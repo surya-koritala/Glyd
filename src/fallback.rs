@@ -160,7 +160,7 @@ pub fn compress_fallback(
 
         pos += forward_step;
         step_skip += 1;
-        forward_step = (step_skip >> 5).max(1);
+        forward_step = (step_skip >> 6).max(1);
     }
 
     let mut trailing = src_len - anchor;

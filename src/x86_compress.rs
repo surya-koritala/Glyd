@@ -135,7 +135,7 @@ pub unsafe fn compress_chained_avx2(
 
         pos += forward_step;
         step_skip += 1;
-        forward_step = (step_skip >> 5).max(1);
+        forward_step = (step_skip >> 6).max(1);
     }
 
     // Flush trailing literals
