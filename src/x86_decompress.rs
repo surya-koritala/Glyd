@@ -48,24 +48,48 @@ pub unsafe fn decompress_avx512(
 ) -> Result<usize> {
     let mut dst_ptr = dst.as_mut_ptr();
     let block_start = dst_ptr;
+    let block_end = dst_ptr.add(uncompressed_len);
+    let safe_limit = if uncompressed_len >= 64 {
+        block_end.sub(64)
+    } else {
+        block_start
+    };
 
     let mut lit_ptr = literals.as_ptr();
+    let lit_limit = literals.as_ptr().add(literals.len());
     let mut offset_idx = 0;
+    let mut token_idx = 0;
+    let num_tokens = tokens.len();
 
-    for &token in tokens {
+    // Fast Phase: zero boundary checks in the hot loop
+    while token_idx < num_tokens && dst_ptr <= safe_limit {
+        let token = *tokens.get_unchecked(token_idx);
         let lit_len = token.lit_len();
         let match_len = token.match_len();
 
-        // 1. Literal copy (single 64-byte vector store covers any lit_len <= 31)
+        if dst_ptr.add(lit_len + match_len + 64) > block_end {
+            break;
+        }
+        token_idx += 1;
+
         if lit_len > 0 {
-            let v0 = _mm512_loadu_si512(lit_ptr as *const _);
-            _mm512_storeu_si512(dst_ptr as *mut _, v0);
+            if lit_ptr.add(32) <= lit_limit {
+                if lit_len <= 8 {
+                    std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 8);
+                } else if lit_len <= 16 {
+                    std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 16);
+                } else {
+                    let v = _mm256_loadu_si256(lit_ptr as *const __m256i);
+                    _mm256_storeu_si256(dst_ptr as *mut __m256i, v);
+                }
+            } else {
+                std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
+            }
 
             lit_ptr = lit_ptr.add(lit_len);
             dst_ptr = dst_ptr.add(lit_len);
         }
 
-        // 2. Match copy (up to 2047 bytes)
         if match_len > 0 {
             if offset_idx >= offsets.len() {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
@@ -81,60 +105,45 @@ pub unsafe fn decompress_avx512(
             let match_src = dst_ptr.sub(offset);
 
             if offset >= 64 {
-                // Wide 64-byte AVX-512 non-overlapping path
-                if match_len <= 64 {
-                    let v0 = _mm512_loadu_si512(match_src as *const _);
-                    _mm512_storeu_si512(dst_ptr as *mut _, v0);
-                } else {
-                    let mut m = match_len;
-                    let mut s = match_src;
-                    let mut d = dst_ptr;
-                    while m >= 64 {
-                        let v = _mm512_loadu_si512(s as *const _);
-                        _mm512_storeu_si512(d as *mut _, v);
-                        s = s.add(64);
-                        d = d.add(64);
-                        m -= 64;
-                    }
-                    if m > 0 {
-                        let v = _mm512_loadu_si512(s as *const _);
-                        _mm512_storeu_si512(d as *mut _, v);
-                    }
-                }
-            } else if offset >= 32 {
-                // 32-byte AVX2 path
-                let mut m = match_len;
+                let match_end = dst_ptr.add(match_len);
                 let mut s = match_src;
                 let mut d = dst_ptr;
-                while m >= 32 {
+                while d < match_end {
+                    let v0 = _mm512_loadu_si512(s as *const _);
+                    _mm512_storeu_si512(d as *mut _, v0);
+                    s = s.add(64);
+                    d = d.add(64);
+                }
+            } else if offset >= 32 {
+                let match_end = dst_ptr.add(match_len);
+                let mut s = match_src;
+                let mut d = dst_ptr;
+                while d < match_end {
                     let v = _mm256_loadu_si256(s as *const __m256i);
                     _mm256_storeu_si256(d as *mut __m256i, v);
                     s = s.add(32);
                     d = d.add(32);
-                    m -= 32;
-                }
-                if m > 0 {
-                    let v = _mm256_loadu_si256(s as *const __m256i);
-                    _mm256_storeu_si256(d as *mut __m256i, v);
                 }
             } else if offset >= 16 {
-                // 16-byte SSE path
-                let mut m = match_len;
+                let match_end = dst_ptr.add(match_len);
                 let mut s = match_src;
                 let mut d = dst_ptr;
-                while m >= 16 {
+                while d < match_end {
                     let v = _mm_loadu_si128(s as *const __m128i);
                     _mm_storeu_si128(d as *mut __m128i, v);
                     s = s.add(16);
                     d = d.add(16);
-                    m -= 16;
                 }
-                if m > 0 {
-                    let v = _mm_loadu_si128(s as *const __m128i);
-                    _mm_storeu_si128(d as *mut __m128i, v);
+            } else if offset >= 8 {
+                let match_end = dst_ptr.add(match_len);
+                let mut s = match_src;
+                let mut d = dst_ptr;
+                while d < match_end {
+                    std::ptr::copy_nonoverlapping(s, d, 8);
+                    s = s.add(8);
+                    d = d.add(8);
                 }
             } else {
-                // Small offset (1..15): Replicate using multi-chunk shuffle masks
                 let raw_pattern = _mm_loadu_si128(match_src as *const __m128i);
                 let masks = &SHUFFLE_MASKS[offset];
 
@@ -168,21 +177,54 @@ pub unsafe fn decompress_avx512(
                             if match_len > 64 {
                                 let safe_dist = PERIODIC_SAFE_OFFSETS[offset];
                                 let mut d = dst_ptr.add(64);
-                                let mut remaining = match_len - 64;
-                                while remaining >= 32 {
+                                let match_end = dst_ptr.add(match_len);
+                                while d < match_end {
                                     let v = _mm256_loadu_si256(d.sub(safe_dist) as *const __m256i);
                                     _mm256_storeu_si256(d as *mut __m256i, v);
                                     d = d.add(32);
-                                    remaining -= 32;
-                                }
-                                if remaining > 0 {
-                                    let v = _mm256_loadu_si256(d.sub(safe_dist) as *const __m256i);
-                                    _mm256_storeu_si256(d as *mut __m256i, v);
                                 }
                             }
                         }
                     }
                 }
+            }
+
+            dst_ptr = dst_ptr.add(match_len);
+        }
+    }
+
+    // Boundary Tail Phase: handles remaining tokens with exact non-overshooting copies
+    while token_idx < num_tokens {
+        let token = *tokens.get_unchecked(token_idx);
+        token_idx += 1;
+
+        let lit_len = token.lit_len();
+        let match_len = token.match_len();
+
+        if lit_len > 0 {
+            std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
+            lit_ptr = lit_ptr.add(lit_len);
+            dst_ptr = dst_ptr.add(lit_len);
+        }
+
+        if match_len > 0 {
+            if offset_idx >= offsets.len() {
+                return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
+            }
+            let offset = *offsets.get_unchecked(offset_idx) as usize;
+            offset_idx += 1;
+
+            let available = dst_ptr.offset_from(buffer_start) as usize;
+            if offset == 0 || offset > available {
+                return Err(CodecError::OffsetOutOfBounds { offset, available });
+            }
+
+            let mut s = dst_ptr.sub(offset);
+            let mut d = dst_ptr;
+            for _ in 0..match_len {
+                *d = *s;
+                s = s.add(1);
+                d = d.add(1);
             }
 
             dst_ptr = dst_ptr.add(match_len);
@@ -210,28 +252,48 @@ pub unsafe fn decompress_avx2(
 ) -> Result<usize> {
     let mut dst_ptr = dst.as_mut_ptr();
     let block_start = dst_ptr;
+    let block_end = dst_ptr.add(uncompressed_len);
+    let safe_limit = if uncompressed_len >= 64 {
+        block_end.sub(64)
+    } else {
+        block_start
+    };
 
     let mut lit_ptr = literals.as_ptr();
+    let lit_limit = literals.as_ptr().add(literals.len());
     let mut offset_idx = 0;
+    let mut token_idx = 0;
+    let num_tokens = tokens.len();
 
-    for &token in tokens {
+    // Fast Phase
+    while token_idx < num_tokens && dst_ptr <= safe_limit {
+        let token = *tokens.get_unchecked(token_idx);
         let lit_len = token.lit_len();
         let match_len = token.match_len();
 
-        // 1. Literal copy (up to 31 bytes)
+        if dst_ptr.add(lit_len + match_len + 32) > block_end {
+            break;
+        }
+        token_idx += 1;
+
         if lit_len > 0 {
-            if lit_len <= 8 {
-                std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 8);
+            if lit_ptr.add(32) <= lit_limit {
+                if lit_len <= 8 {
+                    std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 8);
+                } else if lit_len <= 16 {
+                    std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 16);
+                } else {
+                    let v0 = _mm256_loadu_si256(lit_ptr as *const __m256i);
+                    _mm256_storeu_si256(dst_ptr as *mut __m256i, v0);
+                }
             } else {
-                let v0 = _mm256_loadu_si256(lit_ptr as *const __m256i);
-                _mm256_storeu_si256(dst_ptr as *mut __m256i, v0);
+                std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
             }
 
             lit_ptr = lit_ptr.add(lit_len);
             dst_ptr = dst_ptr.add(lit_len);
         }
 
-        // 2. Match copy (up to 2047 bytes)
         if match_len > 0 {
             if offset_idx >= offsets.len() {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
@@ -246,53 +308,34 @@ pub unsafe fn decompress_avx2(
 
             let match_src = dst_ptr.sub(offset);
 
-            if offset >= 8 {
-                std::ptr::copy_nonoverlapping(match_src, dst_ptr, 8);
-                if match_len > 8 {
-                    if offset >= 32 {
-                        let mut m = match_len - 8;
-                        let mut s = match_src.add(8);
-                        let mut d = dst_ptr.add(8);
-                        while m >= 32 {
-                            let v = _mm256_loadu_si256(s as *const __m256i);
-                            _mm256_storeu_si256(d as *mut __m256i, v);
-                            s = s.add(32);
-                            d = d.add(32);
-                            m -= 32;
-                        }
-                        if m > 0 {
-                            let v = _mm256_loadu_si256(s as *const __m256i);
-                            _mm256_storeu_si256(d as *mut __m256i, v);
-                        }
-                    } else if offset >= 16 {
-                        let mut m = match_len - 8;
-                        let mut s = match_src.add(8);
-                        let mut d = dst_ptr.add(8);
-                        while m >= 16 {
-                            let v = _mm_loadu_si128(s as *const __m128i);
-                            _mm_storeu_si128(d as *mut __m128i, v);
-                            s = s.add(16);
-                            d = d.add(16);
-                            m -= 16;
-                        }
-                        if m > 0 {
-                            let v = _mm_loadu_si128(s as *const __m128i);
-                            _mm_storeu_si128(d as *mut __m128i, v);
-                        }
-                    } else {
-                        let mut m = match_len - 8;
-                        let mut s = match_src.add(8);
-                        let mut d = dst_ptr.add(8);
-                        while m >= 8 {
-                            std::ptr::copy_nonoverlapping(s, d, 8);
-                            s = s.add(8);
-                            d = d.add(8);
-                            m -= 8;
-                        }
-                        if m > 0 {
-                            std::ptr::copy_nonoverlapping(s, d, 8);
-                        }
-                    }
+            if offset >= 32 {
+                let match_end = dst_ptr.add(match_len);
+                let mut s = match_src;
+                let mut d = dst_ptr;
+                while d < match_end {
+                    let v = _mm256_loadu_si256(s as *const __m256i);
+                    _mm256_storeu_si256(d as *mut __m256i, v);
+                    s = s.add(32);
+                    d = d.add(32);
+                }
+            } else if offset >= 16 {
+                let match_end = dst_ptr.add(match_len);
+                let mut s = match_src;
+                let mut d = dst_ptr;
+                while d < match_end {
+                    let v = _mm_loadu_si128(s as *const __m128i);
+                    _mm_storeu_si128(d as *mut __m128i, v);
+                    s = s.add(16);
+                    d = d.add(16);
+                }
+            } else if offset >= 8 {
+                let match_end = dst_ptr.add(match_len);
+                let mut s = match_src;
+                let mut d = dst_ptr;
+                while d < match_end {
+                    std::ptr::copy_nonoverlapping(s, d, 8);
+                    s = s.add(8);
+                    d = d.add(8);
                 }
             } else {
                 let raw_pattern = _mm_loadu_si128(match_src as *const __m128i);
@@ -328,21 +371,54 @@ pub unsafe fn decompress_avx2(
                             if match_len > 64 {
                                 let safe_dist = PERIODIC_SAFE_OFFSETS[offset];
                                 let mut d = dst_ptr.add(64);
-                                let mut remaining = match_len - 64;
-                                while remaining >= 32 {
+                                let match_end = dst_ptr.add(match_len);
+                                while d < match_end {
                                     let v = _mm256_loadu_si256(d.sub(safe_dist) as *const __m256i);
                                     _mm256_storeu_si256(d as *mut __m256i, v);
                                     d = d.add(32);
-                                    remaining -= 32;
-                                }
-                                if remaining > 0 {
-                                    let v = _mm256_loadu_si256(d.sub(safe_dist) as *const __m256i);
-                                    _mm256_storeu_si256(d as *mut __m256i, v);
                                 }
                             }
                         }
                     }
                 }
+            }
+
+            dst_ptr = dst_ptr.add(match_len);
+        }
+    }
+
+    // Boundary Tail Phase
+    while token_idx < num_tokens {
+        let token = *tokens.get_unchecked(token_idx);
+        token_idx += 1;
+
+        let lit_len = token.lit_len();
+        let match_len = token.match_len();
+
+        if lit_len > 0 {
+            std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
+            lit_ptr = lit_ptr.add(lit_len);
+            dst_ptr = dst_ptr.add(lit_len);
+        }
+
+        if match_len > 0 {
+            if offset_idx >= offsets.len() {
+                return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
+            }
+            let offset = *offsets.get_unchecked(offset_idx) as usize;
+            offset_idx += 1;
+
+            let available = dst_ptr.offset_from(buffer_start) as usize;
+            if offset == 0 || offset > available {
+                return Err(CodecError::OffsetOutOfBounds { offset, available });
+            }
+
+            let mut s = dst_ptr.sub(offset);
+            let mut d = dst_ptr;
+            for _ in 0..match_len {
+                *d = *s;
+                s = s.add(1);
+                d = d.add(1);
             }
 
             dst_ptr = dst_ptr.add(match_len);

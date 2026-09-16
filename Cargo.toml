@@ -9,6 +9,13 @@ snap = "1.1"
 zstd = "0.13"
 rayon = "1.10"
 
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "alatirok"
+path = "src/bin/alatirok.rs"
+
 [[example]]
 name = "bench"
 path = "examples/bench.rs"
