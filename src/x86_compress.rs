@@ -3,7 +3,7 @@ use std::arch::x86_64::*;
 use crate::format::{Token, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN, MAX_BLOCK_SIZE};
 
 // 16,384 entries * 4 bytes = 64 KB (fits comfortably in Zen 4 L2 cache)
-pub const HASH_BITS: u32 = 14;
+pub const HASH_BITS: u32 = 16;
 pub const HASH_SIZE: usize = 1 << HASH_BITS;
 
 #[inline(always)]

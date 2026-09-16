@@ -72,7 +72,7 @@ pub fn decompress_fallback(
     Ok(dst_pos)
 }
 
-const HASH_BITS: u32 = 14;
+const HASH_BITS: u32 = 16;
 const HASH_SIZE: usize = 1 << HASH_BITS;
 
 #[inline(always)]
