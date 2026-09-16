@@ -1,0 +1,21 @@
+[package]
+name = "simd-stream-codec"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+lz4_flex = "0.11"
+snap = "1.1"
+zstd = "0.13"
+rayon = "1.10"
+
+[[example]]
+name = "bench"
+path = "examples/bench.rs"
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+overflow-checks = false
