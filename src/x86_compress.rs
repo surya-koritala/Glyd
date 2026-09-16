@@ -85,13 +85,38 @@ pub unsafe fn compress_chained_avx2(
             let candidate_val = std::ptr::read_unaligned(src_ptr.add(candidate) as *const u32);
             if val == candidate_val {
                 let max_possible_match = block_end - pos;
-                let match_len = common_prefix_len_avx2(
+                let mut match_len = common_prefix_len_avx2(
                     src_ptr.add(pos),
                     src_ptr.add(candidate),
                     max_possible_match,
                 );
 
                 if match_len >= MIN_MATCH_LEN {
+                    let mut match_offset = offset;
+                    // Lazy matching: probe pos + 1
+                    if pos + 1 < limit {
+                        let val2 = std::ptr::read_unaligned(src_ptr.add(pos + 1) as *const u32);
+                        let h2 = hash4(val2);
+                        let candidate2 = table[h2] as usize;
+                        let offset2 = (pos + 1).wrapping_sub(candidate2);
+                        if offset2 > 0 && offset2 < MAX_BLOCK_SIZE && candidate2 < pos + 1 {
+                            let candidate2_val = std::ptr::read_unaligned(src_ptr.add(candidate2) as *const u32);
+                            if val2 == candidate2_val {
+                                let match_len2 = common_prefix_len_avx2(
+                                    src_ptr.add(pos + 1),
+                                    src_ptr.add(candidate2),
+                                    block_end - (pos + 1),
+                                );
+                                if match_len2 > match_len {
+                                    table[h2] = (pos + 1) as u32;
+                                    pos += 1;
+                                    match_len = match_len2;
+                                    match_offset = offset2;
+                                }
+                            }
+                        }
+                    }
+
                     // Flush pending literals
                     let mut lit_count = pos - anchor;
                     let mut lit_src = anchor;
@@ -108,7 +133,7 @@ pub unsafe fn compress_chained_avx2(
 
                     let first_match_chunk = match_len.min(MAX_MATCH_LEN);
                     tokens.push(Token::new(lit_count, first_match_chunk));
-                    offsets.push(offset as u16);
+                    offsets.push(match_offset as u16);
                     if lit_count > 0 {
                         literals.extend_from_slice(std::slice::from_raw_parts(
                             src_ptr.add(lit_src),
@@ -120,7 +145,7 @@ pub unsafe fn compress_chained_avx2(
                     while rem_match > 0 {
                         let chunk = rem_match.min(MAX_MATCH_LEN);
                         tokens.push(Token::new(0, chunk));
-                        offsets.push(offset as u16);
+                        offsets.push(match_offset as u16);
                         rem_match -= chunk;
                     }
 

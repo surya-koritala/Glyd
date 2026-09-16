@@ -126,6 +126,35 @@ pub fn compress_fallback(
                     match_len += 1;
                 }
 
+                let mut match_offset = offset;
+                // Lazy matching: probe pos + 1
+                if pos + 1 < limit {
+                    let val2 = u32::from_le_bytes([src[pos + 1], src[pos + 2], src[pos + 3], src[pos + 4]]);
+                    let h2 = hash4(val2);
+                    let cand2 = table[h2] as usize;
+                    let off2 = (pos + 1).wrapping_sub(cand2);
+                    if off2 > 0 && off2 < MAX_BLOCK_SIZE && cand2 < pos + 1 {
+                        let cand2_val = u32::from_le_bytes([
+                            src[cand2],
+                            src[cand2 + 1],
+                            src[cand2 + 2],
+                            src[cand2 + 3],
+                        ]);
+                        if val2 == cand2_val {
+                            let mut m2 = 4;
+                            while pos + 1 + m2 < src_len && src[pos + 1 + m2] == src[cand2 + m2] {
+                                m2 += 1;
+                            }
+                            if m2 > match_len {
+                                table[h2] = (pos + 1) as u16;
+                                pos += 1;
+                                match_len = m2;
+                                match_offset = off2;
+                            }
+                        }
+                    }
+                }
+
                 let mut lit_count = pos - anchor;
                 let mut lit_src = anchor;
                 while lit_count > MAX_LIT_LEN {
@@ -137,7 +166,7 @@ pub fn compress_fallback(
 
                 let first_match_chunk = match_len.min(MAX_MATCH_LEN);
                 tokens.push(Token::new(lit_count, first_match_chunk));
-                offsets.push(offset as u16);
+                offsets.push(match_offset as u16);
                 if lit_count > 0 {
                     literals.extend_from_slice(&src[lit_src..lit_src + lit_count]);
                 }
