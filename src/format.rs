@@ -9,6 +9,9 @@ pub const MIN_MATCH_LEN: usize = 4;
 
 pub const FLAG_COMPRESSED: u16 = 0;
 pub const FLAG_RAW_UNCOMPRESSED: u16 = 1;
+pub const FLAG_CHAIN_RESET: u16 = 2;
+
+pub const PARALLEL_CHUNK_SIZE: usize = 256 * 1024; // 256 KB parallel chunk unit
 
 /// A compact 16-bit descriptor:
 /// - bits 0..4:  literal length (0..31)

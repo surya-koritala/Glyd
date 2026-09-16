@@ -137,7 +137,7 @@ impl<R: Read> AlatirokReader<R> {
         }
 
         let uncomp_len = header.uncompressed_len as usize;
-        let payload_len = if header.flags == FLAG_RAW_UNCOMPRESSED {
+        let payload_len = if (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
             uncomp_len
         } else {
             (header.token_count as usize * std::mem::size_of::<crate::format::Token>())

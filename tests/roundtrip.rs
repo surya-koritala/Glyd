@@ -188,3 +188,28 @@ fn test_roundtrip_mixed_literal_runs() {
     assert_eq!(decomp_p, input);
 }
 
+#[test]
+fn test_parallel_pipeline_256k_chunking_and_chaining() {
+    // 1 MB payload spanning multiple 256 KB parallel chunks and multiple 64 KB blocks per chunk
+    let base = b"EventRecord(user='antigravity-ai', cluster='us-east-1', status='PROD_ACTIVE', ts=1720000000)\n";
+    let mut input = Vec::with_capacity(1024 * 1024);
+    while input.len() < 1024 * 1024 {
+        input.extend_from_slice(base);
+    }
+
+    // 1. Parallel compress -> Sequential decompress
+    let comp_parallel = simd_stream_codec::compress_parallel(&input);
+    let decomp_seq = simd_stream_codec::decompress(&comp_parallel).expect("Sequential decompress of parallel stream failed");
+    assert_eq!(decomp_seq, input);
+
+    // 2. Parallel compress -> Parallel decompress
+    let decomp_par = simd_stream_codec::decompress_parallel(&comp_parallel).expect("Parallel decompress of parallel stream failed");
+    assert_eq!(decomp_par, input);
+
+    // 3. Sequential compress (cross-block chained across 1MB) -> Parallel decompress (must safely fall back to sequential)
+    let comp_seq = simd_stream_codec::compress(&input);
+    let decomp_par_fallback = simd_stream_codec::decompress_parallel(&comp_seq).expect("Parallel decompress of sequential chained stream failed");
+    assert_eq!(decomp_par_fallback, input);
+}
+
+

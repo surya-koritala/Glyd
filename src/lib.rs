@@ -82,7 +82,7 @@ pub fn compress_block_into(chunk: &[u8], output: &mut Vec<u8>) {
             let header = BlockHeader {
                 magic: MAGIC,
                 version: CURRENT_VERSION,
-                flags: FLAG_RAW_UNCOMPRESSED,
+                flags: FLAG_RAW_UNCOMPRESSED | FLAG_CHAIN_RESET,
                 checksum,
                 uncompressed_len: chunk.len() as u32,
                 token_count: 0,
@@ -104,7 +104,7 @@ pub fn compress_block_into(chunk: &[u8], output: &mut Vec<u8>) {
         let header = BlockHeader {
             magic: MAGIC,
             version: CURRENT_VERSION,
-            flags: FLAG_COMPRESSED,
+            flags: FLAG_COMPRESSED | FLAG_CHAIN_RESET,
             checksum,
             uncompressed_len: chunk.len() as u32,
             token_count: tokens.len() as u32,
@@ -195,11 +195,13 @@ pub fn compress_into(input: &[u8], output: &mut Vec<u8>) {
         let offset_bytes_len = offsets.len() * std::mem::size_of::<u16>();
         let compressed_payload_len = token_bytes_len + offset_bytes_len + literals.len();
 
+        let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
+
         if compressed_payload_len >= chunk_len - (chunk_len / 50) {
             let header = BlockHeader {
                 magic: MAGIC,
                 version: CURRENT_VERSION,
-                flags: FLAG_RAW_UNCOMPRESSED,
+                flags: FLAG_RAW_UNCOMPRESSED | chain_flag,
                 checksum,
                 uncompressed_len: chunk_len as u32,
                 token_count: 0,
@@ -222,7 +224,7 @@ pub fn compress_into(input: &[u8], output: &mut Vec<u8>) {
         let header = BlockHeader {
             magic: MAGIC,
             version: CURRENT_VERSION,
-            flags: FLAG_COMPRESSED,
+            flags: FLAG_COMPRESSED | chain_flag,
             checksum,
             uncompressed_len: chunk_len as u32,
             token_count: tokens.len() as u32,
@@ -261,18 +263,18 @@ pub fn compress_into(input: &[u8], output: &mut Vec<u8>) {
 
 /// Compress across all CPU cores in parallel into a pre-allocated destination vector.
 pub fn compress_parallel_into(input: &[u8], output: &mut Vec<u8>) {
-    if input.len() <= MAX_BLOCK_SIZE {
+    if input.len() <= PARALLEL_CHUNK_SIZE {
         compress_into(input, output);
         return;
     }
 
-    let chunks: Vec<&[u8]> = input.chunks(MAX_BLOCK_SIZE).collect();
+    let chunks: Vec<&[u8]> = input.chunks(PARALLEL_CHUNK_SIZE).collect();
     let compressed_chunks: Vec<Vec<u8>> = chunks
         .par_iter()
         .map(|chunk| {
-            let mut block_out = Vec::with_capacity(chunk.len() / 2 + 512);
-            compress_block_into(chunk, &mut block_out);
-            block_out
+            let mut chunk_out = Vec::with_capacity(chunk.len() / 2 + 1024);
+            compress_into(chunk, &mut chunk_out);
+            chunk_out
         })
         .collect();
 
@@ -305,7 +307,7 @@ pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
         }
         total_uncompressed_len += header.uncompressed_len as usize;
 
-        let block_payload_len = if header.flags == FLAG_RAW_UNCOMPRESSED {
+        let block_payload_len = if (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
             header.uncompressed_len as usize
         } else {
             (header.token_count as usize * std::mem::size_of::<Token>())
@@ -358,7 +360,7 @@ pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
         }
 
         // Raw uncompressed bypass path
-        if header.flags == FLAG_RAW_UNCOMPRESSED {
+        if (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
             if cursor + uncomp_len > compressed.len() {
                 return Err(CodecError::CorruptedBitstream("Unexpected end in raw block"));
             }
@@ -502,7 +504,7 @@ pub fn decompress_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
             });
         }
 
-        if header.flags == FLAG_RAW_UNCOMPRESSED {
+        if (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
             if cursor + uncomp_len > compressed.len() {
                 return Err(CodecError::CorruptedBitstream("Unexpected end in raw block"));
             }
@@ -609,6 +611,13 @@ struct BlockInfo {
     uncomp_len: usize,
 }
 
+struct ParallelUnit {
+    first_block_idx: usize,
+    block_count: usize,
+    uncomp_offset: usize,
+    uncomp_len: usize,
+}
+
 /// Decompress in parallel across all CPU cores into a freshly allocated vector.
 pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
     let mut total_uncomp = 0usize;
@@ -623,7 +632,7 @@ pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
             return Err(CodecError::UnsupportedVersion(header.version));
         }
         let uncomp_len = header.uncompressed_len as usize;
-        let payload_len = if header.flags == FLAG_RAW_UNCOMPRESSED {
+        let payload_len = if (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
             uncomp_len
         } else {
             (header.token_count as usize * std::mem::size_of::<Token>())
@@ -643,6 +652,7 @@ pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
 /// Decompress in parallel across all CPU cores into a pre-allocated buffer with checksum verification.
 pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
     let mut blocks = Vec::new();
+    let mut units: Vec<ParallelUnit> = Vec::new();
     let mut cursor = 0usize;
     let mut total_uncomp = 0usize;
 
@@ -656,7 +666,7 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
         }
         let uncomp_len = header.uncompressed_len as usize;
 
-        let payload_len = if header.flags == FLAG_RAW_UNCOMPRESSED {
+        let payload_len = if (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
             uncomp_len
         } else {
             (header.token_count as usize * std::mem::size_of::<Token>())
@@ -665,12 +675,26 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
         };
 
         let total_block_len = HEADER_SIZE + payload_len;
+        let block_idx = blocks.len();
         blocks.push(BlockInfo {
             block_offset: cursor,
             block_size: total_block_len,
             uncomp_offset: total_uncomp,
             uncomp_len,
         });
+
+        if (header.flags & FLAG_CHAIN_RESET) != 0 || units.is_empty() {
+            units.push(ParallelUnit {
+                first_block_idx: block_idx,
+                block_count: 1,
+                uncomp_offset: total_uncomp,
+                uncomp_len,
+            });
+        } else {
+            let u = units.last_mut().unwrap();
+            u.block_count += 1;
+            u.uncomp_len += uncomp_len;
+        }
 
         cursor += total_block_len;
         total_uncomp += uncomp_len;
@@ -687,7 +711,7 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
         });
     }
 
-    if blocks.len() <= 1 {
+    if units.len() <= 1 {
         return decompress_into(compressed, dst);
     }
 
@@ -698,22 +722,77 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
     #[cfg(target_arch = "x86_64")]
     let has_avx2 = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("bmi2");
 
-    blocks.par_iter().try_for_each(|b| -> Result<()> {
-        let block_slice = &compressed[b.block_offset..b.block_offset + b.block_size];
-        let header = unsafe { std::ptr::read_unaligned(block_slice.as_ptr() as *const BlockHeader) };
+    units.par_iter().try_for_each(|unit| -> Result<()> {
+        let unit_slice = unsafe {
+            let ptr = (output_ptr + unit.uncomp_offset) as *mut u8;
+            std::slice::from_raw_parts_mut(ptr, unit.uncomp_len + PADDING)
+        };
+        let unit_buffer_start = unit_slice.as_ptr();
 
-        if header.flags == FLAG_RAW_UNCOMPRESSED {
+        for i in 0..unit.block_count {
+            let b = &blocks[unit.first_block_idx + i];
+            let block_slice = &compressed[b.block_offset..b.block_offset + b.block_size];
+            let header = unsafe { std::ptr::read_unaligned(block_slice.as_ptr() as *const BlockHeader) };
+
+            let block_offset_in_unit = b.uncomp_offset - unit.uncomp_offset;
             let dst_slice = unsafe {
                 let ptr = (output_ptr + b.uncomp_offset) as *mut u8;
-                std::slice::from_raw_parts_mut(ptr, b.uncomp_len)
+                std::slice::from_raw_parts_mut(ptr, b.uncomp_len + PADDING)
             };
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    block_slice.as_ptr().add(HEADER_SIZE),
-                    dst_slice.as_mut_ptr(),
-                    b.uncomp_len,
-                );
+
+            if (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        block_slice.as_ptr().add(HEADER_SIZE),
+                        dst_slice.as_mut_ptr(),
+                        b.uncomp_len,
+                    );
+                }
+            } else {
+                let token_count = header.token_count as usize;
+                let offset_count = header.offset_count as usize;
+                let lit_len = header.literal_len as usize;
+
+                let mut c = HEADER_SIZE;
+                let token_bytes_len = token_count * std::mem::size_of::<Token>();
+                let offset_bytes_len = offset_count * std::mem::size_of::<u16>();
+
+                let tokens = unsafe {
+                    std::slice::from_raw_parts(
+                        block_slice.as_ptr().add(c) as *const Token,
+                        token_count,
+                    )
+                };
+                c += token_bytes_len;
+
+                let offsets = unsafe {
+                    std::slice::from_raw_parts(
+                        block_slice.as_ptr().add(c) as *const u16,
+                        offset_count,
+                    )
+                };
+                c += offset_bytes_len;
+
+                let raw_literals = &block_slice[c..c + lit_len];
+
+                #[cfg(target_arch = "x86_64")]
+                {
+                    unsafe {
+                        if has_avx512 {
+                            x86_decompress::decompress_avx512(tokens, offsets, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
+                        } else if has_avx2 {
+                            x86_decompress::decompress_avx2(tokens, offsets, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
+                        } else {
+                            fallback::decompress_fallback(tokens, offsets, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
+                        }
+                    }
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    fallback::decompress_fallback(tokens, offsets, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
+                }
             }
+
             let actual = compute_checksum(&dst_slice[..b.uncomp_len]);
             if actual != header.checksum {
                 return Err(CodecError::ChecksumMismatch {
@@ -721,66 +800,6 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
                     computed: actual,
                 });
             }
-            return Ok(());
-        }
-
-        let token_count = header.token_count as usize;
-        let offset_count = header.offset_count as usize;
-        let lit_len = header.literal_len as usize;
-
-        let mut c = HEADER_SIZE;
-        let token_bytes_len = token_count * std::mem::size_of::<Token>();
-        let offset_bytes_len = offset_count * std::mem::size_of::<u16>();
-
-        let tokens = unsafe {
-            std::slice::from_raw_parts(
-                block_slice.as_ptr().add(c) as *const Token,
-                token_count,
-            )
-        };
-        c += token_bytes_len;
-
-        let offsets = unsafe {
-            std::slice::from_raw_parts(
-                block_slice.as_ptr().add(c) as *const u16,
-                offset_count,
-            )
-        };
-        c += offset_bytes_len;
-
-        let raw_literals = &block_slice[c..c + lit_len];
-
-        let dst_slice = unsafe {
-            let ptr = (output_ptr + b.uncomp_offset) as *mut u8;
-            std::slice::from_raw_parts_mut(ptr, b.uncomp_len + PADDING)
-        };
-        let block_ptr = dst_slice.as_mut_ptr();
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            unsafe {
-                if has_avx512 {
-                    x86_decompress::decompress_avx512(tokens, offsets, raw_literals, dst_slice, block_ptr, b.uncomp_len)?;
-                } else if has_avx2 {
-                    x86_decompress::decompress_avx2(tokens, offsets, raw_literals, dst_slice, block_ptr, b.uncomp_len)?;
-                } else {
-                    fallback::decompress_fallback(tokens, offsets, raw_literals, dst_slice, 0, b.uncomp_len)?;
-                }
-            }
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            unsafe {
-                fallback::decompress_fallback(tokens, offsets, raw_literals, dst_slice, 0, b.uncomp_len)?;
-            }
-        }
-
-        let actual = compute_checksum(&dst_slice[..b.uncomp_len]);
-        if actual != header.checksum {
-            return Err(CodecError::ChecksumMismatch {
-                expected: header.checksum,
-                computed: actual,
-            });
         }
 
         Ok(())
@@ -792,6 +811,7 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
 /// Decompress in parallel across all CPU cores into a pre-allocated buffer without verifying checksum (raw codec speed).
 pub fn decompress_parallel_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
     let mut blocks = Vec::new();
+    let mut units: Vec<ParallelUnit> = Vec::new();
     let mut cursor = 0usize;
     let mut total_uncomp = 0usize;
 
@@ -802,7 +822,7 @@ pub fn decompress_parallel_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result
         }
         let uncomp_len = header.uncompressed_len as usize;
 
-        let payload_len = if header.flags == FLAG_RAW_UNCOMPRESSED {
+        let payload_len = if (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
             uncomp_len
         } else {
             (header.token_count as usize * std::mem::size_of::<Token>())
@@ -811,12 +831,26 @@ pub fn decompress_parallel_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result
         };
 
         let total_block_len = HEADER_SIZE + payload_len;
+        let block_idx = blocks.len();
         blocks.push(BlockInfo {
             block_offset: cursor,
             block_size: total_block_len,
             uncomp_offset: total_uncomp,
             uncomp_len,
         });
+
+        if (header.flags & FLAG_CHAIN_RESET) != 0 || units.is_empty() {
+            units.push(ParallelUnit {
+                first_block_idx: block_idx,
+                block_count: 1,
+                uncomp_offset: total_uncomp,
+                uncomp_len,
+            });
+        } else {
+            let u = units.last_mut().unwrap();
+            u.block_count += 1;
+            u.uncomp_len += uncomp_len;
+        }
 
         cursor += total_block_len;
         total_uncomp += uncomp_len;
@@ -833,7 +867,7 @@ pub fn decompress_parallel_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result
         });
     }
 
-    if blocks.len() <= 1 {
+    if units.len() <= 1 {
         return decompress_into_raw(compressed, dst);
     }
 
@@ -844,73 +878,75 @@ pub fn decompress_parallel_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result
     #[cfg(target_arch = "x86_64")]
     let has_avx2 = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("bmi2");
 
-    blocks.par_iter().try_for_each(|b| -> Result<()> {
-        let block_slice = &compressed[b.block_offset..b.block_offset + b.block_size];
-        let header = unsafe { std::ptr::read_unaligned(block_slice.as_ptr() as *const BlockHeader) };
+    units.par_iter().try_for_each(|unit| -> Result<()> {
+        let unit_slice = unsafe {
+            let ptr = (output_ptr + unit.uncomp_offset) as *mut u8;
+            std::slice::from_raw_parts_mut(ptr, unit.uncomp_len + PADDING)
+        };
+        let unit_buffer_start = unit_slice.as_ptr();
 
-        if header.flags == FLAG_RAW_UNCOMPRESSED {
+        for i in 0..unit.block_count {
+            let b = &blocks[unit.first_block_idx + i];
+            let block_slice = &compressed[b.block_offset..b.block_offset + b.block_size];
+            let header = unsafe { std::ptr::read_unaligned(block_slice.as_ptr() as *const BlockHeader) };
+
+            let block_offset_in_unit = b.uncomp_offset - unit.uncomp_offset;
             let dst_slice = unsafe {
                 let ptr = (output_ptr + b.uncomp_offset) as *mut u8;
-                std::slice::from_raw_parts_mut(ptr, b.uncomp_len)
+                std::slice::from_raw_parts_mut(ptr, b.uncomp_len + PADDING)
             };
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    block_slice.as_ptr().add(HEADER_SIZE),
-                    dst_slice.as_mut_ptr(),
-                    b.uncomp_len,
-                );
-            }
-            return Ok(());
-        }
 
-        let token_count = header.token_count as usize;
-        let offset_count = header.offset_count as usize;
-        let lit_len = header.literal_len as usize;
-
-        let mut c = HEADER_SIZE;
-        let token_bytes_len = token_count * std::mem::size_of::<Token>();
-        let offset_bytes_len = offset_count * std::mem::size_of::<u16>();
-
-        let tokens = unsafe {
-            std::slice::from_raw_parts(
-                block_slice.as_ptr().add(c) as *const Token,
-                token_count,
-            )
-        };
-        c += token_bytes_len;
-
-        let offsets = unsafe {
-            std::slice::from_raw_parts(
-                block_slice.as_ptr().add(c) as *const u16,
-                offset_count,
-            )
-        };
-        c += offset_bytes_len;
-
-        let raw_literals = &block_slice[c..c + lit_len];
-
-        let dst_slice = unsafe {
-            let ptr = (output_ptr + b.uncomp_offset) as *mut u8;
-            std::slice::from_raw_parts_mut(ptr, b.uncomp_len + PADDING)
-        };
-        let block_ptr = dst_slice.as_mut_ptr();
-
-        #[cfg(target_arch = "x86_64")]
-        {
-            unsafe {
-                if has_avx512 {
-                    x86_decompress::decompress_avx512(tokens, offsets, raw_literals, dst_slice, block_ptr, b.uncomp_len)?;
-                } else if has_avx2 {
-                    x86_decompress::decompress_avx2(tokens, offsets, raw_literals, dst_slice, block_ptr, b.uncomp_len)?;
-                } else {
-                    fallback::decompress_fallback(tokens, offsets, raw_literals, dst_slice, 0, b.uncomp_len)?;
+            if (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        block_slice.as_ptr().add(HEADER_SIZE),
+                        dst_slice.as_mut_ptr(),
+                        b.uncomp_len,
+                    );
                 }
-            }
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            unsafe {
-                fallback::decompress_fallback(tokens, offsets, raw_literals, dst_slice, 0, b.uncomp_len)?;
+            } else {
+                let token_count = header.token_count as usize;
+                let offset_count = header.offset_count as usize;
+                let lit_len = header.literal_len as usize;
+
+                let mut c = HEADER_SIZE;
+                let token_bytes_len = token_count * std::mem::size_of::<Token>();
+                let offset_bytes_len = offset_count * std::mem::size_of::<u16>();
+
+                let tokens = unsafe {
+                    std::slice::from_raw_parts(
+                        block_slice.as_ptr().add(c) as *const Token,
+                        token_count,
+                    )
+                };
+                c += token_bytes_len;
+
+                let offsets = unsafe {
+                    std::slice::from_raw_parts(
+                        block_slice.as_ptr().add(c) as *const u16,
+                        offset_count,
+                    )
+                };
+                c += offset_bytes_len;
+
+                let raw_literals = &block_slice[c..c + lit_len];
+
+                #[cfg(target_arch = "x86_64")]
+                {
+                    unsafe {
+                        if has_avx512 {
+                            x86_decompress::decompress_avx512(tokens, offsets, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
+                        } else if has_avx2 {
+                            x86_decompress::decompress_avx2(tokens, offsets, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
+                        } else {
+                            fallback::decompress_fallback(tokens, offsets, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
+                        }
+                    }
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    fallback::decompress_fallback(tokens, offsets, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
+                }
             }
         }
 
