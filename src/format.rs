@@ -1,5 +1,5 @@
 pub const MAGIC: u32 = 0x53494D44; // "SIMD"
-pub const CURRENT_VERSION: u16 = 1;
+pub const CURRENT_VERSION: u16 = 2;
 pub const MAX_BLOCK_SIZE: usize = 65536; // 64 KB
 pub const PADDING: usize = 64; // Safe SIMD read/write margin
 
@@ -10,9 +10,11 @@ pub const MIN_MATCH_LEN: usize = 4;
 pub const FLAG_COMPRESSED: u16 = 0;
 pub const FLAG_RAW_UNCOMPRESSED: u16 = 1;
 
-/// A compact 16-bit descriptor for branchless decompression:
+/// A compact 16-bit descriptor:
 /// - bits 0..4:  literal length (0..31)
 /// - bits 5..15: match length (0..2047)
+/// Format v2: lit_len == 31 && match_len == 0 encodes an extended literal run (> 31 bytes),
+/// where the true length is read as one u16 from the offset stream.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct Token(pub u16);
@@ -33,6 +35,11 @@ impl Token {
     #[inline(always)]
     pub fn match_len(self) -> usize {
         ((self.0 >> 5) & 0x7FF) as usize
+    }
+
+    #[inline(always)]
+    pub fn is_extended_literal(self) -> bool {
+        self.0 == 31
     }
 }
 

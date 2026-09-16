@@ -53,12 +53,13 @@ pub unsafe fn compress_chained_avx2(
 ) {
     if block_len < MIN_MATCH_LEN {
         let chunk = &full_input[block_start..block_start + block_len];
-        let mut rem = chunk;
-        while !rem.is_empty() {
-            let c = rem.len().min(MAX_LIT_LEN);
-            tokens.push(Token::new(c, 0));
-            literals.extend_from_slice(&rem[..c]);
-            rem = &rem[c..];
+        if chunk.len() > MAX_LIT_LEN {
+            tokens.push(Token::new(31, 0));
+            offsets.push(chunk.len() as u16);
+            literals.extend_from_slice(chunk);
+        } else if !chunk.is_empty() {
+            tokens.push(Token::new(chunk.len(), 0));
+            literals.extend_from_slice(chunk);
         }
         return;
     }
@@ -118,26 +119,28 @@ pub unsafe fn compress_chained_avx2(
                     }
 
                     // Flush pending literals
-                    let mut lit_count = pos - anchor;
-                    let mut lit_src = anchor;
+                    let lit_count = pos - anchor;
+                    let lit_src = anchor;
 
-                    while lit_count > MAX_LIT_LEN {
-                        tokens.push(Token::new(MAX_LIT_LEN, 0));
-                        literals.extend_from_slice(std::slice::from_raw_parts(
-                            src_ptr.add(lit_src),
-                            MAX_LIT_LEN,
-                        ));
-                        lit_src += MAX_LIT_LEN;
-                        lit_count -= MAX_LIT_LEN;
-                    }
-
-                    let first_match_chunk = match_len.min(MAX_MATCH_LEN);
-                    tokens.push(Token::new(lit_count, first_match_chunk));
-                    offsets.push(match_offset as u16);
-                    if lit_count > 0 {
+                    let (first_lit_len, rem_lit_src) = if lit_count > MAX_LIT_LEN {
+                        tokens.push(Token::new(31, 0));
+                        offsets.push(lit_count as u16);
                         literals.extend_from_slice(std::slice::from_raw_parts(
                             src_ptr.add(lit_src),
                             lit_count,
+                        ));
+                        (0, lit_src + lit_count)
+                    } else {
+                        (lit_count, lit_src)
+                    };
+
+                    let first_match_chunk = match_len.min(MAX_MATCH_LEN);
+                    tokens.push(Token::new(first_lit_len, first_match_chunk));
+                    offsets.push(match_offset as u16);
+                    if first_lit_len > 0 {
+                        literals.extend_from_slice(std::slice::from_raw_parts(
+                            src_ptr.add(rem_lit_src),
+                            first_lit_len,
                         ));
                     }
 
@@ -164,17 +167,20 @@ pub unsafe fn compress_chained_avx2(
     }
 
     // Flush trailing literals
-    let mut trailing = block_end - anchor;
-    let mut lit_src = anchor;
-    while trailing > 0 {
-        let chunk = trailing.min(MAX_LIT_LEN);
-        tokens.push(Token::new(chunk, 0));
+    let trailing = block_end - anchor;
+    if trailing > MAX_LIT_LEN {
+        tokens.push(Token::new(31, 0));
+        offsets.push(trailing as u16);
         literals.extend_from_slice(std::slice::from_raw_parts(
-            src_ptr.add(lit_src),
-            chunk,
+            src_ptr.add(anchor),
+            trailing,
         ));
-        lit_src += chunk;
-        trailing -= chunk;
+    } else if trailing > 0 {
+        tokens.push(Token::new(trailing, 0));
+        literals.extend_from_slice(std::slice::from_raw_parts(
+            src_ptr.add(anchor),
+            trailing,
+        ));
     }
 }
 

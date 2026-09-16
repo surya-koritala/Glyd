@@ -64,23 +64,52 @@ pub unsafe fn decompress_avx512(
     // Fast Phase: zero boundary checks in the hot loop
     while token_idx < num_tokens && dst_ptr <= safe_limit {
         let token = *tokens.get_unchecked(token_idx);
-        let lit_len = token.lit_len();
-        let match_len = token.match_len();
+        let (lit_len, match_len) = if token.is_extended_literal() {
+            if offset_idx >= offsets.len() {
+                return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
+            }
+            let ext_len = *offsets.get_unchecked(offset_idx) as usize;
+            offset_idx += 1;
+            (ext_len, 0)
+        } else {
+            (token.lit_len(), token.match_len())
+        };
 
         if dst_ptr.add(lit_len + match_len + 64) > block_end {
+            if token.is_extended_literal() {
+                offset_idx -= 1;
+            }
             break;
         }
         token_idx += 1;
 
         if lit_len > 0 {
+            if lit_ptr.add(lit_len) > lit_limit {
+                return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
+            }
             if lit_ptr.add(32) <= lit_limit {
                 if lit_len <= 8 {
                     std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 8);
                 } else if lit_len <= 16 {
                     std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 16);
-                } else {
+                } else if lit_len <= 32 {
                     let v = _mm256_loadu_si256(lit_ptr as *const __m256i);
                     _mm256_storeu_si256(dst_ptr as *mut __m256i, v);
+                } else {
+                    let mut copied = 0;
+                    while copied + 64 <= lit_len {
+                        let v = _mm512_loadu_si512(lit_ptr.add(copied) as *const __m512i);
+                        _mm512_storeu_si512(dst_ptr.add(copied) as *mut __m512i, v);
+                        copied += 64;
+                    }
+                    while copied + 32 <= lit_len {
+                        let v = _mm256_loadu_si256(lit_ptr.add(copied) as *const __m256i);
+                        _mm256_storeu_si256(dst_ptr.add(copied) as *mut __m256i, v);
+                        copied += 32;
+                    }
+                    if copied < lit_len {
+                        std::ptr::copy_nonoverlapping(lit_ptr.add(copied), dst_ptr.add(copied), lit_len - copied);
+                    }
                 }
             } else {
                 std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
@@ -198,10 +227,21 @@ pub unsafe fn decompress_avx512(
         let token = *tokens.get_unchecked(token_idx);
         token_idx += 1;
 
-        let lit_len = token.lit_len();
-        let match_len = token.match_len();
+        let (lit_len, match_len) = if token.is_extended_literal() {
+            if offset_idx >= offsets.len() {
+                return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
+            }
+            let ext_len = *offsets.get_unchecked(offset_idx) as usize;
+            offset_idx += 1;
+            (ext_len, 0)
+        } else {
+            (token.lit_len(), token.match_len())
+        };
 
         if lit_len > 0 {
+            if lit_ptr.add(lit_len) > lit_limit {
+                return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
+            }
             std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
             lit_ptr = lit_ptr.add(lit_len);
             dst_ptr = dst_ptr.add(lit_len);
@@ -268,23 +308,47 @@ pub unsafe fn decompress_avx2(
     // Fast Phase
     while token_idx < num_tokens && dst_ptr <= safe_limit {
         let token = *tokens.get_unchecked(token_idx);
-        let lit_len = token.lit_len();
-        let match_len = token.match_len();
+        let (lit_len, match_len) = if token.is_extended_literal() {
+            if offset_idx >= offsets.len() {
+                return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
+            }
+            let ext_len = *offsets.get_unchecked(offset_idx) as usize;
+            offset_idx += 1;
+            (ext_len, 0)
+        } else {
+            (token.lit_len(), token.match_len())
+        };
 
         if dst_ptr.add(lit_len + match_len + 32) > block_end {
+            if token.is_extended_literal() {
+                offset_idx -= 1;
+            }
             break;
         }
         token_idx += 1;
 
         if lit_len > 0 {
+            if lit_ptr.add(lit_len) > lit_limit {
+                return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
+            }
             if lit_ptr.add(32) <= lit_limit {
                 if lit_len <= 8 {
                     std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 8);
                 } else if lit_len <= 16 {
                     std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 16);
-                } else {
+                } else if lit_len <= 32 {
                     let v0 = _mm256_loadu_si256(lit_ptr as *const __m256i);
                     _mm256_storeu_si256(dst_ptr as *mut __m256i, v0);
+                } else {
+                    let mut copied = 0;
+                    while copied + 32 <= lit_len {
+                        let v = _mm256_loadu_si256(lit_ptr.add(copied) as *const __m256i);
+                        _mm256_storeu_si256(dst_ptr.add(copied) as *mut __m256i, v);
+                        copied += 32;
+                    }
+                    if copied < lit_len {
+                        std::ptr::copy_nonoverlapping(lit_ptr.add(copied), dst_ptr.add(copied), lit_len - copied);
+                    }
                 }
             } else {
                 std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
@@ -392,10 +456,21 @@ pub unsafe fn decompress_avx2(
         let token = *tokens.get_unchecked(token_idx);
         token_idx += 1;
 
-        let lit_len = token.lit_len();
-        let match_len = token.match_len();
+        let (lit_len, match_len) = if token.is_extended_literal() {
+            if offset_idx >= offsets.len() {
+                return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
+            }
+            let ext_len = *offsets.get_unchecked(offset_idx) as usize;
+            offset_idx += 1;
+            (ext_len, 0)
+        } else {
+            (token.lit_len(), token.match_len())
+        };
 
         if lit_len > 0 {
+            if lit_ptr.add(lit_len) > lit_limit {
+                return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
+            }
             std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
             lit_ptr = lit_ptr.add(lit_len);
             dst_ptr = dst_ptr.add(lit_len);

@@ -1,0 +1,87 @@
+=========================================================================================================
+             OFFICIAL SILESIA COMPRESSION CORPUS BENCHMARK (AVX-512 + MULTI-CORE)
+             Hardware: AMD Ryzen 9 7950X3D (Zen 4, 16-Core / 32-Thread) | Rayon Threads: 32
+=========================================================================================================
+Tested dickens    (  9.7 MB) | Comp 1C: 0.31 GB/s (16C:  2.2 GB/s) | Decomp 1C:  1.5 GB/s (16C:  4.7 GB/s) | LZ4 1C:  3.7 GB/s
+Tested mozilla    ( 48.8 MB) | Comp 1C: 0.38 GB/s (16C:  1.6 GB/s) | Decomp 1C:  2.0 GB/s (16C: 14.8 GB/s) | LZ4 1C:  2.9 GB/s
+Tested mr         (  9.5 MB) | Comp 1C: 0.42 GB/s (16C:  2.7 GB/s) | Decomp 1C:  2.0 GB/s (16C:  5.9 GB/s) | LZ4 1C:  3.9 GB/s
+Tested nci        ( 32.0 MB) | Comp 1C: 1.08 GB/s (16C:  6.9 GB/s) | Decomp 1C:  4.7 GB/s (16C: 19.3 GB/s) | LZ4 1C:  4.5 GB/s
+Tested ooffice    (  5.9 MB) | Comp 1C: 0.26 GB/s (16C:  1.9 GB/s) | Decomp 1C:  1.8 GB/s (16C:  3.2 GB/s) | LZ4 1C:  3.7 GB/s
+Tested osdb       (  9.6 MB) | Comp 1C: 0.49 GB/s (16C:  2.9 GB/s) | Decomp 1C:  4.3 GB/s (16C:  5.3 GB/s) | LZ4 1C:  3.6 GB/s
+Tested reymont    (  6.3 MB) | Comp 1C: 0.42 GB/s (16C:  2.0 GB/s) | Decomp 1C:  1.6 GB/s (16C:  3.3 GB/s) | LZ4 1C:  3.4 GB/s
+Tested samba      ( 20.6 MB) | Comp 1C: 0.63 GB/s (16C:  4.3 GB/s) | Decomp 1C:  2.9 GB/s (16C: 11.7 GB/s) | LZ4 1C:  3.8 GB/s
+Tested sao        (  6.9 MB) | Comp 1C: 0.22 GB/s (16C:  2.1 GB/s) | Decomp 1C:  2.5 GB/s (16C:  4.4 GB/s) | LZ4 1C:  4.8 GB/s
+Tested webster    ( 39.5 MB) | Comp 1C: 0.36 GB/s (16C:  1.7 GB/s) | Decomp 1C:  1.8 GB/s (16C: 14.3 GB/s) | LZ4 1C:  3.0 GB/s
+Tested xml        (  5.1 MB) | Comp 1C: 0.89 GB/s (16C:  2.3 GB/s) | Decomp 1C:  4.0 GB/s (16C:  2.4 GB/s) | LZ4 1C:  4.3 GB/s
+Tested x-ray      (  8.1 MB) | Comp 1C: 0.21 GB/s (16C:  2.4 GB/s) | Decomp 1C:  3.4 GB/s (16C:  4.3 GB/s) | LZ4 1C: 16.7 GB/s
+
+=========================================================================================================
+                                   COMPRESSION RATIO COMPARISON
+=========================================================================================================
+File         |  Orig Size | SIMD (Ours) |        LZ4 |     Snappy |     Zstd-1 | Deficit vs LZ4
+-------------+------------+------------+------------+------------+------------+---------------
+dickens      |    9.72 MB |     1.34x |     1.59x |     1.61x |     2.39x |         -15.3%
+mozilla      |   48.85 MB |     1.77x |     1.93x |     1.92x |     2.57x |          -8.5%
+mr           |    9.51 MB |     1.58x |     1.83x |     1.83x |     2.61x |         -13.6%
+nci          |   32.00 MB |     5.41x |     6.06x |     5.46x |    11.78x |         -10.8%
+ooffice      |    5.87 MB |     1.34x |     1.41x |     1.43x |     1.71x |          -4.9%
+osdb         |    9.62 MB |     2.06x |     1.91x |     1.86x |     2.70x |           8.0%
+reymont      |    6.32 MB |     1.59x |     2.08x |     2.05x |     3.09x |         -23.6%
+samba        |   20.61 MB |     2.44x |     2.80x |     2.68x |     3.93x |         -12.9%
+sao          |    6.92 MB |     1.05x |     1.06x |     1.12x |     1.16x |          -0.9%
+webster      |   39.54 MB |     1.78x |     2.06x |     2.05x |     3.03x |         -13.3%
+xml          |    5.10 MB |     3.82x |     4.35x |     4.08x |     7.70x |         -12.2%
+x-ray        |    8.08 MB |     1.02x |     1.01x |     1.00x |     1.25x |           1.4%
+-------------+------------+------------+------------+------------+------------+---------------
+TOTAL SILESIA |  202.12 MB |     1.90x |     2.10x |     2.08x |     2.89x |          -9.3%
+
+=================================================================================================================================
+                                     COMPRESSION THROUGHPUT (GB/s) - SINGLE VS MULTI-CORE
+=================================================================================================================================
+File       |   SIMD 1C Comp |  SIMD 16C Comp |    LZ4 (1C) |   Snap (1C) | Zstd-1 (1C)
+-----------+----------------+----------------+-------------+-------------+------------
+dickens    |        0.31 GB/s |        2.19 GB/s |     0.47 GB/s |     0.47 GB/s |     0.37 GB/s
+mozilla    |        0.38 GB/s |        1.61 GB/s |     0.70 GB/s |     0.65 GB/s |     0.48 GB/s
+mr         |        0.42 GB/s |        2.67 GB/s |     0.86 GB/s |     0.75 GB/s |     0.51 GB/s
+nci        |        1.08 GB/s |        6.86 GB/s |     1.19 GB/s |     1.38 GB/s |     1.06 GB/s
+ooffice    |        0.26 GB/s |        1.86 GB/s |     0.77 GB/s |     0.61 GB/s |     0.48 GB/s
+osdb       |        0.49 GB/s |        2.86 GB/s |     0.78 GB/s |     0.88 GB/s |     0.54 GB/s
+reymont    |        0.42 GB/s |        2.01 GB/s |     0.50 GB/s |     0.59 GB/s |     0.38 GB/s
+samba      |        0.63 GB/s |        4.27 GB/s |     0.80 GB/s |     0.91 GB/s |     0.66 GB/s
+sao        |        0.22 GB/s |        2.11 GB/s |     0.89 GB/s |     0.62 GB/s |     0.43 GB/s
+webster    |        0.36 GB/s |        1.65 GB/s |     0.52 GB/s |     0.51 GB/s |     0.43 GB/s
+xml        |        0.89 GB/s |        2.29 GB/s |     1.06 GB/s |     1.13 GB/s |     0.90 GB/s
+x-ray      |        0.21 GB/s |        2.35 GB/s |     2.72 GB/s |     8.08 GB/s |     0.87 GB/s
+
+=================================================================================================================================
+                                     DECOMPRESSION THROUGHPUT (GB/s) - SINGLE VS MULTI-CORE
+=================================================================================================================================
+File       |    SIMD 1C Raw |    SIMD 1C Ver |   SIMD 16C Raw |   SIMD 16C Ver |    LZ4 (1C) |   Snap (1C) | Zstd-1 (1C)
+-----------+----------------+----------------+----------------+----------------+-------------+-------------+------------
+dickens    |        1.47 GB/s |        1.44 GB/s |        4.96 GB/s |        4.71 GB/s |     3.69 GB/s |     1.38 GB/s |     1.42 GB/s
+mozilla    |        2.01 GB/s |        2.05 GB/s |       14.01 GB/s |       14.78 GB/s |     2.90 GB/s |     1.92 GB/s |     0.74 GB/s
+mr         |        2.00 GB/s |        1.81 GB/s |        5.78 GB/s |        5.92 GB/s |     3.89 GB/s |     1.89 GB/s |     1.67 GB/s
+nci        |        4.75 GB/s |        4.23 GB/s |       17.65 GB/s |       19.27 GB/s |     4.49 GB/s |     3.43 GB/s |     0.97 GB/s
+ooffice    |        1.82 GB/s |        1.70 GB/s |        3.32 GB/s |        3.15 GB/s |     3.68 GB/s |     1.86 GB/s |     1.23 GB/s
+osdb       |        4.30 GB/s |        3.46 GB/s |        6.23 GB/s |        5.27 GB/s |     3.56 GB/s |     2.56 GB/s |     1.50 GB/s
+reymont    |        1.56 GB/s |        1.44 GB/s |        3.35 GB/s |        3.32 GB/s |     3.44 GB/s |     1.61 GB/s |     1.39 GB/s
+samba      |        2.92 GB/s |        2.63 GB/s |       10.90 GB/s |       11.66 GB/s |     3.84 GB/s |     2.38 GB/s |     0.84 GB/s
+sao        |        2.48 GB/s |        2.28 GB/s |        4.30 GB/s |        4.40 GB/s |     4.78 GB/s |     2.06 GB/s |     1.24 GB/s
+webster    |        1.78 GB/s |        1.77 GB/s |       15.32 GB/s |       14.33 GB/s |     2.97 GB/s |     1.50 GB/s |     0.80 GB/s
+xml        |        4.02 GB/s |        3.41 GB/s |        2.52 GB/s |        2.45 GB/s |     4.28 GB/s |     2.79 GB/s |     2.19 GB/s
+x-ray      |        3.35 GB/s |        2.87 GB/s |        4.19 GB/s |        4.27 GB/s |    16.65 GB/s |    26.80 GB/s |     1.35 GB/s
+=================================================================================================================================
+
+=================================================================================================================================
+                      REAL-WORLD APPLICATION WORKLOAD BENCHMARK (25 MB PER WORKLOAD)
+                      Hardware: AMD Ryzen 9 7950X3D (Zen 4, 16C / 32T) | Rayon Threads: 32
+=================================================================================================================================
+Workload       | Application Domain                         |  Ratio |    SIMD 1C Raw |   SIMD 16C Ver |     LZ4 1C |    Snap 1C | Deficit vs LZ4
+---------------+--------------------------------------------+--------+----------------+----------------+------------+------------+---------------
+JSON Logs      | Kubernetes / CloudWatch JSON structured logs |  6.99x |       10.59 GB/s |       17.57 GB/s |    5.87 GB/s |    4.91 GB/s |         -10.7%
+Columnar DB    | Parquet / ClickHouse timestamp & metric columns |  1.68x |        3.18 GB/s |        9.25 GB/s |    2.37 GB/s |    1.91 GB/s |         -22.6%
+Binary RPC     | Protobuf / gRPC microservice packed payloads |  9.59x |       14.57 GB/s |       19.18 GB/s |    8.34 GB/s |    8.55 GB/s |           3.8%
+Source Code    | Codebase repositories, ASTs, and syntax trees | 15.85x |       16.30 GB/s |       14.69 GB/s |   18.11 GB/s |    7.94 GB/s |         -93.6%
+=================================================================================================================================
+
+Wrote benchmark results to CSV: bench_format_v2.csv

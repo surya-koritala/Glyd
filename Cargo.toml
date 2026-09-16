@@ -24,5 +24,4 @@ path = "examples/bench.rs"
 opt-level = 3
 codegen-units = 1
 lto = "fat"
-panic = "abort"
 overflow-checks = false

@@ -121,3 +121,70 @@ fn test_roundtrip_all_silesia_corpus() {
         assert_eq!(decomp_p, data, "Parallel roundtrip mismatch on {}", file_name);
     }
 }
+
+#[test]
+fn test_roundtrip_extended_literals_10kb() {
+    // Generate 10 KB with low repeat probability so extended literal runs are created
+    let mut input = Vec::with_capacity(10_000);
+    let mut state = 0x87654321u64;
+    for _ in 0..10_000 {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        input.push((state >> 32) as u8);
+    }
+
+    let compressed = compress(&input);
+    let decompressed = decompress(&compressed).expect("Decompression of 10KB random failed");
+    assert_eq!(decompressed, input);
+
+    let comp_p = simd_stream_codec::compress_parallel(&input);
+    let decomp_p = simd_stream_codec::decompress_parallel(&comp_p).expect("Parallel decompression failed");
+    assert_eq!(decomp_p, input);
+}
+
+#[test]
+fn test_roundtrip_extended_literals_max_block() {
+    // Exactly 65,535 bytes
+    let mut input = Vec::with_capacity(65535);
+    let mut state = 0xCAFEBABE12345678u64;
+    for _ in 0..65535 {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        input.push((state >> 32) as u8);
+    }
+
+    let compressed = compress(&input);
+    let decompressed = decompress(&compressed).expect("Decompression of max-block random failed");
+    assert_eq!(decompressed, input);
+
+    let comp_p = simd_stream_codec::compress_parallel(&input);
+    let decomp_p = simd_stream_codec::decompress_parallel(&comp_p).expect("Parallel decompression failed");
+    assert_eq!(decomp_p, input);
+}
+
+#[test]
+fn test_roundtrip_mixed_literal_runs() {
+    let mut input = Vec::new();
+    let mut state = 0xDEADBEEF00112233u64;
+    let run_sizes = [5, 16, 31, 32, 33, 64, 100, 256, 1024, 4096];
+
+    for &size in &run_sizes {
+        // High entropy literal run of exact size
+        for _ in 0..size {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            input.push((state >> 32) as u8);
+        }
+        // Repetitive match sequence to trigger match encoding
+        let pattern = b"0123456789ABCDEF";
+        for _ in 0..20 {
+            input.extend_from_slice(pattern);
+        }
+    }
+
+    let compressed = compress(&input);
+    let decompressed = decompress(&compressed).expect("Decompression of mixed runs failed");
+    assert_eq!(decompressed, input);
+
+    let comp_p = simd_stream_codec::compress_parallel(&input);
+    let decomp_p = simd_stream_codec::decompress_parallel(&comp_p).expect("Parallel decompression failed");
+    assert_eq!(decomp_p, input);
+}
+

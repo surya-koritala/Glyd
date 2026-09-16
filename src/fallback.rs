@@ -15,8 +15,16 @@ pub fn decompress_fallback(
     let mut offset_idx = 0usize;
 
     for &token in tokens {
-        let lit_len = token.lit_len();
-        let match_len = token.match_len();
+        let (lit_len, match_len) = if token.is_extended_literal() {
+            if offset_idx >= offsets.len() {
+                return Err(CodecError::CorruptedBitstream("Missing offset for extended literal"));
+            }
+            let extended_len = offsets[offset_idx] as usize;
+            offset_idx += 1;
+            (extended_len, 0)
+        } else {
+            (token.lit_len(), token.match_len())
+        };
 
         // 1. Literal copy
         if lit_len > 0 {
@@ -89,12 +97,13 @@ pub fn compress_fallback(
 ) {
     let src_len = src.len();
     if src_len < MIN_MATCH_LEN {
-        let mut rem = src;
-        while !rem.is_empty() {
-            let chunk = rem.len().min(MAX_LIT_LEN);
-            tokens.push(Token::new(chunk, 0));
-            literals.extend_from_slice(&rem[..chunk]);
-            rem = &rem[chunk..];
+        if src_len > MAX_LIT_LEN {
+            tokens.push(Token::new(31, 0));
+            offsets.push(src_len as u16);
+            literals.extend_from_slice(src);
+        } else if src_len > 0 {
+            tokens.push(Token::new(src_len, 0));
+            literals.extend_from_slice(src);
         }
         return;
     }
@@ -155,27 +164,30 @@ pub fn compress_fallback(
                     }
                 }
 
-                let mut lit_count = pos - anchor;
-                let mut lit_src = anchor;
-                while lit_count > MAX_LIT_LEN {
-                    tokens.push(Token::new(MAX_LIT_LEN, 0));
-                    literals.extend_from_slice(&src[lit_src..lit_src + MAX_LIT_LEN]);
-                    lit_src += MAX_LIT_LEN;
-                    lit_count -= MAX_LIT_LEN;
-                }
+                let lit_count = pos - anchor;
+                let lit_src = anchor;
+
+                let (first_lit_len, rem_lit_src) = if lit_count > MAX_LIT_LEN {
+                    tokens.push(Token::new(31, 0));
+                    offsets.push(lit_count as u16);
+                    literals.extend_from_slice(&src[lit_src..lit_src + lit_count]);
+                    (0, lit_src + lit_count)
+                } else {
+                    (lit_count, lit_src)
+                };
 
                 let first_match_chunk = match_len.min(MAX_MATCH_LEN);
-                tokens.push(Token::new(lit_count, first_match_chunk));
+                tokens.push(Token::new(first_lit_len, first_match_chunk));
                 offsets.push(match_offset as u16);
-                if lit_count > 0 {
-                    literals.extend_from_slice(&src[lit_src..lit_src + lit_count]);
+                if first_lit_len > 0 {
+                    literals.extend_from_slice(&src[rem_lit_src..rem_lit_src + first_lit_len]);
                 }
 
                 let mut rem_match = match_len - first_match_chunk;
                 while rem_match > 0 {
                     let chunk = rem_match.min(MAX_MATCH_LEN);
                     tokens.push(Token::new(0, chunk));
-                    offsets.push(offset as u16);
+                    offsets.push(match_offset as u16);
                     rem_match -= chunk;
                 }
 
@@ -192,13 +204,13 @@ pub fn compress_fallback(
         forward_step = (step_skip >> 6).max(1);
     }
 
-    let mut trailing = src_len - anchor;
-    let mut lit_src = anchor;
-    while trailing > 0 {
-        let chunk = trailing.min(MAX_LIT_LEN);
-        tokens.push(Token::new(chunk, 0));
-        literals.extend_from_slice(&src[lit_src..lit_src + chunk]);
-        lit_src += chunk;
-        trailing -= chunk;
+    let trailing = src_len - anchor;
+    if trailing > MAX_LIT_LEN {
+        tokens.push(Token::new(31, 0));
+        offsets.push(trailing as u16);
+        literals.extend_from_slice(&src[anchor..src_len]);
+    } else if trailing > 0 {
+        tokens.push(Token::new(trailing, 0));
+        literals.extend_from_slice(&src[anchor..anchor + trailing]);
     }
 }
