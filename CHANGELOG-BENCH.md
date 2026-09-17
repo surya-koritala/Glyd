@@ -48,3 +48,8 @@ token decode table (3.20 -> 3.73). Compression unchanged.
 Silesia ratio 2.19 -> 2.20 (min file 0.97x -> 0.98x), decomp 3.60 -> 3.75.
 Source Code workload ratio 36.75 -> 74.18 (liblz4 246.81). Matches were
 being cut at the block boundary, not by the window.
+
+## analysis: v3 G2/G4 frontier sweep (6 configs)
+No configuration passes both G2 and G4, and none passes G4 at all. The
+fastest point on the frontier is 0.698x liblz4 compression (16KB table,
+lazy off), 30% short of the 1.00x threshold, and it fails G2 at 0.946x.

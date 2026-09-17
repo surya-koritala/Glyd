@@ -111,29 +111,35 @@ The remaining gap is per-token overhead, and decode speed tracks token density
 directly. Closing it needs fewer tokens or a genuinely branchless multi-token
 decode, not further micro-optimisation of the current loop.
 
-### G4: compression speed
+### G4: compression speed, and why it is unreachable with G2
 
-0.49x of liblz4, gate needs 1.00x. Least explored of the failing gates.
+0.49x of liblz4 at the shipped setting; the gate needs 1.00x.
 
-The hash-table sweep is the core evidence. Ratio and compression speed trade
-off against each other almost exactly, and the two ends of the sweep are the
-best ratio and the best speed:
+A six-point sweep on the current v3 format, varying only the hash table size
+and whether lazy matching runs, maps the whole frontier this compressor can
+reach. Everything else is identical, measured on Silesia:
 
-| Table | Ratio vs liblz4 | Comp vs liblz4 |
-|---|---:|---:|
-| 16 KB | 0.867x | 0.626x |
-| 32 KB | 0.885x | 0.584x |
-| 64 KB | 0.895x | 0.532x |
-| 128 KB | 0.901x | 0.505x |
-| 256 KB | 0.905x | 0.504x |
+| Config | Ratio | vs liblz4 | G2 | Comp | vs liblz4 | G4 |
+|---|---:|---:|:--|---:|---:|:--|
+| 16 KB, lazy off | 1.9871x | 0.946x | fail | 0.614 GB/s | 0.698x | fail |
+| 16 KB, lazy on | 2.0410x | 0.972x | fail | 0.520 GB/s | 0.602x | fail |
+| 64 KB, lazy off | 2.0840x | 0.992x | fail | 0.507 GB/s | 0.587x | fail |
+| 64 KB, lazy on | 2.1543x | 1.025x | PASS | 0.449 GB/s | 0.512x | fail |
+| 256 KB, lazy off | 2.1169x | 1.008x | fail | 0.473 GB/s | 0.552x | fail |
+| 256 KB, lazy on | 2.1950x | 1.045x | PASS | 0.420 GB/s | 0.485x | fail |
 
-Also rejected: capping the lazy-match probe at one byte past the incumbent
-match, which produces byte-identical output but ran 12% slower, because the
-probe almost always fails inside the first 32-byte vector anyway and the extra
-bound computation costs more than the comparison it saves.
+No configuration passes both. More than that, **no configuration passes G4 at
+all**: the fastest point on the entire frontier is 0.698x, still 30% short of
+the 1.00x threshold, and it reaches that speed only by giving up ratio to
+0.946x, which fails G2.
 
-Lazy matching cannot simply be removed: it is worth about 5% ratio, and G2
-currently passes at 1.045x with only 0.025x of headroom.
+The two gates pull in opposite directions through the same two knobs. Ratio
+comes from a large hash table and lazy matching; compression speed comes from a
+small L1-resident table and no lazy probe. liblz4 is fast precisely because it
+does neither: a 4096-entry table that fits L1 and a single greedy probe. Beating
+its ratio while matching its compression speed is not a tuning problem, it
+requires a match finder that is both cheaper and better than the one liblz4
+uses. That is a redesign, not a constant.
 
 ### G6: workload ratios, and a conflict between gates
 
