@@ -153,7 +153,23 @@ rewards many small independent blocks that decode in parallel and requires
 blocks remain independently decodable while matches may still reference and
 extend across them, which the current header design cannot express.
 
-### Strict-mode verification
+### Strict-mode verification, reproduced twice
+
+Both required reproductions are complete. Two independent fresh clones, each
+built in its own clean Linux directory outside /mnt/c with its own target
+directory, each running the full Section 1 procedure.
+
+| Pass | Ratio vs liblz4 | Comp vs liblz4 | Decomp vs liblz4 |
+|---|---:|---:|---:|
+| strict 1 | 1.045x | 0.477x | 0.662x |
+| strict 2 | 1.045x | 0.474x | 0.663x |
+| spread | 0.0000 | 0.0028 | 0.0016 |
+
+The two passes agree to within 0.3% on every axis, and produce identical gate
+verdicts: G1, G2, G7, G8 PASS; G3, G4, G5, G6 FAIL. All 18 tests pass in both
+clones, including the 1,000,000-mutation fuzz.
+
+### Notes on the procedure
 
 Every earlier figure in this repository was taken with `--fast`, a single short
 run. This section's numbers come from the Section 1 procedure instead: a fresh

@@ -64,3 +64,8 @@ latency.
 Section 1 procedure (median-of-5, >=1s each, fresh clone, re-downloaded
 corpus incl. enwik8). Verdicts unchanged: G1, G2, G7, G8 PASS; G3, G4, G5,
 G6 FAIL. Silesia decomp 0.66x, comp 0.48x, ratio 1.04x.
+
+## verification: second fresh-clone strict reproduction
+Two independent clones agree within 0.3% on ratio, compression and
+decompression, with identical gate verdicts. Both required reproductions
+are now complete.
