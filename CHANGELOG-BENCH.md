@@ -53,3 +53,9 @@ being cut at the block boundary, not by the window.
 No configuration passes both G2 and G4, and none passes G4 at all. The
 fastest point on the frontier is 0.698x liblz4 compression (16KB table,
 lazy off), 30% short of the 1.00x threshold, and it fails G2 at 0.946x.
+
+## compress: prefetch hash buckets
+Silesia comp 0.420 -> 0.428 GB/s (0.485x -> 0.498x liblz4), ratio identical
+at 2.1950. Small gain, and the size of it is the finding: compression is
+throughput-bound in the inner loop, not stalled on the 256 KB table's L2
+latency.

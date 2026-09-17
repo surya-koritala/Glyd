@@ -6,6 +6,9 @@ use crate::format::{encode_lit, encode_match, Token, MAX_LIT_LEN, MAX_MATCH_LEN,
 pub const HASH_BITS: u32 = 16;
 /// Only probe pos+1 when the match found at pos is shorter than this.
 pub const LAZY_MATCH_THRESHOLD: usize = 32;
+/// How far ahead to prefetch hash buckets. The table is larger than L1, so
+/// every probe would otherwise stall on L2 latency.
+pub const PREFETCH_DIST: usize = 8;
 pub const HASH_SIZE: usize = 1 << HASH_BITS;
 
 #[inline(always)]
@@ -75,6 +78,14 @@ pub unsafe fn compress_chained_avx2(
     while pos < limit {
         let val = std::ptr::read_unaligned(src_ptr.add(pos) as *const u32);
         let h = hash4(val);
+
+        // Warm the bucket this loop will need a few positions from now.
+        if pos + PREFETCH_DIST < limit {
+            let fval = std::ptr::read_unaligned(src_ptr.add(pos + PREFETCH_DIST) as *const u32);
+            let fh = hash4(fval);
+            _mm_prefetch(table.as_ptr().add(fh) as *const i8, _MM_HINT_T0);
+        }
+
         let candidate = table[h] as usize;
         table[h] = pos as u32;
 
