@@ -9,6 +9,7 @@ lz4 = "1.28"
 snap = "1.1"
 zstd = "0.13"
 rayon = "1.10"
+lzav = "0.1.1"
 
 [dev-dependencies]
 libc = "0.2"
@@ -45,3 +46,7 @@ path = "examples/stream_stats.rs"
 [[example]]
 name = "token_hist"
 path = "examples/token_hist.rs"
+
+[[example]]
+name = "field_survey"
+path = "examples/field_survey.rs"
