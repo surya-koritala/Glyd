@@ -59,3 +59,8 @@ Silesia comp 0.420 -> 0.428 GB/s (0.485x -> 0.498x liblz4), ratio identical
 at 2.1950. Small gain, and the size of it is the finding: compression is
 throughput-bound in the inner loop, not stalled on the 256 KB table's L2
 latency.
+
+## verification: strict-mode run from a fresh clone
+Section 1 procedure (median-of-5, >=1s each, fresh clone, re-downloaded
+corpus incl. enwik8). Verdicts unchanged: G1, G2, G7, G8 PASS; G3, G4, G5,
+G6 FAIL. Silesia decomp 0.66x, comp 0.48x, ratio 1.04x.
