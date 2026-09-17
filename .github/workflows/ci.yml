@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, compression-v2 ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-cpu=x86-64-v3"
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Download Corpus
+        run: bash scripts/download_corpus.sh
+
+      - name: Run Test Suite
+        run: cargo test --release --all-targets
+
+      - name: Run Regression Floor Tests
+        run: cargo test --release --test regression_floors -- --nocapture
+
+      - name: Build Binaries
+        run: |
+          cargo build --release --bin alatirok
+          cargo build --release --example bench
