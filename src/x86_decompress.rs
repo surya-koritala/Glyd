@@ -1,7 +1,8 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 use crate::error::{CodecError, Result};
-use crate::format::Token;
+use crate::format::{Token, LIT_CODE_ESCAPE, MATCH_CODE_BIAS, MATCH_CODE_ESCAPE,
+    TOKEN_ESCAPE_MASK, TOKEN_LIT_ESCAPE, TOKEN_MATCH_ESCAPE, TOKEN_TABLE};
 
 /// Precomputed 16-byte shuffle masks for repeating patterns of period 1..15.
 /// SHUFFLE_MASKS[offset][chunk][i] = ((chunk * 16 + i) % offset) as u8
@@ -42,6 +43,8 @@ pub unsafe fn decompress_avx2(
     num_tokens: usize,
     offsets: *const u16,
     num_offsets: usize,
+    extras: *const u16,
+    num_extras: usize,
     literals: &[u8],
     dst: &mut [u8],
     buffer_start: *const u8,
@@ -59,29 +62,37 @@ pub unsafe fn decompress_avx2(
     let mut lit_ptr = literals.as_ptr();
     let lit_limit = literals.as_ptr().add(literals.len());
     let mut offset_idx = 0;
+    let mut extra_idx = 0;
     let mut token_idx = 0;
 
     // Fast Phase
     while token_idx < num_tokens && dst_ptr <= safe_limit {
         let token = std::ptr::read_unaligned(tokens.add(token_idx));
-        let (lit_len, match_len) = if token.is_extended_literal() {
-            if offset_idx >= num_offsets {
-                return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
+        let tv = *TOKEN_TABLE.get_unchecked(token.0 as usize);
+        let mut lit_len = (tv & 0xFF) as usize;
+        let mut match_len = ((tv >> 8) & 0xFF) as usize;
+        let mut e = extra_idx;
+        if tv & TOKEN_ESCAPE_MASK != 0 {
+            let need = ((tv & TOKEN_LIT_ESCAPE) != 0) as usize
+                + ((tv & TOKEN_MATCH_ESCAPE) != 0) as usize;
+            if e + need > num_extras {
+                return Err(CodecError::CorruptedBitstream("Insufficient extras in bitstream"));
             }
-            let ext_len = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
-            offset_idx += 1;
-            (ext_len, 0)
-        } else {
-            (token.lit_len(), token.match_len())
-        };
+            if tv & TOKEN_LIT_ESCAPE != 0 {
+                lit_len = std::ptr::read_unaligned(extras.add(e)) as usize;
+                e += 1;
+            }
+            if tv & TOKEN_MATCH_ESCAPE != 0 {
+                match_len = std::ptr::read_unaligned(extras.add(e)) as usize;
+                e += 1;
+            }
+        }
 
         let remaining = block_end.offset_from(dst_ptr) as usize;
         if lit_len + match_len + 32 > remaining {
-            if token.is_extended_literal() {
-                offset_idx -= 1;
-            }
             break;
         }
+        extra_idx = e;
         token_idx += 1;
 
         if lit_ptr.add(lit_len) > lit_limit {
@@ -187,15 +198,29 @@ pub unsafe fn decompress_avx2(
         let token = std::ptr::read_unaligned(tokens.add(token_idx));
         token_idx += 1;
 
-        let (lit_len, match_len) = if token.is_extended_literal() {
-            if offset_idx >= num_offsets {
-                return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
+        let lc = token.lit_code();
+        let mc = token.match_code();
+        let lit_len = if lc == LIT_CODE_ESCAPE {
+            if extra_idx >= num_extras {
+                return Err(CodecError::CorruptedBitstream("Insufficient extras in bitstream"));
             }
-            let ext_len = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
-            offset_idx += 1;
-            (ext_len, 0)
+            let v = std::ptr::read_unaligned(extras.add(extra_idx)) as usize;
+            extra_idx += 1;
+            v
         } else {
-            (token.lit_len(), token.match_len())
+            lc
+        };
+        let match_len = if mc == 0 {
+            0
+        } else if mc == MATCH_CODE_ESCAPE {
+            if extra_idx >= num_extras {
+                return Err(CodecError::CorruptedBitstream("Insufficient extras in bitstream"));
+            }
+            let v = std::ptr::read_unaligned(extras.add(extra_idx)) as usize;
+            extra_idx += 1;
+            v
+        } else {
+            mc + MATCH_CODE_BIAS
         };
 
         // A corrupted token must never write past the declared block length.

@@ -1,6 +1,6 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
-use crate::format::{Token, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN, MAX_BLOCK_SIZE};
+use crate::format::{encode_lit, encode_match, Token, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN, MAX_BLOCK_SIZE};
 
 // 16,384 entries * 4 bytes = 64 KB (fits comfortably in Zen 4 L2 cache)
 pub const HASH_BITS: u32 = 16;
@@ -51,17 +51,13 @@ pub unsafe fn compress_chained_avx2(
     table: &mut [u32; HASH_SIZE],
     tokens: &mut Vec<Token>,
     offsets: &mut Vec<u16>,
+    extras: &mut Vec<u16>,
     literals: &mut Vec<u8>,
 ) {
     if block_len < MIN_MATCH_LEN {
         let chunk = &full_input[block_start..block_start + block_len];
-        if chunk.len() > MAX_LIT_LEN {
-            tokens.push(Token::new(31, 0));
-            offsets.push(chunk.len() as u16);
-            literals.extend_from_slice(chunk);
-        } else if !chunk.is_empty() {
-            tokens.push(Token::new(chunk.len(), 0));
-            literals.extend_from_slice(chunk);
+        if !chunk.is_empty() {
+            emit_literal_run(chunk, tokens, extras, literals);
         }
         return;
     }
@@ -126,20 +122,27 @@ pub unsafe fn compress_chained_avx2(
                     let lit_count = pos - anchor;
                     let lit_src = anchor;
 
+                    // Literal runs longer than one escape field are split off
+                    // into their own literal-only tokens first.
                     let (first_lit_len, rem_lit_src) = if lit_count > MAX_LIT_LEN {
-                        tokens.push(Token::new(31, 0));
-                        offsets.push(lit_count as u16);
-                        literals.extend_from_slice(std::slice::from_raw_parts(
-                            src_ptr.add(lit_src),
-                            lit_count,
-                        ));
-                        (0, lit_src + lit_count)
+                        let head = lit_count - MAX_LIT_LEN;
+                        emit_literal_run(
+                            std::slice::from_raw_parts(src_ptr.add(lit_src), head),
+                            tokens,
+                            extras,
+                            literals,
+                        );
+                        (MAX_LIT_LEN, lit_src + head)
                     } else {
                         (lit_count, lit_src)
                     };
 
                     let first_match_chunk = match_len.min(MAX_MATCH_LEN);
-                    tokens.push(Token::new(first_lit_len, first_match_chunk));
+                    let (lc, le) = encode_lit(first_lit_len);
+                    let (mc, me) = encode_match(first_match_chunk);
+                    tokens.push(Token::from_codes(lc, mc));
+                    if let Some(v) = le { extras.push(v); }
+                    if let Some(v) = me { extras.push(v); }
                     offsets.push(match_offset as u16);
                     if first_lit_len > 0 {
                         literals.extend_from_slice(std::slice::from_raw_parts(
@@ -151,7 +154,9 @@ pub unsafe fn compress_chained_avx2(
                     let mut rem_match = match_len - first_match_chunk;
                     while rem_match > 0 {
                         let chunk = rem_match.min(MAX_MATCH_LEN);
-                        tokens.push(Token::new(0, chunk));
+                        let (mc2, me2) = encode_match(chunk);
+                        tokens.push(Token::from_codes(0, mc2));
+                        if let Some(v) = me2 { extras.push(v); }
                         offsets.push(match_offset as u16);
                         rem_match -= chunk;
                     }
@@ -172,19 +177,34 @@ pub unsafe fn compress_chained_avx2(
 
     // Flush trailing literals
     let trailing = block_end - anchor;
-    if trailing > MAX_LIT_LEN {
-        tokens.push(Token::new(31, 0));
-        offsets.push(trailing as u16);
-        literals.extend_from_slice(std::slice::from_raw_parts(
-            src_ptr.add(anchor),
-            trailing,
-        ));
-    } else if trailing > 0 {
-        tokens.push(Token::new(trailing, 0));
-        literals.extend_from_slice(std::slice::from_raw_parts(
-            src_ptr.add(anchor),
-            trailing,
-        ));
+    if trailing > 0 {
+        emit_literal_run(
+            std::slice::from_raw_parts(src_ptr.add(anchor), trailing),
+            tokens,
+            extras,
+            literals,
+        );
+    }
+}
+
+/// Emit a literal-only run of any length as one or more tokens carrying no
+/// match, splitting at MAX_LIT_LEN so each length fits one u16 escape.
+#[inline]
+pub fn emit_literal_run(
+    mut run: &[u8],
+    tokens: &mut Vec<Token>,
+    extras: &mut Vec<u16>,
+    literals: &mut Vec<u8>,
+) {
+    while !run.is_empty() {
+        let n = run.len().min(MAX_LIT_LEN);
+        let (lc, le) = encode_lit(n);
+        tokens.push(Token::from_codes(lc, 0));
+        if let Some(v) = le {
+            extras.push(v);
+        }
+        literals.extend_from_slice(&run[..n]);
+        run = &run[n..];
     }
 }
 
@@ -195,8 +215,9 @@ pub unsafe fn compress_avx2(
     src: &[u8],
     tokens: &mut Vec<Token>,
     offsets: &mut Vec<u16>,
+    extras: &mut Vec<u16>,
     literals: &mut Vec<u8>,
 ) {
     let mut table = [0u32; HASH_SIZE];
-    compress_chained_avx2(src, 0, src.len(), &mut table, tokens, offsets, literals);
+    compress_chained_avx2(src, 0, src.len(), &mut table, tokens, offsets, extras, literals);
 }

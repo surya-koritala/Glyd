@@ -37,3 +37,9 @@ match_len in 4..33 covers 96.56%. A 1-byte token (3-bit literal code,
 5-bit match code, 2-byte escapes) models to ratio 2.1833 vs liblz4 2.1015
 = 1.039x, which clears G2's 1.02x threshold. 4/4 split is worse (1.212
 bytes/token vs 1.185).
+
+## format v3: 1-byte token. G2 PASSES.
+Silesia ratio 1.9002 -> 2.19 (0.904x -> 1.04x liblz4, min file 0.97x).
+G2 now PASS. Decode 4.38 -> 3.73 GB/s (0.79x -> 0.68x): the escape branches
+cost more than the smaller stream saved, partly recovered by a 256-entry
+token decode table (3.20 -> 3.73). Compression unchanged.

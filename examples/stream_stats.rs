@@ -22,13 +22,14 @@ fn main() {
             let h = unsafe { std::ptr::read_unaligned(comp.as_ptr().add(cur) as *const BlockHeader) };
             let raw = (h.flags & FLAG_RAW_UNCOMPRESSED) != 0;
             let (tc, oc, ll) = (h.token_count as usize, h.offset_count as usize, h.literal_len as usize);
-            let payload = if raw { h.uncompressed_len as usize } else { tc*2 + oc*2 + ll };
+            let ec = h.extras_count as usize;
+            let payload = if raw { h.uncompressed_len as usize } else { tc + oc*2 + ec*2 + ll };
             if !raw { toks += tc; offs += oc; lits += ll; }
             cur += HEADER_SIZE + payload;
         }
         let mb = data.len() as f64 / 1048576.0;
         let ratio = data.len() as f64 / comp.len() as f64;
-        let tok_bytes = toks * 2;
+        let tok_bytes = toks;
         let tok_pct = 100.0 * tok_bytes as f64 / comp.len() as f64;
         // Saving one byte per token (a 1-byte token in the common case).
         let save_pct = 100.0 * toks as f64 / comp.len() as f64;
@@ -41,6 +42,6 @@ fn main() {
     println!("\nTOTAL orig={:.1} MB comp={:.1} MB ratio={:.4}", t_o as f64/1048576.0, t_c as f64/1048576.0, ratio);
     println!("tokens={} offsets={} lit_bytes={}", t_t, t_f, t_l);
     println!("token stream = {:.1}% of output, offset stream = {:.1}%, literals = {:.1}%",
-             100.0*(t_t*2) as f64/t_c as f64, 100.0*(t_f*2) as f64/t_c as f64, 100.0*t_l as f64/t_c as f64);
+             100.0*t_t as f64/t_c as f64, 100.0*(t_f*2) as f64/t_c as f64, 100.0*t_l as f64/t_c as f64);
     println!("If token shrank to 1 byte: ratio {:.4} -> {:.4} (liblz4 is 2.1015)", ratio, new_ratio);
 }

@@ -13,14 +13,22 @@ fn test_fallback_parity() {
     let input = b"The quick brown fox jumps over the lazy dog. 1234567890! Repeating pattern: ABCDEFABCDEFABCDEF";
     let mut tokens = Vec::new();
     let mut offsets = Vec::new();
+    let mut extras = Vec::new();
     let mut literals = Vec::new();
 
-    fallback::compress_fallback(input, &mut tokens, &mut offsets, &mut literals);
+    fallback::compress_fallback(input, &mut tokens, &mut offsets, &mut extras, &mut literals);
 
     let mut decomp_buf = vec![0u8; input.len()];
-    let written =
-        fallback::decompress_fallback(&tokens, &offsets, &literals, &mut decomp_buf, 0, input.len())
-            .unwrap();
+    let written = fallback::decompress_fallback(
+        &tokens,
+        &offsets,
+        &extras,
+        &literals,
+        &mut decomp_buf,
+        0,
+        input.len(),
+    )
+    .unwrap();
     assert_eq!(written, input.len());
     assert_eq!(&decomp_buf[..written], input);
 }

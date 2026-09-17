@@ -1,5 +1,6 @@
 use crate::error::{CodecError, Result};
-use crate::format::{Token, MAX_BLOCK_SIZE, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN};
+use crate::format::{encode_lit, encode_match, Token, MATCH_CODE_BIAS, MATCH_CODE_ESCAPE,
+    LIT_CODE_ESCAPE, MAX_BLOCK_SIZE, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN};
 
 /// Universal portable decompressor with raw unaligned pointer support.
 pub unsafe fn decompress_fallback_raw(
@@ -7,6 +8,8 @@ pub unsafe fn decompress_fallback_raw(
     num_tokens: usize,
     offsets: *const u16,
     num_offsets: usize,
+    extras: *const u16,
+    num_extras: usize,
     literals: &[u8],
     full_dst: &mut [u8],
     block_offset: usize,
@@ -15,18 +18,35 @@ pub unsafe fn decompress_fallback_raw(
     let mut dst_pos = 0usize;
     let mut lit_pos = 0usize;
     let mut offset_idx = 0usize;
+    let mut extra_idx = 0usize;
 
     for token_idx in 0..num_tokens {
         let token = std::ptr::read_unaligned(tokens.add(token_idx));
-        let (lit_len, match_len) = if token.is_extended_literal() {
-            if offset_idx >= num_offsets {
-                return Err(CodecError::CorruptedBitstream("Missing offset for extended literal"));
+        let lc = token.lit_code();
+        let mc = token.match_code();
+
+        let lit_len = if lc == LIT_CODE_ESCAPE {
+            if extra_idx >= num_extras {
+                return Err(CodecError::CorruptedBitstream("Missing extra for literal length"));
             }
-            let extended_len = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
-            offset_idx += 1;
-            (extended_len, 0)
+            let v = std::ptr::read_unaligned(extras.add(extra_idx)) as usize;
+            extra_idx += 1;
+            v
         } else {
-            (token.lit_len(), token.match_len())
+            lc
+        };
+
+        let match_len = if mc == 0 {
+            0
+        } else if mc == MATCH_CODE_ESCAPE {
+            if extra_idx >= num_extras {
+                return Err(CodecError::CorruptedBitstream("Missing extra for match length"));
+            }
+            let v = std::ptr::read_unaligned(extras.add(extra_idx)) as usize;
+            extra_idx += 1;
+            v
+        } else {
+            mc + MATCH_CODE_BIAS
         };
 
         // 1. Literal copy
@@ -87,6 +107,7 @@ pub unsafe fn decompress_fallback_raw(
 pub fn decompress_fallback(
     tokens: &[Token],
     offsets: &[u16],
+    extras: &[u16],
     literals: &[u8],
     full_dst: &mut [u8],
     block_offset: usize,
@@ -98,6 +119,8 @@ pub fn decompress_fallback(
             tokens.len(),
             offsets.as_ptr(),
             offsets.len(),
+            extras.as_ptr(),
+            extras.len(),
             literals,
             full_dst,
             block_offset,
@@ -119,17 +142,13 @@ pub fn compress_fallback(
     src: &[u8],
     tokens: &mut Vec<Token>,
     offsets: &mut Vec<u16>,
+    extras: &mut Vec<u16>,
     literals: &mut Vec<u8>,
 ) {
     let src_len = src.len();
     if src_len < MIN_MATCH_LEN {
-        if src_len > MAX_LIT_LEN {
-            tokens.push(Token::new(31, 0));
-            offsets.push(src_len as u16);
-            literals.extend_from_slice(src);
-        } else if src_len > 0 {
-            tokens.push(Token::new(src_len, 0));
-            literals.extend_from_slice(src);
+        if src_len > 0 {
+            emit_literal_run_fallback(src, tokens, extras, literals);
         }
         return;
     }
@@ -194,16 +213,19 @@ pub fn compress_fallback(
                 let lit_src = anchor;
 
                 let (first_lit_len, rem_lit_src) = if lit_count > MAX_LIT_LEN {
-                    tokens.push(Token::new(31, 0));
-                    offsets.push(lit_count as u16);
-                    literals.extend_from_slice(&src[lit_src..lit_src + lit_count]);
-                    (0, lit_src + lit_count)
+                    let head = lit_count - MAX_LIT_LEN;
+                    emit_literal_run_fallback(&src[lit_src..lit_src + head], tokens, extras, literals);
+                    (MAX_LIT_LEN, lit_src + head)
                 } else {
                     (lit_count, lit_src)
                 };
 
                 let first_match_chunk = match_len.min(MAX_MATCH_LEN);
-                tokens.push(Token::new(first_lit_len, first_match_chunk));
+                let (lc, le) = encode_lit(first_lit_len);
+                let (mc, me) = encode_match(first_match_chunk);
+                tokens.push(Token::from_codes(lc, mc));
+                if let Some(v) = le { extras.push(v); }
+                if let Some(v) = me { extras.push(v); }
                 offsets.push(match_offset as u16);
                 if first_lit_len > 0 {
                     literals.extend_from_slice(&src[rem_lit_src..rem_lit_src + first_lit_len]);
@@ -212,7 +234,9 @@ pub fn compress_fallback(
                 let mut rem_match = match_len - first_match_chunk;
                 while rem_match > 0 {
                     let chunk = rem_match.min(MAX_MATCH_LEN);
-                    tokens.push(Token::new(0, chunk));
+                    let (mc2, me2) = encode_match(chunk);
+                    tokens.push(Token::from_codes(0, mc2));
+                    if let Some(v) = me2 { extras.push(v); }
                     offsets.push(match_offset as u16);
                     rem_match -= chunk;
                 }
@@ -231,12 +255,27 @@ pub fn compress_fallback(
     }
 
     let trailing = src_len - anchor;
-    if trailing > MAX_LIT_LEN {
-        tokens.push(Token::new(31, 0));
-        offsets.push(trailing as u16);
-        literals.extend_from_slice(&src[anchor..src_len]);
-    } else if trailing > 0 {
-        tokens.push(Token::new(trailing, 0));
-        literals.extend_from_slice(&src[anchor..anchor + trailing]);
+    if trailing > 0 {
+        emit_literal_run_fallback(&src[anchor..src_len], tokens, extras, literals);
+    }
+}
+
+/// Portable counterpart of `x86_compress::emit_literal_run`.
+#[inline]
+fn emit_literal_run_fallback(
+    mut run: &[u8],
+    tokens: &mut Vec<Token>,
+    extras: &mut Vec<u16>,
+    literals: &mut Vec<u8>,
+) {
+    while !run.is_empty() {
+        let n = run.len().min(MAX_LIT_LEN);
+        let (lc, le) = encode_lit(n);
+        tokens.push(Token::from_codes(lc, 0));
+        if let Some(v) = le {
+            extras.push(v);
+        }
+        literals.extend_from_slice(&run[..n]);
+        run = &run[n..];
     }
 }

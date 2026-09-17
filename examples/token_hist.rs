@@ -24,16 +24,25 @@ fn main() {
             let h = unsafe { std::ptr::read_unaligned(comp.as_ptr().add(cur) as *const BlockHeader) };
             let raw = (h.flags & FLAG_RAW_UNCOMPRESSED) != 0;
             let (tc, oc, ll) = (h.token_count as usize, h.offset_count as usize, h.literal_len as usize);
-            let payload = if raw { h.uncompressed_len as usize } else { tc*2 + oc*2 + ll };
+            let ec = h.extras_count as usize;
+            let payload = if raw { h.uncompressed_len as usize } else { tc + oc*2 + ec*2 + ll };
             if !raw {
                 let base = cur + HEADER_SIZE;
+                let ebase = base + tc + oc * 2;
+                let mut e = 0usize;
                 for i in 0..tc {
-                    let t = unsafe { std::ptr::read_unaligned(comp.as_ptr().add(base + i*2) as *const u16) };
-                    let tok = Token(t);
-                    if tok.is_extended_literal() { ext_lit += 1; continue; }
-                    let l = tok.lit_len().min(63);
-                    let m = tok.match_len().min(2099);
-                    lit_h[l] += 1; mat_h[m] += 1; total_tokens += 1;
+                    let tok = Token(unsafe { *comp.as_ptr().add(base + i) });
+                    let lc = tok.lit_code();
+                    let mc = tok.match_code();
+                    let l = if lc == LIT_CODE_ESCAPE {
+                        let v = unsafe { std::ptr::read_unaligned(comp.as_ptr().add(ebase + e*2) as *const u16) } as usize;
+                        e += 1; ext_lit += 1; v
+                    } else { lc };
+                    let m = if mc == 0 { 0 } else if mc == MATCH_CODE_ESCAPE {
+                        let v = unsafe { std::ptr::read_unaligned(comp.as_ptr().add(ebase + e*2) as *const u16) } as usize;
+                        e += 1; v
+                    } else { mc + MATCH_CODE_BIAS };
+                    lit_h[l.min(63)] += 1; mat_h[m.min(2099)] += 1; total_tokens += 1;
                 }
             }
             cur += HEADER_SIZE + payload;
