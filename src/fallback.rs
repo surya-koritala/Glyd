@@ -1,6 +1,6 @@
 use crate::error::{CodecError, Result};
 use crate::format::{encode_lit, encode_match, Token, MATCH_CODE_BIAS, MATCH_CODE_ESCAPE,
-    LIT_CODE_ESCAPE, MAX_BLOCK_SIZE, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN};
+    LIT_CODE_ESCAPE, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN, WINDOW_SIZE};
 
 /// Universal portable decompressor with raw unaligned pointer support.
 pub unsafe fn decompress_fallback_raw(
@@ -167,7 +167,7 @@ pub fn compress_fallback(
         table[h] = pos as u16;
 
         let offset = pos.wrapping_sub(candidate);
-        if offset > 0 && offset < MAX_BLOCK_SIZE && candidate < pos {
+        if offset > 0 && offset < WINDOW_SIZE && candidate < pos {
             let cand_val = u32::from_le_bytes([
                 src[candidate],
                 src[candidate + 1],
@@ -187,7 +187,7 @@ pub fn compress_fallback(
                     let h2 = hash4(val2);
                     let cand2 = table[h2] as usize;
                     let off2 = (pos + 1).wrapping_sub(cand2);
-                    if off2 > 0 && off2 < MAX_BLOCK_SIZE && cand2 < pos + 1 {
+                    if off2 > 0 && off2 < WINDOW_SIZE && cand2 < pos + 1 {
                         let cand2_val = u32::from_le_bytes([
                             src[cand2],
                             src[cand2 + 1],

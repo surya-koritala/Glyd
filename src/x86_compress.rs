@@ -1,6 +1,6 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
-use crate::format::{encode_lit, encode_match, Token, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN, MAX_BLOCK_SIZE};
+use crate::format::{encode_lit, encode_match, Token, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN, WINDOW_SIZE};
 
 // 16,384 entries * 4 bytes = 64 KB (fits comfortably in Zen 4 L2 cache)
 pub const HASH_BITS: u32 = 16;
@@ -80,7 +80,7 @@ pub unsafe fn compress_chained_avx2(
 
         let offset = pos.wrapping_sub(candidate);
         // Match can reach back up to 65,535 bytes (strictly < 65536 to fit in u16)
-        if offset > 0 && offset < MAX_BLOCK_SIZE && candidate < pos {
+        if offset > 0 && offset < WINDOW_SIZE && candidate < pos {
             let candidate_val = std::ptr::read_unaligned(src_ptr.add(candidate) as *const u32);
             if val == candidate_val {
                 let max_possible_match = block_end - pos;
@@ -100,7 +100,7 @@ pub unsafe fn compress_chained_avx2(
                         let h2 = hash4(val2);
                         let candidate2 = table[h2] as usize;
                         let offset2 = (pos + 1).wrapping_sub(candidate2);
-                        if offset2 > 0 && offset2 < MAX_BLOCK_SIZE && candidate2 < pos + 1 {
+                        if offset2 > 0 && offset2 < WINDOW_SIZE && candidate2 < pos + 1 {
                             let candidate2_val = std::ptr::read_unaligned(src_ptr.add(candidate2) as *const u32);
                             if val2 == candidate2_val {
                                 let match_len2 = common_prefix_len_avx2(

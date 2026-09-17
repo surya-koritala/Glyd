@@ -1,6 +1,11 @@
 pub const MAGIC: u32 = 0x53494D44; // "SIMD"
 pub const CURRENT_VERSION: u16 = 3;
-pub const MAX_BLOCK_SIZE: usize = 65536; // 64 KB
+/// Match window. Offsets are u16, so a match can reach at most 65535 bytes
+/// back. This is independent of how much output one block header covers.
+pub const WINDOW_SIZE: usize = 65536;
+/// Output covered by one block header. Larger blocks mean fewer headers and,
+/// more importantly, matches that are not cut short at a block boundary.
+pub const MAX_BLOCK_SIZE: usize = 256 * 1024;
 pub const PADDING: usize = 64; // Safe SIMD read/write margin
 
 pub const MIN_MATCH_LEN: usize = 4;

@@ -43,3 +43,8 @@ Silesia ratio 1.9002 -> 2.19 (0.904x -> 1.04x liblz4, min file 0.97x).
 G2 now PASS. Decode 4.38 -> 3.73 GB/s (0.79x -> 0.68x): the escape branches
 cost more than the smaller stream saved, partly recovered by a 256-entry
 token decode table (3.20 -> 3.73). Compression unchanged.
+
+## format: decouple match window (64 KB) from output block size (256 KB)
+Silesia ratio 2.19 -> 2.20 (min file 0.97x -> 0.98x), decomp 3.60 -> 3.75.
+Source Code workload ratio 36.75 -> 74.18 (liblz4 246.81). Matches were
+being cut at the block boundary, not by the window.
