@@ -80,3 +80,8 @@ so it measures a 6-7% different configuration than the documented local build.
 Merging the two hottest streams into fixed 3-byte records made decode 3.8%
 slower (0.678x -> 0.647x liblz4) with identical ratio. The columnar layout
 is not the decoder's bottleneck. Reverted.
+
+## diagnostic: emission is 13.3% of compression time
+Search-only build (all output writes removed) reaches 0.556x liblz4 vs
+0.482x for the full compressor. Even with free emission, G4's 1.00x
+threshold is unreachable. The match search is 86.7% of the time.

@@ -246,6 +246,35 @@ explanation available for the decode gap. The columnar layout is not why the
 decoder is slower than liblz4; per-token work is, and that has resisted 16
 separate attempts. The change was reverted.
 
+### G4 upper bound: emission is 13% of compression time
+
+A diagnostic build kept the match search byte-for-byte identical and removed
+every output write (tokens, offsets, extras, literals). The output is garbage;
+the point is the time split.
+
+| Build | Comp | vs liblz4 |
+|---|---:|---:|
+| Full compressor | 0.421 GB/s | 0.482x |
+| Search only, no emission | 0.485 GB/s | **0.556x** |
+
+Emission accounts for 13.3% of compression time. The match search is the other
+86.7%. This sets a hard upper bound: **even if output writing were free, this
+compressor would reach 0.556x of liblz4, barely half of G4's 1.00x threshold.**
+
+That closes the last optimisation avenue for G4. Disassembly had shown 25 call
+sites into Vec growth machinery, suggesting emission was worth attacking with
+raw pointer cursors into preallocated buffers. It is not: the entire prize is
+13%, and G4 needs 110%.
+
+Combined with the frontier sweep, G4 is bounded from two directions. No
+configuration of table size and lazy matching exceeds 0.698x, and no amount of
+emission work exceeds 0.556x at the shipped configuration. The binding
+constraint is the match search itself, which at the fast end of the frontier is
+already algorithmically equivalent to liblz4's: the same 0x9E3779B1 hash
+constant, the same 4-byte probe, the same single-candidate table. Reaching
+1.00x while holding G2's ratio requires a match finder that is both cheaper and
+better than the one liblz4 uses, which is a research result, not a tuning pass.
+
 ## CSV
 
 `/tmp/claude-1000/-home-surya/ae7f39bc-ce5c-4579-9557-fb26287a402a/scratchpad/strict1.csv`
