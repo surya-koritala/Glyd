@@ -2,8 +2,27 @@
 use std::arch::x86_64::*;
 use crate::format::{encode_lit, encode_match, Token, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN, WINDOW_SIZE};
 
-// 16,384 entries * 4 bytes = 64 KB (fits comfortably in Zen 4 L2 cache)
-pub const HASH_BITS: u32 = 16;
+/// Hash-table entry: the 4 match bytes seen at `pos`, stored next to `pos`.
+///
+/// Storing the word is the point. A probe can then reject a non-matching
+/// candidate with a register compare, instead of dereferencing the candidate
+/// position in the source data, which is a random access and usually a cache
+/// miss. Most probes fail, so that read dominated the inner loop.
+///
+/// It also makes the check exact rather than probabilistic: `word == val`
+/// proves the 4 bytes at `pos` equal the 4 bytes here, so a hit is always a
+/// real >=4-byte match and never a hash collision to be verified later.
+///
+/// Technique adapted from LZAV by Aleksey Vaneev (MIT), which stores the match
+/// word in its hash tuples for the same reason.
+#[derive(Copy, Clone, Default)]
+#[repr(C)]
+pub struct HashEntry {
+    pub word: u32,
+    pub pos: u32,
+}
+
+pub const HASH_BITS: u32 = 15;
 /// Only probe pos+1 when the match found at pos is shorter than this.
 pub const LAZY_MATCH_THRESHOLD: usize = 32;
 /// How far ahead to prefetch hash buckets. The table is larger than L1, so
@@ -51,7 +70,7 @@ pub unsafe fn compress_chained_avx2(
     full_input: &[u8],
     block_start: usize,
     block_len: usize,
-    table: &mut [u32; HASH_SIZE],
+    table: &mut [HashEntry; HASH_SIZE],
     tokens: &mut Vec<Token>,
     offsets: &mut Vec<u16>,
     extras: &mut Vec<u16>,
@@ -86,14 +105,15 @@ pub unsafe fn compress_chained_avx2(
             _mm_prefetch(table.as_ptr().add(fh) as *const i8, _MM_HINT_T0);
         }
 
-        let candidate = table[h] as usize;
-        table[h] = pos as u32;
+        let e = *table.get_unchecked(h);
+        *table.get_unchecked_mut(h) = HashEntry { word: val, pos: pos as u32 };
+        let candidate = e.pos as usize;
 
         let offset = pos.wrapping_sub(candidate);
-        // Match can reach back up to 65,535 bytes (strictly < 65536 to fit in u16)
-        if offset > 0 && offset < WINDOW_SIZE && candidate < pos {
-            let candidate_val = std::ptr::read_unaligned(src_ptr.add(candidate) as *const u32);
-            if val == candidate_val {
+        // `e.word == val` already proves the first 4 bytes match, so no read of
+        // the candidate position is needed to reject a miss.
+        if e.word == val && offset > 0 && offset < WINDOW_SIZE && candidate < pos {
+            {
                 let max_possible_match = block_end - pos;
                 let mut match_len = common_prefix_len_avx2(
                     src_ptr.add(pos),
@@ -109,18 +129,18 @@ pub unsafe fn compress_chained_avx2(
                     if match_len < LAZY_MATCH_THRESHOLD && pos + 1 < limit {
                         let val2 = std::ptr::read_unaligned(src_ptr.add(pos + 1) as *const u32);
                         let h2 = hash4(val2);
-                        let candidate2 = table[h2] as usize;
+                        let e2 = *table.get_unchecked(h2);
+                        let candidate2 = e2.pos as usize;
                         let offset2 = (pos + 1).wrapping_sub(candidate2);
-                        if offset2 > 0 && offset2 < WINDOW_SIZE && candidate2 < pos + 1 {
-                            let candidate2_val = std::ptr::read_unaligned(src_ptr.add(candidate2) as *const u32);
-                            if val2 == candidate2_val {
+                        if e2.word == val2 && offset2 > 0 && offset2 < WINDOW_SIZE && candidate2 < pos + 1 {
+                            {
                                 let match_len2 = common_prefix_len_avx2(
                                     src_ptr.add(pos + 1),
                                     src_ptr.add(candidate2),
                                     block_end - (pos + 1),
                                 );
                                 if match_len2 > match_len {
-                                    table[h2] = (pos + 1) as u32;
+                                    *table.get_unchecked_mut(h2) = HashEntry { word: val2, pos: (pos + 1) as u32 };
                                     pos += 1;
                                     match_len = match_len2;
                                     match_offset = offset2;
@@ -229,6 +249,6 @@ pub unsafe fn compress_avx2(
     extras: &mut Vec<u16>,
     literals: &mut Vec<u8>,
 ) {
-    let mut table = [0u32; HASH_SIZE];
+    let mut table = [HashEntry::default(); HASH_SIZE];
     compress_chained_avx2(src, 0, src.len(), &mut table, tokens, offsets, extras, literals);
 }

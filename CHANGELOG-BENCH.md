@@ -95,3 +95,10 @@ Cause: the hash table keeps only the most recent position per hash, so a far
 candidate only appears when a pattern has NOT recurred recently. Taking it
 costs 7 bytes vs 3 and consumes positions that would have yielded better near
 matches. Window size is not the lever; the match finder is. Reverted.
+
+## T1.3: hash entries store the match word (adapted from LZAV, MIT)
+comp 0.387 -> 0.4744 GB/s (+22.6%, now 97.0% of the 0.489 target)
+decomp 3.529 -> 3.8795 GB/s (+9.9%, T1.4 floor passing)
+ratio 2.19502 -> 2.17972 (HASH_BITS 16 -> 15 to hold memory flat; sweep next)
+A probe now rejects a miss with a register compare instead of a random,
+cache-missing read of the candidate position in the source.

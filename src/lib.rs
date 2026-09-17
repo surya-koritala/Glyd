@@ -20,7 +20,7 @@ struct CompressScratch {
     offsets: Vec<u16>,
     extras: Vec<u16>,
     literals: Vec<u8>,
-    table: [u32; x86_compress::HASH_SIZE],
+    table: [x86_compress::HashEntry; x86_compress::HASH_SIZE],
 }
 
 thread_local! {
@@ -29,7 +29,7 @@ thread_local! {
         offsets: Vec::with_capacity(4096),
         extras: Vec::with_capacity(1024),
         literals: Vec::with_capacity(MAX_BLOCK_SIZE + 64),
-        table: [0u32; x86_compress::HASH_SIZE],
+        table: [x86_compress::HashEntry::default(); x86_compress::HASH_SIZE],
     });
 }
 
@@ -49,7 +49,7 @@ pub fn compress_block_into(chunk: &[u8], output: &mut Vec<u8>) {
         offsets.clear();
         extras.clear();
         literals.clear();
-        table.fill(0);
+        table.fill(x86_compress::HashEntry::default());
 
         let checksum = compute_checksum(chunk);
 
@@ -167,7 +167,7 @@ pub fn compress(input: &[u8]) -> Vec<u8> {
 
 /// Compress an input slice into a destination vector with cross-block history lookback.
 pub fn compress_into(input: &[u8], output: &mut Vec<u8>) {
-    let mut table = [0u32; x86_compress::HASH_SIZE];
+    let mut table = [x86_compress::HashEntry::default(); x86_compress::HASH_SIZE];
     let mut tokens = Vec::with_capacity(4096);
     let mut offsets = Vec::with_capacity(4096);
     let mut extras = Vec::with_capacity(1024);
