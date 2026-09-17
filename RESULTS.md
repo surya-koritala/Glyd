@@ -169,6 +169,37 @@ The two passes agree to within 0.3% on every axis, and produce identical gate
 verdicts: G1, G2, G7, G8 PASS; G3, G4, G5, G6 FAIL. All 18 tests pass in both
 clones, including the 1,000,000-mutation fuzz.
 
+### Build flags materially change the numbers
+
+Static disassembly of `decompress_avx2` in the shipped build shows the literal
+wildcopy compiled to `vmovdqu64 %zmm0`, a 512-bit AVX-512 instruction. The
+explicit AVX-512 decoder was removed earlier for measuring slower, but with
+`-C target-cpu=native` LLVM re-introduces 512-bit codegen by auto-vectorising
+the 32-byte loop.
+
+Disabling AVX-512 codegen entirely removes every `zmm` from the decoder,
+leaving 18 `ymm`. Measured like-for-like from the same clone and corpus:
+
+| Build | Comp vs liblz4 | Decomp vs liblz4 |
+|---|---:|---:|
+| `-C target-cpu=native` (zmm present) | 0.482x | 0.678x |
+| AVX-512 codegen disabled (ymm only) | 0.509x | 0.630x |
+
+512-bit registers help the decoder and hurt the compressor, by 7% and 6%.
+Neither configuration passes G3 or G4, so no verdict changes, but two
+consequences are worth recording.
+
+GOAL.md Section 1 specifies `RUSTFLAGS="-C target-cpu=native"` while
+`.github/workflows/ci.yml` builds with `x86-64-v3`, which has no AVX-512. CI
+therefore measures the second row. A gate evaluated in CI would differ from a
+local run by 6-7% on both speed axes.
+
+And the earlier AVX-512 removal result was narrower than it appeared.
+Hand-written 64-byte copies throughout the decoder lost on all 12 files, but
+compiler-chosen 512-bit stores in the literal path specifically are a win.
+Vector width is not uniformly good or bad; it depends on which copy it is
+applied to.
+
 ### Notes on the procedure
 
 Every earlier figure in this repository was taken with `--fast`, a single short
