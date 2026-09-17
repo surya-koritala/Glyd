@@ -2,7 +2,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-blue.svg)](https://www.rust-lang.org)
 [![License: MIT/Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
-[![AVX2 / AVX-512](https://img.shields.io/badge/SIMD-AVX2%20%2F%20AVX--512-orange.svg)]()
+[![SIMD: AVX2](https://img.shields.io/badge/SIMD-AVX2-orange.svg)]()
 [![C ABI](https://img.shields.io/badge/C%20ABI-include%2Falatirok.h-brightgreen.svg)]()
 [![CI](https://github.com/Sigbound/alatirok/actions/workflows/ci.yml/badge.svg)](https://github.com/Sigbound/alatirok/actions)
 

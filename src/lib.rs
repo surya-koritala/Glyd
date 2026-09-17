@@ -335,8 +335,6 @@ pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
     let buffer_start = dst.as_ptr();
 
     #[cfg(target_arch = "x86_64")]
-    let has_avx512 = is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw");
-    #[cfg(target_arch = "x86_64")]
     let has_avx2 = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("bmi2");
 
     while cursor + HEADER_SIZE <= compressed.len() {
@@ -404,20 +402,7 @@ pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
 
         #[cfg(target_arch = "x86_64")]
         {
-            if has_avx512 {
-                unsafe {
-                    x86_decompress::decompress_avx512(
-                        tokens_ptr,
-                        token_count,
-                        offsets_ptr,
-                        offset_count,
-                        raw_literals,
-                        dst_slice,
-                        buffer_start,
-                        uncomp_len,
-                    )?;
-                }
-            } else if has_avx2 {
+            if has_avx2 {
                 unsafe {
                     x86_decompress::decompress_avx2(
                         tokens_ptr,
@@ -486,8 +471,6 @@ pub fn decompress_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
     let buffer_start = dst.as_ptr();
 
     #[cfg(target_arch = "x86_64")]
-    let has_avx512 = is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw");
-    #[cfg(target_arch = "x86_64")]
     let has_avx2 = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("bmi2");
 
     while cursor + HEADER_SIZE <= compressed.len() {
@@ -541,20 +524,7 @@ pub fn decompress_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
 
         #[cfg(target_arch = "x86_64")]
         {
-            if has_avx512 {
-                unsafe {
-                    x86_decompress::decompress_avx512(
-                        tokens_ptr,
-                        token_count,
-                        offsets_ptr,
-                        offset_count,
-                        raw_literals,
-                        dst_slice,
-                        buffer_start,
-                        uncomp_len,
-                    )?;
-                }
-            } else if has_avx2 {
+            if has_avx2 {
                 unsafe {
                     x86_decompress::decompress_avx2(
                         tokens_ptr,
@@ -722,8 +692,6 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
     let output_ptr = dst.as_mut_ptr() as usize;
 
     #[cfg(target_arch = "x86_64")]
-    let has_avx512 = is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw");
-    #[cfg(target_arch = "x86_64")]
     let has_avx2 = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("bmi2");
 
     units.par_iter().try_for_each(|unit| -> Result<()> {
@@ -772,9 +740,7 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
                 #[cfg(target_arch = "x86_64")]
                 {
                     unsafe {
-                        if has_avx512 {
-                            x86_decompress::decompress_avx512(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
-                        } else if has_avx2 {
+                    if has_avx2 {
                             x86_decompress::decompress_avx2(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
                         } else {
                             fallback::decompress_fallback_raw(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
@@ -870,8 +836,6 @@ pub fn decompress_parallel_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result
     let output_ptr = dst.as_mut_ptr() as usize;
 
     #[cfg(target_arch = "x86_64")]
-    let has_avx512 = is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw");
-    #[cfg(target_arch = "x86_64")]
     let has_avx2 = is_x86_feature_detected!("avx2") && is_x86_feature_detected!("bmi2");
 
     units.par_iter().try_for_each(|unit| -> Result<()> {
@@ -920,9 +884,7 @@ pub fn decompress_parallel_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result
                 #[cfg(target_arch = "x86_64")]
                 {
                     unsafe {
-                        if has_avx512 {
-                            x86_decompress::decompress_avx512(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
-                        } else if has_avx2 {
+                    if has_avx2 {
                             x86_decompress::decompress_avx2(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
                         } else {
                             fallback::decompress_fallback_raw(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;

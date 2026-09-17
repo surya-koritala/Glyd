@@ -24,3 +24,8 @@ ratio 1.011 (1.001x liblz4, still clear of the 0.95 floor).
 Rejected first: a sampling pre-scan (stride-16 4-byte hash hit rate). It
 never fired on x-ray yet did fire on mozilla, costing 3.7% ratio there.
 Measured savings beat predicted savings.
+
+## decode: remove the AVX-512 path (measured slower on Zen 4)
+Silesia 1C decomp 4.12 -> 4.38 GB/s (0.75x -> 0.79x liblz4). AVX-512 was
+slower than AVX2 on all 12 files by 5-15% (dickens +12.7%, mr +15.0%).
+Zen 4 executes 512-bit ops at half rate. Function, dispatch and badge removed.
