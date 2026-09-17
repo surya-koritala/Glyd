@@ -1,10 +1,12 @@
 use crate::error::{CodecError, Result};
 use crate::format::{Token, MAX_BLOCK_SIZE, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN};
 
-/// Universal portable decompressor without any SIMD intrinsics requirement.
-pub fn decompress_fallback(
-    tokens: &[Token],
-    offsets: &[u16],
+/// Universal portable decompressor with raw unaligned pointer support.
+pub unsafe fn decompress_fallback_raw(
+    tokens: *const Token,
+    num_tokens: usize,
+    offsets: *const u16,
+    num_offsets: usize,
     literals: &[u8],
     full_dst: &mut [u8],
     block_offset: usize,
@@ -14,12 +16,13 @@ pub fn decompress_fallback(
     let mut lit_pos = 0usize;
     let mut offset_idx = 0usize;
 
-    for &token in tokens {
+    for token_idx in 0..num_tokens {
+        let token = std::ptr::read_unaligned(tokens.add(token_idx));
         let (lit_len, match_len) = if token.is_extended_literal() {
-            if offset_idx >= offsets.len() {
+            if offset_idx >= num_offsets {
                 return Err(CodecError::CorruptedBitstream("Missing offset for extended literal"));
             }
-            let extended_len = offsets[offset_idx] as usize;
+            let extended_len = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
             offset_idx += 1;
             (extended_len, 0)
         } else {
@@ -47,10 +50,10 @@ pub fn decompress_fallback(
 
         // 2. Match copy (supports cross-block lookback)
         if match_len > 0 {
-            if offset_idx >= offsets.len() {
+            if offset_idx >= num_offsets {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets"));
             }
-            let offset = offsets[offset_idx] as usize;
+            let offset = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
             offset_idx += 1;
 
             let available = block_offset + dst_pos;
@@ -78,6 +81,29 @@ pub fn decompress_fallback(
     }
 
     Ok(dst_pos)
+}
+
+/// Universal portable decompressor without any SIMD intrinsics requirement.
+pub fn decompress_fallback(
+    tokens: &[Token],
+    offsets: &[u16],
+    literals: &[u8],
+    full_dst: &mut [u8],
+    block_offset: usize,
+    uncompressed_len: usize,
+) -> Result<usize> {
+    unsafe {
+        decompress_fallback_raw(
+            tokens.as_ptr(),
+            tokens.len(),
+            offsets.as_ptr(),
+            offsets.len(),
+            literals,
+            full_dst,
+            block_offset,
+            uncompressed_len,
+        )
+    }
 }
 
 const HASH_BITS: u32 = 16;

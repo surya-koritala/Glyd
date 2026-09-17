@@ -39,8 +39,10 @@ pub static PERIODIC_SAFE_OFFSETS: [usize; 16] = {
 #[target_feature(enable = "avx512bw")]
 #[target_feature(enable = "bmi2")]
 pub unsafe fn decompress_avx512(
-    tokens: &[Token],
-    offsets: &[u16],
+    tokens: *const Token,
+    num_tokens: usize,
+    offsets: *const u16,
+    num_offsets: usize,
     literals: &[u8],
     dst: &mut [u8],
     buffer_start: *const u8,
@@ -59,23 +61,23 @@ pub unsafe fn decompress_avx512(
     let lit_limit = literals.as_ptr().add(literals.len());
     let mut offset_idx = 0;
     let mut token_idx = 0;
-    let num_tokens = tokens.len();
 
     // Fast Phase: zero boundary checks in the hot loop
     while token_idx < num_tokens && dst_ptr <= safe_limit {
-        let token = *tokens.get_unchecked(token_idx);
+        let token = std::ptr::read_unaligned(tokens.add(token_idx));
         let (lit_len, match_len) = if token.is_extended_literal() {
-            if offset_idx >= offsets.len() {
+            if offset_idx >= num_offsets {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let ext_len = *offsets.get_unchecked(offset_idx) as usize;
+            let ext_len = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
             offset_idx += 1;
             (ext_len, 0)
         } else {
             (token.lit_len(), token.match_len())
         };
 
-        if dst_ptr.add(lit_len + match_len + 64) > block_end {
+        let remaining = block_end.offset_from(dst_ptr) as usize;
+        if lit_len + match_len + 64 > remaining {
             if token.is_extended_literal() {
                 offset_idx -= 1;
             }
@@ -87,32 +89,19 @@ pub unsafe fn decompress_avx512(
             if lit_ptr.add(lit_len) > lit_limit {
                 return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
             }
-            if lit_ptr.add(32) <= lit_limit {
-                if lit_len <= 8 {
-                    std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 8);
-                } else if lit_len <= 16 {
-                    std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 16);
-                } else if lit_len <= 32 {
-                    let v = _mm256_loadu_si256(lit_ptr as *const __m256i);
-                    _mm256_storeu_si256(dst_ptr as *mut __m256i, v);
-                } else {
-                    let mut copied = 0;
-                    while copied + 64 <= lit_len {
-                        let v = _mm512_loadu_si512(lit_ptr.add(copied) as *const __m512i);
-                        _mm512_storeu_si512(dst_ptr.add(copied) as *mut __m512i, v);
-                        copied += 64;
-                    }
-                    while copied + 32 <= lit_len {
-                        let v = _mm256_loadu_si256(lit_ptr.add(copied) as *const __m256i);
-                        _mm256_storeu_si256(dst_ptr.add(copied) as *mut __m256i, v);
-                        copied += 32;
-                    }
-                    if copied < lit_len {
-                        std::ptr::copy_nonoverlapping(lit_ptr.add(copied), dst_ptr.add(copied), lit_len - copied);
-                    }
-                }
+            if lit_ptr.add(32) <= lit_limit && lit_len <= 32 {
+                let v = _mm256_loadu_si256(lit_ptr as *const __m256i);
+                _mm256_storeu_si256(dst_ptr as *mut __m256i, v);
             } else {
-                std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
+                let mut copied = 0;
+                while copied + 32 <= lit_len && lit_ptr.add(copied + 32) <= lit_limit {
+                    let v = _mm256_loadu_si256(lit_ptr.add(copied) as *const __m256i);
+                    _mm256_storeu_si256(dst_ptr.add(copied) as *mut __m256i, v);
+                    copied += 32;
+                }
+                if copied < lit_len {
+                    std::ptr::copy_nonoverlapping(lit_ptr.add(copied), dst_ptr.add(copied), lit_len - copied);
+                }
             }
 
             lit_ptr = lit_ptr.add(lit_len);
@@ -120,10 +109,10 @@ pub unsafe fn decompress_avx512(
         }
 
         if match_len > 0 {
-            if offset_idx >= offsets.len() {
+            if offset_idx >= num_offsets {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let offset = *offsets.get_unchecked(offset_idx) as usize;
+            let offset = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
             offset_idx += 1;
 
             let available = dst_ptr.offset_from(buffer_start) as usize;
@@ -132,19 +121,9 @@ pub unsafe fn decompress_avx512(
             }
 
             let match_src = dst_ptr.sub(offset);
+            let match_end = dst_ptr.add(match_len);
 
-            if offset >= 64 {
-                let match_end = dst_ptr.add(match_len);
-                let mut s = match_src;
-                let mut d = dst_ptr;
-                while d < match_end {
-                    let v0 = _mm512_loadu_si512(s as *const _);
-                    _mm512_storeu_si512(d as *mut _, v0);
-                    s = s.add(64);
-                    d = d.add(64);
-                }
-            } else if offset >= 32 {
-                let match_end = dst_ptr.add(match_len);
+            if offset >= 32 {
                 let mut s = match_src;
                 let mut d = dst_ptr;
                 while d < match_end {
@@ -154,7 +133,6 @@ pub unsafe fn decompress_avx512(
                     d = d.add(32);
                 }
             } else if offset >= 16 {
-                let match_end = dst_ptr.add(match_len);
                 let mut s = match_src;
                 let mut d = dst_ptr;
                 while d < match_end {
@@ -164,7 +142,6 @@ pub unsafe fn decompress_avx512(
                     d = d.add(16);
                 }
             } else if offset >= 8 {
-                let match_end = dst_ptr.add(match_len);
                 let mut s = match_src;
                 let mut d = dst_ptr;
                 while d < match_end {
@@ -172,49 +149,34 @@ pub unsafe fn decompress_avx512(
                     s = s.add(8);
                     d = d.add(8);
                 }
+            } else if offset == 1 {
+                let v = _mm256_set1_epi8(*match_src as i8);
+                let mut d = dst_ptr;
+                while d < match_end {
+                    _mm256_storeu_si256(d as *mut __m256i, v);
+                    d = d.add(32);
+                }
+            } else if offset == 2 {
+                let v = _mm256_set1_epi16(std::ptr::read_unaligned(match_src as *const i16));
+                let mut d = dst_ptr;
+                while d < match_end {
+                    _mm256_storeu_si256(d as *mut __m256i, v);
+                    d = d.add(32);
+                }
+            } else if offset == 4 {
+                let v = _mm256_set1_epi32(std::ptr::read_unaligned(match_src as *const i32));
+                let mut d = dst_ptr;
+                while d < match_end {
+                    _mm256_storeu_si256(d as *mut __m256i, v);
+                    d = d.add(32);
+                }
             } else {
-                let raw_pattern = _mm_loadu_si128(match_src as *const __m128i);
-                let masks = &SHUFFLE_MASKS[offset];
-
-                let c0 = _mm_shuffle_epi8(
-                    raw_pattern,
-                    _mm_loadu_si128(masks[0].as_ptr() as *const __m128i),
-                );
-                _mm_storeu_si128(dst_ptr as *mut __m128i, c0);
-
-                if match_len > 16 {
-                    let c1 = _mm_shuffle_epi8(
-                        raw_pattern,
-                        _mm_loadu_si128(masks[1].as_ptr() as *const __m128i),
-                    );
-                    _mm_storeu_si128(dst_ptr.add(16) as *mut __m128i, c1);
-
-                    if match_len > 32 {
-                        let c2 = _mm_shuffle_epi8(
-                            raw_pattern,
-                            _mm_loadu_si128(masks[2].as_ptr() as *const __m128i),
-                        );
-                        _mm_storeu_si128(dst_ptr.add(32) as *mut __m128i, c2);
-
-                        if match_len > 48 {
-                            let c3 = _mm_shuffle_epi8(
-                                raw_pattern,
-                                _mm_loadu_si128(masks[3].as_ptr() as *const __m128i),
-                            );
-                            _mm_storeu_si128(dst_ptr.add(48) as *mut __m128i, c3);
-
-                            if match_len > 64 {
-                                let safe_dist = PERIODIC_SAFE_OFFSETS[offset];
-                                let mut d = dst_ptr.add(64);
-                                let match_end = dst_ptr.add(match_len);
-                                while d < match_end {
-                                    let v = _mm256_loadu_si256(d.sub(safe_dist) as *const __m256i);
-                                    _mm256_storeu_si256(d as *mut __m256i, v);
-                                    d = d.add(32);
-                                }
-                            }
-                        }
-                    }
+                let mut s = match_src;
+                let mut d = dst_ptr;
+                while d < match_end {
+                    *d = *s;
+                    d = d.add(1);
+                    s = s.add(1);
                 }
             }
 
@@ -224,19 +186,32 @@ pub unsafe fn decompress_avx512(
 
     // Boundary Tail Phase: handles remaining tokens with exact non-overshooting copies
     while token_idx < num_tokens {
-        let token = *tokens.get_unchecked(token_idx);
+        let token = std::ptr::read_unaligned(tokens.add(token_idx));
         token_idx += 1;
 
         let (lit_len, match_len) = if token.is_extended_literal() {
-            if offset_idx >= offsets.len() {
+            if offset_idx >= num_offsets {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let ext_len = *offsets.get_unchecked(offset_idx) as usize;
+            let ext_len = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
             offset_idx += 1;
             (ext_len, 0)
         } else {
             (token.lit_len(), token.match_len())
         };
+
+        // A corrupted token must never write past the declared block length.
+        // This check has to happen before any copy, not after.
+        let remaining = if dst_ptr <= block_end {
+            block_end.offset_from(dst_ptr) as usize
+        } else {
+            0
+        };
+        if lit_len + match_len > remaining {
+            return Err(CodecError::CorruptedBitstream(
+                "Token output exceeds declared block length",
+            ));
+        }
 
         if lit_len > 0 {
             if lit_ptr.add(lit_len) > lit_limit {
@@ -248,10 +223,10 @@ pub unsafe fn decompress_avx512(
         }
 
         if match_len > 0 {
-            if offset_idx >= offsets.len() {
+            if offset_idx >= num_offsets {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let offset = *offsets.get_unchecked(offset_idx) as usize;
+            let offset = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
             offset_idx += 1;
 
             let available = dst_ptr.offset_from(buffer_start) as usize;
@@ -283,8 +258,10 @@ pub unsafe fn decompress_avx512(
 #[target_feature(enable = "avx2")]
 #[target_feature(enable = "bmi2")]
 pub unsafe fn decompress_avx2(
-    tokens: &[Token],
-    offsets: &[u16],
+    tokens: *const Token,
+    num_tokens: usize,
+    offsets: *const u16,
+    num_offsets: usize,
     literals: &[u8],
     dst: &mut [u8],
     buffer_start: *const u8,
@@ -303,23 +280,23 @@ pub unsafe fn decompress_avx2(
     let lit_limit = literals.as_ptr().add(literals.len());
     let mut offset_idx = 0;
     let mut token_idx = 0;
-    let num_tokens = tokens.len();
 
     // Fast Phase
     while token_idx < num_tokens && dst_ptr <= safe_limit {
-        let token = *tokens.get_unchecked(token_idx);
+        let token = std::ptr::read_unaligned(tokens.add(token_idx));
         let (lit_len, match_len) = if token.is_extended_literal() {
-            if offset_idx >= offsets.len() {
+            if offset_idx >= num_offsets {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let ext_len = *offsets.get_unchecked(offset_idx) as usize;
+            let ext_len = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
             offset_idx += 1;
             (ext_len, 0)
         } else {
             (token.lit_len(), token.match_len())
         };
 
-        if dst_ptr.add(lit_len + match_len + 32) > block_end {
+        let remaining = block_end.offset_from(dst_ptr) as usize;
+        if lit_len + match_len + 32 > remaining {
             if token.is_extended_literal() {
                 offset_idx -= 1;
             }
@@ -331,27 +308,19 @@ pub unsafe fn decompress_avx2(
             if lit_ptr.add(lit_len) > lit_limit {
                 return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
             }
-            if lit_ptr.add(32) <= lit_limit {
-                if lit_len <= 8 {
-                    std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 8);
-                } else if lit_len <= 16 {
-                    std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, 16);
-                } else if lit_len <= 32 {
-                    let v0 = _mm256_loadu_si256(lit_ptr as *const __m256i);
-                    _mm256_storeu_si256(dst_ptr as *mut __m256i, v0);
-                } else {
-                    let mut copied = 0;
-                    while copied + 32 <= lit_len {
-                        let v = _mm256_loadu_si256(lit_ptr.add(copied) as *const __m256i);
-                        _mm256_storeu_si256(dst_ptr.add(copied) as *mut __m256i, v);
-                        copied += 32;
-                    }
-                    if copied < lit_len {
-                        std::ptr::copy_nonoverlapping(lit_ptr.add(copied), dst_ptr.add(copied), lit_len - copied);
-                    }
-                }
+            if lit_ptr.add(32) <= lit_limit && lit_len <= 32 {
+                let v0 = _mm256_loadu_si256(lit_ptr as *const __m256i);
+                _mm256_storeu_si256(dst_ptr as *mut __m256i, v0);
             } else {
-                std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
+                let mut copied = 0;
+                while copied + 32 <= lit_len && lit_ptr.add(copied + 32) <= lit_limit {
+                    let v = _mm256_loadu_si256(lit_ptr.add(copied) as *const __m256i);
+                    _mm256_storeu_si256(dst_ptr.add(copied) as *mut __m256i, v);
+                    copied += 32;
+                }
+                if copied < lit_len {
+                    std::ptr::copy_nonoverlapping(lit_ptr.add(copied), dst_ptr.add(copied), lit_len - copied);
+                }
             }
 
             lit_ptr = lit_ptr.add(lit_len);
@@ -359,10 +328,10 @@ pub unsafe fn decompress_avx2(
         }
 
         if match_len > 0 {
-            if offset_idx >= offsets.len() {
+            if offset_idx >= num_offsets {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let offset = *offsets.get_unchecked(offset_idx) as usize;
+            let offset = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
             offset_idx += 1;
 
             let available = dst_ptr.offset_from(buffer_start) as usize;
@@ -371,9 +340,9 @@ pub unsafe fn decompress_avx2(
             }
 
             let match_src = dst_ptr.sub(offset);
+            let match_end = dst_ptr.add(match_len);
 
             if offset >= 32 {
-                let match_end = dst_ptr.add(match_len);
                 let mut s = match_src;
                 let mut d = dst_ptr;
                 while d < match_end {
@@ -383,7 +352,6 @@ pub unsafe fn decompress_avx2(
                     d = d.add(32);
                 }
             } else if offset >= 16 {
-                let match_end = dst_ptr.add(match_len);
                 let mut s = match_src;
                 let mut d = dst_ptr;
                 while d < match_end {
@@ -393,7 +361,6 @@ pub unsafe fn decompress_avx2(
                     d = d.add(16);
                 }
             } else if offset >= 8 {
-                let match_end = dst_ptr.add(match_len);
                 let mut s = match_src;
                 let mut d = dst_ptr;
                 while d < match_end {
@@ -401,49 +368,34 @@ pub unsafe fn decompress_avx2(
                     s = s.add(8);
                     d = d.add(8);
                 }
+            } else if offset == 1 {
+                let v = _mm256_set1_epi8(*match_src as i8);
+                let mut d = dst_ptr;
+                while d < match_end {
+                    _mm256_storeu_si256(d as *mut __m256i, v);
+                    d = d.add(32);
+                }
+            } else if offset == 2 {
+                let v = _mm256_set1_epi16(std::ptr::read_unaligned(match_src as *const i16));
+                let mut d = dst_ptr;
+                while d < match_end {
+                    _mm256_storeu_si256(d as *mut __m256i, v);
+                    d = d.add(32);
+                }
+            } else if offset == 4 {
+                let v = _mm256_set1_epi32(std::ptr::read_unaligned(match_src as *const i32));
+                let mut d = dst_ptr;
+                while d < match_end {
+                    _mm256_storeu_si256(d as *mut __m256i, v);
+                    d = d.add(32);
+                }
             } else {
-                let raw_pattern = _mm_loadu_si128(match_src as *const __m128i);
-                let masks = &SHUFFLE_MASKS[offset];
-
-                let c0 = _mm_shuffle_epi8(
-                    raw_pattern,
-                    _mm_loadu_si128(masks[0].as_ptr() as *const __m128i),
-                );
-                _mm_storeu_si128(dst_ptr as *mut __m128i, c0);
-
-                if match_len > 16 {
-                    let c1 = _mm_shuffle_epi8(
-                        raw_pattern,
-                        _mm_loadu_si128(masks[1].as_ptr() as *const __m128i),
-                    );
-                    _mm_storeu_si128(dst_ptr.add(16) as *mut __m128i, c1);
-
-                    if match_len > 32 {
-                        let c2 = _mm_shuffle_epi8(
-                            raw_pattern,
-                            _mm_loadu_si128(masks[2].as_ptr() as *const __m128i),
-                        );
-                        _mm_storeu_si128(dst_ptr.add(32) as *mut __m128i, c2);
-
-                        if match_len > 48 {
-                            let c3 = _mm_shuffle_epi8(
-                                raw_pattern,
-                                _mm_loadu_si128(masks[3].as_ptr() as *const __m128i),
-                            );
-                            _mm_storeu_si128(dst_ptr.add(48) as *mut __m128i, c3);
-
-                            if match_len > 64 {
-                                let safe_dist = PERIODIC_SAFE_OFFSETS[offset];
-                                let mut d = dst_ptr.add(64);
-                                let match_end = dst_ptr.add(match_len);
-                                while d < match_end {
-                                    let v = _mm256_loadu_si256(d.sub(safe_dist) as *const __m256i);
-                                    _mm256_storeu_si256(d as *mut __m256i, v);
-                                    d = d.add(32);
-                                }
-                            }
-                        }
-                    }
+                let mut s = match_src;
+                let mut d = dst_ptr;
+                while d < match_end {
+                    *d = *s;
+                    d = d.add(1);
+                    s = s.add(1);
                 }
             }
 
@@ -453,19 +405,32 @@ pub unsafe fn decompress_avx2(
 
     // Boundary Tail Phase
     while token_idx < num_tokens {
-        let token = *tokens.get_unchecked(token_idx);
+        let token = std::ptr::read_unaligned(tokens.add(token_idx));
         token_idx += 1;
 
         let (lit_len, match_len) = if token.is_extended_literal() {
-            if offset_idx >= offsets.len() {
+            if offset_idx >= num_offsets {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let ext_len = *offsets.get_unchecked(offset_idx) as usize;
+            let ext_len = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
             offset_idx += 1;
             (ext_len, 0)
         } else {
             (token.lit_len(), token.match_len())
         };
+
+        // A corrupted token must never write past the declared block length.
+        // This check has to happen before any copy, not after.
+        let remaining = if dst_ptr <= block_end {
+            block_end.offset_from(dst_ptr) as usize
+        } else {
+            0
+        };
+        if lit_len + match_len > remaining {
+            return Err(CodecError::CorruptedBitstream(
+                "Token output exceeds declared block length",
+            ));
+        }
 
         if lit_len > 0 {
             if lit_ptr.add(lit_len) > lit_limit {
@@ -477,10 +442,10 @@ pub unsafe fn decompress_avx2(
         }
 
         if match_len > 0 {
-            if offset_idx >= offsets.len() {
+            if offset_idx >= num_offsets {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let offset = *offsets.get_unchecked(offset_idx) as usize;
+            let offset = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
             offset_idx += 1;
 
             let available = dst_ptr.offset_from(buffer_start) as usize;

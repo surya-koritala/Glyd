@@ -5,9 +5,13 @@ edition = "2021"
 
 [dependencies]
 lz4_flex = "0.11"
+lz4 = "1.28"
 snap = "1.1"
 zstd = "0.13"
 rayon = "1.10"
+
+[dev-dependencies]
+libc = "0.2"
 
 [lib]
 crate-type = ["rlib", "cdylib", "staticlib"]
@@ -25,3 +29,11 @@ opt-level = 3
 codegen-units = 1
 lto = "fat"
 overflow-checks = false
+
+[[example]]
+name = "fuzz_repro"
+path = "examples/fuzz_repro.rs"
+
+[[example]]
+name = "decode_one"
+path = "examples/decode_one.rs"

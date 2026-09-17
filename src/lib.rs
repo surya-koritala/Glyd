@@ -391,20 +391,10 @@ pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
             return Err(CodecError::CorruptedBitstream("Truncated compressed block payload"));
         }
 
-        let tokens = unsafe {
-            std::slice::from_raw_parts(
-                compressed.as_ptr().add(cursor) as *const Token,
-                token_count,
-            )
-        };
+        let tokens_ptr = unsafe { compressed.as_ptr().add(cursor) as *const Token };
         cursor += token_bytes_len;
 
-        let offsets = unsafe {
-            std::slice::from_raw_parts(
-                compressed.as_ptr().add(cursor) as *const u16,
-                offset_count,
-            )
-        };
+        let offsets_ptr = unsafe { compressed.as_ptr().add(cursor) as *const u16 };
         cursor += offset_bytes_len;
 
         let raw_literals = &compressed[cursor..cursor + lit_len];
@@ -417,8 +407,10 @@ pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
             if has_avx512 {
                 unsafe {
                     x86_decompress::decompress_avx512(
-                        tokens,
-                        offsets,
+                        tokens_ptr,
+                        token_count,
+                        offsets_ptr,
+                        offset_count,
                         raw_literals,
                         dst_slice,
                         buffer_start,
@@ -428,8 +420,10 @@ pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
             } else if has_avx2 {
                 unsafe {
                     x86_decompress::decompress_avx2(
-                        tokens,
-                        offsets,
+                        tokens_ptr,
+                        token_count,
+                        offsets_ptr,
+                        offset_count,
                         raw_literals,
                         dst_slice,
                         buffer_start,
@@ -437,26 +431,34 @@ pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
                     )?;
                 }
             } else {
-                fallback::decompress_fallback(
-                    tokens,
-                    offsets,
+                unsafe {
+                    fallback::decompress_fallback_raw(
+                        tokens_ptr,
+                        token_count,
+                        offsets_ptr,
+                        offset_count,
+                        raw_literals,
+                        dst,
+                        dst_offset,
+                        uncomp_len,
+                    )?;
+                }
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            unsafe {
+                fallback::decompress_fallback_raw(
+                    tokens_ptr,
+                    token_count,
+                    offsets_ptr,
+                    offset_count,
                     raw_literals,
                     dst,
                     dst_offset,
                     uncomp_len,
                 )?;
             }
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            fallback::decompress_fallback(
-                tokens,
-                offsets,
-                raw_literals,
-                dst,
-                dst_offset,
-                uncomp_len,
-            )?;
         }
 
         let actual_checksum = compute_checksum(&dst[dst_offset..dst_offset + uncomp_len]);
@@ -526,20 +528,10 @@ pub fn decompress_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
             return Err(CodecError::CorruptedBitstream("Truncated compressed block payload"));
         }
 
-        let tokens = unsafe {
-            std::slice::from_raw_parts(
-                compressed.as_ptr().add(cursor) as *const Token,
-                token_count,
-            )
-        };
+        let tokens_ptr = unsafe { compressed.as_ptr().add(cursor) as *const Token };
         cursor += token_bytes_len;
 
-        let offsets = unsafe {
-            std::slice::from_raw_parts(
-                compressed.as_ptr().add(cursor) as *const u16,
-                offset_count,
-            )
-        };
+        let offsets_ptr = unsafe { compressed.as_ptr().add(cursor) as *const u16 };
         cursor += offset_bytes_len;
 
         let raw_literals = &compressed[cursor..cursor + lit_len];
@@ -552,8 +544,10 @@ pub fn decompress_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
             if has_avx512 {
                 unsafe {
                     x86_decompress::decompress_avx512(
-                        tokens,
-                        offsets,
+                        tokens_ptr,
+                        token_count,
+                        offsets_ptr,
+                        offset_count,
                         raw_literals,
                         dst_slice,
                         buffer_start,
@@ -563,8 +557,10 @@ pub fn decompress_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
             } else if has_avx2 {
                 unsafe {
                     x86_decompress::decompress_avx2(
-                        tokens,
-                        offsets,
+                        tokens_ptr,
+                        token_count,
+                        offsets_ptr,
+                        offset_count,
                         raw_literals,
                         dst_slice,
                         buffer_start,
@@ -572,26 +568,34 @@ pub fn decompress_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
                     )?;
                 }
             } else {
-                fallback::decompress_fallback(
-                    tokens,
-                    offsets,
+                unsafe {
+                    fallback::decompress_fallback_raw(
+                        tokens_ptr,
+                        token_count,
+                        offsets_ptr,
+                        offset_count,
+                        raw_literals,
+                        dst,
+                        dst_offset,
+                        uncomp_len,
+                    )?;
+                }
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            unsafe {
+                fallback::decompress_fallback_raw(
+                    tokens_ptr,
+                    token_count,
+                    offsets_ptr,
+                    offset_count,
                     raw_literals,
                     dst,
                     dst_offset,
                     uncomp_len,
                 )?;
             }
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            fallback::decompress_fallback(
-                tokens,
-                offsets,
-                raw_literals,
-                dst,
-                dst_offset,
-                uncomp_len,
-            )?;
         }
 
         dst_offset += uncomp_len;
@@ -757,20 +761,10 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
                 let token_bytes_len = token_count * std::mem::size_of::<Token>();
                 let offset_bytes_len = offset_count * std::mem::size_of::<u16>();
 
-                let tokens = unsafe {
-                    std::slice::from_raw_parts(
-                        block_slice.as_ptr().add(c) as *const Token,
-                        token_count,
-                    )
-                };
+                let tokens_ptr = unsafe { block_slice.as_ptr().add(c) as *const Token };
                 c += token_bytes_len;
 
-                let offsets = unsafe {
-                    std::slice::from_raw_parts(
-                        block_slice.as_ptr().add(c) as *const u16,
-                        offset_count,
-                    )
-                };
+                let offsets_ptr = unsafe { block_slice.as_ptr().add(c) as *const u16 };
                 c += offset_bytes_len;
 
                 let raw_literals = &block_slice[c..c + lit_len];
@@ -779,17 +773,19 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
                 {
                     unsafe {
                         if has_avx512 {
-                            x86_decompress::decompress_avx512(tokens, offsets, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
+                            x86_decompress::decompress_avx512(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
                         } else if has_avx2 {
-                            x86_decompress::decompress_avx2(tokens, offsets, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
+                            x86_decompress::decompress_avx2(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
                         } else {
-                            fallback::decompress_fallback(tokens, offsets, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
+                            fallback::decompress_fallback_raw(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
                         }
                     }
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 {
-                    fallback::decompress_fallback(tokens, offsets, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
+                    unsafe {
+                        fallback::decompress_fallback_raw(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
+                    }
                 }
             }
 
@@ -913,20 +909,10 @@ pub fn decompress_parallel_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result
                 let token_bytes_len = token_count * std::mem::size_of::<Token>();
                 let offset_bytes_len = offset_count * std::mem::size_of::<u16>();
 
-                let tokens = unsafe {
-                    std::slice::from_raw_parts(
-                        block_slice.as_ptr().add(c) as *const Token,
-                        token_count,
-                    )
-                };
+                let tokens_ptr = unsafe { block_slice.as_ptr().add(c) as *const Token };
                 c += token_bytes_len;
 
-                let offsets = unsafe {
-                    std::slice::from_raw_parts(
-                        block_slice.as_ptr().add(c) as *const u16,
-                        offset_count,
-                    )
-                };
+                let offsets_ptr = unsafe { block_slice.as_ptr().add(c) as *const u16 };
                 c += offset_bytes_len;
 
                 let raw_literals = &block_slice[c..c + lit_len];
@@ -935,17 +921,19 @@ pub fn decompress_parallel_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result
                 {
                     unsafe {
                         if has_avx512 {
-                            x86_decompress::decompress_avx512(tokens, offsets, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
+                            x86_decompress::decompress_avx512(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
                         } else if has_avx2 {
-                            x86_decompress::decompress_avx2(tokens, offsets, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
+                            x86_decompress::decompress_avx2(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, dst_slice, unit_buffer_start, b.uncomp_len)?;
                         } else {
-                            fallback::decompress_fallback(tokens, offsets, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
+                            fallback::decompress_fallback_raw(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
                         }
                     }
                 }
                 #[cfg(not(target_arch = "x86_64"))]
                 {
-                    fallback::decompress_fallback(tokens, offsets, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
+                    unsafe {
+                        fallback::decompress_fallback_raw(tokens_ptr, token_count, offsets_ptr, offset_count, raw_literals, unit_slice, block_offset_in_unit, b.uncomp_len)?;
+                    }
                 }
             }
         }

@@ -4,3 +4,4 @@
 *.ptx
 *.log
 *.alk
+.g1-status.json
