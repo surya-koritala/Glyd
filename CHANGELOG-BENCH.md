@@ -69,3 +69,9 @@ G6 FAIL. Silesia decomp 0.66x, comp 0.48x, ratio 1.04x.
 Two independent clones agree within 0.3% on ratio, compression and
 decompression, with identical gate verdicts. Both required reproductions
 are now complete.
+
+## analysis: disassembly shows compiler-emitted AVX-512 in the decoder
+`target-cpu=native` makes LLVM auto-vectorise the literal wildcopy to
+vmovdqu64/zmm. Disabling AVX-512 codegen: comp 0.482x -> 0.509x, decomp
+0.678x -> 0.630x. Neither passes G3/G4. CI builds x86-64-v3 (no AVX-512)
+so it measures a 6-7% different configuration than the documented local build.
