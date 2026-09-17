@@ -9,3 +9,10 @@
 - Fixed: G1 gate was hardcoded to PASS. It now reads .g1-status.json written
   by the fuzz test and FAILs when absent or under 1,000,000 mutations.
 - SECURITY: heap-buffer-overflow in the tail phase of both vector decoders.
+
+## decode: branchless literal wildcopy
+Silesia 1C decomp 2.694 -> 4.053 GB/s (0.488x -> 0.733x liblz4). Ratio and
+compression unchanged. Removed the per-token `if lit_len > 0` guard and the
+<=32 / >32 dual path in favour of an unconditional vector store loop.
+Hash-table sweep (16KB..256KB) recorded: ratio and compression speed trade
+off almost exactly, no setting reaches G2 and G4 together.

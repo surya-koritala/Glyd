@@ -85,28 +85,27 @@ pub unsafe fn decompress_avx512(
         }
         token_idx += 1;
 
-        if lit_len > 0 {
-            if lit_ptr.add(lit_len) > lit_limit {
-                return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
-            }
-            if lit_ptr.add(32) <= lit_limit && lit_len <= 32 {
-                let v = _mm256_loadu_si256(lit_ptr as *const __m256i);
-                _mm256_storeu_si256(dst_ptr as *mut __m256i, v);
-            } else {
-                let mut copied = 0;
-                while copied + 32 <= lit_len && lit_ptr.add(copied + 32) <= lit_limit {
-                    let v = _mm256_loadu_si256(lit_ptr.add(copied) as *const __m256i);
-                    _mm256_storeu_si256(dst_ptr.add(copied) as *mut __m256i, v);
-                    copied += 32;
-                }
-                if copied < lit_len {
-                    std::ptr::copy_nonoverlapping(lit_ptr.add(copied), dst_ptr.add(copied), lit_len - copied);
-                }
-            }
-
-            lit_ptr = lit_ptr.add(lit_len);
-            dst_ptr = dst_ptr.add(lit_len);
+        if lit_ptr.add(lit_len) > lit_limit {
+            return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
         }
+        // Literal wildcopy: unconditional 64-byte stores. The `+ 64` slack in
+        // the phase guard covers destination overshoot, so no per-token length
+        // branch is needed.
+        if lit_ptr.add(lit_len + 64) <= lit_limit {
+            let mut n = 0usize;
+            loop {
+                let v = _mm512_loadu_si512(lit_ptr.add(n) as *const _);
+                _mm512_storeu_si512(dst_ptr.add(n) as *mut _, v);
+                n += 64;
+                if n >= lit_len {
+                    break;
+                }
+            }
+        } else if lit_len > 0 {
+            std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
+        }
+        lit_ptr = lit_ptr.add(lit_len);
+        dst_ptr = dst_ptr.add(lit_len);
 
         if match_len > 0 {
             if offset_idx >= num_offsets {
@@ -304,28 +303,27 @@ pub unsafe fn decompress_avx2(
         }
         token_idx += 1;
 
-        if lit_len > 0 {
-            if lit_ptr.add(lit_len) > lit_limit {
-                return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
-            }
-            if lit_ptr.add(32) <= lit_limit && lit_len <= 32 {
-                let v0 = _mm256_loadu_si256(lit_ptr as *const __m256i);
-                _mm256_storeu_si256(dst_ptr as *mut __m256i, v0);
-            } else {
-                let mut copied = 0;
-                while copied + 32 <= lit_len && lit_ptr.add(copied + 32) <= lit_limit {
-                    let v = _mm256_loadu_si256(lit_ptr.add(copied) as *const __m256i);
-                    _mm256_storeu_si256(dst_ptr.add(copied) as *mut __m256i, v);
-                    copied += 32;
-                }
-                if copied < lit_len {
-                    std::ptr::copy_nonoverlapping(lit_ptr.add(copied), dst_ptr.add(copied), lit_len - copied);
-                }
-            }
-
-            lit_ptr = lit_ptr.add(lit_len);
-            dst_ptr = dst_ptr.add(lit_len);
+        if lit_ptr.add(lit_len) > lit_limit {
+            return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
         }
+        // Literal wildcopy: unconditional 32-byte stores. Overshoot is
+        // absorbed by the destination headroom guaranteed above and by the
+        // literal-stream padding, so no per-token length branch is needed.
+        if lit_ptr.add(lit_len + 32) <= lit_limit {
+            let mut n = 0usize;
+            loop {
+                let v = _mm256_loadu_si256(lit_ptr.add(n) as *const __m256i);
+                _mm256_storeu_si256(dst_ptr.add(n) as *mut __m256i, v);
+                n += 32;
+                if n >= lit_len {
+                    break;
+                }
+            }
+        } else if lit_len > 0 {
+            std::ptr::copy_nonoverlapping(lit_ptr, dst_ptr, lit_len);
+        }
+        lit_ptr = lit_ptr.add(lit_len);
+        dst_ptr = dst_ptr.add(lit_len);
 
         if match_len > 0 {
             if offset_idx >= num_offsets {

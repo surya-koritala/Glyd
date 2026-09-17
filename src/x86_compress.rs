@@ -4,6 +4,8 @@ use crate::format::{Token, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN, MAX_BLOCK_
 
 // 16,384 entries * 4 bytes = 64 KB (fits comfortably in Zen 4 L2 cache)
 pub const HASH_BITS: u32 = 16;
+/// Only probe pos+1 when the match found at pos is shorter than this.
+pub const LAZY_MATCH_THRESHOLD: usize = 32;
 pub const HASH_SIZE: usize = 1 << HASH_BITS;
 
 #[inline(always)]
@@ -94,8 +96,10 @@ pub unsafe fn compress_chained_avx2(
 
                 if match_len >= MIN_MATCH_LEN {
                     let mut match_offset = offset;
-                    // Lazy matching: probe pos + 1
-                    if pos + 1 < limit {
+                    // Lazy matching: probe pos + 1 only when the first match is
+                    // short. A long match is already cheap to encode, so probing
+                    // past it costs compression speed for no ratio gain.
+                    if match_len < LAZY_MATCH_THRESHOLD && pos + 1 < limit {
                         let val2 = std::ptr::read_unaligned(src_ptr.add(pos + 1) as *const u32);
                         let h2 = hash4(val2);
                         let candidate2 = table[h2] as usize;
@@ -163,7 +167,7 @@ pub unsafe fn compress_chained_avx2(
 
         pos += forward_step;
         step_skip += 1;
-        forward_step = (step_skip >> 6).max(1);
+        forward_step = (step_skip >> 5).max(1);
     }
 
     // Flush trailing literals
