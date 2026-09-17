@@ -37,3 +37,11 @@ path = "examples/fuzz_repro.rs"
 [[example]]
 name = "decode_one"
 path = "examples/decode_one.rs"
+
+[[example]]
+name = "stream_stats"
+path = "examples/stream_stats.rs"
+
+[[example]]
+name = "token_hist"
+path = "examples/token_hist.rs"

@@ -29,3 +29,11 @@ Measured savings beat predicted savings.
 Silesia 1C decomp 4.12 -> 4.38 GB/s (0.75x -> 0.79x liblz4). AVX-512 was
 slower than AVX2 on all 12 files by 5-15% (dickens +12.7%, mr +15.0%).
 Zen 4 executes 512-bit ops at half rate. Function, dispatch and badge removed.
+
+## analysis: stream composition and token histograms
+Silesia: token stream is 31.9% of compressed output, offsets 31.9%,
+literals 28.4%. 17.74M tokens. lit_len <= 6 covers 94.20% of tokens;
+match_len in 4..33 covers 96.56%. A 1-byte token (3-bit literal code,
+5-bit match code, 2-byte escapes) models to ratio 2.1833 vs liblz4 2.1015
+= 1.039x, which clears G2's 1.02x threshold. 4/4 split is worse (1.212
+bytes/token vs 1.185).
