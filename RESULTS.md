@@ -217,6 +217,35 @@ The failing gates fail by large margins, not marginal ones: G3 needs 1.05x and
 reads 0.66x, G4 needs 1.00x and reads 0.48x. No plausible measurement error
 accounts for a gap of that size.
 
+### The columnar layout is not the decoder's bottleneck
+
+The README's central architectural claim is that splitting the bitstream into
+separate homogeneous streams is an advantage. Disassembly suggested the
+opposite might be true: the decoder maintains four independent read cursors
+(tokens, offsets, extras, literals) where liblz4 maintains one, and that is the
+clearest structural difference between them.
+
+Tested directly. Token and offset were merged into a fixed 3-byte record, so the
+two hottest streams became one. The encoder was changed to give every token an
+offset slot, which keeps records fixed-width and costs nothing measurable
+because only 0.01% of tokens carry no match. `payload_len` is unchanged, since
+`tc + oc*2 == tc*3` when `oc == tc`. All 18 tests passed on the modified format,
+including the 1,000,000-mutation fuzz.
+
+| Layout | Ratio vs liblz4 | Comp vs liblz4 | Decomp vs liblz4 |
+|---|---:|---:|---:|
+| Columnar, 4 streams (shipped) | 1.045x | 0.482x | **0.678x** |
+| Interleaved token+offset | 1.045x | 0.487x | 0.647x |
+
+Interleaving made decompression 3.8% slower and left ratio identical. The
+hardware prefetchers handle four sequential streams without difficulty, so
+merging them buys nothing and costs the wasted offset slots' cache footprint.
+
+This refutes the multi-stream hypothesis and, with it, the last structural
+explanation available for the decode gap. The columnar layout is not why the
+decoder is slower than liblz4; per-token work is, and that has resisted 16
+separate attempts. The change was reverted.
+
 ## CSV
 
 `/tmp/claude-1000/-home-surya/ae7f39bc-ce5c-4579-9557-fb26287a402a/scratchpad/strict1.csv`

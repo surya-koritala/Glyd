@@ -75,3 +75,8 @@ are now complete.
 vmovdqu64/zmm. Disabling AVX-512 codegen: comp 0.482x -> 0.509x, decomp
 0.678x -> 0.630x. Neither passes G3/G4. CI builds x86-64-v3 (no AVX-512)
 so it measures a 6-7% different configuration than the documented local build.
+
+## analysis: interleaved token+offset layout tested and rejected
+Merging the two hottest streams into fixed 3-byte records made decode 3.8%
+slower (0.678x -> 0.647x liblz4) with identical ratio. The columnar layout
+is not the decoder's bottleneck. Reverted.
