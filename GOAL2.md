@@ -131,9 +131,16 @@ Ratio needs +11.6% and compression +26.4%; decode already passes with 12.7% to
 spare. Both ratio levers below are believed to also reduce token count, which
 helps decode, so they do not fight T1.4.
 
-1. **Match window beyond 64 KB.** Offsets are u16 today, capping the window at
-   64 KB regardless of block size. LZAV reaches further back. This is the
-   largest single ratio lever identified and was never implemented.
+1. ~~**Match window beyond 64 KB.**~~ **REFUTED 2026-09-17.** Implemented as
+   format v4 (zero marker in the offset stream, true offset in extras, so no
+   token bits spent) and swept over window sizes 1/4/16 MB and far-match
+   thresholds 12..48. Every configuration lost to the 64 KB baseline:
+   2.19502 baseline against a best far-offset result of 2.18781. The cause is
+   that the hash table keeps only the most recent position per hash, so a far
+   candidate only arises when a pattern has not recurred recently; taking it
+   costs 7 bytes against 3 and consumes positions that would otherwise yield
+   better near matches. **A larger window is worthless without a match finder
+   that can choose among several candidates.** Reverted.
 2. **Repeat-offset codes.** Cost nothing to decode, shrink the offset stream
    (31.9% of output), and reduce per-token bytes.
 3. **Optimal or wider parsing**, only if T1.3 still holds afterwards.

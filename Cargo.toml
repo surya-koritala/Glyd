@@ -50,3 +50,7 @@ path = "examples/token_hist.rs"
 [[example]]
 name = "field_survey"
 path = "examples/field_survey.rs"
+
+[[example]]
+name = "ratio_only"
+path = "examples/ratio_only.rs"

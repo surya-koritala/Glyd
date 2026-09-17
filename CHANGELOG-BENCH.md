@@ -85,3 +85,13 @@ is not the decoder's bottleneck. Reverted.
 Search-only build (all output writes removed) reaches 0.556x liblz4 vs
 0.482x for the full compressor. Even with free emission, G4's 1.00x
 threshold is unreachable. The match search is 86.7% of the time.
+
+## T1.2 attempt: match window beyond 64 KB - REFUTED
+Format v4 (far offsets: zero marker in the u16 offset stream, true offset in
+extras) implemented and measured across window sizes and far-match thresholds.
+Every configuration is WORSE than the 64 KB baseline:
+  baseline 64KB no-far 2.19502 | 1MB/12 2.17908 | 4MB/24 2.18653 | 16MB/32 2.18781
+Cause: the hash table keeps only the most recent position per hash, so a far
+candidate only appears when a pattern has NOT recurred recently. Taking it
+costs 7 bytes vs 3 and consumes positions that would have yielded better near
+matches. Window size is not the lever; the match finder is. Reverted.
