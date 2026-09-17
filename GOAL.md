@@ -82,6 +82,11 @@ flags). Extra levels may exist but do not count toward any gate.
 - Never change a threshold in this file. If a gate looks impossible, write the
   evidence in `RESULTS.md` under "Blocked gates" and keep working on the others.
 - Same `RUSTFLAGS`, same core pinning, same timing policy for every codec.
+- CI (`.github/workflows/ci.yml`) builds `x86-64-v3` and validates correctness
+  only. It is not a gate measurement and must not be quoted as one: that build
+  has no AVX-512, which shifts single-core compression about +6% and
+  decompression about -7% against the `target-cpu=native` build this section
+  mandates.
   A measurement that breaks this is invalid and must be rerun.
 - Every commit does one thing and ships its own `bench --csv` output plus a
   one-line delta in `CHANGELOG-BENCH.md`. Commit messages state what changed and why.
