@@ -16,3 +16,11 @@ compression unchanged. Removed the per-token `if lit_len > 0` guard and the
 <=32 / >32 dual path in favour of an unconditional vector store loop.
 Hash-table sweep (16KB..256KB) recorded: ratio and compression speed trade
 off almost exactly, no setting reaches G2 and G4 together.
+
+## compress: widen raw-block bypass from 2% to 4% savings
+Silesia 1C decomp 3.882 -> 4.209 GB/s (0.708x -> 0.759x liblz4).
+Total ratio 1.9022 -> 1.9002 (-0.1%). x-ray decode 6.15 -> 12.68 GB/s with
+ratio 1.011 (1.001x liblz4, still clear of the 0.95 floor).
+Rejected first: a sampling pre-scan (stride-16 4-byte hash hit rate). It
+never fired on x-ray yet did fire on mozilla, costing 3.7% ratio there.
+Measured savings beat predicted savings.

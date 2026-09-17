@@ -78,7 +78,7 @@ pub fn compress_block_into(chunk: &[u8], output: &mut Vec<u8>) {
 
         // Incompressibility check: If compressed payload doesn't save at least 2% space,
         // bypass compression entirely and store raw bytes!
-        if compressed_payload_len >= chunk.len() - (chunk.len() / 50) {
+        if compressed_payload_len >= chunk.len() - (chunk.len() / 25) {
             let header = BlockHeader {
                 magic: MAGIC,
                 version: CURRENT_VERSION,
@@ -197,7 +197,7 @@ pub fn compress_into(input: &[u8], output: &mut Vec<u8>) {
 
         let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
 
-        if compressed_payload_len >= chunk_len - (chunk_len / 50) {
+        if compressed_payload_len >= chunk_len - (chunk_len / 25) {
             let header = BlockHeader {
                 magic: MAGIC,
                 version: CURRENT_VERSION,
