@@ -525,3 +525,21 @@ min 7 -> 8 cut tokens 18% and bought 18%.
   liblz4's 2.101; unbounded back-match and dropping the post-match
   re-insert are noise. Kept at 13 bits (2.176). The dial is documented in
   finder.rs; the parse loop has no ratio-neutral speed left.
+
+## v7 milestone 1: entropy coders
+- Huffman: `huff8.rs`, 8-stream interleaved canonical Huffman over
+  `bits::BitReader`/`BitWriter` (LSB-first, bit-reversed codes, length
+  capped at 11 so decode is one table lookup). Symbol i goes to sub-stream
+  i % 8; decode refills all 8 streams every 4 symbols per stream (44 bits
+  <= the 56-bit refill guarantee). Roundtrip, invalid-code (Kraft-sum) and
+  overrun tests pass. Silesia literals (dickens + mozilla, 235 blocks,
+  20 MB; the full 12-file corpus gives the same number at 794 blocks/55 MB,
+  so this is not a sampling artifact), best of 5, `target-cpu=native`:
+  **1.06 ns/symbol decode, over the 0.6 ns/symbol gate.** The throwaway
+  `examples/huff_spike.rs` prototype measures 0.46 ns/symbol on the same
+  data with the same table and loop shape; the gap is `bits::BitReader`'s
+  safety cost over the spike's raw pointers -- a `consumed` bit-counter
+  add on every `consume()` (for `overrun()` / Result<(), ()>) and a
+  bounds-checked slice index (`t[idx]`) instead of unchecked `*t.add(idx)`.
+  Not optimized further per the task brief (bits.rs is Task 1's interface,
+  used as given); flagged for the controller rather than reworked here.

@@ -16,6 +16,7 @@ pub mod neon_checksum;
 pub mod streaming;
 pub mod c_api;
 pub mod bits;
+pub mod huff8;
 
 pub use streaming::{AlatirokReader, AlatirokWriter};
 pub use format::compute_checksum;
