@@ -672,3 +672,51 @@ min 7 -> 8 cut tokens 18% and bought 18%.
   the walk is where the time is, and it wants the huff8 treatment (8
   unclamped `FastReader`s in a loop unrolled by 8, `safe_refills`
   bound, clamped tail) before Task 9 -- not implemented here.
+
+## v7 milestone 2b: pass 1 on fast readers
+- The extra-bits walk in `v7_decode::sequences` (three dependent clamped
+  `BitReader::get`s per sequence through `ers[i % 8]`, eight readers in
+  memory) now has the `huff8::decode` shape: an unclamped batch loop of
+  8 sequences (one per stream) under a proven load bound, the clamped
+  readers for the tail. Its hot state is one bit position per stream
+  rather than a `FastReader`: a valid sequence's extra bits are at most
+  18 + 18 + 20 = 56 (lengths up to 2^18, offsets below 2^21) and one
+  unaligned 8-byte load shifted by the sub-byte position holds >= 57,
+  so a sequence is one load, three field extractions and one add --
+  no accumulator, count or refill, 8 live registers instead of 24. The
+  load bound is `safe_seqs`: at most 58 bits (codes 31, 31, 23) = 8
+  bytes per sequence whatever the code bytes hold; a corrupt 58-bit
+  sequence reads a zero for its last bit and advances exactly. The tail
+  starts its clamped readers at the walk's positions
+  (`BitReader::new_at`, exact accounting, `overrun` unchanged). Walk
+  tables `v7_format::*_WALK` (256 x u64, `base << 32 | mask << 8 | nb`)
+  replace the branchy code functions: per field an AND with the mask
+  and an add of the base as shifted operands, a shift by `nb` -- three
+  instructions where building the mask cost two more. `Reps::update`
+  selects (`select_unpredictable`) instead of matching. Totals are
+  summed over the arrays after the walk. `tans::decode8` and
+  `huff8::decode` bounds-check their output batch once instead of per
+  symbol.
+- Steps, Silesia, per sequence, same machine state (zstd-3 1.41-1.43 in
+  those runs): walk 6.73 (baseline) -> 3.40 (8 `FastReader`s, 32-entry
+  u32 tables, select reps; readers spilled to the stack, 56 instructions
+  per sequence) -> 2.88 (bit positions, 256-entry tables) -> 2.38
+  (streams written out so positions live in registers) -> 2.40 (scalar
+  positions, totals after the walk: nil then, 0.15 better once the
+  table layout landed) -> 2.25 (u64 entries, base-high/mask-mid layout).
+  Rejected: branchy `Reps::update` 2.71 (rep codes are 4.0% of offsets
+  on this parse and it still lost 0.3); raw-pointer batch slices 2.32
+  (3%, not worth the unsafe). Then `decode8` once-per-batch bounds
+  check: the three code streams 2.42 -> 2.14 ns/sequence, pass 1 5.27
+  -> 4.99; the same in `huff8::decode`: pass 2 0.203 -> 0.169 ns/byte.
+  Pass 1 now: walk 2.25 + tANS decode 2.14 + tANS table builds 0.58
+  (three 1024-entry builds per block; reuse rarely fires) + 0.04.
+- `examples/v7_bench.rs`, same protocol as milestone 2, before and after
+  in the same machine state:
+  before **v7 decomp 1.218 GB/s** | zstd-3 1.479 | zstd-1 1.576;
+  after **v7: ratio 2.7406, comp 0.142 GB/s, decomp 1.883 GB/s** |
+  zstd-3: ratio 3.2045, comp 0.341, decomp 1.474 |
+  zstd-1: ratio 2.8942, comp 0.561, decomp 1.558.
+  Pass 1 9.79 -> 5.0 ns/sequence (brief: <= 5), decode +55% (brief:
+  >= ~1.7 GB/s); v7 decode is now 1.28x zstd -3 and 1.21x zstd -1 on
+  this parse. Per byte: pass 1 0.21, pass 2 0.17, pass 3 0.13.
