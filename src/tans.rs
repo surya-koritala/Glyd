@@ -242,18 +242,64 @@ pub fn encode8(syms: &[u8], t: &EncodeTable) -> Vec<Vec<u8>> {
     encs.into_iter().map(|e| e.finish()).collect()
 }
 
+/// Refill and decode 4 symbols/stream for one group of 4 streams starting
+/// at `BASE` (0 or 4). `BASE` is a const generic, not a runtime parameter:
+/// each of the two call sites below monomorphizes its own copy of this
+/// function with `BASE..BASE + 4` baked in as a compile-time-constant
+/// range, so compiling *this* loop body only ever involves 4 streams'
+/// worth of state (4 `FastReader`s + 4 `st` values), not all 8. That's the
+/// fix for fix-round 1: with all 8 streams live across one shared `for k
+/// in 0..STREAMS` loop, 8 streams x 4 live values/stream (`p, bits, cnt`
+/// from `FastReader`, plus tANS's own `st[k]`) exceeds the ~31 GPRs
+/// available, forcing spills; splitting into two groups of 4, each fully
+/// finished (all 4 `j`s) before the other group starts, halves the peak
+/// live set to 16 without changing which symbol ends up at which output
+/// index (`out[o + j * STREAMS + k]` only depends on `j`/`k`, not on the
+/// order the two groups run in).
+#[inline(always)]
+fn decode_group<const BASE: usize>(fast: &mut [FastReader; STREAMS], st: &mut [u32; STREAMS], e: &[u32], out: &mut [u8], o: usize) {
+    for k in BASE..BASE + 4 {
+        // SAFETY: caller (`decode8`) proved via `safe_refills` that this
+        // refill's starting p is <= that stream's `last`.
+        unsafe {
+            fast[k].refill();
+        }
+    }
+    for j in 0..4 {
+        for k in BASE..BASE + 4 {
+            // SAFETY: st[k] < L because base + bits < L for a valid table
+            // and st[k] is initialised from get(TL), which is < L (this
+            // holds inductively regardless of which bits a corrupt/overrun
+            // stream produces: nbits <= TL and base + (2^nbits - 1) < L
+            // are properties of the table alone, so base + bits < L for
+            // any bits < 2^nbits).
+            let d = unsafe { *e.get_unchecked(st[k] as usize) };
+            let nbits = unpack_nbits(d);
+            let bits = fast[k].peek(nbits) as u32;
+            fast[k].consume(nbits);
+            st[k] = unpack_base(d) + bits;
+            out[o + j * STREAMS + k] = unpack_sym(d);
+        }
+    }
+}
+
 /// Decode `n` symbols from 8 interleaved tANS streams (symbol i in stream
-/// i % STREAMS). Structured exactly like `huff8::decode`: a clamped,
-/// accounted `BitReader` carries 6 fields/stream, which spills registers
-/// across 8 unrolled streams, so the hot loop runs on `FastReader` (3
-/// fields/stream, unclamped and unaccounted) instead. `safe_refills` proves,
-/// from each stream's remaining real bytes, how many `PER_ITER`-symbol
-/// batches can run before that stream's reader might need the clamp; the
-/// outer loop takes the minimum across streams and re-evaluates every pass.
-/// Whatever is left once some stream runs low on margin -- normally under
-/// one `PER_ITER` batch, but can be more if one stream is short -- goes
-/// through the clamped, accounted, per-symbol path, which is also what
-/// makes `overrun` exact for corrupt/truncated streams.
+/// i % STREAMS). Structured like `huff8::decode`: a clamped, accounted
+/// `BitReader` carries 6 fields/stream, which spills registers across 8
+/// unrolled streams, so the hot loop runs on `FastReader` (3 fields/stream,
+/// unclamped and unaccounted) instead -- plus, for tANS specifically, its
+/// own per-stream `st[k]` (the threaded decode state, which Huffman doesn't
+/// need since its table key is a fixed `peek(TB)`), split into two groups
+/// of 4 by `decode_group` to keep that combined state within the register
+/// file (see its doc comment). `safe_refills` proves, from each stream's
+/// remaining real bytes, how many `PER_ITER`-symbol batches can run before
+/// that stream's reader might need the clamp; the outer loop takes the
+/// minimum across all 8 streams (unchanged by the group split -- both
+/// groups must still respect the same `iters` bound) and re-evaluates
+/// every pass. Whatever is left once some stream runs low on margin --
+/// normally under one `PER_ITER` batch, but can be more if one stream is
+/// short -- goes through the clamped, accounted, per-symbol path, which is
+/// also what makes `overrun` exact for corrupt/truncated streams.
 pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
     assert!(out.len() >= n);
     let e = t.entries.as_slice();
@@ -276,29 +322,8 @@ pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut 
             break;
         }
         for _ in 0..iters {
-            for k in 0..STREAMS {
-                // SAFETY: `iters` <= every stream's safe_refills(lasts[k]),
-                // proving this refill's starting p is <= lasts[k].
-                unsafe {
-                    fast[k].refill();
-                }
-            }
-            for j in 0..4 {
-                for k in 0..STREAMS {
-                    // SAFETY: st[k] < L because base + bits < L for a valid
-                    // table and st[k] is initialised from get(TL), which is
-                    // < L (this holds inductively regardless of which bits
-                    // a corrupt/overrun stream produces: nbits <= TL and
-                    // base + (2^nbits - 1) < L are properties of the table
-                    // alone, so base + bits < L for any bits < 2^nbits).
-                    let d = unsafe { *e.get_unchecked(st[k] as usize) };
-                    let nbits = unpack_nbits(d);
-                    let bits = fast[k].peek(nbits) as u32;
-                    fast[k].consume(nbits);
-                    st[k] = unpack_base(d) + bits;
-                    out[o + j * STREAMS + k] = unpack_sym(d);
-                }
-            }
+            decode_group::<0>(&mut fast, &mut st, e, out, o);
+            decode_group::<4>(&mut fast, &mut st, e, out, o);
             o += PER_ITER;
         }
         remaining -= PER_ITER * iters;

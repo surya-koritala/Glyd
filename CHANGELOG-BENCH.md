@@ -613,3 +613,34 @@ min 7 -> 8 cut tokens 18% and bought 18%.
   symbols, the other seven all common/short-code, exercising the outer
   loop's per-stream `safe_refills` minimum when streams end up very
   different lengths) pass.
+- tANS round 1 (coordinator-directed register-pressure fix, bounded to one
+  attempt): the accepted diagnosis was that `decode8`'s 8-stream loop keeps
+  32 live values in flight at once (`FastReader`'s 3 fields + tANS's own
+  `st[k]`, x 8 streams), over the ~31 GPRs available. Fix: split the inner
+  loop into two sequential groups of 4 streams (`decode_group::<0>`, then
+  `decode_group::<4>`, each fully finishing its own 4 refills + 4x4 decode
+  before the other starts) via a `#[inline(always)] fn decode_group<const
+  BASE: usize>` -- `BASE` is a const generic, not a runtime parameter, so
+  each of the two call sites monomorphizes with a compile-time-constant `k`
+  range instead of forcing the compiler to keep all 8 streams' state live
+  across one shared loop. Output positions are unchanged (`out[o + j *
+  STREAMS + k]` depends only on `j`/`k`, not on group order); round-trip
+  tests pass unmodified, and the new `tans8_overrun_is_an_error` (`decode8`
+  asked for 10x the encoded symbol count returns `Err`) also passes.
+  Measured **slower**, not faster: **0.774 ns/symbol**, vs. 0.738-0.739
+  before this round (reproduced 3x on each side, both stable). Implemented
+  exactly as specified and verified against the spec before concluding this
+  is a genuine regression, not a bug in this round's code. A whole-function
+  instruction count (`objdump`, since `decode_group` fully inlines and
+  leaves no separate symbol) shows ~1270 instructions, 226 str-family/296
+  ldr-family for the whole `decode8` -- not isolated to just the hot loop
+  body the way huff8's cited counts are, so it's inconclusive on its own.
+  Working hypothesis, not confirmed: de-interleaving the 8 streams into two
+  sequential groups of 4 halves the independent dependency chains in flight
+  during each group's decode loop, and that lost latency-hiding (each
+  symbol decode is a serial load -> compute -> load chain per stream, and
+  more independent chains in flight hides more of that latency) may cost
+  more than whatever spill traffic the split removed -- i.e. register
+  pressure may not have been the actual bottleneck. Kept as committed per
+  the round's own instruction ("report whatever it measures"); reverting
+  this split is a candidate starting point for round 2.

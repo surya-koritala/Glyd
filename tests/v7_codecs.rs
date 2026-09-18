@@ -314,6 +314,22 @@ fn tans8_streams_of_different_lengths() {
     assert_eq!(out, data);
 }
 
+#[test]
+fn tans8_overrun_is_an_error() {
+    let n = 5000usize;
+    let nsym = 36usize;
+    let data = skewed_codes(n, nsym, 7);
+    let mut hist = vec![0u32; nsym];
+    for &s in &data { hist[s as usize] += 1; }
+    let counts = tans::normalize(&hist, nsym);
+    let et = tans::EncodeTable::build(&counts).unwrap();
+    let dt = tans::DecodeTable::build(&counts).unwrap();
+    let streams = tans::encode8(&data, &et);
+    let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+    let mut out = vec![0u8; n * 10];
+    assert!(tans::decode8(&dt, &refs, n * 10, &mut out).is_err());
+}
+
 /// Ignored perf check, not part of the pristine test run. Generates 14M
 /// skewed symbols, encodes with `encode8`, times `decode8` best of 5. Run
 /// with:
