@@ -2,7 +2,7 @@
 //! sub-stream i % 8, LSB-first with bit-reversed canonical codes, so the
 //! decoder's table is indexed by the next `TB` bits directly. Measured on
 //! the M1 Max (examples/huff_spike.rs): 0.47 ns/symbol.
-use crate::bits::{BitReader, BitWriter};
+use crate::bits::{BitReader, BitWriter, FastReader};
 use crate::huffman::{build_codes, build_lengths, MAX_CODE_LEN};
 
 pub const STREAMS: usize = 8;
@@ -103,25 +103,74 @@ fn sym(s: &mut St, t: &[u16]) -> u8 {
     e as u8
 }
 
+/// Same as `sym`, for the unclamped hot-loop reader.
+#[inline(always)]
+fn fast_sym(s: &mut FastReader, t: &[u16]) -> u8 {
+    // SAFETY: peek(TB) masks to < 1 << TB == t.len() (Table::build allocates
+    // exactly `1 << TB` entries), so the index is always in bounds.
+    let e = unsafe { *t.get_unchecked(s.peek(TB) as usize) };
+    s.consume((e >> 8) as u32);
+    e as u8
+}
+
+const PER_ITER: usize = 4 * STREAMS; // 4 symbols per stream per refill: 4 * 11 <= 56
+
 /// Decode `n` symbols into `out[..n]`. Err if any sub-stream overran.
+///
+/// Hot loop runs on `FastReader`: 3 live values per stream (as in
+/// examples/huff_spike.rs), no clamp and no accounting, so 8 of them fit
+/// in registers instead of spilling `BitReader`'s 6 fields/stream to the
+/// stack. `safe_refills` proves, from each stream's remaining real bytes,
+/// how many refills can run before its reader might need the clamp; the
+/// outer loop takes the minimum across streams (and caps at whole
+/// PER_ITER batches of the symbols still wanted) and re-evaluates every
+/// pass, so streams with short codes (whose pointer creeps forward slowly)
+/// just cost more, cheap passes instead of one big one. Whatever is left
+/// once some stream runs low on margin -- normally under one PER_ITER
+/// batch, but can be more if one stream is short -- goes through the
+/// original clamped, accounted, per-symbol path, which is also what makes
+/// `overrun` exact for corrupt/truncated streams.
 pub fn decode(table: &Table, streams: &[&[u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
     assert!(out.len() >= n);
     let t = table.entries.as_slice();
     let mut st: [St; STREAMS] = std::array::from_fn(|k| St { r: BitReader::new(streams[k]) });
-    let per_iter = 4 * STREAMS; // 4 symbols per stream per refill: 4 * 11 <= 56
-    let full = n / per_iter;
+    let lasts: [*const u8; STREAMS] = std::array::from_fn(|k| st[k].r.last());
+    let mut fast: [FastReader; STREAMS] = std::array::from_fn(|k| st[k].r.to_fast());
+
     let mut o = 0usize;
-    for _ in 0..full {
+    let mut remaining = n;
+    loop {
+        let mut iters = remaining / PER_ITER;
         for k in 0..STREAMS {
-            st[k].r.refill();
+            iters = iters.min(fast[k].safe_refills(lasts[k]));
         }
-        for j in 0..4 {
+        if iters == 0 {
+            break;
+        }
+        for _ in 0..iters {
             for k in 0..STREAMS {
-                out[o + j * STREAMS + k] = sym(&mut st[k], t);
+                // SAFETY: `iters` <= every stream's safe_refills(lasts[k]),
+                // proving this refill's starting p is <= lasts[k].
+                unsafe {
+                    fast[k].refill();
+                }
             }
+            for j in 0..4 {
+                for k in 0..STREAMS {
+                    out[o + j * STREAMS + k] = fast_sym(&mut fast[k], t);
+                }
+            }
+            o += PER_ITER;
         }
-        o += per_iter;
+        remaining -= PER_ITER * iters;
     }
+
+    for (k, f) in fast.into_iter().enumerate() {
+        st[k].r.resume(f);
+    }
+
+    // Tail: fewer than PER_ITER symbols left, or some stream ran low on
+    // safe margin early. Either way, back to the clamped per-symbol path.
     for i in o..n {
         let k = i % STREAMS;
         st[k].r.refill();

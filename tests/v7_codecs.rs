@@ -152,3 +152,37 @@ fn huff8_speed_silesia() {
         ns_per_symbol
     );
 }
+
+/// Exercises the outer loop's re-evaluation in huff8::decode's fast path:
+/// only 3 distinct byte values means short codes (~2 bits each), so the
+/// unclamped reader's pointer creeps forward slowly and `safe_refills`
+/// (which assumes a worst-case 7 bytes/refill) undershoots badly, forcing
+/// many small batches instead of one big one.
+#[test]
+fn huff8_short_codes_roundtrip() {
+    let n = 200_000usize;
+    let mut x = 12345u64;
+    let data: Vec<u8> = (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            match x % 3 {
+                0 => b'a',
+                1 => b'b',
+                _ => b'c',
+            }
+        })
+        .collect();
+    let mut hist = [0u64; 256];
+    for &b in &data {
+        hist[b as usize] += 1;
+    }
+    let lengths = huff8::lengths_for(&hist);
+    let streams = huff8::encode(&data, &lengths);
+    let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+    let table = huff8::Table::build(&lengths).unwrap();
+    let mut out = vec![0u8; n];
+    huff8::decode(&table, &refs, n, &mut out).unwrap();
+    assert_eq!(out, data);
+}

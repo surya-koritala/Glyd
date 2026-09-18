@@ -557,8 +557,31 @@ min 7 -> 8 cut tokens 18% and bought 18%.
   + 39 ldr of 292, vs. the spike's 35 str + 22 ldr of 316) -- `BitReader`
   carries 6 fields per stream (`p, last, bits, cnt, filled, budget`)
   against the spike's unchecked `St { p, bits, cnt }` (3), and across 8
-  unrolled streams that state doesn't fit in registers. Trimming one more
-  field (merging `consumed`+`total_bits` into the signed `budget` above)
-  barely moved the static instruction mix, so the array-of-8-readers
-  living on the stack looks like the more fundamental limit, not any one
-  field. Flagged for the controller rather than redesigned further here.
+  unrolled streams that state doesn't fit in registers.
+- Round 2: restructured `huff8::decode` per the register-pressure finding
+  above. Added `bits::FastReader { p, bits, cnt }` -- the spike's exact
+  3-field, unclamped, unaccounted reader, plus `BitReader::to_fast`/
+  `resume`/`last()`. `resume` reconciles the round-1 `budget`/`filled`
+  scheme after an unaccounted excursion: since `FastReader` never clamps
+  (the caller proved it wouldn't need to), the bits it loaded are exactly
+  `(f.p - old_p) * 8` (the same per-call identity `refill` relies on:
+  bytes advanced == bits newly loaded), so `consumed = old_cnt + loaded -
+  f.cnt` folds back exactly, no approximation. `huff8::decode`'s hot loop
+  now runs on 8 `FastReader`s; an outer loop computes, each pass,
+  `iters = min(remaining/32, min_k safe_refills(fast[k], last_k))`
+  (`safe_refills(last) = (last-p)/7 + 1` for `p <= last`, since a refill
+  advances `p` by at most 7 bytes) and runs that many 32-symbols-at-a-time
+  batches -- the spike's exact loop body, unsafe and 3-field. Once some
+  stream runs low on margin (or fewer than 32 symbols remain), `resume`
+  hands the state back to the clamped `BitReader`s for the existing
+  per-symbol tail path, which is also what keeps `overrun` exact.
+  Result: 235 blocks / 20 MB, best of 5, `target-cpu=native`:
+  **0.61 ns/symbol** (1.06 -> 0.85 -> 0.61 across the two rounds, ~43%
+  faster than round 1's start), a hair over the 0.6 gate. objdump of the
+  new inner loop confirms the fix landed: 186 instructions (was 292) with
+  memory ops back to ~18% (was ~39%), matching the spike's proportions.
+  Added `huff8_short_codes_roundtrip` (200,000 symbols, 3 distinct byte
+  values / ~2-bit codes) to exercise the outer loop's re-evaluation, since
+  short codes make the pointer creep forward slowly and `safe_refills`'
+  worst-case-7-bytes assumption undershoots badly there -- passes, just
+  costs more (small) outer passes instead of one big one, as intended.

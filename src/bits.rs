@@ -125,4 +125,74 @@ impl BitReader {
         let open = (self.filled - self.cnt) as i64;
         self.budget - open < 0
     }
+
+    /// End-of-safe-region pointer, for `FastReader::safe_refills`.
+    pub fn last(&self) -> *const u8 {
+        self.last
+    }
+
+    /// Snapshot the live state into an unclamped, unaccounted `FastReader`
+    /// for a hot loop. Pairs with `resume`.
+    pub fn to_fast(&self) -> FastReader {
+        FastReader { p: self.p, bits: self.bits, cnt: self.cnt }
+    }
+
+    /// Write a `FastReader`'s state back and fold in the bits it consumed,
+    /// so `overrun` stays exact across the excursion. `f` never clamped
+    /// (the caller proved every one of its refills started at or before
+    /// `last`), so the bits it loaded are exactly `(f.p - self.p) * 8`
+    /// (the same identity `refill` relies on: each call's `p` advance in
+    /// bytes equals the bits it newly loaded). From that and how far `cnt`
+    /// moved, `consumed = self.cnt + loaded - f.cnt`.
+    pub fn resume(&mut self, f: FastReader) {
+        let loaded = (f.p as usize - self.p as usize) as i64 * 8;
+        let consumed = self.cnt as i64 + loaded - f.cnt as i64;
+        self.budget -= consumed;
+        self.p = f.p;
+        self.bits = f.bits;
+        self.cnt = f.cnt;
+        self.filled = f.cnt;
+    }
+}
+
+/// Unclamped reader for hot loops: a caller must prove, from the stream's
+/// remaining bytes, that every refill it performs starts at or before
+/// `last` (see `safe_refills`). `p` advances by at most 7 bytes per refill.
+pub struct FastReader {
+    pub p: *const u8,
+    pub bits: u64,
+    pub cnt: u32,
+}
+
+impl FastReader {
+    /// SAFETY (caller must uphold): `self.p` must be `<= last` for whatever
+    /// `last` the reader was proved safe against (see `safe_refills`) --
+    /// otherwise this can read past the end of the stream's allocation.
+    #[inline(always)]
+    pub unsafe fn refill(&mut self) {
+        self.bits |= std::ptr::read_unaligned(self.p as *const u64) << self.cnt;
+        self.p = self.p.add(((63 - self.cnt) >> 3) as usize);
+        self.cnt |= 56;
+    }
+
+    #[inline(always)]
+    pub fn peek(&self, n: u32) -> u64 {
+        self.bits & ((1u64 << n) - 1)
+    }
+
+    #[inline(always)]
+    pub fn consume(&mut self, n: u32) {
+        self.bits >>= n;
+        self.cnt -= n;
+    }
+
+    /// How many refills can run unclamped from here: each advances p by <= 7.
+    #[inline(always)]
+    pub fn safe_refills(&self, last: *const u8) -> usize {
+        if self.p > last {
+            0
+        } else {
+            (last as usize - self.p as usize) / 7 + 1
+        }
+    }
 }
