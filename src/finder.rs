@@ -24,7 +24,7 @@
 
 use crate::format::{
     Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, LIT_DIRECT_MAX, MATCH_CODE_ESCAPE,
-    MAX_LIT_LEN, MIN_MATCH_LEN, MIN_MATCH_LEN_DENSE, WINDOW_SIZE,
+    MAX_LIT_LEN, MIN_MATCH_LEN, MIN_MATCH_LEN_DENSE, MIN_MATCH_LEN_TURBO, WINDOW_SIZE,
 };
 
 /// Default finder window; see `window_size`. The v6 format holds 17-bit
@@ -168,6 +168,15 @@ pub trait Mode {
 pub struct Lzav;
 impl Mode for Lzav {
     const MIN_MATCH: usize = MIN_MATCH_LEN;
+    const SKIP: bool = true;
+    const CAP_BY_OFFSET: bool = true;
+    const MIN_OFFSET: usize = MIN_OFFSET;
+}
+
+/// Turbo level: the default parse at minimum match 8.
+pub struct Turbo;
+impl Mode for Turbo {
+    const MIN_MATCH: usize = MIN_MATCH_LEN_TURBO;
     const SKIP: bool = true;
     const CAP_BY_OFFSET: bool = true;
     const MIN_OFFSET: usize = MIN_OFFSET;

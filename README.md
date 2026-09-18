@@ -100,7 +100,11 @@ Levels, same run (`quick3`, M1 Max, one core):
 | :--- | ---: | ---: | ---: |
 | `--fast` (`compress_into_fast`) | 0.55 | 2.176 | 4.96 |
 | default | 0.34 | 2.192 | 6.94 |
+| `--turbo` (`compress_into_turbo`) | 0.33 | 2.055 | **8.23** |
 | liblz4 | 0.66 | 2.101 | 4.39 |
+
+Turbo is the default parse at minimum match 8 (`FLAG_TURBO` blocks):
+fewer tokens, so decode is 188% of liblz4 at 2% less ratio than liblz4.
 
 Multi-core decode (10 threads, independent 256 KB blocks): **42.9 GB/s**
 over Silesia, above this machine's single-core memcpy (`examples/mc.rs`).

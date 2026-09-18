@@ -238,7 +238,7 @@ fn test_roundtrip_literal_run_at_max_len() {
 
 /// Fast level: every shape the default tests cover, sequential and parallel.
 #[test]
-fn test_roundtrip_fast_level() {
+fn test_roundtrip_fast_and_turbo_levels() {
     let mut x = 0x9E3779B97F4A7C15u64;
     let mut rnd = |n: usize| -> Vec<u8> { (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect() };
     let mut inputs: Vec<Vec<u8>> = vec![
@@ -262,5 +262,11 @@ fn test_roundtrip_fast_level() {
         let mut p = Vec::new();
         simd_stream_codec::compress_parallel_into_fast(input, &mut p);
         assert_eq!(&simd_stream_codec::decompress_parallel(&p).unwrap(), input, "fast parallel, len {}", input.len());
+        let mut c = Vec::new();
+        simd_stream_codec::compress_into_turbo(input, &mut c);
+        assert_eq!(&decompress(&c).unwrap(), input, "turbo sequential, len {}", input.len());
+        let mut p = Vec::new();
+        simd_stream_codec::compress_parallel_into_turbo(input, &mut p);
+        assert_eq!(&simd_stream_codec::decompress_parallel(&p).unwrap(), input, "turbo parallel, len {}", input.len());
     }
 }

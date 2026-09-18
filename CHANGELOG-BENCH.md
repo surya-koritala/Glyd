@@ -503,3 +503,13 @@ at 2.08).
 - Multi-core (`examples/mc.rs`, parallel-compressed independent 256 KB
   blocks, 10 threads): 42.9 GB/s aggregate over Silesia, above this
   machine's single-core memcpy (40 GB/s); per file 26-71 GB/s.
+
+## Turbo level (M1 Max)
+`compress_into_turbo` / `compress_parallel_into_turbo` / CLI `-t --turbo`:
+the default finder at minimum match 8, emitted as FLAG_TURBO blocks (new
+token table and escape base; the decoders are bias-generic). Same run:
+decode 8.23 GB/s = 188% of liblz4 (default 6.94 = 159%), ratio 2.055
+(default 2.192, liblz4 2.101), comp 0.33 GB/s. Per file 7.0-11.2 GB/s on
+compressible data; sao is stored raw at this level (its 1.037 is under the
+4% threshold) and decodes at memcpy. Decode scales with tokens per byte:
+min 7 -> 8 cut tokens 18% and bought 18%.

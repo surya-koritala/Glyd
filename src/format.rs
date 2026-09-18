@@ -20,6 +20,9 @@ pub const MIN_MATCH_LEN: usize = 7;
 /// Minimum match of the dense retry parse (FLAG_DENSE blocks). Data such as
 /// 12-bit images has its redundancy in 4- and 5-byte matches.
 pub const MIN_MATCH_LEN_DENSE: usize = 5;
+/// Minimum match of the turbo level (FLAG_TURBO blocks): fewer tokens,
+/// faster decode, ~6% less ratio. 8 is the most the finder verifies.
+pub const MIN_MATCH_LEN_TURBO: usize = 8;
 
 /// v6 token layout, one byte:
 ///   bits 0..2  literal code: 0..6 is the literal length, 7 escapes to `extras`
@@ -38,6 +41,7 @@ pub const MATCH_CODE_ESCAPE: usize = 15;
 /// bias = minimum - 1: 5 for ordinary blocks, 3 for FLAG_DENSE blocks.
 pub const MATCH_CODE_BIAS: usize = MIN_MATCH_LEN - 1;
 pub const MATCH_CODE_BIAS_DENSE: usize = MIN_MATCH_LEN_DENSE - 1;
+pub const MATCH_CODE_BIAS_TURBO: usize = MIN_MATCH_LEN_TURBO - 1;
 pub const MATCH_DIRECT_MAX: usize = MATCH_CODE_BIAS + 14;
 
 /// Escaped lengths travel in a byte stream: one byte holds `value - base`
@@ -46,6 +50,7 @@ pub const MATCH_DIRECT_MAX: usize = MATCH_CODE_BIAS + 14;
 pub const ESCAPE_BASE_LIT: usize = LIT_DIRECT_MAX + 1;
 pub const ESCAPE_BASE_MATCH: usize = MATCH_DIRECT_MAX + 1;
 pub const ESCAPE_BASE_MATCH_DENSE: usize = MATCH_CODE_BIAS_DENSE + 15;
+pub const ESCAPE_BASE_MATCH_TURBO: usize = MATCH_CODE_BIAS_TURBO + 15;
 pub const ESCAPE_CONT: u8 = 255;
 pub const MAX_LIT_LEN: usize = ESCAPE_BASE_LIT + 255 + 65535;
 pub const MAX_MATCH_LEN: usize = ESCAPE_BASE_MATCH + 255 + 65535;
@@ -58,6 +63,9 @@ pub const FLAG_HUFF_TOKENS: u16 = 4;
 /// Block was parsed by the dense retry: match lengths are biased by
 /// MATCH_CODE_BIAS_DENSE and offsets may be as small as 1 with overlap.
 pub const FLAG_DENSE: u16 = 8;
+/// Block was parsed at minimum match 8 (turbo level): match lengths are
+/// biased by MATCH_CODE_BIAS_TURBO.
+pub const FLAG_TURBO: u16 = 16;
 
 pub const PARALLEL_CHUNK_SIZE: usize = 256 * 1024; // 256 KB parallel chunk unit
 
@@ -186,6 +194,7 @@ const fn token_table(bias: usize) -> [u32; 256] {
 
 pub static TOKEN_TABLE: [u32; 256] = token_table(MATCH_CODE_BIAS);
 pub static TOKEN_TABLE_DENSE: [u32; 256] = token_table(MATCH_CODE_BIAS_DENSE);
+pub static TOKEN_TABLE_TURBO: [u32; 256] = token_table(MATCH_CODE_BIAS_TURBO);
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C, packed)]

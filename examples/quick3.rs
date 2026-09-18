@@ -37,7 +37,8 @@ fn main() {
     let min_s: f64 = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(0.3);
     let verbose = std::env::args().any(|a| a == "-v");
     let fast = std::env::args().any(|a| a == "--fast");
-    let comp: fn(&[u8], &mut Vec<u8>) = if fast { simd_stream_codec::compress_into_fast } else { simd_stream_codec::compress_into };
+    let turbo = std::env::args().any(|a| a == "--turbo");
+    let comp: fn(&[u8], &mut Vec<u8>) = if fast { simd_stream_codec::compress_into_fast } else if turbo { simd_stream_codec::compress_into_turbo } else { simd_stream_codec::compress_into };
     let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
                  "reymont","samba","sao","webster","xml","x-ray"];
     let dir = std::path::Path::new("corpus");
