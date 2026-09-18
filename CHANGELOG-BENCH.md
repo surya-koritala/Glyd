@@ -102,3 +102,9 @@ decomp 3.529 -> 3.8795 GB/s (+9.9%, T1.4 floor passing)
 ratio 2.19502 -> 2.17972 (HASH_BITS 16 -> 15 to hold memory flat; sweep next)
 A probe now rejects a miss with a register compare instead of a random,
 cache-missing read of the candidate position in the source.
+
+## T1 frontier mapped; T1.3 and T1.4 solved, T1.2 is the gap
+Best comp 0.5318 (target 0.489, PASSES). Best decomp 4.75 (floor 3.130).
+Best ratio 2.2637 (target 2.4500, +8.2% still needed).
+Measured and rejected: larger window (negative), repeat offsets (3.3% of
+matches, +1.23%). Offsets are 37.8% of output, the largest single component.

@@ -58,3 +58,7 @@ path = "examples/ratio_only.rs"
 [[example]]
 name = "quick3"
 path = "examples/quick3.rs"
+
+[[example]]
+name = "repeat_offset_stats"
+path = "examples/repeat_offset_stats.rs"
