@@ -46,7 +46,7 @@ impl BitWriter {
     }
 }
 
-pub struct BitReader {
+pub struct BitReader<'a> {
     p: *const u8,
     /// Last address a full 8-byte load may start at.
     last: *const u8,
@@ -63,11 +63,24 @@ pub struct BitReader {
     /// initial value keeps this reader at the same field count as an
     /// explicit `consumed` + `total_bits` pair.
     budget: i64,
+    /// Ties this reader to `src`'s lifetime: `p`/`last` are raw pointers
+    /// into it, so nothing here is a real borrow without this marker,
+    /// and safe code could otherwise outlive the buffer (use-after-free).
+    _src: std::marker::PhantomData<&'a [u8]>,
 }
 
-impl BitReader {
+impl<'a> BitReader<'a> {
     /// `src` must end with `PAD` bytes (as `BitWriter::finish` produces).
-    pub fn new(src: &[u8]) -> Self {
+    ///
+    /// The returned reader borrows `src`, so a buffer that doesn't outlive
+    /// it is a compile error, not a use-after-free:
+    ///
+    /// ```compile_fail
+    /// use simd_stream_codec::bits::{BitReader, BitWriter};
+    /// let r = { let v = BitWriter::new().finish(); BitReader::new(&v) };
+    /// let _ = r.overrun();
+    /// ```
+    pub fn new(src: &'a [u8]) -> BitReader<'a> {
         assert!(src.len() >= PAD, "stream shorter than its padding");
         let p = src.as_ptr();
         let mut r = BitReader {
@@ -77,6 +90,7 @@ impl BitReader {
             cnt: 0,
             filled: 0,
             budget: ((src.len() - PAD) * 8) as i64,
+            _src: std::marker::PhantomData,
         };
         r.refill();
         r

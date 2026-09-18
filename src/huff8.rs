@@ -90,12 +90,12 @@ pub fn encode(data: &[u8], lengths: &[u8; 256]) -> Vec<Vec<u8>> {
     writers.into_iter().map(|w| w.finish()).collect()
 }
 
-struct St {
-    r: BitReader,
+struct St<'a> {
+    r: BitReader<'a>,
 }
 
 #[inline(always)]
-fn sym(s: &mut St, t: &[u16]) -> u8 {
+fn sym(s: &mut St<'_>, t: &[u16]) -> u8 {
     // SAFETY: peek(TB) masks to < 1 << TB == t.len() (Table::build allocates
     // exactly `1 << TB` entries), so the index is always in bounds.
     let e = unsafe { *t.get_unchecked(s.r.peek(TB) as usize) };
@@ -130,10 +130,10 @@ const PER_ITER: usize = 4 * STREAMS; // 4 symbols per stream per refill: 4 * 11 
 /// batch, but can be more if one stream is short -- goes through the
 /// original clamped, accounted, per-symbol path, which is also what makes
 /// `overrun` exact for corrupt/truncated streams.
-pub fn decode(table: &Table, streams: &[&[u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
+pub fn decode<'b>(table: &Table, streams: &[&'b [u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
     assert!(out.len() >= n);
     let t = table.entries.as_slice();
-    let mut st: [St; STREAMS] = std::array::from_fn(|k| St { r: BitReader::new(streams[k]) });
+    let mut st: [St<'b>; STREAMS] = std::array::from_fn(|k| St { r: BitReader::new(streams[k]) });
     let lasts: [*const u8; STREAMS] = std::array::from_fn(|k| st[k].r.last());
     let mut fast: [FastReader; STREAMS] = std::array::from_fn(|k| st[k].r.to_fast());
 

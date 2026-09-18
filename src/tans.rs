@@ -37,6 +37,11 @@ pub fn normalize(hist: &[u32], n_symbols: usize) -> Vec<u16> {
     }
     // Put the rounding error on the most frequent symbol.
     let cl = counts[largest] as isize + (L as isize - sum as isize);
+    // Holds for any histogram: of the <= 64 present symbols, m got bumped
+    // from 0 to 1 (each overshooting L by less than 1) and b = n - m share
+    // the rest, largest among them; m + b <= 64 caps m * b <= 1024 = L
+    // (AM-GM), which is enough to keep the bumps' overshoot under largest's
+    // own share, so cl never drops below 1.
     assert!(cl >= 1, "normalization underflow");
     counts[largest] = cl as u16;
     counts
@@ -178,12 +183,12 @@ impl<'a> Encoder<'a> {
 
 pub struct Decoder<'a> {
     t: &'a [DecodeEntry],
-    r: BitReader,
+    r: BitReader<'a>,
     state: u32,
 }
 
 impl<'a> Decoder<'a> {
-    pub fn new(t: &'a DecodeTable, stream: &[u8]) -> Self {
+    pub fn new(t: &'a DecodeTable, stream: &'a [u8]) -> Self {
         let mut r = BitReader::new(stream);
         let state = r.get(TL) as u32;
         Decoder { t: t.entries.as_slice(), r, state }
