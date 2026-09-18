@@ -20,9 +20,11 @@ pub const MIN_MATCH_LEN: usize = 7;
 /// Minimum match of the dense retry parse (FLAG_DENSE blocks). Data such as
 /// 12-bit images has its redundancy in 4- and 5-byte matches.
 pub const MIN_MATCH_LEN_DENSE: usize = 5;
-/// Minimum match of the turbo level (FLAG_TURBO blocks): fewer tokens,
-/// faster decode, ~6% less ratio. 8 is the most the finder verifies.
-pub const MIN_MATCH_LEN_TURBO: usize = 8;
+/// Minimum match of the turbo level (FLAG_TURBO blocks). Decode scales
+/// with tokens per byte; measured on Silesia (M1 Max, default 6.9 GB/s at
+/// 2.19): 8 -> 8.2 GB/s at 2.055, 9 -> 8.8 at 1.975, 10 -> 9.3 at 1.884,
+/// 12 -> 10.5 at 1.751. 10 is the +35% point.
+pub const MIN_MATCH_LEN_TURBO: usize = 10;
 
 /// v6 token layout, one byte:
 ///   bits 0..2  literal code: 0..6 is the literal length, 7 escapes to `extras`

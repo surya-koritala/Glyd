@@ -358,7 +358,7 @@ pub unsafe fn find_matches<M: MatchLen, P: Mode>(
     let mut cur = out.begin_block(block_len);
     // Hashing reads 6 bytes; a match must have room for the minimum.
     // Hashing reads 4 bytes at pos and verification 4 more at pos + 4.
-    let hash_limit = block_end.saturating_sub(P::MIN_MATCH.max(5) + 3).max(block_start);
+    let hash_limit = block_end.saturating_sub(P::MIN_MATCH.max(8) + 3).max(block_start);
     let window = window_size();
 
     let mut anchor = block_start; // start of pending literals
@@ -452,12 +452,16 @@ pub unsafe fn find_matches<M: MatchLen, P: Mode>(
             }
         }
 
-        let mut rc = P::MIN_MATCH
-            + M::prefix(
-                src.add(pos + P::MIN_MATCH),
-                src.add(cand + P::MIN_MATCH),
-                ml - P::MIN_MATCH,
-            );
+        // The word and verify mask prove min(MIN_MATCH, 8) bytes; extend
+        // from there. Above 8 the extension must reach the minimum or the
+        // hit is dropped.
+        const PROVEN: usize = 8;
+        let proven = if P::MIN_MATCH < PROVEN { P::MIN_MATCH } else { PROVEN };
+        let mut rc = proven + M::prefix(src.add(pos + proven), src.add(cand + proven), ml - proven);
+        if P::MIN_MATCH > PROVEN && rc < P::MIN_MATCH {
+            pos += 1;
+            continue;
+        }
         let mut lc = pos - anchor;
         let mut mpos = pos;
         if lc != 0 {

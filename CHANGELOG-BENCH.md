@@ -513,3 +513,15 @@ decode 8.23 GB/s = 188% of liblz4 (default 6.94 = 159%), ratio 2.055
 compressible data; sao is stored raw at this level (its 1.037 is under the
 4% threshold) and decodes at memcpy. Decode scales with tokens per byte:
 min 7 -> 8 cut tokens 18% and bought 18%.
+
+## Turbo at minimum match 10; the compression dial (M1 Max)
+- Finder: minimums above 8 are now sound (the word plus verify mask prove
+  8 bytes, the extension must reach the minimum or the hit is dropped).
+- Turbo sweep, same run: min 8 8.2 GB/s at 2.055, 9 8.8 at 1.975, 10 9.3
+  at 1.884, 12 10.5 at 1.751. Turbo set to 10: decode 211% of liblz4,
+  +34% over the default. Hash table 17/18 bits: +0.005 ratio, not worth
+  the L2 traffic (comp -15%).
+- Fast level: 12-bit table gives 0.585 GB/s (+7%) at ratio 2.078, under
+  liblz4's 2.101; unbounded back-match and dropping the post-match
+  re-insert are noise. Kept at 13 bits (2.176). The dial is documented in
+  finder.rs; the parse loop has no ratio-neutral speed left.
