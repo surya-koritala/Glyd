@@ -70,3 +70,7 @@ path = "examples/entropy_probe.rs"
 [[example]]
 name = "huff_probe"
 path = "examples/huff_probe.rs"
+
+[[example]]
+name = "lzav_decomp"
+path = "examples/lzav_decomp.rs"

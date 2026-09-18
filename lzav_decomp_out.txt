@@ -1,0 +1,25 @@
+dickens  ours   6008186  ours-in-lzav-fmt   6142103  lzav   4799265  lzav-in-our-fmt   4447983  refs ours  1634307 lzav  1259016
+mozilla  ours  25613129  ours-in-lzav-fmt  31388022  lzav  23858089  lzav-in-our-fmt  23749601  refs ours  4080745 lzav  3250392
+mr       ours   5413277  ours-in-lzav-fmt  36933576  lzav   4853973  lzav-in-our-fmt   4754494  refs ours  1056363 lzav   776064
+nci      ours   5636833  ours-in-lzav-fmt  42390027  lzav   4388126  lzav-in-our-fmt   4542901  refs ours  1309734 lzav  1164004
+ooffice  ours   4155595  ours-in-lzav-fmt  46517152  lzav   4072727  lzav-in-our-fmt   4101748  refs ours   620169 lzav   350916
+osdb     ours   4784204  ours-in-lzav-fmt  51200296  lzav   4094065  lzav-in-our-fmt   4209714  refs ours   637953 lzav   551437
+reymont  ours   3271776  ours-in-lzav-fmt  54418695  lzav   2568026  lzav-in-our-fmt   2446869  refs ours   914300 lzav   740430
+samba    ours   7565704  ours-in-lzav-fmt  61936752  lzav   6444233  lzav-in-our-fmt   6286124  refs ours  1509343 lzav  1227937
+sao      ours   6716341  ours-in-lzav-fmt  68322622  lzav   6492850  lzav-in-our-fmt   6524323  refs ours   694616 lzav   281131
+webster  ours  18884181  ours-in-lzav-fmt  87653842  lzav  15521956  lzav-in-our-fmt  14474389  refs ours  4730862 lzav  3938508
+xml      ours   1180678  ours-in-lzav-fmt  88821673  lzav    936960  lzav-in-our-fmt    942223  refs ours   291583 lzav   226458
+x-ray    ours   8001974  ours-in-lzav-fmt  96923277  lzav   8474032  lzav-in-our-fmt   8473520  refs ours   458296 lzav      308
+
+Silesia 211938580 bytes
+  ours, our format          97231878  ratio 2.17972
+  ours, LZAV format         96923277  ratio 2.18666   <- format effect on our parse
+  LZAV, LZAV format         86504302  ratio 2.45004
+  LZAV parse, our format    84953889  ratio 2.49475   <- parse effect (offsets >=64K costed as if legal)
+
+ours   refs  17938271  lit bytes  36387038 (17.2% of input)  match bytes 172143670  avg len 9.60
+       offsets <1K  33.3%  <4K  19.4%  <64K  47.3%  >=64K   0.0%
+       len <=20  92.8%  21..33   3.8%  >33   3.4%   lit before ref: 0  50.5%  1..6  42.9%  7..15   5.2%
+lzav   refs  13766601  lit bytes  40266880 (19.0% of input)  match bytes 171671700  avg len 12.47
+       offsets <1K  21.4%  <4K   9.6%  <64K  27.4%  >=64K  41.6%
+       len <=20  89.4%  21..33   5.9%  >33   4.7%   lit before ref: 0  66.9%  1..6  25.5%  7..15   4.8%

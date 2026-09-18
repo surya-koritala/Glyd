@@ -127,3 +127,18 @@ tokens+offset-hi, which fits only on the h6 base whose ratio (2.11-2.16)
 lands at 2.35-2.41 after coding. Huffman on the current format reaches T1.2
 but cannot hold T1.4 on the same commit. Next: decompose LZAV's advantage
 into format vs parse (it reaches 2.45 with no entropy coding at all).
+
+## T1.2: LZAV's advantage decomposed. Format is worth 0.3%, the parse is everything
+examples/lzav_decomp.rs re-costs our exact token stream in LZAV's stream
+format 2 and parses LZAV's real output with a port of lzav_decompress_2
+(verified: match + literal bytes sum to the input exactly).
+  ours in our format 2.17972 | ours in LZAV format 2.18666 (+0.3%)
+  LZAV in LZAV format 2.45004 | LZAV parse in our format 2.49475
+LZAV emits 13.77M refs vs our 17.94M (avg match 12.47 vs 9.60) with 10.7%
+more literal bytes; net 12.3 MB less. 41.6% of its refs are beyond 64 KB,
+unreachable with u16 offsets. 66.9% of its refs carry no literals (ours
+50.5%). Its finder: 6-byte hash, 2-tuple buckets (1 MB table), 8 MB
+window, back-matching into pending literals, adaptive skip, no lazy match.
+Route to T1.2: reproduce that parse in a stream format with cheap far
+offsets. The earlier "bigger window is negative" result was for a 1-way
+4-byte-hash table, which thrashes; it does not refute this combination.
