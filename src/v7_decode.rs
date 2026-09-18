@@ -27,9 +27,15 @@ pub struct Scratch {
     pub codes: Vec<u8>,
     pub codes2: Vec<u8>,
     pub codes3: Vec<u8>,
-    /// 64 bytes of margin past MAX_BLOCK_SIZE for the 32-byte wild copies.
+    /// WILD_MARGIN bytes past MAX_BLOCK_SIZE for the wild copies' reads.
     pub lits: Vec<u8>,
 }
+
+/// A wild copy runs past its sequence's end: the fixed 3x32 tails of
+/// `copy_seq_wild` write 128 bytes for a 33-byte run, 95 past its end.
+/// A sequence is copied wild only with this much room left in `dst` and
+/// in the literal buffer, exactly otherwise.
+const WILD_MARGIN: usize = 96;
 
 impl Scratch {
     pub fn new() -> Self {
@@ -40,7 +46,7 @@ impl Scratch {
             codes: vec![0; MAX_SEQ],
             codes2: vec![0; MAX_SEQ],
             codes3: vec![0; MAX_SEQ],
-            lits: vec![0; MAX_BLOCK_SIZE + 64],
+            lits: vec![0; MAX_BLOCK_SIZE + WILD_MARGIN],
         }
     }
 }
@@ -194,60 +200,133 @@ fn literals(payload: &[u8], layout: &Layout, n_lit: usize, prev: &mut DecTables,
     huff8::decode(table, &streams, n_lit, &mut s.lits).map_err(|_| corrupt("v7: literal stream overrun"))
 }
 
-/// Pass 3: copies. 32-byte wild copies wherever both the literal buffer's
-/// margin and `dst.len()` allow, exact copies otherwise (the NEON loop
-/// replaces this body in Task 8).
+/// One sequence, wild: `ll` literals from `lit`, then `ml` bytes from
+/// `d + ll - off`, in 32-byte stores that may run up to WILD_MARGIN past
+/// the sequence's end. The shape measured in `neon_decompress::copy_run`:
+/// one unconditional 32-byte copy, fixed 3x32 tails to 128 bytes, a loop
+/// only past that, and a cold path for offsets under 32.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+unsafe fn copy_seq_wild(lit: *const u8, d: *mut u8, ll: usize, ml: usize, off: usize) {
+    use crate::neon_decompress::{copy32, short_match};
+    copy32(lit, d);
+    if ll > 32 {
+        copy32(lit.add(32), d.add(32));
+        copy32(lit.add(64), d.add(64));
+        copy32(lit.add(96), d.add(96));
+        if ll > 128 {
+            let mut k = 128;
+            while k < ll {
+                copy32(lit.add(k), d.add(k));
+                k += 32;
+            }
+        }
+    }
+    if ml == 0 {
+        return;
+    }
+    let d = d.add(ll);
+    let src = d.sub(off);
+    if off >= 32 {
+        // Each 32-byte read ends at or before its write starts.
+        copy32(src, d);
+        if ml > 32 {
+            copy32(src.add(32), d.add(32));
+            copy32(src.add(64), d.add(64));
+            copy32(src.add(96), d.add(96));
+            if ml > 128 {
+                let mut k = 128;
+                while k < ml {
+                    copy32(src.add(k), d.add(k));
+                    k += 32;
+                }
+            }
+        }
+    } else {
+        short_match(src, d, off, ml);
+    }
+}
+
+/// Same contract, portable: 32-byte copy loops, a byte loop for
+/// overlapping matches.
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+unsafe fn copy_seq_wild(lit: *const u8, d: *mut u8, ll: usize, ml: usize, off: usize) {
+    let mut k = 0;
+    while k < ll {
+        std::ptr::copy_nonoverlapping(lit.add(k), d.add(k), 32);
+        k += 32;
+    }
+    if ml == 0 {
+        return;
+    }
+    let d = d.add(ll);
+    let src = d.sub(off);
+    if off >= 32 {
+        let mut k = 0;
+        while k < ml {
+            std::ptr::copy_nonoverlapping(src.add(k), d.add(k), 32);
+            k += 32;
+        }
+    } else {
+        for k in 0..ml {
+            *d.add(k) = *src.add(k);
+        }
+    }
+}
+
+/// Same contract, exact: nothing past the sequence's end is touched. The
+/// last WILD_MARGIN bytes of a block whose `dst` has no slack (the
+/// parallel path's) take this.
+#[cold]
+#[inline(never)]
+unsafe fn copy_seq_exact(lit: *const u8, d: *mut u8, ll: usize, ml: usize, off: usize) {
+    std::ptr::copy_nonoverlapping(lit, d, ll);
+    let d = d.add(ll);
+    let src = d.sub(off);
+    for k in 0..ml {
+        *d.add(k) = *src.add(k);
+    }
+}
+
+/// Pass 3: copies. Per sequence: the block and literal bounds, the
+/// offset against the window, then a wild copy when both `dst` and the
+/// literal buffer have WILD_MARGIN to spare past the sequence, an exact
+/// one otherwise.
 ///
 /// SAFETY: `buffer_start` must point into the same allocation as `dst`,
 /// at or before `dst.as_ptr()`, with every byte between them initialised
-/// (the window). `uncompressed_len <= dst.len()` is the caller's check.
+/// (the window). `uncompressed_len <= dst.len()`, `n <= MAX_SEQ` and
+/// `n_lit <= MAX_BLOCK_SIZE` are the caller's checks.
 unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize) -> Result<usize> {
     let base = dst.as_mut_ptr();
     let lits = s.lits.as_ptr();
+    let (lls, mls, offs) = (s.ll.as_ptr(), s.ml.as_ptr(), s.off.as_ptr());
+    let wild_limit = dst.len().saturating_sub(WILD_MARGIN);
+    let lit_wild_limit = s.lits.len() - WILD_MARGIN;
+    let window = (base as *const u8).offset_from(buffer_start) as usize;
     let mut written = 0usize;
     let mut lp = 0usize;
     for i in 0..n {
-        let ll = s.ll[i] as usize;
-        let ml = s.ml[i] as usize;
-        if ll + ml > uncompressed_len - written || ll > n_lit - lp {
+        let ll = *lls.add(i) as usize;
+        let ml = *mls.add(i) as usize;
+        let off = *offs.add(i) as usize;
+        let end = written + ll + ml;
+        let lend = lp + ll;
+        if end > uncompressed_len || lend > n_lit {
             return Err(corrupt("v7: sequence exceeds block"));
         }
-        let d = base.add(written);
-        let src = lits.add(lp);
-        if lp + ll + 32 <= s.lits.len() && written + ll + 32 <= dst.len() {
-            let mut k = 0;
-            while k < ll {
-                std::ptr::copy_nonoverlapping(src.add(k), d.add(k), 32);
-                k += 32;
-            }
-        } else {
-            std::ptr::copy_nonoverlapping(src, d, ll);
-        }
-        written += ll;
-        lp += ll;
-        if ml == 0 {
-            continue;
-        }
-        let d = base.add(written);
-        let off = s.off[i] as usize;
-        let available = d.offset_from(buffer_start) as usize;
-        if off == 0 || off > available {
+        let available = window + written + ll;
+        if ml != 0 && (off == 0 || off > available) {
             return Err(CodecError::OffsetOutOfBounds { offset: off, available });
         }
-        let src = d.sub(off);
-        if off >= 32 && written + ml + 32 <= dst.len() {
-            // off >= 32: each 32-byte read ends at or before its write starts.
-            let mut k = 0;
-            while k < ml {
-                std::ptr::copy_nonoverlapping(src.add(k), d.add(k), 32);
-                k += 32;
-            }
+        if end <= wild_limit && lend <= lit_wild_limit {
+            copy_seq_wild(lits.add(lp), base.add(written), ll, ml, off);
         } else {
-            for k in 0..ml {
-                *d.add(k) = *src.add(k);
-            }
+            copy_seq_exact(lits.add(lp), base.add(written), ll, ml, off);
         }
-        written += ml;
+        written = end;
+        lp = lend;
     }
     if written != uncompressed_len || lp != n_lit {
         return Err(corrupt("v7: decoded length mismatch"));

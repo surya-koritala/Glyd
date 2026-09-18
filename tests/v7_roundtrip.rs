@@ -282,6 +282,37 @@ fn v7_block_decode_with_raw_literals_and_raw_codes() {
     assert_eq!(&dst[at..at + n5], &expect3[..]);
 }
 
+/// A `dst` with no slack past `uncompressed_len` (the parallel path's
+/// per-block slices) must decode correctly with nothing written past its
+/// end: the wild copies fall back to exact ones there. The worst shape
+/// for the fixed 3x32 tails is a 33-byte run copied as 128 bytes, 95
+/// past its end: one ends 65 bytes before the block end, so a margin
+/// under 96 would write 30 bytes past `dst`.
+#[test]
+fn v7_block_decode_into_exact_dst_writes_nothing_past_it() {
+    for (seqs, lits) in [
+        well_formed_sequences(),
+        (
+            vec![
+                Sequence { lit_len: 200, match_len: 3, offset: 1 },
+                Sequence { lit_len: 0, match_len: 33, offset: 50 },
+                Sequence { lit_len: 65, match_len: 0, offset: 0 },
+            ],
+            (0..265u32).map(|i| b'a' + (i % 26) as u8).collect(),
+        ),
+    ] {
+        let expect = materialize(&seqs, &lits);
+        let mut p = Vec::new();
+        encode_block(&seqs, &lits, 0, &mut Tables::none(), &mut p);
+        let mut dst = vec![0xEEu8; expect.len() + 256];
+        let base = dst.as_ptr();
+        let n = unsafe { decode_block(&p, seqs.len(), lits.len(), &mut dst[..expect.len()], base, expect.len(), &mut DecTables::none(), &mut Scratch::new()) }.unwrap();
+        assert_eq!(n, expect.len());
+        assert_eq!(&dst[..n], &expect[..]);
+        assert!(dst[n..].iter().all(|&b| b == 0xEE), "bytes past dst were written");
+    }
+}
+
 // ---- Task 8: container integration ----
 
 /// Max level through every container entry point: empty, one byte, a

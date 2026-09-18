@@ -12,7 +12,7 @@ use crate::format::{ESCAPE_BASE_LIT, ESCAPE_CONT, OFFSET_BYTES,
     TOKEN_LIT_ESCAPE, TOKEN_MATCH_ESCAPE, TOKEN_OFF_SHIFT};
 
 #[inline(always)]
-unsafe fn copy32(s: *const u8, d: *mut u8) {
+pub(crate) unsafe fn copy32(s: *const u8, d: *mut u8) {
     vst1q_u8(d, vld1q_u8(s));
     vst1q_u8(d.add(16), vld1q_u8(s.add(16)));
 }
@@ -402,10 +402,10 @@ pub unsafe fn decompress_neon(
 }
 
 /// Overlapping match copy for offsets under 32. The chunk bounds allow 64
-/// bytes of wild store past the match end.
+/// bytes of wild store past the match end. `ml` must be non-zero.
 #[cold]
 #[inline(never)]
-unsafe fn short_match(s: *const u8, d: *mut u8, offset: usize, ml: usize) {
+pub(crate) unsafe fn short_match(s: *const u8, d: *mut u8, offset: usize, ml: usize) {
     let end = d.add(ml);
     if offset >= 16 {
         let (mut s, mut d) = (s, d);
