@@ -102,3 +102,7 @@ path = "examples/mc.rs"
 [[example]]
 name = "huff_spike"
 path = "examples/huff_spike.rs"
+
+[[example]]
+name = "v7_bench"
+path = "examples/v7_bench.rs"

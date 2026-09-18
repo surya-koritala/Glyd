@@ -622,3 +622,53 @@ min 7 -> 8 cut tokens 18% and bought 18%.
   single 8-way interleaved loop. Kept from round 1: `tans8_overrun_is_an_error`.
   Final, confirmed: **0.74 ns/symbol** (packed-u32 table), still over the
   0.6 gate.
+
+## v7 milestone 2: container + decoder on the default parse
+- Container: `parse_header` accepts VERSION_V7; `decode_block` dispatches
+  v7 payloads to `v7_decode` with a thread-local table carry, reset at
+  FLAG_CHAIN_RESET (the parallel path decodes each chained unit whole on
+  one thread starting at such a block, so it sees what the sequential
+  path sees). `compress_into_max` / `compress_parallel_into_max`: the
+  default (Lzav) finder, its v6 streams bridged to a sequence list by
+  `sequences_from_streams`, `v7_encode::encode_block` per 256 KB block;
+  a block the coder cannot shrink below the chunk is stored as a v6 raw
+  block. Round trip through every `decompress*` entry point on empty,
+  one byte, constant, random (raw), periodic (periods 3..70000), text
+  and word-salad inputs, the last checked to exercise literal- and
+  sequence-table reuse across blocks (the periodic/text inputs never do:
+  `close()` demands identical support, and one rare code per block --
+  a block-boundary literal run, a 46-byte match once in 256 KB -- breaks
+  it; ~0.1% of ratio, a later task's call).
+- Pass 3 (copies) took `neon_decompress::copy_run`'s measured shape per
+  sequence: unconditional 32-byte copy, fixed 3x32 tails, cold
+  `short_match` under offset 32 (`copy32`/`short_match` shared with the
+  v6 decoder), portable twin under `cfg(not(aarch64))`. The 3x32 tails
+  overshoot a sequence by up to 95 bytes (a 33-byte run copies 128), so
+  the wild path needs 96 bytes of room past the sequence in both `dst`
+  and the literal buffer -- the brief's 64 was not enough; the last 96
+  bytes of a block whose `dst` has no slack (the parallel path's
+  per-block slices are exact) take an exact copy, so nothing is written
+  past `dst` (sentinel test with the worst-case shape fails at 64,
+  passes at 96). Pass 3: 6.0 -> 2.9 ns/sequence; Silesia decode 0.99 ->
+  1.20 GB/s (mr, short offsets, 0.62 -> 1.14). The per-sequence
+  block/literal bound checks, redundant with pass 1's totals, cost 0.3
+  ns/sequence (2% of decode); kept.
+- `examples/v7_bench.rs`, Silesia, M1 Max, `target-cpu=native`, median
+  of 3 runs of >= 0.3 s, zstd 1.5.7 (bulk API, contexts reused) in the
+  same run:
+  **v7: ratio 2.7406, comp 0.133 GB/s, decomp 1.203 GB/s** |
+  zstd-3: ratio 3.2045, comp 0.326, decomp 1.434 |
+  zstd-1: ratio 2.8942, comp 0.551, decomp 1.543.
+  Ratio is in the brief's 2.6-2.8 band (+25% over v6's 2.19 on the same
+  parse); decode is under the 2.5 GB/s stop rule, and 3-4 GB/s was never
+  in reach of this pipeline: per byte, pass 1 (sequences) is 0.46 ns =
+  50%, pass 2 (literals) 0.18 ns = 19%, pass 3 (copies, before the NEON
+  loop) 0.29 ns = 31%. Inside pass 1 the three tANS streams take ~3
+  ns/sequence (~1 ns/symbol) and the extra-bits walk 6.7 ns/sequence --
+  the largest single cost in the decoder (35% of the total): three
+  dependent clamped `BitReader::get`s through `ers[i % 8]` (state in
+  memory, not registers) plus the branchy `Reps::resolve`. The stop
+  rule's remedy, double-symbol Huffman tables, targets the 19% pass;
+  the walk is where the time is, and it wants the huff8 treatment (8
+  unclamped `FastReader`s in a loop unrolled by 8, `safe_refills`
+  bound, clamped tail) before Task 9 -- not implemented here.
