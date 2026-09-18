@@ -87,10 +87,12 @@ Beats liblz4 on 10 of 12 files; trails on nci and webster by 2-3%.
 | Codec | Decode GB/s | % of memcpy wall | Ratio |
 | :--- | ---: | ---: | ---: |
 | memcpy | 39.9 | 100 | - |
-| **Alatirok v6 (NEON)** | **5.32** | **13** | **2.192** |
+| **Alatirok v6 (NEON)** | **6.68** | **17** | **2.192** |
 | liblz4 (same run) | 4.36 | 11 | 2.101 |
 
-Beats liblz4 on 12 of 12 files (+22% total). `src/neon_decompress.rs` is a
+Beats liblz4 on 12 of 12 files (+53% total). The measured wall for this
+format on this chip is ~12.5 GB/s (one dependent 32-byte copy per token on
+the serial output pointer); see `examples/floor.rs` and the changelog. `src/neon_decompress.rs` is a
 lane-for-lane port of the AVX2 decoder; the finder is still scalar on arm64
 (comp 0.27 GB/s).
 

@@ -82,3 +82,7 @@ path = "examples/token_stats.rs"
 [[example]]
 name = "prepass_bench"
 path = "examples/prepass_bench.rs"
+
+[[example]]
+name = "floor"
+path = "examples/floor.rs"

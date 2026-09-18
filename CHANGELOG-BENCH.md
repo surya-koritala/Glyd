@@ -347,3 +347,46 @@ Ratio 2.192, comp 0.27 GB/s (scalar finder, no NEON prefix compare yet).
 memcpy ceiling here is 39.9 GB/s; we are at 13% of it, liblz4 at 11%.
 25 tests green including the 1M-mutation fuzz. Checksum stays scalar on
 arm64 (not on the raw decode path that the gate measures).
+
+## aarch64: where the floor is, and loop-free escapes (M1 Max)
+New harness `examples/floor.rs`: each Silesia block pre-decoded once into
+flat length arrays, then a ladder of loops each removing one physical cost.
+Silesia, 10.0M tokens, 21.2 bytes/token, one core:
+
+| rung | ns/token | GB/s |
+|---|---:|---:|
+| real decoder (before) | 3.70 | 5.3 |
+| copy loop only, real branches | 2.26 | 8.7 |
+| one unconditional 32-byte copy per run, no branches | 1.57 | 12.5 |
+| same with every offset >= 32 | 1.56 | 12.6 |
+| one 32-byte store per token, no match load | 0.84 | 23.4 |
+| pointer chain only (dst += lit + ml) | 0.69 | 28.6 |
+| memcpy | 0.45 | 44.1 |
+
+Findings. (1) The wall for this format on this chip is ~1.6 ns/token
+(~12.5 GB/s): the serial dst chain plus one dependent load+store per token.
+memcpy (39.9 GB/s) is unreachable at 21 bytes/token; throughput = bytes per
+token / ns per token, and 0.45 ns/token is below the pointer chain.
+(2) Short offsets cost nothing on Silesia (97.8% are >= 32); the
+store->load hazard GOAL3 worried about is 0.1 ns. (3) Each rare copy path
+(lit > 32: 1.9%, offset < 32: 2.2%, ml > 32: 6.6%) costs one mispredict,
+additive: 0.15 + 0.12 + 0.31 ns. Branch-free versions (unconditional extra
+copies) cost more than they save. (4) The escape patch loop was 1.07 of
+the 1.3 ns pre-pass: not its branches (a branchless select variant was
+0.96) but the loop itself. The mask walk alone with an empty body costs
+0.64 ns/token: variable trip count -> exit mispredict every chunk -> the
+flush exposes the movemask latency chain each time.
+
+Change: escapes are expanded without a loop. fields per lane (0..2) ->
+exclusive prefix sum (4 ext+add steps per half) -> vqtbl4q gather from
+the next 64 extras bytes -> u16 blend with the direct lengths. A 255
+continuation in any consumed field sends the chunk to the old scalar loop.
+Pass 1 in isolation: 1.14 -> 0.45 ns/token, bit-exact on all 794 blocks.
+Copy loop: match and literal tails up to 128 bytes are fixed 3x32 stores;
+the loop only runs past that (5% in the harness). Offset < 32 is a cold
+function.
+
+Silesia 1C decomp 5.32 -> 6.68 GB/s vs liblz4 4.36 = 153% (was 122%).
+12/12 files up; osdb 5.3 -> 8.5, ooffice 5.7 -> 7.4, samba 5.3 -> 7.0.
+3.01 ns/token against the 2.2 ns copy loop: ~0.8 ns of pass 1 left.
+25 tests green including the 1M-mutation fuzz.

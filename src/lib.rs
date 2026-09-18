@@ -359,7 +359,7 @@ unsafe fn decode_block(
         };
         neon_decompress::decompress_neon(
             tokens, token_count, offsets, offsets_len, extras, extras_len,
-            literals, dst, buffer_start, uncomp_len, table, esc,
+            payload.len() - (c - extras_len), literals, dst, buffer_start, uncomp_len, table, esc,
         )?;
         return Ok(());
     }
