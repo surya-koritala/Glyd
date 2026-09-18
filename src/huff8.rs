@@ -2,7 +2,7 @@
 //! sub-stream i % 8, LSB-first with bit-reversed canonical codes, so the
 //! decoder's table is indexed by the next `TB` bits directly. Measured on
 //! the M1 Max: 0.61 ns/symbol (tests/v7_codecs.rs, huff8_speed_silesia).
-use crate::bits::{split_streams, write_streams, BitReader, FastReader, MAX_PUT};
+use crate::bits::{split_streams, write_streams, BitReader, MAX_PUT, PAD};
 use crate::huffman::{build_codes, build_lengths, MAX_CODE_LEN};
 
 pub use crate::bits::STREAMS;
@@ -124,59 +124,68 @@ pub fn encode(data: &[u8], lengths: &[u8; 256]) -> Vec<Vec<u8>> {
     split_streams(&section)
 }
 
-struct St<'a> {
-    r: BitReader<'a>,
-}
-
+/// One symbol from a clamped reader (the tail).
 #[inline(always)]
-fn sym(s: &mut St<'_>, t: &[u16]) -> u8 {
+fn sym(r: &mut BitReader<'_>, t: &[u16]) -> u8 {
     // SAFETY: peek(TB) masks to < 1 << TB == t.len() (Table::build allocates
     // exactly `1 << TB` entries), so the index is always in bounds.
-    let e = unsafe { *t.get_unchecked(s.r.peek(TB) as usize) };
-    s.r.consume((e >> 8) as u32);
+    let e = unsafe { *t.get_unchecked(r.peek(TB) as usize) };
+    r.consume((e >> 8) as u32);
     e as u8
 }
 
-/// Same as `sym`, for the unclamped hot-loop reader.
-#[inline(always)]
-fn fast_sym(s: &mut FastReader, t: &[u16]) -> u8 {
-    // SAFETY: peek(TB) masks to < 1 << TB == t.len() (Table::build allocates
-    // exactly `1 << TB` entries), so the index is always in bounds.
-    let e = unsafe { *t.get_unchecked(s.peek(TB) as usize) };
-    s.consume((e >> 8) as u32);
-    e as u8
-}
+/// 4 symbols/stream per batch: 4 * TB = 44 bits, from one 8-byte load
+/// shifted by a sub-byte position (>= 57 valid bits).
+const PER_ITER: usize = 4 * STREAMS;
+/// Bytes a batch can advance a stream's load address: ceil(44 / 8).
+const BATCH_BYTES: usize = (4 * TB as usize).div_ceil(8);
+const _: () = assert!(4 * TB <= 57);
 
-const PER_ITER: usize = 4 * STREAMS; // 4 symbols per stream per refill: 4 * 11 <= 56
+/// Batches the fast loop can take on one stream before a load might
+/// start past `last` (the next load is at `at`, each later one at most
+/// BATCH_BYTES further).
+#[inline(always)]
+fn safe_batches(at: usize, last: usize) -> usize {
+    if at > last {
+        0
+    } else {
+        (last - at) / BATCH_BYTES + 1
+    }
+}
 
 /// Decode `n` symbols into `out[..n]`. Err if any sub-stream overran.
 ///
-/// Hot loop runs on `FastReader`: 3 live values per stream (as in
-/// examples/huff_spike.rs), no clamp and no accounting, so 8 of them fit
-/// in registers instead of spilling `BitReader`'s 6 fields/stream to the
-/// stack. `safe_refills` proves, from each stream's remaining real bytes,
-/// how many refills can run before its reader might need the clamp; the
-/// outer loop takes the minimum across streams (and caps at whole
-/// PER_ITER batches of the symbols still wanted) and re-evaluates every
-/// pass, so streams with short codes (whose pointer creeps forward slowly)
-/// just cost more, cheap passes instead of one big one. Whatever is left
-/// once some stream runs low on margin -- normally under one PER_ITER
-/// batch, but can be more if one stream is short -- goes through the
-/// original clamped, accounted, per-symbol path, which is also what makes
-/// `overrun` exact for corrupt/truncated streams.
+/// The hot loop runs on absolute bit addresses (`ptr * 8 + bit`), one per
+/// stream, with a window of bits loaded from it per batch of four
+/// symbols -- 2 live values per stream, so the 8 streams stay in
+/// registers (a `FastReader` is 3, and those spilled); a symbol is one
+/// `and` for the index, the table load, a shift of the window by the
+/// code length, an add of it to the position, and the byte store.
+/// `safe_batches` proves, from each stream's remaining real bytes, how
+/// many batches can run before a load might leave the stream; the outer
+/// loop takes the minimum across streams (and caps at whole batches of
+/// the symbols still wanted) and re-evaluates every pass, so streams with
+/// short codes (whose address creeps forward slowly) just cost more,
+/// cheap passes instead of one big one. Whatever is left once some stream
+/// runs low on margin -- normally under one batch, more if one stream is
+/// short -- goes through the clamped, accounted `BitReader`s started at
+/// the positions the fast loop reached (`BitReader::new_at`), which is
+/// also what makes `overrun` exact for corrupt/truncated streams.
 pub fn decode<'b>(table: &Table, streams: &[&'b [u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
     assert!(out.len() >= n);
     let t = table.entries.as_slice();
-    let mut st: [St<'b>; STREAMS] = std::array::from_fn(|k| St { r: BitReader::new(streams[k]) });
-    let lasts: [*const u8; STREAMS] = std::array::from_fn(|k| st[k].r.last());
-    let mut fast: [FastReader; STREAMS] = std::array::from_fn(|k| st[k].r.to_fast());
+    for s in streams {
+        assert!(s.len() >= PAD, "stream shorter than its padding");
+    }
+    let mut b: [usize; STREAMS] = std::array::from_fn(|k| streams[k].as_ptr() as usize * 8);
+    let lasts: [usize; STREAMS] = std::array::from_fn(|k| streams[k].as_ptr() as usize + streams[k].len() - PAD);
 
     let mut o = 0usize;
     let mut remaining = n;
     loop {
         let mut iters = remaining / PER_ITER;
         for k in 0..STREAMS {
-            iters = iters.min(fast[k].safe_refills(lasts[k]));
+            iters = iters.min(safe_batches(b[k] >> 3, lasts[k]));
         }
         if iters == 0 {
             break;
@@ -184,35 +193,67 @@ pub fn decode<'b>(table: &Table, streams: &[&'b [u8]; STREAMS], n: usize, out: &
         for _ in 0..iters {
             // One bounds check per batch, not one per symbol.
             let batch: &mut [u8; PER_ITER] = (&mut out[o..o + PER_ITER]).try_into().unwrap();
+            let mut w = [0u64; STREAMS];
             for k in 0..STREAMS {
-                // SAFETY: `iters` <= every stream's safe_refills(lasts[k]),
-                // proving this refill's starting p is <= lasts[k].
-                unsafe {
-                    fast[k].refill();
-                }
+                // SAFETY: `iters` <= every stream's safe_batches at the
+                // start of this run and each batch advances a load address
+                // by at most BATCH_BYTES, so this load starts at or before
+                // lasts[k]: its 8 bytes are inside stream k.
+                w[k] = unsafe { std::ptr::read_unaligned((b[k] >> 3) as *const u64) } >> (b[k] & 7);
             }
-            for j in 0..4 {
-                for k in 0..STREAMS {
-                    batch[j * STREAMS + k] = fast_sym(&mut fast[k], t);
-                }
+            // The 32 symbols written out; `$consume` shifts the window past
+            // the symbol, and the last row has nothing left to read from it.
+            macro_rules! sym {
+                ($j:literal, $k:literal, $len:ident, $consume:block) => {{
+                    // SAFETY: the index is masked to < 1 << TB == t.len().
+                    let e = unsafe { *t.get_unchecked(w[$k] as usize & ((1 << TB) - 1)) };
+                    let $len = (e >> 8) as u32;
+                    $consume
+                    b[$k] += $len as usize;
+                    batch[$j * STREAMS + $k] = e as u8;
+                }};
             }
+            macro_rules! row {
+                ($j:literal, shift) => {
+                    sym!($j, 0, n, { w[0] >>= n });
+                    sym!($j, 1, n, { w[1] >>= n });
+                    sym!($j, 2, n, { w[2] >>= n });
+                    sym!($j, 3, n, { w[3] >>= n });
+                    sym!($j, 4, n, { w[4] >>= n });
+                    sym!($j, 5, n, { w[5] >>= n });
+                    sym!($j, 6, n, { w[6] >>= n });
+                    sym!($j, 7, n, { w[7] >>= n });
+                };
+                ($j:literal, last) => {
+                    sym!($j, 0, n, {});
+                    sym!($j, 1, n, {});
+                    sym!($j, 2, n, {});
+                    sym!($j, 3, n, {});
+                    sym!($j, 4, n, {});
+                    sym!($j, 5, n, {});
+                    sym!($j, 6, n, {});
+                    sym!($j, 7, n, {});
+                };
+            }
+            row!(0, shift);
+            row!(1, shift);
+            row!(2, shift);
+            row!(3, last);
             o += PER_ITER;
         }
         remaining -= PER_ITER * iters;
     }
 
-    for (k, f) in fast.into_iter().enumerate() {
-        st[k].r.resume(f);
-    }
+    let mut rs: [BitReader; STREAMS] = std::array::from_fn(|k| BitReader::new_at(streams[k], b[k] - streams[k].as_ptr() as usize * 8));
 
     // Tail: fewer than PER_ITER symbols left, or some stream ran low on
-    // safe margin early. Either way, back to the clamped per-symbol path.
+    // safe margin early. Either way, the clamped per-symbol path.
     for i in o..n {
         let k = i % STREAMS;
-        st[k].r.refill();
-        out[i] = sym(&mut st[k], t);
+        rs[k].refill();
+        out[i] = sym(&mut rs[k], t);
     }
-    if st.iter().any(|s| s.r.overrun()) {
+    if rs.iter().any(|r| r.overrun()) {
         return Err(());
     }
     Ok(())

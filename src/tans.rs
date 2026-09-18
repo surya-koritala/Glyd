@@ -438,9 +438,11 @@ pub fn decode8_rows(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, row: 
             }
             // Written out: the 32 symbols as straight-line code (a `for j`
             // over the four rows kept a counter, which was the register
-            // that tipped two positions onto the stack).
+            // that tipped two positions onto the stack). `$consume` shifts
+            // the window past the symbol; the last row has nothing left
+            // to read from it.
             macro_rules! sym {
-                ($j:literal, $k:literal) => {{
+                ($j:literal, $k:literal, $nbits:ident, $consume:block) => {{
                     // SAFETY: st[k] < L because base + bits < L for a valid
                     // table and st[k] is initialised masked to < L (this
                     // holds inductively regardless of which bits a
@@ -448,30 +450,40 @@ pub fn decode8_rows(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, row: 
                     // base + (2^nbits - 1) < L are properties of the table
                     // alone, so base + bits < L for any bits < 2^nbits).
                     let d = unsafe { *e.get_unchecked(st[$k] as usize) };
-                    let nbits = unpack_nbits(d);
+                    let $nbits = unpack_nbits(d);
                     let bits = w[$k] as u32 & unpack_mask(d);
-                    w[$k] >>= nbits;
-                    b[$k] += nbits as usize;
+                    $consume
+                    b[$k] += $nbits as usize;
                     st[$k] = unpack_base(d) + bits;
                     unsafe { *rows[$j].add($k) = unpack_sym(d) };
                 }};
             }
             macro_rules! row {
-                ($j:literal) => {
-                    sym!($j, 0);
-                    sym!($j, 1);
-                    sym!($j, 2);
-                    sym!($j, 3);
-                    sym!($j, 4);
-                    sym!($j, 5);
-                    sym!($j, 6);
-                    sym!($j, 7);
+                ($j:literal, shift) => {
+                    sym!($j, 0, n, { w[0] >>= n });
+                    sym!($j, 1, n, { w[1] >>= n });
+                    sym!($j, 2, n, { w[2] >>= n });
+                    sym!($j, 3, n, { w[3] >>= n });
+                    sym!($j, 4, n, { w[4] >>= n });
+                    sym!($j, 5, n, { w[5] >>= n });
+                    sym!($j, 6, n, { w[6] >>= n });
+                    sym!($j, 7, n, { w[7] >>= n });
+                };
+                ($j:literal, last) => {
+                    sym!($j, 0, n, {});
+                    sym!($j, 1, n, {});
+                    sym!($j, 2, n, {});
+                    sym!($j, 3, n, {});
+                    sym!($j, 4, n, {});
+                    sym!($j, 5, n, {});
+                    sym!($j, 6, n, {});
+                    sym!($j, 7, n, {});
                 };
             }
-            row!(0);
-            row!(1);
-            row!(2);
-            row!(3);
+            row!(0, shift);
+            row!(1, shift);
+            row!(2, shift);
+            row!(3, last);
             o += PER_ITER;
         }
         remaining -= PER_ITER * iters;
