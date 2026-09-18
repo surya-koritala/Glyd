@@ -78,7 +78,7 @@ impl BitReader {
         unsafe {
             let p = if self.p > self.last { self.last } else { self.p };
             self.bits |= std::ptr::read_unaligned(p as *const u64) << self.cnt;
-            self.p = self.p.add(((63 - self.cnt) >> 3) as usize);
+            self.p = p.add(((63 - self.cnt) >> 3) as usize);
             self.cnt |= 56;
         }
     }
