@@ -62,3 +62,7 @@ path = "examples/quick3.rs"
 [[example]]
 name = "repeat_offset_stats"
 path = "examples/repeat_offset_stats.rs"
+
+[[example]]
+name = "entropy_probe"
+path = "examples/entropy_probe.rs"
