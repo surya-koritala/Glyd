@@ -585,3 +585,31 @@ min 7 -> 8 cut tokens 18% and bought 18%.
   short codes make the pointer creep forward slowly and `safe_refills`'
   worst-case-7-bytes assumption undershoots badly there -- passes, just
   costs more (small) outer passes instead of one big one, as intended.
+- tANS: `tans::encode8`/`decode8`, 8-stream interleaved tANS over the same
+  `bits::BitReader`/`FastReader` split as Huffman above. `encode8` splits
+  symbol i to sub-stream i % 8 across 8 independent `Encoder`s (unchanged
+  from Task 3). `decode8` is `huff8::decode`'s exact structure ported to
+  tANS: clamped `BitReader`s read each stream's initial TL-bit state and
+  handle the tail, unclamped `FastReader`s run the hot loop 4 symbols/
+  stream per refill (4 * TL = 40 <= 56), `safe_refills` bounds how many
+  batches run before any stream might need the clamp. First cut, with
+  Task 3's 4-byte `DecodeEntry { sym: u8, nbits: u8, base: u16 }` struct:
+  14M symbols (36-symbol alphabet, skewed), best of 5, `target-cpu=native`:
+  **0.873 ns/symbol**, over the 0.6 gate. `size_of::<DecodeEntry>()` is
+  already 4 (no padding -- the three fields pack exactly into a `u16` +
+  two `u8`s; the brief's 6-byte guess didn't hold here), so the fix isn't
+  removing padding but removing the struct itself: packed the same three
+  fields into a `u32` (`sym | nbits << 8 | base << 16`) and switched
+  `DecodeTable`'s storage from `Vec<DecodeEntry>` to `Vec<u32>`. Result:
+  **0.738 ns/symbol**, ~15% faster, still over the 0.6 gate -- the same
+  shortfall shape as huff8's first cut (1.06) before its two
+  register-pressure rounds. Unlike Huffman's fixed `peek(TB)` table key,
+  tANS's key is `st[k]`, a per-stream state threaded from one decoded
+  symbol's `base + bits` to the next lookup: that's a 4th live value per
+  stream on top of `FastReader`'s 3, and the likely next place to look if
+  this needs closing further (not attempted here; out of this task's
+  scope). Roundtrip tests (n = 0, 1, and non-multiples of 8) and
+  `tans8_streams_of_different_lengths` (one sub-stream all rare/long-code
+  symbols, the other seven all common/short-code, exercising the outer
+  loop's per-stream `safe_refills` minimum when streams end up very
+  different lengths) pass.

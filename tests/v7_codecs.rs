@@ -273,3 +273,75 @@ fn tans_rejects_bad_counts() {
     assert!(tans::DecodeTable::build(&[512, 511]).is_none()); // sums to 1023
     assert!(tans::DecodeTable::build(&vec![16u16; 65]).is_none()); // too many symbols
 }
+
+#[test]
+fn tans8_roundtrip() {
+    for n in [0usize, 1, 5, 8, 9, 64, 65, 12_345] {
+        let data = skewed_codes(n, 36, 11);
+        let mut hist = vec![0u32; 36];
+        for &s in &data { hist[s as usize] += 1; }
+        if n == 0 { hist[0] = 1; }
+        let counts = tans::normalize(&hist, 36);
+        let et = tans::EncodeTable::build(&counts).unwrap();
+        let dt = tans::DecodeTable::build(&counts).unwrap();
+        let streams = tans::encode8(&data, &et);
+        let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+        let mut out = vec![0u8; n];
+        tans::decode8(&dt, &refs, n, &mut out).unwrap();
+        assert_eq!(out, data, "n={}", n);
+    }
+}
+
+/// Streams of different lengths: symbols at i % 8 == 0 are always a rare
+/// symbol (long code, few bytes consumed per symbol) and the rest are the
+/// common symbol (short code), so the 8 sub-streams end up with very
+/// different byte lengths. Exercises `safe_refills` picking a low common
+/// `iters` across streams whose pointers creep at different rates.
+#[test]
+fn tans8_streams_of_different_lengths() {
+    let n = 20_000usize;
+    let nsym = 36usize;
+    let data: Vec<u8> = (0..n).map(|i| if i % 8 == 0 { (nsym - 1) as u8 } else { 0u8 }).collect();
+    let mut hist = vec![0u32; nsym];
+    for &s in &data { hist[s as usize] += 1; }
+    let counts = tans::normalize(&hist, nsym);
+    let et = tans::EncodeTable::build(&counts).unwrap();
+    let dt = tans::DecodeTable::build(&counts).unwrap();
+    let streams = tans::encode8(&data, &et);
+    let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+    let mut out = vec![0u8; n];
+    tans::decode8(&dt, &refs, n, &mut out).unwrap();
+    assert_eq!(out, data);
+}
+
+/// Ignored perf check, not part of the pristine test run. Generates 14M
+/// skewed symbols, encodes with `encode8`, times `decode8` best of 5. Run
+/// with:
+///   RUSTFLAGS="-C target-cpu=native" cargo test --release --test v7_codecs tans8_speed -- --ignored --nocapture
+#[test]
+#[ignore]
+fn tans8_speed() {
+    use std::time::Instant;
+
+    let n = 14_000_000usize;
+    let nsym = 36usize;
+    let data = skewed_codes(n, nsym, 42);
+    let mut hist = vec![0u32; nsym];
+    for &s in &data { hist[s as usize] += 1; }
+    let counts = tans::normalize(&hist, nsym);
+    let et = tans::EncodeTable::build(&counts).unwrap();
+    let dt = tans::DecodeTable::build(&counts).unwrap();
+    let streams = tans::encode8(&data, &et);
+    let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+
+    let mut out = vec![0u8; n];
+    let mut best = f64::MAX;
+    for _ in 0..5 {
+        let t = Instant::now();
+        tans::decode8(&dt, &refs, n, &mut out).unwrap();
+        best = best.min(t.elapsed().as_secs_f64());
+    }
+    assert_eq!(out, data);
+    let ns_per_symbol = best * 1e9 / n as f64;
+    println!("tans8_speed: {} symbols, {:.3} ns/symbol", n, ns_per_symbol);
+}

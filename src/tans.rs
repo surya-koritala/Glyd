@@ -3,7 +3,7 @@
 //! the initial state (TL bits), then per symbol the table's `nbits` bits.
 //! The encoder therefore processes symbols last-to-first and emits the
 //! chunks in reverse, so no bit-reversal is needed anywhere.
-use crate::bits::{BitReader, BitWriter};
+use crate::bits::{BitReader, BitWriter, FastReader};
 
 pub const TL: u32 = 10;
 pub const L: usize = 1 << TL;
@@ -71,15 +71,35 @@ fn highbit(x: u32) -> u32 {
     31 - x.leading_zeros()
 }
 
-#[derive(Clone, Copy)]
-pub struct DecodeEntry {
-    pub sym: u8,
-    pub nbits: u8,
-    pub base: u16,
+/// Decode-table entry packed into a `u32`: `sym | nbits << 8 | base << 16`.
+/// A plain scalar measured faster than an equivalent 4-byte
+/// `{sym: u8, nbits: u8, base: u16}` struct in the 8-stream hot loop
+/// (tans8_speed: 0.873 -> see CHANGELOG-BENCH.md) -- one less live value's
+/// worth of register pressure per stream across 8 unrolled streams, even
+/// though both are 4 bytes; `base` is < L <= 1024 so it fits in the top 16
+/// bits with no truncation.
+#[inline(always)]
+fn pack(sym: u8, nbits: u8, base: u16) -> u32 {
+    sym as u32 | (nbits as u32) << 8 | (base as u32) << 16
+}
+
+#[inline(always)]
+fn unpack_nbits(e: u32) -> u32 {
+    (e >> 8) & 0xFF
+}
+
+#[inline(always)]
+fn unpack_base(e: u32) -> u32 {
+    e >> 16
+}
+
+#[inline(always)]
+fn unpack_sym(e: u32) -> u8 {
+    e as u8
 }
 
 pub struct DecodeTable {
-    pub entries: Vec<DecodeEntry>,
+    entries: Vec<u32>,
 }
 
 impl DecodeTable {
@@ -89,13 +109,14 @@ impl DecodeTable {
         }
         let sp = spread(counts);
         let mut next: Vec<u32> = counts.iter().map(|&c| c as u32).collect();
-        let mut entries = vec![DecodeEntry { sym: 0, nbits: 0, base: 0 }; L];
+        let mut entries = vec![0u32; L];
         for i in 0..L {
             let s = sp[i] as usize;
             let x = next[s];
             next[s] += 1;
             let nbits = TL - highbit(x);
-            entries[i] = DecodeEntry { sym: s as u8, nbits: nbits as u8, base: ((x << nbits) - L as u32) as u16 };
+            let base = (x << nbits) - L as u32;
+            entries[i] = pack(s as u8, nbits as u8, base as u16);
         }
         Some(DecodeTable { entries })
     }
@@ -182,7 +203,7 @@ impl<'a> Encoder<'a> {
 }
 
 pub struct Decoder<'a> {
-    t: &'a [DecodeEntry],
+    t: &'a [u32],
     r: BitReader<'a>,
     state: u32,
 }
@@ -197,12 +218,111 @@ impl<'a> Decoder<'a> {
     pub fn next(&mut self) -> u8 {
         let e = self.t[self.state as usize];
         self.r.refill();
-        let bits = self.r.peek(e.nbits as u32) as u32;
-        self.r.consume(e.nbits as u32);
-        self.state = e.base as u32 + bits;
-        e.sym
+        let nbits = unpack_nbits(e);
+        let bits = self.r.peek(nbits) as u32;
+        self.r.consume(nbits);
+        self.state = unpack_base(e) + bits;
+        unpack_sym(e)
     }
     pub fn overrun(&self) -> bool {
         self.r.overrun()
     }
+}
+
+pub const STREAMS: usize = 8;
+/// 4 symbols/stream per refill: 4 * TL = 40 bits <= the 56-bit refill
+/// guarantee (nbits <= TL for every table entry, see `DecodeTable::build`).
+const PER_ITER: usize = 4 * STREAMS;
+
+pub fn encode8(syms: &[u8], t: &EncodeTable) -> Vec<Vec<u8>> {
+    let mut encs: Vec<Encoder> = (0..STREAMS).map(|_| Encoder::new(t)).collect();
+    for (i, &s) in syms.iter().enumerate() {
+        encs[i % STREAMS].push(s);
+    }
+    encs.into_iter().map(|e| e.finish()).collect()
+}
+
+/// Decode `n` symbols from 8 interleaved tANS streams (symbol i in stream
+/// i % STREAMS). Structured exactly like `huff8::decode`: a clamped,
+/// accounted `BitReader` carries 6 fields/stream, which spills registers
+/// across 8 unrolled streams, so the hot loop runs on `FastReader` (3
+/// fields/stream, unclamped and unaccounted) instead. `safe_refills` proves,
+/// from each stream's remaining real bytes, how many `PER_ITER`-symbol
+/// batches can run before that stream's reader might need the clamp; the
+/// outer loop takes the minimum across streams and re-evaluates every pass.
+/// Whatever is left once some stream runs low on margin -- normally under
+/// one `PER_ITER` batch, but can be more if one stream is short -- goes
+/// through the clamped, accounted, per-symbol path, which is also what
+/// makes `overrun` exact for corrupt/truncated streams.
+pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
+    assert!(out.len() >= n);
+    let e = t.entries.as_slice();
+    let mut rs: [BitReader; STREAMS] = std::array::from_fn(|k| BitReader::new(streams[k]));
+    let mut st = [0u32; STREAMS];
+    for k in 0..STREAMS {
+        st[k] = rs[k].get(TL) as u32;
+    }
+    let lasts: [*const u8; STREAMS] = std::array::from_fn(|k| rs[k].last());
+    let mut fast: [FastReader; STREAMS] = std::array::from_fn(|k| rs[k].to_fast());
+
+    let mut o = 0usize;
+    let mut remaining = n;
+    loop {
+        let mut iters = remaining / PER_ITER;
+        for k in 0..STREAMS {
+            iters = iters.min(fast[k].safe_refills(lasts[k]));
+        }
+        if iters == 0 {
+            break;
+        }
+        for _ in 0..iters {
+            for k in 0..STREAMS {
+                // SAFETY: `iters` <= every stream's safe_refills(lasts[k]),
+                // proving this refill's starting p is <= lasts[k].
+                unsafe {
+                    fast[k].refill();
+                }
+            }
+            for j in 0..4 {
+                for k in 0..STREAMS {
+                    // SAFETY: st[k] < L because base + bits < L for a valid
+                    // table and st[k] is initialised from get(TL), which is
+                    // < L (this holds inductively regardless of which bits
+                    // a corrupt/overrun stream produces: nbits <= TL and
+                    // base + (2^nbits - 1) < L are properties of the table
+                    // alone, so base + bits < L for any bits < 2^nbits).
+                    let d = unsafe { *e.get_unchecked(st[k] as usize) };
+                    let nbits = unpack_nbits(d);
+                    let bits = fast[k].peek(nbits) as u32;
+                    fast[k].consume(nbits);
+                    st[k] = unpack_base(d) + bits;
+                    out[o + j * STREAMS + k] = unpack_sym(d);
+                }
+            }
+            o += PER_ITER;
+        }
+        remaining -= PER_ITER * iters;
+    }
+
+    for (k, f) in fast.into_iter().enumerate() {
+        rs[k].resume(f);
+    }
+
+    // Tail: fewer than PER_ITER symbols left, or some stream ran low on
+    // safe margin early. Back to the clamped per-symbol path, in stream
+    // order i % STREAMS -- also what makes `overrun` below exact.
+    for i in o..n {
+        let k = i % STREAMS;
+        let d = e[st[k] as usize];
+        rs[k].refill();
+        let nbits = unpack_nbits(d);
+        let bits = rs[k].peek(nbits) as u32;
+        rs[k].consume(nbits);
+        st[k] = unpack_base(d) + bits;
+        out[i] = unpack_sym(d);
+    }
+    if rs.iter().any(|r| r.overrun()) {
+        return Err(());
+    }
+    Ok(())
 }
