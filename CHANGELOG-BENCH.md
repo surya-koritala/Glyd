@@ -293,3 +293,14 @@ shows the pre-pass alone costs 8.8 ms (3.4 cycles/token).
           5.60 / 5.59 / 5.61 same run = 90.2 / 89.8 / 89.8% (was 71.6%)
 Per file we now beat liblz4 on decode on ooffice, osdb and (raw) x-ray, tie
 reymont, and trail by 4-33% elsewhere (mr, sao, nci worst).
+
+## Continuation escapes decoded inside the chunk: decode 97% of liblz4
+A 255 escape byte (literal run >= 262, match >= 275) used to reject the whole
+32-token chunk to the careful path, which hurt long-match files most (nci
+77%, mr 68% of liblz4). The fixup loop now reads the u16 continuation inline;
+the branch is rare on most data and predictable where it is common.
+  quick3: ratio 2.27262 | comp 0.412-0.422 | decomp 5.50 / 5.47 / 5.45 vs
+          liblz4 5.65 / 5.63 / 5.60 same run = 97.4 / 97.1 / 97.2% (was 90%)
+Per file vs liblz4 decode: beat it on mozilla, ooffice, osdb, reymont, sao,
+xml, x-ray (7 of 12); trail on dickens 94%, mr 98%, nci 93%, samba 95%,
+webster 86%.

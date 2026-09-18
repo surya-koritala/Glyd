@@ -120,50 +120,45 @@ pub unsafe fn decompress_avx2(
             let mut lit_sum = sum8(lit);
             let mut ml_sum = sum8(ml);
 
-            // Patch escaped lanes from the extras stream: one byte per
-            // escaped field, literal first, in token order. A 255 byte means
-            // a u16 continuation, which this path does not take.
+            // Patch escaped lanes from the extras stream, literal field first,
+            // in token order: one byte per field, or 255 plus a u16 for long
+            // runs. The continuation branch is rare on most data and
+            // predictable where it is common (long matches in nci), so it is
+            // taken inline rather than sending the chunk to the careful path;
+            // that alone was worth ~10% on long-match files. Reads are bounded
+            // by a conservative 3-bytes-per-field check up front.
             let mut e = extra_idx;
             if esc_mask != 0 {
-                let need = esc_mask.count_ones() as usize
+                let fields = esc_mask.count_ones() as usize
                     + (lit_esc_mask & m_esc_mask).count_ones() as usize;
-                if e + need > extras_len {
+                if e + 3 * fields > extras_len {
                     careful = CHUNK - 1;
                     break 'chunk;
                 }
-                // Branch-free per escaped token: which field(s) escaped is
-                // ~50/50 and unpredictable, so both lanes are selected
-                // arithmetically and stored unconditionally. (With `if`s here
-                // the mispredicts cost as much as the old per-token branch.)
                 let mut bits = esc_mask;
-                let mut cont = 0usize;
                 while bits != 0 {
                     let i = bits.trailing_zeros() as usize;
                     bits &= bits - 1;
-                    let l = ((lit_esc_mask >> i) & 1) as usize;
-                    let m = ((m_esc_mask >> i) & 1) as usize;
-                    let b1 = *extras.add(e) as usize;
-                    let b2 = *extras.add(e + l) as usize;
-                    cont |= (l & (b1 == ESCAPE_CONT as usize) as usize)
-                        | (m & (b2 == ESCAPE_CONT as usize) as usize);
-                    // Literal lane: current value, or base + byte when escaped
-                    // (a token whose match escaped keeps its own literal count).
-                    let cur_l = *litl.get_unchecked(i) as usize;
-                    let lm = l.wrapping_neg();
-                    let nl = (cur_l & !lm) | ((ESCAPE_BASE_LIT + b1) & lm);
-                    lit_sum += b1 * l;
-                    *litl.get_unchecked_mut(i) = nl as u16;
-                    // Match lane: current value, or base + byte when escaped.
-                    let cur = *mll.get_unchecked(i) as usize;
-                    let mm = m.wrapping_neg();
-                    let nm = (cur & !mm) | ((esc_base_match + b2) & mm);
-                    ml_sum += b2 * m;
-                    *mll.get_unchecked_mut(i) = nm as u16;
-                    e += l + m;
-                }
-                if cont != 0 {
-                    careful = CHUNK - 1;
-                    break 'chunk;
+                    if (lit_esc_mask >> i) & 1 != 0 {
+                        let mut v = *extras.add(e) as usize;
+                        e += 1;
+                        if v == ESCAPE_CONT as usize {
+                            v += std::ptr::read_unaligned(extras.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
+                        lit_sum += v;
+                        *litl.get_unchecked_mut(i) = (ESCAPE_BASE_LIT + v) as u16;
+                    }
+                    if (m_esc_mask >> i) & 1 != 0 {
+                        let mut v = *extras.add(e) as usize;
+                        e += 1;
+                        if v == ESCAPE_CONT as usize {
+                            v += std::ptr::read_unaligned(extras.add(e) as *const u16) as usize;
+                            e += 2;
+                        }
+                        ml_sum += v;
+                        *mll.get_unchecked_mut(i) = (esc_base_match + v) as u16;
+                    }
                 }
             }
 
