@@ -2,12 +2,14 @@
 //! sub-stream i % 8, LSB-first with bit-reversed canonical codes, so the
 //! decoder's table is indexed by the next `TB` bits directly. Measured on
 //! the M1 Max: 0.61 ns/symbol (tests/v7_codecs.rs, huff8_speed_silesia).
-use crate::bits::{split_streams, write_streams, BitReader, FastReader};
+use crate::bits::{split_streams, write_streams, BitReader, FastReader, MAX_PUT};
 use crate::huffman::{build_codes, build_lengths, MAX_CODE_LEN};
 
 pub use crate::bits::STREAMS;
 pub const TB: u32 = MAX_CODE_LEN;
 pub const TABLE_BYTES: usize = 128;
+/// `encode_into` concatenates four codes per put.
+const _: () = assert!(4 * TB <= MAX_PUT);
 
 fn reverse_bits(code: u16, len: u8) -> u16 {
     let mut r = 0u16;
@@ -87,13 +89,16 @@ pub fn encode_into(data: &[u8], lengths: &[u8; 256], out: &mut Vec<u8>) {
     let codes = build_codes(lengths);
     let rev: [u32; 256] = std::array::from_fn(|s| reverse_bits(codes[s], lengths[s]) as u32);
     let len: [u32; 256] = std::array::from_fn(|s| lengths[s] as u32);
-    debug_assert!(data.iter().all(|&b| lengths[b as usize] > 0), "symbol without a code");
+    debug_assert!(data.iter().all(|&b| (1..=TB as u8).contains(&lengths[b as usize])), "symbol without a code, or one longer than TB");
     let max_bits = data.len().div_ceil(STREAMS) * TB as usize;
     write_streams(out, max_bits, |k, w| {
         let s = &data[k.min(data.len())..];
         let mut i = 0;
         // SAFETY: at most ceil(len / 8) symbols of at most TB bits each go
         // into this stream, the `max_bits` the section was reserved for.
+        // No length exceeds TB: `build_codes` above indexes its
+        // `[_; MAX_CODE_LEN + 1]` count table by every length, so a
+        // longer one has already panicked there.
         unsafe {
             while i + 3 * STREAMS < s.len() {
                 let (a, b, c, d) = (s[i] as usize, s[i + STREAMS] as usize, s[i + 2 * STREAMS] as usize, s[i + 3 * STREAMS] as usize);

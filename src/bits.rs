@@ -119,10 +119,12 @@ impl BitWriter {
     }
 
     /// Append the low `nbits` (0..=`MAX_PUT`) of `value`, least
-    /// significant first.
+    /// significant first. Panics above `MAX_PUT`: this is the safe entry
+    /// point to a raw cursor whose reservation is sized for one put, so
+    /// the contract is checked in release too (it is not a hot path).
     #[inline(always)]
     pub fn put(&mut self, value: u64, nbits: u32) {
-        debug_assert!(nbits <= MAX_PUT);
+        assert!(nbits <= MAX_PUT, "put of more than MAX_PUT bits");
         self.out.reserve(16);
         let len = self.out.len();
         // SAFETY: 16 bytes of room past `len`, more than one put's 8-byte

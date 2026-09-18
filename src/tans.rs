@@ -3,11 +3,14 @@
 //! the initial state (TL bits), then per symbol the table's `nbits` bits.
 //! The encoder therefore processes symbols last-to-first and emits the
 //! chunks in reverse, so no bit-reversal is needed anywhere.
-use crate::bits::{split_streams, write_streams, BitReader, BitWriter, FastReader};
+use crate::bits::{split_streams, write_streams, BitReader, BitWriter, FastReader, MAX_PUT};
 
 pub const TL: u32 = 10;
 pub const L: usize = 1 << TL;
 pub const MAX_SYMBOLS: usize = 64;
+/// A chunk packs the state under `nbits << 16`, and `encode8_into`
+/// concatenates four chunks per put.
+const _: () = assert!(TL < 16 && 4 * TL <= MAX_PUT);
 
 /// Scale a histogram to counts summing to L. Present symbols get >= 1.
 pub fn normalize(hist: &[u32], n_symbols: usize) -> Vec<u16> {

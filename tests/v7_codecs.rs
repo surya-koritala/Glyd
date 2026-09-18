@@ -29,6 +29,15 @@ fn bits_reader_clamps_at_end() {
     assert!(r.overrun());
 }
 
+/// The safe writer fronts a raw cursor reserved for one put of at most
+/// MAX_PUT bits: more must panic in release, not write past the reservation.
+#[test]
+#[should_panic(expected = "MAX_PUT")]
+fn bits_writer_rejects_oversized_put() {
+    let mut w = BitWriter::new();
+    w.put(0, simd_stream_codec::bits::MAX_PUT + 1);
+}
+
 use simd_stream_codec::huff8;
 
 fn skewed_bytes(n: usize, seed: u64) -> Vec<u8> {

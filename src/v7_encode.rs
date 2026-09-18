@@ -139,6 +139,7 @@ impl EncScratch {
 
 /// Bits of `extra` per sequence, a `MAX_PUT` put.
 const EXTRA_BITS: u32 = 56;
+const _: () = assert!(EXTRA_BITS <= crate::bits::MAX_PUT);
 
 /// Lengths must be at most `MAX_BLOCK_SIZE` (2^18, as the decoder
 /// enforces per block) and offsets below `MAX_WINDOW`.
