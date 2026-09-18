@@ -350,7 +350,9 @@ pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
     let mut table = new_table();
     finder::init_table(&mut table, input);
     let (mut tokens, mut offsets, mut extras, mut literals) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut seqs = Vec::new();
     let mut prev = v7_encode::Tables::none();
+    let mut scratch = v7_encode::EncScratch::new();
     let mut payload = Vec::new();
     let mut offset = 0;
     while offset < input.len() {
@@ -362,8 +364,8 @@ pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
         literals.clear();
         payload.clear();
         find_block::<Lzav>(input, offset, chunk_len, &mut table, &mut tokens, &mut offsets, &mut extras, &mut literals);
-        let seqs = v7_encode::sequences_from_streams(&tokens, &offsets, &extras, Lzav::MIN_MATCH);
-        v7_encode::encode_block(&seqs, &literals, 0, &mut prev, &mut payload);
+        v7_encode::sequences_from_streams(&tokens, &offsets, &extras, Lzav::MIN_MATCH, &mut seqs);
+        v7_encode::encode_block_with(&seqs, &literals, 0, &mut prev, &mut scratch, &mut payload);
         let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
         if payload.len() + HEADER_SIZE >= chunk_len {
             prev = v7_encode::Tables::none();

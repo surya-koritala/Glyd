@@ -3,11 +3,14 @@
 //! the initial state (TL bits), then per symbol the table's `nbits` bits.
 //! The encoder therefore processes symbols last-to-first and emits the
 //! chunks in reverse, so no bit-reversal is needed anywhere.
-use crate::bits::{BitReader, BitWriter, FastReader};
+use crate::bits::{split_streams, write_streams, BitReader, BitWriter, FastReader, MAX_PUT};
 
 pub const TL: u32 = 10;
 pub const L: usize = 1 << TL;
 pub const MAX_SYMBOLS: usize = 64;
+/// A chunk packs the state under `nbits << 16`, and `encode8_into`
+/// concatenates four chunks per put.
+const _: () = assert!(TL < 16 && 4 * TL <= MAX_PUT);
 
 /// Scale a histogram to counts summing to L. Present symbols get >= 1.
 pub fn normalize(hist: &[u32], n_symbols: usize) -> Vec<u16> {
@@ -125,8 +128,13 @@ impl DecodeTable {
 pub struct EncodeTable {
     /// Indexed by cumulative position; holds the next state (L..2L).
     state_table: Vec<u16>,
-    /// Per symbol: (delta_nbits, delta_find_state).
-    sym: Vec<(u32, i32)>,
+    /// Per symbol: (delta_nbits, delta_find_state as u32, added wrapping).
+    /// 256 entries so a `u8` indexes it with no bounds check; a symbol the
+    /// table does not hold (absent, or past `MAX_SYMBOLS`) sits on the
+    /// `(0, 0)` placeholder, which sends `step` to `state_table[state]`,
+    /// out of bounds and caught by that lookup's check -- the panic a
+    /// zero-count symbol always got (see `v7_encode::close`).
+    sym: [(u32, u32); 256],
 }
 
 impl EncodeTable {
@@ -146,18 +154,17 @@ impl EncodeTable {
             state_table[fill[s] as usize] = (L + i) as u16;
             fill[s] += 1;
         }
-        let mut sym = Vec::with_capacity(counts.len());
+        let mut sym = [(0u32, 0u32); 256];
         for s in 0..counts.len() {
             let c = counts[s] as u32;
             if c == 0 {
-                sym.push((0, 0));
                 continue;
             }
             let max_bits_out = TL - highbit(c);
             let min_state_plus = c << max_bits_out;
             let delta_nbits = (max_bits_out << 16).wrapping_sub(min_state_plus);
-            let delta_find_state = cumul[s] as i32 - c as i32;
-            sym.push((delta_nbits, delta_find_state));
+            let delta_find_state = cumul[s].wrapping_sub(c);
+            sym[s] = (delta_nbits, delta_find_state);
         }
         Some(EncodeTable { state_table, sym })
     }
@@ -178,25 +185,18 @@ impl<'a> Encoder<'a> {
     }
     /// Encode last-to-first, then write the chunks in decode order.
     pub fn finish(self) -> Vec<u8> {
-        let mut chunks: Vec<(u32, u8)> = Vec::with_capacity(self.syms.len());
-        // Initial encoder state: any value in [L, 2L); use the first
-        // symbol's smallest legal state so the decoder's first state is
-        // well defined.
+        let mut chunks: Vec<u32> = Vec::with_capacity(self.syms.len());
         let mut state: u32 = L as u32;
         for &s in self.syms.iter().rev() {
-            let (delta_nbits, delta_find) = self.t.sym[s as usize];
-            let nbits_out = (state.wrapping_add(delta_nbits)) >> 16;
-            let low = state & ((1u32 << nbits_out) - 1);
-            chunks.push((low, nbits_out as u8));
-            let idx = ((state >> nbits_out) as i32 + delta_find) as usize;
-            state = self.t.state_table[idx] as u32;
+            let (c, next) = step(self.t, state, s);
+            chunks.push(c);
+            state = next;
         }
         let mut w = BitWriter::new();
         w.put((state - L as u32) as u64, TL);
-        for &(v, n) in chunks.iter().rev() {
-            if n > 0 {
-                w.put(v as u64, n as u32);
-            }
+        for &c in chunks.iter().rev() {
+            let (v, n) = unpack_chunk(c);
+            w.put(v as u64, n);
         }
         w.finish()
     }
@@ -229,17 +229,89 @@ impl<'a> Decoder<'a> {
     }
 }
 
-pub const STREAMS: usize = 8;
+pub use crate::bits::STREAMS;
 /// 4 symbols/stream per refill: 4 * TL = 40 bits <= the 56-bit refill
 /// guarantee (nbits <= TL for every table entry, see `DecodeTable::build`).
 const PER_ITER: usize = 4 * STREAMS;
 
-pub fn encode8(syms: &[u8], t: &EncodeTable) -> Vec<Vec<u8>> {
-    let mut encs: Vec<Encoder> = (0..STREAMS).map(|_| Encoder::new(t)).collect();
-    for (i, &s) in syms.iter().enumerate() {
-        encs[i % STREAMS].push(s);
+/// One encoder step: the chunk (`state | nbits << 16`: the low `nbits`
+/// of the state are the bits to emit, masked by the reader of the chunk,
+/// where there is slack; nbits <= TL < 16) and the next state.
+#[inline(always)]
+fn step(t: &EncodeTable, state: u32, s: u8) -> (u32, u32) {
+    let (delta_nbits, delta_find) = t.sym[s as usize];
+    let plus = state.wrapping_add(delta_nbits);
+    let nbits = plus >> 16;
+    let idx = (state >> nbits).wrapping_add(delta_find) as usize;
+    (state | (plus & 0xFFFF_0000), t.state_table[idx] as u32)
+}
+
+/// A chunk's bits and their count.
+#[inline(always)]
+fn unpack_chunk(c: u32) -> (u32, u32) {
+    let nbits = c >> 16;
+    (c & !(u32::MAX << nbits), nbits)
+}
+
+/// Append the 8-stream section (size table + padded streams) for `syms`
+/// (symbol i in stream i % 8) to `out`; `chunks` is scratch, grown to
+/// `syms.len()`. Two passes: last-to-first over all symbols with the 8
+/// stream states side by side (independent chains, so they overlap in the
+/// pipeline instead of serialising on one state's table lookup), packing
+/// each symbol's chunk into `chunks[i]`; then per stream, first-to-last,
+/// the initial state and the chunks, four per `put` (4 x TL <= MAX_PUT).
+pub fn encode8_into(syms: &[u8], t: &EncodeTable, chunks: &mut Vec<u32>, out: &mut Vec<u8>) {
+    let n = syms.len();
+    chunks.clear();
+    chunks.resize(n, 0);
+    // Initial encoder state: any value in [L, 2L); use the first symbol's
+    // smallest legal state so the decoder's first state is well defined.
+    let mut st = [L as u32; STREAMS];
+    let full = n & !(STREAMS - 1);
+    for i in (full..n).rev() {
+        let (c, s) = step(t, st[i - full], syms[i]);
+        chunks[i] = c;
+        st[i - full] = s;
     }
-    encs.into_iter().map(|e| e.finish()).collect()
+    for (sg, cg) in syms[..full].chunks_exact(STREAMS).zip(chunks[..full].chunks_exact_mut(STREAMS)).rev() {
+        for k in 0..STREAMS {
+            let (c, s) = step(t, st[k], sg[k]);
+            cg[k] = c;
+            st[k] = s;
+        }
+    }
+    let max_bits = (TL as usize) * (1 + n.div_ceil(STREAMS));
+    write_streams(out, max_bits, |k, w| {
+        let c = &chunks[k.min(n)..];
+        let mut i = 0;
+        // SAFETY: TL bits of state plus at most ceil(n / 8) chunks of at
+        // most TL bits each go into this stream: `max_bits`.
+        unsafe {
+            w.put((st[k] - L as u32) as u64, TL);
+            while i + 3 * STREAMS < c.len() {
+                let (a, na) = unpack_chunk(c[i]);
+                let (b, nb) = unpack_chunk(c[i + STREAMS]);
+                let (d, nd) = unpack_chunk(c[i + 2 * STREAMS]);
+                let (e, ne) = unpack_chunk(c[i + 3 * STREAMS]);
+                let ab = a | b << na;
+                let de = d | e << nd;
+                w.put((ab as u64) | (de as u64) << (na + nb), na + nb + nd + ne);
+                i += 4 * STREAMS;
+            }
+            while i < c.len() {
+                let (a, na) = unpack_chunk(c[i]);
+                w.put(a as u64, na);
+                i += STREAMS;
+            }
+        }
+    });
+}
+
+/// The 8 streams as separate vectors (tests).
+pub fn encode8(syms: &[u8], t: &EncodeTable) -> Vec<Vec<u8>> {
+    let mut section = Vec::new();
+    encode8_into(syms, t, &mut Vec::new(), &mut section);
+    split_streams(&section)
 }
 
 /// Decode `n` symbols from 8 interleaved tANS streams (symbol i in stream

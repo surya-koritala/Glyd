@@ -18,7 +18,7 @@ pub const LENGTHS_BYTES: usize = 128;
 /// any code came out too long. Scaling shortens the tail without disturbing the
 /// common symbols, and converges in a few rounds.
 pub fn build_lengths(hist: &[u64; 256]) -> [u8; 256] {
-    let mut counts: Vec<u64> = hist.to_vec();
+    let mut counts = *hist;
     loop {
         let lengths = huffman_lengths(&counts);
         if lengths.iter().all(|&l| l as u32 <= MAX_CODE_LEN) {
@@ -32,45 +32,100 @@ pub fn build_lengths(hist: &[u64; 256]) -> [u8; 256] {
     }
 }
 
-fn huffman_lengths(counts: &[u64]) -> [u8; 256] {
+/// Plain Huffman over the used symbols, on fixed arrays and in linear
+/// time after one sort (this runs two or three times per block: as a
+/// stable re-sort per merge it was 150 us per block on Silesia, more than
+/// the rest of the literal coder).
+fn huffman_lengths(counts: &[u64; 256]) -> [u8; 256] {
     let mut lengths = [0u8; 256];
-    let used: Vec<usize> = (0..256).filter(|&i| counts[i] > 0).collect();
-    if used.is_empty() {
+    let mut used = [0u8; 256];
+    let mut n = 0usize;
+    for s in 0..256 {
+        if counts[s] > 0 {
+            used[n] = s as u8;
+            n += 1;
+        }
+    }
+    if n == 0 {
         return lengths;
     }
-    if used.len() == 1 {
-        lengths[used[0]] = 1; // a lone symbol still needs one bit
+    if n == 1 {
+        lengths[used[0] as usize] = 1; // a lone symbol still needs one bit
         return lengths;
     }
 
-    // Node pool: leaves then internal nodes.
-    let n = used.len();
-    let mut weight: Vec<u64> = used.iter().map(|&s| counts[s]).collect();
-    let mut left: Vec<i32> = vec![-1; n];
-    let mut right: Vec<i32> = vec![-1; n];
-    let mut live: Vec<usize> = (0..n).collect();
-
-    while live.len() > 1 {
-        // Two lightest nodes.
-        live.sort_by_key(|&i| std::cmp::Reverse(weight[i]));
-        let a = live.pop().unwrap();
-        let b = live.pop().unwrap();
-        let w = weight[a] + weight[b];
-        weight.push(w);
-        left.push(a as i32);
-        right.push(b as i32);
-        live.push(weight.len() - 1);
+    // Node pool: leaves 0..n, then internal nodes n..2n-1.
+    let mut weight = [0u64; 511];
+    for i in 0..n {
+        weight[i] = counts[used[i] as usize];
     }
+    let mut child = [[0u16; 2]; 511];
+    // Two queues (Van Leeuwen): leaves by ascending weight, and merged
+    // nodes in creation order, whose weights never decrease. The lightest
+    // node is at the head of one of them. Ties reproduce the original
+    // stable-sort version exactly -- it merged the two *last* nodes of a
+    // list ordered by descending weight, then leaves by ascending symbol,
+    // then merged nodes by creation -- so a leaf tie takes the highest
+    // symbol first, a leaf/merged tie takes the merged node, and a tie
+    // among merged nodes takes the newest, i.e. the last of the
+    // equal-weight run at the head of that queue.
+    let mut leaves = [0u16; 256];
+    for i in 0..n {
+        leaves[i] = i as u16;
+    }
+    leaves[..n].sort_unstable_by_key(|&i| (weight[i as usize], std::cmp::Reverse(i)));
+    // Queue state: `leaves[lh..n]`, `merged[mh..mt]`.
+    struct Q {
+        leaves: [u16; 256],
+        merged: [u16; 256],
+        lh: usize,
+        mh: usize,
+        mt: usize,
+        n: usize,
+    }
+    fn take(q: &mut Q, weight: &[u64; 511]) -> usize {
+        let from_merged = q.mh < q.mt && (q.lh >= q.n || weight[q.merged[q.mh] as usize] <= weight[q.leaves[q.lh] as usize]);
+        if from_merged {
+            let w = weight[q.merged[q.mh] as usize];
+            let mut e = q.mh + 1;
+            while e < q.mt && weight[q.merged[e] as usize] == w {
+                e += 1;
+            }
+            let node = q.merged[e - 1] as usize;
+            q.merged.copy_within(q.mh..e - 1, q.mh + 1);
+            q.mh += 1;
+            node
+        } else {
+            q.lh += 1;
+            q.leaves[q.lh - 1] as usize
+        }
+    }
+    let mut q = Q { leaves, merged: [0u16; 256], lh: 0, mh: 0, mt: 0, n };
+    let mut next = n;
+    while next < 2 * n - 1 {
+        let a = take(&mut q, &weight);
+        let b = take(&mut q, &weight);
+        weight[next] = weight[a] + weight[b];
+        child[next] = [a as u16, b as u16];
+        q.merged[q.mt] = next as u16;
+        q.mt += 1;
+        next += 1;
+    }
+    let root = next - 1;
 
     // Walk down assigning depths.
-    let root = live[0];
-    let mut stack = vec![(root, 0u32)];
-    while let Some((node, d)) = stack.pop() {
-        if left[node] < 0 {
-            lengths[used[node]] = d.max(1) as u8;
+    let mut stack = [(0u16, 0u8); 512];
+    let mut top = 1;
+    stack[0] = (root as u16, 0);
+    while top > 0 {
+        top -= 1;
+        let (node, d) = stack[top];
+        if (node as usize) < n {
+            lengths[used[node as usize] as usize] = d.max(1);
         } else {
-            stack.push((left[node] as usize, d + 1));
-            stack.push((right[node] as usize, d + 1));
+            stack[top] = (child[node as usize][0], d + 1);
+            stack[top + 1] = (child[node as usize][1], d + 1);
+            top += 2;
         }
     }
     lengths
