@@ -195,6 +195,44 @@ unsafe fn slow_match(s: *const u8, d: *mut u8, off: usize, ml: usize) {
     }
 }
 
+/// Two independent blocks decoded in one interleaved loop (v5 copy rules):
+/// two serial chains overlap on one core.
+#[inline(never)]
+unsafe fn copy_dual(a: &Block, da: *mut u8, b: &Block, db: *mut u8) -> usize {
+    #[inline(always)]
+    unsafe fn step(bk: &Block, i: usize, lp: &mut *const u8, d: &mut *mut u8) {
+        let lit = *bk.lit.get_unchecked(i) as usize;
+        let ml = *bk.ml.get_unchecked(i) as usize;
+        cp32(*lp, *d);
+        if lit > 32 { cp32(lp.add(32), d.add(32)); cp32(lp.add(64), d.add(64)); cp32(lp.add(96), d.add(96)); if lit > 128 { let mut k = 128; while k < lit { cp32(lp.add(k), d.add(k)); k += 32; } } }
+        *lp = lp.add(lit); *d = d.add(lit);
+        let off = *bk.off.get_unchecked(i) as usize;
+        let s = d.sub(off);
+        if off < 32 { slow_match(s, *d, off, ml); } else {
+            cp32(s, *d);
+            if ml > 32 { cp32(s.add(32), d.add(32)); cp32(s.add(64), d.add(64)); cp32(s.add(96), d.add(96)); if ml > 128 { let mut k = 128; while k < ml { cp32(s.add(k), d.add(k)); k += 32; } } }
+        }
+        *d = d.add(ml);
+    }
+    let (mut lpa, mut lpb) = (a.literals.as_ptr(), b.literals.as_ptr());
+    let (mut pa, mut pb) = (da, db);
+    let enda = da.add(a.out_len.saturating_sub(256));
+    let endb = db.add(b.out_len.saturating_sub(256));
+    let n = a.lit.len().min(b.lit.len());
+    let mut i = 0;
+    while i < n {
+        if pa > enda || pb > endb { break; }
+        step(a, i, &mut lpa, &mut pa);
+        step(b, i, &mut lpb, &mut pb);
+        i += 1;
+    }
+    let mut j = i;
+    while j < a.lit.len() { if pa > enda { break; } step(a, j, &mut lpa, &mut pa); j += 1; }
+    let mut j = i;
+    while j < b.lit.len() { if pb > endb { break; } step(b, j, &mut lpb, &mut pb); j += 1; }
+    (pa.offset_from(da) + pb.offset_from(db)) as usize
+}
+
 /// copy32 plus exactly one of the rare-path branches (timing only).
 #[inline(never)]
 unsafe fn copy_iso<const W: u8>(b: &Block, dst: *mut u8) -> usize {
@@ -737,6 +775,15 @@ fn main() {
     let t_i4 = time(&mut || { for b in &blocks { unsafe { copy_iso::<4>(b, base.add(b.dst_pos)); } } });
     let t_i6 = time(&mut || { for b in &blocks { unsafe { copy_iso::<6>(b, base.add(b.dst_pos)); } } });
     let t_i0 = time(&mut || { for b in &blocks { unsafe { copy_iso::<0>(b, base.add(b.dst_pos)); } } });
+    let t_dual = time(&mut || {
+        let mut k = 0;
+        while k + 1 < blocks.len() {
+            let (a, b) = (&blocks[k], &blocks[k + 1]);
+            unsafe { copy_dual(a, base.add(a.dst_pos), b, base.add(b.dst_pos)); }
+            k += 2;
+        }
+        if k < blocks.len() { let b = &blocks[k]; unsafe { copy_var::<5>(b, base.add(b.dst_pos)); } }
+    });
     let t_v3 = time(&mut || { for b in &blocks { unsafe { copy_var::<3>(b, base.add(b.dst_pos)); } } });
     // correctness of the variants against the real decoder on every block
     {
@@ -811,6 +858,7 @@ fn main() {
     pr("iso_mlsel", t_i6);
     pr("v4_m128", t_v4);
     pr("v5_lm128", t_v5);
+    pr("dual_v5", t_dual);
     pr("copy32", t_copy32);
     pr("far", t_far);
     pr("vfar64k", t_vfar);

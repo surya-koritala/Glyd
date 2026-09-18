@@ -488,3 +488,18 @@ Same run (quick3), Silesia, one core:
 Fast beats liblz4 on ratio (+3.6%) and decode (+10%) and is at 83% of its
 compression speed. Table size remains the speed dial (12 bits: ~0.60 GB/s
 at 2.08).
+
+## Decode: super-chunks, and the remaining levers (M1 Max)
+- Fast phase restructured: pass 1 fills L1-resident length arrays for up
+  to 1024 tokens (32 at a time, running totals checked against the block
+  bounds), pass 2 is one copy loop. Bookkeeping per 1024 tokens instead of
+  per 32. Silesia 1C decode 6.82 -> 6.94 GB/s (159% of liblz4).
+- Refuted: two independent blocks decoded interleaved on one core (2.62
+  vs 2.17 ns/token in the harness; the loop is mispredict-bound, and a
+  flush kills both chains); folding the offset bit into the length array
+  (pass 1 pays what pass 2 saves).
+- Measured, not adopted: minimum match 8 gives 8.05 GB/s (+18%) at ratio
+  2.056, under the liblz4 floor. Decode is a straight dial on token count.
+- Multi-core (`examples/mc.rs`, parallel-compressed independent 256 KB
+  blocks, 10 threads): 42.9 GB/s aggregate over Silesia, above this
+  machine's single-core memcpy (40 GB/s); per file 26-71 GB/s.

@@ -45,16 +45,6 @@ unsafe fn blend16(esc: uint8x16_t, v: uint8x16_t, base: uint16x8_t, cur: uint8x1
     vaddq_u16(lo, hi)
 }
 
-#[derive(Clone, Copy)]
-struct Lens {
-    litl: [u16; 32],
-    mll: [u16; 32],
-    lit_sum: usize,
-    ml_sum: usize,
-    n_match: usize,
-    e_end: usize,
-}
-
 struct Prepass {
     tokens: *const u8,
     extras: *const u8,
@@ -73,10 +63,12 @@ struct Prepass {
 }
 
 impl Prepass {
-    /// Decode 32 tokens at `t` into `out`. Returns false when the chunk must
-    /// be taken carefully (extras too short, a continuation past u16).
+    /// Decode 32 tokens at `t` into `litl`/`mll`. Returns the chunk's
+    /// literal total, match total, match count and extras cursor, or None
+    /// when the chunk must be taken carefully (extras too short, a
+    /// continuation past u16).
     #[inline(always)]
-    unsafe fn run(&self, t: usize, e0: usize, out: &mut Lens) -> bool {
+    unsafe fn run(&self, t: usize, e0: usize, litl: *mut u16, mll: *mut u16) -> Option<(usize, usize, usize, usize)> {
         let (tokens, extras, extras_len) = (self.tokens, self.extras, self.extras_len);
         let (seven, fifteen, v_bias, zero, one, ff) = (self.seven, self.fifteen, self.v_bias, self.zero, self.one, self.ff);
         let esc_base_match = self.esc_base_match;
@@ -94,7 +86,7 @@ impl Prepass {
         let m_zero1 = vceqzq_u8(mc1);
         let ml0 = vbicq_u8(vaddq_u8(mc0, v_bias), m_zero0);
         let ml1 = vbicq_u8(vaddq_u8(mc1, v_bias), m_zero1);
-        out.n_match = 32 - (vaddlvq_u8(vandq_u8(m_zero0, one)) + vaddlvq_u8(vandq_u8(m_zero1, one))) as usize;
+        let n_match = 32 - (vaddlvq_u8(vandq_u8(m_zero0, one)) + vaddlvq_u8(vandq_u8(m_zero1, one))) as usize;
 
         // Escapes, loop-free. 31% of Silesia tokens carry one; a
         // data-dependent loop over them mispredicts at exit every chunk
@@ -104,7 +96,7 @@ impl Prepass {
         // consumed field (0.3% of tokens) takes the scalar loop below.
         let mut e = e0;
         if e + 64 > self.extras_readable {
-            return false;
+            return None;
         }
         let f0 = vreinterpretq_u8_s8(vnegq_s8(vaddq_s8(vreinterpretq_s8_u8(lit_esc0), vreinterpretq_s8_u8(m_esc0))));
         let f1 = vreinterpretq_u8_s8(vnegq_s8(vaddq_s8(vreinterpretq_s8_u8(lit_esc1), vreinterpretq_s8_u8(m_esc1))));
@@ -121,7 +113,7 @@ impl Prepass {
         p1 = vaddq_u8(p1, vdupq_laneq_u8(p0, 15));
         let fields = vgetq_lane_u8(p1, 15) as usize;
         if e + fields > extras_len {
-            return false;
+            return None;
         }
         let x0 = vsubq_u8(p0, f0);
         let x1 = vsubq_u8(p1, f1);
@@ -141,16 +133,16 @@ impl Prepass {
             vorrq_u8(vandq_u8(vceqq_u8(vl0, ff), lit_esc0), vandq_u8(vceqq_u8(vl1, ff), lit_esc1)),
             vorrq_u8(vandq_u8(vceqq_u8(vm0, ff), m_esc0), vandq_u8(vceqq_u8(vm1, ff), m_esc1)),
         );
-        let litl = out.litl.as_mut_ptr();
-        let mll = out.mll.as_mut_ptr();
+        let lit_sum;
+        let ml_sum;
         if vmaxvq_u8(cont) == 0 {
             e += fields;
             let ls0 = blend16(lit_esc0, vl0, self.v_base_lit, lit0, litl);
             let ls1 = blend16(lit_esc1, vl1, self.v_base_lit, lit1, litl.add(16));
             let ms0 = blend16(m_esc0, vm0, self.v_base_match, ml0, mll);
             let ms1 = blend16(m_esc1, vm1, self.v_base_match, ml1, mll.add(16));
-            out.lit_sum = vaddvq_u16(vaddq_u16(ls0, ls1)) as usize;
-            out.ml_sum = vaddvq_u16(vaddq_u16(ms0, ms1)) as usize;
+            lit_sum = vaddvq_u16(vaddq_u16(ls0, ls1)) as usize;
+            ml_sum = vaddvq_u16(vaddq_u16(ms0, ms1)) as usize;
         } else {
             vst1q_u16(litl, vmovl_u8(vget_low_u8(lit0)));
             vst1q_u16(litl.add(8), vmovl_high_u8(lit0));
@@ -166,7 +158,7 @@ impl Prepass {
             let m_esc_mask = movemask32(m_esc0, m_esc1, self.bitsel);
             let both = (lit_esc_mask & m_esc_mask).count_ones() as usize;
             if e + 3 * (fields + both) > extras_len {
-                return false;
+                return None;
             }
             let mut bits = lit_esc_mask | m_esc_mask;
             while bits != 0 {
@@ -179,7 +171,7 @@ impl Prepass {
                         v += std::ptr::read_unaligned(extras.add(e) as *const u16) as usize;
                         e += 2;
                         if ESCAPE_BASE_LIT + v > 0xFFFF {
-                            return false;
+                            return None;
                         }
                     }
                     ls += v;
@@ -192,18 +184,17 @@ impl Prepass {
                         v += std::ptr::read_unaligned(extras.add(e) as *const u16) as usize;
                         e += 2;
                         if esc_base_match + v > 0xFFFF {
-                            return false;
+                            return None;
                         }
                     }
                     ms += v;
                     *mll.add(i) = (esc_base_match + v) as u16;
                 }
             }
-            out.lit_sum = ls;
-            out.ml_sum = ms;
+            lit_sum = ls;
+            ml_sum = ms;
         }
-        out.e_end = e;
-        true
+        Some((lit_sum, ml_sum, n_match, e))
     }
 }
 
@@ -254,66 +245,61 @@ pub unsafe fn decompress_neon(
         v_base_match: vdupq_n_u16(esc_base_match as u16),
     };
 
-    // Two length buffers: chunk k+1 is pre-passed before chunk k is copied,
-    // so the vector chain's latency (and the store->load of the arrays)
-    // overlaps the previous copy loop instead of stalling every chunk.
-    let mut bufs = [Lens { litl: [0u16; CHUNK], mll: [0u16; CHUNK], lit_sum: 0, ml_sum: 0, n_match: 0, e_end: 0 }; 2];
-    let mut cur = 0usize;
-    let mut prepared = false;
+    // Super-chunks of 1024 tokens: pass 1 fills L1-resident length arrays
+    // 32 tokens at a time, checking the running totals against the block
+    // bounds; pass 2 is one copy loop over everything that fit. Bounds and
+    // loop bookkeeping are paid once per 1024 tokens, not per 32.
+    const SUPER: usize = 1024;
+    let mut litl = [0u16; SUPER];
+    let mut mll = [0u16; SUPER];
     let mut careful = 0usize;
 
     'tokens: loop {
-        'chunk: {
+        'fast: {
             if careful > 0 {
                 careful -= 1;
-                break 'chunk;
+                break 'fast;
             }
             if token_idx + CHUNK > num_tokens || dst_ptr > safe_limit {
-                break 'chunk;
+                break 'fast;
             }
-            if !prepared {
-                if !pp.run(token_idx, extra_idx, &mut bufs[cur]) {
-                    careful = CHUNK - 1;
-                    break 'chunk;
-                }
-            }
-            prepared = false;
-            let (lit_sum, ml_sum, n_match, e_end) = {
-                let b = &bufs[cur];
-                (b.lit_sum, b.ml_sum, b.n_match, b.e_end)
-            };
-
-            // Chunk bounds: wild stores need 64 bytes past the chunk's last
-            // byte; literal loads need 64 past the chunk's literals; offsets
-            // need OFFSET_BYTES per match.
+            // Pass 1. Wild stores need 64 bytes past the run's last byte;
+            // literal loads need 64 past the run's literals; offsets need
+            // OFFSET_BYTES per match.
             let remaining = block_end.offset_from(dst_ptr) as usize;
-            if lit_sum + ml_sum + 64 > remaining
-                || lit_ptr.add(lit_sum + 64) > lit_limit
-                || off_pos + n_match * OFFSET_BYTES > offsets_len
-            {
+            let lit_room = lit_limit.offset_from(lit_ptr) as usize;
+            let mut n = 0usize;
+            let mut e = extra_idx;
+            let (mut ls, mut ms, mut nm) = (0usize, 0usize, 0usize);
+            while n + CHUNK <= SUPER && token_idx + n + CHUNK <= num_tokens {
+                let Some((l, m, k, e2)) = pp.run(token_idx + n, e, litl.as_mut_ptr().add(n), mll.as_mut_ptr().add(n)) else { break };
+                if ls + l + ms + m + 64 > remaining
+                    || ls + l + 64 > lit_room
+                    || off_pos + (nm + k) * OFFSET_BYTES > offsets_len
+                {
+                    break;
+                }
+                ls += l;
+                ms += m;
+                nm += k;
+                e = e2;
+                n += CHUNK;
+            }
+            if n == 0 {
                 careful = CHUNK - 1;
-                break 'chunk;
+                break 'fast;
             }
-
-            // Pre-pass the next chunk while this one's copies are in flight.
-            let next = cur ^ 1;
-            if token_idx + 2 * CHUNK <= num_tokens {
-                prepared = pp.run(token_idx + CHUNK, e_end, &mut bufs[next]);
-            }
-
-            let b = &bufs[cur];
-            let (nl, nd, no) = copy_chunk(
-                &b.litl, &b.mll, tokens.add(token_idx), lit_ptr, dst_ptr, offsets, off_pos, buffer_start,
+            // Pass 2.
+            let (nl, nd, no) = copy_run(
+                litl.as_ptr(), mll.as_ptr(), n, tokens.add(token_idx), lit_ptr, dst_ptr, offsets, off_pos, buffer_start,
             )?;
             lit_ptr = nl;
             dst_ptr = nd;
             off_pos = no;
-            token_idx += CHUNK;
-            extra_idx = e_end;
-            cur = next;
+            token_idx += n;
+            extra_idx = e;
             continue 'tokens;
         }
-        prepared = false;
 
         // Careful step: one token, every access checked.
         if token_idx >= num_tokens {
@@ -441,12 +427,13 @@ unsafe fn short_match(s: *const u8, d: *mut u8, offset: usize, ml: usize) {
     }
 }
 
-/// Pass 2: apply one chunk of decoded lengths. Bounds were established by
+/// Pass 2: apply `n` decoded lengths. Bounds were established by
 /// the caller from the chunk's totals; only the offset is validated here.
 #[inline(never)]
-unsafe fn copy_chunk(
-    litl: &[u16; 32],
-    mll: &[u16; 32],
+unsafe fn copy_run(
+    litl: *const u16,
+    mll: *const u16,
+    n: usize,
     tok_base: *const u8,
     mut lit_ptr: *const u8,
     mut dst_ptr: *mut u8,
@@ -454,9 +441,9 @@ unsafe fn copy_chunk(
     mut off_pos: usize,
     buffer_start: *const u8,
 ) -> Result<(*const u8, *mut u8, usize)> {
-    for i in 0..32 {
-        let lit = *litl.get_unchecked(i) as usize;
-        let ml = *mll.get_unchecked(i) as usize;
+    for i in 0..n {
+        let lit = *litl.add(i) as usize;
+        let ml = *mll.add(i) as usize;
 
         // Rare paths (lit > 32: 1.9% of tokens, ml > 32: 6.6%, offset < 32:
         // 2.2%) each cost one mispredict; measured additive. Tails up to

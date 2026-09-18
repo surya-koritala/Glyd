@@ -87,7 +87,7 @@ Beats liblz4 on 10 of 12 files; trails on nci and webster by 2-3%.
 | Codec | Decode GB/s | % of memcpy wall | Ratio |
 | :--- | ---: | ---: | ---: |
 | memcpy | 39.9 | 100 | - |
-| **Alatirok v6 (NEON)** | **6.68** | **17** | **2.192** |
+| **Alatirok v6 (NEON)** | **6.94** | **17** | **2.192** |
 | liblz4 (same run) | 4.36 | 11 | 2.101 |
 
 Beats liblz4 on 12 of 12 files (+53% total). The measured wall for this
@@ -98,9 +98,12 @@ Levels, same run (`quick3`, M1 Max, one core):
 
 | Level | Comp GB/s | Ratio | Decode GB/s |
 | :--- | ---: | ---: | ---: |
-| `--fast` (`compress_into_fast`) | 0.55 | 2.176 | 4.84 |
-| default | 0.34 | 2.192 | 6.82 |
+| `--fast` (`compress_into_fast`) | 0.55 | 2.176 | 4.96 |
+| default | 0.34 | 2.192 | 6.94 |
 | liblz4 | 0.66 | 2.101 | 4.39 |
+
+Multi-core decode (10 threads, independent 256 KB blocks): **42.9 GB/s**
+over Silesia, above this machine's single-core memcpy (`examples/mc.rs`).
 
 The compression ceiling for any greedy LZ finder is one data-random branch
 per probed position (~0.7-1 GB/s per core); see `examples/cfloor.rs`. `src/neon_decompress.rs` is a

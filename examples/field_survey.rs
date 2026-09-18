@@ -66,7 +66,7 @@ fn main() {
     let dir = Path::new("corpus");
 
     let names = ["Alatirok", "liblz4", "lz4_flex", "LZAV", "LZAV-hi",
-                 "zstd--5", "zstd--3", "zstd--1", "zstd-1", "zstd-3", "snappy"];
+                 "zstd--5", "zstd--3", "zstd--1", "zstd-1", "zstd-3", "snappy", "Alatirok-fast"];
     let mut tot: Vec<Totals> = names.iter().map(|n| Totals { name: n.to_string(), ..Default::default() }).collect();
 
     for f in &files {
@@ -85,6 +85,13 @@ fn main() {
         let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); simd_stream_codec::compress_into(&data, &mut b); });
         let d = timed(runs, min_secs, 3, || { let _ = simd_stream_codec::decompress_into_raw(&c0, &mut dst); });
         acc(&mut tot[0], len, c0.len(), t, d); log_row(f, "Alatirok", len, c0.len(), t, d);
+
+        // ---- Alatirok fast level ----
+        let mut c1 = Vec::with_capacity(len);
+        simd_stream_codec::compress_into_fast(&data, &mut c1);
+        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); simd_stream_codec::compress_into_fast(&data, &mut b); });
+        let d = timed(runs, min_secs, 3, || { let _ = simd_stream_codec::decompress_into_raw(&c1, &mut dst); });
+        acc(&mut tot[11], len, c1.len(), t, d); log_row(f, "Alatirok-fast", len, c1.len(), t, d);
 
         // ---- liblz4 (reference C) ----
         let bound = lz4::block::compress_bound(len).unwrap_or(len * 2 + 64);
