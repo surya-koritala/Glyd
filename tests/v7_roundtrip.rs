@@ -287,7 +287,10 @@ fn v7_block_decode_with_raw_literals_and_raw_codes() {
 /// end: the wild copies fall back to exact ones there. The worst shape
 /// for the fixed 3x32 tails is a 33-byte run copied as 128 bytes, 95
 /// past its end: one ends 65 bytes before the block end, so a margin
-/// under 96 would write 30 bytes past `dst`.
+/// under 96 would write 30 bytes past `dst`. The empty block (one
+/// literal-only sequence of length 0, `dst` of length 0) is the shape
+/// where a saturating margin check let the unconditional 32-byte
+/// literal copy through.
 #[test]
 fn v7_block_decode_into_exact_dst_writes_nothing_past_it() {
     for (seqs, lits) in [
@@ -300,6 +303,7 @@ fn v7_block_decode_into_exact_dst_writes_nothing_past_it() {
             ],
             (0..265u32).map(|i| b'a' + (i % 26) as u8).collect(),
         ),
+        (vec![Sequence { lit_len: 0, match_len: 0, offset: 0 }], Vec::new()),
     ] {
         let expect = materialize(&seqs, &lits);
         let mut p = Vec::new();

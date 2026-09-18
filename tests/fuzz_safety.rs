@@ -109,23 +109,52 @@ fn seed_inputs() -> Vec<Vec<u8>> {
     seeds
 }
 
+/// A v7 block of uncompressed length 0 holding one empty literal-only
+/// sequence: the compressor never emits it, but the decoder must take it
+/// (it is where a saturating wild-copy margin let a 32-byte store
+/// through with a zero-length `dst`).
+fn empty_v7_block() -> Vec<u8> {
+    use simd_stream_codec::format::{BlockHeader, FLAG_CHAIN_RESET, HEADER_SIZE, MAGIC, VERSION_V7};
+    use simd_stream_codec::v7_encode::{encode_block, Sequence, Tables};
+    let mut payload = Vec::new();
+    encode_block(&[Sequence { lit_len: 0, match_len: 0, offset: 0 }], &[], 0, &mut Tables::none(), &mut payload);
+    let header = BlockHeader {
+        magic: MAGIC,
+        version: VERSION_V7,
+        flags: FLAG_CHAIN_RESET,
+        checksum: simd_stream_codec::compute_checksum(&[]),
+        uncompressed_len: 0,
+        token_count: 1,
+        token_bytes: payload.len() as u32,
+        offset_bytes: 0,
+        extras_bytes: 0,
+        literal_len: 0,
+    };
+    let mut out = unsafe { std::slice::from_raw_parts(&header as *const BlockHeader as *const u8, HEADER_SIZE) }.to_vec();
+    out.extend_from_slice(&payload);
+    out
+}
+
 #[test]
 fn test_corruption_mutation_fuzz_1m() {
     let seeds = seed_inputs();
 
     // Compress every seed both sequentially and in parallel so the fuzzer
     // covers chained streams and FLAG_CHAIN_RESET streams alike, at the
-    // default level (v6 blocks) and the max level (v7 blocks).
-    let mut streams: Vec<(Vec<u8>, usize)> = Vec::new();
+    // default level (v6 blocks) and the max level (v7 blocks, flagged).
+    let mut streams: Vec<(Vec<u8>, usize, bool)> = Vec::new();
     for s in &seeds {
-        streams.push((compress(s), s.len()));
-        streams.push((compress_parallel(s), s.len()));
+        streams.push((compress(s), s.len(), false));
+        streams.push((compress_parallel(s), s.len(), false));
         let (mut m, mut mp) = (Vec::new(), Vec::new());
         simd_stream_codec::compress_into_max(s, &mut m);
         simd_stream_codec::compress_parallel_into_max(s, &mut mp);
-        streams.push((m, s.len()));
-        streams.push((mp, s.len()));
+        streams.push((m, s.len(), true));
+        streams.push((mp, s.len(), true));
     }
+    let empty = empty_v7_block();
+    assert_eq!(decompress(&empty).unwrap().len(), 0);
+    streams.push((empty, 0, true));
 
     let mut rng = Rng(0xDEAD_BEEF_CAFE_F00D);
     let mut mutations: u64 = 0;
@@ -133,10 +162,15 @@ fn test_corruption_mutation_fuzz_1m() {
 
     let max_out = seeds.iter().map(|s| s.len()).max().unwrap() + 4096;
     let mut dst = vec![0u8; max_out];
+    // v7 streams decode into an exact-size `dst` in front of a 64-byte
+    // sentinel: the v7 decoder must never write past `dst`, Ok or Err.
+    // (v6 keeps the slack buffer above: its decoder has a known, separate
+    // overshoot past `uncompressed_len`, tracked on its own.)
+    let mut exact = vec![0xEEu8; max_out + 64];
     let mut corrupted: Vec<u8> = Vec::with_capacity(max_out);
 
     while mutations < G1_REQUIRED_MUTATIONS {
-        for (stream, orig_len) in streams.iter() {
+        for (stream, orig_len, is_max) in streams.iter() {
             if mutations >= G1_REQUIRED_MUTATIONS {
                 break;
             }
@@ -180,12 +214,25 @@ fn test_corruption_mutation_fuzz_1m() {
                 );
                 clean_decodes += 1;
             }
-            let _ = decompress_into_raw(&corrupted, &mut dst);
-
             // The Rayon paths carry thread-pool overhead, so sample them.
-            if mutations % 8 == 0 {
+            let parallel = mutations % 8 == 0;
+            if *is_max {
+                let (exact_dst, tail) = exact[..*orig_len + 64].split_at_mut(*orig_len);
+                tail.fill(0xEE);
+                let _ = decompress_into_raw(&corrupted, exact_dst);
+                assert!(tail.iter().all(|&b| b == 0xEE), "decompress_into_raw wrote past dst");
+                if parallel {
+                    let _ = decompress_parallel_into_raw(&corrupted, exact_dst);
+                    assert!(tail.iter().all(|&b| b == 0xEE), "decompress_parallel_into_raw wrote past dst");
+                }
+            } else {
+                let _ = decompress_into_raw(&corrupted, &mut dst);
+                if parallel {
+                    let _ = decompress_parallel_into_raw(&corrupted, &mut dst);
+                }
+            }
+            if parallel {
                 let _ = decompress_parallel(&corrupted);
-                let _ = decompress_parallel_into_raw(&corrupted, &mut dst);
             }
 
             mutations += 1;

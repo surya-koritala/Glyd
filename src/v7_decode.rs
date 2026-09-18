@@ -302,8 +302,6 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
     let base = dst.as_mut_ptr();
     let lits = s.lits.as_ptr();
     let (lls, mls, offs) = (s.ll.as_ptr(), s.ml.as_ptr(), s.off.as_ptr());
-    let wild_limit = dst.len().saturating_sub(WILD_MARGIN);
-    let lit_wild_limit = s.lits.len() - WILD_MARGIN;
     let window = (base as *const u8).offset_from(buffer_start) as usize;
     let mut written = 0usize;
     let mut lp = 0usize;
@@ -320,7 +318,10 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
         if ml != 0 && (off == 0 || off > available) {
             return Err(CodecError::OffsetOutOfBounds { offset: off, available });
         }
-        if end <= wild_limit && lend <= lit_wild_limit {
+        // No saturating form here: with a short `dst` it would let an
+        // empty sequence through to the unconditional 32-byte copy.
+        // `end <= MAX_BLOCK_SIZE` by the check above, so no overflow.
+        if end + WILD_MARGIN <= dst.len() && lend + WILD_MARGIN <= s.lits.len() {
             copy_seq_wild(lits.add(lp), base.add(written), ll, ml, off);
         } else {
             copy_seq_exact(lits.add(lp), base.add(written), ll, ml, off);
