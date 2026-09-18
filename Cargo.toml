@@ -66,3 +66,7 @@ path = "examples/repeat_offset_stats.rs"
 [[example]]
 name = "entropy_probe"
 path = "examples/entropy_probe.rs"
+
+[[example]]
+name = "huff_probe"
+path = "examples/huff_probe.rs"
