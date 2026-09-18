@@ -281,3 +281,66 @@ fn v7_block_decode_with_raw_literals_and_raw_codes() {
     let n5 = unsafe { decode_block(&p5, seqs3.len(), lits3.len(), &mut dst[at..], base, expect3.len(), &mut dtab, &mut scratch) }.unwrap();
     assert_eq!(&dst[at..at + n5], &expect3[..]);
 }
+
+// ---- Task 8: container integration ----
+
+/// Max level through every container entry point: empty, one byte, a
+/// constant run, incompressible bytes (stored raw), periodic data at
+/// four periods (short offsets, long matches), 1.2 MB of text and 1.2 MB
+/// of word salad (several blocks, tables reused across them).
+#[test]
+fn v7_max_level_roundtrip_through_container() {
+    let mut x = 0x1234_5678_9ABC_DEF0u64;
+    let mut rnd = |n: usize| -> Vec<u8> { (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect() };
+    let mut inputs: Vec<Vec<u8>> = vec![Vec::new(), b"x".to_vec(), vec![b'A'; 300_000], rnd(300_000)];
+    for period in [3usize, 17, 1000, 70_000] {
+        let pat = rnd(period);
+        inputs.push(pat.iter().cycle().take(600_000).copied().collect());
+    }
+    let mut text = Vec::new();
+    while text.len() < 1_200_000 { text.extend_from_slice(b"the quick brown fox jumps over the lazy dog "); text.extend_from_slice(&rnd(2)); }
+    inputs.push(text);
+    // Word salad from a fixed vocabulary: stationary statistics with the
+    // same code support block after block, so the sequence and literal
+    // tables get reused across blocks (through the container's table
+    // carry), which the periodic inputs above never trigger.
+    let vocab: Vec<Vec<u8>> = (0..300).map(|_| { let n = 3 + rnd(1)[0] as usize % 8; rnd(n).iter().map(|b| b'a' + b % 26).collect() }).collect();
+    let mut salad = Vec::new();
+    while salad.len() < 1_200_000 { salad.extend_from_slice(&vocab[u16::from_le_bytes(rnd(2).try_into().unwrap()) as usize % 300]); salad.push(b' '); }
+    inputs.push(salad);
+    // (version, coded bits, reuse bits) per block, so an all-raw stream
+    // cannot pass vacuously and cross-block table reuse is known to run.
+    fn versions(c: &[u8]) -> Vec<(u16, u8, u8)> {
+        use simd_stream_codec::format::{BlockHeader, HEADER_SIZE, VERSION_V7};
+        let (mut cursor, mut v) = (0usize, Vec::new());
+        while cursor < c.len() {
+            let h: BlockHeader = unsafe { std::ptr::read_unaligned(c[cursor..].as_ptr() as *const BlockHeader) };
+            let body = &c[cursor + HEADER_SIZE..cursor + HEADER_SIZE + h.payload_len()];
+            let sub = if h.version == VERSION_V7 { let l = payload_layout(body).unwrap().sub; (l.coded, l.reuse) } else { (0, 0) };
+            v.push((h.version, sub.0, sub.1));
+            cursor += HEADER_SIZE + h.payload_len();
+        }
+        v
+    }
+    for (k, input) in inputs.iter().enumerate() {
+        let mut c = Vec::new();
+        simd_stream_codec::compress_into_max(input, &mut c);
+        let v = versions(&c);
+        assert_eq!(v.len(), (input.len() + 256 * 1024 - 1) / (256 * 1024), "block count, len {}", input.len());
+        if k >= 4 {
+            assert!(v.iter().all(|&(ver, _, _)| ver == simd_stream_codec::format::VERSION_V7), "input {} should be all v7 blocks: {:?}", k, v);
+            assert!(c.len() < input.len() / 2, "input {} ratio: {} -> {}", k, input.len(), c.len());
+        }
+        if k == inputs.len() - 1 {
+            assert!(v[1..].iter().any(|&(_, _, reuse)| reuse & 1 != 0), "salad should reuse the literal table: {:?}", v);
+            assert!(v[1..].iter().any(|&(_, _, reuse)| reuse & 2 != 0), "salad should reuse the sequence tables: {:?}", v);
+        }
+        if k == 3 {
+            assert!(v.iter().all(|&(ver, _, _)| ver == 6), "random input must be stored raw: {:?}", v);
+        }
+        assert_eq!(&simd_stream_codec::decompress(&c).unwrap(), input, "max sequential, len {}", input.len());
+        let mut p = Vec::new();
+        simd_stream_codec::compress_parallel_into_max(input, &mut p);
+        assert_eq!(&simd_stream_codec::decompress_parallel(&p).unwrap(), input, "max parallel, len {}", input.len());
+    }
+}

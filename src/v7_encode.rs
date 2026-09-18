@@ -247,3 +247,55 @@ pub fn encode_block(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut
         prev.off = None;
     }
 }
+
+/// v6 streams (tokens, offsets, extras) -> sequences. Milestone 2 bridge:
+/// lets the v7 container and decoder be measured on the proven parse.
+/// The streams must be well formed (they come straight from the finder).
+pub fn sequences_from_streams(tokens: &[u8], offsets: &[u8], extras: &[u8], min_match: usize) -> Vec<Sequence> {
+    use crate::format::{Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, MATCH_CODE_ESCAPE};
+    fn read_escape(extras: &[u8], e: &mut usize, base: usize) -> u32 {
+        let v = extras[*e] as usize;
+        *e += 1;
+        if v != ESCAPE_CONT as usize {
+            return (base + v) as u32;
+        }
+        let w = u16::from_le_bytes([extras[*e], extras[*e + 1]]) as usize;
+        *e += 2;
+        (base + v + w) as u32
+    }
+    let bias = min_match - 1;
+    let mut e = 0usize;
+    let mut o = 0usize;
+    let mut seqs = Vec::with_capacity(tokens.len());
+    for &t in tokens {
+        let tok = Token(t);
+        let lc = tok.lit_code();
+        let mc = tok.match_code();
+        let lit_len = if lc == LIT_CODE_ESCAPE { read_escape(extras, &mut e, ESCAPE_BASE_LIT) } else { lc as u32 };
+        let (match_len, offset) = if mc == 0 {
+            (0, 0)
+        } else {
+            let ml = if mc == MATCH_CODE_ESCAPE { read_escape(extras, &mut e, bias + 15) } else { (mc + bias) as u32 };
+            let lo = u16::from_le_bytes([offsets[o], offsets[o + 1]]) as u32;
+            o += 2;
+            (ml, lo | ((tok.off_hi() as u32) << 16))
+        };
+        seqs.push(Sequence { lit_len, match_len, offset });
+    }
+    // The format wants exactly one literal-only sequence, last. Merge any
+    // interior literal-only tokens (the v6 MAX_LIT_LEN split) into the next.
+    let mut merged: Vec<Sequence> = Vec::with_capacity(seqs.len());
+    let mut carry = 0u32;
+    for (i, s) in seqs.iter().enumerate() {
+        if s.match_len == 0 && i + 1 < seqs.len() {
+            carry += s.lit_len;
+            continue;
+        }
+        merged.push(Sequence { lit_len: s.lit_len + carry, match_len: s.match_len, offset: s.offset });
+        carry = 0;
+    }
+    if merged.last().map_or(true, |s| s.match_len != 0) {
+        merged.push(Sequence { lit_len: carry, match_len: 0, offset: 0 });
+    }
+    merged
+}

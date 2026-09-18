@@ -49,6 +49,15 @@ thread_local! {
     });
 }
 
+thread_local! {
+    /// The previous v7 block's entropy tables. Reuse across blocks needs
+    /// the blocks of a chain decoded in order on one thread: the
+    /// sequential path does that, and the parallel path decodes each unit
+    /// (a run of chained blocks) whole on one thread, starting at a
+    /// FLAG_CHAIN_RESET block, which resets these.
+    static V7_TABLES: RefCell<v7_decode::DecTables> = RefCell::new(v7_decode::DecTables::none());
+}
+
 #[inline(always)]
 fn has_avx2() -> bool {
     #[cfg(target_arch = "x86_64")]
@@ -333,6 +342,57 @@ pub fn compress_parallel_into_fast(input: &[u8], output: &mut Vec<u8>) {
     compress_parallel_with(input, output, compress_into_fast)
 }
 
+/// Max level: format v7 (entropy-coded sequences and literals). Milestone
+/// 2 runs the default parse through `sequences_from_streams`; Task 9
+/// replaces it with the double-fast parse. Blocks the coder cannot
+/// shrink are stored raw (as v6 raw blocks, which every decoder reads).
+pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
+    let mut table = new_table();
+    finder::init_table(&mut table, input);
+    let (mut tokens, mut offsets, mut extras, mut literals) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut prev = v7_encode::Tables::none();
+    let mut payload = Vec::new();
+    let mut offset = 0;
+    while offset < input.len() {
+        let chunk_len = (input.len() - offset).min(MAX_BLOCK_SIZE);
+        let chunk = &input[offset..offset + chunk_len];
+        tokens.clear();
+        offsets.clear();
+        extras.clear();
+        literals.clear();
+        payload.clear();
+        find_block::<Lzav>(input, offset, chunk_len, &mut table, &mut tokens, &mut offsets, &mut extras, &mut literals);
+        let seqs = v7_encode::sequences_from_streams(&tokens, &offsets, &extras, Lzav::MIN_MATCH);
+        v7_encode::encode_block(&seqs, &literals, 0, &mut prev, &mut payload);
+        let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
+        if payload.len() + HEADER_SIZE >= chunk_len {
+            prev = v7_encode::Tables::none();
+            write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
+        } else {
+            let header = BlockHeader {
+                magic: MAGIC,
+                version: VERSION_V7,
+                flags: FLAG_COMPRESSED | chain_flag,
+                checksum: compute_checksum(chunk),
+                uncompressed_len: chunk_len as u32,
+                token_count: seqs.len() as u32,
+                token_bytes: payload.len() as u32,
+                offset_bytes: 0,
+                extras_bytes: 0,
+                literal_len: literals.len() as u32,
+            };
+            output.extend_from_slice(header_bytes(&header));
+            output.extend_from_slice(&payload);
+        }
+        offset += chunk_len;
+    }
+}
+
+/// Max level, all cores.
+pub fn compress_parallel_into_max(input: &[u8], output: &mut Vec<u8>) {
+    compress_parallel_with(input, output, compress_into_max)
+}
+
 fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>)) {
     if input.len() <= PARALLEL_CHUNK_SIZE {
         level(input, output);
@@ -371,7 +431,7 @@ fn parse_header(compressed: &[u8], cursor: usize) -> Result<(BlockHeader, usize)
     if header.magic != MAGIC {
         return Err(CodecError::InvalidMagic);
     }
-    if header.version != CURRENT_VERSION {
+    if header.version != CURRENT_VERSION && header.version != VERSION_V7 {
         return Err(CodecError::UnsupportedVersion(header.version));
     }
     if !header.is_plausible() {
@@ -401,6 +461,21 @@ unsafe fn decode_block(
     if (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
         dst[..uncomp_len].copy_from_slice(&payload[..uncomp_len]);
         return Ok(());
+    }
+    if header.version == VERSION_V7 {
+        return v7_decode::with_scratch(|scratch| {
+            V7_TABLES.with(|t| {
+                let mut t = t.borrow_mut();
+                if (header.flags & FLAG_CHAIN_RESET) != 0 {
+                    *t = v7_decode::DecTables::none();
+                }
+                v7_decode::decode_block(
+                    payload, header.token_count as usize, header.literal_len as usize,
+                    dst, buffer_start, uncomp_len, &mut t, scratch,
+                )
+                .map(|_| ())
+            })
+        });
     }
     if (header.flags & FLAG_HUFF_TOKENS) != 0 {
         return Err(CodecError::CorruptedBitstream("Huffman token blocks not supported yet"));
