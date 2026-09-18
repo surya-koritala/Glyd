@@ -186,3 +186,49 @@ fn huff8_short_codes_roundtrip() {
     huff8::decode(&table, &refs, n, &mut out).unwrap();
     assert_eq!(out, data);
 }
+
+/// Fuzzed-and-verified regression: `BitReader::resume` must fold in bits
+/// consumed *before* `to_fast()` was called (via the clamped path), not
+/// just what the fast excursion itself consumed, or `overrun()`
+/// under-counts. Drives a `FastReader` by hand: exactly T bits of real
+/// data, consume 5 through the normal path, hand off, consume exactly
+/// T - 5 more through the fast reader (refill only while
+/// `safe_refills` proves it's still in bounds; once that runs out, the
+/// bits already banked from the last refill are -- by construction, since
+/// a refill only stops being safe once more has been loaded than the
+/// T-bit budget -- always enough to deliver the rest), resume, and check
+/// the boundary is exact on both sides.
+#[test]
+fn bits_resume_keeps_overrun_exact() {
+    let t_bits: u32 = 1000; // a multiple of 8: no partial last byte to round total_bits up
+    let mut w = BitWriter::new();
+    let mut left_to_write = t_bits;
+    while left_to_write > 0 {
+        let chunk = left_to_write.min(32);
+        w.put(0, chunk);
+        left_to_write -= chunk;
+    }
+    let bytes = w.finish();
+
+    let mut r = BitReader::new(&bytes);
+    let _ = r.get(5); // consume 5 bits via the clamped path before handing off
+
+    let last = r.last();
+    let mut f = r.to_fast();
+    let mut left = t_bits - 5;
+    while left > 0 {
+        if f.safe_refills(last) > 0 {
+            unsafe {
+                f.refill();
+            }
+        }
+        let take = left.min(56);
+        f.consume(take);
+        left -= take;
+    }
+    r.resume(f);
+    assert!(!r.overrun(), "exactly T bits consumed must not be an overrun");
+
+    let _ = r.get(1);
+    assert!(r.overrun(), "T + 1 bits consumed must be an overrun");
+}

@@ -1,7 +1,7 @@
 //! 8-stream interleaved Huffman for byte streams. Symbol i lives in
 //! sub-stream i % 8, LSB-first with bit-reversed canonical codes, so the
 //! decoder's table is indexed by the next `TB` bits directly. Measured on
-//! the M1 Max (examples/huff_spike.rs): 0.47 ns/symbol.
+//! the M1 Max: 0.61 ns/symbol (tests/v7_codecs.rs, huff8_speed_silesia).
 use crate::bits::{BitReader, BitWriter, FastReader};
 use crate::huffman::{build_codes, build_lengths, MAX_CODE_LEN};
 
@@ -38,7 +38,7 @@ pub fn coded_size(hist: &[u64; 256], lengths: &[u8; 256]) -> usize {
 
 /// Packed decode table: entry = sym | (len << 8).
 pub struct Table {
-    pub entries: Vec<u16>,
+    entries: Vec<u16>,
 }
 
 impl Table {

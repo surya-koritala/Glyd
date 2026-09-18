@@ -138,15 +138,24 @@ impl BitReader {
     }
 
     /// Write a `FastReader`'s state back and fold in the bits it consumed,
-    /// so `overrun` stays exact across the excursion. `f` never clamped
-    /// (the caller proved every one of its refills started at or before
-    /// `last`), so the bits it loaded are exactly `(f.p - self.p) * 8`
-    /// (the same identity `refill` relies on: each call's `p` advance in
-    /// bytes equals the bits it newly loaded). From that and how far `cnt`
-    /// moved, `consumed = self.cnt + loaded - f.cnt`.
+    /// so `overrun` stays exact across the excursion. `f` must be a value
+    /// this same reader produced via `to_fast` (mixing readers would mix
+    /// up the accounting below).
+    ///
+    /// `f` never clamped (the caller proved every one of its refills
+    /// started at or before `last`), so the bits it loaded are exactly
+    /// `(f.p - self.p) * 8` (the same identity `refill` relies on: each
+    /// call's `p` advance in bytes equals the bits it newly loaded). The
+    /// window still open when `to_fast` was called started with `filled`
+    /// bits banked (not `cnt`: bits consumed between the last `refill`
+    /// and `to_fast`, i.e. `filled - cnt` at that point, haven't been
+    /// folded into `budget` yet either, and must not be lost when this
+    /// closes that window out) and ends with `f.cnt` banked, so the bits
+    /// consumed over the whole window, excursion included, is
+    /// `consumed = self.filled + loaded - f.cnt`.
     pub fn resume(&mut self, f: FastReader) {
         let loaded = (f.p as usize - self.p as usize) as i64 * 8;
-        let consumed = self.cnt as i64 + loaded - f.cnt as i64;
+        let consumed = self.filled as i64 + loaded - f.cnt as i64;
         self.budget -= consumed;
         self.p = f.p;
         self.bits = f.bits;
@@ -158,10 +167,11 @@ impl BitReader {
 /// Unclamped reader for hot loops: a caller must prove, from the stream's
 /// remaining bytes, that every refill it performs starts at or before
 /// `last` (see `safe_refills`). `p` advances by at most 7 bytes per refill.
+/// Fields are private -- get one only from `BitReader::to_fast`.
 pub struct FastReader {
-    pub p: *const u8,
-    pub bits: u64,
-    pub cnt: u32,
+    p: *const u8,
+    bits: u64,
+    cnt: u32,
 }
 
 impl FastReader {
