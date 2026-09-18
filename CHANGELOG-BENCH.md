@@ -304,3 +304,20 @@ the branch is rare on most data and predictable where it is common.
 Per file vs liblz4 decode: beat it on mozilla, ooffice, osdb, reymont, sao,
 xml, x-ray (7 of 12); trail on dickens 94%, mr 98%, nci 93%, samba 95%,
 webster 86%.
+
+## GOAL3 S1 PASSED: decode beats liblz4 on Silesia, same run, ratio floor held
+Minimum match 6 -> 7: tokens 12.5M -> 10.0M (-20%), and decode time tracks
+tokens. Ratio 2.2726 -> 2.1923 (floor 2.1009). Compression 0.41 -> 0.345,
+which GOAL3 assigns to the fast level. The candidate check was generalized
+to a masked u32 over bytes 4..7 so any minimum 4..8 is sound (7 and 8 were
+corrupting output before, trusting unverified bytes).
+Also fixed on the way, a latent decoder bug: the chunked path keeps lengths
+in u16 arrays, and a literal run at MAX_LIT_LEN (65797) wrapped to 261. Only
+the parallel Silesia stream contained one. Such lengths now take the careful
+path; tests/roundtrip.rs pins it. Refuted this round: packing lit/hi/ml into
+one u32 lane (0), near-offset store-forwarding stalls (0), hoisting the copy
+loop into its own function (+3%, kept).
+  quick3: ratio 2.19234 | comp 0.345 | decomp 6.15 / 6.03 / 6.05 vs liblz4
+          5.67 / 5.69 / 5.73 same run = 108.5 / 106.0 / 105.6%  S1 OK
+Per file we beat liblz4 on 10 of 12 (dickens 114%, ooffice 143%, sao 189%,
+xml 115%...), trail on nci 94% and webster 96%. x-ray (raw) 49 GB/s.

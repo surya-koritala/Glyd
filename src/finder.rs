@@ -103,9 +103,9 @@ fn window_size() -> usize {
 
 /// komihash-style 6-byte hash, as in LZAV.
 #[inline(always)]
-fn hash6(iw1: u32, iw2: u16) -> usize {
+fn hash6(iw1: u32, iw2: u32) -> usize {
     let seed1 = 0x243F_6A88u32 ^ iw1;
-    let hm = (seed1 as u64).wrapping_mul((0x85A3_08D3u32 ^ iw2 as u32) as u64);
+    let hm = (seed1 as u64).wrapping_mul((0x85A3_08D3u32 ^ (iw2 & 0xFFFF)) as u64);
     let hval = (hm as u32) ^ ((hm >> 32) as u32);
     ((hval >> 4) as usize) & (HASH_SIZE - 1)
 }
@@ -146,10 +146,18 @@ impl MatchLen for ScalarMatch {
 /// but it only runs on blocks the first pass would otherwise store raw.
 pub trait Mode {
     const MIN_MATCH: usize;
-    /// Bytes 4 and 5 that must be confirmed against the candidate before a
-    /// match is trusted, as a mask over the u16 at position + 4. The stored
-    /// word proves 4 bytes; the minimum match must not exceed 4 plus these.
-    const VERIFY_MASK: u16 = if Self::MIN_MATCH >= 6 { 0xFFFF } else if Self::MIN_MATCH == 5 { 0x00FF } else { 0 };
+    /// Bytes 4..7 that must be confirmed against the candidate before a match
+    /// is trusted, as a mask over the u32 at position + 4. The stored word
+    /// proves 4 bytes; the minimum match must not exceed 4 plus these, so it
+    /// is sound for minimums 4 through 8. (Trusting 5 with 4 proven, and 8
+    /// with 6, each corrupted output during development.)
+    const VERIFY_MASK: u32 = match Self::MIN_MATCH {
+        0..=4 => 0,
+        5 => 0x0000_00FF,
+        6 => 0x0000_FFFF,
+        7 => 0x00FF_FFFF,
+        _ => 0xFFFF_FFFF,
+    };
     /// Widen the step on poor data.
     const SKIP: bool;
     /// Cap match length at the offset so no copy overlaps itself.
@@ -230,7 +238,8 @@ pub unsafe fn find_matches<M: MatchLen, P: Mode>(
     let src = full_input.as_ptr();
     let block_end = block_start + block_len;
     // Hashing reads 6 bytes; a match must have room for the minimum.
-    let hash_limit = block_end.saturating_sub(P::MIN_MATCH + 3).max(block_start);
+    // Hashing reads 4 bytes at pos and verification 4 more at pos + 4.
+    let hash_limit = block_end.saturating_sub(P::MIN_MATCH.max(5) + 3).max(block_start);
     let window = window_size();
 
     let mut anchor = block_start; // start of pending literals
@@ -241,7 +250,7 @@ pub unsafe fn find_matches<M: MatchLen, P: Mode>(
 
     while pos < hash_limit {
         let iw1 = std::ptr::read_unaligned(src.add(pos) as *const u32);
-        let iw2 = std::ptr::read_unaligned(src.add(pos + 4) as *const u16) & P::VERIFY_MASK;
+        let iw2 = if P::VERIFY_MASK == 0 { 0 } else { std::ptr::read_unaligned(src.add(pos + 4) as *const u32) & P::VERIFY_MASK };
         let h = hash6(iw1, iw2);
         let bucket = table.get_unchecked_mut(h);
         let hw1 = bucket.w1;
@@ -252,17 +261,17 @@ pub unsafe fn find_matches<M: MatchLen, P: Mode>(
         let mut cand = usize::MAX;
         if word1_hit {
             let c = bucket.p1 as usize;
-            if P::VERIFY_MASK == 0 || std::ptr::read_unaligned(src.add(c + 4) as *const u16) & P::VERIFY_MASK == iw2 {
+            if P::VERIFY_MASK == 0 || std::ptr::read_unaligned(src.add(c + 4) as *const u32) & P::VERIFY_MASK == iw2 {
                 cand = c;
             } else if iw1 == bucket.w2 {
                 let c2 = bucket.p2 as usize;
-                if std::ptr::read_unaligned(src.add(c2 + 4) as *const u16) & P::VERIFY_MASK == iw2 {
+                if std::ptr::read_unaligned(src.add(c2 + 4) as *const u32) & P::VERIFY_MASK == iw2 {
                     cand = c2;
                 }
             }
         } else if iw1 == bucket.w2 {
             let c2 = bucket.p2 as usize;
-            if P::VERIFY_MASK == 0 || std::ptr::read_unaligned(src.add(c2 + 4) as *const u16) & P::VERIFY_MASK == iw2 {
+            if P::VERIFY_MASK == 0 || std::ptr::read_unaligned(src.add(c2 + 4) as *const u32) & P::VERIFY_MASK == iw2 {
                 cand = c2;
             }
         }

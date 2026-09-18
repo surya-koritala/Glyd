@@ -214,3 +214,24 @@ fn test_parallel_pipeline_256k_chunking_and_chaining() {
 
 
 
+
+/// A literal run at the format's maximum (MAX_LIT_LEN = 65797) inside a
+/// compressed block. The chunked AVX2 decoder keeps lengths in u16 arrays and
+/// once wrapped this to 261; the parallel Silesia stream happened to contain
+/// one, the sequential one did not. The block needs a compressible prefix so
+/// it is not stored raw, then an incompressible run longer than the maximum.
+#[test]
+fn test_roundtrip_literal_run_at_max_len() {
+    use simd_stream_codec::format::MAX_LIT_LEN;
+    let mut input = vec![b'A'; 100 * 1024];
+    let mut st = 0x9E37_79B9_7F4A_7C15u64;
+    for _ in 0..(MAX_LIT_LEN + 5000) {
+        st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        input.push((st >> 40) as u8);
+    }
+    for f in [simd_stream_codec::compress, simd_stream_codec::compress_parallel] {
+        let c = f(&input);
+        assert_eq!(simd_stream_codec::decompress(&c).unwrap(), input);
+        assert_eq!(simd_stream_codec::decompress_parallel(&c).unwrap(), input);
+    }
+}

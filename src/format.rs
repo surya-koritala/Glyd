@@ -16,7 +16,7 @@ pub const PADDING: usize = 64; // Safe SIMD read/write margin
 /// LZAV's minimum reference: 6-byte matches cost 2 or 3 bytes to encode, so
 /// anything shorter is not worth a token. Measured on Silesia: 23% fewer
 /// tokens than the 4-byte minimum for 10.7% more literal bytes, net positive.
-pub const MIN_MATCH_LEN: usize = 6;
+pub const MIN_MATCH_LEN: usize = 7;
 /// Minimum match of the dense retry parse (FLAG_DENSE blocks). Data such as
 /// 12-bit images has its redundancy in 4- and 5-byte matches.
 pub const MIN_MATCH_LEN_DENSE: usize = 5;

@@ -145,6 +145,11 @@ pub unsafe fn decompress_avx2(
                         if v == ESCAPE_CONT as usize {
                             v += std::ptr::read_unaligned(extras.add(e) as *const u16) as usize;
                             e += 2;
+                            // The length arrays are u16; the top 262 lengths do not fit.
+                            if ESCAPE_BASE_LIT + v > 0xFFFF {
+                                careful = CHUNK - 1;
+                                break 'chunk;
+                            }
                         }
                         lit_sum += v;
                         *litl.get_unchecked_mut(i) = (ESCAPE_BASE_LIT + v) as u16;
@@ -155,6 +160,10 @@ pub unsafe fn decompress_avx2(
                         if v == ESCAPE_CONT as usize {
                             v += std::ptr::read_unaligned(extras.add(e) as *const u16) as usize;
                             e += 2;
+                            if esc_base_match + v > 0xFFFF {
+                                careful = CHUNK - 1;
+                                break 'chunk;
+                            }
                         }
                         ml_sum += v;
                         *mll.get_unchecked_mut(i) = (esc_base_match + v) as u16;
@@ -174,77 +183,15 @@ pub unsafe fn decompress_avx2(
                 break 'chunk;
             }
 
-            // Copy-only loop.
-            let tok_base = tokens.add(token_idx);
-            for i in 0..CHUNK {
-                let lit = *litl.get_unchecked(i) as usize;
-                let ml = *mll.get_unchecked(i) as usize;
-
-                let v = _mm256_loadu_si256(lit_ptr as *const __m256i);
-                _mm256_storeu_si256(dst_ptr as *mut __m256i, v);
-                if lit > 32 {
-                    let mut n = 32usize;
-                    while n < lit {
-                        let v = _mm256_loadu_si256(lit_ptr.add(n) as *const __m256i);
-                        _mm256_storeu_si256(dst_ptr.add(n) as *mut __m256i, v);
-                        n += 32;
-                    }
-                }
-                lit_ptr = lit_ptr.add(lit);
-                dst_ptr = dst_ptr.add(lit);
-
-                if ml != 0 {
-                    let lo = std::ptr::read_unaligned(offsets.add(off_pos) as *const u16) as usize;
-                    let offset = lo | (((*tok_base.add(i) >> 7) as usize) << 16);
-                    off_pos += OFFSET_BYTES;
-                    let available = dst_ptr.offset_from(buffer_start) as usize;
-                    if offset == 0 || offset > available {
-                        return Err(CodecError::OffsetOutOfBounds { offset, available });
-                    }
-                    let match_src = dst_ptr.sub(offset);
-                    if offset >= 32 {
-                        let m = _mm256_loadu_si256(match_src as *const __m256i);
-                        _mm256_storeu_si256(dst_ptr as *mut __m256i, m);
-                        if ml > 32 {
-                            let mut n = 32usize;
-                            while n < ml {
-                                let m = _mm256_loadu_si256(match_src.add(n) as *const __m256i);
-                                _mm256_storeu_si256(dst_ptr.add(n) as *mut __m256i, m);
-                                n += 32;
-                            }
-                        }
-                    } else if offset >= 16 {
-                        let match_end = dst_ptr.add(ml);
-                        let mut s = match_src;
-                        let mut d = dst_ptr;
-                        while d < match_end {
-                            let m = _mm_loadu_si128(s as *const __m128i);
-                            _mm_storeu_si128(d as *mut __m128i, m);
-                            s = s.add(16);
-                            d = d.add(16);
-                        }
-                    } else if offset >= 8 {
-                        let match_end = dst_ptr.add(ml);
-                        let mut s = match_src;
-                        let mut d = dst_ptr;
-                        while d < match_end {
-                            std::ptr::copy_nonoverlapping(s, d, 8);
-                            s = s.add(8);
-                            d = d.add(8);
-                        }
-                    } else {
-                        let match_end = dst_ptr.add(ml);
-                        let mut s = match_src;
-                        let mut d = dst_ptr;
-                        while d < match_end {
-                            *d = *s;
-                            d = d.add(1);
-                            s = s.add(1);
-                        }
-                    }
-                    dst_ptr = dst_ptr.add(ml);
-                }
-            }
+            // Copy-only loop, in its own function so its cursors stay in
+            // registers: inlined into this large frame they spilled, and the
+            // spill made dst_ptr a store-load chain (~10 cycles per token).
+            let (nl, nd, no) = copy_chunk(
+                &litl, &mll, tokens.add(token_idx), lit_ptr, dst_ptr, offsets, off_pos, buffer_start,
+            )?;
+            lit_ptr = nl;
+            dst_ptr = nd;
+            off_pos = no;
             token_idx += CHUNK;
             extra_idx = e;
             continue 'tokens;
@@ -360,4 +307,92 @@ pub unsafe fn decompress_avx2(
     }
 
     Ok(written)
+}
+
+/// Pass 2 of the fast phase: apply one chunk of decoded lengths. Bounds were
+/// established by the caller from the chunk's totals; only the offset itself
+/// is validated here, since it is the one value that can point outside.
+#[target_feature(enable = "avx2")]
+#[target_feature(enable = "bmi2")]
+#[inline(never)]
+unsafe fn copy_chunk(
+    litl: &[u16; 32],
+    mll: &[u16; 32],
+    tok_base: *const u8,
+    mut lit_ptr: *const u8,
+    mut dst_ptr: *mut u8,
+    offsets: *const u8,
+    mut off_pos: usize,
+    buffer_start: *const u8,
+) -> Result<(*const u8, *mut u8, usize)> {
+    for i in 0..32 {
+        let lit = *litl.get_unchecked(i) as usize;
+        let ml = *mll.get_unchecked(i) as usize;
+
+        let v = _mm256_loadu_si256(lit_ptr as *const __m256i);
+        _mm256_storeu_si256(dst_ptr as *mut __m256i, v);
+        if lit > 32 {
+            let mut n = 32usize;
+            while n < lit {
+                let v = _mm256_loadu_si256(lit_ptr.add(n) as *const __m256i);
+                _mm256_storeu_si256(dst_ptr.add(n) as *mut __m256i, v);
+                n += 32;
+            }
+        }
+        lit_ptr = lit_ptr.add(lit);
+        dst_ptr = dst_ptr.add(lit);
+
+        if ml != 0 {
+            let lo = std::ptr::read_unaligned(offsets.add(off_pos) as *const u16) as usize;
+            let offset = lo | (((*tok_base.add(i) >> 7) as usize) << 16);
+            off_pos += OFFSET_BYTES;
+            let available = dst_ptr.offset_from(buffer_start) as usize;
+            if offset == 0 || offset > available {
+                return Err(CodecError::OffsetOutOfBounds { offset, available });
+            }
+            let match_src = dst_ptr.sub(offset);
+            if offset >= 32 {
+                let m = _mm256_loadu_si256(match_src as *const __m256i);
+                _mm256_storeu_si256(dst_ptr as *mut __m256i, m);
+                if ml > 32 {
+                    let mut n = 32usize;
+                    while n < ml {
+                        let m = _mm256_loadu_si256(match_src.add(n) as *const __m256i);
+                        _mm256_storeu_si256(dst_ptr.add(n) as *mut __m256i, m);
+                        n += 32;
+                    }
+                }
+            } else if offset >= 16 {
+                let match_end = dst_ptr.add(ml);
+                let mut s = match_src;
+                let mut d = dst_ptr;
+                while d < match_end {
+                    let m = _mm_loadu_si128(s as *const __m128i);
+                    _mm_storeu_si128(d as *mut __m128i, m);
+                    s = s.add(16);
+                    d = d.add(16);
+                }
+            } else if offset >= 8 {
+                let match_end = dst_ptr.add(ml);
+                let mut s = match_src;
+                let mut d = dst_ptr;
+                while d < match_end {
+                    std::ptr::copy_nonoverlapping(s, d, 8);
+                    s = s.add(8);
+                    d = d.add(8);
+                }
+            } else {
+                let match_end = dst_ptr.add(ml);
+                let mut s = match_src;
+                let mut d = dst_ptr;
+                while d < match_end {
+                    *d = *s;
+                    d = d.add(1);
+                    s = s.add(1);
+                }
+            }
+            dst_ptr = dst_ptr.add(ml);
+        }
+    }
+    Ok((lit_ptr, dst_ptr, off_pos))
 }
