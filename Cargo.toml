@@ -90,3 +90,7 @@ path = "examples/floor.rs"
 [[example]]
 name = "cfloor"
 path = "examples/cfloor.rs"
+
+[[example]]
+name = "fastloop"
+path = "examples/fastloop.rs"

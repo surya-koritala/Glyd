@@ -98,9 +98,9 @@ Levels, same run (`quick3`, M1 Max, one core):
 
 | Level | Comp GB/s | Ratio | Decode GB/s |
 | :--- | ---: | ---: | ---: |
-| `--fast` (`compress_into_fast`) | 0.54 | 2.098 | 5.02 |
-| default | 0.34 | 2.192 | 6.80 |
-| liblz4 | 0.66 | 2.101 | 4.38 |
+| `--fast` (`compress_into_fast`) | 0.55 | 2.176 | 4.84 |
+| default | 0.34 | 2.192 | 6.82 |
+| liblz4 | 0.66 | 2.101 | 4.39 |
 
 The compression ceiling for any greedy LZ finder is one data-random branch
 per probed position (~0.7-1 GB/s per core); see `examples/cfloor.rs`. `src/neon_decompress.rs` is a
@@ -147,9 +147,11 @@ speed.
 **Next, in order:**
 
 1. **Fast compression level (GOAL3 S3).** Built (`-1`/`--fast`): 5-byte
-   hash, 1-way 32 KB table, skip, minimum match 5. On the M1 it is at 81%
-   of liblz4's compression speed at liblz4's ratio, decoding 14% faster
-   than liblz4. Handles x-ray (1.004) instead of storing it raw.
+   hash, 1-way 32 KB table, skip, minimum match 5, offsets down to 1. On
+   the M1 it is at 83% of liblz4's compression speed with 3.6% better
+   ratio and 10% faster decode. The parse alone is faster than liblz4;
+   the gap is the four-stream emit (profile in the changelog). Handles
+   x-ray (1.004) instead of storing it raw.
 2. **Decode toward the wall (GOAL3 S2).** memcpy of the output is 22.9 GB/s;
    we are at 26% of it, liblz4 at 24%. The remaining cost is ~9 cycles per
    token in the copy loop; the plausible next stop is ~9-10 GB/s. nci and

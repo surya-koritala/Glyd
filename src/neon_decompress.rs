@@ -415,18 +415,29 @@ pub unsafe fn decompress_neon(
     Ok(written)
 }
 
-/// Overlapping match copy for offsets under 32 (2.2% of matches).
+/// Overlapping match copy for offsets under 32. The chunk bounds allow 64
+/// bytes of wild store past the match end.
 #[cold]
 #[inline(never)]
 unsafe fn short_match(s: *const u8, d: *mut u8, offset: usize, ml: usize) {
     let end = d.add(ml);
-    let (mut s, mut d) = (s, d);
     if offset >= 16 {
+        let (mut s, mut d) = (s, d);
         while d < end { copy16(s, d); s = s.add(16); d = d.add(16); }
     } else if offset >= 8 {
+        let (mut s, mut d) = (s, d);
         while d < end { std::ptr::copy_nonoverlapping(s, d, 8); s = s.add(8); d = d.add(8); }
     } else {
-        while d < end { *d = *s; d = d.add(1); s = s.add(1); }
+        // Period-`offset` pattern: eight byte stores lay it down, then
+        // 8-byte copies continue from the same pattern at a distance that
+        // is a multiple of the period and at least 8.
+        for k in 0..8 {
+            *d.add(k) = *s.add(k);
+        }
+        let stride = offset * ((8 + offset - 1) / offset);
+        let mut dd = d.add(8);
+        let mut ss = dd.sub(stride);
+        while dd < end { std::ptr::copy_nonoverlapping(ss, dd, 8); ss = ss.add(8); dd = dd.add(8); }
     }
 }
 

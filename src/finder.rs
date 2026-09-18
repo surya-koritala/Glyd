@@ -293,10 +293,12 @@ impl Cursors {
                 self.push_escape(rc, bias + 15);
             }
         } else {
-            *self.ext = lc.wrapping_sub(ESCAPE_BASE_LIT) as u8;
-            self.ext = self.ext.add(nl);
-            *self.ext = rc.wrapping_sub(bias + 15) as u8;
-            self.ext = self.ext.add(nm);
+            // Both escape bytes in one u16 store: the match byte sits at
+            // position nl, the literal byte (if present) at 0.
+            let lb = (lc.wrapping_sub(ESCAPE_BASE_LIT) as u8) as u16 & 0u16.wrapping_sub(nl as u16);
+            let mb = (rc.wrapping_sub(bias + 15) as u8) as u16;
+            std::ptr::write_unaligned(self.ext as *mut u16, (lb | (mb << (8 * nl))).to_le());
+            self.ext = self.ext.add(nl + nm);
         }
         let lcode = lc.min(LIT_CODE_ESCAPE);
         let mcode = if rc == 0 { 0 } else { (rc - bias).min(MATCH_CODE_ESCAPE) };
@@ -310,9 +312,9 @@ impl Cursors {
         // Literal wild copy: 32 bytes unconditionally (lc is often 0 and
         // that branch mispredicts), more only for long runs.
         if lit_src.add(lc + 32) <= src_end {
-            std::ptr::copy_nonoverlapping(lit_src, self.lit, 32);
-            if lc > 32 {
-                let mut k = 32;
+            std::ptr::copy_nonoverlapping(lit_src, self.lit, 16);
+            if lc > 16 {
+                let mut k = 16;
                 while k < lc {
                     std::ptr::copy_nonoverlapping(lit_src.add(k), self.lit.add(k), 32);
                     k += 32;
@@ -492,6 +494,9 @@ pub const FAST_HASH_BITS: u32 = 13;
 pub const FAST_HASH_SIZE: usize = 1 << FAST_HASH_BITS;
 pub type FastTable = [u32; FAST_HASH_SIZE];
 
+/// Offsets down to 1 are accepted (the default parse refuses < 8 to keep
+/// its copies wide): on Silesia that is +0.08 ratio at the same speed.
+///
 /// 5-byte hash, as liblz4 on 64-bit: every hit is a 5-byte candidate, so
 /// the minimum-5 parse wastes fewer compares and mispredicts less.
 #[inline(always)]
@@ -540,7 +545,7 @@ pub unsafe fn find_matches_fast<P: Mode>(
             let step = (search_nb >> SKIP_STRENGTH) as usize;
             search_nb += 1;
             let d = pos.wrapping_sub(c);
-            if d >= MIN_OFFSET && d < window {
+            if d >= 1 && d < window {
                 let x = std::ptr::read_unaligned(src.add(pos) as *const u64)
                     ^ std::ptr::read_unaligned(src.add(c) as *const u64);
                 let len = if x == 0 { 8 } else { (x.trailing_zeros() / 8) as usize };

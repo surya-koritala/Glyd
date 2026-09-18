@@ -454,3 +454,37 @@ path is per-token work in the parse loop (extend, back-match, two
 variable-trip loops) that liblz4 also pays; per byte the parse alone is at
 liblz4 parity (0.67 vs 0.66), the rest is emit and framing.
 27 tests green (fast-level round trips added).
+
+## Fast level: offset floor 1, the profile, and where the gap is (M1 Max)
+- The fast finder now accepts offsets down to 1 (the default parse refuses
+  < 8 to keep its copies wide). Parse-only sweep at 13 bits: ratio 2.104 ->
+  2.183 and 0.68 -> 0.70 GB/s. End to end: ratio 2.098 -> 2.176.
+- Decoder: offsets under 8 were a byte loop; now eight byte stores lay the
+  pattern down and 8-byte copies continue at a stride rounded up to a
+  multiple of the period (liblz4's trick). Fast-level decode 4.48 -> 4.84
+  GB/s (mozilla 3.3 -> 3.9, mr 3.05 -> 4.1).
+- Instruments profile of the fast level (`examples/fastloop.rs`, Time
+  Profiler, 4000 samples): 31% of samples on the instruction after the
+  hit branch, 19% on the miss-loop top, 7.5% waiting on the candidate
+  compare. Half the time is resolving the data-random hit/miss branch;
+  the loop body is 12 instructions. Per byte the parse alone (0.70 GB/s)
+  is faster than liblz4 end to end (0.66); our four-stream emit is 2.8 ns
+  per token (~9 cycles, 4 stores) and is the whole remaining gap.
+- Refuted for speed, all measured in `cfloor`: NEON 32-byte extend and
+  u64 back-match (355 vs 292 ms: the vector->scalar latency lands on the
+  serial pos chain), liblz4's forward-hash loop shape (338), acceleration
+  2-4 (ratio falls below 2.10 before speed passes liblz4), 64 KB window
+  (slower: fewer matches, more probes), record-then-emit two-pass (equal),
+  u16 escape store and 16-byte literal copy (noise).
+
+Same run (quick3), Silesia, one core:
+
+| level | comp GB/s | ratio | decode GB/s | vs liblz4 decode |
+|---|---:|---:|---:|---:|
+| liblz4 | 0.66 | 2.101 | 4.39 | 100% |
+| fast | 0.55 | 2.176 | 4.84 | 110% |
+| default | 0.34 | 2.192 | 6.82 | 156% |
+
+Fast beats liblz4 on ratio (+3.6%) and decode (+10%) and is at 83% of its
+compression speed. Table size remains the speed dial (12 bits: ~0.60 GB/s
+at 2.08).
