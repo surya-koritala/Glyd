@@ -232,3 +232,13 @@ help, but even optimistic hiding leaves it marginal. The trade is ratio
 dominance over LZAV for our decode crown -- probably not worth it, since the
 decode lead is our defining strength. Building v6 to get the exact integrated
 number is hours with a likely revert.
+
+## GOAL3: pivot to speed. Physics measured, LZ4 is the gate, dense retry retired
+speed_ceiling (single core, pinned): memcpy of Silesia 22.9 GB/s is the hard
+decode ceiling (DRAM ~19, L3 ~48, L2 ~67). liblz4 decodes at 25% of it, we at
+14%. Nobody is near the wall because cost is per token (14-20M tokens), not per
+byte. GOAL3.md: Tier S1 = dominate liblz4 on decode+ratio, measured in the same
+run (quick3 now reports liblz4 alongside). Dense retry made opt-in
+(ALATIROK_DENSE=1); x-ray floor set to liblz4's own 1.00-1.01; total ratio
+floor RAISED 1.85 -> 2.1009.
+  goal3_baseline: ratio 2.37232 | comp 0.4651 | decomp 3.1239 vs liblz4 5.6526 (55.3%)

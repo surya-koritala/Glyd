@@ -1,5 +1,9 @@
 // Fast three-axis check on Silesia: ratio, compression GB/s, decompression GB/s.
 // Verifies round-trip. Appends durably to quick3_log.csv (this host crashes).
+//
+// GOAL3: liblz4 is decoded in the same run with the same protocol, so the
+// S1.2 gate (decode >= liblz4) is judged against a live number, not a stale
+// one that thermal or background drift could fake.
 use std::io::Write;
 use std::time::Instant;
 const GB: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -36,6 +40,7 @@ fn main() {
                  "reymont","samba","sao","webster","xml","x-ray"];
     let dir = std::path::Path::new("corpus");
     let (mut o, mut c, mut ct, mut dt) = (0usize, 0usize, 0.0f64, 0.0f64);
+    let (mut lz_c, mut lz_dt) = (0usize, 0.0f64);
     pin(4);
     for f in &files {
         let p = dir.join(f);
@@ -49,22 +54,30 @@ fn main() {
         let fc = timed(runs, min_s, || { let mut x = Vec::with_capacity(d.len());
                                           simd_stream_codec::compress_into(&d, &mut x); });
         let fd = timed(runs, min_s, || { let _ = simd_stream_codec::decompress_into_raw(&b, &mut dst); });
-        ct += fc; dt += fd;
+        // liblz4, same protocol, same run.
+        let bound = lz4::block::compress_bound(d.len()).unwrap_or(d.len() * 2 + 64);
+        let mut lb = vec![0u8; bound];
+        let n = lz4::block::compress_to_buffer(&d, None, false, &mut lb).unwrap();
+        let lz = lb[..n].to_vec();
+        let ld = timed(runs, min_s, || { let _ = lz4::block::decompress_to_buffer(&lz, Some(d.len() as i32), &mut dst); });
+        ct += fc; dt += fd; lz_dt += ld; lz_c += lz.len();
         if verbose {
-            println!("  {:<8} ratio {:.4}  comp {:.3} GB/s ({:.1} ms)  decomp {:.3} GB/s ({:.1} ms)", f,
-                     d.len() as f64 / b.len() as f64, (d.len() as f64 / GB) / fc, fc * 1e3, (d.len() as f64 / GB) / fd, fd * 1e3);
+            println!("  {:<8} ratio {:.4}  comp {:.3} GB/s ({:.1} ms)  decomp {:.3} GB/s ({:.1} ms)  lz4 decomp {:.3} GB/s", f,
+                     d.len() as f64 / b.len() as f64, (d.len() as f64 / GB) / fc, fc * 1e3,
+                     (d.len() as f64 / GB) / fd, fd * 1e3, (d.len() as f64 / GB) / ld);
         }
         o += d.len(); c += b.len();
     }
     let ratio = o as f64 / c as f64;
     let cg = (o as f64 / GB) / ct;
     let dg = (o as f64 / GB) / dt;
-    // LZAV targets from Phase 0: ratio 2.4500, comp 0.489, decomp 3.130
-    println!("{:<22} ratio {:.5} ({:.1}% of T1.2)  comp {:.4} ({:.1}% of T1.3)  decomp {:.4} ({})",
-             label, ratio, 100.0*ratio/2.45, cg, 100.0*cg/0.489, dg,
-             if dg >= 3.130 { "T1.4 OK" } else { "T1.4 FAIL" });
+    let lzg = (o as f64 / GB) / lz_dt;
+    let lz_ratio = o as f64 / lz_c as f64;
+    println!("{:<22} ratio {:.5} (floor {:.4})  comp {:.4}  decomp {:.4} vs liblz4 {:.4} = {:.1}% ({})",
+             label, ratio, lz_ratio, cg, dg, lzg, 100.0 * dg / lzg,
+             if dg >= lzg && ratio >= lz_ratio { "S1 OK" } else { "S1 short" });
     if let Ok(mut fh) = std::fs::OpenOptions::new().create(true).append(true).open("quick3_log.csv") {
-        let _ = writeln!(fh, "{},{:.5},{:.5},{:.5}", label, ratio, cg, dg);
+        let _ = writeln!(fh, "{},{:.5},{:.5},{:.5},lz4dec={:.5}", label, ratio, cg, dg, lzg);
         let _ = fh.flush();
     }
 }

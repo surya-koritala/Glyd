@@ -76,6 +76,16 @@ fn find_block<P: Mode>(
     );
 }
 
+/// The dense retry is opt-in (ALATIROK_DENSE=1). GOAL3 section 3: it bought
+/// x-ray 1.08 for 23 ms of compression and 2.7 ms of decode, which the speed
+/// target cannot afford; liblz4 gets 1.01 there at memcpy speed. The fast
+/// level (GOAL3 Tier S3) is the intended replacement. Cached, never per block.
+fn dense_enabled() -> bool {
+    use std::sync::OnceLock;
+    static D: OnceLock<bool> = OnceLock::new();
+    *D.get_or_init(|| std::env::var("ALATIROK_DENSE").is_ok())
+}
+
 /// Streams would not save at least 4% of the chunk.
 #[inline(always)]
 fn not_worth_it(chunk_len: usize, tokens: &[u8], offsets: &[u8], extras: &[u8], literals: &[u8]) -> bool {
@@ -98,6 +108,11 @@ fn parse_block(
     find_block::<Lzav>(full_input, block_start, block_len, table, tokens, offsets, extras, literals);
     if !not_worth_it(block_len, tokens, offsets, extras, literals) {
         return FLAG_COMPRESSED;
+    }
+    if !dense_enabled() {
+        // Keep the ordinary parse whenever it beats a raw store at all.
+        let payload = tokens.len() + offsets.len() + extras.len() + literals.len();
+        return if payload < block_len { FLAG_COMPRESSED } else { FLAG_RAW_UNCOMPRESSED };
     }
     tokens.clear();
     offsets.clear();
