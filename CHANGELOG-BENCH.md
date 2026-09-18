@@ -114,3 +114,16 @@ Shannon entropy of the real streams: tokens 5.344 b/sym (saves 5.96 MB),
 offset-hi 6.247 (3.93 MB), literals 7.524 (2.16 MB), offset-lo 7.785 (0.48 MB).
 Total ideal saving 12.89% of output -> ratio 2.17972 becomes 2.50225.
 Tokens + offset-hi alone give 10.17% -> 2.42641. First proven route to T1.2.
+
+## T1.2 entropy coding measured per block with the real huffman.rs
+examples/huff_probe.rs, 802 blocks, table cost included, raw kept when smaller.
+Per-block tables capture more than the corpus-wide bound predicted:
+  tokens 7.31% | offset-hi 4.30% | offset-lo 1.49% | literals 5.89% (was 2.2%)
+  tokens only -> 2.35170 | tokens+offset-hi -> 2.46615 | all four -> 2.69078
+Decode cost is the wall. Current decode_into: 3.3 ns/sym, tokens alone 60 ms,
+against a T1.4 budget of 63 ms for the WHOLE decode (LZ loop already 44-54 ms).
+A 4-stream interleaved decoder at ~0.5 ns/sym would cost ~18 ms for
+tokens+offset-hi, which fits only on the h6 base whose ratio (2.11-2.16)
+lands at 2.35-2.41 after coding. Huffman on the current format reaches T1.2
+but cannot hold T1.4 on the same commit. Next: decompose LZAV's advantage
+into format vs parse (it reaches 2.45 with no entropy coding at all).
