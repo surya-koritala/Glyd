@@ -23,3 +23,25 @@ ours   refs  17938271  lit bytes  36387038 (17.2% of input)  match bytes 1721436
 lzav   refs  13766601  lit bytes  40266880 (19.0% of input)  match bytes 171671700  avg len 12.47
        offsets <1K  21.4%  <4K   9.6%  <64K  27.4%  >=64K  41.6%
        len <=20  89.4%  21..33   5.9%  >33   4.7%   lit before ref: 0  66.9%  1..6  25.5%  7..15   4.8%
+
+LZAV offsets: <256 12.4%  <4K 18.5%  <64K 27.4%  <1M 33.0%  <4M 7.6%  >=4M 1.1%
+LZAV match len: <=20 89.4%  21..33 5.9%  34..270 4.5%  271..525 0.1%  >525 0.1%
+LZAV lit count: 0 66.9%  1..2 17.8%  3..6 7.6%  7..15 4.8%  >15 2.8%
+
+format                                our parse    ratio     LZAV parse    ratio
+v3 as is (3 lit/5 len/u16 off)        111736197  1.89678       98720490  2.14686
+A: 2 off/4 len/2 lit, esc u16          96031225  2.20698       93187905  2.27431
+A: 2 off/4 len/2 lit, esc u8+          91423049  2.31822       89425224  2.37001
+B: 1 off/4 len/3 lit, esc u8+          93040416  2.27792       90091035  2.35249
+C: 2 off/3 len/3 lit, esc u8+          91398215  2.31885       90462777  2.34283
+D: 1 off/5 len/2 lit, esc u8+          93817976  2.25904       90044025  2.35372
+E: 2 off/4 len/2 lit mref6 u8+         91087784  2.32675       89165956  2.37690
+
+format, LZAV parse                     tokens      other    ratio     huff tok    ratio
+S: LZAV headers, split streams       18320099   68941840  2.42876     82242442  2.57700  T1.2 OK
+A: 2 off/4 len/2 lit, esc u16        13766613   79421292  2.27431     88015750  2.40796
+A: 2 off/4 len/2 lit, esc u8+        13766613   75658611  2.37001     84253069  2.51550  T1.2 OK
+B: 1 off/4 len/3 lit, esc u8+        13766613   76324422  2.35249     84761459  2.50041  T1.2 OK
+C: 2 off/3 len/3 lit, esc u8+        13766613   76696164  2.34283     84469271  2.50906  T1.2 OK
+D: 1 off/5 len/2 lit, esc u8+        13766613   76277412  2.35372     84965945  2.49439  T1.2 OK
+E: 2 off/4 len/2 lit mref6 u8+       13766613   75399343  2.37690     84148891  2.51861  T1.2 OK

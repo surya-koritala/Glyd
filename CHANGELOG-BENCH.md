@@ -142,3 +142,15 @@ window, back-matching into pending literals, adaptive skip, no lazy match.
 Route to T1.2: reproduce that parse in a stream format with cheap far
 offsets. The earlier "bigger window is negative" result was for a 1-way
 4-byte-hash table, which thrashes; it does not refute this combination.
+
+## T1.2: stream formats costed exactly on LZAV's parse (lzav_decomp format study)
+Simple byte layouts lose to LZAV's own format on its parse because LZAV
+steals 2 offset bits from its header byte (10/18/23-bit classes):
+  E: 2-bit offset class / 4-bit len (mref 6) / 2-bit lit, 1/2/3-byte offsets,
+     byte escapes: 2.37690 raw, 2.51861 with per-block Huffman on the
+     13.77M token bytes (T1.2 OK, +2.8% margin)
+  S: LZAV headers split into streams: 2.42876 raw, 2.57700 with Huffman on
+     18.32M header bytes
+  v3 layout on the same parse: 2.14686 (u16 offsets cannot even hold it)
+LZAV parse offsets: <256 12.4% | <4K 18.5% | <64K 27.4% | <1M 33.0% | <4M 7.6%
+Plan: port LZAV's finder, format v5 = E, then Huffman tokens.
