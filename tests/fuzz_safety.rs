@@ -39,7 +39,9 @@ fn test_corruption_truncation_safety() {
     let input = b"Structured payload testing memory safety under extreme stream truncations. \
                   {\"id\": 101, \"status\": \"ACTIVE\", \"tokens\": [1,2,3,4,5,6,7,8,9]}";
 
-    for compressed in [compress(input), compress_parallel(input)] {
+    let mut max = Vec::new();
+    simd_stream_codec::compress_into_max(input, &mut max);
+    for compressed in [compress(input), compress_parallel(input), max] {
         let mut dst = vec![0u8; input.len() + 256];
         for len in 1..compressed.len() {
             let truncated = &compressed[..len];
@@ -112,11 +114,17 @@ fn test_corruption_mutation_fuzz_1m() {
     let seeds = seed_inputs();
 
     // Compress every seed both sequentially and in parallel so the fuzzer
-    // covers chained streams and FLAG_CHAIN_RESET streams alike.
+    // covers chained streams and FLAG_CHAIN_RESET streams alike, at the
+    // default level (v6 blocks) and the max level (v7 blocks).
     let mut streams: Vec<(Vec<u8>, usize)> = Vec::new();
     for s in &seeds {
         streams.push((compress(s), s.len()));
         streams.push((compress_parallel(s), s.len()));
+        let (mut m, mut mp) = (Vec::new(), Vec::new());
+        simd_stream_codec::compress_into_max(s, &mut m);
+        simd_stream_codec::compress_parallel_into_max(s, &mut mp);
+        streams.push((m, s.len()));
+        streams.push((mp, s.len()));
     }
 
     let mut rng = Rng(0xDEAD_BEEF_CAFE_F00D);
