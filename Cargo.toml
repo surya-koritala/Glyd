@@ -58,3 +58,7 @@ path = "examples/huff_probe.rs"
 [[example]]
 name = "lzav_decomp"
 path = "examples/lzav_decomp.rs"
+
+[[example]]
+name = "huff_speed"
+path = "examples/huff_speed.rs"

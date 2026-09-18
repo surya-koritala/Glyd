@@ -189,3 +189,16 @@ the gap. The gap is encoding:
 To beat 2.45 (not just tie) needs entropy coding, but scalar Huffman token
 decode (~3.4 ns/sym) would drop decode under the floor. The path that can
 dominate LZAV is a fast (interleaved/SIMD) entropy decoder; that is next.
+
+## T1.2 entropy coding REFUTED for the decode budget (huff_speed)
+Interleaved Huffman decode of the 14.38M-token stream, pinned, best of 7:
+  N=1 4.28 ns/sym | N=2 3.81 | N=4 3.06 | N=8 3.10  (~0.3 GB/s on tokens)
+Interleaving gained only 1.4x and plateaued at N=4, so the table lookup is
+the bottleneck, not the serial bit-position dependency. Huffman shrinks tokens
+to 5.79 bits/sym (14.38M -> 10.42M bytes, saves ~4.5% of output, ratio ~2.50),
+but decoding them costs ~43 ms on top of the ~63 ms LZ decode: decode would
+fall 3.19 -> ~1.9 GB/s, well under the 3.130 floor. Table Huffman cannot pay
+for itself here even interleaved. The path that strictly dominates LZAV on all
+three axes is therefore not reachable with this entropy method. The remaining
+ratio lever that does not touch decode is the byte format (bit-packed offsets,
+~+2% -> ~2.44), which would tie LZAV on ratio while we keep our decode lead.
