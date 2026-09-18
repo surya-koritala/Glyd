@@ -1,3 +1,5 @@
+#[cfg(target_arch = "x86_64")]
+mod x86 {
 // Why is the SIMD token pre-pass 10 cycles/token when its instruction count
 // says 2? Isolate it: the same steps as the decoder's pre-pass over the real
 // token and extras streams, built up one piece at a time, timed per token.
@@ -131,3 +133,9 @@ fn main() {
     stage!("3 + read arrays back", 3);
     std::hint::black_box(sink);
 }
+
+}
+#[cfg(target_arch = "x86_64")]
+fn main() { x86::main() }
+#[cfg(not(target_arch = "x86_64"))]
+fn main() {}

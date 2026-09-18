@@ -332,3 +332,18 @@ columns; S3 table now lists fast (not built), default (min match 7), dense
                     same run = 109.3%  S1 OK
 Per file: beat liblz4 on 10 of 12 (sao +87%, ooffice +35%, osdb +23%, mr
 +19%); nci -2%, webster -3%.
+
+## aarch64: NEON port of the v6 decoder (Apple M1 Max)
+The crate did not build on arm64 (x86 modules were unguarded) and the
+scalar fallback decoded Silesia at 1.28 GB/s against liblz4's 4.43 in the
+same run (29%). `src/neon_decompress.rs` is a lane-for-lane port of the
+AVX2 decoder: the 32-token pre-pass runs as two 16-lane vectors, movemask
+is bit-select + three pairwise adds, sums are `vaddlvq_u8`, copies are
+16-byte pairs (ldp/stp q). Same-run quick3, M1 Max, one core:
+
+Silesia 1C decomp 1.28 -> 5.32 GB/s vs liblz4 4.36 = 122% (S1.2 PASS on
+this host). Beats liblz4 on 12/12 files (nci +8%, webster +15%, sao +97%).
+Ratio 2.192, comp 0.27 GB/s (scalar finder, no NEON prefix compare yet).
+memcpy ceiling here is 39.9 GB/s; we are at 13% of it, liblz4 at 11%.
+25 tests green including the 1M-mutation fuzz. Checksum stays scalar on
+arm64 (not on the raw decode path that the gate measures).

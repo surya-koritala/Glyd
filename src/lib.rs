@@ -3,9 +3,14 @@ pub mod format;
 pub mod huffman;
 pub mod finder;
 pub mod fallback;
+#[cfg(target_arch = "x86_64")]
 pub mod x86_decompress;
+#[cfg(target_arch = "x86_64")]
 pub mod x86_compress;
+#[cfg(target_arch = "x86_64")]
 pub mod x86_checksum;
+#[cfg(target_arch = "aarch64")]
+pub mod neon_decompress;
 pub mod streaming;
 pub mod c_api;
 
@@ -345,6 +350,20 @@ unsafe fn decode_block(
             return Ok(());
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let (table, esc) = if dense {
+            (&TOKEN_TABLE_DENSE, ESCAPE_BASE_MATCH_DENSE)
+        } else {
+            (&TOKEN_TABLE, ESCAPE_BASE_MATCH)
+        };
+        neon_decompress::decompress_neon(
+            tokens, token_count, offsets, offsets_len, extras, extras_len,
+            literals, dst, buffer_start, uncomp_len, table, esc,
+        )?;
+        return Ok(());
+    }
+    #[allow(unreachable_code)]
     let _ = avx2;
     fallback::decompress_fallback_raw(
         tokens, token_count, offsets, offsets_len, extras, extras_len,

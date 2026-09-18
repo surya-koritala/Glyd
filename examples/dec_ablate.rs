@@ -1,3 +1,5 @@
+#[cfg(target_arch = "x86_64")]
+mod x86 {
 // Where do the decoder's cycles go? Ablation: the fast decode loop re-run over
 // every Silesia block's real streams with pieces switched off. Output is wrong
 // for the reduced variants; only the time matters. Pinned, best of 5.
@@ -226,3 +228,9 @@ fn main() {
         println!("{:<8} {:>8.2} ms  {:>6.2} ns/token  {:>6.2} GB/s", "lib", best * 1e3, best * 1e9 / ntok as f64, (total_out as f64 / gb) / best);
     }
 }
+
+}
+#[cfg(target_arch = "x86_64")]
+fn main() { x86::main() }
+#[cfg(not(target_arch = "x86_64"))]
+fn main() {}

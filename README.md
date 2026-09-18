@@ -2,7 +2,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-blue.svg)](https://www.rust-lang.org)
 [![License: MIT/Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
-[![SIMD: AVX2](https://img.shields.io/badge/SIMD-AVX2-orange.svg)]()
+[![SIMD: AVX2 | NEON](https://img.shields.io/badge/SIMD-AVX2%20%7C%20NEON-orange.svg)]()
 [![C ABI](https://img.shields.io/badge/C%20ABI-include%2Falatirok.h-brightgreen.svg)]()
 [![CI](https://github.com/Sigbound/alatirok/actions/workflows/ci.yml/badge.svg)](https://github.com/Sigbound/alatirok/actions)
 
@@ -81,6 +81,18 @@ Oodle (commercial, closed) is the unmeasured bar above that.
 | **Total** | **2.192** | **6.05** | **5.54** | **+9%** |
 
 Beats liblz4 on 10 of 12 files; trails on nci and webster by 2-3%.
+
+### Apple M1 Max, same run (2026-09-18, NEON port, one core)
+
+| Codec | Decode GB/s | % of memcpy wall | Ratio |
+| :--- | ---: | ---: | ---: |
+| memcpy | 39.9 | 100 | - |
+| **Alatirok v6 (NEON)** | **5.32** | **13** | **2.192** |
+| liblz4 (same run) | 4.36 | 11 | 2.101 |
+
+Beats liblz4 on 12 of 12 files (+22% total). `src/neon_decompress.rs` is a
+lane-for-lane port of the AVX2 decoder; the finder is still scalar on arm64
+(comp 0.27 GB/s).
 
 ### Multi-core (16 cores / 32 threads, 256 KB independent blocks)
 
