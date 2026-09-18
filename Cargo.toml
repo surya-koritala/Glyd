@@ -98,3 +98,7 @@ path = "examples/fastloop.rs"
 [[example]]
 name = "mc"
 path = "examples/mc.rs"
+
+[[example]]
+name = "huff_spike"
+path = "examples/huff_spike.rs"
