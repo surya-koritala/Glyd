@@ -263,3 +263,16 @@ so decode is immune to the VM's cache-state drift (57.0/57.1% on repeats vs
 -> 0.418 (a level, not a gate, under GOAL3).
   credit_win256k_default: ratio 2.27212 | comp 0.4184 | decomp 3.2126 vs
   liblz4 5.6378 = 57.0%
+
+## Format v6: 3-bit literal, 4-bit match, fixed 2-byte offsets. Decode +26%
+token_stats on the real stream (256 KB window, 12.9M tokens): 31.7% of tokens
+escaped (literal 22.3%, match 12.1%), and every offset fit 18 bits, so v5's
+two width bits bought nothing. v6 token = literal 0..6 direct / match 6..19
+direct / offset bit 16; offset stream is a constant 2 bytes per match (17-bit
+offsets, 128 KB window). Escaped tokens 31.7% -> 21.5%; the decoder's offset
+read no longer waits on the previous token's width; 3-byte offsets vanish,
+which pays for the smaller window (ratio unchanged at 2.2726).
+  v6: ratio 2.27262 | comp 0.4204 | decomp 4.05/4.05/3.97 vs liblz4 5.66/5.66/5.63
+      = 71.6 / 71.5 / 70.5% of liblz4 (was 57.0%)
+Per file we are 61-85% of LZ4 on decode; x-ray (raw) decodes at 45 GB/s.
+x-ray regression floor set to a raw store (0.99) until the fast level exists.

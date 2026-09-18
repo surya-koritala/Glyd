@@ -1,10 +1,13 @@
 pub const MAGIC: u32 = 0x53494D44; // "SIMD"
-pub const CURRENT_VERSION: u16 = 5;
-/// Match window. Offsets travel as 1 to 3 bytes, so the format can address
-/// 16 MB; the compressor searches 8 MB like LZAV, whose parse this format
-/// was sized against.
-pub const WINDOW_SIZE: usize = 1 << 23;
-pub const MAX_OFFSET: usize = (1 << 24) - 1;
+pub const CURRENT_VERSION: u16 = 6;
+/// Match window. An offset is 17 bits: 16 in the offset stream plus one in
+/// the token, so the format addresses 128 KB. Measured (token_stats): with
+/// a 256 KB finder window every offset already fit 18 bits, so the two bits
+/// v5 spent on a width class bought nothing; spending one on the offset
+/// instead makes the offset stream constant-stride (no per-token width
+/// chain in the decoder) and frees a bit for the literal field.
+pub const WINDOW_SIZE: usize = 1 << 17;
+pub const MAX_OFFSET: usize = WINDOW_SIZE - 1;
 /// Output covered by one block header. Larger blocks mean fewer headers and,
 /// more importantly, matches that are not cut short at a block boundary.
 pub const MAX_BLOCK_SIZE: usize = 256 * 1024;
@@ -18,17 +21,18 @@ pub const MIN_MATCH_LEN: usize = 6;
 /// 12-bit images has its redundancy in 4- and 5-byte matches.
 pub const MIN_MATCH_LEN_DENSE: usize = 5;
 
-/// v5 token layout, one byte:
-///   bits 0..1  literal code: 0..2 is the literal length, 3 escapes to `extras`
-///   bits 2..5  match code:   0 means no match, 1..14 means length 6..19,
+/// v6 token layout, one byte:
+///   bits 0..2  literal code: 0..6 is the literal length, 7 escapes to `extras`
+///   bits 3..6  match code:   0 means no match, 1..14 means length 6..19,
 ///                            15 escapes to `extras`
-///   bits 6..7  offset width: bytes of offset in the offset stream, minus one
+///   bit  7     offset bit 16; bits 0..15 are the two bytes in the offset stream
 ///
-/// Sized from LZAV's parse of Silesia: 66.9% of matches carry no literals,
-/// 17.8% carry one or two; 89.4% of match lengths are 20 or below; offsets
-/// split 12.4% below 256, 46% below 64 KB, the rest up to 8 MB.
-pub const LIT_DIRECT_MAX: usize = 2;
-pub const LIT_CODE_ESCAPE: usize = 3;
+/// Sized from our own token stream (token_stats, 256 KB window): literal runs
+/// are <= 6 for 89.4% of tokens (<= 2 was only 77.7%), match lengths <= 19
+/// for 87.9%. Escaped tokens fall from 31.7% to 21.5%, and each escape costs
+/// the decoder ~5 ns.
+pub const LIT_DIRECT_MAX: usize = 6;
+pub const LIT_CODE_ESCAPE: usize = 7;
 pub const MATCH_CODE_ESCAPE: usize = 15;
 /// match code 1 encodes the minimum length, so length = code + bias where
 /// bias = minimum - 1: 5 for ordinary blocks, 3 for FLAG_DENSE blocks.
@@ -63,28 +67,28 @@ pub struct Token(pub u8);
 
 impl Token {
     #[inline(always)]
-    pub fn from_codes(lit_code: usize, match_code: usize, off_width: usize) -> Self {
+    pub fn from_codes(lit_code: usize, match_code: usize, off_hi: usize) -> Self {
         debug_assert!(lit_code <= LIT_CODE_ESCAPE);
         debug_assert!(match_code <= MATCH_CODE_ESCAPE);
-        debug_assert!(off_width >= 1 && off_width <= 4);
-        Self((lit_code as u8) | ((match_code as u8) << 2) | (((off_width - 1) as u8) << 6))
+        debug_assert!(off_hi <= 1);
+        Self((lit_code as u8) | ((match_code as u8) << 3) | ((off_hi as u8) << 7))
     }
 
     #[inline(always)]
     pub fn lit_code(self) -> usize {
-        (self.0 & 0x03) as usize
+        (self.0 & 0x07) as usize
     }
 
     #[inline(always)]
     pub fn match_code(self) -> usize {
-        ((self.0 >> 2) & 0x0F) as usize
+        ((self.0 >> 3) & 0x0F) as usize
     }
 
-    /// Bytes of offset that follow in the offset stream (1..4). Meaningful
-    /// only when `match_code` is non-zero.
+    /// Bit 16 of the match offset; bits 0..15 are the two bytes in the offset
+    /// stream. Meaningful only when `match_code` is non-zero.
     #[inline(always)]
-    pub fn off_width(self) -> usize {
-        (self.0 >> 6) as usize + 1
+    pub fn off_hi(self) -> usize {
+        (self.0 >> 7) as usize
     }
 }
 
@@ -131,25 +135,15 @@ pub fn encode_match(match_len: usize, extras: &mut Vec<u8>, min_match: usize) ->
     }
 }
 
-/// Bytes needed to hold an offset: 1 below 256, 2 below 64 KB, 3 below 16 MB.
+/// Append the low 16 bits of an offset; bit 16 goes in the token.
 #[inline(always)]
-pub fn offset_width(offset: usize) -> usize {
+pub fn push_offset(offsets: &mut Vec<u8>, offset: usize) {
     debug_assert!(offset > 0 && offset <= MAX_OFFSET);
-    if offset < (1 << 8) {
-        1
-    } else if offset < (1 << 16) {
-        2
-    } else {
-        3
-    }
+    offsets.extend_from_slice(&(offset as u16).to_le_bytes());
 }
 
-/// Append an offset in little-endian `width` bytes.
-#[inline(always)]
-pub fn push_offset(offsets: &mut Vec<u8>, offset: usize, width: usize) {
-    let bytes = (offset as u32).to_le_bytes();
-    offsets.extend_from_slice(&bytes[..width]);
-}
+/// Bytes of offset stream per match.
+pub const OFFSET_BYTES: usize = 2;
 
 /// Decode table indexed by the whole token byte, so the hot loop needs one
 /// load instead of shifts and comparisons.
@@ -157,7 +151,7 @@ pub fn push_offset(offsets: &mut Vec<u8>, offset: usize, width: usize) {
 ///   bits  8..15  match length   (valid unless the match-escape bit is set)
 ///   bit  16      literal length escapes to `extras`
 ///   bit  17      match length escapes to `extras`
-///   bits 20..22  offset width in bytes (1..4), zero when there is no match
+///   bit  20      offset bit 16
 /// `TOKEN_ESCAPE_MASK` is zero for the tokens that need no extras.
 pub const TOKEN_LIT_ESCAPE: u32 = 1 << 16;
 pub const TOKEN_MATCH_ESCAPE: u32 = 1 << 17;
@@ -168,9 +162,9 @@ const fn token_table(bias: usize) -> [u32; 256] {
     let mut t = [0u32; 256];
     let mut i = 0usize;
     while i < 256 {
-        let lc = i & 0x03;
-        let mc = (i >> 2) & 0x0F;
-        let ow = (i >> 6) + 1;
+        let lc = i & 0x07;
+        let mc = (i >> 3) & 0x0F;
+        let ow = i >> 7;
         let mut v: u32 = 0;
         if lc == LIT_CODE_ESCAPE {
             v |= TOKEN_LIT_ESCAPE;
@@ -193,9 +187,6 @@ const fn token_table(bias: usize) -> [u32; 256] {
 pub static TOKEN_TABLE: [u32; 256] = token_table(MATCH_CODE_BIAS);
 pub static TOKEN_TABLE_DENSE: [u32; 256] = token_table(MATCH_CODE_BIAS_DENSE);
 
-/// Mask selecting the low `width` bytes of a little-endian u32 load.
-pub static OFFSET_MASK: [u32; 5] = [0, 0xFF, 0xFFFF, 0xFF_FFFF, 0xFFFF_FFFF];
-
 #[derive(Copy, Clone, Debug)]
 #[repr(C, packed)]
 pub struct BlockHeader {
@@ -209,7 +200,7 @@ pub struct BlockHeader {
     /// Bytes the token section occupies on disk. Equals `token_count` unless
     /// the tokens are entropy coded.
     pub token_bytes: u32,
-    /// Bytes of the offset section; offsets are 1 to 4 bytes each.
+    /// Bytes of the offset section: OFFSET_BYTES per match.
     pub offset_bytes: u32,
     pub extras_bytes: u32,
     pub literal_len: u32,
@@ -239,7 +230,7 @@ impl BlockHeader {
         u <= MAX_BLOCK_SIZE
             && self.token_count as usize <= u
             && self.token_bytes as usize <= u
-            && self.offset_bytes as usize <= 4 * u
+            && self.offset_bytes as usize <= 2 * u
             && self.extras_bytes as usize <= 3 * u
             && self.literal_len as usize <= u
     }

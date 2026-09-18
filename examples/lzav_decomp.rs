@@ -50,10 +50,8 @@ fn walk_block(c: &[u8], cur: usize, h: &BlockHeader, mut f: impl FnMut(usize, us
         let mc = t.match_code();
         let rc = if mc == 0 { 0 } else if mc == MATCH_CODE_ESCAPE { read_esc(&mut ei, bias + 15) } else { mc + bias };
         let off = if rc > 0 {
-            let w = t.off_width();
-            let mut v = 0usize;
-            for k in 0..w { v |= (c[ob + oi + k] as usize) << (8 * k); }
-            oi += w;
+            let v = u16::from_le_bytes([c[ob + oi], c[ob + oi + 1]]) as usize | (t.off_hi() << 16);
+            oi += OFFSET_BYTES;
             v
         } else { 0 };
         f(lc, rc, off);

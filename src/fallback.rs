@@ -1,7 +1,7 @@
 use crate::error::{CodecError, Result};
 use crate::finder::{find_matches, init_table, HashTable, Mode, ScalarMatch, Streams};
 use crate::format::{
-    Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, MATCH_CODE_ESCAPE,
+    Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, MATCH_CODE_ESCAPE, OFFSET_BYTES,
 };
 
 /// Read one escaped length from the extras stream.
@@ -95,15 +95,12 @@ pub unsafe fn decompress_fallback_raw(
         }
 
         if match_len > 0 {
-            let width = token.off_width();
-            if off_pos + width > offsets_len {
+            if off_pos + OFFSET_BYTES > offsets_len {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let mut offset = 0usize;
-            for i in 0..width {
-                offset |= (*offsets.add(off_pos + i) as usize) << (8 * i);
-            }
-            off_pos += width;
+            let lo = u16::from_le_bytes([*offsets.add(off_pos), *offsets.add(off_pos + 1)]) as usize;
+            let offset = lo | (token.off_hi() << 16);
+            off_pos += OFFSET_BYTES;
 
             let available = block.add(dst_pos).offset_from(buffer_start) as usize;
             if offset == 0 || offset > available {

@@ -47,7 +47,7 @@ unsafe fn run<const LIT: bool, const OFF: bool, const MATCH: bool, const ESC: bo
     // arbitrary input, fine on this valid corpus where the ablation stops at
     // a conservative token bound).
     let tok_end = if ONEGUARD { num_tokens.saturating_sub(64) } else { num_tokens };
-    while token_idx < tok_end && (ONEGUARD || (dst_ptr <= safe_limit && lit_ptr.add(64) <= lit_limit && off_pos + 4 <= offsets_len)) {
+    while token_idx < tok_end && (ONEGUARD || (dst_ptr <= safe_limit && lit_ptr.add(64) <= lit_limit && off_pos + OFFSET_BYTES <= offsets_len)) {
         let t = *tokens.add(token_idx) as usize;
         // ALU: fields by shift and mask, no table load on the recurrence.
         let tv = if ALU {
@@ -60,7 +60,7 @@ unsafe fn run<const LIT: bool, const OFF: bool, const MATCH: bool, const ESC: bo
         };
         let mut lit_len = (tv & 0xFF) as usize;
         let mut match_len = ((tv >> 8) & 0xFF) as usize;
-        let width = ((tv >> TOKEN_OFF_SHIFT) & 7) as usize;
+        let off_hi = ((tv >> TOKEN_OFF_SHIFT) & 1) as usize;
         if ESC && tv & TOKEN_ESCAPE_MASK != 0 {
             let mut e = extra_idx;
             if tv & TOKEN_LIT_ESCAPE != 0 {
@@ -102,23 +102,14 @@ unsafe fn run<const LIT: bool, const OFF: bool, const MATCH: bool, const ESC: bo
         lit_ptr = lit_ptr.add(lit_len);
         dst_ptr = dst_ptr.add(lit_len);
         if match_len != 0 {
-            let offset = if FIXW {
-                // Constant-stride offset stream: the position no longer depends
-                // on the previous token, so the load can issue early. Values
-                // are kept plausible so copies still hit real memory.
-                let raw = std::ptr::read_unaligned(offsets.add(off_pos) as *const u32);
-                off_pos += 3;
-                if off_pos + 4 > offsets_len { off_pos = 0; }
-                let o = ((raw & 0xFFFF) | 32) as usize;
-                let available = dst_ptr.offset_from(buffer_start) as usize;
-                if o > available { 64 } else { o }
-            } else if OFF {
-                let raw = std::ptr::read_unaligned(offsets.add(off_pos) as *const u32);
-                let o = (raw & *OFFSET_MASK.get_unchecked(width)) as usize;
-                off_pos += width;
-                o
+            // v6: constant-stride 2-byte offsets, so FIXW is the format now.
+            let _ = FIXW;
+            let offset = if OFF {
+                let lo = std::ptr::read_unaligned(offsets.add(off_pos) as *const u16) as usize;
+                off_pos += OFFSET_BYTES;
+                lo | (off_hi << 16)
             } else {
-                off_pos += width;
+                off_pos += OFFSET_BYTES;
                 64
             };
             let available = dst_ptr.offset_from(buffer_start) as usize;

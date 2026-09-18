@@ -68,13 +68,13 @@ name = "rans_speed"
 path = "examples/rans_speed.rs"
 
 [[example]]
-name = "bitoff_probe"
-path = "examples/bitoff_probe.rs"
-
-[[example]]
 name = "speed_ceiling"
 path = "examples/speed_ceiling.rs"
 
 [[example]]
 name = "dec_ablate"
 path = "examples/dec_ablate.rs"
+
+[[example]]
+name = "token_stats"
+path = "examples/token_stats.rs"

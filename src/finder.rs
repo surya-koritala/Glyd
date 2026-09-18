@@ -23,12 +23,13 @@
 //! and the portable build run the same parse.
 
 use crate::format::{
-    encode_lit, encode_match, offset_width, push_offset, Token, MAX_LIT_LEN, MIN_MATCH_LEN,
+    encode_lit, encode_match, push_offset, Token, MAX_LIT_LEN, MIN_MATCH_LEN,
     MIN_MATCH_LEN_DENSE, WINDOW_SIZE,
 };
 
-/// Default finder window; see `window_size`.
-pub const FINDER_WINDOW: usize = 256 * 1024;
+/// Default finder window; see `window_size`. The v6 format holds 17-bit
+/// offsets, so this is also the maximum.
+pub const FINDER_WINDOW: usize = WINDOW_SIZE;
 
 pub const HASH_BITS: u32 = 16;
 pub const HASH_SIZE: usize = 1 << HASH_BITS;
@@ -82,10 +83,11 @@ pub fn init_table(table: &mut HashTable, src: &[u8]) {
 
 /// How far back the finder looks, in bytes. The format can address 16 MB
 /// (`WINDOW_SIZE` caps the override), but the default is FINDER_WINDOW:
-/// 256 KB keeps every match source in L2, which measured the best and by far
-/// the most stable decode (57% of liblz4 in the same run, against a noisy
-/// 51-55% at 8 MB) at ratio 2.27 against a 2.10 floor. Overridable once per
-/// process with `ALATIROK_WINDOW` for sweeps; read once and cached.
+/// a small window keeps every match source in L2, which measured the best
+/// and by far the most stable decode (57% of liblz4 in the same run at 256 KB,
+/// against a noisy 51-55% at 8 MB) at a ratio well above the 2.10 floor.
+/// Overridable once per process with `ALATIROK_WINDOW` for sweeps; read once
+/// and cached.
 #[inline]
 fn window_size() -> usize {
     use std::sync::OnceLock;
@@ -189,7 +191,7 @@ impl<'a> Streams<'a> {
     pub unsafe fn emit(&mut self, mut lit_src: *const u8, mut lc: usize, rc: usize, offset: usize) {
         while lc > MAX_LIT_LEN {
             let code = encode_lit(MAX_LIT_LEN, self.extras);
-            self.tokens.push(Token::from_codes(code, 0, 1).0);
+            self.tokens.push(Token::from_codes(code, 0, 0).0);
             self.literals
                 .extend_from_slice(std::slice::from_raw_parts(lit_src, MAX_LIT_LEN));
             lit_src = lit_src.add(MAX_LIT_LEN);
@@ -197,10 +199,10 @@ impl<'a> Streams<'a> {
         }
         let lcode = encode_lit(lc, self.extras);
         let mcode = encode_match(rc, self.extras, self.min_match);
-        let width = if rc > 0 { offset_width(offset) } else { 1 };
-        self.tokens.push(Token::from_codes(lcode, mcode, width).0);
+        let hi = if rc > 0 { offset >> 16 } else { 0 };
+        self.tokens.push(Token::from_codes(lcode, mcode, hi).0);
         if rc > 0 {
-            push_offset(self.offsets, offset, width);
+            push_offset(self.offsets, offset);
         }
         if lc > 0 {
             self.literals

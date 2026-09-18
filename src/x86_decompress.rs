@@ -2,7 +2,7 @@
 use std::arch::x86_64::*;
 use crate::error::{CodecError, Result};
 use crate::fallback::read_escape;
-use crate::format::{ESCAPE_BASE_LIT, OFFSET_MASK, TOKEN_ESCAPE_MASK,
+use crate::format::{ESCAPE_BASE_LIT, OFFSET_BYTES, TOKEN_ESCAPE_MASK,
     TOKEN_LIT_ESCAPE, TOKEN_MATCH_ESCAPE, TOKEN_OFF_SHIFT};
 
 /// 32-Byte AVX2 Decompressor.
@@ -50,17 +50,17 @@ pub unsafe fn decompress_avx2(
     // Fast phase. Ablation (examples/dec_ablate.rs) priced the per-token
     // bound checks at ~8 ms of a ~66 ms decode, for four compares that almost
     // never trip. So bounds are paid in bulk: a token without an escape reads
-    // at most 2 literal bytes and 3 offset bytes and advances the output by
+    // at most 6 literal bytes and OFFSET_BYTES offset bytes and advances the output by
     // at most 21, while each of its two 32-byte wild stores needs 64 bytes of
     // headroom. From the cursors, `credit` is the number of such tokens that
     // are provably safe; the loop then spends one decrement per token and
-    // recomputes only when the credit runs out or after an escape, whose
-    // lengths are unbounded and therefore checked on the spot.
+    // recomputes only when the credit runs out; an escape, whose lengths are
+    // unbounded, is checked on the spot and charges its excess.
     macro_rules! credit {
         () => {{
             let out = if dst_ptr <= safe_limit { safe_limit.offset_from(dst_ptr) as usize >> 5 } else { 0 };
-            let lit = if lit_ptr.add(64) <= lit_limit { lit_limit.offset_from(lit_ptr.add(64)) as usize >> 1 } else { 0 };
-            let off = if off_pos + 4 <= offsets_len { (offsets_len - 4 - off_pos) >> 2 } else { 0 };
+            let lit = if lit_ptr.add(64) <= lit_limit { lit_limit.offset_from(lit_ptr.add(64)) as usize / 6 } else { 0 };
+            let off = if off_pos + OFFSET_BYTES <= offsets_len { (offsets_len - off_pos) / OFFSET_BYTES } else { 0 };
             let tok = num_tokens - token_idx;
             out.min(lit).min(off).min(tok)
         }};
@@ -70,7 +70,7 @@ pub unsafe fn decompress_avx2(
         let tv = *table.get_unchecked(*tokens.add(token_idx) as usize);
         let mut lit_len = (tv & 0xFF) as usize;
         let mut match_len = ((tv >> 8) & 0xFF) as usize;
-        let width = ((tv >> TOKEN_OFF_SHIFT) & 7) as usize;
+        let off_hi = ((tv >> TOKEN_OFF_SHIFT) & 1) as usize;
         let escaped = tv & TOKEN_ESCAPE_MASK != 0;
         if escaped {
             let mut e = extra_idx;
@@ -103,9 +103,11 @@ pub unsafe fn decompress_avx2(
         dst_ptr = dst_ptr.add(lit_len);
 
         if match_len != 0 {
-            let raw = std::ptr::read_unaligned(offsets.add(off_pos) as *const u32);
-            let offset = (raw & *OFFSET_MASK.get_unchecked(width)) as usize;
-            off_pos += width;
+            // Constant-stride offset stream: this load does not wait on the
+            // previous token.
+            let lo = std::ptr::read_unaligned(offsets.add(off_pos) as *const u16) as usize;
+            let offset = lo | (off_hi << 16);
+            off_pos += OFFSET_BYTES;
             let available = dst_ptr.offset_from(buffer_start) as usize;
             if offset == 0 || offset > available {
                 return Err(CodecError::OffsetOutOfBounds { offset, available });
@@ -159,7 +161,7 @@ pub unsafe fn decompress_avx2(
         // recomputing, since a quarter of tokens escape. Recompute only when
         // the credit is exhausted.
         if escaped {
-            let extra = (lit_len >> 1) + ((lit_len + match_len) >> 5);
+            let extra = (lit_len / 6) + ((lit_len + match_len) >> 5);
             credit = credit.saturating_sub(extra);
         }
         if credit == 0 {
@@ -218,15 +220,12 @@ pub unsafe fn decompress_avx2(
         }
 
         if match_len > 0 {
-            let width = ((tv >> TOKEN_OFF_SHIFT) & 7) as usize;
-            if off_pos + width > offsets_len {
+            if off_pos + OFFSET_BYTES > offsets_len {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let mut offset = 0usize;
-            for i in 0..width {
-                offset |= (*offsets.add(off_pos + i) as usize) << (8 * i);
-            }
-            off_pos += width;
+            let lo = u16::from_le_bytes([*offsets.add(off_pos), *offsets.add(off_pos + 1)]) as usize;
+            let offset = lo | ((((tv >> TOKEN_OFF_SHIFT) & 1) as usize) << 16);
+            off_pos += OFFSET_BYTES;
 
             let available = dst_ptr.offset_from(buffer_start) as usize;
             if offset == 0 || offset > available {
