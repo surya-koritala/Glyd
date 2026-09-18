@@ -535,6 +535,78 @@ unsafe fn pass1<const ESC: u8>(tokens: &[u8], extras: &[u8], litl: &mut [u16], m
                 w(m_esc0, vm0, bm, ml0, m);
                 w(m_esc1, vm1, bm, ml1, m.add(16));
             }
+        } else if ESC == 10 {
+            // Loop-free expand. fields per lane (0..2) -> exclusive prefix
+            // sum across 32 lanes -> tbl gather from the next 64 extras
+            // bytes -> u16 blend. A 255 continuation in any consumed field
+            // sends the chunk to the scalar loop.
+            let zero = vdupq_n_u8(0);
+            let f0 = vreinterpretq_u8_s8(vnegq_s8(vaddq_s8(vreinterpretq_s8_u8(lit_esc0), vreinterpretq_s8_u8(m_esc0))));
+            let f1 = vreinterpretq_u8_s8(vnegq_s8(vaddq_s8(vreinterpretq_s8_u8(lit_esc1), vreinterpretq_s8_u8(m_esc1))));
+            // inclusive prefix within each 16-lane half
+            let mut p0 = f0;
+            p0 = vaddq_u8(p0, vextq_u8(zero, p0, 15));
+            p0 = vaddq_u8(p0, vextq_u8(zero, p0, 14));
+            p0 = vaddq_u8(p0, vextq_u8(zero, p0, 12));
+            p0 = vaddq_u8(p0, vextq_u8(zero, p0, 8));
+            let mut p1 = f1;
+            p1 = vaddq_u8(p1, vextq_u8(zero, p1, 15));
+            p1 = vaddq_u8(p1, vextq_u8(zero, p1, 14));
+            p1 = vaddq_u8(p1, vextq_u8(zero, p1, 12));
+            p1 = vaddq_u8(p1, vextq_u8(zero, p1, 8));
+            p1 = vaddq_u8(p1, vdupq_laneq_u8(p0, 15));
+            let total = vgetq_lane_u8(p1, 15) as usize;
+            // exclusive
+            let x0 = vsubq_u8(p0, f0);
+            let x1 = vsubq_u8(p1, f1);
+            // indices: lit field at x, match field at x + lit_esc; 0xFF where absent
+            let il0 = vorrq_u8(x0, vmvnq_u8(lit_esc0));
+            let il1 = vorrq_u8(x1, vmvnq_u8(lit_esc1));
+            let im0 = vorrq_u8(vsubq_u8(x0, lit_esc0), vmvnq_u8(m_esc0)); // - (-1) = +1
+            let im1 = vorrq_u8(vsubq_u8(x1, lit_esc1), vmvnq_u8(m_esc1));
+            let tab = uint8x16x4_t(vld1q_u8(ex.add(e)), vld1q_u8(ex.add(e + 16)), vld1q_u8(ex.add(e + 32)), vld1q_u8(ex.add(e + 48)));
+            let vl0 = vqtbl4q_u8(tab, il0);
+            let vl1 = vqtbl4q_u8(tab, il1);
+            let vm0 = vqtbl4q_u8(tab, im0);
+            let vm1 = vqtbl4q_u8(tab, im1);
+            let ff = vdupq_n_u8(255);
+            let cont = vorrq_u8(vorrq_u8(vandq_u8(vceqq_u8(vl0, ff), lit_esc0), vandq_u8(vceqq_u8(vl1, ff), lit_esc1)),
+                                vorrq_u8(vandq_u8(vceqq_u8(vm0, ff), m_esc0), vandq_u8(vceqq_u8(vm1, ff), m_esc1)));
+            if ESC == 10 && false && vmaxvq_u8(cont) != 0 {
+                // scalar path for this chunk (variant 1's loop)
+                let mut bits = esc_mask;
+                while bits != 0 {
+                    let i = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    if (lit_esc_mask >> i) & 1 != 0 {
+                        let mut v = *ex.add(e) as usize; e += 1;
+                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
+                        *l.add(i) = (ESCAPE_BASE_LIT + v) as u16;
+                    }
+                    if (m_esc_mask >> i) & 1 != 0 {
+                        let mut v = *ex.add(e) as usize; e += 1;
+                        if v == 255 { v += std::ptr::read_unaligned(ex.add(e) as *const u16) as usize; e += 2; }
+                        *m.add(i) = (ESCAPE_BASE_MATCH + v) as u16;
+                    }
+                }
+            } else {
+                e += total;
+                let bl = vdupq_n_u16(ESCAPE_BASE_LIT as u16);
+                let bm = vdupq_n_u16(ESCAPE_BASE_MATCH as u16);
+                // widen and blend
+                let w = |esc: uint8x16_t, v: uint8x16_t, base: uint16x8_t, cur: uint8x16_t, out: *mut u16| {
+                    let e_lo = vmovl_u8(vget_low_u8(esc)); let e_hi = vmovl_high_u8(esc);
+                    let e_lo = vceqq_u16(e_lo, vdupq_n_u16(0xFF)); let e_hi = vceqq_u16(e_hi, vdupq_n_u16(0xFF));
+                    let v_lo = vaddq_u16(vmovl_u8(vget_low_u8(v)), base); let v_hi = vaddq_u16(vmovl_high_u8(v), base);
+                    let c_lo = vmovl_u8(vget_low_u8(cur)); let c_hi = vmovl_high_u8(cur);
+                    vst1q_u16(out, vbslq_u16(e_lo, v_lo, c_lo));
+                    vst1q_u16(out.add(8), vbslq_u16(e_hi, v_hi, c_hi));
+                };
+                w(lit_esc0, vl0, bl, lit0, l);
+                w(lit_esc1, vl1, bl, lit1, l.add(16));
+                w(m_esc0, vm0, bm, ml0, m);
+                w(m_esc1, vm1, bm, ml1, m.add(16));
+            }
         } else if ESC == 3 {
             // scalar per-token walk of the 32 tokens, table-free: for every
             // token, cursor advances by escape bits; only escaped lanes store.
@@ -702,6 +774,7 @@ fn main() {
         let t7 = time(&mut || { for b in &blocks { unsafe { pass1::<7>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
         let t8 = time(&mut || { for b in &blocks { unsafe { pass1::<8>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
         let t9 = time(&mut || { for b in &blocks { unsafe { pass1::<9>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
+        let t10 = time(&mut || { for b in &blocks { unsafe { pass1::<10>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
         let t5 = time(&mut || { for b in &blocks { unsafe { pass1::<5>(&b.tokens, &b.extras, &mut la, &mut ma); } } });
         // verify variant 1..3 agree with predecode on the first block
         for b in &blocks {
@@ -723,6 +796,7 @@ fn main() {
         pr("p1_noechain", t7);
         pr("p1_maskonly", t8);
         pr("p1_expand", t9);
+        pr("p1_nocont", t10);
     }
     pr("lib", t_lib);
     pr("copy", t_copy);

@@ -390,3 +390,15 @@ Silesia 1C decomp 5.32 -> 6.68 GB/s vs liblz4 4.36 = 153% (was 122%).
 12/12 files up; osdb 5.3 -> 8.5, ooffice 5.7 -> 7.4, samba 5.3 -> 7.0.
 3.01 ns/token against the 2.2 ns copy loop: ~0.8 ns of pass 1 left.
 25 tests green including the 1M-mutation fuzz.
+
+## aarch64: pipelined pre-pass (M1 Max)
+Chunk k+1's pre-pass now runs before chunk k's copy loop (double-buffered
+length arrays), to overlap the vector chain and the array store->load with
+the copies. Silesia 1C decomp 6.68 -> 6.79 GB/s (155% of liblz4): +1.5%,
+so the out-of-order core was already hiding most of it. The decoder is at
+2.94 ns/token against the harness floor of ~2.6 (copy loop with fixed
+tails 2.16 + loop-free pass 1 0.45). What is left is per-token bookkeeping
+in the copy loop (offset validation, the token's offset bit) and the 10% of
+chunks that hit a 255 continuation; neither is worth more than ~5%. The
+next lever is the format: a token wide enough to make escapes rare (they
+are 31% of tokens at 3+4 bits) trades ~10% ratio, below the liblz4 floor.
