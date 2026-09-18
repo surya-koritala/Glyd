@@ -2,10 +2,10 @@
 //! sub-stream i % 8, LSB-first with bit-reversed canonical codes, so the
 //! decoder's table is indexed by the next `TB` bits directly. Measured on
 //! the M1 Max: 0.61 ns/symbol (tests/v7_codecs.rs, huff8_speed_silesia).
-use crate::bits::{BitReader, BitWriter, FastReader};
+use crate::bits::{split_streams, write_streams, BitReader, FastReader};
 use crate::huffman::{build_codes, build_lengths, MAX_CODE_LEN};
 
-pub const STREAMS: usize = 8;
+pub use crate::bits::STREAMS;
 pub const TB: u32 = MAX_CODE_LEN;
 pub const TABLE_BYTES: usize = 128;
 
@@ -78,16 +78,45 @@ impl Table {
     }
 }
 
-pub fn encode(data: &[u8], lengths: &[u8; 256]) -> Vec<Vec<u8>> {
+/// Append the 8-stream section (size table + padded streams) for `data`
+/// to `out`. Sub-stream k is the stride-8 walk from `data[k]`, four
+/// symbols per `put` (their codes concatenated off the accumulator's
+/// dependency chain: 4 x TB <= MAX_PUT) from tables of reversed codes
+/// and lengths (two loads beat one load plus the unpacking ALU ops).
+pub fn encode_into(data: &[u8], lengths: &[u8; 256], out: &mut Vec<u8>) {
     let codes = build_codes(lengths);
-    let rev: Vec<u16> = (0..256).map(|s| reverse_bits(codes[s], lengths[s])).collect();
-    let mut writers: Vec<BitWriter> = (0..STREAMS).map(|_| BitWriter::new()).collect();
-    for (i, &b) in data.iter().enumerate() {
-        let l = lengths[b as usize] as u32;
-        debug_assert!(l > 0, "symbol without a code");
-        writers[i % STREAMS].put(rev[b as usize] as u64, l);
-    }
-    writers.into_iter().map(|w| w.finish()).collect()
+    let rev: [u32; 256] = std::array::from_fn(|s| reverse_bits(codes[s], lengths[s]) as u32);
+    let len: [u32; 256] = std::array::from_fn(|s| lengths[s] as u32);
+    debug_assert!(data.iter().all(|&b| lengths[b as usize] > 0), "symbol without a code");
+    let max_bits = data.len().div_ceil(STREAMS) * TB as usize;
+    write_streams(out, max_bits, |k, w| {
+        let s = &data[k.min(data.len())..];
+        let mut i = 0;
+        // SAFETY: at most ceil(len / 8) symbols of at most TB bits each go
+        // into this stream, the `max_bits` the section was reserved for.
+        unsafe {
+            while i + 3 * STREAMS < s.len() {
+                let (a, b, c, d) = (s[i] as usize, s[i + STREAMS] as usize, s[i + 2 * STREAMS] as usize, s[i + 3 * STREAMS] as usize);
+                let lab = len[a] + len[b];
+                let ab = rev[a] | rev[b] << len[a];
+                let cd = rev[c] | rev[d] << len[c];
+                w.put((ab as u64) | (cd as u64) << lab, lab + len[c] + len[d]);
+                i += 4 * STREAMS;
+            }
+            while i < s.len() {
+                let a = s[i] as usize;
+                w.put(rev[a] as u64, len[a]);
+                i += STREAMS;
+            }
+        }
+    });
+}
+
+/// The 8 streams as separate vectors (tests).
+pub fn encode(data: &[u8], lengths: &[u8; 256]) -> Vec<Vec<u8>> {
+    let mut section = Vec::new();
+    encode_into(data, lengths, &mut section);
+    split_streams(&section)
 }
 
 struct St<'a> {

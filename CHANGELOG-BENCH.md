@@ -672,3 +672,62 @@ min 7 -> 8 cut tokens 18% and bought 18%.
   the walk is where the time is, and it wants the huff8 treatment (8
   unclamped `FastReader`s in a loop unrolled by 8, `safe_refills`
   bound, clamped tail) before Task 9 -- not implemented here.
+
+## v7 milestone 2c: encoder throughput
+- Stage costs per pass over Silesia (212 MB, 10.0 M sequences, 63.3 M
+  literals; `compress_into_max` replayed stage by stage with the Lzav
+  finder at 2.9-3.0 ns/byte in the same run, M1 Max, `target-cpu=native`):
+  the v7 encode side was 3.8 ns/byte -- `sequences_from_streams` 0.27,
+  `encode_block` 3.53 (75 ns/sequence): the codes + extra-bits loop
+  0.130 s, literal histogram + lengths 0.158 s (of which
+  `huffman::build_lengths` 0.125 s = 150 us/block: a stable re-sort of
+  the live nodes per merge, two or three builds per block for the length
+  cap), `huff8::encode` 0.198 s (3.1 ns/literal), code histograms +
+  normalize 0.039 s, the three tANS streams 0.220 s (2.4 ns/symbol),
+  assembly 0.004 s. Steps, each byte-identical on the whole corpus
+  (FNV of every `compress_into_max` output against the milestone-2
+  binary) and measured in the same harness: (1) `huffman_lengths` sorts
+  once and inserts merged nodes at `partition_point` (identical ties):
+  lengths 0.125 -> 0.027 s, encode 3.53 -> 3.18 ns/B. (2) `bits::BitCursor`
+  (64-bit accumulator, one unconditional 8-byte `write_unaligned` per
+  put, cursor by value in the caller's frame) and `bits::write_streams`
+  (the section layout -- 8 u32 sizes, 8 padded streams -- reserved from
+  the caller's bit bound, `B / 8 + 16` bytes per stream); `huff8` and
+  `tans` write their sections straight into the payload with stride-8
+  walks, the tANS reverse pass runs the 8 stream states side by side
+  (independent chains overlap in the pipeline) into a packed `u32` chunk
+  scratch; `encode_block` writes every section into `out` behind a
+  sub-header placeholder, with codes and the per-sequence extra bits (ll,
+  ml, off concatenated: at most 18 + 18 + 20 = 56 bits, one put) in a
+  caller-owned `EncScratch`: 3.18 -> 1.32 ns/B. (3) 4-way then 8-way
+  interleaved histograms (`[u32; N]`, no `vec!`): code hists 0.041 ->
+  0.011 s, literal hist 0.038 -> 0.020 s. (4) tANS reverse pass without
+  the four per-symbol bounds checks (`chunks_exact` walks, a 256-entry
+  `sym` table so a `u8` indexes it -- the `state_table` check stays as the
+  zero-count safety net), `u32` wrapping `delta_find`, the chunk stored as
+  `state | nbits << 16` with the masking moved to the forward pass, four
+  chunks per put: 2.01 -> 1.17 ns/symbol; `huff8` four symbols per put
+  from split code/length tables: 3.1 -> 0.44 ns/literal. (5)
+  `sequences_from_streams` in one pass into a reused `Vec<Sequence>`:
+  0.27 -> 0.20 ns/B. (6) `huffman_lengths` on fixed arrays with the exact
+  two-queue merge (leaf ties by descending symbol, merged ties by newest,
+  merged over leaf -- the original stable sort's order, checked identical
+  on 20 815 histograms): lengths 0.027 -> 0.013 s. (7) Zipped cursors in
+  the codes loop (the `Vec`s behind `&mut EncScratch` reloaded pointer
+  and length per store), two sequences' extras per put when they fit:
+  0.130 -> 0.035 s and 0.013 -> 0.008 s. Rejected, measured slower or
+  equal: a branch-free `Reps::code_for` (the compiler already selects,
+  and the rep0/rep1 branches predict well on this parse), branch-light
+  escape decoding in the bridge.
+- After: encode side 0.95 ns/byte (bridge 0.20, `encode_block` 0.75 = 16
+  ns/sequence: codes loop 0.035 s, literal hist + lengths 0.035 s, huff8
+  0.028 s, code hists 0.011 s, tANS 3 x 0.014 s, extras 0.008 s).
+  `examples/v7_bench.rs`, same protocol as milestone 2, milestone-2
+  binary and this one back to back: **comp 0.134 -> 0.237 GB/s**, ratio
+  2.7406 and decomp 1.19 GB/s unchanged (zstd-3 comp 0.326 / 0.321 in the
+  two runs). The brief's 0.5 ns/byte (~0.28 GB/s) is not reached: the
+  parse alone is 2.9-3.0 ns/byte here, and what is left on the encode
+  side is per-sequence work at its instruction-throughput floor -- the
+  bridge (4 ns/sequence, gone with Task 9's parse), the codes loop (3.5
+  ns, of which the rep-offset state chain is 0.8) and the three tANS
+  reverse passes (~14 instructions/symbol with 8 chains in flight).

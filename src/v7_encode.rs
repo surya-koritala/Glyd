@@ -9,7 +9,7 @@
 //! sequence). The extra-bits section is always 8 raw padded sub-streams
 //! behind a size table: sub-stream k holds, for sequences i == k (mod 8)
 //! in order, the ll extra bits, then ml, then offset extra bits.
-use crate::bits::{BitWriter, PAD};
+use crate::bits::{write_streams, PAD};
 use crate::huff8;
 use crate::tans;
 use crate::v7_format::*;
@@ -76,28 +76,28 @@ fn close(a: &[u16], b: &[u16]) -> bool {
         })
 }
 
-fn write_substreams(streams: &[Vec<u8>], out: &mut Vec<u8>) {
-    for s in streams {
-        out.extend_from_slice(&(s.len() as u32).to_le_bytes());
+/// Histogram over eight interleaved tables: consecutive equal symbols
+/// (the common case in code streams, and runs in literals) otherwise
+/// serialise on one counter's store-to-load forwarding.
+fn hist8<const N: usize>(data: &[u8]) -> [u32; N] {
+    let mut h = [[0u32; N]; 8];
+    let mut it = data.chunks_exact(8);
+    for c in &mut it {
+        for k in 0..8 {
+            h[k][c[k] as usize] += 1;
+        }
     }
-    for s in streams {
-        out.extend_from_slice(s);
+    for &b in it.remainder() {
+        h[0][b as usize] += 1;
     }
+    std::array::from_fn(|s| h.iter().map(|t| t[s]).sum())
 }
 
-fn code_hist(codes: &[u8], n_symbols: usize) -> Vec<u32> {
-    let mut hist = vec![0u32; n_symbols];
-    for &c in codes {
-        hist[c as usize] += 1;
-    }
-    hist
-}
-
-/// tANS-code `codes` against `counts` (either freshly normalized for this
-/// block, or the previous block's when `reusing`), or leave the codes raw
-/// if coding would not pay for itself. Returns the section bytes and
-/// whether it was coded; a raw section never carries reuse.
-fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool) -> (Vec<u8>, bool) {
+/// Append the section for `codes`: tANS-coded against `counts` (either
+/// freshly normalized for this block, or the previous block's when
+/// `reusing`), or the codes raw if coding would not pay for itself.
+/// Returns whether it was coded; a raw section never carries reuse.
+fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool, chunks: &mut Vec<u32>, out: &mut Vec<u8>) -> bool {
     let n_symbols = counts.len();
     let bits: f64 = (0..n_symbols)
         .map(|s| if hist[s] == 0 { 0.0 } else { hist[s] as f64 * -((counts[s] as f64) / tans::L as f64).log2() })
@@ -105,60 +105,93 @@ fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool) -> (V
     let table_bytes = if reusing { 0 } else { 1 + 2 * n_symbols };
     let coded_estimate = (bits / 8.0) as usize + table_bytes + 8 * (4 + PAD);
     if coded_estimate + codes.len() / 50 >= codes.len() {
-        return (codes.to_vec(), false);
+        out.extend_from_slice(codes);
+        return false;
     }
     let et = tans::EncodeTable::build(counts).expect("normalized counts sum to L");
-    let streams = tans::encode8(codes, &et);
-    let mut section = Vec::new();
     if !reusing {
-        section.push(n_symbols as u8);
+        out.push(n_symbols as u8);
         for &c in counts {
-            section.extend_from_slice(&c.to_le_bytes());
+            out.extend_from_slice(&c.to_le_bytes());
         }
     }
-    write_substreams(&streams, &mut section);
-    (section, true)
+    tans::encode8_into(codes, &et, chunks, out);
+    true
 }
 
-pub fn encode_block(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut Tables, out: &mut Vec<u8>) {
-    // Codes and extra bits.
-    let n = seqs.len();
-    let mut ll = Vec::with_capacity(n);
-    let mut ml = Vec::with_capacity(n);
-    let mut off = Vec::with_capacity(n);
-    let mut extra: Vec<BitWriter> = (0..8).map(|_| BitWriter::new()).collect();
-    let mut reps = Reps::new();
-    for (i, s) in seqs.iter().enumerate() {
-        let w = &mut extra[i % 8];
-        let (c, nb, e) = ll_code(s.lit_len);
-        ll.push(c);
-        if nb > 0 {
-            w.put(e as u64, nb as u32);
-        }
-        if s.match_len == 0 {
-            debug_assert_eq!(i, n - 1, "literal-only sequence must be last");
-            ml.push(0);
-            off.push(0);
-            continue;
-        }
-        let (c, nb, e) = ml_code(s.match_len);
-        ml.push(c);
-        if nb > 0 {
-            w.put(e as u64, nb as u32);
-        }
-        let (c, nb, e) = reps.code_for(s.offset);
-        off.push(c);
-        if nb > 0 {
-            w.put(e as u64, nb as u32);
-        }
+/// Per-block scratch, owned by the caller and reused across blocks.
+pub struct EncScratch {
+    ll: Vec<u8>,
+    ml: Vec<u8>,
+    off: Vec<u8>,
+    /// Per sequence: the ll, ml and offset extra bits concatenated in
+    /// stream order (at most 18 + 18 + 20 = `EXTRA_BITS` for lengths
+    /// within a block and offsets within the window), their count above.
+    extra: Vec<u64>,
+    chunks: Vec<u32>,
+}
+
+impl EncScratch {
+    pub fn new() -> Self {
+        EncScratch { ll: Vec::new(), ml: Vec::new(), off: Vec::new(), extra: Vec::new(), chunks: Vec::new() }
     }
-    let extra_streams: Vec<Vec<u8>> = extra.into_iter().map(|w| w.finish()).collect();
+}
+
+/// Bits of `extra` per sequence, a `MAX_PUT` put.
+const EXTRA_BITS: u32 = 56;
+
+/// Lengths must be at most `MAX_BLOCK_SIZE` (2^18, as the decoder
+/// enforces per block) and offsets below `MAX_WINDOW`.
+pub fn encode_block(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut Tables, out: &mut Vec<u8>) {
+    encode_block_with(seqs, literals, dict_id, prev, &mut EncScratch::new(), out)
+}
+
+/// `encode_block` with caller-owned scratch (`compress_into_max` keeps
+/// one across a stream's blocks).
+pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut Tables, s: &mut EncScratch, out: &mut Vec<u8>) {
+    let n = seqs.len();
+    let base = out.len();
+    out.resize(base + SubHeader::BYTES, 0);
+
+    // Codes and extra bits, in sequence order (the rep state).
+    s.ll.clear();
+    s.ll.resize(n, 0);
+    s.ml.clear();
+    s.ml.resize(n, 0);
+    s.off.clear();
+    s.off.resize(n, 0);
+    s.extra.clear();
+    s.extra.resize(n, 0);
+    let mut reps = Reps::new();
+    let mut max_bits = 0u32;
+    let codes = s.ll.iter_mut().zip(s.ml.iter_mut()).zip(s.off.iter_mut()).zip(s.extra.iter_mut());
+    for (i, (q, (((ll, ml), off), extra))) in seqs.iter().zip(codes).enumerate() {
+        let (llc, nb, e) = ll_code(q.lit_len);
+        let mut v = e as u64;
+        let mut bits = nb as u32;
+        // The literal-only last sequence codes as a match of MIN_MATCH:
+        // ml code 0 with no extra bits, which is what the decoder expects.
+        let (mlc, nb, e) = ml_code(q.match_len.max(MIN_MATCH));
+        v |= (e as u64) << bits;
+        bits += nb as u32;
+        let (offc, nb, e) = if q.match_len != 0 {
+            reps.code_for(q.offset)
+        } else {
+            debug_assert_eq!(i, n - 1, "literal-only sequence must be last");
+            (0, 0, 0)
+        };
+        v |= (e as u64) << bits;
+        bits += nb as u32;
+        max_bits = max_bits.max(bits);
+        *ll = llc;
+        *ml = mlc;
+        *off = offc;
+        *extra = v | (bits as u64) << EXTRA_BITS;
+    }
+    assert!(max_bits <= EXTRA_BITS, "sequence length beyond the block bound");
 
     // Literals.
-    let mut hist = [0u64; 256];
-    for &b in literals {
-        hist[b as usize] += 1;
-    }
+    let hist: [u64; 256] = hist8::<256>(literals).map(|c| c as u64);
     let lengths = huff8::lengths_for(&hist);
     let lit_reuse = prev.lit_lengths.map_or(false, |p| {
         let est_prev: u64 = (0..256).map(|s| hist[s] * p[s] as u64).sum();
@@ -168,24 +201,24 @@ pub fn encode_block(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut
     let lit_lengths = if lit_reuse { prev.lit_lengths.unwrap() } else { lengths };
     let lit_coded_size = huff8::coded_size(&hist, &lit_lengths) - if lit_reuse { huff8::TABLE_BYTES } else { 0 } + 8 * (4 + PAD);
     let lit_coded = literals.len() >= 64 && lit_coded_size + literals.len() / 50 < literals.len();
-    let mut lit_section = Vec::new();
+    let lit_start = out.len();
     if lit_coded {
         if !lit_reuse {
-            crate::huffman::pack_lengths(&lit_lengths, &mut lit_section);
+            crate::huffman::pack_lengths(&lit_lengths, out);
         }
-        let streams = huff8::encode(literals, &lit_lengths);
-        write_substreams(&streams, &mut lit_section);
+        huff8::encode_into(literals, &lit_lengths, out);
     } else {
-        lit_section.extend_from_slice(literals);
+        out.extend_from_slice(literals);
     }
+    let lit_size = out.len() - lit_start;
 
     // Sequence code streams: one up-front decision (not a per-stream, then
     // shadowed re-encode) -- reuse the previous block's three tables only
     // when all three are present and each is close to this block's fresh
     // counts; otherwise recompute and write fresh tables for all three.
-    let ll_hist = code_hist(&ll, LL_SYMBOLS);
-    let ml_hist = code_hist(&ml, ML_SYMBOLS);
-    let off_hist = code_hist(&off, OFF_SYMBOLS);
+    let ll_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.ll);
+    let ml_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.ml);
+    let off_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.off);
     let ll_fresh = tans::normalize(&ll_hist, LL_SYMBOLS);
     let ml_fresh = tans::normalize(&ml_hist, ML_SYMBOLS);
     let off_fresh = tans::normalize(&off_hist, OFF_SYMBOLS);
@@ -196,43 +229,73 @@ pub fn encode_block(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut
     let mut ll_counts = if seq_reuse { prev.ll.clone().unwrap() } else { ll_fresh.clone() };
     let mut ml_counts = if seq_reuse { prev.ml.clone().unwrap() } else { ml_fresh.clone() };
     let mut off_counts = if seq_reuse { prev.off.clone().unwrap() } else { off_fresh.clone() };
-    let (mut ll_sec, mut ll_coded) = encode_codes(&ll, &ll_hist, &ll_counts, seq_reuse);
-    let (mut ml_sec, mut ml_coded) = encode_codes(&ml, &ml_hist, &ml_counts, seq_reuse);
-    let (mut off_sec, mut off_coded) = encode_codes(&off, &off_hist, &off_counts, seq_reuse);
-    let mut seq_coded = ll_coded && ml_coded && off_coded;
-    // The up-front reuse decision is optimistic (each `encode_codes` call
-    // still independently applies the raw-beats-coding rule). If reuse was
-    // assumed but one stream falls back to raw anyway, the other two
-    // cannot be left with their table omitted under a header that now has
-    // to report "not reused" -- that combination is undecodable (a coded,
-    // non-reused section must carry its own table). Redo all three fresh,
-    // no reuse, and let each decide coded/raw again on its own.
-    if seq_reuse && !seq_coded {
+    let seq_start = out.len();
+    let mut sizes = [0usize; 3];
+    let mut coded = [false; 3];
+    for _ in 0..2 {
+        for (i, (codes, hist, counts)) in [(&s.ll, &ll_hist, &ll_counts), (&s.ml, &ml_hist, &ml_counts), (&s.off, &off_hist, &off_counts)].into_iter().enumerate() {
+            let start = out.len();
+            coded[i] = encode_codes(codes, hist, counts, seq_reuse, &mut s.chunks, out);
+            sizes[i] = out.len() - start;
+        }
+        // The up-front reuse decision is optimistic (each `encode_codes`
+        // call still independently applies the raw-beats-coding rule).
+        // If reuse was assumed but one stream falls back to raw anyway,
+        // the other two cannot be left with their table omitted under a
+        // header that now has to report "not reused" -- that combination
+        // is undecodable (a coded, non-reused section must carry its own
+        // table). Redo all three fresh, no reuse, and let each decide
+        // coded/raw again on its own.
+        if !seq_reuse || coded.iter().all(|&c| c) {
+            break;
+        }
         seq_reuse = false;
         ll_counts = ll_fresh.clone();
         ml_counts = ml_fresh.clone();
         off_counts = off_fresh.clone();
-        (ll_sec, ll_coded) = encode_codes(&ll, &ll_hist, &ll_counts, false);
-        (ml_sec, ml_coded) = encode_codes(&ml, &ml_hist, &ml_counts, false);
-        (off_sec, off_coded) = encode_codes(&off, &off_hist, &off_counts, false);
-        seq_coded = ll_coded && ml_coded && off_coded;
+        out.truncate(seq_start);
     }
+    let seq_coded = coded.iter().all(|&c| c);
 
-    let mut extra_sec = Vec::new();
-    write_substreams(&extra_streams, &mut extra_sec);
+    // Extra bits: sub-stream k holds sequences k, k + 8, ... in order.
+    let extra_start = out.len();
+    write_streams(out, n.div_ceil(8) * EXTRA_BITS as usize, |k, w| {
+        let e = &s.extra[k.min(n)..];
+        let mut i = 0;
+        // SAFETY: at most ceil(n / 8) sequences of at most EXTRA_BITS
+        // bits each go into this stream, the `max_bits` reserved.
+        unsafe {
+            while i + 8 < e.len() {
+                // Two sequences per put when they fit MAX_PUT together
+                // (nearly always: a sequence averages ~15 extra bits).
+                let (x, y) = (e[i], e[i + 8]);
+                let (nx, ny) = ((x >> EXTRA_BITS) as u32, (y >> EXTRA_BITS) as u32);
+                let (vx, vy) = (x & ((1u64 << EXTRA_BITS) - 1), y & ((1u64 << EXTRA_BITS) - 1));
+                if nx + ny <= crate::bits::MAX_PUT {
+                    w.put(vx | vy << nx, nx + ny);
+                } else {
+                    w.put(vx, nx);
+                    w.put(vy, ny);
+                }
+                i += 16;
+            }
+            if i < e.len() {
+                let x = e[i];
+                w.put(x & ((1u64 << EXTRA_BITS) - 1), (x >> EXTRA_BITS) as u32);
+            }
+        }
+    });
+    let extra_size = out.len() - extra_start;
 
     let sub = SubHeader {
-        coded: (lit_coded as u8) << S_LIT | (ll_coded as u8) << S_LL | (ml_coded as u8) << S_ML | (off_coded as u8) << S_OFF,
+        coded: (lit_coded as u8) << S_LIT | (coded[0] as u8) << S_LL | (coded[1] as u8) << S_ML | (coded[2] as u8) << S_OFF,
         reuse: (lit_coded && lit_reuse) as u8 | (((seq_reuse && seq_coded) as u8) << 1),
         dict_id,
-        sizes: [lit_section.len() as u32, ll_sec.len() as u32, ml_sec.len() as u32, off_sec.len() as u32, extra_sec.len() as u32],
+        sizes: [lit_size as u32, sizes[0] as u32, sizes[1] as u32, sizes[2] as u32, extra_size as u32],
     };
-    sub.write(out);
-    out.extend_from_slice(&lit_section);
-    out.extend_from_slice(&ll_sec);
-    out.extend_from_slice(&ml_sec);
-    out.extend_from_slice(&off_sec);
-    out.extend_from_slice(&extra_sec);
+    let mut hdr = Vec::with_capacity(SubHeader::BYTES);
+    sub.write(&mut hdr);
+    out[base..base + SubHeader::BYTES].copy_from_slice(&hdr);
 
     if lit_coded {
         prev.lit_lengths = Some(lit_lengths);
@@ -251,7 +314,7 @@ pub fn encode_block(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut
 /// v6 streams (tokens, offsets, extras) -> sequences. Milestone 2 bridge:
 /// lets the v7 container and decoder be measured on the proven parse.
 /// The streams must be well formed (they come straight from the finder).
-pub fn sequences_from_streams(tokens: &[u8], offsets: &[u8], extras: &[u8], min_match: usize) -> Vec<Sequence> {
+pub fn sequences_from_streams(tokens: &[u8], offsets: &[u8], extras: &[u8], min_match: usize, seqs: &mut Vec<Sequence>) {
     use crate::format::{Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, MATCH_CODE_ESCAPE};
     fn read_escape(extras: &[u8], e: &mut usize, base: usize) -> u32 {
         let v = extras[*e] as usize;
@@ -266,36 +329,29 @@ pub fn sequences_from_streams(tokens: &[u8], offsets: &[u8], extras: &[u8], min_
     let bias = min_match - 1;
     let mut e = 0usize;
     let mut o = 0usize;
-    let mut seqs = Vec::with_capacity(tokens.len());
-    for &t in tokens {
+    seqs.clear();
+    seqs.reserve(tokens.len() + 1);
+    // The format wants exactly one literal-only sequence, last. Merge any
+    // interior literal-only tokens (the v6 MAX_LIT_LEN split) into the next.
+    let mut carry = 0u32;
+    for (i, &t) in tokens.iter().enumerate() {
         let tok = Token(t);
         let lc = tok.lit_code();
         let mc = tok.match_code();
         let lit_len = if lc == LIT_CODE_ESCAPE { read_escape(extras, &mut e, ESCAPE_BASE_LIT) } else { lc as u32 };
-        let (match_len, offset) = if mc == 0 {
-            (0, 0)
-        } else {
-            let ml = if mc == MATCH_CODE_ESCAPE { read_escape(extras, &mut e, bias + 15) } else { (mc + bias) as u32 };
-            let lo = u16::from_le_bytes([offsets[o], offsets[o + 1]]) as u32;
-            o += 2;
-            (ml, lo | ((tok.off_hi() as u32) << 16))
-        };
-        seqs.push(Sequence { lit_len, match_len, offset });
-    }
-    // The format wants exactly one literal-only sequence, last. Merge any
-    // interior literal-only tokens (the v6 MAX_LIT_LEN split) into the next.
-    let mut merged: Vec<Sequence> = Vec::with_capacity(seqs.len());
-    let mut carry = 0u32;
-    for (i, s) in seqs.iter().enumerate() {
-        if s.match_len == 0 && i + 1 < seqs.len() {
-            carry += s.lit_len;
-            continue;
+        if mc == 0 {
+            if i + 1 < tokens.len() {
+                carry += lit_len;
+                continue;
+            }
+            seqs.push(Sequence { lit_len: lit_len + carry, match_len: 0, offset: 0 });
+            return;
         }
-        merged.push(Sequence { lit_len: s.lit_len + carry, match_len: s.match_len, offset: s.offset });
+        let match_len = if mc == MATCH_CODE_ESCAPE { read_escape(extras, &mut e, bias + 15) } else { (mc + bias) as u32 };
+        let lo = u16::from_le_bytes([offsets[o], offsets[o + 1]]) as u32;
+        o += 2;
+        seqs.push(Sequence { lit_len: lit_len + carry, match_len, offset: lo | ((tok.off_hi() as u32) << 16) });
         carry = 0;
     }
-    if merged.last().map_or(true, |s| s.match_len != 0) {
-        merged.push(Sequence { lit_len: carry, match_len: 0, offset: 0 });
-    }
-    merged
+    seqs.push(Sequence { lit_len: 0, match_len: 0, offset: 0 });
 }

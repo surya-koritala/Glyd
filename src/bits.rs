@@ -1,13 +1,112 @@
 //! LSB-first bitstreams for the v7 entropy coders.
 //!
-//! The reader keeps a 64-bit accumulator and refills it with one unaligned
-//! 8-byte load, branch-free (Giesen's scheme): `cnt` is the number of valid
-//! low bits; after `refill` it is at least 56. The load pointer is clamped
-//! to `end - 8`, so a corrupt stream can make the reader return zeros but
-//! never read outside its slice; `overrun` reports that.
+//! The writer mirrors the reader: a 64-bit accumulator holding under 8
+//! bits between calls, and every `put` stores the whole accumulator with
+//! one unaligned 8-byte write at the cursor and advances by the whole
+//! bytes it completed, branch-free. The reader keeps a 64-bit accumulator
+//! and refills it with one unaligned 8-byte load, branch-free (Giesen's
+//! scheme): `cnt` is the number of valid low bits; after `refill` it is
+//! at least 56. The load pointer is clamped to `end - 8`, so a corrupt
+//! stream can make the reader return zeros but never read outside its
+//! slice; `overrun` reports that.
 
 pub const PAD: usize = 8;
 
+/// Most bits one `put` may carry: 7 banked + 56 <= 63 keeps every shift
+/// in range.
+pub const MAX_PUT: u32 = 56;
+
+/// Write cursor over a pre-reserved buffer, held by value in the caller's
+/// frame so `acc`/`n`/`p` stay in registers (the `finder::Cursors`
+/// lesson: state behind `&mut` that a raw store may alias goes through
+/// memory on every call). Every `put` writes 8 bytes at `p` and advances
+/// by the whole bytes completed, so a stream of `B` bits touches at most
+/// `B / 8 + 8` bytes past its start, and `finish` adds the partial byte
+/// and `PAD` zeros: `B / 8 + 16` bytes of room is always enough.
+pub struct BitCursor {
+    acc: u64,
+    n: u32,
+    p: *mut u8,
+}
+
+impl BitCursor {
+    /// Append the low `nbits` (0..=`MAX_PUT`) of `value`, least
+    /// significant first. `value` must be below `1 << nbits` (no mask
+    /// here: every caller builds its values that way).
+    ///
+    /// # Safety
+    /// The buffer behind `p` must have room for this stream's bit bound
+    /// as described on the type (`write_streams` reserves it).
+    #[inline(always)]
+    pub unsafe fn put(&mut self, value: u64, nbits: u32) {
+        debug_assert!(nbits <= MAX_PUT && value >> nbits == 0);
+        self.acc |= value << self.n;
+        self.n += nbits;
+        std::ptr::write_unaligned(self.p as *mut u64, self.acc.to_le());
+        let bytes = self.n >> 3;
+        self.p = self.p.add(bytes as usize);
+        self.acc >>= bytes * 8;
+        self.n &= 7;
+    }
+
+    /// Close the stream: the partial byte, then `PAD` zero bytes. Returns
+    /// the cursor just past the padding.
+    ///
+    /// # Safety
+    /// As `put`.
+    #[inline(always)]
+    unsafe fn finish(self) -> *mut u8 {
+        // The last `put` already stored the partial byte's bits here with
+        // zeros above; the store below also covers the no-`put` case.
+        *self.p = self.acc as u8;
+        let p = self.p.add((self.n > 0) as usize);
+        std::ptr::write_unaligned(p as *mut u64, 0u64);
+        p.add(PAD)
+    }
+}
+
+pub const STREAMS: usize = 8;
+
+/// The v7 section layout: 8 sub-streams behind 8 u32 LE byte sizes, each
+/// closed with `PAD` zeros. `fill(k, cursor)` writes sub-stream `k` with
+/// at most `max_bits` bits, which is what the reservation is proven from
+/// (see `BitCursor`).
+pub fn write_streams(out: &mut Vec<u8>, max_bits: usize, mut fill: impl FnMut(usize, &mut BitCursor)) {
+    let table = out.len();
+    out.resize(table + 4 * STREAMS, 0);
+    for k in 0..STREAMS {
+        // SAFETY: `fill` puts at most `max_bits` bits, and a stream of B
+        // bits plus its `finish` writes within B / 8 + 16 bytes of its
+        // start (see `BitCursor`), which is reserved here; `set_len`
+        // publishes only bytes those writes initialised.
+        out.reserve(max_bits / 8 + 16);
+        let start = out.len();
+        unsafe {
+            let base = out.as_mut_ptr().add(start);
+            let mut c = BitCursor { acc: 0, n: 0, p: base };
+            fill(k, &mut c);
+            let end = c.finish();
+            out.set_len(start + end.offset_from(base) as usize);
+        }
+        let len = (out.len() - start) as u32;
+        out[table + 4 * k..table + 4 * k + 4].copy_from_slice(&len.to_le_bytes());
+    }
+}
+
+/// Split a `write_streams` section back into its 8 streams (test helper).
+pub fn split_streams(section: &[u8]) -> Vec<Vec<u8>> {
+    let mut pos = 4 * STREAMS;
+    (0..STREAMS)
+        .map(|k| {
+            let n = u32::from_le_bytes(section[4 * k..4 * k + 4].try_into().unwrap()) as usize;
+            pos += n;
+            section[pos - n..pos].to_vec()
+        })
+        .collect()
+}
+
+/// Growable writer for one stream (tests and the single-stream tANS
+/// encoder); the hot paths use `write_streams`.
 pub struct BitWriter {
     acc: u64,
     n: u32,
@@ -19,21 +118,23 @@ impl BitWriter {
         BitWriter { acc: 0, n: 0, out: Vec::new() }
     }
 
-    /// Append the low `nbits` (1..=32) of `value`, least significant first.
+    /// Append the low `nbits` (0..=`MAX_PUT`) of `value`, least
+    /// significant first.
     #[inline(always)]
     pub fn put(&mut self, value: u64, nbits: u32) {
-        debug_assert!(nbits >= 1 && nbits <= 32);
-        self.acc |= (value & ((1u64 << nbits) - 1)) << self.n;
-        self.n += nbits;
-        while self.n >= 8 {
-            self.out.push(self.acc as u8);
-            self.acc >>= 8;
-            self.n -= 8;
+        debug_assert!(nbits <= MAX_PUT);
+        self.out.reserve(16);
+        let len = self.out.len();
+        // SAFETY: 16 bytes of room past `len`, more than one put's 8-byte
+        // store; `set_len` publishes only the whole bytes it completed.
+        unsafe {
+            let base = self.out.as_mut_ptr().add(len);
+            let mut c = BitCursor { acc: self.acc, n: self.n, p: base };
+            c.put(value & ((1u64 << nbits) - 1), nbits);
+            self.out.set_len(len + c.p.offset_from(base) as usize);
+            self.acc = c.acc;
+            self.n = c.n;
         }
-    }
-
-    pub fn bits_written(&self) -> usize {
-        self.out.len() * 8 + self.n as usize
     }
 
     /// Flush the partial byte and append `PAD` zero bytes.
