@@ -1,5 +1,10 @@
 pub const MAGIC: u32 = 0x53494D44; // "SIMD"
 pub const CURRENT_VERSION: u16 = 6;
+/// Entropy-coded blocks (see v7_format.rs). Same BlockHeader; for this
+/// version `token_bytes` is the whole payload length, `token_count` the
+/// sequence count and `literal_len` the literal byte count; the other
+/// section fields are zero.
+pub const VERSION_V7: u16 = 7;
 /// Match window. An offset is 17 bits: 16 in the offset stream plus one in
 /// the token, so the format addresses 128 KB. Measured (token_stats): with
 /// a 256 KB finder window every offset already fit 18 bits, so the two bits
@@ -225,6 +230,8 @@ impl BlockHeader {
     pub fn payload_len(&self) -> usize {
         if (self.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
             self.uncompressed_len as usize
+        } else if self.version == VERSION_V7 {
+            self.token_bytes as usize
         } else {
             self.token_bytes as usize
                 + self.offset_bytes as usize
@@ -238,6 +245,14 @@ impl BlockHeader {
     #[inline(always)]
     pub fn is_plausible(&self) -> bool {
         let u = self.uncompressed_len as usize;
+        if self.version == VERSION_V7 {
+            return u <= MAX_BLOCK_SIZE
+                && self.token_count as usize <= u / 3 + 1
+                && self.literal_len as usize <= u
+                && self.token_bytes as usize <= 2 * u + 4096
+                && self.offset_bytes == 0
+                && self.extras_bytes == 0;
+        }
         u <= MAX_BLOCK_SIZE
             && self.token_count as usize <= u
             && self.token_bytes as usize <= u

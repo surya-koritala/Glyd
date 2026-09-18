@@ -361,3 +361,51 @@ fn tans8_speed() {
     let ns_per_symbol = best * 1e9 / n as f64;
     println!("tans8_speed: {} symbols, {:.3} ns/symbol", n, ns_per_symbol);
 }
+
+use simd_stream_codec::v7_format::{self, Reps, SubHeader};
+
+#[test]
+fn v7_length_and_offset_codes_roundtrip() {
+    for v in (0u32..70_000).step_by(7).chain([0, 15, 16, 17, 31, 32, 262_143].into_iter()) {
+        let (c, nb, e) = v7_format::ll_code(v);
+        assert!(c < v7_format::LL_SYMBOLS as u8);
+        assert_eq!(v7_format::extra_bits_of_code(v7_format::Kind::Ll, c), nb);
+        assert_eq!(v7_format::ll_value(c, e), v);
+        let m = v + v7_format::MIN_MATCH;
+        let (c, nb, e) = v7_format::ml_code(m);
+        assert!(c < v7_format::ML_SYMBOLS as u8);
+        assert_eq!(v7_format::extra_bits_of_code(v7_format::Kind::Ml, c), nb);
+        assert_eq!(v7_format::ml_value(c, e), m);
+    }
+    for o in (1u32..v7_format::MAX_WINDOW).step_by(997).chain([1, 2, 3, 4, 65535, 65536, v7_format::MAX_WINDOW - 1].into_iter()) {
+        let (c, nb, e) = v7_format::off_code(o);
+        assert!(c >= 3 && c < v7_format::OFF_SYMBOLS as u8);
+        assert_eq!(v7_format::extra_bits_of_code(v7_format::Kind::Off, c), nb);
+        assert_eq!(v7_format::off_value(c, e), o);
+    }
+}
+
+#[test]
+fn v7_repeat_offsets_encoder_and_decoder_agree() {
+    let offsets = [100u32, 100, 7, 100, 7, 7, 300, 100, 300, 1];
+    let mut enc = Reps::new();
+    let mut dec = Reps::new();
+    let mut rep_hits = 0;
+    for &o in &offsets {
+        let (code, nb, extra) = enc.code_for(o);
+        if code < 3 { rep_hits += 1; assert_eq!(nb, 0); }
+        assert_eq!(dec.resolve(code, extra), o);
+    }
+    assert!(rep_hits >= 5, "repeats must be found: {}", rep_hits);
+}
+
+#[test]
+fn v7_subheader_roundtrip() {
+    let h = SubHeader { coded: 0b01011, reuse: 0b10, dict_id: 0xDEADBEEF, sizes: [1, 2, 3, 4, 5] };
+    let mut out = Vec::new();
+    h.write(&mut out);
+    assert_eq!(out.len(), SubHeader::BYTES);
+    let p = SubHeader::parse(&out).unwrap();
+    assert_eq!((p.coded, p.reuse, p.dict_id, p.sizes), (h.coded, h.reuse, h.dict_id, h.sizes));
+    assert!(SubHeader::parse(&out[..10]).is_none());
+}

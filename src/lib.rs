@@ -18,6 +18,7 @@ pub mod c_api;
 pub mod bits;
 pub mod huff8;
 pub mod tans;
+pub mod v7_format;
 
 pub use streaming::{AlatirokReader, AlatirokWriter};
 pub use format::compute_checksum;
