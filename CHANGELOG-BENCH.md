@@ -242,3 +242,24 @@ run (quick3 now reports liblz4 alongside). Dense retry made opt-in
 (ALATIROK_DENSE=1); x-ray floor set to liblz4's own 1.00-1.01; total ratio
 floor RAISED 1.85 -> 2.1009.
   goal3_baseline: ratio 2.37232 | comp 0.4651 | decomp 3.1239 vs liblz4 5.6526 (55.3%)
+
+## GOAL3 decode: ablation maps the loop; credit guards +4%; window 256 KB
+examples/dec_ablate.rs re-runs the fast loop over every block's real streams
+with pieces switched off (cold cache, whole corpus, 13.8M tokens, ~66 ms):
+  walk (no memory traffic) 38 ms = base 14 (1.0 ns/token, LZ4-class floor)
+    + guards 8 + escapes 16 (25% of tokens carry one)
+  memory side ~28 ms: far-offset misses dominate when cold; the offset
+    position chain itself is only ~4 ms (full vs fixed-stride at 64 KB)
+Refuted by measurement (do not retry): branchless cmov escapes (-25%: the
+extras cursor chain serializes), shift/mask token decode instead of the
+table (-5%), 16-byte copies (0), self/one-ahead prefetch (-30%), scalar
+two-pass split (-10%), recomputing bounds after every escape (-6%).
+Adopted: LZ4-style single 32-byte store per literal run and per match; a
+credit counter that pays bound checks in bulk (one decrement per token,
+escapes charge their excess). Same-run decode 55.3% -> 57.1% of liblz4.
+Finder window default 8 MB -> 256 KB (FINDER_WINDOW): sources stay in L2,
+so decode is immune to the VM's cache-state drift (57.0/57.1% on repeats vs
+51.5/55.5% at 8 MB). Costs: ratio 2.372 -> 2.272 (floor 2.10), comp 0.457
+-> 0.418 (a level, not a gate, under GOAL3).
+  credit_win256k_default: ratio 2.27212 | comp 0.4184 | decomp 3.2126 vs
+  liblz4 5.6378 = 57.0%

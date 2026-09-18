@@ -27,6 +27,9 @@ use crate::format::{
     MIN_MATCH_LEN_DENSE, WINDOW_SIZE,
 };
 
+/// Default finder window; see `window_size`.
+pub const FINDER_WINDOW: usize = 256 * 1024;
+
 pub const HASH_BITS: u32 = 16;
 pub const HASH_SIZE: usize = 1 << HASH_BITS;
 
@@ -77,9 +80,12 @@ pub fn init_table(table: &mut HashTable, src: &[u8]) {
     table.fill(Bucket { w1: w, p1: 0, w2: w, p2: 0 });
 }
 
-/// Match window, in bytes. Defaults to the format window (`WINDOW_SIZE`),
-/// overridable once per process with `ALATIROK_WINDOW` for frontier sweeps.
-/// Read once and cached, so it never touches the per-block hot path.
+/// How far back the finder looks, in bytes. The format can address 16 MB
+/// (`WINDOW_SIZE` caps the override), but the default is FINDER_WINDOW:
+/// 256 KB keeps every match source in L2, which measured the best and by far
+/// the most stable decode (57% of liblz4 in the same run, against a noisy
+/// 51-55% at 8 MB) at ratio 2.27 against a 2.10 floor. Overridable once per
+/// process with `ALATIROK_WINDOW` for sweeps; read once and cached.
 #[inline]
 fn window_size() -> usize {
     use std::sync::OnceLock;
@@ -89,7 +95,7 @@ fn window_size() -> usize {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .map(|w| w.clamp(1, WINDOW_SIZE))
-            .unwrap_or(WINDOW_SIZE)
+            .unwrap_or(FINDER_WINDOW)
     })
 }
 
