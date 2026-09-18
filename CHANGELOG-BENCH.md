@@ -202,3 +202,19 @@ for itself here even interleaved. The path that strictly dominates LZAV on all
 three axes is therefore not reachable with this entropy method. The remaining
 ratio lever that does not touch decode is the byte format (bit-packed offsets,
 ~+2% -> ~2.44), which would tie LZAV on ratio while we keep our decode lead.
+
+## Moonshot REFUTED: rANS decode hits the same wall as Huffman (rans_speed)
+Interleaved 32-bit rANS, 12-bit freqs, decode of the 14.38M-token stream:
+  N=1 4.59 ns/sym | N=2 4.09 | N=4 3.56 | N=8 3.62 | N=16 3.84 | N=32 3.72
+Best ~0.26 GB/s on tokens, and it PLATEAUS/worsens past N=4 -- slightly slower
+than interleaved Huffman (3.06). rANS's branchless arithmetic did not help,
+which pins the bottleneck on the per-symbol table load throughput, not the
+algorithm. Both methods do ~1 random few-KB-table load per symbol at ~3 ns.
+Entropy-coding tokens by ANY table method adds ~36-43 ms to the ~63 ms decode:
+decode 3.19 -> ~2.1 GB/s, under the 3.130 floor. SIMD/gather rANS would not
+escape this (gather is N sequential loads at the same throughput). Conclusion:
+the ratio/decode tradeoff cannot be broken on this hardware with table entropy;
+strictly dominating LZAV on all three axes is infeasible for this design. The
+defensible win is the speed niche: fastest decode of anything denser than LZ4,
+dominating Snappy on ratio and decode. Remaining ratio lever with no decode
+cost is format bit-packing (~+2% -> ~2.44, ties LZAV, keeps the decode lead).
