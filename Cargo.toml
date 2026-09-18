@@ -66,3 +66,7 @@ path = "examples/huff_speed.rs"
 [[example]]
 name = "rans_speed"
 path = "examples/rans_speed.rs"
+
+[[example]]
+name = "bitoff_probe"
+path = "examples/bitoff_probe.rs"

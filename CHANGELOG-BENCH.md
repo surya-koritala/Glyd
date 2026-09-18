@@ -218,3 +218,17 @@ strictly dominating LZAV on all three axes is infeasible for this design. The
 defensible win is the speed niche: fastest decode of anything denser than LZ4,
 dominating Snappy on ratio and decode. Remaining ratio lever with no decode
 cost is format bit-packing (~+2% -> ~2.44, ties LZAV, keeps the decode lead).
+
+## Bit-packed offsets: ratio prize 2.47 (beats LZAV) but decode cost looks prohibitive
+bitoff_probe on the 14.38M real offsets. Best 4-class widths [10,16,20,24]
+save 8.86% of offset bytes (33.17M -> 30.23M = 2.94M = 3.31% of output),
+taking ratio 2.388 -> ~2.470, above LZAV's 2.450. But a bitstream read per
+match costs ~3.3 ns/match isolated (single accumulator; a Vec-indexed
+"interleaved" variant was slower, inconclusive). 14.38M matches ~ 47.8 ms of
+offset decode vs ~10-12 ms today, so integrated decode very likely falls from
+3.19 to ~2.1-2.5 GB/s, under the 3.130 floor. The offset bitstream has no
+table load (unlike Huffman/rANS), so register-allocated interleaving MIGHT
+help, but even optimistic hiding leaves it marginal. The trade is ratio
+dominance over LZAV for our decode crown -- probably not worth it, since the
+decode lead is our defining strength. Building v6 to get the exact integrated
+number is hours with a likely revert.
