@@ -1,0 +1,19 @@
+Silesia 211938580 bytes -> 97231878 bytes, ratio 2.17972, 802 compressed blocks
+
+stream         symbols         raw     huffman    save%      shannon    capt%  coded/bl
+tokens        17938614    17938614    10828233    7.31%      7400443    96.1%  802/802 
+offset hi     17938271    17938271    13755954    4.30%      4386130    95.4%  802/802 
+offset lo     17938271    17938271    16491775    1.49%      1569402    92.2%  483/802 
+literals      36387038    36387038    30659108    5.89%      5968045    96.0%  793/802 
+
+tokens only          saves   7110381 bytes =  7.31%  ratio 2.17972 -> 2.35170 (T1.2 short)
+tokens + offset hi   saves  11292698 bytes = 11.61%  ratio 2.17972 -> 2.46615 (T1.2 OK)
+tokens + offsets     saves  12739194 bytes = 13.10%  ratio 2.17972 -> 2.50837 (T1.2 OK)
+all four             saves  18467124 bytes = 18.99%  ratio 2.17972 -> 2.69078 (T1.2 OK)
+
+decode cost of coded blocks, best of 5, current decode_into:
+tokens        17938614 syms     60.39 ms    3.37 ns/sym  cumulative   60.39 ms
+offset hi     17938271 syms     58.89 ms    3.28 ns/sym  cumulative  119.28 ms
+offset lo      8923892 syms     25.27 ms    2.83 ns/sym  cumulative  144.55 ms
+literals      34495586 syms    101.41 ms    2.94 ns/sym  cumulative  245.97 ms
+T1.4 floor 3.130 GB/s allows 63.06 ms total for 211938580 bytes

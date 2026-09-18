@@ -1,65 +1,118 @@
 use crate::error::{CodecError, Result};
-use crate::format::{Token, MAX_BLOCK_SIZE, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN};
+use crate::finder::{find_matches, init_table, HashTable, Mode, ScalarMatch, Streams};
+use crate::format::{
+    Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, MATCH_CODE_ESCAPE, OFFSET_BYTES,
+};
 
-/// Universal portable decompressor without any SIMD intrinsics requirement.
-pub fn decompress_fallback(
-    tokens: &[Token],
-    offsets: &[u16],
-    literals: &[u8],
-    full_dst: &mut [u8],
-    block_offset: usize,
-    uncompressed_len: usize,
+/// Read one escaped length from the extras stream.
+#[inline(always)]
+pub unsafe fn read_escape(
+    extras: *const u8,
+    extras_len: usize,
+    idx: &mut usize,
+    base: usize,
 ) -> Result<usize> {
+    if *idx >= extras_len {
+        return Err(CodecError::CorruptedBitstream("Insufficient extras in bitstream"));
+    }
+    let v = *extras.add(*idx);
+    *idx += 1;
+    if v != ESCAPE_CONT {
+        return Ok(base + v as usize);
+    }
+    if *idx + 2 > extras_len {
+        return Err(CodecError::CorruptedBitstream("Insufficient extras in bitstream"));
+    }
+    let w = u16::from_le_bytes([*extras.add(*idx), *extras.add(*idx + 1)]) as usize;
+    *idx += 2;
+    Ok(base + 255 + w)
+}
+
+/// Universal portable decompressor. Every access is bounds-checked, so it is
+/// also the reference for the SIMD decoder's tail phase.
+///
+/// `dst` is the block's own output region (plus padding); `buffer_start` is
+/// where the match window begins, at or before `dst`. `min_match` selects
+/// the length bias (6 for ordinary blocks, 4 for FLAG_DENSE).
+pub unsafe fn decompress_fallback_raw(
+    tokens: *const u8,
+    num_tokens: usize,
+    offsets: *const u8,
+    offsets_len: usize,
+    extras: *const u8,
+    extras_len: usize,
+    literals: &[u8],
+    dst: &mut [u8],
+    buffer_start: *const u8,
+    uncompressed_len: usize,
+    min_match: usize,
+) -> Result<usize> {
+    let bias = min_match - 1;
+    if uncompressed_len > dst.len() {
+        return Err(CodecError::OutputBufferTooSmall {
+            required: uncompressed_len,
+            provided: dst.len(),
+        });
+    }
+    let block = dst.as_mut_ptr();
     let mut dst_pos = 0usize;
     let mut lit_pos = 0usize;
-    let mut offset_idx = 0usize;
+    let mut off_pos = 0usize;
+    let mut extra_idx = 0usize;
 
-    for &token in tokens {
-        let lit_len = token.lit_len();
-        let match_len = token.match_len();
+    for token_idx in 0..num_tokens {
+        let token = Token(*tokens.add(token_idx));
+        let lc = token.lit_code();
+        let mc = token.match_code();
 
-        // 1. Literal copy
+        let lit_len = if lc == LIT_CODE_ESCAPE {
+            read_escape(extras, extras_len, &mut extra_idx, ESCAPE_BASE_LIT)?
+        } else {
+            lc
+        };
+        let match_len = if mc == 0 {
+            0
+        } else if mc == MATCH_CODE_ESCAPE {
+            read_escape(extras, extras_len, &mut extra_idx, bias + 15)?
+        } else {
+            mc + bias
+        };
+
+        // A corrupted token must never write past the declared block length.
+        if lit_len + match_len > uncompressed_len - dst_pos {
+            return Err(CodecError::CorruptedBitstream(
+                "Token output exceeds declared block length",
+            ));
+        }
+
         if lit_len > 0 {
             if lit_pos + lit_len > literals.len() {
                 return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
             }
-            let target_start = block_offset + dst_pos;
-            if target_start + lit_len > full_dst.len() {
-                return Err(CodecError::OutputBufferTooSmall {
-                    required: target_start + lit_len,
-                    provided: full_dst.len(),
-                });
-            }
-
-            full_dst[target_start..target_start + lit_len]
-                .copy_from_slice(&literals[lit_pos..lit_pos + lit_len]);
+            std::ptr::copy_nonoverlapping(literals.as_ptr().add(lit_pos), block.add(dst_pos), lit_len);
             lit_pos += lit_len;
             dst_pos += lit_len;
         }
 
-        // 2. Match copy (supports cross-block lookback)
         if match_len > 0 {
-            if offset_idx >= offsets.len() {
-                return Err(CodecError::CorruptedBitstream("Insufficient match offsets"));
+            if off_pos + OFFSET_BYTES > offsets_len {
+                return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let offset = offsets[offset_idx] as usize;
-            offset_idx += 1;
+            let lo = u16::from_le_bytes([*offsets.add(off_pos), *offsets.add(off_pos + 1)]) as usize;
+            let offset = lo | (token.off_hi() << 16);
+            off_pos += OFFSET_BYTES;
 
-            let available = block_offset + dst_pos;
+            let available = block.add(dst_pos).offset_from(buffer_start) as usize;
             if offset == 0 || offset > available {
                 return Err(CodecError::OffsetOutOfBounds { offset, available });
             }
-            let target_start = block_offset + dst_pos;
-            if target_start + match_len > full_dst.len() {
-                return Err(CodecError::OutputBufferTooSmall {
-                    required: target_start + match_len,
-                    provided: full_dst.len(),
-                });
-            }
 
-            let match_start = target_start - offset;
-            for i in 0..match_len {
-                full_dst[target_start + i] = full_dst[match_start + i];
+            let mut s = block.add(dst_pos).sub(offset);
+            let mut d = block.add(dst_pos);
+            for _ in 0..match_len {
+                *d = *s;
+                s = s.add(1);
+                d = d.add(1);
             }
             dst_pos += match_len;
         }
@@ -68,108 +121,63 @@ pub fn decompress_fallback(
     if dst_pos != uncompressed_len {
         return Err(CodecError::CorruptedBitstream("Decompressed length mismatch"));
     }
-
     Ok(dst_pos)
 }
 
-const HASH_BITS: u32 = 14;
-const HASH_SIZE: usize = 1 << HASH_BITS;
-
-#[inline(always)]
-fn hash4(v: u32) -> usize {
-    ((v.wrapping_mul(0x9E3779B1)) >> (32 - HASH_BITS)) as usize
+/// Safe wrapper: decode a standalone block whose window starts at `dst[0]`.
+pub fn decompress_fallback(
+    tokens: &[u8],
+    offsets: &[u8],
+    extras: &[u8],
+    literals: &[u8],
+    dst: &mut [u8],
+    uncompressed_len: usize,
+    min_match: usize,
+) -> Result<usize> {
+    let buffer_start = dst.as_ptr();
+    unsafe {
+        decompress_fallback_raw(
+            tokens.as_ptr(),
+            tokens.len(),
+            offsets.as_ptr(),
+            offsets.len(),
+            extras.as_ptr(),
+            extras.len(),
+            literals,
+            dst,
+            buffer_start,
+            uncompressed_len,
+            min_match,
+        )
+    }
 }
 
-/// Universal portable compressor.
-pub fn compress_fallback(
-    src: &[u8],
-    tokens: &mut Vec<Token>,
-    offsets: &mut Vec<u16>,
+/// Portable chained compressor: same parse as the AVX2 build.
+pub fn compress_chained_fallback<P: Mode>(
+    full_input: &[u8],
+    block_start: usize,
+    block_len: usize,
+    table: &mut HashTable,
+    tokens: &mut Vec<u8>,
+    offsets: &mut Vec<u8>,
+    extras: &mut Vec<u8>,
     literals: &mut Vec<u8>,
 ) {
-    let src_len = src.len();
-    if src_len < MIN_MATCH_LEN {
-        let mut rem = src;
-        while !rem.is_empty() {
-            let chunk = rem.len().min(MAX_LIT_LEN);
-            tokens.push(Token::new(chunk, 0));
-            literals.extend_from_slice(&rem[..chunk]);
-            rem = &rem[chunk..];
-        }
-        return;
+    let mut out = Streams { min_match: P::MIN_MATCH, tokens, offsets, extras, literals };
+    unsafe {
+        find_matches::<ScalarMatch, P>(full_input, block_start, block_len, table, &mut out);
     }
+}
 
-    let mut table = [0u16; HASH_SIZE];
-    let mut anchor = 0usize;
-    let mut pos = 0usize;
-    let limit = src_len - MIN_MATCH_LEN;
-    let mut forward_step = 1usize;
-    let mut step_skip = 1usize;
-
-    while pos < limit {
-        let val = u32::from_le_bytes([src[pos], src[pos + 1], src[pos + 2], src[pos + 3]]);
-        let h = hash4(val);
-        let candidate = table[h] as usize;
-        table[h] = pos as u16;
-
-        let offset = pos.wrapping_sub(candidate);
-        if offset > 0 && offset < MAX_BLOCK_SIZE && candidate < pos {
-            let cand_val = u32::from_le_bytes([
-                src[candidate],
-                src[candidate + 1],
-                src[candidate + 2],
-                src[candidate + 3],
-            ]);
-            if val == cand_val {
-                let mut match_len = 4;
-                while pos + match_len < src_len && src[pos + match_len] == src[candidate + match_len] {
-                    match_len += 1;
-                }
-
-                let mut lit_count = pos - anchor;
-                let mut lit_src = anchor;
-                while lit_count > MAX_LIT_LEN {
-                    tokens.push(Token::new(MAX_LIT_LEN, 0));
-                    literals.extend_from_slice(&src[lit_src..lit_src + MAX_LIT_LEN]);
-                    lit_src += MAX_LIT_LEN;
-                    lit_count -= MAX_LIT_LEN;
-                }
-
-                let first_match_chunk = match_len.min(MAX_MATCH_LEN);
-                tokens.push(Token::new(lit_count, first_match_chunk));
-                offsets.push(offset as u16);
-                if lit_count > 0 {
-                    literals.extend_from_slice(&src[lit_src..lit_src + lit_count]);
-                }
-
-                let mut rem_match = match_len - first_match_chunk;
-                while rem_match > 0 {
-                    let chunk = rem_match.min(MAX_MATCH_LEN);
-                    tokens.push(Token::new(0, chunk));
-                    offsets.push(offset as u16);
-                    rem_match -= chunk;
-                }
-
-                pos += match_len;
-                anchor = pos;
-                forward_step = 1;
-                step_skip = 1;
-                continue;
-            }
-        }
-
-        pos += forward_step;
-        step_skip += 1;
-        forward_step = (step_skip >> 5).max(1);
-    }
-
-    let mut trailing = src_len - anchor;
-    let mut lit_src = anchor;
-    while trailing > 0 {
-        let chunk = trailing.min(MAX_LIT_LEN);
-        tokens.push(Token::new(chunk, 0));
-        literals.extend_from_slice(&src[lit_src..lit_src + chunk]);
-        lit_src += chunk;
-        trailing -= chunk;
-    }
+/// Portable single-block compressor with the ordinary parse.
+pub fn compress_fallback(
+    src: &[u8],
+    table: &mut HashTable,
+    tokens: &mut Vec<u8>,
+    offsets: &mut Vec<u8>,
+    extras: &mut Vec<u8>,
+    literals: &mut Vec<u8>,
+) {
+    init_table(table, src);
+    compress_chained_fallback::<crate::finder::Lzav>(src, 0, src.len(), table, tokens, offsets, extras, literals);
 }

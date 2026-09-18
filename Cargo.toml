@@ -5,9 +5,14 @@ edition = "2021"
 
 [dependencies]
 lz4_flex = "0.11"
+lz4 = "1.28"
 snap = "1.1"
 zstd = "0.13"
 rayon = "1.10"
+lzav = "0.1.1"
+
+[dev-dependencies]
+libc = "0.2"
 
 [lib]
 crate-type = ["rlib", "cdylib", "staticlib"]
@@ -24,5 +29,56 @@ path = "examples/bench.rs"
 opt-level = 3
 codegen-units = 1
 lto = "fat"
-panic = "abort"
 overflow-checks = false
+
+[[example]]
+name = "fuzz_repro"
+path = "examples/fuzz_repro.rs"
+
+[[example]]
+name = "decode_one"
+path = "examples/decode_one.rs"
+
+[[example]]
+name = "field_survey"
+path = "examples/field_survey.rs"
+
+[[example]]
+name = "ratio_only"
+path = "examples/ratio_only.rs"
+
+[[example]]
+name = "quick3"
+path = "examples/quick3.rs"
+
+[[example]]
+name = "huff_probe"
+path = "examples/huff_probe.rs"
+
+[[example]]
+name = "lzav_decomp"
+path = "examples/lzav_decomp.rs"
+
+[[example]]
+name = "huff_speed"
+path = "examples/huff_speed.rs"
+
+[[example]]
+name = "rans_speed"
+path = "examples/rans_speed.rs"
+
+[[example]]
+name = "speed_ceiling"
+path = "examples/speed_ceiling.rs"
+
+[[example]]
+name = "dec_ablate"
+path = "examples/dec_ablate.rs"
+
+[[example]]
+name = "token_stats"
+path = "examples/token_stats.rs"
+
+[[example]]
+name = "prepass_bench"
+path = "examples/prepass_bench.rs"

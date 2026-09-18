@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, compression-v2 ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Portable baseline: GitHub runners are not the reference machine, so
+  # target-cpu=native would mean something different on every run. x86-64-v3
+  # gives AVX2 without AVX-512.
+  #
+  # This job validates CORRECTNESS ONLY. It must never be used to evaluate the
+  # GOAL.md gates. Those are machine-specific and are measured locally with
+  # `-C target-cpu=native` per GOAL.md Section 1. The two builds differ
+  # measurably: enabling AVX-512 codegen moves single-core compression by about
+  # -6% and decompression by about +7% on Zen 4, because LLVM auto-vectorises
+  # the decoder's literal wildcopy to 512-bit stores.
+  RUSTFLAGS: "-C target-cpu=x86-64-v3"
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Download Corpus
+        run: bash scripts/download_corpus.sh
+
+      - name: Run Test Suite (correctness only, not gate measurement)
+        run: cargo test --release --all-targets
+
+      - name: Run Regression Floor Tests
+        run: cargo test --release --test regression_floors -- --nocapture
+
+      - name: Build Binaries
+        run: |
+          cargo build --release --bin alatirok
+          cargo build --release --example bench

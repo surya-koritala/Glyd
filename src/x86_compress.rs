@@ -1,15 +1,6 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
-use crate::format::{Token, MAX_LIT_LEN, MAX_MATCH_LEN, MIN_MATCH_LEN, MAX_BLOCK_SIZE};
-
-// 16,384 entries * 4 bytes = 64 KB (fits comfortably in Zen 4 L2 cache)
-pub const HASH_BITS: u32 = 14;
-pub const HASH_SIZE: usize = 1 << HASH_BITS;
-
-#[inline(always)]
-fn hash4(v: u32) -> usize {
-    ((v.wrapping_mul(0x9E3779B1)) >> (32 - HASH_BITS)) as usize
-}
+use crate::finder::{find_matches, init_table, HashTable, Lzav, MatchLen, Mode, Streams};
 
 /// Measure common prefix length using AVX2 vector comparisons.
 #[target_feature(enable = "avx2")]
@@ -29,7 +20,16 @@ pub unsafe fn common_prefix_len_avx2(mut a: *const u8, mut b: *const u8, max_len
         a = a.add(32);
         b = b.add(32);
     }
-
+    while len + 8 <= max_len {
+        let x = std::ptr::read_unaligned(a as *const u64);
+        let y = std::ptr::read_unaligned(b as *const u64);
+        if x != y {
+            return len + ((x ^ y).trailing_zeros() / 8) as usize;
+        }
+        len += 8;
+        a = a.add(8);
+        b = b.add(8);
+    }
     while len < max_len && *a == *b {
         len += 1;
         a = a.add(1);
@@ -38,119 +38,31 @@ pub unsafe fn common_prefix_len_avx2(mut a: *const u8, mut b: *const u8, max_len
     len
 }
 
-/// Chained block compressor: allows matches up to 64 KB into the past across block boundaries.
-/// This closes the compression ratio gap with continuous-stream compressors like LZ4.
+pub struct Avx2Match;
+
+impl MatchLen for Avx2Match {
+    #[inline(always)]
+    unsafe fn prefix(a: *const u8, b: *const u8, max: usize) -> usize {
+        common_prefix_len_avx2(a, b, max)
+    }
+}
+
+/// Chained block compressor: history reaches back through `full_input` to
+/// the start of the window, across block boundaries.
 #[target_feature(enable = "avx2")]
 #[target_feature(enable = "bmi2")]
-pub unsafe fn compress_chained_avx2(
+pub unsafe fn compress_chained_avx2<P: Mode>(
     full_input: &[u8],
     block_start: usize,
     block_len: usize,
-    table: &mut [u32; HASH_SIZE],
-    tokens: &mut Vec<Token>,
-    offsets: &mut Vec<u16>,
+    table: &mut HashTable,
+    tokens: &mut Vec<u8>,
+    offsets: &mut Vec<u8>,
+    extras: &mut Vec<u8>,
     literals: &mut Vec<u8>,
 ) {
-    if block_len < MIN_MATCH_LEN {
-        let chunk = &full_input[block_start..block_start + block_len];
-        let mut rem = chunk;
-        while !rem.is_empty() {
-            let c = rem.len().min(MAX_LIT_LEN);
-            tokens.push(Token::new(c, 0));
-            literals.extend_from_slice(&rem[..c]);
-            rem = &rem[c..];
-        }
-        return;
-    }
-
-    let src_ptr = full_input.as_ptr();
-    let block_end = block_start + block_len;
-    let limit = block_end - MIN_MATCH_LEN;
-
-    let mut anchor = block_start;
-    let mut pos = block_start;
-
-    let mut forward_step = 1usize;
-    let mut step_skip = 1usize;
-
-    while pos < limit {
-        let val = std::ptr::read_unaligned(src_ptr.add(pos) as *const u32);
-        let h = hash4(val);
-        let candidate = table[h] as usize;
-        table[h] = pos as u32;
-
-        let offset = pos.wrapping_sub(candidate);
-        // Match can reach back up to 65,535 bytes (strictly < 65536 to fit in u16)
-        if offset > 0 && offset < MAX_BLOCK_SIZE && candidate < pos {
-            let candidate_val = std::ptr::read_unaligned(src_ptr.add(candidate) as *const u32);
-            if val == candidate_val {
-                let max_possible_match = block_end - pos;
-                let match_len = common_prefix_len_avx2(
-                    src_ptr.add(pos),
-                    src_ptr.add(candidate),
-                    max_possible_match,
-                );
-
-                if match_len >= MIN_MATCH_LEN {
-                    // Flush pending literals
-                    let mut lit_count = pos - anchor;
-                    let mut lit_src = anchor;
-
-                    while lit_count > MAX_LIT_LEN {
-                        tokens.push(Token::new(MAX_LIT_LEN, 0));
-                        literals.extend_from_slice(std::slice::from_raw_parts(
-                            src_ptr.add(lit_src),
-                            MAX_LIT_LEN,
-                        ));
-                        lit_src += MAX_LIT_LEN;
-                        lit_count -= MAX_LIT_LEN;
-                    }
-
-                    let first_match_chunk = match_len.min(MAX_MATCH_LEN);
-                    tokens.push(Token::new(lit_count, first_match_chunk));
-                    offsets.push(offset as u16);
-                    if lit_count > 0 {
-                        literals.extend_from_slice(std::slice::from_raw_parts(
-                            src_ptr.add(lit_src),
-                            lit_count,
-                        ));
-                    }
-
-                    let mut rem_match = match_len - first_match_chunk;
-                    while rem_match > 0 {
-                        let chunk = rem_match.min(MAX_MATCH_LEN);
-                        tokens.push(Token::new(0, chunk));
-                        offsets.push(offset as u16);
-                        rem_match -= chunk;
-                    }
-
-                    pos += match_len;
-                    anchor = pos;
-                    forward_step = 1;
-                    step_skip = 1;
-                    continue;
-                }
-            }
-        }
-
-        pos += forward_step;
-        step_skip += 1;
-        forward_step = (step_skip >> 5).max(1);
-    }
-
-    // Flush trailing literals
-    let mut trailing = block_end - anchor;
-    let mut lit_src = anchor;
-    while trailing > 0 {
-        let chunk = trailing.min(MAX_LIT_LEN);
-        tokens.push(Token::new(chunk, 0));
-        literals.extend_from_slice(std::slice::from_raw_parts(
-            src_ptr.add(lit_src),
-            chunk,
-        ));
-        lit_src += chunk;
-        trailing -= chunk;
-    }
+    let mut out = Streams { min_match: P::MIN_MATCH, tokens, offsets, extras, literals };
+    find_matches::<Avx2Match, P>(full_input, block_start, block_len, table, &mut out);
 }
 
 /// Single-block standalone compressor (used when compressing independent blocks in parallel).
@@ -158,10 +70,12 @@ pub unsafe fn compress_chained_avx2(
 #[target_feature(enable = "bmi2")]
 pub unsafe fn compress_avx2(
     src: &[u8],
-    tokens: &mut Vec<Token>,
-    offsets: &mut Vec<u16>,
+    table: &mut HashTable,
+    tokens: &mut Vec<u8>,
+    offsets: &mut Vec<u8>,
+    extras: &mut Vec<u8>,
     literals: &mut Vec<u8>,
 ) {
-    let mut table = [0u32; HASH_SIZE];
-    compress_chained_avx2(src, 0, src.len(), &mut table, tokens, offsets, literals);
+    init_table(table, src);
+    compress_chained_avx2::<Lzav>(src, 0, src.len(), table, tokens, offsets, extras, literals);
 }

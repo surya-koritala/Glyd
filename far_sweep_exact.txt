@@ -1,0 +1,7 @@
+config,total_ratio
+baseline_64KB_nofar,2.19502
+w1MB_far12,2.17908
+w1MB_far24,2.18389
+w4MB_far24,2.18653
+w4MB_far32,2.18607
+w16MB_far32,2.18781
