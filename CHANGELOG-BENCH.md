@@ -321,3 +321,14 @@ loop into its own function (+3%, kept).
           5.67 / 5.69 / 5.73 same run = 108.5 / 106.0 / 105.6%  S1 OK
 Per file we beat liblz4 on 10 of 12 (dickens 114%, ooffice 143%, sao 189%,
 xml 115%...), trail on nci 94% and webster 96%. x-ray (raw) 49 GB/s.
+
+## Docs refresh: README, GOAL3 status, per-file S1 table
+README rewritten from the format-v2 era to the current state: v6 layout, the
+field table, a fresh same-run per-file table, the decode trajectory, and a
+"where we are / what is next" section. GOAL3 S1 marked passed with start/now
+columns; S3 table now lists fast (not built), default (min match 7), dense
+(ALATIROK_DENSE=1). Fresh run for the README table:
+  quick3 readme_s1: ratio 2.19234 | comp 0.346 | decomp 6.05 vs liblz4 5.54
+                    same run = 109.3%  S1 OK
+Per file: beat liblz4 on 10 of 12 (sao +87%, ooffice +35%, osdb +23%, mr
++19%); nci -2%, webster -3%.

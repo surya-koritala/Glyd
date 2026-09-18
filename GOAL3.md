@@ -46,13 +46,19 @@ at a higher ratio. Its liability: ~4.6 ns per token against LZ4's ~1.8.
 
 ### Tier S1: dominate liblz4 on decode and ratio (proven point)
 
-| Gate | Requirement | Current | Feasibility proof |
-|---|---|---:|---|
-| **S1.1** Correctness | all tests green, 1M-mutation fuzz, Silesia + enwik8 round-trip | PASS | held |
-| **S1.2** Decode 1C | >= liblz4 measured in the same run, same protocol (5.8 GB/s today) | 3.1 | liblz4 achieves it |
-| **S1.3** Ratio floor | Silesia >= liblz4's 2.1009 | 2.388 | held; the point of beating LZ4 is being denser |
-| **S1.4** Multi-core | 16C decode >= 10 GB/s on mozilla, nci, webster, samba | 13.4 | held |
-| **S1.5** Memory | decoder allocates nothing beyond output | PASS | held |
+**PASSED 2026-09-18 at commit 54f0a24** (format v6, AVX2 32-token pre-pass,
+minimum match 7). Numbers are the same-run quick3 result; per-file table in
+README.md.
+
+| Gate | Requirement | Start | Now | Status |
+|---|---|---:|---:|---|
+| **S1.1** Correctness | all tests green, 1M-mutation fuzz, Silesia + enwik8 round-trip | PASS | PASS | held |
+| **S1.2** Decode 1C | >= liblz4 measured in the same run, same protocol | 3.1 (55%) | 6.05 vs 5.54 (109%) | **PASS** |
+| **S1.3** Ratio floor | Silesia >= liblz4's 2.1009 | 2.388 | 2.192 | held (spent 0.20 on S1.2) |
+| **S1.4** Multi-core | 16C decode >= 10 GB/s on mozilla, nci, webster, samba | 13.4 | 13+ | held |
+| **S1.5** Memory | decoder allocates nothing beyond output | PASS | PASS | held |
+
+Cost of passing: compression 0.45 -> 0.35 GB/s, which is S3's job.
 
 Decode is the attack axis. Ratio and multi-core are floors. Compression speed
 is NOT a Tier S1 gate: LZ4's 0.85 GB/s comes from a finder that cannot produce
@@ -68,12 +74,19 @@ inline format like LZ4's cannot do. Plausible ceiling ~9-10 GB/s on Silesia
 (~40% of the wall, ~1.7x LZ4). Becomes a gate only when a measured prototype
 shows the number.
 
+Status 2026-09-18: the vectorized pre-pass is built and is what carried S1.
+What remains is the copy loop (~9 cycles/token; the pre-pass is ~3.4) and the
+two files still behind liblz4, nci and webster. Finding the next cut needs
+hardware counters, which WSL2 does not expose: continue on bare-metal Linux
+or macOS.
+
 ### Tier S3: levels
 
 | Level | Finder | Target | Purpose |
 |---|---|---|---|
-| fast | 4-byte hash, 1-way, 64 KB window, no lazy, skip | comp >= 0.85 GB/s, ratio >= 2.10 | LZ4-class compression speed; also handles x-ray-like data cheaply |
-| dense | current LZAV-port finder | ratio 2.39 | the ratio point |
+| fast | 4-byte hash, 1-way, 64 KB window, no lazy, skip | comp >= 0.85 GB/s, ratio >= 2.10 | LZ4-class compression speed; also handles x-ray-like data cheaply. **Not built; next.** |
+| default | LZAV-port finder, minimum match 7 | ratio 2.19, decode > liblz4 | the S1 point (current default) |
+| dense | LZAV-port finder, minimum match 5 (`ALATIROK_DENSE=1`) | ratio 2.39 | the ratio point; decode ~55% of liblz4 |
 
 ## 3. Floors carried from GOAL2, and one consciously retired
 

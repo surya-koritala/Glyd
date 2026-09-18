@@ -6,83 +6,150 @@
 [![C ABI](https://img.shields.io/badge/C%20ABI-include%2Falatirok.h-brightgreen.svg)]()
 [![CI](https://github.com/Sigbound/alatirok/actions/workflows/ci.yml/badge.svg)](https://github.com/Sigbound/alatirok/actions)
 
-**Alatirok** is an ultra-high-throughput, SIMD-first streaming lossless compression and decompression engine engineered in Rust. It is purpose-built to eliminate throughput bottlenecks in **Cloud Infrastructure** (S3/GCS chunk storage, gRPC microservices, ClickHouse/Parquet columnar data) and **AI/LLM Serving** (PagedAttention KV-cache host-accelerator memory streaming).
+**Alatirok** is a SIMD-first LZ77 codec in Rust, built for the places where
+decompression throughput is the bottleneck: object-store chunk fetches, gRPC
+payloads, columnar scans, and KV-cache paging for LLM serving.
 
-By decoupling the compressed bitstream into three separate, homogeneous columnar streams (**Tokens**, **Match Offsets**, and **Literals**), Alatirok eliminates tag-branch mispredictions and unlocks true multi-core CPU parallel execution.
+The compressed block is split into four homogeneous streams (**tokens**,
+**offsets**, **extras**, **literals**) instead of one interleaved byte stream.
+That is what lets the decoder pre-decode 32 tokens per AVX2 pass, check
+bounds once per chunk, and run a copy-only loop, which an inline format such
+as LZ4's cannot do.
 
----
-
-## Key Architectural Advantages
-
-| Feature | Google Snappy | LZ4 | Alatirok (Ours) |
-| :--- | :--- | :--- | :--- |
-| **Bitstream Architecture** | Interleaved variable tag bytes, offsets, literals. | Interleaved 1-byte token, literals, 2-byte offsets. | **Decoupled Columnar**: 3 homogeneous independent streams (Tokens, Offsets, Literals). |
-| **Token Representation** | Variable-length tag bytes (4 element types, 00..11). | 1-byte packed: `(lit << 4) \| match` + varints. | **Uniform 16-bit Token**: 5-bit literal len, 11-bit match len + Format v2 extended literal escapes. |
-| **SIMD Vector Engine** | Partial scalar wildcopy. | 8-byte / 16-byte wildcopy with bounds traps. | **AVX-512 (64-byte) & AVX2 (32-byte)** vector wildcopies with split hot-loop boundaries. |
-| **Periodic Matches (1..15 bytes)** | Scalar byte copy loops. | Scalar byte copies for offsets < 8. | **AVX2 Shuffle Tables** (`_mm_shuffle_epi8`) with precomputed periodicity masks. |
-| **Multi-Core Scaling** | None (Single-threaded bitstream). | None (Serial stream dependencies). | **256 KB Parallel Pipeline**: Independent chunk units with `FLAG_CHAIN_RESET` and sequential fallback. |
-| **Streaming I/O** | Custom framing. | LZ4 Frame format. | **Standard `std::io::Read` & `Write`** (`AlatirokReader` / `AlatirokWriter`) with chunk framing. |
-| **Universal Plug-in** | C++ library. | C library. | **Standard C ABI (`include/alatirok.h`)**, `.so` / `.a` libraries, and standalone CLI (`alatirok`). |
-| **Integrity Verification** | CRC32. | xxHash32. | **AVX2-Vectorized Adler32** (12–50 GB/s line rate). |
+**Status (2026-09-18, commit `54f0a24`): single-core decode beats liblz4 on
+Silesia, measured in the same run, at a higher ratio.** Compression speed is
+the open axis. See [Where we are](#where-we-are-and-what-is-next).
 
 ---
 
-## Performance Highlights
+## Format v6 (current)
 
-Tested on an **AMD Ryzen 9 7950X3D (Zen 4, 16-Core / 32-Thread, AVX-512, 128 MB L3 Cache)** with native CPU target flags (`-C target-cpu=native`):
+| Stream | Layout |
+| :--- | :--- |
+| **Token** (1 byte per token) | bits 0..2 literal length 0..6 (7 = escape), bits 3..6 match length code (0 = none, 1..14 = length 7..20, 15 = escape), bit 7 = offset bit 16 |
+| **Offsets** | fixed 2 bytes per match; 17-bit offsets, 128 KB window |
+| **Extras** | one byte per escaped length (`255` + `u16` continuation for longer runs) |
+| **Literals** | raw bytes, copied 32 at a time |
 
-### 1. Like-for-Like Single-Core Comparison (1C vs 1C)
+Blocks are 256 KB, 36-byte header, AVX2-vectorized Adler32, `FLAG_CHAIN_RESET`
+for independent parallel decode. The match finder is a port of LZAV 4.3's
+parse (komihash 6-byte hash, 2-way buckets, back-matching, adaptive skip) with
+a masked-u32 candidate check, minimum match 7.
 
-All compressors and decompressors executing on a single dedicated core:
+---
 
-| File Target | Orig Size | Alatirok 1C Comp | LZ4 1C Comp | Alatirok 1C Decomp | LZ4 1C Decomp | Snappy 1C Decomp | Alatirok Ratio | LZ4 Ratio | Deficit vs LZ4 |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`nci`** | 32.00 MB | 1.12 GB/s | 1.19 GB/s | **5.21 GB/s** | 4.45 GB/s | 3.09 GB/s | 5.41x | 6.06x | -10.8% |
-| **`osdb`** | 9.62 MB | 0.49 GB/s | 0.76 GB/s | **4.16 GB/s** | 3.58 GB/s | 2.72 GB/s | **2.06x** | 1.91x | **+8.0% (Beats LZ4)** |
-| **`xml`** | 5.10 MB | 0.91 GB/s | 1.08 GB/s | **4.37 GB/s** | 4.33 GB/s | 2.95 GB/s | 3.82x | 4.35x | -12.2% |
-| **`samba`** | 20.61 MB | 0.63 GB/s | 0.77 GB/s | 2.99 GB/s | 3.71 GB/s | 2.40 GB/s | 2.44x | 2.80x | -12.9% |
-| **`mozilla`** | 48.85 MB | 0.35 GB/s | 0.69 GB/s | 2.16 GB/s | 2.83 GB/s | 1.91 GB/s | 1.77x | 1.93x | -8.5% |
-| **`mr`** | 9.51 MB | 0.41 GB/s | 0.82 GB/s | 1.98 GB/s | 3.86 GB/s | 1.86 GB/s | 1.58x | 1.83x | -13.6% |
-| **`dickens`** | 9.72 MB | 0.31 GB/s | 0.42 GB/s | 1.54 GB/s | 3.74 GB/s | 1.36 GB/s | 1.34x | 1.59x | -15.3% |
-| **`webster`** | 39.54 MB | 0.35 GB/s | 0.50 GB/s | 1.91 GB/s | 2.97 GB/s | 1.55 GB/s | 1.78x | 2.06x | -13.3% |
-| **`x-ray`** | 8.08 MB | 0.20 GB/s | 2.66 GB/s | 3.46 GB/s | 16.41 GB/s | 26.61 GB/s | **1.02x** | 1.01x | **+1.4% (Beats LZ4)** |
-| **TOTAL SILESIA** | **202.12 MB** | — | — | — | — | — | **1.90x** | **2.10x** | **-9.3%** |
+## Measured against the field
 
-### 2. Multi-Core Scaling on 16 Cores / 32 Threads
+All numbers: Silesia corpus (202 MB, 12 files), AMD Ryzen 9 7950X3D, one pinned
+core, `-C target-cpu=native`, median of repeated runs. **Every Alatirok decode
+number is paired with liblz4 from the same run** (`examples/quick3.rs`) so
+the comparison cannot be met by run-to-run drift (which is ±3-10% in this
+WSL2 VM).
 
-Alatirok's parallel pipeline splits inputs into 256 KB chained units scheduled across Rayon worker threads:
+### Single core, Silesia total
 
-| File Target | Orig Size | 1-Core Comp | 16-Core Comp | Comp Scaling | 1-Core Decomp (Ver) | 16-Core Decomp (Ver) | Decomp Scaling |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`nci`** | 32.00 MB | 1.12 GB/s | **8.01 GB/s** | **7.2x** | 4.57 GB/s | **12.85 GB/s** | **2.8x** |
-| **`samba`** | 20.61 MB | 0.63 GB/s | **4.75 GB/s** | **7.5x** | 2.56 GB/s | **9.58 GB/s** | **3.7x** |
-| **`mozilla`** | 48.85 MB | 0.35 GB/s | **1.48 GB/s** | **4.2x** | 2.08 GB/s | **15.03 GB/s** | **7.2x** |
-| **`webster`** | 39.54 MB | 0.35 GB/s | **1.66 GB/s** | **4.7x** | 1.80 GB/s | **12.88 GB/s** | **7.2x** |
-| **`osdb`** | 9.62 MB | 0.49 GB/s | **3.37 GB/s** | **6.9x** | 3.42 GB/s | **5.21 GB/s** | **1.5x** |
-| **`xml`** | 5.10 MB | 0.91 GB/s | **3.08 GB/s** | **3.4x** | 3.48 GB/s | **4.21 GB/s** | **1.2x** |
+| Codec | Decode GB/s | % of memcpy wall | Ratio | Comp GB/s |
+| :--- | ---: | ---: | ---: | ---: |
+| memcpy (the physical ceiling) | 22.9 | 100 | - | - |
+| **Alatirok v6** | **6.05** | **26** | **2.192** | 0.35 |
+| liblz4 (same run) | 5.54 | 24 | 2.101 | 0.85 |
+| lz4_flex | 3.7 | 16 | 2.097 | 0.67 |
+| LZAV | 3.1 | 14 | 2.450 | 0.49 |
+| zstd -1 / 1 / 3 | 2.2 / 1.7 / 1.6 | 7-10 | 2.24-3.20 | 0.3-0.6 |
+| snappy | 2.1 | 9 | 2.076 | 0.78 |
 
-### 3. Real-World Application Workloads (25 MB Payloads)
+liblz4 is the open-source decode-speed champion; every other measured codec is
+slower. Alatirok is the only one above it, and does so while 4% denser. RAD
+Oodle (commercial, closed) is the unmeasured bar above that.
 
-| Workload | Application Domain | Ratio | Alatirok 1C Raw | Alatirok 16C Ver | LZ4 1C | Snappy 1C | Deficit vs LZ4 |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Binary RPC** | Protobuf / gRPC microservice packed payloads | **9.65x** | **14.62 GB/s** | **11.74 GB/s** | 8.55 GB/s | 9.21 GB/s | **+4.4% (Beats LZ4)** |
-| **JSON Logs** | Kubernetes / CloudWatch structured JSON logs | **7.08x** | **9.70 GB/s** | **12.42 GB/s** | 6.31 GB/s | 5.40 GB/s | -9.4% |
-| **Columnar DB** | Parquet / ClickHouse timestamp & metric tables | **1.68x** | **3.08 GB/s** | **10.75 GB/s** | 2.35 GB/s | 1.95 GB/s | -22.5% |
-| **Source Code** | Codebase repositories, ASTs, and syntax trees | **30.43x** | **20.54 GB/s** | **12.11 GB/s** | 16.34 GB/s | 7.79 GB/s | -87.7% |
+### Per file, same run (2026-09-18)
+
+| File | Ratio | Alatirok decode GB/s | liblz4 decode GB/s | vs liblz4 |
+| :--- | ---: | ---: | ---: | ---: |
+| dickens | 1.815 | 5.99 | 5.19 | **+15%** |
+| mozilla | 1.926 | 5.42 | 4.83 | **+12%** |
+| mr | 1.902 | 6.65 | 5.57 | **+19%** |
+| nci | 6.846 | 7.13 | 7.24 | -2% |
+| ooffice | 1.335 | 6.31 | 4.68 | **+35%** |
+| osdb | 2.294 | 6.27 | 5.11 | **+23%** |
+| reymont | 2.378 | 5.04 | 4.49 | **+12%** |
+| samba | 2.858 | 6.38 | 6.14 | **+4%** |
+| sao | 1.038 | 13.71 | 7.32 | **+87%** |
+| webster | 2.250 | 4.70 | 4.85 | -3% |
+| xml | 4.949 | 6.42 | 5.56 | **+16%** |
+| x-ray (stored raw) | 1.000 | 46.6 | 18.1 | **+157%** |
+| **Total** | **2.192** | **6.05** | **5.54** | **+9%** |
+
+Beats liblz4 on 10 of 12 files; trails on nci and webster by 2-3%.
+
+### Multi-core (16 cores / 32 threads, 256 KB independent blocks)
+
+13+ GB/s decode on mozilla, nci, webster, samba (GOAL3 floor S1.4: >= 10 GB/s).
+Compression scales 4-7x on 16 cores. Full table in `RESULTS.md`; refresh
+with `examples/bench.rs`.
+
+### How the decode number was reached
+
+| Step | Decode, % of liblz4 (same run) |
+| :--- | ---: |
+| Pivot to speed (GOAL3) baseline | 55% |
+| Credit-based bounds checks | 57% |
+| Format v6: 3-bit literal, fixed 2-byte offsets | 72% |
+| AVX2 32-token pre-pass | 75% |
+| Fix chunk-retry waste (`careful` counter) | 90% |
+| 255-continuations decoded inside the chunk | 97% |
+| Copy loop in its own function | 98% |
+| Minimum match 7 (tokens -20%) | **106-109%** |
+
+Every step and every refuted idea is recorded with its numbers in
+`CHANGELOG-BENCH.md`.
+
+---
+
+## Where we are, and what is next
+
+**Done (GOAL3 Tier S1):** decode >= liblz4 in the same run, Silesia ratio >=
+2.1009 (liblz4's), 16-core decode >= 10 GB/s, decoder allocates nothing beyond
+the output, 25 tests green including 1M-mutation fuzz.
+
+**The trade that was made:** to get here the minimum match went 6 -> 7, which
+took the ratio from 2.39 to 2.19 and compression from 0.42 to 0.35 GB/s.
+Ratio and decode speed trade against each other in this design; that was
+measured every way we could think of (entropy-coded tokens, bit-packed
+offsets, bigger windows, all refuted in `CHANGELOG-BENCH.md`) before choosing
+speed.
+
+**Next, in order:**
+
+1. **Fast compression level (GOAL3 S3).** An LZ4-class finder (4-byte hash,
+   1-way, no lazy, skip) targeting comp >= 0.85 GB/s at ratio >= 2.10. This
+   is the weak axis today (0.35 GB/s vs liblz4's 0.85) and is also the right
+   way to handle incompressible data such as x-ray (currently stored raw).
+2. **Decode toward the wall (GOAL3 S2).** memcpy of the output is 22.9 GB/s;
+   we are at 26% of it, liblz4 at 24%. The remaining cost is ~9 cycles per
+   token in the copy loop; the plausible next stop is ~9-10 GB/s. nci and
+   webster are the two files still behind. Needs hardware counters, which
+   WSL2 does not expose: profile on bare-metal Linux or macOS.
+3. **Multi-core against DRAM bandwidth.** 16-core decode is 13+ GB/s; the
+   question is how close to the memory wall it gets on a bare-metal box.
+
+**Not worth retrying (all measured, see changelog):** Huffman or rANS on the
+token stream (~3 ns/symbol table-load wall), bit-packed offsets (ratio 2.47
+but 3.3 ns/match), windows above 2 MB, prefetching in the decoder, branchless
+escape handling, 16-byte copies, scalar two-pass decode, packed u32 lanes.
+
+**Goal documents:** `GOAL3.md` (current: speed), `GOAL2.md` (ratio tiers,
+superseded but its rules still bind), `GOAL.md` (original).
 
 ---
 
 ## Universal Compatibility
 
-Alatirok is designed to be a universal, drop-in replacement across any stack.
-
 ### 1. Standalone CLI Utility (`alatirok`)
-Install globally:
 ```bash
 cargo install --path .
 ```
 
-Compress and decompress files or Unix streams:
 ```bash
 # Compress with multi-core parallelism (default)
 alatirok -c telemetry.json -o telemetry.json.alk
@@ -142,15 +209,13 @@ reader.read_to_end(&mut decoded)?;
 ## Cloud & AI Applications
 
 ### 1. Cloud Object Store & gRPC Streaming (`examples/cloud_stream.rs`)
-- High-throughput streaming ingestion into S3 / GCS / gRPC (>2.4 GB/s streaming, >7.0 GB/s multi-core).
-- **Indexed Chunk Storage**: Query arbitrary records in the middle of a 100 MB object without decompressing the rest of the file:
+- Indexed chunk storage: read arbitrary records from the middle of a 100 MB object without decompressing the rest.
   ```bash
   cargo run --release --example cloud_stream
   ```
 
 ### 2. AI / LLM PagedAttention KV-Cache Offload (`examples/ai_kv_cache.rs`)
-- Compresses inactive FP16/BF16 KV-cache blocks into host DRAM.
-- Expands effective context capacity while retaining multi-gigabyte/second restoration throughput:
+- Compresses inactive FP16/BF16 KV-cache blocks into host DRAM and restores them at multi-GB/s.
   ```bash
   cargo run --release --example ai_kv_cache
   ```
@@ -159,20 +224,32 @@ reader.read_to_end(&mut decoded)?;
 
 ## Quickstart
 
-### Build and Run Tests
+### Build and run tests
+Builds are done in WSL2 on this machine; see `GOAL2.md` section 3 for the
+measurement protocol and `scratch/test_all.sh` for the full test run.
 ```bash
-cargo test --release
+CARGO_BUILD_JOBS=6 cargo test --release
 ```
 
-### Run C ABI Verification Test
+### Same-run comparison against liblz4 (the S1 gate)
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo run --release --example quick3 -- label 3 0.3 -v
+```
+
+### Field survey (liblz4, lz4_flex, LZAV, zstd, snappy, ...)
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo run --release --example field_survey
+```
+
+### Physical ceiling on this machine
+```bash
+RUSTFLAGS="-C target-cpu=native" cargo run --release --example speed_ceiling
+```
+
+### C ABI verification
 ```bash
 gcc -O3 tests/test_c_abi.c -Iinclude -Ltarget/release -lsimd_stream_codec -o target/release/test_c_abi
 LD_LIBRARY_PATH=target/release ./target/release/test_c_abi
-```
-
-### Run Silesia & Workload Benchmarks
-```bash
-RUSTFLAGS="-C target-cpu=native" cargo run --release --example bench
 ```
 
 ---
