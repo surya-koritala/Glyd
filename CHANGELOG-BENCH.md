@@ -170,3 +170,22 @@ Before the dense retry was wired in, the same finder measured decomp
 the window. LZAV per-file: we trail on ratio on 10 of 12 files (dickens
 -7.5%, webster -7.3%), the format effect of its 10/18-bit offset classes;
 x-ray costs us 24 ms of compression against LZAV's 0.7 ms.
+
+## Window frontier mapped; finder cleanup; parse is not the gap
+Window sweep (5x1s median, idle), ratio | comp | decode:
+  64K 2.205|0.378|3.16  256K 2.277|0.406|3.19  1M 2.344|0.440|3.21
+  2M 2.366|0.451|3.24  4M 2.382|0.427|3.00  8M 2.388|0.452|3.19
+No window passes all three. Ratio saturates past ~2M; comp and ratio move
+TOGETHER with window (bigger window = more matches accepted = fewer positions
+hashed = faster AND denser), so the only real tension is (ratio+comp) vs decode.
+Removed a per-block std::env::var syscall from the finder hot path (window is
+now read once, cached); comp 0.43 -> 0.452 at 8M.
+Diagnosis via lzav_decomp: our parse is as dense as LZAV's (14.38M refs vs
+13.77M, 35.1M lit bytes vs 40.3M, avg match 12.15 vs 12.47). The finder is not
+the gap. The gap is encoding:
+  our parse, our v5 format   88.75 MB  2.38817
+  our parse, LZAV bit format 86.95 MB  2.43757  (format costs ~2%)
+  LZAV parse+format          86.50 MB  2.45004
+To beat 2.45 (not just tie) needs entropy coding, but scalar Huffman token
+decode (~3.4 ns/sym) would drop decode under the floor. The path that can
+dominate LZAV is a fast (interleaved/SIMD) entropy decoder; that is next.

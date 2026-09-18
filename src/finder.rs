@@ -77,6 +77,22 @@ pub fn init_table(table: &mut HashTable, src: &[u8]) {
     table.fill(Bucket { w1: w, p1: 0, w2: w, p2: 0 });
 }
 
+/// Match window, in bytes. Defaults to the format window (`WINDOW_SIZE`),
+/// overridable once per process with `ALATIROK_WINDOW` for frontier sweeps.
+/// Read once and cached, so it never touches the per-block hot path.
+#[inline]
+fn window_size() -> usize {
+    use std::sync::OnceLock;
+    static W: OnceLock<usize> = OnceLock::new();
+    *W.get_or_init(|| {
+        std::env::var("ALATIROK_WINDOW")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .map(|w| w.clamp(1, WINDOW_SIZE))
+            .unwrap_or(WINDOW_SIZE)
+    })
+}
+
 /// komihash-style 6-byte hash, as in LZAV.
 #[inline(always)]
 fn hash6(iw1: u32, iw2: u16) -> usize {
@@ -207,6 +223,7 @@ pub unsafe fn find_matches<M: MatchLen, P: Mode>(
     let block_end = block_start + block_len;
     // Hashing reads 6 bytes; a match must have room for the minimum.
     let hash_limit = block_end.saturating_sub(P::MIN_MATCH + 3).max(block_start);
+    let window = window_size();
 
     let mut anchor = block_start; // start of pending literals
     let mut pos = block_start;
@@ -265,10 +282,10 @@ pub unsafe fn find_matches<M: MatchLen, P: Mode>(
         }
 
         let d = pos.wrapping_sub(cand);
-        if d < P::MIN_OFFSET || d >= WINDOW_SIZE {
+        if d < P::MIN_OFFSET || d >= window {
             // Too near to be worth a token, or fell out of the window. Out of
             // the window, the position replaces the tuple whose word it hit.
-            if d >= WINDOW_SIZE {
+            if d >= window {
                 if word1_hit {
                     bucket.p1 = pos as u32;
                 } else {
