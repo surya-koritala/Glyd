@@ -154,3 +154,19 @@ steals 2 offset bits from its header byte (10/18/23-bit classes):
   v3 layout on the same parse: 2.14686 (u16 offsets cannot even hold it)
 LZAV parse offsets: <256 12.4% | <4K 18.5% | <64K 27.4% | <1M 33.0% | <4M 7.6%
 Plan: port LZAV's finder, format v5 = E, then Huffman tokens.
+
+## Format v5 + LZAV finder port: ratio 2.388 on one configuration
+Format v5: 2-bit offset class (1/2/3-byte offsets, 16 MB reach), 4-bit
+match length (bias 5), 2-bit literal count, byte escapes; 36-byte header
+with token_bytes/offset_bytes/extras_bytes. Finder ported from LZAV 4.3:
+6-byte komihash into 2-tuple 16-byte buckets (1 MB), 8 MB window,
+back-matching, adaptive skip, no lazy. Dense retry (min match 5, 4-byte
+hash, no cap on offset) for blocks the first pass would store raw; only
+x-ray (33 blocks) and one mozilla block take it. x-ray 1.080 (floor 1.01).
+Measured 5x1s median, three repeats:
+  ratio 2.38817 | comp 0.434-0.452 | decomp 2.74-2.88 (T1.4 FAIL)
+Before the dense retry was wired in, the same finder measured decomp
+3.2246 (3x0.3s), so part of the decode drop is suspected plumbing, not
+the window. LZAV per-file: we trail on ratio on 10 of 12 files (dickens
+-7.5%, webster -7.3%), the format effect of its 10/18-bit offset classes;
+x-ray costs us 24 ms of compression against LZAV's 0.7 ms.

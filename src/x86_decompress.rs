@@ -1,55 +1,37 @@
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
 use crate::error::{CodecError, Result};
-use crate::format::{Token, LIT_CODE_ESCAPE, MATCH_CODE_BIAS, MATCH_CODE_ESCAPE,
-    TOKEN_ESCAPE_MASK, TOKEN_LIT_ESCAPE, TOKEN_MATCH_ESCAPE, TOKEN_TABLE};
+use crate::fallback::read_escape;
+use crate::format::{ESCAPE_BASE_LIT, OFFSET_MASK, TOKEN_ESCAPE_MASK,
+    TOKEN_LIT_ESCAPE, TOKEN_MATCH_ESCAPE, TOKEN_OFF_SHIFT};
 
-/// Precomputed 16-byte shuffle masks for repeating patterns of period 1..15.
-/// SHUFFLE_MASKS[offset][chunk][i] = ((chunk * 16 + i) % offset) as u8
-pub static SHUFFLE_MASKS: [[[u8; 16]; 4]; 16] = {
-    let mut table = [[[0u8; 16]; 4]; 16];
-    let mut offset = 1;
-    while offset <= 15 {
-        let mut chunk = 0;
-        while chunk < 4 {
-            let mut i = 0;
-            while i < 16 {
-                table[offset][chunk][i] = ((chunk * 16 + i) % offset) as u8;
-                i += 1;
-            }
-            chunk += 1;
-        }
-        offset += 1;
-    }
-    table
-};
-
-/// Smallest multiple of offset that is >= 32.
-pub static PERIODIC_SAFE_OFFSETS: [usize; 16] = {
-    let mut table = [0usize; 16];
-    let mut k = 1;
-    while k <= 15 {
-        table[k] = ((32 + k - 1) / k) * k;
-        k += 1;
-    }
-    table
-};
-
-/// 32-Byte AVX2 Decompressor
+/// 32-Byte AVX2 Decompressor.
+///
+/// `dst` is the block's own output region plus padding; `buffer_start` is
+/// where the match window begins, at or before `dst`. `table` and
+/// `esc_base_match` select the length bias (ordinary or FLAG_DENSE).
 #[target_feature(enable = "avx2")]
 #[target_feature(enable = "bmi2")]
 pub unsafe fn decompress_avx2(
-    tokens: *const Token,
+    tokens: *const u8,
     num_tokens: usize,
-    offsets: *const u16,
-    num_offsets: usize,
-    extras: *const u16,
-    num_extras: usize,
+    offsets: *const u8,
+    offsets_len: usize,
+    extras: *const u8,
+    extras_len: usize,
     literals: &[u8],
     dst: &mut [u8],
     buffer_start: *const u8,
     uncompressed_len: usize,
+    table: &[u32; 256],
+    esc_base_match: usize,
 ) -> Result<usize> {
+    if uncompressed_len > dst.len() {
+        return Err(CodecError::OutputBufferTooSmall {
+            required: uncompressed_len,
+            provided: dst.len(),
+        });
+    }
     let mut dst_ptr = dst.as_mut_ptr();
     let block_start = dst_ptr;
     let block_end = dst_ptr.add(uncompressed_len);
@@ -61,30 +43,22 @@ pub unsafe fn decompress_avx2(
 
     let mut lit_ptr = literals.as_ptr();
     let lit_limit = literals.as_ptr().add(literals.len());
-    let mut offset_idx = 0;
-    let mut extra_idx = 0;
+    let mut off_pos = 0usize;
+    let mut extra_idx = 0usize;
     let mut token_idx = 0;
-
-    // Fast Phase
-    while token_idx < num_tokens && dst_ptr <= safe_limit {
-        let token = std::ptr::read_unaligned(tokens.add(token_idx));
-        let tv = *TOKEN_TABLE.get_unchecked(token.0 as usize);
+    // Fast Phase. Offsets are read as one 4-byte load, so it needs 4 bytes
+    // of offset stream left; the last few tokens take the tail phase.
+    while token_idx < num_tokens && dst_ptr <= safe_limit && off_pos + 4 <= offsets_len {
+        let tv = *table.get_unchecked(*tokens.add(token_idx) as usize);
         let mut lit_len = (tv & 0xFF) as usize;
         let mut match_len = ((tv >> 8) & 0xFF) as usize;
         let mut e = extra_idx;
         if tv & TOKEN_ESCAPE_MASK != 0 {
-            let need = ((tv & TOKEN_LIT_ESCAPE) != 0) as usize
-                + ((tv & TOKEN_MATCH_ESCAPE) != 0) as usize;
-            if e + need > num_extras {
-                return Err(CodecError::CorruptedBitstream("Insufficient extras in bitstream"));
-            }
             if tv & TOKEN_LIT_ESCAPE != 0 {
-                lit_len = std::ptr::read_unaligned(extras.add(e)) as usize;
-                e += 1;
+                lit_len = read_escape(extras, extras_len, &mut e, ESCAPE_BASE_LIT)?;
             }
             if tv & TOKEN_MATCH_ESCAPE != 0 {
-                match_len = std::ptr::read_unaligned(extras.add(e)) as usize;
-                e += 1;
+                match_len = read_escape(extras, extras_len, &mut e, esc_base_match)?;
             }
         }
 
@@ -118,11 +92,11 @@ pub unsafe fn decompress_avx2(
         dst_ptr = dst_ptr.add(lit_len);
 
         if match_len > 0 {
-            if offset_idx >= num_offsets {
-                return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
-            }
-            let offset = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
-            offset_idx += 1;
+            // Offset: one unaligned load masked to the token's width.
+            let width = ((tv >> TOKEN_OFF_SHIFT) & 7) as usize;
+            let raw = std::ptr::read_unaligned(offsets.add(off_pos) as *const u32);
+            let offset = (raw & *OFFSET_MASK.get_unchecked(width)) as usize;
+            off_pos += width;
 
             let available = dst_ptr.offset_from(buffer_start) as usize;
             if offset == 0 || offset > available {
@@ -132,6 +106,10 @@ pub unsafe fn decompress_avx2(
             let match_src = dst_ptr.sub(offset);
             let match_end = dst_ptr.add(match_len);
 
+            // The compressor never emits a match longer than its offset, so
+            // for offsets of 8 and up the 32-byte copies never read a byte
+            // they have not yet written. Shorter offsets only arise from
+            // foreign encoders and take the byte loop.
             if offset >= 32 {
                 let mut s = match_src;
                 let mut d = dst_ptr;
@@ -158,27 +136,6 @@ pub unsafe fn decompress_avx2(
                     s = s.add(8);
                     d = d.add(8);
                 }
-            } else if offset == 1 {
-                let v = _mm256_set1_epi8(*match_src as i8);
-                let mut d = dst_ptr;
-                while d < match_end {
-                    _mm256_storeu_si256(d as *mut __m256i, v);
-                    d = d.add(32);
-                }
-            } else if offset == 2 {
-                let v = _mm256_set1_epi16(std::ptr::read_unaligned(match_src as *const i16));
-                let mut d = dst_ptr;
-                while d < match_end {
-                    _mm256_storeu_si256(d as *mut __m256i, v);
-                    d = d.add(32);
-                }
-            } else if offset == 4 {
-                let v = _mm256_set1_epi32(std::ptr::read_unaligned(match_src as *const i32));
-                let mut d = dst_ptr;
-                while d < match_end {
-                    _mm256_storeu_si256(d as *mut __m256i, v);
-                    d = d.add(32);
-                }
             } else {
                 let mut s = match_src;
                 let mut d = dst_ptr;
@@ -193,35 +150,19 @@ pub unsafe fn decompress_avx2(
         }
     }
 
-    // Boundary Tail Phase
+    // Boundary Tail Phase: byte-exact, every access checked.
     while token_idx < num_tokens {
-        let token = std::ptr::read_unaligned(tokens.add(token_idx));
+        let tv = *table.get_unchecked(*tokens.add(token_idx) as usize);
         token_idx += 1;
 
-        let lc = token.lit_code();
-        let mc = token.match_code();
-        let lit_len = if lc == LIT_CODE_ESCAPE {
-            if extra_idx >= num_extras {
-                return Err(CodecError::CorruptedBitstream("Insufficient extras in bitstream"));
-            }
-            let v = std::ptr::read_unaligned(extras.add(extra_idx)) as usize;
-            extra_idx += 1;
-            v
-        } else {
-            lc
-        };
-        let match_len = if mc == 0 {
-            0
-        } else if mc == MATCH_CODE_ESCAPE {
-            if extra_idx >= num_extras {
-                return Err(CodecError::CorruptedBitstream("Insufficient extras in bitstream"));
-            }
-            let v = std::ptr::read_unaligned(extras.add(extra_idx)) as usize;
-            extra_idx += 1;
-            v
-        } else {
-            mc + MATCH_CODE_BIAS
-        };
+        let mut lit_len = (tv & 0xFF) as usize;
+        let mut match_len = ((tv >> 8) & 0xFF) as usize;
+        if tv & TOKEN_LIT_ESCAPE != 0 {
+            lit_len = read_escape(extras, extras_len, &mut extra_idx, ESCAPE_BASE_LIT)?;
+        }
+        if tv & TOKEN_MATCH_ESCAPE != 0 {
+            match_len = read_escape(extras, extras_len, &mut extra_idx, esc_base_match)?;
+        }
 
         // A corrupted token must never write past the declared block length.
         // This check has to happen before any copy, not after.
@@ -246,11 +187,15 @@ pub unsafe fn decompress_avx2(
         }
 
         if match_len > 0 {
-            if offset_idx >= num_offsets {
+            let width = ((tv >> TOKEN_OFF_SHIFT) & 7) as usize;
+            if off_pos + width > offsets_len {
                 return Err(CodecError::CorruptedBitstream("Insufficient match offsets in bitstream"));
             }
-            let offset = std::ptr::read_unaligned(offsets.add(offset_idx)) as usize;
-            offset_idx += 1;
+            let mut offset = 0usize;
+            for i in 0..width {
+                offset |= (*offsets.add(off_pos + i) as usize) << (8 * i);
+            }
+            off_pos += width;
 
             let available = dst_ptr.offset_from(buffer_start) as usize;
             if offset == 0 || offset > available {

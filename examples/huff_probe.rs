@@ -92,8 +92,8 @@ fn main() {
     let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
                  "reymont","samba","sao","webster","xml","x-ray"];
     let dir = std::path::Path::new("corpus");
-    let mut st = [Stream::new("tokens"), Stream::new("offset hi"),
-                  Stream::new("offset lo"), Stream::new("literals")];
+    let mut st = [Stream::new("tokens"), Stream::new("offsets"),
+                  Stream::new("extras"), Stream::new("literals")];
     let (mut orig, mut comp_total) = (0u64, 0u64);
     let mut blocks = 0u64;
 
@@ -107,24 +107,17 @@ fn main() {
         while cur + HEADER_SIZE <= c.len() {
             let h = unsafe { std::ptr::read_unaligned(c.as_ptr().add(cur) as *const BlockHeader) };
             let raw = (h.flags & FLAG_RAW_UNCOMPRESSED) != 0;
-            let (tc, oc, ec, ll) = (h.token_count as usize, h.offset_count as usize,
-                                    h.extras_count as usize, h.literal_len as usize);
-            let pay = if raw { h.uncompressed_len as usize } else { payload_len(tc, oc, ec, ll) };
+            let pay = h.payload_len();
             if !raw {
                 blocks += 1;
                 let tb = cur + HEADER_SIZE;
-                st[0].add_block(&c[tb..tb + tc]);
-                let ob = tb + tc;
-                let mut hi = Vec::with_capacity(oc);
-                let mut lo = Vec::with_capacity(oc);
-                for i in 0..oc {
-                    let v = u16::from_le_bytes([c[ob + i * 2], c[ob + i * 2 + 1]]);
-                    hi.push((v >> 8) as u8); lo.push((v & 0xFF) as u8);
-                }
-                st[1].add_block(&hi);
-                st[2].add_block(&lo);
-                let lb = ob + oc * 2 + ec * 2;
-                st[3].add_block(&c[lb..lb + ll]);
+                let ob = tb + h.token_bytes as usize;
+                let eb = ob + h.offset_bytes as usize;
+                let lb = eb + h.extras_bytes as usize;
+                st[0].add_block(&c[tb..ob]);
+                st[1].add_block(&c[ob..eb]);
+                st[2].add_block(&c[eb..lb]);
+                st[3].add_block(&c[lb..lb + h.literal_len as usize]);
             }
             cur += HEADER_SIZE + pay;
         }
@@ -146,7 +139,7 @@ fn main() {
         total_save += s.saving();
     }
     println!();
-    let scen = [("tokens only", 1usize), ("tokens + offset hi", 2), ("tokens + offsets", 3), ("all four", 4)];
+    let scen = [("tokens only", 1usize), ("tokens + offsets", 2), ("tokens + offsets + extras", 3), ("all four", 4)];
     for (name, k) in scen {
         let save: u64 = st[..k].iter().map(|s| s.saving()).sum();
         let r = orig as f64 / (comp_total - save) as f64;

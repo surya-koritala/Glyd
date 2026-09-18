@@ -16,7 +16,8 @@ fn test_fallback_parity() {
     let mut extras = Vec::new();
     let mut literals = Vec::new();
 
-    fallback::compress_fallback(input, &mut tokens, &mut offsets, &mut extras, &mut literals);
+    let mut table = simd_stream_codec::finder::new_table();
+    fallback::compress_fallback(input, &mut table, &mut tokens, &mut offsets, &mut extras, &mut literals);
 
     let mut decomp_buf = vec![0u8; input.len()];
     let written = fallback::decompress_fallback(
@@ -25,8 +26,8 @@ fn test_fallback_parity() {
         &extras,
         &literals,
         &mut decomp_buf,
-        0,
         input.len(),
+        simd_stream_codec::format::MIN_MATCH_LEN,
     )
     .unwrap();
     assert_eq!(written, input.len());

@@ -31,6 +31,35 @@ fn lzav_cost(lc: usize, rc: usize, d: usize, mref: usize) -> usize {
     bytes + ob + ext
 }
 
+/// Walk one v5 block's tokens, yielding (literal count, match length, offset).
+fn walk_block(c: &[u8], cur: usize, h: &BlockHeader, mut f: impl FnMut(usize, usize, usize)) {
+    let tb = cur + HEADER_SIZE;
+    let ob = tb + h.token_bytes as usize;
+    let eb = ob + h.offset_bytes as usize;
+    let bias = if (h.flags & FLAG_DENSE) != 0 { MATCH_CODE_BIAS_DENSE } else { MATCH_CODE_BIAS };
+    let (mut oi, mut ei) = (0usize, 0usize);
+    let read_esc = |ei: &mut usize, base: usize| -> usize {
+        let v = c[eb + *ei] as usize; *ei += 1;
+        if v != ESCAPE_CONT as usize { base + v } else {
+            let w = u16::from_le_bytes([c[eb + *ei], c[eb + *ei + 1]]) as usize; *ei += 2; base + 255 + w
+        }
+    };
+    for i in 0..h.token_count as usize {
+        let t = Token(c[tb + i]);
+        let lc = if t.lit_code() == LIT_CODE_ESCAPE { read_esc(&mut ei, ESCAPE_BASE_LIT) } else { t.lit_code() };
+        let mc = t.match_code();
+        let rc = if mc == 0 { 0 } else if mc == MATCH_CODE_ESCAPE { read_esc(&mut ei, bias + 15) } else { mc + bias };
+        let off = if rc > 0 {
+            let w = t.off_width();
+            let mut v = 0usize;
+            for k in 0..w { v |= (c[ob + oi + k] as usize) << (8 * k); }
+            oi += w;
+            v
+        } else { 0 };
+        f(lc, rc, off);
+    }
+}
+
 #[derive(Default)]
 struct Parse {
     seq: Vec<(u32, u32, u32)>,
@@ -54,11 +83,14 @@ impl Parse {
         if rc <= 20 { self.len_le20 += 1 } else if rc <= 33 { self.len_le33 += 1 } else { self.len_gt33 += 1 }
         if lc == 0 { self.lit0 += 1 } else if lc <= 6 { self.lit_le6 += 1 } else if lc <= 15 { self.lit_le15 += 1 }
     }
-    // Cost in our v3 format: 1 token + 2 offset + literals, +2 per escape.
-    fn our_format_cost(lc: usize, rc: usize) -> usize {
+    // Cost in our v5 format: token + literals + 1..3 offset bytes, byte escapes.
+    fn our_format_cost(lc: usize, rc: usize, d: usize) -> usize {
         let mut b = 1 + lc;
-        if lc > 6 { b += 2; }
-        if rc > 0 { b += 2; if rc > 33 { b += 2; } }
+        if lc > 2 { b += if lc - 3 < 255 { 1 } else { 3 }; }
+        if rc > 0 {
+            b += if d < 256 { 1 } else if d < 65536 { 2 } else { 3 };
+            if rc > 19 { b += if rc - 20 < 255 { 1 } else { 3 }; }
+        }
         b
     }
 }
@@ -134,12 +166,12 @@ fn parse_lzav(src: &[u8], out_len: usize) -> Parse {
             }
         }
         p.add(pending_lc, cc, d);
-        p.bytes += Parse::our_format_cost(pending_lc, cc) as u64;
+        p.bytes += Parse::our_format_cost(pending_lc, cc, d) as u64;
         pending_lc = 0;
         produced += cc;
     }
     // Whatever literal tail is left (final LZAV_LIT_FIN block).
-    if pending_lc > 0 { p.add(pending_lc, 0, 0); p.bytes += Parse::our_format_cost(pending_lc, 0) as u64; }
+    if pending_lc > 0 { p.add(pending_lc, 0, 0); p.bytes += Parse::our_format_cost(pending_lc, 0, 0) as u64; }
     if produced != out_len {
         eprintln!("  warning: parsed {} bytes, expected {} (ip {} of {}, ipet {}, refs {}, lit {})", produced, out_len, ip, src.len(), ipet, p.refs, p.lit_bytes);
     }
@@ -167,29 +199,12 @@ fn main() {
         while cur + HEADER_SIZE <= c.len() {
             let h = unsafe { std::ptr::read_unaligned(c.as_ptr().add(cur) as *const BlockHeader) };
             let raw = (h.flags & FLAG_RAW_UNCOMPRESSED) != 0;
-            let (tc, oc, ec, ll) = (h.token_count as usize, h.offset_count as usize,
-                                    h.extras_count as usize, h.literal_len as usize);
-            let pay = if raw { h.uncompressed_len as usize } else { payload_len(tc, oc, ec, ll) };
+            let pay = h.payload_len();
             if raw { ours_in_lzav += pay as u64 + 2; } else {
-                let tb = cur + HEADER_SIZE;
-                let ob = tb + tc;
-                let eb = ob + oc * 2;
-                let (mut oi, mut ei) = (0usize, 0usize);
-                for i in 0..tc {
-                    let t = Token(c[tb + i]);
-                    let lc = if t.lit_code() == LIT_CODE_ESCAPE {
-                        let v = u16::from_le_bytes([c[eb + ei * 2], c[eb + ei * 2 + 1]]) as usize; ei += 1; v
-                    } else { t.lit_code() };
-                    let mc = t.match_code();
-                    let rc = if mc == 0 { 0 } else if mc == MATCH_CODE_ESCAPE {
-                        let v = u16::from_le_bytes([c[eb + ei * 2], c[eb + ei * 2 + 1]]) as usize; ei += 1; v
-                    } else { mc + MATCH_CODE_BIAS };
-                    let off = if rc > 0 {
-                        let v = u16::from_le_bytes([c[ob + oi * 2], c[ob + oi * 2 + 1]]) as usize; oi += 1; v
-                    } else { 0 };
+                walk_block(&c, cur, &h, |lc, rc, off| {
                     ourp.add(lc, rc, off);
                     ours_in_lzav += lzav_cost(lc, rc, off, 4) as u64;
-                }
+                });
             }
             cur += HEADER_SIZE + pay;
         }
@@ -224,26 +239,9 @@ fn main() {
         while cur + HEADER_SIZE <= c.len() {
             let h = unsafe { std::ptr::read_unaligned(c.as_ptr().add(cur) as *const BlockHeader) };
             let raw = (h.flags & FLAG_RAW_UNCOMPRESSED) != 0;
-            let (tc, oc, ec, ll) = (h.token_count as usize, h.offset_count as usize,
-                                    h.extras_count as usize, h.literal_len as usize);
-            let pay = if raw { h.uncompressed_len as usize } else { payload_len(tc, oc, ec, ll) };
+            let pay = h.payload_len();
             if !raw {
-                let tb = cur + HEADER_SIZE; let ob = tb + tc; let eb = ob + oc * 2;
-                let (mut oi, mut ei) = (0usize, 0usize);
-                for i in 0..tc {
-                    let t = Token(c[tb + i]);
-                    let lc = if t.lit_code() == LIT_CODE_ESCAPE {
-                        let v = u16::from_le_bytes([c[eb + ei * 2], c[eb + ei * 2 + 1]]) as usize; ei += 1; v
-                    } else { t.lit_code() };
-                    let mc = t.match_code();
-                    let rc = if mc == 0 { 0 } else if mc == MATCH_CODE_ESCAPE {
-                        let v = u16::from_le_bytes([c[eb + ei * 2], c[eb + ei * 2 + 1]]) as usize; ei += 1; v
-                    } else { mc + MATCH_CODE_BIAS };
-                    let off = if rc > 0 {
-                        let v = u16::from_le_bytes([c[ob + oi * 2], c[ob + oi * 2 + 1]]) as usize; oi += 1; v
-                    } else { 0 };
-                    tot.add(lc, rc, off);
-                }
+                walk_block(&c, cur, &h, |lc, rc, off| tot.add(lc, rc, off));
             }
             cur += HEADER_SIZE + pay;
         }
@@ -255,7 +253,7 @@ fn main() {
     println!("  ours, our format        {:>10}  ratio {:.5}", ours, r(ours));
     println!("  ours, LZAV format       {:>10}  ratio {:.5}   <- format effect on our parse", ours_in_lzav, r(ours_in_lzav));
     println!("  LZAV, LZAV format       {:>10}  ratio {:.5}", lzav_bytes, r(lzav_bytes));
-    println!("  LZAV parse, our format  {:>10}  ratio {:.5}   <- parse effect (offsets >=64K costed as if legal)", lzp.bytes, r(lzp.bytes));
+    println!("  LZAV parse, our format  {:>10}  ratio {:.5}   <- parse effect, v5 layout", lzp.bytes, r(lzp.bytes));
     println!();
     let pr = |name: &str, p: &Parse| {
         let refs = p.refs.max(1) as f64;

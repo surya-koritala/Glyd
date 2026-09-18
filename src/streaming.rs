@@ -1,8 +1,5 @@
 use std::io::{self, Read, Write};
-use crate::format::{
-    BlockHeader, HEADER_SIZE, MAGIC, CURRENT_VERSION, MAX_BLOCK_SIZE, PADDING,
-    FLAG_RAW_UNCOMPRESSED,
-};
+use crate::format::{BlockHeader, HEADER_SIZE, MAGIC, CURRENT_VERSION, MAX_BLOCK_SIZE, PADDING};
 use crate::{compress_block_into, decompress_into};
 
 /// A streaming compressor that wraps any `std::io::Write` sink.
@@ -132,21 +129,14 @@ impl<R: Read> AlatirokReader<R> {
         if header.magic != MAGIC {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid Alatirok magic"));
         }
-        if header.version > CURRENT_VERSION {
+        if header.version != CURRENT_VERSION {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Unsupported Alatirok bitstream version"));
         }
 
-        let uncomp_len = header.uncompressed_len as usize;
-        let payload_len = if (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
-            uncomp_len
-        } else {
-            crate::format::payload_len(
-                header.token_count as usize,
-                header.offset_count as usize,
-                header.extras_count as usize,
-                header.literal_len as usize,
-            )
-        };
+        if !header.is_plausible() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Implausible Alatirok block header"));
+        }
+        let payload_len = header.payload_len();
 
         self.block_buffer.clear();
         self.block_buffer.extend_from_slice(&header_bytes);

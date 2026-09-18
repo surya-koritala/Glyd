@@ -40,14 +40,6 @@ name = "decode_one"
 path = "examples/decode_one.rs"
 
 [[example]]
-name = "stream_stats"
-path = "examples/stream_stats.rs"
-
-[[example]]
-name = "token_hist"
-path = "examples/token_hist.rs"
-
-[[example]]
 name = "field_survey"
 path = "examples/field_survey.rs"
 
@@ -58,14 +50,6 @@ path = "examples/ratio_only.rs"
 [[example]]
 name = "quick3"
 path = "examples/quick3.rs"
-
-[[example]]
-name = "repeat_offset_stats"
-path = "examples/repeat_offset_stats.rs"
-
-[[example]]
-name = "entropy_probe"
-path = "examples/entropy_probe.rs"
 
 [[example]]
 name = "huff_probe"

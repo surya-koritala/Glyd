@@ -31,6 +31,7 @@ fn main() {
     let label = std::env::args().nth(1).unwrap_or_else(|| "unlabelled".into());
     let runs: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(3);
     let min_s: f64 = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(0.3);
+    let verbose = std::env::args().any(|a| a == "-v");
     let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
                  "reymont","samba","sao","webster","xml","x-ray"];
     let dir = std::path::Path::new("corpus");
@@ -45,9 +46,14 @@ fn main() {
         let r = simd_stream_codec::decompress(&b).expect("roundtrip failed");
         assert_eq!(r, d, "roundtrip mismatch on {}", f);
         let mut dst = vec![0u8; d.len() + 1024];
-        ct += timed(runs, min_s, || { let mut x = Vec::with_capacity(d.len());
-                                      simd_stream_codec::compress_into(&d, &mut x); });
-        dt += timed(runs, min_s, || { let _ = simd_stream_codec::decompress_into_raw(&b, &mut dst); });
+        let fc = timed(runs, min_s, || { let mut x = Vec::with_capacity(d.len());
+                                          simd_stream_codec::compress_into(&d, &mut x); });
+        let fd = timed(runs, min_s, || { let _ = simd_stream_codec::decompress_into_raw(&b, &mut dst); });
+        ct += fc; dt += fd;
+        if verbose {
+            println!("  {:<8} ratio {:.4}  comp {:.3} GB/s ({:.1} ms)  decomp {:.3} GB/s ({:.1} ms)", f,
+                     d.len() as f64 / b.len() as f64, (d.len() as f64 / GB) / fc, fc * 1e3, (d.len() as f64 / GB) / fd, fd * 1e3);
+        }
         o += d.len(); c += b.len();
     }
     let ratio = o as f64 / c as f64;
