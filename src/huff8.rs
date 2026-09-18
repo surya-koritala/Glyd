@@ -96,7 +96,9 @@ struct St {
 
 #[inline(always)]
 fn sym(s: &mut St, t: &[u16]) -> u8 {
-    let e = t[s.r.peek(TB) as usize];
+    // SAFETY: peek(TB) masks to < 1 << TB == t.len() (Table::build allocates
+    // exactly `1 << TB` entries), so the index is always in bounds.
+    let e = unsafe { *t.get_unchecked(s.r.peek(TB) as usize) };
     s.r.consume((e >> 8) as u32);
     e as u8
 }

@@ -535,11 +535,30 @@ min 7 -> 8 cut tokens 18% and bought 18%.
   overrun tests pass. Silesia literals (dickens + mozilla, 235 blocks,
   20 MB; the full 12-file corpus gives the same number at 794 blocks/55 MB,
   so this is not a sampling artifact), best of 5, `target-cpu=native`:
-  **1.06 ns/symbol decode, over the 0.6 ns/symbol gate.** The throwaway
-  `examples/huff_spike.rs` prototype measures 0.46 ns/symbol on the same
-  data with the same table and loop shape; the gap is `bits::BitReader`'s
-  safety cost over the spike's raw pointers -- a `consumed` bit-counter
-  add on every `consume()` (for `overrun()` / Result<(), ()>) and a
-  bounds-checked slice index (`t[idx]`) instead of unchecked `*t.add(idx)`.
-  Not optimized further per the task brief (bits.rs is Task 1's interface,
-  used as given); flagged for the controller rather than reworked here.
+  first cut **1.06 ns/symbol**, still over the 0.6 ns/symbol gate against
+  `examples/huff_spike.rs`'s 0.46 on the same data/table/loop shape.
+  Closed part of the gap in `bits::BitReader`: `consume()` no longer
+  touches any counter (just `bits >>= n; cnt -= n`); overrun accounting
+  moved into `refill()` instead, folding in the whole 4-symbols-per-stream
+  window's consumption in one step (4x less often than per-symbol). A
+  pure position-derived count (`p - start`) was tried first and reverted:
+  once `refill`'s OOB-safety clamp kicks in, `p` gets rebased to
+  `last + small_delta` on every subsequent call instead of continuing to
+  grow, so it plateaus right at the real/pad boundary and can't
+  distinguish "ended exactly at the last symbol" from "read arbitrarily
+  far past it" -- confirmed by two opposite test failures (a false-positive
+  overrun on a valid decode, a false-negative on a genuine 10x over-read).
+  `huff8::decode`'s table lookup is also unchecked now (`get_unchecked`,
+  justified by `peek(TB) < table.entries.len()` by construction). Result:
+  **0.85 ns/symbol**, ~20% faster, still over the 0.6 gate. objdump of the
+  main loop (`target/release/deps/v7_codecs-*`, `huff8::decode` vs.
+  `huff_spike::decode::<8>`) shows both loop bodies at ~290 instructions,
+  but huff8's spends proportionally more of them on stack traffic (74 str
+  + 39 ldr of 292, vs. the spike's 35 str + 22 ldr of 316) -- `BitReader`
+  carries 6 fields per stream (`p, last, bits, cnt, filled, budget`)
+  against the spike's unchecked `St { p, bits, cnt }` (3), and across 8
+  unrolled streams that state doesn't fit in registers. Trimming one more
+  field (merging `consumed`+`total_bits` into the signed `budget` above)
+  barely moved the static instruction mix, so the array-of-8-readers
+  living on the stack looks like the more fundamental limit, not any one
+  field. Flagged for the controller rather than redesigned further here.

@@ -52,8 +52,17 @@ pub struct BitReader {
     last: *const u8,
     bits: u64,
     cnt: u32,
-    consumed: u64,
-    total_bits: u64,
+    /// `cnt` immediately after the last `refill`, i.e. the start of the
+    /// current fill window. `filled - cnt` is the bits consumed within
+    /// that window, folded into `budget` the next time `refill` runs
+    /// instead of on every `consume` call.
+    filled: u32,
+    /// Bits left in the stream, counting down from `total_bits` once per
+    /// `refill` (not once per `consume`). Signed so it can go negative:
+    /// that's the overrun signal, and folding `total_bits` into its
+    /// initial value keeps this reader at the same field count as an
+    /// explicit `consumed` + `total_bits` pair.
+    budget: i64,
 }
 
 impl BitReader {
@@ -66,8 +75,8 @@ impl BitReader {
             last: unsafe { p.add(src.len() - PAD) },
             bits: 0,
             cnt: 0,
-            consumed: 0,
-            total_bits: ((src.len() - PAD) * 8) as u64,
+            filled: 0,
+            budget: ((src.len() - PAD) * 8) as i64,
         };
         r.refill();
         r
@@ -75,12 +84,18 @@ impl BitReader {
 
     #[inline(always)]
     pub fn refill(&mut self) {
+        // Fold in whatever was consumed since the last refill, once per
+        // refill instead of once per consume (this loop calls refill 4x
+        // less often than consume, since it decodes 4 symbols per stream
+        // between refills).
+        self.budget -= (self.filled - self.cnt) as i64;
         unsafe {
             let p = if self.p > self.last { self.last } else { self.p };
             self.bits |= std::ptr::read_unaligned(p as *const u64) << self.cnt;
             self.p = p.add(((63 - self.cnt) >> 3) as usize);
             self.cnt |= 56;
         }
+        self.filled = self.cnt;
     }
 
     #[inline(always)]
@@ -92,7 +107,6 @@ impl BitReader {
     pub fn consume(&mut self, n: u32) {
         self.bits >>= n;
         self.cnt -= n;
-        self.consumed += n as u64;
     }
 
     /// Read `n` (0..=32) bits; refills first.
@@ -105,7 +119,10 @@ impl BitReader {
     }
 
     /// More bits consumed than the stream holds: the data was corrupt.
+    /// `budget` covers every fully-closed fill window; subtract whatever
+    /// has been consumed from the still-open one too.
     pub fn overrun(&self) -> bool {
-        self.consumed > self.total_bits
+        let open = (self.filled - self.cnt) as i64;
+        self.budget - open < 0
     }
 }
