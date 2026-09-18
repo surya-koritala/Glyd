@@ -276,3 +276,20 @@ which pays for the smaller window (ratio unchanged at 2.2726).
       = 71.6 / 71.5 / 70.5% of liblz4 (was 57.0%)
 Per file we are 61-85% of LZ4 on decode; x-ray (raw) decodes at 45 GB/s.
 x-ray regression floor set to a raw store (0.99) until the fast level exists.
+
+## GOAL3 S2 landed: AVX2 32-token pre-pass. Decode 90% of liblz4
+The fast phase now decodes 32 token bytes per AVX2 pass (lengths, escape
+lanes, match count), patches escaped lanes from the extras stream branch-free
+over the escape mask, checks bounds once per chunk from its totals, and runs
+a copy-only loop. Two lessons on the way, both measured: (1) `if` inside the
+fixup loop made no difference either way -- the branches were not the cost;
+(2) the real cost was retry waste: a chunk rejected after its pre-pass (a 255
+continuation escape, a stream near its end) was retried one token later,
+still containing the offender, up to 31 times: ~18 ms of ~47. Taking a full
+chunk of tokens carefully after such a rejection fixed it. prepass_bench
+shows the pre-pass alone costs 8.8 ms (3.4 cycles/token).
+  cold harness (lib): 64 -> 47 -> 39.9 ms
+  quick3: ratio 2.27262 | comp 0.412 | decomp 5.06 / 5.02 / 5.04 vs liblz4
+          5.60 / 5.59 / 5.61 same run = 90.2 / 89.8 / 89.8% (was 71.6%)
+Per file we now beat liblz4 on decode on ooffice, osdb and (raw) x-ray, tie
+reymont, and trail by 4-33% elsewhere (mr, sao, nci worst).

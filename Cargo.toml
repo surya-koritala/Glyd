@@ -78,3 +78,7 @@ path = "examples/dec_ablate.rs"
 [[example]]
 name = "token_stats"
 path = "examples/token_stats.rs"
+
+[[example]]
+name = "prepass_bench"
+path = "examples/prepass_bench.rs"

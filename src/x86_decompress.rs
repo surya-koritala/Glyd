@@ -2,7 +2,7 @@
 use std::arch::x86_64::*;
 use crate::error::{CodecError, Result};
 use crate::fallback::read_escape;
-use crate::format::{ESCAPE_BASE_LIT, OFFSET_BYTES, TOKEN_ESCAPE_MASK,
+use crate::format::{ESCAPE_BASE_LIT, ESCAPE_CONT, OFFSET_BYTES,
     TOKEN_LIT_ESCAPE, TOKEN_MATCH_ESCAPE, TOKEN_OFF_SHIFT};
 
 /// 32-Byte AVX2 Decompressor.
@@ -47,131 +47,218 @@ pub unsafe fn decompress_avx2(
     let mut extra_idx = 0usize;
     let mut token_idx = 0;
 
-    // Fast phase. Ablation (examples/dec_ablate.rs) priced the per-token
-    // bound checks at ~8 ms of a ~66 ms decode, for four compares that almost
-    // never trip. So bounds are paid in bulk: a token without an escape reads
-    // at most 6 literal bytes and OFFSET_BYTES offset bytes and advances the output by
-    // at most 21, while each of its two 32-byte wild stores needs 64 bytes of
-    // headroom. From the cursors, `credit` is the number of such tokens that
-    // are provably safe; the loop then spends one decrement per token and
-    // recomputes only when the credit runs out; an escape, whose lengths are
-    // unbounded, is checked on the spot and charges its excess.
-    macro_rules! credit {
-        () => {{
-            let out = if dst_ptr <= safe_limit { safe_limit.offset_from(dst_ptr) as usize >> 5 } else { 0 };
-            let lit = if lit_ptr.add(64) <= lit_limit { lit_limit.offset_from(lit_ptr.add(64)) as usize / 6 } else { 0 };
-            let off = if off_pos + OFFSET_BYTES <= offsets_len { (offsets_len - off_pos) / OFFSET_BYTES } else { 0 };
-            let tok = num_tokens - token_idx;
-            out.min(lit).min(off).min(tok)
-        }};
-    }
-    let mut credit = credit!();
-    'fast: while credit > 0 {
-        let tv = *table.get_unchecked(*tokens.add(token_idx) as usize);
-        let mut lit_len = (tv & 0xFF) as usize;
-        let mut match_len = ((tv >> 8) & 0xFF) as usize;
-        let off_hi = ((tv >> TOKEN_OFF_SHIFT) & 1) as usize;
-        let escaped = tv & TOKEN_ESCAPE_MASK != 0;
-        if escaped {
+    // Fast phase: 32 tokens at a time.
+    //
+    // Ablation (examples/dec_ablate.rs) put 60% of decode time in the token
+    // walk, and half of that in escapes, which a fifth of tokens carry and
+    // which mispredict. So the walk is vectorized: one AVX2 pass turns 32
+    // token bytes into literal and match lengths, with escape lanes marked;
+    // the escaped lanes are then patched from the extras stream in a short
+    // loop over the escape mask (no data-dependent branch per token); and a
+    // copy-only loop consumes the arrays. Bounds are checked once per chunk
+    // from the chunk's totals. v6's constant-stride offsets mean the copy loop
+    // reads offsets straight from the stream, no positions to compute.
+    //
+    // A chunk that cannot be taken (block tail, a 255-continuation escape,
+    // any stream too short) is left to the careful one-token step below, and
+    // the fast phase resumes on the next token.
+    const CHUNK: usize = 32;
+    let bias = (esc_base_match - 15) as i8;
+    let seven = _mm256_set1_epi8(7);
+    let fifteen = _mm256_set1_epi8(15);
+    let zero = _mm256_setzero_si256();
+    let v_bias = _mm256_set1_epi8(bias);
+
+    let mut litl = [0u16; CHUNK];
+    let mut mll = [0u16; CHUNK];
+    // Tokens to take carefully before the next chunk attempt. A chunk
+    // rejected after its pre-pass (a 255 continuation, a stream near its
+    // end) would otherwise be retried one token later, still containing the
+    // same offender, up to 31 times; measured at ~18 ms of a ~47 ms decode.
+    let mut careful = 0usize;
+
+    'tokens: loop {
+        // Try a chunk.
+        'chunk: {
+            if careful > 0 {
+                careful -= 1;
+                break 'chunk;
+            }
+            if token_idx + CHUNK > num_tokens || dst_ptr > safe_limit {
+                break 'chunk;
+            }
+            let v = _mm256_loadu_si256(tokens.add(token_idx) as *const __m256i);
+            let lit = _mm256_and_si256(v, seven);
+            let mc = _mm256_and_si256(_mm256_srli_epi16(v, 3), fifteen);
+            let lit_esc = _mm256_cmpeq_epi8(lit, seven);
+            let m_esc = _mm256_cmpeq_epi8(mc, fifteen);
+            let m_zero = _mm256_cmpeq_epi8(mc, zero);
+            // Match length: code + bias, zero where there is no match. Escape
+            // lanes hold the placeholder 15 + bias until patched.
+            let ml = _mm256_andnot_si256(m_zero, _mm256_add_epi8(mc, v_bias));
+            let esc_mask = _mm256_movemask_epi8(_mm256_or_si256(lit_esc, m_esc)) as u32;
+            let lit_esc_mask = _mm256_movemask_epi8(lit_esc) as u32;
+            let m_esc_mask = _mm256_movemask_epi8(m_esc) as u32;
+            let n_match = CHUNK - (_mm256_movemask_epi8(m_zero) as u32).count_ones() as usize;
+
+            // Widen to u16 arrays.
+            let lit_lo = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(lit));
+            let lit_hi = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(lit, 1));
+            let ml_lo = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(ml));
+            let ml_hi = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(ml, 1));
+            _mm256_storeu_si256(litl.as_mut_ptr() as *mut __m256i, lit_lo);
+            _mm256_storeu_si256(litl.as_mut_ptr().add(16) as *mut __m256i, lit_hi);
+            _mm256_storeu_si256(mll.as_mut_ptr() as *mut __m256i, ml_lo);
+            _mm256_storeu_si256(mll.as_mut_ptr().add(16) as *mut __m256i, ml_hi);
+
+            // Chunk totals from the byte vectors (sum of 8-byte groups).
+            let sum8 = |x: __m256i| -> usize {
+                let s = _mm256_sad_epu8(x, zero);
+                (_mm256_extract_epi64(s, 0) + _mm256_extract_epi64(s, 1)
+                    + _mm256_extract_epi64(s, 2) + _mm256_extract_epi64(s, 3)) as usize
+            };
+            let mut lit_sum = sum8(lit);
+            let mut ml_sum = sum8(ml);
+
+            // Patch escaped lanes from the extras stream: one byte per
+            // escaped field, literal first, in token order. A 255 byte means
+            // a u16 continuation, which this path does not take.
             let mut e = extra_idx;
-            if tv & TOKEN_LIT_ESCAPE != 0 {
-                lit_len = read_escape(extras, extras_len, &mut e, ESCAPE_BASE_LIT)?;
+            if esc_mask != 0 {
+                let need = esc_mask.count_ones() as usize
+                    + (lit_esc_mask & m_esc_mask).count_ones() as usize;
+                if e + need > extras_len {
+                    careful = CHUNK - 1;
+                    break 'chunk;
+                }
+                // Branch-free per escaped token: which field(s) escaped is
+                // ~50/50 and unpredictable, so both lanes are selected
+                // arithmetically and stored unconditionally. (With `if`s here
+                // the mispredicts cost as much as the old per-token branch.)
+                let mut bits = esc_mask;
+                let mut cont = 0usize;
+                while bits != 0 {
+                    let i = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    let l = ((lit_esc_mask >> i) & 1) as usize;
+                    let m = ((m_esc_mask >> i) & 1) as usize;
+                    let b1 = *extras.add(e) as usize;
+                    let b2 = *extras.add(e + l) as usize;
+                    cont |= (l & (b1 == ESCAPE_CONT as usize) as usize)
+                        | (m & (b2 == ESCAPE_CONT as usize) as usize);
+                    // Literal lane: current value, or base + byte when escaped
+                    // (a token whose match escaped keeps its own literal count).
+                    let cur_l = *litl.get_unchecked(i) as usize;
+                    let lm = l.wrapping_neg();
+                    let nl = (cur_l & !lm) | ((ESCAPE_BASE_LIT + b1) & lm);
+                    lit_sum += b1 * l;
+                    *litl.get_unchecked_mut(i) = nl as u16;
+                    // Match lane: current value, or base + byte when escaped.
+                    let cur = *mll.get_unchecked(i) as usize;
+                    let mm = m.wrapping_neg();
+                    let nm = (cur & !mm) | ((esc_base_match + b2) & mm);
+                    ml_sum += b2 * m;
+                    *mll.get_unchecked_mut(i) = nm as u16;
+                    e += l + m;
+                }
+                if cont != 0 {
+                    careful = CHUNK - 1;
+                    break 'chunk;
+                }
             }
-            if tv & TOKEN_MATCH_ESCAPE != 0 {
-                match_len = read_escape(extras, extras_len, &mut e, esc_base_match)?;
-            }
+
+            // Chunk bounds: wild stores need 64 bytes past the chunk's last
+            // byte; literal loads need 64 past the chunk's literals; offsets
+            // need OFFSET_BYTES per match.
             let remaining = block_end.offset_from(dst_ptr) as usize;
-            if lit_len + match_len + 64 > remaining || lit_ptr.add(lit_len + 64) > lit_limit {
-                break 'fast;
+            if lit_sum + ml_sum + 64 > remaining
+                || lit_ptr.add(lit_sum + 64) > lit_limit
+                || off_pos + n_match * OFFSET_BYTES > offsets_len
+            {
+                careful = CHUNK - 1;
+                break 'chunk;
             }
-            extra_idx = e;
-        }
-        token_idx += 1;
-        credit -= 1;
 
-        let v = _mm256_loadu_si256(lit_ptr as *const __m256i);
-        _mm256_storeu_si256(dst_ptr as *mut __m256i, v);
-        if lit_len > 32 {
-            let mut n = 32usize;
-            while n < lit_len {
-                let v = _mm256_loadu_si256(lit_ptr.add(n) as *const __m256i);
-                _mm256_storeu_si256(dst_ptr.add(n) as *mut __m256i, v);
-                n += 32;
-            }
-        }
-        lit_ptr = lit_ptr.add(lit_len);
-        dst_ptr = dst_ptr.add(lit_len);
+            // Copy-only loop.
+            let tok_base = tokens.add(token_idx);
+            for i in 0..CHUNK {
+                let lit = *litl.get_unchecked(i) as usize;
+                let ml = *mll.get_unchecked(i) as usize;
 
-        if match_len != 0 {
-            // Constant-stride offset stream: this load does not wait on the
-            // previous token.
-            let lo = std::ptr::read_unaligned(offsets.add(off_pos) as *const u16) as usize;
-            let offset = lo | (off_hi << 16);
-            off_pos += OFFSET_BYTES;
-            let available = dst_ptr.offset_from(buffer_start) as usize;
-            if offset == 0 || offset > available {
-                return Err(CodecError::OffsetOutOfBounds { offset, available });
-            }
-            let match_src = dst_ptr.sub(offset);
-            if offset >= 32 {
-                let m = _mm256_loadu_si256(match_src as *const __m256i);
-                _mm256_storeu_si256(dst_ptr as *mut __m256i, m);
-                if match_len > 32 {
+                let v = _mm256_loadu_si256(lit_ptr as *const __m256i);
+                _mm256_storeu_si256(dst_ptr as *mut __m256i, v);
+                if lit > 32 {
                     let mut n = 32usize;
-                    while n < match_len {
-                        let m = _mm256_loadu_si256(match_src.add(n) as *const __m256i);
-                        _mm256_storeu_si256(dst_ptr.add(n) as *mut __m256i, m);
+                    while n < lit {
+                        let v = _mm256_loadu_si256(lit_ptr.add(n) as *const __m256i);
+                        _mm256_storeu_si256(dst_ptr.add(n) as *mut __m256i, v);
                         n += 32;
                     }
                 }
-            } else if offset >= 16 {
-                let match_end = dst_ptr.add(match_len);
-                let mut s = match_src;
-                let mut d = dst_ptr;
-                while d < match_end {
-                    let m = _mm_loadu_si128(s as *const __m128i);
-                    _mm_storeu_si128(d as *mut __m128i, m);
-                    s = s.add(16);
-                    d = d.add(16);
-                }
-            } else if offset >= 8 {
-                let match_end = dst_ptr.add(match_len);
-                let mut s = match_src;
-                let mut d = dst_ptr;
-                while d < match_end {
-                    std::ptr::copy_nonoverlapping(s, d, 8);
-                    s = s.add(8);
-                    d = d.add(8);
-                }
-            } else {
-                let match_end = dst_ptr.add(match_len);
-                let mut s = match_src;
-                let mut d = dst_ptr;
-                while d < match_end {
-                    *d = *s;
-                    d = d.add(1);
-                    s = s.add(1);
+                lit_ptr = lit_ptr.add(lit);
+                dst_ptr = dst_ptr.add(lit);
+
+                if ml != 0 {
+                    let lo = std::ptr::read_unaligned(offsets.add(off_pos) as *const u16) as usize;
+                    let offset = lo | (((*tok_base.add(i) >> 7) as usize) << 16);
+                    off_pos += OFFSET_BYTES;
+                    let available = dst_ptr.offset_from(buffer_start) as usize;
+                    if offset == 0 || offset > available {
+                        return Err(CodecError::OffsetOutOfBounds { offset, available });
+                    }
+                    let match_src = dst_ptr.sub(offset);
+                    if offset >= 32 {
+                        let m = _mm256_loadu_si256(match_src as *const __m256i);
+                        _mm256_storeu_si256(dst_ptr as *mut __m256i, m);
+                        if ml > 32 {
+                            let mut n = 32usize;
+                            while n < ml {
+                                let m = _mm256_loadu_si256(match_src.add(n) as *const __m256i);
+                                _mm256_storeu_si256(dst_ptr.add(n) as *mut __m256i, m);
+                                n += 32;
+                            }
+                        }
+                    } else if offset >= 16 {
+                        let match_end = dst_ptr.add(ml);
+                        let mut s = match_src;
+                        let mut d = dst_ptr;
+                        while d < match_end {
+                            let m = _mm_loadu_si128(s as *const __m128i);
+                            _mm_storeu_si128(d as *mut __m128i, m);
+                            s = s.add(16);
+                            d = d.add(16);
+                        }
+                    } else if offset >= 8 {
+                        let match_end = dst_ptr.add(ml);
+                        let mut s = match_src;
+                        let mut d = dst_ptr;
+                        while d < match_end {
+                            std::ptr::copy_nonoverlapping(s, d, 8);
+                            s = s.add(8);
+                            d = d.add(8);
+                        }
+                    } else {
+                        let match_end = dst_ptr.add(ml);
+                        let mut s = match_src;
+                        let mut d = dst_ptr;
+                        while d < match_end {
+                            *d = *s;
+                            d = d.add(1);
+                            s = s.add(1);
+                        }
+                    }
+                    dst_ptr = dst_ptr.add(ml);
                 }
             }
-            dst_ptr = dst_ptr.add(match_len);
+            token_idx += CHUNK;
+            extra_idx = e;
+            continue 'tokens;
         }
 
-        // An escape consumed more than a token's budget (2 literal bytes, 32
-        // output bytes); charge the excess in token units rather than
-        // recomputing, since a quarter of tokens escape. Recompute only when
-        // the credit is exhausted.
-        if escaped {
-            let extra = (lit_len / 6) + ((lit_len + match_len) >> 5);
-            credit = credit.saturating_sub(extra);
+        // Careful step: one token, every access checked.
+        if token_idx >= num_tokens {
+            break 'tokens;
         }
-        if credit == 0 {
-            credit = credit!();
-        }
-    }
-
-    // Careful loop: the block's tail and anything the fast phase declined.
-    // Every access checked.
-    while token_idx < num_tokens {
         let tv = *table.get_unchecked(*tokens.add(token_idx) as usize);
         token_idx += 1;
 
@@ -202,7 +289,6 @@ pub unsafe fn decompress_avx2(
                 return Err(CodecError::CorruptedBitstream("Literal stream overrun"));
             }
             if lit_ptr.add(lit_len + 32) <= lit_limit && remaining >= lit_len + 32 {
-                // Long literal run with room: 32-byte wild copies.
                 let mut n = 0usize;
                 loop {
                     let v = _mm256_loadu_si256(lit_ptr.add(n) as *const __m256i);
@@ -234,8 +320,6 @@ pub unsafe fn decompress_avx2(
 
             let match_src = dst_ptr.sub(offset);
             let match_end = dst_ptr.add(match_len);
-            // With 32 bytes of headroom past the match, wide copies are safe;
-            // the block's last bytes and near offsets take the exact paths.
             if remaining >= lit_len + match_len + 32 && offset >= 32 {
                 let mut s = match_src;
                 let mut d = dst_ptr;
