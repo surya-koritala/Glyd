@@ -36,6 +36,8 @@ fn main() {
     let runs: usize = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(3);
     let min_s: f64 = std::env::args().nth(3).and_then(|s| s.parse().ok()).unwrap_or(0.3);
     let verbose = std::env::args().any(|a| a == "-v");
+    let fast = std::env::args().any(|a| a == "--fast");
+    let comp: fn(&[u8], &mut Vec<u8>) = if fast { simd_stream_codec::compress_into_fast } else { simd_stream_codec::compress_into };
     let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
                  "reymont","samba","sao","webster","xml","x-ray"];
     let dir = std::path::Path::new("corpus");
@@ -47,12 +49,12 @@ fn main() {
         if !p.exists() { continue; }
         let d = std::fs::read(&p).unwrap();
         let mut b = Vec::with_capacity(d.len());
-        simd_stream_codec::compress_into(&d, &mut b);
+        comp(&d, &mut b);
         let r = simd_stream_codec::decompress(&b).expect("roundtrip failed");
         assert_eq!(r, d, "roundtrip mismatch on {}", f);
         let mut dst = vec![0u8; d.len() + 1024];
         let fc = timed(runs, min_s, || { let mut x = Vec::with_capacity(d.len());
-                                          simd_stream_codec::compress_into(&d, &mut x); });
+                                          comp(&d, &mut x); });
         let fd = timed(runs, min_s, || { let _ = simd_stream_codec::decompress_into_raw(&b, &mut dst); });
         // liblz4, same protocol, same run.
         let bound = lz4::block::compress_bound(d.len()).unwrap_or(d.len() * 2 + 64);

@@ -86,3 +86,7 @@ path = "examples/prepass_bench.rs"
 [[example]]
 name = "floor"
 path = "examples/floor.rs"
+
+[[example]]
+name = "cfloor"
+path = "examples/cfloor.rs"

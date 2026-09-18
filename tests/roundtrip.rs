@@ -235,3 +235,32 @@ fn test_roundtrip_literal_run_at_max_len() {
         assert_eq!(simd_stream_codec::decompress_parallel(&c).unwrap(), input);
     }
 }
+
+/// Fast level: every shape the default tests cover, sequential and parallel.
+#[test]
+fn test_roundtrip_fast_level() {
+    let mut x = 0x9E3779B97F4A7C15u64;
+    let mut rnd = |n: usize| -> Vec<u8> { (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect() };
+    let mut inputs: Vec<Vec<u8>> = vec![
+        Vec::new(),
+        b"Hello, World!".to_vec(),
+        vec![b'A'; 2048],
+        rnd(300_000),                      // incompressible: raw blocks
+        (0..2_000_000u32).map(|i| (i / 7) as u8).collect(), // long runs, long matches
+    ];
+    for period in [1usize, 3, 7, 13, 64, 300, 5000, 70_000] {
+        let pat = rnd(period);
+        inputs.push(pat.iter().cycle().take(700_000).copied().collect());
+    }
+    let mut text = Vec::new();
+    while text.len() < 1_500_000 { text.extend_from_slice(b"the quick brown fox jumps over the lazy dog "); text.extend_from_slice(&rnd(3)); }
+    inputs.push(text);
+    for input in &inputs {
+        let mut c = Vec::new();
+        simd_stream_codec::compress_into_fast(input, &mut c);
+        assert_eq!(&decompress(&c).unwrap(), input, "fast sequential, len {}", input.len());
+        let mut p = Vec::new();
+        simd_stream_codec::compress_parallel_into_fast(input, &mut p);
+        assert_eq!(&simd_stream_codec::decompress_parallel(&p).unwrap(), input, "fast parallel, len {}", input.len());
+    }
+}

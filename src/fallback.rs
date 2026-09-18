@@ -163,7 +163,7 @@ pub fn compress_chained_fallback<P: Mode>(
     extras: &mut Vec<u8>,
     literals: &mut Vec<u8>,
 ) {
-    let mut out = Streams { min_match: P::MIN_MATCH, tokens, offsets, extras, literals };
+    let mut out = Streams::new(P::MIN_MATCH, tokens, offsets, extras, literals);
     unsafe {
         find_matches::<ScalarMatch, P>(full_input, block_start, block_len, table, &mut out);
     }

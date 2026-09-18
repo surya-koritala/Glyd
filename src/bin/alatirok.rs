@@ -9,6 +9,7 @@ Usage: alatirok [OPTIONS] [INPUT] [-o OUTPUT]
 
 Options:
     -c, --compress         Compress input (default if output is .alk)
+    -1, --fast             Fast level: LZ4-class compression speed, ratio ~2.10
     -d, --decompress       Decompress input (default if input is .alk)
     -m, --multi-core       Use multi-core parallel engine (default)
     -1, --single-core      Force single-core sequential engine
@@ -53,6 +54,7 @@ fn main() -> io::Result<()> {
     let mut mode_compress = None;
     let mut multi_core = true;
     let mut benchmark_mode = false;
+    let mut fast = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -66,6 +68,7 @@ fn main() -> io::Result<()> {
                 return Ok(());
             }
             "-c" | "--compress" => mode_compress = Some(true),
+            "-1" | "--fast" => fast = true,
             "-d" | "--decompress" => mode_compress = Some(false),
             "-m" | "--multi-core" => multi_core = true,
             "-1" | "--single-core" => multi_core = false,
@@ -125,11 +128,14 @@ fn main() -> io::Result<()> {
     });
 
     let output_data = if should_compress {
-        if multi_core && input_data.len() > simd_stream_codec::format::MAX_BLOCK_SIZE {
-            simd_stream_codec::compress_parallel(&input_data)
-        } else {
-            simd_stream_codec::compress(&input_data)
+        let mut out = Vec::with_capacity(input_data.len() / 2 + 1024);
+        match (multi_core && input_data.len() > simd_stream_codec::format::MAX_BLOCK_SIZE, fast) {
+            (true, true) => simd_stream_codec::compress_parallel_into_fast(&input_data, &mut out),
+            (true, false) => simd_stream_codec::compress_parallel_into(&input_data, &mut out),
+            (false, true) => simd_stream_codec::compress_into_fast(&input_data, &mut out),
+            (false, false) => simd_stream_codec::compress_into(&input_data, &mut out),
         }
+        out
     } else {
         let result = if multi_core && input_data.len() > simd_stream_codec::format::MAX_BLOCK_SIZE {
             simd_stream_codec::decompress_parallel(&input_data)

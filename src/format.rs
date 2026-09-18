@@ -245,6 +245,11 @@ pub fn compute_checksum(data: &[u8]) -> u32 {
             return unsafe { crate::x86_checksum::checksum_avx2(data) };
         }
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return unsafe { crate::neon_checksum::checksum_neon(data) };
+    }
+    #[allow(unreachable_code)]
     compute_checksum_scalar(data)
 }
 

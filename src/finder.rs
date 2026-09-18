@@ -23,8 +23,8 @@
 //! and the portable build run the same parse.
 
 use crate::format::{
-    encode_lit, encode_match, push_offset, Token, MAX_LIT_LEN, MIN_MATCH_LEN,
-    MIN_MATCH_LEN_DENSE, WINDOW_SIZE,
+    Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, LIT_DIRECT_MAX, MATCH_CODE_ESCAPE,
+    MAX_LIT_LEN, MIN_MATCH_LEN, MIN_MATCH_LEN_DENSE, WINDOW_SIZE,
 };
 
 /// Default finder window; see `window_size`. The v6 format holds 17-bit
@@ -191,31 +191,137 @@ pub struct Streams<'a> {
     pub literals: &'a mut Vec<u8>,
 }
 
+/// Write cursors for one block, held by value in the finder's frame so they
+/// stay in registers: as Vec lengths (or as fields behind `&mut Streams`,
+/// which any raw-pointer store may alias) every token paid serial
+/// load/store chains through memory, measured 6.5 ns per token.
+#[derive(Clone, Copy)]
+pub struct Cursors {
+    min_match: usize,
+    tok: *mut u8,
+    off: *mut u8,
+    ext: *mut u8,
+    lit: *mut u8,
+}
+
 impl<'a> Streams<'a> {
+    pub fn new(min_match: usize, tokens: &'a mut Vec<u8>, offsets: &'a mut Vec<u8>, extras: &'a mut Vec<u8>, literals: &'a mut Vec<u8>) -> Self {
+        Streams { min_match, tokens, offsets, extras, literals }
+    }
+
+    /// Reserve so `Cursors::emit` can write without capacity checks for a
+    /// block of `block_len` bytes: at most one token per input byte plus
+    /// one, two offset bytes per token, under one extras byte per input
+    /// byte (a token with extras spans at least 7 bytes and carries at most
+    /// 6), and the literals plus a 32-byte wild-copy margin.
+    #[inline(always)]
+    pub fn begin_block(&mut self, block_len: usize) -> Cursors {
+        self.tokens.reserve(block_len + 64);
+        self.offsets.reserve(2 * block_len + 64);
+        self.extras.reserve(block_len + 64);
+        self.literals.reserve(block_len + 64);
+        unsafe {
+            Cursors {
+                min_match: self.min_match,
+                tok: self.tokens.as_mut_ptr().add(self.tokens.len()),
+                off: self.offsets.as_mut_ptr().add(self.offsets.len()),
+                ext: self.extras.as_mut_ptr().add(self.extras.len()),
+                lit: self.literals.as_mut_ptr().add(self.literals.len()),
+            }
+        }
+    }
+
+    /// Publish the cursors as the Vec lengths.
+    #[inline(always)]
+    pub fn finish(&mut self, c: Cursors) {
+        unsafe {
+            self.tokens.set_len(c.tok.offset_from(self.tokens.as_ptr()) as usize);
+            self.offsets.set_len(c.off.offset_from(self.offsets.as_ptr()) as usize);
+            self.extras.set_len(c.ext.offset_from(self.extras.as_ptr()) as usize);
+            self.literals.set_len(c.lit.offset_from(self.literals.as_ptr()) as usize);
+        }
+    }
+}
+
+impl Cursors {
+    /// Escaped length: one byte, or 255 plus a u16 for the rest.
+    #[inline(always)]
+    unsafe fn push_escape(&mut self, value: usize, base: usize) {
+        let v = value - base;
+        if v < 255 {
+            *self.ext = v as u8;
+            self.ext = self.ext.add(1);
+        } else {
+            let rest = (v - 255) as u16;
+            debug_assert!(v - 255 <= 65535);
+            *self.ext = ESCAPE_CONT;
+            std::ptr::write_unaligned(self.ext.add(1) as *mut u16, rest.to_le());
+            self.ext = self.ext.add(3);
+        }
+    }
+
     /// One token: `lc` literals from `lit_src`, then a match of `rc` bytes at
     /// `offset` (rc == 0 means none). Literal runs longer than one escape
-    /// are split into leading literal-only tokens.
+    /// are split into leading literal-only tokens. `src_end` bounds the
+    /// literal wild copy's over-read.
+    ///
+    /// # Safety
+    /// Must come from `Streams::begin_block` for the block being emitted.
     #[inline(always)]
-    pub unsafe fn emit(&mut self, mut lit_src: *const u8, mut lc: usize, rc: usize, offset: usize) {
+    pub unsafe fn emit(&mut self, mut lit_src: *const u8, mut lc: usize, rc: usize, offset: usize, src_end: *const u8) {
         while lc > MAX_LIT_LEN {
-            let code = encode_lit(MAX_LIT_LEN, self.extras);
-            self.tokens.push(Token::from_codes(code, 0, 0).0);
-            self.literals
-                .extend_from_slice(std::slice::from_raw_parts(lit_src, MAX_LIT_LEN));
+            self.push_escape(MAX_LIT_LEN, ESCAPE_BASE_LIT);
+            *self.tok = Token::from_codes(LIT_CODE_ESCAPE, 0, 0).0;
+            self.tok = self.tok.add(1);
+            std::ptr::copy_nonoverlapping(lit_src, self.lit, MAX_LIT_LEN);
+            self.lit = self.lit.add(MAX_LIT_LEN);
             lit_src = lit_src.add(MAX_LIT_LEN);
             lc -= MAX_LIT_LEN;
         }
-        let lcode = encode_lit(lc, self.extras);
-        let mcode = encode_match(rc, self.extras, self.min_match);
+        // Escapes without branches: the escape byte is written at the
+        // cursor unconditionally and the cursor advances by the condition
+        // (19% of tokens escape the literal, 14% the match; as branches
+        // they mispredicted). Only the 255 continuation is a branch.
+        let bias = self.min_match - 1;
+        let nl = (lc > LIT_DIRECT_MAX) as usize;
+        let nm = (rc > bias + 14) as usize;
+        if (lc >= ESCAPE_BASE_LIT + 255) | (rc >= bias + 15 + 255) {
+            if nl != 0 {
+                self.push_escape(lc, ESCAPE_BASE_LIT);
+            }
+            if nm != 0 {
+                self.push_escape(rc, bias + 15);
+            }
+        } else {
+            *self.ext = lc.wrapping_sub(ESCAPE_BASE_LIT) as u8;
+            self.ext = self.ext.add(nl);
+            *self.ext = rc.wrapping_sub(bias + 15) as u8;
+            self.ext = self.ext.add(nm);
+        }
+        let lcode = lc.min(LIT_CODE_ESCAPE);
+        let mcode = if rc == 0 { 0 } else { (rc - bias).min(MATCH_CODE_ESCAPE) };
         let hi = if rc > 0 { offset >> 16 } else { 0 };
-        self.tokens.push(Token::from_codes(lcode, mcode, hi).0);
-        if rc > 0 {
-            push_offset(self.offsets, offset);
+        *self.tok = Token::from_codes(lcode, mcode, hi).0;
+        self.tok = self.tok.add(1);
+        // Offset written unconditionally (99.99% of tokens carry one);
+        // the cursor advances only when it does.
+        std::ptr::write_unaligned(self.off as *mut u16, (offset as u16).to_le());
+        self.off = self.off.add(2 * (rc > 0) as usize);
+        // Literal wild copy: 32 bytes unconditionally (lc is often 0 and
+        // that branch mispredicts), more only for long runs.
+        if lit_src.add(lc + 32) <= src_end {
+            std::ptr::copy_nonoverlapping(lit_src, self.lit, 32);
+            if lc > 32 {
+                let mut k = 32;
+                while k < lc {
+                    std::ptr::copy_nonoverlapping(lit_src.add(k), self.lit.add(k), 32);
+                    k += 32;
+                }
+            }
+        } else {
+            std::ptr::copy_nonoverlapping(lit_src, self.lit, lc);
         }
-        if lc > 0 {
-            self.literals
-                .extend_from_slice(std::slice::from_raw_parts(lit_src, lc));
-        }
+        self.lit = self.lit.add(lc);
     }
 }
 
@@ -236,7 +342,9 @@ pub unsafe fn find_matches<M: MatchLen, P: Mode>(
     out: &mut Streams,
 ) {
     let src = full_input.as_ptr();
+    let src_end = src.add(full_input.len());
     let block_end = block_start + block_len;
+    let mut cur = out.begin_block(block_len);
     // Hashing reads 6 bytes; a match must have room for the minimum.
     // Hashing reads 4 bytes at pos and verification 4 more at pos + 4.
     let hash_limit = block_end.saturating_sub(P::MIN_MATCH.max(5) + 3).max(block_start);
@@ -356,7 +464,7 @@ pub unsafe fn find_matches<M: MatchLen, P: Mode>(
             }
         }
 
-        out.emit(src.add(anchor), lc, rc, d);
+        cur.emit(src.add(anchor), lc, rc, d, src_end);
         pos = mpos + rc;
         anchor = pos;
         mavg += ((rc << 21) as isize - mavg) >> 10;
@@ -364,6 +472,124 @@ pub unsafe fn find_matches<M: MatchLen, P: Mode>(
 
     let trailing = block_end - anchor;
     if trailing > 0 {
-        out.emit(src.add(anchor), trailing, 0, 0);
+        cur.emit(src.add(anchor), trailing, 0, 0, src_end);
     }
+    out.finish(cur);
+}
+
+// ---------------------------------------------------------------------------
+// Fast level (GOAL3 S3): an LZ4-class finder. One position per bucket in a
+// table small enough to stay in L1, 4-byte multiplicative hash, a single
+// u64 compare that both tests the candidate and yields the match length,
+// LZ4's skip acceleration on misses, minimum match 7 (the v6 token floor),
+// and the same back-match as the default parse since it costs a few
+// well-predicted byte compares per token.
+
+/// 32 KB table. Swept on Silesia (5-byte hash, minimum match 5, parse
+/// only): 12 bits 0.72 GB/s at 2.00, 13 bits 0.68 at 2.10, 14 bits 0.57
+/// at 2.18, 16 bits 0.38 at 2.25. 13 is the liblz4 point on both axes.
+pub const FAST_HASH_BITS: u32 = 13;
+pub const FAST_HASH_SIZE: usize = 1 << FAST_HASH_BITS;
+pub type FastTable = [u32; FAST_HASH_SIZE];
+
+/// 5-byte hash, as liblz4 on 64-bit: every hit is a 5-byte candidate, so
+/// the minimum-5 parse wastes fewer compares and mispredicts less.
+#[inline(always)]
+unsafe fn hash5(p: *const u8) -> usize {
+    ((std::ptr::read_unaligned(p as *const u64) << 24).wrapping_mul(889523592379u64) >> (64 - FAST_HASH_BITS)) as usize
+}
+
+/// Parse `full_input[block_start..block_start + block_len]` greedily.
+/// `table` holds absolute positions into `full_input` (0 = empty, which is
+/// harmless: position 0 is either verified or too near).
+///
+/// # Safety
+/// Every position in `table` must be below `block_start + block_len`.
+pub unsafe fn find_matches_fast<P: Mode>(
+    full_input: &[u8],
+    block_start: usize,
+    block_len: usize,
+    table: &mut FastTable,
+    out: &mut Streams,
+) {
+    const { assert!(P::MIN_MATCH <= 8) };
+    let min = P::MIN_MATCH;
+    const SKIP_STRENGTH: u32 = 6;
+    let src = full_input.as_ptr();
+    let src_end = src.add(full_input.len());
+    let block_end = block_start + block_len;
+    let mut cur = out.begin_block(block_len);
+    // The u64 compare reads 8 bytes at pos and at the candidate.
+    let limit = block_end.saturating_sub(8).max(block_start);
+    let window = window_size();
+
+    let mut anchor = block_start;
+    let mut pos = block_start;
+    let mut search_nb: u32 = 1 << SKIP_STRENGTH;
+
+    'outer: loop {
+        // Find the next match.
+        let (cand, mut rc);
+        loop {
+            if pos >= limit {
+                break 'outer;
+            }
+            let h = hash5(src.add(pos));
+            let c = *table.get_unchecked(h) as usize;
+            *table.get_unchecked_mut(h) = pos as u32;
+            let step = (search_nb >> SKIP_STRENGTH) as usize;
+            search_nb += 1;
+            let d = pos.wrapping_sub(c);
+            if d >= MIN_OFFSET && d < window {
+                let x = std::ptr::read_unaligned(src.add(pos) as *const u64)
+                    ^ std::ptr::read_unaligned(src.add(c) as *const u64);
+                let len = if x == 0 { 8 } else { (x.trailing_zeros() / 8) as usize };
+                if len >= min {
+                    cand = c;
+                    rc = len;
+                    break;
+                }
+            }
+            pos += step;
+        }
+        search_nb = 1 << SKIP_STRENGTH;
+
+        let d = pos - cand;
+        let mut ml = block_end - pos;
+        if ml > MAX_REF_LEN {
+            ml = MAX_REF_LEN;
+        }
+        if rc == 8 && ml > 8 {
+            rc = 8 + ScalarMatch::prefix(src.add(pos + 8), src.add(cand + 8), ml - 8);
+        }
+        rc = rc.min(ml);
+
+        let mut lc = pos - anchor;
+        let mut mpos = pos;
+        if lc != 0 {
+            let mut room = lc.min(cand).min(BACK_MATCH_MAX);
+            let mut bmc = 0usize;
+            while room > 0 && *src.add(mpos - 1 - bmc) == *src.add(cand - 1 - bmc) {
+                bmc += 1;
+                room -= 1;
+            }
+            rc += bmc;
+            mpos -= bmc;
+            lc -= bmc;
+        }
+
+        cur.emit(src.add(anchor), lc, rc, d, src_end);
+        pos = mpos + rc;
+        anchor = pos;
+        // Index the last position of the match so a run continues to hash.
+        if pos >= 2 && pos < limit {
+            *table.get_unchecked_mut(hash5(src.add(pos - 2))) = (pos - 2) as u32;
+        }
+    }
+
+    let trailing = block_end - anchor;
+    if trailing > 0 {
+        cur.emit(src.add(anchor), trailing, 0, 0, src_end);
+    }
+    out.finish(cur);
 }

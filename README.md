@@ -92,7 +92,18 @@ Beats liblz4 on 10 of 12 files; trails on nci and webster by 2-3%.
 
 Beats liblz4 on 12 of 12 files (+53% total). The measured wall for this
 format on this chip is ~12.5 GB/s (one dependent 32-byte copy per token on
-the serial output pointer); see `examples/floor.rs` and the changelog. `src/neon_decompress.rs` is a
+the serial output pointer); see `examples/floor.rs` and the changelog.
+
+Levels, same run (`quick3`, M1 Max, one core):
+
+| Level | Comp GB/s | Ratio | Decode GB/s |
+| :--- | ---: | ---: | ---: |
+| `--fast` (`compress_into_fast`) | 0.54 | 2.098 | 5.02 |
+| default | 0.34 | 2.192 | 6.80 |
+| liblz4 | 0.66 | 2.101 | 4.38 |
+
+The compression ceiling for any greedy LZ finder is one data-random branch
+per probed position (~0.7-1 GB/s per core); see `examples/cfloor.rs`. `src/neon_decompress.rs` is a
 lane-for-lane port of the AVX2 decoder; the finder is still scalar on arm64
 (comp 0.27 GB/s).
 
@@ -135,10 +146,10 @@ speed.
 
 **Next, in order:**
 
-1. **Fast compression level (GOAL3 S3).** An LZ4-class finder (4-byte hash,
-   1-way, no lazy, skip) targeting comp >= 0.85 GB/s at ratio >= 2.10. This
-   is the weak axis today (0.35 GB/s vs liblz4's 0.85) and is also the right
-   way to handle incompressible data such as x-ray (currently stored raw).
+1. **Fast compression level (GOAL3 S3).** Built (`-1`/`--fast`): 5-byte
+   hash, 1-way 32 KB table, skip, minimum match 5. On the M1 it is at 81%
+   of liblz4's compression speed at liblz4's ratio, decoding 14% faster
+   than liblz4. Handles x-ray (1.004) instead of storing it raw.
 2. **Decode toward the wall (GOAL3 S2).** memcpy of the output is 22.9 GB/s;
    we are at 26% of it, liblz4 at 24%. The remaining cost is ~9 cycles per
    token in the copy loop; the plausible next stop is ~9-10 GB/s. nci and

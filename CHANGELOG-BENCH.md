@@ -402,3 +402,55 @@ in the copy loop (offset validation, the token's offset bit) and the 10% of
 chunks that hit a 255 continuation; neither is worth more than ~5%. The
 next lever is the format: a token wide enough to make escapes rare (they
 are 31% of tokens at 3+4 bits) trades ~10% ratio, below the liblz4 floor.
+
+## Compression: the ceiling, and the fast level (M1 Max)
+New harness `examples/cfloor.rs`, Silesia, one core:
+
+| rung | GB/s | ns/byte |
+|---|---:|---:|
+| memcpy | 44 | 0.02 |
+| hash every position into a 64 KB table, probe, no branch | 4.1 | 0.23 |
+| greedy LZ4-shape parse (hit/miss branch, extend), no output | 0.52 | 1.80 |
+| liblz4 | 0.66 | 1.41 |
+| default finder alone (before) | 0.33 | 2.83 |
+| compress_into (before) | 0.28 | 3.33 |
+| block checksum, scalar (before) | 2.6 | 0.36 |
+
+The ceiling for an LZ finder is not memory: it is one data-random branch
+(match or not) per probed position, ~7 cycles average, so a greedy parse
+that probes every literal position tops out around 0.7-1 GB/s per core.
+liblz4 is there. Going faster means probing fewer positions, which is the
+ratio trade.
+
+Changes.
+1. NEON checksum: 75 -> 8.4 ms on Silesia (2.6 -> 23.5 GB/s). Vector-only
+   formulation (block sums, k-weighted block sums, position-weighted sums),
+   four independent accumulators; chained into one it was 12 cycles per
+   32 bytes.
+2. Emit path: cursors by value, unchecked writes with per-block reserve,
+   32-byte wild literal copies bounded by the input end, branchless escape
+   and offset writes. 8.5 -> ~4 ns per token.
+3. Fast level (GOAL3 S3): `compress_into_fast`, `compress_parallel_into_fast`,
+   CLI `-1/--fast`. LZ4-class finder: one position per bucket, 5-byte hash
+   (as liblz4 on 64-bit), a u64 compare that is both the hit test and the
+   length, LZ4 skip acceleration, back-match, minimum match 5 emitted as
+   FLAG_DENSE blocks. Table size sweep (parse only, 5-byte hash, min 5):
+   12 bits 0.72 GB/s at 2.00, 13 bits 0.68 at 2.10, 14 bits 0.57 at 2.18,
+   16 bits 0.38 at 2.25. 13 bits chosen. Refuted for speed: 64 KB window
+   (slower: fewer matches, more probes), liblz4's forward-hash loop shape
+   (slower here, the core overlaps it already), 4-byte hash.
+
+Same run (quick3), Silesia, one core:
+
+| level | comp GB/s | ratio | decode GB/s | vs liblz4 decode |
+|---|---:|---:|---:|---:|
+| liblz4 | 0.66 | 2.101 | 4.38 | 100% |
+| fast | 0.54 | 2.098 | 5.02 | 114% |
+| default | 0.34 (was 0.28) | 2.192 | 6.80 | 155% |
+
+Fast is at 81% of liblz4's compression speed at its ratio, and x-ray now
+compresses (1.004) instead of being stored raw. What remains in the fast
+path is per-token work in the parse loop (extend, back-match, two
+variable-trip loops) that liblz4 also pays; per byte the parse alone is at
+liblz4 parity (0.67 vs 0.66), the rest is emit and framing.
+27 tests green (fast-level round trips added).

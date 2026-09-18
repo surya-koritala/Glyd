@@ -61,7 +61,7 @@ pub unsafe fn compress_chained_avx2<P: Mode>(
     extras: &mut Vec<u8>,
     literals: &mut Vec<u8>,
 ) {
-    let mut out = Streams { min_match: P::MIN_MATCH, tokens, offsets, extras, literals };
+    let mut out = Streams::new(P::MIN_MATCH, tokens, offsets, extras, literals);
     find_matches::<Avx2Match, P>(full_input, block_start, block_len, table, &mut out);
 }
 

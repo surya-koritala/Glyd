@@ -11,6 +11,8 @@ pub mod x86_compress;
 pub mod x86_checksum;
 #[cfg(target_arch = "aarch64")]
 pub mod neon_decompress;
+#[cfg(target_arch = "aarch64")]
+pub mod neon_checksum;
 pub mod streaming;
 pub mod c_api;
 
@@ -244,10 +246,53 @@ pub fn compress_into(input: &[u8], output: &mut Vec<u8>) {
     }
 }
 
+/// Fast level (GOAL3 S3): LZ4-class finder, minimum match 5 (FLAG_DENSE
+/// blocks), same container. Blocks the finder cannot shrink by 4% are
+/// stored raw.
+pub fn compress_into_fast(input: &[u8], output: &mut Vec<u8>) {
+    let mut table: Box<finder::FastTable> =
+        vec![0u32; finder::FAST_HASH_SIZE].into_boxed_slice().try_into().unwrap();
+    let mut tokens = Vec::new();
+    let mut offsets = Vec::new();
+    let mut extras = Vec::new();
+    let mut literals = Vec::new();
+
+    let mut offset = 0;
+    while offset < input.len() {
+        let chunk_len = (input.len() - offset).min(MAX_BLOCK_SIZE);
+        let chunk = &input[offset..offset + chunk_len];
+        tokens.clear();
+        offsets.clear();
+        extras.clear();
+        literals.clear();
+        {
+            let mut out = finder::Streams::new(Dense::MIN_MATCH, &mut tokens, &mut offsets, &mut extras, &mut literals);
+            unsafe { finder::find_matches_fast::<Dense>(input, offset, chunk_len, &mut table, &mut out) };
+        }
+        let flags = if not_worth_it(chunk_len, &tokens, &offsets, &extras, &literals) {
+            FLAG_RAW_UNCOMPRESSED
+        } else {
+            FLAG_DENSE
+        };
+        let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
+        write_block(chunk, flags, chain_flag, &tokens, &offsets, &extras, &literals, output);
+        offset += chunk_len;
+    }
+}
+
 /// Compress across all CPU cores in parallel into a pre-allocated destination vector.
 pub fn compress_parallel_into(input: &[u8], output: &mut Vec<u8>) {
+    compress_parallel_with(input, output, compress_into)
+}
+
+/// Fast level, all cores.
+pub fn compress_parallel_into_fast(input: &[u8], output: &mut Vec<u8>) {
+    compress_parallel_with(input, output, compress_into_fast)
+}
+
+fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>)) {
     if input.len() <= PARALLEL_CHUNK_SIZE {
-        compress_into(input, output);
+        level(input, output);
         return;
     }
 
@@ -256,7 +301,7 @@ pub fn compress_parallel_into(input: &[u8], output: &mut Vec<u8>) {
         .par_iter()
         .map(|chunk| {
             let mut chunk_out = Vec::with_capacity(chunk.len() / 2 + 1024);
-            compress_into(chunk, &mut chunk_out);
+            level(chunk, &mut chunk_out);
             chunk_out
         })
         .collect();
