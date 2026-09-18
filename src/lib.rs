@@ -1,5 +1,6 @@
 pub mod error;
 pub mod format;
+pub mod huffman;
 pub mod fallback;
 pub mod x86_decompress;
 pub mod x86_compress;
