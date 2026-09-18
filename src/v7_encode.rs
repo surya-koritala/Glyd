@@ -59,9 +59,21 @@ pub fn payload_layout(payload: &[u8]) -> Option<Layout> {
     Some(Layout { sub, sections })
 }
 
-/// Reuse when every count is within 1/8 of the previous table's.
+/// Reuse when the two tables have identical support -- a symbol present
+/// in one and absent (count 0) from the other never passes, regardless of
+/// magnitude -- and every present count is within 1/8 of the previous
+/// table's. Support must match exactly: reusing a table that assigns a
+/// symbol zero probability while this block's data actually contains it
+/// sends the tANS encoder's state machine out of bounds (a zero-count
+/// symbol's `EncodeTable` entry is the placeholder `(0, 0)`, which is only
+/// safe to hit for a symbol that truly never gets encoded). This is the
+/// same support requirement the literal path already applies (see
+/// `lit_reuse` below).
 fn close(a: &[u16], b: &[u16]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(&x, &y)| (x as i32 - y as i32).abs() <= (x as i32 / 8).max(2))
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(&x, &y)| {
+            (x == 0) == (y == 0) && (x as i32 - y as i32).abs() <= (x as i32 / 8).max(2)
+        })
 }
 
 fn write_substreams(streams: &[Vec<u8>], out: &mut Vec<u8>) {
@@ -177,17 +189,34 @@ pub fn encode_block(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut
     let ll_fresh = tans::normalize(&ll_hist, LL_SYMBOLS);
     let ml_fresh = tans::normalize(&ml_hist, ML_SYMBOLS);
     let off_fresh = tans::normalize(&off_hist, OFF_SYMBOLS);
-    let seq_reuse = matches!(
+    let mut seq_reuse = matches!(
         (&prev.ll, &prev.ml, &prev.off),
         (Some(a), Some(b), Some(c)) if close(a, &ll_fresh) && close(b, &ml_fresh) && close(c, &off_fresh)
     );
-    let ll_counts = if seq_reuse { prev.ll.clone().unwrap() } else { ll_fresh };
-    let ml_counts = if seq_reuse { prev.ml.clone().unwrap() } else { ml_fresh };
-    let off_counts = if seq_reuse { prev.off.clone().unwrap() } else { off_fresh };
-    let (ll_sec, ll_coded) = encode_codes(&ll, &ll_hist, &ll_counts, seq_reuse);
-    let (ml_sec, ml_coded) = encode_codes(&ml, &ml_hist, &ml_counts, seq_reuse);
-    let (off_sec, off_coded) = encode_codes(&off, &off_hist, &off_counts, seq_reuse);
-    let seq_coded = ll_coded && ml_coded && off_coded;
+    let mut ll_counts = if seq_reuse { prev.ll.clone().unwrap() } else { ll_fresh.clone() };
+    let mut ml_counts = if seq_reuse { prev.ml.clone().unwrap() } else { ml_fresh.clone() };
+    let mut off_counts = if seq_reuse { prev.off.clone().unwrap() } else { off_fresh.clone() };
+    let (mut ll_sec, mut ll_coded) = encode_codes(&ll, &ll_hist, &ll_counts, seq_reuse);
+    let (mut ml_sec, mut ml_coded) = encode_codes(&ml, &ml_hist, &ml_counts, seq_reuse);
+    let (mut off_sec, mut off_coded) = encode_codes(&off, &off_hist, &off_counts, seq_reuse);
+    let mut seq_coded = ll_coded && ml_coded && off_coded;
+    // The up-front reuse decision is optimistic (each `encode_codes` call
+    // still independently applies the raw-beats-coding rule). If reuse was
+    // assumed but one stream falls back to raw anyway, the other two
+    // cannot be left with their table omitted under a header that now has
+    // to report "not reused" -- that combination is undecodable (a coded,
+    // non-reused section must carry its own table). Redo all three fresh,
+    // no reuse, and let each decide coded/raw again on its own.
+    if seq_reuse && !seq_coded {
+        seq_reuse = false;
+        ll_counts = ll_fresh.clone();
+        ml_counts = ml_fresh.clone();
+        off_counts = off_fresh.clone();
+        (ll_sec, ll_coded) = encode_codes(&ll, &ll_hist, &ll_counts, false);
+        (ml_sec, ml_coded) = encode_codes(&ml, &ml_hist, &ml_counts, false);
+        (off_sec, off_coded) = encode_codes(&off, &off_hist, &off_counts, false);
+        seq_coded = ll_coded && ml_coded && off_coded;
+    }
 
     let mut extra_sec = Vec::new();
     write_substreams(&extra_streams, &mut extra_sec);
