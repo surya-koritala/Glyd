@@ -19,14 +19,27 @@ use crate::v7_format::*;
 /// Every sequence but the last carries a match of at least MIN_MATCH bytes.
 const MAX_SEQ: usize = MAX_BLOCK_SIZE / MIN_MATCH as usize + 1;
 
+/// Sequences are kept in groups of eight (one per extra-bits sub-stream,
+/// one walk batch): a group holds the eight ll codes, then the eight ml
+/// codes, then the eight offset codes (`codes`), and likewise the eight
+/// literal lengths, match lengths and offsets (`seq`). Sequence i is at
+/// `i / 8 * GROUP + i % 8` plus the field's lane offset. One pointer per
+/// array in the walk instead of three, which is what keeps its eight
+/// stream positions in registers.
+pub const GROUP: usize = 24;
+const GROUPS: usize = MAX_SEQ.div_ceil(8);
+
+/// Index of sequence `i`'s lane-0 entry in a grouped array.
+#[inline(always)]
+fn at(i: usize) -> usize {
+    i / 8 * GROUP + i % 8
+}
+
 pub struct Scratch {
-    pub ll: Vec<u32>,
-    pub ml: Vec<u32>,
-    pub off: Vec<u32>,
-    /// ll, ml and off codes, in that order.
+    /// Grouped ll, ml and offset codes (see `GROUP`).
     pub codes: Vec<u8>,
-    pub codes2: Vec<u8>,
-    pub codes3: Vec<u8>,
+    /// Grouped literal lengths, match lengths and offsets.
+    pub seq: Vec<u32>,
     /// WILD_MARGIN bytes past MAX_BLOCK_SIZE for the wild copies' reads.
     pub lits: Vec<u8>,
 }
@@ -40,12 +53,8 @@ const WILD_MARGIN: usize = 96;
 impl Scratch {
     pub fn new() -> Self {
         Scratch {
-            ll: vec![0; MAX_SEQ],
-            ml: vec![0; MAX_SEQ],
-            off: vec![0; MAX_SEQ],
-            codes: vec![0; MAX_SEQ],
-            codes2: vec![0; MAX_SEQ],
-            codes3: vec![0; MAX_SEQ],
+            codes: vec![0; GROUPS * GROUP],
+            seq: vec![0; GROUPS * GROUP],
             lits: vec![0; MAX_BLOCK_SIZE + WILD_MARGIN],
         }
     }
@@ -100,7 +109,8 @@ fn substreams(sec: &[u8]) -> Result<[&[u8]; 8]> {
     Ok(out)
 }
 
-/// Decode one code stream (or copy it raw) into `codes[..n]`.
+/// Decode one code stream (or copy it raw) into its lane of the grouped
+/// `codes` (`codes` starts at the lane: code i goes to `at(i)`).
 fn code_stream(sec: &[u8], coded: bool, reuse: bool, n_symbols: usize, n: usize, prev: &mut Option<tans::DecodeTable>, codes: &mut [u8]) -> Result<()> {
     if !coded {
         if sec.len() != n {
@@ -109,7 +119,9 @@ fn code_stream(sec: &[u8], coded: bool, reuse: bool, n_symbols: usize, n: usize,
         if sec.iter().any(|&c| c as usize >= n_symbols) {
             return Err(corrupt("v7: raw code out of range"));
         }
-        codes[..n].copy_from_slice(sec);
+        for (i, &c) in sec.iter().enumerate() {
+            codes[at(i)] = c;
+        }
         return Ok(());
     }
     let mut pos = 0usize;
@@ -131,9 +143,9 @@ fn code_stream(sec: &[u8], coded: bool, reuse: bool, n_symbols: usize, n: usize,
     }
     let table = prev.as_ref().ok_or(corrupt("v7: table reuse without a table"))?;
     let streams = substreams(&sec[pos..])?;
-    tans::decode8(table, &streams, n, codes).map_err(|_| corrupt("v7: code stream overrun"))?;
+    tans::decode8_rows(table, &streams, n, GROUP, codes).map_err(|_| corrupt("v7: code stream overrun"))?;
     // A table built from `n_symbols` counts only ever yields those symbols.
-    debug_assert!(codes[..n].iter().all(|&c| (c as usize) < n_symbols));
+    debug_assert!((0..n).all(|i| (codes[at(i)] as usize) < n_symbols));
     Ok(())
 }
 
@@ -189,8 +201,8 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
     let coded = |i: usize| sub.coded & (1 << i) != 0;
     let reuse = sub.reuse & 0b10 != 0;
     code_stream(&payload[layout.sections[S_LL].clone()], coded(S_LL), reuse, LL_SYMBOLS, n, &mut prev.ll, &mut s.codes)?;
-    code_stream(&payload[layout.sections[S_ML].clone()], coded(S_ML), reuse, ML_SYMBOLS, n, &mut prev.ml, &mut s.codes2)?;
-    code_stream(&payload[layout.sections[S_OFF].clone()], coded(S_OFF), reuse, OFF_SYMBOLS, n, &mut prev.off, &mut s.codes3)?;
+    code_stream(&payload[layout.sections[S_ML].clone()], coded(S_ML), reuse, ML_SYMBOLS, n, &mut prev.ml, &mut s.codes[8..])?;
+    code_stream(&payload[layout.sections[S_OFF].clone()], coded(S_OFF), reuse, OFF_SYMBOLS, n, &mut prev.off, &mut s.codes[16..])?;
     if !(coded(S_LL) && coded(S_ML) && coded(S_OFF)) {
         // The encoder drops its tables whenever any stream went raw.
         prev.ll = None;
@@ -199,12 +211,11 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
     }
 
     let extra = substreams(&payload[layout.sections[S_EXTRA].clone()])?;
-    // The 8 sub-streams are consecutive in the section, so one base
-    // pointer serves all: stream k's next bit is `b<k>`, an offset from
-    // it (eight scalars, not an array, so they stay in registers);
-    // `lasts[k]` is the last address a load on stream k may start at.
-    let base = extra[0].as_ptr();
-    let start = |k: usize| ((extra[k].as_ptr() as usize - base as usize) * 8) as u64;
+    // Stream k's next bit is `b<k>`, an absolute bit address (`ptr * 8 +
+    // bit`, as in `tans::decode8`): eight scalars, not an array, so they
+    // stay in registers, and no base register. `lasts[k]` is the last
+    // address a load on stream k may start at.
+    let start = |k: usize| (extra[k].as_ptr() as usize * 8) as u64;
     let (mut b0, mut b1, mut b2, mut b3) = (start(0), start(1), start(2), start(3));
     let (mut b4, mut b5, mut b6, mut b7) = (start(4), start(5), start(6), start(7));
     let lasts: [usize; 8] = std::array::from_fn(|k| extra[k][extra[k].len() - PAD..].as_ptr() as usize);
@@ -215,14 +226,13 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
         // stream's safe margin.
         let mut iters = (n - o).saturating_sub(1) / 8;
         for (k, b) in [b0, b1, b2, b3, b4, b5, b6, b7].into_iter().enumerate() {
-            iters = iters.min(safe_seqs(base as usize + (b >> 3) as usize, lasts[k]));
+            iters = iters.min(safe_seqs((b >> 3) as usize, lasts[k]));
         }
         if iters == 0 {
             break;
         }
-        for _ in 0..iters {
-            let (c1, c2, c3) = (&s.codes[o..o + 8], &s.codes2[o..o + 8], &s.codes3[o..o + 8]);
-            let (lls, mls, offs) = (&mut s.ll[o..o + 8], &mut s.ml[o..o + 8], &mut s.off[o..o + 8]);
+        let (g0, g1) = (o / 8 * GROUP, (o / 8 + iters) * GROUP);
+        for (c, out) in s.codes[g0..g1].chunks_exact(GROUP).zip(s.seq[g0..g1].chunks_exact_mut(GROUP)) {
             // One sequence per stream, written out (a loop this size is
             // not unrolled on its own, and the positions must not become
             // an indexed array).
@@ -233,17 +243,17 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
                     // a stream by at most SEQ_BYTES, so this load starts at
                     // or before lasts[k], i.e. its 8 bytes are inside
                     // sub-stream k.
-                    let w = unsafe { std::ptr::read_unaligned(base.add(($b >> 3) as usize) as *const u64) } >> ($b & 7);
-                    let (ll, w, n1) = field(w, LL_WALK[c1[$k] as usize]);
-                    let (ml, w, n2) = field(w, ML_WALK[c2[$k] as usize]);
-                    let offc = c3[$k];
+                    let w = unsafe { std::ptr::read_unaligned(($b >> 3) as *const u64) } >> ($b & 7);
+                    let (ll, w, n1) = field(w, LL_WALK[c[$k] as usize]);
+                    let (ml, w, n2) = field(w, ML_WALK[c[8 + $k] as usize]);
+                    let offc = c[16 + $k];
                     let (ov, _, n3) = field(w, OFF_WALK[offc as usize]);
                     $b += n1 as u64;
                     $b += n2 as u64;
                     $b += n3 as u64;
-                    lls[$k] = ll;
-                    mls[$k] = ml;
-                    offs[$k] = reps.update(offc, ov);
+                    out[$k] = ll;
+                    out[8 + $k] = ml;
+                    out[16 + $k] = reps.update(offc, ov);
                 }};
             }
             seq!(0, b0);
@@ -254,35 +264,44 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
             seq!(5, b5);
             seq!(6, b6);
             seq!(7, b7);
-            o += 8;
         }
+        o += 8 * iters;
     }
-    let at = |k: usize, b: u64| BitReader::new_at(extra[k], (b - start(k)) as usize);
-    let mut ers: [BitReader; 8] = [at(0, b0), at(1, b1), at(2, b2), at(3, b3), at(4, b4), at(5, b5), at(6, b6), at(7, b7)];
+    let rd = |k: usize, b: u64| BitReader::new_at(extra[k], (b - start(k)) as usize);
+    let mut ers: [BitReader; 8] = [rd(0, b0), rd(1, b1), rd(2, b2), rd(3, b3), rd(4, b4), rd(5, b5), rd(6, b6), rd(7, b7)];
 
     // Tail: the last sequence, whatever a short stream's margin left, and
     // the literal-only rule -- on the clamped readers.
     for i in o..n {
         let r = &mut ers[i % 8];
-        let llc = s.codes[i];
-        s.ll[i] = ll_value(llc, r.get(extra_bits_of_code(Kind::Ll, llc) as u32) as u32);
-        let mlc = s.codes2[i];
+        let j = at(i);
+        let llc = s.codes[j];
+        s.seq[j] = ll_value(llc, r.get(extra_bits_of_code(Kind::Ll, llc) as u32) as u32);
+        let mlc = s.codes[8 + j];
         if mlc == 0 && i == n - 1 {
-            s.ml[i] = 0;
-            s.off[i] = 0;
+            s.seq[8 + j] = 0;
+            s.seq[16 + j] = 0;
             continue;
         }
         let ml = ml_value(mlc, r.get(extra_bits_of_code(Kind::Ml, mlc) as u32) as u32);
-        let offc = s.codes3[i];
+        let offc = s.codes[16 + j];
         let off = reps.resolve(offc, r.get(extra_bits_of_code(Kind::Off, offc) as u32) as u32);
-        s.ml[i] = ml;
-        s.off[i] = off;
+        s.seq[8 + j] = ml;
+        s.seq[16 + j] = off;
     }
     // Totals over the arrays rather than in the walk (two fewer live
-    // values there; this is a vectorised pass over L2-resident data). The
-    // literal-only last sequence stored ml = 0, so it adds nothing.
-    let lit_total: usize = s.ll[..n].iter().map(|&v| v as usize).sum();
-    let match_total: usize = s.ml[..n].iter().map(|&v| v as usize).sum();
+    // values there; this is a vectorised pass over L2-resident data): the
+    // whole groups, then the last, partial one. The literal-only last
+    // sequence stored ml = 0, so it adds nothing.
+    let (mut lit_total, mut match_total) = (0usize, 0usize);
+    for g in s.seq[..n / 8 * GROUP].chunks_exact(GROUP) {
+        lit_total += g[..8].iter().map(|&v| v as usize).sum::<usize>();
+        match_total += g[8..16].iter().map(|&v| v as usize).sum::<usize>();
+    }
+    for i in n / 8 * 8..n {
+        lit_total += s.seq[at(i)] as usize;
+        match_total += s.seq[8 + at(i)] as usize;
+    }
     if ers.iter().any(|r| r.overrun()) {
         return Err(corrupt("v7: extra bits overrun"));
     }
@@ -413,10 +432,10 @@ unsafe fn copy_seq_exact(lit: *const u8, d: *mut u8, ll: usize, ml: usize, off: 
 /// (the window). `uncompressed_len <= dst.len()`, `n <= MAX_SEQ`,
 /// `n_lit <= MAX_BLOCK_SIZE` and the totals above are the caller's checks.
 unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize) -> Result<usize> {
-    debug_assert!(s.ll[..n].iter().map(|&v| v as usize).sum::<usize>() == n_lit && n_lit <= MAX_BLOCK_SIZE);
-    debug_assert!(s.ml[..n].iter().map(|&v| v as usize).sum::<usize>() + n_lit == uncompressed_len && uncompressed_len <= dst.len());
+    debug_assert!((0..n).map(|i| s.seq[at(i)] as usize).sum::<usize>() == n_lit && n_lit <= MAX_BLOCK_SIZE);
+    debug_assert!((0..n).map(|i| s.seq[8 + at(i)] as usize).sum::<usize>() + n_lit == uncompressed_len && uncompressed_len <= dst.len());
     let base = dst.as_mut_ptr();
-    let (lls, mls, offs) = (s.ll.as_ptr(), s.ml.as_ptr(), s.off.as_ptr());
+    let seq = s.seq.as_ptr();
     let mut d = base;
     let mut lp = s.lits.as_ptr();
     let mut i = 0usize;
@@ -425,24 +444,30 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
     // an empty sequence there would still take the 32-byte store).
     if dst.len() >= WILD_MARGIN {
         let wild_end = base.add(dst.len() - WILD_MARGIN);
-        while i + 1 < n {
-            let ll = *lls.add(i) as usize;
-            let ml = *mls.add(i) as usize;
-            let off = *offs.add(i) as usize;
-            let m = d.add(ll);
-            let available = m.offset_from(buffer_start) as usize;
-            // One compare for both `off == 0` (wraps) and `off > available`.
-            if off.wrapping_sub(1) >= available {
-                return Err(CodecError::OffsetOutOfBounds { offset: off, available });
+        // Whole groups of eight before the last sequence, through one
+        // group pointer; the rest (under eight sequences, plus whatever
+        // lies within the margin) takes the exact loop below.
+        'groups: while i + 8 < n {
+            let g = seq.add(i / 8 * GROUP);
+            for k in 0..8 {
+                let ll = *g.add(k) as usize;
+                let ml = *g.add(8 + k) as usize;
+                let off = *g.add(16 + k) as usize;
+                let m = d.add(ll);
+                let available = m.offset_from(buffer_start) as usize;
+                // One compare for both `off == 0` (wraps) and `off > available`.
+                if off.wrapping_sub(1) >= available {
+                    return Err(CodecError::OffsetOutOfBounds { offset: off, available });
+                }
+                let end = m.add(ml);
+                if end > wild_end {
+                    break 'groups;
+                }
+                copy_seq_wild(lp, d, ll, ml, off);
+                d = end;
+                lp = lp.add(ll);
+                i += 1;
             }
-            let end = m.add(ml);
-            if end > wild_end {
-                break;
-            }
-            copy_seq_wild(lp, d, ll, ml, off);
-            d = end;
-            lp = lp.add(ll);
-            i += 1;
         }
     }
     let mut written = d.offset_from(base) as usize;
@@ -450,9 +475,10 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
     let lits = s.lits.as_ptr();
     let window = (base as *const u8).offset_from(buffer_start) as usize;
     while i < n {
-        let ll = *lls.add(i) as usize;
-        let ml = *mls.add(i) as usize;
-        let off = *offs.add(i) as usize;
+        let j = at(i);
+        let ll = *seq.add(j) as usize;
+        let ml = *seq.add(8 + j) as usize;
+        let off = *seq.add(16 + j) as usize;
         let end = written + ll + ml;
         let lend = lp + ll;
         if end > uncompressed_len || lend > n_lit {

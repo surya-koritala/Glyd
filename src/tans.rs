@@ -371,7 +371,17 @@ fn safe_batches(at: usize, last: usize) -> usize {
 }
 
 /// Decode `n` symbols from 8 interleaved tANS streams (symbol i in stream
-/// i % STREAMS). Structured like `v7_decode::sequences`' walk: the hot
+/// i % STREAMS) into `out[..n]`.
+pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
+    decode8_rows(t, streams, n, STREAMS, out)
+}
+
+/// `decode8` with symbol i landing at `out[i / 8 * row + i % 8]`: rows of
+/// eight at a stride (`row >= 8`; `row == 8` is `decode8`). v7 decodes
+/// its three code streams at `row = 24` into one 24-byte group per eight
+/// sequences, so its walk reads them through one pointer.
+///
+/// Structured like `v7_decode::sequences`' walk: the hot
 /// state per stream is an absolute bit address (`ptr * 8 + bit`) and a
 /// window of bits loaded from it -- 2 live values per stream, so the 8
 /// streams and their 8 states stay in registers (a `FastReader` is 3, and
@@ -385,8 +395,10 @@ fn safe_batches(at: usize, last: usize) -> usize {
 /// `BitReader`s started at the positions the fast loop reached
 /// (`BitReader::new_at`), which is also what makes `overrun` exact for
 /// corrupt or truncated streams.
-pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
-    assert!(out.len() >= n);
+pub fn decode8_rows(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, row: usize, out: &mut [u8]) -> Result<(), ()> {
+    assert!(row >= STREAMS);
+    // Every index `i / 8 * row + i % 8` for i < n is in bounds from here on.
+    assert!(n == 0 || out.len() > (n - 1) / STREAMS * row + (n - 1) % STREAMS);
     let e = &t.entries;
     for s in streams {
         assert!(s.len() >= PAD, "stream shorter than its padding");
@@ -411,8 +423,11 @@ pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut 
             break;
         }
         for _ in 0..iters {
-            // One bounds check per batch, not one per symbol.
-            let batch: &mut [u8; PER_ITER] = (&mut out[o..o + PER_ITER]).try_into().unwrap();
+            // The batch's four rows. SAFETY: o + PER_ITER <= n (iters is
+            // bounded by remaining / PER_ITER), so every store below is
+            // at an index the length assert above covers.
+            let r0 = unsafe { out.as_mut_ptr().add(o / STREAMS * row) };
+            let rows = [r0, r0.wrapping_add(row), r0.wrapping_add(2 * row), r0.wrapping_add(3 * row)];
             let mut w = [0u64; STREAMS];
             for k in 0..STREAMS {
                 // SAFETY: `iters` <= every stream's safe_batches at the
@@ -438,7 +453,7 @@ pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut 
                     w[$k] >>= nbits;
                     b[$k] += nbits as usize;
                     st[$k] = unpack_base(d) + bits;
-                    batch[$j * STREAMS + $k] = unpack_sym(d);
+                    unsafe { *rows[$j].add($k) = unpack_sym(d) };
                 }};
             }
             macro_rules! row {
@@ -475,7 +490,7 @@ pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut 
         let bits = rs[k].peek(nbits) as u32;
         rs[k].consume(nbits);
         st[k] = unpack_base(d) + bits;
-        out[i] = unpack_sym(d);
+        out[i / STREAMS * row + i % STREAMS] = unpack_sym(d);
     }
     if rs.iter().any(|r| r.overrun()) {
         return Err(());
