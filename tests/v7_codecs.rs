@@ -232,3 +232,44 @@ fn bits_resume_keeps_overrun_exact() {
     let _ = r.get(1);
     assert!(r.overrun(), "T + 1 bits consumed must be an overrun");
 }
+
+use simd_stream_codec::tans;
+
+fn skewed_codes(n: usize, nsym: usize, seed: u64) -> Vec<u8> {
+    let mut x = seed;
+    (0..n).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; let r = (x >> 16) & 0xFF; (if r < 128 { 0 } else if r < 200 { 1 + (x & 3) } else { x % nsym as u64 }) as u8 }).collect()
+}
+
+#[test]
+fn tans_normalize_sums_to_l_and_keeps_present() {
+    let hist: Vec<u32> = vec![1_000_000, 1, 0, 3, 500];
+    let c = tans::normalize(&hist, 5);
+    assert_eq!(c.iter().map(|&v| v as u32).sum::<u32>(), tans::L as u32);
+    assert!(c[1] >= 1 && c[3] >= 1 && c[4] >= 1 && c[2] == 0);
+}
+
+#[test]
+fn tans_single_stream_roundtrip() {
+    for (n, nsym) in [(0usize, 4usize), (1, 4), (2, 36), (1000, 36), (77_777, 64)] {
+        let data = skewed_codes(n, nsym, 5);
+        let mut hist = vec![0u32; nsym];
+        for &s in &data { hist[s as usize] += 1; }
+        if n == 0 { hist[0] = 1; }
+        let counts = tans::normalize(&hist, nsym);
+        let et = tans::EncodeTable::build(&counts).unwrap();
+        let dt = tans::DecodeTable::build(&counts).unwrap();
+        let mut enc = tans::Encoder::new(&et);
+        for &s in &data { enc.push(s); }
+        let stream = enc.finish();
+        let mut dec = tans::Decoder::new(&dt, &stream);
+        let out: Vec<u8> = (0..n).map(|_| dec.next()).collect();
+        assert_eq!(out, data, "n={} nsym={}", n, nsym);
+        assert!(!dec.overrun());
+    }
+}
+
+#[test]
+fn tans_rejects_bad_counts() {
+    assert!(tans::DecodeTable::build(&[512, 511]).is_none()); // sums to 1023
+    assert!(tans::DecodeTable::build(&vec![16u16; 65]).is_none()); // too many symbols
+}
