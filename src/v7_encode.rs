@@ -299,3 +299,164 @@ pub fn sequences_from_streams(tokens: &[u8], offsets: &[u8], extras: &[u8], min_
     }
     merged
 }
+
+// ---------------------------------------------------------------------------
+// Double-fast parse (zstd -3's shape): a long table keyed by an 8-byte hash
+// and a short table keyed by a 5-byte hash, one candidate each; at every
+// position the three repeat offsets are tried first, then the long
+// candidate, then the short one. Lazy by one position: a match at pos + 1
+// that is 4+ bytes longer wins. Window 2 MB.
+//
+// Table sizes are the ratio dial (Silesia, this coder): 17/16 bits (zstd
+// -3's, 768 KB) 3.162; 18/17 (1.5 MB) 3.204; 18/18 (2 MB) 3.222, the
+// parse ~7% slower than 17/16, the extra on the binaries (x-ray +30%).
+
+pub const DFAST_LONG_BITS: u32 = 18;
+pub const DFAST_SHORT_BITS: u32 = 18;
+/// Misses before the probe step grows by one (as the fast finder).
+const DFAST_SKIP_STRENGTH: u32 = 6;
+
+pub struct DfastTables {
+    long: Box<[u32; 1 << DFAST_LONG_BITS]>,
+    short: Box<[u32; 1 << DFAST_SHORT_BITS]>,
+}
+
+impl DfastTables {
+    /// Both tables empty. Entries are positions absolute in the input;
+    /// 0 doubles as empty, which is harmless: position 0 is verified by
+    /// content like any other candidate. So is an entry left over from a
+    /// previous input: a candidate at or past the current position is
+    /// rejected and any other one is compared byte for byte, so the
+    /// tables can be reused across inputs without clearing.
+    pub fn new() -> Box<Self> {
+        Box::new(DfastTables {
+            long: vec![0; 1 << DFAST_LONG_BITS].into_boxed_slice().try_into().unwrap(),
+            short: vec![0; 1 << DFAST_SHORT_BITS].into_boxed_slice().try_into().unwrap(),
+        })
+    }
+}
+
+#[inline(always)]
+unsafe fn h8(p: *const u8) -> usize {
+    (std::ptr::read_unaligned(p as *const u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - DFAST_LONG_BITS)) as usize
+}
+#[inline(always)]
+unsafe fn h5(p: *const u8) -> usize {
+    ((std::ptr::read_unaligned(p as *const u64) << 24).wrapping_mul(889_523_592_379) >> (64 - DFAST_SHORT_BITS)) as usize
+}
+#[inline(always)]
+unsafe fn eq4(a: *const u8, b: *const u8) -> bool {
+    std::ptr::read_unaligned(a as *const u32) == std::ptr::read_unaligned(b as *const u32)
+}
+#[inline(always)]
+unsafe fn eq8(a: *const u8, b: *const u8) -> bool {
+    std::ptr::read_unaligned(a as *const u64) == std::ptr::read_unaligned(b as *const u64)
+}
+
+/// The match at `pos`: the first of the repeat offsets (4-byte compare
+/// each), the long candidate (8-byte) and the short one (4-byte) that
+/// verifies, extended to at most `block_end`; `(usize::MAX, 0)` if none.
+/// Records `pos` in both tables. Reads 8 bytes at `pos`: `pos + 8 <=
+/// block_end` is the caller's guarantee.
+#[inline(always)]
+unsafe fn probe(src: *const u8, pos: usize, block_end: usize, t: &mut DfastTables, r: &[u32; 3]) -> (usize, usize) {
+    use crate::finder::{MatchLen, ScalarMatch};
+    let p = src.add(pos);
+    let hl = h8(p);
+    let hs = h5(p);
+    let cl = t.long[hl] as usize;
+    let cs = t.short[hs] as usize;
+    t.long[hl] = pos as u32;
+    t.short[hs] = pos as u32;
+    for &o in r {
+        let o = o as usize;
+        if o <= pos && eq4(p, p.sub(o)) {
+            return (pos - o, 4 + ScalarMatch::prefix(p.add(4), p.sub(o).add(4), block_end - pos - 4));
+        }
+    }
+    let window = MAX_WINDOW as usize;
+    let dl = pos.wrapping_sub(cl);
+    if dl >= 1 && dl < window && eq8(p, src.add(cl)) {
+        return (cl, 8 + ScalarMatch::prefix(p.add(8), src.add(cl + 8), block_end - pos - 8));
+    }
+    let ds = pos.wrapping_sub(cs);
+    if ds >= 1 && ds < window && eq4(p, src.add(cs)) {
+        return (cs, 4 + ScalarMatch::prefix(p.add(4), src.add(cs + 4), block_end - pos - 4));
+    }
+    (usize::MAX, 0)
+}
+
+/// Parse `input[block_start..block_start + block_len]` into `seqs` and
+/// `literals` (appended). Offsets are absolute distances, at least 1 and
+/// under MAX_WINDOW; the last sequence is literal-only. `t` carries the
+/// window across the blocks of one input. `reps` is only used to *find*
+/// matches (the codes are assigned by `encode_block`, whose `Reps` starts
+/// fresh per block, so the caller passes `[1, 4, 8]` at every block).
+pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>) {
+    let src = input.as_ptr();
+    let block_end = block_start + block_len;
+    assert!(block_end <= input.len(), "block past the input");
+    debug_assert!(reps.iter().all(|&o| o >= 1), "a zero repeat offset would verify against itself");
+    // Every probe reads 8 bytes at `pos`; extensions stop at block_end.
+    let limit = block_end.saturating_sub(8).max(block_start);
+    let mut anchor = block_start;
+    let mut pos = block_start;
+    let mut step_nb: u32 = 1 << DFAST_SKIP_STRENGTH;
+    let mut r = *reps;
+
+    unsafe {
+        while pos < limit {
+            let (mut cand, mut rc) = probe(src, pos, block_end, t, &r);
+            if cand == usize::MAX {
+                pos += (step_nb >> DFAST_SKIP_STRENGTH) as usize;
+                step_nb += 1;
+                continue;
+            }
+            step_nb = 1 << DFAST_SKIP_STRENGTH;
+            // Lazy: a match one byte later that is 4+ bytes longer wins.
+            if pos + 1 < limit {
+                let (c1, rc1) = probe(src, pos + 1, block_end, t, &r);
+                if c1 != usize::MAX && rc1 >= rc + 4 {
+                    pos += 1;
+                    cand = c1;
+                    rc = rc1;
+                }
+            }
+            // Back-match into the pending literals.
+            let mut mpos = pos;
+            let mut c = cand;
+            while mpos > anchor && c > 0 && *src.add(mpos - 1) == *src.add(c - 1) {
+                mpos -= 1;
+                c -= 1;
+                rc += 1;
+            }
+            let offset = (mpos - c) as u32;
+            literals.extend_from_slice(&input[anchor..mpos]);
+            seqs.push(Sequence { lit_len: (mpos - anchor) as u32, match_len: rc as u32, offset });
+            // The same update as Reps::code_for.
+            if offset == r[1] {
+                r.swap(0, 1);
+            } else if offset == r[2] {
+                r = [r[2], r[0], r[1]];
+            } else if offset != r[0] {
+                r = [offset, r[0], r[1]];
+            }
+            pos = mpos + rc;
+            anchor = pos;
+            // Index the match's second position and its tail (zstd's
+            // insertions) so runs keep hashing.
+            if pos < limit {
+                let q = src.add(mpos + 2);
+                t.long[h8(q)] = (mpos + 2) as u32;
+                t.short[h5(q)] = (mpos + 2) as u32;
+                let q = src.add(pos - 2);
+                t.long[h8(q)] = (pos - 2) as u32;
+                let q = src.add(pos - 1);
+                t.short[h5(q)] = (pos - 1) as u32;
+            }
+        }
+    }
+    literals.extend_from_slice(&input[anchor..block_end]);
+    seqs.push(Sequence { lit_len: (block_end - anchor) as u32, match_len: 0, offset: 0 });
+    *reps = r;
+}

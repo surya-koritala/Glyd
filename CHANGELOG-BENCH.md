@@ -672,3 +672,81 @@ min 7 -> 8 cut tokens 18% and bought 18%.
   the walk is where the time is, and it wants the huff8 treatment (8
   unclamped `FastReader`s in a loop unrolled by 8, `safe_refills`
   bound, clamped tail) before Task 9 -- not implemented here.
+
+## v7 milestone 3/4: modeling + double-fast parse
+- `v7_encode::find_sequences_dfast` replaces the milestone-2 bridge in
+  `compress_into_max`: zstd -3's double-fast shape -- a long table keyed
+  by an 8-byte hash and a short table keyed by a 5-byte hash, one
+  candidate each; at every position the three repeat offsets are tried
+  first (a 4-byte compare each), then the long candidate, then the
+  short one -- plus lazy matching by one position (a match at pos + 1
+  that is 4+ bytes longer wins) and zstd's post-match insertions (match
+  start + 2 in both tables, end - 2 long, end - 1 short). Minimum match
+  4, window 2 MB across the blocks of one call (positions absolute in
+  the input). The tables live in a thread-local and are never cleared:
+  a stale entry is at or past the current position (rejected) or is
+  compared byte for byte like any candidate, so the parallel path's one
+  call per 256 KB chunk pays no 2 MB calloc. The repeat offsets mirror
+  `Reps::code_for`'s update and reset per block as `encode_block`'s do.
+- Silesia ratio (this coder), the steps: greedy, 17/16-bit tables
+  (zstd -3's sizes): 2.7406 -> 3.0475, under the spec's 3.10 stop rule,
+  so lazy matching went in: 3.1337; zstd's insertions: 3.1621; tables
+  18/18 (2 MB): **3.2219** -- G2 (>= 3.20) met, zstd -3 is 3.2045.
+  Table size is the dial: 17/16 3.162, 18/17 or 17/18 3.204, 18/18
+  3.222; the parse is ~7% slower at 18/18 than at 17/16, the extra on
+  the binaries (x-ray +30%). Skip strength 8 instead of 6 is +0.1%
+  (x-ray +1%), not taken; a short rep hit yielding to a 4+ longer long
+  candidate is +0.1%, not taken; long-before-reps is -0.7%.
+- The parse's share, measured by running zstd -3's own sequences
+  (libzstd's `ZSTD_generateSequences` through the zstd-sys static
+  library, its 128 KB blocks merged pairwise) through `encode_block`:
+  3.1398. So zstd's dfast parse through this coder is 2.0% behind
+  zstd -3 -- that 2% is the coder's (coarser length codes above 16,
+  1 + 2n-byte tANS tables and 128-byte Huffman tables per block, 8 x
+  u32 sub-stream sizes per section) -- and this parse beats zstd's
+  dfast on every Silesia file through the same coder (+2.6% total).
+- Container test: the word salad no longer reuses *sequence* tables
+  under this parse (a rare code -- a literal run of 5, a new offset
+  bucket while the window fills -- flickers between blocks and
+  `close()` demands identical support); a 64-byte-record input whose
+  blocks parse to the same few codes asserts that instead, the salad
+  keeps the literal-table assertion.
+- `examples/v7_bench.rs`, Silesia, M1 Max, `target-cpu=native`, median
+  of 3 runs of >= 0.3 s, zstd 1.5.7 in the same run (two other agents'
+  builds running; zstd-3 within 3% of the milestone-2 run):
+  **v7: ratio 3.2219, comp 0.125 GB/s, decomp 0.983 GB/s** |
+  zstd-3: ratio 3.2045, comp 0.319, decomp 1.411 |
+  zstd-1: ratio 2.8942, comp 0.540, decomp 1.517.
+  G2 (ratio >= 3.20) is met. G4 (comp >= 0.34 GB/s = 2.94 ns/byte for
+  parse and coder together) is not: the parse alone is 3.37 ns/byte
+  (byte-weighted over Silesia, `find_sequences_dfast` timed by itself
+  in 256 KB blocks; 2.96 at 17/16 tables), the coder the other 3.8 of
+  the 7.2 ns/byte total, so even a free coder leaves G4 short -- the
+  parse needs zstd's pipelining (the next position's hashes and table
+  loads issued a probe early; each probe is a hash -> table -> candidate
+  latency chain now) and fewer branches per match (two probes per match
+  with the lazy step, each with five data-dependent branches; ~39 ns
+  per match on dickens). Per file, parse ns/byte: nci 1.1, xml 1.6,
+  samba 2.6, mozilla 3.4, osdb 3.4, reymont 3.8, mr 4.1, webster 4.3,
+  ooffice 4.4, sao 5.0, dickens 5.1, x-ray 5.5 (its 4-byte short
+  matches every ~15 bytes keep the probe step at 1: with the long table
+  alone it parses at 0.36 ns/byte and loses 7% of its ratio, at 17/16). G3 (decode >= 3.0)
+  is the decoder task's; the parse's sequences are shorter than the
+  Lzav parse's (dickens 8.3 bytes per sequence, x-ray 9), so per byte
+  the current decoder is 17% slower than at milestone 2 (1.18 -> 0.98).
+
+  | file    | v7 ratio | comp GB/s | decomp GB/s | zstd-3 ratio | zstd-3 comp | zstd-3 decomp |
+  |---------|---------:|----------:|------------:|-------------:|------------:|--------------:|
+  | dickens |   2.8376 |     0.091 |       0.722 |       2.7822 |       0.201 |         1.152 |
+  | mozilla |   2.7821 |     0.122 |       0.914 |       2.8101 |       0.345 |         1.264 |
+  | mr      |   2.8191 |     0.100 |       0.816 |       2.8106 |       0.251 |         1.248 |
+  | nci     |  11.2417 |     0.333 |       1.858 |      11.8403 |       0.844 |         2.607 |
+  | ooffice |   1.9930 |     0.089 |       0.728 |       1.9680 |       0.254 |         0.982 |
+  | osdb    |   2.8612 |     0.119 |       1.090 |       2.8804 |       0.344 |         1.629 |
+  | reymont |   3.4815 |     0.115 |       0.868 |       3.4197 |       0.253 |         1.350 |
+  | samba   |   4.3658 |     0.168 |       1.291 |       4.3604 |       0.418 |         1.922 |
+  | sao     |   1.3171 |     0.092 |       0.989 |       1.3120 |       0.201 |         0.842 |
+  | webster |   3.4994 |     0.105 |       0.849 |       3.4272 |       0.250 |         1.368 |
+  | xml     |   8.3375 |     0.248 |       1.679 |       8.4138 |       0.641 |         2.401 |
+  | x-ray   |   1.4617 |     0.071 |       0.621 |       1.3926 |       0.190 |         0.829 |
+  | total   |   3.2219 |     0.125 |       0.983 |       3.2045 |       0.319 |         1.411 |

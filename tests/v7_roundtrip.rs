@@ -335,14 +335,26 @@ fn v7_max_level_roundtrip_through_container() {
     let mut text = Vec::new();
     while text.len() < 1_200_000 { text.extend_from_slice(b"the quick brown fox jumps over the lazy dog "); text.extend_from_slice(&rnd(2)); }
     inputs.push(text);
-    // Word salad from a fixed vocabulary: stationary statistics with the
-    // same code support block after block, so the sequence and literal
-    // tables get reused across blocks (through the container's table
-    // carry), which the periodic inputs above never trigger.
+    // Word salad from a fixed vocabulary: stationary literal statistics
+    // with the same support block after block, so the literal table gets
+    // reused across blocks (through the container's table carry), which
+    // the periodic inputs above never trigger. Its sequence tables are
+    // not: under the double-fast parse a rare code (a literal run of 5,
+    // an offset bucket) flickers between blocks and `close()` demands
+    // identical support.
     let vocab: Vec<Vec<u8>> = (0..300).map(|_| { let n = 3 + rnd(1)[0] as usize % 8; rnd(n).iter().map(|b| b'a' + b % 26).collect() }).collect();
     let mut salad = Vec::new();
     while salad.len() < 1_200_000 { salad.extend_from_slice(&vocab[u16::from_le_bytes(rnd(2).try_into().unwrap()) as usize % 300]); salad.push(b' '); }
     inputs.push(salad);
+    // 64-byte records, a little-endian counter then 60 fixed bytes: every
+    // block after the first parses to the same few codes (one or two
+    // literals, a 62/63-byte match at offset 64: a real offset for the
+    // block's first record, repeats after), so the sequence tables get
+    // reused block after block; the literals (counter bytes) stay raw.
+    let fixed = rnd(60);
+    let mut records = Vec::new();
+    for i in 0..16384u32 { records.extend_from_slice(&i.to_le_bytes()); records.extend_from_slice(&fixed); }
+    inputs.push(records);
     // (version, coded bits, reuse bits) per block, so an all-raw stream
     // cannot pass vacuously and cross-block table reuse is known to run.
     fn versions(c: &[u8]) -> Vec<(u16, u8, u8)> {
@@ -366,9 +378,11 @@ fn v7_max_level_roundtrip_through_container() {
             assert!(v.iter().all(|&(ver, _, _)| ver == simd_stream_codec::format::VERSION_V7), "input {} should be all v7 blocks: {:?}", k, v);
             assert!(c.len() < input.len() / 2, "input {} ratio: {} -> {}", k, input.len(), c.len());
         }
-        if k == inputs.len() - 1 {
+        if k == inputs.len() - 2 {
             assert!(v[1..].iter().any(|&(_, _, reuse)| reuse & 1 != 0), "salad should reuse the literal table: {:?}", v);
-            assert!(v[1..].iter().any(|&(_, _, reuse)| reuse & 2 != 0), "salad should reuse the sequence tables: {:?}", v);
+        }
+        if k == inputs.len() - 1 {
+            assert!(v[1..].iter().any(|&(_, _, reuse)| reuse & 2 != 0), "records should reuse the sequence tables: {:?}", v);
         }
         if k == 3 {
             assert!(v.iter().all(|&(ver, _, _)| ver == 6), "random input must be stored raw: {:?}", v);
@@ -378,4 +392,30 @@ fn v7_max_level_roundtrip_through_container() {
         simd_stream_codec::compress_parallel_into_max(input, &mut p);
         assert_eq!(&simd_stream_codec::decompress_parallel(&p).unwrap(), input, "max parallel, len {}", input.len());
     }
+}
+
+use simd_stream_codec::v7_encode::{find_sequences_dfast, DfastTables};
+
+#[test]
+fn dfast_parse_finds_repeats_and_roundtrips() {
+    // Records with a fixed stride: offsets repeat.
+    let mut data = Vec::new();
+    let mut x = 9u64;
+    for i in 0..20_000u32 {
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        data.extend_from_slice(format!("id={:08} name=user{:03} score={:05}\n", i, x % 500, x % 100_000).as_bytes());
+    }
+    let mut t = DfastTables::new();
+    let mut seqs = Vec::new();
+    let mut lits = Vec::new();
+    let mut reps = [1u32, 4, 8];
+    find_sequences_dfast(&data, 0, data.len().min(256 * 1024), &mut t, &mut reps, &mut seqs, &mut lits);
+    let out = materialize(&seqs, &lits);
+    assert_eq!(&out[..], &data[..out.len()]);
+    let matched: u32 = seqs.iter().map(|s| s.match_len).sum();
+    assert!(matched as usize > out.len() * 6 / 10, "expected mostly matches: {}/{}", matched, out.len());
+    let mut c = Vec::new();
+    simd_stream_codec::compress_into_max(&data, &mut c);
+    assert_eq!(simd_stream_codec::decompress(&c).unwrap(), data);
+    assert!(c.len() * 4 < data.len(), "structured text should compress 4x+: {}", c.len());
 }

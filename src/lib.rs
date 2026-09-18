@@ -342,27 +342,29 @@ pub fn compress_parallel_into_fast(input: &[u8], output: &mut Vec<u8>) {
     compress_parallel_with(input, output, compress_into_fast)
 }
 
-/// Max level: format v7 (entropy-coded sequences and literals). Milestone
-/// 2 runs the default parse through `sequences_from_streams`; Task 9
-/// replaces it with the double-fast parse. Blocks the coder cannot
-/// shrink are stored raw (as v6 raw blocks, which every decoder reads).
+/// Max level: format v7 (entropy-coded sequences and literals) on the
+/// double-fast parse, whose 2 MB window spans the blocks of one call.
+/// Blocks the coder cannot shrink are stored raw (as v6 raw blocks,
+/// which every decoder reads).
 pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
-    let mut table = new_table();
-    finder::init_table(&mut table, input);
-    let (mut tokens, mut offsets, mut extras, mut literals) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    thread_local! {
+        /// The parse's 2 MB of tables, kept across calls without clearing
+        /// (stale entries are harmless, see `DfastTables::new`): the
+        /// parallel path makes one call per 256 KB chunk.
+        static DFAST: RefCell<Box<v7_encode::DfastTables>> = RefCell::new(v7_encode::DfastTables::new());
+    }
+    let (mut seqs, mut literals) = (Vec::new(), Vec::new());
     let mut prev = v7_encode::Tables::none();
     let mut payload = Vec::new();
     let mut offset = 0;
     while offset < input.len() {
         let chunk_len = (input.len() - offset).min(MAX_BLOCK_SIZE);
         let chunk = &input[offset..offset + chunk_len];
-        tokens.clear();
-        offsets.clear();
-        extras.clear();
+        seqs.clear();
         literals.clear();
         payload.clear();
-        find_block::<Lzav>(input, offset, chunk_len, &mut table, &mut tokens, &mut offsets, &mut extras, &mut literals);
-        let seqs = v7_encode::sequences_from_streams(&tokens, &offsets, &extras, Lzav::MIN_MATCH);
+        let mut reps = [1u32, 4, 8]; // encode_block's Reps starts fresh per block
+        DFAST.with_borrow_mut(|t| v7_encode::find_sequences_dfast(input, offset, chunk_len, t, &mut reps, &mut seqs, &mut literals));
         v7_encode::encode_block(&seqs, &literals, 0, &mut prev, &mut payload);
         let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
         if payload.len() + HEADER_SIZE >= chunk_len {
