@@ -118,8 +118,15 @@ fn code_stream(sec: &[u8], coded: bool, reuse: bool, n_symbols: usize, n: usize,
         if ns != n_symbols || sec.len() < 1 + 2 * ns {
             return Err(corrupt("v7: table symbol count"));
         }
-        let counts: Vec<u16> = (0..ns).map(|s| u16::from_le_bytes([sec[1 + 2 * s], sec[2 + 2 * s]])).collect();
-        *prev = Some(tans::DecodeTable::build(&counts).ok_or(corrupt("v7: tANS counts"))?);
+        let mut counts = [0u16; tans::MAX_SYMBOLS];
+        for (s, c) in counts[..ns].iter_mut().enumerate() {
+            *c = u16::from_le_bytes([sec[1 + 2 * s], sec[2 + 2 * s]]);
+        }
+        // Rebuilt in place: the table lives in `DecTables` across blocks.
+        if !prev.get_or_insert_with(tans::DecodeTable::empty).rebuild(&counts[..ns]) {
+            *prev = None;
+            return Err(corrupt("v7: tANS counts"));
+        }
         pos = 1 + 2 * ns;
     }
     let table = prev.as_ref().ok_or(corrupt("v7: table reuse without a table"))?;
@@ -306,11 +313,12 @@ fn literals(payload: &[u8], layout: &Layout, n_lit: usize, prev: &mut DecTables,
     huff8::decode(table, &streams, n_lit, &mut s.lits).map_err(|_| corrupt("v7: literal stream overrun"))
 }
 
-/// One sequence, wild: `ll` literals from `lit`, then `ml` bytes from
-/// `d + ll - off`, in 32-byte stores that may run up to WILD_MARGIN past
-/// the sequence's end. The shape measured in `neon_decompress::copy_run`:
-/// one unconditional 32-byte copy, fixed 3x32 tails to 128 bytes, a loop
-/// only past that, and a cold path for offsets under 32.
+/// One sequence, wild: `ll` literals from `lit`, then `ml` (>= 1) bytes
+/// from `d + ll - off`, in 32-byte stores that may run up to WILD_MARGIN
+/// past the sequence's end. The shape measured in
+/// `neon_decompress::copy_run`: one unconditional 32-byte copy, fixed
+/// 3x32 tails to 128 bytes, a loop only past that, and a cold path for
+/// offsets under 32.
 #[cfg(target_arch = "aarch64")]
 #[inline(always)]
 unsafe fn copy_seq_wild(lit: *const u8, d: *mut u8, ll: usize, ml: usize, off: usize) {
@@ -327,9 +335,6 @@ unsafe fn copy_seq_wild(lit: *const u8, d: *mut u8, ll: usize, ml: usize, off: u
                 k += 32;
             }
         }
-    }
-    if ml == 0 {
-        return;
     }
     let d = d.add(ll);
     let src = d.sub(off);
@@ -363,9 +368,6 @@ unsafe fn copy_seq_wild(lit: *const u8, d: *mut u8, ll: usize, ml: usize, off: u
         std::ptr::copy_nonoverlapping(lit.add(k), d.add(k), 32);
         k += 32;
     }
-    if ml == 0 {
-        return;
-    }
     let d = d.add(ll);
     let src = d.sub(off);
     if off >= 32 {
@@ -395,23 +397,59 @@ unsafe fn copy_seq_exact(lit: *const u8, d: *mut u8, ll: usize, ml: usize, off: 
     }
 }
 
-/// Pass 3: copies. Per sequence: the block and literal bounds, the
-/// offset against the window, then a wild copy when both `dst` and the
-/// literal buffer have WILD_MARGIN to spare past the sequence, an exact
-/// one otherwise.
+/// Pass 3: copies. The caller has checked the totals: `sum(ll) == n_lit
+/// <= MAX_BLOCK_SIZE` and `sum(ll + ml) == uncompressed_len <= dst.len()`,
+/// so no sequence ends past the block or the decoded literals (prefix
+/// sums of non-negative lengths), and a wild literal copy, which reads at
+/// most WILD_MARGIN past its run, stays inside the literal buffer
+/// (`MAX_BLOCK_SIZE + WILD_MARGIN` bytes). The fast loop therefore checks
+/// only the offset against the window and the wild margin in `dst`; the
+/// last sequence (the only one with `ml == 0`: pass 1 stores >= MIN_MATCH
+/// everywhere else, for any input) and whatever lies within WILD_MARGIN
+/// of `dst`'s end take the exact path with every check.
 ///
 /// SAFETY: `buffer_start` must point into the same allocation as `dst`,
 /// at or before `dst.as_ptr()`, with every byte between them initialised
-/// (the window). `uncompressed_len <= dst.len()`, `n <= MAX_SEQ` and
-/// `n_lit <= MAX_BLOCK_SIZE` are the caller's checks.
+/// (the window). `uncompressed_len <= dst.len()`, `n <= MAX_SEQ`,
+/// `n_lit <= MAX_BLOCK_SIZE` and the totals above are the caller's checks.
 unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize) -> Result<usize> {
+    debug_assert!(s.ll[..n].iter().map(|&v| v as usize).sum::<usize>() == n_lit && n_lit <= MAX_BLOCK_SIZE);
+    debug_assert!(s.ml[..n].iter().map(|&v| v as usize).sum::<usize>() + n_lit == uncompressed_len && uncompressed_len <= dst.len());
     let base = dst.as_mut_ptr();
-    let lits = s.lits.as_ptr();
     let (lls, mls, offs) = (s.ll.as_ptr(), s.ml.as_ptr(), s.off.as_ptr());
+    let mut d = base;
+    let mut lp = s.lits.as_ptr();
+    let mut i = 0usize;
+    // A sequence ending at or before `wild_end` may be copied wild; a
+    // `dst` shorter than the margin has no such point (not even `base`:
+    // an empty sequence there would still take the 32-byte store).
+    if dst.len() >= WILD_MARGIN {
+        let wild_end = base.add(dst.len() - WILD_MARGIN);
+        while i + 1 < n {
+            let ll = *lls.add(i) as usize;
+            let ml = *mls.add(i) as usize;
+            let off = *offs.add(i) as usize;
+            let m = d.add(ll);
+            let available = m.offset_from(buffer_start) as usize;
+            // One compare for both `off == 0` (wraps) and `off > available`.
+            if off.wrapping_sub(1) >= available {
+                return Err(CodecError::OffsetOutOfBounds { offset: off, available });
+            }
+            let end = m.add(ml);
+            if end > wild_end {
+                break;
+            }
+            copy_seq_wild(lp, d, ll, ml, off);
+            d = end;
+            lp = lp.add(ll);
+            i += 1;
+        }
+    }
+    let mut written = d.offset_from(base) as usize;
+    let mut lp = lp.offset_from(s.lits.as_ptr()) as usize;
+    let lits = s.lits.as_ptr();
     let window = (base as *const u8).offset_from(buffer_start) as usize;
-    let mut written = 0usize;
-    let mut lp = 0usize;
-    for i in 0..n {
+    while i < n {
         let ll = *lls.add(i) as usize;
         let ml = *mls.add(i) as usize;
         let off = *offs.add(i) as usize;
@@ -424,16 +462,10 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
         if ml != 0 && (off == 0 || off > available) {
             return Err(CodecError::OffsetOutOfBounds { offset: off, available });
         }
-        // No saturating form here: with a short `dst` it would let an
-        // empty sequence through to the unconditional 32-byte copy.
-        // `end <= MAX_BLOCK_SIZE` by the check above, so no overflow.
-        if end + WILD_MARGIN <= dst.len() && lend + WILD_MARGIN <= s.lits.len() {
-            copy_seq_wild(lits.add(lp), base.add(written), ll, ml, off);
-        } else {
-            copy_seq_exact(lits.add(lp), base.add(written), ll, ml, off);
-        }
+        copy_seq_exact(lits.add(lp), base.add(written), ll, ml, off);
         written = end;
         lp = lend;
+        i += 1;
     }
     if written != uncompressed_len || lp != n_lit {
         return Err(corrupt("v7: decoded length mismatch"));

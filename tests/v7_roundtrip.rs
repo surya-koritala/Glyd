@@ -304,6 +304,15 @@ fn v7_block_decode_into_exact_dst_writes_nothing_past_it() {
             (0..265u32).map(|i| b'a' + (i % 26) as u8).collect(),
         ),
         (vec![Sequence { lit_len: 0, match_len: 0, offset: 0 }], Vec::new()),
+        // Shorter than the wild margin: every sequence takes the exact path.
+        (
+            vec![
+                Sequence { lit_len: 10, match_len: 5, offset: 3 },
+                Sequence { lit_len: 0, match_len: 20, offset: 7 },
+                Sequence { lit_len: 5, match_len: 0, offset: 0 },
+            ],
+            (0..15u32).map(|i| b'a' + (i % 26) as u8).collect(),
+        ),
     ] {
         let expect = materialize(&seqs, &lits);
         let mut p = Vec::new();

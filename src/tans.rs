@@ -3,7 +3,7 @@
 //! the initial state (TL bits), then per symbol the table's `nbits` bits.
 //! The encoder therefore processes symbols last-to-first and emits the
 //! chunks in reverse, so no bit-reversal is needed anywhere.
-use crate::bits::{split_streams, write_streams, BitReader, BitWriter, FastReader, MAX_PUT};
+use crate::bits::{split_streams, write_streams, BitReader, BitWriter, MAX_PUT, PAD};
 
 pub const TL: u32 = 10;
 pub const L: usize = 1 << TL;
@@ -74,54 +74,95 @@ fn highbit(x: u32) -> u32 {
     31 - x.leading_zeros()
 }
 
-/// Decode-table entry packed into a `u32`: `sym | nbits << 8 | base << 16`.
-/// A plain scalar measured faster than an equivalent 4-byte
-/// `{sym: u8, nbits: u8, base: u16}` struct in the 8-stream hot loop
-/// (tans8_speed: 0.873 -> see CHANGELOG-BENCH.md) -- one less live value's
-/// worth of register pressure per stream across 8 unrolled streams, even
-/// though both are 4 bytes; `base` is < L <= 1024 so it fits in the top 16
-/// bits with no truncation.
+/// Decode-table entry packed into a `u64`: `nbits | sym << 8 | mask << 16
+/// | base << 32`, with `mask = (1 << nbits) - 1`. Laid out for the
+/// 8-stream hot loop on AArch64: `nbits` in the low byte is the shift
+/// amount as it stands (a shift reads its low six bits) and the position
+/// advance is one `add` with a `uxtb` operand; the mask below bit 32 and
+/// the base above it make the bits one 32-bit `and` with a shifted
+/// operand and the next state one `add` with a shifted operand. (A `u32`
+/// entry without the mask cost a shift and a subtract per symbol to
+/// build it.) `nbits <= TL < 16`, so mask and base each fit 16 bits.
 #[inline(always)]
-fn pack(sym: u8, nbits: u8, base: u16) -> u32 {
-    sym as u32 | (nbits as u32) << 8 | (base as u32) << 16
+fn pack(sym: u8, nbits: u8, base: u16) -> u64 {
+    nbits as u64 | (sym as u64) << 8 | ((1u64 << nbits) - 1) << 16 | (base as u64) << 32
 }
 
 #[inline(always)]
-fn unpack_nbits(e: u32) -> u32 {
-    (e >> 8) & 0xFF
+fn unpack_nbits(e: u64) -> u32 {
+    e as u32 & 0xFF
 }
 
 #[inline(always)]
-fn unpack_base(e: u32) -> u32 {
-    e >> 16
+fn unpack_mask(e: u64) -> u32 {
+    e as u32 >> 16
 }
 
 #[inline(always)]
-fn unpack_sym(e: u32) -> u8 {
-    e as u8
+fn unpack_base(e: u64) -> u32 {
+    (e >> 32) as u32
+}
+
+#[inline(always)]
+fn unpack_sym(e: u64) -> u8 {
+    (e >> 8) as u8
 }
 
 pub struct DecodeTable {
-    entries: Vec<u32>,
+    entries: [u64; L],
 }
 
 impl DecodeTable {
     pub fn build(counts: &[u16]) -> Option<DecodeTable> {
-        if !check(counts) {
-            return None;
+        let mut t = DecodeTable::empty();
+        if t.rebuild(counts) {
+            Some(t)
+        } else {
+            None
         }
-        let sp = spread(counts);
-        let mut next: Vec<u32> = counts.iter().map(|&c| c as u32).collect();
-        let mut entries = vec![0u32; L];
+    }
+
+    /// A placeholder to `rebuild` into (every entry yields symbol 0 and
+    /// stays at state 0).
+    pub fn empty() -> DecodeTable {
+        DecodeTable { entries: [0; L] }
+    }
+
+    /// Overwrite with the table for `counts`, in place (the decoder keeps
+    /// one per stream across blocks; 8 KB is not worth moving per block).
+    /// False, contents unspecified, unless the counts sum to L. Two passes
+    /// on the stack, no allocation: the spread, then the entries in table
+    /// order (the state an entry leads to is the rank of that occurrence
+    /// among its symbol's in table order -- what the encoder's
+    /// `state_table` is filled by -- so the fill cannot follow the
+    /// spread's order).
+    pub fn rebuild(&mut self, counts: &[u16]) -> bool {
+        if !check(counts) {
+            return false;
+        }
+        let step = (L >> 1) + (L >> 3) + 3;
+        let mut sp = [0u8; L];
+        let mut pos = 0usize;
+        for (s, &c) in counts.iter().enumerate() {
+            for _ in 0..c {
+                sp[pos] = s as u8;
+                pos = (pos + step) & (L - 1);
+            }
+        }
+        debug_assert_eq!(pos, 0);
+        let mut next = [0u32; MAX_SYMBOLS];
+        for (s, &c) in counts.iter().enumerate() {
+            next[s] = c as u32;
+        }
         for i in 0..L {
             let s = sp[i] as usize;
             let x = next[s];
-            next[s] += 1;
+            next[s] = x + 1;
             let nbits = TL - highbit(x);
             let base = (x << nbits) - L as u32;
-            entries[i] = pack(s as u8, nbits as u8, base as u16);
+            self.entries[i] = pack(s as u8, nbits as u8, base as u16);
         }
-        Some(DecodeTable { entries })
+        true
     }
 }
 
@@ -203,7 +244,7 @@ impl<'a> Encoder<'a> {
 }
 
 pub struct Decoder<'a> {
-    t: &'a [u32],
+    t: &'a [u64],
     r: BitReader<'a>,
     state: u32,
 }
@@ -212,7 +253,7 @@ impl<'a> Decoder<'a> {
     pub fn new(t: &'a DecodeTable, stream: &'a [u8]) -> Self {
         let mut r = BitReader::new(stream);
         let state = r.get(TL) as u32;
-        Decoder { t: t.entries.as_slice(), r, state }
+        Decoder { t: &t.entries[..], r, state }
     }
     #[inline(always)]
     pub fn next(&mut self) -> u8 {
@@ -230,9 +271,12 @@ impl<'a> Decoder<'a> {
 }
 
 pub use crate::bits::STREAMS;
-/// 4 symbols/stream per refill: 4 * TL = 40 bits <= the 56-bit refill
-/// guarantee (nbits <= TL for every table entry, see `DecodeTable::build`).
+/// 4 symbols/stream per batch: 4 * TL = 40 bits, from one 8-byte load
+/// shifted by a sub-byte position (>= 57 valid bits).
 const PER_ITER: usize = 4 * STREAMS;
+/// Bytes a batch can advance a stream's load address: 40 bits.
+const BATCH_BYTES: usize = (4 * TL / 8) as usize;
+const _: () = assert!(4 * TL <= 57 && 4 * TL % 8 == 0);
 
 /// One encoder step: the chunk (`state | nbits << 16`: the low `nbits`
 /// of the state are the bits to emit, masked by the reader of the chunk,
@@ -314,41 +358,54 @@ pub fn encode8(syms: &[u8], t: &EncodeTable) -> Vec<Vec<u8>> {
     split_streams(&section)
 }
 
+/// Batches the fast loop can take on one stream before a load might
+/// start past `last`: the next load is at `at`, each later one at most
+/// BATCH_BYTES further.
+#[inline(always)]
+fn safe_batches(at: usize, last: usize) -> usize {
+    if at > last {
+        0
+    } else {
+        (last - at) / BATCH_BYTES + 1
+    }
+}
+
 /// Decode `n` symbols from 8 interleaved tANS streams (symbol i in stream
-/// i % STREAMS). Structured like `huff8::decode`: a clamped, accounted
-/// `BitReader` carries 6 fields/stream, which spills registers across 8
-/// unrolled streams, so the hot loop runs on `FastReader` (3 fields/stream,
-/// unclamped and unaccounted) instead. `safe_refills` proves, from each
-/// stream's remaining real bytes, how many `PER_ITER`-symbol batches can
-/// run before that stream's reader might need the clamp; the outer loop
-/// takes the minimum across streams and re-evaluates every pass. Whatever
-/// is left once some stream runs low on margin -- normally under one
-/// `PER_ITER` batch, but can be more if one stream is short -- goes
-/// through the clamped, accounted, per-symbol path, which is also what
-/// makes `overrun` exact for corrupt/truncated streams.
-///
-/// (A fix-round attempt split this loop's 8 streams into two sequential
-/// groups of 4, to bring the per-iteration live set -- `FastReader`'s 3
-/// fields + tANS's own `st[k]`, x 8 streams -- under the ~31 GPRs
-/// available. It measured slower, not faster, and was reverted; see
-/// CHANGELOG-BENCH.md.)
+/// i % STREAMS). Structured like `v7_decode::sequences`' walk: the hot
+/// state per stream is an absolute bit address (`ptr * 8 + bit`) and a
+/// window of bits loaded from it -- 2 live values per stream, so the 8
+/// streams and their 8 states stay in registers (a `FastReader` is 3, and
+/// with the states that spilled) -- and per batch one unaligned 8-byte
+/// load per stream, shifted by its sub-byte position, holds the 40 bits
+/// four symbols can take. `safe_batches` proves, from each stream's
+/// remaining real bytes, how many batches can run before a load might
+/// leave the stream; the outer loop takes the minimum across streams and
+/// re-evaluates every pass. Whatever is left -- normally under one batch,
+/// more if one stream is short -- goes through the clamped, accounted
+/// `BitReader`s started at the positions the fast loop reached
+/// (`BitReader::new_at`), which is also what makes `overrun` exact for
+/// corrupt or truncated streams.
 pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
     assert!(out.len() >= n);
-    let e = t.entries.as_slice();
-    let mut rs: [BitReader; STREAMS] = std::array::from_fn(|k| BitReader::new(streams[k]));
-    let mut st = [0u32; STREAMS];
-    for k in 0..STREAMS {
-        st[k] = rs[k].get(TL) as u32;
+    let e = &t.entries;
+    for s in streams {
+        assert!(s.len() >= PAD, "stream shorter than its padding");
     }
-    let lasts: [*const u8; STREAMS] = std::array::from_fn(|k| rs[k].last());
-    let mut fast: [FastReader; STREAMS] = std::array::from_fn(|k| rs[k].to_fast());
+    // Initial states: the first TL bits of each stream (a valid stream
+    // always holds them; a shorter one reads padding and overruns below).
+    let mut st: [u32; STREAMS] = std::array::from_fn(|k| {
+        // SAFETY: len >= PAD = 8 bytes, asserted above.
+        unsafe { std::ptr::read_unaligned(streams[k].as_ptr() as *const u64) as u32 & (L as u32 - 1) }
+    });
+    let mut b: [usize; STREAMS] = std::array::from_fn(|k| streams[k].as_ptr() as usize * 8 + TL as usize);
+    let lasts: [usize; STREAMS] = std::array::from_fn(|k| streams[k].as_ptr() as usize + streams[k].len() - PAD);
 
     let mut o = 0usize;
     let mut remaining = n;
     loop {
         let mut iters = remaining / PER_ITER;
         for k in 0..STREAMS {
-            iters = iters.min(fast[k].safe_refills(lasts[k]));
+            iters = iters.min(safe_batches(b[k] >> 3, lasts[k]));
         }
         if iters == 0 {
             break;
@@ -356,37 +413,56 @@ pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut 
         for _ in 0..iters {
             // One bounds check per batch, not one per symbol.
             let batch: &mut [u8; PER_ITER] = (&mut out[o..o + PER_ITER]).try_into().unwrap();
+            let mut w = [0u64; STREAMS];
             for k in 0..STREAMS {
-                // SAFETY: `iters` <= every stream's safe_refills(lasts[k]),
-                // proving this refill's starting p is <= lasts[k].
-                unsafe {
-                    fast[k].refill();
-                }
+                // SAFETY: `iters` <= every stream's safe_batches at the
+                // start of this run and each batch advances a load address
+                // by at most BATCH_BYTES, so this load starts at or before
+                // lasts[k]: its 8 bytes are inside stream k.
+                w[k] = unsafe { std::ptr::read_unaligned((b[k] >> 3) as *const u64) } >> (b[k] & 7);
             }
-            for j in 0..4 {
-                for k in 0..STREAMS {
+            // Written out: the 32 symbols as straight-line code (a `for j`
+            // over the four rows kept a counter, which was the register
+            // that tipped two positions onto the stack).
+            macro_rules! sym {
+                ($j:literal, $k:literal) => {{
                     // SAFETY: st[k] < L because base + bits < L for a valid
-                    // table and st[k] is initialised from get(TL), which is
-                    // < L (this holds inductively regardless of which bits
-                    // a corrupt/overrun stream produces: nbits <= TL and
+                    // table and st[k] is initialised masked to < L (this
+                    // holds inductively regardless of which bits a
+                    // corrupt/overrun stream produces: nbits <= TL and
                     // base + (2^nbits - 1) < L are properties of the table
                     // alone, so base + bits < L for any bits < 2^nbits).
-                    let d = unsafe { *e.get_unchecked(st[k] as usize) };
+                    let d = unsafe { *e.get_unchecked(st[$k] as usize) };
                     let nbits = unpack_nbits(d);
-                    let bits = fast[k].peek(nbits) as u32;
-                    fast[k].consume(nbits);
-                    st[k] = unpack_base(d) + bits;
-                    batch[j * STREAMS + k] = unpack_sym(d);
-                }
+                    let bits = w[$k] as u32 & unpack_mask(d);
+                    w[$k] >>= nbits;
+                    b[$k] += nbits as usize;
+                    st[$k] = unpack_base(d) + bits;
+                    batch[$j * STREAMS + $k] = unpack_sym(d);
+                }};
             }
+            macro_rules! row {
+                ($j:literal) => {
+                    sym!($j, 0);
+                    sym!($j, 1);
+                    sym!($j, 2);
+                    sym!($j, 3);
+                    sym!($j, 4);
+                    sym!($j, 5);
+                    sym!($j, 6);
+                    sym!($j, 7);
+                };
+            }
+            row!(0);
+            row!(1);
+            row!(2);
+            row!(3);
             o += PER_ITER;
         }
         remaining -= PER_ITER * iters;
     }
 
-    for (k, f) in fast.into_iter().enumerate() {
-        rs[k].resume(f);
-    }
+    let mut rs: [BitReader; STREAMS] = std::array::from_fn(|k| BitReader::new_at(streams[k], b[k] - streams[k].as_ptr() as usize * 8));
 
     // Tail: fewer than PER_ITER symbols left, or some stream ran low on
     // safe margin early. Back to the clamped per-symbol path, in stream
