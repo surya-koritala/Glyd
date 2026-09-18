@@ -282,6 +282,8 @@ pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut 
             break;
         }
         for _ in 0..iters {
+            // One bounds check per batch, not one per symbol.
+            let batch: &mut [u8; PER_ITER] = (&mut out[o..o + PER_ITER]).try_into().unwrap();
             for k in 0..STREAMS {
                 // SAFETY: `iters` <= every stream's safe_refills(lasts[k]),
                 // proving this refill's starting p is <= lasts[k].
@@ -302,7 +304,7 @@ pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut 
                     let bits = fast[k].peek(nbits) as u32;
                     fast[k].consume(nbits);
                     st[k] = unpack_base(d) + bits;
-                    out[o + j * STREAMS + k] = unpack_sym(d);
+                    batch[j * STREAMS + k] = unpack_sym(d);
                 }
             }
             o += PER_ITER;

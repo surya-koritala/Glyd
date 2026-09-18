@@ -148,6 +148,8 @@ pub fn decode<'b>(table: &Table, streams: &[&'b [u8]; STREAMS], n: usize, out: &
             break;
         }
         for _ in 0..iters {
+            // One bounds check per batch, not one per symbol.
+            let batch: &mut [u8; PER_ITER] = (&mut out[o..o + PER_ITER]).try_into().unwrap();
             for k in 0..STREAMS {
                 // SAFETY: `iters` <= every stream's safe_refills(lasts[k]),
                 // proving this refill's starting p is <= lasts[k].
@@ -157,7 +159,7 @@ pub fn decode<'b>(table: &Table, streams: &[&'b [u8]; STREAMS], n: usize, out: &
             }
             for j in 0..4 {
                 for k in 0..STREAMS {
-                    out[o + j * STREAMS + k] = fast_sym(&mut fast[k], t);
+                    batch[j * STREAMS + k] = fast_sym(&mut fast[k], t);
                 }
             }
             o += PER_ITER;

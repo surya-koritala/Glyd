@@ -130,9 +130,53 @@ fn code_stream(sec: &[u8], coded: bool, reuse: bool, n_symbols: usize, n: usize,
     Ok(())
 }
 
+/// One field of the walk: `e` is a `*_WALK` entry, `base << 32 | mask <<
+/// 8 | nb`; the value is `base` plus the low `nb` bits of `w`. Returns
+/// the value, `w` shifted past them, and `nb`.
+#[inline(always)]
+fn field(w: u64, e: u64) -> (u32, u64, u32) {
+    let nb = e as u32 & 0xff;
+    let extra = w as u32 & (e as u32 >> 8);
+    ((extra as u64 + (e >> 32)) as u32, w >> nb, nb)
+}
+
+/// Bytes a sequence can advance a stream: its three fields are at most
+/// 19 + 19 + 20 = 58 bits (codes 31, 31 and 23), so the load address moves
+/// by at most 8 bytes per sequence whatever the code bytes hold.
+const SEQ_BYTES: usize = 8;
+
+/// Sequences the fast walk can take on one stream before a load might
+/// start past `last`: the next load is at `at`, each later one <= SEQ_BYTES
+/// further. Mirrors `FastReader::safe_refills`.
+#[inline(always)]
+fn safe_seqs(at: usize, last: usize) -> usize {
+    if at > last {
+        0
+    } else {
+        (last - at) / SEQ_BYTES + 1
+    }
+}
+
 /// Pass 1: the three code streams, then one walk over the extra bits in
 /// the encoder's order (ll, ml, off per sequence, sub-stream i % 8).
 /// Fills scratch.ll/ml/off; returns (literal total, match total).
+///
+/// The walk has the `huff8::decode` shape -- an unclamped batch loop with
+/// a proven load bound, then the clamped `BitReader`s for the tail -- but
+/// its hot state is one bit position per stream, not a `FastReader`: a
+/// valid sequence's extra bits are at most 18 + 18 + 20 = 56 (values up to
+/// MAX_BLOCK_SIZE = 2^18, offsets below 2^21), and one unaligned 8-byte
+/// load shifted by the sub-byte position holds at least 57, so each
+/// sequence is one load, three field extractions and one add to its
+/// stream's position, with no accumulator, count or refill to maintain
+/// (8 live registers for the 8 streams instead of 24). A corrupt stream
+/// asking for 58 bits reads a zero for the last one and advances exactly
+/// anyway; the values are garbage either way and the checks after the
+/// walk catch them. Each iteration handles 8 sequences, one per stream;
+/// the batch count is bounded by every stream's `safe_seqs` and stops
+/// short of sequence n - 1 (which may be literal-only and always goes
+/// through the tail). The tail's clamped readers start at the positions
+/// the walk reached (`BitReader::new_at`), which keeps `overrun` exact.
 fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s: &mut Scratch) -> Result<(usize, usize)> {
     let sub = &layout.sub;
     let coded = |i: usize| sub.coded & (1 << i) != 0;
@@ -148,15 +192,73 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
     }
 
     let extra = substreams(&payload[layout.sections[S_EXTRA].clone()])?;
-    let mut ers: [BitReader; 8] = std::array::from_fn(|k| BitReader::new(extra[k]));
+    // The 8 sub-streams are consecutive in the section, so one base
+    // pointer serves all: stream k's next bit is `b<k>`, an offset from
+    // it (eight scalars, not an array, so they stay in registers);
+    // `lasts[k]` is the last address a load on stream k may start at.
+    let base = extra[0].as_ptr();
+    let start = |k: usize| ((extra[k].as_ptr() as usize - base as usize) * 8) as u64;
+    let (mut b0, mut b1, mut b2, mut b3) = (start(0), start(1), start(2), start(3));
+    let (mut b4, mut b5, mut b6, mut b7) = (start(4), start(5), start(6), start(7));
+    let lasts: [usize; 8] = std::array::from_fn(|k| extra[k][extra[k].len() - PAD..].as_ptr() as usize);
     let mut reps = Reps::new();
-    let (mut lit_total, mut match_total) = (0usize, 0usize);
-    for i in 0..n {
+    let mut o = 0usize;
+    loop {
+        // Whole batches of 8 that stop short of sequence n - 1 and of any
+        // stream's safe margin.
+        let mut iters = (n - o).saturating_sub(1) / 8;
+        for (k, b) in [b0, b1, b2, b3, b4, b5, b6, b7].into_iter().enumerate() {
+            iters = iters.min(safe_seqs(base as usize + (b >> 3) as usize, lasts[k]));
+        }
+        if iters == 0 {
+            break;
+        }
+        for _ in 0..iters {
+            let (c1, c2, c3) = (&s.codes[o..o + 8], &s.codes2[o..o + 8], &s.codes3[o..o + 8]);
+            let (lls, mls, offs) = (&mut s.ll[o..o + 8], &mut s.ml[o..o + 8], &mut s.off[o..o + 8]);
+            // One sequence per stream, written out (a loop this size is
+            // not unrolled on its own, and the positions must not become
+            // an indexed array).
+            macro_rules! seq {
+                ($k:literal, $b:ident) => {{
+                    // SAFETY: `iters` <= every stream's safe_seqs at the
+                    // start of this batch run and each iteration advances
+                    // a stream by at most SEQ_BYTES, so this load starts at
+                    // or before lasts[k], i.e. its 8 bytes are inside
+                    // sub-stream k.
+                    let w = unsafe { std::ptr::read_unaligned(base.add(($b >> 3) as usize) as *const u64) } >> ($b & 7);
+                    let (ll, w, n1) = field(w, LL_WALK[c1[$k] as usize]);
+                    let (ml, w, n2) = field(w, ML_WALK[c2[$k] as usize]);
+                    let offc = c3[$k];
+                    let (ov, _, n3) = field(w, OFF_WALK[offc as usize]);
+                    $b += n1 as u64;
+                    $b += n2 as u64;
+                    $b += n3 as u64;
+                    lls[$k] = ll;
+                    mls[$k] = ml;
+                    offs[$k] = reps.update(offc, ov);
+                }};
+            }
+            seq!(0, b0);
+            seq!(1, b1);
+            seq!(2, b2);
+            seq!(3, b3);
+            seq!(4, b4);
+            seq!(5, b5);
+            seq!(6, b6);
+            seq!(7, b7);
+            o += 8;
+        }
+    }
+    let at = |k: usize, b: u64| BitReader::new_at(extra[k], (b - start(k)) as usize);
+    let mut ers: [BitReader; 8] = [at(0, b0), at(1, b1), at(2, b2), at(3, b3), at(4, b4), at(5, b5), at(6, b6), at(7, b7)];
+
+    // Tail: the last sequence, whatever a short stream's margin left, and
+    // the literal-only rule -- on the clamped readers.
+    for i in o..n {
         let r = &mut ers[i % 8];
         let llc = s.codes[i];
-        let ll = ll_value(llc, r.get(extra_bits_of_code(Kind::Ll, llc) as u32) as u32);
-        s.ll[i] = ll;
-        lit_total += ll as usize;
+        s.ll[i] = ll_value(llc, r.get(extra_bits_of_code(Kind::Ll, llc) as u32) as u32);
         let mlc = s.codes2[i];
         if mlc == 0 && i == n - 1 {
             s.ml[i] = 0;
@@ -168,8 +270,12 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
         let off = reps.resolve(offc, r.get(extra_bits_of_code(Kind::Off, offc) as u32) as u32);
         s.ml[i] = ml;
         s.off[i] = off;
-        match_total += ml as usize;
     }
+    // Totals over the arrays rather than in the walk (two fewer live
+    // values there; this is a vectorised pass over L2-resident data). The
+    // literal-only last sequence stored ml = 0, so it adds nothing.
+    let lit_total: usize = s.ll[..n].iter().map(|&v| v as usize).sum();
+    let match_total: usize = s.ml[..n].iter().map(|&v| v as usize).sum();
     if ers.iter().any(|r| r.overrun()) {
         return Err(corrupt("v7: extra bits overrun"));
     }

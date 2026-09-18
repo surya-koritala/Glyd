@@ -41,7 +41,7 @@ fn len_code(v: u32) -> (u8, u8, u32) {
 }
 
 #[inline(always)]
-fn len_value(code: u8, extra: u32) -> u32 {
+const fn len_value(code: u8, extra: u32) -> u32 {
     if code < 16 {
         code as u32
     } else {
@@ -53,14 +53,14 @@ fn len_value(code: u8, extra: u32) -> u32 {
 pub fn ll_code(v: u32) -> (u8, u8, u32) {
     len_code(v)
 }
-pub fn ll_value(code: u8, extra: u32) -> u32 {
+pub const fn ll_value(code: u8, extra: u32) -> u32 {
     len_value(code, extra)
 }
 pub fn ml_code(v: u32) -> (u8, u8, u32) {
     debug_assert!(v >= MIN_MATCH);
     len_code(v - MIN_MATCH)
 }
-pub fn ml_value(code: u8, extra: u32) -> u32 {
+pub const fn ml_value(code: u8, extra: u32) -> u32 {
     len_value(code, extra) + MIN_MATCH
 }
 pub fn off_code(offset: u32) -> (u8, u8, u32) {
@@ -68,7 +68,7 @@ pub fn off_code(offset: u32) -> (u8, u8, u32) {
     let k = log2(offset);
     ((3 + k) as u8, k as u8, offset - (1 << k))
 }
-pub fn off_value(code: u8, extra: u32) -> u32 {
+pub const fn off_value(code: u8, extra: u32) -> u32 {
     let k = code as u32 - 3;
     (1 << k) + extra
 }
@@ -76,7 +76,7 @@ pub fn off_value(code: u8, extra: u32) -> u32 {
 /// Extra bits carried by a code; the decoder reads this many after the
 /// symbol. For length codes below 16 and rep codes it is zero.
 #[inline(always)]
-pub fn extra_bits_of_code(kind: Kind, code: u8) -> u8 {
+pub const fn extra_bits_of_code(kind: Kind, code: u8) -> u8 {
     match kind {
         Kind::Ll | Kind::Ml => {
             if code < 16 {
@@ -93,6 +93,44 @@ pub fn extra_bits_of_code(kind: Kind, code: u8) -> u8 {
             }
         }
     }
+}
+
+/// Decoder walk tables, one per field: entry `code` packs
+/// `value_base << 32 | mask << 8 | extra_bits`, with `mask` the low
+/// `extra_bits` bits set (at most 20 of them, so it fits below bit 32),
+/// so a field decodes as one table load, an AND with the mask, an add of
+/// the base and a shift by `extra_bits` -- each a single instruction on
+/// AArch64 with this layout (the mask and the base come in as shifted
+/// operands; building the mask from `extra_bits` would cost two more).
+/// For a code without extra bits, extra is 0 and `base` is the value
+/// itself; rep codes get base 0 and are resolved by `Reps`. Built from
+/// the code functions above. 256 entries so a `u8` code indexes without
+/// a check; entries past a field's symbol count are zero (never
+/// produced: the code streams are validated to their symbol counts).
+pub const LL_WALK: [u64; 256] = walk_table(Kind::Ll, LL_SYMBOLS);
+pub const ML_WALK: [u64; 256] = walk_table(Kind::Ml, ML_SYMBOLS);
+pub const OFF_WALK: [u64; 256] = walk_table(Kind::Off, OFF_SYMBOLS);
+
+const fn walk_table(kind: Kind, n_symbols: usize) -> [u64; 256] {
+    let mut t = [0u64; 256];
+    let mut c = 0;
+    while c < n_symbols {
+        let base = match kind {
+            Kind::Ll => ll_value(c as u8, 0),
+            Kind::Ml => ml_value(c as u8, 0),
+            Kind::Off => {
+                if c < 3 {
+                    0
+                } else {
+                    off_value(c as u8, 0)
+                }
+            }
+        };
+        let nb = extra_bits_of_code(kind, c as u8) as u64;
+        t[c] = (base as u64) << 32 | ((1u64 << nb) - 1) << 8 | nb;
+        c += 1;
+    }
+    t
 }
 
 /// Repeat-offset state, identical on both sides.
@@ -126,22 +164,24 @@ impl Reps {
     /// Decoder: the offset for a code and its extra bits.
     #[inline(always)]
     pub fn resolve(&mut self, code: u8, extra: u32) -> u32 {
-        match code {
-            0 => self.r[0],
-            1 => {
-                self.r.swap(0, 1);
-                self.r[0]
-            }
-            2 => {
-                self.r = [self.r[2], self.r[0], self.r[1]];
-                self.r[0]
-            }
-            _ => {
-                let o = off_value(code, extra);
-                self.r = [o, self.r[0], self.r[1]];
-                o
-            }
-        }
+        self.update(code, if code < 3 { 0 } else { off_value(code, extra) })
+    }
+
+    /// Decoder: the offset for a code whose extra bits already decoded to
+    /// `value` (`off_value`; ignored for a rep code), updating the reps.
+    /// Selects, not a match: in the decoder's walk the branchy form
+    /// measured 0.3 ns/sequence slower on Silesia even with rep codes at
+    /// only 4% of offsets (the default parse; a better one raises that).
+    /// The three cases code 1 (swap r0 r1), code 2 (rotate r2 to the
+    /// front) and a real offset (push) are all "the chosen offset moves
+    /// to the front, the entries in front of its old slot shift back one".
+    #[inline(always)]
+    pub fn update(&mut self, code: u8, value: u32) -> u32 {
+        use std::hint::select_unpredictable as sel;
+        let [r0, r1, r2] = self.r;
+        let o = sel(code < 2, sel(code == 0, r0, r1), sel(code == 2, r2, value));
+        self.r = [o, sel(code == 0, r1, r0), sel(code < 2, r2, r1)];
+        o
     }
 }
 

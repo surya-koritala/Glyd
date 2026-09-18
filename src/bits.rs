@@ -81,18 +81,31 @@ impl<'a> BitReader<'a> {
     /// let _ = r.overrun();
     /// ```
     pub fn new(src: &'a [u8]) -> BitReader<'a> {
+        Self::new_at(src, 0)
+    }
+
+    /// A reader positioned at absolute bit `pos` of `src` (0 = its first
+    /// bit), for a caller that walked the bits before it some other way
+    /// (v7's extra-bits fast loop). The accounting counts `pos` as
+    /// consumed, so `overrun` is exact from here: a `pos` past the stream
+    /// reports it at once, and the first load is clamped like every other.
+    pub fn new_at(src: &'a [u8], pos: usize) -> BitReader<'a> {
         assert!(src.len() >= PAD, "stream shorter than its padding");
         let p = src.as_ptr();
+        let bit = (pos & 7) as u32;
         let mut r = BitReader {
-            p,
+            p: unsafe { p.add((pos >> 3).min(src.len() - PAD)) },
             last: unsafe { p.add(src.len() - PAD) },
             bits: 0,
             cnt: 0,
             filled: 0,
-            budget: ((src.len() - PAD) * 8) as i64,
+            // The whole bytes of `pos` here; its `bit` sub-byte bits are
+            // consumed below into the open window, so `overrun` sees both.
+            budget: ((src.len() - PAD) * 8) as i64 - (pos - bit as usize) as i64,
             _src: std::marker::PhantomData,
         };
         r.refill();
+        r.consume(bit);
         r
     }
 
