@@ -123,13 +123,13 @@ fn seed_inputs() -> Vec<Vec<u8>> {
 /// (it is where a saturating wild-copy margin let a 32-byte store
 /// through with a zero-length `dst`).
 fn empty_v7_block() -> Vec<u8> {
-    use glyd::format::{BlockHeader, FLAG_CHAIN_RESET, HEADER_SIZE, MAGIC, VERSION_V7};
+    use glyd::format::{BlockHeader, FLAG_CHAIN_RESET, HEADER_SIZE, MAGIC, VERSION_V8};
     use glyd::v7_encode::{encode_block, Sequence, Tables};
     let mut payload = Vec::new();
     encode_block(&[Sequence { lit_len: 0, match_len: 0, offset: 0 }], &[], 0, &mut Tables::none(), &mut payload);
     let header = BlockHeader {
         magic: MAGIC,
-        version: VERSION_V7,
+        version: VERSION_V8,
         flags: FLAG_CHAIN_RESET,
         checksum: glyd::compute_checksum(&[]),
         uncompressed_len: 0,

@@ -3,7 +3,7 @@
 //! the initial state (TL bits), then per symbol the table's `nbits` bits.
 //! The encoder therefore processes symbols last-to-first and emits the
 //! chunks in reverse, so no bit-reversal is needed anywhere.
-use crate::bits::{split_streams, write_streams, BitReader, BitWriter, MAX_PUT, PAD};
+use crate::bits::{split_streams, write_streams, BitReader, BitWriter, Stream, MAX_PUT, PAD};
 
 pub const TL: u32 = 10;
 pub const L: usize = 1 << TL;
@@ -388,7 +388,7 @@ fn safe_batches(at: usize, last: usize) -> usize {
 
 /// Decode `n` symbols from 8 interleaved tANS streams (symbol i in stream
 /// i % STREAMS) into `out[..n]`.
-pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
+pub fn decode8(t: &DecodeTable, streams: &[Stream; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
     decode8_rows(t, streams, n, STREAMS, out)
 }
 
@@ -412,22 +412,22 @@ pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut 
 /// (`BitReader::new_at`), which is also what makes `overrun` exact for
 /// corrupt or truncated streams.
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-pub fn decode8_rows(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, row: usize, out: &mut [u8]) -> Result<(), ()> {
+pub fn decode8_rows(t: &DecodeTable, streams: &[Stream; STREAMS], n: usize, row: usize, out: &mut [u8]) -> Result<(), ()> {
     assert!(row >= STREAMS);
     // Every index `i / 8 * row + i % 8` for i < n is in bounds from here on.
     assert!(n == 0 || out.len() > (n - 1) / STREAMS * row + (n - 1) % STREAMS);
     let e = &t.entries;
     for s in streams {
-        assert!(s.len() >= PAD, "stream shorter than its padding");
+        assert!(s.bytes.len() >= PAD, "stream shorter than its padding");
     }
     // Initial states: the first TL bits of each stream (a valid stream
     // always holds them; a shorter one reads padding and overruns below).
     let mut st: [u32; STREAMS] = std::array::from_fn(|k| {
-        // SAFETY: len >= PAD = 8 bytes, asserted above.
-        unsafe { std::ptr::read_unaligned(streams[k].as_ptr() as *const u64) as u32 & (L as u32 - 1) }
+        // SAFETY: bytes.len() >= PAD = 8 bytes, asserted above.
+        unsafe { std::ptr::read_unaligned(streams[k].bytes.as_ptr() as *const u64) as u32 & (L as u32 - 1) }
     });
-    let mut b: [usize; STREAMS] = std::array::from_fn(|k| streams[k].as_ptr() as usize * 8 + TL as usize);
-    let lasts: [usize; STREAMS] = std::array::from_fn(|k| streams[k].as_ptr() as usize + streams[k].len() - PAD);
+    let mut b: [usize; STREAMS] = std::array::from_fn(|k| streams[k].bytes.as_ptr() as usize * 8 + TL as usize);
+    let lasts: [usize; STREAMS] = std::array::from_fn(|k| streams[k].bytes.as_ptr() as usize + streams[k].bytes.len() - PAD);
 
     let mut o = 0usize;
     let mut remaining = n;
@@ -555,7 +555,7 @@ pub fn decode8_rows(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, row: 
         remaining -= PER_ITER * iters;
     }
 
-    let mut rs: [BitReader; STREAMS] = std::array::from_fn(|k| BitReader::new_at(streams[k], b[k] - streams[k].as_ptr() as usize * 8));
+    let mut rs: [BitReader; STREAMS] = std::array::from_fn(|k| BitReader::new_at(streams[k], b[k] - streams[k].bytes.as_ptr() as usize * 8));
 
     // Tail: fewer than PER_ITER symbols left, or some stream ran low on
     // safe margin early. Back to the clamped per-symbol path, in stream

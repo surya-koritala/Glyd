@@ -35,7 +35,7 @@ fn main() {
     for p in files {
         let name = p.file_name().unwrap().to_string_lossy().to_string();
         let d = std::fs::read(&p).unwrap();
-        st.clear();
+        st.clear(d.len());
         let (mut seqs, mut lits): (Vec<Sequence>, Vec<u8>) = (Vec::new(), Vec::new());
         let (mut hc_ll, mut hc_ml, mut hz_ll, mut hz_ml) = (vec![0u64; 64], vec![0u64; 64], vec![0u64; 64], vec![0u64; 64]);
         let (mut xc, mut xz) = (0u64, 0u64);

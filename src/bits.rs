@@ -51,8 +51,8 @@ impl BitCursor {
         self.n &= 7;
     }
 
-    /// Close the stream: the partial byte, then `PAD` zero bytes. Returns
-    /// the cursor just past the padding.
+    /// Close the stream: the partial byte, if any. Returns the cursor just
+    /// past it. (The section's `PAD` zeros come after the last stream.)
     ///
     /// # Safety
     /// As `put`.
@@ -61,21 +61,63 @@ impl BitCursor {
         // The last `put` already stored the partial byte's bits here with
         // zeros above; the store below also covers the no-`put` case.
         *self.p = self.acc as u8;
-        let p = self.p.add((self.n > 0) as usize);
-        std::ptr::write_unaligned(p as *mut u64, 0u64);
-        p.add(PAD)
+        self.p.add((self.n > 0) as usize)
+    }
+}
+
+/// Bytes of the size table at the head of a section: seven 24-bit sizes,
+/// the eighth stream's being what remains before the padding.
+pub const SIZES_BYTES: usize = 3 * (STREAMS - 1);
+
+/// A sub-stream as the decoders take it: `bytes` runs from its start to
+/// the end of its section (at least `PAD` long, so a load starting at or
+/// before `bytes.len() - PAD` is inside the section) and `len` says how
+/// many of them are its own bits' (the overrun budget).
+#[derive(Clone, Copy)]
+pub struct Stream<'a> {
+    pub bytes: &'a [u8],
+    pub len: usize,
+}
+
+impl<'a> Stream<'a> {
+    /// The eight streams of a section written by `write_streams`, or
+    /// None if its size table does not fit the section.
+    pub fn split(section: &'a [u8]) -> Option<[Stream<'a>; STREAMS]> {
+        if section.len() < SIZES_BYTES + PAD {
+            return None;
+        }
+        let data = SIZES_BYTES..section.len() - PAD;
+        let mut out = [Stream { bytes: &section[data.end..], len: 0 }; STREAMS];
+        let mut pos = data.start;
+        for k in 0..STREAMS - 1 {
+            let n = u32::from_le_bytes([section[3 * k], section[3 * k + 1], section[3 * k + 2], 0]) as usize;
+            if n > data.end - pos {
+                return None;
+            }
+            out[k] = Stream { bytes: &section[pos..], len: n };
+            pos += n;
+        }
+        out[STREAMS - 1] = Stream { bytes: &section[pos..], len: data.end - pos };
+        Some(out)
+    }
+
+    /// A stream that stands alone with its own padding (tests).
+    pub fn whole(bytes: &'a [u8]) -> Stream<'a> {
+        assert!(bytes.len() >= PAD);
+        Stream { bytes, len: bytes.len() - PAD }
     }
 }
 
 pub const STREAMS: usize = 8;
 
-/// The v7 section layout: 8 sub-streams behind 8 u32 LE byte sizes, each
-/// closed with `PAD` zeros. `fill(k, cursor)` writes sub-stream `k` with
-/// at most `max_bits` bits, which is what the reservation is proven from
-/// (see `BitCursor`).
+/// The section layout: `SIZES_BYTES` of 24-bit LE sizes for streams 0-6,
+/// the 8 sub-streams back to back, then `PAD` zero bytes; the eighth
+/// stream's size is what the section has left. `fill(k, cursor)` writes
+/// sub-stream `k` with at most `max_bits` bits, which is what the
+/// reservation is proven from (see `BitCursor`).
 pub fn write_streams(out: &mut Vec<u8>, max_bits: usize, mut fill: impl FnMut(usize, &mut BitCursor)) {
     let table = out.len();
-    out.resize(table + 4 * STREAMS, 0);
+    out.resize(table + SIZES_BYTES, 0);
     for k in 0..STREAMS {
         // SAFETY: `fill` puts at most `max_bits` bits, and a stream of B
         // bits plus its `finish` writes within B / 8 + 16 bytes of its
@@ -90,20 +132,25 @@ pub fn write_streams(out: &mut Vec<u8>, max_bits: usize, mut fill: impl FnMut(us
             let end = c.finish();
             out.set_len(start + end.offset_from(base) as usize);
         }
-        let len = (out.len() - start) as u32;
-        out[table + 4 * k..table + 4 * k + 4].copy_from_slice(&len.to_le_bytes());
+        let len = out.len() - start;
+        if k < STREAMS - 1 {
+            assert!(len < 1 << 24, "sub-stream over 16 MB");
+            out[table + 3 * k..table + 3 * k + 3].copy_from_slice(&len.to_le_bytes()[..3]);
+        }
     }
+    out.extend_from_slice(&[0u8; PAD]);
 }
 
-/// Split a `write_streams` section back into its 8 streams (test helper).
-#[doc(hidden)]
+/// Split a `write_streams` section back into its 8 streams' own bytes,
+/// each followed by `PAD` zeros as a stream on its own (test helper).
 pub fn split_streams(section: &[u8]) -> Vec<Vec<u8>> {
-    let mut pos = 4 * STREAMS;
-    (0..STREAMS)
-        .map(|k| {
-            let n = u32::from_le_bytes(section[4 * k..4 * k + 4].try_into().unwrap()) as usize;
-            pos += n;
-            section[pos - n..pos].to_vec()
+    let streams = Stream::split(section).expect("a write_streams section");
+    streams
+        .iter()
+        .map(|s| {
+            let mut v = s.bytes[..s.len].to_vec();
+            v.extend_from_slice(&[0u8; PAD]);
+            v
         })
         .collect()
 }
@@ -187,7 +234,7 @@ impl<'a> BitReader<'a> {
     /// let _ = r.overrun();
     /// ```
     pub fn new(src: &'a [u8]) -> BitReader<'a> {
-        Self::new_at(src, 0)
+        Self::new_at(Stream::whole(src), 0)
     }
 
     /// A reader positioned at absolute bit `pos` of `src` (0 = its first
@@ -195,19 +242,19 @@ impl<'a> BitReader<'a> {
     /// (v7's extra-bits fast loop). The accounting counts `pos` as
     /// consumed, so `overrun` is exact from here: a `pos` past the stream
     /// reports it at once, and the first load is clamped like every other.
-    pub fn new_at(src: &'a [u8], pos: usize) -> BitReader<'a> {
-        assert!(src.len() >= PAD, "stream shorter than its padding");
-        let p = src.as_ptr();
+    pub fn new_at(src: Stream<'a>, pos: usize) -> BitReader<'a> {
+        assert!(src.bytes.len() >= PAD && src.len <= src.bytes.len() - PAD, "stream without its padding");
+        let p = src.bytes.as_ptr();
         let bit = (pos & 7) as u32;
         let mut r = BitReader {
-            p: unsafe { p.add((pos >> 3).min(src.len() - PAD)) },
-            last: unsafe { p.add(src.len() - PAD) },
+            p: unsafe { p.add((pos >> 3).min(src.bytes.len() - PAD)) },
+            last: unsafe { p.add(src.bytes.len() - PAD) },
             bits: 0,
             cnt: 0,
             filled: 0,
             // The whole bytes of `pos` here; its `bit` sub-byte bits are
             // consumed below into the open window, so `overrun` sees both.
-            budget: ((src.len() - PAD) * 8) as i64 - (pos - bit as usize) as i64,
+            budget: (src.len * 8) as i64 - (pos - bit as usize) as i64,
             _src: std::marker::PhantomData,
         };
         r.refill();

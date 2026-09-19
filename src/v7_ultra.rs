@@ -23,7 +23,6 @@ use crate::v7_format::*;
 
 const HASH4_BITS: u32 = 20;
 const HASH3_BITS: u32 = 16;
-const TREE_MASK: usize = MAX_WINDOW as usize - 1;
 /// Tree nodes compared per position, searching or inserting.
 const DEPTH: usize = 64;
 const NONE: u32 = u32::MAX;
@@ -62,7 +61,7 @@ struct Prices {
 /// bits) and never recovers.
 const PRIOR_LL: [u32; LL_SYMBOLS] = [2543, 744, 227, 147, 49, 77, 34, 44, 16, 29, 18, 30, 11, 20, 25, 23, 50, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
 const PRIOR_ML: [u32; ML_SYMBOLS] = [300, 600, 1035, 490, 298, 550, 268, 220, 157, 108, 72, 104, 105, 49, 36, 40, 340, 150, 23, 6, 5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
-const PRIOR_OFF: [u32; OFF_SYMBOLS] = [209, 158, 59, 2, 3, 1, 12, 39, 65, 91, 103, 114, 129, 146, 186, 221, 269, 317, 362, 385, 388, 374, 288, 176];
+const PRIOR_OFF: [u32; OFF_SYMBOLS] = [209, 158, 59, 2, 3, 1, 12, 39, 65, 91, 103, 114, 129, 146, 186, 221, 269, 317, 362, 385, 388, 374, 288, 176, 120, 80];
 
 impl Prices {
     /// Prices from the prior plus `s` (the recent blocks' counts), with
@@ -189,9 +188,9 @@ fn rep_code(off: u32, r: &[u32; 3]) -> (u8, [u32; 3]) {
 }
 
 #[inline(always)]
-fn h4(p: *const u8) -> usize {
+fn h4(p: *const u8, shift: u32) -> usize {
     let w = unsafe { std::ptr::read_unaligned(p as *const u32) };
-    (w.wrapping_mul(0x9E37_79B1) >> (32 - HASH4_BITS)) as usize
+    (w.wrapping_mul(0x9E37_79B1) >> shift) as usize
 }
 
 #[inline(always)]
@@ -200,14 +199,21 @@ fn h3(p: *const u8) -> usize {
     (w.wrapping_mul(0x9E37_79B1) >> (32 - HASH3_BITS)) as usize
 }
 
-/// The finder's tables and the parse's work arrays: 28 MB, allocated
-/// once per thread and cleared per call.
+/// The finder's tables and the parse's work arrays, allocated once per
+/// thread and sized per call to the input (`clear`): up to 4 MB of heads
+/// and 64 MB of tree for inputs that fill the 8 MB window, a few MB for
+/// a 256 KB chunk.
 pub struct UltraState {
-    hash4: Box<[u32]>,
+    hash4: Vec<u32>,
+    /// Bits `h4` keeps: 12 to `HASH4_BITS` by input size.
+    hash4_shift: u32,
     hash3: Box<[u32]>,
-    /// Per window slot, the position's two children: the newest older
-    /// position whose suffix sorts below it, and above it.
-    tree: Box<[u32]>,
+    /// Per ring slot, the position's two children: the newest older
+    /// position whose suffix sorts below it, and above it. The ring holds
+    /// the window, or the whole input when that is smaller, so no two
+    /// positions in reach of each other share a slot.
+    tree: Vec<u32>,
+    ring_mask: usize,
     /// Positions below this are in the tables.
     inserted: usize,
     opt: Vec<Node>,
@@ -222,9 +228,11 @@ pub struct UltraState {
 impl UltraState {
     pub fn new() -> Box<Self> {
         Box::new(UltraState {
-            hash4: vec![NONE; 1 << HASH4_BITS].into_boxed_slice(),
+            hash4: Vec::new(),
+            hash4_shift: 32 - 12,
             hash3: vec![NONE; 1 << HASH3_BITS].into_boxed_slice(),
-            tree: vec![NONE; 2 * MAX_WINDOW as usize].into_boxed_slice(),
+            tree: Vec::new(),
+            ring_mask: 0,
             inserted: 0,
             opt: Vec::new(),
             cands: Vec::new(),
@@ -233,11 +241,18 @@ impl UltraState {
         })
     }
 
-    /// Forget everything: the output then depends only on the input.
-    pub fn clear(&mut self) {
-        self.hash4.fill(NONE);
+    /// Forget everything and size the tables for an input of `len` bytes:
+    /// the output then depends only on the input.
+    pub fn clear(&mut self, len: usize) {
+        let ring = len.min(MAX_WINDOW as usize).max(1 << 16).next_power_of_two();
+        let bits = (usize::BITS - len.max(1).leading_zeros()).clamp(12, HASH4_BITS);
+        self.hash4.clear();
+        self.hash4.resize(1 << bits, NONE);
+        self.hash4_shift = 32 - bits;
         self.hash3.fill(NONE);
-        self.tree.fill(NONE);
+        self.tree.clear();
+        self.tree.resize(2 * ring, NONE);
+        self.ring_mask = ring - 1;
         self.inserted = 0;
         self.stats = None;
     }
@@ -264,8 +279,8 @@ impl UltraState {
         let n = self.undo.len();
         for (k, e) in self.undo.drain(..).rev().enumerate() {
             let pos = self.inserted - 1 - k;
-            self.tree[2 * (pos & TREE_MASK)] = NONE;
-            self.tree[2 * (pos & TREE_MASK) + 1] = NONE;
+            self.tree[2 * (pos & self.ring_mask)] = NONE;
+            self.tree[2 * (pos & self.ring_mask) + 1] = NONE;
             self.hash4[e[0] as usize] = e[1];
             self.hash3[e[2] as usize] = e[3];
         }
@@ -285,7 +300,7 @@ impl UltraState {
         let src = input.as_ptr();
         let cur = unsafe { src.add(pos) };
         let full = input.len() - pos;
-        let (i4, i3) = (h4(cur), h3(cur));
+        let (i4, i3) = (h4(cur, self.hash4_shift), h3(cur));
         if log {
             self.undo.push([i4 as u32, self.hash4[i4], i3 as u32, self.hash3[i3]]);
         }
@@ -293,7 +308,7 @@ impl UltraState {
         self.hash4[i4] = pos as u32;
         self.hash3[i3] = pos as u32;
         let low = pos.saturating_sub(MAX_WINDOW as usize - 1);
-        let (mut sp, mut lp) = (2 * (pos & TREE_MASK), 2 * (pos & TREE_MASK) + 1);
+        let (mut sp, mut lp) = (2 * (pos & self.ring_mask), 2 * (pos & self.ring_mask) + 1);
         let (mut cls, mut cll) = (0usize, 0usize);
         let mut best = if collect { self.cands.last().map_or(MIN_MATCH as usize - 1, |c| c.0 as usize) } else { 0 };
         let mut reach = pos;
@@ -301,7 +316,7 @@ impl UltraState {
         while n > 0 && m != NONE && (m as usize) < pos && (m as usize) >= low {
             n -= 1;
             let mi = m as usize;
-            let node = 2 * (mi & TREE_MASK);
+            let node = 2 * (mi & self.ring_mask);
             let c = unsafe { src.add(mi) };
             let mut ml = cls.min(cll);
             ml += unsafe { ScalarMatch::prefix(cur.add(ml), c.add(ml), full - ml) };

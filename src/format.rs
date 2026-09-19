@@ -5,6 +5,17 @@ pub const CURRENT_VERSION: u16 = 6;
 /// sequence count and `literal_len` the literal byte count; the other
 /// section fields are zero.
 pub const VERSION_V7: u16 = 7;
+/// v7 with an 8 MB window (26 offset codes), a compact section layout
+/// (24-bit sub-stream sizes, one padding per section) and packed tANS
+/// counts. Written by every level of format v7's kind from v0.3.0 on;
+/// v7 blocks are still decoded.
+pub const VERSION_V8: u16 = 8;
+
+/// A block of the entropy-coded family (v7 or v8).
+#[inline(always)]
+pub fn is_coded_version(version: u16) -> bool {
+    version == VERSION_V7 || version == VERSION_V8
+}
 /// Match window. An offset is 17 bits: 16 in the offset stream plus one in
 /// the token, so the format addresses 128 KB. Measured (token_stats): with
 /// a 256 KB finder window every offset already fit 18 bits, so the two bits
@@ -230,7 +241,7 @@ impl BlockHeader {
     pub fn payload_len(&self) -> usize {
         if (self.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
             self.uncompressed_len as usize
-        } else if self.version == VERSION_V7 {
+        } else if is_coded_version(self.version) {
             self.token_bytes as usize
         } else {
             self.token_bytes as usize
@@ -245,7 +256,7 @@ impl BlockHeader {
     #[inline(always)]
     pub fn is_plausible(&self) -> bool {
         let u = self.uncompressed_len as usize;
-        if self.version == VERSION_V7 {
+        if is_coded_version(self.version) {
             return u <= MAX_BLOCK_SIZE
                 && self.token_count as usize <= u / 3 + 1
                 && self.literal_len as usize <= u

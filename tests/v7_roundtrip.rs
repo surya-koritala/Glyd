@@ -163,10 +163,10 @@ fn v7_block_roundtrip_two_blocks_with_reuse() {
     let mut dtab = DecTables::none();
     let mut scratch = Scratch::new();
     let base = dst.as_ptr();
-    let n = unsafe { decode_block(&p1, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch) }.unwrap();
+    let n = unsafe { decode_block(&p1, true, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch) }.unwrap();
     assert_eq!(n, expect.len());
     assert_eq!(&dst[..n], &expect[..]);
-    let n2 = unsafe { decode_block(&p2, seqs.len(), lits.len(), &mut dst[n..], base, expect.len(), &mut dtab, &mut scratch) }.unwrap();
+    let n2 = unsafe { decode_block(&p2, true, seqs.len(), lits.len(), &mut dst[n..], base, expect.len(), &mut dtab, &mut scratch) }.unwrap();
     assert_eq!(&dst[n..n + n2], &expect[..]);
 }
 
@@ -180,12 +180,12 @@ fn v7_block_rejects_bad_offset_and_wrong_length() {
     let expect_len = materialize(&well_formed_sequences().0, &lits).len();
     let mut dst = vec![0u8; expect_len + 128];
     let base = dst.as_ptr();
-    let r = unsafe { decode_block(&p, seqs.len(), lits.len(), &mut dst, base, expect_len, &mut DecTables::none(), &mut Scratch::new()) };
+    let r = unsafe { decode_block(&p, true, seqs.len(), lits.len(), &mut dst, base, expect_len, &mut DecTables::none(), &mut Scratch::new()) };
     assert!(matches!(r, Err(CodecError::OffsetOutOfBounds { offset: 1_000_000, .. })), "{:?}", r);
     let (seqs, lits) = well_formed_sequences();
     let mut p = Vec::new();
     encode_block(&seqs, &lits, 0, &mut Tables::none(), &mut p);
-    let r = unsafe { decode_block(&p, seqs.len(), lits.len(), &mut dst, base, expect_len - 1, &mut DecTables::none(), &mut Scratch::new()) };
+    let r = unsafe { decode_block(&p, true, seqs.len(), lits.len(), &mut dst, base, expect_len - 1, &mut DecTables::none(), &mut Scratch::new()) };
     assert!(matches!(r, Err(CodecError::CorruptedBitstream(_))), "{:?}", r);
 }
 
@@ -210,13 +210,13 @@ fn v7_block_decode_never_panics_on_mutations() {
             2 => { q.truncate(rnd(&mut x) as usize % q.len()); }
             _ => { for _ in 0..8 { let i = rnd(&mut x) as usize % q.len(); q[i] = rnd(&mut x) as u8; } }
         }
-        let _ = unsafe { decode_block(&q, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut DecTables::none(), &mut scratch) };
+        let _ = unsafe { decode_block(&q, true, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut DecTables::none(), &mut scratch) };
     }
     for _ in 0..2_000 {
         let n_seq = rnd(&mut x) as usize % (seqs.len() * 2);
         let n_lit = rnd(&mut x) as usize % (lits.len() * 2);
         let len = rnd(&mut x) as usize % (expect.len() * 2);
-        let _ = unsafe { decode_block(&p, n_seq, n_lit, &mut dst, base, len, &mut DecTables::none(), &mut scratch) };
+        let _ = unsafe { decode_block(&p, true, n_seq, n_lit, &mut dst, base, len, &mut DecTables::none(), &mut scratch) };
     }
 }
 
@@ -234,7 +234,9 @@ fn v7_block_decode_with_raw_literals_and_raw_codes() {
     let mut lits = Vec::new();
     let mut produced = 0u32;
     let mut x = 99u64;
-    for i in 0..200u32 {
+    // Few enough sequences that a code table (45 bytes) plus the section
+    // framing cannot beat the raw codes.
+    for i in 0..60u32 {
         let ll = if i == 0 { 40 } else { (rnd(&mut x) % 16) as u32 };
         for _ in 0..ll { lits.push((rnd(&mut x) >> 24) as u8); }
         produced += ll;
@@ -268,17 +270,17 @@ fn v7_block_decode_with_raw_literals_and_raw_codes() {
     let mut dtab = DecTables::none();
     let mut scratch = Scratch::new();
     let base = dst.as_ptr();
-    let n1 = unsafe { decode_block(&p1, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch) }.unwrap();
+    let n1 = unsafe { decode_block(&p1, true, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch) }.unwrap();
     assert_eq!(&dst[..n1], &expect[..]);
-    let n2 = unsafe { decode_block(&p2, seqs.len(), lits.len(), &mut dst[n1..], base, expect.len(), &mut dtab, &mut scratch) }.unwrap();
+    let n2 = unsafe { decode_block(&p2, true, seqs.len(), lits.len(), &mut dst[n1..], base, expect.len(), &mut dtab, &mut scratch) }.unwrap();
     assert_eq!(&dst[n1..n1 + n2], &expect[..]);
-    let n3 = unsafe { decode_block(&p3, seqs3.len(), lits3.len(), &mut dst[n1 + n2..], base, expect3.len(), &mut dtab, &mut scratch) }.unwrap();
+    let n3 = unsafe { decode_block(&p3, true, seqs3.len(), lits3.len(), &mut dst[n1 + n2..], base, expect3.len(), &mut dtab, &mut scratch) }.unwrap();
     assert_eq!(&dst[n1 + n2..n1 + n2 + n3], &expect3[..]);
     let at = n1 + n2 + n3;
-    let n4 = unsafe { decode_block(&p4, seqs.len(), lits.len(), &mut dst[at..], base, expect.len(), &mut dtab, &mut scratch) }.unwrap();
+    let n4 = unsafe { decode_block(&p4, true, seqs.len(), lits.len(), &mut dst[at..], base, expect.len(), &mut dtab, &mut scratch) }.unwrap();
     assert_eq!(&dst[at..at + n4], &expect[..]);
     let at = at + n4;
-    let n5 = unsafe { decode_block(&p5, seqs3.len(), lits3.len(), &mut dst[at..], base, expect3.len(), &mut dtab, &mut scratch) }.unwrap();
+    let n5 = unsafe { decode_block(&p5, true, seqs3.len(), lits3.len(), &mut dst[at..], base, expect3.len(), &mut dtab, &mut scratch) }.unwrap();
     assert_eq!(&dst[at..at + n5], &expect3[..]);
 }
 
@@ -336,7 +338,7 @@ fn v7_block_decode_into_exact_dst_writes_nothing_past_it() {
         encode_block(&seqs, &lits, 0, &mut Tables::none(), &mut p);
         let mut dst = vec![0xEEu8; expect.len() + 256];
         let base = dst.as_ptr();
-        let n = unsafe { decode_block(&p, seqs.len(), lits.len(), &mut dst[..expect.len()], base, expect.len(), &mut DecTables::none(), &mut Scratch::new()) }.unwrap();
+        let n = unsafe { decode_block(&p, true, seqs.len(), lits.len(), &mut dst[..expect.len()], base, expect.len(), &mut DecTables::none(), &mut Scratch::new()) }.unwrap();
         assert_eq!(n, expect.len());
         assert_eq!(&dst[..n], &expect[..]);
         assert!(dst[n..].iter().all(|&b| b == 0xEE), "bytes past dst were written");
@@ -385,12 +387,12 @@ fn v7_max_level_roundtrip_through_container() {
     // (version, coded bits, reuse bits) per block, so an all-raw stream
     // cannot pass vacuously and cross-block table reuse is known to run.
     fn versions(c: &[u8]) -> Vec<(u16, u8, u8)> {
-        use glyd::format::{BlockHeader, HEADER_SIZE, VERSION_V7};
+        use glyd::format::{BlockHeader, HEADER_SIZE, VERSION_V8};
         let (mut cursor, mut v) = (0usize, Vec::new());
         while cursor < c.len() {
             let h: BlockHeader = unsafe { std::ptr::read_unaligned(c[cursor..].as_ptr() as *const BlockHeader) };
             let body = &c[cursor + HEADER_SIZE..cursor + HEADER_SIZE + h.payload_len()];
-            let sub = if h.version == VERSION_V7 { let l = payload_layout(body).unwrap().sub; (l.coded, l.reuse) } else { (0, 0) };
+            let sub = if h.version == VERSION_V8 { let l = payload_layout(body).unwrap().sub; (l.coded, l.reuse) } else { (0, 0) };
             v.push((h.version, sub.0, sub.1));
             cursor += HEADER_SIZE + h.payload_len();
         }
@@ -402,7 +404,7 @@ fn v7_max_level_roundtrip_through_container() {
         let v = versions(&c);
         assert_eq!(v.len(), (input.len() + 256 * 1024 - 1) / (256 * 1024), "block count, len {}", input.len());
         if k >= 4 {
-            assert!(v.iter().all(|&(ver, _, _)| ver == glyd::format::VERSION_V7), "input {} should be all v7 blocks: {:?}", k, v);
+            assert!(v.iter().all(|&(ver, _, _)| ver == glyd::format::VERSION_V8), "input {} should be all v7 blocks: {:?}", k, v);
             assert!(c.len() < input.len() / 2, "input {} ratio: {} -> {}", k, input.len(), c.len());
         }
         if k == inputs.len() - 2 {
@@ -461,7 +463,7 @@ fn dfast_parse_finds_repeats_and_roundtrips() {
 /// parses from the same empty state as the `DfastTables::new` here.
 #[test]
 fn v7_max_matches_reference_block_encoder() {
-    use glyd::format::{BlockHeader, HEADER_SIZE, MAX_BLOCK_SIZE, VERSION_V7};
+    use glyd::format::{BlockHeader, HEADER_SIZE, MAX_BLOCK_SIZE, VERSION_V8};
     use glyd::v7_encode::encode_block_with;
 
     // One entry per container block, in order; None for a raw block.
@@ -471,7 +473,7 @@ fn v7_max_matches_reference_block_encoder() {
         while cursor < c.len() {
             let h: BlockHeader = unsafe { std::ptr::read_unaligned(c[cursor..].as_ptr() as *const BlockHeader) };
             let end = cursor + HEADER_SIZE + h.payload_len();
-            v.push(if h.version == VERSION_V7 { Some(&c[cursor + HEADER_SIZE..end]) } else { None });
+            v.push(if h.version == VERSION_V8 { Some(&c[cursor + HEADER_SIZE..end]) } else { None });
             cursor = end;
         }
         v
@@ -563,7 +565,7 @@ fn v7_dictionary_helps_small_inputs_and_is_required() {
 /// start of every call, not only at `FLAG_CHAIN_RESET` blocks.
 #[test]
 fn v7_decode_does_not_carry_tables_across_calls() {
-    use glyd::format::{BlockHeader, HEADER_SIZE, VERSION_V7};
+    use glyd::format::{BlockHeader, HEADER_SIZE, VERSION_V8};
     // 64-byte records: every block after the first reuses the sequence
     // tables (see `v7_max_level_roundtrip_through_container`).
     let mut x = 5u64;
@@ -577,7 +579,7 @@ fn v7_decode_does_not_carry_tables_across_calls() {
     while cursor < c.len() {
         let h: BlockHeader = unsafe { std::ptr::read_unaligned(c[cursor..].as_ptr() as *const BlockHeader) };
         let end = cursor + HEADER_SIZE + h.payload_len();
-        if h.version == VERSION_V7 && payload_layout(&c[cursor + HEADER_SIZE..end]).unwrap().sub.reuse & 0b10 != 0 {
+        if h.version == VERSION_V8 && payload_layout(&c[cursor + HEADER_SIZE..end]).unwrap().sub.reuse & 0b10 != 0 {
             block = Some(c[cursor..end].to_vec());
             break;
         }

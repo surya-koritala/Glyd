@@ -1,4 +1,4 @@
-use glyd::bits::{BitReader, BitWriter, PAD};
+use glyd::bits::{BitReader, BitWriter, Stream, PAD};
 
 #[test]
 fn bits_roundtrip_mixed_widths() {
@@ -54,7 +54,7 @@ fn huff8_roundtrip_and_size() {
         let lengths = huff8::lengths_for(&hist);
         let streams = huff8::encode(&data, &lengths);
         assert_eq!(streams.len(), huff8::STREAMS);
-        let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+        let refs: [Stream; 8] = std::array::from_fn(|k| Stream::whole(streams[k].as_slice()));
         let table = huff8::Table::build(&lengths).unwrap();
         let mut out = vec![0u8; n];
         huff8::decode(&table, &refs, n, &mut out).unwrap();
@@ -83,7 +83,7 @@ fn huff8_overrun_is_an_error() {
     for &b in &data { hist[b as usize] += 1; }
     let lengths = huff8::lengths_for(&hist);
     let streams = huff8::encode(&data, &lengths);
-    let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+    let refs: [Stream; 8] = std::array::from_fn(|k| Stream::whole(streams[k].as_slice()));
     let table = huff8::Table::build(&lengths).unwrap();
     let mut out = vec![0u8; 50_000];
     assert!(huff8::decode(&table, &refs, 50_000, &mut out).is_err());
@@ -148,7 +148,7 @@ fn huff8_speed_silesia() {
     for _ in 0..5 {
         let t = Instant::now();
         for b in &blks {
-            let refs: [&[u8]; huff8::STREAMS] = std::array::from_fn(|k| b.streams[k].as_slice());
+            let refs: [Stream; huff8::STREAMS] = std::array::from_fn(|k| Stream::whole(b.streams[k].as_slice()));
             huff8::decode(&b.table, &refs, b.lit.len(), &mut out[..b.lit.len()]).unwrap();
         }
         best = best.min(t.elapsed().as_secs_f64());
@@ -189,7 +189,7 @@ fn huff8_short_codes_roundtrip() {
     }
     let lengths = huff8::lengths_for(&hist);
     let streams = huff8::encode(&data, &lengths);
-    let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+    let refs: [Stream; 8] = std::array::from_fn(|k| Stream::whole(streams[k].as_slice()));
     let table = huff8::Table::build(&lengths).unwrap();
     let mut out = vec![0u8; n];
     huff8::decode(&table, &refs, n, &mut out).unwrap();
@@ -248,7 +248,7 @@ fn tans8_roundtrip() {
         let et = tans::EncodeTable::build(&counts).unwrap();
         let dt = tans::DecodeTable::build(&counts).unwrap();
         let streams = tans::encode8(&data, &et);
-        let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+        let refs: [Stream; 8] = std::array::from_fn(|k| Stream::whole(streams[k].as_slice()));
         let mut out = vec![0u8; n];
         tans::decode8(&dt, &refs, n, &mut out).unwrap();
         assert_eq!(out, data, "n={}", n);
@@ -271,7 +271,7 @@ fn tans8_streams_of_different_lengths() {
     let et = tans::EncodeTable::build(&counts).unwrap();
     let dt = tans::DecodeTable::build(&counts).unwrap();
     let streams = tans::encode8(&data, &et);
-    let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+    let refs: [Stream; 8] = std::array::from_fn(|k| Stream::whole(streams[k].as_slice()));
     let mut out = vec![0u8; n];
     tans::decode8(&dt, &refs, n, &mut out).unwrap();
     assert_eq!(out, data);
@@ -288,7 +288,7 @@ fn tans8_overrun_is_an_error() {
     let et = tans::EncodeTable::build(&counts).unwrap();
     let dt = tans::DecodeTable::build(&counts).unwrap();
     let streams = tans::encode8(&data, &et);
-    let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+    let refs: [Stream; 8] = std::array::from_fn(|k| Stream::whole(streams[k].as_slice()));
     let mut out = vec![0u8; n * 10];
     assert!(tans::decode8(&dt, &refs, n * 10, &mut out).is_err());
 }
@@ -311,7 +311,7 @@ fn tans8_speed() {
     let et = tans::EncodeTable::build(&counts).unwrap();
     let dt = tans::DecodeTable::build(&counts).unwrap();
     let streams = tans::encode8(&data, &et);
-    let refs: [&[u8]; 8] = std::array::from_fn(|k| streams[k].as_slice());
+    let refs: [Stream; 8] = std::array::from_fn(|k| Stream::whole(streams[k].as_slice()));
 
     let mut out = vec![0u8; n];
     let mut best = f64::MAX;

@@ -83,9 +83,14 @@ fn ultra_window_edge() {
         data.extend((0..gap).map(|_| rnd(&mut y) as u8));
         data.extend_from_slice(&block);
         let c = roundtrip(&format!("window gap {gap}"), &data);
+        // The repeat straddles a block boundary; the part in the last
+        // block (at least 3 KB of the 4 KB) must be matched, the block
+        // headers of the raw noise cost ~1 KB.
         let in_window = gap + 4096 < w;
         if in_window {
-            assert!(c.len() < data.len() - 3000, "gap {gap}: the repeat should match ({} bytes)", c.len());
+            assert!(c.len() < data.len() - 2000, "gap {gap}: the repeat should match ({} bytes)", c.len());
+        } else {
+            assert!(c.len() > data.len() - 1000, "gap {gap}: past the window, nothing to match ({} bytes)", c.len());
         }
     }
 }

@@ -4,12 +4,12 @@
 //!   [table: 128 bytes of packed Huffman lengths, or 1 + 2 * n bytes of
 //!    tANS counts (u8 count then u16 LE counts); omitted when reused]
 //!   [8 x u32 LE sub-stream sizes]
-//!   [8 sub-streams, each ending in bits::PAD zero bytes]
+//!   [8 sub-streams behind seven 24-bit sizes, then bits::PAD zero bytes]
 //! A raw section is the bytes themselves (literals, or one code byte per
 //! sequence). The extra-bits section is always 8 raw padded sub-streams
 //! behind a size table: sub-stream k holds, for sequences i == k (mod 8)
 //! in order, the ll extra bits, then ml, then offset extra bits.
-use crate::bits::{write_streams, PAD};
+use crate::bits::{write_streams, PAD, SIZES_BYTES};
 use crate::format::MAX_BLOCK_SIZE;
 use crate::huff8;
 use crate::tans;
@@ -40,6 +40,10 @@ impl Tables {
 pub struct Layout {
     pub sub: SubHeader,
     pub sections: [std::ops::Range<usize>; 5],
+    /// Set by the decoder from the block header: the v8 section layout
+    /// (`bits::Stream::split`, packed tANS counts, 26 offset codes)
+    /// rather than v7's.
+    pub v8: bool,
 }
 
 pub fn payload_layout(payload: &[u8]) -> Option<Layout> {
@@ -57,7 +61,7 @@ pub fn payload_layout(payload: &[u8]) -> Option<Layout> {
     if pos != payload.len() {
         return None;
     }
-    Some(Layout { sub, sections })
+    Some(Layout { sub, sections, v8: true })
 }
 
 /// Bits `hist` costs under a tANS table of `counts`, or None when a symbol
@@ -105,21 +109,42 @@ fn hist8<const N: usize>(data: &[u8]) -> [u32; N] {
 fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool, chunks: &mut Vec<u32>, out: &mut Vec<u8>) -> bool {
     let n_symbols = counts.len();
     let bits = table_cost(&hist[..n_symbols], counts).expect("table covers the data");
-    let table_bytes = if reusing { 0 } else { 1 + 2 * n_symbols };
-    let coded_estimate = (bits / 8.0) as usize + table_bytes + 8 * (4 + PAD);
+    let table_bytes = if reusing { 0 } else { tans_table_bytes(n_symbols) };
+    let coded_estimate = (bits / 8.0) as usize + table_bytes + SIZES_BYTES + PAD;
     if coded_estimate + codes.len() / 50 >= codes.len() {
         out.extend_from_slice(codes);
         return false;
     }
     let et = tans::EncodeTable::build(counts).expect("normalized counts sum to L");
     if !reusing {
-        out.push(n_symbols as u8);
-        for &c in counts {
-            out.extend_from_slice(&c.to_le_bytes());
-        }
+        write_tans_table(counts, out);
     }
     tans::encode8_into(codes, &et, chunks, out);
     true
+}
+
+/// Bytes a tANS table of `n` symbols takes: the count, then 11-bit
+/// little-endian packed counts (each at most `tans::L` = 1024).
+fn tans_table_bytes(n: usize) -> usize {
+    1 + (n * 11).div_ceil(8)
+}
+
+fn write_tans_table(counts: &[u16], out: &mut Vec<u8>) {
+    out.push(counts.len() as u8);
+    let start = out.len();
+    out.resize(start + (counts.len() * 11).div_ceil(8), 0);
+    let mut bit = 0usize;
+    for &c in counts {
+        debug_assert!(c as usize <= tans::L);
+        let byte = start + (bit >> 3);
+        let v = (c as u32) << (bit & 7);
+        out[byte] |= v as u8;
+        out[byte + 1] |= (v >> 8) as u8;
+        if byte + 2 < out.len() {
+            out[byte + 2] |= (v >> 16) as u8;
+        }
+        bit += 11;
+    }
 }
 
 /// Per-block scratch, owned by the caller and reused across blocks.
@@ -128,7 +153,7 @@ pub struct EncScratch {
     ml: Vec<u8>,
     off: Vec<u8>,
     /// Per sequence: the ll, ml and offset extra bits concatenated in
-    /// stream order (at most 18 + 18 + 20 = `EXTRA_BITS` for lengths
+    /// stream order (at most 18 + 17 + 22 = `EXTRA_BITS` for lengths
     /// within a block and offsets within the window), their count above.
     extra: Vec<u64>,
     chunks: Vec<u32>,
@@ -199,8 +224,28 @@ fn len_code_bf(v: u32) -> (u8, u32, u32) {
 }
 
 /// Bits of `extra` per sequence, a `MAX_PUT` put.
-const EXTRA_BITS: u32 = 56;
-const _: () = assert!(EXTRA_BITS <= crate::bits::MAX_PUT);
+/// Bits one sequence's three fields can hold: a literal run of 2^18 (18),
+/// a match of up to 2^18 (17), an offset below 2^23 (22). One more than a
+/// `put` carries, so `put_wide` splits such a sequence in two.
+const EXTRA_BITS: u32 = 57;
+const _: () = assert!(EXTRA_BITS <= crate::bits::MAX_PUT + 1);
+const _: () = assert!(
+    EXTRA_BITS as usize
+        == extra_bits_of_code(Kind::Ll, ll_code(crate::format::MAX_BLOCK_SIZE as u32).0) as usize
+            + extra_bits_of_code(Kind::Ml, ml_code(crate::format::MAX_BLOCK_SIZE as u32).0) as usize
+            + (MAX_OFFSET_BITS - 1) as usize
+);
+
+/// One sequence's extra bits, in two puts when they exceed one.
+#[inline(always)]
+unsafe fn put_wide(w: &mut crate::bits::BitCursor, v: u64, n: u32) {
+    if n <= crate::bits::MAX_PUT {
+        w.put(v, n);
+    } else {
+        w.put(v & 0xFFFF_FFFF, 32);
+        w.put(v >> 32, n - 32);
+    }
+}
 
 /// Lengths must be at most `MAX_BLOCK_SIZE` (2^18, as the decoder
 /// enforces per block), offsets at least 1 and below `MAX_WINDOW`, and
@@ -269,7 +314,7 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
         p.iter().zip(hist.iter()).all(|(&l, &h)| l > 0 || h == 0) && est_prev <= est_new + (huff8::TABLE_BYTES as u64) * 8
     });
     let lit_lengths = if lit_reuse { prev.lit_lengths.unwrap() } else { lengths };
-    let lit_coded_size = huff8::coded_size(&hist, &lit_lengths) - if lit_reuse { huff8::TABLE_BYTES } else { 0 } + 8 * (4 + PAD);
+    let lit_coded_size = huff8::coded_size(&hist, &lit_lengths) - if lit_reuse { huff8::TABLE_BYTES } else { 0 } + SIZES_BYTES + PAD;
     let lit_coded = literals.len() >= 64 && lit_coded_size + literals.len() / 50 < literals.len();
     let lit_start = out.len();
     if lit_coded {
@@ -357,14 +402,14 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
                 if nx + ny <= crate::bits::MAX_PUT {
                     w.put(vx | vy << nx, nx + ny);
                 } else {
-                    w.put(vx, nx);
-                    w.put(vy, ny);
+                    put_wide(w, vx, nx);
+                    put_wide(w, vy, ny);
                 }
                 i += 16;
             }
             if i < e.len() {
                 let x = e[i];
-                w.put(x & ((1u64 << EXTRA_BITS) - 1), (x >> EXTRA_BITS) as u32);
+                put_wide(w, x & ((1u64 << EXTRA_BITS) - 1), (x >> EXTRA_BITS) as u32);
             }
         }
     });

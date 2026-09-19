@@ -52,7 +52,8 @@ stream, decided per block by coded size vs raw minus 2%):
    decides what it emits.
 4. **Offsets**: codes 0-2 are repeat offsets (rep0/rep1/rep2 with zstd
    semantics), 3+ are log2 buckets with extra bits. Offsets up to 21 bits
-   (2 MB window).
+   (2 MB window) in v7 blocks, 23 bits (8 MB) in v8 (see the v8 section
+   at the end).
 5. **Extra bits**: one raw LSB-first bitstream, 8-way interleaved like
    the others.
 
@@ -171,3 +172,32 @@ lazy matching goes in and G4 is renegotiated explicitly, not dropped.
 AVX2 port of the v7 decoder (scalar fallback on x86 until then),
 pre-trained dictionary entropy tables, levels above `--max`, any change
 to format v6.
+
+## Format v8 (v0.3.0)
+
+The same coder and decoder with three changes, all measured on the ultra
+level's parse of Silesia (`examples/coder_overhead.rs`); the block header
+says `VERSION_V8`, and v7 blocks are still decoded by the same code paths
+through a version flag.
+
+1. **8 MB window.** `MAX_OFFSET_BITS` 21 -> 23, `OFF_SYMBOLS` 24 -> 26
+   (codes 24 and 25 are the two new log2 buckets). A sequence's extra bits
+   are now at most 18 + 17 + 22 = 57: a literal run of a whole block, a
+   match below that, an offset below 2^23. The decoder's one-load walk
+   holds 57 bits after the sub-byte shift, exactly enough; the encoder
+   writes such a sequence in two puts (`put_wide`). Ultra 3.801 -> 3.895,
+   max 3.218 -> 3.229.
+2. **Section layout.** Seven 24-bit sub-stream sizes (the eighth is what
+   remains), the eight streams back to back, one `PAD` of 8 zero bytes
+   at the end of the section instead of one per stream (`bits::Stream`):
+   96 bytes per section -> 29. A stream's fast loop may read into the
+   next stream's bytes (still inside the section, which is what the load
+   bound needs); its own length is the overrun budget of the tail reader.
+3. **tANS tables.** Counts packed 11 bits each (they sum to 1024) instead
+   of u16: 65 bytes -> 45 per table.
+
+Per-block overhead over the order-0 estimate of the parse: 950 bytes
+(1.45%) -> 550 (0.92%). Ultra 3.917, max 3.244 on Silesia; decode
+unchanged. What remains per block: the block header (32), sub-header
+(26), five size tables (105), five paddings (40), the literal table (128
+when written) and three tANS tables (135 when written).

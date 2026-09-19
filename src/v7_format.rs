@@ -5,12 +5,14 @@
 //! Offsets: codes 0..=2 are the three most recent distinct offsets; a real
 //! offset o uses code 3 + floor(log2(o)) with that many extra bits.
 
-pub const MAX_OFFSET_BITS: u32 = 21;
+/// v8: offsets below 8 MB. v7 blocks (`OFF_SYMBOLS_V7`) stay below 2 MB.
+pub const MAX_OFFSET_BITS: u32 = 23;
 pub const MAX_WINDOW: u32 = 1 << MAX_OFFSET_BITS;
 pub const MIN_MATCH: u32 = 3;
 pub const LL_SYMBOLS: usize = 32; // codes 0..=30 for values up to 2^18
 pub const ML_SYMBOLS: usize = 32;
-pub const OFF_SYMBOLS: usize = 24; // 3 reps + log2 buckets 0..=20
+pub const OFF_SYMBOLS: usize = 26; // 3 reps + log2 buckets 0..=22
+pub const OFF_SYMBOLS_V7: usize = 24;
 
 pub const S_LIT: usize = 0;
 pub const S_LL: usize = 1;
@@ -26,12 +28,12 @@ pub enum Kind {
 }
 
 #[inline(always)]
-fn log2(v: u32) -> u32 {
+const fn log2(v: u32) -> u32 {
     31 - v.leading_zeros()
 }
 
 #[inline(always)]
-fn len_code(v: u32) -> (u8, u8, u32) {
+const fn len_code(v: u32) -> (u8, u8, u32) {
     if v < 16 {
         (v as u8, 0, 0)
     } else {
@@ -50,13 +52,13 @@ const fn len_value(code: u8, extra: u32) -> u32 {
     }
 }
 
-pub fn ll_code(v: u32) -> (u8, u8, u32) {
+pub const fn ll_code(v: u32) -> (u8, u8, u32) {
     len_code(v)
 }
 pub const fn ll_value(code: u8, extra: u32) -> u32 {
     len_value(code, extra)
 }
-pub fn ml_code(v: u32) -> (u8, u8, u32) {
+pub const fn ml_code(v: u32) -> (u8, u8, u32) {
     debug_assert!(v >= MIN_MATCH);
     len_code(v - MIN_MATCH)
 }

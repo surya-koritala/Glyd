@@ -8,7 +8,7 @@
 //! Every section size and sub-stream length is checked against its
 //! container before any reader touches it, so corrupt input yields an
 //! error, never a panic or an out-of-bounds access.
-use crate::bits::{BitReader, PAD};
+use crate::bits::{BitReader, Stream, PAD};
 use crate::error::{CodecError, Result};
 use crate::format::MAX_BLOCK_SIZE;
 use crate::huff8;
@@ -88,19 +88,24 @@ fn corrupt(msg: &'static str) -> CodecError {
     CodecError::CorruptedBitstream(msg)
 }
 
-/// Split a section's tail into 8 padded sub-streams behind a size table.
-fn substreams(sec: &[u8]) -> Result<[&[u8]; 8]> {
+/// A section's 8 sub-streams. v8: `bits::Stream::split` (24-bit sizes,
+/// one padding at the end). v7: 8 u32 sizes, each stream carrying its own
+/// `PAD` zeros.
+fn substreams(sec: &[u8], v8: bool) -> Result<[Stream; 8]> {
+    if v8 {
+        return Stream::split(sec).ok_or(corrupt("v8: sub-stream table"));
+    }
     if sec.len() < 32 {
         return Err(corrupt("v7: sub-stream table truncated"));
     }
     let mut pos = 32usize;
-    let mut out: [&[u8]; 8] = [&[]; 8];
+    let mut out = [Stream { bytes: &sec[sec.len() - PAD.min(sec.len())..], len: 0 }; 8];
     for k in 0..8 {
         let n = u32::from_le_bytes(sec[k * 4..k * 4 + 4].try_into().unwrap()) as usize;
         if n < PAD || n > sec.len() - pos {
             return Err(corrupt("v7: sub-stream out of section"));
         }
-        out[k] = &sec[pos..pos + n];
+        out[k] = Stream { bytes: &sec[pos..pos + n], len: n - PAD };
         pos += n;
     }
     if pos != sec.len() {
@@ -109,10 +114,35 @@ fn substreams(sec: &[u8]) -> Result<[&[u8]; 8]> {
     Ok(out)
 }
 
+/// A tANS table's counts as the block carries them: `ns` then, in v8,
+/// `ns` 11-bit little-endian packed counts; in v7, `ns` u16 LE counts.
+/// Returns the counts and the bytes consumed.
+fn tans_counts(sec: &[u8], v8: bool, n_symbols: usize, counts: &mut [u16; tans::MAX_SYMBOLS]) -> Result<usize> {
+    let ns = *sec.first().ok_or(corrupt("v7: table truncated"))? as usize;
+    let bytes = if v8 { 1 + (ns * 11).div_ceil(8) } else { 1 + 2 * ns };
+    if ns != n_symbols || sec.len() < bytes {
+        return Err(corrupt("v7: table symbol count"));
+    }
+    if v8 {
+        let mut bit = 8usize;
+        for c in counts[..ns].iter_mut() {
+            let byte = bit >> 3;
+            let w = u32::from_le_bytes([sec[byte], sec[byte + 1], *sec.get(byte + 2).unwrap_or(&0), 0]);
+            *c = ((w >> (bit & 7)) & 0x7FF) as u16;
+            bit += 11;
+        }
+    } else {
+        for (s, c) in counts[..ns].iter_mut().enumerate() {
+            *c = u16::from_le_bytes([sec[1 + 2 * s], sec[2 + 2 * s]]);
+        }
+    }
+    Ok(bytes)
+}
+
 /// Decode one code stream (or copy it raw) into its lane of the grouped
 /// `codes` (`codes` starts at the lane: code i goes to `at(i)`).
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-fn code_stream(sec: &[u8], coded: bool, reuse: bool, n_symbols: usize, n: usize, prev: &mut Option<tans::DecodeTable>, codes: &mut [u8]) -> Result<()> {
+fn code_stream(sec: &[u8], v8: bool, coded: bool, reuse: bool, n_symbols: usize, n: usize, prev: &mut Option<tans::DecodeTable>, codes: &mut [u8]) -> Result<()> {
     if !coded {
         if sec.len() != n {
             return Err(corrupt("v7: raw code stream length"));
@@ -127,23 +157,16 @@ fn code_stream(sec: &[u8], coded: bool, reuse: bool, n_symbols: usize, n: usize,
     }
     let mut pos = 0usize;
     if !reuse {
-        let ns = *sec.first().ok_or(corrupt("v7: table truncated"))? as usize;
-        if ns != n_symbols || sec.len() < 1 + 2 * ns {
-            return Err(corrupt("v7: table symbol count"));
-        }
         let mut counts = [0u16; tans::MAX_SYMBOLS];
-        for (s, c) in counts[..ns].iter_mut().enumerate() {
-            *c = u16::from_le_bytes([sec[1 + 2 * s], sec[2 + 2 * s]]);
-        }
+        pos = tans_counts(sec, v8, n_symbols, &mut counts)?;
         // Rebuilt in place: the table lives in `DecTables` across blocks.
-        if !prev.get_or_insert_with(tans::DecodeTable::empty).rebuild(&counts[..ns]) {
+        if !prev.get_or_insert_with(tans::DecodeTable::empty).rebuild(&counts[..n_symbols]) {
             *prev = None;
             return Err(corrupt("v7: tANS counts"));
         }
-        pos = 1 + 2 * ns;
     }
     let table = prev.as_ref().ok_or(corrupt("v7: table reuse without a table"))?;
-    let streams = substreams(&sec[pos..])?;
+    let streams = substreams(&sec[pos..], v8)?;
     tans::decode8_rows(table, &streams, n, GROUP, codes).map_err(|_| corrupt("v7: code stream overrun"))?;
     // A table built from `n_symbols` counts only ever yields those symbols.
     debug_assert!((0..n).all(|i| (codes[at(i)] as usize) < n_symbols));
@@ -170,7 +193,7 @@ fn field2<const K: usize>(w: u64, c: u8) -> (u32, u64, u32) {
 }
 
 /// Bytes a sequence can advance a stream: its three fields are at most
-/// 19 + 19 + 20 = 58 bits (codes 31, 31 and 23), so the load address moves
+/// 19 + 19 + 22 = 60 bits (codes 31, 31 and 25), so the load address moves
 /// by at most 8 bytes per sequence whatever the code bytes hold.
 const SEQ_BYTES: usize = 8;
 const _: () = assert!(
@@ -200,15 +223,15 @@ fn safe_seqs(at: usize, last: usize) -> usize {
 /// a proven load bound, then the clamped `BitReader`s for the tail -- but
 /// its hot state is one bit position per stream, not a reader with an
 /// accumulator and a count: a valid sequence's extra bits are at most
-/// 18 + 18 + 20 = 56 (values up to MAX_BLOCK_SIZE = 2^18, offsets below
-/// 2^21), and one unaligned 8-byte load shifted by the sub-byte position
-/// holds at least 57, so each sequence is one load, three field
-/// extractions and one add to its stream's position, with no
-/// accumulator, count or refill to maintain (8 live registers for the 8
-/// streams instead of 24). A corrupt stream
-/// asking for 58 bits reads a zero for the last one and advances exactly
-/// anyway; the values are garbage either way and the checks after the
-/// walk catch them. Each iteration handles 8 sequences, one per stream;
+/// 18 + 17 + 22 = 57 (a literal run of MAX_BLOCK_SIZE = 2^18, a match
+/// below it, an offset below 2^23; v7 blocks stop at 2^21), and one
+/// unaligned 8-byte load shifted by the sub-byte position holds at least
+/// 57, so each sequence is one load, three field extractions and one add
+/// to its stream's position, with no accumulator, count or refill to
+/// maintain (8 live registers for the 8 streams instead of 24). A
+/// corrupt stream asking for more reads zeros for the last bits and
+/// advances exactly anyway; the values are garbage either way and the
+/// checks after the walk catch them. Each iteration handles 8 sequences, one per stream;
 /// the batch count is bounded by every stream's `safe_seqs` and stops
 /// short of sequence n - 1 (which may be literal-only and always goes
 /// through the tail). The tail's clamped readers start at the positions
@@ -218,9 +241,11 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
     let sub = &layout.sub;
     let coded = |i: usize| sub.coded & (1 << i) != 0;
     let reuse = sub.reuse & 0b10 != 0;
-    code_stream(&payload[layout.sections[S_LL].clone()], coded(S_LL), reuse, LL_SYMBOLS, n, &mut prev.ll, &mut s.codes)?;
-    code_stream(&payload[layout.sections[S_ML].clone()], coded(S_ML), reuse, ML_SYMBOLS, n, &mut prev.ml, &mut s.codes[8..])?;
-    code_stream(&payload[layout.sections[S_OFF].clone()], coded(S_OFF), reuse, OFF_SYMBOLS, n, &mut prev.off, &mut s.codes[16..])?;
+    let v8 = layout.v8;
+    code_stream(&payload[layout.sections[S_LL].clone()], v8, coded(S_LL), reuse, LL_SYMBOLS, n, &mut prev.ll, &mut s.codes)?;
+    code_stream(&payload[layout.sections[S_ML].clone()], v8, coded(S_ML), reuse, ML_SYMBOLS, n, &mut prev.ml, &mut s.codes[8..])?;
+    let off_symbols = if v8 { OFF_SYMBOLS } else { OFF_SYMBOLS_V7 };
+    code_stream(&payload[layout.sections[S_OFF].clone()], v8, coded(S_OFF), reuse, off_symbols, n, &mut prev.off, &mut s.codes[16..])?;
     if !(coded(S_LL) && coded(S_ML) && coded(S_OFF)) {
         // The encoder drops its tables whenever any stream went raw.
         prev.ll = None;
@@ -229,7 +254,7 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
     }
 
     let sec = &payload[layout.sections[S_EXTRA].clone()];
-    let extra = substreams(sec)?;
+    let extra = substreams(sec, v8)?;
     // Stream k's next bit is `b<k>`, an absolute bit address (`ptr * 8 +
     // bit`, as in `tans::decode8`): eight scalars, not an array, so they
     // stay in registers, and no base register. Built from the extras
@@ -239,11 +264,11 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
     // may start at.
     let sec_addr = sec.as_ptr() as usize;
     // SAFETY: every `extra[k]` is a sub-slice of `sec`.
-    let offs: [usize; 8] = std::array::from_fn(|k| unsafe { extra[k].as_ptr().offset_from(sec.as_ptr()) as usize });
+    let offs: [usize; 8] = std::array::from_fn(|k| unsafe { extra[k].bytes.as_ptr().offset_from(sec.as_ptr()) as usize });
     let start = |k: usize| ((sec_addr + offs[k]) * 8) as u64;
     let (mut b0, mut b1, mut b2, mut b3) = (start(0), start(1), start(2), start(3));
     let (mut b4, mut b5, mut b6, mut b7) = (start(4), start(5), start(6), start(7));
-    let lasts: [usize; 8] = std::array::from_fn(|k| extra[k][extra[k].len() - PAD..].as_ptr() as usize);
+    let lasts: [usize; 8] = std::array::from_fn(|k| extra[k].bytes.as_ptr() as usize + extra[k].bytes.len() - PAD);
     let mut reps = Reps::new();
     let mut o = 0usize;
     loop {
@@ -363,7 +388,7 @@ fn literals(payload: &[u8], layout: &Layout, n_lit: usize, prev: &mut DecTables,
         pos = huff8::TABLE_BYTES;
     }
     let table = prev.lit.as_ref().ok_or(corrupt("v7: literal table reuse without a table"))?;
-    let streams = substreams(&sec[pos..])?;
+    let streams = substreams(&sec[pos..], layout.v8)?;
     huff8::decode(table, &streams, n_lit, &mut s.lits).map_err(|_| corrupt("v7: literal stream overrun"))
 }
 
@@ -600,33 +625,34 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
 /// `buffer_start` must point into the same allocation as `dst`, at or
 /// before `dst.as_ptr()`, with every byte between them initialised: that
 /// is the match window (the previous blocks of the same chain).
-pub unsafe fn decode_block(payload: &[u8], n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
+pub unsafe fn decode_block(payload: &[u8], v8: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
     #[cfg(target_arch = "x86_64")]
     {
         if crate::has_avx2() {
-            return decode_block_avx2(payload, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch);
+            return decode_block_avx2(payload, v8, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch);
         }
     }
-    decode_block_impl(payload, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch)
+    decode_block_impl(payload, v8, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch)
 }
 
 /// The decoder compiled for AVX2 + BMI2: the same passes, with 32-byte
 /// copies and single-uop variable shifts (`shrx`) in the bit loops.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,bmi2")]
-unsafe fn decode_block_avx2(payload: &[u8], n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
-    decode_block_impl(payload, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch)
+unsafe fn decode_block_avx2(payload: &[u8], v8: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
+    decode_block_impl(payload, v8, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch)
 }
 
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-unsafe fn decode_block_impl(payload: &[u8], n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
+unsafe fn decode_block_impl(payload: &[u8], v8: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
     if uncompressed_len > dst.len() {
         return Err(CodecError::OutputBufferTooSmall { required: uncompressed_len, provided: dst.len() });
     }
     if uncompressed_len > MAX_BLOCK_SIZE || n_lit > MAX_BLOCK_SIZE || n_seq > MAX_SEQ {
         return Err(corrupt("v7: block header sizes"));
     }
-    let layout = payload_layout(payload).ok_or(corrupt("v7: payload layout"))?;
+    let mut layout = payload_layout(payload).ok_or(corrupt("v7: payload layout"))?;
+    layout.v8 = v8;
     let sub = &layout.sub;
     let coded = |i: usize| sub.coded & (1 << i) != 0;
     if (sub.reuse & 1 != 0 && !coded(S_LIT)) || (sub.reuse & 2 != 0 && !(coded(S_LL) && coded(S_ML) && coded(S_OFF))) {

@@ -18,7 +18,7 @@ fn main() {
         let d = std::fs::read(&p).unwrap();
         let mut out = Vec::new();
         glyd::compress_into_ultra(&d, &mut out);
-        st.clear();
+        st.clear(d.len());
         let (mut seqs, mut lits): (Vec<Sequence>, Vec<u8>) = (Vec::new(), Vec::new());
         let (mut est_lit, mut est_seq, mut xbits, mut nblocks) = (0f64, 0f64, 0u64, 0usize);
         let mut off = 0;

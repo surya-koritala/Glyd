@@ -408,7 +408,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, outp
             t.clear();
             t.seed(full, start);
         }),
-        Parse::Ultra => ULTRA.with_borrow_mut(|t| t.get_or_insert_with(v7_ultra::UltraState::new).clear()),
+        Parse::Ultra => ULTRA.with_borrow_mut(|t| t.get_or_insert_with(v7_ultra::UltraState::new).clear(full.len())),
     }
     let mut offset = start;
     while offset < full.len() {
@@ -435,7 +435,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, outp
         } else {
             let header = BlockHeader {
                 magic: MAGIC,
-                version: VERSION_V7,
+                version: VERSION_V8,
                 flags: FLAG_COMPRESSED | chain_flag,
                 checksum: compute_checksum(chunk),
                 uncompressed_len: chunk_len as u32,
@@ -509,7 +509,7 @@ fn parse_header(compressed: &[u8], cursor: usize) -> Result<(BlockHeader, usize)
     if header.magic != MAGIC {
         return Err(CodecError::InvalidMagic);
     }
-    if header.version != CURRENT_VERSION && header.version != VERSION_V7 {
+    if header.version != CURRENT_VERSION && !is_coded_version(header.version) {
         return Err(CodecError::UnsupportedVersion(header.version));
     }
     if !header.is_plausible() {
@@ -540,7 +540,7 @@ unsafe fn decode_block(
         dst[..uncomp_len].copy_from_slice(&payload[..uncomp_len]);
         return Ok(());
     }
-    if header.version == VERSION_V7 {
+    if is_coded_version(header.version) {
         return v7_decode::with_scratch(|scratch| {
             V7_TABLES.with(|t| {
                 let mut t = t.borrow_mut();
@@ -548,7 +548,7 @@ unsafe fn decode_block(
                     *t = v7_decode::DecTables::none();
                 }
                 v7_decode::decode_block(
-                    payload, header.token_count as usize, header.literal_len as usize,
+                    payload, header.version == VERSION_V8, header.token_count as usize, header.literal_len as usize,
                     dst, buffer_start, uncomp_len, &mut t, scratch,
                 )
                 .map(|_| ())
@@ -649,7 +649,7 @@ pub fn decompress_with_dict(dict: &[u8], compressed: &[u8]) -> Result<Vec<u8>> {
 /// The dictionary id a v7 block names; None for raw blocks (which need
 /// none) and payloads too short to hold a sub-header (rejected later).
 fn block_dict_id(header: &BlockHeader, payload: &[u8]) -> Option<u32> {
-    if header.version != VERSION_V7 || (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
+    if !is_coded_version(header.version) || (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
         return None;
     }
     v7_format::SubHeader::parse(payload).map(|s| s.dict_id)

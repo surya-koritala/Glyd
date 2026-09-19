@@ -15,7 +15,7 @@ fn main() {
         let (mut ns, mut nl, mut nm3, mut rep) = (0usize, 0usize, 0usize, 0usize);
         let mut off = 0;
         t.clear();
-        st.clear();
+        st.clear(d.len());
         while off < d.len() {
             let len = (d.len() - off).min(256 * 1024);
             seqs.clear();

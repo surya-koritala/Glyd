@@ -2,7 +2,7 @@
 //! sub-stream i % 8, LSB-first with bit-reversed canonical codes, so the
 //! decoder's table is indexed by the next `TB` bits directly. Measured on
 //! the M1 Max: 0.61 ns/symbol (tests/v7_codecs.rs, huff8_speed_silesia).
-use crate::bits::{split_streams, write_streams, BitReader, MAX_PUT, PAD};
+use crate::bits::{split_streams, write_streams, BitReader, Stream, MAX_PUT, PAD};
 use crate::huffman::{build_codes, build_lengths, MAX_CODE_LEN};
 
 pub use crate::bits::STREAMS;
@@ -174,14 +174,14 @@ fn safe_batches(at: usize, last: usize) -> usize {
 /// the positions the fast loop reached (`BitReader::new_at`), which is
 /// also what makes `overrun` exact for corrupt/truncated streams.
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-pub fn decode<'b>(table: &Table, streams: &[&'b [u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
+pub fn decode<'b>(table: &Table, streams: &[Stream<'b>; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
     assert!(out.len() >= n);
     let t = table.entries.as_slice();
     for s in streams {
-        assert!(s.len() >= PAD, "stream shorter than its padding");
+        assert!(s.bytes.len() >= PAD, "stream shorter than its padding");
     }
-    let mut b: [usize; STREAMS] = std::array::from_fn(|k| streams[k].as_ptr() as usize * 8);
-    let lasts: [usize; STREAMS] = std::array::from_fn(|k| streams[k].as_ptr() as usize + streams[k].len() - PAD);
+    let mut b: [usize; STREAMS] = std::array::from_fn(|k| streams[k].bytes.as_ptr() as usize * 8);
+    let lasts: [usize; STREAMS] = std::array::from_fn(|k| streams[k].bytes.as_ptr() as usize + streams[k].bytes.len() - PAD);
 
     let mut o = 0usize;
     let mut remaining = n;
@@ -290,7 +290,7 @@ pub fn decode<'b>(table: &Table, streams: &[&'b [u8]; STREAMS], n: usize, out: &
         remaining -= PER_ITER * iters;
     }
 
-    let mut rs: [BitReader; STREAMS] = std::array::from_fn(|k| BitReader::new_at(streams[k], b[k] - streams[k].as_ptr() as usize * 8));
+    let mut rs: [BitReader; STREAMS] = std::array::from_fn(|k| BitReader::new_at(streams[k], b[k] - streams[k].bytes.as_ptr() as usize * 8));
 
     // Tail: fewer than PER_ITER symbols left, or some stream ran low on
     // safe margin early. Either way, the clamped per-symbol path.
