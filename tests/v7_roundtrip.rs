@@ -561,3 +561,42 @@ fn v7_dictionary_helps_small_inputs_and_is_required() {
         assert_eq!(decompress_with_dict(&dict, &c).unwrap(), input);
     }
 }
+
+// ---- Decoder table state is per call ----
+
+/// A v7 block that reuses the previous block's tables, cut out of its
+/// stream and decoded on its own, must fail the same way whatever the
+/// thread decoded before: the decoder's table carry is reset at the
+/// start of every call, not only at `FLAG_CHAIN_RESET` blocks.
+#[test]
+fn v7_decode_does_not_carry_tables_across_calls() {
+    use simd_stream_codec::format::{BlockHeader, HEADER_SIZE, VERSION_V7};
+    // 64-byte records: every block after the first reuses the sequence
+    // tables (see `v7_max_level_roundtrip_through_container`).
+    let mut x = 5u64;
+    let fixed: Vec<u8> = (0..60).map(|_| rnd(&mut x) as u8).collect();
+    let mut records = Vec::new();
+    for i in 0..16384u32 { records.extend_from_slice(&i.to_le_bytes()); records.extend_from_slice(&fixed); }
+    let mut c = Vec::new();
+    simd_stream_codec::compress_into_max(&records, &mut c);
+    let mut block = None;
+    let mut cursor = 0usize;
+    while cursor < c.len() {
+        let h: BlockHeader = unsafe { std::ptr::read_unaligned(c[cursor..].as_ptr() as *const BlockHeader) };
+        let end = cursor + HEADER_SIZE + h.payload_len();
+        if h.version == VERSION_V7 && payload_layout(&c[cursor + HEADER_SIZE..end]).unwrap().sub.reuse & 0b10 != 0 {
+            block = Some(c[cursor..end].to_vec());
+            break;
+        }
+        cursor = end;
+    }
+    let block = block.expect("a block reusing the sequence tables");
+    // Warm thread: this one has just decoded the whole stream.
+    assert_eq!(simd_stream_codec::decompress(&c).unwrap(), records);
+    let warm = simd_stream_codec::decompress(&block);
+    let b = block.clone();
+    let fresh = std::thread::spawn(move || simd_stream_codec::decompress(&b)).join().unwrap();
+    assert!(matches!(fresh, Err(CodecError::CorruptedBitstream(_))), "{:?}", fresh);
+    assert!(matches!(warm, Err(CodecError::CorruptedBitstream(_))), "{:?}", warm);
+    assert_eq!(warm, fresh);
+}

@@ -53,8 +53,10 @@ thread_local! {
     /// The previous v7 block's entropy tables. Reuse across blocks needs
     /// the blocks of a chain decoded in order on one thread: the
     /// sequential path does that, and the parallel path decodes each unit
-    /// (a run of chained blocks) whole on one thread, starting at a
-    /// FLAG_CHAIN_RESET block, which resets these.
+    /// (a run of chained blocks) whole on one thread. Reset at the start
+    /// of every call and unit (so a stream whose first block asks for
+    /// reuse fails the same way on any thread) and at every
+    /// FLAG_CHAIN_RESET block.
     static V7_TABLES: RefCell<v7_decode::DecTables> = RefCell::new(v7_decode::DecTables::none());
 }
 
@@ -616,6 +618,7 @@ fn decompress_sequential(compressed: &[u8], dst: &mut [u8], verify: bool) -> Res
 /// the first block may match into. Every v7 block must name
 /// `expected_dict` (0: none). Returns the bytes written.
 fn decompress_sequential_from(compressed: &[u8], dst: &mut [u8], dst_offset0: usize, expected_dict: Option<u32>, verify: bool) -> Result<usize> {
+    V7_TABLES.with_borrow_mut(|t| *t = v7_decode::DecTables::none());
     let mut cursor = 0usize;
     let mut dst_offset = dst_offset0;
     let buffer_start = dst.as_ptr();
@@ -740,6 +743,7 @@ fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> 
     let avx2 = has_avx2();
 
     units.par_iter().try_for_each(|unit| -> Result<()> {
+        V7_TABLES.with_borrow_mut(|t| *t = v7_decode::DecTables::none());
         let unit_buffer_start = (output_ptr + unit.uncomp_offset) as *const u8;
         for i in 0..unit.block_count {
             let b = &blocks[unit.first_block_idx + i];
