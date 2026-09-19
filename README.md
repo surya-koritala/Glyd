@@ -91,7 +91,8 @@ and the parallel decompress path do not take one.
 
 ### Extended corpus (gate G2)
 
-`scripts/download_corpus.sh` also populates `corpus/ext/` with real-world
+`EXT_CORPUS=1 scripts/download_corpus.sh` also populates `corpus/ext/`
+(opt-in: over 1 GB, and CI runs the script without it) with real-world
 formats beyond Silesia/enwik8 (GitHub Archive JSON lines, NASA HTTP logs,
 NYC taxi Parquet, an uncompressed Linux source tarball, an OpenStreetMap
 PBF extract, and TPC-H `lineitem` when DuckDB is on `PATH`) so the ratio

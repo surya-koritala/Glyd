@@ -41,9 +41,11 @@ fi
 
 # 3. Extended corpus: real-world formats beyond Silesia/enwik8, used by
 # `examples/v7_bench.rs` for gate G2 (v7 ratio >= zstd -3 ratio per file).
-# Each entry is best-effort: a failed download is reported and skipped
-# rather than aborting the rest of the script (no single flaky host should
-# block the others).
+# Opt-in (EXT_CORPUS=1): it is over 1 GB and CI does not need it. Each
+# entry is best-effort: a failed download is reported and skipped rather
+# than aborting the rest of the script (no single flaky host should block
+# the others).
+if [ "${EXT_CORPUS:-0}" = "1" ]; then
 mkdir -p "$CORPUS_DIR/ext"
 
 # GitHub Archive: one hour of events, JSON lines (gzip)
@@ -95,4 +97,6 @@ if [ -f "$CORPUS_DIR/ext/vmlinux" ]; then
 else
     echo "NOTE: skipping vmlinux (no local kernel build available)."
 fi
-
+else
+    echo "Skipping the extended corpus (corpus/ext); run with EXT_CORPUS=1 to download it."
+fi
