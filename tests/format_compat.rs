@@ -84,3 +84,27 @@ fn v9_is_written_now_and_is_denser() {
     assert!(now.len() < v8.len() && v8.len() < v7.len(), "v9 {} vs v8 {} vs v7 {}", now.len(), v8.len(), v7.len());
     assert_eq!(glyd::decompress(&now).unwrap(), plain);
 }
+
+/// v0.4.0's far matches (27-bit offsets): the sample repeated every
+/// 1.5 MB with zeros between, 10 MB in all; every copy after the first
+/// is a far match at both levels, so the file is barely larger than
+/// one copy's.
+#[test]
+fn v9_far_matches_from_v0_4_0() {
+    let sample = std::fs::read("tests/data/v7-sample.bin").unwrap();
+    let mut plain = Vec::new();
+    while plain.len() < 9 << 20 {
+        plain.extend_from_slice(&sample);
+        let n = plain.len();
+        plain.resize(n + (3 << 19), 0);
+    }
+    plain.extend_from_slice(&sample);
+    let mut one = Vec::new();
+    glyd::compress_into_max(&sample, &mut one);
+    for name in ["v9-far-max.glyd", "v9-far-ultra.glyd"] {
+        let c = std::fs::read(format!("tests/data/{name}")).unwrap();
+        let d = glyd::decompress(&c).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert!(d == plain, "{name}: decoded bytes differ");
+        assert!(c.len() < 2 * one.len(), "{name}: {} bytes for seven copies, one alone is {}", c.len(), one.len());
+    }
+}
