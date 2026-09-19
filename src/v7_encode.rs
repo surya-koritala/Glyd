@@ -505,8 +505,9 @@ unsafe fn eq4(a: *const u8, b: *const u8) -> bool {
     std::ptr::read_unaligned(a as *const u32) == std::ptr::read_unaligned(b as *const u32)
 }
 /// The candidate an entry `e` names for a probe at `pos` whose own
-/// tagged entry is `mine`: its distance if the tags agree and it is at
-/// least 1 and within the window (and not before the input), else None.
+/// tagged entry is `mine`: its position if the tags agree and its
+/// distance is at least 1 and within the window (and the input), else
+/// None.
 #[inline(always)]
 fn candidate(e: u32, mine: u32, pos: usize) -> Option<usize> {
     let d = (pos.wrapping_sub(e as usize)) & POS_MASK;
@@ -605,108 +606,104 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
     codes.clear();
     codes.reserve_for(block_len);
 
-    unsafe {
-        if pos >= limit {
-            literals.extend_from_slice(&input[anchor..block_end]);
-            seqs.push(Sequence { lit_len: (block_end - anchor) as u32, match_len: 0, offset: 0 });
-            codes.push_codes((block_end - anchor) as u32, MIN_MATCH, 1, 0);
-            return;
-        }
-        let mut cur = Slot::at(src, pos);
-        let mut el = t.long[cur.il];
-        let mut es = t.short[cur.is];
-        loop {
-            t.long[cur.il] = cur.ml;
-            t.short[cur.is] = cur.ms;
-            let nxt = Slot::at(src, pos + 1);
-            let el1 = t.long[nxt.il];
-            let es1 = t.short[nxt.is];
-            let (mut cand, mut rc) = probe(src, pos, block_end, &cur, el, es, &r);
-            if cand == usize::MAX {
-                let step = (step_nb >> DFAST_SKIP_STRENGTH) as usize;
-                step_nb += 1;
-                pos += step;
+    if pos < limit {
+        unsafe {
+            let mut cur = Slot::at(src, pos);
+            let mut el = t.long[cur.il];
+            let mut es = t.short[cur.is];
+            loop {
+                t.long[cur.il] = cur.ml;
+                t.short[cur.is] = cur.ms;
+                let nxt = Slot::at(src, pos + 1);
+                let el1 = t.long[nxt.il];
+                let es1 = t.short[nxt.is];
+                let (mut cand, mut rc) = probe(src, pos, block_end, &cur, el, es, &r);
+                if cand == usize::MAX {
+                    let step = (step_nb >> DFAST_SKIP_STRENGTH) as usize;
+                    step_nb += 1;
+                    pos += step;
+                    if pos >= limit {
+                        break;
+                    }
+                    if step == 1 {
+                        cur = nxt;
+                        el = el1;
+                        es = es1;
+                    } else {
+                        cur = Slot::at(src, pos);
+                        el = t.long[cur.il];
+                        es = t.short[cur.is];
+                    }
+                    continue;
+                }
+                step_nb = 1 << DFAST_SKIP_STRENGTH;
+                // Lazy: a long candidate one byte later that is 4+ bytes
+                // longer wins. pos + 1 is indexed either way.
+                t.long[nxt.il] = nxt.ml;
+                t.short[nxt.is] = nxt.ms;
+                if let Some(c) = candidate(el1, nxt.ml, pos + 1) {
+                    let rc1 = crate::finder::ScalarMatch::prefix(src.add(pos + 1), src.add(c), block_end - pos - 1);
+                    if rc1 >= rc + 4 {
+                        // Out of line so this stays a (rarely taken)
+                        // branch: as selects, the next position would
+                        // wait for this probe's whole load chain.
+                        lazy_win(&mut pos, &mut cand, &mut rc, c, rc1);
+                    }
+                }
+                // Back-match into the pending literals.
+                let mut mpos = pos;
+                let mut c = cand;
+                while mpos > anchor && c > 0 && *src.add(mpos - 1) == *src.add(c - 1) {
+                    mpos -= 1;
+                    c -= 1;
+                    rc += 1;
+                }
+                let offset = (mpos - c) as u32;
+                let ll = mpos - anchor;
+                let dst = literals.as_mut_ptr().add(literals.len());
+                if ll <= 16 {
+                    // Two 8-byte copies, the second at the tail (they overlap
+                    // or coincide): reads stay under `mpos + 8 <= block_end`
+                    // and the reserve above covers the writes.
+                    let k = ll.saturating_sub(8);
+                    std::ptr::copy_nonoverlapping(src.add(anchor), dst, 8);
+                    std::ptr::copy_nonoverlapping(src.add(anchor + k), dst.add(k), 8);
+                } else {
+                    std::ptr::copy_nonoverlapping(src.add(anchor), dst, ll);
+                }
+                literals.set_len(literals.len() + ll);
+                seqs.push(Sequence { lit_len: ll as u32, match_len: rc as u32, offset });
+                // The codes, and the same update as Reps::code_for: the
+                // offset moves to the front and the entries before its old
+                // slot shift back one.
+                {
+                    use std::hint::select_unpredictable as sel;
+                    let (e0, e1, e2) = (offset == r[0], offset == r[1], offset == r[2]);
+                    codes.push_codes(ll as u32, rc as u32, offset, sel(e0, 0, sel(e1, 1, sel(e2, 2, 3))));
+                    r = [offset, sel(e0, r[1], r[0]), sel(e0 | e1, r[2], r[1])];
+                }
+                pos = mpos + rc;
+                anchor = pos;
                 if pos >= limit {
                     break;
                 }
-                if step == 1 {
-                    cur = nxt;
-                    el = el1;
-                    es = es1;
-                } else {
-                    cur = Slot::at(src, pos);
-                    el = t.long[cur.il];
-                    es = t.short[cur.is];
-                }
-                continue;
+                // Index the match's second position and its tail (zstd's
+                // insertions) so runs keep hashing.
+                let w = std::ptr::read_unaligned(src.add(mpos + 2) as *const u64);
+                let (i, m) = long_slot(w, mpos + 2);
+                t.long[i] = m;
+                let (i, m) = short_slot(w, mpos + 2);
+                t.short[i] = m;
+                let w = std::ptr::read_unaligned(src.add(pos - 2) as *const u64);
+                let (i, m) = long_slot(w, pos - 2);
+                t.long[i] = m;
+                let w = std::ptr::read_unaligned(src.add(pos - 1) as *const u64);
+                let (i, m) = short_slot(w, pos - 1);
+                t.short[i] = m;
+                cur = Slot::at(src, pos);
+                el = t.long[cur.il];
+                es = t.short[cur.is];
             }
-            step_nb = 1 << DFAST_SKIP_STRENGTH;
-            // Lazy: a long candidate one byte later that is 4+ bytes
-            // longer wins. pos + 1 is indexed either way.
-            t.long[nxt.il] = nxt.ml;
-            t.short[nxt.is] = nxt.ms;
-            if let Some(c) = candidate(el1, nxt.ml, pos + 1) {
-                let rc1 = crate::finder::ScalarMatch::prefix(src.add(pos + 1), src.add(c), block_end - pos - 1);
-                if rc1 >= rc + 4 {
-                    // Out of line so this stays a (rarely taken)
-                    // branch: as selects, the next position would
-                    // wait for this probe's whole load chain.
-                    lazy_win(&mut pos, &mut cand, &mut rc, c, rc1);
-                }
-            }
-            // Back-match into the pending literals.
-            let mut mpos = pos;
-            let mut c = cand;
-            while mpos > anchor && c > 0 && *src.add(mpos - 1) == *src.add(c - 1) {
-                mpos -= 1;
-                c -= 1;
-                rc += 1;
-            }
-            let offset = (mpos - c) as u32;
-            let ll = mpos - anchor;
-            let dst = literals.as_mut_ptr().add(literals.len());
-            if ll <= 16 {
-                // Two 8-byte copies, the second at the tail (they overlap
-                // or coincide): reads stay under `mpos + 8 <= block_end`
-                // and the reserve above covers the writes.
-                let k = ll.saturating_sub(8);
-                std::ptr::copy_nonoverlapping(src.add(anchor), dst, 8);
-                std::ptr::copy_nonoverlapping(src.add(anchor + k), dst.add(k), 8);
-            } else {
-                std::ptr::copy_nonoverlapping(src.add(anchor), dst, ll);
-            }
-            literals.set_len(literals.len() + ll);
-            seqs.push(Sequence { lit_len: ll as u32, match_len: rc as u32, offset });
-            // The codes, and the same update as Reps::code_for: the
-            // offset moves to the front and the entries before its old
-            // slot shift back one.
-            {
-                use std::hint::select_unpredictable as sel;
-                let (e0, e1, e2) = (offset == r[0], offset == r[1], offset == r[2]);
-                codes.push_codes(ll as u32, rc as u32, offset, sel(e0, 0, sel(e1, 1, sel(e2, 2, 3))));
-                r = [offset, sel(e0, r[1], r[0]), sel(e0 | e1, r[2], r[1])];
-            }
-            pos = mpos + rc;
-            anchor = pos;
-            if pos >= limit {
-                break;
-            }
-            // Index the match's second position and its tail (zstd's
-            // insertions) so runs keep hashing.
-            let w = std::ptr::read_unaligned(src.add(mpos + 2) as *const u64);
-            let (i, m) = long_slot(w, mpos + 2);
-            t.long[i] = m;
-            let (i, m) = short_slot(w, mpos + 2);
-            t.short[i] = m;
-            let w = std::ptr::read_unaligned(src.add(pos - 2) as *const u64);
-            let (i, m) = long_slot(w, pos - 2);
-            t.long[i] = m;
-            let w = std::ptr::read_unaligned(src.add(pos - 1) as *const u64);
-            let (i, m) = short_slot(w, pos - 1);
-            t.short[i] = m;
-            cur = Slot::at(src, pos);
-            el = t.long[cur.il];
-            es = t.short[cur.is];
         }
     }
     literals.extend_from_slice(&input[anchor..block_end]);
