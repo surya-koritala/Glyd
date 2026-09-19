@@ -257,11 +257,13 @@ fn safe_seqs(at: usize, last: usize) -> usize {
 /// through the tail). The tail's clamped readers start at the positions
 /// the walk reached (`BitReader::new_at`), which keeps `overrun` exact.
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s: &mut Scratch) -> Result<(usize, usize)> {
+fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s: &mut Scratch) -> Result<(usize, usize)> {
     let sub = &layout.sub;
     let coded = |i: usize| sub.coded & (1 << i) != 0;
     let reuse = sub.reuse & 0b10 != 0;
-    let v8 = layout.v8;
+    // The version is a const parameter so the walk's tables are constant
+    // addresses, not a register (the x86-64 walk has none to spare).
+    let v8 = V8;
     let (ll_symbols, ml_symbols) = if v8 { (LL_SYMBOLS, ML_SYMBOLS) } else { (LL_SYMBOLS_V7, ML_SYMBOLS_V7) };
     code_stream(&payload[layout.sections[S_LL].clone()], v8, coded(S_LL), reuse, ll_symbols, n, &mut prev.ll, &mut s.codes)?;
     code_stream(&payload[layout.sections[S_ML].clone()], v8, coded(S_ML), reuse, ml_symbols, n, &mut prev.ml, &mut s.codes[8..])?;
@@ -698,7 +700,7 @@ unsafe fn decode_block_impl(payload: &[u8], v8: bool, n_seq: usize, n_lit: usize
     if (sub.reuse & 1 != 0 && !coded(S_LIT)) || (sub.reuse & 2 != 0 && !(coded(S_LL) && coded(S_ML) && coded(S_OFF))) {
         return Err(corrupt("v7: table reuse on a raw stream"));
     }
-    let (lit_total, match_total) = sequences(payload, &layout, n_seq, prev, scratch)?;
+    let (lit_total, match_total) = if v8 { sequences::<true>(payload, &layout, n_seq, prev, scratch)? } else { sequences::<false>(payload, &layout, n_seq, prev, scratch)? };
     if lit_total != n_lit || lit_total + match_total != uncompressed_len {
         return Err(corrupt("v7: sequence totals disagree with header"));
     }
