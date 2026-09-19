@@ -46,3 +46,12 @@ jobs:
         run: |
           cargo build --release --bin glyd
           cargo build --release --example bench
+      - name: C ABI
+        run: |
+          cargo build --release --lib
+          cc -O2 -o target/c_abi tests/test_c_abi.c -Ltarget/release -lglyd -Wl,-rpath,$PWD/target/release
+          ./target/c_abi
+      - name: CLI round trip and corruption
+        run: |
+          head -c 3000000 corpus/dickens > /tmp/sample.bin
+          scripts/verify_roundtrip.sh /tmp/sample.bin
