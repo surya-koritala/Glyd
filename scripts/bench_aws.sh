@@ -70,8 +70,9 @@ export RUSTFLAGS="-C target-cpu=native"
 mkdir -p ~/results
 {
   echo "commit: COMMIT_PLACEHOLDER"
-  echo "instance: $(curl -s http://169.254.169.254/latest/meta-data/instance-type)"
-  echo "cpu: $(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | sed "s/^ //")"
+  TOK=$(curl -sX PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+  echo "instance: $(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/latest/meta-data/instance-type)"
+  echo "cpu: $(lscpu | grep -m1 -E "Model name|BIOS Model name" | cut -d: -f2 | sed "s/^ *//") ($(nproc) vCPU)"
   echo "simd: $(grep -m1 -o "avx512bw\|avx2\|asimd" /proc/cpuinfo | head -1)"
   echo "rustc: $(rustc --version)"
   echo "kernel: $(uname -sr)"

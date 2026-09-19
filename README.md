@@ -39,7 +39,7 @@ for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
 | ⚡&nbsp;**Glyd&nbsp;default** | 2.19 | 340&nbsp;MB/s | **6,900&nbsp;MB/s** | **1.6×** liblz4, better ratio |
 | ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.22** | 300&nbsp;MB/s | **1,860&nbsp;MB/s** | **1.3×** zstd&nbsp;-3 (1,440&nbsp;MB/s); denser (3.20) |
 
-<sub>Silesia corpus (202 MB), one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. Full tables and the honest gaps: <a href="#benchmarks">Benchmarks</a>.</sub>
+<sub>Silesia corpus (202 MB), Apple M1 Max, one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. The same story holds on AWS Graviton3; on x86 the v6 levels lead too, while <code>--max</code> still runs its scalar decoder (AVX2 port next). Cross-platform results: <a href="benchmarks/">benchmarks/</a>.</sub>
 
 - 🚀 **Fastest decode at every ratio point** measured, against liblz4, lz4_flex, LZAV, zstd (7 levels) and snappy, in the same run.
 - 📦 **Fewer bytes than zstd -3** with the `--max` level, at 30% faster reads.
@@ -216,10 +216,24 @@ board — the ordering is the same.)
 
 </details>
 
+### Other machines (AWS, same script, same-run references)
+
+| Decompress MB/s | Glyd default | liblz4 | Glyd --turbo | Glyd --max | zstd -3 |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Graviton3 (c7g.2xlarge, NEON) | **3,690** | 3,160 | **4,980** | **1,205** | 912 |
+| Sapphire Rapids (c7i.2xlarge; AVX2 for v6, `--max` scalar) | **4,430** | 3,775 | **5,350** | 858 | 1,291 |
+
+Ratios are identical across machines (the format is deterministic).
+`--max` on x86 uses the portable scalar decoder until its AVX2 port lands
+(ROADMAP item 1), so it trails zstd -3 there today. Raw outputs and the
+launch script: [`benchmarks/`](benchmarks/).
+
 ### Multi-core
 
 10 threads, independent 256 KB blocks, default level: **42,900 MB/s** over
-Silesia (`examples/mc.rs`), above the machine's single-core `memcpy`.
+Silesia on the M1 Max (`examples/mc.rs`), above the machine's single-core
+`memcpy`; 27,100 MB/s on 8 Graviton3 vCPUs, 21,400 MB/s on 8 Sapphire
+Rapids vCPUs.
 
 ### Beyond Silesia
 
@@ -275,9 +289,10 @@ unsafe block carries its bound.
 - On the extended corpus `--max` beats zstd -3 on 3 of 5 files; it loses
   0.6% on very repetitive JSON.
 - `GlydReader`/`GlydWriter` (std::io streaming) carry v6 levels only.
-- The `--max` decoder has a NEON path and a scalar fallback; the AVX2 port
-  is next (see the roadmap), so x86 `--max` decode numbers are currently
-  the scalar path.
+- The `--max` decoder has a NEON path and a scalar fallback: on x86 it
+  decodes at 0.66× zstd -3 today (858 vs 1,291 MB/s on Sapphire Rapids).
+  The AVX2 port is roadmap item 1; the v6 levels already have AVX2 and lead
+  on x86.
 
 ---
 

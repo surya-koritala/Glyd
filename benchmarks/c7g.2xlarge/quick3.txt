@@ -1,0 +1,13 @@
+  dickens  ratio 1.8151  comp 0.101 GB/s (93.8 ms)  decomp 2.859 GB/s (3.3 ms)  lz4 decomp 2.604 GB/s
+  mozilla  ratio 1.9265  comp 0.252 GB/s (189.0 ms)  decomp 3.529 GB/s (13.5 ms)  lz4 decomp 3.019 GB/s
+  mr       ratio 1.9015  comp 0.230 GB/s (40.4 ms)  decomp 3.772 GB/s (2.5 ms)  lz4 decomp 3.086 GB/s
+  nci      ratio 6.8465  comp 0.463 GB/s (67.4 ms)  decomp 3.752 GB/s (8.3 ms)  lz4 decomp 4.071 GB/s
+  ooffice  ratio 1.3353  comp 0.275 GB/s (20.8 ms)  decomp 4.859 GB/s (1.2 ms)  lz4 decomp 2.847 GB/s
+  osdb     ratio 2.2941  comp 0.332 GB/s (28.3 ms)  decomp 4.710 GB/s (2.0 ms)  lz4 decomp 3.000 GB/s
+  reymont  ratio 2.3786  comp 0.129 GB/s (48.0 ms)  decomp 2.958 GB/s (2.1 ms)  lz4 decomp 2.282 GB/s
+  samba    ratio 2.8580  comp 0.254 GB/s (79.1 ms)  decomp 3.877 GB/s (5.2 ms)  lz4 decomp 3.226 GB/s
+  sao      ratio 1.0373  comp 0.492 GB/s (13.7 ms)  decomp 9.713 GB/s (0.7 ms)  lz4 decomp 4.271 GB/s
+  webster  ratio 2.2501  comp 0.127 GB/s (304.8 ms)  decomp 2.901 GB/s (13.3 ms)  lz4 decomp 2.713 GB/s
+  xml      ratio 4.9489  comp 0.410 GB/s (12.1 ms)  decomp 4.524 GB/s (1.1 ms)  lz4 decomp 3.284 GB/s
+  x-ray    ratio 0.9999  comp 2.229 GB/s (3.5 ms)  decomp 29.618 GB/s (0.3 ms)  lz4 decomp 9.414 GB/s
+aws                    ratio 2.19241 (floor 2.1009)  comp 0.2190  decomp 3.6927 vs liblz4 3.1641 = 116.7% (S1 OK)
