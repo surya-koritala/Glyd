@@ -457,11 +457,8 @@ fn dfast_parse_finds_repeats_and_roundtrips() {
 /// takes) must write byte-for-byte what `compress_into_max` puts in the
 /// container, which instead codes directly from `find_sequences_dfast`'s
 /// scratch (`encode_block_coded`) -- for every block the container did
-/// not store raw. Each input runs in its own fresh thread so the
-/// container's thread-local parse table starts empty, matching the
-/// freshly constructed one this test parses with (`DfastTables::new`);
-/// otherwise the two could choose different matches for the same bytes
-/// and disagree on harmless grounds (see `find_sequences_dfast`).
+/// not store raw. The container clears its parse table per call, so it
+/// parses from the same empty state as the `DfastTables::new` here.
 #[test]
 fn v7_max_matches_reference_block_encoder() {
     use simd_stream_codec::format::{BlockHeader, HEADER_SIZE, MAX_BLOCK_SIZE, VERSION_V7};
@@ -487,39 +484,35 @@ fn v7_max_matches_reference_block_encoder() {
     while mixed.len() < 600_000 { mixed.extend_from_slice(b"the quick brown fox jumps over the lazy dog "); mixed.extend_from_slice(&rnd(&mut x).to_le_bytes()[..3]); }
 
     for input in [records_input(), text, mixed] {
-        std::thread::spawn(move || {
-            let mut c = Vec::new();
-            simd_stream_codec::compress_into_max(&input, &mut c);
-            let reference = block_payloads(&c);
-            assert!(reference.iter().any(|p| p.is_some()), "expected at least one coded block");
+        let mut c = Vec::new();
+        simd_stream_codec::compress_into_max(&input, &mut c);
+        let reference = block_payloads(&c);
+        assert!(reference.iter().any(|p| p.is_some()), "expected at least one coded block");
 
-            let mut t = DfastTables::new();
-            let mut prev = Tables::none();
-            let mut scratch = EncScratch::new();
-            let (mut seqs, mut literals) = (Vec::new(), Vec::new());
-            let mut block_start = 0usize;
-            for expected in reference {
-                let block_len = (input.len() - block_start).min(MAX_BLOCK_SIZE);
-                let mut reps = [1u32, 4, 8];
-                seqs.clear();
-                literals.clear();
-                find_sequences_dfast(&input, block_start, block_len, &mut t, &mut reps, &mut seqs, &mut literals, &mut scratch);
-                match expected {
-                    Some(payload) => {
-                        let mut out = Vec::new();
-                        encode_block_with(&seqs, &literals, 0, &mut prev, &mut scratch, &mut out);
-                        assert_eq!(&out[..], payload, "block at {} payload mismatch", block_start);
-                    }
-                    // The container drops its tables when a block is
-                    // stored raw (see `compress_max_from`).
-                    None => prev = Tables::none(),
+        let mut t = DfastTables::new();
+        let mut prev = Tables::none();
+        let mut scratch = EncScratch::new();
+        let (mut seqs, mut literals) = (Vec::new(), Vec::new());
+        let mut block_start = 0usize;
+        for expected in reference {
+            let block_len = (input.len() - block_start).min(MAX_BLOCK_SIZE);
+            let mut reps = [1u32, 4, 8];
+            seqs.clear();
+            literals.clear();
+            find_sequences_dfast(&input, block_start, block_len, &mut t, &mut reps, &mut seqs, &mut literals, &mut scratch);
+            match expected {
+                Some(payload) => {
+                    let mut out = Vec::new();
+                    encode_block_with(&seqs, &literals, 0, &mut prev, &mut scratch, &mut out);
+                    assert_eq!(&out[..], payload, "block at {} payload mismatch", block_start);
                 }
-                block_start += block_len;
+                // The container drops its tables when a block is
+                // stored raw (see `compress_max_from`).
+                None => prev = Tables::none(),
             }
-            assert_eq!(block_start, input.len());
-        })
-        .join()
-        .unwrap();
+            block_start += block_len;
+        }
+        assert_eq!(block_start, input.len());
     }
 }
 
@@ -599,4 +592,45 @@ fn v7_decode_does_not_carry_tables_across_calls() {
     assert!(matches!(fresh, Err(CodecError::CorruptedBitstream(_))), "{:?}", fresh);
     assert!(matches!(warm, Err(CodecError::CorruptedBitstream(_))), "{:?}", warm);
     assert_eq!(warm, fresh);
+}
+
+/// `--max` output depends only on the input: the parse's thread-local
+/// tables are cleared at the start of every call, so a thread that has
+/// compressed something else before writes the same bytes as a fresh
+/// thread, through both the sequential and the parallel entry points.
+///
+/// The input is built so stale entries would show: S is 20 KB of random
+/// bytes. B holds S twice (the second copy is one long match, so nothing
+/// in it is indexed), then 30 pieces of S's middle, each behind 3 loose
+/// bytes, then text to 1.2 MB. A (the warm-up) parses S at B's second
+/// copy's positions, behind a 20 KB prefix whose tail is a match and 6
+/// loose bytes, so it indexes S at other positions than B's first copy
+/// (the skip phase differs). From cleared tables every piece matches the
+/// first copy of S at the first position B indexed there; from A's
+/// leftovers about half of them match the second copy instead (where
+/// A's indexed position comes first), a different offset.
+#[test]
+fn v7_max_output_is_deterministic() {
+    let mut x = 77u64;
+    let mut bytes = |n: usize| -> Vec<u8> { (0..n).map(|_| rnd(&mut x) as u8).collect() };
+    let s = bytes(20_000);
+    let y = bytes(9_997);
+    let a = [y.clone(), y, bytes(6), s.clone()].concat();
+    let mut b = [s.clone(), s.clone()].concat();
+    for i in 0..30 { b.extend_from_slice(&bytes(3)); let k = 1000 + 600 * i; b.extend_from_slice(&s[k..k + 200]); }
+    while b.len() < 1_200_000 { b.extend_from_slice(b"the quick brown fox jumps over the lazy dog "); b.extend_from_slice(&bytes(3)); }
+    // A in every 256 KB chunk (zero padding indexes nothing), so the
+    // parallel path's pool threads are warmed too.
+    let a_chunks: Vec<u8> = (0..8).flat_map(|_| { let mut c = a.clone(); c.resize(256 * 1024, 0); c }).collect();
+    for level in [simd_stream_codec::compress_into_max as fn(&[u8], &mut Vec<u8>), simd_stream_codec::compress_parallel_into_max] {
+        let run = move |input: &[u8]| { let mut c = Vec::new(); level(input, &mut c); c };
+        run(&a_chunks);
+        run(&a);
+        let warm1 = run(&b);
+        let warm2 = run(&b);
+        let bb = b.clone();
+        let fresh = std::thread::spawn(move || run(&bb)).join().unwrap();
+        assert!(warm1 == fresh, "warm thread differs from a fresh one");
+        assert!(warm2 == fresh, "second warm run differs from a fresh one");
+    }
 }

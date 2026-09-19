@@ -376,16 +376,21 @@ pub fn compress_with_dict(dict: &[u8], input: &[u8], output: &mut Vec<u8>) {
 /// block, so the parse's window reaches into it.
 fn compress_max_from(full: &[u8], start: usize, dict_id: u32, output: &mut Vec<u8>) {
     thread_local! {
-        /// The parse's 2 MB of tables, kept across calls without clearing
-        /// (stale entries are harmless, see `DfastTables::new`): the
-        /// parallel path makes one call per 256 KB chunk.
+        /// The parse's 2 MB of tables, allocated once per thread and
+        /// cleared at the start of every call (the parallel path makes
+        /// one per 256 KB chunk), so the output depends only on the
+        /// input and the dictionary, not on what the thread compressed
+        /// before (see `DfastTables::new`).
         static DFAST: RefCell<Box<v7_encode::DfastTables>> = RefCell::new(v7_encode::DfastTables::new());
     }
     let (mut seqs, mut literals) = (Vec::new(), Vec::new());
     let mut prev = v7_encode::Tables::none();
     let mut scratch = v7_encode::EncScratch::new();
     let mut payload = Vec::new();
-    DFAST.with_borrow_mut(|t| t.seed(full, start));
+    DFAST.with_borrow_mut(|t| {
+        t.clear();
+        t.seed(full, start);
+    });
     let mut offset = start;
     while offset < full.len() {
         let chunk_len = (full.len() - offset).min(MAX_BLOCK_SIZE);

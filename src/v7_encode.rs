@@ -465,12 +465,21 @@ impl DfastTables {
     /// previous input: under the modular distances `POS_BITS` describes,
     /// a candidate at or past the current position is not specially
     /// rejected, just let through to the same byte-for-byte check as any
-    /// other, so the tables can be reused across inputs without clearing.
+    /// other, so reusing the tables across inputs without clearing is
+    /// safe -- but a leftover can still win a match the empty table
+    /// would not have found, so for output that depends only on the
+    /// input, `clear` first (as `compress_into_max` does per call).
     pub fn new() -> Box<Self> {
         Box::new(DfastTables {
             long: vec![0; 1 << DFAST_LONG_BITS].into_boxed_slice().try_into().unwrap(),
             short: vec![0; 1 << DFAST_SHORT_BITS].into_boxed_slice().try_into().unwrap(),
         })
+    }
+
+    /// Empty both tables (2 MB of stores).
+    pub fn clear(&mut self) {
+        self.long.fill(0);
+        self.short.fill(0);
     }
 
     /// Index every position of `input[..end]` (a dictionary: the blocks
@@ -598,10 +607,9 @@ fn lazy_win(pos: &mut usize, cand: &mut usize, rc: &mut usize, c: usize, rc1: us
 /// MAX_WINDOW; the last sequence is literal-only. `t` carries the window
 /// across the blocks of one input. `reps` finds matches and codes them,
 /// so it must be what `encode_block`'s `Reps` starts a block with: the
-/// caller passes `[1, 4, 8]` at every block. Because `t` carries state
-/// across calls, the output can depend on the thread-local table's prior
-/// contents: both outputs decode identically, only the choice of match
-/// differs.
+/// caller passes `[1, 4, 8]` at every block. The choice of match depends
+/// on what `t` holds, so the output of an input's first block is only
+/// determined by the input when `t` starts empty (`DfastTables::clear`).
 ///
 /// Software pipelined as zstd's double-fast loop is: the slot and table
 /// entries of `pos + 1` are computed and loaded while `pos` is checked,
