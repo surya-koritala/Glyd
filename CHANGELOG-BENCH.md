@@ -1200,3 +1200,22 @@ is green as part of the full suite.
 - The walk's eight stream positions kept in memory on x86-64 (a volatile
   load and store per sequence instead of a register each): +1.5%
   (1,350 -> 1,370 MB/s). Kept.
+
+## Ultra parse pricing (2026-09-19, M1 Max, Silesia, ultra_bench)
+
+Where zstd -19 spends its bytes (`examples/zstd_anatomy.rs`, from its
+frame headers): on dickens it keeps 112 KB of literal bytes where the
+ultra parse kept 357 KB, with 9% more sequences; per unit the two coders
+cost about the same (zstd 5.2 bits per literal and 23.5 per sequence,
+Glyd 4.8 and 24.6). The fixed-price dynamic program is exact to first
+order and blind to the regime it creates; iterating a block on its own
+counts converges at once (dickens 3.537 -> 3.538 -> 3.538) while pricing
+literals 25% higher lands at 3.556. Corpus-wide the multiplicative fudge
+is a wash (1.25x: 3.933 vs 3.931; 1.5x: 3.908), an additive half bit per
+literal is not (0/0.5/1.0/1.5 bits: 3.941/3.946/3.944/3.941 with the
+prior at weight 2). The prior: the parse's own statistics beat the max
+level's (3.935 vs 3.931 at weight 1), weight 2 gives 3.941, 4 the same,
+1/4 3.912, 1/16 3.870. Kept: own prior at weight 2, half a bit per
+literal: 3.925 -> 3.946, decode 2,150 -> 2,087 MB/s (more short matches).
+Block splitting (`split_points`): margin 2x/3x/4x overhead gives
+3.938/3.935/3.931 at 2,097/2,119/2,142 MB/s; 4x kept.

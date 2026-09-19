@@ -1,5 +1,6 @@
-// Code histograms of the max level's parse over Silesia, normalised to
-// 4096 per table: the ultra parse's starting prices.
+// Code histograms of a parse over Silesia (the max level's, or with
+// ULTRA=1 the ultra level's own), normalised to 4096 per table: the ultra
+// parse's starting prices.
 use glyd::v7_encode::{find_sequences_dfast, DfastTables, EncScratch, Sequence};
 use glyd::v7_format::{ll_code, ml_code, LL_SYMBOLS, ML_SYMBOLS, OFF_SYMBOLS};
 
@@ -10,16 +11,22 @@ fn main() {
     let (mut hll, mut hml, mut hoff) = ([0u64; LL_SYMBOLS], [0u64; ML_SYMBOLS], [0u64; OFF_SYMBOLS]);
     let mut t = DfastTables::new();
     let mut codes = EncScratch::new();
+    let mut st = glyd::v7_ultra::UltraState::new();
     let (mut seqs, mut lits): (Vec<Sequence>, Vec<u8>) = (Vec::new(), Vec::new());
     for p in files {
         let d = std::fs::read(&p).unwrap();
         t.clear();
+        st.clear(d.len());
         let mut off = 0;
         while off < d.len() {
             let len = (d.len() - off).min(256 * 1024);
             seqs.clear(); lits.clear();
             let mut reps = [1u32, 4, 8];
-            find_sequences_dfast(&d, off, len, &mut t, &mut reps, &mut seqs, &mut lits, &mut codes);
+            if std::env::var("ULTRA").is_ok() {
+                glyd::v7_ultra::find_sequences_ultra(&d, off, len, &mut st, [1, 4, 8], &mut seqs, &mut lits);
+            } else {
+                find_sequences_dfast(&d, off, len, &mut t, &mut reps, &mut seqs, &mut lits, &mut codes);
+            }
             let mut r = [1u32, 4, 8];
             for q in &seqs {
                 hll[ll_code(q.lit_len).0 as usize] += 1;

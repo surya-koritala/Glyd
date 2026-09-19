@@ -31,6 +31,17 @@ const NONE: u32 = u32::MAX;
 const SUFFICIENT_LEN: usize = 256;
 /// Price unit: 1/256 bit.
 const BIT: u32 = 256;
+const PRIOR_WEIGHT: u32 = 2;
+/// Added to every literal's price. The dynamic program prices each
+/// decision at the current code frequencies, which is exact to first
+/// order but blind to the regime it creates: a parse that turns literals
+/// into short matches makes every short match and every ll = 0 cheaper,
+/// which the fixed prices never credit, so the exact model settles on a
+/// literal-heavy parse (dickens: 3.2x the literal bytes of zstd -19's).
+/// Half a bit per literal nudges it over; on Silesia 0/0.5/1.0/1.5 bits
+/// give 3.941/3.946/3.944/3.941, at 0.5-1.5% decode for the extra short
+/// matches.
+const LIT_SURCHARGE: u32 = BIT / 2;
 
 #[derive(Clone, Copy)]
 struct Node {
@@ -52,24 +63,24 @@ struct Prices {
     off: [u32; OFF_SYMBOLS],
 }
 
-/// Starting code counts, 4096 per table: the max level's parse over
-/// Silesia, with weight moved onto the shortest matches (which that parse
-/// never makes and this one does). They stay in every block's prices at
-/// this weight, so a code the recent blocks did not use keeps a price the
-/// parse can afford to try again; without that, a block parsed on prices
-/// from a sparse block gets sparser (an unused code costs log2(total)
-/// bits) and never recovers.
-const PRIOR_LL: [u32; LL_SYMBOLS] = [2589, 735, 216, 137, 44, 74, 32, 43, 16, 28, 18, 29, 10, 20, 25, 23, 18, 14, 5, 5, 4, 3, 3, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
-const PRIOR_ML: [u32; ML_SYMBOLS] = [300, 600, 1025, 488, 295, 555, 271, 223, 159, 110, 73, 104, 105, 49, 37, 41, 35, 35, 52, 42, 37, 21, 15, 16, 14, 12, 9, 16, 14, 8, 6, 6, 11, 10, 8, 9, 28, 10, 29, 46, 14, 6, 4, 6, 5, 1, 1, 1, 1, 1, 1, 1, 1, 1];
-const PRIOR_OFF: [u32; OFF_SYMBOLS] = [204, 160, 59, 2, 3, 1, 12, 38, 63, 89, 100, 111, 126, 143, 183, 216, 263, 310, 352, 373, 375, 359, 275, 165, 80, 32];
+/// Starting code counts, 4096 per table, from this parse's own output
+/// over Silesia (`examples/prior_stats.rs` with ULTRA=1), counted
+/// `PRIOR_WEIGHT` times in every block's prices, so a code the recent
+/// blocks did not use keeps a price the parse can afford to try again;
+/// without that, a block parsed on prices from a sparse block gets
+/// sparser (an unused code costs log2(total) bits) and never recovers.
+/// Weight 2 measured 0.13% over 1 on Silesia, 4 the same as 2, 1/4 -0.5%.
+const PRIOR_LL: [u32; LL_SYMBOLS] = [1863, 1245, 423, 186, 91, 84, 58, 26, 25, 24, 16, 7, 3, 6, 14, 9, 4, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+const PRIOR_ML: [u32; ML_SYMBOLS] = [339, 204, 630, 279, 409, 379, 123, 231, 200, 169, 52, 137, 198, 24, 32, 54, 28, 17, 64, 20, 40, 10, 24, 28, 24, 12, 8, 61, 9, 7, 4, 18, 9, 28, 9, 9, 37, 12, 33, 55, 21, 11, 11, 13, 11, 2, 1, 1, 1, 1, 1, 1, 1, 1];
+const PRIOR_OFF: [u32; OFF_SYMBOLS] = [554, 178, 82, 10, 2, 4, 19, 76, 89, 102, 107, 106, 108, 109, 132, 139, 158, 184, 213, 238, 267, 308, 305, 263, 204, 137];
 
 impl Prices {
     /// Prices from the prior plus `s` (the recent blocks' counts), with
     /// `lit` standing in for the literal counts when `s` has none.
     fn of(s: &Stats, lit: &[u32; 256]) -> Prices {
-        let mut ll = PRIOR_LL;
-        let mut ml = PRIOR_ML;
-        let mut off = PRIOR_OFF;
+        let mut ll = PRIOR_LL.map(|c| c * PRIOR_WEIGHT);
+        let mut ml = PRIOR_ML.map(|c| c * PRIOR_WEIGHT);
+        let mut off = PRIOR_OFF.map(|c| c * PRIOR_WEIGHT);
         for (a, b) in ll.iter_mut().zip(s.ll.iter()) {
             *a += b;
         }
@@ -79,7 +90,11 @@ impl Prices {
         for (a, b) in off.iter_mut().zip(s.off.iter()) {
             *a += b;
         }
-        Prices { lit: costs(if s.lit.iter().any(|&c| c > 0) { &s.lit } else { lit }), ll: costs(&ll), ml: costs(&ml), off: costs(&off) }
+        let mut litc = costs(if s.lit.iter().any(|&c| c > 0) { &s.lit } else { lit });
+        for c in litc.iter_mut() {
+            *c += LIT_SURCHARGE;
+        }
+        Prices { lit: litc, ll: costs(&ll), ml: costs(&ml), off: costs(&off) }
     }
 
     #[inline(always)]
