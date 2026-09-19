@@ -8,7 +8,7 @@
 //! Every section size and sub-stream length is checked against its
 //! container before any reader touches it, so corrupt input yields an
 //! error, never a panic or an out-of-bounds access.
-use crate::bits::{BitReader, Stream, PAD};
+use crate::bits::{BitReader, Framing, Stream, PAD};
 use crate::error::{CodecError, Result};
 use crate::format::MAX_BLOCK_SIZE;
 use crate::huff8;
@@ -36,6 +36,10 @@ fn at(i: usize) -> usize {
 }
 
 pub struct Scratch {
+    /// A compact block's payload with `PAD` zero bytes after it (the
+    /// decoders' loads run past a stream's last byte; on disk a compact
+    /// block carries no padding).
+    pub padded: Vec<u8>,
     /// Grouped ll, ml and offset codes (see `GROUP`).
     pub codes: Vec<u8>,
     /// Grouped literal lengths, match lengths and offsets.
@@ -53,6 +57,7 @@ const WILD_MARGIN: usize = 96;
 impl Scratch {
     pub fn new() -> Self {
         Scratch {
+            padded: Vec::with_capacity(crate::format::COMPACT_MAX + PAD),
             codes: vec![0; GROUPS * GROUP],
             seq: vec![0; GROUPS * GROUP],
             lits: vec![0; MAX_BLOCK_SIZE + WILD_MARGIN],
@@ -163,9 +168,10 @@ impl<'a> Section<'a> {
 /// A section's 8 sub-streams. v9: `bits::Stream::split_compact`. v8:
 /// `bits::Stream::split` (24-bit sizes, one padding at the end). v7: 8
 /// u32 sizes, each stream carrying its own `PAD` zeros.
-fn substreams(sec: Section, v8: bool, compact: bool) -> Result<([Stream; 8], bool)> {
+fn substreams(sec: Section, v8: bool, compact: bool, n_symbols: usize) -> Result<([Stream; 8], bool)> {
     if compact {
-        return Stream::split_compact(sec.bytes, sec.len).ok_or(corrupt("v9: sub-stream table"));
+        let single = Framing::compact_for(n_symbols) == Framing::Single;
+        return Stream::split_compact(sec.bytes, sec.len, single).ok_or(corrupt("v9: sub-stream table"));
     }
     let sec = sec.own();
     if v8 {
@@ -273,7 +279,7 @@ fn code_stream_open<'a, 'p, 'd>(sec: Section<'a>, v8: bool, compact: bool, coded
         }
     }
     let table = prev.get().ok_or(corrupt("v7: table reuse without a table"))?;
-    let (streams, single) = substreams(sec.from(pos), v8, compact)?;
+    let (streams, single) = substreams(sec.from(pos), v8, compact, n)?;
     Ok(Some((table, streams, single)))
 }
 
@@ -379,7 +385,7 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
 
     let section = Section::of(payload, layout, S_EXTRA);
     let sec = section.bytes;
-    let (extra, single) = substreams(section, v8, compact)?;
+    let (extra, single) = substreams(section, v8, compact, n)?;
     // Stream k's next bit is `b<k>`, an absolute bit address (`ptr * 8 +
     // bit`, as in `tans::decode8`): eight scalars, not an array, so they
     // stay in registers, and no base register. Built from the extras
@@ -590,7 +596,7 @@ fn literals(payload: &[u8], layout: &Layout, n_lit: usize, prev: &mut DecTables,
         prev.lit = Slot::Own(huff8::Table::build(&lengths).ok_or(corrupt("v7: literal code lengths"))?);
     }
     let table = prev.lit.get().ok_or(corrupt("v7: literal table reuse without a table"))?;
-    let (streams, single) = substreams(section.from(pos), layout.v8, layout.compact)?;
+    let (streams, single) = substreams(section.from(pos), layout.v8, layout.compact, n_lit)?;
     huff8::decode_with(table, &streams, n_lit, single, &mut s.lits).map_err(|_| corrupt("v7: literal stream overrun"))
 }
 
@@ -952,7 +958,23 @@ unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, n_seq: usiz
     if uncompressed_len > MAX_BLOCK_SIZE || n_lit > MAX_BLOCK_SIZE || n_seq > MAX_SEQ {
         return Err(corrupt("v7: block header sizes"));
     }
-    let mut layout = if compact { payload_layout_compact(payload) } else { payload_layout(payload) }.ok_or(corrupt("v7: payload layout"))?;
+    if !compact {
+        return decode_padded(payload, v8, false, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext);
+    }
+    let mut padded = std::mem::take(&mut scratch.padded);
+    padded.clear();
+    padded.extend_from_slice(payload);
+    padded.extend_from_slice(&[0u8; PAD]);
+    let r = decode_padded(&padded, v8, true, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext);
+    scratch.padded = padded;
+    r
+}
+
+/// The passes over a payload whose streams may be read `PAD` bytes past
+/// their ends.
+#[cfg_attr(target_arch = "x86_64", inline(always))]
+unsafe fn decode_padded(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>) -> Result<usize> {
+    let mut layout = if compact { payload_layout_compact(payload, true) } else { payload_layout(payload) }.ok_or(corrupt("v7: payload layout"))?;
     layout.v8 = v8;
     let sub = &layout.sub;
     let coded = |i: usize| sub.coded & (1 << i) != 0;

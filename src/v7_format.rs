@@ -369,29 +369,50 @@ impl SubHeader {
         })
     }
 
-    /// The compact form (v9 blocks): sizes as u16.
-    pub const COMPACT_BYTES: usize = 1 + 1 + 4 + 2 * 5;
+    /// The compact form (v9 blocks): one byte of flags (bits 0-3 `coded`,
+    /// bits 4-5 `reuse`, bit 7 a dictionary id follows), the dictionary
+    /// id when there is one, and the first four sizes as varints (the
+    /// fifth section runs to the end of the payload).
+    pub const COMPACT_MAX: usize = 1 + 4 + 4 * 3;
 
     pub fn write_compact(&self, out: &mut Vec<u8>) {
-        out.push(self.coded);
-        out.push(self.reuse);
-        out.extend_from_slice(&self.dict_id.to_le_bytes());
-        for s in self.sizes {
-            debug_assert!(s < 65536);
-            out.extend_from_slice(&(s as u16).to_le_bytes());
+        debug_assert!(self.coded < 16 && self.reuse < 4);
+        out.push(self.coded | self.reuse << 4 | if self.dict_id != 0 { 128 } else { 0 });
+        if self.dict_id != 0 {
+            out.extend_from_slice(&self.dict_id.to_le_bytes());
+        }
+        for &s in &self.sizes[..4] {
+            crate::format::put_varint(out, s);
         }
     }
 
-    pub fn parse_compact(src: &[u8]) -> Option<SubHeader> {
-        if src.len() < Self::COMPACT_BYTES {
-            return None;
+    /// The compact sub-header at the start of `src`, whose last `tail`
+    /// bytes are padding: the sub-header and its length.
+    pub fn parse_compact(src: &[u8], tail: usize) -> Option<(SubHeader, usize)> {
+        let flags = *src.first()?;
+        let mut pos = 1usize;
+        let dict_id = if flags & 128 != 0 {
+            let d = src.get(pos..pos + 4)?;
+            pos += 4;
+            u32::from_le_bytes([d[0], d[1], d[2], d[3]])
+        } else {
+            0
+        };
+        let mut sizes = [0u32; 5];
+        for s in sizes[..4].iter_mut() {
+            *s = crate::format::get_varint(src, &mut pos)?;
         }
-        let u = |i: usize| u16::from_le_bytes([src[i], src[i + 1]]) as u32;
-        Some(SubHeader {
-            coded: src[0],
-            reuse: src[1],
-            dict_id: u32::from_le_bytes([src[2], src[3], src[4], src[5]]),
-            sizes: [u(6), u(8), u(10), u(12), u(14)],
-        })
+        let used: usize = sizes[..4].iter().map(|&s| s as usize).sum::<usize>() + pos + tail;
+        sizes[4] = src.len().checked_sub(used)? as u32;
+        Some((SubHeader { coded: flags & 15, reuse: flags >> 4 & 3, dict_id, sizes }, pos))
+    }
+
+    /// The dictionary id a compact sub-header names.
+    pub fn compact_dict_id(src: &[u8]) -> Option<u32> {
+        if *src.first()? & 128 == 0 {
+            return Some(0);
+        }
+        let d = src.get(1..5)?;
+        Some(u32::from_le_bytes([d[0], d[1], d[2], d[3]]))
     }
 }

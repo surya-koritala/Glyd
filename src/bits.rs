@@ -188,25 +188,25 @@ pub fn write_section(out: &mut Vec<u8>, framing: Framing, max_bits: usize, fill:
 }
 
 /// Bytes a section's framing takes beyond its streams' bits: the size
-/// table and the padding (compact: a stream count and the varints, ~1
-/// byte each; the payload's one padding is counted in the block).
+/// table and the padding (compact: the varint sizes, ~1 byte each).
 pub fn section_frame_bytes(framing: Framing) -> usize {
     match framing {
         Framing::Wide => SIZES_BYTES + PAD,
-        Framing::Compact => STREAMS,
-        Framing::Single => 1,
+        Framing::Compact => STREAMS - 1,
+        Framing::Single => 0,
     }
 }
 
-/// The compact section layout (v9 blocks): a stream count (1 or 8), for
-/// 8 seven varint sizes (7 bits a byte, low first, the top bit marking
-/// more), the streams back to back, and no padding of its own:
-/// `section` must run on to the end of the payload, whose last `PAD`
-/// bytes are zero.
+/// The compact section layout (v9 blocks): for eight streams seven
+/// varint sizes (7 bits a byte, low first, the top bit marking more),
+/// then the streams back to back; for one stream just its bytes. Whether
+/// a section is one stream or eight follows from its symbol count
+/// (`Framing::compact_for`), so nothing says so here. No padding of its
+/// own: `section` must run on to the end of the payload, whose last
+/// `PAD` bytes are zero (the decoder's padded copy).
 pub fn write_streams_compact(out: &mut Vec<u8>, n_streams: usize, max_bits: usize, mut fill: impl FnMut(usize, &mut BitCursor)) {
     debug_assert!(n_streams == 1 || n_streams == STREAMS);
     let mut lens = [0usize; STREAMS];
-    out.push(n_streams as u8);
     // The streams go straight into `out`; the size table, known only
     // once they are written, is slid in front of them afterwards.
     let streams_at = out.len();
@@ -250,36 +250,19 @@ impl<'a> Stream<'a> {
     /// from the stream count to the end of the payload (`section_len`
     /// bytes are the section's own), so every stream's bytes reach the
     /// payload's padding.
-    pub fn split_compact(section: &'a [u8], section_len: usize) -> Option<([Stream<'a>; STREAMS], bool)> {
-        if section_len > section.len() - PAD.min(section.len()) || section_len < 1 {
+    pub fn split_compact(section: &'a [u8], section_len: usize, single: bool) -> Option<([Stream<'a>; STREAMS], bool)> {
+        if section_len > section.len() - PAD.min(section.len()) {
             return None;
         }
-        let n_streams = section[0] as usize;
-        let mut pos = 1usize;
-        if n_streams == 1 {
+        if single {
             let mut out = [Stream { bytes: &section[section_len..], len: 0 }; STREAMS];
-            out[0] = Stream { bytes: &section[pos..], len: section_len - pos };
+            out[0] = Stream { bytes: section, len: section_len };
             return Some((out, true));
         }
-        if n_streams != STREAMS {
-            return None;
-        }
+        let mut pos = 0usize;
         let mut lens = [0usize; STREAMS];
         for l in lens[..STREAMS - 1].iter_mut() {
-            let (mut v, mut shift) = (0usize, 0u32);
-            loop {
-                let b = *section.get(pos)?;
-                pos += 1;
-                v |= ((b & 127) as usize) << shift;
-                if b < 128 {
-                    break;
-                }
-                shift += 7;
-                if shift > 28 {
-                    return None;
-                }
-            }
-            *l = v;
+            *l = crate::format::get_varint(section, &mut pos)? as usize;
         }
         let data_start = pos;
         let sum: usize = lens[..STREAMS - 1].iter().sum();

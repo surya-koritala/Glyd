@@ -11,13 +11,48 @@ pub const VERSION_V7: u16 = 7;
 /// v7 blocks are still decoded.
 pub const VERSION_V8: u16 = 8;
 
-/// v8 coding in compact framing for small blocks: a 19-byte header
-/// (lengths as u16), a 16-byte sub-header, sub-stream sizes as varints,
-/// one 8-byte padding at the end of the payload instead of one per
-/// section. Written for blocks of at most `COMPACT_MAX` bytes.
+/// v8 coding in compact framing for small blocks: a one-byte marker
+/// instead of the magic and version, the lengths as varints, a
+/// sub-header of one flag byte, the dictionary id when there is one and
+/// four varint section sizes, sub-stream sizes as varints, and no
+/// padding on disk (the decoder pads its copy). Written for blocks of at
+/// most `COMPACT_MAX` bytes.
 pub const VERSION_V9: u16 = 9;
 pub const COMPACT_MAX: usize = 32 * 1024;
-pub const COMPACT_HEADER_SIZE: usize = 19;
+/// The first byte of a compact block ('G'; the magic's is 'D').
+pub const COMPACT_MARKER: u8 = 0x47;
+/// The shortest compact header: marker, flags, two one-byte lengths, checksum.
+pub const COMPACT_HEADER_MIN: usize = 8;
+
+/// A 7-bits-a-byte little-endian varint, the top bit marking more.
+pub fn put_varint(out: &mut Vec<u8>, mut v: u32) {
+    while v >= 128 {
+        out.push((v & 127) as u8 | 128);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+pub fn varint_len(v: u32) -> usize {
+    1 + (31 - (v | 1).leading_zeros() as usize) / 7
+}
+
+/// The varint at `src[*pos..]`; None if truncated or over 32 bits.
+pub fn get_varint(src: &[u8], pos: &mut usize) -> Option<u32> {
+    let (mut v, mut shift) = (0u32, 0u32);
+    loop {
+        let b = *src.get(*pos)?;
+        *pos += 1;
+        v |= ((b & 127) as u32) << shift;
+        if b < 128 {
+            return Some(v);
+        }
+        shift += 7;
+        if shift > 28 {
+            return None;
+        }
+    }
+}
 
 /// A block of the entropy-coded family (v7, v8 or v9).
 #[inline(always)]
@@ -25,47 +60,48 @@ pub fn is_coded_version(version: u16) -> bool {
     version == VERSION_V7 || version == VERSION_V8 || version == VERSION_V9
 }
 
-/// Bytes the on-disk header of a block of `version` takes.
-#[inline(always)]
-pub fn header_len(version: u16) -> usize {
-    if version == VERSION_V9 {
-        COMPACT_HEADER_SIZE
+/// Bytes the on-disk header of a coded block takes: the compact one's
+/// depends on its lengths.
+pub fn coded_header_len(compact: bool, uncompressed_len: usize, payload_len: usize, n_seq: usize, n_lit: usize) -> usize {
+    if compact {
+        2 + varint_len(uncompressed_len as u32) + varint_len(payload_len as u32) + varint_len(n_seq as u32) + varint_len(n_lit as u32) + 4
     } else {
         HEADER_SIZE
     }
 }
 
 impl BlockHeader {
-    /// The compact on-disk form (v9): magic, version, flags as one byte,
-    /// the four lengths as u16, the checksum.
+    /// The compact on-disk form (v9): the marker, the flags as one byte,
+    /// the uncompressed and payload lengths as varints, for a coded block
+    /// the sequence and literal counts as varints, the checksum.
     pub fn write_compact(&self, out: &mut Vec<u8>) {
-        debug_assert!(self.version == VERSION_V9 && self.flags < 256 && self.uncompressed_len < 65536 && self.token_count < 65536 && self.token_bytes < 65536 && self.literal_len < 65536);
-        out.extend_from_slice(&self.magic.to_le_bytes());
-        out.extend_from_slice(&self.version.to_le_bytes());
+        debug_assert!(self.version == VERSION_V9 && self.flags < 256);
+        out.push(COMPACT_MARKER);
         out.push(self.flags as u8);
-        out.extend_from_slice(&(self.uncompressed_len as u16).to_le_bytes());
-        out.extend_from_slice(&(self.token_count as u16).to_le_bytes());
-        out.extend_from_slice(&(self.token_bytes as u16).to_le_bytes());
-        out.extend_from_slice(&(self.literal_len as u16).to_le_bytes());
+        put_varint(out, self.uncompressed_len);
+        put_varint(out, self.token_bytes);
+        if self.flags & FLAG_RAW_UNCOMPRESSED == 0 {
+            put_varint(out, self.token_count);
+            put_varint(out, self.literal_len);
+        }
         out.extend_from_slice(&self.checksum.to_le_bytes());
     }
 
-    /// Read a compact header (`src` starts at its magic, at least
-    /// `COMPACT_HEADER_SIZE` long).
-    pub fn read_compact(src: &[u8]) -> BlockHeader {
-        let u16at = |i: usize| u16::from_le_bytes([src[i], src[i + 1]]) as u32;
-        BlockHeader {
-            magic: u32::from_le_bytes([src[0], src[1], src[2], src[3]]),
-            version: u16::from_le_bytes([src[4], src[5]]),
-            flags: src[6] as u16,
-            uncompressed_len: u16at(7),
-            token_count: u16at(9),
-            token_bytes: u16at(11),
-            literal_len: u16at(13),
-            checksum: u32::from_le_bytes([src[15], src[16], src[17], src[18]]),
-            offset_bytes: 0,
-            extras_bytes: 0,
+    /// Read a compact header (`src` starts at its marker): the header and
+    /// its length, or None if truncated.
+    pub fn read_compact(src: &[u8]) -> Option<(BlockHeader, usize)> {
+        if src.len() < COMPACT_HEADER_MIN || src[0] != COMPACT_MARKER {
+            return None;
         }
+        let flags = src[1] as u16;
+        let mut pos = 2usize;
+        let uncompressed_len = get_varint(src, &mut pos)?;
+        let token_bytes = get_varint(src, &mut pos)?;
+        let (token_count, literal_len) = if flags & FLAG_RAW_UNCOMPRESSED == 0 { (get_varint(src, &mut pos)?, get_varint(src, &mut pos)?) } else { (0, 0) };
+        let c = src.get(pos..pos + 4)?;
+        let checksum = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+        let header = BlockHeader { magic: MAGIC, version: VERSION_V9, flags, uncompressed_len, token_count, token_bytes, literal_len, checksum, offset_bytes: 0, extras_bytes: 0 };
+        Some((header, pos + 4))
     }
 }
 /// Match window. An offset is 17 bits: 16 in the offset stream plus one in

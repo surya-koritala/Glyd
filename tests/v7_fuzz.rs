@@ -110,7 +110,7 @@ fn v7_small_object_mutation_fuzz() {
         let mut c = Vec::new();
         compress_with_dict(dict, input, &mut c);
         assert_eq!(decompress_with_dict(dict, &c).unwrap(), input);
-        for _ in 0..fuzz_target() / 100 {
+        for _ in 0..fuzz_target() / 5 {
             mutate(&mut x, &c, &mut m);
             if let Ok(out) = decompress_with_dict(dict, &m) {
                 assert!(out.len() <= input.len() && out[..] == input[..out.len()], "checksum passed but data differs");

@@ -16,11 +16,15 @@ use crate::{huff8, tans};
 
 const MAGIC: &[u8; 8] = b"GLYDDICT";
 const VERSION: u16 = 1;
-const SEGMENT: usize = 256;
 
 /// Zero bytes kept after the content: the decoder's copies from a
 /// dictionary run in 32-byte steps past a match's end.
 pub const CONTENT_PAD: usize = 64;
+
+/// The trainer's segment length (see `select_content`): 1 KB against
+/// zstd's optimized 50-2000; measured 256/512/1024/2048 on JSON events,
+/// access logs and a source tree, 1024 best or within noise.
+const SEGMENT: usize = 1024;
 
 pub struct Dict {
     /// The content, then `CONTENT_PAD` zeros.
@@ -199,65 +203,80 @@ fn tables_for(content: &[u8], samples: &[&[u8]]) -> Tables {
 
 /// The dictionary content, by cover (zstd's FASTCOVER shape): every
 /// 8-byte string (a "dmer") in the samples is counted in a hashed table;
-/// the samples are cut into as many epochs as the budget has segments,
-/// and each epoch contributes its best `SEGMENT`-byte window (the sum of
-/// its dmers' counts, kept as a running sum), whose dmers are then zeroed
-/// so later picks cover new strings. Taken segments go in from the end,
-/// so the most valuable sit at the shortest offsets. Linear in the
-/// sample bytes.
+/// the samples' concatenation is cut into as many epochs as the budget
+/// has segments, and each epoch contributes its best `SEGMENT`-byte
+/// window (the sum of its dmers' counts, kept as a running sum), whose
+/// dmers are then zeroed so later picks cover new strings. Taken
+/// segments go in from the end, so the most valuable (the early epochs',
+/// picked while every count was whole) sit at the shortest offsets.
+/// Linear in the sample bytes.
 fn select_content(samples: &[&[u8]], budget: usize) -> Vec<u8> {
+    let segment = SEGMENT;
     const D: usize = 8;
     const FBITS: u32 = 20;
     let hash = |w: &[u8]| (u64::from_le_bytes(w.try_into().unwrap()).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (64 - FBITS)) as usize;
-    let mut freq = vec![0u32; 1 << FBITS];
-    let total: usize = samples.iter().map(|s| s.len()).sum();
-    for s in samples {
-        for w in s.windows(D) {
-            freq[hash(w)] += 1;
-        }
-    }
-    let n_segments = budget / SEGMENT;
-    if n_segments == 0 || total < SEGMENT {
+    let joined: Vec<u8> = samples.concat();
+    let n_segments = budget / segment;
+    if n_segments == 0 || joined.len() < segment {
         return Vec::new();
     }
-    let epoch = (total / n_segments).max(SEGMENT);
-    // Epochs over the concatenation of the samples, each a slice of one
-    // sample (a sample's tail shorter than an epoch is its own epoch).
-    let mut taken: Vec<(usize, usize)> = Vec::new(); // (sample, offset), best first
-    for (si, s) in samples.iter().enumerate() {
-        let mut start = 0;
-        while start + SEGMENT <= s.len() {
-            let end = (start + epoch).min(s.len());
-            let e = &s[start..end];
-            if e.len() < SEGMENT {
-                break;
+    let mut freq = vec![0u32; 1 << FBITS];
+    for w in joined.windows(D) {
+        freq[hash(w)] += 1;
+    }
+    let epoch = (joined.len() / n_segments).max(segment);
+    let per_seg = segment - D + 1;
+    // A window's score counts each distinct dmer once (a run of one
+    // string is worth one string): `inside` holds how many times each
+    // dmer is in the window, and a dmer's count is added when it enters
+    // and taken away when its last copy leaves.
+    let mut inside = vec![0u16; 1 << FBITS];
+    let mut taken: Vec<usize> = Vec::new(); // offsets into `joined`, first epoch first
+    let mut start = 0;
+    while start + segment <= joined.len() {
+        let e = &joined[start..(start + epoch).min(joined.len())];
+        let dmers = e.len() - D + 1;
+        let mut sum = 0u64;
+        for i in 0..per_seg {
+            let h = hash(&e[i..i + D]);
+            if inside[h] == 0 {
+                sum += freq[h] as u64;
             }
-            // Running sum of the dmer counts inside the window.
-            let dmers = e.len() - D + 1;
-            let per_seg = SEGMENT - D + 1;
-            let mut sum: u64 = (0..per_seg).map(|i| freq[hash(&e[i..i + D])] as u64).sum();
-            let mut best = (sum, 0usize);
-            for off in 1..=dmers.saturating_sub(per_seg) {
-                sum += freq[hash(&e[off + per_seg - 1..off + per_seg - 1 + D])] as u64;
-                sum -= freq[hash(&e[off - 1..off - 1 + D])] as u64;
-                if sum > best.0 {
-                    best = (sum, off);
-                }
-            }
-            if best.0 > 0 {
-                let seg = &e[best.1..best.1 + SEGMENT];
-                for w in seg.windows(D) {
-                    freq[hash(w)] = 0;
-                }
-                taken.push((si, start + best.1));
-            }
-            start = end;
+            inside[h] += 1;
         }
+        let mut best = (sum, 0usize);
+        for off in 1..=dmers.saturating_sub(per_seg) {
+            let h = hash(&e[off + per_seg - 1..off + per_seg - 1 + D]);
+            if inside[h] == 0 {
+                sum += freq[h] as u64;
+            }
+            inside[h] += 1;
+            let h = hash(&e[off - 1..off - 1 + D]);
+            inside[h] -= 1;
+            if inside[h] == 0 {
+                sum -= freq[h] as u64;
+            }
+            if sum > best.0 {
+                best = (sum, off);
+            }
+        }
+        // Empty the window's counts for the next epoch.
+        let last = dmers.saturating_sub(per_seg);
+        for i in last..last + per_seg {
+            inside[hash(&e[i..i + D])] -= 1;
+        }
+        if best.0 > 0 {
+            for w in e[best.1..best.1 + segment].windows(D) {
+                freq[hash(w)] = 0;
+            }
+            taken.push(start + best.1);
+        }
+        start += epoch;
     }
     taken.truncate(n_segments);
-    let mut content = Vec::with_capacity(taken.len() * SEGMENT);
-    for &(si, off) in taken.iter().rev() {
-        content.extend_from_slice(&samples[si][off..off + SEGMENT]);
+    let mut content = Vec::with_capacity(taken.len() * segment);
+    for &off in taken.iter().rev() {
+        content.extend_from_slice(&joined[off..off + segment]);
     }
     content
 }

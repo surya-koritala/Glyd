@@ -62,7 +62,7 @@ pub struct Layout {
     /// rather than v7's.
     pub v8: bool,
     /// The v9 framing: compact sub-header, `bits::Stream::split_compact`
-    /// sections, one padding at the payload's end.
+    /// sections, one padding at the payload's end (the decoder's copy).
     pub compact: bool,
 }
 
@@ -72,10 +72,12 @@ pub fn payload_layout(payload: &[u8]) -> Option<Layout> {
     layout_from(payload, sub, SubHeader::BYTES, 0, false)
 }
 
-/// The layout of a v9 payload: the sections, then `PAD` zero bytes.
-pub fn payload_layout_compact(payload: &[u8]) -> Option<Layout> {
-    let sub = SubHeader::parse_compact(payload)?;
-    layout_from(payload, sub, SubHeader::COMPACT_BYTES, PAD, true)
+/// The layout of a v9 payload: the sections, then, when `padded` (the
+/// decoder's copy), `PAD` zero bytes.
+pub fn payload_layout_compact(payload: &[u8], padded: bool) -> Option<Layout> {
+    let tail = if padded { PAD } else { 0 };
+    let (sub, used) = SubHeader::parse_compact(payload, tail)?;
+    layout_from(payload, sub, used, tail, true)
 }
 
 fn layout_from(payload: &[u8], sub: SubHeader, start: usize, tail: usize, compact: bool) -> Option<Layout> {
@@ -371,7 +373,9 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     debug_assert!(s.ml.len() == n && s.off.len() == n && s.extra.len() == n);
     debug_assert!(s.extra.iter().all(|&x| (x >> EXTRA_BITS) as u32 <= EXTRA_BITS));
     let base = out.len();
-    let sub_bytes = if compact { SubHeader::COMPACT_BYTES } else { SubHeader::BYTES };
+    // Room for the sub-header, written once the section sizes are known
+    // (a compact one is shorter: the sections then slide back).
+    let sub_bytes = if compact { SubHeader::COMPACT_MAX } else { SubHeader::BYTES };
     out.resize(base + sub_bytes, 0);
 
     // Literals. A small block (a small object) with a previous table
@@ -401,7 +405,10 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     // short sections a single stream.
     let framing = |symbols: usize| if compact { Framing::compact_for(symbols) } else { Framing::Wide };
     let lit_coded_size = huff8::coded_size(&hist, &lit_lengths) - if lit_reuse { crate::huffman::packed_lengths_v8_size(&lit_lengths) } else { 0 } + section_frame_bytes(framing(literals.len()));
-    let lit_coded = literals.len() >= 64 && lit_coded_size + literals.len() / 50 < literals.len();
+    // A reused table costs nothing to carry, so even a short section is
+    // coded when the bits say so; a fresh one is not worth building
+    // under 64 literals.
+    let lit_coded = literals.len() >= if lit_reuse { 8 } else { 64 } && lit_coded_size + literals.len() / 50 < literals.len();
     let lit_start = out.len();
     if lit_coded {
         if lit_reuse {
@@ -437,7 +444,7 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     // (a small object) whose previous tables cover it reuses them
     // without pricing fresh ones (as with the literal table above).
     let mut fresh: Option<[Vec<u16>; 3]> = None;
-    let mut fresh_tables = |fresh: &mut Option<[Vec<u16>; 3]>| {
+    let fresh_tables = |fresh: &mut Option<[Vec<u16>; 3]>| {
         fresh.get_or_insert_with(|| [tans::normalize(&ll_hist, LL_SYMBOLS), tans::normalize(&ml_hist, ML_SYMBOLS), tans::normalize(&off_hist, OFF_SYMBOLS)]);
     };
     let mut seq_reuse = match prev_cost {
@@ -536,12 +543,13 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     let mut hdr = Vec::with_capacity(SubHeader::BYTES);
     if compact {
         sub.write_compact(&mut hdr);
-        // The one padding every compact section's streams run into.
-        out.extend_from_slice(&[0u8; PAD]);
+        let end = out.len();
+        out.copy_within(base + sub_bytes..end, base + hdr.len());
+        out.truncate(end - (sub_bytes - hdr.len()));
     } else {
         sub.write(&mut hdr);
     }
-    out[base..base + sub_bytes].copy_from_slice(&hdr);
+    out[base..base + hdr.len()].copy_from_slice(&hdr);
 
     if seq_coded {
         if !seq_reuse {
