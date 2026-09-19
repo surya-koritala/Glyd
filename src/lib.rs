@@ -798,9 +798,10 @@ fn records_envelope(compressed: &[u8]) -> Option<Vec<RecordUnit<'_>>> {
 }
 
 /// `level` in record mode: units of `input` are transformed when they are
-/// record-shaped and the transform pays, else compressed as they are.
-/// `decompress`, `decompress_into` and the parallel decoders read the
-/// result.
+/// record-shaped and the transform pays, else compressed as they are;
+/// the units run in parallel, so `level` should be a sequential one
+/// (`compress_into_max`, `compress_into_ultra`). `decompress`,
+/// `decompress_into` and the parallel decoders read the result.
 pub fn compress_records_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>)) {
     // Units cut at line ends.
     let mut units: Vec<&[u8]> = Vec::new();
@@ -828,7 +829,7 @@ pub fn compress_records_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8]
                     let (mut a, mut b) = (Vec::new(), Vec::new());
                     level(trial, &mut a);
                     level(&image, &mut b);
-                    b.len() * 100 < a.len() * 97
+                    b.len() * 100 < a.len() * 95
                 }
                 None => false,
             };

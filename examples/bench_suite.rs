@@ -123,11 +123,13 @@ fn glyd_max(input: &[u8], threads: usize, out: &mut Vec<u8>) {
 fn glyd_ultra(input: &[u8], threads: usize, out: &mut Vec<u8>) {
     if threads > 1 { glyd::compress_parallel_into_ultra(input, out) } else { glyd::compress_into_ultra(input, out) }
 }
-fn glyd_max_rec(input: &[u8], threads: usize, out: &mut Vec<u8>) {
-    glyd::compress_records_with(input, out, if threads > 1 { glyd::compress_parallel_into_max } else { glyd::compress_into_max })
+// Record mode runs its units in parallel itself; the level inside a unit
+// is sequential (the unit is the parallel granule and the window).
+fn glyd_max_rec(input: &[u8], _threads: usize, out: &mut Vec<u8>) {
+    glyd::compress_records_with(input, out, glyd::compress_into_max)
 }
-fn glyd_ultra_rec(input: &[u8], threads: usize, out: &mut Vec<u8>) {
-    glyd::compress_records_with(input, out, if threads > 1 { glyd::compress_parallel_into_ultra } else { glyd::compress_into_ultra })
+fn glyd_ultra_rec(input: &[u8], _threads: usize, out: &mut Vec<u8>) {
+    glyd::compress_records_with(input, out, glyd::compress_into_ultra)
 }
 fn glyd_decompress(input: &[u8], threads: usize, out: &mut Vec<u8>) {
     // Into the caller's buffer, as every codec here: memory that is

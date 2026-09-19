@@ -155,7 +155,16 @@ fn main() -> io::Result<()> {
             (false, _, _, _) => glyd::compress_into,
         };
         if records {
-            glyd::compress_records_with(&input_data, &mut out, level);
+            // Record mode parallelises over its own units; the level
+            // inside a unit is the sequential one.
+            let unit_level: fn(&[u8], &mut Vec<u8>) = match (fast, turbo, max, ultra) {
+                (_, _, _, true) => glyd::compress_into_ultra,
+                (_, _, true, _) => glyd::compress_into_max,
+                (true, _, _, _) => glyd::compress_into_fast,
+                (_, true, _, _) => glyd::compress_into_turbo,
+                _ => glyd::compress_into,
+            };
+            glyd::compress_records_with(&input_data, &mut out, unit_level);
         } else {
             level(&input_data, &mut out);
         }

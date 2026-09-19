@@ -370,6 +370,11 @@ pub fn detect(input: &[u8]) -> Option<Shape> {
         return Some(Shape::Sql);
     }
     let lines: Vec<&[u8]> = sample.split(|&b| b == b'\n').collect();
+    // JSON lines and other bracketed records are not delimited tables:
+    // their fields are named, and the split would cut inside strings.
+    if lines.iter().take(64).filter(|l| !l.is_empty()).all(|l| l.starts_with(b"{") || l.starts_with(b"[") || l.starts_with(b"<")) {
+        return None;
+    }
     // A unit cut inside a dump's tuple list: lines `(...),`.
     if lines.len() >= 2 && lines[..lines.len() - 1].iter().take(64).all(|l| l.starts_with(b"(") && (l.ends_with(b"),") || l.ends_with(b");") || l.ends_with(b")"))) {
         return Some(Shape::Sql);
