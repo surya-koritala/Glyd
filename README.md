@@ -1,19 +1,37 @@
-# Glyd — the world's fastest-decoding open-source compression
+<h1 align="center">Glyd</h1>
+<p align="center"><strong>The world's fastest-decoding open-source compression.</strong><br>
+Fewer bytes than zstd's default level. Reads 1.3× faster than zstd, up to 2.1× faster than LZ4.</p>
 
-[![CI](https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg)](https://github.com/surya-koritala/Glyd/actions)
-[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.80%2B-blue.svg)](https://www.rust-lang.org)
-[![SIMD: AVX2 | NEON](https://img.shields.io/badge/SIMD-AVX2%20%7C%20NEON-orange.svg)]()
-[![C ABI](https://img.shields.io/badge/C%20ABI-include%2Fglyd.h-brightgreen.svg)](include/glyd.h)
+<p align="center">
+<a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
+<a href="LICENSE"><img alt="License: BUSL-1.1" src="https://img.shields.io/badge/license-BUSL--1.1-blue.svg"></a>
+<img alt="Rust 1.80+" src="https://img.shields.io/badge/rust-1.80%2B-blue.svg">
+<img alt="SIMD: AVX2 | NEON" src="https://img.shields.io/badge/SIMD-AVX2%20%7C%20NEON-orange.svg">
+<a href="include/glyd.h"><img alt="C ABI" src="https://img.shields.io/badge/C%20ABI-include%2Fglyd.h-brightgreen.svg"></a>
+<a href="https://github.com/surya-koritala/Glyd/releases"><img alt="Release" src="https://img.shields.io/github/v/release/surya-koritala/Glyd?include_prereleases&label=release"></a>
+</p>
+
+<p align="center">
+<a href="#at-a-glance">At a glance</a> ·
+<a href="#what-glyd-saves-you">Savings</a> ·
+<a href="#quick-start">Quick start</a> ·
+<a href="#levels">Levels</a> ·
+<a href="#benchmarks">Benchmarks</a> ·
+<a href="#how-it-works">How it works</a> ·
+<a href="ROADMAP.md">Roadmap</a> ·
+<a href="#license">License</a>
+</p>
+
+---
+
+## At a glance
 
 **Glyd** is a lossless data compression library and CLI, written in Rust with
 a C ABI, for workloads where **decompression speed** and **storage cost**
 decide the bill: object storage and data lakes (Parquet, ORC), columnar
 scans, RPC and message payloads, game and app assets, and KV-cache paging
 for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
-**zstd**: it decodes faster than every open codec we could measure, at
-every ratio point, and its `--max` level stores fewer bytes than zstd's
-default level.
+**zstd**.
 
 | Level | Ratio | Compress | **Decompress** | Same-run reference |
 | :--- | ---: | ---: | ---: | :--- |
@@ -21,14 +39,19 @@ default level.
 | default | 2.19 | 340 MB/s | **6,900 MB/s** | 1.6× liblz4, at a better ratio |
 | `--max` | **3.22** | 300 MB/s | **1,860 MB/s** | zstd -3: 3.20 ratio, 1,440 MB/s |
 
-Silesia corpus (202 MB), one core, every Glyd number paired with the
-reference library measured in the same process. Multi-core decode reaches
-**43,000 MB/s** on 10 cores — the machine's memory wall. Full tables,
-per-file results and the honest gaps are in [Benchmarks](#benchmarks).
+<sub>Silesia corpus (202 MB), one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. Full tables and the honest gaps: <a href="#benchmarks">Benchmarks</a>.</sub>
+
+- 🚀 **Fastest decode at every ratio point** measured, against liblz4, lz4_flex, LZAV, zstd (7 levels) and snappy, in the same run.
+- 📦 **Fewer bytes than zstd -3** with the `--max` level, at 30% faster reads.
+- 🧱 **One container, three levels**, any mix of blocks decodes; independent 256 KB blocks scale across cores.
+- 🛡️ **Fuzzed** with a million mutations per run into exact-size buffers; no per-call allocation in the decoder.
+- 🔌 **Rust, C ABI, CLI**, streaming `std::io` adapters, dictionaries for small objects.
 
 ---
 
 ## What Glyd saves you
+
+> **Try it:** [docs/savings.html](docs/savings.html) — enter what you store and what you compress with today.
 
 Stored bytes scale with `1 / ratio`. Most analytics data today is compressed
 with Snappy or LZ4 (Parquet's default codec is Snappy). Moving it to Glyd
@@ -47,7 +70,6 @@ saves CPU on every read instead.
 Formula: `saved_per_year = stored_TB × (1 − old_ratio / 3.22) × price_per_TB_month × 12`.
 Ratios are Silesia, same run; your data will differ — measure it with
 `glyd -b yourfile` before believing any table, including this one.
-An interactive version is at [docs/savings.html](docs/savings.html).
 
 **At market scale:** object storage holds hundreds of exabytes (AWS said in
 March 2026 that S3 alone stores "hundreds of exabytes" across 500 trillion
@@ -149,7 +171,8 @@ machine; the headline table above is from a quiet run of the paired
 harnesses, which is why its numbers are a few percent higher across the
 board — the ordering is the same.)
 
-### Default level vs liblz4, per file (same run)
+<details>
+<summary><b>Default level vs liblz4, per file</b> (same run)</summary>
 
 | File | Ratio | Glyd MB/s | liblz4 MB/s | |
 | :--- | ---: | ---: | ---: | ---: |
@@ -168,7 +191,10 @@ board — the ordering is the same.)
 
 (AMD Ryzen 9 7950X3D, AVX2 path. On the M1 Max NEON path Glyd wins 12 of 12.)
 
-### `--max` vs zstd, per file (same run, M1 Max)
+</details>
+
+<details>
+<summary><b><code>--max</code> vs zstd -3, per file</b> (same run, M1 Max)</summary>
 
 | File | Glyd ratio | zstd -3 ratio | Glyd MB/s | zstd -3 MB/s |
 | :--- | ---: | ---: | ---: | ---: |
@@ -187,6 +213,8 @@ board — the ordering is the same.)
 | **Total** | **3.218** | **3.204** | **1,841** | **1,417** |
 
 (Same run; `--max` wins ratio on 8 of 12 files and decode on 12 of 12.)
+
+</details>
 
 ### Multi-core
 
@@ -253,6 +281,23 @@ unsafe block carries its bound.
 
 ---
 
+## Releases and versioning
+
+Current release: **v0.1.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Glyd follows SemVer. The on-disk format is versioned separately in every
+block header (v6 for default/fast/turbo, v7 for `--max`); every release
+decodes every earlier format, and a format change always gets a new
+format number, never a silent reinterpretation. Tags are `vMAJOR.MINOR.PATCH`;
+each tag ships with release notes and the benchmark tables measured at
+that commit.
+
+Contributing: open an issue with the measured number for anything that
+touches speed or ratio (`examples/quick3.rs`, `examples/v7_bench.rs` and
+`examples/field_survey.rs` all print same-run comparisons); pull requests
+run the full suite including the 1M-mutation fuzz in CI.
+
+---
+
 ## License
 
 Glyd is released under the [Business Source License 1.1](LICENSE).
@@ -260,6 +305,6 @@ Glyd is released under the [Business Source License 1.1](LICENSE).
 - Free to read, modify, redistribute and use for development, testing,
   personal, educational, research and other non-commercial purposes.
 - **Commercial or revenue-generating production use requires a commercial
-  license.** Contact suryakoritala@outlook.com.
+  license.** Contact suryakoritala1324@gmail.com.
 - Each version converts to the Apache License 2.0 on its Change Date
   (four years after its first public release; 2030-09-18 for this one).

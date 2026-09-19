@@ -407,6 +407,6 @@ Glyd is released under the [Business Source License 1.1](LICENSE).
 - Free to read, modify, redistribute, and use for development, testing,
   personal, educational, research and other non-commercial purposes.
 - **Commercial or revenue-generating production use requires a commercial
-  license.** Contact suryakoritala@outlook.com.
+  license.** Contact suryakoritala1324@gmail.com.
 - Each version converts to the Apache License 2.0 on its Change Date (four
   years after its first public release; 2030-09-18 for this release).

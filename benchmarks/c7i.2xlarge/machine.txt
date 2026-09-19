@@ -1,0 +1,7 @@
+commit: 7161d316b25689d677f67c944a3c7d87fba210b8
+instance: 
+cpu: Intel(R) Xeon(R) Platinum 8488C
+simd: avx2
+rustc: rustc 1.98.1 (48a229cea 2026-09-01)
+kernel: Linux 7.0.0-1012-aws
+date: 2026-09-19T04:05:35Z
