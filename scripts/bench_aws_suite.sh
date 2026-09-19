@@ -84,6 +84,7 @@ BENCH='set -x
 source ~/.cargo/env
 cd ~/glyd
 export RUSTFLAGS="-C target-cpu=native"
+export AWS_DEFAULT_REGION=REGION_PLACEHOLDER
 mkdir -p ~/results
 TOK=$(curl -sX PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
 INSTANCE=$(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/latest/meta-data/instance-type)
@@ -113,6 +114,7 @@ touch ~/results/DONE
 '
 BENCH="${BENCH//COMMIT_PLACEHOLDER/$COMMIT}"
 BENCH="${BENCH//BUCKET_PLACEHOLDER/$BUCKET}"
+BENCH="${BENCH//REGION_PLACEHOLDER/$REGION}"
 
 for T in $TYPES; do
     case "$T" in *g.*|*gd.*|*gn.*|a1.*) ARCH=arm64 ;; *) ARCH=amd64 ;; esac
