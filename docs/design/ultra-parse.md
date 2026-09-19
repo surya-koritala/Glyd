@@ -9,9 +9,10 @@ fewer sequences per byte.
 
 ## Match finder
 
-A binary tree per 4-byte hash bucket over the 2 MB window (`tree`, 2 × 2²¹
-slots; `hash4`, 2²⁰ heads), as in zstd's `btlazy2`/`btopt` and LZMA's
-`bt4`. Every position is inserted at its bucket's root; the walk down
+A binary tree per 4-byte hash bucket over the window (`tree`, two slots
+per ring position, the ring sized per call to the input up to the 8 MB
+window; `hash4`, up to 2²⁰ heads), as in zstd's `btlazy2`/`btopt` and
+LZMA's `bt4`. Every position is inserted at its bucket's root; the walk down
 compares the new suffix against the nodes on its path, threading each onto
 the smaller or larger side, so the tree stays sorted by suffix. Because a
 node's children are always older positions, a search walks from the newest
@@ -71,7 +72,11 @@ inside it is searched (zstd's `targetLength`). The back-trace from
 `opt[block_len]` yields the sequences; trailing literals form the
 literal-only last sequence the format requires.
 
-## Measured (Silesia, one run, Apple M1 Max)
+## Measured (Silesia, one run, Apple M1 Max, v0.2.0: format v7, 2 MB window)
+
+Format v8 (v0.3.0) moved `--ultra` to 3.925 and `--max` to 3.254; see
+[format-v7.md](format-v7.md), "Format v8". The table below is the state
+the sweeps were run in.
 
 | | Ratio | Compress | Decode |
 | :--- | ---: | ---: | ---: |
