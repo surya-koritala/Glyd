@@ -560,10 +560,11 @@ pub fn compress_with_dict_ultra(dict: &Dict, input: &[u8], output: &mut Vec<u8>)
     compress_max_from(&joined, dict.content().len(), dict.id(), Parse::Ultra, Some(dict), output);
 }
 
-/// `level` over units of `unit` bytes on all cores, each unit a chain of
-/// its own (see `format::PARALLEL_UNIT_*`). An input of one unit or less
-/// is compressed sequentially.
-fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>), unit: usize) {
+/// `level` over units of at least `smallest` bytes on all cores
+/// (`format::parallel_unit`), each unit a chain of its own. An input of
+/// one unit or less is compressed sequentially.
+fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>), smallest: usize) {
+    let unit = parallel_unit(input.len(), rayon::current_num_threads(), smallest);
     if input.len() <= unit {
         level(input, output);
         return;

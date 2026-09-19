@@ -180,9 +180,23 @@ pub const FLAG_TURBO: u16 = 16;
 /// unit size is a ratio trade per level (Silesia, 10 cores, against the
 /// sequential ratio): the v6 levels lose 3% at 256 KB, 0.5% at 2 MB, 0.1%
 /// at 8 MB; max 6.6% / 1.7% / 0.4%; ultra 13% / 4% (4 MB) / 0.7% (16 MB).
+/// These are the smallest units: a large input takes larger ones, up to
+/// `PARALLEL_UNIT_LARGEST`, as long as every core keeps two
+/// (`parallel_unit`). On repetitive data the small unit costs more than
+/// Silesia says: JSON events lose 4.7% at 8 MB, 1.2% at 32 MB, 0.6% at
+/// 64 MB (an SQL dump 0.7% / 0.2% / 0.1%).
 pub const PARALLEL_UNIT_V6: usize = 2 * 1024 * 1024;
 pub const PARALLEL_UNIT_MAX: usize = 8 * 1024 * 1024;
 pub const PARALLEL_UNIT_ULTRA: usize = 16 * 1024 * 1024;
+pub const PARALLEL_UNIT_LARGEST: usize = 64 * 1024 * 1024;
+
+/// The unit for an input of `len` bytes on `threads` cores, at least
+/// `smallest`: as large as leaves two units per core, capped at
+/// `PARALLEL_UNIT_LARGEST`, rounded down to a megabyte.
+pub fn parallel_unit(len: usize, threads: usize, smallest: usize) -> usize {
+    let fair = len / (2 * threads.max(1));
+    (fair.min(PARALLEL_UNIT_LARGEST) & !((1 << 20) - 1)).max(smallest)
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
