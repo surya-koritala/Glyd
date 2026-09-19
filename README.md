@@ -129,10 +129,10 @@ int64_t dlen = glyd_decompress_parallel(dst, clen, out, n);
 
 | Level | Use it for | How it works |
 | :--- | :--- | :--- |
-| `--turbo` (`-t`) | Data read far more often than written, where read CPU is the cost: in-memory caches, game assets, KV-cache paging | v6 format, minimum match 10: fewest tokens, one 32-byte copy per token |
-| default | The LZ4/Snappy slot with better ratio and 1.6× LZ4's read speed | v6 format, LZAV-class match finder, minimum match 7 |
-| `--fast` (`-1`) | When you need LZ4-class compression speed | v6 format, LZ4-class finder, minimum match 5 |
-| `--max` (`-9`) | The zstd slot: fewest bytes, 30% faster reads than zstd -3 | v7 format: 8-way interleaved Huffman literals + tANS-coded sequences, repeat offsets, 2 MB window, double-fast lazy parse |
+| **‑‑turbo**&nbsp;(‑t) | Data read far more often than written, where read CPU is the cost: in-memory caches, game assets, KV-cache paging | v6 format, minimum match 10: fewest tokens, one 32-byte copy per token |
+| **default** | The LZ4/Snappy slot with better ratio and 1.6× LZ4's read speed | v6 format, LZAV-class match finder, minimum match 7 |
+| **‑‑fast**&nbsp;(‑1) | When you need LZ4-class compression speed | v6 format, LZ4-class finder, minimum match 5 |
+| **‑‑max**&nbsp;(‑9) | The zstd slot: fewest bytes, 30% faster reads than zstd -3 | v7 format: 8-way interleaved Huffman literals + tANS-coded sequences, repeat offsets, 2 MB window, double-fast lazy parse |
 
 All levels produce the same container; the decoder reads any mix. Blocks
 are 256 KB; `FLAG_CHAIN_RESET` blocks decode independently across cores.
