@@ -33,11 +33,11 @@ scans, RPC and message payloads, game and app assets, and KV-cache paging
 for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
 **zstd**.
 
-| Level | Ratio | Compress | **Decompress** | Same-run reference |
+| Level | Ratio | Compress | **Decompress** | vs the reference, same run |
 | :--- | ---: | ---: | ---: | :--- |
-| `--turbo` | 1.88 | 280 MB/s | **9,200 MB/s** | 2.1× liblz4 (4,400 MB/s) |
-| default | 2.19 | 340 MB/s | **6,900 MB/s** | 1.6× liblz4, at a better ratio |
-| `--max` | **3.22** | 300 MB/s | **1,860 MB/s** | zstd -3: 3.20 ratio, 1,440 MB/s |
+| ⚡ **Glyd `--turbo`** | 1.88 | 280 MB/s | **9,200 MB/s** | **2.1×** liblz4's 4,400 MB/s |
+| ⚡ **Glyd default** | 2.19 | 340 MB/s | **6,900 MB/s** | **1.6×** liblz4, at a better ratio |
+| ⚡ **Glyd `--max`** | **3.22** | 300 MB/s | **1,860 MB/s** | **1.3×** zstd -3's 1,440 MB/s, and denser (3.20) |
 
 <sub>Silesia corpus (202 MB), one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. Full tables and the honest gaps: <a href="#benchmarks">Benchmarks</a>.</sub>
 
@@ -58,7 +58,7 @@ with Snappy or LZ4 (Parquet's default codec is Snappy). Moving it to Glyd
 `--max` cuts the bytes stored and moved by about a third; moving from zstd
 saves CPU on every read instead.
 
-| You store today | Compressed with | Glyd `--max` stores | Bytes saved | **Saved per year** at $21/TB-month |
+| You store today | Compressed with | ⚡ **With Glyd `--max`** | Bytes saved | **Saved per year** at $21/TB-month |
 | ---: | :--- | ---: | ---: | ---: |
 | 100 TB | Snappy (ratio 2.08) | 64.5 TB | 35.5% | **$8,900** |
 | 1 PB | Snappy | 645 TB | 35.5% | **$89,000** |
@@ -149,22 +149,22 @@ script that produced them.
 
 ### The field, one run (Silesia, Apple M1 Max, one core)
 
-| Codec | Ratio | Compress MB/s | **Decompress MB/s** |
-| :--- | ---: | ---: | ---: |
-| **Glyd --max** | **3.218** | 277 | **1,733** |
-| zstd -3 | 3.205 | 319 | 1,361 |
-| zstd -1 | 2.894 | 535 | 1,493 |
-| LZAV-hi | 2.803 | 91 | 3,185 |
-| LZAV | 2.450 | 426 | 3,128 |
-| zstd --fast=1 | 2.438 | 614 | 2,153 |
-| zstd --fast=3 | 2.240 | 684 | 2,307 |
-| **Glyd** | 2.192 | 312 | **6,507** |
-| **Glyd --fast** | 2.176 | 501 | **4,670** |
-| liblz4 | 2.101 | 610 | 4,108 |
-| lz4_flex | 2.097 | 633 | 3,004 |
-| snappy | 2.076 | 607 | 1,495 |
-| zstd --fast=5 | 2.057 | 746 | 2,484 |
-| **Glyd --turbo** | 1.884 | 263 | **8,647** |
+| Codec | Ratio | Compress MB/s | **Decompress MB/s** | |
+| :--- | ---: | ---: | ---: | :--- |
+| ⚡ **Glyd --max** | **3.218** | 277 | **1,733** | ✅ best ratio in the field, 1.27× zstd -3 decode |
+| zstd -3 | 3.205 | 319 | 1,361 | |
+| zstd -1 | 2.894 | 535 | 1,493 | |
+| LZAV-hi | 2.803 | 91 | 3,185 | |
+| LZAV | 2.450 | 426 | 3,128 | |
+| zstd --fast=1 | 2.438 | 614 | 2,153 | |
+| zstd --fast=3 | 2.240 | 684 | 2,307 | |
+| ⚡ **Glyd default** | **2.192** | 312 | **6,507** | ✅ 1.6× liblz4 decode at a better ratio |
+| ⚡ **Glyd --fast** | **2.176** | 501 | **4,670** | ✅ 1.1× liblz4 decode at a better ratio |
+| liblz4 | 2.101 | 610 | 4,108 | |
+| lz4_flex | 2.097 | 633 | 3,004 | |
+| snappy | 2.076 | 607 | 1,495 | |
+| zstd --fast=5 | 2.057 | 746 | 2,484 | |
+| ⚡ **Glyd --turbo** | 1.884 | 263 | **8,647** | ✅ fastest decode in the field, 2.1× liblz4 |
 
 (`examples/field_survey.rs`. This run was taken with other work on the
 machine; the headline table above is from a quiet run of the paired
@@ -174,7 +174,7 @@ board — the ordering is the same.)
 <details>
 <summary><b>Default level vs liblz4, per file</b> (same run)</summary>
 
-| File | Ratio | Glyd MB/s | liblz4 MB/s | |
+| File | Ratio | ⚡ **Glyd MB/s** | liblz4 MB/s | Glyd advantage |
 | :--- | ---: | ---: | ---: | ---: |
 | dickens | 1.815 | 5,990 | 5,190 | +15% |
 | mozilla | 1.926 | 5,420 | 4,830 | +12% |
@@ -196,7 +196,7 @@ board — the ordering is the same.)
 <details>
 <summary><b><code>--max</code> vs zstd -3, per file</b> (same run, M1 Max)</summary>
 
-| File | Glyd ratio | zstd -3 ratio | Glyd MB/s | zstd -3 MB/s |
+| File | ⚡ **Glyd ratio** | zstd -3 ratio | ⚡ **Glyd MB/s** | zstd -3 MB/s |
 | :--- | ---: | ---: | ---: | ---: |
 | dickens | 2.833 | 2.782 | 1,300 | 1,139 |
 | mozilla | 2.776 | 2.810 | 1,697 | 1,275 |
@@ -226,7 +226,7 @@ Silesia (`examples/mc.rs`), above the machine's single-core `memcpy`.
 `EXT_CORPUS=1 scripts/download_corpus.sh` adds real-world formats;
 `examples/v7_bench.rs` checks `--max` against zstd -3 file by file:
 
-| File | Glyd --max | zstd -3 | |
+| File | ⚡ **Glyd --max** | zstd -3 | |
 | :--- | ---: | ---: | :--- |
 | Linux kernel source tarball (64 MB) | 4.937 | 4.898 | +0.8% |
 | NASA HTTP server log (205 MB) | 9.789 | 9.782 | + |
