@@ -163,10 +163,16 @@ fn field(w: u64, e: u64) -> (u32, u64, u32) {
 /// 19 + 19 + 20 = 58 bits (codes 31, 31 and 23), so the load address moves
 /// by at most 8 bytes per sequence whatever the code bytes hold.
 const SEQ_BYTES: usize = 8;
+const _: () = assert!(
+    SEQ_BYTES * 8
+        >= (extra_bits_of_code(Kind::Ll, (LL_SYMBOLS - 1) as u8)
+            + extra_bits_of_code(Kind::Ml, (ML_SYMBOLS - 1) as u8)
+            + extra_bits_of_code(Kind::Off, (OFF_SYMBOLS - 1) as u8)) as usize
+);
 
 /// Sequences the fast walk can take on one stream before a load might
 /// start past `last`: the next load is at `at`, each later one <= SEQ_BYTES
-/// further. Mirrors `FastReader::safe_refills`.
+/// further. Mirrors `tans::safe_batches`.
 #[inline(always)]
 fn safe_seqs(at: usize, last: usize) -> usize {
     if at > last {
@@ -182,13 +188,14 @@ fn safe_seqs(at: usize, last: usize) -> usize {
 ///
 /// The walk has the `huff8::decode` shape -- an unclamped batch loop with
 /// a proven load bound, then the clamped `BitReader`s for the tail -- but
-/// its hot state is one bit position per stream, not a `FastReader`: a
-/// valid sequence's extra bits are at most 18 + 18 + 20 = 56 (values up to
-/// MAX_BLOCK_SIZE = 2^18, offsets below 2^21), and one unaligned 8-byte
-/// load shifted by the sub-byte position holds at least 57, so each
-/// sequence is one load, three field extractions and one add to its
-/// stream's position, with no accumulator, count or refill to maintain
-/// (8 live registers for the 8 streams instead of 24). A corrupt stream
+/// its hot state is one bit position per stream, not a reader with an
+/// accumulator and a count: a valid sequence's extra bits are at most
+/// 18 + 18 + 20 = 56 (values up to MAX_BLOCK_SIZE = 2^18, offsets below
+/// 2^21), and one unaligned 8-byte load shifted by the sub-byte position
+/// holds at least 57, so each sequence is one load, three field
+/// extractions and one add to its stream's position, with no
+/// accumulator, count or refill to maintain (8 live registers for the 8
+/// streams instead of 24). A corrupt stream
 /// asking for 58 bits reads a zero for the last one and advances exactly
 /// anyway; the values are garbage either way and the checks after the
 /// walk catch them. Each iteration handles 8 sequences, one per stream;

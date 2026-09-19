@@ -118,6 +118,7 @@ pub fn encode_into(data: &[u8], lengths: &[u8; 256], out: &mut Vec<u8>) {
 }
 
 /// The 8 streams as separate vectors (tests).
+#[doc(hidden)]
 pub fn encode(data: &[u8], lengths: &[u8; 256]) -> Vec<Vec<u8>> {
     let mut section = Vec::new();
     encode_into(data, lengths, &mut section);
@@ -158,7 +159,8 @@ fn safe_batches(at: usize, last: usize) -> usize {
 /// The hot loop runs on absolute bit addresses (`ptr * 8 + bit`), one per
 /// stream, with a window of bits loaded from it per batch of four
 /// symbols -- 2 live values per stream, so the 8 streams stay in
-/// registers (a `FastReader` is 3, and those spilled); a symbol is one
+/// registers (a reader with pointer, accumulator and count is 3, and
+/// those spilled); a symbol is one
 /// `and` for the index, the table load, a shift of the window by the
 /// code length, an add of it to the position, and the byte store.
 /// `safe_batches` proves, from each stream's remaining real bytes, how

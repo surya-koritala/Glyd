@@ -203,7 +203,10 @@ const EXTRA_BITS: u32 = 56;
 const _: () = assert!(EXTRA_BITS <= crate::bits::MAX_PUT);
 
 /// Lengths must be at most `MAX_BLOCK_SIZE` (2^18, as the decoder
-/// enforces per block) and offsets below `MAX_WINDOW`.
+/// enforces per block), offsets at least 1 and below `MAX_WINDOW`, and
+/// the last sequence literal-only (`match_len == 0`; it is coded as ml
+/// code 0, which the decoder reads as "no match" only in last position),
+/// with no other literal-only sequence.
 pub fn encode_block(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut Tables, out: &mut Vec<u8>) {
     encode_block_with(seqs, literals, dict_id, prev, &mut EncScratch::new(), out)
 }
@@ -212,6 +215,7 @@ pub fn encode_block(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut
 /// one across a stream's blocks).
 pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut Tables, s: &mut EncScratch, out: &mut Vec<u8>) {
     let n = seqs.len();
+    debug_assert!(seqs.last().map_or(true, |q| q.match_len == 0), "the last sequence must be literal-only");
     // Codes and extra bits, in sequence order (the rep state).
     s.clear();
     let mut reps = Reps::new();
@@ -388,51 +392,6 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
         prev.ml = None;
         prev.off = None;
     }
-}
-
-/// v6 streams (tokens, offsets, extras) -> sequences. Milestone 2 bridge:
-/// lets the v7 container and decoder be measured on the proven parse.
-/// The streams must be well formed (they come straight from the finder).
-pub fn sequences_from_streams(tokens: &[u8], offsets: &[u8], extras: &[u8], min_match: usize, seqs: &mut Vec<Sequence>) {
-    use crate::format::{Token, ESCAPE_BASE_LIT, ESCAPE_CONT, LIT_CODE_ESCAPE, MATCH_CODE_ESCAPE};
-    fn read_escape(extras: &[u8], e: &mut usize, base: usize) -> u32 {
-        let v = extras[*e] as usize;
-        *e += 1;
-        if v != ESCAPE_CONT as usize {
-            return (base + v) as u32;
-        }
-        let w = u16::from_le_bytes([extras[*e], extras[*e + 1]]) as usize;
-        *e += 2;
-        (base + v + w) as u32
-    }
-    let bias = min_match - 1;
-    let mut e = 0usize;
-    let mut o = 0usize;
-    seqs.clear();
-    seqs.reserve(tokens.len() + 1);
-    // The format wants exactly one literal-only sequence, last. Merge any
-    // interior literal-only tokens (the v6 MAX_LIT_LEN split) into the next.
-    let mut carry = 0u32;
-    for (i, &t) in tokens.iter().enumerate() {
-        let tok = Token(t);
-        let lc = tok.lit_code();
-        let mc = tok.match_code();
-        let lit_len = if lc == LIT_CODE_ESCAPE { read_escape(extras, &mut e, ESCAPE_BASE_LIT) } else { lc as u32 };
-        if mc == 0 {
-            if i + 1 < tokens.len() {
-                carry += lit_len;
-                continue;
-            }
-            seqs.push(Sequence { lit_len: lit_len + carry, match_len: 0, offset: 0 });
-            return;
-        }
-        let match_len = if mc == MATCH_CODE_ESCAPE { read_escape(extras, &mut e, bias + 15) } else { (mc + bias) as u32 };
-        let lo = u16::from_le_bytes([offsets[o], offsets[o + 1]]) as u32;
-        o += 2;
-        seqs.push(Sequence { lit_len: lit_len + carry, match_len, offset: lo | ((tok.off_hi() as u32) << 16) });
-        carry = 0;
-    }
-    seqs.push(Sequence { lit_len: 0, match_len: 0, offset: 0 });
 }
 
 // ---------------------------------------------------------------------------

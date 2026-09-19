@@ -224,6 +224,7 @@ impl EncodeTable {
     }
 }
 
+#[doc(hidden)]
 pub struct Encoder<'a> {
     t: &'a EncodeTable,
     syms: Vec<u8>,
@@ -256,6 +257,7 @@ impl<'a> Encoder<'a> {
     }
 }
 
+#[doc(hidden)]
 pub struct Decoder<'a> {
     t: &'a [u64],
     r: BitReader<'a>,
@@ -321,8 +323,8 @@ pub fn encode8_into(syms: &[u8], t: &EncodeTable, chunks: &mut Vec<u32>, out: &m
     let n = syms.len();
     chunks.clear();
     chunks.resize(n, 0);
-    // Initial encoder state: any value in [L, 2L); use the first symbol's
-    // smallest legal state so the decoder's first state is well defined.
+    // Initial encoder state (the decoder's final one): `L`. Any value in
+    // [L, 2L) would do; the decoder never checks where it ends.
     let mut st = [L as u32; STREAMS];
     let full = n & !(STREAMS - 1);
     for i in (full..n).rev() {
@@ -365,6 +367,7 @@ pub fn encode8_into(syms: &[u8], t: &EncodeTable, chunks: &mut Vec<u32>, out: &m
 }
 
 /// The 8 streams as separate vectors (tests).
+#[doc(hidden)]
 pub fn encode8(syms: &[u8], t: &EncodeTable) -> Vec<Vec<u8>> {
     let mut section = Vec::new();
     encode8_into(syms, t, &mut Vec::new(), &mut section);
@@ -397,8 +400,8 @@ pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut 
 /// Structured like `v7_decode::sequences`' walk: the hot
 /// state per stream is an absolute bit address (`ptr * 8 + bit`) and a
 /// window of bits loaded from it -- 2 live values per stream, so the 8
-/// streams and their 8 states stay in registers (a `FastReader` is 3, and
-/// with the states that spilled) -- and per batch one unaligned 8-byte
+/// streams and their 8 states stay in registers (a reader with pointer,
+/// accumulator and count is 3, and with the states that spilled) -- and per batch one unaligned 8-byte
 /// load per stream, shifted by its sub-byte position, holds the 40 bits
 /// four symbols can take. `safe_batches` proves, from each stream's
 /// remaining real bytes, how many batches can run before a load might
