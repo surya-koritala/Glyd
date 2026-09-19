@@ -13,6 +13,7 @@ Options:
     -t, --turbo            Turbo level: fastest decode, ~6% less ratio
     -9, --max              Max level: entropy coded, ratio above zstd -3
     -19, --ultra           Ultra level: optimal parse, ratio above zstd -16; slow to compress
+    -r, --records          Record mode: logs and table dumps as typed columns before the level
     -d, --decompress       Decompress input (default if input is .glyd)
     -m, --multi-core       Use multi-core parallel engine (default)
     -s, --single-core      Force single-core sequential engine
@@ -61,6 +62,7 @@ fn main() -> io::Result<()> {
     let mut turbo = false;
     let mut max = false;
     let mut ultra = false;
+    let mut records = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -78,6 +80,7 @@ fn main() -> io::Result<()> {
             "-t" | "--turbo" => turbo = true,
             "-9" | "--max" => max = true,
             "-19" | "--ultra" => ultra = true,
+            "-r" | "--records" => records = true,
             "-d" | "--decompress" => mode_compress = Some(false),
             "-m" | "--multi-core" => multi_core = true,
             "-s" | "--single-core" => multi_core = false,
@@ -151,7 +154,11 @@ fn main() -> io::Result<()> {
             (false, _, true, _) => glyd::compress_into_turbo,
             (false, _, _, _) => glyd::compress_into,
         };
-        level(&input_data, &mut out);
+        if records {
+            glyd::compress_records_with(&input_data, &mut out, level);
+        } else {
+            level(&input_data, &mut out);
+        }
         out
     } else {
         let result = if multi_core && input_data.len() > glyd::format::MAX_BLOCK_SIZE {

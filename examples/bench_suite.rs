@@ -123,6 +123,12 @@ fn glyd_max(input: &[u8], threads: usize, out: &mut Vec<u8>) {
 fn glyd_ultra(input: &[u8], threads: usize, out: &mut Vec<u8>) {
     if threads > 1 { glyd::compress_parallel_into_ultra(input, out) } else { glyd::compress_into_ultra(input, out) }
 }
+fn glyd_max_rec(input: &[u8], threads: usize, out: &mut Vec<u8>) {
+    glyd::compress_records_with(input, out, if threads > 1 { glyd::compress_parallel_into_max } else { glyd::compress_into_max })
+}
+fn glyd_ultra_rec(input: &[u8], threads: usize, out: &mut Vec<u8>) {
+    glyd::compress_records_with(input, out, if threads > 1 { glyd::compress_parallel_into_ultra } else { glyd::compress_into_ultra })
+}
 fn glyd_decompress(input: &[u8], threads: usize, out: &mut Vec<u8>) {
     // Into the caller's buffer, as every codec here: memory that is
     // already mapped after the first repeat (a fresh allocation per call
@@ -188,6 +194,8 @@ fn codecs() -> Vec<Codec> {
         Codec { name: "glyd-default", compress: glyd_default, decompress: glyd_decompress },
         Codec { name: "glyd-max", compress: glyd_max, decompress: glyd_decompress },
         Codec { name: "glyd-ultra", compress: glyd_ultra, decompress: glyd_decompress },
+        Codec { name: "glyd-max-rec", compress: glyd_max_rec, decompress: glyd_decompress },
+        Codec { name: "glyd-ultra-rec", compress: glyd_ultra_rec, decompress: glyd_decompress },
         Codec { name: "zstd-3", compress: zstd3, decompress: zstd_decompress },
         Codec { name: "zstd-19", compress: zstd19, decompress: zstd_decompress },
         Codec { name: "lz4", compress: lz4_frame, decompress: lz4_decompress },
@@ -228,7 +236,7 @@ fn large(o: &Opts, out: &mut std::fs::File) {
         let name = std::path::Path::new(path).file_name().unwrap().to_string_lossy().to_string();
         eprintln!("{name}: {} bytes", input.len());
         for (ci, c) in codecs.iter().enumerate() {
-            let repeats = if c.name == "glyd-ultra" || c.name == "zstd-19" { o.slow_repeats } else { o.repeats };
+            let repeats = if c.name.starts_with("glyd-ultra") || c.name == "zstd-19" { o.slow_repeats } else { o.repeats };
             let mut comp = Vec::with_capacity(input.len() + input.len() / 8 + (1 << 16));
             let mut ct = Vec::new();
             for _ in 0..repeats {
