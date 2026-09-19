@@ -59,21 +59,24 @@ pub fn payload_layout(payload: &[u8]) -> Option<Layout> {
     Some(Layout { sub, sections })
 }
 
-/// Reuse when the two tables have identical support -- a symbol present
-/// in one and absent (count 0) from the other never passes, regardless of
-/// magnitude -- and every present count is within 1/8 of the previous
-/// table's. Support must match exactly: reusing a table that assigns a
-/// symbol zero probability while this block's data actually contains it
-/// sends the tANS encoder's state machine out of bounds (a zero-count
-/// symbol's `EncodeTable` entry is the placeholder `(0, 0)`, which is only
-/// safe to hit for a symbol that truly never gets encoded). This is the
-/// same support requirement the literal path already applies (see
-/// `lit_reuse` below).
-fn close(a: &[u16], b: &[u16]) -> bool {
-    a.len() == b.len()
-        && a.iter().zip(b).all(|(&x, &y)| {
-            (x == 0) == (y == 0) && (x as i32 - y as i32).abs() <= (x as i32 / 8).max(2)
-        })
+/// Bits `hist` costs under a tANS table of `counts`, or None when a symbol
+/// present in the data has count 0 there: such a table must never be used
+/// for this data (a zero-count symbol's `EncodeTable` entry is the
+/// placeholder `(0, 0)`, which sends the encoder's state machine out of
+/// bounds; the literal path applies the same rule, see `lit_reuse`). A
+/// table can be reused when every present symbol has a count, whatever
+/// the two tables' supports are otherwise: the decision is by cost.
+fn table_cost(hist: &[u32], counts: &[u16]) -> Option<f64> {
+    let mut bits = 0.0;
+    for (&h, &c) in hist.iter().zip(counts) {
+        if h != 0 {
+            if c == 0 {
+                return None;
+            }
+            bits += h as f64 * -((c as f64) / tans::L as f64).log2();
+        }
+    }
+    Some(bits)
 }
 
 /// Histogram over eight interleaved tables: consecutive equal symbols
@@ -99,9 +102,7 @@ fn hist8<const N: usize>(data: &[u8]) -> [u32; N] {
 /// Returns whether it was coded; a raw section never carries reuse.
 fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool, chunks: &mut Vec<u32>, out: &mut Vec<u8>) -> bool {
     let n_symbols = counts.len();
-    let bits: f64 = (0..n_symbols)
-        .map(|s| if hist[s] == 0 { 0.0 } else { hist[s] as f64 * -((counts[s] as f64) / tans::L as f64).log2() })
-        .sum();
+    let bits = table_cost(&hist[..n_symbols], counts).expect("table covers the data");
     let table_bytes = if reusing { 0 } else { 1 + 2 * n_symbols };
     let coded_estimate = (bits / 8.0) as usize + table_bytes + 8 * (4 + PAD);
     if coded_estimate + codes.len() / 50 >= codes.len() {
@@ -197,7 +198,8 @@ pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev:
     let lit_reuse = prev.lit_lengths.map_or(false, |p| {
         let est_prev: u64 = (0..256).map(|s| hist[s] * p[s] as u64).sum();
         let est_new: u64 = (0..256).map(|s| hist[s] * lengths[s] as u64).sum();
-        p.iter().zip(lengths.iter()).all(|(&a, &b)| (a > 0) == (b > 0)) && est_prev <= est_new + (huff8::TABLE_BYTES as u64) * 8
+        // The previous table must have a code for every symbol present.
+        p.iter().zip(hist.iter()).all(|(&l, &h)| l > 0 || h == 0) && est_prev <= est_new + (huff8::TABLE_BYTES as u64) * 8
     });
     let lit_lengths = if lit_reuse { prev.lit_lengths.unwrap() } else { lengths };
     let lit_coded_size = huff8::coded_size(&hist, &lit_lengths) - if lit_reuse { huff8::TABLE_BYTES } else { 0 } + 8 * (4 + PAD);
@@ -214,19 +216,32 @@ pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev:
     let lit_size = out.len() - lit_start;
 
     // Sequence code streams: one up-front decision (not a per-stream, then
-    // shadowed re-encode) -- reuse the previous block's three tables only
-    // when all three are present and each is close to this block's fresh
-    // counts; otherwise recompute and write fresh tables for all three.
+    // shadowed re-encode) -- reuse the previous block's three tables when
+    // all three are present, cover this block's symbols, and together
+    // cost no more than fresh tables plus their headers; otherwise
+    // recompute and write fresh tables for all three.
     let ll_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.ll);
     let ml_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.ml);
     let off_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.off);
     let ll_fresh = tans::normalize(&ll_hist, LL_SYMBOLS);
     let ml_fresh = tans::normalize(&ml_hist, ML_SYMBOLS);
     let off_fresh = tans::normalize(&off_hist, OFF_SYMBOLS);
-    let mut seq_reuse = matches!(
-        (&prev.ll, &prev.ml, &prev.off),
-        (Some(a), Some(b), Some(c)) if close(a, &ll_fresh) && close(b, &ml_fresh) && close(c, &off_fresh)
-    );
+    let mut seq_reuse = match (&prev.ll, &prev.ml, &prev.off) {
+        (Some(a), Some(b), Some(c)) => {
+            let streams = [(&ll_hist[..LL_SYMBOLS], &ll_fresh, a), (&ml_hist[..ML_SYMBOLS], &ml_fresh, b), (&off_hist[..OFF_SYMBOLS], &off_fresh, c)];
+            let (mut prev_bits, mut fresh_bits) = (0.0, 0.0);
+            let mut ok = true;
+            for (hist, fresh, old) in streams {
+                match table_cost(hist, old) {
+                    Some(bits) => prev_bits += bits,
+                    None => ok = false,
+                }
+                fresh_bits += table_cost(hist, fresh).expect("fresh table covers the data") + 8.0 * (1 + 2 * fresh.len()) as f64;
+            }
+            ok && prev_bits <= fresh_bits
+        }
+        _ => false,
+    };
     let mut ll_counts = if seq_reuse { prev.ll.clone().unwrap() } else { ll_fresh.clone() };
     let mut ml_counts = if seq_reuse { prev.ml.clone().unwrap() } else { ml_fresh.clone() };
     let mut off_counts = if seq_reuse { prev.off.clone().unwrap() } else { off_fresh.clone() };
