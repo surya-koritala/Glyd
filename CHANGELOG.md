@@ -6,6 +6,31 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.3.0 — 2026-09-19
+
+### Format v8
+Every level of the entropy-coded family now writes format v8; v7 (and
+v6) files from earlier releases decode unchanged (tests/format_compat.rs
+holds v0.2.0 output as fixtures).
+- 8 MB window (26 offset codes).
+- Section layout: 24-bit sub-stream sizes and one padding per section
+  instead of per stream; tANS counts as width + mantissa; literal tables
+  as nibbles with unused-symbol runs. Per-block overhead 950 → 421
+  bytes.
+- Length codes with direct codes to 15 (runs) and 34 (matches) and
+  short buckets before the log2 ones.
+
+Silesia, M1 Max, same run: `--ultra` 3.80 → **3.93** (zstd -16 3.83,
+zstd -19 4.01), decode 2,150 MB/s (1.3× zstd -19); `--max` 3.22 →
+**3.25** (zstd -3 3.20), decode 1,890 MB/s (1.27× zstd -3). Design
+notes: docs/design/format-v7.md, "Format v8".
+
+### Library
+- The ultra finder sizes its tables to the input per call: 2 MB for a
+  256 KB chunk, 64 MB for an input that fills the window.
+- `bits::Stream` (a sub-stream with its own length and the bytes to the
+  section's end) replaces bare slices in the decoders' signatures.
+
 ## v0.2.0 — 2026-09-19
 
 ### Levels

@@ -1,6 +1,6 @@
 <h1 align="center">Glyd</h1>
 <p align="center"><strong>The world's fastest-decoding open-source compression.</strong><br>
-Fewer bytes than zstd -3, and a <code>--ultra</code> level denser than zstd -16. Reads 1.3× faster than zstd, up to 2.1× faster than LZ4.</p>
+Fewer bytes than zstd -3; a <code>--ultra</code> level denser than zstd -16 and within 2% of zstd -19. Reads 1.3× faster than zstd, up to 2.1× faster than LZ4.</p>
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
@@ -37,14 +37,14 @@ for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
 | :--- | ---: | ---: | ---: | :--- |
 | ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | 1.88 | 280&nbsp;MB/s | **9,200&nbsp;MB/s** | **2.1×** liblz4 (4,400&nbsp;MB/s) |
 | ⚡&nbsp;**Glyd&nbsp;default** | 2.19 | 340&nbsp;MB/s | **6,900&nbsp;MB/s** | **1.6×** liblz4, better ratio |
-| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.22** | 300&nbsp;MB/s | **1,860&nbsp;MB/s** | **1.3×** zstd&nbsp;-3 (1,440&nbsp;MB/s); denser (3.20) |
-| ⚡&nbsp;**Glyd&nbsp;‑‑ultra** | **3.80** | 4.8&nbsp;MB/s | **2,190&nbsp;MB/s** | **1.3×** zstd&nbsp;-19 (1,640&nbsp;MB/s); denser than zstd&nbsp;-16 (3.83) |
+| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.25** | 310&nbsp;MB/s | **1,890&nbsp;MB/s** | **1.3×** zstd&nbsp;-3 (1,490&nbsp;MB/s); denser (3.20) |
+| ⚡&nbsp;**Glyd&nbsp;‑‑ultra** | **3.93** | 3.8&nbsp;MB/s | **2,150&nbsp;MB/s** | **1.3×** zstd&nbsp;-19 (1,640&nbsp;MB/s); denser than zstd&nbsp;-16 (3.83), 2% below zstd&nbsp;-19 (4.01) |
 
 <sub>Silesia corpus (202 MB), Apple M1 Max, one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. The same story holds on AWS Graviton3; on x86 (Sapphire Rapids) the v6 levels lead and <code>--max</code> decodes 1.03× zstd -3. Cross-platform results: <a href="benchmarks/">benchmarks/</a>.</sub>
 
 - 🚀 **Fastest decode at every ratio point** measured, against liblz4, lz4_flex, LZAV, zstd (7 levels) and snappy, in the same run.
 - 📦 **Fewer bytes than zstd -3** with the `--max` level, at 30% faster reads.
-- 🗜️ **`--ultra`: denser than zstd -16** (Silesia 3.80) on an optimal parse, and its output reads 1.3× faster than zstd -19's. Same decoder, same container.
+- 🗜️ **`--ultra`: denser than zstd -16** (Silesia 3.93, zstd -16 3.83, zstd -19 4.01) on an optimal parse, and its output reads 1.3× faster than zstd -19's. Same decoder, same container.
 - 🧱 **One container, three levels**, any mix of blocks decodes; independent 256 KB blocks scale across cores.
 - 🛡️ **Fuzzed** with a million mutations per run into exact-size buffers; no per-call allocation in the decoder.
 - 🔌 **Rust, C ABI, CLI**, streaming `std::io` adapters, dictionaries for small objects.
@@ -62,14 +62,14 @@ saves CPU on every read instead.
 
 | You&nbsp;store&nbsp;today | Compressed&nbsp;with | ⚡&nbsp;**Glyd&nbsp;‑‑max** | Bytes&nbsp;saved | **Saved&nbsp;per&nbsp;year** ($21/TB‑month) |
 | ---: | :--- | ---: | ---: | ---: |
-| 100&nbsp;TB | Snappy (2.08) | 64.5&nbsp;TB | 35.5% | **$8,900** |
-| 1 PB | Snappy | 645 TB | 35.5% | **$89,000** |
-| 1 PB | LZ4 (2.10) | 653 TB | 34.7% | **$87,000** |
-| 10 PB | Snappy | 6.45 PB | 35.5% | **$895,000** |
-| 100 PB | Snappy | 64.5 PB | 35.5% | **$8.9 million** |
-| 1&nbsp;PB | zstd&nbsp;-3 (3.20) | 996&nbsp;TB | 0.4% | $1,000, plus **22% fewer decode CPU‑seconds** on every read |
+| 100&nbsp;TB | Snappy (2.08) | 63.8&nbsp;TB | 36.2% | **$9,100** |
+| 1 PB | Snappy | 638 TB | 36.2% | **$91,000** |
+| 1 PB | LZ4 (2.10) | 646 TB | 35.4% | **$89,000** |
+| 10 PB | Snappy | 6.38 PB | 36.2% | **$912,000** |
+| 100 PB | Snappy | 63.8 PB | 36.2% | **$9.1 million** |
+| 1&nbsp;PB | zstd&nbsp;-3 (3.20) | 985&nbsp;TB | 1.5% | $3,800, plus **22% fewer decode CPU‑seconds** on every read |
 
-Formula: `saved_per_year = stored_TB × (1 − old_ratio / 3.22) × price_per_TB_month × 12`.
+Formula: `saved_per_year = stored_TB × (1 − old_ratio / 3.25) × price_per_TB_month × 12`.
 Ratios are Silesia, same run; your data will differ — measure it with
 `glyd -b yourfile` before believing any table, including this one.
 
@@ -154,7 +154,7 @@ script that produced them.
 
 | Codec | Ratio | Compress MB/s | **Decompress MB/s** | |
 | :--- | ---: | ---: | ---: | :--- |
-| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.218** | 277 | **1,733** | ✅ best ratio; 1.27× zstd&nbsp;-3 decode |
+| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.254** | 277 | **1,733** | ✅ best ratio; 1.27× zstd&nbsp;-3 decode |
 | zstd&nbsp;-3 | 3.205 | 319 | 1,361 | |
 | zstd&nbsp;-1 | 2.894 | 535 | 1,493 | |
 | LZAV-hi | 2.803 | 91 | 3,185 | |
@@ -201,19 +201,19 @@ board — the ordering is the same.)
 
 | File | ⚡ **Glyd ratio** | zstd -3 ratio | ⚡ **Glyd MB/s** | zstd -3 MB/s |
 | :--- | ---: | ---: | ---: | ---: |
-| dickens | 2.833 | 2.782 | 1,300 | 1,139 |
-| mozilla | 2.776 | 2.810 | 1,697 | 1,275 |
-| mr | 2.819 | 2.811 | 1,421 | 1,240 |
-| nci | 11.156 | 11.840 | 3,530 | 2,600 |
-| ooffice | 1.991 | 1.968 | 1,326 | 978 |
-| osdb | 2.863 | 2.880 | 2,093 | 1,608 |
-| reymont | 3.483 | 3.420 | 1,665 | 1,339 |
-| samba | 4.362 | 4.360 | 2,401 | 1,947 |
-| sao | 1.318 | 1.312 | 1,936 | 832 |
-| webster | 3.496 | 3.427 | 1,661 | 1,389 |
-| xml | 8.245 | 8.414 | 3,115 | 2,400 |
-| x-ray | 1.462 | 1.393 | 1,094 | 839 |
-| **Total** | **3.218** | **3.204** | **1,841** | **1,417** |
+| dickens | 2.848 | 2.782 | 1,367 | 1,220 |
+| mozilla | 2.801 | 2.810 | 1,734 | 1,316 |
+| mr | 2.827 | 2.811 | 1,519 | 1,320 |
+| nci | 11.735 | 11.840 | 3,696 | 2,746 |
+| ooffice | 1.999 | 1.968 | 1,403 | 1,035 |
+| osdb | 2.903 | 2.880 | 2,243 | 1,731 |
+| reymont | 3.506 | 3.420 | 1,764 | 1,445 |
+| samba | 4.471 | 4.360 | 2,480 | 2,039 |
+| sao | 1.326 | 1.312 | 1,901 | 889 |
+| webster | 3.538 | 3.427 | 1,640 | 1,456 |
+| xml | 8.386 | 8.414 | 3,194 | 2,526 |
+| x-ray | 1.465 | 1.393 | 1,157 | 866 |
+| **Total** | **3.254** | **3.204** | **1,891** | **1,487** |
 
 (Same run; `--max` wins ratio on 8 of 12 files and decode on 12 of 12.)
 
@@ -301,9 +301,9 @@ unsafe block carries its bound.
 - On x86 (Sapphire Rapids) `--max` decodes at 1.03× zstd -3, not the 1.3×
   it reaches on ARM: x86-64's 16 general registers spill the 8-stream
   entropy loops that ARM's 31 keep in registers.
-- `--ultra` is 2.7% less dense than zstd -19 inside the same 2 MB window
-  (3.80 vs 3.91) and 5% less than zstd -19 at its default 8 MB window
-  (4.01); the window is a format limit, roadmap item 1.
+- `--ultra` is 2% less dense than zstd -19 (3.93 vs 4.01, both with an
+  8 MB window); the gap sits on structured data (mozilla, xml, samba
+  3-4%), text and binaries are within 1-2%.
 
 ---
 
