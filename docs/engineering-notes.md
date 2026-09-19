@@ -2,7 +2,7 @@
 
 The measurement history behind the numbers in the README: formats, floors,
 refuted ideas, per-file tables. `CHANGELOG-BENCH.md` has every step with
-its number; `GOAL*.md` the rules the work was done under.
+its number; `docs/history/GOAL*.md` the rules the work was done under.
 
 ## Format v6 (current)
 

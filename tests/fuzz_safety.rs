@@ -4,7 +4,7 @@ use glyd::{
 };
 use std::io::Write;
 
-/// G1 requirement from GOAL.md: 1,000,000 random mutations of compressed
+/// G1 requirement from docs/history/GOAL.md: 1,000,000 random mutations of compressed
 /// streams, zero panics, zero out-of-bounds. Do not lower this number.
 const G1_REQUIRED_MUTATIONS: u64 = 1_000_000;
 

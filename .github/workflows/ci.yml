@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, compression-v2 ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
 
@@ -13,8 +13,8 @@ env:
   # gives AVX2 without AVX-512.
   #
   # This job validates CORRECTNESS ONLY. It must never be used to evaluate the
-  # GOAL.md gates. Those are machine-specific and are measured locally with
-  # `-C target-cpu=native` per GOAL.md Section 1. The two builds differ
+  # docs/history/GOAL.md gates. Those are machine-specific and are measured locally with
+  # `-C target-cpu=native` per docs/history/GOAL.md section 1. The two builds differ
   # measurably: enabling AVX-512 codegen moves single-core compression by about
   # -6% and decompression by about +7% on Zen 4, because LLVM auto-vectorises
   # the decoder's literal wildcopy to 512-bit stores.

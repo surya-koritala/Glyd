@@ -838,7 +838,7 @@ pub fn evaluate_gates(records: &[BenchRecord]) -> Vec<GateResult> {
 
 pub fn print_gates_table(gates: &[GateResult]) {
     println!("\n=================================================================================================================================");
-    println!("                                            GOAL.md GATES EVALUATION TABLE");
+    println!("                                            docs/history/GOAL.md GATES EVALUATION TABLE");
     println!("=================================================================================================================================");
     println!("| Gate | Metric | Measured | Threshold | LZ4 Value | Status |");
     println!("|---|---|---|---|---|---|");
@@ -893,7 +893,7 @@ pub fn write_csv(path: &str, records: &[BenchRecord]) -> std::io::Result<()> {
 }
 
 fn main() {
-    // Configure Rayon to use exactly 16 threads for multi-core runs as specified in GOAL.md
+    // Configure Rayon to use exactly 16 threads for multi-core runs as specified in docs/history/GOAL.md
     rayon::ThreadPoolBuilder::new()
         .num_threads(16)
         .build_global()
