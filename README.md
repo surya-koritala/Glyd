@@ -64,7 +64,7 @@ saves CPU on every read instead.
 | 1 PB | Snappy | 645 TB | 35.5% | **$89,000** |
 | 1 PB | LZ4 (2.10) | 653 TB | 34.7% | **$87,000** |
 | 10 PB | Snappy | 6.45 PB | 35.5% | **$895,000** |
-| 100 PB | Snappy | 64.5 PB | 35.5% | **$8.9 M** |
+| 100 PB | Snappy | 64.5 PB | 35.5% | **$8.9 million** |
 | 1&nbsp;PB | zstd&nbsp;-3 (3.20) | 996&nbsp;TB | 0.4% | $1,000, plus **22% fewer decode CPU‑seconds** on every read |
 
 Formula: `saved_per_year = stored_TB × (1 − old_ratio / 3.22) × price_per_TB_month × 12`.
@@ -74,8 +74,8 @@ Ratios are Silesia, same run; your data will differ — measure it with
 **At market scale:** object storage holds hundreds of exabytes (AWS said in
 March 2026 that S3 alone stores "hundreds of exabytes" across 500 trillion
 objects). At list price, **every 1% fewer bytes across 100 EB is about
-$250 M a year**; moving the Snappy/LZ4-compressed share of it to Glyd
-`--max` is worth billions a year.
+$250 million a year**; moving 100 EB from Snappy or LZ4 to Glyd `--max`
+(35% fewer bytes) is worth about **$8.8 billion a year**.
 
 Where the numbers come from and what they do not say: the byte savings
 apply when you are on Snappy/LZ4 today; against zstd -3 the saving is CPU,

@@ -65,13 +65,13 @@
       <tr><th>Bytes saved</th><td id="pct">—</td></tr>
       <tr><th>Decode CPU vs today's codec</th><td id="cpu">—</td></tr>
     </table>
-    <small>Formula: stored_TB × (1 − old_ratio / glyd_ratio) × price × 12. Decode speeds (MB/s, one core, same run): Snappy 1,495 · LZ4 4,108 · zstd -1 1,493 · zstd -3 1,361–1,440 · Glyd --max 1,860 · Glyd default 6,900. Every 1% fewer bytes across 100 EB of object storage is about $250 M a year at list price.</small>
+    <small>Formula: stored_TB × (1 − old_ratio / glyd_ratio) × price × 12. Decode speeds (MB/s, one core, same run): Snappy 1,495 · LZ4 4,108 · zstd -1 1,493 · zstd -3 1,361–1,440 · Glyd --max 1,860 · Glyd default 6,900. Every 1% fewer bytes across 100 EB of object storage is about $250 million a year at list price.</small>
   </div>
 </main>
 <script>
   const dec = { "2.076":1495, "2.101":4108, "1.0":40000, "2.894":1493, "3.205":1440 };
   const $ = id => document.getElementById(id);
-  function fmt(n){ return n >= 1e9 ? "$" + (n/1e9).toFixed(2) + " B" : n >= 1e6 ? "$" + (n/1e6).toFixed(2) + " M" : "$" + Math.round(n).toLocaleString(); }
+  function fmt(n){ return n >= 1e9 ? "$" + (n/1e9).toFixed(2) + " billion" : n >= 1e6 ? "$" + (n/1e6).toFixed(2) + " million" : "$" + Math.round(n).toLocaleString(); }
   function tb(n){ return n >= 1000 ? (n/1000).toFixed(2) + " PB" : n.toFixed(1) + " TB"; }
   function calc(){
     const stored = +$("tb").value || 0, old = +$("codec").value, price = +$("price").value || 0;
