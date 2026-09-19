@@ -24,6 +24,7 @@ pub mod v7_decode;
 pub mod v7_ultra;
 pub mod fixlog;
 pub mod record;
+pub mod ldm;
 pub mod dict;
 pub use dict::Dict;
 
@@ -33,6 +34,7 @@ pub use format::compute_checksum;
 use error::{CodecError, Result};
 use finder::{new_table, Dense, HashTable, Lzav, Mode, Turbo};
 use format::*;
+use v7_format::LOCAL_WINDOW;
 use rayon::prelude::*;
 use std::cell::RefCell;
 
@@ -473,6 +475,10 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
             }
         }),
     }
+    // Far matches (past the local finders' 8 MB) over the whole input,
+    // found once here; an input that fits the local window has none.
+    let far = if full.len() > LOCAL_WINDOW as usize && dict.is_none() { ldm::Matches::find(full) } else { ldm::Matches { list: Vec::new() } };
+    let mut far_i = 0usize;
     let mut offset = start;
     let mut first = true;
     // One block: the chunk at `offset`, its parse, and the header flags.
@@ -500,7 +506,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
             Parse::Dfast => {
                 DFAST.with_borrow_mut(|t| match dict {
                     Some(d) => v7_encode::find_sequences_dfast_dict(full, offset, chunk_len, t, d.finder(), &mut reps, seqs, literals, scratch),
-                    None => v7_encode::find_sequences_dfast(full, offset, chunk_len, t, &mut reps, seqs, literals, scratch),
+                    None => v7_encode::find_sequences_dfast_far(full, offset, chunk_len, t, &far, &mut far_i, &mut reps, seqs, literals, scratch),
                 });
                 // The dfast parse wrote its codes into the scratch as it
                 // went; encode from those.
@@ -517,7 +523,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
                 first = false;
             }
             Parse::Ultra => {
-                ULTRA.with_borrow_mut(|t| v7_ultra::find_sequences_ultra(full, offset, chunk_len, t.as_mut().unwrap(), reps, seqs, literals));
+                ULTRA.with_borrow_mut(|t| v7_ultra::find_sequences_ultra_far(full, offset, chunk_len, t.as_mut().unwrap(), reps, &far, seqs, literals));
                 // The parse may be split into blocks with their own tables
                 // where its statistics change (`v7_ultra::split_points`).
                 let mut cuts = v7_ultra::split_points(seqs, literals);

@@ -304,17 +304,25 @@ impl EncScratch {
     }
 }
 
-/// Bits of `extra` per sequence, a `MAX_PUT` put.
-/// Bits one sequence's three fields can hold: a literal run of 2^18 (18),
-/// a match of up to 2^18 (17), an offset below 2^23 (22). One more than a
-/// `put` carries, so `put_wide` splits such a sequence in two.
+/// Bits of `extra` per sequence, a `MAX_PUT` put, and the decoder's
+/// one-load walk budget: a literal run of 2^18 (18), a match of up to
+/// 2^18 (17), an offset below 2^23 (22). One more than a `put` carries,
+/// so `put_wide` splits such a sequence in two. A far offset (up to 26
+/// bits) only ever comes with a match of at most `FAR_MATCH_CAP` (3
+/// extra bits), which the finders guarantee.
 const EXTRA_BITS: u32 = 57;
 const _: () = assert!(EXTRA_BITS <= crate::bits::MAX_PUT + 1);
 const _: () = assert!(
     EXTRA_BITS as usize
         == extra_bits_of_code(Kind::Ll, ll_code(crate::format::MAX_BLOCK_SIZE as u32).0) as usize
             + extra_bits_of_code(Kind::Ml, ml_code(crate::format::MAX_BLOCK_SIZE as u32).0) as usize
-            + (MAX_OFFSET_BITS - 1) as usize
+            + FAR_OFFSET_BITS as usize
+);
+const _: () = assert!(
+    extra_bits_of_code(Kind::Ll, ll_code(crate::format::MAX_BLOCK_SIZE as u32).0) as usize
+        + extra_bits_of_code(Kind::Ml, ml_code(FAR_MATCH_CAP).0) as usize
+        + (MAX_OFFSET_BITS - 1) as usize
+        <= EXTRA_BITS as usize
 );
 
 /// One sequence's extra bits, in two puts when they exceed one.
@@ -445,7 +453,12 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     let ll_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.ll);
     let ml_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.ml);
     let off_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.off);
-    let hists = [&ll_hist[..LL_SYMBOLS], &ml_hist[..ML_SYMBOLS], &off_hist[..OFF_SYMBOLS]];
+    // A v8 (non-compact) block carries the v8 offset codes: no far
+    // offsets (the library writes compact blocks; this path is the
+    // tests' and the reference encoder's).
+    let off_symbols = if compact { OFF_SYMBOLS } else { OFF_SYMBOLS_V8 };
+    debug_assert!(compact || off_hist[OFF_SYMBOLS_V8..OFF_SYMBOLS].iter().all(|&c| c == 0), "far offset in a v8 block");
+    let hists = [&ll_hist[..LL_SYMBOLS], &ml_hist[..ML_SYMBOLS], &off_hist[..off_symbols]];
     let prev_cost = match (&prev.ll, &prev.ml, &prev.off) {
         (Some(a), Some(b), Some(c)) => hists.iter().zip([a, b, c]).try_fold(0u64, |acc, (h, t)| table_cost(h, t).map(|b| acc + b)),
         _ => None,
@@ -455,7 +468,7 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     // without pricing fresh ones (as with the literal table above).
     let mut fresh: Option<[Vec<u16>; 3]> = None;
     let fresh_tables = |fresh: &mut Option<[Vec<u16>; 3]>| {
-        fresh.get_or_insert_with(|| [tans::normalize(&ll_hist, LL_SYMBOLS), tans::normalize(&ml_hist, ML_SYMBOLS), tans::normalize(&off_hist, OFF_SYMBOLS)]);
+        fresh.get_or_insert_with(|| [tans::normalize(&ll_hist, LL_SYMBOLS), tans::normalize(&ml_hist, ML_SYMBOLS), tans::normalize(&off_hist, off_symbols)]);
     };
     let mut seq_reuse = match prev_cost {
         Some(_) if n < SMALL_SEQUENCES => true,
@@ -694,7 +707,7 @@ unsafe fn eq4(a: *const u8, b: *const u8) -> bool {
 #[inline(always)]
 fn candidate(e: u32, mine: u32, pos: usize) -> Option<usize> {
     let d = (pos.wrapping_sub(e as usize)) & POS_MASK;
-    let lim = pos.min(MAX_WINDOW as usize - 1);
+    let lim = pos.min(LOCAL_WINDOW as usize - 1);
     if d.wrapping_sub(1) < lim && (e ^ mine) >> POS_BITS == 0 {
         Some(pos - d)
     } else {
@@ -793,7 +806,7 @@ unsafe fn probe<const D: bool>(src: *const u8, pos: usize, block_end: usize, c: 
             if (e ^ mine) >> POS_BITS == 0 {
                 let epos = (e as usize) & POS_MASK;
                 let off = pos + d.len - epos;
-                if epos < d.len && off < MAX_WINDOW as usize {
+                if epos < d.len && off < LOCAL_WINDOW as usize {
                     let len = ScalarMatch::prefix(p, d.content.add(epos), (block_end - pos).min(d.len - epos));
                     if len >= 4 && len > best.len {
                         best = Found { src: d.content.add(epos), off, len };
@@ -829,18 +842,26 @@ fn lazy_win(pos: &mut usize, found: &mut Found, better: Found) {
 /// so a mispredicted check does not restart that load chain; a hit's
 /// lazy step and a step-1 miss's next probe both use them.
 pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
-    find_sequences_dfast_impl::<false>(input, block_start, block_len, t, None, reps, seqs, literals, codes)
+    find_sequences_dfast_impl::<false>(input, block_start, block_len, t, None, &NO_FAR, &mut 0, reps, seqs, literals, codes)
 }
+
+/// `find_sequences_dfast` with the input's far matches (`ldm::Matches`)
+/// on offer; `far_i` is the caller's cursor into them, kept across blocks.
+pub fn find_sequences_dfast_far(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, far: &crate::ldm::Matches, far_i: &mut usize, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
+    find_sequences_dfast_impl::<false>(input, block_start, block_len, t, None, far, far_i, reps, seqs, literals, codes)
+}
+
+static NO_FAR: crate::ldm::Matches = crate::ldm::Matches { list: Vec::new() };
 
 /// `find_sequences_dfast` with a prepared dictionary's tables: its
 /// content is history before `input` (offsets reach through it), found
 /// through its own tables after the input's.
 pub fn find_sequences_dfast_dict(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: &DictTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
-    find_sequences_dfast_impl::<true>(input, block_start, block_len, t, Some(dict), reps, seqs, literals, codes)
+    find_sequences_dfast_impl::<true>(input, block_start, block_len, t, Some(dict), &NO_FAR, &mut 0, reps, seqs, literals, codes)
 }
 
 #[inline(always)]
-fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: Option<&DictTables>, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
+fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: Option<&DictTables>, far: &crate::ldm::Matches, far_i: &mut usize, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
     use crate::finder::MatchLen;
     let src = input.as_ptr();
     let (lb, sb) = (t.lbits, t.sbits);
@@ -881,6 +902,14 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                     (0, 0)
                 };
                 let mut found = probe::<D>(src, pos, block_end, &cur, el, es, &r, dict, eld, esd);
+                // A far match covering this position (the long-distance
+                // matcher's) wins when it is longer than the local one.
+                if let Some((flen, foff)) = far.at(far_i, pos) {
+                    let flen = flen.min(block_end - pos);
+                    if flen > found.len && flen >= 4 {
+                        found = Found { src: src.add(pos - foff), off: foff, len: flen };
+                    }
+                }
                 if found.off == 0 {
                     let step = (step_nb >> DFAST_SKIP_STRENGTH) as usize;
                     step_nb += 1;
@@ -925,6 +954,12 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                     mpos -= 1;
                     c = c.sub(1);
                     rc += 1;
+                }
+                // A far offset's match fits the decoder's one-load walk
+                // only up to FAR_MATCH_CAP bytes; the rest follows as a
+                // repeat-offset match (the reps probe finds it).
+                if found.off >= 1 << (FAR_OFFSET_BITS as usize + 1) {
+                    rc = rc.min(FAR_MATCH_CAP as usize);
                 }
                 let offset = found.off as u32;
                 let ll = mpos - anchor;

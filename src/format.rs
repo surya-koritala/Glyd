@@ -210,13 +210,14 @@ pub const FLAG_TURBO: u16 = 16;
 pub const PARALLEL_UNIT_V6: usize = 2 * 1024 * 1024;
 pub const PARALLEL_UNIT_MAX: usize = 8 * 1024 * 1024;
 pub const PARALLEL_UNIT_ULTRA: usize = 16 * 1024 * 1024;
-pub const PARALLEL_UNIT_LARGEST: usize = 64 * 1024 * 1024;
+pub const PARALLEL_UNIT_LARGEST: usize = 128 * 1024 * 1024;
 
 /// The unit for an input of `len` bytes on `threads` cores, at least
-/// `smallest`: as large as leaves two units per core, capped at
+/// `smallest`: as large as leaves one unit per core (the long-distance
+/// matcher reaches 128 MB, and a unit is its window), capped at
 /// `PARALLEL_UNIT_LARGEST`, rounded down to a megabyte.
 pub fn parallel_unit(len: usize, threads: usize, smallest: usize) -> usize {
-    let fair = len / (2 * threads.max(1));
+    let fair = len / threads.max(1);
     (fair.min(PARALLEL_UNIT_LARGEST) & !((1 << 20) - 1)).max(smallest)
 }
 

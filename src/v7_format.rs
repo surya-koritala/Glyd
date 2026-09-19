@@ -7,14 +7,27 @@
 //! Offsets: codes 0..=2 are the three most recent distinct offsets; a real
 //! offset o uses code 3 + floor(log2(o)) with that many extra bits.
 
-/// v8: offsets below 8 MB. v7 blocks (`OFF_SYMBOLS_V7`) stay below 2 MB.
-pub const MAX_OFFSET_BITS: u32 = 23;
+/// v9: offsets below 128 MB (the long-distance matcher's reach; the
+/// block-local finders keep an 8 MB window, `LOCAL_WINDOW`). v8 blocks
+/// (`OFF_SYMBOLS_V8`) stay below 8 MB, v7 blocks below 2 MB.
+pub const MAX_OFFSET_BITS: u32 = 27;
 pub const MAX_WINDOW: u32 = 1 << MAX_OFFSET_BITS;
+/// The window of the hash-table and tree finders.
+pub const LOCAL_WINDOW: u32 = 1 << 23;
 pub const MIN_MATCH: u32 = 3;
 pub const LL_SYMBOLS: usize = 38;
 pub const ML_SYMBOLS: usize = 54;
-pub const OFF_SYMBOLS: usize = 26; // 3 reps + log2 buckets 0..=22
+pub const OFF_SYMBOLS: usize = 30; // 3 reps + log2 buckets 0..=26
+pub const OFF_SYMBOLS_V8: usize = 26;
 pub const OFF_SYMBOLS_V7: usize = 24;
+/// A sequence whose offset code carries more than this many extra bits
+/// is a far match (past `LOCAL_WINDOW`); its match is capped so the
+/// three fields fit the decoder's one-load walk (see `FAR_MATCH_CAP`).
+pub const FAR_OFFSET_BITS: u8 = 22;
+/// Longest match coded with a far offset in one sequence: the rest
+/// follows as a repeat-offset sequence. Below 131 a match length code
+/// carries at most 3 extra bits: 18 + 3 + 26 = 47 bits, within the walk's 57.
+pub const FAR_MATCH_CAP: u32 = 130;
 
 pub const S_LIT: usize = 0;
 pub const S_LL: usize = 1;
@@ -203,6 +216,7 @@ pub const fn extra_bits_of_code_v7(kind: Kind, code: u8) -> u8 {
 pub const LL_WALK: [u64; 256] = walk_table(Kind::Ll, LL_SYMBOLS, false);
 pub const ML_WALK: [u64; 256] = walk_table(Kind::Ml, ML_SYMBOLS, false);
 pub const OFF_WALK: [u64; 256] = walk_table(Kind::Off, OFF_SYMBOLS, false);
+const _: () = assert!(3 + (MAX_OFFSET_BITS as usize - 1) + 1 == OFF_SYMBOLS);
 /// The same for v7 blocks' length codes (offsets code alike).
 pub const LL_WALK_V7: [u64; 256] = walk_table(Kind::Ll, LL_SYMBOLS_V7, true);
 pub const ML_WALK_V7: [u64; 256] = walk_table(Kind::Ml, ML_SYMBOLS_V7, true);
@@ -225,6 +239,12 @@ pub static WALK_SPLIT_V7: WalkSplit = WalkSplit {
     base: [base_table(&LL_WALK_V7), base_table(&ML_WALK_V7), base_table(&OFF_WALK)],
 };
 
+/// Bit position of the base in a walk entry; the mask below it holds
+/// `WALK_BASE_SHIFT` - 8 bits.
+pub const WALK_BASE_SHIFT: u32 = 36;
+pub const WALK_MASK_BITS: u32 = WALK_BASE_SHIFT - 8;
+const _: () = assert!(MAX_OFFSET_BITS - 1 <= WALK_MASK_BITS && MAX_OFFSET_BITS <= 64 - WALK_BASE_SHIFT);
+
 const fn nb_table(walk: &[u64; 256]) -> [u8; 256] {
     let mut t = [0u8; 256];
     let mut c = 0;
@@ -239,7 +259,7 @@ const fn base_table(walk: &[u64; 256]) -> [u32; 256] {
     let mut t = [0u32; 256];
     let mut c = 0;
     while c < 256 {
-        t[c] = (walk[c] >> 32) as u32;
+        t[c] = (walk[c] >> WALK_BASE_SHIFT) as u32;
         c += 1;
     }
     t
@@ -273,7 +293,9 @@ const fn walk_table(kind: Kind, n_symbols: usize, v7: bool) -> [u64; 256] {
             }
         };
         let nb = if v7 { extra_bits_of_code_v7(kind, c as u8) } else { extra_bits_of_code(kind, c as u8) } as u64;
-        t[c] = (base as u64) << 32 | ((1u64 << nb) - 1) << 8 | nb;
+        // Layout: nb in bits 0..8, the mask (up to 28 bits) in 8..36,
+        // the base (up to 28 bits) in 36..64.
+        t[c] = (base as u64) << WALK_BASE_SHIFT | ((1u64 << nb) - 1) << 8 | nb;
         c += 1;
     }
     t

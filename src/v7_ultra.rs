@@ -72,7 +72,7 @@ struct Prices {
 /// Weight 2 measured 0.13% over 1 on Silesia, 4 the same as 2, 1/4 -0.5%.
 const PRIOR_LL: [u32; LL_SYMBOLS] = [1863, 1245, 423, 186, 91, 84, 58, 26, 25, 24, 16, 7, 3, 6, 14, 9, 4, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
 const PRIOR_ML: [u32; ML_SYMBOLS] = [339, 204, 630, 279, 409, 379, 123, 231, 200, 169, 52, 137, 198, 24, 32, 54, 28, 17, 64, 20, 40, 10, 24, 28, 24, 12, 8, 61, 9, 7, 4, 18, 9, 28, 9, 9, 37, 12, 33, 55, 21, 11, 11, 13, 11, 2, 1, 1, 1, 1, 1, 1, 1, 1];
-const PRIOR_OFF: [u32; OFF_SYMBOLS] = [554, 178, 82, 10, 2, 4, 19, 76, 89, 102, 107, 106, 108, 109, 132, 139, 158, 184, 213, 238, 267, 308, 305, 263, 204, 137];
+const PRIOR_OFF: [u32; OFF_SYMBOLS] = [554, 178, 82, 10, 2, 4, 19, 76, 89, 102, 107, 106, 108, 109, 132, 139, 158, 184, 213, 238, 267, 308, 305, 263, 204, 137, 40, 40, 40, 40];
 
 impl Prices {
     /// Prices from the prior plus `s` (the recent blocks' counts), with
@@ -331,7 +331,7 @@ impl UltraState {
     }
 
     pub fn clear(&mut self, len: usize) {
-        let ring = len.min(MAX_WINDOW as usize).max(1 << 16).next_power_of_two();
+        let ring = len.min(LOCAL_WINDOW as usize).max(1 << 16).next_power_of_two();
         let bits = (usize::BITS - len.max(1).leading_zeros()).clamp(12, HASH4_BITS);
         self.hash4.clear();
         self.hash4.resize(1 << bits, NONE);
@@ -394,7 +394,7 @@ impl UltraState {
         let mut m = self.hash4[i4];
         self.hash4[i4] = pos as u32;
         self.hash3[i3] = pos as u32;
-        let low = pos.saturating_sub(MAX_WINDOW as usize - 1);
+        let low = pos.saturating_sub(LOCAL_WINDOW as usize - 1);
         let (mut sp, mut lp) = (2 * (pos & self.ring_mask), 2 * (pos & self.ring_mask) + 1);
         let (mut cls, mut cll) = (0usize, 0usize);
         let mut best = if collect { self.cands.last().map_or(MIN_MATCH as usize - 1, |c| c.0 as usize) } else { 0 };
@@ -454,12 +454,13 @@ impl UltraState {
     /// Candidates at `pos`, into `cands` in the order found: the reps
     /// (any length), the 3-byte head, then the tree's, each longer than
     /// the last. Inserts `pos`. Returns the longest length.
-    fn candidates(&mut self, input: &[u8], pos: usize, limit: usize, log: bool, reps: &[u32; 3]) -> usize {
+    fn candidates(&mut self, input: &[u8], pos: usize, limit: usize, log: bool, reps: &[u32; 3], far: &crate::ldm::Matches, far_i: &mut usize) -> usize {
         self.cands.clear();
         let max = limit - pos;
         if max < MIN_MATCH as usize {
             return 0;
         }
+
         let src = input.as_ptr();
         let cur = unsafe { src.add(pos) };
         let mut best = MIN_MATCH as usize - 1;
@@ -477,7 +478,7 @@ impl UltraState {
         }
         if best < SUFFICIENT_LEN {
             let p3 = self.hash3[h3(cur)];
-            if p3 != NONE && (p3 as usize) < pos && (pos - p3 as usize) < MAX_WINDOW as usize {
+            if p3 != NONE && (p3 as usize) < pos && (pos - p3 as usize) < LOCAL_WINDOW as usize {
                 let len = unsafe { ScalarMatch::prefix(cur, src.add(p3 as usize), max) };
                 if len > best {
                     self.cands.push((len as u32, (pos - p3 as usize) as u32));
@@ -493,6 +494,20 @@ impl UltraState {
             best = best.max(self.walk(input, pos, limit, log, true).0);
         }
         self.inserted = self.inserted.max(pos + 1);
+        // A far match covering this position goes last (the candidates
+        // are in order of length, each pricing the lengths past the one
+        // before): only when it is the longest. Its length is capped for
+        // a far offset (FAR_MATCH_CAP); the rest continues as a repeat.
+        if let Some((flen, foff)) = far.at(far_i, pos) {
+            let mut flen = flen.min(max);
+            if foff >= 1 << (FAR_OFFSET_BITS as usize + 1) {
+                flen = flen.min(FAR_MATCH_CAP as usize);
+            }
+            if flen > best {
+                self.cands.push((flen as u32, foff as u32));
+                best = flen;
+            }
+        }
         best
     }
 }
@@ -501,12 +516,20 @@ impl UltraState {
 /// last one literal-only) and `literals`, with `input[..block_start]` as
 /// the window. `reps` is the block's initial repeat-offset state.
 pub fn find_sequences_ultra(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState, reps: [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>) {
+    find_sequences_ultra_far(input, block_start, block_len, st, reps, &NO_FAR, seqs, literals)
+}
+
+static NO_FAR: crate::ldm::Matches = crate::ldm::Matches { list: Vec::new() };
+
+/// `find_sequences_ultra` with the input's far matches (`ldm::Matches`)
+/// on offer as candidates.
+pub fn find_sequences_ultra_far(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState, reps: [u32; 3], far: &crate::ldm::Matches, seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>) {
     assert!(block_len <= MAX_BLOCK_SIZE && block_start + block_len <= input.len());
     let block = &input[block_start..block_start + block_len];
     match st.stats.take() {
         Some(mut s) => {
             let prices = Prices::of(&s, &[0; 256]);
-            parse(input, block_start, block_len, st, reps, &prices, false, seqs, literals);
+            parse(input, block_start, block_len, st, reps, &prices, false, far, seqs, literals);
             s.decay_into(&Stats::of(seqs, literals, reps));
             st.stats = Some(s);
         }
@@ -517,17 +540,19 @@ pub fn find_sequences_ultra(input: &[u8], block_start: usize, block_len: usize, 
             for &b in block {
                 hist[b as usize] += 1;
             }
-            parse(input, block_start, block_len, st, reps, &Prices::of(&Stats::none(), &hist), true, seqs, literals);
+            parse(input, block_start, block_len, st, reps, &Prices::of(&Stats::none(), &hist), true, far, seqs, literals);
             let prices = Prices::of(&Stats::of(seqs, literals, reps), &hist);
             st.undo();
-            parse(input, block_start, block_len, st, reps, &prices, false, seqs, literals);
+            parse(input, block_start, block_len, st, reps, &prices, false, far, seqs, literals);
             st.stats = Some(Stats::of(seqs, literals, reps));
         }
     }
 }
 
-fn parse(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState, reps: [u32; 3], prices: &Prices, log: bool, seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>) {
+fn parse(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState, reps: [u32; 3], prices: &Prices, log: bool, far: &crate::ldm::Matches, seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>) {
     let block_end = block_start + block_len;
+    // The far-match cursor starts at the first match reaching into the block.
+    let mut far_i = far.list.partition_point(|m| (m.start + m.len) as usize <= block_start);
     st.opt.clear();
     st.opt.resize(block_len + 1, UNREACHED);
     st.opt[0] = Node { price: 0, mlen: 0, off: 0, litlen: 0, reps };
@@ -550,7 +575,7 @@ fn parse(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState
         }
         let pos = block_start + cur;
         st.insert_upto(input, pos, log);
-        let best = st.candidates(input, pos, block_end, log, &n.reps);
+        let best = st.candidates(input, pos, block_end, log, &n.reps, far, &mut far_i);
         if best < MIN_MATCH as usize {
             continue;
         }

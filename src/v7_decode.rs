@@ -209,8 +209,11 @@ pub(crate) fn read_tans_table(bytes: &[u8], n_symbols: usize) -> Option<(Vec<u16
 /// (`v7_encode::write_tans_table`); in v7, `ns` u16 LE counts. Returns
 /// the bytes consumed.
 fn tans_counts(sec: &[u8], v8: bool, n_symbols: usize, counts: &mut [u16; tans::MAX_SYMBOLS]) -> Result<usize> {
+    // A block may carry a table of fewer symbols than the version
+    // allows (blocks written before the offset codes grew): the rest
+    // have count 0 and are never decoded.
     let ns = *sec.first().ok_or(corrupt("v7: table truncated"))? as usize;
-    if ns != n_symbols {
+    if ns > n_symbols || ns == 0 {
         return Err(corrupt("v7: table symbol count"));
     }
     if !v8 {
@@ -283,14 +286,14 @@ fn code_stream_open<'a, 'p, 'd>(sec: Section<'a>, v8: bool, compact: bool, coded
     Ok(Some((table, streams, single)))
 }
 
-/// One field of the walk: `e` is a `*_WALK` entry, `base << 32 | mask <<
+/// One field of the walk: `e` is a `*_WALK` entry, `base << 36 | mask <<
 /// 8 | nb`; the value is `base` plus the low `nb` bits of `w`. Returns
 /// the value, `w` shifted past them, and `nb`.
 #[inline(always)]
 fn field(w: u64, e: u64) -> (u32, u64, u32) {
     let nb = e as u32 & 0xff;
-    let extra = w as u32 & (e as u32 >> 8);
-    ((extra as u64 + (e >> 32)) as u32, w >> nb, nb)
+    let extra = w as u32 & ((e >> 8) as u32 & ((1 << WALK_MASK_BITS) - 1));
+    ((extra as u64 + (e >> WALK_BASE_SHIFT)) as u32, w >> nb, nb)
 }
 
 /// The x86-64 field: width and base from the split tables (a byte and a
@@ -356,7 +359,7 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
     let v8 = V8;
     let compact = layout.compact;
     let (ll_symbols, ml_symbols) = if v8 { (LL_SYMBOLS, ML_SYMBOLS) } else { (LL_SYMBOLS_V7, ML_SYMBOLS_V7) };
-    let off_symbols = if v8 { OFF_SYMBOLS } else { OFF_SYMBOLS_V7 };
+    let off_symbols = if compact { OFF_SYMBOLS } else if v8 { OFF_SYMBOLS_V8 } else { OFF_SYMBOLS_V7 };
     let ll = code_stream_open(Section::of(payload, layout, S_LL), v8, compact, coded(S_LL), reuse, ll_symbols, n, &mut prev.ll, &mut s.codes)?;
     let ml = code_stream_open(Section::of(payload, layout, S_ML), v8, compact, coded(S_ML), reuse, ml_symbols, n, &mut prev.ml, &mut s.codes[8..])?;
     let off = code_stream_open(Section::of(payload, layout, S_OFF), v8, compact, coded(S_OFF), reuse, off_symbols, n, &mut prev.off, &mut s.codes[16..])?;

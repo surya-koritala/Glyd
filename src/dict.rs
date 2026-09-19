@@ -102,7 +102,12 @@ impl Dict {
         if pos != bytes.len() {
             return None;
         }
-        let dict = Self::assemble(content, tables);
+        // The id is the checksum of the bytes as given: a dictionary
+        // re-serialized by a later version (tables of more symbols) must
+        // keep the id its objects name.
+        let mut dict = Self::assemble(content, tables);
+        let id = crate::compute_checksum(bytes);
+        dict.id = if id == 0 { 1 } else { id };
         Some(dict)
     }
 

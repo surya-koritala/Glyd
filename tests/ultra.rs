@@ -2,7 +2,7 @@
 //! (empty, tiny, runs, cross-block matches, the window's edge, raw
 //! blocks, dictionaries), determinism, and the parallel path.
 use glyd::format::MAX_BLOCK_SIZE;
-use glyd::v7_format::MAX_WINDOW;
+use glyd::v7_format::LOCAL_WINDOW;
 
 fn rnd(x: &mut u64) -> u64 {
     *x ^= *x << 13;
@@ -70,11 +70,12 @@ fn ultra_roundtrip_shapes() {
     assert!(c.len() < m.len(), "ultra ({}) should beat max ({}) on text", c.len(), m.len());
 }
 
-/// Matches at exactly the window's edge and just past it: the finder
-/// must offer the first and never the second.
+/// Matches at exactly the local window's edge and just past it: the
+/// tree finder offers the first; the second is the long-distance
+/// matcher's (its offset needs a far code) and is matched too.
 #[test]
 fn ultra_window_edge() {
-    let w = MAX_WINDOW as usize;
+    let w = LOCAL_WINDOW as usize;
     let mut x = 12345u64;
     let block: Vec<u8> = (0..4096).map(|_| rnd(&mut x) as u8).collect();
     for gap in [w - 4096 - 1, w - 4096, w - 4096 + 1, w + 100] {
@@ -86,12 +87,7 @@ fn ultra_window_edge() {
         // The repeat straddles a block boundary; the part in the last
         // block (at least 3 KB of the 4 KB) must be matched, the block
         // headers of the raw noise cost ~1 KB.
-        let in_window = gap + 4096 < w;
-        if in_window {
-            assert!(c.len() < data.len() - 2000, "gap {gap}: the repeat should match ({} bytes)", c.len());
-        } else {
-            assert!(c.len() > data.len() - 1000, "gap {gap}: past the window, nothing to match ({} bytes)", c.len());
-        }
+        assert!(c.len() < data.len() - 2000, "gap {gap}: the repeat should match ({} bytes)", c.len());
     }
 }
 
