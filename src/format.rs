@@ -18,7 +18,7 @@ pub const VERSION_V8: u16 = 8;
 /// padding on disk (the decoder pads its copy). Written for blocks of at
 /// most `COMPACT_MAX` bytes.
 pub const VERSION_V9: u16 = 9;
-pub const COMPACT_MAX: usize = 32 * 1024;
+pub const COMPACT_MAX: usize = MAX_BLOCK_SIZE;
 /// The first byte of a compact block ('G'; the magic's is 'D').
 pub const COMPACT_MARKER: u8 = 0x47;
 /// The shortest compact header: marker, flags, two one-byte lengths, checksum.
@@ -85,6 +85,28 @@ impl BlockHeader {
             put_varint(out, self.literal_len);
         }
         out.extend_from_slice(&self.checksum.to_le_bytes());
+    }
+
+    /// The header at the start of `src`, of either kind (compact by its
+    /// marker, else the struct behind the magic), and its length; None
+    /// if truncated or not a block.
+    pub fn read(src: &[u8]) -> Option<(BlockHeader, usize)> {
+        if src.first() == Some(&COMPACT_MARKER) {
+            return Self::read_compact(src);
+        }
+        if src.len() < HEADER_SIZE || u32::from_le_bytes([src[0], src[1], src[2], src[3]]) != MAGIC {
+            return None;
+        }
+        Some((unsafe { std::ptr::read_unaligned(src.as_ptr() as *const BlockHeader) }, HEADER_SIZE))
+    }
+
+    /// Bytes this header takes on disk.
+    pub fn header_len(&self) -> usize {
+        if self.version == VERSION_V9 {
+            coded_header_len(true, self.uncompressed_len as usize, self.token_bytes as usize, self.token_count as usize, self.literal_len as usize) - if self.flags & FLAG_RAW_UNCOMPRESSED != 0 { varint_len(self.token_count) + varint_len(self.literal_len) } else { 0 }
+        } else {
+            HEADER_SIZE
+        }
     }
 
     /// Read a compact header (`src` starts at its marker): the header and

@@ -72,6 +72,16 @@ pub fn payload_layout(payload: &[u8]) -> Option<Layout> {
     layout_from(payload, sub, SubHeader::BYTES, 0, false)
 }
 
+/// The layout of a block's payload as written (no padding), by its
+/// header's version.
+pub fn payload_layout_of(header: &crate::format::BlockHeader, payload: &[u8]) -> Option<Layout> {
+    if header.version == crate::format::VERSION_V9 {
+        payload_layout_compact(payload, false)
+    } else {
+        payload_layout(payload)
+    }
+}
+
 /// The layout of a v9 payload: the sections, then, when `padded` (the
 /// decoder's copy), `PAD` zero bytes.
 pub fn payload_layout_compact(payload: &[u8], padded: bool) -> Option<Layout> {

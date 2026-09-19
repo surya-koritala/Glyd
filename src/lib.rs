@@ -613,16 +613,10 @@ fn parse_header(compressed: &[u8], cursor: usize) -> Result<(BlockHeader, usize)
 #[inline(always)]
 fn parse_header_at(compressed: &[u8], cursor: usize) -> Result<(BlockHeader, usize, usize)> {
     let head = &compressed[cursor..];
-    let (header, used) = if head[0] == COMPACT_MARKER {
-        BlockHeader::read_compact(head).ok_or(CodecError::CorruptedBitstream("Truncated block header"))?
-    } else {
-        if head.len() < HEADER_SIZE {
-            return Err(CodecError::CorruptedBitstream("Truncated block header"));
-        }
-        if u32::from_le_bytes([head[0], head[1], head[2], head[3]]) != MAGIC {
-            return Err(CodecError::InvalidMagic);
-        }
-        (unsafe { std::ptr::read_unaligned(head.as_ptr() as *const BlockHeader) }, HEADER_SIZE)
+    let (header, used) = match BlockHeader::read(head) {
+        Some(h) => h,
+        None if head[0] != COMPACT_MARKER && head.len() >= 4 && u32::from_le_bytes([head[0], head[1], head[2], head[3]]) != MAGIC => return Err(CodecError::InvalidMagic),
+        None => return Err(CodecError::CorruptedBitstream("Truncated block header")),
     };
     if header.version != CURRENT_VERSION && !is_coded_version(header.version) {
         return Err(CodecError::UnsupportedVersion(header.version));
@@ -661,19 +655,25 @@ unsafe fn decode_block(
     if is_coded_version(header.version) {
         let v8 = header.version >= VERSION_V8;
         let compact = header.version == VERSION_V9;
+        // `payload` may run past the block (see the callers); the block's
+        // own bytes, plus for a compact block the readable bytes after
+        // them that stand in for its padding.
+        let len = header.payload_len();
+        let prepadded = compact && payload.len() >= len + bits::PAD;
+        let payload = if prepadded { &payload[..len + bits::PAD] } else { &payload[..len] };
         let (n_seq, n_lit) = (header.token_count as usize, header.literal_len as usize);
         return v7_decode::with_scratch(|scratch| {
             // A dictionary stream's tables are the caller's (borrowing the
             // dictionary's); otherwise the thread's, reset at a chain start.
             if let Some(t) = tables {
-                return v7_decode::decode_block(payload, v8, compact, n_seq, n_lit, dst, buffer_start, uncomp_len, t, scratch, ext).map(|_| ());
+                return v7_decode::decode_block(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncomp_len, t, scratch, ext).map(|_| ());
             }
             V7_TABLES.with(|t| {
                 let mut t = t.borrow_mut();
                 if (header.flags & FLAG_CHAIN_RESET) != 0 {
                     *t = v7_decode::DecTables::none();
                 }
-                v7_decode::decode_block(payload, v8, compact, n_seq, n_lit, dst, buffer_start, uncomp_len, &mut t, scratch, ext).map(|_| ())
+                v7_decode::decode_block(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncomp_len, &mut t, scratch, ext).map(|_| ())
             })
         });
     }
@@ -819,7 +819,9 @@ fn decompress_sequential_impl(compressed: &[u8], dst: &mut [u8], dst_offset0: us
                 provided: dst.len(),
             });
         }
-        let payload = &compressed[start..next];
+        // The slice runs up to `PAD` bytes past the payload when the
+        // buffer has them: a compact block is then decoded in place.
+        let payload = &compressed[start..(next + bits::PAD).min(compressed.len())];
         if block_dict_id(&header, payload).is_some_and(|id| id != expected_dict) {
             return Err(CodecError::CorruptedBitstream("dictionary id mismatch"));
         }
@@ -932,7 +934,7 @@ fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> 
         let unit_buffer_start = (output_ptr + unit.uncomp_offset) as *const u8;
         for i in 0..unit.block_count {
             let b = &blocks[unit.first_block_idx + i];
-            let block_slice = &compressed[b.block_offset..b.block_offset + b.block_size];
+            let block_slice = &compressed[b.block_offset..(b.block_offset + b.block_size + bits::PAD).min(compressed.len())];
             // Parsed once already in the scan above.
             let (header, start, _) = parse_header_at(block_slice, 0)?;
             let payload = &block_slice[start..];

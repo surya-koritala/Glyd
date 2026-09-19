@@ -932,26 +932,26 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
 /// `buffer_start` must point into the same allocation as `dst`, at or
 /// before `dst.as_ptr()`, with every byte between them initialised: that
 /// is the match window (the previous blocks of the same chain).
-pub unsafe fn decode_block(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>) -> Result<usize> {
+pub unsafe fn decode_block(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>) -> Result<usize> {
     #[cfg(target_arch = "x86_64")]
     {
         if crate::has_avx2() {
-            return decode_block_avx2(payload, v8, compact, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext);
+            return decode_block_avx2(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext);
         }
     }
-    decode_block_impl(payload, v8, compact, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext)
+    decode_block_impl(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext)
 }
 
 /// The decoder compiled for AVX2 + BMI2: the same passes, with 32-byte
 /// copies and single-uop variable shifts (`shrx`) in the bit loops.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,bmi2")]
-unsafe fn decode_block_avx2(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>) -> Result<usize> {
-    decode_block_impl(payload, v8, compact, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext)
+unsafe fn decode_block_avx2(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>) -> Result<usize> {
+    decode_block_impl(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext)
 }
 
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>) -> Result<usize> {
+unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>) -> Result<usize> {
     if uncompressed_len > dst.len() {
         return Err(CodecError::OutputBufferTooSmall { required: uncompressed_len, provided: dst.len() });
     }
@@ -960,6 +960,13 @@ unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, n_seq: usiz
     }
     if !compact {
         return decode_padded(payload, v8, false, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext);
+    }
+    // A compact block's payload must be followed by `PAD` readable bytes
+    // (their content is never used): the caller passes them when its
+    // buffer has them (`prepadded`: `payload` is the block plus `PAD`),
+    // else the block is copied behind zeros.
+    if prepadded {
+        return decode_padded(payload, v8, true, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext);
     }
     let mut padded = std::mem::take(&mut scratch.padded);
     padded.clear();

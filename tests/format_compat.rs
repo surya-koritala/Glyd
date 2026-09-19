@@ -70,20 +70,17 @@ fn v9_dictionary_objects_from_v0_4_0() {
     }
 }
 
-/// The current writer produces v8 blocks, which are denser than the v7
-/// blocks of the same input (the 8 MB window cannot matter at 85 KB; the
-/// section layout does).
+/// The current writer produces compact (v9) blocks, denser than the v7
+/// and v8 blocks of the same input (the 8 MB window cannot matter at
+/// 85 KB; the section layout and the framing do).
 #[test]
-fn v8_is_written_now_and_is_denser() {
-    use glyd::format::{BlockHeader, HEADER_SIZE, VERSION_V8};
+fn v9_is_written_now_and_is_denser() {
     let plain = std::fs::read("tests/data/v7-sample.bin").unwrap();
-    let old = std::fs::read("tests/data/v7-sample-max.glyd").unwrap();
+    let v7 = std::fs::read("tests/data/v7-sample-max.glyd").unwrap();
+    let v8 = std::fs::read("tests/data/v8-sample-max.glyd").unwrap();
     let mut now = Vec::new();
     glyd::compress_into_max(&plain, &mut now);
-    let h: BlockHeader = unsafe { std::ptr::read_unaligned(now.as_ptr() as *const BlockHeader) };
-    let version = h.version;
-    assert_eq!(version, VERSION_V8);
-    assert!(now.len() < old.len(), "v8 {} vs v7 {}", now.len(), old.len());
-    assert!(now.len() >= HEADER_SIZE);
+    assert_eq!(now[0], glyd::format::COMPACT_MARKER);
+    assert!(now.len() < v8.len() && v8.len() < v7.len(), "v9 {} vs v8 {} vs v7 {}", now.len(), v8.len(), v7.len());
     assert_eq!(glyd::decompress(&now).unwrap(), plain);
 }

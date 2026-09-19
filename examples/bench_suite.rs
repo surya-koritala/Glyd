@@ -265,9 +265,18 @@ fn child(path: &str, codec: &str, threads: usize, max_bytes: usize) {
 }
 
 fn max_rss() -> u64 {
+    // Linux: the address space's high-water mark (getrusage's ru_maxrss
+    // reported the parent's peak for a spawned child on Graviton3).
+    if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+        if let Some(line) = status.lines().find(|l| l.starts_with("VmHWM:")) {
+            if let Some(kb) = line.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()) {
+                return kb * 1024;
+            }
+        }
+    }
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
     unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
-    // ru_maxrss is bytes on macOS, kilobytes on Linux.
+    // ru_maxrss is bytes on macOS, kilobytes elsewhere.
     if cfg!(target_os = "macos") { ru.ru_maxrss as u64 } else { ru.ru_maxrss as u64 * 1024 }
 }
 
