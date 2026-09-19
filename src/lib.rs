@@ -298,7 +298,7 @@ pub fn compress_into_turbo(input: &[u8], output: &mut Vec<u8>) {
 
 /// Turbo level, all cores.
 pub fn compress_parallel_into_turbo(input: &[u8], output: &mut Vec<u8>) {
-    compress_parallel_with(input, output, compress_into_turbo)
+    compress_parallel_with(input, output, compress_into_turbo, PARALLEL_UNIT_V6)
 }
 
 /// Fast level (GOAL3 S3): LZ4-class finder, minimum match 5 (FLAG_DENSE
@@ -337,12 +337,12 @@ pub fn compress_into_fast(input: &[u8], output: &mut Vec<u8>) {
 
 /// Compress across all CPU cores in parallel into a pre-allocated destination vector.
 pub fn compress_parallel_into(input: &[u8], output: &mut Vec<u8>) {
-    compress_parallel_with(input, output, compress_into)
+    compress_parallel_with(input, output, compress_into, PARALLEL_UNIT_V6)
 }
 
 /// Fast level, all cores.
 pub fn compress_parallel_into_fast(input: &[u8], output: &mut Vec<u8>) {
-    compress_parallel_with(input, output, compress_into_fast)
+    compress_parallel_with(input, output, compress_into_fast, PARALLEL_UNIT_V6)
 }
 
 /// Max level: format v7 (entropy-coded sequences and literals) on the
@@ -505,13 +505,14 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, outp
 
 /// Max level, all cores.
 pub fn compress_parallel_into_max(input: &[u8], output: &mut Vec<u8>) {
-    compress_parallel_with(input, output, compress_into_max)
+    compress_parallel_with(input, output, compress_into_max, PARALLEL_UNIT_MAX)
 }
 
-/// Ultra level, all cores: each 256 KB chunk parsed on its own, so the
-/// window does not reach across chunks (the sequential level's does).
+/// Ultra level, all cores: 16 MB units parsed on their own (0.7% less
+/// dense than the sequential level on Silesia; the window does not reach
+/// across units, and each decodes on its own).
 pub fn compress_parallel_into_ultra(input: &[u8], output: &mut Vec<u8>) {
-    compress_parallel_with(input, output, compress_into_ultra)
+    compress_parallel_with(input, output, compress_into_ultra, PARALLEL_UNIT_ULTRA)
 }
 
 /// Ultra level with a dictionary; `decompress_with_dict` reads it.
@@ -522,13 +523,16 @@ pub fn compress_with_dict_ultra(dict: &[u8], input: &[u8], output: &mut Vec<u8>)
     compress_max_from(&joined, dict.len(), dict_id(dict), Parse::Ultra, output);
 }
 
-fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>)) {
-    if input.len() <= PARALLEL_CHUNK_SIZE {
+/// `level` over units of `unit` bytes on all cores, each unit a chain of
+/// its own (see `format::PARALLEL_UNIT_*`). An input of one unit or less
+/// is compressed sequentially.
+fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>), unit: usize) {
+    if input.len() <= unit {
         level(input, output);
         return;
     }
 
-    let chunks: Vec<&[u8]> = input.chunks(PARALLEL_CHUNK_SIZE).collect();
+    let chunks: Vec<&[u8]> = input.chunks(unit).collect();
     let compressed_chunks: Vec<Vec<u8>> = chunks
         .par_iter()
         .map(|chunk| {

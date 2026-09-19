@@ -85,7 +85,16 @@ pub const FLAG_DENSE: u16 = 8;
 /// biased by MATCH_CODE_BIAS_TURBO.
 pub const FLAG_TURBO: u16 = 16;
 
-pub const PARALLEL_CHUNK_SIZE: usize = 256 * 1024; // 256 KB parallel chunk unit
+/// Units the parallel paths cut an input into: each is compressed on its
+/// own (its first block carries FLAG_CHAIN_RESET) and decodes on its own,
+/// so decoding runs one unit per core and a unit is the granule of random
+/// access. A unit's first bytes have no window and empty tables, so the
+/// unit size is a ratio trade per level (Silesia, 10 cores, against the
+/// sequential ratio): the v6 levels lose 3% at 256 KB, 0.5% at 2 MB, 0.1%
+/// at 8 MB; max 6.6% / 1.7% / 0.4%; ultra 13% / 4% (4 MB) / 0.7% (16 MB).
+pub const PARALLEL_UNIT_V6: usize = 2 * 1024 * 1024;
+pub const PARALLEL_UNIT_MAX: usize = 8 * 1024 * 1024;
+pub const PARALLEL_UNIT_ULTRA: usize = 16 * 1024 * 1024;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]

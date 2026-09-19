@@ -45,7 +45,7 @@ for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
 - 🚀 **Fastest decode at every ratio point** measured, against liblz4, lz4_flex, LZAV, zstd (7 levels) and snappy, in the same run.
 - 📦 **Fewer bytes than zstd -3** with the `--max` level, at 30% faster reads.
 - 🗜️ **`--ultra`: denser than zstd -16** (Silesia 3.93, zstd -16 3.83, zstd -19 4.01) on an optimal parse, and its output reads 1.3× faster than zstd -19's. Same decoder, same container.
-- 🧱 **One container, three levels**, any mix of blocks decodes; independent 256 KB blocks scale across cores.
+- 🧱 **One container, four levels**, any mix of blocks decodes; independent units (2-16 MB by level) scale across cores.
 - 🛡️ **Fuzzed** with a million mutations per run into exact-size buffers; no per-call allocation in the decoder.
 - 🔌 **Rust, C ABI, CLI**, streaming `std::io` adapters, dictionaries for small objects.
 
@@ -138,7 +138,11 @@ int64_t dlen = glyd_decompress_parallel(dst, clen, out, n);
 | **‑‑ultra**&nbsp;(‑19) | Write once, read many: cold storage, release assets, datasets. Fewest bytes; compresses at single-digit MB/s | v7 format on an optimal parse: binary-tree match finder, every position priced in the coder's own bits, cheapest path through the block ([design](docs/design/ultra-parse.md)) |
 
 All levels produce the same container; the decoder reads any mix. Blocks
-are 256 KB; `FLAG_CHAIN_RESET` blocks decode independently across cores.
+are 256 KB; the parallel paths cut the input into independent units
+(2 MB for the v6 levels, 8 MB for `--max`, 16 MB for `--ultra`: the first
+block of each carries `FLAG_CHAIN_RESET`) that compress and decode one per
+core and cost 0.5-0.7% of ratio against the sequential path; `-s` on the
+CLI takes the sequential path.
 
 ---
 
@@ -241,10 +245,11 @@ against 1.3× and 1.45× on Graviton3. Raw outputs and the launch script:
 
 ### Multi-core
 
-10 threads, independent 256 KB blocks, default level: **42,900 MB/s** over
-Silesia on the M1 Max (`examples/mc.rs`), above the machine's single-core
-`memcpy`; 27,100 MB/s on 8 Graviton3 vCPUs, 21,400 MB/s on 8 Sapphire
-Rapids vCPUs.
+10 threads, independent 2 MB units, default level: **31,900 MB/s** over
+Silesia on the M1 Max (`examples/mc.rs`; Silesia's files are 6-50 MB, so
+most have fewer units than the machine has cores; 42,900 MB/s with 256 KB
+units, which cost 3% of ratio and were the default before v0.3.1). The
+AWS numbers in `benchmarks/` are from the 256 KB units.
 
 ### Beyond Silesia
 

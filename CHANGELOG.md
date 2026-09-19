@@ -6,6 +6,26 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+### Parallel paths
+- The parallel compressors cut the input into units of 2 MB (v6 levels),
+  8 MB (`--max`) and 16 MB (`--ultra`) instead of 256 KB. Each unit is
+  still a chain of its own (parallel decode, random access), and the
+  ratio now stays within 0.5-0.7% of the sequential path; at 256 KB the
+  CLI's multi-core default was giving up 3% (default level), 6.6%
+  (`--max`) and 13% (`--ultra`). Multi-core decode of files with few
+  units is correspondingly less parallel (Silesia on 10 cores: 31,900
+  MB/s against 42,900).
+
+### Ultra level
+- Blocks are split where the parse's statistics change
+  (`v7_ultra::split_points`); prices carry the parse's own prior at
+  weight 2 and half a bit per literal. Silesia 3.925 → 3.946 (zstd -19:
+  4.006), decode 2,150 → 2,090 MB/s.
+- x86-64: the walk's and the tANS batch's per-stream state through
+  memory: +6% max-level decode on Sapphire Rapids.
+
 ## v0.3.0 — 2026-09-19
 
 ### Format v8
