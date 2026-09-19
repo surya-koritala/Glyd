@@ -99,7 +99,7 @@ INSTANCE=$(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/la
   echo "date: $(date -u +%FT%TZ)"
 } > ~/results/machine.txt
 cp /var/log/cloud-init-output.log ~/results/cloud-init.log 2>/dev/null || true
-cargo build --release --examples > ~/results/build.txt 2>&1
+cargo build --release --examples --bins > ~/results/build.txt 2>&1
 tail -3 ~/results/build.txt
 if [ ! -x target/release/examples/bench_suite ] || [ ! -x target/release/glyd ]; then echo "BUILD FAILED" > ~/results/FAILED; touch ~/results/DONE; exit 1; fi
 bash scripts/download_bench_corpus.sh > ~/results/corpus.txt 2>&1
