@@ -124,7 +124,14 @@ fn glyd_ultra(input: &[u8], threads: usize, out: &mut Vec<u8>) {
     if threads > 1 { glyd::compress_parallel_into_ultra(input, out) } else { glyd::compress_into_ultra(input, out) }
 }
 fn glyd_decompress(input: &[u8], threads: usize, out: &mut Vec<u8>) {
-    *out = if threads > 1 { glyd::decompress_parallel(input) } else { glyd::decompress(input) }.expect("glyd decode");
+    // Into the caller's buffer, as the zstd and LZ4 readers below refill
+    // theirs: every codec decodes into memory that is already mapped
+    // after the first repeat (a fresh allocation per call cost Glyd 25%
+    // on a 170 MB file: page faults, not decoding).
+    let len = glyd::decompressed_len(input).expect("glyd framing");
+    out.resize(len, 0);
+    let n = if threads > 1 { glyd::decompress_parallel_into(input, out) } else { glyd::decompress_into(input, out) }.expect("glyd decode");
+    out.truncate(n);
 }
 fn zstd_level(input: &[u8], threads: usize, level: i32, out: &mut Vec<u8>) {
     out.clear();

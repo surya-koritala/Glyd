@@ -733,6 +733,12 @@ unsafe fn decode_block(
     Ok(())
 }
 
+/// The decompressed size of `compressed`, from its block headers (every
+/// header is validated; the payloads are not read).
+pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
+    total_uncompressed_len(compressed)
+}
+
 /// Walk every header, validating framing, and return the total output size.
 fn total_uncompressed_len(compressed: &[u8]) -> Result<usize> {
     let mut total = 0usize;
