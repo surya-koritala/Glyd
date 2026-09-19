@@ -178,7 +178,7 @@ fn safe_seqs(at: usize, last: usize) -> usize {
 
 /// Pass 1: the three code streams, then one walk over the extra bits in
 /// the encoder's order (ll, ml, off per sequence, sub-stream i % 8).
-/// Fills scratch.ll/ml/off; returns (literal total, match total).
+/// Fills scratch.seq; returns (literal total, match total).
 ///
 /// The walk has the `huff8::decode` shape -- an unclamped batch loop with
 /// a proven load bound, then the clamped `BitReader`s for the tail -- but
@@ -210,12 +210,19 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
         prev.off = None;
     }
 
-    let extra = substreams(&payload[layout.sections[S_EXTRA].clone()])?;
+    let sec = &payload[layout.sections[S_EXTRA].clone()];
+    let extra = substreams(sec)?;
     // Stream k's next bit is `b<k>`, an absolute bit address (`ptr * 8 +
     // bit`, as in `tans::decode8`): eight scalars, not an array, so they
-    // stay in registers, and no base register. `lasts[k]` is the last
-    // address a load on stream k may start at.
-    let start = |k: usize| (extra[k].as_ptr() as usize * 8) as u64;
+    // stay in registers, and no base register. Built from the extras
+    // *section*'s pointer plus each sub-stream's offset, not each
+    // sub-stream's own slice pointer, so the address's provenance covers
+    // every sub-stream. `lasts[k]` is the last address a load on stream k
+    // may start at.
+    let sec_addr = sec.as_ptr() as usize;
+    // SAFETY: every `extra[k]` is a sub-slice of `sec`.
+    let offs: [usize; 8] = std::array::from_fn(|k| unsafe { extra[k].as_ptr().offset_from(sec.as_ptr()) as usize });
+    let start = |k: usize| ((sec_addr + offs[k]) * 8) as u64;
     let (mut b0, mut b1, mut b2, mut b3) = (start(0), start(1), start(2), start(3));
     let (mut b4, mut b5, mut b6, mut b7) = (start(4), start(5), start(6), start(7));
     let lasts: [usize; 8] = std::array::from_fn(|k| extra[k][extra[k].len() - PAD..].as_ptr() as usize);
@@ -501,6 +508,9 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
 
 /// Decode one v7 payload into `dst[..uncompressed_len]`; `n_seq` and
 /// `n_lit` come from the block header. Returns the bytes written.
+/// Wild copies (see `copies`) may write up to 95 bytes past
+/// `uncompressed_len`, but never past `dst.len()` (the 96-byte
+/// `WILD_MARGIN` rule).
 ///
 /// # Safety
 /// `buffer_start` must point into the same allocation as `dst`, at or

@@ -135,7 +135,7 @@ impl DecodeTable {
     /// the spread computes every position from its index (no running
     /// `pos`), and the fill's per-entry work is a 256-entry counter (a
     /// `u8` indexes it unchecked), one `clz`, one shift and two ORs with
-    /// the mask and count from a 16-entry table. 2.2 -> 1.4 us per table
+    /// the mask and count from a 16-entry table. 2.2 -> 1.5 us per table
     /// on the M1 Max.
     pub fn rebuild(&mut self, counts: &[u16]) -> bool {
         if !check(counts) {

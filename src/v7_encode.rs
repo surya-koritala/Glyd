@@ -10,6 +10,7 @@
 //! behind a size table: sub-stream k holds, for sequences i == k (mod 8)
 //! in order, the ll extra bits, then ml, then offset extra bits.
 use crate::bits::{write_streams, PAD};
+use crate::format::MAX_BLOCK_SIZE;
 use crate::huff8;
 use crate::tans;
 use crate::v7_format::*;
@@ -67,6 +68,7 @@ pub fn payload_layout(payload: &[u8]) -> Option<Layout> {
 /// table can be reused when every present symbol has a count, whatever
 /// the two tables' supports are otherwise: the decision is by cost.
 fn table_cost(hist: &[u32], counts: &[u16]) -> Option<f64> {
+    debug_assert_eq!(hist.len(), counts.len());
     let mut bits = 0.0;
     for (&h, &c) in hist.iter().zip(counts) {
         if h != 0 {
@@ -460,9 +462,10 @@ impl DfastTables {
     /// Both tables empty. An entry is a tagged position (see `POS_BITS`);
     /// 0 doubles as empty, which is harmless: position 0 is verified by
     /// content like any other candidate. So is an entry left over from a
-    /// previous input: a candidate at or past the current position is
-    /// rejected and any other one is compared byte for byte, so the
-    /// tables can be reused across inputs without clearing.
+    /// previous input: under the modular distances `POS_BITS` describes,
+    /// a candidate at or past the current position is not specially
+    /// rejected, just let through to the same byte-for-byte check as any
+    /// other, so the tables can be reused across inputs without clearing.
     pub fn new() -> Box<Self> {
         Box::new(DfastTables {
             long: vec![0; 1 << DFAST_LONG_BITS].into_boxed_slice().try_into().unwrap(),
@@ -474,7 +477,7 @@ impl DfastTables {
     /// parsed after `end` may match into it) in both tables, later
     /// positions winning a slot (they are the nearer, cheaper offsets).
     pub fn seed(&mut self, input: &[u8], end: usize) {
-        for (pos, w) in input.windows(8).take(end).enumerate() {
+        for (pos, w) in input[..end].windows(8).enumerate() {
             let w = u64::from_ne_bytes(w.try_into().unwrap());
             let (i, m) = long_slot(w, pos);
             self.long[i] = m;
@@ -595,7 +598,10 @@ fn lazy_win(pos: &mut usize, cand: &mut usize, rc: &mut usize, c: usize, rc1: us
 /// MAX_WINDOW; the last sequence is literal-only. `t` carries the window
 /// across the blocks of one input. `reps` finds matches and codes them,
 /// so it must be what `encode_block`'s `Reps` starts a block with: the
-/// caller passes `[1, 4, 8]` at every block.
+/// caller passes `[1, 4, 8]` at every block. Because `t` carries state
+/// across calls, the output can depend on the thread-local table's prior
+/// contents: both outputs decode identically, only the choice of match
+/// differs.
 ///
 /// Software pipelined as zstd's double-fast loop is: the slot and table
 /// entries of `pos + 1` are computed and loaded while `pos` is checked,
@@ -605,6 +611,8 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
     use crate::finder::MatchLen;
     let src = input.as_ptr();
     let block_end = block_start + block_len;
+    assert!(block_len <= MAX_BLOCK_SIZE, "the extras packing relies on block_len <= MAX_BLOCK_SIZE");
+    debug_assert_eq!(*reps, [1, 4, 8], "written codes assume the decoder's fresh Reps");
     assert!(block_end <= input.len(), "block past the input");
     debug_assert!(reps.iter().all(|&o| o >= 1), "a zero repeat offset would verify against itself");
     // Every probe reads 8 bytes at `pos` and 8 at `pos + 1`; extensions

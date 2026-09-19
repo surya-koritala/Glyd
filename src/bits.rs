@@ -10,6 +10,8 @@
 //! stream can make the reader return zeros but never read outside its
 //! slice; `overrun` reports that.
 
+const _: () = assert!(usize::BITS >= 64, "v7 bit-position readers use absolute bit addresses");
+
 pub const PAD: usize = 8;
 
 /// Most bits one `put` may carry: 7 banked + 56 <= 63 keeps every shift

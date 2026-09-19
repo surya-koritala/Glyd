@@ -366,8 +366,9 @@ fn v7_max_level_roundtrip_through_container() {
     // reused across blocks (through the container's table carry), which
     // the periodic inputs above never trigger. Its sequence tables are
     // not: under the double-fast parse a rare code (a literal run of 5,
-    // an offset bucket) flickers between blocks and `close()` demands
-    // identical support.
+    // an offset bucket) flickers between blocks, and reuse is decided by
+    // cost (`table_cost`), so the old table's extra bits for that block's
+    // histogram outweigh a fresh table's saving.
     let vocab: Vec<Vec<u8>> = (0..300).map(|_| { let n = 3 + rnd(1)[0] as usize % 8; rnd(n).iter().map(|b| b'a' + b % 26).collect() }).collect();
     let mut salad = Vec::new();
     while salad.len() < 1_200_000 { salad.extend_from_slice(&vocab[u16::from_le_bytes(rnd(2).try_into().unwrap()) as usize % 300]); salad.push(b' '); }
@@ -422,15 +423,21 @@ fn v7_max_level_roundtrip_through_container() {
 
 use simd_stream_codec::v7_encode::{find_sequences_dfast, DfastTables, EncScratch};
 
-#[test]
-fn dfast_parse_finds_repeats_and_roundtrips() {
-    // Records with a fixed stride: offsets repeat.
+/// Records with a fixed stride: offsets repeat. Shared with
+/// `v7_max_matches_reference_block_encoder`.
+fn records_input() -> Vec<u8> {
     let mut data = Vec::new();
     let mut x = 9u64;
     for i in 0..20_000u32 {
         x ^= x << 13; x ^= x >> 7; x ^= x << 17;
         data.extend_from_slice(format!("id={:08} name=user{:03} score={:05}\n", i, x % 500, x % 100_000).as_bytes());
     }
+    data
+}
+
+#[test]
+fn dfast_parse_finds_repeats_and_roundtrips() {
+    let data = records_input();
     let mut t = DfastTables::new();
     let mut seqs = Vec::new();
     let mut lits = Vec::new();
@@ -444,6 +451,76 @@ fn dfast_parse_finds_repeats_and_roundtrips() {
     simd_stream_codec::compress_into_max(&data, &mut c);
     assert_eq!(simd_stream_codec::decompress(&c).unwrap(), data);
     assert!(c.len() * 4 < data.len(), "structured text should compress 4x+: {}", c.len());
+}
+
+/// `encode_block_with` (the path a caller with its own `Sequence` list
+/// takes) must write byte-for-byte what `compress_into_max` puts in the
+/// container, which instead codes directly from `find_sequences_dfast`'s
+/// scratch (`encode_block_coded`) -- for every block the container did
+/// not store raw. Each input runs in its own fresh thread so the
+/// container's thread-local parse table starts empty, matching the
+/// freshly constructed one this test parses with (`DfastTables::new`);
+/// otherwise the two could choose different matches for the same bytes
+/// and disagree on harmless grounds (see `find_sequences_dfast`).
+#[test]
+fn v7_max_matches_reference_block_encoder() {
+    use simd_stream_codec::format::{BlockHeader, HEADER_SIZE, MAX_BLOCK_SIZE, VERSION_V7};
+    use simd_stream_codec::v7_encode::encode_block_with;
+
+    // One entry per container block, in order; None for a raw block.
+    fn block_payloads(c: &[u8]) -> Vec<Option<&[u8]>> {
+        let mut v = Vec::new();
+        let mut cursor = 0usize;
+        while cursor < c.len() {
+            let h: BlockHeader = unsafe { std::ptr::read_unaligned(c[cursor..].as_ptr() as *const BlockHeader) };
+            let end = cursor + HEADER_SIZE + h.payload_len();
+            v.push(if h.version == VERSION_V7 { Some(&c[cursor + HEADER_SIZE..end]) } else { None });
+            cursor = end;
+        }
+        v
+    }
+
+    let mut text = Vec::new();
+    while text.len() < 600_000 { text.extend_from_slice(b"the quick brown fox jumps over the lazy dog. "); }
+    let mut mixed = Vec::new();
+    let mut x = 99u64;
+    while mixed.len() < 600_000 { mixed.extend_from_slice(b"the quick brown fox jumps over the lazy dog "); mixed.extend_from_slice(&rnd(&mut x).to_le_bytes()[..3]); }
+
+    for input in [records_input(), text, mixed] {
+        std::thread::spawn(move || {
+            let mut c = Vec::new();
+            simd_stream_codec::compress_into_max(&input, &mut c);
+            let reference = block_payloads(&c);
+            assert!(reference.iter().any(|p| p.is_some()), "expected at least one coded block");
+
+            let mut t = DfastTables::new();
+            let mut prev = Tables::none();
+            let mut scratch = EncScratch::new();
+            let (mut seqs, mut literals) = (Vec::new(), Vec::new());
+            let mut block_start = 0usize;
+            for expected in reference {
+                let block_len = (input.len() - block_start).min(MAX_BLOCK_SIZE);
+                let mut reps = [1u32, 4, 8];
+                seqs.clear();
+                literals.clear();
+                find_sequences_dfast(&input, block_start, block_len, &mut t, &mut reps, &mut seqs, &mut literals, &mut scratch);
+                match expected {
+                    Some(payload) => {
+                        let mut out = Vec::new();
+                        encode_block_with(&seqs, &literals, 0, &mut prev, &mut scratch, &mut out);
+                        assert_eq!(&out[..], payload, "block at {} payload mismatch", block_start);
+                    }
+                    // The container drops its tables when a block is
+                    // stored raw (see `compress_max_from`).
+                    None => prev = Tables::none(),
+                }
+                block_start += block_len;
+            }
+            assert_eq!(block_start, input.len());
+        })
+        .join()
+        .unwrap();
+    }
 }
 
 // ---- Task 11: dictionaries ----

@@ -82,8 +82,11 @@ mechanism zstd's dictionaries use, aimed at small, similarly-shaped inputs
 (e.g. one JSON event) where a cold `--max` block has nothing to match
 against yet. `dict_id(dict)` (`compute_checksum(dict)`, with checksum 0
 remapped to 1) is stored in the block header; a decompress call is
-rejected unless it is given the same dictionary bytes. Dictionaries are a
-sequential-only feature in this milestone -- `compress_parallel_into_max`
+rejected unless it is given the same dictionary bytes. Blocks stored raw
+(incompressible data, or inputs under ~160 bytes) carry no dictionary id,
+so a dictionary stream made only of raw blocks decodes without the
+dictionary; the id is enforced on every entropy-coded block. Dictionaries
+are a sequential-only feature in this milestone -- `compress_parallel_into_max`
 and the parallel decompress path do not take one.
 
 ### Extended corpus (gate G2)
