@@ -347,6 +347,32 @@ pub fn compress_parallel_into_fast(input: &[u8], output: &mut Vec<u8>) {
 /// Blocks the coder cannot shrink are stored raw (as v6 raw blocks,
 /// which every decoder reads).
 pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
+    compress_max_from(input, 0, 0, output)
+}
+
+/// The id a dictionary is named by in the blocks compressed with it: its
+/// checksum, with 0 (no dictionary) reserved.
+pub fn dict_id(dict: &[u8]) -> u32 {
+    let id = compute_checksum(dict);
+    if id == 0 { 1 } else { id }
+}
+
+/// Max level with a dictionary: the dictionary is the window's first
+/// `dict.len()` bytes, so matches may reach into it (from the first block
+/// on, which is what helps small inputs); every v7 block carries
+/// `dict_id(dict)` and `decompress_with_dict` must be given the same
+/// bytes. Blocks stored raw carry no id. Sequential decode only.
+pub fn compress_with_dict(dict: &[u8], input: &[u8], output: &mut Vec<u8>) {
+    let mut joined = Vec::with_capacity(dict.len() + input.len());
+    joined.extend_from_slice(dict);
+    joined.extend_from_slice(input);
+    compress_max_from(&joined, dict.len(), dict_id(dict), output);
+}
+
+/// The max level over `full[start..]`, with `full[..start]` (a dictionary
+/// named `dict_id`, or nothing) as history: indexed before the first
+/// block, so the parse's window reaches into it.
+fn compress_max_from(full: &[u8], start: usize, dict_id: u32, output: &mut Vec<u8>) {
     thread_local! {
         /// The parse's 2 MB of tables, kept across calls without clearing
         /// (stale entries are harmless, see `DfastTables::new`): the
@@ -357,17 +383,18 @@ pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
     let mut prev = v7_encode::Tables::none();
     let mut scratch = v7_encode::EncScratch::new();
     let mut payload = Vec::new();
-    let mut offset = 0;
-    while offset < input.len() {
-        let chunk_len = (input.len() - offset).min(MAX_BLOCK_SIZE);
-        let chunk = &input[offset..offset + chunk_len];
+    DFAST.with_borrow_mut(|t| t.seed(full, start));
+    let mut offset = start;
+    while offset < full.len() {
+        let chunk_len = (full.len() - offset).min(MAX_BLOCK_SIZE);
+        let chunk = &full[offset..offset + chunk_len];
         seqs.clear();
         literals.clear();
         payload.clear();
         let mut reps = [1u32, 4, 8]; // encode_block's Reps starts fresh per block
-        DFAST.with_borrow_mut(|t| v7_encode::find_sequences_dfast(input, offset, chunk_len, t, &mut reps, &mut seqs, &mut literals, &mut scratch));
-        v7_encode::encode_block_coded(&literals, 0, &mut prev, &mut scratch, &mut payload);
-        let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
+        DFAST.with_borrow_mut(|t| v7_encode::find_sequences_dfast(full, offset, chunk_len, t, &mut reps, &mut seqs, &mut literals, &mut scratch));
+        v7_encode::encode_block_coded(&literals, dict_id, &mut prev, &mut scratch, &mut payload);
+        let chain_flag = if offset == start { FLAG_CHAIN_RESET } else { 0 };
         if payload.len() + HEADER_SIZE >= chunk_len {
             prev = v7_encode::Tables::none();
             write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
@@ -560,11 +587,40 @@ pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
     Ok(output)
 }
 
+/// Decompress a stream made by `compress_with_dict` with the same `dict`.
+pub fn decompress_with_dict(dict: &[u8], compressed: &[u8]) -> Result<Vec<u8>> {
+    let total = total_uncompressed_len(compressed)?;
+    let mut buf = vec![0u8; dict.len() + total + PADDING * 2];
+    buf[..dict.len()].copy_from_slice(dict);
+    let written = decompress_sequential_from(compressed, &mut buf, dict.len(), Some(dict_id(dict)), true)?;
+    buf.drain(..dict.len());
+    buf.truncate(written);
+    Ok(buf)
+}
+
+/// The dictionary id a v7 block names; None for raw blocks (which need
+/// none) and payloads too short to hold a sub-header (rejected later).
+fn block_dict_id(header: &BlockHeader, payload: &[u8]) -> Option<u32> {
+    if header.version != VERSION_V7 || (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
+        return None;
+    }
+    v7_format::SubHeader::parse(payload).map(|s| s.dict_id)
+}
+
 fn decompress_sequential(compressed: &[u8], dst: &mut [u8], verify: bool) -> Result<usize> {
+    decompress_sequential_from(compressed, dst, 0, None, verify)
+}
+
+/// Decode every block, in order, into `dst[dst_offset0..]`; the window
+/// starts at `dst[0]`, so `dst[..dst_offset0]` (a dictionary) is history
+/// the first block may match into. Every v7 block must name
+/// `expected_dict` (0: none). Returns the bytes written.
+fn decompress_sequential_from(compressed: &[u8], dst: &mut [u8], dst_offset0: usize, expected_dict: Option<u32>, verify: bool) -> Result<usize> {
     let mut cursor = 0usize;
-    let mut dst_offset = 0usize;
+    let mut dst_offset = dst_offset0;
     let buffer_start = dst.as_ptr();
     let avx2 = has_avx2();
+    let expected_dict = expected_dict.unwrap_or(0);
 
     while cursor + HEADER_SIZE <= compressed.len() {
         let (header, next) = parse_header(compressed, cursor)?;
@@ -576,6 +632,9 @@ fn decompress_sequential(compressed: &[u8], dst: &mut [u8], verify: bool) -> Res
             });
         }
         let payload = &compressed[cursor + HEADER_SIZE..next];
+        if block_dict_id(&header, payload).is_some_and(|id| id != expected_dict) {
+            return Err(CodecError::CorruptedBitstream("dictionary id mismatch"));
+        }
         let dst_slice = &mut dst[dst_offset..];
         unsafe {
             decode_block(&header, payload, dst_slice, buffer_start, avx2)?;
@@ -593,7 +652,7 @@ fn decompress_sequential(compressed: &[u8], dst: &mut [u8], verify: bool) -> Res
     if cursor != compressed.len() {
         return Err(CodecError::CorruptedBitstream("Trailing unparsed bytes or truncated block"));
     }
-    Ok(dst_offset)
+    Ok(dst_offset - dst_offset0)
 }
 
 /// Decompress into a pre-allocated buffer sequentially with checksum validation.
@@ -629,6 +688,9 @@ pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
     Ok(output)
 }
 
+/// Dictionary streams (`compress_with_dict`) are sequential-only: a unit
+/// here has no history before it, so any v7 block naming a dictionary is
+/// rejected up front.
 fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> Result<usize> {
     let mut blocks = Vec::new();
     let mut units: Vec<ParallelUnit> = Vec::new();
@@ -637,6 +699,9 @@ fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> 
 
     while cursor + HEADER_SIZE <= compressed.len() {
         let (header, next) = parse_header(compressed, cursor)?;
+        if block_dict_id(&header, &compressed[cursor + HEADER_SIZE..next]).is_some_and(|id| id != 0) {
+            return Err(CodecError::CorruptedBitstream("dictionary streams are sequential-only"));
+        }
         let uncomp_len = header.uncompressed_len as usize;
         let block_idx = blocks.len();
         blocks.push(BlockInfo {

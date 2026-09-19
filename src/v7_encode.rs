@@ -469,6 +469,19 @@ impl DfastTables {
             short: vec![0; 1 << DFAST_SHORT_BITS].into_boxed_slice().try_into().unwrap(),
         })
     }
+
+    /// Index every position of `input[..end]` (a dictionary: the blocks
+    /// parsed after `end` may match into it) in both tables, later
+    /// positions winning a slot (they are the nearer, cheaper offsets).
+    pub fn seed(&mut self, input: &[u8], end: usize) {
+        for (pos, w) in input.windows(8).take(end).enumerate() {
+            let w = u64::from_ne_bytes(w.try_into().unwrap());
+            let (i, m) = long_slot(w, pos);
+            self.long[i] = m;
+            let (i, m) = short_slot(w, pos);
+            self.short[i] = m;
+        }
+    }
 }
 
 /// Table entries: the position's low 24 bits under an 8-bit hash tag, so

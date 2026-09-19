@@ -19,13 +19,31 @@ fn seed_inputs() -> Vec<Vec<u8>> {
     v
 }
 
+/// `m` = `c` with one mutation: a bit flip, a byte, a truncation or a swap.
+fn mutate(x: &mut u64, c: &[u8], m: &mut Vec<u8>) {
+    *x ^= *x << 13; *x ^= *x >> 7; *x ^= *x << 17;
+    let x = *x;
+    m.clear();
+    m.extend_from_slice(c);
+    match x % 4 {
+        0 => { let i = (x >> 8) as usize % m.len(); m[i] ^= 1 << ((x >> 40) & 7); }
+        1 => { let i = (x >> 8) as usize % m.len(); m[i] = (x >> 40) as u8; }
+        2 => { let n = (x >> 8) as usize % m.len(); m.truncate(n); }
+        _ => { let i = (x >> 8) as usize % m.len(); let j = (x >> 32) as usize % m.len(); m.swap(i, j); }
+    }
+}
+
+fn fuzz_target() -> u64 {
+    std::env::var("V7_FUZZ").ok().and_then(|s| s.parse().ok()).unwrap_or(200_000)
+}
+
 #[test]
 fn v7_mutation_fuzz() {
     let inputs = seed_inputs();
     let streams: Vec<Vec<u8>> = inputs.iter().map(|i| { let mut c = Vec::new(); compress_into_max(i, &mut c); c }).collect();
     let mut x = 0x5EEDu64;
     let mut mutations = 0u64;
-    let target: u64 = std::env::var("V7_FUZZ").ok().and_then(|s| s.parse().ok()).unwrap_or(200_000);
+    let target = fuzz_target();
     let mut m = Vec::new();
     while mutations < target {
         for (input, c) in inputs.iter().zip(&streams) {
@@ -34,15 +52,7 @@ fn v7_mutation_fuzz() {
             // output) never reaches. Nothing may be written past it.
             let mut dst = vec![0u8; input.len()];
             for _ in 0..50 {
-                x ^= x << 13; x ^= x >> 7; x ^= x << 17;
-                m.clear();
-                m.extend_from_slice(c);
-                match x % 4 {
-                    0 => { let i = (x >> 8) as usize % m.len(); m[i] ^= 1 << ((x >> 40) & 7); }
-                    1 => { let i = (x >> 8) as usize % m.len(); m[i] = (x >> 40) as u8; }
-                    2 => { let n = (x >> 8) as usize % m.len(); m.truncate(n); }
-                    _ => { let i = (x >> 8) as usize % m.len(); let j = (x >> 32) as usize % m.len(); m.swap(i, j); }
-                }
+                mutate(&mut x, c, &mut m);
                 if let Ok(n) = decompress_into(&m, &mut dst) {
                     assert_eq!(&dst[..n], &input[..n], "checksum passed but data differs");
                 }
@@ -56,6 +66,31 @@ fn v7_mutation_fuzz() {
         }
     }
     std::fs::write(".v7-fuzz-status", format!("{}", mutations)).unwrap();
+}
+
+/// A dictionary stream (two blocks, matches into the dictionary and
+/// across the block boundary) under mutation: with the dictionary or
+/// without, a decode that passes is exact. A fiftieth of the main
+/// count: each mutation decodes 300 KB twice.
+#[test]
+fn v7_dictionary_mutation_fuzz() {
+    use simd_stream_codec::{compress_with_dict, decompress_with_dict};
+    let text = &seed_inputs()[4];
+    let (dict, input) = (&text[..50_000], &text[100_000..]);
+    let mut c = Vec::new();
+    compress_with_dict(dict, input, &mut c);
+    assert_eq!(decompress_with_dict(dict, &c).unwrap(), input);
+    let mut x = 0xD1C7u64;
+    let mut m = Vec::new();
+    for _ in 0..fuzz_target() / 50 {
+        mutate(&mut x, &c, &mut m);
+        if let Ok(out) = decompress_with_dict(dict, &m) {
+            assert!(out.len() <= input.len() && out[..] == input[..out.len()], "checksum passed but data differs");
+        }
+        if let Ok(out) = decompress(&m) {
+            assert!(out.len() <= input.len() && out[..] == input[..out.len()], "checksum passed but data differs");
+        }
+    }
 }
 
 /// The wild copy pass (NEON on aarch64, 32-byte scalar copies elsewhere)

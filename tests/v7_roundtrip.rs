@@ -445,3 +445,42 @@ fn dfast_parse_finds_repeats_and_roundtrips() {
     assert_eq!(simd_stream_codec::decompress(&c).unwrap(), data);
     assert!(c.len() * 4 < data.len(), "structured text should compress 4x+: {}", c.len());
 }
+
+// ---- Task 11: dictionaries ----
+
+/// A dictionary of 64 distinct JSON fields (as one trained from samples
+/// would hold) and a small object using 16 of them once each with fresh
+/// values: nothing repeats inside the doc, so without the dictionary it
+/// is nearly all literals. Measured 0.65 of the plain size (a v7 block's
+/// fixed ~158 bytes -- header, sub-header, the eight padded extra-bit
+/// streams -- are paid either way, which is also why an input under
+/// ~200 bytes is stored raw with or without a dictionary, carrying no id).
+#[test]
+fn v7_dictionary_helps_small_inputs_and_is_required() {
+    use simd_stream_codec::{compress_with_dict, decompress, decompress_parallel, decompress_with_dict};
+    let mut x = 1u64;
+    let fields: Vec<Vec<u8>> = (0..64).map(|i| { let r = rnd(&mut x); format!("\"field_{:02}\":\"{}-{:x}-value-of-field-{:02}\",", i, ["alpha", "beta", "gamma", "delta"][(r % 4) as usize], r >> 40, i).into_bytes() }).collect();
+    let dict: Vec<u8> = fields.concat();
+    let mut doc = b"{".to_vec();
+    for i in 0..16 { doc.extend_from_slice(&fields[(i * 7) % 64]); doc.extend_from_slice(format!("\"n{}\":{},", i, rnd(&mut x) % 100_000).as_bytes()); }
+    doc.push(b'}');
+    let mut plain = Vec::new();
+    simd_stream_codec::compress_into_max(&doc, &mut plain);
+    let mut with = Vec::new();
+    compress_with_dict(&dict, &doc, &mut with);
+    assert!(with.len() * 4 < plain.len() * 3, "dictionary must help: {} vs {}", with.len(), plain.len());
+    assert_eq!(decompress_with_dict(&dict, &with).unwrap(), doc);
+    assert_eq!(decompress(&with), Err(CodecError::CorruptedBitstream("dictionary id mismatch")));
+    assert_eq!(decompress_with_dict(b"wrong dictionary bytes", &with), Err(CodecError::CorruptedBitstream("dictionary id mismatch")));
+    assert_eq!(decompress_parallel(&with), Err(CodecError::CorruptedBitstream("dictionary streams are sequential-only")));
+    // Several blocks, matches into the dictionary and across blocks; an
+    // incompressible doc is stored raw (no id) and still round-trips.
+    let mut big = Vec::new();
+    while big.len() < 600_000 { big.extend_from_slice(&fields[(rnd(&mut x) % 64) as usize]); big.extend_from_slice(&rnd(&mut x).to_le_bytes()[..3]); }
+    let noise: Vec<u8> = (0..5000).map(|_| rnd(&mut x) as u8).collect();
+    for input in [big, noise, Vec::new()] {
+        let mut c = Vec::new();
+        compress_with_dict(&dict, &input, &mut c);
+        assert_eq!(decompress_with_dict(&dict, &c).unwrap(), input);
+    }
+}
