@@ -282,3 +282,46 @@ Serialized (`Dict::to_bytes`, "GLYDDICT" v1): the content, the packed
 literal lengths, the three count tables. The id is the checksum of that
 form; a block names it in its sub-header and the decoder refuses a block
 whose id is not the dictionary's.
+
+## Record mode (v0.4.0): typed columns before the level
+
+Byte-level matching finds a repeat and points back at it; on a log or a
+table dump most of the redundancy sits in the same field of every
+record, thousands of bytes apart and interleaved with the other fields.
+Record mode (`src/record.rs`) reorders the text into one stream per
+field before the ordinary level compresses it, and rebuilds the bytes
+exactly afterwards:
+
+- Shapes recognised (`detect`, on the first megabyte): lines split by
+  one delimiter (space, tab or comma) into a constant field count for
+  at least 90% of lines; MySQL dumps (`INSERT ... VALUES (...),(...);`),
+  also when a unit starts inside a tuple list.
+- Column types, chosen per column from its values: integers as zigzag
+  varint deltas from the previous row (only canonical decimals, so
+  `i64` formatting reproduces them); date-times under a known fixed
+  pattern (Common Log Format, ISO 8601, `YYYY-mm-DD hh:mm:ss`) as
+  second deltas, the pattern verified to reproduce every value; columns
+  of at most 256 distinct values as a dictionary and one byte per value;
+  columns with at most one distinct value in three as a dictionary, a
+  64-deep recency list (a byte per value: the position of the value in
+  the list of the last 64 distinct ones, or an escape) and the escaped
+  ids; everything else as newline-separated text.
+- Lines that do not fit the shape go to a raw stream in order; for
+  dumps the statement text is a frame with a zero byte where each
+  record tuple was.
+- The input is cut into units of 32 MB at line ends; each unit decides
+  for itself (a 4 MB trial compressed both ways must favour the
+  transform by 3%) and is transformed, compressed and rebuilt on its
+  own, so both directions run one unit per core.
+
+The envelope (`GLYDRECS`, the units' lengths and kinds, then their
+streams) is read by every decoder; the container underneath is
+unchanged. Measured (50 MB slices, Glyd `--max` in record mode against
+zstd -19 on the raw text): NASA access log 1.98 vs 3.19 MB, ClarkNet
+2.51 vs 3.51, enwiki page_props 7.47 vs 8.25, simplewiki pagelinks
+2.44 vs 3.60; Wikipedia pageviews 12.9 vs 10.8 (a column of unique
+titles gains nothing from the split). JSON events are not record
+shaped; their redundancy is inside each record and across the whole
+file, where a larger window (128 MB: 23% with zstd `--long`) is the
+lever, not columns (shredding measured 6% worse). The transform runs at
+~200 MB/s per core and the rebuild at 500-900 MB/s per core.
