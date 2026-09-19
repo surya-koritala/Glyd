@@ -111,6 +111,7 @@ fn substreams(sec: &[u8]) -> Result<[&[u8]; 8]> {
 
 /// Decode one code stream (or copy it raw) into its lane of the grouped
 /// `codes` (`codes` starts at the lane: code i goes to `at(i)`).
+#[cfg_attr(target_arch = "x86_64", inline(always))]
 fn code_stream(sec: &[u8], coded: bool, reuse: bool, n_symbols: usize, n: usize, prev: &mut Option<tans::DecodeTable>, codes: &mut [u8]) -> Result<()> {
     if !coded {
         if sec.len() != n {
@@ -159,6 +160,15 @@ fn field(w: u64, e: u64) -> (u32, u64, u32) {
     ((extra as u64 + (e >> 32)) as u32, w >> nb, nb)
 }
 
+/// The x86-64 field: width and base from the split tables (a byte and a
+/// dword load that fold into the arithmetic), the extra bits by `bzhi`.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn field2<const K: usize>(w: u64, c: u8) -> (u32, u64, u32) {
+    let n = WALK_SPLIT.nb[K][c as usize] as u32;
+    ((w & ((1u64 << n) - 1)) as u32 + WALK_SPLIT.base[K][c as usize], w >> n, n)
+}
+
 /// Bytes a sequence can advance a stream: its three fields are at most
 /// 19 + 19 + 20 = 58 bits (codes 31, 31 and 23), so the load address moves
 /// by at most 8 bytes per sequence whatever the code bytes hold.
@@ -203,6 +213,7 @@ fn safe_seqs(at: usize, last: usize) -> usize {
 /// short of sequence n - 1 (which may be literal-only and always goes
 /// through the tail). The tail's clamped readers start at the positions
 /// the walk reached (`BitReader::new_at`), which keeps `overrun` exact.
+#[cfg_attr(target_arch = "x86_64", inline(always))]
 fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s: &mut Scratch) -> Result<(usize, usize)> {
     let sub = &layout.sub;
     let coded = |i: usize| sub.coded & (1 << i) != 0;
@@ -258,10 +269,19 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
                     // or before lasts[k], i.e. its 8 bytes are inside
                     // sub-stream k.
                     let w = unsafe { std::ptr::read_unaligned(($b >> 3) as *const u64) } >> ($b & 7);
-                    let (ll, w, n1) = field(w, LL_WALK[c[$k] as usize]);
-                    let (ml, w, n2) = field(w, ML_WALK[c[8 + $k] as usize]);
                     let offc = c[16 + $k];
+                    #[cfg(not(target_arch = "x86_64"))]
+                    let (ll, w, n1) = field(w, LL_WALK[c[$k] as usize]);
+                    #[cfg(not(target_arch = "x86_64"))]
+                    let (ml, w, n2) = field(w, ML_WALK[c[8 + $k] as usize]);
+                    #[cfg(not(target_arch = "x86_64"))]
                     let (ov, _, n3) = field(w, OFF_WALK[offc as usize]);
+                    #[cfg(target_arch = "x86_64")]
+                    let (ll, w, n1) = field2::<0>(w, c[$k]);
+                    #[cfg(target_arch = "x86_64")]
+                    let (ml, w, n2) = field2::<1>(w, c[8 + $k]);
+                    #[cfg(target_arch = "x86_64")]
+                    let (ov, _, n3) = field2::<2>(w, offc);
                     $b += n1 as u64;
                     $b += n2 as u64;
                     $b += n3 as u64;
@@ -323,6 +343,7 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
 }
 
 /// Pass 2: literals into scratch.lits[..n_lit].
+#[cfg_attr(target_arch = "x86_64", inline(always))]
 fn literals(payload: &[u8], layout: &Layout, n_lit: usize, prev: &mut DecTables, s: &mut Scratch) -> Result<()> {
     let sec = &payload[layout.sections[S_LIT].clone()];
     if layout.sub.coded & (1 << S_LIT) == 0 {
@@ -391,27 +412,82 @@ unsafe fn copy_seq_wild(lit: *const u8, d: *mut u8, ll: usize, ml: usize, off: u
     }
 }
 
-/// Same contract, portable: 32-byte copy loops, a byte loop for
-/// overlapping matches.
+/// Same contract and shape on the other targets, with `copy_nonoverlapping`
+/// standing in for the vector copy: LLVM emits one 32-byte move where AVX
+/// is enabled (`decode_block_avx2`) and two 16-byte moves elsewhere.
 #[cfg(not(target_arch = "aarch64"))]
 #[inline(always)]
 unsafe fn copy_seq_wild(lit: *const u8, d: *mut u8, ll: usize, ml: usize, off: usize) {
-    let mut k = 0;
-    while k < ll {
-        std::ptr::copy_nonoverlapping(lit.add(k), d.add(k), 32);
-        k += 32;
+    #[inline(always)]
+    unsafe fn copy32(s: *const u8, d: *mut u8) {
+        std::ptr::copy_nonoverlapping(s, d, 32);
+    }
+    copy32(lit, d);
+    if ll > 32 {
+        copy32(lit.add(32), d.add(32));
+        copy32(lit.add(64), d.add(64));
+        copy32(lit.add(96), d.add(96));
+        if ll > 128 {
+            let mut k = 128;
+            while k < ll {
+                copy32(lit.add(k), d.add(k));
+                k += 32;
+            }
+        }
     }
     let d = d.add(ll);
     let src = d.sub(off);
     if off >= 32 {
-        let mut k = 0;
-        while k < ml {
-            std::ptr::copy_nonoverlapping(src.add(k), d.add(k), 32);
-            k += 32;
+        copy32(src, d);
+        if ml > 32 {
+            copy32(src.add(32), d.add(32));
+            copy32(src.add(64), d.add(64));
+            copy32(src.add(96), d.add(96));
+            if ml > 128 {
+                let mut k = 128;
+                while k < ml {
+                    copy32(src.add(k), d.add(k));
+                    k += 32;
+                }
+            }
         }
     } else {
-        for k in 0..ml {
-            *d.add(k) = *src.add(k);
+        short_match(src, d, off, ml);
+    }
+}
+
+/// Overlapping match (`off < 32`) in 16- or 8-byte steps, each reading
+/// only bytes written at least a step earlier; below 8 the period is laid
+/// down once by hand and then copied at a stride that is a multiple of it.
+#[cfg(not(target_arch = "aarch64"))]
+#[inline(always)]
+unsafe fn short_match(s: *const u8, d: *mut u8, off: usize, ml: usize) {
+    let end = d.add(ml);
+    if off >= 16 {
+        let (mut s, mut d) = (s, d);
+        while d < end {
+            std::ptr::copy_nonoverlapping(s, d, 16);
+            s = s.add(16);
+            d = d.add(16);
+        }
+    } else if off >= 8 {
+        let (mut s, mut d) = (s, d);
+        while d < end {
+            std::ptr::copy_nonoverlapping(s, d, 8);
+            s = s.add(8);
+            d = d.add(8);
+        }
+    } else {
+        for k in 0..8 {
+            *d.add(k) = *s.add(k);
+        }
+        let stride = off * ((8 + off - 1) / off);
+        let mut dd = d.add(8);
+        let mut ss = dd.sub(stride);
+        while dd < end {
+            std::ptr::copy_nonoverlapping(ss, dd, 8);
+            ss = ss.add(8);
+            dd = dd.add(8);
         }
     }
 }
@@ -445,6 +521,7 @@ unsafe fn copy_seq_exact(lit: *const u8, d: *mut u8, ll: usize, ml: usize, off: 
 /// at or before `dst.as_ptr()`, with every byte between them initialised
 /// (the window). `uncompressed_len <= dst.len()`, `n <= MAX_SEQ`,
 /// `n_lit <= MAX_BLOCK_SIZE` and the totals above are the caller's checks.
+#[cfg_attr(target_arch = "x86_64", inline(always))]
 unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize) -> Result<usize> {
     debug_assert!((0..n).map(|i| s.seq[at(i)] as usize).sum::<usize>() == n_lit && n_lit <= MAX_BLOCK_SIZE);
     debug_assert!((0..n).map(|i| s.seq[8 + at(i)] as usize).sum::<usize>() + n_lit == uncompressed_len && uncompressed_len <= dst.len());
@@ -524,6 +601,25 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
 /// before `dst.as_ptr()`, with every byte between them initialised: that
 /// is the match window (the previous blocks of the same chain).
 pub unsafe fn decode_block(payload: &[u8], n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if crate::has_avx2() {
+            return decode_block_avx2(payload, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch);
+        }
+    }
+    decode_block_impl(payload, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch)
+}
+
+/// The decoder compiled for AVX2 + BMI2: the same passes, with 32-byte
+/// copies and single-uop variable shifts (`shrx`) in the bit loops.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,bmi2")]
+unsafe fn decode_block_avx2(payload: &[u8], n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
+    decode_block_impl(payload, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch)
+}
+
+#[cfg_attr(target_arch = "x86_64", inline(always))]
+unsafe fn decode_block_impl(payload: &[u8], n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
     if uncompressed_len > dst.len() {
         return Err(CodecError::OutputBufferTooSmall { required: uncompressed_len, provided: dst.len() });
     }

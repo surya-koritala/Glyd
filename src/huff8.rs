@@ -173,6 +173,7 @@ fn safe_batches(at: usize, last: usize) -> usize {
 /// short -- goes through the clamped, accounted `BitReader`s started at
 /// the positions the fast loop reached (`BitReader::new_at`), which is
 /// also what makes `overrun` exact for corrupt/truncated streams.
+#[cfg_attr(target_arch = "x86_64", inline(always))]
 pub fn decode<'b>(table: &Table, streams: &[&'b [u8]; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
     assert!(out.len() >= n);
     let t = table.entries.as_slice();
@@ -205,6 +206,7 @@ pub fn decode<'b>(table: &Table, streams: &[&'b [u8]; STREAMS], n: usize, out: &
             }
             // The 32 symbols written out; `$consume` shifts the window past
             // the symbol, and the last row has nothing left to read from it.
+            #[allow(unused_macros)]
             macro_rules! sym {
                 ($j:literal, $k:literal, $len:ident, $consume:block) => {{
                     // SAFETY: the index is masked to < 1 << TB == t.len().
@@ -215,6 +217,7 @@ pub fn decode<'b>(table: &Table, streams: &[&'b [u8]; STREAMS], n: usize, out: &
                     batch[$j * STREAMS + $k] = e as u8;
                 }};
             }
+            #[allow(unused_macros)]
             macro_rules! row {
                 ($j:literal, shift) => {
                     sym!($j, 0, n, { w[0] >>= n });
@@ -237,10 +240,51 @@ pub fn decode<'b>(table: &Table, streams: &[&'b [u8]; STREAMS], n: usize, out: &
                     sym!($j, 7, n, {});
                 };
             }
-            row!(0, shift);
-            row!(1, shift);
-            row!(2, shift);
-            row!(3, last);
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                row!(0, shift);
+                row!(1, shift);
+                row!(2, shift);
+                row!(3, last);
+            }
+            // x86-64 has 16 general registers: the row-major order above
+            // keeps 8 windows and 8 positions live and spills a third of
+            // its instructions to the stack. Stream-major order decodes one
+            // stream's four symbols with a single window live, and lets
+            // the core overlap the eight independent chains itself.
+            #[cfg(target_arch = "x86_64")]
+            {
+                macro_rules! stream {
+                    ($k:literal) => {{
+                        let mut p = b[$k];
+                        let mut v = w[$k];
+                        // SAFETY: as in `sym`, every index is masked to < 1 << TB.
+                        let e0 = unsafe { *t.get_unchecked(v as usize & ((1 << TB) - 1)) };
+                        v >>= e0 >> 8;
+                        p += (e0 >> 8) as usize;
+                        let e1 = unsafe { *t.get_unchecked(v as usize & ((1 << TB) - 1)) };
+                        v >>= e1 >> 8;
+                        p += (e1 >> 8) as usize;
+                        let e2 = unsafe { *t.get_unchecked(v as usize & ((1 << TB) - 1)) };
+                        v >>= e2 >> 8;
+                        p += (e2 >> 8) as usize;
+                        let e3 = unsafe { *t.get_unchecked(v as usize & ((1 << TB) - 1)) };
+                        b[$k] = p + (e3 >> 8) as usize;
+                        batch[$k] = e0 as u8;
+                        batch[STREAMS + $k] = e1 as u8;
+                        batch[2 * STREAMS + $k] = e2 as u8;
+                        batch[3 * STREAMS + $k] = e3 as u8;
+                    }};
+                }
+                stream!(0);
+                stream!(1);
+                stream!(2);
+                stream!(3);
+                stream!(4);
+                stream!(5);
+                stream!(6);
+                stream!(7);
+            }
             o += PER_ITER;
         }
         remaining -= PER_ITER * iters;

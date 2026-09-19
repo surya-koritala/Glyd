@@ -411,6 +411,7 @@ pub fn decode8(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, out: &mut 
 /// `BitReader`s started at the positions the fast loop reached
 /// (`BitReader::new_at`), which is also what makes `overrun` exact for
 /// corrupt or truncated streams.
+#[cfg_attr(target_arch = "x86_64", inline(always))]
 pub fn decode8_rows(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, row: usize, out: &mut [u8]) -> Result<(), ()> {
     assert!(row >= STREAMS);
     // Every index `i / 8 * row + i % 8` for i < n is in bounds from here on.
@@ -457,6 +458,7 @@ pub fn decode8_rows(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, row: 
             // that tipped two positions onto the stack). `$consume` shifts
             // the window past the symbol; the last row has nothing left
             // to read from it.
+            #[allow(unused_macros)]
             macro_rules! sym {
                 ($j:literal, $k:literal, $nbits:ident, $consume:block) => {{
                     // SAFETY: st[k] < L because base + bits < L for a valid
@@ -474,6 +476,7 @@ pub fn decode8_rows(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, row: 
                     unsafe { *rows[$j].add($k) = unpack_sym(d) };
                 }};
             }
+            #[allow(unused_macros)]
             macro_rules! row {
                 ($j:literal, shift) => {
                     sym!($j, 0, n, { w[0] >>= n });
@@ -496,10 +499,57 @@ pub fn decode8_rows(t: &DecodeTable, streams: &[&[u8]; STREAMS], n: usize, row: 
                     sym!($j, 7, n, {});
                 };
             }
-            row!(0, shift);
-            row!(1, shift);
-            row!(2, shift);
-            row!(3, last);
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                row!(0, shift);
+                row!(1, shift);
+                row!(2, shift);
+                row!(3, last);
+            }
+            // Stream-major on x86-64 (16 general registers): one stream's
+            // four symbols with its state, position and window live, the
+            // eight chains overlapped by the core rather than the register
+            // file. Same table walk as `sym`.
+            #[cfg(target_arch = "x86_64")]
+            {
+                macro_rules! stream {
+                    ($k:literal) => {{
+                        let mut v = w[$k];
+                        let mut p = b[$k];
+                        let mut x = st[$k];
+                        // SAFETY: as in `sym`, x < L by the table's construction.
+                        let d0 = unsafe { *e.get_unchecked(x as usize) };
+                        x = unpack_base(d0) + (v as u32 & unpack_mask(d0));
+                        v >>= unpack_nbits(d0);
+                        p += unpack_nbits(d0) as usize;
+                        let d1 = unsafe { *e.get_unchecked(x as usize) };
+                        x = unpack_base(d1) + (v as u32 & unpack_mask(d1));
+                        v >>= unpack_nbits(d1);
+                        p += unpack_nbits(d1) as usize;
+                        let d2 = unsafe { *e.get_unchecked(x as usize) };
+                        x = unpack_base(d2) + (v as u32 & unpack_mask(d2));
+                        v >>= unpack_nbits(d2);
+                        p += unpack_nbits(d2) as usize;
+                        let d3 = unsafe { *e.get_unchecked(x as usize) };
+                        st[$k] = unpack_base(d3) + (v as u32 & unpack_mask(d3));
+                        b[$k] = p + unpack_nbits(d3) as usize;
+                        unsafe {
+                            *rows[0].add($k) = unpack_sym(d0);
+                            *rows[1].add($k) = unpack_sym(d1);
+                            *rows[2].add($k) = unpack_sym(d2);
+                            *rows[3].add($k) = unpack_sym(d3);
+                        }
+                    }};
+                }
+                stream!(0);
+                stream!(1);
+                stream!(2);
+                stream!(3);
+                stream!(4);
+                stream!(5);
+                stream!(6);
+                stream!(7);
+            }
             o += PER_ITER;
         }
         remaining -= PER_ITER * iters;

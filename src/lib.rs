@@ -61,7 +61,7 @@ thread_local! {
 }
 
 #[inline(always)]
-fn has_avx2() -> bool {
+pub(crate) fn has_avx2() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         is_x86_feature_detected!("avx2") && is_x86_feature_detected!("bmi2")

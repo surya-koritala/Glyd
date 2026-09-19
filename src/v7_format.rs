@@ -111,6 +111,40 @@ pub const LL_WALK: [u64; 256] = walk_table(Kind::Ll, LL_SYMBOLS);
 pub const ML_WALK: [u64; 256] = walk_table(Kind::Ml, ML_SYMBOLS);
 pub const OFF_WALK: [u64; 256] = walk_table(Kind::Off, OFF_SYMBOLS);
 
+/// The walk entries split into width bytes and base dwords, all six
+/// tables behind one base address for the x86-64 walk (a byte and a dword
+/// load per field, folded into its arithmetic, no table pointers live).
+#[repr(C)]
+pub struct WalkSplit {
+    pub nb: [[u8; 256]; 3],
+    pub base: [[u32; 256]; 3],
+}
+
+pub static WALK_SPLIT: WalkSplit = WalkSplit {
+    nb: [nb_table(&LL_WALK), nb_table(&ML_WALK), nb_table(&OFF_WALK)],
+    base: [base_table(&LL_WALK), base_table(&ML_WALK), base_table(&OFF_WALK)],
+};
+
+const fn nb_table(walk: &[u64; 256]) -> [u8; 256] {
+    let mut t = [0u8; 256];
+    let mut c = 0;
+    while c < 256 {
+        t[c] = walk[c] as u8;
+        c += 1;
+    }
+    t
+}
+
+const fn base_table(walk: &[u64; 256]) -> [u32; 256] {
+    let mut t = [0u32; 256];
+    let mut c = 0;
+    while c < 256 {
+        t[c] = (walk[c] >> 32) as u32;
+        c += 1;
+    }
+    t
+}
+
 const fn walk_table(kind: Kind, n_symbols: usize) -> [u64; 256] {
     let mut t = [0u64; 256];
     let mut c = 0;
