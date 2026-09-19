@@ -35,9 +35,9 @@ for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
 
 | Level | Ratio | Compress | **Decompress** | vs the reference, same run |
 | :--- | ---: | ---: | ---: | :--- |
-| ⚡&nbsp;**Glyd&nbsp;`--turbo`** | 1.88 | 280&nbsp;MB/s | **9,200&nbsp;MB/s** | **2.1×** liblz4 (4,400&nbsp;MB/s) |
+| ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | 1.88 | 280&nbsp;MB/s | **9,200&nbsp;MB/s** | **2.1×** liblz4 (4,400&nbsp;MB/s) |
 | ⚡&nbsp;**Glyd&nbsp;default** | 2.19 | 340&nbsp;MB/s | **6,900&nbsp;MB/s** | **1.6×** liblz4, better ratio |
-| ⚡&nbsp;**Glyd&nbsp;`--max`** | **3.22** | 300&nbsp;MB/s | **1,860&nbsp;MB/s** | **1.3×** zstd&nbsp;-3 (1,440&nbsp;MB/s), denser than its 3.20 |
+| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.22** | 300&nbsp;MB/s | **1,860&nbsp;MB/s** | **1.3×** zstd&nbsp;-3 (1,440&nbsp;MB/s); denser (3.20) |
 
 <sub>Silesia corpus (202 MB), one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. Full tables and the honest gaps: <a href="#benchmarks">Benchmarks</a>.</sub>
 
