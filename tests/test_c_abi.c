@@ -59,14 +59,41 @@ int main(void) {
     assert(memcmp(original, restored, test_size) == 0);
     printf("   Multi-core verification: PASS\n");
 
-    // Test 5: Error handling with undersized destination
+    // Test 5: Max level compress (format v7) + decompress round trip
+    memset(compressed, 0, max_comp_len);
+    int64_t max_comp_bytes = alatirok_compress_max(original, test_size, compressed, max_comp_len);
+    printf("5. Max-level compress: written %lld bytes (ratio: %.2fx)\n",
+           (long long)max_comp_bytes, (double)test_size / (double)max_comp_bytes);
+    assert(max_comp_bytes > 0);
+
+    memset(restored, 0, test_size);
+    int64_t max_decomp_bytes = alatirok_decompress(compressed, (size_t)max_comp_bytes, restored, test_size);
+    printf("   Max-level decompress: restored %lld bytes\n", (long long)max_decomp_bytes);
+    assert(max_decomp_bytes == (int64_t)test_size);
+    assert(memcmp(original, restored, test_size) == 0);
+    printf("   Max-level verification: PASS\n");
+
+    // Test 5b: Max level, parallel compress + decompress round trip
+    memset(compressed, 0, max_comp_len);
+    int64_t max_par_comp_bytes = alatirok_compress_max_parallel(original, test_size, compressed, max_comp_len);
+    printf("5b. Max-level parallel compress: written %lld bytes\n", (long long)max_par_comp_bytes);
+    assert(max_par_comp_bytes > 0);
+
+    memset(restored, 0, test_size);
+    int64_t max_par_decomp_bytes = alatirok_decompress_parallel(compressed, (size_t)max_par_comp_bytes, restored, test_size);
+    printf("    Max-level parallel decompress: restored %lld bytes\n", (long long)max_par_decomp_bytes);
+    assert(max_par_decomp_bytes == (int64_t)test_size);
+    assert(memcmp(original, restored, test_size) == 0);
+    printf("    Max-level parallel verification: PASS\n");
+
+    // Test 7: Error handling with undersized destination
     int64_t err_comp = alatirok_compress(original, test_size, compressed, 10);
-    printf("5. Undersized buffer test: error code %lld\n", (long long)err_comp);
+    printf("7. Undersized buffer test: error code %lld\n", (long long)err_comp);
     assert(err_comp == -1);
 
-    // Test 6: Null pointer safety
+    // Test 8: Null pointer safety
     int64_t err_null = alatirok_compress(NULL, test_size, compressed, max_comp_len);
-    printf("6. Null pointer safety test: error code %lld\n", (long long)err_null);
+    printf("8. Null pointer safety test: error code %lld\n", (long long)err_null);
     assert(err_null == -2);
 
     free(original);
