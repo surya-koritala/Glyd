@@ -69,4 +69,58 @@ fn main() {
         println!();
     }
     println!("v7 total: {} | zstd-3 {} | zstd-1 {}", v7.line(), z3.line(), z1.line());
+
+    // Extended corpus (scripts/download_corpus.sh's corpus/ext/): real-world
+    // formats beyond Silesia/enwik8. Gate G2: v7's ratio must be >= zstd
+    // -3's, file by file; every file is measured and reported regardless,
+    // so one weak file does not hide the rest of the picture.
+    let ext_dir = std::path::Path::new("corpus/ext");
+    if ext_dir.is_dir() {
+        let mut names: Vec<String> = std::fs::read_dir(ext_dir).unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        println!("\nExtended corpus (corpus/ext), gate G2: v7 ratio >= zstd -3 ratio per file");
+        let (mut ev7, mut ez3, mut ez1) = (Tot::default(), Tot::default(), Tot::default());
+        let mut g2_pass = true;
+        for name in &names {
+            let d = std::fs::read(ext_dir.join(name)).unwrap();
+            if d.is_empty() { continue; }
+            let mut dst = vec![0u8; d.len() + 1024];
+
+            let mut b = Vec::with_capacity(d.len());
+            simd_stream_codec::compress_into_max(&d, &mut b);
+            assert_eq!(simd_stream_codec::decompress(&b).expect("v7 decode failed"), d, "v7 roundtrip mismatch on {}", name);
+            let fc = timed(runs, min_s, || { b.clear(); simd_stream_codec::compress_into_max(&d, &mut b); });
+            let fd = timed(runs, min_s, || { let _ = simd_stream_codec::decompress_into_raw(&b, &mut dst); });
+            ev7.add(d.len(), b.len(), fc, fd);
+            let v7_ratio = d.len() as f64 / b.len() as f64;
+            print!("  {:<24} v7 {:<50}", name, Tot { o: d.len(), c: b.len(), ct: fc, dt: fd }.line());
+
+            let mut z3_ratio = 0.0;
+            for (level, tot) in [(3, &mut ez3), (1, &mut ez1)] {
+                let mut comp = zstd::bulk::Compressor::new(level).unwrap();
+                let mut dec = zstd::bulk::Decompressor::new().unwrap();
+                let mut zb = vec![0u8; zstd::zstd_safe::compress_bound(d.len())];
+                let n = comp.compress_to_buffer(&d, &mut zb[..]).unwrap();
+                let z = zb[..n].to_vec();
+                let zc = timed(runs, min_s, || { let _ = comp.compress_to_buffer(&d, &mut zb[..]); });
+                let zd = timed(runs, min_s, || { let _ = dec.decompress_to_buffer(&z, &mut dst[..]); });
+                tot.add(d.len(), z.len(), zc, zd);
+                if level == 3 { z3_ratio = d.len() as f64 / z.len() as f64; }
+                print!(" | zstd-{} {:<50}", level, Tot { o: d.len(), c: z.len(), ct: zc, dt: zd }.line());
+            }
+            let pass = v7_ratio >= z3_ratio;
+            if !pass { g2_pass = false; }
+            println!(" | G2 {}", if pass { "PASS" } else { "FAIL" });
+        }
+        if !names.is_empty() {
+            println!("ext total: v7 {} | zstd-3 {} | zstd-1 {}", ev7.line(), ez3.line(), ez1.line());
+        }
+        println!("G2 (extended corpus, v7 ratio >= zstd -3 ratio, per file): {}", if g2_pass { "PASS" } else { "FAIL" });
+    } else {
+        println!("\ncorpus/ext not present, skipping extended-corpus gate G2.");
+    }
 }

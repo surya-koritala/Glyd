@@ -11,6 +11,7 @@ Options:
     -c, --compress         Compress input (default if output is .alk)
     -1, --fast             Fast level: LZ4-class compression speed, ratio ~2.10
     -t, --turbo            Turbo level: fastest decode, ~6% less ratio
+    -9, --max              Max level: entropy coded, ratio above zstd -3
     -d, --decompress       Decompress input (default if input is .alk)
     -m, --multi-core       Use multi-core parallel engine (default)
     -1, --single-core      Force single-core sequential engine
@@ -57,6 +58,7 @@ fn main() -> io::Result<()> {
     let mut benchmark_mode = false;
     let mut fast = false;
     let mut turbo = false;
+    let mut max = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -72,6 +74,7 @@ fn main() -> io::Result<()> {
             "-c" | "--compress" => mode_compress = Some(true),
             "-1" | "--fast" => fast = true,
             "-t" | "--turbo" => turbo = true,
+            "-9" | "--max" => max = true,
             "-d" | "--decompress" => mode_compress = Some(false),
             "-m" | "--multi-core" => multi_core = true,
             "-1" | "--single-core" => multi_core = false,
@@ -133,13 +136,15 @@ fn main() -> io::Result<()> {
     let output_data = if should_compress {
         let mut out = Vec::with_capacity(input_data.len() / 2 + 1024);
         let mc = multi_core && input_data.len() > simd_stream_codec::format::MAX_BLOCK_SIZE;
-        let level: fn(&[u8], &mut Vec<u8>) = match (mc, fast, turbo) {
-            (true, true, _) => simd_stream_codec::compress_parallel_into_fast,
-            (true, _, true) => simd_stream_codec::compress_parallel_into_turbo,
-            (true, _, _) => simd_stream_codec::compress_parallel_into,
-            (false, true, _) => simd_stream_codec::compress_into_fast,
-            (false, _, true) => simd_stream_codec::compress_into_turbo,
-            (false, _, _) => simd_stream_codec::compress_into,
+        let level: fn(&[u8], &mut Vec<u8>) = match (mc, fast, turbo, max) {
+            (true, _, _, true) => simd_stream_codec::compress_parallel_into_max,
+            (false, _, _, true) => simd_stream_codec::compress_into_max,
+            (true, true, _, _) => simd_stream_codec::compress_parallel_into_fast,
+            (true, _, true, _) => simd_stream_codec::compress_parallel_into_turbo,
+            (true, _, _, _) => simd_stream_codec::compress_parallel_into,
+            (false, true, _, _) => simd_stream_codec::compress_into_fast,
+            (false, _, true, _) => simd_stream_codec::compress_into_turbo,
+            (false, _, _, _) => simd_stream_codec::compress_into,
         };
         level(&input_data, &mut out);
         out

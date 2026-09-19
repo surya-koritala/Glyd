@@ -1002,3 +1002,178 @@ compression speed at +0.4% ratio (start: 65%, +0.5%).
   | xml     |   8.2448 |     0.545 |       2.803 |       8.4138 |       0.665 |         2.471 |
   | x-ray   |   1.4621 |     0.165 |       0.967 |       1.3926 |       0.197 |         0.848 |
   | total   |   3.2176 |     0.304 |       1.623 |       3.2045 |       0.333 |         1.446 |
+
+## v7 milestone 5: levels, corpus, field survey
+Starting point, not previously recorded in this file: Task 9b (parse/coder
+work, merged as 5241056) took the combined Silesia numbers from milestone
+4b's 3.2176 / 0.304 / 1.623 to **ratio 3.2176, comp 0.305 GB/s, decode
+1.862 GB/s** (zstd-3 in the same run: 3.2045 / 0.335 / 1.448). This task
+adds the `--max` level to the CLI and C ABI, an extended real-world
+corpus, and the field survey, then checks all of it against zstd honestly
+rather than only on Silesia.
+
+**CLI**: `-9`/`--max` added to `src/bin/alatirok.rs` as the highest-priority
+arm of the `(mc, fast, turbo, max)` match (`compress_into_max` /
+`compress_parallel_into_max`). Verified with `cmp`:
+`alatirok -9 corpus/dickens -o d.alk && alatirok -d d.alk -o d && cmp d
+corpus/dickens` -- byte-identical. Multi-core default: 10,192,446 ->
+3,912,217 bytes (ratio 2.6055, independent `PARALLEL_CHUNK_SIZE` chunks
+cost some ratio vs a single chained stream); `--single-core`: 10,192,446
+-> 3,597,654 (ratio **2.8331**, matching milestone 4b's per-file dickens
+number exactly).
+
+**C ABI**: `alatirok_compress_max` / `alatirok_compress_max_parallel`
+added to `src/c_api.rs` and `include/alatirok.h`, mirroring
+`alatirok_compress[_parallel]` exactly (same signature, same error
+codes). No new decompress entry point was needed --
+`alatirok_decompress[_parallel]` already dispatch on the block header's
+version, so v7 payloads round-trip through the existing calls.
+`tests/test_c_abi.c` extended with a max-level sequential and parallel
+round trip on its existing 1 MB structured buffer; built with clang and
+run with `DYLD_LIBRARY_PATH` on macOS (`README.md`'s C ABI section now
+shows both clang/`DYLD_LIBRARY_PATH` for macOS and gcc/`LD_LIBRARY_PATH`
+for Linux):
+
+```
+====================================================
+  Testing Alatirok C ABI Interface (Shared Library)
+====================================================
+Alatirok Version: 0.1.0
+Uncompressed size: 1048576 bytes, Max compressed buffer: 1052736 bytes
+1. Single-core compress: written 14960 bytes (ratio: 70.09x)
+2. Single-core decompress: restored 1048576 bytes
+   Single-core verification: PASS
+3. Multi-core compress: written 17840 bytes
+4. Multi-core decompress: restored 1048576 bytes
+   Multi-core verification: PASS
+5. Max-level compress: written 720 bytes (ratio: 1456.36x)
+   Max-level decompress: restored 1048576 bytes
+   Max-level verification: PASS
+5b. Max-level parallel compress: written 852 bytes
+    Max-level parallel decompress: restored 1048576 bytes
+    Max-level parallel verification: PASS
+7. Undersized buffer test: error code -1
+8. Null pointer safety test: error code -2
+====================================================
+  All C ABI Tests Passed 100% Cleanly!
+====================================================
+```
+
+**Extended corpus** (`scripts/download_corpus.sh` -> `corpus/ext/`, each
+entry best-effort so one flaky host does not block the rest): GitHub
+Archive one-hour JSON-lines sample (912 MB), NASA HTTP logs July 1995
+(205 MB, fetched over plain FTP -- it still works), NYC yellow taxi
+Parquet for 2024-01 (50 MB), the first 64 MB of the linux-6.6 source
+tarball, and a small OpenStreetMap PBF extract (Liechtenstein, 3.4 MB)
+all downloaded on the first try. TPC-H `lineitem` skipped (no `duckdb`
+on `PATH`) and `vmlinux` skipped (no local kernel build available) --
+both noted by the script rather than failing it. The linux.tar entry
+needed a fix after the first run: `curl -fsSL URL | xz -dc | head -c
+67108864 > dest` reports a broken-pipe error from `curl` (exit 56) once
+`head` stops reading at 64 MB, even though `dest` is exactly the right
+64 MB -- under `set -euo pipefail` that would abort the whole script, so
+this entry now runs the pipeline inside an `if` (exempt from `set -e`
+regardless of its exit status) and judges success by `[ -s dest ]`
+instead of the pipeline's exit code.
+
+`examples/v7_bench.rs` now iterates `corpus/ext/*` after Silesia and
+checks gate G2 (v7 ratio >= zstd -3 ratio) per file. Fresh Silesia total
+in the same run (`RUSTFLAGS="-C target-cpu=native" cargo run --release
+--example v7_bench`, confirms the 9b numbers above within normal
+run-to-run noise on a machine shared with other agents' worktrees during
+this task):
+
+  | file    | v7 ratio | comp GB/s | decomp GB/s | zstd-3 ratio | zstd-3 comp | zstd-3 decomp |
+  |---------|---------:|----------:|------------:|-------------:|------------:|--------------:|
+  | dickens |   2.8331 |     0.219 |       1.382 |       2.7822 |       0.217 |         1.211 |
+  | mozilla |   2.7760 |     0.317 |       1.737 |       2.8101 |       0.369 |         1.303 |
+  | mr      |   2.8188 |     0.256 |       1.517 |       2.8106 |       0.268 |         1.313 |
+  | nci     |  11.1565 |     0.771 |       3.673 |      11.8403 |       0.914 |         2.722 |
+  | ooffice |   1.9914 |     0.227 |       1.401 |       1.9680 |       0.269 |         1.021 |
+  | osdb    |   2.8629 |     0.329 |       2.224 |       2.8804 |       0.365 |         1.725 |
+  | reymont |   3.4834 |     0.277 |       1.770 |       3.4197 |       0.261 |         1.441 |
+  | samba   |   4.3619 |     0.428 |       2.489 |       4.3604 |       0.448 |         2.031 |
+  | sao     |   1.3176 |     0.207 |       2.050 |       1.3120 |       0.210 |         0.882 |
+  | webster |   3.4962 |     0.263 |       1.701 |       3.4272 |       0.265 |         1.444 |
+  | xml     |   8.2448 |     0.564 |       3.227 |       8.4138 |       0.680 |         2.520 |
+  | x-ray   |   1.4621 |     0.172 |       1.144 |       1.3926 |       0.201 |         0.864 |
+  | total   |   3.2176 |     0.314 |       1.911 |       3.2045 |       0.339 |         1.476 |
+
+Extended corpus, gate G2 per file:
+
+  | file | size | v7 ratio | v7 comp | v7 decomp | zstd-3 ratio | zstd-3 comp | zstd-3 decomp | G2 |
+  |---|---:|---:|---:|---:|---:|---:|---:|:---:|
+  | gharchive.json | 912 MB | 10.5913 | 0.745 | 4.064 | 10.6560 | 0.955 | 3.329 | **FAIL** |
+  | liechtenstein.osm.pbf | 3.4 MB | 1.0001 | 1.002 | 30.645 | 1.0000 | 5.038 | 47.806 | PASS |
+  | linux.tar | 64 MB | 4.9371 | 0.373 | 2.183 | 4.8983 | 0.400 | 1.793 | PASS |
+  | nasa_access.log | 205 MB | 9.7894 | 0.682 | 3.072 | 9.7822 | 0.825 | 2.369 | PASS |
+  | yellow_tripdata.parquet | 50 MB | 1.0007 | 1.797 | 25.705 | 1.0038 | 0.770 | 6.798 | **FAIL** |
+  | total | | 7.1117 | 0.713 | 3.820 | 7.1343 | 0.861 | 3.053 | **FAIL (2/5)** |
+
+**G2 does not hold on the extended corpus** -- honest result, not the
+Silesia-only 3.2176 >= 3.2045 story. The Parquet "loss" is noise at the
+incompressible floor (both ratios round to 1.00; Parquet already applies
+its own internal compression, so this is framing overhead, not entropy
+coding, and zstd is 2.3x faster to compress it too -- likely its
+raw-block short-circuit is cheaper than v7's). The GitHub Archive loss is
+real, if small (-0.6% ratio, and zstd -3 is faster there too: 0.955 vs
+0.745 GB/s): on this file's very repetitive JSON structure zstd -3's
+search finds matches v7's `dfast` (double-fast, greedy-with-one-step-lazy)
+parse does not -- consistent with milestone 4b's unexplained ~2% modeling
+gap on zstd's own sequences through this coder. liechtenstein.osm.pbf,
+linux.tar and nasa_access.log all pass, two of them by a comfortable
+margin. Net: `--max` is a solid zstd -3 substitute on Silesia-like text
+and source code, roughly a wash on structured/repetitive JSON, and
+already-compressed containers (Parquet, PBF) are a wash for any
+general-purpose byte-level coder by construction.
+
+**Field survey** (`examples/field_survey.rs` gained an `Alatirok-max` row,
+index 13, `compress_into_max` / `decompress_into_raw`, same pattern as
+the fast/turbo rows). `RUSTFLAGS="-C target-cpu=native" cargo run
+--release --example field_survey 3 0.3`, Silesia, M1 Max, one core, every
+codec in the same run:
+
+  ```
+  codec      |   ratio  vs lz4 | comp GB/s  vs lz4 |  dec GB/s  vs lz4 | dominates lz4?
+  -------------------------------------------------------------------------------------------------
+  Alatirok-max |  3.2176  1.532x |     0.277  0.454x |     1.733  0.422x | wins: ratio
+  zstd-3     |  3.2045  1.525x |     0.319  0.523x |     1.361  0.331x | wins: ratio
+  zstd-1     |  2.8942  1.378x |     0.535  0.876x |     1.493  0.363x | wins: ratio
+  LZAV-hi    |  2.8032  1.334x |     0.091  0.148x |     3.185  0.775x | wins: ratio
+  LZAV       |  2.4500  1.166x |     0.426  0.699x |     3.128  0.761x | wins: ratio
+  zstd--1    |  2.4380  1.160x |     0.614  1.007x |     2.153  0.524x | wins: ratio+comp
+  zstd--3    |  2.2399  1.066x |     0.684  1.122x |     2.307  0.562x | wins: ratio+comp
+  Alatirok   |  2.1924  1.044x |     0.312  0.511x |     6.507  1.584x | wins: ratio+dec
+  Alatirok-fast |  2.1760  1.036x |     0.501  0.821x |     4.670  1.137x | wins: ratio+dec
+  liblz4     |  2.1009  1.000x |     0.610  1.000x |     4.108  1.000x | (baseline)
+  lz4_flex   |  2.0971  0.998x |     0.633  1.037x |     3.004  0.731x | wins: comp
+  snappy     |  2.0761  0.988x |     0.607  0.996x |     1.495  0.364x | no
+  zstd--5    |  2.0570  0.979x |     0.746  1.222x |     2.484  0.605x | wins: comp
+  Alatirok-turbo |  1.8837  0.897x |     0.263  0.431x |     8.647  2.105x | wins: dec
+  ```
+`Alatirok-max` is the best ratio in the field (ahead of zstd -3, same
+survey conclusion as always: nothing dominates liblz4 on all three axes).
+Its own comp/decode numbers here (0.277 / 1.733) read lower than the
+v7_bench total above (0.314 / 1.911) -- both are honest measurements of
+the same binary, just different harnesses (field_survey's `timed` warms
+up and loops per codec across 14 codecs x 12 files back to back) and,
+per the standing note in this file, a machine shared with other agents'
+worktrees during this task; run-to-run spread here is in the same
+±3-10% band already on record.
+
+**Cleanup**: `examples/huff_spike.rs` (the milestone-1 throwaway spike,
+superseded by the real decoder in `src/huffman.rs` and `src/v7_decode.rs`)
+and its `Cargo.toml` `[[example]]` entry deleted. `cargo test --release`
+after deletion still shows exactly the 5 pre-existing warnings and no
+others: `src/lib.rs` unused `avx2` (line ~458) and `min_match` (line
+~503), `src/bin/alatirok.rs` an unreachable `"-1" | "--single-core"` arm
+(pre-existing -- `"-1"` already matches `"--fast"` above it, so
+single-core can only be selected with the long flag; not introduced or
+fixed here, out of this task's scope), and `examples/floor.rs` an
+unused `mut` and a dead `file_base` field. None of the 5 came from the
+spike, before or after its removal. `tests/v7_fuzz.rs` (Task 10, a
+different worktree's concurrent work, not yet merged into this branch)
+does not exist here yet, so `V7_FUZZ=1000000 cargo test --release --test
+v7_fuzz` cannot run in this worktree; `fuzz_safety.rs`'s existing
+1,000,000-mutation container-format test (`test_corruption_mutation_fuzz_1m`)
+is green as part of the full suite.

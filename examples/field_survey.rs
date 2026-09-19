@@ -66,7 +66,7 @@ fn main() {
     let dir = Path::new("corpus");
 
     let names = ["Alatirok", "liblz4", "lz4_flex", "LZAV", "LZAV-hi",
-                 "zstd--5", "zstd--3", "zstd--1", "zstd-1", "zstd-3", "snappy", "Alatirok-fast", "Alatirok-turbo"];
+                 "zstd--5", "zstd--3", "zstd--1", "zstd-1", "zstd-3", "snappy", "Alatirok-fast", "Alatirok-turbo", "Alatirok-max"];
     let mut tot: Vec<Totals> = names.iter().map(|n| Totals { name: n.to_string(), ..Default::default() }).collect();
 
     for f in &files {
@@ -99,6 +99,13 @@ fn main() {
         let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); simd_stream_codec::compress_into_turbo(&data, &mut b); });
         let d = timed(runs, min_secs, 3, || { let _ = simd_stream_codec::decompress_into_raw(&c2, &mut dst); });
         acc(&mut tot[12], len, c2.len(), t, d); log_row(f, "Alatirok-turbo", len, c2.len(), t, d);
+
+        // ---- Alatirok max level (format v7, entropy coded) ----
+        let mut c3 = Vec::with_capacity(len);
+        simd_stream_codec::compress_into_max(&data, &mut c3);
+        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); simd_stream_codec::compress_into_max(&data, &mut b); });
+        let d = timed(runs, min_secs, 3, || { let _ = simd_stream_codec::decompress_into_raw(&c3, &mut dst); });
+        acc(&mut tot[13], len, c3.len(), t, d); log_row(f, "Alatirok-max", len, c3.len(), t, d);
 
         // ---- liblz4 (reference C) ----
         let bound = lz4::block::compress_bound(len).unwrap_or(len * 2 + 64);

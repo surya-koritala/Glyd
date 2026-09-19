@@ -70,6 +70,63 @@ pub unsafe extern "C" fn alatirok_compress_parallel(
     out_vec.len() as isize
 }
 
+/// Compress sequentially using the max level (format v7, entropy coded).
+///
+/// Returns: Number of compressed bytes written to `dst`, or negative on error:
+///   -1: Destination buffer too small
+///   -2: Null pointer passed
+#[no_mangle]
+pub unsafe extern "C" fn alatirok_compress_max(
+    src: *const u8,
+    src_len: usize,
+    dst: *mut u8,
+    dst_capacity: usize,
+) -> isize {
+    if src.is_null() || dst.is_null() {
+        return -2;
+    }
+
+    let input = slice::from_raw_parts(src, src_len);
+    let mut out_vec = Vec::with_capacity(dst_capacity);
+    crate::compress_into_max(input, &mut out_vec);
+
+    if out_vec.len() > dst_capacity {
+        return -1;
+    }
+
+    std::ptr::copy_nonoverlapping(out_vec.as_ptr(), dst, out_vec.len());
+    out_vec.len() as isize
+}
+
+/// Compress in parallel across all CPU cores using the max level (format v7,
+/// entropy coded).
+///
+/// Returns: Number of compressed bytes written to `dst`, or negative on error:
+///   -1: Destination buffer too small
+///   -2: Null pointer passed
+#[no_mangle]
+pub unsafe extern "C" fn alatirok_compress_max_parallel(
+    src: *const u8,
+    src_len: usize,
+    dst: *mut u8,
+    dst_capacity: usize,
+) -> isize {
+    if src.is_null() || dst.is_null() {
+        return -2;
+    }
+
+    let input = slice::from_raw_parts(src, src_len);
+    let mut out_vec = Vec::with_capacity(dst_capacity);
+    crate::compress_parallel_into_max(input, &mut out_vec);
+
+    if out_vec.len() > dst_capacity {
+        return -1;
+    }
+
+    std::ptr::copy_nonoverlapping(out_vec.as_ptr(), dst, out_vec.len());
+    out_vec.len() as isize
+}
+
 /// Decompress sequentially using single-core engine with checksum validation.
 ///
 /// Returns: Number of uncompressed bytes written to `dst`, or negative on error:

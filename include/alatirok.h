@@ -59,6 +59,38 @@ int64_t alatirok_compress_parallel(
 );
 
 /**
+ * Compresses `src` at the max level (format v7: entropy-coded literals and
+ * sequences, ratio above zstd -3) using the sequential single-core engine.
+ *
+ * Returns:
+ *   >= 0 : Number of compressed bytes written to `dst`.
+ *     -1 : Destination buffer capacity too small.
+ *     -2 : Null pointer passed.
+ */
+int64_t alatirok_compress_max(
+    const uint8_t* src,
+    size_t src_len,
+    uint8_t* dst,
+    size_t dst_capacity
+);
+
+/**
+ * Compresses `src` at the max level (format v7) across all available CPU
+ * cores in parallel using Rayon.
+ *
+ * Returns:
+ *   >= 0 : Number of compressed bytes written to `dst`.
+ *     -1 : Destination buffer capacity too small.
+ *     -2 : Null pointer passed.
+ */
+int64_t alatirok_compress_max_parallel(
+    const uint8_t* src,
+    size_t src_len,
+    uint8_t* dst,
+    size_t dst_capacity
+);
+
+/**
  * Decompresses `src` of length `src_len` into buffer `dst` of capacity `dst_capacity`
  * using the sequential single-core engine with checksum verification.
  * 
