@@ -141,6 +141,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
+name = "glyd"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "lz4",
+ "lz4_flex",
+ "lzav",
+ "rayon",
+ "snap",
+ "zstd",
+]
+
+[[package]]
 name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -347,19 +360,6 @@ name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
-
-[[package]]
-name = "simd-stream-codec"
-version = "0.1.0"
-dependencies = [
- "libc",
- "lz4",
- "lz4_flex",
- "lzav",
- "rayon",
- "snap",
- "zstd",
-]
 
 [[package]]
 name = "snap"

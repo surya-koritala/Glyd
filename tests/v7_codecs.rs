@@ -1,4 +1,4 @@
-use simd_stream_codec::bits::{BitReader, BitWriter, PAD};
+use glyd::bits::{BitReader, BitWriter, PAD};
 
 #[test]
 fn bits_roundtrip_mixed_widths() {
@@ -35,10 +35,10 @@ fn bits_reader_clamps_at_end() {
 #[should_panic(expected = "MAX_PUT")]
 fn bits_writer_rejects_oversized_put() {
     let mut w = BitWriter::new();
-    w.put(0, simd_stream_codec::bits::MAX_PUT + 1);
+    w.put(0, glyd::bits::MAX_PUT + 1);
 }
 
-use simd_stream_codec::huff8;
+use glyd::huff8;
 
 fn skewed_bytes(n: usize, seed: u64) -> Vec<u8> {
     let mut x = seed;
@@ -97,7 +97,7 @@ fn huff8_overrun_is_an_error() {
 #[test]
 #[ignore]
 fn huff8_speed_silesia() {
-    use simd_stream_codec::format::*;
+    use glyd::format::*;
     use std::time::Instant;
 
     let files = ["dickens", "mozilla"];
@@ -107,7 +107,7 @@ fn huff8_speed_silesia() {
             Ok(d) => d,
             Err(_) => continue, // skip silently if the corpus isn't present
         };
-        let c = simd_stream_codec::compress(&d);
+        let c = glyd::compress(&d);
         let mut cur = 0usize;
         while cur + HEADER_SIZE <= c.len() {
             let h = unsafe { std::ptr::read_unaligned(c.as_ptr().add(cur) as *const BlockHeader) };
@@ -196,7 +196,7 @@ fn huff8_short_codes_roundtrip() {
     assert_eq!(out, data);
 }
 
-use simd_stream_codec::tans;
+use glyd::tans;
 
 fn skewed_codes(n: usize, nsym: usize, seed: u64) -> Vec<u8> {
     let mut x = seed;
@@ -325,7 +325,7 @@ fn tans8_speed() {
     println!("tans8_speed: {} symbols, {:.3} ns/symbol", n, ns_per_symbol);
 }
 
-use simd_stream_codec::v7_format::{self, Reps, SubHeader};
+use glyd::v7_format::{self, Reps, SubHeader};
 
 #[test]
 fn v7_length_and_offset_codes_roundtrip() {

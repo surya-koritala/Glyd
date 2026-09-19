@@ -6,7 +6,7 @@
 // Usage: cargo run --release --example v7_parse [runs=5] [min_s=0.2]
 //        cargo run --release --example v7_parse -- --loop [secs=8]
 //           (parse only, for `xctrace record --template 'Time Profiler'`)
-use simd_stream_codec::v7_encode::{find_sequences_dfast, DfastTables, EncScratch};
+use glyd::v7_encode::{find_sequences_dfast, DfastTables, EncScratch};
 use std::time::Instant;
 
 const BLOCK: usize = 256 * 1024;
@@ -31,7 +31,7 @@ fn timed<F: FnMut()>(runs: usize, min_s: f64, mut op: F) -> f64 {
     v.into_iter().fold(f64::INFINITY, f64::min)
 }
 
-fn parse_all(d: &[u8], t: &mut DfastTables, seqs: &mut Vec<simd_stream_codec::v7_encode::Sequence>, lits: &mut Vec<u8>, codes: &mut EncScratch) -> usize {
+fn parse_all(d: &[u8], t: &mut DfastTables, seqs: &mut Vec<glyd::v7_encode::Sequence>, lits: &mut Vec<u8>, codes: &mut EncScratch) -> usize {
     let mut n = 0;
     let mut off = 0;
     while off < d.len() {
@@ -77,10 +77,10 @@ fn main() {
             parse_all(d, &mut t, &mut seqs, &mut lits, &mut codes);
         });
         let mut out = Vec::with_capacity(d.len());
-        simd_stream_codec::compress_into_max(d, &mut out);
+        glyd::compress_into_max(d, &mut out);
         let ct = timed(runs, min_s, || {
             out.clear();
-            simd_stream_codec::compress_into_max(d, &mut out);
+            glyd::compress_into_max(d, &mut out);
         });
         let ns = 1e9 / d.len() as f64;
         println!("{:<8} {:>8.3} {:>8.3} {:>8.4} {:>10} {:>8.1}", f, pt * ns, ct * ns, d.len() as f64 / out.len() as f64, n_seq, d.len() as f64 / n_seq as f64);

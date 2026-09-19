@@ -1,4 +1,4 @@
-use simd_stream_codec::huffman::*;
+use glyd::huffman::*;
 
 fn roundtrip(data: &[u8]) {
     let mut hist = [0u64; 256];

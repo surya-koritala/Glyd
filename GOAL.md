@@ -104,7 +104,7 @@ Regenerate `RESULTS.md` on every commit that changes a number. It contains:
 1. Commit hash, date, machine, `rustc --version`, `RUSTFLAGS`, taskset core.
 2. Gate table: one row per gate with Measured, Threshold, LZ4 value, PASS/FAIL.
 3. Per-file tables for Silesia, enwik8, and workloads: ratio, comp 1C, decomp 1C,
-   for Alatirok, liblz4, lz4_flex, Snappy, Zstd-1.
+   for Glyd, liblz4, lz4_flex, Snappy, Zstd-1.
 4. "Blocked gates" section, if any, with evidence.
 5. Path to the CSV for this run.
 
@@ -115,7 +115,7 @@ Regenerate `RESULTS.md` on every commit that changes a number. It contains:
 Independently measured on this machine. Baseline here is `lz4_flex`; the agent's
 first task is to add liblz4 and re-baseline. Expect liblz4 to be equal or faster.
 
-Silesia total ratio: Alatirok 1.90x, LZ4 2.10x (deficit 9.3%).
+Silesia total ratio: Glyd 1.90x, LZ4 2.10x (deficit 9.3%).
 
 | File | Ratio Alat / LZ4 | Decomp 1C GB/s Alat / LZ4 | Comp 1C GB/s Alat / LZ4 |
 |---|---|---|---|

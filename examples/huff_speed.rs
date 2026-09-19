@@ -10,8 +10,8 @@
 // per loop iteration. The N lookups have no dependency between them, so they
 // pipeline. This measures ns/sym for N = 1, 2, 4, 8 on the real token stream,
 // pinned to one core. If interleaving reaches ~1 ns/sym, entropy coding fits.
-use simd_stream_codec::format::*;
-use simd_stream_codec::huffman::*;
+use glyd::format::*;
+use glyd::huffman::*;
 use std::time::Instant;
 
 #[cfg(target_os = "linux")]
@@ -98,7 +98,7 @@ fn main() {
         let p = dir.join(f);
         if !p.exists() { continue; }
         let d = std::fs::read(&p).unwrap();
-        let c = simd_stream_codec::compress(&d);
+        let c = glyd::compress(&d);
         let mut cur = 0usize;
         while cur + HEADER_SIZE <= c.len() {
             let h = unsafe { std::ptr::read_unaligned(c.as_ptr().add(cur) as *const BlockHeader) };

@@ -1,24 +1,38 @@
-# Alatirok: High-Throughput SIMD-First Streaming Lossless Codec
+# Glyd — the world's fastest-decoding open-source compression
 
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-blue.svg)](https://www.rust-lang.org)
-[![License: MIT/Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+[![License: BUSL-1.1](https://img.shields.io/badge/license-BUSL--1.1-blue.svg)](LICENSE)
 [![SIMD: AVX2 | NEON](https://img.shields.io/badge/SIMD-AVX2%20%7C%20NEON-orange.svg)]()
-[![C ABI](https://img.shields.io/badge/C%20ABI-include%2Falatirok.h-brightgreen.svg)]()
-[![CI](https://github.com/Sigbound/alatirok/actions/workflows/ci.yml/badge.svg)](https://github.com/Sigbound/alatirok/actions)
+[![C ABI](https://img.shields.io/badge/C%20ABI-include%2Fglyd.h-brightgreen.svg)]()
+[![CI](https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg)](https://github.com/surya-koritala/Glyd/actions)
 
-**Alatirok** is a SIMD-first LZ77 codec in Rust, built for the places where
-decompression throughput is the bottleneck: object-store chunk fetches, gRPC
-payloads, columnar scans, and KV-cache paging for LLM serving.
+**Glyd** is a lossless codec in Rust built for the places where decompression
+is the bottleneck: object-store fetches, columnar scans, RPC payloads,
+game assets, KV-cache paging for LLM serving. It decodes faster than any
+open codec we could measure, at every ratio point, in the same run:
 
-The compressed block is split into four homogeneous streams (**tokens**,
-**offsets**, **extras**, **literals**) instead of one interleaved byte stream.
-That is what lets the decoder pre-decode 32 tokens per AVX2 pass, check
-bounds once per chunk, and run a copy-only loop, which an inline format such
-as LZ4's cannot do.
+| Level | Ratio | Compress GB/s | **Decompress GB/s** | Same-run reference |
+| :--- | ---: | ---: | ---: | :--- |
+| `--turbo` | 1.88 | 0.28 | **9.2** | 2.1× liblz4 (4.4) |
+| default | 2.19 | 0.34 | **6.9** | 1.6× liblz4 at a better ratio |
+| `--max` (entropy coded) | 3.22 | 0.30 | **1.86** | zstd -3: 3.20 ratio, 1.44 decode |
 
-**Status (2026-09-18, commit `54f0a24`): single-core decode beats liblz4 on
-Silesia, measured in the same run, at a higher ratio.** Compression speed is
-the open axis. See [Where we are](#where-we-are-and-what-is-next).
+Silesia corpus (202 MB), Apple M1 Max, one core, `RUSTFLAGS="-C target-cpu=native"`;
+every Glyd number is paired with the reference library measured in the
+same process (`examples/quick3.rs`, `examples/v7_bench.rs`, `examples/field_survey.rs`).
+Multi-core decode reaches 43 GB/s on 10 cores, the machine's memory wall.
+
+How: the compressed block is split into homogeneous streams (tokens,
+offsets, lengths, literals) instead of one interleaved byte stream, so the
+decoder pre-decodes 32 tokens per SIMD pass, checks bounds once per chunk,
+and runs a copy-only loop that an inline format such as LZ4's cannot. The
+`--max` level adds 8-way interleaved entropy coding (Huffman literals, tANS
+sequences) on the same layout, with a three-pass decoder.
+
+What it is not: the fastest *compressor*. LZ4 and zstd -1 compress faster;
+Glyd's default and max levels compress at roughly zstd's speed. See
+[Measured against the field](#measured-against-the-field) for the full table
+and the honest gaps.
 
 ---
 
@@ -65,7 +79,7 @@ branch: no x86 machine was available.
 
 | Codec | Ratio | Comp GB/s | Decode GB/s |
 | :--- | ---: | ---: | ---: |
-| **Alatirok `--max` (v7)** | **3.218** | 0.305 | **1.86** |
+| **Glyd `--max` (v7)** | **3.218** | 0.305 | **1.86** |
 | zstd -3 | 3.205 | 0.335 | 1.45 |
 | zstd -1 | 2.894 | 0.555 | 1.55 |
 
@@ -127,7 +141,7 @@ JSON structure. Full per-file numbers are in `CHANGELOG-BENCH.md`
 ## Measured against the field
 
 All numbers: Silesia corpus (202 MB, 12 files), AMD Ryzen 9 7950X3D, one pinned
-core, `-C target-cpu=native`, median of repeated runs. **Every Alatirok decode
+core, `-C target-cpu=native`, median of repeated runs. **Every Glyd decode
 number is paired with liblz4 from the same run** (`examples/quick3.rs`) so
 the comparison cannot be met by run-to-run drift (which is ±3-10% in this
 WSL2 VM).
@@ -137,7 +151,7 @@ WSL2 VM).
 | Codec | Decode GB/s | % of memcpy wall | Ratio | Comp GB/s |
 | :--- | ---: | ---: | ---: | ---: |
 | memcpy (the physical ceiling) | 22.9 | 100 | - | - |
-| **Alatirok v6** | **6.05** | **26** | **2.192** | 0.35 |
+| **Glyd v6** | **6.05** | **26** | **2.192** | 0.35 |
 | liblz4 (same run) | 5.54 | 24 | 2.101 | 0.85 |
 | lz4_flex | 3.7 | 16 | 2.097 | 0.67 |
 | LZAV | 3.1 | 14 | 2.450 | 0.49 |
@@ -145,12 +159,12 @@ WSL2 VM).
 | snappy | 2.1 | 9 | 2.076 | 0.78 |
 
 liblz4 is the open-source decode-speed champion; every other measured codec is
-slower. Alatirok is the only one above it, and does so while 4% denser. RAD
+slower. Glyd is the only one above it, and does so while 4% denser. RAD
 Oodle (commercial, closed) is the unmeasured bar above that.
 
 ### Per file, same run (2026-09-18)
 
-| File | Ratio | Alatirok decode GB/s | liblz4 decode GB/s | vs liblz4 |
+| File | Ratio | Glyd decode GB/s | liblz4 decode GB/s | vs liblz4 |
 | :--- | ---: | ---: | ---: | ---: |
 | dickens | 1.815 | 5.99 | 5.19 | **+15%** |
 | mozilla | 1.926 | 5.42 | 4.83 | **+12%** |
@@ -173,7 +187,7 @@ Beats liblz4 on 10 of 12 files; trails on nci and webster by 2-3%.
 | Codec | Decode GB/s | % of memcpy wall | Ratio |
 | :--- | ---: | ---: | ---: |
 | memcpy | 39.9 | 100 | - |
-| **Alatirok v6 (NEON)** | **6.94** | **17** | **2.192** |
+| **Glyd v6 (NEON)** | **6.94** | **17** | **2.192** |
 | liblz4 (same run) | 4.36 | 11 | 2.101 |
 
 Beats liblz4 on 12 of 12 files (+53% total). The measured wall for this
@@ -200,31 +214,31 @@ at LZ4-class ratios makes no sense; its competitor is zstd -3. See the
 
 ### Field survey: does anything dominate liblz4? (`examples/field_survey.rs`, Silesia, M1 Max, one core)
 
-Every codec measured in the same run, `Alatirok-max` included:
+Every codec measured in the same run, `Glyd-max` included:
 
 ```
 codec      |   ratio  vs lz4 | comp GB/s  vs lz4 |  dec GB/s  vs lz4 | dominates lz4?
 -------------------------------------------------------------------------------------------------
-Alatirok-max |  3.2176  1.532x |     0.277  0.454x |     1.733  0.422x | wins: ratio
+Glyd-max   |  3.2176  1.532x |     0.277  0.454x |     1.733  0.422x | wins: ratio
 zstd-3     |  3.2045  1.525x |     0.319  0.523x |     1.361  0.331x | wins: ratio
 zstd-1     |  2.8942  1.378x |     0.535  0.876x |     1.493  0.363x | wins: ratio
 LZAV-hi    |  2.8032  1.334x |     0.091  0.148x |     3.185  0.775x | wins: ratio
 LZAV       |  2.4500  1.166x |     0.426  0.699x |     3.128  0.761x | wins: ratio
 zstd--1    |  2.4380  1.160x |     0.614  1.007x |     2.153  0.524x | wins: ratio+comp
 zstd--3    |  2.2399  1.066x |     0.684  1.122x |     2.307  0.562x | wins: ratio+comp
-Alatirok   |  2.1924  1.044x |     0.312  0.511x |     6.507  1.584x | wins: ratio+dec
-Alatirok-fast |  2.1760  1.036x |     0.501  0.821x |     4.670  1.137x | wins: ratio+dec
+Glyd       |  2.1924  1.044x |     0.312  0.511x |     6.507  1.584x | wins: ratio+dec
+Glyd-fast  |  2.1760  1.036x |     0.501  0.821x |     4.670  1.137x | wins: ratio+dec
 liblz4     |  2.1009  1.000x |     0.610  1.000x |     4.108  1.000x | (baseline)
 lz4_flex   |  2.0971  0.998x |     0.633  1.037x |     3.004  0.731x | wins: comp
 snappy     |  2.0761  0.988x |     0.607  0.996x |     1.495  0.364x | no
 zstd--5    |  2.0570  0.979x |     0.746  1.222x |     2.484  0.605x | wins: comp
-Alatirok-turbo |  1.8837  0.897x |     0.263  0.431x |     8.647  2.105x | wins: dec
+Glyd-turbo |  1.8837  0.897x |     0.263  0.431x |     8.647  2.105x | wins: dec
 ```
 
 (`zstd-N` is the normal level N; `zstd--N` is `--fast=N`, zstd's low-ratio
-ultra-fast mode.) `Alatirok-max` has the best ratio of the field, ahead of
+ultra-fast mode.) `Glyd-max` has the best ratio of the field, ahead of
 zstd -3; nothing here beats liblz4 on ratio, compression and decode at
-once, `Alatirok-max` included -- it wins on ratio alone in this survey,
+once, `Glyd-max` included -- it wins on ratio alone in this survey,
 same as zstd -3. Raw per-file numbers are logged to
 `field_survey_partial.csv` by every run.
 
@@ -301,64 +315,64 @@ superseded but its rules still bind), `GOAL.md` (original).
 
 ## Universal Compatibility
 
-### 1. Standalone CLI Utility (`alatirok`)
+### 1. Standalone CLI Utility (`glyd`)
 ```bash
 cargo install --path .
 ```
 
 ```bash
 # Compress with multi-core parallelism (default)
-alatirok -c telemetry.json -o telemetry.json.alk
+glyd -c telemetry.json -o telemetry.json.glyd
 
 # Decompress to original file
-alatirok -d telemetry.json.alk -o telemetry_restored.json
+glyd -d telemetry.json.glyd -o telemetry_restored.json
 
 # Streaming UNIX pipes (zero temporary disk files)
-cat raw_stream.log | alatirok -c | curl -X POST https://s3-bucket.internal/upload --data-binary @-
+cat raw_stream.log | glyd -c | curl -X POST https://s3-bucket.internal/upload --data-binary @-
 
 # Fast benchmark mode
-alatirok -b bigdata.csv
+glyd -b bigdata.csv
 
 # Inspect SIMD hardware capabilities (AVX-512 / AVX2 / BMI2)
-alatirok -v
+glyd -v
 ```
 
-### 2. Standard C / C++ ABI (`include/alatirok.h`)
-Any C, C++, Go (CGO), Python (ctypes/CFFI), or Java (JNI) program can link directly with `libsimd_stream_codec.so` or `libsimd_stream_codec.a`.
+### 2. Standard C / C++ ABI (`include/glyd.h`)
+Any C, C++, Go (CGO), Python (ctypes/CFFI), or Java (JNI) program can link directly with `libglyd.so` or `libglyd.a`.
 
 ```c
-#include "alatirok.h"
+#include "glyd.h"
 
 // 1. Calculate safe destination buffer capacity
-size_t max_out = alatirok_max_compressed_len(src_len);
+size_t max_out = glyd_max_compressed_len(src_len);
 uint8_t* compressed = malloc(max_out);
 
 // 2. Compress using all CPU cores in parallel
-int64_t comp_bytes = alatirok_compress_parallel(src, src_len, compressed, max_out);
+int64_t comp_bytes = glyd_compress_parallel(src, src_len, compressed, max_out);
 
 // 3. Decompress with checksum validation
 uint8_t* restored = malloc(src_len);
-int64_t decomp_bytes = alatirok_decompress_parallel(compressed, comp_bytes, restored, src_len);
+int64_t decomp_bytes = glyd_decompress_parallel(compressed, comp_bytes, restored, src_len);
 ```
 
 ### 3. Standard Rust Streaming I/O (`std::io::Read` / `std::io::Write`)
-`AlatirokWriter` and `AlatirokReader` carry only format v6 blocks: a
+`GlydWriter` and `GlydReader` carry only format v6 blocks: a
 `--max` / `-9` (format v7) file cannot be read through the streaming API
 yet; use `decompress` / `decompress_parallel` for those.
 ```rust
 use std::fs::File;
 use std::io::{copy, BufReader, BufWriter};
-use simd_stream_codec::streaming::{AlatirokWriter, AlatirokReader};
+use glyd::streaming::{GlydWriter, GlydReader};
 
 // Transparent streaming compression to disk or network
-let out_file = File::create("archive.alk")?;
-let mut writer = AlatirokWriter::new(BufWriter::new(out_file));
+let out_file = File::create("archive.glyd")?;
+let mut writer = GlydWriter::new(BufWriter::new(out_file));
 writer.write_all(b"high-throughput streaming data")?;
 writer.flush()?;
 
 // Transparent streaming decompression on the fly
-let in_file = File::open("archive.alk")?;
-let mut reader = AlatirokReader::new(BufReader::new(in_file));
+let in_file = File::open("archive.glyd")?;
+let mut reader = GlydReader::new(BufReader::new(in_file));
 let mut decoded = Vec::new();
 reader.read_to_end(&mut decoded)?;
 ```
@@ -408,11 +422,11 @@ RUSTFLAGS="-C target-cpu=native" cargo run --release --example speed_ceiling
 ### C ABI verification
 ```bash
 # macOS
-clang -O3 tests/test_c_abi.c -Iinclude -Ltarget/release -lsimd_stream_codec -o target/release/test_c_abi
+clang -O3 tests/test_c_abi.c -Iinclude -Ltarget/release -lglyd -o target/release/test_c_abi
 DYLD_LIBRARY_PATH=target/release ./target/release/test_c_abi
 
 # Linux
-gcc -O3 tests/test_c_abi.c -Iinclude -Ltarget/release -lsimd_stream_codec -o target/release/test_c_abi
+gcc -O3 tests/test_c_abi.c -Iinclude -Ltarget/release -lglyd -o target/release/test_c_abi
 LD_LIBRARY_PATH=target/release ./target/release/test_c_abi
 ```
 
@@ -420,8 +434,11 @@ LD_LIBRARY_PATH=target/release ./target/release/test_c_abi
 
 ## License
 
-Dual-licensed under either of:
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT License ([LICENSE-MIT](LICENSE-MIT))
+Glyd is released under the [Business Source License 1.1](LICENSE).
 
-at your option.
+- Free to read, modify, redistribute, and use for development, testing,
+  personal, educational, research and other non-commercial purposes.
+- **Commercial or revenue-generating production use requires a commercial
+  license.** Contact suryakoritala@outlook.com.
+- Each version converts to the Apache License 2.0 on its Change Date (four
+  years after its first public release; 2030-09-18 for this release).

@@ -1,6 +1,6 @@
 # Format v7: beat zstd -3 on ratio at 2x its decode speed
 
-Date: 2026-09-18. Status: approved design, not yet implemented.
+Date: 2026-09-18. Status: implemented (`--max` level); measured results in CHANGELOG-BENCH.md.
 
 ## Goal
 
@@ -26,7 +26,7 @@ switch a storage provider can flip.
   bucket codes plus raw bits, lengths as codes plus raw bits, repeat
   offsets, a 512 KB - 2 MB window. The ratio comes from modeling, not the
   coder.
-- Spike (`examples/huff_spike.rs`, throwaway): 8 interleaved LSB-first
+- Probe (a throwaway 8-stream Huffman decoder, since removed): 8 interleaved LSB-first
   Huffman streams with a packed 2^11 table and a branchless 64-bit refill
   decode Silesia literals at 0.47 ns/symbol (2.0 GB/s of literals) on the
   M1 Max. Literals are 27% of output. Decode budget at ratio 3.2:

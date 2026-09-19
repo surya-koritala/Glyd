@@ -54,7 +54,7 @@ fn main() {
                  "reymont","samba","sao","webster","xml","x-ray"];
     let dir = std::path::Path::new("corpus");
     println!();
-    println!("Silesia decode, single core: memcpy ceiling vs liblz4 vs Alatirok");
+    println!("Silesia decode, single core: memcpy ceiling vs liblz4 vs Glyd");
     println!("{:<8} {:>12} {:>12} {:>12}   {:>10} {:>10}", "file", "memcpy GB/s", "lz4 GB/s", "ours GB/s", "lz4 ratio", "our ratio");
     let (mut tot_o, mut t_mc, mut t_lz, mut t_us) = (0usize, 0.0, 0.0, 0.0);
     let (mut c_lz, mut c_us) = (0usize, 0usize);
@@ -74,8 +74,8 @@ fn main() {
         let lz = timed(runs, min_s, || { let _ = lz4::block::decompress_to_buffer(&lz4c, Some(len as i32), &mut dst); });
 
         let mut ours = Vec::with_capacity(len);
-        simd_stream_codec::compress_into(&d, &mut ours);
-        let us = timed(runs, min_s, || { let _ = simd_stream_codec::decompress_into_raw(&ours, &mut dst); });
+        glyd::compress_into(&d, &mut ours);
+        let us = timed(runs, min_s, || { let _ = glyd::decompress_into_raw(&ours, &mut dst); });
 
         println!("{:<8} {:>12.2} {:>12.2} {:>12.2}   {:>10.3} {:>10.3}",
                  f, (len as f64 / GB) / mc, (len as f64 / GB) / lz, (len as f64 / GB) / us,
@@ -87,5 +87,5 @@ fn main() {
              "TOTAL", o / t_mc, o / t_lz, o / t_us, tot_o as f64 / c_lz as f64, tot_o as f64 / c_us as f64);
     println!();
     println!("memcpy is the ceiling for any decoder that writes its output: {:.2} GB/s here.", o / t_mc);
-    println!("liblz4 reaches {:.0}% of it; Alatirok {:.0}%.", 100.0 * t_mc / t_lz, 100.0 * t_mc / t_us);
+    println!("liblz4 reaches {:.0}% of it; Glyd {:.0}%.", 100.0 * t_mc / t_lz, 100.0 * t_mc / t_us);
 }

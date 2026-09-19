@@ -6,7 +6,7 @@ Store ceilings by working set (single core, pinned):
      64 MB          28.9          18.1
     212 MB          28.6          18.9
 
-Silesia decode, single core: memcpy ceiling vs liblz4 vs Alatirok
+Silesia decode, single core: memcpy ceiling vs liblz4 vs Glyd
 file      memcpy GB/s     lz4 GB/s    ours GB/s    lz4 ratio  our ratio
 dickens         43.05         4.82         2.24        1.585      1.964
 mozilla         16.25         4.93         3.00        1.938      2.153
@@ -23,4 +23,4 @@ x-ray           44.31        18.92         2.69        1.010      1.080
 TOTAL           22.89         5.78         3.12        2.101      2.388
 
 memcpy is the ceiling for any decoder that writes its output: 22.89 GB/s here.
-liblz4 reaches 25% of it; Alatirok 14%.
+liblz4 reaches 25% of it; Glyd 14%.

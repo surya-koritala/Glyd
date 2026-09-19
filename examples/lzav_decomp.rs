@@ -7,8 +7,8 @@
 //     what that parse would cost in our format: "LZAV parse, our format".
 //
 // Both numbers are exact byte counts on Silesia, not models.
-use simd_stream_codec::format::*;
-use simd_stream_codec::huffman;
+use glyd::format::*;
+use glyd::huffman;
 use std::io::Write;
 
 // LZAV format 2 cost of one (literal run, reference) pair. `mref` is the
@@ -191,7 +191,7 @@ fn main() {
         orig += d.len() as u64;
 
         // (a) our parse costed in LZAV's format (mref 4 so all our matches are legal)
-        let c = simd_stream_codec::compress(&d);
+        let c = glyd::compress(&d);
         ours += c.len() as u64;
         let mut cur = 0usize;
         while cur + HEADER_SIZE <= c.len() {
@@ -232,7 +232,7 @@ fn main() {
         let path = dir.join(f);
         if !path.exists() { continue; }
         let d = std::fs::read(&path).unwrap();
-        let c = simd_stream_codec::compress(&d);
+        let c = glyd::compress(&d);
         let mut cur = 0usize;
         while cur + HEADER_SIZE <= c.len() {
             let h = unsafe { std::ptr::read_unaligned(c.as_ptr().add(cur) as *const BlockHeader) };

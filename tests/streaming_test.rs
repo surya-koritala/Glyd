@@ -1,18 +1,18 @@
 use std::io::{Read, Write};
-use simd_stream_codec::{AlatirokReader, AlatirokWriter};
+use glyd::{GlydReader, GlydWriter};
 
 #[test]
 fn test_streaming_roundtrip_large() {
     let mut original_data = Vec::with_capacity(300_000);
-    let sample = b"Streaming compression chunk test for Alatirok engine with cloud & AI workflows. ";
+    let sample = b"Streaming compression chunk test for Glyd engine with cloud & AI workflows. ";
     while original_data.len() < 300_000 {
         original_data.extend_from_slice(sample);
     }
 
-    // Compress via AlatirokWriter
+    // Compress via GlydWriter
     let mut compressed = Vec::new();
     {
-        let mut writer = AlatirokWriter::new(&mut compressed);
+        let mut writer = GlydWriter::new(&mut compressed);
         // Write in random-sized chunks to test arbitrary slice boundaries
         let mut offset = 0;
         let chunk_sizes = [13, 1024, 77, 65536, 12, 4096, 33];
@@ -29,8 +29,8 @@ fn test_streaming_roundtrip_large() {
     assert!(!compressed.is_empty());
     assert!(compressed.len() < original_data.len() / 2);
 
-    // Decompress via AlatirokReader
-    let mut reader = AlatirokReader::new(&compressed[..]);
+    // Decompress via GlydReader
+    let mut reader = GlydReader::new(&compressed[..]);
     let mut decompressed = Vec::new();
     let mut buf = [0u8; 512];
     loop {

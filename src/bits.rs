@@ -182,7 +182,7 @@ impl<'a> BitReader<'a> {
     /// it is a compile error, not a use-after-free:
     ///
     /// ```compile_fail
-    /// use simd_stream_codec::bits::{BitReader, BitWriter};
+    /// use glyd::bits::{BitReader, BitWriter};
     /// let r = { let v = BitWriter::new().finish(); BitReader::new(&v) };
     /// let _ = r.overrun();
     /// ```

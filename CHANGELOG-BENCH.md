@@ -239,7 +239,7 @@ decode ceiling (DRAM ~19, L3 ~48, L2 ~67). liblz4 decodes at 25% of it, we at
 14%. Nobody is near the wall because cost is per token (14-20M tokens), not per
 byte. GOAL3.md: Tier S1 = dominate liblz4 on decode+ratio, measured in the same
 run (quick3 now reports liblz4 alongside). Dense retry made opt-in
-(ALATIROK_DENSE=1); x-ray floor set to liblz4's own 1.00-1.01; total ratio
+(GLYD_DENSE=1); x-ray floor set to liblz4's own 1.00-1.01; total ratio
 floor RAISED 1.85 -> 2.1009.
   goal3_baseline: ratio 2.37232 | comp 0.4651 | decomp 3.1239 vs liblz4 5.6526 (55.3%)
 
@@ -327,7 +327,7 @@ README rewritten from the format-v2 era to the current state: v6 layout, the
 field table, a fresh same-run per-file table, the decode trajectory, and a
 "where we are / what is next" section. GOAL3 S1 marked passed with start/now
 columns; S3 table now lists fast (not built), default (min match 7), dense
-(ALATIROK_DENSE=1). Fresh run for the README table:
+(GLYD_DENSE=1). Fresh run for the README table:
   quick3 readme_s1: ratio 2.19234 | comp 0.346 | decomp 6.05 vs liblz4 5.54
                     same run = 109.3%  S1 OK
 Per file: beat liblz4 on 10 of 12 (sao +87%, ooffice +35%, osdb +23%, mr
@@ -1012,21 +1012,21 @@ adds the `--max` level to the CLI and C ABI, an extended real-world
 corpus, and the field survey, then checks all of it against zstd honestly
 rather than only on Silesia.
 
-**CLI**: `-9`/`--max` added to `src/bin/alatirok.rs` as the highest-priority
+**CLI**: `-9`/`--max` added to `src/bin/glyd.rs` as the highest-priority
 arm of the `(mc, fast, turbo, max)` match (`compress_into_max` /
 `compress_parallel_into_max`). Verified with `cmp`:
-`alatirok -9 corpus/dickens -o d.alk && alatirok -d d.alk -o d && cmp d
+`glyd -9 corpus/dickens -o d.glyd && glyd -d d.glyd -o d && cmp d
 corpus/dickens` -- byte-identical. Multi-core default: 10,192,446 ->
 3,912,217 bytes (ratio 2.6055, independent `PARALLEL_CHUNK_SIZE` chunks
 cost some ratio vs a single chained stream); `--single-core`: 10,192,446
 -> 3,597,654 (ratio **2.8331**, matching milestone 4b's per-file dickens
 number exactly).
 
-**C ABI**: `alatirok_compress_max` / `alatirok_compress_max_parallel`
-added to `src/c_api.rs` and `include/alatirok.h`, mirroring
-`alatirok_compress[_parallel]` exactly (same signature, same error
+**C ABI**: `glyd_compress_max` / `glyd_compress_max_parallel`
+added to `src/c_api.rs` and `include/glyd.h`, mirroring
+`glyd_compress[_parallel]` exactly (same signature, same error
 codes). No new decompress entry point was needed --
-`alatirok_decompress[_parallel]` already dispatch on the block header's
+`glyd_decompress[_parallel]` already dispatch on the block header's
 version, so v7 payloads round-trip through the existing calls.
 `tests/test_c_abi.c` extended with a max-level sequential and parallel
 round trip on its existing 1 MB structured buffer; built with clang and
@@ -1036,9 +1036,9 @@ for Linux):
 
 ```
 ====================================================
-  Testing Alatirok C ABI Interface (Shared Library)
+  Testing Glyd C ABI Interface (Shared Library)
 ====================================================
-Alatirok Version: 0.1.0
+Glyd Version: 0.1.0
 Uncompressed size: 1048576 bytes, Max compressed buffer: 1052736 bytes
 1. Single-core compress: written 14960 bytes (ratio: 70.09x)
 2. Single-core decompress: restored 1048576 bytes
@@ -1127,7 +1127,7 @@ and source code, roughly a wash on structured/repetitive JSON, and
 already-compressed containers (Parquet, PBF) are a wash for any
 general-purpose byte-level coder by construction.
 
-**Field survey** (`examples/field_survey.rs` gained an `Alatirok-max` row,
+**Field survey** (`examples/field_survey.rs` gained an `Glyd-max` row,
 index 13, `compress_into_max` / `decompress_into_raw`, same pattern as
 the fast/turbo rows). `RUSTFLAGS="-C target-cpu=native" cargo run
 --release --example field_survey 3 0.3`, Silesia, M1 Max, one core, every
@@ -1136,22 +1136,22 @@ codec in the same run:
   ```
   codec      |   ratio  vs lz4 | comp GB/s  vs lz4 |  dec GB/s  vs lz4 | dominates lz4?
   -------------------------------------------------------------------------------------------------
-  Alatirok-max |  3.2176  1.532x |     0.277  0.454x |     1.733  0.422x | wins: ratio
+  Glyd-max   |  3.2176  1.532x |     0.277  0.454x |     1.733  0.422x | wins: ratio
   zstd-3     |  3.2045  1.525x |     0.319  0.523x |     1.361  0.331x | wins: ratio
   zstd-1     |  2.8942  1.378x |     0.535  0.876x |     1.493  0.363x | wins: ratio
   LZAV-hi    |  2.8032  1.334x |     0.091  0.148x |     3.185  0.775x | wins: ratio
   LZAV       |  2.4500  1.166x |     0.426  0.699x |     3.128  0.761x | wins: ratio
   zstd--1    |  2.4380  1.160x |     0.614  1.007x |     2.153  0.524x | wins: ratio+comp
   zstd--3    |  2.2399  1.066x |     0.684  1.122x |     2.307  0.562x | wins: ratio+comp
-  Alatirok   |  2.1924  1.044x |     0.312  0.511x |     6.507  1.584x | wins: ratio+dec
-  Alatirok-fast |  2.1760  1.036x |     0.501  0.821x |     4.670  1.137x | wins: ratio+dec
+  Glyd       |  2.1924  1.044x |     0.312  0.511x |     6.507  1.584x | wins: ratio+dec
+  Glyd-fast  |  2.1760  1.036x |     0.501  0.821x |     4.670  1.137x | wins: ratio+dec
   liblz4     |  2.1009  1.000x |     0.610  1.000x |     4.108  1.000x | (baseline)
   lz4_flex   |  2.0971  0.998x |     0.633  1.037x |     3.004  0.731x | wins: comp
   snappy     |  2.0761  0.988x |     0.607  0.996x |     1.495  0.364x | no
   zstd--5    |  2.0570  0.979x |     0.746  1.222x |     2.484  0.605x | wins: comp
-  Alatirok-turbo |  1.8837  0.897x |     0.263  0.431x |     8.647  2.105x | wins: dec
+  Glyd-turbo |  1.8837  0.897x |     0.263  0.431x |     8.647  2.105x | wins: dec
   ```
-`Alatirok-max` is the best ratio in the field (ahead of zstd -3, same
+`Glyd-max` is the best ratio in the field (ahead of zstd -3, same
 survey conclusion as always: nothing dominates liblz4 on all three axes).
 Its own comp/decode numbers here (0.277 / 1.733) read lower than the
 v7_bench total above (0.314 / 1.911) -- both are honest measurements of
@@ -1166,7 +1166,7 @@ superseded by the real decoder in `src/huffman.rs` and `src/v7_decode.rs`)
 and its `Cargo.toml` `[[example]]` entry deleted. `cargo test --release`
 after deletion still shows exactly the 5 pre-existing warnings and no
 others: `src/lib.rs` unused `avx2` (line ~458) and `min_match` (line
-~503), `src/bin/alatirok.rs` an unreachable `"-1" | "--single-core"` arm
+~503), `src/bin/glyd.rs` an unreachable `"-1" | "--single-core"` arm
 (pre-existing -- `"-1"` already matches `"--fast"` above it, so
 single-core can only be selected with the long flag; not introduced or
 fixed here, out of this task's scope), and `examples/floor.rs` an

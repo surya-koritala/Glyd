@@ -1,6 +1,6 @@
 //! Decoding into a `dst` of exactly the uncompressed length (no slack):
 //! the v6 decoder's wild copies must never land past it.
-use simd_stream_codec::*;
+use glyd::*;
 
 type Decode = fn(&[u8], &mut [u8]) -> error::Result<usize>;
 

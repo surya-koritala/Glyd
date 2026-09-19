@@ -1,6 +1,6 @@
 // Deterministic replay of the G1 fuzz sequence that isolates the exact
 // mutation and decode path that corrupts memory.
-use simd_stream_codec::{
+use glyd::{
     compress, compress_parallel, decompress, decompress_into_raw, decompress_parallel,
     decompress_parallel_into_raw,
 };

@@ -7,7 +7,7 @@
 //! 4. Transparent host DRAM <-> GPU VRAM offload pipeline.
 
 use std::time::Instant;
-use simd_stream_codec::{compress, decompress, compress_parallel, decompress_parallel};
+use glyd::{compress, decompress, compress_parallel, decompress_parallel};
 
 /// Simulates a standard PagedAttention Block (vLLM style):
 /// - 16 tokens per block
@@ -65,7 +65,7 @@ fn generate_synthetic_kv_block(block_id: u32) -> Vec<u8> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("================================================================================");
-    println!("  Alatirok AI / LLM PagedAttention KV-Cache Streaming Acceleration");
+    println!("  Glyd AI / LLM PagedAttention KV-Cache Streaming Acceleration");
     println!("================================================================================");
     println!("Architecture: vLLM PagedAttention / TensorRT-LLM Tiered Memory Architecture");
     println!("Block Configuration:");

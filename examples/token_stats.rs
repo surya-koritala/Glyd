@@ -3,7 +3,7 @@
 // measures the real literal-length, match-length and offset distributions of
 // our token stream and costs every plausible split of the 8 token bits:
 // escape rate, and the byte cost of the offset classes each split can afford.
-use simd_stream_codec::format::*;
+use glyd::format::*;
 
 fn main() {
     let files = ["dickens","mozilla","mr","nci","ooffice","osdb",
@@ -17,7 +17,7 @@ fn main() {
         let p = dir.join(f);
         if !p.exists() { continue; }
         let d = std::fs::read(&p).unwrap();
-        let c = simd_stream_codec::compress(&d);
+        let c = glyd::compress(&d);
         comp_total += c.len() as u64;
         let mut cur = 0usize;
         while cur + HEADER_SIZE <= c.len() {

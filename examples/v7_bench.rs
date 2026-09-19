@@ -48,10 +48,10 @@ fn main() {
         let mut dst = vec![0u8; d.len() + 1024];
 
         let mut b = Vec::with_capacity(d.len());
-        simd_stream_codec::compress_into_max(&d, &mut b);
-        assert_eq!(simd_stream_codec::decompress(&b).expect("v7 decode failed"), d, "v7 roundtrip mismatch on {}", f);
-        let fc = timed(runs, min_s, || { b.clear(); simd_stream_codec::compress_into_max(&d, &mut b); });
-        let fd = timed(runs, min_s, || { let _ = simd_stream_codec::decompress_into_raw(&b, &mut dst); });
+        glyd::compress_into_max(&d, &mut b);
+        assert_eq!(glyd::decompress(&b).expect("v7 decode failed"), d, "v7 roundtrip mismatch on {}", f);
+        let fc = timed(runs, min_s, || { b.clear(); glyd::compress_into_max(&d, &mut b); });
+        let fd = timed(runs, min_s, || { let _ = glyd::decompress_into_raw(&b, &mut dst); });
         v7.add(d.len(), b.len(), fc, fd);
         print!("  {:<8} v7 {:<50}", f, Tot { o: d.len(), c: b.len(), ct: fc, dt: fd }.line());
 
@@ -91,10 +91,10 @@ fn main() {
             let mut dst = vec![0u8; d.len() + 1024];
 
             let mut b = Vec::with_capacity(d.len());
-            simd_stream_codec::compress_into_max(&d, &mut b);
-            assert_eq!(simd_stream_codec::decompress(&b).expect("v7 decode failed"), d, "v7 roundtrip mismatch on {}", name);
-            let fc = timed(runs, min_s, || { b.clear(); simd_stream_codec::compress_into_max(&d, &mut b); });
-            let fd = timed(runs, min_s, || { let _ = simd_stream_codec::decompress_into_raw(&b, &mut dst); });
+            glyd::compress_into_max(&d, &mut b);
+            assert_eq!(glyd::decompress(&b).expect("v7 decode failed"), d, "v7 roundtrip mismatch on {}", name);
+            let fc = timed(runs, min_s, || { b.clear(); glyd::compress_into_max(&d, &mut b); });
+            let fd = timed(runs, min_s, || { let _ = glyd::decompress_into_raw(&b, &mut dst); });
             ev7.add(d.len(), b.len(), fc, fd);
             let v7_ratio = d.len() as f64 / b.len() as f64;
             print!("  {:<24} v7 {:<50}", name, Tot { o: d.len(), c: b.len(), ct: fc, dt: fd }.line());

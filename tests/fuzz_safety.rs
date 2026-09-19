@@ -1,4 +1,4 @@
-use simd_stream_codec::{
+use glyd::{
     compress, compress_parallel, decompress, decompress_into_raw, decompress_parallel,
     decompress_parallel_into_raw, fallback,
 };
@@ -16,7 +16,7 @@ fn test_fallback_parity() {
     let mut extras = Vec::new();
     let mut literals = Vec::new();
 
-    let mut table = simd_stream_codec::finder::new_table();
+    let mut table = glyd::finder::new_table();
     fallback::compress_fallback(input, &mut table, &mut tokens, &mut offsets, &mut extras, &mut literals);
 
     let mut decomp_buf = vec![0u8; input.len()];
@@ -27,7 +27,7 @@ fn test_fallback_parity() {
         &literals,
         &mut decomp_buf,
         input.len(),
-        simd_stream_codec::format::MIN_MATCH_LEN,
+        glyd::format::MIN_MATCH_LEN,
     )
     .unwrap();
     assert_eq!(written, input.len());
@@ -40,7 +40,7 @@ fn test_corruption_truncation_safety() {
                   {\"id\": 101, \"status\": \"ACTIVE\", \"tokens\": [1,2,3,4,5,6,7,8,9]}";
 
     let mut max = Vec::new();
-    simd_stream_codec::compress_into_max(input, &mut max);
+    glyd::compress_into_max(input, &mut max);
     for compressed in [compress(input), compress_parallel(input), max] {
         let mut dst = vec![0u8; input.len() + 256];
         for len in 1..compressed.len() {
@@ -123,15 +123,15 @@ fn seed_inputs() -> Vec<Vec<u8>> {
 /// (it is where a saturating wild-copy margin let a 32-byte store
 /// through with a zero-length `dst`).
 fn empty_v7_block() -> Vec<u8> {
-    use simd_stream_codec::format::{BlockHeader, FLAG_CHAIN_RESET, HEADER_SIZE, MAGIC, VERSION_V7};
-    use simd_stream_codec::v7_encode::{encode_block, Sequence, Tables};
+    use glyd::format::{BlockHeader, FLAG_CHAIN_RESET, HEADER_SIZE, MAGIC, VERSION_V7};
+    use glyd::v7_encode::{encode_block, Sequence, Tables};
     let mut payload = Vec::new();
     encode_block(&[Sequence { lit_len: 0, match_len: 0, offset: 0 }], &[], 0, &mut Tables::none(), &mut payload);
     let header = BlockHeader {
         magic: MAGIC,
         version: VERSION_V7,
         flags: FLAG_CHAIN_RESET,
-        checksum: simd_stream_codec::compute_checksum(&[]),
+        checksum: glyd::compute_checksum(&[]),
         uncompressed_len: 0,
         token_count: 1,
         token_bytes: payload.len() as u32,
@@ -156,8 +156,8 @@ fn test_corruption_mutation_fuzz_1m() {
         streams.push((compress(s), s.len()));
         streams.push((compress_parallel(s), s.len()));
         let (mut m, mut mp) = (Vec::new(), Vec::new());
-        simd_stream_codec::compress_into_max(s, &mut m);
-        simd_stream_codec::compress_parallel_into_max(s, &mut mp);
+        glyd::compress_into_max(s, &mut m);
+        glyd::compress_parallel_into_max(s, &mut mp);
         streams.push((m, s.len()));
         streams.push((mp, s.len()));
     }

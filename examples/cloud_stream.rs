@@ -1,17 +1,17 @@
-//! Cloud Object Store & gRPC Microservice Streaming with Alatirok
+//! Cloud Object Store & gRPC Microservice Streaming with Glyd
 //!
 //! Demonstrates:
-//! 1. High-throughput streaming ingestion into S3 / GCS / gRPC using `AlatirokWriter`.
-//! 2. Streaming readback using `AlatirokReader`.
+//! 1. High-throughput streaming ingestion into S3 / GCS / gRPC using `GlydWriter`.
+//! 2. Streaming readback using `GlydReader`.
 //! 3. Indexed chunk storage: Random-access seek to query specific records
 //!    WITHOUT decompressing the surrounding object.
 //! 4. AVX2 checksum validation on the wire.
 
 use std::io::{Cursor, Read, Write};
 use std::time::Instant;
-use simd_stream_codec::streaming::{AlatirokWriter, AlatirokReader};
-use simd_stream_codec::{compress_parallel, decompress_parallel};
-use simd_stream_codec::compute_checksum;
+use glyd::streaming::{GlydWriter, GlydReader};
+use glyd::{compress_parallel, decompress_parallel};
+use glyd::compute_checksum;
 
 /// Metadata for an indexed chunk stored in a cloud object (S3 / GCS).
 #[derive(Debug, Clone)]
@@ -43,7 +43,7 @@ impl CloudObjectStore {
             let comp_start = storage_buffer.len() as u64;
             
             // Compress chunk
-            let compressed = simd_stream_codec::compress(chunk);
+            let compressed = glyd::compress(chunk);
             let checksum = compute_checksum(chunk);
 
             storage_buffer.extend_from_slice(&compressed);
@@ -69,7 +69,7 @@ impl CloudObjectStore {
 
     /// Random-access seek: Read a specific byte range from the cloud object
     /// by decompressing ONLY the relevant indexed chunks.
-    pub fn read_range(&self, start: u64, length: usize) -> Result<Vec<u8>, simd_stream_codec::error::CodecError> {
+    pub fn read_range(&self, start: u64, length: usize) -> Result<Vec<u8>, glyd::error::CodecError> {
         let end = start + length as u64;
         let mut result = Vec::with_capacity(length);
 
@@ -80,7 +80,7 @@ impl CloudObjectStore {
             // Check if this chunk overlaps the requested range
             if chunk_end > start && chunk_start < end {
                 let comp_slice = &self.data[entry.compressed_offset as usize..(entry.compressed_offset + entry.compressed_size as u64) as usize];
-                let decompressed = simd_stream_codec::decompress(comp_slice)?;
+                let decompressed = glyd::decompress(comp_slice)?;
 
                 // Verify integrity
                 debug_assert_eq!(compute_checksum(&decompressed), entry.checksum);
@@ -110,7 +110,7 @@ fn generate_cloud_telemetry(num_records: usize) -> Vec<u8> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("================================================================================");
-    println!("  Alatirok Cloud Object Storage & Streaming Architecture Demo");
+    println!("  Glyd Cloud Object Storage & Streaming Architecture Demo");
     println!("================================================================================");
 
     // 1. Generate realistic CloudWatch / Kubernetes JSON log stream (~25 MB)
@@ -120,12 +120,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let payload_mb = payload.len() as f64 / (1024.0 * 1024.0);
     println!("{:.2} MB ready.", payload_mb);
 
-    // 2. High-Throughput Streaming Ingestion via AlatirokWriter
+    // 2. High-Throughput Streaming Ingestion via GlydWriter
     println!("\n[Scenario A] Continuous Streaming Ingestion (e.g. gRPC Microservice Pipe)");
     let t0 = Instant::now();
     let mut compressed_stream = Vec::new();
     {
-        let mut writer = AlatirokWriter::new(&mut compressed_stream);
+        let mut writer = GlydWriter::new(&mut compressed_stream);
         // Write in 16 KB chunks to simulate network packets
         for chunk in payload.chunks(16 * 1024) {
             writer.write_all(chunk)?;
@@ -140,9 +140,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Ingested & Compressed: {:.2} MB -> {:.2} MB ({:.2}x ratio)", payload_mb, comp_mb, ratio);
     println!("  Streaming Throughput:  {:.2} GB/s ({:.2} ms)", write_gb_s, write_dur.as_secs_f64() * 1000.0);
 
-    // 3. Streaming Decompression via AlatirokReader
+    // 3. Streaming Decompression via GlydReader
     let t1 = Instant::now();
-    let mut reader = AlatirokReader::new(Cursor::new(&compressed_stream));
+    let mut reader = GlydReader::new(Cursor::new(&compressed_stream));
     let mut roundtrip_payload = Vec::with_capacity(payload.len());
     reader.read_to_end(&mut roundtrip_payload)?;
     let read_dur = t1.elapsed();

@@ -86,14 +86,14 @@ pub fn init_table(table: &mut HashTable, src: &[u8]) {
 /// a small window keeps every match source in L2, which measured the best
 /// and by far the most stable decode (57% of liblz4 in the same run at 256 KB,
 /// against a noisy 51-55% at 8 MB) at a ratio well above the 2.10 floor.
-/// Overridable once per process with `ALATIROK_WINDOW` for sweeps; read once
+/// Overridable once per process with `GLYD_WINDOW` for sweeps; read once
 /// and cached.
 #[inline]
 fn window_size() -> usize {
     use std::sync::OnceLock;
     static W: OnceLock<usize> = OnceLock::new();
     *W.get_or_init(|| {
-        std::env::var("ALATIROK_WINDOW")
+        std::env::var("GLYD_WINDOW")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .map(|w| w.clamp(1, WINDOW_SIZE))

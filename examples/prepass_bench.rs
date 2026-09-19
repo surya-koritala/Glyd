@@ -5,7 +5,7 @@ mod x86 {
 // token and extras streams, built up one piece at a time, timed per token.
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
-use simd_stream_codec::format::*;
+use glyd::format::*;
 use std::time::Instant;
 
 #[cfg(target_os = "linux")]
@@ -97,7 +97,7 @@ fn main() {
         let p = dir.join(f);
         if !p.exists() { continue; }
         let d = std::fs::read(&p).unwrap();
-        let c = simd_stream_codec::compress(&d);
+        let c = glyd::compress(&d);
         let mut cur = 0usize;
         while cur + HEADER_SIZE <= c.len() {
             let h = unsafe { std::ptr::read_unaligned(c.as_ptr().add(cur) as *const BlockHeader) };

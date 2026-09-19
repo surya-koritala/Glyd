@@ -1,13 +1,13 @@
 /*
- * Alatirok - High-Performance SIMD Stream Codec
+ * Glyd - High-Performance SIMD Stream Codec
  * C / C++ Language Bindings
  * 
  * Hardware acceleration: AVX-512 / AVX2 / NVIDIA GPU
- * License: Apache-2.0 / MIT
+ * License: BUSL-1.1 (see LICENSE)
  */
 
-#ifndef ALATIROK_H
-#define ALATIROK_H
+#ifndef GLYD_H
+#define GLYD_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -19,13 +19,13 @@ extern "C" {
 /**
  * Returns a null-terminated version string, e.g. "0.1.0".
  */
-const char* alatirok_version(void);
+const char* glyd_version(void);
 
 /**
  * Calculates a guaranteed safe upper bound for the destination buffer
  * when compressing an uncompressed source of `src_len` bytes.
  */
-size_t alatirok_max_compressed_len(size_t src_len);
+size_t glyd_max_compressed_len(size_t src_len);
 
 /**
  * Compresses `src` of length `src_len` into buffer `dst` of capacity `dst_capacity`
@@ -36,7 +36,7 @@ size_t alatirok_max_compressed_len(size_t src_len);
  *     -1 : Destination buffer capacity too small.
  *     -2 : Null pointer passed.
  */
-int64_t alatirok_compress(
+int64_t glyd_compress(
     const uint8_t* src,
     size_t src_len,
     uint8_t* dst,
@@ -51,7 +51,7 @@ int64_t alatirok_compress(
  *     -1 : Destination buffer capacity too small.
  *     -2 : Null pointer passed.
  */
-int64_t alatirok_compress_parallel(
+int64_t glyd_compress_parallel(
     const uint8_t* src,
     size_t src_len,
     uint8_t* dst,
@@ -67,7 +67,7 @@ int64_t alatirok_compress_parallel(
  *     -1 : Destination buffer capacity too small.
  *     -2 : Null pointer passed.
  */
-int64_t alatirok_compress_max(
+int64_t glyd_compress_max(
     const uint8_t* src,
     size_t src_len,
     uint8_t* dst,
@@ -83,7 +83,7 @@ int64_t alatirok_compress_max(
  *     -1 : Destination buffer capacity too small.
  *     -2 : Null pointer passed.
  */
-int64_t alatirok_compress_max_parallel(
+int64_t glyd_compress_max_parallel(
     const uint8_t* src,
     size_t src_len,
     uint8_t* dst,
@@ -100,7 +100,7 @@ int64_t alatirok_compress_max_parallel(
  *     -2 : Corrupted bitstream or checksum mismatch.
  *     -3 : Null pointer passed.
  */
-int64_t alatirok_decompress(
+int64_t glyd_decompress(
     const uint8_t* src,
     size_t src_len,
     uint8_t* dst,
@@ -117,7 +117,7 @@ int64_t alatirok_decompress(
  *     -2 : Corrupted bitstream or checksum mismatch.
  *     -3 : Null pointer passed.
  */
-int64_t alatirok_decompress_parallel(
+int64_t glyd_decompress_parallel(
     const uint8_t* src,
     size_t src_len,
     uint8_t* dst,
@@ -128,4 +128,4 @@ int64_t alatirok_decompress_parallel(
 }
 #endif
 
-#endif /* ALATIROK_H */
+#endif /* GLYD_H */

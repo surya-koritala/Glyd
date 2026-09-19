@@ -4,15 +4,15 @@ use std::path::Path;
 use std::time::Instant;
 
 fn print_usage() {
-    eprintln!(r#"Alatirok High-Performance SIMD Stream Codec (AVX-512 / AVX2 / GPU)
-Usage: alatirok [OPTIONS] [INPUT] [-o OUTPUT]
+    eprintln!(r#"Glyd High-Performance SIMD Stream Codec (AVX-512 / AVX2 / GPU)
+Usage: glyd [OPTIONS] [INPUT] [-o OUTPUT]
 
 Options:
-    -c, --compress         Compress input (default if output is .alk)
+    -c, --compress         Compress input (default if output is .glyd)
     -1, --fast             Fast level: LZ4-class compression speed, ratio ~2.10
     -t, --turbo            Turbo level: fastest decode, ~6% less ratio
     -9, --max              Max level: entropy coded, ratio above zstd -3
-    -d, --decompress       Decompress input (default if input is .alk)
+    -d, --decompress       Decompress input (default if input is .glyd)
     -m, --multi-core       Use multi-core parallel engine (default)
     -1, --single-core      Force single-core sequential engine
     -o, --output <FILE>    Specify destination output file (defaults to stdout if piped)
@@ -21,16 +21,16 @@ Options:
     -h, --help             Print this help message
 
 Examples:
-    alatirok input.tar -o input.tar.alk
-    alatirok -d input.tar.alk -o input.tar
-    cat large.json | alatirok -c > large.json.alk
-    cat large.json.alk | alatirok -d > large.json
-    alatirok -b dataset.bin
+    glyd input.tar -o input.tar.glyd
+    glyd -d input.tar.glyd -o input.tar
+    cat large.json | glyd -c > large.json.glyd
+    cat large.json.glyd | glyd -d > large.json
+    glyd -b dataset.bin
 "#);
 }
 
 fn print_version() {
-    println!("alatirok 0.1.0");
+    println!("glyd 0.1.0");
     #[cfg(target_arch = "x86_64")]
     {
         let avx512 = is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw");
@@ -127,7 +127,7 @@ fn main() -> io::Result<()> {
     // Determine compress vs decompress
     let should_compress = mode_compress.unwrap_or_else(|| {
         if let Some(ref p) = input_path {
-            !p.ends_with(".alk")
+            !p.ends_with(".glyd")
         } else {
             true
         }
@@ -135,24 +135,24 @@ fn main() -> io::Result<()> {
 
     let output_data = if should_compress {
         let mut out = Vec::with_capacity(input_data.len() / 2 + 1024);
-        let mc = multi_core && input_data.len() > simd_stream_codec::format::MAX_BLOCK_SIZE;
+        let mc = multi_core && input_data.len() > glyd::format::MAX_BLOCK_SIZE;
         let level: fn(&[u8], &mut Vec<u8>) = match (mc, fast, turbo, max) {
-            (true, _, _, true) => simd_stream_codec::compress_parallel_into_max,
-            (false, _, _, true) => simd_stream_codec::compress_into_max,
-            (true, true, _, _) => simd_stream_codec::compress_parallel_into_fast,
-            (true, _, true, _) => simd_stream_codec::compress_parallel_into_turbo,
-            (true, _, _, _) => simd_stream_codec::compress_parallel_into,
-            (false, true, _, _) => simd_stream_codec::compress_into_fast,
-            (false, _, true, _) => simd_stream_codec::compress_into_turbo,
-            (false, _, _, _) => simd_stream_codec::compress_into,
+            (true, _, _, true) => glyd::compress_parallel_into_max,
+            (false, _, _, true) => glyd::compress_into_max,
+            (true, true, _, _) => glyd::compress_parallel_into_fast,
+            (true, _, true, _) => glyd::compress_parallel_into_turbo,
+            (true, _, _, _) => glyd::compress_parallel_into,
+            (false, true, _, _) => glyd::compress_into_fast,
+            (false, _, true, _) => glyd::compress_into_turbo,
+            (false, _, _, _) => glyd::compress_into,
         };
         level(&input_data, &mut out);
         out
     } else {
-        let result = if multi_core && input_data.len() > simd_stream_codec::format::MAX_BLOCK_SIZE {
-            simd_stream_codec::decompress_parallel(&input_data)
+        let result = if multi_core && input_data.len() > glyd::format::MAX_BLOCK_SIZE {
+            glyd::decompress_parallel(&input_data)
         } else {
-            simd_stream_codec::decompress(&input_data)
+            glyd::decompress(&input_data)
         };
 
         match result {
@@ -193,13 +193,13 @@ fn run_benchmark(path_str: &str) {
 
     // Sequential compression
     let start = Instant::now();
-    let comp_seq = simd_stream_codec::compress(&data);
+    let comp_seq = glyd::compress(&data);
     let seq_comp_sec = start.elapsed().as_secs_f64();
     let seq_comp_gb = (len as f64 / (1024.0 * 1024.0 * 1024.0)) / seq_comp_sec;
 
     // Parallel compression
     let start = Instant::now();
-    let comp_par = simd_stream_codec::compress_parallel(&data);
+    let comp_par = glyd::compress_parallel(&data);
     let par_comp_sec = start.elapsed().as_secs_f64();
     let par_comp_gb = (len as f64 / (1024.0 * 1024.0 * 1024.0)) / par_comp_sec;
 
@@ -215,25 +215,25 @@ fn run_benchmark(path_str: &str) {
 
     let start = Instant::now();
     for _ in 0..iters {
-        simd_stream_codec::decompress_into_raw(&comp_seq, &mut dst).unwrap();
+        glyd::decompress_into_raw(&comp_seq, &mut dst).unwrap();
     }
     let raw_1c_gb = (len as f64 * iters as f64 / (1024.0 * 1024.0 * 1024.0)) / start.elapsed().as_secs_f64();
 
     let start = Instant::now();
     for _ in 0..iters {
-        simd_stream_codec::decompress_into(&comp_seq, &mut dst).unwrap();
+        glyd::decompress_into(&comp_seq, &mut dst).unwrap();
     }
     let ver_1c_gb = (len as f64 * iters as f64 / (1024.0 * 1024.0 * 1024.0)) / start.elapsed().as_secs_f64();
 
     let start = Instant::now();
     for _ in 0..iters {
-        simd_stream_codec::decompress_parallel_into_raw(&comp_par, &mut dst).unwrap();
+        glyd::decompress_parallel_into_raw(&comp_par, &mut dst).unwrap();
     }
     let raw_par_gb = (len as f64 * iters as f64 / (1024.0 * 1024.0 * 1024.0)) / start.elapsed().as_secs_f64();
 
     let start = Instant::now();
     for _ in 0..iters {
-        simd_stream_codec::decompress_parallel_into(&comp_par, &mut dst).unwrap();
+        glyd::decompress_parallel_into(&comp_par, &mut dst).unwrap();
     }
     let ver_par_gb = (len as f64 * iters as f64 / (1024.0 * 1024.0 * 1024.0)) / start.elapsed().as_secs_f64();
 

@@ -3,14 +3,14 @@ use crate::format::MAX_BLOCK_SIZE;
 
 /// Return safe upper bound for compressed destination buffer.
 #[no_mangle]
-pub extern "C" fn alatirok_max_compressed_len(src_len: usize) -> usize {
+pub extern "C" fn glyd_max_compressed_len(src_len: usize) -> usize {
     let num_blocks = (src_len + MAX_BLOCK_SIZE - 1) / MAX_BLOCK_SIZE;
     src_len + (num_blocks.max(1) * 1024) + 64
 }
 
 /// Return version string.
 #[no_mangle]
-pub extern "C" fn alatirok_version() -> *const std::ffi::c_char {
+pub extern "C" fn glyd_version() -> *const std::ffi::c_char {
     concat!("0.1.0", "\0").as_ptr() as *const std::ffi::c_char
 }
 
@@ -20,7 +20,7 @@ pub extern "C" fn alatirok_version() -> *const std::ffi::c_char {
 ///   -1: Destination buffer too small
 ///   -2: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn alatirok_compress(
+pub unsafe extern "C" fn glyd_compress(
     src: *const u8,
     src_len: usize,
     dst: *mut u8,
@@ -48,7 +48,7 @@ pub unsafe extern "C" fn alatirok_compress(
 ///   -1: Destination buffer too small
 ///   -2: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn alatirok_compress_parallel(
+pub unsafe extern "C" fn glyd_compress_parallel(
     src: *const u8,
     src_len: usize,
     dst: *mut u8,
@@ -76,7 +76,7 @@ pub unsafe extern "C" fn alatirok_compress_parallel(
 ///   -1: Destination buffer too small
 ///   -2: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn alatirok_compress_max(
+pub unsafe extern "C" fn glyd_compress_max(
     src: *const u8,
     src_len: usize,
     dst: *mut u8,
@@ -105,7 +105,7 @@ pub unsafe extern "C" fn alatirok_compress_max(
 ///   -1: Destination buffer too small
 ///   -2: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn alatirok_compress_max_parallel(
+pub unsafe extern "C" fn glyd_compress_max_parallel(
     src: *const u8,
     src_len: usize,
     dst: *mut u8,
@@ -134,7 +134,7 @@ pub unsafe extern "C" fn alatirok_compress_max_parallel(
 ///   -2: Corrupted bitstream or checksum mismatch
 ///   -3: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn alatirok_decompress(
+pub unsafe extern "C" fn glyd_decompress(
     src: *const u8,
     src_len: usize,
     dst: *mut u8,
@@ -161,7 +161,7 @@ pub unsafe extern "C" fn alatirok_decompress(
 ///   -2: Corrupted bitstream or checksum mismatch
 ///   -3: Null pointer passed
 #[no_mangle]
-pub unsafe extern "C" fn alatirok_decompress_parallel(
+pub unsafe extern "C" fn glyd_decompress_parallel(
     src: *const u8,
     src_len: usize,
     dst: *mut u8,

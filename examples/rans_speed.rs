@@ -10,7 +10,7 @@
 // 32-bit rANS, 8-bit renormalization, 12-bit frequencies (ryg_rans style,
 // Fabian Giesen, public domain technique). Each of N interleaved coders owns
 // its own byte buffer, encoded in reverse and read backward at decode.
-use simd_stream_codec::format::*;
+use glyd::format::*;
 use std::time::Instant;
 
 #[cfg(target_os = "linux")]
@@ -106,7 +106,7 @@ fn main() {
         let p = dir.join(f);
         if !p.exists() { continue; }
         let d = std::fs::read(&p).unwrap();
-        let c = simd_stream_codec::compress(&d);
+        let c = glyd::compress(&d);
         let mut cur = 0usize;
         while cur + HEADER_SIZE <= c.len() {
             let h = unsafe { std::ptr::read_unaligned(c.as_ptr().add(cur) as *const BlockHeader) };

@@ -1,4 +1,4 @@
-use simd_stream_codec::{compress, compress_parallel, decompress, decompress_parallel};
+use glyd::{compress, compress_parallel, decompress, decompress_parallel};
 use std::path::Path;
 
 #[test]

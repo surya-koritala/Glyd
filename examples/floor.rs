@@ -18,7 +18,7 @@
 //              per token, i.e. the serial pointer chain
 //   memcpy     the output, copied once
 use std::time::Instant;
-use simd_stream_codec::format::*;
+use glyd::format::*;
 
 struct Block {
     tokens: Vec<u8>,
@@ -688,7 +688,7 @@ fn main() {
         let p = dir.join(f);
         if !p.exists() { continue; }
         let d = std::fs::read(&p).unwrap();
-        let c = simd_stream_codec::compress(&d);
+        let c = glyd::compress(&d);
         let file_base = total_out;
         let mut cur = 0usize;
         while cur + HEADER_SIZE <= c.len() {
@@ -762,7 +762,7 @@ fn main() {
     };
     let src = dst.clone();
     let t_memcpy = time(&mut || { dst.copy_from_slice(&src); std::hint::black_box(&dst); });
-    let t_lib = time(&mut || { for (c, base) in &raw { let _ = simd_stream_codec::decompress_into_raw(c, &mut dst[*base..]); } });
+    let t_lib = time(&mut || { for (c, base) in &raw { let _ = glyd::decompress_into_raw(c, &mut dst[*base..]); } });
     let base = dst.as_mut_ptr();
     let t_copy = time(&mut || { for b in &blocks { unsafe { copy_real(b, base.add(b.dst_pos)); } } });
     let t_v1 = time(&mut || { for b in &blocks { unsafe { copy_var::<1>(b, base.add(b.dst_pos)); } } });
@@ -788,7 +788,7 @@ fn main() {
     // correctness of the variants against the real decoder on every block
     {
         let mut refbuf = vec![0u8; total_out + 4096];
-        for (c, base) in &raw { simd_stream_codec::decompress_into_raw(c, &mut refbuf[*base..]).unwrap(); }
+        for (c, base) in &raw { glyd::decompress_into_raw(c, &mut refbuf[*base..]).unwrap(); }
         dst.copy_from_slice(&refbuf);
         for v in 1..6u8 {
             for b in &blocks {

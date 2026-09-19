@@ -5,7 +5,7 @@ fn main() {
     let fast = std::env::args().any(|a| a == "--fast");
     let t = std::time::Instant::now();
     while t.elapsed().as_secs_f64() < 4.0 {
-        for d in &data { out.clear(); if fast { simd_stream_codec::compress_into_fast(d, &mut out) } else { simd_stream_codec::compress_into(d, &mut out) } }
+        for d in &data { out.clear(); if fast { glyd::compress_into_fast(d, &mut out) } else { glyd::compress_into(d, &mut out) } }
     }
     std::hint::black_box(out.len());
 }

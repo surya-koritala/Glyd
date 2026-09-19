@@ -1,4 +1,4 @@
-use simd_stream_codec::{compress, decompress};
+use glyd::{compress, decompress};
 
 #[test]
 fn test_roundtrip_empty() {
@@ -53,8 +53,8 @@ fn test_roundtrip_multiblock() {
     assert_eq!(decompressed, input);
 
     // Parallel multi-core test
-    let comp_par = simd_stream_codec::compress_parallel(&input);
-    let decomp_par = simd_stream_codec::decompress_parallel(&comp_par).unwrap();
+    let comp_par = glyd::compress_parallel(&input);
+    let decomp_par = glyd::decompress_parallel(&comp_par).unwrap();
     assert_eq!(decomp_par, input);
 }
 
@@ -88,8 +88,8 @@ fn test_roundtrip_100mb_scale() {
     assert_eq!(decompressed, input);
 
     // 2. Parallel Independent Blocks
-    let comp_par = simd_stream_codec::compress_parallel(&input);
-    let decomp_par = simd_stream_codec::decompress_parallel(&comp_par).unwrap();
+    let comp_par = glyd::compress_parallel(&input);
+    let decomp_par = glyd::decompress_parallel(&comp_par).unwrap();
     assert_eq!(decomp_par.len(), input.len());
     assert_eq!(decomp_par, input);
 }
@@ -116,8 +116,8 @@ fn test_roundtrip_all_silesia_corpus() {
         assert_eq!(decomp, data, "Sequential roundtrip mismatch on {}", file_name);
 
         // Parallel test
-        let comp_p = simd_stream_codec::compress_parallel(&data);
-        let decomp_p = simd_stream_codec::decompress_parallel(&comp_p).unwrap();
+        let comp_p = glyd::compress_parallel(&data);
+        let decomp_p = glyd::decompress_parallel(&comp_p).unwrap();
         assert_eq!(decomp_p, data, "Parallel roundtrip mismatch on {}", file_name);
     }
 }
@@ -136,8 +136,8 @@ fn test_roundtrip_extended_literals_10kb() {
     let decompressed = decompress(&compressed).expect("Decompression of 10KB random failed");
     assert_eq!(decompressed, input);
 
-    let comp_p = simd_stream_codec::compress_parallel(&input);
-    let decomp_p = simd_stream_codec::decompress_parallel(&comp_p).expect("Parallel decompression failed");
+    let comp_p = glyd::compress_parallel(&input);
+    let decomp_p = glyd::decompress_parallel(&comp_p).expect("Parallel decompression failed");
     assert_eq!(decomp_p, input);
 }
 
@@ -155,8 +155,8 @@ fn test_roundtrip_extended_literals_max_block() {
     let decompressed = decompress(&compressed).expect("Decompression of max-block random failed");
     assert_eq!(decompressed, input);
 
-    let comp_p = simd_stream_codec::compress_parallel(&input);
-    let decomp_p = simd_stream_codec::decompress_parallel(&comp_p).expect("Parallel decompression failed");
+    let comp_p = glyd::compress_parallel(&input);
+    let decomp_p = glyd::decompress_parallel(&comp_p).expect("Parallel decompression failed");
     assert_eq!(decomp_p, input);
 }
 
@@ -183,8 +183,8 @@ fn test_roundtrip_mixed_literal_runs() {
     let decompressed = decompress(&compressed).expect("Decompression of mixed runs failed");
     assert_eq!(decompressed, input);
 
-    let comp_p = simd_stream_codec::compress_parallel(&input);
-    let decomp_p = simd_stream_codec::decompress_parallel(&comp_p).expect("Parallel decompression failed");
+    let comp_p = glyd::compress_parallel(&input);
+    let decomp_p = glyd::decompress_parallel(&comp_p).expect("Parallel decompression failed");
     assert_eq!(decomp_p, input);
 }
 
@@ -198,17 +198,17 @@ fn test_parallel_pipeline_256k_chunking_and_chaining() {
     }
 
     // 1. Parallel compress -> Sequential decompress
-    let comp_parallel = simd_stream_codec::compress_parallel(&input);
-    let decomp_seq = simd_stream_codec::decompress(&comp_parallel).expect("Sequential decompress of parallel stream failed");
+    let comp_parallel = glyd::compress_parallel(&input);
+    let decomp_seq = glyd::decompress(&comp_parallel).expect("Sequential decompress of parallel stream failed");
     assert_eq!(decomp_seq, input);
 
     // 2. Parallel compress -> Parallel decompress
-    let decomp_par = simd_stream_codec::decompress_parallel(&comp_parallel).expect("Parallel decompress of parallel stream failed");
+    let decomp_par = glyd::decompress_parallel(&comp_parallel).expect("Parallel decompress of parallel stream failed");
     assert_eq!(decomp_par, input);
 
     // 3. Sequential compress (cross-block chained across 1MB) -> Parallel decompress (must safely fall back to sequential)
-    let comp_seq = simd_stream_codec::compress(&input);
-    let decomp_par_fallback = simd_stream_codec::decompress_parallel(&comp_seq).expect("Parallel decompress of sequential chained stream failed");
+    let comp_seq = glyd::compress(&input);
+    let decomp_par_fallback = glyd::decompress_parallel(&comp_seq).expect("Parallel decompress of sequential chained stream failed");
     assert_eq!(decomp_par_fallback, input);
 }
 
@@ -222,17 +222,17 @@ fn test_parallel_pipeline_256k_chunking_and_chaining() {
 /// it is not stored raw, then an incompressible run longer than the maximum.
 #[test]
 fn test_roundtrip_literal_run_at_max_len() {
-    use simd_stream_codec::format::MAX_LIT_LEN;
+    use glyd::format::MAX_LIT_LEN;
     let mut input = vec![b'A'; 100 * 1024];
     let mut st = 0x9E37_79B9_7F4A_7C15u64;
     for _ in 0..(MAX_LIT_LEN + 5000) {
         st = st.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         input.push((st >> 40) as u8);
     }
-    for f in [simd_stream_codec::compress, simd_stream_codec::compress_parallel] {
+    for f in [glyd::compress, glyd::compress_parallel] {
         let c = f(&input);
-        assert_eq!(simd_stream_codec::decompress(&c).unwrap(), input);
-        assert_eq!(simd_stream_codec::decompress_parallel(&c).unwrap(), input);
+        assert_eq!(glyd::decompress(&c).unwrap(), input);
+        assert_eq!(glyd::decompress_parallel(&c).unwrap(), input);
     }
 }
 
@@ -257,16 +257,16 @@ fn test_roundtrip_fast_and_turbo_levels() {
     inputs.push(text);
     for input in &inputs {
         let mut c = Vec::new();
-        simd_stream_codec::compress_into_fast(input, &mut c);
+        glyd::compress_into_fast(input, &mut c);
         assert_eq!(&decompress(&c).unwrap(), input, "fast sequential, len {}", input.len());
         let mut p = Vec::new();
-        simd_stream_codec::compress_parallel_into_fast(input, &mut p);
-        assert_eq!(&simd_stream_codec::decompress_parallel(&p).unwrap(), input, "fast parallel, len {}", input.len());
+        glyd::compress_parallel_into_fast(input, &mut p);
+        assert_eq!(&glyd::decompress_parallel(&p).unwrap(), input, "fast parallel, len {}", input.len());
         let mut c = Vec::new();
-        simd_stream_codec::compress_into_turbo(input, &mut c);
+        glyd::compress_into_turbo(input, &mut c);
         assert_eq!(&decompress(&c).unwrap(), input, "turbo sequential, len {}", input.len());
         let mut p = Vec::new();
-        simd_stream_codec::compress_parallel_into_turbo(input, &mut p);
-        assert_eq!(&simd_stream_codec::decompress_parallel(&p).unwrap(), input, "turbo parallel, len {}", input.len());
+        glyd::compress_parallel_into_turbo(input, &mut p);
+        assert_eq!(&glyd::decompress_parallel(&p).unwrap(), input, "turbo parallel, len {}", input.len());
     }
 }

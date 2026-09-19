@@ -44,5 +44,5 @@ jobs:
 
       - name: Build Binaries
         run: |
-          cargo build --release --bin alatirok
+          cargo build --release --bin glyd
           cargo build --release --example bench

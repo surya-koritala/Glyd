@@ -148,10 +148,10 @@ fn benchmark_file(
 
     // Prepare compressed buffers for decompression benchmark
     let mut simd_comp = Vec::with_capacity(len);
-    simd_stream_codec::compress_into(data, &mut simd_comp);
+    glyd::compress_into(data, &mut simd_comp);
 
     let mut simd_par_comp = Vec::with_capacity(len);
-    simd_stream_codec::compress_parallel_into(data, &mut simd_par_comp);
+    glyd::compress_parallel_into(data, &mut simd_par_comp);
 
     let lz4_bound = lz4::block::compress_bound(len).unwrap_or(len * 2 + 64);
     let mut lz4_comp = vec![0u8; lz4_bound];
@@ -173,21 +173,21 @@ fn benchmark_file(
     let mut zstd_dest = vec![0u8; len + 128];
 
     // --- Compression Timings ---
-    // 1. Alatirok 1C
+    // 1. Glyd 1C
     pin_to_core(4);
     let mut c_buf = Vec::with_capacity(len);
     let simd_comp_1c_time = measure_median_time(config, || {
         c_buf.clear();
-        simd_stream_codec::compress_into(data, &mut c_buf);
+        glyd::compress_into(data, &mut c_buf);
     });
     let simd_comp_1c_gb = throughput_gb(len, simd_comp_1c_time);
 
-    // 2. Alatirok 16C (unpinned Rayon)
+    // 2. Glyd 16C (unpinned Rayon)
     unpin_cores();
     let mut par_c_buf = Vec::with_capacity(len);
     let simd_comp_16c_time = measure_median_time(config, || {
         par_c_buf.clear();
-        simd_stream_codec::compress_parallel_into(data, &mut par_c_buf);
+        glyd::compress_parallel_into(data, &mut par_c_buf);
     });
     let simd_comp_16c_gb = throughput_gb(len, simd_comp_16c_time);
 
@@ -223,31 +223,31 @@ fn benchmark_file(
     let zstd_comp_1c_gb = throughput_gb(len, zstd_comp_1c_time);
 
     // --- Decompression Timings ---
-    // 1. Alatirok 1C Raw
+    // 1. Glyd 1C Raw
     pin_to_core(4);
     let simd_decomp_1c_raw_time = measure_median_time(config, || {
-        let _ = simd_stream_codec::decompress_into_raw(&simd_comp, &mut simd_dest);
+        let _ = glyd::decompress_into_raw(&simd_comp, &mut simd_dest);
     });
     let simd_decomp_1c_raw_gb = throughput_gb(len, simd_decomp_1c_raw_time);
 
-    // 2. Alatirok 1C Verified
+    // 2. Glyd 1C Verified
     pin_to_core(4);
     let simd_decomp_1c_ver_time = measure_median_time(config, || {
-        let _ = simd_stream_codec::decompress_into(&simd_comp, &mut simd_dest);
+        let _ = glyd::decompress_into(&simd_comp, &mut simd_dest);
     });
     let simd_decomp_1c_ver_gb = throughput_gb(len, simd_decomp_1c_ver_time);
 
-    // 3. Alatirok 16C Raw
+    // 3. Glyd 16C Raw
     unpin_cores();
     let simd_decomp_16c_raw_time = measure_median_time(config, || {
-        let _ = simd_stream_codec::decompress_parallel_into_raw(&simd_par_comp, &mut simd_dest);
+        let _ = glyd::decompress_parallel_into_raw(&simd_par_comp, &mut simd_dest);
     });
     let simd_decomp_16c_raw_gb = throughput_gb(len, simd_decomp_16c_raw_time);
 
-    // 4. Alatirok 16C Verified
+    // 4. Glyd 16C Verified
     unpin_cores();
     let simd_decomp_16c_ver_time = measure_median_time(config, || {
-        let _ = simd_stream_codec::decompress_parallel_into(&simd_par_comp, &mut simd_dest);
+        let _ = glyd::decompress_parallel_into(&simd_par_comp, &mut simd_dest);
     });
     let simd_decomp_16c_ver_gb = throughput_gb(len, simd_decomp_16c_ver_time);
 
@@ -507,7 +507,7 @@ fn print_summary_tables(records: &[BenchRecord]) {
     println!("                                   COMPRESSION RATIO COMPARISON");
     println!("=========================================================================================================");
     println!("{:<12} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>10} | {:>12}",
-             "File", "Orig Size", "Alatirok", "C liblz4", "lz4_flex", "Snappy", "Zstd-1", "vs liblz4");
+             "File", "Orig Size", "Glyd", "C liblz4", "lz4_flex", "Snappy", "Zstd-1", "vs liblz4");
     println!("-------------+------------+------------+------------+------------+------------+------------+-------------");
 
     let silesia_records: Vec<&BenchRecord> = records.iter().filter(|r| r.category == "silesia").collect();
@@ -553,7 +553,7 @@ fn print_summary_tables(records: &[BenchRecord]) {
     println!("                                     COMPRESSION THROUGHPUT (GB/s) - SINGLE VS MULTI-CORE");
     println!("=================================================================================================================================");
     println!("{:<10} | {:>14} | {:>14} | {:>12} | {:>11} | {:>11} | {:>11}",
-             "File", "Alatirok 1C", "Alatirok 16C", "C liblz4 1C", "lz4_flex 1C", "Snap (1C)", "Zstd-1 (1C)");
+             "File", "Glyd 1C", "Glyd 16C", "C liblz4 1C", "lz4_flex 1C", "Snap (1C)", "Zstd-1 (1C)");
     println!("-----------+----------------+----------------+--------------+-------------+-------------+------------");
     for r in &silesia_records {
         println!("{:<10} | {:>11.2} GB/s | {:>11.2} GB/s | {:>9.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s | {:>8.2} GB/s",

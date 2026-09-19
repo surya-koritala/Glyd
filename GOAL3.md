@@ -30,7 +30,7 @@ The wall is reachable only on highly redundant data (few tokens).
 | memcpy | 22.9 | 100 | - | - |
 | liblz4 | 5.8 | 25 | 2.101 | 0.85 |
 | lz4_flex | 3.7 | 16 | 2.097 | 0.67 |
-| Alatirok (v5) | 3.1 | 14 | 2.388 | 0.45 |
+| Glyd (v5) | 3.1 | 14 | 2.388 | 0.45 |
 | LZAV | 3.1 | 14 | 2.450 | 0.49 |
 | zstd -3 / -1 / 1 / 3 | 2.3 / 2.2 / 1.7 / 1.6 | 7-10 | 2.24-3.20 | 0.3-0.6 |
 | snappy | 2.1 | 9 | 2.076 | 0.78 |
@@ -39,7 +39,7 @@ liblz4 is the open-source speed champion; every measured codec decodes slower.
 The only thing above it is RAD Oodle (Selkie/Mermaid), commercial and closed,
 not measurable here. It is the unmeasured bar, believed ~1.5-2x LZ4 on decode.
 
-Alatirok's asset: its parse emits ~14.4M tokens against LZ4's ~20M (30% fewer)
+Glyd's asset: its parse emits ~14.4M tokens against LZ4's ~20M (30% fewer)
 at a higher ratio. Its liability: ~4.6 ns per token against LZ4's ~1.8.
 
 ## 2. Tiers
@@ -86,7 +86,7 @@ or macOS.
 |---|---|---|---|
 | fast | 4-byte hash, 1-way, 64 KB window, no lazy, skip | comp >= 0.85 GB/s, ratio >= 2.10 | LZ4-class compression speed; also handles x-ray-like data cheaply. **Not built; next.** |
 | default | LZAV-port finder, minimum match 7 | ratio 2.19, decode > liblz4 | the S1 point (current default) |
-| dense | LZAV-port finder, minimum match 5 (`ALATIROK_DENSE=1`) | ratio 2.39 | the ratio point; decode ~55% of liblz4 |
+| dense | LZAV-port finder, minimum match 5 (`GLYD_DENSE=1`) | ratio 2.39 | the ratio point; decode ~55% of liblz4 |
 
 ## 3. Floors carried from GOAL2, and one consciously retired
 
@@ -102,5 +102,5 @@ raw. This is a user decision, recorded here, not a silent trade.
 
 ## 4. Measurement
 
-GOAL2 section 3 procedure. Every report of an Alatirok decode number carries
+GOAL2 section 3 procedure. Every report of an Glyd decode number carries
 liblz4's number from the same run so the gate cannot be met by drift.

@@ -6,13 +6,13 @@ use crate::{compress_block_into, decompress_into};
 ///
 /// Accumulates uncompressed data into 64 KB blocks and writes them out
 /// as fast SIMD-stream blocks.
-pub struct AlatirokWriter<W: Write> {
+pub struct GlydWriter<W: Write> {
     writer: Option<W>,
     buffer: Vec<u8>,
     scratch_compressed: Vec<u8>,
 }
 
-impl<W: Write> AlatirokWriter<W> {
+impl<W: Write> GlydWriter<W> {
     pub fn new(writer: W) -> Self {
         Self {
             writer: Some(writer),
@@ -47,7 +47,7 @@ impl<W: Write> AlatirokWriter<W> {
     }
 }
 
-impl<W: Write> Write for AlatirokWriter<W> {
+impl<W: Write> Write for GlydWriter<W> {
     fn write(&mut self, mut buf: &[u8]) -> io::Result<usize> {
         let total_in = buf.len();
 
@@ -80,7 +80,7 @@ impl<W: Write> Write for AlatirokWriter<W> {
     }
 }
 
-impl<W: Write> Drop for AlatirokWriter<W> {
+impl<W: Write> Drop for GlydWriter<W> {
     fn drop(&mut self) {
         let _ = self.flush_current_block();
         if let Some(ref mut w) = self.writer {
@@ -93,7 +93,7 @@ impl<W: Write> Drop for AlatirokWriter<W> {
 ///
 /// Decodes blocks on the fly into an internal 64 KB buffer, enabling
 /// streaming reads without loading the entire archive into memory.
-pub struct AlatirokReader<R: Read> {
+pub struct GlydReader<R: Read> {
     reader: R,
     block_buffer: Vec<u8>,
     decomp_buffer: Vec<u8>,
@@ -102,7 +102,7 @@ pub struct AlatirokReader<R: Read> {
     eof_reached: bool,
 }
 
-impl<R: Read> AlatirokReader<R> {
+impl<R: Read> GlydReader<R> {
     pub fn new(reader: R) -> Self {
         Self {
             reader,
@@ -127,14 +127,14 @@ impl<R: Read> AlatirokReader<R> {
 
         let header: BlockHeader = unsafe { std::ptr::read_unaligned(header_bytes.as_ptr() as *const BlockHeader) };
         if header.magic != MAGIC {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid Alatirok magic"));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid Glyd magic"));
         }
         if header.version != CURRENT_VERSION {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Unsupported Alatirok bitstream version"));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Unsupported Glyd bitstream version"));
         }
 
         if !header.is_plausible() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Implausible Alatirok block header"));
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Implausible Glyd block header"));
         }
         let payload_len = header.payload_len();
 
@@ -154,7 +154,7 @@ impl<R: Read> AlatirokReader<R> {
     }
 }
 
-impl<R: Read> Read for AlatirokReader<R> {
+impl<R: Read> Read for GlydReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if buf.is_empty() {
             return Ok(0);

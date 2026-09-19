@@ -6,8 +6,8 @@
 //
 // Then it times decoding every coded block back, pinned to one core, so the
 // decode cost against the T1.4 floor is a number and not a guess.
-use simd_stream_codec::format::*;
-use simd_stream_codec::huffman::*;
+use glyd::format::*;
+use glyd::huffman::*;
 use std::io::Write;
 use std::time::Instant;
 
@@ -101,7 +101,7 @@ fn main() {
         let p = dir.join(f);
         if !p.exists() { continue; }
         let d = std::fs::read(&p).unwrap();
-        let c = simd_stream_codec::compress(&d);
+        let c = glyd::compress(&d);
         orig += d.len() as u64; comp_total += c.len() as u64;
         let mut cur = 0usize;
         while cur + HEADER_SIZE <= c.len() {

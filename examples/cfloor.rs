@@ -336,31 +336,31 @@ fn main() {
     };
     let mut out = vec![0u8; total + 4096];
     let t_memcpy = time(&mut || { let mut o = 0; for d in &data { out[o..o + d.len()].copy_from_slice(d); o += d.len(); } });
-    let t_ck = time(&mut || { let mut s = 0u32; for d in &data { for c in d.chunks(256 * 1024) { s ^= simd_stream_codec::compute_checksum(c); } } std::hint::black_box(s); });
+    let t_ck = time(&mut || { let mut s = 0u32; for d in &data { for c in d.chunks(256 * 1024) { s ^= glyd::compute_checksum(c); } } std::hint::black_box(s); });
     let mut table = vec![0u32; 1 << 14];
     let t_ins = time(&mut || { for d in &data { table.fill(0); unsafe { hash_ins(d, &mut table); } } });
     let t_probe = time(&mut || { for d in &data { table.fill(0); unsafe { hash_probe(d, &mut table); } } });
     let mut gt = (0, 0);
     let t_greedy = time(&mut || { gt = (0, 0); for d in &data { table.fill(0); let r = unsafe { greedy(d, &mut table) }; gt.0 += r.0; gt.1 += r.1; } });
     // real finder, no framing
-    let mut tb = simd_stream_codec::finder::new_table();
+    let mut tb = glyd::finder::new_table();
     let (mut tk, mut of, mut ex, mut li) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut fout = 0usize;
     let t_finder = time(&mut || {
         fout = 0;
         for d in &data {
-            simd_stream_codec::finder::init_table(&mut tb, d);
+            glyd::finder::init_table(&mut tb, d);
             let mut s = 0;
             while s < d.len() {
                 let l = (d.len() - s).min(256 * 1024);
                 tk.clear(); of.clear(); ex.clear(); li.clear();
-                simd_stream_codec::fallback::compress_chained_fallback::<simd_stream_codec::finder::Lzav>(d, s, l, &mut tb, &mut tk, &mut of, &mut ex, &mut li);
+                glyd::fallback::compress_chained_fallback::<glyd::finder::Lzav>(d, s, l, &mut tb, &mut tk, &mut of, &mut ex, &mut li);
                 fout += tk.len() + of.len() + ex.len() + li.len();
                 s += l;
             }
         }
     });
-    let mut ft: Box<simd_stream_codec::finder::FastTable> = vec![0u32; simd_stream_codec::finder::FAST_HASH_SIZE].into_boxed_slice().try_into().unwrap();
+    let mut ft: Box<glyd::finder::FastTable> = vec![0u32; glyd::finder::FAST_HASH_SIZE].into_boxed_slice().try_into().unwrap();
     let mut fout2 = 0usize;
     let t_fast = time(&mut || {
         fout2 = 0;
@@ -370,8 +370,8 @@ fn main() {
             while s < d.len() {
                 let l = (d.len() - s).min(256 * 1024);
                 tk.clear(); of.clear(); ex.clear(); li.clear();
-                let mut st = simd_stream_codec::finder::Streams::new(5, &mut tk, &mut of, &mut ex, &mut li);
-                unsafe { simd_stream_codec::finder::find_matches_fast::<simd_stream_codec::finder::Dense>(d, s, l, &mut ft, &mut st); }
+                let mut st = glyd::finder::Streams::new(5, &mut tk, &mut of, &mut ex, &mut li);
+                unsafe { glyd::finder::find_matches_fast::<glyd::finder::Dense>(d, s, l, &mut ft, &mut st); }
                 fout2 += tk.len() + of.len() + ex.len() + li.len();
                 s += l;
             }
@@ -439,7 +439,7 @@ fn main() {
             fo = 0;
             for (d, r) in data.iter().zip(&recs) {
                 tk.clear(); of.clear(); ex.clear(); li.clear();
-                let mut st = simd_stream_codec::finder::Streams::new(5, &mut tk, &mut of, &mut ex, &mut li);
+                let mut st = glyd::finder::Streams::new(5, &mut tk, &mut of, &mut ex, &mut li);
                 let mut c = st.begin_block(d.len());
                 let src = d.as_ptr(); let end = unsafe { src.add(d.len()) };
                 for e in r { unsafe { c.emit(src.add(e[0] as usize), e[1] as usize, e[2] as usize, e[3] as usize, end); } }
@@ -451,11 +451,11 @@ fn main() {
     }
     let mut cbuf = Vec::with_capacity(total);
     let mut clen = 0;
-    let t_lib = time(&mut || { clen = 0; for d in &data { cbuf.clear(); simd_stream_codec::compress_into(d, &mut cbuf); clen += cbuf.len(); } });
+    let t_lib = time(&mut || { clen = 0; for d in &data { cbuf.clear(); glyd::compress_into(d, &mut cbuf); clen += cbuf.len(); } });
     let mut clen2 = 0;
-    let t_libfast = time(&mut || { clen2 = 0; for d in &data { cbuf.clear(); simd_stream_codec::compress_into_fast(d, &mut cbuf); clen2 += cbuf.len(); } });
+    let t_libfast = time(&mut || { clen2 = 0; for d in &data { cbuf.clear(); glyd::compress_into_fast(d, &mut cbuf); clen2 += cbuf.len(); } });
     // round-trip check of the fast level
-    if std::env::var("NOCHECK").is_err() { for d in &data { cbuf.clear(); simd_stream_codec::compress_into_fast(d, &mut cbuf); assert_eq!(&simd_stream_codec::decompress(&cbuf).unwrap(), d, "fast roundtrip"); } }
+    if std::env::var("NOCHECK").is_err() { for d in &data { cbuf.clear(); glyd::compress_into_fast(d, &mut cbuf); assert_eq!(&glyd::decompress(&cbuf).unwrap(), d, "fast roundtrip"); } }
     let mut lz = vec![0u8; lz4::block::compress_bound(64 << 20).unwrap()];
     let mut lzlen = 0;
     let t_lz4 = time(&mut || { lzlen = 0; for d in &data { lzlen += lz4::block::compress_to_buffer(d, None, false, &mut lz).unwrap(); } });

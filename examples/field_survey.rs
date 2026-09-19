@@ -65,8 +65,8 @@ fn main() {
                  "reymont","samba","sao","webster","xml","x-ray"];
     let dir = Path::new("corpus");
 
-    let names = ["Alatirok", "liblz4", "lz4_flex", "LZAV", "LZAV-hi",
-                 "zstd--5", "zstd--3", "zstd--1", "zstd-1", "zstd-3", "snappy", "Alatirok-fast", "Alatirok-turbo", "Alatirok-max"];
+    let names = ["Glyd", "liblz4", "lz4_flex", "LZAV", "LZAV-hi",
+                 "zstd--5", "zstd--3", "zstd--1", "zstd-1", "zstd-3", "snappy", "Glyd-fast", "Glyd-turbo", "Glyd-max"];
     let mut tot: Vec<Totals> = names.iter().map(|n| Totals { name: n.to_string(), ..Default::default() }).collect();
 
     for f in &files {
@@ -78,34 +78,34 @@ fn main() {
 
         let mut dst = vec![0u8; len + 1024];
 
-        // ---- Alatirok ----
+        // ---- Glyd ----
         pin_to_core(4);
         let mut c0 = Vec::with_capacity(len);
-        simd_stream_codec::compress_into(&data, &mut c0);
-        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); simd_stream_codec::compress_into(&data, &mut b); });
-        let d = timed(runs, min_secs, 3, || { let _ = simd_stream_codec::decompress_into_raw(&c0, &mut dst); });
-        acc(&mut tot[0], len, c0.len(), t, d); log_row(f, "Alatirok", len, c0.len(), t, d);
+        glyd::compress_into(&data, &mut c0);
+        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); glyd::compress_into(&data, &mut b); });
+        let d = timed(runs, min_secs, 3, || { let _ = glyd::decompress_into_raw(&c0, &mut dst); });
+        acc(&mut tot[0], len, c0.len(), t, d); log_row(f, "Glyd", len, c0.len(), t, d);
 
-        // ---- Alatirok fast level ----
+        // ---- Glyd fast level ----
         let mut c1 = Vec::with_capacity(len);
-        simd_stream_codec::compress_into_fast(&data, &mut c1);
-        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); simd_stream_codec::compress_into_fast(&data, &mut b); });
-        let d = timed(runs, min_secs, 3, || { let _ = simd_stream_codec::decompress_into_raw(&c1, &mut dst); });
-        acc(&mut tot[11], len, c1.len(), t, d); log_row(f, "Alatirok-fast", len, c1.len(), t, d);
+        glyd::compress_into_fast(&data, &mut c1);
+        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); glyd::compress_into_fast(&data, &mut b); });
+        let d = timed(runs, min_secs, 3, || { let _ = glyd::decompress_into_raw(&c1, &mut dst); });
+        acc(&mut tot[11], len, c1.len(), t, d); log_row(f, "Glyd-fast", len, c1.len(), t, d);
 
-        // ---- Alatirok turbo level ----
+        // ---- Glyd turbo level ----
         let mut c2 = Vec::with_capacity(len);
-        simd_stream_codec::compress_into_turbo(&data, &mut c2);
-        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); simd_stream_codec::compress_into_turbo(&data, &mut b); });
-        let d = timed(runs, min_secs, 3, || { let _ = simd_stream_codec::decompress_into_raw(&c2, &mut dst); });
-        acc(&mut tot[12], len, c2.len(), t, d); log_row(f, "Alatirok-turbo", len, c2.len(), t, d);
+        glyd::compress_into_turbo(&data, &mut c2);
+        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); glyd::compress_into_turbo(&data, &mut b); });
+        let d = timed(runs, min_secs, 3, || { let _ = glyd::decompress_into_raw(&c2, &mut dst); });
+        acc(&mut tot[12], len, c2.len(), t, d); log_row(f, "Glyd-turbo", len, c2.len(), t, d);
 
-        // ---- Alatirok max level (format v7, entropy coded) ----
+        // ---- Glyd max level (format v7, entropy coded) ----
         let mut c3 = Vec::with_capacity(len);
-        simd_stream_codec::compress_into_max(&data, &mut c3);
-        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); simd_stream_codec::compress_into_max(&data, &mut b); });
-        let d = timed(runs, min_secs, 3, || { let _ = simd_stream_codec::decompress_into_raw(&c3, &mut dst); });
-        acc(&mut tot[13], len, c3.len(), t, d); log_row(f, "Alatirok-max", len, c3.len(), t, d);
+        glyd::compress_into_max(&data, &mut c3);
+        let t = timed(runs, min_secs, 3, || { let mut b = Vec::with_capacity(len); glyd::compress_into_max(&data, &mut b); });
+        let d = timed(runs, min_secs, 3, || { let _ = glyd::decompress_into_raw(&c3, &mut dst); });
+        acc(&mut tot[13], len, c3.len(), t, d); log_row(f, "Glyd-max", len, c3.len(), t, d);
 
         // ---- liblz4 (reference C) ----
         let bound = lz4::block::compress_bound(len).unwrap_or(len * 2 + 64);

@@ -13,7 +13,7 @@ mod x86 {
 //             the escape branch and extras reads vanish; output is wrong
 #[cfg(target_arch = "x86_64")]
 use std::arch::x86_64::*;
-use simd_stream_codec::format::*;
+use glyd::format::*;
 use std::time::Instant;
 
 #[cfg(target_os = "linux")]
@@ -66,10 +66,10 @@ unsafe fn run<const LIT: bool, const OFF: bool, const MATCH: bool, const ESC: bo
         if ESC && tv & TOKEN_ESCAPE_MASK != 0 {
             let mut e = extra_idx;
             if tv & TOKEN_LIT_ESCAPE != 0 {
-                lit_len = simd_stream_codec::fallback::read_escape(extras, extras_len, &mut e, ESCAPE_BASE_LIT).unwrap();
+                lit_len = glyd::fallback::read_escape(extras, extras_len, &mut e, ESCAPE_BASE_LIT).unwrap();
             }
             if tv & TOKEN_MATCH_ESCAPE != 0 {
-                match_len = simd_stream_codec::fallback::read_escape(extras, extras_len, &mut e, ESCAPE_BASE_MATCH).unwrap();
+                match_len = glyd::fallback::read_escape(extras, extras_len, &mut e, ESCAPE_BASE_MATCH).unwrap();
             }
             let remaining = block_end.offset_from(dst_ptr) as usize;
             if lit_len + match_len + 64 > remaining || lit_ptr.add(lit_len + 64) > lit_limit { break; }
@@ -163,7 +163,7 @@ fn main() {
         let p = dir.join(f);
         if !p.exists() { continue; }
         let d = std::fs::read(&p).unwrap();
-        let c = simd_stream_codec::compress(&d);
+        let c = glyd::compress(&d);
         let file_base = total_out;
         let mut cur = 0usize;
         while cur + HEADER_SIZE <= c.len() {
@@ -217,7 +217,7 @@ fn main() {
             for b in &blocks {
                 let bs = unsafe { base.add(b.file_base) };
                 let out = &mut dst[b.dst_pos..];
-                let _ = unsafe { simd_stream_codec::x86_decompress::decompress_avx2(
+                let _ = unsafe { glyd::x86_decompress::decompress_avx2(
                     b.tokens.as_ptr(), b.tokens.len(), b.offsets.as_ptr(), b.offsets.len(),
                     b.extras.as_ptr(), b.extras.len(), &b.literals, out, bs, b.out_len,
                     &TOKEN_TABLE, ESCAPE_BASE_MATCH) }.expect("lib decode");

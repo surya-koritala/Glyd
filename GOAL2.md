@@ -20,7 +20,7 @@ Single core, liblz4 = reference C LZ4 as baseline.
 | LZAV | 2.4500 | 1.166x | 0.489 | 0.578x | 3.130 | 0.612x |
 | zstd--1 | 2.4380 | 1.160x | 0.535 | 0.633x | 2.174 | 0.425x |
 | zstd--3 | 2.2399 | 1.066x | 0.635 | 0.751x | 2.301 | 0.450x |
-| **Alatirok** | **2.1950** | 1.045x | **0.387** | 0.458x | **3.529** | 0.690x |
+| **Glyd** | **2.1950** | 1.045x | **0.387** | 0.458x | **3.529** | 0.690x |
 | liblz4 | 2.1009 | 1.000x | 0.846 | 1.000x | 5.116 | 1.000x |
 | lz4_flex | 2.0971 | 0.998x | 0.670 | 0.793x | 3.698 | 0.723x |
 | snappy | 2.0761 | 0.988x | 0.778 | 0.920x | 2.126 | 0.415x |
@@ -32,9 +32,9 @@ beats it on ratio pays on both speeds. This is why GOAL.md's G2+G3+G4 was
 unreachable: it demanded a point no artifact occupies.
 
 **The class** is the codecs that beat liblz4 on ratio: zstd-3, zstd-1, LZAV-hi,
-LZAV, zstd--1, zstd--3, Alatirok.
+LZAV, zstd--1, zstd--3, Glyd.
 
-**Where we already stand.** Alatirok holds the highest decompression speed in
+**Where we already stand.** Glyd holds the highest decompression speed in
 that class, 3.529 GB/s against LZAV's 3.130 and zstd-1's 1.660. No class member
 dominates us, because each one that beats our ratio loses our decode. We are
 already Pareto-optimal. We are also the weakest on ratio and compression speed.
@@ -59,7 +59,7 @@ above. That is the rule GOAL.md violated.
 | **T1.7** Memory floor | Compressor <= 1 MB working set; decompressor 0 alloc beyond output | PASS | already held |
 
 LZAV occupies (2.4500, 0.489, 3.130) simultaneously, so T1.2+T1.3+T1.4 are
-jointly satisfiable by a real artifact. Passing Tier 1 means Alatirok strictly
+jointly satisfiable by a real artifact. Passing Tier 1 means Glyd strictly
 dominates LZAV: equal-or-better ratio and compression, strictly better decode.
 
 ### Tier 2: dominate the fast-zstd points

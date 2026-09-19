@@ -5,7 +5,7 @@
 //! path, sentinels past `dst`); this is the cheaper v7-only gate: 200,000
 //! mutations by default, `V7_FUZZ=1000000 cargo test --release --test
 //! v7_fuzz` for the full run, whose count lands in `.v7-fuzz-status`.
-use simd_stream_codec::{compress_into_max, decompress, decompress_into};
+use glyd::{compress_into_max, decompress, decompress_into};
 
 fn seed_inputs() -> Vec<Vec<u8>> {
     let mut x = 0xC0FFEEu64;
@@ -74,7 +74,7 @@ fn v7_mutation_fuzz() {
 /// count: each mutation decodes 300 KB twice.
 #[test]
 fn v7_dictionary_mutation_fuzz() {
-    use simd_stream_codec::{compress_with_dict, decompress_with_dict};
+    use glyd::{compress_with_dict, decompress_with_dict};
     let text = &seed_inputs()[4];
     let (dict, input) = (&text[..50_000], &text[100_000..]);
     let mut c = Vec::new();

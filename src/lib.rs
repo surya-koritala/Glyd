@@ -22,7 +22,7 @@ pub mod v7_format;
 pub mod v7_encode;
 pub mod v7_decode;
 
-pub use streaming::{AlatirokReader, AlatirokWriter};
+pub use streaming::{GlydReader, GlydWriter};
 pub use format::compute_checksum;
 
 use error::{CodecError, Result};
@@ -100,14 +100,14 @@ fn find_block<P: Mode>(
     );
 }
 
-/// The dense retry is opt-in (ALATIROK_DENSE=1). GOAL3 section 3: it bought
+/// The dense retry is opt-in (GLYD_DENSE=1). GOAL3 section 3: it bought
 /// x-ray 1.08 for 23 ms of compression and 2.7 ms of decode, which the speed
 /// target cannot afford; liblz4 gets 1.01 there at memcpy speed. The fast
 /// level (GOAL3 Tier S3) is the intended replacement. Cached, never per block.
 fn dense_enabled() -> bool {
     use std::sync::OnceLock;
     static D: OnceLock<bool> = OnceLock::new();
-    *D.get_or_init(|| std::env::var("ALATIROK_DENSE").is_ok())
+    *D.get_or_init(|| std::env::var("GLYD_DENSE").is_ok())
 }
 
 /// Streams would not save at least 4% of the chunk.

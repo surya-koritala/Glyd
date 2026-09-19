@@ -1,5 +1,5 @@
-use simd_stream_codec::v7_encode::{encode_block, payload_layout, Sequence, Tables};
-use simd_stream_codec::v7_format::{SubHeader, S_EXTRA, S_LIT, S_LL, S_ML, S_OFF};
+use glyd::v7_encode::{encode_block, payload_layout, Sequence, Tables};
+use glyd::v7_format::{SubHeader, S_EXTRA, S_LIT, S_LL, S_ML, S_OFF};
 
 fn sample_sequences() -> (Vec<Sequence>, Vec<u8>) {
     // "abcabcabc..." style: literal runs then matches at small offsets.
@@ -104,8 +104,8 @@ fn v7_encode_reuse_falls_back_when_a_stream_goes_raw() {
 
 // ---- Task 7: block decoder ----
 
-use simd_stream_codec::error::CodecError;
-use simd_stream_codec::v7_decode::{decode_block, DecTables, Scratch};
+use glyd::error::CodecError;
+use glyd::v7_decode::{decode_block, DecTables, Scratch};
 
 /// Oracle: materialize sequences + literals into the bytes they describe.
 fn materialize(seqs: &[Sequence], lits: &[u8]) -> Vec<u8> {
@@ -385,7 +385,7 @@ fn v7_max_level_roundtrip_through_container() {
     // (version, coded bits, reuse bits) per block, so an all-raw stream
     // cannot pass vacuously and cross-block table reuse is known to run.
     fn versions(c: &[u8]) -> Vec<(u16, u8, u8)> {
-        use simd_stream_codec::format::{BlockHeader, HEADER_SIZE, VERSION_V7};
+        use glyd::format::{BlockHeader, HEADER_SIZE, VERSION_V7};
         let (mut cursor, mut v) = (0usize, Vec::new());
         while cursor < c.len() {
             let h: BlockHeader = unsafe { std::ptr::read_unaligned(c[cursor..].as_ptr() as *const BlockHeader) };
@@ -398,11 +398,11 @@ fn v7_max_level_roundtrip_through_container() {
     }
     for (k, input) in inputs.iter().enumerate() {
         let mut c = Vec::new();
-        simd_stream_codec::compress_into_max(input, &mut c);
+        glyd::compress_into_max(input, &mut c);
         let v = versions(&c);
         assert_eq!(v.len(), (input.len() + 256 * 1024 - 1) / (256 * 1024), "block count, len {}", input.len());
         if k >= 4 {
-            assert!(v.iter().all(|&(ver, _, _)| ver == simd_stream_codec::format::VERSION_V7), "input {} should be all v7 blocks: {:?}", k, v);
+            assert!(v.iter().all(|&(ver, _, _)| ver == glyd::format::VERSION_V7), "input {} should be all v7 blocks: {:?}", k, v);
             assert!(c.len() < input.len() / 2, "input {} ratio: {} -> {}", k, input.len(), c.len());
         }
         if k == inputs.len() - 2 {
@@ -414,14 +414,14 @@ fn v7_max_level_roundtrip_through_container() {
         if k == 3 {
             assert!(v.iter().all(|&(ver, _, _)| ver == 6), "random input must be stored raw: {:?}", v);
         }
-        assert_eq!(&simd_stream_codec::decompress(&c).unwrap(), input, "max sequential, len {}", input.len());
+        assert_eq!(&glyd::decompress(&c).unwrap(), input, "max sequential, len {}", input.len());
         let mut p = Vec::new();
-        simd_stream_codec::compress_parallel_into_max(input, &mut p);
-        assert_eq!(&simd_stream_codec::decompress_parallel(&p).unwrap(), input, "max parallel, len {}", input.len());
+        glyd::compress_parallel_into_max(input, &mut p);
+        assert_eq!(&glyd::decompress_parallel(&p).unwrap(), input, "max parallel, len {}", input.len());
     }
 }
 
-use simd_stream_codec::v7_encode::{find_sequences_dfast, DfastTables, EncScratch};
+use glyd::v7_encode::{find_sequences_dfast, DfastTables, EncScratch};
 
 /// Records with a fixed stride: offsets repeat. Shared with
 /// `v7_max_matches_reference_block_encoder`.
@@ -448,8 +448,8 @@ fn dfast_parse_finds_repeats_and_roundtrips() {
     let matched: u32 = seqs.iter().map(|s| s.match_len).sum();
     assert!(matched as usize > out.len() * 6 / 10, "expected mostly matches: {}/{}", matched, out.len());
     let mut c = Vec::new();
-    simd_stream_codec::compress_into_max(&data, &mut c);
-    assert_eq!(simd_stream_codec::decompress(&c).unwrap(), data);
+    glyd::compress_into_max(&data, &mut c);
+    assert_eq!(glyd::decompress(&c).unwrap(), data);
     assert!(c.len() * 4 < data.len(), "structured text should compress 4x+: {}", c.len());
 }
 
@@ -461,8 +461,8 @@ fn dfast_parse_finds_repeats_and_roundtrips() {
 /// parses from the same empty state as the `DfastTables::new` here.
 #[test]
 fn v7_max_matches_reference_block_encoder() {
-    use simd_stream_codec::format::{BlockHeader, HEADER_SIZE, MAX_BLOCK_SIZE, VERSION_V7};
-    use simd_stream_codec::v7_encode::encode_block_with;
+    use glyd::format::{BlockHeader, HEADER_SIZE, MAX_BLOCK_SIZE, VERSION_V7};
+    use glyd::v7_encode::encode_block_with;
 
     // One entry per container block, in order; None for a raw block.
     fn block_payloads(c: &[u8]) -> Vec<Option<&[u8]>> {
@@ -485,7 +485,7 @@ fn v7_max_matches_reference_block_encoder() {
 
     for input in [records_input(), text, mixed] {
         let mut c = Vec::new();
-        simd_stream_codec::compress_into_max(&input, &mut c);
+        glyd::compress_into_max(&input, &mut c);
         let reference = block_payloads(&c);
         assert!(reference.iter().any(|p| p.is_some()), "expected at least one coded block");
 
@@ -527,7 +527,7 @@ fn v7_max_matches_reference_block_encoder() {
 /// ~200 bytes is stored raw with or without a dictionary, carrying no id).
 #[test]
 fn v7_dictionary_helps_small_inputs_and_is_required() {
-    use simd_stream_codec::{compress_with_dict, decompress, decompress_parallel, decompress_with_dict};
+    use glyd::{compress_with_dict, decompress, decompress_parallel, decompress_with_dict};
     let mut x = 1u64;
     let fields: Vec<Vec<u8>> = (0..64).map(|i| { let r = rnd(&mut x); format!("\"field_{:02}\":\"{}-{:x}-value-of-field-{:02}\",", i, ["alpha", "beta", "gamma", "delta"][(r % 4) as usize], r >> 40, i).into_bytes() }).collect();
     let dict: Vec<u8> = fields.concat();
@@ -535,7 +535,7 @@ fn v7_dictionary_helps_small_inputs_and_is_required() {
     for i in 0..16 { doc.extend_from_slice(&fields[(i * 7) % 64]); doc.extend_from_slice(format!("\"n{}\":{},", i, rnd(&mut x) % 100_000).as_bytes()); }
     doc.push(b'}');
     let mut plain = Vec::new();
-    simd_stream_codec::compress_into_max(&doc, &mut plain);
+    glyd::compress_into_max(&doc, &mut plain);
     let mut with = Vec::new();
     compress_with_dict(&dict, &doc, &mut with);
     assert!(with.len() * 4 < plain.len() * 3, "dictionary must help: {} vs {}", with.len(), plain.len());
@@ -563,7 +563,7 @@ fn v7_dictionary_helps_small_inputs_and_is_required() {
 /// start of every call, not only at `FLAG_CHAIN_RESET` blocks.
 #[test]
 fn v7_decode_does_not_carry_tables_across_calls() {
-    use simd_stream_codec::format::{BlockHeader, HEADER_SIZE, VERSION_V7};
+    use glyd::format::{BlockHeader, HEADER_SIZE, VERSION_V7};
     // 64-byte records: every block after the first reuses the sequence
     // tables (see `v7_max_level_roundtrip_through_container`).
     let mut x = 5u64;
@@ -571,7 +571,7 @@ fn v7_decode_does_not_carry_tables_across_calls() {
     let mut records = Vec::new();
     for i in 0..16384u32 { records.extend_from_slice(&i.to_le_bytes()); records.extend_from_slice(&fixed); }
     let mut c = Vec::new();
-    simd_stream_codec::compress_into_max(&records, &mut c);
+    glyd::compress_into_max(&records, &mut c);
     let mut block = None;
     let mut cursor = 0usize;
     while cursor < c.len() {
@@ -585,10 +585,10 @@ fn v7_decode_does_not_carry_tables_across_calls() {
     }
     let block = block.expect("a block reusing the sequence tables");
     // Warm thread: this one has just decoded the whole stream.
-    assert_eq!(simd_stream_codec::decompress(&c).unwrap(), records);
-    let warm = simd_stream_codec::decompress(&block);
+    assert_eq!(glyd::decompress(&c).unwrap(), records);
+    let warm = glyd::decompress(&block);
     let b = block.clone();
-    let fresh = std::thread::spawn(move || simd_stream_codec::decompress(&b)).join().unwrap();
+    let fresh = std::thread::spawn(move || glyd::decompress(&b)).join().unwrap();
     assert!(matches!(fresh, Err(CodecError::CorruptedBitstream(_))), "{:?}", fresh);
     assert!(matches!(warm, Err(CodecError::CorruptedBitstream(_))), "{:?}", warm);
     assert_eq!(warm, fresh);
@@ -622,7 +622,7 @@ fn v7_max_output_is_deterministic() {
     // A in every 256 KB chunk (zero padding indexes nothing), so the
     // parallel path's pool threads are warmed too.
     let a_chunks: Vec<u8> = (0..8).flat_map(|_| { let mut c = a.clone(); c.resize(256 * 1024, 0); c }).collect();
-    for level in [simd_stream_codec::compress_into_max as fn(&[u8], &mut Vec<u8>), simd_stream_codec::compress_parallel_into_max] {
+    for level in [glyd::compress_into_max as fn(&[u8], &mut Vec<u8>), glyd::compress_parallel_into_max] {
         let run = move |input: &[u8]| { let mut c = Vec::new(); level(input, &mut c); c };
         run(&a_chunks);
         run(&a);
