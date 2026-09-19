@@ -476,6 +476,14 @@ unsafe fn probe(src: *const u8, pos: usize, block_end: usize, t: &mut DfastTable
     (usize::MAX, 0)
 }
 
+#[cold]
+#[inline(never)]
+fn lazy_win(pos: &mut usize, cand: &mut usize, rc: &mut usize, c: usize, rc1: usize) {
+    *pos += 1;
+    *cand = c;
+    *rc = rc1;
+}
+
 /// Parse `input[block_start..block_start + block_len]` into `seqs` and
 /// `literals` (appended). Offsets are absolute distances, at least 1 and
 /// under MAX_WINDOW; the last sequence is literal-only. `t` carries the
@@ -519,9 +527,10 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
                 if let Some(c) = candidate(el, ml, pos + 1) {
                     let rc1 = crate::finder::ScalarMatch::prefix(p1, src.add(c), block_end - pos - 1);
                     if rc1 >= rc + 4 {
-                        pos += 1;
-                        cand = c;
-                        rc = rc1;
+                        // Out of line so this stays a (rarely taken)
+                        // branch: as selects, the next position would
+                        // wait for this probe's whole load chain.
+                        lazy_win(&mut pos, &mut cand, &mut rc, c, rc1);
                     }
                 }
             }
