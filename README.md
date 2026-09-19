@@ -375,14 +375,17 @@ against 2,300; `--ultra -r` is 10% smaller than zstd -19. The transform
 costs: record-mode reads run at 4,500-4,700 MB/s instead of 8,700 for
 plain `--max`. JSON events are not record-shaped (their redundancy is
 inside each record and across the whole file) and are left to the
-plain level; a 128 MB matching window is the lever there (23% with
-zstd `--long`; not yet in Glyd).
+plain level, where the long-distance matcher (repeats up to 128 MB
+back, on at `--max` and `--ultra`) is the lever: 12.58 and 15.58 on
+the hour above against 11.15 and 14.13 with the 8 MB window.
 
 ## Known gaps
 
 - `--max` compresses at 0.65-0.78x zstd -3's speed on server cores
   (Graviton3, Sapphire Rapids): its 2 MB of finder tables miss a 1 MB
-  L2; 0.9x on Apple silicon.
+  L2; 0.9x on Apple silicon. The long-distance pass takes another
+  15-37% where it stays on (text, logs, JSON: 3-16% fewer bytes for
+  it); `zstd -3 --long=27` pays 17-60% for the same window.
 - `--max` decodes 1.3× zstd -3, not the 2× the design aimed at.
 - On the extended corpus `--max` beats zstd -3 on 3 of 5 files; it loses
   0.6% on very repetitive JSON.

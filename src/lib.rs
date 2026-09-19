@@ -477,7 +477,12 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
     }
     // Far matches (past the local finders' 8 MB) over the whole input,
     // found once here; an input that fits the local window has none.
-    let far = if full.len() > LOCAL_WINDOW as usize && dict.is_none() { ldm::Matches::find(full) } else { ldm::Matches { list: Vec::new() } };
+    // The max level gives the pass up on inputs with few far repeats.
+    let far = if full.len() > LOCAL_WINDOW as usize && dict.is_none() {
+        ldm::Matches::find(full, matches!(parse, Parse::Dfast))
+    } else {
+        ldm::Matches { list: Vec::new() }
+    };
     let mut far_i = 0usize;
     let mut offset = start;
     let mut first = true;

@@ -454,7 +454,7 @@ impl UltraState {
     /// Candidates at `pos`, into `cands` in the order found: the reps
     /// (any length), the 3-byte head, then the tree's, each longer than
     /// the last. Inserts `pos`. Returns the longest length.
-    fn candidates(&mut self, input: &[u8], pos: usize, limit: usize, log: bool, reps: &[u32; 3], far: &crate::ldm::Matches, far_i: &mut usize) -> usize {
+    fn candidates(&mut self, input: &[u8], pos: usize, limit: usize, log: bool, reps: &[u32; 3], far: &mut crate::ldm::Cursor<'_>) -> usize {
         self.cands.clear();
         let max = limit - pos;
         if max < MIN_MATCH as usize {
@@ -498,7 +498,7 @@ impl UltraState {
         // are in order of length, each pricing the lengths past the one
         // before): only when it is the longest. Its length is capped for
         // a far offset (FAR_MATCH_CAP); the rest continues as a repeat.
-        if let Some((flen, foff)) = far.at(far_i, pos) {
+        if let Some((flen, foff)) = far.at(pos) {
             let mut flen = flen.min(max);
             if foff >= 1 << (FAR_OFFSET_BITS as usize + 1) {
                 flen = flen.min(FAR_MATCH_CAP as usize);
@@ -551,8 +551,7 @@ pub fn find_sequences_ultra_far(input: &[u8], block_start: usize, block_len: usi
 
 fn parse(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState, reps: [u32; 3], prices: &Prices, log: bool, far: &crate::ldm::Matches, seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>) {
     let block_end = block_start + block_len;
-    // The far-match cursor starts at the first match reaching into the block.
-    let mut far_i = far.list.partition_point(|m| (m.start + m.len) as usize <= block_start);
+    let mut far_cursor = far.cursor(block_start);
     st.opt.clear();
     st.opt.resize(block_len + 1, UNREACHED);
     st.opt[0] = Node { price: 0, mlen: 0, off: 0, litlen: 0, reps };
@@ -575,7 +574,7 @@ fn parse(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState
         }
         let pos = block_start + cur;
         st.insert_upto(input, pos, log);
-        let best = st.candidates(input, pos, block_end, log, &n.reps, far, &mut far_i);
+        let best = st.candidates(input, pos, block_end, log, &n.reps, &mut far_cursor);
         if best < MIN_MATCH as usize {
             continue;
         }

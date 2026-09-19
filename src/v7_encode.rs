@@ -861,7 +861,7 @@ pub fn find_sequences_dfast_dict(input: &[u8], block_start: usize, block_len: us
 }
 
 #[inline(always)]
-fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: Option<&DictTables>, far: &crate::ldm::Matches, far_i: &mut usize, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
+fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: Option<&DictTables>, far: &crate::ldm::Matches, _far_i: &mut usize, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
     use crate::finder::MatchLen;
     let src = input.as_ptr();
     let (lb, sb) = (t.lbits, t.sbits);
@@ -871,6 +871,7 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
     debug_assert_eq!(*reps, [1, 4, 8], "written codes assume the decoder's fresh Reps");
     assert!(block_end <= input.len(), "block past the input");
     debug_assert!(reps.iter().all(|&o| o >= 1), "a zero repeat offset would verify against itself");
+    let mut far_cursor = far.cursor(block_start);
     // Every probe reads 8 bytes at `pos` and 8 at `pos + 1`; extensions
     // stop at block_end.
     let limit = block_end.saturating_sub(9).max(block_start);
@@ -904,7 +905,7 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                 let mut found = probe::<D>(src, pos, block_end, &cur, el, es, &r, dict, eld, esd);
                 // A far match covering this position (the long-distance
                 // matcher's) wins when it is longer than the local one.
-                if let Some((flen, foff)) = far.at(far_i, pos) {
+                if let Some((flen, foff)) = far_cursor.at(pos) {
                     let flen = flen.min(block_end - pos);
                     if flen > found.len && flen >= 4 {
                         found = Found { src: src.add(pos - foff), off: foff, len: flen };

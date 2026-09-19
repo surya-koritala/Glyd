@@ -141,3 +141,38 @@ fn ultra_fuzz_roundtrip() {
         roundtrip(&format!("fuzz {i}"), &v);
     }
 }
+
+/// Repeats farther back than the local window, at both levels: a 1 MB
+/// text repeated 9 MB later, twice, in 24 MB. Only a far match can
+/// store a copy in a few KB; the max level's gate must keep its pass
+/// on (the text repeats), and every byte comes back.
+#[test]
+fn far_repeats_round_trip_at_max_and_ultra() {
+    let block = wordy(1 << 20, 5);
+    let mut data = Vec::new();
+    for gap in [21u64, 22] {
+        data.extend_from_slice(&block);
+        data.extend_from_slice(&wordy(9 << 20, gap));
+    }
+    data.extend_from_slice(&block);
+    let mut alone = Vec::new();
+    glyd::compress_into_max(&data[..data.len() - (1 << 20)], &mut alone);
+    for (name, f) in [("max", glyd::compress_into_max as fn(&[u8], &mut Vec<u8>)), ("ultra", glyd::compress_into_ultra)] {
+        let mut c = Vec::new();
+        f(&data, &mut c);
+        assert!(glyd::decompress(&c).unwrap() == data, "{name}: round trip mismatch");
+        let mut c2 = Vec::new();
+        f(&data, &mut c2);
+        assert!(c == c2, "{name}: two compressions differ");
+        if name == "max" {
+            assert!(c.len() < alone.len() + 20_000, "max: the far copy should cost under 20 KB, not {}", c.len() - alone.len());
+        }
+    }
+    // Noise past the window: the pass finds nothing and stops early;
+    // the bytes still come back.
+    let mut x = 99u64;
+    let noise: Vec<u8> = (0..(9 << 20)).map(|_| rnd(&mut x) as u8).collect();
+    let mut c = Vec::new();
+    glyd::compress_into_max(&noise, &mut c);
+    assert!(glyd::decompress(&c).unwrap() == noise);
+}

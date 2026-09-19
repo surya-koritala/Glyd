@@ -8,6 +8,33 @@ every earlier format.
 
 ## Unreleased
 
+### Long-distance matching
+- The max and ultra levels find repeats of 32 bytes or more up to 128 MB
+  back (`src/ldm.rs`): one pass over the input before the parse, with
+  content-defined anchors (one position in 16, found 16 at a time with
+  NEON or AVX2) hashing the 32 bytes after them into a 16 MB table whose
+  entries carry a hash check; matches are verified, extended both ways
+  and handed to the parse, which takes one wherever it beats the local
+  finder. Format v9 offsets grow to 27 bits (30 offset codes; v8 blocks
+  keep 26, and a table with fewer symbols than its version allows still
+  decodes). A far match is capped at 130 bytes per sequence so the
+  decoder's one-load walk holds its extra bits, the rest following as a
+  repeat-offset sequence. Parallel units grow to one per core, up to
+  128 MB (the matcher's reach is the unit).
+- The pass runs at 1.2-2 GB/s on one core. The max level gates it:
+  after 4 MB and 16 MB (or half the input) it stops on data whose
+  repeats are too few or too near to pay (media, Parquet, most SQL
+  dumps), which keep 92-96% of their speed; the ultra level runs it
+  whole. Where it stays on, the max level compresses at 63-85% of its
+  former speed for 3-16% fewer bytes. One core, M1 Max, 128 MB of
+  GitHub Archive JSON: `--max` 11.63 -> 9.73 MB at 577 MB/s (zstd -3
+  12.90 MB at 895; `zstd -3 --long=27` 10.20 MB at 433), `--ultra`
+  7.78 MB (zstd -19 8.96, `zstd -19 --long=27` 7.80); NASA access
+  log 13.22 -> 11.92 MB at 435 MB/s (`zstd -3 --long=27` 13.63 MB at
+  383); Silesia `--max` 3.259 -> 3.302 at 247 MB/s (290 before; zstd
+  -3 3.205 at 335). GitHub Archive, one hour (814 MB), 10 cores:
+  `--max` 11.15 -> 12.58, `--ultra` 14.13 -> 15.58 (zstd -19 14.59).
+
 ### Record mode
 - `glyd -r` / `compress_records_with`: delimited lines and SQL dumps
   become typed column streams (integer and date-time deltas,

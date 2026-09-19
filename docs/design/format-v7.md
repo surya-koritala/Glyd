@@ -325,3 +325,50 @@ shaped; their redundancy is inside each record and across the whole
 file, where a larger window (128 MB: 23% with zstd `--long`) is the
 lever, not columns (shredding measured 6% worse). The transform runs at
 ~200 MB/s per core and the rebuild at 500-900 MB/s per core.
+
+## Long-distance matching (v0.4.0): repeats up to 128 MB back
+
+The block-local finders keep 8 MB of history and, being hash tables
+without chains, forget most of it long before that: on GitHub Archive
+JSON a repeat 1-8 MB back is found by neither, and the events repeat
+whole records across the hour. `zstd -19 --long=27` measured 23% on
+such an hour. `src/ldm.rs` adds one pass before the parse of a unit:
+
+- Anchors are content-defined: a position whose 4-byte hash has its
+  4 high bits zero (one in 16), so a repeat anchors at the same places
+  as its original. The anchors of 16 positions come from one NEON or
+  AVX2 step (four multiplies on the shifted words, a mask), their
+  positions are extracted without a branch per anchor, then each is
+  hashed over its 32 following bytes.
+- The table has 2^22 entries of one u32: 27 bits of the position under
+  5 bits of hash check. A candidate whose check differs is dropped
+  without reading its bytes (97% of candidates on mozilla); the slot is
+  prefetched a chunk of 1 KB ahead. Runs of one byte never anchor.
+- A candidate's bytes are compared 8 at a time forward and back; a
+  match of 32 bytes or more is kept, non-overlapping and in position
+  order. The parse (`find_sequences_dfast_far`, `find_sequences_ultra_far`)
+  walks the list with a cursor and takes the far match wherever it
+  beats the local one, capped at 130 bytes per sequence for a far
+  offset (the walk entry's 57 bits hold 18 + 3 + 26 extra bits); the
+  remainder follows as a repeat-offset sequence.
+- Format v9 offsets are 27 bits (30 offset codes); v8 blocks keep 26.
+  A stored table with fewer symbols than its version allows decodes.
+- The pass costs 1.2-2 GB/s per core against a max-level parse of
+  0.25-0.8 GB/s, so the max level gates it: after 4 MB it stops when
+  under 1/64 of the input is inside a repeat, after 16 MB when repeats
+  at least 1 MB back cover under 1/32; both checkpoints move to half
+  the input when that is sooner. Off for media, Parquet, most SQL dumps
+  and mozilla-like binaries (92-96% of the old speed kept); on for text,
+  logs and JSON (63-85% of the old speed, 3-16% fewer bytes). The ultra
+  level runs it whole.
+
+Measured (one core, M1 Max, first 128 MB): GitHub Archive JSON `--max`
+11.63 -> 9.73 MB at 577 MB/s (zstd -3 12.90 MB at 895 MB/s, `zstd -3
+--long=27` 10.20 MB at 433); `--ultra` 7.78 MB (zstd -19 8.96, `zstd
+-19 --long=27` 7.80). NASA access log `--max` 13.22 -> 11.92 MB at 435
+MB/s (`zstd -3 --long=27` 13.63 MB at 383). Silesia `--max` 3.259 ->
+3.302 at 247 MB/s (290 before). Refuted on the way: sparser anchors
+(one in 32 halves the pass but costs 1.4% on JSON and 2.5% on logs
+because 32-64 byte repeats are missed); a 16-byte hash (more false
+candidates than the check bits save); prefetching the candidate's
+bytes (no gain on M1, dropped).
