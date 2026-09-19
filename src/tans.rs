@@ -515,8 +515,11 @@ pub fn decode8_rows(t: &DecodeTable, streams: &[Stream; STREAMS], n: usize, row:
                 macro_rules! stream {
                     ($k:literal) => {{
                         let mut v = w[$k];
-                        let mut p = b[$k];
-                        let mut x = st[$k];
+                        // Position and state through memory (see the
+                        // walk in v7_decode): 16 registers do not hold
+                        // eight of each plus the window and the table.
+                        let mut p = unsafe { std::ptr::read_volatile(&b[$k]) };
+                        let mut x = unsafe { std::ptr::read_volatile(&st[$k]) };
                         // SAFETY: as in `sym`, x < L by the table's construction.
                         let d0 = unsafe { *e.get_unchecked(x as usize) };
                         x = unpack_base(d0) + (v as u32 & unpack_mask(d0));
@@ -531,8 +534,10 @@ pub fn decode8_rows(t: &DecodeTable, streams: &[Stream; STREAMS], n: usize, row:
                         v >>= unpack_nbits(d2);
                         p += unpack_nbits(d2) as usize;
                         let d3 = unsafe { *e.get_unchecked(x as usize) };
-                        st[$k] = unpack_base(d3) + (v as u32 & unpack_mask(d3));
-                        b[$k] = p + unpack_nbits(d3) as usize;
+                        unsafe {
+                            std::ptr::write_volatile(&mut st[$k], unpack_base(d3) + (v as u32 & unpack_mask(d3)));
+                            std::ptr::write_volatile(&mut b[$k], p + unpack_nbits(d3) as usize);
+                        }
                         unsafe {
                             *rows[0].add($k) = unpack_sym(d0);
                             *rows[1].add($k) = unpack_sym(d1);
