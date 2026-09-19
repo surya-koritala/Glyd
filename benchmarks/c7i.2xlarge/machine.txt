@@ -1,7 +1,7 @@
-commit: ea7b580f35019e0fca6b588cc286f22bba9c43ef
+commit: 287dde5e34dba7e0c2f6526a20e9e58f3d39bb05
 instance: c7i.2xlarge
 cpu: Intel(R) Xeon(R) Platinum 8488C (8 vCPU)
 simd: avx2
 rustc: rustc 1.98.1 (48a229cea 2026-09-01)
 kernel: Linux 7.0.0-1012-aws
-date: 2026-09-19T05:10:45Z
+date: 2026-09-19T06:40:08Z

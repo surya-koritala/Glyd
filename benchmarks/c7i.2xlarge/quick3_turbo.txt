@@ -1,13 +1,13 @@
-  dickens  ratio 1.2372  comp 0.113 GB/s (84.2 ms)  decomp 5.029 GB/s (1.9 ms)  lz4 decomp 3.307 GB/s
-  mozilla  ratio 1.6888  comp 0.261 GB/s (182.8 ms)  decomp 4.776 GB/s (10.0 ms)  lz4 decomp 3.317 GB/s
-  mr       ratio 1.4301  comp 0.272 GB/s (34.1 ms)  decomp 10.345 GB/s (0.9 ms)  lz4 decomp 3.766 GB/s
-  nci      ratio 6.4154  comp 0.479 GB/s (65.2 ms)  decomp 4.927 GB/s (6.3 ms)  lz4 decomp 5.056 GB/s
-  ooffice  ratio 1.1945  comp 0.423 GB/s (13.6 ms)  decomp 7.236 GB/s (0.8 ms)  lz4 decomp 3.242 GB/s
-  osdb     ratio 1.9551  comp 0.315 GB/s (29.8 ms)  decomp 6.141 GB/s (1.5 ms)  lz4 decomp 3.406 GB/s
-  reymont  ratio 1.8575  comp 0.120 GB/s (51.3 ms)  decomp 5.195 GB/s (1.2 ms)  lz4 decomp 2.933 GB/s
-  samba    ratio 2.5120  comp 0.239 GB/s (84.3 ms)  decomp 4.935 GB/s (4.1 ms)  lz4 decomp 3.897 GB/s
-  sao      ratio 0.9999  comp 1.663 GB/s (4.1 ms)  decomp 14.858 GB/s (0.5 ms)  lz4 decomp 4.585 GB/s
-  webster  ratio 1.8550  comp 0.122 GB/s (315.8 ms)  decomp 4.244 GB/s (9.1 ms)  lz4 decomp 3.287 GB/s
-  xml      ratio 4.4963  comp 0.384 GB/s (13.0 ms)  decomp 4.986 GB/s (1.0 ms)  lz4 decomp 3.786 GB/s
-  x-ray    ratio 0.9999  comp 2.016 GB/s (3.9 ms)  decomp 14.834 GB/s (0.5 ms)  lz4 decomp 9.797 GB/s
-aws-turbo              ratio 1.88365 (floor 2.1009)  comp 0.2238  decomp 5.2237 vs liblz4 3.7221 = 140.3% (S1 short)
+  dickens  ratio 1.2372  comp 0.098 GB/s (96.7 ms)  decomp 4.372 GB/s (2.2 ms)  lz4 decomp 2.875 GB/s
+  mozilla  ratio 1.6888  comp 0.228 GB/s (209.1 ms)  decomp 4.253 GB/s (11.2 ms)  lz4 decomp 2.933 GB/s
+  mr       ratio 1.4301  comp 0.235 GB/s (39.5 ms)  decomp 9.413 GB/s (1.0 ms)  lz4 decomp 3.272 GB/s
+  nci      ratio 6.4154  comp 0.420 GB/s (74.5 ms)  decomp 4.298 GB/s (7.3 ms)  lz4 decomp 4.381 GB/s
+  ooffice  ratio 1.1945  comp 0.360 GB/s (15.9 ms)  decomp 6.412 GB/s (0.9 ms)  lz4 decomp 2.803 GB/s
+  osdb     ratio 1.9551  comp 0.269 GB/s (35.0 ms)  decomp 5.343 GB/s (1.8 ms)  lz4 decomp 2.936 GB/s
+  reymont  ratio 1.8575  comp 0.103 GB/s (60.1 ms)  decomp 4.499 GB/s (1.4 ms)  lz4 decomp 2.545 GB/s
+  samba    ratio 2.5120  comp 0.205 GB/s (98.1 ms)  decomp 4.292 GB/s (4.7 ms)  lz4 decomp 3.391 GB/s
+  sao      ratio 0.9999  comp 1.460 GB/s (4.6 ms)  decomp 13.394 GB/s (0.5 ms)  lz4 decomp 4.002 GB/s
+  webster  ratio 1.8550  comp 0.106 GB/s (363.8 ms)  decomp 3.709 GB/s (10.4 ms)  lz4 decomp 2.856 GB/s
+  xml      ratio 4.4963  comp 0.326 GB/s (15.3 ms)  decomp 4.335 GB/s (1.1 ms)  lz4 decomp 3.283 GB/s
+  x-ray    ratio 0.9999  comp 1.858 GB/s (4.2 ms)  decomp 13.415 GB/s (0.6 ms)  lz4 decomp 9.054 GB/s
+aws-turbo              ratio 1.88365 (floor 2.1009)  comp 0.1941  decomp 4.5896 vs liblz4 3.2500 = 141.2% (S1 short)

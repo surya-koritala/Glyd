@@ -223,11 +223,18 @@ board — the ordering is the same.)
 
 | Decompress&nbsp;MB/s | ⚡&nbsp;**Glyd&nbsp;default** | liblz4 | ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | ⚡&nbsp;**Glyd&nbsp;‑‑max** | zstd&nbsp;‑3 |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| Graviton3&nbsp;(c7g.2xlarge, NEON) | **3,750** | 3,160 | **4,970** | **1,180** | 903 |
-| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **4,340** | 3,720 | **5,220** | **1,300** | 1,260 |
+| Graviton3&nbsp;(c7g.2xlarge, NEON) | **3,800** | 3,170 | **5,170** | **1,210** | 916 |
+| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **3,790** | 3,250 | **4,590** | **1,180** | 1,110 |
 
-Ratios are identical across machines (the format is deterministic). Raw
-outputs and the launch script: [`benchmarks/`](benchmarks/).
+| Decompress&nbsp;MB/s | ⚡&nbsp;**Glyd&nbsp;‑‑ultra** | zstd&nbsp;‑16 | zstd&nbsp;‑19 |
+| :--- | ---: | ---: | ---: |
+| Graviton3&nbsp;(c7g.2xlarge, NEON) | **1,390** | 1,024 | 924 |
+| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **1,325** | 1,218 | 1,077 |
+
+Ratios are identical across machines (the format is deterministic).
+Absolute speeds on shared cloud instances move by up to 10% between runs;
+the pairings within one run are the comparison. Raw outputs and the
+launch script: [`benchmarks/`](benchmarks/).
 
 ### Multi-core
 

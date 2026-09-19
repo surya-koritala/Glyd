@@ -1,15 +1,15 @@
-  dickens  v7 ratio 2.8331 comp 0.137 GB/s decomp 0.943 GB/s     | zstd-3 ratio 2.7822 comp 0.186 GB/s decomp 1.161 GB/s     | zstd-1 ratio 2.3916 comp 0.315 GB/s decomp 1.336 GB/s    
-  mozilla  v7 ratio 2.7760 comp 0.181 GB/s decomp 1.144 GB/s     | zstd-3 ratio 2.8101 comp 0.269 GB/s decomp 1.063 GB/s     | zstd-1 ratio 2.5651 comp 0.464 GB/s decomp 1.112 GB/s    
-  mr       v7 ratio 2.8188 comp 0.151 GB/s decomp 1.078 GB/s     | zstd-3 ratio 2.8106 comp 0.226 GB/s decomp 1.242 GB/s     | zstd-1 ratio 2.6146 comp 0.424 GB/s decomp 1.366 GB/s    
-  nci      v7 ratio 11.1565 comp 0.510 GB/s decomp 2.747 GB/s    | zstd-3 ratio 11.8403 comp 0.699 GB/s decomp 2.146 GB/s    | zstd-1 ratio 11.7790 comp 0.855 GB/s decomp 2.225 GB/s   
-  ooffice  v7 ratio 1.9914 comp 0.130 GB/s decomp 1.019 GB/s     | zstd-3 ratio 1.9680 comp 0.211 GB/s decomp 0.873 GB/s     | zstd-1 ratio 1.7122 comp 0.401 GB/s decomp 0.944 GB/s    
-  osdb     v7 ratio 2.8629 comp 0.183 GB/s decomp 1.578 GB/s     | zstd-3 ratio 2.8804 comp 0.277 GB/s decomp 1.464 GB/s     | zstd-1 ratio 2.7041 comp 0.465 GB/s decomp 1.392 GB/s    
-  reymont  v7 ratio 3.4834 comp 0.180 GB/s decomp 1.193 GB/s     | zstd-3 ratio 3.4197 comp 0.230 GB/s decomp 1.275 GB/s     | zstd-1 ratio 3.0836 comp 0.304 GB/s decomp 1.394 GB/s    
-  samba    v7 ratio 4.3619 comp 0.267 GB/s decomp 1.788 GB/s     | zstd-3 ratio 4.3604 comp 0.352 GB/s decomp 1.720 GB/s     | zstd-1 ratio 3.9373 comp 0.521 GB/s decomp 1.753 GB/s    
-  sao      v7 ratio 1.3176 comp 0.107 GB/s decomp 1.478 GB/s     | zstd-3 ratio 1.3120 comp 0.175 GB/s decomp 0.772 GB/s     | zstd-1 ratio 1.1603 comp 0.394 GB/s decomp 0.909 GB/s    
-  webster  v7 ratio 3.4962 comp 0.162 GB/s decomp 1.070 GB/s     | zstd-3 ratio 3.4272 comp 0.210 GB/s decomp 1.247 GB/s     | zstd-1 ratio 3.0346 comp 0.355 GB/s decomp 1.378 GB/s    
-  xml      v7 ratio 8.2448 comp 0.420 GB/s decomp 2.386 GB/s     | zstd-3 ratio 8.4138 comp 0.569 GB/s decomp 2.064 GB/s     | zstd-1 ratio 7.7097 comp 0.699 GB/s decomp 2.092 GB/s    
-  x-ray    v7 ratio 1.4621 comp 0.093 GB/s decomp 0.837 GB/s     | zstd-3 ratio 1.3926 comp 0.163 GB/s decomp 0.835 GB/s     | zstd-1 ratio 1.2513 comp 0.772 GB/s decomp 1.114 GB/s    
-v7 total: ratio 3.2176 comp 0.186 GB/s decomp 1.299 GB/s | zstd-3 ratio 3.2045 comp 0.267 GB/s decomp 1.264 GB/s | zstd-1 ratio 2.8942 comp 0.461 GB/s decomp 1.366 GB/s
+  dickens  v7 ratio 2.8331 comp 0.126 GB/s decomp 0.839 GB/s     | zstd-3 ratio 2.7822 comp 0.163 GB/s decomp 1.020 GB/s     | zstd-1 ratio 2.3916 comp 0.275 GB/s decomp 1.162 GB/s    
+  mozilla  v7 ratio 2.7760 comp 0.167 GB/s decomp 1.067 GB/s     | zstd-3 ratio 2.8101 comp 0.239 GB/s decomp 0.942 GB/s     | zstd-1 ratio 2.5651 comp 0.408 GB/s decomp 0.975 GB/s    
+  mr       v7 ratio 2.8188 comp 0.140 GB/s decomp 0.958 GB/s     | zstd-3 ratio 2.8106 comp 0.203 GB/s decomp 1.083 GB/s     | zstd-1 ratio 2.6146 comp 0.370 GB/s decomp 1.187 GB/s    
+  nci      v7 ratio 11.1565 comp 0.464 GB/s decomp 2.442 GB/s    | zstd-3 ratio 11.8403 comp 0.615 GB/s decomp 1.865 GB/s    | zstd-1 ratio 11.7790 comp 0.753 GB/s decomp 1.926 GB/s   
+  ooffice  v7 ratio 1.9914 comp 0.120 GB/s decomp 0.902 GB/s     | zstd-3 ratio 1.9680 comp 0.186 GB/s decomp 0.757 GB/s     | zstd-1 ratio 1.7122 comp 0.349 GB/s decomp 0.818 GB/s    
+  osdb     v7 ratio 2.8629 comp 0.170 GB/s decomp 1.409 GB/s     | zstd-3 ratio 2.8804 comp 0.248 GB/s decomp 1.277 GB/s     | zstd-1 ratio 2.7041 comp 0.404 GB/s decomp 1.214 GB/s    
+  reymont  v7 ratio 3.4834 comp 0.164 GB/s decomp 1.062 GB/s     | zstd-3 ratio 3.4197 comp 0.204 GB/s decomp 1.115 GB/s     | zstd-1 ratio 3.0836 comp 0.266 GB/s decomp 1.213 GB/s    
+  samba    v7 ratio 4.3619 comp 0.244 GB/s decomp 1.588 GB/s     | zstd-3 ratio 4.3604 comp 0.311 GB/s decomp 1.499 GB/s     | zstd-1 ratio 3.9373 comp 0.457 GB/s decomp 1.525 GB/s    
+  sao      v7 ratio 1.3176 comp 0.100 GB/s decomp 1.309 GB/s     | zstd-3 ratio 1.3120 comp 0.149 GB/s decomp 0.672 GB/s     | zstd-1 ratio 1.1603 comp 0.344 GB/s decomp 0.788 GB/s    
+  webster  v7 ratio 3.4962 comp 0.149 GB/s decomp 0.986 GB/s     | zstd-3 ratio 3.4272 comp 0.185 GB/s decomp 1.097 GB/s     | zstd-1 ratio 3.0346 comp 0.310 GB/s decomp 1.195 GB/s    
+  xml      v7 ratio 8.2448 comp 0.378 GB/s decomp 2.105 GB/s     | zstd-3 ratio 8.4138 comp 0.490 GB/s decomp 1.800 GB/s     | zstd-1 ratio 7.7097 comp 0.615 GB/s decomp 1.815 GB/s    
+  x-ray    v7 ratio 1.4621 comp 0.087 GB/s decomp 0.737 GB/s     | zstd-3 ratio 1.3926 comp 0.146 GB/s decomp 0.723 GB/s     | zstd-1 ratio 1.2513 comp 0.666 GB/s decomp 0.965 GB/s    
+v7 total: ratio 3.2176 comp 0.172 GB/s decomp 1.179 GB/s | zstd-3 ratio 3.2045 comp 0.236 GB/s decomp 1.108 GB/s | zstd-1 ratio 2.8942 comp 0.404 GB/s decomp 1.189 GB/s
 
 corpus/ext not present, skipping extended-corpus gate G2.
