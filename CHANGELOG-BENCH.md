@@ -1177,3 +1177,18 @@ does not exist here yet, so `V7_FUZZ=1000000 cargo test --release --test
 v7_fuzz` cannot run in this worktree; `fuzz_safety.rs`'s existing
 1,000,000-mutation container-format test (`test_corruption_mutation_fuzz_1m`)
 is green as part of the full suite.
+
+## v8 decoder experiments (2026-09-19, Sapphire Rapids c7i.2xlarge dev box, M1 Max)
+
+- Resolving repeat offsets in the copy pass instead of the sequence
+  walk (the walk stores the raw offset value; the copy loop, sequential
+  anyway, runs the three-select chain): M1 neutral (2,187 vs 2,190 MB/s
+  on the corpus loop), x86 -5% (1,292 vs 1,360). The chain moved from a
+  pass that overlaps eight streams onto the address of every match
+  source load, where the x86 core cannot run ahead of it. Reverted.
+- Format v8 (8 MB window) against v7 on the same x86 instance, same
+  binaries side by side: max-level decode 1,390/1,370 -> 1,355/1,337
+  MB/s (corpus loop), 1,197 -> 1,183 (v7_bench); zstd -3 1,157. The
+  published c7i run of 56cc09d measured every codec 5-25% below its
+  previous run on that instance (noisy neighbour); re-run on a fresh
+  instance for the release.
