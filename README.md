@@ -51,7 +51,7 @@ for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
 
 ## What Glyd saves you
 
-> **Try it:** [docs/savings.html](docs/savings.html) — enter what you store and what you compress with today.
+> **Try it:** [surya-koritala.github.io/Glyd/savings.html](https://surya-koritala.github.io/Glyd/savings.html) — enter what you store and what you compress with today.
 
 Stored bytes scale with `1 / ratio`. Most analytics data today is compressed
 with Snappy or LZ4 (Parquet's default codec is Snappy). Moving it to Glyd
