@@ -345,6 +345,39 @@ The short version: `--max` stores 1% less than zstd -3 over the corpus
 speed; `--ultra` stores 1.5% more than zstd -19; a terabyte-year in
 S3 costs within 1% either way.
 
+## Record mode: logs and table dumps as columns
+
+Byte-level matching is a plateau: on real data zstd -19, xz and Glyd
+`--ultra` land within a few percent of each other. The redundancy of a
+log or a table dump is not in nearby bytes but in the same field of
+every record. `glyd -r` (record mode, [design](docs/design/format-v7.md#record-mode-v040-typed-columns-before-the-level))
+detects delimited lines and SQL dumps, turns them into one typed
+stream per field (integer and date-time deltas, dictionaries with
+recency ranks, text), compresses those with the chosen level in
+parallel 32 MB units, and rebuilds the bytes exactly. Anything else
+is left as it is.
+
+The 8.7 GB benchmark corpus, 10 cores, every decode byte-checked
+(`examples/bench_suite.rs`, rows in [`benchmarks/suite/m1-max-record-mode/`](benchmarks/suite/m1-max-record-mode/)):
+
+| Data | Glyd&nbsp;‑‑max | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑r** | ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;‑r** | zstd&nbsp;-3 | zstd&nbsp;-19 | **‑‑ultra&nbsp;‑r vs zstd&nbsp;-19** |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| SQL dumps (3.9 GB) | 4.94 | **8.35** | **10.13** | 4.97 | 7.10 | **1.43× smaller** |
+| Access logs (0.55 GB) | 9.65 | **20.4** | **22.4** | 9.51 | 14.8 | **1.51× smaller** |
+| Pageview logs (0.71 GB) | 3.68 | **4.02** | **4.89** | 3.56 | 4.82 | 1.01× |
+| JSON events (2.6 GB) | 11.49 | 11.46 | 14.59 | 10.46 | **15.07** | 0.97× (left plain) |
+| Parquet (1.0 GB) | 1.01 | 1.01 | 1.02 | 1.01 | 1.02 | 1.00× |
+| Whole corpus | 3.89 | **4.66** | **5.13** | 3.85 | 4.66 | **1.10× smaller** |
+
+`--max -r` matches zstd -19's size over the corpus while compressing at
+1,150 MB/s against 19 (10 cores) and decompressing at 4,700 MB/s
+against 2,300; `--ultra -r` is 10% smaller than zstd -19. The transform
+costs: record-mode reads run at 4,500-4,700 MB/s instead of 8,700 for
+plain `--max`. JSON events are not record-shaped (their redundancy is
+inside each record and across the whole file) and are left to the
+plain level; a 128 MB matching window is the lever there (23% with
+zstd `--long`; not yet in Glyd).
+
 ## Known gaps
 
 - `--max` compresses at 0.65-0.78x zstd -3's speed on server cores

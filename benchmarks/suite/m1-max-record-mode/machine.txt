@@ -1,0 +1,4 @@
+commit: b677084a6801e774320ad1b8242ff7a9b79bdd47
+machine: Apple M1 Max, 10 cores, macOS
+run: bench_suite --large --threads 10 --repeats 1 --slow-repeats 1 --codecs glyd-max,glyd-max-rec,glyd-ultra-rec,zstd-3,zstd-19
+date: 2026-09-19T21:51:14Z
