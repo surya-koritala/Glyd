@@ -14,7 +14,7 @@ every earlier format.
   dictionaries with recency ranks, text) before the level, in
   parallel 32 MB units, rebuilt byte for byte; other data is left as
   it is. Whole 8.7 GB corpus, 10 cores: `--ultra -r` 5.13 against
-  zstd -19's 4.66 (SQL dumps 1.43x smaller, access logs 1.51x, JSON
+  zstd -19's 4.66 (SQL dumps 1.43x smaller, access logs 1.54x, JSON
   left plain); `--max -r` 4.66 at 1,150 MB/s. Design notes in
   docs/design/format-v7.md; the prototypes and measurements that led
   here in experiments/structure/.

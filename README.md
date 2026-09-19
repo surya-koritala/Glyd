@@ -363,8 +363,8 @@ The 8.7 GB benchmark corpus, 10 cores, every decode byte-checked
 | Data | Glyd&nbsp;‑‑max | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑r** | ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;‑r** | zstd&nbsp;-3 | zstd&nbsp;-19 | **‑‑ultra&nbsp;‑r vs zstd&nbsp;-19** |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | SQL dumps (3.9 GB) | 4.94 | **8.35** | **10.13** | 4.97 | 7.10 | **1.43× smaller** |
-| Access logs (0.55 GB) | 9.65 | **20.4** | **22.4** | 9.51 | 14.8 | **1.51× smaller** |
-| Pageview logs (0.71 GB) | 3.68 | **4.02** | **4.89** | 3.56 | 4.82 | 1.01× |
+| Access logs (0.55 GB) | 9.67 | **21.4** | **23.0** | 9.53 | 14.9 | **1.54× smaller** |
+| Pageview logs (0.71 GB) | 3.68 | **4.03** | **4.89** | 3.56 | 4.82 | 1.02× |
 | JSON events (2.6 GB) | 11.49 | 11.46 | 14.59 | 10.46 | **15.07** | 0.97× (left plain) |
 | Parquet (1.0 GB) | 1.01 | 1.01 | 1.02 | 1.01 | 1.02 | 1.00× |
 | Whole corpus | 3.89 | **4.66** | **5.13** | 3.85 | 4.66 | **1.10× smaller** |
