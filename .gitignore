@@ -5,3 +5,4 @@
 *.log
 *.alk
 .g1-status.json
+.v7-fuzz-status
