@@ -518,11 +518,10 @@ fn candidate(e: u32, mine: u32, pos: usize) -> Option<usize> {
     }
 }
 
-/// A position's two table slots: its 8 bytes, and per table the index and
-/// the tagged entry it writes there.
+/// A position's two table slots: per table the index and the tagged
+/// entry it writes there.
 #[derive(Clone, Copy)]
 struct Slot {
-    w: u64,
     il: usize,
     ml: u32,
     is: usize,
@@ -536,7 +535,7 @@ impl Slot {
         let w = std::ptr::read_unaligned(src.add(pos) as *const u64);
         let (il, ml) = long_slot(w, pos);
         let (is, ms) = short_slot(w, pos);
-        Slot { w, il, ml, is, ms }
+        Slot { il, ml, is, ms }
     }
 }
 
