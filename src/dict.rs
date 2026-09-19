@@ -36,6 +36,10 @@ pub struct Dict {
     /// every object's parse (`content` never moves: `Dict` owns it and
     /// this points into it).
     finder: DictTables,
+    /// The ultra finder's tables with the content inserted, built on
+    /// first use (`compress_with_dict_ultra`), sized for objects up to a
+    /// block.
+    ultra: std::sync::OnceLock<std::sync::Arc<crate::v7_ultra::UltraSnapshot>>,
 }
 
 // `finder.content` points into `content`, which is never reallocated.
@@ -121,7 +125,7 @@ impl Dict {
         let content_len = content.len() - CONTENT_PAD;
         finder_tables.seed(&content, content_len);
         let finder = DictTables { tables: finder_tables, content: content.as_ptr(), len: content_len };
-        let mut d = Dict { content, id: 0, tables, dec, finder };
+        let mut d = Dict { content, id: 0, tables, dec, finder, ultra: std::sync::OnceLock::new() };
         // The id covers the tables too: a block coded against them must
         // not be decoded with another set. 0 means "no dictionary".
         let id = crate::compute_checksum(&d.to_bytes());
@@ -154,6 +158,15 @@ impl Dict {
 
     pub(crate) fn finder(&self) -> &DictTables {
         &self.finder
+    }
+
+    /// The ultra finder's snapshot of the content, for an input of
+    /// `content + object` bytes of at most its `len`.
+    pub(crate) fn ultra_snapshot(&self) -> &std::sync::Arc<crate::v7_ultra::UltraSnapshot> {
+        self.ultra.get_or_init(|| {
+            let n = self.content().len();
+            std::sync::Arc::new(crate::v7_ultra::UltraState::snapshot_of(self.content(), n, n + crate::format::MAX_BLOCK_SIZE))
+        })
     }
 }
 

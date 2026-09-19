@@ -242,6 +242,18 @@ fn h3(p: *const u8) -> usize {
 /// thread and sized per call to the input (`clear`): up to 4 MB of heads
 /// and 64 MB of tree for inputs that fill the 8 MB window, a few MB for
 /// a 256 KB chunk.
+/// An `UltraState`'s tables with a dictionary's content inserted.
+pub struct UltraSnapshot {
+    hash4: Vec<u32>,
+    hash4_shift: u32,
+    hash3: Box<[u32]>,
+    tree: Vec<u32>,
+    ring_mask: usize,
+    inserted: usize,
+    /// The input length the tables were sized for.
+    pub len: usize,
+}
+
 pub struct UltraState {
     hash4: Vec<u32>,
     /// Bits `h4` keeps: 12 to `HASH4_BITS` by input size.
@@ -258,6 +270,7 @@ pub struct UltraState {
     opt: Vec<Node>,
     cands: Vec<(u32, u32)>,
     stats: Option<Stats>,
+
     /// Table writes of the first block's first pass: (hash4 index, old
     /// head, hash3 index, old head) per position, undone before its
     /// second pass.
@@ -278,6 +291,34 @@ impl UltraState {
             stats: None,
             undo: Vec::new(),
         })
+    }
+
+    /// The tables after `clear(len)` and inserting `input[..end]`: a
+    /// dictionary's content indexed once, for every object compressed
+    /// with it to start from (`restore`) instead of inserting the content
+    /// again. `len` is the largest input (content and object) the
+    /// tables are sized for.
+    pub fn snapshot_of(input: &[u8], end: usize, len: usize) -> UltraSnapshot {
+        let mut st = UltraState::new();
+        st.clear(len);
+        st.insert_upto(input, end, false);
+        UltraSnapshot { hash4: st.hash4, hash4_shift: st.hash4_shift, hash3: st.hash3, tree: st.tree, ring_mask: st.ring_mask, inserted: st.inserted, len }
+    }
+
+    /// Start from a snapshot's tables (for an input of at most its `len`
+    /// bytes whose first `inserted` bytes are what it indexed). A second
+    /// pass on the object's own counts was measured and gains nothing
+    /// over the dictionary's prices (JSON objects of 1-64 KB: -0.6% to 0).
+    pub fn restore(&mut self, snap: &UltraSnapshot) {
+        self.hash4.clear();
+        self.hash4.extend_from_slice(&snap.hash4);
+        self.hash4_shift = snap.hash4_shift;
+        self.hash3.copy_from_slice(&snap.hash3);
+        self.tree.clear();
+        self.tree.extend_from_slice(&snap.tree);
+        self.ring_mask = snap.ring_mask;
+        self.inserted = snap.inserted;
+        self.stats = None;
     }
 
     /// Forget everything and size the tables for an input of `len` bytes:

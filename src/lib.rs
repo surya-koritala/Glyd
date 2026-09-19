@@ -460,7 +460,13 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
         }),
         Parse::Ultra => ULTRA.with_borrow_mut(|t| {
             let t = t.get_or_insert_with(v7_ultra::UltraState::new);
-            t.clear(full.len());
+            // With a dictionary, an object of up to a block starts from
+            // the dictionary's snapshot (its content indexed once) and
+            // is priced by the dictionary's tables.
+            match dict.map(|d| d.ultra_snapshot()).filter(|s| full.len() <= s.len) {
+                Some(snap) => t.restore(snap),
+                None => t.clear(full.len()),
+            }
             if let Some(d) = dict {
                 t.seed_stats(&d.tables());
             }
