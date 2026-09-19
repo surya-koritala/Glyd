@@ -58,7 +58,13 @@ const T_DICT8: u8 = 4;
 struct FxHasher(u64);
 impl std::hash::Hasher for FxHasher {
     fn finish(&self) -> u64 {
-        self.0
+        // Avalanche: hashbrown takes the top bits for its groups and the
+        // low bits for the bucket, so every input bit must reach both.
+        let mut h = self.0;
+        h ^= h >> 32;
+        h = h.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        h ^= h >> 29;
+        h
     }
     fn write(&mut self, bytes: &[u8]) {
         let mut h = self.0;
@@ -364,6 +370,10 @@ pub fn detect(input: &[u8]) -> Option<Shape> {
         return Some(Shape::Sql);
     }
     let lines: Vec<&[u8]> = sample.split(|&b| b == b'\n').collect();
+    // A unit cut inside a dump's tuple list: lines `(...),`.
+    if lines.len() >= 2 && lines[..lines.len() - 1].iter().take(64).all(|l| l.starts_with(b"(") && (l.ends_with(b"),") || l.ends_with(b");") || l.ends_with(b")"))) {
+        return Some(Shape::Sql);
+    }
     if lines.len() < 8 {
         return None;
     }
@@ -601,19 +611,27 @@ fn transform_sql(input: &[u8]) -> Option<Vec<u8>> {
     let mut tuples: Vec<(usize, usize, Vec<(usize, usize)>)> = Vec::new(); // (start '(', end after ')', fields)
     let n = input.len();
     let mut i = 0usize;
+    // A list may start at the very beginning (a unit cut inside one).
+    let mut list_at_start = input.first() == Some(&b'(');
     while i < n {
-        let j = match memfind(&input[i..], b"VALUES") {
-            Some(p) => i + p,
-            None => break,
+        let k = if list_at_start {
+            list_at_start = false;
+            0
+        } else {
+            let j = match memfind(&input[i..], b"VALUES") {
+                Some(p) => i + p,
+                None => break,
+            };
+            let mut k = j + 6;
+            while k < n && (input[k] == b' ' || input[k] == b'\n') {
+                k += 1;
+            }
+            if k >= n || input[k] != b'(' {
+                i = k.max(j + 6);
+                continue;
+            }
+            k
         };
-        let mut k = j + 6;
-        while k < n && (input[k] == b' ' || input[k] == b'\n') {
-            k += 1;
-        }
-        if k >= n || input[k] != b'(' {
-            i = k.max(j + 6);
-            continue;
-        }
         i = k;
         while i < n && input[i] == b'(' {
             let mut p = i + 1;

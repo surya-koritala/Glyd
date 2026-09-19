@@ -737,8 +737,8 @@ unsafe fn decode_block(
 /// The decompressed size of `compressed`, from its block headers (every
 /// header is validated; the payloads are not read).
 pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
-    if let Some((len, _)) = records_envelope(compressed) {
-        return Ok(len);
+    if let Some(units) = records_envelope(compressed) {
+        return Ok(units.iter().map(|u| u.len).sum());
     }
     total_uncompressed_len(compressed)
 }
@@ -746,65 +746,167 @@ pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
 // ---------------------------------------------------------------------------
 // Record mode: `record::transform` turns record-shaped text (logs, table
 // dumps) into typed column streams, which the ordinary levels then
-// compress; the output is an envelope naming the original length around
-// an ordinary Glyd stream of the image, and every decoder rebuilds the
-// text from it (`record::inverse`).
+// compress. The input is cut into units at line boundaries; each unit
+// is transformed on its own (its own dictionaries) when a trial on its
+// first megabytes shows the transform pays, and units compress and
+// rebuild in parallel. The output is an envelope around the units'
+// Glyd streams, and every decoder reads it (`record::inverse`).
 
-/// The envelope: magic, the original length, then the Glyd stream.
+/// The envelope: magic; number of units; per unit its original length,
+/// its stream's length and whether it is a record image (1) or the text
+/// itself (0); then the streams back to back.
 const RECORDS_MAGIC: &[u8; 8] = b"GLYDRECS";
+/// Text per unit (cut at a line end), the granule of parallel rebuild.
+const RECORDS_UNIT: usize = 32 << 20;
+/// Bytes of a unit the record-mode decision is made on.
+const RECORDS_TRIAL: usize = 4 << 20;
 
-/// The original length and the inner stream of a record-mode output.
-fn records_envelope(compressed: &[u8]) -> Option<(usize, &[u8])> {
-    if compressed.len() < 16 || &compressed[..8] != RECORDS_MAGIC {
-        return None;
-    }
-    let len = u64::from_le_bytes(compressed[8..16].try_into().unwrap()) as usize;
-    Some((len, &compressed[16..]))
+struct RecordUnit<'a> {
+    len: usize,
+    image: bool,
+    stream: &'a [u8],
 }
 
-/// `level` in record mode: `input` is transformed when it is record-shaped
-/// (the output then starts with the record envelope), else compressed
-/// as it is. `decompress`, `decompress_into` and the parallel decoders
-/// read both.
+/// The units of a record-mode output, or None when `compressed` is not one.
+fn records_envelope(compressed: &[u8]) -> Option<Vec<RecordUnit<'_>>> {
+    if compressed.len() < 9 || &compressed[..8] != RECORDS_MAGIC {
+        return None;
+    }
+    let mut pos = 8usize;
+    let n = get_varint(compressed, &mut pos)? as usize;
+    if n > compressed.len() {
+        return None;
+    }
+    let mut units = Vec::with_capacity(n);
+    let mut sizes = Vec::with_capacity(n);
+    for _ in 0..n {
+        let len = get_varint(compressed, &mut pos)? as usize;
+        let clen = get_varint(compressed, &mut pos)? as usize;
+        let image = *compressed.get(pos)?;
+        pos += 1;
+        sizes.push((len, clen, image != 0));
+    }
+    for (len, clen, image) in sizes {
+        let stream = compressed.get(pos..pos.checked_add(clen)?)?;
+        pos += clen;
+        units.push(RecordUnit { len, image, stream });
+    }
+    if pos != compressed.len() {
+        return None;
+    }
+    Some(units)
+}
+
+/// `level` in record mode: units of `input` are transformed when they are
+/// record-shaped and the transform pays, else compressed as they are.
+/// `decompress`, `decompress_into` and the parallel decoders read the
+/// result.
 pub fn compress_records_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>)) {
-    match record::transform(input) {
-        Some(image) => {
-            output.extend_from_slice(RECORDS_MAGIC);
-            output.extend_from_slice(&(input.len() as u64).to_le_bytes());
-            level(&image, output);
+    // Units cut at line ends.
+    let mut units: Vec<&[u8]> = Vec::new();
+    let mut at = 0usize;
+    while at < input.len() {
+        let mut end = (at + RECORDS_UNIT).min(input.len());
+        if end < input.len() {
+            match input[at..end].iter().rposition(|&b| b == b'\n') {
+                Some(p) if p > 0 => end = at + p + 1,
+                _ => {}
+            }
         }
-        None => level(input, output),
+        units.push(&input[at..end]);
+        at = end;
+    }
+    if units.is_empty() {
+        units.push(&input[..0]);
+    }
+    let compressed: Vec<(bool, Vec<u8>)> = units
+        .par_iter()
+        .map(|unit| {
+            let trial = &unit[..unit.len().min(RECORDS_TRIAL)];
+            let wins = match record::transform(trial) {
+                Some(image) => {
+                    let (mut a, mut b) = (Vec::new(), Vec::new());
+                    level(trial, &mut a);
+                    level(&image, &mut b);
+                    b.len() * 100 < a.len() * 97
+                }
+                None => false,
+            };
+            let mut out = Vec::with_capacity(unit.len() / 3 + 1024);
+            if wins {
+                if let Some(image) = record::transform(unit) {
+                    level(&image, &mut out);
+                    return (true, out);
+                }
+            }
+            level(unit, &mut out);
+            (false, out)
+        })
+        .collect();
+    output.extend_from_slice(RECORDS_MAGIC);
+    put_varint(output, units.len() as u32);
+    for (u, (image, c)) in units.iter().zip(&compressed) {
+        put_varint(output, u.len() as u32);
+        put_varint(output, c.len() as u32);
+        output.push(*image as u8);
+    }
+    for (_, c) in &compressed {
+        output.extend_from_slice(c);
     }
 }
 
 /// Max level in record mode (see `compress_records_with`).
 pub fn compress_records_into_max(input: &[u8], output: &mut Vec<u8>) {
-    compress_records_with(input, output, compress_parallel_into_max)
+    compress_records_with(input, output, compress_into_max)
 }
 
 /// Ultra level in record mode.
 pub fn compress_records_into_ultra(input: &[u8], output: &mut Vec<u8>) {
-    compress_records_with(input, output, compress_parallel_into_ultra)
+    compress_records_with(input, output, compress_into_ultra)
 }
 
-/// Decode a record-mode stream: the inner stream, then the rebuild.
-fn decompress_records(len: usize, inner: &[u8], parallel: bool) -> Result<Vec<u8>> {
-    let image = if parallel { decompress_parallel(inner)? } else { decompress(inner)? };
-    let text = record::inverse(&image)?;
-    if text.len() != len {
-        return Err(CodecError::CorruptedBitstream("record envelope: length"));
+/// Decode a record-mode stream into `dst`: every unit in parallel, its
+/// inner stream then the rebuild.
+fn records_into(units: &[RecordUnit<'_>], dst: &mut [u8]) -> Result<usize> {
+    let total: usize = units.iter().map(|u| u.len).sum();
+    if dst.len() < total {
+        return Err(CodecError::OutputBufferTooSmall { required: total, provided: dst.len() });
     }
-    Ok(text)
+    let mut offsets = Vec::with_capacity(units.len());
+    let mut at = 0usize;
+    for u in units {
+        offsets.push(at);
+        at += u.len;
+    }
+    let base = dst.as_mut_ptr() as usize;
+    units.par_iter().zip(offsets.par_iter()).try_for_each(|(u, &off)| -> Result<()> {
+        // Units cover disjoint ranges of `dst`.
+        let out = unsafe { std::slice::from_raw_parts_mut((base + off) as *mut u8, u.len) };
+        if u.image {
+            let image = decompress(u.stream)?;
+            let text = record::inverse(&image)?;
+            if text.len() != u.len {
+                return Err(CodecError::CorruptedBitstream("record envelope: unit length"));
+            }
+            out.copy_from_slice(&text);
+        } else {
+            let n = decompress_into(u.stream, out)?;
+            if n != u.len {
+                return Err(CodecError::CorruptedBitstream("record envelope: unit length"));
+            }
+        }
+        Ok(())
+    })?;
+    Ok(total)
 }
 
-fn records_into(len: usize, inner: &[u8], dst: &mut [u8], parallel: bool) -> Result<usize> {
-    if dst.len() < len {
-        return Err(CodecError::OutputBufferTooSmall { required: len, provided: dst.len() });
-    }
-    let text = decompress_records(len, inner, parallel)?;
-    dst[..len].copy_from_slice(&text);
-    Ok(len)
+fn decompress_records(units: &[RecordUnit<'_>]) -> Result<Vec<u8>> {
+    let total: usize = units.iter().map(|u| u.len).sum();
+    let mut out = vec![0u8; total];
+    records_into(units, &mut out)?;
+    Ok(out)
 }
+
 
 /// Walk every header, validating framing, and return the total output size.
 fn total_uncompressed_len(compressed: &[u8]) -> Result<usize> {
@@ -823,8 +925,8 @@ fn total_uncompressed_len(compressed: &[u8]) -> Result<usize> {
 
 /// Decompress an entire SIMD-stream payload sequentially into a freshly allocated vector.
 pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
-    if let Some((len, inner)) = records_envelope(compressed) {
-        return decompress_records(len, inner, false);
+    if let Some(units) = records_envelope(compressed) {
+        return decompress_records(&units);
     }
     let total = total_uncompressed_len(compressed)?;
     let mut output = vec![0u8; total + PADDING * 2];
@@ -923,8 +1025,8 @@ fn decompress_sequential_impl(compressed: &[u8], dst: &mut [u8], dst_offset0: us
 
 /// Decompress into a pre-allocated buffer sequentially with checksum validation.
 pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
-    if let Some((len, inner)) = records_envelope(compressed) {
-        return records_into(len, inner, dst, false);
+    if let Some(units) = records_envelope(compressed) {
+        return records_into(&units, dst);
     }
     decompress_sequential(compressed, dst, true)
 }
@@ -950,8 +1052,8 @@ struct ParallelUnit {
 
 /// Decompress in parallel across all CPU cores into a freshly allocated vector.
 pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
-    if let Some((len, inner)) = records_envelope(compressed) {
-        return decompress_records(len, inner, true);
+    if let Some(units) = records_envelope(compressed) {
+        return decompress_records(&units);
     }
     let total = total_uncompressed_len(compressed)?;
     let mut output = vec![0u8; total + PADDING * 2];
@@ -1043,8 +1145,8 @@ fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> 
 
 /// Decompress in parallel across all CPU cores into a pre-allocated buffer with checksum verification.
 pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
-    if let Some((len, inner)) = records_envelope(compressed) {
-        return records_into(len, inner, dst, true);
+    if let Some(units) = records_envelope(compressed) {
+        return records_into(&units, dst);
     }
     decompress_parallel_impl(compressed, dst, true)
 }
