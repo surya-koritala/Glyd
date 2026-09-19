@@ -313,6 +313,23 @@ fn v7_block_decode_into_exact_dst_writes_nothing_past_it() {
             ],
             (0..15u32).map(|i| b'a' + (i % 26) as u8).collect(),
         ),
+        // Repeat offsets across the switch from wild to exact copies,
+        // which falls in the middle of a group of eight (sequence 14 of
+        // 22 is the first to end within the margin): the exact loop must
+        // continue the rep state, not re-apply the switching sequence's.
+        // That sequence pushes a new offset and the next one swaps in the
+        // previous (code 1), which a double push would have lost; the
+        // matches cover the literals, so the two offsets copy different
+        // bytes.
+        (
+            std::iter::once(Sequence { lit_len: 12, match_len: 12, offset: 12 })
+                .chain(std::iter::repeat(Sequence { lit_len: 2, match_len: 12, offset: 12 }).take(13))
+                .chain(std::iter::once(Sequence { lit_len: 2, match_len: 12, offset: 24 }))
+                .chain(std::iter::repeat(Sequence { lit_len: 2, match_len: 12, offset: 12 }).take(6))
+                .chain(std::iter::once(Sequence { lit_len: 3, match_len: 0, offset: 0 }))
+                .collect(),
+            (0..55u32).map(|i| b'a' + (i % 26) as u8).collect(),
+        ),
     ] {
         let expect = materialize(&seqs, &lits);
         let mut p = Vec::new();
