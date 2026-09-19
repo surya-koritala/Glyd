@@ -368,4 +368,30 @@ impl SubHeader {
             sizes: [u(6), u(10), u(14), u(18), u(22)],
         })
     }
+
+    /// The compact form (v9 blocks): sizes as u16.
+    pub const COMPACT_BYTES: usize = 1 + 1 + 4 + 2 * 5;
+
+    pub fn write_compact(&self, out: &mut Vec<u8>) {
+        out.push(self.coded);
+        out.push(self.reuse);
+        out.extend_from_slice(&self.dict_id.to_le_bytes());
+        for s in self.sizes {
+            debug_assert!(s < 65536);
+            out.extend_from_slice(&(s as u16).to_le_bytes());
+        }
+    }
+
+    pub fn parse_compact(src: &[u8]) -> Option<SubHeader> {
+        if src.len() < Self::COMPACT_BYTES {
+            return None;
+        }
+        let u = |i: usize| u16::from_le_bytes([src[i], src[i + 1]]) as u32;
+        Some(SubHeader {
+            coded: src[0],
+            reuse: src[1],
+            dict_id: u32::from_le_bytes([src[2], src[3], src[4], src[5]]),
+            sizes: [u(6), u(8), u(10), u(12), u(14)],
+        })
+    }
 }

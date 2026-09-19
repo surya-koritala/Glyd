@@ -13,7 +13,7 @@ use crate::error::{CodecError, Result};
 use crate::format::MAX_BLOCK_SIZE;
 use crate::huff8;
 use crate::tans;
-use crate::v7_encode::{payload_layout, Layout};
+use crate::v7_encode::{payload_layout, payload_layout_compact, Layout};
 use crate::v7_format::*;
 
 /// Every sequence but the last carries a match of at least MIN_MATCH bytes.
@@ -89,12 +89,46 @@ fn corrupt(msg: &'static str) -> CodecError {
     CodecError::CorruptedBitstream(msg)
 }
 
-/// A section's 8 sub-streams. v8: `bits::Stream::split` (24-bit sizes,
-/// one padding at the end). v7: 8 u32 sizes, each stream carrying its own
-/// `PAD` zeros.
-fn substreams(sec: &[u8], v8: bool) -> Result<[Stream; 8]> {
+/// One section of a payload as the passes take it: its own bytes are
+/// `bytes[..len]`; in a compact (v9) block `bytes` runs on to the end of
+/// the payload, whose padding the streams' loads may reach.
+#[derive(Clone, Copy)]
+struct Section<'a> {
+    bytes: &'a [u8],
+    len: usize,
+}
+
+impl<'a> Section<'a> {
+    fn of(payload: &'a [u8], layout: &Layout, i: usize) -> Section<'a> {
+        let r = layout.sections[i].clone();
+        if layout.compact {
+            Section { bytes: &payload[r.start..], len: r.end - r.start }
+        } else {
+            Section { bytes: &payload[r.clone()], len: r.end - r.start }
+        }
+    }
+
+    /// The section's own bytes.
+    fn own(&self) -> &'a [u8] {
+        &self.bytes[..self.len]
+    }
+
+    /// The section from `pos` on (past a table).
+    fn from(&self, pos: usize) -> Section<'a> {
+        Section { bytes: &self.bytes[pos..], len: self.len - pos }
+    }
+}
+
+/// A section's 8 sub-streams. v9: `bits::Stream::split_compact`. v8:
+/// `bits::Stream::split` (24-bit sizes, one padding at the end). v7: 8
+/// u32 sizes, each stream carrying its own `PAD` zeros.
+fn substreams(sec: Section, v8: bool, compact: bool) -> Result<([Stream; 8], bool)> {
+    if compact {
+        return Stream::split_compact(sec.bytes, sec.len).ok_or(corrupt("v9: sub-stream table"));
+    }
+    let sec = sec.own();
     if v8 {
-        return Stream::split(sec).ok_or(corrupt("v8: sub-stream table"));
+        return Stream::split(sec).map(|s| (s, false)).ok_or(corrupt("v8: sub-stream table"));
     }
     if sec.len() < 32 {
         return Err(corrupt("v7: sub-stream table truncated"));
@@ -112,7 +146,7 @@ fn substreams(sec: &[u8], v8: bool) -> Result<[Stream; 8]> {
     if pos != sec.len() {
         return Err(corrupt("v7: section has trailing bytes"));
     }
-    Ok(out)
+    Ok((out, false))
 }
 
 /// A v8 tANS table from the front of `bytes`: its counts and the bytes
@@ -171,8 +205,9 @@ fn tans_counts(sec: &[u8], v8: bool, n_symbols: usize, counts: &mut [u16; tans::
 /// Decode one code stream (or copy it raw) into its lane of the grouped
 /// `codes` (`codes` starts at the lane: code i goes to `at(i)`).
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-fn code_stream(sec: &[u8], v8: bool, coded: bool, reuse: bool, n_symbols: usize, n: usize, prev: &mut Option<tans::DecodeTable>, codes: &mut [u8]) -> Result<()> {
+fn code_stream(sec: Section, v8: bool, compact: bool, coded: bool, reuse: bool, n_symbols: usize, n: usize, prev: &mut Option<tans::DecodeTable>, codes: &mut [u8]) -> Result<()> {
     if !coded {
+        let sec = sec.own();
         if sec.len() != n {
             return Err(corrupt("v7: raw code stream length"));
         }
@@ -187,7 +222,7 @@ fn code_stream(sec: &[u8], v8: bool, coded: bool, reuse: bool, n_symbols: usize,
     let mut pos = 0usize;
     if !reuse {
         let mut counts = [0u16; tans::MAX_SYMBOLS];
-        pos = tans_counts(sec, v8, n_symbols, &mut counts)?;
+        pos = tans_counts(sec.own(), v8, n_symbols, &mut counts)?;
         // Rebuilt in place: the table lives in `DecTables` across blocks.
         if !prev.get_or_insert_with(tans::DecodeTable::empty).rebuild(&counts[..n_symbols]) {
             *prev = None;
@@ -195,8 +230,8 @@ fn code_stream(sec: &[u8], v8: bool, coded: bool, reuse: bool, n_symbols: usize,
         }
     }
     let table = prev.as_ref().ok_or(corrupt("v7: table reuse without a table"))?;
-    let streams = substreams(&sec[pos..], v8)?;
-    tans::decode8_rows(table, &streams, n, GROUP, codes).map_err(|_| corrupt("v7: code stream overrun"))?;
+    let (streams, single) = substreams(sec.from(pos), v8, compact)?;
+    tans::decode8_rows_with(table, &streams, n, GROUP, single, codes).map_err(|_| corrupt("v7: code stream overrun"))?;
     // A table built from `n_symbols` counts only ever yields those symbols.
     debug_assert!((0..n).all(|i| (codes[at(i)] as usize) < n_symbols));
     Ok(())
@@ -273,11 +308,12 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
     // The version is a const parameter so the walk's tables are constant
     // addresses, not a register (the x86-64 walk has none to spare).
     let v8 = V8;
+    let compact = layout.compact;
     let (ll_symbols, ml_symbols) = if v8 { (LL_SYMBOLS, ML_SYMBOLS) } else { (LL_SYMBOLS_V7, ML_SYMBOLS_V7) };
-    code_stream(&payload[layout.sections[S_LL].clone()], v8, coded(S_LL), reuse, ll_symbols, n, &mut prev.ll, &mut s.codes)?;
-    code_stream(&payload[layout.sections[S_ML].clone()], v8, coded(S_ML), reuse, ml_symbols, n, &mut prev.ml, &mut s.codes[8..])?;
+    code_stream(Section::of(payload, layout, S_LL), v8, compact, coded(S_LL), reuse, ll_symbols, n, &mut prev.ll, &mut s.codes)?;
+    code_stream(Section::of(payload, layout, S_ML), v8, compact, coded(S_ML), reuse, ml_symbols, n, &mut prev.ml, &mut s.codes[8..])?;
     let off_symbols = if v8 { OFF_SYMBOLS } else { OFF_SYMBOLS_V7 };
-    code_stream(&payload[layout.sections[S_OFF].clone()], v8, coded(S_OFF), reuse, off_symbols, n, &mut prev.off, &mut s.codes[16..])?;
+    code_stream(Section::of(payload, layout, S_OFF), v8, compact, coded(S_OFF), reuse, off_symbols, n, &mut prev.off, &mut s.codes[16..])?;
     if !(coded(S_LL) && coded(S_ML) && coded(S_OFF)) {
         // The encoder drops its tables whenever any stream went raw.
         prev.ll = None;
@@ -285,8 +321,9 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
         prev.off = None;
     }
 
-    let sec = &payload[layout.sections[S_EXTRA].clone()];
-    let extra = substreams(sec, v8)?;
+    let section = Section::of(payload, layout, S_EXTRA);
+    let sec = section.bytes;
+    let (extra, single) = substreams(section, v8, compact)?;
     // Stream k's next bit is `b<k>`, an absolute bit address (`ptr * 8 +
     // bit`, as in `tans::decode8`): eight scalars, not an array, so they
     // stay in registers, and no base register. Built from the extras
@@ -311,6 +348,11 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
     #[cfg(target_arch = "x86_64")]
     let split: &WalkSplit = if v8 { &WALK_SPLIT } else { &WALK_SPLIT_V7 };
     loop {
+        // A single-stream section (compact block) has every sequence in
+        // stream 0: the clamped tail below takes them all.
+        if single {
+            break;
+        }
         // Whole batches of 8 that stop short of sequence n - 1 and of any
         // stream's safe margin.
         let mut iters = (n - o).saturating_sub(1) / 8;
@@ -386,7 +428,7 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
     // Tail: the last sequence, whatever a short stream's margin left, and
     // the literal-only rule -- on the clamped readers.
     for i in o..n {
-        let r = &mut ers[i % 8];
+        let r = &mut ers[if single { 0 } else { i % 8 }];
         let j = at(i);
         let llc = s.codes[j];
         let mlc = s.codes[8 + j];
@@ -432,7 +474,8 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
 /// Pass 2: literals into scratch.lits[..n_lit].
 #[cfg_attr(target_arch = "x86_64", inline(always))]
 fn literals(payload: &[u8], layout: &Layout, n_lit: usize, prev: &mut DecTables, s: &mut Scratch) -> Result<()> {
-    let sec = &payload[layout.sections[S_LIT].clone()];
+    let section = Section::of(payload, layout, S_LIT);
+    let sec = section.own();
     if layout.sub.coded & (1 << S_LIT) == 0 {
         if sec.len() != n_lit {
             return Err(corrupt("v7: raw literal length"));
@@ -456,8 +499,8 @@ fn literals(payload: &[u8], layout: &Layout, n_lit: usize, prev: &mut DecTables,
         prev.lit = Some(huff8::Table::build(&lengths).ok_or(corrupt("v7: literal code lengths"))?);
     }
     let table = prev.lit.as_ref().ok_or(corrupt("v7: literal table reuse without a table"))?;
-    let streams = substreams(&sec[pos..], layout.v8)?;
-    huff8::decode(table, &streams, n_lit, &mut s.lits).map_err(|_| corrupt("v7: literal stream overrun"))
+    let (streams, single) = substreams(section.from(pos), layout.v8, layout.compact)?;
+    huff8::decode_with(table, &streams, n_lit, single, &mut s.lits).map_err(|_| corrupt("v7: literal stream overrun"))
 }
 
 /// One sequence, wild: `ll` literals from `lit`, then `ml` (>= 1) bytes
@@ -693,33 +736,33 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
 /// `buffer_start` must point into the same allocation as `dst`, at or
 /// before `dst.as_ptr()`, with every byte between them initialised: that
 /// is the match window (the previous blocks of the same chain).
-pub unsafe fn decode_block(payload: &[u8], v8: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
+pub unsafe fn decode_block(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
     #[cfg(target_arch = "x86_64")]
     {
         if crate::has_avx2() {
-            return decode_block_avx2(payload, v8, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch);
+            return decode_block_avx2(payload, v8, compact, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch);
         }
     }
-    decode_block_impl(payload, v8, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch)
+    decode_block_impl(payload, v8, compact, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch)
 }
 
 /// The decoder compiled for AVX2 + BMI2: the same passes, with 32-byte
 /// copies and single-uop variable shifts (`shrx`) in the bit loops.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,bmi2")]
-unsafe fn decode_block_avx2(payload: &[u8], v8: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
-    decode_block_impl(payload, v8, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch)
+unsafe fn decode_block_avx2(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
+    decode_block_impl(payload, v8, compact, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch)
 }
 
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-unsafe fn decode_block_impl(payload: &[u8], v8: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
+unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch) -> Result<usize> {
     if uncompressed_len > dst.len() {
         return Err(CodecError::OutputBufferTooSmall { required: uncompressed_len, provided: dst.len() });
     }
     if uncompressed_len > MAX_BLOCK_SIZE || n_lit > MAX_BLOCK_SIZE || n_seq > MAX_SEQ {
         return Err(corrupt("v7: block header sizes"));
     }
-    let mut layout = payload_layout(payload).ok_or(corrupt("v7: payload layout"))?;
+    let mut layout = if compact { payload_layout_compact(payload) } else { payload_layout(payload) }.ok_or(corrupt("v7: payload layout"))?;
     layout.v8 = v8;
     let sub = &layout.sub;
     let coded = |i: usize| sub.coded & (1 << i) != 0;

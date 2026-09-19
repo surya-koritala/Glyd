@@ -2,7 +2,7 @@
 //! sub-stream i % 8, LSB-first with bit-reversed canonical codes, so the
 //! decoder's table is indexed by the next `TB` bits directly. Measured on
 //! the M1 Max: 0.61 ns/symbol (tests/v7_codecs.rs, huff8_speed_silesia).
-use crate::bits::{split_streams, write_streams, BitReader, Stream, MAX_PUT, PAD};
+use crate::bits::{split_streams, write_section, BitReader, Framing, Stream, MAX_PUT, PAD};
 use crate::huffman::{build_codes, build_lengths, MAX_CODE_LEN};
 
 pub use crate::bits::STREAMS;
@@ -88,15 +88,27 @@ impl Table {
 /// symbols per `put` (their codes concatenated off the accumulator's
 /// dependency chain: 4 x TB <= MAX_PUT) from tables of reversed codes
 /// and lengths (two loads beat one load plus the unpacking ALU ops).
-pub fn encode_into(data: &[u8], lengths: &[u8; 256], out: &mut Vec<u8>) {
+pub fn encode_into(data: &[u8], lengths: &[u8; 256], framing: Framing, out: &mut Vec<u8>) {
     let codes = build_codes(lengths);
     let rev: [u32; 256] = std::array::from_fn(|s| reverse_bits(codes[s], lengths[s]) as u32);
     let len: [u32; 256] = std::array::from_fn(|s| lengths[s] as u32);
     debug_assert!(data.iter().all(|&b| (1..=TB as u8).contains(&lengths[b as usize])), "symbol without a code, or one longer than TB");
-    let max_bits = data.len().div_ceil(STREAMS) * TB as usize;
-    write_streams(out, max_bits, |k, w| {
+    // Symbol i goes to stream i % streams: `STREAMS` apart in the data,
+    // or every symbol into the one stream.
+    let streams = framing.streams();
+    let max_bits = data.len().div_ceil(streams) * TB as usize;
+    write_section(out, framing, max_bits, |k, w| {
         let s = &data[k.min(data.len())..];
         let mut i = 0;
+        if streams == 1 {
+            // SAFETY: every symbol into this stream: `max_bits` covers it.
+            unsafe {
+                for &a in s {
+                    w.put(rev[a as usize] as u64, len[a as usize]);
+                }
+            }
+            return;
+        }
         // SAFETY: at most ceil(len / 8) symbols of at most TB bits each go
         // into this stream, the `max_bits` the section was reserved for.
         // No length exceeds TB: `build_codes` above indexes its
@@ -124,7 +136,7 @@ pub fn encode_into(data: &[u8], lengths: &[u8; 256], out: &mut Vec<u8>) {
 #[doc(hidden)]
 pub fn encode(data: &[u8], lengths: &[u8; 256]) -> Vec<Vec<u8>> {
     let mut section = Vec::new();
-    encode_into(data, lengths, &mut section);
+    encode_into(data, lengths, Framing::Wide, &mut section);
     split_streams(&section)
 }
 
@@ -178,8 +190,22 @@ fn safe_batches(at: usize, last: usize) -> usize {
 /// also what makes `overrun` exact for corrupt/truncated streams.
 #[cfg_attr(target_arch = "x86_64", inline(always))]
 pub fn decode<'b>(table: &Table, streams: &[Stream<'b>; STREAMS], n: usize, out: &mut [u8]) -> Result<(), ()> {
+    decode_with(table, streams, n, false, out)
+}
+
+/// `decode`; with `single`, every symbol comes from `streams[0]` on the
+/// clamped per-symbol path (a compact block's short section).
+pub fn decode_with<'b>(table: &Table, streams: &[Stream<'b>; STREAMS], n: usize, single: bool, out: &mut [u8]) -> Result<(), ()> {
     assert!(out.len() >= n);
     let t = table.entries.as_slice();
+    if single {
+        let mut r = BitReader::new_at(streams[0], 0);
+        for o in out[..n].iter_mut() {
+            r.refill();
+            *o = sym(&mut r, t);
+        }
+        return if r.overrun() { Err(()) } else { Ok(()) };
+    }
     for s in streams {
         assert!(s.bytes.len() >= PAD, "stream shorter than its padding");
     }

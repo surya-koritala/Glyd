@@ -3,7 +3,7 @@
 //! the initial state (TL bits), then per symbol the table's `nbits` bits.
 //! The encoder therefore processes symbols last-to-first and emits the
 //! chunks in reverse, so no bit-reversal is needed anywhere.
-use crate::bits::{split_streams, write_streams, BitReader, BitWriter, Stream, MAX_PUT, PAD};
+use crate::bits::{split_streams, write_section, BitReader, BitWriter, Framing, Stream, MAX_PUT, PAD};
 
 pub const TL: u32 = 10;
 pub const L: usize = 1 << TL;
@@ -320,10 +320,28 @@ fn unpack_chunk(c: u32) -> (u32, u32) {
 /// pipeline instead of serialising on one state's table lookup), packing
 /// each symbol's chunk into `chunks[i]`; then per stream, first-to-last,
 /// the initial state and the chunks, four per `put` (4 x TL <= MAX_PUT).
-pub fn encode8_into(syms: &[u8], t: &EncodeTable, chunks: &mut Vec<u32>, out: &mut Vec<u8>) {
+pub fn encode8_into(syms: &[u8], t: &EncodeTable, chunks: &mut Vec<u32>, framing: Framing, out: &mut Vec<u8>) {
     let n = syms.len();
     chunks.clear();
     chunks.resize(n, 0);
+    if framing == Framing::Single {
+        // One state over every symbol, backwards; the stream holds the
+        // final state then the chunks in symbol order.
+        let mut st = L as u32;
+        for i in (0..n).rev() {
+            let (c, s) = step(t, st, syms[i]);
+            chunks[i] = c;
+            st = s;
+        }
+        write_section(out, framing, TL as usize * (1 + n), |_, w| unsafe {
+            w.put((st - L as u32) as u64, TL);
+            for &c in chunks.iter() {
+                let (a, na) = unpack_chunk(c);
+                w.put(a as u64, na);
+            }
+        });
+        return;
+    }
     // Initial encoder state (the decoder's final one): `L`. Any value in
     // [L, 2L) would do; the decoder never checks where it ends.
     let mut st = [L as u32; STREAMS];
@@ -341,7 +359,7 @@ pub fn encode8_into(syms: &[u8], t: &EncodeTable, chunks: &mut Vec<u32>, out: &m
         }
     }
     let max_bits = (TL as usize) * (1 + n.div_ceil(STREAMS));
-    write_streams(out, max_bits, |k, w| {
+    write_section(out, framing, max_bits, |k, w| {
         let c = &chunks[k.min(n)..];
         let mut i = 0;
         // SAFETY: TL bits of state plus at most ceil(n / 8) chunks of at
@@ -371,7 +389,7 @@ pub fn encode8_into(syms: &[u8], t: &EncodeTable, chunks: &mut Vec<u32>, out: &m
 #[doc(hidden)]
 pub fn encode8(syms: &[u8], t: &EncodeTable) -> Vec<Vec<u8>> {
     let mut section = Vec::new();
-    encode8_into(syms, t, &mut Vec::new(), &mut section);
+    encode8_into(syms, t, &mut Vec::new(), Framing::Wide, &mut section);
     split_streams(&section)
 }
 
@@ -414,7 +432,33 @@ pub fn decode8(t: &DecodeTable, streams: &[Stream; STREAMS], n: usize, out: &mut
 /// corrupt or truncated streams.
 #[cfg_attr(target_arch = "x86_64", inline(always))]
 pub fn decode8_rows(t: &DecodeTable, streams: &[Stream; STREAMS], n: usize, row: usize, out: &mut [u8]) -> Result<(), ()> {
+    decode8_rows_with(t, streams, n, row, false, out)
+}
+
+/// `decode8_rows`; with `single`, every symbol comes from `streams[0]`
+/// through one state on the clamped path (a compact block's short
+/// section).
+pub fn decode8_rows_with(t: &DecodeTable, streams: &[Stream; STREAMS], n: usize, row: usize, single: bool, out: &mut [u8]) -> Result<(), ()> {
     assert!(row >= STREAMS);
+    if single {
+        assert!(n == 0 || out.len() > (n - 1) / STREAMS * row + (n - 1) % STREAMS);
+        let e = &t.entries;
+        let mut r = BitReader::new_at(streams[0], 0);
+        r.refill();
+        let mut st = r.peek(TL) as u32;
+        r.consume(TL);
+        for i in 0..n {
+            // SAFETY: st < L, as in `sym`: base + bits < L for a valid table.
+            let d = unsafe { *e.get_unchecked(st as usize) };
+            r.refill();
+            let nbits = unpack_nbits(d);
+            let bits = r.peek(nbits) as u32;
+            r.consume(nbits);
+            st = unpack_base(d) + bits;
+            out[i / STREAMS * row + i % STREAMS] = unpack_sym(d);
+        }
+        return if r.overrun() { Err(()) } else { Ok(()) };
+    }
     // Every index `i / 8 * row + i % 8` for i < n is in bounds from here on.
     assert!(n == 0 || out.len() > (n - 1) / STREAMS * row + (n - 1) % STREAMS);
     let e = &t.entries;

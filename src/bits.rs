@@ -141,6 +141,154 @@ pub fn write_streams(out: &mut Vec<u8>, max_bits: usize, mut fill: impl FnMut(us
     out.extend_from_slice(&[0u8; PAD]);
 }
 
+/// How a section is laid out: the v8 layout, or the compact one with
+/// eight streams or, for a section of few symbols, one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    Wide,
+    Compact,
+    Single,
+}
+
+impl Framing {
+    /// The framing of a compact block's section of `symbols` symbols.
+    pub fn compact_for(symbols: usize) -> Framing {
+        if symbols <= SINGLE_MAX_SYMBOLS {
+            Framing::Single
+        } else {
+            Framing::Compact
+        }
+    }
+
+    /// Streams a section of this framing has; symbol i goes to stream
+    /// `i % streams`.
+    pub fn streams(self) -> usize {
+        if self == Framing::Single {
+            1
+        } else {
+            STREAMS
+        }
+    }
+}
+
+/// A compact section of at most this many symbols is one stream: the
+/// decoders' per-symbol path is slower per symbol than the eight-stream
+/// batches, but on a section this short the 8-way framing (a size table,
+/// eight byte-aligned tails) costs more than the speed is worth.
+pub const SINGLE_MAX_SYMBOLS: usize = 1024;
+
+/// A section in the given framing; `fill(k, cursor)` writes stream `k`
+/// (only k = 0 for `Single`).
+pub fn write_section(out: &mut Vec<u8>, framing: Framing, max_bits: usize, fill: impl FnMut(usize, &mut BitCursor)) {
+    match framing {
+        Framing::Wide => write_streams(out, max_bits, fill),
+        Framing::Compact => write_streams_compact(out, STREAMS, max_bits, fill),
+        Framing::Single => write_streams_compact(out, 1, max_bits, fill),
+    }
+}
+
+/// Bytes a section's framing takes beyond its streams' bits: the size
+/// table and the padding (compact: a stream count and the varints, ~1
+/// byte each; the payload's one padding is counted in the block).
+pub fn section_frame_bytes(framing: Framing) -> usize {
+    match framing {
+        Framing::Wide => SIZES_BYTES + PAD,
+        Framing::Compact => STREAMS,
+        Framing::Single => 1,
+    }
+}
+
+/// The compact section layout (v9 blocks): a stream count (1 or 8), for
+/// 8 seven varint sizes (7 bits a byte, low first, the top bit marking
+/// more), the streams back to back, and no padding of its own:
+/// `section` must run on to the end of the payload, whose last `PAD`
+/// bytes are zero.
+pub fn write_streams_compact(out: &mut Vec<u8>, n_streams: usize, max_bits: usize, mut fill: impl FnMut(usize, &mut BitCursor)) {
+    debug_assert!(n_streams == 1 || n_streams == STREAMS);
+    let mut lens = [0usize; STREAMS];
+    let mut data: Vec<u8> = Vec::with_capacity(n_streams * (max_bits / 8 + 16));
+    out.push(n_streams as u8);
+    for k in 0..n_streams {
+        data.reserve(max_bits / 8 + 16);
+        let start = data.len();
+        // SAFETY: as in `write_streams`.
+        unsafe {
+            let base = data.as_mut_ptr().add(start);
+            let mut c = BitCursor { acc: 0, n: 0, p: base };
+            fill(k, &mut c);
+            let end = c.finish();
+            data.set_len(start + end.offset_from(base) as usize);
+        }
+        lens[k] = data.len() - start;
+    }
+    if n_streams == STREAMS {
+        for &n in &lens[..STREAMS - 1] {
+            let mut v = n;
+            while v >= 128 {
+                out.push((v & 127) as u8 | 128);
+                v >>= 7;
+            }
+            out.push(v as u8);
+        }
+    }
+    out.extend_from_slice(&data);
+}
+
+impl<'a> Stream<'a> {
+    /// The streams of a compact section, and whether it is a single one
+    /// (then only `[0]` holds symbols; the rest are empty): `section` runs
+    /// from the stream count to the end of the payload (`section_len`
+    /// bytes are the section's own), so every stream's bytes reach the
+    /// payload's padding.
+    pub fn split_compact(section: &'a [u8], section_len: usize) -> Option<([Stream<'a>; STREAMS], bool)> {
+        if section_len > section.len() - PAD.min(section.len()) || section_len < 1 {
+            return None;
+        }
+        let n_streams = section[0] as usize;
+        let mut pos = 1usize;
+        if n_streams == 1 {
+            let mut out = [Stream { bytes: &section[section_len..], len: 0 }; STREAMS];
+            out[0] = Stream { bytes: &section[pos..], len: section_len - pos };
+            return Some((out, true));
+        }
+        if n_streams != STREAMS {
+            return None;
+        }
+        let mut lens = [0usize; STREAMS];
+        for l in lens[..STREAMS - 1].iter_mut() {
+            let (mut v, mut shift) = (0usize, 0u32);
+            loop {
+                let b = *section.get(pos)?;
+                pos += 1;
+                v |= ((b & 127) as usize) << shift;
+                if b < 128 {
+                    break;
+                }
+                shift += 7;
+                if shift > 28 {
+                    return None;
+                }
+            }
+            *l = v;
+        }
+        let data_start = pos;
+        let sum: usize = lens[..STREAMS - 1].iter().sum();
+        if data_start + sum > section_len {
+            return None;
+        }
+        lens[STREAMS - 1] = section_len - data_start - sum;
+        let mut out = [Stream { bytes: &section[section_len..], len: 0 }; STREAMS];
+        for k in 0..STREAMS {
+            if section.len() - pos < PAD {
+                return None;
+            }
+            out[k] = Stream { bytes: &section[pos..], len: lens[k] };
+            pos += lens[k];
+        }
+        Some((out, false))
+    }
+}
+
 /// Split a `write_streams` section back into its 8 streams' own bytes,
 /// each followed by `PAD` zeros as a stream on its own (test helper).
 pub fn split_streams(section: &[u8]) -> Vec<Vec<u8>> {

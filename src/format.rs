@@ -11,10 +11,62 @@ pub const VERSION_V7: u16 = 7;
 /// v7 blocks are still decoded.
 pub const VERSION_V8: u16 = 8;
 
-/// A block of the entropy-coded family (v7 or v8).
+/// v8 coding in compact framing for small blocks: a 19-byte header
+/// (lengths as u16), a 16-byte sub-header, sub-stream sizes as varints,
+/// one 8-byte padding at the end of the payload instead of one per
+/// section. Written for blocks of at most `COMPACT_MAX` bytes.
+pub const VERSION_V9: u16 = 9;
+pub const COMPACT_MAX: usize = 32 * 1024;
+pub const COMPACT_HEADER_SIZE: usize = 19;
+
+/// A block of the entropy-coded family (v7, v8 or v9).
 #[inline(always)]
 pub fn is_coded_version(version: u16) -> bool {
-    version == VERSION_V7 || version == VERSION_V8
+    version == VERSION_V7 || version == VERSION_V8 || version == VERSION_V9
+}
+
+/// Bytes the on-disk header of a block of `version` takes.
+#[inline(always)]
+pub fn header_len(version: u16) -> usize {
+    if version == VERSION_V9 {
+        COMPACT_HEADER_SIZE
+    } else {
+        HEADER_SIZE
+    }
+}
+
+impl BlockHeader {
+    /// The compact on-disk form (v9): magic, version, flags as one byte,
+    /// the four lengths as u16, the checksum.
+    pub fn write_compact(&self, out: &mut Vec<u8>) {
+        debug_assert!(self.version == VERSION_V9 && self.flags < 256 && self.uncompressed_len < 65536 && self.token_count < 65536 && self.token_bytes < 65536 && self.literal_len < 65536);
+        out.extend_from_slice(&self.magic.to_le_bytes());
+        out.extend_from_slice(&self.version.to_le_bytes());
+        out.push(self.flags as u8);
+        out.extend_from_slice(&(self.uncompressed_len as u16).to_le_bytes());
+        out.extend_from_slice(&(self.token_count as u16).to_le_bytes());
+        out.extend_from_slice(&(self.token_bytes as u16).to_le_bytes());
+        out.extend_from_slice(&(self.literal_len as u16).to_le_bytes());
+        out.extend_from_slice(&self.checksum.to_le_bytes());
+    }
+
+    /// Read a compact header (`src` starts at its magic, at least
+    /// `COMPACT_HEADER_SIZE` long).
+    pub fn read_compact(src: &[u8]) -> BlockHeader {
+        let u16at = |i: usize| u16::from_le_bytes([src[i], src[i + 1]]) as u32;
+        BlockHeader {
+            magic: u32::from_le_bytes([src[0], src[1], src[2], src[3]]),
+            version: u16::from_le_bytes([src[4], src[5]]),
+            flags: src[6] as u16,
+            uncompressed_len: u16at(7),
+            token_count: u16at(9),
+            token_bytes: u16at(11),
+            literal_len: u16at(13),
+            checksum: u32::from_le_bytes([src[15], src[16], src[17], src[18]]),
+            offset_bytes: 0,
+            extras_bytes: 0,
+        }
+    }
 }
 /// Match window. An offset is 17 bits: 16 in the offset stream plus one in
 /// the token, so the format addresses 128 KB. Measured (token_stats): with

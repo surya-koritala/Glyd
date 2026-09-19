@@ -9,7 +9,7 @@
 //! sequence). The extra-bits section is always 8 raw padded sub-streams
 //! behind a size table: sub-stream k holds, for sequences i == k (mod 8)
 //! in order, the ll extra bits, then ml, then offset extra bits.
-use crate::bits::{write_streams, PAD, SIZES_BYTES};
+use crate::bits::{section_frame_bytes, write_section, Framing, PAD};
 use crate::format::MAX_BLOCK_SIZE;
 use crate::huff8;
 use crate::tans;
@@ -45,11 +45,25 @@ pub struct Layout {
     /// (`bits::Stream::split`, packed tANS counts, 26 offset codes)
     /// rather than v7's.
     pub v8: bool,
+    /// The v9 framing: compact sub-header, `bits::Stream::split_compact`
+    /// sections, one padding at the payload's end.
+    pub compact: bool,
 }
 
+/// The layout of a v7/v8 payload.
 pub fn payload_layout(payload: &[u8]) -> Option<Layout> {
     let sub = SubHeader::parse(payload)?;
-    let mut pos = SubHeader::BYTES;
+    layout_from(payload, sub, SubHeader::BYTES, 0, false)
+}
+
+/// The layout of a v9 payload: the sections, then `PAD` zero bytes.
+pub fn payload_layout_compact(payload: &[u8]) -> Option<Layout> {
+    let sub = SubHeader::parse_compact(payload)?;
+    layout_from(payload, sub, SubHeader::COMPACT_BYTES, PAD, true)
+}
+
+fn layout_from(payload: &[u8], sub: SubHeader, start: usize, tail: usize, compact: bool) -> Option<Layout> {
+    let mut pos = start;
     let mut sections: [std::ops::Range<usize>; 5] = std::array::from_fn(|_| 0..0);
     for s in 0..5 {
         let end = pos.checked_add(sub.sizes[s] as usize)?;
@@ -59,10 +73,10 @@ pub fn payload_layout(payload: &[u8]) -> Option<Layout> {
         sections[s] = pos..end;
         pos = end;
     }
-    if pos != payload.len() {
+    if pos + tail != payload.len() {
         return None;
     }
-    Some(Layout { sub, sections, v8: true })
+    Some(Layout { sub, sections, v8: true, compact })
 }
 
 /// Bits `hist` costs under a tANS table of `counts`, or None when a symbol
@@ -108,11 +122,11 @@ fn hist8<const N: usize>(data: &[u8]) -> [u32; N] {
 /// freshly normalized for this block, or the previous block's when
 /// `reusing`), or the codes raw if coding would not pay for itself.
 /// Returns whether it was coded; a raw section never carries reuse.
-fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool, chunks: &mut Vec<u32>, out: &mut Vec<u8>) -> bool {
+fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool, framing: Framing, chunks: &mut Vec<u32>, out: &mut Vec<u8>) -> bool {
     let n_symbols = counts.len();
     let bits = table_cost(&hist[..n_symbols], counts).expect("table covers the data");
     let table_bytes = if reusing { 0 } else { tans_table_bytes(counts) };
-    let coded_estimate = (bits >> 19) as usize + table_bytes + SIZES_BYTES + PAD;
+    let coded_estimate = (bits >> 19) as usize + table_bytes + section_frame_bytes(framing);
     if coded_estimate + codes.len() / 50 >= codes.len() {
         out.extend_from_slice(codes);
         return false;
@@ -121,7 +135,7 @@ fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool, chunk
     if !reusing {
         write_tans_table(counts, out);
     }
-    tans::encode8_into(codes, &et, chunks, out);
+    tans::encode8_into(codes, &et, chunks, framing, out);
     true
 }
 
@@ -262,12 +276,12 @@ unsafe fn put_wide(w: &mut crate::bits::BitCursor, v: u64, n: u32) {
 /// code 0, which the decoder reads as "no match" only in last position),
 /// with no other literal-only sequence.
 pub fn encode_block(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut Tables, out: &mut Vec<u8>) {
-    encode_block_with(seqs, literals, dict_id, prev, &mut EncScratch::new(), out)
+    encode_block_with(seqs, literals, dict_id, prev, &mut EncScratch::new(), false, out)
 }
 
 /// `encode_block` with caller-owned scratch (`compress_into_max` keeps
 /// one across a stream's blocks).
-pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut Tables, s: &mut EncScratch, out: &mut Vec<u8>) {
+pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut Tables, s: &mut EncScratch, compact: bool, out: &mut Vec<u8>) {
     let n = seqs.len();
     debug_assert!(seqs.last().map_or(true, |q| q.match_len == 0), "the last sequence must be literal-only");
     // Codes and extra bits, in sequence order (the rep state).
@@ -298,7 +312,7 @@ pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev:
         s.extra.push(v | (bits as u64) << EXTRA_BITS);
     }
     assert!(max_bits <= EXTRA_BITS, "sequence length beyond the block bound");
-    encode_block_coded(literals, dict_id, prev, s, out)
+    encode_block_coded(literals, dict_id, prev, s, compact, out)
 }
 
 /// The block from codes already in the scratch (`find_sequences_dfast`
@@ -306,12 +320,13 @@ pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev:
 /// Every `extra` entry's count (its top byte) must be at most
 /// `EXTRA_BITS`, which those two producers guarantee: the extras section
 /// is written without further checks against that bound.
-pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Tables, s: &mut EncScratch, out: &mut Vec<u8>) {
+pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Tables, s: &mut EncScratch, compact: bool, out: &mut Vec<u8>) {
     let n = s.ll.len();
     debug_assert!(s.ml.len() == n && s.off.len() == n && s.extra.len() == n);
     debug_assert!(s.extra.iter().all(|&x| (x >> EXTRA_BITS) as u32 <= EXTRA_BITS));
     let base = out.len();
-    out.resize(base + SubHeader::BYTES, 0);
+    let sub_bytes = if compact { SubHeader::COMPACT_BYTES } else { SubHeader::BYTES };
+    out.resize(base + sub_bytes, 0);
 
     // Literals.
     let hist: [u64; 256] = hist8::<256>(literals).map(|c| c as u64);
@@ -323,14 +338,17 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
         p.iter().zip(hist.iter()).all(|(&l, &h)| l > 0 || h == 0) && est_prev <= est_new + (crate::huffman::packed_lengths_v8_size(&lengths) as u64) * 8
     });
     let lit_lengths = if lit_reuse { prev.lit_lengths.unwrap() } else { lengths };
-    let lit_coded_size = huff8::coded_size(&hist, &lit_lengths) - if lit_reuse { crate::huffman::packed_lengths_v8_size(&lit_lengths) } else { 0 } + SIZES_BYTES + PAD;
+    // Each section's framing: the block's, and for a compact block's
+    // short sections a single stream.
+    let framing = |symbols: usize| if compact { Framing::compact_for(symbols) } else { Framing::Wide };
+    let lit_coded_size = huff8::coded_size(&hist, &lit_lengths) - if lit_reuse { crate::huffman::packed_lengths_v8_size(&lit_lengths) } else { 0 } + section_frame_bytes(framing(literals.len()));
     let lit_coded = literals.len() >= 64 && lit_coded_size + literals.len() / 50 < literals.len();
     let lit_start = out.len();
     if lit_coded {
         if !lit_reuse {
             crate::huffman::pack_lengths_v8(&lit_lengths, out);
         }
-        huff8::encode_into(literals, &lit_lengths, out);
+        huff8::encode_into(literals, &lit_lengths, framing(literals.len()), out);
     } else {
         out.extend_from_slice(literals);
     }
@@ -372,7 +390,7 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     for _ in 0..2 {
         for (i, (codes, hist, counts)) in [(&s.ll, &ll_hist, &ll_counts), (&s.ml, &ml_hist, &ml_counts), (&s.off, &off_hist, &off_counts)].into_iter().enumerate() {
             let start = out.len();
-            coded[i] = encode_codes(codes, hist, counts, seq_reuse, &mut s.chunks, out);
+            coded[i] = encode_codes(codes, hist, counts, seq_reuse, framing(n), &mut s.chunks, out);
             sizes[i] = out.len() - start;
         }
         // The up-front reuse decision is optimistic (each `encode_codes`
@@ -396,12 +414,20 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
 
     // Extra bits: sub-stream k holds sequences k, k + 8, ... in order.
     let extra_start = out.len();
-    write_streams(out, n.div_ceil(8) * EXTRA_BITS as usize, |k, w| {
+    let extra_framing = framing(n);
+    let step = extra_framing.streams();
+    write_section(out, extra_framing, n.div_ceil(step) * EXTRA_BITS as usize, |k, w| {
         let e = &s.extra[k.min(n)..];
         let mut i = 0;
-        // SAFETY: at most ceil(n / 8) sequences of at most EXTRA_BITS
-        // bits each go into this stream, the `max_bits` reserved.
+        // SAFETY: at most ceil(n / streams) sequences of at most
+        // EXTRA_BITS bits each go into this stream, the `max_bits` reserved.
         unsafe {
+            if step == 1 {
+                for &x in e {
+                    put_wide(w, x & ((1u64 << EXTRA_BITS) - 1), (x >> EXTRA_BITS) as u32);
+                }
+                return;
+            }
             while i + 8 < e.len() {
                 // Two sequences per put when they fit MAX_PUT together
                 // (nearly always: a sequence averages ~15 extra bits).
@@ -431,8 +457,14 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
         sizes: [lit_size as u32, sizes[0] as u32, sizes[1] as u32, sizes[2] as u32, extra_size as u32],
     };
     let mut hdr = Vec::with_capacity(SubHeader::BYTES);
-    sub.write(&mut hdr);
-    out[base..base + SubHeader::BYTES].copy_from_slice(&hdr);
+    if compact {
+        sub.write_compact(&mut hdr);
+        // The one padding every compact section's streams run into.
+        out.extend_from_slice(&[0u8; PAD]);
+    } else {
+        sub.write(&mut hdr);
+    }
+    out[base..base + sub_bytes].copy_from_slice(&hdr);
 
     if lit_coded {
         prev.lit_lengths = Some(lit_lengths);

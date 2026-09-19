@@ -210,3 +210,38 @@ Per-block overhead over the order-0 estimate of the parse: 950 bytes
 3.254 on Silesia; decode unchanged. What remains per block: the block
 header (32), sub-header (26), five size tables (105), five paddings (40),
 the tables when written (~180).
+
+## Format v9: compact framing for small blocks (v0.4.0)
+
+The v8 coding under framing sized for small objects, written for blocks
+of at most `COMPACT_MAX` = 32 KB (v8 above that; v7/v8 blocks decode as
+before):
+
+- Header (19 bytes): magic, version, flags as one byte, the four lengths
+  as u16, checksum. Sub-header (16): coded, reuse, dict id, five u16
+  section sizes. One 8-byte padding at the end of the payload; sections
+  carry none of their own (a stream's loads may run into the next
+  section, the last into the padding).
+- Sections: a stream count, then for eight streams seven varint sizes
+  and the streams; a section of at most `SINGLE_MAX_SYMBOLS` = 1024
+  symbols is one stream (`bits::Framing::Single`): no size table, no
+  seven byte-aligned tails, decoded on the clamped per-symbol path
+  (slower per symbol, immaterial at that size).
+
+A 4 KB JSON event with a prepared dictionary: 207 bytes of framing
+(header 32, sub-header 26, five sections' size tables and paddings) went
+to 43; the object 870 -> 676 bytes. Small objects, `examples/small_objects.rs`
+(gharchive events, 2,000 per size, dictionaries trained on 2,000 others):
+
+| Object | zstd -3 | zstd -3 + dict | Glyd --max | + Dict | Glyd --ultra + Dict |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 KB | 2.38 | 5.00 | 1.99 | 4.11 | 4.11 |
+| 4 KB | 3.56 | 6.52 | 3.25 | 6.06 | 6.22 |
+| 16 KB | 4.89 | 7.74 | 4.76 | 7.52 | 7.98 |
+| 64 KB | 6.38 | 8.50 | 6.27 | 8.13 | 8.91 |
+
+Before v0.4.0 the same objects with a window-only dictionary compressed
+to 2.15 (1 KB) and 3.87 (4 KB). What remains at 1 KB is the framing
+still (43 of 249 bytes) and the dictionary content's quality (zstd's
+trained content used as Glyd's window: 4.83 against 4.7 at 4 KB before
+the framing change).

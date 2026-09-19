@@ -209,6 +209,36 @@ fn header_bytes(header: &BlockHeader) -> &[u8] {
     unsafe { std::slice::from_raw_parts(header as *const BlockHeader as *const u8, HEADER_SIZE) }
 }
 
+/// Whether a coded block of `len` bytes takes the compact (v9) framing.
+#[inline(always)]
+fn compact_block(len: usize) -> bool {
+    len <= COMPACT_MAX
+}
+
+/// Append a coded block: the v8 header and payload, or the v9 (compact)
+/// ones for a small block.
+fn write_coded_block(chunk: &[u8], n_seq: usize, n_lit: usize, chain_flag: u16, payload: &[u8], output: &mut Vec<u8>) {
+    let compact = compact_block(chunk.len());
+    let header = BlockHeader {
+        magic: MAGIC,
+        version: if compact { VERSION_V9 } else { VERSION_V8 },
+        flags: FLAG_COMPRESSED | chain_flag,
+        checksum: compute_checksum(chunk),
+        uncompressed_len: chunk.len() as u32,
+        token_count: n_seq as u32,
+        token_bytes: payload.len() as u32,
+        offset_bytes: 0,
+        extras_bytes: 0,
+        literal_len: n_lit as u32,
+    };
+    if compact {
+        header.write_compact(output);
+    } else {
+        output.extend_from_slice(header_bytes(&header));
+    }
+    output.extend_from_slice(payload);
+}
+
 /// Compress a single block (at most MAX_BLOCK_SIZE bytes) with no history
 /// into a pre-allocated vector.
 pub fn compress_block_into(chunk: &[u8], output: &mut Vec<u8>) {
@@ -421,28 +451,16 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
     // One block: the chunk at `offset`, its parse, and the header flags.
     let mut emit = |chunk: &[u8], seqs: &[v7_encode::Sequence], literals: &[u8], first: bool, prev: &mut v7_encode::Tables, scratch: &mut v7_encode::EncScratch, payload: &mut Vec<u8>, output: &mut Vec<u8>| {
         payload.clear();
-        v7_encode::encode_block_with(seqs, literals, dict_id, prev, scratch, payload);
+        let compact = compact_block(chunk.len());
+        v7_encode::encode_block_with(seqs, literals, dict_id, prev, scratch, compact, payload);
         // A dictionary stream's first block continues the dictionary's
         // window and tables: no reset.
         let chain_flag = if first && dict.is_none() { FLAG_CHAIN_RESET } else { 0 };
-        if payload.len() + HEADER_SIZE >= chunk.len() {
+        if payload.len() + header_len(if compact { VERSION_V9 } else { VERSION_V8 }) >= chunk.len() {
             *prev = v7_encode::Tables::none();
             write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
         } else {
-            let header = BlockHeader {
-                magic: MAGIC,
-                version: VERSION_V8,
-                flags: FLAG_COMPRESSED | chain_flag,
-                checksum: compute_checksum(chunk),
-                uncompressed_len: chunk.len() as u32,
-                token_count: seqs.len() as u32,
-                token_bytes: payload.len() as u32,
-                offset_bytes: 0,
-                extras_bytes: 0,
-                literal_len: literals.len() as u32,
-            };
-            output.extend_from_slice(header_bytes(&header));
-            output.extend_from_slice(payload);
+            write_coded_block(chunk, seqs.len(), literals.len(), chain_flag, payload, output);
         }
     };
     let (mut part_seqs, mut part_lits) = (Vec::new(), Vec::new());
@@ -458,26 +476,14 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
                 // The dfast parse wrote its codes into the scratch as it
                 // went; encode from those.
                 payload.clear();
-                v7_encode::encode_block_coded(&literals, dict_id, &mut prev, &mut scratch, &mut payload);
+                let compact = compact_block(chunk_len);
+                v7_encode::encode_block_coded(&literals, dict_id, &mut prev, &mut scratch, compact, &mut payload);
                 let chain_flag = if first && dict.is_none() { FLAG_CHAIN_RESET } else { 0 };
-                if payload.len() + HEADER_SIZE >= chunk_len {
+                if payload.len() + header_len(if compact { VERSION_V9 } else { VERSION_V8 }) >= chunk_len {
                     prev = v7_encode::Tables::none();
                     write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
                 } else {
-                    let header = BlockHeader {
-                        magic: MAGIC,
-                        version: VERSION_V8,
-                        flags: FLAG_COMPRESSED | chain_flag,
-                        checksum: compute_checksum(chunk),
-                        uncompressed_len: chunk_len as u32,
-                        token_count: seqs.len() as u32,
-                        token_bytes: payload.len() as u32,
-                        offset_bytes: 0,
-                        extras_bytes: 0,
-                        literal_len: literals.len() as u32,
-                    };
-                    output.extend_from_slice(header_bytes(&header));
-                    output.extend_from_slice(&payload);
+                    write_coded_block(chunk, seqs.len(), literals.len(), chain_flag, &payload, output);
                 }
                 first = false;
             }
@@ -568,21 +574,39 @@ pub fn compress_parallel(input: &[u8]) -> Vec<u8> {
 /// the cursor of the next block. Nothing in the payload is touched.
 #[inline(always)]
 fn parse_header(compressed: &[u8], cursor: usize) -> Result<(BlockHeader, usize)> {
-    let header = unsafe { std::ptr::read_unaligned(compressed.as_ptr().add(cursor) as *const BlockHeader) };
-    if header.magic != MAGIC {
+    parse_header_at(compressed, cursor).map(|(h, _, next)| (h, next))
+}
+
+/// `parse_header`, also returning where the payload starts (the header's
+/// length depends on the block's version: 19 bytes for v9, 32 otherwise).
+/// `cursor + COMPACT_HEADER_SIZE <= compressed.len()` is the caller's check.
+#[inline(always)]
+fn parse_header_at(compressed: &[u8], cursor: usize) -> Result<(BlockHeader, usize, usize)> {
+    let head = &compressed[cursor..];
+    if u32::from_le_bytes([head[0], head[1], head[2], head[3]]) != MAGIC {
         return Err(CodecError::InvalidMagic);
     }
+    let version = u16::from_le_bytes([head[4], head[5]]);
+    let header = if version == VERSION_V9 {
+        BlockHeader::read_compact(head)
+    } else {
+        if head.len() < HEADER_SIZE {
+            return Err(CodecError::CorruptedBitstream("Truncated block header"));
+        }
+        unsafe { std::ptr::read_unaligned(head.as_ptr() as *const BlockHeader) }
+    };
     if header.version != CURRENT_VERSION && !is_coded_version(header.version) {
         return Err(CodecError::UnsupportedVersion(header.version));
     }
     if !header.is_plausible() {
         return Err(CodecError::CorruptedBitstream("Implausible block header"));
     }
-    let next = cursor + HEADER_SIZE + header.payload_len();
+    let start = cursor + header_len(header.version);
+    let next = start + header.payload_len();
     if next > compressed.len() {
         return Err(CodecError::CorruptedBitstream("Truncated compressed block payload"));
     }
-    Ok((header, next))
+    Ok((header, start, next))
 }
 
 /// Decode one block's payload into `dst` (the block's output region plus
@@ -611,7 +635,7 @@ unsafe fn decode_block(
                     *t = v7_decode::DecTables::none();
                 }
                 v7_decode::decode_block(
-                    payload, header.version == VERSION_V8, header.token_count as usize, header.literal_len as usize,
+                    payload, header.version >= VERSION_V8, header.version == VERSION_V9, header.token_count as usize, header.literal_len as usize,
                     dst, buffer_start, uncomp_len, &mut t, scratch,
                 )
                 .map(|_| ())
@@ -678,7 +702,7 @@ unsafe fn decode_block(
 fn total_uncompressed_len(compressed: &[u8]) -> Result<usize> {
     let mut total = 0usize;
     let mut cursor = 0usize;
-    while cursor + HEADER_SIZE <= compressed.len() {
+    while cursor + COMPACT_HEADER_SIZE <= compressed.len() {
         let (header, next) = parse_header(compressed, cursor)?;
         total += header.uncompressed_len as usize;
         cursor = next;
@@ -719,7 +743,11 @@ fn block_dict_id(header: &BlockHeader, payload: &[u8]) -> Option<u32> {
     if !is_coded_version(header.version) || (header.flags & FLAG_RAW_UNCOMPRESSED) != 0 {
         return None;
     }
-    v7_format::SubHeader::parse(payload).map(|s| s.dict_id)
+    if header.version == VERSION_V9 {
+        v7_format::SubHeader::parse_compact(payload).map(|s| s.dict_id)
+    } else {
+        v7_format::SubHeader::parse(payload).map(|s| s.dict_id)
+    }
 }
 
 fn decompress_sequential(compressed: &[u8], dst: &mut [u8], verify: bool) -> Result<usize> {
@@ -742,8 +770,8 @@ fn decompress_sequential_from(compressed: &[u8], dst: &mut [u8], dst_offset0: us
     let avx2 = has_avx2();
     let expected_dict = expected_dict.unwrap_or(0);
 
-    while cursor + HEADER_SIZE <= compressed.len() {
-        let (header, next) = parse_header(compressed, cursor)?;
+    while cursor + COMPACT_HEADER_SIZE <= compressed.len() {
+        let (header, start, next) = parse_header_at(compressed, cursor)?;
         let uncomp_len = header.uncompressed_len as usize;
         if dst_offset + uncomp_len > dst.len() {
             return Err(CodecError::OutputBufferTooSmall {
@@ -751,7 +779,7 @@ fn decompress_sequential_from(compressed: &[u8], dst: &mut [u8], dst_offset0: us
                 provided: dst.len(),
             });
         }
-        let payload = &compressed[cursor + HEADER_SIZE..next];
+        let payload = &compressed[start..next];
         if block_dict_id(&header, payload).is_some_and(|id| id != expected_dict) {
             return Err(CodecError::CorruptedBitstream("dictionary id mismatch"));
         }
@@ -817,9 +845,9 @@ fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> 
     let mut cursor = 0usize;
     let mut total_uncomp = 0usize;
 
-    while cursor + HEADER_SIZE <= compressed.len() {
-        let (header, next) = parse_header(compressed, cursor)?;
-        if block_dict_id(&header, &compressed[cursor + HEADER_SIZE..next]).is_some_and(|id| id != 0) {
+    while cursor + COMPACT_HEADER_SIZE <= compressed.len() {
+        let (header, start, next) = parse_header_at(compressed, cursor)?;
+        if block_dict_id(&header, &compressed[start..next]).is_some_and(|id| id != 0) {
             return Err(CodecError::CorruptedBitstream("dictionary streams are sequential-only"));
         }
         let uncomp_len = header.uncompressed_len as usize;
@@ -865,8 +893,9 @@ fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> 
         for i in 0..unit.block_count {
             let b = &blocks[unit.first_block_idx + i];
             let block_slice = &compressed[b.block_offset..b.block_offset + b.block_size];
-            let header = unsafe { std::ptr::read_unaligned(block_slice.as_ptr() as *const BlockHeader) };
-            let payload = &block_slice[HEADER_SIZE..];
+            // Parsed once already in the scan above.
+            let (header, start, _) = parse_header_at(block_slice, 0)?;
+            let payload = &block_slice[start..];
             // Blocks cover disjoint output ranges, so these slices never alias.
             let dst_slice = unsafe {
                 let ptr = (output_ptr + b.uncomp_offset) as *mut u8;

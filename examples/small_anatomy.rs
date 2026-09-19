@@ -1,8 +1,8 @@
 // One small object with a dictionary: where its bytes go (header,
 // sub-header, sections, tables reused or not), and the same with zstd's
 // trained content as Glyd's dictionary content.
-use glyd::format::{BlockHeader, HEADER_SIZE, FLAG_RAW_UNCOMPRESSED};
-use glyd::v7_encode::payload_layout;
+use glyd::format::{BlockHeader, FLAG_RAW_UNCOMPRESSED, VERSION_V9, header_len};
+use glyd::v7_encode::{payload_layout, payload_layout_compact};
 use std::io::Read;
 fn anatomy(name: &str, dict: &glyd::Dict, objects: &[&[u8]]) {
     let (mut raw, mut out, mut hdr, mut sub, mut secs, mut rawblocks, mut reuse_lit, mut reuse_seq, mut n) = (0usize, 0usize, 0usize, 0usize, [0usize; 5], 0usize, 0usize, 0usize, 0usize);
@@ -10,11 +10,14 @@ fn anatomy(name: &str, dict: &glyd::Dict, objects: &[&[u8]]) {
         let mut c = Vec::new();
         glyd::compress_with_dict(dict, o, &mut c);
         raw += o.len(); out += c.len();
-        let h: BlockHeader = unsafe { std::ptr::read_unaligned(c.as_ptr() as *const BlockHeader) };
-        hdr += HEADER_SIZE; n += 1;
+        let v9 = u16::from_le_bytes([c[4], c[5]]) == VERSION_V9;
+        let h: BlockHeader = if v9 { BlockHeader::read_compact(&c) } else { unsafe { std::ptr::read_unaligned(c.as_ptr() as *const BlockHeader) } };
+        let hl = header_len(h.version);
+        hdr += hl; n += 1;
         if h.flags & FLAG_RAW_UNCOMPRESSED != 0 { rawblocks += 1; continue; }
-        let l = payload_layout(&c[HEADER_SIZE..HEADER_SIZE + h.payload_len()]).unwrap();
-        sub += 26;
+        let payload = &c[hl..hl + h.payload_len()];
+        let l = if v9 { payload_layout_compact(payload) } else { payload_layout(payload) }.unwrap();
+        sub += if v9 { 16 + 8 } else { 26 };
         for i in 0..5 { secs[i] += l.sub.sizes[i] as usize; }
         if l.sub.reuse & 1 != 0 { reuse_lit += 1; }
         if l.sub.reuse & 2 != 0 { reuse_seq += 1; }
