@@ -109,7 +109,7 @@ fn hist8<const N: usize>(data: &[u8]) -> [u32; N] {
 fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool, chunks: &mut Vec<u32>, out: &mut Vec<u8>) -> bool {
     let n_symbols = counts.len();
     let bits = table_cost(&hist[..n_symbols], counts).expect("table covers the data");
-    let table_bytes = if reusing { 0 } else { tans_table_bytes(n_symbols) };
+    let table_bytes = if reusing { 0 } else { tans_table_bytes(counts) };
     let coded_estimate = (bits / 8.0) as usize + table_bytes + SIZES_BYTES + PAD;
     if coded_estimate + codes.len() / 50 >= codes.len() {
         out.extend_from_slice(codes);
@@ -123,27 +123,41 @@ fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool, chunk
     true
 }
 
-/// Bytes a tANS table of `n` symbols takes: the count, then 11-bit
-/// little-endian packed counts (each at most `tans::L` = 1024).
-fn tans_table_bytes(n: usize) -> usize {
-    1 + (n * 11).div_ceil(8)
+/// A tANS table as a v8 block carries it: the symbol count, then each
+/// count as its bit width in a nibble followed by the bits below its top
+/// one (a count of 0 or 1 is the nibble alone; 1024 is width 11), packed
+/// little-endian. Small counts, the common case, take 4-7 bits.
+fn tans_table_bits(counts: &[u16]) -> usize {
+    counts.iter().map(|&c| 4 + (16 - c.leading_zeros() as usize).saturating_sub(1)).sum()
+}
+
+fn tans_table_bytes(counts: &[u16]) -> usize {
+    1 + tans_table_bits(counts).div_ceil(8)
 }
 
 fn write_tans_table(counts: &[u16], out: &mut Vec<u8>) {
     out.push(counts.len() as u8);
     let start = out.len();
-    out.resize(start + (counts.len() * 11).div_ceil(8), 0);
+    out.resize(start + tans_table_bits(counts).div_ceil(8), 0);
     let mut bit = 0usize;
+    let mut put = |v: u32, n: usize, bit: &mut usize| {
+        // At most 15 bits at a time: three bytes cover any position.
+        let byte = start + (*bit >> 3);
+        let v = (v as u64) << (*bit & 7);
+        for k in 0..3 {
+            if byte + k < out.len() {
+                out[byte + k] |= (v >> (8 * k)) as u8;
+            }
+        }
+        *bit += n;
+    };
     for &c in counts {
         debug_assert!(c as usize <= tans::L);
-        let byte = start + (bit >> 3);
-        let v = (c as u32) << (bit & 7);
-        out[byte] |= v as u8;
-        out[byte + 1] |= (v >> 8) as u8;
-        if byte + 2 < out.len() {
-            out[byte + 2] |= (v >> 16) as u8;
+        let w = 16 - c.leading_zeros() as usize;
+        put(w as u32, 4, &mut bit);
+        if w >= 2 {
+            put(c as u32 - (1 << (w - 1)), w - 1, &mut bit);
         }
-        bit += 11;
     }
 }
 
@@ -180,8 +194,11 @@ impl EncScratch {
     #[inline(always)]
     unsafe fn push_codes(&mut self, lit_len: u32, match_len: u32, offset: u32, rep: u32) {
         use std::hint::select_unpredictable as sel;
-        let (llc, lnb, le) = len_code_bf(lit_len);
-        let (mlc, mnb, me) = len_code_bf(match_len - MIN_MATCH);
+        // The length codes' branches are on values below 64 and 131,
+        // which almost every run and match is: well predicted.
+        let (llc, lnb, le) = ll_code(lit_len);
+        let (mlc, mnb, me) = ml_code(match_len);
+        let (lnb, mnb) = (lnb as u32, mnb as u32);
         debug_assert!(offset >= 1);
         let k = 31 - offset.leading_zeros();
         let is_rep = rep < 3;
@@ -211,16 +228,6 @@ impl EncScratch {
         self.off.reserve(n);
         self.extra.reserve(n);
     }
-}
-
-/// `v7_format::len_code` without its branch: (code, extra bits, extra).
-#[inline(always)]
-fn len_code_bf(v: u32) -> (u8, u32, u32) {
-    use std::hint::select_unpredictable as sel;
-    let k = 31 - (v | 1).leading_zeros();
-    let big = v >= 16;
-    // (v = 0 wraps in the discarded arm.)
-    (sel(big, 12 + k, v) as u8, sel(big, k, 0), sel(big, v.wrapping_sub(1 << k), 0))
 }
 
 /// Bits of `extra` per sequence, a `MAX_PUT` put.
@@ -311,15 +318,15 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
         let est_prev: u64 = (0..256).map(|s| hist[s] * p[s] as u64).sum();
         let est_new: u64 = (0..256).map(|s| hist[s] * lengths[s] as u64).sum();
         // The previous table must have a code for every symbol present.
-        p.iter().zip(hist.iter()).all(|(&l, &h)| l > 0 || h == 0) && est_prev <= est_new + (huff8::TABLE_BYTES as u64) * 8
+        p.iter().zip(hist.iter()).all(|(&l, &h)| l > 0 || h == 0) && est_prev <= est_new + (crate::huffman::packed_lengths_v8_size(&lengths) as u64) * 8
     });
     let lit_lengths = if lit_reuse { prev.lit_lengths.unwrap() } else { lengths };
-    let lit_coded_size = huff8::coded_size(&hist, &lit_lengths) - if lit_reuse { huff8::TABLE_BYTES } else { 0 } + SIZES_BYTES + PAD;
+    let lit_coded_size = huff8::coded_size(&hist, &lit_lengths) - if lit_reuse { crate::huffman::packed_lengths_v8_size(&lit_lengths) } else { 0 } + SIZES_BYTES + PAD;
     let lit_coded = literals.len() >= 64 && lit_coded_size + literals.len() / 50 < literals.len();
     let lit_start = out.len();
     if lit_coded {
         if !lit_reuse {
-            crate::huffman::pack_lengths(&lit_lengths, out);
+            crate::huffman::pack_lengths_v8(&lit_lengths, out);
         }
         huff8::encode_into(literals, &lit_lengths, out);
     } else {

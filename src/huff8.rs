@@ -7,6 +7,8 @@ use crate::huffman::{build_codes, build_lengths, MAX_CODE_LEN};
 
 pub use crate::bits::STREAMS;
 pub const TB: u32 = MAX_CODE_LEN;
+/// Bytes of a v7 block's literal table (256 nibbles); v8 tables are
+/// `huffman::packed_lengths_v8_size` long.
 pub const TABLE_BYTES: usize = 128;
 /// `encode_into` concatenates four codes per put.
 const _: () = assert!(4 * TB <= MAX_PUT);
@@ -35,7 +37,7 @@ pub fn lengths_for(hist: &[u64; 256]) -> [u8; 256] {
 /// Bytes the coded stream will occupy, plus the packed table.
 pub fn coded_size(hist: &[u64; 256], lengths: &[u8; 256]) -> usize {
     let bits: u64 = (0..256).map(|s| hist[s] * lengths[s] as u64).sum();
-    (bits / 8) as usize + TABLE_BYTES
+    (bits / 8) as usize + crate::huffman::packed_lengths_v8_size(lengths)
 }
 
 /// Packed decode table: entry = sym | (len << 8).

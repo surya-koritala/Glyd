@@ -62,7 +62,7 @@ fn huff8_roundtrip_and_size() {
         if n >= 1000 {
             let coded: usize = streams.iter().map(|s| s.len()).sum();
             assert!(coded < n * 8 / 10, "skewed data must compress: {} vs {}", coded, n);
-            assert_eq!(huff8::coded_size(&hist, &lengths), (0..256).map(|s| hist[s] as usize * lengths[s] as usize).sum::<usize>() / 8 + 128);
+            assert_eq!(huff8::coded_size(&hist, &lengths), (0..256).map(|s| hist[s] as usize * lengths[s] as usize).sum::<usize>() / 8 + glyd::huffman::packed_lengths_v8_size(&lengths));
         }
     }
 }

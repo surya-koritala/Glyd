@@ -1,7 +1,9 @@
 //! Format v7 constants, code mappings and the block sub-header.
 //!
-//! Lengths: values below 16 are their own code; larger values use code
-//! 12 + floor(log2(v)) with floor(log2(v)) extra bits holding v - 2^k.
+//! Lengths (v8): direct codes for the common values, then buckets of 1-5
+//! extra bits, then one code per power of two (`LL_BITS`/`LL_BASE`,
+//! `ML_BITS`/`ML_BASE`); v7 blocks used direct codes below 16 and log2
+//! buckets above.
 //! Offsets: codes 0..=2 are the three most recent distinct offsets; a real
 //! offset o uses code 3 + floor(log2(o)) with that many extra bits.
 
@@ -9,8 +11,8 @@
 pub const MAX_OFFSET_BITS: u32 = 23;
 pub const MAX_WINDOW: u32 = 1 << MAX_OFFSET_BITS;
 pub const MIN_MATCH: u32 = 3;
-pub const LL_SYMBOLS: usize = 32; // codes 0..=30 for values up to 2^18
-pub const ML_SYMBOLS: usize = 32;
+pub const LL_SYMBOLS: usize = 38;
+pub const ML_SYMBOLS: usize = 54;
 pub const OFF_SYMBOLS: usize = 26; // 3 reps + log2 buckets 0..=22
 pub const OFF_SYMBOLS_V7: usize = 24;
 
@@ -32,39 +34,105 @@ const fn log2(v: u32) -> u32 {
     31 - v.leading_zeros()
 }
 
+// Length codes, v8: direct codes for the common values, then buckets
+// that grow slowly (two or four codes per doubling) before the log2
+// buckets take over, so that a match of 20 or a literal run of 30 costs
+// its code alone. The tables below give each code's extra bits and base.
+
+/// Literal-length codes: 0-15 direct; 16-24 in steps of 1, 1, 1, 1, 2,
+/// 2, 3, 3, 4 bits; 25.. one code per power of two from 64 (6 bits) to
+/// 2^18 (18 bits, the run of a whole block).
+pub const LL_BITS: [u8; LL_SYMBOLS] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+pub const LL_BASE: [u32; LL_SYMBOLS] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 28, 32, 40, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144];
+/// Match-length codes: 0-31 direct for lengths 3-34; 32-42 in steps of
+/// 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5 bits; 43.. one code per power of two
+/// of (length - 3) from 128 (7 bits) to 2^17 (17 bits).
+pub const ML_BITS: [u8; ML_SYMBOLS] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+pub const ML_BASE: [u32; ML_SYMBOLS] = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 37, 39, 41, 43, 47, 51, 59, 67, 83, 99, 131, 259, 515, 1027, 2051, 4099, 8195, 16387, 32771, 65539, 131075];
+
+const _: () = {
+    // Each table is contiguous: a code's range ends where the next begins.
+    let mut c = 0;
+    while c + 1 < LL_SYMBOLS {
+        assert!(LL_BASE[c] + (1 << LL_BITS[c]) == LL_BASE[c + 1]);
+        c += 1;
+    }
+    let mut c = 0;
+    while c + 1 < ML_SYMBOLS {
+        assert!(ML_BASE[c] + (1 << ML_BITS[c]) == ML_BASE[c + 1]);
+        c += 1;
+    }
+    assert!(ML_BASE[ML_SYMBOLS - 1] + (1 << ML_BITS[ML_SYMBOLS - 1]) > crate::format::MAX_BLOCK_SIZE as u32);
+    assert!(LL_BASE[LL_SYMBOLS - 1] <= crate::format::MAX_BLOCK_SIZE as u32);
+};
+
+/// The code of a literal run of `v`: (code, extra bits, extra).
 #[inline(always)]
-const fn len_code(v: u32) -> (u8, u8, u32) {
-    if v < 16 {
-        (v as u8, 0, 0)
+pub const fn ll_code(v: u32) -> (u8, u8, u32) {
+    if v < 64 {
+        let c = LL_SMALL[v as usize];
+        (c, LL_BITS[c as usize], v - LL_BASE[c as usize])
     } else {
         let k = log2(v);
-        ((12 + k) as u8, k as u8, v - (1 << k))
+        ((19 + k) as u8, k as u8, v - (1 << k))
     }
 }
 
 #[inline(always)]
-const fn len_value(code: u8, extra: u32) -> u32 {
+pub const fn ll_value(code: u8, extra: u32) -> u32 {
+    LL_BASE[code as usize] + extra
+}
+
+/// The code of a match of `v` bytes (at least MIN_MATCH).
+#[inline(always)]
+pub const fn ml_code(v: u32) -> (u8, u8, u32) {
+    debug_assert!(v >= MIN_MATCH);
+    if v < 131 {
+        let c = ML_SMALL[v as usize];
+        (c, ML_BITS[c as usize], v - ML_BASE[c as usize])
+    } else {
+        let k = log2(v - 3);
+        ((36 + k) as u8, k as u8, v - 3 - (1 << k))
+    }
+}
+
+#[inline(always)]
+pub const fn ml_value(code: u8, extra: u32) -> u32 {
+    ML_BASE[code as usize] + extra
+}
+
+/// Code of each small value, from the tables.
+const LL_SMALL: [u8; 64] = small_codes::<64, LL_SYMBOLS>(&LL_BASE);
+const ML_SMALL: [u8; 131] = small_codes::<131, ML_SYMBOLS>(&ML_BASE);
+
+const fn small_codes<const N: usize, const S: usize>(base: &[u32; S]) -> [u8; N] {
+    let mut t = [0u8; N];
+    let mut c = 0;
+    let mut v = base[0] as usize;
+    while v < N {
+        while c + 1 < S && base[c + 1] as usize <= v {
+            c += 1;
+        }
+        t[v] = c as u8;
+        v += 1;
+    }
+    t
+}
+
+// The v7 length codes, for decoding v7 blocks: values below 16 are their
+// own code, larger ones code 12 + floor(log2(v)) with that many extra bits.
+pub const LL_SYMBOLS_V7: usize = 32;
+pub const ML_SYMBOLS_V7: usize = 32;
+
+#[inline(always)]
+pub const fn len_value_v7(code: u8, extra: u32) -> u32 {
     if code < 16 {
         code as u32
     } else {
-        let k = code as u32 - 12;
-        (1 << k) + extra
+        (1 << (code as u32 - 12)) + extra
     }
 }
 
-pub const fn ll_code(v: u32) -> (u8, u8, u32) {
-    len_code(v)
-}
-pub const fn ll_value(code: u8, extra: u32) -> u32 {
-    len_value(code, extra)
-}
-pub const fn ml_code(v: u32) -> (u8, u8, u32) {
-    debug_assert!(v >= MIN_MATCH);
-    len_code(v - MIN_MATCH)
-}
-pub const fn ml_value(code: u8, extra: u32) -> u32 {
-    len_value(code, extra) + MIN_MATCH
-}
 pub fn off_code(offset: u32) -> (u8, u8, u32) {
     debug_assert!(offset >= 1 && offset < MAX_WINDOW);
     let k = log2(offset);
@@ -76,15 +144,23 @@ pub const fn off_value(code: u8, extra: u32) -> u32 {
 }
 
 /// Extra bits carried by a code; the decoder reads this many after the
-/// symbol. For length codes below 16 and rep codes it is zero.
+/// symbol. For rep codes it is zero. Codes past a field's symbol count
+/// read as zero bits.
 #[inline(always)]
 pub const fn extra_bits_of_code(kind: Kind, code: u8) -> u8 {
     match kind {
-        Kind::Ll | Kind::Ml => {
-            if code < 16 {
-                0
+        Kind::Ll => {
+            if (code as usize) < LL_SYMBOLS {
+                LL_BITS[code as usize]
             } else {
-                code - 12
+                0
+            }
+        }
+        Kind::Ml => {
+            if (code as usize) < ML_SYMBOLS {
+                ML_BITS[code as usize]
+            } else {
+                0
             }
         }
         Kind::Off => {
@@ -94,6 +170,21 @@ pub const fn extra_bits_of_code(kind: Kind, code: u8) -> u8 {
                 code - 3
             }
         }
+    }
+}
+
+/// `extra_bits_of_code` for v7 blocks' length codes.
+#[inline(always)]
+pub const fn extra_bits_of_code_v7(kind: Kind, code: u8) -> u8 {
+    match kind {
+        Kind::Ll | Kind::Ml => {
+            if code < 16 {
+                0
+            } else {
+                code - 12
+            }
+        }
+        Kind::Off => extra_bits_of_code(Kind::Off, code),
     }
 }
 
@@ -109,9 +200,12 @@ pub const fn extra_bits_of_code(kind: Kind, code: u8) -> u8 {
 /// the code functions above. 256 entries so a `u8` code indexes without
 /// a check; entries past a field's symbol count are zero (never
 /// produced: the code streams are validated to their symbol counts).
-pub const LL_WALK: [u64; 256] = walk_table(Kind::Ll, LL_SYMBOLS);
-pub const ML_WALK: [u64; 256] = walk_table(Kind::Ml, ML_SYMBOLS);
-pub const OFF_WALK: [u64; 256] = walk_table(Kind::Off, OFF_SYMBOLS);
+pub const LL_WALK: [u64; 256] = walk_table(Kind::Ll, LL_SYMBOLS, false);
+pub const ML_WALK: [u64; 256] = walk_table(Kind::Ml, ML_SYMBOLS, false);
+pub const OFF_WALK: [u64; 256] = walk_table(Kind::Off, OFF_SYMBOLS, false);
+/// The same for v7 blocks' length codes (offsets code alike).
+pub const LL_WALK_V7: [u64; 256] = walk_table(Kind::Ll, LL_SYMBOLS_V7, true);
+pub const ML_WALK_V7: [u64; 256] = walk_table(Kind::Ml, ML_SYMBOLS_V7, true);
 
 /// The walk entries split into width bytes and base dwords, all six
 /// tables behind one base address for the x86-64 walk (a byte and a dword
@@ -125,6 +219,10 @@ pub struct WalkSplit {
 pub static WALK_SPLIT: WalkSplit = WalkSplit {
     nb: [nb_table(&LL_WALK), nb_table(&ML_WALK), nb_table(&OFF_WALK)],
     base: [base_table(&LL_WALK), base_table(&ML_WALK), base_table(&OFF_WALK)],
+};
+pub static WALK_SPLIT_V7: WalkSplit = WalkSplit {
+    nb: [nb_table(&LL_WALK_V7), nb_table(&ML_WALK_V7), nb_table(&OFF_WALK)],
+    base: [base_table(&LL_WALK_V7), base_table(&ML_WALK_V7), base_table(&OFF_WALK)],
 };
 
 const fn nb_table(walk: &[u64; 256]) -> [u8; 256] {
@@ -147,13 +245,25 @@ const fn base_table(walk: &[u64; 256]) -> [u32; 256] {
     t
 }
 
-const fn walk_table(kind: Kind, n_symbols: usize) -> [u64; 256] {
+const fn walk_table(kind: Kind, n_symbols: usize, v7: bool) -> [u64; 256] {
     let mut t = [0u64; 256];
     let mut c = 0;
     while c < n_symbols {
         let base = match kind {
-            Kind::Ll => ll_value(c as u8, 0),
-            Kind::Ml => ml_value(c as u8, 0),
+            Kind::Ll => {
+                if v7 {
+                    len_value_v7(c as u8, 0)
+                } else {
+                    ll_value(c as u8, 0)
+                }
+            }
+            Kind::Ml => {
+                if v7 {
+                    len_value_v7(c as u8, 0) + MIN_MATCH
+                } else {
+                    ml_value(c as u8, 0)
+                }
+            }
             Kind::Off => {
                 if c < 3 {
                     0
@@ -162,7 +272,7 @@ const fn walk_table(kind: Kind, n_symbols: usize) -> [u64; 256] {
                 }
             }
         };
-        let nb = extra_bits_of_code(kind, c as u8) as u64;
+        let nb = if v7 { extra_bits_of_code_v7(kind, c as u8) } else { extra_bits_of_code(kind, c as u8) } as u64;
         t[c] = (base as u64) << 32 | ((1u64 << nb) - 1) << 8 | nb;
         c += 1;
     }

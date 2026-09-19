@@ -175,7 +175,7 @@ to format v6.
 
 ## Format v8 (v0.3.0)
 
-The same coder and decoder with three changes, all measured on the ultra
+The same coder and decoder with four changes, all measured on the ultra
 level's parse of Silesia (`examples/coder_overhead.rs`); the block header
 says `VERSION_V8`, and v7 blocks are still decoded by the same code paths
 through a version flag.
@@ -186,18 +186,27 @@ through a version flag.
    match below that, an offset below 2^23. The decoder's one-load walk
    holds 57 bits after the sub-byte shift, exactly enough; the encoder
    writes such a sequence in two puts (`put_wide`). Ultra 3.801 -> 3.895,
-   max 3.218 -> 3.229.
+   max 3.218 -> 3.229. The ultra finder's tree is sized to the input per
+   call (64 MB for an 8 MB window, 2 MB for a 256 KB chunk).
 2. **Section layout.** Seven 24-bit sub-stream sizes (the eighth is what
    remains), the eight streams back to back, one `PAD` of 8 zero bytes
    at the end of the section instead of one per stream (`bits::Stream`):
    96 bytes per section -> 29. A stream's fast loop may read into the
    next stream's bytes (still inside the section, which is what the load
    bound needs); its own length is the overrun budget of the tail reader.
-3. **tANS tables.** Counts packed 11 bits each (they sum to 1024) instead
-   of u16: 65 bytes -> 45 per table.
+3. **Length codes.** Direct codes for literal runs to 15 and matches to
+   34, then buckets of 1-5 extra bits before the log2 buckets
+   (`LL_BITS`/`LL_BASE`, `ML_BITS`/`ML_BASE`: 38 and 54 codes); v7's
+   direct-below-16-then-log2 codes are kept for decoding v7 blocks. Worth
+   1% on nci and a wash on text: the extra bits it saves, the code
+   entropy mostly paid.
+4. **Tables.** Literal code lengths as nibbles with runs of unused symbols
+   as (0, run - 1): 128 bytes -> ~88. tANS counts as a 4-bit width and the
+   bits below the top one: 11 bits each -> 4-7 for the small counts that
+   dominate; three tables 167 bytes -> ~93.
 
 Per-block overhead over the order-0 estimate of the parse: 950 bytes
-(1.45%) -> 550 (0.92%). Ultra 3.917, max 3.244 on Silesia; decode
-unchanged. What remains per block: the block header (32), sub-header
-(26), five size tables (105), five paddings (40), the literal table (128
-when written) and three tANS tables (135 when written).
+(1.45%) -> 421 (0.85%; nci, at 13 KB per block, 3.3%). Ultra 3.925, max
+3.254 on Silesia; decode unchanged. What remains per block: the block
+header (32), sub-header (26), five size tables (105), five paddings (40),
+the tables when written (~180).

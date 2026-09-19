@@ -114,29 +114,49 @@ fn substreams(sec: &[u8], v8: bool) -> Result<[Stream; 8]> {
     Ok(out)
 }
 
-/// A tANS table's counts as the block carries them: `ns` then, in v8,
-/// `ns` 11-bit little-endian packed counts; in v7, `ns` u16 LE counts.
-/// Returns the counts and the bytes consumed.
+/// A tANS table's counts as the block carries them: `ns`, then in v8
+/// each count as a 4-bit width and the bits below its top one
+/// (`v7_encode::write_tans_table`); in v7, `ns` u16 LE counts. Returns
+/// the bytes consumed.
 fn tans_counts(sec: &[u8], v8: bool, n_symbols: usize, counts: &mut [u16; tans::MAX_SYMBOLS]) -> Result<usize> {
     let ns = *sec.first().ok_or(corrupt("v7: table truncated"))? as usize;
-    let bytes = if v8 { 1 + (ns * 11).div_ceil(8) } else { 1 + 2 * ns };
-    if ns != n_symbols || sec.len() < bytes {
+    if ns != n_symbols {
         return Err(corrupt("v7: table symbol count"));
     }
-    if v8 {
-        let mut bit = 8usize;
-        for c in counts[..ns].iter_mut() {
-            let byte = bit >> 3;
-            let w = u32::from_le_bytes([sec[byte], sec[byte + 1], *sec.get(byte + 2).unwrap_or(&0), 0]);
-            *c = ((w >> (bit & 7)) & 0x7FF) as u16;
-            bit += 11;
+    if !v8 {
+        if sec.len() < 1 + 2 * ns {
+            return Err(corrupt("v7: table truncated"));
         }
-    } else {
         for (s, c) in counts[..ns].iter_mut().enumerate() {
             *c = u16::from_le_bytes([sec[1 + 2 * s], sec[2 + 2 * s]]);
         }
+        return Ok(1 + 2 * ns);
     }
-    Ok(bytes)
+    let mut bit = 8usize;
+    let get = |bit: usize, n: usize| -> Result<u32> {
+        // n <= 11 bits from position `bit`: the three bytes that can hold them.
+        let byte = bit >> 3;
+        if (bit + n).div_ceil(8) > sec.len() {
+            return Err(corrupt("v8: table truncated"));
+        }
+        let b = |k: usize| *sec.get(byte + k).unwrap_or(&0) as u32;
+        Ok(((b(0) | b(1) << 8 | b(2) << 16) >> (bit & 7)) & ((1 << n) - 1))
+    };
+    for c in counts[..ns].iter_mut() {
+        let w = get(bit, 4)? as usize;
+        bit += 4;
+        if w > 11 {
+            return Err(corrupt("v8: table count width"));
+        }
+        *c = if w >= 2 {
+            let m = get(bit, w - 1)?;
+            bit += w - 1;
+            ((1u32 << (w - 1)) + m) as u16
+        } else {
+            w as u16
+        };
+    }
+    Ok(bit.div_ceil(8))
 }
 
 /// Decode one code stream (or copy it raw) into its lane of the grouped
@@ -187,9 +207,9 @@ fn field(w: u64, e: u64) -> (u32, u64, u32) {
 /// dword load that fold into the arithmetic), the extra bits by `bzhi`.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-fn field2<const K: usize>(w: u64, c: u8) -> (u32, u64, u32) {
-    let n = WALK_SPLIT.nb[K][c as usize] as u32;
-    ((w & ((1u64 << n) - 1)) as u32 + WALK_SPLIT.base[K][c as usize], w >> n, n)
+fn field2<const K: usize>(w: u64, t: &WalkSplit, c: u8) -> (u32, u64, u32) {
+    let n = t.nb[K][c as usize] as u32;
+    ((w & ((1u64 << n) - 1)) as u32 + t.base[K][c as usize], w >> n, n)
 }
 
 /// Bytes a sequence can advance a stream: its three fields are at most
@@ -242,8 +262,9 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
     let coded = |i: usize| sub.coded & (1 << i) != 0;
     let reuse = sub.reuse & 0b10 != 0;
     let v8 = layout.v8;
-    code_stream(&payload[layout.sections[S_LL].clone()], v8, coded(S_LL), reuse, LL_SYMBOLS, n, &mut prev.ll, &mut s.codes)?;
-    code_stream(&payload[layout.sections[S_ML].clone()], v8, coded(S_ML), reuse, ML_SYMBOLS, n, &mut prev.ml, &mut s.codes[8..])?;
+    let (ll_symbols, ml_symbols) = if v8 { (LL_SYMBOLS, ML_SYMBOLS) } else { (LL_SYMBOLS_V7, ML_SYMBOLS_V7) };
+    code_stream(&payload[layout.sections[S_LL].clone()], v8, coded(S_LL), reuse, ll_symbols, n, &mut prev.ll, &mut s.codes)?;
+    code_stream(&payload[layout.sections[S_ML].clone()], v8, coded(S_ML), reuse, ml_symbols, n, &mut prev.ml, &mut s.codes[8..])?;
     let off_symbols = if v8 { OFF_SYMBOLS } else { OFF_SYMBOLS_V7 };
     code_stream(&payload[layout.sections[S_OFF].clone()], v8, coded(S_OFF), reuse, off_symbols, n, &mut prev.off, &mut s.codes[16..])?;
     if !(coded(S_LL) && coded(S_ML) && coded(S_OFF)) {
@@ -271,6 +292,11 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
     let lasts: [usize; 8] = std::array::from_fn(|k| extra[k].bytes.as_ptr() as usize + extra[k].bytes.len() - PAD);
     let mut reps = Reps::new();
     let mut o = 0usize;
+    // The length-code tables of the block's version.
+    #[cfg(not(target_arch = "x86_64"))]
+    let (llw, mlw): (&[u64; 256], &[u64; 256]) = if v8 { (&LL_WALK, &ML_WALK) } else { (&LL_WALK_V7, &ML_WALK_V7) };
+    #[cfg(target_arch = "x86_64")]
+    let split: &WalkSplit = if v8 { &WALK_SPLIT } else { &WALK_SPLIT_V7 };
     loop {
         // Whole batches of 8 that stop short of sequence n - 1 and of any
         // stream's safe margin.
@@ -296,17 +322,17 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
                     let w = unsafe { std::ptr::read_unaligned(($b >> 3) as *const u64) } >> ($b & 7);
                     let offc = c[16 + $k];
                     #[cfg(not(target_arch = "x86_64"))]
-                    let (ll, w, n1) = field(w, LL_WALK[c[$k] as usize]);
+                    let (ll, w, n1) = field(w, llw[c[$k] as usize]);
                     #[cfg(not(target_arch = "x86_64"))]
-                    let (ml, w, n2) = field(w, ML_WALK[c[8 + $k] as usize]);
+                    let (ml, w, n2) = field(w, mlw[c[8 + $k] as usize]);
                     #[cfg(not(target_arch = "x86_64"))]
                     let (ov, _, n3) = field(w, OFF_WALK[offc as usize]);
                     #[cfg(target_arch = "x86_64")]
-                    let (ll, w, n1) = field2::<0>(w, c[$k]);
+                    let (ll, w, n1) = field2::<0>(w, split, c[$k]);
                     #[cfg(target_arch = "x86_64")]
-                    let (ml, w, n2) = field2::<1>(w, c[8 + $k]);
+                    let (ml, w, n2) = field2::<1>(w, split, c[8 + $k]);
                     #[cfg(target_arch = "x86_64")]
-                    let (ov, _, n3) = field2::<2>(w, offc);
+                    let (ov, _, n3) = field2::<2>(w, split, offc);
                     $b += n1 as u64;
                     $b += n2 as u64;
                     $b += n3 as u64;
@@ -335,14 +361,22 @@ fn sequences(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s:
         let r = &mut ers[i % 8];
         let j = at(i);
         let llc = s.codes[j];
-        s.seq[j] = ll_value(llc, r.get(extra_bits_of_code(Kind::Ll, llc) as u32) as u32);
         let mlc = s.codes[8 + j];
+        if v8 {
+            s.seq[j] = ll_value(llc, r.get(extra_bits_of_code(Kind::Ll, llc) as u32) as u32);
+        } else {
+            s.seq[j] = len_value_v7(llc, r.get(extra_bits_of_code_v7(Kind::Ll, llc) as u32) as u32);
+        }
         if mlc == 0 && i == n - 1 {
             s.seq[8 + j] = 0;
             s.seq[16 + j] = 0;
             continue;
         }
-        let ml = ml_value(mlc, r.get(extra_bits_of_code(Kind::Ml, mlc) as u32) as u32);
+        let ml = if v8 {
+            ml_value(mlc, r.get(extra_bits_of_code(Kind::Ml, mlc) as u32) as u32)
+        } else {
+            len_value_v7(mlc, r.get(extra_bits_of_code_v7(Kind::Ml, mlc) as u32) as u32) + MIN_MATCH
+        };
         let offc = s.codes[16 + j];
         let off = reps.resolve(offc, r.get(extra_bits_of_code(Kind::Off, offc) as u32) as u32);
         s.seq[8 + j] = ml;
@@ -380,12 +414,18 @@ fn literals(payload: &[u8], layout: &Layout, n_lit: usize, prev: &mut DecTables,
     }
     let mut pos = 0usize;
     if layout.sub.reuse & 1 == 0 {
-        if sec.len() < huff8::TABLE_BYTES {
-            return Err(corrupt("v7: literal table truncated"));
-        }
-        let lengths = crate::huffman::unpack_lengths(&sec[..huff8::TABLE_BYTES]);
+        let lengths = if layout.v8 {
+            let (lengths, n) = crate::huffman::unpack_lengths_v8(sec).ok_or(corrupt("v8: literal table truncated"))?;
+            pos = n;
+            lengths
+        } else {
+            if sec.len() < huff8::TABLE_BYTES {
+                return Err(corrupt("v7: literal table truncated"));
+            }
+            pos = huff8::TABLE_BYTES;
+            crate::huffman::unpack_lengths(&sec[..huff8::TABLE_BYTES])
+        };
         prev.lit = Some(huff8::Table::build(&lengths).ok_or(corrupt("v7: literal code lengths"))?);
-        pos = huff8::TABLE_BYTES;
     }
     let table = prev.lit.as_ref().ok_or(corrupt("v7: literal table reuse without a table"))?;
     let streams = substreams(&sec[pos..], layout.v8)?;

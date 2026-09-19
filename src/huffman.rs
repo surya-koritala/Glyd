@@ -172,6 +172,78 @@ pub fn unpack_lengths(src: &[u8]) -> [u8; 256] {
     l
 }
 
+/// The v8 table: nibbles, a length as itself and a run of 1-16 unused
+/// symbols as 0 then the run minus one; the last nibble of an odd count
+/// is a zero pad. Returns the bytes written.
+pub fn pack_lengths_v8(lengths: &[u8; 256], out: &mut Vec<u8>) -> usize {
+    let mut nibbles = Vec::with_capacity(256);
+    let mut i = 0;
+    while i < 256 {
+        if lengths[i] == 0 {
+            let mut run = 0;
+            while i < 256 && lengths[i] == 0 && run < 16 {
+                run += 1;
+                i += 1;
+            }
+            nibbles.push(0);
+            nibbles.push(run as u8 - 1);
+        } else {
+            debug_assert!(lengths[i] <= 15);
+            nibbles.push(lengths[i]);
+            i += 1;
+        }
+    }
+    let start = out.len();
+    for pair in nibbles.chunks(2) {
+        out.push(pair[0] | pair.get(1).map_or(0, |&n| n << 4));
+    }
+    out.len() - start
+}
+
+/// Bytes `pack_lengths_v8` writes for `lengths`.
+pub fn packed_lengths_v8_size(lengths: &[u8; 256]) -> usize {
+    let mut n = 0usize;
+    let mut i = 0;
+    while i < 256 {
+        if lengths[i] == 0 {
+            let mut run = 0;
+            while i < 256 && lengths[i] == 0 && run < 16 {
+                run += 1;
+                i += 1;
+            }
+            n += 2;
+        } else {
+            n += 1;
+            i += 1;
+        }
+    }
+    n.div_ceil(2)
+}
+
+/// Read a v8 table from the front of `src`: the lengths and the bytes it
+/// took, or None if it runs past `src` or past 256 symbols.
+pub fn unpack_lengths_v8(src: &[u8]) -> Option<([u8; 256], usize)> {
+    let mut l = [0u8; 256];
+    let (mut i, mut k) = (0usize, 0usize);
+    let nibble = |k: usize| -> Option<u8> { src.get(k / 2).map(|&b| if k % 2 == 0 { b & 0x0F } else { b >> 4 }) };
+    while i < 256 {
+        let n = nibble(k)?;
+        k += 1;
+        if n == 0 {
+            let run = nibble(k)? as usize + 1;
+            k += 1;
+            if i + run > 256 {
+                return None;
+            }
+            i += run;
+        } else {
+            l[i] = n;
+            i += 1;
+        }
+    }
+    Some((l, k.div_ceil(2)))
+}
+
 /// MSB-first bit writer.
 pub struct BitWriter {
     acc: u64,

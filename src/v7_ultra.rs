@@ -59,9 +59,9 @@ struct Prices {
 /// parse can afford to try again; without that, a block parsed on prices
 /// from a sparse block gets sparser (an unused code costs log2(total)
 /// bits) and never recovers.
-const PRIOR_LL: [u32; LL_SYMBOLS] = [2543, 744, 227, 147, 49, 77, 34, 44, 16, 29, 18, 30, 11, 20, 25, 23, 50, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
-const PRIOR_ML: [u32; ML_SYMBOLS] = [300, 600, 1035, 490, 298, 550, 268, 220, 157, 108, 72, 104, 105, 49, 36, 40, 340, 150, 23, 6, 5, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
-const PRIOR_OFF: [u32; OFF_SYMBOLS] = [209, 158, 59, 2, 3, 1, 12, 39, 65, 91, 103, 114, 129, 146, 186, 221, 269, 317, 362, 385, 388, 374, 288, 176, 120, 80];
+const PRIOR_LL: [u32; LL_SYMBOLS] = [2589, 735, 216, 137, 44, 74, 32, 43, 16, 28, 18, 29, 10, 20, 25, 23, 18, 14, 5, 5, 4, 3, 3, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+const PRIOR_ML: [u32; ML_SYMBOLS] = [300, 600, 1025, 488, 295, 555, 271, 223, 159, 110, 73, 104, 105, 49, 37, 41, 35, 35, 52, 42, 37, 21, 15, 16, 14, 12, 9, 16, 14, 8, 6, 6, 11, 10, 8, 9, 28, 10, 29, 46, 14, 6, 4, 6, 5, 1, 1, 1, 1, 1, 1, 1, 1, 1];
+const PRIOR_OFF: [u32; OFF_SYMBOLS] = [204, 160, 59, 2, 3, 1, 12, 38, 63, 89, 100, 111, 126, 143, 183, 216, 263, 310, 352, 373, 375, 359, 275, 165, 80, 32];
 
 impl Prices {
     /// Prices from the prior plus `s` (the recent blocks' counts), with
