@@ -6,8 +6,11 @@
 # role that may read and write one S3 bucket:
 #   1. scripts/verify_roundtrip.sh on three files (CLI, every level,
 #      single- and multi-core, corrupted copies);
-#   2. examples/bench_suite --threads 1 and --threads <vCPUs> (every
-#      decode checked against the input);
+#   2. examples/bench_suite: every codec at all threads on the large
+#      files, the small objects (one thread), and the fast codecs at one
+#      thread (every decode checked against the input; the single-thread
+#      passes of --ultra and zstd -19 over 9 GB would take an hour each
+#      and are left out);
 #   3. scripts/s3_workflow.sh over the corpus (compress, upload,
 #      download, decompress, verify; costs).
 # Results land in benchmarks/suite/<instance-type>/. Everything created
@@ -16,7 +19,7 @@
 #
 #   AWS_PROFILE=... scripts/bench_aws_suite.sh <bucket> [git-ref]
 # Env: REGION (us-east-1), TYPES ("c7g.2xlarge c7i.2xlarge").
-# A run takes 3-5 hours per instance (in parallel); ~$1.50 per instance.
+# A run takes about 2 hours per instance (in parallel); ~$0.70 per instance.
 set -euo pipefail
 
 BUCKET="$1"
@@ -107,8 +110,9 @@ bash scripts/download_bench_corpus.sh > ~/results/corpus.txt 2>&1
 export PATH=$PWD/target/release:$PATH
 which zstd lz4 aws glyd >> ~/results/machine.txt
 scripts/verify_roundtrip.sh corpus/bench/nasa-access-jul95.log corpus/bench/gharchive-2024-01-16-12.json corpus/bench/yellow_tripdata_2024-02.parquet > ~/results/verify.txt 2>&1
-./target/release/examples/bench_suite --threads 1 --repeats 3 --slow-repeats 1 --out ~/results/bench_suite_1thread.jsonl > ~/results/bench_suite_1thread.txt 2>&1
-./target/release/examples/bench_suite --large --threads $(nproc) --repeats 3 --slow-repeats 2 --out ~/results/bench_suite_${INSTANCE}_allthreads.jsonl > ~/results/bench_suite_allthreads.txt 2>&1
+./target/release/examples/bench_suite --large --threads $(nproc) --repeats 3 --slow-repeats 2 --out ~/results/bench_suite_allthreads.jsonl > ~/results/bench_suite_allthreads.txt 2>&1
+./target/release/examples/bench_suite --small --threads 1 --repeats 3 --out ~/results/bench_suite_small.jsonl > ~/results/bench_suite_small.txt 2>&1
+./target/release/examples/bench_suite --large --threads 1 --repeats 3 --codecs glyd-default,glyd-max,zstd-3,lz4 --out ~/results/bench_suite_1thread.jsonl > ~/results/bench_suite_1thread.txt 2>&1
 S3WF_OUT=~/results/s3_workflow.jsonl scripts/s3_workflow.sh BUCKET_PLACEHOLDER corpus/bench > ~/results/s3_workflow.txt 2>&1
 touch ~/results/DONE
 '
