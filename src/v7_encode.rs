@@ -9,6 +9,7 @@
 //! sequence). The extra-bits section is always 8 raw padded sub-streams
 //! behind a size table: sub-stream k holds, for sequences i == k (mod 8)
 //! in order, the ll extra bits, then ml, then offset extra bits.
+use std::sync::Arc;
 use crate::bits::{section_frame_bytes, write_section, Framing, PAD};
 use crate::format::MAX_BLOCK_SIZE;
 use crate::huff8;
@@ -24,17 +25,32 @@ pub struct Sequence {
 
 /// The previous block's entropy tables, carried forward so the next block
 /// can reuse them instead of writing a fresh one.
+/// The counts and built tables are shared, not copied: every object
+/// compressed with a dictionary starts from a clone of the dictionary's.
 #[derive(Clone)]
 pub struct Tables {
     pub lit_lengths: Option<[u8; 256]>,
-    pub ll: Option<Vec<u16>>,
-    pub ml: Option<Vec<u16>>,
-    pub off: Option<Vec<u16>>,
+    /// The codes of `lit_lengths`, built on first use.
+    pub lit_codes: Option<Arc<huff8::Codes>>,
+    pub ll: Option<Arc<[u16]>>,
+    pub ml: Option<Arc<[u16]>>,
+    pub off: Option<Arc<[u16]>>,
+    /// The encoder's tables for `ll`, `ml`, `off`, built on first reuse.
+    pub seq_enc: Option<Arc<[tans::EncodeTable; 3]>>,
 }
 
 impl Tables {
     pub fn none() -> Self {
-        Tables { lit_lengths: None, ll: None, ml: None, off: None }
+        Tables { lit_lengths: None, lit_codes: None, ll: None, ml: None, off: None, seq_enc: None }
+    }
+
+    /// The encoder's tables of `ll`/`ml`/`off`, built if not yet.
+    pub(crate) fn seq_enc(&mut self) -> &Arc<[tans::EncodeTable; 3]> {
+        let (ll, ml, off) = (self.ll.as_ref().unwrap(), self.ml.as_ref().unwrap(), self.off.as_ref().unwrap());
+        self.seq_enc.get_or_insert_with(|| {
+            let build = |c: &[u16]| tans::EncodeTable::build(c).expect("normalized counts sum to L");
+            Arc::new([build(ll), build(ml), build(off)])
+        })
     }
 }
 
@@ -95,16 +111,40 @@ fn table_cost(hist: &[u32], counts: &[u16]) -> Option<u64> {
             if c == 0 {
                 return None;
             }
-            bits += h as u64 * crate::fixlog::cost_q16(c as u64, tans::L as u64);
+            bits += h as u64 * crate::fixlog::tans_cost_q16(c);
         }
     }
     Some(bits)
+}
+
+/// Literal sections below this many bytes, and sequence sections below
+/// this many sequences, reuse covering previous tables without pricing
+/// fresh ones (see `encode_block_coded`).
+const SMALL_LITERALS: usize = 4096;
+const SMALL_SEQUENCES: usize = 512;
+
+/// A plain histogram, for short inputs (eight tables cost more to zero
+/// than they save).
+fn hist1(data: &[u8]) -> [u64; 256] {
+    let mut h = [0u64; 256];
+    for &b in data {
+        h[b as usize] += 1;
+    }
+    h
 }
 
 /// Histogram over eight interleaved tables: consecutive equal symbols
 /// (the common case in code streams, and runs in literals) otherwise
 /// serialise on one counter's store-to-load forwarding.
 fn hist8<const N: usize>(data: &[u8]) -> [u32; N] {
+    if data.len() < 32 * N {
+        // Eight tables cost more to zero and sum than they save.
+        let mut h = [0u32; N];
+        for &b in data {
+            h[b as usize] += 1;
+        }
+        return h;
+    }
     let mut h = [[0u32; N]; 8];
     let mut it = data.chunks_exact(8);
     for c in &mut it {
@@ -122,20 +162,25 @@ fn hist8<const N: usize>(data: &[u8]) -> [u32; N] {
 /// freshly normalized for this block, or the previous block's when
 /// `reusing`), or the codes raw if coding would not pay for itself.
 /// Returns whether it was coded; a raw section never carries reuse.
-fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool, framing: Framing, chunks: &mut Vec<u32>, out: &mut Vec<u8>) -> bool {
+fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reused: Option<&tans::EncodeTable>, framing: Framing, chunks: &mut Vec<u32>, out: &mut Vec<u8>) -> bool {
     let n_symbols = counts.len();
     let bits = table_cost(&hist[..n_symbols], counts).expect("table covers the data");
-    let table_bytes = if reusing { 0 } else { tans_table_bytes(counts) };
+    let table_bytes = if reused.is_some() { 0 } else { tans_table_bytes(counts) };
     let coded_estimate = (bits >> 19) as usize + table_bytes + section_frame_bytes(framing);
     if coded_estimate + codes.len() / 50 >= codes.len() {
         out.extend_from_slice(codes);
         return false;
     }
-    let et = tans::EncodeTable::build(counts).expect("normalized counts sum to L");
-    if !reusing {
-        write_tans_table(counts, out);
-    }
-    tans::encode8_into(codes, &et, chunks, framing, out);
+    let own;
+    let et = match reused {
+        Some(et) => et,
+        None => {
+            write_tans_table(counts, out);
+            own = tans::EncodeTable::build(counts).expect("normalized counts sum to L");
+            &own
+        }
+    };
+    tans::encode8_into(codes, et, chunks, framing, out);
     true
 }
 
@@ -178,6 +223,7 @@ pub(crate) fn write_tans_table(counts: &[u16], out: &mut Vec<u8>) {
 }
 
 /// Per-block scratch, owned by the caller and reused across blocks.
+#[derive(Default)]
 pub struct EncScratch {
     ll: Vec<u8>,
     ml: Vec<u8>,
@@ -328,16 +374,29 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     let sub_bytes = if compact { SubHeader::COMPACT_BYTES } else { SubHeader::BYTES };
     out.resize(base + sub_bytes, 0);
 
-    // Literals.
-    let hist: [u64; 256] = hist8::<256>(literals).map(|c| c as u64);
-    let lengths = huff8::lengths_for(&hist);
-    let lit_reuse = prev.lit_lengths.map_or(false, |p| {
-        let est_prev: u64 = (0..256).map(|s| hist[s] * p[s] as u64).sum();
-        let est_new: u64 = (0..256).map(|s| hist[s] * lengths[s] as u64).sum();
-        // The previous table must have a code for every symbol present.
-        p.iter().zip(hist.iter()).all(|(&l, &h)| l > 0 || h == 0) && est_prev <= est_new + (crate::huffman::packed_lengths_v8_size(&lengths) as u64) * 8
-    });
-    let lit_lengths = if lit_reuse { prev.lit_lengths.unwrap() } else { lengths };
+    // Literals. A small block (a small object) with a previous table
+    // covering its symbols reuses it without pricing a fresh one: a
+    // fresh table's ~90 bytes cannot pay for themselves on a literal
+    // section that short, and building one is most of a small object's
+    // encoding time.
+    let hist: [u64; 256] = if literals.len() < 4096 { hist1(literals) } else { hist8::<256>(literals).map(|c| c as u64) };
+    let small = literals.len() < SMALL_LITERALS;
+    let covered = prev.lit_lengths.as_ref().map_or(false, |p| p.iter().zip(hist.iter()).all(|(&l, &h)| l > 0 || h == 0));
+    let mut fresh: Option<[u8; 256]> = None;
+    let lit_reuse = if small && covered {
+        true
+    } else {
+        let lengths = huff8::lengths_for(&hist);
+        let reuse = covered && {
+            let p = prev.lit_lengths.as_ref().unwrap();
+            let est_prev: u64 = (0..256).map(|s| hist[s] * p[s] as u64).sum();
+            let est_new: u64 = (0..256).map(|s| hist[s] * lengths[s] as u64).sum();
+            est_prev <= est_new + (crate::huffman::packed_lengths_v8_size(&lengths) as u64) * 8
+        };
+        fresh = Some(lengths);
+        reuse
+    };
+    let lit_lengths = if lit_reuse { prev.lit_lengths.unwrap() } else { fresh.unwrap() };
     // Each section's framing: the block's, and for a compact block's
     // short sections a single stream.
     let framing = |symbols: usize| if compact { Framing::compact_for(symbols) } else { Framing::Wide };
@@ -345,10 +404,17 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     let lit_coded = literals.len() >= 64 && lit_coded_size + literals.len() / 50 < literals.len();
     let lit_start = out.len();
     if lit_coded {
-        if !lit_reuse {
+        if lit_reuse {
+            // The previous table's codes, built once and kept with it.
+            let codes = prev.lit_codes.get_or_insert_with(|| Arc::new(huff8::Codes::build(&lit_lengths)));
+            huff8::encode_with(literals, codes, framing(literals.len()), out);
+        } else {
             crate::huffman::pack_lengths_v8(&lit_lengths, out);
+            let codes = huff8::Codes::build(&lit_lengths);
+            huff8::encode_with(literals, &codes, framing(literals.len()), out);
+            prev.lit_lengths = Some(lit_lengths);
+            prev.lit_codes = Some(Arc::new(codes));
         }
-        huff8::encode_into(literals, &lit_lengths, framing(literals.len()), out);
     } else {
         out.extend_from_slice(literals);
     }
@@ -362,35 +428,44 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     let ll_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.ll);
     let ml_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.ml);
     let off_hist = hist8::<{ tans::MAX_SYMBOLS }>(&s.off);
-    let ll_fresh = tans::normalize(&ll_hist, LL_SYMBOLS);
-    let ml_fresh = tans::normalize(&ml_hist, ML_SYMBOLS);
-    let off_fresh = tans::normalize(&off_hist, OFF_SYMBOLS);
-    let mut seq_reuse = match (&prev.ll, &prev.ml, &prev.off) {
-        (Some(a), Some(b), Some(c)) => {
-            let streams = [(&ll_hist[..LL_SYMBOLS], &ll_fresh, a), (&ml_hist[..ML_SYMBOLS], &ml_fresh, b), (&off_hist[..OFF_SYMBOLS], &off_fresh, c)];
-            let (mut prev_bits, mut fresh_bits) = (0u64, 0u64);
-            let mut ok = true;
-            for (hist, fresh, old) in streams {
-                match table_cost(hist, old) {
-                    Some(bits) => prev_bits += bits,
-                    None => ok = false,
-                }
-                fresh_bits += table_cost(hist, fresh).expect("fresh table covers the data") + (((8 * tans_table_bytes(fresh)) as u64) << 16);
-            }
-            ok && prev_bits <= fresh_bits
-        }
-        _ => false,
+    let hists = [&ll_hist[..LL_SYMBOLS], &ml_hist[..ML_SYMBOLS], &off_hist[..OFF_SYMBOLS]];
+    let prev_cost = match (&prev.ll, &prev.ml, &prev.off) {
+        (Some(a), Some(b), Some(c)) => hists.iter().zip([a, b, c]).try_fold(0u64, |acc, (h, t)| table_cost(h, t).map(|b| acc + b)),
+        _ => None,
     };
-    let mut ll_counts = if seq_reuse { prev.ll.clone().unwrap() } else { ll_fresh.clone() };
-    let mut ml_counts = if seq_reuse { prev.ml.clone().unwrap() } else { ml_fresh.clone() };
-    let mut off_counts = if seq_reuse { prev.off.clone().unwrap() } else { off_fresh.clone() };
+    // Fresh tables, built only when they might be used: a small block
+    // (a small object) whose previous tables cover it reuses them
+    // without pricing fresh ones (as with the literal table above).
+    let mut fresh: Option<[Vec<u16>; 3]> = None;
+    let mut fresh_tables = |fresh: &mut Option<[Vec<u16>; 3]>| {
+        fresh.get_or_insert_with(|| [tans::normalize(&ll_hist, LL_SYMBOLS), tans::normalize(&ml_hist, ML_SYMBOLS), tans::normalize(&off_hist, OFF_SYMBOLS)]);
+    };
+    let mut seq_reuse = match prev_cost {
+        Some(_) if n < SMALL_SEQUENCES => true,
+        Some(prev_bits) => {
+            fresh_tables(&mut fresh);
+            let fresh_bits: u64 = hists.iter().zip(fresh.as_ref().unwrap()).map(|(h, t)| table_cost(h, t).expect("fresh table covers the data") + (((8 * tans_table_bytes(t)) as u64) << 16)).sum();
+            prev_bits <= fresh_bits
+        }
+        None => false,
+    };
+    if !seq_reuse {
+        fresh_tables(&mut fresh);
+    }
+    let (mut ll_counts, mut ml_counts, mut off_counts) = if seq_reuse {
+        (prev.ll.clone().unwrap(), prev.ml.clone().unwrap(), prev.off.clone().unwrap())
+    } else {
+        let [a, b, c] = fresh.as_ref().unwrap();
+        (Arc::from(&a[..]), Arc::from(&b[..]), Arc::from(&c[..]))
+    };
     let seq_start = out.len();
     let mut sizes = [0usize; 3];
     let mut coded = [false; 3];
     for _ in 0..2 {
+        let enc = if seq_reuse { Some(prev.seq_enc().clone()) } else { None };
         for (i, (codes, hist, counts)) in [(&s.ll, &ll_hist, &ll_counts), (&s.ml, &ml_hist, &ml_counts), (&s.off, &off_hist, &off_counts)].into_iter().enumerate() {
             let start = out.len();
-            coded[i] = encode_codes(codes, hist, counts, seq_reuse, framing(n), &mut s.chunks, out);
+            coded[i] = encode_codes(codes, hist, counts, enc.as_ref().map(|e| &e[i]), framing(n), &mut s.chunks, out);
             sizes[i] = out.len() - start;
         }
         // The up-front reuse decision is optimistic (each `encode_codes`
@@ -405,9 +480,11 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
             break;
         }
         seq_reuse = false;
-        ll_counts = ll_fresh.clone();
-        ml_counts = ml_fresh.clone();
-        off_counts = off_fresh.clone();
+        fresh_tables(&mut fresh);
+        let [a, b, c] = fresh.as_ref().unwrap();
+        ll_counts = Arc::from(&a[..]);
+        ml_counts = Arc::from(&b[..]);
+        off_counts = Arc::from(&c[..]);
         out.truncate(seq_start);
     }
     let seq_coded = coded.iter().all(|&c| c);
@@ -466,17 +543,18 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     }
     out[base..base + sub_bytes].copy_from_slice(&hdr);
 
-    if lit_coded {
-        prev.lit_lengths = Some(lit_lengths);
-    }
     if seq_coded {
-        prev.ll = Some(ll_counts);
-        prev.ml = Some(ml_counts);
-        prev.off = Some(off_counts);
+        if !seq_reuse {
+            prev.ll = Some(ll_counts);
+            prev.ml = Some(ml_counts);
+            prev.off = Some(off_counts);
+            prev.seq_enc = None;
+        }
     } else {
         prev.ll = None;
         prev.ml = None;
         prev.off = None;
+        prev.seq_enc = None;
     }
 }
 
@@ -499,8 +577,13 @@ pub const DFAST_SHORT_BITS: u32 = 18;
 const DFAST_SKIP_STRENGTH: u32 = 6;
 
 pub struct DfastTables {
-    long: Box<[u32; 1 << DFAST_LONG_BITS]>,
-    short: Box<[u32; 1 << DFAST_SHORT_BITS]>,
+    long: Vec<u32>,
+    short: Vec<u32>,
+    /// Index bits of each table: `DFAST_LONG_BITS` / `DFAST_SHORT_BITS`
+    /// for a large input, fewer for a small one (`size_for`), so a call
+    /// on a small object clears kilobytes, not megabytes.
+    lbits: u32,
+    sbits: u32,
 }
 
 impl DfastTables {
@@ -516,15 +599,27 @@ impl DfastTables {
     /// input, `clear` first (as `compress_into_max` does per call).
     pub fn new() -> Box<Self> {
         Box::new(DfastTables {
-            long: vec![0; 1 << DFAST_LONG_BITS].into_boxed_slice().try_into().unwrap(),
-            short: vec![0; 1 << DFAST_SHORT_BITS].into_boxed_slice().try_into().unwrap(),
+            long: vec![0; 1 << DFAST_LONG_BITS],
+            short: vec![0; 1 << DFAST_SHORT_BITS],
+            lbits: DFAST_LONG_BITS,
+            sbits: DFAST_SHORT_BITS,
         })
     }
 
-    /// Empty both tables (2 MB of stores).
+    /// Empty both tables (2 MB of stores at full size).
     pub fn clear(&mut self) {
-        self.long.fill(0);
-        self.short.fill(0);
+        self.long[..1 << self.lbits].fill(0);
+        self.short[..1 << self.sbits].fill(0);
+    }
+
+    /// Empty the tables and size them for an input of `len` bytes: the
+    /// full 18 bits from 128 KB up, one bit per halving below, at least
+    /// 10. Output depends only on the input either way.
+    pub fn clear_for(&mut self, len: usize) {
+        let bits = (usize::BITS - len.max(1).leading_zeros() + 1).clamp(10, DFAST_LONG_BITS);
+        self.lbits = bits;
+        self.sbits = bits.min(DFAST_SHORT_BITS);
+        self.clear();
     }
 
     /// Index every position of `input[..end]` (a dictionary: the blocks
@@ -533,9 +628,9 @@ impl DfastTables {
     pub fn seed(&mut self, input: &[u8], end: usize) {
         for (pos, w) in input[..end].windows(8).enumerate() {
             let w = u64::from_ne_bytes(w.try_into().unwrap());
-            let (i, m) = long_slot(w, pos);
+            let (i, m) = long_slot(w, pos, self.lbits);
             self.long[i] = m;
-            let (i, m) = short_slot(w, pos);
+            let (i, m) = short_slot(w, pos, self.sbits);
             self.short[i] = m;
         }
     }
@@ -561,14 +656,14 @@ fn h5(w: u64) -> u64 {
 }
 /// (index, tagged position) for the long table.
 #[inline(always)]
-fn long_slot(w: u64, pos: usize) -> (usize, u32) {
+fn long_slot(w: u64, pos: usize, bits: u32) -> (usize, u32) {
     let h = h8(w);
-    ((h >> (64 - DFAST_LONG_BITS)) as usize, (pos & POS_MASK) as u32 | ((h >> (64 - DFAST_LONG_BITS - 8)) as u32) << POS_BITS)
+    ((h >> (64 - bits)) as usize, (pos & POS_MASK) as u32 | ((h >> (64 - bits - 8)) as u32) << POS_BITS)
 }
 #[inline(always)]
-fn short_slot(w: u64, pos: usize) -> (usize, u32) {
+fn short_slot(w: u64, pos: usize, bits: u32) -> (usize, u32) {
     let h = h5(w);
-    ((h >> (64 - DFAST_SHORT_BITS)) as usize, (pos & POS_MASK) as u32 | ((h >> (64 - DFAST_SHORT_BITS - 8)) as u32) << POS_BITS)
+    ((h >> (64 - bits)) as usize, (pos & POS_MASK) as u32 | ((h >> (64 - bits - 8)) as u32) << POS_BITS)
 }
 #[inline(always)]
 unsafe fn eq4(a: *const u8, b: *const u8) -> bool {
@@ -597,16 +692,31 @@ struct Slot {
     ml: u32,
     is: usize,
     ms: u32,
+    /// The two hashes, for a dictionary's full-size tables.
+    hl: u64,
+    hs: u64,
 }
 
 impl Slot {
     /// Reads 8 bytes at `pos`: the caller guarantees `pos + 8 <= block_end`.
     #[inline(always)]
-    unsafe fn at(src: *const u8, pos: usize) -> Slot {
+    unsafe fn at(src: *const u8, pos: usize, lbits: u32, sbits: u32) -> Slot {
         let w = std::ptr::read_unaligned(src.add(pos) as *const u64);
-        let (il, ml) = long_slot(w, pos);
-        let (is, ms) = short_slot(w, pos);
-        Slot { il, ml, is, ms }
+        let (il, ml) = long_slot(w, pos, lbits);
+        let (is, ms) = short_slot(w, pos, sbits);
+        Slot { il, ml, is, ms, hl: h8(w), hs: h5(w) }
+    }
+
+    /// The slot's indexes in a dictionary's full-size tables, and the
+    /// tags the entries there must carry (the same hash bits below the
+    /// index, at full size).
+    #[inline(always)]
+    fn dict_index(&self) -> (usize, u32, usize, u32) {
+        let il = (self.hl >> (64 - DFAST_LONG_BITS)) as usize;
+        let ml = ((self.hl >> (64 - DFAST_LONG_BITS - 8)) as u32) << POS_BITS;
+        let is = (self.hs >> (64 - DFAST_SHORT_BITS)) as usize;
+        let ms = ((self.hs >> (64 - DFAST_SHORT_BITS - 8)) as u32) << POS_BITS;
+        (il, ml, is, ms)
     }
 }
 
@@ -616,33 +726,73 @@ impl Slot {
 /// short one that verifies (4+ bytes; a long candidate whose tag agrees
 /// shares 8 in practice), extended to at most `block_end`; `(usize::MAX,
 /// 0)` if none. `pos + 8 <= block_end` is the caller's guarantee.
+/// A match found by `probe`: where its source bytes start, its offset,
+/// and its length. `off == 0` is no match.
+#[derive(Clone, Copy)]
+struct Found {
+    src: *const u8,
+    off: usize,
+    len: usize,
+}
+
+const NONE: Found = Found { src: std::ptr::null(), off: 0, len: 0 };
+
+/// A prepared dictionary's tables for the parse: seeded on its content
+/// (positions 0..len there), read only, consulted after the input's own.
+pub struct DictTables {
+    pub(crate) tables: Box<DfastTables>,
+    pub(crate) content: *const u8,
+    pub(crate) len: usize,
+}
+
 #[inline(always)]
-unsafe fn probe(src: *const u8, pos: usize, block_end: usize, c: &Slot, el: u32, es: u32, r: &[u32; 3]) -> (usize, usize) {
+unsafe fn probe<const D: bool>(src: *const u8, pos: usize, block_end: usize, c: &Slot, el: u32, es: u32, r: &[u32; 3], dict: Option<&DictTables>, eld: u32, esd: u32) -> Found {
     use crate::finder::{MatchLen, ScalarMatch};
     let p = src.add(pos);
     for &o in r {
         let o = o as usize;
         if o <= pos && eq4(p, p.sub(o)) {
-            return (pos - o, 4 + ScalarMatch::prefix(p.add(4), p.sub(o).add(4), block_end - pos - 4));
+            return Found { src: p.sub(o), off: o, len: 4 + ScalarMatch::prefix(p.add(4), p.sub(o).add(4), block_end - pos - 4) };
         }
     }
+    let mut best = NONE;
     for (e, mine) in [(el, c.ml), (es, c.ms)] {
         if let Some(cand) = candidate(e, mine, pos) {
             let len = ScalarMatch::prefix(p, src.add(cand), block_end - pos);
             if len >= 4 {
-                return (cand, len);
+                best = Found { src: src.add(cand), off: pos - cand, len };
+                break;
             }
         }
     }
-    (usize::MAX, 0)
+    if D {
+        // The dictionary: an entry names a position in its content; the
+        // offset counts through the content's tail and this input. The
+        // longer of the input's and the dictionary's candidates wins.
+        let d = dict.unwrap_unchecked();
+        let (_, tl, _, ts) = c.dict_index();
+        for (e, mine) in [(eld, tl), (esd, ts)] {
+            if (e ^ mine) >> POS_BITS == 0 {
+                let epos = (e as usize) & POS_MASK;
+                let off = pos + d.len - epos;
+                if epos < d.len && off < MAX_WINDOW as usize {
+                    let len = ScalarMatch::prefix(p, d.content.add(epos), (block_end - pos).min(d.len - epos));
+                    if len >= 4 && len > best.len {
+                        best = Found { src: d.content.add(epos), off, len };
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    best
 }
 
 #[cold]
 #[inline(never)]
-fn lazy_win(pos: &mut usize, cand: &mut usize, rc: &mut usize, c: usize, rc1: usize) {
+fn lazy_win(pos: &mut usize, found: &mut Found, better: Found) {
     *pos += 1;
-    *cand = c;
-    *rc = rc1;
+    *found = better;
 }
 
 /// Parse `input[block_start..block_start + block_len]` into `seqs` and
@@ -661,8 +811,22 @@ fn lazy_win(pos: &mut usize, cand: &mut usize, rc: &mut usize, c: usize, rc1: us
 /// so a mispredicted check does not restart that load chain; a hit's
 /// lazy step and a step-1 miss's next probe both use them.
 pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
+    find_sequences_dfast_impl::<false>(input, block_start, block_len, t, None, reps, seqs, literals, codes)
+}
+
+/// `find_sequences_dfast` with a prepared dictionary's tables: its
+/// content is history before `input` (offsets reach through it), found
+/// through its own tables after the input's.
+pub fn find_sequences_dfast_dict(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: &DictTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
+    find_sequences_dfast_impl::<true>(input, block_start, block_len, t, Some(dict), reps, seqs, literals, codes)
+}
+
+#[inline(always)]
+fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: Option<&DictTables>, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
     use crate::finder::MatchLen;
     let src = input.as_ptr();
+    let (lb, sb) = (t.lbits, t.sbits);
+    debug_assert!(!D || (dict.unwrap().tables.lbits == DFAST_LONG_BITS && dict.unwrap().tables.sbits == DFAST_SHORT_BITS));
     let block_end = block_start + block_len;
     assert!(block_len <= MAX_BLOCK_SIZE, "the extras packing relies on block_len <= MAX_BLOCK_SIZE");
     debug_assert_eq!(*reps, [1, 4, 8], "written codes assume the decoder's fresh Reps");
@@ -682,17 +846,24 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
 
     if pos < limit {
         unsafe {
-            let mut cur = Slot::at(src, pos);
+            let mut cur = Slot::at(src, pos, lb, sb);
             let mut el = t.long[cur.il];
             let mut es = t.short[cur.is];
             loop {
                 t.long[cur.il] = cur.ml;
                 t.short[cur.is] = cur.ms;
-                let nxt = Slot::at(src, pos + 1);
+                let nxt = Slot::at(src, pos + 1, lb, sb);
                 let el1 = t.long[nxt.il];
                 let es1 = t.short[nxt.is];
-                let (mut cand, mut rc) = probe(src, pos, block_end, &cur, el, es, &r);
-                if cand == usize::MAX {
+                let (eld, esd) = if D {
+                    let d = &dict.unwrap_unchecked().tables;
+                    let (il, _, is, _) = cur.dict_index();
+                    (d.long[il], d.short[is])
+                } else {
+                    (0, 0)
+                };
+                let mut found = probe::<D>(src, pos, block_end, &cur, el, es, &r, dict, eld, esd);
+                if found.off == 0 {
                     let step = (step_nb >> DFAST_SKIP_STRENGTH) as usize;
                     step_nb += 1;
                     pos += step;
@@ -704,7 +875,7 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
                         el = el1;
                         es = es1;
                     } else {
-                        cur = Slot::at(src, pos);
+                        cur = Slot::at(src, pos, lb, sb);
                         el = t.long[cur.il];
                         es = t.short[cur.is];
                     }
@@ -717,22 +888,27 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
                 t.short[nxt.is] = nxt.ms;
                 if let Some(c) = candidate(el1, nxt.ml, pos + 1) {
                     let rc1 = crate::finder::ScalarMatch::prefix(src.add(pos + 1), src.add(c), block_end - pos - 1);
-                    if rc1 >= rc + 4 {
+                    if rc1 >= found.len + 4 {
                         // Out of line so this stays a (rarely taken)
                         // branch: as selects, the next position would
                         // wait for this probe's whole load chain.
-                        lazy_win(&mut pos, &mut cand, &mut rc, c, rc1);
+                        let better = Found { src: src.add(c), off: pos + 1 - c, len: rc1 };
+                        lazy_win(&mut pos, &mut found, better);
                     }
                 }
-                // Back-match into the pending literals.
+                // Back-match into the pending literals: the source steps
+                // back with the match, within its buffer (the input, or
+                // the dictionary's content).
                 let mut mpos = pos;
-                let mut c = cand;
-                while mpos > anchor && c > 0 && *src.add(mpos - 1) == *src.add(c - 1) {
+                let mut c = found.src;
+                let mut rc = found.len;
+                let lo = if D && found.off > pos { dict.unwrap_unchecked().content } else { src };
+                while mpos > anchor && c > lo && *src.add(mpos - 1) == *c.sub(1) {
                     mpos -= 1;
-                    c -= 1;
+                    c = c.sub(1);
                     rc += 1;
                 }
-                let offset = (mpos - c) as u32;
+                let offset = found.off as u32;
                 let ll = mpos - anchor;
                 let dst = literals.as_mut_ptr().add(literals.len());
                 if ll <= 16 {
@@ -764,17 +940,17 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
                 // Index the match's second position and its tail (zstd's
                 // insertions) so runs keep hashing.
                 let w = std::ptr::read_unaligned(src.add(mpos + 2) as *const u64);
-                let (i, m) = long_slot(w, mpos + 2);
+                let (i, m) = long_slot(w, mpos + 2, lb);
                 t.long[i] = m;
-                let (i, m) = short_slot(w, mpos + 2);
+                let (i, m) = short_slot(w, mpos + 2, sb);
                 t.short[i] = m;
                 let w = std::ptr::read_unaligned(src.add(pos - 2) as *const u64);
-                let (i, m) = long_slot(w, pos - 2);
+                let (i, m) = long_slot(w, pos - 2, lb);
                 t.long[i] = m;
                 let w = std::ptr::read_unaligned(src.add(pos - 1) as *const u64);
-                let (i, m) = short_slot(w, pos - 1);
+                let (i, m) = short_slot(w, pos - 1, sb);
                 t.short[i] = m;
-                cur = Slot::at(src, pos);
+                cur = Slot::at(src, pos, lb, sb);
                 el = t.long[cur.il];
                 es = t.short[cur.is];
             }

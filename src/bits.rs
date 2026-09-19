@@ -206,32 +206,42 @@ pub fn section_frame_bytes(framing: Framing) -> usize {
 pub fn write_streams_compact(out: &mut Vec<u8>, n_streams: usize, max_bits: usize, mut fill: impl FnMut(usize, &mut BitCursor)) {
     debug_assert!(n_streams == 1 || n_streams == STREAMS);
     let mut lens = [0usize; STREAMS];
-    let mut data: Vec<u8> = Vec::with_capacity(n_streams * (max_bits / 8 + 16));
     out.push(n_streams as u8);
+    // The streams go straight into `out`; the size table, known only
+    // once they are written, is slid in front of them afterwards.
+    let streams_at = out.len();
     for k in 0..n_streams {
-        data.reserve(max_bits / 8 + 16);
-        let start = data.len();
+        out.reserve(max_bits / 8 + 16);
+        let start = out.len();
         // SAFETY: as in `write_streams`.
         unsafe {
-            let base = data.as_mut_ptr().add(start);
+            let base = out.as_mut_ptr().add(start);
             let mut c = BitCursor { acc: 0, n: 0, p: base };
             fill(k, &mut c);
             let end = c.finish();
-            data.set_len(start + end.offset_from(base) as usize);
+            out.set_len(start + end.offset_from(base) as usize);
         }
-        lens[k] = data.len() - start;
+        lens[k] = out.len() - start;
     }
     if n_streams == STREAMS {
-        for &n in &lens[..STREAMS - 1] {
-            let mut v = n;
+        // Seven varints of at most four bytes: a stream is under 2^28.
+        let mut sizes = [0u8; 4 * (STREAMS - 1)];
+        let mut n = 0;
+        for &len in &lens[..STREAMS - 1] {
+            let mut v = len;
             while v >= 128 {
-                out.push((v & 127) as u8 | 128);
+                sizes[n] = (v & 127) as u8 | 128;
+                n += 1;
                 v >>= 7;
             }
-            out.push(v as u8);
+            sizes[n] = v as u8;
+            n += 1;
         }
+        let end = out.len();
+        out.resize(end + n, 0);
+        out.copy_within(streams_at..end, streams_at + n);
+        out[streams_at..streams_at + n].copy_from_slice(&sizes[..n]);
     }
-    out.extend_from_slice(&data);
 }
 
 impl<'a> Stream<'a> {

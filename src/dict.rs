@@ -9,8 +9,8 @@
 //! each taken segment covering its strings so the next pick adds new
 //! ones; the most valuable last (nearest offsets). Then it parses the
 //! samples against that content for the tables.
-use crate::v7_decode::DecTables;
-use crate::v7_encode::{Sequence, Tables};
+use crate::v7_decode::{DecTables, Slot};
+use crate::v7_encode::{DictTables, Sequence, Tables};
 use crate::v7_format::*;
 use crate::{huff8, tans};
 
@@ -18,12 +18,25 @@ const MAGIC: &[u8; 8] = b"GLYDDICT";
 const VERSION: u16 = 1;
 const SEGMENT: usize = 256;
 
+/// Zero bytes kept after the content: the decoder's copies from a
+/// dictionary run in 32-byte steps past a match's end.
+pub const CONTENT_PAD: usize = 64;
+
 pub struct Dict {
+    /// The content, then `CONTENT_PAD` zeros.
     content: Vec<u8>,
     id: u32,
     tables: Tables,
-    dec: DecTables,
+    dec: DecTables<'static>,
+    /// The max-level finder's tables seeded on the content, read by
+    /// every object's parse (`content` never moves: `Dict` owns it and
+    /// this points into it).
+    finder: DictTables,
 }
+
+// `finder.content` points into `content`, which is never reallocated.
+unsafe impl Send for Dict {}
+unsafe impl Sync for Dict {}
 
 impl Dict {
     /// A dictionary from `content` alone: the window, and tables from a
@@ -51,11 +64,11 @@ impl Dict {
 
     /// The serialized form: magic, version, the content, the tables.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.content.len() + 512);
+        let mut out = Vec::with_capacity(self.content().len() + 512);
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&VERSION.to_le_bytes());
-        out.extend_from_slice(&(self.content.len() as u32).to_le_bytes());
-        out.extend_from_slice(&self.content);
+        out.extend_from_slice(&(self.content().len() as u32).to_le_bytes());
+        out.extend_from_slice(self.content());
         crate::huffman::pack_lengths_v8(self.tables.lit_lengths.as_ref().unwrap(), &mut out);
         for t in [&self.tables.ll, &self.tables.ml, &self.tables.off] {
             crate::v7_encode::write_tans_table(t.as_ref().unwrap(), &mut out);
@@ -72,11 +85,11 @@ impl Dict {
         let mut pos = 14 + n;
         let (lengths, used) = crate::huffman::unpack_lengths_v8(bytes.get(pos..)?)?;
         pos += used;
-        let mut tables = Tables { lit_lengths: Some(lengths), ll: None, ml: None, off: None };
+        let mut tables = Tables { lit_lengths: Some(lengths), lit_codes: None, ll: None, ml: None, off: None, seq_enc: None };
         for (slot, n_symbols) in [(&mut tables.ll, LL_SYMBOLS), (&mut tables.ml, ML_SYMBOLS), (&mut tables.off, OFF_SYMBOLS)] {
             let (counts, used) = crate::v7_decode::read_tans_table(bytes.get(pos..)?, n_symbols)?;
             pos += used;
-            *slot = Some(counts);
+            *slot = Some(counts.into());
         }
         if pos != bytes.len() {
             return None;
@@ -85,15 +98,26 @@ impl Dict {
         Some(dict)
     }
 
-    fn assemble(content: Vec<u8>, tables: Tables) -> Dict {
+    fn assemble(mut content: Vec<u8>, mut tables: Tables) -> Dict {
+        content.extend_from_slice(&[0u8; CONTENT_PAD]);
+        // Built once here; every object's `Tables` clone shares them.
+        tables.seq_enc();
+        tables.lit_codes = Some(std::sync::Arc::new(huff8::Codes::build(tables.lit_lengths.as_ref().unwrap())));
+        fn own<T>(t: Option<T>) -> Slot<'static, T> {
+            t.map_or(Slot::None, Slot::Own)
+        }
         let dec = DecTables {
-            lit: huff8::Table::build(tables.lit_lengths.as_ref().unwrap()),
-            ll: tans::DecodeTable::build(tables.ll.as_ref().unwrap()),
-            ml: tans::DecodeTable::build(tables.ml.as_ref().unwrap()),
-            off: tans::DecodeTable::build(tables.off.as_ref().unwrap()),
+            lit: own(huff8::Table::build(tables.lit_lengths.as_ref().unwrap())),
+            ll: own(tans::DecodeTable::build(tables.ll.as_ref().unwrap())),
+            ml: own(tans::DecodeTable::build(tables.ml.as_ref().unwrap())),
+            off: own(tans::DecodeTable::build(tables.off.as_ref().unwrap())),
         };
-        debug_assert!(dec.lit.is_some() && dec.ll.is_some() && dec.ml.is_some() && dec.off.is_some());
-        let mut d = Dict { content, id: 0, tables, dec };
+        debug_assert!(!dec.lit.is_none() && !dec.ll.is_none() && !dec.ml.is_none() && !dec.off.is_none());
+        let mut finder_tables = crate::v7_encode::DfastTables::new();
+        let content_len = content.len() - CONTENT_PAD;
+        finder_tables.seed(&content, content_len);
+        let finder = DictTables { tables: finder_tables, content: content.as_ptr(), len: content_len };
+        let mut d = Dict { content, id: 0, tables, dec, finder };
         // The id covers the tables too: a block coded against them must
         // not be decoded with another set. 0 means "no dictionary".
         let id = crate::compute_checksum(&d.to_bytes());
@@ -101,7 +125,13 @@ impl Dict {
         d
     }
 
+    /// The content (the window an object's first block sees).
     pub fn content(&self) -> &[u8] {
+        &self.content[..self.content.len() - CONTENT_PAD]
+    }
+
+    /// The content with its padding: what the decoder reads from.
+    pub(crate) fn content_padded(&self) -> &[u8] {
         &self.content
     }
 
@@ -113,8 +143,13 @@ impl Dict {
         self.tables.clone()
     }
 
-    pub(crate) fn dec_tables(&self) -> DecTables {
-        self.dec.clone()
+    /// The decoder's tables, borrowing this dictionary's.
+    pub(crate) fn dec_tables(&self) -> DecTables<'_> {
+        DecTables::borrowing(&self.dec)
+    }
+
+    pub(crate) fn finder(&self) -> &DictTables {
+        &self.finder
     }
 }
 
@@ -154,9 +189,11 @@ fn tables_for(content: &[u8], samples: &[&[u8]]) -> Tables {
     }
     Tables {
         lit_lengths: Some(huff8::lengths_for(&lit)),
-        ll: Some(tans::normalize(&ll, LL_SYMBOLS)),
-        ml: Some(tans::normalize(&ml, ML_SYMBOLS)),
-        off: Some(tans::normalize(&off, OFF_SYMBOLS)),
+        lit_codes: None,
+        ll: Some(tans::normalize(&ll, LL_SYMBOLS).into()),
+        ml: Some(tans::normalize(&ml, ML_SYMBOLS).into()),
+        off: Some(tans::normalize(&off, OFF_SYMBOLS).into()),
+        seq_enc: None,
     }
 }
 

@@ -61,7 +61,7 @@ thread_local! {
     /// of every call and unit (so a stream whose first block asks for
     /// reuse fails the same way on any thread) and at every
     /// FLAG_CHAIN_RESET block.
-    static V7_TABLES: RefCell<v7_decode::DecTables> = RefCell::new(v7_decode::DecTables::none());
+    static V7_TABLES: RefCell<v7_decode::DecTables<'static>> = RefCell::new(v7_decode::DecTables::none());
 }
 
 #[inline(always)]
@@ -414,10 +414,9 @@ pub fn dict_id(dict: &[u8]) -> u32 {
 /// the same dictionary. Blocks stored raw carry no id. Sequential decode
 /// only.
 pub fn compress_with_dict(dict: &Dict, input: &[u8], output: &mut Vec<u8>) {
-    let mut joined = Vec::with_capacity(dict.content().len() + input.len());
-    joined.extend_from_slice(dict.content());
-    joined.extend_from_slice(input);
-    compress_max_from(&joined, dict.content().len(), dict.id(), Parse::Dfast, Some(dict), output);
+    // The input is parsed in place: the dictionary's content is history
+    // outside it, found through the dictionary's own seeded tables.
+    compress_max_from(input, 0, dict.id(), Parse::Dfast, Some(dict), output);
 }
 
 /// The max level over `full[start..]`, with `full[..start]` (a dictionary
@@ -433,15 +432,30 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
         static DFAST: RefCell<Box<v7_encode::DfastTables>> = RefCell::new(v7_encode::DfastTables::new());
         /// The ultra parse's 20 MB, likewise.
         static ULTRA: RefCell<Option<Box<v7_ultra::UltraState>>> = RefCell::new(None);
+        /// The per-block buffers, kept across calls: a call on a small
+        /// object would otherwise spend a fifth of its time growing them.
+        static WORK: RefCell<Work> = RefCell::new(Work::default());
     }
-    let (mut seqs, mut literals) = (Vec::new(), Vec::new());
+    #[derive(Default)]
+    struct Work {
+        seqs: Vec<v7_encode::Sequence>,
+        literals: Vec<u8>,
+        scratch: v7_encode::EncScratch,
+        payload: Vec<u8>,
+        part_seqs: Vec<v7_encode::Sequence>,
+        part_lits: Vec<u8>,
+    }
+    let mut work = WORK.with(|w| std::mem::take(&mut *w.borrow_mut()));
+    let Work { seqs, literals, scratch, payload, part_seqs, part_lits } = &mut work;
     // A prepared dictionary's tables stand as the previous block's.
     let mut prev = dict.map_or_else(v7_encode::Tables::none, |d| d.tables());
-    let mut scratch = v7_encode::EncScratch::new();
-    let mut payload = Vec::new();
     match parse {
         Parse::Dfast => DFAST.with_borrow_mut(|t| {
-            t.clear();
+            // Tables sized to the input (a small object clears little);
+            // `full[..start]` is a dictionary's content laid before the
+            // input (the ultra path) and is indexed here, while the max
+            // level reads a dictionary through the dictionary's own tables.
+            t.clear_for(full.len());
             t.seed(full, start);
         }),
         Parse::Ultra => ULTRA.with_borrow_mut(|t| t.get_or_insert_with(v7_ultra::UltraState::new).clear(full.len())),
@@ -449,7 +463,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
     let mut offset = start;
     let mut first = true;
     // One block: the chunk at `offset`, its parse, and the header flags.
-    let mut emit = |chunk: &[u8], seqs: &[v7_encode::Sequence], literals: &[u8], first: bool, prev: &mut v7_encode::Tables, scratch: &mut v7_encode::EncScratch, payload: &mut Vec<u8>, output: &mut Vec<u8>| {
+    let emit = |chunk: &[u8], seqs: &[v7_encode::Sequence], literals: &[u8], first: bool, prev: &mut v7_encode::Tables, scratch: &mut v7_encode::EncScratch, payload: &mut Vec<u8>, output: &mut Vec<u8>| {
         payload.clear();
         let compact = compact_block(chunk.len());
         v7_encode::encode_block_with(seqs, literals, dict_id, prev, scratch, compact, payload);
@@ -463,7 +477,6 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
             write_coded_block(chunk, seqs.len(), literals.len(), chain_flag, payload, output);
         }
     };
-    let (mut part_seqs, mut part_lits) = (Vec::new(), Vec::new());
     while offset < full.len() {
         let chunk_len = (full.len() - offset).min(MAX_BLOCK_SIZE);
         let chunk = &full[offset..offset + chunk_len];
@@ -472,26 +485,29 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
         let mut reps = [1u32, 4, 8]; // encode_block's Reps starts fresh per block
         match parse {
             Parse::Dfast => {
-                DFAST.with_borrow_mut(|t| v7_encode::find_sequences_dfast(full, offset, chunk_len, t, &mut reps, &mut seqs, &mut literals, &mut scratch));
+                DFAST.with_borrow_mut(|t| match dict {
+                    Some(d) => v7_encode::find_sequences_dfast_dict(full, offset, chunk_len, t, d.finder(), &mut reps, seqs, literals, scratch),
+                    None => v7_encode::find_sequences_dfast(full, offset, chunk_len, t, &mut reps, seqs, literals, scratch),
+                });
                 // The dfast parse wrote its codes into the scratch as it
                 // went; encode from those.
                 payload.clear();
                 let compact = compact_block(chunk_len);
-                v7_encode::encode_block_coded(&literals, dict_id, &mut prev, &mut scratch, compact, &mut payload);
+                v7_encode::encode_block_coded(literals, dict_id, &mut prev, scratch, compact, payload);
                 let chain_flag = if first && dict.is_none() { FLAG_CHAIN_RESET } else { 0 };
                 if payload.len() + header_len(if compact { VERSION_V9 } else { VERSION_V8 }) >= chunk_len {
                     prev = v7_encode::Tables::none();
                     write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
                 } else {
-                    write_coded_block(chunk, seqs.len(), literals.len(), chain_flag, &payload, output);
+                    write_coded_block(chunk, seqs.len(), literals.len(), chain_flag, payload, output);
                 }
                 first = false;
             }
             Parse::Ultra => {
-                ULTRA.with_borrow_mut(|t| v7_ultra::find_sequences_ultra(full, offset, chunk_len, t.as_mut().unwrap(), reps, &mut seqs, &mut literals));
+                ULTRA.with_borrow_mut(|t| v7_ultra::find_sequences_ultra(full, offset, chunk_len, t.as_mut().unwrap(), reps, seqs, literals));
                 // The parse may be split into blocks with their own tables
                 // where its statistics change (`v7_ultra::split_points`).
-                let mut cuts = v7_ultra::split_points(&seqs, &literals);
+                let mut cuts = v7_ultra::split_points(seqs, literals);
                 cuts.push(seqs.len());
                 let (mut at, mut lit_at, mut pos) = (0usize, 0usize, 0usize);
                 for cut in cuts {
@@ -504,7 +520,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
                     }
                     part_lits.clear();
                     part_lits.extend_from_slice(&literals[lit_at..lit_end]);
-                    emit(&chunk[pos..pos + len], &part_seqs, &part_lits, first, &mut prev, &mut scratch, &mut payload, output);
+                    emit(&chunk[pos..pos + len], part_seqs, part_lits, first, &mut prev, scratch, payload, output);
                     first = false;
                     at = cut;
                     lit_at = lit_end;
@@ -515,6 +531,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
         }
         offset += chunk_len;
     }
+    WORK.with(|w| *w.borrow_mut() = work);
 }
 
 /// Max level, all cores.
@@ -618,6 +635,8 @@ unsafe fn decode_block(
     dst: &mut [u8],
     buffer_start: *const u8,
     avx2: bool,
+    ext: Option<&[u8]>,
+    tables: Option<&mut v7_decode::DecTables<'_>>,
 ) -> Result<()> {
     let uncomp_len = header.uncompressed_len as usize;
     if uncomp_len > dst.len() {
@@ -628,17 +647,21 @@ unsafe fn decode_block(
         return Ok(());
     }
     if is_coded_version(header.version) {
+        let v8 = header.version >= VERSION_V8;
+        let compact = header.version == VERSION_V9;
+        let (n_seq, n_lit) = (header.token_count as usize, header.literal_len as usize);
         return v7_decode::with_scratch(|scratch| {
+            // A dictionary stream's tables are the caller's (borrowing the
+            // dictionary's); otherwise the thread's, reset at a chain start.
+            if let Some(t) = tables {
+                return v7_decode::decode_block(payload, v8, compact, n_seq, n_lit, dst, buffer_start, uncomp_len, t, scratch, ext).map(|_| ());
+            }
             V7_TABLES.with(|t| {
                 let mut t = t.borrow_mut();
                 if (header.flags & FLAG_CHAIN_RESET) != 0 {
                     *t = v7_decode::DecTables::none();
                 }
-                v7_decode::decode_block(
-                    payload, header.version >= VERSION_V8, header.version == VERSION_V9, header.token_count as usize, header.literal_len as usize,
-                    dst, buffer_start, uncomp_len, &mut t, scratch,
-                )
-                .map(|_| ())
+                v7_decode::decode_block(payload, v8, compact, n_seq, n_lit, dst, buffer_start, uncomp_len, &mut t, scratch, ext).map(|_| ())
             })
         });
     }
@@ -725,16 +748,17 @@ pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
 /// Decompress a stream made by `compress_with_dict` with the same `dict`.
 pub fn decompress_with_dict(dict: &Dict, compressed: &[u8]) -> Result<Vec<u8>> {
     let total = total_uncompressed_len(compressed)?;
-    let content = dict.content();
-    let mut buf = vec![0u8; content.len() + total + PADDING * 2];
-    buf[..content.len()].copy_from_slice(content);
-    V7_TABLES.with_borrow_mut(|t| *t = dict.dec_tables());
-    let written = decompress_sequential_from(compressed, &mut buf, content.len(), Some(dict.id()), true);
-    V7_TABLES.with_borrow_mut(|t| *t = v7_decode::DecTables::none());
-    let written = written?;
-    buf.drain(..content.len());
+    let mut buf = vec![0u8; total + PADDING * 2];
+    let written = decompress_with_dict_into(dict, compressed, &mut buf)?;
     buf.truncate(written);
     Ok(buf)
+}
+
+/// `decompress_with_dict` into a caller's buffer of at least the output's
+/// size. The dictionary's content is read in place: matches that reach
+/// before the output take their bytes from it.
+pub fn decompress_with_dict_into(dict: &Dict, compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
+    decompress_sequential_impl(compressed, dst, 0, Some(dict), true, Some(dict.content()))
 }
 
 /// The dictionary id a v7 block names; None for raw blocks (which need
@@ -751,17 +775,21 @@ fn block_dict_id(header: &BlockHeader, payload: &[u8]) -> Option<u32> {
 }
 
 fn decompress_sequential(compressed: &[u8], dst: &mut [u8], verify: bool) -> Result<usize> {
-    decompress_sequential_from(compressed, dst, 0, None, verify)
+    decompress_sequential_impl(compressed, dst, 0, None, verify, None)
 }
 
 /// Decode every block, in order, into `dst[dst_offset0..]`; the window
 /// starts at `dst[0]`, so `dst[..dst_offset0]` (a dictionary) is history
 /// the first block may match into. Every v7 block must name
 /// `expected_dict` (0: none). Returns the bytes written.
-fn decompress_sequential_from(compressed: &[u8], dst: &mut [u8], dst_offset0: usize, expected_dict: Option<u32>, verify: bool) -> Result<usize> {
-    // Without a dictionary the tables start empty; with one, the caller
-    // installed its tables (which the first block may reuse).
-    if expected_dict.is_none() {
+/// Every block in order into `dst[dst_offset0..]`, with a dictionary
+/// (`dict`: its id is what every coded block must name, its tables are
+/// the first block's "previous", and with `ext` its content is history
+/// outside the buffer) or without.
+fn decompress_sequential_impl(compressed: &[u8], dst: &mut [u8], dst_offset0: usize, dict: Option<&Dict>, verify: bool, ext: Option<&[u8]>) -> Result<usize> {
+    let mut tables = dict.map(|d| d.dec_tables());
+    let expected_dict = dict.map(|d| d.id());
+    if dict.is_none() {
         V7_TABLES.with_borrow_mut(|t| *t = v7_decode::DecTables::none());
     }
     let mut cursor = 0usize;
@@ -785,7 +813,7 @@ fn decompress_sequential_from(compressed: &[u8], dst: &mut [u8], dst_offset0: us
         }
         let dst_slice = &mut dst[dst_offset..];
         unsafe {
-            decode_block(&header, payload, dst_slice, buffer_start, avx2)?;
+            decode_block(&header, payload, dst_slice, buffer_start, avx2, ext, tables.as_mut())?;
         }
         if verify {
             let actual = compute_checksum(&dst[dst_offset..dst_offset + uncomp_len]);
@@ -902,7 +930,7 @@ fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> 
                 std::slice::from_raw_parts_mut(ptr, b.uncomp_len)
             };
             unsafe {
-                decode_block(&header, payload, dst_slice, unit_buffer_start, avx2)?;
+                decode_block(&header, payload, dst_slice, unit_buffer_start, avx2, None, None)?;
             }
             if verify {
                 let actual = compute_checksum(&dst_slice[..b.uncomp_len]);

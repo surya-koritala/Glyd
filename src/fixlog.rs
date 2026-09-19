@@ -4,20 +4,22 @@
 
 /// log2(v) with 16 fractional bits, `v >= 1`: the integer part from the
 /// bit length, then 16 fraction bits by squaring the mantissa.
-pub fn log2_q16(v: u64) -> u64 {
+pub const fn log2_q16(v: u64) -> u64 {
     debug_assert!(v >= 1);
     let k = 63 - v.leading_zeros();
     // The mantissa in [1, 2) as a Q62 fixed-point number (a 64-bit value
     // drops its lowest bit).
     let mut m = if k <= 62 { (v as u128) << (62 - k) } else { (v as u128) >> (k - 62) };
     let mut frac = 0u64;
-    for _ in 0..16 {
+    let mut i = 0;
+    while i < 16 {
         m = (m * m) >> 62;
         frac <<= 1;
         if m >= 1u128 << 63 {
             frac |= 1;
             m >>= 1;
         }
+        i += 1;
     }
     (k as u64) << 16 | frac
 }
@@ -25,8 +27,26 @@ pub fn log2_q16(v: u64) -> u64 {
 /// The cost, in 1/65536 bit, of one symbol of count `c` in a total of
 /// `t`: log2(t) - log2(c).
 #[inline]
-pub fn cost_q16(c: u64, t: u64) -> u64 {
+pub const fn cost_q16(c: u64, t: u64) -> u64 {
     log2_q16(t).saturating_sub(log2_q16(c))
+}
+
+/// `cost_q16(c, L)` for every tANS count `c` in `1..=L`, from a table:
+/// the count tables are priced symbol by symbol on every block, and
+/// a small object's block is mostly that pricing (`log2_q16` squares a
+/// 128-bit mantissa sixteen times).
+pub fn tans_cost_q16(c: u16) -> u64 {
+    const L: usize = crate::tans::L;
+    static COST: [u32; L + 1] = {
+        let mut t = [0u32; L + 1];
+        let mut c = 1;
+        while c <= L {
+            t[c] = cost_q16(c as u64, L as u64) as u32;
+            c += 1;
+        }
+        t
+    };
+    COST[c as usize] as u64
 }
 
 #[cfg(test)]

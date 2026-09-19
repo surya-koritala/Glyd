@@ -438,6 +438,80 @@ pub fn decode8_rows(t: &DecodeTable, streams: &[Stream; STREAMS], n: usize, row:
 /// `decode8_rows`; with `single`, every symbol comes from `streams[0]`
 /// through one state on the clamped path (a compact block's short
 /// section).
+/// Three single-stream code sections (a compact block's ll, ml and off)
+/// decoded together: each is one dependent chain of table lookups, so
+/// three at once run three times as fast as one after another. Stream k's
+/// symbol i goes to `out[i / 8 * row + i % 8 + 8 * k]`.
+pub fn decode_single3(t: [&DecodeTable; 3], streams: [Stream; 3], n: usize, row: usize, out: &mut [u8]) -> Result<(), ()> {
+    assert!(row >= 3 * STREAMS);
+    assert!(n == 0 || out.len() > (n - 1) / STREAMS * row + (n - 1) % STREAMS + 2 * STREAMS);
+    for s in &streams {
+        assert!(s.bytes.len() >= PAD, "stream shorter than its padding");
+    }
+    let e = [&t[0].entries, &t[1].entries, &t[2].entries];
+    let starts: [usize; 3] = std::array::from_fn(|k| streams[k].bytes.as_ptr() as usize * 8);
+    let lasts: [usize; 3] = std::array::from_fn(|k| streams[k].bytes.as_ptr() as usize + streams[k].bytes.len() - PAD);
+    // Initial states: the first TL bits of each stream.
+    let mut st: [u32; 3] = std::array::from_fn(|k| {
+        // SAFETY: bytes.len() >= PAD = 8 bytes, asserted above.
+        unsafe { std::ptr::read_unaligned(streams[k].bytes.as_ptr() as *const u64) as u32 & (L as u32 - 1) }
+    });
+    let mut b: [usize; 3] = std::array::from_fn(|k| starts[k] + TL as usize);
+    // One-load batches of four symbols per stream while every stream's
+    // margin allows (retaken as they are read), then clamped readers.
+    let mut o = 0usize;
+    loop {
+        let mut iters = (n - o) / 4;
+        for k in 0..3 {
+            iters = iters.min(safe_batches(b[k] >> 3, lasts[k]));
+        }
+        if iters == 0 {
+            break;
+        }
+        for _ in 0..iters {
+            let mut w = [0u64; 3];
+            for k in 0..3 {
+                // SAFETY: as in `decode8_rows_with`: the load starts at or
+                // before lasts[k], so its 8 bytes are inside stream k.
+                w[k] = unsafe { std::ptr::read_unaligned((b[k] >> 3) as *const u64) } >> (b[k] & 7);
+            }
+            for j in 0..4 {
+                let i = o + j;
+                let at = i / STREAMS * row + i % STREAMS;
+                for k in 0..3 {
+                    // SAFETY: st < L, as in `sym`: base + bits < L for a valid table.
+                    let d = unsafe { *e[k].get_unchecked(st[k] as usize) };
+                    let nbits = unpack_nbits(d);
+                    st[k] = unpack_base(d) + (w[k] as u32 & ((1u32 << nbits) - 1));
+                    w[k] >>= nbits;
+                    b[k] += nbits as usize;
+                    out[at + STREAMS * k] = unpack_sym(d);
+                }
+            }
+            o += 4;
+        }
+    }
+    let mut r: [BitReader; 3] = std::array::from_fn(|k| BitReader::new_at(streams[k], b[k] - starts[k]));
+    for i in o..n {
+        let at = i / STREAMS * row + i % STREAMS;
+        for k in 0..3 {
+            // SAFETY: as above.
+            let d = unsafe { *e[k].get_unchecked(st[k] as usize) };
+            r[k].refill();
+            let nbits = unpack_nbits(d);
+            let bits = r[k].peek(nbits) as u32;
+            r[k].consume(nbits);
+            st[k] = unpack_base(d) + bits;
+            out[at + STREAMS * k] = unpack_sym(d);
+        }
+    }
+    if r.iter().any(|r| r.overrun()) {
+        Err(())
+    } else {
+        Ok(())
+    }
+}
+
 pub fn decode8_rows_with(t: &DecodeTable, streams: &[Stream; STREAMS], n: usize, row: usize, single: bool, out: &mut [u8]) -> Result<(), ()> {
     assert!(row >= STREAMS);
     if single {

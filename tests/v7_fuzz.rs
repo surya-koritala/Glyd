@@ -94,6 +94,34 @@ fn v7_dictionary_mutation_fuzz() {
     }
 }
 
+/// Small objects with a trained dictionary: compact (v9) blocks, whose
+/// single-stream sections have their own decode paths.
+#[test]
+fn v7_small_object_mutation_fuzz() {
+    use glyd::{compress_with_dict, decompress_with_dict};
+    let text = &seed_inputs()[4];
+    let samples: Vec<&[u8]> = text[..200_000].chunks(2000).collect();
+    let dict = glyd::Dict::train(&samples, 16_000);
+    let dict = &dict;
+    let objects: Vec<&[u8]> = [300usize, 1000, 2500, 6000, 20_000].iter().scan(200_000usize, |at, &n| { let o = &text[*at..*at + n]; *at += n; Some(o) }).collect();
+    let mut x = 0x5A11u64;
+    let mut m = Vec::new();
+    for input in objects {
+        let mut c = Vec::new();
+        compress_with_dict(dict, input, &mut c);
+        assert_eq!(decompress_with_dict(dict, &c).unwrap(), input);
+        for _ in 0..fuzz_target() / 100 {
+            mutate(&mut x, &c, &mut m);
+            if let Ok(out) = decompress_with_dict(dict, &m) {
+                assert!(out.len() <= input.len() && out[..] == input[..out.len()], "checksum passed but data differs");
+            }
+            if let Ok(out) = decompress(&m) {
+                assert!(out.len() <= input.len() && out[..] == input[..out.len()], "checksum passed but data differs");
+            }
+        }
+    }
+}
+
 /// The wild copy pass (NEON on aarch64, 32-byte scalar copies elsewhere)
 /// and the exact scalar pass must produce identical bytes: a padded
 /// output (`decompress`) copies nearly every sequence wild, an exact-size

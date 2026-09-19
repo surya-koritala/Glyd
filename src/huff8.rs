@@ -89,10 +89,31 @@ impl Table {
 /// dependency chain: 4 x TB <= MAX_PUT) from tables of reversed codes
 /// and lengths (two loads beat one load plus the unpacking ALU ops).
 pub fn encode_into(data: &[u8], lengths: &[u8; 256], framing: Framing, out: &mut Vec<u8>) {
-    let codes = build_codes(lengths);
-    let rev: [u32; 256] = std::array::from_fn(|s| reverse_bits(codes[s], lengths[s]) as u32);
-    let len: [u32; 256] = std::array::from_fn(|s| lengths[s] as u32);
-    debug_assert!(data.iter().all(|&b| (1..=TB as u8).contains(&lengths[b as usize])), "symbol without a code, or one longer than TB");
+    encode_with(data, &Codes::build(lengths), framing, out)
+}
+
+/// The encoder's view of a table: reversed codes and lengths, built
+/// once per table and kept while the table is reused.
+#[derive(Clone)]
+pub struct Codes {
+    rev: [u32; 256],
+    len: [u32; 256],
+}
+
+impl Codes {
+    pub fn build(lengths: &[u8; 256]) -> Codes {
+        let codes = build_codes(lengths);
+        Codes {
+            rev: std::array::from_fn(|s| reverse_bits(codes[s], lengths[s]) as u32),
+            len: std::array::from_fn(|s| lengths[s] as u32),
+        }
+    }
+}
+
+/// `encode_into` with the codes already built.
+pub fn encode_with(data: &[u8], codes: &Codes, framing: Framing, out: &mut Vec<u8>) {
+    let (rev, len) = (&codes.rev, &codes.len);
+    debug_assert!(data.iter().all(|&b| (1..=TB as u32).contains(&len[b as usize])), "symbol without a code, or one longer than TB");
     // Symbol i goes to stream i % streams: `STREAMS` apart in the data,
     // or every symbol into the one stream.
     let streams = framing.streams();
@@ -199,8 +220,39 @@ pub fn decode_with<'b>(table: &Table, streams: &[Stream<'b>; STREAMS], n: usize,
     assert!(out.len() >= n);
     let t = table.entries.as_slice();
     if single {
-        let mut r = BitReader::new_at(streams[0], 0);
-        for o in out[..n].iter_mut() {
+        // One stream: the one-load batches of four symbols while the
+        // stream's margin allows (retaken as it is read: the margin is by
+        // the widest codes), then the clamped reader for the rest.
+        let s0 = streams[0];
+        assert!(s0.bytes.len() >= PAD, "stream shorter than its padding");
+        let start = s0.bytes.as_ptr() as usize * 8;
+        let last = s0.bytes.as_ptr() as usize + s0.bytes.len() - PAD;
+        let mut b = start;
+        let mut o = 0usize;
+        loop {
+            let iters = ((n - o) / 4).min(safe_batches(b >> 3, last));
+            if iters == 0 {
+                break;
+            }
+            let batch: &mut [u8] = &mut out[o..o + 4 * iters];
+            for q in batch.chunks_exact_mut(4) {
+                // SAFETY: as in the eight-stream loop below: this load
+                // starts at or before `last`, so its 8 bytes are in the
+                // stream.
+                let mut w = unsafe { std::ptr::read_unaligned((b >> 3) as *const u64) } >> (b & 7);
+                for v in q {
+                    // SAFETY: the index is masked to TB bits, the table's size.
+                    let e = unsafe { *t.get_unchecked((w & ((1 << TB) - 1)) as usize) };
+                    let len = (e >> 8) as u32;
+                    w >>= len;
+                    b += len as usize;
+                    *v = e as u8;
+                }
+            }
+            o += 4 * iters;
+        }
+        let mut r = BitReader::new_at(s0, b - start);
+        for o in out[o..n].iter_mut() {
             r.refill();
             *o = sym(&mut r, t);
         }
