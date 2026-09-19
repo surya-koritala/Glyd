@@ -58,14 +58,14 @@ with Snappy or LZ4 (Parquet's default codec is Snappy). Moving it to Glyd
 `--max` cuts the bytes stored and moved by about a third; moving from zstd
 saves CPU on every read instead.
 
-| You store today | Compressed with | ⚡ **With Glyd `--max`** | Bytes saved | **Saved per year** at $21/TB-month |
+| You&nbsp;store&nbsp;today | Compressed&nbsp;with | ⚡&nbsp;**Glyd&nbsp;‑‑max** | Bytes&nbsp;saved | **Saved&nbsp;per&nbsp;year** ($21/TB‑month) |
 | ---: | :--- | ---: | ---: | ---: |
-| 100 TB | Snappy (ratio 2.08) | 64.5 TB | 35.5% | **$8,900** |
+| 100&nbsp;TB | Snappy (2.08) | 64.5&nbsp;TB | 35.5% | **$8,900** |
 | 1 PB | Snappy | 645 TB | 35.5% | **$89,000** |
 | 1 PB | LZ4 (2.10) | 653 TB | 34.7% | **$87,000** |
 | 10 PB | Snappy | 6.45 PB | 35.5% | **$895,000** |
 | 100 PB | Snappy | 64.5 PB | 35.5% | **$8.9 M** |
-| 1 PB | zstd -3 (3.20) | 996 TB | 0.4% | $1,000 — plus **22% fewer decode CPU-seconds** on every read |
+| 1&nbsp;PB | zstd&nbsp;-3 (3.20) | 996&nbsp;TB | 0.4% | $1,000, plus **22% fewer decode CPU‑seconds** on every read |
 
 Formula: `saved_per_year = stored_TB × (1 − old_ratio / 3.22) × price_per_TB_month × 12`.
 Ratios are Silesia, same run; your data will differ — measure it with
