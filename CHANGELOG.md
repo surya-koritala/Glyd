@@ -8,9 +8,55 @@ every earlier format.
 
 ## Unreleased
 
+### Small objects and dictionaries
+- `Dict`: a prepared dictionary (trained content plus entropy tables)
+  for small objects; `Dict::train` (cover selection as zstd's fastcover,
+  scoring each distinct string once), `to_bytes`/`from_bytes`,
+  `compress_with_dict`, `compress_with_dict_ultra`,
+  `decompress_with_dict`. The object is parsed in place against the
+  dictionary's own seeded tables; the decoder copies from the content
+  and borrows the dictionary's built tables.
+- Format v9: compact framing for blocks of at most 32 KB (one marker
+  byte, varint lengths, a 5-10 byte sub-header, single-stream sections
+  under 1,024 symbols, no padding on disk): 207 -> 21 bytes of framing
+  on a 4 KB object. Every earlier format decodes unchanged
+  (tests/format_compat.rs holds v0.2.0, v0.3.0 and v0.4.0 output).
+- The ultra level with a dictionary prices its parse from the
+  dictionary's tables.
+- Per-object work cut: entropy tables and codes built once per
+  dictionary, table costs from a lookup, buffers kept across calls,
+  single-stream decode paths (three code chains at once, one-load
+  batches).
+
+GitHub Archive JSON objects, Apple M1 Max, one core, 110 KB
+dictionaries trained on other objects (zstd's numbers without a
+checksum; Glyd writes 4 bytes per object): 1 KB objects `--max` + Dict
+ratio 4.75 (zstd -3 + dict 4.96), compress 245 MB/s (454), decode 920
+MB/s (1,117); 4 KB 6.28 (6.42), 321 (588), 1,209 (1,440); 16 KB 7.65
+(7.66), 394 (635), 1,674 (1,890). `--ultra` + Dict: 5.25 / 7.13 / 8.84
+(zstd -19 + dict 5.47 / 7.41 / 8.95). Before this work the same objects
+compressed to 2.15 / 3.87 / - with a window-only dictionary at 6 MB/s
+and decoded at 170 MB/s.
+
+### Verification and benchmarks
+- `scripts/verify_roundtrip.sh` (every level and core mode through the
+  CLI, byte-compared; corrupted copies rejected or decoded exactly),
+  `scripts/download_bench_corpus.sh` (~9 GB of logs, JSON, SQL dumps
+  and Parquet with a separate training set), `examples/bench_suite.rs`
+  (Glyd against zstd -3, zstd -19 and LZ4 at a stated thread count,
+  every decode checked, peak memory, small-object latencies),
+  `scripts/s3_workflow.sh` (compress, upload, download, decompress,
+  verify, monthly cost), `scripts/bench_aws_suite.sh` (all of it on
+  Graviton3 and Sapphire Rapids), `scripts/report_suite.py`.
+- The format-compatibility fixtures are now committed (they were
+  ignored by the `*.glyd` rule; CI failed on every push since they were
+  added).
+
 ### Parallel paths
-- The parallel compressors cut the input into units of 2 MB (v6 levels),
-  8 MB (`--max`) and 16 MB (`--ultra`) instead of 256 KB. Each unit is
+- The parallel compressors cut the input into units of at least 2 MB
+  (v6 levels), 8 MB (`--max`) and 16 MB (`--ultra`) instead of 256 KB,
+  growing with the input (two units per core, up to 64 MB): JSON events
+  lost 4.7% to 8 MB units against the sequential ratio, 1% at 64 MB. Each unit is
   still a chain of its own (parallel decode, random access), and the
   ratio now stays within 0.5-0.7% of the sequential path; at 256 KB the
   CLI's multi-core default was giving up 3% (default level), 6.6%

@@ -215,33 +215,70 @@ the tables when written (~180).
 
 The v8 coding under framing sized for small objects, written for blocks
 of at most `COMPACT_MAX` = 32 KB (v8 above that; v7/v8 blocks decode as
-before):
+before). Everything a small block does not need is gone from its
+framing:
 
-- Header (19 bytes): magic, version, flags as one byte, the four lengths
-  as u16, checksum. Sub-header (16): coded, reuse, dict id, five u16
-  section sizes. One 8-byte padding at the end of the payload; sections
-  carry none of their own (a stream's loads may run into the next
-  section, the last into the padding).
-- Sections: a stream count, then for eight streams seven varint sizes
-  and the streams; a section of at most `SINGLE_MAX_SYMBOLS` = 1024
-  symbols is one stream (`bits::Framing::Single`): no size table, no
-  seven byte-aligned tails, decoded on the clamped per-symbol path
-  (slower per symbol, immaterial at that size).
+- Block header: one marker byte (`COMPACT_MARKER`, 'G'; the v6-v8 magic
+  starts with 'D') in place of the 4-byte magic and 2-byte version, the
+  flags as one byte, the uncompressed and payload lengths as varints,
+  for a coded block the sequence and literal counts as varints, then the
+  4-byte checksum: 12-14 bytes for a block under 16 KB (v8: 32).
+- Sub-header: one byte of coded/reuse bits with a flag for a dictionary
+  id, the id only when there is one, and the first four section sizes as
+  varints (the fifth section runs to the end of the payload): 5-10 bytes
+  (v8: 26).
+- Sections: eight streams behind seven varint sizes, or, for a section of
+  at most `SINGLE_MAX_SYMBOLS` = 1024 symbols, one stream with no size
+  table at all (`bits::Framing::Single`). Which of the two a section is
+  follows from its symbol count in the block header, so no byte says so.
+- No padding on disk. The decoders' loads run past a stream's last byte,
+  so the decoder copies a compact block's payload (at most 32 KB) into a
+  padded scratch buffer first.
+- A literal section under a reused table is coded whenever its bits say
+  so (the 64-literal floor applies to fresh tables only).
 
-A 4 KB JSON event with a prepared dictionary: 207 bytes of framing
-(header 32, sub-header 26, five sections' size tables and paddings) went
-to 43; the object 870 -> 676 bytes. Small objects, `examples/small_objects.rs`
-(gharchive events, 2,000 per size, dictionaries trained on 2,000 others):
+The single-stream sections decode on their own paths: the three code
+streams together (three independent chains, `tans::decode_single3`),
+and the walk, literal and code loops take one-load batches inside the
+stream's margin (retaken as the stream is read) before the clamped tail.
 
-| Object | zstd -3 | zstd -3 + dict | Glyd --max | + Dict | Glyd --ultra + Dict |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 KB | 2.38 | 5.00 | 1.99 | 4.11 | 4.11 |
-| 4 KB | 3.56 | 6.52 | 3.25 | 6.06 | 6.22 |
-| 16 KB | 4.89 | 7.74 | 4.76 | 7.52 | 7.98 |
-| 64 KB | 6.38 | 8.50 | 6.27 | 8.13 | 8.91 |
+A 4 KB JSON event with a prepared dictionary: 207 bytes of framing in v8
+(header 32, sub-header 26, five sections' size tables and paddings), 48
+in the first v9 layout, 21 now; the object 870 -> 676 -> 643 bytes.
 
-Before v0.4.0 the same objects with a window-only dictionary compressed
-to 2.15 (1 KB) and 3.87 (4 KB). What remains at 1 KB is the framing
-still (43 of 249 bytes) and the dictionary content's quality (zstd's
-trained content used as Glyd's window: 4.83 against 4.7 at 4 KB before
-the framing change).
+## Dictionaries (`src/dict.rs`, v0.4.0)
+
+A `Dict` is content plus entropy tables. The content is the window an
+object's first block sees: the max level parses the object in place and
+probes the dictionary's own seeded finder tables beside the object's
+(`v7_encode::DictTables`); the decoder copies matches from the content
+through an extDict path (`copy_seq_from_ext`, `copy_seq_wild_ext`; the
+content is kept with 64 zero bytes after it for the wild copies). The
+tables (a literal table and the three tANS tables) are what a block that
+reuses them writes none of its own: ~90 + 3 x ~25 bytes, most of a
+small object's output. The decoder keeps them built (`DecTables`
+borrowing the dictionary's), so an object costs no table work; the
+encoder keeps the built encoder tables and Huffman codes with them
+(`Tables`, shared by `Arc`).
+
+`Dict::train` selects the content by cover, as zstd's fastcover: every
+8-byte string in the samples' concatenation is counted in a 2^20-entry
+hashed table; the concatenation is cut into as many epochs as the budget
+has 1 KB segments; each epoch contributes its best segment, scoring each
+distinct string once, and the segment's strings are zeroed so later
+picks cover new ones; the segments go in from the end, the earliest
+picks (made while every count was whole) nearest the object. The tables
+come from a max-level parse of the samples against that content, every
+symbol given at least one count. Under Glyd's own compressor this
+content matches zstd's trained content on JSON events (6.37 vs 6.32 at
+4 KB) and is at or above it on access-log and source-tree objects.
+
+The ultra level with a dictionary (`compress_with_dict_ultra`) prices
+its parse from the dictionary's tables (`v7_ultra::Stats::of_tables`,
+weight 64 per tANS count) rather than from the object's own few
+symbols: 1 KB JSON events 4.77 -> 5.23.
+
+Serialized (`Dict::to_bytes`, "GLYDDICT" v1): the content, the packed
+literal lengths, the three count tables. The id is the checksum of that
+form; a block names it in its sub-header and the decoder refuses a block
+whose id is not the dictionary's.

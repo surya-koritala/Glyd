@@ -108,9 +108,13 @@ let mut out = Vec::new();
 glyd::compress_into_max(&input, &mut out);          // or compress_into / compress_into_fast / compress_into_turbo
 let back = glyd::decompress(&out)?;                  // any level, any block mix
 
-// Dictionaries for small objects (JSON documents, records):
+// Dictionaries for small objects (JSON documents, records): train once
+// on samples of the data, keep the bytes, prepare on every process.
+let dict = glyd::Dict::train(&samples, 110 * 1024);   // samples: &[&[u8]], content budget
+std::fs::write("events.glyddict", dict.to_bytes())?;
+let dict = glyd::Dict::from_bytes(&std::fs::read("events.glyddict")?).unwrap();
 let mut out = Vec::new();
-glyd::compress_with_dict(&dict, &doc, &mut out);
+glyd::compress_with_dict(&dict, &doc, &mut out);       // or compress_with_dict_ultra
 let back = glyd::decompress_with_dict(&dict, &out)?;
 
 // std::io streaming (v6 levels):
@@ -264,6 +268,34 @@ AWS numbers in `benchmarks/` are from the 256 KB units.
 | OpenStreetMap PBF | 1.000 | 1.000 | tie (already compressed) |
 | NYC taxi Parquet (50 MB) | 1.001 | 1.004 | tie (already compressed) |
 
+### Small objects (JSON events, one core)
+
+Objects cut from GitHub Archive events, 2,000 per size, each codec with
+its own 110 KB dictionary trained on 2,000 other objects (zstd's
+trainer for zstd, `Dict::train` for Glyd; zstd's output carries no
+checksum, Glyd's 4 bytes per object). Apple M1 Max, one core,
+`examples/small_objects.rs` and `examples/small_speed.rs`:
+
+| Object | zstd&nbsp;-3&nbsp;+&nbsp;dict | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | zstd&nbsp;-19&nbsp;+&nbsp;dict | ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;+&nbsp;Dict** |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 KB | 4.96 | **4.75** | 5.47 | **5.25** |
+| 4 KB | 6.42 | **6.28** | 7.41 | **7.13** |
+| 16 KB | 7.66 | **7.65** | 8.95 | **8.84** |
+
+| Object | Codec | Compress | Decompress |
+| ---: | :--- | ---: | ---: |
+| 1 KB | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | 245&nbsp;MB/s | **920&nbsp;MB/s** |
+| 1 KB | zstd -3 + dict | 454&nbsp;MB/s | 1,117&nbsp;MB/s |
+| 4 KB | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | 321&nbsp;MB/s | **1,209&nbsp;MB/s** |
+| 4 KB | zstd -3 + dict | 588&nbsp;MB/s | 1,440&nbsp;MB/s |
+| 16 KB | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | 394&nbsp;MB/s | **1,674&nbsp;MB/s** |
+| 16 KB | zstd -3 + dict | 635&nbsp;MB/s | 1,890&nbsp;MB/s |
+
+On small objects zstd is ahead: 1-4% denser at `-3` and 1-4% at `-19`,
+1.6-1.9× faster to compress and 1.1-1.2× faster to decode. Without a
+dictionary Glyd `--max` is 6-12% less dense than zstd -3 on objects
+under 16 KB.
+
 ### Reproduce
 
 ```bash
@@ -305,6 +337,8 @@ unsafe block carries its bound.
 - `--max` decodes 1.3× zstd -3, not the 2× the design aimed at.
 - On the extended corpus `--max` beats zstd -3 on 3 of 5 files; it loses
   0.6% on very repetitive JSON.
+- Small objects with a dictionary: zstd is 1-4% denser and 1.6-1.9×
+  faster to compress (table above).
 - `GlydReader`/`GlydWriter` (std::io streaming) carry v6 levels only.
 - On x86 (Sapphire Rapids) `--max` decodes at 0.9-1.06× zstd -3, not the
   1.3× it reaches on ARM: x86-64's 16 general registers spill the 8-stream
