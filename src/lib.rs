@@ -21,6 +21,7 @@ pub mod tans;
 pub mod v7_format;
 pub mod v7_encode;
 pub mod v7_decode;
+pub mod v7_ultra;
 
 pub use streaming::{GlydReader, GlydWriter};
 pub use format::compute_checksum;
@@ -349,7 +350,20 @@ pub fn compress_parallel_into_fast(input: &[u8], output: &mut Vec<u8>) {
 /// Blocks the coder cannot shrink are stored raw (as v6 raw blocks,
 /// which every decoder reads).
 pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
-    compress_max_from(input, 0, 0, output)
+    compress_max_from(input, 0, 0, Parse::Dfast, output)
+}
+
+/// Ultra level: format v7 on the optimal parse (`v7_ultra`): the same
+/// decoder and window, denser output, an order of magnitude slower to
+/// produce.
+pub fn compress_into_ultra(input: &[u8], output: &mut Vec<u8>) {
+    compress_max_from(input, 0, 0, Parse::Ultra, output)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Parse {
+    Dfast,
+    Ultra,
 }
 
 /// The id a dictionary is named by in the blocks compressed with it: its
@@ -368,13 +382,13 @@ pub fn compress_with_dict(dict: &[u8], input: &[u8], output: &mut Vec<u8>) {
     let mut joined = Vec::with_capacity(dict.len() + input.len());
     joined.extend_from_slice(dict);
     joined.extend_from_slice(input);
-    compress_max_from(&joined, dict.len(), dict_id(dict), output);
+    compress_max_from(&joined, dict.len(), dict_id(dict), Parse::Dfast, output);
 }
 
 /// The max level over `full[start..]`, with `full[..start]` (a dictionary
 /// named `dict_id`, or nothing) as history: indexed before the first
 /// block, so the parse's window reaches into it.
-fn compress_max_from(full: &[u8], start: usize, dict_id: u32, output: &mut Vec<u8>) {
+fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, output: &mut Vec<u8>) {
     thread_local! {
         /// The parse's 2 MB of tables, allocated once per thread and
         /// cleared at the start of every call (the parallel path makes
@@ -382,15 +396,20 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, output: &mut Vec<u
         /// input and the dictionary, not on what the thread compressed
         /// before (see `DfastTables::new`).
         static DFAST: RefCell<Box<v7_encode::DfastTables>> = RefCell::new(v7_encode::DfastTables::new());
+        /// The ultra parse's 20 MB, likewise.
+        static ULTRA: RefCell<Option<Box<v7_ultra::UltraState>>> = RefCell::new(None);
     }
     let (mut seqs, mut literals) = (Vec::new(), Vec::new());
     let mut prev = v7_encode::Tables::none();
     let mut scratch = v7_encode::EncScratch::new();
     let mut payload = Vec::new();
-    DFAST.with_borrow_mut(|t| {
-        t.clear();
-        t.seed(full, start);
-    });
+    match parse {
+        Parse::Dfast => DFAST.with_borrow_mut(|t| {
+            t.clear();
+            t.seed(full, start);
+        }),
+        Parse::Ultra => ULTRA.with_borrow_mut(|t| t.get_or_insert_with(v7_ultra::UltraState::new).clear()),
+    }
     let mut offset = start;
     while offset < full.len() {
         let chunk_len = (full.len() - offset).min(MAX_BLOCK_SIZE);
@@ -399,8 +418,16 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, output: &mut Vec<u
         literals.clear();
         payload.clear();
         let mut reps = [1u32, 4, 8]; // encode_block's Reps starts fresh per block
-        DFAST.with_borrow_mut(|t| v7_encode::find_sequences_dfast(full, offset, chunk_len, t, &mut reps, &mut seqs, &mut literals, &mut scratch));
-        v7_encode::encode_block_coded(&literals, dict_id, &mut prev, &mut scratch, &mut payload);
+        match parse {
+            Parse::Dfast => {
+                DFAST.with_borrow_mut(|t| v7_encode::find_sequences_dfast(full, offset, chunk_len, t, &mut reps, &mut seqs, &mut literals, &mut scratch));
+                v7_encode::encode_block_coded(&literals, dict_id, &mut prev, &mut scratch, &mut payload);
+            }
+            Parse::Ultra => {
+                ULTRA.with_borrow_mut(|t| v7_ultra::find_sequences_ultra(full, offset, chunk_len, t.as_mut().unwrap(), reps, &mut seqs, &mut literals));
+                v7_encode::encode_block_with(&seqs, &literals, dict_id, &mut prev, &mut scratch, &mut payload);
+            }
+        }
         let chain_flag = if offset == start { FLAG_CHAIN_RESET } else { 0 };
         if payload.len() + HEADER_SIZE >= chunk_len {
             prev = v7_encode::Tables::none();
