@@ -4,6 +4,7 @@
 *.ptx
 *.log
 *.glyd
+!tests/data/*.glyd
 .g1-status.json
 .v7-fuzz-status
 /field_survey_partial.csv

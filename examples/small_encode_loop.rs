@@ -3,10 +3,10 @@ use std::io::Read;
 fn main() {
     let size: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(1024);
     let mut f = std::fs::File::open("corpus/ext/gharchive.json").unwrap();
-    let mut d = vec![0u8; 64 << 20];
+    let mut d = vec![0u8; 256 << 20];
     let n = f.read(&mut d).unwrap(); d.truncate(n);
     let objects: Vec<&[u8]> = d.chunks(size).take(2000).collect();
-    let samples: Vec<&[u8]> = d[32 << 20..].chunks(size).take(2000).collect();
+    let samples: Vec<&[u8]> = d[128 << 20..].chunks(size).take(2000).collect();
     let dict = glyd::Dict::train(&samples, 110 * 1024);
     let mut out = Vec::with_capacity(size + 1024);
     let t = std::time::Instant::now();

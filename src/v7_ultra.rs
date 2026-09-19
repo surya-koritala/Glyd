@@ -170,6 +170,30 @@ impl Stats {
         Stats { lit: [0; 256], ll: [0; LL_SYMBOLS], ml: [0; ML_SYMBOLS], off: [0; OFF_SYMBOLS] }
     }
 
+    /// Counts standing for a dictionary's tables, as the recent blocks'
+    /// would: `DICT_WEIGHT` times each tANS count (they sum to `tans::L`
+    /// per table; the prior weighs 4096 x `PRIOR_WEIGHT`), and for the
+    /// literals 2^(TB - length) per symbol, the code's implied
+    /// probability, at the same weight.
+    pub fn of_tables(t: &crate::v7_encode::Tables) -> Option<Stats> {
+        const DICT_WEIGHT: u32 = 64;
+        let (lengths, ll, ml, off) = (t.lit_lengths.as_ref()?, t.ll.as_ref()?, t.ml.as_ref()?, t.off.as_ref()?);
+        let mut s = Stats::none();
+        for (a, &l) in s.lit.iter_mut().zip(lengths.iter()) {
+            *a = if l == 0 { 0 } else { (DICT_WEIGHT << (crate::huff8::TB as u32 - l as u32)) / 2 };
+        }
+        for (a, &c) in s.ll.iter_mut().zip(ll.iter()) {
+            *a = DICT_WEIGHT * c as u32;
+        }
+        for (a, &c) in s.ml.iter_mut().zip(ml.iter()) {
+            *a = DICT_WEIGHT * c as u32;
+        }
+        for (a, &c) in s.off.iter_mut().zip(off.iter()) {
+            *a = DICT_WEIGHT * c as u32;
+        }
+        Some(s)
+    }
+
     /// Halve these counts and add a block's.
     fn decay_into(&mut self, block: &Stats) {
         for (a, b) in self.lit.iter_mut().zip(block.lit.iter()) {
@@ -258,6 +282,13 @@ impl UltraState {
 
     /// Forget everything and size the tables for an input of `len` bytes:
     /// the output then depends only on the input.
+    /// Start the next block's prices from a dictionary's tables (after
+    /// `clear`): the parse of a small object is then priced by what
+    /// objects like it cost, not by its own few symbols.
+    pub fn seed_stats(&mut self, tables: &crate::v7_encode::Tables) {
+        self.stats = Stats::of_tables(tables);
+    }
+
     pub fn clear(&mut self, len: usize) {
         let ring = len.min(MAX_WINDOW as usize).max(1 << 16).next_power_of_two();
         let bits = (usize::BITS - len.max(1).leading_zeros()).clamp(12, HASH4_BITS);

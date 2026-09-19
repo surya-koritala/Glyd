@@ -458,7 +458,13 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
             t.clear_for(full.len());
             t.seed(full, start);
         }),
-        Parse::Ultra => ULTRA.with_borrow_mut(|t| t.get_or_insert_with(v7_ultra::UltraState::new).clear(full.len())),
+        Parse::Ultra => ULTRA.with_borrow_mut(|t| {
+            let t = t.get_or_insert_with(v7_ultra::UltraState::new);
+            t.clear(full.len());
+            if let Some(d) = dict {
+                t.seed_stats(&d.tables());
+            }
+        }),
     }
     let mut offset = start;
     let mut first = true;
