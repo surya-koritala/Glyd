@@ -457,34 +457,49 @@ fn candidate(e: u32, mine: u32, pos: usize) -> Option<usize> {
     }
 }
 
-/// The match at `pos`: the first of the repeat offsets (4-byte compare
-/// each), the long candidate and the short one that verifies (4+ bytes;
-/// a long candidate whose tag agrees shares 8 in practice), extended to
-/// at most `block_end`; `(usize::MAX, 0)` if none. Records `pos` in both
-/// tables. Reads 8 bytes at `pos`: `pos + 8 <= block_end` is the caller's
-/// guarantee.
+/// A position's two table slots: its 8 bytes, and per table the index and
+/// the tagged entry it writes there.
+#[derive(Clone, Copy)]
+struct Slot {
+    w: u64,
+    il: usize,
+    ml: u32,
+    is: usize,
+    ms: u32,
+}
+
+impl Slot {
+    /// Reads 8 bytes at `pos`: the caller guarantees `pos + 8 <= block_end`.
+    #[inline(always)]
+    unsafe fn at(src: *const u8, pos: usize) -> Slot {
+        let w = std::ptr::read_unaligned(src.add(pos) as *const u64);
+        let (il, ml) = long_slot(w, pos);
+        let (is, ms) = short_slot(w, pos);
+        Slot { w, il, ml, is, ms }
+    }
+}
+
+/// The match at `pos` (slot `c`, whose table entries `el` / `es` were
+/// loaded before `pos` was written into the tables): the first of the
+/// repeat offsets (4-byte compare each), the long candidate and the
+/// short one that verifies (4+ bytes; a long candidate whose tag agrees
+/// shares 8 in practice), extended to at most `block_end`; `(usize::MAX,
+/// 0)` if none. `pos + 8 <= block_end` is the caller's guarantee.
 #[inline(always)]
-unsafe fn probe(src: *const u8, pos: usize, block_end: usize, t: &mut DfastTables, r: &[u32; 3]) -> (usize, usize) {
+unsafe fn probe(src: *const u8, pos: usize, block_end: usize, c: &Slot, el: u32, es: u32, r: &[u32; 3]) -> (usize, usize) {
     use crate::finder::{MatchLen, ScalarMatch};
     let p = src.add(pos);
-    let w = std::ptr::read_unaligned(p as *const u64);
-    let (il, ml) = long_slot(w, pos);
-    let (is, ms) = short_slot(w, pos);
-    let el = t.long[il];
-    let es = t.short[is];
-    t.long[il] = ml;
-    t.short[is] = ms;
     for &o in r {
         let o = o as usize;
         if o <= pos && eq4(p, p.sub(o)) {
             return (pos - o, 4 + ScalarMatch::prefix(p.add(4), p.sub(o).add(4), block_end - pos - 4));
         }
     }
-    for (e, mine) in [(el, ml), (es, ms)] {
-        if let Some(c) = candidate(e, mine, pos) {
-            let len = ScalarMatch::prefix(p, src.add(c), block_end - pos);
+    for (e, mine) in [(el, c.ml), (es, c.ms)] {
+        if let Some(cand) = candidate(e, mine, pos) {
+            let len = ScalarMatch::prefix(p, src.add(cand), block_end - pos);
             if len >= 4 {
-                return (c, len);
+                return (cand, len);
             }
         }
     }
@@ -505,14 +520,20 @@ fn lazy_win(pos: &mut usize, cand: &mut usize, rc: &mut usize, c: usize, rc1: us
 /// window across the blocks of one input. `reps` is only used to *find*
 /// matches (the codes are assigned by `encode_block`, whose `Reps` starts
 /// fresh per block, so the caller passes `[1, 4, 8]` at every block).
+///
+/// Software pipelined as zstd's double-fast loop is: the slot and table
+/// entries of `pos + 1` are computed and loaded while `pos` is checked,
+/// so a mispredicted check does not restart that load chain; a hit's
+/// lazy step and a step-1 miss's next probe both use them.
 pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>) {
     use crate::finder::MatchLen;
     let src = input.as_ptr();
     let block_end = block_start + block_len;
     assert!(block_end <= input.len(), "block past the input");
     debug_assert!(reps.iter().all(|&o| o >= 1), "a zero repeat offset would verify against itself");
-    // Every probe reads 8 bytes at `pos`; extensions stop at block_end.
-    let limit = block_end.saturating_sub(8).max(block_start);
+    // Every probe reads 8 bytes at `pos` and 8 at `pos + 1`; extensions
+    // stop at block_end.
+    let limit = block_end.saturating_sub(9).max(block_start);
     let mut anchor = block_start;
     let mut pos = block_start;
     let mut step_nb: u32 = 1 << DFAST_SKIP_STRENGTH;
@@ -521,32 +542,51 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
     literals.reserve(block_len + 16);
 
     unsafe {
-        while pos < limit {
-            let (mut cand, mut rc) = probe(src, pos, block_end, t, &r);
+        if pos >= limit {
+            literals.extend_from_slice(&input[anchor..block_end]);
+            seqs.push(Sequence { lit_len: (block_end - anchor) as u32, match_len: 0, offset: 0 });
+            return;
+        }
+        let mut cur = Slot::at(src, pos);
+        let mut el = t.long[cur.il];
+        let mut es = t.short[cur.is];
+        loop {
+            t.long[cur.il] = cur.ml;
+            t.short[cur.is] = cur.ms;
+            let nxt = Slot::at(src, pos + 1);
+            let el1 = t.long[nxt.il];
+            let es1 = t.short[nxt.is];
+            let (mut cand, mut rc) = probe(src, pos, block_end, &cur, el, es, &r);
             if cand == usize::MAX {
-                pos += (step_nb >> DFAST_SKIP_STRENGTH) as usize;
+                let step = (step_nb >> DFAST_SKIP_STRENGTH) as usize;
                 step_nb += 1;
+                pos += step;
+                if pos >= limit {
+                    break;
+                }
+                if step == 1 {
+                    cur = nxt;
+                    el = el1;
+                    es = es1;
+                } else {
+                    cur = Slot::at(src, pos);
+                    el = t.long[cur.il];
+                    es = t.short[cur.is];
+                }
                 continue;
             }
             step_nb = 1 << DFAST_SKIP_STRENGTH;
             // Lazy: a long candidate one byte later that is 4+ bytes
-            // longer wins.
-            if pos + 1 < limit {
-                let p1 = src.add(pos + 1);
-                let w = std::ptr::read_unaligned(p1 as *const u64);
-                let (il, ml) = long_slot(w, pos + 1);
-                let (is, ms) = short_slot(w, pos + 1);
-                let el = t.long[il];
-                t.long[il] = ml;
-                t.short[is] = ms;
-                if let Some(c) = candidate(el, ml, pos + 1) {
-                    let rc1 = crate::finder::ScalarMatch::prefix(p1, src.add(c), block_end - pos - 1);
-                    if rc1 >= rc + 4 {
-                        // Out of line so this stays a (rarely taken)
-                        // branch: as selects, the next position would
-                        // wait for this probe's whole load chain.
-                        lazy_win(&mut pos, &mut cand, &mut rc, c, rc1);
-                    }
+            // longer wins. pos + 1 is indexed either way.
+            t.long[nxt.il] = nxt.ml;
+            t.short[nxt.is] = nxt.ms;
+            if let Some(c) = candidate(el1, nxt.ml, pos + 1) {
+                let rc1 = crate::finder::ScalarMatch::prefix(src.add(pos + 1), src.add(c), block_end - pos - 1);
+                if rc1 >= rc + 4 {
+                    // Out of line so this stays a (rarely taken)
+                    // branch: as selects, the next position would
+                    // wait for this probe's whole load chain.
+                    lazy_win(&mut pos, &mut cand, &mut rc, c, rc1);
                 }
             }
             // Back-match into the pending literals.
@@ -582,21 +622,25 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
             }
             pos = mpos + rc;
             anchor = pos;
+            if pos >= limit {
+                break;
+            }
             // Index the match's second position and its tail (zstd's
             // insertions) so runs keep hashing.
-            if pos < limit {
-                let w = std::ptr::read_unaligned(src.add(mpos + 2) as *const u64);
-                let (i, m) = long_slot(w, mpos + 2);
-                t.long[i] = m;
-                let (i, m) = short_slot(w, mpos + 2);
-                t.short[i] = m;
-                let w = std::ptr::read_unaligned(src.add(pos - 2) as *const u64);
-                let (i, m) = long_slot(w, pos - 2);
-                t.long[i] = m;
-                let w = std::ptr::read_unaligned(src.add(pos - 1) as *const u64);
-                let (i, m) = short_slot(w, pos - 1);
-                t.short[i] = m;
-            }
+            let w = std::ptr::read_unaligned(src.add(mpos + 2) as *const u64);
+            let (i, m) = long_slot(w, mpos + 2);
+            t.long[i] = m;
+            let (i, m) = short_slot(w, mpos + 2);
+            t.short[i] = m;
+            let w = std::ptr::read_unaligned(src.add(pos - 2) as *const u64);
+            let (i, m) = long_slot(w, pos - 2);
+            t.long[i] = m;
+            let w = std::ptr::read_unaligned(src.add(pos - 1) as *const u64);
+            let (i, m) = short_slot(w, pos - 1);
+            t.short[i] = m;
+            cur = Slot::at(src, pos);
+            el = t.long[cur.il];
+            es = t.short[cur.is];
         }
     }
     literals.extend_from_slice(&input[anchor..block_end]);
