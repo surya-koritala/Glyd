@@ -51,6 +51,8 @@ and decoded at 170 MB/s.
 - The format-compatibility fixtures are now committed (they were
   ignored by the `*.glyd` rule; CI failed on every push since they were
   added).
+- Results of the program on Graviton3 and Sapphire Rapids:
+  docs/benchmarks/suite-2026-09.md (raw rows in benchmarks/suite/).
 
 ### Parallel paths
 - The parallel compressors cut the input into units of at least 2 MB

@@ -331,19 +331,39 @@ unsafe block carries its bound.
 
 ---
 
+## Real data, real machines
+
+The verification and benchmark program (8.7 GB of logs, JSON, SQL
+dumps and Parquet; zstd -3, zstd -19 and LZ4 on the same AWS machines
+and thread counts; small objects with dictionaries; a real S3 round
+trip costed at list prices) and its results: [docs/benchmarks/](docs/benchmarks/README.md)
+and [docs/benchmarks/suite-2026-09.md](docs/benchmarks/suite-2026-09.md).
+The short version: `--max` stores 1% less than zstd -3 over the corpus
+(9% less on JSON, 3% on logs, parity on SQL and Parquet), decodes
+3-7x faster with several cores and 1.09x (Graviton3) / 0.77x
+(Sapphire Rapids) on one, and compresses at 0.65-0.78x zstd -3's
+speed; `--ultra` stores 1.5% more than zstd -19; a terabyte-year in
+S3 costs within 1% either way.
+
 ## Known gaps
 
-- `--max` compresses at 89–91% of zstd -3's speed.
+- `--max` compresses at 0.65-0.78x zstd -3's speed on server cores
+  (Graviton3, Sapphire Rapids): its 2 MB of finder tables miss a 1 MB
+  L2; 0.9x on Apple silicon.
 - `--max` decodes 1.3× zstd -3, not the 2× the design aimed at.
 - On the extended corpus `--max` beats zstd -3 on 3 of 5 files; it loses
   0.6% on very repetitive JSON.
 - Small objects with a dictionary: zstd is 1-4% denser and 1.6-1.9×
   faster to compress (table above).
 - `GlydReader`/`GlydWriter` (std::io streaming) carry v6 levels only.
-- On x86 (Sapphire Rapids) `--max` decodes at 0.9-1.06× zstd -3, not the
-  1.3× it reaches on ARM: x86-64's 16 general registers spill the 8-stream
-  entropy loops that ARM's 31 keep in registers, and the 8 MB window's
-  far copies miss its smaller caches.
+- On x86 (Sapphire Rapids) `--max` decodes at 0.77x zstd -3 on the real-data
+  corpus (0.9-1.06x on Silesia), not the 1.1-1.3x it reaches on ARM:
+  x86-64's 16 general registers spill the 8-stream entropy loops that
+  ARM's 31 keep in registers, and the 8 MB window's far copies miss its
+  smaller caches.
+- The CLI spends more CPU per decoded byte than zstd's (a checksum per
+  block, a whole-file buffer, the parallel decode's threads): 1.3x on
+  Graviton3, 2x on Sapphire Rapids over the corpus.
 - `--ultra` is 2% less dense than zstd -19 (3.93 vs 4.01, both with an
   8 MB window); the gap sits on structured data (mozilla, xml, samba
   3-4%), text and binaries are within 1-2%.

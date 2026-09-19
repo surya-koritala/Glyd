@@ -41,12 +41,12 @@ def large_tables(d):
     if not large:
         return
     threads = sorted({r["threads"] for r in large})
-    codecs = []
-    for r in large:
-        if r["codec"] not in codecs:
-            codecs.append(r["codec"])
     for t in threads:
         sel = [r for r in large if r["threads"] == t]
+        codecs = []
+        for r in sel:
+            if r["codec"] not in codecs:
+                codecs.append(r["codec"])
         files = sorted({r["file"] for r in sel})
         # Only files every codec covered, so the totals compare like with like.
         complete = [f for f in files if all(any(r["file"] == f and r["codec"] == c for r in sel) for c in codecs)]
@@ -130,8 +130,8 @@ def s3_table(d):
         print(f"| {name} | {fmt_bytes(r['stored_bytes'])} | {r['ratio']:.3f} | {r['compress_wall_s']:.1f} / {r['compress_cpu_s']:.1f} | {r['upload_wall_s']:.1f} | {r['download_wall_s']:.1f} | {r['decompress_wall_s']:.1f} / {r['decompress_cpu_s']:.1f} | {r['verified']} | {r['usd_month_1_read']:.4f} | {r['usd_month_10_reads']:.4f} | {r['usd_month_100_reads']:.4f} | {r['usd_egress_per_read']:.4f} |")
     # The same, per terabyte of original data (the corpus scaled linearly).
     tb = r0["raw_bytes"] / 1e12
-    print("\nPer TB of original data, from the run above (linear scaling; instance seconds at the listed price):\n")
-    print("| Codec | Stored TB | Storage $/month | Compress $ (once) | Decompress $ per read | Egress $ per read | $/month at 1 read | at 10 reads | at 100 reads |")
+    print("\nPer TB of original data, from the run above (linear scaling; instance seconds at the listed price). The year-1 columns keep the terabyte for twelve months, compress it once and read it back R times a month, all in the region (no egress):\n")
+    print("| Codec | Stored TB | Storage $/month | Compress $ (once) | Decompress $ per read | Egress $ per read | Year 1, 1 read/month | 10 reads/month | 100 reads/month |")
     print("| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for r in rs:
         name = f"**{r['codec']}**" if r["codec"].startswith("glyd") else r["codec"]
@@ -142,9 +142,26 @@ def s3_table(d):
         egress = stored_tb * 1000 * p["egress_per_gb"]
         requests_put = r["files"] * p["put_per_1000"] / 1000 / tb
         requests_get = r["files"] * p["get_per_1000"] / 1000 / tb
-        def month(reads):
-            return storage + requests_put + comp + reads * (decomp + requests_get)
-        print(f"| {name} | {stored_tb:.3f} | {storage:.2f} | {comp:.2f} | {decomp:.3f} | {egress:.2f} | {month(1):.2f} | {month(10):.2f} | {month(100):.2f} |")
+        def year(reads):
+            return 12 * storage + requests_put + comp + 12 * reads * (decomp + requests_get)
+        print(f"| {name} | {stored_tb:.3f} | {storage:.2f} | {comp:.2f} | {decomp:.3f} | {egress:.2f} | {year(1):.2f} | {year(10):.2f} | {year(100):.2f} |")
+    # Instance seconds by wall time instead: a dedicated instance is billed
+    # for the run, not for the cores it kept busy (Glyd's parallel paths use
+    # every core; zstd -T and the single-thread decoders leave cores idle).
+    print("\nThe same with the instance billed by wall time (a dedicated instance runs the job alone; the compress and decompress steps were bound by the EBS volume at 500 MB/s, so these favour nobody's decoder):\n")
+    print("| Codec | Compress $ (once) | Decompress $ per read | Year 1, 1 read/month | 10 reads/month | 100 reads/month |")
+    print("| :--- | ---: | ---: | ---: | ---: | ---: |")
+    for r in rs:
+        name = f"**{r['codec']}**" if r["codec"].startswith("glyd") else r["codec"]
+        stored_tb = r["stored_bytes"] / 1e12 / tb
+        storage = stored_tb * 1000 * p["s3_gb_month"]
+        comp = r["compress_wall_s"] / 3600 * p["ec2_per_hour"] / tb
+        decomp = r["decompress_wall_s"] / 3600 * p["ec2_per_hour"] / tb
+        requests_put = r["files"] * p["put_per_1000"] / 1000 / tb
+        requests_get = r["files"] * p["get_per_1000"] / 1000 / tb
+        def year(reads):
+            return 12 * storage + requests_put + comp + 12 * reads * (decomp + requests_get)
+        print(f"| {name} | {comp:.2f} | {decomp:.3f} | {year(1):.2f} | {year(10):.2f} | {year(100):.2f} |")
 
 
 def main():

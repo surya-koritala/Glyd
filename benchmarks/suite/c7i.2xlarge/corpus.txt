@@ -1,0 +1,50 @@
+downloading gharchive-2024-01-15-12.json from https://data.gharchive.org/2024-01-15-12.json.gz
+downloading gharchive-2024-01-16-12.json from https://data.gharchive.org/2024-01-16-12.json.gz
+downloading gharchive-2024-01-15-18.json from https://data.gharchive.org/2024-01-15-18.json.gz
+downloading gharchive-2024-01-14-12.json from https://data.gharchive.org/2024-01-14-12.json.gz
+downloading nasa-access-jul95.log from ftp://ita.ee.lbl.gov/traces/NASA_access_log_Jul95.gz
+downloading nasa-access-aug95.log from ftp://ita.ee.lbl.gov/traces/NASA_access_log_Aug95.gz
+downloading clarknet-access-aug28.log from ftp://ita.ee.lbl.gov/traces/clarknet_access_log_Aug28.gz
+downloading clarknet-access-sep4.log from ftp://ita.ee.lbl.gov/traces/clarknet_access_log_Sep4.gz
+downloading pageviews-20240115-10.log from https://dumps.wikimedia.org/other/pageviews/2024/2024-01/pageviews-20240115-100000.gz
+downloading pageviews-20240115-11.log from https://dumps.wikimedia.org/other/pageviews/2024/2024-01/pageviews-20240115-110000.gz
+downloading pageviews-20240115-20.log from https://dumps.wikimedia.org/other/pageviews/2024/2024-01/pageviews-20240115-200000.gz
+downloading pageviews-20240114-10.log from https://dumps.wikimedia.org/other/pageviews/2024/2024-01/pageviews-20240114-100000.gz
+downloading simplewiki-pagelinks.sql from https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-pagelinks.sql.gz
+downloading simplewiki-page.sql from https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-page.sql.gz
+downloading simplewiki-categorylinks.sql from https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-categorylinks.sql.gz
+downloading simplewiki-templatelinks.sql from https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-templatelinks.sql.gz
+downloading enwiki-redirect.sql from https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-redirect.sql.gz
+downloading enwiki-page_props.sql from https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-page_props.sql.gz
+downloading fhvhv_tripdata_2024-01.parquet from https://d37ci6vzurychx.cloudfront.net/trip-data/fhvhv_tripdata_2024-01.parquet
+downloading fhvhv_tripdata_2024-02.parquet from https://d37ci6vzurychx.cloudfront.net/trip-data/fhvhv_tripdata_2024-02.parquet
+downloading yellow_tripdata_2024-02.parquet from https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-02.parquet
+
+9.0G	/home/ubuntu/glyd/corpus/bench
+/home/ubuntu/glyd/corpus/bench:
+total 8526592
+-rw-rw-r-- 1 ubuntu ubuntu  170957969 Sep 19 17:13 clarknet-access-aug28.log
+-rw-rw-r-- 1 ubuntu ubuntu  172456884 Sep 19 17:13 clarknet-access-sep4.log
+-rw-rw-r-- 1 ubuntu ubuntu 2174406671 Sep 19 17:16 enwiki-page_props.sql
+-rw-rw-r-- 1 ubuntu ubuntu  720752280 Sep 19 17:15 enwiki-redirect.sql
+-rw-rw-r-- 1 ubuntu ubuntu  472757547 Sep 19 17:16 fhvhv_tripdata_2024-01.parquet
+-rw-rw-r-- 1 ubuntu ubuntu  462475428 Sep 19 17:16 fhvhv_tripdata_2024-02.parquet
+-rw-rw-r-- 1 ubuntu ubuntu  912009879 Sep 19 17:13 gharchive-2024-01-15-12.json
+-rw-rw-r-- 1 ubuntu ubuntu  837179933 Sep 19 17:13 gharchive-2024-01-15-18.json
+-rw-rw-r-- 1 ubuntu ubuntu  813688795 Sep 19 17:13 gharchive-2024-01-16-12.json
+-rw-rw-r-- 1 ubuntu ubuntu  205242368 Sep 19 17:13 nasa-access-jul95.log
+-rw-rw-r-- 1 ubuntu ubuntu  226407723 Sep 19 17:13 pageviews-20240115-10.log
+-rw-rw-r-- 1 ubuntu ubuntu  232504283 Sep 19 17:13 pageviews-20240115-11.log
+-rw-rw-r-- 1 ubuntu ubuntu  255040307 Sep 19 17:13 pageviews-20240115-20.log
+-rw-rw-r-- 1 ubuntu ubuntu  216689785 Sep 19 17:14 simplewiki-categorylinks.sql
+-rw-rw-r-- 1 ubuntu ubuntu  107824175 Sep 19 17:14 simplewiki-page.sql
+-rw-rw-r-- 1 ubuntu ubuntu  458505669 Sep 19 17:14 simplewiki-pagelinks.sql
+-rw-rw-r-- 1 ubuntu ubuntu  241915057 Sep 19 17:14 simplewiki-templatelinks.sql
+drwxrwxr-x 2 ubuntu ubuntu       4096 Sep 19 17:14 train
+-rw-rw-r-- 1 ubuntu ubuntu   50349284 Sep 19 17:16 yellow_tripdata_2024-02.parquet
+
+/home/ubuntu/glyd/corpus/bench/train:
+total 834552
+-rw-rw-r-- 1 ubuntu ubuntu 475440995 Sep 19 17:13 gharchive-2024-01-14-12.json
+-rw-rw-r-- 1 ubuntu ubuntu 167813770 Sep 19 17:13 nasa-access-aug95.log
+-rw-rw-r-- 1 ubuntu ubuntu 211314152 Sep 19 17:14 pageviews-20240114-10.log
