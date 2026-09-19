@@ -124,21 +124,25 @@ fn glyd_ultra(input: &[u8], threads: usize, out: &mut Vec<u8>) {
     if threads > 1 { glyd::compress_parallel_into_ultra(input, out) } else { glyd::compress_into_ultra(input, out) }
 }
 fn glyd_decompress(input: &[u8], threads: usize, out: &mut Vec<u8>) {
-    // Into the caller's buffer, as the zstd and LZ4 readers below refill
-    // theirs: every codec decodes into memory that is already mapped
-    // after the first repeat (a fresh allocation per call cost Glyd 25%
-    // on a 170 MB file: page faults, not decoding).
-    let len = glyd::decompressed_len(input).expect("glyd framing");
+    // Into the caller's buffer, as every codec here: memory that is
+    // already mapped after the first repeat (a fresh allocation per call
+    // cost Glyd 25% on a 170 MB file: page faults, not decoding).
+    let len = DECOMPRESSED_LEN.load(std::sync::atomic::Ordering::Relaxed);
     out.resize(len, 0);
     let n = if threads > 1 { glyd::decompress_parallel_into(input, out) } else { glyd::decompress_into(input, out) }.expect("glyd decode");
     out.truncate(n);
 }
 fn zstd_level(input: &[u8], threads: usize, level: i32, out: &mut Vec<u8>) {
     out.clear();
-    let mut enc = zstd::stream::Encoder::new(std::mem::take(out), level).unwrap();
-    if threads > 1 {
-        enc.multithread(threads as u32).unwrap();
+    if threads <= 1 {
+        // The one-shot API: zstd's fastest single-thread path.
+        let mut c = zstd::bulk::Compressor::new(level).unwrap();
+        out.reserve(zstd::zstd_safe::compress_bound(input.len()));
+        c.compress_to_buffer(input, out).unwrap();
+        return;
     }
+    let mut enc = zstd::stream::Encoder::new(std::mem::take(out), level).unwrap();
+    enc.multithread(threads as u32).unwrap();
     enc.write_all(input).unwrap();
     *out = enc.finish().unwrap();
 }
@@ -149,10 +153,19 @@ fn zstd19(input: &[u8], threads: usize, out: &mut Vec<u8>) {
     zstd_level(input, threads, 19, out)
 }
 fn zstd_decompress(input: &[u8], _threads: usize, out: &mut Vec<u8>) {
-    out.clear();
-    let mut dec = zstd::stream::Decoder::new(input).unwrap();
-    dec.read_to_end(out).unwrap();
+    // The one-shot API into the caller's buffer (zstd's fastest path);
+    // the frame's content size is not in the header (streaming
+    // compression), so the buffer is sized by the upper bound the
+    // harness keeps for every codec (`DECOMPRESSED_LEN`).
+    let len = DECOMPRESSED_LEN.load(std::sync::atomic::Ordering::Relaxed);
+    out.resize(len, 0);
+    let n = zstd::bulk::decompress_to_buffer(input, &mut out[..]).unwrap();
+    out.truncate(n);
 }
+
+/// The size every codec's decode buffer is set to: the original input's
+/// length, known to the harness (a store keeps object sizes too).
+static DECOMPRESSED_LEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 fn lz4_frame(input: &[u8], _threads: usize, out: &mut Vec<u8>) {
     out.clear();
     let mut enc = lz4::EncoderBuilder::new().level(1).build(std::mem::take(out)).unwrap();
@@ -162,7 +175,10 @@ fn lz4_frame(input: &[u8], _threads: usize, out: &mut Vec<u8>) {
     *out = w;
 }
 fn lz4_decompress(input: &[u8], _threads: usize, out: &mut Vec<u8>) {
+    // The frame reader into the caller's buffer (its capacity kept).
+    let len = DECOMPRESSED_LEN.load(std::sync::atomic::Ordering::Relaxed);
     out.clear();
+    out.reserve(len);
     let mut dec = lz4::Decoder::new(input).unwrap();
     dec.read_to_end(out).unwrap();
 }
@@ -208,6 +224,7 @@ fn large(o: &Opts, out: &mut std::fs::File) {
     let mut totals: Vec<(String, usize, usize, f64, f64)> = codecs.iter().map(|c| (c.name.to_string(), 0usize, 0usize, 0f64, 0f64)).collect();
     for path in &files {
         let input = read_file(path, o.max_bytes);
+        DECOMPRESSED_LEN.store(input.len(), std::sync::atomic::Ordering::Relaxed);
         let name = std::path::Path::new(path).file_name().unwrap().to_string_lossy().to_string();
         eprintln!("{name}: {} bytes", input.len());
         for (ci, c) in codecs.iter().enumerate() {
@@ -263,6 +280,7 @@ fn child(path: &str, codec: &str, threads: usize, max_bytes: usize) {
     rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
     let c = codecs().into_iter().find(|c| c.name == codec).unwrap();
     let input = read_file(path, max_bytes);
+    DECOMPRESSED_LEN.store(input.len(), std::sync::atomic::Ordering::Relaxed);
     let mut comp = Vec::new();
     (c.compress)(&input, threads, &mut comp);
     let mut back = Vec::new();
