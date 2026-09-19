@@ -294,6 +294,8 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
     let lasts: [usize; 8] = std::array::from_fn(|k| extra[k].bytes.as_ptr() as usize + extra[k].bytes.len() - PAD);
     let mut reps = Reps::new();
     let mut o = 0usize;
+    #[cfg(target_arch = "x86_64")]
+    let mut bp: [u64; 8] = [b0, b1, b2, b3, b4, b5, b6, b7];
     // The length-code tables of the block's version.
     #[cfg(not(target_arch = "x86_64"))]
     let (llw, mlw): (&[u64; 256], &[u64; 256]) = if v8 { (&LL_WALK, &ML_WALK) } else { (&LL_WALK_V7, &ML_WALK_V7) };
@@ -321,6 +323,11 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
                     // a stream by at most SEQ_BYTES, so this load starts at
                     // or before lasts[k], i.e. its 8 bytes are inside
                     // sub-stream k.
+                    // x86-64: the position lives in memory between its
+                    // uses (a load and a store per sequence, both cheap)
+                    // rather than competing for one of 16 registers.
+                    #[cfg(target_arch = "x86_64")]
+                    let mut $b: u64 = unsafe { std::ptr::read_volatile(&bp[$k]) };
                     let w = unsafe { std::ptr::read_unaligned(($b >> 3) as *const u64) } >> ($b & 7);
                     let offc = c[16 + $k];
                     #[cfg(not(target_arch = "x86_64"))]
@@ -338,11 +345,17 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
                     $b += n1 as u64;
                     $b += n2 as u64;
                     $b += n3 as u64;
+                    #[cfg(target_arch = "x86_64")]
+                    unsafe {
+                        std::ptr::write_volatile(&mut bp[$k], $b);
+                    }
                     out[$k] = ll;
                     out[8 + $k] = ml;
                     out[16 + $k] = reps.update(offc, ov);
                 }};
             }
+            #[cfg(target_arch = "x86_64")]
+            let _ = (&mut b0, &mut b1, &mut b2, &mut b3, &mut b4, &mut b5, &mut b6, &mut b7);
             seq!(0, b0);
             seq!(1, b1);
             seq!(2, b2);
@@ -353,6 +366,10 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
             seq!(7, b7);
         }
         o += 8 * iters;
+        #[cfg(target_arch = "x86_64")]
+        {
+            [b0, b1, b2, b3, b4, b5, b6, b7] = bp;
+        }
     }
     let rd = |k: usize, b: u64| BitReader::new_at(extra[k], (b - start(k)) as usize);
     let mut ers: [BitReader; 8] = [rd(0, b0), rd(1, b1), rd(2, b2), rd(3, b3), rd(4, b4), rd(5, b5), rd(6, b6), rd(7, b7)];

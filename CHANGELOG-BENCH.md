@@ -1192,3 +1192,11 @@ is green as part of the full suite.
   published c7i run of 56cc09d measured every codec 5-25% below its
   previous run on that instance (noisy neighbour); re-run on a fresh
   instance for the release.
+- Match sources as positions (the walk keeps a running output position
+  and stores `pos + ll - off`; the copy pass takes the address directly
+  and can prefetch it two groups ahead): M1 -3.6%, x86 -10% without the
+  prefetch and -4%/-8% with it. The running position is one more value
+  live across the walk's eight streams. Reverted.
+- The walk's eight stream positions kept in memory on x86-64 (a volatile
+  load and store per sequence instead of a register each): +1.5%
+  (1,350 -> 1,370 MB/s). Kept.
