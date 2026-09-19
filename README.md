@@ -218,10 +218,10 @@ board — the ordering is the same.)
 
 ### Other machines (AWS, same script, same-run references)
 
-| Decompress MB/s | Glyd default | liblz4 | Glyd --turbo | Glyd --max | zstd -3 |
+| Decompress&nbsp;MB/s | ⚡&nbsp;**Glyd&nbsp;default** | liblz4 | ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | ⚡&nbsp;**Glyd&nbsp;‑‑max** | zstd&nbsp;‑3 |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| Graviton3 (c7g.2xlarge, NEON) | **3,690** | 3,160 | **4,980** | **1,205** | 912 |
-| Sapphire Rapids (c7i.2xlarge; AVX2 for v6, `--max` scalar) | **4,430** | 3,775 | **5,350** | 858 | 1,291 |
+| Graviton3&nbsp;(c7g.2xlarge, NEON) | **3,690** | 3,160 | **4,980** | **1,205** | 912 |
+| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **4,430** | 3,775 | **5,350** | 858 | 1,291 |
 
 Ratios are identical across machines (the format is deterministic).
 `--max` on x86 uses the portable scalar decoder until its AVX2 port lands
