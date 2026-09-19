@@ -394,7 +394,7 @@ fn v7_max_level_roundtrip_through_container() {
     }
 }
 
-use simd_stream_codec::v7_encode::{find_sequences_dfast, DfastTables};
+use simd_stream_codec::v7_encode::{find_sequences_dfast, DfastTables, EncScratch};
 
 #[test]
 fn dfast_parse_finds_repeats_and_roundtrips() {
@@ -409,7 +409,7 @@ fn dfast_parse_finds_repeats_and_roundtrips() {
     let mut seqs = Vec::new();
     let mut lits = Vec::new();
     let mut reps = [1u32, 4, 8];
-    find_sequences_dfast(&data, 0, data.len().min(256 * 1024), &mut t, &mut reps, &mut seqs, &mut lits);
+    find_sequences_dfast(&data, 0, data.len().min(256 * 1024), &mut t, &mut reps, &mut seqs, &mut lits, &mut EncScratch::new());
     let out = materialize(&seqs, &lits);
     assert_eq!(&out[..], &data[..out.len()]);
     let matched: u32 = seqs.iter().map(|s| s.match_len).sum();

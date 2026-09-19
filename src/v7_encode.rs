@@ -136,6 +136,64 @@ impl EncScratch {
     pub fn new() -> Self {
         EncScratch { ll: Vec::new(), ml: Vec::new(), off: Vec::new(), extra: Vec::new(), chunks: Vec::new() }
     }
+
+    /// Empty the per-sequence arrays for a new block.
+    pub fn clear(&mut self) {
+        self.ll.clear();
+        self.ml.clear();
+        self.off.clear();
+        self.extra.clear();
+    }
+
+    /// Append one sequence's codes: lengths as `len_code` and the offset
+    /// as `Reps::code_for` would code them, `rep` naming the rep slot the
+    /// offset sits in (0..=2) or 3 for none. Branch-free: a rep hit is a
+    /// coin toss on binaries. SAFETY: the caller has reserved room for
+    /// this entry in all four arrays (`reserve_for`).
+    #[inline(always)]
+    unsafe fn push_codes(&mut self, lit_len: u32, match_len: u32, offset: u32, rep: u32) {
+        use std::hint::select_unpredictable as sel;
+        let (llc, lnb, le) = len_code_bf(lit_len);
+        let (mlc, mnb, me) = len_code_bf(match_len - MIN_MATCH);
+        debug_assert!(offset >= 1);
+        let k = 31 - offset.leading_zeros();
+        let is_rep = rep < 3;
+        let offc = sel(is_rep, rep, 3 + k) as u8;
+        let onb = sel(is_rep, 0, k);
+        let oe = sel(is_rep, 0, offset - (1 << k));
+        let v = le as u64 | (me as u64) << lnb | (oe as u64) << (lnb + mnb);
+        let bits = lnb + mnb + onb;
+        let i = self.ll.len();
+        debug_assert!(i < self.ll.capacity() && i < self.ml.capacity() && i < self.off.capacity() && i < self.extra.capacity());
+        *self.ll.as_mut_ptr().add(i) = llc;
+        *self.ml.as_mut_ptr().add(i) = mlc;
+        *self.off.as_mut_ptr().add(i) = offc;
+        *self.extra.as_mut_ptr().add(i) = v | (bits as u64) << EXTRA_BITS;
+        self.ll.set_len(i + 1);
+        self.ml.set_len(i + 1);
+        self.off.set_len(i + 1);
+        self.extra.set_len(i + 1);
+    }
+
+    /// Room for every sequence a block of `block_len` bytes can hold (a
+    /// match is at least 4 bytes, plus the literal-only last one).
+    fn reserve_for(&mut self, block_len: usize) {
+        let n = block_len / 4 + 2;
+        self.ll.reserve(n);
+        self.ml.reserve(n);
+        self.off.reserve(n);
+        self.extra.reserve(n);
+    }
+}
+
+/// `v7_format::len_code` without its branch: (code, extra bits, extra).
+#[inline(always)]
+fn len_code_bf(v: u32) -> (u8, u32, u32) {
+    use std::hint::select_unpredictable as sel;
+    let k = 31 - (v | 1).leading_zeros();
+    let big = v >= 16;
+    // (v = 0 wraps in the discarded arm.)
+    (sel(big, 12 + k, v) as u8, sel(big, k, 0), sel(big, v.wrapping_sub(1 << k), 0))
 }
 
 /// Bits of `extra` per sequence, a `MAX_PUT` put.
@@ -152,22 +210,11 @@ pub fn encode_block(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut
 /// one across a stream's blocks).
 pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev: &mut Tables, s: &mut EncScratch, out: &mut Vec<u8>) {
     let n = seqs.len();
-    let base = out.len();
-    out.resize(base + SubHeader::BYTES, 0);
-
     // Codes and extra bits, in sequence order (the rep state).
-    s.ll.clear();
-    s.ll.resize(n, 0);
-    s.ml.clear();
-    s.ml.resize(n, 0);
-    s.off.clear();
-    s.off.resize(n, 0);
-    s.extra.clear();
-    s.extra.resize(n, 0);
+    s.clear();
     let mut reps = Reps::new();
     let mut max_bits = 0u32;
-    let codes = s.ll.iter_mut().zip(s.ml.iter_mut()).zip(s.off.iter_mut()).zip(s.extra.iter_mut());
-    for (i, (q, (((ll, ml), off), extra))) in seqs.iter().zip(codes).enumerate() {
+    for (i, q) in seqs.iter().enumerate() {
         let (llc, nb, e) = ll_code(q.lit_len);
         let mut v = e as u64;
         let mut bits = nb as u32;
@@ -185,12 +232,26 @@ pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev:
         v |= (e as u64) << bits;
         bits += nb as u32;
         max_bits = max_bits.max(bits);
-        *ll = llc;
-        *ml = mlc;
-        *off = offc;
-        *extra = v | (bits as u64) << EXTRA_BITS;
+        s.ll.push(llc);
+        s.ml.push(mlc);
+        s.off.push(offc);
+        s.extra.push(v | (bits as u64) << EXTRA_BITS);
     }
     assert!(max_bits <= EXTRA_BITS, "sequence length beyond the block bound");
+    encode_block_coded(literals, dict_id, prev, s, out)
+}
+
+/// The block from codes already in the scratch (`find_sequences_dfast`
+/// writes them as it parses; `encode_block_with` from a sequence list).
+/// Every `extra` entry's count (its top byte) must be at most
+/// `EXTRA_BITS`, which those two producers guarantee: the extras section
+/// is written without further checks against that bound.
+pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Tables, s: &mut EncScratch, out: &mut Vec<u8>) {
+    let n = s.ll.len();
+    debug_assert!(s.ml.len() == n && s.off.len() == n && s.extra.len() == n);
+    debug_assert!(s.extra.iter().all(|&x| (x >> EXTRA_BITS) as u32 <= EXTRA_BITS));
+    let base = out.len();
+    out.resize(base + SubHeader::BYTES, 0);
 
     // Literals.
     let hist: [u64; 256] = hist8::<256>(literals).map(|c| c as u64);
@@ -515,17 +576,19 @@ fn lazy_win(pos: &mut usize, cand: &mut usize, rc: &mut usize, c: usize, rc1: us
 }
 
 /// Parse `input[block_start..block_start + block_len]` into `seqs` and
-/// `literals` (appended). Offsets are absolute distances, at least 1 and
-/// under MAX_WINDOW; the last sequence is literal-only. `t` carries the
-/// window across the blocks of one input. `reps` is only used to *find*
-/// matches (the codes are assigned by `encode_block`, whose `Reps` starts
-/// fresh per block, so the caller passes `[1, 4, 8]` at every block).
+/// `literals` (appended) and, as `encode_block_with` would code them,
+/// into `codes` (cleared first; `encode_block_coded` takes it from
+/// there). Offsets are absolute distances, at least 1 and under
+/// MAX_WINDOW; the last sequence is literal-only. `t` carries the window
+/// across the blocks of one input. `reps` finds matches and codes them,
+/// so it must be what `encode_block`'s `Reps` starts a block with: the
+/// caller passes `[1, 4, 8]` at every block.
 ///
 /// Software pipelined as zstd's double-fast loop is: the slot and table
 /// entries of `pos + 1` are computed and loaded while `pos` is checked,
 /// so a mispredicted check does not restart that load chain; a hit's
 /// lazy step and a step-1 miss's next probe both use them.
-pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>) {
+pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
     use crate::finder::MatchLen;
     let src = input.as_ptr();
     let block_end = block_start + block_len;
@@ -540,11 +603,14 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
     let mut r = *reps;
     // The literal copies below run 16 bytes wild past their length.
     literals.reserve(block_len + 16);
+    codes.clear();
+    codes.reserve_for(block_len);
 
     unsafe {
         if pos >= limit {
             literals.extend_from_slice(&input[anchor..block_end]);
             seqs.push(Sequence { lit_len: (block_end - anchor) as u32, match_len: 0, offset: 0 });
+            codes.push_codes((block_end - anchor) as u32, MIN_MATCH, 1, 0);
             return;
         }
         let mut cur = Slot::at(src, pos);
@@ -612,13 +678,14 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
             }
             literals.set_len(literals.len() + ll);
             seqs.push(Sequence { lit_len: ll as u32, match_len: rc as u32, offset });
-            // The same update as Reps::code_for.
-            if offset == r[1] {
-                r.swap(0, 1);
-            } else if offset == r[2] {
-                r = [r[2], r[0], r[1]];
-            } else if offset != r[0] {
-                r = [offset, r[0], r[1]];
+            // The codes, and the same update as Reps::code_for: the
+            // offset moves to the front and the entries before its old
+            // slot shift back one.
+            {
+                use std::hint::select_unpredictable as sel;
+                let (e0, e1, e2) = (offset == r[0], offset == r[1], offset == r[2]);
+                codes.push_codes(ll as u32, rc as u32, offset, sel(e0, 0, sel(e1, 1, sel(e2, 2, 3))));
+                r = [offset, sel(e0, r[1], r[0]), sel(e0 | e1, r[2], r[1])];
             }
             pos = mpos + rc;
             anchor = pos;
@@ -645,5 +712,9 @@ pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, 
     }
     literals.extend_from_slice(&input[anchor..block_end]);
     seqs.push(Sequence { lit_len: (block_end - anchor) as u32, match_len: 0, offset: 0 });
+    // The literal-only last sequence codes as a match of MIN_MATCH with
+    // rep code 0 and no extra bits, as `encode_block_with` codes it.
+    // SAFETY: `reserve_for` above counted this entry.
+    unsafe { codes.push_codes((block_end - anchor) as u32, MIN_MATCH, 1, 0) };
     *reps = r;
 }
