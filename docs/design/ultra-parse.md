@@ -89,3 +89,18 @@ tree instead of the 3-byte head gains nothing; zstd-style finer length
 codes would save 0.6% of the sequence section. The coder itself spends
 1.45% over the order-0 estimate of its parse, ~950 bytes per 256 KB
 block (sub-stream size tables and padding, entropy tables, headers).
+
+## Block splitting (v0.3.1)
+
+After the parse of a 256 KB block, `split_points` looks for a cut where
+the two parts coded on their own statistics (order-0 cost of the literal
+bytes and the ll/ml/off codes; extra bits are the same either way) are
+cheaper than the whole by more than four times a block's overhead
+(~600 bytes of framing and tables), with parts of at least 48 KB, and
+tries each part again. The parts become blocks of their own: the repeat
+offsets restart, the tables may be reused across them, the decoder sees
+ordinary blocks. Silesia: 3.925 -> 3.931, decode 2,150 -> 2,142 MB/s;
+mozilla and samba, whose sections differ, gain most. The margin is the
+decode price: every block costs the decoder its table builds and stream
+tails (~2.6 us), so at twice the overhead the same corpus gains 0.33%
+for 2.5% decode, at four times 0.15% for 0.4%.

@@ -411,26 +411,14 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, outp
         Parse::Ultra => ULTRA.with_borrow_mut(|t| t.get_or_insert_with(v7_ultra::UltraState::new).clear(full.len())),
     }
     let mut offset = start;
-    while offset < full.len() {
-        let chunk_len = (full.len() - offset).min(MAX_BLOCK_SIZE);
-        let chunk = &full[offset..offset + chunk_len];
-        seqs.clear();
-        literals.clear();
+    let mut first = true;
+    // One block: the chunk at `offset`, its parse, and the header flags.
+    let mut emit = |chunk: &[u8], seqs: &[v7_encode::Sequence], literals: &[u8], first: bool, prev: &mut v7_encode::Tables, scratch: &mut v7_encode::EncScratch, payload: &mut Vec<u8>, output: &mut Vec<u8>| {
         payload.clear();
-        let mut reps = [1u32, 4, 8]; // encode_block's Reps starts fresh per block
-        match parse {
-            Parse::Dfast => {
-                DFAST.with_borrow_mut(|t| v7_encode::find_sequences_dfast(full, offset, chunk_len, t, &mut reps, &mut seqs, &mut literals, &mut scratch));
-                v7_encode::encode_block_coded(&literals, dict_id, &mut prev, &mut scratch, &mut payload);
-            }
-            Parse::Ultra => {
-                ULTRA.with_borrow_mut(|t| v7_ultra::find_sequences_ultra(full, offset, chunk_len, t.as_mut().unwrap(), reps, &mut seqs, &mut literals));
-                v7_encode::encode_block_with(&seqs, &literals, dict_id, &mut prev, &mut scratch, &mut payload);
-            }
-        }
-        let chain_flag = if offset == start { FLAG_CHAIN_RESET } else { 0 };
-        if payload.len() + HEADER_SIZE >= chunk_len {
-            prev = v7_encode::Tables::none();
+        v7_encode::encode_block_with(seqs, literals, dict_id, prev, scratch, payload);
+        let chain_flag = if first { FLAG_CHAIN_RESET } else { 0 };
+        if payload.len() + HEADER_SIZE >= chunk.len() {
+            *prev = v7_encode::Tables::none();
             write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
         } else {
             let header = BlockHeader {
@@ -438,7 +426,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, outp
                 version: VERSION_V8,
                 flags: FLAG_COMPRESSED | chain_flag,
                 checksum: compute_checksum(chunk),
-                uncompressed_len: chunk_len as u32,
+                uncompressed_len: chunk.len() as u32,
                 token_count: seqs.len() as u32,
                 token_bytes: payload.len() as u32,
                 offset_bytes: 0,
@@ -446,7 +434,70 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, outp
                 literal_len: literals.len() as u32,
             };
             output.extend_from_slice(header_bytes(&header));
-            output.extend_from_slice(&payload);
+            output.extend_from_slice(payload);
+        }
+    };
+    let (mut part_seqs, mut part_lits) = (Vec::new(), Vec::new());
+    while offset < full.len() {
+        let chunk_len = (full.len() - offset).min(MAX_BLOCK_SIZE);
+        let chunk = &full[offset..offset + chunk_len];
+        seqs.clear();
+        literals.clear();
+        let mut reps = [1u32, 4, 8]; // encode_block's Reps starts fresh per block
+        match parse {
+            Parse::Dfast => {
+                DFAST.with_borrow_mut(|t| v7_encode::find_sequences_dfast(full, offset, chunk_len, t, &mut reps, &mut seqs, &mut literals, &mut scratch));
+                // The dfast parse wrote its codes into the scratch as it
+                // went; encode from those.
+                payload.clear();
+                v7_encode::encode_block_coded(&literals, dict_id, &mut prev, &mut scratch, &mut payload);
+                let chain_flag = if first { FLAG_CHAIN_RESET } else { 0 };
+                if payload.len() + HEADER_SIZE >= chunk_len {
+                    prev = v7_encode::Tables::none();
+                    write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
+                } else {
+                    let header = BlockHeader {
+                        magic: MAGIC,
+                        version: VERSION_V8,
+                        flags: FLAG_COMPRESSED | chain_flag,
+                        checksum: compute_checksum(chunk),
+                        uncompressed_len: chunk_len as u32,
+                        token_count: seqs.len() as u32,
+                        token_bytes: payload.len() as u32,
+                        offset_bytes: 0,
+                        extras_bytes: 0,
+                        literal_len: literals.len() as u32,
+                    };
+                    output.extend_from_slice(header_bytes(&header));
+                    output.extend_from_slice(&payload);
+                }
+                first = false;
+            }
+            Parse::Ultra => {
+                ULTRA.with_borrow_mut(|t| v7_ultra::find_sequences_ultra(full, offset, chunk_len, t.as_mut().unwrap(), reps, &mut seqs, &mut literals));
+                // The parse may be split into blocks with their own tables
+                // where its statistics change (`v7_ultra::split_points`).
+                let mut cuts = v7_ultra::split_points(&seqs, &literals);
+                cuts.push(seqs.len());
+                let (mut at, mut lit_at, mut pos) = (0usize, 0usize, 0usize);
+                for cut in cuts {
+                    part_seqs.clear();
+                    part_seqs.extend_from_slice(&seqs[at..cut]);
+                    let lit_end = lit_at + part_seqs.iter().map(|q| q.lit_len as usize).sum::<usize>();
+                    let len: usize = part_seqs.iter().map(|q| (q.lit_len + q.match_len) as usize).sum();
+                    if part_seqs.last().map_or(true, |q| q.match_len != 0) {
+                        part_seqs.push(v7_encode::Sequence { lit_len: 0, match_len: 0, offset: 0 });
+                    }
+                    part_lits.clear();
+                    part_lits.extend_from_slice(&literals[lit_at..lit_end]);
+                    emit(&chunk[pos..pos + len], &part_seqs, &part_lits, first, &mut prev, &mut scratch, &mut payload, output);
+                    first = false;
+                    at = cut;
+                    lit_at = lit_end;
+                    pos += len;
+                }
+                debug_assert_eq!(pos, chunk_len);
+            }
         }
         offset += chunk_len;
     }

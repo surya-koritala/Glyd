@@ -530,3 +530,132 @@ fn parse(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState
     seqs.push(Sequence { lit_len: trailing as u32, match_len: 0, offset: 0 });
     st.insert_upto(input, block_end, log);
 }
+
+/// Order-0 cost in bits of coding `hist` with its own table.
+fn entropy_bits<const N: usize>(hist: &[u32; N]) -> f64 {
+    let total: u32 = hist.iter().sum();
+    if total == 0 {
+        return 0.0;
+    }
+    let t = total as f64;
+    hist.iter().filter(|&&c| c > 0).map(|&c| c as f64 * (t / c as f64).log2()).sum()
+}
+
+/// Bytes a block spends beyond its symbols: framing (header, sub-header,
+/// section size tables and paddings) and the entropy tables it writes.
+const BLOCK_OVERHEAD_BITS: f64 = 8.0 * (32.0 + 26.0 + 5.0 * 29.0 + 90.0 + 90.0);
+/// Candidate cuts are tried every this many sequences.
+const SPLIT_STEP: usize = 256;
+/// A part is never shorter than this much output: every block costs the
+/// decoder its tables and tails (a 256 KB block decodes in ~120 us, a
+/// block's fixed work is a few us), so a cut must be worth well over its
+/// bytes.
+const MIN_PART: usize = 48 * 1024;
+
+/// Where a block's parse should be cut into blocks with their own
+/// tables: the sequence indices at which new blocks start, in order, or
+/// none. A cut is taken when the two parts coded on their own statistics
+/// are cheaper than the whole coded on its by more than four times a
+/// block's overhead, and both parts hold at least `MIN_PART` bytes; each
+/// part is then considered again. The margin buys decode speed: on
+/// Silesia, cutting at twice the overhead gains 0.33% ratio for 2.5%
+/// decode, at four times 0.15% for 0.4%.
+pub fn split_points(seqs: &[Sequence], literals: &[u8]) -> Vec<usize> {
+    let mut cuts = Vec::new();
+    let (mut lit_at, mut pos) = (0usize, 0usize);
+    // Literal start and output position of each sequence, once.
+    let (lit_starts, positions): (Vec<usize>, Vec<usize>) = seqs
+        .iter()
+        .map(|q| {
+            let s = (lit_at, pos);
+            lit_at += q.lit_len as usize;
+            pos += (q.lit_len + q.match_len) as usize;
+            s
+        })
+        .unzip();
+    let end_pos = |b: usize| if b < seqs.len() { positions[b] } else { pos };
+    let mut spans = vec![(0usize, seqs.len())];
+    while let Some((from, to)) = spans.pop() {
+        if to - from < 2 * SPLIT_STEP || end_pos(to) - positions[from] < 2 * MIN_PART {
+            continue;
+        }
+        let lit_range = |a: usize, b: usize| lit_starts[a]..if b < seqs.len() { lit_starts[b] } else { literals.len() };
+        let whole = cost(&seqs[from..to], &literals[lit_range(from, to)]);
+        let mut best = (whole - 4.0 * BLOCK_OVERHEAD_BITS, 0usize);
+        // Prefix statistics grow as the cut moves; the suffix's are the
+        // whole's minus the prefix's.
+        let mut pre = Stats::none();
+        let all = stats_of(&seqs[from..to], &literals[lit_range(from, to)]);
+        let mut k = from;
+        while k + SPLIT_STEP <= to - SPLIT_STEP {
+            add_stats(&mut pre, &seqs[k..k + SPLIT_STEP], &literals[lit_range(k, k + SPLIT_STEP)]);
+            k += SPLIT_STEP;
+            if positions[k] - positions[from] < MIN_PART || end_pos(to) - positions[k] < MIN_PART {
+                continue;
+            }
+            let suf = sub_stats(&all, &pre);
+            let c = stats_cost(&pre) + stats_cost(&suf);
+            if c < best.0 {
+                best = (c, k);
+            }
+        }
+        if best.1 != 0 {
+            cuts.push(best.1);
+            spans.push((from, best.1));
+            spans.push((best.1, to));
+        }
+    }
+    cuts.sort_unstable();
+    cuts
+}
+
+fn stats_of(seqs: &[Sequence], literals: &[u8]) -> Stats {
+    let mut s = Stats::none();
+    add_stats(&mut s, seqs, literals);
+    s
+}
+
+/// Add a run of sequences' codes (offsets as if every one were a fresh
+/// offset: rep codes depend on order, and a split resets them anyway) and
+/// literal bytes.
+fn add_stats(s: &mut Stats, seqs: &[Sequence], literals: &[u8]) {
+    for &b in literals {
+        s.lit[b as usize] += 1;
+    }
+    for q in seqs {
+        s.ll[ll_code(q.lit_len).0 as usize] += 1;
+        if q.match_len == 0 {
+            continue;
+        }
+        s.ml[ml_code(q.match_len).0 as usize] += 1;
+        let k = 31 - q.offset.max(1).leading_zeros();
+        s.off[3 + k as usize] += 1;
+    }
+}
+
+fn sub_stats(a: &Stats, b: &Stats) -> Stats {
+    let mut s = a.clone();
+    for (x, y) in s.lit.iter_mut().zip(b.lit.iter()) {
+        *x -= y;
+    }
+    for (x, y) in s.ll.iter_mut().zip(b.ll.iter()) {
+        *x -= y;
+    }
+    for (x, y) in s.ml.iter_mut().zip(b.ml.iter()) {
+        *x -= y;
+    }
+    for (x, y) in s.off.iter_mut().zip(b.off.iter()) {
+        *x -= y;
+    }
+    s
+}
+
+/// Order-0 coding cost of the codes in `s` (extra bits are the same
+/// however the block is cut and are left out).
+fn stats_cost(s: &Stats) -> f64 {
+    entropy_bits(&s.lit) + entropy_bits(&s.ll) + entropy_bits(&s.ml) + entropy_bits(&s.off)
+}
+
+fn cost(seqs: &[Sequence], literals: &[u8]) -> f64 {
+    stats_cost(&stats_of(seqs, literals))
+}
