@@ -5,11 +5,15 @@
 // against the input. Rows go to a JSON-lines file; a summary prints at
 // the end.
 //
-//   bench_suite [--threads N] [--repeats R] [--out FILE] [--large] [--small]
-//               [--codecs a,b,c] [--files f1,f2] [--max-bytes N]
+//   bench_suite [--threads N] [--repeats R] [--slow-repeats R] [--out FILE]
+//               [--large] [--small] [--codecs a,b,c] [--files f1,f2] [--max-bytes N]
 //
-// Peak memory is measured in a child process per (file, codec): the
-// suite re-runs itself with `--child` and reads the child's ru_maxrss.
+// `--slow-repeats` (default 1) is the repeat count for glyd-ultra and
+// zstd-19, whose single-thread passes over a gigabyte take minutes.
+// Peak memory is measured in a child process per (file, codec) on the
+// file's first 64 MB: the suite re-runs itself with `--child` and reads
+// the child's ru_maxrss (input, compressed and decompressed buffers
+// included, so 64 MB + compressed + 64 MB is the floor).
 //
 // What is compared, and how:
 // - Large files: whole-file compress and decompress in memory. Glyd's
@@ -34,6 +38,7 @@ use std::time::Instant;
 struct Opts {
     threads: usize,
     repeats: usize,
+    slow_repeats: usize,
     out: String,
     large: bool,
     small: bool,
@@ -50,12 +55,13 @@ fn main() {
         child(&args[2], &args[3], args[4].parse().unwrap(), args[5].parse().unwrap());
         return;
     }
-    let mut o = Opts { threads: 1, repeats: 3, out: "bench_suite.jsonl".into(), large: false, small: false, codecs: Vec::new(), files: Vec::new(), max_bytes: usize::MAX, dir: "corpus/bench".into() };
+    let mut o = Opts { threads: 1, repeats: 3, slow_repeats: 1, out: "bench_suite.jsonl".into(), large: false, small: false, codecs: Vec::new(), files: Vec::new(), max_bytes: usize::MAX, dir: "corpus/bench".into() };
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--threads" => { o.threads = args[i + 1].parse().unwrap(); i += 1; }
             "--repeats" => { o.repeats = args[i + 1].parse().unwrap(); i += 1; }
+            "--slow-repeats" => { o.slow_repeats = args[i + 1].parse().unwrap(); i += 1; }
             "--out" => { o.out = args[i + 1].clone(); i += 1; }
             "--codecs" => { o.codecs = args[i + 1].split(',').map(String::from).collect(); i += 1; }
             "--files" => { o.files = args[i + 1].split(',').map(String::from).collect(); i += 1; }
@@ -198,9 +204,11 @@ fn large(o: &Opts, out: &mut std::fs::File) {
         let name = std::path::Path::new(path).file_name().unwrap().to_string_lossy().to_string();
         eprintln!("{name}: {} bytes", input.len());
         for (ci, c) in codecs.iter().enumerate() {
-            let mut comp = Vec::with_capacity(input.len() + input.len() / 8 + 1 << 16);
+            let repeats = if c.name == "glyd-ultra" || c.name == "zstd-19" { o.slow_repeats } else { o.repeats };
+            let mut comp = Vec::with_capacity(input.len() + input.len() / 8 + (1 << 16));
             let mut ct = Vec::new();
-            for _ in 0..o.repeats {
+            for _ in 0..repeats {
+                comp.clear(); // Glyd's compress_into appends
                 let t = Instant::now();
                 (c.compress)(&input, o.threads, &mut comp);
                 ct.push(t.elapsed().as_secs_f64());
@@ -214,9 +222,9 @@ fn large(o: &Opts, out: &mut std::fs::File) {
                 assert!(back == input, "{name} / {}: decoded bytes differ from the input", c.name);
             }
             let (cmed, dmed) = (median(&mut ct), median(&mut dt));
-            let rss = child_rss(path, c.name, o.threads, o.max_bytes);
-            let row = format!("{{\"kind\":\"large\",\"file\":\"{name}\",\"bytes\":{},\"codec\":\"{}\",\"threads\":{},\"compressed\":{},\"ratio\":{:.4},\"compress_s\":{:.4},\"compress_min_s\":{:.4},\"decompress_s\":{:.4},\"decompress_min_s\":{:.4},\"compress_mb_s\":{:.1},\"decompress_mb_s\":{:.1},\"peak_rss_bytes\":{},\"verified\":true}}",
-                input.len(), c.name, o.threads, comp.len(), input.len() as f64 / comp.len() as f64, cmed, ct[0], dmed, dt[0], input.len() as f64 / cmed / 1e6, input.len() as f64 / dmed / 1e6, rss);
+            let rss = child_rss(path, c.name, o.threads, o.max_bytes.min(64 << 20));
+            let row = format!("{{\"kind\":\"large\",\"file\":\"{name}\",\"bytes\":{},\"codec\":\"{}\",\"threads\":{},\"compressed\":{},\"ratio\":{:.4},\"compress_s\":{:.4},\"compress_min_s\":{:.4},\"decompress_s\":{:.4},\"decompress_min_s\":{:.4},\"compress_mb_s\":{:.1},\"decompress_mb_s\":{:.1},\"peak_rss_bytes_64mb\":{},\"repeats\":{},\"verified\":true}}",
+                input.len(), c.name, o.threads, comp.len(), input.len() as f64 / comp.len() as f64, cmed, ct[0], dmed, dt[0], input.len() as f64 / cmed / 1e6, input.len() as f64 / dmed / 1e6, rss, repeats);
             writeln!(out, "{row}").unwrap();
             eprintln!("  {:<13} ratio {:>7.3}  comp {:>8.1} MB/s  decomp {:>8.1} MB/s  peak rss {:>6} MB", c.name, input.len() as f64 / comp.len() as f64, input.len() as f64 / cmed / 1e6, input.len() as f64 / dmed / 1e6, rss >> 20);
             let t = &mut totals[ci];
