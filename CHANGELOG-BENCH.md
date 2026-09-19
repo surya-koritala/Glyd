@@ -855,3 +855,60 @@ min 7 -> 8 cut tokens 18% and bought 18%.
   | xml     |   8.3375 |     0.248 |       1.679 |       8.4138 |       0.641 |         2.401 |
   | x-ray   |   1.4617 |     0.071 |       0.621 |       1.3926 |       0.190 |         0.829 |
   | total   |   3.2219 |     0.125 |       0.983 |       3.2045 |       0.319 |         1.411 |
+
+## v7 milestone 2d: decoder on the real parse
+- Profile at the double-fast parse (Silesia, 14.2 bytes per sequence,
+  temporary per-pass timers, M1 Max): per byte pass 1 0.318 ns (57%:
+  the three tANS streams 2.11 ns/sequence, the extra-bits walk 2.08,
+  table builds 0.42, tail 0.17), pass 3 (copies) 0.177 (32%, 2.67
+  ns/sequence), pass 2 (literals) 0.055 (10%). Sequence statistics:
+  ll = 0 in 62% of sequences, ll > 32 in 0.2%, ml > 32 in 4.9%, offsets
+  under 32 in 4.3% (mozilla 15%), rep codes 11% of offsets (mozilla 32%,
+  nci 25%, the text files ~1%). Pass 2 is under the 25% that would have
+  bought the double-symbol Huffman table.
+- Steps, each measured against its predecessor with the two binaries
+  run alternately (other sessions' builds moved single runs by up to
+  10%); the final column is the whole corpus back to back in one state:
+
+  | step | what | ns/sequence | ns/byte |
+  |---|---|---|---|
+  | baseline f25f4f9 | | p1 4.80, p2 0.82, p3 2.67 | 0.553 |
+  | copy pass | bounds implied by the totals dropped from the fast loop; one compare for the offset; the last sequence (the only ml == 0) and the last 96 bytes of a slack-less `dst` exact | p3 2.67 -> 2.15 | 0.518 |
+  | tANS decode | bit positions + a window per stream (2 live values, no spills); u64 entries `nbits, sym << 8, mask << 16, base << 32`, the 32 symbols of a batch written out: 5 ALU ops per symbol; table rebuilt in place in `DecTables` | codes 2.53 -> 2.15 | 0.499 |
+  | groups of eight | codes and lengths in `[ll x 8, ml x 8, off x 8]` groups (`tans::decode8_rows`): one pointer per array in the walk instead of three, positions as absolute bit addresses; the walk's batch 316 -> 263 instructions, ~80 -> 6 stack references | walk 2.10 -> 1.90, tail 0.17 -> 0.14 | 0.489 |
+  | huff8 decode | the same position scheme: 4 ALU ops per symbol, no spills | p2 0.82 -> 0.74 | 0.484 |
+  | table build | spread from the index (no running position), fill with a 256-entry counter, u64 math and a mask table: 2.2 -> 1.5 us per table | tables 0.46 -> 0.38 | 0.479 |
+
+  Rejected, measured: a per-batch "no rep code among the eight" branch
+  that skips the LRU selects (walk 2.08 -> 2.13: text gains 0.15, the
+  binaries lose 0.5, the branch is unpredictable there); the walk with
+  `chunks_exact` zips over six arrays (2.34: the compiler sank the
+  position adds and spilled the table entries); the walk and the copies
+  fused per batch (4.33 vs 4.15 separate: the copy state pushed the walk
+  back into spilling); the rep LRU resolved in the copy pass instead
+  (walk -0.32, copies +0.35: no idle slots there after all); an inline
+  16-byte path for offsets 16..31 (within noise). The 4-chain table fill
+  and a chain-free fill were slower than the plain one in a microbench:
+  the fill is throughput-bound, not chain-bound.
+- Where it stands: tANS 1.7 + walk 1.9 + copies 2.2 + literals 0.7 +
+  tables 0.4 + tail 0.14 = 7.0 ns/sequence. The walk is 21 ALU ops per
+  sequence (3 position, 8 fields, 3 adds, 7 for the rep LRU) and runs
+  at ~3.4 of them per cycle, as does the tANS loop at 5 per symbol --
+  the shifted-operand ops the entry layouts rely on look like the
+  ceiling; the copy loop is ~20 instructions at 2.7 IPC, latency- and
+  mispredict-bound (the floor analysis's shape). 2.5 GB/s needs 5.3
+  ns/sequence: a shorter sequence format (fewer fields, or reps out of
+  the per-sequence chain) more than a faster loop.
+- `examples/v7_bench.rs`, Silesia, M1 Max, `target-cpu=native`, median
+  of 3 runs of >= 0.3 s, zstd 1.5.7 in the same run, the f25f4f9 and
+  HEAD binaries back to back (zstd-3 1.439 / 1.435 in the two):
+  before **v7 decomp 1.603 GB/s** | zstd-3 1.439 | zstd-1 1.538;
+  after **v7: ratio 3.2219, comp 0.214 GB/s, decomp 1.822 GB/s** |
+  zstd-3: ratio 3.2045, comp 0.329, decomp 1.435 |
+  zstd-1: ratio 2.8942, comp 0.545, decomp 1.534.
+  +13.7%, 1.27x zstd -3 and 1.19x zstd -1; the brief's 2.5 GB/s and
+  gate G3's 3.0 are not met. Per file, decode GB/s before -> after:
+  dickens 1.14 -> 1.32, mozilla 1.49 -> 1.67, mr 1.29 -> 1.47, nci 3.14
+  -> 3.49, ooffice 1.20 -> 1.34, osdb 1.87 -> 2.11, reymont 1.43 ->
+  1.65, samba 2.14 -> 2.39, sao 1.63 -> 1.92, webster 1.39 -> 1.60, xml
+  2.73 -> 3.09, x-ray 0.94 -> 1.11.
