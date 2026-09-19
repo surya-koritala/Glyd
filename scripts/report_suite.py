@@ -128,6 +128,23 @@ def s3_table(d):
     for r in rs:
         name = f"**{r['codec']}**" if r["codec"].startswith("glyd") else r["codec"]
         print(f"| {name} | {fmt_bytes(r['stored_bytes'])} | {r['ratio']:.3f} | {r['compress_wall_s']:.1f} / {r['compress_cpu_s']:.1f} | {r['upload_wall_s']:.1f} | {r['download_wall_s']:.1f} | {r['decompress_wall_s']:.1f} / {r['decompress_cpu_s']:.1f} | {r['verified']} | {r['usd_month_1_read']:.4f} | {r['usd_month_10_reads']:.4f} | {r['usd_month_100_reads']:.4f} | {r['usd_egress_per_read']:.4f} |")
+    # The same, per terabyte of original data (the corpus scaled linearly).
+    tb = r0["raw_bytes"] / 1e12
+    print("\nPer TB of original data, from the run above (linear scaling; instance seconds at the listed price):\n")
+    print("| Codec | Stored TB | Storage $/month | Compress $ (once) | Decompress $ per read | Egress $ per read | $/month at 1 read | at 10 reads | at 100 reads |")
+    print("| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    for r in rs:
+        name = f"**{r['codec']}**" if r["codec"].startswith("glyd") else r["codec"]
+        stored_tb = r["stored_bytes"] / 1e12 / tb
+        storage = stored_tb * 1000 * p["s3_gb_month"]
+        comp = r["compress_cpu_s"] / 3600 * p["ec2_per_hour"] / tb
+        decomp = r["decompress_cpu_s"] / 3600 * p["ec2_per_hour"] / tb
+        egress = stored_tb * 1000 * p["egress_per_gb"]
+        requests_put = r["files"] * p["put_per_1000"] / 1000 / tb
+        requests_get = r["files"] * p["get_per_1000"] / 1000 / tb
+        def month(reads):
+            return storage + requests_put + comp + reads * (decomp + requests_get)
+        print(f"| {name} | {stored_tb:.3f} | {storage:.2f} | {comp:.2f} | {decomp:.3f} | {egress:.2f} | {month(1):.2f} | {month(10):.2f} | {month(100):.2f} |")
 
 
 def main():
