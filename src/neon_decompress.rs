@@ -11,6 +11,14 @@ use crate::fallback::read_escape;
 use crate::format::{ESCAPE_BASE_LIT, ESCAPE_CONT, OFFSET_BYTES,
     TOKEN_LIT_ESCAPE, TOKEN_MATCH_ESCAPE, TOKEN_OFF_SHIFT};
 
+/// A wild copy runs past its run's end: `copy_run`'s fixed 3x32 tails
+/// store 128 bytes for a 33-byte run, 95 past its end, and read as far
+/// past the run's literals. A chunk is copied wild only when its runs end
+/// this far before the block's end (`dst` may be exactly that long: the
+/// parallel path's slices, `decompress_into` with an exact buffer) and
+/// before the literal stream's; the rest takes the careful path.
+const WILD_MARGIN: usize = 96;
+
 #[inline(always)]
 pub(crate) unsafe fn copy32(s: *const u8, d: *mut u8) {
     vst1q_u8(d, vld1q_u8(s));
@@ -223,7 +231,7 @@ pub unsafe fn decompress_neon(
     let mut dst_ptr = dst.as_mut_ptr();
     let block_start = dst_ptr;
     let block_end = dst_ptr.add(uncompressed_len);
-    let safe_limit = if uncompressed_len >= 64 { block_end.sub(64) } else { block_start };
+    let safe_limit = if uncompressed_len >= WILD_MARGIN { block_end.sub(WILD_MARGIN) } else { block_start };
 
     let mut lit_ptr = literals.as_ptr();
     let lit_limit = literals.as_ptr().add(literals.len());
@@ -263,9 +271,9 @@ pub unsafe fn decompress_neon(
             if token_idx + CHUNK > num_tokens || dst_ptr > safe_limit {
                 break 'fast;
             }
-            // Pass 1. Wild stores need 64 bytes past the run's last byte;
-            // literal loads need 64 past the run's literals; offsets need
-            // OFFSET_BYTES per match.
+            // Pass 1. Wild stores need WILD_MARGIN bytes past the run's
+            // last byte; literal loads need WILD_MARGIN past the run's
+            // literals; offsets need OFFSET_BYTES per match.
             let remaining = block_end.offset_from(dst_ptr) as usize;
             let lit_room = lit_limit.offset_from(lit_ptr) as usize;
             let mut n = 0usize;
@@ -273,8 +281,8 @@ pub unsafe fn decompress_neon(
             let (mut ls, mut ms, mut nm) = (0usize, 0usize, 0usize);
             while n + CHUNK <= SUPER && token_idx + n + CHUNK <= num_tokens {
                 let Some((l, m, k, e2)) = pp.run(token_idx + n, e, litl.as_mut_ptr().add(n), mll.as_mut_ptr().add(n)) else { break };
-                if ls + l + ms + m + 64 > remaining
-                    || ls + l + 64 > lit_room
+                if ls + l + ms + m + WILD_MARGIN > remaining
+                    || ls + l + WILD_MARGIN > lit_room
                     || off_pos + (nm + k) * OFFSET_BYTES > offsets_len
                 {
                     break;
@@ -401,8 +409,8 @@ pub unsafe fn decompress_neon(
     Ok(written)
 }
 
-/// Overlapping match copy for offsets under 32. The chunk bounds allow 64
-/// bytes of wild store past the match end. `ml` must be non-zero.
+/// Overlapping match copy for offsets under 32. The chunk bounds allow
+/// WILD_MARGIN bytes of wild store past the match end. `ml` must be non-zero.
 #[cold]
 #[inline(never)]
 pub(crate) unsafe fn short_match(s: *const u8, d: *mut u8, offset: usize, ml: usize) {
