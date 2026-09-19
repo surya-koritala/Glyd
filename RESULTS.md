@@ -277,4 +277,4 @@ better than the one liblz4 uses, which is a research result, not a tuning pass.
 
 ## CSV
 
-`/tmp/claude-1000/-home-surya/ae7f39bc-ce5c-4579-9557-fb26287a402a/scratchpad/strict1.csv`
+`/tmp

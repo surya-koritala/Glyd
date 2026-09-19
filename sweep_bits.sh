@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-export CARGO_TARGET_DIR=/tmp/claude-1000/-home-surya/ae7f39bc-ce5c-4579-9557-fb26287a402a/scratchpad/alk-target
+export CARGO_TARGET_DIR=/tmp
 for B in 14 15 16 17; do
   grep -q "^h${B}," quick3_log.csv 2>/dev/null && continue
   sed -i -E "s/pub const HASH_BITS: u32 = [0-9]+;/pub const HASH_BITS: u32 = ${B};/" src/x86_compress.rs

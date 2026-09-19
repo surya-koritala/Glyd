@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Sweep far-match threshold x window size. Appends durably (host crashes).
 set -uo pipefail
-export CARGO_TARGET_DIR=/tmp/claude-1000/-home-surya/ae7f39bc-ce5c-4579-9557-fb26287a402a/scratchpad/alk-target
+export CARGO_TARGET_DIR=/tmp
 OUT=far_sweep.txt
 [ -f "$OUT" ] || echo "window_bits,far_min,total_ratio" > "$OUT"
 for WB in 20 22; do

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glyd savings calculator</title>
+<meta name="description" content="Estimate what Glyd saves on object storage and decode CPU compared with Snappy, LZ4 and zstd.">
+<style>
+  :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --line:#333; --accent:#6ea0ff; } }
+  body { font: 16px/1.5 -apple-system, system-ui, sans-serif; color:var(--fg); background:var(--bg); margin:0; padding:24px 16px; }
+  main { max-width:720px; margin:0 auto; }
+  h1 { font-size:1.5rem; margin:0 0 .25rem; }
+  p.sub { color:var(--muted); margin:0 0 1.5rem; }
+  label { display:block; margin:12px 0 4px; font-weight:600; }
+  input, select { font:inherit; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); width:100%; max-width:320px; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:520px) { .row { grid-template-columns:1fr; } }
+  .out { margin-top:24px; padding:16px; border:1px solid var(--line); border-radius:8px; }
+  .big { font-size:2rem; font-weight:700; color:var(--accent); }
+  table { border-collapse:collapse; width:100%; margin-top:12px; }
+  td, th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  td:last-child, th:last-child { text-align:right; }
+  small { color:var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>What Glyd saves you</h1>
+  <p class="sub">Bytes stored scale with 1 / ratio. Ratios below are Silesia, measured in the same run; measure your own data with <code>glyd -b yourfile</code>.</p>
+
+  <div class="row">
+    <div>
+      <label for="tb">Data you store today (TB, compressed)</label>
+      <input id="tb" type="number" min="0" step="any" value="1000">
+    </div>
+    <div>
+      <label for="codec">Compressed today with</label>
+      <select id="codec">
+        <option value="2.076">Snappy (2.08)</option>
+        <option value="2.101">LZ4 (2.10)</option>
+        <option value="1.0">Nothing (1.00)</option>
+        <option value="2.894">zstd -1 (2.89)</option>
+        <option value="3.205">zstd -3 (3.20)</option>
+      </select>
+    </div>
+    <div>
+      <label for="price">Storage price ($ per TB-month)</label>
+      <input id="price" type="number" min="0" step="any" value="21">
+    </div>
+    <div>
+      <label for="level">Glyd level</label>
+      <select id="level">
+        <option value="3.218" data-dec="1860">--max (3.22, 1,860 MB/s decode)</option>
+        <option value="2.192" data-dec="6900">default (2.19, 6,900 MB/s decode)</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="out">
+    <div>Saved per year</div>
+    <div class="big" id="usd">—</div>
+    <table>
+      <tr><th>Stored with Glyd</th><td id="after">—</td></tr>
+      <tr><th>Bytes saved</th><td id="pct">—</td></tr>
+      <tr><th>Decode CPU vs today's codec</th><td id="cpu">—</td></tr>
+    </table>
+    <small>Formula: stored_TB × (1 − old_ratio / glyd_ratio) × price × 12. Decode speeds (MB/s, one core, same run): Snappy 1,495 · LZ4 4,108 · zstd -1 1,493 · zstd -3 1,361–1,440 · Glyd --max 1,860 · Glyd default 6,900. Every 1% fewer bytes across 100 EB of object storage is about $250 M a year at list price.</small>
+  </div>
+</main>
+<script>
+  const dec = { "2.076":1495, "2.101":4108, "1.0":40000, "2.894":1493, "3.205":1440 };
+  const $ = id => document.getElementById(id);
+  function fmt(n){ return n >= 1e9 ? "$" + (n/1e9).toFixed(2) + " B" : n >= 1e6 ? "$" + (n/1e6).toFixed(2) + " M" : "$" + Math.round(n).toLocaleString(); }
+  function tb(n){ return n >= 1000 ? (n/1000).toFixed(2) + " PB" : n.toFixed(1) + " TB"; }
+  function calc(){
+    const stored = +$("tb").value || 0, old = +$("codec").value, price = +$("price").value || 0;
+    const opt = $("level").selectedOptions[0], glyd = +opt.value, gdec = +opt.dataset.dec;
+    const after = stored * old / glyd, saved = stored - after;
+    $("usd").textContent = fmt(Math.max(0, saved) * price * 12);
+    $("after").textContent = tb(after);
+    $("pct").textContent = (100 * (1 - old / glyd)).toFixed(1) + "%";
+    const d = dec[$("codec").value] || 0;
+    $("cpu").textContent = d ? (gdec >= d ? (100 * (1 - d / gdec)).toFixed(0) + "% fewer CPU-seconds" : (100 * (d / gdec - 1)).toFixed(0) + "% more CPU-seconds") : "—";
+  }
+  document.querySelectorAll("input, select").forEach(e => e.addEventListener("input", calc));
+  calc();
+</script>
+</body>
+</html>

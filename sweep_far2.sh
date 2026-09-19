@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-export CARGO_TARGET_DIR=/tmp/claude-1000/-home-surya/ae7f39bc-ce5c-4579-9557-fb26287a402a/scratchpad/alk-target
+export CARGO_TARGET_DIR=/tmp
 OUT=far_sweep_exact.txt
 [ -f "$OUT" ] || echo "config,total_ratio" > "$OUT"
 run() { # $1=label $2=window_bits $3=far_min
