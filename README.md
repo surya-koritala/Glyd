@@ -40,7 +40,7 @@ for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
 | ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.25** | 310&nbsp;MB/s | **1,890&nbsp;MB/s** | **1.3×** zstd&nbsp;-3 (1,490&nbsp;MB/s); denser (3.20) |
 | ⚡&nbsp;**Glyd&nbsp;‑‑ultra** | **3.93** | 3.8&nbsp;MB/s | **2,150&nbsp;MB/s** | **1.3×** zstd&nbsp;-19 (1,640&nbsp;MB/s); denser than zstd&nbsp;-16 (3.83), 2% below zstd&nbsp;-19 (4.01) |
 
-<sub>Silesia corpus (202 MB), Apple M1 Max, one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. The same story holds on AWS Graviton3; on x86 (Sapphire Rapids) the v6 levels lead and <code>--max</code> decodes 1.03× zstd -3. Cross-platform results: <a href="benchmarks/">benchmarks/</a>.</sub>
+<sub>Silesia corpus (202 MB), Apple M1 Max, one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. The same story holds on AWS Graviton3; on x86 (Sapphire Rapids) the v6 levels lead, <code>--max</code> decodes about as fast as zstd -3 and <code>--ultra</code> 1.1-1.2× zstd -19. Cross-platform results: <a href="benchmarks/">benchmarks/</a>.</sub>
 
 - 🚀 **Fastest decode at every ratio point** measured, against liblz4, lz4_flex, LZAV, zstd (7 levels) and snappy, in the same run.
 - 📦 **Fewer bytes than zstd -3** with the `--max` level, at 30% faster reads.
@@ -223,18 +223,21 @@ board — the ordering is the same.)
 
 | Decompress&nbsp;MB/s | ⚡&nbsp;**Glyd&nbsp;default** | liblz4 | ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | ⚡&nbsp;**Glyd&nbsp;‑‑max** | zstd&nbsp;‑3 |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| Graviton3&nbsp;(c7g.2xlarge, NEON) | **3,800** | 3,170 | **5,170** | **1,210** | 916 |
-| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **3,790** | 3,250 | **4,590** | **1,180** | 1,110 |
+| Graviton3&nbsp;(c7g.2xlarge, NEON) | **3,880** | 3,180 | **5,230** | **1,200** | 928 |
+| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **4,410** | 3,760 | **5,100** | 1,170 | 1,270 |
 
 | Decompress&nbsp;MB/s | ⚡&nbsp;**Glyd&nbsp;‑‑ultra** | zstd&nbsp;‑16 | zstd&nbsp;‑19 |
 | :--- | ---: | ---: | ---: |
-| Graviton3&nbsp;(c7g.2xlarge, NEON) | **1,390** | 1,024 | 924 |
-| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **1,325** | 1,218 | 1,077 |
+| Graviton3&nbsp;(c7g.2xlarge, NEON) | **1,380** | 1,040 | 950 |
+| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **1,335** | 1,362 | 1,180 |
 
 Ratios are identical across machines (the format is deterministic).
-Absolute speeds on shared cloud instances move by up to 10% between runs;
-the pairings within one run are the comparison. Raw outputs and the
-launch script: [`benchmarks/`](benchmarks/).
+Absolute speeds on shared cloud instances move by up to 20% between runs
+(three c7i runs put zstd -3 at 1,060, 1,110 and 1,270 MB/s); the pairings
+within one run are the comparison, and on Sapphire Rapids they say
+`--max` decodes at 0.9-1.06× zstd -3 and `--ultra` at 1.1-1.2× zstd -19,
+against 1.3× and 1.45× on Graviton3. Raw outputs and the launch script:
+[`benchmarks/`](benchmarks/).
 
 ### Multi-core
 
@@ -298,9 +301,10 @@ unsafe block carries its bound.
 - On the extended corpus `--max` beats zstd -3 on 3 of 5 files; it loses
   0.6% on very repetitive JSON.
 - `GlydReader`/`GlydWriter` (std::io streaming) carry v6 levels only.
-- On x86 (Sapphire Rapids) `--max` decodes at 1.03× zstd -3, not the 1.3×
-  it reaches on ARM: x86-64's 16 general registers spill the 8-stream
-  entropy loops that ARM's 31 keep in registers.
+- On x86 (Sapphire Rapids) `--max` decodes at 0.9-1.06× zstd -3, not the
+  1.3× it reaches on ARM: x86-64's 16 general registers spill the 8-stream
+  entropy loops that ARM's 31 keep in registers, and the 8 MB window's
+  far copies miss its smaller caches.
 - `--ultra` is 2% less dense than zstd -19 (3.93 vs 4.01, both with an
   8 MB window); the gap sits on structured data (mozilla, xml, samba
   3-4%), text and binaries are within 1-2%.

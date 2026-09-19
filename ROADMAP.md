@@ -31,11 +31,13 @@ overhead than they gain in adaptivity (measured: 128 KB blocks -0.1%,
    literal-length-zero context (zstd's), literal tables by context class.
    Gate: `--ultra` ratio >= zstd -19 on Silesia, decode unchanged.
 
-2. **x86-64 parity for the max level's decoder.** 1.03× zstd -3 on
+2. **x86-64 parity for the max level's decoder.** 0.9-1.06× zstd -3 on
    Sapphire Rapids against 1.3× on ARM; the remaining cost is instruction
    count in the 8-stream loops (~150 per sequence; ARM does it in two
-   thirds). Hand-scheduled BMI2 loops for the tANS batch and the walk.
-   Gate: >= 1.2× zstd -3 in the published run.
+   thirds) and, since the 8 MB window, far copies missing the 2 MB L2.
+   Hand-scheduled BMI2 loops for the tANS batch and the walk; copies
+   that overlap the next source's miss. Gate: >= 1.2× zstd -3 in the
+   published run.
 
 3. **Compression speed of `--max`.** 0.9× zstd -3 on ARM, 0.7× on x86.
    The finder probe loop is at liblz4's efficiency; what is left is the
@@ -55,7 +57,7 @@ overhead than they gain in adaptivity (measured: 128 KB blocks -0.1%,
 ## Known gaps, stated
 
 - `--max` compresses at 89-91% of zstd -3's speed on ARM, 70% on x86.
-- `--max` decodes 1.3x zstd -3 on ARM and 1.0x on x86, not the 2x the
+- `--max` decodes 1.3x zstd -3 on ARM and 0.9-1.06x on x86, not the 2x the
   design aimed at; the remaining cost is per-sequence and inherent to
   the sequence format.
 - `--ultra` is 2% less dense than zstd -19 (same 8 MB window); it
