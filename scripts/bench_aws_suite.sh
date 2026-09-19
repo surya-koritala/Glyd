@@ -72,7 +72,10 @@ SG="$(aws ec2 create-security-group --group-name "$RUN_ID" --description "glyd b
 aws ec2 authorize-security-group-ingress --group-id "$SG" --protocol tcp --port 22 --cidr "$MYIP" >/dev/null
 
 USERDATA='#!/bin/bash
-apt-get update -y && apt-get install -y build-essential clang curl git unzip xz-utils pkg-config zstd lz4 bc python3 awscli
+for i in 1 2 3; do apt-get update -y && break; sleep 20; done
+apt-get install -y build-essential clang curl git unzip xz-utils pkg-config
+apt-get install -y zstd lz4 bc python3
+cd /tmp && curl -sSL "https://awscli.amazonaws.com/awscli-exe-linux-$(uname -m).zip" -o awscli.zip && unzip -q awscli.zip && ./aws/install
 sudo -u ubuntu bash -c "curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal"
 touch /home/ubuntu/READY
 '
@@ -95,9 +98,13 @@ INSTANCE=$(curl -s -H "X-aws-ec2-metadata-token: $TOK" http://169.254.169.254/la
   echo "kernel: $(uname -sr)"
   echo "date: $(date -u +%FT%TZ)"
 } > ~/results/machine.txt
-cargo build --release --examples 2>&1 | tail -2
+cp /var/log/cloud-init-output.log ~/results/cloud-init.log 2>/dev/null || true
+cargo build --release --examples > ~/results/build.txt 2>&1
+tail -3 ~/results/build.txt
+if [ ! -x target/release/examples/bench_suite ] || [ ! -x target/release/glyd ]; then echo "BUILD FAILED" > ~/results/FAILED; touch ~/results/DONE; exit 1; fi
 bash scripts/download_bench_corpus.sh > ~/results/corpus.txt 2>&1
 export PATH=$PWD/target/release:$PATH
+which zstd lz4 aws glyd >> ~/results/machine.txt
 scripts/verify_roundtrip.sh corpus/bench/nasa-access-jul95.log corpus/bench/gharchive-2024-01-16-12.json corpus/bench/yellow_tripdata_2024-02.parquet > ~/results/verify.txt 2>&1
 ./target/release/examples/bench_suite --threads 1 --repeats 3 --slow-repeats 1 --out ~/results/bench_suite_1thread.jsonl > ~/results/bench_suite_1thread.txt 2>&1
 ./target/release/examples/bench_suite --large --threads $(nproc) --repeats 3 --slow-repeats 2 --out ~/results/bench_suite_${INSTANCE}_allthreads.jsonl > ~/results/bench_suite_allthreads.txt 2>&1
