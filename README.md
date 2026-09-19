@@ -35,9 +35,9 @@ for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
 
 | Level | Ratio | Compress | **Decompress** | vs the reference, same run |
 | :--- | ---: | ---: | ---: | :--- |
-| ⚡ **Glyd `--turbo`** | 1.88 | 280 MB/s | **9,200 MB/s** | **2.1×** liblz4's 4,400 MB/s |
-| ⚡ **Glyd default** | 2.19 | 340 MB/s | **6,900 MB/s** | **1.6×** liblz4, at a better ratio |
-| ⚡ **Glyd `--max`** | **3.22** | 300 MB/s | **1,860 MB/s** | **1.3×** zstd -3's 1,440 MB/s, and denser (3.20) |
+| ⚡&nbsp;**Glyd&nbsp;`--turbo`** | 1.88 | 280&nbsp;MB/s | **9,200&nbsp;MB/s** | **2.1×** liblz4 (4,400&nbsp;MB/s) |
+| ⚡&nbsp;**Glyd&nbsp;default** | 2.19 | 340&nbsp;MB/s | **6,900&nbsp;MB/s** | **1.6×** liblz4, better ratio |
+| ⚡&nbsp;**Glyd&nbsp;`--max`** | **3.22** | 300&nbsp;MB/s | **1,860&nbsp;MB/s** | **1.3×** zstd&nbsp;-3 (1,440&nbsp;MB/s), denser than its 3.20 |
 
 <sub>Silesia corpus (202 MB), one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. Full tables and the honest gaps: <a href="#benchmarks">Benchmarks</a>.</sub>
 
@@ -151,20 +151,20 @@ script that produced them.
 
 | Codec | Ratio | Compress MB/s | **Decompress MB/s** | |
 | :--- | ---: | ---: | ---: | :--- |
-| ⚡ **Glyd --max** | **3.218** | 277 | **1,733** | ✅ best ratio in the field, 1.27× zstd -3 decode |
-| zstd -3 | 3.205 | 319 | 1,361 | |
-| zstd -1 | 2.894 | 535 | 1,493 | |
+| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.218** | 277 | **1,733** | ✅ best ratio; 1.27× zstd&nbsp;-3 decode |
+| zstd&nbsp;-3 | 3.205 | 319 | 1,361 | |
+| zstd&nbsp;-1 | 2.894 | 535 | 1,493 | |
 | LZAV-hi | 2.803 | 91 | 3,185 | |
 | LZAV | 2.450 | 426 | 3,128 | |
-| zstd --fast=1 | 2.438 | 614 | 2,153 | |
-| zstd --fast=3 | 2.240 | 684 | 2,307 | |
-| ⚡ **Glyd default** | **2.192** | 312 | **6,507** | ✅ 1.6× liblz4 decode at a better ratio |
-| ⚡ **Glyd --fast** | **2.176** | 501 | **4,670** | ✅ 1.1× liblz4 decode at a better ratio |
+| zstd&nbsp;‑‑fast=1 | 2.438 | 614 | 2,153 | |
+| zstd&nbsp;‑‑fast=3 | 2.240 | 684 | 2,307 | |
+| ⚡&nbsp;**Glyd&nbsp;default** | **2.192** | 312 | **6,507** | ✅ 1.6× liblz4 decode, better ratio |
+| ⚡&nbsp;**Glyd&nbsp;‑‑fast** | **2.176** | 501 | **4,670** | ✅ 1.1× liblz4 decode, better ratio |
 | liblz4 | 2.101 | 610 | 4,108 | |
 | lz4_flex | 2.097 | 633 | 3,004 | |
 | snappy | 2.076 | 607 | 1,495 | |
-| zstd --fast=5 | 2.057 | 746 | 2,484 | |
-| ⚡ **Glyd --turbo** | 1.884 | 263 | **8,647** | ✅ fastest decode in the field, 2.1× liblz4 |
+| zstd&nbsp;‑‑fast=5 | 2.057 | 746 | 2,484 | |
+| ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | 1.884 | 263 | **8,647** | ✅ fastest decode, 2.1× liblz4 |
 
 (`examples/field_survey.rs`. This run was taken with other work on the
 machine; the headline table above is from a quiet run of the paired
