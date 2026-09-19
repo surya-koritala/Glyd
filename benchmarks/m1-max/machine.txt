@@ -1,0 +1,3 @@
+machine: Apple M1 Max (10 cores), macOS 27.0, rustc 1.97.1
+date: 2026-09-19T06:37:32Z
+command: cargo run --release --example ultra_bench 3 0.3 (RUSTFLAGS unset: aarch64 NEON is the baseline)

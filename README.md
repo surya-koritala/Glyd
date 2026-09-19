@@ -1,6 +1,6 @@
 <h1 align="center">Glyd</h1>
 <p align="center"><strong>The world's fastest-decoding open-source compression.</strong><br>
-Fewer bytes than zstd's default level. Reads 1.3× faster than zstd, up to 2.1× faster than LZ4.</p>
+Fewer bytes than zstd -3, and a <code>--ultra</code> level denser than zstd -16. Reads 1.3× faster than zstd, up to 2.1× faster than LZ4.</p>
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
@@ -38,11 +38,13 @@ for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
 | ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | 1.88 | 280&nbsp;MB/s | **9,200&nbsp;MB/s** | **2.1×** liblz4 (4,400&nbsp;MB/s) |
 | ⚡&nbsp;**Glyd&nbsp;default** | 2.19 | 340&nbsp;MB/s | **6,900&nbsp;MB/s** | **1.6×** liblz4, better ratio |
 | ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.22** | 300&nbsp;MB/s | **1,860&nbsp;MB/s** | **1.3×** zstd&nbsp;-3 (1,440&nbsp;MB/s); denser (3.20) |
+| ⚡&nbsp;**Glyd&nbsp;‑‑ultra** | **3.80** | 4.8&nbsp;MB/s | **2,190&nbsp;MB/s** | **1.3×** zstd&nbsp;-19 (1,640&nbsp;MB/s); denser than zstd&nbsp;-16 (3.83) |
 
-<sub>Silesia corpus (202 MB), Apple M1 Max, one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. The same story holds on AWS Graviton3; on x86 the v6 levels lead too, while <code>--max</code> still runs its scalar decoder (AVX2 port next). Cross-platform results: <a href="benchmarks/">benchmarks/</a>.</sub>
+<sub>Silesia corpus (202 MB), Apple M1 Max, one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. The same story holds on AWS Graviton3; on x86 (Sapphire Rapids) the v6 levels lead and <code>--max</code> decodes 1.03× zstd -3. Cross-platform results: <a href="benchmarks/">benchmarks/</a>.</sub>
 
 - 🚀 **Fastest decode at every ratio point** measured, against liblz4, lz4_flex, LZAV, zstd (7 levels) and snappy, in the same run.
 - 📦 **Fewer bytes than zstd -3** with the `--max` level, at 30% faster reads.
+- 🗜️ **`--ultra`: denser than zstd -16** (Silesia 3.80) on an optimal parse, and its output reads 1.3× faster than zstd -19's. Same decoder, same container.
 - 🧱 **One container, three levels**, any mix of blocks decodes; independent 256 KB blocks scale across cores.
 - 🛡️ **Fuzzed** with a million mutations per run into exact-size buffers; no per-call allocation in the decoder.
 - 🔌 **Rust, C ABI, CLI**, streaming `std::io` adapters, dictionaries for small objects.
@@ -132,7 +134,8 @@ int64_t dlen = glyd_decompress_parallel(dst, clen, out, n);
 | **‑‑turbo**&nbsp;(‑t) | Data read far more often than written, where read CPU is the cost: in-memory caches, game assets, KV-cache paging | v6 format, minimum match 10: fewest tokens, one 32-byte copy per token |
 | **default** | The LZ4/Snappy slot with better ratio and 1.6× LZ4's read speed | v6 format, LZAV-class match finder, minimum match 7 |
 | **‑‑fast**&nbsp;(‑1) | When you need LZ4-class compression speed | v6 format, LZ4-class finder, minimum match 5 |
-| **‑‑max**&nbsp;(‑9) | The zstd slot: fewest bytes, 30% faster reads than zstd -3 | v7 format: 8-way interleaved Huffman literals + tANS-coded sequences, repeat offsets, 2 MB window, double-fast lazy parse |
+| **‑‑max**&nbsp;(‑9) | The zstd slot: fewer bytes than zstd -3, 30% faster reads | v7 format: 8-way interleaved Huffman literals + tANS-coded sequences, repeat offsets, 2 MB window, double-fast lazy parse |
+| **‑‑ultra**&nbsp;(‑19) | Write once, read many: cold storage, release assets, datasets. Fewest bytes; compresses at single-digit MB/s | v7 format on an optimal parse: binary-tree match finder, every position priced in the coder's own bits, cheapest path through the block ([design](docs/design/ultra-parse.md)) |
 
 All levels produce the same container; the decoder reads any mix. Blocks
 are 256 KB; `FLAG_CHAIN_RESET` blocks decode independently across cores.
@@ -220,13 +223,11 @@ board — the ordering is the same.)
 
 | Decompress&nbsp;MB/s | ⚡&nbsp;**Glyd&nbsp;default** | liblz4 | ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | ⚡&nbsp;**Glyd&nbsp;‑‑max** | zstd&nbsp;‑3 |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| Graviton3&nbsp;(c7g.2xlarge, NEON) | **3,690** | 3,160 | **4,980** | **1,205** | 912 |
-| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **4,430** | 3,775 | **5,350** | 858 | 1,291 |
+| Graviton3&nbsp;(c7g.2xlarge, NEON) | **3,750** | 3,160 | **4,970** | **1,180** | 903 |
+| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **4,340** | 3,720 | **5,220** | **1,300** | 1,260 |
 
-Ratios are identical across machines (the format is deterministic).
-`--max` on x86 uses the portable scalar decoder until its AVX2 port lands
-(ROADMAP item 1), so it trails zstd -3 there today. Raw outputs and the
-launch script: [`benchmarks/`](benchmarks/).
+Ratios are identical across machines (the format is deterministic). Raw
+outputs and the launch script: [`benchmarks/`](benchmarks/).
 
 ### Multi-core
 
@@ -254,6 +255,7 @@ Rapids vCPUs.
 scripts/download_corpus.sh                                         # Silesia + enwik8
 RUSTFLAGS="-C target-cpu=native" cargo run --release --example quick3 -- label 3 0.3 -v   # v6 levels vs liblz4
 RUSTFLAGS="-C target-cpu=native" cargo run --release --example v7_bench                  # --max vs zstd -3 / -1
+RUSTFLAGS="-C target-cpu=native" cargo run --release --example ultra_bench               # --ultra vs zstd -16 / -19
 RUSTFLAGS="-C target-cpu=native" cargo run --release --example field_survey 3 0.3        # everything
 AWS_PROFILE=... scripts/bench_aws.sh main                          # Graviton3 + Sapphire Rapids, ~$1
 ```
@@ -289,10 +291,12 @@ unsafe block carries its bound.
 - On the extended corpus `--max` beats zstd -3 on 3 of 5 files; it loses
   0.6% on very repetitive JSON.
 - `GlydReader`/`GlydWriter` (std::io streaming) carry v6 levels only.
-- The `--max` decoder has a NEON path and a scalar fallback: on x86 it
-  decodes at 0.66× zstd -3 today (858 vs 1,291 MB/s on Sapphire Rapids).
-  The AVX2 port is roadmap item 1; the v6 levels already have AVX2 and lead
-  on x86.
+- On x86 (Sapphire Rapids) `--max` decodes at 1.03× zstd -3, not the 1.3×
+  it reaches on ARM: x86-64's 16 general registers spill the 8-stream
+  entropy loops that ARM's 31 keep in registers.
+- `--ultra` is 2.7% less dense than zstd -19 inside the same 2 MB window
+  (3.80 vs 3.91) and 5% less than zstd -19 at its default 8 MB window
+  (4.01); the window is a format limit, roadmap item 1.
 
 ---
 

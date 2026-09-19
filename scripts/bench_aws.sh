@@ -4,14 +4,14 @@
 # Launches one on-demand instance per type (default: Graviton3 and Sapphire
 # Rapids), ships the tree at a git ref as a tarball (so private checkouts
 # work too), downloads the Silesia corpus, runs the same-run harnesses
-# (quick3: v6 levels vs liblz4; v7_bench: max level vs zstd; field_survey:
-# the whole field; mc: multi-core), copies the results into
+# (quick3: v6 levels vs liblz4; v7_bench: max level vs zstd; ultra_bench:
+# ultra level vs zstd -16/-19; field_survey: the whole field; mc: multi-core), copies the results into
 # benchmarks/<instance-type>/ and terminates everything it created.
 #
 # Usage:
 #   AWS_PROFILE=... scripts/bench_aws.sh [git-ref]
 # Env: REGION (us-east-1), TYPES ("c7g.2xlarge c7i.2xlarge"). Cost:
-# ~$0.35/hour per instance; a run takes 30-50 minutes. Everything created
+# ~$0.35/hour per instance; a run takes 40-60 minutes. Everything created
 # is tagged glyd-bench and deleted on exit (also on Ctrl-C).
 set -euo pipefail
 
@@ -82,6 +82,7 @@ cargo build --release --examples 2>&1 | tail -2
 ./target/release/examples/quick3 aws 3 0.3 -v > ~/results/quick3.txt 2>&1
 ./target/release/examples/quick3 aws-turbo 3 0.3 --turbo -v > ~/results/quick3_turbo.txt 2>&1 || true
 ./target/release/examples/v7_bench > ~/results/v7_bench.txt 2>&1
+./target/release/examples/ultra_bench > ~/results/ultra_bench.txt 2>&1
 ./target/release/examples/field_survey 3 0.3 > ~/results/field_survey.txt 2>&1
 ./target/release/examples/mc > ~/results/multicore.txt 2>&1
 touch ~/results/DONE

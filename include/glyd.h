@@ -75,6 +75,38 @@ int64_t glyd_compress_max(
 );
 
 /**
+ * Compresses `src` at the ultra level: format v7 on the optimal parse,
+ * denser than the max level (ratio above zstd -16 on Silesia), an order of
+ * magnitude slower to produce, decoded by the same decoder.
+ *
+ * Returns:
+ *   >= 0 : Number of compressed bytes written to `dst`.
+ *     -1 : Destination buffer capacity too small.
+ *     -2 : Null pointer passed.
+ */
+int64_t glyd_compress_ultra(
+    const uint8_t* src,
+    size_t src_len,
+    uint8_t* dst,
+    size_t dst_capacity
+);
+
+/**
+ * Compresses `src` at the ultra level across all available CPU cores.
+ *
+ * Returns:
+ *   >= 0 : Number of compressed bytes written to `dst`.
+ *     -1 : Destination buffer capacity too small.
+ *     -2 : Null pointer passed.
+ */
+int64_t glyd_compress_ultra_parallel(
+    const uint8_t* src,
+    size_t src_len,
+    uint8_t* dst,
+    size_t dst_capacity
+);
+
+/**
  * Compresses `src` at the max level (format v7) across all available CPU
  * cores in parallel using Rayon.
  *

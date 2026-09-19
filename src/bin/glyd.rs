@@ -12,9 +12,10 @@ Options:
     -1, --fast             Fast level: LZ4-class compression speed, ratio ~2.10
     -t, --turbo            Turbo level: fastest decode, ~6% less ratio
     -9, --max              Max level: entropy coded, ratio above zstd -3
+    -19, --ultra           Ultra level: optimal parse, ratio above zstd -16; slow to compress
     -d, --decompress       Decompress input (default if input is .glyd)
     -m, --multi-core       Use multi-core parallel engine (default)
-    -1, --single-core      Force single-core sequential engine
+    -s, --single-core      Force single-core sequential engine
     -o, --output <FILE>    Specify destination output file (defaults to stdout if piped)
     -b, --bench            Benchmark compression and decompression throughput
     -v, --version          Print version and CPU SIMD hardware capabilities
@@ -59,6 +60,7 @@ fn main() -> io::Result<()> {
     let mut fast = false;
     let mut turbo = false;
     let mut max = false;
+    let mut ultra = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -75,9 +77,10 @@ fn main() -> io::Result<()> {
             "-1" | "--fast" => fast = true,
             "-t" | "--turbo" => turbo = true,
             "-9" | "--max" => max = true,
+            "-19" | "--ultra" => ultra = true,
             "-d" | "--decompress" => mode_compress = Some(false),
             "-m" | "--multi-core" => multi_core = true,
-            "-1" | "--single-core" => multi_core = false,
+            "-s" | "--single-core" => multi_core = false,
             "-b" | "--bench" => benchmark_mode = true,
             "-o" | "--output" => {
                 if i + 1 < args.len() {
@@ -137,6 +140,8 @@ fn main() -> io::Result<()> {
         let mut out = Vec::with_capacity(input_data.len() / 2 + 1024);
         let mc = multi_core && input_data.len() > glyd::format::MAX_BLOCK_SIZE;
         let level: fn(&[u8], &mut Vec<u8>) = match (mc, fast, turbo, max) {
+            (true, _, _, _) if ultra => glyd::compress_parallel_into_ultra,
+            (false, _, _, _) if ultra => glyd::compress_into_ultra,
             (true, _, _, true) => glyd::compress_parallel_into_max,
             (false, _, _, true) => glyd::compress_into_max,
             (true, true, _, _) => glyd::compress_parallel_into_fast,

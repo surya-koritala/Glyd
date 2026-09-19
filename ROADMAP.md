@@ -6,48 +6,62 @@ was not reproduced.
 
 ## Where the levels stand (Silesia, one core, Apple M1 Max)
 
-| Level | Ratio | Compress GB/s | Decompress GB/s | Reference (same run) |
+| Level | Ratio | Compress MB/s | Decompress MB/s | Reference (same run) |
 | :--- | ---: | ---: | ---: | :--- |
-| turbo | 1.88 | 0.28 | 9.2 | liblz4 2.10 / 0.66 / 4.4 |
-| default | 2.19 | 0.34 | 6.9 | liblz4 |
-| max | 3.22 | 0.30 | 1.86 | zstd -3 3.20 / 0.33 / 1.44 |
+| turbo | 1.88 | 280 | 9,200 | liblz4 2.10 / 660 / 4,400 |
+| default | 2.19 | 340 | 6,900 | liblz4 |
+| max | 3.22 | 300 | 1,860 | zstd -3 3.20 / 330 / 1,440 |
+| ultra | 3.80 | 4.8 | 2,190 | zstd -16 3.83 / 8.0 / 1,780; zstd -19 4.01 / 4.0 / 1,640 |
 
 Measured floors that bound further tuning of these levels are recorded in
-`CHANGELOG-BENCH.md` ("where the floor is", "the ceiling", "decoder on the
-real parse"): the v6 copy loop and the v7 pass-1 walk are at their
-instruction floors, the parse probe loop is at liblz4's efficiency, and
-the entropy coders are within 20% of their symbol-rate floors.
+`CHANGELOG-BENCH.md` and `docs/design/ultra-parse.md`: the v6 copy loop
+and the v7 pass-1 walk are at their instruction floors, the entropy coders
+within 20% of their symbol-rate floors, and the ultra parse's finder depth
+and cutoffs are past their knees.
 
 ## Next: move the needle, not the decimals
 
-1. **x86 parity for the max level.** The v7 decoder is NEON with a scalar
-   fallback; the AVX2 port is mechanical and required before the x86
-   numbers in `benchmarks/` mean anything.
-   Gate: c7i decode of `--max` >= 1.25x zstd -3 in the same run.
+1. **A larger window (format v8).** zstd -19 gains 2.5% from its 8 MB
+   window over 2 MB; ours is a format limit (21 offset bits, and the
+   decoder's one-load sequence walk holds 57 bits: 18 + 18 + 21 fits a
+   4 MB window, 8 MB needs a second load or shorter length fields). With
+   it, the per-block overhead measured at 1.45% (sub-stream size tables
+   and padding, entropy tables) comes down too: shared padding, compact
+   tables. Gate: `--ultra` ratio >= zstd -19 at its default window
+   (4.01) on Silesia, decode unchanged, every v7 file still decoded.
 
-2. **Optimal parsing (`--ultra`).** The decoder does not change. A
-   binary-tree match finder and a backward cost-model parse over the
-   coder's actual costs, the way zstd's high levels win their ratio.
-   Gate: Silesia ratio >= 3.55 (+11% over zstd -3) at >= 0.08 GB/s
-   compression, decode unchanged. This is the "write once, read many"
-   proposition: fewer bytes stored and moved than zstd's default, faster
-   reads, slower writes.
+2. **x86-64 parity for the max level's decoder.** 1.03× zstd -3 on
+   Sapphire Rapids against 1.3× on ARM; the remaining cost is instruction
+   count in the 8-stream loops (~150 per sequence; ARM does it in two
+   thirds). Hand-scheduled BMI2 loops for the tANS batch and the walk.
+   Gate: >= 1.2× zstd -3 in the published run.
 
-3. **Modeling the decoder can afford.** Finer length buckets, literal
-   tables by context class, larger tANS tables. Each is worth fractions
-   of a percent; done after 2, measured one at a time.
+3. **Compression speed of `--max`.** 0.9× zstd -3 on ARM, 0.7× on x86.
+   The finder probe loop is at liblz4's efficiency; what is left is the
+   entropy stage (histograms, table builds, two-pass literal decision).
+   Gate: >= zstd -3's compression speed in the same run.
 
-4. **Dictionaries, prepared.** A prepared-dictionary object (pre-seeded
+4. **Modeling the decoder can afford.** Finer length buckets are worth
+   0.6% of the sequence section; literal tables by context class and
+   larger tANS tables each fractions of a percent. After 1, one at a
+   time.
+
+5. **Dictionaries, prepared.** A prepared-dictionary object (pre-seeded
    tables, pre-built entropy tables through the existing reuse flags) for
    small objects, where most stored objects live.
 
-5. **Streaming for v7.** `GlydReader`/`GlydWriter` carry v6 blocks only.
+6. **Streaming for v7.** `GlydReader`/`GlydWriter` carry v6 blocks only.
 
 ## Known gaps, stated
 
-- `--max` compresses at 89-91% of zstd -3's speed.
-- `--max` decodes 1.3x zstd -3, not the 2x the design aimed at; the
-  remaining cost is per-sequence and inherent to the sequence format.
+- `--max` compresses at 89-91% of zstd -3's speed on ARM, 70% on x86.
+- `--max` decodes 1.3x zstd -3 on ARM and 1.03x on x86, not the 2x the
+  design aimed at; the remaining cost is per-sequence and inherent to
+  the sequence format.
+- `--ultra` is 2.7% less dense than zstd -19 in the same window and 5%
+  less at zstd's default window; it decodes 1.3x faster than zstd -19's
+  output.
 - Extended corpus: `--max` beats zstd -3 on 3 of 5 files; loses 0.6% on
   JSON event logs and ties at the incompressible floor on Parquet.
-- x86 vs ARM bit-identical output for `--max` is not yet verified.
+- x86 vs ARM bit-identical output for `--max` and `--ultra` is not yet
+  verified.

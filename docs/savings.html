@@ -51,6 +51,7 @@
     <div>
       <label for="level">Glyd level</label>
       <select id="level">
+        <option value="3.801" data-dec="2190">--ultra (3.80, 2,190 MB/s decode)</option>
         <option value="3.218" data-dec="1860">--max (3.22, 1,860 MB/s decode)</option>
         <option value="2.192" data-dec="6900">default (2.19, 6,900 MB/s decode)</option>
       </select>
@@ -65,7 +66,7 @@
       <tr><th>Bytes saved</th><td id="pct">—</td></tr>
       <tr><th>Decode CPU vs today's codec</th><td id="cpu">—</td></tr>
     </table>
-    <small>Formula: stored_TB × (1 − old_ratio / glyd_ratio) × price × 12. Decode speeds (MB/s, one core, same run): Snappy 1,495 · LZ4 4,108 · zstd -1 1,493 · zstd -3 1,361–1,440 · Glyd --max 1,860 · Glyd default 6,900. Every 1% fewer bytes across 100 EB of object storage is about $250 million a year at list price.</small>
+    <small>Formula: stored_TB × (1 − old_ratio / glyd_ratio) × price × 12. Decode speeds (MB/s, one core, same run): Snappy 1,495 · LZ4 4,108 · zstd -1 1,493 · zstd -3 1,361–1,440 · Glyd --ultra 2,190 · Glyd --max 1,860 · Glyd default 6,900. Every 1% fewer bytes across 100 EB of object storage is about $250 million a year at list price.</small>
   </div>
 </main>
 <script>

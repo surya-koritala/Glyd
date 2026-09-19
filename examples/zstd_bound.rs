@@ -25,7 +25,25 @@ fn main() {
                 out_total += enc.finish().unwrap().len();
             }
             let s = t.elapsed().as_secs_f64();
-            println!("zstd -{lvl:<2} wlog {wlog}: ratio {:.3}  {:6.1} MB/s", total as f64 / out_total as f64, total as f64 / s / 1e6);
+            // Decode speed of that output, one core.
+            let mut outs = Vec::new();
+            for d in &data {
+                let mut enc = zstd::Encoder::new(Vec::new(), lvl).unwrap();
+                enc.set_parameter(zstd::zstd_safe::CParameter::WindowLog(wlog)).unwrap();
+                enc.write_all(d).unwrap();
+                outs.push(enc.finish().unwrap());
+            }
+            let mut dsecs = 0f64;
+            for (d, c) in data.iter().zip(outs.iter()) {
+                let mut dst = vec![0u8; d.len()];
+                let mut dec = zstd::bulk::Decompressor::new().unwrap();
+                dec.set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(27)).unwrap();
+                let t = Instant::now();
+                let mut k = 0;
+                while t.elapsed().as_secs_f64() < 0.3 { dec.decompress_to_buffer(c, &mut dst).unwrap(); k += 1; }
+                dsecs += t.elapsed().as_secs_f64() / k as f64;
+            }
+            println!("zstd -{lvl:<2} wlog {wlog}: ratio {:.3}  comp {:6.1} MB/s  decode {:6.0} MB/s", total as f64 / out_total as f64, total as f64 / s / 1e6, total as f64 / dsecs / 1e6);
         }
     }
 }

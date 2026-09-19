@@ -6,6 +6,31 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.2.0 — 2026-09-19
+
+### Levels
+- **`--ultra` / `-19`** (format v7, same decoder): optimal parse on a
+  binary-tree match finder, every position priced in the coder's own
+  bits ([design](docs/design/ultra-parse.md)). Silesia ratio 3.80 vs
+  `--max`'s 3.22; zstd -16 3.83, zstd -19 4.01 (3.91 inside Glyd's 2 MB
+  window). Compresses at 4.8 MB/s; its output decodes at 2,190 MB/s,
+  1.3× zstd -19's. `compress_into_ultra`, `compress_parallel_into_ultra`,
+  `compress_with_dict_ultra`; C `glyd_compress_ultra`,
+  `glyd_compress_ultra_parallel`.
+
+### Platforms
+- x86-64 `--max` decoder: an AVX2+BMI2 entry point and loop shapes for
+  16 registers (stream-major entropy batches, the NEON copy structure,
+  split walk tables). Sapphire Rapids decode 858 → 1,300 MB/s in the
+  published run (zstd -3: 1,260 MB/s); default builds gain the same.
+- Cross-platform benchmarks re-run; `ultra_bench` added to the script.
+
+### CLI
+- `-19` / `--ultra`; `--single-core` is now `-s` (`-1` was `--fast`).
+
+### Fixed
+- Nothing user-visible; see CHANGELOG-BENCH.md for the measurement trail.
+
 ## v0.1.0 — 2026-09-19
 
 First public release.

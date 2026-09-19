@@ -25,11 +25,11 @@ const HASH4_BITS: u32 = 20;
 const HASH3_BITS: u32 = 16;
 const TREE_MASK: usize = MAX_WINDOW as usize - 1;
 /// Tree nodes compared per position, searching or inserting.
-fn depth() -> usize { std::env::var("ULTRA_DEPTH").ok().and_then(|v| v.parse().ok()).unwrap_or(128) }
+const DEPTH: usize = 64;
 const NONE: u32 = u32::MAX;
 /// A match this long is taken whole: no other candidate at its position
 /// is priced and no position inside it is searched.
-const SUFFICIENT_LEN: usize = 128;
+const SUFFICIENT_LEN: usize = 256;
 /// Price unit: 1/256 bit.
 const BIT: u32 = 256;
 
@@ -110,13 +110,14 @@ impl Prices {
     }
 }
 
-/// -log2(p) of each symbol in 1/256 bit, add-one smoothed.
+/// -log2(p) of each symbol in 1/256 bit, add-one smoothed, at least one
+/// bit: no prefix code spends less on a symbol.
 fn costs<const N: usize>(hist: &[u32; N]) -> [u32; N] {
     let total: f64 = hist.iter().map(|&c| c as f64 + 1.0).sum();
     let lt = total.log2();
     let mut out = [0u32; N];
     for (o, &c) in out.iter_mut().zip(hist.iter()) {
-        *o = ((lt - (c as f64 + 1.0).log2()) * BIT as f64).round() as u32;
+        *o = (((lt - (c as f64 + 1.0).log2()) * BIT as f64).round() as u32).max(BIT);
     }
     out
 }
@@ -248,8 +249,10 @@ impl UltraState {
         let end = end.min(input.len().saturating_sub(3));
         while self.inserted < end {
             let pos = self.inserted;
-            self.walk(input, pos, pos, log, false);
-            self.inserted = pos + 1;
+            let (_, reach) = self.walk(input, pos, pos, log, false);
+            // Positions covered by a match found here have their twins in
+            // the tree already: skip to its last 8 bytes.
+            self.inserted = pos + reach.saturating_sub(pos + 8).max(1);
         }
     }
 
@@ -276,7 +279,9 @@ impl UltraState {
     /// clipped to `limit`). Suffixes are ordered over the whole input so
     /// the trees stay consistent across blocks. Positions older than the
     /// window are not followed: their slots belong to newer positions.
-    fn walk(&mut self, input: &[u8], pos: usize, limit: usize, log: bool, collect: bool) -> usize {
+    /// Returns the longest usable length and the furthest end of any
+    /// match seen (`insert_upto` skips the positions under it).
+    fn walk(&mut self, input: &[u8], pos: usize, limit: usize, log: bool, collect: bool) -> (usize, usize) {
         let src = input.as_ptr();
         let cur = unsafe { src.add(pos) };
         let full = input.len() - pos;
@@ -291,7 +296,8 @@ impl UltraState {
         let (mut sp, mut lp) = (2 * (pos & TREE_MASK), 2 * (pos & TREE_MASK) + 1);
         let (mut cls, mut cll) = (0usize, 0usize);
         let mut best = if collect { self.cands.last().map_or(MIN_MATCH as usize - 1, |c| c.0 as usize) } else { 0 };
-        let mut n = depth();
+        let mut reach = pos;
+        let mut n = DEPTH;
         while n > 0 && m != NONE && (m as usize) < pos && (m as usize) >= low {
             n -= 1;
             let mi = m as usize;
@@ -299,6 +305,7 @@ impl UltraState {
             let c = unsafe { src.add(mi) };
             let mut ml = cls.min(cll);
             ml += unsafe { ScalarMatch::prefix(cur.add(ml), c.add(ml), full - ml) };
+            reach = reach.max(mi + ml);
             debug_assert_eq!(unsafe { ScalarMatch::prefix(cur, c, full) }, ml, "tree order broken at {pos}, node {mi}");
             if collect {
                 let usable = ml.min(limit - pos);
@@ -320,7 +327,7 @@ impl UltraState {
                 if mi <= low {
                     // At the window's edge: its children are not followed.
                     self.tree[lp] = NONE;
-                    return best;
+                    return (best, reach);
                 }
                 sp = node + 1;
                 m = self.tree[node + 1];
@@ -329,7 +336,7 @@ impl UltraState {
                 cll = ml;
                 if mi <= low {
                     self.tree[sp] = NONE;
-                    return best;
+                    return (best, reach);
                 }
                 lp = node;
                 m = self.tree[node];
@@ -339,7 +346,7 @@ impl UltraState {
         // tree: both open slots are closed.
         self.tree[sp] = NONE;
         self.tree[lp] = NONE;
-        best
+        (best, reach)
     }
 
     /// Candidates at `pos`, into `cands` in the order found: the reps
@@ -381,7 +388,7 @@ impl UltraState {
         if best >= SUFFICIENT_LEN {
             self.walk(input, pos, limit, log, false);
         } else {
-            best = best.max(self.walk(input, pos, limit, log, true));
+            best = best.max(self.walk(input, pos, limit, log, true).0);
         }
         self.inserted = self.inserted.max(pos + 1);
         best
@@ -397,13 +404,6 @@ pub fn find_sequences_ultra(input: &[u8], block_start: usize, block_len: usize, 
     match st.stats.take() {
         Some(mut s) => {
             let prices = Prices::of(&s, &[0; 256]);
-            if std::env::var("DUMP_PRICES").is_ok() {
-                let lit_avg = block.iter().map(|&b| prices.lit[b as usize] as f64).sum::<f64>() / block.len() as f64 / 256.0;
-                eprintln!("block at {block_start}: lit avg {lit_avg:.2} bits; ll(4) {:.2} ll(0) {:.2} ll(500) {:.2}; ml(4) {:.2} ml(5) {:.2} ml(8) {:.2}; off(1M) {:.2} off(1000) {:.2} off(rep0) {:.2}",
-                    prices.ll(4) as f64 / 256.0, prices.ll(0) as f64 / 256.0, prices.ll(500) as f64 / 256.0,
-                    prices.ml(4) as f64 / 256.0, prices.ml(5) as f64 / 256.0, prices.ml(8) as f64 / 256.0,
-                    prices.off(1 << 20, &[1, 4, 8]) as f64 / 256.0, prices.off(1000, &[1, 4, 8]) as f64 / 256.0, prices.off(1, &[1, 4, 8]) as f64 / 256.0);
-            }
             parse(input, block_start, block_len, st, reps, &prices, false, seqs, literals);
             s.decay_into(&Stats::of(seqs, literals, reps));
             st.stats = Some(s);

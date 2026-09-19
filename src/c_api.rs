@@ -98,6 +98,63 @@ pub unsafe extern "C" fn glyd_compress_max(
     out_vec.len() as isize
 }
 
+/// Compress sequentially using the ultra level (format v7 on the optimal
+/// parse: denser than the max level, much slower to produce, same decoder).
+///
+/// Returns: Number of compressed bytes written to `dst`, or negative on error:
+///   -1: Destination buffer too small
+///   -2: Null pointer passed
+#[no_mangle]
+pub unsafe extern "C" fn glyd_compress_ultra(
+    src: *const u8,
+    src_len: usize,
+    dst: *mut u8,
+    dst_capacity: usize,
+) -> isize {
+    if src.is_null() || dst.is_null() {
+        return -2;
+    }
+
+    let input = slice::from_raw_parts(src, src_len);
+    let mut out_vec = Vec::with_capacity(dst_capacity);
+    crate::compress_into_ultra(input, &mut out_vec);
+
+    if out_vec.len() > dst_capacity {
+        return -1;
+    }
+
+    std::ptr::copy_nonoverlapping(out_vec.as_ptr(), dst, out_vec.len());
+    out_vec.len() as isize
+}
+
+/// Compress in parallel across all CPU cores using the ultra level.
+///
+/// Returns: Number of compressed bytes written to `dst`, or negative on error:
+///   -1: Destination buffer too small
+///   -2: Null pointer passed
+#[no_mangle]
+pub unsafe extern "C" fn glyd_compress_ultra_parallel(
+    src: *const u8,
+    src_len: usize,
+    dst: *mut u8,
+    dst_capacity: usize,
+) -> isize {
+    if src.is_null() || dst.is_null() {
+        return -2;
+    }
+
+    let input = slice::from_raw_parts(src, src_len);
+    let mut out_vec = Vec::with_capacity(dst_capacity);
+    crate::compress_parallel_into_ultra(input, &mut out_vec);
+
+    if out_vec.len() > dst_capacity {
+        return -1;
+    }
+
+    std::ptr::copy_nonoverlapping(out_vec.as_ptr(), dst, out_vec.len());
+    out_vec.len() as isize
+}
+
 /// Compress in parallel across all CPU cores using the max level (format v7,
 /// entropy coded).
 ///

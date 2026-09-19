@@ -457,6 +457,20 @@ pub fn compress_parallel_into_max(input: &[u8], output: &mut Vec<u8>) {
     compress_parallel_with(input, output, compress_into_max)
 }
 
+/// Ultra level, all cores: each 256 KB chunk parsed on its own, so the
+/// window does not reach across chunks (the sequential level's does).
+pub fn compress_parallel_into_ultra(input: &[u8], output: &mut Vec<u8>) {
+    compress_parallel_with(input, output, compress_into_ultra)
+}
+
+/// Ultra level with a dictionary; `decompress_with_dict` reads it.
+pub fn compress_with_dict_ultra(dict: &[u8], input: &[u8], output: &mut Vec<u8>) {
+    let mut joined = Vec::with_capacity(dict.len() + input.len());
+    joined.extend_from_slice(dict);
+    joined.extend_from_slice(input);
+    compress_max_from(&joined, dict.len(), dict_id(dict), Parse::Ultra, output);
+}
+
 fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>)) {
     if input.len() <= PARALLEL_CHUNK_SIZE {
         level(input, output);

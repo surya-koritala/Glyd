@@ -1,9 +1,10 @@
 # Benchmarks
 
 Per-machine results produced by `scripts/bench_aws.sh` (one directory per
-instance type: `machine.txt`, `quick3.txt`, `v7_bench.txt`,
+instance type: `machine.txt`, `quick3.txt`, `v7_bench.txt`, `ultra_bench.txt`,
 `field_survey.txt`, `multicore.txt`), plus the local Apple M1 Max runs
-quoted in the top-level README. Every file is the harness's own output;
+quoted in the top-level README (`m1-max/`: the ultra-level run; the other
+M1 numbers are in `CHANGELOG-BENCH.md`). Every file is the harness's own output;
 every Glyd number is paired with the reference library measured in the
 same process.
 
