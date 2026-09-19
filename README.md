@@ -46,18 +46,20 @@ independently entropy-coded streams: **literals** (Huffman, 8 interleaved
 bitstreams, max code length 11, table sent as packed 4-bit lengths or a
 "reuse previous block" flag), **literal lengths** and **match lengths**
 (tANS over a small code alphabet, 0-15 direct plus log2-bucket codes above
-that), **offsets** (tANS; codes 0-2 are repeat offsets `rep0`/`rep1`/`rep2`
-with zstd-style semantics, 3+ are log2 buckets, up to 21 bits for a 2 MB
-window), and **extra bits** (one raw LSB-first bitstream, also 8-way
+that), **offsets** (tANS; codes 0-2 are the three most-recent-offset codes
+(move-to-front), 3+ are log2 buckets, up to 21 bits for a 2 MB window), and **extra bits** (one raw LSB-first bitstream, also 8-way
 interleaved). Every stream falls back to raw storage per block when coding
 does not pay for itself. The decoder runs three passes over thread-local
 scratch (~1.5 MB, allocated once per thread, never per call): an entropy
 pass that unpacks streams 2-5 into flat sequence arrays (repeat-offset
 resolution happens here), a literal pass that Huffman-decodes the block's
-literals, and a copy pass that walks the arrays and literal buffer through
-the existing NEON/AVX2 copy loop -- the same three-register decode
-discipline as format v6, just fed by entropy-coded streams instead of raw
-bytes.
+literals, and a copy pass of its own that walks the arrays and literal
+buffer (NEON on aarch64, a scalar twin elsewhere; there is no AVX2 v7
+path) -- the same three-register decode discipline as format v6, just fed
+by entropy-coded streams instead of raw bytes. `--max` output is
+deterministic (a function of the input and the dictionary alone), but
+bit-identical output between x86 and ARM has not been verified on this
+branch: no x86 machine was available.
 
 **Measured (Silesia, same run, M1 Max, one core):**
 
@@ -194,7 +196,7 @@ scales with tokens per byte (min 8: 8.2 GB/s at 2.055; 12: 10.5 at 1.75).
 
 `--max` is not measured against liblz4 above -- an entropy-coded format
 at LZ4-class ratios makes no sense; its competitor is zstd -3. See the
-"Format v7" section below.
+"Format v7" section above.
 
 ### Field survey: does anything dominate liblz4? (`examples/field_survey.rs`, Silesia, M1 Max, one core)
 
@@ -340,6 +342,9 @@ int64_t decomp_bytes = alatirok_decompress_parallel(compressed, comp_bytes, rest
 ```
 
 ### 3. Standard Rust Streaming I/O (`std::io::Read` / `std::io::Write`)
+`AlatirokWriter` and `AlatirokReader` carry only format v6 blocks: a
+`--max` / `-9` (format v7) file cannot be read through the streaming API
+yet; use `decompress` / `decompress_parallel` for those.
 ```rust
 use std::fs::File;
 use std::io::{copy, BufReader, BufWriter};
