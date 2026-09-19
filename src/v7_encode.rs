@@ -24,6 +24,7 @@ pub struct Sequence {
 
 /// The previous block's entropy tables, carried forward so the next block
 /// can reuse them instead of writing a fresh one.
+#[derive(Clone)]
 pub struct Tables {
     pub lit_lengths: Option<[u8; 256]>,
     pub ll: Option<Vec<u16>>,
@@ -71,15 +72,16 @@ pub fn payload_layout(payload: &[u8]) -> Option<Layout> {
 /// bounds; the literal path applies the same rule, see `lit_reuse`). A
 /// table can be reused when every present symbol has a count, whatever
 /// the two tables' supports are otherwise: the decision is by cost.
-fn table_cost(hist: &[u32], counts: &[u16]) -> Option<f64> {
+fn table_cost(hist: &[u32], counts: &[u16]) -> Option<u64> {
     debug_assert_eq!(hist.len(), counts.len());
-    let mut bits = 0.0;
+    // In 1/65536 bit, by integer arithmetic: the same decision everywhere.
+    let mut bits = 0u64;
     for (&h, &c) in hist.iter().zip(counts) {
         if h != 0 {
             if c == 0 {
                 return None;
             }
-            bits += h as f64 * -((c as f64) / tans::L as f64).log2();
+            bits += h as u64 * crate::fixlog::cost_q16(c as u64, tans::L as u64);
         }
     }
     Some(bits)
@@ -110,7 +112,7 @@ fn encode_codes(codes: &[u8], hist: &[u32], counts: &[u16], reusing: bool, chunk
     let n_symbols = counts.len();
     let bits = table_cost(&hist[..n_symbols], counts).expect("table covers the data");
     let table_bytes = if reusing { 0 } else { tans_table_bytes(counts) };
-    let coded_estimate = (bits / 8.0) as usize + table_bytes + SIZES_BYTES + PAD;
+    let coded_estimate = (bits >> 19) as usize + table_bytes + SIZES_BYTES + PAD;
     if coded_estimate + codes.len() / 50 >= codes.len() {
         out.extend_from_slice(codes);
         return false;
@@ -135,7 +137,7 @@ fn tans_table_bytes(counts: &[u16]) -> usize {
     1 + tans_table_bits(counts).div_ceil(8)
 }
 
-fn write_tans_table(counts: &[u16], out: &mut Vec<u8>) {
+pub(crate) fn write_tans_table(counts: &[u16], out: &mut Vec<u8>) {
     out.push(counts.len() as u8);
     let start = out.len();
     out.resize(start + tans_table_bits(counts).div_ceil(8), 0);
@@ -348,14 +350,14 @@ pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Table
     let mut seq_reuse = match (&prev.ll, &prev.ml, &prev.off) {
         (Some(a), Some(b), Some(c)) => {
             let streams = [(&ll_hist[..LL_SYMBOLS], &ll_fresh, a), (&ml_hist[..ML_SYMBOLS], &ml_fresh, b), (&off_hist[..OFF_SYMBOLS], &off_fresh, c)];
-            let (mut prev_bits, mut fresh_bits) = (0.0, 0.0);
+            let (mut prev_bits, mut fresh_bits) = (0u64, 0u64);
             let mut ok = true;
             for (hist, fresh, old) in streams {
                 match table_cost(hist, old) {
                     Some(bits) => prev_bits += bits,
                     None => ok = false,
                 }
-                fresh_bits += table_cost(hist, fresh).expect("fresh table covers the data") + 8.0 * (1 + 2 * fresh.len()) as f64;
+                fresh_bits += table_cost(hist, fresh).expect("fresh table covers the data") + (((8 * tans_table_bytes(fresh)) as u64) << 16);
             }
             ok && prev_bits <= fresh_bits
         }

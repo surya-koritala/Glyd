@@ -104,6 +104,7 @@ fn unpack_sym(e: u64) -> u8 {
     (e >> 8) as u8
 }
 
+#[derive(Clone)]
 pub struct DecodeTable {
     entries: [u64; L],
 }

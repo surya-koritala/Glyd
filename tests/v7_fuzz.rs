@@ -76,7 +76,8 @@ fn v7_mutation_fuzz() {
 fn v7_dictionary_mutation_fuzz() {
     use glyd::{compress_with_dict, decompress_with_dict};
     let text = &seed_inputs()[4];
-    let (dict, input) = (&text[..50_000], &text[100_000..]);
+    let (dict, input) = (glyd::Dict::from_content(&text[..50_000], &[]), &text[100_000..]);
+    let dict = &dict;
     let mut c = Vec::new();
     compress_with_dict(dict, input, &mut c);
     assert_eq!(decompress_with_dict(dict, &c).unwrap(), input);

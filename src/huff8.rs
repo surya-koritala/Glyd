@@ -41,6 +41,7 @@ pub fn coded_size(hist: &[u64; 256], lengths: &[u8; 256]) -> usize {
 }
 
 /// Packed decode table: entry = sym | (len << 8).
+#[derive(Clone)]
 pub struct Table {
     entries: Vec<u16>,
 }

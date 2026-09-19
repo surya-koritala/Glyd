@@ -71,6 +71,7 @@ pub fn with_scratch<T>(f: impl FnOnce(&mut Scratch) -> T) -> T {
 /// The previous block's decode tables, kept exactly as the encoder keeps
 /// its own: the literal table survives raw-literal blocks, the three
 /// sequence tables survive only blocks where all three streams are coded.
+#[derive(Clone)]
 pub struct DecTables {
     pub lit: Option<huff8::Table>,
     pub ll: Option<tans::DecodeTable>,
@@ -112,6 +113,14 @@ fn substreams(sec: &[u8], v8: bool) -> Result<[Stream; 8]> {
         return Err(corrupt("v7: section has trailing bytes"));
     }
     Ok(out)
+}
+
+/// A v8 tANS table from the front of `bytes`: its counts and the bytes
+/// it took (dictionaries carry tables the same way blocks do).
+pub(crate) fn read_tans_table(bytes: &[u8], n_symbols: usize) -> Option<(Vec<u16>, usize)> {
+    let mut counts = [0u16; tans::MAX_SYMBOLS];
+    let used = tans_counts(bytes, true, n_symbols, &mut counts).ok()?;
+    Some((counts[..n_symbols].to_vec(), used))
 }
 
 /// A tANS table's counts as the block carries them: `ns`, then in v8

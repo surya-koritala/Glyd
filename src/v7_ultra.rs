@@ -125,13 +125,13 @@ impl Prices {
 }
 
 /// -log2(p) of each symbol in 1/256 bit, add-one smoothed, at least one
-/// bit: no prefix code spends less on a symbol.
+/// bit: no prefix code spends less on a symbol. Integer arithmetic
+/// (`fixlog`), so the parse is the same on every platform.
 fn costs<const N: usize>(hist: &[u32; N]) -> [u32; N] {
-    let total: f64 = hist.iter().map(|&c| c as f64 + 1.0).sum();
-    let lt = total.log2();
+    let total: u64 = hist.iter().map(|&c| c as u64 + 1).sum();
     let mut out = [0u32; N];
     for (o, &c) in out.iter_mut().zip(hist.iter()) {
-        *o = (((lt - (c as f64 + 1.0).log2()) * BIT as f64).round() as u32).max(BIT);
+        *o = (((crate::fixlog::cost_q16(c as u64 + 1, total) + 128) >> 8) as u32).max(BIT);
     }
     out
 }
@@ -546,19 +546,16 @@ fn parse(input: &[u8], block_start: usize, block_len: usize, st: &mut UltraState
     st.insert_upto(input, block_end, log);
 }
 
-/// Order-0 cost in bits of coding `hist` with its own table.
-fn entropy_bits<const N: usize>(hist: &[u32; N]) -> f64 {
-    let total: u32 = hist.iter().sum();
-    if total == 0 {
-        return 0.0;
-    }
-    let t = total as f64;
-    hist.iter().filter(|&&c| c > 0).map(|&c| c as f64 * (t / c as f64).log2()).sum()
+/// Order-0 cost of coding `hist` with its own table, in 1/65536 bit.
+fn entropy_bits<const N: usize>(hist: &[u32; N]) -> u64 {
+    let total: u64 = hist.iter().map(|&c| c as u64).sum();
+    hist.iter().filter(|&&c| c > 0).map(|&c| c as u64 * crate::fixlog::cost_q16(c as u64, total)).sum()
 }
 
-/// Bytes a block spends beyond its symbols: framing (header, sub-header,
-/// section size tables and paddings) and the entropy tables it writes.
-const BLOCK_OVERHEAD_BITS: f64 = 8.0 * (32.0 + 26.0 + 5.0 * 29.0 + 90.0 + 90.0);
+/// What a block spends beyond its symbols, in 1/65536 bit: framing
+/// (header, sub-header, section size tables and paddings) and the
+/// entropy tables it writes.
+const BLOCK_OVERHEAD_BITS: u64 = 8 * (32 + 26 + 5 * 29 + 90 + 90) << 16;
 /// Candidate cuts are tried every this many sequences.
 const SPLIT_STEP: usize = 256;
 /// A part is never shorter than this much output: every block costs the
@@ -596,7 +593,7 @@ pub fn split_points(seqs: &[Sequence], literals: &[u8]) -> Vec<usize> {
         }
         let lit_range = |a: usize, b: usize| lit_starts[a]..if b < seqs.len() { lit_starts[b] } else { literals.len() };
         let whole = cost(&seqs[from..to], &literals[lit_range(from, to)]);
-        let mut best = (whole - 4.0 * BLOCK_OVERHEAD_BITS, 0usize);
+        let mut best = (whole.saturating_sub(4 * BLOCK_OVERHEAD_BITS), 0usize);
         // Prefix statistics grow as the cut moves; the suffix's are the
         // whole's minus the prefix's.
         let mut pre = Stats::none();
@@ -667,10 +664,10 @@ fn sub_stats(a: &Stats, b: &Stats) -> Stats {
 
 /// Order-0 coding cost of the codes in `s` (extra bits are the same
 /// however the block is cut and are left out).
-fn stats_cost(s: &Stats) -> f64 {
+fn stats_cost(s: &Stats) -> u64 {
     entropy_bits(&s.lit) + entropy_bits(&s.ll) + entropy_bits(&s.ml) + entropy_bits(&s.off)
 }
 
-fn cost(seqs: &[Sequence], literals: &[u8]) -> f64 {
+fn cost(seqs: &[Sequence], literals: &[u8]) -> u64 {
     stats_cost(&stats_of(seqs, literals))
 }

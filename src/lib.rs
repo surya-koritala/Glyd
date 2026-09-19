@@ -22,6 +22,9 @@ pub mod v7_format;
 pub mod v7_encode;
 pub mod v7_decode;
 pub mod v7_ultra;
+pub mod fixlog;
+pub mod dict;
+pub use dict::Dict;
 
 pub use streaming::{GlydReader, GlydWriter};
 pub use format::compute_checksum;
@@ -350,14 +353,14 @@ pub fn compress_parallel_into_fast(input: &[u8], output: &mut Vec<u8>) {
 /// Blocks the coder cannot shrink are stored raw (as v6 raw blocks,
 /// which every decoder reads).
 pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
-    compress_max_from(input, 0, 0, Parse::Dfast, output)
+    compress_max_from(input, 0, 0, Parse::Dfast, None, output)
 }
 
 /// Ultra level: format v7 on the optimal parse (`v7_ultra`): the same
 /// decoder and window, denser output, an order of magnitude slower to
 /// produce.
 pub fn compress_into_ultra(input: &[u8], output: &mut Vec<u8>) {
-    compress_max_from(input, 0, 0, Parse::Ultra, output)
+    compress_max_from(input, 0, 0, Parse::Ultra, None, output)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -373,22 +376,24 @@ pub fn dict_id(dict: &[u8]) -> u32 {
     if id == 0 { 1 } else { id }
 }
 
-/// Max level with a dictionary: the dictionary is the window's first
-/// `dict.len()` bytes, so matches may reach into it (from the first block
-/// on, which is what helps small inputs); every v7 block carries
-/// `dict_id(dict)` and `decompress_with_dict` must be given the same
-/// bytes. Blocks stored raw carry no id. Sequential decode only.
-pub fn compress_with_dict(dict: &[u8], input: &[u8], output: &mut Vec<u8>) {
-    let mut joined = Vec::with_capacity(dict.len() + input.len());
-    joined.extend_from_slice(dict);
+/// Max level with a prepared dictionary (`Dict`): its content is the
+/// window's first bytes, so matches may reach into it from the first
+/// block on, and its entropy tables are the "previous block's" for the
+/// first block, so an object that reuses them writes none. Every block
+/// carries the dictionary's id and `decompress_with_dict` must be given
+/// the same dictionary. Blocks stored raw carry no id. Sequential decode
+/// only.
+pub fn compress_with_dict(dict: &Dict, input: &[u8], output: &mut Vec<u8>) {
+    let mut joined = Vec::with_capacity(dict.content().len() + input.len());
+    joined.extend_from_slice(dict.content());
     joined.extend_from_slice(input);
-    compress_max_from(&joined, dict.len(), dict_id(dict), Parse::Dfast, output);
+    compress_max_from(&joined, dict.content().len(), dict.id(), Parse::Dfast, Some(dict), output);
 }
 
 /// The max level over `full[start..]`, with `full[..start]` (a dictionary
 /// named `dict_id`, or nothing) as history: indexed before the first
 /// block, so the parse's window reaches into it.
-fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, output: &mut Vec<u8>) {
+fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict: Option<&Dict>, output: &mut Vec<u8>) {
     thread_local! {
         /// The parse's 2 MB of tables, allocated once per thread and
         /// cleared at the start of every call (the parallel path makes
@@ -400,7 +405,8 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, outp
         static ULTRA: RefCell<Option<Box<v7_ultra::UltraState>>> = RefCell::new(None);
     }
     let (mut seqs, mut literals) = (Vec::new(), Vec::new());
-    let mut prev = v7_encode::Tables::none();
+    // A prepared dictionary's tables stand as the previous block's.
+    let mut prev = dict.map_or_else(v7_encode::Tables::none, |d| d.tables());
     let mut scratch = v7_encode::EncScratch::new();
     let mut payload = Vec::new();
     match parse {
@@ -416,7 +422,9 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, outp
     let mut emit = |chunk: &[u8], seqs: &[v7_encode::Sequence], literals: &[u8], first: bool, prev: &mut v7_encode::Tables, scratch: &mut v7_encode::EncScratch, payload: &mut Vec<u8>, output: &mut Vec<u8>| {
         payload.clear();
         v7_encode::encode_block_with(seqs, literals, dict_id, prev, scratch, payload);
-        let chain_flag = if first { FLAG_CHAIN_RESET } else { 0 };
+        // A dictionary stream's first block continues the dictionary's
+        // window and tables: no reset.
+        let chain_flag = if first && dict.is_none() { FLAG_CHAIN_RESET } else { 0 };
         if payload.len() + HEADER_SIZE >= chunk.len() {
             *prev = v7_encode::Tables::none();
             write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
@@ -451,7 +459,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, outp
                 // went; encode from those.
                 payload.clear();
                 v7_encode::encode_block_coded(&literals, dict_id, &mut prev, &mut scratch, &mut payload);
-                let chain_flag = if first { FLAG_CHAIN_RESET } else { 0 };
+                let chain_flag = if first && dict.is_none() { FLAG_CHAIN_RESET } else { 0 };
                 if payload.len() + HEADER_SIZE >= chunk_len {
                     prev = v7_encode::Tables::none();
                     write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
@@ -515,12 +523,12 @@ pub fn compress_parallel_into_ultra(input: &[u8], output: &mut Vec<u8>) {
     compress_parallel_with(input, output, compress_into_ultra, PARALLEL_UNIT_ULTRA)
 }
 
-/// Ultra level with a dictionary; `decompress_with_dict` reads it.
-pub fn compress_with_dict_ultra(dict: &[u8], input: &[u8], output: &mut Vec<u8>) {
-    let mut joined = Vec::with_capacity(dict.len() + input.len());
-    joined.extend_from_slice(dict);
+/// Ultra level with a prepared dictionary; `decompress_with_dict` reads it.
+pub fn compress_with_dict_ultra(dict: &Dict, input: &[u8], output: &mut Vec<u8>) {
+    let mut joined = Vec::with_capacity(dict.content().len() + input.len());
+    joined.extend_from_slice(dict.content());
     joined.extend_from_slice(input);
-    compress_max_from(&joined, dict.len(), dict_id(dict), Parse::Ultra, output);
+    compress_max_from(&joined, dict.content().len(), dict.id(), Parse::Ultra, Some(dict), output);
 }
 
 /// `level` over units of `unit` bytes on all cores, each unit a chain of
@@ -691,12 +699,16 @@ pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// Decompress a stream made by `compress_with_dict` with the same `dict`.
-pub fn decompress_with_dict(dict: &[u8], compressed: &[u8]) -> Result<Vec<u8>> {
+pub fn decompress_with_dict(dict: &Dict, compressed: &[u8]) -> Result<Vec<u8>> {
     let total = total_uncompressed_len(compressed)?;
-    let mut buf = vec![0u8; dict.len() + total + PADDING * 2];
-    buf[..dict.len()].copy_from_slice(dict);
-    let written = decompress_sequential_from(compressed, &mut buf, dict.len(), Some(dict_id(dict)), true)?;
-    buf.drain(..dict.len());
+    let content = dict.content();
+    let mut buf = vec![0u8; content.len() + total + PADDING * 2];
+    buf[..content.len()].copy_from_slice(content);
+    V7_TABLES.with_borrow_mut(|t| *t = dict.dec_tables());
+    let written = decompress_sequential_from(compressed, &mut buf, content.len(), Some(dict.id()), true);
+    V7_TABLES.with_borrow_mut(|t| *t = v7_decode::DecTables::none());
+    let written = written?;
+    buf.drain(..content.len());
     buf.truncate(written);
     Ok(buf)
 }
@@ -719,7 +731,11 @@ fn decompress_sequential(compressed: &[u8], dst: &mut [u8], verify: bool) -> Res
 /// the first block may match into. Every v7 block must name
 /// `expected_dict` (0: none). Returns the bytes written.
 fn decompress_sequential_from(compressed: &[u8], dst: &mut [u8], dst_offset0: usize, expected_dict: Option<u32>, verify: bool) -> Result<usize> {
-    V7_TABLES.with_borrow_mut(|t| *t = v7_decode::DecTables::none());
+    // Without a dictionary the tables start empty; with one, the caller
+    // installed its tables (which the first block may reuse).
+    if expected_dict.is_none() {
+        V7_TABLES.with_borrow_mut(|t| *t = v7_decode::DecTables::none());
+    }
     let mut cursor = 0usize;
     let mut dst_offset = dst_offset0;
     let buffer_start = dst.as_ptr();

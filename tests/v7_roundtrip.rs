@@ -532,7 +532,7 @@ fn v7_dictionary_helps_small_inputs_and_is_required() {
     use glyd::{compress_with_dict, decompress, decompress_parallel, decompress_with_dict};
     let mut x = 1u64;
     let fields: Vec<Vec<u8>> = (0..64).map(|i| { let r = rnd(&mut x); format!("\"field_{:02}\":\"{}-{:x}-value-of-field-{:02}\",", i, ["alpha", "beta", "gamma", "delta"][(r % 4) as usize], r >> 40, i).into_bytes() }).collect();
-    let dict: Vec<u8> = fields.concat();
+    let dict = glyd::Dict::from_content(&fields.concat(), &[]);
     let mut doc = b"{".to_vec();
     for i in 0..16 { doc.extend_from_slice(&fields[(i * 7) % 64]); doc.extend_from_slice(format!("\"n{}\":{},", i, rnd(&mut x) % 100_000).as_bytes()); }
     doc.push(b'}');
@@ -543,7 +543,11 @@ fn v7_dictionary_helps_small_inputs_and_is_required() {
     assert!(with.len() * 4 < plain.len() * 3, "dictionary must help: {} vs {}", with.len(), plain.len());
     assert_eq!(decompress_with_dict(&dict, &with).unwrap(), doc);
     assert_eq!(decompress(&with), Err(CodecError::CorruptedBitstream("dictionary id mismatch")));
-    assert_eq!(decompress_with_dict(b"wrong dictionary bytes", &with), Err(CodecError::CorruptedBitstream("dictionary id mismatch")));
+    assert_eq!(decompress_with_dict(&glyd::Dict::from_content(b"wrong dictionary bytes", &[]), &with), Err(CodecError::CorruptedBitstream("dictionary id mismatch")));
+    // The serialized form round-trips and names the same id.
+    let again = glyd::Dict::from_bytes(&dict.to_bytes()).unwrap();
+    assert_eq!(again.id(), dict.id());
+    assert_eq!(decompress_with_dict(&again, &with).unwrap(), doc);
     assert_eq!(decompress_parallel(&with), Err(CodecError::CorruptedBitstream("dictionary streams are sequential-only")));
     // Several blocks, matches into the dictionary and across blocks; an
     // incompressible doc is stored raw (no id) and still round-trips.

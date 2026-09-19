@@ -102,7 +102,7 @@ fn ultra_parallel_and_dictionary() {
     glyd::compress_parallel_into_ultra(&text, &mut p);
     assert_eq!(glyd::decompress(&p).unwrap(), text);
 
-    let dict = wordy(64 * 1024, 9);
+    let dict = glyd::Dict::from_content(&wordy(64 * 1024, 9), &[]);
     let small = wordy(3000, 11);
     let (mut with, mut without) = (Vec::new(), Vec::new());
     glyd::compress_with_dict_ultra(&dict, &small, &mut with);
