@@ -1,91 +1,91 @@
 dickens:
-  Glyd --max    ratio 2.833 comp  109.8 MB/s decode   936 MB/s
-  Glyd --ultra  ratio 3.430 comp    2.2 MB/s decode  1157 MB/s
-  zstd -16      ratio 3.485 comp    2.5 MB/s decode   836 MB/s
-  zstd -16 w21  ratio 3.463 comp    2.8 MB/s decode   837 MB/s
-  zstd -19      ratio 3.576 comp    1.7 MB/s decode   854 MB/s
-  zstd -19 w21  ratio 3.492 comp    2.2 MB/s decode   851 MB/s
+  Glyd --max    ratio 2.848 comp  109.5 MB/s decode   940 MB/s
+  Glyd --ultra  ratio 3.529 comp    1.8 MB/s decode  1179 MB/s
+  zstd -16      ratio 3.485 comp    2.8 MB/s decode   860 MB/s
+  zstd -16 w21  ratio 3.463 comp    3.1 MB/s decode   861 MB/s
+  zstd -19      ratio 3.576 comp    1.9 MB/s decode   848 MB/s
+  zstd -19 w21  ratio 3.492 comp    2.4 MB/s decode   850 MB/s
 mozilla:
-  Glyd --max    ratio 2.776 comp  162.2 MB/s decode  1249 MB/s
-  Glyd --ultra  ratio 3.183 comp    3.9 MB/s decode  1177 MB/s
-  zstd -16      ratio 3.195 comp    5.9 MB/s decode   879 MB/s
-  zstd -16 w21  ratio 3.164 comp    6.2 MB/s decode   898 MB/s
-  zstd -19      ratio 3.395 comp    3.0 MB/s decode   717 MB/s
-  zstd -19 w21  ratio 3.327 comp    3.9 MB/s decode   761 MB/s
+  Glyd --max    ratio 2.801 comp  158.5 MB/s decode  1238 MB/s
+  Glyd --ultra  ratio 3.272 comp    2.9 MB/s decode  1160 MB/s
+  zstd -16      ratio 3.195 comp    6.2 MB/s decode   889 MB/s
+  zstd -16 w21  ratio 3.164 comp    6.4 MB/s decode   894 MB/s
+  zstd -19      ratio 3.395 comp    3.0 MB/s decode   753 MB/s
+  zstd -19 w21  ratio 3.327 comp    4.0 MB/s decode   766 MB/s
 mr:
-  Glyd --max    ratio 2.819 comp  132.2 MB/s decode  1072 MB/s
-  Glyd --ultra  ratio 3.104 comp    3.9 MB/s decode  1150 MB/s
-  zstd -16      ratio 3.183 comp    4.2 MB/s decode   819 MB/s
-  zstd -16 w21  ratio 3.179 comp    4.6 MB/s decode   822 MB/s
-  zstd -19      ratio 3.209 comp    2.8 MB/s decode   808 MB/s
-  zstd -19 w21  ratio 3.178 comp    3.7 MB/s decode   809 MB/s
+  Glyd --max    ratio 2.827 comp  127.3 MB/s decode  1053 MB/s
+  Glyd --ultra  ratio 3.148 comp    3.2 MB/s decode  1141 MB/s
+  zstd -16      ratio 3.183 comp    4.6 MB/s decode   817 MB/s
+  zstd -16 w21  ratio 3.179 comp    5.0 MB/s decode   825 MB/s
+  zstd -19      ratio 3.209 comp    3.1 MB/s decode   801 MB/s
+  zstd -19 w21  ratio 3.178 comp    3.9 MB/s decode   808 MB/s
 nci:
-  Glyd --max    ratio 11.156 comp  446.7 MB/s decode  2362 MB/s
-  Glyd --ultra  ratio 17.335 comp    2.2 MB/s decode  3152 MB/s
-  zstd -16      ratio 16.649 comp    6.8 MB/s decode  2528 MB/s
-  zstd -16 w21  ratio 16.288 comp    7.0 MB/s decode  2524 MB/s
-  zstd -19      ratio 20.155 comp    2.3 MB/s decode  2367 MB/s
-  zstd -19 w21  ratio 18.602 comp    2.6 MB/s decode  2326 MB/s
+  Glyd --max    ratio 11.735 comp  442.0 MB/s decode  2384 MB/s
+  Glyd --ultra  ratio 19.618 comp    2.2 MB/s decode  3246 MB/s
+  zstd -16      ratio 16.649 comp    7.2 MB/s decode  2602 MB/s
+  zstd -16 w21  ratio 16.288 comp    7.3 MB/s decode  2621 MB/s
+  zstd -19      ratio 20.155 comp    2.4 MB/s decode  2484 MB/s
+  zstd -19 w21  ratio 18.602 comp    2.6 MB/s decode  2339 MB/s
 ooffice:
-  Glyd --max    ratio 1.991 comp  109.9 MB/s decode  1007 MB/s
-  Glyd --ultra  ratio 2.288 comp    3.7 MB/s decode   858 MB/s
-  zstd -16      ratio 2.230 comp    5.2 MB/s decode   682 MB/s
-  zstd -16 w21  ratio 2.221 comp    5.3 MB/s decode   685 MB/s
-  zstd -19      ratio 2.369 comp    3.2 MB/s decode   570 MB/s
-  zstd -19 w21  ratio 2.356 comp    3.5 MB/s decode   570 MB/s
+  Glyd --max    ratio 1.999 comp  108.2 MB/s decode  1000 MB/s
+  Glyd --ultra  ratio 2.309 comp    3.1 MB/s decode   852 MB/s
+  zstd -16      ratio 2.230 comp    4.9 MB/s decode   676 MB/s
+  zstd -16 w21  ratio 2.221 comp    5.1 MB/s decode   680 MB/s
+  zstd -19      ratio 2.369 comp    3.2 MB/s decode   568 MB/s
+  zstd -19 w21  ratio 2.356 comp    3.6 MB/s decode   568 MB/s
 osdb:
-  Glyd --max    ratio 2.863 comp  155.9 MB/s decode  1541 MB/s
-  Glyd --ultra  ratio 3.238 comp    3.4 MB/s decode  1766 MB/s
-  zstd -16      ratio 3.270 comp    4.2 MB/s decode  1191 MB/s
-  zstd -16 w21  ratio 3.265 comp    4.8 MB/s decode  1191 MB/s
-  zstd -19      ratio 3.253 comp    2.7 MB/s decode  1070 MB/s
-  zstd -19 w21  ratio 3.217 comp    3.1 MB/s decode  1099 MB/s
+  Glyd --max    ratio 2.903 comp  153.0 MB/s decode  1525 MB/s
+  Glyd --ultra  ratio 3.297 comp    2.8 MB/s decode  1741 MB/s
+  zstd -16      ratio 3.270 comp    4.7 MB/s decode  1198 MB/s
+  zstd -16 w21  ratio 3.265 comp    5.1 MB/s decode  1198 MB/s
+  zstd -19      ratio 3.253 comp    2.9 MB/s decode  1087 MB/s
+  zstd -19 w21  ratio 3.217 comp    3.4 MB/s decode  1109 MB/s
 reymont:
-  Glyd --max    ratio 3.483 comp  149.3 MB/s decode  1221 MB/s
-  Glyd --ultra  ratio 4.692 comp    2.4 MB/s decode  1653 MB/s
-  zstd -16      ratio 4.813 comp    2.9 MB/s decode  1137 MB/s
-  zstd -16 w21  ratio 4.786 comp    3.1 MB/s decode  1124 MB/s
-  zstd -19      ratio 4.919 comp    2.0 MB/s decode  1099 MB/s
-  zstd -19 w21  ratio 4.831 comp    2.3 MB/s decode  1094 MB/s
+  Glyd --max    ratio 3.506 comp  147.3 MB/s decode  1201 MB/s
+  Glyd --ultra  ratio 4.821 comp    2.2 MB/s decode  1647 MB/s
+  zstd -16      ratio 4.813 comp    3.2 MB/s decode  1132 MB/s
+  zstd -16 w21  ratio 4.786 comp    3.4 MB/s decode  1131 MB/s
+  zstd -19      ratio 4.919 comp    2.1 MB/s decode  1095 MB/s
+  zstd -19 w21  ratio 4.831 comp    2.5 MB/s decode  1090 MB/s
 samba:
-  Glyd --max    ratio 4.362 comp  235.2 MB/s decode  1807 MB/s
-  Glyd --ultra  ratio 5.128 comp    3.5 MB/s decode  1895 MB/s
-  zstd -16      ratio 5.351 comp    6.6 MB/s decode  1466 MB/s
-  zstd -16 w21  ratio 5.256 comp    6.7 MB/s decode  1462 MB/s
-  zstd -19      ratio 5.545 comp    3.1 MB/s decode  1388 MB/s
-  zstd -19 w21  ratio 5.335 comp    3.5 MB/s decode  1365 MB/s
+  Glyd --max    ratio 4.471 comp  229.0 MB/s decode  1798 MB/s
+  Glyd --ultra  ratio 5.404 comp    3.1 MB/s decode  1960 MB/s
+  zstd -16      ratio 5.351 comp    6.9 MB/s decode  1493 MB/s
+  zstd -16 w21  ratio 5.256 comp    7.1 MB/s decode  1474 MB/s
+  zstd -19      ratio 5.545 comp    3.2 MB/s decode  1418 MB/s
+  zstd -19 w21  ratio 5.335 comp    3.6 MB/s decode  1395 MB/s
 sao:
-  Glyd --max    ratio 1.318 comp   87.6 MB/s decode  1466 MB/s
-  Glyd --ultra  ratio 1.443 comp    3.7 MB/s decode  1044 MB/s
-  zstd -16      ratio 1.432 comp    4.5 MB/s decode   626 MB/s
-  zstd -16 w21  ratio 1.430 comp    4.8 MB/s decode   628 MB/s
-  zstd -19      ratio 1.450 comp    3.1 MB/s decode   644 MB/s
-  zstd -19 w21  ratio 1.449 comp    3.7 MB/s decode   644 MB/s
+  Glyd --max    ratio 1.326 comp   85.9 MB/s decode  1359 MB/s
+  Glyd --ultra  ratio 1.448 comp    3.1 MB/s decode  1034 MB/s
+  zstd -16      ratio 1.432 comp    5.2 MB/s decode   628 MB/s
+  zstd -16 w21  ratio 1.430 comp    5.3 MB/s decode   629 MB/s
+  zstd -19      ratio 1.450 comp    3.5 MB/s decode   645 MB/s
+  zstd -19 w21  ratio 1.449 comp    4.2 MB/s decode   648 MB/s
 webster:
-  Glyd --max    ratio 3.496 comp  141.0 MB/s decode  1094 MB/s
-  Glyd --ultra  ratio 4.426 comp    2.6 MB/s decode  1343 MB/s
-  zstd -16      ratio 4.524 comp    3.3 MB/s decode   971 MB/s
-  zstd -16 w21  ratio 4.465 comp    3.7 MB/s decode  1016 MB/s
-  zstd -19      ratio 4.776 comp    1.8 MB/s decode   913 MB/s
-  zstd -19 w21  ratio 4.525 comp    2.4 MB/s decode   989 MB/s
+  Glyd --max    ratio 3.538 comp  141.4 MB/s decode  1052 MB/s
+  Glyd --ultra  ratio 4.705 comp    2.0 MB/s decode  1311 MB/s
+  zstd -16      ratio 4.524 comp    3.8 MB/s decode  1011 MB/s
+  zstd -16 w21  ratio 4.465 comp    3.8 MB/s decode  1028 MB/s
+  zstd -19      ratio 4.776 comp    1.9 MB/s decode   955 MB/s
+  zstd -19 w21  ratio 4.525 comp    2.6 MB/s decode  1007 MB/s
 xml:
-  Glyd --max    ratio 8.245 comp  351.9 MB/s decode  2531 MB/s
-  Glyd --ultra  ratio 11.077 comp    3.3 MB/s decode  3115 MB/s
-  zstd -16      ratio 11.311 comp    7.3 MB/s decode  2411 MB/s
-  zstd -16 w21  ratio 11.300 comp    7.3 MB/s decode  2421 MB/s
-  zstd -19      ratio 11.808 comp    3.5 MB/s decode  2323 MB/s
-  zstd -19 w21  ratio 11.784 comp    3.5 MB/s decode  2327 MB/s
+  Glyd --max    ratio 8.386 comp  352.2 MB/s decode  2471 MB/s
+  Glyd --ultra  ratio 11.392 comp    3.3 MB/s decode  3063 MB/s
+  zstd -16      ratio 11.311 comp    7.4 MB/s decode  2432 MB/s
+  zstd -16 w21  ratio 11.300 comp    7.4 MB/s decode  2437 MB/s
+  zstd -19      ratio 11.808 comp    3.5 MB/s decode  2340 MB/s
+  zstd -19 w21  ratio 11.784 comp    3.5 MB/s decode  2345 MB/s
 x-ray:
-  Glyd --max    ratio 1.462 comp   81.6 MB/s decode   799 MB/s
-  Glyd --ultra  ratio 1.617 comp    4.1 MB/s decode   649 MB/s
-  zstd -16      ratio 1.625 comp    3.9 MB/s decode   513 MB/s
-  zstd -16 w21  ratio 1.617 comp    4.1 MB/s decode   521 MB/s
-  zstd -19      ratio 1.652 comp    2.7 MB/s decode   456 MB/s
-  zstd -19 w21  ratio 1.643 comp    3.2 MB/s decode   454 MB/s
+  Glyd --max    ratio 1.465 comp   79.4 MB/s decode   802 MB/s
+  Glyd --ultra  ratio 1.633 comp    3.0 MB/s decode   649 MB/s
+  zstd -16      ratio 1.625 comp    3.9 MB/s decode   508 MB/s
+  zstd -16 w21  ratio 1.617 comp    4.2 MB/s decode   516 MB/s
+  zstd -19      ratio 1.652 comp    2.7 MB/s decode   451 MB/s
+  zstd -19 w21  ratio 1.643 comp    3.3 MB/s decode   451 MB/s
 total:
-  Glyd --max    ratio 3.218 comp  161.6 MB/s decode  1316 MB/s
-  Glyd --ultra  ratio 3.801 comp    3.0 MB/s decode  1389 MB/s
-  zstd -16      ratio 3.834 comp    4.6 MB/s decode  1024 MB/s
-  zstd -16 w21  ratio 3.802 comp    4.9 MB/s decode  1041 MB/s
-  zstd -19      ratio 4.006 comp    2.4 MB/s decode   924 MB/s
-  zstd -19 w21  ratio 3.910 comp    3.0 MB/s decode   954 MB/s
+  Glyd --max    ratio 3.254 comp  159.1 MB/s decode  1296 MB/s
+  Glyd --ultra  ratio 3.925 comp    2.5 MB/s decode  1382 MB/s
+  zstd -16      ratio 3.834 comp    5.0 MB/s decode  1040 MB/s
+  zstd -16 w21  ratio 3.802 comp    5.2 MB/s decode  1047 MB/s
+  zstd -19      ratio 4.006 comp    2.5 MB/s decode   950 MB/s
+  zstd -19 w21  ratio 3.910 comp    3.1 MB/s decode   961 MB/s
