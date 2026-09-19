@@ -365,8 +365,8 @@ pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
         literals.clear();
         payload.clear();
         let mut reps = [1u32, 4, 8]; // encode_block's Reps starts fresh per block
-        DFAST.with_borrow_mut(|t| v7_encode::find_sequences_dfast(input, offset, chunk_len, t, &mut reps, &mut seqs, &mut literals));
-        v7_encode::encode_block_with(&seqs, &literals, 0, &mut prev, &mut scratch, &mut payload);
+        DFAST.with_borrow_mut(|t| v7_encode::find_sequences_dfast(input, offset, chunk_len, t, &mut reps, &mut seqs, &mut literals, &mut scratch));
+        v7_encode::encode_block_coded(&literals, 0, &mut prev, &mut scratch, &mut payload);
         let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
         if payload.len() + HEADER_SIZE >= chunk_len {
             prev = v7_encode::Tables::none();

@@ -912,3 +912,93 @@ min 7 -> 8 cut tokens 18% and bought 18%.
   -> 3.49, ooffice 1.20 -> 1.34, osdb 1.87 -> 2.11, reymont 1.43 ->
   1.65, samba 2.14 -> 2.39, sao 1.63 -> 1.92, webster 1.39 -> 1.60, xml
   2.73 -> 3.09, x-ray 0.94 -> 1.11.
+## v7 milestone 4b: parse speed, and the coder's modeling gap
+Goal: comp >= 0.30 GB/s at ratio >= 3.20 on Silesia. Start (f25f4f9,
+`v7_bench`): ratio 3.2219, comp 0.211 GB/s, zstd-3 0.327 in the same run.
+Profile (Instruments Time Profiler on `examples/v7_parse --loop`): 96% of
+samples in `find_sequences_dfast`; per probe, the long candidate's
+compare+branch took 24% and the short one's 19% (both directions hot: on
+text 88% of probes hit and which table hits is a coin toss), the lazy
+re-probe 15%, the literal memcpy call 4%. Counters: dickens 0.26 probes
+per byte, 46% of them the lazy re-probe, which wins 7%; rep checks hit
+0.1-1% of probes on text, 16% on mozilla.
+
+Steps, each measured alone (`examples/v7_parse`: the parse by itself in
+256 KB blocks, min of 5 runs, next to `compress_into_max`'s total ns/byte
+and ratio; the machine was shared with other agents, so the later steps
+were A/B'd as alternating binaries, min of 3):
+
+| step | parse ns/B | total ns/B | ratio |
+|---|---:|---:|---:|
+| f25f4f9 | 3.24 | 4.10 | 3.2219 |
+| lazy step probes the long table only (reps + short at pos + 1 were +0.2% ratio for 3x the cost) | 2.86 | 3.68 | 3.2162 |
+| literal runs <= 16 copied as two 8-byte stores into reserved slack, no memcpy call | 2.79 | 3.61 | 3.2162 |
+| table entries = 24-bit position + 8-bit hash tag: a miss resolves from the entry, verify + extend is one loop | 2.50 | 3.32 | 3.2162 |
+| lazy win out of line (`#[cold]`): a branch, not csel/cinc on the next position | -3% | | 3.2162 |
+| sequence tables reused by cost (195/815 blocks, was 0), literal table when it covers the block (156, was 61) | | | 3.2176 |
+| software pipelined: pos + 1's slot and entries loaded while pos is checked; a hit's lazy step and a step-1 miss's next probe use them | 2.33 | 3.16 | 3.2176 |
+| the parse writes the code bytes and extra-bit words (`EncScratch::push_codes`), `encode_block_coded` skips the codes loop; rep update as selects | 2.61* | 3.22 | 3.2176 |
+| final, quiet machine, min of 5 | 2.39* | 2.93 | 3.2176 |
+
+(* parse column includes the code emission from that step on.)
+
+Rejected, measured: rep0-only checks (-0.9% ratio, no faster); all five
+checks evaluated branchlessly under one branch (3.35 vs 2.86 ns/B: the
+early-outs beat the csel chain and five always-issued loads); one branch
+for the long + short tag checks with a csel'd candidate (+8% and, on the
+pipelined loop, +4%); dropping the match-start + 2 insertions (-0.9%
+ratio, no faster); skip strength 5 (-0.9% time, -0.12% ratio); lazy only
+when the first match is under 16 (-0.26% ratio, noise); a 4-byte
+pre-check at offset rc before the lazy extension (+2.5%: it makes the
+lazy chain depend on rc); pipelining pos + 1 for the lazy step only (text
+-10%, sao/x-ray +10-15%, a wash); code histograms accumulated in the
+parse (a wash); no `o <= pos` guards on the rep checks (no change); the
+`Sequence` push is 1.2% (kept: the tests and the harness read it). Table
+sizes with tags: 18/17 3.1990 at -6% parse time, 17/17 3.1770, 17/16
+3.1572 (-6%); 18/18 stays. 128 KB blocks: 3.1990.
+
+Encoder-only modeling (bitstream unchanged): reuse by cost +0.04%
+(29.7 KB); the raw-vs-coded 2% margin at 0 is +0.09% (3.2205), all sao's
+literals going Huffman, i.e. slower decode on near-incompressible blocks
+-- not taken, the decoder owner's call; the literal length limiter
+(halve-and-rebuild at 11 bits) is within 1 KB of package-merge over the
+815 blocks, a 12-bit cap another 0.5 KB.
+
+Output composition (bytes, entropy of the code alphabets + raw extras):
+literals 24.56 MB (27.2 M literals, 7.2 bits each), ll codes 2.92 MB +
+0.11 MB extras, ml 5.73 + 1.07, offsets 7.09 + 23.61 MB of raw mantissa
+(36% of the output), tables + size tables + headers ~0.8 MB. Format
+changes and their estimated gains on these sequences: two length codes
+per octave above 16 (one raw bit less, the split entropy coded): ll -13
+KB, ml -65 KB (0.12%); zstd's ll == 0 rep semantics (rep0 is impossible
+there; code rep0 +- 1): 7300 sequences, ~18 KB (0.03%); FSE-style
+compressed tANS count tables (~30 bytes instead of 1 + 2n): ~60 KB
+(0.09%); u16 or varint sub-stream size tables (5 x 8 x u32 = 160
+bytes/block): ~90 KB (0.14%); compressed Huffman lengths instead of 128
+packed bytes: ~36 KB (0.06%); 12-bit Huffman: 0.5 KB. Together ~0.45%.
+The 2.0% measured in milestone 3/4 for zstd's own sequences through this
+coder is not explained by these; re-measure that harness before
+spending on the format.
+
+`examples/v7_bench.rs`, Silesia, M1 Max, `target-cpu=native`, median of
+3 runs of >= 0.3 s, zstd 1.5.7 in the same run, load average ~3.5:
+**v7: ratio 3.2176, comp 0.304 GB/s, decomp 1.623 GB/s** | zstd-3:
+ratio 3.2045, comp 0.333, decomp 1.446 | zstd-1: 2.8942, 0.553, 1.545.
+Gate met: comp 0.304 >= 0.30 at ratio 3.2176 >= 3.20; 91% of zstd-3's
+compression speed at +0.4% ratio (start: 65%, +0.5%).
+
+  | file    | v7 ratio | comp GB/s | decomp GB/s | zstd-3 ratio | zstd-3 comp | zstd-3 decomp |
+  |---------|---------:|----------:|------------:|-------------:|------------:|--------------:|
+  | dickens |   2.8331 |     0.206 |       1.135 |       2.7822 |       0.212 |         1.176 |
+  | mozilla |   2.7760 |     0.307 |       1.518 |       2.8101 |       0.359 |         1.286 |
+  | mr      |   2.8188 |     0.250 |       1.265 |       2.8106 |       0.261 |         1.234 |
+  | nci     |  11.1565 |     0.749 |       3.180 |      11.8403 |       0.884 |         2.679 |
+  | ooffice |   1.9914 |     0.221 |       1.198 |       1.9680 |       0.263 |         1.020 |
+  | osdb    |   2.8629 |     0.317 |       1.873 |       2.8804 |       0.356 |         1.700 |
+  | reymont |   3.4834 |     0.272 |       1.459 |       3.4197 |       0.269 |         1.412 |
+  | samba   |   4.3619 |     0.423 |       2.112 |       4.3604 |       0.437 |         1.998 |
+  | sao     |   1.3176 |     0.200 |       1.717 |       1.3120 |       0.209 |         0.862 |
+  | webster |   3.4962 |     0.255 |       1.417 |       3.4272 |       0.263 |         1.406 |
+  | xml     |   8.2448 |     0.545 |       2.803 |       8.4138 |       0.665 |         2.471 |
+  | x-ray   |   1.4621 |     0.165 |       0.967 |       1.3926 |       0.197 |         0.848 |
+  | total   |   3.2176 |     0.304 |       1.623 |       3.2045 |       0.333 |         1.446 |
