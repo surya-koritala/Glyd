@@ -1,7 +1,8 @@
 //! Files written by earlier releases decode unchanged: v0.2.0's default
-//! (format v6), max and ultra (format v7) output of tests/data/v7-sample.bin.
-//! v8 (this release on) widened the window and compacted the section
-//! layout; every earlier format stays readable.
+//! (format v6), max and ultra (format v7) output of tests/data/v7-sample.bin,
+//! v0.3.0's max and ultra (format v8), and v0.4.0's compact blocks (format
+//! v9) and dictionary objects. Every earlier format stays readable; a
+//! fixture is never regenerated.
 
 fn check(name: &str) {
     let plain = std::fs::read("tests/data/v7-sample.bin").unwrap();
@@ -26,6 +27,47 @@ fn v7_max_from_v0_2_0() {
 #[test]
 fn v7_ultra_from_v0_2_0() {
     check("v7-sample-ultra.glyd");
+}
+
+#[test]
+fn v8_max_from_v0_3_0() {
+    check("v8-sample-max.glyd");
+}
+
+#[test]
+fn v8_ultra_from_v0_3_0() {
+    check("v8-sample-ultra.glyd");
+}
+
+fn check_small(name: &str) {
+    let plain = std::fs::read("tests/data/v7-sample.bin").unwrap();
+    let c = std::fs::read(format!("tests/data/{name}")).unwrap();
+    assert_eq!(c[0], glyd::format::COMPACT_MARKER, "{name}: a compact (v9) block");
+    let d = glyd::decompress(&c).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    assert!(d == plain[..20_000], "{name}: decoded bytes differ");
+}
+
+#[test]
+fn v9_compact_max_from_v0_4_0() {
+    check_small("v9-small-max.glyd");
+}
+
+#[test]
+fn v9_compact_ultra_from_v0_4_0() {
+    check_small("v9-small-ultra.glyd");
+}
+
+/// A serialized dictionary and objects compressed with it, from v0.4.0.
+#[test]
+fn v9_dictionary_objects_from_v0_4_0() {
+    let plain = std::fs::read("tests/data/v7-sample.bin").unwrap();
+    let dict = glyd::Dict::from_bytes(&std::fs::read("tests/data/v9-dict.glyddict").unwrap()).expect("dictionary parses");
+    for name in ["v9-object-dict.glyd", "v9-object-dict-ultra.glyd"] {
+        let c = std::fs::read(format!("tests/data/{name}")).unwrap();
+        let d = glyd::decompress_with_dict(&dict, &c).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert!(d == plain[..3000], "{name}: decoded bytes differ");
+        assert!(glyd::decompress(&c).is_err(), "{name}: decodes without its dictionary");
+    }
 }
 
 /// The current writer produces v8 blocks, which are denser than the v7

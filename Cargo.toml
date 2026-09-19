@@ -13,7 +13,7 @@ license-file = "LICENSE"
 lz4_flex = "0.11"
 lz4 = "1.28"
 snap = "1.1"
-zstd = "0.13"
+zstd = { version = "0.13", features = ["zstdmt"] }
 rayon = "1.10"
 lzav = "0.1.1"
 
