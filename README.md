@@ -370,10 +370,12 @@ byte-exact (`scripts/bench_versions.sh`, data from
 | Linux 6.10 → 6.10.1 source tar (1.5 GB) | 3.26 MB · 560 MB/s | 2.58 MB · 30 MB/s | **3.04 MB · 1,980 MB/s** | **2.04 MB** · 1 MB/s |
 
 Compressed alone with `--max` those versions are 33, 287 and 200 MB.
-`--max --base` stores 1.1–2.1× less than zstd's fast patch at 1.5–3×
+`--max --base` stores 1.1–2.1× less than zstd's fast patch at 2–3.5×
 its speed, and on the image pair less than zstd's slow patch at 50×
-its speed; `--ultra --base` stores less than zstd -19's patch on every
-pair, at its speed. Reads run at 6–10 GB/s. Chunk-level dedup, the
+its speed; `--ultra --base` stores 5–21% less than zstd -19's patch on
+every pair but runs at 1–4 MB/s against its 2–39 (it indexes each
+unit's base region anew; a shared index is the fix). Reads run at
+6–10 GB/s. Chunk-level dedup, the
 backup approach, gains 1–4× on the same pairs
 ([experiments/structure/README.md](experiments/structure/README.md)).
 
