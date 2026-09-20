@@ -9,22 +9,26 @@
 //! record shape goes to a raw stream, so any input rebuilds byte for
 //! byte (`inverse`).
 //!
-//! Two shapes are recognised (`detect`): lines split by one delimiter
-//! (space, tab, comma) into a constant number of fields, and MySQL dumps
+//! Three shapes are recognised (`detect`): lines split by one delimiter
+//! (space, tab, comma) into a constant number of fields; MySQL dumps
 //! (`INSERT ... VALUES (...),(...);`) whose tuples become the records
-//! while the statement text around them is kept as a frame.
+//! while the statement text around them is kept as a frame; and JSON
+//! objects one per line, where a column is a key path (`actor.id`,
+//! `commits.[].sha`) and the columns that type as integers, times or
+//! dictionaries leave holes in a frame of the structure, keys and text
+//! values (text stays where its strings match across fields).
 //!
 //! The image `transform` writes (all integers little-endian varints
 //! unless said otherwise):
 //!
 //! ```text
-//! "GLYDREC1"  mode u8 (1 delimited, 2 sql)  delimiter u8  n_fields  n_lines
+//! "GLYDREC1"  mode u8 (1 delimited, 2 sql, 3 json)  delimiter u8  n_fields  n_lines
 //! flags u8 (bit 0: input ends with a newline)
 //! types: n_fields bytes (0 text, 1 int, 2 dict, 3 time, 4 dict8)
 //! n_streams, then each stream's length, then the streams back to back:
 //!   kind (one byte per line: 0 record, 1 raw), raw (raw lines, '\n'-joined),
 //!   then per field: int -> zigzag varint deltas; dict -> the dictionary
-//!   ('\n'-joined, first-appearance order), the recency ranks (a byte:
+//!   (each entry ending with '\n', first-appearance order), the recency ranks (a byte:
 //!   1 + position in the list of the last 64 distinct values, 0 an
 //!   escape) and the escaped ids (varint: 0 a new value, else id + 1);
 //!   text -> '\n'-joined values; time -> the
@@ -32,16 +36,30 @@
 //!   most 256 distinct values) -> the dictionary and one byte per value.
 //!   sql mode: the frame stream first (statement bytes with 0 where a
 //!   record tuple was), then the same per-field streams.
+//!   json mode: the key paths ('\n'-joined), the frame (0 where a typed
+//!   value was), the column of each hole in order (varints), then the
+//!   per-column streams (a text column's is empty); n_lines counts the
+//!   holes.
 //! ```
 //!
 //! Measured on 50 MB slices with zstd -19 as the second stage (the
 //! prototypes in experiments/structure): access logs 1.23-1.39x smaller
 //! than zstd -19 on the raw text, pageviews 1.08x, SQL dumps 1.41-1.52x.
+//! JSON lines of telemetry (cluster and weather records) through the
+//! max level: 3.5x and 2.5x smaller than zstd -3, 1.9x and 1.5x than
+//! zstd -19; API events with hashes and free text (GitHub Archive) gain
+//! 1.6%, under the trial's margin, and stay plain.
 use crate::error::CodecError;
 
 pub const MAGIC: &[u8; 8] = b"GLYDREC1";
 const MODE_DELIMITED: u8 = 1;
 const MODE_SQL: u8 = 2;
+/// JSON objects one per line: every scalar value is a column keyed by
+/// its key path, the structure and keys are the frame.
+const MODE_JSON: u8 = 3;
+/// Columns a JSON image may have (a wide schema's rarest paths stay in
+/// the frame).
+const JSON_MAX_COLUMNS: usize = 4096;
 const T_TEXT: u8 = 0;
 const T_INT: u8 = 1;
 const T_DICT: u8 = 2;
@@ -358,6 +376,7 @@ fn parse_canonical_int(b: &[u8]) -> Option<i64> {
 pub enum Shape {
     Delimited { delimiter: u8, fields: usize },
     Sql,
+    Json,
 }
 
 /// Whether `input` is record-shaped text worth transforming.
@@ -370,8 +389,14 @@ pub fn detect(input: &[u8]) -> Option<Shape> {
         return Some(Shape::Sql);
     }
     let lines: Vec<&[u8]> = sample.split(|&b| b == b'\n').collect();
-    // JSON lines and other bracketed records are not delimited tables:
-    // their fields are named, and the split would cut inside strings.
+    // JSON objects, one per line (the last line of the sample may be cut).
+    let whole = if lines.len() > 1 { &lines[..lines.len() - 1] } else { &lines[..] };
+    let objects = whole.iter().filter(|l| l.starts_with(b"{") && l.ends_with(b"}")).count();
+    if objects >= 8 && objects * 10 >= whole.len() * 9 {
+        return Some(Shape::Json);
+    }
+    // Other bracketed records are not delimited tables: their fields
+    // are named, and the split would cut inside strings.
     if lines.iter().take(64).filter(|l| !l.is_empty()).all(|l| l.starts_with(b"{") || l.starts_with(b"[") || l.starts_with(b"<")) {
         return None;
     }
@@ -478,11 +503,9 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
         let mut order: Vec<(&[u8], u32)> = distinct.iter().map(|(k, v)| (*k, *v)).collect();
         order.sort_by_key(|&(_, id)| id);
         let mut dict = Vec::new();
-        for (i, (k, _)) in order.iter().enumerate() {
-            if i > 0 {
-                dict.push(b'\n');
-            }
+        for (k, _) in &order {
             dict.extend_from_slice(k);
+            dict.push(b'\n');
         }
         let ids: Vec<u8> = col.iter().map(|&(a, b)| distinct[&src[a..b]] as u8).collect();
         streams.push(dict);
@@ -503,10 +526,8 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
                 Some(&id) => (id, false),
                 None => {
                     id_of.insert(v, n);
-                    if n > 0 {
-                        dict.push(b'\n');
-                    }
                     dict.extend_from_slice(v);
+                    dict.push(b'\n');
                     (n, true)
                 }
             };
@@ -541,6 +562,7 @@ pub fn transform(input: &[u8]) -> Option<Vec<u8>> {
     match shape {
         Shape::Delimited { delimiter, fields } => Some(transform_delimited(input, delimiter, fields)),
         Shape::Sql => transform_sql(input),
+        Shape::Json => transform_json(input),
     }
 }
 
@@ -744,6 +766,183 @@ fn transform_sql(input: &[u8]) -> Option<Vec<u8>> {
     Some(write_image(MODE_SQL, b',', fields, n_records, false, &types, &streams))
 }
 
+/// A scalar value found by `scan_json`: its bytes (a string's content
+/// between the quotes, else the token) and its key path.
+struct JsonValue {
+    start: usize,
+    end: usize,
+}
+
+/// Walk `input` as JSON objects one per line, calling `value` for every
+/// scalar with the key path (keys joined by '.', array elements as
+/// "[]") in `path`. Keys, punctuation and whitespace are not reported.
+/// A line that is not an object is skipped whole; a newline resets the
+/// path. Strings honour backslash escapes; nothing is validated beyond
+/// what the walk needs, so any bytes are safe.
+fn scan_json(input: &[u8], mut value: impl FnMut(&[u8], JsonValue)) {
+    let n = input.len();
+    let mut path: Vec<u8> = Vec::with_capacity(256);
+    let mut marks: Vec<usize> = Vec::with_capacity(32); // path length at each nesting level
+    let mut key: Option<(usize, usize)> = None;
+    let mut at = 0usize;
+    while at < n {
+        let end = input[at..].iter().position(|&b| b == b'\n').map_or(n, |p| at + p);
+        let line = &input[at..end];
+        if !(line.starts_with(b"{") && line.ends_with(b"}")) {
+            at = end + 1;
+            continue;
+        }
+        path.clear();
+        marks.clear();
+        key = None;
+        let mut i = at;
+        // The path of a value: the enclosing keys, then its own key.
+        macro_rules! with_key {
+            () => {{
+                let base = path.len();
+                if let Some((ks, ke)) = key {
+                    if base > 0 {
+                        path.push(b'.');
+                    }
+                    path.extend_from_slice(&input[ks..ke]);
+                }
+                base
+            }};
+        }
+        while i < end {
+            match input[i] {
+                b'"' => {
+                    let mut j = i + 1;
+                    while j < end {
+                        match input[j] {
+                            b'\\' => j += 2,
+                            b'"' => break,
+                            _ => j += 1,
+                        }
+                    }
+                    let j = j.min(end);
+                    let (s, e) = (i + 1, j);
+                    i = (j + 1).min(end);
+                    let mut k = i;
+                    while k < end && input[k] == b' ' {
+                        k += 1;
+                    }
+                    if k < end && input[k] == b':' {
+                        key = Some((s, e));
+                        i = k + 1;
+                    } else {
+                        let base = with_key!();
+                        value(&path, JsonValue { start: s, end: e });
+                        path.truncate(base);
+                    }
+                }
+                b'{' | b'[' => {
+                    marks.push(path.len());
+                    let base = with_key!();
+                    let _ = base;
+                    if input[i] == b'[' {
+                        if path.len() > 0 {
+                            path.push(b'.');
+                        }
+                        path.extend_from_slice(b"[]");
+                    }
+                    key = None;
+                    i += 1;
+                }
+                b'}' | b']' => {
+                    if let Some(m) = marks.pop() {
+                        path.truncate(m);
+                    }
+                    key = None;
+                    i += 1;
+                }
+                b',' => {
+                    key = None;
+                    i += 1;
+                }
+                b' ' | b':' | b'\t' | b'\r' => i += 1,
+                _ => {
+                    // A number or a literal: up to the next delimiter.
+                    let mut j = i;
+                    while j < end && !matches!(input[j], b',' | b'}' | b']' | b' ' | b'"') {
+                        j += 1;
+                    }
+                    let base = with_key!();
+                    value(&path, JsonValue { start: i, end: j });
+                    path.truncate(base);
+                    i = j.max(i + 1);
+                }
+            }
+        }
+        at = end + 1;
+    }
+}
+
+/// JSON lines: every scalar value is gathered into the column of its
+/// key path; columns that type as integers, times or dictionaries
+/// leave a 0 in the frame where each value was (a stream names the
+/// column of each hole in order), text columns stay in the frame, where
+/// their strings keep matching across fields and records.
+fn transform_json(input: &[u8]) -> Option<Vec<u8>> {
+    if input.len() > u32::MAX as usize {
+        return None;
+    }
+    let mut paths: std::collections::HashMap<Vec<u8>, usize, FxBuild> = std::collections::HashMap::default();
+    let mut names: Vec<Vec<u8>> = Vec::new();
+    let mut cols: Vec<Column> = Vec::new();
+    let mut values: Vec<(u32, u32, u32)> = Vec::with_capacity(input.len() / 16); // (start, end, column)
+    scan_json(input, |path, v| {
+        let id = match paths.get(path) {
+            Some(&id) => id,
+            None => {
+                if names.len() >= JSON_MAX_COLUMNS {
+                    return;
+                }
+                paths.insert(path.to_vec(), names.len());
+                names.push(path.to_vec());
+                cols.push(Column { values: Vec::new() });
+                names.len() - 1
+            }
+        };
+        cols[id].values.push((v.start, v.end));
+        values.push((v.start as u32, v.end as u32, id as u32));
+    });
+    let fields = names.len();
+    let mut types = vec![T_TEXT; fields];
+    let mut streams: Vec<Vec<u8>> = Vec::with_capacity(3 + 3 * fields);
+    for (i, c) in cols.iter().enumerate() {
+        let n = streams.len();
+        encode_column(input, &c.values, &mut types[i], &mut streams);
+        if types[i] == T_TEXT {
+            // Its values stay in the frame; the column has no stream.
+            streams.truncate(n);
+            streams.push(Vec::new());
+        }
+    }
+    // The frame, with holes for the typed columns only.
+    let mut order: Vec<u8> = Vec::with_capacity(values.len());
+    let mut frame: Vec<u8> = Vec::with_capacity(input.len() / 2);
+    let mut last = 0usize;
+    let mut holes = 0usize;
+    for &(start, end, id) in &values {
+        if types[id as usize] == T_TEXT {
+            continue;
+        }
+        frame.extend_from_slice(&input[last..start as usize]);
+        frame.push(0);
+        last = end as usize;
+        put_varint(&mut order, id as u64);
+        holes += 1;
+    }
+    frame.extend_from_slice(&input[last..]);
+    if holes == 0 || frame.iter().filter(|&&b| b == 0).count() != holes {
+        return None;
+    }
+    let mut all = vec![names.join(&b'\n'), frame, order];
+    all.append(&mut streams);
+    Some(write_image(MODE_JSON, 0, fields, holes, false, &types, &all))
+}
+
 fn memfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
@@ -755,6 +954,14 @@ enum Decoded<'a> {
     Time { src: &'a [u8], pos: usize, last: i64, pattern: &'static [u8] },
     Dict { dict: Vec<&'a [u8]>, ranks: &'a [u8], pos: usize, ids: &'a [u8], ids_pos: usize, recent: Recent, next_new: usize },
     Text { rest: &'a [u8] },
+}
+
+/// A dictionary stream's entries: each ends with a newline (an empty
+/// value is an entry too).
+fn dict_entries(d: &[u8]) -> Vec<&[u8]> {
+    let mut v: Vec<&[u8]> = d.split(|&b| b == b'\n').collect();
+    v.pop();
+    v
 }
 
 impl<'a> Decoded<'a> {
@@ -773,15 +980,13 @@ impl<'a> Decoded<'a> {
             T_DICT8 => {
                 let d = streams.next().ok_or(corrupt("record image: missing stream"))?;
                 let ids = streams.next().ok_or(corrupt("record image: missing stream"))?;
-                let dict: Vec<&[u8]> = if d.is_empty() { Vec::new() } else { d.split(|&b| b == b'\n').collect() };
-                Decoded::Dict8 { dict, ids, pos: 0 }
+                Decoded::Dict8 { dict: dict_entries(d), ids, pos: 0 }
             }
             T_DICT => {
                 let d = streams.next().ok_or(corrupt("record image: missing stream"))?;
                 let r = streams.next().ok_or(corrupt("record image: missing stream"))?;
                 let ids = streams.next().ok_or(corrupt("record image: missing stream"))?;
-                let dict: Vec<&[u8]> = if d.is_empty() { Vec::new() } else { d.split(|&b| b == b'\n').collect() };
-                Decoded::Dict { dict, ranks: r, pos: 0, ids, ids_pos: 0, recent: Recent::new(), next_new: 0 }
+                Decoded::Dict { dict: dict_entries(d), ranks: r, pos: 0, ids, ids_pos: 0, recent: Recent::new(), next_new: 0 }
             }
             T_TEXT => {
                 let s = streams.next().ok_or(corrupt("record image: missing stream"))?;
@@ -804,13 +1009,14 @@ pub fn inverse(image: &[u8]) -> Result<Vec<u8>> {
     let n_lines = get_varint(image, &mut pos)? as usize;
     let trailing_newline = *image.get(pos).ok_or(corrupt("record image: truncated"))? != 0;
     pos += 1;
-    if fields > 64 || n_lines > image.len().saturating_mul(64) + 1 {
+    let max_fields = if mode == MODE_JSON { JSON_MAX_COLUMNS } else { 64 };
+    if fields > max_fields || n_lines > image.len().saturating_mul(64) + 1 {
         return Err(corrupt("record image: header sizes"));
     }
     let types = image.get(pos..pos + fields).ok_or(corrupt("record image: truncated types"))?;
     pos += fields;
     let n_streams = get_varint(image, &mut pos)? as usize;
-    if n_streams > 2 + 3 * fields {
+    if n_streams > 3 + 3 * fields {
         return Err(corrupt("record image: stream count"));
     }
     let mut lens = Vec::with_capacity(n_streams);
@@ -890,6 +1096,35 @@ pub fn inverse(image: &[u8]) -> Result<Vec<u8>> {
                     next_value(c, &mut out)?;
                 }
                 out.push(b')');
+            }
+        }
+        MODE_JSON => {
+            let _names = *it.next().ok_or(corrupt("record image: missing paths"))?;
+            let frame = *it.next().ok_or(corrupt("record image: missing frame"))?;
+            let order = *it.next().ok_or(corrupt("record image: missing order"))?;
+            let mut cols: Vec<Decoded> = Vec::with_capacity(fields);
+            for &t in types {
+                cols.push(Decoded::new(t, &mut it)?);
+            }
+            let mut opos = 0usize;
+            let mut holes = 0usize;
+            let mut at = 0usize;
+            while at < frame.len() {
+                let z = match frame[at..].iter().position(|&b| b == 0) {
+                    Some(p) => at + p,
+                    None => {
+                        out.extend_from_slice(&frame[at..]);
+                        break;
+                    }
+                };
+                out.extend_from_slice(&frame[at..z]);
+                at = z + 1;
+                holes += 1;
+                if holes > n_lines {
+                    return Err(corrupt("record image: more holes than values"));
+                }
+                let id = get_varint(order, &mut opos)? as usize;
+                next_value(cols.get_mut(id).ok_or(corrupt("record image: column id"))?, &mut out)?;
             }
         }
         _ => return Err(corrupt("record image: mode")),
@@ -994,6 +1229,43 @@ mod tests {
             s.extend_from_slice(format!("({},'v{}',{})", i * 3, i % 17, if i % 2 == 0 { "NULL".to_string() } else { format!("'it''s {}, ok\\')'", i) }).as_bytes());
         }
         s.extend_from_slice(b";\nINSERT INTO `t` VALUES (1,'x'),(2,'y');\n/*!40000 ALTER TABLE `t` ENABLE KEYS */;\n");
+        assert!(roundtrip(&s).is_some());
+    }
+
+
+    #[test]
+    fn json_lines_round_trip() {
+        let mut s = Vec::new();
+        let mut x = 5u64;
+        for i in 0..3000u32 {
+            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            s.extend_from_slice(format!("{{\"ts\":\"2026-09-19T14:{:02}:{:02}Z\",\"host\":\"m_{}\",\"cpu\":{},\"mem\":{:.2},\"tags\":[\"a\",\"b{}\"],\"meta\":{{\"id\":{},\"ok\":{},\"note\":null,\"path\":\"/x\\\"y\\\\z\",\"list\":[{{\"n\":{}}},{{\"n\":{}}}]}},\"e\":\"\"}}\n",
+                (i / 60) % 60, i % 60, x % 40, x % 100, (x % 10000) as f64 / 100.0, x % 3, 1_000_000 + i, x % 2 == 0, x % 7, x % 11).as_bytes());
+            if i % 500 == 0 {
+                s.extend_from_slice(b"not json at all\n");
+                s.extend_from_slice(b"{\"broken\": [1, 2\n");
+            }
+        }
+        assert_eq!(detect(&s), Some(Shape::Json));
+        let image = transform(&s).expect("transforms");
+        assert_eq!(inverse(&image).unwrap(), s);
+        let mut no_trailing = s.clone();
+        no_trailing.pop();
+        assert_eq!(inverse(&transform(&no_trailing).unwrap()).unwrap(), no_trailing);
+        // Odd bytes never break the rebuild.
+        let mut odd = s.clone();
+        odd.extend_from_slice(b"{\"a\":\"unterminated\n{\"b\":}\n{}\n{\"c\":[[[1]]],\"d\":-0,\"e\":1e5,\"f\":007}\n{\"\\u00e9\":\"\\\"\"}\n");
+        assert_eq!(inverse(&transform(&odd).unwrap()).unwrap(), odd);
+    }
+
+
+    #[test]
+    fn empty_and_single_valued_columns_round_trip() {
+        // A column that is always empty, one with one value, one mixed.
+        let mut s = Vec::new();
+        for i in 0..500u32 {
+            s.extend_from_slice(format!("{},,x,{}\n", i, if i % 3 == 0 { "" } else { "y" }).as_bytes());
+        }
         assert!(roundtrip(&s).is_some());
     }
 

@@ -1,7 +1,8 @@
-//! Record mode through the public API: record-shaped input takes the
-//! envelope and comes back byte for byte, smaller than the plain level;
-//! input the transform does not pay on (JSON-like lines) takes the plain
-//! parallel path, with no envelope, and comes back too.
+//! Record mode through the public API: record-shaped input (delimited
+//! lines, JSON lines) takes the envelope and comes back byte for byte,
+//! smaller than the plain level; input the transform does not pay on
+//! (prose) takes the plain parallel path, with no envelope, and comes
+//! back too.
 
 fn rnd(x: &mut u64) -> u64 {
     *x ^= *x << 13;
@@ -21,7 +22,7 @@ fn delimited(lines: usize) -> Vec<u8> {
     v
 }
 
-/// One JSON object per line: not record-shaped for the transform.
+/// One JSON object per line with typed fields.
 fn json_lines(lines: usize) -> Vec<u8> {
     let mut x = 77u64;
     let mut v = Vec::new();
@@ -52,12 +53,42 @@ fn record_shaped_input_takes_the_envelope() {
 }
 
 #[test]
-fn other_input_takes_the_plain_path() {
+fn json_lines_take_the_envelope() {
     let data = json_lines(200_000);
     let (mut rec, mut plain) = (Vec::new(), Vec::new());
     glyd::compress_records_into_max(&data, &mut rec);
     glyd::compress_parallel_into_max(&data, &mut plain);
-    assert_ne!(&rec[..8], b"GLYDRECS", "JSON lines are not record-shaped");
+    assert_eq!(&rec[..8], b"GLYDRECS");
+    assert!(rec.len() < plain.len(), "typed fields should pay: {} vs {}", rec.len(), plain.len());
+    assert!(glyd::decompress(&rec).unwrap() == data);
+    assert!(glyd::decompress_parallel(&rec).unwrap() == data);
+}
+
+/// Prose: lines of words, no field structure.
+fn prose(lines: usize) -> Vec<u8> {
+    let words = ["the", "storage", "bill", "falls", "when", "records", "share", "their", "fields", "across", "lines", "and", "text", "does", "not"];
+    let mut x = 3u64;
+    let mut v = Vec::new();
+    for _ in 0..lines {
+        let n = 3 + (rnd(&mut x) % 12) as usize;
+        for k in 0..n {
+            if k > 0 {
+                v.push(b' ');
+            }
+            v.extend_from_slice(words[(rnd(&mut x) % words.len() as u64) as usize].as_bytes());
+        }
+        v.push(b'\n');
+    }
+    v
+}
+
+#[test]
+fn other_input_takes_the_plain_path() {
+    let data = prose(300_000);
+    let (mut rec, mut plain) = (Vec::new(), Vec::new());
+    glyd::compress_records_into_max(&data, &mut rec);
+    glyd::compress_parallel_into_max(&data, &mut plain);
+    assert_ne!(&rec[..8], b"GLYDRECS", "prose is not record-shaped");
     assert!(rec == plain, "the plain parallel stream, unit for unit");
     assert!(glyd::decompress(&rec).unwrap() == data);
     // Empty and tiny inputs.
