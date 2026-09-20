@@ -33,3 +33,27 @@ What it says:
   data; knowing the field structure is.
 
 Run: `python3 experiments/structure/<script>.py <file>` (needs `zstd` on PATH).
+
+## Versions of an object (2026-09-20): where the leap is
+
+`examples/versions.rs` (and `versions.py`, the same in Python) on
+pairs of consecutive versions of real objects, every rebuild byte-exact.
+"Alone" is the new version compressed by itself with zstd -19; "chunk
+dedup" stores only the content-defined chunks (gear hash, 8 KB mean)
+that the old version lacks; "delta" is `zstd -19 --patch-from old`,
+byte-level matching with the old version as the window.
+
+| Old -> new | New version | Alone | Chunk dedup | Delta vs old | Delta is |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| simplewiki `page` table, dumps a month apart | 108 MB | 24.9 MB (4.3x) | 24.5 MB (98% of chunks touched) | **1.30 MB (83x)** | **19x smaller than alone** |
+| Linux 6.10 -> 6.10.1 source tar | 1.50 GB | 149 MB (10x) | 79.6 MB (8 KB chunks) | **2.58 MB (580x)** | **58x smaller** |
+| Ubuntu 24.04 cloud root filesystem, builds 16 days apart | 1.11 GB | 245 MB (4.5x) | 61.9 MB | **5.61 MB (197x)** | **44x smaller** |
+
+Chunk-level dedup is what backup systems do and gains 1-4x here; the
+byte-level delta against the previous version gains 19-58x. That is
+the leap: not a better codec for one object, but compressing each
+version against the last. It fits Glyd's parts (the long-distance
+matcher's anchors index the old version; units decode in parallel;
+record mode still applies to the new bytes) and needs a reference
+match type whose source is the old version, an envelope naming it, and
+`glyd --base old new` / `glyd -d --base old`.
