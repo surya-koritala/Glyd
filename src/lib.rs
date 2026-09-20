@@ -811,9 +811,35 @@ fn records_envelope(compressed: &[u8]) -> Option<Vec<RecordUnit<'_>>> {
 /// `level` in record mode: units of `input` are transformed when they are
 /// record-shaped and the transform pays, else compressed as they are;
 /// the units run in parallel, so `level` should be a sequential one
-/// (`compress_into_max`, `compress_into_ultra`). `decompress`,
-/// `decompress_into` and the parallel decoders read the result.
+/// (`compress_into_max`, `compress_into_ultra`). Input whose first
+/// 4 MB the transform does not pay on (JSON, binaries) goes through the
+/// plain parallel path instead, whose units reach 128 MB (the
+/// long-distance matcher's window; record units are 32 MB).
+/// `decompress`, `decompress_into` and the parallel decoders read the
+/// result.
 pub fn compress_records_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>)) {
+    records_with(input, output, level, PARALLEL_UNIT_MAX)
+}
+
+/// Whether the transform pays on `sample` at `level`: its image must
+/// compress 5% smaller than the sample itself.
+fn records_pay(sample: &[u8], level: fn(&[u8], &mut Vec<u8>)) -> bool {
+    match record::transform(sample) {
+        Some(image) => {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            level(sample, &mut a);
+            level(&image, &mut b);
+            b.len() * 100 < a.len() * 95
+        }
+        None => false,
+    }
+}
+
+fn records_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>), smallest: usize) {
+    if !records_pay(&input[..input.len().min(RECORDS_TRIAL)], level) {
+        compress_parallel_with(input, output, level, smallest);
+        return;
+    }
     // Units cut at line ends.
     let mut units: Vec<&[u8]> = Vec::new();
     let mut at = 0usize;
@@ -834,18 +860,8 @@ pub fn compress_records_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8]
     let compressed: Vec<(bool, Vec<u8>)> = units
         .par_iter()
         .map(|unit| {
-            let trial = &unit[..unit.len().min(RECORDS_TRIAL)];
-            let wins = match record::transform(trial) {
-                Some(image) => {
-                    let (mut a, mut b) = (Vec::new(), Vec::new());
-                    level(trial, &mut a);
-                    level(&image, &mut b);
-                    b.len() * 100 < a.len() * 95
-                }
-                None => false,
-            };
             let mut out = Vec::with_capacity(unit.len() / 3 + 1024);
-            if wins {
+            if records_pay(&unit[..unit.len().min(RECORDS_TRIAL)], level) {
                 if let Some(image) = record::transform(unit) {
                     level(&image, &mut out);
                     return (true, out);
@@ -874,7 +890,7 @@ pub fn compress_records_into_max(input: &[u8], output: &mut Vec<u8>) {
 
 /// Ultra level in record mode.
 pub fn compress_records_into_ultra(input: &[u8], output: &mut Vec<u8>) {
-    compress_records_with(input, output, compress_into_ultra)
+    records_with(input, output, compress_into_ultra, PARALLEL_UNIT_ULTRA)
 }
 
 /// Decode a record-mode stream into `dst`: every unit in parallel, its

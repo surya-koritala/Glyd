@@ -461,14 +461,18 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
     }
     // Few distinct values: dictionary + move-to-front ranks.
     let mut distinct: std::collections::HashMap<&[u8], u32, FxBuild> = std::collections::HashMap::default();
+    let few = col.len() / DICT_SHARE + 1;
+    let mut counted = true;
     for &(a, b) in col {
         let n = distinct.len() as u32;
         distinct.entry(&src[a..b]).or_insert(n);
-        if distinct.len() > col.len() / DICT_SHARE + 1 {
+        if distinct.len() > few {
+            // Too many to be a dictionary column; the count is partial.
+            counted = false;
             break;
         }
     }
-    if !col.is_empty() && distinct.len() <= 256 {
+    if counted && !col.is_empty() && distinct.len() <= 256 {
         // The dictionary in first-appearance order and one byte per value.
         *out_type = T_DICT8;
         let mut order: Vec<(&[u8], u32)> = distinct.iter().map(|(k, v)| (*k, *v)).collect();
@@ -485,7 +489,7 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
         streams.push(ids);
         return;
     }
-    if !col.is_empty() && distinct.len() <= col.len() / DICT_SHARE + 1 {
+    if counted && !col.is_empty() {
         *out_type = T_DICT;
         let mut dict = Vec::new();
         let mut ranks = Vec::with_capacity(col.len());
