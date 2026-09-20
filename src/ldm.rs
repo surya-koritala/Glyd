@@ -96,6 +96,8 @@ trait Scan {
     unsafe fn mask16(p: *const u8) -> u32;
 }
 
+/// The fallback where no vector step applies (x86 without AVX2).
+#[allow(dead_code)]
 struct Scalar;
 impl Scan for Scalar {
     #[inline(always)]
@@ -362,26 +364,6 @@ impl Matches {
         Matches { list }
     }
 
-    /// The far match covering `pos`, as (length from `pos`, offset);
-    /// `i` is the caller's cursor into the list, advanced past matches
-    /// that end at or before `pos`.
-    #[inline(always)]
-    pub fn at(&self, i: &mut usize, pos: usize) -> Option<(usize, usize)> {
-        while *i < self.list.len() {
-            let m = self.list[*i];
-            let end = m.start as usize + m.len as usize;
-            if end <= pos {
-                *i += 1;
-                continue;
-            }
-            if (m.start as usize) <= pos {
-                return Some((end - pos, m.off as usize));
-            }
-            return None;
-        }
-        None
-    }
-
     pub fn is_empty(&self) -> bool {
         self.list.is_empty()
     }
@@ -461,8 +443,9 @@ mod tests {
             let (s, l, o) = (f.start as usize, f.len as usize, f.off as usize);
             assert!(data[s..s + l] == data[s - o..s - o + l]);
         }
-        let mut i = 0;
         let f = far[0];
-        assert_eq!(m.at(&mut i, f.start as usize + 10).map(|(l, _)| l), Some(f.len as usize - 10));
+        let mut c = m.cursor(0);
+        assert_eq!(c.at(f.start as usize + 10).map(|(l, _)| l), Some(f.len as usize - 10));
+        assert_eq!(c.at(f.start as usize + f.len as usize), None);
     }
 }

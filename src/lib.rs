@@ -483,7 +483,6 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
     } else {
         ldm::Matches { list: Vec::new() }
     };
-    let mut far_i = 0usize;
     let mut offset = start;
     let mut first = true;
     // One block: the chunk at `offset`, its parse, and the header flags.
@@ -511,7 +510,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
             Parse::Dfast => {
                 DFAST.with_borrow_mut(|t| match dict {
                     Some(d) => v7_encode::find_sequences_dfast_dict(full, offset, chunk_len, t, d.finder(), &mut reps, seqs, literals, scratch),
-                    None => v7_encode::find_sequences_dfast_far(full, offset, chunk_len, t, &far, &mut far_i, &mut reps, seqs, literals, scratch),
+                    None => v7_encode::find_sequences_dfast_far(full, offset, chunk_len, t, &far, &mut reps, seqs, literals, scratch),
                 });
                 // The dfast parse wrote its codes into the scratch as it
                 // went; encode from those.

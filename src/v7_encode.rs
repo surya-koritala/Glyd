@@ -842,13 +842,13 @@ fn lazy_win(pos: &mut usize, found: &mut Found, better: Found) {
 /// so a mispredicted check does not restart that load chain; a hit's
 /// lazy step and a step-1 miss's next probe both use them.
 pub fn find_sequences_dfast(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
-    find_sequences_dfast_impl::<false>(input, block_start, block_len, t, None, &NO_FAR, &mut 0, reps, seqs, literals, codes)
+    find_sequences_dfast_impl::<false>(input, block_start, block_len, t, None, &NO_FAR, reps, seqs, literals, codes)
 }
 
 /// `find_sequences_dfast` with the input's far matches (`ldm::Matches`)
-/// on offer; `far_i` is the caller's cursor into them, kept across blocks.
-pub fn find_sequences_dfast_far(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, far: &crate::ldm::Matches, far_i: &mut usize, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
-    find_sequences_dfast_impl::<false>(input, block_start, block_len, t, None, far, far_i, reps, seqs, literals, codes)
+/// on offer.
+pub fn find_sequences_dfast_far(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, far: &crate::ldm::Matches, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
+    find_sequences_dfast_impl::<false>(input, block_start, block_len, t, None, far, reps, seqs, literals, codes)
 }
 
 static NO_FAR: crate::ldm::Matches = crate::ldm::Matches { list: Vec::new() };
@@ -857,11 +857,11 @@ static NO_FAR: crate::ldm::Matches = crate::ldm::Matches { list: Vec::new() };
 /// content is history before `input` (offsets reach through it), found
 /// through its own tables after the input's.
 pub fn find_sequences_dfast_dict(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: &DictTables, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
-    find_sequences_dfast_impl::<true>(input, block_start, block_len, t, Some(dict), &NO_FAR, &mut 0, reps, seqs, literals, codes)
+    find_sequences_dfast_impl::<true>(input, block_start, block_len, t, Some(dict), &NO_FAR, reps, seqs, literals, codes)
 }
 
 #[inline(always)]
-fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: Option<&DictTables>, far: &crate::ldm::Matches, _far_i: &mut usize, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
+fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: Option<&DictTables>, far: &crate::ldm::Matches, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
     use crate::finder::MatchLen;
     let src = input.as_ptr();
     let (lb, sb) = (t.lbits, t.sbits);
