@@ -36,7 +36,7 @@ Examples:
 }
 
 fn print_version() {
-    println!("glyd 0.1.0");
+    println!("glyd {}", env!("CARGO_PKG_VERSION"));
     #[cfg(target_arch = "x86_64")]
     {
         let avx512 = is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw");

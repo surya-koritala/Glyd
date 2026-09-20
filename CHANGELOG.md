@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.6.0 — 2026-09-20
 
 ### Base mode: content found wherever it moved, ultra at full speed
 - Each unit's region of the base is chosen from a coarse map of the
