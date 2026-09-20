@@ -10,7 +10,9 @@ The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 ([report](docs/benchmarks/suite-2026-09-20.md)): `--max` 3.96 (zstd -3
 3.85) at 0.61× its write speed and 6× its read speed; `--ultra` 4.66
 (zstd -19 4.66); `--max -r` 4.75 at 675 MB/s; `--ultra -r` 5.21.
-Telemetry with `-r`: 2.5–3.5× fewer bytes than zstd -3. Versions with
+Telemetry with `-r`: 2.5–3.5× fewer bytes than zstd -3; application and
+system logs (templates, unreleased): 1.4–3.3× fewer than zstd -3 and
+1.1–2.1× fewer than zstd -19. Versions with
 `--base`: 1.1–2.1× fewer bytes than `zstd -3 --patch-from` at 2–3.5× its
 speed; `--ultra --base` 5–21% fewer than zstd -19's patch. A
 terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
@@ -23,30 +25,32 @@ Details: [experiments/structure/README.md](experiments/structure/README.md).
 
 ## Next, in order of what moves the bill
 
-1. **Record-mode reads.** The column rebuild runs at 24–35 ns per value
-   and makes `-r` reads cost 2–3× zstd's CPU, which is what decides the
-   bill at high read rates. Reserved-capacity writes, a digit-pair
-   integer formatter, the dictionary decoder taking its rank without a
-   second search, an unchecked varint fast path. Gate: rebuild at
-   1.5–2 GB/s per core; `--max -r` the cheapest S3 row at a hundred
-   CPU-billed reads a month.
-2. **Base mode, the rest of the leap.** A base index built once and
+1. **Base mode, the rest of the leap.** A base index built once and
    shared by the units, so `--ultra --base` runs at the plain ultra
    speed instead of 1–4 MB/s; a coarse map of the base so content that
    moved farther than 32 MB is still matched; chains of versions with a
    measured answer to how long a chain before re-basing. Gate: kernel
    pair under zstd -19's patch size at `--max` speed.
-3. **Write speed of `--max`** (0.58–0.66× zstd -3 on one server core):
+2. **Write speed of `--max`** (0.58–0.66× zstd -3 on one server core):
    the finder's cache footprint and the matcher pass. Gate: 0.8× zstd -3
    with the corpus ratio kept.
-4. **Small objects**: a single-pass decoder for compact blocks and a
+3. **Small objects**: a single-pass decoder for compact blocks and a
    cheaper per-object encoder (zstd is 1.4–2× faster per object); a
    dictionary that carries a record schema, so `-r` ratios reach
    one-record objects. Gate: within 1.2× of zstd per object.
-5. **The x86-64 decoder** (0.80× zstd -3 on one Sapphire Rapids core
+4. **The x86-64 decoder** (0.80× zstd -3 on one Sapphire Rapids core
    against 1.03× on Graviton3). Gate: 1.0× in the published run.
-6. **Streaming for v9** in `GlydReader`/`GlydWriter` (v6 levels only
+5. **Streaming for v9** in `GlydReader`/`GlydWriter` (v6 levels only
    today); the CLI already streams batches of units.
+
+Done since v0.5.0: record-mode reads (column-at-a-time rebuild, 1.4–1.7×
+faster; `--max -r` now within 1% of zstd -3's S3 row at ten CPU-billed
+reads a month) and the template shape for logs. The levers were sized
+against each other first
+([experiments/research/README.md](experiments/research/README.md)):
+version chains 5.7× over per-version compression, template logs 1.2–1.6×
+over zstd -19 (measured 1.1–2.1× once built), context mixing 1.2–1.5×
+at ~1 MB/s for cold data only, float columns nothing.
 
 Later, if the CPU is acceptable where it applies: context-mixing literal
 models for the free text inside logs and JSON (the 30% of a compressed

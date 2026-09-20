@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Glyd — compression that moves the storage bill</title>
-<meta name="description" content="Glyd v0.5.0: base mode stores a new version of a dump, image or source tree for a few percent of its size; record mode turns logs, dumps, CSV and JSON lines into typed columns; measured against zstd and LZ4 on real data.">
+<meta name="description" content="Glyd v0.5.0: base mode stores a new version of a dump, image or source tree for a few percent of its size; record mode turns logs of any shape, dumps, CSV and JSON lines into typed columns; measured against zstd and LZ4 on real data.">
 <style>
   :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; --hl:#eef3ff; }
   @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --line:#333; --accent:#6ea0ff; --hl:#1b2233; } }
@@ -68,7 +68,7 @@
   <p class="muted">Compressed alone those versions are 33, 287 and 200 MB: a version costs 1–5% of what it did. Against zstd's fast patch Glyd stores 1.1–2.1× less at 2–3.5× the speed; <code>--ultra --base</code> stores 5–21% less than zstd -19's patch on every pair, slowly. Chunk-level dedup, the backup approach, gains only 1–4× on the same pairs.</p>
 
   <h2>Record mode: the data's own structure, not just its bytes</h2>
-  <p>Byte-level matching (zstd, LZ4, Glyd's own levels) is a plateau: on real data zstd -19, xz and Glyd <code>--ultra</code> land within a few percent of each other. The redundancy of a log, a dump or a telemetry export sits in the same field of every record. <code>glyd -r</code> detects delimited lines, SQL dumps and JSON lines, turns them into one typed stream per field (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those, and rebuilds the bytes exactly. Anything else is left as it is.</p>
+  <p>Byte-level matching (zstd, LZ4, Glyd's own levels) is a plateau: on real data zstd -19, xz and Glyd <code>--ultra</code> land within a few percent of each other. The redundancy of a log, a dump or a telemetry export sits in the same field of every record. <code>glyd -r</code> detects delimited lines, SQL dumps and JSON lines, turns them into one typed stream per field (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those, and rebuilds the bytes exactly. Logs whose lines vary in shape take a template: the line's text with a hole where every token holding a digit was, and the tokens as typed columns keyed by template and slot. Anything else is left as it is.</p>
 
   <div class="wrap"><table>
     <tr><th>Telemetry, 128 MB slices (ratio, higher is smaller)</th><th>LZ4</th><th>zstd -3</th><th>zstd -19</th><th>Glyd --max -r</th><th>Glyd --ultra -r</th></tr>
@@ -78,7 +78,16 @@
     <tr class="g"><td>the same rows as JSON lines</td><td>10.5</td><td>18.7</td><td>31.6</td><td>47.0</td><td>58.0</td></tr>
     <tr class="g"><td>NYC taxi trips, CSV export</td><td>3.3</td><td>5.6</td><td>8.4</td><td>8.9</td><td>9.4</td></tr>
   </table></div>
-  <p class="muted">2.5–3.5× fewer bytes than the fast tier (LZ4, zstd -3), 1.5–2× fewer than zstd -19, written at 340–690 MB/s on 10 cores. Sources and the script that fetches them: <code>scripts/download_ext_corpus.sh</code>.</p>
+  <p class="muted">2.5–3.5× fewer bytes than the fast tier (LZ4, zstd -3), 1.5–2× fewer than zstd -19, written at 340–690 MB/s on 10 cores.</p>
+
+  <div class="wrap"><table>
+    <tr><th>Application and system logs, 128 MB slices (loghub 2.0)</th><th>LZ4</th><th>zstd -3</th><th>zstd -19</th><th>Glyd --max -r</th><th>Glyd --ultra -r</th></tr>
+    <tr class="g"><td>HDFS (Hadoop file system)</td><td>5.6</td><td>10.4</td><td>16.0</td><td>22.0</td><td>27.5</td></tr>
+    <tr class="g"><td>Spark (application logs)</td><td>7.9</td><td>14.5</td><td>25.2</td><td>47.0</td><td>53.6</td></tr>
+    <tr class="g"><td>BGL (supercomputer RAS log)</td><td>6.1</td><td>11.0</td><td>22.4</td><td>15.9</td><td>28.9</td></tr>
+    <tr class="g"><td>Android (system log)</td><td>5.0</td><td>12.9</td><td>23.0</td><td>17.9</td><td>25.4</td></tr>
+  </table></div>
+  <p class="muted">1.4–3.3× fewer bytes than zstd -3 and 1.1–2.1× fewer than zstd -19 with <code>--ultra -r</code>; <code>--max -r</code> writes at 260–460 MB/s and reads back at 1,200–1,400 MB/s. Sources and the script that fetches them: <code>scripts/download_ext_corpus.sh</code>.</p>
 
   <h2>The 8.7 GB corpus on AWS (Graviton3 and Sapphire Rapids, 8 threads)</h2>
   <div class="wrap"><table>
