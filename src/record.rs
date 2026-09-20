@@ -224,6 +224,68 @@ fn parse_time(p: &[u8], text: &[u8]) -> Option<i64> {
     Some((days_from_civil(y, mo, d) * 86400 + (h * 3600 + mi * 60 + s) as i64) * time_scale(p) + frac)
 }
 
+/// Two digits per byte pair, "00".."99".
+static DIGITS2: [u8; 200] = {
+    let mut t = [0u8; 200];
+    let mut i = 0;
+    while i < 100 {
+        t[2 * i] = b'0' + (i / 10) as u8;
+        t[2 * i + 1] = b'0' + (i % 10) as u8;
+        i += 1;
+    }
+    t
+};
+
+/// `out.extend_from_slice(b)` for short values: two overlapping 8-byte
+/// copies when `b` fits 16 bytes, no `memcpy` call.
+#[inline(always)]
+fn append(out: &mut Vec<u8>, b: &[u8]) {
+    let n = b.len();
+    if n <= 16 {
+        out.reserve(16);
+        // SAFETY: 16 bytes reserved; the two copies cover b[..n] exactly
+        // (they overlap or coincide when n < 16) and read within `b`
+        // via `b.as_ptr().add(n - 8)` only when n >= 8.
+        unsafe {
+            let dst = out.as_mut_ptr().add(out.len());
+            if n >= 8 {
+                std::ptr::copy_nonoverlapping(b.as_ptr(), dst, 8);
+                std::ptr::copy_nonoverlapping(b.as_ptr().add(n - 8), dst.add(n - 8), 8);
+            } else {
+                let mut tmp = [0u8; 8];
+                std::ptr::copy_nonoverlapping(b.as_ptr(), tmp.as_mut_ptr(), n);
+                std::ptr::copy_nonoverlapping(tmp.as_ptr(), dst, 8);
+            }
+            out.set_len(out.len() + n);
+        }
+    } else {
+        out.extend_from_slice(b);
+    }
+}
+
+/// The first newline in `b`, eight bytes at a time.
+#[inline(always)]
+fn find_newline(b: &[u8]) -> Option<usize> {
+    find_byte(b, b'\n')
+}
+
+/// The first `c` in `b`, eight bytes at a time.
+#[inline(always)]
+fn find_byte(b: &[u8], c: u8) -> Option<usize> {
+    let pat = u64::from_ne_bytes([c; 8]);
+    let mut i = 0;
+    while i + 8 <= b.len() {
+        let w = u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+        let x = w ^ pat;
+        let z = x.wrapping_sub(0x0101_0101_0101_0101) & !x & 0x8080_8080_8080_8080;
+        if z != 0 {
+            return Some(i + (z.trailing_zeros() / 8) as usize);
+        }
+        i += 8;
+    }
+    b[i..].iter().position(|&v| v == c).map(|p| i + p)
+}
+
 /// `v` as `n` zero-padded decimal digits.
 #[inline]
 fn push_digits(out: &mut Vec<u8>, mut v: u64, n: usize) {
@@ -238,36 +300,72 @@ fn push_digits(out: &mut Vec<u8>, mut v: u64, n: usize) {
 /// `v` in decimal, as `i64::to_string` prints it.
 #[inline]
 fn push_int(out: &mut Vec<u8>, v: i64) {
-    if v < 0 {
-        out.push(b'-');
-    }
+    out.reserve(21);
+    // SAFETY: 21 bytes reserved: a sign and up to 20 digits.
+    unsafe { push_int_reserved(out, v) }
+}
+
+/// `push_int` into space the caller reserved (21 bytes per value).
+#[inline(always)]
+unsafe fn push_int_reserved(out: &mut Vec<u8>, v: i64) {
     let mut u = v.unsigned_abs();
-    let mut buf = [0u8; 20];
-    let mut i = buf.len();
-    loop {
-        i -= 1;
-        buf[i] = b'0' + (u % 10) as u8;
-        u /= 10;
-        if u == 0 {
-            break;
+    {
+        let base = out.as_mut_ptr().add(out.len());
+        let mut p = base;
+        if v < 0 {
+            *p = b'-';
+            p = p.add(1);
         }
+        let digits = if u < 10 { 1 } else if u < 100 { 2 } else if u < 10_000 { if u < 1000 { 3 } else { 4 } } else if u < 100_000_000 { if u < 1_000_000 { if u < 100_000 { 5 } else { 6 } } else if u < 10_000_000 { 7 } else { 8 } } else { 8 + { let mut n = 0; let mut t = u / 100_000_000; while t > 0 { n += 1; t /= 10; } n } };
+        let mut i = digits;
+        while i >= 2 {
+            let q = u / 100;
+            let r = (u - q * 100) as usize;
+            i -= 2;
+            std::ptr::copy_nonoverlapping(DIGITS2.as_ptr().add(2 * r), p.add(i), 2);
+            u = q;
+        }
+        if i == 1 {
+            *p = b'0' + u as u8;
+        }
+        out.set_len(out.len() + digits + (v < 0) as usize);
     }
-    out.extend_from_slice(&buf[i..]);
 }
 
 /// The text of `secs` under pattern `p`.
 fn format_time(p: &[u8], value: i64, out: &mut Vec<u8>) {
+    format_time_cached(p, value, out, &mut DayCache::default())
+}
+
+/// The last civil date a time column printed: consecutive values are
+/// mostly of one day, and the date is the costly part.
+#[derive(Default)]
+struct DayCache {
+    days: i64,
+    ymd: (i64, u32, u32),
+    valid: bool,
+}
+
+fn format_time_cached(p: &[u8], value: i64, out: &mut Vec<u8>, day: &mut DayCache) {
     let scale = time_scale(p);
     let (secs, frac) = (value.div_euclid(scale), value.rem_euclid(scale));
     let days = secs.div_euclid(86400);
     let rem = secs.rem_euclid(86400) as u32;
-    let (y, mo, d) = civil_from_days(days);
+    if !day.valid || day.days != days {
+        day.ymd = civil_from_days(days);
+        day.days = days;
+        day.valid = true;
+    }
+    let (y, mo, d) = day.ymd;
     let (h, mi, s) = (rem / 3600, rem / 60 % 60, rem % 60);
+    out.reserve(p.len() + 8);
     let mut i = 0;
     while i < p.len() {
         match p[i] {
             b'Y' => {
-                push_digits(out, y.rem_euclid(10000) as u64, 4);
+                let y = y.rem_euclid(10000) as usize;
+                push2(out, y / 100);
+                push2(out, y % 100);
                 i += 4;
             }
             b'M' if p[i..].starts_with(b"MMM") => {
@@ -275,23 +373,23 @@ fn format_time(p: &[u8], value: i64, out: &mut Vec<u8>) {
                 i += 3;
             }
             b'm' if p[i..].starts_with(b"mm") && i > 0 && p[i - 1] != b':' && (i + 2 >= p.len() || p[i + 2] != b':') => {
-                push_digits(out, mo as u64, 2);
+                push2(out, mo as usize);
                 i += 2;
             }
             b'D' => {
-                push_digits(out, d as u64, 2);
+                push2(out, d as usize);
                 i += 2;
             }
             b'h' => {
-                push_digits(out, h as u64, 2);
+                push2(out, h as usize);
                 i += 2;
             }
             b'm' => {
-                push_digits(out, mi as u64, 2);
+                push2(out, mi as usize);
                 i += 2;
             }
             b's' => {
-                push_digits(out, s as u64, 2);
+                push2(out, s as usize);
                 i += 2;
             }
             b'f' => {
@@ -305,6 +403,12 @@ fn format_time(p: &[u8], value: i64, out: &mut Vec<u8>) {
             }
         }
     }
+}
+
+/// Two digits of `v` (< 100).
+#[inline(always)]
+fn push2(out: &mut Vec<u8>, v: usize) {
+    out.extend_from_slice(&DIGITS2[2 * v..2 * v + 2]);
 }
 /// A column is dictionary-coded when at most one value in this many is
 /// distinct: the dictionary holds each once, the ranks are small
@@ -326,6 +430,22 @@ fn put_varint(out: &mut Vec<u8>, mut v: u64) {
 }
 
 fn get_varint(src: &[u8], pos: &mut usize) -> Result<u64> {
+    // One- and two-byte values (nearly all deltas) from one 8-byte load.
+    if *pos + 8 <= src.len() {
+        let w = u64::from_le_bytes(src[*pos..*pos + 8].try_into().unwrap());
+        if w & 0x80 == 0 {
+            *pos += 1;
+            return Ok(w & 0x7F);
+        }
+        if w & 0x8000 == 0 {
+            *pos += 2;
+            return Ok((w & 0x7F) | ((w >> 8) & 0x7F) << 7);
+        }
+        if w & 0x80_0000 == 0 {
+            *pos += 3;
+            return Ok((w & 0x7F) | ((w >> 8) & 0x7F) << 7 | ((w >> 16) & 0x7F) << 14);
+        }
+    }
     let (mut v, mut shift) = (0u64, 0u32);
     loop {
         let b = *src.get(*pos).ok_or(corrupt("record image: truncated varint"))?;
@@ -356,33 +476,53 @@ fn unzigzag(v: u64) -> i64 {
 const RECENT: usize = 64;
 
 struct Recent {
-    ids: Vec<u32>,
+    /// A ring: the front is `ids[head]`, position p is `ids[(head + p) % RECENT]`.
+    ids: [u32; RECENT],
+    head: usize,
+    len: usize,
 }
 
 impl Recent {
     fn new() -> Recent {
-        Recent { ids: Vec::with_capacity(RECENT) }
+        Recent { ids: [0; RECENT], head: 0, len: 0 }
     }
     /// The value's position, moving it to the front; None (and the value
-    /// put in front) when it was not in the list.
+    /// put in front) when it was not in the list. The encoder's side.
     fn touch(&mut self, id: u32) -> Option<usize> {
-        let pos = self.ids.iter().position(|&x| x == id);
+        let pos = (0..self.len).position(|p| self.ids[(self.head + p) % RECENT] == id);
         match pos {
             Some(p) => {
-                self.ids.copy_within(..p, 1);
-                self.ids[0] = id;
+                self.touch_at(p);
             }
-            None => {
-                if self.ids.len() == RECENT {
-                    self.ids.pop();
-                }
-                self.ids.insert(0, id);
-            }
+            None => self.push_front(id),
         }
         pos
     }
+    #[inline(always)]
     fn at(&self, p: usize) -> Option<u32> {
-        self.ids.get(p).copied()
+        if p < self.len { Some(self.ids[(self.head + p) % RECENT]) } else { None }
+    }
+    /// The value at position `p` (below `len`) moved to the front: the
+    /// entries before it step back one.
+    #[inline(always)]
+    fn touch_at(&mut self, p: usize) -> u32 {
+        let id = self.ids[(self.head + p) % RECENT];
+        let mut i = p;
+        while i > 0 {
+            self.ids[(self.head + i) % RECENT] = self.ids[(self.head + i - 1) % RECENT];
+            i -= 1;
+        }
+        self.ids[self.head] = id;
+        id
+    }
+    /// A value not in the list put in front; the last one falls off.
+    #[inline(always)]
+    fn push_front(&mut self, id: u32) {
+        self.head = (self.head + RECENT - 1) % RECENT;
+        self.ids[self.head] = id;
+        if self.len < RECENT {
+            self.len += 1;
+        }
     }
 }
 
@@ -1152,6 +1292,248 @@ impl<'a> Decoded<'a> {
     }
 }
 
+
+/// A time column's values printed with the minute's prefix cached:
+/// consecutive values are mostly in one minute, and everything before
+/// the seconds field depends on the minute alone.
+struct TimeFmt {
+    pattern: &'static [u8],
+    /// Where "ss" starts in the pattern.
+    sec_at: usize,
+    scale: i64,
+    prefix: Vec<u8>,
+    minute: i64,
+    valid: bool,
+    day: DayCache,
+}
+
+impl TimeFmt {
+    fn new(pattern: &'static [u8]) -> TimeFmt {
+        // The seconds field is the 's' pair that is not a month or a minute.
+        let sec_at = pattern.windows(2).position(|w| w == b"ss").unwrap_or(pattern.len());
+        TimeFmt { pattern, sec_at, scale: time_scale(pattern), prefix: Vec::with_capacity(32), minute: 0, valid: false, day: DayCache::default() }
+    }
+
+    #[inline(always)]
+    fn push(&mut self, value: i64, out: &mut Vec<u8>) {
+        let (secs, frac) = (value.div_euclid(self.scale), value.rem_euclid(self.scale));
+        let minute = secs.div_euclid(60);
+        if !self.valid || minute != self.minute {
+            self.prefix.clear();
+            // The prefix pattern has no fraction digits: its unit is the second.
+            format_time_cached(&self.pattern[..self.sec_at], minute * 60, &mut self.prefix, &mut self.day);
+            self.minute = minute;
+            self.valid = true;
+        }
+        out.extend_from_slice(&self.prefix);
+        let s = secs.rem_euclid(60) as usize;
+        if self.sec_at < self.pattern.len() {
+            push2(out, s);
+            let mut i = self.sec_at + 2;
+            let p = self.pattern;
+            while i < p.len() {
+                if p[i] == b'f' {
+                    let n = p[i..].iter().take_while(|&&c| c == b'f').count();
+                    push_digits(out, frac as u64, n);
+                    i += n;
+                } else {
+                    out.push(p[i]);
+                    i += 1;
+                }
+            }
+        }
+    }
+}
+
+/// A column's values decoded ahead of the rows: `bytes` holds them back
+/// to back, `ends[i]` is where value `i` ends. Decoding a whole column
+/// in one loop keeps its state in registers and its branch pattern
+/// constant; the rows are then assembled by copying.
+#[derive(Default)]
+struct ColTable {
+    bytes: Vec<u8>,
+    ends: Vec<u32>,
+}
+
+impl ColTable {
+    #[inline(always)]
+    fn value(&self, i: usize) -> &[u8] {
+        let start = if i == 0 { 0 } else { self.ends[i - 1] as usize };
+        &self.bytes[start..self.ends[i] as usize]
+    }
+}
+
+/// `n` values of column `c` into `t`.
+fn decode_column(c: &mut Decoded, n: usize, t: &mut ColTable) -> Result<()> {
+    t.bytes.clear();
+    t.ends.clear();
+    t.ends.reserve(n);
+    let out = &mut t.bytes;
+    match c {
+        Decoded::Int { src, pos, last } => {
+            out.reserve(n * 21 + 8);
+            for _ in 0..n {
+                let d = get_varint(src, pos)?;
+                *last = last.wrapping_add(unzigzag(d));
+                // SAFETY: 21 bytes per value reserved above.
+                unsafe { push_int_reserved(out, *last) };
+                t.ends.push(out.len() as u32);
+            }
+        }
+        Decoded::Dict8 { dict, ids, pos } => {
+            let ids = ids.get(*pos..*pos + n).ok_or(corrupt("record image: ids overrun"))?;
+            *pos += n;
+            if dict.iter().all(|e| e.len() <= 16) && !dict.is_empty() {
+                // Every entry padded to 16 bytes: one unconditional copy
+                // per value, the length from a table.
+                let mut pad = vec![[0u8; 16]; 256];
+                let mut lens = [0u8; 256];
+                for (i, e) in dict.iter().enumerate() {
+                    pad[i][..e.len()].copy_from_slice(e);
+                    lens[i] = e.len() as u8;
+                }
+                if ids.iter().any(|&id| id as usize >= dict.len()) {
+                    return Err(corrupt("record image: dictionary id"));
+                }
+                out.reserve(n * 16 + 16);
+                // SAFETY: n * 16 + 16 bytes reserved, every id below
+                // dict.len() <= 256; each value writes 16 bytes and
+                // advances by its length.
+                unsafe {
+                    let mut p = out.as_mut_ptr().add(out.len());
+                    let base = out.as_ptr().add(out.len()) as usize;
+                    for &id in ids {
+                        std::ptr::copy_nonoverlapping(pad.get_unchecked(id as usize).as_ptr(), p, 16);
+                        p = p.add(*lens.get_unchecked(id as usize) as usize);
+                        t.ends.push((out.len() + (p as usize - base)) as u32);
+                    }
+                    let len = p as usize - out.as_ptr() as usize;
+                    out.set_len(len);
+                }
+            } else {
+                for &id in ids {
+                    append(out, dict.get(id as usize).ok_or(corrupt("record image: dictionary id"))?);
+                    t.ends.push(out.len() as u32);
+                }
+            }
+        }
+        Decoded::Text { rest } => {
+            out.reserve(rest.len());
+            for _ in 0..n {
+                let end = find_newline(rest).unwrap_or(rest.len());
+                append(out, &rest[..end]);
+                *rest = if end < rest.len() { &rest[end + 1..] } else { &rest[end..] };
+                t.ends.push(out.len() as u32);
+            }
+        }
+        Decoded::Time { src, pos, last, pattern, fracs, fpos, esc } => {
+            let mut fmt = TimeFmt::new(pattern);
+            out.reserve(n * (pattern.len() + 1));
+            for _ in 0..n {
+                let d = get_varint(src, pos)?;
+                if d == 0 {
+                    let end = find_newline(esc).ok_or(corrupt("record image: time escape"))?;
+                    out.extend_from_slice(&esc[..end]);
+                    *esc = &esc[end + 1..];
+                } else {
+                    *last = last.wrapping_add(unzigzag(d - 1));
+                    if last.unsigned_abs() > 1 << 40 {
+                        return Err(corrupt("record image: time out of range"));
+                    }
+                    let frac = if fmt.scale > 1 { get_varint(fracs, fpos)? as i64 } else { 0 };
+                    if frac >= fmt.scale {
+                        return Err(corrupt("record image: time fraction"));
+                    }
+                    fmt.push(*last * fmt.scale + frac, out);
+                }
+                t.ends.push(out.len() as u32);
+            }
+        }
+        _ => {
+            let mut day = DayCache::default();
+            for _ in 0..n {
+                next_value(c, out, &mut day)?;
+                t.ends.push(out.len() as u32);
+            }
+        }
+    }
+    // Padding the row assembly's 32-byte copies read into.
+    out.resize(out.len() + 32, 0);
+    Ok(())
+}
+
+
+/// The rows assembled into `out` through a raw pointer: the space is
+/// reserved once from the tables' sizes, so no write checks capacity.
+struct Rows {
+    p: *mut u8,
+}
+
+impl Rows {
+    /// Reserve for `extra` bytes plus the tables, plus 32 for the short
+    /// copies' overrun, and start writing at the end of `out`.
+    fn start(out: &mut Vec<u8>, tables: &[ColTable], extra: usize) -> Rows {
+        let total: usize = tables.iter().map(|t| t.bytes.len()).sum::<usize>() + extra + 32;
+        debug_assert!(tables.iter().all(|t| t.bytes.len() >= 32));
+        out.reserve(total);
+        Rows { p: unsafe { out.as_mut_ptr().add(out.len()) } }
+    }
+    #[inline(always)]
+    unsafe fn byte(&mut self, b: u8) {
+        *self.p = b;
+        self.p = self.p.add(1);
+    }
+    /// `b` copied exactly (a frame or raw slice: nothing readable past it).
+    #[inline(always)]
+    unsafe fn bytes(&mut self, b: &[u8]) {
+        std::ptr::copy_nonoverlapping(b.as_ptr(), self.p, b.len());
+        self.p = self.p.add(b.len());
+    }
+    /// Value `i` of `t`, which holds at least `i + 1` values: a 16- or
+    /// 32-byte copy for a short value (the table's padding makes the read
+    /// safe, the reservation the write), no branch on its exact length.
+    #[inline(always)]
+    unsafe fn value(&mut self, t: &ColTable, i: usize) {
+        let start = if i == 0 { 0 } else { *t.ends.get_unchecked(i - 1) as usize };
+        let end = *t.ends.get_unchecked(i) as usize;
+        let n = end - start;
+        let src = t.bytes.as_ptr().add(start);
+        if n <= 16 {
+            std::ptr::copy_nonoverlapping(src, self.p, 16);
+        } else if n <= 32 {
+            std::ptr::copy_nonoverlapping(src, self.p, 32);
+        } else {
+            std::ptr::copy_nonoverlapping(src, self.p, n);
+        }
+        self.p = self.p.add(n);
+    }
+    unsafe fn finish(self, out: &mut Vec<u8>) {
+        let n = self.p.offset_from(out.as_ptr()) as usize;
+        debug_assert!(n <= out.capacity());
+        out.set_len(n);
+    }
+}
+
+thread_local! {
+    /// Column tables kept across rebuilds (their capacity is the work).
+    static TABLES: std::cell::RefCell<Vec<ColTable>> = std::cell::RefCell::new(Vec::new());
+}
+
+/// Every column decoded into the thread's tables (`n` values each,
+/// or `counts[i]` when given), returned for the rows to be assembled.
+fn decode_columns(cols: &mut [Decoded], counts: &[usize]) -> Result<Vec<ColTable>> {
+    let mut tables = TABLES.with(|t| std::mem::take(&mut *t.borrow_mut()));
+    tables.resize_with(cols.len(), ColTable::default);
+    for (i, c) in cols.iter_mut().enumerate() {
+        decode_column(c, counts[i], &mut tables[i])?;
+    }
+    Ok(tables)
+}
+
+fn return_tables(tables: Vec<ColTable>) {
+    TABLES.with(|t| *t.borrow_mut() = tables);
+}
+
 /// Rebuild the input from a record image.
 pub fn inverse(image: &[u8]) -> Result<Vec<u8>> {
     let mut out = Vec::new();
@@ -1208,27 +1590,47 @@ pub fn inverse_into(image: &[u8], out: &mut Vec<u8>) -> Result<()> {
             for &t in types {
                 cols.push(Decoded::new(t, &mut it)?);
             }
+            if kind.iter().any(|&k| k > 1) {
+                return Err(corrupt("record image: line kind"));
+            }
+            let records = kind.iter().filter(|&&k| k == 0).count();
+            let t0 = std::time::Instant::now();
+            let tables = decode_columns(&mut cols, &vec![records; fields])?;
+            let t_dec = t0.elapsed();
+            let t1 = std::time::Instant::now();
+            // Every table holds `records` values (decode_column made
+            // exactly that many), so the writes below are within the
+            // reservation: values, a delimiter per field, a newline per
+            // line, the raw lines.
+            let mut w = Rows::start(out, &tables, raw.len() + n_lines * (fields + 1) + 1);
             let mut raw_rest = raw;
-            for (li, &k) in kind.iter().enumerate() {
-                if li > 0 {
-                    out.push(b'\n');
-                }
-                if k == 1 {
-                    let end = raw_rest.iter().position(|&b| b == b'\n').unwrap_or(raw_rest.len());
-                    out.extend_from_slice(&raw_rest[..end]);
-                    raw_rest = if end < raw_rest.len() { &raw_rest[end + 1..] } else { &raw_rest[end..] };
-                    continue;
-                }
-                for (ci, c) in cols.iter_mut().enumerate() {
-                    if ci > 0 {
-                        out.push(delimiter);
+            let mut r = 0usize;
+            unsafe {
+                for (li, &k) in kind.iter().enumerate() {
+                    if li > 0 {
+                        w.byte(b'\n');
                     }
-                    next_value(c, out)?;
+                    if k == 1 {
+                        let end = find_newline(raw_rest).unwrap_or(raw_rest.len());
+                        w.bytes(&raw_rest[..end]);
+                        raw_rest = if end < raw_rest.len() { &raw_rest[end + 1..] } else { &raw_rest[end..] };
+                        continue;
+                    }
+                    for (ci, t) in tables.iter().enumerate() {
+                        if ci > 0 {
+                            w.byte(delimiter);
+                        }
+                        w.value(t, r);
+                    }
+                    r += 1;
                 }
+                if trailing_newline {
+                    w.byte(b'\n');
+                }
+                w.finish(out);
             }
-            if trailing_newline {
-                out.push(b'\n');
-            }
+            if std::env::var_os("REC_TIMING").is_some() { eprintln!("decode {:?} assemble {:?}", t_dec, t1.elapsed()); }
+            return_tables(tables);
         }
         MODE_SQL => {
             let frame = *it.next().ok_or(corrupt("record image: missing frame"))?;
@@ -1236,31 +1638,37 @@ pub fn inverse_into(image: &[u8], out: &mut Vec<u8>) -> Result<()> {
             for &t in types {
                 cols.push(Decoded::new(t, &mut it)?);
             }
+            let tables = decode_columns(&mut cols, &vec![n_lines; fields])?;
+            let mut w = Rows::start(out, &tables, frame.len() + n_lines * (fields + 2));
             let mut records = 0usize;
             let mut at = 0usize;
-            while at < frame.len() {
-                let z = match frame[at..].iter().position(|&b| b == 0) {
-                    Some(p) => at + p,
-                    None => {
-                        out.extend_from_slice(&frame[at..]);
-                        break;
+            unsafe {
+                while at < frame.len() {
+                    let z = match find_byte(&frame[at..], 0) {
+                        Some(p) => at + p,
+                        None => {
+                            w.bytes(&frame[at..]);
+                            break;
+                        }
+                    };
+                    w.bytes(&frame[at..z]);
+                    at = z + 1;
+                    if records >= n_lines {
+                        return Err(corrupt("record image: more tuples than records"));
                     }
-                };
-                out.extend_from_slice(&frame[at..z]);
-                at = z + 1;
-                records += 1;
-                if records > n_lines {
-                    return Err(corrupt("record image: more tuples than records"));
-                }
-                out.push(b'(');
-                for (ci, c) in cols.iter_mut().enumerate() {
-                    if ci > 0 {
-                        out.push(b',');
+                    w.byte(b'(');
+                    for (ci, t) in tables.iter().enumerate() {
+                        if ci > 0 {
+                            w.byte(b',');
+                        }
+                        w.value(t, records);
                     }
-                    next_value(c, out)?;
+                    w.byte(b')');
+                    records += 1;
                 }
-                out.push(b')');
+                w.finish(out);
             }
+            return_tables(tables);
         }
         MODE_JSON => {
             let _names = *it.next().ok_or(corrupt("record image: missing paths"))?;
@@ -1270,26 +1678,51 @@ pub fn inverse_into(image: &[u8], out: &mut Vec<u8>) -> Result<()> {
             for &t in types {
                 cols.push(Decoded::new(t, &mut it)?);
             }
+            // The column of every hole, and how many each column has.
+            let mut ids: Vec<u32> = Vec::with_capacity(n_lines);
+            let mut counts = vec![0usize; fields];
             let mut opos = 0usize;
+            while opos < order.len() {
+                let id = get_varint(order, &mut opos)? as usize;
+                if id >= fields {
+                    return Err(corrupt("record image: column id"));
+                }
+                counts[id] += 1;
+                ids.push(id as u32);
+            }
+            if ids.len() != n_lines {
+                return Err(corrupt("record image: hole count"));
+            }
+            let tables = decode_columns(&mut cols, &counts)?;
+            let mut w = Rows::start(out, &tables, frame.len());
+            let mut next = vec![0usize; fields];
             let mut holes = 0usize;
             let mut at = 0usize;
-            while at < frame.len() {
-                let z = match frame[at..].iter().position(|&b| b == 0) {
-                    Some(p) => at + p,
-                    None => {
-                        out.extend_from_slice(&frame[at..]);
-                        break;
+            unsafe {
+                while at < frame.len() {
+                    let z = match find_byte(&frame[at..], 0) {
+                        Some(p) => at + p,
+                        None => {
+                            w.bytes(&frame[at..]);
+                            break;
+                        }
+                    };
+                    w.bytes(&frame[at..z]);
+                    at = z + 1;
+                    if holes >= n_lines {
+                        return Err(corrupt("record image: more holes than values"));
                     }
-                };
-                out.extend_from_slice(&frame[at..z]);
-                at = z + 1;
-                holes += 1;
-                if holes > n_lines {
-                    return Err(corrupt("record image: more holes than values"));
+                    // `ids` came from `order` and `counts` from `ids`:
+                    // column `id` holds `counts[id]` values, and `next[id]`
+                    // stays below that.
+                    let id = ids[holes] as usize;
+                    w.value(&tables[id], next[id]);
+                    next[id] += 1;
+                    holes += 1;
                 }
-                let id = get_varint(order, &mut opos)? as usize;
-                next_value(cols.get_mut(id).ok_or(corrupt("record image: column id"))?, out)?;
+                w.finish(out);
             }
+            return_tables(tables);
         }
         _ => return Err(corrupt("record image: mode")),
     }
@@ -1297,7 +1730,7 @@ pub fn inverse_into(image: &[u8], out: &mut Vec<u8>) -> Result<()> {
 }
 
 /// Append the column's next value to `out`.
-fn next_value(c: &mut Decoded, out: &mut Vec<u8>) -> Result<()> {
+fn next_value(c: &mut Decoded, out: &mut Vec<u8>, day: &mut DayCache) -> Result<()> {
     match c {
         Decoded::Int { src, pos, last } => {
             let d = get_varint(src, pos)?;
@@ -1307,12 +1740,12 @@ fn next_value(c: &mut Decoded, out: &mut Vec<u8>) -> Result<()> {
         Decoded::Dict8 { dict, ids, pos } => {
             let id = *ids.get(*pos).ok_or(corrupt("record image: ids overrun"))? as usize;
             *pos += 1;
-            out.extend_from_slice(dict.get(id).ok_or(corrupt("record image: dictionary id"))?);
+            append(out, dict.get(id).ok_or(corrupt("record image: dictionary id"))?);
         }
         Decoded::Time { src, pos, last, pattern, fracs, fpos, esc } => {
             let d = get_varint(src, pos)?;
             if d == 0 {
-                let end = esc.iter().position(|&b| b == b'\n').ok_or(corrupt("record image: time escape"))?;
+                let end = find_newline(esc).ok_or(corrupt("record image: time escape"))?;
                 out.extend_from_slice(&esc[..end]);
                 *esc = &esc[end + 1..];
                 return Ok(());
@@ -1326,33 +1759,43 @@ fn next_value(c: &mut Decoded, out: &mut Vec<u8>) -> Result<()> {
             if frac >= scale {
                 return Err(corrupt("record image: time fraction"));
             }
-            format_time(pattern, *last * scale + frac, out);
+            format_time_cached(pattern, *last * scale + frac, out, day);
         }
         Decoded::Dict { dict, ranks, pos, ids, ids_pos, recent, next_new } => {
             let r = *ranks.get(*pos).ok_or(corrupt("record image: ranks overrun"))? as usize;
             *pos += 1;
             let id = if r == 0 {
                 let e = get_varint(ids, ids_pos)?;
-                if e == 0 {
+                let id = if e == 0 {
                     let id = *next_new;
                     *next_new += 1;
                     id
                 } else {
                     (e - 1) as usize
+                };
+                if id >= dict.len() {
+                    return Err(corrupt("record image: dictionary id"));
                 }
+                // An escaped value may already sit in the list (a
+                // corrupt image says so): the encoder never escapes one
+                // that is, so a duplicate is only a wasted slot.
+                recent.push_front(id as u32);
+                id
             } else {
-                recent.at(r - 1).ok_or(corrupt("record image: recency rank"))? as usize
+                if r - 1 >= recent.len {
+                    return Err(corrupt("record image: recency rank"));
+                }
+                recent.touch_at(r - 1) as usize
             };
             if id >= dict.len() {
                 return Err(corrupt("record image: dictionary id"));
             }
-            recent.touch(id as u32);
-            out.extend_from_slice(dict[id]);
+            append(out, dict[id]);
         }
         Decoded::Dec { src, pos, last, scale, places, ppos, esc } => {
             let d = get_varint(src, pos)?;
             if d == 0 {
-                let end = esc.iter().position(|&b| b == b'\n').ok_or(corrupt("record image: decimal escape"))?;
+                let end = find_newline(esc).ok_or(corrupt("record image: decimal escape"))?;
                 out.extend_from_slice(&esc[..end]);
                 *esc = &esc[end + 1..];
                 return Ok(());
@@ -1378,8 +1821,8 @@ fn next_value(c: &mut Decoded, out: &mut Vec<u8>) -> Result<()> {
             }
         }
         Decoded::Text { rest } => {
-            let end = rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
-            out.extend_from_slice(&rest[..end]);
+            let end = find_newline(rest).unwrap_or(rest.len());
+            append(out, &rest[..end]);
             *rest = if end < rest.len() { &rest[end + 1..] } else { &rest[end..] };
         }
     }
@@ -1517,6 +1960,23 @@ mod tests {
             assert_eq!(out, t.as_bytes(), "{t}");
         }
         assert!(parse_time(DATE_PATTERNS[4], b"2024-02-01 00:04:45.00000x").is_none());
+        // Through a column: consecutive values across minutes, days and
+        // years, each pattern, with and without fractions.
+        for p in ["2024-02-01 00:04:45.000000", "2024-01-15T12:00:01.123Z", "2024-01-15T12:00:01Z", "[19/Sep/2026:14:02:05", "2024-02-01 00:04:45"] {
+            let mut s = Vec::new();
+            for i in 0..3000u64 {
+                let secs = 1_706_745_885 + i * 37 + (i % 7) * 86_400 * 200;
+                let mut t = Vec::new();
+                let pi = DATE_PATTERNS.iter().position(|q| parse_time(q, p.as_bytes()).is_some()).unwrap();
+                let scale = time_scale(DATE_PATTERNS[pi]);
+                format_time(DATE_PATTERNS[pi], secs as i64 * scale + (i as i64 * 7919) % scale, &mut t);
+                s.extend_from_slice(b"x,");
+                s.extend_from_slice(&t);
+                s.extend_from_slice(format!(",{}\n", i % 5).as_bytes());
+            }
+            let img = transform(&s).expect("transforms");
+            assert!(inverse(&img).unwrap() == s, "{p}");
+        }
     }
 
     #[test]
