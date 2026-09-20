@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Exact recovery through the CLI: every file given (default: the whole
 # benchmark corpus) at every level, single- and multi-core, must
-# decompress to the original bytes (cmp), and corrupted copies of the
+# decompress to the original bytes (cmp), record mode included, and corrupted copies of the
 # compressed file (bit flips, byte overwrites, truncations) must be
 # rejected or, if their checksum still passes, decode to the original
 # bytes. Exit status is non-zero on any failure.
@@ -32,7 +32,7 @@ PY
 for f in "${FILES[@]}"; do
     [ -f "$f" ] || continue
     name="$(basename "$f")"
-    for level in "-t" "-1" "" "--max" "--ultra"; do
+    for level in "-t" "-1" "" "--max" "--ultra" "--max -r" "--ultra -r"; do
         for cores in "-s" "-m"; do
             label="$name level=${level:-default} $cores"
             if ! "$GLYD" $level $cores -c "$f" -o "$TMP/c.glyd" 2>"$TMP/err"; then echo "FAIL compress: $label: $(cat "$TMP/err")"; fail=$((fail+1)); continue; fi
