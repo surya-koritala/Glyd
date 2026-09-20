@@ -289,11 +289,23 @@ fn find_byte(b: &[u8], c: u8) -> Option<usize> {
 /// `v` as `n` zero-padded decimal digits.
 #[inline]
 fn push_digits(out: &mut Vec<u8>, mut v: u64, n: usize) {
-    let start = out.len();
-    out.resize(start + n, b'0');
-    for i in (0..n).rev() {
-        out[start + i] = b'0' + (v % 10) as u8;
-        v /= 10;
+    out.reserve(n + 1);
+    // SAFETY: n + 1 bytes reserved; pairs are written from the end, a
+    // leading odd digit last.
+    unsafe {
+        let base = out.as_mut_ptr().add(out.len());
+        let mut i = n;
+        while i >= 2 {
+            let q = v / 100;
+            let r = (v - q * 100) as usize;
+            i -= 2;
+            std::ptr::copy_nonoverlapping(DIGITS2.as_ptr().add(2 * r), base.add(i), 2);
+            v = q;
+        }
+        if i == 1 {
+            *base = b'0' + (v % 10) as u8;
+        }
+        out.set_len(out.len() + n);
     }
 }
 
@@ -405,10 +417,16 @@ fn format_time_cached(p: &[u8], value: i64, out: &mut Vec<u8>, day: &mut DayCach
     }
 }
 
-/// Two digits of `v` (< 100).
+/// Two digits of `v` (< 100): one 2-byte write.
 #[inline(always)]
 fn push2(out: &mut Vec<u8>, v: usize) {
-    out.extend_from_slice(&DIGITS2[2 * v..2 * v + 2]);
+    let pair = u16::from_ne_bytes([DIGITS2[2 * v], DIGITS2[2 * v + 1]]);
+    out.reserve(2);
+    // SAFETY: 2 bytes reserved.
+    unsafe {
+        std::ptr::write_unaligned(out.as_mut_ptr().add(out.len()) as *mut u16, pair);
+        out.set_len(out.len() + 2);
+    }
 }
 /// A column is dictionary-coded when at most one value in this many is
 /// distinct: the dictionary holds each once, the ranks are small
@@ -1301,31 +1319,132 @@ struct TimeFmt {
     /// Where "ss" starts in the pattern.
     sec_at: usize,
     scale: i64,
-    prefix: Vec<u8>,
+    /// The prefix's fields in order, compiled from the pattern once.
+    ops: Vec<TimeOp>,
+    /// The minute's prefix, padded: copied as one 32-byte block.
+    prefix: [u8; 32],
+    prefix_len: usize,
     minute: i64,
     valid: bool,
     day: DayCache,
+}
+
+#[derive(Clone, Copy)]
+enum TimeOp {
+    Lit(u8),
+    Year,
+    Month,
+    MonthName,
+    Day,
+    Hour,
+    Minute,
 }
 
 impl TimeFmt {
     fn new(pattern: &'static [u8]) -> TimeFmt {
         // The seconds field is the 's' pair that is not a month or a minute.
         let sec_at = pattern.windows(2).position(|w| w == b"ss").unwrap_or(pattern.len());
-        TimeFmt { pattern, sec_at, scale: time_scale(pattern), prefix: Vec::with_capacity(32), minute: 0, valid: false, day: DayCache::default() }
+        let p = &pattern[..sec_at];
+        let mut ops = Vec::new();
+        let mut i = 0;
+        while i < p.len() {
+            match p[i] {
+                b'Y' => {
+                    ops.push(TimeOp::Year);
+                    i += 4;
+                }
+                b'M' if p[i..].starts_with(b"MMM") => {
+                    ops.push(TimeOp::MonthName);
+                    i += 3;
+                }
+                b'm' if p[i..].starts_with(b"mm") && i > 0 && p[i - 1] != b':' && (i + 2 >= p.len() || p[i + 2] != b':') => {
+                    ops.push(TimeOp::Month);
+                    i += 2;
+                }
+                b'D' => {
+                    ops.push(TimeOp::Day);
+                    i += 2;
+                }
+                b'h' => {
+                    ops.push(TimeOp::Hour);
+                    i += 2;
+                }
+                b'm' => {
+                    ops.push(TimeOp::Minute);
+                    i += 2;
+                }
+                c => {
+                    ops.push(TimeOp::Lit(c));
+                    i += 1;
+                }
+            }
+        }
+        assert!(sec_at <= 32, "time patterns keep their prefix within 32 bytes");
+        TimeFmt { pattern, sec_at, scale: time_scale(pattern), ops, prefix: [0; 32], prefix_len: 0, minute: 0, valid: false, day: DayCache::default() }
     }
 
+    /// The prefix of `minute` (minutes since the epoch) into `prefix`.
+    fn prefix_of(&mut self, minute: i64) {
+        let secs = minute * 60;
+        let days = secs.div_euclid(86400);
+        let rem = secs.rem_euclid(86400) as u32;
+        if !self.day.valid || self.day.days != days {
+            self.day.ymd = civil_from_days(days);
+            self.day.days = days;
+            self.day.valid = true;
+        }
+        let (y, mo, d) = self.day.ymd;
+        let (h, mi) = (rem / 3600, rem / 60 % 60);
+        // Into the 32-byte prefix directly (the pattern's prefix fits it,
+        // checked in `new`).
+        let buf = &mut self.prefix;
+        let mut k = 0usize;
+        let mut two = |buf: &mut [u8; 32], k: &mut usize, v: usize| {
+            buf[*k] = DIGITS2[2 * v];
+            buf[*k + 1] = DIGITS2[2 * v + 1];
+            *k += 2;
+        };
+        for &op in &self.ops {
+            match op {
+                TimeOp::Lit(c) => {
+                    buf[k] = c;
+                    k += 1;
+                }
+                TimeOp::Year => {
+                    let y = y.rem_euclid(10000) as usize;
+                    two(buf, &mut k, y / 100);
+                    two(buf, &mut k, y % 100);
+                }
+                TimeOp::Month => two(buf, &mut k, mo as usize),
+                TimeOp::MonthName => {
+                    buf[k..k + 3].copy_from_slice(MONTHS[(mo - 1) as usize]);
+                    k += 3;
+                }
+                TimeOp::Day => two(buf, &mut k, d as usize),
+                TimeOp::Hour => two(buf, &mut k, h as usize),
+                TimeOp::Minute => two(buf, &mut k, mi as usize),
+            }
+        }
+        self.prefix_len = k;
+    }
+
+    /// `secs` since the epoch and the fraction in the pattern's unit.
     #[inline(always)]
-    fn push(&mut self, value: i64, out: &mut Vec<u8>) {
-        let (secs, frac) = (value.div_euclid(self.scale), value.rem_euclid(self.scale));
+    fn push(&mut self, secs: i64, frac: i64, out: &mut Vec<u8>) {
         let minute = secs.div_euclid(60);
         if !self.valid || minute != self.minute {
-            self.prefix.clear();
-            // The prefix pattern has no fraction digits: its unit is the second.
-            format_time_cached(&self.pattern[..self.sec_at], minute * 60, &mut self.prefix, &mut self.day);
+            self.prefix_of(minute);
             self.minute = minute;
             self.valid = true;
         }
-        out.extend_from_slice(&self.prefix);
+        out.reserve(32 + self.pattern.len() + 8);
+        // SAFETY: reserved above; the 32-byte copy overruns the prefix
+        // into space the seconds and tail then overwrite or that stays
+        // beyond `len`.
+        unsafe {
+            std::ptr::copy_nonoverlapping(self.prefix.as_ptr(), out.as_mut_ptr().add(out.len()), 32);
+            out.set_len(out.len() + self.prefix_len);
+        }
         let s = secs.rem_euclid(60) as usize;
         if self.sec_at < self.pattern.len() {
             push2(out, s);
@@ -1444,7 +1563,7 @@ fn decode_column(c: &mut Decoded, n: usize, t: &mut ColTable) -> Result<()> {
                     if frac >= fmt.scale {
                         return Err(corrupt("record image: time fraction"));
                     }
-                    fmt.push(*last * fmt.scale + frac, out);
+                    fmt.push(*last, frac, out);
                 }
                 t.ends.push(out.len() as u32);
             }
