@@ -294,25 +294,40 @@ exactly afterwards:
 
 - Shapes recognised (`detect`, on the first megabyte): lines split by
   one delimiter (space, tab or comma) into a constant field count for
-  at least 90% of lines; MySQL dumps (`INSERT ... VALUES (...),(...);`),
-  also when a unit starts inside a tuple list.
+  at least 90% of lines (among delimiters consistent on 98%, the one
+  splitting finest, so a timestamp's space does not beat a CSV's
+  commas); MySQL dumps (`INSERT ... VALUES (...),(...);`), also when a
+  unit starts inside a tuple list; JSON objects one per line (90% of
+  lines), where a column is a key path (`actor.id`, `commits.[].sha`).
 - Column types, chosen per column from its values: integers as zigzag
   varint deltas from the previous row (only canonical decimals, so
   `i64` formatting reproduces them); date-times under a known fixed
-  pattern (Common Log Format, ISO 8601, `YYYY-mm-DD hh:mm:ss`) as
-  second deltas, the pattern verified to reproduce every value; columns
-  of at most 256 distinct values as a dictionary and one byte per value;
-  columns with at most one distinct value in three as a dictionary, a
-  64-deep recency list (a byte per value: the position of the value in
-  the list of the last 64 distinct ones, or an escape) and the escaped
-  ids; everything else as newline-separated text.
+  pattern (Common Log Format, ISO 8601 with or without a fraction,
+  `YYYY-mm-DD hh:mm:ss[.ffffff]`) as second deltas with the fraction in
+  its own stream, the pattern chosen from the first eight values and
+  verified to reproduce each, up to a tenth of the values escaped (a
+  header line, a malformed field); columns of at most 256 distinct
+  values as a dictionary and one byte per value; columns with at most
+  one distinct value in three as a dictionary, a 64-deep recency list
+  (a byte per value: the position of the value in the list of the last
+  64 distinct ones, or an escape) and the escaped ids; columns of
+  decimals with more distinct values than that as deltas of the value
+  scaled to the column's most places, each value keeping its own places
+  ("43.1", "43.10", "43"), other values escaped; everything else as
+  newline-separated text.
 - Lines that do not fit the shape go to a raw stream in order; for
   dumps the statement text is a frame with a zero byte where each
-  record tuple was.
+  record tuple was; for JSON lines the frame is the structure, the keys
+  and the text values (text stays where its strings match across
+  fields and records; shredding it too cost 13% on GitHub events), with
+  a zero where each typed value was and a stream naming each hole's
+  column.
 - The input is cut into units of 32 MB at line ends; each unit decides
   for itself (a 4 MB trial compressed both ways must favour the
-  transform by 3%) and is transformed, compressed and rebuilt on its
-  own, so both directions run one unit per core.
+  transform by 5%) and is transformed, compressed and rebuilt on its
+  own, so both directions run one unit per core. Input whose first
+  4 MB the transform does not pay on takes the plain parallel path
+  (units up to 128 MB, the matcher's window).
 
 The envelope (`GLYDRECS`, the units' lengths and kinds, then their
 streams) is read by every decoder; the container underneath is
@@ -325,6 +340,20 @@ shaped; their redundancy is inside each record and across the whole
 file, where a larger window (128 MB: 23% with zstd `--long`) is the
 lever, not columns (shredding measured 6% worse). The transform runs at
 ~200 MB/s per core and the rebuild at 500-900 MB/s per core.
+
+Telemetry (the extended set of `scripts/download_ext_corpus.sh`, 128 MB
+slices, 10 cores, `benchmarks/suite/m1-max-v0.4.0/bench_suite_ext2.*`):
+Alibaba cluster machine usage as CSV `--max -r` 12.6x against zstd -3's
+4.5x and zstd -19's 6.9x, as JSON lines 54.6x against 15.7x and 28.7x;
+NOAA daily weather as CSV 19.6x against 7.0x and 12.0x, as JSON lines
+47.0x against 18.7x and 31.6x; NYC taxi trips exported to CSV 8.9x
+against 5.6x and 8.4x (its two timestamp columns with fractions were
+44% of the image as text); `--ultra -r` 13.7x, 58.9x, 23.1x, 58.0x,
+9.4x. A Common Crawl index (JSON after a key and a timestamp, a hash
+per line) is not record-shaped and stays plain, 2% under zstd -19: a
+hash does not compress, and the ablation in
+experiments/structure/json_ablation.py puts 20% of a compressed GitHub
+event in its SHAs, 10% in random ids and 30% in free text.
 
 ## Long-distance matching (v0.4.0): repeats up to 128 MB back
 

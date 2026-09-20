@@ -38,12 +38,18 @@ every earlier format.
   4.66), JSON events 16.40 (zstd -19 15.07).
 
 ### Record mode
-- `glyd -r` / `compress_records_with`: delimited lines and SQL dumps
-  become typed column streams (integer and date-time deltas,
-  dictionaries with recency ranks, text) before the level, in
-  parallel 32 MB units, rebuilt byte for byte; other data is left as
-  it is; input the transform does not pay on (JSON, binaries) takes
-  the plain parallel path. Whole 8.7 GB corpus, 10 cores: `--ultra -r`
+- `glyd -r` / `compress_records_with`: delimited lines, SQL dumps and
+  JSON lines become typed column streams (integer, decimal and
+  date-time deltas, dictionaries with recency ranks, text) before the
+  level, in parallel 32 MB units, rebuilt byte for byte; other data is
+  left as it is; input the transform does not pay on (API events with
+  hashes and free text, binaries) takes the plain parallel path. JSON
+  lines: a column per key path, typed values leave holes in a frame of
+  the structure, keys and text. Telemetry as rows, 128 MB slices, 10
+  cores: a cluster trace as CSV `--max -r` 12.6 against zstd -3's 4.5
+  and zstd -19's 6.9, as JSON lines 54.6 against 15.7 and 28.7; daily
+  weather 19.6 / 47.0 against 7.0 / 18.7 and 12.0 / 31.6; taxi trips
+  exported to CSV 8.9 against 5.6 and 8.4 (`scripts/download_ext_corpus.sh`). Whole 8.7 GB corpus, 10 cores: `--ultra -r`
   5.20 against zstd -19's 4.66 (SQL dumps 1.43x smaller, access logs
   1.54x, JSON 1.09x through the plain level's matcher); `--max -r`
   4.75 at 1,100 MB/s. Design notes in

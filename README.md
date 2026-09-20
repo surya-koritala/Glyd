@@ -351,11 +351,11 @@ Byte-level matching is a plateau: on real data zstd -19, xz and Glyd
 `--ultra` land within a few percent of each other. The redundancy of a
 log or a table dump is not in nearby bytes but in the same field of
 every record. `glyd -r` (record mode, [design](docs/design/format-v7.md#record-mode-v040-typed-columns-before-the-level))
-detects delimited lines and SQL dumps, turns them into one typed
-stream per field (integer and date-time deltas, dictionaries with
-recency ranks, text), compresses those with the chosen level in
-parallel 32 MB units, and rebuilds the bytes exactly. Anything else
-is left as it is.
+detects delimited lines, SQL dumps and JSON lines, turns them into one
+typed stream per field or key path (integer, decimal and date-time
+deltas, dictionaries with recency ranks, text), compresses those with
+the chosen level in parallel 32 MB units, and rebuilds the bytes
+exactly. Anything else is left as it is.
 
 The 8.7 GB benchmark corpus, 10 cores, every decode byte-checked
 (`examples/bench_suite.rs`, rows in [`benchmarks/suite/m1-max-v0.4.0/`](benchmarks/suite/m1-max-v0.4.0/)):
@@ -380,6 +380,26 @@ with the 8 MB window, 27% and 9% smaller than zstd -3 and zstd -19.
 Costs: `--max` compresses the corpus at 2,000 MB/s (2,400 without the
 matcher; zstd -3 4,000), record-mode reads run at 4,400 MB/s instead
 of 6,500-8,700 for plain `--max`.
+
+Telemetry is where the multiples are. Measurements as rows (a cluster
+trace, daily weather, taxi trips) in CSV or as JSON lines
+(`scripts/download_ext_corpus.sh`, 128 MB slices, 10 cores, rows in
+[`benchmarks/suite/m1-max-v0.4.0/bench_suite_ext2.txt`](benchmarks/suite/m1-max-v0.4.0/bench_suite_ext2.txt)):
+
+| Data | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑r** | ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;‑r** | zstd&nbsp;-3 | zstd&nbsp;-19 | **‑‑max&nbsp;‑r vs zstd&nbsp;-3** | **‑‑ultra&nbsp;‑r vs zstd&nbsp;-19** |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Alibaba cluster machine usage, CSV | **12.6** | **13.7** | 4.46 | 6.90 | **2.8× smaller** | **2.0× smaller** |
+| the same as JSON lines | **54.6** | **58.9** | 15.7 | 28.7 | **3.5× smaller** | **2.1× smaller** |
+| NOAA daily weather, CSV | **19.6** | **23.1** | 6.99 | 12.0 | **2.8× smaller** | **1.9× smaller** |
+| the same as JSON lines | **47.0** | **58.0** | 18.7 | 31.6 | **2.5× smaller** | **1.8× smaller** |
+| NYC taxi trips, CSV export | **8.93** | **9.37** | 5.64 | 8.38 | **1.6× smaller** | 1.1× smaller |
+| Common Crawl index (a hash per line) | 7.73 | 9.36 | 7.55 | 9.66 | 1.02× | 0.97× |
+
+`--max -r` compresses these at 340-680 MB/s (10 cores) and reads back
+at 770-2,500 MB/s. The last row is the honest limit: a line that is
+mostly a hash has nothing a column can model, and API events with
+hashes and free text (GitHub Archive) gain 1.6% from columns and stay
+plain.
 
 ## Known gaps
 

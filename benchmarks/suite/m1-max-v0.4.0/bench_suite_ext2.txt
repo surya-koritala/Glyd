@@ -1,0 +1,51 @@
+machine: "cpu":"Apple M1 Max","cores":10,"arch":"aarch64","os":"macos","date":"2026-09-20T02:02:53Z"
+alibaba_machine_usage.csv: 134217728 bytes
+  glyd-max      ratio   4.280  comp   1268.3 MB/s  decomp   5209.8 MB/s  peak rss    188 MB
+  glyd-ultra    ratio   6.639  comp     14.8 MB/s  decomp   8551.5 MB/s  peak rss    538 MB
+  glyd-max-rec  ratio  12.578  comp    374.5 MB/s  decomp   1177.0 MB/s  peak rss    580 MB
+  glyd-ultra-rec ratio  13.744  comp     24.9 MB/s  decomp   1175.3 MB/s  peak rss    750 MB
+  zstd-3        ratio   4.460  comp   2151.1 MB/s  decomp   1336.2 MB/s  peak rss    170 MB
+  zstd-19       ratio   6.895  comp      5.3 MB/s  decomp   1274.2 MB/s  peak rss    313 MB
+alibaba_machine_usage.jsonl: 134217728 bytes
+  glyd-max      ratio  15.738  comp   3753.8 MB/s  decomp  16007.0 MB/s  peak rss    161 MB
+  glyd-ultra    ratio  28.869  comp     16.7 MB/s  decomp  22032.9 MB/s  peak rss    539 MB
+  glyd-max-rec  ratio  54.619  comp    678.3 MB/s  decomp   1970.4 MB/s  peak rss    484 MB
+  glyd-ultra-rec ratio  58.947  comp     29.8 MB/s  decomp   2479.5 MB/s  peak rss    637 MB
+  zstd-3        ratio  15.720  comp   6408.8 MB/s  decomp   3080.5 MB/s  peak rss    150 MB
+  zstd-19       ratio  28.709  comp      5.5 MB/s  decomp   3208.9 MB/s  peak rss    299 MB
+cc_index_cdx.txt: 134217728 bytes
+  glyd-max      ratio   7.734  comp   2009.8 MB/s  decomp   9478.7 MB/s  peak rss    169 MB
+  glyd-ultra    ratio   9.385  comp     23.2 MB/s  decomp  18409.0 MB/s  peak rss    546 MB
+  glyd-max-rec  ratio   7.734  comp   2274.6 MB/s  decomp  13348.3 MB/s  peak rss    169 MB
+  glyd-ultra-rec ratio   9.362  comp     19.2 MB/s  decomp  14686.3 MB/s  peak rss    801 MB
+  zstd-3        ratio   7.546  comp   4402.7 MB/s  decomp   2734.1 MB/s  peak rss    158 MB
+  zstd-19       ratio   9.655  comp     11.0 MB/s  decomp   3330.6 MB/s  peak rss    307 MB
+ghcn_2023.csv: 134217728 bytes
+  glyd-max      ratio   7.280  comp   1993.1 MB/s  decomp  11726.4 MB/s  peak rss    174 MB
+  glyd-ultra    ratio  11.435  comp     25.2 MB/s  decomp  15299.4 MB/s  peak rss    540 MB
+  glyd-max-rec  ratio  19.644  comp    430.0 MB/s  decomp   1447.8 MB/s  peak rss    522 MB
+  glyd-ultra-rec ratio  23.055  comp     29.8 MB/s  decomp   1464.1 MB/s  peak rss    739 MB
+  zstd-3        ratio   6.993  comp   3211.1 MB/s  decomp   1503.4 MB/s  peak rss    159 MB
+  zstd-19       ratio  12.035  comp     10.6 MB/s  decomp   1689.6 MB/s  peak rss    305 MB
+ghcn_2023.jsonl: 134217728 bytes
+  glyd-max      ratio  19.938  comp   5009.2 MB/s  decomp   8910.1 MB/s  peak rss    158 MB
+  glyd-ultra    ratio  30.532  comp     20.2 MB/s  decomp  25353.8 MB/s  peak rss    536 MB
+  glyd-max-rec  ratio  47.013  comp    586.7 MB/s  decomp   1907.6 MB/s  peak rss    531 MB
+  glyd-ultra-rec ratio  58.008  comp     22.6 MB/s  decomp   2218.5 MB/s  peak rss    659 MB
+  zstd-3        ratio  18.674  comp   7095.6 MB/s  decomp   3507.7 MB/s  peak rss    146 MB
+  zstd-19       ratio  31.566  comp      9.1 MB/s  decomp   3389.5 MB/s  peak rss    299 MB
+yellow_tripdata_2024-02.csv: 134217728 bytes
+  glyd-max      ratio   6.091  comp   1705.0 MB/s  decomp   9323.9 MB/s  peak rss    178 MB
+  glyd-ultra    ratio   8.206  comp     19.0 MB/s  decomp  15202.9 MB/s  peak rss    548 MB
+  glyd-max-rec  ratio   8.929  comp    341.4 MB/s  decomp    765.6 MB/s  peak rss    546 MB
+  glyd-ultra-rec ratio   9.367  comp     25.7 MB/s  decomp    885.8 MB/s  peak rss    750 MB
+  zstd-3        ratio   5.635  comp   2967.5 MB/s  decomp   1855.7 MB/s  peak rss    163 MB
+  zstd-19       ratio   8.377  comp      8.9 MB/s  decomp   2686.8 MB/s  peak rss    310 MB
+
+large files, 10 threads, 805306368 bytes in:
+  glyd-max      ratio   7.710  compressed    104450061 B  compress   2112.5 MB/s  decompress   9026.9 MB/s
+  glyd-ultra    ratio  11.239  compressed     71654920 B  compress     19.2 MB/s  decompress  15494.7 MB/s
+  glyd-max-rec  ratio  14.588  compressed     55201555 B  compress    519.8 MB/s  decompress   1517.8 MB/s
+  glyd-ultra-rec ratio  16.488  compressed     48843083 B  compress     24.7 MB/s  decompress   1673.7 MB/s
+  zstd-3        ratio   7.553  compressed    106614104 B  compress   3664.4 MB/s  decompress   2049.2 MB/s
+  zstd-19       ratio  11.592  compressed     69468861 B  compress      7.7 MB/s  decompress   2259.2 MB/s
