@@ -8,6 +8,18 @@ every earlier format.
 
 ## Unreleased
 
+### Packs: small objects as one stream
+- `compress_pack(objects, out, level)`, `decompress_pack`,
+  `decompress_pack_object(pack, i)`, `pack_len`; CLI `--pack files...`,
+  `--unpack dir`. Envelope `GLYDPACK`: the count, the lengths as
+  zigzag deltas compressed at the max level, then the concatenation in
+  record mode where it pays. 1 MB packs of 1 KB objects at `--max`:
+  JSON events 42.4x (zstd -3 + dict per object 10.6x), NASA log 15.2x
+  (5.3x), HDFS 16.2x (6.0x), CSV telemetry 8.9x (3.8x), taxi CSV 7.6x
+  (3.9x); 40-130 MB/s to pack, an object read back in 0.5-1.7 ms.
+  Record mode's pay decision now samples an eighth of a small input
+  (at least 256 KB) instead of the whole of it.
+
 ### Shape dictionaries: record mode for small objects
 - `ShapeDict::train(sample)`, `compress`, `decompress`, `to_bytes`,
   `from_bytes`; CLI `--shape-train`, `--shape`. The dictionary carries

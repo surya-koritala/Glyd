@@ -821,6 +821,107 @@ pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
 }
 
 // ---------------------------------------------------------------------------
+// Packs: many small objects compressed as one stream — record mode where
+// it pays, so a thousand events cost what they cost as a file, not as a
+// thousand objects — with an index of their lengths, so any one of them
+// is the pack decoded and sliced. Envelope:
+//
+//   "GLYDPACK" n_objects, index_len (varints), the index (the lengths
+//   as zigzag deltas, compressed at the max level), then the objects'
+//   concatenation compressed by `level` in record mode.
+// ---------------------------------------------------------------------------
+
+const PACK_MAGIC: &[u8; 8] = b"GLYDPACK";
+
+/// `objects` compressed together at `level` (a sequential level:
+/// `compress_into_max`, `compress_into_ultra`, `compress_into_cold`),
+/// record mode where the transform pays. Packs of 1-4 MB decode in
+/// under a millisecond per megabyte; `decompress_pack_object` is the
+/// pack decoded and one object sliced out.
+pub fn compress_pack(objects: &[&[u8]], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>)) {
+    let total: usize = objects.iter().map(|o| o.len()).sum();
+    let mut joined = Vec::with_capacity(total);
+    let mut lengths = Vec::with_capacity(objects.len() * 2);
+    let mut last = 0i64;
+    for o in objects {
+        joined.extend_from_slice(o);
+        record::put_varint(&mut lengths, record::zigzag(o.len() as i64 - last));
+        last = o.len() as i64;
+    }
+    let mut index = Vec::new();
+    compress_into_max(&lengths, &mut index);
+    output.extend_from_slice(PACK_MAGIC);
+    put_varint(output, objects.len() as u32);
+    put_varint(output, index.len() as u32);
+    output.extend_from_slice(&index);
+    records_with(&joined, output, level, PARALLEL_UNIT_MAX);
+}
+
+/// The objects' lengths and the payload of a pack.
+fn pack_envelope(compressed: &[u8]) -> Result<(Vec<usize>, &[u8])> {
+    if compressed.len() < 10 || &compressed[..8] != PACK_MAGIC {
+        return Err(CodecError::CorruptedBitstream("not a pack"));
+    }
+    let mut pos = 8usize;
+    let n = get_varint(compressed, &mut pos).ok_or(CodecError::CorruptedBitstream("pack: count"))? as usize;
+    let index_len = get_varint(compressed, &mut pos).ok_or(CodecError::CorruptedBitstream("pack: index"))? as usize;
+    let index = compressed.get(pos..pos.checked_add(index_len).ok_or(CodecError::CorruptedBitstream("pack: index"))?).ok_or(CodecError::CorruptedBitstream("pack: index"))?;
+    pos += index_len;
+    if n > index.len() * 64 + 64 {
+        return Err(CodecError::CorruptedBitstream("pack: count"));
+    }
+    let deltas = decompress(index)?;
+    let mut lengths = Vec::with_capacity(n);
+    let (mut at, mut last) = (0usize, 0i64);
+    for _ in 0..n {
+        let d = record::get_varint(&deltas, &mut at)?;
+        last = last.wrapping_add(record::unzigzag(d));
+        if last < 0 {
+            return Err(CodecError::CorruptedBitstream("pack: length"));
+        }
+        lengths.push(last as usize);
+    }
+    Ok((lengths, &compressed[pos..]))
+}
+
+/// Every object of a pack.
+pub fn decompress_pack(compressed: &[u8]) -> Result<Vec<Vec<u8>>> {
+    let (lengths, stream) = pack_envelope(compressed)?;
+    let all = decompress(stream)?;
+    if lengths.iter().sum::<usize>() != all.len() {
+        return Err(CodecError::CorruptedBitstream("pack: lengths"));
+    }
+    let mut at = 0usize;
+    Ok(lengths
+        .iter()
+        .map(|&n| {
+            at += n;
+            all[at - n..at].to_vec()
+        })
+        .collect())
+}
+
+/// Object `i` of a pack: the pack decoded and sliced.
+pub fn decompress_pack_object(compressed: &[u8], i: usize) -> Result<Vec<u8>> {
+    let (lengths, stream) = pack_envelope(compressed)?;
+    if i >= lengths.len() {
+        return Err(CodecError::CorruptedBitstream("pack: no such object"));
+    }
+    let all = decompress(stream)?;
+    let start: usize = lengths[..i].iter().sum();
+    let end = start + lengths[i];
+    if end > all.len() {
+        return Err(CodecError::CorruptedBitstream("pack: lengths"));
+    }
+    Ok(all[start..end].to_vec())
+}
+
+/// The object count of a pack.
+pub fn pack_len(compressed: &[u8]) -> Result<usize> {
+    Ok(pack_envelope(compressed)?.0.len())
+}
+
+// ---------------------------------------------------------------------------
 // The cold level: context mixing (`cm`) over 32 MB units, each coded
 // from an empty model so that units decode in parallel. A unit's
 // stream has no framing of its own; the envelope carries its length and
@@ -925,7 +1026,7 @@ pub fn compress_parallel_into_cold(input: &[u8], output: &mut Vec<u8>) {
 
 /// The cold level in record mode: the typed columns, then context mixing.
 pub fn compress_records_into_cold(input: &[u8], output: &mut Vec<u8>) {
-    if !records_pay(&input[..input.len().min(RECORDS_TRIAL)], compress_into_cold) {
+    if !records_pay(records_trial(input), compress_into_cold) {
         return compress_parallel_into_cold(input, output);
     }
     records_units(input, output, compress_into_cold)
@@ -1263,8 +1364,13 @@ pub fn needs_base(compressed: &[u8]) -> bool {
 const RECORDS_MAGIC: &[u8; 8] = b"GLYDRECS";
 /// Text per unit (cut at a line end), the granule of parallel rebuild.
 const RECORDS_UNIT: usize = 32 << 20;
-/// Bytes of a unit the record-mode decision is made on.
+/// Bytes of a unit the record-mode decision is made on: up to 4 MB, an
+/// eighth of a small input (a pack), at least 256 KB.
 const RECORDS_TRIAL: usize = 4 << 20;
+
+fn records_trial(input: &[u8]) -> &[u8] {
+    &input[..input.len().min(RECORDS_TRIAL).min((input.len() / 8).max(256 << 10))]
+}
 
 struct RecordUnit<'a> {
     len: usize,
@@ -1336,7 +1442,7 @@ fn records_pay(sample: &[u8], _level: fn(&[u8], &mut Vec<u8>)) -> bool {
 }
 
 fn records_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>), smallest: usize) {
-    if !records_pay(&input[..input.len().min(RECORDS_TRIAL)], level) {
+    if !records_pay(records_trial(input), level) {
         compress_parallel_with(input, output, level, smallest);
         return;
     }
@@ -1367,7 +1473,7 @@ fn records_units(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u
     let _ = par_units::<()>(units.len(), |i| {
         let unit = units[i];
         let mut out = Vec::with_capacity(unit.len() / 3 + 1024);
-        let image = records_pay(&unit[..unit.len().min(RECORDS_TRIAL)], level) && match record::transform(unit) {
+        let image = records_pay(records_trial(unit), level) && match record::transform(unit) {
             Some(image) => {
                 level(&image, &mut out);
                 true

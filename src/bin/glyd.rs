@@ -21,6 +21,9 @@ Options:
     -S, --shape <FILE>     Shape dictionary: compress or decompress a small object (an event, a
                            small log or CSV) with a dictionary trained on a sample of such data
         --shape-train      Train a shape dictionary on the input (a few MB) and write it to -o
+    -P, --pack             Pack the input files (many small objects) into one stream with an
+                           index, record mode where it pays; any one object is read back alone
+    -U, --unpack <DIR>     Write a pack's objects into DIR as 000000, 000001, ...
     -d, --decompress       Decompress input (default if input is .glyd)
     -m, --multi-core       Use multi-core parallel engine (default)
     -s, --single-core      Force single-core sequential engine
@@ -34,6 +37,8 @@ Examples:
     glyd -d input.tar.glyd -o input.tar
     glyd --base dump-monday.sql dump-tuesday.sql -o tuesday.glyd
     glyd -d --base dump-monday.sql tuesday.glyd -o dump-tuesday.sql
+    glyd --pack events/*.json -o events.glyd
+    glyd --unpack out/ events.glyd
     glyd --shape-train sample.log -o events.shape
     glyd --shape events.shape event.log -o event.glyd
     glyd -d --shape events.shape event.glyd -o event.log
@@ -79,6 +84,9 @@ fn main() -> io::Result<()> {
     let mut base_path: Option<String> = None;
     let mut shape_path: Option<String> = None;
     let mut shape_train = false;
+    let mut pack = false;
+    let mut unpack_dir: Option<String> = None;
+    let mut inputs: Vec<String> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -117,6 +125,16 @@ fn main() -> io::Result<()> {
                 }
             }
             "--shape-train" => shape_train = true,
+            "-P" | "--pack" => pack = true,
+            "-U" | "--unpack" => {
+                if i + 1 < args.len() {
+                    unpack_dir = Some(args[i + 1].clone());
+                    i += 1;
+                } else {
+                    eprintln!("Error: --unpack requires a directory");
+                    std::process::exit(1);
+                }
+            }
             "-d" | "--decompress" => mode_compress = Some(false),
             "-m" | "--multi-core" => multi_core = true,
             "-s" | "--single-core" => multi_core = false,
@@ -133,6 +151,9 @@ fn main() -> io::Result<()> {
             other => {
                 if !other.starts_with('-') && input_path.is_none() {
                     input_path = Some(other.to_string());
+                    inputs.push(other.to_string());
+                } else if !other.starts_with('-') && pack {
+                    inputs.push(other.to_string());
                 } else {
                     eprintln!("Unknown option: {}", other);
                     print_usage();
@@ -153,6 +174,36 @@ fn main() -> io::Result<()> {
             }
         };
         run_benchmark(path);
+        return Ok(());
+    }
+
+    if pack {
+        let files: Vec<Vec<u8>> = inputs.iter().map(std::fs::read).collect::<io::Result<_>>()?;
+        let refs: Vec<&[u8]> = files.iter().map(|v| v.as_slice()).collect();
+        let level: fn(&[u8], &mut Vec<u8>) = if cold { glyd::compress_into_cold } else if ultra { glyd::compress_into_ultra } else { glyd::compress_into_max };
+        let mut out = Vec::new();
+        glyd::compress_pack(&refs, &mut out, level);
+        return write_out(&output_path, &out);
+    }
+    if let Some(dir) = unpack_dir {
+        let data = match input_path {
+            Some(ref p) => std::fs::read(p)?,
+            None => {
+                eprintln!("Error: --unpack needs the pack file");
+                std::process::exit(1);
+            }
+        };
+        let objects = match glyd::decompress_pack(&data) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("Decompression failed: {}", e);
+                std::process::exit(1);
+            }
+        };
+        std::fs::create_dir_all(&dir)?;
+        for (i, o) in objects.iter().enumerate() {
+            std::fs::write(Path::new(&dir).join(format!("{:06}", i)), o)?;
+        }
         return Ok(());
     }
 

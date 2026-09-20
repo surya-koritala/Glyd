@@ -72,6 +72,23 @@ fn main() {
         // shape dictionary would let each cost, plus 24 B of framing each.
         let ideal = rec_max(&joined) as i64 - base_cost as i64 + 24 * objs.len() as i64;
         let batched = rec_max(&batch);
+        // The objects packed: 1 MB packs at --max, one object read back from each.
+        let refs: Vec<&[u8]> = objs.iter().map(|v| v.as_slice()).collect();
+        let per_pack = (1 << 20) / size;
+        let (mut packed, mut read_s) = (0usize, 0.0f64);
+        let t = std::time::Instant::now();
+        let packs: Vec<Vec<u8>> = refs.chunks(per_pack).map(|group| { let mut p = Vec::new(); glyd::compress_pack(group, &mut p, glyd::compress_into_max); p }).collect();
+        let pack_s = t.elapsed().as_secs_f64();
+        for (k, p) in packs.iter().enumerate() {
+            packed += p.len();
+            let t = std::time::Instant::now();
+            let o = glyd::decompress_pack_object(p, 0).unwrap();
+            read_s += t.elapsed().as_secs_f64();
+            assert!(o == objs[k * per_pack], "pack object");
+            let all = glyd::decompress_pack(p).unwrap();
+            assert!(all.iter().zip(&objs[k * per_pack..]).all(|(a, b)| a == b), "pack contents");
+        }
+        println!("{name:>18} ~{size:>4} B: packed ({} per 1 MB pack, --max) {:.2}x ({:.2}x over zstd+dict); {:.0} MB/s to pack, one object read in {:.2} ms", per_pack, raw as f64 / packed as f64, z1 as f64 / packed as f64, raw as f64 / pack_s / 1e6, read_s / packs.len() as f64 * 1e3);
         println!("{name:>18} ~{size:>4} B x {}: zstd -3 + dict {:.2}x | Glyd --max + Dict {:.2}x | shape dict (ideal) {:.2}x  -> {:.2}x over zstd+dict | the objects as one record stream {:.2}x", objs.len(), raw as f64 / z1 as f64, raw as f64 / g1 as f64, raw as f64 / ideal.max(1) as f64, z1 as f64 / ideal.max(1) as f64, raw as f64 / batched as f64);
     }
 }

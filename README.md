@@ -74,7 +74,8 @@ right side of the trade; for data written constantly and rarely read,
 zstd -3 or LZ4 still win on write cost.
 
 - 🗂️ **Record mode (`-r`)**: logs, SQL dumps, CSV and JSON lines as typed columns; logs of varying shape as templates plus typed variables. Telemetry stores 2.5–3.5× less than zstd -3 and 1.5–2× less than zstd -19; application and system logs 1.4–3.3× less than zstd -3 and 1.1–2.1× less than zstd -19; the whole corpus 19% less than zstd -3.
-- 🧩 **Shape dictionaries (`--shape`)**: record mode for small objects. Trained on a sample; a 1–4 KB event or log object stores 1.1–1.9× less than with a zstd dictionary.
+- 📦 **Packs (`--pack`)**: many small objects as one record-mode stream with an index; 2–4× fewer bytes than zstd + dictionary per object, any one object read back in a millisecond.
+- 🧩 **Shape dictionaries (`--shape`)**: record mode for a single small object. Trained on a sample; a 1–4 KB event or log object stores 1.1–1.9× less than with a zstd dictionary.
 - 🧊 **Cold level (`--cold`)**: context mixing for what is stored for years and read rarely. 1.5–2.6× fewer bytes than zstd -19 on logs, dumps, JSON and text — the zpaq -m5 class at 3–4× its speed — at 1.2–1.5 MB/s per core each way.
 - 🔁 **Base mode (`--base`)**: a new version against the old one, its content found wherever it moved. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 1.8–3× its speed; 15 kernel releases in 228 MB instead of 3 GB.
 - 🔭 **128 MB long-distance matcher** in `--max` and `--ultra`: JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
@@ -97,6 +98,7 @@ matters):
 | **Telemetry, measurements** as CSV or JSON lines (`-r`) | **−60 to −71%** | **−33 to −52%** |
 | **Application and system logs** (HDFS, Spark, BGL, Android; `-r`) | **−28 to −69%** | **−9 to −53%** |
 | **Cold archives** of logs, dumps, JSON, text (`--cold`, 1 MB/s per core) | **−52 to −69%** | **−32 to −62%** |
+| **Small objects** (events, log and CSV objects of 1–4 KB) packed (`--pack`) | **−48 to −75%** vs zstd + dictionary per object | |
 | **Access logs** (`-r`) | **−55%** | **−35%** |
 | **SQL dumps** (`-r`) | **−41%** | **−30%** |
 | **JSON events** (API payloads with hashes) | **−22%** | −10% |
@@ -389,13 +391,26 @@ paths the object is the first to mention, and a per-object scheme pays
 for new information whatever it does. Dictionaries are 80–220 KB; an
 object codes at 60–150 MB/s and decodes at 55–430 MB/s on one core.
 
-The larger lever for small objects is not per-object at all: the same
-400 objects **packed** into one record-mode stream cost 2–4× less than
-zstd + dictionary per object (NASA 15.5× against 5.3×, HDFS 16.5×
-against 6.0×, JSON lines 43× against 10.6×), and a 1 MB pack decodes
-in under a millisecond. A store that groups small objects into packs
-gets that; one that must compress each object alone gets the table
-above.
+The larger lever for small objects is not per-object at all. A
+**pack** (`compress_pack`, `decompress_pack_object`; `glyd --pack
+files... -o p.glyd`, `glyd --unpack dir p.glyd`) compresses many small
+objects as one record-mode stream with an index of their lengths, so
+they cost what they cost as a file; reading one object is the pack
+decoded and sliced. The same objects in 1 MB packs at `--max`:
+
+| Objects | zstd -3 + dict, each alone | ⚡&nbsp;**Glyd pack** | **vs zstd + dict** | One object read |
+| :--- | ---: | ---: | ---: | ---: |
+| JSON events, 1 KB (1,024 per pack) | 10.6× | **42.4×** | **4.0× smaller** | 0.6 ms |
+| JSON events, 4 KB | 13.0× | **39.0×** | **3.0×** | 0.9 ms |
+| NASA access log, 1 KB | 5.3× | **15.2×** | **2.9×** | 0.7 ms |
+| HDFS log, 1 KB | 6.0× | **16.2×** | **2.7×** | 0.5 ms |
+| CSV telemetry, 1 KB | 3.8× | **8.9×** | **2.3×** | 0.9 ms |
+| NYC taxi CSV, 1 KB | 3.9× | **7.6×** | **1.9×** | 1.0 ms |
+
+Packing runs at 40–130 MB/s on one core. A store that groups small
+objects — a log shipper, an event stream, an S3 batcher — gets 2–4×
+over per-object dictionaries; one that must compress each object alone
+gets the shape-dictionary table above.
 
 ### Small objects
 
