@@ -437,9 +437,9 @@ plain.
 
 ## Releases and versioning
 
-Current release: **v0.1.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.4.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
-block header (v6 for default/fast/turbo, v7 for `--max`); every release
+block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7 and v8 are read); every release
 decodes every earlier format, and a format change always gets a new
 format number, never a silent reinterpretation. Tags are `vMAJOR.MINOR.PATCH`;
 each tag ships with release notes and the benchmark tables measured at

@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.4.0 — 2026-09-20
 
 ### Long-distance matching
 - The max and ultra levels find repeats of 32 bytes or more up to 128 MB
