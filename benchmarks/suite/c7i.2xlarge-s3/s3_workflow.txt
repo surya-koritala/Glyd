@@ -1,11 +1,11 @@
-dataset: 18 files, 8731164037 bytes; instance c7i.2xlarge (8 threads); run s3wf-20260920T030905Z-6972; bucket s3://glyd-bench-712416033631
+dataset: 18 files, 8731164037 bytes; instance c7i.2xlarge (8 threads); run s3wf-20260920T161451Z-7146; bucket s3://glyd-bench-712416033631
 codec         stored_bytes    ratio    comp_s      up_s    down_s  decomp_s     cpu_s  verified
-raw             8731164037    1.000      0.05     14.74     28.57      0.05      0.09  true
-glyd-max        2203549748    3.962     27.28      4.72      6.84     15.32     82.93  true
-glyd-ultra      1873469729    4.660    752.06      4.31      6.34     14.63   5551.87  true
-glyd-max-rec     1836562870    4.754     37.68      4.02      6.71     14.47    153.03  true
-glyd-ultra-rec     1677314026    5.205    628.91      3.77      5.76     15.76   4303.35  true
-zstd-3          2272369865    3.842     27.34      4.93      8.28     13.57     39.51  true
-zstd-19         1883375283    4.636   1018.80      4.24      5.83     13.60   3629.09  true
-lz4             3213990664    2.717     30.38      5.81     10.09     14.78     22.51  true
+raw             8731164037    1.000      0.06     13.72     35.39      0.05      0.09  true
+glyd-max        2201038043    3.967     30.38      4.52      8.30     15.58     85.96  true
+glyd-ultra      1872520396    4.663    836.49      4.27      7.46     14.18   6166.16  true
+glyd-max-rec     1834109358    4.760     38.82      3.85      6.88     15.15    153.40  true
+glyd-ultra-rec     1677229883    5.206    687.83      3.47      6.52     15.04   4695.58  true
+zstd-3          2272369865    3.842     28.06      4.58      9.01     13.63     41.21  true
+zstd-19         1883375283    4.636   1170.44      3.86      7.29     13.28   4172.23  true
+lz4             3213990664    2.717     32.40      6.05     12.35     14.60     23.63  true
 rows in /home/ubuntu/results/s3_workflow.jsonl

@@ -6,6 +6,26 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+### Reads
+- The record-mode rebuild decodes a column at a time into tables and
+  assembles the rows by copy (reserved space, no length branch per
+  value; integers through a digit-pair table; the minute's prefix of a
+  time column kept and copied as a block; a ring for the recency list;
+  16-byte padded dict8 entries; varints of up to three bytes from one
+  load). One core, M1 Max: int columns 489 -> 810 MB/s, dictionaries
+  344 -> 1,076, times 477 -> 1,815; the NASA log 509 -> 734, JSON
+  lines 734 -> 1,117, the taxi CSV 260 -> 409. Record images are
+  unchanged.
+- The S3 workflow rerun on both AWS machines: the CLI's decompress
+  CPU per 8.7 GB fell from 14.5 to 11.7 s on Graviton3 for `--max`
+  (zstd -3: 10.9) and from 19.2 to 14.2 on Sapphire Rapids (zstd -3:
+  10.4); `--ultra` 11.1 against zstd -19's 12.5. A terabyte-year at
+  ten reads a month: `--max` $83.1, `--max -r` $83.6, zstd -3 $84.2.
+- The reference codecs (zstd, LZ4, Snappy, LZAV) are dev-dependencies:
+  the benchmarks link them, the library and CLI carry none.
+
 ## v0.5.0 — 2026-09-20
 
 ### Base mode

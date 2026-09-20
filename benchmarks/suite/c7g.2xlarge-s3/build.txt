@@ -1,123 +1,152 @@
     Updating crates.io index
  Downloading crates ...
-  Downloaded lzav v0.1.1
-  Downloaded clang-sys v1.9.1
-  Downloaded glob v0.3.4
-  Downloaded yansi-term v0.1.2
+  Downloaded prettyplease v0.2.37
   Downloaded zstd v0.13.3
-  Downloaded zstd-safe v7.3.0
-  Downloaded annotate-snippets v0.9.2
   Downloaded lz4 v1.28.1
-  Downloaded cfg-if v1.0.5
-  Downloaded rustc-hash v1.1.0
   Downloaded crossbeam-deque v0.8.8
+  Downloaded bindgen v0.70.1
   Downloaded find-msvc-tools v0.1.12
-  Downloaded quote v1.0.47
-  Downloaded cexpr v0.6.0
-  Downloaded either v1.18.0
-  Downloaded pkg-config v0.3.34
-  Downloaded shlex v1.3.0
-  Downloaded snap v1.1.2
-  Downloaded log v0.4.34
-  Downloaded lz4_flex v0.11.6
   Downloaded shlex v2.0.1
   Downloaded twox-hash v2.1.4
-  Downloaded unicode-ident v1.0.26
-  Downloaded bitflags v2.13.2
-  Downloaded crossbeam-epoch v0.9.21
-  Downloaded crossbeam-utils v0.8.23
-  Downloaded jobserver v0.1.35
+  Downloaded lzav v0.1.1
+  Downloaded pkg-config v0.3.34
+  Downloaded syn v2.0.119
   Downloaded libloading v0.8.9
-  Downloaded minimal-lexical v0.2.1
+  Downloaded cfg-if v1.0.5
+  Downloaded yansi-term v0.1.2
+  Downloaded rustc-hash v1.1.0
+  Downloaded glob v0.3.4
+  Downloaded either v1.18.0
+  Downloaded shlex v1.3.0
+  Downloaded zstd-safe v7.3.0
+  Downloaded annotate-snippets v0.9.2
+  Downloaded jobserver v0.1.35
+  Downloaded unicode-ident v1.0.26
+  Downloaded crossbeam-utils v0.8.23
+  Downloaded lz4_flex v0.11.6
+  Downloaded cexpr v0.6.0
+  Downloaded quote v1.0.47
+  Downloaded snap v1.1.2
+  Downloaded bitflags v2.13.2
   Downloaded proc-macro2 v1.0.107
-  Downloaded rayon-core v1.13.0
-  Downloaded memchr v2.8.3
-  Downloaded prettyplease v0.2.37
+  Downloaded aho-corasick v1.1.5
+  Downloaded clang-sys v1.9.1
+  Downloaded crossbeam-epoch v0.9.21
+  Downloaded log v0.4.34
+  Downloaded minimal-lexical v0.2.1
   Downloaded cc v1.4.6
+  Downloaded memchr v2.8.3
+  Downloaded itertools v0.13.0
   Downloaded nom v7.1.3
   Downloaded regex v1.13.1
-  Downloaded itertools v0.13.0
-  Downloaded rayon v1.12.0
-  Downloaded aho-corasick v1.1.5
-  Downloaded bindgen v0.70.1
-  Downloaded syn v2.0.119
-  Downloaded unicode-width v0.1.14
-  Downloaded regex-syntax v0.8.11
-  Downloaded lz4-sys v1.11.1+lz4-1.10.0
   Downloaded regex-automata v0.4.18
-  Downloaded zstd-sys v2.1.0+zstd.1.5.7
+  Downloaded rayon v1.12.0
+  Downloaded unicode-width v0.1.14
+  Downloaded lz4-sys v1.11.1+lz4-1.10.0
   Downloaded libc v0.2.189
+  Downloaded regex-syntax v0.8.11
+  Downloaded zstd-sys v2.1.0+zstd.1.5.7
+  Downloaded rayon-core v1.13.0
    Compiling libc v0.2.189
-   Compiling find-msvc-tools v0.1.12
    Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.12
    Compiling proc-macro2 v1.0.107
    Compiling quote v1.0.47
    Compiling glob v0.3.4
    Compiling unicode-ident v1.0.26
    Compiling prettyplease v0.2.37
-   Compiling minimal-lexical v0.2.1
+   Compiling pkg-config v0.3.34
    Compiling regex-syntax v0.8.11
+   Compiling memchr v2.8.3
+   Compiling minimal-lexical v0.2.1
    Compiling cfg-if v1.0.5
    Compiling crossbeam-utils v0.8.23
-   Compiling pkg-config v0.3.34
-   Compiling memchr v2.8.3
-   Compiling libloading v0.8.9
    Compiling clang-sys v1.9.1
-   Compiling bindgen v0.70.1
+   Compiling libloading v0.8.9
    Compiling crossbeam-epoch v0.9.21
-   Compiling yansi-term v0.1.2
    Compiling nom v7.1.3
-   Compiling either v1.18.0
    Compiling unicode-width v0.1.14
+   Compiling either v1.18.0
+   Compiling bindgen v0.70.1
+   Compiling yansi-term v0.1.2
    Compiling itertools v0.13.0
-   Compiling annotate-snippets v0.9.2
    Compiling syn v2.0.119
+   Compiling annotate-snippets v0.9.2
    Compiling crossbeam-deque v0.8.8
    Compiling jobserver v0.1.35
    Compiling regex-automata v0.4.18
-   Compiling bitflags v2.13.2
-   Compiling cc v1.4.6
    Compiling log v0.4.34
+   Compiling cc v1.4.6
+   Compiling bitflags v2.13.2
    Compiling rustc-hash v1.1.0
    Compiling shlex v1.3.0
+   Compiling cexpr v0.6.0
    Compiling rayon-core v1.13.0
    Compiling zstd-safe v7.3.0
-   Compiling cexpr v0.6.0
    Compiling snap v1.1.2
    Compiling twox-hash v2.1.4
+   Compiling glyd v0.5.0 (/home/ubuntu/glyd)
    Compiling regex v1.13.1
+warning: unused doc comment
+    --> src/lib.rs:1169:1
+     |
+1169 | / /// Decode a record-mode stream into `dst`: every unit in parallel, its
+1170 | | /// inner stream then the rebuild.
+     | |_---------------------------------^
+     |   |
+     |   rustdoc does not generate documentation for macro invocations
+     |
+     = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+     = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
    Compiling rayon v1.12.0
    Compiling lz4_flex v0.11.6
    Compiling zstd-sys v2.1.0+zstd.1.5.7
    Compiling lz4-sys v1.11.1+lz4-1.10.0
-   Compiling lz4 v1.28.1
-   Compiling lzav v0.1.1
-   Compiling zstd v0.13.3
-   Compiling glyd v0.3.0 (/home/ubuntu/glyd)
 warning: value assigned to `key` is never read
-   --> src/record.rs:928:43
-    |
-928 |     let mut key: Option<(usize, usize)> = None;
-    |                                           ^^^^ this value is reassigned later and never used
+    --> src/record.rs:1068:43
+     |
+1068 |     let mut key: Option<(usize, usize)> = None;
+     |                                           ^^^^ this value is reassigned later and never used
 ...
-939 |         key = None;
-    |         ---------- `key` is overwritten here before the previous value is read
-    |
-    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+1079 |         key = None;
+     |         ---------- `key` is overwritten here before the previous value is read
+     |
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
 
 warning: unused variable: `avx2`
-   --> src/lib.rs:654:5
+   --> src/lib.rs:707:5
     |
-654 |     avx2: bool,
+707 |     avx2: bool,
     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_avx2`
     |
     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
 
 warning: unused variable: `min_match`
-   --> src/lib.rs:711:9
+   --> src/lib.rs:764:9
     |
-711 |     let min_match = if dense { MIN_MATCH_LEN_DENSE } else if turbo { MIN_MATCH_LEN_TURBO } else { MIN_MATCH_LEN };
+764 |     let min_match = if dense { MIN_MATCH_LEN_DENSE } else if turbo { MIN_MATCH_LEN_TURBO } else { MIN_MATCH_LEN };
     |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_min_match`
+
+warning: method `at` is never used
+   --> src/record.rs:502:8
+    |
+485 | impl Recent {
+    | ----------- method in this implementation
+...
+502 |     fn at(&self, p: usize) -> Option<u32> {
+    |        ^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `value` is never used
+    --> src/record.rs:1360:8
+     |
+1358 | impl ColTable {
+     | ------------- method in this implementation
+1359 |     #[inline(always)]
+1360 |     fn value(&self, i: usize) -> &[u8] {
+     |        ^^^^^
 
 warning: method `content_padded` is never used
    --> src/dict.rs:147:19
@@ -127,20 +156,11 @@ warning: method `content_padded` is never used
 ...
 147 |     pub(crate) fn content_padded(&self) -> &[u8] {
     |                   ^^^^^^^^^^^^^^
-    |
-    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
-warning: `glyd` (lib) generated 4 warnings (run `cargo fix --lib -p glyd` to apply 2 suggestions)
-warning: variable does not need to be mutable
-  --> examples/rec_trial.rs:29:9
-   |
-29 |     let mut varint = |pos: &mut usize| { let (mut v, mut sh) = (0u64, 0); loop { let b = img[*pos]; *pos += 1; v |= ((b & 127) as u6...
-   |         ----^^^^^^
-   |         |
-   |         help: remove this `mut`
-   |
-   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
-
+   Compiling lzav v0.1.1
+warning: `glyd` (lib) generated 7 warnings (run `cargo fix --lib -p glyd` to apply 2 suggestions)
+   Compiling lz4 v1.28.1
+   Compiling zstd v0.13.3
 warning: variable does not need to be mutable
    --> examples/floor.rs:758:9
     |
@@ -162,6 +182,16 @@ warning: field `file_base` is never read
    |
    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
-warning: `glyd` (example "rec_trial") generated 1 warning (run `cargo fix --example "rec_trial" -p glyd` to apply 1 suggestion)
 warning: `glyd` (example "floor") generated 2 warnings (run `cargo fix --example "floor" -p glyd` to apply 1 suggestion)
+warning: variable does not need to be mutable
+  --> examples/rec_trial.rs:29:9
+   |
+29 |     let mut varint = |pos: &mut usize| { let (mut v, mut sh) = (0u64, 0); loop { let b = img[*pos]; *pos += 1; v |= ((b & 127) as u6...
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `glyd` (example "rec_trial") generated 1 warning (run `cargo fix --example "rec_trial" -p glyd` to apply 1 suggestion)
     Finished `release` profile [optimized] target(s) in 1m 06s

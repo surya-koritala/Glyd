@@ -98,14 +98,14 @@
   <div class="wrap"><table>
     <tr><th>Codec</th><th>Stored</th><th>Year 1, 1 read/month</th><th>10 reads/month</th><th>100 reads/month</th></tr>
     <tr><td>Raw</td><td>1.000 TB</td><td>$276</td><td>$276</td><td>$278</td></tr>
-    <tr class="g"><td>Glyd --max -r</td><td>0.210 TB</td><td>$61.7</td><td>$85.3</td><td>$321</td></tr>
-    <tr><td>Glyd --max</td><td>0.252 TB</td><td>$71.9</td><td>$86.3</td><td>$231</td></tr>
-    <tr><td>zstd -3</td><td>0.260 TB</td><td>$73.3</td><td>$84.1</td><td>$192</td></tr>
-    <tr class="g"><td>Glyd --ultra -r</td><td>0.192 TB</td><td>$88.1</td><td>$111</td><td>$336</td></tr>
-    <tr><td>zstd -19</td><td>0.216 TB</td><td>$105</td><td>$118</td><td>$245</td></tr>
+    <tr class="g"><td>Glyd --max -r</td><td>0.210 TB</td><td>$61.4</td><td>$83.6</td><td>$305</td></tr>
+    <tr class="g"><td>Glyd --max</td><td>0.252 TB</td><td>$71.5</td><td>$83.1</td><td>$200</td></tr>
+    <tr><td>zstd -3</td><td>0.260 TB</td><td>$73.4</td><td>$84.2</td><td>$193</td></tr>
+    <tr class="g"><td>Glyd --ultra -r</td><td>0.192 TB</td><td>$88.5</td><td>$109</td><td>$315</td></tr>
+    <tr class="g"><td>Glyd --ultra</td><td>0.214 TB</td><td>$103</td><td>$114</td><td>$226</td></tr>
+    <tr><td>zstd -19</td><td>0.216 TB</td><td>$106</td><td>$118</td><td>$243</td></tr>
   </table></div>
-  <p class="muted">Where zstd still wins, plainly: a hundred CPU-billed reads a month (record-mode reads spend 2–3× zstd's CPU rebuilding the columns; this is the next thing being worked on), single-core compression speed (<code>--max</code> at 0.58–0.66× zstd -3), small objects with dictionaries (1–3% larger, 1.4–2× slower per object), and data made of hashes.</p>
-
+  <p class="muted">Where zstd still wins, plainly: a hundred CPU-billed reads a month of record-mode data (its reads spend 2–2.7× zstd's CPU rebuilding the columns), single-core compression speed (<code>--max</code> at 0.58–0.66× zstd -3), small objects with dictionaries (1–3% larger, 1.4–2× slower per object), and data made of hashes.</p>
   <h2>How the numbers are made</h2>
   <ul>
     <li><b>Correctness first</b>: 98 tests, a million-mutation fuzz, files from every earlier release decoded unchanged, and <code>scripts/verify_roundtrip.sh</code> through the CLI on both machines with corrupted copies rejected or decoded exactly; base-mode streams refuse any other base.</li>

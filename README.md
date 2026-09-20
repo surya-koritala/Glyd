@@ -100,11 +100,12 @@ matters):
 | Plain text, binaries, Parquet | ~0% | ~0% (the floor; nothing moves it) |
 
 A terabyte kept a year in S3 Standard, compressed once and read once a
-month (Graviton3, CPU billed at the on-demand price): `--max -r` **$61.7**
-against zstd -3's $73.3 and zstd -19's $105. At a hundred reads a month
-zstd -3 is cheaper by CPU (record-mode reads cost 2–3× its CPU); billed by
-wall time on a dedicated instance `--max -r` is the cheapest at every read
-rate ([report](docs/benchmarks/suite-2026-09-20.md)). At the scale of
+month (Graviton3, CPU billed at the on-demand price): `--max -r` **$61.4**
+against zstd -3's $73.4 and zstd -19's $106; at ten reads a month
+`--max -r` $83.6, `--max` $83.1, zstd -3 $84.2; at a hundred reads a
+month zstd -3 is cheaper ($193 against `--max` $200 and `--max -r` $305:
+record-mode reads spend 2–2.7× its CPU rebuilding the columns)
+([report](docs/benchmarks/suite-2026-09-20.md)). At the scale of
 object storage (hundreds of exabytes) every 1% fewer bytes is about $250
 million a year at list price; the percentages above are what to multiply.
 
@@ -436,11 +437,11 @@ panic or an unbounded allocation; every unsafe block carries its bound.
   2 MB of finder tables miss a 1 MB L2, and the long-distance pass costs
   15–37% where it stays on. Record mode's transform halves the write
   speed again (200–400 MB/s per core).
-- Reads in record mode spend 2–3× zstd's CPU rebuilding the columns
-  (24–35 ns per value), which makes zstd -3 the cheaper choice at a
-  hundred CPU-billed reads a month; the CLI also checksums every block
-  and decodes in parallel, 1.3× zstd's CPU per byte on Graviton3, 2× on
-  Sapphire Rapids for the plain levels.
+- Reads in record mode spend 2–2.7× zstd's CPU rebuilding the columns
+  (5–30 ns per value by column type), which makes zstd -3 the cheaper
+  choice at a hundred CPU-billed reads a month; the plain CLI's reads
+  cost 1.07× zstd's CPU on Graviton3 and 1.37× on Sapphire Rapids (a
+  checksum per block, the parallel decode).
 - Base mode matches content that stayed within 32 MB of its old position;
   what moved farther is compressed plainly. `--ultra --base` re-indexes
   each unit's base region and runs at 1–4 MB/s. The encoder holds the old

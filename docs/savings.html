@@ -85,7 +85,7 @@
     </table>
     <small id="note"></small>
   </div>
-  <p><small>Formula: stored_TB × (1 − old_ratio / glyd_ratio) × price × 12. Read CPU is the CLI's decompress CPU seconds per 8.7 GB in the S3 workflow on Graviton3 (LZ4 7.8, zstd -3 10.7, zstd -19 12.7, Glyd --max 14.5, --ultra 13.8, --max -r 23.7, --ultra -r 22.6), not the library's in-memory speed. Every 1% fewer bytes across 100 EB of object storage is about $250 million a year at list price.</small></p>
+  <p><small>Formula: stored_TB × (1 − old_ratio / glyd_ratio) × price × 12. Read CPU is the CLI's decompress CPU seconds per 8.7 GB in the S3 workflow on Graviton3 (LZ4 7.8, zstd -3 10.9, zstd -19 12.5, Glyd --max 11.7, --ultra 11.1, --max -r 22.2, --ultra -r 20.7), not the library's in-memory speed. Every 1% fewer bytes across 100 EB of object storage is about $250 million a year at list price.</small></p>
 </main>
 <script>
   // Ratios by data kind: [lz4, zstd -3, zstd -19, none, glyd max, max -r, ultra, ultra -r].
@@ -99,7 +99,7 @@
     parquet:        { lz4:1.000, zstd3:1.010,  zstd19:1.021,  none:1, max:1.007,  maxrec:1.007,  ultra:1.018,  ultrarec:1.018,  note:"Parquet already holds zstd-compressed pages; nothing shrinks it further." },
     versions:       { lz4:2.70,  zstd3:28.1,   zstd19:83.2,   none:1, max:60.2,   maxrec:60.2,   ultra:87.6,   ultrarec:87.6,   note:"Wikipedia page-table dumps a month apart (108 MB): zstd's figures are its --patch-from against the previous dump (LZ4 has no delta mode, so each dump alone); Glyd's are --base. Image and source-tree pairs give 200-700x." },
   };
-  const CPU = { lz4:7.8, zstd3:10.7, zstd19:12.7, none:0, max:14.5, maxrec:23.7, ultra:13.8, ultrarec:22.6 };
+  const CPU = { lz4:7.8, zstd3:10.9, zstd19:12.5, none:0, max:11.7, maxrec:22.2, ultra:11.1, ultrarec:20.7 };
   const $ = id => document.getElementById(id);
   function fmt(n){ return n >= 1e9 ? "$" + (n/1e9).toFixed(2) + " billion" : n >= 1e6 ? "$" + (n/1e6).toFixed(2) + " million" : "$" + Math.round(n).toLocaleString(); }
   function tb(n){ return n >= 1000 ? (n/1000).toFixed(2) + " PB" : n.toFixed(1) + " TB"; }
