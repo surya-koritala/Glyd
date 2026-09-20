@@ -32,17 +32,21 @@ every earlier format.
   7.78 MB (zstd -19 8.96, `zstd -19 --long=27` 7.80); NASA access
   log 13.22 -> 11.92 MB at 435 MB/s (`zstd -3 --long=27` 13.63 MB at
   383); Silesia `--max` 3.259 -> 3.302 at 247 MB/s (290 before; zstd
-  -3 3.205 at 335). GitHub Archive, one hour (814 MB), 10 cores:
-  `--max` 11.15 -> 12.58, `--ultra` 14.13 -> 15.58 (zstd -19 14.59).
+  -3 3.205 at 335). The 8.7 GB corpus on 10 cores: `--max` 3.89 ->
+  3.96 at 2,000 MB/s (2,400 before; zstd -3 3.85 at 4,000), JSON
+  events 11.49 -> 13.26 (zstd -3 10.46); `--ultra` 4.65 (zstd -19
+  4.66), JSON events 16.40 (zstd -19 15.07).
 
 ### Record mode
 - `glyd -r` / `compress_records_with`: delimited lines and SQL dumps
   become typed column streams (integer and date-time deltas,
   dictionaries with recency ranks, text) before the level, in
   parallel 32 MB units, rebuilt byte for byte; other data is left as
-  it is. Whole 8.7 GB corpus, 10 cores: `--ultra -r` 5.13 against
-  zstd -19's 4.66 (SQL dumps 1.43x smaller, access logs 1.54x, JSON
-  left plain); `--max -r` 4.66 at 1,150 MB/s. Design notes in
+  it is; input the transform does not pay on (JSON, binaries) takes
+  the plain parallel path. Whole 8.7 GB corpus, 10 cores: `--ultra -r`
+  5.20 against zstd -19's 4.66 (SQL dumps 1.43x smaller, access logs
+  1.54x, JSON 1.09x through the plain level's matcher); `--max -r`
+  4.75 at 1,100 MB/s. Design notes in
   docs/design/format-v7.md; the prototypes and measurements that led
   here in experiments/structure/.
 

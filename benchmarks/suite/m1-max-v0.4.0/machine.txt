@@ -1,0 +1,5 @@
+commit: b69ed21 (record-mode rows on the JSON files rerun after it; the rest at cd2b9b3)
+machine: Apple M1 Max, 10 cores, macOS
+run: bench_suite --large --threads 10 --repeats 1 --slow-repeats 1 --codecs glyd-max,glyd-ultra,glyd-max-rec,glyd-ultra-rec,zstd-3,zstd-19
+note: one repeat; decompress speeds include first-touch page faults and are 30-50% under a 3-repeat minimum (see the AWS rows for those)
+date: 2026-09-20T00:05:00Z

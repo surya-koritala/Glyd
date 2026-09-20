@@ -358,26 +358,28 @@ parallel 32 MB units, and rebuilds the bytes exactly. Anything else
 is left as it is.
 
 The 8.7 GB benchmark corpus, 10 cores, every decode byte-checked
-(`examples/bench_suite.rs`, rows in [`benchmarks/suite/m1-max-record-mode/`](benchmarks/suite/m1-max-record-mode/)):
+(`examples/bench_suite.rs`, rows in [`benchmarks/suite/m1-max-v0.4.0/`](benchmarks/suite/m1-max-v0.4.0/)):
 
-| Data | Glyd&nbsp;‑‑max | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑r** | ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;‑r** | zstd&nbsp;-3 | zstd&nbsp;-19 | **‑‑ultra&nbsp;‑r vs zstd&nbsp;-19** |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| SQL dumps (3.9 GB) | 4.94 | **8.35** | **10.13** | 4.97 | 7.10 | **1.43× smaller** |
-| Access logs (0.55 GB) | 9.67 | **21.4** | **23.0** | 9.53 | 14.9 | **1.54× smaller** |
-| Pageview logs (0.71 GB) | 3.68 | **4.03** | **4.89** | 3.56 | 4.82 | 1.02× |
-| JSON events (2.6 GB) | 11.49 | 11.46 | 14.59 | 10.46 | **15.07** | 0.97× (left plain) |
-| Parquet (1.0 GB) | 1.01 | 1.01 | 1.02 | 1.01 | 1.02 | 1.00× |
-| Whole corpus | 3.89 | **4.66** | **5.13** | 3.85 | 4.66 | **1.10× smaller** |
+| Data | Glyd&nbsp;‑‑max | Glyd&nbsp;‑‑ultra | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑r** | ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;‑r** | zstd&nbsp;-3 | zstd&nbsp;-19 | **‑‑ultra&nbsp;‑r vs zstd&nbsp;-19** |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| SQL dumps (3.9 GB) | 4.96 | 6.98 | **8.38** | **10.14** | 4.97 | 7.10 | **1.43× smaller** |
+| Access logs (0.55 GB) | 10.56 | 14.40 | **21.4** | **23.0** | 9.53 | 14.9 | **1.54× smaller** |
+| Pageview logs (0.71 GB) | 3.71 | 4.68 | **4.10** | **4.92** | 3.56 | 4.82 | 1.02× |
+| JSON events (2.6 GB) | **13.26** | **16.40** | 13.26 | 16.40 | 10.46 | 15.07 | **1.09× smaller** |
+| Parquet (1.0 GB) | 1.01 | 1.02 | 1.01 | 1.02 | 1.01 | 1.02 | 1.00× |
+| Whole corpus | 3.96 | 4.65 | **4.75** | **5.20** | 3.85 | 4.66 | **1.11× smaller** |
 
-`--max -r` matches zstd -19's size over the corpus while compressing at
-1,150 MB/s against 19 (10 cores) and decompressing at 4,700 MB/s
-against 2,300; `--ultra -r` is 10% smaller than zstd -19. The transform
-costs: record-mode reads run at 4,500-4,700 MB/s instead of 8,700 for
-plain `--max`. JSON events are not record-shaped (their redundancy is
-inside each record and across the whole file) and are left to the
-plain level, where the long-distance matcher (repeats up to 128 MB
-back, on at `--max` and `--ultra`) is the lever: 12.58 and 15.58 on
-the hour above against 11.15 and 14.13 with the 8 MB window.
+`--max -r` is 2% smaller than zstd -19 over the corpus while
+compressing at 1,100 MB/s against 19 (10 cores); `--ultra -r` is 11%
+smaller than zstd -19, and plain `--ultra` now equals it. JSON events
+are not record-shaped (their redundancy is inside each record and
+across the whole file), so `-r` hands them to the plain level, where
+the long-distance matcher (repeats up to 128 MB back, on at `--max`
+and `--ultra`) does the work: 13.26 and 16.40 against 11.49 and 14.59
+with the 8 MB window, 27% and 9% smaller than zstd -3 and zstd -19.
+Costs: `--max` compresses the corpus at 2,000 MB/s (2,400 without the
+matcher; zstd -3 4,000), record-mode reads run at 4,400 MB/s instead
+of 6,500-8,700 for plain `--max`.
 
 ## Known gaps
 
