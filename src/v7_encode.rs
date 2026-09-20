@@ -657,7 +657,13 @@ impl DfastTables {
     /// parsed after `end` may match into it) in both tables, later
     /// positions winning a slot (they are the nearer, cheaper offsets).
     pub fn seed(&mut self, input: &[u8], end: usize) {
-        for (pos, w) in input[..end].windows(8).enumerate() {
+        self.seed_range(input, 0, end);
+    }
+
+    /// `seed` over `input[from..end]` only (positions stay absolute).
+    pub fn seed_range(&mut self, input: &[u8], from: usize, end: usize) {
+        for (i, w) in input[from..end].windows(8).enumerate() {
+            let pos = from + i;
             let w = u64::from_ne_bytes(w.try_into().unwrap());
             let (i, m) = long_slot(w, pos, self.lbits);
             self.long[i] = m;
@@ -957,12 +963,13 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                     rc += 1;
                 }
                 // A far offset's match fits the decoder's one-load walk
-                // only up to FAR_MATCH_CAP bytes; the rest follows as a
-                // repeat-offset match (the reps probe finds it).
-                if found.off >= 1 << (FAR_OFFSET_BITS as usize + 1) {
+                // only up to FAR_MATCH_CAP bytes when the offset is coded
+                // anew; the rest follows as a repeat-offset match of any
+                // length (a repeat code carries no offset bits).
+                let offset = found.off as u32;
+                if found.off >= 1 << (FAR_OFFSET_BITS as usize + 1) && offset != r[0] && offset != r[1] && offset != r[2] {
                     rc = rc.min(FAR_MATCH_CAP as usize);
                 }
-                let offset = found.off as u32;
                 let ll = mpos - anchor;
                 let dst = literals.as_mut_ptr().add(literals.len());
                 if ll <= 16 {

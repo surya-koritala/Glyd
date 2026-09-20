@@ -14,6 +14,8 @@ Options:
     -9, --max              Max level: entropy coded, ratio above zstd -3
     -19, --ultra           Ultra level: optimal parse, ratio above zstd -16; slow to compress
     -r, --records          Record mode: logs and table dumps as typed columns before the level
+    -B, --base <FILE>      Base mode: compress a new version against this old one (--max, or
+                           --ultra); decoding needs the same file
     -d, --decompress       Decompress input (default if input is .glyd)
     -m, --multi-core       Use multi-core parallel engine (default)
     -s, --single-core      Force single-core sequential engine
@@ -25,6 +27,8 @@ Options:
 Examples:
     glyd input.tar -o input.tar.glyd
     glyd -d input.tar.glyd -o input.tar
+    glyd --base dump-monday.sql dump-tuesday.sql -o tuesday.glyd
+    glyd -d --base dump-monday.sql tuesday.glyd -o dump-tuesday.sql
     cat large.json | glyd -c > large.json.glyd
     cat large.json.glyd | glyd -d > large.json
     glyd -b dataset.bin
@@ -63,6 +67,7 @@ fn main() -> io::Result<()> {
     let mut max = false;
     let mut ultra = false;
     let mut records = false;
+    let mut base_path: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -81,6 +86,15 @@ fn main() -> io::Result<()> {
             "-9" | "--max" => max = true,
             "-19" | "--ultra" => ultra = true,
             "-r" | "--records" => records = true,
+            "-B" | "--base" => {
+                if i + 1 < args.len() {
+                    base_path = Some(args[i + 1].clone());
+                    i += 1;
+                } else {
+                    eprintln!("Error: --base requires a file");
+                    std::process::exit(1);
+                }
+            }
             "-d" | "--decompress" => mode_compress = Some(false),
             "-m" | "--multi-core" => multi_core = true,
             "-s" | "--single-core" => multi_core = false,
@@ -139,8 +153,23 @@ fn main() -> io::Result<()> {
         }
     });
 
+    let base = match base_path {
+        Some(ref p) => Some(std::fs::read(p)?),
+        None => None,
+    };
     let output_data = if should_compress {
         let mut out = Vec::with_capacity(input_data.len() / 2 + 1024);
+        if let Some(ref base) = base {
+            glyd::compress_with_base(base, &input_data, &mut out, ultra);
+            match output_path {
+                Some(ref p) if p != "-" => std::fs::write(p, &out)?,
+                _ => {
+                    io::stdout().write_all(&out)?;
+                    io::stdout().flush()?;
+                }
+            }
+            return Ok(());
+        }
         let mc = multi_core && input_data.len() > glyd::format::MAX_BLOCK_SIZE;
         let level: fn(&[u8], &mut Vec<u8>) = match (mc, fast, turbo, max) {
             (true, _, _, _) if ultra => glyd::compress_parallel_into_ultra,
@@ -176,7 +205,12 @@ fn main() -> io::Result<()> {
             Some(ref p) if p != "-" => Box::new(std::fs::File::create(p)?),
             _ => Box::new(io::stdout().lock()),
         };
-        let result = if multi_core && input_data.len() > glyd::format::MAX_BLOCK_SIZE {
+        let result = if glyd::needs_base(&input_data) {
+            match base {
+                Some(ref base) => glyd::decompress_stream_with_base(base, &input_data, |batch| out.write_all(batch)),
+                None => Err(io::Error::new(io::ErrorKind::InvalidData, "this file was compressed against a base: pass it with --base")),
+            }
+        } else if multi_core && input_data.len() > glyd::format::MAX_BLOCK_SIZE {
             glyd::decompress_stream(&input_data, |batch| out.write_all(batch))
         } else {
             match glyd::decompress(&input_data) {

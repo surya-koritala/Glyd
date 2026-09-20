@@ -511,7 +511,9 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
             // input (the ultra path) and is indexed here, while the max
             // level reads a dictionary through the dictionary's own tables.
             t.clear_for(full.len());
-            t.seed(full, start);
+            // A base region before the input is history the matcher
+            // reaches; the tables take its last few megabytes only.
+            t.seed_range(full, start.saturating_sub(BASE_SEED), start);
         }),
         Parse::Ultra => ULTRA.with_borrow_mut(|t| {
             let t = t.get_or_insert_with(v7_ultra::UltraState::new);
@@ -531,7 +533,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
     // found once here; an input that fits the local window has none.
     // The max level gives the pass up on inputs with few far repeats.
     let far = if full.len() > LOCAL_WINDOW as usize && dict.is_none() {
-        ldm::Matches::find(full, matches!(parse, Parse::Dfast))
+        ldm::Matches::find(full, matches!(parse, Parse::Dfast) && start == 0)
     } else {
         ldm::Matches { list: Vec::new() }
     };
@@ -801,7 +803,220 @@ pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
     if let Some(units) = records_envelope(compressed) {
         return Ok(units.iter().map(|u| u.len).sum());
     }
+    if let Some((_, units)) = base_envelope(compressed) {
+        return Ok(units.iter().map(|u| u.len).sum());
+    }
     total_uncompressed_len(compressed)
+}
+
+// ---------------------------------------------------------------------------
+// Base (delta) mode: a new version of an object compressed against the
+// old one. The input is cut into `BASE_UNIT`s; each is parsed with a
+// region of the base laid before it as history (the region around the
+// unit's own position, `BASE_SLACK` each way, so a version whose
+// content has drifted by less than that finds it), the long-distance
+// matcher reaching all of it and the local finder its last megabytes.
+// The decoder reads the region in place. Envelope:
+//
+//   "GLYDBASE" base id (u64 LE: the base's length and checksum)
+//   n_units, then per unit: base_start, base_len, new_len, stream_len
+//   (varints), then the units' streams back to back.
+// ---------------------------------------------------------------------------
+
+const BASE_MAGIC: &[u8; 8] = b"GLYDBASE";
+const BASE_UNIT: usize = 32 << 20;
+const BASE_SLACK: usize = 32 << 20;
+/// A region ends this far before the base's end: the decoder's copies
+/// read a little past it.
+const BASE_TAIL: usize = 64;
+/// Bytes of the region before the input the local finder is seeded with.
+const BASE_SEED: usize = 8 << 20;
+
+/// What identifies a base: its length and checksum.
+pub fn base_id(base: &[u8]) -> u64 {
+    (base.len() as u64) << 32 | compute_checksum(base) as u64
+}
+
+struct BaseUnit<'a> {
+    base_start: usize,
+    base_len: usize,
+    len: usize,
+    stream: &'a [u8],
+}
+
+fn base_envelope(compressed: &[u8]) -> Option<(u64, Vec<BaseUnit<'_>>)> {
+    if compressed.len() < 16 || &compressed[..8] != BASE_MAGIC {
+        return None;
+    }
+    let id = u64::from_le_bytes(compressed[8..16].try_into().unwrap());
+    let mut pos = 16usize;
+    let n = get_varint64(compressed, &mut pos)? as usize;
+    if n > compressed.len() {
+        return None;
+    }
+    let mut heads = Vec::with_capacity(n);
+    for _ in 0..n {
+        let base_start = get_varint64(compressed, &mut pos)? as usize;
+        let base_len = get_varint64(compressed, &mut pos)? as usize;
+        let len = get_varint64(compressed, &mut pos)? as usize;
+        let slen = get_varint64(compressed, &mut pos)? as usize;
+        // What the encoder writes; a corrupt header cannot ask for more.
+        if len > BASE_UNIT || base_len > BASE_UNIT + 2 * BASE_SLACK {
+            return None;
+        }
+        heads.push((base_start, base_len, len, slen));
+    }
+    let mut units = Vec::with_capacity(n);
+    for (base_start, base_len, len, slen) in heads {
+        let stream = compressed.get(pos..pos.checked_add(slen)?)?;
+        pos += slen;
+        units.push(BaseUnit { base_start, base_len, len, stream });
+    }
+    if pos != compressed.len() {
+        return None;
+    }
+    Some((id, units))
+}
+
+/// `input` compressed against `base` at the max level (`ultra` for the
+/// ultra level): the output decodes only with the same base
+/// (`decompress_with_base`). A version of a dump, a source tree or an
+/// image costs a few percent of what it costs alone.
+pub fn compress_with_base(base: &[u8], input: &[u8], output: &mut Vec<u8>, ultra: bool) {
+    let parse = if ultra { Parse::Ultra } else { Parse::Dfast };
+    let units: Vec<(usize, usize)> = (0..input.len().max(1)).step_by(BASE_UNIT).map(|a| (a, (a + BASE_UNIT).min(input.len()))).collect();
+    let base_end = base.len().saturating_sub(BASE_TAIL);
+    let region = |a: usize, b: usize| -> (usize, usize) {
+        let r0 = a.saturating_sub(BASE_SLACK).min(base_end);
+        let r1 = (b + BASE_SLACK).min(base_end);
+        (r0, r1.max(r0))
+    };
+    let slots: Vec<std::sync::Mutex<Vec<u8>>> = units.iter().map(|_| std::sync::Mutex::new(Vec::new())).collect();
+    let _ = par_units::<()>(units.len(), |i| {
+        let (a, b) = units[i];
+        let (r0, r1) = region(a, b);
+        let mut full = Vec::with_capacity(r1 - r0 + b - a);
+        full.extend_from_slice(&base[r0..r1]);
+        full.extend_from_slice(&input[a..b]);
+        let mut out = Vec::with_capacity((b - a) / 8 + 1024);
+        compress_max_from(&full, r1 - r0, 0, parse, None, &mut out);
+        *slots[i].lock().unwrap() = out;
+        Ok(())
+    });
+    output.extend_from_slice(BASE_MAGIC);
+    output.extend_from_slice(&base_id(base).to_le_bytes());
+    put_varint(output, units.len() as u32);
+    let streams: Vec<Vec<u8>> = slots.into_iter().map(|m| m.into_inner().unwrap()).collect();
+    for (&(a, b), s) in units.iter().zip(&streams) {
+        let (r0, r1) = region(a, b);
+        put_varint64(output, r0 as u64);
+        put_varint64(output, (r1 - r0) as u64);
+        put_varint64(output, (b - a) as u64);
+        put_varint64(output, s.len() as u64);
+    }
+    for s in &streams {
+        output.extend_from_slice(s);
+    }
+}
+
+fn put_varint64(out: &mut Vec<u8>, mut v: u64) {
+    while v >= 128 {
+        out.push((v & 127) as u8 | 128);
+        v >>= 7;
+    }
+    out.push(v as u8);
+}
+
+fn get_varint64(src: &[u8], pos: &mut usize) -> Option<u64> {
+    let (mut v, mut shift) = (0u64, 0u32);
+    loop {
+        let b = *src.get(*pos)?;
+        *pos += 1;
+        v |= ((b & 127) as u64) << shift;
+        if b < 128 {
+            return Some(v);
+        }
+        shift += 7;
+        if shift > 63 {
+            return None;
+        }
+    }
+}
+
+/// The units of a base envelope decoded into `dst` (disjoint ranges),
+/// each reading its region of `base` as history before it.
+fn base_units_into(base: &[u8], units: &[BaseUnit<'_>], dst: &mut [u8]) -> Result<usize> {
+    let total: usize = units.iter().map(|u| u.len).sum();
+    if dst.len() < total {
+        return Err(CodecError::OutputBufferTooSmall { required: total, provided: dst.len() });
+    }
+    let mut offsets = Vec::with_capacity(units.len());
+    let mut at = 0usize;
+    for u in units {
+        offsets.push(at);
+        at += u.len;
+    }
+    let ptr = dst.as_mut_ptr() as usize;
+    par_units(units.len(), |i| -> Result<()> {
+        let (u, off) = (&units[i], offsets[i]);
+        let end = u.base_start.checked_add(u.base_len).ok_or(CodecError::CorruptedBitstream("base envelope: region"))?;
+        if end + BASE_TAIL > base.len() && u.base_len > 0 {
+            return Err(CodecError::CorruptedBitstream("base envelope: region past the base"));
+        }
+        let region = &base[u.base_start..end];
+        // Units cover disjoint ranges of `dst`.
+        let out = unsafe { std::slice::from_raw_parts_mut((ptr + off) as *mut u8, u.len) };
+        let n = decompress_sequential_impl(u.stream, out, 0, None, true, Some(region))?;
+        if n != u.len {
+            return Err(CodecError::CorruptedBitstream("base envelope: unit length"));
+        }
+        Ok(())
+    })?;
+    Ok(total)
+}
+
+/// Decode `compressed` (a `compress_with_base` output) with its base.
+pub fn decompress_with_base(base: &[u8], compressed: &[u8]) -> Result<Vec<u8>> {
+    let (id, units) = base_envelope(compressed).ok_or(CodecError::CorruptedBitstream("not a base envelope"))?;
+    if id != base_id(base) {
+        return Err(CodecError::CorruptedBitstream("base envelope: not this base"));
+    }
+    let total: usize = units.iter().map(|u| u.len).sum();
+    let mut out = vec![0u8; total + PADDING * 2];
+    let n = base_units_into(base, &units, &mut out)?;
+    out.truncate(n);
+    Ok(out)
+}
+
+/// `decompress_stream` for a base envelope: batches of units decoded
+/// against `base` into one reused buffer, handed to `sink` in order.
+pub fn decompress_stream_with_base(base: &[u8], compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+    let codec = |e: CodecError| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+    let (id, units) = base_envelope(compressed).ok_or_else(|| codec(CodecError::CorruptedBitstream("not a base envelope")))?;
+    if id != base_id(base) {
+        return Err(codec(CodecError::CorruptedBitstream("base envelope: not this base")));
+    }
+    let workers = threads();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut at = 0usize;
+    while at < units.len() {
+        let mut end = at + 1;
+        let mut total = units[at].len;
+        while end < units.len() && end - at < workers.max(2) && total < STREAM_BATCH {
+            total += units[end].len;
+            end += 1;
+        }
+        buf.resize(total + PADDING * 2, 0);
+        base_units_into(base, &units[at..end], &mut buf).map_err(codec)?;
+        sink(&buf[..total])?;
+        at = end;
+    }
+    Ok(())
+}
+
+/// Whether `compressed` needs a base to decode (`decompress_with_base`).
+pub fn needs_base(compressed: &[u8]) -> bool {
+    compressed.len() >= 16 && &compressed[..8] == BASE_MAGIC
 }
 
 // ---------------------------------------------------------------------------
@@ -843,6 +1058,10 @@ fn records_envelope(compressed: &[u8]) -> Option<Vec<RecordUnit<'_>>> {
     for _ in 0..n {
         let len = get_varint(compressed, &mut pos)? as usize;
         let clen = get_varint(compressed, &mut pos)? as usize;
+        // A unit is at most RECORDS_UNIT; a corrupt header cannot ask for more.
+        if len > RECORDS_UNIT {
+            return None;
+        }
         let image = *compressed.get(pos)?;
         pos += 1;
         sizes.push((len, clen, image != 0));
@@ -950,7 +1169,7 @@ pub fn compress_records_into_ultra(input: &[u8], output: &mut Vec<u8>) {
 /// Decode a record-mode stream into `dst`: every unit in parallel, its
 /// inner stream then the rebuild.
 thread_local! {
-    /// A record unit's image and text, kept across units.
+    // A record unit's image and text, kept across units.
     static RECORD_BUFS: RefCell<(Vec<u8>, Vec<u8>)> = RefCell::new((Vec::new(), Vec::new()));
 }
 
@@ -1020,6 +1239,9 @@ fn total_uncompressed_len(compressed: &[u8]) -> Result<usize> {
 
 /// Decompress an entire SIMD-stream payload sequentially into a freshly allocated vector.
 pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
+    if needs_base(compressed) {
+        return Err(CodecError::CorruptedBitstream("a base envelope: decode with its base"));
+    }
     if let Some(units) = records_envelope(compressed) {
         return decompress_records(&units);
     }
@@ -1120,6 +1342,9 @@ fn decompress_sequential_impl(compressed: &[u8], dst: &mut [u8], dst_offset0: us
 
 /// Decompress into a pre-allocated buffer sequentially with checksum validation.
 pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
+    if needs_base(compressed) {
+        return Err(CodecError::CorruptedBitstream("a base envelope: decode with its base"));
+    }
     if let Some(units) = records_envelope(compressed) {
         return records_into(&units, dst);
     }
@@ -1147,6 +1372,9 @@ struct ParallelUnit {
 
 /// Decompress in parallel across all CPU cores into a freshly allocated vector.
 pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
+    if needs_base(compressed) {
+        return Err(CodecError::CorruptedBitstream("a base envelope: decode with its base"));
+    }
     if let Some(units) = records_envelope(compressed) {
         return decompress_records(&units);
     }
@@ -1303,6 +1531,9 @@ pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::
 
 /// Decompress in parallel across all CPU cores into a pre-allocated buffer with checksum verification.
 pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
+    if needs_base(compressed) {
+        return Err(CodecError::CorruptedBitstream("a base envelope: decode with its base"));
+    }
     if let Some(units) = records_envelope(compressed) {
         return records_into(&units, dst);
     }

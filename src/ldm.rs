@@ -26,7 +26,10 @@ use crate::v7_format::MAX_OFFSET_BITS;
 /// Shortest repeat worth a far offset (its code costs up to 26 extra bits).
 pub const MIN_LEN: usize = 32;
 const ANCHOR_BITS: u32 = 4;
+/// Table entries (log2) for an input of up to 64 MB; larger inputs
+/// get a slot per 16 bytes (`find` sizes the table to the input).
 const TABLE_BITS: u32 = 22;
+const TABLE_BITS_MAX: u32 = 25;
 const POS_BITS: u32 = MAX_OFFSET_BITS;
 const CHECK_BITS: u32 = 32 - POS_BITS;
 const HASH_LEN: usize = 32;
@@ -88,7 +91,7 @@ unsafe fn h32p(p: *const u8) -> u32 {
     let h = (a.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ b.wrapping_mul(0xC2B2_AE3D_27D4_EB4F))
         .wrapping_add(c.wrapping_mul(0x1656_67B1_9E37_79F9) ^ d.wrapping_mul(0x27D4_EB2F_1656_67C5));
     let h = (h ^ (h >> 29)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    (h >> (64 - TABLE_BITS - CHECK_BITS)) as u32
+    (h >> (64 - TABLE_BITS_MAX - CHECK_BITS)) as u32
 }
 
 /// The anchors among 16 positions as a bit mask (bit k for `p + k`).
@@ -180,7 +183,7 @@ static BIT_INDEXES: [[u8; 8]; 256] = {
 /// without a branch per anchor (a stray branch mispredicts once per
 /// 16 bytes), then hashed in a loop of known length.
 #[inline(always)]
-unsafe fn gather<S: Scan>(src: *const u8, mut pos: usize, end: usize, table: *const u32, positions: &mut [u32; CHUNK + 16], anchors: &mut Vec<(u32, u32)>) {
+unsafe fn gather<S: Scan>(src: *const u8, mut pos: usize, end: usize, table: *const u32, table_shift: u32, positions: &mut [u32; CHUNK + 16], anchors: &mut Vec<(u32, u32)>) {
     let mut count = 0usize;
     while pos + 16 <= end {
         let m = S::mask16(src.add(pos)) as usize;
@@ -210,7 +213,7 @@ unsafe fn gather<S: Scan>(src: *const u8, mut pos: usize, end: usize, table: *co
         // hash alike.
         if w != w.rotate_left(8) {
             let h = h32p(src.add(pos as usize));
-            prefetch(table.add((h >> CHECK_BITS) as usize));
+            prefetch(table.add((h >> (CHECK_BITS + table_shift)) as usize));
             anchors.push((pos, h));
         }
     }
@@ -218,12 +221,12 @@ unsafe fn gather<S: Scan>(src: *const u8, mut pos: usize, end: usize, table: *co
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,bmi2")]
-unsafe fn gather_avx2(src: *const u8, pos: usize, end: usize, table: *const u32, positions: &mut [u32; CHUNK + 16], anchors: &mut Vec<(u32, u32)>) {
-    gather::<Avx2>(src, pos, end, table, positions, anchors)
+unsafe fn gather_avx2(src: *const u8, pos: usize, end: usize, table: *const u32, table_shift: u32, positions: &mut [u32; CHUNK + 16], anchors: &mut Vec<(u32, u32)>) {
+    gather::<Avx2>(src, pos, end, table, table_shift, positions, anchors)
 }
 
 /// The gather for this machine.
-fn gather_fn() -> unsafe fn(*const u8, usize, usize, *const u32, &mut [u32; CHUNK + 16], &mut Vec<(u32, u32)>) {
+fn gather_fn() -> unsafe fn(*const u8, usize, usize, *const u32, u32, &mut [u32; CHUNK + 16], &mut Vec<(u32, u32)>) {
     #[cfg(target_arch = "aarch64")]
     {
         gather::<Neon>
@@ -258,7 +261,11 @@ impl Matches {
         // of its hash: a mismatching check skips the (usually missing)
         // read of the candidate's bytes. The candidate is the nearest
         // position with those low bits (the window is 2^POS_BITS).
-        let mut table = vec![u32::MAX; 1 << TABLE_BITS];
+        // A slot per 16 bytes of input, at least the base size: the
+        // table would otherwise forget the start of a 128 MB unit.
+        let table_bits = (usize::BITS - (n / 16).leading_zeros()).clamp(TABLE_BITS, TABLE_BITS_MAX);
+        let table_shift = TABLE_BITS_MAX - table_bits;
+        let mut table = vec![u32::MAX; 1 << table_bits];
         let src = input.as_ptr();
         let end = n - HASH_LEN;
         let mut gate_at = if gated { (n / 2).min(GATE_AT) } else { usize::MAX };
@@ -292,10 +299,10 @@ impl Matches {
                 }
                 let chunk_end = (chunk_start + CHUNK).min(end);
                 anchors.clear();
-                gather(src, chunk_start.max(covered), chunk_end, table.as_ptr(), &mut positions, &mut anchors);
+                gather(src, chunk_start.max(covered), chunk_end, table.as_ptr(), table_shift, &mut positions, &mut anchors);
                 for &(pos, h) in &anchors {
                     let pos = pos as usize;
-                    let slot = table.get_unchecked_mut((h >> CHECK_BITS) as usize);
+                    let slot = table.get_unchecked_mut((h >> (CHECK_BITS + table_shift)) as usize);
                     let entry = *slot;
                     let check = (h & ((1 << CHECK_BITS) - 1)) << POS_BITS;
                     *slot = check | (pos as u32 & ((1 << POS_BITS) - 1));
