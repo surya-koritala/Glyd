@@ -4,12 +4,12 @@ What has to be true before Glyd's numbers are used for a storage
 decision, and how each point is checked. Results of each run are in
 [`../../benchmarks/suite/`](../../benchmarks/suite/) as JSON lines, one
 directory per machine, with the log of the run; the tables in
-[`suite-2026-09.md`](suite-2026-09.md) are generated from them by
+[`suite-2026-09-20.md`](suite-2026-09-20.md) (and the earlier [`suite-2026-09.md`](suite-2026-09.md)) are generated from them by
 `scripts/report_suite.py`.
 
 ## 1. Correctness
 
-- `cargo test --release`: 80 tests, among them round trips of every
+- `cargo test --release`: 95 tests, among them round trips of every
   level through the container, exact-size destination buffers,
   mutation fuzzing of every decoder (`tests/fuzz_safety.rs`: a million
   mutations per run into sentinel-guarded buffers; `tests/v7_fuzz.rs`

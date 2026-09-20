@@ -1,99 +1,110 @@
     Updating crates.io index
  Downloading crates ...
-  Downloaded crossbeam-epoch v0.9.21
-  Downloaded twox-hash v2.1.4
-  Downloaded regex v1.13.1
-  Downloaded lzav v0.1.1
-  Downloaded pkg-config v0.3.34
-  Downloaded find-msvc-tools v0.1.12
-  Downloaded crossbeam-deque v0.8.8
-  Downloaded glob v0.3.4
-  Downloaded log v0.4.34
-  Downloaded quote v1.0.47
-  Downloaded cexpr v0.6.0
-  Downloaded clang-sys v1.9.1
-  Downloaded unicode-ident v1.0.26
-  Downloaded memchr v2.8.3
-  Downloaded prettyplease v0.2.37
-  Downloaded snap v1.1.2
-  Downloaded cc v1.4.6
-  Downloaded rustc-hash v1.1.0
   Downloaded aho-corasick v1.1.5
-  Downloaded jobserver v0.1.35
-  Downloaded nom v7.1.3
-  Downloaded bindgen v0.70.1
-  Downloaded yansi-term v0.1.2
-  Downloaded lz4 v1.28.1
-  Downloaded crossbeam-utils v0.8.23
-  Downloaded zstd-sys v2.1.0+zstd.1.5.7
-  Downloaded either v1.18.0
+  Downloaded annotate-snippets v0.9.2
+  Downloaded shlex v2.0.1
   Downloaded bitflags v2.13.2
-  Downloaded syn v2.0.119
-  Downloaded rayon-core v1.13.0
+  Downloaded cc v1.4.6
+  Downloaded cexpr v0.6.0
+  Downloaded snap v1.1.2
+  Downloaded lz4_flex v0.11.6
+  Downloaded quote v1.0.47
+  Downloaded unicode-ident v1.0.26
+  Downloaded zstd v0.13.3
+  Downloaded zstd-safe v7.3.0
+  Downloaded crossbeam-deque v0.8.8
+  Downloaded twox-hash v2.1.4
+  Downloaded clang-sys v1.9.1
+  Downloaded jobserver v0.1.35
+  Downloaded pkg-config v0.3.34
+  Downloaded crossbeam-epoch v0.9.21
+  Downloaded rustc-hash v1.1.0
+  Downloaded cfg-if v1.0.5
+  Downloaded find-msvc-tools v0.1.12
+  Downloaded lz4 v1.28.1
+  Downloaded either v1.18.0
+  Downloaded lzav v0.1.1
+  Downloaded libloading v0.8.9
+  Downloaded minimal-lexical v0.2.1
+  Downloaded yansi-term v0.1.2
+  Downloaded glob v0.3.4
+  Downloaded crossbeam-utils v0.8.23
+  Downloaded log v0.4.34
   Downloaded proc-macro2 v1.0.107
   Downloaded shlex v1.3.0
-  Downloaded shlex v2.0.1
-  Downloaded annotate-snippets v0.9.2
-  Downloaded regex-syntax v0.8.11
-  Downloaded cfg-if v1.0.5
-  Downloaded libloading v0.8.9
-  Downloaded lz4_flex v0.11.6
+  Downloaded prettyplease v0.2.37
+  Downloaded rayon-core v1.13.0
   Downloaded itertools v0.13.0
-  Downloaded zstd-safe v7.3.0
-  Downloaded minimal-lexical v0.2.1
+  Downloaded memchr v2.8.3
+  Downloaded nom v7.1.3
+  Downloaded regex v1.13.1
   Downloaded rayon v1.12.0
+  Downloaded bindgen v0.70.1
+  Downloaded syn v2.0.119
   Downloaded unicode-width v0.1.14
-  Downloaded regex-automata v0.4.18
-  Downloaded zstd v0.13.3
-  Downloaded libc v0.2.189
+  Downloaded regex-syntax v0.8.11
   Downloaded lz4-sys v1.11.1+lz4-1.10.0
+  Downloaded regex-automata v0.4.18
+  Downloaded zstd-sys v2.1.0+zstd.1.5.7
+  Downloaded libc v0.2.189
    Compiling libc v0.2.189
    Compiling find-msvc-tools v0.1.12
    Compiling shlex v2.0.1
    Compiling proc-macro2 v1.0.107
+   Compiling glob v0.3.4
    Compiling unicode-ident v1.0.26
    Compiling quote v1.0.47
-   Compiling glob v0.3.4
    Compiling prettyplease v0.2.37
-   Compiling pkg-config v0.3.34
+   Compiling regex-syntax v0.8.11
+   Compiling crossbeam-utils v0.8.23
    Compiling memchr v2.8.3
    Compiling minimal-lexical v0.2.1
-   Compiling crossbeam-utils v0.8.23
-   Compiling regex-syntax v0.8.11
-   Compiling clang-sys v1.9.1
+   Compiling pkg-config v0.3.34
    Compiling cfg-if v1.0.5
-   Compiling crossbeam-epoch v0.9.21
    Compiling libloading v0.8.9
+   Compiling clang-sys v1.9.1
+   Compiling crossbeam-epoch v0.9.21
    Compiling yansi-term v0.1.2
+   Compiling unicode-width v0.1.14
    Compiling bindgen v0.70.1
    Compiling either v1.18.0
    Compiling nom v7.1.3
-   Compiling unicode-width v0.1.14
-   Compiling annotate-snippets v0.9.2
    Compiling itertools v0.13.0
+   Compiling annotate-snippets v0.9.2
    Compiling syn v2.0.119
    Compiling crossbeam-deque v0.8.8
-   Compiling log v0.4.34
-   Compiling bitflags v2.13.2
-   Compiling shlex v1.3.0
    Compiling rustc-hash v1.1.0
+   Compiling shlex v1.3.0
+   Compiling log v0.4.34
    Compiling jobserver v0.1.35
-   Compiling zstd-safe v7.3.0
-   Compiling cc v1.4.6
+   Compiling bitflags v2.13.2
    Compiling regex-automata v0.4.18
+   Compiling cc v1.4.6
+   Compiling zstd-safe v7.3.0
    Compiling rayon-core v1.13.0
-   Compiling snap v1.1.2
    Compiling cexpr v0.6.0
+   Compiling snap v1.1.2
    Compiling twox-hash v2.1.4
    Compiling lz4_flex v0.11.6
-   Compiling rayon v1.12.0
    Compiling regex v1.13.1
+   Compiling rayon v1.12.0
    Compiling zstd-sys v2.1.0+zstd.1.5.7
    Compiling lz4-sys v1.11.1+lz4-1.10.0
    Compiling lzav v0.1.1
    Compiling lz4 v1.28.1
    Compiling zstd v0.13.3
    Compiling glyd v0.3.0 (/home/ubuntu/glyd)
+warning: value assigned to `key` is never read
+   --> src/record.rs:928:43
+    |
+928 |     let mut key: Option<(usize, usize)> = None;
+    |                                           ^^^^ this value is reassigned later and never used
+...
+939 |         key = None;
+    |         ---------- `key` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
 warning: function `field` is never used
    --> src/v7_decode.rs:293:4
     |
@@ -111,7 +122,18 @@ warning: method `content_padded` is never used
 147 |     pub(crate) fn content_padded(&self) -> &[u8] {
     |                   ^^^^^^^^^^^^^^
 
-warning: `glyd` (lib) generated 2 warnings
+warning: `glyd` (lib) generated 3 warnings
+warning: variable does not need to be mutable
+  --> examples/rec_trial.rs:29:9
+   |
+29 |     let mut varint = |pos: &mut usize| { let (mut v, mut sh) = (0u64, 0); loop { let b = img[*pos]; *pos += 1; v |= ((b & 127) as u6...
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `glyd` (example "rec_trial") generated 1 warning (run `cargo fix --example "rec_trial" -p glyd` to apply 1 suggestion)
 warning: variable does not need to be mutable
    --> examples/floor.rs:758:9
     |
@@ -138,4 +160,4 @@ warning: fields `tokens`, `extras`, and `file_base` are never read
    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: `glyd` (example "floor") generated 2 warnings (run `cargo fix --example "floor" -p glyd` to apply 1 suggestion)
-    Finished `release` profile [optimized] target(s) in 1m 12s
+    Finished `release` profile [optimized] target(s) in 1m 11s

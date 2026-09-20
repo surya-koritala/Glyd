@@ -337,13 +337,17 @@ The verification and benchmark program (8.7 GB of logs, JSON, SQL
 dumps and Parquet; zstd -3, zstd -19 and LZ4 on the same AWS machines
 and thread counts; small objects with dictionaries; a real S3 round
 trip costed at list prices) and its results: [docs/benchmarks/](docs/benchmarks/README.md)
-and [docs/benchmarks/suite-2026-09.md](docs/benchmarks/suite-2026-09.md).
-The short version: `--max` stores 1% less than zstd -3 over the corpus
-(9% less on JSON, 3% on logs, parity on SQL and Parquet), decodes
-3-7x faster with several cores and 1.09x (Graviton3) / 0.77x
-(Sapphire Rapids) on one, and compresses at 0.65-0.78x zstd -3's
-speed; `--ultra` stores 1.5% more than zstd -19; a terabyte-year in
-S3 costs within 1% either way.
+and [docs/benchmarks/suite-2026-09-20.md](docs/benchmarks/suite-2026-09-20.md).
+The short version, Graviton3 and Sapphire Rapids: `--max` stores 2.8%
+less than zstd -3 over the corpus (22% less on JSON, 5% on logs,
+parity on SQL and Parquet), decodes 3-6x faster with 8 cores and 1.03x
+(Graviton3) / 0.80x (Sapphire Rapids) on one, and compresses at
+0.58-0.66x zstd -3's speed; `--ultra` equals zstd -19 (10% smaller on
+JSON); `--max -r` stores 19% less than zstd -3 and 2% less than
+zstd -19 at 540-675 MB/s on 8 cores, `--ultra -r` 10% less than
+zstd -19. A terabyte-year in S3 at one read a month costs within 2%
+either way for the plain levels; the record-mode rows are in the
+report.
 
 ## Record mode: logs and table dumps as columns
 
@@ -403,28 +407,31 @@ plain.
 
 ## Known gaps
 
-- `--max` compresses at 0.65-0.78x zstd -3's speed on server cores
-  (Graviton3, Sapphire Rapids): its 2 MB of finder tables miss a 1 MB
-  L2; 0.9x on Apple silicon. The long-distance pass takes another
-  15-37% where it stays on (text, logs, JSON: 3-16% fewer bytes for
-  it); `zstd -3 --long=27` pays 17-60% for the same window.
+- `--max` compresses at 0.58-0.66x zstd -3's speed on server cores
+  (Graviton3, Sapphire Rapids; 0.65-0.78x before the matcher): its
+  2 MB of finder tables miss a 1 MB L2, and the long-distance pass
+  takes another 15-37% where it stays on (text, logs, JSON: 3-16%
+  fewer bytes for it; `zstd -3 --long=27` pays 17-60% for the same
+  window). Record mode's transform halves the write speed again
+  (200-400 MB/s per core).
 - `--max` decodes 1.3× zstd -3, not the 2× the design aimed at.
 - On the extended corpus `--max` beats zstd -3 on 3 of 5 files; it loses
   0.6% on very repetitive JSON.
 - Small objects with a dictionary: zstd is 1-4% denser and 1.6-1.9×
   faster to compress (table above).
 - `GlydReader`/`GlydWriter` (std::io streaming) carry v6 levels only.
-- On x86 (Sapphire Rapids) `--max` decodes at 0.77x zstd -3 on the real-data
-  corpus (0.9-1.06x on Silesia), not the 1.1-1.3x it reaches on ARM:
+- On x86 (Sapphire Rapids) `--max` decodes at 0.80x zstd -3 on the real-data
+  corpus (0.9-1.06x on Silesia), not the 1.03-1.3x it reaches on ARM:
   x86-64's 16 general registers spill the 8-stream entropy loops that
   ARM's 31 keep in registers, and the 8 MB window's far copies miss its
   smaller caches.
 - The CLI spends more CPU per decoded byte than zstd's (a checksum per
   block, a whole-file buffer, the parallel decode's threads): 1.3x on
   Graviton3, 2x on Sapphire Rapids over the corpus.
-- `--ultra` is 2% less dense than zstd -19 (3.93 vs 4.01, both with an
-  8 MB window); the gap sits on structured data (mozilla, xml, samba
-  3-4%), text and binaries are within 1-2%.
+- `--ultra` is 1.2% less dense than zstd -19 on Silesia (3.96 vs
+  4.01); the gap sits on structured data (mozilla, xml, samba 3-4%),
+  text and binaries are within 1-2%. On the real-data corpus the two
+  are equal.
 
 ---
 

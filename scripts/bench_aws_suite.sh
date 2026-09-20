@@ -179,7 +179,7 @@ wait
 for T in $TYPES; do
     [ "${STEPS:-all}" = "s3" ] && T="$T-s3"
     echo "== $T"; cat "$OUT/$T/machine.txt" 2>/dev/null
-    tail -3 "$OUT/$T/verify.txt" 2>/dev/null
+    tail -3 "$OUT/$T/verify.txt" 2>/dev/null || true
     cat "$OUT/$T/s3_workflow.txt" 2>/dev/null
 done
 echo "done: $RUN_ID"
