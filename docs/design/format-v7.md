@@ -478,3 +478,62 @@ version alone at `--ultra`, on 10 M1 cores), still 3-10x slower than
 zstd -19's patch on the large pairs, whose level is a hash chain, not a
 tree. The encoder holds old, new, the map and a 128 MB copy per thread
 in memory.
+
+## The cold level: context mixing
+
+Measured first (experiments/research/README.md, section C): on 64 MB
+slices of the corpus, xz -9 and brotli -q 11 land within 5% of zstd -19
+and Glyd `--ultra`; only context mixing (zpaq -m5) moves the floor, by
+1.2-1.5x, at 0.3-0.4 MB/s. That is the cold tier's lever, and `--cold`
+(`src/cm.rs`, `compress_into_cold` and friends in `src/lib.rs`) is it.
+
+- No parse. Each bit is coded arithmetically at a probability mixed
+  from eleven predictors: the byte orders 1, 2, 3, 4, 6 and 8; the
+  current word (letters and digits, case folded) and the word before
+  it; the column (position in the line and the byte above it in the
+  line before, for what repeats line after line); the last quoted name
+  before a colon (a JSON value's key); and a match model that follows
+  the longest earlier occurrence of the last seven bytes and offers
+  the bit it predicts, its strength learned by match length. The match
+  model's expected byte is also a context.
+- Each context predictor is a table of 2^21 buckets of 16 bytes: a
+  checksum and the bit-history states of a nibble's 15 nodes, so one
+  cache line serves four bits. The states are paq's (`NEX`, generated:
+  253 states over the counts of zeros and ones, the last bit kept
+  while the counts are small, a count discounted when the other bit
+  arrives); a state map per predictor turns a state into a learned
+  probability (22 bits, an adaptive rate over a 10-bit count). A bucket
+  is found among three of one line by its checksum and the least-used
+  one replaced.
+- Two mixers (one weight set per partial byte and match-length class,
+  one per previous byte) take the predictors' logits and are averaged
+  in the logit domain; two SSE stages (by partial byte; by partial byte
+  and a hash of the last three bytes) refine the mix, 1:3. The
+  arithmetic coder is the carry-free 32-bit binary coder of lpaq.
+- Units of 32 MB start from an empty model, so they code and decode in
+  parallel (a unit's model is 400 MB; halving the tables to 2^20 and
+  the unit to 16 MB costs 3-9%). The envelope `GLYDCOLD` carries each
+  unit's length, stream length and checksum: the coder has no framing
+  of its own and decodes any bytes to something, so the checksum is
+  the integrity check, and every decoder verifies it.
+- Record mode composes: `-r --cold` transforms the unit into typed
+  columns first (the pay decision is made at the max level for every
+  level, since the cold trial would take seconds).
+
+64 MB slices, one thread for the references, Glyd's two units on two
+threads, every decode byte-checked (`experiments/research/coldtier.sh`):
+
+| Data | zstd -19 | Glyd `--ultra` (-r) | zpaq -m5 | Glyd `--cold` (-r) |
+| :--- | ---: | ---: | ---: | ---: |
+| GitHub Archive JSON events | 14.6x | 15.9x | 22.8x · 0.4 MB/s | **22.5x** · 1.3 MB/s per core |
+| NASA access log | 15.7x | 26.4x | 31.7x · 0.3 MB/s | **31.1x** · 1.2 MB/s per core |
+| enwiki page_props dump | 6.2x | 8.6x | 11.1x · 0.4 MB/s | **11.6x** · 1.2 MB/s per core |
+| webster | 4.8x | 4.8x | 7.3x · 0.35 MB/s | **7.1x** · 1.2 MB/s per core |
+
+What was tried and what it gave, in order: adaptive counters alone
+(1.16-1.5x over `--ultra`); bit histories in their place (+6-13%);
+orders 8 and a sparse context (+1%); the column context and the
+match-length mixer sets (+3-10%); the second mixer (+1-2%); the word
+bigram, JSON key and expected-byte contexts (+1.5-6%). Mixer learning
+rates 4-10 are flat. Left: a second match model for long repeats, an
+indirect (byte history) context, SIMD for the mixers — each 1-2%.

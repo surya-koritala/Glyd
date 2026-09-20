@@ -6,6 +6,23 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+### The cold level: context mixing
+- `glyd --cold` (`compress_into_cold`, `compress_parallel_into_cold`,
+  `compress_records_into_cold` with `-r`): every bit predicted from
+  eleven contexts (byte orders 1-4, 6, 8; the word and the one before;
+  the column and the byte above; the JSON key; the longest earlier
+  match) through paq-style bit histories, mixed by two networks, two
+  SSE stages, a binary arithmetic coder; 32 MB units coded from an
+  empty model, in parallel, each with a checksum in the envelope
+  (`GLYDCOLD`); every decoder reads it. 64 MB slices, two threads: JSON
+  events 22.5x (zstd -19 14.6x, `--ultra` 15.9x, zpaq -m5 22.8x), NASA
+  log `-r` 31.1x (15.7x, 26.4x, 31.7x), page_props dump `-r` 11.6x
+  (6.2x, 8.6x, 11.1x), webster 7.1x (4.8x, 4.8x, 7.3x); 1.2-1.3 MB/s
+  per core each way, 400 MB per thread. Record mode decides whether
+  its transform pays at the max level whatever the level.
+
 ## v0.6.0 — 2026-09-20
 
 ### Base mode: content found wherever it moved, ultra at full speed

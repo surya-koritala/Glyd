@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Lever C: the cold tier. Stronger-than-zstd-19 codecs on 64 MB slices
 # (xz -9, brotli -q 11 with a 24-bit window, zpaq -m5 context mixing)
-# against Glyd --ultra (-r where it applies) and zstd -19: size and
-# compress time. What paying 10-100x the CPU buys.
+# against Glyd --ultra and --cold (-r where it applies) and zstd -19:
+# size and compress time. What paying 10-100x the CPU buys.
 set -uo pipefail
 R="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
@@ -22,7 +22,7 @@ for f in "$R/corpus/bench/gharchive-2024-01-15-12.json" "$R/corpus/bench/nasa-ac
         t1=$(now)
         printf "   %-32s %12s B  %7.1f s  %5.2fx\n" "$c" "$(size "$out")" "$(echo "$t1 - $t0" | bc -l)" "$(echo "$n / $(size "$out")" | bc -l)"
     done
-    for lvl in "--ultra" "--ultra -r"; do
+    for lvl in "--ultra" "--ultra -r" "--cold" "--cold -r"; do
         t0=$(now); "$R/target/release/glyd" $lvl -s "$TMP/s.bin" -o "$TMP/o.glyd" >/dev/null 2>&1; t1=$(now)
         printf "   %-32s %12s B  %7.1f s  %5.2fx\n" "Glyd $lvl" "$(size "$TMP/o.glyd")" "$(echo "$t1 - $t0" | bc -l)" "$(echo "$n / $(size "$TMP/o.glyd")" | bc -l)"
     done

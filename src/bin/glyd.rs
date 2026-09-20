@@ -13,6 +13,8 @@ Options:
     -t, --turbo            Turbo level: fastest decode, ~6% less ratio
     -9, --max              Max level: entropy coded, ratio above zstd -3
     -19, --ultra           Ultra level: optimal parse, ratio above zstd -16; slow to compress
+    -C, --cold             Cold level: context mixing, the smallest output, 1-2 MB/s per core
+                           each way; for what is stored for years and read rarely
     -r, --records          Record mode: logs and table dumps as typed columns before the level
     -B, --base <FILE>      Base mode: compress a new version against this old one (--max, or
                            --ultra); decoding needs the same file
@@ -66,6 +68,7 @@ fn main() -> io::Result<()> {
     let mut turbo = false;
     let mut max = false;
     let mut ultra = false;
+    let mut cold = false;
     let mut records = false;
     let mut base_path: Option<String> = None;
 
@@ -85,6 +88,7 @@ fn main() -> io::Result<()> {
             "-t" | "--turbo" => turbo = true,
             "-9" | "--max" => max = true,
             "-19" | "--ultra" => ultra = true,
+            "-C" | "--cold" => cold = true,
             "-r" | "--records" => records = true,
             "-B" | "--base" => {
                 if i + 1 < args.len() {
@@ -172,6 +176,8 @@ fn main() -> io::Result<()> {
         }
         let mc = multi_core && input_data.len() > glyd::format::MAX_BLOCK_SIZE;
         let level: fn(&[u8], &mut Vec<u8>) = match (mc, fast, turbo, max) {
+            (true, _, _, _) if cold => glyd::compress_parallel_into_cold,
+            (false, _, _, _) if cold => glyd::compress_into_cold,
             (true, _, _, _) if ultra => glyd::compress_parallel_into_ultra,
             (false, _, _, _) if ultra => glyd::compress_into_ultra,
             (true, _, _, true) => glyd::compress_parallel_into_max,
@@ -183,7 +189,9 @@ fn main() -> io::Result<()> {
             (false, _, true, _) => glyd::compress_into_turbo,
             (false, _, _, _) => glyd::compress_into,
         };
-        if records {
+        if records && cold {
+            glyd::compress_records_into_cold(&input_data, &mut out);
+        } else if records {
             // Record mode parallelises over its own units; the level
             // inside a unit is the sequential one.
             let unit_level: fn(&[u8], &mut Vec<u8>) = match (fast, turbo, max, ultra) {

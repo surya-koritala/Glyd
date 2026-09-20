@@ -6,6 +6,7 @@
 # rejected or, if their checksum still passes, decode to the original
 # bytes. Exit status is non-zero on any failure.
 #   scripts/verify_roundtrip.sh [file ...]
+# COLD=1 adds the cold level (--cold, --cold -r), at 1-2 MB/s per core.
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GLYD="$ROOT/target/release/glyd"
@@ -32,7 +33,9 @@ PY
 for f in "${FILES[@]}"; do
     [ -f "$f" ] || continue
     name="$(basename "$f")"
-    for level in "-t" "-1" "" "--max" "--ultra" "--max -r" "--ultra -r"; do
+    levels=("-t" "-1" "" "--max" "--ultra" "--max -r" "--ultra -r")
+    [ "${COLD:-0}" = 1 ] && levels+=("--cold" "--cold -r")
+    for level in "${levels[@]}"; do
         for cores in "-s" "-m"; do
             label="$name level=${level:-default} $cores"
             if ! "$GLYD" $level $cores -c "$f" -o "$TMP/c.glyd" 2>"$TMP/err"; then echo "FAIL compress: $label: $(cat "$TMP/err")"; fail=$((fail+1)); continue; fi

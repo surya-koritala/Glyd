@@ -22,6 +22,7 @@ pub mod v7_format;
 pub mod v7_encode;
 pub mod v7_decode;
 pub mod v7_ultra;
+pub mod cm;
 pub mod fixlog;
 pub mod record;
 pub mod ldm;
@@ -808,10 +809,158 @@ pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
     if let Some(units) = records_envelope(compressed) {
         return Ok(units.iter().map(|u| u.len).sum());
     }
+    if let Some(units) = cold_envelope(compressed) {
+        return Ok(units.iter().map(|u| u.len).sum());
+    }
     if let Some((_, units)) = base_envelope(compressed) {
         return Ok(units.iter().map(|u| u.len).sum());
     }
     total_uncompressed_len(compressed)
+}
+
+// ---------------------------------------------------------------------------
+// The cold level: context mixing (`cm`) over 32 MB units, each coded
+// from an empty model so that units decode in parallel. A unit's
+// stream has no framing of its own; the envelope carries its length and
+// checksum, and a decoder that does not get the checksum back reports
+// corruption. Envelope:
+//
+//   "GLYDCOLD" n_units, then per unit: len, stream_len (varints),
+//   checksum (u32 LE); then the units' streams back to back.
+// ---------------------------------------------------------------------------
+
+const COLD_MAGIC: &[u8; 8] = b"GLYDCOLD";
+const COLD_UNIT: usize = 32 << 20;
+
+struct ColdUnit<'a> {
+    len: usize,
+    checksum: u32,
+    stream: &'a [u8],
+}
+
+fn cold_envelope(compressed: &[u8]) -> Option<Vec<ColdUnit<'_>>> {
+    if compressed.len() < 9 || &compressed[..8] != COLD_MAGIC {
+        return None;
+    }
+    let mut pos = 8usize;
+    let n = get_varint(compressed, &mut pos)? as usize;
+    if n > compressed.len() {
+        return None;
+    }
+    let mut heads = Vec::with_capacity(n);
+    for _ in 0..n {
+        let len = get_varint(compressed, &mut pos)? as usize;
+        let slen = get_varint(compressed, &mut pos)? as usize;
+        let checksum = u32::from_le_bytes(compressed.get(pos..pos + 4)?.try_into().unwrap());
+        pos += 4;
+        if len > COLD_UNIT {
+            return None;
+        }
+        heads.push((len, slen, checksum));
+    }
+    let mut units = Vec::with_capacity(n);
+    for (len, slen, checksum) in heads {
+        let stream = compressed.get(pos..pos.checked_add(slen)?)?;
+        pos += slen;
+        units.push(ColdUnit { len, checksum, stream });
+    }
+    if pos != compressed.len() {
+        return None;
+    }
+    Some(units)
+}
+
+fn cold_units(input: &[u8]) -> Vec<&[u8]> {
+    if input.is_empty() {
+        return vec![input];
+    }
+    input.chunks(COLD_UNIT).collect()
+}
+
+fn write_cold(output: &mut Vec<u8>, units: &[&[u8]], streams: &[Vec<u8>]) {
+    output.extend_from_slice(COLD_MAGIC);
+    put_varint(output, units.len() as u32);
+    for (u, c) in units.iter().zip(streams) {
+        put_varint(output, u.len() as u32);
+        put_varint(output, c.len() as u32);
+        output.extend_from_slice(&compute_checksum(u).to_le_bytes());
+    }
+    for c in streams {
+        output.extend_from_slice(c);
+    }
+}
+
+/// The cold level: context mixing, the smallest output and 1-2 MB/s
+/// each way on one core; for what is stored for years and read rarely.
+/// Units of 32 MB coded one after the other; `compress_parallel_into_cold`
+/// codes them on all cores. Every decoder reads the result.
+pub fn compress_into_cold(input: &[u8], output: &mut Vec<u8>) {
+    let units = cold_units(input);
+    let streams: Vec<Vec<u8>> = units
+        .iter()
+        .map(|u| {
+            let mut c = Vec::with_capacity(u.len() / 4 + 64);
+            cm::encode(u, &mut c);
+            c
+        })
+        .collect();
+    write_cold(output, &units, &streams);
+}
+
+/// The cold level, all cores (a thread holds 400 MB of model and unit).
+pub fn compress_parallel_into_cold(input: &[u8], output: &mut Vec<u8>) {
+    let units = cold_units(input);
+    let slots: Vec<std::sync::Mutex<Vec<u8>>> = units.iter().map(|_| std::sync::Mutex::new(Vec::new())).collect();
+    let _ = par_units::<()>(units.len(), |i| {
+        let mut c = Vec::with_capacity(units[i].len() / 4 + 64);
+        cm::encode(units[i], &mut c);
+        *slots[i].lock().unwrap() = c;
+        Ok(())
+    });
+    let streams: Vec<Vec<u8>> = slots.into_iter().map(|m| m.into_inner().unwrap()).collect();
+    write_cold(output, &units, &streams);
+}
+
+/// The cold level in record mode: the typed columns, then context mixing.
+pub fn compress_records_into_cold(input: &[u8], output: &mut Vec<u8>) {
+    if !records_pay(&input[..input.len().min(RECORDS_TRIAL)], compress_into_cold) {
+        return compress_parallel_into_cold(input, output);
+    }
+    records_units(input, output, compress_into_cold)
+}
+
+/// The units of a cold envelope decoded into `dst` in parallel, each
+/// checked against its checksum.
+fn cold_into(units: &[ColdUnit<'_>], dst: &mut [u8]) -> Result<usize> {
+    let total: usize = units.iter().map(|u| u.len).sum();
+    if dst.len() < total {
+        return Err(CodecError::OutputBufferTooSmall { required: total, provided: dst.len() });
+    }
+    let mut offsets = Vec::with_capacity(units.len());
+    let mut at = 0usize;
+    for u in units {
+        offsets.push(at);
+        at += u.len;
+    }
+    let base = dst.as_mut_ptr() as usize;
+    par_units(units.len(), |i| -> Result<()> {
+        let (u, off) = (&units[i], offsets[i]);
+        // Units cover disjoint ranges of `dst`.
+        let out = unsafe { std::slice::from_raw_parts_mut((base + off) as *mut u8, u.len) };
+        cm::decode(u.stream, out);
+        if compute_checksum(out) != u.checksum {
+            return Err(CodecError::CorruptedBitstream("cold envelope: checksum"));
+        }
+        Ok(())
+    })?;
+    Ok(total)
+}
+
+fn decompress_cold(units: &[ColdUnit<'_>]) -> Result<Vec<u8>> {
+    let total: usize = units.iter().map(|u| u.len).sum();
+    let mut out = vec![0u8; total];
+    cold_into(units, &mut out)?;
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1168,14 +1317,16 @@ pub fn compress_records_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8]
     records_with(input, output, level, PARALLEL_UNIT_MAX)
 }
 
-/// Whether the transform pays on `sample` at `level`: its image must
-/// compress 5% smaller than the sample itself.
-fn records_pay(sample: &[u8], level: fn(&[u8], &mut Vec<u8>)) -> bool {
+/// Whether the transform pays on `sample`: its image must compress 5%
+/// smaller than the sample itself. Decided at the max level whatever
+/// the level: the question is the data's shape, and the cold level
+/// would spend seconds on the trial.
+fn records_pay(sample: &[u8], _level: fn(&[u8], &mut Vec<u8>)) -> bool {
     match record::transform(sample) {
         Some(image) => {
             let (mut a, mut b) = (Vec::new(), Vec::new());
-            level(sample, &mut a);
-            level(&image, &mut b);
+            compress_into_max(sample, &mut a);
+            compress_into_max(&image, &mut b);
             b.len() * 100 < a.len() * 95
         }
         None => false,
@@ -1187,6 +1338,12 @@ fn records_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8
         compress_parallel_with(input, output, level, smallest);
         return;
     }
+    records_units(input, output, level)
+}
+
+/// Record mode over units cut at line ends, `level` on each unit's
+/// image (or the unit itself where the transform does not pay).
+fn records_units(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>)) {
     // Units cut at line ends.
     let mut units: Vec<&[u8]> = Vec::new();
     let mut at = 0usize;
@@ -1323,6 +1480,9 @@ pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
     if let Some(units) = records_envelope(compressed) {
         return decompress_records(&units);
     }
+    if let Some(units) = cold_envelope(compressed) {
+        return decompress_cold(&units);
+    }
     let total = total_uncompressed_len(compressed)?;
     let mut output = vec![0u8; total + PADDING * 2];
     let written = decompress_into(compressed, &mut output)?;
@@ -1426,11 +1586,17 @@ pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
     if let Some(units) = records_envelope(compressed) {
         return records_into(&units, dst);
     }
+    if let Some(units) = cold_envelope(compressed) {
+        return cold_into(&units, dst);
+    }
     decompress_sequential(compressed, dst, true)
 }
 
 /// Decompress into pre-allocated buffer without verifying checksum (raw codec speed).
 pub fn decompress_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
+    if let Some(units) = cold_envelope(compressed) {
+        return cold_into(&units, dst);
+    }
     decompress_sequential(compressed, dst, false)
 }
 
@@ -1455,6 +1621,9 @@ pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
     }
     if let Some(units) = records_envelope(compressed) {
         return decompress_records(&units);
+    }
+    if let Some(units) = cold_envelope(compressed) {
+        return decompress_cold(&units);
     }
     let total = total_uncompressed_len(compressed)?;
     let mut output = vec![0u8; total + PADDING * 2];
@@ -1585,6 +1754,22 @@ pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::
         }
         return Ok(());
     }
+    if let Some(units) = cold_envelope(compressed) {
+        let mut at = 0usize;
+        while at < units.len() {
+            let mut end = at + 1;
+            let mut total = units[at].len;
+            while end < units.len() && end - at < workers.max(2) && total < STREAM_BATCH {
+                total += units[end].len;
+                end += 1;
+            }
+            buf.resize(total, 0);
+            cold_into(&units[at..end], &mut buf).map_err(codec)?;
+            sink(&buf[..total])?;
+            at = end;
+        }
+        return Ok(());
+    }
     let (blocks, units, total_uncomp) = scan_units(compressed).map_err(codec)?;
     if units.len() <= 1 {
         buf.resize(total_uncomp + PADDING * 2, 0);
@@ -1615,10 +1800,16 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
     if let Some(units) = records_envelope(compressed) {
         return records_into(&units, dst);
     }
+    if let Some(units) = cold_envelope(compressed) {
+        return cold_into(&units, dst);
+    }
     decompress_parallel_impl(compressed, dst, true)
 }
 
 /// Decompress in parallel across all CPU cores into a pre-allocated buffer without verifying checksum (raw codec speed).
 pub fn decompress_parallel_into_raw(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
+    if let Some(units) = cold_envelope(compressed) {
+        return cold_into(&units, dst);
+    }
     decompress_parallel_impl(compressed, dst, false)
 }

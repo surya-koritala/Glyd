@@ -52,6 +52,11 @@ JSON floor:
 | enwiki page_props dump | 6.2x · 33 s | 6.1x | 8.6x · 11 s | **11.1x · 160 s** | 1.29x, 15x slower |
 | webster (text) | 4.8x · 22 s | 4.8x · 20 s | 4.6x | **7.3x · 119 s** | 1.54x, 6x slower |
 
+Shipped as `glyd --cold` (v0.7.0): 64 MB slices, 32 MB units on two
+threads, every decode byte-checked — JSON events 22.5x, NASA `-r` 31.1x,
+page_props `-r` 11.6x, webster 7.1x; zpaq -m5 within 3% either way at
+3-4x its speed per core (1.2-1.3 MB/s each way).
+
 ## F. Binary float columns (`floats.py`)
 
 Double columns of the taxi Parquet as raw f64 against decimal-scaled
@@ -70,6 +75,6 @@ bytes. Not a lever.
    reads, cross-object matching).
 3. **Context mixing for cold data**: 1.2-1.5x over every LZ codec on
    every text-like class, JSON events included, at 1 MB/s per core —
-   the only lever left for hash-and-text JSON; weeks of work; cold
-   archives only.
+   the only lever left for hash-and-text JSON; cold archives only.
+   Built as `--cold` (section C).
 4. Float columns and Parquet pages: dead ends, measured.

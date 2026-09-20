@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Glyd — compression that moves the storage bill</title>
-<meta name="description" content="Glyd v0.6.0: base mode stores a new version of a dump, image or source tree for a few percent of its size, 15 kernel releases in 228 MB; record mode turns logs of any shape, dumps, CSV and JSON lines into typed columns; measured against zstd and LZ4 on real data.">
+<meta name="description" content="Glyd v0.6.0: base mode stores a new version of a dump, image or source tree for a few percent of its size, 15 kernel releases in 228 MB; record mode turns logs of any shape, dumps, CSV and JSON lines into typed columns; the cold level's context mixing stores 1.5–2× less than zstd -19; measured against zstd and LZ4 on real data.">
 <style>
   :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; --hl:#eef3ff; }
   @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --line:#333; --accent:#6ea0ff; --hl:#1b2233; } }
@@ -94,6 +94,17 @@
     <tr class="g"><td>Android (system log)</td><td>5.0</td><td>12.9</td><td>23.0</td><td>17.9</td><td>25.4</td></tr>
   </table></div>
   <p class="muted">1.4–3.3× fewer bytes than zstd -3 and 1.1–2.1× fewer than zstd -19 with <code>--ultra -r</code>; <code>--max -r</code> writes at 260–460 MB/s and reads back at 1,200–1,400 MB/s. Sources and the script that fetches them: <code>scripts/download_ext_corpus.sh</code>.</p>
+
+  <h2>The cold level: below the floor every LZ codec shares</h2>
+  <p>On real data zstd -19, xz -9 and Glyd <code>--ultra</code> land within 5% of each other: that is the floor of byte matching. Context mixing — every bit predicted from many contexts at once and coded at the mixed probability, no parse — goes below it at 30–100× the CPU. <code>glyd --cold</code> is that level: eleven predictors with paq-style bit histories, two mixers, two SSE stages, 32 MB units coded in parallel at 1.2–1.3 MB/s per core each way. Measured on 64 MB slices against the strongest tools, every decode byte-checked:</p>
+  <div class="wrap"><table>
+    <tr><th>Data</th><th>zstd -19</th><th>xz -9</th><th>Glyd --ultra (-r)</th><th>zpaq -m5</th><th>Glyd --cold (-r)</th><th>vs zstd -19</th></tr>
+    <tr class="g"><td>GitHub Archive JSON events</td><td>14.6</td><td>14.8</td><td>15.9</td><td>22.8 · 0.4 MB/s</td><td>22.5 · 1.3 MB/s per core</td><td>1.54× smaller</td></tr>
+    <tr class="g"><td>NASA access log</td><td>15.7</td><td>15.4</td><td>26.4</td><td>31.7 · 0.3 MB/s</td><td>31.1 · 1.2 MB/s per core</td><td>1.98× smaller</td></tr>
+    <tr class="g"><td>enwiki page_props SQL dump</td><td>6.2</td><td>6.4</td><td>8.6</td><td>11.1 · 0.4 MB/s</td><td>11.6 · 1.2 MB/s per core</td><td>1.87× smaller</td></tr>
+    <tr class="g"><td>webster (text, 41 MB)</td><td>4.8</td><td>4.9</td><td>4.8</td><td>7.3 · 0.35 MB/s</td><td>7.1 · 1.2 MB/s per core</td><td>1.47× smaller</td></tr>
+  </table></div>
+  <p class="muted">The zpaq -m5 class within 3% either way, at 3–4× its speed per core; reads cost what writes cost. A terabyte is about 210 core-hours each way ($8 on Graviton3); 1.5–2× fewer bytes than zstd -19 saves $3–5 a year per raw terabyte in S3 Standard-IA, so the level pays for data kept two years or more and read a few times at most, or moved more than it is read.</p>
 
   <h2>The 8.7 GB corpus on AWS (Graviton3 and Sapphire Rapids, 8 threads)</h2>
   <div class="wrap"><table>

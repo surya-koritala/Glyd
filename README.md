@@ -74,6 +74,7 @@ right side of the trade; for data written constantly and rarely read,
 zstd -3 or LZ4 still win on write cost.
 
 - 🗂️ **Record mode (`-r`)**: logs, SQL dumps, CSV and JSON lines as typed columns; logs of varying shape as templates plus typed variables. Telemetry stores 2.5–3.5× less than zstd -3 and 1.5–2× less than zstd -19; application and system logs 1.4–3.3× less than zstd -3 and 1.1–2.1× less than zstd -19; the whole corpus 19% less than zstd -3.
+- 🧊 **Cold level (`--cold`)**: context mixing for what is stored for years and read rarely. 1.5–2× fewer bytes than zstd -19 on logs, dumps, JSON and text — the zpaq -m5 class at 3–4× its speed — at 1–1.3 MB/s per core each way.
 - 🔁 **Base mode (`--base`)**: a new version against the old one, its content found wherever it moved. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 1.8–3× its speed; 15 kernel releases in 228 MB instead of 3 GB.
 - 🔭 **128 MB long-distance matcher** in `--max` and `--ultra`: JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
 - 🚀 **Fastest reads at every ratio**: 8-way interleaved entropy coding and copy-only loops, units that decode one per core.
@@ -94,6 +95,7 @@ matters):
 | **Versions** of a dump, image or source tree (`--base`) | **−45 to −53%** vs zstd's fast patch; **−95 to −99%** vs the version alone | −5 to −21% (`--ultra`) |
 | **Telemetry, measurements** as CSV or JSON lines (`-r`) | **−60 to −71%** | **−33 to −52%** |
 | **Application and system logs** (HDFS, Spark, BGL, Android; `-r`) | **−28 to −69%** | **−9 to −53%** |
+| **Cold archives** of logs, dumps, JSON, text (`--cold`, 1 MB/s per core) | **−52 to −69%** | **−32 to −50%** |
 | **Access logs** (`-r`) | **−55%** | **−35%** |
 | **SQL dumps** (`-r`) | **−41%** | **−30%** |
 | **JSON events** (API payloads with hashes) | **−22%** | −10% |
@@ -121,7 +123,8 @@ cargo install --git https://github.com/surya-koritala/Glyd
 ```bash
 glyd --max  events.json -o events.glyd            # the zstd -3 slot: fewer bytes, 3-7x faster reads
 glyd --max -r access.log -o access.glyd           # record mode: logs, dumps, CSV, JSON lines as columns
-glyd --ultra -r dump.sql -o dump.glyd             # fewest bytes; slow to write
+glyd --ultra -r dump.sql -o dump.glyd             # fewest bytes from a parse; slow to write
+glyd --cold -r dump.sql -o dump.glyd              # fewest bytes of all; 1 MB/s per core each way
 glyd --base dump-mon.sql dump-tue.sql -o tue.glyd # base mode: Tuesday's dump against Monday's
 glyd -d --base dump-mon.sql tue.glyd -o tue.sql   # decoding a base-mode file needs the base
 glyd    telemetry.bin -o telemetry.glyd           # default: LZ4-class ratio, 22 GB/s reads on 8 cores
@@ -133,7 +136,7 @@ Rust:
 
 ```rust
 let mut out = Vec::new();
-glyd::compress_parallel_into_max(&input, &mut out);   // or compress_into_max, _ultra, compress_into (default)
+glyd::compress_parallel_into_max(&input, &mut out);   // or compress_into_max, _ultra, _cold, compress_into (default)
 let back = glyd::decompress_parallel(&out)?;          // any level, any block mix
 
 glyd::compress_records_into_max(&log, &mut out);      // record mode (-r); decompress() reads it
@@ -164,7 +167,8 @@ int64_t dlen = glyd_decompress_parallel(dst, clen, out, n);
 | **default** | The LZ4/Snappy slot with a better ratio and faster reads | v6 format, LZAV-class finder, minimum match 7 |
 | **‑‑fast**&nbsp;(‑1) | LZ4-class compression speed | v6 format, LZ4-class finder, minimum match 5 |
 | **‑‑max**&nbsp;(‑9) | The zstd -3 slot: fewer bytes, 3–7× faster reads on a server | v9 format: 8-way interleaved Huffman literals, tANS sequences with repeat offsets, a double-fast lazy parse, and a 128 MB long-distance matcher |
-| **‑‑ultra**&nbsp;(‑19) | Write once, read many: cold storage, datasets, release assets | v9 format on an optimal parse: binary-tree finder, every position priced in the coder's own bits ([design](docs/design/ultra-parse.md)) |
+| **‑‑ultra**&nbsp;(‑19) | Write once, read many: datasets, release assets | v9 format on an optimal parse: binary-tree finder, every position priced in the coder's own bits ([design](docs/design/ultra-parse.md)) |
+| **‑‑cold**&nbsp;(‑C) | Stored for years, read rarely: archives, compliance holds, the last copy | Context mixing: every bit predicted from eleven contexts (byte orders, the word, the column, the JSON key, the longest earlier match) with bit histories, mixed by two small networks, coded arithmetically; 32 MB units in parallel, 1–1.3 MB/s per core each way ([design](docs/design/format-v7.md#the-cold-level-context-mixing)) |
 
 | Mode | Use it for | How it works |
 | :--- | :--- | :--- |
@@ -320,6 +324,36 @@ of each, 10 cores, every decode byte-checked):
 `--max -r` writes these at 260-460 MB/s and reads them back at
 1,200-1,400 MB/s.
 
+### The cold level: context mixing for what is read rarely
+
+Every LZ codec sits on the same floor: on the data above zstd -19, xz -9
+and Glyd `--ultra` land within 5% of each other. Below that floor is
+context mixing — each bit predicted from many contexts at once and coded
+at the mixed probability, with no parse — at 30–100× the CPU. `glyd
+--cold` is that level: eleven predictors (byte orders 1–4, 6 and 8, the
+word and the word before it, the column and the byte above it, the JSON
+key, the longest earlier match), paq-style bit histories, two mixers,
+two SSE stages, 32 MB units coded in parallel. Measured on 64 MB slices
+against the strongest tools, one thread each for the references, every
+decode byte-checked (`experiments/research/coldtier.sh`):
+
+| Data | zstd&nbsp;-19 | xz&nbsp;-9 | Glyd&nbsp;‑‑ultra&nbsp;(‑r) | zpaq&nbsp;-m5 | ⚡&nbsp;**Glyd&nbsp;‑‑cold&nbsp;(‑r)** | **vs zstd&nbsp;-19** |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| GitHub Archive JSON events | 14.6× | 14.8× | 15.9× | 22.8× · 0.4 MB/s | **22.5×** · 1.3 MB/s/core | **1.54× smaller** |
+| NASA access log | 15.7× | 15.4× | 26.4× | 31.7× · 0.3 MB/s | **31.1×** · 1.2 MB/s/core | **1.98× smaller** |
+| enwiki page_props SQL dump | 6.2× | 6.4× | 8.6× | 11.1× · 0.4 MB/s | **11.6×** · 1.2 MB/s/core | **1.87× smaller** |
+| webster (text, 41 MB) | 4.8× | 4.9× | 4.8× | 7.3× · 0.35 MB/s | **7.1×** · 1.2 MB/s/core | **1.47× smaller** |
+
+`--cold` matches zpaq's strongest level within 3% either way at 3–4×
+its speed per core, and reads back at the same speed it writes: a
+terabyte costs about 210 core-hours each way, $8 on Graviton3. Against
+that, 1.5–2× fewer bytes than zstd -19 saves $3–5 a year per raw
+terabyte in S3 Standard-IA and under $0.50 in Glacier Deep Archive, so
+the level pays for data kept two years or more in a warm-ish tier and
+read a few times at most, and for bytes that are moved (egress,
+replication) more than they are read. The encoder holds 400 MB per
+thread.
+
 ### Small objects
 
 Objects cut from GitHub Archive events, 2,000 per size, each codec with
@@ -433,6 +467,7 @@ cargo run --release --example bench_suite -- --small --threads 1               #
 scripts/download_ext_corpus.sh && cargo run --release --example bench_suite -- --large --dir corpus/ext2   # telemetry
 scripts/download_versions.sh && scripts/bench_versions.sh corpus/versions/linux-6.10.tar corpus/versions/linux-6.10.1.tar   # base mode vs zstd --patch-from
 scripts/download_chain.sh && scripts/bench_chain.sh   # 15 Linux point releases as a chain of versions (20 GB)
+experiments/research/coldtier.sh                    # the cold level against xz, brotli, zpaq on 64 MB slices
 scripts/verify_roundtrip.sh yourfile                # every level and mode through the CLI, corrupted copies
 scripts/download_corpus.sh && cargo run --release --example v7_bench            # Silesia, --max vs zstd -3
 AWS_PROFILE=... scripts/bench_aws_suite.sh <bucket> main   # the whole program on Graviton3 + Sapphire Rapids, ~$1.50
@@ -493,6 +528,9 @@ panic or an unbounded allocation; every unsafe block carries its bound.
   object. Record mode works on files, not on single small objects.
 - JSON API events and crawl indexes are 20–65% hashes and random ids once
   compressed; no column model moves them. Parquet is zstd inside already.
+- `--cold` is symmetric: reads cost what writes cost, 1–1.3 MB/s per
+  core, so it is for data read a few times in its life, not a tier that
+  serves reads. It is 1–3% behind zpaq -m5 on text and JSON.
 - `--ultra` is 1.2% less dense than zstd -19 on Silesia (3.96 vs 4.01);
   on the real-data corpus the two are equal. zstd 1.5.7's `--max` level
   is denser still, at 72 minutes per gigabyte.
