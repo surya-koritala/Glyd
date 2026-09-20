@@ -6,6 +6,25 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+### Shape dictionaries: record mode for small objects
+- `ShapeDict::train(sample)`, `compress`, `decompress`, `to_bytes`,
+  `from_bytes`; CLI `--shape-train`, `--shape`. The dictionary carries
+  the shape (delimited, JSON lines, or a log's skeletons: punctuation
+  between runs of letters and digits), the frames lines take with a
+  column per hole, the columns' types (integers with a recency ring
+  and deltas, times, decimals, dictionaries seeded with the sample's
+  values by frequency, constants, text) and an LZ `Dict` trained on
+  such objects' images. An object is a compact image: a byte per row,
+  then every column's values, each column self-delimiting; unknown
+  lines stay raw. 1–4 KB objects cut from real files: JSON lines 14.6×
+  and 24.3× (zstd -3 + dict 10.6× and 13.0×), CSV telemetry 5.8× and
+  7.9× (3.8×, 4.4×), HDFS log 6.7× and 9.7× (6.0×, 7.4×), NASA log
+  5.1× and 7.3× (5.3×, 6.4×). 60–150 MB/s to code, 55–430 MB/s to
+  decode, one core. The same objects packed into one record-mode
+  stream cost 2–4× less than zstd + dict per object.
+
 ## v0.7.0 — 2026-09-20
 
 ### The cold level: context mixing

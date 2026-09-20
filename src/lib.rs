@@ -23,11 +23,13 @@ pub mod v7_encode;
 pub mod v7_decode;
 pub mod v7_ultra;
 pub mod cm;
+pub mod shape;
 pub mod fixlog;
 pub mod record;
 pub mod ldm;
 pub mod dict;
 pub use dict::Dict;
+pub use shape::ShapeDict;
 
 pub use streaming::{GlydReader, GlydWriter};
 pub use format::compute_checksum;

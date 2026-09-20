@@ -74,6 +74,7 @@ right side of the trade; for data written constantly and rarely read,
 zstd -3 or LZ4 still win on write cost.
 
 - 🗂️ **Record mode (`-r`)**: logs, SQL dumps, CSV and JSON lines as typed columns; logs of varying shape as templates plus typed variables. Telemetry stores 2.5–3.5× less than zstd -3 and 1.5–2× less than zstd -19; application and system logs 1.4–3.3× less than zstd -3 and 1.1–2.1× less than zstd -19; the whole corpus 19% less than zstd -3.
+- 🧩 **Shape dictionaries (`--shape`)**: record mode for small objects. Trained on a sample; a 1–4 KB event or log object stores 1.1–1.9× less than with a zstd dictionary.
 - 🧊 **Cold level (`--cold`)**: context mixing for what is stored for years and read rarely. 1.5–2.6× fewer bytes than zstd -19 on logs, dumps, JSON and text — the zpaq -m5 class at 3–4× its speed — at 1.2–1.5 MB/s per core each way.
 - 🔁 **Base mode (`--base`)**: a new version against the old one, its content found wherever it moved. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 1.8–3× its speed; 15 kernel releases in 228 MB instead of 3 GB.
 - 🔭 **128 MB long-distance matcher** in `--max` and `--ultra`: JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
@@ -355,6 +356,46 @@ the level pays for data kept two years or more in a warm-ish tier and
 read a few times at most, and for bytes that are moved (egress,
 replication) more than they are read. The encoder holds 400 MB per
 thread.
+
+### Small objects with a shape dictionary
+
+A single event, a small log or CSV has nothing to learn a schema from,
+so small objects got the plain path and its dictionaries. A **shape
+dictionary** (`glyd --shape-train sample -o d.shape`, then `glyd
+--shape d.shape object`) is trained once on a few MB of the data and
+carries the shape, the frames lines take, the columns' types and the
+values dictionary columns usually hold; an object is coded as a
+compact image (a byte per row, values as ranks and deltas, new values
+as text) through a prepared LZ dictionary trained on such images.
+Objects cut from real files, the dictionaries trained on the first
+4 MB of each, objects from the middle, every decode byte-checked
+(`examples/shape_gain.rs`):
+
+| Objects | zstd -3 + dict | Glyd --max + Dict | ⚡&nbsp;**Glyd shape dictionary** | **vs zstd + dict** |
+| :--- | ---: | ---: | ---: | ---: |
+| Alibaba machine usage, JSON lines, 4 KB | 13.0× | 13.1× | **24.3×** | **1.87× smaller** |
+| the same, 1 KB | 10.6× | 10.3× | **14.6×** | **1.37×** |
+| Alibaba machine usage, CSV, 4 KB | 4.4× | 4.2× | **7.9×** | **1.81×** |
+| the same, 1 KB | 3.8× | 3.7× | **5.8×** | **1.53×** |
+| NYC taxi CSV, 1 KB | 3.9× | 3.9× | **5.3×** | **1.35×** |
+| HDFS log, 4 KB | 7.4× | 7.1× | **9.7×** | **1.31×** |
+| the same, 1 KB | 6.0× | 5.6× | **6.7×** | **1.12×** |
+| NASA access log, 4 KB | 6.4× | 6.9× | **7.3×** | **1.14×** |
+| the same, 1 KB | 5.3× | 5.4× | 5.1× | 0.97× |
+
+1.1–1.9× fewer bytes than a zstd dictionary on telemetry and structured
+logs, nothing on an access log of 1 KB: its bytes are host names and
+paths the object is the first to mention, and a per-object scheme pays
+for new information whatever it does. Dictionaries are 80–220 KB; an
+object codes at 60–150 MB/s and decodes at 55–430 MB/s on one core.
+
+The larger lever for small objects is not per-object at all: the same
+400 objects **packed** into one record-mode stream cost 2–4× less than
+zstd + dictionary per object (NASA 15.5× against 5.3×, HDFS 16.5×
+against 6.0×, JSON lines 43× against 10.6×), and a 1 MB pack decodes
+in under a millisecond. A store that groups small objects into packs
+gets that; one that must compress each object alone gets the table
+above.
 
 ### Small objects
 

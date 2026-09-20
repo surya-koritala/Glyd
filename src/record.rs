@@ -130,7 +130,7 @@ type FxBuild = std::hash::BuildHasherDefault<FxHasher>;
 /// Date-time layouts recognised for `T_TIME` columns. `M` is a month
 /// name, `m` a two-digit month; every field is fixed width; the pattern
 /// must reproduce the text exactly or the column stays text.
-const DATE_PATTERNS: [&[u8]; 8] = [
+pub(crate) const DATE_PATTERNS: [&[u8]; 8] = [
     b"[DD/MMM/YYYY:hh:mm:ss", // Common Log Format, the zone in the next field
     b"YYYY-mm-DDThh:mm:ssZ",  // ISO 8601, UTC
     b"YYYY-mm-DD hh:mm:ss",   // SQL / syslog style
@@ -143,7 +143,7 @@ const DATE_PATTERNS: [&[u8]; 8] = [
 ];
 
 /// The unit of a pattern's values: 1 per fraction digit's power of ten.
-fn time_scale(p: &[u8]) -> i64 {
+pub(crate) fn time_scale(p: &[u8]) -> i64 {
     10i64.pow(p.iter().filter(|&&c| c == b'f').count() as u32)
 }
 const MONTHS: [&[u8]; 12] = [b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov", b"Dec"];
@@ -173,7 +173,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 /// Seconds for `text` under pattern `p`, if it matches exactly.
-fn parse_time(p: &[u8], text: &[u8]) -> Option<i64> {
+pub(crate) fn parse_time(p: &[u8], text: &[u8]) -> Option<i64> {
     if text.len() != p.len() {
         return None;
     }
@@ -324,7 +324,7 @@ fn push_digits(out: &mut Vec<u8>, mut v: u64, n: usize) {
 
 /// `v` in decimal, as `i64::to_string` prints it.
 #[inline]
-fn push_int(out: &mut Vec<u8>, v: i64) {
+pub(crate) fn push_int(out: &mut Vec<u8>, v: i64) {
     out.reserve(21);
     // SAFETY: 21 bytes reserved: a sign and up to 20 digits.
     unsafe { push_int_reserved(out, v) }
@@ -358,7 +358,7 @@ unsafe fn push_int_reserved(out: &mut Vec<u8>, v: i64) {
 }
 
 /// The text of `secs` under pattern `p`.
-fn format_time(p: &[u8], value: i64, out: &mut Vec<u8>) {
+pub(crate) fn format_time(p: &[u8], value: i64, out: &mut Vec<u8>) {
     format_time_cached(p, value, out, &mut DayCache::default())
 }
 
@@ -448,11 +448,11 @@ const DICT_SHARE: usize = 3;
 
 type Result<T> = std::result::Result<T, CodecError>;
 
-fn corrupt(msg: &'static str) -> CodecError {
+pub(crate) fn corrupt(msg: &'static str) -> CodecError {
     CodecError::CorruptedBitstream(msg)
 }
 
-fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+pub(crate) fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 128 {
         out.push((v & 127) as u8 | 128);
         v >>= 7;
@@ -460,7 +460,7 @@ fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     out.push(v as u8);
 }
 
-fn get_varint(src: &[u8], pos: &mut usize) -> Result<u64> {
+pub(crate) fn get_varint(src: &[u8], pos: &mut usize) -> Result<u64> {
     // One- and two-byte values (nearly all deltas) from one 8-byte load.
     if *pos + 8 <= src.len() {
         let w = u64::from_le_bytes(src[*pos..*pos + 8].try_into().unwrap());
@@ -492,11 +492,11 @@ fn get_varint(src: &[u8], pos: &mut usize) -> Result<u64> {
     }
 }
 
-fn zigzag(v: i64) -> u64 {
+pub(crate) fn zigzag(v: i64) -> u64 {
     ((v << 1) ^ (v >> 63)) as u64
 }
 
-fn unzigzag(v: u64) -> i64 {
+pub(crate) fn unzigzag(v: u64) -> i64 {
     ((v >> 1) as i64) ^ -((v & 1) as i64)
 }
 
@@ -504,9 +504,10 @@ fn unzigzag(v: u64) -> i64 {
 /// values, most recent first. A value in it is coded by its position (a
 /// byte, 1-based); any other by an escape byte and its dictionary id in a
 /// second stream (0 there means a new value, appended to the dictionary).
-const RECENT: usize = 64;
+pub(crate) const RECENT: usize = 64;
 
-struct Recent {
+#[derive(Clone)]
+pub(crate) struct Recent {
     /// A ring: the front is `ids[head]`, position p is `ids[(head + p) % RECENT]`.
     ids: [u32; RECENT],
     head: usize,
@@ -514,12 +515,12 @@ struct Recent {
 }
 
 impl Recent {
-    fn new() -> Recent {
+    pub(crate) fn new() -> Recent {
         Recent { ids: [0; RECENT], head: 0, len: 0 }
     }
     /// The value's position, moving it to the front; None (and the value
     /// put in front) when it was not in the list. The encoder's side.
-    fn touch(&mut self, id: u32) -> Option<usize> {
+    pub(crate) fn touch(&mut self, id: u32) -> Option<usize> {
         let pos = (0..self.len).position(|p| self.ids[(self.head + p) % RECENT] == id);
         match pos {
             Some(p) => {
@@ -536,7 +537,7 @@ impl Recent {
     /// The value at position `p` (below `len`) moved to the front: the
     /// entries before it step back one.
     #[inline(always)]
-    fn touch_at(&mut self, p: usize) -> u32 {
+    pub(crate) fn touch_at(&mut self, p: usize) -> u32 {
         let id = self.ids[(self.head + p) % RECENT];
         let mut i = p;
         while i > 0 {
@@ -548,7 +549,7 @@ impl Recent {
     }
     /// A value not in the list put in front; the last one falls off.
     #[inline(always)]
-    fn push_front(&mut self, id: u32) {
+    pub(crate) fn push_front(&mut self, id: u32) {
         self.head = (self.head + RECENT - 1) % RECENT;
         self.ids[self.head] = id;
         if self.len < RECENT {
@@ -559,7 +560,7 @@ impl Recent {
 
 /// A canonical decimal integer: what `i64::to_string` would print, so
 /// the rebuild is exact.
-fn parse_canonical_int(b: &[u8]) -> Option<i64> {
+pub(crate) fn parse_canonical_int(b: &[u8]) -> Option<i64> {
     let (neg, digits) = match b.first() {
         Some(b'-') => (true, &b[1..]),
         _ => (false, b),
@@ -584,7 +585,7 @@ fn parse_canonical_int(b: &[u8]) -> Option<i64> {
 /// at most 18 digits in all; (all its digits as one integer, its
 /// places). "-0.0" and "-0" are not canonical (they would print back
 /// without the sign).
-fn parse_decimal(b: &[u8]) -> Option<(i64, u32)> {
+pub(crate) fn parse_decimal(b: &[u8]) -> Option<(i64, u32)> {
     let (neg, body) = match b.first() {
         Some(b'-') => (true, &b[1..]),
         _ => (false, b),
@@ -717,7 +718,7 @@ fn template_of(line: &[u8], key: &mut Vec<u8>) -> usize {
 }
 
 #[inline(always)]
-fn is_token_byte(c: u8) -> bool {
+pub(crate) fn is_token_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b':' | b'/' | b'-')
 }
 
@@ -1221,9 +1222,9 @@ fn transform_sql(input: &[u8]) -> Option<Vec<u8>> {
 
 /// A scalar value found by `scan_json`: its bytes (a string's content
 /// between the quotes, else the token) and its key path.
-struct JsonValue {
-    start: usize,
-    end: usize,
+pub(crate) struct JsonValue {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
 }
 
 /// Walk `input` as JSON objects one per line, calling `value` for every
@@ -1232,7 +1233,7 @@ struct JsonValue {
 /// A line that is not an object is skipped whole; a newline resets the
 /// path. Strings honour backslash escapes; nothing is validated beyond
 /// what the walk needs, so any bytes are safe.
-fn scan_json(input: &[u8], mut value: impl FnMut(&[u8], JsonValue)) {
+pub(crate) fn scan_json(input: &[u8], mut value: impl FnMut(&[u8], JsonValue)) {
     let n = input.len();
     let mut path: Vec<u8> = Vec::with_capacity(256);
     let mut marks: Vec<usize> = Vec::with_capacity(32); // path length at each nesting level

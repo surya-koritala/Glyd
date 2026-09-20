@@ -18,6 +18,9 @@ Options:
     -r, --records          Record mode: logs and table dumps as typed columns before the level
     -B, --base <FILE>      Base mode: compress a new version against this old one (--max, or
                            --ultra); decoding needs the same file
+    -S, --shape <FILE>     Shape dictionary: compress or decompress a small object (an event, a
+                           small log or CSV) with a dictionary trained on a sample of such data
+        --shape-train      Train a shape dictionary on the input (a few MB) and write it to -o
     -d, --decompress       Decompress input (default if input is .glyd)
     -m, --multi-core       Use multi-core parallel engine (default)
     -s, --single-core      Force single-core sequential engine
@@ -31,6 +34,9 @@ Examples:
     glyd -d input.tar.glyd -o input.tar
     glyd --base dump-monday.sql dump-tuesday.sql -o tuesday.glyd
     glyd -d --base dump-monday.sql tuesday.glyd -o dump-tuesday.sql
+    glyd --shape-train sample.log -o events.shape
+    glyd --shape events.shape event.log -o event.glyd
+    glyd -d --shape events.shape event.glyd -o event.log
     cat large.json | glyd -c > large.json.glyd
     cat large.json.glyd | glyd -d > large.json
     glyd -b dataset.bin
@@ -71,6 +77,8 @@ fn main() -> io::Result<()> {
     let mut cold = false;
     let mut records = false;
     let mut base_path: Option<String> = None;
+    let mut shape_path: Option<String> = None;
+    let mut shape_train = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -99,6 +107,16 @@ fn main() -> io::Result<()> {
                     std::process::exit(1);
                 }
             }
+            "-S" | "--shape" => {
+                if i + 1 < args.len() {
+                    shape_path = Some(args[i + 1].clone());
+                    i += 1;
+                } else {
+                    eprintln!("Error: --shape requires a file");
+                    std::process::exit(1);
+                }
+            }
+            "--shape-train" => shape_train = true,
             "-d" | "--decompress" => mode_compress = Some(false),
             "-m" | "--multi-core" => multi_core = true,
             "-s" | "--single-core" => multi_core = false,
@@ -161,6 +179,39 @@ fn main() -> io::Result<()> {
         Some(ref p) => Some(std::fs::read(p)?),
         None => None,
     };
+    if shape_train {
+        let dict = match glyd::ShapeDict::train(&input_data) {
+            Some(d) => d,
+            None => {
+                eprintln!("Error: the input is not record-shaped (delimited lines, JSON lines or a log)");
+                std::process::exit(1);
+            }
+        };
+        return write_out(&output_path, &dict.to_bytes());
+    }
+    if let Some(ref p) = shape_path {
+        let dict = match glyd::ShapeDict::from_bytes(&std::fs::read(p)?) {
+            Some(d) => d,
+            None => {
+                eprintln!("Error: {} is not a shape dictionary", p);
+                std::process::exit(1);
+            }
+        };
+        let out = if should_compress {
+            let mut out = Vec::new();
+            dict.compress(&input_data, &mut out);
+            out
+        } else {
+            match dict.decompress(&input_data) {
+                Ok(d) => d,
+                Err(e) => {
+                    eprintln!("Decompression failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        };
+        return write_out(&output_path, &out);
+    }
     let output_data = if should_compress {
         let mut out = Vec::with_capacity(input_data.len() / 2 + 1024);
         if let Some(ref base) = base {
@@ -249,6 +300,16 @@ fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn write_out(output_path: &Option<String>, data: &[u8]) -> io::Result<()> {
+    match output_path {
+        Some(p) if p != "-" => std::fs::write(p, data),
+        _ => {
+            io::stdout().write_all(data)?;
+            io::stdout().flush()
+        }
+    }
 }
 
 fn run_benchmark(path_str: &str) {
