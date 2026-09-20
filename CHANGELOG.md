@@ -8,6 +8,19 @@ every earlier format.
 
 ## Unreleased
 
+### Record mode: templates
+- Logs whose lines vary in shape (application and system logs) take a
+  fourth shape: each line's template (its text with a hole where every
+  token holding a digit was) goes into a dictionary, and the tokens
+  become typed columns keyed by template and slot; lines past the
+  column budget stay raw. loghub 2.0, 128 MB of each, 10 cores: HDFS
+  `--max -r` 22.0 against zstd -3's 10.5 and zstd -19's 16.0 (`--ultra
+  -r` 27.5), Spark 47.0 against 14.5 and 25.2 (53.6), BGL 15.9 against
+  11.0 and 22.4 (28.9), Android 17.9 against 12.9 and 23.0 (25.4);
+  writes at 260-460 MB/s, reads at 1,200-1,400 MB/s. The levers were
+  sized first (experiments/research/README.md): version chains, these
+  log shapes, context mixing for cold data, float columns.
+
 ### Reads
 - The record-mode rebuild decodes a column at a time into tables and
   assembles the rows by copy (reserved space, no length branch per

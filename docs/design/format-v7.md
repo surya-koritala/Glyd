@@ -298,7 +298,14 @@ exactly afterwards:
   splitting finest, so a timestamp's space does not beat a CSV's
   commas); MySQL dumps (`INSERT ... VALUES (...),(...);`), also when a
   unit starts inside a tuple list; JSON objects one per line (90% of
-  lines), where a column is a key path (`actor.id`, `commits.[].sha`).
+  lines), where a column is a key path (`actor.id`, `commits.[].sha`);
+  and, when none of those fits, logs of varying line shape whose
+  templates repeat (at most one template per four lines, and templates
+  that carry a variable): a line's template is its text with a hole
+  where each token holding a digit was (a token is a run of letters,
+  digits and `_.:/-`), the templates form a dictionary, and the tokens
+  are columns keyed by template and slot, typed like any other; a line
+  whose template would exceed 4,096 columns stays raw.
 - Column types, chosen per column from its values: integers as zigzag
   varint deltas from the previous row (only canonical decimals, so
   `i64` formatting reproduces them); date-times under a known fixed

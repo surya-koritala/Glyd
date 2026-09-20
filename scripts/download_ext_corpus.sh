@@ -32,6 +32,25 @@ slice "$DIR/ghcn_2023.csv" https://www.ncei.noaa.gov/pub/data/ghcn/daily/by_year
 # timestamp; hash-heavy, at its entropy floor, kept as a control.
 slice "$DIR/cc_index_cdx.txt" https://data.commoncrawl.org/cc-index/collections/CC-MAIN-2024-10/indexes/cdx-00000.gz
 
+# System and application logs of varying line shape (loghub 2.0, Zenodo
+# record 8196385): HDFS, Spark (containers concatenated), BGL, Android.
+zen() { # zen <file> <url>: fetch into the directory and unpack
+    local f="$1" url="$2"
+    [ -s "$DIR/$f" ] && { echo "have $f"; return; }
+    echo "downloading $f"
+    curl -fsSL --retry 3 -o "$DIR/$f.part" "$url" && mv "$DIR/$f.part" "$DIR/$f" || { echo "WARNING: $f failed" >&2; rm -f "$DIR/$f.part"; }
+}
+zen HDFS_v1.zip "https://zenodo.org/api/records/8196385/files/HDFS_v1.zip/content"
+zen BGL.zip "https://zenodo.org/api/records/8196385/files/BGL.zip/content"
+zen Spark.tar.gz "https://zenodo.org/api/records/8196385/files/Spark.tar.gz/content"
+zen Android_v1.zip "https://zenodo.org/api/records/8196385/files/Android_v1.zip/content"
+( cd "$DIR" || exit 0
+  [ -s HDFS.log ] || { unzip -oq HDFS_v1.zip 2>/dev/null; mv -f HDFS_v1/HDFS.log . 2>/dev/null; rm -rf HDFS_v1 preprocessed; }
+  [ -s BGL.log ] || unzip -oq BGL.zip 2>/dev/null
+  [ -s Android.log ] || { unzip -oq Android_v1.zip 2>/dev/null; mv -f Android_v1/Android.log . 2>/dev/null; rm -rf Android_v1; }
+  [ -s Spark.log ] || { tar -xzf Spark.tar.gz 2>/dev/null; find . -path "./application_*" -name "*.log" | sort | head -400 | xargs cat > Spark.log; rm -rf application_*; }
+  rm -f HDFS_v1.zip BGL.zip Spark.tar.gz Android_v1.zip )
+
 # JSON lines twins of the two measurement sets (128 MB each).
 [ -s "$DIR/alibaba_machine_usage.jsonl" ] || python3 "$(dirname "${BASH_SOURCE[0]}")/ext2_jsonl.py" "$DIR/alibaba_machine_usage.csv" "$DIR/alibaba_machine_usage.jsonl" machine_id,time_stamp,cpu_util_percent,mem_util_percent,mem_gps,mkpi,net_in,net_out,disk_io_percent
 [ -s "$DIR/ghcn_2023.jsonl" ] || python3 "$(dirname "${BASH_SOURCE[0]}")/ext2_jsonl.py" "$DIR/ghcn_2023.csv" "$DIR/ghcn_2023.jsonl" id,date,element,value,m_flag,q_flag,s_flag,obs_time

@@ -73,7 +73,7 @@ less where the data has structure; it writes at 0.6× zstd -3's speed
 right side of the trade; for data written constantly and rarely read,
 zstd -3 or LZ4 still win on write cost.
 
-- 🗂️ **Record mode (`-r`)**: logs, SQL dumps, CSV and JSON lines as typed columns. Telemetry stores 2.5–3.5× less than zstd -3 and 1.5–2× less than zstd -19; the whole corpus 19% less than zstd -3.
+- 🗂️ **Record mode (`-r`)**: logs, SQL dumps, CSV and JSON lines as typed columns; logs of varying shape as templates plus typed variables. Telemetry stores 2.5–3.5× less than zstd -3 and 1.5–2× less than zstd -19; application and system logs 1.4–3.3× less than zstd -3 and 1.1–2.1× less than zstd -19; the whole corpus 19% less than zstd -3.
 - 🔁 **Base mode (`--base`)**: a new version against the old one. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 2–3.5× its speed.
 - 🔭 **128 MB long-distance matcher** in `--max` and `--ultra`: JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
 - 🚀 **Fastest reads at every ratio**: 8-way interleaved entropy coding and copy-only loops, units that decode one per core.
@@ -93,6 +93,7 @@ matters):
 | :--- | ---: | ---: |
 | **Versions** of a dump, image or source tree (`--base`) | **−45 to −53%** vs zstd's fast patch; **−95 to −99%** vs the version alone | −5 to −21% (`--ultra`) |
 | **Telemetry, measurements** as CSV or JSON lines (`-r`) | **−60 to −71%** | **−33 to −52%** |
+| **Application and system logs** (HDFS, Spark, BGL, Android; `-r`) | **−28 to −69%** | **−9 to −53%** |
 | **Access logs** (`-r`) | **−55%** | **−35%** |
 | **SQL dumps** (`-r`) | **−41%** | **−30%** |
 | **JSON events** (API payloads with hashes) | **−22%** | −10% |
@@ -167,7 +168,7 @@ int64_t dlen = glyd_decompress_parallel(dst, clen, out, n);
 
 | Mode | Use it for | How it works |
 | :--- | :--- | :--- |
-| **‑r** record mode | Logs, SQL dumps, CSV/TSV, JSON lines | Detects the shape, turns each field or key path into a typed stream (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those with the level in 32 MB units, rebuilds exactly ([design](docs/design/format-v7.md#record-mode-v040-typed-columns-before-the-level)) |
+| **‑r** record mode | Logs of any shape, SQL dumps, CSV/TSV, JSON lines | Detects the shape (delimited lines, dumps, JSON lines, or templates for logs of varying shape), turns each field, key path or template slot into a typed stream (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those with the level in 32 MB units, rebuilds exactly ([design](docs/design/format-v7.md#record-mode-v040-typed-columns-before-the-level)) |
 | **‑‑base** base mode | Versions: nightly dumps, snapshots, images, source trees | Parses each 32 MB of the new version with the old one's matching region as history; the stream decodes with the same base ([design](docs/design/format-v7.md#base-mode-v050-a-version-compressed-against-the-last-one)) |
 
 All levels write one container; the decoder reads any mix. Blocks are
@@ -281,6 +282,22 @@ at 770-2,500 MB/s. The last row is the honest limit: a line that is
 mostly a hash has nothing a column can model, and API events with
 hashes and free text (GitHub Archive) gain 1.6% from columns and stay
 plain.
+
+Logs whose lines vary in shape (application and system logs) take the
+template shape: each line's template — its text with a hole where every
+token holding a digit was — goes into a dictionary, and the tokens
+become typed columns keyed by template and slot (loghub 2.0 logs, 128 MB
+of each, 10 cores, every decode byte-checked):
+
+| Log | zstd&nbsp;-3 | zstd&nbsp;-19 | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑r** | ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;‑r** | **‑‑max&nbsp;‑r vs zstd&nbsp;-3** | **‑‑ultra&nbsp;‑r vs zstd&nbsp;-19** |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| HDFS (Hadoop file system) | 10.5 | 16.0 | **22.0** | **27.5** | **2.1× smaller** | **1.72× smaller** |
+| Spark (application logs) | 14.5 | 25.2 | **47.0** | **53.6** | **3.3× smaller** | **2.12× smaller** |
+| BGL (supercomputer RAS log) | 11.0 | 22.4 | **15.9** | **28.9** | **1.45× smaller** | **1.29× smaller** |
+| Android (system log) | 12.9 | 23.0 | **17.9** | **25.4** | **1.39× smaller** | **1.10× smaller** |
+
+`--max -r` writes these at 260-460 MB/s and reads them back at
+1,200-1,400 MB/s.
 
 ### Small objects
 

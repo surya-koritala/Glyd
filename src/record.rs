@@ -9,20 +9,23 @@
 //! record shape goes to a raw stream, so any input rebuilds byte for
 //! byte (`inverse`).
 //!
-//! Three shapes are recognised (`detect`): lines split by one delimiter
+//! Four shapes are recognised (`detect`): lines split by one delimiter
 //! (space, tab, comma) into a constant number of fields; MySQL dumps
 //! (`INSERT ... VALUES (...),(...);`) whose tuples become the records
-//! while the statement text around them is kept as a frame; and JSON
+//! while the statement text around them is kept as a frame; JSON
 //! objects one per line, where a column is a key path (`actor.id`,
 //! `commits.[].sha`) and the columns that type as integers, times or
 //! dictionaries leave holes in a frame of the structure, keys and text
-//! values (text stays where its strings match across fields).
+//! values (text stays where its strings match across fields); and logs
+//! of varying line shape, where a line's template (its text with a hole
+//! where each token holding a digit was) is one of a dictionary and the
+//! tokens are columns keyed by template and slot.
 //!
 //! The image `transform` writes (all integers little-endian varints
 //! unless said otherwise):
 //!
 //! ```text
-//! "GLYDREC1"  mode u8 (1 delimited, 2 sql, 3 json)  delimiter u8  n_fields  n_lines
+//! "GLYDREC1"  mode u8 (1 delimited, 2 sql, 3 json, 4 template)  delimiter u8  n_fields  n_lines
 //! flags u8 (bit 0: input ends with a newline)
 //! types: n_fields bytes (0 text, 1 int, 2 dict, 3 time, 4 dict8, 5 decimal)
 //! n_streams, then each stream's length, then the streams back to back:
@@ -47,6 +50,10 @@
 //!   value was), the column of each hole in order (varints), then the
 //!   per-column streams (a text column's is empty); n_lines counts the
 //!   holes.
+//!   template mode: kind (a byte per line: 0 templated, 1 raw), raw
+//!   lines, the templates (each ending with '\n', a 0 per hole), the
+//!   template of each templated line (varints), then the per-column
+//!   streams, columns in template order then slot order.
 //! ```
 //!
 //! Measured on 50 MB slices with zstd -19 as the second stage (the
@@ -67,6 +74,12 @@ const MODE_JSON: u8 = 3;
 /// Columns a JSON image may have (a wide schema's rarest paths stay in
 /// the frame).
 const JSON_MAX_COLUMNS: usize = 4096;
+/// Lines of a log whose shape varies line to line: each line's template
+/// (its text with a hole where every token holding a digit was) is one
+/// of a dictionary, and the tokens are columns keyed by (template, slot).
+const MODE_TEMPLATE: u8 = 4;
+/// Columns a template image may have; lines of templates past that stay raw.
+const TEMPLATE_MAX_COLUMNS: usize = 4096;
 const T_TEXT: u8 = 0;
 const T_INT: u8 = 1;
 const T_DICT: u8 = 2;
@@ -603,6 +616,7 @@ pub enum Shape {
     Delimited { delimiter: u8, fields: usize },
     Sql,
     Json,
+    Template,
 }
 
 /// Whether `input` is record-shaped text worth transforming.
@@ -650,12 +664,61 @@ pub fn detect(input: &[u8]) -> Option<Shape> {
             }
         }
     }
-    let (delimiter, fields, agreeing) = best?;
-    // At least 90% of the sample's lines must have that field count.
-    if agreeing * 10 < full.len() * 9 || fields < 2 || fields > 64 {
-        return None;
+    if let Some((delimiter, fields, agreeing)) = best {
+        // At least 90% of the sample's lines must have that field count.
+        if agreeing * 10 >= full.len() * 9 && fields >= 2 && fields <= 64 {
+            return Some(Shape::Delimited { delimiter, fields });
+        }
     }
-    Some(Shape::Delimited { delimiter, fields })
+    // Lines of varying shape whose templates repeat: at most one
+    // template per four lines, and templates that carry a variable.
+    let mut templates: std::collections::HashSet<Vec<u8>> = std::collections::HashSet::new();
+    let mut key = Vec::new();
+    let mut vars = 0usize;
+    for l in full {
+        vars += template_of(l, &mut key);
+        templates.insert(key.clone());
+    }
+    if templates.len() * 4 <= full.len() && vars >= full.len() {
+        return Some(Shape::Template);
+    }
+    None
+}
+
+/// `line`'s template into `key`: the line with a 0 where each token
+/// holding a digit was (a token is a run of letters, digits and
+/// `_.:/-`; everything else is the template's own text). Returns the
+/// number of holes.
+fn template_of(line: &[u8], key: &mut Vec<u8>) -> usize {
+    key.clear();
+    let mut holes = 0usize;
+    let mut i = 0usize;
+    while i < line.len() {
+        let c = line[i];
+        if is_token_byte(c) {
+            let start = i;
+            let mut digit = false;
+            while i < line.len() && is_token_byte(line[i]) {
+                digit |= line[i].is_ascii_digit();
+                i += 1;
+            }
+            if digit {
+                key.push(0);
+                holes += 1;
+            } else {
+                key.extend_from_slice(&line[start..i]);
+            }
+        } else {
+            key.push(c);
+            i += 1;
+        }
+    }
+    holes
+}
+
+#[inline(always)]
+fn is_token_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b':' | b'/' | b'-')
 }
 
 /// One field column being built.
@@ -863,6 +926,7 @@ pub fn transform(input: &[u8]) -> Option<Vec<u8>> {
         Shape::Delimited { delimiter, fields } => Some(transform_delimited(input, delimiter, fields)),
         Shape::Sql => transform_sql(input),
         Shape::Json => transform_json(input),
+        Shape::Template => transform_template(input),
     }
 }
 
@@ -884,6 +948,95 @@ fn write_image(mode: u8, delimiter: u8, fields: usize, n_lines: usize, trailing_
         out.extend_from_slice(s);
     }
     out
+}
+
+/// Log lines of varying shape: every line's template goes into a
+/// dictionary (a 0 where each digit-holding token was), the tokens into
+/// columns keyed by (template, slot), typed like the delimited columns;
+/// lines whose template would exceed the column budget stay raw.
+fn transform_template(input: &[u8]) -> Option<Vec<u8>> {
+    if input.iter().any(|&b| b == 0) {
+        return None;
+    }
+    let trailing_newline = input.last() == Some(&b'\n');
+    let body = if trailing_newline { &input[..input.len() - 1] } else { input };
+    let mut templates: std::collections::HashMap<Vec<u8>, u32, FxBuild> = std::collections::HashMap::default();
+    let mut tmpl_bytes: Vec<u8> = Vec::new(); // each template, ending with '\n'
+    let mut tmpl_holes: Vec<usize> = Vec::new();
+    let mut tmpl_base: Vec<usize> = Vec::new(); // first column of each template
+    let mut cols: Vec<Column> = Vec::new();
+    let mut kind = Vec::new();
+    let mut raw = Vec::new();
+    let mut tids = Vec::new();
+    let mut key = Vec::new();
+    let mut n_lines = 0usize;
+    let mut first_raw = true;
+    let mut at = 0usize;
+    loop {
+        let end = body[at..].iter().position(|&b| b == b'\n').map_or(body.len(), |p| at + p);
+        let line = &body[at..end];
+        n_lines += 1;
+        let holes = template_of(line, &mut key);
+        let tid = match templates.get(key.as_slice()) {
+            Some(&t) => Some(t as usize),
+            None if cols.len() + holes <= TEMPLATE_MAX_COLUMNS => {
+                let t = tmpl_holes.len();
+                templates.insert(key.clone(), t as u32);
+                tmpl_bytes.extend_from_slice(&key);
+                tmpl_bytes.push(b'\n');
+                tmpl_holes.push(holes);
+                tmpl_base.push(cols.len());
+                cols.extend((0..holes).map(|_| Column { values: Vec::new() }));
+                Some(t)
+            }
+            None => None,
+        };
+        match tid {
+            Some(t) => {
+                kind.push(0u8);
+                put_varint(&mut tids, t as u64);
+                // The tokens again, into their columns.
+                let base = tmpl_base[t];
+                let mut k = 0usize;
+                let mut i = 0usize;
+                while i < line.len() {
+                    if is_token_byte(line[i]) {
+                        let start = i;
+                        let mut digit = false;
+                        while i < line.len() && is_token_byte(line[i]) {
+                            digit |= line[i].is_ascii_digit();
+                            i += 1;
+                        }
+                        if digit {
+                            cols[base + k].values.push((at + start, at + i));
+                            k += 1;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            None => {
+                kind.push(1u8);
+                if !first_raw {
+                    raw.push(b'\n');
+                }
+                raw.extend_from_slice(line);
+                first_raw = false;
+            }
+        }
+        if end >= body.len() {
+            break;
+        }
+        at = end + 1;
+    }
+    let fields = cols.len();
+    let mut types = vec![T_TEXT; fields];
+    let mut streams = vec![kind, raw, tmpl_bytes, tids];
+    for (i, c) in cols.iter().enumerate() {
+        encode_column(input, &c.values, &mut types[i], &mut streams);
+    }
+    Some(write_image(MODE_TEMPLATE, 0, fields, n_lines, trailing_newline, &types, &streams))
 }
 
 fn transform_delimited(input: &[u8], delimiter: u8, fields: usize) -> Vec<u8> {
@@ -1674,14 +1827,18 @@ pub fn inverse_into(image: &[u8], out: &mut Vec<u8>) -> Result<()> {
     let n_lines = get_varint(image, &mut pos)? as usize;
     let trailing_newline = *image.get(pos).ok_or(corrupt("record image: truncated"))? != 0;
     pos += 1;
-    let max_fields = if mode == MODE_JSON { JSON_MAX_COLUMNS } else { 64 };
+    let max_fields = match mode {
+        MODE_JSON => JSON_MAX_COLUMNS,
+        MODE_TEMPLATE => TEMPLATE_MAX_COLUMNS,
+        _ => 64,
+    };
     if fields > max_fields || n_lines > image.len().saturating_mul(64) + 1 {
         return Err(corrupt("record image: header sizes"));
     }
     let types = image.get(pos..pos + fields).ok_or(corrupt("record image: truncated types"))?;
     pos += fields;
     let n_streams = get_varint(image, &mut pos)? as usize;
-    if n_streams > 3 + 3 * fields {
+    if n_streams > 4 + 3 * fields {
         return Err(corrupt("record image: stream count"));
     }
     let mut lens = Vec::with_capacity(n_streams);
@@ -1838,6 +1995,87 @@ pub fn inverse_into(image: &[u8], out: &mut Vec<u8>) -> Result<()> {
                     w.value(&tables[id], next[id]);
                     next[id] += 1;
                     holes += 1;
+                }
+                w.finish(out);
+            }
+            return_tables(tables);
+        }
+        MODE_TEMPLATE => {
+            let kind = *it.next().ok_or(corrupt("record image: missing kind"))?;
+            let raw = *it.next().ok_or(corrupt("record image: missing raw"))?;
+            let tmpl_bytes = *it.next().ok_or(corrupt("record image: missing templates"))?;
+            let tids = *it.next().ok_or(corrupt("record image: missing template ids"))?;
+            if kind.len() != n_lines || kind.iter().any(|&k| k > 1) {
+                return Err(corrupt("record image: line kinds"));
+            }
+            // Templates: their bytes, holes and first columns.
+            let templates: Vec<&[u8]> = dict_entries(tmpl_bytes);
+            let mut base = Vec::with_capacity(templates.len());
+            let mut n_cols = 0usize;
+            for t in &templates {
+                base.push(n_cols);
+                n_cols += t.iter().filter(|&&b| b == 0).count();
+            }
+            if n_cols != fields {
+                return Err(corrupt("record image: template columns"));
+            }
+            // The template of every templated line, and each column's count.
+            let templated = kind.iter().filter(|&&k| k == 0).count();
+            let mut line_tids: Vec<u32> = Vec::with_capacity(templated);
+            let mut counts = vec![0usize; fields];
+            let mut tpos = 0usize;
+            for _ in 0..templated {
+                let t = get_varint(tids, &mut tpos)? as usize;
+                if t >= templates.len() {
+                    return Err(corrupt("record image: template id"));
+                }
+                let holes = if t + 1 < base.len() { base[t + 1] - base[t] } else { fields - base[t] };
+                for c in &mut counts[base[t]..base[t] + holes] {
+                    *c += 1;
+                }
+                line_tids.push(t as u32);
+            }
+            let mut cols: Vec<Decoded> = Vec::with_capacity(fields);
+            for &t in types {
+                cols.push(Decoded::new(t, &mut it)?);
+            }
+            let tables = decode_columns(&mut cols, &counts)?;
+            // Per line at most the longest template's text, a newline, and its values.
+            let longest = templates.iter().map(|t| t.len()).max().unwrap_or(0);
+            let mut w = Rows::start(out, &tables, raw.len() + n_lines + longest * templated + 1);
+            let mut next = vec![0usize; fields];
+            let mut raw_rest = raw;
+            let mut li_t = 0usize;
+            unsafe {
+                for (li, &k) in kind.iter().enumerate() {
+                    if li > 0 {
+                        w.byte(b'\n');
+                    }
+                    if k == 1 {
+                        let end = find_newline(raw_rest).unwrap_or(raw_rest.len());
+                        w.bytes(&raw_rest[..end]);
+                        raw_rest = if end < raw_rest.len() { &raw_rest[end + 1..] } else { &raw_rest[end..] };
+                        continue;
+                    }
+                    let t = line_tids[li_t] as usize;
+                    li_t += 1;
+                    let tb = templates[t];
+                    let mut col = base[t];
+                    let mut seg = 0usize;
+                    for (i, &b) in tb.iter().enumerate() {
+                        if b == 0 {
+                            w.bytes(&tb[seg..i]);
+                            // `counts[col]` values were decoded for this column, one per use.
+                            w.value(&tables[col], next[col]);
+                            next[col] += 1;
+                            col += 1;
+                            seg = i + 1;
+                        }
+                    }
+                    w.bytes(&tb[seg..]);
+                }
+                if trailing_newline {
+                    w.byte(b'\n');
                 }
                 w.finish(out);
             }
@@ -2096,6 +2334,38 @@ mod tests {
             let img = transform(&s).expect("transforms");
             assert!(inverse(&img).unwrap() == s, "{p}");
         }
+    }
+
+
+    #[test]
+    fn template_logs_round_trip() {
+        // HDFS-style lines: a few templates, ids and addresses as variables.
+        let mut s = Vec::new();
+        let mut x = 3u64;
+        for i in 0..20000u64 {
+            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            let line = match x % 4 {
+                0 => format!("081109 {:06} {} INFO dfs.DataNode$DataXceiver: Receiving block blk_-{} src: /10.250.{}.{}:{} dest: /10.250.19.102:50010", 203518 + i, x % 900, x % 10_000_000_000_000, x % 200, x % 250, 40000 + x % 20000),
+                1 => format!("081109 {:06} {} INFO dfs.FSNamesystem: BLOCK* NameSystem.allocateBlock: /mnt/hadoop/job_{}_{:04}/part-{:05}. blk_{}", 203518 + i, x % 900, 200811092030 + i % 7, x % 100, x % 90, x % 10_000_000),
+                2 => format!("081109 {:06} {} INFO dfs.DataNode$PacketResponder: PacketResponder {} for block blk_{} terminating", 203518 + i, x % 900, x % 3, x % 10_000_000),
+                _ => format!("081109 {:06} {} WARN dfs.DataNode$DataXceiver: writeBlock blk_{} received exception java.io.IOException: Connection reset by peer", 203518 + i, x % 900, x % 10_000_000),
+            };
+            s.extend_from_slice(line.as_bytes());
+            s.push(b'\n');
+            if i % 3000 == 0 {
+                s.extend_from_slice(b"a line with no digits at all\n");
+            }
+        }
+        assert_eq!(detect(&s), Some(Shape::Template));
+        let img = transform(&s).expect("transforms");
+        assert!(inverse(&img).unwrap() == s);
+        let mut no_trailing = s.clone();
+        no_trailing.pop();
+        assert!(inverse(&transform(&no_trailing).unwrap()).unwrap() == no_trailing);
+        // Odd input: empty lines, tokens at the edges, long runs.
+        let mut odd = s.clone();
+        odd.extend_from_slice(b"\n\n123\nabc\n1.2.3.4:5 x\n:::---...\n0000000000000000000000000000000000000000\n");
+        assert!(inverse(&transform(&odd).unwrap()).unwrap() == odd);
     }
 
     #[test]

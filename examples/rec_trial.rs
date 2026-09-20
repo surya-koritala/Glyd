@@ -40,7 +40,7 @@ pub fn anatomy(img: &[u8]) {
     let per_type = [1usize, 1, 3, 3, 2, 3];
     let mut streams = Vec::new();
     for &l in &lens { streams.push(&img[pos..pos + l]); pos += l; }
-    let fixed = match mode { 1 => 2, 2 => 1, 3 => 3, _ => 0 };
+    let fixed = match mode { 1 => 2, 2 => 1, 3 => 3, 4 => 4, _ => 0 };
     println!("   mode {} types {:?} stream lengths {:?}", mode, types, lens);
     let cost = |s: &[u8]| { let mut c = Vec::new(); glyd::compress_into_max(s, &mut c); c.len() };
     let mut si = 0;
