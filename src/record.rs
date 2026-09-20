@@ -24,16 +24,23 @@
 //! ```text
 //! "GLYDREC1"  mode u8 (1 delimited, 2 sql, 3 json)  delimiter u8  n_fields  n_lines
 //! flags u8 (bit 0: input ends with a newline)
-//! types: n_fields bytes (0 text, 1 int, 2 dict, 3 time, 4 dict8)
+//! types: n_fields bytes (0 text, 1 int, 2 dict, 3 time, 4 dict8, 5 decimal)
 //! n_streams, then each stream's length, then the streams back to back:
 //!   kind (one byte per line: 0 record, 1 raw), raw (raw lines, '\n'-joined),
 //!   then per field: int -> zigzag varint deltas; dict -> the dictionary
 //!   (each entry ending with '\n', first-appearance order), the recency ranks (a byte:
 //!   1 + position in the list of the last 64 distinct values, 0 an
 //!   escape) and the escaped ids (varint: 0 a new value, else id + 1);
-//!   text -> '\n'-joined values; time -> the
-//!   pattern index then zigzag varint deltas of the seconds; dict8 (at
-//!   most 256 distinct values) -> the dictionary and one byte per value.
+//!   text -> '\n'-joined values; time -> the pattern index then per
+//!   value a varint (0: the next escaped value, else 1 + zigzag delta
+//!   of the seconds), the fractions of a second (varints, patterns
+//!   with a fraction only) and the escaped values (each ending with
+//!   '\n'); dict8 (at
+//!   most 256 distinct values) -> the dictionary and one byte per value;
+//!   decimal -> the column's places P, then per value a varint (0: the
+//!   next escaped value; else 1 + zigzag delta of the value scaled to P
+//!   places), the places of each unescaped value (a byte each), and the
+//!   escaped values (each ending with '\n').
 //!   sql mode: the frame stream first (statement bytes with 0 where a
 //!   record tuple was), then the same per-field streams.
 //!   json mode: the key paths ('\n'-joined), the frame (0 where a typed
@@ -69,6 +76,14 @@ const T_TIME: u8 = 3;
 /// At most 256 distinct values: the dictionary and one byte per value
 /// (the entropy coder takes the redundancy; no move-to-front work).
 const T_DICT8: u8 = 4;
+/// Decimals (integers among them) scaled to the column's most places
+/// and coded as deltas, each with its own number of places so "43.1",
+/// "43.10" and "43" print back as written; values of any other shape
+/// (empty, null) are escaped to a text stream. Chosen when the column
+/// has too many distinct values for a byte dictionary.
+const T_DEC: u8 = 5;
+/// Most places a decimal column keeps.
+const DEC_PLACES: u32 = 9;
 
 /// A fast hasher for the byte-string maps (SipHash is a third of the
 /// transform's time on a column of short values).
@@ -102,12 +117,22 @@ type FxBuild = std::hash::BuildHasherDefault<FxHasher>;
 /// Date-time layouts recognised for `T_TIME` columns. `M` is a month
 /// name, `m` a two-digit month; every field is fixed width; the pattern
 /// must reproduce the text exactly or the column stays text.
-const DATE_PATTERNS: [&[u8]; 4] = [
+const DATE_PATTERNS: [&[u8]; 8] = [
     b"[DD/MMM/YYYY:hh:mm:ss", // Common Log Format, the zone in the next field
     b"YYYY-mm-DDThh:mm:ssZ",  // ISO 8601, UTC
     b"YYYY-mm-DD hh:mm:ss",   // SQL / syslog style
     b"DD/MMM/YYYY:hh:mm:ss",
+    // Fractions of a second ('f' digits): the value is in those units.
+    b"YYYY-mm-DD hh:mm:ss.ffffff", // SQL, Parquet and pandas exports
+    b"YYYY-mm-DDThh:mm:ss.fffZ",   // ISO 8601 with milliseconds (JSON logs)
+    b"YYYY-mm-DDThh:mm:ss.ffffffZ",
+    b"YYYY-mm-DD hh:mm:ss.fff",
 ];
+
+/// The unit of a pattern's values: 1 per fraction digit's power of ten.
+fn time_scale(p: &[u8]) -> i64 {
+    10i64.pow(p.iter().filter(|&&c| c == b'f').count() as u32)
+}
 const MONTHS: [&[u8]; 12] = [b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov", b"Dec"];
 
 /// Days since 1970-01-01 of a civil date (proleptic Gregorian).
@@ -140,6 +165,7 @@ fn parse_time(p: &[u8], text: &[u8]) -> Option<i64> {
         return None;
     }
     let (mut y, mut mo, mut d, mut h, mut mi, mut s) = (0i64, 0u32, 0u32, 0u32, 0u32, 0u32);
+    let mut frac = 0i64;
     let mut i = 0;
     while i < p.len() {
         let c = p[i];
@@ -179,6 +205,11 @@ fn parse_time(p: &[u8], text: &[u8]) -> Option<i64> {
                 s = digits(2)?;
                 i += 2;
             }
+            b'f' => {
+                let n = p[i..].iter().take_while(|&&c| c == b'f').count();
+                frac = digits(n)? as i64;
+                i += n;
+            }
             _ => {
                 if text[i] != c {
                     return None;
@@ -190,7 +221,7 @@ fn parse_time(p: &[u8], text: &[u8]) -> Option<i64> {
     if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 60 {
         return None;
     }
-    Some(days_from_civil(y, mo, d) * 86400 + (h * 3600 + mi * 60 + s) as i64)
+    Some((days_from_civil(y, mo, d) * 86400 + (h * 3600 + mi * 60 + s) as i64) * time_scale(p) + frac)
 }
 
 /// `v` as `n` zero-padded decimal digits.
@@ -225,7 +256,9 @@ fn push_int(out: &mut Vec<u8>, v: i64) {
 }
 
 /// The text of `secs` under pattern `p`.
-fn format_time(p: &[u8], secs: i64, out: &mut Vec<u8>) {
+fn format_time(p: &[u8], value: i64, out: &mut Vec<u8>) {
+    let scale = time_scale(p);
+    let (secs, frac) = (value.div_euclid(scale), value.rem_euclid(scale));
     let days = secs.div_euclid(86400);
     let rem = secs.rem_euclid(86400) as u32;
     let (y, mo, d) = civil_from_days(days);
@@ -260,6 +293,11 @@ fn format_time(p: &[u8], secs: i64, out: &mut Vec<u8>) {
             b's' => {
                 push_digits(out, s as u64, 2);
                 i += 2;
+            }
+            b'f' => {
+                let n = p[i..].iter().take_while(|&&c| c == b'f').count();
+                push_digits(out, frac as u64, n);
+                i += n;
             }
             c => {
                 out.push(c);
@@ -371,6 +409,36 @@ fn parse_canonical_int(b: &[u8]) -> Option<i64> {
     Some(if neg { -v } else { v })
 }
 
+/// A canonical decimal: `-?D.F` or an integer, D without leading zeros,
+/// at most 18 digits in all; (all its digits as one integer, its
+/// places). "-0.0" and "-0" are not canonical (they would print back
+/// without the sign).
+fn parse_decimal(b: &[u8]) -> Option<(i64, u32)> {
+    let (neg, body) = match b.first() {
+        Some(b'-') => (true, &b[1..]),
+        _ => (false, b),
+    };
+    let dot = body.iter().position(|&c| c == b'.');
+    let (int, frac) = match dot {
+        Some(d) => (&body[..d], &body[d + 1..]),
+        None => (body, &body[..0]),
+    };
+    if int.is_empty() || (dot.is_some() && frac.is_empty()) || int.len() + frac.len() > 18 || frac.len() > DEC_PLACES as usize {
+        return None;
+    }
+    if !int.iter().chain(frac).all(|c| c.is_ascii_digit()) || (int.len() > 1 && int[0] == b'0') {
+        return None;
+    }
+    let mut v: i64 = 0;
+    for &c in int.iter().chain(frac) {
+        v = v * 10 + (c - b'0') as i64;
+    }
+    if neg && v == 0 {
+        return None;
+    }
+    Some((if neg { -v } else { v }, frac.len() as u32))
+}
+
 /// The shape of an input, from its first megabyte.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
@@ -456,32 +524,53 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
         streams.push(s);
         return;
     }
-    // Date-times: every value under one pattern, reproduced exactly.
-    if let Some(&(a, b)) = col.first() {
-        if let Some(pi) = DATE_PATTERNS.iter().position(|p| parse_time(p, &src[a..b]).is_some()) {
-            let p = DATE_PATTERNS[pi];
-            let mut s = Vec::with_capacity(col.len() * 2 + 1);
-            s.push(pi as u8);
-            let mut last = 0i64;
-            let mut check = Vec::with_capacity(32);
-            let all = col.iter().all(|&(a, b)| match parse_time(p, &src[a..b]) {
-                Some(t) => {
-                    check.clear();
-                    format_time(p, t, &mut check);
-                    if check != &src[a..b] {
-                        return false;
-                    }
-                    put_varint(&mut s, zigzag(t.wrapping_sub(last)));
-                    last = t;
-                    true
-                }
-                None => false,
+    // Date-times: the values under one pattern, reproduced exactly; up
+    // to a tenth of the values may be of another shape (a header line,
+    // an empty field), escaped to a text stream.
+    if let Some(pi) = col.iter().take(8).find_map(|&(a, b)| DATE_PATTERNS.iter().position(|p| parse_time(p, &src[a..b]).is_some())) {
+        let p = DATE_PATTERNS[pi];
+        let scale = time_scale(p);
+        let mut s = Vec::with_capacity(col.len() * 2 + 1);
+        let mut fracs = Vec::new();
+        let mut esc = Vec::new();
+        s.push(pi as u8);
+        let mut last = 0i64;
+        let mut escapes = 0usize;
+        let mut check = Vec::with_capacity(32);
+        for &(a, b) in col {
+            let exact = parse_time(p, &src[a..b]).filter(|&t| {
+                check.clear();
+                format_time(p, t, &mut check);
+                check == &src[a..b]
             });
-            if all {
-                *out_type = T_TIME;
-                streams.push(s);
-                return;
+            match exact {
+                Some(t) => {
+                    // Seconds as deltas; the fraction, when the pattern
+                    // has one, in its own stream.
+                    let secs = t.div_euclid(scale);
+                    put_varint(&mut s, zigzag(secs.wrapping_sub(last)) + 1);
+                    last = secs;
+                    if scale > 1 {
+                        put_varint(&mut fracs, t.rem_euclid(scale) as u64);
+                    }
+                }
+                None => {
+                    escapes += 1;
+                    if escapes * 10 > col.len() {
+                        break;
+                    }
+                    put_varint(&mut s, 0);
+                    esc.extend_from_slice(&src[a..b]);
+                    esc.push(b'\n');
+                }
             }
+        }
+        if escapes * 10 <= col.len() {
+            *out_type = T_TIME;
+            streams.push(s);
+            streams.push(fracs);
+            streams.push(esc);
+            return;
         }
     }
     // Few distinct values: dictionary + move-to-front ranks.
@@ -545,6 +634,56 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
         return;
     }
     // Text.
+    // Decimals, when the column is mostly decimals with too many
+    // distinct values for a dictionary (continuous readings, prices).
+    if !col.is_empty() && !counted {
+        let mut decs = Vec::with_capacity(col.len());
+        let mut places = 0u32;
+        let mut int_digits = 0usize;
+        let mut escapes = 0usize;
+        for &(a, b) in col {
+            match parse_decimal(&src[a..b]) {
+                Some((v, p)) => {
+                    places = places.max(p);
+                    int_digits = int_digits.max(b - a - p as usize - (p > 0) as usize);
+                    decs.push(Some((v, p)));
+                }
+                None => {
+                    escapes += 1;
+                    decs.push(None);
+                }
+            }
+        }
+        if escapes * 10 <= col.len() && int_digits + places as usize <= 18 {
+            {
+                *out_type = T_DEC;
+                let mut deltas = Vec::with_capacity(col.len() * 2);
+                let mut pl = Vec::with_capacity(col.len());
+                let mut esc = Vec::new();
+                let mut last = 0i64;
+                deltas.push(places as u8);
+                for (&(a, b), d) in col.iter().zip(&decs) {
+                    match *d {
+                        Some((v, p)) => {
+                            let scaled = v * 10i64.pow(places - p);
+                            put_varint(&mut deltas, zigzag(scaled.wrapping_sub(last)) + 1);
+                            last = scaled;
+                            pl.push(p as u8);
+                        }
+                        None => {
+                            put_varint(&mut deltas, 0);
+                            esc.extend_from_slice(&src[a..b]);
+                            esc.push(b'\n');
+                        }
+                    }
+                }
+                streams.push(deltas);
+                streams.push(pl);
+                streams.push(esc);
+                return;
+            }
+        }
+    }
     *out_type = T_TEXT;
     let mut s = Vec::with_capacity(col.iter().map(|&(a, b)| b - a + 1).sum());
     for (i, &(a, b)) in col.iter().enumerate() {
@@ -951,8 +1090,9 @@ fn memfind(hay: &[u8], needle: &[u8]) -> Option<usize> {
 enum Decoded<'a> {
     Int { src: &'a [u8], pos: usize, last: i64 },
     Dict8 { dict: Vec<&'a [u8]>, ids: &'a [u8], pos: usize },
-    Time { src: &'a [u8], pos: usize, last: i64, pattern: &'static [u8] },
+    Time { src: &'a [u8], pos: usize, last: i64, pattern: &'static [u8], fracs: &'a [u8], fpos: usize, esc: &'a [u8] },
     Dict { dict: Vec<&'a [u8]>, ranks: &'a [u8], pos: usize, ids: &'a [u8], ids_pos: usize, recent: Recent, next_new: usize },
+    Dec { src: &'a [u8], pos: usize, last: i64, scale: u32, places: &'a [u8], ppos: usize, esc: &'a [u8] },
     Text { rest: &'a [u8] },
 }
 
@@ -975,7 +1115,9 @@ impl<'a> Decoded<'a> {
                 let s = streams.next().ok_or(corrupt("record image: missing stream"))?;
                 let pi = *s.first().ok_or(corrupt("record image: time pattern"))? as usize;
                 let pattern = *DATE_PATTERNS.get(pi).ok_or(corrupt("record image: time pattern"))?;
-                Decoded::Time { src: s, pos: 1, last: 0, pattern }
+                let fracs = streams.next().ok_or(corrupt("record image: missing stream"))?;
+                let esc = streams.next().ok_or(corrupt("record image: missing stream"))?;
+                Decoded::Time { src: s, pos: 1, last: 0, pattern, fracs, fpos: 0, esc }
             }
             T_DICT8 => {
                 let d = streams.next().ok_or(corrupt("record image: missing stream"))?;
@@ -987,6 +1129,16 @@ impl<'a> Decoded<'a> {
                 let r = streams.next().ok_or(corrupt("record image: missing stream"))?;
                 let ids = streams.next().ok_or(corrupt("record image: missing stream"))?;
                 Decoded::Dict { dict: dict_entries(d), ranks: r, pos: 0, ids, ids_pos: 0, recent: Recent::new(), next_new: 0 }
+            }
+            T_DEC => {
+                let s = streams.next().ok_or(corrupt("record image: missing stream"))?;
+                let places = streams.next().ok_or(corrupt("record image: missing stream"))?;
+                let esc = streams.next().ok_or(corrupt("record image: missing stream"))?;
+                let scale = *s.first().ok_or(corrupt("record image: decimal scale"))? as u32;
+                if scale > DEC_PLACES {
+                    return Err(corrupt("record image: decimal scale"));
+                }
+                Decoded::Dec { src: s, pos: 1, last: 0, scale, places, ppos: 0, esc }
             }
             T_TEXT => {
                 let s = streams.next().ok_or(corrupt("record image: missing stream"))?;
@@ -1145,13 +1297,24 @@ fn next_value(c: &mut Decoded, out: &mut Vec<u8>) -> Result<()> {
             *pos += 1;
             out.extend_from_slice(dict.get(id).ok_or(corrupt("record image: dictionary id"))?);
         }
-        Decoded::Time { src, pos, last, pattern } => {
+        Decoded::Time { src, pos, last, pattern, fracs, fpos, esc } => {
             let d = get_varint(src, pos)?;
-            *last = last.wrapping_add(unzigzag(d));
+            if d == 0 {
+                let end = esc.iter().position(|&b| b == b'\n').ok_or(corrupt("record image: time escape"))?;
+                out.extend_from_slice(&esc[..end]);
+                *esc = &esc[end + 1..];
+                return Ok(());
+            }
+            *last = last.wrapping_add(unzigzag(d - 1));
             if last.unsigned_abs() > 1 << 40 {
                 return Err(corrupt("record image: time out of range"));
             }
-            format_time(pattern, *last, out);
+            let scale = time_scale(pattern);
+            let frac = if scale > 1 { get_varint(fracs, fpos)? as i64 } else { 0 };
+            if frac >= scale {
+                return Err(corrupt("record image: time fraction"));
+            }
+            format_time(pattern, *last * scale + frac, out);
         }
         Decoded::Dict { dict, ranks, pos, ids, ids_pos, recent, next_new } => {
             let r = *ranks.get(*pos).ok_or(corrupt("record image: ranks overrun"))? as usize;
@@ -1173,6 +1336,34 @@ fn next_value(c: &mut Decoded, out: &mut Vec<u8>) -> Result<()> {
             }
             recent.touch(id as u32);
             out.extend_from_slice(dict[id]);
+        }
+        Decoded::Dec { src, pos, last, scale, places, ppos, esc } => {
+            let d = get_varint(src, pos)?;
+            if d == 0 {
+                let end = esc.iter().position(|&b| b == b'\n').ok_or(corrupt("record image: decimal escape"))?;
+                out.extend_from_slice(&esc[..end]);
+                *esc = &esc[end + 1..];
+                return Ok(());
+            }
+            *last = last.wrapping_add(unzigzag(d - 1));
+            let p = *places.get(*ppos).ok_or(corrupt("record image: places overrun"))? as u32;
+            *ppos += 1;
+            if p > *scale {
+                return Err(corrupt("record image: decimal places"));
+            }
+            let v = *last;
+            if v < 0 {
+                out.push(b'-');
+            }
+            let m = 10i64.pow(*scale);
+            let (int, frac) = (v.unsigned_abs() / m as u64, v.unsigned_abs() % m as u64);
+            push_int(out, int as i64);
+            if p > 0 {
+                out.push(b'.');
+                let start = out.len();
+                push_digits(out, frac, *scale as usize);
+                out.truncate(start + p as usize);
+            }
         }
         Decoded::Text { rest } => {
             let end = rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
@@ -1267,6 +1458,53 @@ mod tests {
             s.extend_from_slice(format!("{},,x,{}\n", i, if i % 3 == 0 { "" } else { "y" }).as_bytes());
         }
         assert!(roundtrip(&s).is_some());
+    }
+
+
+    #[test]
+    fn decimal_column_round_trips() {
+        // Prices with 0-3 places, negatives, nulls; ids with nulls.
+        let mut s = Vec::new();
+        let mut x = 11u64;
+        for i in 0..5000u32 {
+            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            let price = match x % 5 {
+                0 => format!("{}", (x >> 8) % 100000),
+                1 => format!("{}.{}", (x >> 8) % 1000, (x >> 20) % 10),
+                2 => format!("-{}.{:02}", (x >> 8) % 1000, (x >> 20) % 100),
+                3 => format!("{}.{:03}", (x >> 8) % 1000, (x >> 20) % 1000),
+                _ => if i % 20 == 0 { "null".to_string() } else { "0.50".to_string() },
+            };
+            let id = if i % 30 == 0 { "".to_string() } else { format!("{}", 1_000_000 + (x % 50_000)) };
+            s.extend_from_slice(format!("{},{},{}\n", i, price, id).as_bytes());
+        }
+        let img = transform(&s).expect("transforms");
+        // types follow the header: magic 8, mode, delimiter, fields varint (3), lines varint, flags
+        let mut pos = 10;
+        get_varint(&img, &mut pos).unwrap();
+        get_varint(&img, &mut pos).unwrap();
+        pos += 1;
+        assert_eq!(&img[pos..pos + 3], &[T_INT, T_DEC, T_DEC], "column types");
+        assert!(inverse(&img).unwrap() == s);
+        for v in [b"-0".as_slice(), b"-0.0", b"00.5", b"1.", b".5", b"1e5", b"0.1234567890"] {
+            assert!(parse_decimal(v).is_none(), "{:?}", std::str::from_utf8(v));
+        }
+        assert_eq!(parse_decimal(b"43.10"), Some((4310, 2)));
+        assert_eq!(parse_decimal(b"-7"), Some((-7, 0)));
+    }
+
+
+    #[test]
+    fn fractional_second_patterns_round_trip() {
+        for (t, unit) in [("2024-02-01 00:04:45.000000", 1_000_000i64), ("2024-01-15T12:00:01.123Z", 1000), ("2024-01-15T12:00:01.123456Z", 1_000_000), ("2024-02-01 00:04:45.250", 1000)] {
+            let pi = DATE_PATTERNS.iter().position(|p| parse_time(p, t.as_bytes()).is_some()).unwrap_or_else(|| panic!("{t}: no pattern"));
+            let v = parse_time(DATE_PATTERNS[pi], t.as_bytes()).unwrap();
+            assert_eq!(v.rem_euclid(unit), t.rsplit('.').next().unwrap().trim_end_matches('Z').parse::<i64>().unwrap(), "{t}");
+            let mut out = Vec::new();
+            format_time(DATE_PATTERNS[pi], v, &mut out);
+            assert_eq!(out, t.as_bytes(), "{t}");
+        }
+        assert!(parse_time(DATE_PATTERNS[4], b"2024-02-01 00:04:45.00000x").is_none());
     }
 
     #[test]
