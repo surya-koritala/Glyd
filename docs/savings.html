@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Glyd savings calculator</title>
-<meta name="description" content="Estimate what Glyd v0.4.0 saves on object storage compared with LZ4, zstd -3 and zstd -19, from measured ratios on real data.">
+<meta name="description" content="Estimate what Glyd v0.5.0 saves on object storage compared with LZ4, zstd -3 and zstd -19, from measured ratios on real data, versions included.">
 <style>
   :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; }
   @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --line:#333; --accent:#6ea0ff; } }
@@ -30,7 +30,7 @@
 <main>
   <nav><a href="./">Glyd</a> · <a href="https://github.com/surya-koritala/Glyd">GitHub</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-20.md">benchmark report</a></nav>
   <h1>What Glyd saves you</h1>
-  <p class="sub">Bytes stored scale with 1 / ratio. Ratios are measured on real data (v0.4.0, AWS Graviton3 and Sapphire Rapids, 8 threads; the telemetry sets on an M1 Max), every decode compared with its input. Measure your own data with <code>glyd -b yourfile</code>.</p>
+  <p class="sub">Bytes stored scale with 1 / ratio. Ratios are measured on real data (v0.5.0: AWS Graviton3 and Sapphire Rapids, 8 threads; the telemetry sets and the version pairs on an M1 Max), every decode compared with its input. Measure your own data with <code>glyd -b yourfile</code>.</p>
 
   <div class="row">
     <div>
@@ -47,6 +47,7 @@
         <option value="sql">Database dumps (SQL)</option>
         <option value="json">JSON API events (GitHub Archive)</option>
         <option value="parquet">Parquet (already compressed)</option>
+        <option value="versions">Versions of an object: nightly dumps (each against the previous one)</option>
       </select>
     </div>
     <div>
@@ -96,6 +97,7 @@
     sql:            { lz4:3.006, zstd3:4.973,  zstd19:7.098,  none:1, max:4.961,  maxrec:8.381,  ultra:6.982,  ultrarec:10.137, note:"MySQL dumps of Wikipedia tables (3.9 GB)." },
     json:           { lz4:5.020, zstd3:10.462, zstd19:15.073, none:1, max:13.467, maxrec:13.467, ultra:16.717, ultrarec:16.717, note:"GitHub Archive hours (2.6 GB): not record-shaped, so -r hands them to the plain level; hashes and free text set the floor." },
     parquet:        { lz4:1.000, zstd3:1.010,  zstd19:1.021,  none:1, max:1.007,  maxrec:1.007,  ultra:1.018,  ultrarec:1.018,  note:"Parquet already holds zstd-compressed pages; nothing shrinks it further." },
+    versions:       { lz4:2.70,  zstd3:28.1,   zstd19:83.2,   none:1, max:60.2,   maxrec:60.2,   ultra:87.6,   ultrarec:87.6,   note:"Wikipedia page-table dumps a month apart (108 MB): zstd's figures are its --patch-from against the previous dump (LZ4 has no delta mode, so each dump alone); Glyd's are --base. Image and source-tree pairs give 200-700x." },
   };
   const CPU = { lz4:7.8, zstd3:10.7, zstd19:12.7, none:0, max:14.5, maxrec:23.7, ultra:13.8, ultrarec:22.6 };
   const $ = id => document.getElementById(id);

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Glyd — compression that moves the storage bill</title>
-<meta name="description" content="Glyd v0.4.0: record mode turns logs, dumps, CSV and JSON lines into typed columns; a 128 MB matcher; measured against zstd and LZ4 on real data and a real S3 workflow.">
+<meta name="description" content="Glyd v0.5.0: base mode stores a new version of a dump, image or source tree for a few percent of its size; record mode turns logs, dumps, CSV and JSON lines into typed columns; measured against zstd and LZ4 on real data.">
 <style>
   :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; --hl:#eef3ff; }
   @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --line:#333; --accent:#6ea0ff; --hl:#1b2233; } }
@@ -28,12 +28,44 @@
 </head>
 <body>
 <main>
-  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.4.0">v0.4.0 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-20.md">Benchmark report</a><a href="savings.html">Savings calculator</a></nav>
+  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.5.0">v0.5.0 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-20.md">Benchmark report</a><a href="savings.html">Savings calculator</a></nav>
   <h1>Glyd</h1>
-  <p class="sub">A compression library and CLI (Rust, C ABI) for the data that fills object storage: logs, database exports, telemetry, JSON. v0.4.0, September 2026. Every number below is measured on public data, every decode compared byte for byte with its input, and reproducible from the repository.</p>
+  <p class="sub">A compression library and CLI (Rust, C ABI) for the data that fills object storage: logs, database exports, telemetry, JSON, and the versions of all of them. v0.5.0, September 2026. Every number below is measured on public data, every decode compared byte for byte with its input, and reproducible from the repository.</p>
 
   <a class="cta" href="savings.html">What would it save you?</a>
   <a class="cta" href="https://github.com/surya-koritala/Glyd#quick-start">Quick start</a>
+
+  <h2>Fastest or slowest? The table everyone uses</h2>
+  <p>The 8.7 GB real-data corpus on AWS Graviton3, ratio · compress MB/s · decompress MB/s. One core, the way zstd's README reports it, then eight cores (Glyd's output decodes in parallel; a zstd or LZ4 frame decodes on one thread).</p>
+  <div class="wrap"><table>
+    <tr><th>One core</th><th>Ratio</th><th>Compress MB/s</th><th>Decompress MB/s</th></tr>
+    <tr><td>LZ4</td><td>2.72</td><td><b>503</b></td><td>1,391</td></tr>
+    <tr class="g"><td>Glyd default</td><td>2.82</td><td>322</td><td><b>3,281</b></td></tr>
+    <tr><td>zstd -3</td><td>3.86</td><td>304</td><td>1,371</td></tr>
+    <tr class="g"><td>Glyd --max</td><td><b>4.00</b></td><td>201</td><td>1,412</td></tr>
+  </table></div>
+  <div class="wrap"><table>
+    <tr><th>Eight cores</th><th>Ratio</th><th>Compress MB/s</th><th>Decompress MB/s</th></tr>
+    <tr class="g"><td>Glyd default</td><td>2.82</td><td><b>2,111</b></td><td><b>22,037</b></td></tr>
+    <tr><td>zstd -3 -T8</td><td>3.85</td><td>1,947</td><td>1,412</td></tr>
+    <tr class="g"><td>Glyd --max</td><td>3.96</td><td>1,196</td><td><b>8,840</b></td></tr>
+    <tr class="g"><td>Glyd --max -r</td><td>4.75</td><td>675</td><td><b>3,831</b></td></tr>
+    <tr><td>LZ4</td><td>2.72</td><td>503</td><td>1,392</td></tr>
+    <tr><td>zstd -19 -T8</td><td>4.66</td><td>13</td><td>1,280</td></tr>
+    <tr class="g"><td>Glyd --ultra</td><td>4.66</td><td>14</td><td><b>9,551</b></td></tr>
+    <tr class="g"><td>Glyd --ultra -r</td><td><b>5.21</b></td><td>17</td><td><b>3,890</b></td></tr>
+  </table></div>
+  <p class="muted">Reads: Glyd is the fastest, 3–7× zstd on a server. Writes: Glyd is slower, 0.6× zstd -3 (record mode 0.35×); LZ4 is the write-speed king on one core. Size: Glyd is the smallest wherever the data has structure, and ties elsewhere.</p>
+
+  <h2>Base mode: a version stored for the change, not the whole</h2>
+  <p>Most stored bytes are versions — nightly dumps, snapshots, images, source trees. <code>glyd --base old new</code> parses every 32 MB of the new version with the old one's matching region as history and writes a stream that decodes with the same base. Measured on consecutive versions of real objects against zstd 1.5.7's own <code>--patch-from</code>, same machine, every rebuild byte-exact:</p>
+  <div class="wrap"><table>
+    <tr><th>Old → new</th><th>zstd -3 --patch-from</th><th>zstd -19 --patch-from</th><th>Glyd --max --base</th><th>Glyd --ultra --base</th></tr>
+    <tr class="g"><td>Wikipedia page-table dumps, a month apart (108 MB)</td><td>3.84 MB · 409 MB/s</td><td>1.30 MB · 2 MB/s</td><td>1.79 MB · 863 MB/s</td><td>1.23 MB · 2 MB/s</td></tr>
+    <tr class="g"><td>Ubuntu 24.04 cloud root filesystem, builds 16 days apart (1.1 GB)</td><td>8.82 MB · 654 MB/s</td><td>5.61 MB · 39 MB/s</td><td>5.31 MB · 2,018 MB/s</td><td>4.59 MB · 4 MB/s</td></tr>
+    <tr class="g"><td>Linux 6.10 → 6.10.1 source tar (1.5 GB)</td><td>3.26 MB · 560 MB/s</td><td>2.58 MB · 30 MB/s</td><td>3.04 MB · 1,980 MB/s</td><td>2.04 MB · 1 MB/s</td></tr>
+  </table></div>
+  <p class="muted">Compressed alone those versions are 33, 287 and 200 MB: a version costs 1–5% of what it did. Against zstd's fast patch Glyd stores 1.1–2.1× less at 2–3.5× the speed; <code>--ultra --base</code> stores 5–21% less than zstd -19's patch on every pair, slowly. Chunk-level dedup, the backup approach, gains only 1–4× on the same pairs.</p>
 
   <h2>Record mode: the data's own structure, not just its bytes</h2>
   <p>Byte-level matching (zstd, LZ4, Glyd's own levels) is a plateau: on real data zstd -19, xz and Glyd <code>--ultra</code> land within a few percent of each other. The redundancy of a log, a dump or a telemetry export sits in the same field of every record. <code>glyd -r</code> detects delimited lines, SQL dumps and JSON lines, turns them into one typed stream per field (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those, and rebuilds the bytes exactly. Anything else is left as it is.</p>
@@ -76,10 +108,10 @@
 
   <h2>How the numbers are made</h2>
   <ul>
-    <li><b>Correctness first</b>: 95 tests, a million-mutation fuzz, files from every earlier release decoded unchanged, and <code>scripts/verify_roundtrip.sh</code> through the CLI on both machines with corrupted copies rejected or decoded exactly.</li>
+    <li><b>Correctness first</b>: 98 tests, a million-mutation fuzz, files from every earlier release decoded unchanged, and <code>scripts/verify_roundtrip.sh</code> through the CLI on both machines with corrupted copies rejected or decoded exactly; base-mode streams refuse any other base.</li>
     <li><b>Fair comparison</b>: zstd -3, zstd -19 and LZ4 on the same machines and thread counts, each on its fastest API, buffers kept; compressed bytes include every codec's own framing.</li>
     <li><b>A real workflow</b>: compress, upload to S3, download, decompress, sha256 every file, at list prices.</li>
-    <li><b>The floors are stated</b>: JSON API events are 20% hashes, 10% random ids and 30% free text once compressed; Parquet is already zstd inside. Neither moves.</li>
+    <li><b>The floors are stated</b>: JSON API events are 20% hashes, 10% random ids and 30% free text once compressed; Parquet is already zstd inside. Neither moves. Where zstd wins — write speed, small objects per second, reads at very high read rates — is written down too.</li>
   </ul>
   <p><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-20.md">Full report with every table</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/design/format-v7.md">Design notes</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/CHANGELOG.md">Changelog</a></p>
   <p><small>Business Source License 1.1. Contact: suryakoritala1324@gmail.com.</small></p>

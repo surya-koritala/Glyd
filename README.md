@@ -1,6 +1,6 @@
 <h1 align="center">Glyd</h1>
-<p align="center"><strong>The world's fastest-decoding open-source compression.</strong><br>
-Fewer bytes than zstd -3; a <code>--ultra</code> level denser than zstd -16 and within 2% of zstd -19. Reads 1.3× faster than zstd, up to 2.1× faster than LZ4.</p>
+<p align="center"><strong>Compression for the data that fills object storage.</strong><br>
+Fewer bytes than zstd wherever the data has structure, the fastest reads at every ratio, and a new version of a dump, image or source tree stored for a few percent of its size.</p>
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
@@ -15,9 +15,11 @@ Fewer bytes than zstd -3; a <code>--ultra</code> level denser than zstd -16 and 
 <a href="#at-a-glance">At a glance</a> ·
 <a href="#what-glyd-saves-you">Savings</a> ·
 <a href="#quick-start">Quick start</a> ·
-<a href="#levels">Levels</a> ·
-<a href="#benchmarks">Benchmarks</a> ·
-<a href="#how-it-works">How it works</a> ·
+<a href="#levels-and-modes">Levels and modes</a> ·
+<a href="#base-mode-a-version-compressed-against-the-last-one">Base mode</a> ·
+<a href="#record-mode-logs-and-table-dumps-as-columns">Record mode</a> ·
+<a href="#real-data-real-machines">Real data</a> ·
+<a href="#known-gaps">Known gaps</a> ·
 <a href="ROADMAP.md">Roadmap</a> ·
 <a href="#license">License</a>
 </p>
@@ -26,28 +28,57 @@ Fewer bytes than zstd -3; a <code>--ultra</code> level denser than zstd -16 and 
 
 ## At a glance
 
-**Glyd** is a lossless data compression library and CLI, written in Rust with
-a C ABI, for workloads where **decompression speed** and **storage cost**
-decide the bill: object storage and data lakes (Parquet, ORC), columnar
-scans, RPC and message payloads, game and app assets, and KV-cache paging
-for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
-**zstd**.
+**Glyd** is a lossless compression library and CLI, written in Rust with a
+C ABI, for the workloads where storage and read CPU decide the bill:
+object storage, data lakes, logs and telemetry, backups and versioned
+exports, RPC payloads, caches. It is a drop-in alternative to **LZ4**,
+**Snappy** and **zstd**, and it does two things they do not: it turns
+record-shaped data (logs, dumps, CSV, JSON lines) into typed columns
+before compressing (`-r`), and it compresses a new version of an object
+against the old one (`--base`).
 
-| Level | Ratio | Compress | **Decompress** | vs the reference, same run |
-| :--- | ---: | ---: | ---: | :--- |
-| ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | 1.88 | 280&nbsp;MB/s | **9,200&nbsp;MB/s** | **2.1×** liblz4 (4,400&nbsp;MB/s) |
-| ⚡&nbsp;**Glyd&nbsp;default** | 2.19 | 340&nbsp;MB/s | **6,900&nbsp;MB/s** | **1.6×** liblz4, better ratio |
-| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.25** | 310&nbsp;MB/s | **1,890&nbsp;MB/s** | **1.3×** zstd&nbsp;-3 (1,490&nbsp;MB/s); denser (3.20) |
-| ⚡&nbsp;**Glyd&nbsp;‑‑ultra** | **3.93** | 3.8&nbsp;MB/s | **2,150&nbsp;MB/s** | **1.3×** zstd&nbsp;-19 (1,640&nbsp;MB/s); denser than zstd&nbsp;-16 (3.83), 2% below zstd&nbsp;-19 (4.01) |
+Every number in this README is measured on public data, every decode
+compared byte for byte with its input, against the reference codec on the
+same machine and thread count in the same run. The full program and its
+results: [docs/benchmarks/suite-2026-09-20.md](docs/benchmarks/suite-2026-09-20.md).
 
-<sub>Silesia corpus (202 MB), Apple M1 Max, one core; every Glyd number is paired with the reference library measured in the same process. Multi-core decode reaches <b>43,000 MB/s</b> on 10 cores, the machine's memory wall. The same story holds on AWS Graviton3; on x86 (Sapphire Rapids) the v6 levels lead, <code>--max</code> decodes about as fast as zstd -3 and <code>--ultra</code> 1.1-1.2× zstd -19. Cross-platform results: <a href="benchmarks/">benchmarks/</a>.</sub>
+**The table everyone uses** — the 8.7 GB real-data corpus (logs, JSON
+events, SQL dumps, Parquet) on AWS Graviton3, ratio · compress MB/s ·
+decompress MB/s. One core, the way zstd's own README reports:
 
-- 🚀 **Fastest decode at every ratio point** measured, against liblz4, lz4_flex, LZAV, zstd (7 levels) and snappy, in the same run.
-- 📦 **Fewer bytes than zstd -3** with the `--max` level, at 30% faster reads.
-- 🗜️ **`--ultra`: denser than zstd -16** (Silesia 3.93, zstd -16 3.83, zstd -19 4.01) on an optimal parse, and its output reads 1.3× faster than zstd -19's. Same decoder, same container.
-- 🧱 **One container, four levels**, any mix of blocks decodes; independent units (2-16 MB by level) scale across cores.
-- 🛡️ **Fuzzed** with a million mutations per run into exact-size buffers; no per-call allocation in the decoder.
-- 🔌 **Rust, C ABI, CLI**, streaming `std::io` adapters, dictionaries for small objects.
+| Codec | Ratio | Compress MB/s | Decompress MB/s |
+| :--- | ---: | ---: | ---: |
+| LZ4 | 2.72 | **503** | 1,391 |
+| ⚡&nbsp;**Glyd&nbsp;default** | 2.82 | 322 | **3,281** |
+| zstd&nbsp;-3 | 3.86 | 304 | 1,371 |
+| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **4.00** | 201 | 1,412 |
+
+Eight cores, what a server does (Glyd's output decodes in parallel; a
+zstd or LZ4 frame decodes on one thread):
+
+| Codec | Ratio | Compress MB/s | Decompress MB/s |
+| :--- | ---: | ---: | ---: |
+| ⚡&nbsp;**Glyd&nbsp;default** | 2.82 | **2,111** | **22,037** |
+| zstd&nbsp;-3&nbsp;-T8 | 3.85 | 1,947 | 1,412 |
+| ⚡&nbsp;**Glyd&nbsp;‑‑max** | 3.96 | 1,196 | **8,840** |
+| ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑r** | 4.75 | 675 | **3,831** |
+| LZ4 | 2.72 | 503 | 1,392 |
+| zstd&nbsp;-19&nbsp;-T8 | 4.66 | 13 | 1,280 |
+| ⚡&nbsp;**Glyd&nbsp;‑‑ultra** | 4.66 | 14 | **9,551** |
+| ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;‑r** | **5.21** | 17 | **3,890** |
+
+In one line: Glyd reads 3–7× faster than zstd on a server and stores 10–70%
+less where the data has structure; it writes at 0.6× zstd -3's speed
+(record mode 0.35×). For data written once and read many times that is the
+right side of the trade; for data written constantly and rarely read,
+zstd -3 or LZ4 still win on write cost.
+
+- 🗂️ **Record mode (`-r`)**: logs, SQL dumps, CSV and JSON lines as typed columns. Telemetry stores 2.5–3.5× less than zstd -3 and 1.5–2× less than zstd -19; the whole corpus 19% less than zstd -3.
+- 🔁 **Base mode (`--base`)**: a new version against the old one. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 2–3.5× its speed.
+- 🔭 **128 MB long-distance matcher** in `--max` and `--ultra`: JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
+- 🚀 **Fastest reads at every ratio**: 8-way interleaved entropy coding and copy-only loops, units that decode one per core.
+- 🛡️ **Verified**: 98 tests, a million-mutation fuzz per run, every earlier format decoded unchanged, the CLI round-tripped with corrupted copies on both AWS machines.
+- 🔌 **Rust, C ABI, CLI**, streaming `std::io` adapters, trained dictionaries for small objects.
 
 ---
 
@@ -55,34 +86,27 @@ for LLM inference. It is a drop-in alternative to **LZ4**, **Snappy** and
 
 > **Try it:** [surya-koritala.github.io/Glyd/savings.html](https://surya-koritala.github.io/Glyd/savings.html) — enter what you store and what you compress with today.
 
-Stored bytes scale with `1 / ratio`. Most analytics data today is compressed
-with Snappy or LZ4 (Parquet's default codec is Snappy). Moving it to Glyd
-`--max` cuts the bytes stored and moved by about a third; moving from zstd
-saves CPU on every read instead.
+Bytes stored, against zstd on the same data (measured; the sign is what
+matters):
 
-| You&nbsp;store&nbsp;today | Compressed&nbsp;with | ⚡&nbsp;**Glyd&nbsp;‑‑max** | Bytes&nbsp;saved | **Saved&nbsp;per&nbsp;year** ($21/TB‑month) |
-| ---: | :--- | ---: | ---: | ---: |
-| 100&nbsp;TB | Snappy (2.08) | 63.8&nbsp;TB | 36.2% | **$9,100** |
-| 1 PB | Snappy | 638 TB | 36.2% | **$91,000** |
-| 1 PB | LZ4 (2.10) | 646 TB | 35.4% | **$89,000** |
-| 10 PB | Snappy | 6.38 PB | 36.2% | **$912,000** |
-| 100 PB | Snappy | 63.8 PB | 36.2% | **$9.1 million** |
-| 1&nbsp;PB | zstd&nbsp;-3 (3.20) | 985&nbsp;TB | 1.5% | $3,800, plus **22% fewer decode CPU‑seconds** on every read |
+| Data | vs zstd -3 (the fast tier) | vs zstd -19 (the slow tier) |
+| :--- | ---: | ---: |
+| **Versions** of a dump, image or source tree (`--base`) | **−45 to −53%** vs zstd's fast patch; **−95 to −99%** vs the version alone | −5 to −21% (`--ultra`) |
+| **Telemetry, measurements** as CSV or JSON lines (`-r`) | **−60 to −71%** | **−33 to −52%** |
+| **Access logs** (`-r`) | **−55%** | **−35%** |
+| **SQL dumps** (`-r`) | **−41%** | **−30%** |
+| **JSON events** (API payloads with hashes) | **−22%** | −10% |
+| Whole mixed corpus (`-r`) | **−19%** | −10% |
+| Plain text, binaries, Parquet | ~0% | ~0% (the floor; nothing moves it) |
 
-Formula: `saved_per_year = stored_TB × (1 − old_ratio / 3.25) × price_per_TB_month × 12`.
-Ratios are Silesia, same run; your data will differ — measure it with
-`glyd -b yourfile` before believing any table, including this one.
-
-**At market scale:** object storage holds hundreds of exabytes (AWS said in
-March 2026 that S3 alone stores "hundreds of exabytes" across 500 trillion
-objects). At list price, **every 1% fewer bytes across 100 EB is about
-$250 million a year**; moving 100 EB from Snappy or LZ4 to Glyd `--max`
-(35% fewer bytes) is worth about **$8.8 billion a year**.
-
-Where the numbers come from and what they do not say: the byte savings
-apply when you are on Snappy/LZ4 today; against zstd -3 the saving is CPU,
-not bytes. Glyd `--max` compresses at 89–91% of zstd -3's speed. See
-[Known gaps](#known-gaps).
+A terabyte kept a year in S3 Standard, compressed once and read once a
+month (Graviton3, CPU billed at the on-demand price): `--max -r` **$61.7**
+against zstd -3's $73.3 and zstd -19's $105. At a hundred reads a month
+zstd -3 is cheaper by CPU (record-mode reads cost 2–3× its CPU); billed by
+wall time on a dedicated instance `--max -r` is the cheapest at every read
+rate ([report](docs/benchmarks/suite-2026-09-20.md)). At the scale of
+object storage (hundreds of exabytes) every 1% fewer bytes is about $250
+million a year at list price; the percentages above are what to multiply.
 
 ---
 
@@ -93,32 +117,31 @@ cargo install --git https://github.com/surya-koritala/Glyd
 ```
 
 ```bash
-glyd -9 data.parquet -o data.parquet.glyd     # --max: zstd-class ratio, faster reads
-glyd    telemetry.json -o telemetry.glyd      # default: LZ4-class ratio, 6.9 GB/s reads
-glyd -t assets.bin -o assets.glyd             # --turbo: 9 GB/s reads
-glyd -d data.parquet.glyd -o data.parquet     # decompress (level is in the stream)
-cat log | glyd -c | curl -X POST https://store/upload --data-binary @-
-glyd -b bigfile                               # benchmark all levels on your data
+glyd --max  events.json -o events.glyd            # the zstd -3 slot: fewer bytes, 3-7x faster reads
+glyd --max -r access.log -o access.glyd           # record mode: logs, dumps, CSV, JSON lines as columns
+glyd --ultra -r dump.sql -o dump.glyd             # fewest bytes; slow to write
+glyd --base dump-mon.sql dump-tue.sql -o tue.glyd # base mode: Tuesday's dump against Monday's
+glyd -d --base dump-mon.sql tue.glyd -o tue.sql   # decoding a base-mode file needs the base
+glyd    telemetry.bin -o telemetry.glyd           # default: LZ4-class ratio, 22 GB/s reads on 8 cores
+glyd -d events.glyd -o events.json                # the level and mode are in the stream
+glyd -b bigfile                                   # benchmark every level on your data
 ```
 
 Rust:
 
 ```rust
 let mut out = Vec::new();
-glyd::compress_into_max(&input, &mut out);          // or compress_into / compress_into_fast / compress_into_turbo
-let back = glyd::decompress(&out)?;                  // any level, any block mix
+glyd::compress_parallel_into_max(&input, &mut out);   // or compress_into_max, _ultra, compress_into (default)
+let back = glyd::decompress_parallel(&out)?;          // any level, any block mix
 
-// Dictionaries for small objects (JSON documents, records): train once
-// on samples of the data, keep the bytes, prepare on every process.
-let dict = glyd::Dict::train(&samples, 110 * 1024);   // samples: &[&[u8]], content budget
-std::fs::write("events.glyddict", dict.to_bytes())?;
-let dict = glyd::Dict::from_bytes(&std::fs::read("events.glyddict")?).unwrap();
-let mut out = Vec::new();
-glyd::compress_with_dict(&dict, &doc, &mut out);       // or compress_with_dict_ultra
+glyd::compress_records_into_max(&log, &mut out);      // record mode (-r); decompress() reads it
+glyd::compress_with_base(&old, &new, &mut out, false);// base mode; decompress_with_base(&old, &out)
+glyd::decompress_stream(&out, |batch| file.write_all(batch))?;   // batches of units, bounded memory
+
+// Dictionaries for small objects: train once on samples, keep the bytes.
+let dict = glyd::Dict::train(&samples, 110 * 1024);
+glyd::compress_with_dict(&dict, &doc, &mut out);      // or compress_with_dict_ultra
 let back = glyd::decompress_with_dict(&dict, &out)?;
-
-// std::io streaming (v6 levels):
-let mut w = glyd::GlydWriter::new(std::io::BufWriter::new(file));
 ```
 
 C / C++ / Go / Python (ctypes): link `libglyd` and include [`include/glyd.h`](include/glyd.h):
@@ -131,223 +154,46 @@ int64_t dlen = glyd_decompress_parallel(dst, clen, out, n);
 
 ---
 
-## Levels
+## Levels and modes
 
 | Level | Use it for | How it works |
 | :--- | :--- | :--- |
-| **‑‑turbo**&nbsp;(‑t) | Data read far more often than written, where read CPU is the cost: in-memory caches, game assets, KV-cache paging | v6 format, minimum match 10: fewest tokens, one 32-byte copy per token |
-| **default** | The LZ4/Snappy slot with better ratio and 1.6× LZ4's read speed | v6 format, LZAV-class match finder, minimum match 7 |
-| **‑‑fast**&nbsp;(‑1) | When you need LZ4-class compression speed | v6 format, LZ4-class finder, minimum match 5 |
-| **‑‑max**&nbsp;(‑9) | The zstd slot: fewer bytes than zstd -3, 30% faster reads | v7 format: 8-way interleaved Huffman literals + tANS-coded sequences, repeat offsets, 2 MB window, double-fast lazy parse |
-| **‑‑ultra**&nbsp;(‑19) | Write once, read many: cold storage, release assets, datasets. Fewest bytes; compresses at single-digit MB/s | v7 format on an optimal parse: binary-tree match finder, every position priced in the coder's own bits, cheapest path through the block ([design](docs/design/ultra-parse.md)) |
+| **‑‑turbo**&nbsp;(‑t) | Data read far more often than written: caches, assets, KV-cache paging | v6 format, minimum match 10: fewest tokens, one 32-byte copy per token |
+| **default** | The LZ4/Snappy slot with a better ratio and faster reads | v6 format, LZAV-class finder, minimum match 7 |
+| **‑‑fast**&nbsp;(‑1) | LZ4-class compression speed | v6 format, LZ4-class finder, minimum match 5 |
+| **‑‑max**&nbsp;(‑9) | The zstd -3 slot: fewer bytes, 3–7× faster reads on a server | v9 format: 8-way interleaved Huffman literals, tANS sequences with repeat offsets, a double-fast lazy parse, and a 128 MB long-distance matcher |
+| **‑‑ultra**&nbsp;(‑19) | Write once, read many: cold storage, datasets, release assets | v9 format on an optimal parse: binary-tree finder, every position priced in the coder's own bits ([design](docs/design/ultra-parse.md)) |
 
-All levels produce the same container; the decoder reads any mix. Blocks
-are 256 KB; the parallel paths cut the input into independent units
-(2 MB for the v6 levels, 8 MB for `--max`, 16 MB for `--ultra`: the first
-block of each carries `FLAG_CHAIN_RESET`) that compress and decode one per
-core and cost 0.5-0.7% of ratio against the sequential path; `-s` on the
-CLI takes the sequential path.
+| Mode | Use it for | How it works |
+| :--- | :--- | :--- |
+| **‑r** record mode | Logs, SQL dumps, CSV/TSV, JSON lines | Detects the shape, turns each field or key path into a typed stream (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those with the level in 32 MB units, rebuilds exactly ([design](docs/design/format-v7.md#record-mode-v040-typed-columns-before-the-level)) |
+| **‑‑base** base mode | Versions: nightly dumps, snapshots, images, source trees | Parses each 32 MB of the new version with the old one's matching region as history; the stream decodes with the same base ([design](docs/design/format-v7.md#base-mode-v050-a-version-compressed-against-the-last-one)) |
 
----
-
-## Benchmarks
-
-Every number below is from a single process that also runs the reference
-library, so a comparison cannot be met by run-to-run drift. Reproduce with
-the commands at the end of this section; cross-platform runs on AWS
-Graviton3 and Sapphire Rapids are in [`benchmarks/`](benchmarks/) with the
-script that produced them.
-
-### The field, one run (Silesia, Apple M1 Max, one core)
-
-| Codec | Ratio | Compress MB/s | **Decompress MB/s** | |
-| :--- | ---: | ---: | ---: | :--- |
-| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.254** | 277 | **1,733** | ✅ best ratio; 1.27× zstd&nbsp;-3 decode |
-| zstd&nbsp;-3 | 3.205 | 319 | 1,361 | |
-| zstd&nbsp;-1 | 2.894 | 535 | 1,493 | |
-| LZAV-hi | 2.803 | 91 | 3,185 | |
-| LZAV | 2.450 | 426 | 3,128 | |
-| zstd&nbsp;‑‑fast=1 | 2.438 | 614 | 2,153 | |
-| zstd&nbsp;‑‑fast=3 | 2.240 | 684 | 2,307 | |
-| ⚡&nbsp;**Glyd&nbsp;default** | **2.192** | 312 | **6,507** | ✅ 1.6× liblz4 decode, better ratio |
-| ⚡&nbsp;**Glyd&nbsp;‑‑fast** | **2.176** | 501 | **4,670** | ✅ 1.1× liblz4 decode, better ratio |
-| liblz4 | 2.101 | 610 | 4,108 | |
-| lz4_flex | 2.097 | 633 | 3,004 | |
-| snappy | 2.076 | 607 | 1,495 | |
-| zstd&nbsp;‑‑fast=5 | 2.057 | 746 | 2,484 | |
-| ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | 1.884 | 263 | **8,647** | ✅ fastest decode, 2.1× liblz4 |
-
-(`examples/field_survey.rs`. This run was taken with other work on the
-machine; the headline table above is from a quiet run of the paired
-harnesses, which is why its numbers are a few percent higher across the
-board — the ordering is the same.)
-
-<details>
-<summary><b>Default level vs liblz4, per file</b> (same run)</summary>
-
-| File | Ratio | ⚡ **Glyd MB/s** | liblz4 MB/s | Glyd advantage |
-| :--- | ---: | ---: | ---: | ---: |
-| dickens | 1.815 | 5,990 | 5,190 | +15% |
-| mozilla | 1.926 | 5,420 | 4,830 | +12% |
-| mr | 1.902 | 6,650 | 5,570 | +19% |
-| nci | 6.846 | 7,130 | 7,240 | −2% |
-| ooffice | 1.335 | 6,310 | 4,680 | +35% |
-| osdb | 2.294 | 6,270 | 5,110 | +23% |
-| reymont | 2.378 | 5,040 | 4,490 | +12% |
-| samba | 2.858 | 6,380 | 6,140 | +4% |
-| sao | 1.038 | 13,710 | 7,320 | +87% |
-| webster | 2.250 | 4,700 | 4,850 | −3% |
-| xml | 4.949 | 6,420 | 5,560 | +16% |
-| x-ray | 1.000 | 46,600 | 18,100 | +157% |
-
-(AMD Ryzen 9 7950X3D, AVX2 path. On the M1 Max NEON path Glyd wins 12 of 12.)
-
-</details>
-
-<details>
-<summary><b><code>--max</code> vs zstd -3, per file</b> (same run, M1 Max)</summary>
-
-| File | ⚡ **Glyd ratio** | zstd -3 ratio | ⚡ **Glyd MB/s** | zstd -3 MB/s |
-| :--- | ---: | ---: | ---: | ---: |
-| dickens | 2.848 | 2.782 | 1,367 | 1,220 |
-| mozilla | 2.801 | 2.810 | 1,734 | 1,316 |
-| mr | 2.827 | 2.811 | 1,519 | 1,320 |
-| nci | 11.735 | 11.840 | 3,696 | 2,746 |
-| ooffice | 1.999 | 1.968 | 1,403 | 1,035 |
-| osdb | 2.903 | 2.880 | 2,243 | 1,731 |
-| reymont | 3.506 | 3.420 | 1,764 | 1,445 |
-| samba | 4.471 | 4.360 | 2,480 | 2,039 |
-| sao | 1.326 | 1.312 | 1,901 | 889 |
-| webster | 3.538 | 3.427 | 1,640 | 1,456 |
-| xml | 8.386 | 8.414 | 3,194 | 2,526 |
-| x-ray | 1.465 | 1.393 | 1,157 | 866 |
-| **Total** | **3.254** | **3.204** | **1,891** | **1,487** |
-
-(Same run; `--max` wins ratio on 8 of 12 files and decode on 12 of 12.)
-
-</details>
-
-### Other machines (AWS, same script, same-run references)
-
-| Decompress&nbsp;MB/s | ⚡&nbsp;**Glyd&nbsp;default** | liblz4 | ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | ⚡&nbsp;**Glyd&nbsp;‑‑max** | zstd&nbsp;‑3 |
-| :--- | ---: | ---: | ---: | ---: | ---: |
-| Graviton3&nbsp;(c7g.2xlarge, NEON) | **3,880** | 3,180 | **5,230** | **1,200** | 928 |
-| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **4,410** | 3,760 | **5,100** | 1,170 | 1,270 |
-
-| Decompress&nbsp;MB/s | ⚡&nbsp;**Glyd&nbsp;‑‑ultra** | zstd&nbsp;‑16 | zstd&nbsp;‑19 |
-| :--- | ---: | ---: | ---: |
-| Graviton3&nbsp;(c7g.2xlarge, NEON) | **1,380** | 1,040 | 950 |
-| Sapphire&nbsp;Rapids (c7i.2xlarge, AVX2) | **1,335** | 1,362 | 1,180 |
-
-Ratios are identical across machines (the format is deterministic).
-Absolute speeds on shared cloud instances move by up to 20% between runs
-(three c7i runs put zstd -3 at 1,060, 1,110 and 1,270 MB/s); the pairings
-within one run are the comparison, and on Sapphire Rapids they say
-`--max` decodes at 0.9-1.06× zstd -3 and `--ultra` at 1.1-1.2× zstd -19,
-against 1.3× and 1.45× on Graviton3. Raw outputs and the launch script:
-[`benchmarks/`](benchmarks/).
-
-### Multi-core
-
-10 threads, independent 2 MB units, default level: **31,900 MB/s** over
-Silesia on the M1 Max (`examples/mc.rs`; Silesia's files are 6-50 MB, so
-most have fewer units than the machine has cores; 42,900 MB/s with 256 KB
-units, which cost 3% of ratio and were the default before v0.3.1). The
-AWS numbers in `benchmarks/` are from the 256 KB units.
-
-### Beyond Silesia
-
-`EXT_CORPUS=1 scripts/download_corpus.sh` adds real-world formats;
-`examples/v7_bench.rs` checks `--max` against zstd -3 file by file:
-
-| File | ⚡ **Glyd --max** | zstd -3 | |
-| :--- | ---: | ---: | :--- |
-| Linux kernel source tarball (64 MB) | 4.937 | 4.898 | +0.8% |
-| NASA HTTP server log (205 MB) | 9.789 | 9.782 | + |
-| GitHub Archive JSON events (912 MB) | 10.591 | 10.656 | −0.6% |
-| OpenStreetMap PBF | 1.000 | 1.000 | tie (already compressed) |
-| NYC taxi Parquet (50 MB) | 1.001 | 1.004 | tie (already compressed) |
-
-### Small objects (JSON events, one core)
-
-Objects cut from GitHub Archive events, 2,000 per size, each codec with
-its own 110 KB dictionary trained on 2,000 other objects (zstd's
-trainer for zstd, `Dict::train` for Glyd; zstd's output carries no
-checksum, Glyd's 4 bytes per object). Apple M1 Max, one core,
-`examples/small_objects.rs` and `examples/small_speed.rs`:
-
-| Object | zstd&nbsp;-3&nbsp;+&nbsp;dict | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | zstd&nbsp;-19&nbsp;+&nbsp;dict | ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;+&nbsp;Dict** |
-| ---: | ---: | ---: | ---: | ---: |
-| 1 KB | 4.96 | **4.75** | 5.47 | **5.25** |
-| 4 KB | 6.42 | **6.28** | 7.41 | **7.13** |
-| 16 KB | 7.66 | **7.65** | 8.95 | **8.84** |
-
-| Object | Codec | Compress | Decompress |
-| ---: | :--- | ---: | ---: |
-| 1 KB | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | 245&nbsp;MB/s | **920&nbsp;MB/s** |
-| 1 KB | zstd -3 + dict | 454&nbsp;MB/s | 1,117&nbsp;MB/s |
-| 4 KB | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | 321&nbsp;MB/s | **1,209&nbsp;MB/s** |
-| 4 KB | zstd -3 + dict | 588&nbsp;MB/s | 1,440&nbsp;MB/s |
-| 16 KB | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | 394&nbsp;MB/s | **1,674&nbsp;MB/s** |
-| 16 KB | zstd -3 + dict | 635&nbsp;MB/s | 1,890&nbsp;MB/s |
-
-On small objects zstd is ahead: 1-4% denser at `-3` and 1-4% at `-19`,
-1.6-1.9× faster to compress and 1.1-1.2× faster to decode. Without a
-dictionary Glyd `--max` is 6-12% less dense than zstd -3 on objects
-under 16 KB.
-
-### Reproduce
-
-```bash
-scripts/download_corpus.sh                                         # Silesia + enwik8
-RUSTFLAGS="-C target-cpu=native" cargo run --release --example quick3 -- label 3 0.3 -v   # v6 levels vs liblz4
-RUSTFLAGS="-C target-cpu=native" cargo run --release --example v7_bench                  # --max vs zstd -3 / -1
-RUSTFLAGS="-C target-cpu=native" cargo run --release --example ultra_bench               # --ultra vs zstd -16 / -19
-RUSTFLAGS="-C target-cpu=native" cargo run --release --example field_survey 3 0.3        # everything
-AWS_PROFILE=... scripts/bench_aws.sh main                          # Graviton3 + Sapphire Rapids, ~$1
-```
-
----
-
-## How it works
-
-The compressed block is split into homogeneous streams — tokens, offsets,
-lengths, literals — instead of one interleaved byte stream. That is what
-lets the decoder pre-decode 32 tokens per SIMD pass, check bounds once per
-chunk and run a copy-only loop, which an inline format such as LZ4's
-cannot. The `--max` level keeps the layout and adds 8-way interleaved
-entropy coding (Huffman literals, tANS sequences with repeat offsets), so
-the entropy decoders run as straight-line SIMD-friendly loops and the
-copies stay a separate pass.
-
-Design: [docs/design/format-v7.md](docs/design/format-v7.md). Every
-measurement, refuted idea and floor: [docs/engineering-notes.md](docs/engineering-notes.md)
-and [CHANGELOG-BENCH.md](CHANGELOG-BENCH.md). What comes next: [ROADMAP.md](ROADMAP.md).
-
-Safety: the decoder is fuzzed with a million random mutations per run
-into exact-size buffers with sentinel guards, on every level; it never
-allocates per call (a 1.5 MB thread-local scratch for `--max`), and every
-unsafe block carries its bound.
+All levels write one container; the decoder reads any mix. Blocks are
+256 KB; the parallel paths cut the input into units (one per core, up to
+128 MB) that compress and decode independently. The CLI decodes a batch of
+units at a time into one reused buffer, so its memory is a batch, not the
+file.
 
 ---
 
 ## Real data, real machines
 
-The verification and benchmark program (8.7 GB of logs, JSON, SQL
-dumps and Parquet; zstd -3, zstd -19 and LZ4 on the same AWS machines
-and thread counts; small objects with dictionaries; a real S3 round
-trip costed at list prices) and its results: [docs/benchmarks/](docs/benchmarks/README.md)
-and [docs/benchmarks/suite-2026-09-20.md](docs/benchmarks/suite-2026-09-20.md).
-The short version, Graviton3 and Sapphire Rapids: `--max` stores 2.8%
-less than zstd -3 over the corpus (22% less on JSON, 5% on logs,
-parity on SQL and Parquet), decodes 3-6x faster with 8 cores and 1.03x
-(Graviton3) / 0.80x (Sapphire Rapids) on one, and compresses at
-0.58-0.66x zstd -3's speed; `--ultra` equals zstd -19 (10% smaller on
-JSON); `--max -r` stores 19% less than zstd -3 and 2% less than
-zstd -19 at 540-675 MB/s on 8 cores, `--ultra -r` 10% less than
-zstd -19. A terabyte-year in S3 at one read a month costs within 2%
-either way for the plain levels; the record-mode rows are in the
-report.
+The verification and benchmark program: 8.7 GB of logs, JSON events,
+SQL dumps and Parquet; zstd -3, zstd -19 and LZ4 on the same AWS machines
+(Graviton3 c7g.2xlarge and Sapphire Rapids c7i.2xlarge) and thread counts;
+small objects with dictionaries trained on other days' data; a real S3
+round trip (compress, upload, download, decompress, sha256) costed at list
+prices. Method: [docs/benchmarks/README.md](docs/benchmarks/README.md);
+results with every table: [docs/benchmarks/suite-2026-09-20.md](docs/benchmarks/suite-2026-09-20.md);
+raw rows: [benchmarks/suite/](benchmarks/suite/).
+
+The short version: `--max` stores 2.8% less than zstd -3 over the corpus
+(22% less on JSON events), decodes 3–6× faster with 8 cores and 1.03×
+(Graviton3) / 0.80× (Sapphire Rapids) on one core, and compresses at
+0.58–0.66× zstd -3's speed. `--ultra` equals zstd -19 (10% smaller on
+JSON). `--max -r` stores 19% less than zstd -3 and 2% less than zstd -19
+at 540–675 MB/s on 8 cores; `--ultra -r` 10% less than zstd -19.
 
 ## Base mode: a version compressed against the last one
 
@@ -435,49 +281,198 @@ mostly a hash has nothing a column can model, and API events with
 hashes and free text (GitHub Archive) gain 1.6% from columns and stay
 plain.
 
+### Small objects
+
+Objects cut from GitHub Archive events, 2,000 per size, each codec with
+its own 110 KB dictionary trained on 2,000 other objects (zstd's
+trainer for zstd, `Dict::train` for Glyd; zstd's output carries no
+checksum, Glyd's 4 bytes per object). Apple M1 Max, one core,
+`examples/small_objects.rs` and `examples/small_speed.rs`:
+
+| Object | zstd&nbsp;-3&nbsp;+&nbsp;dict | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | zstd&nbsp;-19&nbsp;+&nbsp;dict | ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;+&nbsp;Dict** |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 KB | 4.96 | **4.75** | 5.47 | **5.25** |
+| 4 KB | 6.42 | **6.28** | 7.41 | **7.13** |
+| 16 KB | 7.66 | **7.65** | 8.95 | **8.84** |
+
+| Object | Codec | Compress | Decompress |
+| ---: | :--- | ---: | ---: |
+| 1 KB | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | 245&nbsp;MB/s | **920&nbsp;MB/s** |
+| 1 KB | zstd -3 + dict | 454&nbsp;MB/s | 1,117&nbsp;MB/s |
+| 4 KB | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | 321&nbsp;MB/s | **1,209&nbsp;MB/s** |
+| 4 KB | zstd -3 + dict | 588&nbsp;MB/s | 1,440&nbsp;MB/s |
+| 16 KB | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;+&nbsp;Dict** | 394&nbsp;MB/s | **1,674&nbsp;MB/s** |
+| 16 KB | zstd -3 + dict | 635&nbsp;MB/s | 1,890&nbsp;MB/s |
+
+On small objects zstd is ahead: 1-4% denser at `-3` and 1-4% at `-19`,
+1.6-1.9× faster to compress and 1.1-1.2× faster to decode. Without a
+dictionary Glyd `--max` is 6-12% less dense than zstd -3 on objects
+under 16 KB.
+
+On the AWS machines (dictionaries trained on another day's data, 110 KB):
+sizes within 1–3% of zstd's either way, zstd 1.7–2× faster to compress and
+1.4–1.7× faster to decompress per object. Without a dictionary a 1 KB log
+record compresses 2.5×; with one, 5.2× (zstd: 2.9× and 5.3×).
+
+### The classic corpus: Silesia, one run, one core (Apple M1 Max; v0.3.0 run)
+
+| Codec | Ratio | Compress MB/s | **Decompress MB/s** | |
+| :--- | ---: | ---: | ---: | :--- |
+| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.254** | 277 | **1,733** | ✅ best ratio; 1.27× zstd&nbsp;-3 decode |
+| zstd&nbsp;-3 | 3.205 | 319 | 1,361 | |
+| zstd&nbsp;-1 | 2.894 | 535 | 1,493 | |
+| LZAV-hi | 2.803 | 91 | 3,185 | |
+| LZAV | 2.450 | 426 | 3,128 | |
+| zstd&nbsp;‑‑fast=1 | 2.438 | 614 | 2,153 | |
+| zstd&nbsp;‑‑fast=3 | 2.240 | 684 | 2,307 | |
+| ⚡&nbsp;**Glyd&nbsp;default** | **2.192** | 312 | **6,507** | ✅ 1.6× liblz4 decode, better ratio |
+| ⚡&nbsp;**Glyd&nbsp;‑‑fast** | **2.176** | 501 | **4,670** | ✅ 1.1× liblz4 decode, better ratio |
+| liblz4 | 2.101 | 610 | 4,108 | |
+| lz4_flex | 2.097 | 633 | 3,004 | |
+| snappy | 2.076 | 607 | 1,495 | |
+| zstd&nbsp;‑‑fast=5 | 2.057 | 746 | 2,484 | |
+| ⚡&nbsp;**Glyd&nbsp;‑‑turbo** | 1.884 | 263 | **8,647** | ✅ fastest decode, 2.1× liblz4 |
+
+(`examples/field_survey.rs`, taken with other work on the machine, before
+the 128 MB matcher; the ordering has not changed. This release on the
+same machine and corpus: `--max` 3.302 at 244 MB/s and 1,856 MB/s
+decode, `--ultra` 3.959 at 3.2 MB/s and 1,910 MB/s decode, against
+zstd -3 3.205 / 335 / 1,453 and zstd -19 4.006 / 3.7 / 1,589 in the
+same runs, `examples/v7_bench.rs` and `examples/ultra_bench.rs`.)
+
+<details>
+<summary><b>Default level vs liblz4, per file</b> (same run)</summary>
+
+| File | Ratio | ⚡ **Glyd MB/s** | liblz4 MB/s | Glyd advantage |
+| :--- | ---: | ---: | ---: | ---: |
+| dickens | 1.815 | 5,990 | 5,190 | +15% |
+| mozilla | 1.926 | 5,420 | 4,830 | +12% |
+| mr | 1.902 | 6,650 | 5,570 | +19% |
+| nci | 6.846 | 7,130 | 7,240 | −2% |
+| ooffice | 1.335 | 6,310 | 4,680 | +35% |
+| osdb | 2.294 | 6,270 | 5,110 | +23% |
+| reymont | 2.378 | 5,040 | 4,490 | +12% |
+| samba | 2.858 | 6,380 | 6,140 | +4% |
+| sao | 1.038 | 13,710 | 7,320 | +87% |
+| webster | 2.250 | 4,700 | 4,850 | −3% |
+| xml | 4.949 | 6,420 | 5,560 | +16% |
+| x-ray | 1.000 | 46,600 | 18,100 | +157% |
+
+(AMD Ryzen 9 7950X3D, AVX2 path. On the M1 Max NEON path Glyd wins 12 of 12.)
+
+</details>
+
+<details>
+<summary><b><code>--max</code> vs zstd -3, per file</b> (same run, M1 Max)</summary>
+
+| File | ⚡ **Glyd ratio** | zstd -3 ratio | ⚡ **Glyd MB/s** | zstd -3 MB/s |
+| :--- | ---: | ---: | ---: | ---: |
+| dickens | 2.848 | 2.782 | 1,367 | 1,220 |
+| mozilla | 2.801 | 2.810 | 1,734 | 1,316 |
+| mr | 2.827 | 2.811 | 1,519 | 1,320 |
+| nci | 11.735 | 11.840 | 3,696 | 2,746 |
+| ooffice | 1.999 | 1.968 | 1,403 | 1,035 |
+| osdb | 2.903 | 2.880 | 2,243 | 1,731 |
+| reymont | 3.506 | 3.420 | 1,764 | 1,445 |
+| samba | 4.471 | 4.360 | 2,480 | 2,039 |
+| sao | 1.326 | 1.312 | 1,901 | 889 |
+| webster | 3.538 | 3.427 | 1,640 | 1,456 |
+| xml | 8.386 | 8.414 | 3,194 | 2,526 |
+| x-ray | 1.465 | 1.393 | 1,157 | 866 |
+| **Total** | **3.254** | **3.204** | **1,891** | **1,487** |
+
+(Same run; `--max` wins ratio on 8 of 12 files and decode on 12 of 12.)
+
+</details>
+
+### Reproduce
+
+```bash
+scripts/download_bench_corpus.sh                    # the 8.7 GB real-data corpus (+ training data)
+cargo run --release --example bench_suite -- --large --threads 8 --repeats 3   # every codec, every file, decodes checked
+cargo run --release --example bench_suite -- --small --threads 1               # small objects with dictionaries
+scripts/download_ext_corpus.sh && cargo run --release --example bench_suite -- --large --dir corpus/ext2   # telemetry
+scripts/download_versions.sh && scripts/bench_versions.sh corpus/versions/linux-6.10.tar corpus/versions/linux-6.10.1.tar   # base mode vs zstd --patch-from
+scripts/verify_roundtrip.sh yourfile                # every level and mode through the CLI, corrupted copies
+scripts/download_corpus.sh && cargo run --release --example v7_bench            # Silesia, --max vs zstd -3
+AWS_PROFILE=... scripts/bench_aws_suite.sh <bucket> main   # the whole program on Graviton3 + Sapphire Rapids, ~$1.50
+```
+
+---
+
+## How it works
+
+The compressed block is split into homogeneous streams — tokens, offsets,
+lengths, literals — instead of one interleaved byte stream, so the decoder
+pre-decodes 32 tokens per SIMD pass, checks bounds once per chunk and runs
+a copy-only loop. `--max` and `--ultra` keep the layout and add 8-way
+interleaved entropy coding (Huffman literals, tANS sequences with repeat
+offsets), so the entropy decoders run as straight-line SIMD-friendly loops
+and the copies stay a separate pass. A long-distance matcher indexes every
+16th position of a unit with a content-defined anchor and hands the parse
+repeats up to 128 MB back. Record mode reorders record-shaped text into
+one typed stream per field before the level; base mode lays a region of
+the old version before each unit as history and lets the decoder read it
+in place.
+
+Design: [docs/design/format-v7.md](docs/design/format-v7.md) (formats v7–v9,
+dictionaries, record mode, the matcher, base mode) and
+[docs/design/ultra-parse.md](docs/design/ultra-parse.md). Every
+measurement, refuted idea and floor: [docs/engineering-notes.md](docs/engineering-notes.md),
+[CHANGELOG-BENCH.md](CHANGELOG-BENCH.md) and
+[experiments/structure/README.md](experiments/structure/README.md). What
+comes next: [ROADMAP.md](ROADMAP.md).
+
+Safety: the decoder is fuzzed with a million random mutations per run into
+exact-size buffers with sentinel guards, on every level; corrupted record
+and base envelopes are rejected or decode to a checked length, never a
+panic or an unbounded allocation; every unsafe block carries its bound.
+
+---
+
 ## Known gaps
 
-- `--max` compresses at 0.58-0.66x zstd -3's speed on server cores
-  (Graviton3, Sapphire Rapids; 0.65-0.78x before the matcher): its
-  2 MB of finder tables miss a 1 MB L2, and the long-distance pass
-  takes another 15-37% where it stays on (text, logs, JSON: 3-16%
-  fewer bytes for it; `zstd -3 --long=27` pays 17-60% for the same
-  window). Record mode's transform halves the write speed again
-  (200-400 MB/s per core).
-- `--max` decodes 1.3× zstd -3, not the 2× the design aimed at.
-- On the extended corpus `--max` beats zstd -3 on 3 of 5 files; it loses
-  0.6% on very repetitive JSON.
-- Small objects with a dictionary: zstd is 1-4% denser and 1.6-1.9×
-  faster to compress (table above).
+- `--max` compresses at 0.58–0.66× zstd -3's speed on server cores: its
+  2 MB of finder tables miss a 1 MB L2, and the long-distance pass costs
+  15–37% where it stays on. Record mode's transform halves the write
+  speed again (200–400 MB/s per core).
+- Reads in record mode spend 2–3× zstd's CPU rebuilding the columns
+  (24–35 ns per value), which makes zstd -3 the cheaper choice at a
+  hundred CPU-billed reads a month; the CLI also checksums every block
+  and decodes in parallel, 1.3× zstd's CPU per byte on Graviton3, 2× on
+  Sapphire Rapids for the plain levels.
+- Base mode matches content that stayed within 32 MB of its old position;
+  what moved farther is compressed plainly. `--ultra --base` re-indexes
+  each unit's base region and runs at 1–4 MB/s. The encoder holds the old
+  and new versions plus 128 MB per thread.
+- On x86 (Sapphire Rapids) `--max` decodes at 0.80× zstd -3 on one core,
+  against 1.03× on Graviton3: x86-64's 16 general registers spill the
+  8-stream entropy loops.
+- Small objects with a dictionary: sizes tie, zstd is 1.4–2× faster per
+  object. Record mode works on files, not on single small objects.
+- JSON API events and crawl indexes are 20–65% hashes and random ids once
+  compressed; no column model moves them. Parquet is zstd inside already.
+- `--ultra` is 1.2% less dense than zstd -19 on Silesia (3.96 vs 4.01);
+  on the real-data corpus the two are equal. zstd 1.5.7's `--max` level
+  is denser still, at 72 minutes per gigabyte.
 - `GlydReader`/`GlydWriter` (std::io streaming) carry v6 levels only.
-- On x86 (Sapphire Rapids) `--max` decodes at 0.80x zstd -3 on the real-data
-  corpus (0.9-1.06x on Silesia), not the 1.03-1.3x it reaches on ARM:
-  x86-64's 16 general registers spill the 8-stream entropy loops that
-  ARM's 31 keep in registers, and the 8 MB window's far copies miss its
-  smaller caches.
-- The CLI spends more CPU per decoded byte than zstd's (a checksum per
-  block, a whole-file buffer, the parallel decode's threads): 1.3x on
-  Graviton3, 2x on Sapphire Rapids over the corpus.
-- `--ultra` is 1.2% less dense than zstd -19 on Silesia (3.96 vs
-  4.01); the gap sits on structured data (mozilla, xml, samba 3-4%),
-  text and binaries are within 1-2%. On the real-data corpus the two
-  are equal.
 
 ---
 
 ## Releases and versioning
 
-Current release: **v0.4.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.5.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
-block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7 and v8 are read); every release
-decodes every earlier format, and a format change always gets a new
-format number, never a silent reinterpretation. Tags are `vMAJOR.MINOR.PATCH`;
-each tag ships with release notes and the benchmark tables measured at
-that commit.
+block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
+and v8 are read); record and base envelopes carry their own magic. Every
+release decodes every earlier format (`tests/format_compat.rs` holds the
+output of each), and a format change always gets a new format number,
+never a silent reinterpretation. Tags are `vMAJOR.MINOR.PATCH`; each tag
+ships with release notes and the benchmark tables measured at that commit.
 
 Contributing: open an issue with the measured number for anything that
-touches speed or ratio (`examples/quick3.rs`, `examples/v7_bench.rs` and
-`examples/field_survey.rs` all print same-run comparisons); pull requests
+touches speed or ratio (`examples/bench_suite.rs`, `examples/v7_bench.rs`
+and `scripts/bench_versions.sh` print same-run comparisons); pull requests
 run the full suite including the 1M-mutation fuzz in CI.
 
 ---

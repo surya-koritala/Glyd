@@ -1,68 +1,53 @@
 # Roadmap
 
-Every item has a measured gate, taken in the same run as the reference
-codec, on the corpus and machine named. Nothing ships on a number that
-was not reproduced.
+Every item has a measured gate, taken against the reference codec on the
+same machine and thread count, on named public data. Nothing ships on a
+number that was not reproduced.
 
-## Where the levels stand (Silesia, one core, Apple M1 Max)
+## Where it stands (v0.5.0, 2026-09-20)
 
-| Level | Ratio | Compress MB/s | Decompress MB/s | Reference (same run) |
-| :--- | ---: | ---: | ---: | :--- |
-| turbo | 1.88 | 280 | 9,200 | liblz4 2.10 / 660 / 4,400 |
-| default | 2.19 | 340 | 6,900 | liblz4 |
-| max | 3.25 | 310 | 1,890 | zstd -3 3.20 / 340 / 1,490 |
-| ultra | 3.93 | 3.8 | 2,150 | zstd -16 3.83 / 8.0 / 1,790; zstd -19 4.01 / 4.0 / 1,640 |
+The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
+([report](docs/benchmarks/suite-2026-09-20.md)): `--max` 3.96 (zstd -3
+3.85) at 0.61× its write speed and 6× its read speed; `--ultra` 4.66
+(zstd -19 4.66); `--max -r` 4.75 at 675 MB/s; `--ultra -r` 5.21.
+Telemetry with `-r`: 2.5–3.5× fewer bytes than zstd -3. Versions with
+`--base`: 1.1–2.1× fewer bytes than `zstd -3 --patch-from` at 2–3.5× its
+speed; `--ultra --base` 5–21% fewer than zstd -19's patch. A
+terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
 
-Measured floors that bound further tuning of these levels are recorded in
-`CHANGELOG-BENCH.md` and `docs/design/ultra-parse.md`: the v6 copy loop
-and the v7 pass-1 walk are at their instruction floors, the entropy coders
-within 20% of their symbol-rate floors, and the ultra parse's finder depth
-and cutoffs are past their knees. Format v8 (v0.3.0) took the window to
-8 MB and the per-block overhead to 421 bytes; smaller blocks lose more
-overhead than they gain in adaptivity (measured: 128 KB blocks -0.1%,
-64 KB -0.9%).
+Measured floors, not to be retried: JSON API events and crawl indexes
+are 20–65% hashes and random ids once compressed (typed columns gain
+0.1%); Parquet is zstd inside; generic text and binaries sit on the same
+entropy floor for every codec (zstd -19, xz, Glyd `--ultra` within 2%).
+Details: [experiments/structure/README.md](experiments/structure/README.md).
 
-## Next: move the needle, not the decimals
+## Next, in order of what moves the bill
 
-1. **The last 2% to zstd -19.** It sits on structured data (mozilla,
-   xml, samba, nci: 3-4% behind; text and binaries within 1-2%). What
-   remains per block is ~420 bytes of framing and tables (3% of an nci
-   block), and modeling the parse cannot see: rep-code semantics with a
-   literal-length-zero context (zstd's), literal tables by context class.
-   Gate: `--ultra` ratio >= zstd -19 on Silesia, decode unchanged.
+1. **Record-mode reads.** The column rebuild runs at 24–35 ns per value
+   and makes `-r` reads cost 2–3× zstd's CPU, which is what decides the
+   bill at high read rates. Reserved-capacity writes, a digit-pair
+   integer formatter, the dictionary decoder taking its rank without a
+   second search, an unchecked varint fast path. Gate: rebuild at
+   1.5–2 GB/s per core; `--max -r` the cheapest S3 row at a hundred
+   CPU-billed reads a month.
+2. **Base mode, the rest of the leap.** A base index built once and
+   shared by the units, so `--ultra --base` runs at the plain ultra
+   speed instead of 1–4 MB/s; a coarse map of the base so content that
+   moved farther than 32 MB is still matched; chains of versions with a
+   measured answer to how long a chain before re-basing. Gate: kernel
+   pair under zstd -19's patch size at `--max` speed.
+3. **Write speed of `--max`** (0.58–0.66× zstd -3 on one server core):
+   the finder's cache footprint and the matcher pass. Gate: 0.8× zstd -3
+   with the corpus ratio kept.
+4. **Small objects**: a single-pass decoder for compact blocks and a
+   cheaper per-object encoder (zstd is 1.4–2× faster per object); a
+   dictionary that carries a record schema, so `-r` ratios reach
+   one-record objects. Gate: within 1.2× of zstd per object.
+5. **The x86-64 decoder** (0.80× zstd -3 on one Sapphire Rapids core
+   against 1.03× on Graviton3). Gate: 1.0× in the published run.
+6. **Streaming for v9** in `GlydReader`/`GlydWriter` (v6 levels only
+   today); the CLI already streams batches of units.
 
-2. **x86-64 parity for the max level's decoder.** 0.9-1.06× zstd -3 on
-   Sapphire Rapids against 1.3× on ARM; the remaining cost is instruction
-   count in the 8-stream loops (~150 per sequence; ARM does it in two
-   thirds) and, since the 8 MB window, far copies missing the 2 MB L2.
-   Hand-scheduled BMI2 loops for the tANS batch and the walk; copies
-   that overlap the next source's miss. Gate: >= 1.2× zstd -3 in the
-   published run.
-
-3. **Compression speed of `--max`.** 0.9× zstd -3 on ARM, 0.7× on x86.
-   The finder probe loop is at liblz4's efficiency; what is left is the
-   entropy stage (histograms, table builds, two-pass literal decision).
-   Gate: >= zstd -3's compression speed in the same run.
-
-4. **Modeling the decoder can afford.** Literal tables by context
-   class and larger tANS tables, each fractions of a percent; the finer
-   length buckets landed in v8 (worth 1% on nci, a wash on text).
-
-5. **Dictionaries, prepared.** A prepared-dictionary object (pre-seeded
-   tables, pre-built entropy tables through the existing reuse flags) for
-   small objects, where most stored objects live.
-
-6. **Streaming for v7.** `GlydReader`/`GlydWriter` carry v6 blocks only.
-
-## Known gaps, stated
-
-- `--max` compresses at 89-91% of zstd -3's speed on ARM, 70% on x86.
-- `--max` decodes 1.3x zstd -3 on ARM and 0.9-1.06x on x86, not the 2x the
-  design aimed at; the remaining cost is per-sequence and inherent to
-  the sequence format.
-- `--ultra` is 2% less dense than zstd -19 (same 8 MB window); it
-  decodes 1.3x faster than zstd -19's output.
-- Extended corpus: `--max` beats zstd -3 on 3 of 5 files; loses 0.6% on
-  JSON event logs and ties at the incompressible floor on Parquet.
-- x86 vs ARM bit-identical output for `--max` and `--ultra` is not yet
-  verified.
+Later, if the CPU is acceptable where it applies: context-mixing literal
+models for the free text inside logs and JSON (the 30% of a compressed
+GitHub event that is prose), at 10–50× the CPU for 6–9%.

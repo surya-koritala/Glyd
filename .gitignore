@@ -10,3 +10,4 @@
 .v7-fuzz-status
 /field_survey_partial.csv
 quick3_log.csv
+benchmarks/suite/*/DONE

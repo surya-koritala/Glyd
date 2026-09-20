@@ -9,7 +9,7 @@ directory per machine, with the log of the run; the tables in
 
 ## 1. Correctness
 
-- `cargo test --release`: 95 tests, among them round trips of every
+- `cargo test --release`: 98 tests, among them round trips of every
   level through the container, exact-size destination buffers,
   mutation fuzzing of every decoder (`tests/fuzz_safety.rs`: a million
   mutations per run into sentinel-guarded buffers; `tests/v7_fuzz.rs`

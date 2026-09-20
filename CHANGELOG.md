@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.5.0 — 2026-09-20
 
 ### Base mode
 - `glyd --base old new` / `compress_with_base`: a new version of an
