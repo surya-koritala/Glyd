@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glyd — compression that moves the storage bill</title>
+<meta name="description" content="Glyd v0.4.0: record mode turns logs, dumps, CSV and JSON lines into typed columns; a 128 MB matcher; measured against zstd and LZ4 on real data and a real S3 workflow.">
+<style>
+  :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; --hl:#eef3ff; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --line:#333; --accent:#6ea0ff; --hl:#1b2233; } }
+  body { font: 16px/1.55 -apple-system, system-ui, sans-serif; color:var(--fg); background:var(--bg); margin:0; padding:24px 16px; }
+  main { max-width:860px; margin:0 auto; }
+  h1 { font-size:1.9rem; margin:0 0 .25rem; }
+  h2 { font-size:1.25rem; margin:2rem 0 .5rem; }
+  p.sub { color:var(--muted); margin:0 0 1rem; font-size:1.05rem; }
+  nav a { margin-right:14px; }
+  a { color:var(--accent); }
+  table { border-collapse:collapse; width:100%; margin:12px 0; font-size:.95rem; }
+  td, th { text-align:right; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td:first-child, th:first-child { text-align:left; white-space:normal; min-width:15em; }
+  tr.g td { background:var(--hl); font-weight:600; }
+  .wrap { overflow-x:auto; }
+  small, .muted { color:var(--muted); }
+  code { font-size:.95em; }
+  ul { padding-left:1.2rem; }
+  .cta { display:inline-block; margin:8px 12px 8px 0; padding:8px 14px; border:1px solid var(--accent); border-radius:8px; text-decoration:none; }
+</style>
+</head>
+<body>
+<main>
+  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.4.0">v0.4.0 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-20.md">Benchmark report</a><a href="savings.html">Savings calculator</a></nav>
+  <h1>Glyd</h1>
+  <p class="sub">A compression library and CLI (Rust, C ABI) for the data that fills object storage: logs, database exports, telemetry, JSON. v0.4.0, September 2026. Every number below is measured on public data, every decode compared byte for byte with its input, and reproducible from the repository.</p>
+
+  <a class="cta" href="savings.html">What would it save you?</a>
+  <a class="cta" href="https://github.com/surya-koritala/Glyd#quick-start">Quick start</a>
+
+  <h2>Record mode: the data's own structure, not just its bytes</h2>
+  <p>Byte-level matching (zstd, LZ4, Glyd's own levels) is a plateau: on real data zstd -19, xz and Glyd <code>--ultra</code> land within a few percent of each other. The redundancy of a log, a dump or a telemetry export sits in the same field of every record. <code>glyd -r</code> detects delimited lines, SQL dumps and JSON lines, turns them into one typed stream per field (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those, and rebuilds the bytes exactly. Anything else is left as it is.</p>
+
+  <div class="wrap"><table>
+    <tr><th>Telemetry, 128 MB slices (ratio, higher is smaller)</th><th>LZ4</th><th>zstd -3</th><th>zstd -19</th><th>Glyd --max -r</th><th>Glyd --ultra -r</th></tr>
+    <tr class="g"><td>Alibaba cluster machine usage, CSV</td><td>2.8</td><td>4.5</td><td>6.9</td><td>12.6</td><td>13.7</td></tr>
+    <tr class="g"><td>the same rows as JSON lines</td><td>8.3</td><td>15.7</td><td>28.7</td><td>54.6</td><td>58.9</td></tr>
+    <tr class="g"><td>NOAA daily weather, CSV</td><td>3.8</td><td>7.0</td><td>12.0</td><td>19.6</td><td>23.1</td></tr>
+    <tr class="g"><td>the same rows as JSON lines</td><td>10.5</td><td>18.7</td><td>31.6</td><td>47.0</td><td>58.0</td></tr>
+    <tr class="g"><td>NYC taxi trips, CSV export</td><td>3.3</td><td>5.6</td><td>8.4</td><td>8.9</td><td>9.4</td></tr>
+  </table></div>
+  <p class="muted">2.5–3.5× fewer bytes than the fast tier (LZ4, zstd -3), 1.5–2× fewer than zstd -19, written at 340–690 MB/s on 10 cores. Sources and the script that fetches them: <code>scripts/download_ext_corpus.sh</code>.</p>
+
+  <h2>The 8.7 GB corpus on AWS (Graviton3 and Sapphire Rapids, 8 threads)</h2>
+  <div class="wrap"><table>
+    <tr><th>Data</th><th>Glyd --max</th><th>Glyd --max -r</th><th>zstd -3</th><th>Glyd --ultra</th><th>Glyd --ultra -r</th><th>zstd -19</th></tr>
+    <tr><td>Whole corpus</td><td>3.96</td><td><b>4.75</b></td><td>3.85</td><td>4.66</td><td><b>5.21</b></td><td>4.66</td></tr>
+    <tr><td>JSON events (2.6 GB)</td><td><b>13.5</b></td><td>13.5</td><td>10.5</td><td><b>16.7</b></td><td>16.7</td><td>15.1</td></tr>
+    <tr><td>Access and pageview logs (1.3 GB)</td><td>5.17</td><td><b>6.32</b></td><td>4.89</td><td>6.63</td><td><b>7.47</b></td><td>6.83</td></tr>
+    <tr><td>SQL dumps (3.9 GB)</td><td>4.96</td><td><b>8.38</b></td><td>4.97</td><td>6.98</td><td><b>10.1</b></td><td>7.10</td></tr>
+    <tr><td>Parquet (1.0 GB, already compressed)</td><td>1.01</td><td>1.01</td><td>1.01</td><td>1.02</td><td>1.02</td><td>1.02</td></tr>
+    <tr><td>Compress MB/s, Graviton3</td><td>1,196</td><td>675</td><td>1,947</td><td>14</td><td>17</td><td>13</td></tr>
+    <tr><td>Decompress MB/s, Graviton3</td><td><b>8,840</b></td><td><b>3,831</b></td><td>1,412</td><td><b>9,551</b></td><td><b>3,890</b></td><td>1,280</td></tr>
+  </table></div>
+  <p class="muted"><code>--max -r</code> stores 19% less than zstd -3 and 2% less than zstd -19 while writing 50× faster than zstd -19; Glyd's output decodes in parallel, so with 8 cores it reads 3–7× faster than a zstd frame. JSON events are not record-shaped (their bytes are hashes, ids and free text); the 128 MB long-distance matcher in <code>--max</code> and <code>--ultra</code> is what wins there.</p>
+
+  <h2>A terabyte in S3 for a year</h2>
+  <p>Compressed once by the CLI, read back once a month in the region, S3 Standard at list price, instance CPU seconds at the on-demand price (Graviton3):</p>
+  <div class="wrap"><table>
+    <tr><th>Codec</th><th>Stored</th><th>Year 1, 1 read/month</th><th>10 reads/month</th><th>100 reads/month</th></tr>
+    <tr><td>Raw</td><td>1.000 TB</td><td>$276</td><td>$276</td><td>$278</td></tr>
+    <tr class="g"><td>Glyd --max -r</td><td>0.210 TB</td><td>$61.7</td><td>$85.3</td><td>$321</td></tr>
+    <tr><td>Glyd --max</td><td>0.252 TB</td><td>$71.9</td><td>$86.3</td><td>$231</td></tr>
+    <tr><td>zstd -3</td><td>0.260 TB</td><td>$73.3</td><td>$84.1</td><td>$192</td></tr>
+    <tr class="g"><td>Glyd --ultra -r</td><td>0.192 TB</td><td>$88.1</td><td>$111</td><td>$336</td></tr>
+    <tr><td>zstd -19</td><td>0.216 TB</td><td>$105</td><td>$118</td><td>$245</td></tr>
+  </table></div>
+  <p class="muted">Where zstd still wins, plainly: a hundred CPU-billed reads a month (record-mode reads spend 2–3× zstd's CPU rebuilding the columns; this is the next thing being worked on), single-core compression speed (<code>--max</code> at 0.58–0.66× zstd -3), small objects with dictionaries (1–3% larger, 1.4–2× slower per object), and data made of hashes.</p>
+
+  <h2>How the numbers are made</h2>
+  <ul>
+    <li><b>Correctness first</b>: 95 tests, a million-mutation fuzz, files from every earlier release decoded unchanged, and <code>scripts/verify_roundtrip.sh</code> through the CLI on both machines with corrupted copies rejected or decoded exactly.</li>
+    <li><b>Fair comparison</b>: zstd -3, zstd -19 and LZ4 on the same machines and thread counts, each on its fastest API, buffers kept; compressed bytes include every codec's own framing.</li>
+    <li><b>A real workflow</b>: compress, upload to S3, download, decompress, sha256 every file, at list prices.</li>
+    <li><b>The floors are stated</b>: JSON API events are 20% hashes, 10% random ids and 30% free text once compressed; Parquet is already zstd inside. Neither moves.</li>
+  </ul>
+  <p><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-20.md">Full report with every table</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/design/format-v7.md">Design notes</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/CHANGELOG.md">Changelog</a></p>
+  <p><small>Business Source License 1.1. Contact: suryakoritala1324@gmail.com.</small></p>
+</main>
+</body>
+</html>
