@@ -74,7 +74,7 @@ right side of the trade; for data written constantly and rarely read,
 zstd -3 or LZ4 still win on write cost.
 
 - 🗂️ **Record mode (`-r`)**: logs, SQL dumps, CSV and JSON lines as typed columns; logs of varying shape as templates plus typed variables. Telemetry stores 2.5–3.5× less than zstd -3 and 1.5–2× less than zstd -19; application and system logs 1.4–3.3× less than zstd -3 and 1.1–2.1× less than zstd -19; the whole corpus 19% less than zstd -3.
-- 🔁 **Base mode (`--base`)**: a new version against the old one. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 2–3.5× its speed.
+- 🔁 **Base mode (`--base`)**: a new version against the old one, its content found wherever it moved. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 1.8–3× its speed; 15 kernel releases in 228 MB instead of 3 GB.
 - 🔭 **128 MB long-distance matcher** in `--max` and `--ultra`: JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
 - 🚀 **Fastest reads at every ratio**: 8-way interleaved entropy coding and copy-only loops, units that decode one per core.
 - 🛡️ **Verified**: 98 tests, a million-mutation fuzz per run, every earlier format decoded unchanged, the CLI round-tripped with corrupted copies on both AWS machines.
@@ -169,7 +169,7 @@ int64_t dlen = glyd_decompress_parallel(dst, clen, out, n);
 | Mode | Use it for | How it works |
 | :--- | :--- | :--- |
 | **‑r** record mode | Logs of any shape, SQL dumps, CSV/TSV, JSON lines | Detects the shape (delimited lines, dumps, JSON lines, or templates for logs of varying shape), turns each field, key path or template slot into a typed stream (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those with the level in 32 MB units, rebuilds exactly ([design](docs/design/format-v7.md#record-mode-v040-typed-columns-before-the-level)) |
-| **‑‑base** base mode | Versions: nightly dumps, snapshots, images, source trees | Parses each 32 MB of the new version with the old one's matching region as history; the stream decodes with the same base ([design](docs/design/format-v7.md#base-mode-v050-a-version-compressed-against-the-last-one)) |
+| **‑‑base** base mode | Versions: nightly dumps, snapshots, images, source trees | Parses each 32 MB of the new version with the region of the old one that holds its content (found through a coarse map of the base) as history; the stream decodes with the same base ([design](docs/design/format-v7.md#base-mode-v050-a-version-compressed-against-the-last-one)) |
 
 All levels write one container; the decoder reads any mix. Blocks are
 256 KB; the parallel paths cut the input into units (one per core, up to
@@ -203,8 +203,8 @@ Most stored bytes are versions: nightly dumps, snapshots, images,
 source trees, artifacts rebuilt with small changes. A new version
 compressed alone costs what the first did; compressed against the old
 one it costs the change. `glyd --base old new` parses every 32 MB of
-the new version with the old one's corresponding region as history
-(the long-distance matcher reaches all of it) and writes a stream that
+the new version with the region of the old one that holds its content
+as history (the long-distance matcher reaches all of it) and writes a stream that
 decodes with the same base: `glyd -d --base old new.glyd`. Measured on
 consecutive versions of real objects against zstd 1.5.7's
 `--patch-from`, the same machine and thread count, every rebuild
@@ -213,19 +213,40 @@ byte-exact (`scripts/bench_versions.sh`, data from
 
 | Old → new | zstd -3 --patch-from | zstd -19 --patch-from | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑‑base** | **Glyd&nbsp;‑‑ultra&nbsp;‑‑base** |
 | :--- | ---: | ---: | ---: | ---: |
-| Wikipedia `page` dumps a month apart (108 MB) | 3.84 MB · 409 MB/s | 1.30 MB · 2 MB/s | **1.79 MB · 863 MB/s** | **1.23 MB** · 2 MB/s |
-| Ubuntu 24.04 cloud root filesystem, builds 16 days apart (1.1 GB) | 8.82 MB · 654 MB/s | 5.61 MB · 39 MB/s | **5.31 MB · 2,018 MB/s** | **4.59 MB** · 4 MB/s |
-| Linux 6.10 → 6.10.1 source tar (1.5 GB) | 3.26 MB · 560 MB/s | 2.58 MB · 30 MB/s | **3.04 MB · 1,980 MB/s** | **2.04 MB** · 1 MB/s |
+| Wikipedia `page` dumps a month apart (108 MB) | 3.84 MB · 409 MB/s | 1.30 MB · 2 MB/s | **1.79 MB · 720 MB/s** | **1.23 MB** · 6 MB/s |
+| Ubuntu 24.04 cloud root filesystem, builds 16 days apart (1.1 GB) | 8.82 MB · 654 MB/s | 5.61 MB · 39 MB/s | **5.33 MB · 1,590 MB/s** | **4.60 MB** · 11 MB/s |
+| Linux 6.10 → 6.10.1 source tar (1.5 GB) | 3.26 MB · 560 MB/s | 2.58 MB · 30 MB/s | **3.03 MB · 1,700 MB/s** | **2.04 MB** · 3 MB/s |
 
 Compressed alone with `--max` those versions are 33, 287 and 200 MB.
-`--max --base` stores 1.1–2.1× less than zstd's fast patch at 2–3.5×
-its speed, and on the image pair less than zstd's slow patch at 50×
+`--max --base` stores 1.1–2.1× less than zstd's fast patch at 1.8–3×
+its speed, and on the image pair less than zstd's slow patch at 40×
 its speed; `--ultra --base` stores 5–21% less than zstd -19's patch on
-every pair but runs at 1–4 MB/s against its 2–39 (it indexes each
-unit's base region anew; a shared index is the fix). Reads run at
-6–10 GB/s. Chunk-level dedup, the
-backup approach, gains 1–4× on the same pairs
-([experiments/structure/README.md](experiments/structure/README.md)).
+every pair at the plain `--ultra` speed, which is 3–10× slower than
+zstd -19's patch on the large pairs. Reads run at 6–10 GB/s. Content
+is found wherever it moved: each unit's region of the base is chosen
+from a coarse map of the base (one anchor per KB), so a version with
+48 MB inserted before the kernel tree still costs 18.4 MB (zstd -3
+--patch-from 18.7; a fixed window around the unit's own position,
+33.5). Chunk-level dedup, the backup approach, gains 1–4× on the same
+pairs ([experiments/structure/README.md](experiments/structure/README.md)).
+
+Over a chain of versions, the Linux 6.10 point releases (15 versions
+of a 1.5 GB tree; `scripts/download_chain.sh`, `scripts/bench_chain.sh`),
+each version against the one before it, or against 6.10 alone so that
+any version is two reads:
+
+| Stored | Glyd --max --base | zstd -3 --patch-from | Stored one by one |
+| :--- | ---: | ---: | ---: |
+| 6.10 plus 14 point releases, each against the previous | **228 MB** | 260 MB | Glyd --max 3,000 MB · zstd -3 3,236 MB |
+| the same, each against 6.10 | **246 MB** | 265 MB | |
+
+A step costs 1.8 MB (0.12% of the tree; 3.0–3.1 MB when the release
+number grows a digit, which touches every path in the archive) and
+the delta against a base 14 versions old costs 3.6 MB, so rebasing
+inside a release series is not needed. A terabyte of such trees in
+S3 Standard ($276 per stored TB-year) costs $37 a year compressed one
+by one with `--max` ($40 with zstd -3) and $2.8–3.0 with base mode
+($3.2–3.3 with zstd's patch).
 
 ## Record mode: logs and table dumps as columns
 
@@ -411,6 +432,7 @@ cargo run --release --example bench_suite -- --large --threads 8 --repeats 3   #
 cargo run --release --example bench_suite -- --small --threads 1               # small objects with dictionaries
 scripts/download_ext_corpus.sh && cargo run --release --example bench_suite -- --large --dir corpus/ext2   # telemetry
 scripts/download_versions.sh && scripts/bench_versions.sh corpus/versions/linux-6.10.tar corpus/versions/linux-6.10.1.tar   # base mode vs zstd --patch-from
+scripts/download_chain.sh && scripts/bench_chain.sh   # 15 Linux point releases as a chain of versions (20 GB)
 scripts/verify_roundtrip.sh yourfile                # every level and mode through the CLI, corrupted copies
 scripts/download_corpus.sh && cargo run --release --example v7_bench            # Silesia, --max vs zstd -3
 AWS_PROFILE=... scripts/bench_aws_suite.sh <bucket> main   # the whole program on Graviton3 + Sapphire Rapids, ~$1.50
@@ -459,10 +481,11 @@ panic or an unbounded allocation; every unsafe block carries its bound.
   choice at a hundred CPU-billed reads a month; the plain CLI's reads
   cost 1.07× zstd's CPU on Graviton3 and 1.37× on Sapphire Rapids (a
   checksum per block, the parallel decode).
-- Base mode matches content that stayed within 32 MB of its old position;
-  what moved farther is compressed plainly. `--ultra --base` re-indexes
-  each unit's base region and runs at 1–4 MB/s. The encoder holds the old
-  and new versions plus 128 MB per thread.
+- `--ultra --base` runs at the plain `--ultra` speed (3–11 MB/s on ten
+  M1 cores), 3–10× slower than zstd -19's patch on the large pairs. The
+  encoder holds the old and new versions, a map of 1.6% of the old one,
+  and 128 MB per thread. A unit whose content is spread over two places
+  of the base farther apart than 96 MB has only the denser one in reach.
 - On x86 (Sapphire Rapids) `--max` decodes at 0.80× zstd -3 on one core,
   against 1.03× on Graviton3: x86-64's 16 general registers spill the
   8-stream entropy loops.

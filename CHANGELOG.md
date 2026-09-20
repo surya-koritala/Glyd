@@ -8,6 +8,27 @@ every earlier format.
 
 ## Unreleased
 
+### Base mode: content found wherever it moved, ultra at full speed
+- Each unit's region of the base is chosen from a coarse map of the
+  base (its sparse anchors, one per KB, found with the matcher's vector
+  scan at 3-4 GB/s and sorted by the hash of the 32 bytes at each): the
+  96 MB window holding the most of the unit's own anchors, or the base
+  around the unit's position when its content is new. A version with
+  48 MB inserted before the kernel tree costs 18.4 MB against 33.5 MB
+  with the fixed window (zstd -3 --patch-from: 18.7 MB). The consecutive
+  pairs are unchanged within 0.5%; `--max --base` runs at 720-1,700
+  MB/s on ten M1 cores (was 860-2,020: the map's cost).
+- `--ultra --base` inserted each unit's whole 96 MB region into the
+  tree finder, which reaches 8 MB back: it now starts at the window's
+  edge and runs at the plain `--ultra` speed, 3-11 MB/s on ten M1 cores
+  against 1-4 before (the kernel pair 483 s, the new version alone at
+  `--ultra` 555 s), the bytes the same.
+- Chains measured (`scripts/download_chain.sh`, `scripts/bench_chain.sh`):
+  the 15 Linux 6.10 point releases cost 228 MB each against the one
+  before (zstd -3 --patch-from 260 MB; stored one by one 3.0-3.2 GB) or
+  246 MB each against 6.10 (zstd 265 MB), a step 1.8 MB and the delta
+  against a base 14 releases old 3.6 MB.
+
 ### Record mode: templates
 - Logs whose lines vary in shape (application and system logs) take a
   fourth shape: each line's template (its text with a hole where every

@@ -84,14 +84,98 @@ fn anchor(w: u32) -> u32 {
 /// `TABLE_BITS` + `CHECK_BITS` bits, the four words mixed in parallel.
 #[inline(always)]
 unsafe fn h32p(p: *const u8) -> u32 {
+    (h64p(p) >> (64 - TABLE_BITS_MAX - CHECK_BITS)) as u32
+}
+
+/// One position in 2^MAP_BITS is a sparse anchor (a stricter anchor
+/// than the matcher's): `sparse_anchors` maps a base by them.
+pub const MAP_BITS: u32 = 10;
+
+/// The sparse anchors of `input` (positions whose 4-byte hash has
+/// `MAP_BITS` high zero bits, runs of one byte excepted) appended to
+/// `out` as (hash of the 32 bytes at the anchor, position + `at`). A
+/// unit of a new version is located in its base by looking its anchors
+/// up in the base's (`compress_with_base`).
+pub fn sparse_anchors(input: &[u8], at: u64, out: &mut Vec<(u64, u64)>) {
+    unsafe { sparse_fn()(input, at, out) }
+}
+
+/// `sparse_anchors` with a vector step: a sparse anchor is one of the
+/// matcher's, so only the one position in 16 the mask finds is tested.
+unsafe fn sparse<S: Scan>(input: &[u8], at: u64, out: &mut Vec<(u64, u64)>) {
+    let end = input.len().saturating_sub(HASH_LEN);
+    let src = input.as_ptr();
+    let test = |pos: usize, out: &mut Vec<(u64, u64)>| {
+        let w = std::ptr::read_unaligned(src.add(pos) as *const u32);
+        if h4(w) >> (32 - MAP_BITS) == 0 && w != w.rotate_left(8) {
+            out.push((h64p(src.add(pos)), at + pos as u64));
+        }
+    };
+    // The matcher's anchors of a chunk are extracted without a branch
+    // per anchor (as in `gather`), then tested in a loop of known length.
+    let mut positions = [0u32; CHUNK + 16];
+    let mut pos = 0;
+    while pos + 16 <= end {
+        let stop = (pos + CHUNK).min(end);
+        let mut count = 0usize;
+        while pos + 16 <= stop {
+            let m = S::mask16(src.add(pos)) as usize;
+            for half in 0..2 {
+                let byte = (m >> (8 * half)) & 0xFF;
+                let idx = BIT_INDEXES.get_unchecked(byte);
+                let base = (pos + 8 * half) as u32;
+                let o = positions.as_mut_ptr().add(count);
+                for i in 0..8 {
+                    *o.add(i) = base + *idx.get_unchecked(i) as u32;
+                }
+                count += byte.count_ones() as usize;
+            }
+            pos += 16;
+        }
+        for &p in positions.get_unchecked(..count) {
+            test(p as usize, out);
+        }
+    }
+    while pos < end {
+        test(pos, out);
+        pos += 1;
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,bmi2")]
+unsafe fn sparse_avx2(input: &[u8], at: u64, out: &mut Vec<(u64, u64)>) {
+    sparse::<Avx2>(input, at, out)
+}
+
+fn sparse_fn() -> unsafe fn(&[u8], u64, &mut Vec<(u64, u64)>) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        sparse::<Neon>
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("bmi2") {
+            return sparse_avx2;
+        }
+        sparse::<Scalar>
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    {
+        sparse::<Scalar>
+    }
+}
+
+/// The 64-bit hash `h32p` is cut from.
+#[inline(always)]
+unsafe fn h64p(p: *const u8) -> u64 {
     let a = std::ptr::read_unaligned(p as *const u64);
     let b = std::ptr::read_unaligned(p.add(8) as *const u64);
     let c = std::ptr::read_unaligned(p.add(16) as *const u64);
     let d = std::ptr::read_unaligned(p.add(24) as *const u64);
     let h = (a.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ b.wrapping_mul(0xC2B2_AE3D_27D4_EB4F))
         .wrapping_add(c.wrapping_mul(0x1656_67B1_9E37_79F9) ^ d.wrapping_mul(0x27D4_EB2F_1656_67C5));
-    let h = (h ^ (h >> 29)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    (h >> (64 - TABLE_BITS_MAX - CHECK_BITS)) as u32
+    (h ^ (h >> 29)).wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }
 
 /// The anchors among 16 positions as a bit mask (bit k for `p + k`).

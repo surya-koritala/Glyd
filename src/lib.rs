@@ -522,7 +522,12 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
             // is priced by the dictionary's tables.
             match dict.map(|d| d.ultra_snapshot()).filter(|s| full.len() <= s.len) {
                 Some(snap) => t.restore(snap),
-                None => t.clear(full.len()),
+                None => {
+                    t.clear(full.len());
+                    // A base region before the input: the tree reaches
+                    // its last window only, the matcher pass the rest.
+                    t.start_at(start.saturating_sub(LOCAL_WINDOW as usize));
+                }
             }
             if let Some(d) = dict {
                 t.seed_stats(&d.tables());
@@ -878,6 +883,80 @@ fn base_envelope(compressed: &[u8]) -> Option<(u64, Vec<BaseUnit<'_>>)> {
     Some((id, units))
 }
 
+/// The base's sparse anchors (`ldm::sparse_anchors`) sorted by hash: a
+/// unit's own anchors looked up here say where in the base its content
+/// is.
+fn base_map(base: &[u8]) -> Vec<(u64, u64)> {
+    const CHUNK: usize = 16 << 20;
+    let n = (base.len() + CHUNK - 1) / CHUNK;
+    let parts: Vec<std::sync::Mutex<Vec<(u64, u64)>>> = (0..n).map(|_| std::sync::Mutex::new(Vec::new())).collect();
+    let _ = par_units::<()>(n, |i| {
+        let (a, b) = (i * CHUNK, ((i + 1) * CHUNK + 32).min(base.len()));
+        let mut v = Vec::with_capacity((b - a) >> ldm::MAP_BITS);
+        ldm::sparse_anchors(&base[a..b], a as u64, &mut v);
+        *parts[i].lock().unwrap() = v;
+        Ok(())
+    });
+    let mut map: Vec<(u64, u64)> = parts.into_iter().flat_map(|m| m.into_inner().unwrap()).collect();
+    map.sort_unstable();
+    map
+}
+
+/// Bins of the base a region's choice is made in.
+const BASE_BIN: usize = 4 << 20;
+/// An anchor found at more places in the base than this says nothing
+/// about where a unit's content is; fewer share one hit between them.
+const MAP_AMBIGUOUS: usize = 64;
+
+/// The region of the base for a unit at `a..b` of the input: the
+/// window of `len` bytes holding the most of the unit's anchors (by
+/// `map`), when the unit's anchors are found there at all; else the
+/// base around the unit's own position (content that has not moved).
+fn base_region(base_end: usize, map: &[(u64, u64)], unit: &[u8], a: usize, b: usize) -> (usize, usize) {
+    let len = (b - a + 2 * BASE_SLACK).min(base_end);
+    let positional = {
+        let r0 = a.saturating_sub(BASE_SLACK).min(base_end);
+        (r0, (r0 + len).min(base_end))
+    };
+    let mut anchors = Vec::with_capacity(unit.len() >> ldm::MAP_BITS);
+    ldm::sparse_anchors(unit, 0, &mut anchors);
+    let bins = base_end / BASE_BIN + 1;
+    // Hits in 1/MAP_AMBIGUOUS-ths: an anchor at k places is 1/k at each.
+    let mut hits = vec![0u64; bins];
+    let mut total = 0u64;
+    for (h, _) in anchors {
+        let lo = map.partition_point(|e| e.0 < h);
+        let hi = map.partition_point(|e| e.0 <= h);
+        let k = hi - lo;
+        if k == 0 || k > MAP_AMBIGUOUS {
+            continue;
+        }
+        for &(_, pos) in &map[lo..hi] {
+            hits[(pos as usize).min(base_end) / BASE_BIN] += (MAP_AMBIGUOUS / k) as u64;
+        }
+        total += MAP_AMBIGUOUS as u64;
+    }
+    if total < 16 * MAP_AMBIGUOUS as u64 {
+        return positional;
+    }
+    // The window of `len` bytes (whole bins) with the most hits, ties
+    // to the earliest; the region starts at its first bin.
+    let span = (len / BASE_BIN).max(1);
+    let (mut best, mut best_at, mut sum) = (0u64, 0usize, 0u64);
+    for i in 0..bins {
+        sum += hits[i];
+        if i >= span {
+            sum -= hits[i - span];
+        }
+        if sum > best {
+            best = sum;
+            best_at = i + 1 - span.min(i + 1);
+        }
+    }
+    let r0 = (best_at * BASE_BIN).min(base_end);
+    (r0, (r0 + len).min(base_end))
+}
+
 /// `input` compressed against `base` at the max level (`ultra` for the
 /// ultra level): the output decodes only with the same base
 /// (`decompress_with_base`). A version of a dump, a source tree or an
@@ -886,35 +965,34 @@ pub fn compress_with_base(base: &[u8], input: &[u8], output: &mut Vec<u8>, ultra
     let parse = if ultra { Parse::Ultra } else { Parse::Dfast };
     let units: Vec<(usize, usize)> = (0..input.len().max(1)).step_by(BASE_UNIT).map(|a| (a, (a + BASE_UNIT).min(input.len()))).collect();
     let base_end = base.len().saturating_sub(BASE_TAIL);
-    let region = |a: usize, b: usize| -> (usize, usize) {
-        let r0 = a.saturating_sub(BASE_SLACK).min(base_end);
-        let r1 = (b + BASE_SLACK).min(base_end);
-        (r0, r1.max(r0))
-    };
-    let slots: Vec<std::sync::Mutex<Vec<u8>>> = units.iter().map(|_| std::sync::Mutex::new(Vec::new())).collect();
+    // Each unit's region: where the base holds its content, by a coarse
+    // map of the base, so content that moved farther than the slack
+    // (a table that grew, a file added early in an archive) is found.
+    let map = base_map(base);
+    let slots: Vec<std::sync::Mutex<((usize, usize), Vec<u8>)>> = units.iter().map(|_| std::sync::Mutex::new(((0, 0), Vec::new()))).collect();
     let _ = par_units::<()>(units.len(), |i| {
         let (a, b) = units[i];
-        let (r0, r1) = region(a, b);
+        let (r0, r1) = base_region(base_end, &map, &input[a..b], a, b);
         let mut full = Vec::with_capacity(r1 - r0 + b - a);
         full.extend_from_slice(&base[r0..r1]);
         full.extend_from_slice(&input[a..b]);
         let mut out = Vec::with_capacity((b - a) / 8 + 1024);
         compress_max_from(&full, r1 - r0, 0, parse, None, &mut out);
-        *slots[i].lock().unwrap() = out;
+        *slots[i].lock().unwrap() = ((r0, r1), out);
         Ok(())
     });
+    drop(map);
     output.extend_from_slice(BASE_MAGIC);
     output.extend_from_slice(&base_id(base).to_le_bytes());
     put_varint(output, units.len() as u32);
-    let streams: Vec<Vec<u8>> = slots.into_iter().map(|m| m.into_inner().unwrap()).collect();
-    for (&(a, b), s) in units.iter().zip(&streams) {
-        let (r0, r1) = region(a, b);
-        put_varint64(output, r0 as u64);
+    let streams: Vec<((usize, usize), Vec<u8>)> = slots.into_iter().map(|m| m.into_inner().unwrap()).collect();
+    for (&(a, b), ((r0, r1), s)) in units.iter().zip(&streams) {
+        put_varint64(output, *r0 as u64);
         put_varint64(output, (r1 - r0) as u64);
         put_varint64(output, (b - a) as u64);
         put_varint64(output, s.len() as u64);
     }
-    for s in &streams {
+    for (_, s) in &streams {
         output.extend_from_slice(s);
     }
 }

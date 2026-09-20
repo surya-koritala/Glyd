@@ -344,6 +344,14 @@ impl UltraState {
         self.stats = None;
     }
 
+    /// Begin the tables at `pos` (after `clear`): history before it is
+    /// never inserted. A base region laid before the input is reached
+    /// by the tree only within the window, so its earlier megabytes
+    /// would be inserted for nothing.
+    pub fn start_at(&mut self, pos: usize) {
+        self.inserted = pos;
+    }
+
     /// Insert positions `inserted..end` (the last three bytes of the
     /// input are never hashed: a 4-byte load must fit). With `log`, the
     /// first block's first pass, the writes are logged for `undo`.

@@ -94,10 +94,17 @@ fn drift_and_size_changes() {
     // The input much shorter than the base; the base much shorter than the input.
     check(&old, &old[10 << 20..12 << 20], "a slice of the base");
     check(&old[..100], &old[..5 << 20], "a 100-byte base");
-    // Content moved beyond the slack: still exact, just not matched.
-    let mut moved = wordy(70 << 20, 8);
-    moved.extend_from_slice(&old[..4 << 20]);
-    check(&old, &moved, "moved past the slack");
+    // Content moved beyond the slack (70 MB of new content before it):
+    // the base's map finds it, so it costs a fraction of its plain size
+    // on top of the new content's.
+    let front = wordy(70 << 20, 8);
+    let mut moved = front.clone();
+    moved.extend_from_slice(&old[..30 << 20]);
+    let with_base = check(&old, &moved, "moved past the slack");
+    let (mut front_alone, mut old_alone) = (Vec::new(), Vec::new());
+    glyd::compress_parallel_into_max(&front, &mut front_alone);
+    glyd::compress_parallel_into_max(&old[..30 << 20], &mut old_alone);
+    assert!(with_base < front_alone.len() + old_alone.len() / 10, "moved content should be found: {with_base} vs {} new + {} moved", front_alone.len(), old_alone.len());
 }
 
 #[test]

@@ -423,11 +423,21 @@ first.
 `glyd --base old new`):
 
 - The input is cut into 32 MB units. Each is parsed with a region of
-  the base laid before it as history: the base around the unit's own
-  position, `BASE_SLACK` (32 MB) each way, so a version whose content
-  has drifted by less than that finds it (a dump with rows inserted, a
-  tar with files grown). Region and unit together are at most 128 MB,
-  the window.
+  the base laid before it as history, 96 MB at most (region and unit
+  together fit the 128 MB window). The region is chosen from a coarse
+  map of the base: the base's sparse anchors (one position in 1,024,
+  content-defined like the matcher's, found with the same vector scan
+  at 3-4 GB/s) sorted by the hash of the 32 bytes at each. The unit's
+  own sparse anchors are looked up; an anchor found at up to 64 places
+  in the base counts a hit shared between them, one found at more says
+  nothing; the region is the 96 MB window of 4 MB bins holding the
+  most hits, or, when the unit's anchors are not in the base at all
+  (new content), the base around the unit's own position. Content that
+  moved anywhere in the base is found this way: a version with 48 MB
+  inserted before the kernel tree costs 18.4 MB against 33.5 MB with
+  the fixed window (zstd -3 --patch-from, whose window is the whole
+  base: 18.7 MB). The map costs 1.6% of the base in memory and a few
+  percent of the max level's time.
 - The long-distance matcher indexes region and unit (its table takes a
   slot per 16 bytes, up to 2^25 entries), so any repeat of 32 bytes or
   more in the region is a candidate; the local finder is seeded with
@@ -454,14 +464,17 @@ on `scripts/download_versions.sh`):
 
 | Old -> new | zstd -3 --patch-from | zstd -19 --patch-from | Glyd `--max --base` | Glyd `--ultra --base` |
 | :--- | ---: | ---: | ---: | ---: |
-| Wikipedia `page` dumps a month apart (108 MB) | 3.84 MB · 409 MB/s | 1.30 MB · 2 MB/s | **1.79 MB · 863 MB/s** | **1.23 MB · 2 MB/s** |
-| Ubuntu 24.04 cloud root fs, builds 16 days apart (1.1 GB) | 8.82 MB · 654 MB/s | 5.61 MB · 39 MB/s | **5.31 MB · 2,018 MB/s** | **4.59 MB · 4 MB/s** |
-| Linux 6.10 -> 6.10.1 source tar (1.5 GB) | 3.26 MB · 560 MB/s | 2.58 MB · 30 MB/s | **3.04 MB · 1,980 MB/s** | **2.04 MB** · 1 MB/s |
+| Wikipedia `page` dumps a month apart (108 MB) | 3.84 MB · 409 MB/s | 1.30 MB · 2 MB/s | **1.79 MB · 720 MB/s** | **1.23 MB · 6 MB/s** |
+| Ubuntu 24.04 cloud root fs, builds 16 days apart (1.1 GB) | 8.82 MB · 654 MB/s | 5.61 MB · 39 MB/s | **5.33 MB · 1,590 MB/s** | **4.60 MB · 11 MB/s** |
+| Linux 6.10 -> 6.10.1 source tar (1.5 GB) | 3.26 MB · 560 MB/s | 2.58 MB · 30 MB/s | **3.03 MB · 1,700 MB/s** | **2.04 MB** · 3 MB/s |
 
 Plain `--max` on the new versions: 32.8, 287 and 200 MB. Reads run at
-6-10 GB/s. What is left: the ultra base mode indexes each unit's 96 MB
-region in the tree finder, which makes it 2-4 MB/s; a base index built
-once and shared by the units would take that to the plain ultra speed.
-Content that moved farther than the slack is not matched (a region
-chosen from a coarse map of the base would fix that). The encoder
-holds old, new and a 128 MB copy per thread in memory.
+6-10 GB/s. The ultra base mode used to insert each unit's whole region
+into the tree finder, whose window reaches 8 MB back, so 88 of the 96
+MB were inserted for nothing and it ran at 1-4 MB/s; it now starts the
+tables at the window's edge (`UltraState::start_at`) and runs at the
+plain ultra speed (the kernel pair 483 s against 555 s for the new
+version alone at `--ultra`, on 10 M1 cores), still 3-10x slower than
+zstd -19's patch on the large pairs, whose level is a hash chain, not a
+tree. The encoder holds old, new, the map and a 128 MB copy per thread
+in memory.

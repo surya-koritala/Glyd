@@ -13,7 +13,7 @@ The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 Telemetry with `-r`: 2.5–3.5× fewer bytes than zstd -3; application and
 system logs (templates, unreleased): 1.4–3.3× fewer than zstd -3 and
 1.1–2.1× fewer than zstd -19. Versions with
-`--base`: 1.1–2.1× fewer bytes than `zstd -3 --patch-from` at 2–3.5× its
+`--base`: 1.1–2.1× fewer bytes than `zstd -3 --patch-from` at 1.8–3× its
 speed; `--ultra --base` 5–21% fewer than zstd -19's patch. A
 terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
 
@@ -25,27 +25,27 @@ Details: [experiments/structure/README.md](experiments/structure/README.md).
 
 ## Next, in order of what moves the bill
 
-1. **Base mode, the rest of the leap.** A base index built once and
-   shared by the units, so `--ultra --base` runs at the plain ultra
-   speed instead of 1–4 MB/s; a coarse map of the base so content that
-   moved farther than 32 MB is still matched; chains of versions with a
-   measured answer to how long a chain before re-basing. Gate: kernel
-   pair under zstd -19's patch size at `--max` speed.
-2. **Write speed of `--max`** (0.58–0.66× zstd -3 on one server core):
+1. **Write speed of `--max`** (0.58–0.66× zstd -3 on one server core):
    the finder's cache footprint and the matcher pass. Gate: 0.8× zstd -3
    with the corpus ratio kept.
-3. **Small objects**: a single-pass decoder for compact blocks and a
+2. **Small objects**: a single-pass decoder for compact blocks and a
    cheaper per-object encoder (zstd is 1.4–2× faster per object); a
    dictionary that carries a record schema, so `-r` ratios reach
    one-record objects. Gate: within 1.2× of zstd per object.
-4. **The x86-64 decoder** (0.80× zstd -3 on one Sapphire Rapids core
+3. **The x86-64 decoder** (0.80× zstd -3 on one Sapphire Rapids core
    against 1.03× on Graviton3). Gate: 1.0× in the published run.
-5. **Streaming for v9** in `GlydReader`/`GlydWriter` (v6 levels only
+4. **Streaming for v9** in `GlydReader`/`GlydWriter` (v6 levels only
    today); the CLI already streams batches of units.
 
 Done since v0.5.0: record-mode reads (column-at-a-time rebuild, 1.4–1.7×
 faster; `--max -r` now within 1% of zstd -3's S3 row at ten CPU-billed
-reads a month) and the template shape for logs. The levers were sized
+reads a month); the template shape for logs; base mode's region chosen
+from a coarse map of the base (content found wherever it moved) and
+`--ultra --base` at the plain ultra speed (was 1–4 MB/s); the kernel
+point-release chain measured (15 versions in 228 MB, a step 1.8 MB, no
+rebasing needed inside a series). Not reached: the kernel pair under
+zstd -19's patch size at `--max` speed (`--max --base` 3.03 MB against
+2.58; `--ultra --base` 2.04 MB at 3 MB/s). The levers were sized
 against each other first
 ([experiments/research/README.md](experiments/research/README.md)):
 version chains 5.7× over per-version compression, template logs 1.2–1.6×

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Glyd — compression that moves the storage bill</title>
-<meta name="description" content="Glyd v0.5.0: base mode stores a new version of a dump, image or source tree for a few percent of its size; record mode turns logs of any shape, dumps, CSV and JSON lines into typed columns; measured against zstd and LZ4 on real data.">
+<meta name="description" content="Glyd v0.5.0: base mode stores a new version of a dump, image or source tree for a few percent of its size, 15 kernel releases in 228 MB; record mode turns logs of any shape, dumps, CSV and JSON lines into typed columns; measured against zstd and LZ4 on real data.">
 <style>
   :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; --hl:#eef3ff; }
   @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --line:#333; --accent:#6ea0ff; --hl:#1b2233; } }
@@ -61,11 +61,17 @@
   <p>Most stored bytes are versions — nightly dumps, snapshots, images, source trees. <code>glyd --base old new</code> parses every 32 MB of the new version with the old one's matching region as history and writes a stream that decodes with the same base. Measured on consecutive versions of real objects against zstd 1.5.7's own <code>--patch-from</code>, same machine, every rebuild byte-exact:</p>
   <div class="wrap"><table>
     <tr><th>Old → new</th><th>zstd -3 --patch-from</th><th>zstd -19 --patch-from</th><th>Glyd --max --base</th><th>Glyd --ultra --base</th></tr>
-    <tr class="g"><td>Wikipedia page-table dumps, a month apart (108 MB)</td><td>3.84 MB · 409 MB/s</td><td>1.30 MB · 2 MB/s</td><td>1.79 MB · 863 MB/s</td><td>1.23 MB · 2 MB/s</td></tr>
-    <tr class="g"><td>Ubuntu 24.04 cloud root filesystem, builds 16 days apart (1.1 GB)</td><td>8.82 MB · 654 MB/s</td><td>5.61 MB · 39 MB/s</td><td>5.31 MB · 2,018 MB/s</td><td>4.59 MB · 4 MB/s</td></tr>
-    <tr class="g"><td>Linux 6.10 → 6.10.1 source tar (1.5 GB)</td><td>3.26 MB · 560 MB/s</td><td>2.58 MB · 30 MB/s</td><td>3.04 MB · 1,980 MB/s</td><td>2.04 MB · 1 MB/s</td></tr>
+    <tr class="g"><td>Wikipedia page-table dumps, a month apart (108 MB)</td><td>3.84 MB · 409 MB/s</td><td>1.30 MB · 2 MB/s</td><td>1.79 MB · 720 MB/s</td><td>1.23 MB · 6 MB/s</td></tr>
+    <tr class="g"><td>Ubuntu 24.04 cloud root filesystem, builds 16 days apart (1.1 GB)</td><td>8.82 MB · 654 MB/s</td><td>5.61 MB · 39 MB/s</td><td>5.33 MB · 1,590 MB/s</td><td>4.60 MB · 11 MB/s</td></tr>
+    <tr class="g"><td>Linux 6.10 → 6.10.1 source tar (1.5 GB)</td><td>3.26 MB · 560 MB/s</td><td>2.58 MB · 30 MB/s</td><td>3.03 MB · 1,700 MB/s</td><td>2.04 MB · 3 MB/s</td></tr>
   </table></div>
-  <p class="muted">Compressed alone those versions are 33, 287 and 200 MB: a version costs 1–5% of what it did. Against zstd's fast patch Glyd stores 1.1–2.1× less at 2–3.5× the speed; <code>--ultra --base</code> stores 5–21% less than zstd -19's patch on every pair, slowly. Chunk-level dedup, the backup approach, gains only 1–4× on the same pairs.</p>
+  <p class="muted">Compressed alone those versions are 33, 287 and 200 MB: a version costs 1–5% of what it did. Against zstd's fast patch Glyd stores 1.1–2.1× less at 1.8–3× the speed; <code>--ultra --base</code> stores 5–21% less than zstd -19's patch on every pair, at the plain <code>--ultra</code> speed. Content is found wherever it moved in the old version (a coarse map of the base picks each unit's region). Chunk-level dedup, the backup approach, gains only 1–4× on the same pairs.</p>
+  <div class="wrap"><table>
+    <tr><th>15 Linux 6.10 point releases (1.5 GB each)</th><th>Glyd --max --base</th><th>zstd -3 --patch-from</th><th>Stored one by one</th></tr>
+    <tr class="g"><td>each release against the one before it</td><td>228 MB</td><td>260 MB</td><td>3,000 MB (Glyd --max) · 3,236 MB (zstd -3)</td></tr>
+    <tr class="g"><td>each release against 6.10 (any version is two reads)</td><td>246 MB</td><td>265 MB</td><td></td></tr>
+  </table></div>
+  <p class="muted">A step costs 1.8 MB, 0.12% of the tree; the delta against a base 14 releases old is 3.6 MB, so a series needs no rebasing. A terabyte of such trees in S3 Standard: $37 a year compressed one by one with <code>--max</code> ($40 with zstd -3), $2.8–3.0 with base mode ($3.2–3.3 with zstd's patch).</p>
 
   <h2>Record mode: the data's own structure, not just its bytes</h2>
   <p>Byte-level matching (zstd, LZ4, Glyd's own levels) is a plateau: on real data zstd -19, xz and Glyd <code>--ultra</code> land within a few percent of each other. The redundancy of a log, a dump or a telemetry export sits in the same field of every record. <code>glyd -r</code> detects delimited lines, SQL dumps and JSON lines, turns them into one typed stream per field (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those, and rebuilds the bytes exactly. Logs whose lines vary in shape take a template: the line's text with a hole where every token holding a digit was, and the tokens as typed columns keyed by template and slot. Anything else is left as it is.</p>

@@ -1236,7 +1236,6 @@ fn scan_json(input: &[u8], mut value: impl FnMut(&[u8], JsonValue)) {
     let n = input.len();
     let mut path: Vec<u8> = Vec::with_capacity(256);
     let mut marks: Vec<usize> = Vec::with_capacity(32); // path length at each nesting level
-    let mut key: Option<(usize, usize)> = None;
     let mut at = 0usize;
     while at < n {
         let end = input[at..].iter().position(|&b| b == b'\n').map_or(n, |p| at + p);
@@ -1247,7 +1246,7 @@ fn scan_json(input: &[u8], mut value: impl FnMut(&[u8], JsonValue)) {
         }
         path.clear();
         marks.clear();
-        key = None;
+        let mut key: Option<(usize, usize)> = None;
         let mut i = at;
         // The path of a value: the enclosing keys, then its own key.
         macro_rules! with_key {
@@ -1552,7 +1551,7 @@ impl TimeFmt {
         // checked in `new`).
         let buf = &mut self.prefix;
         let mut k = 0usize;
-        let mut two = |buf: &mut [u8; 32], k: &mut usize, v: usize| {
+        let two = |buf: &mut [u8; 32], k: &mut usize, v: usize| {
             buf[*k] = DIGITS2[2 * v];
             buf[*k + 1] = DIGITS2[2 * v + 1];
             *k += 2;
