@@ -6,6 +6,36 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+### Base mode
+- `glyd --base old new` / `compress_with_base`: a new version of an
+  object compressed against the old one, decodable with it (`glyd -d
+  --base old`, `decompress_with_base`). Units of 32 MB are parsed with
+  the base around their own position as history (32 MB of slack each
+  way), the long-distance matcher reaching all of it; the decoder reads
+  the base in place. Against zstd 1.5.7 `--patch-from` on the same
+  machine, byte-exact: Wikipedia page-table dumps a month apart
+  `--max` 1.79 MB at 863 MB/s (zstd -3 patch 3.84 MB at 409, zstd -19
+  patch 1.30 MB at 2), `--ultra` 1.23 MB; Ubuntu cloud root filesystems
+  16 days apart 5.31 MB at 2,018 MB/s (zstd -3 8.82 MB at 654, zstd -19
+  5.61 MB at 39), `--ultra` 4.59 MB; Linux 6.10 -> 6.10.1 3.04 MB at
+  1,980 MB/s (zstd -3 3.26 MB at 560, zstd -19 2.58 MB at 30), `--ultra`
+  2.04 MB. Plain `--max` on those
+  files: 33, 287 and 200 MB. Design notes in docs/design/format-v7.md;
+  the measurement that led here in experiments/structure/README.md.
+- A far match's cap of 130 bytes per sequence applied to the
+  repeat-offset continuation as well; a repeat carries no offset bits,
+  so the rest of the match is now one sequence. Plain `--max` gains 1%
+  on JSON events.
+- The long-distance matcher's table grows with the input (a slot per
+  16 bytes, up to 2^25 entries).
+- The CLI decodes a batch of units at a time into one reused buffer
+  and writes as it goes (`decompress_stream`): the memory is a batch,
+  not the file, and no output page is touched for the first time after
+  the first batch; the library's parallel paths run on scoped worker
+  threads (`set_threads`) instead of rayon.
+
 ## v0.4.0 — 2026-09-20
 
 ### Long-distance matching

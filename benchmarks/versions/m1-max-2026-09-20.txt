@@ -1,0 +1,16 @@
+== simplewiki-20260801-page.sql -> simplewiki-20260901-page.sql (107824175 bytes, 10 threads)
+   zstd -3  --patch-from       3843731 B      0.26 s     409 MB/s  exact
+   zstd -19 --patch-from       1296641 B     63.59 s       2 MB/s  exact
+   Glyd --max: 1790233 B (60.2x; plain --max 32789995 B) compress 0.12 s (863 MB/s) decompress 0.01 s (8514 MB/s), exact
+   Glyd --ultra: 1230512 B (87.6x; plain --max 32789995 B) compress 58.04 s (2 MB/s) decompress 0.01 s (9193 MB/s), exact
+== noble-20260826-root.tar -> noble-20260911-root.tar (1108172800 bytes, 10 threads)
+   zstd -3  --patch-from       8822267 B      1.70 s     654 MB/s  exact
+   zstd -19 --patch-from       5614809 B     28.07 s      39 MB/s  exact
+   Glyd --max: 5310629 B (208.7x; plain --max 286516480 B) compress 0.55 s (2018 MB/s) decompress 0.11 s (10514 MB/s), exact
+   Glyd --ultra: 4587802 B (241.5x; plain --max 286516480 B) compress 253.38 s (4 MB/s) decompress 0.17 s (6526 MB/s), exact
+== linux-6.10.tar -> linux-6.10.1.tar (1496780800 bytes, 10 threads)
+   zstd -3  --patch-from       3263189 B      2.67 s     560 MB/s  exact
+   zstd -19 --patch-from       2580236 B     50.65 s      30 MB/s  exact
+   Glyd --max: 3041232 B (492.2x; plain --max 200007594 B) compress 0.76 s (1980 MB/s) decompress 0.18 s (8108 MB/s), exact
+   Glyd --ultra: 2041834 B (733.1x; plain --max 200007594 B) compress 1122.15 s (1 MB/s) decompress 0.13 s (11470 MB/s), exact
+machine: Apple M1 Max, 10 cores, macOS; zstd 1.5.7 CLI; Glyd at commit 034f2fb (scripts/bench_versions.sh on scripts/download_versions.sh)

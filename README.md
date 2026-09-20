@@ -349,6 +349,34 @@ zstd -19. A terabyte-year in S3 at one read a month costs within 2%
 either way for the plain levels; the record-mode rows are in the
 report.
 
+## Base mode: a version compressed against the last one
+
+Most stored bytes are versions: nightly dumps, snapshots, images,
+source trees, artifacts rebuilt with small changes. A new version
+compressed alone costs what the first did; compressed against the old
+one it costs the change. `glyd --base old new` parses every 32 MB of
+the new version with the old one's corresponding region as history
+(the long-distance matcher reaches all of it) and writes a stream that
+decodes with the same base: `glyd -d --base old new.glyd`. Measured on
+consecutive versions of real objects against zstd 1.5.7's
+`--patch-from`, the same machine and thread count, every rebuild
+byte-exact (`scripts/bench_versions.sh`, data from
+`scripts/download_versions.sh`):
+
+| Old → new | zstd -3 --patch-from | zstd -19 --patch-from | ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑‑base** | **Glyd&nbsp;‑‑ultra&nbsp;‑‑base** |
+| :--- | ---: | ---: | ---: | ---: |
+| Wikipedia `page` dumps a month apart (108 MB) | 3.84 MB · 409 MB/s | 1.30 MB · 2 MB/s | **1.79 MB · 863 MB/s** | **1.23 MB** · 2 MB/s |
+| Ubuntu 24.04 cloud root filesystem, builds 16 days apart (1.1 GB) | 8.82 MB · 654 MB/s | 5.61 MB · 39 MB/s | **5.31 MB · 2,018 MB/s** | **4.59 MB** · 4 MB/s |
+| Linux 6.10 → 6.10.1 source tar (1.5 GB) | 3.26 MB · 560 MB/s | 2.58 MB · 30 MB/s | **3.04 MB · 1,980 MB/s** | **2.04 MB** · 1 MB/s |
+
+Compressed alone with `--max` those versions are 33, 287 and 200 MB.
+`--max --base` stores 1.1–2.1× less than zstd's fast patch at 1.5–3×
+its speed, and on the image pair less than zstd's slow patch at 50×
+its speed; `--ultra --base` stores less than zstd -19's patch on every
+pair, at its speed. Reads run at 6–10 GB/s. Chunk-level dedup, the
+backup approach, gains 1–4× on the same pairs
+([experiments/structure/README.md](experiments/structure/README.md)).
+
 ## Record mode: logs and table dumps as columns
 
 Byte-level matching is a plateau: on real data zstd -19, xz and Glyd

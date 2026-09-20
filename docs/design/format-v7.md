@@ -401,3 +401,60 @@ MB/s (`zstd -3 --long=27` 13.63 MB at 383). Silesia `--max` 3.259 ->
 because 32-64 byte repeats are missed); a 16-byte hash (more false
 candidates than the check bits save); prefetching the candidate's
 bytes (no gain on M1, dropped).
+
+## Base mode (v0.5.0): a version compressed against the last one
+
+Measured first (`examples/versions.rs`, experiments/structure/README.md):
+a new version of a database dump, a source tree or a VM image holds a
+few percent of new bytes, but chunk-level dedup (what backup systems
+do) gains only 1-4x because every chunk is touched; byte-level matching
+against the old version gains 19-58x. That is the leap the codec can
+offer: not fewer bytes for one object, but for every version after the
+first.
+
+`compress_with_base(base, input, out, ultra)` (`src/lib.rs`, CLI
+`glyd --base old new`):
+
+- The input is cut into 32 MB units. Each is parsed with a region of
+  the base laid before it as history: the base around the unit's own
+  position, `BASE_SLACK` (32 MB) each way, so a version whose content
+  has drifted by less than that finds it (a dump with rows inserted, a
+  tar with files grown). Region and unit together are at most 128 MB,
+  the window.
+- The long-distance matcher indexes region and unit (its table takes a
+  slot per 16 bytes, up to 2^25 entries), so any repeat of 32 bytes or
+  more in the region is a candidate; the local finder is seeded with
+  the region's last 8 MB for short matches near the boundary. A far
+  match's first sequence is capped at 130 bytes (the decoder's one-load
+  walk holds 26 offset bits only with a short match); the rest follows
+  as a repeat-offset sequence of any length. That cap used to apply to
+  the repeat as well, which made a 6 KB copy 46 sequences and the
+  kernel pair 10.9 instead of 3.0 MB.
+- The stream is ordinary v9 blocks, the first with a chain reset; the
+  decoder reads the region in place as external history
+  (`decompress_sequential_impl`'s `ext`), units in parallel, batches
+  into one reused buffer for the CLI (`decompress_stream_with_base`).
+- Envelope: `GLYDBASE`, the base's id (length and checksum, so another
+  base is refused), the unit count, then per unit its region's start
+  and length, its length and its stream's length (varints), then the
+  streams. The plain decoders refuse the envelope and say the base is
+  needed. Unit lengths in a header are bounded by what the encoder
+  writes, so a corrupt header cannot ask for an allocation.
+
+Measured against zstd 1.5.7's `--patch-from` on the same machine (M1
+Max, 10 threads, every rebuild byte-exact; `scripts/bench_versions.sh`
+on `scripts/download_versions.sh`):
+
+| Old -> new | zstd -3 --patch-from | zstd -19 --patch-from | Glyd `--max --base` | Glyd `--ultra --base` |
+| :--- | ---: | ---: | ---: | ---: |
+| Wikipedia `page` dumps a month apart (108 MB) | 3.84 MB · 409 MB/s | 1.30 MB · 2 MB/s | **1.79 MB · 863 MB/s** | **1.23 MB · 2 MB/s** |
+| Ubuntu 24.04 cloud root fs, builds 16 days apart (1.1 GB) | 8.82 MB · 654 MB/s | 5.61 MB · 39 MB/s | **5.31 MB · 2,018 MB/s** | **4.59 MB · 4 MB/s** |
+| Linux 6.10 -> 6.10.1 source tar (1.5 GB) | 3.26 MB · 560 MB/s | 2.58 MB · 30 MB/s | **3.04 MB · 1,980 MB/s** | **2.04 MB** · 1 MB/s |
+
+Plain `--max` on the new versions: 32.8, 287 and 200 MB. Reads run at
+6-10 GB/s. What is left: the ultra base mode indexes each unit's 96 MB
+region in the tree finder, which makes it 2-4 MB/s; a base index built
+once and shared by the units would take that to the plain ultra speed.
+Content that moved farther than the slack is not matched (a region
+chosen from a coarse map of the base would fix that). The encoder
+holds old, new and a 128 MB copy per thread in memory.
