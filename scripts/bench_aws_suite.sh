@@ -18,7 +18,9 @@
 # glyd-bench and deleted on exit; the bucket is the caller's.
 #
 #   AWS_PROFILE=... scripts/bench_aws_suite.sh <bucket> [git-ref]
-# Env: REGION (us-east-1), TYPES ("c7g.2xlarge c7i.2xlarge").
+# Env: REGION (us-east-1), TYPES ("c7g.2xlarge c7i.2xlarge"), STEPS
+# ("all", or "s3" for the S3 workflow alone, into an output directory
+# of its own: <type>-s3).
 # A run takes about 2 hours per instance (in parallel); ~$0.70 per instance.
 set -euo pipefail
 
@@ -109,14 +111,17 @@ if [ ! -x target/release/examples/bench_suite ] || [ ! -x target/release/glyd ];
 bash scripts/download_bench_corpus.sh > ~/results/corpus.txt 2>&1
 export PATH=$PWD/target/release:$PATH
 which zstd lz4 aws glyd >> ~/results/machine.txt
+if [ "STEPS_PLACEHOLDER" != "s3" ]; then
 scripts/verify_roundtrip.sh corpus/bench/nasa-access-jul95.log corpus/bench/gharchive-2024-01-16-12.json corpus/bench/yellow_tripdata_2024-02.parquet > ~/results/verify.txt 2>&1
 ./target/release/examples/bench_suite --large --threads $(nproc) --repeats 3 --slow-repeats 2 --out ~/results/bench_suite_allthreads.jsonl > ~/results/bench_suite_allthreads.txt 2>&1
 ./target/release/examples/bench_suite --small --threads 1 --repeats 3 --out ~/results/bench_suite_small.jsonl > ~/results/bench_suite_small.txt 2>&1
 ./target/release/examples/bench_suite --large --threads 1 --repeats 3 --codecs glyd-default,glyd-max,zstd-3,lz4 --out ~/results/bench_suite_1thread.jsonl > ~/results/bench_suite_1thread.txt 2>&1
+fi
 S3WF_OUT=~/results/s3_workflow.jsonl scripts/s3_workflow.sh BUCKET_PLACEHOLDER corpus/bench > ~/results/s3_workflow.txt 2>&1
 touch ~/results/DONE
 '
 BENCH="${BENCH//COMMIT_PLACEHOLDER/$COMMIT}"
+BENCH="${BENCH//STEPS_PLACEHOLDER/${STEPS:-all}}"
 BENCH="${BENCH//BUCKET_PLACEHOLDER/$BUCKET}"
 BENCH="${BENCH//REGION_PLACEHOLDER/$REGION}"
 
@@ -146,6 +151,7 @@ bench_one() {
     echo "[$T] running (corpus download, build, verification, benchmarks, S3 workflow: 2-3 hours)"
     # A previous run's results (its DONE above all) would end the poll
     # below at once; they live in git.
+    [ "${STEPS:-all}" = "s3" ] && T="$T-s3"
     rm -rf "$OUT/$T"
     mkdir -p "$OUT/$T"
     "${SSH[@]}" "cat > bench.sh" <<< "$BENCH"
@@ -171,6 +177,7 @@ for T in $TYPES; do
 done
 wait
 for T in $TYPES; do
+    [ "${STEPS:-all}" = "s3" ] && T="$T-s3"
     echo "== $T"; cat "$OUT/$T/machine.txt" 2>/dev/null
     tail -3 "$OUT/$T/verify.txt" 2>/dev/null
     cat "$OUT/$T/s3_workflow.txt" 2>/dev/null

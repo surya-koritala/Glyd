@@ -12,11 +12,12 @@
 #   raw            no compression (the baseline the savings are against)
 #   glyd-max       glyd --max -m         zstd-3   zstd -3 -T0
 #   glyd-ultra     glyd --ultra -m       zstd-19  zstd -19 -T0
+#   glyd-max-rec   glyd --max -r -m      glyd-ultra-rec  glyd --ultra -r -m
 #   lz4            lz4 -1 (one thread: the format's frame is decoded on one)
 # Results: s3_workflow.jsonl (one row per codec) and a table on stdout.
 set -euo pipefail
 BUCKET="$1"; DATA="$2"; shift 2
-CODECS=("$@"); [ ${#CODECS[@]} -gt 0 ] || CODECS=(raw glyd-max glyd-ultra zstd-3 zstd-19 lz4)
+CODECS=("$@"); [ ${#CODECS[@]} -gt 0 ] || CODECS=(raw glyd-max glyd-ultra glyd-max-rec glyd-ultra-rec zstd-3 zstd-19 lz4)
 RUN="s3wf-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 WORK="${S3WF_WORK:-$(mktemp -d)}"
 OUT="${S3WF_OUT:-s3_workflow.jsonl}"
@@ -81,6 +82,8 @@ compress_all() { # compress_all <codec> <src dir> <dst dir>
             raw) ln "$f" "$dst/$b" 2>/dev/null || cp "$f" "$dst/$b" ;;
             glyd-max) glyd --max -m -c "$f" -o "$dst/$b.glyd" ;;
             glyd-ultra) glyd --ultra -m -c "$f" -o "$dst/$b.glyd" ;;
+            glyd-max-rec) glyd --max -r -m -c "$f" -o "$dst/$b.glyd" ;;
+            glyd-ultra-rec) glyd --ultra -r -m -c "$f" -o "$dst/$b.glyd" ;;
             zstd-3) zstd -q -3 -T0 "$f" -o "$dst/$b.zst" ;;
             zstd-19) zstd -q -19 -T0 "$f" -o "$dst/$b.zst" ;;
             lz4) lz4 -q -1 "$f" "$dst/$b.lz4" ;;
