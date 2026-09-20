@@ -143,7 +143,10 @@ bench_one() {
     echo "[$T] waiting for the toolchain on $IP"
     until "${SSH[@]}" test -f READY 2>/dev/null; do sleep 15; done
     "${SSH[@]}" "mkdir -p glyd && tar -C glyd -xf -" < "$TARBALL"
-    echo "[$T] running (corpus download, build, verification, benchmarks, S3 workflow: 3-5 hours)"
+    echo "[$T] running (corpus download, build, verification, benchmarks, S3 workflow: 2-3 hours)"
+    # A previous run's results (its DONE above all) would end the poll
+    # below at once; they live in git.
+    rm -rf "$OUT/$T"
     mkdir -p "$OUT/$T"
     "${SSH[@]}" "cat > bench.sh" <<< "$BENCH"
     "${SSH[@]}" "nohup bash bench.sh > run.log 2>&1 < /dev/null &"
