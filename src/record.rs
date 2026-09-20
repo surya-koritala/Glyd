@@ -475,7 +475,9 @@ pub fn detect(input: &[u8]) -> Option<Shape> {
     if lines.len() < 8 {
         return None;
     }
-    // The delimiter whose field count is most consistent across lines.
+    // The delimiter whose field count is most consistent across lines;
+    // among delimiters consistent on 98% of them, the one splitting
+    // finest (a timestamp's space must not beat a CSV's commas).
     let full: &[&[u8]] = if lines.len() > 1 { &lines[..lines.len() - 1] } else { &lines };
     let mut best: Option<(u8, usize, usize)> = None; // (delimiter, fields, lines agreeing)
     for &d in &[b' ', b'\t', b','] {
@@ -484,7 +486,8 @@ pub fn detect(input: &[u8]) -> Option<Shape> {
             *counts.entry(l.iter().filter(|&&b| b == d).count()).or_insert(0usize) += 1;
         }
         if let Some((&n, &c)) = counts.iter().max_by_key(|(_, &c)| c) {
-            if n >= 1 && best.map_or(true, |b| c > b.2) {
+            let rank = |fields: usize, agreeing: usize| (agreeing * 50 >= full.len() * 49, if agreeing * 50 >= full.len() * 49 { fields } else { agreeing });
+            if n >= 1 && best.map_or(true, |b| rank(n + 1, c) > rank(b.1, b.2)) {
                 best = Some((d, n + 1, c));
             }
         }
