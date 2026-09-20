@@ -170,19 +170,29 @@ fn main() -> io::Result<()> {
         }
         out
     } else {
-        let result = if multi_core && input_data.len() > glyd::format::MAX_BLOCK_SIZE {
-            glyd::decompress_parallel(&input_data)
-        } else {
-            glyd::decompress(&input_data)
+        // Decoded a batch of units at a time into one reused buffer and
+        // written as it goes: the memory is a batch, not the file.
+        let mut out: Box<dyn Write> = match output_path {
+            Some(ref p) if p != "-" => Box::new(std::fs::File::create(p)?),
+            _ => Box::new(io::stdout().lock()),
         };
-
-        match result {
-            Ok(data) => data,
-            Err(e) => {
-                eprintln!("Decompression failed: {:?}", e);
+        let result = if multi_core && input_data.len() > glyd::format::MAX_BLOCK_SIZE {
+            glyd::decompress_stream(&input_data, |batch| out.write_all(batch))
+        } else {
+            match glyd::decompress(&input_data) {
+                Ok(data) => out.write_all(&data),
+                Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+            }
+        };
+        if let Err(e) = result {
+            if e.kind() == io::ErrorKind::InvalidData {
+                eprintln!("Decompression failed: {}", e);
                 std::process::exit(1);
             }
+            return Err(e);
         }
+        out.flush()?;
+        return Ok(());
     };
 
     // Determine output destination

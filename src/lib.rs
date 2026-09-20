@@ -35,7 +35,59 @@ use error::{CodecError, Result};
 use finder::{new_table, Dense, HashTable, Lzav, Mode, Turbo};
 use format::*;
 use v7_format::LOCAL_WINDOW;
-use rayon::prelude::*;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// Threads the parallel paths use: `set_threads`, else the machine's.
+static THREADS: AtomicUsize = AtomicUsize::new(0);
+
+/// Use `n` threads for the parallel paths (0: the machine's count).
+pub fn set_threads(n: usize) {
+    THREADS.store(n, Ordering::Relaxed);
+}
+
+fn threads() -> usize {
+    match THREADS.load(Ordering::Relaxed) {
+        0 => std::thread::available_parallelism().map_or(1, |t| t.get()),
+        n => n,
+    }
+}
+
+/// `f(i)` for every `i < n`, on up to `threads()` scoped threads that
+/// each take the next unit as they finish one and exit when none is
+/// left (no idle thread spins, so the CPU time is the work's). The
+/// first error stops the rest and is returned.
+fn par_units<E: Send>(n: usize, f: impl Fn(usize) -> std::result::Result<(), E> + Sync) -> std::result::Result<(), E> {
+    let workers = threads().min(n);
+    if workers <= 1 {
+        return (0..n).try_for_each(f);
+    }
+    let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let run = || -> std::result::Result<(), E> {
+        loop {
+            let i = next.fetch_add(1, Ordering::Relaxed);
+            if i >= n || stop.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+            if let Err(e) = f(i) {
+                stop.store(true, Ordering::Relaxed);
+                return Err(e);
+            }
+        }
+    };
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (1..workers).map(|_| s.spawn(run)).collect();
+        let mut result = run();
+        for h in handles {
+            if let Err(e) = h.join().expect("a worker panicked") {
+                if result.is_ok() {
+                    result = Err(e);
+                }
+            }
+        }
+        result
+    })
+}
 use std::cell::RefCell;
 
 struct CompressScratch {
@@ -581,26 +633,25 @@ pub fn compress_with_dict_ultra(dict: &Dict, input: &[u8], output: &mut Vec<u8>)
 /// (`format::parallel_unit`), each unit a chain of its own. An input of
 /// one unit or less is compressed sequentially.
 fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>), smallest: usize) {
-    let unit = parallel_unit(input.len(), rayon::current_num_threads(), smallest);
+    let unit = parallel_unit(input.len(), threads(), smallest);
     if input.len() <= unit {
         level(input, output);
         return;
     }
 
     let chunks: Vec<&[u8]> = input.chunks(unit).collect();
-    let compressed_chunks: Vec<Vec<u8>> = chunks
-        .par_iter()
-        .map(|chunk| {
-            let mut chunk_out = Vec::with_capacity(chunk.len() / 2 + 1024);
-            level(chunk, &mut chunk_out);
-            chunk_out
-        })
-        .collect();
+    let compressed_chunks: Vec<std::sync::Mutex<Vec<u8>>> = chunks.iter().map(|_| std::sync::Mutex::new(Vec::new())).collect();
+    let _ = par_units::<()>(chunks.len(), |i| {
+        let mut chunk_out = Vec::with_capacity(chunks[i].len() / 2 + 1024);
+        level(chunks[i], &mut chunk_out);
+        *compressed_chunks[i].lock().unwrap() = chunk_out;
+        Ok(())
+    });
 
-    let total_len: usize = compressed_chunks.iter().map(|c| c.len()).sum();
+    let total_len: usize = compressed_chunks.iter().map(|c| c.lock().unwrap().len()).sum();
     output.reserve(total_len);
     for chunk in compressed_chunks {
-        output.extend_from_slice(&chunk);
+        output.extend_from_slice(&chunk.into_inner().unwrap());
     }
 }
 
@@ -856,20 +907,24 @@ fn records_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8
     if units.is_empty() {
         units.push(&input[..0]);
     }
-    let compressed: Vec<(bool, Vec<u8>)> = units
-        .par_iter()
-        .map(|unit| {
-            let mut out = Vec::with_capacity(unit.len() / 3 + 1024);
-            if records_pay(&unit[..unit.len().min(RECORDS_TRIAL)], level) {
-                if let Some(image) = record::transform(unit) {
-                    level(&image, &mut out);
-                    return (true, out);
-                }
+    let slots: Vec<std::sync::Mutex<(bool, Vec<u8>)>> = units.iter().map(|_| std::sync::Mutex::new((false, Vec::new()))).collect();
+    let _ = par_units::<()>(units.len(), |i| {
+        let unit = units[i];
+        let mut out = Vec::with_capacity(unit.len() / 3 + 1024);
+        let image = records_pay(&unit[..unit.len().min(RECORDS_TRIAL)], level) && match record::transform(unit) {
+            Some(image) => {
+                level(&image, &mut out);
+                true
             }
+            None => false,
+        };
+        if !image {
             level(unit, &mut out);
-            (false, out)
-        })
-        .collect();
+        }
+        *slots[i].lock().unwrap() = (image, out);
+        Ok(())
+    });
+    let compressed: Vec<(bool, Vec<u8>)> = slots.into_iter().map(|m| m.into_inner().unwrap()).collect();
     output.extend_from_slice(RECORDS_MAGIC);
     put_varint(output, units.len() as u32);
     for (u, (image, c)) in units.iter().zip(&compressed) {
@@ -894,6 +949,11 @@ pub fn compress_records_into_ultra(input: &[u8], output: &mut Vec<u8>) {
 
 /// Decode a record-mode stream into `dst`: every unit in parallel, its
 /// inner stream then the rebuild.
+thread_local! {
+    /// A record unit's image and text, kept across units.
+    static RECORD_BUFS: RefCell<(Vec<u8>, Vec<u8>)> = RefCell::new((Vec::new(), Vec::new()));
+}
+
 fn records_into(units: &[RecordUnit<'_>], dst: &mut [u8]) -> Result<usize> {
     let total: usize = units.iter().map(|u| u.len).sum();
     if dst.len() < total {
@@ -906,16 +966,24 @@ fn records_into(units: &[RecordUnit<'_>], dst: &mut [u8]) -> Result<usize> {
         at += u.len;
     }
     let base = dst.as_mut_ptr() as usize;
-    units.par_iter().zip(offsets.par_iter()).try_for_each(|(u, &off)| -> Result<()> {
+    par_units(units.len(), |i| -> Result<()> {
+        let (u, off) = (&units[i], offsets[i]);
         // Units cover disjoint ranges of `dst`.
         let out = unsafe { std::slice::from_raw_parts_mut((base + off) as *mut u8, u.len) };
         if u.image {
-            let image = decompress(u.stream)?;
-            let text = record::inverse(&image)?;
-            if text.len() != u.len {
-                return Err(CodecError::CorruptedBitstream("record envelope: unit length"));
-            }
-            out.copy_from_slice(&text);
+            // The image and the rebuilt text in buffers this thread keeps.
+            RECORD_BUFS.with_borrow_mut(|(image, text)| -> Result<()> {
+                let n = decompressed_len(u.stream)?;
+                image.resize(n + PADDING * 2, 0);
+                let n = decompress_into(u.stream, image)?;
+                image.truncate(n);
+                record::inverse_into(image, text)?;
+                if text.len() != u.len {
+                    return Err(CodecError::CorruptedBitstream("record envelope: unit length"));
+                }
+                out.copy_from_slice(text);
+                Ok(())
+            })?;
         } else {
             let n = decompress_into(u.stream, out)?;
             if n != u.len {
@@ -1092,7 +1160,9 @@ pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
 /// Dictionary streams (`compress_with_dict`) are sequential-only: a unit
 /// here has no history before it, so any v7 block naming a dictionary is
 /// rejected up front.
-fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> Result<usize> {
+/// The blocks of a plain stream and its units (a unit starts at a
+/// chain reset and decodes on its own), with the total decoded length.
+fn scan_units(compressed: &[u8]) -> Result<(Vec<BlockInfo>, Vec<ParallelUnit>, usize)> {
     let mut blocks = Vec::new();
     let mut units: Vec<ParallelUnit> = Vec::new();
     let mut cursor = 0usize;
@@ -1130,19 +1200,18 @@ fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> 
     if cursor != compressed.len() {
         return Err(CodecError::CorruptedBitstream("Trailing unparsed bytes or truncated block"));
     }
-    if dst.len() < total_uncomp {
-        return Err(CodecError::OutputBufferTooSmall { required: total_uncomp, provided: dst.len() });
-    }
-    if units.len() <= 1 {
-        return decompress_sequential(compressed, dst, verify);
-    }
+    Ok((blocks, units, total_uncomp))
+}
 
+/// Decode `units` (their output starting at `base` of the stream) into
+/// `dst`, in parallel; `dst[0]` holds the byte at `base`.
+fn decode_units(compressed: &[u8], blocks: &[BlockInfo], units: &[ParallelUnit], base: usize, dst: &mut [u8], verify: bool) -> Result<()> {
     let output_ptr = dst.as_mut_ptr() as usize;
     let avx2 = has_avx2();
-
-    units.par_iter().try_for_each(|unit| -> Result<()> {
+    par_units(units.len(), |i| -> Result<()> {
+        let unit = &units[i];
         V7_TABLES.with_borrow_mut(|t| *t = v7_decode::DecTables::none());
-        let unit_buffer_start = (output_ptr + unit.uncomp_offset) as *const u8;
+        let unit_buffer_start = (output_ptr + unit.uncomp_offset - base) as *const u8;
         for i in 0..unit.block_count {
             let b = &blocks[unit.first_block_idx + i];
             let block_slice = &compressed[b.block_offset..(b.block_offset + b.block_size + bits::PAD).min(compressed.len())];
@@ -1151,7 +1220,7 @@ fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> 
             let payload = &block_slice[start..];
             // Blocks cover disjoint output ranges, so these slices never alias.
             let dst_slice = unsafe {
-                let ptr = (output_ptr + b.uncomp_offset) as *mut u8;
+                let ptr = (output_ptr + b.uncomp_offset - base) as *mut u8;
                 std::slice::from_raw_parts_mut(ptr, b.uncomp_len)
             };
             unsafe {
@@ -1165,9 +1234,71 @@ fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> 
             }
         }
         Ok(())
-    })?;
+    })
+}
 
+fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> Result<usize> {
+    let (blocks, units, total_uncomp) = scan_units(compressed)?;
+    if dst.len() < total_uncomp {
+        return Err(CodecError::OutputBufferTooSmall { required: total_uncomp, provided: dst.len() });
+    }
+    if units.len() <= 1 {
+        return decompress_sequential(compressed, dst, verify);
+    }
+    decode_units(compressed, &blocks, &units, 0, dst, verify)?;
     Ok(total_uncomp)
+}
+
+/// Bytes of output a streaming batch holds at least (units are added
+/// until the batch reaches this, or `threads()` of them).
+const STREAM_BATCH: usize = 256 << 20;
+
+/// Decode `compressed` a batch of units at a time into one reused
+/// buffer, handing each batch to `sink` in order (with checksums
+/// verified): the memory is a batch, not the whole output, and after
+/// the first batch no output page is touched for the first time, which
+/// is what a whole-output decode spends most of its extra CPU on. A
+/// codec error comes back as `InvalidData`.
+pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+    let codec = |e: CodecError| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+    let mut buf: Vec<u8> = Vec::new();
+    let workers = threads();
+    if let Some(units) = records_envelope(compressed) {
+        let mut at = 0usize;
+        while at < units.len() {
+            let mut end = at + 1;
+            let mut total = units[at].len;
+            while end < units.len() && end - at < workers.max(2) && total < STREAM_BATCH {
+                total += units[end].len;
+                end += 1;
+            }
+            buf.resize(total + PADDING * 2, 0);
+            records_into(&units[at..end], &mut buf).map_err(codec)?;
+            sink(&buf[..total])?;
+            at = end;
+        }
+        return Ok(());
+    }
+    let (blocks, units, total_uncomp) = scan_units(compressed).map_err(codec)?;
+    if units.len() <= 1 {
+        buf.resize(total_uncomp + PADDING * 2, 0);
+        let n = decompress_sequential(compressed, &mut buf, true).map_err(codec)?;
+        return sink(&buf[..n]);
+    }
+    let mut at = 0usize;
+    while at < units.len() {
+        let mut end = at + 1;
+        while end < units.len() && end - at < workers.max(2) && units[end].uncomp_offset - units[at].uncomp_offset < STREAM_BATCH {
+            end += 1;
+        }
+        let base = units[at].uncomp_offset;
+        let total = units[end - 1].uncomp_offset + units[end - 1].uncomp_len - base;
+        buf.resize(total + PADDING * 2, 0);
+        decode_units(compressed, &blocks, &units[at..end], base, &mut buf, true).map_err(codec)?;
+        sink(&buf[..total])?;
+        at = end;
+    }
+    Ok(())
 }
 
 /// Decompress in parallel across all CPU cores into a pre-allocated buffer with checksum verification.

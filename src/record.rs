@@ -1154,6 +1154,15 @@ impl<'a> Decoded<'a> {
 
 /// Rebuild the input from a record image.
 pub fn inverse(image: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    inverse_into(image, &mut out)?;
+    Ok(out)
+}
+
+/// `inverse` appending to `out` (cleared first; its capacity is kept
+/// across calls).
+pub fn inverse_into(image: &[u8], out: &mut Vec<u8>) -> Result<()> {
+    out.clear();
     if image.len() < MAGIC.len() + 4 || &image[..8] != MAGIC {
         return Err(corrupt("record image: magic"));
     }
@@ -1187,7 +1196,7 @@ pub fn inverse(image: &[u8]) -> Result<Vec<u8>> {
         return Err(corrupt("record image: trailing bytes"));
     }
     let mut it = streams.iter();
-    let mut out = Vec::with_capacity(image.len() * 4);
+    out.reserve(image.len() * 4);
     match mode {
         MODE_DELIMITED => {
             let kind = *it.next().ok_or(corrupt("record image: missing kind"))?;
@@ -1214,7 +1223,7 @@ pub fn inverse(image: &[u8]) -> Result<Vec<u8>> {
                     if ci > 0 {
                         out.push(delimiter);
                     }
-                    next_value(c, &mut out)?;
+                    next_value(c, out)?;
                 }
             }
             if trailing_newline {
@@ -1248,7 +1257,7 @@ pub fn inverse(image: &[u8]) -> Result<Vec<u8>> {
                     if ci > 0 {
                         out.push(b',');
                     }
-                    next_value(c, &mut out)?;
+                    next_value(c, out)?;
                 }
                 out.push(b')');
             }
@@ -1279,12 +1288,12 @@ pub fn inverse(image: &[u8]) -> Result<Vec<u8>> {
                     return Err(corrupt("record image: more holes than values"));
                 }
                 let id = get_varint(order, &mut opos)? as usize;
-                next_value(cols.get_mut(id).ok_or(corrupt("record image: column id"))?, &mut out)?;
+                next_value(cols.get_mut(id).ok_or(corrupt("record image: column id"))?, out)?;
             }
         }
         _ => return Err(corrupt("record image: mode")),
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Append the column's next value to `out`.

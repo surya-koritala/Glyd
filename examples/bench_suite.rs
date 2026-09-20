@@ -77,6 +77,7 @@ fn main() {
         o.large = true;
         o.small = true;
     }
+    glyd::set_threads(o.threads);
     rayon::ThreadPoolBuilder::new().num_threads(o.threads).build_global().unwrap();
     let mut out = std::fs::OpenOptions::new().create(true).append(true).open(&o.out).unwrap();
     let machine = machine();
@@ -287,6 +288,7 @@ fn child_rss(path: &str, codec: &str, threads: usize, max_bytes: usize) -> u64 {
 }
 
 fn child(path: &str, codec: &str, threads: usize, max_bytes: usize) {
+    glyd::set_threads(threads);
     rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
     let c = codecs().into_iter().find(|c| c.name == codec).unwrap();
     let input = read_file(path, max_bytes);
