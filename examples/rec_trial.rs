@@ -26,7 +26,7 @@ fn main() {
 /// Per-stream anatomy of a record image: type, raw and --max size.
 pub fn anatomy(img: &[u8]) {
     let mut pos = 10usize;
-    let mut varint = |pos: &mut usize| { let (mut v, mut sh) = (0u64, 0); loop { let b = img[*pos]; *pos += 1; v |= ((b & 127) as u64) << sh; if b < 128 { return v; } sh += 7; } };
+    let varint = |pos: &mut usize| { let (mut v, mut sh) = (0u64, 0); loop { let b = img[*pos]; *pos += 1; v |= ((b & 127) as u64) << sh; if b < 128 { return v; } sh += 7; } };
     let mode = img[8];
     let fields = varint(&mut pos) as usize;
     let _lines = varint(&mut pos);

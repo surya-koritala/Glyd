@@ -770,6 +770,8 @@ unsafe fn decode_block(
     let dense = (header.flags & FLAG_DENSE) != 0;
     let turbo = (header.flags & FLAG_TURBO) != 0;
     let min_match = if dense { MIN_MATCH_LEN_DENSE } else if turbo { MIN_MATCH_LEN_TURBO } else { MIN_MATCH_LEN };
+    // Each machine takes its own decoder below; the others' inputs go unused.
+    let _ = (avx2, min_match);
     let (table, esc): (&[u32; 256], usize) = if dense {
         (&TOKEN_TABLE_DENSE, ESCAPE_BASE_MATCH_DENSE)
     } else if turbo {
@@ -797,7 +799,8 @@ unsafe fn decode_block(
         return Ok(());
     }
     #[allow(unreachable_code)]
-    let _ = (avx2, table, esc);
+    let _ = (table, esc);
+    #[allow(unreachable_code)]
     fallback::decompress_fallback_raw(
         tokens, token_count, offsets, offsets_len, extras, extras_len,
         literals, dst, buffer_start, uncomp_len, min_match,
@@ -1509,8 +1512,8 @@ pub fn compress_records_into_ultra(input: &[u8], output: &mut Vec<u8>) {
     records_with(input, output, compress_into_ultra, PARALLEL_UNIT_ULTRA)
 }
 
-/// Decode a record-mode stream into `dst`: every unit in parallel, its
-/// inner stream then the rebuild.
+// Decode a record-mode stream into `dst`: every unit in parallel, its
+// inner stream then the rebuild.
 thread_local! {
     // A record unit's image and text, kept across units.
     static RECORD_BUFS: RefCell<(Vec<u8>, Vec<u8>)> = RefCell::new((Vec::new(), Vec::new()));

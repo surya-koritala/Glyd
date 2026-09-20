@@ -28,7 +28,6 @@ struct Block {
     off: Vec<u32>,
     literals: Vec<u8>,
     out_len: usize,
-    file_base: usize,
     dst_pos: usize,
 }
 
@@ -702,7 +701,7 @@ fn main() {
                 let mut literals = c[lb..lb + h.literal_len as usize].to_vec();
                 literals.resize(literals.len() + 64, 0);
                 let mut extras = c[eb..lb].to_vec(); extras.resize(extras.len() + 64, 0);
-                blocks.push(Block { tokens: c[tb..ob].to_vec(), extras, lit, ml, off, literals, out_len: h.uncompressed_len as usize, file_base, dst_pos: total_out });
+                blocks.push(Block { tokens: c[tb..ob].to_vec(), extras, lit, ml, off, literals, out_len: h.uncompressed_len as usize, dst_pos: total_out });
             }
             total_out += h.uncompressed_len as usize;
             cur += HEADER_SIZE + h.payload_len();
@@ -755,7 +754,7 @@ fn main() {
         println!("{:<9} {:>8.2} ms  {:>6.2} ns/token  {:>6.1} GB/s  {:>5.1}% of memcpy", name, best * 1e3,
             best * 1e9 / ntok as f64, (total_out as f64 / gb) / best, 0.0);
     };
-    let mut time = |f: &mut dyn FnMut()| -> f64 {
+    let time = |f: &mut dyn FnMut()| -> f64 {
         let mut best = f64::MAX;
         for _ in 0..5 { let t = Instant::now(); f(); let e = t.elapsed().as_secs_f64(); if e < best { best = e; } }
         best

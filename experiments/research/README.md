@@ -78,3 +78,26 @@ bytes. Not a lever.
    the only lever left for hash-and-text JSON; cold archives only.
    Built as `--cold` (section C).
 4. Float columns and Parquet pages: dead ends, measured.
+
+## G. Model checkpoints (`tensors.py`)
+
+Public checkpoints from Hugging Face, every transform lossless: byte
+planes (the k-th byte of every element together), and the XOR with the
+previous checkpoint of the same run, under zstd -3 / -19 and Glyd
+`--max` (10 threads).
+
+| File | as it is: zstd -3 · zstd -19 · Glyd --max | byte planes: zstd -3 · zstd -19 · Glyd --max |
+| :--- | ---: | ---: |
+| Pythia-70m step 142000, fp32 (282 MB) | 1.74x · 2.06x · 1.79x | 2.20x · 2.33x · **2.22x at 970 MB/s** |
+| Qwen2.5-0.5B, bf16 (988 MB) | 1.28x · 1.32x · 1.28x | 1.41x · 1.49x · 1.41x |
+
+Between consecutive Pythia checkpoints (1,000 steps apart, end of
+training) 0.3% of the elements are identical, so byte-level history
+(Glyd `--base`) gains nothing: 1.79x. The XOR of the two, in byte
+planes: **2.94x (zstd -3), 3.18x (zstd -19), 2.96x (Glyd --max)** — a
+checkpoint after the first costs 1.7x less than compressed alone.
+
+What it says: a tensor-aware transform is worth 1.26x on fp32 files and
+1.10x on bf16 over zstd -3 (the mantissa bits are noise and stay), and
+1.7x per checkpoint of a run against its predecessor. Real at petabyte
+scale, not a leap; ZipNN-class results (17-33% on bf16) agree.

@@ -143,10 +143,6 @@ impl Dict {
         &self.content[..self.content.len() - CONTENT_PAD]
     }
 
-    /// The content with its padding: what the decoder reads from.
-    pub(crate) fn content_padded(&self) -> &[u8] {
-        &self.content
-    }
 
     pub fn id(&self) -> u32 {
         self.id

@@ -530,10 +530,6 @@ impl Recent {
         }
         pos
     }
-    #[inline(always)]
-    fn at(&self, p: usize) -> Option<u32> {
-        if p < self.len { Some(self.ids[(self.head + p) % RECENT]) } else { None }
-    }
     /// The value at position `p` (below `len`) moved to the front: the
     /// entries before it step back one.
     #[inline(always)]
@@ -1627,13 +1623,6 @@ struct ColTable {
     ends: Vec<u32>,
 }
 
-impl ColTable {
-    #[inline(always)]
-    fn value(&self, i: usize) -> &[u8] {
-        let start = if i == 0 { 0 } else { self.ends[i - 1] as usize };
-        &self.bytes[start..self.ends[i] as usize]
-    }
-}
 
 /// `n` values of column `c` into `t`.
 fn decode_column(c: &mut Decoded, n: usize, t: &mut ColTable) -> Result<()> {
