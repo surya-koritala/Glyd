@@ -369,9 +369,11 @@ impl Predictor {
         let st = &self.tables.stretch;
         for i in 0..NCTX {
             self.slot[i] = self.bucket[i] + within as usize;
-            let s = self.t[i].t[self.slot[i]];
+            // A bucket is 16 slots inside its table; a state is a byte;
+            // a probability's top 12 bits index the stretch table.
+            let s = unsafe { *self.t[i].t.get_unchecked(self.slot[i]) };
             self.state[i] = s;
-            self.x[i] = st[(self.sm[i][s as usize] >> 20) as usize] as i32;
+            self.x[i] = unsafe { *st.get_unchecked((*self.sm[i].get_unchecked(s as usize) >> 20) as usize) } as i32;
         }
         // The match model: the expected byte's next bit, as long as the
         // bits so far agree with it, weighted by the length matched.
@@ -418,8 +420,10 @@ impl Predictor {
         let dt = &self.tables.dt;
         for i in 0..NCTX {
             let s = self.state[i];
-            learn(&mut self.sm[i][s as usize], bit, COUNT_LIMIT, dt);
-            self.t[i].t[self.slot[i]] = NEX[s as usize][bit as usize];
+            unsafe {
+                learn(self.sm[i].get_unchecked_mut(s as usize), bit, COUNT_LIMIT, dt);
+                *self.t[i].t.get_unchecked_mut(self.slot[i]) = NEX[s as usize][bit as usize];
+            }
         }
         if self.mm_slot != usize::MAX {
             learn(&mut self.mm[self.mm_slot], bit, COUNT_LIMIT, dt);

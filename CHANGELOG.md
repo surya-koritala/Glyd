@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.7.0 — 2026-09-20
 
 ### The cold level: context mixing
 - `glyd --cold` (`compress_into_cold`, `compress_parallel_into_cold`,
@@ -19,8 +19,9 @@ every earlier format.
   (`GLYDCOLD`); every decoder reads it. 64 MB slices, two threads: JSON
   events 22.5x (zstd -19 14.6x, `--ultra` 15.9x, zpaq -m5 22.8x), NASA
   log `-r` 31.1x (15.7x, 26.4x, 31.7x), page_props dump `-r` 11.6x
-  (6.2x, 8.6x, 11.1x), webster 7.1x (4.8x, 4.8x, 7.3x); 1.2-1.3 MB/s
-  per core each way, 400 MB per thread. Record mode decides whether
+  (6.2x, 8.6x, 11.1x), webster 7.1x (4.8x, 4.8x, 7.3x); the HDFS and
+  Spark logs (128 MB, `-r`) 33.7x and 65.2x against zstd -19's 16.0x
+  and 25.2x; 1.2-1.5 MB/s per core each way, 400 MB per thread. Record mode decides whether
   its transform pays at the max level whatever the level.
 
 ## v0.6.0 — 2026-09-20

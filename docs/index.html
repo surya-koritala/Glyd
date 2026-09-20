@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Glyd — compression that moves the storage bill</title>
-<meta name="description" content="Glyd v0.6.0: base mode stores a new version of a dump, image or source tree for a few percent of its size, 15 kernel releases in 228 MB; record mode turns logs of any shape, dumps, CSV and JSON lines into typed columns; the cold level's context mixing stores 1.5–2× less than zstd -19; measured against zstd and LZ4 on real data.">
+<meta name="description" content="Glyd v0.7.0: base mode stores a new version of a dump, image or source tree for a few percent of its size, 15 kernel releases in 228 MB; record mode turns logs of any shape, dumps, CSV and JSON lines into typed columns; the cold level's context mixing stores 1.5–2× less than zstd -19; measured against zstd and LZ4 on real data.">
 <style>
   :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; --hl:#eef3ff; }
   @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --line:#333; --accent:#6ea0ff; --hl:#1b2233; } }
@@ -28,9 +28,9 @@
 </head>
 <body>
 <main>
-  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.6.0">v0.6.0 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-20.md">Benchmark report</a><a href="savings.html">Savings calculator</a></nav>
+  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.7.0">v0.7.0 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-20.md">Benchmark report</a><a href="savings.html">Savings calculator</a></nav>
   <h1>Glyd</h1>
-  <p class="sub">A compression library and CLI (Rust, C ABI) for the data that fills object storage: logs, database exports, telemetry, JSON, and the versions of all of them. v0.6.0, September 2026. Every number below is measured on public data, every decode compared byte for byte with its input, and reproducible from the repository.</p>
+  <p class="sub">A compression library and CLI (Rust, C ABI) for the data that fills object storage: logs, database exports, telemetry, JSON, and the versions of all of them. v0.7.0, September 2026. Every number below is measured on public data, every decode compared byte for byte with its input, and reproducible from the repository.</p>
 
   <a class="cta" href="savings.html">What would it save you?</a>
   <a class="cta" href="https://github.com/surya-koritala/Glyd#quick-start">Quick start</a>
@@ -103,6 +103,8 @@
     <tr class="g"><td>NASA access log</td><td>15.7</td><td>15.4</td><td>26.4</td><td>31.7 · 0.3 MB/s</td><td>31.1 · 1.2 MB/s per core</td><td>1.98× smaller</td></tr>
     <tr class="g"><td>enwiki page_props SQL dump</td><td>6.2</td><td>6.4</td><td>8.6</td><td>11.1 · 0.4 MB/s</td><td>11.6 · 1.2 MB/s per core</td><td>1.87× smaller</td></tr>
     <tr class="g"><td>webster (text, 41 MB)</td><td>4.8</td><td>4.9</td><td>4.8</td><td>7.3 · 0.35 MB/s</td><td>7.1 · 1.2 MB/s per core</td><td>1.47× smaller</td></tr>
+    <tr class="g"><td>HDFS log, 128 MB (-r)</td><td>16.0</td><td></td><td>27.5</td><td></td><td>33.7</td><td>2.1× smaller</td></tr>
+    <tr class="g"><td>Spark log, 128 MB (-r)</td><td>25.2</td><td></td><td>53.6</td><td></td><td>65.2</td><td>2.6× smaller</td></tr>
   </table></div>
   <p class="muted">The zpaq -m5 class within 3% either way, at 3–4× its speed per core; reads cost what writes cost. A terabyte is about 210 core-hours each way ($8 on Graviton3); 1.5–2× fewer bytes than zstd -19 saves $3–5 a year per raw terabyte in S3 Standard-IA, so the level pays for data kept two years or more and read a few times at most, or moved more than it is read.</p>
 
