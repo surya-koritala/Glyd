@@ -51,17 +51,13 @@ Examples:
 
 fn print_version() {
     println!("glyd {}", env!("CARGO_PKG_VERSION"));
+    // The kernels are AVX2 (x86-64) and NEON (aarch64); everything else runs scalar.
     #[cfg(target_arch = "x86_64")]
-    {
-        let avx512 = is_x86_feature_detected!("avx512f") && is_x86_feature_detected!("avx512bw");
-        let avx2 = is_x86_feature_detected!("avx2");
-        let bmi2 = is_x86_feature_detected!("bmi2");
-        println!("Hardware SIMD: AVX-512={}, AVX2={}, BMI2={}", avx512, avx2, bmi2);
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        println!("Hardware SIMD: Scalar Fallback");
-    }
+    println!("SIMD: {}", if is_x86_feature_detected!("avx2") { "AVX2" } else { "scalar" });
+    #[cfg(target_arch = "aarch64")]
+    println!("SIMD: NEON");
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    println!("SIMD: scalar");
 }
 
 fn main() -> io::Result<()> {
