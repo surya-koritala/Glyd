@@ -67,7 +67,7 @@
     <tr class="g"><td>GitHub events (12 hours)</td><td>9.4 GB</td><td>875 MB</td><td>670 MB</td><td>1.3× (nothing is a version of anything)</td></tr>
     <tr class="g"><td><b>The bucket</b></td><td><b>39.2 GB</b></td><td><b>6,132 MB (6.4×)</b></td><td><b>1,334 MB (29.4×)</b></td><td><b>4.6× smaller</b></td></tr>
   </table></div>
-  <p class="muted">Put runs at 620 MB/s end to end on ten cores, base rebuilt and delta written; delete, compact and verify are there. A petabyte of such data in S3 Standard: $71K a year with zstd, $15K with the store. Chunk-level dedup, the backup approach, gains 1–4× on the same pairs.</p>
+  <p class="muted">Put runs at 620 MB/s end to end on ten cores, base rebuilt and delta written; delete, compact and verify are there. A petabyte of such data in S3 Standard: $43K a year with zstd -3, $9.4K with the store. Chunk-level dedup, the backup approach, gains 1–4× on the same pairs.</p>
 
   <h2>Base mode: a version stored for the change, not the whole</h2>
   <p>Most stored bytes are versions — nightly dumps, snapshots, images, source trees. <code>glyd --base old new</code> parses every 32 MB of the new version with the old one's matching region as history and writes a stream that decodes with the same base. Measured on consecutive versions of real objects against zstd 1.5.7's own <code>--patch-from</code>, same machine, every rebuild byte-exact:</p>

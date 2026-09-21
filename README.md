@@ -255,8 +255,8 @@ the likeliest next base); verifying the whole bucket reads it back at
 1.5 GB/s. The same store built on zstd's own
 `--patch-from` would land around 3–4×: our deltas are 1.1–2.1× smaller
 and read 10× faster, and the store design does the rest. In money, a
-petabyte of such data in S3 Standard costs $71K a year with zstd and
-$15K with the store. Chunk-level dedup, what backup systems do, gains
+petabyte of such data in S3 Standard costs $43K a year with zstd -3
+and $9.4K with the store. Chunk-level dedup, what backup systems do, gains
 1–4× on the same pairs. The store is a directory: `objects/<id>`, the
 fingerprints, an index, and the fingerprint table — an open-addressing
 hash table mapped from disk (12 bytes per 4 KB stored, kept at most
