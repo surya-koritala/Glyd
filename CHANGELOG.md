@@ -6,6 +6,24 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+### Write speed
+- The max level's finder tables are zstd -3's size (17/16 bits, 768
+  KB) instead of 2 MB: on Graviton3 and Sapphire Rapids the 2 MB
+  tables ran 10–25% slower for 0.5–1.5% fewer bytes (on an M1 the
+  difference is 2–7%). One core, `benchmarks/max`: JSON events
+  330/463 MB/s against zstd -3's 440/633 (Graviton3 / Sapphire Rapids),
+  a table dump 301/420 against 331/462, a root filesystem 178/248
+  against 115/294. Where the time goes: the parse 45–80%, the
+  long-distance pass 7–45% (JSON), the entropy coder 10–18%.
+- The CLI maps its input file instead of reading it into memory
+  first: a 512 MB file at `--max` on ten cores 1,060 → 1,280 MB/s
+  (the in-process figure is 1,760; the rest is the output write).
+- Measured and not taken: probing only the first repeat offset (no
+  faster, 2–3% more bytes); 16/15 tables (5–12% faster again, 1–2%
+  more bytes).
+
 ## v0.9.1 — 2026-09-21
 
 ### The store: S3, rebase, a second candidate

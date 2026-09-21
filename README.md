@@ -627,10 +627,15 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Known gaps
 
-- `--max` compresses at 0.58–0.66× zstd -3's speed on server cores: its
-  2 MB of finder tables miss a 1 MB L2, and the long-distance pass costs
-  15–37% where it stays on. Record mode's transform halves the write
-  speed again (200–400 MB/s per core).
+- `--max` writes slower than zstd -3 on server cores where the data has
+  few far repeats. Measured on one core with the finder's tables at
+  zstd -3's size (17/16 bits, the default since v0.9.2;
+  `benchmarks/max`): JSON events 0.73–0.75× zstd's speed (the
+  long-distance pass is 40% of the time, and 26% fewer bytes), a table
+  dump 0.91×, a root filesystem 1.5× on Graviton3 and 0.84× on Sapphire
+  Rapids. The pass that finds repeats up to 128 MB back is what the
+  time buys; the parse itself runs at zstd's speed. Record mode's
+  transform halves the write speed again (200–400 MB/s per core).
 - Reads in record mode spend 2–2.7× zstd's CPU rebuilding the columns
   (5–30 ns per value by column type), which makes zstd -3 the cheaper
   choice at a hundred CPU-billed reads a month; the plain CLI's reads

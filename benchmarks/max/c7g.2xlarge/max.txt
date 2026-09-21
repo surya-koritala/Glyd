@@ -1,0 +1,154 @@
++ echo 'commit: ceadfcd'
+commit: ceadfcd
+++ lscpu
+++ grep -m1 -E 'Model name|BIOS Model name'
+++ cut -d: -f2
+++ sed 's/^ *//'
+++ nproc
++ echo 'cpu: Neoverse-V1 (8 vCPU)'
+cpu: Neoverse-V1 (8 vCPU)
++ lscpu
++ grep -E 'L2|L3'
+L2 cache:                                8 MiB (8 instances)
+L3 cache:                                32 MiB (1 instance)
++ for f in ~/data/gharchive.json ~/data/categorylinks.sql ~/data/root.tar
+++ stat -c %s /home/ubuntu/data/gharchive.json
++ n=536870912
+++ date +%s.%N
++ t0=1789957496.361275967
++ zstd -3 -T1 -q -c /home/ubuntu/data/gharchive.json
+++ date +%s.%N
++ t1=1789957497.582059766
+++ basename /home/ubuntu/data/gharchive.json
+++ echo '536870912 / (1789957497.582059766 - 1789957496.361275967) / 1000000'
+++ bc -l
+++ cut -c1-6
+++ stat -c %s /tmp/z.zst
++ echo 'gharchive.json: zstd -3 one thread 439.77 MB/s, 51224332 B'
+gharchive.json: zstd -3 one thread 439.77 MB/s, 51224332 B
+++ date +%s.%N
++ t0=1789957497.587429806
++ zstd -3 -T8 -q -c /home/ubuntu/data/gharchive.json
+++ date +%s.%N
++ t1=1789957497.877556349
+++ basename /home/ubuntu/data/gharchive.json
+++ echo '536870912 / (1789957497.877556349 - 1789957497.587429806) / 1000000'
+++ bc -l
+++ cut -c1-6
++ echo 'gharchive.json: zstd -3 eight threads 1850.4 MB/s'
+gharchive.json: zstd -3 eight threads 1850.4 MB/s
++ for bits in 18,18 17,16 16,15
++ echo -n 'tables 18,18: '
+tables 18,18: + GLYD_BITS=18,18
++ ./target/release/examples/max_split /home/ubuntu/data/gharchive.json
+gharchive.json: 512 MB, --max 36233745 B (14.82x) in 1.79 s = 300 MB/s; split: ldm 0.68 s (38%), parse 0.93 s (52%), entropy 0.18 s (10%); far matches 2607356
++ for bits in 18,18 17,16 16,15
++ echo -n 'tables 17,16: '
+tables 17,16: + GLYD_BITS=17,16
++ ./target/release/examples/max_split /home/ubuntu/data/gharchive.json
+gharchive.json: 512 MB, --max 36114823 B (14.87x) in 1.63 s = 330 MB/s; split: ldm 0.68 s (42%), parse 0.77 s (47%), entropy 0.18 s (11%); far matches 2607356
++ for bits in 18,18 17,16 16,15
++ echo -n 'tables 16,15: '
+tables 16,15: + GLYD_BITS=16,15
++ ./target/release/examples/max_split /home/ubuntu/data/gharchive.json
+gharchive.json: 512 MB, --max 36275813 B (14.80x) in 1.51 s = 356 MB/s; split: ldm 0.68 s (45%), parse 0.65 s (43%), entropy 0.18 s (12%); far matches 2607356
++ ./target/release/examples/scale /home/ubuntu/data/gharchive.json
+1 threads: 276 MB/s (276 per thread), 38300651 B
+2 threads: 537 MB/s (268 per thread), 38300651 B
+4 threads: 1012 MB/s (253 per thread), 38300651 B
+8 threads: 1669 MB/s (209 per thread), 40338582 B
+10 threads: 1545 MB/s (155 per thread), 41031605 B
++ for f in ~/data/gharchive.json ~/data/categorylinks.sql ~/data/root.tar
+++ stat -c %s /home/ubuntu/data/categorylinks.sql
++ n=216689785
+++ date +%s.%N
++ t0=1789957507.974009683
++ zstd -3 -T1 -q -c /home/ubuntu/data/categorylinks.sql
+++ date +%s.%N
++ t1=1789957508.628960585
+++ basename /home/ubuntu/data/categorylinks.sql
+++ echo '216689785 / (1789957508.628960585 - 1789957507.974009683) / 1000000'
+++ bc -l
+++ cut -c1-6
+++ stat -c %s /tmp/z.zst
++ echo 'categorylinks.sql: zstd -3 one thread 330.84 MB/s, 26256747 B'
+categorylinks.sql: zstd -3 one thread 330.84 MB/s, 26256747 B
+++ date +%s.%N
++ t0=1789957508.634324133
++ zstd -3 -T8 -q -c /home/ubuntu/data/categorylinks.sql
+++ date +%s.%N
++ t1=1789957508.806784441
+++ basename /home/ubuntu/data/categorylinks.sql
+++ echo '216689785 / (1789957508.806784441 - 1789957508.634324133) / 1000000'
+++ bc -l
+++ cut -c1-6
++ echo 'categorylinks.sql: zstd -3 eight threads 1256.4 MB/s'
+categorylinks.sql: zstd -3 eight threads 1256.4 MB/s
++ for bits in 18,18 17,16 16,15
++ echo -n 'tables 18,18: '
+tables 18,18: + GLYD_BITS=18,18
++ ./target/release/examples/max_split /home/ubuntu/data/categorylinks.sql
+categorylinks.sql: 206 MB, --max 25189865 B (8.60x) in 0.88 s = 247 MB/s; split: ldm 0.05 s (6%), parse 0.71 s (81%), entropy 0.12 s (13%); far matches 142978
++ for bits in 18,18 17,16 16,15
++ echo -n 'tables 17,16: '
+tables 17,16: + GLYD_BITS=17,16
++ ./target/release/examples/max_split /home/ubuntu/data/categorylinks.sql
+categorylinks.sql: 206 MB, --max 25595441 B (8.47x) in 0.72 s = 301 MB/s; split: ldm 0.05 s (7%), parse 0.55 s (77%), entropy 0.12 s (17%); far matches 142978
++ for bits in 18,18 17,16 16,15
++ echo -n 'tables 16,15: '
+tables 16,15: + GLYD_BITS=16,15
++ ./target/release/examples/max_split /home/ubuntu/data/categorylinks.sql
+categorylinks.sql: 206 MB, --max 26048572 B (8.32x) in 0.64 s = 339 MB/s; split: ldm 0.05 s (8%), parse 0.47 s (73%), entropy 0.12 s (19%); far matches 142978
++ ./target/release/examples/scale /home/ubuntu/data/categorylinks.sql
+1 threads: 232 MB/s (232 per thread), 25186266 B
+2 threads: 443 MB/s (222 per thread), 25193739 B
+4 threads: 794 MB/s (198 per thread), 25182958 B
+8 threads: 1274 MB/s (159 per thread), 25201008 B
+10 threads: 1098 MB/s (110 per thread), 25237681 B
++ for f in ~/data/gharchive.json ~/data/categorylinks.sql ~/data/root.tar
+++ stat -c %s /home/ubuntu/data/root.tar
++ n=536870912
+++ date +%s.%N
++ t0=1789957513.521677008
++ zstd -3 -T1 -q -c /home/ubuntu/data/root.tar
+++ date +%s.%N
++ t1=1789957518.193145933
+++ basename /home/ubuntu/data/root.tar
+++ echo '536870912 / (1789957518.193145933 - 1789957513.521677008) / 1000000'
+++ bc -l
+++ cut -c1-6
+++ stat -c %s /tmp/z.zst
++ echo 'root.tar: zstd -3 one thread 114.92 MB/s, 146686037 B'
+root.tar: zstd -3 one thread 114.92 MB/s, 146686037 B
+++ date +%s.%N
++ t0=1789957518.198747060
++ zstd -3 -T8 -q -c /home/ubuntu/data/root.tar
+++ date +%s.%N
++ t1=1789957521.458072198
+++ basename /home/ubuntu/data/root.tar
+++ echo '536870912 / (1789957521.458072198 - 1789957518.198747060) / 1000000'
+++ bc -l
+++ cut -c1-6
++ echo 'root.tar: zstd -3 eight threads 164.71 MB/s'
+root.tar: zstd -3 eight threads 164.71 MB/s
++ for bits in 18,18 17,16 16,15
++ echo -n 'tables 18,18: '
+tables 18,18: + GLYD_BITS=18,18
++ ./target/release/examples/max_split /home/ubuntu/data/root.tar
+root.tar: 512 MB, --max 116274321 B (4.62x) in 3.60 s = 149 MB/s; split: ldm 0.81 s (23%), parse 2.38 s (66%), entropy 0.41 s (11%); far matches 1706814
++ for bits in 18,18 17,16 16,15
++ echo -n 'tables 17,16: '
+tables 17,16: + GLYD_BITS=17,16
++ ./target/release/examples/max_split /home/ubuntu/data/root.tar
+root.tar: 512 MB, --max 117590623 B (4.57x) in 3.02 s = 178 MB/s; split: ldm 0.82 s (27%), parse 1.79 s (59%), entropy 0.41 s (14%); far matches 1706814
++ for bits in 18,18 17,16 16,15
++ echo -n 'tables 16,15: '
+tables 16,15: + GLYD_BITS=16,15
++ ./target/release/examples/max_split /home/ubuntu/data/root.tar
+root.tar: 512 MB, --max 118802689 B (4.52x) in 2.78 s = 193 MB/s; split: ldm 0.82 s (29%), parse 1.55 s (56%), entropy 0.42 s (15%); far matches 1706814
++ ./target/release/examples/scale /home/ubuntu/data/root.tar
+1 threads: 140 MB/s (140 per thread), 121612964 B
+2 threads: 244 MB/s (122 per thread), 121612964 B
+4 threads: 420 MB/s (105 per thread), 121612964 B
+8 threads: 736 MB/s (92 per thread), 126066662 B
+10 threads: 713 MB/s (71 per thread), 130776717 B

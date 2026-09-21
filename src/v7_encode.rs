@@ -600,10 +600,15 @@ pub fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Tables, s: &
 //
 // Table sizes are the ratio dial (Silesia, this coder): 17/16 bits (zstd
 // -3's, 768 KB) 3.162; 18/17 (1.5 MB) 3.204; 18/18 (2 MB) 3.222, the
-// parse ~7% slower than 17/16, the extra on the binaries (x-ray +30%).
+// parse ~7% slower than 17/16 on an M1, the extra on the binaries (x-ray
+// +30%). On server cores the dial is speed: on Graviton3 and Sapphire
+// Rapids 18/18 runs 10-25% slower than 17/16 for 0.5-1.5% fewer bytes
+// (JSON events, a table dump, a root filesystem; benchmarks/max), and
+// 16/15 another 5-12% faster for 1-2% more bytes. 17/16 keeps the max
+// level under zstd -3's bytes and near its speed.
 
-pub const DFAST_LONG_BITS: u32 = 18;
-pub const DFAST_SHORT_BITS: u32 = 18;
+pub const DFAST_LONG_BITS: u32 = 17;
+pub const DFAST_SHORT_BITS: u32 = 16;
 /// Misses before the probe step grows by one (as the fast finder).
 const DFAST_SKIP_STRENGTH: u32 = 6;
 
