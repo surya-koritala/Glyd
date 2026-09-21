@@ -386,7 +386,7 @@ pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev:
 /// Every `extra` entry's count (its top byte) must be at most
 /// `EXTRA_BITS`, which those two producers guarantee: the extras section
 /// is written without further checks against that bound.
-pub(crate) fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Tables, s: &mut EncScratch, compact: bool, out: &mut Vec<u8>) {
+pub fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Tables, s: &mut EncScratch, compact: bool, out: &mut Vec<u8>) {
     let n = s.ll.len();
     debug_assert!(s.ml.len() == n && s.off.len() == n && s.extra.len() == n);
     debug_assert!(s.extra.iter().all(|&x| (x >> EXTRA_BITS) as u32 <= EXTRA_BITS));
@@ -650,6 +650,15 @@ impl DfastTables {
         let bits = (usize::BITS - len.max(1).leading_zeros() + 1).clamp(10, DFAST_LONG_BITS);
         self.lbits = bits;
         self.sbits = bits.min(DFAST_SHORT_BITS);
+        self.clear();
+    }
+
+    /// Smaller tables than the input would get (`clear_for`), for
+    /// measuring the size against the speed on a machine: `lbits` and
+    /// `sbits` at most the full sizes.
+    pub fn set_bits(&mut self, lbits: u32, sbits: u32) {
+        self.lbits = lbits.clamp(10, DFAST_LONG_BITS);
+        self.sbits = sbits.clamp(10, DFAST_SHORT_BITS);
         self.clear();
     }
 

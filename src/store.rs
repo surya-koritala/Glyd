@@ -91,9 +91,10 @@ const SLOT: usize = 12;
 const EMPTY: u32 = u32::MAX;
 const TABLE_HEADER: usize = 16;
 
-/// A file mapped read-write (libc's mmap; the library carries no crate
-/// for it).
-struct Mapping {
+/// A file mapped into memory (libc's mmap; the library carries no crate
+/// for it): read-write for the table, read-only for an input file the
+/// CLI compresses without copying it first (`Mapping::read_only`).
+pub struct Mapping {
     ptr: *mut u8,
     len: usize,
 }
@@ -110,14 +111,29 @@ const MS_SYNC: i32 = 0x10;
 
 impl Mapping {
     fn of(file: &File, len: usize) -> Result<Mapping> {
+        Self::map(file, len, PROT_READ | PROT_WRITE)
+    }
+
+    /// The whole of `path`, read-only; an empty file maps to no bytes.
+    pub fn read_only(path: &Path) -> Result<Mapping> {
+        let file = File::open(path)?;
+        let len = file.metadata()?.len() as usize;
+        if len == 0 {
+            return Ok(Mapping { ptr: std::ptr::NonNull::<u8>::dangling().as_ptr(), len: 0 });
+        }
+        Self::map(&file, len, PROT_READ)
+    }
+
+    fn map(file: &File, len: usize, prot: i32) -> Result<Mapping> {
         use std::os::unix::io::AsRawFd;
-        let ptr = unsafe { mmap(std::ptr::null_mut(), len, PROT_READ | PROT_WRITE, MAP_SHARED, file.as_raw_fd(), 0) };
+        let ptr = unsafe { mmap(std::ptr::null_mut(), len, prot, MAP_SHARED, file.as_raw_fd(), 0) };
         if ptr as isize == -1 {
-            return Err(Error::new(ErrorKind::Other, "store: mmap of the table failed"));
+            return Err(Error::new(ErrorKind::Other, "mmap failed"));
         }
         Ok(Mapping { ptr: ptr as *mut u8, len })
     }
-    fn bytes(&self) -> &[u8] {
+
+    pub fn bytes(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
     fn bytes_mut(&mut self) -> &mut [u8] {
@@ -132,8 +148,10 @@ impl Mapping {
 
 impl Drop for Mapping {
     fn drop(&mut self) {
-        unsafe {
-            munmap(self.ptr as *mut _, self.len);
+        if self.len > 0 {
+            unsafe {
+                munmap(self.ptr as *mut _, self.len);
+            }
         }
     }
 }

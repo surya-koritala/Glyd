@@ -360,12 +360,20 @@ fn main() -> io::Result<()> {
     }
 
     // Read input data
-    let input_data = match input_path {
-        Some(ref p) if p != "-" => std::fs::read(p)?,
+    // A file is mapped, not copied: the read then costs page faults
+    // spread over the compressing threads instead of a pass before.
+    let mapped;
+    let owned;
+    let input_data: &[u8] = match input_path {
+        Some(ref p) if p != "-" => {
+            mapped = glyd::store::Mapping::read_only(Path::new(p))?;
+            mapped.bytes()
+        }
         _ => {
             let mut data = Vec::new();
             io::stdin().read_to_end(&mut data)?;
-            data
+            owned = data;
+            &owned
         }
     };
 
