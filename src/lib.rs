@@ -867,6 +867,9 @@ pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
     if let Some(units) = cold_envelope(compressed) {
         return Ok(units.iter().map(|u| u.len).sum());
     }
+    if is_pack(compressed) {
+        return Ok(pack_envelope(compressed)?.0.iter().sum());
+    }
     if let Some((_, units)) = base_envelope(compressed) {
         return Ok(units.iter().map(|u| u.len).sum());
     }
@@ -935,6 +938,21 @@ fn pack_envelope(compressed: &[u8]) -> Result<(Vec<usize>, &[u8])> {
         lengths.push(last as usize);
     }
     Ok((lengths, &compressed[pos..]))
+}
+
+/// Whether `compressed` is a pack.
+pub fn is_pack(compressed: &[u8]) -> bool {
+    compressed.len() >= 10 && &compressed[..8] == PACK_MAGIC
+}
+
+/// A pack's objects back to back (what `decompress` returns for one).
+fn decompress_pack_joined(compressed: &[u8]) -> Result<Vec<u8>> {
+    let (lengths, stream) = pack_envelope(compressed)?;
+    let all = decompress(stream)?;
+    if lengths.iter().sum::<usize>() != all.len() {
+        return Err(CodecError::CorruptedBitstream("pack: lengths"));
+    }
+    Ok(all)
 }
 
 /// Every object of a pack.
@@ -1644,6 +1662,9 @@ pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
     if let Some(units) = cold_envelope(compressed) {
         return decompress_cold(&units);
     }
+    if is_pack(compressed) {
+        return decompress_pack_joined(compressed);
+    }
     let total = total_uncompressed_len(compressed)?;
     let mut output = vec![0u8; total + PADDING * 2];
     let written = decompress_into(compressed, &mut output)?;
@@ -1750,6 +1771,14 @@ pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
     if let Some(units) = cold_envelope(compressed) {
         return cold_into(&units, dst);
     }
+    if is_pack(compressed) {
+        let all = decompress_pack_joined(compressed)?;
+        if dst.len() < all.len() {
+            return Err(CodecError::OutputBufferTooSmall { required: all.len(), provided: dst.len() });
+        }
+        dst[..all.len()].copy_from_slice(&all);
+        return Ok(all.len());
+    }
     decompress_sequential(compressed, dst, true)
 }
 
@@ -1785,6 +1814,9 @@ pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
     }
     if let Some(units) = cold_envelope(compressed) {
         return decompress_cold(&units);
+    }
+    if is_pack(compressed) {
+        return decompress_pack_joined(compressed);
     }
     let total = total_uncompressed_len(compressed)?;
     let mut output = vec![0u8; total + PADDING * 2];
@@ -1915,6 +1947,10 @@ pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::
         }
         return Ok(());
     }
+    if is_pack(compressed) {
+        let all = decompress_pack_joined(compressed).map_err(codec)?;
+        return sink(&all);
+    }
     if let Some(units) = cold_envelope(compressed) {
         let mut at = 0usize;
         while at < units.len() {
@@ -1963,6 +1999,9 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
     }
     if let Some(units) = cold_envelope(compressed) {
         return cold_into(&units, dst);
+    }
+    if is_pack(compressed) {
+        return decompress_into(compressed, dst);
     }
     decompress_parallel_impl(compressed, dst, true)
 }

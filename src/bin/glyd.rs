@@ -30,6 +30,11 @@ Options:
                            read); --stats lists the objects and the bytes. --ultra or --cold
                            sets the level objects stored alone take. --s3 s3://bucket/prefix
                            keeps the objects in S3 through the AWS CLI (metadata stays in DIR).
+        --audit <PATH>     What the store would save on a directory or an s3://bucket/prefix:
+                           a sample of its objects (--sample N, default 200; spread over the
+                           listing, in name order) goes through a store, against zstd -3 per
+                           object when the zstd CLI is installed, and the result is scaled to
+                           the whole listing with a yearly cost at S3 Standard's list price
     -P, --pack             Pack the input files (many small objects) into one stream with an
                            index, record mode where it pays; any one object is read back alone
     -U, --unpack <DIR>     Write a pack's objects into DIR as 000000, 000001, ...
@@ -109,6 +114,8 @@ fn main() -> io::Result<()> {
     let mut store_verify = false;
     let mut store_rebase: Option<u32> = None;
     let mut store_s3: Option<String> = None;
+    let mut audit: Option<String> = None;
+    let mut sample: usize = 200;
 
     let mut i = 1;
     while i < args.len() {
@@ -214,6 +221,27 @@ fn main() -> io::Result<()> {
                 }
             }
             "--verify" => store_verify = true,
+            "--audit" => {
+                if i + 1 < args.len() {
+                    audit = Some(args[i + 1].clone());
+                    i += 1;
+                } else {
+                    eprintln!("Error: --audit requires a directory or an s3:// url");
+                    std::process::exit(1);
+                }
+            }
+            "--sample" => {
+                match args.get(i + 1).and_then(|a| a.parse().ok()) {
+                    Some(n) => {
+                        sample = n;
+                        i += 1;
+                    }
+                    None => {
+                        eprintln!("Error: --sample requires a count");
+                        std::process::exit(1);
+                    }
+                }
+            }
             "-P" | "--pack" => pack = true,
             "-U" | "--unpack" => {
                 if i + 1 < args.len() {
@@ -266,6 +294,9 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    if let Some(target) = audit {
+        return run_audit(&target, sample);
+    }
     if let Some(dir) = store_dir {
         let mut store = match store_s3 {
             Some(url) => glyd::Store::open_with(&dir, Box::new(glyd::store::S3Cli::new(&url)?))?,
@@ -526,6 +557,144 @@ fn main() -> io::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// The objects under `target` (a directory, or s3://bucket/prefix through
+/// the AWS CLI): (name, bytes), in name order.
+fn list_objects(target: &str) -> io::Result<Vec<(String, u64)>> {
+    let mut out = Vec::new();
+    if let Some(rest) = target.strip_prefix("s3://") {
+        let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
+        let text = std::process::Command::new("aws").args(["s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix, "--query", "Contents[].[Key,Size]", "--output", "text"]).output()?;
+        if !text.status.success() {
+            return Err(io::Error::new(io::ErrorKind::Other, format!("aws: {}", String::from_utf8_lossy(&text.stderr).trim())));
+        }
+        for line in String::from_utf8_lossy(&text.stdout).lines() {
+            if let Some((key, size)) = line.rsplit_once('\t') {
+                if let Ok(n) = size.trim().parse::<u64>() {
+                    if n > 0 {
+                        out.push((format!("s3://{bucket}/{key}"), n));
+                    }
+                }
+            }
+        }
+    } else {
+        fn walk(dir: &Path, out: &mut Vec<(String, u64)>) -> io::Result<()> {
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out)?;
+                } else if let Ok(m) = entry.metadata() {
+                    if m.len() > 0 {
+                        out.push((path.to_string_lossy().to_string(), m.len()));
+                    }
+                }
+            }
+            Ok(())
+        }
+        walk(Path::new(target), &mut out)?;
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn read_object(name: &str) -> io::Result<Vec<u8>> {
+    if name.starts_with("s3://") {
+        let out = std::process::Command::new("aws").args(["s3", "cp", "--quiet", name, "-"]).output()?;
+        if !out.status.success() {
+            return Err(io::Error::new(io::ErrorKind::Other, format!("aws: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        Ok(out.stdout)
+    } else {
+        std::fs::read(name)
+    }
+}
+
+/// `zstd -3` bytes of `data` through the zstd CLI, when it is installed.
+fn zstd3_len(data: &[u8]) -> Option<usize> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("zstd").args(["-3", "-q", "-c", "-T0"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    let mut stdin = child.stdin.take()?;
+    let data = data.to_vec();
+    let writer = std::thread::spawn(move || stdin.write_all(&data));
+    let out = child.wait_with_output().ok()?;
+    writer.join().ok()?.ok()?;
+    if out.status.success() { Some(out.stdout.len()) } else { None }
+}
+
+/// The store on a sample of the objects under `target`, scaled to all
+/// of them, priced at S3 Standard's list rate.
+fn run_audit(target: &str, sample: usize) -> io::Result<()> {
+    const PRICE_TB_YEAR: f64 = 0.023 * 12.0 * 1000.0;
+    let all = list_objects(target)?;
+    if all.is_empty() {
+        eprintln!("nothing under {target}");
+        std::process::exit(1);
+    }
+    let total: u64 = all.iter().map(|(_, n)| n).sum();
+    // The sample: runs of consecutive objects (versions of a thing sit
+    // together by name) at eight places spread over the listing.
+    let n = sample.min(all.len());
+    let picked: Vec<&(String, u64)> = if n >= all.len() {
+        all.iter().collect()
+    } else {
+        let runs = 8.min(n);
+        let per = n / runs;
+        let mut v = Vec::with_capacity(n);
+        for r in 0..runs {
+            let start = r * (all.len() - per) / (runs - 1).max(1);
+            v.extend(all[start..start + per].iter());
+        }
+        v
+    };
+    let dir = std::env::temp_dir().join(format!("glyd-audit-{}", std::process::id()));
+    let mut store = glyd::Store::open(&dir)?;
+    let zstd = zstd3_len(b"probe").is_some();
+    let (mut raw, mut alone_z, mut alone_g) = (0u64, 0u64, 0u64);
+    eprintln!("{target}: {} objects, {:.1} GB; sampling {} of them{}", all.len(), total as f64 / 1e9, picked.len(), if zstd { " against zstd -3" } else { " (no zstd CLI: Glyd --max alone stands in for today's codec)" });
+    let t = Instant::now();
+    for (i, (name, _)) in picked.iter().enumerate() {
+        let data = match read_object(name) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("skipping {name}: {e}");
+                continue;
+            }
+        };
+        raw += data.len() as u64;
+        if zstd {
+            alone_z += zstd3_len(&data).unwrap_or(data.len()) as u64;
+        }
+        let mut c = Vec::new();
+        glyd::compress_parallel_into_max(&data, &mut c);
+        alone_g += c.len() as u64;
+        store.put(name, &data)?;
+        if (i + 1) % 20 == 0 {
+            eprintln!("  {} of {} ({:.0} MB/s)", i + 1, picked.len(), raw as f64 / t.elapsed().as_secs_f64() / 1e6);
+        }
+    }
+    store.flush()?;
+    let (_, stored) = store.stats();
+    let deltas = store.entries().iter().filter(|e| e.base.is_some()).count();
+    let packs = store.entries().iter().filter(|e| e.name.starts_with("pack of ")).count();
+    drop(store);
+    let _ = std::fs::remove_dir_all(&dir);
+    let today = if zstd { alone_z } else { alone_g };
+    let scale = total as f64 / raw.max(1) as f64;
+    let tb = |b: u64| b as f64 * scale / 1e12;
+    let size = |t: f64| if t >= 1.0 { format!("{t:.2} TB") } else { format!("{:.1} GB", t * 1000.0) };
+    let money = |d: f64| if d >= 100.0 { format!("${d:.0}") } else { format!("${d:.2}") };
+    println!("{target}");
+    println!("  {} objects, {} raw; sample of {} objects, {}", all.len(), size(total as f64 / 1e12), picked.len(), size(raw as f64 / 1e12));
+    println!("  {:<34} {:>10} stored  {:>10} a year", if zstd { "zstd -3, each object alone:" } else { "Glyd --max, each object alone:" }, size(tb(today)), money(tb(today) * PRICE_TB_YEAR));
+    if zstd {
+        println!("  {:<34} {:>10} stored  {:>10} a year", "Glyd --max, each object alone:", size(tb(alone_g)), money(tb(alone_g) * PRICE_TB_YEAR));
+    }
+    println!("  {:<34} {:>10} stored  {:>10} a year", "Glyd store (across the objects):", size(tb(stored)), money(tb(stored) * PRICE_TB_YEAR));
+    println!("  {:.2}x fewer bytes than {}; {} of {} sampled objects stored as deltas, {} packs of small ones", today as f64 / stored.max(1) as f64, if zstd { "zstd -3" } else { "Glyd alone" }, deltas, picked.len(), packs);
+    println!("  saving about {} a year at S3 Standard's list price ($23/TB-month), scaled from the sample", money((tb(today) - tb(stored)) * PRICE_TB_YEAR));
     Ok(())
 }
 
