@@ -6,7 +6,22 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.8.0 — 2026-09-21
+
+### The store: compression across objects
+- `Store::open(dir)`, `put(name, data)`, `get(id)`, `entries`, `stats`;
+  CLI `--store DIR --put FILE...`, `--get ID -o`, `--stats`. Each
+  object's fingerprints (one sparse anchor in 4 KB) are looked up in
+  the store's table (the last eight holders of each); the stored object
+  sharing the most is its base, taken when the delta (`--base`) saves a
+  fifth or more of the object alone; chains at most four long, the
+  chain's root past that. A 39 GB bucket (six Ubuntu image builds, the
+  fifteen Linux 6.10 releases, two months of three Wikipedia tables,
+  twelve hours of GitHub events; `scripts/download_bucket.sh`): 1,334
+  MB against zstd -3's 6,132 MB per object, 4.6x, put at 500 MB/s end
+  to end and read back at 270 MB/s with the file written, every object
+  byte-exact; by family 13.9x, 5.2x, 2.0x, 1.3x. The
+  research pass that led here: experiments/research/README.md, H.
 
 ### Packs: small objects as one stream
 - `compress_pack(objects, out, level)`, `decompress_pack`,

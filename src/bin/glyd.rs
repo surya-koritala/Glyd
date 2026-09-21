@@ -21,6 +21,10 @@ Options:
     -S, --shape <FILE>     Shape dictionary: compress or decompress a small object (an event, a
                            small log or CSV) with a dictionary trained on a sample of such data
         --shape-train      Train a shape dictionary on the input (a few MB) and write it to -o
+        --store <DIR>      A store that compresses across its objects: with --put FILE..., each
+                           file is stored as a delta against the stored object it most resembles
+                           (found by fingerprints) when that pays; --get ID writes an object to -o;
+                           --stats lists the objects and the bytes
     -P, --pack             Pack the input files (many small objects) into one stream with an
                            index, record mode where it pays; any one object is read back alone
     -U, --unpack <DIR>     Write a pack's objects into DIR as 000000, 000001, ...
@@ -37,6 +41,9 @@ Examples:
     glyd -d input.tar.glyd -o input.tar
     glyd --base dump-monday.sql dump-tuesday.sql -o tuesday.glyd
     glyd -d --base dump-monday.sql tuesday.glyd -o dump-tuesday.sql
+    glyd --store bucket/ --put snapshot-mon.tar snapshot-tue.tar
+    glyd --store bucket/ --get 1 -o snapshot-tue.tar
+    glyd --store bucket/ --stats
     glyd --pack events/*.json -o events.glyd
     glyd --unpack out/ events.glyd
     glyd --shape-train sample.log -o events.shape
@@ -87,6 +94,10 @@ fn main() -> io::Result<()> {
     let mut pack = false;
     let mut unpack_dir: Option<String> = None;
     let mut inputs: Vec<String> = Vec::new();
+    let mut store_dir: Option<String> = None;
+    let mut store_put = false;
+    let mut store_get: Option<u32> = None;
+    let mut store_stats = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -125,6 +136,29 @@ fn main() -> io::Result<()> {
                 }
             }
             "--shape-train" => shape_train = true,
+            "--store" => {
+                if i + 1 < args.len() {
+                    store_dir = Some(args[i + 1].clone());
+                    i += 1;
+                } else {
+                    eprintln!("Error: --store requires a directory");
+                    std::process::exit(1);
+                }
+            }
+            "--put" => store_put = true,
+            "--get" => {
+                match args.get(i + 1).and_then(|a| a.parse().ok()) {
+                    Some(id) => {
+                        store_get = Some(id);
+                        i += 1;
+                    }
+                    None => {
+                        eprintln!("Error: --get requires an object id");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            "--stats" => store_stats = true,
             "-P" | "--pack" => pack = true,
             "-U" | "--unpack" => {
                 if i + 1 < args.len() {
@@ -152,7 +186,7 @@ fn main() -> io::Result<()> {
                 if !other.starts_with('-') && input_path.is_none() {
                     input_path = Some(other.to_string());
                     inputs.push(other.to_string());
-                } else if !other.starts_with('-') && pack {
+                } else if !other.starts_with('-') && (pack || store_put) {
                     inputs.push(other.to_string());
                 } else {
                     eprintln!("Unknown option: {}", other);
@@ -177,6 +211,30 @@ fn main() -> io::Result<()> {
         return Ok(());
     }
 
+    if let Some(dir) = store_dir {
+        let mut store = glyd::Store::open(&dir)?;
+        if store_put {
+            for f in &inputs {
+                let data = std::fs::read(f)?;
+                let t = Instant::now();
+                let id = store.put(f, &data)?;
+                let e = &store.entries()[id as usize];
+                eprintln!("{:>6}  {:>10} -> {:>10} B  {}  {:.0} MB/s  {}", id, e.raw_len, e.stored_len, e.base.map_or("alone".to_string(), |b| format!("delta against {} (depth {})", b, e.depth)), data.len() as f64 / t.elapsed().as_secs_f64() / 1e6, f);
+            }
+        }
+        if let Some(id) = store_get {
+            let data = store.get(id)?;
+            write_out(&output_path, &data)?;
+        }
+        if store_stats {
+            for e in store.entries() {
+                println!("{:>6}  {:>12}  {:>12}  {:<28} {}", e.id, e.raw_len, e.stored_len, e.base.map_or("alone".to_string(), |b| format!("delta against {} (depth {})", b, e.depth)), e.name);
+            }
+            let (raw, stored) = store.stats();
+            println!("{} objects: {} B raw, {} B stored ({:.2}x)", store.entries().len(), raw, stored, raw as f64 / stored.max(1) as f64);
+        }
+        return Ok(());
+    }
     if pack {
         let files: Vec<Vec<u8>> = inputs.iter().map(std::fs::read).collect::<io::Result<_>>()?;
         let refs: Vec<&[u8]> = files.iter().map(|v| v.as_slice()).collect();
