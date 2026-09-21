@@ -6,6 +6,34 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.9.3 — 2026-09-21
+
+### Adoption: bindings, the audit, the spec, lzbench, packaging
+- C ABI, allocating form (`include/glyd.h`): `glyd_compress2` (every
+  level, record mode, thread count), `glyd_decompress2` (any stream),
+  `glyd_decompressed_len`, base mode, packs (`glyd_pack`,
+  `glyd_unpack_object`, `glyd_pack_len`), the store (`glyd_store_*`:
+  open with a directory or an S3 url, put, get, id_of, delete,
+  compact, flush, rebase, verify, stats, set_level, count), `glyd_free`;
+  `glyd_compress_fast` / `_turbo` in the buffer form; `glyd_version`
+  reports the crate's version. Every decoder now reads a pack (its
+  objects back to back).
+- Python (`bindings/python`, ctypes, `pip install`) and Go
+  (`bindings/go`, cgo) bindings over that ABI, each with a test that
+  round-trips every level, record mode, base mode, packs and the store.
+- `glyd --audit DIR|s3://bucket/prefix [--sample N]`: a sample of the
+  objects (runs of consecutive names at eight places in the listing)
+  through a store, against zstd -3 per object when the CLI is there,
+  scaled to the listing with the yearly cost at S3 Standard's list
+  price.
+- `docs/spec.md`: the formats as a map for decoder writers (block
+  framings and flags, every envelope's layout, the store's files).
+- `contrib/lzbench`: Glyd in lzbench (`setup.sh <checkout>` builds it
+  in; levels 1 default, 2 fast, 3 turbo, 4 max, 5 ultra); run and
+  checked on an lzbench checkout.
+- Packaging: crates.io metadata (the crate excludes the corpus, the
+  benchmarks and the bindings), a Homebrew formula (`Formula/glyd.rb`).
+
 ## v0.9.2 — 2026-09-21
 
 ### Write speed, and the corpus rerun on AWS

@@ -122,6 +122,10 @@ million a year at list price; the percentages above are what to multiply.
 
 ## Quick start
 
+Bindings: [Python](bindings/python/README.md) (`bindings/python/build.sh && pip install bindings/python`),
+[Go](bindings/go/glyd.go) (cgo over `include/glyd.h`), C (`include/glyd.h`, `libglyd.a` / `.dylib` / `.so`).
+Formats: [docs/spec.md](docs/spec.md). lzbench: `contrib/lzbench/setup.sh <checkout>`.
+
 ```bash
 cargo install --git https://github.com/surya-koritala/Glyd
 ```
@@ -134,6 +138,7 @@ glyd --cold -r dump.sql -o dump.glyd              # fewest bytes of all; 1 MB/s 
 glyd --store bucket/ --put mon.tar tue.tar wed.tar # the store finds each object's base itself
 glyd --store bucket/ --get 2 -o wed.tar           # also --find NAME, --delete ID, --rebase ID, --compact, --verify, --stats
 glyd --store meta/ --s3 s3://bucket/prefix --put wed.tar   # objects in S3 through the AWS CLI
+glyd --audit s3://bucket/prefix                   # what the store would save there, from a sample, in dollars
 glyd --base dump-mon.sql dump-tue.sql -o tue.glyd # base mode: Tuesday's dump against Monday's
 glyd -d --base dump-mon.sql tue.glyd -o tue.sql   # decoding a base-mode file needs the base
 glyd    telemetry.bin -o telemetry.glyd           # default: LZ4-class ratio, 22 GB/s reads on 8 cores
@@ -152,6 +157,11 @@ glyd::compress_records_into_max(&log, &mut out);      // record mode (-r); decom
 glyd::compress_with_base(&old, &new, &mut out, false);// base mode; decompress_with_base(&old, &out)
 let mut store = glyd::Store::open("bucket/")?;         // the store: put finds the base, get rebuilds
 let id = store.put("wed.tar", &data)?;  let back = store.get(id)?;
+```
+
+```python
+import glyd                                   # bindings/python
+c = glyd.compress(data, records=True)         # decompress(c); pack(objects); Store("bucket/").put(name, data)
 glyd::decompress_stream(&out, |batch| file.write_all(batch))?;   // batches of units, bounded memory
 
 // Dictionaries for small objects: train once on samples, keep the bytes.
@@ -666,7 +676,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.9.2** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.9.3** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every
