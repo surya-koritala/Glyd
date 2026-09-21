@@ -14,7 +14,8 @@ store is under the Business Source License 1.1 (LICENSE).
     glyd-store meta/ --s3 s3://bucket/prefix --put wed.tar     # objects in S3 (or any S3-compatible service)
     glyd-store --audit s3://bucket/prefix                      # what it would save, in dollars a year
 
-S3 is spoken directly over HTTPS (Signature V4; `glyd-store/src/s3.rs`).
+S3 is spoken directly over HTTPS (Signature V4; `glyd-store/src/s3.rs`);
+objects over 64 MB go up as parts on eight connections.
 Credentials: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (and
 `AWS_SESSION_TOKEN`), else `~/.aws/credentials` for `AWS_PROFILE` or the
 default profile, else the instance or container role. Region:

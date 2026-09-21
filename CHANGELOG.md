@@ -6,6 +6,17 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.11.1 — 2026-09-21
+
+- Multipart upload: objects over 64 MB go to S3 as 64 MB parts on up
+  to 8 connections and one completion, so objects up to 640 GB store
+  and fat links fill; a failed part or completion aborts the upload,
+  leaving no parts behind to be billed. Checked live: a 17 MB object
+  in four parts read back whole, undersized parts refused and aborted
+  cleanly, the 201 MB kernel object in three parts byte-exact. On a
+  home uplink the two-kernel put took 12.2 s against 11.6 s single-put:
+  the link, not the client, is the limit there.
+
 ## v0.11.0 — 2026-09-21
 
 ### The store speaks S3 itself

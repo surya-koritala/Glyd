@@ -23,8 +23,10 @@ use crate::Backend;
 
 const IMDS: &str = "http://169.254.169.254";
 const ECS_CREDENTIALS: &str = "http://169.254.170.2";
-/// A single PUT holds this much; larger objects need multipart upload.
-const MAX_PUT: usize = 5 << 30;
+/// Objects over this go up as parts of this size, on several
+/// connections; S3 takes 5 MB to 5 GB per part and 10,000 parts.
+const PART: usize = 64 << 20;
+const PART_THREADS: usize = 8;
 const ATTEMPTS: u32 = 4;
 
 #[derive(Clone)]
@@ -123,6 +125,57 @@ impl S3Backend {
         Ok(out)
     }
 
+    /// Multipart upload: `part`-sized pieces on up to `PART_THREADS`
+    /// connections, then one completion; aborted if any piece fails,
+    /// so no half-uploaded parts stay behind to be billed.
+    fn write_parts(&self, key: &str, data: &[u8], part: usize) -> Result<()> {
+        let name = self.full_key(key);
+        let r = self.request("POST", key, &[("uploads".to_string(), String::new())], &[])?;
+        let upload = match (r.status, xml_text(&r.body, "UploadId")) {
+            (200, Some(id)) => id,
+            (s, _) => return Err(other(format!("S3 create upload {name}: {s} {}", r.code()))),
+        };
+        let pieces: Vec<&[u8]> = data.chunks(part).collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let etags: Vec<Mutex<Option<Result<String>>>> = pieces.iter().map(|_| Mutex::new(None)).collect();
+        std::thread::scope(|scope| {
+            for _ in 0..PART_THREADS.min(pieces.len()) {
+                scope.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= pieces.len() {
+                        break;
+                    }
+                    let query = [("partNumber".to_string(), (i + 1).to_string()), ("uploadId".to_string(), upload.clone())];
+                    let result = self.request("PUT", key, &query, pieces[i]).and_then(|r| match (r.status, r.header("etag")) {
+                        (200, Some(etag)) => Ok(etag.to_string()),
+                        (s, _) => Err(other(format!("S3 upload part {} of {name}: {s} {}", i + 1, r.code()))),
+                    });
+                    *etags[i].lock().unwrap() = Some(result);
+                });
+            }
+        });
+        let mut xml = String::from("<CompleteMultipartUpload>");
+        for (i, slot) in etags.iter().enumerate() {
+            match slot.lock().unwrap().take() {
+                Some(Ok(etag)) => xml.push_str(&format!("<Part><PartNumber>{}</PartNumber><ETag>{}</ETag></Part>", i + 1, etag.replace('&', "&amp;").replace('<', "&lt;"))),
+                Some(Err(e)) => {
+                    let _ = self.request("DELETE", key, &[("uploadId".to_string(), upload.clone())], &[]);
+                    return Err(e);
+                }
+                None => unreachable!("every part is attempted"),
+            }
+        }
+        xml.push_str("</CompleteMultipartUpload>");
+        let r = self.request("POST", key, &[("uploadId".to_string(), upload.clone())], xml.as_bytes())?;
+        // S3 may answer 200 and still fail; the body says.
+        if r.status == 200 && xml_text(&r.body, "Error").is_none() && r.code().is_empty() {
+            Ok(())
+        } else {
+            let _ = self.request("DELETE", key, &[("uploadId".to_string(), upload)], &[]);
+            Err(other(format!("S3 complete upload {name}: {} {}", r.status, r.code())))
+        }
+    }
+
     fn full_key(&self, key: &str) -> String {
         if self.prefix.is_empty() { key.to_string() } else { format!("{}/{}", self.prefix, key) }
     }
@@ -211,10 +264,10 @@ impl S3Backend {
             req.header("authorization", authorization.as_str())
         };
         let result = match method {
-            "PUT" => {
+            "PUT" | "POST" => {
                 // S3 answers before the body when asked to; without this
                 // the store's 200 MB puts ended in a broken pipe.
-                let mut req = self.agent.put(&url).header("expect", "100-continue");
+                let mut req = if method == "PUT" { self.agent.put(&url) } else { self.agent.post(&url) }.header("expect", "100-continue");
                 for (k, v) in &headers {
                     if k != "host" {
                         req = req.header(k.as_str(), v.as_str());
@@ -257,9 +310,8 @@ impl Backend for S3Backend {
         }
     }
     fn write(&self, key: &str, data: &[u8]) -> Result<()> {
-        if data.len() > MAX_PUT {
-            // ponytail: single PUT, multipart upload when an object beats 5 GB.
-            return Err(other(format!("S3 PUT {}: {} bytes is over the 5 GB single-put limit", self.full_key(key), data.len())));
+        if data.len() > PART {
+            return self.write_parts(key, data, PART);
         }
         let r = self.request("PUT", key, &[], data)?;
         if r.status == 200 { Ok(()) } else { Err(other(format!("S3 PUT {}: {} {}", self.full_key(key), r.status, r.code()))) }
@@ -490,5 +542,19 @@ mod tests {
         s3.remove(&key).unwrap();
         assert!(!s3.exists(&key));
         assert_eq!(s3.read(&key).unwrap_err().kind(), ErrorKind::NotFound);
+        // Multipart: three 5 MB parts and a 2 MB tail, on parallel
+        // connections, read back whole.
+        let big: Vec<u8> = (0..17u32 << 20).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+        let key = format!("s3-test-{}/parts.bin", std::process::id());
+        s3.write_parts(&key, &big, 5 << 20).unwrap();
+        assert_eq!(s3.len(&key), Some(big.len() as u64));
+        assert_eq!(s3.read(&key).unwrap(), big);
+        s3.remove(&key).unwrap();
+        // Parts under S3's 5 MB minimum are refused at completion; the
+        // upload is then aborted (no parts left behind: see
+        // `aws s3api list-multipart-uploads`) and the error surfaces.
+        let e = s3.write_parts(&key, &big[..3 << 20], 1 << 20).unwrap_err().to_string();
+        assert!(e.contains("EntityTooSmall"), "{e}");
+        assert!(!s3.exists(&key));
     }
 }
