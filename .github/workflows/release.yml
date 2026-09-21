@@ -64,6 +64,7 @@ jobs:
         run: |
           set -e
           cp target/release/libglyd_store.* bindings/python/glyd/ 2>/dev/null || true
+          cp LICENSE COPYING bindings/python/ && cp glyd-store/LICENSE bindings/python/LICENSE-glyd-store
           python -m pip install --quiet build wheel
           python -m build --wheel --outdir wheels bindings/python
           # The wheel carries this platform's shared library: tag it so.

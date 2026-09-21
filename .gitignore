@@ -11,8 +11,11 @@
 /field_survey_partial.csv
 quick3_log.csv
 benchmarks/suite/*/DONE
-/bindings/python/glyd/libglyd.*
-/bindings/python/glyd/glyd.dll
+/bindings/python/glyd/libglyd*.*
+/bindings/python/glyd/glyd*.dll
 /bindings/python/build
 /bindings/python/*.egg-info
 __pycache__/
+bindings/python/LICENSE
+bindings/python/COPYING
+bindings/python/LICENSE-glyd-store

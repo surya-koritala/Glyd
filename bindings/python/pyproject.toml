@@ -7,11 +7,14 @@ name = "glyd"
 version = "0.10.2"
 description = "Compression for the data that fills object storage: record mode, packs, a store that compresses across objects, the fastest reads"
 readme = "README.md"
-license = { text = "BSD-3-Clause OR GPL-2.0-only" }
+# The binding and the codec: BSD-3-Clause or GPL-2.0; the bundled
+# libglyd_store (the Store class): BUSL-1.1, see LICENSE-glyd-store.
+license = { text = "BSD-3-Clause OR GPL-2.0-only; bundled libglyd_store BUSL-1.1" }
 requires-python = ">=3.8"
 
 [tool.setuptools]
 packages = ["glyd"]
+license-files = ["LICENSE", "COPYING", "LICENSE-glyd-store"]
 
 [tool.setuptools.package-data]
 glyd = ["libglyd_store.dylib", "libglyd_store.so", "glyd_store.dll", "libglyd.dylib", "libglyd.so", "glyd.dll"]

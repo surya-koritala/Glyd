@@ -2,11 +2,15 @@
 # github.com/surya-koritala/homebrew-glyd carries a copy of this file),
 # or `brew install --build-from-source Formula/glyd.rb` from a checkout.
 class Glyd < Formula
-  desc "Compression for the data that fills object storage: record mode, packs, a store that compresses across objects"
+  desc "Compression for object storage: record mode, packs, a cross-object store"
   homepage "https://github.com/surya-koritala/Glyd"
   url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.10.2.tar.gz"
   sha256 "efcc16e4d3f6afed7b73170c6fe4c4e7a996f7cd9db8c76b9eb4b325f02e8c6f"
-  license any_of: ["BSD-3-Clause", "GPL-2.0-only"]
+  # The codec and CLI: BSD-3-Clause or GPL-2.0; the glyd-store binary: BUSL-1.1.
+  license all_of: [
+    { any_of: ["BSD-3-Clause", "GPL-2.0-only"] },
+    "BUSL-1.1",
+  ]
   head "https://github.com/surya-koritala/Glyd.git", branch: "main"
 
   depends_on "rust" => :build
