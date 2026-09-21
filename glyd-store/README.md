@@ -5,7 +5,7 @@ kept as a delta against the stored object it most resembles (found by
 fingerprints) when that pays, small objects go into packs, and any
 object comes back byte-exact. On a 39 GB bucket of images, releases,
 dumps and events: 4.6× fewer bytes than zstd -3 per object. Built on the
-[glyd](https://github.com/surya-koritala/Glyd) codec (Apache-2.0); the
+[glyd](https://github.com/surya-koritala/Glyd) codec (Apache-2.0 OR GPL-2.0); the
 store is under the Business Source License 1.1 (LICENSE).
 
     glyd-store bucket/ --put mon.tar tue.tar wed.tar

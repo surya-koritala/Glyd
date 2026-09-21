@@ -13,7 +13,7 @@
 // build --release --workspace) and point cgo at them, as the flags
 // below do for a checkout. libglyd_store carries the codec and the
 // store (the store is BUSL-1.1); link -lglyd instead for the codec
-// alone (Apache-2.0), dropping Store.
+// alone (Apache-2.0 OR GPL-2.0), dropping Store.
 package glyd
 
 /*

@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glyd"
-version = "0.10.0"
+version = "0.10.1"
 description = "Compression for the data that fills object storage: record mode, packs, a store that compresses across objects, the fastest reads"
 readme = "README.md"
-license = { text = "Apache-2.0" }
+license = { text = "Apache-2.0 OR GPL-2.0-only" }
 requires-python = ">=3.8"
 
 [tool.setuptools]

@@ -6,6 +6,12 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.10.1 — 2026-09-21
+
+- The codec is dual-licensed, Apache-2.0 or GPL-2.0 at the user's
+  option (`LICENSE`, `LICENSE-GPL2`), the choice zstd offers, so GPLv2
+  projects can carry it too. The store stays under BUSL 1.1.
+
 ## v0.10.0 — 2026-09-21
 
 ### Installing
