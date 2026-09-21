@@ -56,7 +56,7 @@ jobs:
           cp target/release/glyd target/release/glyd-store "$DIR/"
           cp target/release/libglyd_store.* target/release/libglyd.* "$DIR/" 2>/dev/null || true
           rm -f "$DIR"/*.d "$DIR"/*.rlib
-          cp include/glyd.h LICENSE NOTICE README.md "$DIR/"
+          cp include/glyd.h LICENSE COPYING README.md "$DIR/"
           cp glyd-store/LICENSE "$DIR/LICENSE-glyd-store"
           tar -czf "$DIR.tar.gz" "$DIR"
           shasum -a 256 "$DIR.tar.gz" > "$DIR.tar.gz.sha256"

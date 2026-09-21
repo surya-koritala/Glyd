@@ -1,9 +1,8 @@
 /*
- * Glyd - High-Performance SIMD Stream Codec
- * C / C++ Language Bindings
- * 
- * Hardware acceleration: AVX-512 / AVX2 / NVIDIA GPU
- * License: BUSL-1.1 (see LICENSE)
+ * Glyd C API.
+ *
+ * License: BSD-3-Clause OR GPL-2.0 (see LICENSE and COPYING); the store
+ * functions, in libglyd_store, are under BUSL-1.1 (glyd-store/LICENSE).
  */
 
 #ifndef GLYD_H
@@ -208,7 +207,7 @@ int64_t glyd_pack_len(const uint8_t* pack, size_t pack_len);
  * objects there too, or in s3_url (s3://bucket/prefix, through the AWS
  * CLI) when it is not NULL. These live in libglyd_store (the glyd-store
  * crate, BUSL-1.1), which also carries everything above; libglyd (the
- * glyd crate, Apache-2.0 OR GPL-2.0) has everything above and none of these. */
+ * glyd crate, BSD-3-Clause OR GPL-2.0) has everything above and none of these. */
 typedef struct GlydStore GlydStore;
 GlydStore* glyd_store_open(const char* dir, const char* s3_url);
 void glyd_store_close(GlydStore* store);

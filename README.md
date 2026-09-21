@@ -4,7 +4,7 @@ A store that finds what each new object is a version of and keeps only the chang
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
-<a href="LICENSE"><img alt="License: Apache-2.0 OR GPL-2.0" src="https://img.shields.io/badge/codec-Apache--2.0%20OR%20GPL--2.0-blue.svg"></a>
+<a href="LICENSE"><img alt="License: BSD-3-Clause OR GPL-2.0" src="https://img.shields.io/badge/codec-BSD--3--Clause%20OR%20GPL--2.0-blue.svg"></a>
 <a href="glyd-store/LICENSE"><img alt="Store: BUSL-1.1" src="https://img.shields.io/badge/store-BUSL--1.1-blue.svg"></a>
 <img alt="Rust 1.80+" src="https://img.shields.io/badge/rust-1.80%2B-blue.svg">
 <img alt="SIMD: AVX2 | NEON" src="https://img.shields.io/badge/SIMD-AVX2%20%7C%20NEON-orange.svg">
@@ -126,7 +126,7 @@ million a year at list price; the percentages above are what to multiply.
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 cargo install glyd glyd-store                # from crates.io
-pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.10.1-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.10.2-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -243,7 +243,7 @@ near-copies of earlier ones, and a codec that sees one object at a time
 cannot know it.
 
 The store is its own crate, `glyd-store` (`glyd-store DIR --put ...`;
-under the Business Source License, the codec being Apache-2.0 OR GPL-2.0).
+under the Business Source License, the codec being BSD-3-Clause OR GPL-2.0).
 `Store::put` fingerprints the object (one sparse anchor in 4 KB, the
 same map base mode uses), looks the fingerprints up in the store's
 table, takes the stored object sharing the most as the base, and keeps
@@ -688,7 +688,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.10.1** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.10.2** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every
@@ -707,11 +707,11 @@ run the full suite including the 1M-mutation fuzz in CI.
 ## License
 
 - **The codec — the `glyd` crate, the `glyd` CLI, the C ABI, the Python
-  and Go bindings — is under the [Apache License 2.0](LICENSE) or, at
-  your option, the [GNU GPL version 2](LICENSE-GPL2)** (the same choice
-  zstd offers, so it fits GPLv2 projects such as the Linux kernel). Use
-  it, embed it, ship it, sell it; keep the notice. That is everything
-  in this repository except the store.
+  and Go bindings — is under the [BSD 3-Clause License](LICENSE) or, at
+  your option, the [GNU GPL version 2](COPYING)**: the same licenses as
+  zstd, so anything that may ship zstd may ship Glyd, GPLv2 projects such
+  as the Linux kernel included. Use it, embed it, ship it, sell it; keep
+  the notice. That is everything in this repository except the store.
 - **The store — the `glyd-store` crate and CLI — is under the
   [Business Source License 1.1](glyd-store/LICENSE)**: free to use for
   non-commercial and internal purposes; offering it as a commercial

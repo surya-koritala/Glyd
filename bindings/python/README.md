@@ -18,7 +18,7 @@ with glyd.Store("meta/", s3="s3://bucket/prefix") as s:   # objects in S3, throu
     ...
 ```
 
-A thin ctypes layer over `include/glyd.h` (Apache-2.0 OR GPL-2.0); no build step
+A thin ctypes layer over `include/glyd.h` (BSD-3-Clause OR GPL-2.0); no build step
 beyond placing the shared library. `build.sh` places `libglyd_store`,
 which carries the codec and the store; with `libglyd` alone (the codec
-crate, Apache-2.0 OR GPL-2.0) everything but `Store` works.
+crate, BSD-3-Clause OR GPL-2.0) everything but `Store` works.

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::Instant;
 
 fn print_usage() {
-    eprintln!(r#"Glyd High-Performance SIMD Stream Codec (AVX-512 / AVX2 / GPU)
+    eprintln!(r#"Glyd: compression for cloud storage
 Usage: glyd [OPTIONS] [INPUT] [-o OUTPUT]
        (the store, which compresses across objects, is the glyd-store command)
 

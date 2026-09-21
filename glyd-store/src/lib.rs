@@ -26,7 +26,7 @@
 //! (`S3Cli`, through the AWS CLI); metadata stays local.
 //!
 //! This crate is the store; the codec it builds on is the `glyd` crate
-//! (Apache-2.0 OR GPL-2.0). The store is under the Business Source License 1.1.
+//! (BSD-3-Clause OR GPL-2.0). The store is under the Business Source License 1.1.
 
 pub mod c_api;
 

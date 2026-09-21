@@ -6,6 +6,15 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.10.2 — 2026-09-21
+
+- The codec's licenses are now exactly zstd's: BSD 3-Clause (`LICENSE`)
+  or GPL version 2 (`COPYING`), at the user's option, replacing
+  Apache-2.0 OR GPL-2.0. Whatever may ship zstd may ship Glyd. The store
+  stays under BUSL 1.1.
+- `glyd.h` and the CLI banner no longer claim GPU or AVX-512 kernels;
+  there are none (AVX2 and NEON only).
+
 ## v0.10.1 — 2026-09-21
 
 - The codec is dual-licensed, Apache-2.0 or GPL-2.0 at the user's

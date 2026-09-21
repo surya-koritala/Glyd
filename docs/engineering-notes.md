@@ -402,11 +402,10 @@ LD_LIBRARY_PATH=target/release ./target/release/test_c_abi
 
 ## License
 
-Glyd is released under the [Business Source License 1.1](LICENSE).
-
-- Free to read, modify, redistribute, and use for development, testing,
-  personal, educational, research and other non-commercial purposes.
-- **Commercial or revenue-generating production use requires a commercial
-  license.** Contact suryakoritala1324@gmail.com.
-- Each version converts to the Apache License 2.0 on its Change Date (four
-  years after its first public release; 2030-09-18 for this release).
+The codec (the `glyd` crate, CLI, C ABI and bindings) is under the BSD
+3-Clause License or, at your option, the GPL version 2 (LICENSE,
+COPYING): the same licenses as zstd. The store (`glyd-store`) is under
+the [Business Source License 1.1](glyd-store/LICENSE): free for
+non-commercial and internal use, a commercial license for offering it as
+a service or product (suryakoritala1324@gmail.com), and each version
+converts to the Apache License 2.0 four years after its release.
