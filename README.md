@@ -700,7 +700,10 @@ ships with release notes and the benchmark tables measured at that commit.
 Contributing: open an issue with the measured number for anything that
 touches speed or ratio (`examples/bench_suite.rs`, `examples/v7_bench.rs`
 and `scripts/bench_versions.sh` print same-run comparisons); pull requests
-run the full suite including the 1M-mutation fuzz in CI.
+run the full suite including the 1M-mutation fuzz in CI. Every commit
+needs a `Signed-off-by:` line (`git commit -s`), which accepts the
+[contributor license agreement](CLA.md): you keep your copyright and
+grant the project the right to use and relicense the contribution.
 
 ---
 
