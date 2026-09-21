@@ -713,10 +713,11 @@ run the full suite including the 1M-mutation fuzz in CI.
   as the Linux kernel included. Use it, embed it, ship it, sell it; keep
   the notice. That is everything in this repository except the store.
 - **The store — the `glyd-store` crate and CLI — is under the
-  [Business Source License 1.1](glyd-store/LICENSE)**: free to use for
-  non-commercial and internal purposes; offering it as a commercial
-  service or product needs a license (suryakoritala1324@gmail.com); each
-  version converts to Apache-2.0 four years after its release.
+  [Business Source License 1.1](glyd-store/LICENSE)**: source available,
+  free for personal, educational, research and other non-commercial use;
+  any commercial production use needs a license
+  (suryakoritala1324@gmail.com); each version converts to Apache-2.0
+  four years after its release.
 
 Why the split: a codec is adopted by being embedded, and nothing is
 embedded under a source-available license; the store is the product.

@@ -406,6 +406,7 @@ The codec (the `glyd` crate, CLI, C ABI and bindings) is under the BSD
 3-Clause License or, at your option, the GPL version 2 (LICENSE,
 COPYING): the same licenses as zstd. The store (`glyd-store`) is under
 the [Business Source License 1.1](glyd-store/LICENSE): free for
-non-commercial and internal use, a commercial license for offering it as
-a service or product (suryakoritala1324@gmail.com), and each version
-converts to the Apache License 2.0 four years after its release.
+personal, educational, research and other non-commercial use, a
+commercial license for any commercial production use
+(suryakoritala1324@gmail.com), and each version converts to the Apache
+License 2.0 four years after its release.
