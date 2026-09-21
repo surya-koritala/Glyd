@@ -1,0 +1,111 @@
+name: Release
+
+# On a version tag: build the CLIs, the shared libraries and the Python
+# wheels for Linux (x86_64, aarch64) and macOS (arm64), attach them to
+# the GitHub release, and publish to crates.io and PyPI when the tokens
+# are set as repository secrets (CARGO_REGISTRY_TOKEN, PYPI_API_TOKEN).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build for (e.g. v0.10.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            name: linux-x86_64
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            name: linux-aarch64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            name: macos-arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.name == 'linux-x86_64' && '-C target-cpu=x86-64-v3' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: cargo build --release --workspace
+      - name: Package binaries
+        run: |
+          set -e
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DIR="glyd-$TAG-${{ matrix.name }}"
+          mkdir -p "$DIR"
+          cp target/release/glyd target/release/glyd-store "$DIR/"
+          cp target/release/libglyd_store.* target/release/libglyd.* "$DIR/" 2>/dev/null || true
+          rm -f "$DIR"/*.d "$DIR"/*.rlib
+          cp include/glyd.h LICENSE NOTICE README.md "$DIR/"
+          cp glyd-store/LICENSE "$DIR/LICENSE-glyd-store"
+          tar -czf "$DIR.tar.gz" "$DIR"
+          shasum -a 256 "$DIR.tar.gz" > "$DIR.tar.gz.sha256"
+      - name: Build the Python wheel
+        run: |
+          set -e
+          cp target/release/libglyd_store.* bindings/python/glyd/ 2>/dev/null || true
+          python -m pip install --quiet build
+          python -m build --wheel --outdir wheels bindings/python
+          ls wheels
+      - name: Test the wheel
+        run: |
+          python -m pip install --quiet wheels/*.whl
+          cd bindings/python && python -c "import glyd; import test_glyd; test_glyd.test_round_trips()"
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          gh release upload "$TAG" glyd-*.tar.gz glyd-*.tar.gz.sha256 wheels/*.whl --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.name }}
+          path: wheels/*.whl
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          path: wheels
+          merge-multiple: true
+      - name: crates.io
+        if: ${{ env.CARGO_REGISTRY_TOKEN != '' }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          cargo publish -p glyd || echo "glyd: already published or refused"
+          sleep 60
+          cargo publish -p glyd-store || echo "glyd-store: already published or refused"
+      - name: PyPI
+        if: ${{ env.PYPI_API_TOKEN != '' }}
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          python -m pip install --quiet twine
+          TWINE_USERNAME=__token__ TWINE_PASSWORD="$PYPI_API_TOKEN" python -m twine upload --skip-existing wheels/*.whl
