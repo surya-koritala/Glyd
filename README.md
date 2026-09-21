@@ -244,10 +244,15 @@ out, at 270 MB/s. The same store built on zstd's own
 and read 10× faster, and the store design does the rest. In money, a
 petabyte of such data in S3 Standard costs $71K a year with zstd and
 $15K with the store. Chunk-level dedup, what backup systems do, gains
-1–4× on the same pairs. The store is a directory (`objects/<id>`, the
-fingerprints, an index); a store past a terabyte wants its table on
-disk, which this version keeps in memory (about 40 bytes per 4 KB
-stored).
+1–4× on the same pairs. The store is a directory: `objects/<id>`, the
+fingerprints, an index, and the fingerprint table — an open-addressing
+hash table mapped from disk (12 bytes per 4 KB stored, kept at most
+half full), so the store's memory does not grow with what it holds;
+the 39 GB bucket's table is 100 MB. Objects under 256 KB have nothing
+to fingerprint and would cost their whole size alone, so `put` gathers
+them into 2 MB packs (record mode where it pays) and `get` decodes the
+pack and slices: 2,000 GitHub events put one by one store at 9.0×
+against zstd -3's 3.6× per event.
 
 ## Base mode: a version compressed against the last one
 
@@ -643,7 +648,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.8.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.8.1** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every

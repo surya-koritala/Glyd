@@ -6,6 +6,25 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.8.1 — 2026-09-21
+
+### The store at scale
+- The fingerprint table lives on disk: an open-addressing hash table
+  (12-byte slots, the fingerprint and the object id, linear probing, a
+  fingerprint's last eight holders kept) mapped into memory through
+  libc's `mmap`, at most half full, doubled in a fresh file when it
+  fills. The store's memory no longer grows with what it holds: the
+  39 GB bucket's table is 100 MB on disk and the put's memory is the
+  object's own working set. Same bytes (1,314 MB, 29.9x), 480 MB/s end
+  to end.
+- Small objects (under 256 KB) go into packs of about 2 MB, one stored
+  object each (`flush` writes the open pack; `Drop` flushes); `get`
+  decodes the pack and slices, keeping the last pack decoded. 2,000
+  GitHub events put one by one: 9.0x against zstd -3's 3.6x per event.
+- Objects stored alone go through record mode where it pays
+  (`compress_records_into_max`), so a log or a dump put into a store
+  gets its columns.
+
 ## v0.8.0 — 2026-09-21
 
 ### The store: compression across objects

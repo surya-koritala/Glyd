@@ -4,7 +4,7 @@ Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
 
-## Where it stands (v0.8.0, 2026-09-21)
+## Where it stands (v0.8.1, 2026-09-21)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 ([report](docs/benchmarks/suite-2026-09-20.md)): `--max` 3.96 (zstd -3
@@ -31,12 +31,12 @@ storage is between objects.
 
 ## Next, in order of what moves the bill
 
-0. **The store at scale.** The fingerprint table on disk (40 bytes per
-   4 KB stored keeps a terabyte's table in 10 GB of memory); packs and
-   shape dictionaries for the small objects a store receives; a base
-   chosen among several candidates by a trial on the first megabytes;
-   an S3-backed object directory. Gate: a terabyte bucket put and read
-   back at the measured ratios.
+0. **The store at scale.** Done in v0.8.1: the fingerprint table on
+   disk (mapped, 12 bytes per 4 KB stored) and packs for small puts.
+   Left: a base chosen among several candidates by a trial on the
+   first megabytes; an S3-backed object directory; a shape dictionary
+   trained per store for its small objects. Gate: a terabyte bucket
+   put and read back at the measured ratios.
 
 1. **Write speed of `--max`** (0.58–0.66× zstd -3 on one server core):
    the finder's cache footprint and the matcher pass. Gate: 0.8× zstd -3

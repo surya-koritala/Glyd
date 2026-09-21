@@ -142,7 +142,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "glyd"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "libc",
  "lz4",
