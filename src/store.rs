@@ -16,12 +16,14 @@
 //! record mode where it pays) of about `PACK_SIZE`, one stored object
 //! each, and read back by decoding the pack and slicing.
 //!
-//! On disk, a directory: `objects/<id>` (the stream), `objects/<id>.fp`
-//! (the fingerprints), `table` (an open-addressing hash table of the
-//! fingerprints to the objects holding them, read and written in place
-//! so a store's memory does not grow with its size) and `index` (one
-//! line per object: id, base id or -, depth, raw length, stored length,
-//! pack id and position or -, name).
+//! On disk, a directory: `table` (an open-addressing hash table of the
+//! fingerprints to the objects holding them, mapped in place so a
+//! store's memory does not grow with its size), `index` (one line per
+//! object: id, base id or -, depth, raw length, stored length, pack id
+//! and position or -, name; a later line for an id replaces an earlier
+//! one; `D` lines delete), and the objects' streams under `objects/`
+//! through a `Backend`: the directory itself, or an S3 bucket
+//! (`S3Cli`, through the AWS CLI); metadata stays local.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -256,8 +258,117 @@ impl Table {
     }
 }
 
+/// Where a store keeps its objects' bytes.
+pub trait Backend: Send + Sync {
+    fn read(&self, key: &str) -> Result<Vec<u8>>;
+    fn write(&self, key: &str, data: &[u8]) -> Result<()>;
+    fn remove(&self, key: &str) -> Result<()>;
+    fn exists(&self, key: &str) -> bool;
+    /// Bytes of the object at `key`, when it exists.
+    fn len(&self, key: &str) -> Option<u64>;
+}
+
+/// Objects as files under a directory.
+pub struct LocalBackend {
+    dir: PathBuf,
+}
+
+impl LocalBackend {
+    pub fn new(dir: impl AsRef<Path>) -> Result<LocalBackend> {
+        std::fs::create_dir_all(dir.as_ref())?;
+        Ok(LocalBackend { dir: dir.as_ref().to_path_buf() })
+    }
+}
+
+impl Backend for LocalBackend {
+    fn read(&self, key: &str) -> Result<Vec<u8>> {
+        std::fs::read(self.dir.join(key))
+    }
+    fn write(&self, key: &str, data: &[u8]) -> Result<()> {
+        std::fs::write(self.dir.join(key), data)
+    }
+    fn remove(&self, key: &str) -> Result<()> {
+        std::fs::remove_file(self.dir.join(key))
+    }
+    fn exists(&self, key: &str) -> bool {
+        self.dir.join(key).exists()
+    }
+    fn len(&self, key: &str) -> Option<u64> {
+        std::fs::metadata(self.dir.join(key)).ok().map(|m| m.len())
+    }
+}
+
+/// Objects in an S3 bucket through the AWS CLI (`aws s3 cp` and
+/// friends, the profile and region of the environment): one process
+/// per object, which suits objects of megabytes and up. The library
+/// carries no HTTP client; a native client is the upgrade.
+pub struct S3Cli {
+    bucket: String,
+    prefix: String,
+}
+
+impl S3Cli {
+    /// `s3://bucket/prefix` (the prefix may be empty).
+    pub fn new(url: &str) -> Result<S3Cli> {
+        let rest = url.strip_prefix("s3://").ok_or_else(|| bad("an s3:// url"))?;
+        let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
+        if bucket.is_empty() {
+            return Err(bad("an s3:// url with a bucket"));
+        }
+        Ok(S3Cli { bucket: bucket.to_string(), prefix: prefix.trim_end_matches('/').to_string() })
+    }
+
+    fn url(&self, key: &str) -> String {
+        if self.prefix.is_empty() { format!("s3://{}/{}", self.bucket, key) } else { format!("s3://{}/{}/{}", self.bucket, self.prefix, key) }
+    }
+
+    fn run(args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>> {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("aws").args(args).stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        if let Some(data) = input {
+            let mut stdin = child.stdin.take().unwrap();
+            let data = data.to_vec();
+            // Written on its own thread: the CLI may not read stdin
+            // before it writes stdout.
+            let writer = std::thread::spawn(move || stdin.write_all(&data));
+            let out = child.wait_with_output()?;
+            writer.join().map_err(|_| bad("aws: stdin writer"))??;
+            if !out.status.success() {
+                return Err(Error::new(ErrorKind::Other, format!("aws {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim())));
+            }
+            return Ok(out.stdout);
+        }
+        let out = child.wait_with_output()?;
+        if !out.status.success() {
+            return Err(Error::new(ErrorKind::Other, format!("aws {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        Ok(out.stdout)
+    }
+}
+
+impl Backend for S3Cli {
+    fn read(&self, key: &str) -> Result<Vec<u8>> {
+        Self::run(&["s3", "cp", "--quiet", &self.url(key), "-"], None)
+    }
+    fn write(&self, key: &str, data: &[u8]) -> Result<()> {
+        Self::run(&["s3", "cp", "--quiet", "-", &self.url(key)], Some(data)).map(|_| ())
+    }
+    fn remove(&self, key: &str) -> Result<()> {
+        Self::run(&["s3", "rm", "--quiet", &self.url(key)], None).map(|_| ())
+    }
+    fn exists(&self, key: &str) -> bool {
+        self.len(key).is_some()
+    }
+    fn len(&self, key: &str) -> Option<u64> {
+        let full = if self.prefix.is_empty() { key.to_string() } else { format!("{}/{}", self.prefix, key) };
+        let out = Self::run(&["s3api", "head-object", "--bucket", &self.bucket, "--key", &full, "--query", "ContentLength", "--output", "text"], None).ok()?;
+        String::from_utf8_lossy(&out).trim().parse().ok()
+    }
+}
+
 pub struct Store {
     dir: PathBuf,
+    objects: Box<dyn Backend>,
     entries: Vec<Entry>,
     table: Table,
     level: Level,
@@ -290,12 +401,20 @@ fn fingerprints(data: &[u8]) -> Vec<u64> {
 }
 
 impl Store {
-    /// Open the store at `dir`, creating it when it does not exist.
+    /// Open the store at `dir`, creating it when it does not exist; the
+    /// objects live under `dir/objects`.
     pub fn open(dir: impl AsRef<Path>) -> Result<Store> {
+        let objects = LocalBackend::new(dir.as_ref().join("objects"))?;
+        Self::open_with(dir, Box::new(objects))
+    }
+
+    /// Open the store whose metadata is at `dir` and whose objects are
+    /// in `objects` (a directory, an S3 bucket, ...).
+    pub fn open_with(dir: impl AsRef<Path>, objects: Box<dyn Backend>) -> Result<Store> {
         let dir = dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(dir.join("objects"))?;
+        std::fs::create_dir_all(&dir)?;
         let table = Table::open(dir.join("table"))?;
-        let mut store = Store { dir, entries: Vec::new(), table, level: Level::Max, names: HashMap::new(), pending: Vec::new(), pending_bytes: 0, pack_cache: std::cell::RefCell::new(None), last: std::cell::RefCell::new(None) };
+        let mut store = Store { dir, objects, entries: Vec::new(), table, level: Level::Max, names: HashMap::new(), pending: Vec::new(), pending_bytes: 0, pack_cache: std::cell::RefCell::new(None), last: std::cell::RefCell::new(None) };
         let index = store.dir.join("index");
         if index.exists() {
             let text = std::fs::read_to_string(&index)?;
@@ -354,12 +473,8 @@ impl Store {
         Ok(store)
     }
 
-    fn object_path(&self, id: u32) -> PathBuf {
-        self.dir.join("objects").join(id.to_string())
-    }
-
-    fn fp_path(&self, id: u32) -> PathBuf {
-        self.dir.join("objects").join(format!("{id}.fp"))
+    fn key(id: u32) -> String {
+        id.to_string()
     }
 
     /// The objects, in id order.
@@ -372,7 +487,7 @@ impl Store {
     /// counts until `compact`).
     pub fn stats(&self) -> (u64, u64) {
         let raw = self.entries.iter().filter(|e| !e.deleted).map(|e| e.raw_len).sum();
-        let stored = self.entries.iter().filter(|e| !e.deleted || self.object_path(e.id).exists()).map(|e| e.stored_len).sum();
+        let stored = self.entries.iter().filter(|e| !e.deleted || e.stored_len > 0 && self.objects.exists(&Self::key(e.id))).map(|e| e.stored_len).sum();
         (raw, stored)
     }
 
@@ -426,11 +541,10 @@ impl Store {
             if needed[i] || self.entries[i].pack.is_some() {
                 continue;
             }
-            let path = self.object_path(i as u32);
-            if let Ok(m) = std::fs::metadata(&path) {
-                freed += m.len();
-                std::fs::remove_file(&path)?;
-                let _ = std::fs::remove_file(self.fp_path(i as u32));
+            let key = Self::key(i as u32);
+            if let Some(n) = self.objects.len(&key) {
+                freed += n;
+                self.objects.remove(&key)?;
                 self.entries[i].stored_len = 0;
             }
         }
@@ -464,9 +578,10 @@ impl Store {
         writeln!(index, "{}\t{}\t{}\t{}\t{}\t{}\t{}", entry.id, entry.base.map_or("-".to_string(), |b| b.to_string()), entry.depth, entry.raw_len, entry.stored_len, entry.pack.map_or("-".to_string(), |(p, i)| format!("{p}:{i}")), entry.name)
     }
 
-    /// The stored object the data shares the most fingerprints with,
-    /// and the share, when there is one worth trying.
-    fn candidate(&self, prints: &[u64]) -> Result<Option<(u32, f64)>> {
+    /// The stored objects the data shares the most fingerprints with,
+    /// best first with their shares: the best, and a second when it
+    /// scores at least half as much (`put` tries both on a sample).
+    fn candidates(&self, prints: &[u64]) -> Result<Vec<(u32, f64)>> {
         let mut hits: HashMap<u32, f64> = HashMap::new();
         let mut holders = Vec::with_capacity(HOLDERS);
         for &h in prints {
@@ -481,11 +596,28 @@ impl Store {
         let top = hits.values().cloned().fold(0.0f64, f64::max);
         // Among those within 5% of the best, the most recent: a copy of
         // a copy shares its fingerprints with both.
-        let Some((id, score)) = hits.iter().filter(|(_, &s)| s >= top * 0.95).max_by_key(|(&id, _)| id).map(|(&id, &s)| (id, s)) else {
-            return Ok(None);
+        let Some((first, score)) = hits.iter().filter(|(_, &s)| s >= top * 0.95).max_by_key(|(&id, _)| id).map(|(&id, &s)| (id, s)) else {
+            return Ok(Vec::new());
         };
-        let share = score / prints.len().max(1) as f64;
-        Ok(if share < MIN_SHARE { None } else { Some((id, share)) })
+        let n = prints.len().max(1) as f64;
+        if score / n < MIN_SHARE {
+            return Ok(Vec::new());
+        }
+        let mut out = vec![(first, score / n)];
+        let mut rest: Vec<(u32, f64)> = hits.iter().filter(|(&id, &s)| id != first && s * 2.0 >= score).map(|(&id, &s)| (id, s / n)).collect();
+        rest.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(b.0.cmp(&a.0)));
+        out.extend(rest.into_iter().take(1));
+        Ok(out)
+    }
+
+    /// The chain root of `id` when `id` sits at the depth cap, else `id`.
+    fn within_cap(&self, mut id: u32) -> u32 {
+        if self.entries[id as usize].depth >= MAX_DEPTH {
+            while let Some(p) = self.entries[id as usize].base {
+                id = p;
+            }
+        }
+        id
     }
 
     /// Store `data` under `name`; its id. A large object is kept as a
@@ -518,13 +650,24 @@ impl Store {
         };
         let mut base = None;
         let mut stored = Vec::new();
-        if let Some((mut bid, _)) = self.candidate(&prints)? {
-            if self.entries[bid as usize].depth >= MAX_DEPTH {
-                while let Some(p) = self.entries[bid as usize].base {
-                    bid = p;
+        let mut candidates: Vec<u32> = self.candidates(&prints)?.into_iter().map(|(id, _)| self.within_cap(id)).collect();
+        candidates.dedup();
+        if !candidates.is_empty() {
+            // Two candidates: the one whose delta of the first 32 MB is
+            // smaller wins the whole object.
+            let mut bid = candidates[0];
+            let mut base_data = self.get(bid)?;
+            if candidates.len() > 1 {
+                let sample = &data[..data.len().min(32 << 20)];
+                let other_data = self.get(candidates[1])?;
+                let (mut a, mut b) = (Vec::new(), Vec::new());
+                crate::compress_with_base(&base_data, sample, &mut a, false);
+                crate::compress_with_base(&other_data, sample, &mut b, false);
+                if b.len() < a.len() {
+                    bid = candidates[1];
+                    base_data = other_data;
                 }
             }
-            let base_data = self.get(bid)?;
             let mut delta = Vec::with_capacity(data.len() / 16 + 1024);
             crate::compress_with_base(&base_data, data, &mut delta, self.level == Level::Ultra);
             // Whether the delta pays is judged against the object alone:
@@ -547,12 +690,7 @@ impl Store {
             stored = alone(data);
         }
         let depth = base.map_or(0, |b| self.entries[b as usize].depth + 1);
-        std::fs::write(self.object_path(id), &stored)?;
-        let mut fp = Vec::with_capacity(prints.len() * 8);
-        for h in &prints {
-            fp.extend_from_slice(&h.to_le_bytes());
-        }
-        std::fs::write(self.fp_path(id), &fp)?;
+        self.objects.write(&Self::key(id), &stored)?;
         self.names.insert(name.clone(), id);
         let entry = Entry { id, name, base, depth, raw_len: data.len() as u64, stored_len: stored.len() as u64, pack: None, deleted: false };
         self.append_index(&entry)?;
@@ -580,7 +718,7 @@ impl Store {
             Level::Cold => crate::compress_into_cold,
         };
         crate::compress_pack(&objects, &mut stored, level);
-        std::fs::write(self.object_path(pack_id), &stored)?;
+        self.objects.write(&Self::key(pack_id), &stored)?;
         let pack = Entry { id: pack_id, name: format!("pack of {}", self.pending.len()), base: None, depth: 0, raw_len: 0, stored_len: stored.len() as u64, pack: None, deleted: false };
         // The members' entries, now that their pack has an id.
         for (i, (member, _)) in self.pending.iter().enumerate() {
@@ -617,7 +755,7 @@ impl Store {
             }
             let mut cache = self.pack_cache.borrow_mut();
             if cache.as_ref().map_or(true, |(p, _)| *p != pack) {
-                let stored = std::fs::read(self.object_path(pack))?;
+                let stored = self.objects.read(&Self::key(pack))?;
                 *cache = Some((pack, crate::decompress_pack(&stored).map_err(codec)?));
             }
             let data = cache.as_ref().unwrap().1.get(i as usize).ok_or_else(|| bad("pack member"))?.clone();
@@ -626,7 +764,7 @@ impl Store {
             }
             return Ok(data);
         }
-        let stored = std::fs::read(self.object_path(id))?;
+        let stored = self.objects.read(&Self::key(id))?;
         let data = match entry.base {
             Some(b) => {
                 let base = self.base_data(b)?;
@@ -649,7 +787,7 @@ impl Store {
                 return Ok(data.clone());
             }
         }
-        let stored = std::fs::read(self.object_path(id))?;
+        let stored = self.objects.read(&Self::key(id))?;
         let data = match entry.base {
             Some(b) => {
                 let base = self.base_data(b)?;
@@ -661,6 +799,30 @@ impl Store {
             return Err(bad("object length"));
         }
         Ok(data)
+    }
+
+    /// Store `id` again alone (depth 0), so a read of it is one decode:
+    /// for an object read often that sits deep in a chain. Its
+    /// dependants keep working (their chains still run through it).
+    pub fn rebase(&mut self, id: u32) -> Result<()> {
+        let entry = self.entries.get(id as usize).ok_or_else(|| bad("no such object"))?.clone();
+        if entry.deleted || entry.pack.is_some() || entry.base.is_none() {
+            return Ok(());
+        }
+        let data = self.get(id)?;
+        let mut stored = Vec::with_capacity(data.len() / 4 + 1024);
+        match self.level {
+            Level::Max => crate::compress_records_into_max(&data, &mut stored),
+            Level::Ultra => crate::compress_records_into_ultra(&data, &mut stored),
+            Level::Cold => crate::compress_records_into_cold(&data, &mut stored),
+        }
+        self.objects.write(&Self::key(id), &stored)?;
+        let e = &mut self.entries[id as usize];
+        e.base = None;
+        e.depth = 0;
+        e.stored_len = stored.len() as u64;
+        let e = e.clone();
+        self.append_index(&e)
     }
 }
 
@@ -794,7 +956,7 @@ mod tests {
         }
         let freed = store.compact().unwrap();
         assert!(freed > 0, "the chain through v2 should leave the disk");
-        assert!(!store.object_path(2).exists());
+        assert!(!store.objects.exists("2"));
         let (raw_after, disk_after) = store.stats();
         assert!(raw_after < raw_before && disk_after < disk_before);
         assert_eq!(store.id_of("v2"), None);

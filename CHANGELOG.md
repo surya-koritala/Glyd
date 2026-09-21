@@ -6,6 +6,23 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.9.1 — 2026-09-21
+
+### The store: S3, rebase, a second candidate
+- `Backend` trait for the objects' bytes: `LocalBackend` (a directory)
+  and `S3Cli` (an S3 bucket through the AWS CLI, `aws s3 cp` per
+  object; the library carries no HTTP client); `Store::open_with`.
+  CLI `--s3 s3://bucket/prefix`. Metadata (index, table) stays local.
+  Round trip through a real bucket verified.
+- `rebase(id)` / `--rebase ID`: an object stored alone again, one
+  decode to read; a later index line for an id replaces the earlier.
+- Two base candidates when the second scores at least half the first:
+  both tried on the first 32 MB, the smaller delta wins the object. On
+  the bucket: 1,313.6 -> 1,312.1 MB (the single candidate was already
+  within a few percent of ideal), put 63 -> 70 s.
+- The per-object fingerprint files are gone (the table on disk is the
+  record).
+
 ## v0.9.0 — 2026-09-21
 
 ### The store, complete

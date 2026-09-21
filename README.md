@@ -131,7 +131,8 @@ glyd --max -r access.log -o access.glyd           # record mode: logs, dumps, CS
 glyd --ultra -r dump.sql -o dump.glyd             # fewest bytes from a parse; slow to write
 glyd --cold -r dump.sql -o dump.glyd              # fewest bytes of all; 1 MB/s per core each way
 glyd --store bucket/ --put mon.tar tue.tar wed.tar # the store finds each object's base itself
-glyd --store bucket/ --get 2 -o wed.tar           # also --find NAME, --delete ID, --compact, --verify, --stats
+glyd --store bucket/ --get 2 -o wed.tar           # also --find NAME, --delete ID, --rebase ID, --compact, --verify, --stats
+glyd --store meta/ --s3 s3://bucket/prefix --put wed.tar   # objects in S3 through the AWS CLI
 glyd --base dump-mon.sql dump-tue.sql -o tue.glyd # base mode: Tuesday's dump against Monday's
 glyd -d --base dump-mon.sql tue.glyd -o tue.sql   # decoding a base-mode file needs the base
 glyd    telemetry.bin -o telemetry.glyd           # default: LZ4-class ratio, 22 GB/s reads on 8 cores
@@ -227,10 +228,14 @@ the object as a delta against it (`--base`) when that saves a fifth or
 more of what it costs alone; else alone at `--max` (record mode where
 it pays; `--ultra` or `--cold` on request). Chains are at most four
 long (past that the chain's root is the base), so a read is at most
-five decodes at 6–10 GB/s. `get`, `id_of(name)`, `delete` (a deleted
-object's bytes stay while a live chain runs through them), `compact`
-(frees what no live object needs), `verify` (every object read back
-and checked). Measured on a realistic bucket
+five decodes at 6–10 GB/s; `rebase(id)` stores an object read often
+alone again. `get`, `id_of(name)`, `delete` (a deleted object's bytes
+stay while a live chain runs through them), `compact` (frees what no
+live object needs), `verify` (every object read back and checked).
+The objects' bytes go through a `Backend`: a directory, or an S3
+bucket through the AWS CLI (`--s3 s3://bucket/prefix`; metadata stays
+local; a native client is the upgrade). When two stored objects score
+within 2× of each other as bases, both are tried on the first 32 MB. Measured on a realistic bucket
 (`scripts/download_bucket.sh`, 39 objects, 39.2 GB, each arriving in
 order), every object read back and compared:
 
@@ -655,7 +660,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.9.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.9.1** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every

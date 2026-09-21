@@ -26,8 +26,10 @@ Options:
                            (found by fingerprints) when that pays, small files in packs; --get ID
                            writes an object to -o; --find NAME prints its id; --delete ID;
                            --compact frees what no live object needs; --verify reads every
-                           object back; --stats lists the objects and the bytes. --ultra or
-                           --cold sets the level objects stored alone take.
+                           object back; --rebase ID stores an object alone again (one decode to
+                           read); --stats lists the objects and the bytes. --ultra or --cold
+                           sets the level objects stored alone take. --s3 s3://bucket/prefix
+                           keeps the objects in S3 through the AWS CLI (metadata stays in DIR).
     -P, --pack             Pack the input files (many small objects) into one stream with an
                            index, record mode where it pays; any one object is read back alone
     -U, --unpack <DIR>     Write a pack's objects into DIR as 000000, 000001, ...
@@ -105,6 +107,8 @@ fn main() -> io::Result<()> {
     let mut store_delete: Option<u32> = None;
     let mut store_compact = false;
     let mut store_verify = false;
+    let mut store_rebase: Option<u32> = None;
+    let mut store_s3: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -188,6 +192,27 @@ fn main() -> io::Result<()> {
                 }
             }
             "--compact" => store_compact = true,
+            "--rebase" => {
+                match args.get(i + 1).and_then(|a| a.parse().ok()) {
+                    Some(id) => {
+                        store_rebase = Some(id);
+                        i += 1;
+                    }
+                    None => {
+                        eprintln!("Error: --rebase requires an object id");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            "--s3" => {
+                if i + 1 < args.len() {
+                    store_s3 = Some(args[i + 1].clone());
+                    i += 1;
+                } else {
+                    eprintln!("Error: --s3 requires an s3://bucket/prefix url");
+                    std::process::exit(1);
+                }
+            }
             "--verify" => store_verify = true,
             "-P" | "--pack" => pack = true,
             "-U" | "--unpack" => {
@@ -242,7 +267,10 @@ fn main() -> io::Result<()> {
     }
 
     if let Some(dir) = store_dir {
-        let mut store = glyd::Store::open(&dir)?;
+        let mut store = match store_s3 {
+            Some(url) => glyd::Store::open_with(&dir, Box::new(glyd::store::S3Cli::new(&url)?))?,
+            None => glyd::Store::open(&dir)?,
+        };
         if cold {
             store.set_level(glyd::store::Level::Cold);
         } else if ultra {
@@ -272,6 +300,9 @@ fn main() -> io::Result<()> {
         }
         if let Some(id) = store_delete {
             store.delete(id)?;
+        }
+        if let Some(id) = store_rebase {
+            store.rebase(id)?;
         }
         if store_compact {
             let freed = store.compact()?;
