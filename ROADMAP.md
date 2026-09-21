@@ -4,7 +4,7 @@ Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
 
-## Where it stands (v0.9.2, 2026-09-21)
+## Where it stands (v0.11.0, 2026-09-21)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 ([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
@@ -33,10 +33,13 @@ storage is between objects.
 
 0. **The store at scale.** Done: the fingerprint table on disk
    (mapped, 12 bytes per 4 KB stored), packs for small puts, delete
-   and compaction, verification, levels, S3 through the AWS CLI,
-   rebase, a second candidate tried on a sample. Left: a native S3
-   client (an HTTP dependency, a packaging decision), and the gate: a
-   terabyte bucket put and read back at the measured ratios.
+   and compaction, verification, levels, rebase, a second candidate
+   tried on a sample, and S3 spoken directly (SigV4 over HTTPS, the
+   standard credential chain, any S3-compatible endpoint; v0.11.0).
+   Left: multipart upload (objects over 5 GB, and parallel parts for
+   fat links), an index rebuilt from the objects after a lost
+   metadata directory, and the gate: a terabyte bucket put and read
+   back at the measured ratios.
 
 1. **Write speed of `--max`** (0.71–0.77× zstd -3 on server cores since
    the finder's tables took zstd -3's size; the long-distance pass is

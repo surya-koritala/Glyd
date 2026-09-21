@@ -63,7 +63,7 @@ envelopes carry no version byte because each magic *is* the version
 
 ## 3. The store
 
-Not a stream but a directory (`src/store.rs`): `index` (one text line
+Not a stream but a directory (`glyd-store/src/lib.rs`): `index` (one text line
 per object: id, base id or `-`, depth, raw length, stored length, pack
 `id:position` or `-`, name; `D\t<id>` deletes; a later line for an id
 replaces an earlier one), `table` (an open-addressing hash table of

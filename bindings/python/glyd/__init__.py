@@ -20,7 +20,7 @@ import ctypes
 import os
 import sys
 
-__version__ = "0.10.2"
+__version__ = "0.11.0"
 
 _LEVELS = {"default": 0, "fast": 1, "turbo": 2, "max": 3, "ultra": 4, "cold": 5}
 
@@ -183,8 +183,8 @@ class Store:
     """Objects compressed across each other: put() keeps an object as a
     delta against the stored object it most resembles when that pays,
     small objects in packs; get() rebuilds it. Metadata lives in `path`;
-    the objects there too, or in `s3` (s3://bucket/prefix, through the
-    AWS CLI)."""
+    the objects there too, or in `s3` (s3://bucket/prefix, or any
+    S3-compatible service through AWS_ENDPOINT_URL)."""
 
     def __init__(self, path, s3=None):
         if not _HAS_STORE:

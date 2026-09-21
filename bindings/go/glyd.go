@@ -188,7 +188,7 @@ func PackLen(pack []byte) (int, error) {
 }
 
 // Store: objects compressed across each other. Metadata at dir; the
-// objects there too, or in s3 (s3://bucket/prefix, through the AWS CLI)
+// objects there too, or in s3 (s3://bucket/prefix)
 // when it is not empty.
 type Store struct{ h *C.GlydStore }
 

@@ -23,7 +23,8 @@
 //! and position or -, name; a later line for an id replaces an earlier
 //! one; `D` lines delete), and the objects' streams under `objects/`
 //! through a `Backend`: the directory itself, or an S3 bucket
-//! (`S3Cli`, through the AWS CLI); metadata stays local.
+//! (`S3Backend`, over HTTPS; also any S3-compatible service through
+//! `AWS_ENDPOINT_URL`); metadata stays local.
 //!
 //! This crate is the store; the codec it builds on is the `glyd` crate
 //! (BSD-3-Clause OR GPL-2.0). The store is under the Business Source License 1.1.
@@ -256,73 +257,8 @@ impl Backend for LocalBackend {
     }
 }
 
-/// Objects in an S3 bucket through the AWS CLI (`aws s3 cp` and
-/// friends, the profile and region of the environment): one process
-/// per object, which suits objects of megabytes and up. The library
-/// carries no HTTP client; a native client is the upgrade.
-pub struct S3Cli {
-    bucket: String,
-    prefix: String,
-}
-
-impl S3Cli {
-    /// `s3://bucket/prefix` (the prefix may be empty).
-    pub fn new(url: &str) -> Result<S3Cli> {
-        let rest = url.strip_prefix("s3://").ok_or_else(|| bad("an s3:// url"))?;
-        let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
-        if bucket.is_empty() {
-            return Err(bad("an s3:// url with a bucket"));
-        }
-        Ok(S3Cli { bucket: bucket.to_string(), prefix: prefix.trim_end_matches('/').to_string() })
-    }
-
-    fn url(&self, key: &str) -> String {
-        if self.prefix.is_empty() { format!("s3://{}/{}", self.bucket, key) } else { format!("s3://{}/{}/{}", self.bucket, self.prefix, key) }
-    }
-
-    fn run(args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>> {
-        use std::process::{Command, Stdio};
-        let mut child = Command::new("aws").args(args).stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-        if let Some(data) = input {
-            let mut stdin = child.stdin.take().unwrap();
-            let data = data.to_vec();
-            // Written on its own thread: the CLI may not read stdin
-            // before it writes stdout.
-            let writer = std::thread::spawn(move || stdin.write_all(&data));
-            let out = child.wait_with_output()?;
-            writer.join().map_err(|_| bad("aws: stdin writer"))??;
-            if !out.status.success() {
-                return Err(Error::new(ErrorKind::Other, format!("aws {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim())));
-            }
-            return Ok(out.stdout);
-        }
-        let out = child.wait_with_output()?;
-        if !out.status.success() {
-            return Err(Error::new(ErrorKind::Other, format!("aws {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim())));
-        }
-        Ok(out.stdout)
-    }
-}
-
-impl Backend for S3Cli {
-    fn read(&self, key: &str) -> Result<Vec<u8>> {
-        Self::run(&["s3", "cp", "--quiet", &self.url(key), "-"], None)
-    }
-    fn write(&self, key: &str, data: &[u8]) -> Result<()> {
-        Self::run(&["s3", "cp", "--quiet", "-", &self.url(key)], Some(data)).map(|_| ())
-    }
-    fn remove(&self, key: &str) -> Result<()> {
-        Self::run(&["s3", "rm", "--quiet", &self.url(key)], None).map(|_| ())
-    }
-    fn exists(&self, key: &str) -> bool {
-        self.len(key).is_some()
-    }
-    fn len(&self, key: &str) -> Option<u64> {
-        let full = if self.prefix.is_empty() { key.to_string() } else { format!("{}/{}", self.prefix, key) };
-        let out = Self::run(&["s3api", "head-object", "--bucket", &self.bucket, "--key", &full, "--query", "ContentLength", "--output", "text"], None).ok()?;
-        String::from_utf8_lossy(&out).trim().parse().ok()
-    }
-}
+pub mod s3;
+pub use s3::S3Backend;
 
 pub struct Store {
     dir: PathBuf,

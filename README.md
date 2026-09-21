@@ -126,7 +126,7 @@ million a year at list price; the percentages above are what to multiply.
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 cargo install glyd glyd-store                # from crates.io
-pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.10.2-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.11.0-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -147,7 +147,7 @@ glyd --ultra -r dump.sql -o dump.glyd             # fewest bytes from a parse; s
 glyd --cold -r dump.sql -o dump.glyd              # fewest bytes of all; 1 MB/s per core each way
 glyd-store bucket/ --put mon.tar tue.tar wed.tar  # the store finds each object's base itself (glyd-store crate)
 glyd-store bucket/ --get 2 -o wed.tar            # also --find NAME, --delete ID, --rebase ID, --compact, --verify, --stats
-glyd-store meta/ --s3 s3://bucket/prefix --put wed.tar     # objects in S3 through the AWS CLI
+glyd-store meta/ --s3 s3://bucket/prefix --put wed.tar     # objects in S3 (or any S3-compatible service)
 glyd-store --audit s3://bucket/prefix            # what the store would save there, from a sample, in dollars
 glyd --base dump-mon.sql dump-tue.sql -o tue.glyd # base mode: Tuesday's dump against Monday's
 glyd -d --base dump-mon.sql tue.glyd -o tue.sql   # decoding a base-mode file needs the base
@@ -256,8 +256,8 @@ alone again. `get`, `id_of(name)`, `delete` (a deleted object's bytes
 stay while a live chain runs through them), `compact` (frees what no
 live object needs), `verify` (every object read back and checked).
 The objects' bytes go through a `Backend`: a directory, or an S3
-bucket through the AWS CLI (`--s3 s3://bucket/prefix`; metadata stays
-local; a native client is the upgrade). When two stored objects score
+bucket over HTTPS (`--s3 s3://bucket/prefix`, or any S3-compatible
+service through `AWS_ENDPOINT_URL`; metadata stays local). When two stored objects score
 within 2× of each other as bases, both are tried on the first 32 MB. Measured on a realistic bucket
 (`scripts/download_bucket.sh`, 39 objects, 39.2 GB, each arriving in
 order), every object read back and compared:
@@ -688,7 +688,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.10.2** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.11.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every

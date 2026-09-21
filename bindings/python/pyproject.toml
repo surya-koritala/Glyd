@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glyd"
-version = "0.10.2"
+version = "0.11.0"
 description = "Compression for the data that fills object storage: record mode, packs, a store that compresses across objects, the fastest reads"
 readme = "README.md"
 # The binding and the codec: BSD-3-Clause or GPL-2.0; the bundled

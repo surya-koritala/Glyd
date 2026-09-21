@@ -6,6 +6,26 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.11.0 — 2026-09-21
+
+### The store speaks S3 itself
+
+- `S3Backend` replaces `S3Cli`: PUT, GET, HEAD, DELETE and
+  ListObjectsV2 over HTTPS with Signature V4, no AWS CLI on the
+  machine. Credentials from the environment, `~/.aws/credentials`
+  (`AWS_PROFILE`) or the instance/container role, refreshed before
+  they expire; the region from the environment, the profile, or the
+  bucket's answer; `AWS_ENDPOINT_URL` for MinIO, R2, B2, Ceph and other
+  S3-compatible services. Retries with backoff on 5xx and throttling.
+  Two 1.5 GB kernel tarballs put through S3, one as a 3.4 MB delta,
+  read back byte-exact and verified; the two-object put took the same
+  11.6 s as through the CLI on this link. Single puts up to 5 GB;
+  multipart upload is next.
+- `--audit s3://...` lists and reads through the same client.
+- The `glyd-store` crate takes its first dependencies for this:
+  `ureq` (HTTPS through rustls), `sha2`, `hmac`. The `glyd` crate
+  stays at zero.
+
 ## v0.10.2 — 2026-09-21
 
 - The codec's licenses are now exactly zstd's: BSD 3-Clause (`LICENSE`)

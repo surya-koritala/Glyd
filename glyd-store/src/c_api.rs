@@ -3,7 +3,7 @@
 use std::slice;
 
 /// A store (`glyd_store_*`): metadata at `dir`, objects there too, or
-/// in `s3_url` (s3://bucket/prefix, through the AWS CLI) when given.
+/// in `s3_url` (s3://bucket/prefix) when given.
 pub struct GlydStore(crate::Store);
 
 const GLYD_LEVEL_MAX: i32 = 3;
@@ -30,7 +30,7 @@ pub unsafe extern "C" fn glyd_store_open(dir: *const std::ffi::c_char, s3_url: *
         crate::Store::open(&dir)
     } else {
         let url = std::ffi::CStr::from_ptr(s3_url).to_string_lossy().to_string();
-        crate::S3Cli::new(&url).and_then(|b| crate::Store::open_with(&dir, Box::new(b)))
+        crate::S3Backend::new(&url).and_then(|b| crate::Store::open_with(&dir, Box::new(b)))
     };
     match store {
         Ok(s) => Box::into_raw(Box::new(GlydStore(s))),

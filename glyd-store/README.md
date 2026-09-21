@@ -11,8 +11,18 @@ store is under the Business Source License 1.1 (LICENSE).
     glyd-store bucket/ --put mon.tar tue.tar wed.tar
     glyd-store bucket/ --get 2 -o wed.tar
     glyd-store bucket/ --stats | --verify | --compact | --delete ID | --rebase ID | --find NAME
-    glyd-store meta/ --s3 s3://bucket/prefix --put wed.tar     # objects in S3 through the AWS CLI
+    glyd-store meta/ --s3 s3://bucket/prefix --put wed.tar     # objects in S3 (or any S3-compatible service)
     glyd-store --audit s3://bucket/prefix                      # what it would save, in dollars a year
+
+S3 is spoken directly over HTTPS (Signature V4; `glyd-store/src/s3.rs`).
+Credentials: `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (and
+`AWS_SESSION_TOKEN`), else `~/.aws/credentials` for `AWS_PROFILE` or the
+default profile, else the instance or container role. Region:
+`AWS_REGION`, the profile, or the bucket's own (a wrong one is
+corrected on the first request). `AWS_ENDPOINT_URL` points at any
+S3-compatible service (MinIO, Cloudflare R2, Backblaze B2, Ceph). SSO
+and assume-role profiles are not read; export them to the environment
+(`aws configure export-credentials --format env`).
 
 ```rust
 let mut store = glyd_store::Store::open("bucket/")?;

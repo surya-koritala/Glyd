@@ -14,7 +14,7 @@ event = glyd.unpack(p, 7)
 with glyd.Store("bucket/") as s:              # objects compressed across each other
     i = s.put("wed.tar", data)                # a delta against the object it most resembles
     data = s.get(i)
-with glyd.Store("meta/", s3="s3://bucket/prefix") as s:   # objects in S3, through the AWS CLI
+with glyd.Store("meta/", s3="s3://bucket/prefix") as s:   # objects in S3
     ...
 ```
 

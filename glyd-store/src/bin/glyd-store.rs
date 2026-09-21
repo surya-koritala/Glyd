@@ -9,7 +9,7 @@
 //!   glyd-store DIR --compact            free what no live object needs
 //!   glyd-store DIR --verify             every object read back and checked
 //!   glyd-store DIR --stats              the objects and the bytes
-//!   glyd-store DIR --s3 s3://bucket/prefix ...   objects in S3 through the AWS CLI; metadata in DIR
+//!   glyd-store DIR --s3 s3://bucket/prefix ...   objects in S3 (or an S3-compatible service); metadata in DIR
 //!   glyd-store DIR --ultra | --cold ... the level objects stored alone take
 //!   glyd-store --audit DIR|s3://bucket/prefix [--sample N]
 //!                                       what the store would save there, from a sample, in dollars a year
@@ -125,7 +125,7 @@ fn main() -> io::Result<()> {
     {
         let dir = store_dir;
         let mut store = match store_s3 {
-            Some(url) => glyd_store::Store::open_with(&dir, Box::new(glyd_store::S3Cli::new(&url)?))?,
+            Some(url) => glyd_store::Store::open_with(&dir, Box::new(glyd_store::S3Backend::new(&url)?))?,
             None => glyd_store::Store::open(&dir)?,
         };
         if cold {
@@ -188,56 +188,33 @@ fn main() -> io::Result<()> {
     }
 }
 
-/// The objects under `target` (a directory, or s3://bucket/prefix through
-/// the AWS CLI): (name, bytes), in name order.
-fn list_objects(target: &str) -> io::Result<Vec<(String, u64)>> {
+/// The objects under `target`, a directory or s3://bucket/prefix:
+/// (name, bytes) in name order, and how to read one.
+fn list_objects(target: &str) -> io::Result<(Vec<(String, u64)>, Box<dyn Fn(&str) -> io::Result<Vec<u8>>>)> {
+    if target.starts_with("s3://") {
+        let s3 = glyd_store::S3Backend::new(target)?;
+        let mut out = s3.list()?;
+        out.retain(|(_, n)| *n > 0);
+        return Ok((out, Box::new(move |key| glyd_store::Backend::read(&s3, key))));
+    }
+    fn walk(dir: &Path, out: &mut Vec<(String, u64)>) -> io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out)?;
+            } else if let Ok(m) = entry.metadata() {
+                if m.len() > 0 {
+                    out.push((path.to_string_lossy().to_string(), m.len()));
+                }
+            }
+        }
+        Ok(())
+    }
     let mut out = Vec::new();
-    if let Some(rest) = target.strip_prefix("s3://") {
-        let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
-        let text = std::process::Command::new("aws").args(["s3api", "list-objects-v2", "--bucket", bucket, "--prefix", prefix, "--query", "Contents[].[Key,Size]", "--output", "text"]).output()?;
-        if !text.status.success() {
-            return Err(io::Error::new(io::ErrorKind::Other, format!("aws: {}", String::from_utf8_lossy(&text.stderr).trim())));
-        }
-        for line in String::from_utf8_lossy(&text.stdout).lines() {
-            if let Some((key, size)) = line.rsplit_once('\t') {
-                if let Ok(n) = size.trim().parse::<u64>() {
-                    if n > 0 {
-                        out.push((format!("s3://{bucket}/{key}"), n));
-                    }
-                }
-            }
-        }
-    } else {
-        fn walk(dir: &Path, out: &mut Vec<(String, u64)>) -> io::Result<()> {
-            for entry in std::fs::read_dir(dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_dir() {
-                    walk(&path, out)?;
-                } else if let Ok(m) = entry.metadata() {
-                    if m.len() > 0 {
-                        out.push((path.to_string_lossy().to_string(), m.len()));
-                    }
-                }
-            }
-            Ok(())
-        }
-        walk(Path::new(target), &mut out)?;
-    }
+    walk(Path::new(target), &mut out)?;
     out.sort();
-    Ok(out)
-}
-
-fn read_object(name: &str) -> io::Result<Vec<u8>> {
-    if name.starts_with("s3://") {
-        let out = std::process::Command::new("aws").args(["s3", "cp", "--quiet", name, "-"]).output()?;
-        if !out.status.success() {
-            return Err(io::Error::new(io::ErrorKind::Other, format!("aws: {}", String::from_utf8_lossy(&out.stderr).trim())));
-        }
-        Ok(out.stdout)
-    } else {
-        std::fs::read(name)
-    }
+    Ok((out, Box::new(|name| std::fs::read(name))))
 }
 
 /// `zstd -3` bytes of `data` through the zstd CLI, when it is installed.
@@ -256,7 +233,7 @@ fn zstd3_len(data: &[u8]) -> Option<usize> {
 /// of them, priced at S3 Standard's list rate.
 fn run_audit(target: &str, sample: usize) -> io::Result<()> {
     const PRICE_TB_YEAR: f64 = 0.023 * 12.0 * 1000.0;
-    let all = list_objects(target)?;
+    let (all, read_object) = list_objects(target)?;
     if all.is_empty() {
         eprintln!("nothing under {target}");
         std::process::exit(1);
