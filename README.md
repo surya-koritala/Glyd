@@ -130,7 +130,8 @@ glyd --max  events.json -o events.glyd            # the zstd -3 slot: fewer byte
 glyd --max -r access.log -o access.glyd           # record mode: logs, dumps, CSV, JSON lines as columns
 glyd --ultra -r dump.sql -o dump.glyd             # fewest bytes from a parse; slow to write
 glyd --cold -r dump.sql -o dump.glyd              # fewest bytes of all; 1 MB/s per core each way
-glyd --store bucket/ --put mon.tar tue.tar wed.tar # the store finds each object's base itself; --get 2 -o wed.tar
+glyd --store bucket/ --put mon.tar tue.tar wed.tar # the store finds each object's base itself
+glyd --store bucket/ --get 2 -o wed.tar           # also --find NAME, --delete ID, --compact, --verify, --stats
 glyd --base dump-mon.sql dump-tue.sql -o tue.glyd # base mode: Tuesday's dump against Monday's
 glyd -d --base dump-mon.sql tue.glyd -o tue.sql   # decoding a base-mode file needs the base
 glyd    telemetry.bin -o telemetry.glyd           # default: LZ4-class ratio, 22 GB/s reads on 8 cores
@@ -223,9 +224,13 @@ cannot know it.
 same map base mode uses), looks the fingerprints up in the store's
 table, takes the stored object sharing the most as the base, and keeps
 the object as a delta against it (`--base`) when that saves a fifth or
-more of what it costs alone; else alone at `--max`. Chains are at most
-four long (past that the chain's root is the base), so a read is at
-most five decodes at 6–10 GB/s. Measured on a realistic bucket
+more of what it costs alone; else alone at `--max` (record mode where
+it pays; `--ultra` or `--cold` on request). Chains are at most four
+long (past that the chain's root is the base), so a read is at most
+five decodes at 6–10 GB/s. `get`, `id_of(name)`, `delete` (a deleted
+object's bytes stay while a live chain runs through them), `compact`
+(frees what no live object needs), `verify` (every object read back
+and checked). Measured on a realistic bucket
 (`scripts/download_bucket.sh`, 39 objects, 39.2 GB, each arriving in
 order), every object read back and compared:
 
@@ -237,9 +242,11 @@ order), every object read back and compared:
 | GitHub events (12 hours) | 9.4 GB | 875 MB | 670 MB | 1.3× (no object is a version of another) |
 | **The bucket** | **39.2 GB** | **6,132 MB (6.4×)** | **1,334 MB (29.4×)** | **4.6× smaller** |
 
-Put runs at 500 MB/s end to end on ten cores (reading the file,
-rebuilding the base, writing the delta); get, with the file written
-out, at 270 MB/s. The same store built on zstd's own
+Put runs at 620 MB/s end to end over the bucket on ten cores (reading
+the file, rebuilding the base, writing the delta; a version of the
+last object put runs at 900 MB/s, that object being kept in memory as
+the likeliest next base); verifying the whole bucket reads it back at
+1.5 GB/s. The same store built on zstd's own
 `--patch-from` would land around 3–4×: our deltas are 1.1–2.1× smaller
 and read 10× faster, and the store design does the rest. In money, a
 petabyte of such data in S3 Standard costs $71K a year with zstd and
@@ -648,7 +655,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.8.1** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.9.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every

@@ -6,6 +6,28 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.9.0 — 2026-09-21
+
+### The store, complete
+- `delete(id)` (a tombstone in the index; the bytes stay while a live
+  object's chain runs through them), `compact()` (removes what no live
+  object needs: deleted objects off every live chain, packs whose
+  members are all deleted; returns the bytes freed), `verify()` (every
+  live object read back and checked), `id_of(name)`, `set_level`
+  (`Max`, `Ultra`, `Cold` for objects stored alone and packs; deltas at
+  the ultra level under `Ultra`). Deleted objects are never chosen as
+  bases. CLI: `--find NAME`, `--delete ID`, `--compact`, `--verify`;
+  `--ultra` / `--cold` with `--store` set the level.
+- Put keeps the last large object in memory as the likeliest next base,
+  and judges a delta against the object alone estimated from its first
+  64 MB when that settles it either way (a version's delta is a few
+  percent of the estimate, an unrelated object's about all of it),
+  compressing the whole object alone only in between. The bucket put
+  79 -> 63 s (620 MB/s end to end), same bytes; a version of the last
+  object put runs at 900 MB/s. An estimate used alone, without the
+  exact check in between, chose bases that were not worth it (the
+  bucket 1,314 -> 1,890 MB) — measured, and not shipped.
+
 ## v0.8.1 — 2026-09-21
 
 ### The store at scale

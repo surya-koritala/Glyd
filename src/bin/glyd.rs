@@ -23,8 +23,11 @@ Options:
         --shape-train      Train a shape dictionary on the input (a few MB) and write it to -o
         --store <DIR>      A store that compresses across its objects: with --put FILE..., each
                            file is stored as a delta against the stored object it most resembles
-                           (found by fingerprints) when that pays; --get ID writes an object to -o;
-                           --stats lists the objects and the bytes
+                           (found by fingerprints) when that pays, small files in packs; --get ID
+                           writes an object to -o; --find NAME prints its id; --delete ID;
+                           --compact frees what no live object needs; --verify reads every
+                           object back; --stats lists the objects and the bytes. --ultra or
+                           --cold sets the level objects stored alone take.
     -P, --pack             Pack the input files (many small objects) into one stream with an
                            index, record mode where it pays; any one object is read back alone
     -U, --unpack <DIR>     Write a pack's objects into DIR as 000000, 000001, ...
@@ -98,6 +101,10 @@ fn main() -> io::Result<()> {
     let mut store_put = false;
     let mut store_get: Option<u32> = None;
     let mut store_stats = false;
+    let mut store_find: Option<String> = None;
+    let mut store_delete: Option<u32> = None;
+    let mut store_compact = false;
+    let mut store_verify = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -159,6 +166,29 @@ fn main() -> io::Result<()> {
                 }
             }
             "--stats" => store_stats = true,
+            "--find" => {
+                if i + 1 < args.len() {
+                    store_find = Some(args[i + 1].clone());
+                    i += 1;
+                } else {
+                    eprintln!("Error: --find requires a name");
+                    std::process::exit(1);
+                }
+            }
+            "--delete" => {
+                match args.get(i + 1).and_then(|a| a.parse().ok()) {
+                    Some(id) => {
+                        store_delete = Some(id);
+                        i += 1;
+                    }
+                    None => {
+                        eprintln!("Error: --delete requires an object id");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            "--compact" => store_compact = true,
+            "--verify" => store_verify = true,
             "-P" | "--pack" => pack = true,
             "-U" | "--unpack" => {
                 if i + 1 < args.len() {
@@ -213,6 +243,11 @@ fn main() -> io::Result<()> {
 
     if let Some(dir) = store_dir {
         let mut store = glyd::Store::open(&dir)?;
+        if cold {
+            store.set_level(glyd::store::Level::Cold);
+        } else if ultra {
+            store.set_level(glyd::store::Level::Ultra);
+        }
         if store_put {
             for f in &inputs {
                 let data = std::fs::read(f)?;
@@ -226,12 +261,40 @@ fn main() -> io::Result<()> {
             let data = store.get(id)?;
             write_out(&output_path, &data)?;
         }
+        if let Some(name) = store_find {
+            match store.id_of(&name) {
+                Some(id) => println!("{id}"),
+                None => {
+                    eprintln!("not in the store: {name}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        if let Some(id) = store_delete {
+            store.delete(id)?;
+        }
+        if store_compact {
+            let freed = store.compact()?;
+            eprintln!("compacted: {freed} B freed");
+        }
+        if store_verify {
+            let (ok, failed) = store.verify();
+            for (id, e) in &failed {
+                eprintln!("object {id}: {e}");
+            }
+            eprintln!("verified: {ok} objects ok, {} failed", failed.len());
+            if !failed.is_empty() {
+                std::process::exit(1);
+            }
+        }
         if store_stats {
             for e in store.entries() {
-                println!("{:>6}  {:>12}  {:>12}  {:<28} {}", e.id, e.raw_len, e.stored_len, e.base.map_or("alone".to_string(), |b| format!("delta against {} (depth {})", b, e.depth)), e.name);
+                let how = if e.deleted { "deleted".to_string() } else if let Some((p, i)) = e.pack { format!("in pack {p} at {i}") } else { e.base.map_or("alone".to_string(), |b| format!("delta against {} (depth {})", b, e.depth)) };
+                println!("{:>6}  {:>12}  {:>12}  {:<28} {}", e.id, e.raw_len, e.stored_len, how, e.name);
             }
             let (raw, stored) = store.stats();
-            println!("{} objects: {} B raw, {} B stored ({:.2}x)", store.entries().len(), raw, stored, raw as f64 / stored.max(1) as f64);
+            let live = store.entries().iter().filter(|e| !e.deleted).count();
+            println!("{} objects ({} live): {} B raw, {} B on disk ({:.2}x)", store.entries().len(), live, raw, stored, raw as f64 / stored.max(1) as f64);
         }
         return Ok(());
     }

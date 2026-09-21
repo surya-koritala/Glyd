@@ -28,9 +28,9 @@
 </head>
 <body>
 <main>
-  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.8.1">v0.8.1 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-20.md">Benchmark report</a><a href="savings.html">Savings calculator</a></nav>
+  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.9.0">v0.9.0 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-20.md">Benchmark report</a><a href="savings.html">Savings calculator</a></nav>
   <h1>Glyd</h1>
-  <p class="sub">A compression library and CLI (Rust, C ABI) for the data that fills object storage: logs, database exports, telemetry, JSON, and the versions of all of them. v0.8.1, September 2026. Every number below is measured on public data, every decode compared byte for byte with its input, and reproducible from the repository.</p>
+  <p class="sub">A compression library and CLI (Rust, C ABI) for the data that fills object storage: logs, database exports, telemetry, JSON, and the versions of all of them. v0.9.0, September 2026. Every number below is measured on public data, every decode compared byte for byte with its input, and reproducible from the repository.</p>
 
   <a class="cta" href="savings.html">What would it save you?</a>
   <a class="cta" href="https://github.com/surya-koritala/Glyd#quick-start">Quick start</a>
@@ -67,7 +67,7 @@
     <tr class="g"><td>GitHub events (12 hours)</td><td>9.4 GB</td><td>875 MB</td><td>670 MB</td><td>1.3× (nothing is a version of anything)</td></tr>
     <tr class="g"><td><b>The bucket</b></td><td><b>39.2 GB</b></td><td><b>6,132 MB (6.4×)</b></td><td><b>1,334 MB (29.4×)</b></td><td><b>4.6× smaller</b></td></tr>
   </table></div>
-  <p class="muted">Put runs at 500 MB/s end to end on ten cores, base rebuilt and delta written. A petabyte of such data in S3 Standard: $71K a year with zstd, $15K with the store. Chunk-level dedup, the backup approach, gains 1–4× on the same pairs.</p>
+  <p class="muted">Put runs at 620 MB/s end to end on ten cores, base rebuilt and delta written; delete, compact and verify are there. A petabyte of such data in S3 Standard: $71K a year with zstd, $15K with the store. Chunk-level dedup, the backup approach, gains 1–4× on the same pairs.</p>
 
   <h2>Base mode: a version stored for the change, not the whole</h2>
   <p>Most stored bytes are versions — nightly dumps, snapshots, images, source trees. <code>glyd --base old new</code> parses every 32 MB of the new version with the old one's matching region as history and writes a stream that decodes with the same base. Measured on consecutive versions of real objects against zstd 1.5.7's own <code>--patch-from</code>, same machine, every rebuild byte-exact:</p>

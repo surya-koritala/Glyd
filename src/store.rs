@@ -56,6 +56,18 @@ pub struct Entry {
     pub stored_len: u64,
     /// For a small object: the pack it is in and its position there.
     pub pack: Option<(u32, u32)>,
+    /// Deleted: `get` refuses it; its bytes stay on disk while a live
+    /// object's chain runs through it, until `compact`.
+    pub deleted: bool,
+}
+
+/// The level objects stored alone (and packs) are compressed at; deltas
+/// take the max level, or the ultra level under `Ultra`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Max,
+    Ultra,
+    Cold,
 }
 
 /// The fingerprint table on disk: open addressing, a 12-byte slot per
@@ -248,11 +260,17 @@ pub struct Store {
     dir: PathBuf,
     entries: Vec<Entry>,
     table: Table,
+    level: Level,
+    /// The latest id under each name.
+    names: HashMap<String, u32>,
     /// Small objects waiting for their pack: (id, data).
     pending: Vec<(u32, Vec<u8>)>,
     pending_bytes: usize,
     /// The last pack decoded, for reads of its objects.
     pack_cache: std::cell::RefCell<Option<(u32, Vec<Vec<u8>>)>>,
+    /// The last large object put or rebuilt: the likeliest base of the
+    /// next put, and a read of it costs nothing.
+    last: std::cell::RefCell<Option<(u32, Vec<u8>)>>,
 }
 
 fn bad(msg: &str) -> Error {
@@ -277,12 +295,17 @@ impl Store {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(dir.join("objects"))?;
         let table = Table::open(dir.join("table"))?;
-        let mut store = Store { dir, entries: Vec::new(), table, pending: Vec::new(), pending_bytes: 0, pack_cache: std::cell::RefCell::new(None) };
+        let mut store = Store { dir, entries: Vec::new(), table, level: Level::Max, names: HashMap::new(), pending: Vec::new(), pending_bytes: 0, pack_cache: std::cell::RefCell::new(None), last: std::cell::RefCell::new(None) };
         let index = store.dir.join("index");
         if index.exists() {
             let text = std::fs::read_to_string(&index)?;
             let mut lines: Vec<Entry> = Vec::new();
+            let mut deleted: Vec<u32> = Vec::new();
             for line in text.lines() {
+                if let Some(id) = line.strip_prefix("D\t") {
+                    deleted.push(id.parse().map_err(|_| bad("index deletion"))?);
+                    continue;
+                }
                 let f: Vec<&str> = line.splitn(7, '\t').collect();
                 if f.len() != 7 {
                     return Err(bad("index line"));
@@ -302,6 +325,7 @@ impl Store {
                     stored_len: parse(f[4])?,
                     pack,
                     name: f[6].to_string(),
+                    deleted: false,
                 };
                 lines.push(entry);
             }
@@ -315,7 +339,17 @@ impl Store {
                 let id = e.id as usize;
                 by_id[id] = Some(e);
             }
-            store.entries = by_id.into_iter().enumerate().map(|(id, e)| e.unwrap_or(Entry { id: id as u32, name: "(lost: not flushed)".to_string(), base: None, depth: 0, raw_len: 0, stored_len: 0, pack: Some((u32::MAX, u32::MAX)) })).collect();
+            store.entries = by_id.into_iter().enumerate().map(|(id, e)| e.unwrap_or(Entry { id: id as u32, name: "(lost: not flushed)".to_string(), base: None, depth: 0, raw_len: 0, stored_len: 0, pack: Some((u32::MAX, u32::MAX)), deleted: true })).collect();
+            for id in deleted {
+                if let Some(e) = store.entries.get_mut(id as usize) {
+                    e.deleted = true;
+                }
+            }
+            for e in &store.entries {
+                if !e.deleted && !e.name.starts_with("pack of ") {
+                    store.names.insert(e.name.clone(), e.id);
+                }
+            }
         }
         Ok(store)
     }
@@ -333,10 +367,96 @@ impl Store {
         &self.entries
     }
 
-    /// Raw and stored bytes over the store (an open pack's objects count
-    /// as raw only until `flush`).
+    /// Raw bytes of the live objects and bytes on disk (an open pack's
+    /// objects count as raw only until `flush`; a deleted object's file
+    /// counts until `compact`).
     pub fn stats(&self) -> (u64, u64) {
-        self.entries.iter().fold((0, 0), |(r, s), e| (r + e.raw_len, s + e.stored_len))
+        let raw = self.entries.iter().filter(|e| !e.deleted).map(|e| e.raw_len).sum();
+        let stored = self.entries.iter().filter(|e| !e.deleted || self.object_path(e.id).exists()).map(|e| e.stored_len).sum();
+        (raw, stored)
+    }
+
+    /// The level objects stored alone take from now on.
+    pub fn set_level(&mut self, level: Level) {
+        self.level = level;
+    }
+
+    /// The latest live object put under `name`.
+    pub fn id_of(&self, name: &str) -> Option<u32> {
+        self.names.get(name).copied()
+    }
+
+    /// Mark `id` deleted: `get` refuses it from now on; its bytes leave
+    /// the disk at `compact`, once no live object's chain needs them.
+    pub fn delete(&mut self, id: u32) -> Result<()> {
+        let entry = self.entries.get_mut(id as usize).ok_or_else(|| bad("no such object"))?;
+        if entry.deleted {
+            return Ok(());
+        }
+        entry.deleted = true;
+        let name = entry.name.clone();
+        if self.names.get(&name) == Some(&id) {
+            self.names.remove(&name);
+        }
+        let mut index = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("index"))?;
+        writeln!(index, "D\t{id}")
+    }
+
+    /// Remove from disk what no live object needs: deleted objects no
+    /// live chain runs through, packs whose members are all deleted.
+    /// Returns the bytes freed.
+    pub fn compact(&mut self) -> Result<u64> {
+        let n = self.entries.len();
+        let mut needed = vec![false; n];
+        for e in &self.entries {
+            if e.deleted || e.pack.map_or(false, |(p, _)| p == u32::MAX) {
+                continue;
+            }
+            let mut at = Some(e.id);
+            while let Some(i) = at {
+                needed[i as usize] = true;
+                at = self.entries[i as usize].base;
+            }
+            if let Some((p, _)) = e.pack {
+                needed[p as usize] = true;
+            }
+        }
+        let mut freed = 0u64;
+        for i in 0..n {
+            if needed[i] || self.entries[i].pack.is_some() {
+                continue;
+            }
+            let path = self.object_path(i as u32);
+            if let Ok(m) = std::fs::metadata(&path) {
+                freed += m.len();
+                std::fs::remove_file(&path)?;
+                let _ = std::fs::remove_file(self.fp_path(i as u32));
+                self.entries[i].stored_len = 0;
+            }
+        }
+        if let Some((id, _)) = *self.last.borrow() {
+            if !needed[id as usize] {
+                *self.last.borrow_mut() = None;
+            }
+        }
+        Ok(freed)
+    }
+
+    /// Every live object read back and checked (lengths and the
+    /// streams' own checksums): the count that passed and the failures.
+    pub fn verify(&self) -> (usize, Vec<(u32, String)>) {
+        let mut ok = 0usize;
+        let mut failed = Vec::new();
+        for e in &self.entries {
+            if e.deleted || e.name.starts_with("pack of ") {
+                continue;
+            }
+            match self.get(e.id) {
+                Ok(_) => ok += 1,
+                Err(err) => failed.push((e.id, err.to_string())),
+            }
+        }
+        (ok, failed)
     }
 
     fn append_index(&self, entry: &Entry) -> Result<()> {
@@ -357,6 +477,7 @@ impl Store {
                 *hits.entry(id).or_insert(0.0) += 1.0 / n;
             }
         }
+        hits.retain(|&id, _| self.entries.get(id as usize).map_or(false, |e| !e.deleted));
         let top = hits.values().cloned().fold(0.0f64, f64::max);
         // Among those within 5% of the best, the most recent: a copy of
         // a copy shares its fingerprints with both.
@@ -375,7 +496,8 @@ impl Store {
         let id = self.entries.len() as u32;
         let name = name.replace(['\t', '\n'], " ");
         if data.len() < SMALL {
-            let entry = Entry { id, name, base: None, depth: 0, raw_len: data.len() as u64, stored_len: 0, pack: Some((u32::MAX, self.pending.len() as u32)) };
+            self.names.insert(name.clone(), id);
+            let entry = Entry { id, name, base: None, depth: 0, raw_len: data.len() as u64, stored_len: 0, pack: Some((u32::MAX, self.pending.len() as u32)), deleted: false };
             self.entries.push(entry);
             self.pending.push((id, data.to_vec()));
             self.pending_bytes += data.len();
@@ -385,9 +507,17 @@ impl Store {
             return Ok(id);
         }
         let prints = fingerprints(data);
-        let mut stored = Vec::with_capacity(data.len() / 4 + 1024);
-        crate::compress_records_into_max(data, &mut stored);
+        let alone = |data: &[u8]| {
+            let mut out = Vec::with_capacity(data.len() / 4 + 1024);
+            match self.level {
+                Level::Max => crate::compress_records_into_max(data, &mut out),
+                Level::Ultra => crate::compress_records_into_ultra(data, &mut out),
+                Level::Cold => crate::compress_records_into_cold(data, &mut out),
+            }
+            out
+        };
         let mut base = None;
+        let mut stored = Vec::new();
         if let Some((mut bid, _)) = self.candidate(&prints)? {
             if self.entries[bid as usize].depth >= MAX_DEPTH {
                 while let Some(p) = self.entries[bid as usize].base {
@@ -396,11 +526,25 @@ impl Store {
             }
             let base_data = self.get(bid)?;
             let mut delta = Vec::with_capacity(data.len() / 16 + 1024);
-            crate::compress_with_base(&base_data, data, &mut delta, false);
-            if delta.len() * WORTH_DEN <= stored.len() * WORTH_NUM {
+            crate::compress_with_base(&base_data, data, &mut delta, self.level == Level::Ultra);
+            // Whether the delta pays is judged against the object alone:
+            // estimated from the first 64 MB when that settles it either
+            // way (a version's delta is a few percent; an unrelated
+            // object's, about the whole), compressed in full otherwise.
+            let sample = data.len().min(64 << 20);
+            let estimate = alone(&data[..sample]).len() as u64 * data.len() as u64 / sample.max(1) as u64;
+            let d = delta.len() as u64;
+            let alone_len = if d * 2 <= estimate || d * 5 >= estimate * 6 { estimate } else {
+                stored = alone(data);
+                stored.len() as u64
+            };
+            if d * WORTH_DEN as u64 <= alone_len * WORTH_NUM as u64 {
                 stored = delta;
                 base = Some(bid);
             }
+        }
+        if base.is_none() && stored.is_empty() {
+            stored = alone(data);
         }
         let depth = base.map_or(0, |b| self.entries[b as usize].depth + 1);
         std::fs::write(self.object_path(id), &stored)?;
@@ -409,13 +553,15 @@ impl Store {
             fp.extend_from_slice(&h.to_le_bytes());
         }
         std::fs::write(self.fp_path(id), &fp)?;
-        let entry = Entry { id, name, base, depth, raw_len: data.len() as u64, stored_len: stored.len() as u64, pack: None };
+        self.names.insert(name.clone(), id);
+        let entry = Entry { id, name, base, depth, raw_len: data.len() as u64, stored_len: stored.len() as u64, pack: None, deleted: false };
         self.append_index(&entry)?;
         for h in prints {
             self.table.insert(h, id)?;
         }
         self.table.sync();
         self.entries.push(entry);
+        *self.last.borrow_mut() = Some((id, data.to_vec()));
         Ok(id)
     }
 
@@ -428,10 +574,14 @@ impl Store {
         let pack_id = self.entries.len() as u32;
         let objects: Vec<&[u8]> = self.pending.iter().map(|(_, d)| d.as_slice()).collect();
         let mut stored = Vec::new();
-        crate::compress_pack(&objects, &mut stored, crate::compress_into_max);
+        let level: fn(&[u8], &mut Vec<u8>) = match self.level {
+            Level::Max => crate::compress_into_max,
+            Level::Ultra => crate::compress_into_ultra,
+            Level::Cold => crate::compress_into_cold,
+        };
+        crate::compress_pack(&objects, &mut stored, level);
         std::fs::write(self.object_path(pack_id), &stored)?;
-        let raw: u64 = self.pending.iter().map(|(_, d)| d.len() as u64).sum();
-        let pack = Entry { id: pack_id, name: format!("pack of {}", self.pending.len()), base: None, depth: 0, raw_len: 0, stored_len: stored.len() as u64, pack: None };
+        let pack = Entry { id: pack_id, name: format!("pack of {}", self.pending.len()), base: None, depth: 0, raw_len: 0, stored_len: stored.len() as u64, pack: None, deleted: false };
         // The members' entries, now that their pack has an id.
         for (i, (member, _)) in self.pending.iter().enumerate() {
             let e = &mut self.entries[*member as usize];
@@ -443,7 +593,6 @@ impl Store {
         }
         self.append_index(&pack)?;
         self.entries.push(pack);
-        let _ = raw;
         self.pending.clear();
         self.pending_bytes = 0;
         Ok(())
@@ -453,6 +602,14 @@ impl Store {
     /// (decoded and kept for the next read) when it is small.
     pub fn get(&self, id: u32) -> Result<Vec<u8>> {
         let entry = self.entries.get(id as usize).ok_or_else(|| bad("no such object"))?;
+        if entry.deleted {
+            return Err(bad("object deleted"));
+        }
+        if let Some((lid, data)) = &*self.last.borrow() {
+            if *lid == id {
+                return Ok(data.clone());
+            }
+        }
         if let Some((pack, i)) = entry.pack {
             if pack == u32::MAX {
                 // Still in the open pack.
@@ -472,7 +629,30 @@ impl Store {
         let stored = std::fs::read(self.object_path(id))?;
         let data = match entry.base {
             Some(b) => {
-                let base = self.get(b)?;
+                let base = self.base_data(b)?;
+                crate::decompress_with_base(&base, &stored).map_err(codec)?
+            }
+            None => crate::decompress(&stored).map_err(codec)?,
+        };
+        if data.len() as u64 != entry.raw_len {
+            return Err(bad("object length"));
+        }
+        Ok(data)
+    }
+
+    /// A base's bytes: deleted or not, its chain is still on disk until
+    /// `compact` (which only removes what no live object needs).
+    fn base_data(&self, id: u32) -> Result<Vec<u8>> {
+        let entry = self.entries.get(id as usize).ok_or_else(|| bad("no such object"))?;
+        if let Some((lid, data)) = &*self.last.borrow() {
+            if *lid == id {
+                return Ok(data.clone());
+            }
+        }
+        let stored = std::fs::read(self.object_path(id))?;
+        let data = match entry.base {
+            Some(b) => {
+                let base = self.base_data(b)?;
                 crate::decompress_with_base(&base, &stored).map_err(codec)?
             }
             None => crate::decompress(&stored).map_err(codec)?,
@@ -596,6 +776,43 @@ mod tests {
             let id = first_small + i as u32 + if i > 100 { 1 } else { 0 };
             assert!(store.get(id).unwrap() == *o, "small {i}");
         }
+        // Names, deletion, compaction, verification.
+        let mut store = Store::open(&dir).unwrap();
+        assert_eq!(store.id_of("v3"), Some(3));
+        assert_eq!(store.id_of("nope"), None);
+        let (ok, failed) = store.verify();
+        assert!(failed.is_empty() && ok > 300, "{ok} ok, {failed:?}");
+        let (raw_before, disk_before) = store.stats();
+        // v2 is v3's base: deleting it frees nothing until v3 goes too.
+        store.delete(2).unwrap();
+        assert!(store.get(2).is_err());
+        assert!(store.get(3).unwrap() == versions[3], "v3 still rebuilds through its deleted base");
+        assert_eq!(store.compact().unwrap(), 0);
+        let chain: Vec<u32> = (0..versions.len() as u32).filter(|&i| { let mut at = Some(i); while let Some(j) = at { if j == 2 { return true; } at = store.entries()[j as usize].base; } false }).collect();
+        for &i in &chain {
+            store.delete(i).unwrap();
+        }
+        let freed = store.compact().unwrap();
+        assert!(freed > 0, "the chain through v2 should leave the disk");
+        assert!(!store.object_path(2).exists());
+        let (raw_after, disk_after) = store.stats();
+        assert!(raw_after < raw_before && disk_after < disk_before);
+        assert_eq!(store.id_of("v2"), None);
+        // A small object's deletion: the pack stays while a sibling lives.
+        store.delete(first_small).unwrap();
+        assert!(store.get(first_small).is_err());
+        assert!(store.get(first_small + 1).unwrap() == smalls[1]);
+        assert_eq!(store.compact().unwrap(), 0);
+        let (ok, failed) = store.verify();
+        assert!(failed.is_empty() && ok > 300, "{ok} ok, {failed:?}");
+        // A new version after the deletions still finds a live base.
+        let v9 = edited(&versions[7], 30, 88);
+        let id = store.put("v9", &v9).unwrap();
+        assert!(store.get(id).unwrap() == v9);
+        drop(store);
+        let store = Store::open(&dir).unwrap();
+        assert!(store.get(2).is_err() && store.get(first_small).is_err());
+        assert!(store.get(first_small + 1).unwrap() == smalls[1]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
