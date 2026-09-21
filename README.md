@@ -4,7 +4,8 @@ A store that finds what each new object is a version of and keeps only the chang
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
-<a href="LICENSE"><img alt="License: BUSL-1.1" src="https://img.shields.io/badge/license-BUSL--1.1-blue.svg"></a>
+<a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/codec-Apache--2.0-blue.svg"></a>
+<a href="glyd-store/LICENSE"><img alt="Store: BUSL-1.1" src="https://img.shields.io/badge/store-BUSL--1.1-blue.svg"></a>
 <img alt="Rust 1.80+" src="https://img.shields.io/badge/rust-1.80%2B-blue.svg">
 <img alt="SIMD: AVX2 | NEON" src="https://img.shields.io/badge/SIMD-AVX2%20%7C%20NEON-orange.svg">
 <a href="include/glyd.h"><img alt="C ABI" src="https://img.shields.io/badge/C%20ABI-include%2Fglyd.h-brightgreen.svg"></a>
@@ -73,7 +74,7 @@ less where the data has structure; it writes at 0.77× zstd -3's speed
 right side of the trade; for data written constantly and rarely read,
 zstd -3 or LZ4 still win on write cost.
 
-- 🏪 **The store (`--store`)**: `put` an object and it is kept as a delta against the stored object it most resembles, found by fingerprints, when that pays; chains capped at four. A 39 GB bucket (six Ubuntu image builds, fifteen kernel releases, two months of Wikipedia tables, twelve hours of GitHub events) stores in 1,334 MB against zstd -3's 6,132 MB: **4.6× fewer bytes**, put at 500 MB/s end to end, every object read back byte-exact.
+- 🏪 **The store (`glyd-store`)**: `put` an object and it is kept as a delta against the stored object it most resembles, found by fingerprints, when that pays; chains capped at four. A 39 GB bucket (six Ubuntu image builds, fifteen kernel releases, two months of Wikipedia tables, twelve hours of GitHub events) stores in 1,334 MB against zstd -3's 6,132 MB: **4.6× fewer bytes**, put at 500 MB/s end to end, every object read back byte-exact.
 - 🗂️ **Record mode (`-r`)**: logs, SQL dumps, CSV and JSON lines as typed columns; logs of varying shape as templates plus typed variables. Telemetry stores 2.5–3.5× less than zstd -3 and 1.5–2× less than zstd -19; application and system logs 1.4–3.3× less than zstd -3 and 1.1–2.1× less than zstd -19; the whole corpus 19% less than zstd -3.
 - 📦 **Packs (`--pack`)**: many small objects as one record-mode stream with an index; 2–4× fewer bytes than zstd + dictionary per object, any one object read back in a millisecond.
 - 🧩 **Shape dictionaries (`--shape`)**: record mode for a single small object. Trained on a sample; a 1–4 KB event or log object stores 1.1–1.9× less than with a zstd dictionary.
@@ -135,10 +136,10 @@ glyd --max  events.json -o events.glyd            # the zstd -3 slot: fewer byte
 glyd --max -r access.log -o access.glyd           # record mode: logs, dumps, CSV, JSON lines as columns
 glyd --ultra -r dump.sql -o dump.glyd             # fewest bytes from a parse; slow to write
 glyd --cold -r dump.sql -o dump.glyd              # fewest bytes of all; 1 MB/s per core each way
-glyd --store bucket/ --put mon.tar tue.tar wed.tar # the store finds each object's base itself
-glyd --store bucket/ --get 2 -o wed.tar           # also --find NAME, --delete ID, --rebase ID, --compact, --verify, --stats
-glyd --store meta/ --s3 s3://bucket/prefix --put wed.tar   # objects in S3 through the AWS CLI
-glyd --audit s3://bucket/prefix                   # what the store would save there, from a sample, in dollars
+glyd-store bucket/ --put mon.tar tue.tar wed.tar  # the store finds each object's base itself (glyd-store crate)
+glyd-store bucket/ --get 2 -o wed.tar            # also --find NAME, --delete ID, --rebase ID, --compact, --verify, --stats
+glyd-store meta/ --s3 s3://bucket/prefix --put wed.tar     # objects in S3 through the AWS CLI
+glyd-store --audit s3://bucket/prefix            # what the store would save there, from a sample, in dollars
 glyd --base dump-mon.sql dump-tue.sql -o tue.glyd # base mode: Tuesday's dump against Monday's
 glyd -d --base dump-mon.sql tue.glyd -o tue.sql   # decoding a base-mode file needs the base
 glyd    telemetry.bin -o telemetry.glyd           # default: LZ4-class ratio, 22 GB/s reads on 8 cores
@@ -155,7 +156,7 @@ let back = glyd::decompress_parallel(&out)?;          // any level, any block mi
 
 glyd::compress_records_into_max(&log, &mut out);      // record mode (-r); decompress() reads it
 glyd::compress_with_base(&old, &new, &mut out, false);// base mode; decompress_with_base(&old, &out)
-let mut store = glyd::Store::open("bucket/")?;         // the store: put finds the base, get rebuilds
+let mut store = glyd_store::Store::open("bucket/")?;   // the glyd-store crate: put finds the base, get rebuilds
 let id = store.put("wed.tar", &data)?;  let back = store.get(id)?;
 ```
 
@@ -232,6 +233,8 @@ objects. A bucket holds builds, snapshots, dumps and releases that are
 near-copies of earlier ones, and a codec that sees one object at a time
 cannot know it.
 
+The store is its own crate, `glyd-store` (`glyd-store DIR --put ...`;
+under the Business Source License, the codec being Apache-2.0).
 `Store::put` fingerprints the object (one sparse anchor in 4 KB, the
 same map base mode uses), looks the fingerprints up in the store's
 table, takes the stored object sharing the most as the base, and keeps
@@ -676,7 +679,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.9.3** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.10.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every
@@ -694,11 +697,15 @@ run the full suite including the 1M-mutation fuzz in CI.
 
 ## License
 
-Glyd is released under the [Business Source License 1.1](LICENSE).
+- **The codec — the `glyd` crate, the `glyd` CLI, the C ABI, the Python
+  and Go bindings — is under the [Apache License 2.0](LICENSE).** Use
+  it, embed it, ship it, sell it; keep the notice. That is everything
+  in this repository except the store.
+- **The store — the `glyd-store` crate and CLI — is under the
+  [Business Source License 1.1](glyd-store/LICENSE)**: free to use for
+  non-commercial and internal purposes; offering it as a commercial
+  service or product needs a license (suryakoritala1324@gmail.com); each
+  version converts to Apache-2.0 four years after its release.
 
-- Free to read, modify, redistribute and use for development, testing,
-  personal, educational, research and other non-commercial purposes.
-- **Commercial or revenue-generating production use requires a commercial
-  license.** Contact suryakoritala1324@gmail.com.
-- Each version converts to the Apache License 2.0 on its Change Date
-  (four years after its first public release; 2030-09-18 for this one).
+Why the split: a codec is adopted by being embedded, and nothing is
+embedded under a source-available license; the store is the product.

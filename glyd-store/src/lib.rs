@@ -24,9 +24,14 @@
 //! one; `D` lines delete), and the objects' streams under `objects/`
 //! through a `Backend`: the directory itself, or an S3 bucket
 //! (`S3Cli`, through the AWS CLI); metadata stays local.
+//!
+//! This crate is the store; the codec it builds on is the `glyd` crate
+//! (Apache-2.0). The store is under the Business Source License 1.1.
 
+pub mod c_api;
+
+use glyd::mmap::Mapping;
 use std::collections::HashMap;
-use std::fs::File;
 use std::io::{Error, ErrorKind, Result, Write};
 use std::path::{Path, PathBuf};
 
@@ -91,77 +96,12 @@ const SLOT: usize = 12;
 const EMPTY: u32 = u32::MAX;
 const TABLE_HEADER: usize = 16;
 
-/// A file mapped into memory (libc's mmap; the library carries no crate
-/// for it): read-write for the table, read-only for an input file the
-/// CLI compresses without copying it first (`Mapping::read_only`).
-pub struct Mapping {
-    ptr: *mut u8,
-    len: usize,
-}
-
-extern "C" {
-    fn mmap(addr: *mut std::ffi::c_void, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut std::ffi::c_void;
-    fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
-    fn msync(addr: *mut std::ffi::c_void, len: usize, flags: i32) -> i32;
-}
-const PROT_READ: i32 = 1;
-const PROT_WRITE: i32 = 2;
-const MAP_SHARED: i32 = 1;
-const MS_SYNC: i32 = 0x10;
-
-impl Mapping {
-    fn of(file: &File, len: usize) -> Result<Mapping> {
-        Self::map(file, len, PROT_READ | PROT_WRITE)
-    }
-
-    /// The whole of `path`, read-only; an empty file maps to no bytes.
-    pub fn read_only(path: &Path) -> Result<Mapping> {
-        let file = File::open(path)?;
-        let len = file.metadata()?.len() as usize;
-        if len == 0 {
-            return Ok(Mapping { ptr: std::ptr::NonNull::<u8>::dangling().as_ptr(), len: 0 });
-        }
-        Self::map(&file, len, PROT_READ)
-    }
-
-    fn map(file: &File, len: usize, prot: i32) -> Result<Mapping> {
-        use std::os::unix::io::AsRawFd;
-        let ptr = unsafe { mmap(std::ptr::null_mut(), len, prot, MAP_SHARED, file.as_raw_fd(), 0) };
-        if ptr as isize == -1 {
-            return Err(Error::new(ErrorKind::Other, "mmap failed"));
-        }
-        Ok(Mapping { ptr: ptr as *mut u8, len })
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-    }
-    fn bytes_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
-    }
-    fn sync(&self) {
-        unsafe {
-            msync(self.ptr as *mut _, self.len, MS_SYNC);
-        }
-    }
-}
-
-impl Drop for Mapping {
-    fn drop(&mut self) {
-        if self.len > 0 {
-            unsafe {
-                munmap(self.ptr as *mut _, self.len);
-            }
-        }
-    }
-}
-
 impl Table {
     fn open(path: PathBuf) -> Result<Table> {
         let file = std::fs::OpenOptions::new().read(true).write(true).create(true).open(&path)?;
         let len = file.metadata()?.len() as usize;
         if len >= TABLE_HEADER {
-            let map = Mapping::of(&file, len)?;
+            let map = Mapping::read_write(&file, len)?;
             let b = map.bytes();
             let capacity = u64::from_le_bytes(b[..8].try_into().unwrap());
             let count = u64::from_le_bytes(b[8..16].try_into().unwrap());
@@ -178,7 +118,7 @@ impl Table {
         let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
         let len = TABLE_HEADER + capacity as usize * SLOT;
         file.set_len(len as u64)?;
-        let mut map = Mapping::of(&file, len)?;
+        let mut map = Mapping::read_write(&file, len)?;
         let b = map.bytes_mut();
         b[..8].copy_from_slice(&capacity.to_le_bytes());
         for i in 0..capacity as usize {
@@ -406,7 +346,7 @@ fn bad(msg: &str) -> Error {
     Error::new(ErrorKind::InvalidData, format!("store: {msg}"))
 }
 
-fn codec(e: crate::error::CodecError) -> Error {
+fn codec(e: glyd::error::CodecError) -> Error {
     Error::new(ErrorKind::InvalidData, e)
 }
 
@@ -414,7 +354,7 @@ fn codec(e: crate::error::CodecError) -> Error {
 /// more zero bits.
 fn fingerprints(data: &[u8]) -> Vec<u64> {
     let mut anchors = Vec::new();
-    crate::ldm::sparse_anchors(data, 0, &mut anchors);
+    glyd::ldm::sparse_anchors(data, 0, &mut anchors);
     anchors.into_iter().filter(|&(h, _)| h >> 62 == 0).map(|(h, _)| h).collect()
 }
 
@@ -660,9 +600,9 @@ impl Store {
         let alone = |data: &[u8]| {
             let mut out = Vec::with_capacity(data.len() / 4 + 1024);
             match self.level {
-                Level::Max => crate::compress_records_into_max(data, &mut out),
-                Level::Ultra => crate::compress_records_into_ultra(data, &mut out),
-                Level::Cold => crate::compress_records_into_cold(data, &mut out),
+                Level::Max => glyd::compress_records_into_max(data, &mut out),
+                Level::Ultra => glyd::compress_records_into_ultra(data, &mut out),
+                Level::Cold => glyd::compress_records_into_cold(data, &mut out),
             }
             out
         };
@@ -679,15 +619,15 @@ impl Store {
                 let sample = &data[..data.len().min(32 << 20)];
                 let other_data = self.get(candidates[1])?;
                 let (mut a, mut b) = (Vec::new(), Vec::new());
-                crate::compress_with_base(&base_data, sample, &mut a, false);
-                crate::compress_with_base(&other_data, sample, &mut b, false);
+                glyd::compress_with_base(&base_data, sample, &mut a, false);
+                glyd::compress_with_base(&other_data, sample, &mut b, false);
                 if b.len() < a.len() {
                     bid = candidates[1];
                     base_data = other_data;
                 }
             }
             let mut delta = Vec::with_capacity(data.len() / 16 + 1024);
-            crate::compress_with_base(&base_data, data, &mut delta, self.level == Level::Ultra);
+            glyd::compress_with_base(&base_data, data, &mut delta, self.level == Level::Ultra);
             // Whether the delta pays is judged against the object alone:
             // estimated from the first 64 MB when that settles it either
             // way (a version's delta is a few percent; an unrelated
@@ -731,11 +671,11 @@ impl Store {
         let objects: Vec<&[u8]> = self.pending.iter().map(|(_, d)| d.as_slice()).collect();
         let mut stored = Vec::new();
         let level: fn(&[u8], &mut Vec<u8>) = match self.level {
-            Level::Max => crate::compress_into_max,
-            Level::Ultra => crate::compress_into_ultra,
-            Level::Cold => crate::compress_into_cold,
+            Level::Max => glyd::compress_into_max,
+            Level::Ultra => glyd::compress_into_ultra,
+            Level::Cold => glyd::compress_into_cold,
         };
-        crate::compress_pack(&objects, &mut stored, level);
+        glyd::compress_pack(&objects, &mut stored, level);
         self.objects.write(&Self::key(pack_id), &stored)?;
         let pack = Entry { id: pack_id, name: format!("pack of {}", self.pending.len()), base: None, depth: 0, raw_len: 0, stored_len: stored.len() as u64, pack: None, deleted: false };
         // The members' entries, now that their pack has an id.
@@ -774,7 +714,7 @@ impl Store {
             let mut cache = self.pack_cache.borrow_mut();
             if cache.as_ref().map_or(true, |(p, _)| *p != pack) {
                 let stored = self.objects.read(&Self::key(pack))?;
-                *cache = Some((pack, crate::decompress_pack(&stored).map_err(codec)?));
+                *cache = Some((pack, glyd::decompress_pack(&stored).map_err(codec)?));
             }
             let data = cache.as_ref().unwrap().1.get(i as usize).ok_or_else(|| bad("pack member"))?.clone();
             if data.len() as u64 != entry.raw_len {
@@ -786,9 +726,9 @@ impl Store {
         let data = match entry.base {
             Some(b) => {
                 let base = self.base_data(b)?;
-                crate::decompress_with_base(&base, &stored).map_err(codec)?
+                glyd::decompress_with_base(&base, &stored).map_err(codec)?
             }
-            None => crate::decompress(&stored).map_err(codec)?,
+            None => glyd::decompress(&stored).map_err(codec)?,
         };
         if data.len() as u64 != entry.raw_len {
             return Err(bad("object length"));
@@ -809,9 +749,9 @@ impl Store {
         let data = match entry.base {
             Some(b) => {
                 let base = self.base_data(b)?;
-                crate::decompress_with_base(&base, &stored).map_err(codec)?
+                glyd::decompress_with_base(&base, &stored).map_err(codec)?
             }
-            None => crate::decompress(&stored).map_err(codec)?,
+            None => glyd::decompress(&stored).map_err(codec)?,
         };
         if data.len() as u64 != entry.raw_len {
             return Err(bad("object length"));
@@ -830,9 +770,9 @@ impl Store {
         let data = self.get(id)?;
         let mut stored = Vec::with_capacity(data.len() / 4 + 1024);
         match self.level {
-            Level::Max => crate::compress_records_into_max(&data, &mut stored),
-            Level::Ultra => crate::compress_records_into_ultra(&data, &mut stored),
-            Level::Cold => crate::compress_records_into_cold(&data, &mut stored),
+            Level::Max => glyd::compress_records_into_max(&data, &mut stored),
+            Level::Ultra => glyd::compress_records_into_ultra(&data, &mut stored),
+            Level::Cold => glyd::compress_records_into_cold(&data, &mut stored),
         }
         self.objects.write(&Self::key(id), &stored)?;
         let e = &mut self.entries[id as usize];

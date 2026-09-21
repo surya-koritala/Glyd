@@ -37,7 +37,7 @@ jobs:
         run: bash scripts/download_corpus.sh
 
       - name: Run Test Suite (correctness only, not gate measurement)
-        run: cargo test --release --all-targets
+        run: cargo test --release --all-targets --workspace
 
       - name: Run Regression Floor Tests
         run: cargo test --release --test regression_floors -- --nocapture

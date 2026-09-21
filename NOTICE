@@ -1,0 +1,8 @@
+Glyd
+Copyright 2026 Surya Koritala
+
+The glyd crate (the codec library, the CLI, the C ABI and the language
+bindings) is licensed under the Apache License, Version 2.0 (LICENSE).
+The glyd-store crate is licensed under the Business Source License 1.1
+(glyd-store/LICENSE) and converts to the Apache License 2.0 on its
+Change Date.

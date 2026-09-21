@@ -6,6 +6,18 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.10.0 — 2026-09-21
+
+### The codec under Apache-2.0; the store its own crate under BUSL
+- The `glyd` crate (the codec, every level and mode, base mode, packs,
+  shape dictionaries, the C ABI, the `glyd` CLI) is licensed under the
+  Apache License 2.0. The store moved to the `glyd-store` crate
+  (`glyd-store/`, a workspace member) under the Business Source License
+  1.1, with its own CLI (`glyd-store DIR --put ...`, `--audit`) and its
+  C ABI in `libglyd_store`, which carries the codec's ABI too. The
+  bindings load `libglyd_store` when present and `libglyd` otherwise
+  (everything but `Store`). `Mapping` moved to `glyd::mmap`.
+
 ## v0.9.3 — 2026-09-21
 
 ### Adoption: bindings, the audit, the spec, lzbench, packaging

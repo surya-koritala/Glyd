@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glyd"
-version = "0.9.3"
+version = "0.10.0"
 description = "Compression for the data that fills object storage: record mode, packs, a store that compresses across objects, the fastest reads"
 readme = "README.md"
-license = { text = "BUSL-1.1" }
+license = { text = "Apache-2.0" }
 requires-python = ">=3.8"
 
 [tool.setuptools]
 packages = ["glyd"]
 
 [tool.setuptools.package-data]
-glyd = ["libglyd.dylib", "libglyd.so", "glyd.dll"]
+glyd = ["libglyd_store.dylib", "libglyd_store.so", "glyd_store.dll", "libglyd.dylib", "libglyd.so", "glyd.dll"]

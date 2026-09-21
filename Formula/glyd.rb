@@ -5,15 +5,16 @@
 class Glyd < Formula
   desc "Compression for the data that fills object storage: record mode, packs, a store that compresses across objects"
   homepage "https://github.com/surya-koritala/Glyd"
-  url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.9.3.tar.gz"
+  url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.10.0.tar.gz"
   sha256 "REPLACED-BY-THE-RELEASE-SCRIPT"
-  license "BUSL-1.1"
+  license "Apache-2.0"
   head "https://github.com/surya-koritala/Glyd.git", branch: "main"
 
   depends_on "rust" => :build
 
   def install
     system "cargo", "install", *std_cargo_args
+    system "cargo", "install", *std_cargo_args(path: "glyd-store")
     include.install "include/glyd.h"
   end
 

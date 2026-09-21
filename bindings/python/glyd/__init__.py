@@ -20,15 +20,20 @@ import ctypes
 import os
 import sys
 
-__version__ = "0.9.3"
+__version__ = "0.10.0"
 
 _LEVELS = {"default": 0, "fast": 1, "turbo": 2, "max": 3, "ultra": 4, "cold": 5}
 
 
 def _load():
-    names = {"darwin": "libglyd.dylib", "win32": "glyd.dll"}.get(sys.platform, "libglyd.so")
+    """libglyd_store (the codec and the store, BUSL-1.1) when present,
+    else libglyd (the codec alone, Apache-2.0; Store then raises)."""
+    ext = {"darwin": ".dylib", "win32": ".dll"}.get(sys.platform, ".so")
+    pre = "" if sys.platform == "win32" else "lib"
     here = os.path.dirname(os.path.abspath(__file__))
-    candidates = [os.environ.get("GLYD_LIB"), os.path.join(here, names), names]
+    candidates = [os.environ.get("GLYD_LIB")]
+    for stem in ("glyd_store", "glyd"):
+        candidates += [os.path.join(here, pre + stem + ext), pre + stem + ext]
     last = None
     for c in candidates:
         if not c:
@@ -54,7 +59,9 @@ _lib.glyd_pack.argtypes = [ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)
 _lib.glyd_unpack_object.argtypes = [_u8p, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
 _lib.glyd_pack_len.argtypes = [_u8p, ctypes.c_size_t]
 _lib.glyd_pack_len.restype = ctypes.c_int64
-_lib.glyd_store_open.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+_HAS_STORE = hasattr(_lib, "glyd_store_open")
+if _HAS_STORE:
+    _lib.glyd_store_open.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 _lib.glyd_store_open.restype = ctypes.c_void_p
 _lib.glyd_store_close.argtypes = [ctypes.c_void_p]
 _lib.glyd_store_put.argtypes = [ctypes.c_void_p, ctypes.c_char_p, _u8p, ctypes.c_size_t]
@@ -180,6 +187,8 @@ class Store:
     AWS CLI)."""
 
     def __init__(self, path, s3=None):
+        if not _HAS_STORE:
+            raise OSError("glyd: the store needs libglyd_store (the glyd-store crate); libglyd carries the codec only")
         self._h = _lib.glyd_store_open(os.fsencode(path), s3.encode() if s3 else None)
         if not self._h:
             raise OSError(f"glyd: cannot open the store at {path}")

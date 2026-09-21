@@ -1,14 +1,17 @@
 [package]
 name = "glyd"
-version = "0.9.3"
+version = "0.10.0"
 edition = "2021"
 description = "Compression for the data that fills object storage: logs and dumps as typed columns, packs of small objects, a store that compresses across objects, versions against the last one, and the fastest reads at every ratio"
 repository = "https://github.com/surya-koritala/Glyd"
 readme = "README.md"
 keywords = ["compression", "storage", "s3", "zstd", "deduplication"]
 categories = ["compression"]
-license-file = "LICENSE"
-exclude = ["corpus/", "benchmarks/", "experiments/", "docs/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/"]
+license = "Apache-2.0"
+exclude = ["corpus/", "benchmarks/", "experiments/", "docs/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/"]
+
+[workspace]
+members = [".", "glyd-store"]
 
 [dependencies]
 

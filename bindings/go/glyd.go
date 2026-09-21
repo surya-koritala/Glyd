@@ -9,13 +9,16 @@
 //	data, _ = s.Get(id)
 //	s.Close()
 //
-// Binds include/glyd.h through cgo; build libglyd first (cargo build
-// --release) and point cgo at it, as the flags below do for a checkout.
+// Binds include/glyd.h through cgo; build the libraries first (cargo
+// build --release --workspace) and point cgo at them, as the flags
+// below do for a checkout. libglyd_store carries the codec and the
+// store (the store is BUSL-1.1); link -lglyd instead for the codec
+// alone (Apache-2.0), dropping Store.
 package glyd
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../include
-#cgo LDFLAGS: -L${SRCDIR}/../../target/release -lglyd
+#cgo LDFLAGS: -L${SRCDIR}/../../target/release -lglyd_store
 #cgo darwin LDFLAGS: -framework CoreFoundation
 #include <stdlib.h>
 #include "glyd.h"
