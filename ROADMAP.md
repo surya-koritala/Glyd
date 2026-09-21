@@ -4,12 +4,12 @@ Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
 
-## Where it stands (v0.9.1, 2026-09-21)
+## Where it stands (v0.9.2, 2026-09-21)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
-([report](docs/benchmarks/suite-2026-09-20.md)): `--max` 3.96 (zstd -3
-3.85) at 0.61× its write speed and 6× its read speed; `--ultra` 4.66
-(zstd -19 4.66); `--max -r` 4.75 at 675 MB/s; `--ultra -r` 5.21.
+([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
+3.85) at 0.77× its write speed and 7× its read speed; `--ultra` 4.66
+(zstd -19 4.66); `--max -r` 4.71 at 643 MB/s; `--ultra -r` 5.22.
 Telemetry with `-r`: 2.5–3.5× fewer bytes than zstd -3; application and
 system logs (templates): 1.4–3.3× fewer than zstd -3 and 1.1–2.1× fewer
 than zstd -19; the cold level: 1.5–2.6× fewer than zstd -19 at 1.2–1.5
@@ -38,9 +38,12 @@ storage is between objects.
    client (an HTTP dependency, a packaging decision), and the gate: a
    terabyte bucket put and read back at the measured ratios.
 
-1. **Write speed of `--max`** (0.58–0.66× zstd -3 on one server core):
-   the finder's cache footprint and the matcher pass. Gate: 0.8× zstd -3
-   with the corpus ratio kept.
+1. **Write speed of `--max`** (0.71–0.77× zstd -3 on server cores since
+   the finder's tables took zstd -3's size; the long-distance pass is
+   the rest, 40% of the time on JSON for 24% fewer bytes): the pass
+   itself (its table is 128 MB of random access on a 512 MB unit), and
+   parsing a unit's blocks on several threads so medium inputs keep
+   128 MB units. Gate: 0.9× zstd -3 with the corpus ratio kept.
 2. **Small objects**: a single-pass decoder for compact blocks and a
    cheaper per-object encoder (zstd is 1.4–2× faster per object); a
    dictionary that carries a record schema, so `-r` ratios reach

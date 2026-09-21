@@ -40,7 +40,7 @@ against the old one (`--base`).
 Every number in this README is measured on public data, every decode
 compared byte for byte with its input, against the reference codec on the
 same machine and thread count in the same run. The full program and its
-results: [docs/benchmarks/suite-2026-09-20.md](docs/benchmarks/suite-2026-09-20.md).
+results: [docs/benchmarks/suite-2026-09-21.md](docs/benchmarks/suite-2026-09-21.md).
 
 **The table everyone uses** — the 8.7 GB real-data corpus (logs, JSON
 events, SQL dumps, Parquet) on AWS Graviton3, ratio · compress MB/s ·
@@ -48,28 +48,28 @@ decompress MB/s. One core, the way zstd's own README reports:
 
 | Codec | Ratio | Compress MB/s | Decompress MB/s |
 | :--- | ---: | ---: | ---: |
-| LZ4 | 2.72 | **503** | 1,391 |
-| ⚡&nbsp;**Glyd&nbsp;default** | 2.82 | 322 | **3,281** |
-| zstd&nbsp;-3 | 3.86 | 304 | 1,371 |
-| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **4.00** | 201 | 1,412 |
+| LZ4 | 2.72 | **504** | 1,394 |
+| ⚡&nbsp;**Glyd&nbsp;default** | 2.82 | 332 | **3,309** |
+| zstd&nbsp;-3 | 3.86 | 313 | 1,425 |
+| ⚡&nbsp;**Glyd&nbsp;‑‑max** | **3.98** | 233 | **1,571** |
 
 Eight cores, what a server does (Glyd's output decodes in parallel; a
 zstd or LZ4 frame decodes on one thread):
 
 | Codec | Ratio | Compress MB/s | Decompress MB/s |
 | :--- | ---: | ---: | ---: |
-| ⚡&nbsp;**Glyd&nbsp;default** | 2.82 | **2,111** | **22,037** |
-| zstd&nbsp;-3&nbsp;-T8 | 3.85 | 1,947 | 1,412 |
-| ⚡&nbsp;**Glyd&nbsp;‑‑max** | 3.96 | 1,196 | **8,840** |
-| ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑r** | 4.75 | 675 | **3,831** |
+| ⚡&nbsp;**Glyd&nbsp;default** | 2.82 | **2,143** | **22,707** |
+| zstd&nbsp;-3&nbsp;-T8 | 3.85 | 1,969 | 1,422 |
+| ⚡&nbsp;**Glyd&nbsp;‑‑max** | 3.94 | 1,512 | **10,413** |
+| ⚡&nbsp;**Glyd&nbsp;‑‑max&nbsp;‑r** | 4.71 | 643 | **4,040** |
 | LZ4 | 2.72 | 503 | 1,392 |
-| zstd&nbsp;-19&nbsp;-T8 | 4.66 | 13 | 1,280 |
-| ⚡&nbsp;**Glyd&nbsp;‑‑ultra** | 4.66 | 14 | **9,551** |
-| ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;‑r** | **5.21** | 17 | **3,890** |
+| zstd&nbsp;-19&nbsp;-T8 | 4.66 | 13 | 1,326 |
+| ⚡&nbsp;**Glyd&nbsp;‑‑ultra** | 4.66 | 14.5 | **9,620** |
+| ⚡&nbsp;**Glyd&nbsp;‑‑ultra&nbsp;‑r** | **5.22** | 20 | **3,927** |
 
 In one line: Glyd reads 3–7× faster than zstd on a server and stores 10–70%
-less where the data has structure; it writes at 0.6× zstd -3's speed
-(record mode 0.35×). For data written once and read many times that is the
+less where the data has structure; it writes at 0.77× zstd -3's speed
+(record mode 0.33×). For data written once and read many times that is the
 right side of the trade; for data written constantly and rarely read,
 zstd -3 or LZ4 still win on write cost.
 
@@ -108,12 +108,13 @@ matters):
 | Plain text, binaries, Parquet | ~0% | ~0% (the floor; nothing moves it) |
 
 A terabyte kept a year in S3 Standard, compressed once and read once a
-month (Graviton3, CPU billed at the on-demand price): `--max -r` **$61.4**
-against zstd -3's $73.4 and zstd -19's $106; at ten reads a month
-`--max -r` $83.6, `--max` $83.1, zstd -3 $84.2; at a hundred reads a
-month zstd -3 is cheaper ($193 against `--max` $200 and `--max -r` $305:
-record-mode reads spend 2–2.7× its CPU rebuilding the columns)
-([report](docs/benchmarks/suite-2026-09-20.md)). At the scale of
+month (Graviton3, CPU billed at the on-demand price): `--max -r` **$61.7**
+against zstd -3's $73.3 and zstd -19's $102; at ten reads a month
+`--max` **$81.3**, `--max -r` $82.4, zstd -3 $84.1; at a hundred reads a
+month `--max` **$178** against zstd -3's $191 (its reads now cost less
+CPU than zstd's), while `--max -r` is $289: record-mode reads spend 2×
+the CPU rebuilding the columns
+([report](docs/benchmarks/suite-2026-09-21.md)). At the scale of
 object storage (hundreds of exabytes) every 1% fewer bytes is about $250
 million a year at list price; the percentages above are what to multiply.
 
@@ -201,15 +202,15 @@ SQL dumps and Parquet; zstd -3, zstd -19 and LZ4 on the same AWS machines
 small objects with dictionaries trained on other days' data; a real S3
 round trip (compress, upload, download, decompress, sha256) costed at list
 prices. Method: [docs/benchmarks/README.md](docs/benchmarks/README.md);
-results with every table: [docs/benchmarks/suite-2026-09-20.md](docs/benchmarks/suite-2026-09-20.md);
+results with every table: [docs/benchmarks/suite-2026-09-21.md](docs/benchmarks/suite-2026-09-21.md);
 raw rows: [benchmarks/suite/](benchmarks/suite/).
 
-The short version: `--max` stores 2.8% less than zstd -3 over the corpus
-(22% less on JSON events), decodes 3–6× faster with 8 cores and 1.03×
-(Graviton3) / 0.80× (Sapphire Rapids) on one core, and compresses at
-0.58–0.66× zstd -3's speed. `--ultra` equals zstd -19 (10% smaller on
-JSON). `--max -r` stores 19% less than zstd -3 and 2% less than zstd -19
-at 540–675 MB/s on 8 cores; `--ultra -r` 10% less than zstd -19.
+The short version: `--max` stores 2.2% less than zstd -3 over the corpus
+(24% less on JSON events), decodes 3–7× faster with 8 cores and 1.10×
+(Graviton3) / 0.85× (Sapphire Rapids) on one core, and compresses at
+0.71–0.77× zstd -3's speed. `--ultra` equals zstd -19 (10% smaller on
+JSON). `--max -r` stores 18% less than zstd -3 and 1% less than zstd -19
+at 500–645 MB/s on 8 cores; `--ultra -r` 11% less than zstd -19.
 
 ## The store: compression across objects
 
@@ -339,11 +340,11 @@ The 8.7 GB benchmark corpus, 10 cores, every decode byte-checked
 | Pageview logs (0.71 GB) | 3.71 | 4.68 | **4.10** | **4.92** | 3.56 | 4.82 | 1.02× |
 | JSON events (2.6 GB) | **13.26** | **16.40** | 13.26 | 16.40 | 10.46 | 15.07 | **1.09× smaller** |
 | Parquet (1.0 GB) | 1.01 | 1.02 | 1.01 | 1.02 | 1.01 | 1.02 | 1.00× |
-| Whole corpus | 3.96 | 4.65 | **4.75** | **5.20** | 3.85 | 4.66 | **1.11× smaller** |
+| Whole corpus | 3.94 | 4.66 | **4.71** | **5.22** | 3.85 | 4.66 | **1.12× smaller** |
 
-`--max -r` is 2% smaller than zstd -19 over the corpus while
-compressing at 1,100 MB/s against 19 (10 cores); `--ultra -r` is 11%
-smaller than zstd -19, and plain `--ultra` now equals it. JSON events
+`--max -r` is 1% smaller than zstd -19 over the corpus while
+compressing at 640 MB/s against 13 (8 Graviton3 cores); `--ultra -r` is
+12% smaller than zstd -19, and plain `--ultra` equals it. JSON events
 are not record-shaped (their redundancy is inside each record and
 across the whole file), so `-r` hands them to the plain level, where
 the long-distance matcher (repeats up to 128 MB back, on at `--max`
@@ -665,7 +666,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.9.1** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.9.2** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every

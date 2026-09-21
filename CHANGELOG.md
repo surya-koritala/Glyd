@@ -6,9 +6,22 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.9.2 — 2026-09-21
 
-### Write speed
+### Write speed, and the corpus rerun on AWS
+- The suite (`scripts/bench_aws_suite.sh`, both machines, every decode
+  checked; [docs/benchmarks/suite-2026-09-21.md](docs/benchmarks/suite-2026-09-21.md)):
+  `--max` 3.939 over the 8.7 GB corpus (zstd -3 3.851) at 1,512 MB/s
+  on 8 Graviton3 cores against zstd -3's 1,969 — 0.77× (0.61× in the
+  previous report), decoding at 10,413 against 1,422; one core 233
+  against 313 (0.74×), decode 1,571 against 1,425. Sapphire Rapids:
+  1,122 against 1,513 at 8 threads, 266 against 377 on one. `--max -r`
+  4.712 at 643 MB/s; `--ultra` 4.663 (zstd -19 4.664); `--ultra -r`
+  5.224. In the S3 workflow `--max`'s reads now cost less CPU than
+  zstd -3's on Graviton3 (9.7 against 10.7 s over the corpus), so it
+  is the cheapest row at every read rate: a terabyte-year at 1 / 10 /
+  100 reads a month $71.6 / $81.3 / $178 against zstd -3's $73.3 /
+  $84.1 / $191; `--max -r` $61.7 / $82.4 / $289.
 - The max level's finder tables are zstd -3's size (17/16 bits, 768
   KB) instead of 2 MB: on Graviton3 and Sapphire Rapids the 2 MB
   tables ran 10–25% slower for 0.5–1.5% fewer bytes (on an M1 the
