@@ -29,7 +29,7 @@ const ANCHOR_BITS: u32 = 4;
 /// Table entries (log2) for an input of up to 64 MB; larger inputs
 /// get a slot per 16 bytes (`find` sizes the table to the input).
 const TABLE_BITS: u32 = 22;
-const TABLE_BITS_MAX: u32 = 25;
+const TABLE_BITS_MAX: u32 = 24;
 const POS_BITS: u32 = MAX_OFFSET_BITS;
 const CHECK_BITS: u32 = 32 - POS_BITS;
 const HASH_LEN: usize = 32;

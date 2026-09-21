@@ -667,6 +667,54 @@ fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &
     }
 }
 
+/// `compress_parallel_with`, the units handed to `sink` in order as
+/// each finishes (from a writer thread, so writing overlaps the
+/// compressing) instead of gathered into one buffer: the CLI's memory
+/// is a few units of output, not the file's. `level` is a sequential
+/// level (`compress_into_max`, ...).
+pub fn compress_stream(input: &[u8], level: fn(&[u8], &mut Vec<u8>), smallest: usize, mut sink: impl FnMut(&[u8]) -> std::io::Result<()> + Send) -> std::io::Result<()> {
+    let unit = parallel_unit(input.len(), threads(), smallest);
+    let chunks: Vec<&[u8]> = if input.is_empty() { vec![input] } else { input.chunks(unit).collect() };
+    let n = chunks.len();
+    // Unit i's output goes into slot i; the writer takes slots in order
+    // as they fill, waiting on the condition variable.
+    let slots: Vec<std::sync::Mutex<Option<Vec<u8>>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    let ready = std::sync::Condvar::new();
+    let done = std::sync::Mutex::new(0usize);
+    let error: std::sync::Mutex<Option<std::io::Error>> = std::sync::Mutex::new(None);
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            for slot in slots.iter() {
+                let out = loop {
+                    if let Some(out) = slot.lock().unwrap().take() {
+                        break out;
+                    }
+                    let guard = done.lock().unwrap();
+                    let _guard = ready.wait(guard).unwrap();
+                };
+                if let Err(e) = sink(&out) {
+                    *error.lock().unwrap() = Some(e);
+                    return;
+                }
+            }
+        });
+        let _ = par_units::<()>(n, |i| {
+            let mut out = Vec::with_capacity(chunks[i].len() / 2 + 1024);
+            level(chunks[i], &mut out);
+            *slots[i].lock().unwrap() = Some(out);
+            let mut d = done.lock().unwrap();
+            *d += 1;
+            ready.notify_all();
+            Ok(())
+        });
+        let _ = writer.join();
+    });
+    match error.into_inner().unwrap() {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
 /// Compress across all CPU cores in parallel using Rayon.
 pub fn compress_parallel(input: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(input.len() / 2 + 1024);

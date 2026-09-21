@@ -17,9 +17,12 @@ every earlier format.
   a table dump 301/420 against 331/462, a root filesystem 178/248
   against 115/294. Where the time goes: the parse 45–80%, the
   long-distance pass 7–45% (JSON), the entropy coder 10–18%.
-- The CLI maps its input file instead of reading it into memory
-  first: a 512 MB file at `--max` on ten cores 1,060 → 1,280 MB/s
-  (the in-process figure is 1,760; the rest is the output write).
+- The CLI maps its input file instead of reading it first, and at
+  `--max` and `--ultra` writes each unit as it finishes from a writer
+  thread (`compress_stream`), so the output never sits whole in memory
+  and the write overlaps the compressing: a 512 MB file at `--max` on
+  ten cores 1,060 → 1,500 MB/s (a root filesystem) and 2,090 → 2,940
+  (JSON events); in-process the level runs at 1,760 and 4,200.
 - Measured and not taken: probing only the first repeat offset (no
   faster, 2–3% more bytes); 16/15 tables (5–12% faster again, 1–2%
   more bytes).

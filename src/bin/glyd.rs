@@ -451,6 +451,22 @@ fn main() -> io::Result<()> {
             (false, _, true, _) => glyd::compress_into_turbo,
             (false, _, _, _) => glyd::compress_into,
         };
+        let stream_level: Option<(fn(&[u8], &mut Vec<u8>), usize)> = match (mc, records, cold, ultra, max, fast, turbo) {
+            (true, false, false, false, true, _, _) => Some((glyd::compress_into_max, glyd::format::PARALLEL_UNIT_MAX)),
+            (true, false, false, true, _, _, _) => Some((glyd::compress_into_ultra, glyd::format::PARALLEL_UNIT_ULTRA)),
+            _ => None,
+        };
+        if let Some((unit_level, smallest)) = stream_level {
+            // Units written as they finish: the output never sits whole
+            // in memory, and the write overlaps the compressing.
+            let mut sink: Box<dyn Write + Send> = match output_path {
+                Some(ref p) if p != "-" => Box::new(std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(p)?)),
+                _ => Box::new(io::stdout()),
+            };
+            glyd::compress_stream(input_data, unit_level, smallest, |unit| sink.write_all(unit))?;
+            sink.flush()?;
+            return Ok(());
+        }
         if records && cold {
             glyd::compress_records_into_cold(&input_data, &mut out);
         } else if records {
