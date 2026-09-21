@@ -1,12 +1,11 @@
-# Homebrew formula: `brew install surya-koritala/glyd/glyd` once this file
-# sits in a tap repository (github.com/surya-koritala/homebrew-glyd,
-# Formula/glyd.rb), or `brew install --build-from-source Formula/glyd.rb`
-# from a checkout.
+# Homebrew formula: `brew install surya-koritala/glyd/glyd` (the tap
+# github.com/surya-koritala/homebrew-glyd carries a copy of this file),
+# or `brew install --build-from-source Formula/glyd.rb` from a checkout.
 class Glyd < Formula
   desc "Compression for the data that fills object storage: record mode, packs, a store that compresses across objects"
   homepage "https://github.com/surya-koritala/Glyd"
   url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.10.0.tar.gz"
-  sha256 "REPLACED-BY-THE-RELEASE-SCRIPT"
+  sha256 "2530d8d9b5aaccf8a8364c0c7bfafd2fb64f4a527d60f6ded183a2f071f25b2f"
   license "Apache-2.0"
   head "https://github.com/surya-koritala/Glyd.git", branch: "main"
 
