@@ -101,3 +101,29 @@ What it says: a tensor-aware transform is worth 1.26x on fp32 files and
 1.10x on bf16 over zstd -3 (the mantissa bits are noise and stay), and
 1.7x per checkpoint of a run against its predecessor. Real at petabyte
 scale, not a leap; ZipNN-class results (17-33% on bf16) agree.
+
+## H. A bucket, compressed across its objects (`examples/bucket.rs`)
+
+The redundancy of object storage is between objects, not inside them.
+A realistic bucket (`scripts/download_bucket.sh`, 39 objects, 39.2 GB:
+six builds of the Ubuntu 24.04 cloud root filesystem, the fifteen
+Linux 6.10 point releases, two months of three Wikipedia tables, twelve
+hours of GitHub events), each object arriving in order. For each, the
+stored object sharing the most fingerprints (one sparse anchor in 4 KB,
+the last eight holders of each kept) is its base; it is stored as a
+delta (`--max --base`) when that saves a fifth or more of its own size,
+chains at most four deep (past that, the chain's root is the base).
+
+| Family | raw | zstd -3, each object alone | Glyd, across the bucket | gain |
+| :--- | ---: | ---: | ---: | ---: |
+| Linux releases (15) | 22.5 GB | 3,237 MB | **232 MB** | **13.9x** |
+| Ubuntu images (6 builds) | 6.6 GB | 1,880 MB | **361 MB** | **5.2x** |
+| Wikipedia dumps (2 months, 3 tables) | 0.7 GB | 140 MB | **71 MB** | **2.0x** |
+| GitHub events (12 hours) | 9.4 GB | 875 MB | 670 MB | 1.3x (no base pays) |
+| **The bucket** | **39.2 GB** | **6,132 MB (6.4x)** | **1,334 MB (29.4x)** | **4.6x** |
+
+1,362 MB/s on ten M1 cores, every delta byte-exact by construction of
+base mode. An event stream gains nothing across hours (its repeats are
+short and LZ already has them); everything that is a version of
+something gains 2-14x. Read cost: an object at depth d is d + 1 decodes
+at 6-10 GB/s.
