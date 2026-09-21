@@ -5,7 +5,7 @@ class Glyd < Formula
   desc "Compression for the data that fills object storage: record mode, packs, a store that compresses across objects"
   homepage "https://github.com/surya-koritala/Glyd"
   url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.10.2.tar.gz"
-  sha256 "623df029113592d7e14b29b7dd8e10de8fa8c66448b2c18fb841fd5f2670950a"
+  sha256 "efcc16e4d3f6afed7b73170c6fe4c4e7a996f7cd9db8c76b9eb4b325f02e8c6f"
   license any_of: ["BSD-3-Clause", "GPL-2.0-only"]
   head "https://github.com/surya-koritala/Glyd.git", branch: "main"
 
