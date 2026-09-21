@@ -8,6 +8,14 @@ every earlier format.
 
 ## v0.10.0 — 2026-09-21
 
+### Installing
+- `brew install surya-koritala/glyd/glyd` (the tap
+  github.com/surya-koritala/homebrew-glyd; installs both CLIs and
+  `glyd.h`); every release carries prebuilt CLIs, libraries and Python
+  wheels for Linux x86_64 / aarch64 and macOS arm64
+  (`.github/workflows/release.yml`), and publishes to crates.io and
+  PyPI once those tokens are repository secrets.
+
 ### The codec under Apache-2.0; the store its own crate under BUSL
 - The `glyd` crate (the codec, every level and mode, base mode, packs,
   shape dictionaries, the C ABI, the `glyd` CLI) is licensed under the

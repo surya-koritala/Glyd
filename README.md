@@ -123,9 +123,18 @@ million a year at list price; the percentages above are what to multiply.
 
 ## Quick start
 
-Bindings: [Python](bindings/python/README.md) (`bindings/python/build.sh && pip install bindings/python`),
-[Go](bindings/go/glyd.go) (cgo over `include/glyd.h`), C (`include/glyd.h`, `libglyd.a` / `.dylib` / `.so`).
-Formats: [docs/spec.md](docs/spec.md). lzbench: `contrib/lzbench/setup.sh <checkout>`.
+```bash
+brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
+cargo install glyd glyd-store                # from crates.io
+pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.10.0-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+```
+
+Every [release](https://github.com/surya-koritala/Glyd/releases) carries
+the CLIs, the shared and static libraries and `glyd.h` for Linux
+x86_64, Linux aarch64 and macOS arm64, plus a Python wheel for each.
+Bindings: [Python](bindings/python/README.md), [Go](bindings/go/glyd.go)
+(cgo over `include/glyd.h`), C (`include/glyd.h`). Formats:
+[docs/spec.md](docs/spec.md). lzbench: `contrib/lzbench/setup.sh <checkout>`.
 
 ```bash
 cargo install --git https://github.com/surya-koritala/Glyd
