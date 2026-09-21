@@ -6,7 +6,8 @@ Licensor:             Surya Koritala
 Licensed Work:        glyd-store (the glyd-store crate: the files under
                       glyd-store/ in the Glyd repository). The Glyd codec
                       itself (the glyd crate, the CLI, the bindings) is
-                      licensed under the Apache License 2.0 instead.
+                      instead offered under the BSD 3-Clause License or
+                      the GNU GPL version 2, at the user's option.
                       The Licensed Work is (c) 2026 Surya Koritala.
 Additional Use Grant: You may make production use of the Licensed Work for
                       personal, educational, research, and other

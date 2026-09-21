@@ -16,3 +16,6 @@ benchmarks/suite/*/DONE
 /bindings/python/build
 /bindings/python/*.egg-info
 __pycache__/
+bindings/python/LICENSE
+bindings/python/COPYING
+bindings/python/LICENSE-glyd-store
