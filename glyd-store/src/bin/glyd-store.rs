@@ -3,6 +3,7 @@
 //!   glyd-store DIR --put FILE...        each file kept as a delta against the stored object
 //!                                       it most resembles when that pays; small files in packs
 //!   glyd-store DIR --get ID -o FILE     an object back
+//!   glyd-store DIR --restore OUT        every live object back, into OUT/<id>; prints id and name
 //!   glyd-store DIR --find NAME          the id of the latest object put under a name
 //!   glyd-store DIR --delete ID          a tombstone; the bytes stay while a live chain needs them
 //!   glyd-store DIR --rebase ID          an object read often stored alone again (one decode)
@@ -35,6 +36,7 @@ fn main() -> io::Result<()> {
     let mut store_compact = false;
     let mut store_rebuild = false;
     let mut store_verify = false;
+    let mut store_restore: Option<String> = None;
     let mut store_rebase: Option<u32> = None;
     let mut store_s3: Option<String> = None;
     let mut audit: Option<String> = None;
@@ -80,6 +82,10 @@ fn main() -> io::Result<()> {
             "--compact" => store_compact = true,
             "--rebuild" => store_rebuild = true,
             "--verify" => store_verify = true,
+            "--restore" => {
+                store_restore = Some(need(i, "a directory"));
+                i += 1;
+            }
             "--rebase" => {
                 store_rebase = Some(need(i, "an object id").parse().unwrap_or_else(|_| {
                     eprintln!("Error: --rebase requires an object id");
@@ -184,6 +190,21 @@ fn main() -> io::Result<()> {
         if store_compact {
             let freed = store.compact()?;
             eprintln!("compacted: {freed} B freed");
+        }
+        if let Some(out) = store_restore {
+            // In id order, so each chain is decoded once, its objects kept
+            // for the ones built on them.
+            std::fs::create_dir_all(&out)?;
+            let t = Instant::now();
+            let mut bytes = 0u64;
+            let live: Vec<(u32, String)> = store.entries().iter().filter(|e| !e.deleted && !e.name.starts_with("pack of ")).map(|e| (e.id, e.name.clone())).collect();
+            for (id, name) in &live {
+                let data = store.get(*id)?;
+                bytes += data.len() as u64;
+                std::fs::write(Path::new(&out).join(id.to_string()), &data)?;
+                println!("{id}\t{name}");
+            }
+            eprintln!("restored: {} objects, {} bytes, {:.0} MB/s", live.len(), bytes, bytes as f64 / t.elapsed().as_secs_f64() / 1e6);
         }
         if store_verify {
             let (ok, failed) = store.verify();

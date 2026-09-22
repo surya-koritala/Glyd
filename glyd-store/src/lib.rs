@@ -38,7 +38,7 @@ pub mod c_api;
 use glyd::mmap::Mapping;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Result, Write};
-use std::sync::Mutex;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::path::{Path, PathBuf};
 
 /// Chains are at most this deep.
@@ -58,6 +58,9 @@ pub const SMALL: usize = 256 << 10;
 const PACK_SIZE: usize = 2 << 20;
 /// Decoded objects kept in memory for the next put's base.
 const CACHE_BYTES: usize = 4 << 30;
+/// An object this much of whose fingerprints the store holds already is
+/// a version: its delta is tried in full without a trial on a sample.
+const SURE_COVERAGE: f64 = 0.9;
 
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -284,7 +287,7 @@ pub use s3::S3Backend;
 
 pub struct Store {
     dir: PathBuf,
-    objects: Box<dyn Backend>,
+    objects: Arc<dyn Backend>,
     entries: Vec<Entry>,
     table: Table,
     level: Level,
@@ -295,12 +298,122 @@ pub struct Store {
     pending_bytes: usize,
     /// The last pack decoded, for reads of its objects.
     pack_cache: std::cell::RefCell<Option<(u32, Vec<Vec<u8>>)>>,
-    /// The last large object put or rebuilt: the likeliest base of the
-    /// next put, and a read of it costs nothing.
-    /// Objects decoded lately, newest last, up to `CACHE_BYTES`: the
-    /// next base is usually one of them, and a chain's root serves
-    /// every delta on it.
-    cache: std::cell::RefCell<Vec<(u32, std::sync::Arc<Vec<u8>>)>>,
+    /// Objects decoded lately, newest last, up to `CACHE_BYTES`, each
+    /// with its index as a base once made: the next base is usually one
+    /// of them, and a chain's root serves every delta on it.
+    cache: std::cell::RefCell<Vec<(u32, Arc<Cached>)>>,
+    /// Large objects on their way to the backend.
+    writer: Writer,
+}
+
+/// A decoded object, and its index as a base once one is made.
+struct Cached {
+    data: Vec<u8>,
+    index: OnceLock<glyd::BaseIndex>,
+}
+
+impl Cached {
+    fn new(data: Vec<u8>) -> Arc<Cached> {
+        Arc::new(Cached { data, index: OnceLock::new() })
+    }
+
+    fn index(&self) -> &glyd::BaseIndex {
+        self.index.get_or_init(|| glyd::BaseIndex::new(&self.data))
+    }
+}
+
+/// A large object's writes: the stream, its sidecar, its index line.
+struct Job {
+    id: u32,
+    stored: Vec<u8>,
+    line: String,
+}
+
+/// Large objects written by a thread of their own, in order, so the
+/// next put compresses while this one uploads: the object, its sidecar,
+/// then its line in the index. The first failure stops the rest (none
+/// of them reaches the index) and is returned by the next call.
+struct Writer {
+    jobs: Option<std::sync::mpsc::SyncSender<Job>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    /// (every id sent below this is written, the first failure)
+    state: Arc<(Mutex<(u32, Option<String>)>, Condvar)>,
+    /// One past the last id sent.
+    sent: std::cell::Cell<u32>,
+}
+
+impl Writer {
+    fn new(objects: Arc<dyn Backend>, dir: PathBuf, first: u32) -> Writer {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Job>(2);
+        let state = Arc::new((Mutex::new((first, None)), Condvar::new()));
+        let shared = state.clone();
+        let thread = std::thread::spawn(move || {
+            for job in rx {
+                let failed = shared.0.lock().unwrap().1.is_some();
+                let result = if failed {
+                    Ok(())
+                } else {
+                    objects
+                        .write(&Store::key(job.id), &job.stored)
+                        .and_then(|_| objects.write(&format!("{}.index", job.id), job.line.as_bytes()))
+                        .and_then(|_| std::fs::OpenOptions::new().create(true).append(true).open(dir.join("index")).and_then(|mut f| f.write_all(job.line.as_bytes())))
+                };
+                let mut s = shared.0.lock().unwrap();
+                match result {
+                    Err(e) if s.1.is_none() => s.1 = Some(e.to_string()),
+                    Ok(()) if s.1.is_none() => s.0 = job.id + 1,
+                    _ => {}
+                }
+                shared.1.notify_all();
+            }
+        });
+        Writer { jobs: Some(tx), thread: Some(thread), state, sent: std::cell::Cell::new(first) }
+    }
+
+    fn check(&self) -> Result<()> {
+        match &self.state.0.lock().unwrap().1 {
+            Some(e) => Err(Error::new(ErrorKind::Other, format!("store: a write failed: {e}"))),
+            None => Ok(()),
+        }
+    }
+
+    fn send(&self, job: Job) -> Result<()> {
+        self.check()?;
+        let id = job.id;
+        self.jobs.as_ref().unwrap().send(job).map_err(|_| Error::new(ErrorKind::Other, "store: the writer stopped"))?;
+        self.sent.set(id + 1);
+        Ok(())
+    }
+
+    /// Once `id` is written, when it was sent here.
+    fn wait_for(&self, id: u32) -> Result<()> {
+        if id >= self.sent.get() {
+            return self.check();
+        }
+        let mut s = self.state.0.lock().unwrap();
+        while s.0 <= id && s.1.is_none() {
+            s = self.state.1.wait(s).unwrap();
+        }
+        drop(s);
+        self.check()
+    }
+
+    /// Once everything sent is written.
+    fn wait_all(&self) -> Result<()> {
+        match self.sent.get() {
+            0 => self.check(),
+            n => self.wait_for(n - 1),
+        }
+    }
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        self.jobs.take();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }
 
 fn bad(msg: &str) -> Error {
@@ -354,7 +467,9 @@ impl Store {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir)?;
         let table = Table::open(dir.join("table"))?;
-        let mut store = Store { dir, objects, entries: Vec::new(), table, level: Level::Max, names: HashMap::new(), pending: Vec::new(), pending_bytes: 0, pack_cache: std::cell::RefCell::new(None), cache: std::cell::RefCell::new(Vec::new()) };
+        let objects: Arc<dyn Backend> = Arc::from(objects);
+        let writer = Writer::new(objects.clone(), dir.clone(), 0);
+        let mut store = Store { dir, objects, entries: Vec::new(), table, level: Level::Max, names: HashMap::new(), pending: Vec::new(), pending_bytes: 0, pack_cache: std::cell::RefCell::new(None), cache: std::cell::RefCell::new(Vec::new()), writer };
         let index = store.dir.join("index");
         if index.exists() {
             let text = std::fs::read_to_string(&index)?;
@@ -410,6 +525,7 @@ impl Store {
                 }
             }
         }
+        store.writer = Writer::new(store.objects.clone(), store.dir.clone(), store.entries.len() as u32);
         Ok(store)
     }
 
@@ -518,6 +634,7 @@ impl Store {
     /// Mark `id` deleted: `get` refuses it from now on; its bytes leave
     /// the disk at `compact`, once no live object's chain needs them.
     pub fn delete(&mut self, id: u32) -> Result<()> {
+        self.writer.wait_all()?;
         let entry = self.entries.get_mut(id as usize).ok_or_else(|| bad("no such object"))?;
         if entry.deleted {
             return Ok(());
@@ -540,6 +657,7 @@ impl Store {
     /// live chain runs through, packs whose members are all deleted.
     /// Returns the bytes freed.
     pub fn compact(&mut self) -> Result<u64> {
+        self.writer.wait_all()?;
         let n = self.entries.len();
         let mut needed = vec![false; n];
         for e in &self.entries {
@@ -576,6 +694,9 @@ impl Store {
     pub fn verify(&self) -> (usize, Vec<(u32, String)>) {
         let mut ok = 0usize;
         let mut failed = Vec::new();
+        if let Err(e) = self.writer.wait_all() {
+            failed.push((u32::MAX, e.to_string()));
+        }
         for e in &self.entries {
             if e.deleted || e.name.starts_with("pack of ") {
                 continue;
@@ -596,33 +717,37 @@ impl Store {
     /// The stored objects the data shares the most fingerprints with,
     /// best first with their shares: the best, and a second when it
     /// scores at least half as much (`put` tries both on a sample).
-    fn candidates(&self, prints: &[u64]) -> Result<Vec<(u32, f64)>> {
+    fn candidates(&self, prints: &[u64]) -> Result<(Vec<(u32, f64)>, f64)> {
         let mut hits: HashMap<u32, f64> = HashMap::new();
         let mut holders = Vec::with_capacity(HOLDERS);
+        let mut held = 0usize;
         for &h in prints {
             holders.clear();
             self.table.lookup(h, &mut holders);
+            holders.retain(|&id| self.entries.get(id as usize).map_or(false, |e| !e.deleted));
+            held += !holders.is_empty() as usize;
             let n = holders.len() as f64;
             for &id in &holders {
                 *hits.entry(id).or_insert(0.0) += 1.0 / n;
             }
         }
+        let coverage = held as f64 / prints.len().max(1) as f64;
         hits.retain(|&id, _| self.entries.get(id as usize).map_or(false, |e| !e.deleted));
         let top = hits.values().cloned().fold(0.0f64, f64::max);
         // Among those within 5% of the best, the most recent: a copy of
         // a copy shares its fingerprints with both.
         let Some((first, score)) = hits.iter().filter(|(_, &s)| s >= top * 0.95).max_by_key(|(&id, _)| id).map(|(&id, &s)| (id, s)) else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), coverage));
         };
         let n = prints.len().max(1) as f64;
         if score / n < MIN_SHARE {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), coverage));
         }
         let mut out = vec![(first, score / n)];
         let mut rest: Vec<(u32, f64)> = hits.iter().filter(|(&id, &s)| id != first && s * 2.0 >= score).map(|(&id, &s)| (id, s / n)).collect();
         rest.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(b.0.cmp(&a.0)));
         out.extend(rest.into_iter().take(1));
-        Ok(out)
+        Ok((out, coverage))
     }
 
     /// The chain root of `id` when `id` sits at the depth cap, else `id`.
@@ -675,27 +800,38 @@ impl Store {
             }
             out
         };
+        let ultra = self.level == Level::Ultra;
+        // Against a base: a container is opened by the codec (both sides),
+        // anything else goes against the base's index, made once.
+        let container = glyd::deflate::is_container(data);
+        let against = |base: &Cached, input: &[u8], out: &mut Vec<u8>, ultra: bool| {
+            if container {
+                glyd::compress_with_base(&base.data, input, out, ultra)
+            } else {
+                glyd::compress_with_base_index(&base.data, base.index(), input, out, ultra)
+            }
+        };
         let mut base = None;
         let mut stored = Vec::new();
-        let scored = self.candidates(&prints)?;
+        let (scored, coverage) = self.candidates(&prints)?;
         if timing {
-            eprintln!("  candidates {id}: {}", scored.iter().map(|(c, s)| format!("{c} ({:.3})", s)).collect::<Vec<_>>().join(", "));
+            eprintln!("  candidates {id}: {} (coverage {coverage:.3})", scored.iter().map(|(c, s)| format!("{c} ({:.3})", s)).collect::<Vec<_>>().join(", "));
         }
         let mut candidates: Vec<u32> = scored.into_iter().map(|(id, _)| self.within_cap(id)).collect();
         candidates.dedup();
         lap("candidates", &mut laps);
         if !candidates.is_empty() {
-            // Two candidates: the one whose delta of the first 32 MB is
-            // smaller wins the whole object.
             let mut bid = candidates[0];
             let mut base_data = self.fetch(bid)?;
             lap("base fetched", &mut laps);
-            if candidates.len() > 1 {
+            // Two candidates: the one whose delta of the first 32 MB is
+            // smaller wins the whole object.
+            if candidates.len() > 1 && !container {
                 let sample = &data[..data.len().min(32 << 20)];
                 let other_data = self.fetch(candidates[1])?;
                 let (mut a, mut b) = (Vec::new(), Vec::new());
-                glyd::compress_with_base(&base_data, sample, &mut a, false);
-                glyd::compress_with_base(&other_data, sample, &mut b, false);
+                against(&base_data, sample, &mut a, false);
+                against(&other_data, sample, &mut b, false);
                 if b.len() < a.len() {
                     bid = candidates[1];
                     base_data = other_data;
@@ -703,36 +839,62 @@ impl Store {
             }
             lap("second candidate", &mut laps);
             // Whether the delta pays is judged against the object alone.
-            // Shared fingerprints do not settle it (hours of events share
-            // half their fingerprints and gain nothing), so the first
-            // 32 MB decide first: a delta of the sample against the
-            // sample alone, and only a delta that pays there is taken
-            // in full. Then the whole is estimated from the first 64 MB
-            // when that settles it either way (a version's delta is a
-            // few percent; an unrelated object's, about the whole), and
-            // compressed in full otherwise.
-            let sample = data.len().min(32 << 20);
-            let mut trial = Vec::new();
-            glyd::compress_with_base(&base_data, &data[..sample], &mut trial, false);
-            let trial_alone = alone(&data[..sample]).len();
-            lap("sample", &mut laps);
-            // A version's sample delta is a few percent of the sample
-            // alone; half is the bar, so that hours of events sharing
-            // half their fingerprints are not tried in full.
-            if trial.len() * 2 <= trial_alone {
+            // A container is compressed both ways in full. Otherwise
+            // shared fingerprints settle it only when nearly all of the
+            // object is held already (a version); short of that (hours of
+            // events share half their fingerprints and gain nothing) the
+            // first 32 MB decide first: a delta of the sample against the
+            // sample alone, the whole tried only when that pays. A delta
+            // under a thirty-second of the object is taken; else the
+            // whole is estimated from the sample when that settles it
+            // either way, and compressed in full otherwise.
+            if container {
                 let mut delta = Vec::with_capacity(data.len() / 16 + 1024);
-                glyd::compress_with_base(&base_data, data, &mut delta, self.level == Level::Ultra);
+                against(&base_data, data, &mut delta, ultra);
                 lap("delta", &mut laps);
-                let estimate = trial_alone as u64 * data.len() as u64 / sample.max(1) as u64;
-                let d = delta.len() as u64;
-                let alone_len = if d * 2 <= estimate || d * 5 >= estimate * 6 { estimate } else {
-                    stored = alone(data);
-                    lap("alone in full", &mut laps);
-                    stored.len() as u64
-                };
-                if d * WORTH_DEN as u64 <= alone_len * WORTH_NUM as u64 {
+                let whole = alone(data);
+                lap("alone in full", &mut laps);
+                if delta.len() * WORTH_DEN <= whole.len() * WORTH_NUM {
                     stored = delta;
                     base = Some(bid);
+                } else {
+                    stored = whole;
+                }
+            } else {
+                let sample = data.len().min(32 << 20);
+                let mut trial_alone = None;
+                let pays = coverage >= SURE_COVERAGE || {
+                    let mut trial = Vec::new();
+                    against(&base_data, &data[..sample], &mut trial, false);
+                    let a = alone(&data[..sample]).len();
+                    trial_alone = Some(a);
+                    lap("sample", &mut laps);
+                    // A version's sample delta is a few percent of the
+                    // sample alone; half is the bar.
+                    trial.len() * 2 <= a
+                };
+                if pays {
+                    let mut delta = Vec::with_capacity(data.len() / 16 + 1024);
+                    against(&base_data, data, &mut delta, ultra);
+                    lap("delta", &mut laps);
+                    let d = delta.len() as u64;
+                    let taken = d * 32 <= data.len() as u64 || {
+                        let a = trial_alone.unwrap_or_else(|| alone(&data[..sample]).len());
+                        let estimate = a as u64 * data.len() as u64 / sample.max(1) as u64;
+                        lap("alone estimate", &mut laps);
+                        let alone_len = if d * 2 <= estimate || d * 5 >= estimate * 6 {
+                            estimate
+                        } else {
+                            stored = alone(data);
+                            lap("alone in full", &mut laps);
+                            stored.len() as u64
+                        };
+                        d * WORTH_DEN as u64 <= alone_len * WORTH_NUM as u64
+                    };
+                    if taken {
+                        stored = delta;
+                        base = Some(bid);
+                    }
                 }
             }
         }
@@ -741,20 +903,18 @@ impl Store {
             lap("alone", &mut laps);
         }
         let depth = base.map_or(0, |b| self.entries[b as usize].depth + 1);
-        self.objects.write(&Self::key(id), &stored)?;
-        lap("write", &mut laps);
         self.names.insert(name.clone(), id);
         let entry = Entry { id, name, base, depth, raw_len: data.len() as u64, stored_len: stored.len() as u64, pack: None, deleted: false };
-        self.append_index(&entry)?;
-        self.write_sidecar(id, &Self::line(&entry))?;
+        // The stream, its sidecar and its index line go to the backend
+        // from the writer's thread while the next object is compressed.
+        self.writer.send(Job { id, stored, line: Self::line(&entry) })?;
+        lap("queued", &mut laps);
         for h in prints {
             self.table.insert(h, id)?;
         }
         lap("table insert", &mut laps);
-        self.table.sync();
-        lap("table sync", &mut laps);
         self.entries.push(entry);
-        self.remember(id, std::sync::Arc::new(data.to_vec()));
+        self.remember(id, Cached::new(data.to_vec()));
         lap("cache", &mut laps);
         if timing {
             let total: f64 = laps.iter().map(|(_, t)| t).sum();
@@ -766,7 +926,9 @@ impl Store {
     /// Write the open pack: the small objects put since the last flush,
     /// as one stored object in record mode where that pays.
     pub fn flush(&mut self) -> Result<()> {
+        self.writer.wait_all()?;
         if self.pending.is_empty() {
+            self.table.sync();
             return Ok(());
         }
         let pack_id = self.entries.len() as u32;
@@ -794,6 +956,7 @@ impl Store {
         self.entries.push(pack);
         self.pending.clear();
         self.pending_bytes = 0;
+        self.table.sync();
         Ok(())
     }
 
@@ -804,8 +967,8 @@ impl Store {
         if entry.deleted {
             return Err(bad("object deleted"));
         }
-        if let Some(data) = self.cached(id) {
-            return Ok((*data).clone());
+        if let Some(object) = self.cached(id) {
+            return Ok(object.data.clone());
         }
         if let Some((pack, i)) = entry.pack {
             if pack == u32::MAX {
@@ -823,67 +986,88 @@ impl Store {
             }
             return Ok(data);
         }
-        let data = self.fetch(id)?;
-        if data.len() as u64 != entry.raw_len {
-            return Err(bad("object length"));
-        }
-        Ok((*data).clone())
+        Ok(self.fetch(id)?.data.clone())
     }
 
-    fn cached(&self, id: u32) -> Option<std::sync::Arc<Vec<u8>>> {
+    fn cached(&self, id: u32) -> Option<Arc<Cached>> {
         self.cache.borrow().iter().find(|(i, _)| *i == id).map(|(_, d)| d.clone())
     }
 
-    /// `data` into the cache, the oldest out until it fits.
-    fn remember(&self, id: u32, data: std::sync::Arc<Vec<u8>>) {
-        if data.len() > CACHE_BYTES {
+    /// An object into the cache, the oldest out until it fits.
+    fn remember(&self, id: u32, object: Arc<Cached>) {
+        if object.data.len() > CACHE_BYTES {
             return;
         }
         let mut cache = self.cache.borrow_mut();
         cache.retain(|(i, _)| *i != id);
-        let mut held: usize = cache.iter().map(|(_, d)| d.len()).sum();
-        while held + data.len() > CACHE_BYTES && !cache.is_empty() {
-            held -= cache.remove(0).1.len();
+        let mut held: usize = cache.iter().map(|(_, d)| d.data.len()).sum();
+        while held + object.data.len() > CACHE_BYTES && !cache.is_empty() {
+            held -= cache.remove(0).1.data.len();
         }
-        cache.push((id, data));
+        cache.push((id, object));
     }
 
-    /// A large object's bytes, decoded through its chain and remembered
-    /// (deleted or not: a chain stays on disk until `compact`).
-    fn fetch(&self, id: u32) -> Result<std::sync::Arc<Vec<u8>>> {
-        if let Some(data) = self.cached(id) {
-            return Ok(data);
+    /// A large object decoded, deleted or not (a chain stays on disk
+    /// until `compact`), and remembered with the objects its chain ran
+    /// through: the chain down to a cached object or a root, its streams
+    /// read together, then decoded from the bottom up, each on every
+    /// core.
+    fn fetch(&self, id: u32) -> Result<Arc<Cached>> {
+        if let Some(object) = self.cached(id) {
+            return Ok(object);
         }
-        let data = std::sync::Arc::new(self.base_data(id)?);
-        self.remember(id, data.clone());
-        Ok(data)
-    }
-
-    /// A base's bytes: deleted or not, its chain is still on disk until
-    /// `compact` (which only removes what no live object needs).
-    fn base_data(&self, id: u32) -> Result<Vec<u8>> {
-        let entry = self.entries.get(id as usize).ok_or_else(|| bad("no such object"))?;
-        if let Some(data) = self.cached(id) {
-            return Ok((*data).clone());
-        }
-        let stored = self.objects.read(&Self::key(id))?;
-        let data = match entry.base {
-            Some(b) => {
-                let base = self.fetch(b)?;
-                glyd::decompress_with_base(&base, &stored).map_err(codec)?
+        let mut chain = vec![id];
+        let mut below: Option<Arc<Cached>> = None;
+        loop {
+            let last = *chain.last().unwrap();
+            let entry = self.entries.get(last as usize).ok_or_else(|| bad("no such object"))?;
+            match entry.base {
+                Some(b) => match self.cached(b) {
+                    Some(object) => {
+                        below = Some(object);
+                        break;
+                    }
+                    None => chain.push(b),
+                },
+                None => break,
             }
-            None => glyd::decompress(&stored).map_err(codec)?,
-        };
-        if data.len() as u64 != entry.raw_len {
-            return Err(bad("object length"));
+            if chain.len() > MAX_DEPTH + 1 {
+                return Err(bad("chain deeper than the cap"));
+            }
         }
-        Ok(data)
+        for &c in &chain {
+            self.writer.wait_for(c)?;
+        }
+        let streams: Vec<Mutex<Option<Result<Vec<u8>>>>> = chain.iter().map(|_| Mutex::new(None)).collect();
+        std::thread::scope(|scope| {
+            for (i, &c) in chain.iter().enumerate() {
+                let (objects, slot) = (&self.objects, &streams[i]);
+                scope.spawn(move || *slot.lock().unwrap() = Some(objects.read(&Self::key(c))));
+            }
+        });
+        for (&c, stream) in chain.iter().zip(streams).rev() {
+            let stored = stream.into_inner().unwrap().expect("read")?;
+            let entry = &self.entries[c as usize];
+            let data = match (&below, entry.base) {
+                (Some(b), Some(_)) => glyd::decompress_with_base(&b.data, &stored).map_err(codec)?,
+                (_, None) => glyd::decompress_parallel(&stored).map_err(codec)?,
+                (None, Some(_)) => return Err(bad("chain without its base")),
+            };
+            if data.len() as u64 != entry.raw_len {
+                return Err(bad("object length"));
+            }
+            let object = Cached::new(data);
+            self.remember(c, object.clone());
+            below = Some(object);
+        }
+        Ok(below.expect("the chain has an object"))
     }
 
     /// Store `id` again alone (depth 0), so a read of it is one decode:
     /// for an object read often that sits deep in a chain. Its
     /// dependants keep working (their chains still run through it).
     pub fn rebase(&mut self, id: u32) -> Result<()> {
+        self.writer.wait_all()?;
         let entry = self.entries.get(id as usize).ok_or_else(|| bad("no such object"))?.clone();
         if entry.deleted || entry.pack.is_some() || entry.base.is_none() {
             return Ok(());

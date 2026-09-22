@@ -1529,17 +1529,37 @@ pub fn compress_with_base(base: &[u8], input: &[u8], output: &mut Vec<u8>, ultra
             return as_part(|| compress_with_base(base_plain.as_deref().unwrap_or(base), &opened.plain, output, ultra));
         }
     }
+    compress_with_base_index(base, &BaseIndex::new(base), input, output, ultra)
+}
+
+/// A base prepared once for several `compress_with_base_index` calls
+/// against it: its coarse map, which a call on a base of gigabytes and
+/// an input of megabytes (a trial sample) spends most of its time on.
+pub struct BaseIndex {
+    map: Vec<(u64, u64)>,
+}
+
+impl BaseIndex {
+    pub fn new(base: &[u8]) -> BaseIndex {
+        BaseIndex { map: base_map(base) }
+    }
+}
+
+/// `compress_with_base` with the base's index made beforehand, on the
+/// bytes as they are: no container is opened (`compress_with_base`
+/// opens one before it gets here).
+pub fn compress_with_base_index(base: &[u8], index: &BaseIndex, input: &[u8], output: &mut Vec<u8>, ultra: bool) {
     let parse = if ultra { Parse::Ultra } else { Parse::Dfast };
     let units: Vec<(usize, usize)> = (0..input.len().max(1)).step_by(BASE_UNIT).map(|a| (a, (a + BASE_UNIT).min(input.len()))).collect();
     let base_end = base.len().saturating_sub(BASE_TAIL);
     // Each unit's region: where the base holds its content, by a coarse
     // map of the base, so content that moved farther than the slack
     // (a table that grew, a file added early in an archive) is found.
-    let map = base_map(base);
+    let map = &index.map;
     let slots: Vec<std::sync::Mutex<((usize, usize), Vec<u8>)>> = units.iter().map(|_| std::sync::Mutex::new(((0, 0), Vec::new()))).collect();
     let _ = par_units::<()>(units.len(), |i| {
         let (a, b) = units[i];
-        let (r0, r1) = base_region(base_end, &map, &input[a..b], a, b);
+        let (r0, r1) = base_region(base_end, map, &input[a..b], a, b);
         let mut full = Vec::with_capacity(r1 - r0 + b - a);
         full.extend_from_slice(&base[r0..r1]);
         full.extend_from_slice(&input[a..b]);
@@ -1548,7 +1568,6 @@ pub fn compress_with_base(base: &[u8], input: &[u8], output: &mut Vec<u8>, ultra
         *slots[i].lock().unwrap() = ((r0, r1), out);
         Ok(())
     });
-    drop(map);
     output.extend_from_slice(BASE_MAGIC);
     output.extend_from_slice(&base_id(base).to_le_bytes());
     put_varint(output, units.len() as u32);

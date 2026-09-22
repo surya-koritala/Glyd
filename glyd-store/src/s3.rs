@@ -23,9 +23,11 @@ use crate::Backend;
 
 const IMDS: &str = "http://169.254.169.254";
 const ECS_CREDENTIALS: &str = "http://169.254.170.2";
-/// Objects over this go up as parts of this size, on several
-/// connections; S3 takes 5 MB to 5 GB per part and 10,000 parts.
-const PART: usize = 64 << 20;
+/// Objects over this go up as parts of this size, and come down as
+/// ranges of it, on several connections (one connection moves about
+/// 100 MB/s); S3 takes 5 MB to 5 GB per part and 10,000 parts, so an
+/// object of up to 160 GB.
+const PART: usize = 16 << 20;
 const PART_THREADS: usize = 8;
 const ATTEMPTS: u32 = 4;
 
@@ -198,6 +200,11 @@ impl S3Backend {
     /// One signed request with retries; a wrong-region answer moves the
     /// region and retries once.
     fn request(&self, method: &str, key: &str, query: &[(String, String)], body: &[u8]) -> Result<Response> {
+        self.request_with(method, key, query, body, &[])
+    }
+
+    /// `request` with headers that are sent but not signed (a range).
+    fn request_with(&self, method: &str, key: &str, query: &[(String, String)], body: &[u8], extra: &[(&str, String)]) -> Result<Response> {
         let mut moved = false;
         let mut delay = Duration::from_millis(200);
         let mut last = String::new();
@@ -208,7 +215,7 @@ impl S3Backend {
             }
             // No credentials is not a transient condition.
             let creds = self.credentials()?;
-            match self.send(method, key, query, body, &creds) {
+            match self.send(method, key, query, body, &creds, extra) {
                 Ok(r) => {
                     if let Some(region) = r.header("x-amz-bucket-region").map(str::to_string).or_else(|| if r.status == 400 || r.status == 301 { xml_text(&r.body, "Region") } else { None }) {
                         if (r.status == 301 || r.status == 400) && !moved && region != *self.region.lock().unwrap() {
@@ -234,7 +241,7 @@ impl S3Backend {
         Err(other(format!("S3 {method} {}: gave up after {ATTEMPTS} attempts ({last})", self.full_key(key))))
     }
 
-    fn send(&self, method: &str, key: &str, query: &[(String, String)], body: &[u8], creds: &Credentials) -> Result<Response> {
+    fn send(&self, method: &str, key: &str, query: &[(String, String)], body: &[u8], creds: &Credentials, extra: &[(&str, String)]) -> Result<Response> {
         let full = if key.is_empty() { String::new() } else { self.full_key(key) };
         let (scheme, host, path) = self.locate(&full);
         let mut query: Vec<(String, String)> = query.to_vec();
@@ -260,6 +267,9 @@ impl S3Backend {
                 if k != "host" {
                     req = req.header(k.as_str(), v.as_str());
                 }
+            }
+            for (k, v) in extra {
+                req = req.header(*k, v.as_str());
             }
             req.header("authorization", authorization.as_str())
         };
@@ -301,12 +311,54 @@ impl S3Backend {
 }
 
 impl Backend for S3Backend {
+    /// The first `PART` bytes say the object's size; the rest come as
+    /// ranges on several connections, each asking for the same version
+    /// (its ETag).
     fn read(&self, key: &str) -> Result<Vec<u8>> {
-        let r = self.request("GET", key, &[], &[])?;
+        let r = self.request_with("GET", key, &[], &[], &[("range", format!("bytes=0-{}", PART - 1))])?;
         match r.status {
-            200 => Ok(r.body),
-            404 => Err(Error::new(ErrorKind::NotFound, format!("S3 GET {}: not found", self.full_key(key)))),
-            s => Err(other(format!("S3 GET {}: {s} {}", self.full_key(key), r.code()))),
+            200 => return Ok(r.body),
+            206 => {}
+            404 => return Err(Error::new(ErrorKind::NotFound, format!("S3 GET {}: not found", self.full_key(key)))),
+            416 => return Ok(Vec::new()),
+            s => return Err(other(format!("S3 GET {}: {s} {}", self.full_key(key), r.code()))),
+        }
+        let total = r.header("content-range").and_then(|v| v.rsplit('/').next()).and_then(|t| t.trim().parse::<usize>().ok()).ok_or_else(|| other(format!("S3 GET {}: a range without its size", self.full_key(key))))?;
+        if r.body.len() >= total {
+            return Ok(r.body);
+        }
+        let etag = r.header("etag").unwrap_or("").to_string();
+        let mut out = vec![0u8; total];
+        out[..r.body.len()].copy_from_slice(&r.body);
+        let first = r.body.len();
+        let pieces: Mutex<Vec<(usize, &mut [u8])>> = Mutex::new(out[first..].chunks_mut(PART).enumerate().map(|(i, c)| (first + i * PART, c)).collect());
+        let failed: Mutex<Option<Error>> = Mutex::new(None);
+        std::thread::scope(|scope| {
+            for _ in 0..PART_THREADS {
+                scope.spawn(|| loop {
+                    let Some((at, piece)) = pieces.lock().unwrap().pop() else { break };
+                    let mut extra = vec![("range", format!("bytes={}-{}", at, at + piece.len() - 1))];
+                    if !etag.is_empty() {
+                        extra.push(("if-match", etag.clone()));
+                    }
+                    let result = self.request_with("GET", key, &[], &[], &extra).and_then(|r| {
+                        if r.status == 206 && r.body.len() == piece.len() {
+                            piece.copy_from_slice(&r.body);
+                            Ok(())
+                        } else {
+                            Err(other(format!("S3 GET {} range at {at}: {} {}", self.full_key(key), r.status, r.code())))
+                        }
+                    });
+                    if let Err(e) = result {
+                        *failed.lock().unwrap() = Some(e);
+                        break;
+                    }
+                });
+            }
+        });
+        match failed.into_inner().unwrap() {
+            Some(e) => Err(e),
+            None => Ok(out),
         }
     }
     fn write(&self, key: &str, data: &[u8]) -> Result<()> {
@@ -545,9 +597,9 @@ mod tests {
         s3.remove(&key).unwrap();
         assert!(!s3.exists(&key));
         assert_eq!(s3.read(&key).unwrap_err().kind(), ErrorKind::NotFound);
-        // Multipart: three 5 MB parts and a 2 MB tail, on parallel
-        // connections, read back whole.
-        let big: Vec<u8> = (0..17u32 << 20).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+        // Multipart: eight 5 MB parts, on parallel connections, read back
+        // as ranges on parallel connections.
+        let big: Vec<u8> = (0..40u32 << 20).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
         let key = format!("s3-test-{}/parts.bin", std::process::id());
         s3.write_parts(&key, &big, 5 << 20).unwrap();
         assert_eq!(s3.len(&key), Some(big.len() as u64));
