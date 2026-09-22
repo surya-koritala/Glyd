@@ -449,6 +449,7 @@ Mac, every decode compared with the input:
 | Guava jar, 2,059 entries | 3.05 MB | 2.70 MB | **1.76 MB (−42%)** | 1.43 MB | **1.14 MB (−63%)** |
 | .pptx, 60 slides | 88 KB | 56 KB | **24 KB (−73%)** | 21 KB | **16 KB (−82%)** |
 | .pptx, 12 slides of photos (6.5 MB) | 6.51 MB | 6.50 MB | **5.29 MB (−19%)** at every level | | |
+| .docx, 6 PNG screenshots (2.5 MB) | 2.51 MB | 2.50 MB | **2.32 MB (−8%)** | 2.1 MB | **1.65 MB (−34%)** |
 | .xlsx, 30,000 rows | 1.34 MB | 1.23 MB | 1.33 MB (kept closed) | 1.05 MB | **0.47 MB (−65%)** |
 | .docx, 400 sections | 141 KB | 138 KB | 140 KB | 117 KB | **77 KB (−46%)** |
 | RFC 8878, PDF | 440 KB | 242 KB | **192 KB (−56%)** | 167 KB | **126 KB (−71%)** |

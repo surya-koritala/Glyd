@@ -40,6 +40,11 @@ const JPEG: u8 = 3;
 /// the plain text holds its Lepton stream, from which the JPEG and
 /// then the deflate stream are recreated.
 const DEFLATE_JPEG: u8 = 4;
+/// A PNG deflated inside a container (an Office document's
+/// screenshots): the plain text holds the PNG's own plain text, and
+/// the recipe a recipe for the PNG, from which the PNG and then the
+/// deflate stream are recreated.
+const DEFLATE_PNG: u8 = 5;
 
 /// An object opened: its plain text and the recipe to close it.
 pub struct Opened {
@@ -140,6 +145,27 @@ impl Builder {
                     self.segments += 1;
                     self.verbatim = (at + result.compressed_size, at + result.compressed_size);
                     return Some(result.compressed_size);
+                }
+            }
+        }
+        // A PNG under the deflate: opened in a recipe of its own, its
+        // plain text standing in the plain text for it.
+        if is_png(text.text()) {
+            let mut sub = Builder::new();
+            if sub.png(text.text(), 0, text.text().len()).is_some() {
+                if let Some(inner) = sub.finish(text.text()) {
+                    if self.plain.len() + inner.plain.len() <= PLAIN_LIMIT {
+                        self.recipe.push(DEFLATE_PNG);
+                        put_varint(&mut self.recipe, result.corrections.len() as u64);
+                        self.recipe.extend_from_slice(&result.corrections);
+                        put_varint(&mut self.recipe, inner.recipe.len() as u64);
+                        self.recipe.extend_from_slice(&inner.recipe);
+                        put_varint(&mut self.recipe, inner.plain.len() as u64);
+                        self.plain.extend_from_slice(&inner.plain);
+                        self.segments += 1;
+                        self.verbatim = (at + result.compressed_size, at + result.compressed_size);
+                        return Some(result.compressed_size);
+                    }
                 }
             }
         }
@@ -513,6 +539,15 @@ pub fn close(recipe: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
                 pos += 1;
                 out.extend_from_slice(&crate::jpeg::restore(take(&mut pos)?)?);
             }
+            DEFLATE_PNG => {
+                pos += 1;
+                let corrections = take(&mut pos)?;
+                let inner = take(&mut pos)?;
+                let plen = get_varint(recipe, &mut pos).ok()? as usize;
+                let png = close(inner, plain.get(at..at.checked_add(plen)?)?)?;
+                out.extend_from_slice(&recreate_whole_deflate_stream(&png, corrections).ok()?);
+                at += plen;
+            }
             #[cfg(feature = "jpeg")]
             DEFLATE_JPEG => {
                 pos += 1;
@@ -776,6 +811,7 @@ with zipfile.ZipFile(buf, "w") as z:
     z.writestr("word/media/image1.png", png, compress_type=zipfile.ZIP_STORED)
     z.writestr("word/media/image2.jpeg", jpeg, compress_type=zipfile.ZIP_STORED)
     z.writestr("word/media/image3.jpeg", jpeg, compress_type=zipfile.ZIP_DEFLATED)
+    z.writestr("word/media/image4.png", png, compress_type=zipfile.ZIP_DEFLATED)
 sys.stdout.buffer.write(buf.getvalue())
 "#, png.len(), png.len() + 1), &pictures);
         let opened_pictures = round_trip(&picture_zip, "zip with pictures");
@@ -783,6 +819,8 @@ sys.stdout.buffer.write(buf.getvalue())
         let recipe = open(&picture_zip).unwrap().recipe;
         assert!(recipe.windows(1).any(|w| w[0] == JPEG), "the stored JPEG transcoded");
         assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_JPEG), "the deflated JPEG transcoded under its deflate");
+        assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_PNG), "the deflated PNG opened under its deflate");
+        assert!(opened_pictures.len() > 2 * plain.len(), "both PNGs' plain text is in: {}", opened_pictures.len());
         assert!(is_pdf(&pdf));
         let opened_pdf = round_trip(&pdf, "pdf");
         assert!(opened_pdf.len() >= 600000, "the three Flate streams opened: {}", opened_pdf.len());
