@@ -239,7 +239,7 @@ mod tests {
         let (a, b) = (gzip(&plain, &["-6"]), gzip(&later, &["-6"]));
         let mut d = Vec::new();
         crate::compress_with_base(&a, &b, &mut d, false);
-        assert!(d.len() < 4096, "{}", d.len());
+        assert!(d.len() < b.len() / 4, "{} of {}", d.len(), b.len());
         assert_eq!(crate::decompress_with_base(&a, &d).unwrap(), b);
         // Not gzip: untouched.
         let mut c = Vec::new();
