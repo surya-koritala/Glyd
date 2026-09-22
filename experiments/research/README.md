@@ -152,3 +152,28 @@ rebuilt against a newer base) are already the store's version case
 the pie is too small to be the company. Worth adding to the audit as a
 number (public fraction of the sampled bucket) when a prospect's
 bucket is an artifact store.
+
+## J. Re-doing what is already compressed
+
+Already-compressed objects sit at *their format's* floor, not the
+data's: JPEG, gzip and Parquet each fixed a weak predictor years ago.
+Decode, model better, keep enough to restore the original bytes.
+Measured 2026-09-21 on this Mac:
+
+| Format | Object | As is | Re-done | Fewer bytes | Restores the original bytes? |
+|---|---|---|---|---|---|
+| JPEG | 6 Wikimedia Commons photos, 35.9 MB | 35.9 MB | JPEG XL lossless transcode (cjxl `--lossless_jpeg`) 28.8 MB | **19.7%** (16.7–21.5% each) | Yes, byte-exact (checked with `cmp`); Dropbox's Lepton did the same at 22% over 4 PB |
+| Parquet (zstd inside) | NYC taxi Feb 2024, 3.0 M rows × 19 columns, 50.3 MB | 50.3 MB; rewritten zstd-19 45.9, brotli-11 41.9 | columns re-modeled by Glyd: `--max -r` 37.1 MB, `--ultra -r` 35.4, `--cold -r` 30.1 | **26% / 30% / 40%** (9–17% is all Parquet's own codecs give) | The same table, not the same file: Parquet bytes depend on the writer; a reader gets the table back |
+| gzip'd log | NASA access log, 205 MB raw, gzip-6 20.7 MB | 20.7 MB | `--max -r` 8.2 MB, `--ultra -r` 7.6, `--cold -r` 6.5 | **60% / 63% / 69%** | Upper bound: needs the deflate stream reproduced (preflate does this for zlib output at ~1% cost); not built |
+| gzip'd tarball | 512 MB of a kernel tree, gzip-6 72.7 MB | 72.7 MB | `--max` 55.9 MB, `--ultra` 41.8, `--cold` 28.4 | **23% / 43% / 61%** | Same |
+
+What it says: this is the larger lever, and it sits on the classes
+that hold the petabytes. Logs are shipped and kept gzipped, and
+gzip-inside is where the record and template models already win
+60–69%; archives 23–61%; images 20% with a proven, reversible method;
+Parquet 26–40% at the price of regenerating the file rather than its
+bytes. Against #1 (section I), which is high only where bytes are few,
+#2 is where the bill is. Order to build: gzip-inside first (the models
+exist; the missing piece is a deflate reproducer, and Microsoft's
+preflate-rs is Apache-2.0), then JPEG through libjxl, then Parquet
+columns behind a "same table" option.
