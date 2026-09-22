@@ -20,7 +20,7 @@ import ctypes
 import os
 import sys
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 _LEVELS = {"default": 0, "fast": 1, "turbo": 2, "max": 3, "ultra": 4, "cold": 5}
 

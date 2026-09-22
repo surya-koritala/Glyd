@@ -50,3 +50,31 @@ base); v0.11.2's successor maps the file and caps the kept object at
 instance's, single-process, including the 20 GB objects; the store
 does not yet overlap one object's upload with the next one's
 compression. zstd -3 per family was not recorded, only its total.
+
+## Second run, the same day: the put's time cut
+
+The same corpus and instance type after the put was made to scan
+fingerprints on every core, keep a 4 GB cache of decoded objects (a
+chain's root decoded once for every delta on it) and decide a delta on
+a 32 MB sample before trying it in full (glyd-store 0.12.0 at commit
+99cbbfa; raw results in `benchmarks/gate/im4gn.4xlarge/`, the first
+run's in `im4gn.4xlarge.prev/`). The corpus re-downloaded to
+1,183,711,453,130 bytes (an hour of events differed by 0.5 GB).
+
+| | First run | Second run |
+| :--- | ---: | ---: |
+| put | 150 MB/s, 2 h 12 min | **243 MB/s, 1 h 21 min** |
+| stored | 49.03 GB (24.2× against raw; 3.13× fewer bytes than zstd -3) | 49.56 GB (23.9×; 3.10×) |
+| get, every object compared | 186 MB/s, 1,192 byte-exact | 166 MB/s, 1,192 byte-exact |
+| rebuild from the bucket | 1 h 26 min, index identical | 51 min, index identical |
+| verify after the rebuild | 1 h 02 min, 1,192 ok | 47 min, 1,192 ok |
+
+The read-back rate is within the run-to-run spread of one process
+downloading from S3 and decoding; the bytes differ with the corpus.
+
+Also in the second run, this machine's GNU gzip 1.12 on 512 MB of
+three objects, then `glyd --max` on the gzip, decoded and compared:
+an hour of GitHub events, gzip 75.3 MB → **33.2 MB** (`-r`); a Simple
+English Wikipedia table, 27.1 MB → **16.2 MB** (`-r`); a Linux tree,
+72.2 MB → **55.1 MB**; all three byte-exact. The opener was built
+against macOS's gzip; GNU gzip's streams open the same.

@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.13.0 — 2026-09-22
 
 ### Deflate containers opened
 
@@ -58,7 +58,10 @@ every earlier format.
   tried, and its alone size is the estimate (an hour of events shares
   half its fingerprints with the hour before and gained nothing from a
   full delta). Kernels put at 800–1,600 MB/s on this Mac (300–500
-  before), events at 1,300–1,900; every stored byte identical.
+  before), events at 1,300–1,900; every stored byte identical. The
+  terabyte gate rerun ([report](docs/benchmarks/store-gate-2026-09-22.md)):
+  put 243 MB/s against 150, 1 h 21 min against 2 h 12 min, every
+  object back byte-exact, the rebuild 51 min against 86.
 - Dense max level (`--dense`, `compress_into_max_dense`,
   `compress_max_stream`): units stay at the far matcher's 128 MB
   instead of shrinking to give every core one; a unit's far matches

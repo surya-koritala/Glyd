@@ -126,7 +126,7 @@ million a year at list price; the percentages above are what to multiply.
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 cargo install glyd glyd-store                # from crates.io
-pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.12.0-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.13.0-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -282,7 +282,8 @@ byte for byte, the metadata directory deleted and rebuilt from the
 bucket, then verified: **49.0 GB stored against zstd -3's 153.5 GB,
 3.13× fewer bytes (24× against raw)**; kernels 115–285× against raw,
 Wikipedia tables 21×, hourly events 12.9× (record mode alone). Put ran
-at 150 MB/s and read-back at 186 MB/s, S3 included, on that instance.
+at 243 MB/s (150 before the put's time was cut) and read-back at
+166–186 MB/s, S3 included, on that instance.
 
 Put runs at 620 MB/s end to end over the bucket on ten cores (reading
 the file, rebuilding the base, writing the delta; a version of the
@@ -468,9 +469,12 @@ level does on the content (an Office XML sheet), the fast level keeps
 it closed and the slower levels open it. The cost is the re-encode
 that makes it exact: about 5 MB/s of deflate per core in (50 MB/s of
 content), three times that out; per terabyte of gzipped logs on S3
-Standard, about $2 of CPU once against $166 a year. Streams preflate
-cannot reproduce, or predicts badly (corrections over a quarter of
-the stream), are kept as they are: 18 of the jar's 2,059. JPEG takes
+Standard, about $2 of CPU once against $166 a year. GNU gzip's
+streams open the same as macOS's (checked on Linux: an hour of events
+gzipped, 75.3 → 33.2 MB; a Linux tree, 72.2 → 55.1 MB; byte-exact).
+Streams preflate cannot reproduce, or predicts badly (corrections
+over a quarter of the stream), are kept as they are: 18 of the jar's
+2,059. JPEG takes
 a different road: its DCT coefficients are recoded by Lepton (the
 Rust port of Dropbox's, `lepton_jpeg`) with an arithmetic coder and a
 predictor across blocks, 24% fewer bytes on the six photos above
@@ -757,7 +761,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.12.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.13.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every
