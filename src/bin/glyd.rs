@@ -13,6 +13,9 @@ Options:
     -1, --fast             Fast level: LZ4-class compression speed, ratio ~2.10
     -t, --turbo            Turbo level: fastest decode, ~6% less ratio
     -9, --max              Max level: entropy coded, ratio above zstd -3
+    -D, --dense            With --max: 128 MB units parsed on all cores, one core's bytes at any
+                           core count (5-9% fewer on files of a few hundred MB); reads scale
+                           only with the units. For objects written once and read rarely
     -19, --ultra           Ultra level: optimal parse, ratio above zstd -16; slow to compress
     -C, --cold             Cold level: context mixing, the smallest output, 1-2 MB/s per core
                            each way; for what is stored for years and read rarely
@@ -75,6 +78,7 @@ fn main() -> io::Result<()> {
     let mut fast = false;
     let mut turbo = false;
     let mut max = false;
+    let mut dense = false;
     let mut ultra = false;
     let mut cold = false;
     let mut records = false;
@@ -100,6 +104,7 @@ fn main() -> io::Result<()> {
             "-1" | "--fast" => fast = true,
             "-t" | "--turbo" => turbo = true,
             "-9" | "--max" => max = true,
+            "-D" | "--dense" => dense = true,
             "-19" | "--ultra" => ultra = true,
             "-C" | "--cold" => cold = true,
             "-r" | "--records" => records = true,
@@ -312,7 +317,7 @@ fn main() -> io::Result<()> {
                 Some(ref p) if p != "-" => Box::new(std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(p)?)),
                 _ => Box::new(io::stdout()),
             };
-            if max && !ultra {
+            if max && !ultra && dense {
                 glyd::compress_max_stream(input_data, |part| sink.write_all(part))?;
             } else {
                 glyd::compress_stream(input_data, unit_level, smallest, |unit| sink.write_all(unit))?;
@@ -325,7 +330,7 @@ fn main() -> io::Result<()> {
         } else if max && !ultra && (records || glyd::deflate::is_container(input_data)) {
             // An opened container's content takes record mode where
             // that pays (a gzipped log is a log).
-            glyd::compress_records_into_max(&input_data, &mut out);
+            if dense { glyd::compress_records_into_max_dense(&input_data, &mut out) } else { glyd::compress_records_into_max(&input_data, &mut out) }
         } else if ultra && !cold && glyd::deflate::is_container(input_data) {
             glyd::compress_records_into_ultra(&input_data, &mut out);
         } else if records {

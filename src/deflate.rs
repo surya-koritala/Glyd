@@ -33,6 +33,9 @@ const PLAIN_LIMIT: usize = 8 << 30;
 const VERBATIM: u8 = 0;
 const DEFLATE: u8 = 1;
 const PNG_IMAGE: u8 = 2;
+/// A JPEG inside a container (a .docx's pictures, a zip of photos):
+/// its Lepton stream, in the recipe.
+const JPEG: u8 = 3;
 
 /// An object opened: its plain text and the recipe to close it.
 pub struct Opened {
@@ -252,8 +255,13 @@ fn open_zip(input: &[u8]) -> Option<Opened> {
         if end > input.len() {
             break;
         }
-        // Stored data, or a stream that did not open: kept.
-        b.verbatim(input, opened_to, end);
+        // Stored data (a picture, a nested archive) opened in its own
+        // way; a stream that did not open, kept.
+        if method == 0 && opened_to == data {
+            b.stored(input, data, end);
+        } else {
+            b.verbatim(input, opened_to, end);
+        }
         // The next entry: right here, or past a data descriptor.
         let next = (end..(end + 32).min(input.len().saturating_sub(3))).find(|&p| &input[p..p + 4] == b"PK\x03\x04").unwrap_or(end);
         b.verbatim(input, end, next);
@@ -320,54 +328,106 @@ fn open_zlib(input: &[u8]) -> Option<Opened> {
 /// into chunks (their lengths and CRCs); every other chunk is kept.
 fn open_png(input: &[u8]) -> Option<Opened> {
     let mut b = Builder::new();
-    let be32 = |p: usize| input.get(p..p + 4).map(|s| u32::from_be_bytes(s.try_into().unwrap()) as usize);
-    let mut at = 8usize;
-    let mut idat: Vec<(usize, usize)> = Vec::new(); // (data start, len)
-    let mut image = Vec::new();
-    let mut first_idat = None;
-    while let (Some(len), Some(kind)) = (be32(at), input.get(at + 4..at + 8)) {
-        let chunk_end = at + 12 + len;
-        if chunk_end > input.len() {
-            break;
-        }
-        if kind == b"IDAT" {
-            if first_idat.is_none() {
-                first_idat = Some(at);
-            }
-            idat.push((at + 8, len));
-            image.extend_from_slice(&input[at + 8..at + 8 + len]);
-        } else if first_idat.is_some() {
-            break;
-        }
-        at = chunk_end;
-    }
-    let start = first_idat?;
-    let last_end = idat.last().map(|(s, l)| s + l + 4)?;
-    if !is_zlib(&image) {
-        return None;
-    }
-    b.verbatim(input, 0, start);
-    b.flush_verbatim(input);
-    let (result, text) = preflate_whole_deflate_stream(&image[2..], &b.config).ok()?;
-    if 2 + result.compressed_size + 4 != image.len() || text.text().len() > PLAIN_LIMIT {
-        return None;
-    }
-    b.recipe.push(PNG_IMAGE);
-    b.recipe.extend_from_slice(&image[..2]);
-    put_varint(&mut b.recipe, result.corrections.len() as u64);
-    b.recipe.extend_from_slice(&result.corrections);
-    put_varint(&mut b.recipe, text.text().len() as u64);
-    b.recipe.extend_from_slice(&image[image.len() - 4..]);
-    put_varint(&mut b.recipe, idat.len() as u64);
-    for &(s, l) in &idat {
-        put_varint(&mut b.recipe, l as u64);
-        b.recipe.extend_from_slice(&input[s + l..s + l + 4]);
-    }
-    b.plain.extend_from_slice(text.text());
-    b.segments += 1;
-    b.verbatim = (last_end, last_end);
-    b.verbatim(input, last_end, input.len());
+    b.png(input, 0, input.len())?;
     b.finish(input)
+}
+
+impl Builder {
+    /// The PNG at `input[from..to]` as segments; `None` leaves the
+    /// builder as it was.
+    fn png(&mut self, input: &[u8], from: usize, to: usize) -> Option<()> {
+        let be32 = |p: usize| input.get(p..p + 4).filter(|_| p + 4 <= to).map(|s| u32::from_be_bytes(s.try_into().unwrap()) as usize);
+        let mut at = from + 8;
+        let mut idat: Vec<(usize, usize)> = Vec::new(); // (data start, len)
+        let mut image = Vec::new();
+        let mut first_idat = None;
+        while let (Some(len), Some(kind)) = (be32(at), input.get(at + 4..at + 8)) {
+            let chunk_end = at + 12 + len;
+            if chunk_end > to {
+                break;
+            }
+            if kind == b"IDAT" {
+                if first_idat.is_none() {
+                    first_idat = Some(at);
+                }
+                idat.push((at + 8, len));
+                image.extend_from_slice(&input[at + 8..at + 8 + len]);
+            } else if first_idat.is_some() {
+                break;
+            }
+            at = chunk_end;
+        }
+        let start = first_idat?;
+        let last_end = idat.last().map(|(s, l)| s + l + 4)?;
+        if !is_zlib(&image) {
+            return None;
+        }
+        let (result, text) = preflate_whole_deflate_stream(&image[2..], &self.config).ok()?;
+        if 2 + result.compressed_size + 4 != image.len() || self.plain.len() + text.text().len() > PLAIN_LIMIT || result.corrections.len() * 4 > result.compressed_size {
+            return None;
+        }
+        self.verbatim(input, from, start);
+        self.flush_verbatim(input);
+        self.recipe.push(PNG_IMAGE);
+        self.recipe.extend_from_slice(&image[..2]);
+        put_varint(&mut self.recipe, result.corrections.len() as u64);
+        self.recipe.extend_from_slice(&result.corrections);
+        put_varint(&mut self.recipe, text.text().len() as u64);
+        self.recipe.extend_from_slice(&image[image.len() - 4..]);
+        put_varint(&mut self.recipe, idat.len() as u64);
+        for &(s, l) in &idat {
+            put_varint(&mut self.recipe, l as u64);
+            self.recipe.extend_from_slice(&input[s + l..s + l + 4]);
+        }
+        self.plain.extend_from_slice(text.text());
+        self.segments += 1;
+        self.verbatim = (last_end, last_end);
+        self.verbatim(input, last_end, to);
+        Some(())
+    }
+
+    /// A stored entry's data at `input[from..to]`: a JPEG transcoded,
+    /// a PNG or gzip member opened, anything else kept.
+    fn stored(&mut self, input: &[u8], from: usize, to: usize) {
+        let data = &input[from..to];
+        #[cfg(feature = "jpeg")]
+        if crate::jpeg::is_jpeg(data) {
+            if let Some(lepton) = crate::jpeg::transcode(data) {
+                if lepton.len() + 16 < data.len() {
+                    self.flush_verbatim(input);
+                    self.recipe.push(JPEG);
+                    put_varint(&mut self.recipe, lepton.len() as u64);
+                    self.recipe.extend_from_slice(&lepton);
+                    self.segments += 1;
+                    self.verbatim = (to, to);
+                    return;
+                }
+            }
+        }
+        if is_png(data) && self.png(input, from, to).is_some() {
+            return;
+        }
+        if is_gzip(data) {
+            let hend = gzip_header_end(input, from).filter(|&h| h <= to);
+            if let Some(hend) = hend {
+                let saved = (self.recipe.len(), self.plain.len(), self.segments, self.verbatim);
+                self.verbatim(input, from, hend);
+                match self.deflate(input, hend) {
+                    Some(n) if hend + n + 8 <= to => {
+                        self.verbatim(input, hend + n, to);
+                        return;
+                    }
+                    _ => {
+                        self.recipe.truncate(saved.0);
+                        self.plain.truncate(saved.1);
+                        self.segments = saved.2;
+                        self.verbatim = saved.3;
+                    }
+                }
+            }
+        }
+        self.verbatim(input, from, to);
+    }
 }
 
 /// The object back from its plain text and recipe.
@@ -426,6 +486,11 @@ pub fn close(recipe: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
                 if off != image.len() {
                     return None;
                 }
+            }
+            #[cfg(feature = "jpeg")]
+            JPEG => {
+                pos += 1;
+                out.extend_from_slice(&crate::jpeg::restore(take(&mut pos)?)?);
             }
             _ => return None,
         }
@@ -664,6 +729,27 @@ obj(10, b"<< /Type /ObjStm /N 2 /First 8 /Length " + str(len(zc)).encode() + b" 
 parts.append(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n")
 sys.stdout.buffer.write(b"".join(parts))
 "#, &plain);
+        // A zip with pictures stored (as Office documents hold them): a
+        // PNG opened and a JPEG transcoded inside.
+        let jpeg = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/tiny.jpg")).unwrap();
+        let mut pictures = png.clone();
+        pictures.push(0);
+        pictures.extend_from_slice(&jpeg);
+        let picture_zip = python(&format!(r#"
+import sys, zipfile, io
+blob = sys.stdin.buffer.read()
+png, jpeg = blob[:{}], blob[{}:]
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    z.writestr("word/document.xml", b"<w:document>" + b"<w:p>hello</w:p>" * 2000 + b"</w:document>", compress_type=zipfile.ZIP_DEFLATED)
+    z.writestr("word/media/image1.png", png, compress_type=zipfile.ZIP_STORED)
+    z.writestr("word/media/image2.jpeg", jpeg, compress_type=zipfile.ZIP_STORED)
+sys.stdout.buffer.write(buf.getvalue())
+"#, png.len(), png.len() + 1), &pictures);
+        let opened_pictures = round_trip(&picture_zip, "zip with pictures");
+        assert!(opened_pictures.len() > plain.len(), "the PNG inside opened: {}", opened_pictures.len());
+        let recipe = open(&picture_zip).unwrap().recipe;
+        assert!(recipe.windows(1).any(|w| w[0] == JPEG), "the JPEG inside transcoded");
         assert!(is_pdf(&pdf));
         let opened_pdf = round_trip(&pdf, "pdf");
         assert!(opened_pdf.len() >= 600000, "the three Flate streams opened: {}", opened_pdf.len());

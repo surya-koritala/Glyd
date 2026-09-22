@@ -50,13 +50,18 @@ every earlier format.
   half its fingerprints with the hour before and gained nothing from a
   full delta). Kernels put at 800–1,600 MB/s on this Mac (300–500
   before), events at 1,300–1,900; every stored byte identical.
-- The max level on all cores at one core's ratio (`compress_max_stream`):
-  units stay at the far matcher's 128 MB instead of shrinking to give
-  every core one; a unit's far matches are found by one core and its
-  blocks parsed in 16 MB stripes by all of them, tables seeded with
-  the 2 MB before each stripe. Ten cores gave 7–9% more bytes than one
-  on 512 MB files; now the same bytes at any core count. The parallel
-  max level, record mode's plain fallback and the CLI's `--max` use it.
+- Dense max level (`--dense`, `compress_into_max_dense`,
+  `compress_max_stream`): units stay at the far matcher's 128 MB
+  instead of shrinking to give every core one; a unit's far matches
+  are found by one core and its blocks parsed in 16 MB stripes by all
+  of them, tables seeded with the 2 MB before each stripe, so the
+  bytes are one core's at any core count: 5–9% fewer than the default
+  on files of a few hundred MB, the same on files of gigabytes (the
+  8.7 GB suite corpus: 3.946 against 3.939). Reads then scale only
+  with the units (the suite's 8-thread decode 4.7 GB/s against 10.4),
+  so it is opt-in: the CLI's `--dense`, and the store, whose objects
+  are written once and read rarely. Raw results of the suite run with
+  it: `benchmarks/suite/*-dense/`.
 
 ## v0.12.0 — 2026-09-22
 

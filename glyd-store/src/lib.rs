@@ -667,8 +667,9 @@ impl Store {
         lap("fingerprints", &mut laps);
         let alone = |data: &[u8]| {
             let mut out = Vec::with_capacity(data.len() / 4 + 1024);
+            // Dense: a stored object is written once and read rarely.
             match self.level {
-                Level::Max => glyd::compress_records_into_max(data, &mut out),
+                Level::Max => glyd::compress_records_into_max_dense(data, &mut out),
                 Level::Ultra => glyd::compress_records_into_ultra(data, &mut out),
                 Level::Cold => glyd::compress_records_into_cold(data, &mut out),
             }

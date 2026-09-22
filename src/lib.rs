@@ -656,12 +656,26 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
     WORK.with(|w| *w.borrow_mut() = work);
 }
 
-/// Max level, all cores, at the sequential level's ratio: units of
-/// `PARALLEL_UNIT_LARGEST` (the far matcher's reach), each parsed in
-/// stripes on every core.
+/// Max level, all cores: units of a core's share (at least 8 MB), so
+/// that reads scale across cores as writes do.
 pub fn compress_parallel_into_max(input: &[u8], output: &mut Vec<u8>) {
     #[cfg(feature = "deflate")]
     if deflate::wrap(input, output, compress_parallel_into_max, compress_parallel_into_max) {
+        return;
+    }
+    compress_parallel_with(input, output, compress_into_max, PARALLEL_UNIT_MAX)
+}
+
+/// Max level, all cores, dense: units of `PARALLEL_UNIT_LARGEST` (the
+/// far matcher's reach), each parsed in stripes on every core, so the
+/// bytes are one core's whatever the core count — 5–9% fewer than
+/// `compress_parallel_into_max` on files of a few hundred MB, the
+/// same on files of gigabytes — at the price of reads that scale only
+/// with the units (a 512 MB file decodes on 4 cores, not 8). For
+/// objects written once and read rarely: the store's.
+pub fn compress_into_max_dense(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if deflate::wrap(input, output, compress_into_max_dense, compress_into_max_dense) {
         return;
     }
     if input.len() <= PARALLEL_UNIT_MAX || threads() == 1 {
@@ -1798,6 +1812,19 @@ pub fn compress_records_into_max(input: &[u8], output: &mut Vec<u8>) {
     }
     if !records_pay(records_trial(input), compress_into_max) {
         return compress_parallel_into_max(input, output);
+    }
+    records_units(input, output, compress_into_max)
+}
+
+/// Record mode at the max level, dense (`compress_into_max_dense`)
+/// where the transform does not pay.
+pub fn compress_records_into_max_dense(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if deflate::wrap(input, output, compress_records_into_max_dense, compress_records_into_max_dense) {
+        return;
+    }
+    if !records_pay(records_trial(input), compress_into_max) {
+        return compress_into_max_dense(input, output);
     }
     records_units(input, output, compress_into_max)
 }
