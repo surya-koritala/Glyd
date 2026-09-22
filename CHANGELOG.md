@@ -6,6 +6,18 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.11.2 — 2026-09-21
+
+- A lost metadata directory is rebuilt from the objects: every
+  object's index lines now ride beside it in the backend as
+  `<id>.index` (a pack's carry its members'), and `--rebuild` (or
+  `Store::rebuild_with`) remakes the index from those sidecars and the
+  fingerprint table by reading every object back. Checked live: two
+  kernel tarballs put to S3, the metadata directory deleted, rebuilt
+  in 15 s, verified, read back byte-exact, and a third version then
+  stored as a 1.8 MB delta against the second.
+- `Backend::list` on both backends.
+
 ## v0.11.1 — 2026-09-21
 
 - Multipart upload: objects over 64 MB go to S3 as 64 MB parts on up

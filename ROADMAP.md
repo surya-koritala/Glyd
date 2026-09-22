@@ -4,7 +4,7 @@ Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
 
-## Where it stands (v0.11.1, 2026-09-21)
+## Where it stands (v0.11.2, 2026-09-21)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 ([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
@@ -37,10 +37,10 @@ storage is between objects.
    tried on a sample, and S3 spoken directly (SigV4 over HTTPS, the
    standard credential chain, any S3-compatible endpoint; v0.11.0).
    Multipart upload (v0.11.1): 64 MB parts on 8 connections, aborted
-   whole on any failure. Left: an index rebuilt from the objects after
-   a lost metadata directory, and the gate: a terabyte bucket put and
-   read back at the measured ratios, with the put and get rates of an
-   instance next to the bucket.
+   whole on any failure. Rebuild (v0.11.2): index lines beside every
+   object, the directory remade from the bucket alone. Left: the gate,
+   a terabyte bucket put and read back at the measured ratios, with
+   the put and get rates of an instance next to the bucket.
 
 1. **Write speed of `--max`** (0.71–0.77× zstd -3 on server cores since
    the finder's tables took zstd -3's size; the long-distance pass is

@@ -10,6 +10,7 @@
 //!   glyd-store DIR --verify             every object read back and checked
 //!   glyd-store DIR --stats              the objects and the bytes
 //!   glyd-store DIR --s3 s3://bucket/prefix ...   objects in S3 (or an S3-compatible service); metadata in DIR
+//!   glyd-store DIR [--s3 ...] --rebuild     DIR made anew from the objects (a lost metadata directory)
 //!   glyd-store DIR --ultra | --cold ... the level objects stored alone take
 //!   glyd-store --audit DIR|s3://bucket/prefix [--sample N]
 //!                                       what the store would save there, from a sample, in dollars a year
@@ -32,6 +33,7 @@ fn main() -> io::Result<()> {
     let mut store_find: Option<String> = None;
     let mut store_delete: Option<u32> = None;
     let mut store_compact = false;
+    let mut store_rebuild = false;
     let mut store_verify = false;
     let mut store_rebase: Option<u32> = None;
     let mut store_s3: Option<String> = None;
@@ -72,6 +74,7 @@ fn main() -> io::Result<()> {
                 i += 1;
             }
             "--compact" => store_compact = true,
+            "--rebuild" => store_rebuild = true,
             "--verify" => store_verify = true,
             "--rebase" => {
                 store_rebase = Some(need(i, "an object id").parse().unwrap_or_else(|_| {
@@ -124,9 +127,21 @@ fn main() -> io::Result<()> {
     };
     {
         let dir = store_dir;
-        let mut store = match store_s3 {
-            Some(url) => glyd_store::Store::open_with(&dir, Box::new(glyd_store::S3Backend::new(&url)?))?,
-            None => glyd_store::Store::open(&dir)?,
+        let mut store = match (store_s3, store_rebuild) {
+            (Some(url), false) => glyd_store::Store::open_with(&dir, Box::new(glyd_store::S3Backend::new(&url)?))?,
+            (None, false) => glyd_store::Store::open(&dir)?,
+            (s3, true) => {
+                let t = Instant::now();
+                let (store, failures) = match s3 {
+                    Some(url) => glyd_store::Store::rebuild_with(&dir, Box::new(glyd_store::S3Backend::new(&url)?))?,
+                    None => glyd_store::Store::rebuild(&dir)?,
+                };
+                for (id, e) in &failures {
+                    eprintln!("object {id}: {e}");
+                }
+                eprintln!("rebuilt: {} objects in the index, {} unreadable, {:.0} s", store.entries().len(), failures.len(), t.elapsed().as_secs_f64());
+                store
+            }
         };
         if cold {
             store.set_level(glyd_store::Level::Cold);

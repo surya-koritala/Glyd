@@ -126,7 +126,7 @@ million a year at list price; the percentages above are what to multiply.
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 cargo install glyd glyd-store                # from crates.io
-pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.11.1-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.11.2-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -257,7 +257,9 @@ stay while a live chain runs through them), `compact` (frees what no
 live object needs), `verify` (every object read back and checked).
 The objects' bytes go through a `Backend`: a directory, or an S3
 bucket over HTTPS (`--s3 s3://bucket/prefix`, or any S3-compatible
-service through `AWS_ENDPOINT_URL`; metadata stays local). When two stored objects score
+service through `AWS_ENDPOINT_URL`). Metadata stays local, but every
+object's index lines ride beside it in the backend, so `--rebuild`
+remakes a lost metadata directory from the objects alone. When two stored objects score
 within 2× of each other as bases, both are tried on the first 32 MB. Measured on a realistic bucket
 (`scripts/download_bucket.sh`, 39 objects, 39.2 GB, each arriving in
 order), every object read back and compared:
@@ -688,7 +690,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.11.1** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.11.2** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every

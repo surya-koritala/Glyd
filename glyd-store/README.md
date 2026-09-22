@@ -13,6 +13,7 @@ store is under the Business Source License 1.1 (LICENSE).
     glyd-store bucket/ --stats | --verify | --compact | --delete ID | --rebase ID | --find NAME
     glyd-store meta/ --s3 s3://bucket/prefix --put wed.tar     # objects in S3 (or any S3-compatible service)
     glyd-store --audit s3://bucket/prefix                      # what it would save, in dollars a year
+    glyd-store meta/ --s3 s3://bucket/prefix --rebuild         # meta/ made anew from the objects
 
 S3 is spoken directly over HTTPS (Signature V4; `glyd-store/src/s3.rs`);
 objects over 64 MB go up as parts on eight connections.

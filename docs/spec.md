@@ -70,4 +70,9 @@ replaces an earlier one), `table` (an open-addressing hash table of
 fingerprints: `u64` capacity, `u64` count, then 12-byte slots of
 `u64` fingerprint and `u32` object id, `0xFFFFFFFF` empty) and
 `objects/<id>` (a block stream, a `GLYDBASE` envelope whose base is the
-object named in the index, or a `GLYDPACK`).
+object named in the index, or a `GLYDPACK`). Beside each object sits
+`objects/<id>.index`: its index lines (a pack's sidecar carries its
+members' lines and its own; a deletion adds a `D` line), so the
+directory is rebuilt from the objects alone — the index by
+concatenating the sidecars in id order, the table by reading every
+object back.

@@ -24,7 +24,11 @@
 //! one; `D` lines delete), and the objects' streams under `objects/`
 //! through a `Backend`: the directory itself, or an S3 bucket
 //! (`S3Backend`, over HTTPS; also any S3-compatible service through
-//! `AWS_ENDPOINT_URL`); metadata stays local.
+//! `AWS_ENDPOINT_URL`). Metadata stays local, but every object's index
+//! lines ride beside it as `<id>.index` in the backend (a pack's carry
+//! its members'), so a lost metadata directory is rebuilt from the
+//! objects (`Store::rebuild_with`): the index from the sidecars, the
+//! table by reading every object back.
 //!
 //! This crate is the store; the codec it builds on is the `glyd` crate
 //! (BSD-3-Clause OR GPL-2.0). The store is under the Business Source License 1.1.
@@ -34,6 +38,7 @@ pub mod c_api;
 use glyd::mmap::Mapping;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Result, Write};
+use std::sync::Mutex;
 use std::path::{Path, PathBuf};
 
 /// Chains are at most this deep.
@@ -225,6 +230,8 @@ pub trait Backend: Send + Sync {
     fn exists(&self, key: &str) -> bool;
     /// Bytes of the object at `key`, when it exists.
     fn len(&self, key: &str) -> Option<u64>;
+    /// Every (key, bytes) held, in key order.
+    fn list(&self) -> Result<Vec<(String, u64)>>;
 }
 
 /// Objects as files under a directory.
@@ -254,6 +261,19 @@ impl Backend for LocalBackend {
     }
     fn len(&self, key: &str) -> Option<u64> {
         std::fs::metadata(self.dir.join(key)).ok().map(|m| m.len())
+    }
+    fn list(&self) -> Result<Vec<(String, u64)>> {
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            if let (Some(name), Ok(m)) = (entry.file_name().to_str(), entry.metadata()) {
+                if m.is_file() {
+                    out.push((name.to_string(), m.len()));
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
     }
 }
 
@@ -367,8 +387,82 @@ impl Store {
         Ok(store)
     }
 
+    /// The store whose metadata directory is gone: `dir` is made anew
+    /// from the objects in `objects`, the index from their sidecars and
+    /// the table by reading every object back. Objects that fail to
+    /// read are listed, not fatal.
+    pub fn rebuild_with(dir: impl AsRef<Path>, objects: Box<dyn Backend>) -> Result<(Store, Vec<(u32, String)>)> {
+        let dir = dir.as_ref().to_path_buf();
+        std::fs::create_dir_all(&dir)?;
+        for f in ["index", "table"] {
+            let _ = std::fs::remove_file(dir.join(f));
+        }
+        let keys: Vec<String> = objects.list()?.into_iter().map(|(k, _)| k).filter(|k| k.ends_with(".index")).collect();
+        let sidecars: Mutex<Vec<(u32, String)>> = Mutex::new(Vec::with_capacity(keys.len()));
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failed: Mutex<Option<Error>> = Mutex::new(None);
+        std::thread::scope(|scope| {
+            for _ in 0..16.min(keys.len().max(1)) {
+                scope.spawn(|| loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= keys.len() {
+                        break;
+                    }
+                    let id: u32 = match keys[i].trim_end_matches(".index").parse() {
+                        Ok(id) => id,
+                        Err(_) => continue,
+                    };
+                    match objects.read(&keys[i]).map(|b| String::from_utf8_lossy(&b).to_string()) {
+                        Ok(text) => sidecars.lock().unwrap().push((id, text)),
+                        Err(e) => *failed.lock().unwrap() = Some(e),
+                    }
+                });
+            }
+        });
+        if let Some(e) = failed.into_inner().unwrap() {
+            return Err(e);
+        }
+        let mut sidecars = sidecars.into_inner().unwrap();
+        sidecars.sort();
+        let text: String = sidecars.iter().map(|(_, t)| t.as_str()).collect();
+        std::fs::write(dir.join("index"), text)?;
+        let mut store = Self::open_with(&dir, objects)?;
+        let mut failures = Vec::new();
+        for id in 0..store.entries.len() as u32 {
+            let e = &store.entries[id as usize];
+            if e.deleted || e.pack.is_some() || e.name.starts_with("pack of ") {
+                continue;
+            }
+            match store.get(id) {
+                Ok(data) => {
+                    for h in fingerprints(&data) {
+                        store.table.insert(h, id)?;
+                    }
+                }
+                Err(err) => failures.push((id, err.to_string())),
+            }
+        }
+        store.table.sync();
+        Ok((store, failures))
+    }
+
+    /// `rebuild_with` for a store whose objects are under `dir/objects`.
+    pub fn rebuild(dir: impl AsRef<Path>) -> Result<(Store, Vec<(u32, String)>)> {
+        let objects = LocalBackend::new(dir.as_ref().join("objects"))?;
+        Self::rebuild_with(dir, Box::new(objects))
+    }
+
     fn key(id: u32) -> String {
         id.to_string()
+    }
+
+    fn line(entry: &Entry) -> String {
+        format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", entry.id, entry.base.map_or("-".to_string(), |b| b.to_string()), entry.depth, entry.raw_len, entry.stored_len, entry.pack.map_or("-".to_string(), |(p, i)| format!("{p}:{i}")), entry.name)
+    }
+
+    /// The index lines of object `id`, kept beside it in the backend.
+    fn write_sidecar(&self, id: u32, lines: &str) -> Result<()> {
+        self.objects.write(&format!("{id}.index"), lines.as_bytes())
     }
 
     /// The objects, in id order.
@@ -408,7 +502,12 @@ impl Store {
             self.names.remove(&name);
         }
         let mut index = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("index"))?;
-        writeln!(index, "D\t{id}")
+        writeln!(index, "D\t{id}")?;
+        // A pack member's line is in its pack's sidecar; its own carries
+        // the deletion alone.
+        let entry = &self.entries[id as usize];
+        let lines = if entry.pack.is_some() { format!("D\t{id}\n") } else { format!("{}D\t{id}\n", Self::line(entry)) };
+        self.write_sidecar(id, &lines)
     }
 
     /// Remove from disk what no live object needs: deleted objects no
@@ -469,7 +568,7 @@ impl Store {
 
     fn append_index(&self, entry: &Entry) -> Result<()> {
         let mut index = std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("index"))?;
-        writeln!(index, "{}\t{}\t{}\t{}\t{}\t{}\t{}", entry.id, entry.base.map_or("-".to_string(), |b| b.to_string()), entry.depth, entry.raw_len, entry.stored_len, entry.pack.map_or("-".to_string(), |(p, i)| format!("{p}:{i}")), entry.name)
+        index.write_all(Self::line(entry).as_bytes())
     }
 
     /// The stored objects the data shares the most fingerprints with,
@@ -588,6 +687,7 @@ impl Store {
         self.names.insert(name.clone(), id);
         let entry = Entry { id, name, base, depth, raw_len: data.len() as u64, stored_len: stored.len() as u64, pack: None, deleted: false };
         self.append_index(&entry)?;
+        self.write_sidecar(id, &Self::line(&entry))?;
         for h in prints {
             self.table.insert(h, id)?;
         }
@@ -624,6 +724,7 @@ impl Store {
             self.append_index(e)?;
         }
         self.append_index(&pack)?;
+        self.write_sidecar(pack_id, &members.iter().chain(std::iter::once(&pack)).map(Self::line).collect::<String>())?;
         self.entries.push(pack);
         self.pending.clear();
         self.pending_bytes = 0;
@@ -716,7 +817,8 @@ impl Store {
         e.depth = 0;
         e.stored_len = stored.len() as u64;
         let e = e.clone();
-        self.append_index(&e)
+        self.append_index(&e)?;
+        self.write_sidecar(id, &Self::line(&e))
     }
 }
 
@@ -869,6 +971,56 @@ mod tests {
         let store = Store::open(&dir).unwrap();
         assert!(store.get(2).is_err() && store.get(first_small).is_err());
         assert!(store.get(first_small + 1).unwrap() == smalls[1]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rebuild_from_objects() {
+        let dir = std::env::temp_dir().join(format!("glyd-store-rebuild-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = wordy(3 << 20, 1);
+        let b = edited(&a, 200, 2);
+        let c = edited(&b, 200, 3);
+        let smalls: Vec<Vec<u8>> = (0..5).map(|i| wordy(50_000, 10 + i)).collect();
+        let (before, originals) = {
+            let mut store = Store::open(&dir).unwrap();
+            let ia = store.put("a", &a).unwrap();
+            let mut ids = vec![ia];
+            for (i, s) in smalls.iter().enumerate() {
+                ids.push(store.put(&format!("small {i}"), s).unwrap());
+            }
+            let ib = store.put("b", &b).unwrap();
+            let ic = store.put("c", &c).unwrap();
+            ids.extend([ib, ic]);
+            store.flush().unwrap();
+            store.delete(ids[2]).unwrap();
+            store.rebase(ic).unwrap();
+            let mut originals: Vec<(u32, Vec<u8>)> = vec![(ia, a.clone()), (ib, b.clone()), (ic, c.clone())];
+            for (i, s) in smalls.iter().enumerate() {
+                originals.push((ids[1 + i], s.clone()));
+            }
+            (store.entries().to_vec(), originals)
+        };
+        std::fs::remove_file(dir.join("index")).unwrap();
+        std::fs::remove_file(dir.join("table")).unwrap();
+        let (mut store, failures) = Store::rebuild(&dir).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        let after = store.entries().to_vec();
+        assert_eq!(after.len(), before.len());
+        for (x, y) in before.iter().zip(&after) {
+            assert_eq!((x.id, x.base, x.depth, x.raw_len, x.stored_len, x.pack, &x.name, x.deleted), (y.id, y.base, y.depth, y.raw_len, y.stored_len, y.pack, &y.name, y.deleted));
+        }
+        for (id, data) in &originals {
+            if after[*id as usize].deleted {
+                assert!(store.get(*id).is_err());
+            } else {
+                assert_eq!(&store.get(*id).unwrap(), data, "object {id}");
+            }
+        }
+        // The rebuilt table finds bases again.
+        let d = edited(&c, 100, 4);
+        let id = store.put("d", &d).unwrap();
+        assert!(store.entries()[id as usize].base.is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

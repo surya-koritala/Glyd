@@ -327,6 +327,9 @@ impl Backend for S3Backend {
         let r = self.request("HEAD", key, &[], &[]).ok()?;
         if r.status == 200 { r.header("content-length")?.parse().ok() } else { None }
     }
+    fn list(&self) -> Result<Vec<(String, u64)>> {
+        S3Backend::list(self)
+    }
 }
 
 // Credentials.
