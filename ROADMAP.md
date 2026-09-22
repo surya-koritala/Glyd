@@ -56,6 +56,22 @@ storage is between objects.
    against 1.03× on Graviton3). Gate: 1.0× in the published run.
 4. **Streaming for v9** in `GlydReader`/`GlydWriter` (v6 levels only
    today); the CLI already streams batches of units.
+5. **Already-compressed objects opened** (research section J: gzip
+   shipped in v0.12.0, 23–69% under the gzip; JPEG 20% through a JPEG
+   XL transcode; Parquet 26–40% as the same table). Next: JPEG through
+   libjxl, then Parquet columns behind a "same table" option. Gate:
+   the measured number on real objects, every one restored byte for
+   byte.
+6. **Video: measure the headroom, decide nothing before.** The
+   residual an H.264 file keeps is what its block predictor could not
+   guess; how much a far stronger predictor would guess of the same
+   stream is unknown, not a limit (the 1–3% in the literature is from
+   weak attempts). The experiment, two weeks: pull the symbols the
+   codec stores (modes, motion vectors, coefficients) from real files,
+   predict them with the cold level's mixing conditioned on the
+   decoded frames before, count bits. Under 5%: closed for good. Over
+   15%: the largest byte class on earth, and the roadmap changes.
+   After the store's gate and a first customer, not before.
 
 Done since v0.5.0: record-mode reads (column-at-a-time rebuild, 1.4–1.7×
 faster; `--max -r` now within 1% of zstd -3's S3 row at ten CPU-billed
