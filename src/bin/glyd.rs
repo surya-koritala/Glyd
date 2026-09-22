@@ -212,6 +212,7 @@ fn main() -> io::Result<()> {
     let input_data: &[u8] = match input_path {
         Some(ref p) if p != "-" => {
             mapped = glyd::mmap::Mapping::read_only(Path::new(p))?;
+            mapped.will_need();
             mapped.bytes()
         }
         _ => {
@@ -319,12 +320,18 @@ fn main() -> io::Result<()> {
                 }
                 None => input_data,
             };
-            glyd::compress_stream(data, unit_level, smallest, |unit| sink.write_all(unit))?;
+            if max && !ultra {
+                glyd::compress_max_stream(data, |part| sink.write_all(part))?;
+            } else {
+                glyd::compress_stream(data, unit_level, smallest, |unit| sink.write_all(unit))?;
+            }
             sink.flush()?;
             return Ok(());
         }
         if records && cold {
             glyd::compress_records_into_cold(&input_data, &mut out);
+        } else if records && max && !ultra {
+            glyd::compress_records_into_max(&input_data, &mut out);
         } else if records {
             // Record mode parallelises over its own units; the level
             // inside a unit is the sequential one.

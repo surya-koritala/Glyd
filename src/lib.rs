@@ -654,13 +654,146 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
     WORK.with(|w| *w.borrow_mut() = work);
 }
 
-/// Max level, all cores.
+/// Max level, all cores, at the sequential level's ratio: units of
+/// `PARALLEL_UNIT_LARGEST` (the far matcher's reach), each parsed in
+/// stripes on every core.
 pub fn compress_parallel_into_max(input: &[u8], output: &mut Vec<u8>) {
     #[cfg(feature = "deflate")]
     if gz::wrap(input, output, compress_parallel_into_max) {
         return;
     }
-    compress_parallel_with(input, output, compress_into_max, PARALLEL_UNIT_MAX)
+    if input.len() <= PARALLEL_UNIT_MAX || threads() == 1 {
+        return compress_into_max(input, output);
+    }
+    let _ = compress_max_stream(input, |part| {
+        output.extend_from_slice(part);
+        Ok(())
+    });
+}
+
+/// How far back a stripe's tables are seeded: 2 MB reproduces the
+/// sequential parse to 0.03% (8 MB, the local finder's whole reach,
+/// to 0.0%, at a fifth less speed).
+const STRIPE_SEED: usize = 2 << 20;
+/// Bytes per stripe: enough that seeding is a small part of the work.
+const STRIPE: usize = 16 << 20;
+
+/// The max level over all cores with the ratio of one core, its output
+/// handed to `sink` in order as it is made. Units of
+/// `PARALLEL_UNIT_LARGEST` are streams of their own (a chain reset at
+/// the first block), as `compress_parallel_with` makes them, but the
+/// units are never shrunk to give every core one: a unit's far matches
+/// are found by one core (one unit ahead of the parse) and its blocks
+/// are then parsed in `STRIPE`-sized stripes by all of them, each
+/// stripe's tables seeded with the `STRIPE_SEED` bytes before it. The
+/// output is within a percent of the sequential level's, whatever the
+/// core count, where units of a tenth the size lost 5-14%.
+pub fn compress_max_stream(input: &[u8], mut sink: impl FnMut(&[u8]) -> std::io::Result<()> + Send) -> std::io::Result<()> {
+    thread_local! {
+        static DFAST: RefCell<Box<v7_encode::DfastTables>> = RefCell::new(v7_encode::DfastTables::new());
+        static WORK: RefCell<(Vec<v7_encode::Sequence>, Vec<u8>, v7_encode::EncScratch, Vec<u8>)> = RefCell::new(Default::default());
+    }
+    let units: Vec<&[u8]> = if input.is_empty() { vec![input] } else { input.chunks(PARALLEL_UNIT_LARGEST).collect() };
+    let fars: Vec<std::sync::OnceLock<ldm::Matches>> = units.iter().map(|_| std::sync::OnceLock::new()).collect();
+    // Tasks in the order threads take them: every unit's far pass
+    // first (one core each, the rest start on the first unit's stripes
+    // as soon as its matches are in), then the stripes in order.
+    #[derive(Clone, Copy)]
+    enum Task {
+        Far(usize),
+        Stripe { unit: usize, from: usize, to: usize, index: usize },
+    }
+    let mut tasks: Vec<Task> = (0..units.len()).map(Task::Far).collect();
+    let mut stripe_count = 0usize;
+    for (u, unit) in units.iter().enumerate() {
+        let mut from = 0usize;
+        loop {
+            let to = (from + STRIPE).min(unit.len());
+            tasks.push(Task::Stripe { unit: u, from, to, index: stripe_count });
+            stripe_count += 1;
+            if to >= unit.len() {
+                break;
+            }
+            from = to;
+        }
+    }
+    // Stripe i's output goes into slot i; the writer takes slots in
+    // order as they fill.
+    let slots: Vec<std::sync::Mutex<Option<Vec<u8>>>> = (0..stripe_count).map(|_| std::sync::Mutex::new(None)).collect();
+    let ready = std::sync::Condvar::new();
+    let done = std::sync::Mutex::new(0usize);
+    let error: std::sync::Mutex<Option<std::io::Error>> = std::sync::Mutex::new(None);
+    let far_of = |u: usize| -> &ldm::Matches {
+        // A stripe whose unit's matches are not in yet finds them
+        // itself (never on the thread order above; harmless if so).
+        fars[u].get_or_init(|| if units[u].len() > LOCAL_WINDOW as usize { ldm::Matches::find(units[u], true) } else { ldm::Matches { list: Vec::new() } })
+    };
+    std::thread::scope(|scope| {
+        let writer = scope.spawn(|| {
+            for slot in slots.iter() {
+                let out = loop {
+                    if let Some(out) = slot.lock().unwrap().take() {
+                        break out;
+                    }
+                    let guard = done.lock().unwrap();
+                    let _guard = ready.wait(guard).unwrap();
+                };
+                if let Err(e) = sink(&out) {
+                    *error.lock().unwrap() = Some(e);
+                    return;
+                }
+            }
+        });
+        let _ = par_units::<()>(tasks.len(), |i| {
+            match tasks[i] {
+                Task::Far(u) => {
+                    far_of(u);
+                }
+                Task::Stripe { unit: u, from, to, index } => {
+                    let unit = units[u];
+                    let far = far_of(u);
+                    let mut out = Vec::with_capacity((to - from) / 2 + 1024);
+                    WORK.with_borrow_mut(|(seqs, literals, scratch, payload)| {
+                        DFAST.with_borrow_mut(|t| {
+                            t.clear_for(unit.len());
+                            t.seed_range(unit, from.saturating_sub(STRIPE_SEED), from);
+                            let mut prev = v7_encode::Tables::none();
+                            let mut offset = from;
+                            while offset < to {
+                                let chunk_len = (to - offset).min(MAX_BLOCK_SIZE);
+                                let chunk = &unit[offset..offset + chunk_len];
+                                seqs.clear();
+                                literals.clear();
+                                let mut reps = [1u32, 4, 8];
+                                v7_encode::find_sequences_dfast_far(unit, offset, chunk_len, t, far, &mut reps, seqs, literals, scratch);
+                                payload.clear();
+                                let compact = compact_block(chunk_len);
+                                v7_encode::encode_block_coded(literals, 0, &mut prev, scratch, compact, payload);
+                                let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
+                                if payload.len() + coded_header_len(compact, chunk_len, payload.len(), seqs.len(), literals.len()) >= chunk_len {
+                                    prev = v7_encode::Tables::none();
+                                    write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], &mut out);
+                                } else {
+                                    write_coded_block(chunk, seqs.len(), literals.len(), chain_flag, payload, &mut out);
+                                }
+                                offset += chunk_len;
+                            }
+                        });
+                    });
+                    *slots[index].lock().unwrap() = Some(out);
+                    let mut d = done.lock().unwrap();
+                    *d += 1;
+                    ready.notify_all();
+                }
+            }
+            Ok(())
+        });
+        let _ = writer.join();
+    });
+    match error.into_inner().unwrap() {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// Ultra level, all cores: 16 MB units parsed on their own (0.7% less
@@ -1653,7 +1786,14 @@ fn records_units(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u
 
 /// Max level in record mode (see `compress_records_with`).
 pub fn compress_records_into_max(input: &[u8], output: &mut Vec<u8>) {
-    compress_records_with(input, output, compress_into_max)
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_records_into_max) {
+        return;
+    }
+    if !records_pay(records_trial(input), compress_into_max) {
+        return compress_parallel_into_max(input, output);
+    }
+    records_units(input, output, compress_into_max)
 }
 
 /// Ultra level in record mode.

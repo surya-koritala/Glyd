@@ -17,7 +17,10 @@ extern "C" {
     fn mmap(addr: *mut std::ffi::c_void, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut std::ffi::c_void;
     fn munmap(addr: *mut std::ffi::c_void, len: usize) -> i32;
     fn msync(addr: *mut std::ffi::c_void, len: usize, flags: i32) -> i32;
+    fn madvise(addr: *mut std::ffi::c_void, len: usize, advice: i32) -> i32;
 }
+/// MADV_WILLNEED on Linux and macOS alike.
+const MADV_WILLNEED: i32 = 3;
 const PROT_READ: i32 = 1;
 const PROT_WRITE: i32 = 2;
 const MAP_SHARED: i32 = 1;
@@ -38,6 +41,14 @@ impl Mapping {
             return Ok(Mapping { ptr: std::ptr::NonNull::<u8>::dangling().as_ptr(), len: 0 });
         }
         Self::map(&file, len, PROT_READ)
+    }
+
+    /// Ask for the whole mapping to be read ahead: a pass that touches
+    /// it on a few threads is otherwise paced by page faults.
+    pub fn will_need(&self) {
+        if self.len > 0 {
+            unsafe { madvise(self.ptr as *mut std::ffi::c_void, self.len, MADV_WILLNEED) };
+        }
     }
 
     fn map(file: &File, len: usize, prot: i32) -> Result<Mapping> {
