@@ -69,9 +69,10 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
 4. **Streaming for v9** in `GlydReader`/`GlydWriter` (v6 levels only
    today); the CLI already streams batches of units.
 5. **Already-compressed objects opened** (research section J). Done:
-   gzip (v0.12.0), zip, Office documents, jars, PDF, zlib and PNG
-   (next release): 5–82% under the object at the level that opens it,
-   16–74% where zstd -19 gets 3–53%; JPEG transcoded by Lepton, 24%.
+   gzip (v0.12.0), zip, tar, Office documents, jars, PDF, zlib and PNG,
+   nested four deep (next release): 5–82% under the object at the
+   level that opens it, 16–74% where zstd -19 gets 3–53%; JPEG
+   transcoded by Lepton, 24%, inside the others too.
    Next: Parquet columns behind a "same table" option (26–40%), then
    the recipe itself (preflate's corrections are a fifth of a pdfTeX
    stream; a better predictor of zlib's choices would halve what

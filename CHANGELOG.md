@@ -40,11 +40,13 @@ every earlier format.
   A JPEG Lepton cannot take, or that does not shrink, stays as it is.
   Inside a container too: a JPEG stored in a zip, or deflated (as an
   Office document holds its pictures), is transcoded under its entry;
-  a PNG stored or deflated in a zip is opened (its own recipe nested
-  in the entry's), and so is a gzip member stored in one. A 12-slide
-  deck of photos, 6.51 MB: 5.29 MB (zstd -19: 6.50); a document of
-  six PNG screenshots, 2.51 MB: 2.32 MB at `--max`, 1.65 MB cold
-  (zstd -19: 2.50).
+  any container stored or deflated inside another is opened with a
+  recipe of its own nested in the segment, four deep, and tar joins
+  the containers. A 12-slide deck of photos, 6.51 MB: 5.29 MB (zstd
+  -19: 6.50); a document of six PNG screenshots, 2.51 MB: 2.32 MB at
+  `--max`, 1.65 MB cold (zstd -19: 2.50); a tar of six photos, 36.0
+  MB: 27.3 MB, and 27.3 MB through a gzip of it; a tar.gz of a gzipped
+  log, a PDF, a PNG and a .docx, 22.9 MB: 10.2 MB (zstd -19: 22.9).
 
 ### Speed, same bytes
 

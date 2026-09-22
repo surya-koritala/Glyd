@@ -72,10 +72,18 @@ length and preflate's corrections, varint length of the plain text it
 takes from the plain text in order); 2 a PNG image stream (2 zlib
 header bytes, corrections as for 1, plain length, 4 Adler-32 bytes,
 then a varint chunk count and per chunk a varint length and 4 CRC
-bytes, the recreated zlib stream being cut into IDAT chunks so).
-Recognised containers: gzip (members back to back), zip (local
-entries, method 8 opened, everything else kept), zlib, PNG, and PDF
-(every `stream` whose data is a zlib stream ending before an
+bytes, the recreated zlib stream being cut into IDAT chunks so); 3 a
+JPEG stored inside (varint length, its Lepton stream); 4 a JPEG under
+a deflate stream (corrections as for 1, then the varint length of its
+Lepton stream, which stands in the plain text); 5 a container under a
+deflate stream (corrections, then a varint-length recipe of its own
+and the varint length of its plain text, which stands in the plain
+text); 6 a container stored inside (a recipe of its own and its plain
+length, likewise). Containers nest four deep. Recognised containers:
+gzip (members back to back), zip (local entries, method 8 opened,
+stored entries opened in their own way, everything else kept), tar
+(ustar entries, regular files opened in their own way), zlib, PNG, and
+PDF (every `stream` whose data is a zlib stream ending before an
 `endstream`, found by scanning).
 
 ## 2c. JPEG transcoded (`GLYDJPEG`)
