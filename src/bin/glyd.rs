@@ -139,7 +139,12 @@ fn main() -> io::Result<()> {
             }
             "-d" | "--decompress" => mode_compress = Some(false),
             "-m" | "--multi-core" => multi_core = true,
-            "-s" | "--single-core" => multi_core = false,
+            "-s" | "--single-core" => {
+                // One thread everywhere: record units, container entries
+                // and the decoders' units run on the calling thread too.
+                multi_core = false;
+                glyd::set_threads(1);
+            }
             "-b" | "--bench" => benchmark_mode = true,
             "-o" | "--output" => {
                 if i + 1 < args.len() {
