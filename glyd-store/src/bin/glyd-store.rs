@@ -62,6 +62,10 @@ fn main() -> io::Result<()> {
                 i += 1;
             }
             "--stats" => store_stats = true,
+            "--version" | "-V" => {
+                println!("glyd-store {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
             "--find" => {
                 store_find = Some(need(i, "a name"));
                 i += 1;
