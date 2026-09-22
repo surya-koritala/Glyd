@@ -79,8 +79,8 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
    codec stores (modes, motion vectors, coefficients) from real files,
    predict them with the cold level's mixing conditioned on the
    decoded frames before, count bits. Under 5%: closed for good. Over
-   15%: the largest byte class on earth, and the roadmap changes.
-   After the store's gate and a first customer, not before.
+   15%: the largest byte class there is, and it moves to the top of
+   this list.
 
 Done since v0.5.0: record-mode reads (column-at-a-time rebuild, 1.4–1.7×
 faster; `--max -r` now within 1% of zstd -3's S3 row at ten CPU-billed

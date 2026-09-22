@@ -1,0 +1,5 @@
+date: 2026-09-22T14:53:33Z
+machine: Neoverse-N1 (16 vCPU, 61 GB)
+glyd-store: glyd-store 0.12.0
+corpus: 1192 objects, 1183711453130 bytes
+zstd-3 alone: 153453554045 bytes, 827.975 MB/s

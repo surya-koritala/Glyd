@@ -1,97 +1,97 @@
-machine: "cpu":"unknown","cores":8,"arch":"aarch64","os":"linux","date":"2026-09-21T04:08:59Z"
+machine: "cpu":"unknown","cores":8,"arch":"aarch64","os":"linux","date":"2026-09-22T16:14:35Z"
 clarknet-access-aug28.log: 170957969 bytes
-  glyd-default  ratio   5.314  comp    416.3 MB/s  decomp   3156.2 MB/s  peak rss    142 MB
-  glyd-max      ratio  10.398  comp    222.8 MB/s  decomp   1577.9 MB/s  peak rss    138 MB
-  zstd-3        ratio   9.426  comp    464.3 MB/s  decomp   1678.8 MB/s  peak rss    137 MB
-  lz4           ratio   4.827  comp    552.8 MB/s  decomp   1467.6 MB/s  peak rss    143 MB
+  glyd-default  ratio   5.314  comp    387.5 MB/s  decomp   3108.2 MB/s  peak rss    142 MB
+  glyd-max      ratio  10.398  comp    209.8 MB/s  decomp   1413.5 MB/s  peak rss    138 MB
+  zstd-3        ratio   9.426  comp    449.6 MB/s  decomp   1593.7 MB/s  peak rss    137 MB
+  lz4           ratio   4.827  comp    555.0 MB/s  decomp   1466.6 MB/s  peak rss    144 MB
 clarknet-access-sep4.log: 172456884 bytes
-  glyd-default  ratio   5.328  comp    418.6 MB/s  decomp   3159.8 MB/s  peak rss    142 MB
-  glyd-max      ratio  10.369  comp    224.4 MB/s  decomp   1548.8 MB/s  peak rss    138 MB
-  zstd-3        ratio   9.431  comp    465.4 MB/s  decomp   1687.1 MB/s  peak rss    137 MB
-  lz4           ratio   4.847  comp    555.6 MB/s  decomp   1467.0 MB/s  peak rss    143 MB
+  glyd-default  ratio   5.328  comp    388.8 MB/s  decomp   3110.7 MB/s  peak rss    142 MB
+  glyd-max      ratio  10.369  comp    211.3 MB/s  decomp   1406.8 MB/s  peak rss    138 MB
+  zstd-3        ratio   9.431  comp    441.5 MB/s  decomp   1593.2 MB/s  peak rss    137 MB
+  lz4           ratio   4.847  comp    556.3 MB/s  decomp   1466.1 MB/s  peak rss    143 MB
 enwiki-page_props.sql: 2174406671 bytes
-  glyd-default  ratio   3.319  comp    262.4 MB/s  decomp   2971.9 MB/s  peak rss    151 MB
-  glyd-max      ratio   4.842  comp    199.4 MB/s  decomp   1276.3 MB/s  peak rss    146 MB
-  zstd-3        ratio   4.865  comp    241.3 MB/s  decomp   1132.6 MB/s  peak rss    144 MB
-  lz4           ratio   3.105  comp    422.2 MB/s  decomp   1320.7 MB/s  peak rss    152 MB
+  glyd-default  ratio   3.319  comp    242.8 MB/s  decomp   2925.4 MB/s  peak rss    151 MB
+  glyd-max      ratio   4.842  comp    195.0 MB/s  decomp   1213.9 MB/s  peak rss    146 MB
+  zstd-3        ratio   4.865  comp    233.1 MB/s  decomp   1061.0 MB/s  peak rss    145 MB
+  lz4           ratio   3.105  comp    423.2 MB/s  decomp   1315.9 MB/s  peak rss    153 MB
 enwiki-redirect.sql: 720752280 bytes
-  glyd-default  ratio   2.740  comp    200.8 MB/s  decomp   2988.4 MB/s  peak rss    156 MB
-  glyd-max      ratio   4.253  comp    139.4 MB/s  decomp   1076.6 MB/s  peak rss    149 MB
-  zstd-3        ratio   4.036  comp    218.0 MB/s  decomp   1072.5 MB/s  peak rss    148 MB
-  lz4           ratio   2.625  comp    397.9 MB/s  decomp   1296.5 MB/s  peak rss    158 MB
+  glyd-default  ratio   2.740  comp    187.0 MB/s  decomp   2947.5 MB/s  peak rss    157 MB
+  glyd-max      ratio   4.248  comp    133.5 MB/s  decomp    965.3 MB/s  peak rss    150 MB
+  zstd-3        ratio   4.036  comp    210.0 MB/s  decomp    998.5 MB/s  peak rss    149 MB
+  lz4           ratio   2.625  comp    398.6 MB/s  decomp   1292.6 MB/s  peak rss    159 MB
 fhvhv_tripdata_2024-01.parquet: 472757547 bytes
-  glyd-default  ratio   1.004  comp   3051.0 MB/s  decomp   8633.0 MB/s  peak rss    193 MB
-  glyd-max      ratio   1.007  comp    699.0 MB/s  decomp   5861.3 MB/s  peak rss    195 MB
-  zstd-3        ratio   1.012  comp    454.9 MB/s  decomp   3446.1 MB/s  peak rss    193 MB
-  lz4           ratio   1.000  comp   1253.2 MB/s  decomp   1292.3 MB/s  peak rss    194 MB
+  glyd-default  ratio   1.004  comp   2963.7 MB/s  decomp   8428.8 MB/s  peak rss    194 MB
+  glyd-max      ratio   1.007  comp    710.3 MB/s  decomp   5749.4 MB/s  peak rss    195 MB
+  zstd-3        ratio   1.012  comp    423.5 MB/s  decomp   3412.9 MB/s  peak rss    193 MB
+  lz4           ratio   1.000  comp   1254.0 MB/s  decomp   1285.8 MB/s  peak rss    194 MB
 fhvhv_tripdata_2024-02.parquet: 462475428 bytes
-  glyd-default  ratio   1.004  comp   3046.0 MB/s  decomp   8615.2 MB/s  peak rss    193 MB
-  glyd-max      ratio   1.007  comp    698.2 MB/s  decomp   5903.2 MB/s  peak rss    195 MB
-  zstd-3        ratio   1.012  comp    449.8 MB/s  decomp   3467.3 MB/s  peak rss    193 MB
-  lz4           ratio   1.000  comp   1253.0 MB/s  decomp   1301.6 MB/s  peak rss    194 MB
+  glyd-default  ratio   1.004  comp   2850.9 MB/s  decomp   8393.5 MB/s  peak rss    194 MB
+  glyd-max      ratio   1.007  comp    710.1 MB/s  decomp   5786.6 MB/s  peak rss    195 MB
+  zstd-3        ratio   1.012  comp    422.5 MB/s  decomp   3431.0 MB/s  peak rss    193 MB
+  lz4           ratio   1.000  comp   1253.1 MB/s  decomp   1295.9 MB/s  peak rss    194 MB
 gharchive-2024-01-15-12.json: 912009879 bytes
-  glyd-default  ratio   5.581  comp    485.7 MB/s  decomp   3526.2 MB/s  peak rss    142 MB
-  glyd-max      ratio  15.056  comp    338.1 MB/s  decomp   2432.1 MB/s  peak rss    136 MB
-  zstd-3        ratio  10.656  comp    527.6 MB/s  decomp   2269.7 MB/s  peak rss    136 MB
-  lz4           ratio   5.053  comp    578.3 MB/s  decomp   1576.0 MB/s  peak rss    143 MB
+  glyd-default  ratio   5.581  comp    456.2 MB/s  decomp   3473.5 MB/s  peak rss    142 MB
+  glyd-max      ratio  15.051  comp    335.5 MB/s  decomp   2276.1 MB/s  peak rss    137 MB
+  zstd-3        ratio  10.656  comp    503.8 MB/s  decomp   2192.9 MB/s  peak rss    136 MB
+  lz4           ratio   5.053  comp    581.3 MB/s  decomp   1575.0 MB/s  peak rss    143 MB
 gharchive-2024-01-15-18.json: 837179933 bytes
-  glyd-default  ratio   5.427  comp    471.6 MB/s  decomp   3509.1 MB/s  peak rss    142 MB
-  glyd-max      ratio  15.289  comp    339.4 MB/s  decomp   2442.4 MB/s  peak rss    136 MB
-  zstd-3        ratio  10.607  comp    523.8 MB/s  decomp   2258.7 MB/s  peak rss    136 MB
-  lz4           ratio   4.901  comp    568.1 MB/s  decomp   1565.4 MB/s  peak rss    143 MB
+  glyd-default  ratio   5.427  comp    449.3 MB/s  decomp   3457.7 MB/s  peak rss    142 MB
+  glyd-max      ratio  15.283  comp    340.4 MB/s  decomp   2290.5 MB/s  peak rss    137 MB
+  zstd-3        ratio  10.607  comp    500.3 MB/s  decomp   2188.4 MB/s  peak rss    136 MB
+  lz4           ratio   4.901  comp    570.3 MB/s  decomp   1562.5 MB/s  peak rss    143 MB
 gharchive-2024-01-16-12.json: 813688795 bytes
-  glyd-default  ratio   5.615  comp    498.1 MB/s  decomp   3520.3 MB/s  peak rss    141 MB
-  glyd-max      ratio  14.241  comp    321.7 MB/s  decomp   2326.6 MB/s  peak rss    136 MB
-  zstd-3        ratio  10.378  comp    517.3 MB/s  decomp   2223.9 MB/s  peak rss    136 MB
-  lz4           ratio   5.112  comp    584.3 MB/s  decomp   1571.1 MB/s  peak rss    142 MB
+  glyd-default  ratio   5.615  comp    468.0 MB/s  decomp   3467.6 MB/s  peak rss    142 MB
+  glyd-max      ratio  14.237  comp    317.2 MB/s  decomp   2175.3 MB/s  peak rss    137 MB
+  zstd-3        ratio  10.378  comp    495.0 MB/s  decomp   2155.4 MB/s  peak rss    136 MB
+  lz4           ratio   5.112  comp    587.0 MB/s  decomp   1568.1 MB/s  peak rss    143 MB
 nasa-access-jul95.log: 205242368 bytes
-  glyd-default  ratio   5.848  comp    471.7 MB/s  decomp   3017.2 MB/s  peak rss    141 MB
-  glyd-max      ratio  11.297  comp    229.8 MB/s  decomp   1693.6 MB/s  peak rss    137 MB
-  zstd-3        ratio   9.782  comp    512.7 MB/s  decomp   1637.9 MB/s  peak rss    137 MB
-  lz4           ratio   5.375  comp    617.8 MB/s  decomp   1374.4 MB/s  peak rss    142 MB
+  glyd-default  ratio   5.848  comp    438.9 MB/s  decomp   2996.0 MB/s  peak rss    141 MB
+  glyd-max      ratio  11.297  comp    219.3 MB/s  decomp   1515.4 MB/s  peak rss    137 MB
+  zstd-3        ratio   9.782  comp    493.1 MB/s  decomp   1580.1 MB/s  peak rss    137 MB
+  lz4           ratio   5.375  comp    620.5 MB/s  decomp   1376.2 MB/s  peak rss    142 MB
 pageviews-20240115-10.log: 226407723 bytes
-  glyd-default  ratio   2.352  comp    193.2 MB/s  decomp   2785.2 MB/s  peak rss    158 MB
-  glyd-max      ratio   3.622  comp    156.9 MB/s  decomp   1069.4 MB/s  peak rss    150 MB
-  zstd-3        ratio   3.551  comp    192.4 MB/s  decomp    931.9 MB/s  peak rss    149 MB
-  lz4           ratio   2.332  comp    355.7 MB/s  decomp   1300.4 MB/s  peak rss    158 MB
+  glyd-default  ratio   2.352  comp    179.3 MB/s  decomp   2742.2 MB/s  peak rss    158 MB
+  glyd-max      ratio   3.622  comp    151.6 MB/s  decomp   1001.6 MB/s  peak rss    151 MB
+  zstd-3        ratio   3.551  comp    179.3 MB/s  decomp    885.8 MB/s  peak rss    149 MB
+  lz4           ratio   2.332  comp    356.1 MB/s  decomp   1296.0 MB/s  peak rss    158 MB
 pageviews-20240115-11.log: 232504283 bytes
-  glyd-default  ratio   2.355  comp    191.3 MB/s  decomp   2788.2 MB/s  peak rss    158 MB
-  glyd-max      ratio   3.626  comp    156.6 MB/s  decomp   1067.3 MB/s  peak rss    150 MB
-  zstd-3        ratio   3.555  comp    192.2 MB/s  decomp    931.0 MB/s  peak rss    149 MB
-  lz4           ratio   2.335  comp    356.0 MB/s  decomp   1300.6 MB/s  peak rss    158 MB
+  glyd-default  ratio   2.355  comp    182.6 MB/s  decomp   2745.7 MB/s  peak rss    158 MB
+  glyd-max      ratio   3.626  comp    155.2 MB/s  decomp   1018.0 MB/s  peak rss    151 MB
+  zstd-3        ratio   3.555  comp    184.9 MB/s  decomp    899.8 MB/s  peak rss    149 MB
+  lz4           ratio   2.335  comp    356.3 MB/s  decomp   1296.0 MB/s  peak rss    158 MB
 pageviews-20240115-20.log: 255040307 bytes
-  glyd-default  ratio   2.363  comp    191.1 MB/s  decomp   2805.9 MB/s  peak rss    157 MB
-  glyd-max      ratio   3.645  comp    155.2 MB/s  decomp   1060.8 MB/s  peak rss    150 MB
-  zstd-3        ratio   3.575  comp    192.5 MB/s  decomp    939.1 MB/s  peak rss    148 MB
-  lz4           ratio   2.351  comp    357.7 MB/s  decomp   1305.8 MB/s  peak rss    157 MB
+  glyd-default  ratio   2.363  comp    181.2 MB/s  decomp   2769.6 MB/s  peak rss    158 MB
+  glyd-max      ratio   3.645  comp    152.2 MB/s  decomp   1005.8 MB/s  peak rss    150 MB
+  zstd-3        ratio   3.575  comp    180.7 MB/s  decomp    890.9 MB/s  peak rss    148 MB
+  lz4           ratio   2.351  comp    357.7 MB/s  decomp   1301.6 MB/s  peak rss    158 MB
 simplewiki-categorylinks.sql: 216689785 bytes
-  glyd-default  ratio   5.420  comp    395.2 MB/s  decomp   3776.0 MB/s  peak rss    141 MB
-  glyd-max      ratio   8.467  comp    307.0 MB/s  decomp   1771.2 MB/s  peak rss    139 MB
-  zstd-3        ratio   8.286  comp    387.7 MB/s  decomp   1667.2 MB/s  peak rss    138 MB
-  lz4           ratio   5.285  comp    593.0 MB/s  decomp   1578.5 MB/s  peak rss    141 MB
+  glyd-default  ratio   5.420  comp    358.8 MB/s  decomp   3717.4 MB/s  peak rss    142 MB
+  glyd-max      ratio   8.467  comp    298.1 MB/s  decomp   1621.3 MB/s  peak rss    139 MB
+  zstd-3        ratio   8.286  comp    374.3 MB/s  decomp   1578.0 MB/s  peak rss    138 MB
+  lz4           ratio   5.285  comp    596.8 MB/s  decomp   1573.8 MB/s  peak rss    142 MB
 simplewiki-page.sql: 107824175 bytes
-  glyd-default  ratio   2.115  comp    199.1 MB/s  decomp   3097.3 MB/s  peak rss    160 MB
-  glyd-max      ratio   3.250  comp    139.6 MB/s  decomp   1031.1 MB/s  peak rss    152 MB
-  zstd-3        ratio   3.235  comp    181.6 MB/s  decomp    909.1 MB/s  peak rss    150 MB
-  lz4           ratio   2.057  comp    362.1 MB/s  decomp   1268.2 MB/s  peak rss    161 MB
+  glyd-default  ratio   2.115  comp    185.4 MB/s  decomp   3047.3 MB/s  peak rss    160 MB
+  glyd-max      ratio   3.250  comp    138.3 MB/s  decomp    984.6 MB/s  peak rss    152 MB
+  zstd-3        ratio   3.235  comp    176.1 MB/s  decomp    880.6 MB/s  peak rss    150 MB
+  lz4           ratio   2.057  comp    363.1 MB/s  decomp   1262.5 MB/s  peak rss    161 MB
 simplewiki-pagelinks.sql: 458505669 bytes
-  glyd-default  ratio   2.922  comp    264.0 MB/s  decomp   2243.8 MB/s  peak rss    155 MB
-  glyd-max      ratio   6.252  comp    189.2 MB/s  decomp    991.7 MB/s  peak rss    145 MB
-  zstd-3        ratio   7.089  comp    293.0 MB/s  decomp    930.7 MB/s  peak rss    142 MB
-  lz4           ratio   2.980  comp    476.6 MB/s  decomp   1329.0 MB/s  peak rss    154 MB
+  glyd-default  ratio   2.922  comp    239.2 MB/s  decomp   2222.1 MB/s  peak rss    156 MB
+  glyd-max      ratio   6.252  comp    180.0 MB/s  decomp    923.4 MB/s  peak rss    145 MB
+  zstd-3        ratio   7.089  comp    283.2 MB/s  decomp    897.7 MB/s  peak rss    142 MB
+  lz4           ratio   2.980  comp    476.4 MB/s  decomp   1325.6 MB/s  peak rss    154 MB
 simplewiki-templatelinks.sql: 241915057 bytes
-  glyd-default  ratio   2.922  comp    240.1 MB/s  decomp   2557.4 MB/s  peak rss    152 MB
-  glyd-max      ratio   5.341  comp    168.0 MB/s  decomp    961.6 MB/s  peak rss    146 MB
-  zstd-3        ratio   6.508  comp    270.5 MB/s  decomp    862.4 MB/s  peak rss    141 MB
-  lz4           ratio   2.949  comp    434.4 MB/s  decomp   1424.5 MB/s  peak rss    152 MB
+  glyd-default  ratio   2.922  comp    219.4 MB/s  decomp   2522.8 MB/s  peak rss    153 MB
+  glyd-max      ratio   5.341  comp    162.8 MB/s  decomp    903.3 MB/s  peak rss    146 MB
+  zstd-3        ratio   6.508  comp    260.0 MB/s  decomp    829.8 MB/s  peak rss    141 MB
+  lz4           ratio   2.949  comp    434.3 MB/s  decomp   1420.6 MB/s  peak rss    152 MB
 yellow_tripdata_2024-02.parquet: 50349284 bytes
-  glyd-default  ratio   1.000  comp   3037.6 MB/s  decomp   8657.8 MB/s  peak rss    146 MB
-  glyd-max      ratio   1.002  comp    731.9 MB/s  decomp   6270.4 MB/s  peak rss    163 MB
-  zstd-3        ratio   1.004  comp    405.1 MB/s  decomp   5259.8 MB/s  peak rss    146 MB
-  lz4           ratio   1.000  comp   1253.7 MB/s  decomp   1308.0 MB/s  peak rss    146 MB
+  glyd-default  ratio   1.000  comp   2946.3 MB/s  decomp   8530.7 MB/s  peak rss    146 MB
+  glyd-max      ratio   1.002  comp    725.3 MB/s  decomp   6099.5 MB/s  peak rss    164 MB
+  zstd-3        ratio   1.004  comp    380.8 MB/s  decomp   5199.7 MB/s  peak rss    146 MB
+  lz4           ratio   1.000  comp   1250.6 MB/s  decomp   1301.6 MB/s  peak rss    146 MB
 
 large files, 1 threads, 8731164037 bytes in:
-  glyd-default  ratio   2.820  compressed   3096112356 B  compress    332.0 MB/s  decompress   3308.6 MB/s
-  glyd-max      ratio   3.978  compressed   2194954477 B  compress    232.7 MB/s  decompress   1570.6 MB/s
-  zstd-3        ratio   3.859  compressed   2262326490 B  compress    313.2 MB/s  decompress   1425.3 MB/s
-  lz4           ratio   2.716  compressed   3214580303 B  compress    503.9 MB/s  decompress   1394.3 MB/s
+  glyd-default  ratio   2.820  compressed   3096112356 B  compress    309.1 MB/s  decompress   3259.8 MB/s
+  glyd-max      ratio   3.977  compressed   2195221259 B  compress    227.0 MB/s  decompress   1469.2 MB/s
+  zstd-3        ratio   3.859  compressed   2262326490 B  compress    300.1 MB/s  decompress   1356.2 MB/s
+  lz4           ratio   2.716  compressed   3214580303 B  compress    505.1 MB/s  decompress   1390.4 MB/s

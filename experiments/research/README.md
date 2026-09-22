@@ -144,14 +144,14 @@ company's stored bytes would cost nothing? Measured 2026-09-21
 
 So the public fraction is high exactly where the bytes are few. Build
 artifacts, container images and environments are gigabytes to
-terabytes per company; the petabytes are logs, events, data lakes and
-media, none of it public. A global public reference would take
+terabytes per organisation; the petabytes are logs, events, data lakes
+and media, none of it public. A global public reference would take
 artifact buckets toward zero, and near-identical copies (an image
 rebuilt against a newer base) are already the store's version case
-(Ubuntu images 5.2×, kernels 13.9× on the bucket corpus). Not built:
-the pie is too small to be the company. Worth adding to the audit as a
-number (public fraction of the sampled bucket) when a prospect's
-bucket is an artifact store.
+(Ubuntu images 5.2×, kernels 13.9× on the bucket corpus). Not built
+yet: section J's lever is larger. Worth adding to the audit as a
+number (the public fraction of the sampled bucket) for buckets that
+are artifact stores.
 
 ## J. Re-doing what is already compressed
 
@@ -172,8 +172,8 @@ that hold the petabytes. Logs are shipped and kept gzipped, and
 gzip-inside is where the record and template models already win
 60–69%; archives 23–61%; images 20% with a proven, reversible method;
 Parquet 26–40% at the price of regenerating the file rather than its
-bytes. Against #1 (section I), which is high only where bytes are few,
-#2 is where the bill is. Order to build: gzip-inside first (the models
+bytes. Against section I, which is high only where bytes are few, this
+is where the bytes are. Order to build: gzip-inside first (the models
 exist; the missing piece is a deflate reproducer, and Microsoft's
 preflate-rs is Apache-2.0), then JPEG through libjxl, then Parquet
 columns behind a "same table" option.
