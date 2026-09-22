@@ -17,11 +17,17 @@ every earlier format.
   stored entries and non-image chunks are kept; a PNG's image stream is
   cut back into its IDAT chunks. Entries preflate cannot reproduce stay
   as they are, and so does an object that would not shrink. The CLI's
-  `--max` takes record mode on an opened container where it pays.
-  Measured, decodes compared: a Guava jar 3.05 → 2.15 MB at `--max`
-  (zstd -19 on the jar: 2.70), 1.53 MB cold; a GitHub source zip
-  2.73 → 2.39, 1.76 cold; a 60-slide .pptx 88 → 46 KB; a 30,000-row
-  .xlsx 1.34 → 0.47 MB cold; a PNG photo 1.83 → 1.64, 1.19 cold.
+  `--max` and `--ultra` take record mode on an opened container where
+  it pays. PDF too: every stream whose data is zlib and that ends
+  before an `endstream`, found by scanning. The recipe goes into the
+  envelope compressed (a PDF's duplicate fonts and a jar's thousand
+  entries repeat their corrections), and the object is also compressed
+  closed at the same level, the smaller kept. Measured, decodes
+  compared: a Guava jar 3.05 → 1.76 MB at `--max` (zstd -19 on the
+  jar: 2.70), 1.14 MB cold; a GitHub source zip 2.73 → 2.28, 1.64
+  cold; a 60-slide .pptx 88 → 24 KB; a 30,000-row .xlsx 1.34 → 0.47
+  MB cold; a pdfTeX paper 2.22 → 0.73 MB (zstd -19: 1.04), a paper
+  with figures 6.77 → 4.23 (5.54); a PNG photo 1.83 → 1.64, 1.19 cold.
 
 ### Speed, same bytes
 

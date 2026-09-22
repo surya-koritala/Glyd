@@ -22,6 +22,12 @@ use crate::record::{get_varint, put_varint};
 use preflate_rs::{preflate_whole_deflate_stream, recreate_whole_deflate_stream, PreflateConfig};
 
 pub(crate) const MAGIC: &[u8; 8] = b"GLYDDEFL";
+/// Set while an object is compressed closed for the comparison in
+/// `wrap`, so the level's own units do not open what they start with
+/// (a unit of a container starts with its magic). Process-wide: a
+/// concurrent compression in that moment keeps its container closed,
+/// which costs bytes, never correctness.
+static CLOSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The plain text is held in memory; beyond this an object is left alone.
 const PLAIN_LIMIT: usize = 8 << 30;
 const VERBATIM: u8 = 0;
@@ -36,7 +42,11 @@ pub struct Opened {
 
 /// Whether `input` starts like a container worth opening.
 pub fn is_container(input: &[u8]) -> bool {
-    is_gzip(input) || is_zip(input) || is_png(input) || is_zlib(input)
+    is_gzip(input) || is_zip(input) || is_png(input) || is_pdf(input) || is_zlib(input)
+}
+
+fn is_pdf(input: &[u8]) -> bool {
+    input.len() >= 64 && input.starts_with(b"%PDF-")
 }
 
 fn is_gzip(input: &[u8]) -> bool {
@@ -96,9 +106,11 @@ impl Builder {
     }
 
     /// The deflate stream at `at`: its compressed length when it opens.
+    /// A stream whose corrections come to more than a quarter of it
+    /// (an encoder preflate predicts badly) is not worth opening.
     fn deflate(&mut self, input: &[u8], at: usize) -> Option<usize> {
         let (result, text) = preflate_whole_deflate_stream(input.get(at..)?, &self.config).ok()?;
-        if self.plain.len() + text.text().len() > PLAIN_LIMIT {
+        if self.plain.len() + text.text().len() > PLAIN_LIMIT || result.corrections.len() * 4 > result.compressed_size {
             return None;
         }
         self.flush_verbatim(input);
@@ -133,6 +145,8 @@ pub fn open(input: &[u8]) -> Option<Opened> {
         open_zip(input)
     } else if is_png(input) {
         open_png(input)
+    } else if is_pdf(input) {
+        open_pdf(input)
     } else if is_zlib(input) {
         open_zlib(input)
     } else {
@@ -239,6 +253,49 @@ fn open_zip(input: &[u8]) -> Option<Opened> {
         let next = (end..(end + 32).min(input.len().saturating_sub(3))).find(|&p| &input[p..p + 4] == b"PK\x03\x04").unwrap_or(end);
         b.verbatim(input, end, next);
         at = next;
+    }
+    b.verbatim(input, at, input.len());
+    b.finish(input)
+}
+
+/// A PDF's streams: every `stream` keyword whose data starts like a
+/// zlib stream (a /FlateDecode filter alone; a predictor changes only
+/// what the bytes mean, not the stream) and whose stream ends before
+/// an `endstream`, opened; everything else kept. Found by scanning,
+/// so a /Length given by reference, object streams and cross-reference
+/// streams need no parsing.
+fn open_pdf(input: &[u8]) -> Option<Opened> {
+    let mut b = Builder::new();
+    let mut at = 0usize;
+    let mut scan = 0usize;
+    while scan + 6 <= input.len() {
+        let Some(k) = input[scan..].windows(6).position(|w| w == b"stream") else { break };
+        let key = scan + k;
+        scan = key + 6;
+        // `stream` of `endstream`, or not followed by a line end.
+        if key >= 3 && &input[key - 3..key] == b"end" {
+            continue;
+        }
+        let data = if input.get(scan..scan + 2) == Some(b"\r\n") { scan + 2 } else if input.get(scan) == Some(&b'\n') { scan + 1 } else { continue };
+        if data <= at || !is_zlib(&input[data..]) {
+            continue;
+        }
+        let mut probe = Builder::new();
+        let Some(n) = probe.deflate(input, data + 2) else { continue };
+        let end = data + 2 + n + 4;
+        // What follows must be the end of the stream.
+        let mut p = end;
+        while p < input.len() && matches!(input[p], b'\r' | b'\n' | b' ' | b'\t') {
+            p += 1;
+        }
+        if input.get(p..p + 9) != Some(b"endstream") {
+            continue;
+        }
+        b.verbatim(input, at, data + 2);
+        b.deflate(input, data + 2)?;
+        b.verbatim(input, data + 2 + n, end);
+        at = end;
+        scan = p + 9;
     }
     b.verbatim(input, at, input.len());
     b.finish(input)
@@ -374,42 +431,51 @@ pub fn close(recipe: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// The envelope's head: everything before the inner stream.
+/// The envelope's head: everything before the inner stream. The
+/// recipe goes in compressed at the max level: the corrections of a
+/// container's streams repeat each other (a PDF's duplicate fonts, a
+/// jar's thousand small entries).
 pub fn envelope(original_len: usize, recipe: &[u8], out: &mut Vec<u8>) {
+    let mut packed = Vec::with_capacity(recipe.len() / 2 + 64);
+    crate::compress_into_max(recipe, &mut packed);
     out.extend_from_slice(MAGIC);
     put_varint(out, original_len as u64);
-    put_varint(out, recipe.len() as u64);
-    out.extend_from_slice(recipe);
+    put_varint(out, packed.len() as u64);
+    out.extend_from_slice(&packed);
 }
 
 /// (original length, recipe, inner stream) of an envelope.
-pub(crate) fn parse(compressed: &[u8]) -> Option<(usize, &[u8], &[u8])> {
+pub(crate) fn parse(compressed: &[u8]) -> Option<(usize, Vec<u8>, &[u8])> {
     if compressed.len() < 10 || &compressed[..8] != MAGIC {
         return None;
     }
     let mut pos = 8usize;
     let original = get_varint(compressed, &mut pos).ok()? as usize;
     let rlen = get_varint(compressed, &mut pos).ok()? as usize;
-    let recipe = compressed.get(pos..pos.checked_add(rlen)?)?;
+    let packed = compressed.get(pos..pos.checked_add(rlen)?)?;
+    let recipe = crate::decompress(packed).ok()?;
     Some((original, recipe, &compressed[pos + rlen..]))
 }
 
 /// `input` compressed as an opened container by `inner` when it is
 /// one and that is smaller: the envelope, then `inner` on the plain
 /// text. `false` otherwise.
-pub(crate) fn wrap(input: &[u8], output: &mut Vec<u8>, inner: impl FnOnce(&[u8], &mut Vec<u8>)) -> bool {
-    if !is_container(input) {
+pub(crate) fn wrap(input: &[u8], output: &mut Vec<u8>, inner: impl FnOnce(&[u8], &mut Vec<u8>), closed_level: impl FnOnce(&[u8], &mut Vec<u8>)) -> bool {
+    if !is_container(input) || CLOSED.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
     let Some(opened) = open(input) else { return false };
-    // The container's bytes themselves barely compress, so their length
-    // is what the caller's level would give on them; an opened object
-    // that costs more than that (a recipe of many corrections on
-    // content the level does not beat deflate on) is left closed.
+    // Opened against closed, both at the caller's level: a container
+    // can hold repeats of whole streams (a PDF's fonts) that the level
+    // finds as it is and a recipe of many corrections would hide.
     let mut wrapped = Vec::with_capacity(opened.plain.len() / 4 + opened.recipe.len() + 32);
     envelope(input.len(), &opened.recipe, &mut wrapped);
     inner(&opened.plain, &mut wrapped);
-    if wrapped.len() >= input.len() {
+    let mut closed = Vec::with_capacity(input.len() + 64);
+    CLOSED.store(true, std::sync::atomic::Ordering::Relaxed);
+    closed_level(input, &mut closed);
+    CLOSED.store(false, std::sync::atomic::Ordering::Relaxed);
+    if wrapped.len() >= closed.len() {
         return false;
     }
     output.extend_from_slice(&wrapped);
@@ -420,7 +486,7 @@ pub(crate) fn wrap(input: &[u8], output: &mut Vec<u8>, inner: impl FnOnce(&[u8],
 /// `inner`; `None` when `compressed` is no envelope.
 pub(crate) fn unwrap(compressed: &[u8], inner: impl FnOnce(&[u8]) -> crate::Result<Vec<u8>>) -> Option<crate::Result<Vec<u8>>> {
     let (original, recipe, stream) = parse(compressed)?;
-    Some(inner(stream).and_then(|plain| match close(recipe, &plain) {
+    Some(inner(stream).and_then(|plain| match close(&recipe, &plain) {
         Some(out) if out.len() == original => Ok(out),
         _ => Err(crate::CodecError::CorruptedBitstream("deflate envelope: the object does not close")),
     }))
@@ -516,7 +582,7 @@ mod tests {
         assert_eq!(crate::decompress_with_base(&a, &d).unwrap(), b);
         // Not a container: untouched.
         let mut c = Vec::new();
-        assert!(!wrap(b"\x1f\x8b\x08 but not really a gzip stream at all", &mut c, |_, _| {}));
+        assert!(!wrap(b"\x1f\x8b\x08 but not really a gzip stream at all", &mut c, |_, _| {}, |_, _| {}));
         assert!(open(&plain).is_none());
     }
 
@@ -563,6 +629,31 @@ sys.stdout.buffer.write(out)
 "#, &plain);
         assert!(is_png(&png));
         assert_eq!(round_trip(&png, "png"), plain);
+        // A PDF: two Flate streams (one with a /Length by reference),
+        // one uncompressed stream, an object stream.
+        let pdf = python(r#"
+import sys, zlib
+raw = sys.stdin.buffer.read()
+a, b, c = raw[:300000], raw[300000:600000], raw[600000:]
+parts = [b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n"]
+def obj(n, body): parts.append(f"{n} 0 obj\n".encode() + body + b"\nendobj\n")
+za = zlib.compress(a, 6)
+obj(1, b"<< /Type /Catalog /Pages 2 0 R >>")
+obj(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+obj(3, b"<< /Type /Page /Parent 2 0 R /Contents 4 0 R >>")
+obj(4, b"<< /Length " + str(len(za)).encode() + b" /Filter /FlateDecode >>\nstream\r\n" + za + b"\r\nendstream")
+zb = zlib.compress(b, 9)
+obj(5, b"<< /Length 6 0 R /Filter /FlateDecode >>\nstream\n" + zb + b"\nendstream")
+obj(6, str(len(zb)).encode())
+obj(7, b"<< /Length " + str(len(c)).encode() + b" >>\nstream\n" + c + b"\nendstream")
+zc = zlib.compress(b"8 0 9 20 << /A 1 >> << /B 2 >>", 6)
+obj(10, b"<< /Type /ObjStm /N 2 /First 8 /Length " + str(len(zc)).encode() + b" /Filter /FlateDecode >>\nstream\n" + zc + b"\nendstream")
+parts.append(b"trailer\n<< /Root 1 0 R >>\n%%EOF\n")
+sys.stdout.buffer.write(b"".join(parts))
+"#, &plain);
+        assert!(is_pdf(&pdf));
+        let opened_pdf = round_trip(&pdf, "pdf");
+        assert!(opened_pdf.len() >= 600000, "the three Flate streams opened: {}", opened_pdf.len());
         // A truncated PNG and a zip with garbage after an entry still
         // close to what they were.
         round_trip(&png[..png.len() - 7], "truncated png");

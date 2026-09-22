@@ -425,30 +425,35 @@ of each, 10 cores, every decode byte-checked):
 `--max -r` writes these at 260-460 MB/s and reads them back at
 1,200-1,400 MB/s.
 
-### Deflate containers opened: gzip, zip, Office documents, jars, PNG
+### Deflate containers opened: gzip, zip, Office documents, jars, PDF, PNG
 
 Much of what sits in a bucket is deflate inside a container — gzipped
 logs (ELB, CloudFront, CloudTrail and flow logs are delivered that
-way), zip archives, .docx/.xlsx/.pptx, .jar, PNG — and to zstd all of
-it is noise. Glyd opens the container: every deflate stream inside is
-decoded to its plain text along with what it takes to re-encode it
-bit for bit (preflate, the crate's one dependency); headers,
-directories and stored entries are kept as they are; the plain text
-takes the level asked for (record mode where it pays, the cold level,
-a base — all see the content); and `-d` gives back the identical
-object. An object that would not shrink stays closed. Measured on this
+way), zip archives, .docx/.xlsx/.pptx, .jar, PDF, PNG — and to zstd
+all of it is noise. Glyd opens the container: every deflate stream
+inside is decoded to its plain text along with what it takes to
+re-encode it bit for bit (preflate, the crate's one dependency);
+headers, directories, stored entries and everything else are kept as
+they are; the plain text takes the level asked for (record mode where
+it pays, the cold level, a base — all see the content); and `-d` gives
+back the identical object. The object is also compressed closed, at
+the same level, and the smaller of the two is kept. Measured on this
 Mac, every decode compared with the input:
 
 | Object | As is | zstd -19 on it | ⚡&nbsp;**Glyd ‑‑max** | ⚡&nbsp;**‑‑ultra** | ⚡&nbsp;**‑‑cold** |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| NASA access log, gzip -6 (205 MB inside) | 20.7 MB | 20.5 MB | **8.2 MB (−60%)** | 7.6 MB | **6.5 MB (−69%)** |
+| NASA access log, gzip -6 (205 MB inside) | 20.7 MB | 20.7 MB | **8.2 MB (−60%)** | 7.6 MB | **6.5 MB (−69%)** |
 | Linux tree, 512 MB, gzip -6 | 72.7 MB | 72.0 MB | **56.1 MB (−23%)** | 42.0 MB | **28.4 MB (−61%)** |
-| zstd source, GitHub zip (2.7 MB) | 2.73 MB | 2.57 MB | **2.39 MB (−12%)** | 2.05 MB | **1.76 MB (−36%)** |
-| Guava jar, 2,059 entries (3.1 MB) | 3.05 MB | 2.70 MB | **2.15 MB (−30%)** | 1.82 MB | **1.53 MB (−50%)** |
-| .pptx, 60 slides | 88 KB | 56 KB | **46 KB (−48%)** | 43 KB | **38 KB (−57%)** |
+| zstd source, GitHub zip | 2.73 MB | 2.57 MB | **2.28 MB (−16%)** | 1.94 MB | **1.64 MB (−40%)** |
+| Guava jar, 2,059 entries | 3.05 MB | 2.70 MB | **1.76 MB (−42%)** | 1.43 MB | **1.14 MB (−63%)** |
+| .pptx, 60 slides | 88 KB | 56 KB | **24 KB (−73%)** | 21 KB | **16 KB (−82%)** |
 | .xlsx, 30,000 rows | 1.34 MB | 1.23 MB | 1.33 MB (kept closed) | 1.05 MB | **0.47 MB (−65%)** |
-| .docx, 400 sections | 141 KB | 138 KB | 140 KB | 118 KB | **78 KB (−45%)** |
-| PNG photo (1.8 MB) | 1.83 MB | 1.77 MB | **1.64 MB (−10%)** | 1.52 MB | **1.19 MB (−35%)** |
+| .docx, 400 sections | 141 KB | 138 KB | 140 KB | 117 KB | **77 KB (−46%)** |
+| RFC 8878, PDF | 440 KB | 242 KB | **192 KB (−56%)** | 167 KB | **126 KB (−71%)** |
+| arXiv paper, PDF (pdfTeX) | 2.22 MB | 1.04 MB | **730 KB (−67%)** | 651 KB | **581 KB (−74%)** |
+| arXiv paper with figures, PDF | 6.77 MB | 5.54 MB | **4.23 MB (−38%)** | 3.56 MB | **2.85 MB (−58%)** |
+| PNG photo | 1.83 MB | 1.77 MB | **1.64 MB (−10%)** | 1.52 MB | **1.19 MB (−35%)** |
+| PNG illustration | 669 KB | 663 KB | **634 KB (−5%)** | 540 KB | **448 KB (−33%)** |
 
 Where the container's own deflate was already near what the fast
 level does on the content (an Office XML sheet), the fast level keeps
@@ -456,9 +461,10 @@ it closed and the slower levels open it. The cost is the re-encode
 that makes it exact: about 5 MB/s of deflate per core in (50 MB/s of
 content), three times that out; per terabyte of gzipped logs on S3
 Standard, about $2 of CPU once against $166 a year. Streams preflate
-cannot reproduce (18 of the jar's 2,059) are kept as they are. The
-same for JPEG (a JPEG XL transcode, 20%) and Parquet (its columns as
-records, 26–40%) is measured in
+cannot reproduce, or predicts badly (corrections over a quarter of
+the stream), are kept as they are: 18 of the jar's 2,059. The same for
+JPEG (a JPEG XL transcode, 20%) and Parquet (its columns as records,
+26–40%) is measured in
 [experiments/research](experiments/research/README.md#j-re-doing-what-is-already-compressed)
 and not yet built.
 

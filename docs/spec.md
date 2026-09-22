@@ -63,9 +63,10 @@ envelopes carry no version byte because each magic *is* the version
 
 ## 2b. Deflate containers opened (`GLYDDEFL`)
 
-`"GLYDDEFL"`, original length and recipe length (varints), the recipe,
-then the inner stream of the plain text in any format above. The
-recipe (`src/deflate.rs`) is a count of segments then the segments,
+`"GLYDDEFL"`, original length and packed recipe length (varints), the
+recipe compressed at the max level (a plain block stream), then the
+inner stream of the plain text in any format above. The recipe
+(`src/deflate.rs`) is a count of segments then the segments,
 each tagged: 0 verbatim (varint length, the bytes); 1 deflate (varint
 length and preflate's corrections, varint length of the plain text it
 takes from the plain text in order); 2 a PNG image stream (2 zlib
@@ -73,7 +74,9 @@ header bytes, corrections as for 1, plain length, 4 Adler-32 bytes,
 then a varint chunk count and per chunk a varint length and 4 CRC
 bytes, the recreated zlib stream being cut into IDAT chunks so).
 Recognised containers: gzip (members back to back), zip (local
-entries, method 8 opened, everything else kept), zlib, PNG.
+entries, method 8 opened, everything else kept), zlib, PNG, and PDF
+(every `stream` whose data is a zlib stream ending before an
+`endstream`, found by scanning).
 
 ## 3. The store
 

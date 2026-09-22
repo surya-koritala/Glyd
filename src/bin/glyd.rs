@@ -326,6 +326,8 @@ fn main() -> io::Result<()> {
             // An opened container's content takes record mode where
             // that pays (a gzipped log is a log).
             glyd::compress_records_into_max(&input_data, &mut out);
+        } else if ultra && !cold && glyd::deflate::is_container(input_data) {
+            glyd::compress_records_into_ultra(&input_data, &mut out);
         } else if records {
             // Record mode parallelises over its own units; the level
             // inside a unit is the sequential one.
