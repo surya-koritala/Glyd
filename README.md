@@ -425,28 +425,40 @@ of each, 10 cores, every decode byte-checked):
 `--max -r` writes these at 260-460 MB/s and reads them back at
 1,200-1,400 MB/s.
 
-### Gzip objects opened
+### Deflate containers opened: gzip, zip, Office documents, jars, PNG
 
-Half of what sits in a bucket arrived gzipped — ELB, CloudFront,
-CloudTrail and flow logs are delivered that way — and to zstd a gzip
-is noise. Glyd opens it: the deflate streams inside are decoded to
-their plain text along with what it takes to re-encode each bit for
-bit (preflate, the crate's one dependency), the plain text takes the
-level asked for (record mode, the cold level, a base — all see the
-content), and `-d` gives back the identical gzip. An object that
-would not shrink stays closed. Measured on this Mac, every decode
-compared with the input:
+Much of what sits in a bucket is deflate inside a container — gzipped
+logs (ELB, CloudFront, CloudTrail and flow logs are delivered that
+way), zip archives, .docx/.xlsx/.pptx, .jar, PNG — and to zstd all of
+it is noise. Glyd opens the container: every deflate stream inside is
+decoded to its plain text along with what it takes to re-encode it
+bit for bit (preflate, the crate's one dependency); headers,
+directories and stored entries are kept as they are; the plain text
+takes the level asked for (record mode where it pays, the cold level,
+a base — all see the content); and `-d` gives back the identical
+object. An object that would not shrink stays closed. Measured on this
+Mac, every decode compared with the input:
 
-| gzipped object | gzip | ⚡&nbsp;**Glyd** | **Fewer bytes** |
-| :--- | ---: | ---: | ---: |
-| NASA access log, gzip -6 (205 MB inside) | 20.7 MB | **8.2 MB** `--max -r` · **6.5 MB** `--cold -r` | **60% · 69%** |
-| Linux tree, 512 MB, gzip -6 | 72.7 MB | **56.1 MB** `--max` · **42.0 MB** `--ultra` | **23% · 42%** |
+| Object | As is | zstd -19 on it | ⚡&nbsp;**Glyd ‑‑max** | ⚡&nbsp;**‑‑ultra** | ⚡&nbsp;**‑‑cold** |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| NASA access log, gzip -6 (205 MB inside) | 20.7 MB | 20.5 MB | **8.2 MB (−60%)** | 7.6 MB | **6.5 MB (−69%)** |
+| Linux tree, 512 MB, gzip -6 | 72.7 MB | 72.0 MB | **56.1 MB (−23%)** | 42.0 MB | **28.4 MB (−61%)** |
+| zstd source, GitHub zip (2.7 MB) | 2.73 MB | 2.57 MB | **2.39 MB (−12%)** | 2.05 MB | **1.76 MB (−36%)** |
+| Guava jar, 2,059 entries (3.1 MB) | 3.05 MB | 2.70 MB | **2.15 MB (−30%)** | 1.82 MB | **1.53 MB (−50%)** |
+| .pptx, 60 slides | 88 KB | 56 KB | **46 KB (−48%)** | 43 KB | **38 KB (−57%)** |
+| .xlsx, 30,000 rows | 1.34 MB | 1.23 MB | 1.33 MB (kept closed) | 1.05 MB | **0.47 MB (−65%)** |
+| .docx, 400 sections | 141 KB | 138 KB | 140 KB | 118 KB | **78 KB (−45%)** |
+| PNG photo (1.8 MB) | 1.83 MB | 1.77 MB | **1.64 MB (−10%)** | 1.52 MB | **1.19 MB (−35%)** |
 
-The cost is the re-encode that makes it exact: about 5 MB/s of gzip
-per core in (50 MB/s of content), three times that out. Per terabyte
-of gzipped logs on S3 Standard that is about $2 of CPU once against
-$166 a year. The same on JPEG (a JPEG XL transcode, 20%) and Parquet
-(its columns as records, 26–40%) is measured in
+Where the container's own deflate was already near what the fast
+level does on the content (an Office XML sheet), the fast level keeps
+it closed and the slower levels open it. The cost is the re-encode
+that makes it exact: about 5 MB/s of deflate per core in (50 MB/s of
+content), three times that out; per terabyte of gzipped logs on S3
+Standard, about $2 of CPU once against $166 a year. Streams preflate
+cannot reproduce (18 of the jar's 2,059) are kept as they are. The
+same for JPEG (a JPEG XL transcode, 20%) and Parquet (its columns as
+records, 26–40%) is measured in
 [experiments/research](experiments/research/README.md#j-re-doing-what-is-already-compressed)
 and not yet built.
 

@@ -3,3 +3,5 @@ machine: Neoverse-N1 (16 vCPU, 61 GB)
 glyd-store: glyd-store 0.12.0
 corpus: 1192 objects, 1183711453130 bytes
 zstd-3 alone: 153453554045 bytes, 827.975 MB/s
+put: rc 0, 1183711453130 bytes put, 242.504 MB/s, 4881.199858521 s; 1192 objects (1192 live): 1183711453130 B raw, 49555884282 B on disk (23.89x)
+put: 437 of 1192 objects as deltas

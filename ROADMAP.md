@@ -65,12 +65,13 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
    against 1.03× on Graviton3). Gate: 1.0× in the published run.
 4. **Streaming for v9** in `GlydReader`/`GlydWriter` (v6 levels only
    today); the CLI already streams batches of units.
-5. **Already-compressed objects opened** (research section J: gzip
-   shipped in v0.12.0, 23–69% under the gzip; JPEG 20% through a JPEG
-   XL transcode; Parquet 26–40% as the same table). Next: JPEG through
-   libjxl, then Parquet columns behind a "same table" option. Gate:
-   the measured number on real objects, every one restored byte for
-   byte.
+5. **Already-compressed objects opened** (research section J). Done:
+   gzip (v0.12.0), zip, Office documents, jars, zlib and PNG (next
+   release): 10–65% under the object at the level that opens it.
+   Next: PDF (its FlateDecode streams, found by scanning), then JPEG
+   through a JPEG XL transcode (20%), then Parquet columns behind a
+   "same table" option (26–40%). Gate: the measured number on real
+   objects, every one restored byte for byte.
 6. **Video: measure the headroom, decide nothing before.** The
    residual an H.264 file keeps is what its block predictor could not
    guess; how much a far stronger predictor would guess of the same

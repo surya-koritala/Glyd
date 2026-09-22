@@ -1,2 +1,8 @@
 dataset: 18 files, 8731164037 bytes; instance c7g.2xlarge (8 threads); run s3wf-20260922T162212Z-15921; bucket s3://glyd-bench-712416033631
 codec         stored_bytes    ratio    comp_s      up_s    down_s  decomp_s     cpu_s  verified
+raw             8731164037    1.000      0.06     15.60     21.48      0.06      0.11  true
+glyd-max        2212667969    3.946     17.34      5.38      5.98     18.82     57.65  true
+glyd-ultra      1872520396    4.663    634.48      4.55      5.39     16.90   4632.70  true
+glyd-max-rec     1849902366    4.720     16.07      4.46      4.94     18.95    110.15  true
+glyd-ultra-rec     1671415881    5.224    446.42      4.38      4.41     16.96   3234.19  true
+zstd-3          2272369865    3.842      5.34      5.71      5.81     15.32     45.02  true

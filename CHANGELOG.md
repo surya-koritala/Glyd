@@ -8,6 +8,21 @@ every earlier format.
 
 ## Unreleased
 
+### Deflate containers opened
+
+- Zip (and so .docx, .xlsx, .pptx, .jar, .apk, .odt), zlib streams and
+  PNG join gzip: `src/deflate.rs`, envelope `GLYDDEFL` (replacing
+  v0.12.0's `GLYDGZIP`). Every deflate stream inside is decoded with
+  what it takes to re-encode it bit for bit; headers, directories,
+  stored entries and non-image chunks are kept; a PNG's image stream is
+  cut back into its IDAT chunks. Entries preflate cannot reproduce stay
+  as they are, and so does an object that would not shrink. The CLI's
+  `--max` takes record mode on an opened container where it pays.
+  Measured, decodes compared: a Guava jar 3.05 → 2.15 MB at `--max`
+  (zstd -19 on the jar: 2.70), 1.53 MB cold; a GitHub source zip
+  2.73 → 2.39, 1.76 cold; a 60-slide .pptx 88 → 46 KB; a 30,000-row
+  .xlsx 1.34 → 0.47 MB cold; a PNG photo 1.83 → 1.64, 1.19 cold.
+
 ### Speed, same bytes
 
 - The store's put, where its time went (`GLYD_STORE_TIMING=1` prints

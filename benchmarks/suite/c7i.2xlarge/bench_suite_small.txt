@@ -1,0 +1,41 @@
+machine: "cpu":"Intel(R) Xeon(R) Platinum 8488C","cores":8,"arch":"x86_64","os":"linux","date":"2026-09-22T16:35:49Z"
+
+gharchive events (JSON lines): 20000 objects, 65934510 bytes (mean 3296 B); dictionaries from 20000 samples
+  codec               ratio      bytes     +dict     compress us p50/p90/p99   decompress us p50/p90/p99
+  glyd-max+dict       7.380    8934278   9047162      5.10/  36.72/  77.24      1.50/   9.23/  18.69
+  glyd-ultra+dict     8.492    7764004   7876888    696.80/3637.59/6037.83      1.45/   8.39/  24.03
+  zstd-3+dict         7.568    8712820   8825460      2.62/  27.35/  71.65      0.93/   5.92/  13.35
+  zstd-19+dict        8.778    7511584   7624224    216.95/2359.89/4592.48      0.90/   6.09/  15.44
+  lz4+dict            4.902   13450980  13553380     15.20/  27.43/  45.32      0.41/   4.40/   9.09
+
+nasa access log, 1024 B records: 20000 objects, 19376287 bytes (mean 968 B); dictionaries from 20000 samples
+  codec               ratio      bytes     +dict     compress us p50/p90/p99   decompress us p50/p90/p99
+  glyd-max+dict       4.912    3944664   4057547      4.86/   5.35/   5.77      1.45/   1.61/   1.76
+  glyd-ultra+dict     5.927    3269361   3382244    685.94/ 718.86/ 751.34      1.22/   1.40/   1.55
+  zstd-3+dict         5.119    3785074   3897714      2.58/   2.95/   3.26      0.98/   1.15/   1.32
+  zstd-19+dict        6.162    3144335   3256975    237.85/ 262.43/ 284.65      0.72/   0.89/   1.04
+  lz4+dict            3.522    5501525   5603925     17.64/  18.14/  18.69      0.68/   0.78/   0.86
+
+nasa access log, 4096 B records: 20000 objects, 80824762 bytes (mean 4041 B); dictionaries from 20000 samples
+  codec               ratio      bytes     +dict     compress us p50/p90/p99   decompress us p50/p90/p99
+  glyd-max+dict       6.657   12142171  12255053     15.43/  16.56/  17.59      4.65/   5.01/   5.34
+  glyd-ultra+dict     8.396    9626713   9739595   1347.10/1402.38/1448.99      3.69/   4.07/   4.43
+  zstd-3+dict         6.633   12185522  12298162      8.32/   9.11/   9.78      3.49/   3.83/   4.15
+  zstd-19+dict        8.608    9389785   9502425   1038.47/1101.11/1155.89      2.44/   2.78/   3.11
+  lz4+dict            4.226   19126235  19228635     23.51/  24.30/  24.96      2.64/   2.87/   3.07
+
+wikipedia pageviews, 1024 B records: 20000 objects, 20000974 bytes (mean 1000 B); dictionaries from 20000 samples
+  codec               ratio      bytes     +dict     compress us p50/p90/p99   decompress us p50/p90/p99
+  glyd-max+dict       2.677    7471035   7583914      7.30/   8.45/   9.21      2.31/   2.83/   3.17
+  glyd-ultra+dict     2.969    6735973   6848852    626.19/ 664.35/ 702.86      2.38/   2.95/   3.30
+  zstd-3+dict         2.693    7427222   7539862      4.94/   6.05/   6.80      1.68/   2.11/   2.49
+  zstd-19+dict        3.146    6357331   6469971    178.12/ 216.31/ 240.87      1.59/   2.11/   3.43
+  lz4+dict            1.968   10161442  10263842     17.57/  18.12/  18.55      0.57/   0.98/   1.12
+
+wikipedia pageviews, 4096 B records: 20000 objects, 81562243 bytes (mean 4078 B); dictionaries from 20000 samples
+  codec               ratio      bytes     +dict     compress us p50/p90/p99   decompress us p50/p90/p99
+  glyd-max+dict       2.995   27234639  27347518     26.69/  29.37/  31.46      8.36/   9.69/  10.47
+  glyd-ultra+dict     3.362   24257645  24370524   1081.79/1176.31/1260.71      8.65/   9.98/  11.23
+  zstd-3+dict         2.977   27398447  27511087     18.20/  24.55/  28.09      6.01/   6.88/   7.58
+  zstd-19+dict        3.567   22864810  22977450    709.51/ 783.19/ 863.35      6.55/   8.13/   9.45
+  lz4+dict            2.091   39005378  39107778     28.58/  29.75/  30.82      2.21/   2.78/   3.95

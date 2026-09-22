@@ -302,6 +302,9 @@ fn main() -> io::Result<()> {
             (true, false, false, true, _, _, _) => Some((glyd::compress_into_ultra, glyd::format::PARALLEL_UNIT_ULTRA)),
             _ => None,
         };
+        // A deflate container is opened by the level itself (which keeps
+        // it closed when that is smaller), not streamed.
+        let stream_level = if glyd::deflate::is_container(input_data) { None } else { stream_level };
         if let Some((unit_level, smallest)) = stream_level {
             // Units written as they finish: the output never sits whole
             // in memory, and the write overlaps the compressing.
@@ -309,28 +312,19 @@ fn main() -> io::Result<()> {
                 Some(ref p) if p != "-" => Box::new(std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(p)?)),
                 _ => Box::new(io::stdout()),
             };
-            // A gzip object: opened, its envelope first, its plain text streamed.
-            let opened = if glyd::gz::is_gzip(input_data) { glyd::gz::open(input_data) } else { None };
-            let data: &[u8] = match &opened {
-                Some(o) => {
-                    let mut head = Vec::new();
-                    glyd::gz::envelope(input_data.len(), &o.recipe, &mut head);
-                    sink.write_all(&head)?;
-                    &o.plain
-                }
-                None => input_data,
-            };
             if max && !ultra {
-                glyd::compress_max_stream(data, |part| sink.write_all(part))?;
+                glyd::compress_max_stream(input_data, |part| sink.write_all(part))?;
             } else {
-                glyd::compress_stream(data, unit_level, smallest, |unit| sink.write_all(unit))?;
+                glyd::compress_stream(input_data, unit_level, smallest, |unit| sink.write_all(unit))?;
             }
             sink.flush()?;
             return Ok(());
         }
         if records && cold {
             glyd::compress_records_into_cold(&input_data, &mut out);
-        } else if records && max && !ultra {
+        } else if max && !ultra && (records || glyd::deflate::is_container(input_data)) {
+            // An opened container's content takes record mode where
+            // that pays (a gzipped log is a log).
             glyd::compress_records_into_max(&input_data, &mut out);
         } else if records {
             // Record mode parallelises over its own units; the level

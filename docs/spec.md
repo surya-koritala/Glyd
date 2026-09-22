@@ -61,6 +61,20 @@ A decoder that meets a magic it does not know should stop: the
 envelopes carry no version byte because each magic *is* the version
 (a changed layout gets a new magic).
 
+## 2b. Deflate containers opened (`GLYDDEFL`)
+
+`"GLYDDEFL"`, original length and recipe length (varints), the recipe,
+then the inner stream of the plain text in any format above. The
+recipe (`src/deflate.rs`) is a count of segments then the segments,
+each tagged: 0 verbatim (varint length, the bytes); 1 deflate (varint
+length and preflate's corrections, varint length of the plain text it
+takes from the plain text in order); 2 a PNG image stream (2 zlib
+header bytes, corrections as for 1, plain length, 4 Adler-32 bytes,
+then a varint chunk count and per chunk a varint length and 4 CRC
+bytes, the recreated zlib stream being cut into IDAT chunks so).
+Recognised containers: gzip (members back to back), zip (local
+entries, method 8 opened, everything else kept), zlib, PNG.
+
 ## 3. The store
 
 Not a stream but a directory (`glyd-store/src/lib.rs`): `index` (one text line
