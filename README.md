@@ -126,7 +126,7 @@ million a year at list price; the percentages above are what to multiply.
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 cargo install glyd glyd-store                # from crates.io
-pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.13.0-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.13.1-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -434,33 +434,35 @@ logs (ELB, CloudFront, CloudTrail and flow logs are delivered that
 way), zip and tar archives, .docx/.xlsx/.pptx, .jar, PDF, PNG — and
 to zstd all of it is noise. Containers inside containers open too,
 four deep: a tar of gzipped logs, a tar.gz of pictures, a deck's
-JPEGs under their deflate entries. Glyd opens the container: every deflate stream
-inside is decoded to its plain text along with what it takes to
-re-encode it bit for bit (preflate, the crate's one dependency);
-headers, directories, stored entries and everything else are kept as
-they are; the plain text takes the level asked for (record mode where
-it pays, the cold level, a base — all see the content); and `-d` gives
-back the identical object. The object is also compressed closed, at
-the same level, and the smaller of the two is kept. Measured on this
-Mac, every decode compared with the input:
+JPEGs under their deflate entries. Glyd opens the container: every
+deflate stream inside is decoded to its content along with what it
+takes to re-encode it bit for bit (preflate); the plain text is that
+content, then every other byte of the object as it was (headers,
+directories, stored entries, a tar's files) and the corrections, and
+it takes the level asked for — record mode where it pays, the cold
+level, a base, which sees all of it, so versions of an archive share
+what they have in common. `-d` gives back the identical object. The
+object is also compressed closed, at the same level, and the smaller
+of the two is kept. Measured on this Mac, every decode compared with
+the input:
 
 | Object | As is | zstd -19 on it | ⚡&nbsp;**Glyd ‑‑max** | ⚡&nbsp;**‑‑ultra** | ⚡&nbsp;**‑‑cold** |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| NASA access log, gzip -6 (205 MB inside) | 20.7 MB | 20.7 MB | **8.2 MB (−60%)** | 7.6 MB | **6.5 MB (−69%)** |
-| Linux tree, 512 MB, gzip -6 | 72.7 MB | 72.0 MB | **56.1 MB (−23%)** | 42.0 MB | **28.4 MB (−61%)** |
-| zstd source, GitHub zip | 2.73 MB | 2.57 MB | **2.28 MB (−16%)** | 1.94 MB | **1.64 MB (−40%)** |
-| Guava jar, 2,059 entries | 3.05 MB | 2.70 MB | **1.76 MB (−42%)** | 1.43 MB | **1.14 MB (−63%)** |
-| .pptx, 60 slides | 88 KB | 56 KB | **24 KB (−73%)** | 21 KB | **16 KB (−82%)** |
-| .pptx, 12 slides of photos (6.5 MB) | 6.51 MB | 6.50 MB | **5.29 MB (−19%)** at every level | | |
-| .docx, 6 PNG screenshots (2.5 MB) | 2.51 MB | 2.50 MB | **2.32 MB (−8%)** | 2.1 MB | **1.65 MB (−34%)** |
+| NASA access log, gzip -6 (205 MB inside) | 20.7 MB | 20.7 MB | **8.19 MB (−60%)** | 7.67 MB | **6.55 MB (−68%)** |
+| Linux tree, 512 MB, gzip -6 | 72.7 MB | 72.0 MB | **56.1 MB (−23%)** | 42.0 MB | **28.6 MB (−61%)** |
+| zstd source, GitHub zip | 2.73 MB | 2.57 MB | **2.14 MB (−22%)** | 1.66 MB | **1.34 MB (−51%)** |
+| Guava jar, 2,059 entries | 3.05 MB | 2.70 MB | **1.77 MB (−42%)** | 1.42 MB | **1.11 MB (−64%)** |
+| .pptx, 60 slides | 88 KB | 56 KB | **24.7 KB (−72%)** | 21.5 KB | **15.2 KB (−83%)** |
+| .pptx, 12 slides of photos (6.5 MB) | 6.51 MB | 6.50 MB | **5.26 MB (−19%)** | 5.16 MB | **5.07 MB (−22%)** |
+| .docx, 6 PNG screenshots (2.5 MB) | 2.51 MB | 2.50 MB | **2.32 MB (−8%)** | 2.08 MB | **1.65 MB (−34%)** |
 | tar of the 6 photos, and the same tar gzipped | 36.0 MB | 35.5 MB | **27.3 MB (−24%)**, −23% through the gzip | | |
-| tar.gz of a gzipped log, a PDF, a PNG, a .docx (23 MB) | 22.9 MB | 22.9 MB | **10.2 MB (−56%)** | | |
+| tar.gz of a gzipped log, a PDF, a PNG, a .docx (23 MB) | 22.9 MB | 22.9 MB | **10.2 MB (−56%)** | 9.47 MB | **7.94 MB (−65%)** |
 | .xlsx, 30,000 rows | 1.34 MB | 1.23 MB | 1.33 MB (kept closed) | 1.05 MB | **0.47 MB (−65%)** |
-| .docx, 400 sections | 141 KB | 138 KB | 140 KB | 117 KB | **77 KB (−46%)** |
-| RFC 8878, PDF | 440 KB | 242 KB | **192 KB (−56%)** | 167 KB | **126 KB (−71%)** |
-| arXiv paper, PDF (pdfTeX) | 2.22 MB | 1.04 MB | **730 KB (−67%)** | 651 KB | **581 KB (−74%)** |
-| arXiv paper with figures, PDF | 6.77 MB | 5.54 MB | **4.23 MB (−38%)** | 3.56 MB | **2.85 MB (−58%)** |
-| PNG photo | 1.83 MB | 1.77 MB | **1.64 MB (−10%)** | 1.52 MB | **1.19 MB (−35%)** |
+| .docx, 400 sections | 141 KB | 138 KB | 140 KB | 117 KB | **76.7 KB (−46%)** |
+| RFC 8878, PDF | 440 KB | 242 KB | **191 KB (−57%)** | 158 KB | **106 KB (−76%)** |
+| arXiv paper, PDF (pdfTeX) | 2.22 MB | 1.04 MB | **741 KB (−67%)** | 616 KB | **504 KB (−77%)** |
+| arXiv paper with figures, PDF | 6.77 MB | 5.54 MB | **4.24 MB (−37%)** | 3.55 MB | **2.82 MB (−58%)** |
+| PNG photo | 1.83 MB | 1.77 MB | **1.65 MB (−10%)** | 1.52 MB | **1.19 MB (−35%)** |
 | PNG illustration | 669 KB | 663 KB | **634 KB (−5%)** | 540 KB | **448 KB (−33%)** |
 | 6 JPEG photos, 35.9 MB | 35.9 MB | 35.9 MB | **27.3 MB (−24%)** at every level | | |
 
@@ -761,7 +763,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.13.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.13.1** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every

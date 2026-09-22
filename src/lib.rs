@@ -60,11 +60,32 @@ fn threads() -> usize {
     }
 }
 
+thread_local! {
+    /// Set on a thread while it compresses a part of an object: a unit
+    /// of a parallel stream, a record unit, a trial sample, an opened
+    /// container's plain text. A part is never opened as a container of
+    /// its own: its output is laid into a stream whose decoder reads
+    /// plain blocks.
+    static PART: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `f` with this thread marked as compressing a part (see `PART`).
+pub(crate) fn as_part<T>(f: impl FnOnce() -> T) -> T {
+    let old = PART.with(|p| p.replace(true));
+    let r = f();
+    PART.with(|p| p.set(old));
+    r
+}
+
+pub(crate) fn in_part() -> bool {
+    PART.with(|p| p.get())
+}
+
 /// `f(i)` for every `i < n`, on up to `threads()` scoped threads that
 /// each take the next unit as they finish one and exit when none is
 /// left (no idle thread spins, so the CPU time is the work's). The
 /// first error stops the rest and is returned.
-fn par_units<E: Send>(n: usize, f: impl Fn(usize) -> std::result::Result<(), E> + Sync) -> std::result::Result<(), E> {
+pub(crate) fn par_units<E: Send>(n: usize, f: impl Fn(usize) -> std::result::Result<(), E> + Sync) -> std::result::Result<(), E> {
     let workers = threads().min(n);
     if workers <= 1 {
         return (0..n).try_for_each(f);
@@ -679,7 +700,7 @@ pub fn compress_into_max_dense(input: &[u8], output: &mut Vec<u8>) {
         return;
     }
     if input.len() <= PARALLEL_UNIT_MAX || threads() == 1 {
-        return compress_into_max(input, output);
+        return as_part(|| compress_into_max(input, output));
     }
     let _ = compress_max_stream(input, |part| {
         output.extend_from_slice(part);
@@ -837,7 +858,7 @@ pub fn compress_with_dict_ultra(dict: &Dict, input: &[u8], output: &mut Vec<u8>)
 fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>), smallest: usize) {
     let unit = parallel_unit(input.len(), threads(), smallest);
     if input.len() <= unit {
-        level(input, output);
+        as_part(|| level(input, output));
         return;
     }
 
@@ -845,7 +866,7 @@ fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &
     let compressed_chunks: Vec<std::sync::Mutex<Vec<u8>>> = chunks.iter().map(|_| std::sync::Mutex::new(Vec::new())).collect();
     let _ = par_units::<()>(chunks.len(), |i| {
         let mut chunk_out = Vec::with_capacity(chunks[i].len() / 2 + 1024);
-        level(chunks[i], &mut chunk_out);
+        as_part(|| level(chunks[i], &mut chunk_out));
         *compressed_chunks[i].lock().unwrap() = chunk_out;
         Ok(())
     });
@@ -890,7 +911,7 @@ pub fn compress_stream(input: &[u8], level: fn(&[u8], &mut Vec<u8>), smallest: u
         });
         let _ = par_units::<()>(n, |i| {
             let mut out = Vec::with_capacity(chunks[i].len() / 2 + 1024);
-            level(chunks[i], &mut out);
+            as_part(|| level(chunks[i], &mut out));
             *slots[i].lock().unwrap() = Some(out);
             let mut d = done.lock().unwrap();
             *d += 1;
@@ -1052,7 +1073,7 @@ unsafe fn decode_block(
 /// header is validated; the payloads are not read).
 pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
     #[cfg(feature = "deflate")]
-    if let Some((original, _, _)) = deflate::parse(compressed) {
+    if let Some(original) = deflate::original_len(compressed) {
         return Ok(original);
     }
     #[cfg(feature = "jpeg")]
@@ -1070,6 +1091,10 @@ pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
     }
     if let Some((_, units)) = base_envelope(compressed) {
         return Ok(units.iter().map(|u| u.len).sum());
+    }
+    #[cfg(feature = "deflate")]
+    if let Some(r) = embedded_envelopes(compressed) {
+        return r.map(|v| v.len());
     }
     total_uncompressed_len(compressed)
 }
@@ -1108,7 +1133,7 @@ pub fn compress_pack(objects: &[&[u8]], output: &mut Vec<u8>, level: fn(&[u8], &
     put_varint(output, objects.len() as u32);
     put_varint(output, index.len() as u32);
     output.extend_from_slice(&index);
-    records_with(&joined, output, level, PARALLEL_UNIT_MAX);
+    as_part(|| records_with(&joined, output, level, PARALLEL_UNIT_MAX));
 }
 
 /// The objects' lengths and the payload of a pack.
@@ -1308,7 +1333,7 @@ pub fn compress_records_into_cold(input: &[u8], output: &mut Vec<u8>) {
         return;
     }
     if !records_pay(records_trial(input), compress_into_cold) {
-        return compress_parallel_into_cold(input, output);
+        return as_part(|| compress_parallel_into_cold(input, output));
     }
     records_units(input, output, compress_into_cold)
 }
@@ -1496,12 +1521,12 @@ fn base_region(base_end: usize, map: &[(u64, u64)], unit: &[u8], a: usize, b: us
 /// image costs a few percent of what it costs alone.
 pub fn compress_with_base(base: &[u8], input: &[u8], output: &mut Vec<u8>, ultra: bool) {
     #[cfg(feature = "deflate")]
-    if deflate::is_container(input) {
+    if !in_part() && deflate::is_container(input) {
         if let Some(opened) = deflate::open(input) {
             // Both sides opened: the delta is between the plain texts.
             deflate::envelope(input.len(), &opened.recipe, output);
-            let base_plain = if deflate::is_container(base) { deflate::open(base).map(|o| o.plain) } else { None };
-            return compress_with_base(base_plain.as_deref().unwrap_or(base), &opened.plain, output, ultra);
+            let base_plain = deflate::open(base).map(|o| o.plain);
+            return as_part(|| compress_with_base(base_plain.as_deref().unwrap_or(base), &opened.plain, output, ultra));
         }
     }
     let parse = if ultra { Parse::Ultra } else { Parse::Dfast };
@@ -1598,10 +1623,7 @@ fn base_units_into(base: &[u8], units: &[BaseUnit<'_>], dst: &mut [u8]) -> Resul
 /// Decode `compressed` (a `compress_with_base` output) with its base.
 pub fn decompress_with_base(base: &[u8], compressed: &[u8]) -> Result<Vec<u8>> {
     #[cfg(feature = "deflate")]
-    if let Some(r) = deflate::unwrap(compressed, |inner| {
-        let base_plain = if deflate::is_container(base) { deflate::open(base).map(|o| o.plain) } else { None };
-        decompress_with_base(base_plain.as_deref().unwrap_or(base), inner)
-    }) {
+    if let Some(r) = deflate::unwrap_with_base(base, compressed, decompress_with_base) {
         return r;
     }
     let (id, units) = base_envelope(compressed).ok_or(CodecError::CorruptedBitstream("not a base envelope"))?;
@@ -1620,7 +1642,7 @@ pub fn decompress_with_base(base: &[u8], compressed: &[u8]) -> Result<Vec<u8>> {
 pub fn decompress_stream_with_base(base: &[u8], compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
     let codec = |e: CodecError| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     #[cfg(feature = "deflate")]
-    if deflate::parse(compressed).is_some() {
+    if deflate::original_len(compressed).is_some() {
         return sink(&decompress_with_base(base, compressed).map_err(codec)?);
     }
     let (id, units) = base_envelope(compressed).ok_or_else(|| codec(CodecError::CorruptedBitstream("not a base envelope")))?;
@@ -1738,8 +1760,10 @@ fn records_pay(sample: &[u8], _level: fn(&[u8], &mut Vec<u8>)) -> bool {
     match record::transform(sample) {
         Some(image) => {
             let (mut a, mut b) = (Vec::new(), Vec::new());
-            compress_into_max(sample, &mut a);
-            compress_into_max(&image, &mut b);
+            as_part(|| {
+                compress_into_max(sample, &mut a);
+                compress_into_max(&image, &mut b);
+            });
             b.len() * 100 < a.len() * 95
         }
         None => false,
@@ -1780,13 +1804,13 @@ fn records_units(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u
         let mut out = Vec::with_capacity(unit.len() / 3 + 1024);
         let image = records_pay(records_trial(unit), level) && match record::transform(unit) {
             Some(image) => {
-                level(&image, &mut out);
+                as_part(|| level(&image, &mut out));
                 true
             }
             None => false,
         };
         if !image {
-            level(unit, &mut out);
+            as_part(|| level(unit, &mut out));
         }
         *slots[i].lock().unwrap() = (image, out);
         Ok(())
@@ -1811,7 +1835,7 @@ pub fn compress_records_into_max(input: &[u8], output: &mut Vec<u8>) {
         return;
     }
     if !records_pay(records_trial(input), compress_into_max) {
-        return compress_parallel_into_max(input, output);
+        return as_part(|| compress_parallel_into_max(input, output));
     }
     records_units(input, output, compress_into_max)
 }
@@ -1824,7 +1848,7 @@ pub fn compress_records_into_max_dense(input: &[u8], output: &mut Vec<u8>) {
         return;
     }
     if !records_pay(records_trial(input), compress_into_max) {
-        return compress_into_max_dense(input, output);
+        return as_part(|| compress_into_max_dense(input, output));
     }
     records_units(input, output, compress_into_max)
 }
@@ -1909,6 +1933,59 @@ fn total_uncompressed_len(compressed: &[u8]) -> Result<usize> {
     Ok(total)
 }
 
+/// Streams written by v0.12.0 and v0.13.0 could hold a unit that was
+/// itself opened as a container: an envelope where a block was due
+/// (`as_part` keeps that from happening now). Such a stream is read
+/// around it: runs of blocks decoded as they are, each envelope's inner
+/// blocks taken until they hold the plain text its recipe needs, then
+/// closed. `None` for any other stream.
+#[cfg(feature = "deflate")]
+fn embedded_envelopes(compressed: &[u8]) -> Option<Result<Vec<u8>>> {
+    let mut cursor = 0usize;
+    while cursor + COMPACT_HEADER_MIN <= compressed.len() {
+        match parse_header(compressed, cursor) {
+            Ok((_, next)) => cursor = next,
+            Err(_) if deflate::legacy_magic(&compressed[cursor..]) => return Some(read_around_envelopes(compressed)),
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
+#[cfg(feature = "deflate")]
+fn read_around_envelopes(compressed: &[u8]) -> Result<Vec<u8>> {
+    let bad = || CodecError::CorruptedBitstream("an embedded envelope that does not close");
+    let mut out = Vec::new();
+    let (mut cursor, mut run) = (0usize, 0usize);
+    while cursor < compressed.len() {
+        if deflate::legacy_magic(&compressed[cursor..]) {
+            if run < cursor {
+                out.extend_from_slice(&decompress(&compressed[run..cursor])?);
+            }
+            let (inner_at, need) = deflate::embedded_head(&compressed[cursor..]).ok_or_else(bad)?;
+            let (start, mut end, mut total) = (cursor + inner_at, cursor + inner_at, 0usize);
+            while total < need {
+                let (header, next) = parse_header(compressed, end)?;
+                total += header.uncompressed_len as usize;
+                end = next;
+            }
+            if total != need {
+                return Err(bad());
+            }
+            let plain = decompress(&compressed[start..end])?;
+            out.extend_from_slice(&deflate::embedded_close(&compressed[cursor..], &plain).ok_or_else(bad)?);
+            cursor = end;
+            run = end;
+        } else {
+            cursor = parse_header(compressed, cursor)?.1;
+        }
+    }
+    if run < cursor {
+        out.extend_from_slice(&decompress(&compressed[run..cursor])?);
+    }
+    Ok(out)
+}
+
 /// Decompress an entire SIMD-stream payload sequentially into a freshly allocated vector.
 pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
     #[cfg(feature = "deflate")]
@@ -1926,6 +2003,10 @@ pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
     }
     if is_pack(compressed) {
         return decompress_pack_joined(compressed);
+    }
+    #[cfg(feature = "deflate")]
+    if let Some(r) = embedded_envelopes(compressed) {
+        return r;
     }
     let total = total_uncompressed_len(compressed)?;
     let mut output = vec![0u8; total + PADDING * 2];
@@ -2050,6 +2131,15 @@ pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
         dst[..all.len()].copy_from_slice(&all);
         return Ok(all.len());
     }
+    #[cfg(feature = "deflate")]
+    if let Some(r) = embedded_envelopes(compressed) {
+        let out = r?;
+        if dst.len() < out.len() {
+            return Err(CodecError::OutputBufferTooSmall { required: out.len(), provided: dst.len() });
+        }
+        dst[..out.len()].copy_from_slice(&out);
+        return Ok(out.len());
+    }
     decompress_sequential(compressed, dst, true)
 }
 
@@ -2092,6 +2182,10 @@ pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
     }
     if is_pack(compressed) {
         return decompress_pack_joined(compressed);
+    }
+    #[cfg(feature = "deflate")]
+    if let Some(r) = embedded_envelopes(compressed) {
+        return r;
     }
     let total = total_uncompressed_len(compressed)?;
     let mut output = vec![0u8; total + PADDING * 2];
@@ -2246,6 +2340,10 @@ pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::
         }
         return Ok(());
     }
+    #[cfg(feature = "deflate")]
+    if let Some(r) = embedded_envelopes(compressed) {
+        return sink(&r.map_err(codec)?);
+    }
     let (blocks, units, total_uncomp) = scan_units(compressed).map_err(codec)?;
     if units.len() <= 1 {
         buf.resize(total_uncomp + PADDING * 2, 0);
@@ -2290,6 +2388,15 @@ pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usi
     }
     if is_pack(compressed) {
         return decompress_into(compressed, dst);
+    }
+    #[cfg(feature = "deflate")]
+    if let Some(r) = embedded_envelopes(compressed) {
+        let out = r?;
+        if dst.len() < out.len() {
+            return Err(CodecError::OutputBufferTooSmall { required: out.len(), provided: dst.len() });
+        }
+        dst[..out.len()].copy_from_slice(&out);
+        return Ok(out.len());
     }
     decompress_parallel_impl(compressed, dst, true)
 }

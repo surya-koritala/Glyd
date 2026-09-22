@@ -61,30 +61,50 @@ A decoder that meets a magic it does not know should stop: the
 envelopes carry no version byte because each magic *is* the version
 (a changed layout gets a new magic).
 
-## 2b. Deflate containers opened (`GLYDDEFL`)
+## 2b. Containers opened (`GLYDDEF2`)
 
-`"GLYDDEFL"`, original length and packed recipe length (varints), the
+`"GLYDDEF2"`, original length and packed recipe length (varints), the
 recipe compressed at the max level (a plain block stream), then the
-inner stream of the plain text in any format above. The recipe
-(`src/deflate.rs`) is a count of segments then the segments,
-each tagged: 0 verbatim (varint length, the bytes); 1 deflate (varint
-length and preflate's corrections, varint length of the plain text it
-takes from the plain text in order); 2 a PNG image stream (2 zlib
-header bytes, corrections as for 1, plain length, 4 Adler-32 bytes,
-then a varint chunk count and per chunk a varint length and 4 CRC
-bytes, the recreated zlib stream being cut into IDAT chunks so); 3 a
-JPEG stored inside (varint length, its Lepton stream); 4 a JPEG under
-a deflate stream (corrections as for 1, then the varint length of its
-Lepton stream, which stands in the plain text); 5 a container under a
-deflate stream (corrections, then a varint-length recipe of its own
-and the varint length of its plain text, which stands in the plain
-text); 6 a container stored inside (a recipe of its own and its plain
-length, likewise). Containers nest four deep. Recognised containers:
-gzip (members back to back), zip (local entries, method 8 opened,
-stored entries opened in their own way, everything else kept), tar
-(ustar entries, regular files opened in their own way), zlib, PNG, and
-PDF (every `stream` whose data is a zlib stream ending before an
-`endstream`, found by scanning).
+inner stream of the plain text in any format above. The plain text is
+the content of every opened stream, in order, then the side data:
+every byte of the object no stream claims (headers, directories,
+stored entries, a tar's files), preflate's corrections and Lepton
+streams, in the order the recipe takes them. The recipe
+(`src/deflate.rs`) is the segment count and the content's length
+(varints), then the segments, each a tag and its fields: 0 kept (varint
+length; the bytes from the side); 1 deflate (varint length of the
+corrections, from the side; varint length of the text, from the
+content); 2 a PNG image stream (2 zlib header bytes, corrections' and
+text's lengths as for 1, 4 Adler-32 bytes, then a varint chunk count
+and per chunk a varint length and 4 CRC bytes, the recreated zlib
+stream being cut into IDAT chunks so); 3 a JPEG stored inside (varint
+length of its Lepton stream, from the side); 4 a JPEG under a deflate
+stream (varint lengths of the corrections and of the Lepton stream,
+both from the side); 5 a container under a deflate stream (varint
+length of the corrections, from the side; then the inner container:
+its segment count, the varint length of its segments and the
+segments, the varint lengths of its content and of its side, taken
+from ours); 6 a container stored inside (the inner container,
+likewise). Containers nest four deep. Recognised containers: gzip
+(members back to back), zip (entries from the central directory, or
+walked when it does not parse; method 8 opened, stored entries opened
+in their own way), tar (ustar entries, regular files opened in their
+own way), zlib, PNG, and PDF (every `stream` whose data is a zlib
+stream ending, Adler-32 and white space after it, at its
+`endstream`). A part of a stream (a unit, a record unit) is never an
+envelope.
+
+Earlier envelopes decode: `"GLYDDEFL"` (v0.13.0: the same fields
+except that kept bytes and stored JPEGs' Lepton streams sat in the
+recipe, each with its varint length, and corrections after their
+varint length in the recipe; the plain text held only what the streams
+held) and `"GLYDGZIP"` (v0.12.0: original length, recipe length, the
+recipe as it is: a member count, per member its header, corrections
+(each a varint length then the bytes), the varint length of its plain
+text and its 8-byte trailer, then a varint-length tail). v0.12.0 and
+v0.13.0 could write such an envelope where a block of a multi-unit
+stream was due; a decoder reads the stream around it, the envelope's
+inner blocks being those that hold the plain text its recipe takes.
 
 ## 2c. JPEG transcoded (`GLYDJPEG`)
 

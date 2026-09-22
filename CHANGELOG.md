@@ -6,6 +6,41 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.13.1 — 2026-09-22
+
+Fixes. Every file v0.12.0 and v0.13.0 wrote reads back with this one.
+
+- **Files that did not decode.** Since v0.12.0 a unit of a multi-unit
+  stream could itself be opened as a container: a gzip member (from
+  v0.13.0 also a zip, tar or PDF) that began exactly on an internal
+  unit boundary got an envelope where a block was due, and the file
+  failed to decode ("Implausible block header"): an error, never wrong
+  bytes. Seen with v0.12.0's `--max` and v0.13.0's default level and
+  `--max` on a file with a gzip member at 8 MB. A part of a stream (a
+  unit, a record unit, a trial sample, an opened container's plain
+  text) is never opened now, and the decoders read such files: the
+  stream is read around the envelope, its inner blocks taken until they
+  hold the plain text its recipe needs. Files written by the released
+  binaries are in `tests/data/legacy/`, and a test reads them.
+- **Containers against a base, and their speed.** v0.13.0 kept a
+  container's own bytes (a tar's files and headers, a zip's directory)
+  and the corrections in the recipe, out of reach of base mode: an
+  Ubuntu image with 6,128 .gz files inside came out of
+  `compress_with_base` at 250.7 MB in 17 s, where without opening it is
+  25.6 MB. The envelope is now `GLYDDEF2`: the plain text holds the
+  streams' content, then every other byte, the corrections and the
+  transcoded pictures; the recipe is structure only. The same pair:
+  24.8 MB in 3.6 s, decoded in 1.9 s. Tar, zip and PDF entries open on
+  every core, and segments close on every core. `GLYDGZIP` (v0.12.0)
+  and `GLYDDEFL` (v0.13.0) envelopes still decode, alone and against a
+  base.
+- When the opened object loses to the closed one, the closed
+  compression already made is written instead of being made again.
+- A deflate stream expands to at most 200 times its size (at least
+  256 MB) before it is left closed.
+- `preflate-rs` and `lepton_jpeg` are pinned to exact versions: a base
+  must open to the same plain text for as long as its deltas are kept.
+
 ## v0.13.0 — 2026-09-22
 
 ### Deflate containers opened
