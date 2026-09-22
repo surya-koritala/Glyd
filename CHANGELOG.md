@@ -29,6 +29,16 @@ every earlier format.
   MB cold; a pdfTeX paper 2.22 → 0.73 MB (zstd -19: 1.04), a paper
   with figures 6.77 → 4.23 (5.54); a PNG photo 1.83 → 1.64, 1.19 cold.
 
+### JPEG transcoded
+
+- A JPEG is recoded losslessly by Lepton (`lepton_jpeg`, the Rust port
+  of Dropbox's, behind the default feature `jpeg`): its DCT
+  coefficients under an arithmetic coder with a predictor across
+  blocks, envelope `GLYDJPEG`, the identical JPEG back. Six photos,
+  35.9 MB: 27.3 MB, 24% fewer bytes (a JPEG XL transcode: 20%), every
+  one restored byte for byte; 5–7 MB/s in, 12–14 MB/s out, one core.
+  A JPEG Lepton cannot take, or that does not shrink, stays as it is.
+
 ### Speed, same bytes
 
 - The store's put, where its time went (`GLYD_STORE_TIMING=1` prints

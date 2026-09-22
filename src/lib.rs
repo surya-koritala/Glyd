@@ -27,6 +27,8 @@ pub mod shape;
 pub mod mmap;
 #[cfg(feature = "deflate")]
 pub mod deflate;
+#[cfg(feature = "jpeg")]
+pub mod jpeg;
 pub mod fixlog;
 pub mod record;
 pub mod ldm;
@@ -1037,6 +1039,10 @@ unsafe fn decode_block(
 pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
     #[cfg(feature = "deflate")]
     if let Some((original, _, _)) = deflate::parse(compressed) {
+        return Ok(original);
+    }
+    #[cfg(feature = "jpeg")]
+    if let Some((original, _)) = jpeg::parse(compressed) {
         return Ok(original);
     }
     if let Some(units) = records_envelope(compressed) {

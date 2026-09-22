@@ -68,12 +68,13 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
 5. **Already-compressed objects opened** (research section J). Done:
    gzip (v0.12.0), zip, Office documents, jars, PDF, zlib and PNG
    (next release): 5–82% under the object at the level that opens it,
-   16–74% where zstd -19 gets 3–53%. Next: JPEG through a JPEG XL
-   transcode (20%), then Parquet columns behind a "same table" option
-   (26–40%), then the recipe itself (preflate's corrections are a
-   fifth of a pdfTeX stream; a better predictor of zlib's choices would
-   halve what opening costs). Gate: the measured number on real
-   objects, every one restored byte for byte.
+   16–74% where zstd -19 gets 3–53%; JPEG transcoded by Lepton, 24%.
+   Next: Parquet columns behind a "same table" option (26–40%), then
+   the recipe itself (preflate's corrections are a fifth of a pdfTeX
+   stream; a better predictor of zlib's choices would halve what
+   opening costs), then zip entries and PDF streams that are
+   themselves JPEG or PNG (a .docx's pictures). Gate: the measured
+   number on real objects, every one restored byte for byte.
 6. **Video: measure the headroom, decide nothing before.** The
    residual an H.264 file keeps is what its block predictor could not
    guess; how much a far stronger predictor would guess of the same

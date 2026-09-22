@@ -78,6 +78,12 @@ entries, method 8 opened, everything else kept), zlib, PNG, and PDF
 (every `stream` whose data is a zlib stream ending before an
 `endstream`, found by scanning).
 
+## 2c. JPEG transcoded (`GLYDJPEG`)
+
+`"GLYDJPEG"`, original length (varint), then the Lepton stream
+(`lepton_jpeg`, the format of Dropbox's Lepton) of the JPEG, which
+decodes to the identical JPEG.
+
 ## 3. The store
 
 Not a stream but a directory (`glyd-store/src/lib.rs`): `index` (one text line

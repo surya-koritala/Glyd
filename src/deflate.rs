@@ -40,8 +40,13 @@ pub struct Opened {
     pub recipe: Vec<u8>,
 }
 
-/// Whether `input` starts like a container worth opening.
+/// Whether `input` starts like a container worth opening (a JPEG
+/// counts: it is transcoded by `jpeg` through the same hooks).
 pub fn is_container(input: &[u8]) -> bool {
+    #[cfg(feature = "jpeg")]
+    if crate::jpeg::is_jpeg(input) {
+        return true;
+    }
     is_gzip(input) || is_zip(input) || is_png(input) || is_pdf(input) || is_zlib(input)
 }
 
@@ -464,6 +469,10 @@ pub(crate) fn wrap(input: &[u8], output: &mut Vec<u8>, inner: impl FnOnce(&[u8],
     if !is_container(input) || CLOSED.load(std::sync::atomic::Ordering::Relaxed) {
         return false;
     }
+    #[cfg(feature = "jpeg")]
+    if crate::jpeg::is_jpeg(input) {
+        return crate::jpeg::wrap(input, output);
+    }
     let Some(opened) = open(input) else { return false };
     // Opened against closed, both at the caller's level: a container
     // can hold repeats of whole streams (a PDF's fonts) that the level
@@ -485,6 +494,10 @@ pub(crate) fn wrap(input: &[u8], output: &mut Vec<u8>, inner: impl FnOnce(&[u8],
 /// The original object of an envelope, its inner stream decoded by
 /// `inner`; `None` when `compressed` is no envelope.
 pub(crate) fn unwrap(compressed: &[u8], inner: impl FnOnce(&[u8]) -> crate::Result<Vec<u8>>) -> Option<crate::Result<Vec<u8>>> {
+    #[cfg(feature = "jpeg")]
+    if let Some(r) = crate::jpeg::unwrap(compressed) {
+        return Some(r);
+    }
     let (original, recipe, stream) = parse(compressed)?;
     Some(inner(stream).and_then(|plain| match close(&recipe, &plain) {
         Some(out) if out.len() == original => Ok(out),

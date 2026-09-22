@@ -14,13 +14,16 @@ exclude = ["corpus/", "benchmarks/", "experiments/", "docs/benchmarks/", "bindin
 members = [".", "glyd-store"]
 
 [features]
-default = ["deflate"]
-# Gzip objects opened and re-encoded bit for bit (src/gz.rs); the one
-# dependency, and the one thing `--no-default-features` gives up.
+default = ["deflate", "jpeg"]
+# Deflate containers opened and re-encoded bit for bit (src/deflate.rs)
+# and JPEGs transcoded losslessly (src/jpeg.rs): the dependencies, and
+# what `--no-default-features` gives up.
 deflate = ["dep:preflate-rs"]
+jpeg = ["dep:lepton_jpeg"]
 
 [dependencies]
 preflate-rs = { version = "0.7", optional = true }
+lepton_jpeg = { version = "0.5", optional = true }
 
 # The reference codecs are linked by the benchmark examples and tests
 # only; the library and the CLI carry none of them.

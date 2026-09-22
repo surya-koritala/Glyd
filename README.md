@@ -425,7 +425,7 @@ of each, 10 cores, every decode byte-checked):
 `--max -r` writes these at 260-460 MB/s and reads them back at
 1,200-1,400 MB/s.
 
-### Deflate containers opened: gzip, zip, Office documents, jars, PDF, PNG
+### Objects opened: gzip, zip, Office documents, jars, PDF, PNG — and JPEG transcoded
 
 Much of what sits in a bucket is deflate inside a container — gzipped
 logs (ELB, CloudFront, CloudTrail and flow logs are delivered that
@@ -454,6 +454,7 @@ Mac, every decode compared with the input:
 | arXiv paper with figures, PDF | 6.77 MB | 5.54 MB | **4.23 MB (−38%)** | 3.56 MB | **2.85 MB (−58%)** |
 | PNG photo | 1.83 MB | 1.77 MB | **1.64 MB (−10%)** | 1.52 MB | **1.19 MB (−35%)** |
 | PNG illustration | 669 KB | 663 KB | **634 KB (−5%)** | 540 KB | **448 KB (−33%)** |
+| 6 JPEG photos, 35.9 MB | 35.9 MB | 35.9 MB | **27.3 MB (−24%)** at every level | | |
 
 Where the container's own deflate was already near what the fast
 level does on the content (an Office XML sheet), the fast level keeps
@@ -462,9 +463,13 @@ that makes it exact: about 5 MB/s of deflate per core in (50 MB/s of
 content), three times that out; per terabyte of gzipped logs on S3
 Standard, about $2 of CPU once against $166 a year. Streams preflate
 cannot reproduce, or predicts badly (corrections over a quarter of
-the stream), are kept as they are: 18 of the jar's 2,059. The same for
-JPEG (a JPEG XL transcode, 20%) and Parquet (its columns as records,
-26–40%) is measured in
+the stream), are kept as they are: 18 of the jar's 2,059. JPEG takes
+a different road: its DCT coefficients are recoded by Lepton (the
+Rust port of Dropbox's, `lepton_jpeg`) with an arithmetic coder and a
+predictor across blocks, 24% fewer bytes on the six photos above
+against 20% for a JPEG XL transcode, at 5–7 MB/s in and 12–14 out on
+one core, the identical JPEG back. Parquet (its columns as records,
+26–40%, the same table rather than the same bytes) is measured in
 [experiments/research](experiments/research/README.md#j-re-doing-what-is-already-compressed)
 and not yet built.
 
