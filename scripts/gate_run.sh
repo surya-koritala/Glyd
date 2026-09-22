@@ -1,20 +1,26 @@
 #!/usr/bin/env bash
-# The store's gate, run on the machine holding the corpus: every object
-# put through the store into S3, in name order; zstd -3's bytes for the
-# same objects; every object read back and compared byte for byte; the
-# metadata directory deleted and rebuilt from the bucket, then verified.
-# Wall time and rate of each phase. Results in <results>/gate.txt, the
-# per-object put lines in <results>/put.log.
+# The store's gate, run on the machine holding the corpus, with zstd -3
+# through the same S3 client as the baseline:
+#   zstd put:    every object compressed (zstd -3, all cores) and uploaded
+#   store put:   every object through the store into S3, in name order
+#   zstd get:    every object downloaded and decompressed, one at a time
+#   store get:   every object read back, one process per object (a cold
+#                reader: its chain decoded from the bucket)
+#   restore:     every object read back by one process (a warm reader)
+# Every read is compared byte for byte with its original, outside the
+# timing. With GATE_REBUILD=1 the metadata directory is then deleted,
+# rebuilt from the bucket and verified. Results in <results>/gate.txt.
 #   scripts/gate_run.sh <corpus dir> <s3://bucket/prefix> <work dir> <results dir>
 set -uo pipefail
 CORPUS="$1"; S3="$2"; WORK="$3"; RESULTS="$4"
 GS="${GLYD_STORE:-glyd-store}"
+S3CP="${S3CP:-$(dirname "$GS")/examples/s3cp}"
 META="$WORK/meta"; BACK="$WORK/back"
 mkdir -p "$RESULTS" "$WORK"
 rm -rf "$META" "$BACK"; mkdir -p "$BACK"
 OUT="$RESULTS/gate.txt"
 now() { date +%s.%N; }
-rate() { echo "$1 / ($3 - $2) / 1000000" | bc -l | cut -c1-7; } # bytes t0 t1 -> MB/s
+rate() { echo "$1 / $2 / 1000000" | bc -l | cut -c1-7; } # bytes seconds -> MB/s
 FILES=$(ls -1 "$CORPUS" | grep -v '\.part$' | sort)
 N=$(echo "$FILES" | wc -l | tr -d ' ')
 size() { stat -c %s "$1" 2>/dev/null || stat -f %z "$1"; }
@@ -26,36 +32,64 @@ RAW=0; for f in $FILES; do RAW=$((RAW + $(size "$CORPUS/$f"))); done
     echo "corpus: $N objects, $RAW bytes"
 } > "$OUT"
 
-# zstd -3, every object alone, all cores.
-t0=$(now); Z=0
-for f in $FILES; do Z=$((Z + $(zstd -3 -T0 -q -c "$CORPUS/$f" | wc -c))); done
-t1=$(now)
-echo "zstd-3 alone: $Z bytes, $(rate $RAW $t0 $t1) MB/s" >> "$OUT"
+# zstd -3: compress and upload, every object.
+t=0; Z=0; i=0
+for f in $FILES; do
+    t0=$(now)
+    zstd -3 -T0 -q -c "$CORPUS/$f" > "$BACK/z" && "$S3CP" put "$BACK/z" "$S3/zstd/$i"
+    t1=$(now)
+    t=$(echo "$t + $t1 - $t0" | bc); Z=$((Z + $(size "$BACK/z"))); i=$((i + 1))
+done
+rm -f "$BACK/z"
+echo "zstd-3 put: $Z bytes stored, $(rate $RAW $t) MB/s, $t s (compress and upload)" >> "$OUT"
 
-# Put.
+# The store: put.
 t0=$(now)
-(cd "$CORPUS" && $GS "$META" --s3 "$S3" --put $FILES) > "$RESULTS/put.log" 2>&1
+(cd "$CORPUS" && $GS "$META" --s3 "$S3/store" --put $FILES) > "$RESULTS/put.log" 2>&1
 PUT_RC=$?
 t1=$(now)
-STATS=$($GS "$META" --s3 "$S3" --stats 2>&1 | tail -1)
+STATS=$($GS "$META" --s3 "$S3/store" --stats 2>&1 | tail -1)
 PUT_BYTES=$(awk '{s+=$2} END {print s+0}' "$RESULTS/put.log")
-echo "put: rc $PUT_RC, $PUT_BYTES bytes put, $(rate $PUT_BYTES $t0 $t1) MB/s, $(echo "$t1 - $t0" | bc) s; $STATS" >> "$OUT"
-DELTAS=$(grep -c 'delta against' "$RESULTS/put.log")
-echo "put: $DELTAS of $N objects as deltas" >> "$OUT"
+echo "store put: rc $PUT_RC, $(rate $PUT_BYTES $(echo "$t1 - $t0" | bc)) MB/s, $(echo "$t1 - $t0" | bc) s; $STATS" >> "$OUT"
+echo "store put: $(grep -c 'delta against' "$RESULTS/put.log") of $N objects as deltas" >> "$OUT"
 
-# Get every object back, compared with the original.
+# zstd -3: download and decompress, every object.
+t=0; BAD=0; i=0
+for f in $FILES; do
+    t0=$(now)
+    "$S3CP" get "$S3/zstd/$i" "$BACK/z" && zstd -d -q -c "$BACK/z" > "$BACK/obj"
+    t1=$(now)
+    t=$(echo "$t + $t1 - $t0" | bc)
+    cmp -s "$BACK/obj" "$CORPUS/$f" || BAD=$((BAD + 1))
+    i=$((i + 1))
+done
+rm -f "$BACK/z" "$BACK/obj"
+echo "zstd-3 get: $BAD failed, $(rate $RAW $t) MB/s, $t s (download and decompress, one object at a time)" >> "$OUT"
+
+# The store: every object by a process of its own.
+LIST=$(grep -v '^D' "$META/index" | grep -v $'\tpack of ' | cut -f1,7 | sort -n -u)
 GET_BYTES=$(grep -v '^D' "$META/index" | grep -v $'\tpack of ' | sort -n -u | awk -F'\t' '{s+=$4} END {print s+0}')
-t0=$(now); BAD=0; GOT=0
+t=0; BAD=0; GOT=0
 while IFS=$'\t' read -r id name; do
-    if $GS "$META" --s3 "$S3" --get "$id" -o "$BACK/obj" 2>>"$RESULTS/get.err" && cmp -s "$BACK/obj" "$CORPUS/$name"; then
-        GOT=$((GOT + 1))
-    else
-        BAD=$((BAD + 1)); echo "MISMATCH $id $name" >> "$RESULTS/get.err"
-    fi
-done < <(grep -v '^D' "$META/index" | grep -v $'\tpack of ' | cut -f1,7 | sort -n -u)
+    t0=$(now)
+    $GS "$META" --s3 "$S3/store" --get "$id" -o "$BACK/obj" 2>>"$RESULTS/get.err"
+    t1=$(now)
+    t=$(echo "$t + $t1 - $t0" | bc)
+    if cmp -s "$BACK/obj" "$CORPUS/$name"; then GOT=$((GOT + 1)); else BAD=$((BAD + 1)); echo "MISMATCH $id $name" >> "$RESULTS/get.err"; fi
+done <<< "$LIST"
 rm -f "$BACK/obj"
+echo "store get: $GOT byte-exact, $BAD failed, $(rate $GET_BYTES $t) MB/s, $t s (one process per object)" >> "$OUT"
+
+# The store: every object by one process.
+t0=$(now)
+$GS "$META" --s3 "$S3/store" --restore "$BACK/all" > "$RESULTS/restore.txt" 2>>"$RESULTS/get.err"
 t1=$(now)
-echo "get: $GOT byte-exact, $BAD failed, $(rate $GET_BYTES $t0 $t1) MB/s, $(echo "$t1 - $t0" | bc) s" >> "$OUT"
+BAD=0; GOT=0
+while IFS=$'\t' read -r id name; do
+    if cmp -s "$BACK/all/$id" "$CORPUS/$name"; then GOT=$((GOT + 1)); else BAD=$((BAD + 1)); echo "RESTORE MISMATCH $id $name" >> "$RESULTS/get.err"; fi
+done < "$RESULTS/restore.txt"
+rm -rf "$BACK/all"
+echo "store restore: $GOT byte-exact, $BAD failed, $(rate $GET_BYTES $(echo "$t1 - $t0" | bc)) MB/s, $(echo "$t1 - $t0" | bc) s (one process)" >> "$OUT"
 
 # Gzip objects opened: this machine's gzip (GNU on Linux) on three
 # objects, then glyd on the gzip, decoded and compared.
@@ -73,16 +107,17 @@ if [ -x "$GLYD" ]; then
     rm -f "$BACK/x.gz" "$BACK/x.g" "$BACK/x.back"
 fi
 
-# Rebuild from the bucket, then verify.
-cp "$META/index" "$RESULTS/index.before"
-rm -rf "$META"
-t0=$(now)
-$GS "$META" --s3 "$S3" --rebuild > "$RESULTS/rebuild.log" 2>&1
-t1=$(now)
-cmp -s <(sort "$RESULTS/index.before") <(sort "$META/index") && SAME=same || SAME=DIFFERENT
-echo "rebuild: $(tail -1 "$RESULTS/rebuild.log"); index $SAME as before; $(echo "$t1 - $t0" | bc) s" >> "$OUT"
-t0=$(now)
-$GS "$META" --s3 "$S3" --verify > "$RESULTS/verify.log" 2>&1
-t1=$(now)
-echo "verify: $(tail -1 "$RESULTS/verify.log"); $(echo "$t1 - $t0" | bc) s" >> "$OUT"
+if [ "${GATE_REBUILD:-0}" = 1 ]; then
+    cp "$META/index" "$RESULTS/index.before"
+    rm -rf "$META"
+    t0=$(now)
+    $GS "$META" --s3 "$S3/store" --rebuild > "$RESULTS/rebuild.log" 2>&1
+    t1=$(now)
+    cmp -s <(sort "$RESULTS/index.before") <(sort "$META/index") && SAME=same || SAME=DIFFERENT
+    echo "rebuild: $(tail -1 "$RESULTS/rebuild.log"); index $SAME as before; $(echo "$t1 - $t0" | bc) s" >> "$OUT"
+    t0=$(now)
+    $GS "$META" --s3 "$S3/store" --verify > "$RESULTS/verify.log" 2>&1
+    t1=$(now)
+    echo "verify: $(tail -1 "$RESULTS/verify.log"); $(echo "$t1 - $t0" | bc) s" >> "$OUT"
+fi
 cat "$OUT"
