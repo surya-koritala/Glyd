@@ -38,6 +38,10 @@ every earlier format.
   35.9 MB: 27.3 MB, 24% fewer bytes (a JPEG XL transcode: 20%), every
   one restored byte for byte; 5–7 MB/s in, 12–14 MB/s out, one core.
   A JPEG Lepton cannot take, or that does not shrink, stays as it is.
+  Inside a container too: a JPEG stored in a zip, or deflated (as an
+  Office document holds its pictures), is transcoded under its entry;
+  a PNG or gzip member stored in a zip is opened. A 12-slide deck of
+  photos, 6.51 MB: 5.29 MB (zstd -19: 6.50).
 
 ### Speed, same bytes
 

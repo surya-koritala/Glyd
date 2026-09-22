@@ -448,6 +448,7 @@ Mac, every decode compared with the input:
 | zstd source, GitHub zip | 2.73 MB | 2.57 MB | **2.28 MB (−16%)** | 1.94 MB | **1.64 MB (−40%)** |
 | Guava jar, 2,059 entries | 3.05 MB | 2.70 MB | **1.76 MB (−42%)** | 1.43 MB | **1.14 MB (−63%)** |
 | .pptx, 60 slides | 88 KB | 56 KB | **24 KB (−73%)** | 21 KB | **16 KB (−82%)** |
+| .pptx, 12 slides of photos (6.5 MB) | 6.51 MB | 6.50 MB | **5.29 MB (−19%)** at every level | | |
 | .xlsx, 30,000 rows | 1.34 MB | 1.23 MB | 1.33 MB (kept closed) | 1.05 MB | **0.47 MB (−65%)** |
 | .docx, 400 sections | 141 KB | 138 KB | 140 KB | 117 KB | **77 KB (−46%)** |
 | RFC 8878, PDF | 440 KB | 242 KB | **192 KB (−56%)** | 167 KB | **126 KB (−71%)** |
@@ -469,7 +470,8 @@ a different road: its DCT coefficients are recoded by Lepton (the
 Rust port of Dropbox's, `lepton_jpeg`) with an arithmetic coder and a
 predictor across blocks, 24% fewer bytes on the six photos above
 against 20% for a JPEG XL transcode, at 5–7 MB/s in and 12–14 out on
-one core, the identical JPEG back. Parquet (its columns as records,
+one core, the identical JPEG back — inside a zip or an Office
+document too, stored or deflated. Parquet (its columns as records,
 26–40%, the same table rather than the same bytes) is measured in
 [experiments/research](experiments/research/README.md#j-re-doing-what-is-already-compressed)
 and not yet built.

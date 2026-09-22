@@ -33,9 +33,13 @@ const PLAIN_LIMIT: usize = 8 << 30;
 const VERBATIM: u8 = 0;
 const DEFLATE: u8 = 1;
 const PNG_IMAGE: u8 = 2;
-/// A JPEG inside a container (a .docx's pictures, a zip of photos):
-/// its Lepton stream, in the recipe.
+/// A JPEG stored inside a container (a zip of photos): its Lepton
+/// stream, in the recipe.
 const JPEG: u8 = 3;
+/// A JPEG deflated inside a container (an Office document's pictures):
+/// the plain text holds its Lepton stream, from which the JPEG and
+/// then the deflate stream are recreated.
+const DEFLATE_JPEG: u8 = 4;
 
 /// An object opened: its plain text and the recipe to close it.
 pub struct Opened {
@@ -122,6 +126,23 @@ impl Builder {
             return None;
         }
         self.flush_verbatim(input);
+        // A JPEG under the deflate: its Lepton stream stands in the
+        // plain text for it.
+        #[cfg(feature = "jpeg")]
+        if crate::jpeg::is_jpeg(text.text()) {
+            if let Some(lepton) = crate::jpeg::transcode(text.text()) {
+                if lepton.len() + 16 < text.text().len() {
+                    self.recipe.push(DEFLATE_JPEG);
+                    put_varint(&mut self.recipe, result.corrections.len() as u64);
+                    self.recipe.extend_from_slice(&result.corrections);
+                    put_varint(&mut self.recipe, lepton.len() as u64);
+                    self.plain.extend_from_slice(&lepton);
+                    self.segments += 1;
+                    self.verbatim = (at + result.compressed_size, at + result.compressed_size);
+                    return Some(result.compressed_size);
+                }
+            }
+        }
         self.recipe.push(DEFLATE);
         put_varint(&mut self.recipe, result.corrections.len() as u64);
         self.recipe.extend_from_slice(&result.corrections);
@@ -492,6 +513,16 @@ pub fn close(recipe: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
                 pos += 1;
                 out.extend_from_slice(&crate::jpeg::restore(take(&mut pos)?)?);
             }
+            #[cfg(feature = "jpeg")]
+            DEFLATE_JPEG => {
+                pos += 1;
+                let corrections = take(&mut pos)?;
+                let plen = get_varint(recipe, &mut pos).ok()? as usize;
+                let lepton = plain.get(at..at.checked_add(plen)?)?;
+                let jpeg = crate::jpeg::restore(lepton)?;
+                out.extend_from_slice(&recreate_whole_deflate_stream(&jpeg, corrections).ok()?);
+                at += plen;
+            }
             _ => return None,
         }
     }
@@ -744,12 +775,14 @@ with zipfile.ZipFile(buf, "w") as z:
     z.writestr("word/document.xml", b"<w:document>" + b"<w:p>hello</w:p>" * 2000 + b"</w:document>", compress_type=zipfile.ZIP_DEFLATED)
     z.writestr("word/media/image1.png", png, compress_type=zipfile.ZIP_STORED)
     z.writestr("word/media/image2.jpeg", jpeg, compress_type=zipfile.ZIP_STORED)
+    z.writestr("word/media/image3.jpeg", jpeg, compress_type=zipfile.ZIP_DEFLATED)
 sys.stdout.buffer.write(buf.getvalue())
 "#, png.len(), png.len() + 1), &pictures);
         let opened_pictures = round_trip(&picture_zip, "zip with pictures");
         assert!(opened_pictures.len() > plain.len(), "the PNG inside opened: {}", opened_pictures.len());
         let recipe = open(&picture_zip).unwrap().recipe;
-        assert!(recipe.windows(1).any(|w| w[0] == JPEG), "the JPEG inside transcoded");
+        assert!(recipe.windows(1).any(|w| w[0] == JPEG), "the stored JPEG transcoded");
+        assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_JPEG), "the deflated JPEG transcoded under its deflate");
         assert!(is_pdf(&pdf));
         let opened_pdf = round_trip(&pdf, "pdf");
         assert!(opened_pdf.len() >= 600000, "the three Flate streams opened: {}", opened_pdf.len());
