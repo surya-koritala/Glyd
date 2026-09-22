@@ -1,6 +1,6 @@
 <h1 align="center">Glyd</h1>
 <p align="center"><strong>Compression for the data that fills object storage — across the objects, not just inside them.</strong><br>
-A store that finds what each new object is a version of and keeps only the change: 4.6× fewer bytes than zstd on a 39 GB bucket of images, releases, dumps and events. Inside an object, fewer bytes than zstd wherever the data has structure, and the fastest reads at every ratio.</p>
+A store that finds what each new object is a version of and keeps only the change: 3.1× fewer bytes than zstd on a 1.2 TB bucket of releases, dumps and events (24× against raw), every object read back byte-exact; 4.6× on a 39 GB one. Inside an object, fewer bytes than zstd wherever the data has structure, and the fastest reads at every ratio.</p>
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
@@ -126,7 +126,7 @@ million a year at list price; the percentages above are what to multiply.
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 cargo install glyd glyd-store                # from crates.io
-pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.11.2-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.12.0-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -272,6 +272,17 @@ order), every object read back and compared:
 | GitHub events (12 hours) | 9.4 GB | 875 MB | 670 MB | 1.3× (no object is a version of another) |
 | **The bucket** | **39.2 GB** | **6,132 MB (6.4×)** | **1,334 MB (29.4×)** | **4.6× smaller** |
 
+At a terabyte ([report](docs/benchmarks/store-gate-2026-09-22.md)):
+1,192 objects, 1.18 TB — 400 kernel point releases, every hour of
+GitHub events in January 2024, five English Wikipedia dumps' tables,
+six Ubuntu images — put through the store into S3 from one 16-vCPU
+instance next to the bucket, every object read back and compared
+byte for byte, the metadata directory deleted and rebuilt from the
+bucket, then verified: **49.0 GB stored against zstd -3's 153.5 GB,
+3.13× fewer bytes (24× against raw)**; kernels 115–285× against raw,
+Wikipedia tables 21×, hourly events 12.9× (record mode alone). Put ran
+at 150 MB/s and read-back at 186 MB/s, S3 included, on that instance.
+
 Put runs at 620 MB/s end to end over the bucket on ten cores (reading
 the file, rebuilding the base, writing the delta; a version of the
 last object put runs at 900 MB/s, that object being kept in memory as
@@ -413,6 +424,31 @@ of each, 10 cores, every decode byte-checked):
 
 `--max -r` writes these at 260-460 MB/s and reads them back at
 1,200-1,400 MB/s.
+
+### Gzip objects opened
+
+Half of what sits in a bucket arrived gzipped — ELB, CloudFront,
+CloudTrail and flow logs are delivered that way — and to zstd a gzip
+is noise. Glyd opens it: the deflate streams inside are decoded to
+their plain text along with what it takes to re-encode each bit for
+bit (preflate, the crate's one dependency), the plain text takes the
+level asked for (record mode, the cold level, a base — all see the
+content), and `-d` gives back the identical gzip. An object that
+would not shrink stays closed. Measured on this Mac, every decode
+compared with the input:
+
+| gzipped object | gzip | ⚡&nbsp;**Glyd** | **Fewer bytes** |
+| :--- | ---: | ---: | ---: |
+| NASA access log, gzip -6 (205 MB inside) | 20.7 MB | **8.2 MB** `--max -r` · **6.5 MB** `--cold -r` | **60% · 69%** |
+| Linux tree, 512 MB, gzip -6 | 72.7 MB | **56.1 MB** `--max` · **42.0 MB** `--ultra` | **23% · 42%** |
+
+The cost is the re-encode that makes it exact: about 5 MB/s of gzip
+per core in (50 MB/s of content), three times that out. Per terabyte
+of gzipped logs on S3 Standard that is about $2 of CPU once against
+$166 a year. The same on JPEG (a JPEG XL transcode, 20%) and Parquet
+(its columns as records, 26–40%) is measured in
+[experiments/research](experiments/research/README.md#j-re-doing-what-is-already-compressed)
+and not yet built.
 
 ### The cold level: context mixing for what is read rarely
 
@@ -690,7 +726,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.11.2** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.12.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every

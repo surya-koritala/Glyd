@@ -4,7 +4,7 @@ Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
 
-## Where it stands (v0.11.2, 2026-09-21)
+## Where it stands (v0.12.0, 2026-09-22)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 ([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
@@ -24,10 +24,11 @@ are 20–65% hashes and random ids once compressed (typed columns gain
 entropy floor for every codec (zstd -19, xz, Glyd `--ultra` within 2%).
 Details: [experiments/structure/README.md](experiments/structure/README.md).
 
-The store (v0.8.0): objects compressed across a bucket, 4.6× fewer
-bytes than zstd -3 per object on 39 GB of images, releases, dumps and
-events — the largest lever measured, because the redundancy of object
-storage is between objects.
+The store (v0.8.0, at a terabyte v0.12.0): objects compressed across a
+bucket, 3.1× fewer bytes than zstd -3 per object on 1.18 TB of
+releases, dumps and events (4.6× on a 39 GB bucket) — the largest
+lever measured, because the redundancy of object storage is between
+objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
 
 ## Next, in order of what moves the bill
 
@@ -38,9 +39,13 @@ storage is between objects.
    standard credential chain, any S3-compatible endpoint; v0.11.0).
    Multipart upload (v0.11.1): 64 MB parts on 8 connections, aborted
    whole on any failure. Rebuild (v0.11.2): index lines beside every
-   object, the directory remade from the bucket alone. Left: the gate,
-   a terabyte bucket put and read back at the measured ratios, with
-   the put and get rates of an instance next to the bucket.
+   object, the directory remade from the bucket alone. The gate
+   (v0.12.0, [report](docs/benchmarks/store-gate-2026-09-22.md)): 1.18
+   TB, 1,192 objects, 49.0 GB stored against zstd -3's 153.5 GB,
+   every object back byte-exact, rebuilt from the bucket and verified;
+   put 150 MB/s, get 186 MB/s on one im4gn.4xlarge. Left: overlapping
+   one object's upload with the next one's compression (the put rate
+   is one process, one object at a time).
 
 1. **Write speed of `--max`** (0.71–0.77× zstd -3 on server cores since
    the finder's tables took zstd -3's size; the long-distance pass is

@@ -3,8 +3,9 @@
 A store that compresses across the objects it holds: each object is
 kept as a delta against the stored object it most resembles (found by
 fingerprints) when that pays, small objects go into packs, and any
-object comes back byte-exact. On a 39 GB bucket of images, releases,
-dumps and events: 4.6× fewer bytes than zstd -3 per object. Built on the
+object comes back byte-exact. On a 1.2 TB bucket of releases, dumps
+and events: 3.1× fewer bytes than zstd -3 per object (24× against
+raw), every object back byte-exact; 4.6× on a 39 GB one. Built on the
 [glyd](https://github.com/surya-koritala/Glyd) codec (BSD-3-Clause OR GPL-2.0); the
 store is under the Business Source License 1.1 (LICENSE).
 

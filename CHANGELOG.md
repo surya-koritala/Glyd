@@ -6,6 +6,34 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.12.0 — 2026-09-22
+
+### Gzip objects opened
+
+- A gzip object's deflate streams are decoded to their plain text
+  with what it takes to re-encode each bit for bit (`preflate-rs`,
+  the crate's one dependency, behind the default feature `deflate`);
+  the plain text then takes whatever was asked — a level, record
+  mode, the cold level, a base — so a gzipped log costs what the log
+  costs. Every encode entry point opens gzip input, every decode
+  entry point closes it, and an opened object that would cost more
+  than the gzip stays as it is. A gzip -6 NASA log: 20.7 MB → 8.2 MB
+  at `--max -r`, 6.5 MB cold; a gzipped 512 MB kernel tree: 72.7 MB →
+  56.1 MB at `--max`, 42.0 MB ultra; all back byte-exact. Through the
+  store too.
+
+### The store at a terabyte
+
+- The gate run ([report](docs/benchmarks/store-gate-2026-09-22.md)):
+  1,192 objects, 1.18 TB, put into S3 from one instance, 49.0 GB
+  stored against zstd -3's 153.5 GB (3.13× fewer bytes, 24× against
+  raw), every object read back byte-exact, the metadata directory
+  rebuilt from the bucket and verified.
+- The first attempt died of memory on 20 GB objects: put now maps its
+  files instead of reading them, and the last object is kept as the
+  likeliest next base only up to 1 GB.
+- `glyd-store --version`.
+
 ## v0.11.2 — 2026-09-21
 
 - A lost metadata directory is rebuilt from the objects: every
