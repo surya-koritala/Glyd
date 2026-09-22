@@ -9,8 +9,8 @@ someone can repeat.
 
 Open an issue for anything beyond a small fix, so the approach can be
 agreed first. Bugs and speed or ratio reports have templates; a
-security problem goes by email to suryakoritala1324@gmail.com, not to
-a public issue.
+security problem is reported privately as [SECURITY.md](SECURITY.md)
+describes, not in a public issue.
 
 ## Building and testing
 
