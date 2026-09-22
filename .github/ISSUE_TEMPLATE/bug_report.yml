@@ -1,0 +1,37 @@
+name: Bug
+description: Something that fails, gives wrong output, or does not decode.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A file that does not decode, or decodes to different bytes, is the most serious bug there is: say so in the title. A security problem goes by email to suryakoritala1324@gmail.com, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `glyd --version` (and `glyd-store --version` for the store).
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS and CPU, e.g. Ubuntu 24.04 on Graviton3, macOS 15 on M1.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What you ran
+      description: The commands, in order, and what the input is (its kind and size; a link to it or a sample if it can be shared).
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: What happened, and what you expected
+      description: The error or the output, and whether the compressed file decodes (`glyd -d`) and matches the input (`cmp`).
+    validations:
+      required: true

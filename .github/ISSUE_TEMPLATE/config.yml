@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: mailto:suryakoritala1324@gmail.com
+    about: A vulnerability goes by email, not in a public issue.

@@ -1,0 +1,37 @@
+name: Speed or ratio
+description: A case where Glyd is slower or larger than it should be, or than another codec.
+labels: [performance]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Numbers make this actionable: the same input, machine and thread count for every codec compared. `scripts/landscape.py` measures one thread; `examples/bench_suite.rs` all of them.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `glyd --version`.
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: The data
+      description: What it is (logs, JSON, a dump, images, versions of something), its size, and a link or sample if it can be shared.
+    validations:
+      required: true
+  - type: textarea
+    id: numbers
+    attributes:
+      label: The numbers
+      description: Bytes out, compress and decompress speed, for Glyd and for what you compare it with, and the commands that made them.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: machine
+    attributes:
+      label: Machine and threads
+      description: CPU, core count, and the thread count each codec ran with.
+    validations:
+      required: true

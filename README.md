@@ -778,7 +778,9 @@ and `scripts/bench_versions.sh` print same-run comparisons); pull requests
 run the full suite including the 1M-mutation fuzz in CI. Every commit
 needs a `Signed-off-by:` line (`git commit -s`), which accepts the
 [contributor license agreement](CLA.md): you keep your copyright and
-grant the project the right to use and relicense the contribution.
+grant the project the right to use and relicense the contribution. The
+whole of it is in [CONTRIBUTING.md](CONTRIBUTING.md); the
+[code of conduct](CODE_OF_CONDUCT.md) applies to everyone taking part.
 
 ---
 
