@@ -1,5 +1,7 @@
 //! Deflate containers opened: gzip, zip (so also .docx, .xlsx, .pptx,
-//! .jar, .apk, .odt), zlib streams and PNG. The deflate streams inside
+//! .jar, .apk, .odt), zlib streams, PNG, PDF and tar, nested in one
+//! another (a tar of gzipped logs, a zip of PNGs, a deck's JPEGs under
+//! their deflate entries, a tar.gz of all of it). The deflate streams inside
 //! are decoded to their plain text by `preflate`, which also records
 //! what it takes to re-encode each bit for bit; the plain text then
 //! takes whatever the caller asked for (a level, record mode, the cold
@@ -40,11 +42,17 @@ const JPEG: u8 = 3;
 /// the plain text holds its Lepton stream, from which the JPEG and
 /// then the deflate stream are recreated.
 const DEFLATE_JPEG: u8 = 4;
-/// A PNG deflated inside a container (an Office document's
-/// screenshots): the plain text holds the PNG's own plain text, and
-/// the recipe a recipe for the PNG, from which the PNG and then the
-/// deflate stream are recreated.
-const DEFLATE_PNG: u8 = 5;
+/// A container deflated inside a container (an Office document's PNG
+/// screenshots, a tar.gz of images): the plain text holds the inner
+/// container's own plain text, and the recipe a recipe for it, from
+/// which the inner container and then the deflate stream are
+/// recreated.
+const DEFLATE_NESTED: u8 = 5;
+/// A container stored as it is inside another (a tar of PNGs, a zip
+/// holding a jar): a recipe for it, its plain text in the plain text.
+const NESTED: u8 = 6;
+/// Containers inside containers are opened this deep.
+const MAX_DEPTH: u32 = 4;
 
 /// An object opened: its plain text and the recipe to close it.
 pub struct Opened {
@@ -59,7 +67,26 @@ pub fn is_container(input: &[u8]) -> bool {
     if crate::jpeg::is_jpeg(input) {
         return true;
     }
-    is_gzip(input) || is_zip(input) || is_png(input) || is_pdf(input) || is_zlib(input)
+    is_gzip(input) || is_zip(input) || is_png(input) || is_pdf(input) || is_tar(input) || is_zlib(input)
+}
+
+/// A ustar header at the start, with a size that parses.
+fn is_tar(input: &[u8]) -> bool {
+    input.len() >= 1024 && &input[257..262] == b"ustar" && tar_size(input, 0).is_some()
+}
+
+/// The size of the tar entry whose header is at `at`.
+fn tar_size(input: &[u8], at: usize) -> Option<usize> {
+    let field = input.get(at + 124..at + 136)?;
+    let digits: Vec<u8> = field.iter().copied().take_while(|&b| b != 0 && b != b' ').collect();
+    if digits.is_empty() || digits.iter().any(|b| !(b'0'..=b'7').contains(b)) {
+        return None;
+    }
+    let mut n = 0usize;
+    for &d in &digits {
+        n = n.checked_mul(8)?.checked_add((d - b'0') as usize)?;
+    }
+    Some(n)
 }
 
 fn is_pdf(input: &[u8]) -> bool {
@@ -92,11 +119,29 @@ struct Builder {
     /// A verbatim run not yet written, so adjacent ones merge.
     verbatim: (usize, usize),
     config: PreflateConfig,
+    /// How many containers this one is inside.
+    depth: u32,
+    /// Whether anything but verbatim bytes went in (a tar of JPEGs has
+    /// no plain text and still opens).
+    opened: bool,
 }
 
 impl Builder {
-    fn new() -> Builder {
-        Builder { plain: Vec::new(), recipe: Vec::new(), segments: 0, verbatim: (0, 0), config: PreflateConfig { plain_text_limit: PLAIN_LIMIT, verify_compression: true, ..Default::default() } }
+    fn at_depth(depth: u32) -> Builder {
+        Builder { plain: Vec::new(), recipe: Vec::new(), segments: 0, verbatim: (0, 0), config: PreflateConfig { plain_text_limit: PLAIN_LIMIT, verify_compression: true, ..Default::default() }, depth, opened: false }
+    }
+
+    /// `data` opened as a container of its own, when it is one and
+    /// this builder is not too deep.
+    fn nested(&self, data: &[u8]) -> Option<Opened> {
+        if self.depth + 1 >= MAX_DEPTH || !is_container(data) {
+            return None;
+        }
+        #[cfg(feature = "jpeg")]
+        if crate::jpeg::is_jpeg(data) {
+            return None;
+        }
+        open_at(data, self.depth + 1)
     }
 
     fn verbatim(&mut self, input: &[u8], from: usize, to: usize) {
@@ -143,30 +188,28 @@ impl Builder {
                     put_varint(&mut self.recipe, lepton.len() as u64);
                     self.plain.extend_from_slice(&lepton);
                     self.segments += 1;
+        self.opened = true;
                     self.verbatim = (at + result.compressed_size, at + result.compressed_size);
                     return Some(result.compressed_size);
                 }
             }
         }
-        // A PNG under the deflate: opened in a recipe of its own, its
-        // plain text standing in the plain text for it.
-        if is_png(text.text()) {
-            let mut sub = Builder::new();
-            if sub.png(text.text(), 0, text.text().len()).is_some() {
-                if let Some(inner) = sub.finish(text.text()) {
-                    if self.plain.len() + inner.plain.len() <= PLAIN_LIMIT {
-                        self.recipe.push(DEFLATE_PNG);
-                        put_varint(&mut self.recipe, result.corrections.len() as u64);
-                        self.recipe.extend_from_slice(&result.corrections);
-                        put_varint(&mut self.recipe, inner.recipe.len() as u64);
-                        self.recipe.extend_from_slice(&inner.recipe);
-                        put_varint(&mut self.recipe, inner.plain.len() as u64);
-                        self.plain.extend_from_slice(&inner.plain);
-                        self.segments += 1;
-                        self.verbatim = (at + result.compressed_size, at + result.compressed_size);
-                        return Some(result.compressed_size);
-                    }
-                }
+        // A container under the deflate (a PNG, a tar of logs): opened
+        // in a recipe of its own, its plain text standing in the plain
+        // text for it.
+        if let Some(inner) = self.nested(text.text()) {
+            if self.plain.len() + inner.plain.len() <= PLAIN_LIMIT {
+                self.recipe.push(DEFLATE_NESTED);
+                put_varint(&mut self.recipe, result.corrections.len() as u64);
+                self.recipe.extend_from_slice(&result.corrections);
+                put_varint(&mut self.recipe, inner.recipe.len() as u64);
+                self.recipe.extend_from_slice(&inner.recipe);
+                put_varint(&mut self.recipe, inner.plain.len() as u64);
+                self.plain.extend_from_slice(&inner.plain);
+                self.segments += 1;
+        self.opened = true;
+                self.verbatim = (at + result.compressed_size, at + result.compressed_size);
+                return Some(result.compressed_size);
             }
         }
         self.recipe.push(DEFLATE);
@@ -175,13 +218,14 @@ impl Builder {
         put_varint(&mut self.recipe, text.text().len() as u64);
         self.plain.extend_from_slice(text.text());
         self.segments += 1;
+        self.opened = true;
         self.verbatim = (at + result.compressed_size, at + result.compressed_size);
         Some(result.compressed_size)
     }
 
     fn finish(mut self, input: &[u8]) -> Option<Opened> {
         self.flush_verbatim(input);
-        if self.segments == 0 || self.plain.is_empty() {
+        if !self.opened {
             return None;
         }
         let mut recipe = Vec::with_capacity(self.recipe.len() + 8);
@@ -194,19 +238,52 @@ impl Builder {
 /// The plain text and recipe of a container, when every stream in it
 /// re-encodes bit for bit; `None` for anything else.
 pub fn open(input: &[u8]) -> Option<Opened> {
+    open_at(input, 0)
+}
+
+fn open_at(input: &[u8], depth: u32) -> Option<Opened> {
+    let b = Builder::at_depth(depth);
     if is_gzip(input) {
-        open_gzip(input)
+        open_gzip(input, b)
     } else if is_zip(input) {
-        open_zip(input)
+        open_zip(input, b)
     } else if is_png(input) {
-        open_png(input)
+        open_png(input, b)
     } else if is_pdf(input) {
-        open_pdf(input)
+        open_pdf(input, b)
+    } else if is_tar(input) {
+        open_tar(input, b)
     } else if is_zlib(input) {
-        open_zlib(input)
+        open_zlib(input, b)
     } else {
         None
     }
+}
+
+/// Entries in order, each a 512-byte header and data padded to 512:
+/// the data of a regular file opened in its own way (a gzip member, a
+/// picture, an archive), everything else kept.
+fn open_tar(input: &[u8], mut b: Builder) -> Option<Opened> {
+    let mut at = 0usize;
+    while at + 512 <= input.len() && &input[at + 257..at + 262] == b"ustar" {
+        let Some(size) = tar_size(input, at) else { break };
+        let data = at + 512;
+        let end = data.checked_add(size)?;
+        if end > input.len() {
+            break;
+        }
+        let padded = data + (size + 511) / 512 * 512;
+        b.verbatim(input, at, data);
+        if input[at + 156] == b'0' || input[at + 156] == 0 {
+            b.stored(input, data, end);
+        } else {
+            b.verbatim(input, data, end);
+        }
+        b.verbatim(input, end, padded.min(input.len()));
+        at = padded;
+    }
+    b.verbatim(input, at, input.len());
+    b.finish(input)
 }
 
 /// The end of the gzip header starting at `at`.
@@ -230,8 +307,7 @@ fn gzip_header_end(input: &[u8], at: usize) -> Option<usize> {
 
 /// Members back to back, each a header, a deflate stream and an 8-byte
 /// trailer; whatever follows the last is kept.
-fn open_gzip(input: &[u8]) -> Option<Opened> {
-    let mut b = Builder::new();
+fn open_gzip(input: &[u8], mut b: Builder) -> Option<Opened> {
     let mut at = 0usize;
     while is_gzip(&input[at..]) {
         let hend = gzip_header_end(input, at)?;
@@ -250,8 +326,7 @@ fn open_gzip(input: &[u8]) -> Option<Opened> {
 /// deflate (method 8), kept when it is stored or anything else; then
 /// the central directory and the rest, kept. A data descriptor after
 /// an entry is found by looking for the next entry's signature.
-fn open_zip(input: &[u8]) -> Option<Opened> {
-    let mut b = Builder::new();
+fn open_zip(input: &[u8], mut b: Builder) -> Option<Opened> {
     let mut at = 0usize;
     let le16 = |p: usize| input.get(p..p + 2).map(|s| u16::from_le_bytes(s.try_into().unwrap()) as usize);
     let le32 = |p: usize| input.get(p..p + 4).map(|s| u32::from_le_bytes(s.try_into().unwrap()) as usize);
@@ -324,8 +399,7 @@ fn open_zip(input: &[u8]) -> Option<Opened> {
 /// an `endstream`, opened; everything else kept. Found by scanning,
 /// so a /Length given by reference, object streams and cross-reference
 /// streams need no parsing.
-fn open_pdf(input: &[u8]) -> Option<Opened> {
-    let mut b = Builder::new();
+fn open_pdf(input: &[u8], mut b: Builder) -> Option<Opened> {
     let mut at = 0usize;
     let mut scan = 0usize;
     while scan + 6 <= input.len() {
@@ -340,7 +414,7 @@ fn open_pdf(input: &[u8]) -> Option<Opened> {
         if data <= at || !is_zlib(&input[data..]) {
             continue;
         }
-        let mut probe = Builder::new();
+        let mut probe = Builder::at_depth(b.depth);
         let Some(n) = probe.deflate(input, data + 2) else { continue };
         let end = data + 2 + n + 4;
         // What follows must be the end of the stream.
@@ -362,8 +436,7 @@ fn open_pdf(input: &[u8]) -> Option<Opened> {
 }
 
 /// A zlib stream: 2-byte header, deflate, 4-byte Adler-32; the rest kept.
-fn open_zlib(input: &[u8]) -> Option<Opened> {
-    let mut b = Builder::new();
+fn open_zlib(input: &[u8], mut b: Builder) -> Option<Opened> {
     b.verbatim(input, 0, 2);
     let n = b.deflate(input, 2)?;
     b.verbatim(input, 2 + n, input.len());
@@ -373,8 +446,7 @@ fn open_zlib(input: &[u8]) -> Option<Opened> {
 /// Chunks in order; the IDAT chunks' data, joined, is one zlib stream,
 /// opened as a `PNG_IMAGE` segment that remembers how to cut it back
 /// into chunks (their lengths and CRCs); every other chunk is kept.
-fn open_png(input: &[u8]) -> Option<Opened> {
-    let mut b = Builder::new();
+fn open_png(input: &[u8], mut b: Builder) -> Option<Opened> {
     b.png(input, 0, input.len())?;
     b.finish(input)
 }
@@ -428,6 +500,7 @@ impl Builder {
         }
         self.plain.extend_from_slice(text.text());
         self.segments += 1;
+        self.opened = true;
         self.verbatim = (last_end, last_end);
         self.verbatim(input, last_end, to);
         Some(())
@@ -446,31 +519,24 @@ impl Builder {
                     put_varint(&mut self.recipe, lepton.len() as u64);
                     self.recipe.extend_from_slice(&lepton);
                     self.segments += 1;
+        self.opened = true;
                     self.verbatim = (to, to);
                     return;
                 }
             }
         }
-        if is_png(data) && self.png(input, from, to).is_some() {
-            return;
-        }
-        if is_gzip(data) {
-            let hend = gzip_header_end(input, from).filter(|&h| h <= to);
-            if let Some(hend) = hend {
-                let saved = (self.recipe.len(), self.plain.len(), self.segments, self.verbatim);
-                self.verbatim(input, from, hend);
-                match self.deflate(input, hend) {
-                    Some(n) if hend + n + 8 <= to => {
-                        self.verbatim(input, hend + n, to);
-                        return;
-                    }
-                    _ => {
-                        self.recipe.truncate(saved.0);
-                        self.plain.truncate(saved.1);
-                        self.segments = saved.2;
-                        self.verbatim = saved.3;
-                    }
-                }
+        if let Some(inner) = self.nested(data) {
+            if self.plain.len() + inner.plain.len() <= PLAIN_LIMIT {
+                self.flush_verbatim(input);
+                self.recipe.push(NESTED);
+                put_varint(&mut self.recipe, inner.recipe.len() as u64);
+                self.recipe.extend_from_slice(&inner.recipe);
+                put_varint(&mut self.recipe, inner.plain.len() as u64);
+                self.plain.extend_from_slice(&inner.plain);
+                self.segments += 1;
+        self.opened = true;
+                self.verbatim = (to, to);
+                return;
             }
         }
         self.verbatim(input, from, to);
@@ -539,13 +605,20 @@ pub fn close(recipe: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
                 pos += 1;
                 out.extend_from_slice(&crate::jpeg::restore(take(&mut pos)?)?);
             }
-            DEFLATE_PNG => {
+            DEFLATE_NESTED => {
                 pos += 1;
                 let corrections = take(&mut pos)?;
                 let inner = take(&mut pos)?;
                 let plen = get_varint(recipe, &mut pos).ok()? as usize;
-                let png = close(inner, plain.get(at..at.checked_add(plen)?)?)?;
-                out.extend_from_slice(&recreate_whole_deflate_stream(&png, corrections).ok()?);
+                let object = close(inner, plain.get(at..at.checked_add(plen)?)?)?;
+                out.extend_from_slice(&recreate_whole_deflate_stream(&object, corrections).ok()?);
+                at += plen;
+            }
+            NESTED => {
+                pos += 1;
+                let inner = take(&mut pos)?;
+                let plen = get_varint(recipe, &mut pos).ok()? as usize;
+                out.extend_from_slice(&close(inner, plain.get(at..at.checked_add(plen)?)?)?);
                 at += plen;
             }
             #[cfg(feature = "jpeg")]
@@ -819,8 +892,32 @@ sys.stdout.buffer.write(buf.getvalue())
         let recipe = open(&picture_zip).unwrap().recipe;
         assert!(recipe.windows(1).any(|w| w[0] == JPEG), "the stored JPEG transcoded");
         assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_JPEG), "the deflated JPEG transcoded under its deflate");
-        assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_PNG), "the deflated PNG opened under its deflate");
+        assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_NESTED), "the deflated PNG opened under its deflate");
         assert!(opened_pictures.len() > 2 * plain.len(), "both PNGs' plain text is in: {}", opened_pictures.len());
+        // A tar of a gzipped log, the PNG, the JPEG and a text file; then
+        // that tar gzipped: everything opened through the layers.
+        let mut members = gzip(&plain[..200000], &["-6"]);
+        let (gz_len, png_len) = (members.len(), png.len());
+        members.extend_from_slice(&png);
+        members.extend_from_slice(&jpeg);
+        members.extend_from_slice(&plain[..50000]);
+        let tar = python(&format!(r#"
+import sys, tarfile, io
+blob = sys.stdin.buffer.read()
+parts = [("log.gz", blob[:{gz}]), ("shot.png", blob[{gz}:{gz}+{png}]), ("photo.jpg", blob[{gz}+{png}:-50000]), ("notes.txt", blob[-50000:])]
+buf = io.BytesIO()
+with tarfile.open(fileobj=buf, mode="w") as t:
+    for name, data in parts:
+        info = tarfile.TarInfo(name); info.size = len(data)
+        t.addfile(info, io.BytesIO(data))
+sys.stdout.buffer.write(buf.getvalue())
+"#, gz=gz_len, png=png_len), &members);
+        assert!(is_tar(&tar));
+        let opened_tar = round_trip(&tar, "tar");
+        assert!(opened_tar.len() >= 200000 + plain.len(), "the gzip member and the PNG opened inside the tar: {}", opened_tar.len());
+        let targz = gzip(&tar, &["-6"]);
+        let opened_targz = round_trip(&targz, "tar.gz");
+        assert!(opened_targz.len() >= 200000 + plain.len(), "opened through the gzip: {}", opened_targz.len());
         assert!(is_pdf(&pdf));
         let opened_pdf = round_trip(&pdf, "pdf");
         assert!(opened_pdf.len() >= 600000, "the three Flate streams opened: {}", opened_pdf.len());

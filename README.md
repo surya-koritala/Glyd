@@ -426,12 +426,14 @@ of each, 10 cores, every decode byte-checked):
 `--max -r` writes these at 260-460 MB/s and reads them back at
 1,200-1,400 MB/s.
 
-### Objects opened: gzip, zip, Office documents, jars, PDF, PNG — and JPEG transcoded
+### Objects opened: gzip, zip, tar, Office documents, jars, PDF, PNG — and JPEG transcoded
 
 Much of what sits in a bucket is deflate inside a container — gzipped
 logs (ELB, CloudFront, CloudTrail and flow logs are delivered that
-way), zip archives, .docx/.xlsx/.pptx, .jar, PDF, PNG — and to zstd
-all of it is noise. Glyd opens the container: every deflate stream
+way), zip and tar archives, .docx/.xlsx/.pptx, .jar, PDF, PNG — and
+to zstd all of it is noise. Containers inside containers open too,
+four deep: a tar of gzipped logs, a tar.gz of pictures, a deck's
+JPEGs under their deflate entries. Glyd opens the container: every deflate stream
 inside is decoded to its plain text along with what it takes to
 re-encode it bit for bit (preflate, the crate's one dependency);
 headers, directories, stored entries and everything else are kept as
@@ -450,6 +452,8 @@ Mac, every decode compared with the input:
 | .pptx, 60 slides | 88 KB | 56 KB | **24 KB (−73%)** | 21 KB | **16 KB (−82%)** |
 | .pptx, 12 slides of photos (6.5 MB) | 6.51 MB | 6.50 MB | **5.29 MB (−19%)** at every level | | |
 | .docx, 6 PNG screenshots (2.5 MB) | 2.51 MB | 2.50 MB | **2.32 MB (−8%)** | 2.1 MB | **1.65 MB (−34%)** |
+| tar of the 6 photos, and the same tar gzipped | 36.0 MB | 35.5 MB | **27.3 MB (−24%)**, −23% through the gzip | | |
+| tar.gz of a gzipped log, a PDF, a PNG, a .docx (23 MB) | 22.9 MB | 22.9 MB | **10.2 MB (−56%)** | | |
 | .xlsx, 30,000 rows | 1.34 MB | 1.23 MB | 1.33 MB (kept closed) | 1.05 MB | **0.47 MB (−65%)** |
 | .docx, 400 sections | 141 KB | 138 KB | 140 KB | 117 KB | **77 KB (−46%)** |
 | RFC 8878, PDF | 440 KB | 242 KB | **192 KB (−56%)** | 167 KB | **126 KB (−71%)** |
