@@ -127,3 +127,28 @@ base mode. An event stream gains nothing across hours (its repeats are
 short and LZ already has them); everything that is a version of
 something gains 2-14x. Read cost: an object at depth d is d + 1 decodes
 at 6-10 GB/s.
+
+## I. Public bytes: how much of a bucket is copies of public data
+
+The question: if the decoder had every public artifact (kernels, OS
+images, container layers, packages) for free, what fraction of a
+company's stored bytes would cost nothing? Measured 2026-09-21
+(`public_bytes.py`, and two deployment bundles built locally):
+
+| What | Public, byte-identical | Note |
+|---|---|---|
+| 46 popular container images (11.1 GB of layers, Docker Hub manifests) | 27% of the bytes are in layers another image also has; storing each layer once saves 16% | Registries already store a layer once per account; copies in S3 (`docker save`, artifact stores, backups) do not |
+| A Python service bundle (48 packages, 244 MB) | 63% | The other 37% is `__pycache__` bytecode, generated at install: derivable from public source, not identical to it |
+| A Node service bundle (566 packages, 1.38 GB) | ~100% | `node_modules` is npm's bytes verbatim; an app's own code is a few MB |
+| Logs, events, database dumps, telemetry, media, data lakes | 0% | Own data by definition |
+
+So the public fraction is high exactly where the bytes are few. Build
+artifacts, container images and environments are gigabytes to
+terabytes per company; the petabytes are logs, events, data lakes and
+media, none of it public. A global public reference would take
+artifact buckets toward zero, and near-identical copies (an image
+rebuilt against a newer base) are already the store's version case
+(Ubuntu images 5.2×, kernels 13.9× on the bucket corpus). Not built:
+the pie is too small to be the company. Worth adding to the audit as a
+number (public fraction of the sampled bucket) when a prospect's
+bucket is an artifact store.
