@@ -5,7 +5,8 @@ decision, and how each point is checked. Results of each run are in
 [`../../benchmarks/suite/`](../../benchmarks/suite/) as JSON lines, one
 directory per machine, with the log of the run; the tables in
 [`suite-2026-09-20.md`](suite-2026-09-20.md) (and the earlier [`suite-2026-09.md`](suite-2026-09.md)) are generated from them by
-`scripts/report_suite.py`.
+`scripts/report_suite.py`. Every codec on one machine against Glyd,
+one thread each, is in [`landscape-2026-09-22.md`](landscape-2026-09-22.md).
 
 ## 1. Correctness
 

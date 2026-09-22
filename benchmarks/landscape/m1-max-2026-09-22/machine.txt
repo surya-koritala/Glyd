@@ -1,0 +1,4 @@
+Apple M1 Max, 10 cores, 32 GB, macOS 27.0
+zstd 1.5.7, xz 5.8.4, brotli 1.2.0, Apple gzip 487.0.1, bzip2 1.0.8, lz4 1.10.0, zpaq 7.15, cjxl/djxl 0.12.0
+glyd built from commit 4cd8ceb (src/ unchanged through 0c65e95)
+every codec on one thread; four inputs measured at once (one codec per input at a time)
