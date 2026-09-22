@@ -66,7 +66,7 @@ cd ~/glyd
 export RUSTFLAGS="-C target-cpu=native"
 mkdir -p ~/results
 echo "commit: COMMIT_PLACEHOLDER" > ~/results/machine.txt
-cargo build --release -p glyd-store > ~/results/build.txt 2>&1 || { echo "BUILD FAILED" > ~/results/FAILED; touch ~/results/DONE; exit 1; }
+cargo build --release --workspace > ~/results/build.txt 2>&1 || { echo "BUILD FAILED" > ~/results/FAILED; touch ~/results/DONE; exit 1; }
 export GLYD_STORE=$PWD/target/release/glyd-store AWS_REGION=REGION_PLACEHOLDER
 bash scripts/gate_corpus.sh /data/corpus > ~/results/corpus.txt 2>&1
 bash scripts/gate_run.sh /data/corpus s3://BUCKET_PLACEHOLDER/RUN_PLACEHOLDER /data/work ~/results > ~/results/gate_run.log 2>&1
