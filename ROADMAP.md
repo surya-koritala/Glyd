@@ -47,12 +47,16 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
    one object's upload with the next one's compression (the put rate
    is one process, one object at a time).
 
-1. **Write speed of `--max`** (0.71–0.77× zstd -3 on server cores since
-   the finder's tables took zstd -3's size; the long-distance pass is
-   the rest, 40% of the time on JSON for 24% fewer bytes): the pass
-   itself (its table is 128 MB of random access on a 512 MB unit), and
-   parsing a unit's blocks on several threads so medium inputs keep
-   128 MB units. Gate: 0.9× zstd -3 with the corpus ratio kept.
+1. **Write speed of `--max`** (0.71–0.77× zstd -3 on one server core
+   since the finder's tables took zstd -3's size; the long-distance
+   pass is the rest, 35–40% of the time on JSON for 24% fewer bytes).
+   Done: a unit's blocks parsed in stripes on all cores, so medium
+   inputs keep 128 MB units and the same bytes as one core (ten cores
+   had cost 7–9%). Left: the far pass is one core per unit (half of it
+   the anchor gather, which could split across cores), so a file of
+   few units idles cores at its start. Gate: 0.9× zstd -3 on one core
+   with the corpus ratio kept; at equal bytes, one core is already
+   3–10× faster than the zstd level that reaches them.
 2. **Small objects**: a single-pass decoder for compact blocks and a
    cheaper per-object encoder (zstd is 1.4–2× faster per object); a
    dictionary that carries a record schema, so `-r` ratios reach

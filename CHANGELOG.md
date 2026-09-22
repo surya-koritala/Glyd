@@ -6,6 +6,27 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+### Speed, same bytes
+
+- The store's put, where its time went (`GLYD_STORE_TIMING=1` prints
+  it): the fingerprint scan now runs on every core; a 4 GB cache of
+  decoded objects serves the next base and every delta on a chain (its
+  root decoded once, where each object over 1 GB fetched and decoded
+  its base again); a 32 MB sample decides a delta before the whole is
+  tried, and its alone size is the estimate (an hour of events shares
+  half its fingerprints with the hour before and gained nothing from a
+  full delta). Kernels put at 800–1,600 MB/s on this Mac (300–500
+  before), events at 1,300–1,900; every stored byte identical.
+- The max level on all cores at one core's ratio (`compress_max_stream`):
+  units stay at the far matcher's 128 MB instead of shrinking to give
+  every core one; a unit's far matches are found by one core and its
+  blocks parsed in 16 MB stripes by all of them, tables seeded with
+  the 2 MB before each stripe. Ten cores gave 7–9% more bytes than one
+  on 512 MB files; now the same bytes at any core count. The parallel
+  max level, record mode's plain fallback and the CLI's `--max` use it.
+
 ## v0.12.0 — 2026-09-22
 
 ### Gzip objects opened
