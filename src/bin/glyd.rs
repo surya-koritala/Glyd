@@ -308,7 +308,18 @@ fn main() -> io::Result<()> {
                 Some(ref p) if p != "-" => Box::new(std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(p)?)),
                 _ => Box::new(io::stdout()),
             };
-            glyd::compress_stream(input_data, unit_level, smallest, |unit| sink.write_all(unit))?;
+            // A gzip object: opened, its envelope first, its plain text streamed.
+            let opened = if glyd::gz::is_gzip(input_data) { glyd::gz::open(input_data) } else { None };
+            let data: &[u8] = match &opened {
+                Some(o) => {
+                    let mut head = Vec::new();
+                    glyd::gz::envelope(input_data.len(), &o.recipe, &mut head);
+                    sink.write_all(&head)?;
+                    &o.plain
+                }
+                None => input_data,
+            };
+            glyd::compress_stream(data, unit_level, smallest, |unit| sink.write_all(unit))?;
             sink.flush()?;
             return Ok(());
         }

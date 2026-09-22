@@ -154,7 +154,8 @@ fn main() -> io::Result<()> {
         }
         if store_put {
             for f in &inputs {
-                let data = std::fs::read(f)?;
+                let mapping = glyd::mmap::Mapping::read_only(std::path::Path::new(f))?;
+                let data = mapping.bytes();
                 let t = Instant::now();
                 let id = store.put(f, &data)?;
                 let e = &store.entries()[id as usize];

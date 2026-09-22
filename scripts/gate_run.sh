@@ -38,11 +38,13 @@ t0=$(now)
 PUT_RC=$?
 t1=$(now)
 STATS=$($GS "$META" --s3 "$S3" --stats 2>&1 | tail -1)
-echo "put: rc $PUT_RC, $(rate $RAW $t0 $t1) MB/s, $(echo "$t1 - $t0" | bc) s; $STATS" >> "$OUT"
+PUT_BYTES=$(awk '{s+=$2} END {print s+0}' "$RESULTS/put.log")
+echo "put: rc $PUT_RC, $PUT_BYTES bytes put, $(rate $PUT_BYTES $t0 $t1) MB/s, $(echo "$t1 - $t0" | bc) s; $STATS" >> "$OUT"
 DELTAS=$(grep -c 'delta against' "$RESULTS/put.log")
 echo "put: $DELTAS of $N objects as deltas" >> "$OUT"
 
 # Get every object back, compared with the original.
+GET_BYTES=$(grep -v '^D' "$META/index" | grep -v $'\tpack of ' | sort -n -u | awk -F'\t' '{s+=$4} END {print s+0}')
 t0=$(now); BAD=0; GOT=0
 while IFS=$'\t' read -r id name; do
     if $GS "$META" --s3 "$S3" --get "$id" -o "$BACK/obj" 2>>"$RESULTS/get.err" && cmp -s "$BACK/obj" "$CORPUS/$name"; then
@@ -53,7 +55,23 @@ while IFS=$'\t' read -r id name; do
 done < <(grep -v '^D' "$META/index" | grep -v $'\tpack of ' | cut -f1,7 | sort -n -u)
 rm -f "$BACK/obj"
 t1=$(now)
-echo "get: $GOT byte-exact, $BAD failed, $(rate $RAW $t0 $t1) MB/s, $(echo "$t1 - $t0" | bc) s" >> "$OUT"
+echo "get: $GOT byte-exact, $BAD failed, $(rate $GET_BYTES $t0 $t1) MB/s, $(echo "$t1 - $t0" | bc) s" >> "$OUT"
+
+# Gzip objects opened: this machine's gzip (GNU on Linux) on three
+# objects, then glyd on the gzip, decoded and compared.
+GLYD="${GLYD:-$(dirname "$GS")/glyd}"
+if [ -x "$GLYD" ]; then
+    for f in $(echo "$FILES" | grep -m1 gharchive) $(echo "$FILES" | grep -m1 simplewiki.*categorylinks) $(echo "$FILES" | grep -m1 'linux-6.6'); do
+        [ -n "$f" ] || continue
+        head -c 536870912 "$CORPUS/$f" | gzip -6 > "$BACK/x.gz"
+        case "$f" in *.json|*.sql) opt="-r" ;; *) opt="" ;; esac
+        t0=$(now); "$GLYD" --max $opt "$BACK/x.gz" -o "$BACK/x.g" 2>/dev/null; t1=$(now)
+        "$GLYD" -d "$BACK/x.g" -o "$BACK/x.back" 2>/dev/null
+        cmp -s "$BACK/x.back" "$BACK/x.gz" && ok=exact || ok=DIFFERENT
+        echo "gzip-inside $f ($(gzip --version | head -1)): gzip-6 $(size "$BACK/x.gz") -> glyd --max $opt $(size "$BACK/x.g") B, $ok, $(echo "$t1 - $t0" | bc | cut -c1-6) s" >> "$OUT"
+    done
+    rm -f "$BACK/x.gz" "$BACK/x.g" "$BACK/x.back"
+fi
 
 # Rebuild from the bucket, then verify.
 cp "$META/index" "$RESULTS/index.before"

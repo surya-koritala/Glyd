@@ -13,7 +13,14 @@ exclude = ["corpus/", "benchmarks/", "experiments/", "docs/benchmarks/", "bindin
 [workspace]
 members = [".", "glyd-store"]
 
+[features]
+default = ["deflate"]
+# Gzip objects opened and re-encoded bit for bit (src/gz.rs); the one
+# dependency, and the one thing `--no-default-features` gives up.
+deflate = ["dep:preflate-rs"]
+
 [dependencies]
+preflate-rs = { version = "0.7", optional = true }
 
 # The reference codecs are linked by the benchmark examples and tests
 # only; the library and the CLI carry none of them.
@@ -32,6 +39,7 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [[bin]]
 name = "glyd"
 path = "src/bin/glyd.rs"
+required-features = ["deflate"]
 
 [[example]]
 name = "bench"

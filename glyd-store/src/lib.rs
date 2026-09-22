@@ -56,6 +56,9 @@ const MIN_SHARE: f64 = 0.02;
 pub const SMALL: usize = 256 << 10;
 /// A pack is closed when it holds about this much.
 const PACK_SIZE: usize = 2 << 20;
+/// The last object put is kept in memory as the likeliest next base,
+/// up to this size.
+const LAST_CACHE: usize = 1 << 30;
 
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -693,7 +696,7 @@ impl Store {
         }
         self.table.sync();
         self.entries.push(entry);
-        *self.last.borrow_mut() = Some((id, data.to_vec()));
+        *self.last.borrow_mut() = if data.len() <= LAST_CACHE { Some((id, data.to_vec())) } else { None };
         Ok(id)
     }
 

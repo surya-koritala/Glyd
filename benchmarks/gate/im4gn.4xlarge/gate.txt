@@ -2,3 +2,9 @@ date: 2026-09-22T00:59:02Z
 machine: Neoverse-N1 (16 vCPU, 61 GB)
 glyd-store: glyd-store 0.11.2
 corpus: 1192 objects, 1184268065453 bytes
+zstd-3 alone: 153505807411 bytes, 816.410 MB/s
+put: rc 137, 3076.81 MB/s, 384.900269050 s; 6 objects (6 live): 65569523267 B raw, 3945797999 B on disk (16.62x)
+put: 3 of 1192 objects as deltas
+get: 6 byte-exact, 0 failed, 4317.09 MB/s, 274.320696266 s
+rebuild: rebuilt: 6 objects in the index, 0 unreadable, 177 s; index same as before; 176.649264658 s
+verify: verified: 6 objects ok, 0 failed; 103.324274676 s

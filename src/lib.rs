@@ -25,6 +25,8 @@ pub mod v7_ultra;
 pub mod cm;
 pub mod shape;
 pub mod mmap;
+#[cfg(feature = "deflate")]
+pub mod gz;
 pub mod fixlog;
 pub mod record;
 pub mod ldm;
@@ -331,6 +333,10 @@ pub fn compress(input: &[u8]) -> Vec<u8> {
 
 /// Compress an input slice into a destination vector with cross-block history lookback.
 pub fn compress_into(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_into) {
+        return;
+    }
     let mut table = new_table();
     finder::init_table(&mut table, input);
     let mut tokens = Vec::with_capacity(4096);
@@ -361,6 +367,10 @@ pub fn compress_into(input: &[u8], output: &mut Vec<u8>) {
 /// default at ~6% less ratio. Blocks the parse cannot shrink by 4% are
 /// stored raw.
 pub fn compress_into_turbo(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_into_turbo) {
+        return;
+    }
     let mut table = new_table();
     finder::init_table(&mut table, input);
     let mut tokens = Vec::new();
@@ -390,6 +400,10 @@ pub fn compress_into_turbo(input: &[u8], output: &mut Vec<u8>) {
 
 /// Turbo level, all cores.
 pub fn compress_parallel_into_turbo(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_parallel_into_turbo) {
+        return;
+    }
     compress_parallel_with(input, output, compress_into_turbo, PARALLEL_UNIT_V6)
 }
 
@@ -397,6 +411,10 @@ pub fn compress_parallel_into_turbo(input: &[u8], output: &mut Vec<u8>) {
 /// blocks), same container. Blocks the finder cannot shrink by 4% are
 /// stored raw.
 pub fn compress_into_fast(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_into_fast) {
+        return;
+    }
     let mut table: Box<finder::FastTable> =
         vec![0u32; finder::FAST_HASH_SIZE].into_boxed_slice().try_into().unwrap();
     let mut tokens = Vec::new();
@@ -429,11 +447,19 @@ pub fn compress_into_fast(input: &[u8], output: &mut Vec<u8>) {
 
 /// Compress across all CPU cores in parallel into a pre-allocated destination vector.
 pub fn compress_parallel_into(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_parallel_into) {
+        return;
+    }
     compress_parallel_with(input, output, compress_into, PARALLEL_UNIT_V6)
 }
 
 /// Fast level, all cores.
 pub fn compress_parallel_into_fast(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_parallel_into_fast) {
+        return;
+    }
     compress_parallel_with(input, output, compress_into_fast, PARALLEL_UNIT_V6)
 }
 
@@ -442,6 +468,10 @@ pub fn compress_parallel_into_fast(input: &[u8], output: &mut Vec<u8>) {
 /// Blocks the coder cannot shrink are stored raw (as v6 raw blocks,
 /// which every decoder reads).
 pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_into_max) {
+        return;
+    }
     compress_max_from(input, 0, 0, Parse::Dfast, None, output)
 }
 
@@ -449,6 +479,10 @@ pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
 /// decoder and window, denser output, an order of magnitude slower to
 /// produce.
 pub fn compress_into_ultra(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_into_ultra) {
+        return;
+    }
     compress_max_from(input, 0, 0, Parse::Ultra, None, output)
 }
 
@@ -622,6 +656,10 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
 
 /// Max level, all cores.
 pub fn compress_parallel_into_max(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_parallel_into_max) {
+        return;
+    }
     compress_parallel_with(input, output, compress_into_max, PARALLEL_UNIT_MAX)
 }
 
@@ -629,6 +667,10 @@ pub fn compress_parallel_into_max(input: &[u8], output: &mut Vec<u8>) {
 /// dense than the sequential level on Silesia; the window does not reach
 /// across units, and each decodes on its own).
 pub fn compress_parallel_into_ultra(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_parallel_into_ultra) {
+        return;
+    }
     compress_parallel_with(input, output, compress_into_ultra, PARALLEL_UNIT_ULTRA)
 }
 
@@ -860,6 +902,10 @@ unsafe fn decode_block(
 /// The decompressed size of `compressed`, from its block headers (every
 /// header is validated; the payloads are not read).
 pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
+    #[cfg(feature = "deflate")]
+    if let Some((original, _, _)) = gz::parse(compressed) {
+        return Ok(original);
+    }
     if let Some(units) = records_envelope(compressed) {
         return Ok(units.iter().map(|u| u.len).sum());
     }
@@ -1068,6 +1114,10 @@ fn write_cold(output: &mut Vec<u8>, units: &[&[u8]], streams: &[Vec<u8>]) {
 /// Units of 32 MB coded one after the other; `compress_parallel_into_cold`
 /// codes them on all cores. Every decoder reads the result.
 pub fn compress_into_cold(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_into_cold) {
+        return;
+    }
     let units = cold_units(input);
     let streams: Vec<Vec<u8>> = units
         .iter()
@@ -1082,6 +1132,10 @@ pub fn compress_into_cold(input: &[u8], output: &mut Vec<u8>) {
 
 /// The cold level, all cores (a thread holds 400 MB of model and unit).
 pub fn compress_parallel_into_cold(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_parallel_into_cold) {
+        return;
+    }
     let units = cold_units(input);
     let slots: Vec<std::sync::Mutex<Vec<u8>>> = units.iter().map(|_| std::sync::Mutex::new(Vec::new())).collect();
     let _ = par_units::<()>(units.len(), |i| {
@@ -1096,6 +1150,10 @@ pub fn compress_parallel_into_cold(input: &[u8], output: &mut Vec<u8>) {
 
 /// The cold level in record mode: the typed columns, then context mixing.
 pub fn compress_records_into_cold(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_records_into_cold) {
+        return;
+    }
     if !records_pay(records_trial(input), compress_into_cold) {
         return compress_parallel_into_cold(input, output);
     }
@@ -1284,6 +1342,15 @@ fn base_region(base_end: usize, map: &[(u64, u64)], unit: &[u8], a: usize, b: us
 /// (`decompress_with_base`). A version of a dump, a source tree or an
 /// image costs a few percent of what it costs alone.
 pub fn compress_with_base(base: &[u8], input: &[u8], output: &mut Vec<u8>, ultra: bool) {
+    #[cfg(feature = "deflate")]
+    if gz::is_gzip(input) {
+        if let Some(opened) = gz::open(input) {
+            // Both sides opened: the delta is between the plain texts.
+            gz::envelope(input.len(), &opened.recipe, output);
+            let base_plain = if gz::is_gzip(base) { gz::open(base).map(|o| o.plain) } else { None };
+            return compress_with_base(base_plain.as_deref().unwrap_or(base), &opened.plain, output, ultra);
+        }
+    }
     let parse = if ultra { Parse::Ultra } else { Parse::Dfast };
     let units: Vec<(usize, usize)> = (0..input.len().max(1)).step_by(BASE_UNIT).map(|a| (a, (a + BASE_UNIT).min(input.len()))).collect();
     let base_end = base.len().saturating_sub(BASE_TAIL);
@@ -1377,6 +1444,13 @@ fn base_units_into(base: &[u8], units: &[BaseUnit<'_>], dst: &mut [u8]) -> Resul
 
 /// Decode `compressed` (a `compress_with_base` output) with its base.
 pub fn decompress_with_base(base: &[u8], compressed: &[u8]) -> Result<Vec<u8>> {
+    #[cfg(feature = "deflate")]
+    if let Some(r) = gz::unwrap(compressed, |inner| {
+        let base_plain = if gz::is_gzip(base) { gz::open(base).map(|o| o.plain) } else { None };
+        decompress_with_base(base_plain.as_deref().unwrap_or(base), inner)
+    }) {
+        return r;
+    }
     let (id, units) = base_envelope(compressed).ok_or(CodecError::CorruptedBitstream("not a base envelope"))?;
     if id != base_id(base) {
         return Err(CodecError::CorruptedBitstream("base envelope: not this base"));
@@ -1392,6 +1466,10 @@ pub fn decompress_with_base(base: &[u8], compressed: &[u8]) -> Result<Vec<u8>> {
 /// against `base` into one reused buffer, handed to `sink` in order.
 pub fn decompress_stream_with_base(base: &[u8], compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
     let codec = |e: CodecError| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+    #[cfg(feature = "deflate")]
+    if gz::parse(compressed).is_some() {
+        return sink(&decompress_with_base(base, compressed).map_err(codec)?);
+    }
     let (id, units) = base_envelope(compressed).ok_or_else(|| codec(CodecError::CorruptedBitstream("not a base envelope")))?;
     if id != base_id(base) {
         return Err(codec(CodecError::CorruptedBitstream("base envelope: not this base")));
@@ -1492,6 +1570,10 @@ fn records_envelope(compressed: &[u8]) -> Option<Vec<RecordUnit<'_>>> {
 /// `decompress`, `decompress_into` and the parallel decoders read the
 /// result.
 pub fn compress_records_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>)) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, |p, o| compress_records_with(p, o, level)) {
+        return;
+    }
     records_with(input, output, level, PARALLEL_UNIT_MAX)
 }
 
@@ -1576,6 +1658,10 @@ pub fn compress_records_into_max(input: &[u8], output: &mut Vec<u8>) {
 
 /// Ultra level in record mode.
 pub fn compress_records_into_ultra(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if gz::wrap(input, output, compress_records_into_ultra) {
+        return;
+    }
     records_with(input, output, compress_into_ultra, PARALLEL_UNIT_ULTRA)
 }
 
@@ -1652,6 +1738,10 @@ fn total_uncompressed_len(compressed: &[u8]) -> Result<usize> {
 
 /// Decompress an entire SIMD-stream payload sequentially into a freshly allocated vector.
 pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
+    #[cfg(feature = "deflate")]
+    if let Some(r) = gz::unwrap(compressed, decompress_parallel) {
+        return r;
+    }
     if needs_base(compressed) {
         return Err(CodecError::CorruptedBitstream("a base envelope: decode with its base"));
     }
@@ -1761,6 +1851,15 @@ fn decompress_sequential_impl(compressed: &[u8], dst: &mut [u8], dst_offset0: us
 
 /// Decompress into a pre-allocated buffer sequentially with checksum validation.
 pub fn decompress_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
+    #[cfg(feature = "deflate")]
+    if let Some(r) = gz::unwrap(compressed, decompress_parallel) {
+        let out = r?;
+        if dst.len() < out.len() {
+            return Err(CodecError::OutputBufferTooSmall { required: out.len(), provided: dst.len() });
+        }
+        dst[..out.len()].copy_from_slice(&out);
+        return Ok(out.len());
+    }
     if needs_base(compressed) {
         return Err(CodecError::CorruptedBitstream("a base envelope: decode with its base"));
     }
@@ -1805,6 +1904,10 @@ struct ParallelUnit {
 
 /// Decompress in parallel across all CPU cores into a freshly allocated vector.
 pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
+    #[cfg(feature = "deflate")]
+    if let Some(r) = gz::unwrap(compressed, decompress_parallel) {
+        return r;
+    }
     if needs_base(compressed) {
         return Err(CodecError::CorruptedBitstream("a base envelope: decode with its base"));
     }
@@ -1928,6 +2031,10 @@ const STREAM_BATCH: usize = 256 << 20;
 /// codec error comes back as `InvalidData`.
 pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
     let codec = |e: CodecError| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+    #[cfg(feature = "deflate")]
+    if let Some(r) = gz::unwrap(compressed, decompress_parallel) {
+        return sink(&r.map_err(codec)?);
+    }
     let mut buf: Vec<u8> = Vec::new();
     let workers = threads();
     if let Some(units) = records_envelope(compressed) {
@@ -1990,6 +2097,15 @@ pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::
 
 /// Decompress in parallel across all CPU cores into a pre-allocated buffer with checksum verification.
 pub fn decompress_parallel_into(compressed: &[u8], dst: &mut [u8]) -> Result<usize> {
+    #[cfg(feature = "deflate")]
+    if let Some(r) = gz::unwrap(compressed, decompress_parallel) {
+        let out = r?;
+        if dst.len() < out.len() {
+            return Err(CodecError::OutputBufferTooSmall { required: out.len(), provided: dst.len() });
+        }
+        dst[..out.len()].copy_from_slice(&out);
+        return Ok(out.len());
+    }
     if needs_base(compressed) {
         return Err(CodecError::CorruptedBitstream("a base envelope: decode with its base"));
     }
