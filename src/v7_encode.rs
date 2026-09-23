@@ -234,6 +234,37 @@ pub(crate) fn write_tans_table(counts: &[u16], out: &mut Vec<u8>) {
     }
 }
 
+/// Raw write pointers into an `EncScratch`'s arrays.
+#[derive(Clone, Copy)]
+struct CodeWriter {
+    ll: *mut u8,
+    ml: *mut u8,
+    off: *mut u8,
+    extra: *mut u64,
+}
+
+impl CodeWriter {
+    /// Entry `i`: as `EncScratch::push_codes`. SAFETY: `i` is reserved.
+    #[inline(always)]
+    unsafe fn put(self, i: usize, lit_len: u32, match_len: u32, offset: u32, rep: u32) {
+        use std::hint::select_unpredictable as sel;
+        let (llc, lnb, le) = ll_code(lit_len);
+        let (mlc, mnb, me) = ml_code(match_len);
+        let (lnb, mnb) = (lnb as u32, mnb as u32);
+        let k = 31 - offset.leading_zeros();
+        let is_rep = rep < 3;
+        let offc = sel(is_rep, rep, 3 + k) as u8;
+        let onb = sel(is_rep, 0, k);
+        let oe = sel(is_rep, 0, offset - (1 << k));
+        let v = le as u64 | (me as u64) << lnb | (oe as u64) << (lnb + mnb);
+        let bits = lnb + mnb + onb;
+        *self.ll.add(i) = llc;
+        *self.ml.add(i) = mlc;
+        *self.off.add(i) = offc;
+        *self.extra.add(i) = v | (bits as u64) << EXTRA_BITS;
+    }
+}
+
 /// Per-block scratch, owned by the caller and reused across blocks.
 #[derive(Default)]
 pub struct EncScratch {
@@ -291,6 +322,23 @@ impl EncScratch {
         self.ml.set_len(i + 1);
         self.off.set_len(i + 1);
         self.extra.set_len(i + 1);
+    }
+
+    /// The four arrays' write pointers, for a parse loop that keeps one
+    /// count in a register and sets the lengths once (`set_count`).
+    #[inline(always)]
+    fn writer(&mut self) -> CodeWriter {
+        CodeWriter { ll: self.ll.as_mut_ptr(), ml: self.ml.as_mut_ptr(), off: self.off.as_mut_ptr(), extra: self.extra.as_mut_ptr() }
+    }
+
+    /// SAFETY: entries `..n` were written through `writer` and `n` is
+    /// within what `reserve_for` reserved.
+    #[inline(always)]
+    unsafe fn set_count(&mut self, n: usize) {
+        self.ll.set_len(n);
+        self.ml.set_len(n);
+        self.off.set_len(n);
+        self.extra.set_len(n);
     }
 
     /// Room for every sequence a block of `block_len` bytes can hold (a
@@ -887,7 +935,7 @@ pub fn find_sequences_dfast_dict(input: &[u8], block_start: usize, block_len: us
 
 #[inline(always)]
 fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, block_len: usize, t: &mut DfastTables, dict: Option<&DictTables>, far: &crate::ldm::Matches, reps: &mut [u32; 3], seqs: &mut Vec<Sequence>, literals: &mut Vec<u8>, codes: &mut EncScratch) {
-    use crate::finder::MatchLen;
+    use crate::finder::{MatchLen, ScalarMatch};
     let src = input.as_ptr();
     let (lb, sb) = (t.lbits, t.sbits);
     debug_assert!(!D || (dict.unwrap().tables.lbits == DFAST_LONG_BITS && dict.unwrap().tables.sbits == DFAST_SHORT_BITS));
@@ -896,6 +944,10 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
     debug_assert_eq!(*reps, [1, 4, 8], "written codes assume the decoder's fresh Reps");
     assert!(block_end <= input.len(), "block past the input");
     debug_assert!(reps.iter().all(|&o| o >= 1), "a zero repeat offset would verify against itself");
+    // The tables through raw pointers: every index is a hash's top
+    // `lbits` / `sbits` bits, inside the tables by construction.
+    assert!(t.long.len() >= 1 << lb && t.short.len() >= 1 << sb);
+    let (tl, ts) = (t.long.as_mut_ptr(), t.short.as_mut_ptr());
     let mut far_cursor = far.cursor(block_start);
     // Every probe reads 8 bytes at `pos` and 8 at `pos + 1`; extensions
     // stop at block_end.
@@ -904,22 +956,30 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
     let mut pos = block_start;
     let mut step_nb: u32 = 1 << DFAST_SKIP_STRENGTH;
     let mut r = *reps;
-    // The literal copies below run 16 bytes wild past their length.
+    // The outputs are written through pointers held in the loop, their
+    // lengths set once at the end: six vectors' lengths kept in memory,
+    // and a push's grow call, were what the loop spent its registers on.
+    // The literal copies run 16 bytes wild past their length.
     literals.reserve(block_len + 16);
     codes.clear();
     codes.reserve_for(block_len);
+    seqs.reserve(block_len / 4 + 2);
+    let seq0 = seqs.len();
+    let (seq_out, lit_out, cw) = (seqs.as_mut_ptr().wrapping_add(seq0), literals.as_mut_ptr().wrapping_add(literals.len()), codes.writer());
+    let mut n = 0usize; // sequences written
+    let mut nl = 0usize; // literal bytes written
 
     if pos < limit {
         unsafe {
             let mut cur = Slot::at(src, pos, lb, sb);
-            let mut el = t.long[cur.il];
-            let mut es = t.short[cur.is];
+            let mut el = *tl.add(cur.il);
+            let mut es = *ts.add(cur.is);
             loop {
-                t.long[cur.il] = cur.ml;
-                t.short[cur.is] = cur.ms;
+                *tl.add(cur.il) = cur.ml;
+                *ts.add(cur.is) = cur.ms;
                 let nxt = Slot::at(src, pos + 1, lb, sb);
-                let el1 = t.long[nxt.il];
-                let es1 = t.short[nxt.is];
+                let el1 = *tl.add(nxt.il);
+                let es1 = *ts.add(nxt.is);
                 let (eld, esd) = if D {
                     let d = &dict.unwrap_unchecked().tables;
                     let (il, _, is, _) = cur.dict_index();
@@ -927,24 +987,23 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                 } else {
                     (0, 0)
                 };
-                let mut found = probe::<D>(src, pos, block_end, &cur, el, es, &r, dict, eld, esd);
                 // The last offset one byte on, over anything the tables
                 // say (zstd's order): a record that differs from the one
                 // before it in one byte keeps its offset, which codes in
                 // a couple of bits, instead of a fresh offset from a hash
                 // hit at `pos`. A table dump: 6% fewer bytes; JSON events
-                // and logs 1%.
-                let mut rep_ahead = false;
-                {
-                    let o = r[0] as usize;
-                    let p1 = pos + 1;
-                    if o <= p1 && p1 + 8 <= block_end && eq4(src.add(p1), src.add(p1 - o)) {
-                        let len = 4 + crate::finder::ScalarMatch::prefix(src.add(p1 + 4), src.add(p1 - o + 4), block_end - p1 - 4);
-                        found = Found { src: src.add(p1 - o), off: o, len };
-                        pos = p1;
-                        rep_ahead = true;
-                    }
-                }
+                // and logs 1%. Checked first: on a hit the probe at `pos`
+                // is not needed.
+                let o = r[0] as usize;
+                let p1 = pos + 1;
+                let rep_ahead = o <= p1 && p1 + 8 <= block_end && eq4(src.add(p1), src.add(p1 - o));
+                let mut found = if rep_ahead {
+                    let len = 4 + ScalarMatch::prefix(src.add(p1 + 4), src.add(p1 - o + 4), block_end - p1 - 4);
+                    pos = p1;
+                    Found { src: src.add(p1 - o), off: o, len }
+                } else {
+                    probe::<D>(src, pos, block_end, &cur, el, es, &r, dict, eld, esd)
+                };
                 // A far match covering this position (the long-distance
                 // matcher's) wins when it is longer than the local one.
                 if let Some((flen, foff)) = far_cursor.at(pos) {
@@ -966,8 +1025,8 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                         es = es1;
                     } else {
                         cur = Slot::at(src, pos, lb, sb);
-                        el = t.long[cur.il];
-                        es = t.short[cur.is];
+                        el = *tl.add(cur.il);
+                        es = *ts.add(cur.is);
                     }
                     continue;
                 }
@@ -976,10 +1035,10 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                 // longer wins. pos + 1 is indexed either way. (After the
                 // repeat one byte on, `nxt` is the position itself and the
                 // entry was loaded for it: no lazy step.)
-                t.long[nxt.il] = nxt.ml;
-                t.short[nxt.is] = nxt.ms;
+                *tl.add(nxt.il) = nxt.ml;
+                *ts.add(nxt.is) = nxt.ms;
                 if let Some(c) = candidate(el1, nxt.ml, pos + 1).filter(|_| !rep_ahead) {
-                    let rc1 = crate::finder::ScalarMatch::prefix(src.add(pos + 1), src.add(c), block_end - pos - 1);
+                    let rc1 = ScalarMatch::prefix(src.add(pos + 1), src.add(c), block_end - pos - 1);
                     if rc1 >= found.len + LAZY_GAIN {
                         // Out of line so this stays a (rarely taken)
                         // branch: as selects, the next position would
@@ -1009,7 +1068,7 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                     rc = rc.min(FAR_MATCH_CAP as usize);
                 }
                 let ll = mpos - anchor;
-                let dst = literals.as_mut_ptr().add(literals.len());
+                let dst = lit_out.add(nl);
                 if ll <= 16 {
                     // Two 8-byte copies, the second at the tail (they overlap
                     // or coincide): reads stay under `mpos + 8 <= block_end`
@@ -1020,17 +1079,18 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                 } else {
                     std::ptr::copy_nonoverlapping(src.add(anchor), dst, ll);
                 }
-                literals.set_len(literals.len() + ll);
-                seqs.push(Sequence { lit_len: ll as u32, match_len: rc as u32, offset });
+                nl += ll;
+                seq_out.add(n).write(Sequence { lit_len: ll as u32, match_len: rc as u32, offset });
                 // The codes, and the same update as Reps::code_for: the
                 // offset moves to the front and the entries before its old
                 // slot shift back one.
                 {
                     use std::hint::select_unpredictable as sel;
                     let (e0, e1, e2) = (offset == r[0], offset == r[1], offset == r[2]);
-                    codes.push_codes(ll as u32, rc as u32, offset, rep_symbol(sel(e0, 0, sel(e1, 1, sel(e2, 2, 3))), ll == 0) as u32);
+                    cw.put(n, ll as u32, rc as u32, offset, rep_symbol(sel(e0, 0, sel(e1, 1, sel(e2, 2, 3))), ll == 0) as u32);
                     r = [offset, sel(e0, r[1], r[0]), sel(e0 | e1, r[2], r[1])];
                 }
+                n += 1;
                 pos = mpos + rc;
                 anchor = pos;
                 if pos >= limit {
@@ -1040,20 +1100,27 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                 // insertions) so runs keep hashing.
                 let w = std::ptr::read_unaligned(src.add(mpos + 2) as *const u64);
                 let (i, m) = long_slot(w, mpos + 2, lb);
-                t.long[i] = m;
+                *tl.add(i) = m;
                 let (i, m) = short_slot(w, mpos + 2, sb);
-                t.short[i] = m;
+                *ts.add(i) = m;
                 let w = std::ptr::read_unaligned(src.add(pos - 2) as *const u64);
                 let (i, m) = long_slot(w, pos - 2, lb);
-                t.long[i] = m;
+                *tl.add(i) = m;
                 let w = std::ptr::read_unaligned(src.add(pos - 1) as *const u64);
                 let (i, m) = short_slot(w, pos - 1, sb);
-                t.short[i] = m;
+                *ts.add(i) = m;
                 cur = Slot::at(src, pos, lb, sb);
-                el = t.long[cur.il];
-                es = t.short[cur.is];
+                el = *tl.add(cur.il);
+                es = *ts.add(cur.is);
             }
         }
+    }
+    // SAFETY: `n` sequences, `n` code entries and `nl` literal bytes were
+    // written above, all within the reserves.
+    unsafe {
+        seqs.set_len(seq0 + n);
+        literals.set_len(literals.len() + nl);
+        codes.set_count(n);
     }
     literals.extend_from_slice(&input[anchor..block_end]);
     seqs.push(Sequence { lit_len: (block_end - anchor) as u32, match_len: 0, offset: 0 });
