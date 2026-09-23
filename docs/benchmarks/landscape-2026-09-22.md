@@ -85,7 +85,9 @@ Glyd's bytes against the other (minus: fewer bytes than it), and speeds on one t
   on them and on 8 of 11 then writes the closed form anyway (an
   LZ4-class level on the content loses to the file's own deflate); on
   the jar, the JPEG and the .pptx it keeps the opened form and reads
-  at 9–20 MB/s, far from what the level is for.
+  at 9–20 MB/s, far from what the level is for. (Fixed after this run:
+  from v0.13.2 the default, fast and turbo levels leave containers
+  closed.)
 - **Data without records or containers, fast tier**: `--max` is within
   2% of zstd -3's bytes (executable +1%, page_props +1%, x-ray +2%,
   Parquet ±0%), compresses at 0.36–0.91× its speed on one thread

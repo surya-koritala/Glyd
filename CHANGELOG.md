@@ -6,6 +6,19 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.13.2 — 2026-09-22
+
+- **The default, fast and turbo levels leave containers closed.** They
+  opened gzip, zip, tar, PDF, PNG and JPEG objects like every other
+  level, at 0.6–5.5 MB/s on one thread, and on most then wrote the
+  closed form anyway, an LZ4-class level on the content losing to the
+  file's own deflate; on a jar, a JPEG and a .pptx they kept the opened
+  form, whose reads run at 9–20 MB/s. Those levels exist for speed, so
+  they no longer open anything: a 20.7 MB gzip goes through the default
+  level at 1,529 MB/s instead of 5 (zstd -3: 1,204), a 6.8 MB PDF with
+  figures in 0.00 s instead of 11.7. Containers open from `--max` up,
+  as before. Files those levels wrote with an envelope still decode.
+
 ## v0.13.1 — 2026-09-22
 
 Fixes. Every file v0.12.0 and v0.13.0 wrote reads back with this one.

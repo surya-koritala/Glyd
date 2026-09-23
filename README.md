@@ -126,7 +126,7 @@ million a year at list price; the percentages above are what to multiply.
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 cargo install glyd glyd-store                # from crates.io
-pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.13.1-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.13.2-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -461,7 +461,10 @@ content, then every other byte of the object as it was (headers,
 directories, stored entries, a tar's files) and the corrections, and
 it takes the level asked for — record mode where it pays, the cold
 level, a base, which sees all of it, so versions of an archive share
-what they have in common. `-d` gives back the identical object. The
+what they have in common. Containers open from `--max` up; the
+default, fast and turbo levels leave them as they are, since a read of
+an opened container re-creates its deflate. `-d` gives back the
+identical object. The
 object is also compressed closed, at the same level, and the smaller
 of the two is kept. Measured on this Mac, every decode compared with
 the input:
@@ -484,7 +487,7 @@ the input:
 | arXiv paper with figures, PDF | 6.77 MB | 5.54 MB | **4.24 MB (−37%)** | 3.55 MB | **2.82 MB (−58%)** |
 | PNG photo | 1.83 MB | 1.77 MB | **1.65 MB (−10%)** | 1.52 MB | **1.19 MB (−35%)** |
 | PNG illustration | 669 KB | 663 KB | **634 KB (−5%)** | 540 KB | **448 KB (−33%)** |
-| 6 JPEG photos, 35.9 MB | 35.9 MB | 35.9 MB | **27.3 MB (−24%)** at every level | | |
+| 6 JPEG photos, 35.9 MB | 35.9 MB | 35.9 MB | **27.3 MB (−24%)** at every level from `--max` up | | |
 
 Where the container's own deflate was already near what the fast
 level does on the content (an Office XML sheet), the fast level keeps
@@ -782,16 +785,16 @@ panic or an unbounded allocation; every unsafe block carries its bound.
   than xz -9e and brotli -11 there, which read at 30–125 MB/s against its
   500–1,600. zstd 1.5.7's `--max` level is denser still, at 72 minutes
   per gigabyte.
-- Containers read at 1.5–20 MB/s on one thread: a read re-creates
-  every deflate stream bit for bit. The default level opens them too,
-  at 0.6–5.5 MB/s, and on most keeps the closed form it also tries.
+- Opened containers read at 1.5–20 MB/s on one thread: a read
+  re-creates every deflate stream bit for bit. That is why the
+  default, fast and turbo levels leave containers closed.
 - `GlydReader`/`GlydWriter` (std::io streaming) carry v6 levels only.
 
 ---
 
 ## Releases and versioning
 
-Current release: **v0.13.1** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.13.2** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every

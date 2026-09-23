@@ -356,10 +356,6 @@ pub fn compress(input: &[u8]) -> Vec<u8> {
 
 /// Compress an input slice into a destination vector with cross-block history lookback.
 pub fn compress_into(input: &[u8], output: &mut Vec<u8>) {
-    #[cfg(feature = "deflate")]
-    if deflate::wrap(input, output, compress_into, compress_into) {
-        return;
-    }
     let mut table = new_table();
     finder::init_table(&mut table, input);
     let mut tokens = Vec::with_capacity(4096);
@@ -390,10 +386,6 @@ pub fn compress_into(input: &[u8], output: &mut Vec<u8>) {
 /// default at ~6% less ratio. Blocks the parse cannot shrink by 4% are
 /// stored raw.
 pub fn compress_into_turbo(input: &[u8], output: &mut Vec<u8>) {
-    #[cfg(feature = "deflate")]
-    if deflate::wrap(input, output, compress_into_turbo, compress_into_turbo) {
-        return;
-    }
     let mut table = new_table();
     finder::init_table(&mut table, input);
     let mut tokens = Vec::new();
@@ -423,10 +415,6 @@ pub fn compress_into_turbo(input: &[u8], output: &mut Vec<u8>) {
 
 /// Turbo level, all cores.
 pub fn compress_parallel_into_turbo(input: &[u8], output: &mut Vec<u8>) {
-    #[cfg(feature = "deflate")]
-    if deflate::wrap(input, output, compress_parallel_into_turbo, compress_parallel_into_turbo) {
-        return;
-    }
     compress_parallel_with(input, output, compress_into_turbo, PARALLEL_UNIT_V6)
 }
 
@@ -434,10 +422,6 @@ pub fn compress_parallel_into_turbo(input: &[u8], output: &mut Vec<u8>) {
 /// blocks), same container. Blocks the finder cannot shrink by 4% are
 /// stored raw.
 pub fn compress_into_fast(input: &[u8], output: &mut Vec<u8>) {
-    #[cfg(feature = "deflate")]
-    if deflate::wrap(input, output, compress_into_fast, compress_into_fast) {
-        return;
-    }
     let mut table: Box<finder::FastTable> =
         vec![0u32; finder::FAST_HASH_SIZE].into_boxed_slice().try_into().unwrap();
     let mut tokens = Vec::new();
@@ -470,19 +454,11 @@ pub fn compress_into_fast(input: &[u8], output: &mut Vec<u8>) {
 
 /// Compress across all CPU cores in parallel into a pre-allocated destination vector.
 pub fn compress_parallel_into(input: &[u8], output: &mut Vec<u8>) {
-    #[cfg(feature = "deflate")]
-    if deflate::wrap(input, output, compress_parallel_into, compress_parallel_into) {
-        return;
-    }
     compress_parallel_with(input, output, compress_into, PARALLEL_UNIT_V6)
 }
 
 /// Fast level, all cores.
 pub fn compress_parallel_into_fast(input: &[u8], output: &mut Vec<u8>) {
-    #[cfg(feature = "deflate")]
-    if deflate::wrap(input, output, compress_parallel_into_fast, compress_parallel_into_fast) {
-        return;
-    }
     compress_parallel_with(input, output, compress_into_fast, PARALLEL_UNIT_V6)
 }
 

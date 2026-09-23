@@ -1332,6 +1332,23 @@ mod tests {
         assert!(crate::decompress(&c).unwrap() == input);
     }
 
+    /// The default, fast and turbo levels leave a container as it is: a
+    /// read of an opened one re-creates its deflate, which those levels
+    /// exist to be faster than. From `--max` up it is opened.
+    #[test]
+    fn fast_levels_keep_a_container_closed() {
+        let gz = gzip(&text(4 << 20), &["-1"]);
+        for f in [crate::compress_into, crate::compress_into_fast, crate::compress_into_turbo, crate::compress_parallel_into] {
+            let mut c = Vec::new();
+            f(&gz, &mut c);
+            assert!(parse_any(&c).is_none());
+            assert!(crate::decompress(&c).unwrap() == gz);
+        }
+        let mut c = Vec::new();
+        crate::compress_into_max(&gz, &mut c);
+        assert!(c.starts_with(MAGIC) && c.len() < gz.len(), "{} of {}", c.len(), gz.len());
+    }
+
     /// Two versions of a tar holding gzip members and plain files (an OS
     /// image's shape): the delta between them is small, the kept bytes
     /// and the corrections being in the plain text base mode sees.
