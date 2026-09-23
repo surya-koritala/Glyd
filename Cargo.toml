@@ -21,6 +21,8 @@ default = ["deflate", "jpeg"]
 # src/jpg); `--no-default-features` gives up only the old files.
 deflate = ["dep:preflate-rs"]
 jpeg = ["dep:lepton_jpeg"]
+# The JPEG model's bits and decisions per part, printed by its photos test.
+jpg-stats = []
 
 [dependencies]
 preflate-rs = { package = "glyd-preflate", path = "third_party/preflate-rs", version = "0.7.6", optional = true }

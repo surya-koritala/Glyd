@@ -1055,14 +1055,18 @@ pub(super) mod tests {
             let write_s = t.elapsed().as_secs_f64();
             assert!(back == data);
             let t = std::time::Instant::now();
+            #[cfg(feature = "jpg-stats")]
             for c in model::COST.iter() {
                 c.store(0, std::sync::atomic::Ordering::Relaxed);
             }
             let streams = model::encode(&j, 1);
             let stream: Vec<u8> = streams.concat();
             let refs: Vec<&[u8]> = streams.iter().map(|s| &s[..]).collect();
-            let cost: Vec<String> = ["count", "zero", "exp", "mant", "sign", "e0", "eexp", "emant", "esign", "dc0", "dcexp", "dcmant", "dcsign"].iter().zip(model::COST.iter().zip(model::DECISIONS.iter())).map(|(n, (c, d))| format!("{n} {:.0} KB/{:.1} M", c.load(std::sync::atomic::Ordering::Relaxed) as f64 / 8000.0 / 1000.0, d.swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / 1e6)).collect();
-            eprintln!("  {}", cost.join(", "));
+            #[cfg(feature = "jpg-stats")]
+            {
+                let cost: Vec<String> = ["count", "zero", "exp", "mant", "sign", "e0", "eexp", "emant", "esign", "dc0", "dcexp", "dcmant", "dcsign"].iter().zip(model::COST.iter().zip(model::DECISIONS.iter())).map(|(n, (c, d))| format!("{n} {:.0} KB/{:.1} M", c.load(std::sync::atomic::Ordering::Relaxed) as f64 / 8000.0 / 1000.0, d.swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / 1e6)).collect();
+                eprintln!("  {}", cost.join(", "));
+            }
             let model_s = t.elapsed().as_secs_f64();
             let t = std::time::Instant::now();
             assert!(model::decode(&refs, &j.frame, &j.quant).unwrap() == j.blocks);
@@ -1105,6 +1109,47 @@ pub(super) mod tests {
             let t = std::time::Instant::now();
             assert!(unpack(&packed).unwrap() == data);
             let unpack_s = t.elapsed().as_secs_f64();
+            {
+                // The read's parts, one stripe set as packed.
+                let mut pos = 5usize;
+                let kept = get_varint(&packed, &mut pos).unwrap() as usize;
+                let headers = &packed[pos..pos + kept];
+                pos += kept;
+                let t = std::time::Instant::now();
+                let headers = if packed[4] == 1 { crate::decompress(headers).unwrap() } else { headers.to_vec() };
+                let hdr_s = t.elapsed().as_secs_f64();
+                let scans = get_varint(&packed, &mut pos).unwrap() as usize;
+                let mut pads = Vec::new();
+                for _ in 0..scans {
+                    let n = get_varint(&packed, &mut pos).unwrap() as usize;
+                    let mut list = Vec::new();
+                    for _ in 0..n {
+                        let marker = get_varint(&packed, &mut pos).unwrap() as u32;
+                        list.push((marker, packed[pos]));
+                        pos += 1;
+                    }
+                    pads.push(list);
+                }
+                let mut jj = parse_with(&headers, Some(&mut pads.into_iter())).unwrap();
+                let n = get_varint(&packed, &mut pos).unwrap() as usize;
+                let mut lens = Vec::new();
+                for _ in 0..n {
+                    lens.push(get_varint(&packed, &mut pos).unwrap() as usize);
+                }
+                let mut streams: Vec<&[u8]> = Vec::new();
+                for len in lens {
+                    streams.push(&packed[pos..pos + len]);
+                    pos += len;
+                }
+                let t = std::time::Instant::now();
+                jj.blocks = model::decode(&streams, &jj.frame, &jj.quant).unwrap();
+                let model_s = t.elapsed().as_secs_f64();
+                let t = std::time::Instant::now();
+                let out = write(&jj).unwrap();
+                let write_s = t.elapsed().as_secs_f64();
+                assert!(out == data);
+                eprintln!("  read parts: headers {hdr_s:.3} s, model ({} streams) {model_s:.3} s, write {write_s:.3} s", n);
+            }
             eprintln!("  pack {} B in {pack_s:.2} s ({:.0} MB/s), unpack {unpack_s:.2} s ({:.0} MB/s); lepton in {lepton_s:.2} s ({:.0} MB/s)", packed.len(), data.len() as f64 / 1e6 / pack_s, data.len() as f64 / 1e6 / unpack_s, data.len() as f64 / 1e6 / lepton_s);
             eprintln!("{}: {} B, {} blocks, parse {parse_s:.3} s, write {write_s:.3} s; model {} B ({:.1}%) in {model_s:.2} s, back in {decode_s:.2} s; lepton {:?} ({:.1}%)", path.display(), data.len(), j.blocks.iter().map(|b| b.len()).sum::<usize>(), stream.len(), 100.0 * stream.len() as f64 / data.len() as f64, lepton, lepton.map_or(0.0, |l| 100.0 * l as f64 / data.len() as f64));
         }
