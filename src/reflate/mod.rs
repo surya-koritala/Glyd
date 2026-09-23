@@ -8,6 +8,11 @@
 //! block also records the bit it started at, for the pieces to be
 //! written on every core later.
 
+mod coder;
+pub mod zlib;
+
+use crate::record::{get_varint, put_varint};
+
 /// A literal byte, or a reference: `len` 3..=258 back `dist` 1..=32768.
 /// `len` 259 is 258 coded the long way (code 284 with 31 extra bits),
 /// which the standard allows and zlib never writes.
@@ -439,26 +444,142 @@ pub fn write_block(w: &mut BitWriter, block: &Block) {
         }
         Kind::Dynamic(h, tokens) => {
             w.put(2, 2);
-            w.put(h.hlit as u32 - 257, 5);
-            w.put(h.hdist as u32 - 1, 5);
-            w.put(h.hclen as u32 - 4, 4);
-            for i in 0..h.hclen as usize {
-                w.put(h.clen[CLEN_ORDER[i]] as u32, 3);
-            }
-            let cl = codes(&h.clen);
-            for &(sym, extra) in &h.symbols {
-                let (c, l) = cl[sym as usize];
-                w.code(c, l);
-                match sym {
-                    16 => w.put(extra as u32, 2),
-                    17 => w.put(extra as u32, 3),
-                    18 => w.put(extra as u32, 7),
-                    _ => {}
-                }
-            }
+            write_header(w, h);
             write_tokens(w, tokens, &codes(&h.lit_lens), &codes(&h.dist_lens));
         }
     }
+}
+
+/// A dynamic block's header as bits, for keeping: the bytes and how
+/// many bits of the last are used.
+fn header_bits(h: &Header) -> (Vec<u8>, u32) {
+    let mut w = BitWriter::new(0);
+    write_header(&mut w, h);
+    w.finish()
+}
+
+fn write_header(w: &mut BitWriter, h: &Header) {
+    w.put(h.hlit as u32 - 257, 5);
+    w.put(h.hdist as u32 - 1, 5);
+    w.put(h.hclen as u32 - 4, 4);
+    for i in 0..h.hclen as usize {
+        w.put(h.clen[CLEN_ORDER[i]] as u32, 3);
+    }
+    let cl = codes(&h.clen);
+    for &(sym, extra) in &h.symbols {
+        let (c, l) = cl[sym as usize];
+        w.code(c, l);
+        match sym {
+            16 => w.put(extra as u32, 2),
+            17 => w.put(extra as u32, 3),
+            18 => w.put(extra as u32, 7),
+            _ => {}
+        }
+    }
+}
+
+/// A stream taken apart: its plain text, and the recipe that gives the
+/// stream back from it (`close`).
+pub struct Opened {
+    pub plain: Vec<u8>,
+    pub recipe: Vec<u8>,
+    pub consumed: usize,
+}
+
+/// `data` from its first byte, opened: the recipe holds the level
+/// emulated, each block's kind and, for a dynamic block, its header as
+/// it was, then the corrections to the emulation. `None` when the
+/// stream does not parse, or does not come back bit for bit.
+pub fn open(data: &[u8]) -> Option<Opened> {
+    let s = parse(data)?;
+    let p = zlib::Params { level: 6, filtered: false };
+    let mut recipe = vec![p.level | (p.filtered as u8) << 4];
+    put_varint(&mut recipe, s.blocks.len() as u64);
+    let mut plans = Vec::with_capacity(s.blocks.len());
+    for b in &s.blocks {
+        match &b.kind {
+            Kind::Stored(bytes) => {
+                recipe.push(0 | (b.last as u8) << 2);
+                put_varint(&mut recipe, bytes.len() as u64);
+                plans.push(zlib::Plan::Stored(bytes.len() as u32));
+            }
+            Kind::Fixed(t) => {
+                recipe.push(1 | (b.last as u8) << 2);
+                plans.push(zlib::Plan::Tokens(t));
+            }
+            Kind::Dynamic(h, t) => {
+                recipe.push(2 | (b.last as u8) << 2);
+                let (bytes, bits) = header_bits(h);
+                put_varint(&mut recipe, bytes.len() as u64);
+                recipe.push(bits as u8);
+                recipe.extend_from_slice(&bytes);
+                plans.push(zlib::Plan::Tokens(t));
+            }
+        }
+    }
+    let corrections = zlib::predict(&s.plain, p, &plans);
+    put_varint(&mut recipe, corrections.len() as u64);
+    recipe.extend_from_slice(&corrections);
+    let opened = Opened { plain: s.plain, recipe, consumed: s.consumed };
+    (close(&opened.plain, &opened.recipe)? == data[..opened.consumed]).then_some(opened)
+}
+
+/// The stream back from its plain text and recipe.
+pub fn close(plain: &[u8], recipe: &[u8]) -> Option<Vec<u8>> {
+    let p = zlib::Params { level: *recipe.first()? & 0xf, filtered: recipe[0] & 0x10 != 0 };
+    let mut pos = 1usize;
+    let n = get_varint(recipe, &mut pos).ok()? as usize;
+    let mut kinds = Vec::with_capacity(n);
+    let mut plans = Vec::with_capacity(n);
+    for _ in 0..n {
+        let k = *recipe.get(pos)?;
+        pos += 1;
+        let last = k & 4 != 0;
+        match k & 3 {
+            0 => {
+                let len = get_varint(recipe, &mut pos).ok()? as u32;
+                kinds.push((last, None, Some(len)));
+                plans.push(Some(len));
+            }
+            1 => {
+                kinds.push((last, None, None));
+                plans.push(None);
+            }
+            2 => {
+                let len = get_varint(recipe, &mut pos).ok()? as usize;
+                pos += 1;
+                let bytes = recipe.get(pos..pos + len)?;
+                pos += len;
+                let header = read_header(&mut BitReader::new(bytes))?;
+                kinds.push((last, Some(header), None));
+                plans.push(None);
+            }
+            _ => return None,
+        }
+    }
+    let clen = get_varint(recipe, &mut pos).ok()? as usize;
+    let corrections = recipe.get(pos..pos + clen)?;
+    let tokens = zlib::recreate(plain, p, corrections, &plans)?;
+    let mut at = 0usize;
+    let mut blocks = Vec::with_capacity(n);
+    for ((last, header, stored), tokens) in kinds.into_iter().zip(tokens) {
+        let kind = match (header, stored) {
+            (_, Some(len)) => {
+                let bytes = plain.get(at..at + len as usize)?.to_vec();
+                at += len as usize;
+                Kind::Stored(bytes)
+            }
+            (header, None) => {
+                at += tokens.iter().map(|t| match t { Token::Lit(_) => 1, Token::Ref { len, .. } => if *len == 259 { 258 } else { *len as usize } }).sum::<usize>();
+                match header {
+                    Some(h) => Kind::Dynamic(h, tokens),
+                    None => Kind::Fixed(tokens),
+                }
+            }
+        };
+        blocks.push(Block { last, bit_start: 0, kind });
+    }
+    Some(write(&blocks))
 }
 
 /// The stream's bytes back from its blocks.
@@ -471,11 +592,11 @@ pub fn write(blocks: &[Block]) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::process::{Command, Stdio};
 
-    fn text(n: usize) -> Vec<u8> {
+    pub fn text(n: usize) -> Vec<u8> {
         let mut v = Vec::with_capacity(n);
         let mut x = 0x9E3779B97F4A7C15u64;
         while v.len() < n {
@@ -534,7 +655,7 @@ mod tests {
         &gz[p..gz.len() - 8]
     }
 
-    fn zlib_deflate(plain: &[u8], level: i32, strategy: &str) -> Vec<u8> {
+    pub fn zlib_deflate(plain: &[u8], level: i32, strategy: &str) -> Vec<u8> {
         let script = format!("import sys,zlib\nc=zlib.compressobj({level},zlib.DEFLATED,-15,8,zlib.{strategy})\nd=c.compress(open(sys.argv[1],'rb').read())+c.flush()\nsys.stdout.buffer.write(d)\n");
         run("python3", &["-c", &script, "{}"], plain)
     }
@@ -557,6 +678,34 @@ mod tests {
             assert_eq!(s.blocks[0].bit_start, 0);
             assert!(s.blocks[1].bit_start > 0);
         }
+    }
+
+    /// Whole streams opened and closed through the recipe: gzip at its
+    /// levels, zlib with stored and fixed blocks; the recipe small next
+    /// to the stream, and preflate's corrections for the same stream.
+    #[test]
+    fn open_and_close_bit_for_bit() {
+        let plain = text(1 << 20);
+        let mut streams: Vec<(String, Vec<u8>)> = ["-1", "-6", "-9"].iter().map(|l| (format!("gzip {l}"), gzip_body(&run("gzip", &[l, "-c", "{}"], &plain)).to_vec())).collect();
+        for (level, strategy) in [(0, "Z_DEFAULT_STRATEGY"), (3, "Z_DEFAULT_STRATEGY"), (6, "Z_DEFAULT_STRATEGY"), (9, "Z_DEFAULT_STRATEGY"), (6, "Z_FIXED"), (6, "Z_HUFFMAN_ONLY")] {
+            streams.push((format!("zlib -{level} {strategy}"), zlib_deflate(&plain, level, strategy)));
+        }
+        let mut mixed = text(200 << 10);
+        mixed.extend_from_slice(&noise(300 << 10));
+        mixed.extend_from_slice(&text(200 << 10));
+        for (what, stream) in &streams {
+            let o = open(stream).unwrap_or_else(|| panic!("{what}: opens"));
+            assert!(o.plain == plain && o.consumed == stream.len(), "{what}");
+            assert!(close(&o.plain, &o.recipe).unwrap() == *stream, "{what}: closes");
+            #[cfg(feature = "deflate")]
+            {
+                let pre = preflate_rs::preflate_whole_deflate_stream(stream, &preflate_rs::PreflateConfig::default()).map(|(r, _)| r.corrections.len());
+                eprintln!("{what:28} stream {:7} B  recipe {:6} B ({:.2}%)  preflate {:?}", stream.len(), o.recipe.len(), 100.0 * o.recipe.len() as f64 / stream.len() as f64, pre.ok());
+            }
+        }
+        let stream = zlib_deflate(&mixed, 6, "Z_DEFAULT_STRATEGY");
+        let o = open(&stream).unwrap();
+        assert!(o.plain == mixed && close(&o.plain, &o.recipe).unwrap() == stream, "stored blocks between compressed ones");
     }
 
     #[test]
