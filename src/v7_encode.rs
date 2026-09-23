@@ -158,10 +158,15 @@ fn hist8<const N: usize>(data: &[u8]) -> [u32; N] {
         return h;
     }
     let mut h = [[0u32; N]; 8];
+    // A code is under its stream's symbol count (`push_codes` writes
+    // them), a literal under 256: every byte indexes its table.
+    debug_assert!(N == 256 || data.iter().all(|&b| (b as usize) < N), "a symbol past the table");
     let mut it = data.chunks_exact(8);
     for c in &mut it {
         for k in 0..8 {
-            h[k][c[k] as usize] += 1;
+            // SAFETY: the invariant above (this function is private to
+            // the writers that keep it); `k` is under 8.
+            unsafe { *h.get_unchecked_mut(k).get_unchecked_mut(c[k] as usize) += 1 };
         }
     }
     for &b in it.remainder() {

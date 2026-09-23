@@ -276,10 +276,18 @@ unsafe fn gather<S: Scan>(src: *const u8, mut pos: usize, end: usize, table: *co
             let idx = BIT_INDEXES.get_unchecked(byte);
             let base = (pos + 8 * half) as u32;
             let out = positions.as_mut_ptr().add(count);
-            for i in 0..8 {
-                *out.add(i) = base + *idx.get_unchecked(i) as u32;
+            // One anchor in 16 positions on average: two slots written
+            // without a branch cover a byte's anchors all but once in a
+            // hundred, and the rest take the (well predicted) branch.
+            *out = base + *idx.get_unchecked(0) as u32;
+            *out.add(1) = base + *idx.get_unchecked(1) as u32;
+            let n = byte.count_ones() as usize;
+            if n > 2 {
+                for i in 2..8 {
+                    *out.add(i) = base + *idx.get_unchecked(i) as u32;
+                }
             }
-            count += byte.count_ones() as usize;
+            count += n;
         }
         pos += 16;
     }
