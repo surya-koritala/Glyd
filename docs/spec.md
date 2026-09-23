@@ -93,7 +93,16 @@ content) — the first chunk's corrections carry preflate's parameters,
 each chunk's predictor first learns the 32 KB of plain text before it,
 and the re-created pieces join by or-ing the byte two share; 8 a
 container under a deflate stream in chunks (the chunks as for 7, then
-the inner container as for 5). Containers nest four deep. Recognised containers: gzip
+the inner container as for 5); 9 (v0.13.4) deflate opened by Glyd's own
+reconstruction (`src/reflate/`): the varint length of its recipe, from
+the side, and of its text, from the content — the recipe is a byte of
+parameters (the zlib level emulated, Z_FILTERED, Z_FIXED), a varint
+chunk count, and per chunk its varint plain length, varint block
+count, one byte for the bit within a byte its first block starts at,
+and its corrections (varint length, then the arithmetic-coded
+decisions of `src/reflate/zlib.rs`); 10 a container under such a
+stream (the recipe, then the inner container as for 5). Containers
+nest four deep. Recognised containers: gzip
 (members back to back), zip (entries from the central directory, or
 walked when it does not parse; method 8 opened, stored entries opened
 in their own way), tar (ustar entries, regular files opened in their

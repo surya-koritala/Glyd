@@ -45,7 +45,10 @@ use preflate_rs::{chunked, preflate_whole_deflate_stream, recreate_whole_deflate
 use std::borrow::Cow;
 use std::sync::Mutex;
 
-pub(crate) const MAGIC: &[u8; 8] = b"GLYDDEF2";
+pub(crate) const MAGIC: &[u8; 8] = b"GLYDDEF3";
+/// v0.13.1 to v0.13.3: the same recipe, its streams opened by preflate;
+/// a base such an envelope was made against opens that way still.
+const MAGIC_DEF2: &[u8; 8] = b"GLYDDEF2";
 const MAGIC_V013: &[u8; 8] = b"GLYDDEFL";
 const MAGIC_V012: &[u8; 8] = b"GLYDGZIP";
 /// The plain text is held in memory; beyond this an object is left alone.
@@ -63,6 +66,11 @@ const NESTED: u8 = 6;
 /// chunks that open and close on every core (v0.13.3).
 const DEFLATE_CHUNKED: u8 = 7;
 const DEFLATE_NESTED_CHUNKED: u8 = 8;
+/// `DEFLATE` and `DEFLATE_NESTED` opened by Glyd's own reconstruction
+/// (`crate::reflate`, v0.13.4): the recipe from the side, the text
+/// from the content.
+const REFLATE: u8 = 9;
+const REFLATE_NESTED: u8 = 10;
 
 /// A stream is opened in chunks of this much plain text when it holds
 /// at least two of them.
@@ -149,6 +157,16 @@ struct Parts {
 /// the input kept as it is and not yet written: everything before it
 /// is written, everything from its end on not yet looked at, so a byte
 /// no segment claims is always kept.
+/// What opens a deflate stream: Glyd's own reconstruction (every
+/// envelope written now), or preflate alone, the way v0.13.1 to
+/// v0.13.3 wrote `GLYDDEF2` (a base for their deltas must open to the
+/// same plain text).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    Reflate,
+    Preflate,
+}
+
 struct Builder {
     content: Vec<u8>,
     side: Vec<u8>,
@@ -157,11 +175,12 @@ struct Builder {
     keep: (usize, usize),
     depth: u32,
     opened: bool,
+    engine: Engine,
 }
 
 impl Builder {
-    fn new(depth: u32, at: usize) -> Builder {
-        Builder { content: Vec::new(), side: Vec::new(), body: Vec::new(), segments: 0, keep: (at, at), depth, opened: false }
+    fn new(depth: u32, at: usize, engine: Engine) -> Builder {
+        Builder { content: Vec::new(), side: Vec::new(), body: Vec::new(), segments: 0, keep: (at, at), depth, opened: false, engine }
     }
 
     /// Everything up to `to` not yet looked at, kept.
@@ -227,7 +246,7 @@ impl Builder {
         if crate::jpeg::is_jpeg(data) {
             return None;
         }
-        open_parts(data, self.depth + 1)
+        open_parts(data, self.depth + 1, self.engine)
     }
 
     /// The deflate stream at `input[at..end]`: its compressed length
@@ -237,6 +256,11 @@ impl Builder {
     /// opened.
     fn deflate(&mut self, input: &[u8], at: usize, end: usize) -> Option<usize> {
         let data = input.get(at..end)?;
+        if self.engine == Engine::Reflate {
+            if let Some(n) = self.reflate(input, at, data) {
+                return Some(n);
+            }
+        }
         let config = PreflateConfig { plain_text_limit: stream_limit(data.len()), verify_compression: true, ..Default::default() };
         let parsed = chunked::parse(data, &config).ok()?;
         if parsed.plain.text().len() >= 2 * CHUNK_PLAIN {
@@ -275,6 +299,36 @@ impl Builder {
         put_varint(&mut self.body, text.len() as u64);
         self.side.extend_from_slice(&result.corrections);
         self.content.extend_from_slice(text);
+        self.keep = (at + n, at + n);
+        Some(n)
+    }
+
+    /// The stream opened by Glyd's own reconstruction, checked bit for
+    /// bit: a `REFLATE` segment, or `REFLATE_NESTED` when the text is a
+    /// container. `None` when it does not open that way, or opens
+    /// badly (a recipe over a quarter of the stream), or holds a JPEG
+    /// (preflate's road, for now).
+    fn reflate(&mut self, input: &[u8], at: usize, data: &[u8]) -> Option<usize> {
+        let opened = crate::reflate::open(data)?;
+        let n = opened.consumed;
+        if opened.recipe.len() * 4 > n || opened.plain.len() > stream_limit(data.len()) {
+            return None;
+        }
+        #[cfg(feature = "jpeg")]
+        if crate::jpeg::is_jpeg(&opened.plain) {
+            return None;
+        }
+        let inner = self.nested(&opened.plain);
+        self.segment(input, if inner.is_some() { REFLATE_NESTED } else { REFLATE }, at);
+        put_varint(&mut self.body, opened.recipe.len() as u64);
+        self.side.extend_from_slice(&opened.recipe);
+        match inner {
+            Some(inner) => self.nest(inner),
+            None => {
+                put_varint(&mut self.body, opened.plain.len() as u64);
+                self.content.extend_from_slice(&opened.plain);
+            }
+        }
         self.keep = (at + n, at + n);
         Some(n)
     }
@@ -421,16 +475,16 @@ fn each<T: Send>(n: usize, parallel: bool, f: impl Fn(usize) -> T + Sync) -> Vec
 }
 
 /// A stored entry at `input[from..to]` opened on its own.
-fn stored_parts(input: &[u8], from: usize, to: usize, depth: u32) -> Option<Parts> {
-    let mut b = Builder::new(depth, from);
+fn stored_parts(input: &[u8], from: usize, to: usize, depth: u32, engine: Engine) -> Option<Parts> {
+    let mut b = Builder::new(depth, from, engine);
     b.stored(input, from, to);
     b.into_parts(input, to)
 }
 
 /// The deflate stream at `input[from..to]` opened on its own, what
 /// follows it up to `to` kept; and where the stream ends.
-fn deflate_parts(input: &[u8], from: usize, to: usize, depth: u32) -> Option<(Parts, usize)> {
-    let mut b = Builder::new(depth, from);
+fn deflate_parts(input: &[u8], from: usize, to: usize, depth: u32, engine: Engine) -> Option<(Parts, usize)> {
+    let mut b = Builder::new(depth, from, engine);
     let n = b.deflate(input, from, to)?;
     Some((b.into_parts(input, to)?, from + n))
 }
@@ -438,7 +492,11 @@ fn deflate_parts(input: &[u8], from: usize, to: usize, depth: u32) -> Option<(Pa
 /// The plain text and recipe of a container, when anything in it
 /// opens; `None` for anything else.
 pub fn open(input: &[u8]) -> Option<Opened> {
-    let parts = open_parts(input, 0)?;
+    open_with(input, Engine::Reflate)
+}
+
+pub fn open_with(input: &[u8], engine: Engine) -> Option<Opened> {
+    let parts = open_parts(input, 0, engine)?;
     let mut recipe = Vec::with_capacity(parts.body.len() + 16);
     put_varint(&mut recipe, parts.segments);
     put_varint(&mut recipe, parts.content.len() as u64);
@@ -448,8 +506,8 @@ pub fn open(input: &[u8]) -> Option<Opened> {
     Some(Opened { plain, recipe })
 }
 
-fn open_parts(input: &[u8], depth: u32) -> Option<Parts> {
-    let b = Builder::new(depth, 0);
+fn open_parts(input: &[u8], depth: u32, engine: Engine) -> Option<Parts> {
+    let b = Builder::new(depth, 0, engine);
     if is_gzip(input) {
         open_gzip(input, b)
     } else if is_zip(input) {
@@ -522,7 +580,8 @@ fn open_tar(input: &[u8], mut b: Builder) -> Option<Parts> {
         at = data.saturating_add((size + 511) / 512 * 512);
     }
     let depth = b.depth;
-    let pieces = each(entries.len(), depth == 0, |i| stored_parts(input, entries[i].0, entries[i].1, depth));
+    let engine = b.engine;
+    let pieces = each(entries.len(), depth == 0, |i| stored_parts(input, entries[i].0, entries[i].1, depth, engine));
     for (&(data, end), piece) in entries.iter().zip(pieces) {
         if let Some(p) = piece {
             b.lay(input, p, data, end);
@@ -614,11 +673,12 @@ fn zip_entries(input: &[u8]) -> Option<Vec<(usize, usize, usize, usize)>> {
 fn open_zip(input: &[u8], mut b: Builder) -> Option<Parts> {
     let Some(entries) = zip_entries(input) else { return open_zip_walk(input, b) };
     let depth = b.depth;
+    let engine = b.engine;
     let pieces = each(entries.len(), depth == 0, |i| {
         let (data, end, method, flags) = entries[i];
         match method {
-            8 if flags & 1 == 0 => deflate_parts(input, data, end, depth).map(|(p, _)| p),
-            0 if is_container(&input[data..end]) => stored_parts(input, data, end, depth),
+            8 if flags & 1 == 0 => deflate_parts(input, data, end, depth, engine).map(|(p, _)| p),
+            0 if is_container(&input[data..end]) => stored_parts(input, data, end, depth, engine),
             _ => None,
         }
     });
@@ -709,9 +769,10 @@ fn open_pdf(input: &[u8], mut b: Builder) -> Option<Parts> {
         scan = data + e + 9;
     }
     let depth = b.depth;
+    let engine = b.engine;
     let pieces = each(candidates.len(), depth == 0, |i| {
         let (data, stop) = candidates[i];
-        let (parts, end) = deflate_parts(input, data + 2, stop, depth)?;
+        let (parts, end) = deflate_parts(input, data + 2, stop, depth, engine)?;
         let tail = input.get(end..stop)?;
         (tail.len() >= 4 && tail[4..].iter().all(|c| matches!(c, b'\r' | b'\n' | b' ' | b'\t'))).then_some(parts)
     });
@@ -740,6 +801,8 @@ enum Seg<'a> {
     /// (plain length, corrections, bit offset) per chunk
     DeflateChunked { chunks: Vec<(usize, &'a [u8], u8)>, text: &'a [u8] },
     DeflateNestedChunked { chunks: Vec<(usize, &'a [u8], u8)>, inner: Inner<'a> },
+    Reflate { recipe: &'a [u8], text: &'a [u8] },
+    ReflateNested { recipe: &'a [u8], inner: Inner<'a> },
     Nested(Inner<'a>),
     Png { header: &'a [u8], corrections: &'a [u8], text: &'a [u8], adler: &'a [u8], chunks: Vec<(usize, &'a [u8])> },
     Jpeg(&'a [u8]),
@@ -844,6 +907,15 @@ fn segments<'a>(inner: &Inner<'a>) -> Option<Vec<Seg<'a>>> {
                 let chunks = r.chunks()?;
                 Seg::DeflateNestedChunked { chunks, inner: r.inner()? }
             }
+            REFLATE => {
+                let (c, t) = (r.varint()?, r.varint()?);
+                Seg::Reflate { recipe: r.side(c)?, text: r.content(t)? }
+            }
+            REFLATE_NESTED => {
+                let c = r.varint()?;
+                let recipe = r.side(c)?;
+                Seg::ReflateNested { recipe, inner: r.inner()? }
+            }
             _ => return None,
         });
     }
@@ -857,6 +929,8 @@ fn produce<'a>(seg: &Seg<'a>) -> Option<Cow<'a, [u8]>> {
         Seg::DeflateNested { corrections, inner } => Cow::Owned(recreate_whole_deflate_stream(&close_inner(inner, false)?, corrections).ok()?),
         Seg::DeflateChunked { chunks, text } => Cow::Owned(recreate_chunked(chunks, text)?),
         Seg::DeflateNestedChunked { chunks, inner } => Cow::Owned(recreate_chunked(chunks, &close_inner(inner, false)?)?),
+        Seg::Reflate { recipe, text } => Cow::Owned(crate::reflate::close(text, recipe)?),
+        Seg::ReflateNested { recipe, inner } => Cow::Owned(crate::reflate::close(&close_inner(inner, false)?, recipe)?),
         Seg::Nested(inner) => Cow::Owned(close_inner(inner, false)?),
         Seg::Png { header, corrections, text, adler, chunks } => {
             let mut image = header.to_vec();
@@ -941,8 +1015,8 @@ fn content_of(inner: &Inner<'_>) -> Option<Vec<u8>> {
     for s in &segs {
         match s {
             Seg::Bytes(_) => {}
-            Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } => out.extend_from_slice(text),
-            Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } => out.extend_from_slice(&close_inner(inner, true)?),
+            Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } => out.extend_from_slice(text),
+            Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } => out.extend_from_slice(&close_inner(inner, true)?),
             #[cfg(feature = "jpeg")]
             Seg::DeflateJpeg { lepton, .. } => out.extend_from_slice(&crate::jpeg::restore(lepton)?),
             _ => return None,
@@ -964,7 +1038,7 @@ const NO_CONTENT: crate::CodecError = crate::CodecError::CorruptedBitstream("def
 /// `None` when `compressed` is no envelope of this version.
 pub(crate) fn content(compressed: &[u8], inner: impl FnOnce(&[u8]) -> crate::Result<Vec<u8>>) -> Option<crate::Result<Vec<u8>>> {
     let (_, recipe, stream, kind) = parse_any(compressed)?;
-    if kind != Kind::Current {
+    if !matches!(kind, Kind::Current | Kind::Def2) {
         return None;
     }
     Some(inner(stream).and_then(|plain| content_plain(&recipe, &plain).ok_or(NO_CONTENT)))
@@ -973,10 +1047,11 @@ pub(crate) fn content(compressed: &[u8], inner: impl FnOnce(&[u8]) -> crate::Res
 /// `content` for a base-mode envelope (see `unwrap_with_base`).
 pub(crate) fn content_with_base(base: &[u8], compressed: &[u8], inner: impl FnOnce(&[u8], &[u8]) -> crate::Result<Vec<u8>>) -> Option<crate::Result<Vec<u8>>> {
     let (_, recipe, stream, kind) = parse_any(compressed)?;
-    if kind != Kind::Current {
-        return None;
-    }
-    let base_plain = open(base).map(|o| o.plain);
+    let base_plain = match kind {
+        Kind::Current => open(base).map(|o| o.plain),
+        Kind::Def2 => open_with(base, Engine::Preflate).map(|o| o.plain),
+        _ => return None,
+    };
     Some(inner(base_plain.as_deref().unwrap_or(base), stream).and_then(|plain| content_plain(&recipe, &plain).ok_or(NO_CONTENT)))
 }
 
@@ -994,6 +1069,7 @@ pub fn envelope(original_len: usize, recipe: &[u8], out: &mut Vec<u8>) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Current,
+    Def2,
     V013,
     V012,
 }
@@ -1005,6 +1081,7 @@ fn parse_any(compressed: &[u8]) -> Option<(usize, Vec<u8>, &[u8], Kind)> {
     }
     let kind = match &compressed[..8] {
         m if m == MAGIC => Kind::Current,
+        m if m == MAGIC_DEF2 => Kind::Def2,
         m if m == MAGIC_V013 => Kind::V013,
         m if m == MAGIC_V012 => Kind::V012,
         _ => return None,
@@ -1020,7 +1097,7 @@ fn parse_any(compressed: &[u8]) -> Option<(usize, Vec<u8>, &[u8], Kind)> {
 
 /// The original length of an envelope, when `compressed` is one.
 pub(crate) fn original_len(compressed: &[u8]) -> Option<usize> {
-    if compressed.len() < 10 || ![&MAGIC[..], &MAGIC_V013[..], &MAGIC_V012[..]].contains(&&compressed[..8]) {
+    if compressed.len() < 10 || ![&MAGIC[..], &MAGIC_DEF2[..], &MAGIC_V013[..], &MAGIC_V012[..]].contains(&&compressed[..8]) {
         return None;
     }
     let mut pos = 8usize;
@@ -1029,7 +1106,7 @@ pub(crate) fn original_len(compressed: &[u8]) -> Option<usize> {
 
 fn close_kind(kind: Kind, recipe: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
     match kind {
-        Kind::Current => close(recipe, plain),
+        Kind::Current | Kind::Def2 => close(recipe, plain),
         Kind::V013 => legacy::close_v013(recipe, plain),
         Kind::V012 => legacy::close_v012(recipe, plain),
     }
@@ -1048,7 +1125,7 @@ pub(crate) fn embedded_head(b: &[u8]) -> Option<(usize, usize)> {
     let need = match kind {
         Kind::V012 => legacy::need_v012(&recipe)?,
         Kind::V013 => legacy::need_v013(&recipe)?,
-        Kind::Current => return None,
+        Kind::Current | Kind::Def2 => return None,
     };
     Some((b.len() - stream.len(), need))
 }
@@ -1106,6 +1183,7 @@ pub(crate) fn unwrap_with_base(base: &[u8], compressed: &[u8], inner: impl FnOnc
     let (original, recipe, stream, kind) = parse_any(compressed)?;
     let base_plain = match kind {
         Kind::Current => open(base).map(|o| o.plain),
+        Kind::Def2 => open_with(base, Engine::Preflate).map(|o| o.plain),
         Kind::V013 => legacy::base_plain_v013(base),
         Kind::V012 => legacy::base_plain_v012(base),
     };
@@ -1323,7 +1401,7 @@ mod legacy {
     /// nothing kept, stored JPEGs left out), from the base opened now:
     /// the same streams open, so the same bytes come out.
     pub(super) fn base_plain_v013(base: &[u8]) -> Option<Vec<u8>> {
-        let parts = open_parts(base, 0)?;
+        let parts = open_parts(base, 0, Engine::Preflate)?;
         let mut out = Vec::new();
         collect_v013(&Inner { segments: parts.segments, body: &parts.body, content: &parts.content, side: &parts.side }, &mut out)?;
         Some(out)
@@ -1332,9 +1410,9 @@ mod legacy {
     fn collect_v013(inner: &Inner<'_>, out: &mut Vec<u8>) -> Option<()> {
         for seg in segments(inner)? {
             match seg {
-                Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Png { text, .. } => out.extend_from_slice(text),
+                Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Png { text, .. } => out.extend_from_slice(text),
                 Seg::DeflateJpeg { lepton, .. } => out.extend_from_slice(lepton),
-                Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::Nested(inner) => collect_v013(&inner, out)?,
+                Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::Nested(inner) => collect_v013(&inner, out)?,
                 Seg::Bytes(_) | Seg::Jpeg(_) => {}
             }
         }
@@ -1347,7 +1425,7 @@ mod legacy {
         if !is_gzip(base) {
             return None;
         }
-        let parts = open_parts(base, 0)?;
+        let parts = open_parts(base, 0, Engine::Preflate)?;
         let mut out = Vec::new();
         for seg in segments(&Inner { segments: parts.segments, body: &parts.body, content: &parts.content, side: &parts.side })? {
             match seg {
@@ -1501,7 +1579,7 @@ mod tests {
         let clen = get_varint(&opened.recipe, &mut pos).unwrap() as usize;
         let inner = Inner { segments: segments_n, body: &opened.recipe[pos..], content: &opened.plain[..clen], side: &opened.plain[clen..] };
         let segs = segments(&inner).unwrap();
-        assert!(segs.iter().any(|s| matches!(s, Seg::DeflateChunked { chunks, .. } if chunks.len() >= 2)), "opened in chunks");
+        assert!(segs.iter().any(|s| matches!(s, Seg::Reflate { .. })), "opened by reflate");
         assert_eq!(close(&opened.recipe, &opened.plain).unwrap(), gz);
         let mut c = Vec::new();
         crate::compress_into_max(&gz, &mut c);
@@ -1543,6 +1621,40 @@ mod tests {
         let mut d = Vec::new();
         crate::compress_with_base(&gz, &b, &mut d, false);
         assert!(crate::decompress_content_with_base(&gz, &d).unwrap() == later);
+    }
+
+    /// `GLYD_CONTAINER_FILE=x cargo test --release deflate::tests::engines -- --ignored --nocapture`:
+    /// the file opened by both engines, the segments and their side
+    /// bytes compared.
+    #[test]
+    #[ignore = "a probe on a file named by GLYD_CONTAINER_FILE"]
+    fn engines() {
+        let Ok(path) = std::env::var("GLYD_CONTAINER_FILE") else { return };
+        let data = std::fs::read(path).unwrap();
+        for engine in [Engine::Preflate, Engine::Reflate] {
+            let t = std::time::Instant::now();
+            let o = open_with(&data, engine).unwrap();
+            let open_s = t.elapsed().as_secs_f64();
+            let mut pos = 0usize;
+            let n = get_varint(&o.recipe, &mut pos).unwrap();
+            let clen = get_varint(&o.recipe, &mut pos).unwrap() as usize;
+            let inner = Inner { segments: n, body: &o.recipe[pos..], content: &o.plain[..clen], side: &o.plain[clen..] };
+            let segs = segments(&inner).unwrap();
+            let mut sizes: Vec<(usize, usize)> = Vec::new();
+            for s in &segs {
+                match s {
+                    Seg::Deflate { corrections, text } => sizes.push((corrections.len(), text.len())),
+                    Seg::DeflateChunked { chunks, text } => sizes.push((chunks.iter().map(|c| c.1.len()).sum(), text.len())),
+                    Seg::Reflate { recipe, text } => sizes.push((recipe.len(), text.len())),
+                    _ => {}
+                }
+            }
+            let side: usize = sizes.iter().map(|s| s.0).sum();
+            let text: usize = sizes.iter().map(|s| s.1).sum();
+            let worst = sizes.iter().max_by_key(|s| s.0).copied();
+            let small: usize = sizes.iter().filter(|s| s.1 < 4096).map(|s| s.0).sum();
+            eprintln!("{:?}: opened in {open_s:.2} s; {} streams, {} B of text, {} B of corrections ({} B in streams under 4 KB, largest {:?}); content {} B, side {} B", if engine == Engine::Reflate { "reflate" } else { "preflate" }, sizes.len(), text, side, small, worst, clen, o.plain.len() - clen);
+        }
     }
 
     /// The default, fast and turbo levels leave a container as it is: a
@@ -1615,10 +1727,13 @@ sys.stdout.buffer.write(buf.getvalue())
     fn earlier_envelopes_still_decode() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/legacy/");
         let read = |f: &str| std::fs::read(format!("{dir}{f}")).unwrap();
-        for (glyd, original) in [("log.gz.v0120.glyd", "log.gz"), ("log.gz.v0130.glyd", "log.gz"), ("doc.zip.v0130.glyd", "doc.zip"), ("base.tar.v0130.glyd", "base.tar")] {
+        for (glyd, original) in [("log.gz.v0120.glyd", "log.gz"), ("log.gz.v0130.glyd", "log.gz"), ("doc.zip.v0130.glyd", "doc.zip"), ("base.tar.v0130.glyd", "base.tar"), ("log.gz.v0133.glyd", "log.gz"), ("doc.zip.v0133.glyd", "doc.zip"), ("base.tar.v0133.glyd", "base.tar")] {
             assert!(crate::decompress(&read(glyd)).unwrap() == read(original), "{glyd}");
         }
-        for (glyd, base, original) in [("next.gz.v0120.base.glyd", "base.gz", "next.gz"), ("next.gz.v0130.base.glyd", "base.gz", "next.gz"), ("next.tar.v0130.base.glyd", "base.tar", "next.tar")] {
+        // v0.13.3's content view too, and its deltas: their bases open
+        // the preflate way, as they were made.
+        assert!(crate::decompress_content(&read("log.gz.v0133.glyd")).is_ok(), "content of a GLYDDEF2 object");
+        for (glyd, base, original) in [("next.gz.v0120.base.glyd", "base.gz", "next.gz"), ("next.gz.v0130.base.glyd", "base.gz", "next.gz"), ("next.tar.v0130.base.glyd", "base.tar", "next.tar"), ("next.gz.v0133.base.glyd", "base.gz", "next.gz"), ("next.tar.v0133.base.glyd", "base.tar", "next.tar")] {
             assert!(crate::decompress_with_base(&read(base), &read(glyd)).unwrap() == read(original), "{glyd}");
         }
     }
@@ -1738,7 +1853,7 @@ sys.stdout.buffer.write(buf.getvalue())
         let recipe = open(&picture_zip).unwrap().recipe;
         assert!(recipe.windows(1).any(|w| w[0] == JPEG), "the stored JPEG transcoded");
         assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_JPEG), "the deflated JPEG transcoded under its deflate");
-        assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_NESTED), "the deflated PNG opened under its deflate");
+        assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_NESTED || w[0] == REFLATE_NESTED), "the deflated PNG opened under its deflate");
         assert!(opened_pictures.len() > 2 * plain.len(), "both PNGs' plain text is in: {}", opened_pictures.len());
         // A tar of a gzipped log, the PNG, the JPEG and a text file; then
         // that tar gzipped: everything opened through the layers.

@@ -18,6 +18,14 @@ impl Default for Bit {
 }
 
 impl Bit {
+    /// A context that starts out expecting a 1 with probability
+    /// `p / 65536`, for decisions that are nearly always the same.
+    pub fn leaning(p: u16) -> Self {
+        Bit { p, n: 4 }
+    }
+}
+
+impl Bit {
     #[inline]
     fn p(&self) -> u32 {
         (self.p as u32).clamp(32, 65536 - 32)
@@ -89,7 +97,17 @@ impl Encoder {
         }
     }
 
+    /// The shortest tail that lands in [x1, x2]: the decoder reads
+    /// zeros past the end.
     pub fn finish(mut self) -> Vec<u8> {
+        for n in 1..=4u32 {
+            let keep = 32 - 8 * n;
+            let v = if keep == 32 { 0 } else { (self.x2 >> keep) << keep };
+            if v >= self.x1 {
+                self.out.extend_from_slice(&v.to_be_bytes()[..n as usize]);
+                return self.out;
+            }
+        }
         self.out.extend_from_slice(&self.x1.to_be_bytes());
         self.out
     }

@@ -14,13 +14,8 @@ use super::{coder::{Bit, Decoder, Encoder}, trees, Block, Kind, Token};
 
 const MIN_MATCH: u32 = 3;
 const MAX_MATCH: u32 = 258;
-const W_SIZE: u32 = 32768;
 const MIN_LOOKAHEAD: u32 = MAX_MATCH + MIN_MATCH + 1;
-const MAX_DIST: u32 = W_SIZE - MIN_LOOKAHEAD;
 const TOO_FAR: u32 = 4096;
-const HASH_MASK: u32 = 0x7fff;
-/// Tokens per block: zlib flushes when its buffer of 16,384 holds one less.
-pub const BLOCK_TOKENS: u32 = 16383;
 
 /// `(good, lazy, nice, chain)` per level, deflate.c's table.
 const CONFIG: [(u32, u32, u32, u32); 10] = [
@@ -37,18 +32,55 @@ const CONFIG: [(u32, u32, u32, u32); 10] = [
 ];
 
 /// Level 0 here means no matching at all (Z_HUFFMAN_ONLY, or a stream
-/// of stored blocks); 1–3 `deflate_fast`, 4–9 `deflate_slow`.
+/// of stored blocks); 1–3 `deflate_fast`, 4–9 `deflate_slow`. `mem` is
+/// zlib's memLevel (1–9, 8 by default): it sets the hash (memLevel + 7
+/// bits) and the tokens per block (one less than 1 << (memLevel + 6)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Params {
     pub level: u8,
     pub filtered: bool,
     /// Z_FIXED: every block under the fixed code
     pub fixed: bool,
+    pub mem: u8,
+    /// zlib's windowBits (9–15): the window is 1 << window bytes
+    pub window: u8,
 }
 
 impl Params {
-    pub fn all() -> impl Iterator<Item = Params> {
-        (0..=9u8).flat_map(|level| [false, true].into_iter().filter(move |f| !*f || level >= 4).map(move |filtered| Params { level, filtered, fixed: false }))
+    pub fn all(mem: u8, window: u8) -> impl Iterator<Item = Params> {
+        (0..=9u8).flat_map(move |level| [false, true].into_iter().filter(move |f| !*f || level >= 4).map(move |filtered| Params { level, filtered, fixed: false, mem, window }))
+    }
+
+    fn w_size(&self) -> u32 {
+        1 << self.window
+    }
+
+    /// The farthest a match reaches back.
+    fn max_dist(&self) -> u32 {
+        self.w_size() - MIN_LOOKAHEAD
+    }
+
+    /// The window's low bits, which index `prev`.
+    fn w_mask(&self) -> u32 {
+        self.w_size() - 1
+    }
+
+    /// Tokens per block: zlib flushes when its buffer holds one less
+    /// than its size.
+    pub fn block_tokens(&self) -> u32 {
+        (1 << (self.mem as u32 + 6)) - 1
+    }
+
+    fn hash_bits(&self) -> u32 {
+        self.mem as u32 + 7
+    }
+
+    fn hash_shift(&self) -> u32 {
+        (self.hash_bits() + 2) / 3
+    }
+
+    fn hash_mask(&self) -> u32 {
+        (1 << self.hash_bits()) - 1
     }
 }
 
@@ -57,10 +89,10 @@ impl Params {
 /// slid by 32 KB when the relative position reaches zlib's limit (the
 /// entries that go to 0 were out of reach already); 0 is NIL.
 pub struct Zlib<'a> {
-    plain: &'a [u8],
-    /// the plain text with MAX_MATCH + 8 zero bytes after it, so a
-    /// comparison may run past the end without a check
-    padded: Vec<u8>,
+    /// the plain text with MAX_MATCH + 8 zero bytes after it (`pad`),
+    /// so a comparison may run past the end without a check
+    padded: &'a [u8],
+    len: usize,
     p: Params,
     head: Vec<u16>,
     prev: Vec<u16>,
@@ -73,14 +105,27 @@ pub struct Zlib<'a> {
     carry: Option<(u32, u32)>,
 }
 
-const SLIDE_AT: u32 = W_SIZE + MAX_DIST;
+/// The zero bytes after the plain text the matcher reads.
+pub const PAD: usize = MAX_MATCH as usize + 8;
+
+/// The plain text with its padding, made once for every chunk to share.
+pub fn pad(plain: &[u8]) -> Vec<u8> {
+    let mut padded = Vec::with_capacity(plain.len() + PAD);
+    padded.extend_from_slice(plain);
+    padded.resize(plain.len() + PAD, 0);
+    padded
+}
 
 impl<'a> Zlib<'a> {
-    pub fn new(plain: &'a [u8], p: Params) -> Self {
-        let mut padded = Vec::with_capacity(plain.len() + MAX_MATCH as usize + 8);
-        padded.extend_from_slice(plain);
-        padded.resize(plain.len() + MAX_MATCH as usize + 8, 0);
-        Zlib { plain, padded, p, head: vec![0; 1 << 15], prev: vec![0; 1 << 15], base: 0, ins_h: 0, inserted: 0, carry: None }
+    /// A matcher at `start` of a padded plain text (`pad`), its chains
+    /// holding the window before it: everything zlib's could still
+    /// reach there.
+    pub fn new_at(padded: &'a [u8], p: Params, start: u32) -> Self {
+        let len = padded.len() - PAD;
+        let base = start.saturating_sub(p.w_size());
+        let mut z = Zlib { padded, len, p, head: vec![0; 1 << p.hash_bits()], prev: vec![0; p.w_size() as usize], base, ins_h: 0, inserted: base, carry: None };
+        z.insert_to(start);
+        z
     }
 
     // The reads below stay inside `padded`: every caller's index is at
@@ -106,21 +151,22 @@ impl<'a> Zlib<'a> {
 
     #[inline]
     fn lookahead(&self, pos: u32) -> u32 {
-        self.plain.len() as u32 - pos
+        self.len as u32 - pos
     }
 
-    /// zlib's slide_hash: the window moved by 32 KB.
+    /// zlib's slide_hash: the window moved by its size.
     fn slide(&mut self) {
+        let w = self.p.w_size() as u16;
         for v in self.head.iter_mut().chain(self.prev.iter_mut()) {
-            *v = if *v >= W_SIZE as u16 { *v - W_SIZE as u16 } else { 0 };
+            *v = if *v >= w { *v - w } else { 0 };
         }
-        self.base += W_SIZE;
+        self.base += self.p.w_size();
     }
 
     /// Positions up to `to` (exclusive) into the chains, as zlib inserts
     /// each `strstart` with at least MIN_MATCH bytes left.
     fn insert_to(&mut self, to: u32) {
-        let end = to.min(self.plain.len() as u32 - MIN_MATCH + 1);
+        let end = to.min(self.len as u32 - MIN_MATCH + 1);
         if self.inserted >= end {
             self.inserted = self.inserted.max(to);
             return;
@@ -129,15 +175,20 @@ impl<'a> Zlib<'a> {
         // skipped positions it starts again from the bytes, which gives
         // the same value as rolling would have.
         let mut pos = self.inserted;
-        let mut h = (((self.at(pos) as u32) << 5) ^ self.at(pos + 1) as u32) & HASH_MASK;
-        let mut slide_at = self.base + SLIDE_AT;
+        let (shift, mask) = (self.p.hash_shift(), self.p.hash_mask());
+        let mut h = (((self.at(pos) as u32) << shift) ^ self.at(pos + 1) as u32) & mask;
+        let slide_span = self.p.w_size() + self.p.max_dist();
+        let w_mask = self.p.w_mask();
+        let mut slide_at = self.base + slide_span;
         while pos < end {
             if pos >= slide_at {
                 self.slide();
-                slide_at = self.base + SLIDE_AT;
+                slide_at = self.base + slide_span;
             }
-            h = ((h << 5) ^ self.at(pos + 2) as u32) & HASH_MASK;
-            let slot = (pos & HASH_MASK) as usize;
+            h = ((h << shift) ^ self.at(pos + 2) as u32) & mask;
+            // prev is indexed by the window-relative position, as the
+            // chain links are.
+            let slot = ((pos - self.base) & w_mask) as usize;
             unsafe {
                 *self.prev.get_unchecked_mut(slot) = *self.head.get_unchecked(h as usize);
                 *self.head.get_unchecked_mut(h as usize) = (pos - self.base) as u16;
@@ -155,7 +206,7 @@ impl<'a> Zlib<'a> {
         if self.lookahead(pos) < MIN_MATCH {
             return 0;
         }
-        self.prev[(pos & HASH_MASK) as usize] as u32
+        self.prev[((pos - self.base) & self.p.w_mask()) as usize] as u32
     }
 
     /// deflate.c's longest_match: the longest match at `pos` longer than
@@ -170,7 +221,9 @@ impl<'a> Zlib<'a> {
         let lookahead = self.lookahead(pos);
         let nice = nice.min(lookahead);
         let rel = pos - self.base;
-        let limit = if rel > MAX_DIST { rel - MAX_DIST } else { 0 };
+        let max_dist = self.p.max_dist();
+        let limit = if rel > max_dist { rel - max_dist } else { 0 };
+        let w_mask = self.p.w_mask();
         let mut best_len = prev_len;
         let mut best_start = 0u32;
         let scan_end = self.pair(pos + best_len - 1);
@@ -202,7 +255,7 @@ impl<'a> Zlib<'a> {
                     scan_end = self.pair(pos + best_len - 1);
                 }
             }
-            cur = unsafe { *self.prev.get_unchecked((cur & HASH_MASK) as usize) } as u32;
+            cur = unsafe { *self.prev.get_unchecked((cur & w_mask) as usize) } as u32;
             chain_length -= 1;
             if cur <= limit || chain_length == 0 {
                 break;
@@ -217,7 +270,7 @@ impl<'a> Zlib<'a> {
     fn search(&mut self, pos: u32, prev_len: u32) -> (u32, u32) {
         let (_, lazy, _, _) = CONFIG[self.p.level as usize];
         let head = self.hash_head(pos);
-        if head == 0 || prev_len >= lazy || (pos - self.base) - head > MAX_DIST {
+        if head == 0 || prev_len >= lazy || (pos - self.base) - head > self.p.max_dist() {
             return (0, 0);
         }
         let (len, start) = self.longest_match(pos, head, prev_len);
@@ -238,7 +291,7 @@ impl<'a> Zlib<'a> {
         }
         if self.p.level <= 3 {
             let head = self.hash_head(pos);
-            if head == 0 || (pos - self.base) - head > MAX_DIST {
+            if head == 0 || (pos - self.base) - head > self.p.max_dist() {
                 return Token::Lit(self.at(pos));
             }
             let (len, start) = self.longest_match(pos, head, MIN_MATCH - 1);
@@ -278,7 +331,7 @@ impl<'a> Zlib<'a> {
                     self.inserted = self.inserted.max(pos + len);
                 } else {
                     // zlib inserts up to max_insert = strstart + lookahead - MIN_MATCH.
-                    let max_insert = self.plain.len() as u32 - MIN_MATCH;
+                    let max_insert = self.len as u32 - MIN_MATCH;
                     self.insert_to((pos + len).min(max_insert + 1));
                     self.inserted = self.inserted.max(pos + len);
                 }
@@ -292,14 +345,16 @@ impl<'a> Zlib<'a> {
     fn chain(&mut self, pos: u32) -> impl Iterator<Item = u32> + '_ {
         let mut cur = self.hash_head(pos);
         let rel = pos - self.base;
-        let limit = if rel > MAX_DIST { rel - MAX_DIST } else { 0 };
+        let max_dist = self.p.max_dist();
+        let limit = if rel > max_dist { rel - max_dist } else { 0 };
+        let w_mask = self.p.w_mask();
         let prev = &self.prev;
         std::iter::from_fn(move || {
             if cur == 0 || cur <= limit {
                 return None;
             }
             let d = rel - cur;
-            cur = prev[(cur & HASH_MASK) as usize] as u32;
+            cur = prev[(cur & w_mask) as usize] as u32;
             Some(d)
         })
         .take(4096)
@@ -317,8 +372,9 @@ fn capped(guess: Token, pos: u32, end: u32, plain: &[u8]) -> Token {
 }
 
 /// How many of the first `limit` tokens `p` gets wrong.
-fn mismatches(plain: &[u8], p: Params, blocks: &[Block], limit: usize) -> usize {
-    let mut z = Zlib::new(plain, p);
+fn mismatches(padded: &[u8], p: Params, blocks: &[Block], limit: usize) -> usize {
+    let plain = &padded[..padded.len() - PAD];
+    let mut z = Zlib::new_at(padded, p, 0);
     let (mut pos, mut seen, mut wrong) = (0u32, 0usize, 0usize);
     for b in blocks {
         match &b.kind {
@@ -347,16 +403,37 @@ fn mismatches(plain: &[u8], p: Params, blocks: &[Block], limit: usize) -> usize 
 /// The parameters that predict the stream best, judged on its first
 /// 4,096 tokens; the lower level on a tie. Z_FIXED when every coded
 /// block is fixed.
-pub fn detect(plain: &[u8], blocks: &[Block]) -> Params {
+pub fn detect(padded: &[u8], blocks: &[Block]) -> Params {
     let fixed = blocks.iter().all(|b| !matches!(b.kind, Kind::Dynamic(..))) && blocks.iter().any(|b| matches!(b.kind, Kind::Fixed(_)));
-    let mut best = (usize::MAX, Params { level: 6, filtered: false, fixed });
-    for p in Params::all() {
-        let p = Params { fixed, ..p };
-        let wrong = mismatches(plain, p, blocks, 4096);
-        if wrong < best.0 {
-            best = (wrong, p);
+    // memLevel shows in a full block's token count; without one, the
+    // likely levels are tried when the default predicts badly.
+    let full = blocks.iter().filter(|b| !b.last).find_map(|b| match &b.kind {
+        Kind::Fixed(t) | Kind::Dynamic(_, t) => (7..=15).find(|k| t.len() == (1usize << k) - 1).map(|k| k as u8 - 6),
+        _ => None,
+    });
+    let mems: Vec<u8> = match full {
+        Some(m) => vec![m],
+        None => vec![8, 9, 5, 4, 6, 7, 3, 2, 1],
+    };
+    // The window: the smallest that holds the largest distance used. A
+    // larger window would only have found a farther match if it were
+    // longer, and then its distance would be here.
+    let max_dist = blocks.iter().flat_map(|b| match &b.kind { Kind::Fixed(t) | Kind::Dynamic(_, t) => &t[..], _ => &[] }).map(|t| match t { Token::Ref { dist, .. } => *dist as u32, _ => 0 }).max().unwrap_or(0);
+    let window = (9..=15u8).find(|&w| max_dist <= (1u32 << w) - MIN_LOOKAHEAD).unwrap_or(15);
+    let mut best = (usize::MAX, Params { level: 6, filtered: false, fixed, mem: 8, window });
+    'outer: for (i, &mem) in mems.iter().enumerate() {
+        for p in Params::all(mem, window) {
+            let p = Params { fixed, ..p };
+            let wrong = mismatches(padded, p, blocks, 4096);
+            if wrong < best.0 {
+                best = (wrong, p);
+            }
+            if wrong == 0 {
+                break 'outer;
+            }
         }
-        if wrong == 0 {
+        // Another memLevel is worth trying only when this one is off.
+        if i == 0 && best.0 * 100 < blocks.iter().map(|b| match &b.kind { Kind::Fixed(t) | Kind::Dynamic(_, t) => t.len(), _ => 0 }).sum::<usize>().min(4096) {
             break;
         }
     }
@@ -386,8 +463,12 @@ struct Models {
 
 impl Models {
     fn new() -> Self {
+        // What a stream from zlib itself does: every decision as
+        // predicted.
+        let sure = Bit::leaning(65000);
+        let unlikely = Bit::leaning(536);
         Models {
-            same: [Bit::default(); 2],
+            same: [sure; 2],
             is_ref: [Bit::default(); 2],
             len_same: Bit::default(),
             len: vec![Bit::default(); 512],
@@ -395,13 +476,13 @@ impl Models {
             hop_found: Bit::default(),
             hop: [Bit::default(); 64],
             dist: vec![Bit::default(); 1 << 16],
-            last: Bit::default(),
-            stored: Bit::default(),
+            last: sure,
+            stored: unlikely,
             stored_len: [Bit::default(); 64],
-            block_same: Bit::default(),
+            block_same: sure,
             block_count: [Bit::default(); 64],
-            kind_same: Bit::default(),
-            header_same: Bit::default(),
+            kind_same: sure,
+            header_same: sure,
             header_len: [Bit::default(); 64],
             byte: vec![Bit::default(); 256],
         }
@@ -482,11 +563,12 @@ fn decode_token(d: &mut Decoder, m: &mut Models, z: &mut Zlib, pos: u32, plain: 
 /// count (predicted: 16,383 or to the end), the tokens, then whether
 /// its kind and, for a dynamic block, its header are what zlib's trees
 /// give for those tokens (else the header as it was).
-pub fn predict(plain: &[u8], p: Params, blocks: &[Block]) -> Vec<u8> {
-    let mut z = Zlib::new(plain, p);
+pub fn predict(padded: &[u8], p: Params, blocks: &[Block], start: u32) -> Vec<u8> {
+    let plain = &padded[..padded.len() - PAD];
+    let mut z = Zlib::new_at(padded, p, start);
     let mut m = Models::new();
     let mut e = Encoder::new();
-    let mut pos = 0u32;
+    let mut pos = start;
     let total = plain.len() as u32;
     for b in blocks {
         let (stored_len, tokens): (Option<u32>, &[Token]) = match &b.kind {
@@ -507,7 +589,7 @@ pub fn predict(plain: &[u8], p: Params, blocks: &[Block]) -> Vec<u8> {
             continue;
         }
         let n = tokens.len() as u32;
-        let as_predicted = n == BLOCK_TOKENS || (n < BLOCK_TOKENS && end == total);
+        let as_predicted = n == p.block_tokens() || (n < p.block_tokens() && end == total);
         e.bit(&mut m.block_same, as_predicted as u32);
         if !as_predicted {
             e.count(&mut m.block_count, n);
@@ -538,12 +620,14 @@ pub fn predict(plain: &[u8], p: Params, blocks: &[Block]) -> Vec<u8> {
     e.finish()
 }
 
-/// The blocks back: the emulation with the corrections applied.
-pub fn recreate(plain: &[u8], p: Params, corrections: &[u8], n_blocks: usize) -> Option<Vec<Block>> {
-    let mut z = Zlib::new(plain, p);
+/// The blocks back: the emulation with the corrections applied, from
+/// `start` to `end` of the plain text (a chunk's share).
+pub fn recreate(padded: &[u8], p: Params, corrections: &[u8], n_blocks: usize, start: u32, end: u32) -> Option<Vec<Block>> {
+    let plain = &padded[..padded.len() - PAD];
+    let mut z = Zlib::new_at(padded, p, start);
     let mut m = Models::new();
     let mut d = Decoder::new(corrections);
-    let mut pos = 0u32;
+    let mut pos = start;
     let total = plain.len() as u32;
     let mut out = Vec::with_capacity(n_blocks);
     for _ in 0..n_blocks {
@@ -564,8 +648,8 @@ pub fn recreate(plain: &[u8], p: Params, corrections: &[u8], n_blocks: usize) ->
             continue;
         }
         let as_predicted = d.bit(&mut m.block_same) == 1;
-        let n = if as_predicted { BLOCK_TOKENS } else { d.count(&mut m.block_count) };
-        let mut tokens = Vec::with_capacity(n.min(BLOCK_TOKENS) as usize);
+        let n = if as_predicted { p.block_tokens() } else { d.count(&mut m.block_count) };
+        let mut tokens = Vec::with_capacity(n.min(p.block_tokens()) as usize);
         for _ in 0..n {
             if as_predicted && pos == total {
                 break;
@@ -593,7 +677,7 @@ pub fn recreate(plain: &[u8], p: Params, corrections: &[u8], n_blocks: usize) ->
         };
         out.push(Block { last, bit_start: 0, kind });
     }
-    (pos == total).then_some(out)
+    (pos == end).then_some(out)
 }
 
 #[cfg(test)]
@@ -610,12 +694,13 @@ mod tests {
         for (level, filtered) in [(6, false), (1, false), (2, false), (3, false), (4, false), (5, false), (7, false), (8, false), (9, false), (6, true)] {
             let stream = zlib_deflate(&plain, level, if filtered { "Z_FILTERED" } else { "Z_DEFAULT_STRATEGY" });
             let s = parse(&stream).unwrap();
-            let p = Params { level: level as u8, filtered, fixed: false };
+            let p = Params { level: level as u8, filtered, fixed: false, mem: 8, window: 15 };
             // Levels 8 and 9 make the same stream on this text; the lower
             // wins the tie.
-            let detected = detect(&plain, &s.blocks);
+            let padded = pad(&plain);
+            let detected = detect(&padded, &s.blocks);
             assert!(detected == p || (level == 9 && detected.level == 8), "level {level} filtered {filtered}: detected {detected:?}");
-            let c = predict(&plain, p, &s.blocks);
+            let c = predict(&padded, p, &s.blocks, 0);
             let n_tokens: usize = s.blocks.iter().map(|b| match &b.kind { Kind::Fixed(t) | Kind::Dynamic(_, t) => t.len(), _ => 0 }).sum();
             #[cfg(feature = "deflate")]
             {
@@ -623,13 +708,15 @@ mod tests {
                 eprintln!("level {level} filtered {filtered}: stream {} B, {} tokens in {} blocks; corrections ours {} B, preflate {} B", stream.len(), n_tokens, s.blocks.len(), c.len(), r.corrections.len());
             }
             assert!(c.len() * 400 < stream.len(), "level {level} filtered {filtered}: {} bytes of corrections for {} tokens, {} bytes of stream", c.len(), n_tokens, stream.len());
-            let back = recreate(&plain, p, &c, s.blocks.len()).unwrap();
+            let back = recreate(&padded, p, &c, s.blocks.len(), 0, plain.len() as u32).unwrap();
             assert!(back.iter().zip(&s.blocks).all(|(a, b)| a.last == b.last && a.kind == b.kind), "level {level}: blocks back");
         }
         let stream = zlib_deflate(&plain, 1, "Z_DEFAULT_STRATEGY");
         let s = parse(&stream).unwrap();
-        let p = Params { level: 6, filtered: false, fixed: false };
-        let c = predict(&plain, p, &s.blocks);
-        assert!(recreate(&plain, p, &c, s.blocks.len()).unwrap().iter().zip(&s.blocks).all(|(a, b)| a.kind == b.kind));
+        let p = Params { level: 6, filtered: false, fixed: false, mem: 8, window: 15 };
+        let padded = pad(&plain);
+        let c = predict(&padded, p, &s.blocks, 0);
+        assert!(recreate(&padded, p, &c, s.blocks.len(), 0, plain.len() as u32).unwrap().iter().zip(&s.blocks).all(|(a, b)| a.kind == b.kind));
     }
 }
+

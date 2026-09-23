@@ -529,28 +529,125 @@ pub struct Opened {
     pub consumed: usize,
 }
 
+/// `f(i)` for every `i` below `n`, on every core.
+fn each<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    if n < 2 {
+        return (0..n).map(f).collect();
+    }
+    let slots: Vec<std::sync::Mutex<Option<T>>> = (0..n).map(|_| std::sync::Mutex::new(None)).collect();
+    let _ = crate::par_units::<()>(n, |i| {
+        let r = f(i);
+        *slots[i].lock().unwrap() = Some(r);
+        Ok(())
+    });
+    slots.into_iter().map(|m| m.into_inner().unwrap().expect("every chunk is made")).collect()
+}
+
+/// The plain text a stream is cut at, into chunks of about this much,
+/// so that they open and close on every core.
+pub const CHUNK: usize = 1 << 20;
+
 /// `data` from its first byte, opened: the recipe holds the level
-/// emulated, the block count, then the corrections to the emulation.
-/// `None` when the stream does not parse, or does not come back bit
-/// for bit.
+/// emulated, then the chunks — the blocks cut at block boundaries into
+/// runs of about `CHUNK` bytes of plain text, each with its plain
+/// length, block count, the bit within a byte its first block starts
+/// at, and its corrections to an emulation that first learns the
+/// 32 KB before it. `None` when the stream does not parse, or does not
+/// come back bit for bit.
 pub fn open(data: &[u8]) -> Option<Opened> {
+    open_in(data, CHUNK)
+}
+
+pub fn open_in(data: &[u8], chunk: usize) -> Option<Opened> {
     let s = parse(data)?;
-    let p = zlib::detect(&s.plain, &s.blocks);
-    let mut recipe = vec![p.level | (p.filtered as u8) << 4 | (p.fixed as u8) << 5];
-    put_varint(&mut recipe, s.blocks.len() as u64);
-    recipe.extend_from_slice(&zlib::predict(&s.plain, p, &s.blocks));
+    let padded = zlib::pad(&s.plain);
+    let p = zlib::detect(&padded, &s.blocks);
+    // Chunks: (first block, block count, plain start, plain end).
+    let mut chunks: Vec<(usize, usize, u32, u32)> = Vec::new();
+    let (mut first, mut plain_start, mut at) = (0usize, 0u32, 0u32);
+    for (i, b) in s.blocks.iter().enumerate() {
+        at += match &b.kind {
+            Kind::Stored(x) => x.len() as u32,
+            Kind::Fixed(t) | Kind::Dynamic(_, t) => t.iter().map(|t| match t { Token::Lit(_) => 1, Token::Ref { len, .. } => if *len == 259 { 258 } else { *len as u32 } }).sum(),
+        };
+        if (at - plain_start) as usize >= chunk || i + 1 == s.blocks.len() {
+            chunks.push((first, i + 1 - first, plain_start, at));
+            first = i + 1;
+            plain_start = at;
+        }
+    }
+    let corrections = each(chunks.len(), |i| {
+        let (first, n, start, _) = chunks[i];
+        zlib::predict(&padded, p, &s.blocks[first..first + n], start)
+    });
+    let mut recipe = vec![p.level | (p.filtered as u8) << 4 | (p.fixed as u8) << 5, p.mem | p.window << 4];
+    put_varint(&mut recipe, chunks.len() as u64);
+    for (&(first, n, start, end), c) in chunks.iter().zip(&corrections) {
+        put_varint(&mut recipe, (end - start) as u64);
+        put_varint(&mut recipe, n as u64);
+        recipe.push((s.blocks[first].bit_start % 8) as u8);
+        put_varint(&mut recipe, c.len() as u64);
+        recipe.extend_from_slice(c);
+    }
     let opened = Opened { plain: s.plain, recipe, consumed: s.consumed };
     (close(&opened.plain, &opened.recipe)? == data[..opened.consumed]).then_some(opened)
 }
 
-/// The stream back from its plain text and recipe.
+/// The stream back from its plain text and recipe, its chunks on every
+/// core.
 pub fn close(plain: &[u8], recipe: &[u8]) -> Option<Vec<u8>> {
     let b = *recipe.first()?;
-    let p = zlib::Params { level: b & 0xf, filtered: b & 0x10 != 0, fixed: b & 0x20 != 0 };
-    let mut pos = 1usize;
+    let m = *recipe.get(1)?;
+    let p = zlib::Params { level: b & 0xf, filtered: b & 0x10 != 0, fixed: b & 0x20 != 0, mem: m & 0xf, window: m >> 4 };
+    if p.level > 9 || !(1..=9).contains(&p.mem) || !(9..=15).contains(&p.window) {
+        return None;
+    }
+    let mut pos = 2usize;
     let n = get_varint(recipe, &mut pos).ok()? as usize;
-    let blocks = zlib::recreate(plain, p, recipe.get(pos..)?, n)?;
-    Some(write(&blocks))
+    // (plain start, plain end, block count, bit offset, corrections)
+    let mut chunks: Vec<(u32, u32, usize, u32, &[u8])> = Vec::with_capacity(n);
+    let mut start = 0u32;
+    for _ in 0..n {
+        let len = get_varint(recipe, &mut pos).ok()? as u32;
+        let blocks = get_varint(recipe, &mut pos).ok()? as usize;
+        let bit = *recipe.get(pos)? as u32;
+        pos += 1;
+        let clen = get_varint(recipe, &mut pos).ok()? as usize;
+        let c = recipe.get(pos..pos + clen)?;
+        pos += clen;
+        let end = start.checked_add(len)?;
+        if end as usize > plain.len() {
+            return None;
+        }
+        chunks.push((start, end, blocks, bit, c));
+        start = end;
+    }
+    if start as usize != plain.len() {
+        return None;
+    }
+    let padded = zlib::pad(plain);
+    let pieces = each(chunks.len(), |i| {
+        let (start, end, blocks, bit, c) = chunks[i];
+        let blocks = zlib::recreate(&padded, p, c, blocks, start, end)?;
+        let mut w = BitWriter::new(bit);
+        for b in &blocks {
+            write_block(&mut w, b);
+        }
+        Some(w.finish())
+    });
+    let pieces: Vec<(Vec<u8>, u32)> = pieces.into_iter().collect::<Option<_>>()?;
+    let mut out: Vec<u8> = Vec::with_capacity(pieces.iter().map(|p| p.0.len()).sum());
+    let mut partial = 0u32;
+    for (bytes, bits) in pieces {
+        if partial > 0 && !bytes.is_empty() {
+            *out.last_mut().unwrap() |= bytes[0];
+            out.extend_from_slice(&bytes[1..]);
+        } else {
+            out.extend_from_slice(&bytes);
+        }
+        partial = bits;
+    }
+    Some(out)
 }
 
 /// The stream's bytes back from its blocks.
@@ -678,6 +775,16 @@ pub(super) mod tests {
         let stream = zlib_deflate(&mixed, 6, "Z_DEFAULT_STRATEGY");
         let o = open(&stream).unwrap();
         assert!(o.plain == mixed && close(&o.plain, &o.recipe).unwrap() == stream, "stored blocks between compressed ones");
+        // In chunks: every chunk's emulation starts from the 32 KB before
+        // it, and the pieces join bit for bit; a few hundred bytes more.
+        let whole = open_in(&stream, usize::MAX).unwrap();
+        let chunked = open_in(&stream, 128 << 10).unwrap();
+        assert!(close(&chunked.plain, &chunked.recipe).unwrap() == stream, "chunked stream closes");
+        assert!(chunked.recipe.len() < whole.recipe.len() + 8 * 600, "chunked {} against whole {}", chunked.recipe.len(), whole.recipe.len());
+        for (what, stream) in &streams[..3] {
+            let chunked = open_in(stream, 128 << 10).unwrap();
+            assert!(close(&chunked.plain, &chunked.recipe).unwrap() == *stream, "{what} in chunks");
+        }
     }
 
     /// `GLYD_REFLATE_FILE=some.gz cargo test --release reflate::tests::speed -- --ignored --nocapture`:
@@ -693,10 +800,11 @@ pub(super) mod tests {
         let s = parse(stream).unwrap();
         let parse_s = t.elapsed().as_secs_f64();
         let t = std::time::Instant::now();
-        let p = zlib::detect(&s.plain, &s.blocks);
+        let padded = zlib::pad(&s.plain);
+        let p = zlib::detect(&padded, &s.blocks);
         let detect_s = t.elapsed().as_secs_f64();
         let t = std::time::Instant::now();
-        let c = zlib::predict(&s.plain, p, &s.blocks);
+        let c = zlib::predict(&padded, p, &s.blocks, 0);
         let predict_s = t.elapsed().as_secs_f64();
         eprintln!("reflate:  parse {parse_s:.2} s, detect {detect_s:.2} s, predict {predict_s:.2} s ({} B, {p:?})", c.len());
         let t = std::time::Instant::now();
@@ -707,7 +815,7 @@ pub(super) mod tests {
         let close_s = t.elapsed().as_secs_f64();
         assert!(back == &stream[..o.consumed], "consumed {} of {}, back {}, first difference {:?}", o.consumed, stream.len(), back.len(), back.iter().zip(stream).position(|(a, b)| a != b));
         let mb = o.plain.len() as f64 / 1e6;
-        eprintln!("reflate:  open {open_s:.2} s ({:.0} MB/s of content, with the check), close {close_s:.2} s ({:.0} MB/s), recipe {} B, level {}", mb / open_s, mb / close_s, o.recipe.len(), o.recipe[0] & 0xf);
+        eprintln!("reflate:  open {open_s:.2} s ({:.0} MB/s of content, with the check), close {close_s:.2} s ({:.0} MB/s), recipe {} B, level {} mem {} window {}", mb / open_s, mb / close_s, o.recipe.len(), o.recipe[0] & 0xf, o.recipe[1] & 0xf, o.recipe[1] >> 4);
         #[cfg(feature = "deflate")]
         {
             let t = std::time::Instant::now();
@@ -751,5 +859,64 @@ pub(super) mod tests {
         assert_eq!(parse(&tail).unwrap().consumed, small.len());
         assert!(parse(b"\x1f\x8b not a stream").is_none());
         assert!(parse(&small[..small.len() / 2]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod pdf_probe {
+    use super::*;
+
+    /// `GLYD_PDF=x.pdf cargo test --release reflate::pdf_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore = "a probe on a PDF named by GLYD_PDF"]
+    fn streams() {
+        let Ok(path) = std::env::var("GLYD_PDF") else { return };
+        let data = std::fs::read(path).unwrap();
+        let mut at = 0usize;
+        let mut worst: Vec<(f64, usize, usize, String)> = Vec::new();
+        while let Some(i) = data[at..].windows(6).position(|w| w == b"stream") {
+            let mut p = at + i + 6;
+            if data.get(p) == Some(&b'\r') { p += 1; }
+            if data.get(p) == Some(&b'\n') { p += 1; }
+            at = p;
+            if data.get(p..p + 2).map_or(true, |h| h[0] & 0x0f != 8 || (u16::from_be_bytes([h[0], h[1]]) % 31) != 0) { continue; }
+            let Some(s) = parse(&data[p + 2..]) else { continue };
+            let padded = zlib::pad(&s.plain);
+            let params = zlib::detect(&padded, &s.blocks);
+            let c = zlib::predict(&padded, params, &s.blocks, 0);
+            let mut desc = format!("{params:?}; blocks:");
+            for b in s.blocks.iter().take(12) {
+                desc += &match &b.kind { Kind::Stored(x) => format!(" S{}", x.len()), Kind::Fixed(t) => format!(" F{}", t.len()), Kind::Dynamic(_, t) => format!(" D{}", t.len()) };
+            }
+            // mismatches per block at the detected params
+            let mut z = zlib::Zlib::new_at(&padded, params, 0);
+            let mut pos = 0u32;
+            let mut wrong = Vec::new();
+            let mut max_dist = 0u16;
+            let mut examples = Vec::new();
+            for b in &s.blocks {
+                let mut w = 0;
+                match &b.kind {
+                    Kind::Stored(x) => { pos += x.len() as u32; }
+                    Kind::Fixed(t) | Kind::Dynamic(_, t) => for &tok in t {
+                        if let Token::Ref { dist, .. } = tok { max_dist = max_dist.max(dist); }
+                        let g = z.predict(pos);
+                        if g != tok { w += 1; if examples.len() < 5 && w > 100 { examples.push((pos, g, tok)); } }
+                        pos = z.commit(pos, tok);
+                    }
+                }
+                wrong.push(w);
+            }
+            desc += &format!("; max dist {max_dist}; e.g. {examples:?}");
+            if wrong.iter().any(|&w| w > 0) && s.plain.len() > 4096 {
+                desc += &format!("; wrong per block {:?}", &wrong[..wrong.len().min(12)]);
+            }
+            worst.push((c.len() as f64 / s.consumed as f64, c.len(), s.plain.len(), desc));
+        }
+        worst.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        for (ratio, c, plain, desc) in worst.iter().take(6) {
+            eprintln!("{:.1}% of stream: corrections {c} B, plain {plain} B, {desc}", ratio * 100.0);
+        }
+        eprintln!("{} streams, corrections total {} B", worst.len(), worst.iter().map(|w| w.1).sum::<usize>());
     }
 }
