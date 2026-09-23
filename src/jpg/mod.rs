@@ -8,6 +8,8 @@
 //! padding. Progressive, arithmetic-coded, 12-bit, lossless and
 //! hierarchical JPEGs are not taken apart (`parse` returns `None`).
 
+pub mod model;
+
 /// A frame component: its id and sampling factors, and the block grid
 /// it gets — `bw` × `bh` blocks as an interleaved scan lays them out
 /// (whole MCUs), of which `cw` × `ch` cover the picture.
@@ -60,6 +62,8 @@ pub struct Jpeg {
     pub parts: Vec<Part>,
     /// per component, `bw * bh` blocks of 64 coefficients in zigzag order
     pub blocks: Vec<Vec<[i16; 64]>>,
+    /// the quantization tables, in zigzag order, by id
+    pub quant: Vec<Option<[u16; 64]>>,
     /// the Huffman tables in force, for the writer: [class][id]
     tables: Vec<Vec<Option<Huffman>>>,
     /// the tables each scan was written with, snapshotted
@@ -238,6 +242,7 @@ pub fn parse(data: &[u8]) -> Option<Jpeg> {
     let mut blocks: Vec<Vec<[i16; 64]>> = Vec::new();
     let mut tables: Vec<Vec<Option<Huffman>>> = vec![vec![None; 4], vec![None; 4]];
     let mut scan_tables = Vec::new();
+    let mut quant: Vec<Option<[u16; 64]>> = vec![None; 4];
     let mut restart = 0u16;
     let mut kept_from = 0usize;
     let mut at = 2usize;
@@ -256,7 +261,10 @@ pub fn parse(data: &[u8]) -> Option<Jpeg> {
                 // EOI, then anything after it, all kept.
                 parts.push(Part::Bytes(data[kept_from..].to_vec()));
                 let frame = frame?;
-                return Some(Jpeg { frame, parts, blocks, tables, scan_tables });
+                if frame.components.iter().any(|c| quant[c.tq as usize].is_none()) {
+                    return None;
+                }
+                return Some(Jpeg { frame, parts, blocks, quant, tables, scan_tables });
             }
             _ => {}
         }
@@ -314,6 +322,24 @@ pub fn parse(data: &[u8]) -> Option<Jpeg> {
                     let symbols = body.get(p + 17..p + 17 + n)?.to_vec();
                     tables[tc as usize][th as usize] = Some(Huffman::new(counts, symbols)?);
                     p += 17 + n;
+                }
+            }
+            0xDB => {
+                let mut p = 0usize;
+                while p < body.len() {
+                    let (pq, tq) = (body[p] >> 4, body[p] & 15);
+                    if tq > 3 || pq > 1 {
+                        return None;
+                    }
+                    let mut t = [0u16; 64];
+                    for i in 0..64 {
+                        t[i] = if pq == 0 { *body.get(p + 1 + i)? as u16 } else { be16(body, p + 1 + 2 * i)? };
+                        if t[i] == 0 {
+                            return None;
+                        }
+                    }
+                    quant[tq as usize] = Some(t);
+                    p += 1 + 64 * (1 + pq as usize);
                 }
             }
             0xDD => {
@@ -581,10 +607,10 @@ pub fn write(j: &Jpeg) -> Option<Vec<u8>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
-    fn fixture(name: &str) -> Vec<u8> {
+    pub fn fixture(name: &str) -> Vec<u8> {
         std::fs::read(format!("{}/tests/data/jpeg/{name}", env!("CARGO_MANIFEST_DIR"))).unwrap()
     }
 
@@ -624,8 +650,23 @@ mod tests {
             let t = std::time::Instant::now();
             let back = write(&j).unwrap();
             let write_s = t.elapsed().as_secs_f64();
-            eprintln!("{}: {} B, {} blocks, parse {parse_s:.3} s, write {write_s:.3} s, exact {}", path.display(), data.len(), j.blocks.iter().map(|b| b.len()).sum::<usize>(), back == data);
             assert!(back == data);
+            let t = std::time::Instant::now();
+            for c in model::COST.iter() {
+                c.store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+            let stream = model::encode(&j);
+            let cost: Vec<String> = ["count", "zero", "exp", "mant", "sign", "e0", "eexp", "emant", "esign", "dc0", "dcexp", "dcmant", "dcsign"].iter().zip(model::COST.iter()).map(|(n, c)| format!("{n} {:.0} KB", c.load(std::sync::atomic::Ordering::Relaxed) as f64 / 8000.0 / 1000.0)).collect();
+            eprintln!("  {}", cost.join(", "));
+            let model_s = t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now();
+            assert!(model::decode(&stream, &j.frame, &j.quant).unwrap() == j.blocks);
+            let decode_s = t.elapsed().as_secs_f64();
+            #[cfg(feature = "jpeg")]
+            let lepton = crate::jpeg::transcode(&data).map(|l| l.len());
+            #[cfg(not(feature = "jpeg"))]
+            let lepton: Option<usize> = None;
+            eprintln!("{}: {} B, {} blocks, parse {parse_s:.3} s, write {write_s:.3} s; model {} B ({:.1}%) in {model_s:.2} s, back in {decode_s:.2} s; lepton {:?} ({:.1}%)", path.display(), data.len(), j.blocks.iter().map(|b| b.len()).sum::<usize>(), stream.len(), 100.0 * stream.len() as f64 / data.len() as f64, lepton, lepton.map_or(0.0, |l| 100.0 * l as f64 / data.len() as f64));
         }
     }
 }

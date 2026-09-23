@@ -8,7 +8,7 @@
 //! block also records the bit it started at, for the pieces to be
 //! written on every core later.
 
-mod coder;
+pub(crate) mod coder;
 pub mod trees;
 pub mod zlib;
 

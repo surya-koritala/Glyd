@@ -25,7 +25,13 @@ impl Bit {
     }
 }
 
-impl Bit {
+/// An adaptive probability of a 1 bit, in 1/65536ths, for the coder.
+pub trait Prob {
+    fn p(&self) -> u32;
+    fn update(&mut self, bit: u32);
+}
+
+impl Prob for Bit {
     #[inline]
     fn p(&self) -> u32 {
         (self.p as u32).clamp(32, 65536 - 32)
@@ -58,7 +64,7 @@ impl Encoder {
     }
 
     #[inline]
-    pub fn bit(&mut self, m: &mut Bit, bit: u32) {
+    pub fn bit<P: Prob>(&mut self, m: &mut P, bit: u32) {
         let xmid = self.x1 + ((self.x2 - self.x1) >> 16) * m.p();
         if bit != 0 {
             self.x2 = xmid;
@@ -75,7 +81,7 @@ impl Encoder {
 
     /// `v` in `bits` bits, most significant first, each under its own
     /// context of the tree `m` (which holds `1 << bits` entries).
-    pub fn tree(&mut self, m: &mut [Bit], bits: u32, v: u32) {
+    pub fn tree<P: Prob>(&mut self, m: &mut [P], bits: u32, v: u32) {
         let mut node = 1usize;
         for i in (0..bits).rev() {
             let b = (v >> i) & 1;
@@ -138,7 +144,7 @@ impl<'a> Decoder<'a> {
     }
 
     #[inline]
-    pub fn bit(&mut self, m: &mut Bit) -> u32 {
+    pub fn bit<P: Prob>(&mut self, m: &mut P) -> u32 {
         let xmid = self.x1 + ((self.x2 - self.x1) >> 16) * m.p();
         let bit = if self.x <= xmid { 1 } else { 0 };
         if bit != 0 {
@@ -155,7 +161,7 @@ impl<'a> Decoder<'a> {
         bit
     }
 
-    pub fn tree(&mut self, m: &mut [Bit], bits: u32) -> u32 {
+    pub fn tree<P: Prob>(&mut self, m: &mut [P], bits: u32) -> u32 {
         let mut node = 1usize;
         for _ in 0..bits {
             let b = self.bit(&mut m[node]);
