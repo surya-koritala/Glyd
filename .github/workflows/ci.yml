@@ -27,6 +27,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Versions agree (crate, store, Python package)
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          for f in glyd-store/Cargo.toml bindings/python/pyproject.toml; do
+            grep -q "^version = \"$v\"" "$f" || { echo "$f is not $v"; exit 1; }
+          done
+          grep -q "__version__ = \"$v\"" bindings/python/glyd/__init__.py || { echo "__init__.py is not $v"; exit 1; }
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 

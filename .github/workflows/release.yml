@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build for (e.g. v0.10.0)"
+        description: "Release to attach the build of this ref to (e.g. v0.10.0)"
         required: true
 
 permissions:
@@ -40,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
@@ -91,7 +91,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
