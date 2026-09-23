@@ -1,6 +1,6 @@
 <h1 align="center">Glyd</h1>
-<p align="center"><strong>Compression for the data that fills object storage — across the objects, not just inside them.</strong><br>
-A store that finds what each new object is a version of and keeps only the change: 3.1× fewer bytes than zstd on a 1.2 TB bucket of releases, dumps and events (24× against raw), every object read back byte-exact; 4.6× on a 39 GB one. Inside an object, fewer bytes than zstd wherever the data has structure, and the fastest reads at every ratio.</p>
+<p align="center"><strong>The goal: the best compression on every kind of data — the smallest files, the fastest reads, every claim measured byte for byte.</strong></p>
+<p align="center">Today: 3.1× fewer bytes than zstd on a 1.2 TB bucket · up to 60% fewer on logs, dumps and containers · the smallest of eight codecs on 17 of 24 kinds of data.</p>
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
