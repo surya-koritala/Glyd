@@ -1772,6 +1772,13 @@ sys.stdout.buffer.write(buf.getvalue())
         for (glyd, original) in [("log.gz.v0120.glyd", "log.gz"), ("log.gz.v0130.glyd", "log.gz"), ("doc.zip.v0130.glyd", "doc.zip"), ("base.tar.v0130.glyd", "base.tar"), ("log.gz.v0133.glyd", "log.gz"), ("doc.zip.v0133.glyd", "doc.zip"), ("base.tar.v0133.glyd", "base.tar")] {
             assert!(crate::decompress(&read(glyd)).unwrap() == read(original), "{glyd}");
         }
+        // v0.14.0's JPEG stream (GJPG): the model's contexts and
+        // predictions are the format, so a change to them needs a new
+        // stream tag, not a change here.
+        let jpeg = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/jpeg/");
+        for (glyd, original) in [("q75-420.jpg.v0140.glyd", "q75-420.jpg"), ("q60-422-rst.jpg.v0140.glyd", "q60-422-rst.jpg")] {
+            assert!(crate::decompress(&read(glyd)).unwrap() == std::fs::read(format!("{jpeg}{original}")).unwrap(), "{glyd}");
+        }
         // v0.13.3's content view too, and its deltas: their bases open
         // the preflate way, as they were made.
         assert!(crate::decompress_content(&read("log.gz.v0133.glyd")).is_ok(), "content of a GLYDDEF2 object");

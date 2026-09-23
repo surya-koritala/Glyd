@@ -42,12 +42,11 @@ impl Encoder {
     #[inline]
     pub fn bit<P: Prob>(&mut self, m: &mut P, bit: u32) {
         let bound = (self.range >> 16) * m.p();
-        if bit != 0 {
-            self.range = bound;
-        } else {
-            self.low += bound as u64;
-            self.range -= bound;
-        }
+        // Branch-free, as the decoder: on real coefficients a
+        // mispredicted branch here costs more than the decision.
+        let mask = 0u32.wrapping_sub(bit & 1);
+        self.low += (bound & !mask) as u64;
+        self.range = (bound & mask) | ((self.range - bound) & !mask);
         m.update(bit);
         while self.range < TOP {
             self.range <<= 8;
@@ -59,9 +58,7 @@ impl Encoder {
     #[inline]
     pub fn raw(&mut self, bit: u32) {
         self.range >>= 1;
-        if bit == 0 {
-            self.low += self.range as u64;
-        }
+        self.low += (self.range & (bit & 1).wrapping_sub(1)) as u64;
         if self.range < TOP {
             self.range <<= 8;
             self.shift_low();
@@ -115,12 +112,11 @@ impl<'a> Decoder<'a> {
     pub fn bit<P: Prob>(&mut self, m: &mut P) -> u32 {
         let bound = (self.range >> 16) * m.p();
         let bit = (self.code < bound) as u32;
-        if bit != 0 {
-            self.range = bound;
-        } else {
-            self.code -= bound;
-            self.range -= bound;
-        }
+        // Branch-free: a mispredicted branch here would cost more than
+        // the decision itself.
+        let mask = 0u32.wrapping_sub(bit);
+        self.range = (bound & mask) | ((self.range - bound) & !mask);
+        self.code -= bound & !mask;
         m.update(bit);
         while self.range < TOP {
             self.range <<= 8;
@@ -133,9 +129,7 @@ impl<'a> Decoder<'a> {
     pub fn raw(&mut self) -> u32 {
         self.range >>= 1;
         let bit = (self.code < self.range) as u32;
-        if bit == 0 {
-            self.code -= self.range;
-        }
+        self.code -= self.range & (bit.wrapping_sub(1));
         if self.range < TOP {
             self.range <<= 8;
             self.code = (self.code << 8) | self.byte();

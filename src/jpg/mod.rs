@@ -600,8 +600,7 @@ fn encode_scan(w: &mut BitOut, f: &Frame, tables: &[Vec<Option<Huffman>>], scan:
                     if len == 0 {
                         return None;
                     }
-                    w.put(code as u32, len as u32);
-                    w.put(v, s);
+                    w.put((code as u32) << s | v, len as u32 + s);
                     let mut run = 0u32;
                     let last = (1..64).rev().find(|&i| block[i] != 0).unwrap_or(0);
                     for i in 1..=last {
@@ -622,8 +621,7 @@ fn encode_scan(w: &mut BitOut, f: &Frame, tables: &[Vec<Option<Huffman>>], scan:
                         if len == 0 {
                             return None;
                         }
-                        w.put(code as u32, len as u32);
-                        w.put(v, s);
+                        w.put((code as u32) << s | v, len as u32 + s);
                         run = 0;
                     }
                     if last < 63 {
