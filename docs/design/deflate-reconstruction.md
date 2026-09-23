@@ -76,6 +76,15 @@ corrections' size and the speed.
    the container corpus; when the fallback no longer fires on it,
    remove `third_party/preflate-rs`.
 
+Where it stands (v0.13.4): steps 1–5 are in and step 6 is done for
+every stream — gzip, zip, tar, PDF, PNG, zlib, and a JPEG under a
+deflate stream all go through `reflate`, preflate remaining only to
+read earlier envelopes and open their bases. memLevel and windowBits
+joined the parameters when a PDF's streams turned out to use 4 KB
+windows. Open: the matcher's speed on data with long runs (level 9
+streams of image rows walk a 4,096-deep chain per token), zlib-ng and
+libdeflate variants, and Lepton's road for JPEG.
+
 What this does not cover, and stays closed: streams from encoders not
 emulated (7-Zip's, .NET's, Go's, libdeflate's, zlib-ng's, miniz's; each
 is a later variant if it shows up in real buckets), and JPEG, which is

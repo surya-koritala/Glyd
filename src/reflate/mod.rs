@@ -913,6 +913,36 @@ mod pdf_probe {
             }
             worst.push((c.len() as f64 / s.consumed as f64, c.len(), s.plain.len(), desc));
         }
+        // The largest streams: where the time goes, on every core.
+        let mut at = 0usize;
+        let mut biggest: Vec<(usize, usize)> = Vec::new();
+        while let Some(i) = data[at..].windows(6).position(|w| w == b"stream") {
+            let mut p = at + i + 6;
+            if data.get(p) == Some(&b'\r') { p += 1; }
+            if data.get(p) == Some(&b'\n') { p += 1; }
+            at = p;
+            if data.get(p..p + 2).map_or(true, |h| h[0] & 0x0f != 8 || (u16::from_be_bytes([h[0], h[1]]) % 31) != 0) { continue; }
+            if let Some(s) = parse(&data[p + 2..]) { biggest.push((s.plain.len(), p + 2)); }
+        }
+        biggest.sort_by(|a, b| b.cmp(a));
+        for &(plain_len, p) in biggest.iter().take(3) {
+            let stream = &data[p..];
+            let t = std::time::Instant::now();
+            let s = parse(stream).unwrap();
+            let parse_s = t.elapsed().as_secs_f64();
+            let padded = zlib::pad(&s.plain);
+            let t = std::time::Instant::now();
+            let params = zlib::detect(&padded, &s.blocks);
+            let detect_s = t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now();
+            let o = open(&stream[..s.consumed]).unwrap();
+            let open_s = t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now();
+            let back = close(&o.plain, &o.recipe).unwrap();
+            let close_s = t.elapsed().as_secs_f64();
+            assert!(back == &stream[..s.consumed]);
+            eprintln!("stream of {plain_len} B plain: parse {parse_s:.2} s, detect {detect_s:.2} s, open (with the check) {open_s:.2} s, close {close_s:.2} s; {params:?}, recipe {} B", o.recipe.len());
+        }
         worst.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
         for (ratio, c, plain, desc) in worst.iter().take(6) {
             eprintln!("{:.1}% of stream: corrections {c} B, plain {plain} B, {desc}", ratio * 100.0);

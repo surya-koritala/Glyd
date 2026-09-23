@@ -47,8 +47,9 @@ pub struct Params {
 }
 
 impl Params {
+    /// Every level, the likeliest first (a tie goes to the first).
     pub fn all(mem: u8, window: u8) -> impl Iterator<Item = Params> {
-        (0..=9u8).flat_map(move |level| [false, true].into_iter().filter(move |f| !*f || level >= 4).map(move |filtered| Params { level, filtered, fixed: false, mem, window }))
+        [6u8, 8, 9, 1, 5, 4, 7, 3, 2, 0].into_iter().flat_map(move |level| [false, true].into_iter().filter(move |f| !*f || level >= 4).map(move |filtered| Params { level, filtered, fixed: false, mem, window }))
     }
 
     fn w_size(&self) -> u32 {
@@ -88,6 +89,7 @@ impl Params {
 /// are relative to `base`, 16 bits as in zlib's window, the tables
 /// slid by 32 KB when the relative position reaches zlib's limit (the
 /// entries that go to 0 were out of reach already); 0 is NIL.
+#[derive(Clone)]
 pub struct Zlib<'a> {
     /// the plain text with MAX_MATCH + 8 zero bytes after it (`pad`),
     /// so a comparison may run past the end without a check
@@ -371,12 +373,13 @@ fn capped(guess: Token, pos: u32, end: u32, plain: &[u8]) -> Token {
     }
 }
 
-/// How many of the first `limit` tokens `p` gets wrong.
-fn mismatches(padded: &[u8], p: Params, blocks: &[Block], limit: usize) -> usize {
+/// How many of `limit` tokens from block `from` on the emulation `z`
+/// (seeded at that block's start) gets wrong, counting no further
+/// than `stop` wrong ones.
+fn mismatches(padded: &[u8], mut z: Zlib, blocks: &[Block], starts: &[u32], from: usize, limit: usize, stop: usize) -> usize {
     let plain = &padded[..padded.len() - PAD];
-    let mut z = Zlib::new_at(padded, p, 0);
-    let (mut pos, mut seen, mut wrong) = (0u32, 0usize, 0usize);
-    for b in blocks {
+    let (mut pos, mut seen, mut wrong) = (starts[from], 0usize, 0usize);
+    for b in &blocks[from..] {
         match &b.kind {
             Kind::Stored(bytes) => {
                 let end = pos + bytes.len() as u32;
@@ -387,7 +390,7 @@ fn mismatches(padded: &[u8], p: Params, blocks: &[Block], limit: usize) -> usize
             }
             Kind::Fixed(tokens) | Kind::Dynamic(_, tokens) => {
                 for &actual in tokens {
-                    if seen == limit {
+                    if seen == limit || wrong >= stop {
                         return wrong;
                     }
                     wrong += (z.predict(pos) != actual) as usize;
@@ -420,11 +423,41 @@ pub fn detect(padded: &[u8], blocks: &[Block]) -> Params {
     // longer, and then its distance would be here.
     let max_dist = blocks.iter().flat_map(|b| match &b.kind { Kind::Fixed(t) | Kind::Dynamic(_, t) => &t[..], _ => &[] }).map(|t| match t { Token::Ref { dist, .. } => *dist as u32, _ => 0 }).max().unwrap_or(0);
     let window = (9..=15u8).find(|&w| max_dist <= (1u32 << w) - MIN_LOOKAHEAD).unwrap_or(15);
+    // Judged on the first 4,096 tokens and, when the stream goes on,
+    // on 4,096 more from the block nearest its middle: a start that
+    // every level predicts alike tells nothing.
+    let mut starts = Vec::with_capacity(blocks.len() + 1);
+    let mut at = 0u32;
+    for b in blocks {
+        starts.push(at);
+        at += match &b.kind {
+            Kind::Stored(x) => x.len() as u32,
+            Kind::Fixed(t) | Kind::Dynamic(_, t) => span(t),
+        };
+    }
+    starts.push(at);
+    // The middle sample only when the stream is long enough for the
+    // start to say little (over 8 full blocks).
+    let middle = if blocks.len() > 8 { blocks.len() / 2 } else { 0 };
     let mut best = (usize::MAX, Params { level: 6, filtered: false, fixed, mem: 8, window });
     'outer: for (i, &mem) in mems.iter().enumerate() {
+        // The seeded states, made once per memLevel: the levels differ
+        // only in how they search.
+        let seed = |p: Params, at: u32| Zlib::new_at(padded, p, at);
+        let first = seed(Params { level: 6, filtered: false, fixed, mem, window }, 0);
+        let mid = (middle > 0).then(|| seed(Params { level: 6, filtered: false, fixed, mem, window }, starts[middle]));
         for p in Params::all(mem, window) {
             let p = Params { fixed, ..p };
-            let wrong = mismatches(padded, p, blocks, 4096);
+            let mut z = first.clone();
+            z.p = p;
+            let mut wrong = mismatches(padded, z, blocks, &starts, 0, 4096, best.0);
+            if let Some(mid) = &mid {
+                if wrong < best.0 {
+                    let mut z = mid.clone();
+                    z.p = p;
+                    wrong += mismatches(padded, z, blocks, &starts, middle, 4096, best.0 - wrong);
+                }
+            }
             if wrong < best.0 {
                 best = (wrong, p);
             }
@@ -433,7 +466,7 @@ pub fn detect(padded: &[u8], blocks: &[Block]) -> Params {
             }
         }
         // Another memLevel is worth trying only when this one is off.
-        if i == 0 && best.0 * 100 < blocks.iter().map(|b| match &b.kind { Kind::Fixed(t) | Kind::Dynamic(_, t) => t.len(), _ => 0 }).sum::<usize>().min(4096) {
+        if i == 0 && best.0 * 100 < 8192 {
             break;
         }
     }
@@ -699,7 +732,7 @@ mod tests {
             // wins the tie.
             let padded = pad(&plain);
             let detected = detect(&padded, &s.blocks);
-            assert!(detected == p || (level == 9 && detected.level == 8), "level {level} filtered {filtered}: detected {detected:?}");
+            assert!(detected == p || (level >= 8 && detected.level >= 8 && detected.filtered == filtered), "level {level} filtered {filtered}: detected {detected:?}");
             let c = predict(&padded, p, &s.blocks, 0);
             let n_tokens: usize = s.blocks.iter().map(|b| match &b.kind { Kind::Fixed(t) | Kind::Dynamic(_, t) => t.len(), _ => 0 }).sum();
             #[cfg(feature = "deflate")]

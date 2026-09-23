@@ -33,3 +33,8 @@ on every core (`src/chunked.rs`):
 The output for a stream handled whole is unchanged from upstream 0.7.6:
 objects written by earlier versions of Glyd, and bases their deltas
 were made against, open to the same plain text.
+
+Since v0.13.4 nothing new is written with it: every deflate stream is
+opened by Glyd's own reconstruction (`src/reflate/`), and this copy is
+here to read what v0.12.0 to v0.13.3 wrote (`GLYDGZIP`, `GLYDDEFL`,
+`GLYDDEF2`) and to open the bases their deltas were made against.

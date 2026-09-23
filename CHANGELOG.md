@@ -6,6 +6,35 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.13.4 — 2026-09-23
+
+- **Containers opened by Glyd's own deflate reconstruction.**
+  `src/reflate/` (design: `docs/design/deflate-reconstruction.md`)
+  parses a deflate stream into its blocks and tokens, runs zlib's own
+  matcher over the plain text — `deflate_fast` and `deflate_slow`,
+  the level's chain, lazy and nice limits, the rolling hash, the
+  window, memLevel and windowBits detected from the stream — and
+  builds each block's Huffman trees the way zlib does, so that for a
+  stream zlib made almost nothing needs saying: what differs is coded
+  with a binary arithmetic coder. Streams are cut into 1 MB chunks at
+  block boundaries, each emulated from the window before it, so they
+  open and close on every core. Nothing outside this repository is in
+  the codec's path any more; the copy of preflate-rs stays to read
+  what v0.12.0 to v0.13.3 wrote and to open the bases their deltas
+  were made against. Envelope `GLYDDEF3`; segments 9–12 (spec 2b).
+  Against v0.13.3 on this Mac, all cores, every decode byte-exact:
+  the NASA gzip 8.19 → 8.17 MB, written in 1.2 s instead of 2.4;
+  a PDF (pdfTeX, 4 KB windows) 741 → 728 KB, 0.15 s instead of 0.55,
+  read in 0.06 instead of 0.15; a PNG 1.65 → 1.60 MB, 0.16 s instead
+  of 0.49; a Guava jar 1.77 → 1.68 MB; a .docx 2.32 → 2.27 MB, 0.25 s
+  instead of 0.70; the mixed tar.gz 10.18 → 10.11 MB, 1.8 s instead of
+  3.7. On a 1 MB text through zlib at every level and strategy the
+  recipe is 63–250 bytes (0.01–0.1% of the stream) where preflate's
+  corrections were 28 bytes to 17 KB. Behind on one file: a PDF of
+  large images whose streams are level 9 (a 4,096-deep chain per
+  token) writes in 3.3 s instead of 2.1 and reads in 1.3 instead of
+  0.6 — the matcher's speed on such data is the next piece of work.
+
 ## v0.13.3 — 2026-09-22
 
 - **Containers open and close on every core.** A deflate stream of

@@ -125,7 +125,7 @@ million a year at list price; the percentages above are what to multiply.
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 cargo install glyd glyd-store                # from crates.io
-pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.13.3-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.13.4-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -455,7 +455,9 @@ to zstd all of it is noise. Containers inside containers open too,
 four deep: a tar of gzipped logs, a tar.gz of pictures, a deck's
 JPEGs under their deflate entries. Glyd opens the container: every
 deflate stream inside is decoded to its content along with what it
-takes to re-encode it bit for bit (preflate); the plain text is that
+takes to re-encode it bit for bit (Glyd's own reconstruction since
+v0.13.4, `src/reflate/`: zlib's matcher run over the content, only
+what differs kept); the plain text is that
 content, then every other byte of the object as it was (headers,
 directories, stored entries, a tar's files) and the corrections, and
 it takes the level asked for — record mode where it pays, the cold
@@ -803,7 +805,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.13.3** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.13.4** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every

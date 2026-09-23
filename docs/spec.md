@@ -101,8 +101,14 @@ chunk count, and per chunk its varint plain length, varint block
 count, one byte for the bit within a byte its first block starts at,
 and its corrections (varint length, then the arithmetic-coded
 decisions of `src/reflate/zlib.rs`); 10 a container under such a
-stream (the recipe, then the inner container as for 5). Containers
-nest four deep. Recognised containers: gzip
+stream (the recipe, then the inner container as for 5); 11 a PNG image
+stream opened so (the fields of 2, the recipe in place of the
+corrections); 12 a JPEG under such a stream (the fields of 4, the
+recipe in place of the corrections). An envelope written by v0.13.4 or
+later is `"GLYDDEF3"`; `"GLYDDEF2"` (v0.13.1 to v0.13.3) has the same
+recipe with tags 1 to 8 only, and a base such an envelope was made
+against is opened the way those versions opened it (preflate, carried
+in `third_party/` for that). Containers nest four deep. Recognised containers: gzip
 (members back to back), zip (entries from the central directory, or
 walked when it does not parse; method 8 opened, stored entries opened
 in their own way), tar (ustar entries, regular files opened in their

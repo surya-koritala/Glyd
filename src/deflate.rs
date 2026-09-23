@@ -71,6 +71,10 @@ const DEFLATE_NESTED_CHUNKED: u8 = 8;
 /// from the content.
 const REFLATE: u8 = 9;
 const REFLATE_NESTED: u8 = 10;
+/// `PNG_IMAGE` and `DEFLATE_JPEG` opened by `crate::reflate`: the
+/// recipe from the side in place of preflate's corrections.
+const PNG_REFLATE: u8 = 11;
+const REFLATE_JPEG: u8 = 12;
 
 /// A stream is opened in chunks of this much plain text when it holds
 /// at least two of them.
@@ -316,6 +320,15 @@ impl Builder {
         }
         #[cfg(feature = "jpeg")]
         if crate::jpeg::is_jpeg(&opened.plain) {
+            if let Some(lepton) = crate::jpeg::transcode(&opened.plain).filter(|l| l.len() + 16 < opened.plain.len()) {
+                self.segment(input, REFLATE_JPEG, at);
+                put_varint(&mut self.body, opened.recipe.len() as u64);
+                put_varint(&mut self.body, lepton.len() as u64);
+                self.side.extend_from_slice(&opened.recipe);
+                self.side.extend_from_slice(&lepton);
+                self.keep = (at + n, at + n);
+                return Some(n);
+            }
             return None;
         }
         let inner = self.nested(&opened.plain);
@@ -426,23 +439,36 @@ impl Builder {
         if !is_zlib(&image) {
             return None;
         }
-        let config = PreflateConfig { plain_text_limit: stream_limit(image.len()), verify_compression: true, ..Default::default() };
-        let (result, text) = preflate_whole_deflate_stream(&image[2..], &config).ok()?;
-        if 2 + result.compressed_size + 4 != image.len() || result.corrections.len() * 4 > result.compressed_size {
-            return None;
-        }
-        self.segment(input, PNG_IMAGE, start);
+        // (tag, corrections or recipe, text)
+        let (tag, side, text): (u8, Vec<u8>, Vec<u8>) = match self.engine {
+            Engine::Reflate => {
+                let o = crate::reflate::open(&image[2..])?;
+                if 2 + o.consumed + 4 != image.len() || o.recipe.len() * 4 > o.consumed || o.plain.len() > stream_limit(image.len()) {
+                    return None;
+                }
+                (PNG_REFLATE, o.recipe, o.plain)
+            }
+            Engine::Preflate => {
+                let config = PreflateConfig { plain_text_limit: stream_limit(image.len()), verify_compression: true, ..Default::default() };
+                let (result, text) = preflate_whole_deflate_stream(&image[2..], &config).ok()?;
+                if 2 + result.compressed_size + 4 != image.len() || result.corrections.len() * 4 > result.compressed_size {
+                    return None;
+                }
+                (PNG_IMAGE, result.corrections, text.text().to_vec())
+            }
+        };
+        self.segment(input, tag, start);
         self.body.extend_from_slice(&image[..2]);
-        put_varint(&mut self.body, result.corrections.len() as u64);
-        put_varint(&mut self.body, text.text().len() as u64);
+        put_varint(&mut self.body, side.len() as u64);
+        put_varint(&mut self.body, text.len() as u64);
         self.body.extend_from_slice(&image[image.len() - 4..]);
         put_varint(&mut self.body, idat.len() as u64);
         for &(s, l) in &idat {
             put_varint(&mut self.body, l as u64);
             self.body.extend_from_slice(&input[s + l..s + l + 4]);
         }
-        self.side.extend_from_slice(&result.corrections);
-        self.content.extend_from_slice(text.text());
+        self.side.extend_from_slice(&side);
+        self.content.extend_from_slice(&text);
         self.keep = (last_end, last_end);
         Some(())
     }
@@ -462,11 +488,20 @@ impl Builder {
 /// `f(i)` for every `i < n`, on every core for a container at the top
 /// (its entries, streams or segments are independent), in order below.
 fn each<T: Send>(n: usize, parallel: bool, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    each_sized(n, parallel, |_| 0, f)
+}
+
+fn each_sized<T: Send>(n: usize, parallel: bool, size: impl Fn(usize) -> usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
     if !parallel || n < 2 {
         return (0..n).map(f).collect();
     }
     let slots: Vec<Mutex<Option<T>>> = (0..n).map(|_| Mutex::new(None)).collect();
-    let _ = crate::par_units::<()>(n, |i| {
+    // The biggest pieces first, so that the long ones do not start
+    // last; every piece's own parallel work spawns under this loop's.
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(size(i)));
+    let _ = crate::par_units::<()>(n, |k| {
+        let i = order[k];
         let r = f(i);
         *slots[i].lock().unwrap() = Some(r);
         Ok(())
@@ -581,7 +616,7 @@ fn open_tar(input: &[u8], mut b: Builder) -> Option<Parts> {
     }
     let depth = b.depth;
     let engine = b.engine;
-    let pieces = each(entries.len(), depth == 0, |i| stored_parts(input, entries[i].0, entries[i].1, depth, engine));
+    let pieces = each_sized(entries.len(), depth == 0, |i| entries[i].1 - entries[i].0, |i| stored_parts(input, entries[i].0, entries[i].1, depth, engine));
     for (&(data, end), piece) in entries.iter().zip(pieces) {
         if let Some(p) = piece {
             b.lay(input, p, data, end);
@@ -674,7 +709,7 @@ fn open_zip(input: &[u8], mut b: Builder) -> Option<Parts> {
     let Some(entries) = zip_entries(input) else { return open_zip_walk(input, b) };
     let depth = b.depth;
     let engine = b.engine;
-    let pieces = each(entries.len(), depth == 0, |i| {
+    let pieces = each_sized(entries.len(), depth == 0, |i| entries[i].1 - entries[i].0, |i| {
         let (data, end, method, flags) = entries[i];
         match method {
             8 if flags & 1 == 0 => deflate_parts(input, data, end, depth, engine).map(|(p, _)| p),
@@ -770,7 +805,7 @@ fn open_pdf(input: &[u8], mut b: Builder) -> Option<Parts> {
     }
     let depth = b.depth;
     let engine = b.engine;
-    let pieces = each(candidates.len(), depth == 0, |i| {
+    let pieces = each_sized(candidates.len(), depth == 0, |i| candidates[i].1 - candidates[i].0, |i| {
         let (data, stop) = candidates[i];
         let (parts, end) = deflate_parts(input, data + 2, stop, depth, engine)?;
         let tail = input.get(end..stop)?;
@@ -803,6 +838,9 @@ enum Seg<'a> {
     DeflateNestedChunked { chunks: Vec<(usize, &'a [u8], u8)>, inner: Inner<'a> },
     Reflate { recipe: &'a [u8], text: &'a [u8] },
     ReflateNested { recipe: &'a [u8], inner: Inner<'a> },
+    /// `Png` with a recipe in place of the corrections
+    PngReflate { header: &'a [u8], recipe: &'a [u8], text: &'a [u8], adler: &'a [u8], chunks: Vec<(usize, &'a [u8])> },
+    ReflateJpeg { recipe: &'a [u8], lepton: &'a [u8] },
     Nested(Inner<'a>),
     Png { header: &'a [u8], corrections: &'a [u8], text: &'a [u8], adler: &'a [u8], chunks: Vec<(usize, &'a [u8])> },
     Jpeg(&'a [u8]),
@@ -872,7 +910,7 @@ fn segments<'a>(inner: &Inner<'a>) -> Option<Vec<Seg<'a>>> {
                 let (c, t) = (r.varint()?, r.varint()?);
                 Seg::Deflate { corrections: r.side(c)?, text: r.content(t)? }
             }
-            PNG_IMAGE => {
+            PNG_IMAGE | PNG_REFLATE => {
                 let header = r.fixed(2)?;
                 let (c, t) = (r.varint()?, r.varint()?);
                 let adler = r.fixed(4)?;
@@ -882,7 +920,12 @@ fn segments<'a>(inner: &Inner<'a>) -> Option<Vec<Seg<'a>>> {
                     let len = r.varint()?;
                     chunks.push((len, r.fixed(4)?));
                 }
-                Seg::Png { header, corrections: r.side(c)?, text: r.content(t)?, adler, chunks }
+                let (side, text) = (r.side(c)?, r.content(t)?);
+                if tag == PNG_IMAGE {
+                    Seg::Png { header, corrections: side, text, adler, chunks }
+                } else {
+                    Seg::PngReflate { header, recipe: side, text, adler, chunks }
+                }
             }
             JPEG => {
                 let n = r.varint()?;
@@ -891,6 +934,10 @@ fn segments<'a>(inner: &Inner<'a>) -> Option<Vec<Seg<'a>>> {
             DEFLATE_JPEG => {
                 let (c, l) = (r.varint()?, r.varint()?);
                 Seg::DeflateJpeg { corrections: r.side(c)?, lepton: r.side(l)? }
+            }
+            REFLATE_JPEG => {
+                let (c, l) = (r.varint()?, r.varint()?);
+                Seg::ReflateJpeg { recipe: r.side(c)?, lepton: r.side(l)? }
             }
             DEFLATE_NESTED => {
                 let c = r.varint()?;
@@ -932,30 +979,16 @@ fn produce<'a>(seg: &Seg<'a>) -> Option<Cow<'a, [u8]>> {
         Seg::Reflate { recipe, text } => Cow::Owned(crate::reflate::close(text, recipe)?),
         Seg::ReflateNested { recipe, inner } => Cow::Owned(crate::reflate::close(&close_inner(inner, false)?, recipe)?),
         Seg::Nested(inner) => Cow::Owned(close_inner(inner, false)?),
-        Seg::Png { header, corrections, text, adler, chunks } => {
-            let mut image = header.to_vec();
-            image.extend_from_slice(&recreate_whole_deflate_stream(text, corrections).ok()?);
-            image.extend_from_slice(adler);
-            let mut out = Vec::with_capacity(image.len() + chunks.len() * 12);
-            let mut off = 0usize;
-            for &(len, crc) in chunks {
-                out.extend_from_slice(&(len as u32).to_be_bytes());
-                out.extend_from_slice(b"IDAT");
-                out.extend_from_slice(image.get(off..off.checked_add(len)?)?);
-                out.extend_from_slice(crc);
-                off += len;
-            }
-            if off != image.len() {
-                return None;
-            }
-            Cow::Owned(out)
-        }
+        Seg::Png { header, corrections, text, adler, chunks } => Cow::Owned(png_chunks(header, &recreate_whole_deflate_stream(text, corrections).ok()?, adler, chunks)?),
+        Seg::PngReflate { header, recipe, text, adler, chunks } => Cow::Owned(png_chunks(header, &crate::reflate::close(text, recipe)?, adler, chunks)?),
         #[cfg(feature = "jpeg")]
         Seg::Jpeg(lepton) => Cow::Owned(crate::jpeg::restore(lepton)?),
         #[cfg(feature = "jpeg")]
         Seg::DeflateJpeg { corrections, lepton } => Cow::Owned(recreate_whole_deflate_stream(&crate::jpeg::restore(lepton)?, corrections).ok()?),
+        #[cfg(feature = "jpeg")]
+        Seg::ReflateJpeg { recipe, lepton } => Cow::Owned(crate::reflate::close(&crate::jpeg::restore(lepton)?, recipe)?),
         #[cfg(not(feature = "jpeg"))]
-        Seg::Jpeg(_) | Seg::DeflateJpeg { .. } => return None,
+        Seg::Jpeg(_) | Seg::DeflateJpeg { .. } | Seg::ReflateJpeg { .. } => return None,
     })
 }
 
@@ -979,9 +1012,31 @@ fn recreate_chunked(chunks: &[(usize, &[u8], u8)], text: &[u8]) -> Option<Vec<u8
     Some(chunked::join(&pieces))
 }
 
+/// A PNG's IDAT chunks back around its zlib stream.
+fn png_chunks(header: &[u8], stream: &[u8], adler: &[u8], chunks: &[(usize, &[u8])]) -> Option<Vec<u8>> {
+    let mut image = header.to_vec();
+    image.extend_from_slice(stream);
+    image.extend_from_slice(adler);
+    let mut out = Vec::with_capacity(image.len() + chunks.len() * 12);
+    let mut off = 0usize;
+    for &(len, crc) in chunks {
+        out.extend_from_slice(&(len as u32).to_be_bytes());
+        out.extend_from_slice(b"IDAT");
+        out.extend_from_slice(image.get(off..off.checked_add(len)?)?);
+        out.extend_from_slice(crc);
+        off += len;
+    }
+    (off == image.len()).then_some(out)
+}
+
 fn close_inner(inner: &Inner<'_>, parallel: bool) -> Option<Vec<u8>> {
     let segs = segments(inner)?;
-    let parts = each(segs.len(), parallel, |i| produce(&segs[i]));
+    let size = |i: usize| match &segs[i] {
+        Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => text.len(),
+        Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::Nested(inner) => inner.content.len(),
+        _ => 0,
+    };
+    let parts = each_sized(segs.len(), parallel, size, |i| produce(&segs[i]));
     let mut out = Vec::with_capacity(parts.iter().map(|p| p.as_ref().map_or(0, |p| p.len())).sum());
     for p in parts {
         out.extend_from_slice(&p?);
@@ -1018,7 +1073,7 @@ fn content_of(inner: &Inner<'_>) -> Option<Vec<u8>> {
             Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } => out.extend_from_slice(text),
             Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } => out.extend_from_slice(&close_inner(inner, true)?),
             #[cfg(feature = "jpeg")]
-            Seg::DeflateJpeg { lepton, .. } => out.extend_from_slice(&crate::jpeg::restore(lepton)?),
+            Seg::DeflateJpeg { lepton, .. } | Seg::ReflateJpeg { lepton, .. } => out.extend_from_slice(&crate::jpeg::restore(lepton)?),
             _ => return None,
         }
     }
@@ -1410,8 +1465,8 @@ mod legacy {
     fn collect_v013(inner: &Inner<'_>, out: &mut Vec<u8>) -> Option<()> {
         for seg in segments(inner)? {
             match seg {
-                Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Png { text, .. } => out.extend_from_slice(text),
-                Seg::DeflateJpeg { lepton, .. } => out.extend_from_slice(lepton),
+                Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => out.extend_from_slice(text),
+                Seg::DeflateJpeg { lepton, .. } | Seg::ReflateJpeg { lepton, .. } => out.extend_from_slice(lepton),
                 Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::Nested(inner) => collect_v013(&inner, out)?,
                 Seg::Bytes(_) | Seg::Jpeg(_) => {}
             }
@@ -1635,6 +1690,10 @@ mod tests {
             let t = std::time::Instant::now();
             let o = open_with(&data, engine).unwrap();
             let open_s = t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now();
+            assert!(close(&o.recipe, &o.plain).unwrap() == data);
+            let close_s = t.elapsed().as_secs_f64();
+            eprintln!("  close {close_s:.2} s");
             let mut pos = 0usize;
             let n = get_varint(&o.recipe, &mut pos).unwrap();
             let clen = get_varint(&o.recipe, &mut pos).unwrap() as usize;
@@ -1852,7 +1911,7 @@ sys.stdout.buffer.write(buf.getvalue())
         assert!(opened_pictures.len() > plain.len(), "the PNG inside opened: {}", opened_pictures.len());
         let recipe = open(&picture_zip).unwrap().recipe;
         assert!(recipe.windows(1).any(|w| w[0] == JPEG), "the stored JPEG transcoded");
-        assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_JPEG), "the deflated JPEG transcoded under its deflate");
+        assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_JPEG || w[0] == REFLATE_JPEG), "the deflated JPEG transcoded under its deflate");
         assert!(recipe.windows(1).any(|w| w[0] == DEFLATE_NESTED || w[0] == REFLATE_NESTED), "the deflated PNG opened under its deflate");
         assert!(opened_pictures.len() > 2 * plain.len(), "both PNGs' plain text is in: {}", opened_pictures.len());
         // A tar of a gzipped log, the PNG, the JPEG and a text file; then
