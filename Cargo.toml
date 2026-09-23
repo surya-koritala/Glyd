@@ -1,6 +1,6 @@
 [package]
 name = "glyd"
-version = "0.13.4"
+version = "0.14.0"
 edition = "2021"
 description = "Compression for the data that fills object storage: logs and dumps as typed columns, packs of small objects, a store that compresses across objects, versions against the last one, and the fastest reads at every ratio"
 repository = "https://github.com/surya-koritala/Glyd"
@@ -15,9 +15,10 @@ members = [".", "glyd-store"]
 
 [features]
 default = ["deflate", "jpeg"]
-# Deflate containers opened and re-encoded bit for bit (src/deflate.rs)
-# and JPEGs transcoded losslessly (src/jpeg.rs): the dependencies, and
-# what `--no-default-features` gives up.
+# Reading what earlier releases wrote: v0.12-v0.13.3 containers
+# (preflate's reconstruction) and v0.13.0-v0.13.4 JPEG streams
+# (Lepton's). Everything written today is Glyd's own (src/reflate,
+# src/jpg); `--no-default-features` gives up only the old files.
 deflate = ["dep:preflate-rs"]
 jpeg = ["dep:lepton_jpeg"]
 

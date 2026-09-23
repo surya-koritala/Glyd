@@ -6,6 +6,28 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.14.0 — 2026-09-23
+
+- **JPEG recoded by Glyd's own model.** `src/jpg/` (design:
+  `docs/design/jpeg-recoding.md`) parses a baseline JPEG into its
+  markers and coefficients and writes it back bit for bit; the
+  coefficients are coded with a range coder under contexts from the
+  blocks above and to the left, the first row and column predicted
+  from pixel continuity across the block edge, the DC from both
+  edges, in four stripes of block rows after a prefix so four cores
+  share the work. Stream `GJPG` inside the `GLYDJPEG` envelope and
+  inside containers (spec 2c); the kept bytes (EXIF, previews)
+  compressed. `lepton_jpeg` stays only to read what v0.13.0–v0.13.4
+  wrote (the `jpeg` feature). Against v0.13.4 on this Mac, every
+  decode byte-exact: smaller on all five photos (13.4 MB: 9,934,880
+  against 9,971,627 bytes; 6.4 MB: 4,997,778 against 5,001,278; the
+  three of ~2 MB by 0.4–0.8%), 1.6–1.9× faster to write and 1.6–1.7×
+  faster to read on all cores (13.4 MB: 1.02 and 0.54 s against 1.77
+  and 0.91); on one core 1.3× slower each way. A progressive JPEG
+  stays as it is, as before.
+- The binary arithmetic coder is generic over its probability type
+  (`reflate::coder::Prob`); the corrections coder is unchanged.
+
 ## v0.13.4 — 2026-09-23
 
 - **Containers opened by Glyd's own deflate reconstruction.**

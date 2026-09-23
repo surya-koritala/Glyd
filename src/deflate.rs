@@ -89,7 +89,6 @@ pub struct Opened {
 /// Whether `input` starts like a container worth opening (a JPEG
 /// counts: it is transcoded by `jpeg` through the same hooks).
 pub fn is_container(input: &[u8]) -> bool {
-    #[cfg(feature = "jpeg")]
     if crate::jpeg::is_jpeg(input) {
         return true;
     }
@@ -246,7 +245,6 @@ impl Builder {
         if self.depth + 1 >= MAX_DEPTH || !is_container(data) {
             return None;
         }
-        #[cfg(feature = "jpeg")]
         if crate::jpeg::is_jpeg(data) {
             return None;
         }
@@ -278,7 +276,6 @@ impl Builder {
             return None;
         }
         let text = text.text();
-        #[cfg(feature = "jpeg")]
         if crate::jpeg::is_jpeg(text) {
             if let Some(lepton) = crate::jpeg::transcode(text).filter(|l| l.len() + 16 < text.len()) {
                 self.segment(input, DEFLATE_JPEG, at);
@@ -318,7 +315,6 @@ impl Builder {
         if opened.recipe.len() * 4 > n || opened.plain.len() > stream_limit(data.len()) {
             return None;
         }
-        #[cfg(feature = "jpeg")]
         if crate::jpeg::is_jpeg(&opened.plain) {
             if let Some(lepton) = crate::jpeg::transcode(&opened.plain).filter(|l| l.len() + 16 < opened.plain.len()) {
                 self.segment(input, REFLATE_JPEG, at);
@@ -365,7 +361,6 @@ impl Builder {
         if chunked::join(&pieces) != &data[..n] {
             return None;
         }
-        #[cfg(feature = "jpeg")]
         if crate::jpeg::is_jpeg(text) {
             return None;
         }
@@ -393,7 +388,6 @@ impl Builder {
     /// container opened; anything else stays to be kept.
     fn stored(&mut self, input: &[u8], from: usize, to: usize) {
         let data = &input[from..to];
-        #[cfg(feature = "jpeg")]
         if crate::jpeg::is_jpeg(data) {
             if let Some(lepton) = crate::jpeg::transcode(data).filter(|l| l.len() + 16 < data.len()) {
                 self.segment(input, JPEG, from);
@@ -981,14 +975,9 @@ fn produce<'a>(seg: &Seg<'a>) -> Option<Cow<'a, [u8]>> {
         Seg::Nested(inner) => Cow::Owned(close_inner(inner, false)?),
         Seg::Png { header, corrections, text, adler, chunks } => Cow::Owned(png_chunks(header, &recreate_whole_deflate_stream(text, corrections).ok()?, adler, chunks)?),
         Seg::PngReflate { header, recipe, text, adler, chunks } => Cow::Owned(png_chunks(header, &crate::reflate::close(text, recipe)?, adler, chunks)?),
-        #[cfg(feature = "jpeg")]
         Seg::Jpeg(lepton) => Cow::Owned(crate::jpeg::restore(lepton)?),
-        #[cfg(feature = "jpeg")]
         Seg::DeflateJpeg { corrections, lepton } => Cow::Owned(recreate_whole_deflate_stream(&crate::jpeg::restore(lepton)?, corrections).ok()?),
-        #[cfg(feature = "jpeg")]
         Seg::ReflateJpeg { recipe, lepton } => Cow::Owned(crate::reflate::close(&crate::jpeg::restore(lepton)?, recipe)?),
-        #[cfg(not(feature = "jpeg"))]
-        Seg::Jpeg(_) | Seg::DeflateJpeg { .. } | Seg::ReflateJpeg { .. } => return None,
     })
 }
 
@@ -1072,7 +1061,6 @@ fn content_of(inner: &Inner<'_>) -> Option<Vec<u8>> {
             Seg::Bytes(_) => {}
             Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } => out.extend_from_slice(text),
             Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } => out.extend_from_slice(&close_inner(inner, true)?),
-            #[cfg(feature = "jpeg")]
             Seg::DeflateJpeg { lepton, .. } | Seg::ReflateJpeg { lepton, .. } => out.extend_from_slice(&crate::jpeg::restore(lepton)?),
             _ => return None,
         }
@@ -1199,7 +1187,6 @@ pub(crate) fn wrap(input: &[u8], output: &mut Vec<u8>, inner: impl FnOnce(&[u8],
     if crate::in_part() || !is_container(input) {
         return false;
     }
-    #[cfg(feature = "jpeg")]
     if crate::jpeg::is_jpeg(input) {
         return crate::jpeg::wrap(input, output);
     }
@@ -1220,7 +1207,6 @@ pub(crate) fn wrap(input: &[u8], output: &mut Vec<u8>, inner: impl FnOnce(&[u8],
 /// The original object of an envelope, its inner stream decoded by
 /// `inner`; `None` when `compressed` is no envelope.
 pub(crate) fn unwrap(compressed: &[u8], inner: impl FnOnce(&[u8]) -> crate::Result<Vec<u8>>) -> Option<crate::Result<Vec<u8>>> {
-    #[cfg(feature = "jpeg")]
     if let Some(r) = crate::jpeg::unwrap(compressed) {
         return Some(r);
     }
@@ -1344,7 +1330,6 @@ mod legacy {
                         return None;
                     }
                 }
-                #[cfg(feature = "jpeg")]
                 JPEG => {
                     pos += 1;
                     out.extend_from_slice(&crate::jpeg::restore(take(&mut pos)?)?);
@@ -1365,7 +1350,6 @@ mod legacy {
                     out.extend_from_slice(&close_v013(inner, plain.get(at..at.checked_add(plen)?)?)?);
                     at += plen;
                 }
-                #[cfg(feature = "jpeg")]
                 DEFLATE_JPEG => {
                     pos += 1;
                     let corrections = take(&mut pos)?;
@@ -1486,7 +1470,6 @@ mod legacy {
             match seg {
                 Seg::Deflate { text, .. } => out.extend_from_slice(text),
                 Seg::DeflateNested { inner, .. } => out.extend_from_slice(&close_inner(&inner, false)?),
-                #[cfg(feature = "jpeg")]
                 Seg::DeflateJpeg { lepton, .. } => out.extend_from_slice(&crate::jpeg::restore(lepton)?),
                 _ => {}
             }

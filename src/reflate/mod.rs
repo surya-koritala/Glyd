@@ -530,7 +530,7 @@ pub struct Opened {
 }
 
 /// `f(i)` for every `i` below `n`, on every core.
-fn each<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+pub(crate) fn each<T: Send>(n: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
     if n < 2 {
         return (0..n).map(f).collect();
     }

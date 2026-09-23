@@ -68,8 +68,8 @@ recipe compressed at the max level (a plain block stream), then the
 inner stream of the plain text in any format above. The plain text is
 the content of every opened stream, in order, then the side data:
 every byte of the object no stream claims (headers, directories,
-stored entries, a tar's files), preflate's corrections and Lepton
-streams, in the order the recipe takes them. The recipe
+stored entries, a tar's files), the corrections and the JPEG
+streams (2c), in the order the recipe takes them. The recipe
 (`src/deflate.rs`) is the segment count and the content's length
 (varints), then the segments, each a tag and its fields: 0 kept (varint
 length; the bytes from the side); 1 deflate (varint length of the
@@ -78,8 +78,8 @@ content); 2 a PNG image stream (2 zlib header bytes, corrections' and
 text's lengths as for 1, 4 Adler-32 bytes, then a varint chunk count
 and per chunk a varint length and 4 CRC bytes, the recreated zlib
 stream being cut into IDAT chunks so); 3 a JPEG stored inside (varint
-length of its Lepton stream, from the side); 4 a JPEG under a deflate
-stream (varint lengths of the corrections and of the Lepton stream,
+length of its JPEG stream, from the side); 4 a JPEG under a deflate
+stream (varint lengths of the corrections and of the JPEG stream,
 both from the side); 5 a container under a deflate stream (varint
 length of the corrections, from the side; then the inner container:
 its segment count, the varint length of its segments and the
@@ -129,11 +129,26 @@ v0.13.0 could write such an envelope where a block of a multi-unit
 stream was due; a decoder reads the stream around it, the envelope's
 inner blocks being those that hold the plain text its recipe takes.
 
-## 2c. JPEG transcoded (`GLYDJPEG`)
+## 2c. JPEG recoded (`GLYDJPEG`)
 
-`"GLYDJPEG"`, original length (varint), then the Lepton stream
-(`lepton_jpeg`, the format of Dropbox's Lepton) of the JPEG, which
-decodes to the identical JPEG.
+`"GLYDJPEG"`, original length (varint), then the JPEG stream, which
+decodes to the identical JPEG. Since v0.14.0 the stream is Glyd's own
+(`src/jpg/`): `"GJPG"`; one byte, 0 when the kept bytes follow as they
+are and 1 when compressed at the max level (a plain block stream); the
+kept bytes' varint length and the bytes — the JPEG with every scan's
+entropy-coded data cut out, so the markers, tables and frame header
+come back from them; the scans (varint count), each its odd pad bits
+(varint count; per pad a varint marker index and one byte of bits);
+the model's streams (varint count, then a varint length each): a
+prefix of the first sixteenth of the block rows, then four stripes of
+the rest (fewer when the picture is under 256 block rows), each
+stripe's contexts starting as the prefix left them, each stream a
+range coder (`src/jpg/coder.rs`) over the coefficients of every
+component's blocks in its rows (`src/jpg/model.rs`). v0.13.0 to
+v0.13.4 wrote Lepton's stream (`lepton_jpeg`, the format of Dropbox's
+Lepton; the `jpeg` feature keeps reading it). Baseline JPEGs
+(SOF0/SOF1, 8-bit, Huffman) are recoded; a progressive,
+arithmetic-coded or 12-bit one stays as it is.
 
 ## 3. The store
 

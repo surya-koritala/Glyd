@@ -57,3 +57,57 @@ end-of-band runs whose grouping is the encoder's choice.
    until it beats Lepton on every photo.
 4. Progressive JPEGs.
 5. The switch, Lepton staying only to read `GLYDJPEG`.
+
+## Where it stands (v0.14.0)
+
+Steps 1, 2, 3 and 5 are in; progressive JPEGs (step 4) are next. The
+envelope stayed `GLYDJPEG`, the stream inside it self-identifying
+(`GJPG`, spec 2c), so nothing else changed. What the model turned out
+to need, each step measured on five photos (13.4, 6.4, 2.1, 1.8 and
+1.9 MB; two at quality ~100, 4:2:0 and 4:2:2; three at 75–95):
+
+- The interior 7×7 first, its nonzero count under the neighbours'
+  counts; each coefficient's zero flag under the position, what is
+  left of the count and the neighbours' magnitudes there (left and
+  above weighted 13:13:6 with the corner, plus how far left and above
+  disagree); the exponent in unary under the position, the
+  neighbours' bucket and what is left; the top three mantissa bits
+  under a tree per exponent, the rest raw; the sign under the
+  neighbours' signs.
+- Then each edge (the first row, the first column): its nonzero count
+  first, then each coefficient under a prediction from pixel
+  continuity — with dequantized coefficients the boundary between two
+  blocks is Σ C(v)·(−1)^v·F[v] from the neighbour's side and Σ C(v)·F[v]
+  from ours, so the one unknown is solved for. The weights of true
+  pixel continuity (cos((2·7+1)vπ/16) against cos(vπ/16)) came out
+  worse than the boundary midpoint's ±1; coding the residual against
+  the prediction instead of the value under its bucket came out much
+  worse.
+- The DC last, from both edges by the same relation, weighted towards
+  the side whose eight boundary pixels agree more, the residual under
+  how far the two sides disagree.
+- Probabilities that count their bits, adapting at 1/(n + 1.5) down to
+  1/256 (0.6% smaller than a fixed 1/128; a floor of 1/1024 or 1/60,
+  or a mix of two rates, were worse); a range coder with a 32-bit
+  range and 16-bit probabilities (0.5% smaller than the corrections
+  coder's carry-less one).
+- The kept bytes (EXIF, an embedded preview) compressed at the max
+  level: 98 KB → 75 KB on the 13.4 MB photo. Lepton compresses its
+  header too.
+- Four stripes of block rows after a prefix, each coded on its own
+  core: 0.1–0.2% per stripe, which is the contexts not following the
+  picture from the rows before (continuing a stripe from the previous
+  one's final state costs 0.05%; a warm start from the prefix helps
+  the 13 MB photo and not the 6 MB one). Lepton's format is eight
+  partitions, 0.3% over its one.
+
+Against v0.13.4 (Lepton's stream, single-threaded) on this Mac, every
+decode byte-exact: smaller on all five photos (9,934,880 vs 9,971,627;
+4,997,778 vs 5,001,278; 1,665,845 vs 1,679,213; 1,455,649 vs 1,470,578;
+1,448,903 vs 1,455,039 bytes), 1.6–1.9× faster to write and 1.6–1.7×
+faster to read on all cores (13.4 MB: 1.02 and 0.54 s against 1.77 and
+0.91). On one core it is slower: 2.31 and 1.24 s against 1.76 and 0.91.
+The coder alone runs at 5 ns a decision, 160 million of them for the
+13.4 MB photo, most of the time; the Huffman parse and write are 0.27
+and 0.15 s of it. Next for speed: the scan parsed and written in
+parallel at its restart markers, and fewer decisions per coefficient.

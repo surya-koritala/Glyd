@@ -8,7 +8,10 @@
 //! padding. Progressive, arithmetic-coded, 12-bit, lossless and
 //! hierarchical JPEGs are not taken apart (`parse` returns `None`).
 
+pub mod coder;
 pub mod model;
+
+use crate::record::{get_varint, put_varint};
 
 /// A frame component: its id and sampling factors, and the block grid
 /// it gets — `bw` × `bh` blocks as an interleaved scan lays them out
@@ -86,7 +89,12 @@ pub struct Huffman {
     mincode: [i32; 17],
     maxcode: [i32; 17],
     valptr: [i32; 17],
+    /// decoding: by the next 9 bits, `len << 8 | symbol` for a code of
+    /// up to 9 bits, 0 for a longer one
+    lookup: Vec<u16>,
 }
+
+const LOOKUP_BITS: u32 = 9;
 
 impl Huffman {
     fn new(counts: [u8; 16], symbols: Vec<u8>) -> Option<Huffman> {
@@ -110,7 +118,20 @@ impl Huffman {
             maxcode[len] = if n > 0 { code as i32 - 1 } else { -1 };
             code <<= 1;
         }
-        (k == symbols.len()).then_some(Huffman { counts, symbols, codes, mincode, maxcode, valptr })
+        if k != symbols.len() {
+            return None;
+        }
+        let mut lookup = vec![0u16; 1 << LOOKUP_BITS];
+        for (sym, &(code, len)) in codes.iter().enumerate() {
+            if len == 0 || len as u32 > LOOKUP_BITS {
+                continue;
+            }
+            let first = (code as usize) << (LOOKUP_BITS - len as u32);
+            for e in &mut lookup[first..first + (1 << (LOOKUP_BITS - len as u32))] {
+                *e = (len as u16) << 8 | sym as u16;
+            }
+        }
+        Some(Huffman { counts, symbols, codes, mincode, maxcode, valptr, lookup })
     }
 }
 
@@ -176,9 +197,20 @@ impl<'a> Bits<'a> {
         v
     }
 
+    #[inline]
     fn decode(&mut self, h: &Huffman) -> Option<u8> {
-        let mut code = 0i32;
-        for len in 1..=16usize {
+        if self.n < LOOKUP_BITS {
+            self.fill();
+        }
+        let peek = (self.acc >> (self.n - LOOKUP_BITS)) & ((1 << LOOKUP_BITS) - 1);
+        let hit = h.lookup[peek as usize];
+        if hit != 0 {
+            self.n -= (hit >> 8) as u32;
+            return Some(hit as u8);
+        }
+        let mut code = peek as i32;
+        self.n -= LOOKUP_BITS;
+        for len in LOOKUP_BITS as usize + 1..=16usize {
             code = (code << 1) | self.get(1) as i32;
             if h.maxcode[len] >= 0 && code <= h.maxcode[len] && code >= h.mincode[len] {
                 return h.symbols.get((h.valptr[len] + code - h.mincode[len]) as usize).copied();
@@ -234,6 +266,13 @@ fn extend(v: u32, s: u32) -> i16 {
 /// Everything from the first byte: `None` when it is not a JPEG this
 /// takes apart. The first byte pair must be SOI.
 pub fn parse(data: &[u8]) -> Option<Jpeg> {
+    parse_with(data, None)
+}
+
+/// With `pads`, `data` is a JPEG with every scan's data cut out (as
+/// `pack` keeps it): the scans get their pad bits from the list, the
+/// blocks stay zero for the model to fill.
+fn parse_with(data: &[u8], mut pads: Option<&mut std::vec::IntoIter<Vec<(u32, u8)>>>) -> Option<Jpeg> {
     if data.len() < 4 || data[0] != 0xFF || data[1] != 0xD8 {
         return None;
     }
@@ -369,7 +408,13 @@ pub fn parse(data: &[u8]) -> Option<Jpeg> {
                 let data_at = at + 2 + len;
                 parts.push(Part::Bytes(data[kept_from..data_at].to_vec()));
                 let mut scan = Scan { components, restart, odd_pads: Vec::new() };
-                let end = decode_scan(data, data_at, f, &tables, &mut scan, &mut blocks)?;
+                let end = match pads.as_deref_mut() {
+                    Some(it) => {
+                        scan.odd_pads = it.next()?;
+                        data_at
+                    }
+                    None => decode_scan(data, data_at, f, &tables, &mut scan, &mut blocks)?,
+                };
                 scan_tables.push(tables.clone());
                 parts.push(Part::Scan(scan));
                 kept_from = end;
@@ -466,7 +511,7 @@ fn decode_scan(data: &[u8], at: usize, f: &Frame, tables: &[Vec<Option<Huffman>>
 
 struct BitOut {
     out: Vec<u8>,
-    acc: u32,
+    acc: u64,
     n: u32,
 }
 
@@ -477,11 +522,16 @@ impl BitOut {
 
     #[inline]
     fn put(&mut self, v: u32, k: u32) {
-        if k == 0 {
-            return;
-        }
-        self.acc = (self.acc << k) | (v & ((1u32 << k) - 1));
+        self.acc = (self.acc << k) | (v as u64 & ((1u64 << k) - 1));
         self.n += k;
+        if self.n >= 32 {
+            self.flush();
+        }
+    }
+
+    /// Whole bytes out of the accumulator, 0xFF stuffed.
+    #[inline]
+    fn flush(&mut self) {
         while self.n >= 8 {
             let b = (self.acc >> (self.n - 8)) as u8;
             self.out.push(b);
@@ -494,10 +544,12 @@ impl BitOut {
 
     /// Pad to the byte with `pad` bits (all ones unless recorded).
     fn pad(&mut self, pad: Option<u8>) {
+        self.flush();
         if self.n > 0 {
             let k = 8 - self.n;
             let v = pad.map_or((1u32 << k) - 1, |p| p as u32);
             self.put(v, k);
+            self.flush();
         }
     }
 }
@@ -591,6 +643,112 @@ fn encode_scan(w: &mut BitOut, f: &Frame, tables: &[Vec<Option<Huffman>>], scan:
 }
 
 /// The JPEG's bytes back.
+/// Glyd's own stream of a JPEG, verified to give the JPEG back:
+///
+///   "GJPG", the kept bytes (a flag: 0 as they are, 1 compressed with
+///   the max level; varint length; the file with every scan's data cut
+///   out), the scans (varint count) each with its odd pad bits (varint
+///   count, then varint marker index and the bits), the model's
+///   streams (varint count, each with a varint length), one per
+///   stripe of block rows.
+pub fn pack(input: &[u8]) -> Option<Vec<u8>> {
+    let j = parse(input)?;
+    let mut out = Vec::with_capacity(input.len() * 4 / 5);
+    out.extend_from_slice(MAGIC);
+    let mut kept = Vec::new();
+    for p in &j.parts {
+        if let Part::Bytes(b) = p {
+            kept.extend_from_slice(b);
+        }
+    }
+    let mut packed = Vec::new();
+    crate::compress_max_plain(&kept, &mut packed);
+    if packed.len() < kept.len() {
+        out.push(1);
+        put_varint(&mut out, packed.len() as u64);
+        out.extend_from_slice(&packed);
+    } else {
+        out.push(0);
+        put_varint(&mut out, kept.len() as u64);
+        out.extend_from_slice(&kept);
+    }
+    put_varint(&mut out, j.parts.iter().filter(|p| matches!(p, Part::Scan(_))).count() as u64);
+    for p in &j.parts {
+        if let Part::Scan(s) = p {
+            put_varint(&mut out, s.odd_pads.len() as u64);
+            for &(marker, bits) in &s.odd_pads {
+                put_varint(&mut out, marker as u64);
+                out.push(bits);
+            }
+        }
+    }
+    let streams = model::encode(&j, stripes_for(&j));
+    put_varint(&mut out, streams.len() as u64);
+    for s in &streams {
+        put_varint(&mut out, s.len() as u64);
+    }
+    for s in &streams {
+        out.extend_from_slice(s);
+    }
+    if unpack(&out)? != input {
+        return None;
+    }
+    Some(out)
+}
+
+pub(crate) const MAGIC: &[u8; 4] = b"GJPG";
+
+/// How many stripes a JPEG is coded in: four, so four cores share the
+/// work, each at least 64 block rows tall; the same on every machine,
+/// so the bytes are.
+fn stripes_for(j: &Jpeg) -> usize {
+    let rows = j.frame.components[0].bh;
+    (rows / 64).clamp(1, 4)
+}
+
+/// The JPEG back from `pack`'s stream.
+pub fn unpack(stream: &[u8]) -> Option<Vec<u8>> {
+    if stream.len() < 5 || &stream[..4] != MAGIC {
+        return None;
+    }
+    let mut pos = 5usize;
+    let kept = get_varint(stream, &mut pos).ok()? as usize;
+    let headers = stream.get(pos..pos + kept)?;
+    pos += kept;
+    let headers = match stream[4] {
+        0 => std::borrow::Cow::Borrowed(headers),
+        1 => std::borrow::Cow::Owned(crate::decompress(headers).ok()?),
+        _ => return None,
+    };
+    let headers = &headers[..];
+    let scans = get_varint(stream, &mut pos).ok()? as usize;
+    let mut pads = Vec::with_capacity(scans.min(1024));
+    for _ in 0..scans {
+        let n = get_varint(stream, &mut pos).ok()? as usize;
+        let mut list = Vec::with_capacity(n.min(1024));
+        for _ in 0..n {
+            let marker = get_varint(stream, &mut pos).ok()? as u32;
+            list.push((marker, *stream.get(pos)?));
+            pos += 1;
+        }
+        pads.push(list);
+    }
+    let mut j = parse_with(headers, Some(&mut pads.into_iter()))?;
+    let n = get_varint(stream, &mut pos).ok()? as usize;
+    let mut lens = Vec::with_capacity(n.min(1024));
+    for _ in 0..n {
+        lens.push(get_varint(stream, &mut pos).ok()? as usize);
+    }
+    let mut streams = Vec::with_capacity(n.min(1024));
+    for len in lens {
+        streams.push(stream.get(pos..pos + len)?);
+        pos += len;
+    }
+    j.blocks = model::decode(&streams, &j.frame, &j.quant)?;
+    write(&j)
+}
+
+/// The JPEG written back from its parts and coefficients.
 pub fn write(j: &Jpeg) -> Option<Vec<u8>> {
     let mut w = BitOut::new(Vec::new());
     let mut scan_i = 0usize;
@@ -655,17 +813,54 @@ pub(super) mod tests {
             for c in model::COST.iter() {
                 c.store(0, std::sync::atomic::Ordering::Relaxed);
             }
-            let stream = model::encode(&j);
-            let cost: Vec<String> = ["count", "zero", "exp", "mant", "sign", "e0", "eexp", "emant", "esign", "dc0", "dcexp", "dcmant", "dcsign"].iter().zip(model::COST.iter()).map(|(n, c)| format!("{n} {:.0} KB", c.load(std::sync::atomic::Ordering::Relaxed) as f64 / 8000.0 / 1000.0)).collect();
+            let streams = model::encode(&j, 1);
+            let stream: Vec<u8> = streams.concat();
+            let refs: Vec<&[u8]> = streams.iter().map(|s| &s[..]).collect();
+            let cost: Vec<String> = ["count", "zero", "exp", "mant", "sign", "e0", "eexp", "emant", "esign", "dc0", "dcexp", "dcmant", "dcsign"].iter().zip(model::COST.iter().zip(model::DECISIONS.iter())).map(|(n, (c, d))| format!("{n} {:.0} KB/{:.1} M", c.load(std::sync::atomic::Ordering::Relaxed) as f64 / 8000.0 / 1000.0, d.swap(0, std::sync::atomic::Ordering::Relaxed) as f64 / 1e6)).collect();
             eprintln!("  {}", cost.join(", "));
             let model_s = t.elapsed().as_secs_f64();
             let t = std::time::Instant::now();
-            assert!(model::decode(&stream, &j.frame, &j.quant).unwrap() == j.blocks);
+            assert!(model::decode(&refs, &j.frame, &j.quant).unwrap() == j.blocks);
             let decode_s = t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now();
+            let lepton = {
+                #[cfg(feature = "jpeg")]
+                {
+                    lepton_jpeg::encode_lepton_verify(&data, &lepton_jpeg::EnabledFeatures::compat_lepton_vector_write(), &lepton_jpeg::SingleThreadPool {}).ok().map(|(l, _)| l.len())
+                }
+                #[cfg(not(feature = "jpeg"))]
+                None::<usize>
+            };
+            let lepton_s = t.elapsed().as_secs_f64();
             #[cfg(feature = "jpeg")]
-            let lepton = crate::jpeg::transcode(&data).map(|l| l.len());
-            #[cfg(not(feature = "jpeg"))]
-            let lepton: Option<usize> = None;
+            {
+                // Lepton at one partition (its smallest) and on its
+                // own thread pool (its fastest), each timed through
+                // the encode with verify and the decode alone.
+                let mut one = lepton_jpeg::EnabledFeatures::compat_lepton_vector_write();
+                one.max_partitions = 1;
+                let t = std::time::Instant::now();
+                let l1 = lepton_jpeg::encode_lepton_verify(&data, &one, &lepton_jpeg::SingleThreadPool {}).ok().map(|(l, _)| l.len());
+                let l1_s = t.elapsed().as_secs_f64();
+                let t = std::time::Instant::now();
+                let l8 = lepton_jpeg::encode_lepton_verify(&data, &lepton_jpeg::EnabledFeatures::compat_lepton_vector_write(), &lepton_jpeg::DEFAULT_THREAD_POOL).ok().map(|(l, _)| l);
+                let l8_s = t.elapsed().as_secs_f64();
+                let l8_dec = l8.as_ref().map(|l| {
+                    let t = std::time::Instant::now();
+                    let mut out = Vec::new();
+                    lepton_jpeg::decode_lepton(&mut std::io::Cursor::new(l), &mut out, &lepton_jpeg::EnabledFeatures::compat_lepton_vector_read(), &lepton_jpeg::DEFAULT_THREAD_POOL).unwrap();
+                    assert!(out == data);
+                    t.elapsed().as_secs_f64()
+                });
+                eprintln!("  lepton 1 partition {:?} B in {l1_s:.2} s; 8 partitions on its pool: {:?} B in {l8_s:.2} s, decode {:?} s", l1, l8.map(|l| l.len()), l8_dec.map(|s| (s * 100.0).round() / 100.0));
+            }
+            let t = std::time::Instant::now();
+            let packed = pack(&data).unwrap();
+            let pack_s = t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now();
+            assert!(unpack(&packed).unwrap() == data);
+            let unpack_s = t.elapsed().as_secs_f64();
+            eprintln!("  pack {} B in {pack_s:.2} s ({:.0} MB/s), unpack {unpack_s:.2} s ({:.0} MB/s); lepton in {lepton_s:.2} s ({:.0} MB/s)", packed.len(), data.len() as f64 / 1e6 / pack_s, data.len() as f64 / 1e6 / unpack_s, data.len() as f64 / 1e6 / lepton_s);
             eprintln!("{}: {} B, {} blocks, parse {parse_s:.3} s, write {write_s:.3} s; model {} B ({:.1}%) in {model_s:.2} s, back in {decode_s:.2} s; lepton {:?} ({:.1}%)", path.display(), data.len(), j.blocks.iter().map(|b| b.len()).sum::<usize>(), stream.len(), 100.0 * stream.len() as f64 / data.len() as f64, lepton, lepton.map_or(0.0, |l| 100.0 * l as f64 / data.len() as f64));
         }
     }

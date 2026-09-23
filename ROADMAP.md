@@ -4,7 +4,7 @@ Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
 
-## Where it stands (v0.13.4, 2026-09-23)
+## Where it stands (v0.14.0, 2026-09-23)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 ([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
@@ -72,7 +72,7 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
    gzip (v0.12.0), zip, tar, Office documents, jars, PDF, zlib and PNG,
    nested four deep (next release): 5–82% under the object at the
    level that opens it, 16–74% where zstd -19 gets 3–53%; JPEG
-   transcoded by Lepton, 24%, inside the others too.
+   recoded by Glyd's own model (v0.14.0), 22–26%, inside the others too.
    Next: Parquet columns behind a "same table" option (26–40%), then
    the recipe itself (preflate's corrections are a fifth of a pdfTeX
    stream; a better predictor of zlib's choices would halve what

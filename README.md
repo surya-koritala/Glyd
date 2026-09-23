@@ -125,7 +125,7 @@ million a year at list price; the percentages above are what to multiply.
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 cargo install glyd glyd-store                # from crates.io
-pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.13.4-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.14.0-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -510,12 +510,14 @@ gzipped, 75.3 → 33.2 MB; a Linux tree, 72.2 → 55.1 MB; byte-exact).
 Streams preflate cannot reproduce, or predicts badly (corrections
 over a quarter of the stream), are kept as they are: 18 of the jar's
 2,059. JPEG takes
-a different road: its DCT coefficients are recoded by Lepton (the
-Rust port of Dropbox's, `lepton_jpeg`) with an arithmetic coder and a
-predictor across blocks, 24% fewer bytes on the six photos above
-against 20% for a JPEG XL transcode, at 5–7 MB/s in and 12–14 out on
-one core, the identical JPEG back — inside a zip or an Office
-document too, stored or deflated. Parquet (its columns as records,
+a different road: its DCT coefficients are taken out and coded by
+Glyd's own model (v0.14.0, `src/jpg/`: each coefficient under the
+blocks above and to the left, the first row and column predicted
+from pixel continuity across the block edge, the DC from both
+edges), 22–26% fewer bytes on five photos — smaller than Lepton on
+every one — at 13 MB/s in and 25 out on this Mac's cores, the
+identical JPEG back — inside a zip or an Office document too, stored
+or deflated. Parquet (its columns as records,
 26–40%, the same table rather than the same bytes) is measured in
 [experiments/research](experiments/research/README.md#j-re-doing-what-is-already-compressed)
 and not yet built.
@@ -805,7 +807,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.13.4** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.14.0** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every

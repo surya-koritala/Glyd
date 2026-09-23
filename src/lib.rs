@@ -29,7 +29,6 @@ pub mod mmap;
 pub mod deflate;
 pub mod reflate;
 pub mod jpg;
-#[cfg(feature = "jpeg")]
 pub mod jpeg;
 pub mod fixlog;
 pub mod record;
@@ -55,7 +54,7 @@ pub fn set_threads(n: usize) {
     THREADS.store(n, Ordering::Relaxed);
 }
 
-fn threads() -> usize {
+pub(crate) fn threads() -> usize {
     match THREADS.load(Ordering::Relaxed) {
         0 => std::thread::available_parallelism().map_or(1, |t| t.get()),
         n => n,
@@ -473,6 +472,11 @@ pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
     if deflate::wrap(input, output, compress_into_max, compress_into_max) {
         return;
     }
+    compress_max_plain(input, output)
+}
+
+/// The max level on the bytes as they are: no container opened.
+pub(crate) fn compress_max_plain(input: &[u8], output: &mut Vec<u8>) {
     compress_max_from(input, 0, 0, Parse::Dfast, None, output)
 }
 
@@ -1054,7 +1058,6 @@ pub fn decompressed_len(compressed: &[u8]) -> Result<usize> {
     if let Some(original) = deflate::original_len(compressed) {
         return Ok(original);
     }
-    #[cfg(feature = "jpeg")]
     if let Some((original, _)) = jpeg::parse(compressed) {
         return Ok(original);
     }

@@ -16,7 +16,7 @@
 //! both edges.
 
 use super::{Frame, Jpeg, ZIGZAG};
-use crate::reflate::coder::{Decoder, Encoder as Coder, Prob};
+use super::coder::{Decoder, Encoder as Coder, Prob};
 
 /// The rate of adaptation shrinks with the number of bits seen, down
 /// to 1/`LIMIT`: a context that has seen many bits trusts its count.
@@ -60,15 +60,10 @@ impl Prob for Bit {
 
     #[inline]
     fn update(&mut self, bit: u32) {
-        let r = RECIP[self.n as usize];
-        if bit != 0 {
-            self.p += (((65535 - self.p as u32) * r) >> 16) as u16;
-        } else {
-            self.p -= (((self.p as u32) * r) >> 16) as u16;
-        }
-        if (self.n as usize) < LIMIT {
-            self.n += 1;
-        }
+        let r = RECIP[self.n as usize] as i32;
+        let target = -(bit as i32) & 65535;
+        self.p = (self.p as i32 + (((target - self.p as i32) * r) >> 16)) as u16;
+        self.n += (self.n < LIMIT as u8) as u8;
     }
 }
 
@@ -77,6 +72,8 @@ impl Prob for Bit {
 /// seeing where they go.
 #[cfg(test)]
 pub static COST: [std::sync::atomic::AtomicU64; 13] = [const { std::sync::atomic::AtomicU64::new(0) }; 13];
+#[cfg(test)]
+pub static DECISIONS: [std::sync::atomic::AtomicU64; 13] = [const { std::sync::atomic::AtomicU64::new(0) }; 13];
 
 struct Encoder {
     e: Coder,
@@ -90,7 +87,10 @@ impl Encoder {
     #[inline]
     fn bit(&mut self, m: &mut Bit, bit: u32) {
         #[cfg(test)]
-        COST[self.slot].fetch_add((m.cost(bit) * 1000.0) as u64, std::sync::atomic::Ordering::Relaxed);
+        {
+            COST[self.slot].fetch_add((m.cost(bit) * 1000.0) as u64, std::sync::atomic::Ordering::Relaxed);
+            DECISIONS[self.slot].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         self.e.bit(m, bit)
     }
     #[inline]
@@ -149,8 +149,18 @@ fn mag_bucket(m: u32) -> usize {
     }
 }
 
+const LEFT_LUT: [u8; 64] = {
+    let mut t = [0u8; 64];
+    let mut n = 0;
+    while n < 64 {
+        t[n] = left_bucket(n as u32) as u8;
+        n += 1;
+    }
+    t
+};
+
 #[inline]
-fn count_bucket(n: u32) -> usize {
+const fn count_bucket(n: u32) -> usize {
     match n {
         0 => 0,
         1..=2 => 1,
@@ -164,7 +174,7 @@ fn count_bucket(n: u32) -> usize {
 }
 
 #[inline]
-fn left_bucket(n: u32) -> usize {
+const fn left_bucket(n: u32) -> usize {
     match n {
         0..=3 => n as usize,
         4..=5 => 4,
@@ -187,6 +197,7 @@ fn pred_bucket(p: i32) -> usize {
 }
 
 /// The contexts of one component kind (luma, chroma).
+#[derive(Clone)]
 struct Contexts {
     count: Vec<Bit>,
     zero: Vec<Bit>,
@@ -226,6 +237,7 @@ impl Contexts {
     }
 }
 
+#[inline(always)]
 fn put_magnitude(e: &mut Encoder, exp: &mut [Bit], mant: &mut [Bit], m: u32) {
     let n = 32 - m.leading_zeros();
     let s = e.slot;
@@ -245,7 +257,7 @@ fn put_magnitude(e: &mut Encoder, exp: &mut [Bit], mant: &mut [Bit], m: u32) {
             e.bit(&mut mant[(n as usize % 12) * MANT + node], b);
             node = node * 2 + b as usize;
         } else {
-            e.bit(&mut mant[(n as usize % 12) * MANT + 8 + depth], b);
+            e.e.raw(b);
         }
     }
 }
@@ -254,6 +266,7 @@ fn put_magnitude(e: &mut Encoder, exp: &mut [Bit], mant: &mut [Bit], m: u32) {
 /// one per bit below.
 const MANT: usize = 20;
 
+#[inline(always)]
 fn get_magnitude(d: &mut Decoder, exp: &mut [Bit], mant: &mut [Bit]) -> u32 {
     let mut n = 1u32;
     while n < 12 && d.bit(&mut exp[n as usize]) == 1 {
@@ -268,7 +281,7 @@ fn get_magnitude(d: &mut Decoder, exp: &mut [Bit], mant: &mut [Bit]) -> u32 {
             node = node * 2 + b as usize;
             b
         } else {
-            d.bit(&mut mant[(n as usize % 12) * MANT + 8 + depth])
+            d.raw()
         };
         m = (m << 1) | b;
     }
@@ -276,6 +289,7 @@ fn get_magnitude(d: &mut Decoder, exp: &mut [Bit], mant: &mut [Bit]) -> u32 {
 }
 
 /// A signed value: zero or not, magnitude, sign, under the given slices.
+#[inline(always)]
 fn put_signed(e: &mut Encoder, zero: &mut Bit, exp: &mut [Bit], mant: &mut [Bit], sign: &mut Bit, v: i32) {
     let s = e.slot;
     e.bit(zero, (v != 0) as u32);
@@ -287,6 +301,7 @@ fn put_signed(e: &mut Encoder, zero: &mut Bit, exp: &mut [Bit], mant: &mut [Bit]
     }
 }
 
+#[inline(always)]
 fn get_signed(d: &mut Decoder, zero: &mut Bit, exp: &mut [Bit], mant: &mut [Bit], sign: &mut Bit) -> Option<i32> {
     if d.bit(zero) == 0 {
         return Some(0);
@@ -298,55 +313,74 @@ fn get_signed(d: &mut Decoder, zero: &mut Bit, exp: &mut [Bit], mant: &mut [Bit]
     Some(if d.bit(sign) == 1 { -(m as i32) } else { m as i32 })
 }
 
+static ZERO: [i16; 64] = [0; 64];
+
+/// The blocks to the left, above and at the corner (a zero block when
+/// off the picture) with their interior and edge nonzero counts.
 struct Neighbours<'a> {
-    left: Option<&'a [i16; 64]>,
-    above: Option<&'a [i16; 64]>,
-    corner: Option<&'a [i16; 64]>,
+    left: &'a [i16; 64],
+    above: &'a [i16; 64],
+    corner: &'a [i16; 64],
+    has_left: bool,
+    has_above: bool,
+    /// (interior count, first-row count, first-column count) of left and above
+    left_counts: [u8; 3],
+    above_counts: [u8; 3],
+}
+
+/// Per zigzag position: the neighbours' magnitude bucket, the zero
+/// flag's neighbour context, the sign context.
+struct Tables {
+    pri: [u8; 64],
+    zero: [u16; 64],
+    sign: [u8; 64],
 }
 
 impl Neighbours<'_> {
-    /// The neighbours' magnitudes at `k`, weighted 13:13:6 for left,
-    /// above and the corner, out of 32.
-    #[inline]
-    fn mag(&self, k: usize) -> u32 {
-        let l = self.left.map_or(0, |b| b[k].unsigned_abs() as u32);
-        let a = self.above.map_or(0, |b| b[k].unsigned_abs() as u32);
-        match (self.left.is_some(), self.above.is_some()) {
-            (true, true) => {
-                let c = self.corner.map_or(0, |b| b[k].unsigned_abs() as u32);
-                (13 * l + 13 * a + 6 * c + 16) / 32
-            }
-            _ => l + a,
+    fn new<'a>(blocks: &'a [[i16; 64]], counts: &[[u8; 3]], bw: usize, x: usize, y: usize) -> Neighbours<'a> {
+        let (has_left, has_above) = (x > 0, y > 0);
+        let i = y * bw + x;
+        Neighbours {
+            left: if has_left { &blocks[i - 1] } else { &ZERO },
+            above: if has_above { &blocks[i - bw] } else { &ZERO },
+            corner: if has_left && has_above { &blocks[i - bw - 1] } else { &ZERO },
+            has_left,
+            has_above,
+            left_counts: if has_left { counts[i - 1] } else { [0; 3] },
+            above_counts: if has_above { counts[i - bw] } else { [0; 3] },
         }
     }
 
-    /// The zero flag's context from the neighbours at `k`: the
-    /// weighted magnitude and how far left and above disagree.
-    #[inline]
-    fn mags(&self, k: usize) -> usize {
-        let l = self.left.map_or(0, |b| b[k].unsigned_abs() as u32);
-        let a = self.above.map_or(0, |b| b[k].unsigned_abs() as u32);
-        mag_bucket(self.mag(k)) * MAG_BUCKETS + mag_bucket(l.abs_diff(a)).min(MAG_BUCKETS - 1)
-    }
-
-    #[inline]
-    fn sign_ctx(&self, k: usize) -> usize {
-        let s = |b: Option<&[i16; 64]>| b.map_or(0, |b| b[k].signum() as i32);
-        match s(self.left) + s(self.above) {
-            x if x > 0 => 1,
-            x if x < 0 => 2,
-            _ => 0,
+    /// The per-position contexts of a block: the neighbours'
+    /// magnitudes at each position weighted 13:13:6 for left, above
+    /// and the corner (out of 32) in buckets; with how far left and
+    /// above disagree, for the zero flag; the signs.
+    fn tables(&self) -> Tables {
+        let mut t = Tables { pri: [0; 64], zero: [0; 64], sign: [0; 64] };
+        let both = self.has_left && self.has_above;
+        for k in 0..64 {
+            let l = self.left[k].unsigned_abs() as u32;
+            let a = self.above[k].unsigned_abs() as u32;
+            let c = self.corner[k].unsigned_abs() as u32;
+            let w = if both { (13 * l + 13 * a + 6 * c + 16) >> 5 } else { l + a };
+            let wb = mag_bucket(w);
+            t.pri[k] = wb as u8;
+            t.zero[k] = (wb * MAG_BUCKETS + mag_bucket(l.abs_diff(a)).min(MAG_BUCKETS - 1)) as u16;
+            let sum = self.left[k].signum() + self.above[k].signum();
+            t.sign[k] = (sum > 0) as u8 | ((sum < 0) as u8) << 1;
         }
+        t
     }
 
     /// The context for the interior count: the neighbours' average
     /// count and how far apart they are.
     fn count(&self) -> usize {
-        let c = |b: &[i16; 64]| INTERIOR.iter().filter(|&&k| b[k] != 0).count();
-        match (self.left.map(c), self.above.map(c)) {
-            (Some(l), Some(a)) => ((l + a + 1) / 2) * 4 + mag_bucket(l.abs_diff(a) as u32 / 3).min(3),
-            (Some(n), None) | (None, Some(n)) => 200 + n,
-            (None, None) => 250,
+        let (l, a) = (self.left_counts[0] as usize, self.above_counts[0] as usize);
+        match (self.has_left, self.has_above) {
+            (true, true) => ((l + a + 1) / 2) * 4 + mag_bucket(l.abs_diff(a) as u32 / 3).min(3),
+            (true, false) => 200 + l,
+            (false, true) => 200 + a,
+            (false, false) => 250,
         }
     }
 }
@@ -392,7 +426,7 @@ fn inner_edge(b: &[i16; 64], q: &[u16; 64], line: usize, row: bool, skip: usize)
 /// continue), in quantized units.
 fn edge_prediction(b: &[i16; 64], nb: &Neighbours, q: &[u16; 64], nat: usize) -> Option<i32> {
     let (v, u) = (nat / 8, nat % 8);
-    let (neighbour, line, row, skip) = if v == 0 { (nb.above?, u, false, 0) } else { (nb.left?, v, true, 0) };
+    let (neighbour, line, row, skip) = if v == 0 { (nb.has_above.then_some(nb.above)?, u, false, 0) } else { (nb.has_left.then_some(nb.left)?, v, true, 0) };
     let outer = outer_edge(neighbour, q, line, row);
     let inner = inner_edge(b, q, line, row, skip);
     // The unknown is the index-0 term of the inner sum (v = 0 for a
@@ -449,8 +483,8 @@ fn dc_side(b: &[i16; 64], n: &[i16; 64], q: &[u16; 64], row: bool) -> (i64, i64)
 /// well the better side agrees.
 fn dc_prediction(b: &[i16; 64], nb: &Neighbours, q: &[u16; 64]) -> (i32, usize) {
     let unit = 8192 * q[0] as i64;
-    let a = nb.above.map(|n| dc_side(b, n, q, false));
-    let l = nb.left.map(|n| dc_side(b, n, q, true));
+    let a = nb.has_above.then(|| dc_side(b, nb.above, q, false));
+    let l = nb.has_left.then(|| dc_side(b, nb.left, q, true));
     match (a, l) {
         (Some((pa, sa)), Some((pl, sl))) => {
             let (wa, wl) = (sl + unit, sa + unit);
@@ -476,33 +510,60 @@ fn kind(component: usize) -> usize {
 /// first column's 1..7, as natural indices.
 const EDGES: [usize; 14] = [1, 2, 3, 4, 5, 6, 7, 8, 16, 24, 32, 40, 48, 56];
 
-/// Every component's blocks coded: the model's stream.
-pub fn encode(j: &Jpeg) -> Vec<u8> {
-    let mut e = Encoder::new();
+/// The block rows of a component in band `i` of a picture coded in
+/// `stripes` stripes: band 0 is the prefix, the first `1 / PREFIX` of
+/// the rows, coded first and on its own; bands 1..=stripes split the
+/// rest evenly.
+fn band(bh: usize, stripes: usize, i: usize) -> (usize, usize) {
+    let p = if stripes > 1 { bh / PREFIX } else { 0 };
+    if i == 0 {
+        (0, p)
+    } else {
+        (p + (bh - p) * (i - 1) / stripes, p + (bh - p) * i / stripes)
+    }
+}
+
+/// Every component's blocks coded in a prefix stream and `stripes`
+/// streams of block rows: the prefix under fresh contexts, every
+/// stripe under a copy of the contexts as the prefix left them (so
+/// the stripes are coded on their own cores, each starting warm; a
+/// stripe's first row has no row above it). Each stripe costs about
+/// 0.1-0.2% of the output: its contexts cannot follow the picture
+/// from the rows before it.
+pub fn encode(j: &Jpeg, stripes: usize) -> Vec<Vec<u8>> {
     let mut ctx = [Contexts::new(), Contexts::new()];
+    let prefix = encode_stripe(j, 0, stripes, &mut ctx);
+    let mut streams = vec![prefix];
+    streams.extend(crate::reflate::each(stripes, |i| encode_stripe(j, i + 1, stripes, &mut ctx.clone())));
+    streams
+}
+
+const PREFIX: usize = 16;
+
+fn encode_stripe(j: &Jpeg, i: usize, stripes: usize, ctx: &mut [Contexts; 2]) -> Vec<u8> {
+    let mut e = Encoder::new();
     for (ci, c) in j.frame.components.iter().enumerate() {
         let m = &mut ctx[kind(ci)];
         let q = j.quant[c.tq as usize].as_ref().unwrap();
-        let blocks = &j.blocks[ci];
-        for y in 0..c.bh {
+        let (y0, y1) = band(c.bh, stripes, i);
+        let blocks = &j.blocks[ci][y0 * c.bw..y1 * c.bw];
+        let mut counts = vec![[0u8; 3]; blocks.len()];
+        for y in 0..y1 - y0 {
             for x in 0..c.bw {
                 let block = &blocks[y * c.bw + x];
-                let nb = Neighbours {
-                    left: (x > 0).then(|| &blocks[y * c.bw + x - 1]),
-                    above: (y > 0).then(|| &blocks[(y - 1) * c.bw + x]),
-                    corner: (x > 0 && y > 0).then(|| &blocks[(y - 1) * c.bw + x - 1]),
-                };
+                let nb = Neighbours::new(blocks, &counts, c.bw, x, y);
+                let t = nb.tables();
                 let nz = INTERIOR.iter().filter(|&&k| block[k] != 0).count() as u32;
+                counts[y * c.bw + x] = [nz as u8, edge_count(block, 0) as u8, edge_count(block, 1) as u8];
                 e.slot(0);
                 e.tree(&mut m.count[nb.count() * 64..], 6, nz);
                 let nzb = count_bucket(nz);
-                let mut left = nz;
+                let mut left = nz as usize;
                 for &k in INTERIOR.iter() {
                     if left == 0 {
                         break;
                     }
-                    let mb = mag_bucket(nb.mag(k));
-                    let z = &mut m.zero[(k * LEFT_BUCKETS + left_bucket(left)) * MAG_BUCKETS * MAG_BUCKETS + nb.mags(k)];
+                    let z = &mut m.zero[(LEFT_LUT[left] as usize * MAG_BUCKETS * MAG_BUCKETS + t.zero[k] as usize) * 64 + k];
                     let v = block[k];
                     e.slot(1);
                     e.bit(z, (v != 0) as u32);
@@ -510,11 +571,10 @@ pub fn encode(j: &Jpeg) -> Vec<u8> {
                         continue;
                     }
                     left -= 1;
-                    let base = ((k * MAG_BUCKETS + mb) * LEFT_BUCKETS + left_bucket(left)) * 12;
+                    let base = ((k * MAG_BUCKETS + t.pri[k] as usize) * LEFT_BUCKETS + LEFT_LUT[left] as usize) * 12;
                     put_magnitude(&mut e, &mut m.exp[base..base + 12], &mut m.mant[k * 12 * MANT..(k + 1) * 12 * MANT], v.unsigned_abs() as u32);
-                    let sc = nb.sign_ctx(k);
                     e.slot(4);
-                    e.bit(&mut m.sign[k * 3 + sc], (v < 0) as u32);
+                    e.bit(&mut m.sign[k * 3 + t.sign[k] as usize], (v < 0) as u32);
                 }
                 // A partial block for the edge predictions: the
                 // interior as coded, the edges as they get coded.
@@ -523,9 +583,9 @@ pub fn encode(j: &Jpeg) -> Vec<u8> {
                     partial[k] = block[k];
                 }
                 for dir in 0..2 {
-                    let across = if dir == 0 { nb.above } else { nb.left };
-                    let count = edge_count(block, dir);
-                    let cc = (dir * 8 + nzb) * 8 + across.map_or(0, |b| edge_count(b, dir));
+                    let across = if dir == 0 { nb.above_counts[1] } else { nb.left_counts[2] };
+                    let count = counts[y * c.bw + x][1 + dir] as usize;
+                    let cc = (dir * 8 + nzb) * 8 + across as usize;
                     e.slot(0);
                     e.tree(&mut m.edge_count[cc * 8..], 3, count as u32);
                     let mut left = count;
@@ -537,7 +597,7 @@ pub fn encode(j: &Jpeg) -> Vec<u8> {
                         let pred = edge_prediction(&partial, &nb, q, nat);
                         let pb = pred.map_or(0, pred_bucket);
                         let v = block[k] as i32;
-                        let c = ((i * EDGE_CTX + pb) * 8 + left) * 4 + mag_bucket(nb.mag(k)).min(3);
+                        let c = ((i * EDGE_CTX + pb) * 8 + left) * 4 + (t.pri[k] as usize).min(3);
                         let zero = &mut m.edge_zero[c];
                         let exp = &mut m.edge_exp[c * 12..(c + 1) * 12];
                         let mant = &mut m.edge_mant[i * 12 * MANT..(i + 1) * 12 * MANT];
@@ -562,53 +622,73 @@ pub fn encode(j: &Jpeg) -> Vec<u8> {
     e.finish()
 }
 
-/// The blocks back from the model's stream, for a frame's layout.
-pub fn decode(stream: &[u8], frame: &Frame, quant: &[Option<[u16; 64]>]) -> Option<Vec<Vec<[i16; 64]>>> {
-    let mut d = Decoder::new(stream);
+/// The blocks back from the model's streams (the prefix, then the
+/// stripes), for a frame's layout.
+pub fn decode(streams: &[&[u8]], frame: &Frame, quant: &[Option<[u16; 64]>]) -> Option<Vec<Vec<[i16; 64]>>> {
+    let stripes = streams.len().checked_sub(1)?;
+    if stripes == 0 {
+        return None;
+    }
     let mut ctx = [Contexts::new(), Contexts::new()];
-    let mut out: Vec<Vec<[i16; 64]>> = frame.components.iter().map(|c| vec![[0i16; 64]; c.bw * c.bh]).collect();
+    let prefix = decode_stripe(streams[0], frame, quant, 0, stripes, &mut ctx)?;
+    let parts = crate::reflate::each(stripes, |i| decode_stripe(streams[i + 1], frame, quant, i + 1, stripes, &mut ctx.clone()));
+    let mut out: Vec<Vec<[i16; 64]>> = frame.components.iter().map(|c| Vec::with_capacity(c.bw * c.bh)).collect();
+    for part in std::iter::once(Some(prefix)).chain(parts) {
+        for (ci, rows) in part?.into_iter().enumerate() {
+            out[ci].extend_from_slice(&rows);
+        }
+    }
+    Some(out)
+}
+
+/// Per component, the block rows of one band.
+fn decode_stripe(stream: &[u8], frame: &Frame, quant: &[Option<[u16; 64]>], i: usize, stripes: usize, ctx: &mut [Contexts; 2]) -> Option<Vec<Vec<[i16; 64]>>> {
+    let mut d = Decoder::new(stream);
+    let mut out: Vec<Vec<[i16; 64]>> = Vec::with_capacity(frame.components.len());
     for (ci, c) in frame.components.iter().enumerate() {
         let m = &mut ctx[kind(ci)];
         let q = quant.get(c.tq as usize)?.as_ref()?;
-        for y in 0..c.bh {
+        let (y0, y1) = band(c.bh, stripes, i);
+        let mut rows = vec![[0i16; 64]; (y1 - y0) * c.bw];
+        let mut counts = vec![[0u8; 3]; rows.len()];
+        for y in 0..y1 - y0 {
             for x in 0..c.bw {
                 let mut block = [0i16; 64];
+                let mut edges = [0u8; 2];
                 {
-                    let blocks = &out[ci];
-                    let nb = Neighbours {
-                    left: (x > 0).then(|| &blocks[y * c.bw + x - 1]),
-                    above: (y > 0).then(|| &blocks[(y - 1) * c.bw + x]),
-                    corner: (x > 0 && y > 0).then(|| &blocks[(y - 1) * c.bw + x - 1]),
-                };
+                    let blocks = &rows;
+                    let nb = Neighbours::new(blocks, &counts, c.bw, x, y);
+                    let t = nb.tables();
                     let nz = d.tree(&mut m.count[nb.count() * 64..], 6);
+                    counts[y * c.bw + x][0] = nz as u8;
                     let nzb = count_bucket(nz);
-                    let mut left = nz;
+                    let mut left = nz as usize;
                     for &k in INTERIOR.iter() {
                         if left == 0 {
                             break;
                         }
-                        let mb = mag_bucket(nb.mag(k));
-                        let z = &mut m.zero[(k * LEFT_BUCKETS + left_bucket(left)) * MAG_BUCKETS * MAG_BUCKETS + nb.mags(k)];
+                        let z = &mut m.zero[(LEFT_LUT[left] as usize * MAG_BUCKETS * MAG_BUCKETS + t.zero[k] as usize) * 64 + k];
                         if d.bit(z) == 0 {
                             continue;
                         }
                         left -= 1;
-                        let base = ((k * MAG_BUCKETS + mb) * LEFT_BUCKETS + left_bucket(left)) * 12;
+                        let base = ((k * MAG_BUCKETS + t.pri[k] as usize) * LEFT_BUCKETS + LEFT_LUT[left] as usize) * 12;
                         let mag = get_magnitude(&mut d, &mut m.exp[base..base + 12], &mut m.mant[k * 12 * MANT..(k + 1) * 12 * MANT]);
                         if mag > 32767 {
                             return None;
                         }
-                        let sc = nb.sign_ctx(k);
-                        let neg = d.bit(&mut m.sign[k * 3 + sc]) == 1;
+                        let neg = d.bit(&mut m.sign[k * 3 + t.sign[k] as usize]) == 1;
                         block[k] = if neg { -(mag as i16) } else { mag as i16 };
                     }
                     if left != 0 {
                         return None;
                     }
                     for dir in 0..2 {
-                        let across = if dir == 0 { nb.above } else { nb.left };
-                        let cc = (dir * 8 + nzb) * 8 + across.map_or(0, |b| edge_count(b, dir));
-                        let mut left = d.tree(&mut m.edge_count[cc * 8..], 3) as usize;
+                        let across = if dir == 0 { nb.above_counts[1] } else { nb.left_counts[2] };
+                        let cc = (dir * 8 + nzb) * 8 + across as usize;
+                        let count = d.tree(&mut m.edge_count[cc * 8..], 3) as usize;
+                        edges[dir] = count as u8;
+                        let mut left = count;
                         for (i, &nat) in EDGES.iter().enumerate().skip(dir * 7).take(7) {
                             if left == 0 {
                                 break;
@@ -616,7 +696,7 @@ pub fn decode(stream: &[u8], frame: &Frame, quant: &[Option<[u16; 64]>]) -> Opti
                             let k = NAT2ZZ[nat];
                             let pred = edge_prediction(&block, &nb, q, nat);
                             let pb = pred.map_or(0, pred_bucket);
-                            let c = ((i * EDGE_CTX + pb) * 8 + left) * 4 + mag_bucket(nb.mag(k)).min(3);
+                            let c = ((i * EDGE_CTX + pb) * 8 + left) * 4 + (t.pri[k] as usize).min(3);
                             let zero = &mut m.edge_zero[c];
                             let exp = &mut m.edge_exp[c * 12..(c + 1) * 12];
                             let mant = &mut m.edge_mant[i * 12 * MANT..(i + 1) * 12 * MANT];
@@ -641,9 +721,12 @@ pub fn decode(stream: &[u8], frame: &Frame, quant: &[Option<[u16; 64]>]) -> Opti
                     }
                     block[0] = dc as i16;
                 }
-                out[ci][y * c.bw + x] = block;
+                counts[y * c.bw + x][1] = edges[0];
+                counts[y * c.bw + x][2] = edges[1];
+                rows[y * c.bw + x] = block;
             }
         }
+        out.push(rows);
     }
     Some(out)
 }
@@ -658,11 +741,47 @@ mod tests {
         for name in ["q75-420.jpg", "q90-444.jpg", "q60-422-rst.jpg", "q80-gray.jpg", "q95-opt.jpg"] {
             let data = fixture(name);
             let j = parse(&data).unwrap();
-            let stream = encode(&j);
-            let back = decode(&stream, &j.frame, &j.quant).unwrap();
-            assert!(back == j.blocks, "{name}: coefficients back");
-            eprintln!("{name}: {} B -> model {} B ({:.1}%)", data.len(), stream.len(), 100.0 * stream.len() as f64 / data.len() as f64);
-            assert!(stream.len() < data.len(), "{name}: smaller");
+            for stripes in [1, 3] {
+                let streams = encode(&j, stripes);
+                let refs: Vec<&[u8]> = streams.iter().map(|s| &s[..]).collect();
+                let back = decode(&refs, &j.frame, &j.quant).unwrap();
+                assert!(back == j.blocks, "{name}: coefficients back from {stripes} stripes");
+                let len: usize = streams.iter().map(|s| s.len()).sum();
+                eprintln!("{name}: {} B -> model {} B ({:.1}%) in {stripes} stripes", data.len(), len, 100.0 * len as f64 / data.len() as f64);
+                assert!(len < data.len(), "{name}: smaller");
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod speed {
+    use super::*;
+
+    /// `cargo test --release --lib jpg::model::speed -- --ignored --nocapture`
+    #[test]
+    #[ignore = "the coder's speed on its own"]
+    fn coder_alone() {
+        let n = 50_000_000u32;
+        let mut x = 12345u32;
+        let bits: Vec<u8> = (0..n).map(|_| { x ^= x << 13; x ^= x >> 17; x ^= x << 5; ((x >> 7) % 10 < 3) as u8 }).collect();
+        let mut ctx = vec![Bit::default(); 4096];
+        let t = std::time::Instant::now();
+        let mut e = Coder::new();
+        for (i, &b) in bits.iter().enumerate() {
+            e.bit(&mut ctx[(i * 7) & 4095], b as u32);
+        }
+        let out = e.finish();
+        let enc = t.elapsed().as_secs_f64();
+        let mut ctx = vec![Bit::default(); 4096];
+        let t = std::time::Instant::now();
+        let mut d = Decoder::new(&out);
+        let mut sum = 0u64;
+        for i in 0..n as usize {
+            sum += d.bit(&mut ctx[(i * 7) & 4095]) as u64;
+        }
+        let dec = t.elapsed().as_secs_f64();
+        assert_eq!(sum, bits.iter().map(|&b| b as u64).sum::<u64>());
+        eprintln!("{} decisions: encode {:.2} ns each, decode {:.2} ns each, {} bytes", n, enc * 1e9 / n as f64, dec * 1e9 / n as f64, out.len());
     }
 }
