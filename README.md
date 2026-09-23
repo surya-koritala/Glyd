@@ -1,6 +1,5 @@
 <h1 align="center">Glyd</h1>
-<p align="center"><strong>Glyd is a lossless compression algorithm and store for object storage: fewer bytes than zstd, xz and brotli on logs, database dumps, gzip, zip, Office, PDF and JPEG files; versions kept as the change from the last one; the fastest reads on a server.</strong></p>
-<p align="center">3.1× fewer bytes than zstd on a 1.2 TB bucket · every claim measured byte for byte.</p>
+<p align="center"><strong>Fast lossless compression for object storage. Smaller than zstd, xz and brotli on logs, dumps and archives. Fastest reads.</strong></p>
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
