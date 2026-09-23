@@ -6,6 +6,27 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.14.4 — 2026-09-23
+
+- **`--max` is now zstd -3's structure: the long-distance matcher is
+  opt-in (`--long`, `-L`).** The pass that finds repeats up to 128 MB
+  back was a third of the write time on logs and events; zstd -3 has
+  no such pass, so `--max` now runs without it and `--max --long` is
+  what `--max` was, as `zstd --long`. Library:
+  `compress_into_max_long`, `compress_parallel_into_max_long`,
+  `compress_records_into_max_long`; C `GLYD_LEVEL_MAX_LONG`; Python
+  level `"max-long"`, Go `LevelMaxLong`. `--dense`, `--ultra`, base
+  mode and the store keep the long search: their job is the ratio.
+  One core on Graviton3 / Sapphire Rapids, `glyd -9` against zstd -3:
+  GitHub events 0.93/0.95× the speed at 9.7% fewer bytes, the NASA
+  log 0.81/0.80× at 4.1% fewer, a Wikipedia table dump 0.82/0.74× at
+  1.0% fewer, Silesia mozilla 0.94/0.87× at 0.5% fewer, enwik8
+  0.89/0.80× at 0.3% fewer (v0.14.3 wrote at 0.50–0.83×). Eight cores
+  against `zstd -3 -T8`: events 1.08/1.14×, the log 1.07/1.07×,
+  mozilla 1.05/0.99×, the dump 0.84/0.85×, enwik8 0.86× (Sapphire
+  Rapids). `--max --long` against `zstd -3 --long=27`: 0.83–1.18× the
+  speed at 0.3–14% fewer bytes. Every stream decodes as before.
+
 ## v0.14.3 — 2026-09-23
 
 - **A repeat offset after zero literals is implied by the literal

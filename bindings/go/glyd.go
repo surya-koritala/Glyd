@@ -38,6 +38,7 @@ const (
 	LevelMax     = C.GLYD_LEVEL_MAX
 	LevelUltra   = C.GLYD_LEVEL_ULTRA
 	LevelCold    = C.GLYD_LEVEL_COLD
+	LevelMaxLong = C.GLYD_LEVEL_MAX_LONG
 )
 
 var (

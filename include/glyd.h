@@ -172,6 +172,7 @@ int64_t glyd_compress_turbo(const uint8_t* src, size_t src_len, uint8_t* dst, si
 #define GLYD_LEVEL_MAX 3
 #define GLYD_LEVEL_ULTRA 4
 #define GLYD_LEVEL_COLD 5
+#define GLYD_LEVEL_MAX_LONG 6 /* max with the 128 MB long-distance matcher */
 
 /* Release a buffer handed out by any function below. */
 void glyd_free(uint8_t* ptr, size_t len);

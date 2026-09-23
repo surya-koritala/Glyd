@@ -156,8 +156,14 @@ fn far_repeats_round_trip_at_max_and_ultra() {
     }
     data.extend_from_slice(&block);
     let mut alone = Vec::new();
-    glyd::compress_into_max(&data[..data.len() - (1 << 20)], &mut alone);
-    for (name, f) in [("max", glyd::compress_into_max as fn(&[u8], &mut Vec<u8>)), ("ultra", glyd::compress_into_ultra)] {
+    glyd::compress_into_max_long(&data[..data.len() - (1 << 20)], &mut alone);
+    // Plain max has no far pass: the copies cost their full size, and
+    // every byte still comes back.
+    let mut plain = Vec::new();
+    glyd::compress_into_max(&data, &mut plain);
+    assert!(glyd::decompress(&plain).unwrap() == data);
+    assert!(plain.len() > alone.len() + 100_000, "max without --long should not find the far copy: {} vs {}", plain.len(), alone.len());
+    for (name, f) in [("max", glyd::compress_into_max_long as fn(&[u8], &mut Vec<u8>)), ("ultra", glyd::compress_into_ultra)] {
         let mut c = Vec::new();
         f(&data, &mut c);
         assert!(glyd::decompress(&c).unwrap() == data, "{name}: round trip mismatch");

@@ -2,7 +2,7 @@
 
 What a Linux distribution, a cloud storage system or a large
 deployment needs before it will store data in a format, and where Glyd
-stands on each (v0.14.3, September 2026). Ratio is not on the list
+stands on each (v0.14.4, September 2026). Ratio is not on the list
 because ratio is what gets a codec looked at; the items below are what
 gets it kept. Each line says done, partly, or not, and what the gap is.
 
@@ -29,7 +29,7 @@ The hardest audience and the one that makes the others possible: what
 | :--- | :--- | :--- |
 | Cost per TB stored and read, on their machines | Storage is bought in $/TB-year after CPU. | **Done and reproducible** on Graviton3 and Sapphire Rapids (`benchmarks/`, `scripts/aws_workbench.sh`); the numbers in the README are from those runs and the scripts that made them. Every claim must stay that way. |
 | Decode speed and CPU per read | Written once, read many times. | **Done as a codec** (1.3–2.4× zstd -d on 8 vCPU to memory); **partly** as a tool: with the output written to a filesystem, reads are ~1× zstd on a saturated box because the write itself is the cost (see the v0.14.2 notes). |
-| Write speed at the default level, on all cores | The first number a platform team checks: `zstd -3 -T8` on their box. | **Not.** 0.7–0.8× zstd -3 -T8 on all cores, 0.45–0.8× on one. The double-fast loop is a third slower than zstd's on the same algorithm and the far-match pass is a third of the time on logs and events. This is the open engineering item. |
+| Write speed at the default level, on all cores | The first number a platform team checks: `zstd -3 -T8` on their box. | **Partly.** Since v0.14.4 (`--max` without the far pass, as zstd -3): 0.99–1.14× zstd -3 -T8 on events, logs and mozilla, 0.84–0.86× on a table dump and enwik8; one core 0.74–0.95×. What is left is the parse loop and the entropy coder each running more instructions a byte than zstd's on the same work. This is the open engineering item. |
 | Random access into an object | Range reads, one record of a pack, one file of an archive, without decoding the rest. | **Partly.** Packs index their objects; parallel units are independent streams. Missing: a first-class per-frame index (unit offsets in the frame header) and a range-read API. |
 | Corruption detection they can trust | Every block checked, no known blind spots. | **Done** since v0.14.2 (CRC-32C per block; the earlier sum had a blind spot). Records and cold envelopes still use the older sum. |
 | Predictable behaviour | No level that is sometimes 3× slower; no input class that surprises. | **Partly.** Container and JPEG opening, the far pass and record mode are each gated; the gates are measured but the slow paths exist. Needs a documented worst case per level and a switch to turn each opener off. |
@@ -45,9 +45,10 @@ The hardest audience and the one that makes the others possible: what
 
 ## The order
 
-1. **Write speed**: the double-fast loop rewritten against the profile,
-   then the far pass folded into it or made cheaper. This is the one
-   objection every audience raises, and it is measurable.
+1. **Write speed**: the parse loop and the entropy coder taken to
+   zstd's instruction counts (the far pass is opt-in since v0.14.4).
+   This is the one objection every audience raises, and it is
+   measurable.
 2. **The 1.0 track**, in this order: memory bound declared and enforced;
    chunked streaming in Rust and C; a fuzzing job; a panic audit; the
    spec rewritten so it can be implemented from; the format frozen with

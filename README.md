@@ -79,7 +79,7 @@ zstd -3 or LZ4 still win on write cost.
 - 🧩 **Shape dictionaries (`--shape`)**: record mode for a single small object. Trained on a sample; a 1–4 KB event or log object stores 1.1–1.9× less than with a zstd dictionary.
 - 🧊 **Cold level (`--cold`)**: context mixing for what is stored for years and read rarely. 1.5–2.6× fewer bytes than zstd -19 on logs, dumps, JSON and text — the zpaq -m5 class at 3–4× its speed — at 1.2–1.5 MB/s per core each way.
 - 🔁 **Base mode (`--base`)**: a new version against the old one, its content found wherever it moved. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 1.8–3× its speed; 15 kernel releases in 228 MB instead of 3 GB.
-- 🔭 **128 MB long-distance matcher** in `--max` and `--ultra`: JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
+- 🔭 **128 MB long-distance matcher** (`--max --long`, `--ultra`, the store): JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
 - 🚀 **Fastest reads at every ratio**: 8-way interleaved entropy coding and copy-only loops, units that decode one per core.
 - 🛡️ **Verified**: 98 tests, a million-mutation fuzz per run, every earlier format decoded unchanged, the CLI round-tripped with corrupted copies on both AWS machines.
 - 🔌 **Rust, C ABI, CLI**, streaming `std::io` adapters, trained dictionaries for small objects.
@@ -196,8 +196,9 @@ int64_t dlen = glyd_decompress_parallel(dst, clen, out, n);
 | **‑‑turbo**&nbsp;(‑t) | Data read far more often than written: caches, assets, KV-cache paging | v6 format, minimum match 10: fewest tokens, one 32-byte copy per token |
 | **default** | The LZ4/Snappy slot with a better ratio and faster reads | v6 format, LZAV-class finder, minimum match 7 |
 | **‑‑fast**&nbsp;(‑1) | LZ4-class compression speed | v6 format, LZ4-class finder, minimum match 5 |
-| **‑‑max**&nbsp;(‑9) | The zstd -3 slot: fewer bytes, 3–7× faster reads on a server | v9 format: 8-way interleaved Huffman literals, tANS sequences with repeat offsets, a double-fast lazy parse, and a 128 MB long-distance matcher |
-| **‑‑max&nbsp;‑‑dense**&nbsp;(‑D) | Objects written once and read rarely (the store's) | The same, in 128 MB units parsed in stripes on all cores: one core's bytes at any core count, 5–9% fewer on files of a few hundred MB; reads scale only with the units |
+| **‑‑max**&nbsp;(‑9) | The zstd -3 slot: fewer bytes, 3–7× faster reads on a server | v9 format: 8-way interleaved Huffman literals, tANS sequences with repeat offsets, a double-fast lazy parse over an 8 MB window (zstd -3's structure) |
+| **‑‑max&nbsp;‑‑long**&nbsp;(‑L) | Events, logs, anything that repeats itself across an input | The same, with a 128 MB long-distance matcher run once before the parse (as `zstd --long`): 3–29% fewer bytes on events and logs, at a third more write time |
+| **‑‑max&nbsp;‑‑dense**&nbsp;(‑D) | Objects written once and read rarely (the store's) | `--long`, in 128 MB units parsed in stripes on all cores: one core's bytes at any core count, 5–9% fewer on files of a few hundred MB; reads scale only with the units |
 | **‑‑ultra**&nbsp;(‑19) | Write once, read many: datasets, release assets | v9 format on an optimal parse: binary-tree finder, every position priced in the coder's own bits ([design](docs/design/ultra-parse.md)) |
 | **‑‑cold**&nbsp;(‑C) | Stored for years, read rarely: archives, compliance holds, the last copy | Context mixing: every bit predicted from eleven contexts (byte orders, the word, the column, the JSON key, the longest earlier match) with bit histories, mixed by two small networks, coded arithmetically; 32 MB units in parallel, 1–1.3 MB/s per core each way ([design](docs/design/format-v7.md#the-cold-level-context-mixing)) |
 
@@ -403,8 +404,8 @@ compressing at 640 MB/s against 13 (8 Graviton3 cores); `--ultra -r` is
 12% smaller than zstd -19, and plain `--ultra` equals it. JSON events
 are not record-shaped (their redundancy is inside each record and
 across the whole file), so `-r` hands them to the plain level, where
-the long-distance matcher (repeats up to 128 MB back, on at `--max`
-and `--ultra`) does the work: 13.26 and 16.40 against 11.49 and 14.59
+the long-distance matcher (repeats up to 128 MB back, on at `--max
+--long` and `--ultra`) does the work: 13.26 and 16.40 against 11.49 and 14.59
 with the 8 MB window, 27% and 9% smaller than zstd -3 and zstd -19.
 Costs: `--max` compresses the corpus at 2,000 MB/s (2,400 without the
 matcher; zstd -3 4,000), record-mode reads run at 4,400 MB/s instead
@@ -760,15 +761,17 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Known gaps
 
-- `--max` writes slower than zstd -3 on server cores where the data has
-  few far repeats. Measured on one core with the finder's tables at
-  zstd -3's size (17/16 bits, the default since v0.9.2;
-  `benchmarks/max`): JSON events 0.73–0.75× zstd's speed (the
-  long-distance pass is 40% of the time, and 26% fewer bytes), a table
-  dump 0.91×, a root filesystem 1.5× on Graviton3 and 0.84× on Sapphire
-  Rapids. The pass that finds repeats up to 128 MB back is what the
-  time buys; the parse itself runs at zstd's speed. Record mode's
-  transform halves the write speed again (200–400 MB/s per core).
+- `--max` writes at 0.74–0.95× zstd -3's speed on one server core
+  (v0.14.4, Graviton3 and Sapphire Rapids: GitHub events 0.93–0.95×,
+  Silesia mozilla 0.87–0.94×, enwik8 0.80–0.89×, the NASA log
+  0.80–0.81×, a Wikipedia table dump 0.74–0.82×), 0.3–9.7% smaller on
+  each. On eight cores against `zstd -3 -T8` it is 0.99–1.14× on
+  events, the log and mozilla and 0.84–0.86× on the dump and enwik8.
+  The remaining gap is the parse loop (about 22 instructions a byte to
+  zstd's 20) and the entropy coder (about 12 to zstd's 8), not a pass
+  the level runs and zstd does not; `--long` adds the 128 MB matcher
+  at a third more time. Record mode's transform halves the write speed
+  again (200–400 MB/s per core).
 - Reads in record mode spend 2–2.7× zstd's CPU rebuilding the columns
   (5–30 ns per value by column type), which makes zstd -3 the cheaper
   choice at a hundred CPU-billed reads a month; the plain CLI's reads

@@ -477,7 +477,20 @@ pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
 
 /// The max level on the bytes as they are: no container opened.
 pub(crate) fn compress_max_plain(input: &[u8], output: &mut Vec<u8>) {
-    compress_max_from(input, 0, 0, Parse::Dfast, None, output)
+    compress_max_from(input, 0, 0, Parse::Dfast, None, false, output)
+}
+
+/// The max level with the long-distance matcher: repeats up to 128 MB
+/// back (past the parse's 8 MB) found in a pass before the parse, as
+/// `zstd --long`. Fewer bytes where content repeats across an input
+/// (JSON events, logs), at the pass's cost in time; the same stream
+/// format, so every decoder reads it.
+pub fn compress_into_max_long(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if deflate::wrap(input, output, compress_into_max_long, compress_into_max_long) {
+        return;
+    }
+    compress_max_from(input, 0, 0, Parse::Dfast, None, true, output)
 }
 
 /// Ultra level: format v7 on the optimal parse (`v7_ultra`): the same
@@ -488,7 +501,7 @@ pub fn compress_into_ultra(input: &[u8], output: &mut Vec<u8>) {
     if deflate::wrap(input, output, compress_into_ultra, compress_into_ultra) {
         return;
     }
-    compress_max_from(input, 0, 0, Parse::Ultra, None, output)
+    compress_max_from(input, 0, 0, Parse::Ultra, None, true, output)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -514,13 +527,13 @@ pub fn dict_id(dict: &[u8]) -> u32 {
 pub fn compress_with_dict(dict: &Dict, input: &[u8], output: &mut Vec<u8>) {
     // The input is parsed in place: the dictionary's content is history
     // outside it, found through the dictionary's own seeded tables.
-    compress_max_from(input, 0, dict.id(), Parse::Dfast, Some(dict), output);
+    compress_max_from(input, 0, dict.id(), Parse::Dfast, Some(dict), false, output);
 }
 
 /// The max level over `full[start..]`, with `full[..start]` (a dictionary
 /// named `dict_id`, or nothing) as history: indexed before the first
 /// block, so the parse's window reaches into it.
-fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict: Option<&Dict>, output: &mut Vec<u8>) {
+fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict: Option<&Dict>, long: bool, output: &mut Vec<u8>) {
     thread_local! {
         /// The parse's 2 MB of tables, allocated once per thread and
         /// cleared at the start of every call (the parallel path makes
@@ -578,9 +591,10 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
         }),
     }
     // Far matches (past the local finders' 8 MB) over the whole input,
-    // found once here; an input that fits the local window has none.
-    // The max level gives the pass up on inputs with few far repeats.
-    let far = if full.len() > LOCAL_WINDOW as usize && dict.is_none() {
+    // found once here when `long`; an input that fits the local window
+    // has none. The max level gives the pass up on inputs with few far
+    // repeats.
+    let far = if long && full.len() > LOCAL_WINDOW as usize && dict.is_none() {
         ldm::Matches::find(full, matches!(parse, Parse::Dfast) && start == 0)
     } else {
         ldm::Matches { list: Vec::new() }
@@ -669,8 +683,17 @@ pub fn compress_parallel_into_max(input: &[u8], output: &mut Vec<u8>) {
     compress_parallel_with(input, output, compress_into_max, PARALLEL_UNIT_MAX)
 }
 
+/// `compress_into_max_long` on all cores (units as `compress_parallel_into_max`).
+pub fn compress_parallel_into_max_long(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if deflate::wrap(input, output, compress_parallel_into_max_long, compress_parallel_into_max_long) {
+        return;
+    }
+    compress_parallel_with(input, output, compress_into_max_long, PARALLEL_UNIT_MAX)
+}
+
 /// Max level, all cores, dense: units of `PARALLEL_UNIT_LARGEST` (the
-/// far matcher's reach), each parsed in stripes on every core, so the
+/// far matcher's reach, the long search on), each parsed in stripes on every core, so the
 /// bytes are one core's whatever the core count — 5–9% fewer than
 /// `compress_parallel_into_max` on files of a few hundred MB, the
 /// same on files of gigabytes — at the price of reads that scale only
@@ -682,7 +705,7 @@ pub fn compress_into_max_dense(input: &[u8], output: &mut Vec<u8>) {
         return;
     }
     if input.len() <= PARALLEL_UNIT_MAX || threads() == 1 {
-        return as_part(|| compress_into_max(input, output));
+        return as_part(|| compress_into_max_long(input, output));
     }
     let _ = compress_max_stream(input, |part| {
         output.extend_from_slice(part);
@@ -831,7 +854,7 @@ pub fn compress_with_dict_ultra(dict: &Dict, input: &[u8], output: &mut Vec<u8>)
     let mut joined = Vec::with_capacity(dict.content().len() + input.len());
     joined.extend_from_slice(dict.content());
     joined.extend_from_slice(input);
-    compress_max_from(&joined, dict.content().len(), dict.id(), Parse::Ultra, Some(dict), output);
+    compress_max_from(&joined, dict.content().len(), dict.id(), Parse::Ultra, Some(dict), false, output);
 }
 
 /// `level` over units of at least `smallest` bytes on all cores
@@ -1546,7 +1569,7 @@ pub fn compress_with_base_index(base: &[u8], index: &BaseIndex, input: &[u8], ou
         full.extend_from_slice(&base[r0..r1]);
         full.extend_from_slice(&input[a..b]);
         let mut out = Vec::with_capacity((b - a) / 8 + 1024);
-        compress_max_from(&full, r1 - r0, 0, parse, None, &mut out);
+        compress_max_from(&full, r1 - r0, 0, parse, None, true, &mut out);
         *slots[i].lock().unwrap() = ((r0, r1), out);
         Ok(())
     });
@@ -1863,8 +1886,20 @@ pub fn compress_records_into_max(input: &[u8], output: &mut Vec<u8>) {
     records_units(input, output, compress_into_max)
 }
 
-/// Record mode at the max level, dense (`compress_into_max_dense`)
-/// where the transform does not pay.
+/// Record mode with the long search (`compress_into_max_long`) in every unit.
+pub fn compress_records_into_max_long(input: &[u8], output: &mut Vec<u8>) {
+    #[cfg(feature = "deflate")]
+    if deflate::wrap(input, output, compress_records_into_max_long, compress_records_into_max_long) {
+        return;
+    }
+    if !records_pay(records_trial(input), compress_into_max) {
+        return as_part(|| compress_parallel_into_max_long(input, output));
+    }
+    records_units(input, output, compress_into_max_long)
+}
+
+/// Record mode at the max level with the long search, dense
+/// (`compress_into_max_dense`) where the transform does not pay.
 pub fn compress_records_into_max_dense(input: &[u8], output: &mut Vec<u8>) {
     #[cfg(feature = "deflate")]
     if deflate::wrap(input, output, compress_records_into_max_dense, compress_records_into_max_dense) {
@@ -1873,7 +1908,7 @@ pub fn compress_records_into_max_dense(input: &[u8], output: &mut Vec<u8>) {
     if !records_pay(records_trial(input), compress_into_max) {
         return as_part(|| compress_into_max_dense(input, output));
     }
-    records_units(input, output, compress_into_max)
+    records_units(input, output, compress_into_max_long)
 }
 
 /// Ultra level in record mode.

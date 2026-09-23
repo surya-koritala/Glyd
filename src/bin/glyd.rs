@@ -13,6 +13,8 @@ Options:
     -1, --fast             Fast level: LZ4-class compression speed, ratio ~2.10
     -t, --turbo            Turbo level: fastest decode, ~6% less ratio
     -9, --max              Max level: entropy coded, ratio above zstd -3
+    -L, --long             With --max: repeats up to 128 MB back found in a pass before the parse
+                           (as zstd --long); fewer bytes on events and logs, slower to write
     -D, --dense            With --max: 128 MB units parsed on all cores, one core's bytes at any
                            core count (5-9% fewer on files of a few hundred MB); reads scale
                            only with the units. For objects written once and read rarely
@@ -81,6 +83,7 @@ fn main() -> io::Result<()> {
     let mut fast = false;
     let mut turbo = false;
     let mut max = false;
+    let mut long = false;
     let mut dense = false;
     let mut ultra = false;
     let mut cold = false;
@@ -107,6 +110,7 @@ fn main() -> io::Result<()> {
             "-1" | "--fast" => fast = true,
             "-t" | "--turbo" => turbo = true,
             "-9" | "--max" => max = true,
+            "-L" | "--long" => long = true,
             "-D" | "--dense" => dense = true,
             "-19" | "--ultra" => ultra = true,
             "-C" | "--cold" => cold = true,
@@ -305,6 +309,8 @@ fn main() -> io::Result<()> {
             (false, _, _, _) if cold => glyd::compress_into_cold,
             (true, _, _, _) if ultra => glyd::compress_parallel_into_ultra,
             (false, _, _, _) if ultra => glyd::compress_into_ultra,
+            (true, _, _, true) if long => glyd::compress_parallel_into_max_long,
+            (false, _, _, true) if long => glyd::compress_into_max_long,
             (true, _, _, true) => glyd::compress_parallel_into_max,
             (false, _, _, true) => glyd::compress_into_max,
             (true, true, _, _) => glyd::compress_parallel_into_fast,
@@ -315,7 +321,7 @@ fn main() -> io::Result<()> {
             (false, _, _, _) => glyd::compress_into,
         };
         let stream_level: Option<(fn(&[u8], &mut Vec<u8>), usize)> = match (mc, records, cold, ultra, max, fast, turbo) {
-            (true, false, false, false, true, _, _) => Some((glyd::compress_into_max, glyd::format::PARALLEL_UNIT_MAX)),
+            (true, false, false, false, true, _, _) => Some((if long { glyd::compress_into_max_long } else { glyd::compress_into_max }, glyd::format::PARALLEL_UNIT_MAX)),
             (true, false, false, true, _, _, _) => Some((glyd::compress_into_ultra, glyd::format::PARALLEL_UNIT_ULTRA)),
             _ => None,
         };
@@ -342,7 +348,13 @@ fn main() -> io::Result<()> {
         } else if max && !ultra && (records || glyd::deflate::is_container(input_data)) {
             // An opened container's content takes record mode where
             // that pays (a gzipped log is a log).
-            if dense { glyd::compress_records_into_max_dense(&input_data, &mut out) } else { glyd::compress_records_into_max(&input_data, &mut out) }
+            if dense {
+                glyd::compress_records_into_max_dense(&input_data, &mut out)
+            } else if long {
+                glyd::compress_records_into_max_long(&input_data, &mut out)
+            } else {
+                glyd::compress_records_into_max(&input_data, &mut out)
+            }
         } else if ultra && !cold && glyd::deflate::is_container(input_data) {
             glyd::compress_records_into_ultra(&input_data, &mut out);
         } else if records {
@@ -350,6 +362,7 @@ fn main() -> io::Result<()> {
             // inside a unit is the sequential one.
             let unit_level: fn(&[u8], &mut Vec<u8>) = match (fast, turbo, max, ultra) {
                 (_, _, _, true) => glyd::compress_into_ultra,
+                (_, _, true, _) if long => glyd::compress_into_max_long,
                 (_, _, true, _) => glyd::compress_into_max,
                 (true, _, _, _) => glyd::compress_into_fast,
                 (_, true, _, _) => glyd::compress_into_turbo,

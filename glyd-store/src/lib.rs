@@ -935,7 +935,7 @@ impl Store {
         let objects: Vec<&[u8]> = self.pending.iter().map(|(_, d)| d.as_slice()).collect();
         let mut stored = Vec::new();
         let level: fn(&[u8], &mut Vec<u8>) = match self.level {
-            Level::Max => glyd::compress_into_max,
+            Level::Max => glyd::compress_into_max_long,
             Level::Ultra => glyd::compress_into_ultra,
             Level::Cold => glyd::compress_into_cold,
         };
@@ -1094,7 +1094,7 @@ impl Store {
         let data = self.get(id)?;
         let mut stored = Vec::with_capacity(data.len() / 4 + 1024);
         match self.level {
-            Level::Max => glyd::compress_records_into_max(&data, &mut stored),
+            Level::Max => glyd::compress_records_into_max_long(&data, &mut stored),
             Level::Ultra => glyd::compress_records_into_ultra(&data, &mut stored),
             Level::Cold => glyd::compress_records_into_cold(&data, &mut stored),
         }

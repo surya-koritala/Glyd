@@ -4,7 +4,7 @@ Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
 
-## Where it stands (v0.14.3, 2026-09-23)
+## Where it stands (v0.14.4, 2026-09-23)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 ([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
@@ -47,9 +47,10 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
    one object's upload with the next one's compression (the put rate
    is one process, one object at a time).
 
-1. **Write speed of `--max`** (0.71–0.77× zstd -3 on one server core
-   since the finder's tables took zstd -3's size; the long-distance
-   pass is the rest, 35–40% of the time on JSON for 24% fewer bytes).
+1. **Write speed of `--max`** (0.74–0.95× zstd -3 on one server core
+   since v0.14.4 made the long-distance pass opt-in, `--long`; what is
+   left is the parse at ~22 instructions a byte to zstd's ~20 and the
+   coder at ~12 to zstd's ~8, on the same work).
    Done: `--dense`, a unit's blocks parsed in stripes on all cores, so
    medium inputs keep 128 MB units and the same bytes as one core (ten
    cores had cost 7–9%); opt-in, since reads then scale only with the

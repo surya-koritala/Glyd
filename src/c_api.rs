@@ -282,6 +282,8 @@ pub const GLYD_LEVEL_TURBO: i32 = 2;
 pub const GLYD_LEVEL_MAX: i32 = 3;
 pub const GLYD_LEVEL_ULTRA: i32 = 4;
 pub const GLYD_LEVEL_COLD: i32 = 5;
+/// The max level with the long-distance matcher (`compress_into_max_long`).
+pub const GLYD_LEVEL_MAX_LONG: i32 = 6;
 
 /// A library-allocated buffer handed to the caller: exactly `len`
 /// bytes, freed by `glyd_free(ptr, len)`.
@@ -323,6 +325,8 @@ pub unsafe extern "C" fn glyd_compress2(src: *const u8, src_len: usize, level: i
         (GLYD_LEVEL_TURBO, false, false) => crate::compress_into_turbo(input, &mut v),
         (GLYD_LEVEL_MAX, false, true) => crate::compress_parallel_into_max(input, &mut v),
         (GLYD_LEVEL_MAX, false, false) => crate::compress_into_max(input, &mut v),
+        (GLYD_LEVEL_MAX_LONG, false, true) => crate::compress_parallel_into_max_long(input, &mut v),
+        (GLYD_LEVEL_MAX_LONG, false, false) => crate::compress_into_max_long(input, &mut v),
         (GLYD_LEVEL_ULTRA, false, true) => crate::compress_parallel_into_ultra(input, &mut v),
         (GLYD_LEVEL_ULTRA, false, false) => crate::compress_into_ultra(input, &mut v),
         (GLYD_LEVEL_COLD, false, true) => crate::compress_parallel_into_cold(input, &mut v),
@@ -331,6 +335,7 @@ pub unsafe extern "C" fn glyd_compress2(src: *const u8, src_len: usize, level: i
         (GLYD_LEVEL_FAST, true, _) => crate::compress_records_with(input, &mut v, crate::compress_into_fast),
         (GLYD_LEVEL_TURBO, true, _) => crate::compress_records_with(input, &mut v, crate::compress_into_turbo),
         (GLYD_LEVEL_MAX, true, _) => crate::compress_records_into_max(input, &mut v),
+        (GLYD_LEVEL_MAX_LONG, true, _) => crate::compress_records_into_max_long(input, &mut v),
         (GLYD_LEVEL_ULTRA, true, _) => crate::compress_records_into_ultra(input, &mut v),
         (GLYD_LEVEL_COLD, true, _) => crate::compress_records_into_cold(input, &mut v),
         _ => return -1,
@@ -402,6 +407,7 @@ pub unsafe extern "C" fn glyd_pack(objs: *const *const u8, lens: *const usize, n
     let objects: Vec<&[u8]> = ptrs.iter().zip(lens).map(|(&p, &l)| if l == 0 { &[][..] } else { slice::from_raw_parts(p, l) }).collect();
     let level: fn(&[u8], &mut Vec<u8>) = match level {
         GLYD_LEVEL_MAX => crate::compress_into_max,
+        GLYD_LEVEL_MAX_LONG => crate::compress_into_max_long,
         GLYD_LEVEL_ULTRA => crate::compress_into_ultra,
         GLYD_LEVEL_COLD => crate::compress_into_cold,
         _ => return -1,

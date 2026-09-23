@@ -20,9 +20,9 @@ import ctypes
 import os
 import sys
 
-__version__ = "0.14.3"
+__version__ = "0.14.4"
 
-_LEVELS = {"default": 0, "fast": 1, "turbo": 2, "max": 3, "ultra": 4, "cold": 5}
+_LEVELS = {"default": 0, "fast": 1, "turbo": 2, "max": 3, "ultra": 4, "cold": 5, "max-long": 6}
 
 
 def _load():
