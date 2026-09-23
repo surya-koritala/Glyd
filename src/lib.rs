@@ -2265,9 +2265,33 @@ fn scan_units(compressed: &[u8]) -> Result<(Vec<BlockInfo>, Vec<ParallelUnit>, u
 /// Decode `units` (their output starting at `base` of the stream) into
 /// `dst`, in parallel; `dst[0]` holds the byte at `base`.
 fn decode_units(compressed: &[u8], blocks: &[BlockInfo], units: &[ParallelUnit], base: usize, dst: &mut [u8], verify: bool) -> Result<()> {
+    decode_units_to(compressed, blocks, units, base, dst, verify, None).map_err(|e| match e {
+        StreamError::Codec(c) => c,
+        StreamError::Io(_) => unreachable!("no sink"),
+    })
+}
+
+enum StreamError {
+    Codec(CodecError),
+    Io(std::io::Error),
+}
+
+impl From<CodecError> for StreamError {
+    fn from(e: CodecError) -> Self {
+        StreamError::Codec(e)
+    }
+}
+
+/// `decode_units`, and with `sink` each unit handed to it in order as
+/// soon as it is decoded, by the thread that decoded it while the
+/// others go on: the write of a unit overlaps the decode of the next
+/// ones and copies from a buffer still in cache.
+fn decode_units_to(compressed: &[u8], blocks: &[BlockInfo], units: &[ParallelUnit], base: usize, dst: &mut [u8], verify: bool, sink: Option<&std::sync::Mutex<&mut (dyn FnMut(&[u8]) -> std::io::Result<()> + Send)>>) -> std::result::Result<(), StreamError> {
     let output_ptr = dst.as_mut_ptr() as usize;
     let avx2 = has_avx2();
-    par_units(units.len(), |i| -> Result<()> {
+    let next_write = AtomicUsize::new(0);
+    let io_error: std::sync::Mutex<Option<std::io::Error>> = std::sync::Mutex::new(None);
+    let r = par_units(units.len(), |i| -> Result<()> {
         let unit = &units[i];
         V7_TABLES.with_borrow_mut(|t| *t = v7_decode::DecTables::none());
         let unit_buffer_start = (output_ptr + unit.uncomp_offset - base) as *const u8;
@@ -2292,8 +2316,29 @@ fn decode_units(compressed: &[u8], blocks: &[BlockInfo], units: &[ParallelUnit],
                 }
             }
         }
+        if let Some(sink) = sink {
+            // Units before this one first: they were claimed before it
+            // and finish about as soon, so the wait is short.
+            while next_write.load(Ordering::Acquire) != i {
+                if io_error.lock().unwrap().is_some() {
+                    return Err(CodecError::CorruptedBitstream("the sink failed"));
+                }
+                std::thread::yield_now();
+            }
+            let out = unsafe { std::slice::from_raw_parts(unit_buffer_start, unit.uncomp_len) };
+            let r = (sink.lock().unwrap())(out);
+            next_write.store(i + 1, Ordering::Release);
+            if let Err(e) = r {
+                *io_error.lock().unwrap() = Some(e);
+                return Err(CodecError::CorruptedBitstream("the sink failed"));
+            }
+        }
         Ok(())
-    })
+    });
+    if let Some(e) = io_error.lock().unwrap().take() {
+        return Err(StreamError::Io(e));
+    }
+    r.map_err(StreamError::Codec)
 }
 
 fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> Result<usize> {
@@ -2312,21 +2357,82 @@ fn decompress_parallel_impl(compressed: &[u8], dst: &mut [u8], verify: bool) -> 
 /// until the batch reaches this, or `threads()` of them).
 const STREAM_BATCH: usize = 256 << 20;
 
-/// Decode `compressed` a batch of units at a time into one reused
-/// buffer, handing each batch to `sink` in order (with checksums
-/// verified): the memory is a batch, not the whole output, and after
-/// the first batch no output page is touched for the first time, which
-/// is what a whole-output decode spends most of its extra CPU on. A
+/// Batches decoded one at a time into two buffers taking turns: the
+/// sink writes one on its own thread while the next is decoded, so
+/// the write of a batch (a page-cache copy, a socket) overlaps the
+/// decode instead of following it. `decode` fills the buffer, sized
+/// `len + 2 * PADDING`, and says how many bytes are the batch's.
+fn stream_batches<B>(batches: Vec<B>, decode: impl Fn(&B, &mut Vec<u8>) -> Result<usize>, len: impl Fn(&B) -> usize, mut sink: impl FnMut(&[u8]) -> std::io::Result<()> + Send) -> std::io::Result<()>
+where
+    B: Sync,
+{
+    let codec = |e: CodecError| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
+    if batches.len() <= 1 {
+        let mut buf = Vec::new();
+        for b in &batches {
+            buf.resize(len(b) + PADDING * 2, 0);
+            let n = decode(b, &mut buf).map_err(codec)?;
+            sink(&buf[..n])?;
+        }
+        return Ok(());
+    }
+    std::thread::scope(|s| {
+        let (full, filled) = std::sync::mpsc::sync_channel::<(Vec<u8>, usize)>(1);
+        let (empty, emptied) = std::sync::mpsc::channel::<Vec<u8>>();
+        let writer = s.spawn(move || -> std::io::Result<()> {
+            for (buf, n) in filled {
+                sink(&buf[..n])?;
+                let _ = empty.send(buf);
+            }
+            Ok(())
+        });
+        let mut spare = 2usize;
+        let mut result = Ok(());
+        for b in &batches {
+            let mut buf = if spare > 0 {
+                spare -= 1;
+                Vec::new()
+            } else {
+                match emptied.recv() {
+                    Ok(b) => b,
+                    Err(_) => break, // the writer stopped: its error is below
+                }
+            };
+            buf.resize(len(b) + PADDING * 2, 0);
+            match decode(b, &mut buf) {
+                Ok(n) => {
+                    if full.send((buf, n)).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    result = Err(codec(e));
+                    break;
+                }
+            }
+        }
+        drop(full);
+        let written = writer.join().expect("the writer does not panic");
+        result.and(written)
+    })
+}
+
+/// Decode `compressed` a batch of units at a time into buffers reused
+/// in turn, handing each batch to `sink` in order (with checksums
+/// verified): the memory is two batches, not the whole output, after
+/// the first batches no output page is touched for the first time,
+/// which is what a whole-output decode spends most of its extra CPU
+/// on, and the sink runs beside the decode (`stream_batches`). A
 /// codec error comes back as `InvalidData`.
-pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::io::Result<()> + Send) -> std::io::Result<()> {
     let codec = |e: CodecError| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     #[cfg(feature = "deflate")]
     if let Some(r) = deflate::unwrap(compressed, decompress_parallel) {
         return sink(&r.map_err(codec)?);
     }
-    let mut buf: Vec<u8> = Vec::new();
     let workers = threads();
     if let Some(units) = records_envelope(compressed) {
+        let mut batches = Vec::new();
         let mut at = 0usize;
         while at < units.len() {
             let mut end = at + 1;
@@ -2335,18 +2441,17 @@ pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::
                 total += units[end].len;
                 end += 1;
             }
-            buf.resize(total + PADDING * 2, 0);
-            records_into(&units[at..end], &mut buf).map_err(codec)?;
-            sink(&buf[..total])?;
+            batches.push((at, end, total));
             at = end;
         }
-        return Ok(());
+        return stream_batches(batches, |&(at, end, total), buf| records_into(&units[at..end], buf).map(|_| total), |b| b.2, sink);
     }
     if is_pack(compressed) {
         let all = decompress_pack_joined(compressed).map_err(codec)?;
         return sink(&all);
     }
     if let Some(units) = cold_envelope(compressed) {
+        let mut batches = Vec::new();
         let mut at = 0usize;
         while at < units.len() {
             let mut end = at + 1;
@@ -2355,12 +2460,10 @@ pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::
                 total += units[end].len;
                 end += 1;
             }
-            buf.resize(total, 0);
-            cold_into(&units[at..end], &mut buf).map_err(codec)?;
-            sink(&buf[..total])?;
+            batches.push((at, end, total));
             at = end;
         }
-        return Ok(());
+        return stream_batches(batches, |&(at, end, total), buf| { buf.truncate(total); cold_into(&units[at..end], buf).map(|_| total) }, |b| b.2, sink);
     }
     #[cfg(feature = "deflate")]
     if let Some(r) = embedded_envelopes(compressed) {
@@ -2368,21 +2471,29 @@ pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::
     }
     let (blocks, units, total_uncomp) = scan_units(compressed).map_err(codec)?;
     if units.len() <= 1 {
-        buf.resize(total_uncomp + PADDING * 2, 0);
+        let mut buf = vec![0u8; total_uncomp + PADDING * 2];
         let n = decompress_sequential(compressed, &mut buf, true).map_err(codec)?;
         return sink(&buf[..n]);
     }
+    // Batches of a few units per core into one reused buffer; within a
+    // batch every unit goes to the sink as it is decoded.
+    let mut buf: Vec<u8> = Vec::new();
+    let sink: &mut (dyn FnMut(&[u8]) -> std::io::Result<()> + Send) = &mut sink;
     let mut at = 0usize;
     while at < units.len() {
         let mut end = at + 1;
-        while end < units.len() && end - at < workers.max(2) && units[end].uncomp_offset - units[at].uncomp_offset < STREAM_BATCH {
+        while end < units.len() && end - at < 4 * workers.max(2) && units[end].uncomp_offset - units[at].uncomp_offset < STREAM_BATCH {
             end += 1;
         }
         let base = units[at].uncomp_offset;
         let total = units[end - 1].uncomp_offset + units[end - 1].uncomp_len - base;
         buf.resize(total + PADDING * 2, 0);
-        decode_units(compressed, &blocks, &units[at..end], base, &mut buf, true).map_err(codec)?;
-        sink(&buf[..total])?;
+        let shared: std::sync::Mutex<&mut (dyn FnMut(&[u8]) -> std::io::Result<()> + Send)> = std::sync::Mutex::new(&mut *sink);
+        match decode_units_to(compressed, &blocks, &units[at..end], base, &mut buf, true, Some(&shared)) {
+            Ok(()) => {}
+            Err(StreamError::Codec(e)) => return Err(codec(e)),
+            Err(StreamError::Io(e)) => return Err(e),
+        }
         at = end;
     }
     Ok(())

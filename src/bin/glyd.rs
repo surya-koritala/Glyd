@@ -363,9 +363,9 @@ fn main() -> io::Result<()> {
     } else {
         // Decoded a batch of units at a time into one reused buffer and
         // written as it goes: the memory is a batch, not the file.
-        let mut out: Box<dyn Write> = match output_path {
+        let mut out: Box<dyn Write + Send> = match output_path {
             Some(ref p) if p != "-" => Box::new(std::fs::File::create(p)?),
-            _ => Box::new(io::stdout().lock()),
+            _ => Box::new(io::stdout()),
         };
         let result = if content {
             let r = match base {
