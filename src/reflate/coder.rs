@@ -1,23 +1,38 @@
 //! A binary arithmetic coder with adaptive probabilities, for the
 //! corrections: every decision is a bit under a context that learns.
 
-/// A probability of a 1 bit, 12 bits, adapting at rate 1/32.
+/// A probability of a 1 bit, 16 bits, adapting fast at first (a count
+/// in the low bits of the state sets the rate) and then at 1/128, so a
+/// decision that is always the same costs about a thousandth of a
+/// bit.
 #[derive(Clone, Copy)]
-pub struct Bit(u16);
+pub struct Bit {
+    p: u16,
+    n: u8,
+}
 
 impl Default for Bit {
     fn default() -> Self {
-        Bit(2048)
+        Bit { p: 32768, n: 0 }
     }
 }
 
 impl Bit {
     #[inline]
+    fn p(&self) -> u32 {
+        (self.p as u32).clamp(32, 65536 - 32)
+    }
+
+    #[inline]
     fn update(&mut self, bit: u32) {
+        let rate = (self.n as u32 + 1).min(7);
         if bit != 0 {
-            self.0 += (4096 - self.0) >> 5;
+            self.p += ((65535 - self.p as u32) >> rate) as u16;
         } else {
-            self.0 -= self.0 >> 5;
+            self.p -= (self.p as u32 >> rate) as u16;
+        }
+        if self.n < 7 {
+            self.n += 1;
         }
     }
 }
@@ -36,8 +51,7 @@ impl Encoder {
 
     #[inline]
     pub fn bit(&mut self, m: &mut Bit, bit: u32) {
-        let p = (m.0 as u32).clamp(1, 4095);
-        let xmid = self.x1 + ((self.x2 - self.x1) >> 12) * p;
+        let xmid = self.x1 + ((self.x2 - self.x1) >> 16) * m.p();
         if bit != 0 {
             self.x2 = xmid;
         } else {
@@ -107,8 +121,7 @@ impl<'a> Decoder<'a> {
 
     #[inline]
     pub fn bit(&mut self, m: &mut Bit) -> u32 {
-        let p = (m.0 as u32).clamp(1, 4095);
-        let xmid = self.x1 + ((self.x2 - self.x1) >> 12) * p;
+        let xmid = self.x1 + ((self.x2 - self.x1) >> 16) * m.p();
         let bit = if self.x <= xmid { 1 } else { 0 };
         if bit != 0 {
             self.x2 = xmid;

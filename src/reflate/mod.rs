@@ -75,17 +75,61 @@ fn fixed_lit_lens() -> Vec<u8> {
     v
 }
 
+/// The length code's index (0..29) for each length 3..=258.
+static LEN_INDEX: [u8; 259] = {
+    let mut t = [0u8; 259];
+    let mut len = 3usize;
+    while len <= 258 {
+        let mut i = 28;
+        while LEN_BASE[i] as usize > len {
+            i -= 1;
+        }
+        t[len] = i as u8;
+        len += 1;
+    }
+    t
+};
+
+/// The distance code for each distance 1..=32768, by its high bits:
+/// index by `dist - 1` below 256, else by `(dist - 1) >> 7` at 256..
+static DIST_INDEX: [u8; 512] = {
+    let mut t = [0u8; 512];
+    let mut d = 1usize;
+    while d <= 256 {
+        let mut i = 29;
+        while DIST_BASE[i] as usize > d {
+            i -= 1;
+        }
+        t[d - 1] = i as u8;
+        d += 1;
+    }
+    let mut k = 2usize;
+    while k < 256 {
+        let d = (k << 7) + 1;
+        let mut i = 29;
+        while DIST_BASE[i] as usize > d {
+            i -= 1;
+        }
+        t[256 + k] = i as u8;
+        k += 1;
+    }
+    t
+};
+
 /// The length code and extra bits of a reference length.
+#[inline]
 fn len_code(len: u16) -> (u16, u8, u16) {
     if len == 259 {
         return (284, 5, 31);
     }
-    let i = LEN_BASE.iter().rposition(|&b| b <= len).unwrap();
+    let i = LEN_INDEX[len as usize] as usize;
     (257 + i as u16, LEN_EXTRA[i], len - LEN_BASE[i])
 }
 
+#[inline]
 fn dist_code(dist: u16) -> (u16, u8, u16) {
-    let i = DIST_BASE.iter().rposition(|&b| b <= dist).unwrap();
+    let d = dist as usize - 1;
+    let i = if d < 256 { DIST_INDEX[d] } else { DIST_INDEX[256 + (d >> 7)] } as usize;
     (i as u16, DIST_EXTRA[i], dist - DIST_BASE[i])
 }
 
@@ -351,14 +395,11 @@ impl BitWriter {
         }
     }
 
-    /// A Huffman code of `len` bits, most significant first.
+    /// A Huffman code, given reversed so that its most significant bit
+    /// goes out first.
     #[inline]
-    fn code(&mut self, code: u16, len: u8) {
-        let mut rev = 0u32;
-        for i in 0..len {
-            rev |= (((code >> i) & 1) as u32) << (len - 1 - i);
-        }
-        self.put(rev, len as u32);
+    fn code(&mut self, reversed: u16, len: u8) {
+        self.put(reversed as u32, len as u32);
     }
 
     fn align(&mut self) {
@@ -379,7 +420,8 @@ impl BitWriter {
 }
 
 /// Canonical codes from lengths (RFC 1951 3.2.2), `(code, len)` per
-/// symbol; a symbol of length 0 has no code.
+/// symbol with the code's bits reversed for the writer; a symbol of
+/// length 0 has no code.
 fn codes(lens: &[u8]) -> Vec<(u16, u8)> {
     let mut count = [0u16; 16];
     for &l in lens {
@@ -399,7 +441,7 @@ fn codes(lens: &[u8]) -> Vec<(u16, u8)> {
             } else {
                 let c = next[l as usize];
                 next[l as usize] += 1;
-                (c, l)
+                (c.reverse_bits() >> (16 - l), l)
             }
         })
         .collect()
@@ -647,6 +689,16 @@ pub(super) mod tests {
         let Ok(path) = std::env::var("GLYD_REFLATE_FILE") else { return };
         let gz = std::fs::read(path).unwrap();
         let stream = gzip_body(&gz);
+        let t = std::time::Instant::now();
+        let s = parse(stream).unwrap();
+        let parse_s = t.elapsed().as_secs_f64();
+        let t = std::time::Instant::now();
+        let p = zlib::detect(&s.plain, &s.blocks);
+        let detect_s = t.elapsed().as_secs_f64();
+        let t = std::time::Instant::now();
+        let c = zlib::predict(&s.plain, p, &s.blocks);
+        let predict_s = t.elapsed().as_secs_f64();
+        eprintln!("reflate:  parse {parse_s:.2} s, detect {detect_s:.2} s, predict {predict_s:.2} s ({} B, {p:?})", c.len());
         let t = std::time::Instant::now();
         let o = open(stream).unwrap();
         let open_s = t.elapsed().as_secs_f64();

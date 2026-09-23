@@ -52,12 +52,20 @@ impl Params {
     }
 }
 
-/// zlib's matcher state over a plain text.
+/// zlib's matcher state over a plain text. Positions in the tables
+/// are relative to `base`, 16 bits as in zlib's window, the tables
+/// slid by 32 KB when the relative position reaches zlib's limit (the
+/// entries that go to 0 were out of reach already); 0 is NIL.
 pub struct Zlib<'a> {
     plain: &'a [u8],
+    /// the plain text with MAX_MATCH + 8 zero bytes after it, so a
+    /// comparison may run past the end without a check
+    padded: Vec<u8>,
     p: Params,
-    head: Vec<u32>,
-    prev: Vec<u32>,
+    head: Vec<u16>,
+    prev: Vec<u16>,
+    base: u32,
+    /// the rolling hash after the last insert
     ins_h: u32,
     /// every position below this has been inserted
     inserted: u32,
@@ -65,19 +73,35 @@ pub struct Zlib<'a> {
     carry: Option<(u32, u32)>,
 }
 
+const SLIDE_AT: u32 = W_SIZE + MAX_DIST;
+
 impl<'a> Zlib<'a> {
     pub fn new(plain: &'a [u8], p: Params) -> Self {
-        let mut z = Zlib { plain, p, head: vec![0; 1 << 15], prev: vec![0; 1 << 15], ins_h: 0, inserted: 0, carry: None };
-        if plain.len() >= 2 {
-            z.ins_h = ((plain[0] as u32) << 5) ^ plain[1] as u32;
-            z.ins_h &= HASH_MASK;
-        }
-        z
+        let mut padded = Vec::with_capacity(plain.len() + MAX_MATCH as usize + 8);
+        padded.extend_from_slice(plain);
+        padded.resize(plain.len() + MAX_MATCH as usize + 8, 0);
+        Zlib { plain, padded, p, head: vec![0; 1 << 15], prev: vec![0; 1 << 15], base: 0, ins_h: 0, inserted: 0, carry: None }
+    }
+
+    // The reads below stay inside `padded`: every caller's index is at
+    // most the plain length plus MAX_MATCH + 1, and the padding is
+    // MAX_MATCH + 8.
+    #[inline]
+    fn at(&self, i: u32) -> u8 {
+        debug_assert!((i as usize) < self.padded.len());
+        unsafe { *self.padded.get_unchecked(i as usize) }
     }
 
     #[inline]
-    fn at(&self, i: u32) -> u8 {
-        self.plain.get(i as usize).copied().unwrap_or(0)
+    fn pair(&self, i: u32) -> u16 {
+        debug_assert!(i as usize + 2 <= self.padded.len());
+        unsafe { self.padded.as_ptr().add(i as usize).cast::<u16>().read_unaligned() }
+    }
+
+    #[inline]
+    fn word(&self, i: u32) -> u64 {
+        debug_assert!(i as usize + 8 <= self.padded.len());
+        unsafe { self.padded.as_ptr().add(i as usize).cast::<u64>().read_unaligned() }
     }
 
     #[inline]
@@ -85,36 +109,58 @@ impl<'a> Zlib<'a> {
         self.plain.len() as u32 - pos
     }
 
+    /// zlib's slide_hash: the window moved by 32 KB.
+    fn slide(&mut self) {
+        for v in self.head.iter_mut().chain(self.prev.iter_mut()) {
+            *v = if *v >= W_SIZE as u16 { *v - W_SIZE as u16 } else { 0 };
+        }
+        self.base += W_SIZE;
+    }
+
     /// Positions up to `to` (exclusive) into the chains, as zlib inserts
     /// each `strstart` with at least MIN_MATCH bytes left.
     fn insert_to(&mut self, to: u32) {
-        while self.inserted < to {
-            let pos = self.inserted;
-            if self.lookahead(pos) >= MIN_MATCH {
-                // The rolling hash of three bytes, which is the same as
-                // rolling from the last insert when that was the position
-                // before, and what zlib resets to after the positions
-                // deflate_fast skips.
-                self.ins_h = (((self.at(pos) as u32) << 10) ^ ((self.at(pos + 1) as u32) << 5) ^ self.at(pos + 2) as u32) & HASH_MASK;
-                self.prev[(pos & HASH_MASK) as usize] = self.head[self.ins_h as usize];
-                self.head[self.ins_h as usize] = pos;
-            }
-            self.inserted += 1;
+        let end = to.min(self.plain.len() as u32 - MIN_MATCH + 1);
+        if self.inserted >= end {
+            self.inserted = self.inserted.max(to);
+            return;
         }
+        // zlib rolls its hash across consecutive inserts; after a run of
+        // skipped positions it starts again from the bytes, which gives
+        // the same value as rolling would have.
+        let mut pos = self.inserted;
+        let mut h = (((self.at(pos) as u32) << 5) ^ self.at(pos + 1) as u32) & HASH_MASK;
+        let mut slide_at = self.base + SLIDE_AT;
+        while pos < end {
+            if pos >= slide_at {
+                self.slide();
+                slide_at = self.base + SLIDE_AT;
+            }
+            h = ((h << 5) ^ self.at(pos + 2) as u32) & HASH_MASK;
+            let slot = (pos & HASH_MASK) as usize;
+            unsafe {
+                *self.prev.get_unchecked_mut(slot) = *self.head.get_unchecked(h as usize);
+                *self.head.get_unchecked_mut(h as usize) = (pos - self.base) as u16;
+            }
+            pos += 1;
+        }
+        self.ins_h = h;
+        self.inserted = to.max(end);
     }
 
     /// The chain's head for `pos` after its insertion: the previous
-    /// position with the same hash, or 0.
+    /// position with the same hash, relative to `base`, or 0.
     fn hash_head(&mut self, pos: u32) -> u32 {
         self.insert_to(pos + 1);
         if self.lookahead(pos) < MIN_MATCH {
             return 0;
         }
-        self.prev[(pos & HASH_MASK) as usize]
+        self.prev[(pos & HASH_MASK) as usize] as u32
     }
 
     /// deflate.c's longest_match: the longest match at `pos` longer than
-    /// `prev_len`, starting from `cur` and following the chain.
+    /// `prev_len`, starting from the relative position `cur` and
+    /// following the chain; the length and the match's absolute start.
     fn longest_match(&self, pos: u32, mut cur: u32, prev_len: u32) -> (u32, u32) {
         let (good, _, nice, chain) = CONFIG[self.p.level as usize];
         let mut chain_length = chain;
@@ -123,24 +169,40 @@ impl<'a> Zlib<'a> {
         }
         let lookahead = self.lookahead(pos);
         let nice = nice.min(lookahead);
-        let limit = if pos > MAX_DIST { pos - MAX_DIST } else { 0 };
+        let rel = pos - self.base;
+        let limit = if rel > MAX_DIST { rel - MAX_DIST } else { 0 };
         let mut best_len = prev_len;
         let mut best_start = 0u32;
+        let scan_end = self.pair(pos + best_len - 1);
+        let scan_start = self.pair(pos);
+        let mut scan_end = scan_end;
         loop {
-            if self.at(cur + best_len) == self.at(pos + best_len) && self.at(cur + best_len - 1) == self.at(pos + best_len - 1) && self.at(cur) == self.at(pos) && self.at(cur + 1) == self.at(pos + 1) {
+            let m = self.base + cur;
+            if self.pair(m + best_len - 1) == scan_end && self.pair(m) == scan_start {
                 let mut len = 2u32;
-                while len < MAX_MATCH && self.at(cur + len) == self.at(pos + len) {
-                    len += 1;
+                while len + 8 <= MAX_MATCH {
+                    let x = self.word(m + len) ^ self.word(pos + len);
+                    if x != 0 {
+                        len += x.trailing_zeros() / 8;
+                        break;
+                    }
+                    len += 8;
+                }
+                if len + 8 > MAX_MATCH {
+                    while len < MAX_MATCH && self.at(m + len) == self.at(pos + len) {
+                        len += 1;
+                    }
                 }
                 if len > best_len {
-                    best_start = cur;
+                    best_start = m;
                     best_len = len;
                     if len >= nice {
                         break;
                     }
+                    scan_end = self.pair(pos + best_len - 1);
                 }
             }
-            cur = self.prev[(cur & HASH_MASK) as usize];
+            cur = unsafe { *self.prev.get_unchecked((cur & HASH_MASK) as usize) } as u32;
             chain_length -= 1;
             if cur <= limit || chain_length == 0 {
                 break;
@@ -155,7 +217,7 @@ impl<'a> Zlib<'a> {
     fn search(&mut self, pos: u32, prev_len: u32) -> (u32, u32) {
         let (_, lazy, _, _) = CONFIG[self.p.level as usize];
         let head = self.hash_head(pos);
-        if head == 0 || prev_len >= lazy || pos - head > MAX_DIST {
+        if head == 0 || prev_len >= lazy || (pos - self.base) - head > MAX_DIST {
             return (0, 0);
         }
         let (len, start) = self.longest_match(pos, head, prev_len);
@@ -176,7 +238,7 @@ impl<'a> Zlib<'a> {
         }
         if self.p.level <= 3 {
             let head = self.hash_head(pos);
-            if head == 0 || pos - head > MAX_DIST {
+            if head == 0 || (pos - self.base) - head > MAX_DIST {
                 return Token::Lit(self.at(pos));
             }
             let (len, start) = self.longest_match(pos, head, MIN_MATCH - 1);
@@ -225,18 +287,19 @@ impl<'a> Zlib<'a> {
         }
     }
 
-    /// The candidates at `pos` in chain order, for a distance to be
-    /// named as the n-th of them.
+    /// The candidates at `pos` in chain order, as distances, for a
+    /// distance to be named as the n-th of them.
     fn chain(&mut self, pos: u32) -> impl Iterator<Item = u32> + '_ {
         let mut cur = self.hash_head(pos);
-        let limit = if pos > MAX_DIST { pos - MAX_DIST } else { 0 };
+        let rel = pos - self.base;
+        let limit = if rel > MAX_DIST { rel - MAX_DIST } else { 0 };
         let prev = &self.prev;
         std::iter::from_fn(move || {
             if cur == 0 || cur <= limit {
                 return None;
             }
-            let d = pos - cur;
-            cur = prev[(cur & HASH_MASK) as usize];
+            let d = rel - cur;
+            cur = prev[(cur & HASH_MASK) as usize] as u32;
             Some(d)
         })
         .take(4096)
