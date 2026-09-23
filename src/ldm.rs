@@ -267,7 +267,7 @@ static BIT_INDEXES: [[u8; 8]; 256] = {
 /// without a branch per anchor (a stray branch mispredicts once per
 /// 16 bytes), then hashed in a loop of known length.
 #[inline(always)]
-unsafe fn gather<S: Scan>(src: *const u8, mut pos: usize, end: usize, table: *const u32, table_shift: u32, positions: &mut [u32; CHUNK + 16], anchors: &mut Vec<(u32, u32)>) {
+unsafe fn gather<S: Scan>(src: *const u8, mut pos: usize, end: usize, table: *const u32, table_shift: u32, positions: &mut [u32; CHUNK + 16], anchors: &mut [(u32, u32)]) -> usize {
     let mut count = 0usize;
     while pos + 16 <= end {
         let m = S::mask16(src.add(pos)) as usize;
@@ -291,6 +291,7 @@ unsafe fn gather<S: Scan>(src: *const u8, mut pos: usize, end: usize, table: *co
         }
         pos += 1;
     }
+    let mut found = 0usize;
     for &pos in positions.get_unchecked(..count) {
         let w = std::ptr::read_unaligned(src.add(pos as usize) as *const u32);
         // A run of one byte anchors nowhere: its every position would
@@ -298,19 +299,21 @@ unsafe fn gather<S: Scan>(src: *const u8, mut pos: usize, end: usize, table: *co
         if w != w.rotate_left(8) {
             let h = h32p(src.add(pos as usize));
             prefetch(table.add((h >> (CHECK_BITS + table_shift)) as usize));
-            anchors.push((pos, h));
+            *anchors.get_unchecked_mut(found) = (pos, h);
+            found += 1;
         }
     }
+    found
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,bmi2")]
-unsafe fn gather_avx2(src: *const u8, pos: usize, end: usize, table: *const u32, table_shift: u32, positions: &mut [u32; CHUNK + 16], anchors: &mut Vec<(u32, u32)>) {
+unsafe fn gather_avx2(src: *const u8, pos: usize, end: usize, table: *const u32, table_shift: u32, positions: &mut [u32; CHUNK + 16], anchors: &mut [(u32, u32)]) -> usize {
     gather::<Avx2>(src, pos, end, table, table_shift, positions, anchors)
 }
 
 /// The gather for this machine.
-fn gather_fn() -> unsafe fn(*const u8, usize, usize, *const u32, u32, &mut [u32; CHUNK + 16], &mut Vec<(u32, u32)>) {
+fn gather_fn() -> unsafe fn(*const u8, usize, usize, *const u32, u32, &mut [u32; CHUNK + 16], &mut [(u32, u32)]) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         gather::<Neon>
@@ -360,7 +363,7 @@ impl Matches {
         // Anchors are gathered a chunk at a time and their table slots
         // prefetched (the table is 16 MB: a random slot per anchor, one
         // anchor in 16 bytes, is what the pass would otherwise wait on).
-        let mut anchors: Vec<(u32, u32)> = Vec::with_capacity(CHUNK / 4);
+        let mut anchors: Vec<(u32, u32)> = vec![(0, 0); CHUNK + 16];
         let mut positions = Box::new([0u32; CHUNK + 16]);
         let mut chunk_start = 0usize;
         let gather = gather_fn();
@@ -382,9 +385,8 @@ impl Matches {
                     gate_at = usize::MAX;
                 }
                 let chunk_end = (chunk_start + CHUNK).min(end);
-                anchors.clear();
-                gather(src, chunk_start.max(covered), chunk_end, table.as_ptr(), table_shift, &mut positions, &mut anchors);
-                for &(pos, h) in &anchors {
+                let found = gather(src, chunk_start.max(covered), chunk_end, table.as_ptr(), table_shift, &mut positions, &mut anchors);
+                for &(pos, h) in anchors.get_unchecked(..found) {
                     let pos = pos as usize;
                     let slot = table.get_unchecked_mut((h >> (CHECK_BITS + table_shift)) as usize);
                     let entry = *slot;

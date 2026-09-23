@@ -83,8 +83,8 @@ const _: () = {
 #[inline(always)]
 pub const fn ll_code(v: u32) -> (u8, u8, u32) {
     if v < 64 {
-        let c = LL_SMALL[v as usize];
-        (c, LL_BITS[c as usize], v - LL_BASE[c as usize])
+        let e = LL_TAB[v as usize];
+        (e as u8, (e >> 8) as u8, v - (e >> 16))
     } else {
         let k = log2(v);
         ((19 + k) as u8, k as u8, v - (1 << k))
@@ -101,8 +101,8 @@ pub const fn ll_value(code: u8, extra: u32) -> u32 {
 pub const fn ml_code(v: u32) -> (u8, u8, u32) {
     debug_assert!(v >= MIN_MATCH);
     if v < 131 {
-        let c = ML_SMALL[v as usize];
-        (c, ML_BITS[c as usize], v - ML_BASE[c as usize])
+        let e = ML_TAB[v as usize];
+        (e as u8, (e >> 8) as u8, v - (e >> 16))
     } else {
         let k = log2(v - 3);
         ((36 + k) as u8, k as u8, v - 3 - (1 << k))
@@ -117,6 +117,21 @@ pub const fn ml_value(code: u8, extra: u32) -> u32 {
 /// Code of each small value, from the tables.
 const LL_SMALL: [u8; 64] = small_codes::<64, LL_SYMBOLS>(&LL_BASE);
 const ML_SMALL: [u8; 131] = small_codes::<131, ML_SYMBOLS>(&ML_BASE);
+/// Per small value in one word: its code, the code's extra bits (<< 8)
+/// and base (<< 16) — one load where there were three.
+const LL_TAB: [u32; 64] = code_words::<64, LL_SYMBOLS>(&LL_SMALL, &LL_BITS, &LL_BASE);
+const ML_TAB: [u32; 131] = code_words::<131, ML_SYMBOLS>(&ML_SMALL, &ML_BITS, &ML_BASE);
+
+const fn code_words<const N: usize, const S: usize>(small: &[u8; N], bits: &[u8; S], base: &[u32; S]) -> [u32; N] {
+    let mut t = [0u32; N];
+    let mut v = 0;
+    while v < N {
+        let c = small[v] as usize;
+        t[v] = c as u32 | (bits[c] as u32) << 8 | base[c] << 16;
+        v += 1;
+    }
+    t
+}
 
 const fn small_codes<const N: usize, const S: usize>(base: &[u32; S]) -> [u8; N] {
     let mut t = [0u8; N];
