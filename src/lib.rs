@@ -477,7 +477,29 @@ pub fn compress_into_max(input: &[u8], output: &mut Vec<u8>) {
 
 /// The max level on the bytes as they are: no container opened.
 pub(crate) fn compress_max_plain(input: &[u8], output: &mut Vec<u8>) {
-    compress_max_from(input, 0, 0, Parse::Dfast, None, false, output)
+    compress_max_from(input, 0, 0, Parse::Dfast, None, false, output, None)
+}
+
+/// Bytes a sequential max stream gathers before handing them to its
+/// flush hook: a few blocks, so the writer thread stays busy.
+const FLUSH_BYTES: usize = 1 << 20;
+
+/// The max level (`long` as `compress_into_max_long`) with the output
+/// handed to `sink` in pieces as the blocks are made, so that a caller
+/// on one core can write while the parse goes on (the CLI does, on a
+/// second thread). A container is compressed whole (its opened form is
+/// judged against the closed one) and handed over at the end. The
+/// bytes are exactly `compress_into_max`'s / `compress_into_max_long`'s.
+pub fn compress_max_to(input: &[u8], long: bool, mut sink: impl FnMut(Vec<u8>)) {
+    if deflate::is_container(input) && !in_part() {
+        let mut out = Vec::new();
+        if long { compress_into_max_long(input, &mut out) } else { compress_into_max(input, &mut out) }
+        return sink(out);
+    }
+    let mut out = Vec::with_capacity(2 * FLUSH_BYTES);
+    let mut flush = |o: &mut Vec<u8>| sink(std::mem::replace(o, Vec::with_capacity(2 * FLUSH_BYTES)));
+    compress_max_from(input, 0, 0, Parse::Dfast, None, long, &mut out, Some(&mut flush));
+    sink(out);
 }
 
 /// The max level with the long-distance matcher: repeats up to 128 MB
@@ -490,7 +512,7 @@ pub fn compress_into_max_long(input: &[u8], output: &mut Vec<u8>) {
     if deflate::wrap(input, output, compress_into_max_long, compress_into_max_long) {
         return;
     }
-    compress_max_from(input, 0, 0, Parse::Dfast, None, true, output)
+    compress_max_from(input, 0, 0, Parse::Dfast, None, true, output, None)
 }
 
 /// Ultra level: format v7 on the optimal parse (`v7_ultra`): the same
@@ -501,7 +523,7 @@ pub fn compress_into_ultra(input: &[u8], output: &mut Vec<u8>) {
     if deflate::wrap(input, output, compress_into_ultra, compress_into_ultra) {
         return;
     }
-    compress_max_from(input, 0, 0, Parse::Ultra, None, true, output)
+    compress_max_from(input, 0, 0, Parse::Ultra, None, true, output, None)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -527,13 +549,13 @@ pub fn dict_id(dict: &[u8]) -> u32 {
 pub fn compress_with_dict(dict: &Dict, input: &[u8], output: &mut Vec<u8>) {
     // The input is parsed in place: the dictionary's content is history
     // outside it, found through the dictionary's own seeded tables.
-    compress_max_from(input, 0, dict.id(), Parse::Dfast, Some(dict), false, output);
+    compress_max_from(input, 0, dict.id(), Parse::Dfast, Some(dict), false, output, None);
 }
 
 /// The max level over `full[start..]`, with `full[..start]` (a dictionary
 /// named `dict_id`, or nothing) as history: indexed before the first
 /// block, so the parse's window reaches into it.
-fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict: Option<&Dict>, long: bool, output: &mut Vec<u8>) {
+fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict: Option<&Dict>, long: bool, output: &mut Vec<u8>, mut flush: Option<&mut dyn FnMut(&mut Vec<u8>)>) {
     thread_local! {
         /// The parse's 2 MB of tables, allocated once per thread and
         /// cleared at the start of every call (the parallel path makes
@@ -641,6 +663,13 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
                     write_coded_block(chunk, seqs.len(), literals.len(), chain_flag, payload, output);
                 }
                 first = false;
+                // Blocks so far handed on (the CLI's writer thread),
+                // so the write overlaps the parse.
+                if let Some(f) = flush.as_mut() {
+                    if output.len() >= FLUSH_BYTES {
+                        f(output);
+                    }
+                }
             }
             Parse::Ultra => {
                 ULTRA.with_borrow_mut(|t| v7_ultra::find_sequences_ultra_far(full, offset, chunk_len, t.as_mut().unwrap(), reps, &far, seqs, literals));
@@ -854,7 +883,7 @@ pub fn compress_with_dict_ultra(dict: &Dict, input: &[u8], output: &mut Vec<u8>)
     let mut joined = Vec::with_capacity(dict.content().len() + input.len());
     joined.extend_from_slice(dict.content());
     joined.extend_from_slice(input);
-    compress_max_from(&joined, dict.content().len(), dict.id(), Parse::Ultra, Some(dict), false, output);
+    compress_max_from(&joined, dict.content().len(), dict.id(), Parse::Ultra, Some(dict), false, output, None);
 }
 
 /// `level` over units of at least `smallest` bytes on all cores
@@ -1569,7 +1598,7 @@ pub fn compress_with_base_index(base: &[u8], index: &BaseIndex, input: &[u8], ou
         full.extend_from_slice(&base[r0..r1]);
         full.extend_from_slice(&input[a..b]);
         let mut out = Vec::with_capacity((b - a) / 8 + 1024);
-        compress_max_from(&full, r1 - r0, 0, parse, None, true, &mut out);
+        compress_max_from(&full, r1 - r0, 0, parse, None, true, &mut out, None);
         *slots[i].lock().unwrap() = ((r0, r1), out);
         Ok(())
     });

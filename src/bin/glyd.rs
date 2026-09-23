@@ -228,12 +228,13 @@ fn main() -> io::Result<()> {
     // Read input data
     // A file is mapped, not copied: the read then costs page faults
     // spread over the compressing threads instead of a pass before.
-    let mapped;
+    let mut mapped;
     let owned;
     let input_data: &[u8] = match input_path {
         Some(ref p) if p != "-" => {
             mapped = glyd::mmap::Mapping::read_only(Path::new(p))?;
             mapped.will_need();
+            mapped.populate();
             mapped.bytes()
         }
         _ => {
@@ -342,6 +343,27 @@ fn main() -> io::Result<()> {
             }
             sink.flush()?;
             return Ok(());
+        }
+        if !mc && max && !ultra && !cold && !records && !dense && base.is_none() {
+            // One core: the blocks are written by a second thread as
+            // they are made (zstd's CLI has an I/O thread beside its one
+            // worker too), so the write is not a pass after the parse.
+            let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
+            let mut sink: Box<dyn Write + Send> = match output_path {
+                Some(ref p) if p != "-" => Box::new(std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(p)?)),
+                _ => Box::new(io::stdout()),
+            };
+            let writer = std::thread::spawn(move || -> io::Result<()> {
+                for chunk in rx {
+                    sink.write_all(&chunk)?;
+                }
+                sink.flush()
+            });
+            glyd::compress_max_to(input_data, long, |chunk| {
+                let _ = tx.send(chunk);
+            });
+            drop(tx);
+            return writer.join().expect("writer thread");
         }
         if records && cold {
             glyd::compress_records_into_cold(&input_data, &mut out);

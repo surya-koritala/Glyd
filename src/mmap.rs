@@ -11,6 +11,9 @@ use std::path::Path;
 pub struct Mapping {
     ptr: *mut u8,
     len: usize,
+    /// The thread faulting the pages in (`populate`), joined on drop so
+    /// it never outlives the mapping.
+    populate: Option<std::thread::JoinHandle<()>>,
 }
 
 extern "C" {
@@ -21,6 +24,9 @@ extern "C" {
 }
 /// MADV_WILLNEED on Linux and macOS alike.
 const MADV_WILLNEED: i32 = 3;
+/// MADV_POPULATE_READ (Linux 5.14+): fault the pages in now. Elsewhere
+/// it fails and the pages are touched instead.
+const MADV_POPULATE_READ: i32 = 22;
 const PROT_READ: i32 = 1;
 const PROT_WRITE: i32 = 2;
 const MAP_SHARED: i32 = 1;
@@ -38,7 +44,7 @@ impl Mapping {
         let file = File::open(path)?;
         let len = file.metadata()?.len() as usize;
         if len == 0 {
-            return Ok(Mapping { ptr: std::ptr::NonNull::<u8>::dangling().as_ptr(), len: 0 });
+            return Ok(Mapping { ptr: std::ptr::NonNull::<u8>::dangling().as_ptr(), len: 0, populate: None });
         }
         Self::map(&file, len, PROT_READ)
     }
@@ -51,13 +57,42 @@ impl Mapping {
         }
     }
 
+    /// Fault the pages in on a helper thread, front to back, so a pass
+    /// that walks the mapping on one core is not paced by page faults:
+    /// the thread stays ahead of a parse (a cached file populates at
+    /// several GB/s). Joined when the mapping is dropped.
+    pub fn populate(&mut self) {
+        if self.len == 0 || self.populate.is_some() {
+            return;
+        }
+        let (ptr, len) = (self.ptr as usize, self.len);
+        self.populate = std::thread::Builder::new().name("populate".into()).spawn(move || {
+            const STEP: usize = 8 << 20;
+            let mut at = 0;
+            while at < len {
+                let n = STEP.min(len - at);
+                // SAFETY: within the mapping, which outlives this thread
+                // (joined in `Drop`).
+                let r = unsafe { madvise((ptr + at) as *mut std::ffi::c_void, n, MADV_POPULATE_READ) };
+                if r != 0 {
+                    let mut p = at;
+                    while p < at + n {
+                        unsafe { std::ptr::read_volatile((ptr + p) as *const u8) };
+                        p += 4096;
+                    }
+                }
+                at += n;
+            }
+        }).ok();
+    }
+
     fn map(file: &File, len: usize, prot: i32) -> Result<Mapping> {
         use std::os::unix::io::AsRawFd;
         let ptr = unsafe { mmap(std::ptr::null_mut(), len, prot, MAP_SHARED, file.as_raw_fd(), 0) };
         if ptr as isize == -1 {
             return Err(Error::new(ErrorKind::Other, "mmap failed"));
         }
-        Ok(Mapping { ptr: ptr as *mut u8, len })
+        Ok(Mapping { ptr: ptr as *mut u8, len, populate: None })
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -76,6 +111,9 @@ impl Mapping {
 
 impl Drop for Mapping {
     fn drop(&mut self) {
+        if let Some(t) = self.populate.take() {
+            let _ = t.join();
+        }
         if self.len > 0 {
             unsafe {
                 munmap(self.ptr as *mut _, self.len);

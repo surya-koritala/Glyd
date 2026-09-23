@@ -182,3 +182,26 @@ fn far_repeats_round_trip_at_max_and_ultra() {
     glyd::compress_into_max(&noise, &mut c);
     assert!(glyd::decompress(&c).unwrap() == noise);
 }
+
+/// The streamed max level (`compress_max_to`, the CLI's one-core path
+/// with a writer thread) hands out exactly the buffered level's bytes,
+/// with and without the long search, and on a container.
+#[test]
+fn streamed_max_matches_buffered() {
+    let block = wordy(1 << 20, 5);
+    let mut data = Vec::new();
+    for gap in [21u64, 22, 23] {
+        data.extend_from_slice(&block);
+        data.extend_from_slice(&wordy(9 << 20, gap));
+    }
+    for long in [false, true] {
+        let mut whole = Vec::new();
+        if long { glyd::compress_into_max_long(&data, &mut whole) } else { glyd::compress_into_max(&data, &mut whole) }
+        let mut pieces = 0;
+        let mut streamed = Vec::new();
+        glyd::compress_max_to(&data, long, |chunk| { pieces += 1; streamed.extend_from_slice(&chunk); });
+        assert!(streamed == whole, "long={long}: streamed bytes differ");
+        assert!(pieces >= 3, "long={long}: {pieces} pieces for {} bytes", whole.len());
+        assert!(glyd::decompress(&streamed).unwrap() == data);
+    }
+}
