@@ -1,205 +1,101 @@
-<svg xmlns='http://www.w3.org/2000/svg' width='900' height='1132' viewBox='0 0 900 1132' font-family='-apple-system,system-ui,Segoe UI,Helvetica,Arial,sans-serif' font-size='12'>
-<rect width='900' height='1132' fill='white'/>
-<text x='16' y='26' font-size='17' font-weight='600' fill='#111'>Bytes against zstd -19, xz and brotli, the strong tier</text>
-<text x='16' y='46' fill='#666'>Glyd --ultra (-r on records) against the better of zstd -19 and -22 --long, xz -9e, brotli -11</text>
-<rect x='16' y='58' width='12' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='32' y='67' fill='#111'>vs zstd -19/-22</text>
-<rect x='155' y='58' width='12' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='171' y='67' fill='#111'>vs xz -9e</text>
-<rect x='252' y='58' width='12' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='268' y='67' fill='#111'>vs brotli -11</text>
-<rect x='387' y='58' width='12' height='10' fill='#d64545'/>
-<text x='403' y='67' fill='#111'>Glyd larger</text>
-<line x1='230.6' y1='78' x2='230.6' y2='1102' stroke='#e4e4e4' stroke-width='1'/>
-<text x='230.6' y='1120' text-anchor='middle' fill='#666'>-70%</text>
-<line x1='291.7' y1='78' x2='291.7' y2='1102' stroke='#e4e4e4' stroke-width='1'/>
-<text x='291.7' y='1120' text-anchor='middle' fill='#666'>-60%</text>
-<line x1='352.9' y1='78' x2='352.9' y2='1102' stroke='#e4e4e4' stroke-width='1'/>
-<text x='352.9' y='1120' text-anchor='middle' fill='#666'>-50%</text>
-<line x1='414.1' y1='78' x2='414.1' y2='1102' stroke='#e4e4e4' stroke-width='1'/>
-<text x='414.1' y='1120' text-anchor='middle' fill='#666'>-40%</text>
-<line x1='475.2' y1='78' x2='475.2' y2='1102' stroke='#e4e4e4' stroke-width='1'/>
-<text x='475.2' y='1120' text-anchor='middle' fill='#666'>-30%</text>
-<line x1='536.4' y1='78' x2='536.4' y2='1102' stroke='#e4e4e4' stroke-width='1'/>
-<text x='536.4' y='1120' text-anchor='middle' fill='#666'>-20%</text>
-<line x1='597.6' y1='78' x2='597.6' y2='1102' stroke='#e4e4e4' stroke-width='1'/>
-<text x='597.6' y='1120' text-anchor='middle' fill='#666'>-10%</text>
-<line x1='658.7' y1='78' x2='658.7' y2='1102' stroke='#999' stroke-width='1.5'/>
-<text x='658.7' y='1120' text-anchor='middle' fill='#666'>+0%</text>
-<line x1='719.9' y1='78' x2='719.9' y2='1102' stroke='#e4e4e4' stroke-width='1'/>
-<text x='719.9' y='1120' text-anchor='middle' fill='#666'>+10%</text>
-<line x1='781.1' y1='78' x2='781.1' y2='1102' stroke='#e4e4e4' stroke-width='1'/>
-<text x='781.1' y='1120' text-anchor='middle' fill='#666'>+20%</text>
-<text x='515' y='1131' text-anchor='middle' fill='#666' font-size='11'>Glyd's bytes against the codec: below zero, Glyd is smaller</text>
-<text x='194' y='95' text-anchor='end' font-weight='600' fill='#111'>Records (record mode, -r)</text>
-<text x='194' y='126.5' text-anchor='end' fill='#111'>Web server log</text>
-<rect x='413.1' y='104' width='245.6' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='409.1' y='112' text-anchor='end' fill='#111' font-size='10'>-40%</text>
-<rect x='429.5' y='115' width='229.2' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='425.5' y='123' text-anchor='end' fill='#111' font-size='10'>-37%</text>
-<rect x='421.1' y='126' width='237.7' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='417.1' y='134' text-anchor='end' fill='#111' font-size='10'>-39%</text>
-<text x='194' y='165.5' text-anchor='end' fill='#111'>Pageview log</text>
-<rect x='618.1' y='143' width='40.7' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='614.1' y='151' text-anchor='end' fill='#111' font-size='10'>-7%</text>
-<rect x='643.4' y='154' width='15.4' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='639.4' y='162' text-anchor='end' fill='#111' font-size='10'>-3%</text>
-<rect x='639.5' y='165' width='19.3' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='635.5' y='173' text-anchor='end' fill='#111' font-size='10'>-3%</text>
-<text x='194' y='204.5' text-anchor='end' fill='#111'>SQL dump, page_props</text>
-<rect x='491.9' y='182' width='166.9' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='487.9' y='190' text-anchor='end' fill='#111' font-size='10'>-27%</text>
-<rect x='521.2' y='193' width='137.5' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='517.2' y='201' text-anchor='end' fill='#111' font-size='10'>-22%</text>
-<rect x='505.9' y='204' width='152.9' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='501.9' y='212' text-anchor='end' fill='#111' font-size='10'>-25%</text>
-<text x='194' y='243.5' text-anchor='end' fill='#111'>SQL dump, categorylinks</text>
-<rect x='480.8' y='221' width='177.9' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='476.8' y='229' text-anchor='end' fill='#111' font-size='10'>-29%</text>
-<rect x='515.7' y='232' width='143.1' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='511.7' y='240' text-anchor='end' fill='#111' font-size='10'>-23%</text>
-<rect x='500.4' y='243' width='158.4' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='496.4' y='251' text-anchor='end' fill='#111' font-size='10'>-26%</text>
-<text x='194' y='282.5' text-anchor='end' fill='#111'>JSON events</text>
-<rect x='658.7' y='260' width='15.8' height='10' fill='#d64545' opacity='0.95'/>
-<text x='678.5' y='268' text-anchor='start' fill='#111' font-size='10'>+3%</text>
-<rect x='658.7' y='271' width='44.4' height='10' fill='#d64545' opacity='0.73'/>
-<text x='707.2' y='279' text-anchor='start' fill='#111' font-size='10'>+7%</text>
-<rect x='658.7' y='282' width='56.3' height='10' fill='#d64545' opacity='0.51'/>
-<text x='719.1' y='290' text-anchor='start' fill='#111' font-size='10'>+9%</text>
-<text x='194' y='316' text-anchor='end' font-weight='600' fill='#111'>Containers (opened)</text>
-<text x='194' y='347.5' text-anchor='end' fill='#111'>gzipped log</text>
-<rect x='273.6' y='325' width='385.1' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='269.6' y='333' text-anchor='end' fill='#111' font-size='10'>-63%</text>
-<rect x='273.6' y='336' width='385.1' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='269.6' y='344' text-anchor='end' fill='#111' font-size='10'>-63%</text>
-<rect x='273.9' y='347' width='384.8' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='269.9' y='355' text-anchor='end' fill='#111' font-size='10'>-63%</text>
-<text x='194' y='386.5' text-anchor='end' fill='#111'>tar.gz, mixed</text>
-<rect x='299.9' y='364' width='358.8' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='295.9' y='372' text-anchor='end' fill='#111' font-size='10'>-59%</text>
-<rect x='299.9' y='375' width='358.8' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='295.9' y='383' text-anchor='end' fill='#111' font-size='10'>-59%</text>
-<rect x='300.1' y='386' width='358.6' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='296.1' y='394' text-anchor='end' fill='#111' font-size='10'>-59%</text>
-<text x='194' y='425.5' text-anchor='end' fill='#111'>.jar (Guava)</text>
-<rect x='369.8' y='403' width='289.0' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='365.8' y='411' text-anchor='end' fill='#111' font-size='10'>-47%</text>
-<rect x='368.1' y='414' width='290.7' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='364.1' y='422' text-anchor='end' fill='#111' font-size='10'>-48%</text>
-<rect x='371.6' y='425' width='287.2' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='367.6' y='433' text-anchor='end' fill='#111' font-size='10'>-47%</text>
-<text x='194' y='464.5' text-anchor='end' fill='#111'>source .zip</text>
-<rect x='443.8' y='442' width='214.9' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='439.8' y='450' text-anchor='end' fill='#111' font-size='10'>-35%</text>
-<rect x='441.8' y='453' width='216.9' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='437.8' y='461' text-anchor='end' fill='#111' font-size='10'>-35%</text>
-<rect x='444.9' y='464' width='213.8' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='440.9' y='472' text-anchor='end' fill='#111' font-size='10'>-35%</text>
-<text x='194' y='503.5' text-anchor='end' fill='#111'>.pptx</text>
-<rect x='281.2' y='481' width='377.6' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='277.2' y='489' text-anchor='end' fill='#111' font-size='10'>-62%</text>
-<rect x='280.5' y='492' width='378.3' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='276.5' y='500' text-anchor='end' fill='#111' font-size='10'>-62%</text>
-<rect x='282.5' y='503' width='376.3' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='278.5' y='511' text-anchor='end' fill='#111' font-size='10'>-62%</text>
-<text x='194' y='542.5' text-anchor='end' fill='#111'>.docx, screenshots</text>
-<rect x='552.9' y='520' width='105.8' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='548.9' y='528' text-anchor='end' fill='#111' font-size='10'>-17%</text>
-<rect x='552.8' y='531' width='106.0' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='548.8' y='539' text-anchor='end' fill='#111' font-size='10'>-17%</text>
-<rect x='552.3' y='542' width='106.4' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='548.3' y='550' text-anchor='end' fill='#111' font-size='10'>-17%</text>
-<text x='194' y='581.5' text-anchor='end' fill='#111'>.xlsx</text>
-<rect x='568.0' y='559' width='90.7' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='564.0' y='567' text-anchor='end' fill='#111' font-size='10'>-15%</text>
-<rect x='571.6' y='570' width='87.1' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='567.6' y='578' text-anchor='end' fill='#111' font-size='10'>-14%</text>
-<rect x='569.8' y='581' width='88.9' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='565.8' y='589' text-anchor='end' fill='#111' font-size='10'>-15%</text>
-<text x='194' y='620.5' text-anchor='end' fill='#111'>PDF, text</text>
-<rect x='409.4' y='598' width='249.3' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='405.4' y='606' text-anchor='end' fill='#111' font-size='10'>-41%</text>
-<rect x='411.9' y='609' width='246.9' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='407.9' y='617' text-anchor='end' fill='#111' font-size='10'>-40%</text>
-<rect x='413.4' y='620' width='245.4' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='409.4' y='628' text-anchor='end' fill='#111' font-size='10'>-40%</text>
-<text x='194' y='659.5' text-anchor='end' fill='#111'>PDF, figures</text>
-<rect x='426.8' y='637' width='231.9' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='422.8' y='645' text-anchor='end' fill='#111' font-size='10'>-38%</text>
-<rect x='429.9' y='648' width='228.8' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='425.9' y='656' text-anchor='end' fill='#111' font-size='10'>-37%</text>
-<rect x='428.3' y='659' width='230.4' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='424.3' y='667' text-anchor='end' fill='#111' font-size='10'>-38%</text>
-<text x='194' y='698.5' text-anchor='end' fill='#111'>PNG photo</text>
-<rect x='570.7' y='676' width='88.0' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='566.7' y='684' text-anchor='end' fill='#111' font-size='10'>-14%</text>
-<rect x='570.0' y='687' width='88.7' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='566.0' y='695' text-anchor='end' fill='#111' font-size='10'>-15%</text>
-<rect x='570.1' y='698' width='88.7' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='566.1' y='706' text-anchor='end' fill='#111' font-size='10'>-14%</text>
-<text x='194' y='737.5' text-anchor='end' fill='#111'>JPEG photo</text>
-<rect x='532.7' y='715' width='126.0' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='528.7' y='723' text-anchor='end' fill='#111' font-size='10'>-21%</text>
-<rect x='532.1' y='726' width='126.7' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='528.1' y='734' text-anchor='end' fill='#111' font-size='10'>-21%</text>
-<rect x='535.8' y='737' width='123.0' height='10' fill='#2a9d4a' opacity='0.51'/>
-<text x='531.8' y='745' text-anchor='end' fill='#111' font-size='10'>-20%</text>
-<text x='194' y='771' text-anchor='end' font-weight='600' fill='#111'>Plain data</text>
-<text x='194' y='802.5' text-anchor='end' fill='#111'>Wikipedia text</text>
-<rect x='658.7' y='780' width='18.6' height='10' fill='#d64545' opacity='0.95'/>
-<text x='681.3' y='788' text-anchor='start' fill='#111' font-size='10'>+3%</text>
-<rect x='658.7' y='791' width='32.8' height='10' fill='#d64545' opacity='0.73'/>
-<text x='695.5' y='799' text-anchor='start' fill='#111' font-size='10'>+5%</text>
-<rect x='658.7' y='802' width='29.1' height='10' fill='#d64545' opacity='0.51'/>
-<text x='691.9' y='810' text-anchor='start' fill='#111' font-size='10'>+5%</text>
-<text x='194' y='841.5' text-anchor='end' fill='#111'>English text</text>
-<rect x='658.7' y='819' width='3.8' height='10' fill='#d64545' opacity='0.95'/>
-<text x='666.6' y='827' text-anchor='start' fill='#111' font-size='10'>+1%</text>
-<rect x='658.7' y='830' width='7.7' height='10' fill='#d64545' opacity='0.73'/>
-<text x='670.4' y='838' text-anchor='start' fill='#111' font-size='10'>+1%</text>
-<rect x='658.7' y='841' width='8.5' height='10' fill='#d64545' opacity='0.51'/>
-<text x='671.2' y='849' text-anchor='start' fill='#111' font-size='10'>+1%</text>
-<text x='194' y='880.5' text-anchor='end' fill='#111'>Linux source tar</text>
-<rect x='658.7' y='858' width='17.9' height='10' fill='#d64545' opacity='0.95'/>
-<text x='680.6' y='866' text-anchor='start' fill='#111' font-size='10'>+3%</text>
-<rect x='658.7' y='869' width='36.6' height='10' fill='#d64545' opacity='0.73'/>
-<text x='699.4' y='877' text-anchor='start' fill='#111' font-size='10'>+6%</text>
-<rect x='658.7' y='880' width='27.8' height='10' fill='#d64545' opacity='0.51'/>
-<text x='690.6' y='888' text-anchor='start' fill='#111' font-size='10'>+5%</text>
-<text x='194' y='919.5' text-anchor='end' fill='#111'>Ubuntu root tar</text>
-<rect x='658.7' y='897' width='21.6' height='10' fill='#d64545' opacity='0.95'/>
-<text x='684.4' y='905' text-anchor='start' fill='#111' font-size='10'>+4%</text>
-<rect x='658.7' y='908' width='56.7' height='10' fill='#d64545' opacity='0.73'/>
-<text x='719.5' y='916' text-anchor='start' fill='#111' font-size='10'>+9%</text>
-<rect x='658.7' y='919' width='51.3' height='10' fill='#d64545' opacity='0.51'/>
-<text x='714.0' y='927' text-anchor='start' fill='#111' font-size='10'>+8%</text>
-<text x='194' y='958.5' text-anchor='end' fill='#111'>Executable</text>
-<rect x='658.7' y='936' width='18.4' height='10' fill='#d64545' opacity='0.95'/>
-<text x='681.1' y='944' text-anchor='start' fill='#111' font-size='10'>+3%</text>
-<rect x='658.7' y='947' width='82.9' height='10' fill='#d64545' opacity='0.73'/>
-<text x='745.7' y='955' text-anchor='start' fill='#111' font-size='10'>+14%</text>
-<rect x='658.7' y='958' width='63.0' height='10' fill='#d64545' opacity='0.51'/>
-<text x='725.8' y='966' text-anchor='start' fill='#111' font-size='10'>+10%</text>
-<text x='194' y='997.5' text-anchor='end' fill='#111'>Database file</text>
-<rect x='653.6' y='975' width='5.2' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='649.6' y='983' text-anchor='end' fill='#111' font-size='10'>-1%</text>
-<rect x='658.7' y='986' width='49.3' height='10' fill='#d64545' opacity='0.73'/>
-<text x='712.0' y='994' text-anchor='start' fill='#111' font-size='10'>+8%</text>
-<rect x='658.7' y='997' width='55.9' height='10' fill='#d64545' opacity='0.51'/>
-<text x='718.7' y='1005' text-anchor='start' fill='#111' font-size='10'>+9%</text>
-<text x='194' y='1036.5' text-anchor='end' fill='#111'>X-ray image</text>
-<rect x='658.7' y='1014' width='5.3' height='10' fill='#d64545' opacity='0.95'/>
-<text x='668.0' y='1022' text-anchor='start' fill='#111' font-size='10'>+1%</text>
-<rect x='658.7' y='1025' width='93.2' height='10' fill='#d64545' opacity='0.73'/>
-<text x='755.9' y='1033' text-anchor='start' fill='#111' font-size='10'>+15%</text>
-<rect x='658.7' y='1036' width='64.2' height='10' fill='#d64545' opacity='0.51'/>
-<text x='726.9' y='1044' text-anchor='start' fill='#111' font-size='10'>+10%</text>
-<text x='194' y='1075.5' text-anchor='end' fill='#111'>Parquet</text>
-<rect x='658.7' y='1053' width='0.8' height='10' fill='#8a8a8a' opacity='0.95'/>
-<text x='663.5' y='1061' text-anchor='start' fill='#111' font-size='10'>+0%</text>
-<rect x='658.7' y='1064' width='3.1' height='10' fill='#d64545' opacity='0.73'/>
-<text x='665.8' y='1072' text-anchor='start' fill='#111' font-size='10'>+1%</text>
-<rect x='658.7' y='1075' width='0.8' height='10' fill='#8a8a8a' opacity='0.51'/>
-<text x='663.1' y='1083' text-anchor='start' fill='#111' font-size='10'>+0%</text>
+<svg xmlns='http://www.w3.org/2000/svg' width='900' height='804' viewBox='0 0 900 804' font-family='-apple-system,system-ui,Segoe UI,Helvetica,Arial,sans-serif' font-size='13'>
+<rect width='900' height='804' fill='white'/>
+<text x='16' y='28' font-size='18' font-weight='600' fill='#111'>Glyd against the strongest of zstd -19/-22, xz -9e and brotli -11</text>
+<text x='16' y='50' fill='#666'>Glyd --ultra (-r on records) against whichever of the three is smallest on that data. Green: Glyd's file is smaller.</text>
+<line x1='245.9' y1='70' x2='245.9' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='245.9' y='788' text-anchor='middle' fill='#666'>-70%</text>
+<line x1='305.7' y1='70' x2='305.7' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='305.7' y='788' text-anchor='middle' fill='#666'>-60%</text>
+<line x1='365.5' y1='70' x2='365.5' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='365.5' y='788' text-anchor='middle' fill='#666'>-50%</text>
+<line x1='425.3' y1='70' x2='425.3' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='425.3' y='788' text-anchor='middle' fill='#666'>-40%</text>
+<line x1='485.1' y1='70' x2='485.1' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='485.1' y='788' text-anchor='middle' fill='#666'>-30%</text>
+<line x1='544.9' y1='70' x2='544.9' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='544.9' y='788' text-anchor='middle' fill='#666'>-20%</text>
+<line x1='604.7' y1='70' x2='604.7' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='604.7' y='788' text-anchor='middle' fill='#666'>-10%</text>
+<line x1='664.5' y1='70' x2='664.5' y2='770' stroke='#999' stroke-width='1.5'/>
+<text x='664.5' y='788' text-anchor='middle' fill='#666'>+0%</text>
+<line x1='724.3' y1='70' x2='724.3' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='724.3' y='788' text-anchor='middle' fill='#666'>+10%</text>
+<line x1='784.1' y1='70' x2='784.1' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='784.1' y='788' text-anchor='middle' fill='#666'>+20%</text>
+<text x='515' y='802' text-anchor='middle' fill='#666' font-size='12'>← Glyd's file is smaller · larger →</text>
+<text x='202' y='91' text-anchor='end' font-weight='600' fill='#111'>Records (record mode, -r)</text>
+<text x='202' y='117.0' text-anchor='end' fill='#111'>Web server log</text>
+<rect x='440.4' y='104.0' width='224.1' height='17' rx='2' fill='#2a9d4a'/>
+<text x='434.4' y='117.0' text-anchor='end' fill='#111' font-weight='600'>-37%</text>
+<text x='202' y='142.0' text-anchor='end' fill='#111'>Pageview log</text>
+<rect x='649.5' y='129.0' width='15.0' height='17' rx='2' fill='#2a9d4a'/>
+<text x='643.5' y='142.0' text-anchor='end' fill='#111' font-weight='600'>-3%</text>
+<text x='202' y='167.0' text-anchor='end' fill='#111'>SQL dump, page_props</text>
+<rect x='530.0' y='154.0' width='134.5' height='17' rx='2' fill='#2a9d4a'/>
+<text x='524.0' y='167.0' text-anchor='end' fill='#111' font-weight='600'>-22%</text>
+<text x='202' y='192.0' text-anchor='end' fill='#111'>SQL dump, categorylinks</text>
+<rect x='524.6' y='179.0' width='139.9' height='17' rx='2' fill='#2a9d4a'/>
+<text x='518.6' y='192.0' text-anchor='end' fill='#111' font-weight='600'>-23%</text>
+<text x='202' y='217.0' text-anchor='end' fill='#111'>JSON events</text>
+<rect x='664.5' y='204.0' width='55.1' height='17' rx='2' fill='#d64545'/>
+<text x='725.6' y='217.0' text-anchor='start' fill='#111' font-weight='600'>+9%</text>
+<text x='202' y='246' text-anchor='end' font-weight='600' fill='#111'>Containers (opened)</text>
+<text x='202' y='272.0' text-anchor='end' fill='#111'>gzipped log</text>
+<rect x='288.2' y='259.0' width='376.3' height='17' rx='2' fill='#2a9d4a'/>
+<text x='282.2' y='272.0' text-anchor='end' fill='#111' font-weight='600'>-63%</text>
+<text x='202' y='297.0' text-anchor='end' fill='#111'>tar.gz, mixed</text>
+<rect x='313.9' y='284.0' width='350.7' height='17' rx='2' fill='#2a9d4a'/>
+<text x='307.9' y='297.0' text-anchor='end' fill='#111' font-weight='600'>-59%</text>
+<text x='202' y='322.0' text-anchor='end' fill='#111'>.jar (Guava)</text>
+<rect x='383.7' y='309.0' width='280.8' height='17' rx='2' fill='#2a9d4a'/>
+<text x='377.7' y='322.0' text-anchor='end' fill='#111' font-weight='600'>-47%</text>
+<text x='202' y='347.0' text-anchor='end' fill='#111'>source .zip</text>
+<rect x='455.4' y='334.0' width='209.1' height='17' rx='2' fill='#2a9d4a'/>
+<text x='449.4' y='347.0' text-anchor='end' fill='#111' font-weight='600'>-35%</text>
+<text x='202' y='372.0' text-anchor='end' fill='#111'>.pptx</text>
+<rect x='296.6' y='359.0' width='367.9' height='17' rx='2' fill='#2a9d4a'/>
+<text x='290.6' y='372.0' text-anchor='end' fill='#111' font-weight='600'>-62%</text>
+<text x='202' y='397.0' text-anchor='end' fill='#111'>.docx, screenshots</text>
+<rect x='561.0' y='384.0' width='103.5' height='17' rx='2' fill='#2a9d4a'/>
+<text x='555.0' y='397.0' text-anchor='end' fill='#111' font-weight='600'>-17%</text>
+<text x='202' y='422.0' text-anchor='end' fill='#111'>.xlsx</text>
+<rect x='579.3' y='409.0' width='85.2' height='17' rx='2' fill='#2a9d4a'/>
+<text x='573.3' y='422.0' text-anchor='end' fill='#111' font-weight='600'>-14%</text>
+<text x='202' y='447.0' text-anchor='end' fill='#111'>PDF, text</text>
+<rect x='424.6' y='434.0' width='239.9' height='17' rx='2' fill='#2a9d4a'/>
+<text x='418.6' y='447.0' text-anchor='end' fill='#111' font-weight='600'>-40%</text>
+<text x='202' y='472.0' text-anchor='end' fill='#111'>PDF, figures</text>
+<rect x='440.8' y='459.0' width='223.7' height='17' rx='2' fill='#2a9d4a'/>
+<text x='434.8' y='472.0' text-anchor='end' fill='#111' font-weight='600'>-37%</text>
+<text x='202' y='497.0' text-anchor='end' fill='#111'>PNG photo</text>
+<rect x='578.5' y='484.0' width='86.0' height='17' rx='2' fill='#2a9d4a'/>
+<text x='572.5' y='497.0' text-anchor='end' fill='#111' font-weight='600'>-14%</text>
+<text x='202' y='522.0' text-anchor='end' fill='#111'>JPEG photo</text>
+<rect x='544.3' y='509.0' width='120.2' height='17' rx='2' fill='#2a9d4a'/>
+<text x='538.3' y='522.0' text-anchor='end' fill='#111' font-weight='600'>-20%</text>
+<text x='202' y='551' text-anchor='end' font-weight='600' fill='#111'>Plain data</text>
+<text x='202' y='577.0' text-anchor='end' fill='#111'>Wikipedia text</text>
+<rect x='664.5' y='564.0' width='32.0' height='17' rx='2' fill='#d64545'/>
+<text x='702.5' y='577.0' text-anchor='start' fill='#111' font-weight='600'>+5%</text>
+<text x='202' y='602.0' text-anchor='end' fill='#111'>English text</text>
+<rect x='664.5' y='589.0' width='8.3' height='17' rx='2' fill='#d64545'/>
+<text x='678.8' y='602.0' text-anchor='start' fill='#111' font-weight='600'>+1%</text>
+<text x='202' y='627.0' text-anchor='end' fill='#111'>Linux source tar</text>
+<rect x='664.5' y='614.0' width='35.8' height='17' rx='2' fill='#d64545'/>
+<text x='706.3' y='627.0' text-anchor='start' fill='#111' font-weight='600'>+6%</text>
+<text x='202' y='652.0' text-anchor='end' fill='#111'>Ubuntu root tar</text>
+<rect x='664.5' y='639.0' width='55.5' height='17' rx='2' fill='#d64545'/>
+<text x='726.0' y='652.0' text-anchor='start' fill='#111' font-weight='600'>+9%</text>
+<text x='202' y='677.0' text-anchor='end' fill='#111'>Executable</text>
+<rect x='664.5' y='664.0' width='81.1' height='17' rx='2' fill='#d64545'/>
+<text x='751.6' y='677.0' text-anchor='start' fill='#111' font-weight='600'>+14%</text>
+<text x='202' y='702.0' text-anchor='end' fill='#111'>Database file</text>
+<rect x='664.5' y='689.0' width='54.7' height='17' rx='2' fill='#d64545'/>
+<text x='725.2' y='702.0' text-anchor='start' fill='#111' font-weight='600'>+9%</text>
+<text x='202' y='727.0' text-anchor='end' fill='#111'>X-ray image</text>
+<rect x='664.5' y='714.0' width='91.1' height='17' rx='2' fill='#d64545'/>
+<text x='761.6' y='727.0' text-anchor='start' fill='#111' font-weight='600'>+15%</text>
+<text x='202' y='752.0' text-anchor='end' fill='#111'>Parquet</text>
+<rect x='664.5' y='739.0' width='3.0' height='17' rx='2' fill='#d64545'/>
+<text x='673.5' y='752.0' text-anchor='start' fill='#111' font-weight='600'>+1%</text>
 </svg>

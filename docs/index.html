@@ -58,12 +58,15 @@
   </table></div>
   <p class="muted">Reads: Glyd is the fastest, 3–7× zstd on a server. Writes: Glyd is slower, 0.77× zstd -3 (record mode 0.33×); LZ4 is the write-speed king on one core. Size: Glyd is the smallest wherever the data has structure, and ties elsewhere.</p>
 
-  <h2 id="landscape">Against gzip, zstd, xz and brotli on 24 kinds of data</h2>
-  <p>Every codec's own CLI on one thread of an M1 Max, every decode compared byte for byte with its input (505 round trips, all exact). The percentages are Glyd's bytes against the other codec's on the same data: below zero, Glyd's file is smaller. Glyd runs <code>--max</code> and <code>--ultra</code>, with <code>-r</code> on logs and dumps. <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/landscape-2026-09-22.md">Method, every codec's speed and the raw rows</a>, with lz4, bzip2, zpaq and JPEG XL as well.</p>
-  <img src="benchmarks/charts/bytes-fast-tier.svg" alt="Compression benchmark: Glyd --max bytes against gzip -6 and zstd -3 on logs, SQL dumps, JSON, gzip, zip, jar, Office documents, PDF, PNG, JPEG, text, executables and Parquet">
-  <img src="benchmarks/charts/bytes-strong-tier.svg" alt="Compression benchmark: Glyd --ultra bytes against zstd -19, xz -9e and brotli -11 on the same 24 kinds of data">
-  <img src="benchmarks/charts/ratio-vs-read-speed.svg" alt="Compression ratio against decompression speed: Glyd, zstd, xz, brotli, gzip and lz4 on a Linux source tar and on a web server log">
-  <p class="muted">Where Glyd leads: records (each field a typed column) and containers (the deflate or JPEG inside is opened, and re-created bit for bit on read). Where it does not: plain text and binaries at the strong settings, where xz, brotli -11 and zstd -22 are up to 15% smaller and read at 30–880 MB/s against <code>--ultra</code>'s 500–1,600; and containers read at 1.5–20 MB/s on one thread, the cost of re-creating every deflate stream.</p>
+  <h2 id="landscape">Against zstd, xz and brotli on 24 kinds of data</h2>
+  <p>Every codec's own CLI on one thread, every decode compared byte for byte with its input. Green: Glyd's file is smaller.</p>
+  <img src="benchmarks/charts/bytes-fast-tier.svg" alt="Compression benchmark: Glyd --max bytes against zstd -3 on logs, SQL dumps, JSON, gzip, zip, jar, Office documents, PDF, PNG, JPEG, text, executables and Parquet">
+  <div class="wrap"><table>
+    <tr><th>Data</th><th>vs zstd -3 (--max)</th><th>vs zstd -19, xz, brotli -11 (--ultra)</th></tr>
+    <tr class="g"><td>Records: logs, dumps, JSON (-r)</td><td>12–61% fewer bytes</td><td>3–38% fewer (JSON: 9% more)</td></tr>
+    <tr class="g"><td>Containers: gzip, zip, Office, PDF, PNG, JPEG</td><td>up to 60% fewer</td><td>14–63% fewer</td></tr>
+  </table></div>
+  <p class="muted">Glyd wins where the data has structure: each field of a record becomes a column, and the deflate or JPEG inside a container is opened and re-created bit for bit. On plain text, executables and Parquet it is zstd-class: within 2% at the fast tier, 1–15% larger than xz and brotli -11 at their strongest. <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/landscape-2026-09-22.md">Every codec's speed, the strong-tier and ratio-against-speed charts, and lz4, bzip2, zpaq and JPEG XL</a>.</p>
 
   <h2>The store: compression across objects, not just inside them</h2>
   <p>Inside one object every codec sits on the same floor. The redundancy of object storage is between objects — builds, snapshots, dumps and releases that are near-copies of earlier ones. <code>glyd-store bucket/ --put ...</code> fingerprints each object, finds the stored object it most resembles, and keeps it as a delta when that pays; chains are capped at four, so a read is at most five decodes. Measured on a 39 GB bucket, each object arriving in order, every one read back and compared:</p>

@@ -1,153 +1,99 @@
-<svg xmlns='http://www.w3.org/2000/svg' width='900' height='868' viewBox='0 0 900 868' font-family='-apple-system,system-ui,Segoe UI,Helvetica,Arial,sans-serif' font-size='12'>
-<rect width='900' height='868' fill='white'/>
-<text x='16' y='26' font-size='17' font-weight='600' fill='#111'>Bytes against gzip and zstd -3, the fast tier</text>
-<text x='16' y='46' fill='#666'>Glyd --max (-r on records) against each codec's output on the same data; one thread, M1 Max</text>
-<rect x='16' y='58' width='12' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='32' y='67' fill='#111'>vs gzip -6</text>
-<rect x='120' y='58' width='12' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='136' y='67' fill='#111'>vs zstd -3</text>
-<rect x='234' y='58' width='12' height='10' fill='#d64545'/>
-<text x='250' y='67' fill='#111'>Glyd larger</text>
-<line x1='233.9' y1='78' x2='233.9' y2='838' stroke='#e4e4e4' stroke-width='1'/>
-<text x='233.9' y='856' text-anchor='middle' fill='#666'>-70%</text>
-<line x1='301.6' y1='78' x2='301.6' y2='838' stroke='#e4e4e4' stroke-width='1'/>
-<text x='301.6' y='856' text-anchor='middle' fill='#666'>-60%</text>
-<line x1='369.4' y1='78' x2='369.4' y2='838' stroke='#e4e4e4' stroke-width='1'/>
-<text x='369.4' y='856' text-anchor='middle' fill='#666'>-50%</text>
-<line x1='437.1' y1='78' x2='437.1' y2='838' stroke='#e4e4e4' stroke-width='1'/>
-<text x='437.1' y='856' text-anchor='middle' fill='#666'>-40%</text>
-<line x1='504.8' y1='78' x2='504.8' y2='838' stroke='#e4e4e4' stroke-width='1'/>
-<text x='504.8' y='856' text-anchor='middle' fill='#666'>-30%</text>
-<line x1='572.6' y1='78' x2='572.6' y2='838' stroke='#e4e4e4' stroke-width='1'/>
-<text x='572.6' y='856' text-anchor='middle' fill='#666'>-20%</text>
-<line x1='640.3' y1='78' x2='640.3' y2='838' stroke='#e4e4e4' stroke-width='1'/>
-<text x='640.3' y='856' text-anchor='middle' fill='#666'>-10%</text>
-<line x1='708.1' y1='78' x2='708.1' y2='838' stroke='#999' stroke-width='1.5'/>
-<text x='708.1' y='856' text-anchor='middle' fill='#666'>+0%</text>
-<line x1='775.8' y1='78' x2='775.8' y2='838' stroke='#e4e4e4' stroke-width='1'/>
-<text x='775.8' y='856' text-anchor='middle' fill='#666'>+10%</text>
-<text x='515' y='867' text-anchor='middle' fill='#666' font-size='11'>Glyd's bytes against the codec: below zero, Glyd is smaller</text>
-<text x='194' y='95' text-anchor='end' font-weight='600' fill='#111'>Records (record mode, -r)</text>
-<text x='194' y='121.0' text-anchor='end' fill='#111'>Web server log</text>
-<rect x='297.9' y='104' width='410.2' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='293.9' y='112' text-anchor='end' fill='#111' font-size='10'>-61%</text>
-<rect x='293.0' y='115' width='415.0' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='289.0' y='123' text-anchor='end' fill='#111' font-size='10'>-61%</text>
-<text x='194' y='149.0' text-anchor='end' fill='#111'>Pageview log</text>
-<rect x='636.2' y='132' width='71.9' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='632.2' y='140' text-anchor='end' fill='#111' font-size='10'>-11%</text>
-<rect x='629.0' y='143' width='79.1' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='625.0' y='151' text-anchor='end' fill='#111' font-size='10'>-12%</text>
-<text x='194' y='177.0' text-anchor='end' fill='#111'>SQL dump, page_props</text>
-<rect x='479.6' y='160' width='228.5' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='475.6' y='168' text-anchor='end' fill='#111' font-size='10'>-34%</text>
-<rect x='492.8' y='171' width='215.3' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='488.8' y='179' text-anchor='end' fill='#111' font-size='10'>-32%</text>
-<text x='194' y='205.0' text-anchor='end' fill='#111'>SQL dump, categorylinks</text>
-<rect x='432.1' y='188' width='275.9' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='428.1' y='196' text-anchor='end' fill='#111' font-size='10'>-41%</text>
-<rect x='453.0' y='199' width='255.0' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='449.0' y='207' text-anchor='end' fill='#111' font-size='10'>-38%</text>
-<text x='194' y='233.0' text-anchor='end' fill='#111'>JSON events</text>
-<rect x='422.0' y='216' width='286.0' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='418.0' y='224' text-anchor='end' fill='#111' font-size='10'>-42%</text>
-<rect x='587.2' y='227' width='120.9' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='583.2' y='235' text-anchor='end' fill='#111' font-size='10'>-18%</text>
-<text x='194' y='261' text-anchor='end' font-weight='600' fill='#111'>Containers (opened)</text>
-<text x='194' y='287.0' text-anchor='end' fill='#111'>gzipped log</text>
-<rect x='298.6' y='270' width='409.5' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='294.6' y='278' text-anchor='end' fill='#111' font-size='10'>-60%</text>
-<rect x='298.7' y='281' width='409.4' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='294.7' y='289' text-anchor='end' fill='#111' font-size='10'>-60%</text>
-<text x='194' y='315.0' text-anchor='end' fill='#111'>tar.gz, mixed</text>
-<rect x='331.7' y='298' width='376.4' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='327.7' y='306' text-anchor='end' fill='#111' font-size='10'>-56%</text>
-<rect x='331.8' y='309' width='376.3' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='327.8' y='317' text-anchor='end' fill='#111' font-size='10'>-56%</text>
-<text x='194' y='343.0' text-anchor='end' fill='#111'>.jar (Guava)</text>
-<rect x='467.4' y='326' width='240.7' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='463.4' y='334' text-anchor='end' fill='#111' font-size='10'>-36%</text>
-<rect x='468.2' y='337' width='239.9' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='464.2' y='345' text-anchor='end' fill='#111' font-size='10'>-35%</text>
-<text x='194' y='371.0' text-anchor='end' fill='#111'>source .zip</text>
-<rect x='574.3' y='354' width='133.8' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='570.3' y='362' text-anchor='end' fill='#111' font-size='10'>-20%</text>
-<rect x='584.9' y='365' width='123.1' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='580.9' y='373' text-anchor='end' fill='#111' font-size='10'>-18%</text>
-<text x='194' y='399.0' text-anchor='end' fill='#111'>.pptx</text>
-<rect x='319.3' y='382' width='388.8' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='315.3' y='390' text-anchor='end' fill='#111' font-size='10'>-57%</text>
-<rect x='323.4' y='393' width='384.6' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='319.4' y='401' text-anchor='end' fill='#111' font-size='10'>-57%</text>
-<text x='194' y='427.0' text-anchor='end' fill='#111'>.docx, screenshots</text>
-<rect x='652.8' y='410' width='55.3' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='648.8' y='418' text-anchor='end' fill='#111' font-size='10'>-8%</text>
-<rect x='652.5' y='421' width='55.6' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='648.5' y='429' text-anchor='end' fill='#111' font-size='10'>-8%</text>
-<text x='194' y='455.0' text-anchor='end' fill='#111'>.xlsx</text>
-<rect x='708.1' y='438' width='14.1' height='10' fill='#d64545' opacity='0.95'/>
-<text x='726.2' y='446' text-anchor='start' fill='#111' font-size='10'>+2%</text>
-<rect x='706.3' y='449' width='1.8' height='10' fill='#8a8a8a' opacity='0.73'/>
-<text x='702.3' y='457' text-anchor='end' fill='#111' font-size='10'>-0%</text>
-<text x='194' y='483.0' text-anchor='end' fill='#111'>PDF, text</text>
-<rect x='466.1' y='466' width='242.0' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='462.1' y='474' text-anchor='end' fill='#111' font-size='10'>-36%</text>
-<rect x='482.2' y='477' width='225.9' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='478.2' y='485' text-anchor='end' fill='#111' font-size='10'>-33%</text>
-<text x='194' y='511.0' text-anchor='end' fill='#111'>PDF, figures</text>
-<rect x='521.7' y='494' width='186.4' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='517.7' y='502' text-anchor='end' fill='#111' font-size='10'>-28%</text>
-<rect x='514.6' y='505' width='193.5' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='510.6' y='513' text-anchor='end' fill='#111' font-size='10'>-29%</text>
-<text x='194' y='539.0' text-anchor='end' fill='#111'>PNG photo</text>
-<rect x='647.2' y='522' width='60.8' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='643.2' y='530' text-anchor='end' fill='#111' font-size='10'>-9%</text>
-<rect x='639.1' y='533' width='69.0' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='635.1' y='541' text-anchor='end' fill='#111' font-size='10'>-10%</text>
-<text x='194' y='567.0' text-anchor='end' fill='#111'>JPEG photo</text>
-<rect x='567.5' y='550' width='140.6' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='563.5' y='558' text-anchor='end' fill='#111' font-size='10'>-21%</text>
-<rect x='565.9' y='561' width='142.2' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='561.9' y='569' text-anchor='end' fill='#111' font-size='10'>-21%</text>
-<text x='194' y='595' text-anchor='end' font-weight='600' fill='#111'>Plain data</text>
-<text x='194' y='621.0' text-anchor='end' fill='#111'>Wikipedia text</text>
-<rect x='682.2' y='604' width='25.9' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='678.2' y='612' text-anchor='end' fill='#111' font-size='10'>-4%</text>
-<rect x='704.3' y='615' width='3.7' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='700.3' y='623' text-anchor='end' fill='#111' font-size='10'>-1%</text>
-<text x='194' y='649.0' text-anchor='end' fill='#111'>English text</text>
-<rect x='670.8' y='632' width='37.3' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='666.8' y='640' text-anchor='end' fill='#111' font-size='10'>-6%</text>
-<rect x='706.9' y='643' width='1.2' height='10' fill='#8a8a8a' opacity='0.73'/>
-<text x='702.9' y='651' text-anchor='end' fill='#111' font-size='10'>-0%</text>
-<text x='194' y='677.0' text-anchor='end' fill='#111'>Linux source tar</text>
-<rect x='686.8' y='660' width='21.3' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='682.8' y='668' text-anchor='end' fill='#111' font-size='10'>-3%</text>
-<rect x='691.9' y='671' width='16.2' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='687.9' y='679' text-anchor='end' fill='#111' font-size='10'>-2%</text>
-<text x='194' y='705.0' text-anchor='end' fill='#111'>Ubuntu root tar</text>
-<rect x='609.1' y='688' width='98.9' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='605.1' y='696' text-anchor='end' fill='#111' font-size='10'>-15%</text>
-<rect x='696.6' y='699' width='11.5' height='10' fill='#2a9d4a' opacity='0.73'/>
-<text x='692.6' y='707' text-anchor='end' fill='#111' font-size='10'>-2%</text>
-<text x='194' y='733.0' text-anchor='end' fill='#111'>Executable</text>
-<rect x='678.7' y='716' width='29.3' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='674.7' y='724' text-anchor='end' fill='#111' font-size='10'>-4%</text>
-<rect x='708.1' y='727' width='3.5' height='10' fill='#d64545' opacity='0.73'/>
-<text x='715.6' y='735' text-anchor='start' fill='#111' font-size='10'>+1%</text>
-<text x='194' y='761.0' text-anchor='end' fill='#111'>Database file</text>
-<rect x='669.4' y='744' width='38.7' height='10' fill='#2a9d4a' opacity='0.95'/>
-<text x='665.4' y='752' text-anchor='end' fill='#111' font-size='10'>-6%</text>
-<rect x='704.7' y='755' width='3.3' height='10' fill='#8a8a8a' opacity='0.73'/>
-<text x='700.7' y='763' text-anchor='end' fill='#111' font-size='10'>-0%</text>
-<text x='194' y='789.0' text-anchor='end' fill='#111'>X-ray image</text>
-<rect x='708.1' y='772' width='16.4' height='10' fill='#d64545' opacity='0.95'/>
-<text x='728.5' y='780' text-anchor='start' fill='#111' font-size='10'>+2%</text>
-<rect x='708.1' y='783' width='11.8' height='10' fill='#d64545' opacity='0.73'/>
-<text x='723.8' y='791' text-anchor='start' fill='#111' font-size='10'>+2%</text>
-<text x='194' y='817.0' text-anchor='end' fill='#111'>Parquet</text>
-<rect x='708.1' y='800' width='9.1' height='10' fill='#d64545' opacity='0.95'/>
-<text x='721.1' y='808' text-anchor='start' fill='#111' font-size='10'>+1%</text>
-<rect x='708.1' y='811' width='1.5' height='10' fill='#8a8a8a' opacity='0.73'/>
-<text x='713.6' y='819' text-anchor='start' fill='#111' font-size='10'>+0%</text>
+<svg xmlns='http://www.w3.org/2000/svg' width='900' height='804' viewBox='0 0 900 804' font-family='-apple-system,system-ui,Segoe UI,Helvetica,Arial,sans-serif' font-size='13'>
+<rect width='900' height='804' fill='white'/>
+<text x='16' y='28' font-size='18' font-weight='600' fill='#111'>Glyd against zstd -3: bytes stored</text>
+<text x='16' y='50' fill='#666'>Glyd --max (-r on records) against zstd -3 on the same data; one thread, M1 Max. Green: Glyd's file is smaller.</text>
+<line x1='249.8' y1='70' x2='249.8' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='249.8' y='788' text-anchor='middle' fill='#666'>-70%</text>
+<line x1='316.1' y1='70' x2='316.1' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='316.1' y='788' text-anchor='middle' fill='#666'>-60%</text>
+<line x1='382.4' y1='70' x2='382.4' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='382.4' y='788' text-anchor='middle' fill='#666'>-50%</text>
+<line x1='448.7' y1='70' x2='448.7' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='448.7' y='788' text-anchor='middle' fill='#666'>-40%</text>
+<line x1='515.0' y1='70' x2='515.0' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='515.0' y='788' text-anchor='middle' fill='#666'>-30%</text>
+<line x1='581.3' y1='70' x2='581.3' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='581.3' y='788' text-anchor='middle' fill='#666'>-20%</text>
+<line x1='647.6' y1='70' x2='647.6' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='647.6' y='788' text-anchor='middle' fill='#666'>-10%</text>
+<line x1='713.9' y1='70' x2='713.9' y2='770' stroke='#999' stroke-width='1.5'/>
+<text x='713.9' y='788' text-anchor='middle' fill='#666'>+0%</text>
+<line x1='780.2' y1='70' x2='780.2' y2='770' stroke='#e4e4e4' stroke-width='1'/>
+<text x='780.2' y='788' text-anchor='middle' fill='#666'>+10%</text>
+<text x='515' y='802' text-anchor='middle' fill='#666' font-size='12'>← Glyd's file is smaller · larger →</text>
+<text x='202' y='91' text-anchor='end' font-weight='600' fill='#111'>Records (record mode, -r)</text>
+<text x='202' y='117.0' text-anchor='end' fill='#111'>Web server log</text>
+<rect x='307.7' y='104.0' width='406.2' height='17' rx='2' fill='#2a9d4a'/>
+<text x='301.7' y='117.0' text-anchor='end' fill='#111' font-weight='600'>-61%</text>
+<text x='202' y='142.0' text-anchor='end' fill='#111'>Pageview log</text>
+<rect x='636.5' y='129.0' width='77.4' height='17' rx='2' fill='#2a9d4a'/>
+<text x='630.5' y='142.0' text-anchor='end' fill='#111' font-weight='600'>-12%</text>
+<text x='202' y='167.0' text-anchor='end' fill='#111'>SQL dump, page_props</text>
+<rect x='503.2' y='154.0' width='210.7' height='17' rx='2' fill='#2a9d4a'/>
+<text x='497.2' y='167.0' text-anchor='end' fill='#111' font-weight='600'>-32%</text>
+<text x='202' y='192.0' text-anchor='end' fill='#111'>SQL dump, categorylinks</text>
+<rect x='464.3' y='179.0' width='249.6' height='17' rx='2' fill='#2a9d4a'/>
+<text x='458.3' y='192.0' text-anchor='end' fill='#111' font-weight='600'>-38%</text>
+<text x='202' y='217.0' text-anchor='end' fill='#111'>JSON events</text>
+<rect x='595.6' y='204.0' width='118.3' height='17' rx='2' fill='#2a9d4a'/>
+<text x='589.6' y='217.0' text-anchor='end' fill='#111' font-weight='600'>-18%</text>
+<text x='202' y='246' text-anchor='end' font-weight='600' fill='#111'>Containers (opened)</text>
+<text x='202' y='272.0' text-anchor='end' fill='#111'>gzipped log</text>
+<rect x='313.2' y='259.0' width='400.7' height='17' rx='2' fill='#2a9d4a'/>
+<text x='307.2' y='272.0' text-anchor='end' fill='#111' font-weight='600'>-60%</text>
+<text x='202' y='297.0' text-anchor='end' fill='#111'>tar.gz, mixed</text>
+<rect x='345.6' y='284.0' width='368.3' height='17' rx='2' fill='#2a9d4a'/>
+<text x='339.6' y='297.0' text-anchor='end' fill='#111' font-weight='600'>-56%</text>
+<text x='202' y='322.0' text-anchor='end' fill='#111'>.jar (Guava)</text>
+<rect x='479.1' y='309.0' width='234.8' height='17' rx='2' fill='#2a9d4a'/>
+<text x='473.1' y='322.0' text-anchor='end' fill='#111' font-weight='600'>-35%</text>
+<text x='202' y='347.0' text-anchor='end' fill='#111'>source .zip</text>
+<rect x='593.4' y='334.0' width='120.5' height='17' rx='2' fill='#2a9d4a'/>
+<text x='587.4' y='347.0' text-anchor='end' fill='#111' font-weight='600'>-18%</text>
+<text x='202' y='372.0' text-anchor='end' fill='#111'>.pptx</text>
+<rect x='337.5' y='359.0' width='376.5' height='17' rx='2' fill='#2a9d4a'/>
+<text x='331.5' y='372.0' text-anchor='end' fill='#111' font-weight='600'>-57%</text>
+<text x='202' y='397.0' text-anchor='end' fill='#111'>.docx, screenshots</text>
+<rect x='659.5' y='384.0' width='54.4' height='17' rx='2' fill='#2a9d4a'/>
+<text x='653.5' y='397.0' text-anchor='end' fill='#111' font-weight='600'>-8%</text>
+<text x='202' y='422.0' text-anchor='end' fill='#111'>.xlsx</text>
+<rect x='712.2' y='409.0' width='1.7' height='17' rx='2' fill='#8a8a8a'/>
+<text x='706.2' y='422.0' text-anchor='end' fill='#111' font-weight='600'>0%</text>
+<text x='202' y='447.0' text-anchor='end' fill='#111'>PDF, text</text>
+<rect x='492.8' y='434.0' width='221.1' height='17' rx='2' fill='#2a9d4a'/>
+<text x='486.8' y='447.0' text-anchor='end' fill='#111' font-weight='600'>-33%</text>
+<text x='202' y='472.0' text-anchor='end' fill='#111'>PDF, figures</text>
+<rect x='524.5' y='459.0' width='189.4' height='17' rx='2' fill='#2a9d4a'/>
+<text x='518.5' y='472.0' text-anchor='end' fill='#111' font-weight='600'>-29%</text>
+<text x='202' y='497.0' text-anchor='end' fill='#111'>PNG photo</text>
+<rect x='646.4' y='484.0' width='67.5' height='17' rx='2' fill='#2a9d4a'/>
+<text x='640.4' y='497.0' text-anchor='end' fill='#111' font-weight='600'>-10%</text>
+<text x='202' y='522.0' text-anchor='end' fill='#111'>JPEG photo</text>
+<rect x='574.8' y='509.0' width='139.2' height='17' rx='2' fill='#2a9d4a'/>
+<text x='568.8' y='522.0' text-anchor='end' fill='#111' font-weight='600'>-21%</text>
+<text x='202' y='551' text-anchor='end' font-weight='600' fill='#111'>Plain data</text>
+<text x='202' y='577.0' text-anchor='end' fill='#111'>Wikipedia text</text>
+<rect x='710.3' y='564.0' width='3.6' height='17' rx='2' fill='#2a9d4a'/>
+<text x='704.3' y='577.0' text-anchor='end' fill='#111' font-weight='600'>-1%</text>
+<text x='202' y='602.0' text-anchor='end' fill='#111'>English text</text>
+<rect x='712.8' y='589.0' width='1.1' height='17' rx='2' fill='#8a8a8a'/>
+<text x='706.8' y='602.0' text-anchor='end' fill='#111' font-weight='600'>0%</text>
+<text x='202' y='627.0' text-anchor='end' fill='#111'>Linux source tar</text>
+<rect x='698.0' y='614.0' width='15.9' height='17' rx='2' fill='#2a9d4a'/>
+<text x='692.0' y='627.0' text-anchor='end' fill='#111' font-weight='600'>-2%</text>
+<text x='202' y='652.0' text-anchor='end' fill='#111'>Ubuntu root tar</text>
+<rect x='702.7' y='639.0' width='11.2' height='17' rx='2' fill='#2a9d4a'/>
+<text x='696.7' y='652.0' text-anchor='end' fill='#111' font-weight='600'>-2%</text>
+<text x='202' y='677.0' text-anchor='end' fill='#111'>Executable</text>
+<rect x='713.9' y='664.0' width='3.4' height='17' rx='2' fill='#d64545'/>
+<text x='723.3' y='677.0' text-anchor='start' fill='#111' font-weight='600'>+1%</text>
+<text x='202' y='702.0' text-anchor='end' fill='#111'>Database file</text>
+<rect x='710.6' y='689.0' width='3.3' height='17' rx='2' fill='#8a8a8a'/>
+<text x='704.6' y='702.0' text-anchor='end' fill='#111' font-weight='600'>0%</text>
+<text x='202' y='727.0' text-anchor='end' fill='#111'>X-ray image</text>
+<rect x='713.9' y='714.0' width='11.5' height='17' rx='2' fill='#d64545'/>
+<text x='731.4' y='727.0' text-anchor='start' fill='#111' font-weight='600'>+2%</text>
+<text x='202' y='752.0' text-anchor='end' fill='#111'>Parquet</text>
+<rect x='713.9' y='739.0' width='1.5' height='17' rx='2' fill='#8a8a8a'/>
+<text x='721.4' y='752.0' text-anchor='start' fill='#111' font-weight='600'>0%</text>
 </svg>

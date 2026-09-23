@@ -17,6 +17,16 @@ tables regenerated with `scripts/landscape.py --report rows.jsonl`.
 zpaq -m5 on the other 7** (by 0.4–11%, where Glyd `--cold -r` runs
 1.3–3.4× faster).
 
+## Charts
+
+Against the codecs in general use (`scripts/landscape_charts.py`):
+
+![Glyd --max bytes against zstd -3 on each kind of data](charts/bytes-fast-tier.svg)
+
+![Glyd --ultra bytes against the strongest of zstd -19, zstd -22, xz -9e and brotli -11 on each kind of data](charts/bytes-strong-tier.svg)
+
+![Ratio against decompression speed on a Linux source tar and on a web server log](charts/ratio-vs-read-speed.svg)
+
 ## Summary
 
 Glyd's bytes against the other (minus: fewer bytes than it), and speeds on one thread, MB/s of the original.

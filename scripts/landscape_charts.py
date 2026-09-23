@@ -86,65 +86,44 @@ def esc(s):
     return s.replace("&", "&amp;").replace("<", "&lt;")
 
 
-def bar_chart(rows, title, subtitle, series, glyd_of):
-    """Horizontal bars, one row per data type, one bar per series:
-    Glyd's bytes against a codec, in percent (below zero: fewer)."""
-    left, right, top = 200, 70, 78
-    width = 900
-    bar_h, gap, group_gap = 11, 6, 26
-    vals = []
-    for _, items in GROUPS:
-        for label, _ in items:
-            g = glyd_of(rows, label)
-            for _, codecs in series:
-                vals.append(pct(g, best(rows, label, codecs)))
-    lo, hi = min(min(vals), -10), max(max(vals), 10)
-    lo, hi = math.floor(lo / 10) * 10 - 5, math.ceil(hi / 10) * 10 + 8
+def bar_chart(rows, title, subtitle, codecs, glyd_of):
+    """Horizontal bars, one per data type: Glyd's bytes against the
+    smallest output of `codecs` on that data, in percent (below zero:
+    Glyd is smaller)."""
+    left, right, top = 210, 80, 70
+    width, bar_h, pitch, group_gap = 900, 17, 25, 30
+    vals = {label: pct(glyd_of(rows, label), best(rows, label, codecs)) for _, items in GROUPS for label, _ in items}
+    lo, hi = min(min(vals.values()), -10), max(max(vals.values()), 10)
+    lo, hi = math.floor(lo / 10) * 10 - 6, math.ceil(hi / 10) * 10 + 6
     x0, x1 = left, width - right
-    scale = (x1 - x0) / (hi - lo)
-    x_of = lambda v: x0 + (v - lo) * scale
-    rows_h = bar_h * len(series) + gap
-    height = top + sum(group_gap + rows_h * len(items) for _, items in GROUPS) + 40
-    out = [f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}' {FONT} font-size='12'>",
+    x_of = lambda v: x0 + (v - lo) * (x1 - x0) / (hi - lo)
+    height = top + sum(group_gap + pitch * len(items) for _, items in GROUPS) + 44
+    out = [f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{height}' viewBox='0 0 {width} {height}' {FONT} font-size='13'>",
            f"<rect width='{width}' height='{height}' fill='white'/>",
-           f"<text x='16' y='26' font-size='17' font-weight='600' fill='{TEXT}'>{esc(title)}</text>",
-           f"<text x='16' y='46' fill='{MUTED}'>{esc(subtitle)}</text>"]
-    # Legend: a series is a shade; green is fewer bytes than the codec, red more.
-    lx = 16
-    for i, (name, _) in enumerate(series):
-        out.append(f"<rect x='{lx}' y='58' width='12' height='10' fill='{LESS}' opacity='{0.95 - 0.22 * i}'/>")
-        out.append(f"<text x='{lx + 16}' y='67' fill='{TEXT}'>{esc(name)}</text>")
-        lx += 16 + 7 * len(name) + 18
-    out.append(f"<rect x='{lx + 10}' y='58' width='12' height='10' fill='{MORE}'/>")
-    out.append(f"<text x='{lx + 26}' y='67' fill='{TEXT}'>Glyd larger</text>")
-    # Grid.
-    y_end = height - 30
-    v = lo + 5
-    v = math.ceil(v / 10) * 10
-    while v <= hi:
+           f"<text x='16' y='28' font-size='18' font-weight='600' fill='{TEXT}'>{esc(title)}</text>",
+           f"<text x='16' y='50' fill='{MUTED}'>{esc(subtitle)}</text>"]
+    y_end = height - 34
+    v = math.ceil((lo + 6) / 10) * 10
+    while v <= hi - 6:
         x = x_of(v)
         out.append(f"<line x1='{x:.1f}' y1='{top}' x2='{x:.1f}' y2='{y_end}' stroke='{GRID if v else '#999'}' stroke-width='{1 if v else 1.5}'/>")
-        out.append(f"<text x='{x:.1f}' y='{height - 12}' text-anchor='middle' fill='{MUTED}'>{v:+d}%</text>")
+        out.append(f"<text x='{x:.1f}' y='{height - 16}' text-anchor='middle' fill='{MUTED}'>{v:+d}%</text>")
         v += 10
-    out.append(f"<text x='{(x0 + x1) / 2:.0f}' y='{height - 1}' text-anchor='middle' fill='{MUTED}' font-size='11'>Glyd's bytes against the codec: below zero, Glyd is smaller</text>")
+    out.append(f"<text x='{(x0 + x1) / 2:.0f}' y='{height - 2}' text-anchor='middle' fill='{MUTED}' font-size='12'>← Glyd's file is smaller · larger →</text>")
     y = top
     for group, items in GROUPS:
         y += group_gap
-        out.append(f"<text x='{left - 6}' y='{y - 9}' text-anchor='end' font-weight='600' fill='{TEXT}'>{esc(group)}</text>")
+        out.append(f"<text x='{left - 8}' y='{y - 9}' text-anchor='end' font-weight='600' fill='{TEXT}'>{esc(group)}</text>")
         for label, short in items:
-            g = glyd_of(rows, label)
-            out.append(f"<text x='{left - 6}' y='{y + rows_h / 2 + 3:.1f}' text-anchor='end' fill='{TEXT}'>{esc(short)}</text>")
-            by = y
-            for i, (name, codecs) in enumerate(series):
-                p = pct(g, best(rows, label, codecs))
-                col = LESS if p < -0.5 else (MORE if p > 0.5 else OTHER)
-                xa, xb = sorted((x_of(0), x_of(p)))
-                out.append(f"<rect x='{xa:.1f}' y='{by}' width='{max(xb - xa, 0.8):.1f}' height='{bar_h - 1}' fill='{col}' opacity='{0.95 - 0.22 * i}'/>")
-                tx = xa - 4 if p < 0 else xb + 4
-                anchor = "end" if p < 0 else "start"
-                out.append(f"<text x='{tx:.1f}' y='{by + bar_h - 3}' text-anchor='{anchor}' fill='{TEXT}' font-size='10'>{p:+.0f}%</text>")
-                by += bar_h
-            y += rows_h
+            p = vals[label]
+            col = LESS if p < -0.5 else (MORE if p > 0.5 else OTHER)
+            xa, xb = sorted((x_of(0), x_of(p)))
+            by = y + (pitch - bar_h) / 2
+            out.append(f"<text x='{left - 8}' y='{y + pitch / 2 + 4.5:.1f}' text-anchor='end' fill='{TEXT}'>{esc(short)}</text>")
+            out.append(f"<rect x='{xa:.1f}' y='{by:.1f}' width='{max(xb - xa, 1):.1f}' height='{bar_h}' rx='2' fill='{col}'/>")
+            tx, anchor = (xa - 6, "end") if p < 0 else (xb + 6, "start")
+            out.append(f"<text x='{tx:.1f}' y='{y + pitch / 2 + 4.5:.1f}' text-anchor='{anchor}' fill='{TEXT}' font-weight='600'>{'0%' if abs(p) < 0.5 else f'{p:+.0f}%'}</text>")
+            y += pitch
     out.append("</svg>")
     return "\n".join(out)
 
@@ -233,12 +212,12 @@ def main():
         return
     out = sys.argv[2]
     os.makedirs(out, exist_ok=True)
-    fast = bar_chart(rows, "Bytes against gzip and zstd -3, the fast tier",
-                     "Glyd --max (-r on records) against each codec's output on the same data; one thread, M1 Max",
-                     [("vs gzip -6", ["gzip -6"]), ("vs zstd -3", ["zstd -3"])], glyd_fast)
-    strong = bar_chart(rows, "Bytes against zstd -19, xz and brotli, the strong tier",
-                       "Glyd --ultra (-r on records) against the better of zstd -19 and -22 --long, xz -9e, brotli -11",
-                       [("vs zstd -19/-22", ["zstd -19", "zstd -22 --long"]), ("vs xz -9e", ["xz -6", "xz -9e"]), ("vs brotli -11", ["brotli -11"])], glyd_strong)
+    fast = bar_chart(rows, "Glyd against zstd -3: bytes stored",
+                     "Glyd --max (-r on records) against zstd -3 on the same data; one thread, M1 Max. Green: Glyd's file is smaller.",
+                     ["zstd -3"], glyd_fast)
+    strong = bar_chart(rows, "Glyd against the strongest of zstd -19/-22, xz -9e and brotli -11",
+                       "Glyd --ultra (-r on records) against whichever of the three is smallest on that data. Green: Glyd's file is smaller.",
+                       ["zstd -19", "zstd -22 --long", "xz -6", "xz -9e", "brotli -11"], glyd_strong)
     codecs = ["lz4 -1", "gzip -6", "zstd -1", "zstd -3", "zstd -9", "zstd -19", "zstd -22 --long", "brotli -5", "brotli -11", "xz -6", "xz -9e",
               "Glyd default", "Glyd --max", "Glyd --max -r", "Glyd --ultra", "Glyd --ultra -r", "Glyd --cold -r"]
     speed = scatter(rows, [("Source tree tar (Linux 6.10)", "Linux source tar (plain data)", [c for c in codecs if not c.endswith("-r")]),
