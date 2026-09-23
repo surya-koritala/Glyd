@@ -233,6 +233,66 @@ The short version: `--max` stores 2.2% less than zstd -3 over the corpus
 JSON). `--max -r` stores 18% less than zstd -3 and 1% less than zstd -19
 at 500–645 MB/s on 8 cores; `--ultra -r` 11% less than zstd -19.
 
+## Against gzip, zstd, xz and brotli on 24 kinds of data
+
+Every codec's own CLI on one thread of an Apple M1 Max, every decode
+compared byte for byte with its input (505 round trips, all exact);
+text-like inputs are the first 32 MB of the file, containers and
+pictures whole. Glyd runs `--max` and `--ultra`, with `-r` on logs and
+dumps. The percentages are Glyd's bytes against the other codec's on
+the same data: below zero, Glyd's file is smaller. Method, every
+codec's speed and the raw rows, with lz4, bzip2, zpaq and JPEG XL as
+well: [docs/benchmarks/landscape-2026-09-22.md](docs/benchmarks/landscape-2026-09-22.md).
+
+![Compression benchmark: Glyd --max bytes against gzip -6 and zstd -3 on logs, SQL dumps, JSON, gzip, zip, jar, Office documents, PDF, PNG, JPEG, text, executables and Parquet](docs/benchmarks/charts/bytes-fast-tier.svg)
+
+![Compression benchmark: Glyd --ultra bytes against zstd -19, xz -9e and brotli -11 on the same 24 kinds of data](docs/benchmarks/charts/bytes-strong-tier.svg)
+
+![Compression ratio against decompression speed: Glyd, zstd, xz, brotli, gzip and lz4 on a Linux source tar and on a web server log](docs/benchmarks/charts/ratio-vs-read-speed.svg)
+
+| Data | vs gzip -6 | vs zstd -3 | vs zstd -19/-22 | vs xz -9e | vs brotli -11 | Read MB/s, Glyd --max · zstd -3 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Records (record mode, -r)** | | | | | | |
+| Web server log | **-61%** | **-61%** | **-40%** | **-37%** | **-39%** | 1,246 · 1,261 |
+| Pageview log | **-11%** | **-12%** | **-7%** | **-3%** | **-3%** | 882 · 832 |
+| SQL dump, page_props | **-34%** | **-32%** | **-27%** | **-22%** | **-25%** | 1,127 · 991 |
+| SQL dump, categorylinks | **-41%** | **-38%** | **-29%** | **-23%** | **-26%** | 1,188 · 1,314 |
+| JSON events | **-42%** | **-18%** | +3% | +7% | +9% | 1,570 · 1,419 |
+| **Containers (opened)** | | | | | | |
+| gzipped log | **-60%** | **-60%** | **-63%** | **-63%** | **-63%** | 13 · 2,085 |
+| tar.gz, mixed | **-56%** | **-56%** | **-59%** | **-59%** | **-59%** | 11 · 2,071 |
+| .jar (Guava) | **-36%** | **-35%** | **-47%** | **-48%** | **-47%** | 20 · 520 |
+| source .zip | **-20%** | **-18%** | **-35%** | **-35%** | **-35%** | 10 · 296 |
+| .pptx | **-57%** | **-57%** | **-62%** | **-62%** | **-62%** | 9 · 20 |
+| .docx, screenshots | **-8%** | **-8%** | **-17%** | **-17%** | **-17%** | 10 · 499 |
+| .xlsx | +2% | -0% | **-15%** | **-14%** | **-15%** | 221 · 265 |
+| PDF, text | **-36%** | **-33%** | **-41%** | **-40%** | **-40%** | 7 · 354 |
+| PDF, figures | **-28%** | **-29%** | **-38%** | **-37%** | **-38%** | 2 · 931 |
+| PNG photo | **-9%** | **-10%** | **-14%** | **-15%** | **-14%** | 15 · 391 |
+| JPEG photo | **-21%** | **-21%** | **-21%** | **-21%** | **-20%** | 9 · 389 |
+| **Plain data** | | | | | | |
+| Wikipedia text | **-4%** | **-1%** | +3% | +5% | +5% | 883 · 800 |
+| English text | **-6%** | -0% | +1% | +1% | +1% | 682 · 597 |
+| Linux source tar | **-3%** | **-2%** | +3% | +6% | +5% | 1,166 · 1,076 |
+| Ubuntu root tar | **-15%** | **-2%** | +4% | +9% | +8% | 890 · 875 |
+| Executable | **-4%** | +1% | +3% | +14% | +10% | 1,080 · 901 |
+| Database file | **-6%** | -0% | **-1%** | +8% | +9% | 896 · 761 |
+| X-ray image | +2% | +2% | +1% | +15% | +10% | 646 · 491 |
+| Parquet | +1% | +0% | +0% | +1% | +0% | 2,184 · 2,389 |
+
+Where Glyd leads: records, because each field is stored as a typed
+column, and containers, because the deflate or JPEG inside is opened
+and re-created bit for bit on read while every other codec sees bytes
+that are already compressed (the JPEG goes through Lepton: 1.27×,
+against 1.24× for JPEG XL's lossless JPEG mode). Where it does not:
+plain text and binaries at the strong settings, where xz, brotli -11
+and zstd -22 are up to 15% smaller and read at 30–880 MB/s against
+`--ultra`'s 500–1,600; and speed on containers, which read at 1.5–20
+MB/s on one thread because a read re-creates every deflate stream
+(the 88 KB .pptx row is mostly process start). On one thread `--max`
+writes at 0.36–0.91× zstd -3's speed on plain data and reads at
+0.9–1.3×.
+
 ## The store: compression across objects
 
 Inside one object every codec sits on the same floor: on plain bytes
@@ -753,10 +813,18 @@ panic or an unbounded allocation; every unsafe block carries its bound.
   compressed; no column model moves them. Parquet is zstd inside already.
 - `--cold` is symmetric: reads cost what writes cost, 1–1.3 MB/s per
   core, so it is for data read a few times in its life, not a tier that
-  serves reads. It is 1–3% behind zpaq -m5 on text and JSON.
-- `--ultra` is 1.2% less dense than zstd -19 on Silesia (3.96 vs 4.01);
-  on the real-data corpus the two are equal. zstd 1.5.7's `--max` level
-  is denser still, at 72 minutes per gigabyte.
+  serves reads. It is 1% behind zpaq -m5 on text, 6–11% on an
+  executable, a database file and an OS image, and ahead on logs,
+  dumps and JSON.
+- `--ultra` is 0.1–3.5% larger than the better of zstd -19 and -22 on
+  plain text, executables, source and OS trees, images and Parquet
+  (equal or smaller on records and containers), and up to 15% larger
+  than xz -9e and brotli -11 there, which read at 30–125 MB/s against its
+  500–1,600. zstd 1.5.7's `--max` level is denser still, at 72 minutes
+  per gigabyte.
+- Containers read at 1.5–20 MB/s on one thread: a read re-creates
+  every deflate stream bit for bit. The default level opens them too,
+  at 0.6–5.5 MB/s, and on most keeps the closed form it also tries.
 - `GlydReader`/`GlydWriter` (std::io streaming) carry v6 levels only.
 
 ---

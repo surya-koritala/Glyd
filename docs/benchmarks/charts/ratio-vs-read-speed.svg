@@ -1,0 +1,119 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='900' height='420' viewBox='0 0 900 420' font-family='-apple-system,system-ui,Segoe UI,Helvetica,Arial,sans-serif' font-size='12'>
+<rect width='900' height='420' fill='white'/>
+<text x='16' y='26' font-size='17' font-weight='600' fill='#111'>Ratio against read speed</text>
+<text x='16' y='46' fill='#666'>Every codec's level on the same 32 MB, one thread, M1 Max; up and to the right is better</text>
+<text x='249' y='82' text-anchor='middle' font-weight='600' fill='#111'>Linux source tar (plain data)</text>
+<line x1='64.0' y1='94' x2='64.0' y2='376' stroke='#e4e4e4'/>
+<text x='64.0' y='392' text-anchor='middle' fill='#666'>100</text>
+<line x1='249.0' y1='94' x2='249.0' y2='376' stroke='#e4e4e4'/>
+<text x='249.0' y='392' text-anchor='middle' fill='#666'>1000</text>
+<line x1='434.0' y1='94' x2='434.0' y2='376' stroke='#e4e4e4'/>
+<text x='434.0' y='392' text-anchor='middle' fill='#666'>10000</text>
+<line x1='64' y1='376.0' x2='434' y2='376.0' stroke='#e4e4e4'/>
+<text x='58' y='380.0' text-anchor='end' fill='#666'>0×</text>
+<line x1='64' y1='339.0' x2='434' y2='339.0' stroke='#e4e4e4'/>
+<text x='58' y='343.0' text-anchor='end' fill='#666'>1×</text>
+<line x1='64' y1='302.0' x2='434' y2='302.0' stroke='#e4e4e4'/>
+<text x='58' y='306.0' text-anchor='end' fill='#666'>2×</text>
+<line x1='64' y1='265.0' x2='434' y2='265.0' stroke='#e4e4e4'/>
+<text x='58' y='269.0' text-anchor='end' fill='#666'>3×</text>
+<line x1='64' y1='228.0' x2='434' y2='228.0' stroke='#e4e4e4'/>
+<text x='58' y='232.0' text-anchor='end' fill='#666'>4×</text>
+<line x1='64' y1='191.1' x2='434' y2='191.1' stroke='#e4e4e4'/>
+<text x='58' y='195.1' text-anchor='end' fill='#666'>5×</text>
+<line x1='64' y1='154.1' x2='434' y2='154.1' stroke='#e4e4e4'/>
+<text x='58' y='158.1' text-anchor='end' fill='#666'>6×</text>
+<line x1='64' y1='117.1' x2='434' y2='117.1' stroke='#e4e4e4'/>
+<text x='58' y='121.1' text-anchor='end' fill='#666'>7×</text>
+<text x='249' y='412' text-anchor='middle' fill='#666' font-size='11'>decompress MB/s, one thread (log scale)</text>
+<text transform='translate(32,235) rotate(-90)' text-anchor='middle' fill='#666' font-size='11'>ratio</text>
+<circle cx='81.3' cy='114.9' r='4' fill='#8a8a8a'/>
+<text x='89.3' y='118.9' fill='#111' font-size='11' font-weight='400'>xz -9e</text>
+<circle cx='200.7' cy='118.4' r='4' fill='#8a8a8a'/>
+<text x='129.7' y='122.4' fill='#111' font-size='11' font-weight='400'>brotli -11</text>
+<circle cx='253.9' cy='122.4' r='4' fill='#8a8a8a'/>
+<text x='206.7' y='114.4' fill='#111' font-size='11' font-weight='400'>zstd -22 --long</text>
+<circle cx='84.0' cy='122.5' r='4' fill='#8a8a8a'/>
+<text x='68.3' y='139.5' fill='#111' font-size='11' font-weight='400'>xz -6</text>
+<circle cx='248.1' cy='127.5' r='4' fill='#8a8a8a'/>
+<text x='222.9' y='144.5' fill='#111' font-size='11' font-weight='400'>zstd -19</text>
+<circle cx='261.1' cy='129.6' r='5' fill='#0b5fff'/>
+<text x='269.1' y='157.6' fill='#0b5fff' font-size='11' font-weight='600'>Glyd --ultra</text>
+<circle cx='258.6' cy='158.0' r='4' fill='#8a8a8a'/>
+<text x='236.5' y='175.0' fill='#111' font-size='11' font-weight='400'>zstd -9</text>
+<circle cx='208.0' cy='166.0' r='4' fill='#8a8a8a'/>
+<text x='143.3' y='170.0' fill='#111' font-size='11' font-weight='400'>brotli -5</text>
+<circle cx='261.3' cy='183.3' r='5' fill='#0b5fff'/>
+<text x='269.3' y='187.3' fill='#0b5fff' font-size='11' font-weight='600'>Glyd --max</text>
+<circle cx='254.9' cy='187.9' r='4' fill='#8a8a8a'/>
+<text x='202.8' y='203.9' fill='#111' font-size='11' font-weight='400'>zstd -3</text>
+<circle cx='238.3' cy='189.3' r='4' fill='#8a8a8a'/>
+<text x='186.2' y='217.3' fill='#111' font-size='11' font-weight='400'>gzip -6</text>
+<circle cx='262.1' cy='205.2' r='4' fill='#8a8a8a'/>
+<text x='270.1' y='209.2' fill='#111' font-size='11' font-weight='400'>zstd -1</text>
+<circle cx='298.5' cy='252.1' r='5' fill='#0b5fff'/>
+<text x='306.5' y='256.1' fill='#0b5fff' font-size='11' font-weight='600'>Glyd default</text>
+<circle cx='283.2' cy='257.3' r='4' fill='#8a8a8a'/>
+<text x='237.4' y='261.3' fill='#111' font-size='11' font-weight='400'>lz4 -1</text>
+<text x='679' y='82' text-anchor='middle' font-weight='600' fill='#111'>Web server log (records)</text>
+<line x1='494.0' y1='94' x2='494.0' y2='376' stroke='#e4e4e4'/>
+<text x='494.0' y='392' text-anchor='middle' fill='#666'>1</text>
+<line x1='586.5' y1='94' x2='586.5' y2='376' stroke='#e4e4e4'/>
+<text x='586.5' y='392' text-anchor='middle' fill='#666'>10</text>
+<line x1='679.0' y1='94' x2='679.0' y2='376' stroke='#e4e4e4'/>
+<text x='679.0' y='392' text-anchor='middle' fill='#666'>100</text>
+<line x1='771.5' y1='94' x2='771.5' y2='376' stroke='#e4e4e4'/>
+<text x='771.5' y='392' text-anchor='middle' fill='#666'>1000</text>
+<line x1='864.0' y1='94' x2='864.0' y2='376' stroke='#e4e4e4'/>
+<text x='864.0' y='392' text-anchor='middle' fill='#666'>10000</text>
+<line x1='494' y1='376.0' x2='864' y2='376.0' stroke='#e4e4e4'/>
+<text x='488' y='380.0' text-anchor='end' fill='#666'>0×</text>
+<line x1='494' y1='334.1' x2='864' y2='334.1' stroke='#e4e4e4'/>
+<text x='488' y='338.1' text-anchor='end' fill='#666'>5×</text>
+<line x1='494' y1='292.1' x2='864' y2='292.1' stroke='#e4e4e4'/>
+<text x='488' y='296.1' text-anchor='end' fill='#666'>10×</text>
+<line x1='494' y1='250.2' x2='864' y2='250.2' stroke='#e4e4e4'/>
+<text x='488' y='254.2' text-anchor='end' fill='#666'>15×</text>
+<line x1='494' y1='208.3' x2='864' y2='208.3' stroke='#e4e4e4'/>
+<text x='488' y='212.3' text-anchor='end' fill='#666'>20×</text>
+<line x1='494' y1='166.4' x2='864' y2='166.4' stroke='#e4e4e4'/>
+<text x='488' y='170.4' text-anchor='end' fill='#666'>25×</text>
+<line x1='494' y1='124.4' x2='864' y2='124.4' stroke='#e4e4e4'/>
+<text x='488' y='128.4' text-anchor='end' fill='#666'>30×</text>
+<text x='679' y='412' text-anchor='middle' fill='#666' font-size='11'>decompress MB/s, one thread (log scale)</text>
+<text transform='translate(462,235) rotate(-90)' text-anchor='middle' fill='#666' font-size='11'>ratio</text>
+<circle cx='575.4' cy='114.9' r='5' fill='#0b5fff'/>
+<text x='583.4' y='118.9' fill='#0b5fff' font-size='11' font-weight='600'>Glyd --cold -r</text>
+<circle cx='741.5' cy='154.2' r='5' fill='#0b5fff'/>
+<text x='749.5' y='158.2' fill='#0b5fff' font-size='11' font-weight='600'>Glyd --ultra -r</text>
+<circle cx='741.0' cy='166.6' r='5' fill='#0b5fff'/>
+<text x='749.0' y='170.6' fill='#0b5fff' font-size='11' font-weight='600'>Glyd --max -r</text>
+<circle cx='711.2' cy='237.4' r='4' fill='#8a8a8a'/>
+<text x='719.2' y='241.4' fill='#111' font-size='11' font-weight='400'>xz -9e</text>
+<circle cx='775.5' cy='240.4' r='4' fill='#8a8a8a'/>
+<text x='783.5' y='232.4' fill='#111' font-size='11' font-weight='400'>brotli -11</text>
+<circle cx='790.9' cy='243.3' r='4' fill='#8a8a8a'/>
+<text x='743.6' y='260.3' fill='#111' font-size='11' font-weight='400'>zstd -22 --long</text>
+<circle cx='792.1' cy='245.0' r='4' fill='#8a8a8a'/>
+<text x='800.1' y='273.0' fill='#111' font-size='11' font-weight='400'>zstd -19</text>
+<circle cx='791.8' cy='246.2' r='5' fill='#0b5fff'/>
+<text x='799.8' y='286.2' fill='#0b5fff' font-size='11' font-weight='600'>Glyd --ultra</text>
+<circle cx='711.2' cy='249.8' r='4' fill='#8a8a8a'/>
+<text x='671.7' y='253.8' fill='#111' font-size='11' font-weight='400'>xz -6</text>
+<circle cx='785.9' cy='274.0' r='4' fill='#8a8a8a'/>
+<text x='793.9' y='302.0' fill='#111' font-size='11' font-weight='400'>zstd -9</text>
+<circle cx='770.8' cy='276.2' r='4' fill='#8a8a8a'/>
+<text x='706.1' y='280.2' fill='#111' font-size='11' font-weight='400'>brotli -5</text>
+<circle cx='780.3' cy='283.1' r='5' fill='#0b5fff'/>
+<text x='709.3' y='299.1' fill='#0b5fff' font-size='11' font-weight='600'>Glyd --max</text>
+<circle cx='784.4' cy='293.4' r='4' fill='#8a8a8a'/>
+<text x='792.4' y='321.4' fill='#111' font-size='11' font-weight='400'>gzip -6</text>
+<circle cx='780.8' cy='294.9' r='4' fill='#8a8a8a'/>
+<text x='728.7' y='322.9' fill='#111' font-size='11' font-weight='400'>zstd -3</text>
+<circle cx='782.8' cy='300.0' r='4' fill='#8a8a8a'/>
+<text x='730.7' y='340.0' fill='#111' font-size='11' font-weight='400'>zstd -1</text>
+<circle cx='795.3' cy='327.2' r='5' fill='#0b5fff'/>
+<text x='711.7' y='355.2' fill='#0b5fff' font-size='11' font-weight='600'>Glyd default</text>
+<circle cx='787.5' cy='331.5' r='4' fill='#8a8a8a'/>
+<text x='795.5' y='347.5' fill='#111' font-size='11' font-weight='400'>lz4 -1</text>
+</svg>

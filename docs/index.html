@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Glyd — compression that moves the storage bill</title>
-<meta name="description" content="Glyd: a store that compresses across objects, 3.1× fewer bytes than zstd on a 1.2 TB bucket, 4.6× on a 39 GB one; base mode stores a new version of a dump, image or source tree for a few percent of its size, 15 kernel releases in 228 MB; record mode turns logs of any shape, dumps, CSV and JSON lines into typed columns; the cold level's context mixing stores 1.5–2× less than zstd -19; measured against zstd and LZ4 on real data.">
+<meta name="description" content="Glyd: a store that compresses across objects, 3.1× fewer bytes than zstd on a 1.2 TB bucket, 4.6× on a 39 GB one; base mode stores a new version of a dump, image or source tree for a few percent of its size, 15 kernel releases in 228 MB; record mode turns logs of any shape, dumps, CSV and JSON lines into typed columns; the cold level's context mixing stores 1.5–2× less than zstd -19; benchmarked against gzip, zstd, xz, brotli and LZ4 on 24 kinds of data, every decode byte-exact.">
 <style>
   :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; --hl:#eef3ff; }
   @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --line:#333; --accent:#6ea0ff; --hl:#1b2233; } }
@@ -15,6 +15,7 @@
   p.sub { color:var(--muted); margin:0 0 1rem; font-size:1.05rem; }
   nav a { margin-right:14px; }
   a { color:var(--accent); }
+  img { max-width:100%; height:auto; display:block; margin:12px 0; border-radius:6px; }
   table { border-collapse:collapse; width:100%; margin:12px 0; font-size:.95rem; }
   td, th { text-align:right; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
   td:first-child, th:first-child { text-align:left; white-space:normal; min-width:15em; }
@@ -28,7 +29,7 @@
 </head>
 <body>
 <main>
-  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.13.1">v0.13.1 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-21.md">Benchmark report</a><a href="savings.html">Savings calculator</a></nav>
+  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.13.1">v0.13.1 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-21.md">Benchmark report</a><a href="#landscape">Against zstd, xz, brotli</a><a href="savings.html">Savings calculator</a></nav>
   <h1>Glyd</h1>
   <p class="sub">A compression library and CLI (Rust, C ABI) for the data that fills object storage: logs, database exports, telemetry, JSON, and the versions of all of them. v0.13.1, September 2026. Every number below is measured on public data, every decode compared byte for byte with its input, and reproducible from the repository.</p>
 
@@ -56,6 +57,13 @@
     <tr class="g"><td>Glyd --ultra -r</td><td><b>5.22</b></td><td>20</td><td><b>3,927</b></td></tr>
   </table></div>
   <p class="muted">Reads: Glyd is the fastest, 3–7× zstd on a server. Writes: Glyd is slower, 0.77× zstd -3 (record mode 0.33×); LZ4 is the write-speed king on one core. Size: Glyd is the smallest wherever the data has structure, and ties elsewhere.</p>
+
+  <h2 id="landscape">Against gzip, zstd, xz and brotli on 24 kinds of data</h2>
+  <p>Every codec's own CLI on one thread of an M1 Max, every decode compared byte for byte with its input (505 round trips, all exact). The percentages are Glyd's bytes against the other codec's on the same data: below zero, Glyd's file is smaller. Glyd runs <code>--max</code> and <code>--ultra</code>, with <code>-r</code> on logs and dumps. <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/landscape-2026-09-22.md">Method, every codec's speed and the raw rows</a>, with lz4, bzip2, zpaq and JPEG XL as well.</p>
+  <img src="benchmarks/charts/bytes-fast-tier.svg" alt="Compression benchmark: Glyd --max bytes against gzip -6 and zstd -3 on logs, SQL dumps, JSON, gzip, zip, jar, Office documents, PDF, PNG, JPEG, text, executables and Parquet">
+  <img src="benchmarks/charts/bytes-strong-tier.svg" alt="Compression benchmark: Glyd --ultra bytes against zstd -19, xz -9e and brotli -11 on the same 24 kinds of data">
+  <img src="benchmarks/charts/ratio-vs-read-speed.svg" alt="Compression ratio against decompression speed: Glyd, zstd, xz, brotli, gzip and lz4 on a Linux source tar and on a web server log">
+  <p class="muted">Where Glyd leads: records (each field a typed column) and containers (the deflate or JPEG inside is opened, and re-created bit for bit on read). Where it does not: plain text and binaries at the strong settings, where xz, brotli -11 and zstd -22 are up to 15% smaller and read at 30–880 MB/s against <code>--ultra</code>'s 500–1,600; and containers read at 1.5–20 MB/s on one thread, the cost of re-creating every deflate stream.</p>
 
   <h2>The store: compression across objects, not just inside them</h2>
   <p>Inside one object every codec sits on the same floor. The redundancy of object storage is between objects — builds, snapshots, dumps and releases that are near-copies of earlier ones. <code>glyd-store bucket/ --put ...</code> fingerprints each object, finds the stored object it most resembles, and keeps it as a delta when that pays; chains are capped at four, so a read is at most five decodes. Measured on a 39 GB bucket, each object arriving in order, every one read back and compared:</p>
