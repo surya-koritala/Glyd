@@ -198,6 +198,12 @@ pub const FLAG_TURBO: u16 = 16;
 /// the Adler-like sum below, which keeps only 16 bits of its weighted
 /// half and so misses, for one, two bytes swapped 8 KB apart.
 pub const FLAG_CRC32C: u16 = 32;
+/// A repeat-offset code after zero literals names the *other* repeats
+/// (v0.14.3 on): a match with no literal before it cannot be the last
+/// offset going on (that match would have been longer), so code 0 is
+/// the second repeat, 1 the third, 2 the last one — what zstd does, and
+/// half a bit less per repeat on data whose records alternate sources.
+pub const FLAG_LL0_REP: u16 = 64;
 
 /// Units the parallel paths cut an input into: each is compressed on its
 /// own (its first block carries FLAG_CHAIN_RESET) and decodes on its own,

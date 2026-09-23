@@ -351,15 +351,25 @@ fn v7_length_and_offset_codes_roundtrip() {
 #[test]
 fn v7_repeat_offsets_encoder_and_decoder_agree() {
     let offsets = [100u32, 100, 7, 100, 7, 7, 300, 100, 300, 1];
-    let mut enc = Reps::new();
-    let mut dec = Reps::new();
-    let mut rep_hits = 0;
-    for &o in &offsets {
-        let (code, nb, extra) = enc.code_for(o);
-        if code < 3 { rep_hits += 1; assert_eq!(nb, 0); }
-        assert_eq!(dec.resolve(code, extra), o);
+    // Both with and without literals before the match: after none the
+    // rep symbols are shifted (`FLAG_LL0_REP`) and must shift back.
+    for ll0 in [false, true] {
+        let mut enc = Reps::new();
+        let mut dec = Reps::new();
+        let mut rep_hits = 0;
+        for (i, &o) in offsets.iter().enumerate() {
+            let ll0 = ll0 && i % 2 == 1;
+            let (code, nb, extra) = enc.code_for(o, ll0);
+            if code < 3 { rep_hits += 1; assert_eq!(nb, 0); }
+            assert_eq!(dec.resolve(code, extra, ll0), o);
+        }
+        assert!(rep_hits >= 5, "repeats must be found: {}", rep_hits);
     }
-    assert!(rep_hits >= 5, "repeats must be found: {}", rep_hits);
+    assert_eq!(glyd::v7_format::rep_symbol(1, true), 0);
+    assert_eq!(glyd::v7_format::rep_symbol(0, true), 2);
+    assert_eq!(glyd::v7_format::rep_of_symbol(0, true), 1);
+    assert_eq!(glyd::v7_format::rep_of_symbol(2, true), 0);
+    assert_eq!(glyd::v7_format::rep_of_symbol(5, true), 5);
 }
 
 #[test]

@@ -33,7 +33,10 @@ sum and `b` the running sum of `a`, both wrapping — which keeps 16 bits
 of `b` and so misses, among other things, two bytes swapped 8 KB apart.
 
 Flags (both framings): `RAW` (the payload is the bytes themselves),
-`CRC32C` (32; the checksum above),
+`CRC32C` (32; the checksum above), `LL0_REP` (64; since v0.14.3: a
+repeat-offset code after zero literals names the other repeats — code
+0 the second, 1 the third, 2 the last — since a match with no literal
+before it cannot be the last offset going on),
 `CHAIN_RESET` (the block starts a new history: a decoder may begin
 here, which is how units decode in parallel), `DENSE` / `TURBO` (the
 v6 token variants). A stream decodes unit by unit: a unit is a run of

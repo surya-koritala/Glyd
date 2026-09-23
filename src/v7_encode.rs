@@ -364,7 +364,7 @@ pub fn encode_block_with(seqs: &[Sequence], literals: &[u8], dict_id: u32, prev:
         v |= (e as u64) << bits;
         bits += nb as u32;
         let (offc, nb, e) = if q.match_len != 0 {
-            reps.code_for(q.offset)
+            reps.code_for(q.offset, q.lit_len == 0)
         } else {
             debug_assert_eq!(i, n - 1, "literal-only sequence must be last");
             (0, 0, 0)
@@ -1028,7 +1028,7 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                 {
                     use std::hint::select_unpredictable as sel;
                     let (e0, e1, e2) = (offset == r[0], offset == r[1], offset == r[2]);
-                    codes.push_codes(ll as u32, rc as u32, offset, sel(e0, 0, sel(e1, 1, sel(e2, 2, 3))));
+                    codes.push_codes(ll as u32, rc as u32, offset, rep_symbol(sel(e0, 0, sel(e1, 1, sel(e2, 2, 3))), ll == 0) as u32);
                     r = [offset, sel(e0, r[1], r[0]), sel(e0 | e1, r[2], r[1])];
                 }
                 pos = mpos + rc;

@@ -202,7 +202,7 @@ fn tables_for(content: &[u8], samples: &[&[u8]]) -> Tables {
                 continue;
             }
             ml[ml_code(q.match_len).0 as usize] += 1;
-            off[r.code_for(q.offset).0 as usize] += 1;
+            off[r.code_for(q.offset, q.lit_len == 0).0 as usize] += 1;
         }
     }
     Tables {

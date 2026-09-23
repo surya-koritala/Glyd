@@ -313,26 +313,28 @@ impl Reps {
     }
 
     /// Encoder: rep code if `offset` is a repeat, else its real code.
-    pub fn code_for(&mut self, offset: u32) -> (u8, u8, u32) {
-        if offset == self.r[0] {
-            return (0, 0, 0);
-        }
-        if offset == self.r[1] {
+    /// After zero literals (`ll0`) the rep codes are shifted, as
+    /// `FLAG_LL0_REP` says: symbol `(rep + 2) % 3`.
+    pub fn code_for(&mut self, offset: u32, ll0: bool) -> (u8, u8, u32) {
+        let rep = if offset == self.r[0] {
+            0
+        } else if offset == self.r[1] {
             self.r.swap(0, 1);
-            return (1, 0, 0);
-        }
-        if offset == self.r[2] {
+            1
+        } else if offset == self.r[2] {
             self.r = [self.r[2], self.r[0], self.r[1]];
-            return (2, 0, 0);
-        }
-        self.r = [offset, self.r[0], self.r[1]];
-        off_code(offset)
+            2
+        } else {
+            self.r = [offset, self.r[0], self.r[1]];
+            return off_code(offset);
+        };
+        (rep_symbol(rep, ll0), 0, 0)
     }
 
     /// Decoder: the offset for a code and its extra bits.
     #[inline(always)]
-    pub fn resolve(&mut self, code: u8, extra: u32) -> u32 {
-        self.update(code, if code < 3 { 0 } else { off_value(code, extra) })
+    pub fn resolve(&mut self, code: u8, extra: u32, ll0: bool) -> u32 {
+        self.update(rep_of_symbol(code, ll0), if code < 3 { 0 } else { off_value(code, extra) })
     }
 
     /// Decoder: the offset for a code whose extra bits already decoded to
@@ -351,6 +353,22 @@ impl Reps {
         self.r = [o, sel(code == 0, r1, r0), sel(code < 2, r2, r1)];
         o
     }
+}
+
+/// The symbol coding rep slot `rep` (0..3) after `ll0` (zero literals):
+/// the slots shifted so the common case, the other offset, is 0.
+#[inline(always)]
+pub fn rep_symbol(rep: u32, ll0: bool) -> u8 {
+    use std::hint::select_unpredictable as sel;
+    sel(ll0 & (rep < 3), (rep + 2) % 3, rep) as u8
+}
+
+/// The rep slot a symbol under 3 names after `ll0`; a real offset's
+/// code is itself.
+#[inline(always)]
+pub fn rep_of_symbol(code: u8, ll0: bool) -> u8 {
+    use std::hint::select_unpredictable as sel;
+    sel(ll0 & (code < 3), (code + 1) % 3, code)
 }
 
 /// Sits at the start of a v7 payload. `coded` bit i: stream i is entropy

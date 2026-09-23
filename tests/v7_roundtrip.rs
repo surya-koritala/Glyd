@@ -179,10 +179,10 @@ fn v7_block_roundtrip_two_blocks_with_reuse() {
     let mut dtab = DecTables::none();
     let mut scratch = Scratch::new();
     let base = dst.as_ptr();
-    let n = unsafe { decode_block(&p1, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch, None) }.unwrap();
+    let n = unsafe { decode_block(&p1, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
     assert_eq!(n, expect.len());
     assert_eq!(&dst[..n], &expect[..]);
-    let n2 = unsafe { decode_block(&p2, true, false, false, seqs.len(), lits.len(), &mut dst[n..], base, expect.len(), &mut dtab, &mut scratch, None) }.unwrap();
+    let n2 = unsafe { decode_block(&p2, true, false, false, seqs.len(), lits.len(), &mut dst[n..], base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
     assert_eq!(&dst[n..n + n2], &expect[..]);
 }
 
@@ -196,12 +196,12 @@ fn v7_block_rejects_bad_offset_and_wrong_length() {
     let expect_len = materialize(&well_formed_sequences().0, &lits).len();
     let mut dst = vec![0u8; expect_len + 128];
     let base = dst.as_ptr();
-    let r = unsafe { decode_block(&p, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect_len, &mut DecTables::none(), &mut Scratch::new(), None) };
+    let r = unsafe { decode_block(&p, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect_len, &mut DecTables::none(), &mut Scratch::new(), None, true) };
     assert!(matches!(r, Err(CodecError::OffsetOutOfBounds { offset: 1_000_000, .. })), "{:?}", r);
     let (seqs, lits) = well_formed_sequences();
     let mut p = Vec::new();
     encode_block(&seqs, &lits, 0, &mut Tables::none(), &mut p);
-    let r = unsafe { decode_block(&p, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect_len - 1, &mut DecTables::none(), &mut Scratch::new(), None) };
+    let r = unsafe { decode_block(&p, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect_len - 1, &mut DecTables::none(), &mut Scratch::new(), None, true) };
     assert!(matches!(r, Err(CodecError::CorruptedBitstream(_))), "{:?}", r);
 }
 
@@ -226,13 +226,13 @@ fn v7_block_decode_never_panics_on_mutations() {
             2 => { q.truncate(rnd(&mut x) as usize % q.len()); }
             _ => { for _ in 0..8 { let i = rnd(&mut x) as usize % q.len(); q[i] = rnd(&mut x) as u8; } }
         }
-        let _ = unsafe { decode_block(&q, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut DecTables::none(), &mut scratch, None) };
+        let _ = unsafe { decode_block(&q, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut DecTables::none(), &mut scratch, None, true) };
     }
     for _ in 0..2_000 {
         let n_seq = rnd(&mut x) as usize % (seqs.len() * 2);
         let n_lit = rnd(&mut x) as usize % (lits.len() * 2);
         let len = rnd(&mut x) as usize % (expect.len() * 2);
-        let _ = unsafe { decode_block(&p, true, false, false, n_seq, n_lit, &mut dst, base, len, &mut DecTables::none(), &mut scratch, None) };
+        let _ = unsafe { decode_block(&p, true, false, false, n_seq, n_lit, &mut dst, base, len, &mut DecTables::none(), &mut scratch, None, true) };
     }
 }
 
@@ -286,17 +286,17 @@ fn v7_block_decode_with_raw_literals_and_raw_codes() {
     let mut dtab = DecTables::none();
     let mut scratch = Scratch::new();
     let base = dst.as_ptr();
-    let n1 = unsafe { decode_block(&p1, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch, None) }.unwrap();
+    let n1 = unsafe { decode_block(&p1, true, false, false, seqs.len(), lits.len(), &mut dst, base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
     assert_eq!(&dst[..n1], &expect[..]);
-    let n2 = unsafe { decode_block(&p2, true, false, false, seqs.len(), lits.len(), &mut dst[n1..], base, expect.len(), &mut dtab, &mut scratch, None) }.unwrap();
+    let n2 = unsafe { decode_block(&p2, true, false, false, seqs.len(), lits.len(), &mut dst[n1..], base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
     assert_eq!(&dst[n1..n1 + n2], &expect[..]);
-    let n3 = unsafe { decode_block(&p3, true, false, false, seqs3.len(), lits3.len(), &mut dst[n1 + n2..], base, expect3.len(), &mut dtab, &mut scratch, None) }.unwrap();
+    let n3 = unsafe { decode_block(&p3, true, false, false, seqs3.len(), lits3.len(), &mut dst[n1 + n2..], base, expect3.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
     assert_eq!(&dst[n1 + n2..n1 + n2 + n3], &expect3[..]);
     let at = n1 + n2 + n3;
-    let n4 = unsafe { decode_block(&p4, true, false, false, seqs.len(), lits.len(), &mut dst[at..], base, expect.len(), &mut dtab, &mut scratch, None) }.unwrap();
+    let n4 = unsafe { decode_block(&p4, true, false, false, seqs.len(), lits.len(), &mut dst[at..], base, expect.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
     assert_eq!(&dst[at..at + n4], &expect[..]);
     let at = at + n4;
-    let n5 = unsafe { decode_block(&p5, true, false, false, seqs3.len(), lits3.len(), &mut dst[at..], base, expect3.len(), &mut dtab, &mut scratch, None) }.unwrap();
+    let n5 = unsafe { decode_block(&p5, true, false, false, seqs3.len(), lits3.len(), &mut dst[at..], base, expect3.len(), &mut dtab, &mut scratch, None, true) }.unwrap();
     assert_eq!(&dst[at..at + n5], &expect3[..]);
 }
 
@@ -354,7 +354,7 @@ fn v7_block_decode_into_exact_dst_writes_nothing_past_it() {
         encode_block(&seqs, &lits, 0, &mut Tables::none(), &mut p);
         let mut dst = vec![0xEEu8; expect.len() + 256];
         let base = dst.as_ptr();
-        let n = unsafe { decode_block(&p, true, false, false, seqs.len(), lits.len(), &mut dst[..expect.len()], base, expect.len(), &mut DecTables::none(), &mut Scratch::new(), None) }.unwrap();
+        let n = unsafe { decode_block(&p, true, false, false, seqs.len(), lits.len(), &mut dst[..expect.len()], base, expect.len(), &mut DecTables::none(), &mut Scratch::new(), None, true) }.unwrap();
         assert_eq!(n, expect.len());
         assert_eq!(&dst[..n], &expect[..]);
         assert!(dst[n..].iter().all(|&b| b == 0xEE), "bytes past dst were written");

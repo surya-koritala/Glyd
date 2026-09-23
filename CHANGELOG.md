@@ -6,6 +6,19 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.14.3 — 2026-09-23
+
+- **A repeat offset after zero literals is implied by the literal
+  length** (flag `LL0_REP`): a match with no literal before it cannot be
+  the last offset going on, so the repeat codes shift and the common
+  case — records alternating between two sources — is code 0 every
+  time, which is zstd's rule too. Measured with zstd's own sequences in
+  both coders: ours was 3.4% behind zstd's on the table dump, now 1.1%
+  (table headers). On the servers, one core, the Wikipedia table dump
+  32.48 → 31.44 MB per 200 MB (zstd -3 31.18), the NASA log −0.3%,
+  GitHub events −0.2%, Silesia mozilla −0.25%, at the same speed.
+  Earlier files decode as before.
+
 ## v0.14.2 — 2026-09-23
 
 - **The max level's parse takes the last offset one byte on, before

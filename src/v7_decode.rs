@@ -350,7 +350,7 @@ fn safe_seqs(at: usize, last: usize) -> usize {
 /// through the tail). The tail's clamped readers start at the positions
 /// the walk reached (`BitReader::new_at`), which keeps `overrun` exact.
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &mut DecTables, s: &mut Scratch) -> Result<(usize, usize)> {
+fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, ll0: bool, prev: &mut DecTables, s: &mut Scratch) -> Result<(usize, usize)> {
     let sub = &layout.sub;
     let coded = |i: usize| sub.coded & (1 << i) != 0;
     let reuse = sub.reuse & 0b10 != 0;
@@ -467,7 +467,7 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
                     }
                     out[$k] = ll;
                     out[8 + $k] = ml;
-                    out[16 + $k] = reps.update(offc, ov);
+                    out[16 + $k] = reps.update(rep_of_symbol(offc, ll0 & (ll == 0)), ov);
                 }};
             }
             #[cfg(target_arch = "x86_64")]
@@ -518,7 +518,7 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
             b0 += (n1 + n2 + n3) as u64;
             s.seq[j] = ll;
             s.seq[8 + j] = ml;
-            s.seq[16 + j] = reps.update(offc, ov);
+            s.seq[16 + j] = reps.update(rep_of_symbol(offc, ll0 & (ll == 0)), ov);
         }
         o += iters;
     }
@@ -548,7 +548,7 @@ fn sequences<const V8: bool>(payload: &[u8], layout: &Layout, n: usize, prev: &m
             len_value_v7(mlc, r.get(extra_bits_of_code_v7(Kind::Ml, mlc) as u32) as u32) + MIN_MATCH
         };
         let offc = s.codes[16 + j];
-        let off = reps.resolve(offc, r.get(extra_bits_of_code(Kind::Off, offc) as u32) as u32);
+        let off = reps.resolve(offc, r.get(extra_bits_of_code(Kind::Off, offc) as u32) as u32, ll0 & (s.seq[j] == 0));
         s.seq[8 + j] = ml;
         s.seq[16 + j] = off;
     }
@@ -935,26 +935,26 @@ unsafe fn copies(s: &Scratch, n: usize, n_lit: usize, dst: &mut [u8], buffer_sta
 /// `buffer_start` must point into the same allocation as `dst`, at or
 /// before `dst.as_ptr()`, with every byte between them initialised: that
 /// is the match window (the previous blocks of the same chain).
-pub unsafe fn decode_block(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>) -> Result<usize> {
+pub unsafe fn decode_block(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
     #[cfg(target_arch = "x86_64")]
     {
         if crate::has_avx2() {
-            return decode_block_avx2(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext);
+            return decode_block_avx2(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext, ll0);
         }
     }
-    decode_block_impl(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext)
+    decode_block_impl(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext, ll0)
 }
 
 /// The decoder compiled for AVX2 + BMI2: the same passes, with 32-byte
 /// copies and single-uop variable shifts (`shrx`) in the bit loops.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,bmi2")]
-unsafe fn decode_block_avx2(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>) -> Result<usize> {
-    decode_block_impl(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext)
+unsafe fn decode_block_avx2(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
+    decode_block_impl(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext, ll0)
 }
 
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>) -> Result<usize> {
+unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, prepadded: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
     if uncompressed_len > dst.len() {
         return Err(CodecError::OutputBufferTooSmall { required: uncompressed_len, provided: dst.len() });
     }
@@ -962,20 +962,20 @@ unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, prepadded: 
         return Err(corrupt("v7: block header sizes"));
     }
     if !compact {
-        return decode_padded(payload, v8, false, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext);
+        return decode_padded(payload, v8, false, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext, ll0);
     }
     // A compact block's payload must be followed by `PAD` readable bytes
     // (their content is never used): the caller passes them when its
     // buffer has them (`prepadded`: `payload` is the block plus `PAD`),
     // else the block is copied behind zeros.
     if prepadded {
-        return decode_padded(payload, v8, true, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext);
+        return decode_padded(payload, v8, true, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext, ll0);
     }
     let mut padded = std::mem::take(&mut scratch.padded);
     padded.clear();
     padded.extend_from_slice(payload);
     padded.extend_from_slice(&[0u8; PAD]);
-    let r = decode_padded(&padded, v8, true, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext);
+    let r = decode_padded(&padded, v8, true, n_seq, n_lit, dst, buffer_start, uncompressed_len, prev, scratch, ext, ll0);
     scratch.padded = padded;
     r
 }
@@ -983,7 +983,7 @@ unsafe fn decode_block_impl(payload: &[u8], v8: bool, compact: bool, prepadded: 
 /// The passes over a payload whose streams may be read `PAD` bytes past
 /// their ends.
 #[cfg_attr(target_arch = "x86_64", inline(always))]
-unsafe fn decode_padded(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>) -> Result<usize> {
+unsafe fn decode_padded(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n_lit: usize, dst: &mut [u8], buffer_start: *const u8, uncompressed_len: usize, prev: &mut DecTables, scratch: &mut Scratch, ext: Option<&[u8]>, ll0: bool) -> Result<usize> {
     let mut layout = if compact { payload_layout_compact(payload, true) } else { payload_layout(payload) }.ok_or(corrupt("v7: payload layout"))?;
     layout.v8 = v8;
     let sub = &layout.sub;
@@ -991,7 +991,7 @@ unsafe fn decode_padded(payload: &[u8], v8: bool, compact: bool, n_seq: usize, n
     if (sub.reuse & 1 != 0 && !coded(S_LIT)) || (sub.reuse & 2 != 0 && !(coded(S_LL) && coded(S_ML) && coded(S_OFF))) {
         return Err(corrupt("v7: table reuse on a raw stream"));
     }
-    let (lit_total, match_total) = if v8 { sequences::<true>(payload, &layout, n_seq, prev, scratch)? } else { sequences::<false>(payload, &layout, n_seq, prev, scratch)? };
+    let (lit_total, match_total) = if v8 { sequences::<true>(payload, &layout, n_seq, ll0, prev, scratch)? } else { sequences::<false>(payload, &layout, n_seq, ll0, prev, scratch)? };
     if lit_total != n_lit || lit_total + match_total != uncompressed_len {
         return Err(corrupt("v7: sequence totals disagree with header"));
     }

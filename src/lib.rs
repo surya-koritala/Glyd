@@ -307,7 +307,7 @@ fn write_coded_block(chunk: &[u8], n_seq: usize, n_lit: usize, chain_flag: u16, 
     let header = BlockHeader {
         magic: MAGIC,
         version: if compact { VERSION_V9 } else { VERSION_V8 },
-        flags: FLAG_COMPRESSED | FLAG_CRC32C | chain_flag,
+        flags: FLAG_COMPRESSED | FLAG_CRC32C | FLAG_LL0_REP | chain_flag,
         checksum: format::crc32c(chunk),
         uncompressed_len: chunk.len() as u32,
         token_count: n_seq as u32,
@@ -977,18 +977,19 @@ unsafe fn decode_block(
         let prepadded = compact && payload.len() >= len + bits::PAD;
         let payload = if prepadded { &payload[..len + bits::PAD] } else { &payload[..len] };
         let (n_seq, n_lit) = (header.token_count as usize, header.literal_len as usize);
+        let ll0 = header.flags & FLAG_LL0_REP != 0;
         return v7_decode::with_scratch(|scratch| {
             // A dictionary stream's tables are the caller's (borrowing the
             // dictionary's); otherwise the thread's, reset at a chain start.
             if let Some(t) = tables {
-                return v7_decode::decode_block(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncomp_len, t, scratch, ext).map(|_| ());
+                return v7_decode::decode_block(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncomp_len, t, scratch, ext, ll0).map(|_| ());
             }
             V7_TABLES.with(|t| {
                 let mut t = t.borrow_mut();
                 if (header.flags & FLAG_CHAIN_RESET) != 0 {
                     *t = v7_decode::DecTables::none();
                 }
-                v7_decode::decode_block(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncomp_len, &mut t, scratch, ext).map(|_| ())
+                v7_decode::decode_block(payload, v8, compact, prepadded, n_seq, n_lit, dst, buffer_start, uncomp_len, &mut t, scratch, ext, ll0).map(|_| ())
             })
         });
     }
