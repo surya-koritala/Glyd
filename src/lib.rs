@@ -250,13 +250,13 @@ fn write_block(
     literals: &[u8],
     output: &mut Vec<u8>,
 ) {
-    let checksum = compute_checksum(chunk);
+    let checksum = format::crc32c(chunk);
 
     if (parse_flags & FLAG_RAW_UNCOMPRESSED) != 0 {
         let header = BlockHeader {
             magic: MAGIC,
             version: CURRENT_VERSION,
-            flags: FLAG_RAW_UNCOMPRESSED | chain_flag,
+            flags: FLAG_RAW_UNCOMPRESSED | FLAG_CRC32C | chain_flag,
             checksum,
             uncompressed_len: chunk.len() as u32,
             token_count: 0,
@@ -273,7 +273,7 @@ fn write_block(
     let header = BlockHeader {
         magic: MAGIC,
         version: CURRENT_VERSION,
-        flags: parse_flags | chain_flag,
+        flags: parse_flags | FLAG_CRC32C | chain_flag,
         checksum,
         uncompressed_len: chunk.len() as u32,
         token_count: tokens.len() as u32,
@@ -307,8 +307,8 @@ fn write_coded_block(chunk: &[u8], n_seq: usize, n_lit: usize, chain_flag: u16, 
     let header = BlockHeader {
         magic: MAGIC,
         version: if compact { VERSION_V9 } else { VERSION_V8 },
-        flags: FLAG_COMPRESSED | chain_flag,
-        checksum: compute_checksum(chunk),
+        flags: FLAG_COMPRESSED | FLAG_CRC32C | chain_flag,
+        checksum: format::crc32c(chunk),
         uncompressed_len: chunk.len() as u32,
         token_count: n_seq as u32,
         token_bytes: payload.len() as u32,
@@ -2110,7 +2110,7 @@ fn decompress_sequential_impl(compressed: &[u8], dst: &mut [u8], dst_offset0: us
             decode_block(&header, payload, dst_slice, buffer_start, avx2, ext, tables.as_mut())?;
         }
         if verify {
-            let actual = compute_checksum(&dst[dst_offset..dst_offset + uncomp_len]);
+            let actual = format::block_checksum(header.flags, &dst[dst_offset..dst_offset + uncomp_len]);
             if actual != header.checksum {
                 return Err(CodecError::ChecksumMismatch { expected: header.checksum, computed: actual });
             }
@@ -2286,7 +2286,7 @@ fn decode_units(compressed: &[u8], blocks: &[BlockInfo], units: &[ParallelUnit],
                 decode_block(&header, payload, dst_slice, unit_buffer_start, avx2, None, None)?;
             }
             if verify {
-                let actual = compute_checksum(&dst_slice[..b.uncomp_len]);
+                let actual = format::block_checksum(header.flags, &dst_slice[..b.uncomp_len]);
                 if actual != header.checksum {
                     return Err(CodecError::ChecksumMismatch { expected: header.checksum, computed: actual });
                 }

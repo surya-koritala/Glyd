@@ -194,6 +194,10 @@ pub const FLAG_DENSE: u16 = 8;
 /// Block was parsed at minimum match 8 (turbo level): match lengths are
 /// biased by MATCH_CODE_BIAS_TURBO.
 pub const FLAG_TURBO: u16 = 16;
+/// The block's checksum is CRC-32C (v0.14.2 on); without this flag it is
+/// the Adler-like sum below, which keeps only 16 bits of its weighted
+/// half and so misses, for one, two bytes swapped 8 KB apart.
+pub const FLAG_CRC32C: u16 = 32;
 
 /// Units the parallel paths cut an input into: each is compressed on its
 /// own (its first block carries FLAG_CHAIN_RESET) and decodes on its own,
@@ -407,6 +411,82 @@ impl BlockHeader {
     }
 }
 
+/// The checksum a block's flags say it carries.
+#[inline]
+pub fn block_checksum(flags: u16, data: &[u8]) -> u32 {
+    if flags & FLAG_CRC32C != 0 { crc32c(data) } else { compute_checksum(data) }
+}
+
+/// CRC-32C (Castagnoli), the hardware instruction on aarch64 and
+/// x86-64, a table otherwise; every block written since v0.14.2 is
+/// checked with it.
+pub fn crc32c(data: &[u8]) -> u32 {
+    #[cfg(target_arch = "aarch64")]
+    {
+        if std::arch::is_aarch64_feature_detected!("crc") {
+            return unsafe { crc32c_aarch64(data) };
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("sse4.2") {
+            return unsafe { crc32c_x86(data) };
+        }
+    }
+    crc32c_table(data)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "crc")]
+unsafe fn crc32c_aarch64(data: &[u8]) -> u32 {
+    use std::arch::aarch64::{__crc32cb, __crc32cd};
+    let mut c = !0u32;
+    let (chunks, tail) = data.as_chunks::<8>();
+    for w in chunks {
+        c = __crc32cd(c, u64::from_le_bytes(*w));
+    }
+    for &b in tail {
+        c = __crc32cb(c, b);
+    }
+    !c
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.2")]
+unsafe fn crc32c_x86(data: &[u8]) -> u32 {
+    use std::arch::x86_64::{_mm_crc32_u64, _mm_crc32_u8};
+    let mut c = !0u64;
+    let (chunks, tail) = data.as_chunks::<8>();
+    for w in chunks {
+        c = _mm_crc32_u64(c, u64::from_le_bytes(*w));
+    }
+    let mut c = c as u32;
+    for &b in tail {
+        c = _mm_crc32_u8(c, b);
+    }
+    !c
+}
+
+pub fn crc32c_table(data: &[u8]) -> u32 {
+    static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
+    let t = TABLE.get_or_init(|| {
+        let mut t = [0u32; 256];
+        for (i, e) in t.iter_mut().enumerate() {
+            let mut c = i as u32;
+            for _ in 0..8 {
+                c = if c & 1 != 0 { 0x82F6_3B78 ^ (c >> 1) } else { c >> 1 };
+            }
+            *e = c;
+        }
+        t
+    });
+    let mut c = !0u32;
+    for &b in data {
+        c = t[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
+    }
+    !c
+}
+
 /// Fast hardware-friendly Adler-like 32-bit checksum for integrity verification.
 #[inline(always)]
 pub fn compute_checksum(data: &[u8]) -> u32 {
@@ -433,4 +513,28 @@ pub fn compute_checksum_scalar(data: &[u8]) -> u32 {
         b = b.wrapping_add(a);
     }
     (b << 16) | (a & 0xFFFF)
+}
+
+#[cfg(test)]
+mod checksum_tests {
+    use super::*;
+
+    #[test]
+    fn crc32c_is_castagnoli_and_sees_what_the_sum_missed() {
+        assert_eq!(crc32c(b"123456789"), 0xE306_9283);
+        assert_eq!(crc32c_table(b"123456789"), 0xE306_9283);
+        let mut a: Vec<u8> = (0..20000u32).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect();
+        let base = compute_checksum(&a);
+        let (i, j) = (2297usize, 2297 + 8192);
+        (a[i], a[j]) = (0xD8, 0x60);
+        let sum_before = compute_checksum(&a);
+        let crc_before = crc32c(&a);
+        a.swap(i, j);
+        assert_eq!(compute_checksum(&a), sum_before, "the Adler-like sum misses this swap");
+        assert_ne!(crc32c(&a), crc_before, "the CRC sees it");
+        let _ = base;
+        for n in [0usize, 1, 7, 8, 9, 63, 64, 1000] {
+            assert_eq!(crc32c(&a[..n]), crc32c_table(&a[..n]), "{n}");
+        }
+    }
 }

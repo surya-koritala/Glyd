@@ -391,15 +391,10 @@ fn v7_max_level_roundtrip_through_container() {
     let mut salad = Vec::new();
     while salad.len() < 1_200_000 { salad.extend_from_slice(&vocab[u16::from_le_bytes(rnd(2).try_into().unwrap()) as usize % 300]); salad.push(b' '); }
     inputs.push(salad);
-    // 64-byte records, a little-endian counter then 60 fixed bytes: every
-    // block after the first parses to the same few codes (one or two
-    // literals, a 62/63-byte match at offset 64: a real offset for the
-    // block's first record, repeats after), so the sequence tables get
-    // reused block after block; the literals (counter bytes) stay raw.
-    let fixed = rnd(60);
-    let mut records = Vec::new();
-    for i in 0..16384u32 { records.extend_from_slice(&i.to_le_bytes()); records.extend_from_slice(&fixed); }
-    inputs.push(records);
+    // 64-byte records: every block parses to the same few codes, so the
+    // sequence tables get reused block after block; the literals (the
+    // random bytes) stay raw.
+    inputs.push(reuse_records());
     // (version, coded bits, reuse bits) per block, so an all-raw stream
     // cannot pass vacuously and cross-block table reuse is known to run.
     fn versions(c: &[u8]) -> Vec<(u16, u8, u8)> {
@@ -439,6 +434,22 @@ use glyd::v7_encode::{find_sequences_dfast, DfastTables, EncScratch};
 
 /// Records with a fixed stride: offsets repeat. Shared with
 /// `v7_max_matches_reference_block_encoder`.
+/// 64-byte records whose sequence statistics are the same in every
+/// block: a big-endian counter (its last byte changes every record,
+/// so no repeat offset picks the record up a byte or two on), then 60
+/// fixed bytes matched 64 back — a real offset for the block's first
+/// record, repeats after.
+fn reuse_records() -> Vec<u8> {
+    let mut x = 5u64;
+    let fixed: Vec<u8> = (0..60).map(|_| rnd(&mut x) as u8).collect();
+    let mut records = Vec::new();
+    for i in 0..16384u32 {
+        records.extend_from_slice(&i.to_be_bytes());
+        records.extend_from_slice(&fixed);
+    }
+    records
+}
+
 fn records_input() -> Vec<u8> {
     let mut data = Vec::new();
     let mut x = 9u64;
@@ -575,10 +586,7 @@ fn v7_dictionary_helps_small_inputs_and_is_required() {
 fn v7_decode_does_not_carry_tables_across_calls() {
     // 64-byte records: every block after the first reuses the sequence
     // tables (see `v7_max_level_roundtrip_through_container`).
-    let mut x = 5u64;
-    let fixed: Vec<u8> = (0..60).map(|_| rnd(&mut x) as u8).collect();
-    let mut records = Vec::new();
-    for i in 0..16384u32 { records.extend_from_slice(&i.to_le_bytes()); records.extend_from_slice(&fixed); }
+    let records = reuse_records();
     let mut c = Vec::new();
     glyd::compress_into_max(&records, &mut c);
     let mut block = None;

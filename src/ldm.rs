@@ -540,3 +540,21 @@ mod tests {
         assert_eq!(c.at(f.start as usize + f.len as usize), None);
     }
 }
+
+#[cfg(test)]
+mod speed {
+    /// `GLYD_LDM_FILE=f cargo test --release --lib ldm::speed -- --ignored --nocapture`
+    #[test]
+    #[ignore = "the far pass alone on a file"]
+    fn far_pass_alone() {
+        let Ok(f) = std::env::var("GLYD_LDM_FILE") else { return };
+        let data = std::fs::read(&f).unwrap();
+        for gated in [true, false] {
+            let t = std::time::Instant::now();
+            let m = super::Matches::find(&data, gated);
+            let s = t.elapsed().as_secs_f64();
+            let bytes: u64 = m.list.iter().map(|x| x.len as u64).sum();
+            eprintln!("{f}: gated {gated}: {:.2} s ({:.0} MB/s), {} matches covering {:.1}%", s, data.len() as f64 / 1e6 / s, m.list.len(), 100.0 * bytes as f64 / data.len() as f64);
+        }
+    }
+}

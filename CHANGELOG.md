@@ -6,6 +6,23 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.14.2 — 2026-09-23
+
+- **The max level's parse takes the last offset one byte on, before
+  anything the hash tables say** (zstd's double-fast order): a record
+  that differs from the one before it in a byte keeps its offset, which
+  codes in a couple of bits. On Graviton3 and Sapphire Rapids, one
+  core: a Wikipedia table dump 6.3% smaller (34.67 → 32.48 MB for 200
+  MB; zstd -3 31.18), GitHub events 0.8%, the NASA log 1.2%, Silesia
+  mozilla 0.2%, at the same speed. The probe steps grow after 256
+  misses instead of 64 (as zstd's double-fast).
+- **Blocks are checked with CRC-32C** (flag `CRC32C`, the hardware
+  instruction on aarch64 and x86-64). The Adler-like sum every earlier
+  release wrote kept 16 bits of its weighted half and missed, for one,
+  two bytes swapped 8 KB apart — found by the mutation fuzz once the
+  parse above changed the bytes it mutates. Earlier files verify as
+  before; files written from now on need v0.14.2 or later to verify.
+
 ## v0.14.1 — 2026-09-23
 
 - **JPEG on every core.** The range coder's decision is branch-free

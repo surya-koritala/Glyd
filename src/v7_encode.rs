@@ -609,8 +609,13 @@ pub fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Tables, s: &
 
 pub const DFAST_LONG_BITS: u32 = 17;
 pub const DFAST_SHORT_BITS: u32 = 16;
-/// Misses before the probe step grows by one (as the fast finder).
-const DFAST_SKIP_STRENGTH: u32 = 6;
+/// Misses before the probe step grows by one (zstd's double-fast
+/// takes 256 misses before stepping 2, as here; the fast finder 64).
+const DFAST_SKIP_STRENGTH: u32 = 8;
+/// A long-table hit one byte on beats the probe's match when it is
+/// this much longer. (zstd takes any long-table hit over a short-table
+/// one: 1.1% more bytes on a table dump here, 0.4% fewer on text.)
+const LAZY_GAIN: usize = 4;
 
 pub struct DfastTables {
     long: Vec<u32>,
@@ -923,6 +928,23 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                     (0, 0)
                 };
                 let mut found = probe::<D>(src, pos, block_end, &cur, el, es, &r, dict, eld, esd);
+                // The last offset one byte on, over anything the tables
+                // say (zstd's order): a record that differs from the one
+                // before it in one byte keeps its offset, which codes in
+                // a couple of bits, instead of a fresh offset from a hash
+                // hit at `pos`. A table dump: 6% fewer bytes; JSON events
+                // and logs 1%.
+                let mut rep_ahead = false;
+                {
+                    let o = r[0] as usize;
+                    let p1 = pos + 1;
+                    if o <= p1 && p1 + 8 <= block_end && eq4(src.add(p1), src.add(p1 - o)) {
+                        let len = 4 + crate::finder::ScalarMatch::prefix(src.add(p1 + 4), src.add(p1 - o + 4), block_end - p1 - 4);
+                        found = Found { src: src.add(p1 - o), off: o, len };
+                        pos = p1;
+                        rep_ahead = true;
+                    }
+                }
                 // A far match covering this position (the long-distance
                 // matcher's) wins when it is longer than the local one.
                 if let Some((flen, foff)) = far_cursor.at(pos) {
@@ -951,12 +973,14 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                 }
                 step_nb = 1 << DFAST_SKIP_STRENGTH;
                 // Lazy: a long candidate one byte later that is 4+ bytes
-                // longer wins. pos + 1 is indexed either way.
+                // longer wins. pos + 1 is indexed either way. (After the
+                // repeat one byte on, `nxt` is the position itself and the
+                // entry was loaded for it: no lazy step.)
                 t.long[nxt.il] = nxt.ml;
                 t.short[nxt.is] = nxt.ms;
-                if let Some(c) = candidate(el1, nxt.ml, pos + 1) {
+                if let Some(c) = candidate(el1, nxt.ml, pos + 1).filter(|_| !rep_ahead) {
                     let rc1 = crate::finder::ScalarMatch::prefix(src.add(pos + 1), src.add(c), block_end - pos - 1);
-                    if rc1 >= found.len + 4 {
+                    if rc1 >= found.len + LAZY_GAIN {
                         // Out of line so this stays a (rarely taken)
                         // branch: as selects, the next position would
                         // wait for this probe's whole load chain.

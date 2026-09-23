@@ -24,9 +24,16 @@ to at most 256 KB of output. Blocks come in two framings:
 marker byte `0x47`, one flags byte, the uncompressed length and the
 payload length as varints, then — unless the flag `RAW` is set — the
 sequence count and the literal count as varints, then the `u32`
-checksum (CRC32 of the block's uncompressed bytes). The payload follows.
+checksum of the block's uncompressed bytes. The payload follows.
+
+The checksum is CRC-32C when the flag `CRC32C` is set, which every
+block written since v0.14.2 has; without it (v0.14.1 and before) it is
+the Adler-like sum `(b << 16) | (a & 0xFFFF)` with `a` the running byte
+sum and `b` the running sum of `a`, both wrapping — which keeps 16 bits
+of `b` and so misses, among other things, two bytes swapped 8 KB apart.
 
 Flags (both framings): `RAW` (the payload is the bytes themselves),
+`CRC32C` (32; the checksum above),
 `CHAIN_RESET` (the block starts a new history: a decoder may begin
 here, which is how units decode in parallel), `DENSE` / `TURBO` (the
 v6 token variants). A stream decodes unit by unit: a unit is a run of
