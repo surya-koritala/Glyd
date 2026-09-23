@@ -178,11 +178,7 @@ const INTERIOR: [usize; 49] = {
 
 #[inline]
 fn mag_bucket(m: u32) -> usize {
-    if m == 0 {
-        0
-    } else {
-        (32 - m.leading_zeros()).min(MAG_BUCKETS as u32 - 1) as usize
-    }
+    (32 - m.leading_zeros()).min(MAG_BUCKETS as u32 - 1) as usize
 }
 
 const LEFT_LUT: [u8; 64] = {
@@ -350,6 +346,8 @@ struct Neighbours<'a> {
     left: &'a [i16; 64],
     above: &'a [i16; 64],
     corner: &'a [i16; 64],
+    left_deq: &'a Deq,
+    above_deq: &'a Deq,
     has_left: bool,
     has_above: bool,
     /// (interior count, first-row count, first-column count) of left and above
@@ -366,13 +364,17 @@ struct Tables {
 }
 
 impl Neighbours<'_> {
-    fn new<'a>(blocks: &'a [[i16; 64]], counts: &[[u8; 3]], bw: usize, x: usize, y: usize) -> Neighbours<'a> {
+    /// `deq` holds the dequantized blocks of the row above and this
+    /// row, by index modulo `2 * bw`.
+    fn new<'a>(blocks: &'a [[i16; 64]], deq: &'a [Deq], counts: &[[u8; 3]], bw: usize, x: usize, y: usize) -> Neighbours<'a> {
         let (has_left, has_above) = (x > 0, y > 0);
         let i = y * bw + x;
         Neighbours {
             left: if has_left { &blocks[i - 1] } else { &ZERO },
             above: if has_above { &blocks[i - bw] } else { &ZERO },
             corner: if has_left && has_above { &blocks[i - bw - 1] } else { &ZERO },
+            left_deq: if has_left { &deq[(i - 1) % (2 * bw)] } else { &ZERO_DEQ },
+            above_deq: if has_above { &deq[(i - bw) % (2 * bw)] } else { &ZERO_DEQ },
             has_left,
             has_above,
             left_counts: if has_left { counts[i - 1] } else { [0; 3] },
@@ -421,30 +423,34 @@ impl Neighbours<'_> {
 const W_OUT: [i64; 8] = [5793, -8192, 8192, -8192, 8192, -8192, 8192, -8192];
 const W_IN: [i64; 8] = [5793, 8192, 8192, 8192, 8192, 8192, 8192, 8192];
 
+/// A block dequantized, in natural order (row v, column u at 8v + u):
+/// what the predictions sum over. A coefficient times its quantizer
+/// fits 24 bits.
+type Deq = [i32; 64];
+
+static ZERO_DEQ: Deq = [0; 64];
+
 /// Σ W_OUT[v]·F[v][u]·Q over column `u` of the block above (or, with
 /// `row`, W_OUT[u]·F[v][u]·Q over row `v` of the block to the left):
 /// the neighbour's pixel value at its far edge, for that frequency.
-fn outer_edge(n: &[i16; 64], q: &[u16; 64], line: usize, row: bool) -> i64 {
+#[inline(always)]
+fn outer_edge(n: &Deq, line: usize, row: bool) -> i64 {
     let mut sum = 0i64;
     for i in 0..8 {
         let nat = if row { line * 8 + i } else { i * 8 + line };
-        let k = NAT2ZZ[nat];
-        sum += W_OUT[i] * n[k] as i64 * q[k] as i64;
+        sum += W_OUT[i] * n[nat] as i64;
     }
     sum
 }
 
 /// The same at this block's near edge, over the known coefficients
-/// (index `skip` is the one being predicted).
-fn inner_edge(b: &[i16; 64], q: &[u16; 64], line: usize, row: bool, skip: usize) -> i64 {
+/// (index 0 is the one being predicted).
+#[inline(always)]
+fn inner_edge(b: &Deq, line: usize, row: bool) -> i64 {
     let mut sum = 0i64;
-    for i in 0..8 {
-        if i == skip {
-            continue;
-        }
+    for i in 1..8 {
         let nat = if row { line * 8 + i } else { i * 8 + line };
-        let k = NAT2ZZ[nat];
-        sum += W_IN[i] * b[k] as i64 * q[k] as i64;
+        sum += W_IN[i] * b[nat] as i64;
     }
     sum
 }
@@ -453,15 +459,14 @@ fn inner_edge(b: &[i16; 64], q: &[u16; 64], line: usize, row: bool, skip: usize)
 /// edge it lies on: the first row from the block above (columns
 /// continue), the first column from the block to the left (rows
 /// continue), in quantized units.
-fn edge_prediction(b: &[i16; 64], nb: &Neighbours, q: &[u16; 64], nat: usize) -> Option<i32> {
+fn edge_prediction(b: &Deq, nb: &Neighbours, q: &[u16; 64], nat: usize) -> Option<i32> {
     let (v, u) = (nat / 8, nat % 8);
-    let (neighbour, line, row, skip) = if v == 0 { (nb.has_above.then_some(nb.above)?, u, false, 0) } else { (nb.has_left.then_some(nb.left)?, v, true, 0) };
-    let outer = outer_edge(neighbour, q, line, row);
-    let inner = inner_edge(b, q, line, row, skip);
+    let (neighbour, line, row) = if v == 0 { (nb.has_above.then_some(nb.above_deq)?, u, false) } else { (nb.has_left.then_some(nb.left_deq)?, v, true) };
+    let outer = outer_edge(neighbour, line, row);
+    let inner = inner_edge(b, line, row);
     // The unknown is the index-0 term of the inner sum (v = 0 for a
     // column, u = 0 for a row), with weight c₀.
-    let k = NAT2ZZ[nat];
-    let quant = q[k] as i64;
+    let quant = q[NAT2ZZ[nat]] as i64;
     Some(((outer - inner) / (W_IN[0] * quant).max(1)) as i32)
 }
 
@@ -479,20 +484,24 @@ const IDCT8: [[i64; 8]; 8] = [
 ];
 
 /// One side's DC prediction: the difference between the neighbour's
-/// boundary pixels and this block's (without its DC) along the edge,
-/// as the prediction (its mean, in quantized DC units) and how much
-/// the eight pixels disagree with each other (the spread, in 1/8192
-/// pixel units).
-fn dc_side(b: &[i16; 64], n: &[i16; 64], q: &[u16; 64], row: bool) -> (i64, i64) {
+/// boundary pixels and this block's (without its DC: `b[0]` is zero
+/// here) along the edge, as the prediction (its mean, in quantized DC
+/// units) and how much the eight pixels disagree with each other
+/// (the spread, in 1/8192 pixel units).
+fn dc_side(b: &Deq, n: &Deq, q0: u16, row: bool) -> (i64, i64) {
     let mut e = [0i64; 8];
-    for j in 0..8 {
+    if row {
+        for j in 0..8 {
+            let mut sum = 0i64;
+            for i in 0..8 {
+                sum += W_OUT[i] * n[j * 8 + i] as i64 - W_IN[i] * b[j * 8 + i] as i64;
+            }
+            e[j] = sum;
+        }
+    } else {
         for i in 0..8 {
-            let nat = if row { j * 8 + i } else { i * 8 + j };
-            let k = NAT2ZZ[nat];
-            let qq = q[k] as i64;
-            e[j] += W_OUT[i] * n[k] as i64 * qq;
-            if nat != 0 {
-                e[j] -= W_IN[i] * b[k] as i64 * qq;
+            for j in 0..8 {
+                e[j] += W_OUT[i] * n[i * 8 + j] as i64 - W_IN[i] * b[i * 8 + j] as i64;
             }
         }
     }
@@ -504,16 +513,16 @@ fn dc_side(b: &[i16; 64], n: &[i16; 64], q: &[u16; 64], row: bool) -> (i64, i64)
         }
         spread += (p / 8192).abs();
     }
-    (e[0] / (W_IN[0] * q[0] as i64).max(1), spread)
+    (e[0] / (W_IN[0] * q0 as i64).max(1), spread)
 }
 
 /// The DC predicted from both edges, in quantized units, weighted
 /// towards the side whose pixels agree more, and the context: how
 /// well the better side agrees.
-fn dc_prediction(b: &[i16; 64], nb: &Neighbours, q: &[u16; 64]) -> (i32, usize) {
-    let unit = 8192 * q[0] as i64;
-    let a = nb.has_above.then(|| dc_side(b, nb.above, q, false));
-    let l = nb.has_left.then(|| dc_side(b, nb.left, q, true));
+fn dc_prediction(b: &Deq, nb: &Neighbours, q0: u16) -> (i32, usize) {
+    let unit = 8192 * q0 as i64;
+    let a = nb.has_above.then(|| dc_side(b, nb.above_deq, q0, false));
+    let l = nb.has_left.then(|| dc_side(b, nb.left_deq, q0, true));
     match (a, l) {
         (Some((pa, sa)), Some((pl, sl))) => {
             let (wa, wl) = (sl + unit, sa + unit);
@@ -576,12 +585,13 @@ pub fn encode(j: &Jpeg, stripes: usize) -> Vec<Vec<u8>> {
 
 /// A band of every component, one stream.
 fn encode_band(j: &Jpeg, i: usize, stripes: usize, ctx: &mut [Contexts; 2]) -> Vec<u8> {
-    let mut side = Side { io: Enc { e: Coder::new(), slot: 0 }, rows: Vec::new(), counts: Vec::new(), bw: 0 };
+    let mut side = Side { io: Enc { e: Coder::new(), slot: 0 }, rows: Vec::new(), counts: Vec::new(), deq: Vec::new(), bw: 0 };
     for (ci, c) in j.frame.components.iter().enumerate() {
         let q = j.quant[c.tq as usize].as_ref().unwrap();
         let (y0, y1) = band(c.bh, stripes, i);
         side.rows = j.blocks[ci][y0 * c.bw..y1 * c.bw].to_vec();
         side.counts = vec![[0u8; 3]; side.rows.len()];
+        side.deq = vec![[0i32; 64]; 2 * c.bw];
         side.bw = c.bw;
         code_rows(&mut side, &mut ctx[kind(ci)], q).expect("the encoder codes what it is given");
     }
@@ -609,13 +619,14 @@ pub fn decode(streams: &[&[u8]], frame: &Frame, quant: &[Option<[u16; 64]>]) -> 
 
 /// Per component, the block rows of one band.
 fn decode_band(stream: &[u8], frame: &Frame, quant: &[Option<[u16; 64]>], i: usize, stripes: usize, ctx: &mut [Contexts; 2]) -> Option<Vec<Vec<[i16; 64]>>> {
-    let mut side = Side { io: Dec(Decoder::new(stream)), rows: Vec::new(), counts: Vec::new(), bw: 0 };
+    let mut side = Side { io: Dec(Decoder::new(stream)), rows: Vec::new(), counts: Vec::new(), deq: Vec::new(), bw: 0 };
     let mut out: Vec<Vec<[i16; 64]>> = Vec::with_capacity(frame.components.len());
     for (ci, c) in frame.components.iter().enumerate() {
         let q = quant.get(c.tq as usize)?.as_ref()?;
         let (y0, y1) = band(c.bh, stripes, i);
         side.rows = vec![[0i16; 64]; (y1 - y0) * c.bw];
         side.counts = vec![[0u8; 3]; side.rows.len()];
+        side.deq = vec![[0i32; 64]; 2 * c.bw];
         side.bw = c.bw;
         code_rows(&mut side, &mut ctx[kind(ci)], q)?;
         out.push(std::mem::take(&mut side.rows));
@@ -629,12 +640,16 @@ struct Side<I: Io> {
     io: I,
     rows: Vec<[i16; 64]>,
     counts: Vec<[u8; 3]>,
+    /// the dequantized blocks of the row above and this one
+    deq: Vec<Deq>,
     bw: usize,
 }
 
 /// A block being coded: what its neighbours say, and where it stands.
 struct Block<'a> {
     block: &'a mut [i16; 64],
+    /// the block dequantized, as far as it is coded
+    deq: Deq,
     nb: Neighbours<'a>,
     t: Tables,
     nz: u32,
@@ -645,11 +660,19 @@ struct Block<'a> {
 }
 
 impl<'a> Block<'a> {
-    fn start(rows: &'a mut [[i16; 64]], counts: &[[u8; 3]], bw: usize, i: usize) -> Block<'a> {
+    fn start(rows: &'a mut [[i16; 64]], deq: &'a [Deq], counts: &[[u8; 3]], bw: usize, i: usize) -> Block<'a> {
         let (before, rest) = rows.split_at_mut(i);
-        let nb = Neighbours::new(before, counts, bw, i % bw, i / bw);
+        let nb = Neighbours::new(before, deq, counts, bw, i % bw, i / bw);
         let t = nb.tables();
-        Block { block: &mut rest[0], nb, t, nz: 0, nzb: 0, left: 0, edge_left: 0, edges: [0; 2] }
+        Block { block: &mut rest[0], deq: [0; 64], nb, t, nz: 0, nzb: 0, left: 0, edge_left: 0, edges: [0; 2] }
+    }
+
+    /// The interior dequantized, once it is all coded.
+    #[inline(always)]
+    fn dequantize_interior(&mut self, q: &[u16; 64]) {
+        for &k in INTERIOR.iter() {
+            self.deq[ZIGZAG[k]] = self.block[k] as i32 * q[k] as i32;
+        }
     }
 
     /// The interior's nonzero count.
@@ -707,7 +730,7 @@ impl<'a> Block<'a> {
     #[inline(always)]
     fn edge<I: Io>(&mut self, io: &mut I, m: &mut Contexts, q: &[u16; 64], i: usize, nat: usize) -> Option<()> {
         let k = NAT2ZZ[nat];
-        let pred = edge_prediction(self.block, &self.nb, q, nat);
+        let pred = edge_prediction(&self.deq, &self.nb, q, nat);
         let pb = pred.map_or(0, pred_bucket);
         let c = ((i * EDGE_CTX + pb) * 8 + self.edge_left) * 4 + (self.t.pri[k] as usize).min(3);
         let mut v = self.block[k] as i32;
@@ -718,6 +741,7 @@ impl<'a> Block<'a> {
             self.edge_left -= 1;
         }
         self.block[k] = v as i16;
+        self.deq[nat] = v * q[k] as i32;
         Some(())
     }
 
@@ -725,8 +749,7 @@ impl<'a> Block<'a> {
     #[inline(always)]
     fn dc<I: Io>(&mut self, io: &mut I, m: &mut Contexts, q: &[u16; 64]) -> Option<()> {
         let dc = self.block[0];
-        self.block[0] = 0;
-        let (pred, dctx) = dc_prediction(self.block, &self.nb, q);
+        let (pred, dctx) = dc_prediction(&self.deq, &self.nb, q[0]);
         let mut r = dc as i32 - pred;
         let base = dctx * 13;
         let (zero, rest) = m.dc_exp[base..base + 13].split_at_mut(1);
@@ -737,15 +760,16 @@ impl<'a> Block<'a> {
             return None;
         }
         self.block[0] = dc as i16;
+        self.deq[0] = dc * q[0] as i32;
         Some(())
     }
 }
 
 /// The blocks of a band in raster order, phase by phase.
 fn code_rows<I: Io>(side: &mut Side<I>, m: &mut Contexts, q: &[u16; 64]) -> Option<()> {
-    let Side { io, rows, counts, bw } = side;
+    let Side { io, rows, counts, deq, bw } = side;
     for i in 0..rows.len() {
-        let mut b = Block::start(rows, counts, *bw, i);
+        let mut b = Block::start(rows, deq, counts, *bw, i);
         b.count(io, m);
         for &k in INTERIOR.iter() {
             if b.left == 0 {
@@ -756,6 +780,7 @@ fn code_rows<I: Io>(side: &mut Side<I>, m: &mut Contexts, q: &[u16; 64]) -> Opti
         if b.left != 0 {
             return None;
         }
+        b.dequantize_interior(q);
         for dir in 0..2 {
             b.edge_count(io, m, dir);
             for (i, &nat) in EDGES.iter().enumerate().skip(dir * 7).take(7) {
@@ -769,8 +794,9 @@ fn code_rows<I: Io>(side: &mut Side<I>, m: &mut Contexts, q: &[u16; 64]) -> Opti
             }
         }
         b.dc(io, m, q)?;
-        let done = [b.nz as u8, b.edges[0], b.edges[1]];
-        counts[i] = done;
+        let done = ([b.nz as u8, b.edges[0], b.edges[1]], b.deq);
+        counts[i] = done.0;
+        deq[i % (2 * *bw)] = done.1;
     }
     Some(())
 }
