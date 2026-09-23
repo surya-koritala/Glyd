@@ -27,6 +27,7 @@ pub mod shape;
 pub mod mmap;
 #[cfg(feature = "deflate")]
 pub mod deflate;
+pub mod reflate;
 #[cfg(feature = "jpeg")]
 pub mod jpeg;
 pub mod fixlog;
