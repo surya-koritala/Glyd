@@ -41,7 +41,7 @@
 //! sample) is never opened on its own (`crate::as_part`).
 
 use crate::record::{get_varint, put_varint};
-use preflate_rs::{preflate_whole_deflate_stream, recreate_whole_deflate_stream, PreflateConfig};
+use preflate_rs::{chunked, preflate_whole_deflate_stream, recreate_whole_deflate_stream, PreflateConfig};
 use std::borrow::Cow;
 use std::sync::Mutex;
 
@@ -59,6 +59,14 @@ const JPEG: u8 = 3;
 const DEFLATE_JPEG: u8 = 4;
 const DEFLATE_NESTED: u8 = 5;
 const NESTED: u8 = 6;
+/// `DEFLATE` and `DEFLATE_NESTED` with the stream's corrections in
+/// chunks that open and close on every core (v0.13.3).
+const DEFLATE_CHUNKED: u8 = 7;
+const DEFLATE_NESTED_CHUNKED: u8 = 8;
+
+/// A stream is opened in chunks of this much plain text when it holds
+/// at least two of them.
+const CHUNK_PLAIN: usize = 8 << 20;
 
 /// An object opened: its plain text and the recipe to close it.
 pub struct Opened {
@@ -230,6 +238,12 @@ impl Builder {
     fn deflate(&mut self, input: &[u8], at: usize, end: usize) -> Option<usize> {
         let data = input.get(at..end)?;
         let config = PreflateConfig { plain_text_limit: stream_limit(data.len()), verify_compression: true, ..Default::default() };
+        let parsed = chunked::parse(data, &config).ok()?;
+        if parsed.plain.text().len() >= 2 * CHUNK_PLAIN {
+            if let Some(n) = self.deflate_chunked(input, at, data, parsed) {
+                return Some(n);
+            }
+        }
         let (result, text) = preflate_whole_deflate_stream(data, &config).ok()?;
         let n = result.compressed_size;
         if result.corrections.len() * 4 > n {
@@ -261,6 +275,49 @@ impl Builder {
         put_varint(&mut self.body, text.len() as u64);
         self.side.extend_from_slice(&result.corrections);
         self.content.extend_from_slice(text);
+        self.keep = (at + n, at + n);
+        Some(n)
+    }
+
+    /// A large stream opened in chunks, predicted and checked on every
+    /// core: a `DEFLATE_CHUNKED` segment, or `DEFLATE_NESTED_CHUNKED`
+    /// when the text is a container. `None` when a chunk does not
+    /// close, or a JPEG is inside (the whole-stream way takes those).
+    fn deflate_chunked(&mut self, input: &[u8], at: usize, data: &[u8], parsed: chunked::Parsed) -> Option<usize> {
+        let n = parsed.contents.compressed_size;
+        let chunks = chunked::plan(&parsed, CHUNK_PLAIN);
+        let corrections = each(chunks.len(), true, |i| chunked::predict(&parsed, &chunks[i]).ok());
+        let corrections: Vec<Vec<u8>> = corrections.into_iter().collect::<Option<_>>()?;
+        if corrections.iter().map(|c| c.len()).sum::<usize>() * 4 > n {
+            return None;
+        }
+        let params = chunked::parameters(&corrections[0]).ok()?;
+        let text = parsed.plain.text();
+        let pieces = each(chunks.len(), true, |i| chunked::recreate(&params, text, chunks[i].plain.clone(), &corrections[i], i == 0, chunks[i].bit_start as u32).ok());
+        let pieces: Vec<(Vec<u8>, u32)> = pieces.into_iter().collect::<Option<_>>()?;
+        if chunked::join(&pieces) != &data[..n] {
+            return None;
+        }
+        #[cfg(feature = "jpeg")]
+        if crate::jpeg::is_jpeg(text) {
+            return None;
+        }
+        let inner = self.nested(text);
+        self.segment(input, if inner.is_some() { DEFLATE_NESTED_CHUNKED } else { DEFLATE_CHUNKED }, at);
+        put_varint(&mut self.body, chunks.len() as u64);
+        for (chunk, c) in chunks.iter().zip(&corrections) {
+            put_varint(&mut self.body, chunk.plain.len() as u64);
+            put_varint(&mut self.body, c.len() as u64);
+            self.body.push((chunk.bit_start % 8) as u8);
+            self.side.extend_from_slice(c);
+        }
+        match inner {
+            Some(inner) => self.nest(inner),
+            None => {
+                put_varint(&mut self.body, text.len() as u64);
+                self.content.extend_from_slice(text);
+            }
+        }
         self.keep = (at + n, at + n);
         Some(n)
     }
@@ -680,6 +737,9 @@ enum Seg<'a> {
     Deflate { corrections: &'a [u8], text: &'a [u8] },
     DeflateJpeg { corrections: &'a [u8], lepton: &'a [u8] },
     DeflateNested { corrections: &'a [u8], inner: Inner<'a> },
+    /// (plain length, corrections, bit offset) per chunk
+    DeflateChunked { chunks: Vec<(usize, &'a [u8], u8)>, text: &'a [u8] },
+    DeflateNestedChunked { chunks: Vec<(usize, &'a [u8], u8)>, inner: Inner<'a> },
     Nested(Inner<'a>),
     Png { header: &'a [u8], corrections: &'a [u8], text: &'a [u8], adler: &'a [u8], chunks: Vec<(usize, &'a [u8])> },
     Jpeg(&'a [u8]),
@@ -713,6 +773,17 @@ impl<'a> Reader<'a> {
         let s = self.side.get(self.side_at..self.side_at.checked_add(n)?)?;
         self.side_at += n;
         Some(s)
+    }
+    fn chunks(&mut self) -> Option<Vec<(usize, &'a [u8], u8)>> {
+        let k = self.varint()?;
+        let mut chunks = Vec::with_capacity(k.min(1 << 16));
+        for _ in 0..k {
+            let (plain, c) = (self.varint()?, self.varint()?);
+            let bit = *self.body.get(self.pos)?;
+            self.pos += 1;
+            chunks.push((plain, self.side(c)?, bit));
+        }
+        Some(chunks)
     }
     fn inner(&mut self) -> Option<Inner<'a>> {
         let segments = self.varint()? as u64;
@@ -764,6 +835,15 @@ fn segments<'a>(inner: &Inner<'a>) -> Option<Vec<Seg<'a>>> {
                 Seg::DeflateNested { corrections, inner: r.inner()? }
             }
             NESTED => Seg::Nested(r.inner()?),
+            DEFLATE_CHUNKED => {
+                let chunks = r.chunks()?;
+                let t = r.varint()?;
+                Seg::DeflateChunked { chunks, text: r.content(t)? }
+            }
+            DEFLATE_NESTED_CHUNKED => {
+                let chunks = r.chunks()?;
+                Seg::DeflateNestedChunked { chunks, inner: r.inner()? }
+            }
             _ => return None,
         });
     }
@@ -775,6 +855,8 @@ fn produce<'a>(seg: &Seg<'a>) -> Option<Cow<'a, [u8]>> {
         Seg::Bytes(b) => Cow::Borrowed(*b),
         Seg::Deflate { corrections, text } => Cow::Owned(recreate_whole_deflate_stream(text, corrections).ok()?),
         Seg::DeflateNested { corrections, inner } => Cow::Owned(recreate_whole_deflate_stream(&close_inner(inner, false)?, corrections).ok()?),
+        Seg::DeflateChunked { chunks, text } => Cow::Owned(recreate_chunked(chunks, text)?),
+        Seg::DeflateNestedChunked { chunks, inner } => Cow::Owned(recreate_chunked(chunks, &close_inner(inner, false)?)?),
         Seg::Nested(inner) => Cow::Owned(close_inner(inner, false)?),
         Seg::Png { header, corrections, text, adler, chunks } => {
             let mut image = header.to_vec();
@@ -801,6 +883,26 @@ fn produce<'a>(seg: &Seg<'a>) -> Option<Cow<'a, [u8]>> {
         #[cfg(not(feature = "jpeg"))]
         Seg::Jpeg(_) | Seg::DeflateJpeg { .. } => return None,
     })
+}
+
+/// A chunked stream re-created, every chunk on its own core.
+fn recreate_chunked(chunks: &[(usize, &[u8], u8)], text: &[u8]) -> Option<Vec<u8>> {
+    let params = chunked::parameters(chunks.first()?.1).ok()?;
+    let mut starts = Vec::with_capacity(chunks.len());
+    let mut at = 0usize;
+    for (plain, _, _) in chunks {
+        starts.push(at);
+        at = at.checked_add(*plain)?;
+    }
+    if at != text.len() {
+        return None;
+    }
+    let pieces = each(chunks.len(), true, |i| {
+        let (plain, corrections, bit) = chunks[i];
+        chunked::recreate(&params, text, starts[i]..starts[i] + plain, corrections, i == 0, bit as u32).ok()
+    });
+    let pieces: Vec<(Vec<u8>, u32)> = pieces.into_iter().collect::<Option<_>>()?;
+    Some(chunked::join(&pieces))
 }
 
 fn close_inner(inner: &Inner<'_>, parallel: bool) -> Option<Vec<u8>> {
@@ -839,8 +941,8 @@ fn content_of(inner: &Inner<'_>) -> Option<Vec<u8>> {
     for s in &segs {
         match s {
             Seg::Bytes(_) => {}
-            Seg::Deflate { text, .. } => out.extend_from_slice(text),
-            Seg::DeflateNested { inner, .. } => out.extend_from_slice(&close_inner(inner, true)?),
+            Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } => out.extend_from_slice(text),
+            Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } => out.extend_from_slice(&close_inner(inner, true)?),
             #[cfg(feature = "jpeg")]
             Seg::DeflateJpeg { lepton, .. } => out.extend_from_slice(&crate::jpeg::restore(lepton)?),
             _ => return None,
@@ -1230,9 +1332,9 @@ mod legacy {
     fn collect_v013(inner: &Inner<'_>, out: &mut Vec<u8>) -> Option<()> {
         for seg in segments(inner)? {
             match seg {
-                Seg::Deflate { text, .. } | Seg::Png { text, .. } => out.extend_from_slice(text),
+                Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Png { text, .. } => out.extend_from_slice(text),
                 Seg::DeflateJpeg { lepton, .. } => out.extend_from_slice(lepton),
-                Seg::DeflateNested { inner, .. } | Seg::Nested(inner) => collect_v013(&inner, out)?,
+                Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::Nested(inner) => collect_v013(&inner, out)?,
                 Seg::Bytes(_) | Seg::Jpeg(_) => {}
             }
         }
@@ -1385,6 +1487,35 @@ mod tests {
         })
         .unwrap();
         assert!(crate::decompress(&c).unwrap() == input);
+    }
+
+    /// A stream holding two chunks or more opens in chunks: the object
+    /// closes bit for bit, its content reads, and it takes a base.
+    #[test]
+    fn large_streams_open_and_close_in_chunks() {
+        let plain = text(2 * CHUNK_PLAIN + (1 << 20));
+        let gz = gzip(&plain, &["-1"]);
+        let opened = open(&gz).unwrap();
+        let mut pos = 0usize;
+        let segments_n = get_varint(&opened.recipe, &mut pos).unwrap();
+        let clen = get_varint(&opened.recipe, &mut pos).unwrap() as usize;
+        let inner = Inner { segments: segments_n, body: &opened.recipe[pos..], content: &opened.plain[..clen], side: &opened.plain[clen..] };
+        let segs = segments(&inner).unwrap();
+        assert!(segs.iter().any(|s| matches!(s, Seg::DeflateChunked { chunks, .. } if chunks.len() >= 2)), "opened in chunks");
+        assert_eq!(close(&opened.recipe, &opened.plain).unwrap(), gz);
+        let mut c = Vec::new();
+        crate::compress_into_max(&gz, &mut c);
+        assert!(c.starts_with(MAGIC) && c.len() < gz.len());
+        assert!(crate::decompress(&c).unwrap() == gz);
+        assert!(crate::decompress_parallel(&c).unwrap() == gz);
+        assert!(crate::decompress_content(&c).unwrap() == plain);
+        let mut later = plain.clone();
+        later.extend_from_slice(b"one more line\n");
+        let b = gzip(&later, &["-1"]);
+        let mut d = Vec::new();
+        crate::compress_with_base(&gz, &b, &mut d, false);
+        assert!(d.len() < b.len() / 8, "{} of {}", d.len(), b.len());
+        assert!(crate::decompress_with_base(&gz, &d).unwrap() == b);
     }
 
     /// A gzip object's content comes back without its stream being

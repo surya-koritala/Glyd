@@ -6,8 +6,20 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.13.3 — 2026-09-22
 
+- **Containers open and close on every core.** A deflate stream of
+  16 MB of content or more is cut into 8 MB chunks at block boundaries;
+  each is predicted, checked and later re-created by a predictor of its
+  own that first learns the 32 KB before it, so every chunk runs on its
+  own core and the pieces join bit for bit (segments `DEFLATE_CHUNKED`
+  and `DEFLATE_NESTED_CHUNKED`; `preflate-rs` is carried in
+  `third_party/` with the chunking added, see its README). Ten cores,
+  byte-exact: the 20.7 MB NASA gzip written in 2.3 s instead of 4.6,
+  read in 0.26 s instead of 1.56; a 6.8 MB PDF with figures 1.9 s
+  instead of 13.7, read in 0.59 s instead of 4.3; a 23 MB tar.gz 3.5 s
+  instead of 6.8, read in 0.50 s instead of 1.9. One thread: the same
+  as before. Corrections grow by a few hundred bytes per chunk.
 - **Content reads.** `glyd -d --content`, `glyd-store --get ID
   --content`, `decompress_content` and `decompress_content_with_base`:
   the content of a gzip or zlib object stored opened — what `gunzip`

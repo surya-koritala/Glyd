@@ -85,7 +85,15 @@ length of the corrections, from the side; then the inner container:
 its segment count, the varint length of its segments and the
 segments, the varint lengths of its content and of its side, taken
 from ours); 6 a container stored inside (the inner container,
-likewise). Containers nest four deep. Recognised containers: gzip
+likewise); 7 (v0.13.3) deflate in chunks: a varint chunk count, per
+chunk the varint length of its plain text, the varint length of its
+corrections (from the side) and one byte, the bit within a byte at
+which its blocks start, then the varint length of the text (from the
+content) — the first chunk's corrections carry preflate's parameters,
+each chunk's predictor first learns the 32 KB of plain text before it,
+and the re-created pieces join by or-ing the byte two share; 8 a
+container under a deflate stream in chunks (the chunks as for 7, then
+the inner container as for 5). Containers nest four deep. Recognised containers: gzip
 (members back to back), zip (entries from the central directory, or
 walked when it does not parse; method 8 opened, stored entries opened
 in their own way), tar (ustar entries, regular files opened in their

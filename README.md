@@ -125,7 +125,7 @@ million a year at list price; the percentages above are what to multiply.
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 cargo install glyd glyd-store                # from crates.io
-pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.13.2-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.13.3-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -497,8 +497,12 @@ Where the container's own deflate was already near what the fast
 level does on the content (an Office XML sheet), the fast level keeps
 it closed and the slower levels open it. The cost is the re-encode
 that makes it exact: about 5 MB/s of deflate per core in (50 MB/s of
-content), three times that out; per terabyte of gzipped logs on S3
-Standard, about $2 of CPU once against $166 a year. GNU gzip's
+content), three times that out — and a stream of 16 MB of content or
+more is cut into chunks that open and close on every core, so on ten
+cores the NASA gzip writes in 2.3 s and reads in 0.26 s (one core: 4.6
+and 1.56), the PDF with figures in 1.9 and 0.59 s (13.7 and 4.3); per
+terabyte of gzipped logs on S3 Standard, about $2 of CPU once against
+$166 a year. GNU gzip's
 streams open the same as macOS's (checked on Linux: an hour of events
 gzipped, 75.3 → 33.2 MB; a Linux tree, 72.2 → 55.1 MB; byte-exact).
 Streams preflate cannot reproduce, or predicts badly (corrections
@@ -789,16 +793,17 @@ panic or an unbounded allocation; every unsafe block carries its bound.
   than xz -9e and brotli -11 there, which read at 30–125 MB/s against its
   500–1,600. zstd 1.5.7's `--max` level is denser still, at 72 minutes
   per gigabyte.
-- Opened containers read at 1.5–20 MB/s on one thread: a read
-  re-creates every deflate stream bit for bit. That is why the
-  default, fast and turbo levels leave containers closed.
+- Opened containers read at 1.5–20 MB/s on one thread (6–7× that on
+  ten cores for streams of 16 MB of content or more): a read re-creates
+  every deflate stream bit for bit. That is why the default, fast and
+  turbo levels leave containers closed.
 - `GlydReader`/`GlydWriter` (std::io streaming) carry v6 levels only.
 
 ---
 
 ## Releases and versioning
 
-Current release: **v0.13.2** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Current release: **v0.13.3** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every
