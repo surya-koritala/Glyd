@@ -1,5 +1,5 @@
 <h1 align="center">Glyd</h1>
-<p align="center"><strong>Fast lossless compression for object storage. Smaller than zstd, xz and brotli on logs, dumps and archives. Fastest reads.</strong></p>
+<p align="center"><strong>Glyd - Fast compression for object storage</strong></p>
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
