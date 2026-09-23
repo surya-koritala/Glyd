@@ -761,7 +761,15 @@ fn h5(w: u64) -> u64 {
 /// (index, tagged position) for the long table.
 #[inline(always)]
 fn long_slot(w: u64, pos: usize, bits: u32) -> (usize, u32) {
-    let h = h8(w);
+    long_slot_h(h8(w), pos, bits)
+}
+/// `long_slot` from the hash already taken.
+#[inline(always)]
+fn long_slot_h(h: u64, pos: usize, bits: u32) -> (usize, u32) {
+    ((h >> (64 - bits)) as usize, (pos & POS_MASK) as u32 | ((h >> (64 - bits - 8)) as u32) << POS_BITS)
+}
+#[inline(always)]
+fn short_slot_h(h: u64, pos: usize, bits: u32) -> (usize, u32) {
     ((h >> (64 - bits)) as usize, (pos & POS_MASK) as u32 | ((h >> (64 - bits - 8)) as u32) << POS_BITS)
 }
 #[inline(always)]
@@ -792,9 +800,7 @@ fn candidate(e: u32, mine: u32, pos: usize) -> Option<usize> {
 /// entry it writes there.
 #[derive(Clone, Copy)]
 struct Slot {
-    il: usize,
     ml: u32,
-    is: usize,
     ms: u32,
     /// The two hashes, for a dictionary's full-size tables.
     hl: u64,
@@ -802,15 +808,6 @@ struct Slot {
 }
 
 impl Slot {
-    /// Reads 8 bytes at `pos`: the caller guarantees `pos + 8 <= block_end`.
-    #[inline(always)]
-    unsafe fn at(src: *const u8, pos: usize, lbits: u32, sbits: u32) -> Slot {
-        let w = std::ptr::read_unaligned(src.add(pos) as *const u64);
-        let (il, ml) = long_slot(w, pos, lbits);
-        let (is, ms) = short_slot(w, pos, sbits);
-        Slot { il, ml, is, ms, hl: h8(w), hs: h5(w) }
-    }
-
     /// The slot's indexes in a dictionary's full-size tables, and the
     /// tags the entries there must carry (the same hash bits below the
     /// index, at full size).
@@ -837,9 +834,11 @@ struct Found {
     src: *const u8,
     off: usize,
     len: usize,
+    /// 0 a repeat, 1 the long table, 2 the short table
+    kind: u8,
 }
 
-const NONE: Found = Found { src: std::ptr::null(), off: 0, len: 0 };
+const NONE: Found = Found { src: std::ptr::null(), off: 0, len: 0, kind: 3 };
 
 /// A prepared dictionary's tables for the parse: seeded on its content
 /// (positions 0..len there), read only, consulted after the input's own.
@@ -853,18 +852,22 @@ pub struct DictTables {
 unsafe fn probe<const D: bool>(src: *const u8, pos: usize, block_end: usize, c: &Slot, el: u32, es: u32, r: &[u32; 3], dict: Option<&DictTables>, eld: u32, esd: u32) -> Found {
     use crate::finder::{MatchLen, ScalarMatch};
     let p = src.add(pos);
-    for &o in r {
+    // The last offset is not checked here: a match ending at `pos`
+    // ended because it did not go on, so it never matches (measured:
+    // not a byte on five files). The two before it are the alternating
+    // pattern — a record's two sources taking turns.
+    for &o in &r[1..] {
         let o = o as usize;
         if o <= pos && eq4(p, p.sub(o)) {
-            return Found { src: p.sub(o), off: o, len: 4 + ScalarMatch::prefix(p.add(4), p.sub(o).add(4), block_end - pos - 4) };
+            return Found { src: p.sub(o), off: o, len: 4 + ScalarMatch::prefix(p.add(4), p.sub(o).add(4), block_end - pos - 4), kind: 0 };
         }
     }
     let mut best = NONE;
-    for (e, mine) in [(el, c.ml), (es, c.ms)] {
+    for (i, (e, mine)) in [(el, c.ml), (es, c.ms)].into_iter().enumerate() {
         if let Some(cand) = candidate(e, mine, pos) {
             let len = ScalarMatch::prefix(p, src.add(cand), block_end - pos);
             if len >= 4 {
-                best = Found { src: src.add(cand), off: pos - cand, len };
+                best = Found { src: src.add(cand), off: pos - cand, len, kind: 1 + i as u8 };
                 break;
             }
         }
@@ -882,7 +885,7 @@ unsafe fn probe<const D: bool>(src: *const u8, pos: usize, block_end: usize, c: 
                 if epos < d.len && off < LOCAL_WINDOW as usize {
                     let len = ScalarMatch::prefix(p, d.content.add(epos), (block_end - pos).min(d.len - epos));
                     if len >= 4 && len > best.len {
-                        best = Found { src: d.content.add(epos), off, len };
+                        best = Found { src: d.content.add(epos), off, len, kind: 1 };
                         break;
                     }
                 }
@@ -971,15 +974,26 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
 
     if pos < limit {
         unsafe {
-            let mut cur = Slot::at(src, pos, lb, sb);
-            let mut el = *tl.add(cur.il);
-            let mut es = *ts.add(cur.is);
+            // Pipelined as zstd's double-fast loop: the long hash and its
+            // entry for `pos + 1` are taken while `pos` is probed, so a
+            // mispredicted probe does not restart that load; the short
+            // hash is taken for `pos` only.
+            let mut w = std::ptr::read_unaligned(src.add(pos) as *const u64);
+            let mut hl = h8(w);
+            let (mut il, mut ml) = long_slot_h(hl, pos, lb);
+            let mut el = *tl.add(il);
             loop {
-                *tl.add(cur.il) = cur.ml;
-                *ts.add(cur.is) = cur.ms;
-                let nxt = Slot::at(src, pos + 1, lb, sb);
-                let el1 = *tl.add(nxt.il);
-                let es1 = *ts.add(nxt.is);
+                let hs = h5(w);
+                let (is, ms) = short_slot_h(hs, pos, sb);
+                let es = *ts.add(is);
+                *tl.add(il) = ml;
+                *ts.add(is) = ms;
+                let pos1 = pos + 1;
+                let w1 = std::ptr::read_unaligned(src.add(pos1) as *const u64);
+                let hl1 = h8(w1);
+                let (il1, ml1) = long_slot_h(hl1, pos1, lb);
+                let el1 = *tl.add(il1);
+                let cur = Slot { ml, ms, hl, hs };
                 let (eld, esd) = if D {
                     let d = &dict.unwrap_unchecked().tables;
                     let (il, _, is, _) = cur.dict_index();
@@ -1000,7 +1014,7 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                 let mut found = if rep_ahead {
                     let len = 4 + ScalarMatch::prefix(src.add(p1 + 4), src.add(p1 - o + 4), block_end - p1 - 4);
                     pos = p1;
-                    Found { src: src.add(p1 - o), off: o, len }
+                    Found { src: src.add(p1 - o), off: o, len, kind: 0 }
                 } else {
                     probe::<D>(src, pos, block_end, &cur, el, es, &r, dict, eld, esd)
                 };
@@ -1009,7 +1023,7 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                 if let Some((flen, foff)) = far_cursor.at(pos) {
                     let flen = flen.min(block_end - pos);
                     if flen > found.len && flen >= 4 {
-                        found = Found { src: src.add(pos - foff), off: foff, len: flen };
+                        found = Found { src: src.add(pos - foff), off: foff, len: flen, kind: 1 };
                     }
                 }
                 if found.off == 0 {
@@ -1020,30 +1034,40 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                         break;
                     }
                     if step == 1 {
-                        cur = nxt;
+                        w = w1;
+                        hl = hl1;
+                        il = il1;
+                        ml = ml1;
                         el = el1;
-                        es = es1;
                     } else {
-                        cur = Slot::at(src, pos, lb, sb);
-                        el = *tl.add(cur.il);
-                        es = *ts.add(cur.is);
+                        w = std::ptr::read_unaligned(src.add(pos) as *const u64);
+                        hl = h8(w);
+                        (il, ml) = long_slot_h(hl, pos, lb);
+                        el = *tl.add(il);
                     }
                     continue;
                 }
                 step_nb = 1 << DFAST_SKIP_STRENGTH;
                 // Lazy: a long candidate one byte later that is 4+ bytes
                 // longer wins. pos + 1 is indexed either way. (After the
-                // repeat one byte on, `nxt` is the position itself and the
+                // repeat one byte on, that is the position itself and the
                 // entry was loaded for it: no lazy step.)
-                *tl.add(nxt.il) = nxt.ml;
-                *ts.add(nxt.is) = nxt.ms;
-                if let Some(c) = candidate(el1, nxt.ml, pos + 1).filter(|_| !rep_ahead) {
+                *tl.add(il1) = ml1;
+                {
+                    // `pos1` (not `pos + 1`: the repeat one byte on moved `pos`)
+                    let (is1, ms1) = short_slot_h(h5(w1), pos1, sb);
+                    *ts.add(is1) = ms1;
+                }
+                // Not after a repeat: its cheap code beats a longer match
+                // at a fresh offset (a table dump 1.8% smaller, the rest
+                // within 0.2%), and the compare is spared.
+                if let Some(c) = candidate(el1, ml1, pos + 1).filter(|_| !rep_ahead && found.kind != 0) {
                     let rc1 = ScalarMatch::prefix(src.add(pos + 1), src.add(c), block_end - pos - 1);
                     if rc1 >= found.len + LAZY_GAIN {
                         // Out of line so this stays a (rarely taken)
                         // branch: as selects, the next position would
                         // wait for this probe's whole load chain.
-                        let better = Found { src: src.add(c), off: pos + 1 - c, len: rc1 };
+                        let better = Found { src: src.add(c), off: pos + 1 - c, len: rc1, kind: 1 };
                         lazy_win(&mut pos, &mut found, better);
                     }
                 }
@@ -1098,20 +1122,21 @@ fn find_sequences_dfast_impl<const D: bool>(input: &[u8], block_start: usize, bl
                 }
                 // Index the match's second position and its tail (zstd's
                 // insertions) so runs keep hashing.
-                let w = std::ptr::read_unaligned(src.add(mpos + 2) as *const u64);
-                let (i, m) = long_slot(w, mpos + 2, lb);
+                let w2 = std::ptr::read_unaligned(src.add(mpos + 2) as *const u64);
+                let (i, m) = long_slot(w2, mpos + 2, lb);
                 *tl.add(i) = m;
-                let (i, m) = short_slot(w, mpos + 2, sb);
+                let (i, m) = short_slot(w2, mpos + 2, sb);
                 *ts.add(i) = m;
-                let w = std::ptr::read_unaligned(src.add(pos - 2) as *const u64);
-                let (i, m) = long_slot(w, pos - 2, lb);
+                let w2 = std::ptr::read_unaligned(src.add(pos - 2) as *const u64);
+                let (i, m) = long_slot(w2, pos - 2, lb);
                 *tl.add(i) = m;
-                let w = std::ptr::read_unaligned(src.add(pos - 1) as *const u64);
-                let (i, m) = short_slot(w, pos - 1, sb);
+                let w2 = std::ptr::read_unaligned(src.add(pos - 1) as *const u64);
+                let (i, m) = short_slot(w2, pos - 1, sb);
                 *ts.add(i) = m;
-                cur = Slot::at(src, pos, lb, sb);
-                el = *tl.add(cur.il);
-                es = *ts.add(cur.is);
+                w = std::ptr::read_unaligned(src.add(pos) as *const u64);
+                hl = h8(w);
+                (il, ml) = long_slot_h(hl, pos, lb);
+                el = *tl.add(il);
             }
         }
     }
