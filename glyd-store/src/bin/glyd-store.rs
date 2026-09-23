@@ -3,6 +3,7 @@
 //!   glyd-store DIR --put FILE...        each file kept as a delta against the stored object
 //!                                       it most resembles when that pays; small files in packs
 //!   glyd-store DIR --get ID -o FILE     an object back
+//!   glyd-store DIR --get ID --content   a gzip object's content, its stream not re-created
 //!   glyd-store DIR --restore OUT        every live object back, into OUT/<id>; prints id and name
 //!   glyd-store DIR --find NAME          the id of the latest object put under a name
 //!   glyd-store DIR --delete ID          a tombstone; the bytes stay while a live chain needs them
@@ -30,6 +31,7 @@ fn main() -> io::Result<()> {
     let mut inputs: Vec<String> = Vec::new();
     let mut store_put = false;
     let mut store_get: Option<u32> = None;
+    let mut store_content = false;
     let mut store_stats = false;
     let mut store_find: Option<String> = None;
     let mut store_delete: Option<u32> = None;
@@ -63,6 +65,7 @@ fn main() -> io::Result<()> {
                 }));
                 i += 1;
             }
+            "--content" => store_content = true,
             "--stats" => store_stats = true,
             "--version" | "-V" => {
                 println!("glyd-store {}", env!("CARGO_PKG_VERSION"));
@@ -169,7 +172,7 @@ fn main() -> io::Result<()> {
             }
         }
         if let Some(id) = store_get {
-            let data = store.get(id)?;
+            let data = if store_content { store.get_content(id)? } else { store.get(id)? };
             write_out(&output_path, &data)?;
         }
         if let Some(name) = store_find {

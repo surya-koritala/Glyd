@@ -463,7 +463,12 @@ level, a base, which sees all of it, so versions of an archive share
 what they have in common. Containers open from `--max` up; the
 default, fast and turbo levels leave them as they are, since a read of
 an opened container re-creates its deflate. `-d` gives back the
-identical object. The
+identical object; `-d --content` gives what `gunzip` would — a gzip's
+members' text, a tar.gz's tar — without re-creating the stream, which
+is the expensive part of the read (the 20.7 MB NASA gzip on one
+thread: 0.36 s for the content against 1.58 s for the gzip back; on
+ten cores 0.11 s; `gunzip` itself 0.10 s). The store has it as
+`--get ID --content`. The
 object is also compressed closed, at the same level, and the smaller
 of the two is kept. Measured on this Mac, every decode compared with
 the input:

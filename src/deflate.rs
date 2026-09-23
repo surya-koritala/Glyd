@@ -823,6 +823,61 @@ pub fn close(recipe: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
     close_inner(&inner, true)
 }
 
+/// What the object's deflate streams hold, without re-creating any of
+/// them: a gzip's members' text one after the other (what `gunzip`
+/// prints), a zlib stream's text, a tar.gz's tar. `None` for an object
+/// that is not one stream of content: a zip, a PDF, a PNG, a tar.
+fn content_of(inner: &Inner<'_>) -> Option<Vec<u8>> {
+    let segs = segments(inner)?;
+    let first = segs.iter().find_map(|s| if let Seg::Bytes(b) = s { Some(*b) } else { None })?;
+    let gzip_head = first.len() >= 3 && first[0] == 0x1f && first[1] == 0x8b && first[2] == 8;
+    let zlib_head = first.len() >= 2 && first[0] & 0x0f == 8 && (u16::from_be_bytes([first[0], first[1]]) % 31 == 0);
+    if !(gzip_head || zlib_head) {
+        return None;
+    }
+    let mut out = Vec::new();
+    for s in &segs {
+        match s {
+            Seg::Bytes(_) => {}
+            Seg::Deflate { text, .. } => out.extend_from_slice(text),
+            Seg::DeflateNested { inner, .. } => out.extend_from_slice(&close_inner(inner, true)?),
+            #[cfg(feature = "jpeg")]
+            Seg::DeflateJpeg { lepton, .. } => out.extend_from_slice(&crate::jpeg::restore(lepton)?),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+fn content_plain(recipe: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
+    let mut pos = 0usize;
+    let segments = get_varint(recipe, &mut pos).ok()?;
+    let clen = get_varint(recipe, &mut pos).ok()? as usize;
+    content_of(&Inner { segments, body: &recipe[pos..], content: plain.get(..clen)?, side: plain.get(clen..)? })
+}
+
+const NO_CONTENT: crate::CodecError = crate::CodecError::CorruptedBitstream("deflate envelope: the object is not one gzip or zlib stream of content");
+
+/// `content_of` for an envelope, its inner stream decoded by `inner`;
+/// `None` when `compressed` is no envelope of this version.
+pub(crate) fn content(compressed: &[u8], inner: impl FnOnce(&[u8]) -> crate::Result<Vec<u8>>) -> Option<crate::Result<Vec<u8>>> {
+    let (_, recipe, stream, kind) = parse_any(compressed)?;
+    if kind != Kind::Current {
+        return None;
+    }
+    Some(inner(stream).and_then(|plain| content_plain(&recipe, &plain).ok_or(NO_CONTENT)))
+}
+
+/// `content` for a base-mode envelope (see `unwrap_with_base`).
+pub(crate) fn content_with_base(base: &[u8], compressed: &[u8], inner: impl FnOnce(&[u8], &[u8]) -> crate::Result<Vec<u8>>) -> Option<crate::Result<Vec<u8>>> {
+    let (_, recipe, stream, kind) = parse_any(compressed)?;
+    if kind != Kind::Current {
+        return None;
+    }
+    let base_plain = open(base).map(|o| o.plain);
+    Some(inner(base_plain.as_deref().unwrap_or(base), stream).and_then(|plain| content_plain(&recipe, &plain).ok_or(NO_CONTENT)))
+}
+
 /// The envelope's head: everything before the inner stream. The recipe
 /// goes in compressed at the max level.
 pub fn envelope(original_len: usize, recipe: &[u8], out: &mut Vec<u8>) {
@@ -1330,6 +1385,33 @@ mod tests {
         })
         .unwrap();
         assert!(crate::decompress(&c).unwrap() == input);
+    }
+
+    /// A gzip object's content comes back without its stream being
+    /// re-created: what gunzip prints, members one after the other; an
+    /// object stored closed has no content view; against a base too.
+    #[test]
+    fn content_reads_skip_the_recreate() {
+        let plain = text(2 << 20);
+        let gz = gzip(&plain, &["-1"]);
+        let mut c = Vec::new();
+        crate::compress_into_max(&gz, &mut c);
+        assert!(c.starts_with(MAGIC));
+        assert!(crate::decompress_content(&c).unwrap() == plain);
+        let mut two = gz.clone();
+        two.extend(gzip(&plain[..1 << 20], &["-1"]));
+        let mut c = Vec::new();
+        crate::compress_into_max(&two, &mut c);
+        let mut both = plain.clone();
+        both.extend_from_slice(&plain[..1 << 20]);
+        assert!(crate::decompress_content(&c).unwrap() == both);
+        assert!(crate::decompress_content(&crate::compress(&gz)).is_err());
+        let mut later = plain.clone();
+        later.extend_from_slice(b"one more line\n");
+        let b = gzip(&later, &["-1"]);
+        let mut d = Vec::new();
+        crate::compress_with_base(&gz, &b, &mut d, false);
+        assert!(crate::decompress_content_with_base(&gz, &d).unwrap() == later);
     }
 
     /// The default, fast and turbo levels leave a container as it is: a

@@ -29,6 +29,8 @@ Options:
                            index, record mode where it pays; any one object is read back alone
     -U, --unpack <DIR>     Write a pack's objects into DIR as 000000, 000001, ...
     -d, --decompress       Decompress input (default if input is .glyd)
+        --content          With -d: the content of a gzip or zlib object stored opened (what
+                           gunzip gives), without re-creating the stream
     -m, --multi-core       Use multi-core parallel engine (default)
     -s, --single-core      Force single-core sequential engine
     -o, --output <FILE>    Specify destination output file (defaults to stdout if piped)
@@ -73,6 +75,7 @@ fn main() -> io::Result<()> {
     let mut input_path: Option<String> = None;
     let mut output_path: Option<String> = None;
     let mut mode_compress = None;
+    let mut content = false;
     let mut multi_core = true;
     let mut benchmark_mode = false;
     let mut fast = false;
@@ -138,6 +141,10 @@ fn main() -> io::Result<()> {
                 }
             }
             "-d" | "--decompress" => mode_compress = Some(false),
+            "--content" => {
+                mode_compress = Some(false);
+                content = true;
+            }
             "-m" | "--multi-core" => multi_core = true,
             "-s" | "--single-core" => {
                 // One thread everywhere: record units, container entries
@@ -360,7 +367,16 @@ fn main() -> io::Result<()> {
             Some(ref p) if p != "-" => Box::new(std::fs::File::create(p)?),
             _ => Box::new(io::stdout().lock()),
         };
-        let result = if glyd::needs_base(&input_data) {
+        let result = if content {
+            let r = match base {
+                Some(ref base) => glyd::decompress_content_with_base(base, &input_data),
+                None => glyd::decompress_content(&input_data),
+            };
+            match r {
+                Ok(data) => out.write_all(&data),
+                Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+            }
+        } else if glyd::needs_base(&input_data) {
             match base {
                 Some(ref base) => glyd::decompress_stream_with_base(base, &input_data, |batch| out.write_all(batch)),
                 None => Err(io::Error::new(io::ErrorKind::InvalidData, "this file was compressed against a base: pass it with --base")),

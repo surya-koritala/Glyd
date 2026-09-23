@@ -6,6 +6,18 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- **Content reads.** `glyd -d --content`, `glyd-store --get ID
+  --content`, `decompress_content` and `decompress_content_with_base`:
+  the content of a gzip or zlib object stored opened — what `gunzip`
+  prints, members one after the other, a tar.gz's tar — without
+  re-creating the deflate stream, which is 96% of a read. The 20.7 MB
+  NASA gzip on one thread: 0.36 s for the content against 1.58 s for
+  the gzip back (0.11 s on ten cores; `gunzip` 0.10 s: the stored form
+  is record mode, whose decode is the remaining cost). A zip, a PDF, a
+  tar of gzips and an object stored closed have no content view.
+
 ## v0.13.2 — 2026-09-22
 
 - **The default, fast and turbo levels leave containers closed.** They

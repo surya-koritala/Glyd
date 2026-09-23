@@ -989,6 +989,25 @@ impl Store {
         Ok(self.fetch(id)?.data.clone())
     }
 
+    /// The content of object `id` — a gzip's or a zlib stream's text,
+    /// what `gunzip` prints — without re-creating its deflate stream:
+    /// for an object stored opened, not in a pack.
+    pub fn get_content(&self, id: u32) -> Result<Vec<u8>> {
+        let entry = self.entries.get(id as usize).ok_or_else(|| bad("no such object"))?;
+        if entry.deleted {
+            return Err(bad("object deleted"));
+        }
+        if entry.pack.is_some() {
+            return Err(bad("a packed object has no content view"));
+        }
+        self.writer.wait_for(id)?;
+        let stored = self.objects.read(&Self::key(id))?;
+        match entry.base {
+            Some(b) => glyd::decompress_content_with_base(&self.fetch(b)?.data, &stored).map_err(codec),
+            None => glyd::decompress_content(&stored).map_err(codec),
+        }
+    }
+
     fn cached(&self, id: u32) -> Option<Arc<Cached>> {
         self.cache.borrow().iter().find(|(i, _)| *i == id).map(|(_, d)| d.clone())
     }

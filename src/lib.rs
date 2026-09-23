@@ -1615,6 +1615,28 @@ fn base_units_into(base: &[u8], units: &[BaseUnit<'_>], dst: &mut [u8]) -> Resul
     Ok(total)
 }
 
+/// The content of a gzip or zlib object stored opened (`--max` and up):
+/// what `gunzip` prints — a gzip's members one after the other, a
+/// tar.gz's tar — without re-creating the deflate stream, so at the
+/// plain decode speed. An object that is not one stream of content (a
+/// zip, a PDF, a tar of gzips) or one stored closed is an error.
+pub fn decompress_content(compressed: &[u8]) -> Result<Vec<u8>> {
+    #[cfg(feature = "deflate")]
+    if let Some(r) = deflate::content(compressed, decompress_parallel) {
+        return r;
+    }
+    Err(CodecError::CorruptedBitstream("not an opened gzip or zlib object"))
+}
+
+/// `decompress_content` for an object compressed against `base`.
+pub fn decompress_content_with_base(base: &[u8], compressed: &[u8]) -> Result<Vec<u8>> {
+    #[cfg(feature = "deflate")]
+    if let Some(r) = deflate::content_with_base(base, compressed, decompress_with_base) {
+        return r;
+    }
+    Err(CodecError::CorruptedBitstream("not an opened gzip or zlib object"))
+}
+
 /// Decode `compressed` (a `compress_with_base` output) with its base.
 pub fn decompress_with_base(base: &[u8], compressed: &[u8]) -> Result<Vec<u8>> {
     #[cfg(feature = "deflate")]
