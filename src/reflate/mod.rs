@@ -9,6 +9,7 @@
 //! written on every core later.
 
 mod coder;
+pub mod trees;
 pub mod zlib;
 
 use crate::record::{get_varint, put_varint};
@@ -487,98 +488,26 @@ pub struct Opened {
 }
 
 /// `data` from its first byte, opened: the recipe holds the level
-/// emulated, each block's kind and, for a dynamic block, its header as
-/// it was, then the corrections to the emulation. `None` when the
-/// stream does not parse, or does not come back bit for bit.
+/// emulated, the block count, then the corrections to the emulation.
+/// `None` when the stream does not parse, or does not come back bit
+/// for bit.
 pub fn open(data: &[u8]) -> Option<Opened> {
     let s = parse(data)?;
-    let p = zlib::Params { level: 6, filtered: false };
-    let mut recipe = vec![p.level | (p.filtered as u8) << 4];
+    let p = zlib::detect(&s.plain, &s.blocks);
+    let mut recipe = vec![p.level | (p.filtered as u8) << 4 | (p.fixed as u8) << 5];
     put_varint(&mut recipe, s.blocks.len() as u64);
-    let mut plans = Vec::with_capacity(s.blocks.len());
-    for b in &s.blocks {
-        match &b.kind {
-            Kind::Stored(bytes) => {
-                recipe.push(0 | (b.last as u8) << 2);
-                put_varint(&mut recipe, bytes.len() as u64);
-                plans.push(zlib::Plan::Stored(bytes.len() as u32));
-            }
-            Kind::Fixed(t) => {
-                recipe.push(1 | (b.last as u8) << 2);
-                plans.push(zlib::Plan::Tokens(t));
-            }
-            Kind::Dynamic(h, t) => {
-                recipe.push(2 | (b.last as u8) << 2);
-                let (bytes, bits) = header_bits(h);
-                put_varint(&mut recipe, bytes.len() as u64);
-                recipe.push(bits as u8);
-                recipe.extend_from_slice(&bytes);
-                plans.push(zlib::Plan::Tokens(t));
-            }
-        }
-    }
-    let corrections = zlib::predict(&s.plain, p, &plans);
-    put_varint(&mut recipe, corrections.len() as u64);
-    recipe.extend_from_slice(&corrections);
+    recipe.extend_from_slice(&zlib::predict(&s.plain, p, &s.blocks));
     let opened = Opened { plain: s.plain, recipe, consumed: s.consumed };
     (close(&opened.plain, &opened.recipe)? == data[..opened.consumed]).then_some(opened)
 }
 
 /// The stream back from its plain text and recipe.
 pub fn close(plain: &[u8], recipe: &[u8]) -> Option<Vec<u8>> {
-    let p = zlib::Params { level: *recipe.first()? & 0xf, filtered: recipe[0] & 0x10 != 0 };
+    let b = *recipe.first()?;
+    let p = zlib::Params { level: b & 0xf, filtered: b & 0x10 != 0, fixed: b & 0x20 != 0 };
     let mut pos = 1usize;
     let n = get_varint(recipe, &mut pos).ok()? as usize;
-    let mut kinds = Vec::with_capacity(n);
-    let mut plans = Vec::with_capacity(n);
-    for _ in 0..n {
-        let k = *recipe.get(pos)?;
-        pos += 1;
-        let last = k & 4 != 0;
-        match k & 3 {
-            0 => {
-                let len = get_varint(recipe, &mut pos).ok()? as u32;
-                kinds.push((last, None, Some(len)));
-                plans.push(Some(len));
-            }
-            1 => {
-                kinds.push((last, None, None));
-                plans.push(None);
-            }
-            2 => {
-                let len = get_varint(recipe, &mut pos).ok()? as usize;
-                pos += 1;
-                let bytes = recipe.get(pos..pos + len)?;
-                pos += len;
-                let header = read_header(&mut BitReader::new(bytes))?;
-                kinds.push((last, Some(header), None));
-                plans.push(None);
-            }
-            _ => return None,
-        }
-    }
-    let clen = get_varint(recipe, &mut pos).ok()? as usize;
-    let corrections = recipe.get(pos..pos + clen)?;
-    let tokens = zlib::recreate(plain, p, corrections, &plans)?;
-    let mut at = 0usize;
-    let mut blocks = Vec::with_capacity(n);
-    for ((last, header, stored), tokens) in kinds.into_iter().zip(tokens) {
-        let kind = match (header, stored) {
-            (_, Some(len)) => {
-                let bytes = plain.get(at..at + len as usize)?.to_vec();
-                at += len as usize;
-                Kind::Stored(bytes)
-            }
-            (header, None) => {
-                at += tokens.iter().map(|t| match t { Token::Lit(_) => 1, Token::Ref { len, .. } => if *len == 259 { 258 } else { *len as usize } }).sum::<usize>();
-                match header {
-                    Some(h) => Kind::Dynamic(h, tokens),
-                    None => Kind::Fixed(tokens),
-                }
-            }
-        };
-        blocks.push(Block { last, bit_start: 0, kind });
-    }
+    let blocks = zlib::recreate(plain, p, recipe.get(pos..)?, n)?;
     Some(write(&blocks))
 }
 
@@ -697,6 +626,7 @@ pub(super) mod tests {
             let o = open(stream).unwrap_or_else(|| panic!("{what}: opens"));
             assert!(o.plain == plain && o.consumed == stream.len(), "{what}");
             assert!(close(&o.plain, &o.recipe).unwrap() == *stream, "{what}: closes");
+            assert!(o.recipe.len() * 100 < stream.len() || stream.len() < 4096, "{what}: recipe {} B for {} B", o.recipe.len(), stream.len());
             #[cfg(feature = "deflate")]
             {
                 let pre = preflate_rs::preflate_whole_deflate_stream(stream, &preflate_rs::PreflateConfig::default()).map(|(r, _)| r.corrections.len());
@@ -706,6 +636,38 @@ pub(super) mod tests {
         let stream = zlib_deflate(&mixed, 6, "Z_DEFAULT_STRATEGY");
         let o = open(&stream).unwrap();
         assert!(o.plain == mixed && close(&o.plain, &o.recipe).unwrap() == stream, "stored blocks between compressed ones");
+    }
+
+    /// `GLYD_REFLATE_FILE=some.gz cargo test --release reflate::tests::speed -- --ignored --nocapture`:
+    /// the gzip's stream opened and closed by reflate and by preflate,
+    /// timed, one thread.
+    #[test]
+    #[ignore = "a timing on a file named by GLYD_REFLATE_FILE"]
+    fn speed() {
+        let Ok(path) = std::env::var("GLYD_REFLATE_FILE") else { return };
+        let gz = std::fs::read(path).unwrap();
+        let stream = gzip_body(&gz);
+        let t = std::time::Instant::now();
+        let o = open(stream).unwrap();
+        let open_s = t.elapsed().as_secs_f64();
+        let t = std::time::Instant::now();
+        let back = close(&o.plain, &o.recipe).unwrap();
+        let close_s = t.elapsed().as_secs_f64();
+        assert!(back == &stream[..o.consumed], "consumed {} of {}, back {}, first difference {:?}", o.consumed, stream.len(), back.len(), back.iter().zip(stream).position(|(a, b)| a != b));
+        let mb = o.plain.len() as f64 / 1e6;
+        eprintln!("reflate:  open {open_s:.2} s ({:.0} MB/s of content, with the check), close {close_s:.2} s ({:.0} MB/s), recipe {} B, level {}", mb / open_s, mb / close_s, o.recipe.len(), o.recipe[0] & 0xf);
+        #[cfg(feature = "deflate")]
+        {
+            let t = std::time::Instant::now();
+            let config = preflate_rs::PreflateConfig { plain_text_limit: usize::MAX, ..Default::default() };
+            let (r, text) = preflate_rs::preflate_whole_deflate_stream(stream, &config).unwrap();
+            let open_s = t.elapsed().as_secs_f64();
+            let t = std::time::Instant::now();
+            let back = preflate_rs::recreate_whole_deflate_stream(text.text(), &r.corrections).unwrap();
+            let close_s = t.elapsed().as_secs_f64();
+            assert!(back == &stream[..r.compressed_size]);
+            eprintln!("preflate: open {open_s:.2} s ({:.0} MB/s), close {close_s:.2} s ({:.0} MB/s), corrections {} B", mb / open_s, mb / close_s, r.corrections.len());
+        }
     }
 
     #[test]

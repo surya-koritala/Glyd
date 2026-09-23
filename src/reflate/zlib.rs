@@ -1,6 +1,6 @@
-//! zlib's `deflate_slow` (levels 4–9), run over the plain text to
-//! predict the stream's tokens, and the corrections where the stream
-//! differs.
+//! zlib's `deflate_fast` (levels 1–3) and `deflate_slow` (4–9), run
+//! over the plain text to predict the stream's tokens, and the
+//! corrections where the stream differs.
 //!
 //! The emulation follows deflate.c: a rolling 15-bit hash of three
 //! bytes, `head` and `prev` chains indexed by the low 15 bits of the
@@ -10,7 +10,7 @@
 //! TOO_FAR rule for 3-byte matches, and a block every 16,383 tokens.
 //! Bytes past the end of the input compare as zero.
 
-use super::{coder::{Bit, Decoder, Encoder}, Token};
+use super::{coder::{Bit, Decoder, Encoder}, trees, Block, Kind, Token};
 
 const MIN_MATCH: u32 = 3;
 const MAX_MATCH: u32 = 258;
@@ -36,10 +36,20 @@ const CONFIG: [(u32, u32, u32, u32); 10] = [
     (32, 258, 258, 4096),
 ];
 
+/// Level 0 here means no matching at all (Z_HUFFMAN_ONLY, or a stream
+/// of stored blocks); 1–3 `deflate_fast`, 4–9 `deflate_slow`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Params {
     pub level: u8,
     pub filtered: bool,
+    /// Z_FIXED: every block under the fixed code
+    pub fixed: bool,
+}
+
+impl Params {
+    pub fn all() -> impl Iterator<Item = Params> {
+        (0..=9u8).flat_map(|level| [false, true].into_iter().filter(move |f| !*f || level >= 4).map(move |filtered| Params { level, filtered, fixed: false }))
+    }
 }
 
 /// zlib's matcher state over a plain text.
@@ -81,7 +91,11 @@ impl<'a> Zlib<'a> {
         while self.inserted < to {
             let pos = self.inserted;
             if self.lookahead(pos) >= MIN_MATCH {
-                self.ins_h = ((self.ins_h << 5) ^ self.at(pos + 2) as u32) & HASH_MASK;
+                // The rolling hash of three bytes, which is the same as
+                // rolling from the last insert when that was the position
+                // before, and what zlib resets to after the positions
+                // deflate_fast skips.
+                self.ins_h = (((self.at(pos) as u32) << 10) ^ ((self.at(pos + 1) as u32) << 5) ^ self.at(pos + 2) as u32) & HASH_MASK;
                 self.prev[(pos & HASH_MASK) as usize] = self.head[self.ins_h as usize];
                 self.head[self.ins_h as usize] = pos;
             }
@@ -154,8 +168,20 @@ impl<'a> Zlib<'a> {
         (len, start)
     }
 
-    /// zlib's token at `pos`, from its lazy evaluation.
+    /// zlib's token at `pos`: none for level 0, deflate_fast's, or
+    /// deflate_slow's from its lazy evaluation.
     pub fn predict(&mut self, pos: u32) -> Token {
+        if self.p.level == 0 {
+            return Token::Lit(self.at(pos));
+        }
+        if self.p.level <= 3 {
+            let head = self.hash_head(pos);
+            if head == 0 || pos - head > MAX_DIST {
+                return Token::Lit(self.at(pos));
+            }
+            let (len, start) = self.longest_match(pos, head, MIN_MATCH - 1);
+            return if len >= MIN_MATCH { Token::Ref { len: len as u16, dist: (pos - start) as u16 } } else { Token::Lit(self.at(pos)) };
+        }
         let (len, start) = match self.carry.take() {
             Some(m) => m,
             None => self.search(pos, MIN_MATCH - 1),
@@ -182,10 +208,18 @@ impl<'a> Zlib<'a> {
             Token::Ref { len, .. } => {
                 let len = if len == 259 { 258 } else { len as u32 };
                 self.carry = None;
-                // zlib inserts up to max_insert = strstart + lookahead - MIN_MATCH.
-                let max_insert = self.plain.len() as u32 - MIN_MATCH;
-                self.insert_to((pos + len).min(max_insert + 1));
-                self.inserted = self.inserted.max(pos + len);
+                let (_, lazy, _, _) = CONFIG[self.p.level as usize];
+                if self.p.level <= 3 && (len > lazy || self.lookahead(pos + len) < MIN_MATCH) {
+                    // deflate_fast skips the match's positions when it is
+                    // longer than max_insert_length.
+                    self.insert_to(pos + 1);
+                    self.inserted = self.inserted.max(pos + len);
+                } else {
+                    // zlib inserts up to max_insert = strstart + lookahead - MIN_MATCH.
+                    let max_insert = self.plain.len() as u32 - MIN_MATCH;
+                    self.insert_to((pos + len).min(max_insert + 1));
+                    self.inserted = self.inserted.max(pos + len);
+                }
                 pos + len
             }
         }
@@ -209,6 +243,63 @@ impl<'a> Zlib<'a> {
     }
 }
 
+/// A stored run's tokens are the emulation's own, a literal where a
+/// match would cross the run's end, so the state comes out as zlib's
+/// did when it made and threw them away.
+fn capped(guess: Token, pos: u32, end: u32, plain: &[u8]) -> Token {
+    match guess {
+        Token::Ref { len, .. } if pos + len as u32 > end => Token::Lit(plain[pos as usize]),
+        t => t,
+    }
+}
+
+/// How many of the first `limit` tokens `p` gets wrong.
+fn mismatches(plain: &[u8], p: Params, blocks: &[Block], limit: usize) -> usize {
+    let mut z = Zlib::new(plain, p);
+    let (mut pos, mut seen, mut wrong) = (0u32, 0usize, 0usize);
+    for b in blocks {
+        match &b.kind {
+            Kind::Stored(bytes) => {
+                let end = pos + bytes.len() as u32;
+                while pos < end {
+                    let t = capped(z.predict(pos), pos, end, plain);
+                    pos = z.commit(pos, t);
+                }
+            }
+            Kind::Fixed(tokens) | Kind::Dynamic(_, tokens) => {
+                for &actual in tokens {
+                    if seen == limit {
+                        return wrong;
+                    }
+                    wrong += (z.predict(pos) != actual) as usize;
+                    seen += 1;
+                    pos = z.commit(pos, actual);
+                }
+            }
+        }
+    }
+    wrong
+}
+
+/// The parameters that predict the stream best, judged on its first
+/// 4,096 tokens; the lower level on a tie. Z_FIXED when every coded
+/// block is fixed.
+pub fn detect(plain: &[u8], blocks: &[Block]) -> Params {
+    let fixed = blocks.iter().all(|b| !matches!(b.kind, Kind::Dynamic(..))) && blocks.iter().any(|b| matches!(b.kind, Kind::Fixed(_)));
+    let mut best = (usize::MAX, Params { level: 6, filtered: false, fixed });
+    for p in Params::all() {
+        let p = Params { fixed, ..p };
+        let wrong = mismatches(plain, p, blocks, 4096);
+        if wrong < best.0 {
+            best = (wrong, p);
+        }
+        if wrong == 0 {
+            break;
+        }
+    }
+    best.1
+}
+
 /// The contexts of the corrections coder.
 struct Models {
     same: [Bit; 2],
@@ -219,13 +310,38 @@ struct Models {
     hop_found: Bit,
     hop: [Bit; 64],
     dist: Vec<Bit>,
+    last: Bit,
+    stored: Bit,
+    stored_len: [Bit; 64],
     block_same: Bit,
     block_count: [Bit; 64],
+    kind_same: Bit,
+    header_same: Bit,
+    header_len: [Bit; 64],
+    byte: Vec<Bit>,
 }
 
 impl Models {
     fn new() -> Self {
-        Models { same: [Bit::default(); 2], is_ref: [Bit::default(); 2], len_same: Bit::default(), len: vec![Bit::default(); 512], dist_same: Bit::default(), hop_found: Bit::default(), hop: [Bit::default(); 64], dist: vec![Bit::default(); 1 << 16], block_same: Bit::default(), block_count: [Bit::default(); 64] }
+        Models {
+            same: [Bit::default(); 2],
+            is_ref: [Bit::default(); 2],
+            len_same: Bit::default(),
+            len: vec![Bit::default(); 512],
+            dist_same: Bit::default(),
+            hop_found: Bit::default(),
+            hop: [Bit::default(); 64],
+            dist: vec![Bit::default(); 1 << 16],
+            last: Bit::default(),
+            stored: Bit::default(),
+            stored_len: [Bit::default(); 64],
+            block_same: Bit::default(),
+            block_count: [Bit::default(); 64],
+            kind_same: Bit::default(),
+            header_same: Bit::default(),
+            header_len: [Bit::default(); 64],
+            byte: vec![Bit::default(); 256],
+        }
     }
 }
 
@@ -233,182 +349,224 @@ fn kind(t: &Token) -> usize {
     matches!(t, Token::Ref { .. }) as usize
 }
 
-/// A block as the coder sees it: its tokens, or a stored run of bytes
-/// (whose tokens zlib made and threw away; the emulation runs over the
-/// bytes with its own predictions, so the state comes out the same).
-pub enum Plan<'a> {
-    Tokens(&'a [Token]),
-    Stored(u32),
+fn span(tokens: &[Token]) -> u32 {
+    tokens.iter().map(|t| match t { Token::Lit(_) => 1, Token::Ref { len, .. } => if *len == 259 { 258 } else { *len as u32 } }).sum()
 }
 
-/// A stored run: the emulation's own tokens committed up to `end`,
-/// literals where a match would cross it.
-fn run_stored(z: &mut Zlib, mut pos: u32, end: u32) -> u32 {
-    while pos < end {
-        let t = match z.predict(pos) {
-            Token::Ref { len, .. } if pos + len as u32 <= end => Token::Ref { len, dist: 1 },
-            _ => Token::Lit(0),
-        };
-        pos = z.commit(pos, t);
+/// One token coded against the guess; `pos` moved past it.
+fn code_token(e: &mut Encoder, m: &mut Models, z: &mut Zlib, pos: u32, actual: Token) -> u32 {
+    let guess = z.predict(pos);
+    let same = guess == actual;
+    e.bit(&mut m.same[kind(&guess)], same as u32);
+    if !same {
+        e.bit(&mut m.is_ref[kind(&guess)], kind(&actual) as u32);
+        if let Token::Ref { len, dist } = actual {
+            let (glen, gdist) = match guess {
+                Token::Ref { len, dist } => (len, dist),
+                _ => (0, 0),
+            };
+            if glen != 0 {
+                e.bit(&mut m.len_same, (len == glen) as u32);
+            }
+            if len != glen || glen == 0 {
+                e.tree(&mut m.len, 9, len as u32 - 3);
+            }
+            if glen != 0 {
+                e.bit(&mut m.dist_same, (dist == gdist) as u32);
+            }
+            if dist != gdist || glen == 0 {
+                let hop = z.chain(pos).position(|d| d == dist as u32);
+                e.bit(&mut m.hop_found, hop.is_some() as u32);
+                match hop {
+                    Some(h) => e.count(&mut m.hop, h as u32),
+                    None => e.tree(&mut m.dist, 16, dist as u32 - 1),
+                }
+            }
+        }
     }
-    pos
+    z.commit(pos, actual)
 }
 
-/// The tokens of `blocks` (each a token count and its tokens' slice
-/// into one list) against the emulation: the corrections, from which
-/// `recreate` gets the tokens back with the plain text alone.
-pub fn predict(plain: &[u8], p: Params, blocks: &[Plan]) -> Vec<u8> {
+fn decode_token(d: &mut Decoder, m: &mut Models, z: &mut Zlib, pos: u32, plain: &[u8]) -> Option<(Token, u32)> {
+    let guess = z.predict(pos);
+    let actual = if d.bit(&mut m.same[kind(&guess)]) == 1 {
+        guess
+    } else if d.bit(&mut m.is_ref[kind(&guess)]) == 0 {
+        Token::Lit(*plain.get(pos as usize)?)
+    } else {
+        let (glen, gdist) = match guess {
+            Token::Ref { len, dist } => (len, dist),
+            _ => (0, 0),
+        };
+        let len = if glen != 0 && d.bit(&mut m.len_same) == 1 { glen } else { d.tree(&mut m.len, 9) as u16 + 3 };
+        let dist = if glen != 0 && d.bit(&mut m.dist_same) == 1 {
+            gdist
+        } else if d.bit(&mut m.hop_found) == 1 {
+            let h = d.count(&mut m.hop) as usize;
+            z.chain(pos).nth(h)? as u16
+        } else {
+            d.tree(&mut m.dist, 16) as u16 + 1
+        };
+        Token::Ref { len, dist }
+    };
+    Some((actual, z.commit(pos, actual)))
+}
+
+/// The blocks against the emulation: the corrections, from which
+/// `recreate` gets the blocks back with the plain text alone. Per
+/// block: whether it is the last (predicted: it reaches the end),
+/// whether it is stored (predicted: no; then its length), the token
+/// count (predicted: 16,383 or to the end), the tokens, then whether
+/// its kind and, for a dynamic block, its header are what zlib's trees
+/// give for those tokens (else the header as it was).
+pub fn predict(plain: &[u8], p: Params, blocks: &[Block]) -> Vec<u8> {
     let mut z = Zlib::new(plain, p);
     let mut m = Models::new();
     let mut e = Encoder::new();
     let mut pos = 0u32;
-    for plan in blocks {
-        let tokens = match plan {
-            Plan::Tokens(t) => *t,
-            Plan::Stored(n) => {
-                pos = run_stored(&mut z, pos, pos + n);
-                continue;
-            }
+    let total = plain.len() as u32;
+    for b in blocks {
+        let (stored_len, tokens): (Option<u32>, &[Token]) = match &b.kind {
+            Kind::Stored(bytes) => (Some(bytes.len() as u32), &[]),
+            Kind::Fixed(t) | Kind::Dynamic(_, t) => (None, t),
         };
-        let predicted = if plain.len() as u32 - pos == 0 { 0 } else { BLOCK_TOKENS };
+        let end = pos + stored_len.unwrap_or_else(|| span(tokens));
+        e.bit(&mut m.last, (b.last == (end == total)) as u32);
+        e.bit(&mut m.stored, stored_len.is_some() as u32);
+        if let Some(n) = stored_len {
+            e.count(&mut m.stored_len, n);
+            // The run's tokens are the emulation's own on both sides:
+            // nothing to code.
+            while pos < end {
+                let t = capped(z.predict(pos), pos, end, plain);
+                pos = z.commit(pos, t);
+            }
+            continue;
+        }
         let n = tokens.len() as u32;
-        // A block's token count: as predicted (16,383, or whatever runs
-        // to the end), or given.
-        let to_end = tokens.iter().map(|t| match t { Token::Lit(_) => 1, Token::Ref { len, .. } => if *len == 259 { 258 } else { *len as u32 } }).sum::<u32>() == plain.len() as u32 - pos;
-        let as_predicted = n == predicted || (n < BLOCK_TOKENS && to_end);
+        let as_predicted = n == BLOCK_TOKENS || (n < BLOCK_TOKENS && end == total);
         e.bit(&mut m.block_same, as_predicted as u32);
         if !as_predicted {
             e.count(&mut m.block_count, n);
         }
-        for &actual in tokens.iter() {
-            let guess = z.predict(pos);
-            let same = guess == actual;
-            e.bit(&mut m.same[kind(&guess)], same as u32);
+        for &actual in tokens {
+            pos = code_token(&mut e, &mut m, &mut z, pos, actual);
+        }
+        let t = trees::build(tokens);
+        let predicted_kind = trees::kind_of(&t, (end - (pos - span(tokens))) as usize, p.fixed);
+        let actual_kind = if matches!(b.kind, Kind::Fixed(_)) { 1 } else { 2 };
+        e.bit(&mut m.kind_same, (predicted_kind == actual_kind) as u32);
+        if predicted_kind != actual_kind {
+            e.bit(&mut m.kind_same, (actual_kind == 2) as u32);
+        }
+        if let Kind::Dynamic(h, _) = &b.kind {
+            let same = *h == t.header;
+            e.bit(&mut m.header_same, same as u32);
             if !same {
-                e.bit(&mut m.is_ref[kind(&guess)], kind(&actual) as u32);
-                if let Token::Ref { len, dist } = actual {
-                    let (glen, gdist) = match guess {
-                        Token::Ref { len, dist } => (len, dist),
-                        _ => (0, 0),
-                    };
-                    if glen != 0 {
-                        e.bit(&mut m.len_same, (len == glen) as u32);
-                    }
-                    if len != glen || glen == 0 {
-                        e.tree(&mut m.len, 9, len as u32 - 3);
-                    }
-                    if glen != 0 {
-                        e.bit(&mut m.dist_same, (dist == gdist) as u32);
-                    }
-                    if dist != gdist || glen == 0 {
-                        let hop = z.chain(pos).position(|d| d == dist as u32);
-                        e.bit(&mut m.hop_found, hop.is_some() as u32);
-                        match hop {
-                            Some(h) => e.count(&mut m.hop, h as u32),
-                            None => e.tree(&mut m.dist, 16, dist as u32 - 1),
-                        }
-                    }
+                let (bytes, bits) = super::header_bits(h);
+                e.count(&mut m.header_len, bytes.len() as u32);
+                e.tree(&mut m.byte, 3, bits);
+                for &x in &bytes {
+                    e.tree(&mut m.byte, 8, x as u32);
                 }
             }
-            pos = z.commit(pos, actual);
         }
     }
     e.finish()
 }
 
-/// The tokens back: the emulation with the corrections applied. One
-/// token list per plan (`None` a coded block, `Some(n)` a stored run of
-/// `n` bytes, whose list is empty).
-pub fn recreate(plain: &[u8], p: Params, corrections: &[u8], plans: &[Option<u32>]) -> Option<Vec<Vec<Token>>> {
+/// The blocks back: the emulation with the corrections applied.
+pub fn recreate(plain: &[u8], p: Params, corrections: &[u8], n_blocks: usize) -> Option<Vec<Block>> {
     let mut z = Zlib::new(plain, p);
     let mut m = Models::new();
     let mut d = Decoder::new(corrections);
     let mut pos = 0u32;
-    let mut out = Vec::with_capacity(plans.len());
-    for plan in plans {
-        if let Some(n) = plan {
-            pos = run_stored(&mut z, pos, pos + n);
-            out.push(Vec::new());
+    let total = plain.len() as u32;
+    let mut out = Vec::with_capacity(n_blocks);
+    for _ in 0..n_blocks {
+        let last_as_predicted = d.bit(&mut m.last) == 1;
+        let start = pos;
+        if d.bit(&mut m.stored) == 1 {
+            let n = d.count(&mut m.stored_len);
+            let end = start.checked_add(n)?;
+            if end > total {
+                return None;
+            }
+            while pos < end {
+                let t = capped(z.predict(pos), pos, end, plain);
+                pos = z.commit(pos, t);
+            }
+            let last = last_as_predicted == (end == total);
+            out.push(Block { last, bit_start: 0, kind: Kind::Stored(plain[start as usize..end as usize].to_vec()) });
             continue;
         }
         let as_predicted = d.bit(&mut m.block_same) == 1;
         let n = if as_predicted { BLOCK_TOKENS } else { d.count(&mut m.block_count) };
         let mut tokens = Vec::with_capacity(n.min(BLOCK_TOKENS) as usize);
         for _ in 0..n {
-            if as_predicted && pos == plain.len() as u32 {
+            if as_predicted && pos == total {
                 break;
             }
-            let guess = z.predict(pos);
-            let actual = if d.bit(&mut m.same[kind(&guess)]) == 1 {
-                guess
-            } else if d.bit(&mut m.is_ref[kind(&guess)]) == 0 {
-                Token::Lit(*plain.get(pos as usize)?)
-            } else {
-                let (glen, gdist) = match guess {
-                    Token::Ref { len, dist } => (len, dist),
-                    _ => (0, 0),
-                };
-                let len = if glen != 0 && d.bit(&mut m.len_same) == 1 { glen } else { d.tree(&mut m.len, 9) as u16 + 3 };
-                let dist = if glen != 0 && d.bit(&mut m.dist_same) == 1 {
-                    gdist
-                } else if d.bit(&mut m.hop_found) == 1 {
-                    let h = d.count(&mut m.hop) as usize;
-                    z.chain(pos).nth(h)? as u16
-                } else {
-                    d.tree(&mut m.dist, 16) as u16 + 1
-                };
-                Token::Ref { len, dist }
-            };
-            tokens.push(actual);
-            pos = z.commit(pos, actual);
+            let (t, next) = decode_token(&mut d, &mut m, &mut z, pos, plain)?;
+            tokens.push(t);
+            pos = next;
         }
-        out.push(tokens);
+        let t = trees::build(&tokens);
+        let predicted_kind = trees::kind_of(&t, (pos - start) as usize, p.fixed);
+        let kind = if d.bit(&mut m.kind_same) == 1 { predicted_kind } else if d.bit(&mut m.kind_same) == 1 { 2 } else { 1 };
+        let last = last_as_predicted == (pos == total);
+        let kind = if kind == 1 {
+            Kind::Fixed(tokens)
+        } else {
+            let header = if d.bit(&mut m.header_same) == 1 {
+                t.header
+            } else {
+                let len = d.count(&mut m.header_len) as usize;
+                let _bits = d.tree(&mut m.byte, 3);
+                let bytes: Vec<u8> = (0..len).map(|_| d.tree(&mut m.byte, 8) as u8).collect();
+                super::read_header(&mut super::BitReader::new(&bytes))?
+            };
+            Kind::Dynamic(header, tokens)
+        };
+        out.push(Block { last, bit_start: 0, kind });
     }
-    (pos == plain.len() as u32).then_some(out)
+    (pos == total).then_some(out)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{parse, tests::{text, zlib_deflate}, Kind};
+    use super::super::{parse, tests::{text, zlib_deflate}};
     use super::*;
 
-    fn tokens_of(kind: &Kind) -> &[Token] {
-        match kind {
-            Kind::Fixed(t) | Kind::Dynamic(_, t) => t,
-            Kind::Stored(_) => &[],
-        }
-    }
-
     /// zlib's own streams predicted with few corrections, and every
-    /// token back from them; a stream from another matcher (level 1,
-    /// emulated as 6) still comes back, with more.
+    /// block back from them; a stream from another level (1, emulated
+    /// as 6) still comes back, with more.
     #[test]
     fn zlib_levels_predicted_and_recreated() {
         let plain = text(1 << 20);
-        for (level, filtered) in [(6, false), (4, false), (5, false), (7, false), (8, false), (9, false), (6, true)] {
+        for (level, filtered) in [(6, false), (1, false), (2, false), (3, false), (4, false), (5, false), (7, false), (8, false), (9, false), (6, true)] {
             let stream = zlib_deflate(&plain, level, if filtered { "Z_FILTERED" } else { "Z_DEFAULT_STRATEGY" });
             let s = parse(&stream).unwrap();
-            let blocks: Vec<&[Token]> = s.blocks.iter().map(|b| tokens_of(&b.kind)).collect();
-            let plans: Vec<Plan> = blocks.iter().map(|b| Plan::Tokens(b)).collect();
-            let p = Params { level: level as u8, filtered };
-            let c = predict(&plain, p, &plans);
-            let n_tokens: usize = blocks.iter().map(|b| b.len()).sum();
+            let p = Params { level: level as u8, filtered, fixed: false };
+            // Levels 8 and 9 make the same stream on this text; the lower
+            // wins the tie.
+            let detected = detect(&plain, &s.blocks);
+            assert!(detected == p || (level == 9 && detected.level == 8), "level {level} filtered {filtered}: detected {detected:?}");
+            let c = predict(&plain, p, &s.blocks);
+            let n_tokens: usize = s.blocks.iter().map(|b| match &b.kind { Kind::Fixed(t) | Kind::Dynamic(_, t) => t.len(), _ => 0 }).sum();
             #[cfg(feature = "deflate")]
             {
                 let (r, _) = preflate_rs::preflate_whole_deflate_stream(&stream, &preflate_rs::PreflateConfig::default()).unwrap();
-                eprintln!("level {level} filtered {filtered}: stream {} B, {} tokens in {} blocks; corrections ours {} B, preflate {} B", stream.len(), n_tokens, blocks.len(), c.len(), r.corrections.len());
+                eprintln!("level {level} filtered {filtered}: stream {} B, {} tokens in {} blocks; corrections ours {} B, preflate {} B", stream.len(), n_tokens, s.blocks.len(), c.len(), r.corrections.len());
             }
-            assert!(c.len() * 200 < stream.len(), "level {level} filtered {filtered}: {} bytes of corrections for {} tokens, {} bytes of stream", c.len(), n_tokens, stream.len());
-            let back = recreate(&plain, p, &c, &vec![None; blocks.len()]).unwrap();
-            assert!(back.iter().map(|b| &b[..]).eq(blocks.iter().copied()), "level {level}: tokens back");
+            assert!(c.len() * 400 < stream.len(), "level {level} filtered {filtered}: {} bytes of corrections for {} tokens, {} bytes of stream", c.len(), n_tokens, stream.len());
+            let back = recreate(&plain, p, &c, s.blocks.len()).unwrap();
+            assert!(back.iter().zip(&s.blocks).all(|(a, b)| a.last == b.last && a.kind == b.kind), "level {level}: blocks back");
         }
         let stream = zlib_deflate(&plain, 1, "Z_DEFAULT_STRATEGY");
         let s = parse(&stream).unwrap();
-        let blocks: Vec<&[Token]> = s.blocks.iter().map(|b| tokens_of(&b.kind)).collect();
-        let plans: Vec<Plan> = blocks.iter().map(|b| Plan::Tokens(b)).collect();
-        let p = Params { level: 6, filtered: false };
-        let c = predict(&plain, p, &plans);
-        let back = recreate(&plain, p, &c, &vec![None; blocks.len()]).unwrap();
-        assert!(back.iter().map(|b| &b[..]).eq(blocks.iter().copied()));
+        let p = Params { level: 6, filtered: false, fixed: false };
+        let c = predict(&plain, p, &s.blocks);
+        assert!(recreate(&plain, p, &c, s.blocks.len()).unwrap().iter().zip(&s.blocks).all(|(a, b)| a.kind == b.kind));
     }
 }
