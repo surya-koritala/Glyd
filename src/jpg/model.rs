@@ -84,7 +84,7 @@ impl Encoder {
     fn new() -> Self {
         Encoder { e: Coder::new(), slot: 0 }
     }
-    #[inline]
+    #[inline(always)]
     fn bit(&mut self, m: &mut Bit, bit: u32) {
         #[cfg(test)]
         {

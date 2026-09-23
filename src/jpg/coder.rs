@@ -20,7 +20,7 @@ impl Encoder {
         Encoder { low: 0, range: 0xffff_ffff, cache: 0, cache_size: 1, out: Vec::new() }
     }
 
-    #[inline]
+    #[inline(never)]
     fn shift_low(&mut self) {
         if (self.low as u32) < 0xff00_0000 || (self.low >> 32) != 0 {
             let carry = (self.low >> 32) as u8;
@@ -39,7 +39,7 @@ impl Encoder {
         self.low = (self.low & 0x00ff_ffff) << 8;
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn bit<P: Prob>(&mut self, m: &mut P, bit: u32) {
         let bound = (self.range >> 16) * m.p();
         // Branch-free, as the decoder: on real coefficients a
@@ -55,7 +55,7 @@ impl Encoder {
     }
 
     /// A bit at even odds with nothing to adapt.
-    #[inline]
+    #[inline(always)]
     pub fn raw(&mut self, bit: u32) {
         self.range >>= 1;
         self.low += (self.range & (bit & 1).wrapping_sub(1)) as u64;
@@ -108,7 +108,7 @@ impl<'a> Decoder<'a> {
         b as u32
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn bit<P: Prob>(&mut self, m: &mut P) -> u32 {
         let bound = (self.range >> 16) * m.p();
         let bit = (self.code < bound) as u32;
@@ -125,7 +125,7 @@ impl<'a> Decoder<'a> {
         bit
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn raw(&mut self) -> u32 {
         self.range >>= 1;
         let bit = (self.code < self.range) as u32;

@@ -106,8 +106,22 @@ decode byte-exact: smaller on all five photos (9,934,880 vs 9,971,627;
 4,997,778 vs 5,001,278; 1,665,845 vs 1,679,213; 1,455,649 vs 1,470,578;
 1,448,903 vs 1,455,039 bytes), 1.6–1.9× faster to write and 1.6–1.7×
 faster to read on all cores (13.4 MB: 1.02 and 0.54 s against 1.77 and
-0.91). On one core it is slower: 2.31 and 1.24 s against 1.76 and 0.91.
-The coder alone runs at 5 ns a decision, 160 million of them for the
-13.4 MB photo, most of the time; the Huffman parse and write are 0.27
-and 0.15 s of it. Next for speed: the scan parsed and written in
-parallel at its restart markers, and fewer decisions per coefficient.
+0.91). On one core it was slower: 2.31 and 1.24 s against 1.76 and
+0.91. The coder alone ran at 5 ns a decision, 160 million of them for
+the 13.4 MB photo, most of the time; the Huffman parse and write were
+0.27 and 0.15 s of it.
+
+v0.14.1 took the speed on: the range coder's decision is branch-free
+(5.2 → 3.6 ns on random bits: the mispredicted branch on the bit was
+the cost, not the chain of dependent operations — two coders in
+lockstep gained nothing); the scan is written in bands on every core
+(bits unstuffed per band, joined with the stuffing and the markers
+in one pass) and, when it has restart intervals, parsed in bands at
+its markers; a file of 10 MB and up takes eight stripes (a stripe
+costs a few KB whatever the size). All cores, against v0.13.4: the
+13.4 MB photo written in 0.62 s and read in 0.29 (1.77 and 0.91); the
+6.4 MB one 0.48 and 0.23 (0.97 and 0.50); the three of ~2 MB 0.16–0.21
+and 0.07–0.10 (0.37–0.43 and 0.19–0.22); bytes as above but the 13.4
+MB photo at eight stripes, 9,943,767. One core: 1.99 and 1.06 s against
+1.77 and 0.91 for the 13.4 MB photo — 12–16% slower still, the model's
+decisions (160 million at ~3.6 ns plus their branches) being the rest.

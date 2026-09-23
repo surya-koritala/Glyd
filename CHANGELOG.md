@@ -6,6 +6,19 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.14.1 — 2026-09-23
+
+- **JPEG on every core.** The range coder's decision is branch-free
+  (the mispredicted branch on the bit was the cost); the scan is
+  written in bands on every core and, when it has restart intervals,
+  parsed in bands at its markers; files of 10 MB and up take eight
+  stripes. All cores against v0.13.4 (Lepton, single-threaded), every
+  decode byte-exact: the 13.4 MB photo written in 0.62 s and read in
+  0.29 (1.77 and 0.91); the 6.4 MB one 0.48 and 0.23 (0.97 and 0.50);
+  the three of ~2 MB 0.16–0.21 and 0.07–0.10 (0.37–0.43 and
+  0.19–0.22); every one smaller. One core: 12–16% slower than v0.13.4.
+  v0.14.0 files read back unchanged (fixtures in `tests/data/legacy`).
+
 ## v0.14.0 — 2026-09-23
 
 - **JPEG recoded by Glyd's own model.** `src/jpg/` (design:

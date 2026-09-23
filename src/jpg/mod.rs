@@ -428,27 +428,44 @@ fn parse_with(data: &[u8], mut pads: Option<&mut std::vec::IntoIter<Vec<(u32, u8
     }
 }
 
-/// A baseline scan's data from `at`: the blocks filled; where the data
-/// ends (the marker after it).
-fn decode_scan(data: &[u8], at: usize, f: &Frame, tables: &[Vec<Option<Huffman>>], scan: &mut Scan, blocks: &mut [Vec<[i16; 64]>]) -> Option<usize> {
+/// The blocks of every component (a pointer and a count each),
+/// written by bands that own disjoint MCUs.
+struct Blocks(Vec<(*mut [i16; 64], usize)>);
+// SAFETY: every band writes only the blocks of its own MCUs, and a
+// block belongs to one MCU of a scan, so no two bands touch the same
+// block; nothing reads the blocks until every band is done.
+unsafe impl Sync for Blocks {}
+
+impl Blocks {
+    fn of(blocks: &mut [Vec<[i16; 64]>]) -> Blocks {
+        Blocks(blocks.iter_mut().map(|b| (b.as_mut_ptr(), b.len())).collect())
+    }
+
+    #[inline]
+    #[allow(clippy::mut_from_ref)]
+    fn get(&self, ci: usize, i: usize) -> &mut [i16; 64] {
+        let (p, n) = self.0[ci];
+        assert!(i < n);
+        // SAFETY: see above; `i` is within the component's blocks.
+        unsafe { &mut *p.add(i) }
+    }
+}
+
+/// MCUs `mcu0..mcu1` of a scan decoded from `at` (the byte after the
+/// restart marker before them, or the scan's start): the odd pad
+/// bits met, and the position of the marker after the band.
+fn decode_band(data: &[u8], at: usize, f: &Frame, tables: &[Vec<Option<Huffman>>], scan: &Scan, l: &Layout, mcu0: usize, mcu1: usize, blocks: &Blocks) -> Option<(Vec<(u32, u8)>, usize)> {
     let mut bits = Bits::new(data, at);
-    let single = scan.components.len() == 1;
-    let (mcux, mcuy) = if single {
-        let c = &f.components[scan.components[0].0];
-        (c.cw, c.ch)
-    } else {
-        (f.mcux, f.mcuy)
-    };
-    let total = mcux * mcuy;
+    let restart = scan.restart as usize;
     let mut preds = [0i16; 4];
-    let mut markers = 0u32;
-    let mut mcu = 0usize;
-    while mcu < total {
-        if scan.restart > 0 && mcu > 0 && mcu % scan.restart as usize == 0 {
+    let mut markers = if restart > 0 { (mcu0 / restart) as u32 } else { 0 };
+    let mut odd = Vec::new();
+    for mcu in mcu0..mcu1 {
+        if restart > 0 && mcu > mcu0 && mcu % restart == 0 {
             // A restart marker: pad, then RSTn.
             let (pad, pad_bits, pos) = bits.align();
             if pad_bits > 0 && pad != (1 << pad_bits) - 1 {
-                scan.odd_pads.push((markers, pad));
+                odd.push((markers, pad));
             }
             if data.get(pos)? != &0xFF || data.get(pos + 1)? != &(0xD0 + (markers % 8) as u8) {
                 return None;
@@ -457,16 +474,14 @@ fn decode_scan(data: &[u8], at: usize, f: &Frame, tables: &[Vec<Option<Huffman>>
             bits = Bits::new(data, pos + 2);
             preds = [0; 4];
         }
-        let (mx, my) = (mcu % mcux, mcu / mcux);
         for (k, &(ci, td, ta)) in scan.components.iter().enumerate() {
             let c = &f.components[ci];
             let dc = tables[0][td as usize].as_ref()?;
             let ac = tables[1][ta as usize].as_ref()?;
-            let (nh, nv) = if single { (1, 1) } else { (c.h as usize, c.v as usize) };
+            let (nh, nv) = l.shape(c);
             for by in 0..nv {
                 for bx in 0..nh {
-                    let (x, y) = if single { (mx, my) } else { (mx * nh + bx, my * nv + by) };
-                    let block = &mut blocks[ci][y * c.bw + x];
+                    let block = blocks.get(ci, l.block(c, mcu, bx, by));
                     let s = bits.decode(dc)? as u32;
                     if s > 11 {
                         return None;
@@ -495,16 +510,61 @@ fn decode_scan(data: &[u8], at: usize, f: &Frame, tables: &[Vec<Option<Huffman>>
                 }
             }
         }
-        mcu += 1;
     }
     let (pad, pad_bits, pos) = bits.align();
     if pad_bits > 0 && pad != (1 << pad_bits) - 1 {
-        scan.odd_pads.push((markers, pad));
+        odd.push((markers, pad));
     }
     if data.get(pos)? != &0xFF {
         return None;
     }
-    Some(pos)
+    Some((odd, pos))
+}
+
+/// A baseline scan's data from `at`: the blocks filled; where the data
+/// ends (the marker after it). With restart intervals the data is cut
+/// at its markers into bands decoded on every core.
+fn decode_scan(data: &[u8], at: usize, f: &Frame, tables: &[Vec<Option<Huffman>>], scan: &mut Scan, blocks: &mut [Vec<[i16; 64]>]) -> Option<usize> {
+    let l = Layout::of(f, scan);
+    let restart = scan.restart as usize;
+    let bands = if restart > 0 { l.bands(restart) } else { vec![(0, l.total)] };
+    let shared = Blocks::of(blocks);
+    if bands.len() == 1 {
+        let (odd, end) = decode_band(data, at, f, tables, scan, &l, 0, l.total, &shared)?;
+        scan.odd_pads = odd;
+        return Some(end);
+    }
+    // Where each band begins: after the restart marker before its
+    // first MCU. Markers are the only 0xFF not followed by 0x00.
+    let mut starts = vec![at];
+    let mut pos = at;
+    let mut wanted = bands.iter().skip(1).map(|&(m, _)| m / restart);
+    let mut next = wanted.next();
+    let mut seen = 0usize;
+    while let Some(n) = next {
+        let off = data[pos..].iter().position(|&b| b == 0xFF)?;
+        pos += off;
+        match data.get(pos + 1)? {
+            0x00 => pos += 2,
+            0xD0..=0xD7 => {
+                seen += 1;
+                pos += 2;
+                if seen == n {
+                    starts.push(pos);
+                    next = wanted.next();
+                }
+            }
+            _ => return None,
+        }
+    }
+    let results = crate::reflate::each(bands.len(), |i| decode_band(data, starts[i], f, tables, scan, &l, bands[i].0, bands[i].1, &shared));
+    let mut end = at;
+    for r in results {
+        let (odd, pos) = r?;
+        scan.odd_pads.extend(odd);
+        end = pos;
+    }
+    Some(end)
 }
 
 // ---------------------------------------------------------------- writing
@@ -562,37 +622,198 @@ fn category(v: i16) -> (u32, u32) {
     (s, bits)
 }
 
-fn encode_scan(w: &mut BitOut, f: &Frame, tables: &[Vec<Option<Huffman>>], scan: &Scan, blocks: &[Vec<[i16; 64]>]) -> Option<()> {
-    let single = scan.components.len() == 1;
-    let (mcux, mcuy) = if single {
-        let c = &f.components[scan.components[0].0];
-        (c.cw, c.ch)
-    } else {
-        (f.mcux, f.mcuy)
-    };
-    let total = mcux * mcuy;
+/// What a band of MCUs encodes to: runs of bits as they are (whole
+/// 32-bit words, then a tail), and restart markers, which the join
+/// stuffs and places on the byte.
+enum Piece {
+    Bits(Vec<u32>, u64, u32),
+    Marker(u8),
+}
+
+/// Bits most significant first into 32-bit words, not stuffed.
+struct RawBits {
+    words: Vec<u32>,
+    acc: u64,
+    n: u32,
+    total: u64,
+    pieces: Vec<Piece>,
+}
+
+impl RawBits {
+    fn new() -> Self {
+        RawBits { words: Vec::new(), acc: 0, n: 0, total: 0, pieces: Vec::new() }
+    }
+
+    #[inline]
+    fn put(&mut self, v: u32, k: u32) {
+        self.acc = (self.acc << k) | (v as u64 & ((1u64 << k) - 1));
+        self.n += k;
+        self.total += k as u64;
+        if self.n >= 32 {
+            self.n -= 32;
+            self.words.push((self.acc >> self.n) as u32);
+        }
+    }
+
+    fn take(&mut self) -> Piece {
+        let tail = self.acc & ((1u64 << self.n) - 1);
+        let p = Piece::Bits(std::mem::take(&mut self.words), tail, self.n);
+        self.acc = 0;
+        self.n = 0;
+        p
+    }
+
+    fn finish(mut self) -> Vec<Piece> {
+        let bits = self.take();
+        self.pieces.push(bits);
+        self.pieces
+    }
+
+    /// Pad to the byte with `pad` bits (all ones unless recorded);
+    /// the band starts on a byte, so its own count tells.
+    fn pad(&mut self, pad: Option<u8>) {
+        let r = (self.total % 8) as u32;
+        if r > 0 {
+            let k = 8 - r;
+            let v = pad.map_or((1u32 << k) - 1, |p| p as u32);
+            self.put(v, k);
+        }
+    }
+}
+
+/// Where a band's bits go: straight into the file, or into pieces for
+/// a later join.
+trait Sink {
+    fn put(&mut self, v: u32, k: u32);
+    fn pad(&mut self, pad: Option<u8>);
+    fn marker(&mut self, m: u8);
+}
+
+impl Sink for BitOut {
+    #[inline]
+    fn put(&mut self, v: u32, k: u32) {
+        BitOut::put(self, v, k)
+    }
+    fn pad(&mut self, pad: Option<u8>) {
+        BitOut::pad(self, pad)
+    }
+    fn marker(&mut self, m: u8) {
+        self.flush();
+        debug_assert!(self.n == 0);
+        self.out.push(0xFF);
+        self.out.push(m);
+    }
+}
+
+impl Sink for RawBits {
+    #[inline]
+    fn put(&mut self, v: u32, k: u32) {
+        RawBits::put(self, v, k)
+    }
+    fn pad(&mut self, pad: Option<u8>) {
+        RawBits::pad(self, pad)
+    }
+    fn marker(&mut self, m: u8) {
+        let bits = self.take();
+        self.pieces.push(bits);
+        self.pieces.push(Piece::Marker(m));
+    }
+}
+
+impl BitOut {
+    /// A band's pieces, stuffed, the markers on the byte.
+    fn join(&mut self, pieces: Vec<Piece>) {
+        for p in pieces {
+            match p {
+                Piece::Bits(words, tail, n) => {
+                    for w in words {
+                        self.put(w, 32);
+                    }
+                    self.put(tail as u32, n);
+                }
+                Piece::Marker(m) => self.marker(m),
+            }
+        }
+    }
+}
+
+/// The layout of a scan: which MCUs, and where each component's
+/// blocks sit.
+struct Layout {
+    single: bool,
+    mcux: usize,
+    total: usize,
+}
+
+impl Layout {
+    fn of(f: &Frame, scan: &Scan) -> Layout {
+        let single = scan.components.len() == 1;
+        let (mcux, mcuy) = if single {
+            let c = &f.components[scan.components[0].0];
+            (c.cw, c.ch)
+        } else {
+            (f.mcux, f.mcuy)
+        };
+        Layout { single, mcux, total: mcux * mcuy }
+    }
+
+    /// The block index of block (bx, by) of component `c` in MCU `mcu`.
+    #[inline]
+    fn block(&self, c: &Component, mcu: usize, bx: usize, by: usize) -> usize {
+        let (mx, my) = (mcu % self.mcux, mcu / self.mcux);
+        let (x, y) = if self.single { (mx, my) } else { (mx * c.h as usize + bx, my * c.v as usize + by) };
+        y * c.bw + x
+    }
+
+    #[inline]
+    fn shape(&self, c: &Component) -> (usize, usize) {
+        if self.single { (1, 1) } else { (c.h as usize, c.v as usize) }
+    }
+
+    /// Where the bands of a scan begin and end: about one per core,
+    /// at restart intervals when there are any (each band then starts
+    /// on a byte with fresh predictors), anywhere otherwise.
+    fn bands(&self, restart: usize) -> Vec<(usize, usize)> {
+        let n = crate::threads().clamp(1, 16).min(self.total / 2048).max(1);
+        let mut cuts: Vec<usize> = (0..=n).map(|i| self.total * i / n).map(|m| if restart > 0 { m / restart * restart } else { m }).collect();
+        cuts.dedup();
+        cuts.windows(2).map(|w| (w[0], w[1])).collect()
+    }
+}
+
+/// MCUs `mcu0..mcu1` of a scan encoded into `w`: the bits, and the
+/// restart markers between the intervals inside the band and at its
+/// end (when the scan goes on). Without restart intervals the DC
+/// predictors continue from the MCU before the band.
+fn encode_band<S: Sink>(w: &mut S, f: &Frame, tables: &[Vec<Option<Huffman>>], scan: &Scan, blocks: &[Vec<[i16; 64]>], l: &Layout, mcu0: usize, mcu1: usize) -> Option<()> {
+    let restart = scan.restart as usize;
     let mut preds = [0i16; 4];
-    let mut markers = 0u32;
-    let mut odd = scan.odd_pads.iter().peekable();
-    for mcu in 0..total {
-        if scan.restart > 0 && mcu > 0 && mcu % scan.restart as usize == 0 {
+    if restart == 0 && mcu0 > 0 {
+        for (k, &(ci, _, _)) in scan.components.iter().enumerate() {
+            let c = &f.components[ci];
+            let (nh, nv) = l.shape(c);
+            preds[k] = blocks[ci][l.block(c, mcu0 - 1, nh - 1, nv - 1)][0];
+        }
+    }
+    let mut markers = if restart > 0 { (mcu0 / restart) as u32 } else { 0 };
+    let first = markers;
+    let mut odd = scan.odd_pads.iter().skip_while(move |(m, _)| *m < first).peekable();
+    for mcu in mcu0..mcu1 {
+        if restart > 0 && mcu > mcu0 && mcu % restart == 0 {
             let pad = odd.next_if(|(m, _)| *m == markers).map(|&(_, p)| p);
             w.pad(pad);
-            w.out.push(0xFF);
-            w.out.push(0xD0 + (markers % 8) as u8);
+            w.marker(0xD0 + (markers % 8) as u8);
             markers += 1;
             preds = [0; 4];
         }
-        let (mx, my) = (mcu % mcux, mcu / mcux);
         for (k, &(ci, td, ta)) in scan.components.iter().enumerate() {
             let c = &f.components[ci];
             let dc = tables[0][td as usize].as_ref()?;
             let ac = tables[1][ta as usize].as_ref()?;
-            let (nh, nv) = if single { (1, 1) } else { (c.h as usize, c.v as usize) };
+            let (nh, nv) = l.shape(c);
             for by in 0..nv {
                 for bx in 0..nh {
-                    let (x, y) = if single { (mx, my) } else { (mx * nh + bx, my * nv + by) };
-                    let block = &blocks[ci][y * c.bw + x];
+                    let block = &blocks[ci][l.block(c, mcu, bx, by)];
                     let diff = block[0].wrapping_sub(preds[k]);
                     preds[k] = block[0];
                     let (s, v) = category(diff);
@@ -635,12 +856,36 @@ fn encode_scan(w: &mut BitOut, f: &Frame, tables: &[Vec<Option<Huffman>>], scan:
             }
         }
     }
-    let pad = odd.next_if(|(m, _)| *m == markers).map(|&(_, p)| p);
+    if restart > 0 && mcu1 < l.total {
+        let pad = odd.next_if(|(m, _)| *m == markers).map(|&(_, p)| p);
+        w.pad(pad);
+        w.marker(0xD0 + (markers % 8) as u8);
+    }
+    Some(())
+}
+
+/// A scan's data: its bands encoded on every core, joined, the final
+/// pad.
+fn encode_scan(w: &mut BitOut, f: &Frame, tables: &[Vec<Option<Huffman>>], scan: &Scan, blocks: &[Vec<[i16; 64]>]) -> Option<()> {
+    let l = Layout::of(f, scan);
+    let bands = l.bands(scan.restart as usize);
+    if bands.len() == 1 {
+        encode_band(w, f, tables, scan, blocks, &l, 0, l.total)?;
+    } else {
+        let pieces = crate::reflate::each(bands.len(), |i| {
+            let mut raw = RawBits::new();
+            encode_band(&mut raw, f, tables, scan, blocks, &l, bands[i].0, bands[i].1).map(|_| raw.finish())
+        });
+        for p in pieces {
+            w.join(p?);
+        }
+    }
+    let markers = if scan.restart > 0 { ((l.total - 1) / scan.restart as usize) as u32 } else { 0 };
+    let pad = scan.odd_pads.iter().find(|(m, _)| *m == markers).map(|&(_, p)| p);
     w.pad(pad);
     Some(())
 }
 
-/// The JPEG's bytes back.
 /// Glyd's own stream of a JPEG, verified to give the JPEG back:
 ///
 ///   "GJPG", the kept bytes (a flag: 0 as they are, 1 compressed with
@@ -680,7 +925,7 @@ pub fn pack(input: &[u8]) -> Option<Vec<u8>> {
             }
         }
     }
-    let streams = model::encode(&j, stripes_for(&j));
+    let streams = model::encode(&j, stripes_for(&j, input.len()));
     put_varint(&mut out, streams.len() as u64);
     for s in &streams {
         put_varint(&mut out, s.len() as u64);
@@ -697,11 +942,13 @@ pub fn pack(input: &[u8]) -> Option<Vec<u8>> {
 pub(crate) const MAGIC: &[u8; 4] = b"GJPG";
 
 /// How many stripes a JPEG is coded in: four, so four cores share the
-/// work, each at least 64 block rows tall; the same on every machine,
-/// so the bytes are.
-fn stripes_for(j: &Jpeg) -> usize {
+/// work, eight from 10 MB up (a stripe costs a few KB whatever the
+/// size, so it pays on a big file), each at least 64 block rows tall;
+/// the same on every machine, so the bytes are.
+fn stripes_for(j: &Jpeg, len: usize) -> usize {
     let rows = j.frame.components[0].bh;
-    (rows / 64).clamp(1, 4)
+    let most = if len >= 10 << 20 { 8 } else { 4 };
+    (rows / 64).clamp(1, most)
 }
 
 /// The JPEG back from `pack`'s stream.

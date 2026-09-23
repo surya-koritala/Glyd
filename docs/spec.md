@@ -141,7 +141,8 @@ come back from them; the scans (varint count), each its odd pad bits
 (varint count; per pad a varint marker index and one byte of bits);
 the model's streams (varint count, then a varint length each): a
 prefix of the first sixteenth of the block rows, then four stripes of
-the rest (fewer when the picture is under 256 block rows), each
+the rest (eight from 10 MB up; fewer when the picture is under 256
+block rows; a reader takes any count), each
 stripe's contexts starting as the prefix left them, each stream a
 range coder (`src/jpg/coder.rs`) over the coefficients of every
 component's blocks in its rows (`src/jpg/model.rs`). v0.13.0 to
