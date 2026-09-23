@@ -125,3 +125,18 @@ and 0.07–0.10 (0.37–0.43 and 0.19–0.22); bytes as above but the 13.4
 MB photo at eight stripes, 9,943,767. One core: 1.99 and 1.06 s against
 1.77 and 0.91 for the 13.4 MB photo — 12–16% slower still, the model's
 decisions (160 million at ~3.6 ns plus their branches) being the rest.
+
+What was then tried for that last 10–15% on one core, each measured on
+the same photos and put back (the stream is v0.14.0's throughout):
+the predictions summed over each block dequantized once and kept per
+row (the same integers; 1%); two coders per band in lockstep sharing
+the contexts, so a decoder's next context need not wait on the bit
+before it (nothing: the model's branches keep the chains apart);
+lengths coded against the neighbours' length and interior signs raw,
+a fifth fewer decisions (3% faster, 1% bigger); the context tables cut
+to L1 size (3% faster, 1% bigger); profile-guided optimization
+(nothing). The decoder sits at the sum of its parts — a decision's
+arithmetic, the branch it decides, the context it then loads — and
+none of them is the one to remove. What is left is a different
+model: fewer positions coded per block (runs of zeros, say), which is
+a new stream and a new measurement.
