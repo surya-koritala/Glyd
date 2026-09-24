@@ -465,8 +465,8 @@ compressed with snappy or zstd, and to a codec those pages are noise:
 zstd -19 takes 1% off a Parquet file. Glyd opens them (`src/parquet.rs`):
 every page is written back byte for byte by a port of the compressor
 that wrote it (google/snappy 1.2, level 1, in its builds, and the
-Rust `snap` crate; zstd 1.5.5 at levels 1 and 3, as its library and
-its command line write, `src/resnappy.rs`, `src/rezstd/`), so the
+Rust `snap` crate; zstd 1.5.2 to 1.5.7 at levels 1 and 3, as its
+library and its command line write, `src/resnappy.rs`, `src/rezstd/`), so the
 page's values are what gets compressed, and they are modeled first:
 fixed-width values as byte planes, counters and times in their unit
 and as deltas, decimal doubles as integers, byte arrays as lengths
@@ -828,7 +828,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
   object. Record mode works on files, not on single small objects.
 - JSON API events and crawl indexes are 20–65% hashes and random ids once
   compressed; no column model moves them. Parquet's pages are opened
-  when snappy or zstd 1.5.5 wrote them; pages from other zstd versions
+  when snappy or zstd 1.5.2 to 1.5.7 wrote them; pages from zstd 1.4
   or gzip, and Parquet's encodings beyond plain and dictionary, are
   kept as they are.
 - `--cold` is symmetric: reads cost what writes cost, 1–1.3 MB/s per
