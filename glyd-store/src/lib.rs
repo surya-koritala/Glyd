@@ -845,15 +845,73 @@ impl Store {
         self.root_of(id)
     }
 
-    /// `id`, or its ancestor at depth 1 when it sits deeper.
-    fn shallow(&self, mut id: u32) -> u32 {
-        while self.entries[id as usize].depth > 1 {
-            match self.entries[id as usize].base {
-                Some(p) => id = p,
-                None => break,
+    /// A family's first object that sits at the depth cap, stored again
+    /// shallower: against the ancestor of its base at depth 1, or alone
+    /// when that is smaller, so its family's versions have two levels
+    /// under it (a head at depth 3, against a nearer ancestor at depth
+    /// 2, left them one: 148 of 150 6.1 releases at the cap as its
+    /// direct deltas, 1,013 MB against 899). It has no versions
+    /// under it (one would pass the cap), so no other object changes;
+    /// its content, and so every cached copy of it, is the same. A new
+    /// major release lands there when the last release of the old one
+    /// sits at depth 3: at the gate, 6.1.1 at depth 4 on 5.15.99 sent
+    /// every fifth 6.1 release to 5.15.1, a 26 MB delta where one of
+    /// 6.1.1 costs 2-4 (6.1: 1.32 GB). Lifting only when the family
+    /// first needs its head leaves a series that drifts month to month
+    /// (each month a family of its own, none with versions) on its
+    /// nearest base: taking a shallow base for every new family moved
+    /// Wikipedia's monthly page tables two months back, 0.7 GB more.
+    fn lift(&mut self, id: u32) -> Result<()> {
+        self.writer.wait_all()?;
+        let e = self.entries[id as usize].clone();
+        if e.deleted || e.pack.is_some() || e.depth < MAX_DEPTH {
+            return Ok(());
+        }
+        let data = self.get(id)?;
+        let mut alone = Vec::with_capacity(data.len() / 4 + 1024);
+        match self.level {
+            Level::Max => glyd::compress_records_into_max_dense(&data, &mut alone),
+            Level::Ultra => glyd::compress_records_into_ultra(&data, &mut alone),
+            Level::Cold => glyd::compress_records_into_cold(&data, &mut alone),
+        }
+        let ultra = self.level == Level::Ultra;
+        let mut stored = alone;
+        let mut new_base = None;
+        let mut options = Vec::new();
+        let mut at = e.base;
+        while let Some(a) = at {
+            let x = &self.entries[a as usize];
+            if x.depth <= 1 {
+                if !x.deleted {
+                    options.push(a);
+                }
+                break;
+            }
+            at = x.base;
+        }
+        let container = glyd::deflate::is_container(&data);
+        for anc in options {
+            let base = self.fetch(anc)?;
+            let mut delta = Vec::with_capacity(data.len() / 16 + 1024);
+            if container {
+                glyd::compress_with_base_plain(&base.data, base.index(), base.plain(), &data, None, &mut delta, ultra);
+            } else {
+                glyd::compress_with_base_anchored(&base.data, base.index(), &data, None, &mut delta, ultra);
+            }
+            if delta.len() < stored.len() {
+                stored = delta;
+                new_base = Some(anc);
             }
         }
-        id
+        self.objects.write(&Self::key(id), &stored)?;
+        let depth = new_base.map_or(0, |b| self.entries[b as usize].depth + 1);
+        let entry = &mut self.entries[id as usize];
+        entry.base = new_base;
+        entry.depth = depth;
+        entry.stored_len = stored.len() as u64;
+        let entry = entry.clone();
+        self.append_index(&entry)?;
+        self.write_sidecar(id, &Self::line(&entry))
     }
 
     /// The root of `id`'s chain: where its bases lead.
@@ -923,10 +981,11 @@ impl Store {
         };
         let (prints, anchors) = fingerprints_and_anchors(&data);
         lap("fingerprints", &mut laps);
+        let level = self.level;
         let alone = |data: &[u8]| {
             let mut out = Vec::with_capacity(data.len() / 4 + 1024);
             // Dense: a stored object is written once and read rarely.
-            match self.level {
+            match level {
                 Level::Max => glyd::compress_records_into_max_dense(data, &mut out),
                 Level::Ultra => glyd::compress_records_into_ultra(data, &mut out),
                 Level::Cold => glyd::compress_records_into_cold(data, &mut out),
@@ -993,19 +1052,18 @@ impl Store {
             eprintln!("  candidates {id}: {} (coverage {coverage:.3})", scored.iter().map(|(c, s, h)| format!("{c} ({:.3}, holds {:.2})", s, h)).collect::<Vec<_>>().join(", "));
         }
         let best = scored.first().copied();
-        // An object that will start a family of its own (its best
-        // candidate holds under `FAMILY_SHARE` of it: a new major
-        // release) takes a shallow base, an ancestor at depth 1 or the
-        // root: its family's versions come back to it at the depth
-        // cap, and a head sitting at the cap itself sent them to the
-        // chain's root instead (at the gate, 6.1.1 landed at depth 4
-        // on a 5.15 release, and every fifth 6.1 release was a 26 MB
-        // delta of 5.15.1 where one of 6.1.1 costs 2-4).
-        let starts_family = best.map_or(false, |(_, _, held)| held < FAMILY_SHARE);
-        let mut candidates: Vec<u32> = scored
-            .into_iter()
-            .map(|(id, _, _)| if starts_family { self.shallow(id) } else { self.within_cap(id) })
-            .collect();
+        // A candidate at the depth cap falls back to its family's first
+        // object; one that sits at the cap itself is lifted first
+        // (`lift`), so the family's versions come back to it and not
+        // to the chain's root.
+        for &(id, _, _) in &scored {
+            let e = &self.entries[id as usize];
+            if e.depth >= MAX_DEPTH && self.entries[e.family as usize].depth >= MAX_DEPTH {
+                let head = e.family;
+                self.lift(head)?;
+            }
+        }
+        let mut candidates: Vec<u32> = scored.into_iter().map(|(id, _, _)| self.within_cap(id)).collect();
         candidates.dedup();
         lap("candidates", &mut laps);
         if !candidates.is_empty() {
@@ -1433,7 +1491,7 @@ mod tests {
         }
         let e = store.entries();
         let head = &e[first_b as usize];
-        assert!(head.base.is_some() && head.depth <= 2, "b0 a shallow delta: depth {}", head.depth);
+        assert!(head.base.is_some() && head.depth < MAX_DEPTH, "b0 a delta under the cap: depth {}", head.depth);
         assert_eq!(head.family, first_b);
         for x in &e[first_b as usize + 1..] {
             assert_eq!(x.family, first_b, "{} joins b0's family", x.name);
@@ -1450,6 +1508,62 @@ mod tests {
         for (i, v) in bs.iter().enumerate() {
             assert!(store.get(first_b + i as u32).unwrap() == *v, "b{i}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_family_head_at_the_cap_is_lifted() {
+        // A's versions reach depth 3; B (half new: a family of its own)
+        // lands at depth 4 on a3, where its versions could not follow.
+        // When B's first version arrives, B is stored again shallower
+        // and its versions hang off it; every object comes back, before
+        // and after reopening.
+        let dir = std::env::temp_dir().join(format!("glyd-store-lift-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = vec![wordy(4 << 20, 7)];
+        for i in 1..4 {
+            let prev = a[i - 1].clone();
+            a.push(edited(&prev, 20, 500 + i as u64));
+        }
+        let mut b = a[3][..(1600 << 10)].to_vec();
+        b.extend_from_slice(&wordy(2400 << 10, 8));
+        let mut bs = vec![b];
+        for i in 1..6 {
+            let prev = bs[i - 1].clone();
+            bs.push(edited(&prev, 20, 600 + i as u64));
+        }
+        let mut store = Store::open(&dir).unwrap();
+        for (i, v) in a.iter().enumerate() {
+            store.put(&format!("a{i}"), v).unwrap();
+        }
+        store.put("b0", &bs[0]).unwrap();
+        let head = 4u32;
+        assert_eq!((store.entries()[3].depth, store.entries()[4].depth), (3, MAX_DEPTH), "b0 lands at the cap on a3");
+        assert_eq!(store.entries()[4].family, head);
+        for (i, v) in bs.iter().enumerate().skip(1) {
+            store.put(&format!("b{i}"), v).unwrap();
+        }
+        let check = |store: &Store| {
+            let e = store.entries();
+            assert!(e[head as usize].depth < MAX_DEPTH, "b0 lifted under the cap: depth {}", e[head as usize].depth);
+            for x in &e[head as usize + 1..] {
+                assert_eq!(x.family, head, "{} joins b0's family", x.name);
+                let mut at = x.id;
+                while at != head {
+                    at = e[at as usize].base.unwrap_or_else(|| panic!("{} does not descend from b0", x.name));
+                }
+                assert!(x.depth <= MAX_DEPTH);
+            }
+            for (i, v) in a.iter().enumerate() {
+                assert!(store.get(i as u32).unwrap() == *v, "a{i}");
+            }
+            for (i, v) in bs.iter().enumerate() {
+                assert!(store.get(head + i as u32).unwrap() == *v, "b{i}");
+            }
+        };
+        check(&store);
+        drop(store);
+        check(&Store::open(&dir).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
