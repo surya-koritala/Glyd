@@ -29,6 +29,7 @@ pub mod mmap;
 pub mod deflate;
 pub mod reflate;
 pub mod resnappy;
+pub mod rezstd;
 pub mod parquet;
 pub mod jpg;
 pub mod jpeg;
