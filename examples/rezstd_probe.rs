@@ -1,13 +1,24 @@
-// Scratch: a zstd frame decoded and written again: where the port's bytes first differ. `rezstd_probe <file.zst>`
+// Scratch: a zstd frame decoded and written again through every build: which one matched. `rezstd_probe <file.zst>...`
 fn main() {
-    let f = std::env::args().nth(1).unwrap();
-    let frame = std::fs::read(&f).unwrap();
-    let t = std::time::Instant::now();
-    let plain = glyd::rezstd::decompress(&frame).expect("decodes");
-    let dt = t.elapsed().as_secs_f64();
-    let t = std::time::Instant::now();
-    let again = glyd::rezstd::compress(&plain, glyd::rezstd::BUILDS[0]);
-    let ct = t.elapsed().as_secs_f64();
-    let first = again.iter().zip(frame.iter()).position(|(a, b)| a != b).unwrap_or(again.len().min(frame.len()));
-    println!("{}: {} B -> {} B plain (decode {dt:.2} s); written again {} B (encode {ct:.2} s); first difference at {first} ({})", f.rsplit('/').next().unwrap(), frame.len(), plain.len(), again.len(), if again == frame { "IDENTICAL" } else { "differs" });
+    for f in std::env::args().skip(1) {
+        let frame = std::fs::read(&f).unwrap();
+        let name = f.rsplit('/').next().unwrap();
+        let t = std::time::Instant::now();
+        match glyd::rezstd::reproduce(&frame) {
+            Some((plain, build)) => println!("{name}: {} B -> {} B, reproduced by {build:?} in {:.2} s", frame.len(), plain.len(), t.elapsed().as_secs_f64()),
+            None => {
+                let Some(plain) = glyd::rezstd::decompress(&frame) else {
+                    println!("{name}: does not decode");
+                    continue;
+                };
+                println!("{name}: {} B -> {} B, NOT reproduced; per build, the first differing byte:", frame.len(), plain.len());
+                for b in glyd::rezstd::BUILDS {
+                    let b = glyd::rezstd::Build { checksum: frame[4] & 4 != 0, ..b };
+                    let made = glyd::rezstd::compress(&plain, b);
+                    let first = made.iter().zip(&frame).position(|(a, b)| a != b).unwrap_or(made.len().min(frame.len()));
+                    println!("  {b:?}: {} B made, first difference at {first}", made.len());
+                }
+            }
+        }
+    }
 }

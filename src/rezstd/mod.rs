@@ -1,6 +1,6 @@
-//! Zstd frames reproduced: the reference compressor (zstd 1.5.5 at
-//! level 1 and level 3, the one-shot `ZSTD_compress` and the CLI's
-//! stream) ported step for step, so a frame it wrote is made again
+//! Zstd frames reproduced: the reference compressor (zstd 1.5.2 to
+//! 1.5.7 at level 1 and level 3, the one-shot `ZSTD_compress` and the
+//! CLI's stream and jobs) ported step for step, so a frame it wrote is made again
 //! from its content and the frame's bytes need not be kept. Parquet's
 //! pages are the case, as with snappy in `resnappy`: a data lake's
 //! files hold their columns as zstd pages, and opening a page lets its
@@ -23,6 +23,7 @@ mod dfast;
 mod fast;
 mod fse;
 mod huf;
+mod split;
 mod xxh64;
 
 pub use decode::decompress;
@@ -59,6 +60,18 @@ pub enum Level {
     Three = 3,
 }
 
+/// The reference's versions whose level-1 and level-3 paths differ,
+/// in order. `V1_5_5` stands for 1.5.4, 1.5.5 and 1.5.6, which write
+/// the same bytes on these paths. 1.5.7 cuts full blocks where their
+/// content changes (`split.rs`) and lets the double-fast finder accept
+/// a candidate at the window's lowest index and keep the short match
+/// unless the long match a byte ahead is strictly longer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Version {
+    V1_5_5,
+    V1_5_7,
+}
+
 /// How the input reached the compressor. `OneShot` is `ZSTD_compress`
 /// in one call with a `ZSTD_compressBound` buffer. `Stream` is the CLI
 /// with `--single-thread`: `ZSTD_compressStream2` fed 128 KB at a time,
@@ -83,20 +96,31 @@ pub enum Writer {
 /// one-shot API does not).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Build {
-    pub version: &'static str,
+    pub version: Version,
     pub level: Level,
     pub writer: Writer,
     pub checksum: bool,
 }
 
-/// The builds `reproduce` tries (with the checksum read from the frame).
-pub const BUILDS: [Build; 6] = [
-    Build { version: "1.5.5", level: Level::One, writer: Writer::OneShot, checksum: false },
-    Build { version: "1.5.5", level: Level::Three, writer: Writer::OneShot, checksum: false },
-    Build { version: "1.5.5", level: Level::One, writer: Writer::Cli, checksum: false },
-    Build { version: "1.5.5", level: Level::Three, writer: Writer::Cli, checksum: false },
-    Build { version: "1.5.5", level: Level::One, writer: Writer::Stream, checksum: false },
-    Build { version: "1.5.5", level: Level::Three, writer: Writer::Stream, checksum: false },
+const fn build(version: Version, level: Level, writer: Writer) -> Build {
+    Build { version, level, writer, checksum: false }
+}
+
+/// The builds `reproduce` tries (with the checksum read from the
+/// frame), newest version first.
+pub const BUILDS: [Build; 12] = [
+    build(Version::V1_5_7, Level::One, Writer::OneShot),
+    build(Version::V1_5_7, Level::Three, Writer::OneShot),
+    build(Version::V1_5_7, Level::One, Writer::Cli),
+    build(Version::V1_5_7, Level::Three, Writer::Cli),
+    build(Version::V1_5_7, Level::One, Writer::Stream),
+    build(Version::V1_5_7, Level::Three, Writer::Stream),
+    build(Version::V1_5_5, Level::One, Writer::OneShot),
+    build(Version::V1_5_5, Level::Three, Writer::OneShot),
+    build(Version::V1_5_5, Level::One, Writer::Cli),
+    build(Version::V1_5_5, Level::Three, Writer::Cli),
+    build(Version::V1_5_5, Level::One, Writer::Stream),
+    build(Version::V1_5_5, Level::Three, Writer::Stream),
 ];
 
 /// `clevels.h`: the rows of a level by input size class (over 256 KB,
@@ -160,6 +184,19 @@ impl Build {
         }
         p
     }
+
+    /// Whether full blocks are cut where their content changes
+    /// (`ZSTD_optimalBlockSize`, since 1.5.7).
+    fn splits_blocks(&self) -> bool {
+        self.version >= Version::V1_5_7
+    }
+
+    /// Whether the double-fast finder follows 1.5.7's rules (a
+    /// candidate at the window's lowest index counts; the long match a
+    /// byte ahead wins only when strictly longer).
+    fn dfast_longer_wins(&self) -> bool {
+        self.version >= Version::V1_5_7
+    }
 }
 
 /// `ZSTD_isRLE`.
@@ -178,20 +215,39 @@ struct BlockState {
 /// One compression context's pass over `input[start..end]`: its
 /// blocks appended to `out`. `base` is where the context's history
 /// begins (a job's overlap prefix, whose tables are filled first);
-/// `cap` is the room in the buffer written into, renewed per chunk for
-/// the CLI's stream, whose ring of `ring` bytes restarts the window at
-/// each wrap; `reps` are the repcodes the context starts from.
+/// the input reaches the context in calls of `chunk` bytes
+/// (`ZSTD_compressContinue`); `cap` is the room in the buffer written
+/// into, renewed per call for the CLI's stream, whose ring of `ring`
+/// bytes restarts the window at each wrap; `reps` are the repcodes the
+/// context starts from; `header` is the frame header's size when this
+/// context wrote it, which its savings count from the second call on.
 struct Run {
     base: usize,
     start: usize,
     end: usize,
+    chunk: usize,
     cap: usize,
     per_chunk: bool,
     ring: Option<usize>,
     reps: [u32; 3],
+    header: usize,
 }
 
-fn run(input: &[u8], n: usize, p: &CParams, r: Run, out: &mut Vec<u8>) {
+/// `ZSTD_optimalBlockSize`: the next block's size. Before 1.5.7 a
+/// block is as large as it can be; since then a full block is cut by
+/// `split::split_block` once the frame's savings reach three bytes
+/// (so never the first block, nor incompressible data).
+fn block_size_at(src: &[u8], remaining: usize, block_size_max: usize, b: &Build, strategy: Strategy, savings: i64) -> usize {
+    if !b.splits_blocks() || remaining < BLOCK_SIZE_MAX || block_size_max < BLOCK_SIZE_MAX {
+        return remaining.min(block_size_max);
+    }
+    if savings < 3 {
+        return BLOCK_SIZE_MAX;
+    }
+    split::split_block(src, if strategy == Strategy::Fast { 0 } else { 1 })
+}
+
+fn run(input: &[u8], n: usize, b: &Build, p: &CParams, r: Run, out: &mut Vec<u8>) {
     let s = &input[r.base..r.end];
     let (start, end) = (r.start - r.base, r.end - r.base);
     let window_size = (1u64 << p.window_log).min((end - start) as u64).max(1) as usize;
@@ -217,18 +273,25 @@ fn run(input: &[u8], n: usize, p: &CParams, r: Run, out: &mut Vec<u8>) {
     let mut cap = r.cap;
     let mut first = true;
     let mut ring_pos = 0usize;
-    let mut pos = start;
-    while pos < end {
-        let size = block_size.min(end - pos);
-        let last = r.base + pos + size == n;
+    let (mut consumed, mut produced) = (0i64, 0i64);
+    let mut call_start = start;
+    while call_start < end {
+        let call_end = (call_start + r.chunk).min(end);
         if !first {
             if r.per_chunk {
                 cap = CSTREAM_OUT_SIZE;
             }
             if r.ring.is_some() && ring_pos == 0 {
-                window.restart(pos);
+                window.restart(call_start);
             }
         }
+        // ZSTD_compress_frameChunk: the savings so far decide the splits.
+        let mut savings = consumed - produced;
+        let call_out = out.len();
+        let mut pos = call_start;
+        while pos < call_end {
+        let size = block_size_at(&s[pos..], call_end - pos, block_size, b, p.strategy, savings);
+        let last = r.base + pos + size == n;
         window.enforce_max_dist(pos, p.window_log);
         // ZSTD_compressBlock_internal: 0 is a raw block, 1 an RLE one.
         let src = &s[pos..pos + size];
@@ -239,8 +302,8 @@ fn run(input: &[u8], n: usize, p: &CParams, r: Run, out: &mut Vec<u8>) {
             let store = match (p.strategy, window.has_ext_dict()) {
                 (Strategy::Fast, false) => fast::compress_block(s, pos, pos + size, &mut table, p, &window, &mut next.rep),
                 (Strategy::Fast, true) => fast::compress_block_ext(s, pos, pos + size, &mut table, p, &window, &mut next.rep),
-                (Strategy::DoubleFast, false) => dfast::compress_block(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep),
-                (Strategy::DoubleFast, true) => dfast::compress_block_ext(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep),
+                (Strategy::DoubleFast, false) => dfast::compress_block(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep, b.dfast_longer_wins()),
+                (Strategy::DoubleFast, true) => dfast::compress_block_ext(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep, b.dfast_longer_wins()),
             };
             if let Some(c) = block::compress(&store, &prev.entropy, &mut next.entropy, cap - 3, size, p.strategy) {
                 c_size = c.len();
@@ -271,27 +334,35 @@ fn run(input: &[u8], n: usize, p: &CParams, r: Run, out: &mut Vec<u8>) {
                 out.extend_from_slice(&coded);
             }
         }
-        cap -= match c_size {
+        let written = match c_size {
             0 => 3 + size,
             1 => 4,
             c => 3 + c,
         };
+        cap -= written;
+        savings += size as i64 - written as i64;
+        pos += size;
+        first = false;
+        }
+        consumed += (call_end - call_start) as i64;
+        produced += (out.len() - call_out) as i64 + if call_start == start { r.header as i64 } else { 0 };
         if let Some(ring) = r.ring {
-            ring_pos += size;
+            ring_pos += call_end - call_start;
             if ring_pos + block_size > ring {
                 ring_pos = 0;
             }
         }
-        pos += size;
-        first = false;
+        call_start = call_end;
     }
 }
 
 /// The single-thread stream: 128 KB chunks through the input ring.
-fn stream(input: &[u8], n: usize, p: &CParams, fh_size: usize, out: &mut Vec<u8>) {
+fn stream(input: &[u8], n: usize, b: &Build, p: &CParams, fh_size: usize, out: &mut Vec<u8>) {
     let window_size = (1u64 << p.window_log).min(n as u64).max(1) as usize;
     let block_size = BLOCK_SIZE_MAX.min(window_size);
-    run(input, n, p, Run { base: 0, start: 0, end: n, cap: CSTREAM_OUT_SIZE - fh_size, per_chunk: true, ring: Some(window_size + block_size), reps: [1, 4, 8] }, out);
+    // An input of one block takes the one-shot shortcut: a single call.
+    let chunk = if n <= BLOCK_SIZE_MAX { n } else { block_size };
+    run(input, n, b, p, Run { base: 0, start: 0, end: n, chunk, cap: CSTREAM_OUT_SIZE - fh_size, per_chunk: true, ring: Some(window_size + block_size), reps: [1, 4, 8], header: fh_size }, out);
 }
 
 /// `input` as the reference compressor of `build` writes it.
@@ -323,9 +394,9 @@ pub fn compress(input: &[u8], build: Build) -> Vec<u8> {
         out.extend_from_slice(&[1, 0, 0]);
     } else {
         match build.writer {
-            Writer::OneShot => run(input, n, &p, Run { base: 0, start: 0, end: n, cap: compress_bound(n) - fh_size, per_chunk: false, ring: None, reps: [1, 4, 8] }, &mut out),
-            Writer::Stream => stream(input, n, &p, fh_size, &mut out),
-            Writer::Cli if n <= JOB_SIZE_MIN => stream(input, n, &p, fh_size, &mut out),
+            Writer::OneShot => run(input, n, &build, &p, Run { base: 0, start: 0, end: n, chunk: n, cap: compress_bound(n) - fh_size, per_chunk: false, ring: None, reps: [1, 4, 8], header: fh_size }, &mut out),
+            Writer::Stream => stream(input, n, &build, &p, fh_size, &mut out),
+            Writer::Cli if n <= JOB_SIZE_MIN => stream(input, n, &build, &p, fh_size, &mut out),
             Writer::Cli => {
                 // ZSTDMT_computeTargetJobLog and ZSTDMT_computeOverlapSize
                 // for the fast and double-fast strategies.
@@ -337,7 +408,8 @@ pub fn compress(input: &[u8], build: Build) -> Vec<u8> {
                     let first = start == 0;
                     let base = if first { 0 } else { start - overlap };
                     let cap = compress_bound(job) - if first { fh_size } else { 0 };
-                    run(input, n, &p, Run { base, start, end, cap, per_chunk: false, ring: None, reps: if first { [1, 4, 8] } else { [0, 0, 0] } }, &mut out);
+                    // ZSTDMT_compressionJob feeds its context four blocks at a time.
+                    run(input, n, &build, &p, Run { base, start, end, chunk: 4 * BLOCK_SIZE_MAX, cap, per_chunk: false, ring: None, reps: if first { [1, 4, 8] } else { [0, 0, 0] }, header: if first { fh_size } else { 0 } }, &mut out);
                     start = end;
                 }
             }
@@ -354,9 +426,11 @@ pub fn compress(input: &[u8], build: Build) -> Vec<u8> {
 /// checksum is read from the frame's descriptor; a frame carrying one
 /// is tried as the CLI's first.
 pub fn reproduce(frame: &[u8]) -> Option<(Vec<u8>, Build)> {
-    let plain = decompress(frame)?;
+    let (plain, blocks) = decode::decompress_blocks(frame)?;
     let checksum = frame[4] & 4 != 0;
-    let mut builds: Vec<Build> = BUILDS.iter().map(|b| Build { checksum, ..*b }).collect();
+    // A block short of 128 KB before the last one is the splitter's.
+    let split = blocks.iter().rev().skip(1).any(|&size| size != BLOCK_SIZE_MAX);
+    let mut builds: Vec<Build> = BUILDS.iter().filter(|b| !split || b.splits_blocks()).map(|b| Build { checksum, ..*b }).collect();
     if checksum {
         builds.sort_by_key(|b| b.writer == Writer::OneShot);
     }
@@ -377,6 +451,11 @@ mod tests {
     }
 
     const NAMES: [&str; 11] = ["text50", "text3k", "page0", "page1", "page2", "random40k", "zeros100k", "mixed170k", "text200k", "planes300k", "farrep526k"];
+
+    const V155_L1: Build = build(Version::V1_5_5, Level::One, Writer::OneShot);
+    const V155_L3: Build = build(Version::V1_5_5, Level::Three, Writer::OneShot);
+    const V157_L1: Build = build(Version::V1_5_7, Level::One, Writer::OneShot);
+    const V157_L3: Build = build(Version::V1_5_7, Level::Three, Writer::OneShot);
 
     /// `frame` is `raw` as `build` writes it, and comes back through `reproduce`.
     fn check(name: &str, raw: &[u8], frame: &[u8], build: Build) {
@@ -403,7 +482,7 @@ mod tests {
         // when the window's limit is set from the block's start.
         for name in NAMES {
             let raw = fixture(&format!("{name}.raw"));
-            check(name, &raw, &fixture(&format!("{name}.zst")), BUILDS[0]);
+            check(name, &raw, &fixture(&format!("{name}.zst")), V155_L1);
         }
     }
 
@@ -412,8 +491,25 @@ mod tests {
         // The same inputs through ZSTD_compress at level 3 (double fast).
         for name in NAMES {
             let raw = fixture(&format!("{name}.raw"));
-            check(name, &raw, &fixture(&format!("{name}.l3.zst")), BUILDS[1]);
+            check(name, &raw, &fixture(&format!("{name}.l3.zst")), V155_L3);
         }
+    }
+
+    #[test]
+    fn frames_written_by_zstd_1_5_7_come_back_byte_for_byte() {
+        // 1.5.7's zc at level 1 splits planes300k's second block at 32 KB
+        // (structured bytes, then zeros); at level 3 page1 parses
+        // differently (the double-fast rules) and planes300k splits; the
+        // CLI at level 1 splits within its 128 KB chunk (32 KB + 96 KB).
+        let planes = fixture("planes300k.raw");
+        check("planes300k.v157", &planes, &fixture("planes300k.v157.zst"), V157_L1);
+        check("planes300k.v157.l3", &planes, &fixture("planes300k.v157.l3.zst"), V157_L3);
+        check("planes300k.v157.cli", &planes, &fixture("planes300k.v157.cli.zst"), Build { checksum: true, ..build(Version::V1_5_7, Level::One, Writer::Cli) });
+        let page1 = fixture("page1.raw");
+        check("page1.v157.l3", &page1, &fixture("page1.v157.l3.zst"), V157_L3);
+        // The 1.5.5 frames still come back as 1.5.5's, not as any 1.5.7 build.
+        assert_eq!(reproduce(&fixture("planes300k.zst")).unwrap().1, V155_L1);
+        assert_eq!(reproduce(&fixture("page1.l3.zst")).unwrap().1, V155_L3);
     }
 
     #[test]
@@ -422,9 +518,9 @@ mod tests {
         let raw = fixture("text3k.raw");
         let frame = fixture("text3k.cli.zst");
         assert_eq!(frame[4] & 4, 4, "the descriptor's checksum bit");
-        check("text3k.cli", &raw, &frame, Build { checksum: true, ..BUILDS[2] });
+        check("text3k.cli", &raw, &frame, Build { checksum: true, ..build(Version::V1_5_5, Level::One, Writer::Cli) });
         let (_, found) = reproduce(&frame).unwrap();
-        assert_eq!(found, Build { checksum: true, ..BUILDS[2] });
+        assert_eq!((found.level, found.writer, found.checksum), (Level::One, Writer::Cli, true));
         let mut bad = frame.clone();
         *bad.last_mut().unwrap() ^= 1;
         assert!(decompress(&bad).is_none(), "a wrong checksum is refused");

@@ -52,15 +52,20 @@ fn after_match(input: &[u8], store: &mut SeqStore, long: &mut [u32], small: &mut
 }
 
 /// The block `input[start..end]` parsed into `SeqStore`, the tables
-/// and the repcodes updated for the next block (`noDict`).
+/// and the repcodes updated for the next block (`noDict`). With
+/// `longer_wins` (1.5.7) a candidate at the window's lowest index
+/// counts, and a short match is only replaced by the long match a byte
+/// ahead when that one is strictly longer.
 #[allow(clippy::too_many_arguments)]
-pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], small: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3]) -> SeqStore {
+pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], small: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], longer_wins: bool) -> SeqStore {
     let mut store = SeqStore::new();
     let (hbl, hbs, mls) = (p.hash_log, p.chain_log, p.min_match);
     let step_incr = 1usize << SEARCH_STRENGTH;
     let end_index = idx(end);
     let prefix_lowest_index = window.lowest_prefix(end_index, p.window_log);
     let prefix_lowest = pos(prefix_lowest_index);
+    // The oldest candidate accepted here: past the lowest index, or at it since 1.5.7.
+    let oldest = if longer_wins { prefix_lowest_index } else { prefix_lowest_index + 1 };
     let ilimit = end as isize - HASH_READ_SIZE as isize;
     let mut anchor = start;
     let mut ip = start;
@@ -113,7 +118,7 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], 
                 }
                 hl1 = hash(input, ip1, hbl, 8);
                 // A long match here.
-                if idxl0 > prefix_lowest_index && read64(input, pos(idxl0)) == read64(input, ip) {
+                if idxl0 >= oldest && read64(input, pos(idxl0)) == read64(input, ip) {
                     let mut m = pos(idxl0);
                     let mut len = count(input, ip + 8, m + 8, end) + 8;
                     let offset = (ip - m) as u32;
@@ -126,14 +131,14 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], 
                     break 'search Some(Found { ip: ip0, offset, len });
                 }
                 let idxl1 = long[hl1];
-                // A short match here, upgraded to a long one a byte ahead when there is one.
-                if idxs0 > prefix_lowest_index && read32(input, pos(idxs0)) == read32(input, ip) {
-                    let (mut ip0, mut m, mut len) = if idxl1 > prefix_lowest_index && read64(input, pos(idxl1)) == read64(input, ip1) {
-                        let m = pos(idxl1);
-                        (ip1, m, count(input, ip1 + 8, m + 8, end) + 8)
-                    } else {
-                        let m = pos(idxs0);
-                        (ip, m, count(input, ip + 4, m + 4, end) + 4)
+                // A short match here, upgraded to a long one a byte ahead when
+                // there is one (since 1.5.7 only when that one is longer).
+                if idxs0 >= oldest && read32(input, pos(idxs0)) == read32(input, ip) {
+                    let short_len = count(input, ip + 4, pos(idxs0) + 4, end) + 4;
+                    let long1 = if idxl1 > prefix_lowest_index && read64(input, pos(idxl1)) == read64(input, ip1) { Some(count(input, ip1 + 8, pos(idxl1) + 8, end) + 8) } else { None };
+                    let (mut ip0, mut m, mut len) = match long1 {
+                        Some(l1) if !longer_wins || l1 > short_len => (ip1, pos(idxl1), l1),
+                        _ => (ip, pos(idxs0), short_len),
                     };
                     let offset = (ip0 - m) as u32;
                     while ip0 > anchor && m > prefix_lowest && input[ip0 - 1] == input[m - 1] {
@@ -183,14 +188,15 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], 
 }
 
 /// `ZSTD_compressBlock_doubleFast_extDict_generic`: the block parsed
-/// with a dictionary segment below `window.dict_limit`.
+/// with a dictionary segment below `window.dict_limit` (the same in
+/// every version; `longer_wins` only reaches the regular variant).
 #[allow(clippy::too_many_arguments)]
-pub fn compress_block_ext(input: &[u8], start: usize, end: usize, long: &mut [u32], small: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3]) -> SeqStore {
+pub fn compress_block_ext(input: &[u8], start: usize, end: usize, long: &mut [u32], small: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], longer_wins: bool) -> SeqStore {
     let end_index = idx(end);
     let dict_start_index = window.lowest_match(end_index, p.window_log);
     let prefix_start_index = window.dict_limit.max(dict_start_index);
     if prefix_start_index == dict_start_index {
-        return compress_block(input, start, end, long, small, p, window, rep);
+        return compress_block(input, start, end, long, small, p, window, rep, longer_wins);
     }
     let mut store = SeqStore::new();
     let (hbl, hbs, mls) = (p.hash_log, p.chain_log, p.min_match);

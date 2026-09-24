@@ -536,6 +536,11 @@ fn block(src: &[u8], out: &mut Vec<u8>, t: &mut Tables) -> Option<()> {
 /// The content of a zstd frame, or None for a malformed one, one that
 /// needs a dictionary, or bytes after the frame.
 pub fn decompress(frame: &[u8]) -> Option<Vec<u8>> {
+    decompress_blocks(frame).map(|(out, _)| out)
+}
+
+/// `decompress` with the size of each block's content as well.
+pub(crate) fn decompress_blocks(frame: &[u8]) -> Option<(Vec<u8>, Vec<usize>)> {
     if frame.len() < 5 || u32::from_le_bytes(frame[..4].try_into().unwrap()) != MAGIC {
         return None;
     }
@@ -569,10 +574,12 @@ pub fn decompress(frame: &[u8]) -> Option<Vec<u8>> {
     };
     let mut out = Vec::with_capacity(content_size.unwrap_or(0).min(1 << 30) as usize);
     let mut t = Tables { huf: None, ll: None, of: None, ml: None, rep: [1, 4, 8] };
+    let mut blocks = Vec::new();
     loop {
         let h = take(&mut p, 3)? as usize;
         let last = h & 1 == 1;
         let size = h >> 3;
+        let before = out.len();
         match (h >> 1) & 3 {
             0 => {
                 out.extend_from_slice(frame.get(p..p + size)?);
@@ -589,7 +596,6 @@ pub fn decompress(frame: &[u8]) -> Option<Vec<u8>> {
                 if size > BLOCK_SIZE_MAX {
                     return None;
                 }
-                let before = out.len();
                 block(frame.get(p..p + size)?, &mut out, &mut t)?;
                 if out.len() - before > BLOCK_SIZE_MAX {
                     return None;
@@ -598,6 +604,7 @@ pub fn decompress(frame: &[u8]) -> Option<Vec<u8>> {
             }
             _ => return None,
         }
+        blocks.push(out.len() - before);
         if last {
             break;
         }
@@ -612,5 +619,5 @@ pub fn decompress(frame: &[u8]) -> Option<Vec<u8>> {
     if p != frame.len() || content_size.is_some_and(|n| n != out.len() as u64) {
         return None;
     }
-    Some(out)
+    Some((out, blocks))
 }
