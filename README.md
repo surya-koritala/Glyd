@@ -464,17 +464,19 @@ Parquet, the data lakes' format, holds its columns as pages
 compressed with snappy or zstd, and to a codec those pages are noise:
 zstd -19 takes 1% off a Parquet file. Glyd opens them (`src/parquet.rs`):
 every page is written back byte for byte by a port of the compressor
-that wrote it (google/snappy 1.2, level 1, in its builds;
-zstd 1.5.5 at levels 1 and 3, as its library and its command line
-write, `src/resnappy.rs`, `src/rezstd/`), so the page's values are
-what gets compressed, and they are modeled first: fixed-width values
-as byte planes, counters and times in their unit and as deltas,
-decimal doubles as integers, byte arrays as lengths then bytes,
-dictionary indices unpacked (their runs written again by a port of
-Arrow's encoder). A NYC taxi month written by pyarrow, 61.7 MB with
-snappy pages or 50.3 MB with zstd pages, comes to **34.8 MB** either
-way at `--max` (zstd -19 on the snappy file: 49.8 MB), 32.3 MB at
-`--ultra`, 0.5 s to write on ten cores and 0.1 s to read back; a
+that wrote it (google/snappy 1.2, level 1, in its builds, and the
+Rust `snap` crate; zstd 1.5.5 at levels 1 and 3, as its library and
+its command line write, `src/resnappy.rs`, `src/rezstd/`), so the
+page's values are what gets compressed, and they are modeled first:
+fixed-width values as byte planes, counters and times in their unit
+and as deltas, decimal doubles as integers, byte arrays as lengths
+then bytes, dictionary indices unpacked (their runs written again by
+a port of the writer's encoder: Arrow's, polars' or DuckDB's). A NYC
+taxi month written by pyarrow, 61.7 MB with snappy pages or 50.3 MB
+with zstd pages, comes to **34.8 MB** either way at `--max` (zstd -19
+on the snappy file: 49.8 MB), 32.3 MB at `--ultra`, 0.5 s to write on
+ten cores and 0.1 s to read back; written by polars (86.9 MB snappy,
+57.8 MB zstd) to 48.1 MB, by DuckDB (61.1 MB, 45.7 MB) to 35.0 MB; a
 month of for-hire trips, 519 MB, to 376.5 MB. A whole zstd frame (a
 `.zst` object) opens the same way: an access log `zstd` wrote, 22.3
 MB, comes to 8.0 MB with its records modeled. Every decode is

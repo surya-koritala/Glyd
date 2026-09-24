@@ -57,6 +57,19 @@ every earlier format.
   473.2), read back in 1.0 s; with zstd pages, 472.8 MB: 376.5 MB in
   2.7 s. Pages compressed with gzip, lz4 and brotli are left as they
   are.
+  Files polars and DuckDB write open fully too: polars' snappy pages
+  are the Rust `snap` crate's (the multiply's older hash, shifted by
+  the table's size, which differs on blocks under 8 KB), and each
+  writer's run-length encoder for dictionary indices is ported beside
+  Arrow's (polars: repeats of more than eight, literal runs of up to
+  8192 values packed in blocks of 32; DuckDB: repeats of four or more,
+  bit-packed blocks of 256 written whole), the one that writes a
+  page's runs again named in its recipe. A bit-packed run's padding
+  (a block's earlier values) is taken as the writers leave it. The
+  same taxi month at `--max`: polars' snappy file, 86.9 MB, 51.4 ->
+  48.1 MB, its zstd file, 57.8 MB, 50.8 -> 48.1 MB; DuckDB's snappy
+  file, 61.1 MB, 36.6 -> 35.0 MB, its zstd file, 45.7 MB, 36.6 ->
+  35.0 MB; every decode byte-exact.
 - **The store keeps a version's base among its own kind.** An object
   whose base holds under 90% of its fingerprints starts a family (a
   new kernel major holds 0.85 of the old one; point releases hold
