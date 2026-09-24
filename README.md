@@ -761,21 +761,21 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Known gaps
 
-- `--max` on one core writes at 0.79–0.99× the wall time of `zstd -3`
+- `--max` on one core writes at 0.80–1.06× the wall time of `zstd -3`
   as installed (Graviton3 and Sapphire Rapids: GitHub events
-  0.96–0.99×, Silesia mozilla 0.90–0.94×, enwik8 0.84–0.89×, the NASA
-  log 0.82–0.84×, a Wikipedia table dump 0.79–0.83×), 0.3–9.7% smaller
+  1.02–1.06×, Silesia mozilla 0.96–1.02×, enwik8 0.92–0.95×, the NASA
+  log 0.85–0.87×, a Wikipedia table dump 0.80–0.85×), 0.3–9.7% smaller
   on each. zstd's default is two threads (one compressing, one on I/O
-  and the checksum); against `zstd -3 --single-thread` the same runs
-  are 1.10–1.14× on events, 1.03–1.15× on mozilla, 0.95–1.07× on
-  enwik8, 0.89–0.96× on the log and 0.87–0.97× on the dump. The CLI
-  writes on a second thread as zstd does, so the wall time is the
-  parse; the parse runs the same branches as zstd's with a third more
-  instructions, spent on match-dense data (the log, the dump) in the
-  sequence path. On eight cores against `zstd -3 -T8` it is 0.99–1.14×
-  on events, the log and mozilla and 0.84–0.86× on the dump and enwik8.
-  `--long` adds the 128 MB matcher at a third more time. Record mode's
-  transform halves the write speed again (200–400 MB/s per core).
+  and the checksum), so the CLI writes on a second thread too and the
+  wall time is the parse. What is left on match-dense data (the log,
+  the dump) is the sequence side: the lazy step (4–5% of the time,
+  4% fewer bytes on the log) and the codes and eight-stream sections
+  written per sequence, which run more instructions than zstd's single
+  sequence stream at a higher IPC. On eight cores against `zstd -3
+  -T8` it is 0.99–1.14× on events, the log and mozilla and 0.84–0.86×
+  on the dump and enwik8. `--long` adds the 128 MB matcher at a third
+  more time. Record mode's transform halves the write speed again
+  (200–400 MB/s per core).
 - Reads in record mode spend 2–2.7× zstd's CPU rebuilding the columns
   (5–30 ns per value by column type), which makes zstd -3 the cheaper
   choice at a hundred CPU-billed reads a month; the plain CLI's reads
