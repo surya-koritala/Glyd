@@ -13,8 +13,8 @@
 //! rules on repcodes and backward extension and no repcode check at
 //! the block start.
 
-use super::fast::{count, hash, idx, pos, read32, read64, SeqStore, Window, HASH_READ_SIZE, SEARCH_STRENGTH};
-use super::CParams;
+use super::fast::{count, hash, idx, pos, read32, read64, save_reps, SeqStore, Window, HASH_READ_SIZE, SEARCH_STRENGTH};
+use super::{CParams, Rules};
 
 /// `_match_stored`: the four complementary entries, then repcode 2
 /// matches chained at `ip` (`ext` applies the dictionary segment's
@@ -57,7 +57,8 @@ fn after_match(input: &[u8], store: &mut SeqStore, long: &mut [u32], small: &mut
 /// counts, and a short match is only replaced by the long match a byte
 /// ahead when that one is strictly longer.
 #[allow(clippy::too_many_arguments)]
-pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], small: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], longer_wins: bool) -> SeqStore {
+pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], small: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], rules: &Rules) -> SeqStore {
+    let longer_wins = rules.dfast_longer_wins;
     let mut store = SeqStore::new();
     let (hbl, hbs, mls) = (p.hash_log, p.chain_log, p.min_match);
     let step_incr = 1usize << SEARCH_STRENGTH;
@@ -162,9 +163,7 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], 
             }
         };
         let Some(f) = found else {
-            let saved2 = if saved1 != 0 && rep1 != 0 { saved1 } else { saved2 };
-            rep[0] = if rep1 != 0 { rep1 } else { saved1 };
-            rep[1] = if rep2 != 0 { rep2 } else { saved2 };
+            save_reps(rep, rep1, rep2, saved1, saved2, rules.saved_reps_rotate);
             break;
         };
         if f.offset == 0 {
@@ -189,14 +188,14 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, long: &mut [u32], 
 
 /// `ZSTD_compressBlock_doubleFast_extDict_generic`: the block parsed
 /// with a dictionary segment below `window.dict_limit` (the same in
-/// every version; `longer_wins` only reaches the regular variant).
+/// every version; `rules` only reach the regular variant).
 #[allow(clippy::too_many_arguments)]
-pub fn compress_block_ext(input: &[u8], start: usize, end: usize, long: &mut [u32], small: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], longer_wins: bool) -> SeqStore {
+pub fn compress_block_ext(input: &[u8], start: usize, end: usize, long: &mut [u32], small: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], rules: &Rules) -> SeqStore {
     let end_index = idx(end);
     let dict_start_index = window.lowest_match(end_index, p.window_log);
     let prefix_start_index = window.dict_limit.max(dict_start_index);
     if prefix_start_index == dict_start_index {
-        return compress_block(input, start, end, long, small, p, window, rep, longer_wins);
+        return compress_block(input, start, end, long, small, p, window, rep, rules);
     }
     let mut store = SeqStore::new();
     let (hbl, hbs, mls) = (p.hash_log, p.chain_log, p.min_match);

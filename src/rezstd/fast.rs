@@ -16,7 +16,7 @@
 //! passes as a candidate. The sequence store, the window and the hash
 //! and count helpers here are shared with the double-fast finder.
 
-use super::CParams;
+use super::{CParams, Rules};
 
 /// `ZSTD_WINDOW_START_INDEX`.
 pub const START_INDEX: u32 = 2;
@@ -191,9 +191,16 @@ impl Window {
 }
 
 /// The repcodes invalidated at a block's start come back at its end if
-/// they were not replaced (`_cleanup` of both variants).
-fn save_reps(rep: &mut [u32; 3], rep1: u32, rep2: u32, saved1: u32, saved2: u32) {
-    let saved2 = if saved1 != 0 && rep1 != 0 { saved1 } else { saved2 };
+/// they were not replaced (`_cleanup`): since 1.5.4 with the first
+/// saved one rotating into the second when repcode 1 was replaced;
+/// before, one shared saved value (the first's when it was invalid).
+pub fn save_reps(rep: &mut [u32; 3], rep1: u32, rep2: u32, saved1: u32, saved2: u32, rotate: bool) {
+    let (saved1, saved2) = if rotate {
+        (saved1, if saved1 != 0 && rep1 != 0 { saved1 } else { saved2 })
+    } else {
+        let saved = if saved1 != 0 { saved1 } else { saved2 };
+        (saved, saved)
+    };
     rep[0] = if rep1 != 0 { rep1 } else { saved1 };
     rep[1] = if rep2 != 0 { rep2 } else { saved2 };
 }
@@ -212,7 +219,8 @@ struct Found {
 
 /// The block `input[start..end]` parsed into `SeqStore`, the table and
 /// the repcodes updated for the next block (`noDict`).
-pub fn compress_block(input: &[u8], start: usize, end: usize, table: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3]) -> SeqStore {
+#[allow(clippy::too_many_arguments)]
+pub fn compress_block(input: &[u8], start: usize, end: usize, table: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], rules: &Rules) -> SeqStore {
     let mut store = SeqStore::new();
     let hlog = p.hash_log;
     let mls = p.min_match;
@@ -267,12 +275,16 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, table: &mut [u32],
                     let back = (input[ip0 - 1] == input[match0 - 1]) as usize;
                     ip0 -= back;
                     match0 -= back;
-                    table[hash1] = idx(ip1);
+                    if rules.hash1_in_search {
+                        table[hash1] = idx(ip1);
+                    }
                     break 'search Some(Found { ip0, match0, off_base: 1, len: back + 4, ip1, hash1 });
                 }
                 let mval = if cand >= prefix_start_index { read32(input, pos(cand)) } else { read32(input, ip0) ^ 1 };
                 if read32(input, ip0) == mval {
-                    table[hash1] = idx(ip1);
+                    if rules.hash1_in_search {
+                        table[hash1] = idx(ip1);
+                    }
                     break 'search Some(Found { ip0, match0: pos(cand), off_base: 0, len: 0, ip1, hash1 });
                 }
                 cand = table[hash1];
@@ -287,7 +299,7 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, table: &mut [u32],
                 if read32(input, ip0) == mval {
                     // The entry for ip1 is written only when it stays
                     // below where the search resumes after the match.
-                    if step <= 4 {
+                    if rules.hash1_in_search && step <= 4 {
                         table[hash1] = idx(ip1);
                     }
                     break 'search Some(Found { ip0, match0: pos(cand), off_base: 0, len: 0, ip1, hash1 });
@@ -309,7 +321,7 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, table: &mut [u32],
             }
         };
         let Some(mut f) = found else {
-            save_reps(rep, rep1, rep2, saved1, saved2);
+            save_reps(rep, rep1, rep2, saved1, saved2, rules.saved_reps_rotate);
             break;
         };
         if f.off_base == 0 {
@@ -329,6 +341,9 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, table: &mut [u32],
         store.store(&input[anchor..f.ip0], f.off_base, f.len);
         ip0 = f.ip0 + f.len;
         anchor = ip0;
+        if !rules.hash1_in_search && f.ip1 < ip0 {
+            table[f.hash1] = idx(f.ip1);
+        }
         if ip0 as isize <= ilimit {
             // Fill the table, then take repcode 2 matches right here.
             let c2 = pos(current0) + 2;
@@ -353,13 +368,17 @@ pub fn compress_block(input: &[u8], start: usize, end: usize, table: &mut [u32],
 
 /// `ZSTD_compressBlock_fast_extDict_generic`: the block parsed with a
 /// dictionary segment below `window.dict_limit`.
-pub fn compress_block_ext(input: &[u8], start: usize, end: usize, table: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3]) -> SeqStore {
+#[allow(clippy::too_many_arguments)]
+pub fn compress_block_ext(input: &[u8], start: usize, end: usize, table: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], rules: &Rules) -> SeqStore {
     let end_index = idx(end);
     let dict_start_index = window.lowest_match(end_index, p.window_log);
     let prefix_start_index = window.dict_limit.max(dict_start_index);
     // The dictionary segment fell out of the window: the regular variant.
     if prefix_start_index == dict_start_index {
-        return compress_block(input, start, end, table, p, window, rep);
+        return compress_block(input, start, end, table, p, window, rep, rules);
+    }
+    if !rules.fast_ext_pipelined {
+        return compress_block_ext_old(input, start, end, table, p, window, rep, dict_start_index, prefix_start_index);
     }
     let mut store = SeqStore::new();
     let hlog = p.hash_log;
@@ -445,7 +464,7 @@ pub fn compress_block_ext(input: &[u8], start: usize, end: usize, table: &mut [u
             }
         };
         let Some(mut f) = found else {
-            save_reps(rep, rep1, rep2, saved1, saved2);
+            save_reps(rep, rep1, rep2, saved1, saved2, true);
             break;
         };
         if f.off_base == 0 {
@@ -488,6 +507,82 @@ pub fn compress_block_ext(input: &[u8], start: usize, end: usize, table: &mut [u
             }
         }
     }
+    store.lits.extend_from_slice(&input[anchor..end]);
+    store
+}
+
+/// 1.5.2's `ZSTD_compressBlock_fast_extDict_generic`: one position at
+/// a time, the repcode tried a byte ahead, the step growing with the
+/// distance from the last match; the repcode chained after a match is
+/// checked against the index of the match's start (`curr`), as the
+/// reference does.
+#[allow(clippy::too_many_arguments)]
+fn compress_block_ext_old(input: &[u8], start: usize, end: usize, table: &mut [u32], p: &CParams, window: &Window, rep: &mut [u32; 3], dict_start_index: u32, prefix_start_index: u32) -> SeqStore {
+    let _ = window;
+    let mut store = SeqStore::new();
+    let hlog = p.hash_log;
+    let mls = p.min_match;
+    let step_size = p.target_length as usize + (p.target_length == 0) as usize;
+    let prefix_start = pos(prefix_start_index);
+    let dict_start = pos(dict_start_index);
+    let ilimit = end as isize - HASH_READ_SIZE as isize;
+    let mut anchor = start;
+    let mut ip = start;
+    let (mut rep1, mut rep2) = (rep[0], rep[1]);
+    while (ip as isize) < ilimit {
+        let h = hash(input, ip, hlog, mls);
+        let match_index = table[h];
+        let curr = idx(ip);
+        let rep_index = (curr + 1).wrapping_sub(rep1);
+        table[h] = curr;
+        if (prefix_start_index - 1).wrapping_sub(rep_index) >= 3 && rep1 <= curr + 1 - dict_start_index && read32(input, pos(rep_index)) == read32(input, ip + 1) {
+            let rlen = count(input, ip + 5, pos(rep_index) + 4, end) + 4;
+            ip += 1;
+            store.store(&input[anchor..ip], 1, rlen);
+            ip += rlen;
+            anchor = ip;
+        } else {
+            if match_index < dict_start_index || read32(input, pos(match_index)) != read32(input, ip) {
+                ip += ((ip - anchor) >> SEARCH_STRENGTH) + step_size;
+                continue;
+            }
+            let low_match = if match_index < prefix_start_index { dict_start } else { prefix_start };
+            let mut m = pos(match_index);
+            let offset = curr - match_index;
+            let mut len = count(input, ip + 4, m + 4, end) + 4;
+            while ip > anchor && m > low_match && input[ip - 1] == input[m - 1] {
+                ip -= 1;
+                m -= 1;
+                len += 1;
+            }
+            rep2 = rep1;
+            rep1 = offset;
+            store.store(&input[anchor..ip], offset + 3, len);
+            ip += len;
+            anchor = ip;
+        }
+        if ip as isize <= ilimit {
+            let c2 = pos(curr) + 2;
+            table[hash(input, c2, hlog, mls)] = curr + 2;
+            table[hash(input, ip - 2, hlog, mls)] = idx(ip - 2);
+            while ip as isize <= ilimit {
+                let current2 = idx(ip);
+                let rep_index2 = current2.wrapping_sub(rep2);
+                if (prefix_start_index - 1).wrapping_sub(rep_index2) >= 3 && rep2 <= curr - dict_start_index && read32(input, pos(rep_index2)) == read32(input, ip) {
+                    let rlen = count(input, ip + 4, pos(rep_index2) + 4, end) + 4;
+                    std::mem::swap(&mut rep1, &mut rep2);
+                    store.store(&[], 1, rlen);
+                    table[hash(input, ip, hlog, mls)] = current2;
+                    ip += rlen;
+                    anchor = ip;
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    rep[0] = rep1;
+    rep[1] = rep2;
     store.lits.extend_from_slice(&input[anchor..end]);
     store
 }

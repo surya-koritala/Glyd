@@ -61,15 +61,37 @@ pub enum Level {
 }
 
 /// The reference's versions whose level-1 and level-3 paths differ,
-/// in order. `V1_5_5` stands for 1.5.4, 1.5.5 and 1.5.6, which write
-/// the same bytes on these paths. 1.5.7 cuts full blocks where their
-/// content changes (`split.rs`) and lets the double-fast finder accept
-/// a candidate at the window's lowest index and keep the short match
-/// unless the long match a byte ahead is strictly longer.
+/// in order. 1.5.2's fast finder writes its pipelined table entry
+/// after a match rather than on finding it, keeps one saved repcode
+/// for both invalidated ones, and runs the older one-position loop
+/// past the stream ring's wrap. `V1_5_5` stands for 1.5.4, 1.5.5 and
+/// 1.5.6, which write the same bytes on these paths. 1.5.7 cuts full
+/// blocks where their content changes (`split.rs`) and lets the
+/// double-fast finder accept a candidate at the window's lowest index
+/// and keep the short match unless the long match a byte ahead is
+/// strictly longer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Version {
+    V1_5_2,
     V1_5_5,
     V1_5_7,
+}
+
+/// The finder rules that changed between versions (`Build::rules`).
+#[derive(Clone, Copy, Debug)]
+pub struct Rules {
+    /// The fast finder writes the entry for the position after the
+    /// match's start when it finds the match (1.5.4), not after it.
+    pub hash1_in_search: bool,
+    /// Two saved repcodes, the first rotating into the second when
+    /// repcode 1 was replaced (1.5.4); before, one shared value.
+    pub saved_reps_rotate: bool,
+    /// The fast `extDict` loop is the pipelined one (1.5.4).
+    pub fast_ext_pipelined: bool,
+    /// The double-fast finder's 1.5.7 rules.
+    pub dfast_longer_wins: bool,
+    /// Full blocks cut where their content changes (1.5.7).
+    pub splits_blocks: bool,
 }
 
 /// How the input reached the compressor. `OneShot` is `ZSTD_compress`
@@ -108,7 +130,7 @@ const fn build(version: Version, level: Level, writer: Writer) -> Build {
 
 /// The builds `reproduce` tries (with the checksum read from the
 /// frame), newest version first.
-pub const BUILDS: [Build; 12] = [
+pub const BUILDS: [Build; 18] = [
     build(Version::V1_5_7, Level::One, Writer::OneShot),
     build(Version::V1_5_7, Level::Three, Writer::OneShot),
     build(Version::V1_5_7, Level::One, Writer::Cli),
@@ -121,6 +143,12 @@ pub const BUILDS: [Build; 12] = [
     build(Version::V1_5_5, Level::Three, Writer::Cli),
     build(Version::V1_5_5, Level::One, Writer::Stream),
     build(Version::V1_5_5, Level::Three, Writer::Stream),
+    build(Version::V1_5_2, Level::One, Writer::OneShot),
+    build(Version::V1_5_2, Level::Three, Writer::OneShot),
+    build(Version::V1_5_2, Level::One, Writer::Cli),
+    build(Version::V1_5_2, Level::Three, Writer::Cli),
+    build(Version::V1_5_2, Level::One, Writer::Stream),
+    build(Version::V1_5_2, Level::Three, Writer::Stream),
 ];
 
 /// `clevels.h`: the rows of a level by input size class (over 256 KB,
@@ -185,17 +213,15 @@ impl Build {
         p
     }
 
-    /// Whether full blocks are cut where their content changes
-    /// (`ZSTD_optimalBlockSize`, since 1.5.7).
-    fn splits_blocks(&self) -> bool {
-        self.version >= Version::V1_5_7
-    }
-
-    /// Whether the double-fast finder follows 1.5.7's rules (a
-    /// candidate at the window's lowest index counts; the long match a
-    /// byte ahead wins only when strictly longer).
-    fn dfast_longer_wins(&self) -> bool {
-        self.version >= Version::V1_5_7
+    /// The rules of this build's version.
+    pub fn rules(&self) -> Rules {
+        Rules {
+            hash1_in_search: self.version >= Version::V1_5_5,
+            saved_reps_rotate: self.version >= Version::V1_5_5,
+            fast_ext_pipelined: self.version >= Version::V1_5_5,
+            dfast_longer_wins: self.version >= Version::V1_5_7,
+            splits_blocks: self.version >= Version::V1_5_7,
+        }
     }
 }
 
@@ -237,8 +263,8 @@ struct Run {
 /// block is as large as it can be; since then a full block is cut by
 /// `split::split_block` once the frame's savings reach three bytes
 /// (so never the first block, nor incompressible data).
-fn block_size_at(src: &[u8], remaining: usize, block_size_max: usize, b: &Build, strategy: Strategy, savings: i64) -> usize {
-    if !b.splits_blocks() || remaining < BLOCK_SIZE_MAX || block_size_max < BLOCK_SIZE_MAX {
+fn block_size_at(src: &[u8], remaining: usize, block_size_max: usize, rules: &Rules, strategy: Strategy, savings: i64) -> usize {
+    if !rules.splits_blocks || remaining < BLOCK_SIZE_MAX || block_size_max < BLOCK_SIZE_MAX {
         return remaining.min(block_size_max);
     }
     if savings < 3 {
@@ -248,6 +274,7 @@ fn block_size_at(src: &[u8], remaining: usize, block_size_max: usize, b: &Build,
 }
 
 fn run(input: &[u8], n: usize, b: &Build, p: &CParams, r: Run, out: &mut Vec<u8>) {
+    let rules = b.rules();
     let s = &input[r.base..r.end];
     let (start, end) = (r.start - r.base, r.end - r.base);
     let window_size = (1u64 << p.window_log).min((end - start) as u64).max(1) as usize;
@@ -290,7 +317,7 @@ fn run(input: &[u8], n: usize, b: &Build, p: &CParams, r: Run, out: &mut Vec<u8>
         let call_out = out.len();
         let mut pos = call_start;
         while pos < call_end {
-        let size = block_size_at(&s[pos..], call_end - pos, block_size, b, p.strategy, savings);
+        let size = block_size_at(&s[pos..], call_end - pos, block_size, &rules, p.strategy, savings);
         let last = r.base + pos + size == n;
         window.enforce_max_dist(pos, p.window_log);
         // ZSTD_compressBlock_internal: 0 is a raw block, 1 an RLE one.
@@ -300,10 +327,10 @@ fn run(input: &[u8], n: usize, b: &Build, p: &CParams, r: Run, out: &mut Vec<u8>
         if size >= 7 {
             next.rep = prev.rep;
             let store = match (p.strategy, window.has_ext_dict()) {
-                (Strategy::Fast, false) => fast::compress_block(s, pos, pos + size, &mut table, p, &window, &mut next.rep),
-                (Strategy::Fast, true) => fast::compress_block_ext(s, pos, pos + size, &mut table, p, &window, &mut next.rep),
-                (Strategy::DoubleFast, false) => dfast::compress_block(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep, b.dfast_longer_wins()),
-                (Strategy::DoubleFast, true) => dfast::compress_block_ext(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep, b.dfast_longer_wins()),
+                (Strategy::Fast, false) => fast::compress_block(s, pos, pos + size, &mut table, p, &window, &mut next.rep, &rules),
+                (Strategy::Fast, true) => fast::compress_block_ext(s, pos, pos + size, &mut table, p, &window, &mut next.rep, &rules),
+                (Strategy::DoubleFast, false) => dfast::compress_block(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep, &rules),
+                (Strategy::DoubleFast, true) => dfast::compress_block_ext(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep, &rules),
             };
             if let Some(c) = block::compress(&store, &prev.entropy, &mut next.entropy, cap - 3, size, p.strategy) {
                 c_size = c.len();
@@ -430,7 +457,7 @@ pub fn reproduce(frame: &[u8]) -> Option<(Vec<u8>, Build)> {
     let checksum = frame[4] & 4 != 0;
     // A block short of 128 KB before the last one is the splitter's.
     let split = blocks.iter().rev().skip(1).any(|&size| size != BLOCK_SIZE_MAX);
-    let mut builds: Vec<Build> = BUILDS.iter().filter(|b| !split || b.splits_blocks()).map(|b| Build { checksum, ..*b }).collect();
+    let mut builds: Vec<Build> = BUILDS.iter().filter(|b| !split || b.rules().splits_blocks).map(|b| Build { checksum, ..*b }).collect();
     if checksum {
         builds.sort_by_key(|b| b.writer == Writer::OneShot);
     }
@@ -510,6 +537,29 @@ mod tests {
         // The 1.5.5 frames still come back as 1.5.5's, not as any 1.5.7 build.
         assert_eq!(reproduce(&fixture("planes300k.zst")).unwrap().1, V155_L1);
         assert_eq!(reproduce(&fixture("page1.l3.zst")).unwrap().1, V155_L3);
+    }
+
+    #[test]
+    fn frames_written_by_zstd_1_5_2_come_back_byte_for_byte() {
+        // A 35 KB slice of a binary where 1.5.2's fast finder, writing the
+        // pipelined entry after the match, keeps one 1.5.4 drops (a match
+        // found five or more positions past the last, long enough); and
+        // zeros to 640 KB then 20 KB of text: the text lands past the
+        // single-thread stream's ring wrap, where 1.5.2 runs the older
+        // extDict loop. 1.5.4 to 1.5.7 write the same bytes for both.
+        let moz = fixture("moz35k.raw");
+        check("moz35k", &moz, &fixture("moz35k.zst"), V155_L1);
+        check("moz35k.v152", &moz, &fixture("moz35k.v152.zst"), build(Version::V1_5_2, Level::One, Writer::OneShot));
+        assert_eq!(reproduce(&fixture("moz35k.v152.zst")).unwrap().1.version, Version::V1_5_2);
+        let wrap = fixture("wrap676k.raw");
+        let stream = |version| Build { checksum: true, ..build(version, Level::One, Writer::Stream) };
+        check("wrap676k.st1", &wrap, &fixture("wrap676k.st1.zst"), stream(Version::V1_5_5));
+        check("wrap676k.v152.st1", &wrap, &fixture("wrap676k.v152.st1.zst"), stream(Version::V1_5_2));
+        assert_eq!(reproduce(&fixture("wrap676k.v152.st1.zst")).unwrap().1, stream(Version::V1_5_2));
+        // The 1.5.5 frame also comes back as a CLI job of 1.5.7 or 1.5.5: a
+        // single 676 KB job has no ring, and its contiguous parse of the
+        // text is the same as the stream's extDict one here.
+        assert!(reproduce(&fixture("wrap676k.st1.zst")).unwrap().1.version >= Version::V1_5_5);
     }
 
     #[test]
