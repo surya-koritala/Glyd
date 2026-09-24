@@ -845,6 +845,17 @@ impl Store {
         self.root_of(id)
     }
 
+    /// `id`, or its ancestor at depth 1 when it sits deeper.
+    fn shallow(&self, mut id: u32) -> u32 {
+        while self.entries[id as usize].depth > 1 {
+            match self.entries[id as usize].base {
+                Some(p) => id = p,
+                None => break,
+            }
+        }
+        id
+    }
+
     /// The root of `id`'s chain: where its bases lead.
     fn root_of(&self, mut id: u32) -> u32 {
         while let Some(p) = self.entries[id as usize].base {
@@ -982,7 +993,19 @@ impl Store {
             eprintln!("  candidates {id}: {} (coverage {coverage:.3})", scored.iter().map(|(c, s, h)| format!("{c} ({:.3}, holds {:.2})", s, h)).collect::<Vec<_>>().join(", "));
         }
         let best = scored.first().copied();
-        let mut candidates: Vec<u32> = scored.into_iter().map(|(id, _, _)| self.within_cap(id)).collect();
+        // An object that will start a family of its own (its best
+        // candidate holds under `FAMILY_SHARE` of it: a new major
+        // release) takes a shallow base, an ancestor at depth 1 or the
+        // root: its family's versions come back to it at the depth
+        // cap, and a head sitting at the cap itself sent them to the
+        // chain's root instead (at the gate, 6.1.1 landed at depth 4
+        // on a 5.15 release, and every fifth 6.1 release was a 26 MB
+        // delta of 5.15.1 where one of 6.1.1 costs 2-4).
+        let starts_family = best.map_or(false, |(_, _, held)| held < FAMILY_SHARE);
+        let mut candidates: Vec<u32> = scored
+            .into_iter()
+            .map(|(id, _, _)| if starts_family { self.shallow(id) } else { self.within_cap(id) })
+            .collect();
         candidates.dedup();
         lap("candidates", &mut laps);
         if !candidates.is_empty() {
@@ -1375,6 +1398,57 @@ mod tests {
         assert!(e.iter().all(|x| x.depth <= MAX_DEPTH) && e[4].depth == MAX_DEPTH);
         for (i, v) in versions.iter().enumerate() {
             assert!(store.get(i as u32 + 1).unwrap() == *v, "b{i}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_family_starts_shallow() {
+        // A's versions chain to the depth cap; B (half new) arrives when
+        // the latest of A sits at depth 4. B's base is taken at depth 1
+        // or less, so B's own versions come back to B at the cap
+        // instead of to A's root.
+        let dir = std::env::temp_dir().join(format!("glyd-store-shallow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut a = vec![wordy(4 << 20, 5)];
+        for i in 1..5 {
+            let prev = a[i - 1].clone();
+            a.push(edited(&prev, 20, 300 + i as u64));
+        }
+        let mut b = a[4][..(1600 << 10)].to_vec();
+        b.extend_from_slice(&wordy(2400 << 10, 6));
+        let mut bs = vec![b];
+        for i in 1..6 {
+            let prev = bs[i - 1].clone();
+            bs.push(edited(&prev, 20, 400 + i as u64));
+        }
+        let mut store = Store::open(&dir).unwrap();
+        for (i, v) in a.iter().enumerate() {
+            store.put(&format!("a{i}"), v).unwrap();
+        }
+        assert_eq!(store.entries()[4].depth, MAX_DEPTH, "a4 at the cap");
+        let first_b = store.entries().len() as u32;
+        for (i, v) in bs.iter().enumerate() {
+            store.put(&format!("b{i}"), v).unwrap();
+        }
+        let e = store.entries();
+        let head = &e[first_b as usize];
+        assert!(head.base.is_some() && head.depth <= 2, "b0 a shallow delta: depth {}", head.depth);
+        assert_eq!(head.family, first_b);
+        for x in &e[first_b as usize + 1..] {
+            assert_eq!(x.family, first_b, "{} joins b0's family", x.name);
+            assert!(x.depth <= MAX_DEPTH);
+            let mut root = x.id;
+            while let Some(p) = e[root as usize].base {
+                if p == first_b {
+                    break;
+                }
+                root = p;
+            }
+            assert!(e[root as usize].base == Some(first_b) || root == first_b, "{} descends from b0", x.name);
+        }
+        for (i, v) in bs.iter().enumerate() {
+            assert!(store.get(first_b + i as u32).unwrap() == *v, "b{i}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
