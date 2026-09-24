@@ -269,3 +269,36 @@ fn test_corruption_mutation_fuzz_1m() {
         clean_decodes
     );
 }
+
+/// A flipped byte in one unit of a multi-unit stream is an error, not a
+/// hang: the units after it used to wait forever for their turn at the
+/// sink (a CI round trip sat for hours on this). Every level's parallel
+/// output, the streaming decoder and the whole-buffer one.
+#[test]
+fn corrupted_unit_fails_fast_in_the_streaming_decoder() {
+    let mut x = 11u64;
+    let mut data = Vec::with_capacity(24 << 20);
+    while data.len() < 24 << 20 {
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        data.push(b"the quick brown fox jumps over the lazy dog "[(x % 44) as usize]);
+        if x % 7 == 0 { data.push((x >> 20) as u8); }
+    }
+    for level in [glyd::compress_parallel_into_turbo as fn(&[u8], &mut Vec<u8>), glyd::compress_parallel_into, glyd::compress_parallel_into_max] {
+        let mut c = Vec::new();
+        level(&data, &mut c);
+        for at in [c.len() / 5, c.len() / 2, c.len() - 4000] {
+            let mut bad = c.clone();
+            bad[at] ^= 0x40;
+            let start = std::time::Instant::now();
+            let mut got = 0usize;
+            let r = glyd::decompress_stream(&bad, |b| { got += b.len(); Ok(()) });
+            let r2 = glyd::decompress_parallel(&bad);
+            assert!(start.elapsed().as_secs() < 30, "the decoder hung on a corrupted unit");
+            match (r, r2) {
+                (Ok(()), Ok(d)) => assert!(got == data.len() && d == data, "corruption accepted with wrong bytes"),
+                (Ok(()), Err(_)) | (Err(_), Ok(_)) => panic!("the two decoders disagree on a corrupted stream"),
+                (Err(_), Err(_)) => {}
+            }
+        }
+    }
+}

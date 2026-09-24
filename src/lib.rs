@@ -2367,7 +2367,11 @@ fn decode_units_to(compressed: &[u8], blocks: &[BlockInfo], units: &[ParallelUni
     let avx2 = has_avx2();
     let next_write = AtomicUsize::new(0);
     let io_error: std::sync::Mutex<Option<std::io::Error>> = std::sync::Mutex::new(None);
-    let r = par_units(units.len(), |i| -> Result<()> {
+    // Set by a unit that failed (a corrupted block, a sink error): the
+    // units after it stop waiting for their turn, which would never
+    // come. Without it a flipped byte in one unit hung the decoder.
+    let failed = std::sync::atomic::AtomicBool::new(false);
+    let decode_unit = |i: usize| -> Result<()> {
         let unit = &units[i];
         V7_TABLES.with_borrow_mut(|t| *t = v7_decode::DecTables::none());
         let unit_buffer_start = (output_ptr + unit.uncomp_offset - base) as *const u8;
@@ -2396,8 +2400,8 @@ fn decode_units_to(compressed: &[u8], blocks: &[BlockInfo], units: &[ParallelUni
             // Units before this one first: they were claimed before it
             // and finish about as soon, so the wait is short.
             while next_write.load(Ordering::Acquire) != i {
-                if io_error.lock().unwrap().is_some() {
-                    return Err(CodecError::CorruptedBitstream("the sink failed"));
+                if failed.load(Ordering::Acquire) {
+                    return Err(CodecError::CorruptedBitstream("an earlier unit failed"));
                 }
                 std::thread::yield_now();
             }
@@ -2410,6 +2414,13 @@ fn decode_units_to(compressed: &[u8], blocks: &[BlockInfo], units: &[ParallelUni
             }
         }
         Ok(())
+    };
+    let r = par_units(units.len(), |i| -> Result<()> {
+        let r = decode_unit(i);
+        if r.is_err() {
+            failed.store(true, Ordering::Release);
+        }
+        r
     });
     if let Some(e) = io_error.lock().unwrap().take() {
         return Err(StreamError::Io(e));
