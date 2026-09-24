@@ -50,6 +50,49 @@ fn package_merge(hist: &[u64; 256], limit: usize) -> [u8; 256] {
     lengths
 }
 
+/// tANS table cost in bits of `hist` coded with `counts` (sum L).
+fn tans_bits(hist: &[u64], counts: &[u16]) -> f64 {
+    let l = glyd::tans::L as f64;
+    hist.iter().zip(counts).filter(|(&h, _)| h > 0).map(|(&h, &c)| h as f64 * (l / c as f64).log2()).sum()
+}
+
+/// Glyd's normalizer's counts.
+fn ours(hist: &[u64], n: usize) -> Vec<u16> {
+    let h32: Vec<u32> = hist.iter().map(|&h| h.min(u32::MAX as u64) as u32).collect();
+    glyd::tans::normalize(&h32, n)
+}
+
+/// Greedy allocation: floor shares, then the remaining slots one at a
+/// time to the symbol whose coded cost drops most per slot.
+fn greedy(hist: &[u64], n: usize) -> Vec<u16> {
+    let l = glyd::tans::L;
+    let total: u64 = hist[..n].iter().sum();
+    let mut c = vec![0u32; n];
+    if total == 0 { c[0] = l as u32; return c.iter().map(|&x| x as u16).collect(); }
+    let mut sum = 0u32;
+    for s in 0..n {
+        if hist[s] > 0 { c[s] = (((hist[s] * l as u64) / total) as u32).max(1); sum += c[s]; }
+    }
+    while sum > l as u32 {
+        // Too many (rare-symbol bumps): take from the symbol losing least.
+        let s = (0..n).filter(|&s| c[s] > 1).min_by(|&a, &b| {
+            let ga = hist[a] as f64 * ((c[a] as f64) / (c[a] as f64 - 1.0)).log2();
+            let gb = hist[b] as f64 * ((c[b] as f64) / (c[b] as f64 - 1.0)).log2();
+            ga.partial_cmp(&gb).unwrap()
+        }).unwrap();
+        c[s] -= 1; sum -= 1;
+    }
+    while sum < l as u32 {
+        let s = (0..n).filter(|&s| c[s] > 0).max_by(|&a, &b| {
+            let ga = hist[a] as f64 * ((c[a] as f64 + 1.0) / c[a] as f64).log2();
+            let gb = hist[b] as f64 * ((c[b] as f64 + 1.0) / c[b] as f64).log2();
+            ga.partial_cmp(&gb).unwrap()
+        }).unwrap();
+        c[s] += 1; sum += 1;
+    }
+    c.iter().map(|&x| x as u16).collect()
+}
+
 fn main() {
     let mode = std::env::args().nth(1).unwrap();
     let f = std::env::args().nth(2).unwrap();
@@ -87,6 +130,7 @@ fn main() {
     let mut ideal = [0f64; 5];
     let (mut blocks, mut total) = (0usize, 0u64);
     let (mut one_table, mut two_tables) = (0u64, 0u64);
+    let (mut norm_ours, mut norm_greedy) = ([0f64; 3], [0f64; 3]);
     for t in sq.chunks_exact(16) {
         let (ll, ml, off) = (u32::from_le_bytes(t[0..4].try_into().unwrap()), u32::from_le_bytes(t[4..8].try_into().unwrap()), u32::from_le_bytes(t[8..12].try_into().unwrap()));
         lits.extend_from_slice(&d[pos..pos + ll as usize]);
@@ -140,6 +184,11 @@ fn main() {
             ideal[1] += entropy_bits(&hl) / 8.0;
             ideal[2] += entropy_bits(&hm) / 8.0;
             ideal[3] += entropy_bits(&ho) / 8.0;
+            // The tables' fit: our normalizer against a greedy slot allocation.
+            for (i, (h, n)) in [(&hl, glyd::v7_format::LL_SYMBOLS), (&hm, glyd::v7_format::ML_SYMBOLS), (&ho, glyd::v7_format::OFF_SYMBOLS)].into_iter().enumerate() {
+                norm_ours[i] += tans_bits(&h[..n], &ours(&h[..n], n)) / 8.0;
+                norm_greedy[i] += tans_bits(&h[..n], &greedy(&h[..n], n)) / 8.0;
+            }
             ideal[4] += extra as f64 / 8.0;
             payload.clear();
             encode_block_with(&seqs, &lits, 0, &mut prev, &mut scratch, false, &mut payload);
@@ -162,4 +211,7 @@ fn main() {
     }
     println!();
     println!("  a second literal table per block would save {} B of {} ({:.2}%)", two_tables, one_table, two_tables as f64 * 100.0 / one_table.max(1) as f64);
+    for i in 0..3 {
+        println!("  {} table fit: ours {:.0} B, greedy {:.0} B ({:+.2}%), entropy {:.0} B", names[i + 1], norm_ours[i], norm_greedy[i], (norm_greedy[i] / norm_ours[i] - 1.0) * 100.0, ideal[i + 1]);
+    }
 }
