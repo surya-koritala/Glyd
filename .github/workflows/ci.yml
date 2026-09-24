@@ -41,6 +41,12 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Corpus cache
+        uses: actions/cache@v4
+        with:
+          path: corpus
+          key: corpus-${{ hashFiles('scripts/download_corpus.sh') }}
+
       - name: Download Corpus
         run: bash scripts/download_corpus.sh
 

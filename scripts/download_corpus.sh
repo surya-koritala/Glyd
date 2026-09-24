@@ -30,7 +30,12 @@ fi
 if [ ! -f "$CORPUS_DIR/enwik8" ]; then
     echo "Downloading enwik8 holdout corpus (100 MB)..."
     ENWIK_ZIP=$(mktemp /tmp/enwik8.XXXXXX.zip)
-    curl -sSL "http://mattmahoney.net/dc/enwik8.zip" -o "$ENWIK_ZIP"
+    # Two hosts carry it; a host that answers with a page instead of the
+    # zip (it has) fails the check and the next one is tried.
+    for url in "http://mattmahoney.net/dc/enwik8.zip" "https://cs.fit.edu/~mmahoney/compression/enwik8.zip"; do
+        curl -fsSL --retry 3 "$url" -o "$ENWIK_ZIP" && unzip -tq "$ENWIK_ZIP" >/dev/null 2>&1 && break
+        echo "enwik8: $url did not give a zip, trying the next" >&2
+    done
     echo "Extracting enwik8 into $CORPUS_DIR..."
     unzip -q -o "$ENWIK_ZIP" -d "$CORPUS_DIR"
     rm -f "$ENWIK_ZIP"
