@@ -1107,8 +1107,10 @@ fn find_sequences_dfast_impl<const D: bool, const F: bool, const FULL: bool, con
                 }
                 // Not after a repeat: its cheap code beats a longer match
                 // at a fresh offset (a table dump 1.8% smaller, the rest
-                // within 0.2%), and the compare is spared.
-                if let Some(c) = candidate(el1, ml1, pos + 1).filter(|_| !rep_ahead && found.kind != 0) {
+                // within 0.2%), and the compare is spared. Nor at the
+                // match's own offset: that candidate is the match one
+                // byte on, a byte shorter, never LAZY_GAIN longer.
+                if let Some(c) = candidate(el1, ml1, pos + 1).filter(|&c| !rep_ahead && found.kind != 0 && pos + 1 - c != found.off) {
                     let rc1 = ScalarMatch::prefix(src.add(pos + 1), src.add(c), block_end - pos - 1);
                     if rc1 >= found.len + LAZY_GAIN {
                         // Out of line so this stays a (rarely taken)
