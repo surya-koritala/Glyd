@@ -1,6 +1,7 @@
 // Scratch: our entropy stage on sequences from a file (litLen,
-// matchLen, offset u32 triples over <file>.input, block ends as
-// literal-only entries): the section sizes summed over the blocks.
+// matchLen, offset, rep u32 quads over <file>.input, as zstd's
+// ZSTD_generateSequences gives them; block ends as literal-only
+// entries): the section sizes summed over the blocks.
 use glyd::format::{BlockHeader, FLAG_COMPRESSED, MAGIC, VERSION_V8};
 use glyd::v7_encode::{encode_block_with, payload_layout_of, EncScratch, Sequence, Tables};
 fn main() {
@@ -16,7 +17,7 @@ fn main() {
     // GLYD_MERGE=k: k of the file's blocks coded as one (128 KB blocks -> 128k KB)
     let merge: usize = std::env::var("GLYD_MERGE").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
     let mut delims = 0usize;
-    for t in sq.chunks_exact(12) {
+    for t in sq.chunks_exact(16) {
         let (ll, ml, off) = (u32::from_le_bytes(t[0..4].try_into().unwrap()), u32::from_le_bytes(t[4..8].try_into().unwrap()), u32::from_le_bytes(t[8..12].try_into().unwrap()));
         lits.extend_from_slice(&d[pos..pos + ll as usize]);
         pos += (ll + ml) as usize;

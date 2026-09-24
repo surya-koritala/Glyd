@@ -679,6 +679,9 @@ pub fn encode_block_coded(literals: &[u8], dict_id: u32, prev: &mut Tables, s: &
 // level under zstd -3's bytes and near its speed.
 
 pub const DFAST_LONG_BITS: u32 = 17;
+/// A long-table match one byte on replaces a short-table match when it
+/// is this much longer (see the parse loop).
+const LONG_AHEAD_GAIN: usize = 2;
 pub const DFAST_SHORT_BITS: u32 = 16;
 /// Misses before the probe step grows by one (zstd's double-fast
 /// takes 256 misses before stepping 2, as here; the fast finder 64).
@@ -686,7 +689,6 @@ const DFAST_SKIP_STRENGTH: u32 = 8;
 /// A long-table hit one byte on beats the probe's match when it is
 /// this much longer. (zstd takes any long-table hit over a short-table
 /// one: 1.1% more bytes on a table dump here, 0.4% fewer on text.)
-const LAZY_GAIN: usize = 4;
 
 pub struct DfastTables {
     long: Vec<u32>,
@@ -810,6 +812,10 @@ fn short_slot(w: u64, pos: usize, bits: u32) -> (usize, u32) {
 unsafe fn eq4(a: *const u8, b: *const u8) -> bool {
     std::ptr::read_unaligned(a as *const u32) == std::ptr::read_unaligned(b as *const u32)
 }
+#[inline(always)]
+unsafe fn eq8(a: *const u8, b: *const u8) -> bool {
+    std::ptr::read_unaligned(a as *const u64) == std::ptr::read_unaligned(b as *const u64)
+}
 /// The candidate an entry `e` names for a probe at `pos` whose own
 /// tagged entry is `mine`: its position if the tags agree and its
 /// distance is at least 1 and within the window (and the input), else
@@ -863,11 +869,11 @@ struct Found {
     src: *const u8,
     off: usize,
     len: usize,
-    /// 0 a repeat, 1 the long table, 2 the short table
-    kind: u8,
+    /// Found in the short table (the long one had nothing at `pos`).
+    short: bool,
 }
 
-const NONE: Found = Found { src: std::ptr::null(), off: 0, len: 0, kind: 3 };
+const NONE: Found = Found { src: std::ptr::null(), off: 0, len: 0, short: false };
 
 /// A prepared dictionary's tables for the parse: seeded on its content
 /// (positions 0..len there), read only, consulted after the input's own.
@@ -888,7 +894,7 @@ unsafe fn probe<const D: bool>(src: *const u8, pos: usize, block_end: usize, c: 
     for &o in &r[1..] {
         let o = o as usize;
         if o <= pos && eq4(p, p.sub(o)) {
-            return Found { src: p.sub(o), off: o, len: 4 + ScalarMatch::prefix(p.add(4), p.sub(o).add(4), block_end - pos - 4), kind: 0 };
+            return Found { src: p.sub(o), off: o, len: 4 + ScalarMatch::prefix(p.add(4), p.sub(o).add(4), block_end - pos - 4), short: false };
         }
     }
     let mut best = NONE;
@@ -896,7 +902,7 @@ unsafe fn probe<const D: bool>(src: *const u8, pos: usize, block_end: usize, c: 
         if let Some(cand) = candidate(e, mine, pos) {
             let len = ScalarMatch::prefix(p, src.add(cand), block_end - pos);
             if len >= 4 {
-                best = Found { src: src.add(cand), off: pos - cand, len, kind: 1 + i as u8 };
+                best = Found { src: src.add(cand), off: pos - cand, len, short: i == 1 };
                 break;
             }
         }
@@ -914,7 +920,7 @@ unsafe fn probe<const D: bool>(src: *const u8, pos: usize, block_end: usize, c: 
                 if epos < d.len && off < LOCAL_WINDOW as usize {
                     let len = ScalarMatch::prefix(p, d.content.add(epos), (block_end - pos).min(d.len - epos));
                     if len >= 4 && len > best.len {
-                        best = Found { src: d.content.add(epos), off, len, kind: 1 };
+                        best = Found { src: d.content.add(epos), off, len, short: false };
                         break;
                     }
                 }
@@ -922,13 +928,6 @@ unsafe fn probe<const D: bool>(src: *const u8, pos: usize, block_end: usize, c: 
         }
     }
     best
-}
-
-#[cold]
-#[inline(never)]
-fn lazy_win(pos: &mut usize, found: &mut Found, better: Found) {
-    *pos += 1;
-    *found = better;
 }
 
 /// Parse `input[block_start..block_start + block_len]` into `seqs` and
@@ -1061,7 +1060,7 @@ fn find_sequences_dfast_impl<const D: bool, const F: bool, const FULL: bool, con
                 let mut found = if rep_ahead {
                     let len = 4 + ScalarMatch::prefix(src.add(p1 + 4), src.add(p1 - o + 4), block_end - p1 - 4);
                     pos = p1;
-                    Found { src: src.add(p1 - o), off: o, len, kind: 0 }
+                    Found { src: src.add(p1 - o), off: o, len, short: false }
                 } else {
                     probe::<D>(src, pos, block_end, &cur, el, es, &r, dict, eld, esd)
                 };
@@ -1070,7 +1069,7 @@ fn find_sequences_dfast_impl<const D: bool, const F: bool, const FULL: bool, con
                 if let Some((flen, foff)) = if F { far_cursor.at(pos) } else { None } {
                     let flen = flen.min(block_end - pos);
                     if flen > found.len && flen >= 4 {
-                        found = Found { src: src.add(pos - foff), off: foff, len: flen, kind: 1 };
+                        found = Found { src: src.add(pos - foff), off: foff, len: flen, short: false };
                     }
                 }
                 if found.off == 0 {
@@ -1105,19 +1104,26 @@ fn find_sequences_dfast_impl<const D: bool, const F: bool, const FULL: bool, con
                     let (is1, ms1) = short_slot_h(h5(w1), pos1, sb);
                     *ts.add(is1) = ms1;
                 }
-                // Not after a repeat: its cheap code beats a longer match
-                // at a fresh offset (a table dump 1.8% smaller, the rest
-                // within 0.2%), and the compare is spared. Nor at the
-                // match's own offset: that candidate is the match one
-                // byte on, a byte shorter, never LAZY_GAIN longer.
-                if let Some(c) = candidate(el1, ml1, pos + 1).filter(|&c| !rep_ahead && found.kind != 0 && pos + 1 - c != found.off) {
-                    let rc1 = ScalarMatch::prefix(src.add(pos + 1), src.add(c), block_end - pos - 1);
-                    if rc1 >= found.len + LAZY_GAIN {
-                        // Out of line so this stays a (rarely taken)
-                        // branch: as selects, the next position would
-                        // wait for this probe's whole load chain.
-                        let better = Found { src: src.add(c), off: pos + 1 - c, len: rc1, kind: 1 };
-                        lazy_win(&mut pos, &mut found, better);
+                // No lazy step: zstd -3's double-fast takes the match it
+                // found. A lazy compare one byte on cost 4-8% of the
+                // time for 0.1% (a table dump) to 4% (a log) fewer bytes.
+                // One rule of zstd's, made a little stricter: a match the
+                // short table gave (the long one had nothing at `pos`)
+                // gives way to a long-table match one byte on when that
+                // verifies and is at least LONG_AHEAD_GAIN bytes longer.
+                // The long entry for `pos + 1` was loaded already, so this
+                // is one 8-byte compare on those matches: measured at the
+                // same speed, 0.3-1.7% fewer bytes on every file (zstd's
+                // unconditional form loses 0.7% on a table dump).
+                if found.short && !rep_ahead {
+                    if let Some(c) = candidate(el1, ml1, pos + 1) {
+                        if eq8(src.add(pos + 1), src.add(c)) {
+                            let len = 8 + ScalarMatch::prefix(src.add(pos + 9), src.add(c + 8), block_end - pos - 9);
+                            if len >= found.len + LONG_AHEAD_GAIN {
+                                pos += 1;
+                                found = Found { src: src.add(c), off: pos - c, len, short: false };
+                            }
+                        }
                     }
                 }
                 // Back-match into the pending literals: the source steps

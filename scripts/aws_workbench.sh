@@ -8,6 +8,7 @@
 #   AWS_PROFILE=... scripts/aws_workbench.sh up | sync | run <script> | down
 # State (key, security group, instances) in $GLYD_WORKBENCH (default
 # ~/.glyd-workbench).
+# GLYD_TYPES="c7g.2xlarge" launches a subset of the instance types.
 # A machine of your own instead: GLYD_HOST=user@address (and GLYD_KEY=
 # its key file) makes `sync` and `run` target it; `up` and `down` do
 # nothing. It needs build-essential, perf and zstd installed and the
@@ -26,7 +27,7 @@ if [ -n "${GLYD_HOST:-}" ]; then
 else
   : "${AWS_PROFILE:?set AWS_PROFILE}"
   REGION=us-east-1
-  TYPES="c7g.2xlarge c7i.2xlarge"
+  TYPES=${GLYD_TYPES:-"c7g.2xlarge c7i.2xlarge"}
   aws() { command aws --region "$REGION" --output text "$@"; }
   sshto() { local ip=$1; shift; ssh -i "$ST/key.pem" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR "ubuntu@$ip" "$@"; }
 fi
