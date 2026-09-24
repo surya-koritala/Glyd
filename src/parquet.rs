@@ -379,27 +379,39 @@ const M_PLANES: u8 = 1;
 const M_DELTA_PLANES: u8 = 2;
 const M_DECIMAL: u8 = 3;
 const M_BYTE_ARRAYS: u8 = 4;
-/// Dictionary indices (RLE and bit-packed runs) unpacked, as planes.
+/// Dictionary indices (RLE and bit-packed runs) unpacked, as planes;
+/// the runs are Arrow's.
 const M_INDICES: u8 = 5;
+/// `M_INDICES` with another writer's runs: a byte after the bit width
+/// names its encoder, an index into `ENCODERS`.
+const M_INDICES_BY: u8 = 6;
 
 // ---- Parquet's RLE / bit-packing hybrid ------------------------------------
 //
 // Runs of `bit_width`-bit values: a varint header, its low bit 1 for
 // `header >> 1` groups of eight bit-packed values, 0 for a value
 // repeated `header >> 1` times (the value in ceil(bit_width / 8) bytes).
-// `rle_encode` is Arrow's encoder step for step (parquet-cpp, and so
-// pyarrow, Spark's native writers and more), so an index page it wrote
-// is written again from its values.
+// The writers choose their runs differently, so each one's encoder is
+// ported step for step (`ENCODERS`) and an index page is written again
+// from its values by whichever wrote it.
 
+/// The values of the runs in `b`, the last bit-packed run's padding
+/// included. Every run starts before `at_most` values; a repeated run
+/// ends at most 8 past it, a bit-packed one under 256 past it (DuckDB
+/// packs whole blocks of 256).
 fn rle_decode(b: &[u8], bit_width: u32, at_most: usize) -> Option<Vec<u32>> {
     let mut out = Vec::new();
     let mut p = 0usize;
     let value_bytes = ((bit_width + 7) / 8) as usize;
     while p < b.len() {
+        let left = at_most.checked_sub(out.len()).filter(|&l| l > 0)?;
         let header = get_varint(b, &mut p)?;
         if header & 1 == 1 {
             let groups = (header >> 1) as usize;
-            let bytes = groups.checked_mul(bit_width as usize)?;
+            if groups.checked_mul(8)? >= left + 256 {
+                return None;
+            }
+            let bytes = groups * bit_width as usize;
             let packed = b.get(p..p + bytes)?;
             p += bytes;
             let (mut acc, mut bits) = (0u64, 0u32);
@@ -422,52 +434,67 @@ fn rle_decode(b: &[u8], bit_width: u32, at_most: usize) -> Option<Vec<u32>> {
                 v |= (x as u32) << (8 * k);
             }
             p += value_bytes;
-            if count > at_most.saturating_sub(out.len()) + 8 {
+            if count > left + 8 {
                 return None;
             }
             out.extend(std::iter::repeat(v).take(count));
-        }
-        if out.len() > at_most + 8 {
-            return None;
         }
     }
     Some(out)
 }
 
-/// Arrow's `RleEncoder`: eight values buffered; a value seen eight
+/// Bits written least significant first, as the hybrid packs them.
+struct Bits {
+    out: Vec<u8>,
+    acc: u64,
+    bits: u32,
+}
+
+impl Bits {
+    fn new(capacity: usize) -> Bits {
+        Bits { out: Vec::with_capacity(capacity), acc: 0, bits: 0 }
+    }
+
+    fn put(&mut self, v: u64, n: u32) {
+        self.acc |= v << self.bits;
+        self.bits += n;
+        while self.bits >= 8 {
+            self.out.push(self.acc as u8);
+            self.acc >>= 8;
+            self.bits -= 8;
+        }
+    }
+
+    fn align(&mut self) {
+        if self.bits > 0 {
+            self.out.push(self.acc as u8);
+            self.acc = 0;
+            self.bits = 0;
+        }
+    }
+
+    /// A repeated run: its count, then the value in whole bytes.
+    fn repeated(&mut self, count: usize, value: u32, bit_width: u32) {
+        put_varint(&mut self.out, (count << 1) as u64);
+        self.out.extend_from_slice(&value.to_le_bytes()[..bit_width.div_ceil(8) as usize]);
+    }
+}
+
+/// The index pages' encoders, as an `M_INDICES_BY` recipe names them:
+/// Arrow C++'s (`M_INDICES`), polars', DuckDB's.
+const ENCODERS: [fn(&[u32], u32) -> Vec<u8>; 3] = [rle_encode, rle_encode_polars, rle_encode_duckdb];
+
+/// Arrow's `RleEncoder` (parquet-cpp, and so pyarrow, Spark's native
+/// writers and more): eight values buffered; a value seen eight
 /// times running becomes a repeated run, else groups of eight are
 /// bit-packed into a literal run of up to 504 values; the last group
 /// padded with zeros.
 fn rle_encode(values: &[u32], bit_width: u32) -> Vec<u8> {
-    struct W {
-        out: Vec<u8>,
-        acc: u64,
-        bits: u32,
-    }
-    impl W {
-        fn put(&mut self, v: u64, n: u32) {
-            self.acc |= v << self.bits;
-            self.bits += n;
-            while self.bits >= 8 {
-                self.out.push(self.acc as u8);
-                self.acc >>= 8;
-                self.bits -= 8;
-            }
-        }
-        fn align(&mut self) {
-            if self.bits > 0 {
-                self.out.push(self.acc as u8);
-                self.acc = 0;
-                self.bits = 0;
-            }
-        }
-    }
-    let value_bytes = (bit_width + 7) / 8;
-    let mut w = W { out: Vec::with_capacity(values.len() * bit_width as usize / 8 + 16), acc: 0, bits: 0 };
+    let mut w = Bits::new(values.len() * bit_width as usize / 8 + 16);
     let (mut buffered, mut num_buffered) = ([0u32; 8], 0usize);
     let (mut current, mut repeat, mut literal) = (0u32, 0usize, 0usize);
     let mut indicator: Option<usize> = None;
-    let flush_literal = |w: &mut W, buffered: &[u32; 8], num_buffered: &mut usize, literal: &mut usize, indicator: &mut Option<usize>, update: bool| {
+    let flush_literal = |w: &mut Bits, buffered: &[u32; 8], num_buffered: &mut usize, literal: &mut usize, indicator: &mut Option<usize>, update: bool| {
         if indicator.is_none() {
             w.align();
             *indicator = Some(w.out.len());
@@ -484,10 +511,9 @@ fn rle_encode(values: &[u32], bit_width: u32) -> Vec<u8> {
             *literal = 0;
         }
     };
-    let flush_repeated = |w: &mut W, current: u32, repeat: &mut usize, num_buffered: &mut usize| {
+    let flush_repeated = |w: &mut Bits, current: u32, repeat: &mut usize, num_buffered: &mut usize| {
         w.align();
-        put_varint(&mut w.out, (*repeat << 1) as u64);
-        w.out.extend_from_slice(&current.to_le_bytes()[..value_bytes as usize]);
+        w.repeated(*repeat, current, bit_width);
         *num_buffered = 0;
         *repeat = 0;
     };
@@ -539,21 +565,157 @@ fn rle_encode(values: &[u32], bit_width: u32) -> Vec<u8> {
     w.out
 }
 
+/// polars' `hybrid_rle::encode` (polars-parquet, a fork of arrow2's):
+/// a value seen more than eight times running becomes a repeated run
+/// once it ends (the literal run before it padded to a group of eight
+/// with the run's first values); everything else is buffered into a
+/// literal run of up to 8192 values. A literal run is packed in blocks
+/// of 32; the last one's padding up to a group of eight is what that
+/// block's buffer held before (the previous block's values, or zeros).
+fn rle_encode_polars(values: &[u32], bit_width: u32) -> Vec<u8> {
+    const MAX_LITERAL: usize = 8192;
+    let mut w = Bits::new(values.len() * bit_width as usize / 8 + 16);
+    let bitpacked = |w: &mut Bits, run: &[u32]| {
+        put_varint(&mut w.out, ((run.len().div_ceil(8) << 1) | 1) as u64);
+        let mut block = [0u32; 32];
+        for chunk in run.chunks(32) {
+            block[..chunk.len()].copy_from_slice(chunk);
+            for &v in &block[..chunk.len().div_ceil(8) * 8] {
+                w.put(v as u64, bit_width);
+            }
+        }
+    };
+    let mut buffered = vec![0u32; MAX_LITERAL];
+    let (mut repeats, mut previous, mut buffer_idx, mut literal_idx) = (0usize, 0u32, 0usize, 0usize);
+    for &v in values {
+        if v == previous {
+            repeats += 1;
+            if repeats >= 8 {
+                if repeats > 8 {
+                    continue;
+                }
+                let padding = (8 - literal_idx % 8) % 8;
+                repeats -= padding;
+                literal_idx += padding;
+            }
+        } else if repeats > 8 {
+            if literal_idx > 0 {
+                bitpacked(&mut w, &buffered[..literal_idx]);
+                literal_idx = 0;
+            }
+            w.repeated(repeats, previous, bit_width);
+            repeats = 1;
+            buffer_idx = 0;
+        } else {
+            literal_idx = buffer_idx;
+            repeats = 1;
+        }
+        if buffer_idx == MAX_LITERAL {
+            bitpacked(&mut w, &buffered);
+            repeats = 1;
+            buffer_idx = 0;
+            literal_idx = 0;
+        }
+        buffered[buffer_idx] = v;
+        previous = v;
+        buffer_idx += 1;
+    }
+    if repeats <= 8 {
+        literal_idx = buffer_idx;
+    }
+    if literal_idx > 0 {
+        bitpacked(&mut w, &buffered[..literal_idx]);
+    }
+    if repeats > 8 {
+        w.repeated(repeats, previous, bit_width);
+    }
+    w.out
+}
+
+/// DuckDB's `RleBpEncoder` (its Parquet writer, one per page): a value
+/// seen four or more times running becomes a repeated run when another
+/// value follows; a shorter run starts a bit-packed block of 256 values,
+/// taken whatever they are. The last block is written whole, its tail
+/// what the block held before (the previous block's values, or zeros);
+/// the last run is written as repeated however short.
+fn rle_encode_duckdb(values: &[u32], bit_width: u32) -> Vec<u8> {
+    const BLOCK: usize = 256;
+    let mut w = Bits::new(values.len() * bit_width as usize / 8 + 16);
+    let mut block = [0u32; BLOCK];
+    let (mut in_block, mut rle_count, mut rle_value) = (0usize, 0usize, 0u32);
+    let packed = |w: &mut Bits, block: &[u32; BLOCK]| {
+        put_varint(&mut w.out, ((BLOCK / 8) << 1 | 1) as u64);
+        for &v in block {
+            w.put(v as u64, bit_width);
+        }
+    };
+    for &v in values {
+        if in_block != 0 {
+            block[in_block] = v;
+            in_block += 1;
+            if in_block == BLOCK {
+                packed(&mut w, &block);
+                in_block = 0;
+            }
+        } else if rle_count == 0 {
+            rle_value = v;
+            rle_count = 1;
+        } else if rle_value == v {
+            rle_count += 1;
+        } else if rle_count >= 4 {
+            w.repeated(rle_count, rle_value, bit_width);
+            rle_value = v;
+            rle_count = 1;
+        } else {
+            block[..rle_count].fill(rle_value);
+            block[rle_count] = v;
+            in_block = rle_count + 1;
+            rle_count = 0;
+        }
+    }
+    if rle_count != 0 {
+        w.repeated(rle_count, rle_value, bit_width);
+    } else if in_block != 0 {
+        packed(&mut w, &block);
+    }
+    w.out
+}
+
+/// The index page's values: the bit width, then the runs; decoded and
+/// the index of the encoder in `ENCODERS` that writes the runs again.
+fn index_runs(values: &[u8], count: usize) -> Option<(Vec<u32>, u32, usize)> {
+    let bit_width = *values.first()? as u32;
+    if bit_width > 32 {
+        return None;
+    }
+    let mut decoded = rle_decode(&values[1..], bit_width, count)?;
+    if decoded.len() < count {
+        return None;
+    }
+    decoded.truncate(count);
+    let by = ENCODERS.iter().position(|e| e(&decoded, bit_width) == values[1..])?;
+    Some((decoded, bit_width, by))
+}
+
 /// Why an index page was not modeled: a probe's diagnosis.
 pub fn index_page_diagnosis(raw: &[u8], chunk: &Chunk, page: &Page) -> String {
     let Some(at) = values_at(raw, chunk, page) else { return "levels".into() };
     let values = &raw[at..];
     if values.is_empty() { return "empty".into(); }
     let bit_width = values[0] as u32;
-    if bit_width == 0 || bit_width > 32 { return format!("bit width {bit_width}"); }
+    if bit_width > 32 { return format!("bit width {bit_width}"); }
     let Some(count) = present_values(raw, chunk, page) else { return "present".into() };
     let Some(mut decoded) = rle_decode(&values[1..], bit_width, count) else { return "decode".into() };
     if decoded.len() < count { return format!("short: {} of {count}", decoded.len()); }
     decoded.truncate(count);
-    let again = rle_encode(&decoded, bit_width);
-    if again != values[1..] {
-        let at = again.iter().zip(values[1..].iter()).position(|(a, b)| a != b).unwrap_or(again.len().min(values.len() - 1));
-        return format!("encode differs at {at} of {} (ours {} B), width {bit_width}", values.len() - 1, again.len());
+    // The encoder that agrees longest.
+    let (at, again) = ENCODERS.iter().map(|e| {
+        let again = e(&decoded, bit_width);
+        let at = again.iter().zip(values[1..].iter()).position(|(a, b)| a != b).unwrap_or(if again.len() == values.len() - 1 { usize::MAX } else { again.len().min(values.len() - 1) });
+        (at, again.len())
+    }).max().unwrap();
+    if at != usize::MAX {
+        return format!("encode differs at {at} of {} (ours {again} B), width {bit_width}", values.len() - 1);
     }
     "no gain".into()
 }
@@ -770,22 +932,11 @@ pub fn model(raw: &[u8], chunk: &Chunk, page: &Page) -> Option<(Vec<u8>, Vec<u8>
         return None;
     }
     if indices {
-        // Dictionary indices: the runs decoded, written again by
-        // Arrow's encoder and compared; the indices then as planes of
-        // the bytes that hold them.
-        let bit_width = values[0] as u32;
-        if bit_width == 0 || bit_width > 32 {
-            return None;
-        }
+        // Dictionary indices: the runs decoded, written again by the
+        // encoder that wrote them and compared; the indices then as
+        // planes of the bytes that hold them.
         let count = present_values(raw, chunk, page)?;
-        let mut decoded = rle_decode(&values[1..], bit_width, count)?;
-        if decoded.len() < count {
-            return None;
-        }
-        decoded.truncate(count);
-        if rle_encode(&decoded, bit_width) != values[1..] {
-            return None;
-        }
+        let (decoded, bit_width, by) = index_runs(values, count)?;
         let width = if bit_width <= 8 { 1 } else if bit_width <= 16 { 2 } else { 4 };
         let mut bytes = Vec::with_capacity(count * width);
         for &v in &decoded {
@@ -797,11 +948,14 @@ pub fn model(raw: &[u8], chunk: &Chunk, page: &Page) -> Option<(Vec<u8>, Vec<u8>
             return None;
         }
         let mut recipe = Vec::with_capacity(16);
-        recipe.push(M_INDICES);
+        recipe.push(if by == 0 { M_INDICES } else { M_INDICES_BY });
         put_varint(&mut recipe, prefix.len() as u64);
         put_varint(&mut recipe, count as u64);
         recipe.push(width as u8);
         recipe.push(bit_width as u8);
+        if by != 0 {
+            recipe.push(by as u8);
+        }
         let mut out = Vec::with_capacity(raw.len());
         out.extend_from_slice(prefix);
         out.extend_from_slice(&p);
@@ -910,8 +1064,9 @@ pub fn unmodel(recipe: &[u8], modeled: &[u8]) -> Option<Vec<u8>> {
     }
     let mut values = Vec::with_capacity(body.len());
     unplanes(body, width, &mut values);
-    if kind == M_INDICES {
+    if kind == M_INDICES || kind == M_INDICES_BY {
         let bit_width = d;
+        let encode = if kind == M_INDICES { ENCODERS[0] } else { *ENCODERS.get(*recipe.get(p + 2)? as usize)? };
         let mut decoded = Vec::with_capacity(count);
         for v in values.chunks_exact(width) {
             let mut x = 0u32;
@@ -921,7 +1076,7 @@ pub fn unmodel(recipe: &[u8], modeled: &[u8]) -> Option<Vec<u8>> {
             decoded.push(x);
         }
         out.push(bit_width as u8);
-        out.extend_from_slice(&rle_encode(&decoded, bit_width));
+        out.extend_from_slice(&encode(&decoded, bit_width));
         return Some(out);
     }
     let values = match kind {
@@ -982,6 +1137,86 @@ mod tests {
         let (recipe, modeled) = model(&page_bytes, &chunk(5), &pg).unwrap();
         assert_eq!(recipe[0], M_INDICES);
         assert_eq!(unmodel(&recipe, &modeled).unwrap(), page_bytes);
+    }
+
+    #[test]
+    fn each_writers_index_runs_are_written_again() {
+        // polars: its own tests' cases (width 2) ...
+        assert_eq!(rle_encode_polars(&[0, 1, 2, 1, 2, 1, 1, 0, 3], 2), [(2 << 1) | 1, 0b01_10_01_00, 0b00_01_01_10, 0b00_00_00_11, 0]);
+        assert_eq!(rle_encode_polars(&[3, 3, 0, 3, 2, 3, 3, 3, 3, 1, 3, 3, 3, 0, 3], 2), [5, 207, 254, 247, 51]);
+        // ... a run of more than eight after a literal: the literal padded
+        // to eight with the run's first values, the rest repeated; the last
+        // group padded with zeros (no block before it) ...
+        let v: Vec<u32> = [1, 2, 3].into_iter().chain([7; 20]).chain([4]).collect();
+        assert_eq!(rle_encode_polars(&v, 8), [3, 1, 2, 3, 7, 7, 7, 7, 7, 30, 7, 3, 4, 0, 0, 0, 0, 0, 0, 0]);
+        // ... and a literal of 37: a block of 32, then five padded with
+        // what the block held after its first five (5, 6, 7).
+        let v: Vec<u32> = (0..37).collect();
+        let mut want = vec![11u8];
+        want.extend(0..37u8);
+        want.extend([5, 6, 7]);
+        assert_eq!(rle_encode_polars(&v, 8), want);
+        // DuckDB: four or more repeated; a shorter run opens a block of
+        // 256 written whole, zeros after its values ...
+        let mut want = vec![10u8, 9, 65, 1, 2, 2, 2, 3];
+        want.resize(8 + 251, 0);
+        assert_eq!(rle_encode_duckdb(&[9, 9, 9, 9, 9, 1, 2, 2, 2, 3], 8), want);
+        // ... the last run repeated however short ...
+        assert_eq!(rle_encode_duckdb(&[7, 7, 7, 7, 1, 1], 8), [8, 7, 4, 1]);
+        // ... and a second block's tail the first block's values.
+        let v: Vec<u32> = (0..259).map(|i| i % 200).collect();
+        let mut want = vec![65u8];
+        want.extend(v[..256].iter().map(|&x| x as u8));
+        want.extend([65, 56, 57, 58]);
+        want.extend(v[3..256].iter().map(|&x| x as u8));
+        let duck = rle_encode_duckdb(&v, 8);
+        assert_eq!(duck, want);
+        // The decoder takes a block past the page's values, not a run
+        // starting past them nor padding of 256 values or more.
+        assert_eq!(rle_decode(&duck, 8, 259).unwrap().len(), 512);
+        assert!(rle_decode(&[2, 5, 2, 5], 8, 1).is_none());
+        let mut padded = vec![67u8];
+        padded.resize(1 + 264, 0);
+        assert!(rle_decode(&padded, 8, 8).is_none());
+        assert_eq!(rle_decode(&padded, 8, 9).unwrap().len(), 264);
+        // Every encoder's runs, at every width, found again: long
+        // literals (past polars' 8192), runs of every length, one value.
+        let mut x = 5u64;
+        let mut rnd = move || { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x };
+        for bit_width in [0u32, 1, 2, 3, 5, 8, 11, 16, 17, 24, 32] {
+            let top = if bit_width == 32 { u32::MAX } else { (1u32 << bit_width) - 1 };
+            let mut v = Vec::new();
+            while v.len() < 20_000 {
+                let value = (rnd() as u32) & top;
+                let run = if rnd() % 3 == 0 { 1 + rnd() as usize % 20 } else { 1 };
+                v.extend(std::iter::repeat(value).take(run));
+                if v.len() > 9000 && v.len() < 18_000 {
+                    v.push(rnd() as u32 & top);
+                }
+            }
+            for (i, encode) in ENCODERS.iter().enumerate() {
+                let mut stream = vec![bit_width as u8];
+                stream.extend(encode(&v, bit_width));
+                let (decoded, w, by) = index_runs(&stream, v.len()).unwrap_or_else(|| panic!("encoder {i}, width {bit_width}"));
+                assert_eq!((decoded, w), (v.clone(), bit_width), "encoder {i}, width {bit_width}");
+                assert_eq!(ENCODERS[by](&v, bit_width), stream[1..], "encoder {i}, width {bit_width}");
+            }
+        }
+        // A page of DuckDB's runs modeled under its own recipe kind.
+        let chunk = Chunk { row_group: 0, column: 0, codec: Codec::Snappy, physical_type: 2, max_def_level: 0, max_rep_level: 0, encodings: vec![], num_values: 0, start: 0, compressed_len: 0, uncompressed_len: 0 };
+        let page = Page { header_at: 0, body_at: 0, compressed_len: 0, uncompressed_len: 0, kind: 0, num_values: 3000, encoding: 2, num_nulls: 0, v2_levels_len: 0, v2_compressed: true };
+        let mut idx: Vec<u32> = Vec::new();
+        while idx.len() < 3000 {
+            let r = rnd();
+            let n = if r % 5 == 0 { 6 } else { 1 };
+            idx.extend(std::iter::repeat(if r % 4 == 0 { (r >> 8) as u32 & 15 } else { (r >> 8) as u32 % 3 }).take(n));
+        }
+        idx.truncate(3000);
+        let mut raw = vec![4u8];
+        raw.extend(rle_encode_duckdb(&idx, 4));
+        let (recipe, modeled) = model(&raw, &chunk, &page).unwrap();
+        assert_eq!((recipe[0], recipe[recipe.len() - 1]), (M_INDICES_BY, 2));
+        assert_eq!(unmodel(&recipe, &modeled).unwrap(), raw);
     }
 
     #[test]

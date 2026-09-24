@@ -9,7 +9,9 @@
 //! size (2^14 entries up to 1.1.10, 2^15 since 1.2.0); `reproduce`
 //! finds which build wrote a stream (`Build`). A stream no build
 //! made (another implementation, level 2) is reported as not
-//! reproduced, and its bytes are kept as they are.
+//! reproduced, and its bytes are kept as they are. The Rust `snap`
+//! crate (polars' writer) is the same compressor with the older hash,
+//! shifted by the table's size (`Hash::Shift`).
 //! No dependency: the format is a varint length then literal and copy
 //! tokens, sixty lines to decode.
 
@@ -25,6 +27,11 @@ pub enum Hash {
     Multiply,
     /// `crc32c(bytes, mask)`: x86 with SSE4.2, ARM with the CRC extension.
     Crc,
+    /// `(0x1e35a7bd * bytes) >> (32 - log2(table size))`: the Rust
+    /// `snap` crate, as C++ snappy up to 1.1.8. The same entry as the
+    /// multiply at the largest table, another one below it (a block
+    /// under 8 KB).
+    Shift,
 }
 
 /// A build of the reference: its hash and its largest table.
@@ -36,12 +43,14 @@ pub struct Build {
 }
 
 /// The builds `reproduce` tries, the commonest first (pyarrow's
-/// wheels: 1.1.10 with the multiply).
-pub const BUILDS: [Build; 4] = [
+/// wheels: 1.1.10 with the multiply); a container keeps a build as
+/// its index here, so new builds go at the end.
+pub const BUILDS: [Build; 5] = [
     Build { hash: Hash::Multiply, table_bits: 14 },
     Build { hash: Hash::Multiply, table_bits: 15 },
     Build { hash: Hash::Crc, table_bits: 14 },
     Build { hash: Hash::Crc, table_bits: 15 },
+    Build { hash: Hash::Shift, table_bits: 14 },
 ];
 
 /// The CRC32C (Castagnoli) byte table, as the instruction computes it.
@@ -88,6 +97,8 @@ fn entry(build: Build, bytes: u32, mask: u32) -> usize {
     let h = match build.hash {
         Hash::Multiply => 0x1e35a7bdu32.wrapping_mul(bytes) >> (31 - build.table_bits),
         Hash::Crc => crc32c_u32(bytes, mask),
+        // `mask` has log2(table size) bits set.
+        Hash::Shift => 0x1e35a7bdu32.wrapping_mul(bytes) >> (31 - mask.count_ones()),
     };
     ((h & mask) >> 1) as usize
 }
@@ -339,6 +350,23 @@ mod tests {
             assert_eq!(plain, raw);
             assert_eq!(build, BUILDS[0], "page{i}");
         }
+    }
+
+    #[test]
+    fn a_stream_the_snap_crate_wrote_comes_back_with_its_hash() {
+        // 3000 bytes of words compressed by the Rust `snap` crate 1.1
+        // (through cramjam 2.11), as polars writes its pages: a table of
+        // 4096 entries indexed by the product's top 12 bits, not by the
+        // bits the 1.1.10 multiply keeps.
+        let stream = fixture("snap0.snappy");
+        let raw = fixture("snap0.raw");
+        let (plain, build) = reproduce(&stream).expect("the snap crate's stream is reproduced");
+        assert_eq!(plain, raw);
+        assert_eq!(build, Build { hash: Hash::Shift, table_bits: 14 });
+        assert_ne!(compress(&raw, BUILDS[0]), stream);
+        // At the largest table (a block over 8 KB) the two pick the same entries.
+        let big: Vec<u8> = raw.iter().enumerate().map(|(i, &b)| b ^ (i % 7 == 0) as u8).cycle().take(20_000).collect();
+        assert_eq!(compress(&big, BUILDS[0]), compress(&big, Build { hash: Hash::Shift, table_bits: 14 }));
     }
 
     #[test]
