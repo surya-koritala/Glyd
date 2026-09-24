@@ -48,14 +48,18 @@ use std::path::{Path, PathBuf};
 pub const MAX_DEPTH: usize = 4;
 /// An object whose base holds at least this share of its fingerprints
 /// is a version in the base's family; less, and it starts a family of
-/// its own. Measured: point releases hold 0.99–1.00 of the last, a
-/// 16-day Ubuntu image 0.97, a monthly Wikipedia table 0.69–0.99; a
-/// new kernel major holds 0.85 of the old one, and a table whose dump
-/// format changed 0.50. Past the depth cap a version's base is its
-/// family's first object, so a 6.6 release is never a delta of 5.15.1
-/// (42 MB a delta against 3.9 within 6.6: 1.55 of the 6.6 series'
-/// 1.84 GB at a terabyte).
-pub const FAMILY_SHARE: f64 = 0.9;
+/// its own. Measured: point releases hold 0.99–1.00 of the last (6.6.1
+/// of 6.6.150 too), a 16-day Ubuntu image 0.97, a monthly Wikipedia
+/// table 0.69–0.99; a new kernel major holds 0.85–0.94 of the last
+/// release of the old one (6.6.1 of 6.1.150: 0.94, of 5.15.8: 0.85;
+/// 6.1.150 of 5.15.8: 0.90), and a table whose dump format changed
+/// 0.50. Past the depth cap a version's base is its family's first
+/// object, so a 6.6 release is never a delta of 5.15.1 (42 MB a delta
+/// against 3.9 within 6.6: 1.55 of the 6.6 series' 1.84 GB at a
+/// terabyte). At 0.9 the majors still merged (the gate re-run kept
+/// the 42 MB deltas); an object under this bar falls back to the
+/// chain's root at the cap, the rule before families.
+pub const FAMILY_SHARE: f64 = 0.98;
 /// Holders of one fingerprint the table keeps (the most recent).
 const HOLDERS: usize = 8;
 /// A base is kept when the delta is at most this share of the object
@@ -945,14 +949,32 @@ impl Store {
         let window_anchors = |at: usize, len: usize| -> Vec<(u64, u64)> {
             anchors.iter().filter(|a| (a.1 as usize) >= at && (a.1 as usize) < at + len).map(|a| (a.0, a.1 - at as u64)).collect()
         };
+        // The windows on threads of their own: one after another, the
+        // trial was two thirds of an event hour's put.
         let sample_delta = |base: &Cached| -> usize {
-            windows.iter().map(|&(at, len)| {
-                let mut out = Vec::new();
-                against(base, &data[at..at + len], &window_anchors(at, len), &mut out, false);
-                out.len()
-            }).sum()
+            let sizes: Vec<std::sync::atomic::AtomicUsize> = windows.iter().map(|_| Default::default()).collect();
+            std::thread::scope(|s| {
+                for (i, &(at, len)) in windows.iter().enumerate() {
+                    let (sizes, against, window_anchors, data) = (&sizes, &against, &window_anchors, &data);
+                    s.spawn(move || {
+                        let mut out = Vec::new();
+                        against(base, &data[at..at + len], &window_anchors(at, len), &mut out, false);
+                        sizes[i].store(out.len(), std::sync::atomic::Ordering::Relaxed);
+                    });
+                }
+            });
+            sizes.iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed)).sum()
         };
-        let sample_alone = || -> usize { windows.iter().map(|&(at, len)| alone(&data[at..at + len]).len()).sum() };
+        let sample_alone = || -> usize {
+            let sizes: Vec<std::sync::atomic::AtomicUsize> = windows.iter().map(|_| Default::default()).collect();
+            std::thread::scope(|s| {
+                for (i, &(at, len)) in windows.iter().enumerate() {
+                    let (sizes, alone, data) = (&sizes, &alone, &data);
+                    s.spawn(move || sizes[i].store(alone(&data[at..at + len]).len(), std::sync::atomic::Ordering::Relaxed));
+                }
+            });
+            sizes.iter().map(|x| x.load(std::sync::atomic::Ordering::Relaxed)).sum()
+        };
         let mut base = None;
         let mut stored = Vec::new();
         let (scored, coverage) = self.candidates(&prints)?;
