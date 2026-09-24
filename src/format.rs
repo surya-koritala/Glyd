@@ -442,12 +442,109 @@ pub fn crc32c(data: &[u8]) -> u32 {
     crc32c_table(data)
 }
 
+/// Bytes per lane of a three-lane stripe: the hardware instruction is
+/// three cycles of latency and one a cycle of throughput, so one
+/// chain of it runs at a third of the machine's rate. Three
+/// independent chains over three lanes, then the lanes' registers
+/// combined by the CRC's shift matrices (linear over GF(2)).
+const CRC_LANE: usize = 1024;
+
+/// The register after `n` zero bytes is a linear map of the register:
+/// the maps for one, two and three lanes. Each is kept as four
+/// 256-entry tables, one per byte of the register, so applying it is
+/// four loads and three xors (a row-per-bit loop was 32 unpredictable
+/// branches, half a cycle a byte over the stripe).
+struct CrcShift {
+    one: [[u32; 256]; 4],
+    two: [[u32; 256]; 4],
+    three: [[u32; 256]; 4],
+}
+
+fn byte_tables(m: &[u32; 32]) -> [[u32; 256]; 4] {
+    let mut t = [[0u32; 256]; 4];
+    for (k, table) in t.iter_mut().enumerate() {
+        for (b, e) in table.iter_mut().enumerate() {
+            *e = gf2_times(m, (b as u32) << (8 * k));
+        }
+    }
+    t
+}
+
+#[inline(always)]
+fn apply(t: &[[u32; 256]; 4], v: u32) -> u32 {
+    t[0][(v & 0xff) as usize] ^ t[1][((v >> 8) & 0xff) as usize] ^ t[2][((v >> 16) & 0xff) as usize] ^ t[3][(v >> 24) as usize]
+}
+
+fn gf2_times(m: &[u32; 32], mut v: u32) -> u32 {
+    let (mut r, mut i) = (0u32, 0usize);
+    while v != 0 {
+        if v & 1 != 0 {
+            r ^= m[i];
+        }
+        v >>= 1;
+        i += 1;
+    }
+    r
+}
+
+fn gf2_compose(a: &[u32; 32], b: &[u32; 32]) -> [u32; 32] {
+    std::array::from_fn(|n| gf2_times(a, b[n]))
+}
+
+fn crc_shift() -> &'static CrcShift {
+    static SHIFT: std::sync::OnceLock<CrcShift> = std::sync::OnceLock::new();
+    SHIFT.get_or_init(|| {
+        // One bit step of the reflected CRC-32C register.
+        let mut m = [0u32; 32];
+        m[0] = 0x82F6_3B78;
+        for n in 1..32 {
+            m[n] = 1 << (n - 1);
+        }
+        // Squaring: 2, 4, ..., 8 * CRC_LANE bits.
+        let bits = 8 * CRC_LANE;
+        debug_assert!(bits.is_power_of_two());
+        let mut k = 1;
+        while k < bits {
+            m = gf2_compose(&m, &m);
+            k *= 2;
+        }
+        let one = m;
+        let two = gf2_compose(&one, &one);
+        let three = gf2_compose(&two, &one);
+        CrcShift { one: byte_tables(&one), two: byte_tables(&two), three: byte_tables(&three) }
+    })
+}
+
+/// The register after a stripe of three lanes, from the register
+/// before it and the three lanes' own registers (each from zero).
+#[inline(always)]
+fn crc_join(shift: &CrcShift, before: u32, a: u32, b: u32, c: u32) -> u32 {
+    apply(&shift.three, before) ^ apply(&shift.two, a) ^ apply(&shift.one, b) ^ c
+}
+
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "crc")]
 unsafe fn crc32c_aarch64(data: &[u8]) -> u32 {
     use std::arch::aarch64::{__crc32cb, __crc32cd};
     let mut c = !0u32;
-    let (chunks, tail) = data.as_chunks::<8>();
+    let mut at = 0usize;
+    if data.len() >= 3 * CRC_LANE {
+        let shift = crc_shift();
+        while at + 3 * CRC_LANE <= data.len() {
+            let (mut a, mut b, mut d) = (0u32, 0u32, 0u32);
+            let (pa, pb, pd) = (data.as_ptr().add(at), data.as_ptr().add(at + CRC_LANE), data.as_ptr().add(at + 2 * CRC_LANE));
+            let mut i = 0;
+            while i < CRC_LANE {
+                a = __crc32cd(a, (pa.add(i) as *const u64).read_unaligned());
+                b = __crc32cd(b, (pb.add(i) as *const u64).read_unaligned());
+                d = __crc32cd(d, (pd.add(i) as *const u64).read_unaligned());
+                i += 8;
+            }
+            c = crc_join(shift, c, a, b, d);
+            at += 3 * CRC_LANE;
+        }
+    }
+    let (chunks, tail) = data[at..].as_chunks::<8>();
     for w in chunks {
         c = __crc32cd(c, u64::from_le_bytes(*w));
     }
@@ -462,7 +559,24 @@ unsafe fn crc32c_aarch64(data: &[u8]) -> u32 {
 unsafe fn crc32c_x86(data: &[u8]) -> u32 {
     use std::arch::x86_64::{_mm_crc32_u64, _mm_crc32_u8};
     let mut c = !0u64;
-    let (chunks, tail) = data.as_chunks::<8>();
+    let mut at = 0usize;
+    if data.len() >= 3 * CRC_LANE {
+        let shift = crc_shift();
+        while at + 3 * CRC_LANE <= data.len() {
+            let (mut a, mut b, mut d) = (0u64, 0u64, 0u64);
+            let (pa, pb, pd) = (data.as_ptr().add(at), data.as_ptr().add(at + CRC_LANE), data.as_ptr().add(at + 2 * CRC_LANE));
+            let mut i = 0;
+            while i < CRC_LANE {
+                a = _mm_crc32_u64(a, (pa.add(i) as *const u64).read_unaligned());
+                b = _mm_crc32_u64(b, (pb.add(i) as *const u64).read_unaligned());
+                d = _mm_crc32_u64(d, (pd.add(i) as *const u64).read_unaligned());
+                i += 8;
+            }
+            c = crc_join(shift, c as u32, a as u32, b as u32, d as u32) as u64;
+            at += 3 * CRC_LANE;
+        }
+    }
+    let (chunks, tail) = data[at..].as_chunks::<8>();
     for w in chunks {
         c = _mm_crc32_u64(c, u64::from_le_bytes(*w));
     }
@@ -471,6 +585,20 @@ unsafe fn crc32c_x86(data: &[u8]) -> u32 {
         c = _mm_crc32_u8(c, b);
     }
     !c
+}
+
+#[cfg(test)]
+mod crc_tests {
+    use super::*;
+
+    #[test]
+    fn three_lane_crc_matches_the_table_at_every_length() {
+        let mut x = 3u64;
+        let data: Vec<u8> = (0..20_000).map(|_| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x as u8 }).collect();
+        for len in [0usize, 1, 7, 8, 9, 3071, 3072, 3073, 4096, 6143, 6144, 6145, 9216, 9217, 12345, 20_000] {
+            assert_eq!(crc32c(&data[..len]), crc32c_table(&data[..len]), "len {len}");
+        }
+    }
 }
 
 pub fn crc32c_table(data: &[u8]) -> u32 {
