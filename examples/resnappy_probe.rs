@@ -18,6 +18,11 @@ fn main() {
             e.0 += 1;
             e.1 += p.compressed_len;
             e.2 += p.uncompressed_len;
+            if c.codec == glyd::parquet::Codec::Zstd {
+                let stream = p.compressed(&data);
+                *by_build.entry(match glyd::rezstd::reproduce(stream) { Some((_, b)) => format!("zstd {:?}/{:?}/{:?}{}", b.version, b.level, b.writer, if b.checksum { "+ck" } else { "" }), None => "zstd: NOT reproduced".to_string() }).or_insert(0) += 1;
+                continue;
+            }
             if c.codec != glyd::parquet::Codec::Snappy {
                 continue;
             }
@@ -38,6 +43,7 @@ fn main() {
         println!("  {codec}: {n} pages, {comp} B compressed, {raw} B raw ({:.2}x)", *raw as f64 / (*comp).max(1) as f64);
     }
     if snappy_pages > 0 {
-        println!("  snappy pages reproduced: {reproduced} of {snappy_pages} ({} of {} B; {} B kept as they are); by build: {:?}", reproduced_bytes, snappy_bytes, kept, by_build);
+        println!("  snappy pages reproduced: {reproduced} of {snappy_pages} ({} of {} B; {} B kept as they are)", reproduced_bytes, snappy_bytes, kept);
     }
+    println!("  by build: {by_build:?}");
 }

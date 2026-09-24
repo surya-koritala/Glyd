@@ -16,17 +16,22 @@ every earlier format.
   compressed instead of its LZ tokens: google/snappy 1.2 level 1
   (builds differ in their hash, a multiply or the CRC32C instruction,
   and their table, 2^14 entries up to 1.1.10, 2^15 since 1.2.0), and
-  zstd 1.5.5 at levels 1 and 3 (the fast and double-fast finders and
-  their variants past the window's wrap, Huffman literals with the
-  previous block's table, FSE sequence tables, the capacity rules,
-  the checksum) as its library's one-shot call writes them and as its
-  command line does: the `--single-thread` stream of 128 KB chunks,
-  and the default of 2 MB jobs from fresh contexts seeded with the
-  64 KB before each, so a file `zstd` wrote opens too. Checked
-  against zstd's own output on the fixtures, on a sweep of 3,500
-  inputs under every writer, and on 200 MB logs and dumps. The
-  opener finds the build that wrote a page and keeps a page no build
-  made (other versions of zstd, other levels). A whole zstd frame (a `.zst` object) opens the
+  zstd 1.5.2 through 1.5.7 at levels 1 and 3 (the fast and
+  double-fast finders and their variants past the window's wrap,
+  Huffman literals with the previous block's table, FSE sequence
+  tables, the capacity rules, the checksum; 1.5.7's pre-block-splitter
+  and its two double-fast rules, 1.5.2's three fast-finder rules;
+  1.5.4 and 1.5.6 write what 1.5.5 does) as its library's one-shot
+  call writes them and as its command line does: the
+  `--single-thread` stream of 128 KB chunks, and the default of 2 MB
+  jobs from fresh contexts seeded with the 64 KB before each, so a
+  file `zstd` wrote opens too. Checked against zstd's own output on
+  the fixtures, on a sweep of 3,500 inputs under every version, level
+  and writer, and on 200 MB logs and dumps. The opener finds the
+  build that wrote a page and keeps a page no build made (zstd 1.4
+  and older, other levels, gzip pages). A container under a frame
+  opens in turn: the snappy taxi file inside a `zstd -3` frame,
+  52.3 MB, comes to 34.8 MB. A whole zstd frame (a `.zst` object) opens the
   same way, a container under it opened in turn: the NASA access log
   as zstd 1.5.5 wrote it at level 1, 22.3 MB, comes to 8.0 MB at
   `--max` (its records modeled), 1.4 s to write and 0.6 s to read

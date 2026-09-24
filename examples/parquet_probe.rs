@@ -15,10 +15,12 @@ fn main() {
         for p in glyd::parquet::pages(&data, c).unwrap() {
             let stream = p.compressed(&data);
             closed.extend_from_slice(stream);
-            if c.codec != glyd::parquet::Codec::Snappy {
-                continue;
-            }
-            let Some((plain, _)) = glyd::resnappy::reproduce(stream) else { continue };
+            let opened = match c.codec {
+                glyd::parquet::Codec::Snappy => glyd::resnappy::reproduce(stream).map(|(p, _)| p),
+                glyd::parquet::Codec::Zstd => glyd::rezstd::reproduce(stream).map(|(p, _)| p),
+                _ => None,
+            };
+            let Some(plain) = opened else { continue };
             pages += 1;
             raw.extend_from_slice(&plain);
             match glyd::parquet::model(&plain, c, &p) {
@@ -60,7 +62,7 @@ fn main() {
         glyd::compress_into_max(b, &mut out);
         out.len()
     };
-    println!("{}: {} B, written by {created_by:?}; {pages} snappy pages, {unmodeled} left as they are, recipes {recipes} B", f.rsplit('/').next().unwrap(), data.len());
+    println!("{}: {} B, written by {created_by:?}; {pages} pages opened, {unmodeled} left as they are, recipes {recipes} B", f.rsplit('/').next().unwrap(), data.len());
     println!("  closed pages {} B -> --max {} B", closed.len(), size(&closed));
     println!("  raw pages    {} B -> --max {} B", raw.len(), size(&raw));
     println!("  modeled      {} B -> --max {} B", modeled.len(), size(&modeled));
