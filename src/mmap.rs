@@ -30,6 +30,8 @@ const MADV_POPULATE_READ: i32 = 22;
 const PROT_READ: i32 = 1;
 const PROT_WRITE: i32 = 2;
 const MAP_SHARED: i32 = 1;
+/// Linux: fault the pages in at mmap time.
+const MAP_POPULATE: i32 = 0x8000;
 const MS_SYNC: i32 = 0x10;
 
 impl Mapping {
@@ -41,12 +43,27 @@ impl Mapping {
 
     /// The whole of `path`, read-only; an empty file maps to no bytes.
     pub fn read_only(path: &Path) -> Result<Mapping> {
+        Self::read_only_with(path, 0)
+    }
+
+    /// `read_only` with every page faulted in before it returns (Linux's
+    /// MAP_POPULATE; elsewhere the helper thread), for a pass that would
+    /// otherwise fault them in on every thread it runs on.
+    pub fn read_only_populated(path: &Path) -> Result<Mapping> {
+        let mut m = Self::read_only_with(path, if cfg!(target_os = "linux") { MAP_POPULATE } else { 0 })?;
+        if !cfg!(target_os = "linux") {
+            m.populate();
+        }
+        Ok(m)
+    }
+
+    fn read_only_with(path: &Path, extra_flags: i32) -> Result<Mapping> {
         let file = File::open(path)?;
         let len = file.metadata()?.len() as usize;
         if len == 0 {
             return Ok(Mapping { ptr: std::ptr::NonNull::<u8>::dangling().as_ptr(), len: 0, populate: None });
         }
-        Self::map(&file, len, PROT_READ)
+        Self::map_with(&file, len, PROT_READ, extra_flags)
     }
 
     /// Ask for the whole mapping to be read ahead: a pass that touches
@@ -87,8 +104,12 @@ impl Mapping {
     }
 
     fn map(file: &File, len: usize, prot: i32) -> Result<Mapping> {
+        Self::map_with(file, len, prot, 0)
+    }
+
+    fn map_with(file: &File, len: usize, prot: i32, extra_flags: i32) -> Result<Mapping> {
         use std::os::unix::io::AsRawFd;
-        let ptr = unsafe { mmap(std::ptr::null_mut(), len, prot, MAP_SHARED, file.as_raw_fd(), 0) };
+        let ptr = unsafe { mmap(std::ptr::null_mut(), len, prot, MAP_SHARED | extra_flags, file.as_raw_fd(), 0) };
         if ptr as isize == -1 {
             return Err(Error::new(ErrorKind::Other, "mmap failed"));
         }
@@ -108,6 +129,12 @@ impl Mapping {
         }
     }
 }
+
+// A mapping is a buffer at an address: reading it from any thread is
+// sound (a read-write mapping's `bytes_mut` still needs `&mut self`),
+// and it is unmapped only when the last reference is gone.
+unsafe impl Send for Mapping {}
+unsafe impl Sync for Mapping {}
 
 impl Drop for Mapping {
     fn drop(&mut self) {

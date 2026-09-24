@@ -1515,19 +1515,17 @@ const MAP_AMBIGUOUS: usize = 64;
 /// window of `len` bytes holding the most of the unit's anchors (by
 /// `map`), when the unit's anchors are found there at all; else the
 /// base around the unit's own position (content that has not moved).
-fn base_region(base_end: usize, map: &[(u64, u64)], unit: &[u8], a: usize, b: usize) -> (usize, usize) {
+fn base_region(base_end: usize, map: &[(u64, u64)], anchors: &[(u64, u64)], a: usize, b: usize) -> (usize, usize) {
     let len = (b - a + 2 * BASE_SLACK).min(base_end);
     let positional = {
         let r0 = a.saturating_sub(BASE_SLACK).min(base_end);
         (r0, (r0 + len).min(base_end))
     };
-    let mut anchors = Vec::with_capacity(unit.len() >> ldm::MAP_BITS);
-    ldm::sparse_anchors(unit, 0, &mut anchors);
     let bins = base_end / BASE_BIN + 1;
     // Hits in 1/MAP_AMBIGUOUS-ths: an anchor at k places is 1/k at each.
     let mut hits = vec![0u64; bins];
     let mut total = 0u64;
-    for (h, _) in anchors {
+    for &(h, _) in anchors {
         let lo = map.partition_point(|e| e.0 < h);
         let hi = map.partition_point(|e| e.0 <= h);
         let k = hi - lo;
@@ -1556,9 +1554,45 @@ fn base_region(base_end: usize, map: &[(u64, u64)], unit: &[u8], a: usize, b: us
             best_at = i + 1 - span.min(i + 1);
         }
     }
+    {
+        // The window shrunk to the bins holding nearly all of its hits
+        // (content that did not move needs no slack), never under the
+        // unit plus TIGHT_SLACK a side: the region copied and indexed
+        // per unit is then the unit's own size, not three times it.
+        // Kernel pair on 16 cores: 15% less time and 1.2% fewer bytes.
+        let min_span = ((b - a + 2 * TIGHT_SLACK) / BASE_BIN).max(1);
+        if span > min_span && best > 0 {
+            let lo = best_at;
+            let hi = (best_at + span).min(bins);
+            let need = best * TIGHT_KEEP / 100;
+            let (mut ti, mut tj) = (lo, hi);
+            let mut j = lo;
+            let mut sum = 0u64;
+            for i in lo..hi {
+                while j < hi && (sum < need || j - i < min_span) {
+                    sum += hits[j];
+                    j += 1;
+                }
+                if sum >= need && j - i >= min_span && j - i < tj - ti {
+                    ti = i;
+                    tj = j;
+                }
+                if j == hi && sum < need {
+                    break;
+                }
+                sum -= hits[i];
+            }
+            let r0 = (ti * BASE_BIN).min(base_end);
+            return (r0, (tj * BASE_BIN).min(base_end));
+        }
+    }
     let r0 = (best_at * BASE_BIN).min(base_end);
     (r0, (r0 + len).min(base_end))
 }
+/// A region keeps at least this share of its window's hits when shrunk,
+/// and at least this much slack a side of the unit.
+const TIGHT_KEEP: u64 = 97;
+const TIGHT_SLACK: usize = 8 << 20;
 
 /// `input` compressed against `base` at the max level (`ultra` for the
 /// ultra level): the output decodes only with the same base
@@ -1590,10 +1624,37 @@ impl BaseIndex {
     }
 }
 
+/// `compress_with_base` for a store that keeps the base opened: the
+/// input is opened if it is a container and its plain text compressed
+/// against `base_plain` (the base's opened content and its index, made
+/// once and kept), else the input as it is against `base` and its
+/// index. Opening a base of thousands of gzip members on every put
+/// against it was half of such a put.
+pub fn compress_with_base_plain(base: &[u8], base_index: &BaseIndex, base_plain: Option<(&[u8], &BaseIndex)>, input: &[u8], anchors: Option<&[(u64, u64)]>, output: &mut Vec<u8>, ultra: bool) {
+    #[cfg(feature = "deflate")]
+    if !in_part() && deflate::is_container(input) {
+        if let Some(opened) = deflate::open(input) {
+            deflate::envelope(input.len(), &opened.recipe, output);
+            let (b, bi) = base_plain.unwrap_or((base, base_index));
+            // The opened text has its own positions: its anchors are not the input's.
+            return as_part(|| compress_with_base_index(b, bi, &opened.plain, output, ultra));
+        }
+    }
+    compress_with_base_anchored(base, base_index, input, anchors, output, ultra)
+}
+
 /// `compress_with_base` with the base's index made beforehand, on the
 /// bytes as they are: no container is opened (`compress_with_base`
 /// opens one before it gets here).
 pub fn compress_with_base_index(base: &[u8], index: &BaseIndex, input: &[u8], output: &mut Vec<u8>, ultra: bool) {
+    compress_with_base_anchored(base, index, input, None, output, ultra)
+}
+
+/// `compress_with_base_index` with the input's sparse anchors
+/// (`ldm::sparse_anchors` over the whole input, positions absolute)
+/// given when the caller has them already: the store's fingerprints
+/// are those anchors, and the region choice scanned the input again.
+pub fn compress_with_base_anchored(base: &[u8], index: &BaseIndex, input: &[u8], anchors: Option<&[(u64, u64)]>, output: &mut Vec<u8>, ultra: bool) {
     let parse = if ultra { Parse::Ultra } else { Parse::Dfast };
     let units: Vec<(usize, usize)> = (0..input.len().max(1)).step_by(BASE_UNIT).map(|a| (a, (a + BASE_UNIT).min(input.len()))).collect();
     let base_end = base.len().saturating_sub(BASE_TAIL);
@@ -1604,12 +1665,32 @@ pub fn compress_with_base_index(base: &[u8], index: &BaseIndex, input: &[u8], ou
     let slots: Vec<std::sync::Mutex<((usize, usize), Vec<u8>)>> = units.iter().map(|_| std::sync::Mutex::new(((0, 0), Vec::new()))).collect();
     let _ = par_units::<()>(units.len(), |i| {
         let (a, b) = units[i];
-        let (r0, r1) = base_region(base_end, map, &input[a..b], a, b);
-        let mut full = Vec::with_capacity(r1 - r0 + b - a);
-        full.extend_from_slice(&base[r0..r1]);
-        full.extend_from_slice(&input[a..b]);
+        let mut own = Vec::new();
+        let unit_anchors: &[(u64, u64)] = match anchors {
+            Some(all) => {
+                let lo = all.partition_point(|&(_, p)| (p as usize) < a);
+                let hi = all.partition_point(|&(_, p)| (p as usize) < b);
+                &all[lo..hi]
+            }
+            None => {
+                ldm::sparse_anchors(&input[a..b], 0, &mut own);
+                &own
+            }
+        };
+        let (r0, r1) = base_region(base_end, map, unit_anchors, a, b);
+        // The region and the unit laid out together, in a buffer each
+        // thread keeps across units: allocated and page-faulted anew
+        // per unit, the copy was a quarter of a version's put.
+        thread_local! {
+            static FULL: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+        }
         let mut out = Vec::with_capacity((b - a) / 8 + 1024);
-        compress_max_from(&full, r1 - r0, 0, parse, None, true, &mut out, None);
+        FULL.with_borrow_mut(|full| {
+            full.clear();
+            full.extend_from_slice(&base[r0..r1]);
+            full.extend_from_slice(&input[a..b]);
+            compress_max_from(full, r1 - r0, 0, parse, None, true, &mut out, None);
+        });
         *slots[i].lock().unwrap() = ((r0, r1), out);
         Ok(())
     });

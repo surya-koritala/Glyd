@@ -470,9 +470,15 @@ impl Builder {
     /// Everything up to `to` kept and written: the parts, when anything
     /// opened.
     fn into_parts(mut self, input: &[u8], to: usize) -> Option<Parts> {
+        // Nothing opened: nothing to build. (Flushing first copied the
+        // whole of a tar with no compressed member, 0.24 s a gigabyte,
+        // to then return None.)
+        if !self.opened {
+            return None;
+        }
         self.keep_to(to);
         self.flush(input);
-        if !self.opened || self.content.len() + self.side.len() > PLAIN_LIMIT {
+        if self.content.len() + self.side.len() > PLAIN_LIMIT {
             return None;
         }
         Some(Parts { content: self.content, side: self.side, body: self.body, segments: self.segments })

@@ -307,18 +307,49 @@ pub struct Store {
 }
 
 /// A decoded object, and its index as a base once one is made.
+/// An object's bytes: owned, or the file they came from, mapped.
+enum Bytes {
+    Owned(Vec<u8>),
+    Mapped(Mapping),
+}
+
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Bytes::Owned(v) => v,
+            Bytes::Mapped(m) => m.bytes(),
+        }
+    }
+}
+
 struct Cached {
-    data: Vec<u8>,
+    data: Bytes,
     index: OnceLock<glyd::BaseIndex>,
+    /// A container's opened content and its index, made the first time
+    /// a delta is taken against it and kept: opening a tar of thousands
+    /// of gzip members was half of every put against it.
+    plain: OnceLock<Option<(Vec<u8>, glyd::BaseIndex)>>,
 }
 
 impl Cached {
     fn new(data: Vec<u8>) -> Arc<Cached> {
-        Arc::new(Cached { data, index: OnceLock::new() })
+        Self::of(Bytes::Owned(data))
+    }
+
+    fn of(data: Bytes) -> Arc<Cached> {
+        Arc::new(Cached { data, index: OnceLock::new(), plain: OnceLock::new() })
     }
 
     fn index(&self) -> &glyd::BaseIndex {
         self.index.get_or_init(|| glyd::BaseIndex::new(&self.data))
+    }
+
+    fn plain(&self) -> Option<(&[u8], &glyd::BaseIndex)> {
+        self.plain
+            .get_or_init(|| glyd::deflate::open(&self.data).map(|o| { let index = glyd::BaseIndex::new(&o.plain); (o.plain, index) }))
+            .as_ref()
+            .map(|(p, i)| (p.as_slice(), i))
     }
 }
 
@@ -427,13 +458,20 @@ fn codec(e: glyd::error::CodecError) -> Error {
 /// The fingerprints of an object: its sparse anchors whose hash has two
 /// more zero bits.
 fn fingerprints(data: &[u8]) -> Vec<u64> {
+    fingerprints_and_anchors(data).0
+}
+
+/// The fingerprints of `data` and the sparse anchors they come from (all
+/// of them, positions absolute, in order): the base compressor's region
+/// choice takes the anchors instead of scanning the object again.
+fn fingerprints_and_anchors(data: &[u8]) -> (Vec<u64>, Vec<(u64, u64)>) {
     // Every position is tested on its own, so the scan splits across
     // the cores: each chunk reads 64 bytes past its end for the hashes
     // at its last positions and keeps only the positions it owns.
     const CHUNK: usize = 64 << 20;
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     let chunks: Vec<(usize, usize)> = (0..data.len().max(1)).step_by(CHUNK).map(|a| (a, (a + CHUNK).min(data.len()))).collect();
-    let slots: Vec<Mutex<Vec<u64>>> = chunks.iter().map(|_| Mutex::new(Vec::new())).collect();
+    let slots: Vec<Mutex<Vec<(u64, u64)>>> = chunks.iter().map(|_| Mutex::new(Vec::new())).collect();
     let next = std::sync::atomic::AtomicUsize::new(0);
     std::thread::scope(|scope| {
         for _ in 0..threads.min(chunks.len()) {
@@ -444,13 +482,16 @@ fn fingerprints(data: &[u8]) -> Vec<u64> {
                 }
                 let (a, b) = chunks[i];
                 let mut anchors = Vec::new();
-                glyd::ldm::sparse_anchors(&data[a..(b + 64).min(data.len())], 0, &mut anchors);
-                let own = (b - a) as u64;
-                *slots[i].lock().unwrap() = anchors.into_iter().filter(|&(h, pos)| pos < own && h >> 62 == 0).map(|(h, _)| h).collect();
+                glyd::ldm::sparse_anchors(&data[a..(b + 64).min(data.len())], a as u64, &mut anchors);
+                let end = b as u64;
+                anchors.retain(|&(_, pos)| pos < end);
+                *slots[i].lock().unwrap() = anchors;
             });
         }
     });
-    slots.into_iter().flat_map(|m| m.into_inner().unwrap()).collect()
+    let anchors: Vec<(u64, u64)> = slots.into_iter().flat_map(|m| m.into_inner().unwrap()).collect();
+    let prints = anchors.iter().filter(|&&(h, _)| h >> 62 == 0).map(|&(h, _)| h).collect();
+    (prints, anchors)
 }
 
 impl Store {
@@ -772,6 +813,18 @@ impl Store {
     /// cached copy instead of copying them (a 1.5 GB object's copy was
     /// a fifth of its put).
     pub fn put_vec(&mut self, name: &str, data: Vec<u8>) -> Result<u32> {
+        self.put_bytes(name, Bytes::Owned(data))
+    }
+
+    /// `put` of a file, mapped: no copy of its bytes at all (reading a
+    /// 1.5 GB file into a buffer was 0.4 s of its put), the mapping
+    /// kept as the cached copy while the object is wanted as a base.
+    pub fn put_file(&mut self, name: &str, path: &Path) -> Result<u32> {
+        let mapping = Mapping::read_only_populated(path)?;
+        self.put_bytes(name, Bytes::Mapped(mapping))
+    }
+
+    fn put_bytes(&mut self, name: &str, data: Bytes) -> Result<u32> {
         let id = self.entries.len() as u32;
         let name = name.replace(['\t', '\n'], " ");
         if data.len() < SMALL {
@@ -779,7 +832,7 @@ impl Store {
             let entry = Entry { id, name, base: None, depth: 0, raw_len: data.len() as u64, stored_len: 0, pack: Some((u32::MAX, self.pending.len() as u32)), deleted: false };
             self.entries.push(entry);
             self.pending_bytes += data.len();
-            self.pending.push((id, data));
+            self.pending.push((id, data.to_vec()));
             if self.pending_bytes >= PACK_SIZE {
                 self.flush()?;
             }
@@ -795,7 +848,7 @@ impl Store {
                 clock = std::time::Instant::now();
             }
         };
-        let prints = fingerprints(&data);
+        let (prints, anchors) = fingerprints_and_anchors(&data);
         lap("fingerprints", &mut laps);
         let alone = |data: &[u8]| {
             let mut out = Vec::with_capacity(data.len() / 4 + 1024);
@@ -813,9 +866,10 @@ impl Store {
         let container = glyd::deflate::is_container(&data);
         let against = |base: &Cached, input: &[u8], out: &mut Vec<u8>, ultra: bool| {
             if container {
-                glyd::compress_with_base(&base.data, input, out, ultra)
+                glyd::compress_with_base_plain(&base.data, base.index(), base.plain(), input, Some(&anchors), out, ultra)
             } else {
-                glyd::compress_with_base_index(&base.data, base.index(), input, out, ultra)
+                // The whole object's anchors serve a sample too: a prefix's are a prefix of them.
+                glyd::compress_with_base_anchored(&base.data, base.index(), input, Some(&anchors), out, ultra)
             }
         };
         let mut base = None;
@@ -930,7 +984,7 @@ impl Store {
         lap("table insert", &mut laps);
         self.entries.push(entry);
         let raw_len = data.len();
-        self.remember(id, Cached::new(data));
+        self.remember(id, Cached::of(data));
         lap("cache", &mut laps);
         if timing {
             let total: f64 = laps.iter().map(|(_, t)| t).sum();
@@ -984,7 +1038,7 @@ impl Store {
             return Err(bad("object deleted"));
         }
         if let Some(object) = self.cached(id) {
-            return Ok(object.data.clone());
+            return Ok(object.data.to_vec());
         }
         if let Some((pack, i)) = entry.pack {
             if pack == u32::MAX {
@@ -1002,7 +1056,7 @@ impl Store {
             }
             return Ok(data);
         }
-        Ok(self.fetch(id)?.data.clone())
+        Ok(self.fetch(id)?.data.to_vec())
     }
 
     /// Object `id` written to `out` from the store's copy, without a

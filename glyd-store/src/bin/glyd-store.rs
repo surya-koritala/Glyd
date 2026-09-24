@@ -163,12 +163,11 @@ fn main() -> io::Result<()> {
         }
         if store_put {
             for f in &inputs {
-                // Read into a buffer the store keeps as its cached copy:
-                // one copy of the bytes, not two.
-                let data = std::fs::read(f)?;
-                let len = data.len();
+                // The file mapped, and the mapping kept as the store's
+                // cached copy: no copy of the bytes.
+                let len = std::fs::metadata(f)?.len() as usize;
                 let t = Instant::now();
-                let id = store.put_vec(f, data)?;
+                let id = store.put_file(f, std::path::Path::new(f))?;
                 let e = &store.entries()[id as usize];
                 eprintln!("{:>6}  {:>10} -> {:>10} B  {}  {:.0} MB/s  {}", id, e.raw_len, e.stored_len, e.base.map_or("alone".to_string(), |b| format!("delta against {} (depth {})", b, e.depth)), len as f64 / t.elapsed().as_secs_f64() / 1e6, f);
             }
