@@ -87,18 +87,22 @@ SSH=(ssh -i "$KEYFILE" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/nu
 echo "waiting for the toolchain on $IP"
 until "${SSH[@]}" test -f READY 2>/dev/null; do sleep 15; done
 "${SSH[@]}" "mkdir -p glyd && tar -C glyd -xf -" < "$TARBALL"
-rm -rf "$OUT"; mkdir -p "$OUT"
+# The run's results are synced into a directory of its own and copied
+# into the tree at the end: two runs at once shared "$OUT", and one's
+# DONE ended the other's wait (and its instance) mid-run.
+LIVE="$TMP/results"; mkdir -p "$LIVE"
 "${SSH[@]}" "cat > run.sh" <<< "$RUN"
 "${SSH[@]}" "nohup bash run.sh > run.log 2>&1 < /dev/null &"
 waited=0
 while true; do
     sleep 600; waited=$((waited + 10))
-    "${SSH[@]}" "tar -C results -cf - . 2>/dev/null; true" | tar -C "$OUT" -xf - 2>/dev/null || true
-    "${SSH[@]}" cat run.log > "$OUT/run.log" 2>/dev/null || true
-    "${SSH[@]}" "df -h /data | tail -1; ls /data/corpus 2>/dev/null | wc -l" > "$OUT/progress.txt" 2>/dev/null || true
-    [ -f "$OUT/DONE" ] && break
+    "${SSH[@]}" "tar -C results -cf - . 2>/dev/null; true" | tar -C "$LIVE" -xf - 2>/dev/null || true
+    "${SSH[@]}" cat run.log > "$LIVE/run.log" 2>/dev/null || true
+    "${SSH[@]}" "df -h /data | tail -1; ls /data/corpus 2>/dev/null | wc -l" > "$LIVE/progress.txt" 2>/dev/null || true
+    [ -f "$LIVE/DONE" ] && break
     if [ "$waited" -ge 600 ]; then echo "giving up after 10 hours"; break; fi
-    echo "$waited min: $(cat "$OUT/progress.txt" | tr '\n' ' ') $(ls "$OUT" | tr '\n' ' ')"
+    echo "$waited min: $(cat "$LIVE/progress.txt" | tr '\n' ' ') $(ls "$LIVE" | tr '\n' ' ')"
 done
+rm -rf "$OUT"; mkdir -p "$OUT"; cp -R "$LIVE"/. "$OUT"/
 cat "$OUT/gate.txt" 2>/dev/null || cat "$OUT/run.log"
 echo "done: $RUN_ID"

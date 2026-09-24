@@ -70,11 +70,19 @@ every earlier format.
   48.1 MB, its zstd file, 57.8 MB, 50.8 -> 48.1 MB; DuckDB's snappy
   file, 61.1 MB, 36.6 -> 35.0 MB, its zstd file, 45.7 MB, 36.6 ->
   35.0 MB; every decode byte-exact.
+- **A new family starts shallow.** An object that starts a family (a
+  new major release) takes an ancestor at depth 1 or the chain's root
+  as its base, so its versions come back to it at the depth cap; one
+  that had landed at the cap itself sent them to the chain's root.
+  At the gate, 6.1.1 sat at depth 4 on a 5.15 release and every fifth
+  6.1 release was a 26 MB delta of 5.15.1. On the Ryzen box, 5.15.1-100
+  then the 150 releases of 6.1 in the gate's order: 6.1 1,316 -> 502
+  MB, all 250 releases 1,714 -> 899 MB.
 - **The store keeps a version's base among its own kind.** An object
-  whose base holds under 90% of its fingerprints starts a family (a
-  new kernel major holds 0.85 of the old one; point releases hold
-  0.99–1.00 of the last, a 16-day Ubuntu image 0.97, monthly Wikipedia
-  tables 0.69–0.99), and past the depth cap a version's base is its
+  whose base holds under 98% of its fingerprints starts a family (a
+  new kernel major holds 0.85–0.94 of the old one's releases; point
+  releases hold 0.99–1.00 of the last, a 16-day Ubuntu image 0.97,
+  monthly Wikipedia tables 0.69–0.99), and past the depth cap a version's base is its
   family's first object, not the chain's root. At the terabyte gate
   every kernel release sat in one chain rooted at 5.15.1, and every
   fifth 6.1 and 6.6 release was a delta of 5.15.1 at 42 MB against
@@ -94,7 +102,9 @@ every earlier format.
   2026-09 dump alone, 1,776 MB where its delta against 2026-08 is
   1,205 MB (v0.12.0 had that delta; v0.13.0's sample lost it). An
   object holding a fingerprint several times now counts once among
-  its holders. Put and get speeds unchanged.
+  its holders. The four windows run on threads of their own: an hour
+  of GitHub events put in 0.50 s on the box against 0.79 s with them
+  one after another.
 
 ## v0.14.7 — 2026-09-24
 
