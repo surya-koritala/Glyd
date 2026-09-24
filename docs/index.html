@@ -29,9 +29,9 @@
 </head>
 <body>
 <main>
-  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.14.4">v0.14.4 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-21.md">Benchmark report</a><a href="#landscape">Against zstd, xz, brotli</a><a href="savings.html">Savings calculator</a></nav>
+  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.14.5">v0.14.5 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-21.md">Benchmark report</a><a href="#landscape">Against zstd, xz, brotli</a><a href="savings.html">Savings calculator</a></nav>
   <h1>Glyd</h1>
-  <p class="sub"><b>Fast lossless compression algorithm.</b> Rust, C ABI, CLI; v0.14.4, September 2026. Every number below is measured on public data and reproducible from the repository.</p>
+  <p class="sub"><b>Fast lossless compression algorithm.</b> Rust, C ABI, CLI; v0.14.5, September 2026. Every number below is measured on public data and reproducible from the repository.</p>
 
   <a class="cta" href="savings.html">What would it save you?</a>
   <a class="cta" href="https://github.com/surya-koritala/Glyd#quick-start">Quick start</a>
@@ -156,7 +156,7 @@
     <tr class="g"><td>Glyd --ultra</td><td>0.214 TB</td><td>$99.7</td><td>$110</td><td>$210</td></tr>
     <tr><td>zstd -19</td><td>0.216 TB</td><td>$102</td><td>$114</td><td>$232</td></tr>
   </table></div>
-  <p class="muted">Where zstd still wins, plainly: a hundred CPU-billed reads a month of record-mode data (its reads spend 2× zstd's CPU rebuilding the columns), single-core compression speed (<code>--max</code> at 0.74–0.95× zstd -3 since v0.14.4), small objects with dictionaries (1–3% larger, 1.4–2× slower per object), and data made of hashes.</p>
+  <p class="muted">Where zstd still wins, plainly: a hundred CPU-billed reads a month of record-mode data (its reads spend 2× zstd's CPU rebuilding the columns), single-core compression speed on match-dense data (<code>--max</code> at 0.89× zstd -3 on logs and table dumps on Graviton3; 1.01–1.05× on the rest, v0.14.5), small objects with dictionaries (1–3% larger, 1.4–2× slower per object), and data made of hashes.</p>
   <h2>How the numbers are made</h2>
   <ul>
     <li><b>Correctness first</b>: 106 tests, a million-mutation fuzz, files from every earlier release decoded unchanged, and <code>scripts/verify_roundtrip.sh</code> through the CLI on both machines with corrupted copies rejected or decoded exactly; base-mode streams refuse any other base.</li>

@@ -6,6 +6,29 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.14.5 — 2026-09-24
+
+- **`--max`'s parse is zstd -3's double-fast, no lazy step, with one
+  of zstd's rules made stricter.** The lazy compare one byte on cost
+  4–8% of the write time for 0.1% (a table dump) to 4% (a log) fewer
+  bytes; it is gone. In its place: when only the short table matched,
+  the long table's entry one byte on (loaded already) is tried and its
+  match taken when it is at least two bytes longer; zstd's
+  unconditional form loses 0.7% on the table dump, this one gains on
+  every file. The literal Huffman lengths meet their 11-bit limit by
+  package-merge (optimal) instead of halving the counts. Bytes against
+  zstd -3: GitHub events −7.8%, a Wikipedia table dump −1.2%, the NASA
+  log −0.6%, enwik8 −0.5%, Silesia mozilla −0.1% (zstd 1.5.5; against
+  1.5.7, whose new block splitter gains 1.2% on mozilla, that file is
+  +1.1%). One core on Graviton3 against `zstd -3` as installed: events
+  1.05× its speed, mozilla 1.05×, enwik8 1.01×, the log and the dump
+  0.89×; against `zstd -3 --single-thread` 1.03–1.26× on all five.
+  Eight cores against `zstd -3 -T8`: 1.09×, 1.21×, 0.97×, 1.08×,
+  0.83×. On a Ryzen 9 7950X3D (one core, zstd 1.5.7) 1.07–1.26×
+  faster on all five. The CLI's one-core path writes on a second
+  thread, as zstd's does; the parse loop keeps fewer values live.
+  Every stream decodes as before.
+
 ## v0.14.4 — 2026-09-23
 
 - **`--max` is now zstd -3's structure: the long-distance matcher is
