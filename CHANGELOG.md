@@ -8,6 +8,20 @@ every earlier format.
 
 ## Unreleased
 
+- **Parquet files with snappy pages are opened** (`src/parquet.rs`,
+  `src/resnappy.rs`): the footer's column chunks and page headers are
+  read (thrift's compact protocol, no dependency), and every snappy
+  page is written back byte for byte by a port of the reference
+  compressor (google/snappy 1.2, level 1), so the page's raw bytes are
+  compressed instead of its LZ tokens. Builds of the reference differ
+  in their hash (a multiply, or the CRC32C instruction) and their
+  table (2^14 entries up to 1.1.10, 2^15 since 1.2.0); the opener
+  finds the build that wrote a page and keeps a page no build made.
+  A NYC taxi month written by pyarrow 21 with snappy, 61.7 MB: 174 of
+  174 pages reproduced; `--max` 46.8 MB in 0.6 s (zstd -3 52.3, zstd
+  -19 49.8), `--ultra` 44.4 MB, every decode byte-exact. Pages
+  compressed with zstd, gzip and the rest are left as they are for
+  now; the values' own models (typed columns) come next.
 - **The store keeps a version's base among its own kind.** An object
   whose base holds under 90% of its fingerprints starts a family (a
   new kernel major holds 0.85 of the old one; point releases hold

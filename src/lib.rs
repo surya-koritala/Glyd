@@ -28,6 +28,8 @@ pub mod mmap;
 #[cfg(feature = "deflate")]
 pub mod deflate;
 pub mod reflate;
+pub mod resnappy;
+pub mod parquet;
 pub mod jpg;
 pub mod jpeg;
 pub mod fixlog;

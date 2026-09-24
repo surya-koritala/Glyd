@@ -75,6 +75,10 @@ const REFLATE_NESTED: u8 = 10;
 /// recipe from the side in place of preflate's corrections.
 const PNG_REFLATE: u8 = 11;
 const REFLATE_JPEG: u8 = 12;
+/// A Parquet page's snappy stream written back by `crate::resnappy`:
+/// the build (one byte, an index into its `BUILDS`) and the raw page
+/// as content; the page's compressed length follows from them.
+const SNAPPY_PAGE: u8 = 13;
 
 /// A stream is opened in chunks of this much plain text when it holds
 /// at least two of them.
@@ -92,7 +96,7 @@ pub fn is_container(input: &[u8]) -> bool {
     if crate::jpeg::is_jpeg(input) {
         return true;
     }
-    is_gzip(input) || is_zip(input) || is_png(input) || is_pdf(input) || is_tar(input) || is_zlib(input)
+    is_gzip(input) || is_zip(input) || is_png(input) || is_pdf(input) || is_tar(input) || is_zlib(input) || crate::parquet::is_parquet(input)
 }
 
 /// A ustar header at the start, with a size that parses.
@@ -559,9 +563,40 @@ fn open_parts(input: &[u8], depth: u32, engine: Engine) -> Option<Parts> {
         let mut b = b;
         b.deflate(input, 2, input.len())?;
         b.into_parts(input, input.len())
+    } else if crate::parquet::is_parquet(input) {
+        open_parquet(input, b)
     } else {
         None
     }
+}
+
+/// Parquet: every snappy page the reference compressor's port writes
+/// back byte for byte becomes a `SNAPPY_PAGE` segment, its raw bytes
+/// the content; the headers, the footer and every other page are
+/// kept. Pages of the other codecs wait for their reproducers.
+fn open_parquet(input: &[u8], mut b: Builder) -> Option<Parts> {
+    let (chunks, _) = crate::parquet::chunks(input)?;
+    let mut pages: Vec<(usize, usize)> = Vec::new();
+    for c in chunks.iter().filter(|c| c.codec == crate::parquet::Codec::Snappy) {
+        for p in crate::parquet::pages(input, c)? {
+            let skip = if p.kind == 3 { p.v2_levels_len } else { 0 };
+            pages.push((p.body_at + skip, p.body_at + p.compressed_len));
+        }
+    }
+    pages.sort_unstable();
+    for (at, end) in pages {
+        if at < b.keep.1 || end > input.len() || at >= end {
+            continue;
+        }
+        let Some((plain, build)) = crate::resnappy::reproduce(&input[at..end]) else { continue };
+        let build = crate::resnappy::BUILDS.iter().position(|&x| x == build)? as u8;
+        b.segment(input, SNAPPY_PAGE, at);
+        b.body.push(build);
+        put_varint(&mut b.body, plain.len() as u64);
+        b.content.extend_from_slice(&plain);
+        b.keep = (end, end);
+    }
+    b.into_parts(input, input.len())
 }
 
 /// The end of the gzip header starting at `at`.
@@ -838,6 +873,7 @@ enum Seg<'a> {
     DeflateNestedChunked { chunks: Vec<(usize, &'a [u8], u8)>, inner: Inner<'a> },
     Reflate { recipe: &'a [u8], text: &'a [u8] },
     ReflateNested { recipe: &'a [u8], inner: Inner<'a> },
+    Snappy { build: u8, text: &'a [u8] },
     /// `Png` with a recipe in place of the corrections
     PngReflate { header: &'a [u8], recipe: &'a [u8], text: &'a [u8], adler: &'a [u8], chunks: Vec<(usize, &'a [u8])> },
     ReflateJpeg { recipe: &'a [u8], lepton: &'a [u8] },
@@ -958,6 +994,11 @@ fn segments<'a>(inner: &Inner<'a>) -> Option<Vec<Seg<'a>>> {
                 let (c, t) = (r.varint()?, r.varint()?);
                 Seg::Reflate { recipe: r.side(c)?, text: r.content(t)? }
             }
+            SNAPPY_PAGE => {
+                let build = r.fixed(1)?[0];
+                let t = r.varint()?;
+                Seg::Snappy { build, text: r.content(t)? }
+            }
             REFLATE_NESTED => {
                 let c = r.varint()?;
                 let recipe = r.side(c)?;
@@ -977,6 +1018,7 @@ fn produce<'a>(seg: &Seg<'a>) -> Option<Cow<'a, [u8]>> {
         Seg::DeflateChunked { chunks, text } => Cow::Owned(recreate_chunked(chunks, text)?),
         Seg::DeflateNestedChunked { chunks, inner } => Cow::Owned(recreate_chunked(chunks, &close_inner(inner, false)?)?),
         Seg::Reflate { recipe, text } => Cow::Owned(crate::reflate::close(text, recipe)?),
+        Seg::Snappy { build, text } => Cow::Owned(crate::resnappy::compress(text, *crate::resnappy::BUILDS.get(*build as usize)?)),
         Seg::ReflateNested { recipe, inner } => Cow::Owned(crate::reflate::close(&close_inner(inner, false)?, recipe)?),
         Seg::Nested(inner) => Cow::Owned(close_inner(inner, false)?),
         Seg::Png { header, corrections, text, adler, chunks } => Cow::Owned(png_chunks(header, &recreate_whole_deflate_stream(text, corrections).ok()?, adler, chunks)?),
@@ -1027,7 +1069,7 @@ fn png_chunks(header: &[u8], stream: &[u8], adler: &[u8], chunks: &[(usize, &[u8
 fn close_inner(inner: &Inner<'_>, parallel: bool) -> Option<Vec<u8>> {
     let segs = segments(inner)?;
     let size = |i: usize| match &segs[i] {
-        Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => text.len(),
+        Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => text.len(),
         Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::Nested(inner) => inner.content.len(),
         _ => 0,
     };
@@ -1455,7 +1497,7 @@ mod legacy {
     fn collect_v013(inner: &Inner<'_>, out: &mut Vec<u8>) -> Option<()> {
         for seg in segments(inner)? {
             match seg {
-                Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => out.extend_from_slice(text),
+                Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => out.extend_from_slice(text),
                 Seg::DeflateJpeg { lepton, .. } | Seg::ReflateJpeg { lepton, .. } => out.extend_from_slice(lepton),
                 Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::Nested(inner) => collect_v013(&inner, out)?,
                 Seg::Bytes(_) | Seg::Jpeg(_) => {}
@@ -1665,6 +1707,26 @@ mod tests {
         let mut d = Vec::new();
         crate::compress_with_base(&gz, &b, &mut d, false);
         assert!(crate::decompress_content_with_base(&gz, &d).unwrap() == later);
+    }
+
+    /// A Parquet file with snappy pages opens into its raw pages and
+    /// closes to the same bytes; one with zstd pages is left as it is.
+    #[test]
+    fn parquet_snappy_pages_open_and_close() {
+        let data = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/parquet/tiny.snappy.parquet")).unwrap();
+        let o = open(&data).expect("opens");
+        assert!(o.recipe.len() < 200, "recipe {} B", o.recipe.len());
+        assert!(o.plain.len() > data.len(), "the raw pages outsize the file: {} vs {}", o.plain.len(), data.len());
+        assert!(close(&o.recipe, &o.plain).unwrap() == data);
+        let mut out = Vec::new();
+        crate::compress_into_max(&data, &mut out);
+        assert!(crate::decompress(&out).unwrap() == data);
+        assert!(out.len() * 10 < data.len() * 9, "opened, the file compresses: {} of {}", out.len(), data.len());
+        let zstd = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/parquet/tiny.zstd.parquet")).unwrap();
+        assert!(open(&zstd).is_none(), "zstd pages have no reproducer yet");
+        let mut out = Vec::new();
+        crate::compress_into_max(&zstd, &mut out);
+        assert!(crate::decompress(&out).unwrap() == zstd);
     }
 
     /// `GLYD_CONTAINER_FILE=x cargo test --release deflate::tests::engines -- --ignored --nocapture`:

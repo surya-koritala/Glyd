@@ -1,2 +1,2 @@
-/dev/nvme1n1    6.8T  1.1T  5.4T  17% /data
-1192
+/dev/nvme1n1    6.8T  985G  5.5T  15% /data
+1141
