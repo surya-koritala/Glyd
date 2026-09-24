@@ -765,14 +765,21 @@ impl Store {
     /// pays, else alone at the max level (record mode where that pays);
     /// a small one waits in the open pack (`flush` writes it).
     pub fn put(&mut self, name: &str, data: &[u8]) -> Result<u32> {
+        self.put_vec(name, data.to_vec())
+    }
+
+    /// `put` with the bytes handed over: the store keeps them as the
+    /// cached copy instead of copying them (a 1.5 GB object's copy was
+    /// a fifth of its put).
+    pub fn put_vec(&mut self, name: &str, data: Vec<u8>) -> Result<u32> {
         let id = self.entries.len() as u32;
         let name = name.replace(['\t', '\n'], " ");
         if data.len() < SMALL {
             self.names.insert(name.clone(), id);
             let entry = Entry { id, name, base: None, depth: 0, raw_len: data.len() as u64, stored_len: 0, pack: Some((u32::MAX, self.pending.len() as u32)), deleted: false };
             self.entries.push(entry);
-            self.pending.push((id, data.to_vec()));
             self.pending_bytes += data.len();
+            self.pending.push((id, data));
             if self.pending_bytes >= PACK_SIZE {
                 self.flush()?;
             }
@@ -788,7 +795,7 @@ impl Store {
                 clock = std::time::Instant::now();
             }
         };
-        let prints = fingerprints(data);
+        let prints = fingerprints(&data);
         lap("fingerprints", &mut laps);
         let alone = |data: &[u8]| {
             let mut out = Vec::with_capacity(data.len() / 4 + 1024);
@@ -803,7 +810,7 @@ impl Store {
         let ultra = self.level == Level::Ultra;
         // Against a base: a container is opened by the codec (both sides),
         // anything else goes against the base's index, made once.
-        let container = glyd::deflate::is_container(data);
+        let container = glyd::deflate::is_container(&data);
         let against = |base: &Cached, input: &[u8], out: &mut Vec<u8>, ultra: bool| {
             if container {
                 glyd::compress_with_base(&base.data, input, out, ultra)
@@ -850,15 +857,23 @@ impl Store {
             // either way, and compressed in full otherwise.
             if container {
                 let mut delta = Vec::with_capacity(data.len() / 16 + 1024);
-                against(&base_data, data, &mut delta, ultra);
+                against(&base_data, &data, &mut delta, ultra);
                 lap("delta", &mut laps);
-                let whole = alone(data);
-                lap("alone in full", &mut laps);
-                if delta.len() * WORTH_DEN <= whole.len() * WORTH_NUM {
+                // A delta under a thirty-second of the object is taken
+                // as it is: compressing the whole alone to confirm it
+                // was a third of a version's put.
+                if delta.len() * 32 <= data.len() {
                     stored = delta;
                     base = Some(bid);
                 } else {
-                    stored = whole;
+                    let whole = alone(&data);
+                    lap("alone in full", &mut laps);
+                    if delta.len() * WORTH_DEN <= whole.len() * WORTH_NUM {
+                        stored = delta;
+                        base = Some(bid);
+                    } else {
+                        stored = whole;
+                    }
                 }
             } else {
                 let sample = data.len().min(32 << 20);
@@ -875,7 +890,7 @@ impl Store {
                 };
                 if pays {
                     let mut delta = Vec::with_capacity(data.len() / 16 + 1024);
-                    against(&base_data, data, &mut delta, ultra);
+                    against(&base_data, &data, &mut delta, ultra);
                     lap("delta", &mut laps);
                     let d = delta.len() as u64;
                     let taken = d * 32 <= data.len() as u64 || {
@@ -885,7 +900,7 @@ impl Store {
                         let alone_len = if d * 2 <= estimate || d * 5 >= estimate * 6 {
                             estimate
                         } else {
-                            stored = alone(data);
+                            stored = alone(&data);
                             lap("alone in full", &mut laps);
                             stored.len() as u64
                         };
@@ -899,7 +914,7 @@ impl Store {
             }
         }
         if base.is_none() && stored.is_empty() {
-            stored = alone(data);
+            stored = alone(&data);
             lap("alone", &mut laps);
         }
         let depth = base.map_or(0, |b| self.entries[b as usize].depth + 1);
@@ -914,11 +929,12 @@ impl Store {
         }
         lap("table insert", &mut laps);
         self.entries.push(entry);
-        self.remember(id, Cached::new(data.to_vec()));
+        let raw_len = data.len();
+        self.remember(id, Cached::new(data));
         lap("cache", &mut laps);
         if timing {
             let total: f64 = laps.iter().map(|(_, t)| t).sum();
-            eprintln!("  timing {id}: {}  total {total:.2} s ({:.0} MB/s)", laps.iter().map(|(w, t)| format!("{w} {t:.2}")).collect::<Vec<_>>().join(", "), data.len() as f64 / total / 1e6);
+            eprintln!("  timing {id}: {}  total {total:.2} s ({:.0} MB/s)", laps.iter().map(|(w, t)| format!("{w} {t:.2}")).collect::<Vec<_>>().join(", "), raw_len as f64 / total / 1e6);
         }
         Ok(id)
     }
@@ -987,6 +1003,20 @@ impl Store {
             return Ok(data);
         }
         Ok(self.fetch(id)?.data.clone())
+    }
+
+    /// Object `id` written to `out` from the store's copy, without a
+    /// copy of its own (`get` returns one).
+    pub fn get_to(&self, id: u32, out: &mut dyn std::io::Write) -> Result<()> {
+        let entry = self.entries.get(id as usize).ok_or_else(|| bad("no such object"))?;
+        if entry.deleted {
+            return Err(bad("object deleted"));
+        }
+        if entry.pack.is_some() {
+            return out.write_all(&self.get(id)?);
+        }
+        let object = self.fetch(id)?;
+        out.write_all(&object.data)
     }
 
     /// The content of object `id` — a gzip's or a zlib stream's text,

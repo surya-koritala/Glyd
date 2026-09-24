@@ -163,17 +163,27 @@ fn main() -> io::Result<()> {
         }
         if store_put {
             for f in &inputs {
-                let mapping = glyd::mmap::Mapping::read_only(std::path::Path::new(f))?;
-                let data = mapping.bytes();
+                // Read into a buffer the store keeps as its cached copy:
+                // one copy of the bytes, not two.
+                let data = std::fs::read(f)?;
+                let len = data.len();
                 let t = Instant::now();
-                let id = store.put(f, &data)?;
+                let id = store.put_vec(f, data)?;
                 let e = &store.entries()[id as usize];
-                eprintln!("{:>6}  {:>10} -> {:>10} B  {}  {:.0} MB/s  {}", id, e.raw_len, e.stored_len, e.base.map_or("alone".to_string(), |b| format!("delta against {} (depth {})", b, e.depth)), data.len() as f64 / t.elapsed().as_secs_f64() / 1e6, f);
+                eprintln!("{:>6}  {:>10} -> {:>10} B  {}  {:.0} MB/s  {}", id, e.raw_len, e.stored_len, e.base.map_or("alone".to_string(), |b| format!("delta against {} (depth {})", b, e.depth)), len as f64 / t.elapsed().as_secs_f64() / 1e6, f);
             }
         }
         if let Some(id) = store_get {
-            let data = if store_content { store.get_content(id)? } else { store.get(id)? };
-            write_out(&output_path, &data)?;
+            if store_content {
+                write_out(&output_path, &store.get_content(id)?)?;
+            } else {
+                let mut out: Box<dyn Write> = match output_path {
+                    Some(ref p) if p != "-" => Box::new(io::BufWriter::with_capacity(1 << 20, std::fs::File::create(p)?)),
+                    _ => Box::new(io::stdout()),
+                };
+                store.get_to(id, &mut out)?;
+                out.flush()?;
+            }
         }
         if let Some(name) = store_find {
             match store.id_of(&name) {
