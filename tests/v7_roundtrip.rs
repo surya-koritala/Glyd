@@ -409,7 +409,10 @@ fn v7_max_level_roundtrip_through_container() {
         let mut c = Vec::new();
         glyd::compress_into_max(input, &mut c);
         let v = versions(&c);
-        assert_eq!(v.len(), (input.len() + 256 * 1024 - 1) / (256 * 1024), "block count, len {}", input.len());
+        // Blocks are at most 256 KB; the splitter may cut one short
+        // where the bytes' statistics change, never under 32 KB.
+        let blocks = (input.len() + 256 * 1024 - 1) / (256 * 1024);
+        assert!(v.len() >= blocks && v.len() <= blocks * 8, "block count {} for len {}", v.len(), input.len());
         if k >= 4 {
             assert!(v.iter().all(|&(ver, _, _)| ver == glyd::format::VERSION_V9), "input {} should be all coded (compact) blocks: {:?}", k, v);
             assert!(c.len() < input.len() / 2, "input {} ratio: {} -> {}", k, input.len(), c.len());

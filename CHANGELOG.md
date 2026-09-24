@@ -6,6 +6,21 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.14.6 — 2026-09-24
+
+- **Blocks are cut where the bytes' statistics change** (`src/split.rs`,
+  the idea of zstd 1.5.7's pre-splitter): before each block's parse,
+  sixteen bytes of every 256 in the 256 KB ahead are counted per 16 KB
+  segment, and the block ends at the segment boundary where the two
+  parts coded on their own statistics beat the whole by more than a few
+  blocks' overhead, each part charged for describing its table; never
+  under 32 KB, and the search rests after 32 windows without a cut. On
+  binaries with sections of different content it pays: Silesia mozilla
+  0.9% smaller (now 1.0% under zstd 1.5.5, 0.2% over zstd 1.5.7) for
+  5% more write time on that file; JSON events, the NASA log, a table
+  dump and enwik8 are unchanged in bytes and time. Every stream decodes
+  as before (blocks were always any length up to 256 KB).
+
 ## v0.14.5 — 2026-09-24
 
 - **`--max`'s parse is zstd -3's double-fast, no lazy step, with one

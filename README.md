@@ -196,7 +196,7 @@ int64_t dlen = glyd_decompress_parallel(dst, clen, out, n);
 | **‑‑turbo**&nbsp;(‑t) | Data read far more often than written: caches, assets, KV-cache paging | v6 format, minimum match 10: fewest tokens, one 32-byte copy per token |
 | **default** | The LZ4/Snappy slot with a better ratio and faster reads | v6 format, LZAV-class finder, minimum match 7 |
 | **‑‑fast**&nbsp;(‑1) | LZ4-class compression speed | v6 format, LZ4-class finder, minimum match 5 |
-| **‑‑max**&nbsp;(‑9) | The zstd -3 slot: fewer bytes, 3–7× faster reads on a server | v9 format: 8-way interleaved Huffman literals, tANS sequences with repeat offsets, a double-fast parse over an 8 MB window (zstd -3's, one rule stricter) |
+| **‑‑max**&nbsp;(‑9) | The zstd -3 slot: fewer bytes, 3–7× faster reads on a server | v9 format: 8-way interleaved Huffman literals, tANS sequences with repeat offsets, a double-fast parse over an 8 MB window (zstd -3's, one rule stricter), blocks cut where the bytes' statistics change |
 | **‑‑max&nbsp;‑‑long**&nbsp;(‑L) | Events, logs, anything that repeats itself across an input | The same, with a 128 MB long-distance matcher run once before the parse (as `zstd --long`): 3–29% fewer bytes on events and logs, at a third more write time |
 | **‑‑max&nbsp;‑‑dense**&nbsp;(‑D) | Objects written once and read rarely (the store's) | `--long`, in 128 MB units parsed in stripes on all cores: one core's bytes at any core count, 5–9% fewer on files of a few hundred MB; reads scale only with the units |
 | **‑‑ultra**&nbsp;(‑19) | Write once, read many: datasets, release assets | v9 format on an optimal parse: binary-tree finder, every position priced in the coder's own bits ([design](docs/design/ultra-parse.md)) |
@@ -762,9 +762,9 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 ## Known gaps
 
 - `--max` on one core of Graviton3 writes at 1.01–1.05× the wall time
-  of `zstd -3` as installed on GitHub events, mozilla and enwik8 and at
-  0.89× on the NASA log and a Wikipedia table dump, 0.1–7.8% smaller
-  on each (v0.14.5). zstd's default is two threads (one compressing,
+  of `zstd -3` as installed on GitHub events and enwik8, 0.97× on
+  mozilla and 0.88–0.90× on the NASA log and a Wikipedia table dump,
+  0.5–7.8% smaller on each (v0.14.6). zstd's default is two threads (one compressing,
   one on I/O and the checksum), so the CLI writes on a second thread
   too; against `zstd -3 --single-thread` it is 1.03–1.26× on all five.
   What is left on match-dense data is the sequence side: the codes and
@@ -773,8 +773,8 @@ panic or an unbounded allocation; every unsafe block carries its bound.
   against `zstd -3 -T8`: 1.08–1.21× on events, the log and mozilla,
   0.97× on enwik8, 0.83× on the dump. On a Ryzen 9 7950X3D it is
   1.07–1.26× faster on all five. Against zstd 1.5.7, whose block
-  splitter gains 1.2% on mozilla, that file is 1.1% larger. `--long`
-  adds the 128 MB matcher at a third more time. Record mode's transform
+  splitter gains 1.4% on mozilla against ours 0.9%, that file is 0.2%
+  larger. `--long` adds the 128 MB matcher at a third more time. Record mode's transform
   halves the write speed again (200–400 MB/s per core).
 - Reads in record mode spend 2–2.7× zstd's CPU rebuilding the columns
   (5–30 ns per value by column type), which makes zstd -3 the cheaper

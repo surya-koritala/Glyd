@@ -31,6 +31,7 @@ pub mod reflate;
 pub mod jpg;
 pub mod jpeg;
 pub mod fixlog;
+pub mod split;
 pub mod record;
 pub mod ldm;
 pub mod dict;
@@ -623,6 +624,7 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
     };
     let mut offset = start;
     let mut first = true;
+    let mut splitter = split::Splitter::new();
     // One block: the chunk at `offset`, its parse, and the header flags.
     let emit = |chunk: &[u8], seqs: &[v7_encode::Sequence], literals: &[u8], first: bool, prev: &mut v7_encode::Tables, scratch: &mut v7_encode::EncScratch, payload: &mut Vec<u8>, output: &mut Vec<u8>| {
         payload.clear();
@@ -639,7 +641,13 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
         }
     };
     while offset < full.len() {
-        let chunk_len = (full.len() - offset).min(MAX_BLOCK_SIZE);
+        // The double-fast level cuts a block short where the bytes'
+        // statistics change (`split::block_len`); the optimal parse
+        // cuts on its sequences (`v7_ultra::split_points`).
+        let chunk_len = match parse {
+            Parse::Dfast => splitter.next(full, offset, MAX_BLOCK_SIZE),
+            Parse::Ultra => (full.len() - offset).min(MAX_BLOCK_SIZE),
+        };
         let chunk = &full[offset..offset + chunk_len];
         seqs.clear();
         literals.clear();
@@ -831,8 +839,9 @@ pub fn compress_max_stream(input: &[u8], mut sink: impl FnMut(&[u8]) -> std::io:
                             t.seed_range(unit, from.saturating_sub(STRIPE_SEED), from);
                             let mut prev = v7_encode::Tables::none();
                             let mut offset = from;
+                            let mut splitter = split::Splitter::new();
                             while offset < to {
-                                let chunk_len = (to - offset).min(MAX_BLOCK_SIZE);
+                                let chunk_len = splitter.next(&unit[..to], offset, MAX_BLOCK_SIZE);
                                 let chunk = &unit[offset..offset + chunk_len];
                                 seqs.clear();
                                 literals.clear();
