@@ -8,15 +8,21 @@ every earlier format.
 
 ## Unreleased
 
-- **Parquet files with snappy pages are opened** (`src/parquet.rs`,
-  `src/resnappy.rs`): the footer's column chunks and page headers are
-  read (thrift's compact protocol, no dependency), and every snappy
-  page is written back byte for byte by a port of the reference
-  compressor (google/snappy 1.2, level 1), so the page's raw bytes are
-  compressed instead of its LZ tokens. Builds of the reference differ
-  in their hash (a multiply, or the CRC32C instruction) and their
-  table (2^14 entries up to 1.1.10, 2^15 since 1.2.0); the opener
-  finds the build that wrote a page and keeps a page no build made.
+- **Parquet files with snappy or zstd pages are opened**
+  (`src/parquet.rs`, `src/resnappy.rs`, `src/rezstd/`): the footer's
+  column chunks and page headers are read (thrift's compact protocol,
+  no dependency), and every page is written back byte for byte by a
+  port of the compressor that wrote it, so the page's raw bytes are
+  compressed instead of its LZ tokens: google/snappy 1.2 level 1
+  (builds differ in their hash, a multiply or the CRC32C instruction,
+  and their table, 2^14 entries up to 1.1.10, 2^15 since 1.2.0), and
+  zstd 1.5.5's level 1, the one-shot path step for step (parameters
+  by input size, the fast finder, Huffman literals with the previous
+  block's table, FSE sequence tables, the capacity rules), checked
+  against zstd's own output on the fixtures and a sweep of 3,500
+  inputs. The opener finds the build that wrote a page and keeps a
+  page no build made. A whole zstd frame (a `.zst` object) opens the
+  same way, a container under it opened in turn.
   A page's plain values are then modeled so the LZ and entropy stages
   see their structure: fixed-width values as byte planes, integers in
   their unit (microseconds that are whole seconds divided down) and
@@ -31,11 +37,13 @@ every earlier format.
   0.5 s on ten cores (1.8 s on one), read back in 94 ms (zstd -3 on
   the file 52.3 MB, zstd -19 49.8; the same table's zstd-page file
   50.3; record mode on the table as CSV 37.0), `--ultra` 32.3 MB,
-  every decode byte-exact. A month of for-hire trips, 519 MB with
-  snappy, 1,291 pages, more of them ids: `--max` 376.5 MB in 3.4 s
-  (zstd -3 on the file 473.2; the zstd-page file 472.8), read back in
-  1.0 s. Pages compressed with zstd, gzip and the rest are left as
-  they are for now.
+  every decode byte-exact; the same table's zstd-page file, 50.3 MB
+  (pyarrow 14, zstd level 1): `--max` 34.8 MB in 0.5 s, read back in
+  0.14 s. A month of for-hire trips, 519 MB with snappy, 1,291 pages,
+  more of them ids: `--max` 376.5 MB in 3.4 s (zstd -3 on the file
+  473.2), read back in 1.0 s; with zstd pages, 472.8 MB: 376.5 MB in
+  2.7 s. Pages compressed with gzip, lz4 and brotli are left as they
+  are.
 - **The store keeps a version's base among its own kind.** An object
   whose base holds under 90% of its fingerprints starts a family (a
   new kernel major holds 0.85 of the old one; point releases hold
