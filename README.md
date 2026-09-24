@@ -271,8 +271,11 @@ table, takes the stored object sharing the most as the base, and keeps
 the object as a delta against it (`--base`) when that saves a fifth or
 more of what it costs alone; else alone at `--max` (record mode where
 it pays; `--ultra` or `--cold` on request). Chains are at most four
-long (past that the chain's root is the base), so a read is at most
-five decodes at 6–10 GB/s; `rebase(id)` stores an object read often
+long; past that the base is the first object of the version's family
+(an object whose base holds under 90% of its fingerprints, a new major
+release against the old one, starts a family; its point releases join
+it), so a read is at most five decodes at 6–10 GB/s and a 6.6 kernel
+is never a delta of 5.15's; `rebase(id)` stores an object read often
 alone again. `get`, `id_of(name)`, `delete` (a deleted object's bytes
 stay while a live chain runs through them), `compact` (frees what no
 live object needs), `verify` (every object read back and checked).

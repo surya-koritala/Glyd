@@ -6,6 +6,34 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- **The store keeps a version's base among its own kind.** An object
+  whose base holds under 90% of its fingerprints starts a family (a
+  new kernel major holds 0.85 of the old one; point releases hold
+  0.99–1.00 of the last, a 16-day Ubuntu image 0.97, monthly Wikipedia
+  tables 0.69–0.99), and past the depth cap a version's base is its
+  family's first object, not the chain's root. At the terabyte gate
+  every kernel release sat in one chain rooted at 5.15.1, and every
+  fifth 6.1 and 6.6 release was a delta of 5.15.1 at 42 MB against
+  2–4 MB within its series: 1.55 of the 6.6 series' 1.84 GB. Measured
+  on the Ryzen 9 box, 5.15.1 then the 150 releases of 6.6 in the
+  gate's order: 2,024 MB stored before, **643 MB now**, one 42 MB
+  delta (6.6.1 itself against 5.15.1). The index line carries the
+  family (an eighth field; older lines read as before, their family
+  the chain's root). A star-shaped chain tree was tried and dropped:
+  6% fewer bytes on kernels, 30% more on monthly tables, where a base
+  two months back costs half again the neighbour's.
+- **Whether a delta pays is judged on four 8 MB windows spread over
+  the object**, each against its own base region, at the same 80% bar
+  the whole must meet (the head's 32 MB at a 50% bar before). Across
+  the English Wikipedia `page` dump the ratio of delta to alone runs
+  56–110% by window, 68% whole; the head's verdict had stored the
+  2026-09 dump alone, 1,776 MB where its delta against 2026-08 is
+  1,205 MB (v0.12.0 had that delta; v0.13.0's sample lost it). An
+  object holding a fingerprint several times now counts once among
+  its holders. Put and get speeds unchanged.
+
 ## v0.14.7 — 2026-09-24
 
 - **The store's put is 1.6–4.0× faster, its get 1.1–1.5×.** On a

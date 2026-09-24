@@ -6,8 +6,11 @@
 //! is its base, and the object is kept as a delta against it (base
 //! mode) when that saves a fifth or more of its own size, else alone
 //! at the max level. Chains are at most `MAX_DEPTH` long: past that the
-//! chain's root is the base, so a read is at most `MAX_DEPTH + 1`
-//! decodes. Measured on a 39 GB bucket of images, releases, dumps and
+//! base is the first object of the version's family (`FAMILY_SHARE`: a
+//! new major release starts a family, its point releases join it), so
+//! a read is at most `MAX_DEPTH + 1` decodes and a release is never a
+//! delta of an older major's. Measured on
+//! a 39 GB bucket of images, releases, dumps and
 //! events: 4.6x fewer bytes than zstd -3 per object
 //! (experiments/research/README.md, section H).
 //!
@@ -43,6 +46,16 @@ use std::path::{Path, PathBuf};
 
 /// Chains are at most this deep.
 pub const MAX_DEPTH: usize = 4;
+/// An object whose base holds at least this share of its fingerprints
+/// is a version in the base's family; less, and it starts a family of
+/// its own. Measured: point releases hold 0.99–1.00 of the last, a
+/// 16-day Ubuntu image 0.97, a monthly Wikipedia table 0.69–0.99; a
+/// new kernel major holds 0.85 of the old one, and a table whose dump
+/// format changed 0.50. Past the depth cap a version's base is its
+/// family's first object, so a 6.6 release is never a delta of 5.15.1
+/// (42 MB a delta against 3.9 within 6.6: 1.55 of the 6.6 series'
+/// 1.84 GB at a terabyte).
+pub const FAMILY_SHARE: f64 = 0.9;
 /// Holders of one fingerprint the table keeps (the most recent).
 const HOLDERS: usize = 8;
 /// A base is kept when the delta is at most this share of the object
@@ -68,6 +81,12 @@ pub struct Entry {
     pub name: String,
     pub base: Option<u32>,
     pub depth: usize,
+    /// The family the object is a version in: the id of its family's
+    /// first object. An object joins its base's family when it shares
+    /// at least `FAMILY_SHARE` of its fingerprints with it, and starts
+    /// its own otherwise (a new major release against an old one), so
+    /// the chain tree keeps a version's base among its own kind.
+    pub family: u32,
     pub raw_len: u64,
     /// Bytes on disk; 0 for an object inside a pack (the pack's entry
     /// carries them).
@@ -521,7 +540,13 @@ impl Store {
                     deleted.push(id.parse().map_err(|_| bad("index deletion"))?);
                     continue;
                 }
-                let f: Vec<&str> = line.splitn(7, '\t').collect();
+                // Eight fields since the family field; seven before it
+                // (the family is then the chain's root, `index_chains`).
+                let parts: Vec<&str> = line.splitn(8, '\t').collect();
+                let (f, family): (Vec<&str>, u32) = match parts.get(6).and_then(|s| s.parse::<u32>().ok()) {
+                    Some(fam) if parts.len() == 8 => (parts.iter().enumerate().filter(|(i, _)| *i != 6).map(|(_, s)| *s).collect(), fam),
+                    _ => (line.splitn(7, '\t').collect(), u32::MAX),
+                };
                 if f.len() != 7 {
                     return Err(bad("index line"));
                 }
@@ -539,6 +564,7 @@ impl Store {
                     raw_len: parse(f[3])?,
                     stored_len: parse(f[4])?,
                     pack,
+                    family,
                     name: f[6].to_string(),
                     deleted: false,
                 };
@@ -554,7 +580,7 @@ impl Store {
                 let id = e.id as usize;
                 by_id[id] = Some(e);
             }
-            store.entries = by_id.into_iter().enumerate().map(|(id, e)| e.unwrap_or(Entry { id: id as u32, name: "(lost: not flushed)".to_string(), base: None, depth: 0, raw_len: 0, stored_len: 0, pack: Some((u32::MAX, u32::MAX)), deleted: true })).collect();
+            store.entries = by_id.into_iter().enumerate().map(|(id, e)| e.unwrap_or(Entry { id: id as u32, name: "(lost: not flushed)".to_string(), base: None, depth: 0, family: id as u32, raw_len: 0, stored_len: 0, pack: Some((u32::MAX, u32::MAX)), deleted: true })).collect();
             for id in deleted {
                 if let Some(e) = store.entries.get_mut(id as usize) {
                     e.deleted = true;
@@ -567,6 +593,7 @@ impl Store {
             }
         }
         store.writer = Writer::new(store.objects.clone(), store.dir.clone(), store.entries.len() as u32);
+        store.fill_families();
         Ok(store)
     }
 
@@ -626,6 +653,7 @@ impl Store {
             }
         }
         store.table.sync();
+        store.fill_families();
         Ok((store, failures))
     }
 
@@ -640,7 +668,7 @@ impl Store {
     }
 
     fn line(entry: &Entry) -> String {
-        format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n", entry.id, entry.base.map_or("-".to_string(), |b| b.to_string()), entry.depth, entry.raw_len, entry.stored_len, entry.pack.map_or("-".to_string(), |(p, i)| format!("{p}:{i}")), entry.name)
+        format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", entry.id, entry.base.map_or("-".to_string(), |b| b.to_string()), entry.depth, entry.raw_len, entry.stored_len, entry.pack.map_or("-".to_string(), |(p, i)| format!("{p}:{i}")), entry.family, entry.name)
     }
 
     /// The index lines of object `id`, kept beside it in the backend.
@@ -758,18 +786,25 @@ impl Store {
     /// The stored objects the data shares the most fingerprints with,
     /// best first with their shares: the best, and a second when it
     /// scores at least half as much (`put` tries both on a sample).
-    fn candidates(&self, prints: &[u64]) -> Result<(Vec<(u32, f64)>, f64)> {
+    fn candidates(&self, prints: &[u64]) -> Result<(Vec<(u32, f64, f64)>, f64)> {
         let mut hits: HashMap<u32, f64> = HashMap::new();
+        // Fingerprints each object holds, undiluted by the other holders:
+        // the share a version has of its base (`FAMILY_SHARE`).
+        let mut held_by: HashMap<u32, u32> = HashMap::new();
         let mut holders = Vec::with_capacity(HOLDERS);
         let mut held = 0usize;
         for &h in prints {
             holders.clear();
             self.table.lookup(h, &mut holders);
             holders.retain(|&id| self.entries.get(id as usize).map_or(false, |e| !e.deleted));
+            // An object holding a fingerprint several times counts once.
+            holders.sort_unstable();
+            holders.dedup();
             held += !holders.is_empty() as usize;
             let n = holders.len() as f64;
             for &id in &holders {
                 *hits.entry(id).or_insert(0.0) += 1.0 / n;
+                *held_by.entry(id).or_insert(0) += 1;
             }
         }
         let coverage = held as f64 / prints.len().max(1) as f64;
@@ -784,21 +819,44 @@ impl Store {
         if score / n < MIN_SHARE {
             return Ok((Vec::new(), coverage));
         }
-        let mut out = vec![(first, score / n)];
-        let mut rest: Vec<(u32, f64)> = hits.iter().filter(|(&id, &s)| id != first && s * 2.0 >= score).map(|(&id, &s)| (id, s / n)).collect();
+        let held = |id: u32| held_by.get(&id).copied().unwrap_or(0) as f64 / n;
+        let mut out = vec![(first, score / n, held(first))];
+        let mut rest: Vec<(u32, f64, f64)> = hits.iter().filter(|(&id, &s)| id != first && s * 2.0 >= score).map(|(&id, &s)| (id, s / n, held(id))).collect();
         rest.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(b.0.cmp(&a.0)));
         out.extend(rest.into_iter().take(1));
         Ok((out, coverage))
     }
 
-    /// The chain root of `id` when `id` sits at the depth cap, else `id`.
-    fn within_cap(&self, mut id: u32) -> u32 {
-        if self.entries[id as usize].depth >= MAX_DEPTH {
-            while let Some(p) = self.entries[id as usize].base {
-                id = p;
-            }
+    /// `id` under the depth cap; at the cap, its family's first object
+    /// (a version's kind), or the chain's root when that one sits at
+    /// the cap too.
+    fn within_cap(&self, id: u32) -> u32 {
+        let e = &self.entries[id as usize];
+        if e.depth < MAX_DEPTH {
+            return id;
+        }
+        if self.entries[e.family as usize].depth < MAX_DEPTH {
+            return e.family;
+        }
+        self.root_of(id)
+    }
+
+    /// The root of `id`'s chain: where its bases lead.
+    fn root_of(&self, mut id: u32) -> u32 {
+        while let Some(p) = self.entries[id as usize].base {
+            id = p;
         }
         id
+    }
+
+    /// An entry from before the family field (`u32::MAX`) is put in its
+    /// chain root's family.
+    fn fill_families(&mut self) {
+        for i in 0..self.entries.len() {
+            if self.entries[i].family == u32::MAX {
+                self.entries[i].family = self.root_of(i as u32);
+            }
+        }
     }
 
     /// Store `data` under `name`; its id. A large object is kept as a
@@ -829,7 +887,7 @@ impl Store {
         let name = name.replace(['\t', '\n'], " ");
         if data.len() < SMALL {
             self.names.insert(name.clone(), id);
-            let entry = Entry { id, name, base: None, depth: 0, raw_len: data.len() as u64, stored_len: 0, pack: Some((u32::MAX, self.pending.len() as u32)), deleted: false };
+            let entry = Entry { id, name, base: None, depth: 0, family: id, raw_len: data.len() as u64, stored_len: 0, pack: Some((u32::MAX, self.pending.len() as u32)), deleted: false };
             self.entries.push(entry);
             self.pending_bytes += data.len();
             self.pending.push((id, data.to_vec()));
@@ -864,21 +922,45 @@ impl Store {
         // Against a base: a container is opened by the codec (both sides),
         // anything else goes against the base's index, made once.
         let container = glyd::deflate::is_container(&data);
-        let against = |base: &Cached, input: &[u8], out: &mut Vec<u8>, ultra: bool| {
+        let against = |base: &Cached, input: &[u8], anchors: &[(u64, u64)], out: &mut Vec<u8>, ultra: bool| {
             if container {
-                glyd::compress_with_base_plain(&base.data, base.index(), base.plain(), input, Some(&anchors), out, ultra)
+                glyd::compress_with_base_plain(&base.data, base.index(), base.plain(), input, Some(anchors), out, ultra)
             } else {
-                // The whole object's anchors serve a sample too: a prefix's are a prefix of them.
-                glyd::compress_with_base_anchored(&base.data, base.index(), input, Some(&anchors), out, ultra)
+                glyd::compress_with_base_anchored(&base.data, base.index(), input, Some(anchors), out, ultra)
             }
         };
+        // The trials' sample: four 8 MB windows spread over the object,
+        // each a delta of its own (its base region is its own). One
+        // window misleads: across a Wikipedia table dump the delta ran
+        // 56–110% of alone by window (its head 93%, its middle 110%)
+        // where the whole ran 68%, and the head's verdict lost a 1.2 GB
+        // delta to 1.8 GB alone. An object up to 64 MB is its own
+        // sample.
+        let windows: Vec<(usize, usize)> = if data.len() <= 64 << 20 {
+            vec![(0, data.len())]
+        } else {
+            (0..4).map(|i| (data.len() / 8 * (2 * i + 1) - (4 << 20), 8 << 20)).collect()
+        };
+        let sample_len: usize = windows.iter().map(|w| w.1).sum();
+        let window_anchors = |at: usize, len: usize| -> Vec<(u64, u64)> {
+            anchors.iter().filter(|a| (a.1 as usize) >= at && (a.1 as usize) < at + len).map(|a| (a.0, a.1 - at as u64)).collect()
+        };
+        let sample_delta = |base: &Cached| -> usize {
+            windows.iter().map(|&(at, len)| {
+                let mut out = Vec::new();
+                against(base, &data[at..at + len], &window_anchors(at, len), &mut out, false);
+                out.len()
+            }).sum()
+        };
+        let sample_alone = || -> usize { windows.iter().map(|&(at, len)| alone(&data[at..at + len]).len()).sum() };
         let mut base = None;
         let mut stored = Vec::new();
         let (scored, coverage) = self.candidates(&prints)?;
         if timing {
-            eprintln!("  candidates {id}: {} (coverage {coverage:.3})", scored.iter().map(|(c, s)| format!("{c} ({:.3})", s)).collect::<Vec<_>>().join(", "));
+            eprintln!("  candidates {id}: {} (coverage {coverage:.3})", scored.iter().map(|(c, s, h)| format!("{c} ({:.3}, holds {:.2})", s, h)).collect::<Vec<_>>().join(", "));
         }
-        let mut candidates: Vec<u32> = scored.into_iter().map(|(id, _)| self.within_cap(id)).collect();
+        let best = scored.first().copied();
+        let mut candidates: Vec<u32> = scored.into_iter().map(|(id, _, _)| self.within_cap(id)).collect();
         candidates.dedup();
         lap("candidates", &mut laps);
         if !candidates.is_empty() {
@@ -888,12 +970,9 @@ impl Store {
             // Two candidates: the one whose delta of the first 32 MB is
             // smaller wins the whole object.
             if candidates.len() > 1 && !container {
-                let sample = &data[..data.len().min(32 << 20)];
                 let other_data = self.fetch(candidates[1])?;
-                let (mut a, mut b) = (Vec::new(), Vec::new());
-                against(&base_data, sample, &mut a, false);
-                against(&other_data, sample, &mut b, false);
-                if b.len() < a.len() {
+                let (a, b) = (sample_delta(&base_data), sample_delta(&other_data));
+                if b < a {
                     bid = candidates[1];
                     base_data = other_data;
                 }
@@ -911,7 +990,7 @@ impl Store {
             // either way, and compressed in full otherwise.
             if container {
                 let mut delta = Vec::with_capacity(data.len() / 16 + 1024);
-                against(&base_data, &data, &mut delta, ultra);
+                against(&base_data, &data, &anchors, &mut delta, ultra);
                 lap("delta", &mut laps);
                 // A delta under a thirty-second of the object is taken
                 // as it is: compressing the whole alone to confirm it
@@ -930,26 +1009,28 @@ impl Store {
                     }
                 }
             } else {
-                let sample = data.len().min(32 << 20);
                 let mut trial_alone = None;
                 let pays = coverage >= SURE_COVERAGE || {
-                    let mut trial = Vec::new();
-                    against(&base_data, &data[..sample], &mut trial, false);
-                    let a = alone(&data[..sample]).len();
+                    let trial = sample_delta(&base_data);
+                    let a = sample_alone();
                     trial_alone = Some(a);
                     lap("sample", &mut laps);
-                    // A version's sample delta is a few percent of the
-                    // sample alone; half is the bar.
-                    trial.len() * 2 <= a
+                    if timing {
+                        eprintln!("  sample {id}: delta {trial} B against alone {a} B ({:.0}%)", trial as f64 * 100.0 / a.max(1) as f64);
+                    }
+                    // The bar the whole must meet; a half bar here
+                    // dropped a Wikipedia table whose dump format had
+                    // changed (its delta 68% of alone, 0.6 GB lost).
+                    trial * WORTH_DEN <= a * WORTH_NUM
                 };
                 if pays {
                     let mut delta = Vec::with_capacity(data.len() / 16 + 1024);
-                    against(&base_data, &data, &mut delta, ultra);
+                    against(&base_data, &data, &anchors, &mut delta, ultra);
                     lap("delta", &mut laps);
                     let d = delta.len() as u64;
                     let taken = d * 32 <= data.len() as u64 || {
-                        let a = trial_alone.unwrap_or_else(|| alone(&data[..sample]).len());
-                        let estimate = a as u64 * data.len() as u64 / sample.max(1) as u64;
+                        let a = trial_alone.unwrap_or_else(sample_alone);
+                        let estimate = a as u64 * data.len() as u64 / sample_len.max(1) as u64;
                         lap("alone estimate", &mut laps);
                         let alone_len = if d * 2 <= estimate || d * 5 >= estimate * 6 {
                             estimate
@@ -972,8 +1053,15 @@ impl Store {
             lap("alone", &mut laps);
         }
         let depth = base.map_or(0, |b| self.entries[b as usize].depth + 1);
+        // A version of its base's kind joins the base's family; anything
+        // else (alone, or a delta against a base it shares little with)
+        // starts its own.
+        let family = match (base, best) {
+            (Some(b), Some((_, _, held))) if held >= FAMILY_SHARE => self.entries[b as usize].family,
+            _ => id,
+        };
         self.names.insert(name.clone(), id);
-        let entry = Entry { id, name, base, depth, raw_len: data.len() as u64, stored_len: stored.len() as u64, pack: None, deleted: false };
+        let entry = Entry { id, name, base, depth, family, raw_len: data.len() as u64, stored_len: stored.len() as u64, pack: None, deleted: false };
         // The stream, its sidecar and its index line go to the backend
         // from the writer's thread while the next object is compressed.
         self.writer.send(Job { id, stored, line: Self::line(&entry) })?;
@@ -1011,7 +1099,7 @@ impl Store {
         };
         glyd::compress_pack(&objects, &mut stored, level);
         self.objects.write(&Self::key(pack_id), &stored)?;
-        let pack = Entry { id: pack_id, name: format!("pack of {}", self.pending.len()), base: None, depth: 0, raw_len: 0, stored_len: stored.len() as u64, pack: None, deleted: false };
+        let pack = Entry { id: pack_id, name: format!("pack of {}", self.pending.len()), base: None, depth: 0, family: pack_id, raw_len: 0, stored_len: stored.len() as u64, pack: None, deleted: false };
         // The members' entries, now that their pack has an id.
         for (i, (member, _)) in self.pending.iter().enumerate() {
             let e = &mut self.entries[*member as usize];
@@ -1186,6 +1274,7 @@ impl Store {
         let e = &mut self.entries[id as usize];
         e.base = None;
         e.depth = 0;
+        e.family = id;
         e.stored_len = stored.len() as u64;
         let e = e.clone();
         self.append_index(&e)?;
@@ -1233,6 +1322,39 @@ mod tests {
             v.splice(at..end, ins);
         }
         v
+    }
+
+    #[test]
+    fn a_new_kind_starts_its_own_family() {
+        // B holds 48% of A's fingerprints: a delta against A that pays,
+        // but a family of its own; B's versions chain under B and, at
+        // the depth cap, go back to B, never to A.
+        let dir = std::env::temp_dir().join(format!("glyd-store-family-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let a = wordy(4 << 20, 1);
+        let mut b = a[..(1600 << 10)].to_vec();
+        b.extend_from_slice(&wordy(2400 << 10, 2));
+        let mut versions = vec![b];
+        for i in 1..8 {
+            let prev = versions[i - 1].clone();
+            versions.push(edited(&prev, 20, 200 + i as u64));
+        }
+        let mut store = Store::open(&dir).unwrap();
+        store.put("a", &a).unwrap();
+        for (i, v) in versions.iter().enumerate() {
+            store.put(&format!("b{i}"), v).unwrap();
+        }
+        let e = store.entries();
+        assert_eq!(e[1].base, Some(0), "b is a delta of a");
+        assert_eq!(e[1].family, 1, "but a family of its own");
+        for (k, want) in [(2, 1), (3, 2), (4, 3), (5, 3), (6, 1), (7, 6), (8, 7)] {
+            assert_eq!((e[k].base, e[k].family), (Some(want), 1), "b{}", k - 1);
+        }
+        assert!(e.iter().all(|x| x.depth <= MAX_DEPTH) && e[4].depth == MAX_DEPTH);
+        for (i, v) in versions.iter().enumerate() {
+            assert!(store.get(i as u32 + 1).unwrap() == *v, "b{i}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1318,6 +1440,7 @@ mod tests {
         assert!(store.get(3).unwrap() == versions[3], "v3 still rebuilds through its deleted base");
         assert_eq!(store.compact().unwrap(), 0);
         let chain: Vec<u32> = (0..versions.len() as u32).filter(|&i| { let mut at = Some(i); while let Some(j) = at { if j == 2 { return true; } at = store.entries()[j as usize].base; } false }).collect();
+        assert_eq!(chain, vec![2, 3, 4, 5], "v5 took v3, the second candidate under the cap");
         for &i in &chain {
             store.delete(i).unwrap();
         }
