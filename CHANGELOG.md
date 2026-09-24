@@ -22,7 +22,10 @@ every earlier format.
   against zstd's own output on the fixtures and a sweep of 3,500
   inputs. The opener finds the build that wrote a page and keeps a
   page no build made. A whole zstd frame (a `.zst` object) opens the
-  same way, a container under it opened in turn.
+  same way, a container under it opened in turn: the NASA access log
+  as zstd 1.5.5 wrote it at level 1, 22.3 MB, comes to 8.0 MB at
+  `--max` (its records modeled), 1.4 s to write and 0.6 s to read
+  back, byte-exact.
   A page's plain values are then modeled so the LZ and entropy stages
   see their structure: fixed-width values as byte planes, integers in
   their unit (microseconds that are whole seconds divided down) and
