@@ -656,11 +656,12 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
                 let compact = compact_block(chunk_len);
                 v7_encode::encode_block_coded(literals, dict_id, &mut prev, scratch, compact, payload);
                 let chain_flag = if first && dict.is_none() { FLAG_CHAIN_RESET } else { 0 };
-                if payload.len() + coded_header_len(compact, chunk_len, payload.len(), seqs.len(), literals.len()) >= chunk_len {
+                let n_seq = scratch.count();
+                if payload.len() + coded_header_len(compact, chunk_len, payload.len(), n_seq, literals.len()) >= chunk_len {
                     prev = v7_encode::Tables::none();
                     write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
                 } else {
-                    write_coded_block(chunk, seqs.len(), literals.len(), chain_flag, payload, output);
+                    write_coded_block(chunk, n_seq, literals.len(), chain_flag, payload, output);
                 }
                 first = false;
                 // Blocks so far handed on (the CLI's writer thread),
@@ -841,11 +842,12 @@ pub fn compress_max_stream(input: &[u8], mut sink: impl FnMut(&[u8]) -> std::io:
                                 let compact = compact_block(chunk_len);
                                 v7_encode::encode_block_coded(literals, 0, &mut prev, scratch, compact, payload);
                                 let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
-                                if payload.len() + coded_header_len(compact, chunk_len, payload.len(), seqs.len(), literals.len()) >= chunk_len {
+                                let n_seq = scratch.count();
+                                if payload.len() + coded_header_len(compact, chunk_len, payload.len(), n_seq, literals.len()) >= chunk_len {
                                     prev = v7_encode::Tables::none();
                                     write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], &mut out);
                                 } else {
-                                    write_coded_block(chunk, seqs.len(), literals.len(), chain_flag, payload, &mut out);
+                                    write_coded_block(chunk, n_seq, literals.len(), chain_flag, payload, &mut out);
                                 }
                                 offset += chunk_len;
                             }
