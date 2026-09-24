@@ -4,7 +4,7 @@ Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
 
-## Where it stands (v0.14.6, 2026-09-24)
+## Where it stands (v0.14.7, 2026-09-24)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 ([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
@@ -24,8 +24,8 @@ are 20–65% hashes and random ids once compressed (typed columns gain
 entropy floor for every codec (zstd -19, xz, Glyd `--ultra` within 2%).
 Details: [experiments/structure/README.md](experiments/structure/README.md).
 
-The store (v0.8.0, at a terabyte v0.12.0): objects compressed across a
-bucket, 3.1× fewer bytes than zstd -3 per object on 1.18 TB of
+The store (v0.8.0, at a terabyte v0.12.0 and v0.14.7): objects compressed
+across a bucket, 3.3× fewer bytes than zstd -3 per object on 1.18 TB of
 releases, dumps and events (4.6× on a 39 GB bucket) — the largest
 lever measured, because the redundancy of object storage is between
 objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
@@ -66,8 +66,9 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
    cheaper per-object encoder (zstd is 1.4–2× faster per object); a
    dictionary that carries a record schema, so `-r` ratios reach
    one-record objects. Gate: within 1.2× of zstd per object.
-3. **The x86-64 decoder** (0.80× zstd -3 on one Sapphire Rapids core
-   against 1.03× on Graviton3). Gate: 1.0× in the published run.
+3. **The x86-64 decoder** (0.79–0.97× zstd -3 on one Sapphire Rapids
+   core against 1.15–1.32× on Graviton3 and 1.00–1.30× on a Ryzen 9,
+   v0.14.7). Gate: 1.0× in the published run.
 4. **Streaming for v9** in `GlydReader`/`GlydWriter` (v6 levels only
    today); the CLI already streams batches of units.
 5. **Already-compressed objects opened** (research section J). Done:

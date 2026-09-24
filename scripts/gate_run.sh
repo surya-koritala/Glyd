@@ -82,7 +82,7 @@ echo "store get: $GOT byte-exact, $BAD failed, $(rate $GET_BYTES $t) MB/s, $t s 
 
 # The store: every object by one process.
 t0=$(now)
-$GS "$META" --s3 "$S3/store" --restore "$BACK/all" > "$RESULTS/restore.txt" 2>>"$RESULTS/get.err"
+$GS "$META" --s3 "$S3/store" --restore "$BACK/all" > "$RESULTS/restore.txt" 2>"$RESULTS/restore.log"
 t1=$(now)
 BAD=0; GOT=0
 while IFS=$'\t' read -r id name; do

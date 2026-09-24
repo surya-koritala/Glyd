@@ -6,6 +6,55 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.14.7 — 2026-09-24
+
+- **The store's put is 1.6–4.0× faster, its get 1.1–1.5×.** On a
+  Ryzen 9 7950X3D (16 cores), best of three, every object read back
+  byte-exact: Linux 6.10.1 as a version of 6.10 (1.5 GB) put at
+  1,224 MB/s against 308 before, alone at 2,545 against 668, read
+  back at 1,590 against 1,051; an Ubuntu 24.04 cloud root filesystem
+  (1.1 GB, gzip inside) as a version 215 against 127, read 287
+  against 258; a Wikipedia table a month on (108 MB) as a version 383
+  against 233. What changed: `put_file` maps the file and keeps the
+  mapping as the cached copy (`put_vec` takes the bytes over; no
+  second copy of the object in memory); the container path's deflate
+  emulation returns at once when nothing in the object opened; an
+  opened base is decoded once and cached; the base region a unit
+  searches is cut to what its fingerprints reach (97% of the hits
+  kept, never under the unit and 16 MB); each thread keeps one
+  region-and-unit buffer; a delta under a thirty-second of the object
+  is taken without also compressing the object alone; `get_to` writes
+  into the caller's buffer. The Ubuntu root's version is bounded by
+  the deflate emulator, which runs at zlib's own search speed per
+  thread. At a terabyte, one im4gn.4xlarge next to S3
+  ([report](docs/benchmarks/store-gate-2026-09-24.md)): put at 372
+  MB/s (243 in the 2026-09-22 run), every object read back by its own
+  process at 461 MB/s (166 before; zstd -3's own read-back on that
+  instance 341), the bucket restored by one process at 603 MB/s, all
+  1,192 objects byte-exact both times; 46.3 GB stored against zstd
+  -3's 153.5 GB, 3.32× fewer bytes (3.10× then: the hourly events
+  store 9% smaller; one English Wikipedia table of fifteen went alone
+  that was a delta before, 0.6 GB, to be looked at).
+- **CLI reads: the decoded batch lives on huge pages.** The output
+  batch is an anonymous 2 MB-aligned mapping with `MADV_HUGEPAGE`,
+  the input is populated on a thread while the first units decode,
+  and `-d -s` streams on one thread. One core against `zstd -d -T1`:
+  Ryzen 9 7950X3D 1.00–1.30× its speed (0.65–0.81× before), Graviton3
+  1.15–1.32× (1.03×), Sapphire Rapids 0.79–0.97× (0.80×). All cores:
+  3.9–13.3 GB/s on the Ryzen, 3.6–10.0 GB/s on eight Graviton3 cores,
+  1.9–5.1 GB/s on eight Sapphire Rapids cores.
+- **CRC-32C in three lanes**: the block checksum runs three CRC
+  streams over 1 KB lanes and joins them by table, so the CRC
+  instruction's latency overlaps; it was a tenth of a one-core read on
+  Sapphire Rapids. Bytes unchanged: the checksum's value is the same.
+- **A corrupted unit fails a stream's parallel decode instead of
+  hanging it**: the units after a failed one waited for their turn
+  for ever; the first error now stops the rest
+  (`tests/fuzz_safety.rs`).
+- Library: `Store::put_vec`, `Store::put_file`, `Store::get_to`. CI
+  keeps the corpus between runs and fetches enwik8 from a second host
+  when the first answers with a page.
+
 ## v0.14.6 — 2026-09-24
 
 - **Blocks are cut where the bytes' statistics change** (`src/split.rs`,

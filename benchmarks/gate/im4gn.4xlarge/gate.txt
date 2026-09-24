@@ -1,0 +1,13 @@
+date: 2026-09-24T05:27:29Z
+machine: Neoverse-N1 (16 vCPU, 61 GB)
+glyd-store: glyd-store 0.14.6
+corpus: 1192 objects, 1184268065453 bytes
+zstd-3 put: 153505807411 bytes stored, 546.632 MB/s, 2166.478919965 s (compress and upload)
+store put: rc 0, 371.718 MB/s, 3185.926783136 s; 1192 objects (1192 live): 1184268065453 B raw, 46287252709 B on disk (25.59x)
+store put: 437 of 1192 objects as deltas
+zstd-3 get: 0 failed, 341.351 MB/s, 3469.345680929 s (download and decompress, one object at a time)
+store get: 1192 byte-exact, 0 failed, 461.364 MB/s, 2566.884271505 s (one process per object)
+store restore: 1192 byte-exact, 0 failed, 602.978 MB/s, 1964.031803315 s (one process)
+gzip-inside gharchive-2024-01-01-0.json (gzip 1.12): gzip-6 75250705 -> glyd --max -r 38323032 B, exact, 5.8277 s
+gzip-inside simplewiki-20260101-categorylinks.sql (gzip 1.12): gzip-6 27149380 -> glyd --max -r 16735212 B, exact, 2.8542 s
+gzip-inside linux-6.6.1.tar (gzip 1.12): gzip-6 72152868 -> glyd --max  57892699 B, exact, 5.9729 s

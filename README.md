@@ -293,23 +293,30 @@ order), every object read back and compared:
 | GitHub events (12 hours) | 9.4 GB | 875 MB | 670 MB | 1.3× (no object is a version of another) |
 | **The bucket** | **39.2 GB** | **6,132 MB (6.4×)** | **1,334 MB (29.4×)** | **4.6× smaller** |
 
-At a terabyte ([report](docs/benchmarks/store-gate-2026-09-22.md)):
+At a terabyte ([report](docs/benchmarks/store-gate-2026-09-24.md)):
 1,192 objects, 1.18 TB — 400 kernel point releases, every hour of
 GitHub events in January 2024, five English Wikipedia dumps' tables,
 six Ubuntu images — put through the store into S3 from one 16-vCPU
 instance next to the bucket, every object read back and compared
-byte for byte, the metadata directory deleted and rebuilt from the
-bucket, then verified: **49.0 GB stored against zstd -3's 153.5 GB,
-3.13× fewer bytes (24× against raw)**; kernels 115–285× against raw,
-Wikipedia tables 21×, hourly events 12.9× (record mode alone). Put ran
-at 243 MB/s (150 before the put's time was cut) and read-back at
-166–186 MB/s, S3 included, on that instance.
+byte for byte, then the whole bucket restored by one process and
+compared again (an earlier run also deleted the metadata directory,
+rebuilt it from the bucket and verified): **46.3 GB stored against
+zstd -3's 153.5 GB, 3.32× fewer bytes (25.6× against raw)**; kernels
+116–286× against raw, Wikipedia tables 19.5×, hourly events 14.1×
+(record mode alone). Put ran at 372 MB/s (243 in the 2026-09-22 run),
+read-back one object at a time at 461 MB/s (zstd -3's own read-back
+on the same instance: 341 MB/s) and the restore at 603 MB/s, S3
+included, on that instance.
 
 Put runs at 620 MB/s end to end over the bucket on ten cores (reading
 the file, rebuilding the base, writing the delta; a version of the
 last object put runs at 900 MB/s, that object being kept in memory as
 the likeliest next base); verifying the whole bucket reads it back at
-1.5 GB/s. The same store built on zstd's own
+1.5 GB/s. On a Ryzen 9 7950X3D (16 cores, v0.14.7) a kernel release
+arriving as a version of the last one is put at 1,224 MB/s and read
+back at 1,590; the first of them, alone, at 2,545 MB/s; an Ubuntu root
+filesystem with gzip inside as a version at 215 MB/s (the deflate
+emulation's speed). The same store built on zstd's own
 `--patch-from` would land around 3–4×: our deltas are 1.1–2.1× smaller
 and read 10× faster, and the store design does the rest. In money, a
 petabyte of such data in S3 Standard costs $43K a year with zstd -3
@@ -778,17 +785,18 @@ panic or an unbounded allocation; every unsafe block carries its bound.
   halves the write speed again (200–400 MB/s per core).
 - Reads in record mode spend 2–2.7× zstd's CPU rebuilding the columns
   (5–30 ns per value by column type), which makes zstd -3 the cheaper
-  choice at a hundred CPU-billed reads a month; the plain CLI's reads
-  cost 1.07× zstd's CPU on Graviton3 and 1.37× on Sapphire Rapids (a
-  checksum per block, the parallel decode).
+  choice at a hundred CPU-billed reads a month; the plain CLI's
+  one-core reads run at 1.15–1.32× `zstd -d` on Graviton3, 1.00–1.30×
+  on a Ryzen 9 7950X3D and 0.79–0.97× on Sapphire Rapids (v0.14.7).
 - `--ultra --base` runs at the plain `--ultra` speed (3–11 MB/s on ten
   M1 cores), 3–10× slower than zstd -19's patch on the large pairs. The
   encoder holds the old and new versions, a map of 1.6% of the old one,
   and 128 MB per thread. A unit whose content is spread over two places
   of the base farther apart than 96 MB has only the denser one in reach.
-- On x86 (Sapphire Rapids) `--max` decodes at 0.80× zstd -3 on one core,
-  against 1.03× on Graviton3: x86-64's 16 general registers spill the
-  8-stream entropy loops.
+- On Sapphire Rapids `--max` decodes at 0.79–0.97× zstd -3 on one core
+  (v0.14.7), against 1.15–1.32× on Graviton3 and 1.00–1.30× on a Ryzen 9
+  7950X3D: what is left there is the decode loop's instructions per
+  cycle on Intel.
 - Small objects with a dictionary: sizes tie, zstd is 1.4–2× faster per
   object. Record mode works on files, not on single small objects.
 - JSON API events and crawl indexes are 20–65% hashes and random ids once
