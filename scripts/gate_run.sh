@@ -67,7 +67,7 @@ rm -f "$BACK/z" "$BACK/obj"
 echo "zstd-3 get: $BAD failed, $(rate $RAW $t) MB/s, $t s (download and decompress, one object at a time)" >> "$OUT"
 
 # The store: every object by a process of its own.
-LIST=$(grep -v '^D' "$META/index" | grep -v $'\tpack of ' | cut -f1,7 | sort -n -u)
+LIST=$(grep -v '^D' "$META/index" | grep -v $'\tpack of ' | awk -F'\t' '{print $1 "\t" $NF}' | sort -n -u)
 GET_BYTES=$(grep -v '^D' "$META/index" | grep -v $'\tpack of ' | sort -n -u | awk -F'\t' '{s+=$4} END {print s+0}')
 t=0; BAD=0; GOT=0
 while IFS=$'\t' read -r id name; do
