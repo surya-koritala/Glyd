@@ -359,7 +359,7 @@ fn write_ctable(cap: usize, t: &HufTable, max_symbol: usize, huff_log: u32) -> O
         return Some(out);
     }
     // Raw weights as nibbles.
-    if max_symbol > 128 || (max_symbol + 1) / 2 + 1 > cap {
+    if max_symbol > 128 || max_symbol.div_ceil(2) + 1 > cap {
         return None;
     }
     let mut out = vec![(128 + max_symbol - 1) as u8];

@@ -1,5 +1,5 @@
 //! A plain zstd frame decoder (RFC 8878): one frame, no dictionary,
-//! the checksum skipped. It exists so that `reproduce` can get a
+//! the checksum verified when present. It exists so that `reproduce` can get a
 //! frame's content and so the round trips are checked against the
 //! format rather than the encoder alone. Where the format's edge rules
 //! decide how many symbols a stream holds (the Huffman weights' FSE
@@ -8,6 +8,7 @@
 
 use super::block::{LL_BITS, LL_DEFAULT_NORM, LL_DEFAULT_NORM_LOG, MAX_LL, MAX_ML, MAX_OFF, ML_BITS, ML_DEFAULT_NORM, ML_DEFAULT_NORM_LOG, OF_DEFAULT_NORM, OF_DEFAULT_NORM_LOG};
 use super::fse::highbit;
+use super::xxh64::xxh64;
 use super::{BLOCK_SIZE_MAX, MAGIC};
 
 /// `BIT_DStream_t`: bits taken from the end of a stream, the last
@@ -508,6 +509,7 @@ fn block(src: &[u8], out: &mut Vec<u8>, t: &mut Tables) -> Option<()> {
                 o
             }
         } as usize;
+        if std::env::var("REZSTD_DUMP").is_ok() { eprintln!("seq {} ll {} off {} ml {} at {}", i, lit_len, offset, match_len, out.len() + lit_len); }
         out.extend_from_slice(lits.get(lit_at..lit_at + lit_len)?);
         lit_at += lit_len;
         if offset == 0 || offset > out.len() {
@@ -601,6 +603,10 @@ pub fn decompress(frame: &[u8]) -> Option<Vec<u8>> {
         }
     }
     if checksum {
+        let want = u32::from_le_bytes(frame.get(p..p + 4)?.try_into().unwrap());
+        if want != xxh64(&out) as u32 {
+            return None;
+        }
         p += 4;
     }
     if p != frame.len() || content_size.is_some_and(|n| n != out.len() as u64) {
