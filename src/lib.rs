@@ -1413,6 +1413,7 @@ fn cold_into(units: &[ColdUnit<'_>], dst: &mut [u8]) -> Result<usize> {
 fn decompress_cold(units: &[ColdUnit<'_>]) -> Result<Vec<u8>> {
     let total: usize = units.iter().map(|u| u.len).sum();
     let mut out = vec![0u8; total];
+    mmap::huge_hint(&mut out);
     cold_into(units, &mut out)?;
     Ok(out)
 }
@@ -2092,6 +2093,7 @@ fn records_into(units: &[RecordUnit<'_>], dst: &mut [u8]) -> Result<usize> {
 fn decompress_records(units: &[RecordUnit<'_>]) -> Result<Vec<u8>> {
     let total: usize = units.iter().map(|u| u.len).sum();
     let mut out = vec![0u8; total];
+    mmap::huge_hint(&mut out);
     records_into(units, &mut out)?;
     Ok(out)
 }
@@ -2189,6 +2191,7 @@ pub fn decompress(compressed: &[u8]) -> Result<Vec<u8>> {
     }
     let total = total_uncompressed_len(compressed)?;
     let mut output = vec![0u8; total + PADDING * 2];
+    mmap::huge_hint(&mut output);
     let written = decompress_into(compressed, &mut output)?;
     output.truncate(written);
     Ok(output)
@@ -2368,6 +2371,7 @@ pub fn decompress_parallel(compressed: &[u8]) -> Result<Vec<u8>> {
     }
     let total = total_uncompressed_len(compressed)?;
     let mut output = vec![0u8; total + PADDING * 2];
+    mmap::huge_hint(&mut output);
     let written = decompress_parallel_into(compressed, &mut output)?;
     output.truncate(written);
     Ok(output)
@@ -2639,25 +2643,38 @@ pub fn decompress_stream(compressed: &[u8], mut sink: impl FnMut(&[u8]) -> std::
     }
     let (blocks, units, total_uncomp) = scan_units(compressed).map_err(codec)?;
     if units.len() <= 1 {
-        let mut buf = vec![0u8; total_uncomp + PADDING * 2];
-        let n = decompress_sequential(compressed, &mut buf, true).map_err(codec)?;
-        return sink(&buf[..n]);
+        let mut anon = mmap::Anon::new(total_uncomp + PADDING * 2)?;
+        let n = decompress_sequential(compressed, anon.as_mut_slice(), true).map_err(codec)?;
+        return sink(&anon.as_mut_slice()[..n]);
     }
     // Batches of a few units per core into one reused buffer; within a
     // batch every unit goes to the sink as it is decoded.
-    let mut buf: Vec<u8> = Vec::new();
-    let sink: &mut (dyn FnMut(&[u8]) -> std::io::Result<()> + Send) = &mut sink;
-    let mut at = 0usize;
-    while at < units.len() {
+    let batch_end = |at: usize| {
         let mut end = at + 1;
         while end < units.len() && end - at < 4 * workers.max(2) && units[end].uncomp_offset - units[at].uncomp_offset < STREAM_BATCH {
             end += 1;
         }
+        end
+    };
+    // The buffer: one anonymous mapping the size of the largest batch
+    // (huge pages where the kernel gives them), never zero-filled.
+    let mut largest = 0usize;
+    let mut at = 0usize;
+    while at < units.len() {
+        let end = batch_end(at);
+        largest = largest.max(units[end - 1].uncomp_offset + units[end - 1].uncomp_len - units[at].uncomp_offset);
+        at = end;
+    }
+    let mut anon = mmap::Anon::new(largest + PADDING * 2)?;
+    let sink: &mut (dyn FnMut(&[u8]) -> std::io::Result<()> + Send) = &mut sink;
+    let mut at = 0usize;
+    while at < units.len() {
+        let end = batch_end(at);
         let base = units[at].uncomp_offset;
         let total = units[end - 1].uncomp_offset + units[end - 1].uncomp_len - base;
-        buf.resize(total + PADDING * 2, 0);
+        let buf = &mut anon.as_mut_slice()[..total + PADDING * 2];
         let shared: std::sync::Mutex<&mut (dyn FnMut(&[u8]) -> std::io::Result<()> + Send)> = std::sync::Mutex::new(&mut *sink);
-        match decode_units_to(compressed, &blocks, &units[at..end], base, &mut buf, true, Some(&shared)) {
+        match decode_units_to(compressed, &blocks, &units[at..end], base, buf, true, Some(&shared)) {
             Ok(()) => {}
             Err(StreamError::Codec(e)) => return Err(codec(e)),
             Err(StreamError::Io(e)) => return Err(e),

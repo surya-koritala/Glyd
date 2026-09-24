@@ -416,7 +416,13 @@ fn main() -> io::Result<()> {
                 Some(ref base) => glyd::decompress_stream_with_base(base, &input_data, |batch| out.write_all(batch)),
                 None => Err(io::Error::new(io::ErrorKind::InvalidData, "this file was compressed against a base: pass it with --base")),
             }
-        } else if multi_core && input_data.len() > glyd::format::MAX_BLOCK_SIZE {
+        } else if input_data.len() > glyd::format::MAX_BLOCK_SIZE {
+            // One core or all: the streaming path either way (units into
+            // a reused buffer, written as they are decoded); a whole
+            // output buffer faulted in page by page was most of a read.
+            if !multi_core {
+                glyd::set_threads(1);
+            }
             glyd::decompress_stream(&input_data, |batch| out.write_all(batch))
         } else {
             match glyd::decompress(&input_data) {

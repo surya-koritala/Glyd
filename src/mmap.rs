@@ -32,6 +32,69 @@ const PROT_WRITE: i32 = 2;
 const MAP_SHARED: i32 = 1;
 /// Linux: fault the pages in at mmap time.
 const MAP_POPULATE: i32 = 0x8000;
+const MAP_PRIVATE: i32 = 2;
+#[cfg(target_os = "linux")]
+const MAP_ANONYMOUS: i32 = 0x20;
+#[cfg(not(target_os = "linux"))]
+const MAP_ANONYMOUS: i32 = 0x1000;
+/// Linux: back the range with transparent huge pages when it can.
+const MADV_HUGEPAGE: i32 = 14;
+const HUGE: usize = 2 << 20;
+
+/// An anonymous buffer of `len` zero bytes, aligned to 2 MB and, on
+/// Linux, asked to be huge pages: an output buffer of hundreds of MB
+/// costs a few hundred faults instead of tens of thousands, and no
+/// memset (fresh pages are zero already). A `Vec` of the same size
+/// zero-filled and 4 KB-faulted was most of a decode's CLI time.
+pub struct Anon {
+    map: *mut u8,
+    map_len: usize,
+    ptr: *mut u8,
+    len: usize,
+}
+
+unsafe impl Send for Anon {}
+unsafe impl Sync for Anon {}
+
+impl Anon {
+    pub fn new(len: usize) -> Result<Anon> {
+        let map_len = len.max(1) + HUGE;
+        let map = unsafe { mmap(std::ptr::null_mut(), map_len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) };
+        if map as isize == -1 {
+            return Err(Error::new(ErrorKind::Other, "mmap failed"));
+        }
+        let ptr = ((map as usize + HUGE - 1) & !(HUGE - 1)) as *mut u8;
+        if cfg!(target_os = "linux") && len >= HUGE {
+            unsafe { madvise(ptr as *mut std::ffi::c_void, len & !(HUGE - 1), MADV_HUGEPAGE) };
+        }
+        Ok(Anon { map: map as *mut u8, map_len, ptr, len })
+    }
+
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+}
+
+/// Ask for huge pages under a large buffer not yet touched (Linux;
+/// elsewhere nothing): a zeroed allocation of hundreds of MB is then
+/// faulted in 2 MB at a time as the decoder fills it.
+pub fn huge_hint(buf: &mut [u8]) {
+    if cfg!(target_os = "linux") && buf.len() >= 2 * HUGE {
+        let start = (buf.as_ptr() as usize + HUGE - 1) & !(HUGE - 1);
+        let end = (buf.as_ptr() as usize + buf.len()) & !(HUGE - 1);
+        if end > start {
+            unsafe { madvise(start as *mut std::ffi::c_void, end - start, MADV_HUGEPAGE) };
+        }
+    }
+}
+
+impl Drop for Anon {
+    fn drop(&mut self) {
+        unsafe {
+            munmap(self.map as *mut _, self.map_len);
+        }
+    }
+}
 const MS_SYNC: i32 = 0x10;
 
 impl Mapping {
