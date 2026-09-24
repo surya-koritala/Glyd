@@ -1,13 +1,13 @@
 //! Zstd frames reproduced: the reference compressor (zstd 1.5.5 at
-//! level 1, the one-shot `ZSTD_compress` and the CLI) ported step for
-//! step, so a frame it wrote is made again
+//! level 1 and level 3, the one-shot `ZSTD_compress` and the CLI's
+//! stream) ported step for step, so a frame it wrote is made again
 //! from its content and the frame's bytes need not be kept. Parquet's
 //! pages are the case, as with snappy in `resnappy`: a data lake's
 //! files hold their columns as zstd pages, and opening a page lets its
 //! values be modeled instead of its LZ tokens; a `.zst` file is the
 //! other. Every decision that shapes the bytes is the reference's: the
-//! parameters by input size, the window, the fast match finder with
-//! its growing step, the literals' Huffman table
+//! parameters by input size, the window, the fast and double-fast
+//! match finders with their growing steps, the literals' Huffman table
 //! or the previous block's, the three sequence tables chosen among
 //! predefined, RLE and fresh, the capacity rules of the buffer written
 //! into, and for the CLI the ring its input goes through (a window plus
@@ -19,6 +19,7 @@
 
 mod block;
 mod decode;
+mod dfast;
 mod fast;
 mod fse;
 mod huf;
@@ -26,11 +27,13 @@ mod xxh64;
 
 pub use decode::decompress;
 
-/// `ZSTD_strategy`, as far as ported: `ZSTD_fast` (level 1); the
-/// numeric value is the reference's, which its rules use in arithmetic.
+/// `ZSTD_strategy`, as far as ported: `ZSTD_fast` (level 1) and
+/// `ZSTD_dfast` (level 3); the numeric values are the reference's,
+/// which its rules use in arithmetic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Strategy {
     Fast = 1,
+    DoubleFast = 2,
 }
 
 /// `ZSTD_compressionParameters`: a level row.
@@ -53,6 +56,7 @@ const fn row(window_log: u32, chain_log: u32, hash_log: u32, search_log: u32, mi
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Level {
     One = 1,
+    Three = 3,
 }
 
 /// How the input reached the compressor. `OneShot` is `ZSTD_compress`
@@ -86,10 +90,13 @@ pub struct Build {
 }
 
 /// The builds `reproduce` tries (with the checksum read from the frame).
-pub const BUILDS: [Build; 3] = [
+pub const BUILDS: [Build; 6] = [
     Build { version: "1.5.5", level: Level::One, writer: Writer::OneShot, checksum: false },
+    Build { version: "1.5.5", level: Level::Three, writer: Writer::OneShot, checksum: false },
     Build { version: "1.5.5", level: Level::One, writer: Writer::Cli, checksum: false },
+    Build { version: "1.5.5", level: Level::Three, writer: Writer::Cli, checksum: false },
     Build { version: "1.5.5", level: Level::One, writer: Writer::Stream, checksum: false },
+    Build { version: "1.5.5", level: Level::Three, writer: Writer::Stream, checksum: false },
 ];
 
 /// `clevels.h`: the rows of a level by input size class (over 256 KB,
@@ -99,6 +106,12 @@ const LEVEL1_ROWS: [CParams; 4] = [
     row(18, 13, 14, 1, 6, 0, Strategy::Fast),
     row(17, 12, 13, 1, 6, 0, Strategy::Fast),
     row(14, 14, 15, 1, 5, 0, Strategy::Fast),
+];
+const LEVEL3_ROWS: [CParams; 4] = [
+    row(21, 16, 17, 1, 5, 0, Strategy::DoubleFast),
+    row(18, 16, 16, 1, 4, 0, Strategy::DoubleFast),
+    row(17, 15, 16, 2, 5, 0, Strategy::DoubleFast),
+    row(14, 14, 15, 2, 4, 0, Strategy::DoubleFast),
 ];
 
 const MAGIC: u32 = 0xFD2FB528;
@@ -126,6 +139,7 @@ impl Build {
         let table = (n <= 256 << 10) as usize + (n <= 128 << 10) as usize + (n <= 16 << 10) as usize;
         let mut p = match self.level {
             Level::One => LEVEL1_ROWS[table],
+            Level::Three => LEVEL3_ROWS[table],
         };
         if n <= 1 << 30 {
             let src_log = if n < 1 << HASH_LOG_MIN { HASH_LOG_MIN } else { fse::highbit(n as u32 - 1) + 1 };
@@ -183,13 +197,18 @@ fn run(input: &[u8], n: usize, p: &CParams, r: Run, out: &mut Vec<u8>) {
     let window_size = (1u64 << p.window_log).min((end - start) as u64).max(1) as usize;
     let block_size = BLOCK_SIZE_MAX.min(window_size);
     let mut table = vec![0u32; 1 << p.hash_log];
+    let mut small = vec![0u32; if p.strategy == Strategy::DoubleFast { 1 << p.chain_log } else { 0 }];
     let mut window = fast::Window::new();
-    // ZSTD_fillHashTable (ZSTD_dtlm_fast) over the prefix: every third
-    // position up to nine bytes before its end.
+    // ZSTD_fillHashTable / ZSTD_fillDoubleHashTable (ZSTD_dtlm_fast) over
+    // the prefix: every third position up to nine bytes before its end.
     if start > fast::HASH_READ_SIZE {
         let mut q = 0;
         while q + 9 < start {
-            table[fast::hash(s, q, p.hash_log, p.min_match)] = fast::idx(q);
+            let curr = fast::idx(q);
+            table[fast::hash(s, q, p.hash_log, if p.strategy == Strategy::DoubleFast { 8 } else { p.min_match })] = curr;
+            if p.strategy == Strategy::DoubleFast {
+                small[fast::hash(s, q, p.chain_log, p.min_match)] = curr;
+            }
             q += 3;
         }
     }
@@ -217,12 +236,13 @@ fn run(input: &[u8], n: usize, p: &CParams, r: Run, out: &mut Vec<u8>) {
         let mut c_size = 0usize;
         if size >= 7 {
             next.rep = prev.rep;
-            let store = if window.has_ext_dict() {
-                fast::compress_block_ext(s, pos, pos + size, &mut table, p, &window, &mut next.rep)
-            } else {
-                fast::compress_block(s, pos, pos + size, &mut table, p, &window, &mut next.rep)
+            let store = match (p.strategy, window.has_ext_dict()) {
+                (Strategy::Fast, false) => fast::compress_block(s, pos, pos + size, &mut table, p, &window, &mut next.rep),
+                (Strategy::Fast, true) => fast::compress_block_ext(s, pos, pos + size, &mut table, p, &window, &mut next.rep),
+                (Strategy::DoubleFast, false) => dfast::compress_block(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep),
+                (Strategy::DoubleFast, true) => dfast::compress_block_ext(s, pos, pos + size, &mut table, &mut small, p, &window, &mut next.rep),
             };
-            if let Some(c) = block::compress(&store, &prev.entropy, &mut next.entropy, cap - 3, size) {
+            if let Some(c) = block::compress(&store, &prev.entropy, &mut next.entropy, cap - 3, size, p.strategy) {
                 c_size = c.len();
                 coded = c;
             }
@@ -388,14 +408,23 @@ mod tests {
     }
 
     #[test]
+    fn level_3_frames_come_back_byte_for_byte() {
+        // The same inputs through ZSTD_compress at level 3 (double fast).
+        for name in NAMES {
+            let raw = fixture(&format!("{name}.raw"));
+            check(name, &raw, &fixture(&format!("{name}.l3.zst")), BUILDS[1]);
+        }
+    }
+
+    #[test]
     fn cli_frames_carry_a_checksum() {
         // `zstd -1 --single-thread -T1 text3k.raw`: content size and checksum.
         let raw = fixture("text3k.raw");
         let frame = fixture("text3k.cli.zst");
         assert_eq!(frame[4] & 4, 4, "the descriptor's checksum bit");
-        check("text3k.cli", &raw, &frame, Build { checksum: true, ..BUILDS[1] });
+        check("text3k.cli", &raw, &frame, Build { checksum: true, ..BUILDS[2] });
         let (_, found) = reproduce(&frame).unwrap();
-        assert_eq!(found, Build { checksum: true, ..BUILDS[1] });
+        assert_eq!(found, Build { checksum: true, ..BUILDS[2] });
         let mut bad = frame.clone();
         *bad.last_mut().unwrap() ^= 1;
         assert!(decompress(&bad).is_none(), "a wrong checksum is refused");
@@ -422,7 +451,7 @@ mod tests {
         let head = d[..100_000].to_vec();
         d.extend_from_slice(&head);
         // Every size class, several blocks, a window smaller than the
-        // input, the CLI's ring wrapping (past 640 KB) and its jobs (past 2 MB).
+        // input, and for the CLI the ring wrapping (past 640 KB at level 1).
         for len in [0, 1, 5, 7, 50, 300, 1000, 5000, 16 << 10, 40_000, 128 << 10, (128 << 10) + 1, 200_000, 300_000, d.len()] {
             let s = &d[..len];
             for build in BUILDS.iter().flat_map(|b| [Build { checksum: false, ..*b }, Build { checksum: true, ..*b }]) {

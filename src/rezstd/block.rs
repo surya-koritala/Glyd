@@ -10,6 +10,7 @@
 use super::fast::{LongLength, SeqStore};
 use super::fse::{self, highbit, BitWriter, CState, CTable, Repeat};
 use super::huf::{self, HufTable};
+use super::Strategy;
 
 pub const MAX_LL: usize = 35;
 pub const MAX_ML: usize = 52;
@@ -199,15 +200,18 @@ fn compress_literals(out: &mut Vec<u8>, cap: usize, lits: &[u8], prev: &HufState
     Ok(())
 }
 
-/// `ZSTD_selectEncodingType` for a strategy below `ZSTD_lazy`.
-fn select_coding(repeat: &mut Repeat, most_frequent: usize, nb_seq: usize, default_norm_log: u32, default_allowed: bool) -> Coding {
+/// `ZSTD_selectEncodingType` for a strategy below `ZSTD_lazy`: a
+/// fresh table needs `(1 << log) * (10 - strategy) / 8` sequences
+/// (72 and 36 at level 1, 64 and 32 at level 3) and a most frequent
+/// symbol not too dominant.
+fn select_coding(repeat: &mut Repeat, most_frequent: usize, nb_seq: usize, default_norm_log: u32, default_allowed: bool, strategy: Strategy) -> Coding {
     if most_frequent == nb_seq {
         *repeat = Repeat::None;
         return if default_allowed && nb_seq <= 2 { Coding::Basic } else { Coding::Rle };
     }
     if default_allowed {
         let static_fse_nb_seq_max = 1000;
-        let mult = 10 - 1; // 10 - strategy, the fast strategy being 1
+        let mult = 10 - strategy as usize;
         let dynamic_fse_nb_seq_min = ((1usize << default_norm_log) * mult) >> 3;
         if *repeat == Repeat::Valid && nb_seq < static_fse_nb_seq_max {
             return Coding::Repeat;
@@ -283,7 +287,7 @@ fn encode_sequences(cap: usize, store: &SeqStore, ll: &CTable, of: &CTable, ml: 
 
 /// `ZSTD_entropyCompressSeqStore_internal`: the block's sections in
 /// `cap` bytes; Ok(empty) where the reference returns 0.
-fn compress_internal(store: &SeqStore, prev: &Entropy, next: &mut Entropy, cap: usize) -> Result<Vec<u8>, TooSmall> {
+fn compress_internal(store: &SeqStore, prev: &Entropy, next: &mut Entropy, cap: usize, strategy: Strategy) -> Result<Vec<u8>, TooSmall> {
     let mut out = Vec::new();
     let nb_seq = store.seqs.len();
     let nb_lits = store.lits.len();
@@ -321,7 +325,7 @@ fn compress_internal(store: &SeqStore, prev: &Entropy, next: &mut Entropy, cap: 
     let mut last_count_size = 0usize;
     let (max, most_frequent) = fse::histogram(&mut count, MAX_LL, &ll_codes);
     next.fse.ll_repeat = prev.fse.ll_repeat;
-    let ll_type = select_coding(&mut next.fse.ll_repeat, most_frequent as usize, nb_seq, LL_DEFAULT_NORM_LOG, true);
+    let ll_type = select_coding(&mut next.fse.ll_repeat, most_frequent as usize, nb_seq, LL_DEFAULT_NORM_LOG, true, strategy);
     let at = out.len();
     build_ctable(&mut out, cap - at, &mut next.fse.ll, LL_FSE_LOG, ll_type, &mut count, max, &ll_codes, &LL_DEFAULT_NORM, LL_DEFAULT_NORM_LOG, MAX_LL, &prev.fse.ll)?;
     if ll_type == Coding::Compressed {
@@ -330,7 +334,7 @@ fn compress_internal(store: &SeqStore, prev: &Entropy, next: &mut Entropy, cap: 
     let (max, most_frequent) = fse::histogram(&mut count, MAX_OFF, &of_codes);
     let default_allowed = max <= DEFAULT_MAX_OFF;
     next.fse.of_repeat = prev.fse.of_repeat;
-    let of_type = select_coding(&mut next.fse.of_repeat, most_frequent as usize, nb_seq, OF_DEFAULT_NORM_LOG, default_allowed);
+    let of_type = select_coding(&mut next.fse.of_repeat, most_frequent as usize, nb_seq, OF_DEFAULT_NORM_LOG, default_allowed, strategy);
     let at = out.len();
     build_ctable(&mut out, cap - at, &mut next.fse.of, OFF_FSE_LOG, of_type, &mut count, max, &of_codes, &OF_DEFAULT_NORM, OF_DEFAULT_NORM_LOG, DEFAULT_MAX_OFF, &prev.fse.of)?;
     if of_type == Coding::Compressed {
@@ -338,7 +342,7 @@ fn compress_internal(store: &SeqStore, prev: &Entropy, next: &mut Entropy, cap: 
     }
     let (max, most_frequent) = fse::histogram(&mut count, MAX_ML, &ml_codes);
     next.fse.ml_repeat = prev.fse.ml_repeat;
-    let ml_type = select_coding(&mut next.fse.ml_repeat, most_frequent as usize, nb_seq, ML_DEFAULT_NORM_LOG, true);
+    let ml_type = select_coding(&mut next.fse.ml_repeat, most_frequent as usize, nb_seq, ML_DEFAULT_NORM_LOG, true, strategy);
     let at = out.len();
     build_ctable(&mut out, cap - at, &mut next.fse.ml, ML_FSE_LOG, ml_type, &mut count, max, &ml_codes, &ML_DEFAULT_NORM, ML_DEFAULT_NORM_LOG, MAX_ML, &prev.fse.ml)?;
     if ml_type == Coding::Compressed {
@@ -357,8 +361,8 @@ fn compress_internal(store: &SeqStore, prev: &Entropy, next: &mut Entropy, cap: 
 
 /// `ZSTD_entropyCompressSeqStore`: the compressed block body, or None
 /// when the block is not compressible enough (kept raw).
-pub fn compress(store: &SeqStore, prev: &Entropy, next: &mut Entropy, cap: usize, src_size: usize) -> Option<Vec<u8>> {
-    let out = match compress_internal(store, prev, next, cap) {
+pub fn compress(store: &SeqStore, prev: &Entropy, next: &mut Entropy, cap: usize, src_size: usize, strategy: Strategy) -> Option<Vec<u8>> {
+    let out = match compress_internal(store, prev, next, cap, strategy) {
         Ok(out) => out,
         Err(TooSmall) => {
             assert!(src_size <= cap, "a ZSTD_compressBound buffer always holds a raw block");
