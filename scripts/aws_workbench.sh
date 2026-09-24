@@ -8,14 +8,28 @@
 #   AWS_PROFILE=... scripts/aws_workbench.sh up | sync | run <script> | down
 # State (key, security group, instances) in $GLYD_WORKBENCH (default
 # ~/.glyd-workbench).
+# A machine of your own instead: GLYD_HOST=user@address (and GLYD_KEY=
+# its key file) makes `sync` and `run` target it; `up` and `down` do
+# nothing. It needs build-essential, perf and zstd installed and the
+# files above in ~/data.
 set -uo pipefail
-: "${AWS_PROFILE:?set AWS_PROFILE}"
-REGION=us-east-1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ST=${GLYD_WORKBENCH:-$HOME/.glyd-workbench}
-TYPES="c7g.2xlarge c7i.2xlarge"
-aws() { command aws --region "$REGION" --output text "$@"; }
-sshto() { local ip=$1; shift; ssh -i "$ST/key.pem" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR "ubuntu@$ip" "$@"; }
+mkdir -p "$ST"
+if [ -n "${GLYD_HOST:-}" ]; then
+  TYPES="$(hostname -s 2>/dev/null || echo host)-box"
+  sshto() { local ip=$1; shift; ssh ${GLYD_KEY:+-i "$GLYD_KEY"} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -o LogLevel=ERROR "$ip" "$@"; }
+  echo "$TYPES $GLYD_HOST" > "$ST/ips"
+  case "${1:-}" in
+    up|down) echo "GLYD_HOST=$GLYD_HOST: nothing to $1"; exit 0 ;;
+  esac
+else
+  : "${AWS_PROFILE:?set AWS_PROFILE}"
+  REGION=us-east-1
+  TYPES="c7g.2xlarge c7i.2xlarge"
+  aws() { command aws --region "$REGION" --output text "$@"; }
+  sshto() { local ip=$1; shift; ssh -i "$ST/key.pem" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o LogLevel=ERROR "ubuntu@$ip" "$@"; }
+fi
 case "${1:-}" in
 up)
   RUN="glyd-bench-$(date +%Y%m%d-%H%M%S)"; echo "$RUN" > $ST/run
