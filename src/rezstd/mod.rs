@@ -144,7 +144,7 @@ pub fn compress(input: &[u8], build: Build) -> Vec<u8> {
     while pos < n {
         let size = block_size.min(n - pos);
         let last = pos + size == n;
-        window.enforce_max_dist(pos + size, p.window_log);
+        window.enforce_max_dist(pos, p.window_log);
         // ZSTD_compressBlock_internal: 0 is a raw block, 1 an RLE one.
         let src = &input[pos..pos + size];
         let mut coded = Vec::new();
@@ -216,8 +216,12 @@ mod tests {
     fn frames_written_by_zstd_1_5_5_come_back_byte_for_byte() {
         // Level-1 frames of ZSTD_compress: text and mixed data over one
         // and two blocks, planes, zeros, random bytes, a 50-byte and a
-        // 3 KB input, and three Parquet pages written by pyarrow's zstd.
-        for name in ["text50", "text3k", "page0", "page1", "page2", "random40k", "zeros100k", "mixed170k", "text200k", "planes300k"] {
+        // 3 KB input, three Parquet pages written by pyarrow's zstd, and
+        // zeros with a 150-byte run copied 523,000 bytes later across the
+        // block boundary at 512 KB: the repcode carried into the fifth
+        // block reaches almost a full window back, which only survives
+        // when the window's limit is set from the block's start.
+        for name in ["text50", "text3k", "page0", "page1", "page2", "random40k", "zeros100k", "mixed170k", "text200k", "planes300k", "farrep526k"] {
             let frame = fixture(&format!("{name}.zst"));
             let raw = fixture(&format!("{name}.raw"));
             assert_eq!(decompress(&frame).as_deref(), Some(&raw[..]), "{name} decodes");

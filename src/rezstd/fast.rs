@@ -110,12 +110,16 @@ impl Window {
         Window { dict_limit: START_INDEX, low_limit: START_INDEX }
     }
 
-    /// `ZSTD_window_enforceMaxDist` before a block ending at `block_end`.
-    pub fn enforce_max_dist(&mut self, block_end: usize, window_log: u32) {
-        let block_end_idx = block_end as u32 + START_INDEX;
+    /// `ZSTD_window_enforceMaxDist` before the block at `block_start`:
+    /// the reference passes the block's start (its parameter is named
+    /// `blockEnd`), so a block's oldest reachable index is one window
+    /// before its start and a repcode up to a full window survives the
+    /// boundary.
+    pub fn enforce_max_dist(&mut self, block_start: usize, window_log: u32) {
+        let block_start_idx = block_start as u32 + START_INDEX;
         let max_dist = 1u32 << window_log;
-        if block_end_idx > max_dist {
-            let new_low = block_end_idx - max_dist;
+        if block_start_idx > max_dist {
+            let new_low = block_start_idx - max_dist;
             if self.low_limit < new_low {
                 self.low_limit = new_low;
             }
