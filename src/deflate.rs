@@ -79,6 +79,10 @@ const REFLATE_JPEG: u8 = 12;
 /// the build (one byte, an index into its `BUILDS`) and the raw page
 /// as content; the page's compressed length follows from them.
 const SNAPPY_PAGE: u8 = 13;
+/// `SNAPPY_PAGE` with the page's values modeled (`crate::parquet::model`):
+/// the build, the model's recipe from the side, the modeled bytes as
+/// content.
+const SNAPPY_MODELED: u8 = 14;
 
 /// A stream is opened in chunks of this much plain text when it holds
 /// at least two of them.
@@ -576,25 +580,48 @@ fn open_parts(input: &[u8], depth: u32, engine: Engine) -> Option<Parts> {
 /// kept. Pages of the other codecs wait for their reproducers.
 fn open_parquet(input: &[u8], mut b: Builder) -> Option<Parts> {
     let (chunks, _) = crate::parquet::chunks(input)?;
-    let mut pages: Vec<(usize, usize)> = Vec::new();
-    for c in chunks.iter().filter(|c| c.codec == crate::parquet::Codec::Snappy) {
+    let mut pages: Vec<(usize, usize, usize, crate::parquet::Page)> = Vec::new();
+    for (i, c) in chunks.iter().enumerate().filter(|(_, c)| c.codec == crate::parquet::Codec::Snappy) {
         for p in crate::parquet::pages(input, c)? {
             let skip = if p.kind == 3 { p.v2_levels_len } else { 0 };
-            pages.push((p.body_at + skip, p.body_at + p.compressed_len));
+            pages.push((p.body_at + skip, p.body_at + p.compressed_len, i, p));
         }
     }
-    pages.sort_unstable();
-    for (at, end) in pages {
-        if at < b.keep.1 || end > input.len() || at >= end {
+    pages.sort_unstable_by_key(|p| p.0);
+    // Every page on its own core: reproduced, then its values modeled
+    // when a model beats the page as it is.
+    let opened: Vec<Option<(u8, Option<(Vec<u8>, Vec<u8>)>, Vec<u8>)>> = each_sized(pages.len(), b.depth == 0, |i| pages[i].1 - pages[i].0, |i| {
+        let (at, end, chunk, page) = &pages[i];
+        if *end > input.len() || at >= end {
+            return None;
+        }
+        let (plain, build) = crate::resnappy::reproduce(&input[*at..*end])?;
+        let build = crate::resnappy::BUILDS.iter().position(|&x| x == build)? as u8;
+        let modeled = crate::parquet::model(&plain, &chunks[*chunk], page).filter(|(recipe, _)| recipe[0] != 0);
+        Some((build, modeled, plain))
+    });
+    for (i, (at, end, _, _)) in pages.iter().enumerate() {
+        if *at < b.keep.1 {
             continue;
         }
-        let Some((plain, build)) = crate::resnappy::reproduce(&input[at..end]) else { continue };
-        let build = crate::resnappy::BUILDS.iter().position(|&x| x == build)? as u8;
-        b.segment(input, SNAPPY_PAGE, at);
-        b.body.push(build);
-        put_varint(&mut b.body, plain.len() as u64);
-        b.content.extend_from_slice(&plain);
-        b.keep = (end, end);
+        let Some((build, modeled, plain)) = &opened[i] else { continue };
+        match modeled {
+            Some((recipe, m)) => {
+                b.segment(input, SNAPPY_MODELED, *at);
+                b.body.push(*build);
+                put_varint(&mut b.body, recipe.len() as u64);
+                put_varint(&mut b.body, m.len() as u64);
+                b.side.extend_from_slice(recipe);
+                b.content.extend_from_slice(m);
+            }
+            None => {
+                b.segment(input, SNAPPY_PAGE, *at);
+                b.body.push(*build);
+                put_varint(&mut b.body, plain.len() as u64);
+                b.content.extend_from_slice(plain);
+            }
+        }
+        b.keep = (*end, *end);
     }
     b.into_parts(input, input.len())
 }
@@ -874,6 +901,7 @@ enum Seg<'a> {
     Reflate { recipe: &'a [u8], text: &'a [u8] },
     ReflateNested { recipe: &'a [u8], inner: Inner<'a> },
     Snappy { build: u8, text: &'a [u8] },
+    SnappyModeled { build: u8, recipe: &'a [u8], text: &'a [u8] },
     /// `Png` with a recipe in place of the corrections
     PngReflate { header: &'a [u8], recipe: &'a [u8], text: &'a [u8], adler: &'a [u8], chunks: Vec<(usize, &'a [u8])> },
     ReflateJpeg { recipe: &'a [u8], lepton: &'a [u8] },
@@ -999,6 +1027,11 @@ fn segments<'a>(inner: &Inner<'a>) -> Option<Vec<Seg<'a>>> {
                 let t = r.varint()?;
                 Seg::Snappy { build, text: r.content(t)? }
             }
+            SNAPPY_MODELED => {
+                let build = r.fixed(1)?[0];
+                let (c, t) = (r.varint()?, r.varint()?);
+                Seg::SnappyModeled { build, recipe: r.side(c)?, text: r.content(t)? }
+            }
             REFLATE_NESTED => {
                 let c = r.varint()?;
                 let recipe = r.side(c)?;
@@ -1019,6 +1052,7 @@ fn produce<'a>(seg: &Seg<'a>) -> Option<Cow<'a, [u8]>> {
         Seg::DeflateNestedChunked { chunks, inner } => Cow::Owned(recreate_chunked(chunks, &close_inner(inner, false)?)?),
         Seg::Reflate { recipe, text } => Cow::Owned(crate::reflate::close(text, recipe)?),
         Seg::Snappy { build, text } => Cow::Owned(crate::resnappy::compress(text, *crate::resnappy::BUILDS.get(*build as usize)?)),
+        Seg::SnappyModeled { build, recipe, text } => Cow::Owned(crate::resnappy::compress(&crate::parquet::unmodel(recipe, text)?, *crate::resnappy::BUILDS.get(*build as usize)?)),
         Seg::ReflateNested { recipe, inner } => Cow::Owned(crate::reflate::close(&close_inner(inner, false)?, recipe)?),
         Seg::Nested(inner) => Cow::Owned(close_inner(inner, false)?),
         Seg::Png { header, corrections, text, adler, chunks } => Cow::Owned(png_chunks(header, &recreate_whole_deflate_stream(text, corrections).ok()?, adler, chunks)?),
@@ -1069,7 +1103,7 @@ fn png_chunks(header: &[u8], stream: &[u8], adler: &[u8], chunks: &[(usize, &[u8
 fn close_inner(inner: &Inner<'_>, parallel: bool) -> Option<Vec<u8>> {
     let segs = segments(inner)?;
     let size = |i: usize| match &segs[i] {
-        Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => text.len(),
+        Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::SnappyModeled { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => text.len(),
         Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::Nested(inner) => inner.content.len(),
         _ => 0,
     };
@@ -1497,7 +1531,7 @@ mod legacy {
     fn collect_v013(inner: &Inner<'_>, out: &mut Vec<u8>) -> Option<()> {
         for seg in segments(inner)? {
             match seg {
-                Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => out.extend_from_slice(text),
+                Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::SnappyModeled { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => out.extend_from_slice(text),
                 Seg::DeflateJpeg { lepton, .. } | Seg::ReflateJpeg { lepton, .. } => out.extend_from_slice(lepton),
                 Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::Nested(inner) => collect_v013(&inner, out)?,
                 Seg::Bytes(_) | Seg::Jpeg(_) => {}

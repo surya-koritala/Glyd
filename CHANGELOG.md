@@ -17,11 +17,25 @@ every earlier format.
   in their hash (a multiply, or the CRC32C instruction) and their
   table (2^14 entries up to 1.1.10, 2^15 since 1.2.0); the opener
   finds the build that wrote a page and keeps a page no build made.
-  A NYC taxi month written by pyarrow 21 with snappy, 61.7 MB: 174 of
-  174 pages reproduced; `--max` 46.8 MB in 0.6 s (zstd -3 52.3, zstd
-  -19 49.8), `--ultra` 44.4 MB, every decode byte-exact. Pages
-  compressed with zstd, gzip and the rest are left as they are for
-  now; the values' own models (typed columns) come next.
+  A page's plain values are then modeled so the LZ and entropy stages
+  see their structure: fixed-width values as byte planes, integers in
+  their unit (microseconds that are whole seconds divided down) and
+  as deltas, doubles that are decimals as scaled integers, byte
+  arrays as lengths then bytes; dictionary-index pages have their
+  runs decoded, written again by a port of Arrow's run-length encoder
+  and compared, and the indices laid out as planes of the bytes that
+  hold them. Each page takes the cheapest of its candidates or stays
+  as it is, judged by the max level's own output, and the level
+  blocks stay ahead. A NYC taxi month written by pyarrow 21 with
+  snappy, 61.7 MB: 174 of 174 pages reproduced; `--max` 34.8 MB in
+  0.5 s on ten cores (1.8 s on one), read back in 94 ms (zstd -3 on
+  the file 52.3 MB, zstd -19 49.8; the same table's zstd-page file
+  50.3; record mode on the table as CSV 37.0), `--ultra` 32.3 MB,
+  every decode byte-exact. A month of for-hire trips, 519 MB with
+  snappy, 1,291 pages, more of them ids: `--max` 376.5 MB in 3.4 s
+  (zstd -3 on the file 473.2; the zstd-page file 472.8), read back in
+  1.0 s. Pages compressed with zstd, gzip and the rest are left as
+  they are for now.
 - **The store keeps a version's base among its own kind.** An object
   whose base holds under 90% of its fingerprints starts a family (a
   new kernel major holds 0.85 of the old one; point releases hold
