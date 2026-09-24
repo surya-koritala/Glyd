@@ -20,7 +20,8 @@ terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
 
 Measured floors, not to be retried: JSON API events and crawl indexes
 are 20–65% hashes and random ids once compressed (typed columns gain
-0.1%); Parquet is zstd inside; generic text and binaries sit on the same
+0.1%); Parquet's pages open now (snappy and zstd reproduced, the
+values modeled: 31–44% under the file); generic text and binaries sit on the same
 entropy floor for every codec (zstd -19, xz, Glyd `--ultra` within 2%).
 Details: [experiments/structure/README.md](experiments/structure/README.md).
 
@@ -76,7 +77,11 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
    nested four deep (next release): 5–82% under the object at the
    level that opens it, 16–74% where zstd -19 gets 3–53%; JPEG
    recoded by Glyd's own model (v0.14.0), 22–26%, inside the others too.
-   Next: Parquet columns behind a "same table" option (26–40%), then
+   Parquet with snappy or zstd pages (v0.14.8: every page written back
+   byte for byte by a port of the compressor that wrote it, the values
+   modeled, 31–44% under the file where zstd -19 gets 1%), and zstd
+   objects the same way. Next: zstd versions past 1.5.5 and gzip
+   pages, then
    the recipe itself (preflate's corrections are a fifth of a pdfTeX
    stream; a better predictor of zlib's choices would halve what
    opening costs), then zip entries and PDF streams that are

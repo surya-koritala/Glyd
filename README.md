@@ -105,7 +105,8 @@ matters):
 | **SQL dumps** (`-r`) | **−41%** | **−30%** |
 | **JSON events** (API payloads with hashes) | **−22%** | −10% |
 | Whole mixed corpus (`-r`) | **−19%** | −10% |
-| Plain text, binaries, Parquet | ~0% | ~0% (the floor; nothing moves it) |
+| **Parquet** with snappy or zstd pages (opened, the values modeled) | **−31 to −44%** of the file (zstd -19 gets 1%) | **−35%** (`--ultra`, against zstd -19 on the file) |
+| Plain text, binaries | ~0% | ~0% (the floor; nothing moves it) |
 
 A terabyte kept a year in S3 Standard, compressed once and read once a
 month (Graviton3, CPU billed at the on-demand price): `--max -r` **$61.7**
@@ -247,7 +248,7 @@ byte with its input. Green: Glyd's file is smaller.
 
 Glyd wins where the data has structure: each field of a record becomes
 a column, and the deflate or JPEG inside a container is opened and
-re-created bit for bit. On plain text, executables and Parquet it is
+re-created bit for bit. On plain text and executables it is
 zstd-class: within 2% at the fast tier, 1–15% larger than xz and
 brotli -11 at their strongest. Every codec's speed, the strong-tier
 and ratio-against-speed charts, and lz4, bzip2, zpaq and JPEG XL:
@@ -457,7 +458,28 @@ of each, 10 cores, every decode byte-checked):
 `--max -r` writes these at 260-460 MB/s and reads them back at
 1,200-1,400 MB/s.
 
-### Objects opened: gzip, zip, tar, Office documents, jars, PDF, PNG — and JPEG transcoded
+### Objects opened: gzip, zip, tar, Office documents, jars, PDF, PNG, Parquet, zstd — and JPEG transcoded
+
+Parquet, the data lakes' format, holds its columns as pages
+compressed with snappy or zstd, and to a codec those pages are noise:
+zstd -19 takes 1% off a Parquet file. Glyd opens them (`src/parquet.rs`):
+every page is written back byte for byte by a port of the compressor
+that wrote it (google/snappy 1.2, level 1, in its builds;
+zstd 1.5.5 at levels 1 and 3, as its library and its command line
+write, `src/resnappy.rs`, `src/rezstd/`), so the page's values are
+what gets compressed, and they are modeled first: fixed-width values
+as byte planes, counters and times in their unit and as deltas,
+decimal doubles as integers, byte arrays as lengths then bytes,
+dictionary indices unpacked (their runs written again by a port of
+Arrow's encoder). A NYC taxi month written by pyarrow, 61.7 MB with
+snappy pages or 50.3 MB with zstd pages, comes to **34.8 MB** either
+way at `--max` (zstd -19 on the snappy file: 49.8 MB), 32.3 MB at
+`--ultra`, 0.5 s to write on ten cores and 0.1 s to read back; a
+month of for-hire trips, 519 MB, to 376.5 MB. A whole zstd frame (a
+`.zst` object) opens the same way: an access log `zstd` wrote, 22.3
+MB, comes to 8.0 MB with its records modeled. Every decode is
+byte-exact; a page or frame no build reproduces (another version of
+zstd, another level, gzip pages) is kept as it is.
 
 Much of what sits in a bucket is deflate inside a container — gzipped
 logs (ELB, CloudFront, CloudTrail and flow logs are delivered that
@@ -803,7 +825,10 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 - Small objects with a dictionary: sizes tie, zstd is 1.4–2× faster per
   object. Record mode works on files, not on single small objects.
 - JSON API events and crawl indexes are 20–65% hashes and random ids once
-  compressed; no column model moves them. Parquet is zstd inside already.
+  compressed; no column model moves them. Parquet's pages are opened
+  when snappy or zstd 1.5.5 wrote them; pages from other zstd versions
+  or gzip, and Parquet's encodings beyond plain and dictionary, are
+  kept as they are.
 - `--cold` is symmetric: reads cost what writes cost, 1–1.3 MB/s per
   core, so it is for data read a few times in its life, not a tier that
   serves reads. It is 1% behind zpaq -m5 on text, 6–11% on an
