@@ -1,7 +1,7 @@
 """End to end: a Hugging Face causal LM generating with its weights held
 compressed in VRAM (glyd_gpu), against the same model in bf16.
 
-    python e2e.py MODEL_DIR --format fast|huffman [--fused] [--baseline] [--tokens N]
+    python e2e.py MODEL_DIR --format fast|huffman|mma [--fused] [--baseline] [--tokens N]
 
 Exact path (default): each matrix decoded into a scratch buffer, then
 PyTorch's own matmul: logits and tokens bit-identical to bf16. --fused:
@@ -19,7 +19,7 @@ import glyd_gpu as g
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
-ap.add_argument("--format", default="fast", choices=["fast", "huffman"])
+ap.add_argument("--format", default="fast", choices=["fast", "huffman", "mma"], help="mma: the Linears in the mma layout (the embedding in fast)")
 ap.add_argument("--fused", action="store_true")
 ap.add_argument("--baseline", action="store_true")
 ap.add_argument("--tokens", type=int, default=128)
@@ -85,7 +85,7 @@ class GLinear(nn.Module):
         super().__init__()
         self.p, self.bias = p, bias
         O, K = p.shape
-        step = getattr(p, "rows_per_tile", 1) or 1
+        step = 64 if isinstance(p, g.Mma) else getattr(p, "rows_per_tile", 1) or 1
         # Whole when it fits the scratch (a split matmul sums in another order).
         self.block = O if O * K <= SCRATCH else max(step, SCRATCH // K // step * step)
 
@@ -93,7 +93,9 @@ class GLinear(nn.Module):
         p, K = self.p, self.p.shape[1]
         buf = Scratch.buf[p.sm.device]
         out = buf[: (r1 - r0) * K]
-        if isinstance(p, g.Fast):
+        if isinstance(p, g.Mma):
+            g.mma_unpack(p, out, r0, r1 - r0)
+        elif isinstance(p, g.Fast):
             g._ext.fast_decode(p.sm, p.planes, p.exc, p.exc_base, p.top, r0, r1 - r0, g._none(out.device), K, out.view(torch.int16))
         elif p.split:  # tiles split its rows: decoded whole (it fits the scratch)
             assert r0 == 0 and r1 == p.shape[0]
@@ -110,6 +112,8 @@ class GLinear(nn.Module):
         O, K = self.p.shape
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)
+        if args.fused and isinstance(self.p, g.Mma) and x2.shape[0] <= 32:
+            return g.mma_gemm(self.p, x2, self.bias).view(*lead, O)
         if args.fused and x2.shape[0] == 1:
             f = g.fast_gemv if isinstance(self.p, g.Fast) else g.gemv
             return f(self.p, x2[0], self.bias).view(*lead, O)
@@ -170,7 +174,14 @@ for b in layer_bytes:
 layer_of = {id(m): gpu_of[i] for i, l in enumerate(layers) for m in l.modules()}
 last = args.gpus - 1
 
-pack = g.pack_fast if args.format == "fast" else g.pack
+
+
+def pack(w, linear):
+    if args.format == "mma" and linear and w.shape[0] % 64 == 0 and w.shape[1] % 16 == 0:
+        return g.pack_mma(w)
+    return (g.pack if args.format == "huffman" else g.pack_fast)(w)
+
+
 packed, biggest, t0 = {}, {}, time.perf_counter()
 with torch.no_grad():
     for name, m in list(model.named_modules()):
@@ -179,7 +190,7 @@ with torch.no_grad():
                 dev = torch.device("cuda", layer_of.get(id(child), 0 if isinstance(child, nn.Embedding) else last))
                 key = (child.weight.data_ptr(), dev)
                 if key not in packed:
-                    packed[key] = pack(child.weight.data.to(dev))
+                    packed[key] = pack(child.weight.data.to(dev), isinstance(child, nn.Linear))
                 p = packed[key]
                 bias = child.bias.data.to(dev) if isinstance(child, nn.Linear) and child.bias is not None else None
                 setattr(m, cname, GLinear(p, bias) if isinstance(child, nn.Linear) else GEmbedding(p))

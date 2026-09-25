@@ -345,11 +345,14 @@ def pack_mma(w):
     return Mma((O, K), codes.flatten(), sm, exc, (torch.cumsum(per_step, 0) - per_step).to(torch.int32), base)
 
 
-def mma_unpack(p):
+def mma_unpack(p, out=None, row0=0, rows=None):
+    """Rows [row0, row0 + rows) of W (multiples of 64), bf16 [rows, K]."""
     O, K = p.shape
-    out = torch.empty(O, K, dtype=torch.bfloat16, device=p.sm.device)
-    _ext.mma_unpack(p.codes, p.sm, p.exc, p.exc_base, p.base, O, K, out.view(torch.int16))
-    return out
+    rows = O - row0 if rows is None else rows
+    if out is None:
+        out = torch.empty(rows * K, dtype=torch.bfloat16, device=p.sm.device)
+    _ext.mma_unpack(p.codes, p.sm, p.exc, p.exc_base, p.base, K, row0, rows, out.view(torch.int16))
+    return out[: rows * K].view(rows, K)
 
 
 def mma_gemm(p, x, bias=None):

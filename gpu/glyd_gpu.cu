@@ -774,14 +774,14 @@ __global__ void __launch_bounds__(256, 3 - MT) mma_gemm_kernel(const uint32_t* _
     }
 }
 
-// The mma layout back to W [O, K] in bf16 (checks, and the several-token
-// path that multiplies with PyTorch): a warp a step.
-__global__ void mma_unpack_kernel(const uint32_t* __restrict__ codes, int64_t groups, const uint8_t* __restrict__ sm, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint32_t base, int64_t O, int64_t K, uint16_t* __restrict__ out) {
-    int64_t step = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5;
+// The mma layout back to bf16, rows [row0, row0 + rows) of W (multiples of
+// 64) into out [rows, K] (checks, and the many-token path that multiplies
+// with PyTorch): a warp a step.
+__global__ void mma_unpack_kernel(const uint32_t* __restrict__ codes, int64_t groups, const uint8_t* __restrict__ sm, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint32_t base, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out) {
+    int64_t KS = K / 16, local = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5;
     int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
-    int64_t KS = K / 16;
-    if (step >= (O / 64) * KS) return;
-    int64_t rb = step / KS, s = step % KS, grp = step * 32 + lane;
+    if (local >= rows / 64 * KS) return;
+    int64_t step = row0 / 64 * KS + local, rb = local / KS, s = local % KS, grp = step * 32 + lane;
     uint32_t w[3] = {codes[grp], codes[groups + grp], codes[2 * groups + grp]}, sw[8];
     const uint4* sp = (const uint4*)(sm + grp * 32);
     uint4 x0 = sp[0], x1 = sp[1];
@@ -789,13 +789,14 @@ __global__ void mma_unpack_kernel(const uint32_t* __restrict__ codes, int64_t gr
     uint32_t R[16];
     int64_t at = exc_base[step];
     decode_group(w, sw, (base << 7) | (base << 23), exc, at, lane, R);
+    // R[2n]: row 8n + g, columns 2t and 2t + 1; R[2n + 1]: columns 8 + 2t, 9 + 2t.
+    uint32_t* out32 = (uint32_t*)out;
 #pragma unroll
-    for (int n = 0; n < 8; n++)
-#pragma unroll
-        for (int j = 0; j < 4; j++) {
-            int64_t o = rb * 64 + 8 * n + g, k = s * 16 + 8 * (j >> 1) + 2 * t + (j & 1);
-            out[o * K + k] = (uint16_t)(R[2 * n + (j >> 1)] >> (16 * (j & 1)));
-        }
+    for (int n = 0; n < 8; n++) {
+        int64_t at2 = ((rb * 64 + 8 * n + g) * K + s * 16 + 2 * t) / 2;
+        out32[at2] = R[2 * n];
+        out32[at2 + 4] = R[2 * n + 1];
+    }
 }
 
 // The fast format decoded to bf16: rows [row0, row0 + rows), or the rows
@@ -962,11 +963,12 @@ void mma_gemm(torch::Tensor codes, torch::Tensor sm, torch::Tensor exc, torch::T
     if (splits > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>((const float*)y32.data_ptr(), splits, b, M, O, (__nv_bfloat16*)y.data_ptr());
 }
 
-void mma_unpack(torch::Tensor codes, torch::Tensor sm, torch::Tensor exc, torch::Tensor exc_base, int64_t base, int64_t O, int64_t K, torch::Tensor out) {
+void mma_unpack(torch::Tensor codes, torch::Tensor sm, torch::Tensor exc, torch::Tensor exc_base, int64_t base, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
     const c10::cuda::CUDAGuard guard(codes.device());
     cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    int64_t steps = (O / 64) * (K / 16);
-    mma_unpack_kernel<<<(steps * 32 + 255) / 256, 256, 0, cs>>>((const uint32_t*)codes.data_ptr(), codes.numel() / 3, (const uint8_t*)sm.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint32_t)base, O, K, (uint16_t*)out.data_ptr());
+    TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64");
+    int64_t steps = rows / 64 * (K / 16);
+    mma_unpack_kernel<<<(steps * 32 + 255) / 256, 256, 0, cs>>>((const uint32_t*)codes.data_ptr(), codes.numel() / 3, (const uint8_t*)sm.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint32_t)base, K, row0, rows, (uint16_t*)out.data_ptr());
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
