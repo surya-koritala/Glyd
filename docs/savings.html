@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Glyd savings calculator</title>
-<meta name="description" content="Estimate what Glyd v0.5.0 saves on object storage compared with LZ4, zstd -3 and zstd -19, from measured ratios on real data, versions included.">
+<meta name="description" content="Estimate what Glyd v0.14.9 saves on object storage against LZ4, gzip, zstd -3 and zstd -19, from ratios measured on real data: logs, dumps, JSON, telemetry, Parquet, versions and a terabyte bucket.">
 <style>
   :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; }
   @media (prefers-color-scheme: dark) { :root { --fg:#eee; --bg:#111; --muted:#aaa; --line:#333; --accent:#6ea0ff; } }
@@ -28,9 +28,9 @@
 </head>
 <body>
 <main>
-  <nav><a href="./">Glyd</a> · <a href="https://github.com/surya-koritala/Glyd">GitHub</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-20.md">benchmark report</a></nav>
+  <nav><a href="./">Glyd</a> · <a href="https://github.com/surya-koritala/Glyd">GitHub</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/savings-2026-09-24.md">how these ratios were measured</a> · <a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/store-gate-2026-09-24.md">the terabyte gate</a></nav>
   <h1>What Glyd saves you</h1>
-  <p class="sub">Bytes stored scale with 1 / ratio. Ratios are measured on real data (v0.5.0: AWS Graviton3 and Sapphire Rapids, 8 threads; the telemetry sets and the version pairs on an M1 Max), every decode compared with its input. Measure your own data with <code>glyd -b yourfile</code>.</p>
+  <p class="sub">Bytes stored scale with 1 / ratio. Measured on 2026-09-24 on an AMD Ryzen 9 7950X3D (16 cores, 32 threads) against zstd 1.5.7, LZ4 1.10.0 and gzip 1.14, Glyd at v0.14.9; the bucket row is the store's terabyte gate (v0.14.8, S3, 16 vCPU). Every Glyd output was decoded and compared with its input. Measure your own data with <code>glyd -b yourfile</code>, or a bucket with <code>glyd-store --audit s3://bucket</code>.</p>
 
   <div class="row">
     <div>
@@ -40,29 +40,32 @@
     <div>
       <label for="kind">What the data is</label>
       <select id="kind">
-        <option value="corpus">Mixed: logs, JSON, SQL dumps, Parquet (8.7 GB corpus)</option>
-        <option value="telemetry_csv">Telemetry / measurements as CSV (cluster trace, weather, trips)</option>
-        <option value="telemetry_json">Telemetry / measurements as JSON lines</option>
+        <option value="store">A bucket of versioned objects: releases, images, dumps, events (1.2 TB)</option>
+        <option value="corpus">Mixed: logs, JSON, SQL dumps, Parquet (8.7 GB)</option>
         <option value="logs">Access and pageview logs</option>
         <option value="sql">Database dumps (SQL)</option>
         <option value="json">JSON API events (GitHub Archive)</option>
-        <option value="parquet">Parquet (already compressed)</option>
-        <option value="versions">Versions of an object: nightly dumps (each against the previous one)</option>
+        <option value="telemetry_csv">Telemetry and measurements as CSV (cluster trace, weather, trips)</option>
+        <option value="telemetry_json">Telemetry and measurements as JSON lines</option>
+        <option value="parquet">Parquet with zstd pages (NYC TLC's own files)</option>
+        <option value="parquet_snappy">Parquet with snappy pages (pyarrow's default)</option>
+        <option value="versions">Versions of one object: a table dump a month on, against the last</option>
       </select>
     </div>
     <div>
       <label for="codec">Compressed today with</label>
       <select id="codec">
-        <option value="lz4">LZ4</option>
         <option value="zstd3" selected>zstd -3</option>
+        <option value="gzip6">gzip -6</option>
         <option value="zstd19">zstd -19</option>
+        <option value="lz4">LZ4</option>
         <option value="none">Nothing</option>
       </select>
     </div>
     <div>
       <label for="level">Glyd level</label>
       <select id="level">
-        <option value="maxrec" selected>--max -r (record mode, 540-680 MB/s writes)</option>
+        <option value="maxrec" selected>--max -r (record mode; the store's level)</option>
         <option value="ultrarec">--ultra -r (record mode, slow writes)</option>
         <option value="max">--max</option>
         <option value="ultra">--ultra (slow writes)</option>
@@ -81,39 +84,34 @@
       <tr><th>Ratio today → with Glyd</th><td id="ratios">—</td></tr>
       <tr><th>Stored with Glyd</th><td id="after">—</td></tr>
       <tr><th>Bytes saved</th><td id="pct">—</td></tr>
-      <tr><th>Read CPU vs today's codec (CLI, 8.7 GB corpus)</th><td id="cpu">—</td></tr>
+      <tr><th>CPU to read it back, against today's codec</th><td id="cpu">—</td></tr>
     </table>
     <small id="note"></small>
   </div>
-  <p><small>Formula: stored_TB × (1 − old_ratio / glyd_ratio) × price × 12. Read CPU is the CLI's decompress CPU seconds per 8.7 GB in the S3 workflow on Graviton3 (LZ4 7.8, zstd -3 10.9, zstd -19 12.5, Glyd --max 11.7, --ultra 11.1, --max -r 22.2, --ultra -r 20.7), not the library's in-memory speed. Every 1% fewer bytes across 100 EB of object storage is about $250 million a year at list price.</small></p>
+  <p><small>Formula: stored_TB × (1 − old_ratio / glyd_ratio) × price × 12. Read CPU is the command line's decompress CPU-seconds (user + system, all cores) for the row's files, to /dev/null; record mode spends more CPU on reads than it saves in bytes when data is read many times a month. "Not measured" means that pair was not run on that data; no figure is estimated. At list price, every 1% fewer bytes across 100 EB of object storage is about $276 million a year.</small></p>
 </main>
 <script>
-  // Ratios by data kind: [lz4, zstd -3, zstd -19, none, glyd max, max -r, ultra, ultra -r].
-  const R = {
-    corpus:         { lz4:2.716, zstd3:3.851,  zstd19:4.664,  none:1, max:3.962,  maxrec:4.754,  ultra:4.660,  ultrarec:5.205,  note:"18 files, 8.7 GB: logs 1.3 GB, JSON events 2.6 GB, SQL dumps 3.9 GB, Parquet 1.0 GB." },
-    telemetry_csv:  { lz4:3.24,  zstd3:5.51,   zstd19:8.63,   none:1, max:5.61,   maxrec:11.55,  ultra:8.33,   ultrarec:13.18,   note:"Three CSVs, 128 MB each: Alibaba cluster machine usage, NOAA daily weather, NYC taxi trips; ratios are of the total." },
-    telemetry_json: { lz4:9.30,  zstd3:17.07,  zstd19:30.07,  none:1, max:17.59,  maxrec:50.53,  ultra:29.68,  ultrarec:58.47,   note:"The cluster trace and the weather rows as JSON objects, one per line, 128 MB each." },
-    logs:           { lz4:3.047, zstd3:4.887,  zstd19:6.826,  none:1, max:5.165,  maxrec:6.318,  ultra:6.633,  ultrarec:7.473,  note:"NASA and ClarkNet access logs, Wikipedia pageview logs (1.3 GB)." },
-    sql:            { lz4:3.006, zstd3:4.973,  zstd19:7.098,  none:1, max:4.961,  maxrec:8.381,  ultra:6.982,  ultrarec:10.137, note:"MySQL dumps of Wikipedia tables (3.9 GB)." },
-    json:           { lz4:5.020, zstd3:10.462, zstd19:15.073, none:1, max:13.467, maxrec:13.467, ultra:16.717, ultrarec:16.717, note:"GitHub Archive hours (2.6 GB): not record-shaped, so -r hands them to the plain level; hashes and free text set the floor." },
-    parquet:        { lz4:1.000, zstd3:1.010,  zstd19:1.021,  none:1, max:1.007,  maxrec:1.007,  ultra:1.018,  ultrarec:1.018,  note:"Parquet already holds zstd-compressed pages; nothing shrinks it further." },
-    versions:       { lz4:2.70,  zstd3:28.1,   zstd19:83.2,   none:1, max:60.2,   maxrec:60.2,   ultra:87.6,   ultrarec:87.6,   note:"Wikipedia page-table dumps a month apart (108 MB): zstd's figures are its --patch-from against the previous dump (LZ4 has no delta mode, so each dump alone); Glyd's are --base. Image and source-tree pairs give 200-700x." },
-  };
-  const CPU = { lz4:7.8, zstd3:10.9, zstd19:12.5, none:0, max:11.7, maxrec:22.2, ultra:11.1, ultrarec:20.7 };
+  // Ratios (raw bytes / stored bytes) and decompress CPU-seconds by data kind.
+  // Generated from the measured rows (benchmarks/calc/); null where not measured.
+  const R = /*ROWS*/{"corpus":{"ratio":{"none":1.0,"lz4":2.744,"gzip6":3.644,"zstd3":3.915,"zstd19":4.762,"max":4.309,"maxrec":5.201,"ultra":5.331,"ultrarec":6.083},"cpu":{"lz4":4.02,"gzip6":10.6,"zstd3":4.43,"zstd19":4.2,"max":19.71,"maxrec":28.89,"ultra":19.25,"ultrarec":29.14},"note":"18 files, 8.7 GB: access and pageview logs 1.3 GB, GitHub events 2.6 GB, Wikipedia SQL dumps 3.9 GB, two NYC TLC Parquet files 0.9 GB."},"logs":{"ratio":{"none":1.0,"lz4":3.048,"gzip6":4.837,"zstd3":4.887,"zstd19":6.826,"max":4.898,"maxrec":6.062,"ultra":6.6,"ultrarec":7.747},"cpu":{"lz4":0.63,"gzip6":1.66,"zstd3":0.76,"zstd19":0.66,"max":1.09,"maxrec":3.68,"ultra":0.94,"ultrarec":3.69},"note":"NASA and ClarkNet access logs, three hours of Wikipedia pageviews (1.3 GB)."},"sql":{"ratio":{"none":1.0,"lz4":3.007,"gzip6":4.635,"zstd3":4.973,"zstd19":7.098,"max":5.019,"maxrec":8.083,"ultra":7.008,"ultrarec":10.146},"cpu":{"lz4":1.87,"gzip6":5.39,"zstd3":2.46,"zstd19":2.33,"max":2.68,"maxrec":9.43,"ultra":2.45,"ultrarec":9.48},"note":"MySQL dumps of English and Simple English Wikipedia tables (3.9 GB)."},"json":{"ratio":{"none":1.0,"lz4":5.022,"gzip6":7.286,"zstd3":10.462,"zstd19":15.073,"max":11.248,"maxrec":11.248,"ultra":15.851,"ultrarec":15.851},"cpu":{"lz4":1.02,"gzip6":2.23,"zstd3":0.9,"zstd19":0.79,"max":0.89,"maxrec":0.88,"ultra":0.8,"ultrarec":0.8},"note":"Three hours of GitHub Archive (2.6 GB): not record-shaped, so -r hands them to the plain level; hashes and free text set the floor."},"telemetry_csv":{"ratio":{"none":1.0,"lz4":3.242,"gzip6":5.983,"zstd3":5.508,"zstd19":8.633,"max":5.567,"maxrec":12.336,"ultra":8.376,"ultrarec":13.472},"cpu":{"lz4":0.21,"gzip6":0.42,"zstd3":0.26,"zstd19":0.23,"max":0.37,"maxrec":1.32,"ultra":0.24,"ultrarec":1.29},"note":"Three CSVs, 128 MiB each: Alibaba cluster machine usage, NOAA daily weather, NYC taxi trips."},"telemetry_json":{"ratio":{"none":1.0,"lz4":9.323,"gzip6":18.5,"zstd3":17.07,"zstd19":30.07,"max":17.068,"maxrec":50.275,"ultra":29.808,"ultrarec":58.607},"cpu":{"lz4":0.1,"gzip6":0.09,"zstd3":0.08,"zstd19":0.06,"max":0.15,"maxrec":0.59,"ultra":0.07,"ultrarec":0.6},"note":"The cluster trace and the weather rows as JSON objects, one per line, 128 MiB each."},"parquet":{"ratio":{"none":1.0,"lz4":1.0,"gzip6":1.012,"zstd3":1.011,"zstd19":1.022,"max":1.25,"maxrec":1.25,"ultra":1.306,"ultrarec":1.306},"cpu":{"lz4":0.5,"gzip6":1.32,"zstd3":0.31,"zstd19":0.42,"max":15.05,"maxrec":14.9,"ultra":15.06,"ultrarec":15.17},"note":"NYC TLC's for-hire trips, two months as the city publishes them (zstd pages, 0.9 GB): every page is written back byte for byte by Glyd's port of zstd and its values modeled; zstd on the file gains almost nothing."},"parquet_snappy":{"ratio":{"none":1.0,"lz4":1.0,"gzip6":1.105,"zstd3":1.104,"zstd19":1.131,"max":1.41,"maxrec":1.41,"ultra":1.478,"ultrarec":1.478},"cpu":{"lz4":0.3,"gzip6":1.7,"zstd3":0.38,"zstd19":0.54,"max":6.42,"maxrec":6.49,"ultra":6.47,"ultrarec":6.58},"note":"A for-hire month and a yellow-taxi month written by pyarrow with snappy pages (0.6 GB): every page written back byte for byte by Glyd's port of snappy, its values modeled."},"versions":{"ratio":{"none":1.0,"lz4":2.057,"gzip6":3.261,"zstd3":28.052,"zstd19":83.157,"max":60.889,"maxrec":60.889,"ultra":87.398,"ultrarec":87.398},"cpu":null,"note":"A Simple English Wikipedia page table a month on (108 MB), against the last: zstd's figures are its --patch-from, Glyd's are --base (-r levels as the plain ones); LZ4 and gzip have no delta mode, so each dump alone. Kernel and image pairs give 200-700x."},"store":{"ratio":{"none":1.0,"lz4":null,"gzip6":null,"zstd3":7.715,"zstd19":null,"max":26.701,"maxrec":26.701,"ultra":null,"ultrarec":null},"cpu":null,"note":"The gate: 1,192 public objects, 1.18 TB (400 Linux point releases, every hour of GitHub events in January 2024, five English Wikipedia dumps' tables, six Ubuntu images), put through glyd-store into S3 and every object read back byte-exact; zstd -3 is each object alone. The store keeps a version as a delta of the stored object it most resembles."}};
   const $ = id => document.getElementById(id);
   function fmt(n){ return n >= 1e9 ? "$" + (n/1e9).toFixed(2) + " billion" : n >= 1e6 ? "$" + (n/1e6).toFixed(2) + " million" : "$" + Math.round(n).toLocaleString(); }
   function tb(n){ return n >= 1000 ? (n/1000).toFixed(2) + " PB" : n.toFixed(1) + " TB"; }
   function calc(){
     const stored = +$("tb").value || 0, price = +$("price").value || 0;
-    const r = R[$("kind").value], old = r[$("codec").value], glyd = r[$("level").value];
+    const r = R[$("kind").value], old = r.ratio[$("codec").value], glyd = r.ratio[$("level").value];
+    $("note").textContent = r.note;
+    if (old == null || glyd == null) {
+      for (const id of ["usd", "ratios", "after", "pct", "cpu"]) $(id).textContent = "not measured";
+      return;
+    }
     const after = stored * old / glyd, saved = stored - after;
     $("usd").textContent = fmt(Math.max(0, saved) * price * 12);
     $("ratios").textContent = old.toFixed(2) + " → " + glyd.toFixed(2);
     $("after").textContent = tb(after);
     $("pct").textContent = (100 * (1 - old / glyd)).toFixed(1) + "%" + (saved < 0 ? " (Glyd stores more here)" : "");
-    const d = CPU[$("codec").value], g = CPU[$("level").value];
-    $("cpu").textContent = d ? (g <= d ? (100 * (1 - g / d)).toFixed(0) + "% fewer CPU-seconds" : (100 * (g / d - 1)).toFixed(0) + "% more CPU-seconds") : "—";
-    $("note").textContent = r.note;
+    const d = r.cpu ? r.cpu[$("codec").value] : null, g = r.cpu ? r.cpu[$("level").value] : null;
+    $("cpu").textContent = (d && g) ? (g <= d ? (100 * (1 - g / d)).toFixed(0) + "% fewer CPU-seconds" : (100 * (g / d - 1)).toFixed(0) + "% more CPU-seconds") : "not measured";
   }
   document.querySelectorAll("input, select").forEach(e => e.addEventListener("input", calc));
   calc();

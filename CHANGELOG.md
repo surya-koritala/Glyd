@@ -6,6 +6,20 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- Reads: the decoder no longer spins while a unit waits for the ones
+  ahead of it; the unit that completes the run writes it out. Decompress
+  CPU at the plain levels fell by up to 65% on 32 threads (logs `--max`
+  3.08 → 1.09 s), wall time unchanged.
+- The same bytes on every machine: an input is cut into sixteen units
+  whatever the core count (it followed the thread count before, so a
+  32-thread machine cut twice as finely as a 16-core one). GitHub
+  events at `--ultra` 5.4% smaller on 32 threads; unchanged on 16.
+- The savings calculator re-measured at this code (LZ4, gzip, zstd -3
+  and -19, four Glyd levels, decompress CPU per row; the bucket row
+  from the v0.14.8 gate): [report](docs/benchmarks/savings-2026-09-24.md).
+
 ## v0.14.8 — 2026-09-24
 
 - **At a terabyte: 3.46× fewer bytes than zstd -3** (3.32× in
