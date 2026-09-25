@@ -21,6 +21,12 @@ every earlier format.
   matches would cost more: `--max` on Pythia's exponent plane 171.7 →
   140.1 MB (zstd -19: 143.8), on Qwen2.5's 208.3 → 169.8 MB (171.6).
   Text, logs, SQL and kernel tars come out byte-identical in size.
+- Model weights: a safetensors file is opened, each tensor of 2-, 4- or
+  8-byte elements as byte planes (exponents together, mantissas
+  together), the header kept; closed byte for byte. Pythia-410M (fp32,
+  1,621 MB) at `-9`: 701 MB in 3.5 s, against zstd -19's 809 MB in 92 s
+  and zstd -3's 959 MB; Qwen2.5-0.5B (bf16, 988 MB): 663 MB against
+  750 and 769. Reads at 1.1 GB/s.
 - The savings calculator re-measured at this code (LZ4, gzip, zstd -3
   and -19, four Glyd levels, decompress CPU per row; the bucket row
   from the v0.14.8 gate): [report](docs/benchmarks/savings-2026-09-24.md).

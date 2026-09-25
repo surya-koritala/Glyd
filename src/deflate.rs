@@ -89,6 +89,9 @@ const ZSTD_FRAME: u8 = 15;
 const ZSTD_MODELED: u8 = 16;
 /// `ZSTD_FRAME` whose content is a container of its own, nested.
 const ZSTD_NESTED: u8 = 17;
+/// A safetensors tensor as byte planes (`crate::safetensors::split`):
+/// the element width (one byte), the planes as content.
+const TENSOR_PLANES: u8 = 18;
 
 /// A stream is opened in chunks of this much plain text when it holds
 /// at least two of them.
@@ -106,7 +109,7 @@ pub fn is_container(input: &[u8]) -> bool {
     if crate::jpeg::is_jpeg(input) {
         return true;
     }
-    is_gzip(input) || is_zip(input) || is_png(input) || is_pdf(input) || is_tar(input) || is_zlib(input) || crate::parquet::is_parquet(input) || is_zstd(input)
+    is_gzip(input) || is_zip(input) || is_png(input) || is_pdf(input) || is_tar(input) || is_zlib(input) || crate::parquet::is_parquet(input) || is_zstd(input) || crate::safetensors::is_safetensors(input)
 }
 
 /// A zstd build as one recipe byte: its index among `rezstd::BUILDS`
@@ -596,9 +599,28 @@ fn open_parts(input: &[u8], depth: u32, engine: Engine) -> Option<Parts> {
         open_parquet(input, b)
     } else if is_zstd(input) {
         open_zstd(input, b)
+    } else if crate::safetensors::is_safetensors(input) {
+        open_safetensors(input, b)
     } else {
         None
     }
+}
+
+/// Model weights: every tensor of 2-, 4- or 8-byte elements as byte
+/// planes; the header and anything else kept.
+fn open_safetensors(input: &[u8], mut b: Builder) -> Option<Parts> {
+    for t in crate::safetensors::tensors(input)? {
+        let len = t.end - t.start;
+        if t.width < 2 || len < 64 || len % t.width != 0 {
+            continue;
+        }
+        b.segment(input, TENSOR_PLANES, t.start);
+        b.body.push(t.width as u8);
+        put_varint(&mut b.body, len as u64);
+        crate::safetensors::split(&input[t.start..t.end], t.width, &mut b.content);
+        b.keep = (t.end, t.end);
+    }
+    b.into_parts(input, input.len())
 }
 
 /// A zstd frame standing alone (a `.zst` object) written back by
@@ -965,6 +987,7 @@ enum Seg<'a> {
     Zstd { build: u8, text: &'a [u8] },
     ZstdModeled { build: u8, recipe: &'a [u8], text: &'a [u8] },
     ZstdNested { build: u8, inner: Inner<'a> },
+    Planes { width: u8, text: &'a [u8] },
     /// `Png` with a recipe in place of the corrections
     PngReflate { header: &'a [u8], recipe: &'a [u8], text: &'a [u8], adler: &'a [u8], chunks: Vec<(usize, &'a [u8])> },
     ReflateJpeg { recipe: &'a [u8], lepton: &'a [u8] },
@@ -1114,6 +1137,11 @@ fn segments<'a>(inner: &Inner<'a>) -> Option<Vec<Seg<'a>>> {
                 let recipe = r.side(c)?;
                 Seg::ReflateNested { recipe, inner: r.inner()? }
             }
+            TENSOR_PLANES => {
+                let width = r.fixed(1)?[0];
+                let t = r.varint()?;
+                Seg::Planes { width, text: r.content(t)? }
+            }
             _ => return None,
         });
     }
@@ -1138,6 +1166,7 @@ fn produce<'a>(seg: &Seg<'a>) -> Option<Cow<'a, [u8]>> {
         Seg::Png { header, corrections, text, adler, chunks } => Cow::Owned(png_chunks(header, &recreate_whole_deflate_stream(text, corrections).ok()?, adler, chunks)?),
         Seg::PngReflate { header, recipe, text, adler, chunks } => Cow::Owned(png_chunks(header, &crate::reflate::close(text, recipe)?, adler, chunks)?),
         Seg::Jpeg(lepton) => Cow::Owned(crate::jpeg::restore(lepton)?),
+        Seg::Planes { width, text } => Cow::Owned(crate::safetensors::join(text, *width as usize)?),
         Seg::DeflateJpeg { corrections, lepton } => Cow::Owned(recreate_whole_deflate_stream(&crate::jpeg::restore(lepton)?, corrections).ok()?),
         Seg::ReflateJpeg { recipe, lepton } => Cow::Owned(crate::reflate::close(&crate::jpeg::restore(lepton)?, recipe)?),
     })
@@ -1183,7 +1212,7 @@ fn png_chunks(header: &[u8], stream: &[u8], adler: &[u8], chunks: &[(usize, &[u8
 fn close_inner(inner: &Inner<'_>, parallel: bool) -> Option<Vec<u8>> {
     let segs = segments(inner)?;
     let size = |i: usize| match &segs[i] {
-        Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::SnappyModeled { text, .. } | Seg::Zstd { text, .. } | Seg::ZstdModeled { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => text.len(),
+        Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::SnappyModeled { text, .. } | Seg::Zstd { text, .. } | Seg::ZstdModeled { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } | Seg::Planes { text, .. } => text.len(),
         Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::ZstdNested { inner, .. } | Seg::Nested(inner) => inner.content.len(),
         _ => 0,
     };
@@ -1602,6 +1631,10 @@ mod legacy {
     /// nothing kept, stored JPEGs left out), from the base opened now:
     /// the same streams open, so the same bytes come out.
     pub(super) fn base_plain_v013(base: &[u8]) -> Option<Vec<u8>> {
+        // Model weights opened only from v0.14.9.
+        if crate::safetensors::is_safetensors(base) {
+            return None;
+        }
         let parts = open_parts(base, 0, Engine::Preflate)?;
         let mut out = Vec::new();
         collect_v013(&Inner { segments: parts.segments, body: &parts.body, content: &parts.content, side: &parts.side }, &mut out)?;
@@ -1609,12 +1642,17 @@ mod legacy {
     }
 
     fn collect_v013(inner: &Inner<'_>, out: &mut Vec<u8>) -> Option<()> {
+        // Model weights (opened only from v0.14.9): under a stream, v0.13.0
+        // held them as the stream's text; as an entry of their own, kept.
+        let weights = |inner: &Inner<'_>| segments(inner).is_some_and(|s| s.iter().any(|s| matches!(s, Seg::Planes { .. })));
         for seg in segments(inner)? {
             match seg {
                 Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::SnappyModeled { text, .. } | Seg::Zstd { text, .. } | Seg::ZstdModeled { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } => out.extend_from_slice(text),
                 Seg::DeflateJpeg { lepton, .. } | Seg::ReflateJpeg { lepton, .. } => out.extend_from_slice(lepton),
+                Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::ZstdNested { inner, .. } if weights(&inner) => out.extend_from_slice(&close_inner(&inner, false)?),
+                Seg::Nested(inner) if weights(&inner) => {}
                 Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::ZstdNested { inner, .. } | Seg::Nested(inner) => collect_v013(&inner, out)?,
-                Seg::Bytes(_) | Seg::Jpeg(_) => {}
+                Seg::Bytes(_) | Seg::Jpeg(_) | Seg::Planes { .. } => {}
             }
         }
         Some(())
@@ -1683,6 +1721,28 @@ mod tests {
     fn holds(plain: &[u8], text: &[u8]) -> bool {
         let probe = &text[..text.len().min(64)];
         plain.windows(probe.len()).enumerate().any(|(i, w)| w == probe && plain.get(i..i + text.len()) == Some(text))
+    }
+
+    #[test]
+    fn model_weights_open_as_planes() {
+        // An F32 tensor, a BF16 one too small to open, an F16 one; the
+        // floats' top bytes drawn from few values, as a model's are.
+        let h = r#"{"__metadata__":{"format":"pt"},"w":{"dtype":"F32","shape":[4096],"data_offsets":[0,16384]},"b":{"dtype":"BF16","shape":[3],"data_offsets":[16384,16390]},"e":{"dtype":"F16","shape":[1000],"data_offsets":[16390,18390]}}"#;
+        let mut f = (h.len() as u64).to_le_bytes().to_vec();
+        f.extend_from_slice(h.as_bytes());
+        let mut x = 1u32;
+        for i in 0..18390usize {
+            x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+            f.push(if i % 2 == 1 { 0x3c | (x >> 30) as u8 } else { (x >> 24) as u8 });
+        }
+        let plain = round_trip(&f, "safetensors");
+        assert_eq!(plain.len(), f.len(), "every byte in the plain text once");
+        let opened = open(&f).unwrap();
+        assert_eq!(opened.recipe.iter().filter(|&&b| b == TENSOR_PLANES).count(), 2, "the two tensors past 64 bytes opened");
+        // Not model weights: a header that does not parse is left alone.
+        let mut bad = f.clone();
+        bad[8 + 16] = b'!'; // the metadata object's opening brace
+        assert!(open(&bad).is_none());
     }
 
     fn round_trip(object: &[u8], what: &str) -> Vec<u8> {
