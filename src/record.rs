@@ -508,20 +508,22 @@ pub(crate) const RECENT: usize = 64;
 
 #[derive(Clone)]
 pub(crate) struct Recent {
-    /// A ring: the front is `ids[head]`, position p is `ids[(head + p) % RECENT]`.
+    /// Most recent first: position p is `ids[p]`, below `len`. A ring
+    /// with a modulo per step made the encoder's search of 64 entries
+    /// per value a twentieth of a log's transform; a list kept in place
+    /// is searched eight at a time and shifted with one move.
     ids: [u32; RECENT],
-    head: usize,
     len: usize,
 }
 
 impl Recent {
     pub(crate) fn new() -> Recent {
-        Recent { ids: [0; RECENT], head: 0, len: 0 }
+        Recent { ids: [0; RECENT], len: 0 }
     }
     /// The value's position, moving it to the front; None (and the value
     /// put in front) when it was not in the list. The encoder's side.
     pub(crate) fn touch(&mut self, id: u32) -> Option<usize> {
-        let pos = (0..self.len).position(|p| self.ids[(self.head + p) % RECENT] == id);
+        let pos = self.find(id);
         match pos {
             Some(p) => {
                 self.touch_at(p);
@@ -530,27 +532,41 @@ impl Recent {
         }
         pos
     }
+    /// The position of `id`, comparing eight entries at a time.
+    #[inline(always)]
+    fn find(&self, id: u32) -> Option<usize> {
+        let ids = &self.ids[..self.len];
+        let mut base = 0usize;
+        let mut chunks = ids.chunks_exact(8);
+        for c in &mut chunks {
+            let mut m = 0u32;
+            for (k, &x) in c.iter().enumerate() {
+                m |= ((x == id) as u32) << k;
+            }
+            if m != 0 {
+                return Some(base + m.trailing_zeros() as usize);
+            }
+            base += 8;
+        }
+        chunks.remainder().iter().position(|&x| x == id).map(|p| base + p)
+    }
     /// The value at position `p` (below `len`) moved to the front: the
     /// entries before it step back one.
     #[inline(always)]
     pub(crate) fn touch_at(&mut self, p: usize) -> u32 {
-        let id = self.ids[(self.head + p) % RECENT];
-        let mut i = p;
-        while i > 0 {
-            self.ids[(self.head + i) % RECENT] = self.ids[(self.head + i - 1) % RECENT];
-            i -= 1;
-        }
-        self.ids[self.head] = id;
+        let id = self.ids[p];
+        self.ids.copy_within(0..p, 1);
+        self.ids[0] = id;
         id
     }
     /// A value not in the list put in front; the last one falls off.
     #[inline(always)]
     pub(crate) fn push_front(&mut self, id: u32) {
-        self.head = (self.head + RECENT - 1) % RECENT;
-        self.ids[self.head] = id;
         if self.len < RECENT {
             self.len += 1;
         }
+        self.ids.copy_within(0..self.len - 1, 1);
+        self.ids[0] = id;
     }
 }
 
@@ -758,10 +774,13 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
         let mut last = 0i64;
         let mut escapes = 0usize;
         let mut check = Vec::with_capacity(32);
+        // The check prints each value back through the day cache: the
+        // date, the costly part, only when it changes.
+        let mut day = DayCache::default();
         for &(a, b) in col {
             let exact = parse_time(p, &src[a..b]).filter(|&t| {
                 check.clear();
-                format_time(p, t, &mut check);
+                format_time_cached(p, t, &mut check, &mut day);
                 check == &src[a..b]
             });
             match exact {
@@ -794,13 +813,16 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
             return;
         }
     }
-    // Few distinct values: dictionary + move-to-front ranks.
+    // Few distinct values: dictionary + move-to-front ranks. Every
+    // value's id (first-appearance order) is kept from the counting
+    // pass, so no value is hashed twice.
     let mut distinct: std::collections::HashMap<&[u8], u32, FxBuild> = std::collections::HashMap::default();
     let few = col.len() / DICT_SHARE + 1;
     let mut counted = true;
+    let mut value_ids: Vec<u32> = Vec::with_capacity(col.len());
     for &(a, b) in col {
         let n = distinct.len() as u32;
-        distinct.entry(&src[a..b]).or_insert(n);
+        value_ids.push(*distinct.entry(&src[a..b]).or_insert(n));
         if distinct.len() > few {
             // Too many to be a dictionary column; the count is partial.
             counted = false;
@@ -810,14 +832,16 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
     if counted && !col.is_empty() && distinct.len() <= 256 {
         // The dictionary in first-appearance order and one byte per value.
         *out_type = T_DICT8;
-        let mut order: Vec<(&[u8], u32)> = distinct.iter().map(|(k, v)| (*k, *v)).collect();
-        order.sort_by_key(|&(_, id)| id);
+        let mut order: Vec<&[u8]> = vec![&src[..0]; distinct.len()];
+        for (k, &v) in &distinct {
+            order[v as usize] = k;
+        }
         let mut dict = Vec::new();
-        for (k, _) in &order {
+        for k in &order {
             dict.extend_from_slice(k);
             dict.push(b'\n');
         }
-        let ids: Vec<u8> = col.iter().map(|&(a, b)| distinct[&src[a..b]] as u8).collect();
+        let ids: Vec<u8> = value_ids.iter().map(|&v| v as u8).collect();
         streams.push(dict);
         streams.push(ids);
         return;
@@ -827,20 +851,17 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
         let mut dict = Vec::new();
         let mut ranks = Vec::with_capacity(col.len());
         let mut ids = Vec::new();
-        let mut id_of: std::collections::HashMap<&[u8], u32, FxBuild> = std::collections::HashMap::default();
         let mut recent = Recent::new();
-        for &(a, b) in col {
-            let v = &src[a..b];
-            let n = id_of.len() as u32;
-            let (id, new) = match id_of.get(v) {
-                Some(&id) => (id, false),
-                None => {
-                    id_of.insert(v, n);
-                    dict.extend_from_slice(v);
-                    dict.push(b'\n');
-                    (n, true)
-                }
-            };
+        // A value is new at its id's first appearance: ids were given in
+        // that order, so exactly when the id is the next one unseen.
+        let mut next = 0u32;
+        for (&(a, b), &id) in col.iter().zip(&value_ids) {
+            let new = id == next;
+            if new {
+                next += 1;
+                dict.extend_from_slice(&src[a..b]);
+                dict.push(b'\n');
+            }
             match recent.touch(id) {
                 Some(p) if !new => ranks.push(p as u8 + 1),
                 _ => {
@@ -1039,30 +1060,40 @@ fn transform_template(input: &[u8]) -> Option<Vec<u8>> {
 fn transform_delimited(input: &[u8], delimiter: u8, fields: usize) -> Vec<u8> {
     let trailing_newline = input.last() == Some(&b'\n');
     let body = if trailing_newline { &input[..input.len() - 1] } else { input };
-    let mut cols: Vec<Column> = (0..fields).map(|_| Column { values: Vec::new() }).collect();
-    let mut kind = Vec::new();
+    let lines_guess = body.len() / 64 + 1;
+    let mut cols: Vec<Column> = (0..fields).map(|_| Column { values: Vec::with_capacity(lines_guess) }).collect();
+    let mut kind = Vec::with_capacity(lines_guess);
     let mut raw = Vec::new();
     let mut n_lines = 0usize;
     let mut first_raw = true;
+    // A line's delimiters, found with its end in one pass (three passes
+    // before: the end, a count, the split).
+    let mut cuts: Vec<usize> = Vec::with_capacity(fields + 8);
     // Every line, the last one included (an empty input is one empty line).
     let mut at = 0usize;
     loop {
-        let end = body[at..].iter().position(|&b| b == b'\n').map_or(body.len(), |p| at + p);
+        cuts.clear();
+        let mut end = at;
+        while end < body.len() {
+            let c = body[end];
+            if c == b'\n' {
+                break;
+            }
+            if c == delimiter {
+                cuts.push(end);
+            }
+            end += 1;
+        }
         let line = &body[at..end];
         n_lines += 1;
-        let n = line.iter().filter(|&&b| b == delimiter).count() + 1;
-        if n == fields {
+        if cuts.len() + 1 == fields {
             kind.push(0u8);
             let mut f0 = at;
-            let mut k = 0;
-            for i in at..end {
-                if body[i] == delimiter {
-                    cols[k].values.push((f0, i));
-                    k += 1;
-                    f0 = i + 1;
-                }
+            for (k, &c) in cuts.iter().enumerate() {
+                cols[k].values.push((f0, c));
+                f0 = c + 1;
             }
-            cols[k].values.push((f0, end));
+            cols[fields - 1].values.push((f0, end));
         } else {
             kind.push(1u8);
             if !first_raw {
@@ -1087,9 +1118,54 @@ fn transform_delimited(input: &[u8], delimiter: u8, fields: usize) -> Vec<u8> {
 /// SQL dumps: the tuples of `VALUES (...),(...)` lists with the majority
 /// arity become records; the rest of the text is the frame, a 0 byte
 /// standing for each record tuple.
+/// SWAR: a byte of `w` equal to one of `c`'s bytes (each byte of `c`
+/// the same value) shows as a set high bit.
+#[inline(always)]
+fn has_byte(w: u64, c: u64) -> u64 {
+    let x = w ^ c;
+    x.wrapping_sub(0x0101_0101_0101_0101) & !x & 0x8080_8080_8080_8080
+}
+
+/// From `p`, past every 8 bytes holding none of a tuple's special bytes
+/// (a quote, a comma, a closing parenthesis): long text fields are
+/// crossed a word at a time.
+#[inline(always)]
+fn skip_plain_sql(input: &[u8], mut p: usize) -> usize {
+    const QUOTE: u64 = 0x2727_2727_2727_2727;
+    const COMMA: u64 = 0x2c2c_2c2c_2c2c_2c2c;
+    const CLOSE: u64 = 0x2929_2929_2929_2929;
+    while p + 8 <= input.len() {
+        let w = u64::from_le_bytes(input[p..p + 8].try_into().unwrap());
+        if has_byte(w, QUOTE) | has_byte(w, COMMA) | has_byte(w, CLOSE) != 0 {
+            break;
+        }
+        p += 8;
+    }
+    p
+}
+
+/// From `p` inside a quoted string, past every 8 bytes holding neither
+/// a quote nor a backslash.
+#[inline(always)]
+fn skip_plain_quoted(input: &[u8], mut q: usize) -> usize {
+    const QUOTE: u64 = 0x2727_2727_2727_2727;
+    const BACKSLASH: u64 = 0x5c5c_5c5c_5c5c_5c5c;
+    while q + 8 <= input.len() {
+        let w = u64::from_le_bytes(input[q..q + 8].try_into().unwrap());
+        if has_byte(w, QUOTE) | has_byte(w, BACKSLASH) != 0 {
+            break;
+        }
+        q += 8;
+    }
+    q
+}
+
 fn transform_sql(input: &[u8]) -> Option<Vec<u8>> {
-    // Pass 1: find the tuples.
-    let mut tuples: Vec<(usize, usize, Vec<(usize, usize)>)> = Vec::new(); // (start '(', end after ')', fields)
+    // Pass 1: find the tuples. Their fields go into one list (a list of
+    // its own per tuple was an allocation per row: a tenth of a dump's
+    // transform in the allocator).
+    let mut tuples: Vec<(usize, usize, u32, u32)> = Vec::new(); // (start '(', end after ')', first field, fields)
+    let mut all_fields: Vec<(usize, usize)> = Vec::new();
     let n = input.len();
     let mut i = 0usize;
     // A list may start at the very beginning (a unit cut inside one).
@@ -1116,14 +1192,19 @@ fn transform_sql(input: &[u8]) -> Option<Vec<u8>> {
         i = k;
         while i < n && input[i] == b'(' {
             let mut p = i + 1;
-            let mut fields = Vec::new();
+            let first = all_fields.len();
             let mut f0 = p;
             let mut ok = false;
             while p < n {
+                p = skip_plain_sql(input, p);
+                if p >= n {
+                    break;
+                }
                 match input[p] {
                     b'\'' => {
                         let mut q = p + 1;
                         loop {
+                            q = skip_plain_quoted(input, q);
                             if q >= n {
                                 break;
                             }
@@ -1142,26 +1223,26 @@ fn transform_sql(input: &[u8]) -> Option<Vec<u8>> {
                         p = q + 1;
                     }
                     b',' => {
-                        fields.push((f0, p));
+                        all_fields.push((f0, p));
                         p += 1;
                         f0 = p;
                     }
                     b')' => {
-                        fields.push((f0, p));
+                        all_fields.push((f0, p));
                         p += 1;
                         ok = true;
                         break;
                     }
-                    b'\n' if false => {}
                     _ => p += 1,
                 }
             }
             if !ok {
                 // An unclosed tuple (a truncated dump): the rest is frame.
+                all_fields.truncate(first);
                 i = n;
                 break;
             }
-            tuples.push((i, p, fields));
+            tuples.push((i, p, first as u32, (all_fields.len() - first) as u32));
             i = p;
             // Separator to the next tuple, else the list ends.
             let s = i;
@@ -1177,30 +1258,37 @@ fn transform_sql(input: &[u8]) -> Option<Vec<u8>> {
     if tuples.is_empty() {
         return None;
     }
-    let mut arity_count = std::collections::HashMap::new();
+    // The majority arity; on a tie the smaller (a map's order decided
+    // before, which is to say chance).
+    let mut arity_count: Vec<usize> = Vec::new();
     for t in &tuples {
-        *arity_count.entry(t.2.len()).or_insert(0usize) += 1;
+        let a = t.3 as usize;
+        if a >= arity_count.len() {
+            arity_count.resize(a + 1, 0);
+        }
+        arity_count[a] += 1;
     }
-    let (&fields, _) = arity_count.iter().max_by_key(|(_, &c)| c)?;
+    let fields = (0..arity_count.len()).rev().max_by_key(|&a| arity_count[a])?;
     if fields == 0 || fields > 64 {
         return None;
     }
     // Pass 2: frame and columns.
     let mut frame = Vec::with_capacity(n / 4);
-    let mut cols: Vec<Column> = (0..fields).map(|_| Column { values: Vec::new() }).collect();
+    let mut cols: Vec<Column> = (0..fields).map(|_| Column { values: Vec::with_capacity(arity_count[fields]) }).collect();
     let mut n_records = 0usize;
     let mut last = 0usize;
-    for (s, e, f) in &tuples {
-        if f.len() != fields {
+    for &(s, e, first, count) in &tuples {
+        if count as usize != fields {
             continue;
         }
-        frame.extend_from_slice(&input[last..*s]);
+        frame.extend_from_slice(&input[last..s]);
         frame.push(0);
+        let f = &all_fields[first as usize..first as usize + fields];
         for (k, &(a, b)) in f.iter().enumerate() {
             cols[k].values.push((a, b));
         }
         n_records += 1;
-        last = *e;
+        last = e;
     }
     frame.extend_from_slice(&input[last..]);
     // The frame must not contain a 0 of its own (none in a text dump; refuse otherwise).
