@@ -48,6 +48,26 @@ multiplies with PyTorch's own kernel and gives bf16's logits bit for bit
 where a matrix is decoded whole (Qwen2.5-0.5B: logits and 128 tokens
 identical; the 7B output layer is decoded in blocks to cap the scratch).
 
+Several tokens at once (a prompt): `fast_gemm` reads the fast format,
+decodes each 64-weight step of a 64-row tile into shared memory once for
+all the tile's tokens and multiplies on the tensor cores; K is split
+across blocks where W has few rows, the parts added in a fixed order (the
+same result every run). `e2e.py` uses it for prompts of up to 64 tokens;
+longer ones decode each matrix and use PyTorch's matmul. A prompt's
+forward pass, Qwen2.5-7B (`--prefill`):
+
+| Prompt | bf16 | Glyd `fast` |
+| ---: | ---: | ---: |
+| 16 tokens | 24 ms | 35 ms (was 61) |
+| 64 tokens | 27 ms | 40 ms (was 61) |
+| 128 tokens | 29 ms | 61 ms |
+| 512 tokens | 79 ms | 113 ms |
+| 2048 tokens | 301 ms | 337 ms |
+
+Past 64 tokens the fused kernel is not yet faster than decoding the matrix
+and multiplying (profiled: its loads queue up and stall, at 29%
+occupancy); a GEMM at cuBLAS's efficiency is what closes that.
+
 ## Running
 
 Needs PyTorch with CUDA and nvcc (the extension builds on first import):

@@ -272,3 +272,13 @@ def fast_gemv(p, x, bias=None):
     y = torch.empty(O, dtype=torch.bfloat16, device=x.device)
     _ext.fast_gemv(p.sm, p.planes, p.exc, p.exc_base, p.top, O, K, x.contiguous().view(-1), bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
     return y
+
+
+def fast_gemm(p, x, bias=None):
+    """X W^T (+ bias) for several tokens (x [M, K]), the weights decoded a
+    step at a time into shared memory and multiplied on the tensor cores."""
+    O, K = p.shape
+    x = x.contiguous()
+    y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
+    _ext.fast_gemm(p.sm, p.planes, p.exc, p.exc_base, p.top, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
+    return y

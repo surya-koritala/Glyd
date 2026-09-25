@@ -23,12 +23,32 @@ ap.add_argument("--format", default="fast", choices=["fast", "huffman"])
 ap.add_argument("--fused", action="store_true")
 ap.add_argument("--baseline", action="store_true")
 ap.add_argument("--tokens", type=int, default=128)
+ap.add_argument("--prefill", type=str, default="", help="prompt lengths to time one forward pass at, e.g. 128,512,2048")
+ap.add_argument("--gemm-max", type=int, default=64, help="fused: steps of up to this many tokens multiply straight from the packed weights (fast format)")
 args = ap.parse_args()
 
 tok = AutoTokenizer.from_pretrained(args.model)
 prompt = "The history of data compression began"
 ids = tok(prompt, return_tensors="pt").input_ids.cuda()
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
+
+
+def prefill(model, label):
+    """One forward pass over a prompt of each length: the prompt's tokens a second."""
+    out = []
+    for n in [int(x) for x in args.prefill.split(",") if x]:
+        x = torch.randint(0, 150000, (1, n), device="cuda")
+        with torch.no_grad():
+            model(x, logits_to_keep=1)
+            torch.cuda.synchronize()
+            t = time.perf_counter()
+            for _ in range(3):
+                model(x, logits_to_keep=1)
+            torch.cuda.synchronize()
+            t = (time.perf_counter() - t) / 3
+        out.append(f"{n} tokens {t * 1e3:.0f} ms ({n / t:.0f} tokens/s)")
+    if out:
+        print(f"{label} prefill: " + ", ".join(out))
 
 
 def measure(model, label):
@@ -82,6 +102,8 @@ class GLinear(nn.Module):
         if args.fused and x2.shape[0] == 1:
             f = g.fast_gemv if isinstance(self.p, g.Fast) else g.gemv
             return f(self.p, x2[0], self.bias).view(*lead, O)
+        if args.fused and isinstance(self.p, g.Fast) and x2.shape[0] <= args.gemm_max and K % 64 == 0:
+            return g.fast_gemm(self.p, x2, self.bias).view(*lead, O)
         if self.block >= O:
             return F.linear(x2, self.decode_rows(0, O), self.bias).view(*lead, O)
         y = torch.empty(x2.shape[0], O, dtype=x.dtype, device=x.device)
@@ -106,6 +128,7 @@ weights_bf16 = sum(p.numel() * p.element_size() for p in model.parameters())
 if args.baseline:
     model.cuda()
     logits_a, out_a = measure(model, f"bf16 (weights {weights_bf16 / 1e9:.2f} GB)")
+    prefill(model, "bf16")
     model.cpu()
     torch.cuda.empty_cache()
 
@@ -129,6 +152,7 @@ packed_bytes = sum(p.nbytes() for p in packed.values())
 other = sum(p.numel() * p.element_size() for p in model.parameters()) + sum(m.bias.numel() * 2 for m in model.modules() if isinstance(m, GLinear) and m.bias is not None)
 print(f"{args.format}{' fused' if args.fused else ''}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {Scratch.buf.numel() * 2 / 1e9:.2f} GB, VRAM in use {torch.cuda.memory_allocated() / 1e9:.2f} GB")
 logits_b, out_b = measure(model, f"glyd {args.format}{' fused' if args.fused else ''}")
+prefill(model, f"glyd {args.format}")
 if args.baseline:
     print("logits bit-identical:", torch.equal(logits_a.cuda().view(torch.int16), logits_b.view(torch.int16)))
     same = (out_a.cuda() == out_b).all(0).long().cumprod(0).sum().item() - ids.shape[1]

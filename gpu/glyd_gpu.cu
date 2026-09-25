@@ -14,6 +14,7 @@
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <stdint.h>
+#include <mma.h>
 
 __device__ __forceinline__ uint32_t exponent_of(uint16_t v) { return (v >> 7) & 0xff; }
 __device__ __forceinline__ uint32_t bf16_bits(uint32_t s, uint32_t e) { return ((s & 0x80) << 8) | (e << 7) | (s & 0x7f); }
@@ -405,6 +406,130 @@ __global__ void fast_gemv_wide_kernel(const uint8_t* __restrict__ sm, const uint
     }
 }
 
+// Y = X W^T (+ bias) for several tokens (X [M, K], Y [M, O]) from the fast
+// format, on the tensor cores. A block takes 64 rows of W, 64 tokens and a
+// range of K (split across blocks where W has few rows; the parts are
+// added in fp32). Each 64-weight step of its W rows is decoded into shared
+// memory as bf16, once for all its tokens, while the next step's packed
+// weights and inputs are already on their way; the weights never reach
+// global memory as bf16.
+constexpr int GM_BM = 64, GM_BO = 64, GM_BK = 64, GM_LD = GM_BK + 8;
+
+__global__ void __launch_bounds__(128) fast_gemm_kernel(const uint8_t* __restrict__ sm, const uint32_t* __restrict__ planes, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint64_t top, int64_t O, int64_t K, int64_t M, int64_t kchunk, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
+    using namespace nvcuda;
+    __shared__ __align__(16) __nv_bfloat16 xs[GM_BM][GM_LD];
+    __shared__ __align__(16) __nv_bfloat16 ws[GM_BO][GM_LD];
+    __shared__ float stage[4][16 * 16];
+    int64_t m0 = (int64_t)blockIdx.y * GM_BM, o0 = (int64_t)blockIdx.x * GM_BO;
+    int64_t kb = (int64_t)blockIdx.z * kchunk, ke = min(K, kb + kchunk);
+    int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    int wm = warp >> 1, wo = warp & 1;  // a warp: 32 tokens x 32 outputs
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> acc[2][2];
+#pragma unroll
+    for (int i = 0; i < 2; i++)
+#pragma unroll
+        for (int j = 0; j < 2; j++) wmma::fill_fragment(acc[i][j], 0.f);
+    // This thread's W row, and its 32-weight group of each step (h: which
+    // half of the step); x: its token row and 32 columns of each step.
+    int r = tid >> 1, h = tid & 1;
+    int64_t row = o0 + r, gm = m0 + r;
+    bool wrow = row < O, xrow = gm < M;
+    int64_t segs = (K + SEG - 1) / SEG;
+    int64_t esc = 0;
+    // The next step's loads, in registers.
+    uint32_t p0, p1, p2;
+    uint4 sa, sb, xa, xb, xc, xd;
+    auto fetch = [&](int64_t k0) {
+        if (wrow) {
+            int64_t q = row * K + k0 + h * 32;
+            int64_t g = (q >> 5) * 3;
+            p0 = planes[g]; p1 = planes[g + 1]; p2 = planes[g + 2];
+            sa = *(const uint4*)(sm + q); sb = *(const uint4*)(sm + q + 16);
+        }
+        uint4 z = make_uint4(0, 0, 0, 0);
+        const __nv_bfloat16* xp = X + gm * K + k0 + h * 32;
+        xa = xrow ? *(const uint4*)xp : z; xb = xrow ? *(const uint4*)(xp + 8) : z;
+        xc = xrow ? *(const uint4*)(xp + 16) : z; xd = xrow ? *(const uint4*)(xp + 24) : z;
+    };
+    fetch(kb);
+    for (int64_t k0 = kb; k0 < ke; k0 += GM_BK) {
+        // This step into shared memory: the inputs as they are, the weights decoded.
+        *(uint4*)&xs[r][h * 32] = xa; *(uint4*)&xs[r][h * 32 + 8] = xb;
+        *(uint4*)&xs[r][h * 32 + 16] = xc; *(uint4*)&xs[r][h * 32 + 24] = xd;
+        if (wrow) {
+            if (k0 % SEG == 0 || k0 == kb) {
+                // The segment's first escape, then those of its steps before k0.
+                int64_t s0 = k0 / SEG * SEG;
+                esc = exc_base[row * segs + k0 / SEG];
+                for (int64_t k = s0; k < k0; k += 32) {
+                    int64_t g = ((row * K + k) >> 5) * 3;
+                    esc += __popc(planes[g] & planes[g + 1] & planes[g + 2]);
+                }
+            }
+            uint32_t escm = p0 & p1 & p2;
+            uint32_t mine = __popc(escm), other = __shfl_xor_sync(0xffffffff, mine, 1);
+            int64_t at = esc + (h ? other : 0);
+            uint32_t sw[8] = {sa.x, sa.y, sa.z, sa.w, sb.x, sb.y, sb.z, sb.w};
+            uint32_t out[16];
+#pragma unroll
+            for (int i = 0; i < 32; i++) {
+                uint32_t c = ((p0 >> i) & 1) | (((p1 >> i) & 1) << 1) | (((p2 >> i) & 1) << 2);
+                uint32_t e = c == 7 ? exc[at++] : (uint32_t)(top >> (8 * c)) & 0xff;
+                uint32_t v = bf16_bits((sw[i >> 2] >> (8 * (i & 3))) & 0xff, e);
+                if (i & 1) out[i >> 1] |= v << 16; else out[i >> 1] = v;
+            }
+#pragma unroll
+            for (int q = 0; q < 4; q++) *(uint4*)&ws[r][h * 32 + q * 8] = make_uint4(out[4 * q], out[4 * q + 1], out[4 * q + 2], out[4 * q + 3]);
+            esc += mine + other;
+        } else {
+            uint4 z = make_uint4(0, 0, 0, 0);
+#pragma unroll
+            for (int q = 0; q < 4; q++) *(uint4*)&ws[r][h * 32 + q * 8] = z;
+        }
+        __syncthreads();
+        if (k0 + GM_BK < ke) fetch(k0 + GM_BK);
+#pragma unroll
+        for (int kk = 0; kk < GM_BK; kk += 16) {
+            wmma::fragment<wmma::matrix_a, 16, 16, 16, __nv_bfloat16, wmma::row_major> a[2];
+            wmma::fragment<wmma::matrix_b, 16, 16, 16, __nv_bfloat16, wmma::col_major> b[2];
+#pragma unroll
+            for (int i = 0; i < 2; i++) wmma::load_matrix_sync(a[i], &xs[wm * 32 + i * 16][kk], GM_LD);
+#pragma unroll
+            for (int j = 0; j < 2; j++) wmma::load_matrix_sync(b[j], &ws[wo * 32 + j * 16][kk], GM_LD);
+#pragma unroll
+            for (int i = 0; i < 2; i++)
+#pragma unroll
+                for (int j = 0; j < 2; j++) wmma::mma_sync(acc[i][j], a[i], b[j], acc[i][j]);
+        }
+        __syncthreads();
+    }
+#pragma unroll
+    for (int i = 0; i < 2; i++)
+#pragma unroll
+        for (int j = 0; j < 2; j++) {
+            wmma::store_matrix_sync(stage[warp], acc[i][j], 16, wmma::mem_row_major);
+            __syncwarp();
+            for (int e = lane; e < 256; e += 32) {
+                int64_t tm = m0 + wm * 32 + i * 16 + e / 16, to = o0 + wo * 32 + j * 16 + e % 16;
+                if (tm < M && to < O) {
+                    if (Y32) Y32[(blockIdx.z * M + tm) * O + to] = stage[warp][e];
+                    else Y[tm * O + to] = __float2bfloat16(stage[warp][e] + (bias ? __bfloat162float(bias[to]) : 0.f));
+                }
+            }
+            __syncwarp();
+        }
+}
+
+// Split-K's parts (one [M, O] slice each) added in a fixed order, so the
+// result is the same every run, to bf16 with the bias.
+__global__ void finish_kernel(const float* __restrict__ y32, int64_t split, const __nv_bfloat16* __restrict__ bias, int64_t M, int64_t O, __nv_bfloat16* __restrict__ y) {
+    int64_t i = blockIdx.x * (int64_t)blockDim.x + threadIdx.x;
+    if (i >= M * O) return;
+    float t = 0.f;
+    for (int64_t z = 0; z < split; z++) t += y32[z * M * O + i];
+    y[i] = __float2bfloat16(t + (bias ? __bfloat162float(bias[i % O]) : 0.f));
+}
+
 // The fast format decoded to bf16: rows [row0, row0 + rows), or the rows
 // listed in row_ids, one after another into out.
 __global__ void fast_decode_kernel(const uint8_t* __restrict__ sm, const uint32_t* __restrict__ planes, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint64_t top, int64_t row0, const int64_t* __restrict__ row_ids, int64_t rows, int64_t K, uint16_t* __restrict__ out) {
@@ -487,7 +612,24 @@ void fast_decode(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torc
     fast_decode_kernel<<<(warps * 32 + threads - 1) / threads, threads>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)planes.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint64_t)top, row0, row_ids.numel() ? (const int64_t*)row_ids.data_ptr() : nullptr, rows, K, (uint16_t*)out.data_ptr());
 }
 
+void fast_gemm(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch::Tensor exc_base, int64_t top, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    TORCH_CHECK(K % GM_BK == 0 && x.is_contiguous() && x.size(1) == K, "K a multiple of 64, X contiguous [M, K]");
+    int64_t M = x.size(0);
+    int64_t bo = (O + GM_BO - 1) / GM_BO, bm = (M + GM_BM - 1) / GM_BM;
+    // Split K until the GPU has some `target` blocks, in whole steps.
+    static int64_t target = getenv("GLYD_GPU_GEMM_BLOCKS") ? atoll(getenv("GLYD_GPU_GEMM_BLOCKS")) : 1280;
+    int64_t split = std::max<int64_t>(1, std::min<int64_t>(K / (4 * GM_BK), target / (bo * bm)));
+    int64_t kchunk = (K / GM_BK + split - 1) / split * GM_BK;
+    split = (K + kchunk - 1) / kchunk;
+    const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
+    torch::Tensor y32;
+    if (split > 1) y32 = torch::empty({split, M, O}, x.options().dtype(torch::kFloat32));
+    fast_gemm_kernel<<<dim3(bo, bm, split), 128>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)planes.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint64_t)top, O, K, M, kchunk, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), split > 1 ? (float*)y32.data_ptr() : nullptr);
+    if (split > 1) finish_kernel<<<(M * O + 255) / 256, 256>>>((const float*)y32.data_ptr(), split, b, M, O, (__nv_bfloat16*)y.data_ptr());
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("fast_gemm", &fast_gemm);
     m.def("lane_bits", &lane_bits);
     m.def("write_codes", &write_codes);
     m.def("decode", &decode);
