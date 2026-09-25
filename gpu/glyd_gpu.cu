@@ -268,6 +268,84 @@ __global__ void fast_gemv_kernel(const uint8_t* __restrict__ sm, const uint32_t*
     }
 }
 
+// fast_gemv_kernel with V weights a lane a step (V = 8 or 16; K a
+// multiple of 32 V): 16-byte loads of sign-and-mantissa bytes and
+// inputs, V code bits of each plane from one word.
+template <int V, bool SPLIT>
+__global__ void fast_gemv_wide_kernel(const uint8_t* __restrict__ sm, const uint32_t* __restrict__ planes, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint64_t top, int64_t O, int64_t K, int wpr, const __nv_bfloat16* __restrict__ x, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ y) {
+    __shared__ float part[32];
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    int64_t row = (int64_t)blockIdx.x * (blockDim.x / 32 / wpr) + warp / wpr;
+    int w = warp % wpr;
+    if (!SPLIT && row >= O) return;
+    int64_t segs = (K + SEG - 1) / SEG;
+    float acc = 0.f;
+    if (row < O) for (int64_t s = w; s < segs; s += wpr) {
+        int64_t esc = exc_base[row * segs + s];
+        int64_t kend = min((s + 1) * SEG, K);
+#pragma unroll 2
+        for (int64_t k = s * SEG + lane * V; k < kend; k += 32 * V) {
+            int64_t q = row * K + k;
+            uint32_t smw[V / 4];
+            uint32_t xw[V / 2];
+            if (V == 16) {
+                uint4 a = *(const uint4*)(sm + q);
+                smw[0] = a.x; smw[1] = a.y; smw[2] = a.z; smw[3] = a.w;
+                uint4 b = *(const uint4*)(x + k), c = *(const uint4*)(x + k + 8);
+                xw[0] = b.x; xw[1] = b.y; xw[2] = b.z; xw[3] = b.w; xw[4] = c.x; xw[5] = c.y; xw[6] = c.z; xw[7] = c.w;
+            } else {
+                uint2 a = *(const uint2*)(sm + q);
+                smw[0] = a.x; smw[1] = a.y;
+                uint4 b = *(const uint4*)(x + k);
+                xw[0] = b.x; xw[1] = b.y; xw[2] = b.z; xw[3] = b.w;
+            }
+            int64_t gword = (q >> 5) * 3;
+            int sh = q & 31;
+            uint32_t p0 = planes[gword] >> sh, p1 = planes[gword + 1] >> sh, p2 = planes[gword + 2] >> sh;
+            uint32_t m = p0 & p1 & p2 & ((1u << V) - 1);  // code 7: every plane bit set
+            uint32_t e[V];
+#pragma unroll
+            for (int i = 0; i < V; i++) {
+                uint32_t c = ((p0 >> i) & 1) | (((p1 >> i) & 1) << 1) | (((p2 >> i) & 1) << 2);
+                e[i] = (uint32_t)(top >> (8 * c)) & 0xff;
+            }
+            if (__ballot_sync(0xffffffff, m != 0)) {
+                uint32_t n = __popc(m), before = n;
+#pragma unroll
+                for (int o = 1; o < 32; o <<= 1) {
+                    uint32_t t = __shfl_up_sync(0xffffffff, before, o);
+                    if (lane >= o) before += t;
+                }
+                uint32_t total = __shfl_sync(0xffffffff, before, 31);
+                int64_t at = esc + before - n;
+#pragma unroll
+                for (int i = 0; i < V; i++)
+                    if (m >> i & 1) e[i] = exc[at++];
+                esc += total;
+            }
+#pragma unroll
+            for (int i = 0; i < V; i += 2) {
+                uint32_t s0 = (smw[i / 4] >> (8 * (i % 4))) & 0xff, s1 = (smw[i / 4] >> (8 * (i % 4) + 8)) & 0xff;
+                __nv_bfloat162 xx = *(__nv_bfloat162*)&xw[i / 2];
+                acc += __uint_as_float(bf16_bits(s0, e[i]) << 16) * __low2float(xx) + __uint_as_float(bf16_bits(s1, e[i + 1]) << 16) * __high2float(xx);
+            }
+        }
+    }
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffff, acc, o);
+    if (!SPLIT) {
+        if (lane == 0) y[row] = __float2bfloat16(acc + (bias ? __bfloat162float(bias[row]) : 0.f));
+        return;
+    }
+    if (lane == 0) part[warp] = acc;
+    __syncthreads();
+    if (w == 0 && lane == 0 && row < O) {
+        float t = 0.f;
+        for (int i = 0; i < wpr; i++) t += part[warp + i];
+        y[row] = __float2bfloat16(t + (bias ? __bfloat162float(bias[row]) : 0.f));
+    }
+}
+
 // The fast format decoded to bf16: rows [row0, row0 + rows), or the rows
 // listed in row_ids, one after another into out.
 __global__ void fast_decode_kernel(const uint8_t* __restrict__ sm, const uint32_t* __restrict__ planes, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint64_t top, int64_t row0, const int64_t* __restrict__ row_ids, int64_t rows, int64_t K, uint16_t* __restrict__ out) {
@@ -298,6 +376,8 @@ void fast_gemv(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch:
     int wpr = O >= 16384 ? 1 : (int)std::min<int64_t>(segs, 8);
     int rows_per_block = std::max(1, 8 / wpr), threads = rows_per_block * wpr * 32;
     auto kernel = wpr == 1 ? fast_gemv_kernel<false> : fast_gemv_kernel<true>;
+    if (K % 512 == 0) kernel = wpr == 1 ? fast_gemv_wide_kernel<16, false> : fast_gemv_wide_kernel<16, true>;
+    else if (K % 256 == 0) kernel = wpr == 1 ? fast_gemv_wide_kernel<8, false> : fast_gemv_wide_kernel<8, true>;
     kernel<<<(O + rows_per_block - 1) / rows_per_block, threads>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)planes.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint64_t)top, O, K, wpr, (const __nv_bfloat16*)x.data_ptr(), bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr, (__nv_bfloat16*)y.data_ptr());
 }
 
