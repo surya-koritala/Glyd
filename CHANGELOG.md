@@ -6,6 +6,20 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- PyTorch checkpoints (`torch.save`): the zip's tensor storages go in as
+  byte planes, their element widths read from the checkpoint's pickle
+  (a reader for the opcodes `torch.save` writes, no dependency); against
+  a base checkpoint (`--base`, the store) each storage the base holds
+  under the same name and size goes in as XOR that storage, where that
+  is the cheaper (weights move little between checkpoints, Adam's first
+  moment as much as it holds). Qwen2.5-0.5B fine-tuned with AdamW
+  (fp32 weights and both moments, 5.93 GB a checkpoint): 83.2% of its
+  size alone, 77.3% against the checkpoint 50 steps before; zstd -19
+  92.2% (its `--patch-from` stops at 2 GB). The store finds a
+  checkpoint's predecessor by its storages' names and sizes.
+
 ## v0.14.9 — 2026-09-25
 
 - The store: a family's first object sits at the depth cap only until

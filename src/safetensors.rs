@@ -202,6 +202,28 @@ pub fn split(data: &[u8], w: usize, out: &mut Vec<u8>) {
     }
 }
 
+/// About how many bits `data` (elements of `w` bytes) takes as byte
+/// planes, each plane's order-0 entropy, from up to 64K elements spread
+/// over it: what decides whether a tensor goes in against its base (a
+/// checkpoint's weights move a little in 50 steps; Adam's first moment
+/// moves as much as it holds).
+pub fn plane_bits(data: &[u8], w: usize) -> f64 {
+    let n = data.len() / w;
+    let step = (n / 65536).max(1);
+    let mut total = 0.0;
+    for j in 0..w {
+        let mut h = [0u32; 256];
+        let mut m = 0u32;
+        for i in (0..n).step_by(step) {
+            h[data[i * w + j] as usize] += 1;
+            m += 1;
+        }
+        let m = m as f64;
+        total += h.iter().filter(|&&c| c > 0).map(|&c| -(c as f64) * (c as f64 / m).log2()).sum::<f64>() / m;
+    }
+    total * n as f64
+}
+
 /// Byte planes back to elements of `w` bytes.
 pub fn join(planes: &[u8], w: usize) -> Option<Vec<u8>> {
     if w == 0 || planes.len() % w != 0 {

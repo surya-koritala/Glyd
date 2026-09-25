@@ -492,12 +492,16 @@ fn fingerprints_and_anchors(data: &[u8]) -> (Vec<u64>, Vec<(u64, u64)>) {
     // and size. A checkpoint shares none of its bytes with the one
     // before it and every tensor's layout; the codec then stores each
     // tensor as XOR its predecessor (`glyd::compress_with_base`).
-    if let Some(tensors) = glyd::safetensors::tensors(data) {
-        let prints = tensors
+    // PyTorch checkpoints alike, a fingerprint a storage.
+    let layout: Option<Vec<(Vec<u8>, usize, usize)>> = glyd::safetensors::tensors(data)
+        .map(|ts| ts.into_iter().map(|t| (t.name, t.width, t.end - t.start)).collect())
+        .or_else(|| glyd::deflate::torch_storages(data));
+    if let Some(layout) = layout {
+        let prints = layout
             .iter()
-            .map(|t| {
+            .map(|(name, width, len)| {
                 let mut h = 0xcbf29ce484222325u64;
-                for b in t.name.iter().copied().chain((t.width as u64).to_le_bytes()).chain(((t.end - t.start) as u64).to_le_bytes()) {
+                for b in name.iter().copied().chain((*width as u64).to_le_bytes()).chain((*len as u64).to_le_bytes()) {
                     h = (h ^ b as u64).wrapping_mul(0x100000001b3);
                 }
                 h >> 2 | 1
