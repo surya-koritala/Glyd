@@ -70,38 +70,51 @@ __global__ void write_kernel(const uint16_t* __restrict__ w, int64_t n, int64_t 
     if (nb > 0) atomicOr(&out[wi], (uint32_t)(acc << (32 - nb)));
 }
 
-// A lane's reader over its stream (MSB first) through a 64-bit window;
-// the class table (lane c holds class c: base << 8 | s << 1 | escape) and
-// the rank table (lane r holds rank r's exponent) are read by shuffles.
+// A lane's reader over its stream (MSB first): two words and a bit
+// position; the next 32 bits are one funnel shift. The class table (lane c
+// holds class c: code length | (base - 2^s) mod 32 << 8 | escape << 16)
+// and the rank table (lane r holds rank r's exponent << 23, where a float
+// keeps it) are read by shuffles. A code's value, read as the l bits it
+// takes, is 2^s plus its offset in the class: its rank is that value
+// plus the class's stored base, taken mod 32 by the shuffle.
 struct Reader {
     const uint32_t* words;
-    uint64_t buf;
-    uint32_t wi;
-    int nb;
+    uint32_t hi, lo, nx, wi;  // nx: the word after lo, asked for a word ahead
+    int bp;
     __device__ __forceinline__ Reader(const uint32_t* s, uint32_t pos) : words(s) {
         wi = pos >> 5;
-        int sh = pos & 31;
-        buf = (((uint64_t)s[wi] << 32) | s[wi + 1]) << sh;
-        nb = 64 - sh;
-        wi += 2;
+        bp = pos & 31;
+        hi = s[wi];
+        lo = s[wi + 1];
+        nx = s[wi + 2];
+        wi += 3;
     }
+    // The exponent in a float's place (<< 23).
     __device__ __forceinline__ uint32_t next(uint32_t cls, uint32_t sym) {
-        if (nb <= 32) {
-            buf |= (uint64_t)words[wi++] << (32 - nb);
-            nb += 32;
+        uint32_t top = __funnelshift_l(lo, hi, bp);
+        uint32_t info = __shfl_sync(0xffffffff, cls, __clz(top));
+        int l = info & 31;
+        uint32_t code = top >> (32 - l);
+        uint32_t e = __shfl_sync(0xffffffff, sym, code + (info >> 8));
+        bp += l;
+        if (bp >= 32) {
+            hi = lo;
+            lo = nx;
+            nx = words[wi++];  // used a word (a dozen codes) later
+            bp -= 32;
         }
-        uint32_t top = (uint32_t)(buf >> 32);
-        int c = __clz(top);
-        uint32_t info = __shfl_sync(0xffffffff, cls, c);
-        int s = (info >> 1) & 15;
-        uint32_t val = s ? (top << (c + 1)) >> (32 - s) : 0;
-        uint32_t e = __shfl_sync(0xffffffff, sym, (info >> 8) + val);
-        int l = c + 1 + s;
-        buf <<= l;
-        nb -= l;
-        return (info & 1) ? val : e;
+        return (info & 0x10000) ? (code & 0xff) << 23 : e;
     }
 };
+
+// A weight's float from its sign-and-mantissa byte k of s4 (sign bit 7,
+// mantissa bits 0-6) and its exponent in place (<< 23): the sign's byte
+// and the mantissa's byte moved by byte permutes.
+__device__ __forceinline__ float weight_of(uint32_t sgn4, uint32_t man4, int k, uint32_t e23) {
+    uint32_t sgn = __byte_perm(sgn4, 0, 0x0444 | (k << 12));  // byte k to byte 3
+    uint32_t man = __byte_perm(man4, 0, 0x4044 | (k << 8));   // byte k to byte 2
+    return __uint_as_float(sgn | man | e23);
+}
 
 // A warp's tile streams into shared memory, and its reader there.
 __device__ __forceinline__ const uint32_t* stage(uint32_t* words, const uint32_t* __restrict__ stream, int64_t stream_words, const uint32_t* __restrict__ offs, int64_t tile, int tile_words, int lane) {
@@ -143,23 +156,45 @@ __global__ void decode_kernel(const uint8_t* __restrict__ sm, const uint32_t* __
         if (q + V <= end) {
 #pragma unroll
             for (int k = 0; k < V; k += 4) {
-                uint32_t s4 = *(const uint32_t*)(sm + q + k);
-                uint32_t o0 = bf16_bits(s4 & 0xff, e[k]), o1 = bf16_bits((s4 >> 8) & 0xff, e[k + 1]);
-                uint32_t o2 = bf16_bits((s4 >> 16) & 0xff, e[k + 2]), o3 = bf16_bits(s4 >> 24, e[k + 3]);
+                uint32_t s4 = *(const uint32_t*)(sm + q + k), sgn4 = s4 & 0x80808080, man4 = s4 & 0x7f7f7f7f;
+                uint32_t o0 = __float_as_uint(weight_of(sgn4, man4, 0, e[k])) >> 16, o1 = __float_as_uint(weight_of(sgn4, man4, 1, e[k + 1])) >> 16;
+                uint32_t o2 = __float_as_uint(weight_of(sgn4, man4, 2, e[k + 2])) >> 16, o3 = __float_as_uint(weight_of(sgn4, man4, 3, e[k + 3])) >> 16;
                 *(uint2*)(out + q + k + dst) = make_uint2(o0 | (o1 << 16), o2 | (o3 << 16));
             }
         } else {
-            for (int k = 0; k < V && q + k < end; k++) out[q + k + dst] = (uint16_t)bf16_bits(sm[q + k], e[k]);
+            for (int k = 0; k < V && q + k < end; k++) out[q + k + dst] = (uint16_t)bf16_bits(sm[q + k], e[k] >> 23);
         }
     }
 }
 
-// y = W x (+ bias) for a matrix [O, K] packed in row tiles (tw = T * K,
-// K a multiple of 32 V): one warp a tile, its rows' dot products in fp32,
-// reduced across the warp as each row ends. The weights are read packed
-// and never written out.
-template <int V>
-__global__ void gemv_kernel(const uint8_t* __restrict__ sm, const uint32_t* __restrict__ stream, int64_t stream_words, const uint32_t* __restrict__ offs, const uint32_t* __restrict__ tables, int64_t O, int64_t K, int64_t tw, int tile_words, const __nv_bfloat16* __restrict__ x, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ y, int64_t tiles) {
+// A row's dot product (warp-reduced) is done: written, or, where tiles
+// split rows (SPLIT: rows longer than a tile), added to the row's fp32 sum;
+// the last of the row's tiles to add writes it out and clears the sum.
+template <bool SPLIT>
+__device__ __forceinline__ void row_done(float acc, int64_t row, int64_t K, int64_t tw, int lane, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ y, float* sum, int* count) {
+#pragma unroll
+    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffff, acc, o);
+    if (lane != 0) return;
+    float b = bias ? __bfloat162float(bias[row]) : 0.f;
+    if (!SPLIT) {
+        y[row] = __float2bfloat16(acc + b);
+        return;
+    }
+    int parts = (int)((row * K + K - 1) / tw - (row * K) / tw + 1);
+    atomicAdd(sum + row, acc);
+    __threadfence();
+    if (atomicAdd(count + row, 1) == parts - 1) {
+        y[row] = __float2bfloat16(atomicExch(sum + row, 0.f) + b);
+        count[row] = 0;
+    }
+}
+
+// y = W x (+ bias) for a matrix [O, K] (K a multiple of 32 V): one warp a
+// tile, its rows' dot products in fp32, reduced across the warp as each row
+// ends. Tiles are whole rows, or (SPLIT) flat pieces of long rows. The
+// weights are read packed and never written out.
+template <int V, bool SPLIT>
+__global__ void gemv_kernel(const uint8_t* __restrict__ sm, const uint32_t* __restrict__ stream, int64_t stream_words, const uint32_t* __restrict__ offs, const uint32_t* __restrict__ tables, int64_t O, int64_t K, int64_t tw, int tile_words, const __nv_bfloat16* __restrict__ x, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ y, int64_t tiles, float* sum, int* count) {
     extern __shared__ uint32_t shared[];
     int64_t tile = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5;
     int lane = threadIdx.x & 31;
@@ -174,9 +209,7 @@ __global__ void gemv_kernel(const uint8_t* __restrict__ sm, const uint32_t* __re
     int64_t row = start / K, row_end = (row + 1) * K;
     for (int64_t b = start; b < end; b += 32 * V) {
         if (b >= row_end) {
-#pragma unroll
-            for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffff, acc, o);
-            if (lane == 0) y[row] = __float2bfloat16(acc + (bias ? __bfloat162float(bias[row]) : 0.f));
+            row_done<SPLIT>(acc, row, K, tw, lane, bias, y, sum, count);
             acc = 0.f;
             row++;
             row_end += K;
@@ -196,16 +229,15 @@ __global__ void gemv_kernel(const uint8_t* __restrict__ sm, const uint32_t* __re
         for (int i = 0; i < V; i++) e[i] = r.next(cls, sym);
 #pragma unroll
         for (int i = 0; i < V; i += 4) {
-            uint32_t s4 = s4v[i / 4];
+            uint32_t s4 = s4v[i / 4], sgn4 = s4 & 0x80808080, man4 = s4 & 0x7f7f7f7f;
             uint2 xv = xvv[i / 4];
-            __nv_bfloat162 x01 = *(__nv_bfloat162*)&xv.x, x23 = *(__nv_bfloat162*)&xv.y;
-            acc += __uint_as_float(bf16_bits(s4 & 0xff, e[i]) << 16) * __low2float(x01) + __uint_as_float(bf16_bits((s4 >> 8) & 0xff, e[i + 1]) << 16) * __high2float(x01)
-                 + __uint_as_float(bf16_bits((s4 >> 16) & 0xff, e[i + 2]) << 16) * __low2float(x23) + __uint_as_float(bf16_bits(s4 >> 24, e[i + 3]) << 16) * __high2float(x23);
+            acc = fmaf(weight_of(sgn4, man4, 0, e[i]), __uint_as_float(xv.x << 16), acc);
+            acc = fmaf(weight_of(sgn4, man4, 1, e[i + 1]), __uint_as_float(xv.x & 0xffff0000), acc);
+            acc = fmaf(weight_of(sgn4, man4, 2, e[i + 2]), __uint_as_float(xv.y << 16), acc);
+            acc = fmaf(weight_of(sgn4, man4, 3, e[i + 3]), __uint_as_float(xv.y & 0xffff0000), acc);
         }
     }
-#pragma unroll
-    for (int o = 16; o > 0; o >>= 1) acc += __shfl_xor_sync(0xffffffff, acc, o);
-    if (lane == 0) y[row] = __float2bfloat16(acc + (bias ? __bfloat162float(bias[row]) : 0.f));
+    row_done<SPLIT>(acc, row, K, tw, lane, bias, y, sum, count);
 }
 
 // The fast format: each weight's exponent as a 3-bit code into the
@@ -420,12 +452,18 @@ void decode(torch::Tensor sm, torch::Tensor stream, torch::Tensor offs, torch::T
     BY_V(V, (allow_shared((const void*)decode_kernel<VV>), decode_kernel<VV><<<(tiles * 32 + threads - 1) / threads, threads, shared>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)stream.data_ptr(), stream.numel(), (const uint32_t*)offs.data_ptr(), (const uint32_t*)tables.data_ptr(), n, tw, (int)tile_words, all ? nullptr : (const int64_t*)tile_ids.data_ptr(), tiles, (uint16_t*)out.data_ptr())));
 }
 
-void gemv(torch::Tensor sm, torch::Tensor stream, torch::Tensor offs, torch::Tensor tables, int64_t O, int64_t K, int64_t tw, int64_t V, int64_t tile_words, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
-    TORCH_CHECK(K % (32 * V) == 0 && tw % K == 0, "gemv needs row tiles of K a multiple of 32 V");
+void gemv(torch::Tensor sm, torch::Tensor stream, torch::Tensor offs, torch::Tensor tables, int64_t O, int64_t K, int64_t tw, int64_t V, int64_t tile_words, torch::Tensor x, torch::Tensor bias, torch::Tensor y, torch::Tensor sum, torch::Tensor count) {
+    bool split = tw % K != 0;
+    TORCH_CHECK(K % (32 * V) == 0 && tw % (32 * V) == 0 && (!split || sum.numel() >= O), "gemv needs K and tiles multiples of 32 V, and row sums for split rows");
     int64_t tiles = tiles_for(O * K, tw);
     int threads = 128;
     size_t shared = (threads / 32) * tile_words * sizeof(uint32_t);
-    BY_V(V, (allow_shared((const void*)gemv_kernel<VV>), gemv_kernel<VV><<<(tiles * 32 + threads - 1) / threads, threads, shared>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)stream.data_ptr(), stream.numel(), (const uint32_t*)offs.data_ptr(), (const uint32_t*)tables.data_ptr(), O, K, tw, (int)tile_words, (const __nv_bfloat16*)x.data_ptr(), bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr, (__nv_bfloat16*)y.data_ptr(), tiles)));
+    auto launch = [&](auto kernel) {
+        allow_shared((const void*)kernel);
+        kernel<<<(tiles * 32 + threads - 1) / threads, threads, shared>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)stream.data_ptr(), stream.numel(), (const uint32_t*)offs.data_ptr(), (const uint32_t*)tables.data_ptr(), O, K, tw, (int)tile_words, (const __nv_bfloat16*)x.data_ptr(), bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr, (__nv_bfloat16*)y.data_ptr(), tiles, split ? (float*)sum.data_ptr() : nullptr, split ? (int*)count.data_ptr() : nullptr);
+    };
+    if (V == 16) { if (split) launch(gemv_kernel<16, true>); else launch(gemv_kernel<16, false>); }
+    else { if (split) launch(gemv_kernel<4, true>); else launch(gemv_kernel<4, false>); }
 }
 
 void fast_gemv(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch::Tensor exc_base, int64_t top, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {

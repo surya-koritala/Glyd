@@ -22,7 +22,7 @@ FLAT_TILE = 16384  # weights a tile when the tensor is not a matrix of rows
 ROW_TILE = 8192  # about as many a tile for a matrix: whole rows
 MIN_TILES = 2048  # warps a matrix's product should keep busy
 MIN_TILE = 4096  # but no tile under this many weights (its offsets cost)
-STAGE_MAX = 1024  # words of a tile's streams a warp stages in shared memory, at most
+STAGE_MAX = int(os.environ.get("GLYD_GPU_STAGE_MAX", 2048))  # words of a tile's streams a warp stages in shared memory, at most (past that the reader reads in place, a word ahead)
 SEG = 1024  # the fast format's escape index is kept a segment of this many weights of a row
 
 
@@ -71,16 +71,13 @@ def code_tables(freq):
             if r < base + (1 << sbits):
                 lengths[e], codes[e] = c + 1 + sbits, (1 << sbits) | (r - base)
                 break
-    # 32 class entries (base << 8 | s << 1 | escape), 32 ranks' exponents.
+    # 32 class entries (code length | (base - 2^s) mod 32 << 8 | escape
+    # << 16), 32 ranks' exponents in a float's place (<< 23).
     tables = np.zeros(64, dtype=np.int64)
-    packed_s, esc_class = 0, 255
     for c, (base, sbits, esc) in enumerate(classes):
-        tables[c] = (base << 8) | (sbits << 1) | int(esc)
-        packed_s |= sbits << (4 * c)
-        if esc:
-            esc_class = c
+        tables[c] = (c + 1 + sbits) | (((base - (1 << sbits)) % 32) << 8) | (int(esc) << 16)
     for r, e in enumerate(order[:32]):
-        tables[32 + r] = e
+        tables[32 + r] = e << 23
     tables = np.where(tables[:64] >= 2**31, tables[:64] - 2**32, tables[:64])
     return lengths, codes, tables
 
@@ -92,6 +89,11 @@ class Packed:
         # small enough not to cut the warps an SM holds (0: read in place).
         self.tw, self.V, self.tile_words = tw, V, tile_words if tile_words <= STAGE_MAX else 0
         self.rows_per_tile = tw // shape[1] if len(shape) == 2 and tw % shape[1] == 0 else 0
+        # Split rows (tiles shorter than a row): the product adds each row's
+        # parts in fp32 sums, cleared as they are written out.
+        self.split = len(shape) == 2 and tw % shape[1] != 0
+        self.sum = torch.zeros(shape[0] if self.split else 0, dtype=torch.float32, device=sm.device)
+        self.count = torch.zeros(shape[0] if self.split else 0, dtype=torch.int32, device=sm.device)
 
     def nbytes(self):
         return sum(t.numel() * t.element_size() for t in (self.sm, self.stream, self.offs, self.tables))
@@ -149,8 +151,11 @@ def pack(w):
         # the GPU under MIN_TILES warps (a small matrix: its offsets cost
         # more a weight, on few weights).
         O, K = w.shape
-        tw = max(1, min(ROW_TILE // K, max(MIN_TILE // K, O // MIN_TILES))) * K
-        V = 16 if w.shape[1] % 512 == 0 else 4
+        V = 16 if K % 512 == 0 else 4
+        if K > ROW_TILE and K % 512 == 0:
+            tw = ROW_TILE  # long rows: tiles split them, the product adds the parts
+        else:
+            tw = max(1, min(ROW_TILE // K, max(MIN_TILE // K, O // MIN_TILES))) * K
     else:
         tw, V = FLAT_TILE, 4
     bits = _ext.lane_bits(u, len_t, tw, V).to(torch.int64)
@@ -194,7 +199,7 @@ def gemv(p, x, bias=None):
     """W x (+ bias) for one input vector, the weights decoded in registers."""
     O, K = p.shape
     y = torch.empty(O, dtype=torch.bfloat16, device=x.device)
-    _ext.gemv(p.sm, p.stream, p.offs, p.tables, O, K, p.tw, p.V, p.tile_words, x.contiguous().view(-1), bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
+    _ext.gemv(p.sm, p.stream, p.offs, p.tables, O, K, p.tw, p.V, p.tile_words, x.contiguous().view(-1), bias if bias is not None else _none(x.device).to(torch.bfloat16), y, p.sum, p.count)
     return y
 
 
