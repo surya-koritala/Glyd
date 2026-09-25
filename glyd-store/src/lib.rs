@@ -488,6 +488,23 @@ fn fingerprints(data: &[u8]) -> Vec<u64> {
 /// of them, positions absolute, in order): the base compressor's region
 /// choice takes the anchors instead of scanning the object again.
 fn fingerprints_and_anchors(data: &[u8]) -> (Vec<u64>, Vec<(u64, u64)>) {
+    // Model weights: one fingerprint a tensor, of its name, element width
+    // and size. A checkpoint shares none of its bytes with the one
+    // before it and every tensor's layout; the codec then stores each
+    // tensor as XOR its predecessor (`glyd::compress_with_base`).
+    if let Some(tensors) = glyd::safetensors::tensors(data) {
+        let prints = tensors
+            .iter()
+            .map(|t| {
+                let mut h = 0xcbf29ce484222325u64;
+                for b in t.name.iter().copied().chain((t.width as u64).to_le_bytes()).chain(((t.end - t.start) as u64).to_le_bytes()) {
+                    h = (h ^ b as u64).wrapping_mul(0x100000001b3);
+                }
+                h >> 2 | 1
+            })
+            .collect();
+        return (prints, Vec::new());
+    }
     // Every position is tested on its own, so the scan splits across
     // the cores: each chunk reads 64 bytes past its end for the hashes
     // at its last positions and keeps only the positions it owns.
@@ -1564,6 +1581,42 @@ mod tests {
         check(&store);
         drop(store);
         check(&Store::open(&dir).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn checkpoints_find_the_one_before() {
+        // Three checkpoints of one model: the same tensors, random-looking
+        // mantissas, a few bits moved each step; they share no bytes.
+        fn checkpoint(step: u32) -> Vec<u8> {
+            let h = r#"{"w":{"dtype":"F32","shape":[196608],"data_offsets":[0,786432]},"b":{"dtype":"F32","shape":[1024],"data_offsets":[786432,790528]}}"#;
+            let mut f = (h.len() as u64).to_le_bytes().to_vec();
+            f.extend_from_slice(h.as_bytes());
+            let (mut x, mut y) = (7u64, step as u64 * 7919 + 1);
+            for _ in 0..790528 / 4 {
+                let m = rnd(&mut x) as u32 & 0x007f_ffff;
+                let flip = if rnd(&mut y) % 16 == 0 { rnd(&mut y) as u32 & 0xff } else { 0 };
+                f.extend_from_slice(&((0x3c00_0000 | m) ^ flip).to_le_bytes());
+            }
+            f
+        }
+        let dir = std::env::temp_dir().join(format!("glyd-store-ckpt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let steps: Vec<Vec<u8>> = (0..3).map(checkpoint).collect();
+        let mut store = Store::open(&dir).unwrap();
+        for (i, c) in steps.iter().enumerate() {
+            store.put(&format!("step{i}.safetensors"), c).unwrap();
+        }
+        let e = store.entries();
+        assert!(e[0].base.is_none());
+        for i in 1..3 {
+            assert_eq!(e[i].base, Some(i as u32 - 1), "checkpoint {i} against the one before");
+            assert!(e[i].stored_len * 2 < e[0].stored_len, "{} against {} alone", e[i].stored_len, e[0].stored_len);
+        }
+        for (i, c) in steps.iter().enumerate() {
+            assert!(store.get(i as u32).unwrap() == *c, "checkpoint {i}");
+        }
+        drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

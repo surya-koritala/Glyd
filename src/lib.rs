@@ -639,19 +639,8 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
         // window and tables: no reset.
         let chain_flag = if first && dict.is_none() { FLAG_CHAIN_RESET } else { 0 };
         let (mut n_seq, mut n_lit) = (seqs.len(), literals.len());
-        // As at the double-fast level: a poor parse of noise-level bytes
-        // is tried as literals alone.
-        if n_seq > 1 && payload.len() * 4 > chunk.len() && order0_bytes(chunk) + 64 < payload.len() {
-            let mut alt_prev = before;
-            let mut alt = Vec::new();
-            let only = [v7_encode::Sequence { lit_len: chunk.len() as u32, match_len: 0, offset: 0 }];
-            v7_encode::encode_block_with(&only, chunk, dict_id, &mut alt_prev, scratch, compact, &mut alt);
-            if alt.len() < payload.len() {
-                *payload = alt;
-                *prev = alt_prev;
-                n_seq = 1;
-                n_lit = chunk.len();
-            }
+        if literals_only_if_smaller(chunk, dict_id, before, prev, scratch, compact, payload, n_seq) {
+            (n_seq, n_lit) = (1, chunk.len());
         }
         if payload.len() + coded_header_len(compact, chunk.len(), payload.len(), n_seq, n_lit) >= chunk.len() {
             *prev = v7_encode::Tables::none();
@@ -687,23 +676,8 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
                 let chain_flag = if first && dict.is_none() { FLAG_CHAIN_RESET } else { 0 };
                 let mut n_seq = scratch.count();
                 let mut n_lit = literals.len();
-                // A small alphabet at noise level (a weight's exponent or
-                // mantissa plane) holds many 4-byte matches that cost more
-                // than the literals they replace: where the parse came out
-                // poor and the bytes' order-0 size is under it, the block
-                // is coded as literals alone too, and the smaller kept.
-                if n_seq > 1 && payload.len() * 4 > chunk_len && order0_bytes(chunk) + 64 < payload.len() {
-                    let mut alt_prev = before;
-                    part_seqs.clear();
-                    part_seqs.push(v7_encode::Sequence { lit_len: chunk_len as u32, match_len: 0, offset: 0 });
-                    part_lits.clear(); // the alternative's payload
-                    v7_encode::encode_block_with(part_seqs, chunk, dict_id, &mut alt_prev, scratch, compact, part_lits);
-                    if part_lits.len() < payload.len() {
-                        std::mem::swap(payload, part_lits);
-                        prev = alt_prev;
-                        n_seq = 1;
-                        n_lit = chunk_len;
-                    }
+                if literals_only_if_smaller(chunk, dict_id, before, &mut prev, scratch, compact, payload, n_seq) {
+                    (n_seq, n_lit) = (1, chunk_len);
                 }
                 if payload.len() + coded_header_len(compact, chunk_len, payload.len(), n_seq, n_lit) >= chunk_len {
                     prev = v7_encode::Tables::none();
@@ -749,6 +723,28 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
         offset += chunk_len;
     }
     WORK.with(|w| *w.borrow_mut() = work);
+}
+
+/// A small alphabet at noise level (a weight's exponent or mantissa
+/// plane) holds many 4-byte matches that cost more than the literals
+/// they replace: where a block's parse (`payload`, of `n_seq` sequences,
+/// made from tables `before`) came out poor and the bytes' order-0 size
+/// is under it, the block is coded as literals alone too, and the
+/// smaller kept. Whether the literals were kept.
+fn literals_only_if_smaller(chunk: &[u8], dict_id: u32, before: v7_encode::Tables, prev: &mut v7_encode::Tables, scratch: &mut v7_encode::EncScratch, compact: bool, payload: &mut Vec<u8>, n_seq: usize) -> bool {
+    if n_seq <= 1 || payload.len() * 4 <= chunk.len() || order0_bytes(chunk) + 64 >= payload.len() {
+        return false;
+    }
+    let mut alt_prev = before;
+    let mut alt = Vec::new();
+    let only = [v7_encode::Sequence { lit_len: chunk.len() as u32, match_len: 0, offset: 0 }];
+    v7_encode::encode_block_with(&only, chunk, dict_id, &mut alt_prev, scratch, compact, &mut alt);
+    if alt.len() >= payload.len() {
+        return false;
+    }
+    *payload = alt;
+    *prev = alt_prev;
+    true
 }
 
 /// The bytes an order-0 code of `b` needs, tables aside.
@@ -899,14 +895,18 @@ pub fn compress_max_stream(input: &[u8], mut sink: impl FnMut(&[u8]) -> std::io:
                                 v7_encode::find_sequences_dfast_far(unit, offset, chunk_len, t, far, &mut reps, seqs, literals, scratch);
                                 payload.clear();
                                 let compact = compact_block(chunk_len);
+                                let before = prev.clone();
                                 v7_encode::encode_block_coded(literals, 0, &mut prev, scratch, compact, payload);
                                 let chain_flag = if offset == 0 { FLAG_CHAIN_RESET } else { 0 };
-                                let n_seq = scratch.count();
-                                if payload.len() + coded_header_len(compact, chunk_len, payload.len(), n_seq, literals.len()) >= chunk_len {
+                                let (mut n_seq, mut n_lit) = (scratch.count(), literals.len());
+                                if literals_only_if_smaller(chunk, 0, before, &mut prev, scratch, compact, payload, n_seq) {
+                                    (n_seq, n_lit) = (1, chunk_len);
+                                }
+                                if payload.len() + coded_header_len(compact, chunk_len, payload.len(), n_seq, n_lit) >= chunk_len {
                                     prev = v7_encode::Tables::none();
                                     write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], &mut out);
                                 } else {
-                                    write_coded_block(chunk, n_seq, literals.len(), chain_flag, payload, &mut out);
+                                    write_coded_block(chunk, n_seq, n_lit, chain_flag, payload, &mut out);
                                 }
                                 offset += chunk_len;
                             }
