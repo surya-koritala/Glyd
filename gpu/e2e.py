@@ -68,7 +68,7 @@ class GLinear(nn.Module):
             T = p.rows_per_tile
             tiles = torch.arange(r0 // T, (r1 + T - 1) // T, device=out.device)
             full = Scratch.buf[: tiles.numel() * p.tw]
-            g._ext.decode(p.sm, p.stream, p.offs, p.lut, p.L, p.n, p.tw, tiles, full.view(torch.int16))
+            g.decode_tiles(p, tiles, full)
             out = full[: (r1 - r0) * K]
         return out.view(r1 - r0, K)
 
