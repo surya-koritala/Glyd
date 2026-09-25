@@ -512,8 +512,8 @@ pub(crate) struct Recent {
     /// with a modulo per step made the encoder's search of 64 entries
     /// per value a twentieth of a log's transform; a list kept in place
     /// is searched eight at a time and shifted with one move.
-    ids: [u32; RECENT],
-    len: usize,
+    pub(crate) ids: [u32; RECENT],
+    pub(crate) len: usize,
 }
 
 impl Recent {
@@ -534,7 +534,7 @@ impl Recent {
     }
     /// The position of `id`, comparing eight entries at a time.
     #[inline(always)]
-    fn find(&self, id: u32) -> Option<usize> {
+    pub(crate) fn find(&self, id: u32) -> Option<usize> {
         let ids = &self.ids[..self.len];
         let mut base = 0usize;
         let mut chunks = ids.chunks_exact(8);
@@ -736,14 +736,18 @@ pub(crate) fn is_token_byte(c: u8) -> bool {
 
 /// One field column being built.
 struct Column {
-    values: Vec<(usize, usize)>, // byte ranges into the source
+    /// Byte ranges into the source, as 32-bit offsets: a record unit is
+    /// at most 32 MB, and 64-bit pairs made the ranges of a log's unit
+    /// outweigh its text (51 MB for 32), fresh pages the kernel had to
+    /// fault in on every unit.
+    values: Vec<(u32, u32)>,
 }
 
 /// The typed encoding of one column, chosen from its values.
-fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams: &mut Vec<Vec<u8>>) {
+fn encode_column(src: &[u8], col: &[(u32, u32)], out_type: &mut u8, streams: &mut Vec<Vec<u8>>) {
     // Integers: every value canonical.
     let mut ints = Vec::with_capacity(col.len());
-    let all_int = col.iter().all(|&(a, b)| match parse_canonical_int(&src[a..b]) {
+    let all_int = col.iter().all(|&(a, b)| match parse_canonical_int(&src[a as usize..b as usize]) {
         Some(v) => {
             ints.push(v);
             true
@@ -764,7 +768,7 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
     // Date-times: the values under one pattern, reproduced exactly; up
     // to a tenth of the values may be of another shape (a header line,
     // an empty field), escaped to a text stream.
-    if let Some(pi) = col.iter().take(8).find_map(|&(a, b)| DATE_PATTERNS.iter().position(|p| parse_time(p, &src[a..b]).is_some())) {
+    if let Some(pi) = col.iter().take(8).find_map(|&(a, b)| DATE_PATTERNS.iter().position(|p| parse_time(p, &src[a as usize..b as usize]).is_some())) {
         let p = DATE_PATTERNS[pi];
         let scale = time_scale(p);
         let mut s = Vec::with_capacity(col.len() * 2 + 1);
@@ -778,10 +782,10 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
         // date, the costly part, only when it changes.
         let mut day = DayCache::default();
         for &(a, b) in col {
-            let exact = parse_time(p, &src[a..b]).filter(|&t| {
+            let exact = parse_time(p, &src[a as usize..b as usize]).filter(|&t| {
                 check.clear();
                 format_time_cached(p, t, &mut check, &mut day);
-                check == &src[a..b]
+                check == &src[a as usize..b as usize]
             });
             match exact {
                 Some(t) => {
@@ -800,7 +804,7 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
                         break;
                     }
                     put_varint(&mut s, 0);
-                    esc.extend_from_slice(&src[a..b]);
+                    esc.extend_from_slice(&src[a as usize..b as usize]);
                     esc.push(b'\n');
                 }
             }
@@ -822,7 +826,7 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
     let mut value_ids: Vec<u32> = Vec::with_capacity(col.len());
     for &(a, b) in col {
         let n = distinct.len() as u32;
-        value_ids.push(*distinct.entry(&src[a..b]).or_insert(n));
+        value_ids.push(*distinct.entry(&src[a as usize..b as usize]).or_insert(n));
         if distinct.len() > few {
             // Too many to be a dictionary column; the count is partial.
             counted = false;
@@ -852,6 +856,10 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
         let mut ranks = Vec::with_capacity(col.len());
         let mut ids = Vec::new();
         let mut recent = Recent::new();
+        // Whether each id is in the recency list: a value that is not
+        // (most of a column of hosts or paths) is put in front without
+        // searching the list.
+        let mut listed = vec![false; distinct.len()];
         // A value is new at its id's first appearance: ids were given in
         // that order, so exactly when the id is the next one unseen.
         let mut next = 0u32;
@@ -859,10 +867,23 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
             let new = id == next;
             if new {
                 next += 1;
-                dict.extend_from_slice(&src[a..b]);
+                dict.extend_from_slice(&src[a as usize..b as usize]);
                 dict.push(b'\n');
             }
-            match recent.touch(id) {
+            let hit = if listed[id as usize] { recent.find(id) } else { None };
+            match hit {
+                Some(p) => {
+                    recent.touch_at(p);
+                }
+                None => {
+                    if recent.len == RECENT {
+                        listed[recent.ids[RECENT - 1] as usize] = false;
+                    }
+                    recent.push_front(id);
+                    listed[id as usize] = true;
+                }
+            }
+            match hit {
                 Some(p) if !new => ranks.push(p as u8 + 1),
                 _ => {
                     ranks.push(0);
@@ -884,10 +905,10 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
         let mut int_digits = 0usize;
         let mut escapes = 0usize;
         for &(a, b) in col {
-            match parse_decimal(&src[a..b]) {
+            match parse_decimal(&src[a as usize..b as usize]) {
                 Some((v, p)) => {
                     places = places.max(p);
-                    int_digits = int_digits.max(b - a - p as usize - (p > 0) as usize);
+                    int_digits = int_digits.max((b - a) as usize - p as usize - (p > 0) as usize);
                     decs.push(Some((v, p)));
                 }
                 None => {
@@ -914,7 +935,7 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
                         }
                         None => {
                             put_varint(&mut deltas, 0);
-                            esc.extend_from_slice(&src[a..b]);
+                            esc.extend_from_slice(&src[a as usize..b as usize]);
                             esc.push(b'\n');
                         }
                     }
@@ -927,18 +948,22 @@ fn encode_column(src: &[u8], col: &[(usize, usize)], out_type: &mut u8, streams:
         }
     }
     *out_type = T_TEXT;
-    let mut s = Vec::with_capacity(col.iter().map(|&(a, b)| b - a + 1).sum());
+    let mut s = Vec::with_capacity(col.iter().map(|&(a, b)| (b - a) as usize + 1).sum());
     for (i, &(a, b)) in col.iter().enumerate() {
         if i > 0 {
             s.push(b'\n');
         }
-        s.extend_from_slice(&src[a..b]);
+        s.extend_from_slice(&src[a as usize..b as usize]);
     }
     streams.push(s);
 }
 
 /// The record image of `input`, or None when it is not record-shaped.
 pub fn transform(input: &[u8]) -> Option<Vec<u8>> {
+    // Offsets are 32-bit (`Column`): record units are at most 32 MB.
+    if input.len() > u32::MAX as usize {
+        return None;
+    }
     let shape = detect(input)?;
     match shape {
         Shape::Delimited { delimiter, fields } => Some(transform_delimited(input, delimiter, fields)),
@@ -1026,7 +1051,7 @@ fn transform_template(input: &[u8]) -> Option<Vec<u8>> {
                             i += 1;
                         }
                         if digit {
-                            cols[base + k].values.push((at + start, at + i));
+                            cols[base + k].values.push(((at + start) as u32, (at + i) as u32));
                             k += 1;
                         }
                     } else {
@@ -1090,10 +1115,10 @@ fn transform_delimited(input: &[u8], delimiter: u8, fields: usize) -> Vec<u8> {
             kind.push(0u8);
             let mut f0 = at;
             for (k, &c) in cuts.iter().enumerate() {
-                cols[k].values.push((f0, c));
+                cols[k].values.push((f0 as u32, c as u32));
                 f0 = c + 1;
             }
-            cols[fields - 1].values.push((f0, end));
+            cols[fields - 1].values.push((f0 as u32, end as u32));
         } else {
             kind.push(1u8);
             if !first_raw {
@@ -1165,7 +1190,7 @@ fn transform_sql(input: &[u8]) -> Option<Vec<u8>> {
     // its own per tuple was an allocation per row: a tenth of a dump's
     // transform in the allocator).
     let mut tuples: Vec<(usize, usize, u32, u32)> = Vec::new(); // (start '(', end after ')', first field, fields)
-    let mut all_fields: Vec<(usize, usize)> = Vec::new();
+    let mut all_fields: Vec<(u32, u32)> = Vec::new();
     let n = input.len();
     let mut i = 0usize;
     // A list may start at the very beginning (a unit cut inside one).
@@ -1223,12 +1248,12 @@ fn transform_sql(input: &[u8]) -> Option<Vec<u8>> {
                         p = q + 1;
                     }
                     b',' => {
-                        all_fields.push((f0, p));
+                        all_fields.push((f0 as u32, p as u32));
                         p += 1;
                         f0 = p;
                     }
                     b')' => {
-                        all_fields.push((f0, p));
+                        all_fields.push((f0 as u32, p as u32));
                         p += 1;
                         ok = true;
                         break;
@@ -1441,7 +1466,7 @@ fn transform_json(input: &[u8]) -> Option<Vec<u8>> {
                 names.len() - 1
             }
         };
-        cols[id].values.push((v.start, v.end));
+        cols[id].values.push((v.start as u32, v.end as u32));
         values.push((v.start as u32, v.end as u32, id as u32));
     });
     let fields = names.len();
