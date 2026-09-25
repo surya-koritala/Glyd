@@ -26,6 +26,8 @@ ap.add_argument("--tokens", type=int, default=128)
 ap.add_argument("--prefill", type=str, default="", help="prompt lengths to time one forward pass at, e.g. 128,512,2048")
 ap.add_argument("--gemm-max", type=int, default=64, help="fused: steps of up to this many tokens multiply straight from the packed weights (fast format)")
 ap.add_argument("--batch", type=str, default="1", help="generate for this many copies of the prompt at once (comma list: each measured)")
+ap.add_argument("--gpus", type=int, default=1, help="spread the layers over this many GPUs (bf16: accelerate's device map; glyd: layers balanced by packed size)")
+ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
 args = ap.parse_args()
 
 tok = AutoTokenizer.from_pretrained(args.model)
@@ -61,18 +63,21 @@ def measure(model, label):
             batch = ids.repeat(b, 1)
             model.generate(batch, max_new_tokens=4, do_sample=False)  # warm-up
             torch.cuda.synchronize()
-            torch.cuda.reset_peak_memory_stats()
+            for i in range(torch.cuda.device_count()):
+                torch.cuda.reset_peak_memory_stats(i)
             t = time.perf_counter()
             o = model.generate(batch, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False)
             torch.cuda.synchronize()
             t = time.perf_counter() - t
-            print(f"{label}: batch {b}: {b * args.tokens / t:.1f} tokens/s ({args.tokens / t:.1f} a sequence), peak VRAM {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
+            peaks = [torch.cuda.max_memory_allocated(i) / 1e9 for i in range(torch.cuda.device_count())]
+            used = [f"{x:.1f}" for x in peaks if x > 0.05]
+            print(f"{label}: batch {b}: {b * args.tokens / t:.1f} tokens/s ({args.tokens / t:.1f} a sequence), peak VRAM {sum(peaks):.2f} GB" + (f" ({' + '.join(used)} GB on {len(used)} GPUs)" if len(used) > 1 else ""))
             out = o[:1] if out is None else out
     return logits, out
 
 
 class Scratch:
-    buf = None
+    buf = None  # one a device: {device: tensor}
 
 
 class GLinear(nn.Module):
@@ -86,16 +91,17 @@ class GLinear(nn.Module):
 
     def decode_rows(self, r0, r1):
         p, K = self.p, self.p.shape[1]
-        out = Scratch.buf[: (r1 - r0) * K]
+        buf = Scratch.buf[p.sm.device]
+        out = buf[: (r1 - r0) * K]
         if isinstance(p, g.Fast):
             g._ext.fast_decode(p.sm, p.planes, p.exc, p.exc_base, p.top, r0, r1 - r0, g._none(out.device), K, out.view(torch.int16))
         elif p.split:  # tiles split its rows: decoded whole (it fits the scratch)
             assert r0 == 0 and r1 == p.shape[0]
-            g.unpack(p, Scratch.buf)
+            g.unpack(p, buf)
         else:
             T = p.rows_per_tile
             tiles = torch.arange(r0 // T, (r1 + T - 1) // T, device=out.device)
-            full = Scratch.buf[: tiles.numel() * p.tw]
+            full = buf[: tiles.numel() * p.tw]
             g.decode_tiles(p, tiles, full)
             out = full[: (r1 - r0) * K]
         return out.view(r1 - r0, K)
@@ -137,31 +143,61 @@ class GEmbedding(nn.Module):
 model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).eval()
 weights_bf16 = sum(p.numel() * p.element_size() for p in model.parameters())
 if args.baseline:
-    model.cuda()
+    if args.gpus > 1:
+        from accelerate import dispatch_model, infer_auto_device_map
+        from accelerate.hooks import remove_hook_from_module
+        cap = args.gpu_mem or torch.cuda.get_device_properties(0).total_memory / 2**30 - 2
+        dm = infer_auto_device_map(model, max_memory={i: f"{cap}GiB" for i in range(args.gpus)}, no_split_module_classes=model._no_split_modules)
+        dispatch_model(model, device_map=dm)
+    else:
+        model.cuda()
     logits_a, out_a = measure(model, f"bf16 (weights {weights_bf16 / 1e9:.2f} GB)")
     prefill(model, "bf16")
+    if args.gpus > 1:
+        remove_hook_from_module(model, recurse=True)
     model.cpu()
     torch.cuda.empty_cache()
 
+# Where every decoder layer's weights go: contiguous runs of layers, balanced
+# by their bytes, over args.gpus GPUs; the embedding on the first, the final
+# norm and the output layer on the last.
+layers = model.model.layers
+layer_bytes = [sum(p.numel() for p in l.parameters()) for l in layers]
+per_gpu, acc, gpu_of = sum(layer_bytes) / args.gpus, 0, []
+for b in layer_bytes:
+    gpu_of.append(min(args.gpus - 1, int(acc // per_gpu)))
+    acc += b
+layer_of = {id(m): gpu_of[i] for i, l in enumerate(layers) for m in l.modules()}
+last = args.gpus - 1
+
 pack = g.pack_fast if args.format == "fast" else g.pack
-packed, biggest, t0 = {}, 0, time.perf_counter()
+packed, biggest, t0 = {}, {}, time.perf_counter()
 with torch.no_grad():
     for name, m in list(model.named_modules()):
         for cname, child in list(m.named_children()):
             if isinstance(child, (nn.Linear, nn.Embedding)):
-                key = child.weight.data_ptr()
+                dev = torch.device("cuda", layer_of.get(id(child), 0 if isinstance(child, nn.Embedding) else last))
+                key = (child.weight.data_ptr(), dev)
                 if key not in packed:
-                    packed[key] = pack(child.weight.data.cuda())
+                    packed[key] = pack(child.weight.data.to(dev))
                 p = packed[key]
-                bias = child.bias.data.cuda() if isinstance(child, nn.Linear) and child.bias is not None else None
+                bias = child.bias.data.to(dev) if isinstance(child, nn.Linear) and child.bias is not None else None
                 setattr(m, cname, GLinear(p, bias) if isinstance(child, nn.Linear) else GEmbedding(p))
-                biggest = max(biggest, min(p.n, SCRATCH))
-    model.cuda()
-    Scratch.buf = torch.empty(biggest + 16384 * 8, dtype=torch.bfloat16, device="cuda")
+                biggest[dev] = max(biggest.get(dev, 0), min(p.n, SCRATCH))
+    if args.gpus > 1:
+        from accelerate import dispatch_model
+        dm = {"model.embed_tokens": 0, "model.rotary_emb": 0, "model.norm": last, "lm_head": last}
+        dm.update({f"model.layers.{i}": d for i, d in enumerate(gpu_of)})
+        dispatch_model(model, device_map=dm)
+    else:
+        model.cuda()
+    Scratch.buf = {dev: torch.empty(n + 16384 * 8, dtype=torch.bfloat16, device=dev) for dev, n in biggest.items()}
 torch.cuda.empty_cache()
 packed_bytes = sum(p.nbytes() for p in packed.values())
 other = sum(p.numel() * p.element_size() for p in model.parameters()) + sum(m.bias.numel() * 2 for m in model.modules() if isinstance(m, GLinear) and m.bias is not None)
-print(f"{args.format}{' fused' if args.fused else ''}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {Scratch.buf.numel() * 2 / 1e9:.2f} GB, VRAM in use {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+in_use = sum(torch.cuda.memory_allocated(i) for i in range(torch.cuda.device_count()))
+scratch = sum(b.numel() * 2 for b in Scratch.buf.values())
+print(f"{args.format}{' fused' if args.fused else ''}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {scratch / 1e9:.2f} GB, VRAM in use {in_use / 1e9:.2f} GB on {args.gpus} GPU{'s' if args.gpus > 1 else ''}")
 logits_b, out_b = measure(model, f"glyd {args.format}{' fused' if args.fused else ''}")
 prefill(model, f"glyd {args.format}")
 if args.baseline:
