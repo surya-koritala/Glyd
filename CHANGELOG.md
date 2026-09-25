@@ -16,6 +16,11 @@ every earlier format.
   whatever the core count (it followed the thread count before, so a
   32-thread machine cut twice as finely as a 16-core one). GitHub
   events at `--ultra` 5.4% smaller on 32 threads; unchanged on 16.
+- Noise-level bytes of a small alphabet (a model weight's exponent or
+  mantissa plane) are coded as literals alone where the parse's short
+  matches would cost more: `--max` on Pythia's exponent plane 171.7 →
+  140.1 MB (zstd -19: 143.8), on Qwen2.5's 208.3 → 169.8 MB (171.6).
+  Text, logs, SQL and kernel tars come out byte-identical in size.
 - The savings calculator re-measured at this code (LZ4, gzip, zstd -3
   and -19, four Glyd levels, decompress CPU per row; the bucket row
   from the v0.14.8 gate): [report](docs/benchmarks/savings-2026-09-24.md).

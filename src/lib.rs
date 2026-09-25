@@ -632,15 +632,31 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
     let emit = |chunk: &[u8], seqs: &[v7_encode::Sequence], literals: &[u8], first: bool, prev: &mut v7_encode::Tables, scratch: &mut v7_encode::EncScratch, payload: &mut Vec<u8>, output: &mut Vec<u8>| {
         payload.clear();
         let compact = compact_block(chunk.len());
+        let before = prev.clone();
         v7_encode::encode_block_with(seqs, literals, dict_id, prev, scratch, compact, payload);
         // A dictionary stream's first block continues the dictionary's
         // window and tables: no reset.
         let chain_flag = if first && dict.is_none() { FLAG_CHAIN_RESET } else { 0 };
-        if payload.len() + coded_header_len(compact, chunk.len(), payload.len(), seqs.len(), literals.len()) >= chunk.len() {
+        let (mut n_seq, mut n_lit) = (seqs.len(), literals.len());
+        // As at the double-fast level: a poor parse of noise-level bytes
+        // is tried as literals alone.
+        if n_seq > 1 && payload.len() * 4 > chunk.len() && order0_bytes(chunk) + 64 < payload.len() {
+            let mut alt_prev = before;
+            let mut alt = Vec::new();
+            let only = [v7_encode::Sequence { lit_len: chunk.len() as u32, match_len: 0, offset: 0 }];
+            v7_encode::encode_block_with(&only, chunk, dict_id, &mut alt_prev, scratch, compact, &mut alt);
+            if alt.len() < payload.len() {
+                *payload = alt;
+                *prev = alt_prev;
+                n_seq = 1;
+                n_lit = chunk.len();
+            }
+        }
+        if payload.len() + coded_header_len(compact, chunk.len(), payload.len(), n_seq, n_lit) >= chunk.len() {
             *prev = v7_encode::Tables::none();
             write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
         } else {
-            write_coded_block(chunk, seqs.len(), literals.len(), chain_flag, payload, output);
+            write_coded_block(chunk, n_seq, n_lit, chain_flag, payload, output);
         }
     };
     while offset < full.len() {
@@ -665,14 +681,34 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
                 // went; encode from those.
                 payload.clear();
                 let compact = compact_block(chunk_len);
+                let before = prev.clone();
                 v7_encode::encode_block_coded(literals, dict_id, &mut prev, scratch, compact, payload);
                 let chain_flag = if first && dict.is_none() { FLAG_CHAIN_RESET } else { 0 };
-                let n_seq = scratch.count();
-                if payload.len() + coded_header_len(compact, chunk_len, payload.len(), n_seq, literals.len()) >= chunk_len {
+                let mut n_seq = scratch.count();
+                let mut n_lit = literals.len();
+                // A small alphabet at noise level (a weight's exponent or
+                // mantissa plane) holds many 4-byte matches that cost more
+                // than the literals they replace: where the parse came out
+                // poor and the bytes' order-0 size is under it, the block
+                // is coded as literals alone too, and the smaller kept.
+                if n_seq > 1 && payload.len() * 4 > chunk_len && order0_bytes(chunk) + 64 < payload.len() {
+                    let mut alt_prev = before;
+                    part_seqs.clear();
+                    part_seqs.push(v7_encode::Sequence { lit_len: chunk_len as u32, match_len: 0, offset: 0 });
+                    part_lits.clear(); // the alternative's payload
+                    v7_encode::encode_block_with(part_seqs, chunk, dict_id, &mut alt_prev, scratch, compact, part_lits);
+                    if part_lits.len() < payload.len() {
+                        std::mem::swap(payload, part_lits);
+                        prev = alt_prev;
+                        n_seq = 1;
+                        n_lit = chunk_len;
+                    }
+                }
+                if payload.len() + coded_header_len(compact, chunk_len, payload.len(), n_seq, n_lit) >= chunk_len {
                     prev = v7_encode::Tables::none();
                     write_block(chunk, FLAG_RAW_UNCOMPRESSED, chain_flag, &[], &[], &[], &[], output);
                 } else {
-                    write_coded_block(chunk, n_seq, literals.len(), chain_flag, payload, output);
+                    write_coded_block(chunk, n_seq, n_lit, chain_flag, payload, output);
                 }
                 first = false;
                 // Blocks so far handed on (the CLI's writer thread),
@@ -712,6 +748,16 @@ fn compress_max_from(full: &[u8], start: usize, dict_id: u32, parse: Parse, dict
         offset += chunk_len;
     }
     WORK.with(|w| *w.borrow_mut() = work);
+}
+
+/// The bytes an order-0 code of `b` needs, tables aside.
+fn order0_bytes(b: &[u8]) -> usize {
+    let mut h = [0u32; 256];
+    for &x in b {
+        h[x as usize] += 1;
+    }
+    let n = b.len() as f64;
+    (h.iter().filter(|&&c| c > 0).map(|&c| -(c as f64) * (c as f64 / n).log2()).sum::<f64>() / 8.0) as usize
 }
 
 /// Max level, all cores: units of a core's share (at least 8 MB), so
