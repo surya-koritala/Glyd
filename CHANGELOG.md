@@ -6,8 +6,21 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.15.0 — 2026-09-25
 
+- Model weights on the GPU ([gpu/](gpu/README.md), Python and CUDA beside
+  the library): a bf16 model's weights held compressed in GPU memory and
+  decoded there bit for bit, the sign-and-mantissa byte as it is and the
+  exponent coded, in two formats: dense (a prefix code read by counting
+  leading zeros, as short as Huffman's; 10.9 bits a weight) and fast
+  (3-bit codes into the 7 most common exponents, an escape to the rest;
+  11.25). Generation multiplies straight from the packed weights, never
+  writing bf16 out. Qwen2.5-7B-Instruct on an RTX 4080 SUPER (16 GB):
+  **55.1 tokens/s in 11.05 GB** (fast) and **52.0 in 10.60 GB** (dense),
+  against bf16's 43.2 in 15.25 GB; the fast format's 128 tokens as
+  bf16's. Prompts of up to 64 tokens multiply on the tensor cores from
+  the fast format (35-40 ms, bf16 24-27); longer prompts decode each
+  matrix and use PyTorch's matmul (2048 tokens: 337 ms, bf16 301).
 - PyTorch checkpoints (`torch.save`): the zip's tensor storages go in as
   byte planes, their element widths read from the checkpoint's pickle
   (a reader for the opcodes `torch.save` writes, no dependency); against
