@@ -779,14 +779,28 @@ fn encode_column(src: &[u8], col: &[(u32, u32)], out_type: &mut u8, streams: &mu
         let mut escapes = 0usize;
         let mut check = Vec::with_capacity(32);
         // The check prints each value back through the day cache: the
-        // date, the costly part, only when it changes.
+        // date, the costly part, only when it changes. A value whose
+        // text up to the hour equals the last exact value's has a date
+        // that prints back (every pattern puts the date first), and its
+        // time fields, parsed in range, print back as they are, unless
+        // the second is 60 (a leap second rolls over): no print needed.
         let mut day = DayCache::default();
+        let prefix = p.iter().position(|&c| c == b'h').unwrap_or(p.len());
+        let second = p.iter().position(|&c| c == b's');
+        let mut prev: &[u8] = &[];
         for &(a, b) in col {
-            let exact = parse_time(p, &src[a as usize..b as usize]).filter(|&t| {
+            let v = &src[a as usize..b as usize];
+            let exact = parse_time(p, v).filter(|&t| {
+                if prev.len() == v.len() && v[..prefix] == prev[..prefix] && second.map_or(true, |i| v[i] != b'6') {
+                    return true;
+                }
                 check.clear();
                 format_time_cached(p, t, &mut check, &mut day);
-                check == &src[a as usize..b as usize]
+                check == v
             });
+            if exact.is_some() {
+                prev = v;
+            }
             match exact {
                 Some(t) => {
                     // Seconds as deltas; the fraction, when the pattern
@@ -1099,7 +1113,19 @@ fn transform_delimited(input: &[u8], delimiter: u8, fields: usize) -> Vec<u8> {
     loop {
         cuts.clear();
         let mut end = at;
+        let newline = 0x0a0a_0a0a_0a0a_0a0au64;
+        let delim = u64::from_ne_bytes([delimiter; 8]);
         while end < body.len() {
+            // To the next newline or delimiter a word at a time.
+            if end + 8 <= body.len() {
+                let w = u64::from_le_bytes(body[end..end + 8].try_into().unwrap());
+                let m = has_byte(w, newline) | has_byte(w, delim);
+                if m == 0 {
+                    end += 8;
+                    continue;
+                }
+                end += (m.trailing_zeros() / 8) as usize;
+            }
             let c = body[end];
             if c == b'\n' {
                 break;
@@ -1151,9 +1177,10 @@ fn has_byte(w: u64, c: u64) -> u64 {
     x.wrapping_sub(0x0101_0101_0101_0101) & !x & 0x8080_8080_8080_8080
 }
 
-/// From `p`, past every 8 bytes holding none of a tuple's special bytes
-/// (a quote, a comma, a closing parenthesis): long text fields are
-/// crossed a word at a time.
+/// From `p`, to the next of a tuple's special bytes (a quote, a comma,
+/// a closing parenthesis), a word at a time: the lowest flagged byte of
+/// `has_byte` is exact (a borrow can only flag bytes above a true one).
+/// Within the last 7 bytes it stops where it is.
 #[inline(always)]
 fn skip_plain_sql(input: &[u8], mut p: usize) -> usize {
     const QUOTE: u64 = 0x2727_2727_2727_2727;
@@ -1161,24 +1188,26 @@ fn skip_plain_sql(input: &[u8], mut p: usize) -> usize {
     const CLOSE: u64 = 0x2929_2929_2929_2929;
     while p + 8 <= input.len() {
         let w = u64::from_le_bytes(input[p..p + 8].try_into().unwrap());
-        if has_byte(w, QUOTE) | has_byte(w, COMMA) | has_byte(w, CLOSE) != 0 {
-            break;
+        let m = has_byte(w, QUOTE) | has_byte(w, COMMA) | has_byte(w, CLOSE);
+        if m != 0 {
+            return p + (m.trailing_zeros() / 8) as usize;
         }
         p += 8;
     }
     p
 }
 
-/// From `p` inside a quoted string, past every 8 bytes holding neither
-/// a quote nor a backslash.
+/// From `q` inside a quoted string, to the next quote or backslash, a
+/// word at a time.
 #[inline(always)]
 fn skip_plain_quoted(input: &[u8], mut q: usize) -> usize {
     const QUOTE: u64 = 0x2727_2727_2727_2727;
     const BACKSLASH: u64 = 0x5c5c_5c5c_5c5c_5c5c;
     while q + 8 <= input.len() {
         let w = u64::from_le_bytes(input[q..q + 8].try_into().unwrap());
-        if has_byte(w, QUOTE) | has_byte(w, BACKSLASH) != 0 {
-            break;
+        let m = has_byte(w, QUOTE) | has_byte(w, BACKSLASH);
+        if m != 0 {
+            return q + (m.trailing_zeros() / 8) as usize;
         }
         q += 8;
     }
