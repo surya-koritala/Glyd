@@ -25,6 +25,7 @@ ap.add_argument("--baseline", action="store_true")
 ap.add_argument("--tokens", type=int, default=128)
 ap.add_argument("--prefill", type=str, default="", help="prompt lengths to time one forward pass at, e.g. 128,512,2048")
 ap.add_argument("--gemm-max", type=int, default=64, help="fused: steps of up to this many tokens multiply straight from the packed weights (fast format)")
+ap.add_argument("--batch", type=str, default="1", help="generate for this many copies of the prompt at once (comma list: each measured)")
 args = ap.parse_args()
 
 tok = AutoTokenizer.from_pretrained(args.model)
@@ -53,16 +54,20 @@ def prefill(model, label):
 
 def measure(model, label):
     torch.cuda.synchronize()
+    out = None
     with torch.no_grad():
         logits = model(ids, logits_to_keep=1).logits
-        model.generate(ids, max_new_tokens=4, do_sample=False)  # warm-up
-        torch.cuda.synchronize()
-        torch.cuda.reset_peak_memory_stats()
-        t = time.perf_counter()
-        out = model.generate(ids, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False)
-        torch.cuda.synchronize()
-        t = time.perf_counter() - t
-    print(f"{label}: {args.tokens / t:.1f} tokens/s, peak VRAM {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
+        for b in [int(x) for x in args.batch.split(",")]:
+            batch = ids.repeat(b, 1)
+            model.generate(batch, max_new_tokens=4, do_sample=False)  # warm-up
+            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+            t = time.perf_counter()
+            o = model.generate(batch, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False)
+            torch.cuda.synchronize()
+            t = time.perf_counter() - t
+            print(f"{label}: batch {b}: {b * args.tokens / t:.1f} tokens/s ({args.tokens / t:.1f} a sequence), peak VRAM {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
+            out = o[:1] if out is None else out
     return logits, out
 
 
@@ -102,7 +107,13 @@ class GLinear(nn.Module):
         if args.fused and x2.shape[0] == 1:
             f = g.fast_gemv if isinstance(self.p, g.Fast) else g.gemv
             return f(self.p, x2[0], self.bias).view(*lead, O)
-        if args.fused and isinstance(self.p, g.Fast) and x2.shape[0] <= args.gemm_max and K % 64 == 0:
+        n = x2.shape[0]
+        if args.fused and isinstance(self.p, g.Fast) and 1 < n <= 16 and K % 512 == 0:
+            # A few tokens: the batched product, the tokens padded to 2, 4, 8 or 16.
+            m = 1 << (n - 1).bit_length()
+            xp = x2 if m == n else torch.cat([x2, x2.new_zeros(m - n, K)])
+            return g.fast_bgemv(self.p, xp, self.bias)[:n].view(*lead, O)
+        if args.fused and isinstance(self.p, g.Fast) and n <= args.gemm_max and K % 64 == 0:
             return g.fast_gemm(self.p, x2, self.bias).view(*lead, O)
         if self.block >= O:
             return F.linear(x2, self.decode_rows(0, O), self.bias).view(*lead, O)

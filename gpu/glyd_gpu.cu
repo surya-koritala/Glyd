@@ -530,6 +530,95 @@ __global__ void finish_kernel(const float* __restrict__ y32, int64_t split, cons
     y[i] = __float2bfloat16(t + (bias ? __bfloat162float(bias[i % O]) : 0.f));
 }
 
+// Y = X W^T for a few tokens (MT of them, X [MT, K]) from the fast format:
+// the one-token product's layout (a warp a row, 16 weights a lane a step)
+// with each decoded weight multiplied into MT sums on the CUDA cores. A
+// block stages its K segment of X in shared memory once, then its warps
+// stream W rows through it; K is split into segments where X would not fit
+// (their parts added in a fixed order).
+template <int MT>
+__global__ void __launch_bounds__(256) fast_bgemv_kernel(const uint8_t* __restrict__ sm, const uint32_t* __restrict__ planes, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint64_t top, int64_t O, int64_t K, int64_t kseg, int64_t rows_per_block, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
+    extern __shared__ __align__(16) __nv_bfloat16 xs[];  // [MT][kseg]
+    int64_t kb = (int64_t)blockIdx.y * kseg, ke = min(K, kb + kseg), kn = ke - kb;
+    for (int64_t i = threadIdx.x * 8; i < MT * kn; i += blockDim.x * 8) {
+        int64_t m = i / kn, k = i % kn;
+        *(uint4*)&xs[m * kseg + k] = *(const uint4*)&X[m * K + kb + k];
+    }
+    __syncthreads();
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    int64_t segs = (K + SEG - 1) / SEG;
+    int64_t r0 = (int64_t)blockIdx.x * rows_per_block, r1 = min(O, r0 + rows_per_block);
+    for (int64_t row = r0 + warp; row < r1; row += blockDim.x / 32) {
+        float acc[MT];
+#pragma unroll
+        for (int m = 0; m < MT; m++) acc[m] = 0.f;
+        for (int64_t s = kb / SEG; s * SEG < ke; s++) {
+            int64_t esc = exc_base[row * segs + s];
+            int64_t kend = min((s + 1) * SEG, ke);
+            for (int64_t k = s * SEG + lane * 16; k < kend; k += 512) {
+                int64_t q = row * K + k;
+                uint4 a = *(const uint4*)(sm + q);
+                uint32_t smw[4] = {a.x, a.y, a.z, a.w};
+                int64_t gword = (q >> 5) * 3;
+                int sh = q & 31;
+                uint32_t p0 = planes[gword] >> sh, p1 = planes[gword + 1] >> sh, p2 = planes[gword + 2] >> sh;
+                uint32_t mk = p0 & p1 & p2 & 0xffff;
+                uint32_t e[16];
+#pragma unroll
+                for (int i = 0; i < 16; i++) {
+                    uint32_t c = ((p0 >> i) & 1) | (((p1 >> i) & 1) << 1) | (((p2 >> i) & 1) << 2);
+                    e[i] = (uint32_t)(top >> (8 * c)) & 0xff;
+                }
+                if (__ballot_sync(0xffffffff, mk != 0)) {
+                    uint32_t n = __popc(mk), before = n;
+#pragma unroll
+                    for (int o = 1; o < 32; o <<= 1) {
+                        uint32_t t = __shfl_up_sync(0xffffffff, before, o);
+                        if (lane >= o) before += t;
+                    }
+                    uint32_t total = __shfl_sync(0xffffffff, before, 31);
+                    int64_t at = esc + before - n;
+#pragma unroll
+                    for (int i = 0; i < 16; i++)
+                        if (mk >> i & 1) e[i] = exc[at++];
+                    esc += total;
+                }
+                const __nv_bfloat16* xk = xs + (k - kb);
+#pragma unroll
+                for (int i = 0; i < 16; i += 8) {
+                    float w[8];
+#pragma unroll
+                    for (int t = 0; t < 8; t++) w[t] = __uint_as_float(bf16_bits((smw[(i + t) >> 2] >> (8 * ((i + t) & 3))) & 0xff, e[i + t]) << 16);
+#pragma unroll
+                    for (int m = 0; m < MT; m++) {
+                        uint4 xv = *(const uint4*)(xk + m * kseg + i);
+                        acc[m] = fmaf(w[0], __uint_as_float(xv.x << 16), acc[m]);
+                        acc[m] = fmaf(w[1], __uint_as_float(xv.x & 0xffff0000), acc[m]);
+                        acc[m] = fmaf(w[2], __uint_as_float(xv.y << 16), acc[m]);
+                        acc[m] = fmaf(w[3], __uint_as_float(xv.y & 0xffff0000), acc[m]);
+                        acc[m] = fmaf(w[4], __uint_as_float(xv.z << 16), acc[m]);
+                        acc[m] = fmaf(w[5], __uint_as_float(xv.z & 0xffff0000), acc[m]);
+                        acc[m] = fmaf(w[6], __uint_as_float(xv.w << 16), acc[m]);
+                        acc[m] = fmaf(w[7], __uint_as_float(xv.w & 0xffff0000), acc[m]);
+                    }
+                }
+            }
+        }
+#pragma unroll
+        for (int m = 0; m < MT; m++) {
+#pragma unroll
+            for (int o = 16; o > 0; o >>= 1) acc[m] += __shfl_xor_sync(0xffffffff, acc[m], o);
+        }
+        if (lane == 0) {
+#pragma unroll
+            for (int m = 0; m < MT; m++) {
+                if (Y32) Y32[((int64_t)blockIdx.y * MT + m) * O + row] = acc[m];
+                else Y[m * O + row] = __float2bfloat16(acc[m] + (bias ? __bfloat162float(bias[row]) : 0.f));
+            }
+        }
+    }
+}
+
 // The fast format decoded to bf16: rows [row0, row0 + rows), or the rows
 // listed in row_ids, one after another into out.
 __global__ void fast_decode_kernel(const uint8_t* __restrict__ sm, const uint32_t* __restrict__ planes, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint64_t top, int64_t row0, const int64_t* __restrict__ row_ids, int64_t rows, int64_t K, uint16_t* __restrict__ out) {
@@ -628,7 +717,34 @@ void fast_gemm(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch:
     if (split > 1) finish_kernel<<<(M * O + 255) / 256, 256>>>((const float*)y32.data_ptr(), split, b, M, O, (__nv_bfloat16*)y.data_ptr());
 }
 
+void fast_bgemv(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch::Tensor exc_base, int64_t top, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    int64_t M = x.size(0);
+    TORCH_CHECK(K % 512 == 0 && x.is_contiguous() && x.size(1) == K && (M == 2 || M == 4 || M == 8 || M == 16), "K a multiple of 512, X contiguous [M, K], M 2, 4, 8 or 16");
+    // X's K segment in shared memory: up to 48 KB, whole segments of the escapes' index.
+    int64_t kseg = std::min<int64_t>(K, std::max<int64_t>(SEG, (48 * 1024 / (2 * M)) / SEG * SEG));
+    int64_t nseg = (K + kseg - 1) / kseg;
+    // Rows a block: enough blocks for every SM (4 an SM), at least 64 rows each.
+    int64_t blocks = std::max<int64_t>(1, 320 / nseg);
+    int64_t rows = std::max<int64_t>(64, (O + blocks - 1) / blocks);
+    dim3 grid((O + rows - 1) / rows, nseg);
+    size_t shared = M * kseg * 2;
+    const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
+    torch::Tensor y32;
+    if (nseg > 1) y32 = torch::empty({nseg, M, O}, x.options().dtype(torch::kFloat32));
+    float* p32 = nseg > 1 ? (float*)y32.data_ptr() : nullptr;
+    auto launch = [&](auto kernel) {
+        cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, 99 * 1024);
+        kernel<<<grid, 256, shared>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)planes.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint64_t)top, O, K, kseg, rows, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), p32);
+    };
+    if (M == 2) launch(fast_bgemv_kernel<2>);
+    else if (M == 4) launch(fast_bgemv_kernel<4>);
+    else if (M == 8) launch(fast_bgemv_kernel<8>);
+    else launch(fast_bgemv_kernel<16>);
+    if (nseg > 1) finish_kernel<<<(M * O + 255) / 256, 256>>>((const float*)y32.data_ptr(), nseg, b, M, O, (__nv_bfloat16*)y.data_ptr());
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("fast_bgemv", &fast_bgemv);
     m.def("fast_gemm", &fast_gemm);
     m.def("lane_bits", &lane_bits);
     m.def("write_codes", &write_codes);

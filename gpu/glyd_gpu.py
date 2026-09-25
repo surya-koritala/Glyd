@@ -282,3 +282,13 @@ def fast_gemm(p, x, bias=None):
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
     _ext.fast_gemm(p.sm, p.planes, p.exc, p.exc_base, p.top, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
     return y
+
+
+def fast_bgemv(p, x, bias=None):
+    """X W^T (+ bias) for 2, 4, 8 or 16 tokens (x [M, K]) on the CUDA cores:
+    the one-token product's decode, each weight multiplied into M sums."""
+    O, K = p.shape
+    x = x.contiguous()
+    y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
+    _ext.fast_bgemv(p.sm, p.planes, p.exc, p.exc_base, p.top, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
+    return y

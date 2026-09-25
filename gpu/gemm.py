@@ -38,7 +38,13 @@ for name in names:
         tb = gpu_us(lambda: F.linear(x, w))
         td = gpu_us(lambda: F.linear(x, g.fast_unpack(p, scratch)))
         tf = gpu_us(lambda: g.fast_gemm(p, x))
-        row.append(f"M={M}: bf16 {tb:6.0f} | decode+mm {td:6.0f} | fused {tf:6.0f} us")
+        tv = ""
+        if M in (2, 4, 8, 16):
+            yv = g.fast_bgemv(p, x).float()
+            ev = ((yv - ref).abs().max() / ref.abs().max()).item()
+            assert ev < 1e-2, f"{name} bgemv M={M}: {ev}"
+            tv = f" | bgemv {gpu_us(lambda: g.fast_bgemv(p, x)):6.0f}"
+        row.append(f"M={M}: bf16 {tb:6.0f} | decode+mm {td:6.0f} | fused {tf:6.0f}{tv} us")
     print(f"{name.split('.')[-2]:>10} {str(tuple(w.shape)):>14}  " + "  ".join(row))
     del w, p, scratch
     torch.cuda.empty_cache()
