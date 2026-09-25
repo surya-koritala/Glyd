@@ -30,6 +30,6 @@ for name in names:
             torch.cuda.synchronize()
         times[k] = sum(e.device_time_total for e in prof.key_averages() if e.device_type.name == "CUDA") / 20
     b = w.numel() * 2
-    print(f"{name.split('.')[-2]:>10} {str(tuple(w.shape)):>14}: bf16 {times['bf16']:7.1f} us {b/times['bf16']/1e3:4.0f} GB/s | fast {times['fast']:7.1f} us {fp.nbytes()/times['fast']/1e3:4.0f} GB/s {times['bf16']/times['fast']:.2f}x | huffman {times['huffman']:7.1f} us {hp.nbytes()/times['huffman']/1e3:4.0f} GB/s {times['bf16']/times['huffman']:.2f}x")
+    print(f"{name.split('.')[-2]:>10} {str(tuple(w.shape)):>14}: bf16 {times['bf16']:7.1f} us {b/times['bf16']/1e3:4.0f} GB/s | fast {times['fast']:7.1f} us {fp.nbytes()/times['fast']/1e3:4.0f} GB/s {times['bf16']/times['fast']:.2f}x | huffman {times['huffman']:7.1f} us {hp.nbytes()/times['huffman']/1e3:4.0f} GB/s {times['bf16']/times['huffman']:.2f}x {hp.bits_per_weight():.2f} bits")
     del w, fp, hp
     torch.cuda.empty_cache()

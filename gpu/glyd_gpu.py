@@ -14,64 +14,87 @@ from torch.utils.cpp_extension import load
 _ext = load(
     name="glyd_gpu",
     sources=[os.path.join(os.path.dirname(os.path.abspath(__file__)), "glyd_gpu.cu")],
-    extra_cuda_cflags=["-O3", "-arch=sm_89"],
-    verbose=False,
+    extra_cuda_cflags=["-O3", "-arch=sm_89"] + (["-Xptxas", "-v"] if os.environ.get("GLYD_GPU_PTXAS") else []),
+    verbose=bool(os.environ.get("GLYD_GPU_PTXAS")),
 )
 
 FLAT_TILE = 16384  # weights a tile when the tensor is not a matrix of rows
 ROW_TILE = 8192  # about as many a tile for a matrix: whole rows
-MAX_LEN = 12  # the longest code; the decode table has 2^MAX_LEN entries
+MIN_TILES = 2048  # warps a matrix's product should keep busy
+MIN_TILE = 4096  # but no tile under this many weights (its offsets cost)
+STAGE_MAX = 1024  # words of a tile's streams a warp stages in shared memory, at most
 SEG = 1024  # the fast format's escape index is kept a segment of this many weights of a row
 
 
-def limited_lengths(freq, limit):
-    """Optimal code lengths no longer than `limit` (package-merge)."""
-    syms = [s for s in range(len(freq)) if freq[s] > 0]
-    lengths = np.zeros(len(freq), dtype=np.int64)
-    if len(syms) == 1:
-        lengths[syms[0]] = 1
-        return lengths
-    leaves = sorted(((int(freq[s]), np.eye(1, len(freq), s, dtype=np.int64)[0]) for s in syms), key=lambda x: x[0])
-    current = leaves
-    for _ in range(limit - 1):
-        packages = [(current[i][0] + current[i + 1][0], current[i][1] + current[i + 1][1]) for i in range(0, len(current) - 1, 2)]
-        current = sorted(leaves + packages, key=lambda x: x[0])
-    for _, c in current[: 2 * len(syms) - 2]:
-        lengths += c
-    return lengths
+def class_code(freq):
+    """The cheapest code of the dense format for these exponent counts:
+    classes (c zeros, a one, s_c bits) over the ranks by frequency, the
+    last one an escape (8 raw bits) when ranks are left. Returns the
+    classes as (base, s, escape) and the ranks' exponents."""
+    order = [int(e) for e in np.argsort(-np.asarray(freq), kind="stable") if freq[e] > 0]
+    p = np.asarray([freq[e] for e in order], dtype=np.float64)
+    R = len(order)
+    cum = np.concatenate([[0.0], np.cumsum(p)])
+    memo = {}
+
+    def f(i, c):  # (cost, classes) covering ranks i.. from class c
+        if i >= R:
+            return 0.0, ()
+        if (i, c) not in memo:
+            best = ((cum[R] - cum[i]) * (c + 9), ((i, 8, True),))
+            if c + 1 < 16:
+                for sbits in range(0, 9):
+                    j = min(R, i + (1 << sbits))
+                    if j > 32:  # the rank table is 32 entries, one a lane
+                        break
+                    cost, rest = f(j, c + 1)
+                    cost += (cum[j] - cum[i]) * (c + 1 + sbits)
+                    if cost < best[0]:
+                        best = (cost, ((i, sbits, False),) + rest)
+            memo[(i, c)] = best
+        return memo[(i, c)]
+
+    return list(f(0, 0)[1]), order
 
 
-def canonical_codes(lengths):
-    """Canonical codes, bit-reversed for an LSB-first stream."""
-    codes = np.zeros(len(lengths), dtype=np.int64)
-    code = 0
-    prev = 0
-    for l, s in sorted((int(l), s) for s, l in enumerate(lengths) if l > 0):
-        code <<= l - prev
-        prev = l
-        codes[s] = int(format(code, f"0{l}b")[::-1], 2)
-        code += 1
-    return codes
-
-
-def decode_table(lengths, codes, L):
-    table = np.zeros(1 << L, dtype=np.int64)
-    for s, l in enumerate(lengths):
-        if l == 0:
-            continue
-        step = 1 << l
-        table[codes[s] :: step] = (l << 8) | s
-    return table
+def code_tables(freq):
+    """Every exponent's code length and code (MSB first), and the kernel's
+    tables: 32 class entries (base << 8 | s << 1 | escape), 32 ranks."""
+    classes, order = class_code(freq)
+    lengths = np.zeros(256, dtype=np.int64)
+    codes = np.zeros(256, dtype=np.int64)
+    for r, e in enumerate(order):
+        for c, (base, sbits, esc) in enumerate(classes):
+            if esc:
+                lengths[e], codes[e] = c + 9, (1 << 8) | e
+                break
+            if r < base + (1 << sbits):
+                lengths[e], codes[e] = c + 1 + sbits, (1 << sbits) | (r - base)
+                break
+    # 32 class entries (base << 8 | s << 1 | escape), 32 ranks' exponents.
+    tables = np.zeros(64, dtype=np.int64)
+    packed_s, esc_class = 0, 255
+    for c, (base, sbits, esc) in enumerate(classes):
+        tables[c] = (base << 8) | (sbits << 1) | int(esc)
+        packed_s |= sbits << (4 * c)
+        if esc:
+            esc_class = c
+    for r, e in enumerate(order[:32]):
+        tables[32 + r] = e
+    tables = np.where(tables[:64] >= 2**31, tables[:64] - 2**32, tables[:64])
+    return lengths, codes, tables
 
 
 class Packed:
-    def __init__(self, shape, n, sm, stream, offs, lut, L, tw, tile_words):
-        self.shape, self.n, self.sm, self.stream, self.offs, self.lut, self.L, self.tw = shape, n, sm, stream, offs, lut, L, tw
-        self.tile_words = tile_words
+    def __init__(self, shape, n, sm, stream, offs, tables, tw, V, tile_words):
+        self.shape, self.n, self.sm, self.stream, self.offs, self.tables = shape, n, sm, stream, offs, tables
+        # A warp stages its tile's streams in shared memory when they are
+        # small enough not to cut the warps an SM holds (0: read in place).
+        self.tw, self.V, self.tile_words = tw, V, tile_words if tile_words <= STAGE_MAX else 0
         self.rows_per_tile = tw // shape[1] if len(shape) == 2 and tw % shape[1] == 0 else 0
 
     def nbytes(self):
-        return sum(t.numel() * t.element_size() for t in (self.sm, self.stream, self.offs, self.lut))
+        return sum(t.numel() * t.element_size() for t in (self.sm, self.stream, self.offs, self.tables))
 
     def bits_per_weight(self):
         return self.nbytes() * 8 / self.n
@@ -99,38 +122,6 @@ def _sign_mantissa(u):
     return sm
 
 
-def pack(w):
-    assert w.dtype == torch.bfloat16 and w.is_cuda
-    u = w.contiguous().view(torch.int16).flatten()
-    n = u.numel()
-    hist = _hist(u).cpu().numpy()
-    lengths = limited_lengths(hist, MAX_LEN)
-    codes = canonical_codes(lengths)
-    dev = w.device
-    len_t = torch.tensor(lengths, dtype=torch.uint8, device=dev)
-    code_t = torch.tensor(codes, dtype=torch.int16, device=dev)
-    sm = _sign_mantissa(u)
-    # A matrix whose rows are a multiple of 128 long goes in tiles of
-    # whole rows (the fused product needs them); anything else flat.
-    if w.dim() == 2 and w.shape[1] % 128 == 0:
-        tw = max(1, ROW_TILE // w.shape[1]) * w.shape[1]
-    else:
-        tw = FLAT_TILE
-    bits = _ext.lane_bits(u, len_t, tw).to(torch.int64)
-    offs64 = torch.cumsum(bits, 0) - bits
-    total = int(offs64[-1] + bits[-1])
-    assert total < 2**31, "a tensor of more than 2^31 code bits"
-    offs = offs64.to(torch.int32)
-    # The most words a tile's streams span (from its first lane's word),
-    # with the reader's look-ahead: the shared memory a warp stages.
-    starts = torch.cat([offs64[::32], torch.tensor([total], device=dev)])
-    tile_words = int(((starts[1:] + 31) // 32 - starts[:-1] // 32).max()) + 3
-    stream = torch.zeros(total // 32 + 4, dtype=torch.int32, device=dev)
-    _ext.write_codes(u, len_t, code_t, offs, stream, tw)
-    lut = torch.tensor(decode_table(lengths, codes, MAX_LEN), dtype=torch.int16, device=dev)
-    return Packed(tuple(w.shape), n, sm, stream, offs, lut, MAX_LEN, tw, tile_words)
-
-
 _NONE = {}
 
 
@@ -140,10 +131,52 @@ def _none(dev):
     return _NONE[dev]
 
 
+def pack(w):
+    """The dense format (glyd_gpu.cu): exponents in a prefix code read by
+    counting leading zeros."""
+    assert w.dtype == torch.bfloat16 and w.is_cuda
+    u = w.contiguous().view(torch.int16).flatten()
+    n = u.numel()
+    lengths, codes, tables = code_tables(_hist(u).cpu().numpy())
+    dev = w.device
+    len_t = torch.tensor(lengths, dtype=torch.uint8, device=dev)
+    code_t = torch.tensor(codes, dtype=torch.int32, device=dev)
+    # A matrix whose rows are a multiple of 128 long goes in tiles of
+    # whole rows (the fused product needs them), 16 weights a lane a step
+    # where the rows allow; anything else flat.
+    if w.dim() == 2 and w.shape[1] % 128 == 0:
+        # Rows a tile: about ROW_TILE weights, fewer where that would leave
+        # the GPU under MIN_TILES warps (a small matrix: its offsets cost
+        # more a weight, on few weights).
+        O, K = w.shape
+        tw = max(1, min(ROW_TILE // K, max(MIN_TILE // K, O // MIN_TILES))) * K
+        V = 16 if w.shape[1] % 512 == 0 else 4
+    else:
+        tw, V = FLAT_TILE, 4
+    bits = _ext.lane_bits(u, len_t, tw, V).to(torch.int64)
+    offs64 = torch.cumsum(bits, 0) - bits
+    total = int(offs64[-1] + bits[-1])
+    assert total < 2**31, "a tensor of more than 2^31 code bits"
+    stream = torch.zeros(total // 32 + 4, dtype=torch.int32, device=dev)
+    offs = offs64.to(torch.int32)
+    _ext.write_codes(u, len_t, code_t, offs, stream, tw, V)
+    # The most words a tile's streams span, with the reader's look-ahead:
+    # what a warp stages in shared memory.
+    starts = torch.cat([offs64[::32], torch.tensor([total], device=dev)])
+    tile_words = int(((starts[1:] + 31) // 32 - starts[:-1] // 32).max()) + 3
+    tab = torch.tensor(tables, dtype=torch.int32, device=dev)
+    return Packed(tuple(w.shape), n, _sign_mantissa(u), stream, offs, tab, tw, V, tile_words)
+
+
+def decode_tiles(p, tiles, out):
+    """Tiles `tiles` of p (all of them: an empty tensor) decoded into out."""
+    _ext.decode(p.sm, p.stream, p.offs, p.tables, p.n, p.tw, p.V, p.tile_words, tiles, out.view(torch.int16))
+
+
 def unpack(p, out=None):
     if out is None:
         out = torch.empty(p.n, dtype=torch.bfloat16, device=p.sm.device)
-    _ext.decode(p.sm, p.stream, p.offs, p.lut, p.L, p.n, p.tw, _none(p.sm.device), out.view(torch.int16))
+    decode_tiles(p, _none(p.sm.device), out)
     return out[: p.n].view(p.shape)
 
 
@@ -153,7 +186,7 @@ def rows(p, ids):
     ids = ids.flatten()
     tiles, where = torch.unique(ids // T, return_inverse=True)
     out = torch.empty(tiles.numel() * p.tw, dtype=torch.bfloat16, device=ids.device)
-    _ext.decode(p.sm, p.stream, p.offs, p.lut, p.L, p.n, p.tw, tiles, out.view(torch.int16))
+    decode_tiles(p, tiles, out)
     return out.view(-1, T, K)[where, ids % T]
 
 
@@ -161,7 +194,7 @@ def gemv(p, x, bias=None):
     """W x (+ bias) for one input vector, the weights decoded in registers."""
     O, K = p.shape
     y = torch.empty(O, dtype=torch.bfloat16, device=x.device)
-    _ext.gemv(p.sm, p.stream, p.offs, p.lut, p.L, O, K, p.tw, p.tile_words, x.contiguous().view(-1), bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
+    _ext.gemv(p.sm, p.stream, p.offs, p.tables, O, K, p.tw, p.V, p.tile_words, x.contiguous().view(-1), bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
     return y
 
 
