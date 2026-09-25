@@ -222,12 +222,21 @@ pub const PARALLEL_UNIT_MAX: usize = 8 * 1024 * 1024;
 pub const PARALLEL_UNIT_ULTRA: usize = 16 * 1024 * 1024;
 pub const PARALLEL_UNIT_LARGEST: usize = 128 * 1024 * 1024;
 
-/// The unit for an input of `len` bytes on `threads` cores, at least
-/// `smallest`: as large as leaves one unit per core (the long-distance
-/// matcher reaches 128 MB, and a unit is its window), capped at
-/// `PARALLEL_UNIT_LARGEST`, rounded down to a megabyte.
-pub fn parallel_unit(len: usize, threads: usize, smallest: usize) -> usize {
-    let fair = len / threads.max(1);
+/// The units an input is cut into, whatever the machine: enough for a
+/// 16-core server to decode one per core. The unit followed the thread
+/// count before, so the bytes did too: a 32-thread machine cut an input
+/// four times finer than an 8-core one and lost the far matches across
+/// the cuts (GitHub events at `--ultra`, 10% smaller than zstd -19 on 8
+/// threads, tied it on 32). zstd's jobs are likewise sized from the
+/// level, not the cores.
+pub const PARALLEL_UNITS: usize = 16;
+
+/// The unit for an input of `len` bytes, at least `smallest`: a
+/// `PARALLEL_UNITS`th of the input (the long-distance matcher reaches
+/// 128 MB, and a unit is its window), capped at `PARALLEL_UNIT_LARGEST`,
+/// rounded down to a megabyte. The same on every machine.
+pub fn parallel_unit(len: usize, smallest: usize) -> usize {
+    let fair = len / PARALLEL_UNITS;
     (fair.min(PARALLEL_UNIT_LARGEST) & !((1 << 20) - 1)).max(smallest)
 }
 

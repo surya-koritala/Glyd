@@ -904,7 +904,7 @@ pub fn compress_with_dict_ultra(dict: &Dict, input: &[u8], output: &mut Vec<u8>)
 /// (`format::parallel_unit`), each unit a chain of its own. An input of
 /// one unit or less is compressed sequentially.
 fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &mut Vec<u8>), smallest: usize) {
-    let unit = parallel_unit(input.len(), threads(), smallest);
+    let unit = parallel_unit(input.len(), smallest);
     if input.len() <= unit {
         as_part(|| level(input, output));
         return;
@@ -932,7 +932,7 @@ fn compress_parallel_with(input: &[u8], output: &mut Vec<u8>, level: fn(&[u8], &
 /// is a few units of output, not the file's. `level` is a sequential
 /// level (`compress_into_max`, ...).
 pub fn compress_stream(input: &[u8], level: fn(&[u8], &mut Vec<u8>), smallest: usize, mut sink: impl FnMut(&[u8]) -> std::io::Result<()> + Send) -> std::io::Result<()> {
-    let unit = parallel_unit(input.len(), threads(), smallest);
+    let unit = parallel_unit(input.len(), smallest);
     let chunks: Vec<&[u8]> = if input.is_empty() { vec![input] } else { input.chunks(unit).collect() };
     let n = chunks.len();
     // Unit i's output goes into slot i; the writer takes slots in order
@@ -2453,7 +2453,11 @@ impl From<CodecError> for StreamError {
 fn decode_units_to(compressed: &[u8], blocks: &[BlockInfo], units: &[ParallelUnit], base: usize, dst: &mut [u8], verify: bool, sink: Option<&std::sync::Mutex<&mut (dyn FnMut(&[u8]) -> std::io::Result<()> + Send)>>) -> std::result::Result<(), StreamError> {
     let output_ptr = dst.as_mut_ptr() as usize;
     let avx2 = has_avx2();
-    let next_write = AtomicUsize::new(0);
+    // The next unit to hand to the sink and which units are decoded: a
+    // unit's thread marks it done and writes every done unit from the
+    // next one on, so no thread waits for its turn (they spun in a
+    // yield loop before: 3-4x zstd's CPU-seconds on a 16-core read).
+    let order = std::sync::Mutex::new((0usize, vec![false; units.len()]));
     let io_error: std::sync::Mutex<Option<std::io::Error>> = std::sync::Mutex::new(None);
     // Set by a unit that failed (a corrupted block, a sink error): the
     // units after it stop waiting for their turn, which would never
@@ -2485,20 +2489,17 @@ fn decode_units_to(compressed: &[u8], blocks: &[BlockInfo], units: &[ParallelUni
             }
         }
         if let Some(sink) = sink {
-            // Units before this one first: they were claimed before it
-            // and finish about as soon, so the wait is short.
-            while next_write.load(Ordering::Acquire) != i {
-                if failed.load(Ordering::Acquire) {
-                    return Err(CodecError::CorruptedBitstream("an earlier unit failed"));
+            let mut o = order.lock().unwrap();
+            o.1[i] = true;
+            while o.0 < units.len() && o.1[o.0] && !failed.load(Ordering::Acquire) {
+                let u = &units[o.0];
+                let out = unsafe { std::slice::from_raw_parts((output_ptr + u.uncomp_offset - base) as *const u8, u.uncomp_len) };
+                let r = (sink.lock().unwrap())(out);
+                o.0 += 1;
+                if let Err(e) = r {
+                    *io_error.lock().unwrap() = Some(e);
+                    return Err(CodecError::CorruptedBitstream("the sink failed"));
                 }
-                std::thread::yield_now();
-            }
-            let out = unsafe { std::slice::from_raw_parts(unit_buffer_start, unit.uncomp_len) };
-            let r = (sink.lock().unwrap())(out);
-            next_write.store(i + 1, Ordering::Release);
-            if let Err(e) = r {
-                *io_error.lock().unwrap() = Some(e);
-                return Err(CodecError::CorruptedBitstream("the sink failed"));
             }
         }
         Ok(())
