@@ -7,7 +7,7 @@ PRETTY_NAME="Ubuntu 26.04.1 LTS"
 Mem:              60           2          10           0          48          58
 # The savings calculator's rows re-measured: per row, raw bytes, each codec's bytes and its decompress CPU seconds.
 set -u
-G=~/glyd-test-target/release/glyd; LZ4=~/tools/lz4-1.10.0/lz4; D=~/data/suite; W=/tmp/calc2; rm -rf $W; mkdir -p $W/in
+G=~/glyd-lit-target/release/glyd; LZ4=~/tools/lz4-1.10.0/lz4; D=~/data/suite; W=/tmp/calc3; rm -rf $W; mkdir -p $W/in
 # 128 MiB slices of the telemetry CSVs, cut at a line end (as in v0.5.0)
 for f in alibaba_machine_usage ghcn_2023 yellow_tripdata_2024-02; do head -c 134217728 $D/ext2/$f.csv | awk 'BEGIN{RS="\n"} {print}' > $W/in/$f.csv; done
 cp $D/ext2/alibaba_machine_usage.jsonl $D/ext2/ghcn_2023.jsonl $W/in/

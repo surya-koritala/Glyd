@@ -4,7 +4,7 @@ Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
 
-## Where it stands (v0.14.8, 2026-09-24)
+## Where it stands (v0.14.9, 2026-09-25)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 ([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
@@ -15,7 +15,10 @@ system logs (templates): 1.4–3.3× fewer than zstd -3 and 1.1–2.1× fewer
 than zstd -19; the cold level: 1.5–2.6× fewer than zstd -19 at 1.2–1.5
 MB/s per core. Versions with
 `--base`: 1.1–2.1× fewer bytes than `zstd -3 --patch-from` at 1.8–3× its
-speed; `--ultra --base` 5–21% fewer than zstd -19's patch. A
+speed; `--ultra --base` 5–21% fewer than zstd -19's patch. Model
+weights (safetensors, v0.14.9): 12–13% under zstd -19 at 25× its
+write speed; a checkpoint against the last, 24% under zstd -19's
+patch. A
 terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
 
 Measured floors, not to be retried: JSON API events and crawl indexes
@@ -25,7 +28,7 @@ values modeled: 31–44% under the file); generic text and binaries sit on the s
 entropy floor for every codec (zstd -19, xz, Glyd `--ultra` within 2%).
 Details: [experiments/structure/README.md](experiments/structure/README.md).
 
-The store (v0.8.0, at a terabyte v0.12.0, v0.14.7 and v0.14.8): objects compressed
+The store (v0.8.0, at a terabyte v0.12.0, v0.14.7, v0.14.8 and v0.14.9): objects compressed
 across a bucket, 3.5× fewer bytes than zstd -3 per object on 1.18 TB of
 releases, dumps and events (4.6× on a 39 GB bucket) — the largest
 lever measured, because the redundancy of object storage is between

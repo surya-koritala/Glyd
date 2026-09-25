@@ -29,9 +29,9 @@
 </head>
 <body>
 <main>
-  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.14.8">v0.14.8 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-21.md">Benchmark report</a><a href="#landscape">Against zstd, xz, brotli</a><a href="savings.html">Savings calculator</a></nav>
+  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.14.9">v0.14.9 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-21.md">Benchmark report</a><a href="#landscape">Against zstd, xz, brotli</a><a href="savings.html">Savings calculator</a></nav>
   <h1>Glyd</h1>
-  <p class="sub"><b>Fast lossless compression algorithm.</b> Rust, C ABI, CLI; v0.14.8, September 2026. Every number below is measured on public data and reproducible from the repository.</p>
+  <p class="sub"><b>Fast lossless compression algorithm.</b> Rust, C ABI, CLI; v0.14.9, September 2026. Every number below is measured on public data and reproducible from the repository.</p>
 
   <a class="cta" href="savings.html">What would it save you?</a>
   <a class="cta" href="https://github.com/surya-koritala/Glyd#quick-start">Quick start</a>
@@ -95,6 +95,18 @@
     <tr class="g"><td>each release against 6.10 (any version is two reads)</td><td>246 MB</td><td>265 MB</td><td></td></tr>
   </table></div>
   <p class="muted">A step costs 1.8 MB, 0.12% of the tree; the delta against a base 14 releases old is 3.6 MB, so a series needs no rebasing. A terabyte of such trees in S3 Standard: $37 a year compressed one by one with <code>--max</code> ($40 with zstd -3), $2.8–3.0 with base mode ($3.2–3.3 with zstd's patch).</p>
+
+  <h2>Model weights: a tensor's exponents together, its mantissas together</h2>
+  <p>A safetensors file is opened tensor by tensor as byte planes; against a base (<code>--base</code>, and the store, which finds a checkpoint's predecessor by its tensors), each tensor goes in XOR the base's tensor of the same name. The Ryzen box, all cores, every file decoded and compared (<a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/weights-2026-09-25.md">report</a>):</p>
+  <div class="wrap"><table>
+    <tr><th>File</th><th>zstd -3</th><th>zstd -19</th><th>Glyd -9</th></tr>
+    <tr class="g"><td>Pythia-410M, step 143000 (fp32, 1,621 MB)</td><td>959 MB · 0.8 s</td><td>809 MB · 89 s</td><td>701 MB · 3.3 s</td></tr>
+    <tr class="g"><td>Qwen2.5-0.5B (bf16, 988 MB)</td><td>769 MB · 0.3 s</td><td>750 MB · 29 s</td><td>663 MB · 2.5 s</td></tr>
+    <tr><th>A checkpoint against another</th><th></th><th>zstd -19 --patch-from</th><th>Glyd --max --base</th></tr>
+    <tr class="g"><td>Pythia step 143000 against step 142000</td><td></td><td>806 MB · 148 s</td><td>501 MB · 4.7 s</td></tr>
+    <tr class="g"><td>Qwen2.5-0.5B-Instruct against Qwen2.5-0.5B</td><td></td><td>748 MB · 57 s</td><td>558 MB · 3.4 s</td></tr>
+  </table></div>
+  <p class="muted">The floor for a coder that sees each tensor's planes on their own is 682–684 MB for a Pythia checkpoint and 650 MB for Qwen2.5: Glyd is within 2–3% of it. A mantissa's high byte is noise, in every file.</p>
 
   <h2>Record mode: the data's own structure, not just its bytes</h2>
   <p>Byte-level matching (zstd, LZ4, Glyd's own levels) is a plateau: on real data zstd -19, xz and Glyd <code>--ultra</code> land within a few percent of each other. The redundancy of a log, a dump or a telemetry export sits in the same field of every record. <code>glyd -r</code> detects delimited lines, SQL dumps and JSON lines, turns them into one typed stream per field (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those, and rebuilds the bytes exactly. Logs whose lines vary in shape take a template: the line's text with a hole where every token holding a digit was, and the tokens as typed columns keyed by template and slot. Anything else is left as it is.</p>

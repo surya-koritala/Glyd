@@ -78,6 +78,7 @@ zstd -3 or LZ4 still win on write cost.
 - 📦 **Packs (`--pack`)**: many small objects as one record-mode stream with an index; 2–4× fewer bytes than zstd + dictionary per object, any one object read back in a millisecond.
 - 🧩 **Shape dictionaries (`--shape`)**: record mode for a single small object. Trained on a sample; a 1–4 KB event or log object stores 1.1–1.9× less than with a zstd dictionary.
 - 🧊 **Cold level (`--cold`)**: context mixing for what is stored for years and read rarely. 1.5–2.6× fewer bytes than zstd -19 on logs, dumps, JSON and text — the zpaq -m5 class at 3–4× its speed — at 1.2–1.5 MB/s per core each way.
+- 🧠 **Model weights**: safetensors files opened tensor by tensor as byte planes; Pythia-410M 13% under zstd -19 at 26× its write speed, Qwen2.5-0.5B 12% under. A checkpoint against the one before it (`--base`) goes in as each tensor XOR its predecessor: 612 MB where `zstd -19 --patch-from` stores 805.
 - 🔁 **Base mode (`--base`)**: a new version against the old one, its content found wherever it moved. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 1.8–3× its speed; 15 kernel releases in 228 MB instead of 3 GB.
 - 🔭 **128 MB long-distance matcher** (`--max --long`, `--ultra`, the store): JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
 - 🚀 **Fastest reads at every ratio**: 8-way interleaved entropy coding and copy-only loops, units that decode one per core.
@@ -304,13 +305,13 @@ six Ubuntu images — put through the store into S3 from one 16-vCPU
 instance next to the bucket, every object read back and compared
 byte for byte, then the whole bucket restored by one process and
 compared again (an earlier run also deleted the metadata directory,
-rebuilt it from the bucket and verified): **44.35 GB stored against
-zstd -3's 153.5 GB, 3.46× fewer bytes (26.7× against raw)** in
-v0.14.8; kernels 286–406× against raw, Wikipedia tables 19.1×, hourly
-events 14.1× (record mode alone). Put ran at 386 MB/s (243 in the
-2026-09-22 run), read-back one object at a time at 464 MB/s (zstd
--3's own read-back on the same instance: 348 MB/s) and the restore at
-571 MB/s, S3 included, on that instance.
+rebuilt it from the bucket and verified): **43.61 GB stored against
+zstd -3's 153.5 GB, 3.52× fewer bytes (27.2× against raw)** in
+v0.14.9; kernel releases 286–425× against raw, Wikipedia tables
+20.9×, hourly events 14.1× (record mode alone). Put ran at 374 MB/s
+(243 in the 2026-09-22 run), read-back one object at a time at 486
+MB/s (zstd -3's own read-back on the same instance: 346 MB/s) and the
+restore at 559 MB/s, S3 included, on that instance.
 
 Put runs at 620 MB/s end to end over the bucket on ten cores (reading
 the file, rebuilding the base, writing the delta; a version of the

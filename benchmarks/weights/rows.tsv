@@ -1,0 +1,20 @@
+pythia-410m-step1000	zstd3	1621370224	956982367	0.8	1.3	exact
+pythia-410m-step1000	zstd19	1621370224	811154606	85.0	1.6	exact
+pythia-410m-step1000	glyd9	1621370224	697343489	3.3	1.4	exact
+pythia-410m-step70000	zstd3	1621370224	958948920	0.8	1.3	exact
+pythia-410m-step70000	zstd19	1621370224	807241180	89.6	1.6	exact
+pythia-410m-step70000	glyd9	1621370224	700546161	3.3	1.4	exact
+pythia-410m-step143000	zstd3	1621370224	959273010	0.8	1.4	exact
+pythia-410m-step143000	zstd19	1621370224	808929445	89.4	1.6	exact
+pythia-410m-step143000	glyd9	1621370224	700671172	3.3	1.5	exact
+Qwen2.5-0.5B	zstd3	988097824	769017547	0.3	0.5	exact
+Qwen2.5-0.5B	zstd19	988097824	749791174	29.4	1.4	exact
+Qwen2.5-0.5B	glyd9	988097824	662761798	2.5	1.0	exact
+pythia-410m-step2000 against pythia-410m-step1000	zstd19patch	1621370224	808637958	140.2	2.7	exact
+pythia-410m-step2000 against pythia-410m-step1000	glydbase	1621370224	680735067	4.9	3.2	exact
+pythia-410m-step71000 against pythia-410m-step70000	zstd19patch	1621370224	804624870	147.5	2.7	exact
+pythia-410m-step71000 against pythia-410m-step70000	glydbase	1621370224	612085358	4.7	3.2	exact
+pythia-410m-step143000 against pythia-410m-step142000	zstd19patch	1621370224	806358539	148.1	2.7	exact
+pythia-410m-step143000 against pythia-410m-step142000	glydbase	1621370224	500954595	4.7	3.2	exact
+Qwen2.5-0.5B-Instruct against Qwen2.5-0.5B	zstd19patch	988097824	747846500	57.2	2.1	exact
+Qwen2.5-0.5B-Instruct against Qwen2.5-0.5B	glydbase	988097824	557501796	3.4	2.2	exact

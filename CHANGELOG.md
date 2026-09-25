@@ -6,8 +6,23 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.14.9 — 2026-09-25
 
+- The store: a family's first object sits at the depth cap only until
+  its family first needs it; then it is lifted, stored again against a
+  shallower base, in place of every new family starting shallow
+  (v0.14.8's rule). The terabyte gate, same corpus and instance
+  ([report](docs/benchmarks/store-gate-2026-09-24.md)): **43.61 GB,
+  3.52× fewer bytes than zstd -3** (44.35 GB, 3.46× in v0.14.8), 27.2×
+  against raw; the English Wikipedia tables 8.67 → 7.94 GB, the kernels
+  as in v0.14.8 or smaller. Put 374 MB/s, read-back 486 MB/s (zstd -3's
+  346), restore 559 MB/s; all 1,192 objects byte-exact, both reads.
+- The store finds a model checkpoint's predecessor: a safetensors
+  object's fingerprints are its tensors' names, widths and sizes (it
+  shares no bytes with the checkpoint before it). Nine Pythia-410M
+  checkpoints (14.6 GB): 5.88 GB in the store, where zstd -19 stores
+  7.28 GB and zstd -3 8.63 GB; the last two as deltas of 501 MB, every
+  object verified ([report](docs/benchmarks/weights-2026-09-25.md)).
 - Reads: the decoder no longer spins while a unit waits for the ones
   ahead of it; the unit that completes the run writes it out. Decompress
   CPU at the plain levels fell by up to 65% on 32 threads (logs `--max`
@@ -20,7 +35,9 @@ every earlier format.
   mantissa plane) are coded as literals alone where the parse's short
   matches would cost more: `--max` on Pythia's exponent plane 171.7 →
   140.1 MB (zstd -19: 143.8), on Qwen2.5's 208.3 → 169.8 MB (171.6).
-  Text, logs, SQL and kernel tars come out byte-identical in size.
+  Text, logs, SQL and kernel tars come out byte-identical in size. The
+  store's dense level (stripes on all cores) too: a stored checkpoint
+  752 → 697 MB.
 - Model weights: a safetensors file is opened, each tensor of 2-, 4- or
   8-byte elements as byte planes (exponents together, mantissas
   together), the header kept; closed byte for byte. Pythia-410M (fp32,

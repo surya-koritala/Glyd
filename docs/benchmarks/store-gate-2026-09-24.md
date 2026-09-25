@@ -120,3 +120,36 @@ from the store, found all 1,192 byte-exact), and the other shared a
 results directory with it and was stopped after its put when the first
 finished. Both harness faults are fixed (`scripts/gate_run.sh`,
 `scripts/gate_aws.sh`).
+
+## v0.14.9: a family's first object lifted when its family needs it
+
+The same corpus and instance type (glyd-store at commit 3856a03, the
+store of v0.14.8 with the lift; raw results in
+`benchmarks/gate/im4gn.4xlarge/`). In place of v0.14.8's rule (a
+family's first object takes a shallow base), a family's first object
+may sit at the depth cap until a later version of its family needs a
+base there; then it is stored again against a shallower one.
+
+| | v0.14.8 | v0.14.9 |
+| :--- | ---: | ---: |
+| stored | 44.35 GB (26.7×; 3.46× fewer bytes than zstd -3) | **43.61 GB (27.2×; 3.52×)** |
+| put | 386 MB/s | 374 MB/s |
+| get, every object by its own process, compared | 464 MB/s, 1,192 byte-exact | 486 MB/s, 1,192 byte-exact |
+| zstd -3's own get | 348 MB/s | 346 MB/s |
+| restore, the bucket by one process, compared | 571 MB/s, 1,192 byte-exact | 559 MB/s, 1,192 byte-exact |
+
+| Family | Raw | v0.14.8 | v0.14.9, as put |
+| :--- | ---: | ---: | ---: |
+| Linux 5.15 point releases (100) | 113.8 GB | 0.40 GB (286×) | 0.40 GB (286×) |
+| Linux 6.1 (150) | 204.0 GB | 0.50 GB (406×) | 0.48 GB (425×) |
+| Linux 6.6 (150) | 213.2 GB | 0.57 GB (377×) | 0.55 GB (388×) |
+| English Wikipedia tables (15) | 165.6 GB | 8.67 GB (19.1×) | **7.94 GB (20.9×)** |
+| Simple English Wikipedia tables (27) | 3.2 GB | 0.09 GB | 0.07 GB |
+| Ubuntu cloud images (6) | 6.6 GB | 0.33 GB | 0.32 GB |
+| GitHub events, hourly (744) | 477.8 GB | 33.81 GB | 33.81 GB |
+
+"As put" sums the put log, 43.56 GB; the lifts, which store a family
+head again after its line in the log, account for the 0.05 GB more
+that the index holds (43.61 GB). The English Wikipedia tables are where the delta trial of
+v0.14.8 put them before its shallow rule gave 0.73 GB back, and 0.57
+GB under v0.14.7.
