@@ -1652,8 +1652,9 @@ const TIGHT_SLACK: usize = 8 << 20;
 pub fn compress_with_base(base: &[u8], input: &[u8], output: &mut Vec<u8>, ultra: bool) {
     #[cfg(feature = "deflate")]
     if !in_part() && deflate::is_container(input) {
-        if let Some(opened) = deflate::open(input) {
-            // Both sides opened: the delta is between the plain texts.
+        if let Some(opened) = deflate::open_against(input, base) {
+            // Both sides opened: the delta is between the plain texts
+            // (model weights: of each tensor against the base's).
             deflate::envelope(input.len(), &opened.recipe, output);
             let base_plain = deflate::open(base).map(|o| o.plain);
             return as_part(|| compress_with_base(base_plain.as_deref().unwrap_or(base), &opened.plain, output, ultra));
@@ -1684,7 +1685,7 @@ impl BaseIndex {
 pub fn compress_with_base_plain(base: &[u8], base_index: &BaseIndex, base_plain: Option<(&[u8], &BaseIndex)>, input: &[u8], anchors: Option<&[(u64, u64)]>, output: &mut Vec<u8>, ultra: bool) {
     #[cfg(feature = "deflate")]
     if !in_part() && deflate::is_container(input) {
-        if let Some(opened) = deflate::open(input) {
+        if let Some(opened) = deflate::open_against(input, base) {
             deflate::envelope(input.len(), &opened.recipe, output);
             let (b, bi) = base_plain.unwrap_or((base, base_index));
             // The opened text has its own positions: its anchors are not the input's.
@@ -1887,7 +1888,14 @@ pub fn decompress_stream_with_base(base: &[u8], compressed: &[u8], mut sink: imp
 
 /// Whether `compressed` needs a base to decode (`decompress_with_base`).
 pub fn needs_base(compressed: &[u8]) -> bool {
-    compressed.len() >= 16 && &compressed[..8] == BASE_MAGIC
+    let base_envelope = |b: &[u8]| b.len() >= 16 && &b[..8] == BASE_MAGIC;
+    // A container opened against a base: its inner stream is the base
+    // envelope (a gzip against a gzip, model weights against theirs).
+    #[cfg(feature = "deflate")]
+    if let Some(inner) = deflate::inner_stream(compressed) {
+        return base_envelope(inner);
+    }
+    base_envelope(compressed)
 }
 
 // ---------------------------------------------------------------------------

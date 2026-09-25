@@ -27,6 +27,17 @@ every earlier format.
   1,621 MB) at `-9`: 701 MB in 3.5 s, against zstd -19's 809 MB in 92 s
   and zstd -3's 959 MB; Qwen2.5-0.5B (bf16, 988 MB): 663 MB against
   750 and 769. Reads at 1.1 GB/s.
+- Checkpoints against checkpoints: in base mode, a safetensors file
+  against one holds each tensor the base has under the same name and
+  size as that tensor XOR the base's, in planes. Pythia-410M step 71000
+  against step 70000: 612 MB in 4.7 s, where zstd -19 `--patch-from`
+  stores 805 MB (the raw delta finds nothing to match); step 143000
+  against 142000: 501 MB. Qwen2.5-0.5B-Instruct against its base model:
+  558 MB.
+- The command line asks for `--base` for a container opened against a
+  base (a gzip against a gzip, weights against weights): such a file
+  started with the container envelope, so decoding it without that
+  check failed.
 - The savings calculator re-measured at this code (LZ4, gzip, zstd -3
   and -19, four Glyd levels, decompress CPU per row; the bucket row
   from the v0.14.8 gate): [report](docs/benchmarks/savings-2026-09-24.md).

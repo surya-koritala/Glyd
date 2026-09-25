@@ -7,8 +7,10 @@
 //! header reader knows the JSON the format uses and nothing more.
 
 /// A tensor's data: `start..end` in the file, `width` bytes an element.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tensor {
+    /// The name as the header spells it (escapes as they are).
+    pub name: Vec<u8>,
     pub start: usize,
     pub end: usize,
     pub width: usize,
@@ -53,7 +55,7 @@ pub fn tensors(input: &[u8]) -> Option<Vec<Tensor>> {
                 if s > e || end > input.len() {
                     return None;
                 }
-                out.push(Tensor { start, end, width });
+                out.push(Tensor { name, start, end, width });
             }
             if p.eat(b',') {
                 continue;
@@ -231,7 +233,7 @@ mod tests {
         let h = r#"{"__metadata__":{"format":"pt","a":"{\"x\":1}"},"b":{"dtype":"BF16","shape":[2],"data_offsets":[8,12]}, "a" : {"dtype":"F32","shape":[2],"data_offsets":[0,8]}}"#;
         let f = file(h, &[0u8; 12]);
         let at = 8 + h.len();
-        assert_eq!(tensors(&f).unwrap(), vec![Tensor { start: at, end: at + 8, width: 4 }, Tensor { start: at + 8, end: at + 12, width: 2 }]);
+        assert_eq!(tensors(&f).unwrap(), vec![Tensor { name: b"a".to_vec(), start: at, end: at + 8, width: 4 }, Tensor { name: b"b".to_vec(), start: at + 8, end: at + 12, width: 2 }]);
     }
 
     #[test]

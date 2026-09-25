@@ -92,6 +92,10 @@ const ZSTD_NESTED: u8 = 17;
 /// A safetensors tensor as byte planes (`crate::safetensors::split`):
 /// the element width (one byte), the planes as content.
 const TENSOR_PLANES: u8 = 18;
+/// A tensor XOR the base's tensor of the same name, dtype and size, as
+/// byte planes (base mode only): the width, the length, the base
+/// tensor's offset in the base; the planes as content.
+const TENSOR_DELTA: u8 = 19;
 
 /// A stream is opened in chunks of this much plain text when it holds
 /// at least two of them.
@@ -608,19 +612,64 @@ fn open_parts(input: &[u8], depth: u32, engine: Engine) -> Option<Parts> {
 
 /// Model weights: every tensor of 2-, 4- or 8-byte elements as byte
 /// planes; the header and anything else kept.
-fn open_safetensors(input: &[u8], mut b: Builder) -> Option<Parts> {
+fn open_safetensors(input: &[u8], b: Builder) -> Option<Parts> {
+    open_safetensors_against(input, None, b)
+}
+
+/// `open_safetensors` with a base's tensors: a tensor the base holds
+/// under the same name, width and size goes in XOR that tensor (a
+/// checkpoint against the one before it, a fine-tune against its
+/// model), as planes.
+fn open_safetensors_against(input: &[u8], base: Option<&[u8]>, mut b: Builder) -> Option<Parts> {
+    let theirs: std::collections::HashMap<Vec<u8>, crate::safetensors::Tensor> = match base {
+        Some(base) => crate::safetensors::tensors(base).unwrap_or_default().into_iter().map(|t| (t.name.clone(), t)).collect(),
+        None => Default::default(),
+    };
+    let mut x = Vec::new();
     for t in crate::safetensors::tensors(input)? {
         let len = t.end - t.start;
-        if t.width < 2 || len < 64 || len % t.width != 0 {
+        if len < 64 || len % t.width != 0 {
             continue;
         }
-        b.segment(input, TENSOR_PLANES, t.start);
-        b.body.push(t.width as u8);
-        put_varint(&mut b.body, len as u64);
-        crate::safetensors::split(&input[t.start..t.end], t.width, &mut b.content);
+        let data = &input[t.start..t.end];
+        match (base, theirs.get(&t.name).filter(|u| u.width == t.width && u.end - u.start == len)) {
+            (Some(base), Some(u)) => {
+                b.segment(input, TENSOR_DELTA, t.start);
+                b.body.push(t.width as u8);
+                put_varint(&mut b.body, len as u64);
+                put_varint(&mut b.body, u.start as u64);
+                x.clear();
+                x.extend(data.iter().zip(&base[u.start..u.end]).map(|(a, b)| a ^ b));
+                crate::safetensors::split(&x, t.width, &mut b.content);
+            }
+            _ if t.width >= 2 => {
+                b.segment(input, TENSOR_PLANES, t.start);
+                b.body.push(t.width as u8);
+                put_varint(&mut b.body, len as u64);
+                crate::safetensors::split(data, t.width, &mut b.content);
+            }
+            _ => continue,
+        }
         b.keep = (t.end, t.end);
     }
     b.into_parts(input, input.len())
+}
+
+/// `open` for base mode: model weights against a base of model weights
+/// go in as deltas of its tensors (`close_with` needs that base back);
+/// anything else as `open`.
+pub fn open_against(input: &[u8], base: &[u8]) -> Option<Opened> {
+    if !(crate::safetensors::is_safetensors(input) && crate::safetensors::is_safetensors(base)) {
+        return open(input);
+    }
+    let parts = open_safetensors_against(input, Some(base), Builder::new(0, 0, Engine::Reflate))?;
+    let mut recipe = Vec::with_capacity(parts.body.len() + 16);
+    put_varint(&mut recipe, parts.segments);
+    put_varint(&mut recipe, parts.content.len() as u64);
+    recipe.extend_from_slice(&parts.body);
+    let mut plain = parts.content;
+    plain.extend_from_slice(&parts.side);
+    Some(Opened { plain, recipe })
 }
 
 /// A zstd frame standing alone (a `.zst` object) written back by
@@ -988,6 +1037,7 @@ enum Seg<'a> {
     ZstdModeled { build: u8, recipe: &'a [u8], text: &'a [u8] },
     ZstdNested { build: u8, inner: Inner<'a> },
     Planes { width: u8, text: &'a [u8] },
+    Delta { width: u8, base: &'a [u8], text: &'a [u8] },
     /// `Png` with a recipe in place of the corrections
     PngReflate { header: &'a [u8], recipe: &'a [u8], text: &'a [u8], adler: &'a [u8], chunks: Vec<(usize, &'a [u8])> },
     ReflateJpeg { recipe: &'a [u8], lepton: &'a [u8] },
@@ -1004,6 +1054,8 @@ struct Reader<'a> {
     at: usize,
     side: &'a [u8],
     side_at: usize,
+    /// The base object, for `TENSOR_DELTA` (empty without one).
+    base: &'a [u8],
 }
 
 impl<'a> Reader<'a> {
@@ -1046,7 +1098,11 @@ impl<'a> Reader<'a> {
 }
 
 fn segments<'a>(inner: &Inner<'a>) -> Option<Vec<Seg<'a>>> {
-    let mut r = Reader { body: inner.body, pos: 0, content: inner.content, at: 0, side: inner.side, side_at: 0 };
+    segments_with(inner, &[])
+}
+
+fn segments_with<'a>(inner: &Inner<'a>, base: &'a [u8]) -> Option<Vec<Seg<'a>>> {
+    let mut r = Reader { body: inner.body, pos: 0, content: inner.content, at: 0, side: inner.side, side_at: 0, base };
     let mut out = Vec::with_capacity(inner.segments.min(1 << 20) as usize);
     for _ in 0..inner.segments {
         let tag = *r.body.get(r.pos)?;
@@ -1142,6 +1198,12 @@ fn segments<'a>(inner: &Inner<'a>) -> Option<Vec<Seg<'a>>> {
                 let t = r.varint()?;
                 Seg::Planes { width, text: r.content(t)? }
             }
+            TENSOR_DELTA => {
+                let width = r.fixed(1)?[0];
+                let (t, at) = (r.varint()?, r.varint()?);
+                let base = r.base.get(at..at.checked_add(t)?)?;
+                Seg::Delta { width, base, text: r.content(t)? }
+            }
             _ => return None,
         });
     }
@@ -1167,6 +1229,14 @@ fn produce<'a>(seg: &Seg<'a>) -> Option<Cow<'a, [u8]>> {
         Seg::PngReflate { header, recipe, text, adler, chunks } => Cow::Owned(png_chunks(header, &crate::reflate::close(text, recipe)?, adler, chunks)?),
         Seg::Jpeg(lepton) => Cow::Owned(crate::jpeg::restore(lepton)?),
         Seg::Planes { width, text } => Cow::Owned(crate::safetensors::join(text, *width as usize)?),
+        Seg::Delta { width, base, text } => {
+            let mut v = crate::safetensors::join(text, *width as usize)?;
+            if v.len() != base.len() {
+                return None;
+            }
+            v.iter_mut().zip(*base).for_each(|(a, b)| *a ^= b);
+            Cow::Owned(v)
+        }
         Seg::DeflateJpeg { corrections, lepton } => Cow::Owned(recreate_whole_deflate_stream(&crate::jpeg::restore(lepton)?, corrections).ok()?),
         Seg::ReflateJpeg { recipe, lepton } => Cow::Owned(crate::reflate::close(&crate::jpeg::restore(lepton)?, recipe)?),
     })
@@ -1210,9 +1280,13 @@ fn png_chunks(header: &[u8], stream: &[u8], adler: &[u8], chunks: &[(usize, &[u8
 }
 
 fn close_inner(inner: &Inner<'_>, parallel: bool) -> Option<Vec<u8>> {
-    let segs = segments(inner)?;
+    close_inner_with(inner, parallel, &[])
+}
+
+fn close_inner_with(inner: &Inner<'_>, parallel: bool, base: &[u8]) -> Option<Vec<u8>> {
+    let segs = segments_with(inner, base)?;
     let size = |i: usize| match &segs[i] {
-        Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::SnappyModeled { text, .. } | Seg::Zstd { text, .. } | Seg::ZstdModeled { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } | Seg::Planes { text, .. } => text.len(),
+        Seg::Deflate { text, .. } | Seg::DeflateChunked { text, .. } | Seg::Reflate { text, .. } | Seg::Snappy { text, .. } | Seg::SnappyModeled { text, .. } | Seg::Zstd { text, .. } | Seg::ZstdModeled { text, .. } | Seg::Png { text, .. } | Seg::PngReflate { text, .. } | Seg::Planes { text, .. } | Seg::Delta { text, .. } => text.len(),
         Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::ZstdNested { inner, .. } | Seg::Nested(inner) => inner.content.len(),
         _ => 0,
     };
@@ -1227,11 +1301,16 @@ fn close_inner(inner: &Inner<'_>, parallel: bool) -> Option<Vec<u8>> {
 /// The object back from its plain text and recipe (the segments'
 /// streams recreated on every core).
 pub fn close(recipe: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
+    close_with(recipe, plain, &[])
+}
+
+/// `close` for an object opened against `base` (`open_against`).
+pub fn close_with(recipe: &[u8], plain: &[u8], base: &[u8]) -> Option<Vec<u8>> {
     let mut pos = 0usize;
     let segments = get_varint(recipe, &mut pos).ok()?;
     let clen = get_varint(recipe, &mut pos).ok()? as usize;
-    let inner = Inner { segments, body: &recipe[pos..], content: plain.get(..clen)?, side: plain.get(clen..)? };
-    close_inner(&inner, true)
+    let inner = Inner { segments, body: recipe.get(pos..)?, content: plain.get(..clen)?, side: plain.get(clen..)? };
+    close_inner_with(&inner, true, base)
 }
 
 /// What the object's deflate streams hold, without re-creating any of
@@ -1276,6 +1355,11 @@ pub(crate) fn content(compressed: &[u8], inner: impl FnOnce(&[u8]) -> crate::Res
         return None;
     }
     Some(inner(stream).and_then(|plain| content_plain(&recipe, &plain).ok_or(NO_CONTENT)))
+}
+
+/// An envelope's inner stream; `None` when `compressed` is no envelope.
+pub(crate) fn inner_stream(compressed: &[u8]) -> Option<&[u8]> {
+    parse_any(compressed).map(|(_, _, stream, _)| stream)
 }
 
 /// `content` for a base-mode envelope (see `unwrap_with_base`).
@@ -1339,8 +1423,13 @@ pub(crate) fn original_len(compressed: &[u8]) -> Option<usize> {
 }
 
 fn close_kind(kind: Kind, recipe: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
+    close_kind_with(kind, recipe, plain, &[])
+}
+
+fn close_kind_with(kind: Kind, recipe: &[u8], plain: &[u8], base: &[u8]) -> Option<Vec<u8>> {
     match kind {
-        Kind::Current | Kind::Def2 => close(recipe, plain),
+        Kind::Current => close_with(recipe, plain, base),
+        Kind::Def2 => close(recipe, plain),
         Kind::V013 => legacy::close_v013(recipe, plain),
         Kind::V012 => legacy::close_v012(recipe, plain),
     }
@@ -1419,7 +1508,7 @@ pub(crate) fn unwrap_with_base(base: &[u8], compressed: &[u8], inner: impl FnOnc
         Kind::V013 => legacy::base_plain_v013(base),
         Kind::V012 => legacy::base_plain_v012(base),
     };
-    Some(inner(base_plain.as_deref().unwrap_or(base), stream).and_then(|plain| match close_kind(kind, &recipe, &plain) {
+    Some(inner(base_plain.as_deref().unwrap_or(base), stream).and_then(|plain| match close_kind_with(kind, &recipe, &plain, base) {
         Some(out) if out.len() == original => Ok(out),
         _ => Err(crate::CodecError::CorruptedBitstream("deflate envelope: the object does not close")),
     }))
@@ -1652,7 +1741,7 @@ mod legacy {
                 Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::ZstdNested { inner, .. } if weights(&inner) => out.extend_from_slice(&close_inner(&inner, false)?),
                 Seg::Nested(inner) if weights(&inner) => {}
                 Seg::DeflateNested { inner, .. } | Seg::DeflateNestedChunked { inner, .. } | Seg::ReflateNested { inner, .. } | Seg::ZstdNested { inner, .. } | Seg::Nested(inner) => collect_v013(&inner, out)?,
-                Seg::Bytes(_) | Seg::Jpeg(_) | Seg::Planes { .. } => {}
+                Seg::Bytes(_) | Seg::Jpeg(_) | Seg::Planes { .. } | Seg::Delta { .. } => {}
             }
         }
         Some(())
@@ -1743,6 +1832,43 @@ mod tests {
         let mut bad = f.clone();
         bad[8 + 16] = b'!'; // the metadata object's opening brace
         assert!(open(&bad).is_none());
+    }
+
+    #[test]
+    fn model_weights_against_a_base() {
+        // A checkpoint and the next: the same tensors, a few low bits
+        // moved; one tensor renamed, one resized (both stay planes).
+        fn weights(names: [&str; 3], sizes: [usize; 3], seed: u32, noise: u32) -> Vec<u8> {
+            let mut h = String::from("{");
+            let mut at = 0;
+            for (i, (n, s)) in names.iter().zip(sizes).enumerate() {
+                h += &format!("{}\"{n}\":{{\"dtype\":\"F32\",\"shape\":[{}],\"data_offsets\":[{at},{}]}}", if i > 0 { "," } else { "" }, s / 4, at + s);
+                at += s;
+            }
+            h += "}";
+            let mut f = (h.len() as u64).to_le_bytes().to_vec();
+            f.extend_from_slice(h.as_bytes());
+            let (mut x, mut y) = (seed, 99u32);
+            for _ in 0..at {
+                x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+                y = y.wrapping_mul(22695477).wrapping_add(1);
+                f.push((x >> 24) as u8 ^ if (y >> 24) < noise { 1 } else { 0 });
+            }
+            f
+        }
+        let base = weights(["a", "b", "c"], [40000, 8000, 4000], 5, 0);
+        let next = weights(["a", "b2", "c"], [40000, 8000, 4800], 5, 8);
+        let mut c = Vec::new();
+        crate::compress_with_base(&base, &next, &mut c, false);
+        assert_eq!(crate::decompress_with_base(&base, &c).unwrap(), next);
+        assert!(crate::needs_base(&c), "the CLI asks for the base");
+        let mut alone = Vec::new();
+        crate::compress_into_max(&next, &mut alone);
+        assert!(c.len() * 3 < alone.len(), "the delta pays: {} against {} alone", c.len(), alone.len());
+        let opened = open_against(&next, &base).unwrap();
+        assert_eq!(opened.recipe.iter().filter(|&&b| b == TENSOR_DELTA).count(), 1, "the one tensor matched by name and size");
+        assert_eq!(close_with(&opened.recipe, &opened.plain, &base).unwrap(), next);
+        assert!(close(&opened.recipe, &opened.plain).is_none(), "a delta does not close without its base");
     }
 
     fn round_trip(object: &[u8], what: &str) -> Vec<u8> {
