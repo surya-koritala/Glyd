@@ -169,6 +169,37 @@ fn main() {
                 std::fs::write(format!("{}.{}", a[3], j), o).unwrap();
             }
         }
+        "exponents" => {
+            // bf16 only: bits a weight needs as sign + mantissa (8 bits
+            // raw) + its exponent coded (a) by per-tensor entropy, (b) as
+            // a fixed k-bit index into the tensor's 2^k - 1 most common
+            // exponents with an escape to the full 8 bits.
+            let f = std::fs::read(&a[2]).unwrap();
+            let (ts, data_at) = tensors(&f);
+            let (mut n_all, mut ent) = (0f64, 0f64);
+            let mut fixed = [0f64; 7]; // k = 2..=8
+            for t in ts.iter().filter(|t| t.dtype == "BF16") {
+                let d = &f[data_at + t.start..data_at + t.end];
+                let mut h = [0u64; 256];
+                for e in d.chunks_exact(2) {
+                    let v = u16::from_le_bytes([e[0], e[1]]);
+                    h[((v >> 7) & 0xff) as usize] += 1;
+                }
+                let n: u64 = h.iter().sum();
+                n_all += n as f64;
+                ent += h.iter().filter(|&&c| c > 0).map(|&c| -(c as f64) * (c as f64 / n as f64).log2()).sum::<f64>();
+                let mut sorted = h;
+                sorted.sort_unstable_by(|a, b| b.cmp(a));
+                for (i, k) in (2..=8).enumerate() {
+                    let covered: u64 = sorted[..(1usize << k) - 1].iter().sum();
+                    fixed[i] += (n as f64) * k as f64 + (n - covered) as f64 * 8.0;
+                }
+            }
+            println!("{}: {:.0}M bf16 weights; exponent entropy {:.2} bits, so {:.2} bits a weight", a[2].rsplit('/').next().unwrap(), n_all / 1e6, ent / n_all, 8.0 + ent / n_all);
+            for (i, k) in (2..=8).enumerate() {
+                println!("  fixed {k}-bit exponent code + escape: {:.2} bits a weight", 8.0 + fixed[i] / n_all);
+            }
+        }
         "entropy" => {
             // Bytes an ideal per-tensor coder would need: each byte plane
             // order-0; the top plane given the previous top byte; each lower
