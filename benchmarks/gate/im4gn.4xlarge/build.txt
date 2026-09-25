@@ -1,116 +1,116 @@
 + cargo build --release --workspace
     Updating crates.io index
  Downloading crates ...
-  Downloaded bytes v1.12.1
-  Downloaded bitcode v0.6.9
-  Downloaded base64 v0.23.1
-  Downloaded cfg-if v1.0.5
-  Downloaded find-msvc-tools v0.1.12
-  Downloaded cpufeatures v0.3.1
-  Downloaded const-oid v0.10.2
-  Downloaded bitflags v2.13.2
-  Downloaded getrandom v0.2.17
-  Downloaded jobserver v0.1.35
-  Downloaded miniz_oxide v0.9.1
-  Downloaded rustversion v1.0.23
   Downloaded default-boxed-derive v0.2.0
-  Downloaded once_cell v1.21.4
-  Downloaded rustls-webpki v0.103.15
-  Downloaded bitcode_derive v0.6.9
+  Downloaded arrayvec v0.7.8
+  Downloaded base64 v0.23.1
   Downloaded cmov v0.5.4
+  Downloaded bitcode_derive v0.6.9
   Downloaded subtle v2.6.1
-  Downloaded shlex v2.0.1
-  Downloaded crc32fast v1.5.2
-  Downloaded serde_core v1.0.229
-  Downloaded hybrid-array v0.4.15
-  Downloaded deranged v0.5.8
+  Downloaded crypto-common v0.2.2
+  Downloaded cpufeatures v0.3.1
+  Downloaded itoa v1.0.18
+  Downloaded bitcode v0.6.9
+  Downloaded cfg-if v1.0.5
+  Downloaded git-version v0.3.9
+  Downloaded git-version-macro v0.3.9
+  Downloaded adler2 v2.0.1
   Downloaded percent-encoding v2.3.2
   Downloaded quote v1.0.47
-  Downloaded default-boxed v0.2.0
-  Downloaded ctutils v0.4.2
-  Downloaded zeroize v1.9.0
-  Downloaded untrusted v0.9.0
-  Downloaded utf8-zero v0.8.1
-  Downloaded byteorder v1.5.0
-  Downloaded httparse v1.10.1
-  Downloaded log v0.4.34
-  Downloaded bytemuck v1.25.2
-  Downloaded ureq v3.4.2
-  Downloaded unicode-ident v1.0.26
-  Downloaded lepton_jpeg v0.5.8
-  Downloaded syn v1.0.109
-  Downloaded zlib-rs v0.6.8
-  Downloaded sha2 v0.11.0
-  Downloaded rustls v0.23.45
-  Downloaded glam v0.33.8
-  Downloaded flate2 v1.1.10
-  Downloaded libc v0.2.189
-  Downloaded digest v0.11.3
-  Downloaded git-version v0.3.9
-  Downloaded itoa v1.0.18
-  Downloaded cc v1.4.6
+  Downloaded shlex v2.0.1
+  Downloaded thread-priority v1.2.0
+  Downloaded deranged v0.5.8
+  Downloaded find-msvc-tools v0.1.12
   Downloaded block-buffer v0.12.1
-  Downloaded cabac v0.15.0
-  Downloaded crypto-common v0.2.2
-  Downloaded rustls-pki-types v1.15.1
-  Downloaded adler2 v2.0.1
-  Downloaded git-version-macro v0.3.9
+  Downloaded once_cell v1.21.4
   Downloaded hmac v0.13.0
-  Downloaded proc-macro2 v1.0.107
+  Downloaded hybrid-array v0.4.15
+  Downloaded rustls-pki-types v1.15.1
+  Downloaded rustversion v1.0.23
+  Downloaded sha2 v0.11.0
+  Downloaded utf8-zero v0.8.1
+  Downloaded bitflags v2.13.2
+  Downloaded bytemuck v1.25.2
+  Downloaded default-boxed v0.2.0
+  Downloaded crc32fast v1.5.2
+  Downloaded untrusted v0.9.0
+  Downloaded const-oid v0.10.2
+  Downloaded byteorder v1.5.0
+  Downloaded jobserver v0.1.35
+  Downloaded bytes v1.12.1
+  Downloaded ureq-proto v0.6.4
+  Downloaded log v0.4.34
+  Downloaded zeroize v1.9.0
   Downloaded simd-adler32 v0.3.10
   Downloaded safe_arch v0.9.3
-  Downloaded thread-priority v1.2.0
-  Downloaded arrayvec v0.7.8
+  Downloaded ctutils v0.4.2
+  Downloaded getrandom v0.2.17
+  Downloaded rustls-webpki v0.103.15
   Downloaded serde v1.0.229
+  Downloaded digest v0.11.3
+  Downloaded httparse v1.10.1
+  Downloaded cabac v0.15.0
+  Downloaded proc-macro2 v1.0.107
+  Downloaded serde_core v1.0.229
+  Downloaded unicode-ident v1.0.26
+  Downloaded cc v1.4.6
   Downloaded typenum v1.20.1
-  Downloaded ureq-proto v0.6.4
+  Downloaded lepton_jpeg v0.5.8
+  Downloaded miniz_oxide v0.9.1
   Downloaded http v1.5.0
+  Downloaded flate2 v1.1.10
   Downloaded wide v0.8.3
+  Downloaded ureq v3.4.2
   Downloaded webpki-roots v1.0.9
+  Downloaded syn v1.0.109
+  Downloaded zlib-rs v0.6.8
   Downloaded syn v2.0.119
+  Downloaded rustls v0.23.45
+  Downloaded libc v0.2.189
+  Downloaded glam v0.33.8
   Downloaded ring v0.17.14
    Compiling proc-macro2 v1.0.107
    Compiling unicode-ident v1.0.26
    Compiling quote v1.0.47
    Compiling libc v0.2.189
    Compiling cfg-if v1.0.5
+   Compiling syn v1.0.109
+   Compiling bytemuck v1.25.2
    Compiling find-msvc-tools v0.1.12
    Compiling shlex v2.0.1
-   Compiling bytemuck v1.25.2
-   Compiling syn v1.0.109
    Compiling log v0.4.34
    Compiling crc32fast v1.5.2
    Compiling adler2 v2.0.1
+   Compiling typenum v1.20.1
    Compiling rustversion v1.0.23
    Compiling simd-adler32 v0.3.10
-   Compiling typenum v1.20.1
-   Compiling byteorder v1.5.0
    Compiling zeroize v1.9.0
-   Compiling cmov v0.5.4
+   Compiling byteorder v1.5.0
+   Compiling untrusted v0.9.0
+   Compiling bitflags v2.13.2
    Compiling cc v1.4.6
    Compiling miniz_oxide v0.9.1
-   Compiling safe_arch v0.9.3
    Compiling rustls-pki-types v1.15.1
+   Compiling safe_arch v0.9.3
+   Compiling cmov v0.5.4
    Compiling httparse v1.10.1
-   Compiling bitflags v2.13.2
-   Compiling untrusted v0.9.0
-   Compiling cabac v0.15.0
    Compiling wide v0.8.3
-   Compiling ctutils v0.4.2
-   Compiling rustls v0.23.45
    Compiling deranged v0.5.8
-   Compiling bytes v1.12.1
+   Compiling cabac v0.15.0
    Compiling const-oid v0.10.2
+   Compiling ctutils v0.4.2
    Compiling itoa v1.0.18
-   Compiling once_cell v1.21.4
-   Compiling flate2 v1.1.10
-   Compiling base64 v0.23.1
+   Compiling rustls v0.23.45
+   Compiling bytes v1.12.1
    Compiling subtle v2.6.1
-   Compiling webpki-roots v1.0.9
-   Compiling utf8-zero v0.8.1
-   Compiling percent-encoding v2.3.2
+   Compiling base64 v0.23.1
+   Compiling flate2 v1.1.10
+   Compiling once_cell v1.21.4
    Compiling syn v2.0.119
+   Compiling webpki-roots v1.0.9
    Compiling hybrid-array v0.4.15
+   Compiling percent-encoding v2.3.2
+   Compiling utf8-zero v0.8.1
    Compiling http v1.5.0
    Compiling ring v0.17.14
    Compiling getrandom v0.2.17
@@ -120,8 +120,8 @@
    Compiling block-buffer v0.12.1
    Compiling ureq-proto v0.6.4
    Compiling digest v0.11.3
-   Compiling sha2 v0.11.0
    Compiling hmac v0.13.0
+   Compiling sha2 v0.11.0
    Compiling default-boxed-derive v0.2.0
    Compiling default-boxed v0.2.0
    Compiling bitcode_derive v0.6.9
@@ -134,7 +134,7 @@
    Compiling glyd v0.14.8 (/home/ubuntu/glyd)
    Compiling ureq v3.4.2
    Compiling glyd-store v0.14.8 (/home/ubuntu/glyd/glyd-store)
-    Finished `release` profile [optimized] target(s) in 1m 41s
+    Finished `release` profile [optimized] target(s) in 1m 48s
 + cargo build --release -p glyd-store --example s3cp
    Compiling glyd-store v0.14.8 (/home/ubuntu/glyd/glyd-store)
-    Finished `release` profile [optimized] target(s) in 38.28s
+    Finished `release` profile [optimized] target(s) in 41.07s
