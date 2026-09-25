@@ -64,6 +64,9 @@ class GLinear(nn.Module):
         out = Scratch.buf[: (r1 - r0) * K]
         if isinstance(p, g.Fast):
             g._ext.fast_decode(p.sm, p.planes, p.exc, p.exc_base, p.top, r0, r1 - r0, g._none(out.device), K, out.view(torch.int16))
+        elif p.split:  # tiles split its rows: decoded whole (it fits the scratch)
+            assert r0 == 0 and r1 == p.shape[0]
+            g.unpack(p, Scratch.buf)
         else:
             T = p.rows_per_tile
             tiles = torch.arange(r0 // T, (r1 + T - 1) // T, device=out.device)

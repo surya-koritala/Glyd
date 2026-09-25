@@ -28,16 +28,21 @@ greedy, 128 new tokens (`e2e.py`):
 | :--- | ---: | ---: | ---: |
 | bf16 | 15.25 GB | 43.3 | |
 | `fast`, fused | **11.05 GB** | **55.1** | 128 of 128 |
-| `huffman`, fused | 10.58 GB | 40.4 | 54 of 128 |
+| `huffman`, fused | **10.60 GB** | **52.0** | 54 of 128 |
 | `fast`, decoded then PyTorch's matmul | 11.05 GB | 18.3 | 128 of 128 |
 
 The fused `fast` product on 7B's matrices (`shapes.py`): 662–695 GB/s of
 packed weights, 1.29–1.48x bf16's matrix-vector time (the small key and
 value projections, which sit in L2, 0.66x). The fused `huffman` product:
-0.80–1.18x. With its decode switched off, the same kernel reads 600–680
-GB/s: what holds it back is the decode itself, a code at a time in each
-lane (tried and dropped: two interleaved streams a lane, a table giving up
-to three codes a lookup; both slower). The fused product sums in
+1.17–1.46x (575–690 GB/s of packed weights). Profiled (Nsight Compute),
+its integer pipe had been the limit (83% busy, 44 instructions a
+weight): the reader is two words and a funnel shift, a code's rank is its
+value plus a stored base (taken mod 32 by the shuffle), a weight's float
+is assembled by byte permutes around an exponent kept in a float's place,
+and the next stream word is asked for a word ahead. Rows longer than a
+tile are split across tiles, their parts added in fp32 by the last tile
+of the row. Tried and dropped: two interleaved streams a lane, a table
+giving up to three codes a lookup. The fused product sums in
 another order than cuBLAS, as any two GEMM kernels do; the decoded path
 multiplies with PyTorch's own kernel and gives bf16's logits bit for bit
 where a matrix is decoded whole (Qwen2.5-0.5B: logits and 128 tokens
