@@ -32,6 +32,7 @@ pub mod resnappy;
 pub mod rezstd;
 pub mod parquet;
 pub mod safetensors;
+pub mod torchzip;
 pub mod jpg;
 pub mod jpeg;
 pub mod fixlog;

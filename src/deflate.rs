@@ -42,6 +42,7 @@
 
 use crate::record::{get_varint, put_varint};
 use preflate_rs::{chunked, preflate_whole_deflate_stream, recreate_whole_deflate_stream, PreflateConfig};
+use std::collections::HashMap;
 use std::borrow::Cow;
 use std::sync::Mutex;
 
@@ -632,14 +633,19 @@ fn open_safetensors_against(input: &[u8], base: Option<&[u8]>, mut b: Builder) -
             continue;
         }
         let data = &input[t.start..t.end];
-        match (base, theirs.get(&t.name).filter(|u| u.width == t.width && u.end - u.start == len)) {
-            (Some(base), Some(u)) => {
+        let u = theirs.get(&t.name).filter(|u| u.width == t.width && u.end - u.start == len);
+        if let (Some(base), Some(u)) = (base, u) {
+            x.clear();
+            x.extend(data.iter().zip(&base[u.start..u.end]).map(|(a, b)| a ^ b));
+        }
+        // Against the base only where the XOR is the cheaper to hold.
+        let delta = base.is_some() && u.is_some() && crate::safetensors::plane_bits(&x, t.width) < crate::safetensors::plane_bits(data, t.width);
+        match (delta, u) {
+            (true, Some(u)) => {
                 b.segment(input, TENSOR_DELTA, t.start);
                 b.body.push(t.width as u8);
                 put_varint(&mut b.body, len as u64);
                 put_varint(&mut b.body, u.start as u64);
-                x.clear();
-                x.extend(data.iter().zip(&base[u.start..u.end]).map(|(a, b)| a ^ b));
                 crate::safetensors::split(&x, t.width, &mut b.content);
             }
             _ if t.width >= 2 => {
@@ -655,14 +661,26 @@ fn open_safetensors_against(input: &[u8], base: Option<&[u8]>, mut b: Builder) -
     b.into_parts(input, input.len())
 }
 
+/// A PyTorch checkpoint's tensor storages: (name inside the archive,
+/// element width, bytes), in file order; `None` for anything else.
+pub fn torch_storages(input: &[u8]) -> Option<Vec<(Vec<u8>, usize, usize)>> {
+    let entries = zip_entries(input)?;
+    let named: Vec<(&[u8], usize, usize, usize)> = entries.iter().map(|&(d, end, m, _, na, nl)| (&input[na..na + nl], d, end, m)).collect();
+    let widths = crate::torchzip::entry_widths(input, &named)?;
+    Some(named.iter().zip(widths).filter(|(_, w)| *w >= 2).map(|(e, w)| (crate::torchzip::inner_name(e.0).to_vec(), w, e.2 - e.1)).collect())
+}
+
 /// `open` for base mode: model weights against a base of model weights
 /// go in as deltas of its tensors (`close_with` needs that base back);
 /// anything else as `open`.
 pub fn open_against(input: &[u8], base: &[u8]) -> Option<Opened> {
-    if !(crate::safetensors::is_safetensors(input) && crate::safetensors::is_safetensors(base)) {
+    let parts = if crate::safetensors::is_safetensors(input) && crate::safetensors::is_safetensors(base) {
+        open_safetensors_against(input, Some(base), Builder::new(0, 0, Engine::Reflate))?
+    } else if is_zip(input) && is_zip(base) {
+        open_zip_against(input, Some(base), Builder::new(0, 0, Engine::Reflate))?
+    } else {
         return open(input);
-    }
-    let parts = open_safetensors_against(input, Some(base), Builder::new(0, 0, Engine::Reflate))?;
+    };
     let mut recipe = Vec::with_capacity(parts.body.len() + 16);
     put_varint(&mut recipe, parts.segments);
     put_varint(&mut recipe, parts.content.len() as u64);
@@ -821,7 +839,9 @@ fn open_tar(input: &[u8], mut b: Builder) -> Option<Parts> {
 /// Every entry's data from a zip's central directory: (start, end,
 /// method, flags) in the order of the data; `None` when there is no
 /// directory that parses and agrees with the local headers.
-fn zip_entries(input: &[u8]) -> Option<Vec<(usize, usize, usize, usize)>> {
+/// A zip's entries by the central directory: (data start, end, method,
+/// flags, name start, name length), in file order.
+fn zip_entries(input: &[u8]) -> Option<Vec<(usize, usize, usize, usize, usize, usize)>> {
     let le16 = |p: usize| input.get(p..p + 2).map(|s| u16::from_le_bytes(s.try_into().unwrap()) as usize);
     let le32 = |p: usize| input.get(p..p + 4).map(|s| u32::from_le_bytes(s.try_into().unwrap()) as usize);
     let le64 = |p: usize| input.get(p..p + 8).map(|s| u64::from_le_bytes(s.try_into().unwrap()) as usize);
@@ -877,19 +897,20 @@ fn zip_entries(input: &[u8]) -> Option<Vec<(usize, usize, usize, usize)>> {
                 q += 4 + len;
             }
         }
-        found.push((offset, csize, method, flags));
+        found.push((offset, csize, method, flags, p + 46, nlen));
         p += 46 + nlen + xlen + clen;
     }
     found.sort_unstable();
     let mut entries = Vec::with_capacity(found.len());
     let mut last = 0usize;
-    for (offset, csize, method, flags) in found {
+    for (offset, csize, method, flags, name_at, nlen) in found {
         if offset < last || input.get(offset..offset + 4)? != b"PK\x03\x04" {
             return None;
         }
         let data = offset + 30 + le16(offset + 26)? + le16(offset + 28)?;
         let end = data.checked_add(csize).filter(|&e| e <= input.len())?;
-        entries.push((data, end, method, flags));
+        input.get(name_at..name_at + nlen)?;
+        entries.push((data, end, method, flags, name_at, nlen));
         last = end;
     }
     Some(entries)
@@ -898,21 +919,88 @@ fn zip_entries(input: &[u8]) -> Option<Vec<(usize, usize, usize, usize)>> {
 /// A zip: its entries from the central directory, each deflate stream
 /// or stored container opened (on every core at the top), everything
 /// else kept.
-fn open_zip(input: &[u8], mut b: Builder) -> Option<Parts> {
+fn open_zip(input: &[u8], b: Builder) -> Option<Parts> {
+    open_zip_against(input, None, b)
+}
+
+/// A zip's entries: each deflate stream or stored container opened (on
+/// every core at the top), everything else kept. A PyTorch checkpoint's
+/// tensor storages (element widths from its pickle, `crate::torchzip`) go
+/// in as byte planes; against a base checkpoint, a storage the base holds
+/// under the same name, width and size as XOR that storage.
+fn open_zip_against(input: &[u8], base: Option<&[u8]>, mut b: Builder) -> Option<Parts> {
     let Some(entries) = zip_entries(input) else { return open_zip_walk(input, b) };
     let depth = b.depth;
     let engine = b.engine;
+    fn named<'a>(input: &'a [u8], e: &[(usize, usize, usize, usize, usize, usize)]) -> Vec<(&'a [u8], usize, usize, usize)> {
+        e.iter().map(|&(d, end, m, _, na, nl)| (&input[na..na + nl], d, end, m)).collect()
+    }
+    let widths = crate::torchzip::entry_widths(input, &named(input, &entries));
+    // The base's storages by inner name: (width, data start, end).
+    let theirs: HashMap<Vec<u8>, (usize, usize, usize)> = match (base, &widths) {
+        (Some(base), Some(_)) => zip_entries(base)
+            .and_then(|be| {
+                let bn = named(base, &be);
+                let bw = crate::torchzip::entry_widths(base, &bn)?;
+                Some(bn.iter().zip(bw).filter(|(_, w)| *w >= 2).map(|(e, w)| (crate::torchzip::inner_name(e.0).to_vec(), (w, e.1, e.2))).collect())
+            })
+            .unwrap_or_default(),
+        _ => HashMap::new(),
+    };
+    enum Piece {
+        Parts(Parts),
+        Planes(u8, Vec<u8>),
+        Delta(u8, usize, Vec<u8>),
+    }
     let pieces = each_sized(entries.len(), depth == 0, |i| entries[i].1 - entries[i].0, |i| {
-        let (data, end, method, flags) = entries[i];
+        let (data, end, method, flags, na, nl) = entries[i];
+        let w = widths.as_ref().map_or(0, |w| w[i]);
+        if w >= 2 {
+            let name = crate::torchzip::inner_name(&input[na..na + nl]);
+            let mut out = Vec::with_capacity(end - data);
+            return match (base, theirs.get(name).filter(|t| t.0 == w && t.2 - t.1 == end - data)) {
+                (Some(base), Some(&(_, bs, be))) if {
+                    let x: Vec<u8> = input[data..end].iter().zip(&base[bs..be]).map(|(a, b)| a ^ b).collect();
+                    let pays = crate::safetensors::plane_bits(&x, w) < crate::safetensors::plane_bits(&input[data..end], w);
+                    if pays {
+                        crate::safetensors::split(&x, w, &mut out);
+                    }
+                    pays
+                } =>
+                {
+                    Some(Piece::Delta(w as u8, bs, out))
+                }
+                _ => {
+                    crate::safetensors::split(&input[data..end], w, &mut out);
+                    Some(Piece::Planes(w as u8, out))
+                }
+            };
+        }
         match method {
-            8 if flags & 1 == 0 => deflate_parts(input, data, end, depth, engine).map(|(p, _)| p),
-            0 if is_container(&input[data..end]) => stored_parts(input, data, end, depth, engine),
+            8 if flags & 1 == 0 => deflate_parts(input, data, end, depth, engine).map(|(p, _)| Piece::Parts(p)),
+            0 if is_container(&input[data..end]) => stored_parts(input, data, end, depth, engine).map(Piece::Parts),
             _ => None,
         }
     });
-    for (&(data, end, _, _), piece) in entries.iter().zip(pieces) {
-        if let Some(p) = piece {
-            b.lay(input, p, data, end);
+    for (&(data, end, _, _, _, _), piece) in entries.iter().zip(pieces) {
+        match piece {
+            Some(Piece::Parts(p)) => b.lay(input, p, data, end),
+            Some(Piece::Planes(w, planes)) => {
+                b.segment(input, TENSOR_PLANES, data);
+                b.body.push(w);
+                put_varint(&mut b.body, planes.len() as u64);
+                b.content.extend_from_slice(&planes);
+                b.keep = (end, end);
+            }
+            Some(Piece::Delta(w, at, planes)) => {
+                b.segment(input, TENSOR_DELTA, data);
+                b.body.push(w);
+                put_varint(&mut b.body, planes.len() as u64);
+                put_varint(&mut b.body, at as u64);
+                b.content.extend_from_slice(&planes);
+                b.keep = (end, end);
+            }
+            None => {}
         }
     }
     b.into_parts(input, input.len())
@@ -1720,8 +1808,9 @@ mod legacy {
     /// nothing kept, stored JPEGs left out), from the base opened now:
     /// the same streams open, so the same bytes come out.
     pub(super) fn base_plain_v013(base: &[u8]) -> Option<Vec<u8>> {
-        // Model weights opened only from v0.14.9.
-        if crate::safetensors::is_safetensors(base) {
+        // Model weights opened only from v0.14.9, PyTorch checkpoints after
+        // it: v0.13.0 found nothing to open in either.
+        if crate::safetensors::is_safetensors(base) || torch_storages(base).is_some() {
             return None;
         }
         let parts = open_parts(base, 0, Engine::Preflate)?;
