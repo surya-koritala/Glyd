@@ -6,8 +6,32 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.14.8 — 2026-09-24
 
+- **At a terabyte: 3.46× fewer bytes than zstd -3** (3.32× in
+  v0.14.7). The gate's 1,192 objects, 1.18 TB, put through the store
+  into S3 from one 16-vCPU instance next to the bucket
+  ([report](docs/benchmarks/store-gate-2026-09-24.md)): 44.35 GB
+  stored against zstd -3's 153.5 GB, 26.7× against raw; put at 386
+  MB/s (372 in v0.14.7, zstd -3's own put 535); every object read back
+  by its own process at 464 MB/s (zstd -3's read-back 348), all 1,192
+  byte-exact; the whole bucket restored by one process at
+  571 MB/s (603 in v0.14.7), all 1,192 byte-exact. Kernel releases 5.15 at 286×,
+  6.1 at 406× (155× in v0.14.7), 6.6 at 377× against raw; hourly
+  GitHub events 14.1×. One cost in the release's own rule (below):
+  the English Wikipedia tables 19.1× against raw, where v0.14.7 kept
+  them at 20.9×.
+- **Record mode writes 1.6–1.9× faster, the same bytes.** On the
+  Ryzen box, output byte-identical to v0.14.7: the NASA access log on
+  one core 151 -> 265 MB/s, on all cores 749 -> 1,186 MB/s; a
+  Wikipedia table dump 126 -> 198 and 407 -> 790 MB/s. A dictionary
+  column's values are hashed once, and its recency list is kept in
+  place, searched eight entries at a time and not at all for a value
+  it cannot hold; a time value on the last exact value's date is not
+  printed back to be checked; field ranges are 32-bit (a log unit's
+  ranges had outweighed its text); a delimited line is split in one
+  pass; a SQL dump's rows no longer allocate, and its text is crossed
+  a word at a time to the next special byte.
 - **Parquet files with snappy or zstd pages are opened**
   (`src/parquet.rs`, `src/resnappy.rs`, `src/rezstd/`): the footer's
   column chunks and page headers are read (thrift's compact protocol,
@@ -77,7 +101,13 @@ every earlier format.
   At the gate, 6.1.1 sat at depth 4 on a 5.15 release and every fifth
   6.1 release was a 26 MB delta of 5.15.1. On the Ryzen box, 5.15.1-100
   then the 150 releases of 6.1 in the gate's order: 6.1 1,316 -> 502
-  MB, all 250 releases 1,714 -> 899 MB.
+  MB, all 250 releases 1,714 -> 899 MB. At the gate the rule also
+  moved the monthly Wikipedia page tables, each month a family of its
+  own, onto bases two months back and the September one to alone:
+  0.73 GB more there, most of the kernels' 0.81 GB gain. The next
+  release lifts only a family's first object that sits at the cap,
+  when its family first needs it (measured on the box: the kernels
+  as here, the Wikipedia tables as in v0.14.7).
 - **The store keeps a version's base among its own kind.** An object
   whose base holds under 98% of its fingerprints starts a family (a
   new kernel major holds 0.85–0.94 of the old one's releases; point
@@ -105,6 +135,11 @@ every earlier format.
   its holders. The four windows run on threads of their own: an hour
   of GitHub events put in 0.50 s on the box against 0.79 s with them
   one after another.
+- The gate's read-back compares each object with the corpus file of
+  its name, the index line's last field (it read the seventh, which
+  the family field made the family's id, and counted every object
+  failed); each gate run syncs into a directory of its own (two runs at
+  once shared one, and the first to finish stopped the other's wait).
 
 ## v0.14.7 — 2026-09-24
 

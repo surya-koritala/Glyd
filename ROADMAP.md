@@ -4,7 +4,7 @@ Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
 
-## Where it stands (v0.14.7, 2026-09-24)
+## Where it stands (v0.14.8, 2026-09-24)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 ([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
@@ -25,8 +25,8 @@ values modeled: 31–44% under the file); generic text and binaries sit on the s
 entropy floor for every codec (zstd -19, xz, Glyd `--ultra` within 2%).
 Details: [experiments/structure/README.md](experiments/structure/README.md).
 
-The store (v0.8.0, at a terabyte v0.12.0 and v0.14.7): objects compressed
-across a bucket, 3.3× fewer bytes than zstd -3 per object on 1.18 TB of
+The store (v0.8.0, at a terabyte v0.12.0, v0.14.7 and v0.14.8): objects compressed
+across a bucket, 3.5× fewer bytes than zstd -3 per object on 1.18 TB of
 releases, dumps and events (4.6× on a 39 GB bucket) — the largest
 lever measured, because the redundancy of object storage is between
 objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
@@ -80,8 +80,9 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
    Parquet with snappy or zstd pages (v0.14.8: every page written back
    byte for byte by a port of the compressor that wrote it, the values
    modeled, 31–44% under the file where zstd -19 gets 1%), and zstd
-   objects the same way. Next: zstd versions past 1.5.5 and gzip
-   pages, then
+   objects the same way (zstd 1.5.2 to 1.5.7, levels 1 and 3, as the
+   library and the command line write). Next: gzip, lz4 and brotli
+   pages and zstd 1.4, then
    the recipe itself (preflate's corrections are a fifth of a pdfTeX
    stream; a better predictor of zlib's choices would halve what
    opening costs), then zip entries and PDF streams that are

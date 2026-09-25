@@ -304,13 +304,13 @@ six Ubuntu images — put through the store into S3 from one 16-vCPU
 instance next to the bucket, every object read back and compared
 byte for byte, then the whole bucket restored by one process and
 compared again (an earlier run also deleted the metadata directory,
-rebuilt it from the bucket and verified): **46.3 GB stored against
-zstd -3's 153.5 GB, 3.32× fewer bytes (25.6× against raw)**; kernels
-116–286× against raw, Wikipedia tables 19.5×, hourly events 14.1×
-(record mode alone). Put ran at 372 MB/s (243 in the 2026-09-22 run),
-read-back one object at a time at 461 MB/s (zstd -3's own read-back
-on the same instance: 341 MB/s) and the restore at 603 MB/s, S3
-included, on that instance.
+rebuilt it from the bucket and verified): **44.35 GB stored against
+zstd -3's 153.5 GB, 3.46× fewer bytes (26.7× against raw)** in
+v0.14.8; kernels 286–406× against raw, Wikipedia tables 19.1×, hourly
+events 14.1× (record mode alone). Put ran at 386 MB/s (243 in the
+2026-09-22 run), read-back one object at a time at 464 MB/s (zstd
+-3's own read-back on the same instance: 348 MB/s) and the restore at
+571 MB/s, S3 included, on that instance.
 
 Put runs at 620 MB/s end to end over the bucket on ten cores (reading
 the file, rebuilding the base, writing the delta; a version of the

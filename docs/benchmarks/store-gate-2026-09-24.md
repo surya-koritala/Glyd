@@ -70,3 +70,53 @@ tree, 72.2 MB → **57.9 MB**; all three byte-exact. These are 3–15%
 larger than the 2026-09-22 figures (33.2, 16.2, 55.1 MB) because
 `--max` has run without the 128 MB matcher since v0.14.4; `--max
 --long` is what `--max` was.
+
+## v0.14.8: the same gate, the store keeping versions within their kind
+
+The same corpus and instance type (glyd-store 0.14.8 at commit
+de0ab9f; raw results in `benchmarks/gate/im4gn.4xlarge/`). What
+changed in the store since the first run above: a version's base stays
+in its own family past the depth cap (an object whose base holds under
+98% of its fingerprints starts one: a new kernel major, a monthly
+table), and a family's first object takes a shallow base; the delta
+trial samples four windows spread over the object.
+
+| | v0.14.7 (above) | v0.14.8 |
+| :--- | ---: | ---: |
+| stored | 46.29 GB (25.6×; 3.32× fewer bytes than zstd -3) | **44.35 GB (26.7×; 3.46×)** |
+| put | 372 MB/s | 386 MB/s |
+| zstd -3's own put, 16 threads | 547 MB/s | 535 MB/s |
+| get, every object by its own process, compared | 461 MB/s, 1,192 byte-exact | 464 MB/s, 1,192 byte-exact |
+| zstd -3's own get | 341 MB/s | 348 MB/s |
+| restore, the bucket by one process, compared | 603 MB/s, 1,192 byte-exact | 571 MB/s, 1,192 byte-exact |
+
+| Family | Raw | v0.14.7 | v0.14.8 |
+| :--- | ---: | ---: | ---: |
+| Linux 5.15 point releases (100) | 113.8 GB | 0.40 GB (286×) | 0.40 GB (286×) |
+| Linux 6.1 (150) | 204.0 GB | 1.32 GB (155×) | **0.50 GB (406×)** |
+| Linux 6.6 (150) | 213.2 GB | 1.84 GB (116×) | **0.57 GB (377×)** |
+| English Wikipedia tables (15) | 165.6 GB | 8.51 GB (19.5×) | 8.67 GB (19.1×) |
+| Simple English Wikipedia tables (27) | 3.2 GB | 0.08 GB | 0.09 GB |
+| Ubuntu cloud images (6) | 6.6 GB | 0.34 GB | 0.33 GB |
+| GitHub events, hourly (744) | 477.8 GB | 33.81 GB | 33.81 GB |
+
+The kernels gained 2.1 GB: every fifth 6.1 and 6.6 release had been a
+26–42 MB delta of 5.15.1, the root of the one chain all 400 releases
+formed, and is now a delta of its own major's first release. The
+English Wikipedia tables would have come to 7.94 GB (the new delta
+trial takes the September page table as a 1,205 MB delta again;
+measured in the put of a run stopped before its checks), and the
+shallow rule gave back 0.73 GB of that: each month's page table holds
+0.50–0.69 of the last, so each started a family and took a base two
+months back, the September one going back to alone.
+The next release lifts only a family's first object that sits at the
+depth cap, when its family first needs it; measured on the Ryzen box it
+keeps the kernels as here and the Wikipedia tables as in v0.14.7.
+
+Two runs between v0.14.7 and this one are not reported as results: in
+one the read-back compared each object with the wrong file (the index's
+new family field had moved the name; its restore, which takes names
+from the store, found all 1,192 byte-exact), and the other shared a
+results directory with it and was stopped after its put when the first
+finished. Both harness faults are fixed (`scripts/gate_run.sh`,
+`scripts/gate_aws.sh`).
