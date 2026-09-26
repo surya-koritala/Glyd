@@ -175,6 +175,38 @@ token for all three, over 16 tokens):
 `mma`, and -120552 for `mma12`; the first run's `mma12` kept its
 exponents in local memory, since fixed: same bytes, same answers.)
 
+## Popular models
+
+`sizes.py MODEL_DIR ...` packs every Linear layer's matrix of a model in
+both layouts and unpacks it, compared bit for bit. Ten popular open
+models (H100 SXM, 2026-09-26; `benchmarks/gpu/popular-h100-2026-09-26`):
+
+| Model | Matrices | bf16 | `mma` | `mma12` |
+| :--- | ---: | ---: | ---: | ---: |
+| Llama 3.3 70B Instruct | 68.45 B | 136.90 GB | 91.93 GB (10.74 bits, −32.9%) | 103.00 GB (12.04, −24.8%) |
+| Qwen3 30B-A3B (MoE) | 29.90 B | 59.79 GB | 40.22 GB (10.76, −32.7%) | 44.98 GB (12.04, −24.8%) |
+| Gemma 3 27B | 25.74 B | 51.48 GB | 34.58 GB (10.75, −32.8%) | 38.74 GB (12.04, −24.8%) |
+| Mistral Small 3.2 24B | 22.63 B | 45.26 GB | 30.34 GB (10.72, −33.0%) | 34.05 GB (12.04, −24.8%) |
+| Phi-4 | 13.63 B | 27.26 GB | 18.28 GB (10.73, −32.9%) | 20.51 GB (12.04, −24.8%) |
+| DeepSeek-R1-Distill-Qwen 14B | 13.21 B | 26.42 GB | 17.99 GB (10.89, −31.9%) | 19.89 GB (12.05, −24.7%) |
+| Llama 3.1 8B Instruct | 6.98 B | 13.96 GB | 9.39 GB (10.76, −32.8%) | 10.50 GB (12.04, −24.8%) |
+| Mistral 7B Instruct v0.3 | 6.98 B | 13.96 GB | 9.40 GB (10.77, −32.7%) | 10.50 GB (12.04, −24.7%) |
+| Qwen3 8B | 6.95 B | 13.89 GB | 9.44 GB (10.87, −32.1%) | 10.46 GB (12.05, −24.7%) |
+| SmolLM3 3B | 2.81 B | 5.62 GB | 3.77 GB (10.73, −32.9%) | 4.23 GB (12.04, −24.8%) |
+
+Llama and Gemma from `unsloth/` (the same weights, ungated). bf16 against
+Glyd (`mma`) end to end, the same run (`e2e.py --baseline --ppl --mmlu
+300`), where it loads the model as a causal LM on one GPU:
+
+| Model | Perplexity bf16 / Glyd | Next token as bf16's | MMLU (300) bf16 / Glyd | Answers as bf16's |
+| :--- | ---: | ---: | ---: | ---: |
+| Phi-4 | 14.7888 / 14.7855 | 98.91% | 76.67% / 76.33% | 99.33% |
+| DeepSeek-R1-Distill-Qwen 14B | 27.1955 / 27.1975 | 98.52% | 78.00% / 78.00% | 100% |
+| Llama 3.1 8B Instruct | 19.5915 / 19.5909 | 98.68% | 71.67% / 72.00% | 99.67% |
+| Mistral 7B Instruct v0.3 | 12.1422 / 12.1473 | 99.05% | 60.67% / 60.67% | 100% |
+| Qwen3 8B | 20.7490 / 20.7428 | 98.47% | 74.00% / 74.33% | 99.67% |
+| SmolLM3 3B | 29.1467 / 29.1422 | 97.90% | 63.33% / 63.33% | 99.67% |
+
 ## Larger models
 
 On rented GPUs (`scripts/gpu_lambda.sh`: one Lambda Cloud instance a
@@ -245,6 +277,7 @@ Needs PyTorch with CUDA and nvcc (the extension builds on first import):
     python gemm.py MODEL_DIR 1,16,64          # several tokens: every product against bf16, one layer's matrices
     python e2e.py MODEL_DIR --format mma --fused --baseline [--batch 1,8,32] [--prefill 16,64] [--ppl TEXT] [--mmlu 1000] [--kv 1024,4096]
     python kv.py                              # the KV cache packed and decoded bit for bit; attn_decode against SDPA
+    python sizes.py MODEL_DIR ...             # every Linear's matrix in both layouts, bit for bit: bits a weight, GB
 
 ## License
 

@@ -1,0 +1,15 @@
+Loading weights:   0%|          | 0/579 [00:00<?, ?it/s]Loading weights: 100%|██████████| 579/579 [00:00<00:00, 6017.86it/s]
+[transformers] Token indices sequence length is longer than the specified maximum sequence length for this model (106250 > 16384). Running this sequence through the model will result in indexing errors
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+bf16 (weights 29.54 GB): batch 1: 14.3 tokens/s (14.3 a sequence), peak VRAM 29.59 GB
+bf16 perplexity: 27.1955 (12600 tokens)
+bf16 MMLU: 78.00% of 300 questions (0-shot)
+mma fused: packed in 16 s; weights 20.14 GB against 29.54 GB bf16 (68.2%), scratch 0.27 GB, VRAM in use 20.45 GB on 1 GPU
+glyd mma fused: batch 1: 28.5 tokens/s (28.5 a sequence), peak VRAM 20.46 GB
+glyd mma perplexity: 27.1975 (12600 tokens)
+glyd mma MMLU: 78.00% of 300 questions (0-shot)
+next-token choice as bf16's: 98.52%
+MMLU answer as bf16's: 100.00%
+logits bit-identical: False
+generated tokens identical to bf16: 32 of 32
+text:  in the 1940s with the work of Claude Shannon and David Huffman. Their contributions laid the foundation for lossless data compression algorithms, which are
