@@ -742,6 +742,14 @@ __device__ __forceinline__ void decode_group(const uint32_t w[3], const uint32_t
     if (n > 8) decode_slow(w, sw, base4, exc, a0, sel, R);
 }
 
+// The __byte_perm selector escape_selector gives, from a word's flags (bit
+// 3 of each byte set where its code is 7), by arithmetic: byte j of it
+// j + f_j (4 + r_j - j), r_j the flags before j, then its nibbles packed.
+__device__ __forceinline__ uint32_t escape_selector_of(uint32_t f8) {
+    uint32_t f = f8 >> 3, sb = 0x03020100u + ((f * 0x01010100u + 0x01020304u) & (f * 0xFFu));
+    return __byte_perm(sb | (sb >> 4), 0, 0x4420);
+}
+
 // decode_fast in two halves, for a kernel with other work to put between
 // them: the escapes' scan and loads (the step's first escape at at), then,
 // once those have come, the rest.
@@ -767,7 +775,7 @@ __device__ __forceinline__ void decode_end(const uint32_t w[3], const uint32_t s
 #pragma unroll
     for (int q = 0; q < 8; q++) {
         uint32_t f = (ew[q] + plus1) & 0x08080808u;
-        ew[q] = __byte_perm(ew[q], (uint32_t)eb, sel[(f * 0x00204081u) >> 24 & 15]);
+        ew[q] = __byte_perm(ew[q], (uint32_t)eb, escape_selector_of(f));
         eb >>= 8 * __popc(f);
     }
     pairs(sw, ew, R);
@@ -916,24 +924,24 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(const ui
 }
 
 // Y = X W^T for many tokens from the mma layout (a prompt), as a tiled
-// GEMM with its work split between warps: a block is TM tokens by 128
-// rows of W (two row blocks). K goes in stages of 4 steps (64 columns),
-// NB of them in flight in shared memory. PW warps produce: X's tile of a
-// stage by cp.async (swizzled for ldmatrix), and W's 8 steps of it decoded
-// into B fragments; CW warps consume, each 64 tokens by 64 rows on the
-// tensor cores, never waiting on a decode. Named barriers pass a stage's
+// GEMM with its work split between warps: a block is TM tokens by RBB row
+// blocks of W (64 rows each). K goes in stages of 4 steps (64 columns), NB
+// of them in flight in shared memory. PW warps produce: X's tile of a
+// stage by cp.async (swizzled for ldmatrix), and W's 4 RBB steps of it
+// decoded into B fragments; CW warps consume, each 64 tokens by 64 rows
+// on the tensor cores, never waiting on a decode. Named barriers pass a stage's
 // buffers from producers to consumers (full) and back (empty). A weight
 // is decoded once for TM tokens. Blocks may split K (Y32: their parts,
 // added in a fixed order by finish_kernel).
-constexpr int BIG_KK = 4;                         // steps a stage
-constexpr int BIG_B_UINT4 = 2 * BIG_KK * 4 * 32;  // W's fragments a stage: [row block][step][4][lane]
-template <int CW, int PW, int NB> struct Big {
+constexpr int BIG_KK = 4;  // steps a stage
+template <int CW, int PW, int NB, int RBB> struct Big {
     static constexpr int THREADS = 32 * (CW + PW);
-    static constexpr int TM = 32 * CW;                // tokens a block: CW / 2 slices of 64, by 2 row blocks
-    static constexpr int A_BYTES = TM * 64 * 2;       // X's tile a stage
-    static constexpr int SHARED = NB * (A_BYTES + BIG_B_UINT4 * 16);
-    static constexpr int STEPS = 2 * BIG_KK / PW;     // W's steps a producer warp decodes a stage
-    static constexpr int CHUNKS = TM * 8 / (32 * PW); // X's 16-byte chunks a producer thread copies a stage
+    static constexpr int TM = 64 * CW / RBB;             // tokens a block: CW / RBB slices of 64, by RBB row blocks
+    static constexpr int A_BYTES = TM * 64 * 2;          // X's tile a stage
+    static constexpr int B_UINT4 = RBB * BIG_KK * 4 * 32;  // W's fragments a stage: [row block][step][4][lane]
+    static constexpr int SHARED = NB * (A_BYTES + B_UINT4 * 16);
+    static constexpr int STEPS = RBB * BIG_KK / PW;      // W's steps a producer warp decodes a stage
+    static constexpr int CHUNKS = TM * 8 / (32 * PW);    // X's 16-byte chunks a producer thread copies a stage
 };
 
 __device__ __forceinline__ void cp_async16(uint32_t dst, const void* src, int bytes) {
@@ -947,10 +955,10 @@ __device__ __forceinline__ void ldmatrix_x4(uint32_t r[4], uint32_t addr) {
 template <int THREADS> __device__ __forceinline__ void bar_sync(int id) { asm volatile("bar.sync %0, %1;\n" ::"r"(id), "n"(THREADS)); }
 template <int THREADS> __device__ __forceinline__ void bar_arrive(int id) { asm volatile("bar.arrive %0, %1;\n" ::"r"(id), "n"(THREADS)); }
 
-template <int CW, int PW, int NB>
-__global__ void __launch_bounds__(Big<CW, PW, NB>::THREADS, 1) mma_gemm_big_kernel(const uint8_t* __restrict__ data, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint32_t base, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
-    using C = Big<CW, PW, NB>;
-    extern __shared__ uint4 smem[];  // X's tiles [NB][TM rows][8 16-byte chunks, swizzled], then W's [NB][BIG_B_UINT4]
+template <int CW, int PW, int NB, int RBB>
+__global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big_kernel(const uint8_t* __restrict__ data, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint32_t base, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
+    using C = Big<CW, PW, NB, RBB>;
+    extern __shared__ uint4 smem[];  // X's tiles [NB][TM rows][8 16-byte chunks, swizzled], then W's [NB][B_UINT4]
     __shared__ uint32_t sel[16];
     if (threadIdx.x < 16) sel[threadIdx.x] = escape_selector(threadIdx.x);
     const uint32_t a_base = (uint32_t)__cvta_generic_to_shared(smem);
@@ -960,7 +968,7 @@ __global__ void __launch_bounds__(Big<CW, PW, NB>::THREADS, 1) mma_gemm_big_kern
     int64_t st0 = (int64_t)blockIdx.z * stages_per_split, nst = min(KS / BIG_KK, st0 + stages_per_split) - st0;
     __syncthreads();  // sel
     if (warp >= CW) {
-        // Producer p: X's chunks id = pt + 32 PW i of a stage's; W's steps STEPS p on of its 8 (row block, step).
+        // Producer p: X's chunks id = pt + 32 PW i of a stage's; W's steps STEPS p on of its 4 RBB (row block, step).
         int pt = tid - 32 * CW, p = warp - CW;
         uint32_t base4 = base * 0x01010101u;
         uint32_t w[C::STEPS][3], sw[C::STEPS][8];
@@ -968,8 +976,8 @@ __global__ void __launch_bounds__(Big<CW, PW, NB>::THREADS, 1) mma_gemm_big_kern
         auto d_load = [&](int64_t j) {
 #pragma unroll
             for (int i = 0; i < C::STEPS; i++) {
-                int u = p * C::STEPS + i;  // of the stage's 8: row block u / 4, step u % 4
-                int64_t rb = min(pair * 2 + u / BIG_KK, RB - 1), s = min((st0 + j) * BIG_KK + u % BIG_KK, KS - 1);
+                int u = p * C::STEPS + i;  // of the stage's 4 RBB: row block u / 4, step u % 4
+                int64_t rb = min(pair * RBB + u / BIG_KK, RB - 1), s = min((st0 + j) * BIG_KK + u % BIG_KK, KS - 1);
                 const uint8_t* stp = data + (rb * KS + s) * STEP_BYTES;
                 const uint32_t* cp = (const uint32_t*)stp + lane;
                 w[i][0] = __ldg(cp);
@@ -1014,7 +1022,7 @@ __global__ void __launch_bounds__(Big<CW, PW, NB>::THREADS, 1) mma_gemm_big_kern
             for (int i = 0; i < C::STEPS; i++) {
                 decode_end(cw[i], csw[i], base4, a0[i], e[i], sel, R);
                 if (n[i] > 8) decode_slow(cw[i], csw[i], base4, exc, a0[i], sel, R);
-                uint4* d = Bs + b * BIG_B_UINT4 + ((p * C::STEPS + i) * 4) * 32 + lane;
+                uint4* d = Bs + b * C::B_UINT4 + ((p * C::STEPS + i) * 4) * 32 + lane;
 #pragma unroll
                 for (int q = 0; q < 4; q++) d[q * 32] = make_uint4(R[4 * q], R[4 * q + 1], R[4 * q + 2], R[4 * q + 3]);
             }
@@ -1023,8 +1031,8 @@ __global__ void __launch_bounds__(Big<CW, PW, NB>::THREADS, 1) mma_gemm_big_kern
         }
         return;
     }
-    // Consumer: tokens 64 (warp % (CW / 2)) on of the block's TM, row block warp / (CW / 2) of its two.
-    int g = lane >> 2, t = lane & 3, wm = warp % (CW / 2), rbl = warp / (CW / 2);
+    // Consumer: tokens 64 (warp % (CW / RBB)) on of the block's TM, row block warp / (CW / RBB) of its RBB.
+    int g = lane >> 2, t = lane & 3, wm = warp % (CW / RBB), rbl = warp / (CW / RBB);
     float acc[4][8][4];
 #pragma unroll
     for (int mt = 0; mt < 4; mt++)
@@ -1034,33 +1042,48 @@ __global__ void __launch_bounds__(Big<CW, PW, NB>::THREADS, 1) mma_gemm_big_kern
             for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
     // ldmatrix rows: this lane's row of the 16 (0-7, then 8-15) and its 16-byte half of k.
     uint32_t a_row = (uint32_t)(wm * 64 + (lane & 7) + ((lane >> 3) & 1) * 8) * 128, a_half = lane >> 4, a_sw = lane & 7;
+    // Fragments double-buffered: a step's are asked for while the step
+    // before multiplies; a stage's first, during the last of the one before.
+    uint32_t fa[2][4][4];
+    uint4 fb[2][4];
+    auto frags = [&](int64_t j, int kk, int f) {
+        int bi = (int)(j % NB);
+        uint32_t slot = a_base + (uint32_t)bi * C::A_BYTES;
+        const uint4* bsrc = Bs + bi * C::B_UINT4 + rbl * BIG_KK * 4 * 32 + lane;
+#pragma unroll
+        for (int mt = 0; mt < 4; mt++) ldmatrix_x4(fa[f][mt], slot + a_row + mt * 16 * 128 + (((2 * kk + a_half) ^ a_sw) << 4));
+#pragma unroll
+        for (int q = 0; q < 4; q++) fb[f][q] = bsrc[(kk * 4 + q) * 32];
+    };
+    if (nst > 0) {
+        bar_sync<C::THREADS>(1);  // stage 0 is ready
+        frags(0, 0, 0);
+    }
     for (int64_t j = 0; j < nst; j++) {
-        int b = (int)(j % NB);
-        bar_sync<C::THREADS>(1 + b);  // stage j is ready
-        uint32_t slot = a_base + (uint32_t)b * C::A_BYTES;
-        const uint4* bsrc = Bs + b * BIG_B_UINT4 + rbl * BIG_KK * 4 * 32 + lane;
 #pragma unroll
         for (int kk = 0; kk < BIG_KK; kk++) {
-            uint32_t a[4][4];
-#pragma unroll
-            for (int mt = 0; mt < 4; mt++) ldmatrix_x4(a[mt], slot + a_row + mt * 16 * 128 + (((2 * kk + a_half) ^ a_sw) << 4));
-            uint4 b0 = bsrc[(kk * 4 + 0) * 32], b1 = bsrc[(kk * 4 + 1) * 32], b2 = bsrc[(kk * 4 + 2) * 32], b3 = bsrc[(kk * 4 + 3) * 32];
+            int f = kk & 1;
+            if (kk + 1 < BIG_KK) frags(j, kk + 1, f ^ 1);
+            else if (j + 1 < nst) {
+                bar_sync<C::THREADS>(1 + (int)((j + 1) % NB));  // stage j + 1 is ready
+                frags(j + 1, 0, f ^ 1);
+            }
 #pragma unroll
             for (int mt = 0; mt < 4; mt++) {
-                mma16816(acc[mt][0], a[mt], b0.x, b0.y);
-                mma16816(acc[mt][1], a[mt], b0.z, b0.w);
-                mma16816(acc[mt][2], a[mt], b1.x, b1.y);
-                mma16816(acc[mt][3], a[mt], b1.z, b1.w);
-                mma16816(acc[mt][4], a[mt], b2.x, b2.y);
-                mma16816(acc[mt][5], a[mt], b2.z, b2.w);
-                mma16816(acc[mt][6], a[mt], b3.x, b3.y);
-                mma16816(acc[mt][7], a[mt], b3.z, b3.w);
+                mma16816(acc[mt][0], fa[f][mt], fb[f][0].x, fb[f][0].y);
+                mma16816(acc[mt][1], fa[f][mt], fb[f][0].z, fb[f][0].w);
+                mma16816(acc[mt][2], fa[f][mt], fb[f][1].x, fb[f][1].y);
+                mma16816(acc[mt][3], fa[f][mt], fb[f][1].z, fb[f][1].w);
+                mma16816(acc[mt][4], fa[f][mt], fb[f][2].x, fb[f][2].y);
+                mma16816(acc[mt][5], fa[f][mt], fb[f][2].z, fb[f][2].w);
+                mma16816(acc[mt][6], fa[f][mt], fb[f][3].x, fb[f][3].y);
+                mma16816(acc[mt][7], fa[f][mt], fb[f][3].z, fb[f][3].w);
             }
         }
-        if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + b);  // done with stage j's buffers
+        if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + (int)(j % NB));  // done with stage j's buffers
     }
     // C fragments: token rows g and g + 8 of each m-tile, columns 2t and 2t + 1 of each n-tile.
-    int64_t my_rb = pair * 2 + rbl;
+    int64_t my_rb = pair * RBB + rbl;
     if (my_rb >= RB) return;
 #pragma unroll
     for (int mt = 0; mt < 4; mt++)
@@ -1280,11 +1303,11 @@ void mma_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int
     else launch(mma_gemm_kernel<4>, 4);
 }
 
-template <int CW, int PW, int NB>
+template <int CW, int PW, int NB, int RBB>
 static void mma_gemm_big_run(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int64_t base, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, cudaStream_t cs) {
-    using C = Big<CW, PW, NB>;
-    auto kernel = mma_gemm_big_kernel<CW, PW, NB>;
-    int64_t M = x.size(0), stages = K / 16 / BIG_KK, pairs = (O / 64 + 1) / 2, tiles = (M + C::TM - 1) / C::TM;
+    using C = Big<CW, PW, NB, RBB>;
+    auto kernel = mma_gemm_big_kernel<CW, PW, NB, RBB>;
+    int64_t M = x.size(0), stages = K / 16 / BIG_KK, pairs = (O / 64 + RBB - 1) / RBB, tiles = (M + C::TM - 1) / C::TM;
     static auto* per_sm_of = new std::map<int, int>;  // a device's blocks an SM (its shared memory allowed once)
     int dev = data.get_device();
     if (!per_sm_of->count(dev)) {
@@ -1317,10 +1340,11 @@ void mma_gemm_big(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base,
     const c10::cuda::CUDAGuard guard(data.device());
     cudaStream_t cs = at::cuda::getCurrentCUDAStream();
     TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
-    // Blocks of 128 tokens (4 consumer warps, 4 producers); of 256 (8 and 2) when asked.
-    if (variant == 0) variant = 1;
-    if (variant == 2) mma_gemm_big_run<8, 2, 2>(data, exc, exc_base, base, O, K, x, bias, y, cs);
-    else mma_gemm_big_run<4, 4, 3>(data, exc, exc_base, base, O, K, x, bias, y, cs);
+    // 4 consumer warps and 4 producers: blocks of 128 tokens by two row blocks (3 stages), or, past 128
+    // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens).
+    if (variant == 0) variant = x.size(0) > 128 ? 2 : 1;
+    if (variant == 2) mma_gemm_big_run<4, 4, 2, 1>(data, exc, exc_base, base, O, K, x, bias, y, cs);
+    else mma_gemm_big_run<4, 4, 3, 2>(data, exc, exc_base, base, O, K, x, bias, y, cs);
 }
 
 void mma_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int64_t base, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
