@@ -459,7 +459,7 @@ def mma_unpack(p, out=None, row0=0, rows=None):
     return out[: rows * K].view(rows, K)
 
 
-def mma_gemm(p, x, bias=None):
+def mma_gemm(p, x, bias=None, ahead=0):
     """X W^T (+ bias) for up to 64 tokens (x [M, K]) on the tensor cores,
     the weights decoded in registers straight into their operands."""
     O, K = p.shape
@@ -467,7 +467,7 @@ def mma_gemm(p, x, bias=None):
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
     b = bias if bias is not None else _none(x.device).to(torch.bfloat16)
     if isinstance(p, Mma12):
-        _ext.mma12_gemm(p.data, p.exc, p.exc_base, p.sym, O, K, x, b, y)
+        _ext.mma12_gemm(p.data, p.exc, p.exc_base, p.sym, O, K, x, b, y, ahead)
     else:
         _ext.mma_gemm(p.data, p.blocks, p.block_base, p.tiers, O, K, x, b, y)
     return y

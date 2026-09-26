@@ -58,6 +58,8 @@ for name in names:
             e12 = ((g.mma_gemm(q12, x).float() - ref).abs().max() / ref.abs().max()).item()
             assert e12 < 1e-2 and torch.equal(g.mma_gemm(q12, x), g.mma_gemm(q12, x)), f"{name} mma12 M={M}: {e12}"
             tv += f" | mma12 {gpu_us(lambda: g.mma_gemm(q12, x)):6.0f}"
+            if M <= 16:  # the steps a warp loads ahead, 1-3
+                tv += " (ahead 1/2/3: " + "/".join(f"{gpu_us(lambda: g.mma_gemm(q12, x, ahead=a)):.0f}" for a in (1, 2, 3)) + ")"
         if M >= 32:
             eb = ((g.mma_gemm_big(q, x, variant=1).float() - ref).abs().max() / ref.abs().max()).item()
             assert eb < 1e-2, f"{name} mma big M={M}: {eb}"

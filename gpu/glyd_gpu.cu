@@ -921,7 +921,7 @@ __device__ __forceinline__ int64_t block_of_step(int64_t x, int64_t nb, int64_t 
     return ((x + 1) * nb - 1) / total;  // block b runs steps [b total / nb, (b + 1) total / nb)
 }
 
-template <class Fmt, int MT>
+template <class Fmt, int MT, int PF>
 __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
     extern __shared__ __align__(128) float red[];  // [4 warps][16 MT rows][65], then (tiered) the warps' scratch [8][S2_BYTES]
     __shared__ int last;
@@ -945,7 +945,6 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(Fmt f, i
 #pragma unroll
                 for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
         // Steps loaded PF ahead, in a ring: W's, then the inputs.
-        constexpr int PF = MT == 1 ? Fmt::kAhead : 1;
         typename Fmt::St st[PF];
         uint32_t a[PF][MT][4];
         auto load = [&](int j, int64_t s) {
@@ -1590,7 +1589,7 @@ static Tiered tiered_of(torch::Tensor data, torch::Tensor blocks, torch::Tensor 
 }
 
 template <class Fmt>
-static void mma_gemm_run(Fmt f, torch::Tensor data, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+static void mma_gemm_run(Fmt f, torch::Tensor data, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t ahead = 0) {
     const c10::cuda::CUDAGuard guard(data.device());
     cudaStream_t cs = at::cuda::getCurrentCUDAStream();
     int64_t M = x.size(0);
@@ -1611,17 +1610,21 @@ static void mma_gemm_run(Fmt f, torch::Tensor data, int64_t O, int64_t K, torch:
         torch::Tensor parts = torch::empty({nb + RB, M, 64}, x.options().dtype(torch::kFloat32));
         kernel<<<nb, 256, shared, cs>>>(f, O, K, M, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), (float*)parts.data_ptr(), (int*)done.data_ptr());
     };
-    if (M <= 16) launch(mma_gemm_kernel<Fmt, 1>, 1);
-    else if (M <= 32) launch(mma_gemm_kernel<Fmt, 2>, 2);
-    else launch(mma_gemm_kernel<Fmt, 4>, 4);
+    // Steps a warp loads ahead at up to 16 tokens (0: the layout's own).
+    if (ahead == 0) ahead = Fmt::kAhead;
+    if (M <= 16 && ahead >= 3) launch(mma_gemm_kernel<Fmt, 1, 3>, 1);
+    else if (M <= 16 && ahead == 2) launch(mma_gemm_kernel<Fmt, 1, 2>, 1);
+    else if (M <= 16) launch(mma_gemm_kernel<Fmt, 1, 1>, 1);
+    else if (M <= 32) launch(mma_gemm_kernel<Fmt, 2, 1>, 2);
+    else launch(mma_gemm_kernel<Fmt, 4, 1>, 4);
 }
 
 void mma_gemm(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
     mma_gemm_run(tiered_of(data, blocks, block_base, tiers), data, O, K, x, bias, y);
 }
 
-void mma12_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
-    mma_gemm_run(nib_of(data, exc, exc_base, sym), data, O, K, x, bias, y);
+void mma12_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t ahead) {
+    mma_gemm_run(nib_of(data, exc, exc_base, sym), data, O, K, x, bias, y, ahead);
 }
 
 template <class Fmt, int CW, int PW, int NB, int RBB>
