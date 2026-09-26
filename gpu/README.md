@@ -11,6 +11,7 @@ mantissa byte as it is and code the exponent:
 | `huffman` (`pack`) | per-tensor prefix code read by counting leading zeros (as short as Huffman's on every tensor measured), 32 streams a tile | 10.88 | a lane decodes its stream in turn |
 | `fast` (`pack_fast`) | 3-bit code into the tensor's 7 most common exponents, an escape to the exponent itself | 11.25 | bit operations, every weight in parallel |
 | `mma` (`pack_mma`) | 2-bit digits in tiers: the tensor's 3 commonest exponents, digit 3 going on to the next 3, then the next 3, then the exponent itself; laid out in the order the tensor cores take their operand | 10.80 | in registers, straight into the tensor cores' operands |
+| `mma12` (`pack_mma12`) | a 4-bit code into the tensor's 15 commonest exponents, the rest in a step's exception list; the same layout | 12.04 | three byte permutes per four weights: for GPUs whose memory outruns the tiered decode |
 
 The floor for any code that sees each tensor's exponents on their own
 is about 10.6 bits a weight.
@@ -132,6 +133,26 @@ forward pass, Qwen2.5-7B (`--prefill`):
 Past 64 tokens the fused kernel is not yet faster than decoding the matrix
 and multiplying (profiled: its loads queue up and stall, at 29%
 occupancy); a GEMM at cuBLAS's efficiency is what closes that.
+
+## Two layouts: the most memory, or the lightest decode
+
+The tiered code (`mma`) takes the most off (10.80 bits a weight) and
+costs the most arithmetic to decode; where memory is the limit, as on an
+RTX 4080 SUPER at a few tokens a step, that is the faster one too. Where
+the GPU's memory outruns the decode (an H100's HBM3, or many tokens a
+step), the 12-bit layout (`mma12`, 12.04 bits) decodes four weights with
+three byte permutes and nothing across lanes. Qwen2.5-7B-Instruct, RTX
+4080 SUPER, the same harness:
+
+| | bf16 | `mma` | `mma12` |
+| :--- | ---: | ---: | ---: |
+| Weights | 15.23 GB | **10.32 GB** | 11.42 GB |
+| Tokens/s at 1 / 8 / 32 / 64 sequences | 43.4 / 332.4 / 1153.7 / 2160.0 | **55.7 / 424.2 / 1518.9** / 2244.7 | 51.9 / 398.6 / 1452.4 / **2455.9** |
+| Prompt of 64 / 2048 tokens | 27 / 301 ms | 26 / 330 ms | **23** / 318 ms |
+| Perplexity; MMLU (1,000) | 17.0015; 73.50% | 17.0052; 73.50% | 17.0052; 73.50% |
+
+Per matrix (down_proj, 3584 x 18944): one token 141 us (`mma`), 155
+(`mma12`), 198 (bf16); 64 tokens 192, 174, 236.
 
 ## Larger models
 

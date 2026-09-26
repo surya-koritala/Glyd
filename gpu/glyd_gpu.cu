@@ -842,6 +842,7 @@ struct Tiered {
     Tiers ts;
     typedef Step St;
     static constexpr bool kTable = true;  // decode needs the groups' table and a warp's scratch
+    static constexpr int kAhead = 1;      // steps a warp loads ahead of its decode (one token a step)
     __device__ __forceinline__ void load(St& st, int64_t step, int lane) const { load_step(st, data, blocks, block_base, step, lane); }
     __device__ __forceinline__ void decode(const St& st, int lane, uint32_t* s2, const uint32_t* tab, uint32_t R[16]) const { decode_step(st, ts, blocks, lane, s2, tab, R); }
 };
@@ -867,6 +868,7 @@ struct Nib {
         int e0, e1;
     };
     static constexpr bool kTable = false;
+    static constexpr int kAhead = 2;  // the decode is light: more bytes in flight to cover memory's latency
     __device__ __forceinline__ void load(St& st, int64_t step, int lane) const {
         const uint8_t* p = data + step * STEP12;
         uint4 c = __ldg((const uint4*)p + lane);
@@ -885,13 +887,16 @@ struct Nib {
             uint32_t n = st.nb[q >> 1] >> (16 * (q & 1)), n7 = n & 0x7777u;
             ew[q] = __byte_perm(__byte_perm(sym[0], sym[1], n7), __byte_perm(sym[2], sym[3], n7), ((n >> 1) & 0x4444u) | 0x3210u);
         }
-        // The step's exceptions (the same run for every lane of the warp).
+        // The step's exceptions (the same run for every lane of the warp):
+        // each word takes its byte where the exception is this lane's and in it.
         for (int k = st.e0; k < st.e1; k++) {
             uint32_t x = __ldg(exc + k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
-            if ((int)((x >> 5) & 31) == lane)
+            uint32_t w = (int)((x >> 5) & 31) == lane ? i >> 2 : 8u;
 #pragma unroll
-                for (int q = 0; q < 8; q++)
-                    if (q == (int)(i >> 2)) ew[q] = __byte_perm(ew[q], x >> 16, sel);
+            for (int q = 0; q < 8; q++) {
+                uint32_t v = __byte_perm(ew[q], x >> 16, sel);
+                ew[q] = w == (uint32_t)q ? v : ew[q];
+            }
         }
         pairs(st.sw, ew, R);
     }
@@ -939,36 +944,43 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(Fmt f, i
             for (int nn = 0; nn < 8; nn++)
 #pragma unroll
                 for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
-        // The step's loads: W's, then the inputs.
-        typename Fmt::St st;
-        uint32_t a[MT][4];
-        auto load = [&](int64_t s) {
-            f.load(st, rb * KS + s, lane);
+        // Steps loaded PF ahead, in a ring: W's, then the inputs.
+        constexpr int PF = MT == 1 ? Fmt::kAhead : 1;
+        typename Fmt::St st[PF];
+        uint32_t a[PF][MT][4];
+        auto load = [&](int j, int64_t s) {
+            f.load(st[j], rb * KS + s, lane);
 #pragma unroll
             for (int mt = 0; mt < MT; mt++) {
                 int64_t r0 = mt * 16 + g, r1 = r0 + 8;
                 const __nv_bfloat16* xr = X + s * 16 + t * 2;
-                a[mt][0] = r0 < M ? *(const uint32_t*)(xr + r0 * K) : 0u;
-                a[mt][2] = r0 < M ? *(const uint32_t*)(xr + r0 * K + 8) : 0u;
-                a[mt][1] = r1 < M ? *(const uint32_t*)(xr + r1 * K) : 0u;
-                a[mt][3] = r1 < M ? *(const uint32_t*)(xr + r1 * K + 8) : 0u;
+                a[j][mt][0] = r0 < M ? *(const uint32_t*)(xr + r0 * K) : 0u;
+                a[j][mt][2] = r0 < M ? *(const uint32_t*)(xr + r0 * K + 8) : 0u;
+                a[j][mt][1] = r1 < M ? *(const uint32_t*)(xr + r1 * K) : 0u;
+                a[j][mt][3] = r1 < M ? *(const uint32_t*)(xr + r1 * K + 8) : 0u;
             }
         };
-        if (s0 < s1) load(s0);
-        for (int64_t s = s0; s < s1; s++) {
-            typename Fmt::St cur = st;
-            uint32_t ca[MT][4];
 #pragma unroll
-            for (int mt = 0; mt < MT; mt++)
+        for (int j = 0; j < PF; j++)
+            if (s0 + j < s1) load(j, s0 + j);
+        for (int64_t s = s0; s < s1; s += PF) {
 #pragma unroll
-                for (int q = 0; q < 4; q++) ca[mt][q] = a[mt][q];
-            if (s + 1 < s1) load(s + 1);
-            uint32_t R[16];
-            f.decode(cur, lane, s2, tab, R);
+            for (int j = 0; j < PF; j++) {
+                if (s + j >= s1) break;
+                typename Fmt::St cur = st[j];
+                uint32_t ca[MT][4];
 #pragma unroll
-            for (int mt = 0; mt < MT; mt++)
+                for (int mt = 0; mt < MT; mt++)
 #pragma unroll
-                for (int nn = 0; nn < 8; nn++) mma16816(acc[mt][nn], ca[mt], R[2 * nn], R[2 * nn + 1]);
+                    for (int q = 0; q < 4; q++) ca[mt][q] = a[j][mt][q];
+                if (s + j + PF < s1) load(j, s + j + PF);
+                uint32_t R[16];
+                f.decode(cur, lane, s2, tab, R);
+#pragma unroll
+                for (int mt = 0; mt < MT; mt++)
+#pragma unroll
+                    for (int nn = 0; nn < 8; nn++) mma16816(acc[mt][nn], ca[mt], R[2 * nn], R[2 * nn + 1]);
+            }
         }
         // The warps' sums (C fragment rows g and g + 8, columns 2t and 2t + 1
         // of each n-tile): warps 4-7 put theirs in shared memory, 0-3 add
