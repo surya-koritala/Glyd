@@ -6,6 +6,31 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.16.0 — 2026-09-25
+
+- Model weights on the GPU, several tokens at once
+  ([gpu/](gpu/README.md)): the `mma` layout (`pack_mma`), the fast
+  format's 3-bit codes into the tensor's densest run of 7 exponents,
+  each step of 1024 weights one run in the order the tensor cores take
+  their operand. `mma_gemm` (1 to 64 tokens) decodes it in registers
+  straight into `mma.sync` fragments; `mma_gemm_big` (prompts) is a
+  tiled GEMM whose producer warps decode the weights into shared memory
+  while its consumer warps multiply. Qwen2.5-7B-Instruct on an RTX 4080
+  SUPER, in 11.05 GB where bf16 takes 15.25: **1.23-1.33x bf16's
+  tokens/s at 1 to 48 sequences at once** (one: 55.2 tokens/s, bf16
+  43.3; 32: 1,528.6, bf16 1,149.0; the batched fast-format product it
+  replaces ran 0.72-0.90x); prompts of up to 128 tokens faster than
+  bf16 (128: 27 ms, bf16 29; was 60), 256 to 4096 within 5-9% (4096:
+  696 ms, bf16 645). The same result every run (sums in a fixed order);
+  perplexity as bf16's (Wikipedia, 64-token windows 17.0052 vs 17.0015,
+  512-token 7.5660 vs 7.5677).
+- `gpu/e2e.py`: `--format mma`, `--batch`, `--gpus N` (layers spread
+  over GPUs by their bytes; bf16 by accelerate's device map), `--ppl`;
+  every kernel runs on its tensors' device and PyTorch's current stream.
+  `gpu/setup_env.sh` builds the environment without root (nvcc pinned
+  to PyTorch's CUDA); `scripts/gpu_aws.sh` runs Qwen2.5-32B and 72B on
+  4x L40S.
+
 ## v0.15.0 — 2026-09-25
 
 - Model weights on the GPU ([gpu/](gpu/README.md), Python and CUDA beside
