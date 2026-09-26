@@ -1,6 +1,9 @@
-"""Several tokens at once: the fused fast-format GEMM against decoding the
-matrix to bf16 then PyTorch's matmul, and against bf16 itself, on one
-layer's matrices of a model; kernel GPU time from the profiler."""
+"""Several tokens at once: the fused fast-format GEMM, the batched product
+and the mma layout's tensor-core product against decoding the matrix to
+bf16 then PyTorch's matmul, and against bf16 itself, on one layer's
+matrices of a model; kernel GPU time from the profiler.
+
+    python gemm.py MODEL_DIR 1,2,4,8,16,32"""
 import sys, json, os, torch
 import torch.nn.functional as F
 from torch.profiler import profile, ProfilerActivity
@@ -28,6 +31,8 @@ for name in names:
     with safe_open(os.path.join(d, index[name]), "pt", device="cuda") as f:
         w = f.get_tensor(name)
     p = g.pack_fast(w)
+    q = g.pack_mma(w)
+    assert torch.equal(g.mma_unpack(q).view(torch.int16), w.view(torch.int16)), f"{name}: mma layout not exact"
     scratch = torch.empty(p.n, dtype=torch.bfloat16, device="cuda")
     row = []
     for M in Ms:
@@ -38,7 +43,17 @@ for name in names:
         tb = gpu_us(lambda: F.linear(x, w))
         td = gpu_us(lambda: F.linear(x, g.fast_unpack(p, scratch)))
         tf = gpu_us(lambda: g.fast_gemm(p, x))
-        row.append(f"M={M}: bf16 {tb:6.0f} | decode+mm {td:6.0f} | fused {tf:6.0f} us")
-    print(f"{name.split('.')[-2]:>10} {str(tuple(w.shape)):>14}  " + "  ".join(row))
-    del w, p, scratch
+        tv = ""
+        if M in (2, 4, 8, 16):
+            yv = g.fast_bgemv(p, x).float()
+            ev = ((yv - ref).abs().max() / ref.abs().max()).item()
+            assert ev < 1e-2, f"{name} bgemv M={M}: {ev}"
+            tv = f" | bgemv {gpu_us(lambda: g.fast_bgemv(p, x)):6.0f}"
+        if M <= 64:
+            em = ((g.mma_gemm(q, x).float() - ref).abs().max() / ref.abs().max()).item()
+            assert em < 1e-2, f"{name} mma M={M}: {em}"
+            tv += f" | mma {gpu_us(lambda: g.mma_gemm(q, x)):6.0f}"
+        row.append(f"M={M}: bf16 {tb:6.0f} | decode+mm {td:6.0f} | fused {tf:6.0f}{tv} us")
+    print(f"{name.split('.')[-2]:>10} {str(tuple(w.shape)):>14} fast {p.bits_per_weight():.2f} mma {q.bits_per_weight():.2f} bits  " + "  ".join(row))
+    del w, p, q, scratch
     torch.cuda.empty_cache()

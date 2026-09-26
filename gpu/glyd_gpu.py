@@ -282,3 +282,88 @@ def fast_gemm(p, x, bias=None):
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
     _ext.fast_gemm(p.sm, p.planes, p.exc, p.exc_base, p.top, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
     return y
+
+
+def fast_bgemv(p, x, bias=None):
+    """X W^T (+ bias) for 2, 4, 8 or 16 tokens (x [M, K]) on the CUDA cores:
+    the one-token product's decode, each weight multiplied into M sums."""
+    O, K = p.shape
+    x = x.contiguous()
+    y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
+    _ext.fast_bgemv(p.sm, p.planes, p.exc, p.exc_base, p.top, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
+    return y
+
+
+class Mma:
+    """The mma layout of a matrix [O, K] (O a multiple of 64, K of 16): the
+    fast format with its codes and bytes in the order the tensor cores take
+    their B operand, its 7 exponents a run from base (see glyd_gpu.cu)."""
+
+    def __init__(self, shape, data, exc, exc_base, base):
+        self.shape, self.data, self.exc, self.exc_base, self.base = shape, data, exc, exc_base, base
+        self.sm = data  # its device, as the other formats'
+        self.n = shape[0] * shape[1]
+
+    def nbytes(self):
+        return sum(t.numel() * t.element_size() for t in (self.data, self.exc, self.exc_base)) + 4
+
+    def bits_per_weight(self):
+        return self.nbytes() * 8 / self.n
+
+
+def pack_mma(w):
+    assert w.dtype == torch.bfloat16 and w.is_cuda and w.dim() == 2 and w.shape[0] % 64 == 0 and w.shape[1] % 16 == 0
+    O, K = w.shape
+    RB, KS, dev = O // 64, K // 16, w.device
+    u = w.contiguous().view(torch.int16)
+    # The run of 7 exponents holding the most weights (base + 7 must not reach the sign).
+    h = _hist(u.flatten())
+    base = int(h.unfold(0, 7, 1).sum(1)[:249].argmax())
+    steps = O * K // 1024
+    data = torch.empty(steps, 1408, dtype=torch.uint8, device=dev)  # a warp step: code words [3][32 lanes], then [32 lanes][32 bytes]
+    shifts = torch.arange(32, dtype=torch.int64, device=dev)
+    exc_parts, step_counts = [], []
+    per = max(1, (1 << 22) // (64 * K))  # row blocks a chunk
+    for b0 in range(0, RB, per):
+        b1 = min(RB, b0 + per)
+        # [rb, n, g, ks, j >> 1, t, j & 1] -> [rb, ks, lane = 4g + t, 4n + j]
+        v = u[b0 * 64 : b1 * 64].view(b1 - b0, 8, 8, KS, 2, 4, 2).permute(0, 3, 2, 5, 1, 4, 6).flatten().to(torch.int32) & 0xFFFF
+        a, z = b0 * 64 * K, b1 * 64 * K
+        e = (v >> 7) & 0xFF
+        c = e - base
+        esc = (c < 0) | (c > 6)
+        c[esc] = 7
+        bits = torch.stack([(c >> b) & 1 for b in range(3)], -1).view(-1, 3, 32).to(torch.int64)  # the 96-bit stream, code i at 3i
+        words = (bits << shifts).sum(-1)
+        words = (words - (words >= 2**31).to(torch.int64) * 2**32).to(torch.int32)  # [groups, 3]
+        data[a // 1024 : z // 1024, :384] = words.view(-1, 32, 3).transpose(1, 2).contiguous().view(torch.uint8).view(-1, 384)
+        # Weight i's byte: its mantissa above the sign of weight i ^ 1 (a pair decodes by one rotate).
+        pr = v.view(-1, 2)
+        sign = (pr >> 15) & 1
+        data[a // 1024 : z // 1024, 384:] = (((pr & 0x7F) << 1) | sign.flip(1)).to(torch.uint8).view(-1, 1024)
+        exc_parts.append(e[esc].to(torch.uint8))
+        step_counts.append(esc.view(-1, 1024).sum(1))
+    exc = torch.cat(exc_parts + [torch.zeros(16, dtype=torch.uint8, device=dev)])  # padded: the kernels read words past an escape
+    per_step = torch.cat(step_counts)
+    assert exc.numel() < 2**31
+    return Mma((O, K), data.flatten(), exc, (torch.cumsum(per_step, 0) - per_step).to(torch.int32), base)
+
+
+def mma_unpack(p, out=None, row0=0, rows=None):
+    """Rows [row0, row0 + rows) of W (multiples of 64), bf16 [rows, K]."""
+    O, K = p.shape
+    rows = O - row0 if rows is None else rows
+    if out is None:
+        out = torch.empty(rows * K, dtype=torch.bfloat16, device=p.sm.device)
+    _ext.mma_unpack(p.data, p.exc, p.exc_base, p.base, K, row0, rows, out.view(torch.int16))
+    return out[: rows * K].view(rows, K)
+
+
+def mma_gemm(p, x, bias=None):
+    """X W^T (+ bias) for up to 64 tokens (x [M, K]) on the tensor cores,
+    the weights decoded in registers straight into their operands."""
+    O, K = p.shape
+    x = x.contiguous()
+    y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
+    _ext.mma_gemm(p.data, p.exc, p.exc_base, p.base, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
+    return y
