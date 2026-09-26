@@ -52,6 +52,23 @@ attention ([gpu/](gpu/README.md)).
 | Qwen2.5-72B: MMLU, 1,000 questions | 81.9% | 81.8% |
 | KV cache, Qwen2.5-7B, 16K tokens | 947 MB | **651 MB** |
 
+What those runs cost, at Lambda Cloud's on-demand price for the GPUs
+they ran on ($1.09 an RTX A6000-hour, 2026-09-26), from the tokens/s
+measured:
+
+| Around the clock | bf16 | ⚡&nbsp;**Glyd** |
+| :--- | ---: | ---: |
+| Qwen3-32B: GPUs, an hour | 2, $2.18 | **1, $1.09** |
+| Qwen3-32B: a year | $19,097 | **$9,548** (−50%) |
+| Qwen3-32B: a million tokens at 1 / 8 / 32 / 64 sequences | $63.74 / 8.14 / 2.19 / 1.24 | **$25.66 / 3.19 / 1.04 / 0.76** |
+| Qwen2.5-72B: GPUs, an hour | 4, $4.36 | **3, $3.27** |
+| Qwen2.5-72B: a year | $38,194 | **$28,645** (−25%) |
+| Qwen2.5-72B: a million tokens at 1 / 8 / 32 / 64 sequences | $269.14 / 34.60 / 9.00 / 4.76 | **$141.93 / 18.54 / 5.91 / 4.16** |
+
+(At 64 sequences Glyd's model on fewer GPUs makes fewer tokens a second
+than bf16's, 400.5 against 488.4 for Qwen3-32B, and still costs less a
+token.)
+
 The same on every popular open model measured, and the same model
 afterwards (`gpu/sizes.py`: every Linear layer's matrix packed and
 unpacked bit for bit; perplexity on enwik8 and MMLU on 300 questions,
