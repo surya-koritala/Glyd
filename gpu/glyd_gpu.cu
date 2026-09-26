@@ -1153,6 +1153,211 @@ __global__ void mma_unpack_kernel(const uint8_t* __restrict__ data, const uint8_
     }
 }
 
+// Attention for one new token a sequence (decoding) over a KV cache held in
+// the mma layout (gpu/kv.py): a layer's keys as [pages x pairs x 64 tokens,
+// D] (a pair: one sequence's KV head), its values as [pages x pairs x D, 64
+// tokens], then a tail of tlen (< 64) tokens in bf16, [pairs, tlen, D]. The
+// G queries a KV head serves are one m16 tile. A block takes one pair and a
+// run of its pages (the last run also the tail), a page a warp at a time: its
+// keys decoded into B fragments, the queries' scores on the tensor cores, an
+// online softmax (in base 2), its values decoded, P V accumulated. The warps
+// are merged in shared memory, the pair's blocks by the last to finish, in
+// order (the same result every run).
+constexpr int ATT_WARPS = 4;
+
+__device__ __forceinline__ uint32_t bf16x2(float lo, float hi) {
+    __nv_bfloat162 v = __floats2bfloat162_rn(lo, hi);
+    return *(uint32_t*)&v;
+}
+
+template <int D>
+__global__ void __launch_bounds__(32 * ATT_WARPS) attn_decode_kernel(const __nv_bfloat16* __restrict__ q, const uint8_t* __restrict__ kd, const uint8_t* __restrict__ kb, const int32_t* __restrict__ kbb, Tiers kt, const uint8_t* __restrict__ vd, const uint8_t* __restrict__ vb, const int32_t* __restrict__ vbb, Tiers vt, const __nv_bfloat16* __restrict__ tk, const __nv_bfloat16* __restrict__ tv, int tlen, int pairs, int G, int P, int per, float sl2, float* __restrict__ part, int* __restrict__ done, __nv_bfloat16* __restrict__ out) {
+    constexpr int KS = D / 16, NT = D / 8, RV = D / 64;  // key steps a page, n-tiles of D, value row blocks a page
+    __shared__ uint32_t tab[256];
+    __shared__ __align__(16) uint32_t scratch[ATT_WARPS][S2_BYTES / 4];
+    __shared__ float red[ATT_WARPS][16][D + 2];  // a warp's rows: O, then its max and sum
+    __shared__ int last;
+    fill_groups(tab);
+    __syncthreads();
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+    int pair = blockIdx.x, split = blockIdx.y, splits = gridDim.y;
+    uint32_t* s2 = scratch[warp];
+    // The queries as A fragments: rows g and g + 8 (zero past G).
+    uint32_t aq[KS][4];
+    const __nv_bfloat16* qp = q + (int64_t)pair * G * D;
+#pragma unroll
+    for (int s = 0; s < KS; s++) {
+        int c = 16 * s + 2 * t;
+        aq[s][0] = g < G ? *(const uint32_t*)(qp + g * D + c) : 0u;
+        aq[s][1] = g + 8 < G ? *(const uint32_t*)(qp + (g + 8) * D + c) : 0u;
+        aq[s][2] = g < G ? *(const uint32_t*)(qp + g * D + c + 8) : 0u;
+        aq[s][3] = g + 8 < G ? *(const uint32_t*)(qp + (g + 8) * D + c + 8) : 0u;
+    }
+    float m[2] = {-INFINITY, -INFINITY}, l[2] = {0.f, 0.f}, o[NT][4];
+#pragma unroll
+    for (int n = 0; n < NT; n++) o[n][0] = o[n][1] = o[n][2] = o[n][3] = 0.f;
+    int p0 = split * per, p1 = min(P + (tlen > 0 ? 1 : 0), p0 + per);  // page P: the tail
+    for (int p = p0 + warp; p < p1; p += ATT_WARPS) {
+        float c[8][4];
+#pragma unroll
+        for (int n = 0; n < 8; n++) c[n][0] = c[n][1] = c[n][2] = c[n][3] = 0.f;
+        if (p < P) {
+            int64_t rb = (int64_t)p * pairs + pair;
+#pragma unroll 1
+            for (int s = 0; s < KS; s++) {
+                Step st;
+                uint32_t R[16];
+                load_step(st, kd, kb, kbb, rb * KS + s, lane);
+                decode_step(st, kt, kb, lane, s2, tab, R);
+#pragma unroll
+                for (int n = 0; n < 8; n++) mma16816(c[n], aq[s], R[2 * n], R[2 * n + 1]);
+            }
+        } else {
+            const __nv_bfloat16* kp = tk + (int64_t)pair * tlen * D;
+#pragma unroll
+            for (int s = 0; s < KS; s++)
+#pragma unroll
+                for (int n = 0; n < 8; n++) {
+                    int tok = 8 * n + g;
+                    uint32_t b0 = tok < tlen ? *(const uint32_t*)(kp + tok * D + 16 * s + 2 * t) : 0u;
+                    uint32_t b1 = tok < tlen ? *(const uint32_t*)(kp + tok * D + 16 * s + 8 + 2 * t) : 0u;
+                    mma16816(c[n], aq[s], b0, b1);
+                }
+        }
+        // The page's scores: rows g (c[.][0..1]) and g + 8 (c[.][2..3]), columns 8n + 2t, 8n + 2t + 1.
+        float mx0 = -INFINITY, mx1 = -INFINITY;
+#pragma unroll
+        for (int n = 0; n < 8; n++) {
+            int tok = 8 * n + 2 * t;
+            if (p >= P && tok >= tlen) c[n][0] = c[n][2] = -INFINITY;
+            if (p >= P && tok + 1 >= tlen) c[n][1] = c[n][3] = -INFINITY;
+            mx0 = fmaxf(mx0, fmaxf(c[n][0], c[n][1]));
+            mx1 = fmaxf(mx1, fmaxf(c[n][2], c[n][3]));
+        }
+        mx0 = fmaxf(mx0, __shfl_xor_sync(FULL, mx0, 1));
+        mx0 = fmaxf(mx0, __shfl_xor_sync(FULL, mx0, 2));
+        mx1 = fmaxf(mx1, __shfl_xor_sync(FULL, mx1, 1));
+        mx1 = fmaxf(mx1, __shfl_xor_sync(FULL, mx1, 2));
+        float n0 = fmaxf(m[0], mx0 * sl2), n1 = fmaxf(m[1], mx1 * sl2);
+        float a0 = exp2f(m[0] - n0), a1 = exp2f(m[1] - n1);
+        m[0] = n0;
+        m[1] = n1;
+        l[0] *= a0;
+        l[1] *= a1;
+#pragma unroll
+        for (int n = 0; n < NT; n++) {
+            o[n][0] *= a0;
+            o[n][1] *= a0;
+            o[n][2] *= a1;
+            o[n][3] *= a1;
+        }
+        // P as A fragments of the values' product: tokens 16s.. of n-tiles 2s, 2s + 1.
+        uint32_t ap[4][4];
+#pragma unroll
+        for (int s = 0; s < 4; s++) {
+            float e[2][4];
+#pragma unroll
+            for (int h = 0; h < 2; h++) {
+                int n = 2 * s + h;
+                e[h][0] = exp2f(c[n][0] * sl2 - n0);
+                e[h][1] = exp2f(c[n][1] * sl2 - n0);
+                e[h][2] = exp2f(c[n][2] * sl2 - n1);
+                e[h][3] = exp2f(c[n][3] * sl2 - n1);
+                l[0] += e[h][0] + e[h][1];
+                l[1] += e[h][2] + e[h][3];
+            }
+            ap[s][0] = bf16x2(e[0][0], e[0][1]);
+            ap[s][1] = bf16x2(e[0][2], e[0][3]);
+            ap[s][2] = bf16x2(e[1][0], e[1][1]);
+            ap[s][3] = bf16x2(e[1][2], e[1][3]);
+        }
+        if (p < P) {
+            int64_t rb = ((int64_t)p * pairs + pair) * RV;
+#pragma unroll
+            for (int j = 0; j < RV; j++)
+#pragma unroll 1
+                for (int s = 0; s < 4; s++) {
+                    Step st;
+                    uint32_t R[16];
+                    load_step(st, vd, vb, vbb, (rb + j) * 4 + s, lane);
+                    decode_step(st, vt, vb, lane, s2, tab, R);
+#pragma unroll
+                    for (int n = 0; n < 8; n++) mma16816(o[8 * j + n], ap[s], R[2 * n], R[2 * n + 1]);
+                }
+        } else {
+            const uint16_t* vp = (const uint16_t*)(tv + (int64_t)pair * tlen * D);
+#pragma unroll
+            for (int j = 0; j < RV; j++)
+#pragma unroll
+                for (int s = 0; s < 4; s++)
+#pragma unroll
+                    for (int n = 0; n < 8; n++) {
+                        int d = 64 * j + 8 * n + g, k0 = 16 * s + 2 * t;
+                        auto v = [&](int tok) -> uint32_t { return tok < tlen ? (uint32_t)vp[tok * D + d] : 0u; };
+                        mma16816(o[8 * j + n], ap[s], v(k0) | v(k0 + 1) << 16, v(k0 + 8) | v(k0 + 9) << 16);
+                    }
+        }
+    }
+    // The warps' rows into shared memory (sums over the quad first), merged.
+#pragma unroll
+    for (int r = 0; r < 2; r++) {
+        l[r] += __shfl_xor_sync(FULL, l[r], 1);
+        l[r] += __shfl_xor_sync(FULL, l[r], 2);
+    }
+#pragma unroll
+    for (int n = 0; n < NT; n++) {
+        red[warp][g][8 * n + 2 * t] = o[n][0];
+        red[warp][g][8 * n + 2 * t + 1] = o[n][1];
+        red[warp][g + 8][8 * n + 2 * t] = o[n][2];
+        red[warp][g + 8][8 * n + 2 * t + 1] = o[n][3];
+    }
+    if (t == 0) {
+        red[warp][g][D] = m[0];
+        red[warp][g][D + 1] = l[0];
+        red[warp][g + 8][D] = m[1];
+        red[warp][g + 8][D + 1] = l[1];
+    }
+    __syncthreads();
+    float* mine = part + ((int64_t)pair * splits + split) * 16 * (D + 2);
+    for (int i = threadIdx.x; i < 16 * (D + 2); i += 32 * ATT_WARPS) {
+        int r = i / (D + 2), d = i % (D + 2);
+        float M = -INFINITY;
+#pragma unroll
+        for (int w = 0; w < ATT_WARPS; w++) M = fmaxf(M, red[w][r][D]);
+        float v = 0.f;
+        if (d == D) v = M;
+        else if (M != -INFINITY)
+#pragma unroll
+            for (int w = 0; w < ATT_WARPS; w++) v += red[w][r][d] * exp2f(red[w][r][D] - M);
+        mine[i] = v;
+    }
+    __threadfence();
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        last = atomicAdd(done + pair, 1) == splits - 1;
+        if (last) done[pair] = 0;  // ready for the next call
+    }
+    __syncthreads();
+    if (!last) return;
+    __threadfence();
+    const float* all = part + (int64_t)pair * splits * 16 * (D + 2);
+    for (int i = threadIdx.x; i < G * D; i += 32 * ATT_WARPS) {
+        int r = i / D, d = i % D;
+        float M = -INFINITY;
+        for (int sp = 0; sp < splits; sp++) M = fmaxf(M, __ldcg(all + ((int64_t)sp * 16 + r) * (D + 2) + D));
+        float L = 0.f, O = 0.f;
+        for (int sp = 0; sp < splits; sp++) {
+            const float* row = all + ((int64_t)sp * 16 + r) * (D + 2);
+            float ms = __ldcg(row + D);
+            if (ms == -INFINITY) continue;
+            float w = exp2f(ms - M);
+            L += __ldcg(row + D + 1) * w;
+            O += __ldcg(row + d) * w;
+        }
+        out[((int64_t)pair * G + r) * D + d] = __float2bfloat16(O / L);
+    }
+}
+
 // The fast format decoded to bf16: rows [row0, row0 + rows), or the rows
 // listed in row_ids, one after another into out.
 __global__ void fast_decode_kernel(const uint8_t* __restrict__ sm, const uint32_t* __restrict__ planes, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint64_t top, int64_t row0, const int64_t* __restrict__ row_ids, int64_t rows, int64_t K, uint16_t* __restrict__ out) {
@@ -1378,9 +1583,34 @@ void mma_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_ba
     mma_unpack_kernel<<<(steps * 32 + 255) / 256, 256, 0, cs>>>((const uint8_t*)data.data_ptr(), (const uint8_t*)blocks.data_ptr(), (const int32_t*)block_base.data_ptr(), tiers_of(tiers), K, row0, rows, (uint16_t*)out.data_ptr());
 }
 
+void attn_decode(torch::Tensor q, torch::Tensor kd, torch::Tensor kb, torch::Tensor kbb, std::vector<int64_t> kt, torch::Tensor vd, torch::Tensor vb, torch::Tensor vbb, std::vector<int64_t> vt, torch::Tensor tk, torch::Tensor tv, int64_t tlen, int64_t pairs, int64_t G, int64_t P, double scale, torch::Tensor out) {
+    const c10::cuda::CUDAGuard guard(q.device());
+    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
+    int64_t D = q.size(-1);
+    TORCH_CHECK((D == 64 || D == 128) && G >= 1 && G <= 16 && q.is_contiguous() && tlen < 64 && P + (tlen > 0) > 0, "head_dim 64 or 128, up to 16 queries a KV head");
+    static auto* done_of = new std::map<int, torch::Tensor>;  // a pair's finished blocks: zero between calls
+    torch::Tensor& done = (*done_of)[q.get_device()];
+    if (!done.defined() || done.numel() < pairs) done = torch::zeros({std::max<int64_t>(pairs, 1 << 12)}, q.options().dtype(torch::kInt32));
+    // Pages a block: enough blocks for four an SM, at least a page a warp.
+    int64_t units = P + (tlen > 0), sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
+    int64_t per = std::max<int64_t>(ATT_WARPS, (pairs * units + 4 * sms - 1) / (4 * sms));
+    per = (per + ATT_WARPS - 1) / ATT_WARPS * ATT_WARPS;
+    int64_t splits = (units + per - 1) / per;
+    torch::Tensor part = torch::empty({pairs * splits * 16 * (D + 2)}, q.options().dtype(torch::kFloat32));
+    float sl2 = (float)(scale * 1.4426950408889634);
+    const __nv_bfloat16* tkp = tlen ? (const __nv_bfloat16*)tk.data_ptr() : nullptr;
+    const __nv_bfloat16* tvp = tlen ? (const __nv_bfloat16*)tv.data_ptr() : nullptr;
+    auto launch = [&](auto kernel) {
+        kernel<<<dim3(pairs, splits), 32 * ATT_WARPS, 0, cs>>>((const __nv_bfloat16*)q.data_ptr(), (const uint8_t*)kd.data_ptr(), (const uint8_t*)kb.data_ptr(), (const int32_t*)kbb.data_ptr(), tiers_of(kt), (const uint8_t*)vd.data_ptr(), (const uint8_t*)vb.data_ptr(), (const int32_t*)vbb.data_ptr(), tiers_of(vt), tkp, tvp, (int)tlen, (int)pairs, (int)G, (int)P, (int)per, sl2, (float*)part.data_ptr(), (int*)done.data_ptr(), (__nv_bfloat16*)out.data_ptr());
+    };
+    if (D == 128) launch(attn_decode_kernel<128>);
+    else launch(attn_decode_kernel<64>);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("mma_gemm", &mma_gemm);
     m.def("mma_unpack", &mma_unpack);
+    m.def("attn_decode", &attn_decode);
     m.def("mma_gemm_big", &mma_gemm_big);
     m.def("fast_bgemv", &fast_bgemv);
     m.def("fast_gemm", &fast_gemm);

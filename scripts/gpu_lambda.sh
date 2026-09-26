@@ -80,7 +80,7 @@ EOF
 run_on() {
     "${SSH[@]}" "${H[@]}" "mkdir -p $RW/glyd && rm -rf $RW/results $RW/run.log && tar -C $RW/glyd -xf -" < "$TMP/glyd.tar"
     run_remote | "${SSH[@]}" "${H[@]}" "cat > $RW/run.sh"
-    "${SSH[@]}" "${H[@]}" "cd $RW && nohup bash run.sh > run.log 2>&1 < /dev/null &"
+    "${SSH[@]}" "${H[@]}" "cd $RW; nohup bash run.sh > run.log 2>&1 < /dev/null &"  # only nohup in the background: ssh returns now
     LIVE="$TMP/results"; mkdir -p "$LIVE"
     while true; do
         sleep 60

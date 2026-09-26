@@ -110,31 +110,57 @@ def smi(what):
 def kv_check(model, label):
     if not args.kv:
         return
-    from kv import GlydKVCache
+    from kv import GlydKVCache, use_fused_attention
+    use_fused_attention(model)  # SDPA's, save for a fused cache's one-token steps
     text = open(args.ppl, "rb").read()[10_000_000:12_000_000].decode("utf-8", "ignore")
     b = int(args.batch.split(",")[0])
     for T in [int(x) for x in args.kv.split(",")]:
         x = tok(text, return_tensors="pt").input_ids[:, :T].repeat(b, 1).cuda()
         res = {}
-        for name in ("plain", "glyd"):
-            cache = GlydKVCache(model.config) if name == "glyd" else None
+        for name in ("plain", "packed", "fused"):
+            make = lambda: None if name == "plain" else GlydKVCache(model.config, fused=name == "fused")
             with torch.no_grad():
-                model.generate(x[:, :64], max_new_tokens=2, do_sample=False)  # warm-up
+                model.generate(x[:, :64], max_new_tokens=2, do_sample=False, past_key_values=make())  # warm-up
                 torch.cuda.synchronize()
+                t1 = time.perf_counter()
+                model.generate(x, max_new_tokens=1, do_sample=False, past_key_values=make())  # the prompt alone
+                torch.cuda.synchronize()
+                t1 = time.perf_counter() - t1
                 for i in range(torch.cuda.device_count()):
                     torch.cuda.reset_peak_memory_stats(i)
                 t = time.perf_counter()
-                o = model.generate(x, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False, past_key_values=cache, return_dict_in_generate=True)
+                o = model.generate(x, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False, past_key_values=make(), return_dict_in_generate=True)
                 torch.cuda.synchronize()
                 t = time.perf_counter() - t
             peak = sum(torch.cuda.max_memory_allocated(i) for i in range(torch.cuda.device_count())) / 1e9
             kv = o.past_key_values
-            size = kv.nbytes() if name == "glyd" else sum(l.keys.numel() * 2 + l.values.numel() * 2 for l in kv.layers)
-            res[name] = (o.sequences, t, peak, size)
-            del o, kv, cache  # the next run's peak without this one's cache
+            size = kv.nbytes() if name != "plain" else sum(l.keys.numel() * 2 + l.values.numel() * 2 for l in kv.layers)
+            res[name] = (o.sequences[:, T:], (t - t1) / (args.tokens - 1), peak, size)
+            del o, kv  # the next run's peak without this one's cache
             torch.cuda.empty_cache()
-        (sa, ta, pa, ka), (sb, tb, pb, kb) = res["plain"], res["glyd"]
-        print(f"{label} KV cache, {T}-token prompt, batch {b}, {args.tokens} new tokens: plain {ka / 1e9:.3f} GB, {b * args.tokens / ta:.1f} tokens/s, peak {pa:.2f} GB; compressed {kb / 1e9:.3f} GB ({100 * kb / ka:.1f}%), {b * args.tokens / tb:.1f} tokens/s, peak {pb:.2f} GB; tokens identical: {torch.equal(sa, sb)}")
+        # Quality through the fused steps: the text's next 256 tokens fed one at a time after the prompt.
+        y = tok(text, return_tensors="pt").input_ids[:, T : T + 257].cuda()
+        q = {}
+        for name in ("plain", "fused"):
+            with torch.no_grad():
+                out = model(x[:1], past_key_values=GlydKVCache(model.config, fused=True) if name == "fused" else None, use_cache=True, logits_to_keep=1)
+                kv, nll, top = out.past_key_values, 0.0, []
+                for i in range(256):
+                    out = model(y[:, i : i + 1], past_key_values=kv, use_cache=True)
+                    lg = out.logits[0, -1].float()
+                    nll += F.cross_entropy(lg[None], y[0, i + 1 : i + 2]).item()
+                    top.append(int(lg.argmax()))
+            q[name] = (math.exp(nll / 256), top)
+            del out, kv
+        agree = sum(a == b for a, b in zip(q["plain"][1], q["fused"][1])) / 256 * 100
+        print(f"{label} KV cache, {T}-token prompt, 256 steps fed: perplexity plain {q['plain'][0]:.4f}, fused {q['fused'][0]:.4f}; next token as plain's {agree:.2f}%")
+        sa, ta, pa, ka = res["plain"]
+        line = f"{label} KV cache, {T}-token prompt, batch {b}, {args.tokens} new tokens: plain {ka / 1e9:.3f} GB, {1000 * ta:.1f} ms a step, peak {pa:.2f} GB"
+        for name in ("packed", "fused"):
+            sb, tb, pb, kb = res[name]
+            same = (sa == sb).all(0).long().cumprod(0).sum().item()
+            line += f"; {name} {kb / 1e9:.3f} GB ({100 * kb / ka:.1f}%), {1000 * tb:.1f} ms a step, peak {pb:.2f} GB, tokens as plain's: {same} of {args.tokens}"
+        print(line)
 
 
 def mmlu(model, label):
