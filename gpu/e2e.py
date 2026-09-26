@@ -29,6 +29,7 @@ ap.add_argument("--batch", type=str, default="1", help="generate for this many c
 ap.add_argument("--gpus", type=int, default=1, help="spread the layers over this many GPUs (bf16: accelerate's device map; glyd: layers balanced by packed size)")
 ap.add_argument("--ppl", default="", help="a text file: perplexity over windows of --ppl-window tokens (a forward pass each; 12800 tokens from its 10th MB), and how often the next-token choice is bf16's")
 ap.add_argument("--ppl-window", type=int, default=64)
+ap.add_argument("--kv", type=str, default="", help="prompt lengths (tokens of enwik8, needs --ppl) to generate --tokens after with the KV cache compressed (gpu/kv.py) against the plain cache: the same tokens, its bytes, the time; with --batch's first size")
 ap.add_argument("--smi", default="", help="once a model is on its GPUs: nvidia-smi's report into PREFIX-bf16.txt / PREFIX-glyd.txt")
 ap.add_argument("--mmlu", type=int, default=0, help="MMLU (cais/mmlu, test split, a fixed shuffle): accuracy over this many questions, 0-shot, by the answer letter's logit")
 ap.add_argument("--profile", type=int, default=0, help="one sequence: GPU time by kernel over this many generated tokens, against the wall clock")
@@ -104,6 +105,36 @@ def smi(what):
         torch.cuda.synchronize()
         report = subprocess.run(["nvidia-smi"], capture_output=True, text=True).stdout
         open(f"{args.smi}-{what}.txt", "w").write(report)
+
+
+def kv_check(model, label):
+    if not args.kv:
+        return
+    from kv import GlydKVCache
+    text = open(args.ppl, "rb").read()[10_000_000:12_000_000].decode("utf-8", "ignore")
+    b = int(args.batch.split(",")[0])
+    for T in [int(x) for x in args.kv.split(",")]:
+        x = tok(text, return_tensors="pt").input_ids[:, :T].repeat(b, 1).cuda()
+        res = {}
+        for name in ("plain", "glyd"):
+            cache = GlydKVCache(model.config) if name == "glyd" else None
+            with torch.no_grad():
+                model.generate(x[:, :64], max_new_tokens=2, do_sample=False)  # warm-up
+                torch.cuda.synchronize()
+                for i in range(torch.cuda.device_count()):
+                    torch.cuda.reset_peak_memory_stats(i)
+                t = time.perf_counter()
+                o = model.generate(x, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False, past_key_values=cache, return_dict_in_generate=True)
+                torch.cuda.synchronize()
+                t = time.perf_counter() - t
+            peak = sum(torch.cuda.max_memory_allocated(i) for i in range(torch.cuda.device_count())) / 1e9
+            kv = o.past_key_values
+            size = kv.nbytes() if name == "glyd" else sum(l.keys.numel() * 2 + l.values.numel() * 2 for l in kv.layers)
+            res[name] = (o.sequences, t, peak, size)
+            del o, kv, cache  # the next run's peak without this one's cache
+            torch.cuda.empty_cache()
+        (sa, ta, pa, ka), (sb, tb, pb, kb) = res["plain"], res["glyd"]
+        print(f"{label} KV cache, {T}-token prompt, batch {b}, {args.tokens} new tokens: plain {ka / 1e9:.3f} GB, {b * args.tokens / ta:.1f} tokens/s, peak {pa:.2f} GB; compressed {kb / 1e9:.3f} GB ({100 * kb / ka:.1f}%), {b * args.tokens / tb:.1f} tokens/s, peak {pb:.2f} GB; tokens identical: {torch.equal(sa, sb)}")
 
 
 def mmlu(model, label):
@@ -291,6 +322,7 @@ prefill(model, f"glyd {args.format}")
 profile(model, f"glyd {args.format}")
 top_b = perplexity(model, f"glyd {args.format}")
 mmlu_b = mmlu(model, f"glyd {args.format}")
+kv_check(model, f"glyd {args.format}")
 if args.baseline and top_b is not None:
     print(f"next-token choice as bf16's: {(top_a.cuda() == top_b).float().mean().item() * 100:.2f}%")
 if args.baseline and mmlu_b is not None:
