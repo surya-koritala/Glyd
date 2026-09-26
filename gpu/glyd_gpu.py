@@ -299,12 +299,13 @@ class Mma:
     fast format with its codes and bytes in the order the tensor cores take
     their B operand, its 7 exponents a run from base (see glyd_gpu.cu)."""
 
-    def __init__(self, shape, codes, sm, exc, exc_base, base):
-        self.shape, self.codes, self.sm, self.exc, self.exc_base, self.base = shape, codes, sm, exc, exc_base, base
+    def __init__(self, shape, data, exc, exc_base, base):
+        self.shape, self.data, self.exc, self.exc_base, self.base = shape, data, exc, exc_base, base
+        self.sm = data  # its device, as the other formats'
         self.n = shape[0] * shape[1]
 
     def nbytes(self):
-        return sum(t.numel() * t.element_size() for t in (self.codes, self.sm, self.exc, self.exc_base)) + 4
+        return sum(t.numel() * t.element_size() for t in (self.data, self.exc, self.exc_base)) + 4
 
     def bits_per_weight(self):
         return self.nbytes() * 8 / self.n
@@ -318,9 +319,8 @@ def pack_mma(w):
     # The run of 7 exponents holding the most weights (base + 7 must not reach the sign).
     h = _hist(u.flatten())
     base = int(h.unfold(0, 7, 1).sum(1)[:249].argmax())
-    groups = O * K // 32
-    codes = torch.empty(3, groups, dtype=torch.int32, device=dev)
-    sm = torch.empty(O * K, dtype=torch.uint8, device=dev)
+    steps = O * K // 1024
+    data = torch.empty(steps, 1408, dtype=torch.uint8, device=dev)  # a warp step: code words [3][32 lanes], then [32 lanes][32 bytes]
     shifts = torch.arange(32, dtype=torch.int64, device=dev)
     exc_parts, step_counts = [], []
     per = max(1, (1 << 22) // (64 * K))  # row blocks a chunk
@@ -335,14 +335,18 @@ def pack_mma(w):
         c[esc] = 7
         bits = torch.stack([(c >> b) & 1 for b in range(3)], -1).view(-1, 3, 32).to(torch.int64)  # the 96-bit stream, code i at 3i
         words = (bits << shifts).sum(-1)
-        codes[:, a // 32 : z // 32] = (words - (words >= 2**31).to(torch.int64) * 2**32).to(torch.int32).T
-        sm[a:z] = (((v >> 8) & 0x80) | (v & 0x7F)).to(torch.uint8)
+        words = (words - (words >= 2**31).to(torch.int64) * 2**32).to(torch.int32)  # [groups, 3]
+        data[a // 1024 : z // 1024, :384] = words.view(-1, 32, 3).transpose(1, 2).contiguous().view(torch.uint8).view(-1, 384)
+        # Weight i's byte: its mantissa above the sign of weight i ^ 1 (a pair decodes by one rotate).
+        pr = v.view(-1, 2)
+        sign = (pr >> 15) & 1
+        data[a // 1024 : z // 1024, 384:] = (((pr & 0x7F) << 1) | sign.flip(1)).to(torch.uint8).view(-1, 1024)
         exc_parts.append(e[esc].to(torch.uint8))
         step_counts.append(esc.view(-1, 1024).sum(1))
-    exc = torch.cat(exc_parts)
+    exc = torch.cat(exc_parts + [torch.zeros(16, dtype=torch.uint8, device=dev)])  # padded: the kernels read words past an escape
     per_step = torch.cat(step_counts)
     assert exc.numel() < 2**31
-    return Mma((O, K), codes.flatten(), sm, exc, (torch.cumsum(per_step, 0) - per_step).to(torch.int32), base)
+    return Mma((O, K), data.flatten(), exc, (torch.cumsum(per_step, 0) - per_step).to(torch.int32), base)
 
 
 def mma_unpack(p, out=None, row0=0, rows=None):
@@ -351,7 +355,7 @@ def mma_unpack(p, out=None, row0=0, rows=None):
     rows = O - row0 if rows is None else rows
     if out is None:
         out = torch.empty(rows * K, dtype=torch.bfloat16, device=p.sm.device)
-    _ext.mma_unpack(p.codes, p.sm, p.exc, p.exc_base, p.base, K, row0, rows, out.view(torch.int16))
+    _ext.mma_unpack(p.data, p.exc, p.exc_base, p.base, K, row0, rows, out.view(torch.int16))
     return out[: rows * K].view(rows, K)
 
 
@@ -361,5 +365,5 @@ def mma_gemm(p, x, bias=None):
     O, K = p.shape
     x = x.contiguous()
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
-    _ext.mma_gemm(p.codes, p.sm, p.exc, p.exc_base, p.base, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
+    _ext.mma_gemm(p.data, p.exc, p.exc_base, p.base, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
     return y
