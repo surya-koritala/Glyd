@@ -11,10 +11,23 @@ import torch
 import torch.nn.functional as F
 from torch.utils.cpp_extension import load
 
+def _arch_flags():
+    """Code for this machine's GPU (Hopper as sm_90a, for its warpgroup
+    instructions); GLYD_GPU_ARCH=sm_89,sm_90a builds for several."""
+    archs = os.environ.get("GLYD_GPU_ARCH")
+    if not archs:
+        major, minor = torch.cuda.get_device_capability()
+        archs = f"sm_{major}{minor}" + ("a" if major == 9 else "")
+    flags = []
+    for a in archs.split(","):
+        flags += ["-gencode", f"arch=compute_{a[3:]},code={a}"]
+    return flags
+
+
 _ext = load(
     name="glyd_gpu",
     sources=[os.path.join(os.path.dirname(os.path.abspath(__file__)), "glyd_gpu.cu")],
-    extra_cuda_cflags=["-O3", "-arch=sm_89"] + (["-Xptxas", "-v"] if os.environ.get("GLYD_GPU_PTXAS") else []),
+    extra_cuda_cflags=["-O3"] + _arch_flags() + (["-Xptxas", "-v"] if os.environ.get("GLYD_GPU_PTXAS") else []),
     verbose=bool(os.environ.get("GLYD_GPU_PTXAS")),
 )
 
@@ -340,7 +353,8 @@ def pack_mma(w):
         # Weight i's byte: its mantissa above the sign of weight i ^ 1 (a pair decodes by one rotate).
         pr = v.view(-1, 2)
         sign = (pr >> 15) & 1
-        data[a // 1024 : z // 1024, 384:] = (((pr & 0x7F) << 1) | sign.flip(1)).to(torch.uint8).view(-1, 1024)
+        # As two halves: every lane's first 16 bytes, then every lane's last 16 (each 16-byte load of a warp: 512 contiguous bytes).
+        data[a // 1024 : z // 1024, 384:] = (((pr & 0x7F) << 1) | sign.flip(1)).to(torch.uint8).view(-1, 32, 2, 16).transpose(1, 2).reshape(-1, 1024)
         exc_parts.append(e[esc].to(torch.uint8))
         step_counts.append(esc.view(-1, 1024).sum(1))
     exc = torch.cat(exc_parts + [torch.zeros(16, dtype=torch.uint8, device=dev)])  # padded: the kernels read words past an escape
@@ -359,13 +373,17 @@ def mma_unpack(p, out=None, row0=0, rows=None):
     return out[: rows * K].view(rows, K)
 
 
-def mma_gemm(p, x, bias=None):
+_GEMM_VARIANT = 1 if os.environ.get("GLYD_GPU_TMA") == "0" else 0  # GLYD_GPU_TMA=0: no bulk copies on Hopper
+
+
+def mma_gemm(p, x, bias=None, variant=None):
     """X W^T (+ bias) for up to 64 tokens (x [M, K]) on the tensor cores,
-    the weights decoded in registers straight into their operands."""
+    the weights decoded in registers straight into their operands. On
+    Hopper the steps come by bulk copies (variant 1: plain loads there too)."""
     O, K = p.shape
     x = x.contiguous()
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
-    _ext.mma_gemm(p.data, p.exc, p.exc_base, p.base, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
+    _ext.mma_gemm(p.data, p.exc, p.exc_base, p.base, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y, _GEMM_VARIANT if variant is None else variant)
     return y
 
 

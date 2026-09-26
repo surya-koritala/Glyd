@@ -635,12 +635,35 @@ __global__ void __launch_bounds__(256) fast_bgemv_kernel(const uint8_t* __restri
 // its exponent is base + code, code 7 an escape to exc (in this order;
 // exc_base[warp step] the step's first). A warp step's 1408 bytes are one
 // run: its lanes' first code words, second, third (384 bytes: each load of
-// the warp one 128-byte line), then their 32 bytes each: weight i's 7
+// the warp one 128-byte line), then their 32 bytes each, as two halves
+// (every lane's first 16, then every lane's last 16): weight i's 7
 // mantissa bits above the sign of its pair's other weight (i ^ 1), so a
 // pair's two bytes and two exponents, permuted into one word and rotated
 // by a bit, are its two bf16s.
 
 constexpr int64_t STEP_BYTES = 1408;  // a warp step of the mma layout
+constexpr int TMA_RING = 4;            // steps a warp has in flight on Hopper (bulk copies into shared memory)
+
+// Hopper (sm_90): a bulk copy of global memory into shared memory, its
+// completion counted on an mbarrier by the bytes it carries.
+__device__ __forceinline__ void mbar_init(uint32_t bar) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+    asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;\n" ::"r"(bar) : "memory");
+#endif
+}
+__device__ __forceinline__ void mbar_wait(uint32_t bar, uint32_t parity) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+    uint32_t ok = 0;
+    while (!ok) asm volatile("{\n .reg .pred p;\n mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2;\n selp.u32 %0, 1, 0, p;\n}\n" : "=r"(ok) : "r"(bar), "r"(parity) : "memory");
+#endif
+}
+__device__ __forceinline__ void bulk_load(uint32_t dst, const void* src, uint32_t bytes, uint32_t bar) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+    asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");  // the slot's last reads before the copy's writes
+    asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n" ::"r"(bar), "r"(bytes) : "memory");
+    asm volatile("cp.async.bulk.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];\n" ::"r"(dst), "l"(src), "r"(bytes), "r"(bar) : "memory");
+#endif
+}
 
 // Escapes (code 7) among a group's 32 codes: the words' codes that sit
 // whole in them (their low bits at 3i mod 32), and the two that cross.
@@ -796,19 +819,34 @@ __device__ __forceinline__ void mma16816(float c[4], const uint32_t a[4], uint32
 // same result every run). A warp's step: 1024 weights decoded into B
 // fragments, 8 MT tensor-core products. The next step's loads are issued
 // before this step's decode; a warp's steps are consecutive, so are their
-// escapes (one index to find, at its first).
+// escapes (one index to find, at its first). On Hopper (TMA): a warp's
+// steps come by bulk copies TMA_RING steps ahead into a ring in shared
+// memory (one lane asks; an mbarrier a slot says when a step is in).
 __device__ __forceinline__ int64_t block_of_step(int64_t x, int64_t nb, int64_t total) {
     return ((x + 1) * nb - 1) / total;  // block b runs steps [b total / nb, (b + 1) total / nb)
 }
 
-template <int MT>
+template <int MT, bool TMA>
 __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(const uint8_t* __restrict__ data, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint32_t base, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
-    extern __shared__ float red[];  // [4 warps][16 MT rows][65]
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 900
+    if constexpr (TMA) return;  // Hopper's only
+#endif
+    extern __shared__ __align__(128) float red[];  // [4 warps][16 MT rows][65]; with TMA then the rings [8][TMA_RING][STEP_BYTES], then their mbarriers [8][TMA_RING]
     __shared__ int last;
     __shared__ uint32_t sel[16];
     if (threadIdx.x < 16) sel[threadIdx.x] = escape_selector(threadIdx.x);
-    __syncthreads();
     int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+    const uint8_t* ring = (const uint8_t*)(red + 4 * MT * 16 * 65) + warp * TMA_RING * STEP_BYTES;
+    uint32_t ring_s = (uint32_t)__cvta_generic_to_shared(ring);
+    uint32_t bar_s = (uint32_t)__cvta_generic_to_shared((const uint8_t*)(red + 4 * MT * 16 * 65) + 8 * TMA_RING * STEP_BYTES) + warp * TMA_RING * 8;
+    uint32_t issued = 0, used = 0;  // this warp's bulk copies asked for and taken, over its runs (slot = n % TMA_RING)
+    if (TMA && lane == 0) {
+        for (int i = 0; i < TMA_RING; i++) mbar_init(bar_s + i * 8);
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+        asm volatile("fence.mbarrier_init.release.cluster;\n" ::: "memory");
+#endif
+    }
+    __syncthreads();
     int64_t KS = K / 16, total = O / 64 * KS, nb = gridDim.x;
     int64_t B1 = (blockIdx.x + 1) * total / nb;
     uint32_t base4 = base * 0x01010101u;
@@ -826,15 +864,7 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(const ui
                 for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
         // The step's loads: codes, bytes, inputs.
         uint32_t w[3], sw[8], a[MT][4];
-        auto load = [&](int64_t s) {
-            const uint32_t* cp = (const uint32_t*)(data + (rb * KS + s) * STEP_BYTES) + lane;
-            w[0] = __ldg(cp);
-            w[1] = __ldg(cp + 32);
-            w[2] = __ldg(cp + 64);
-            const uint4* sp = (const uint4*)(data + (rb * KS + s) * STEP_BYTES + 384) + lane * 2;
-            uint4 x0 = __ldg(sp), x1 = __ldg(sp + 1);
-            sw[0] = x0.x; sw[1] = x0.y; sw[2] = x0.z; sw[3] = x0.w;
-            sw[4] = x1.x; sw[5] = x1.y; sw[6] = x1.z; sw[7] = x1.w;
+        auto load_inputs = [&](int64_t s) {
 #pragma unroll
             for (int mt = 0; mt < MT; mt++) {
                 int64_t r0 = mt * 16 + g, r1 = r0 + 8;
@@ -845,20 +875,57 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(const ui
                 a[mt][3] = r1 < M ? *(const uint32_t*)(xr + r1 * K + 8) : 0u;
             }
         };
+        auto load = [&](int64_t s) {
+            const uint32_t* cp = (const uint32_t*)(data + (rb * KS + s) * STEP_BYTES) + lane;
+            w[0] = __ldg(cp);
+            w[1] = __ldg(cp + 32);
+            w[2] = __ldg(cp + 64);
+            const uint4* sp = (const uint4*)(data + (rb * KS + s) * STEP_BYTES + 384) + lane;
+            uint4 x0 = __ldg(sp), x1 = __ldg(sp + 32);
+            sw[0] = x0.x; sw[1] = x0.y; sw[2] = x0.z; sw[3] = x0.w;
+            sw[4] = x1.x; sw[5] = x1.y; sw[6] = x1.z; sw[7] = x1.w;
+            load_inputs(s);
+        };
+        // With TMA: step s into the next ring slot (one lane asks).
+        auto ask = [&](int64_t s) {
+            if (lane == 0) bulk_load(ring_s + (issued % TMA_RING) * STEP_BYTES, data + (rb * KS + s) * STEP_BYTES, STEP_BYTES, bar_s + (issued % TMA_RING) * 8);
+            issued++;
+        };
         int64_t at = 0;
         if (s0 < s1) {
             at = exc_base[rb * KS + s0];
-            load(s0);
+            if (TMA) {
+                for (int64_t i = s0; i < min(s1, s0 + TMA_RING); i++) ask(i);
+                load_inputs(s0);
+            } else load(s0);
         }
         for (int64_t s = s0; s < s1; s++) {
-            uint32_t cw[3] = {w[0], w[1], w[2]}, csw[8], ca[MT][4];
+            uint32_t cw[3], csw[8], ca[MT][4];
+            if (TMA) {
+                uint32_t slot = used % TMA_RING;
+                mbar_wait(bar_s + slot * 8, (used / TMA_RING) & 1);
+                const uint8_t* st = ring + slot * STEP_BYTES;
 #pragma unroll
-            for (int i = 0; i < 8; i++) csw[i] = sw[i];
+                for (int k = 0; k < 3; k++) cw[k] = ((const uint32_t*)st)[k * 32 + lane];
+                uint4 x0 = ((const uint4*)(st + 384))[lane], x1 = ((const uint4*)(st + 384))[lane + 32];
+                csw[0] = x0.x; csw[1] = x0.y; csw[2] = x0.z; csw[3] = x0.w;
+                csw[4] = x1.x; csw[5] = x1.y; csw[6] = x1.z; csw[7] = x1.w;
+            } else {
+#pragma unroll
+                for (int k = 0; k < 3; k++) cw[k] = w[k];
+#pragma unroll
+                for (int i = 0; i < 8; i++) csw[i] = sw[i];
+            }
 #pragma unroll
             for (int mt = 0; mt < MT; mt++)
 #pragma unroll
                 for (int q = 0; q < 4; q++) ca[mt][q] = a[mt][q];
-            if (s + 1 < s1) load(s + 1);
+            if (TMA) {
+                __syncwarp();  // the slot is read
+                used++;
+                if (s + TMA_RING < s1) ask(s + TMA_RING);
+                if (s + 1 < s1) load_inputs(s + 1);
+            } else if (s + 1 < s1) load(s + 1);
             uint32_t R[16];
             decode_group(cw, csw, base4, exc, at, lane, sel, R);
 #pragma unroll
@@ -983,8 +1050,8 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
                 w[i][0] = __ldg(cp);
                 w[i][1] = __ldg(cp + 32);
                 w[i][2] = __ldg(cp + 64);
-                const uint4* sp = (const uint4*)(stp + 384) + lane * 2;
-                uint4 x0 = __ldg(sp), x1 = __ldg(sp + 1);
+                const uint4* sp = (const uint4*)(stp + 384) + lane;
+                uint4 x0 = __ldg(sp), x1 = __ldg(sp + 32);
                 sw[i][0] = x0.x; sw[i][1] = x0.y; sw[i][2] = x0.z; sw[i][3] = x0.w;
                 sw[i][4] = x1.x; sw[i][5] = x1.y; sw[i][6] = x1.z; sw[i][7] = x1.w;
                 at[i] = exc_base[rb * KS + s];
@@ -1121,8 +1188,8 @@ __global__ void mma_unpack_kernel(const uint8_t* __restrict__ data, const uint8_
     int64_t step = row0 / 64 * KS + local, rb = local / KS, s = local % KS;
     const uint32_t* cp = (const uint32_t*)(data + step * STEP_BYTES) + lane;
     uint32_t w[3] = {cp[0], cp[32], cp[64]}, sw[8];
-    const uint4* sp = (const uint4*)(data + step * STEP_BYTES + 384) + lane * 2;
-    uint4 x0 = sp[0], x1 = sp[1];
+    const uint4* sp = (const uint4*)(data + step * STEP_BYTES + 384) + lane;
+    uint4 x0 = sp[0], x1 = sp[32];
     sw[0] = x0.x; sw[1] = x0.y; sw[2] = x0.z; sw[3] = x0.w; sw[4] = x1.x; sw[5] = x1.y; sw[6] = x1.z; sw[7] = x1.w;
     uint32_t R[16];
     int64_t at = exc_base[step];
@@ -1277,7 +1344,7 @@ void fast_bgemv(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch
     if (nseg > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>((const float*)y32.data_ptr(), nseg, b, M, O, (__nv_bfloat16*)y.data_ptr());
 }
 
-void mma_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int64_t base, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+void mma_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int64_t base, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t variant) {
     const c10::cuda::CUDAGuard guard(data.device());
     cudaStream_t cs = at::cuda::getCurrentCUDAStream();
     int64_t M = x.size(0);
@@ -1288,8 +1355,10 @@ void mma_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int
     torch::Tensor& done = (*done_of)[data.get_device()];
     if (!done.defined() || done.numel() < RB) done = torch::zeros({std::max<int64_t>(RB, 1 << 16)}, data.options().dtype(torch::kInt32));
     const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
+    // Hopper: the steps by bulk copies into rings (variant 0: by the GPU; 1: loads; 2: bulk copies).
+    bool tma = variant == 2 || (variant == 0 && at::cuda::getCurrentDeviceProperties()->major >= 9);
     auto launch = [&](auto kernel, int mt) {
-        size_t shared = (size_t)4 * mt * 16 * 65 * sizeof(float);
+        size_t shared = (size_t)4 * mt * 16 * 65 * sizeof(float) + (tma ? (size_t)8 * TMA_RING * (STEP_BYTES + 8) : 0);
         cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
         int per_sm = 1;
         cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kernel, 256, shared);
@@ -1298,9 +1367,15 @@ void mma_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int
         torch::Tensor parts = torch::empty({nb + RB, M, 64}, x.options().dtype(torch::kFloat32));
         kernel<<<nb, 256, shared, cs>>>((const uint8_t*)data.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint32_t)base, O, K, M, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), (float*)parts.data_ptr(), (int*)done.data_ptr());
     };
-    if (M <= 16) launch(mma_gemm_kernel<1>, 1);
-    else if (M <= 32) launch(mma_gemm_kernel<2>, 2);
-    else launch(mma_gemm_kernel<4>, 4);
+    if (tma) {
+        if (M <= 16) launch(mma_gemm_kernel<1, true>, 1);
+        else if (M <= 32) launch(mma_gemm_kernel<2, true>, 2);
+        else launch(mma_gemm_kernel<4, true>, 4);
+    } else {
+        if (M <= 16) launch(mma_gemm_kernel<1, false>, 1);
+        else if (M <= 32) launch(mma_gemm_kernel<2, false>, 2);
+        else launch(mma_gemm_kernel<4, false>, 4);
+    }
 }
 
 template <int CW, int PW, int NB, int RBB>
