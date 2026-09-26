@@ -5,6 +5,7 @@
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
 <a href="LICENSE"><img alt="License: BSD-3-Clause OR GPL-2.0" src="https://img.shields.io/badge/codec-BSD--3--Clause%20OR%20GPL--2.0-blue.svg"></a>
 <a href="glyd-store/LICENSE"><img alt="Store: BUSL-1.1" src="https://img.shields.io/badge/store-BUSL--1.1-blue.svg"></a>
+<a href="gpu/LICENSE"><img alt="GPU: BUSL-1.1" src="https://img.shields.io/badge/GPU-BUSL--1.1-blue.svg"></a>
 <img alt="Rust 1.80+" src="https://img.shields.io/badge/rust-1.80%2B-blue.svg">
 <img alt="SIMD: AVX2 | NEON" src="https://img.shields.io/badge/SIMD-AVX2%20%7C%20NEON-orange.svg">
 <a href="include/glyd.h"><img alt="C ABI" src="https://img.shields.io/badge/C%20ABI-include%2Fglyd.h-brightgreen.svg"></a>
@@ -78,7 +79,7 @@ zstd -3 or LZ4 still win on write cost.
 - 📦 **Packs (`--pack`)**: many small objects as one record-mode stream with an index; 2–4× fewer bytes than zstd + dictionary per object, any one object read back in a millisecond.
 - 🧩 **Shape dictionaries (`--shape`)**: record mode for a single small object. Trained on a sample; a 1–4 KB event or log object stores 1.1–1.9× less than with a zstd dictionary.
 - 🧊 **Cold level (`--cold`)**: context mixing for what is stored for years and read rarely. 1.5–2.6× fewer bytes than zstd -19 on logs, dumps, JSON and text — the zpaq -m5 class at 3–4× its speed — at 1.2–1.5 MB/s per core each way.
-- 🧠 **Model weights**: safetensors files opened tensor by tensor as byte planes; Pythia-410M 13% under zstd -19 at 26× its write speed, Qwen2.5-0.5B 12% under. A checkpoint against the one before it (`--base`) goes in as each tensor XOR its predecessor: 612 MB where `zstd -19 --patch-from` stores 805. PyTorch training checkpoints with optimizer state: 83% of their size alone, 77% against the one before (zstd -19: 92%). On the GPU ([gpu/](gpu/README.md)) the weights stay compressed in memory: a 7B model in 11 GB instead of 15, generating 1.23–1.33× faster than bf16 from 1 to 48 sequences at once, prompts up to 128 tokens faster and longer ones within 5–9%.
+- 🧠 **Model weights**: safetensors files opened tensor by tensor as byte planes; Pythia-410M 13% under zstd -19 at 26× its write speed, Qwen2.5-0.5B 12% under. A checkpoint against the one before it (`--base`) goes in as each tensor XOR its predecessor: 612 MB where `zstd -19 --patch-from` stores 805. PyTorch training checkpoints with optimizer state: 83% of their size alone, 77% against the one before (zstd -19: 92%). On the GPU ([gpu/](gpu/README.md)) the weights stay compressed in memory, bit for bit: a 7B model in 10.6 GB instead of 15.3 (its matrices 32.5% smaller), generating 1.25–1.32× faster than bf16 from 1 to 32 sequences at once (1.04× at 64), prompts up to 128 tokens as fast or faster and longer ones within 5–10%.
 - 🔁 **Base mode (`--base`)**: a new version against the old one, its content found wherever it moved. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 1.8–3× its speed; 15 kernel releases in 228 MB instead of 3 GB.
 - 🔭 **128 MB long-distance matcher** (`--max --long`, `--ultra`, the store): JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
 - 🚀 **Fastest reads at every ratio**: 8-way interleaved entropy coding and copy-only loops, units that decode one per core.
@@ -881,13 +882,20 @@ whole of it is in [CONTRIBUTING.md](CONTRIBUTING.md); the
   your option, the [GNU GPL version 2](COPYING)**: the same licenses as
   zstd, so anything that may ship zstd may ship Glyd, GPLv2 projects such
   as the Linux kernel included. Use it, embed it, ship it, sell it; keep
-  the notice. That is everything in this repository except the store.
+  the notice. That is everything in this repository except the store
+  and the GPU weights.
 - **The store — the `glyd-store` crate and CLI — is under the
   [Business Source License 1.1](glyd-store/LICENSE)**: source available,
   free for personal, educational, research and other non-commercial use;
   any commercial production use needs a license
   (suryakoritala1324@gmail.com); each version converts to Apache-2.0
   four years after its release.
+- **The GPU weights — [gpu/](gpu/README.md), model weights held
+  compressed in GPU memory — are under the
+  [Business Source License 1.1](gpu/LICENSE)** on the same terms as the
+  store (from v0.17.0; earlier releases of gpu/ carry the codec's
+  licenses).
 
 Why the split: a codec is adopted by being embedded, and nothing is
-embedded under a source-available license; the store is the product.
+embedded under a source-available license; the store and the GPU weights
+are the products.

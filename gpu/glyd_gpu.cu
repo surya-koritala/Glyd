@@ -623,61 +623,198 @@ __global__ void __launch_bounds__(256) fast_bgemv_kernel(const uint8_t* __restri
 }
 
 // ---------------------------------------------------------------------------
-// The mma layout: the fast format's codes and bytes in the order the tensor
-// cores' mma.sync.m16n8k16 takes its B operand, so a thread's 32 weights of
-// a step arrive as one 32-byte and three 4-byte loads and are decoded in
-// registers straight into its B fragments (Marlin's arrangement, for this
-// format). For W [O, K] (O a multiple of 64, K of 16): warp step (rb, ks)
-// covers rows rb*64.. and columns ks*16..; its lane l = 4g + t holds, as its
-// group's weight 4n + j (n-tile n 0-7, j 0-3),
+// The mma layout: a tensor's weights in the order the tensor cores'
+// mma.sync.m16n8k16 takes its B operand, so a thread's 32 weights of a step
+// arrive as a few loads and are decoded in registers straight into its B
+// fragments (Marlin's arrangement, for this code). For W [O, K] (O a
+// multiple of 64, K of 16): warp step (rb, ks) covers rows rb*64.. and
+// columns ks*16..; its lane l = 4g + t holds, as its group's weight 4n + j
+// (n-tile n 0-7, j 0-3),
 //   W[rb*64 + 8n + g][ks*16 + 8(j >> 1) + 2t + (j & 1)].
-// Weight i's 3-bit code sits at bits 3i of its group's 96 (three words);
-// its exponent is base + code, code 7 an escape to exc (in this order;
-// exc_base[warp step] the step's first). A warp step's 1408 bytes are one
-// run: its lanes' first code words, second, third (384 bytes: each load of
-// the warp one 128-byte line), then their 32 bytes each: weight i's 7
-// mantissa bits above the sign of its pair's other weight (i ^ 1), so a
-// pair's two bytes and two exponents, permuted into one word and rotated
-// by a bit, are its two bf16s.
+// A weight's exponent is coded in tiers of 2-bit digits: tier 1's digits
+// 0-2 are the tensor's 3 commonest exponents, digit 3 goes on to tier 2
+// (the next 3), then tier 3 (the next 3), then the exponent byte itself.
+// A warp step's fixed 1280 bytes: its lanes' tier-1 digits (weight i at bits
+// 2(i mod 16) of word i / 16; [2 words][32 lanes]), then their 32 bytes each
+// as two halves (every lane's first 16, then every lane's last 16): weight
+// i's 7 mantissa bits above the sign of its pair's other weight (i ^ 1), so
+// a pair's two bytes and two exponents, permuted into one word and rotated
+// by a bit, are its two bf16s. Its block (bytes block_base[step] to
+// block_base[step + 1]): from its start, the tier-3 digits of its tier-2
+// escapes (2 bits each), then from the next byte the exponent bytes of its
+// tier-3 escapes; at its end, the tier-2 digits of its tier-1 escapes in
+// lane order, as words of 16 (word c: escapes 16c to 16c + 15, the c-th
+// word back from the end; unused digits 0). All in order: lane by lane,
+// a lane's weights in order.
 
-constexpr int64_t STEP_BYTES = 1408;  // a warp step of the mma layout
+constexpr int64_t STEP_BYTES = 1280;  // a warp step's fixed part
+constexpr int S2_BYTES = 1040;        // a warp's shared scratch for a step's tier-2 exponents
+constexpr uint32_t FULL = 0xffffffffu;
 
-// Escapes (code 7) among a group's 32 codes: the words' codes that sit
-// whole in them (their low bits at 3i mod 32), and the two that cross.
-__device__ __forceinline__ uint32_t count7(const uint32_t w[3]) {
-    uint32_t t0 = w[0] & (w[0] >> 1) & (w[0] >> 2), t1 = w[1] & (w[1] >> 1) & (w[1] >> 2), t2 = w[2] & (w[2] >> 1) & (w[2] >> 2);
-    return __popc(t0 & 0x09249249u) + __popc(t1 & 0x12492492u) + __popc(t2 & 0x24924924u) + (((w[0] >> 30) == 3u) & w[1]) + ((w[1] >> 31) & ((w[2] & 3u) == 3u));
+// The tiers' symbols: tier k's three exponents in bytes 0-2.
+struct Tiers {
+    uint32_t s1, s2, s3;
+};
+
+// Eight 2-bit digits (bits 0-15) as the nibbles of two __byte_perm
+// selectors: digits 0-3 in bits 0-15, 4-7 in bits 16-31.
+__device__ __forceinline__ uint32_t nib8(uint32_t x) {
+    uint32_t t = ((x & 0xFFFFu) | (x << 8)) & 0x00FF00FFu;
+    t = (t | (t << 4)) & 0x0F0F0F0Fu;
+    return (t | (t << 2)) & 0x33333333u;
 }
 
-// Codes 4q to 4q + 3: the 12 bits at 12q (q a constant once unrolled).
-__device__ __forceinline__ uint32_t field12(const uint32_t w[3], int q) {
-    int bit = 12 * q, k = bit >> 5, off = bit & 31;
-    return off <= 20 ? w[k] >> off : __funnelshift_r(w[k], w[k < 2 ? k + 1 : k], off);
+// A group's selector (bits 0-15; z: its digits' nibbles, fn: their escapes,
+// 1 at bit 0 of each 3; bits past 15 do not reach them): a digit 0-2 picks
+// its symbol, an escape byte 4 + the escapes before it (the stream's bytes,
+// in order).
+__device__ __forceinline__ uint32_t selector(uint32_t z, uint32_t fn) { return z ^ ((z ^ (0x4444u + fn * 0x1110u)) & (fn * 0xFu)); }
+
+// A stream of 16 bytes on by `bytes` (0-4).
+__device__ __forceinline__ void advance(uint32_t s[4], uint32_t bytes) {
+    uint32_t sh = 8 * bytes;
+    s[0] = __funnelshift_rc(s[0], s[1], sh);
+    s[1] = __funnelshift_rc(s[1], s[2], sh);
+    s[2] = __funnelshift_rc(s[2], s[3], sh);
+    s[3] = __funnelshift_rc(s[3], 0u, sh);
 }
 
-// 4 bytes from any address (exc is padded past its end).
+// The groups' table (256 words in shared memory): for four digits (an
+// 8-bit field), their selector (bits 0-15) and escapes (bits 16-18).
+__device__ __forceinline__ void fill_groups(uint32_t* tab) {
+    for (int f = threadIdx.x; f < 256; f += blockDim.x) {
+        uint32_t z = nib8((uint32_t)f), fn = z & (z >> 1) & 0x1111u;
+        tab[f] = selector(z, fn) | (uint32_t)__popc(fn) << 16;
+    }
+}
+
+// Four digits (bits 0-7 of field) as a word of bytes: digits 0-2 the
+// symbols' bytes, escapes the stream's next bytes (taken from it).
+__device__ __forceinline__ uint32_t group(uint32_t field, uint32_t sym, uint32_t s[4], const uint32_t* tab) {
+    uint32_t e = tab[field & 0xFF], o = __byte_perm(sym, s[0], e);
+    advance(s, e >> 16);
+    return o;
+}
+
+__device__ __forceinline__ uint32_t escapes(uint32_t d) { return d & (d >> 1) & 0x55555555u; }
+__device__ __forceinline__ uint32_t first_digits(uint32_t n) { return n >= 16 ? FULL : (1u << (2 * n)) - 1; }
+
+// 4 bytes from any address (blocks are padded past their ends).
 __device__ __forceinline__ uint32_t load4(const uint8_t* __restrict__ p) {
     uintptr_t a = (uintptr_t)p;
     const uint32_t* q = (const uint32_t*)(a & ~(uintptr_t)3);
     return __funnelshift_r(__ldg(q), __ldg(q + 1), (uint32_t)(a & 3) * 8);
 }
 
-// __byte_perm selectors that put the next escapes (its second word) where
-// a word's 4 codes are 7, for each set of the 4 (a block's shared table).
-__device__ __forceinline__ uint32_t escape_selector(uint32_t set) {
-    uint32_t sel = 0, r = 0;
-    for (int j = 0; j < 4; j++) sel |= ((set >> j & 1) ? 4 + r++ : (uint32_t)j) << (4 * j);
-    return sel;
+// 32 bits of a step's block from bit `pos` of its first byte's word on:
+// from the window (each lane's word of the 128 bytes from there; pos < 992,
+// every lane calls it), or from memory.
+__device__ __forceinline__ uint32_t win_bits(uint32_t win, uint32_t pos) {
+    uint32_t k = pos >> 5;
+    return __funnelshift_r(__shfl_sync(FULL, win, k), __shfl_sync(FULL, win, k + 1), pos);
+}
+__device__ __forceinline__ uint32_t mem_bits(const uint8_t* __restrict__ blocks, int64_t blk, uint32_t pos) {
+    const uint32_t* q = (const uint32_t*)(blocks + (blk & ~(int64_t)3)) + (pos >> 5);
+    return __funnelshift_r(__ldg(q), __ldg(q + 1), pos);
 }
 
-// Exponents, 4 a word: each code spread to its byte (two products whose
-// copies do not overlap), plus the base.
-__device__ __forceinline__ void exponents(const uint32_t w[3], uint32_t base4, uint32_t ew[8]) {
+// A count across the warp: this lane's start (the counts of the lanes
+// before it) and the whole.
+__device__ __forceinline__ uint32_t scan(uint32_t n, int lane, uint32_t& total) {
+    uint32_t before = n;
+#pragma unroll
+    for (int o = 1; o < 32; o <<= 1) {
+        uint32_t v = __shfl_up_sync(FULL, before, o);
+        before += lane >= o ? v : 0;
+    }
+    total = __shfl_sync(FULL, before, 31);
+    return before - n;
+}
+
+// A step's loads for a lane: tier-1 digits, bytes, and its block: where it
+// starts and ends, its word from the start (win) and back from the end
+// (tail; tail1: the end's word).
+struct Step {
+    uint32_t pd[2], sw[8], win, tail, tail1;
+    int64_t blk, end;
+};
+
+__device__ __forceinline__ void load_step(Step& st, const uint8_t* __restrict__ data, const uint8_t* __restrict__ blocks, const int32_t* __restrict__ block_base, int64_t step, int lane) {
+    const uint32_t* cp = (const uint32_t*)(data + step * STEP_BYTES) + lane;
+    st.pd[0] = __ldg(cp);
+    st.pd[1] = __ldg(cp + 32);
+    const uint4* sp = (const uint4*)(data + step * STEP_BYTES + 256) + lane;
+    uint4 x0 = __ldg(sp), x1 = __ldg(sp + 32);
+    st.sw[0] = x0.x; st.sw[1] = x0.y; st.sw[2] = x0.z; st.sw[3] = x0.w;
+    st.sw[4] = x1.x; st.sw[5] = x1.y; st.sw[6] = x1.z; st.sw[7] = x1.w;
+    st.blk = __ldg(block_base + step);
+    st.end = __ldg(block_base + step + 1);
+    const uint32_t* bw = (const uint32_t*)blocks;
+    st.win = __ldg(bw + (st.blk >> 2) + lane);
+    st.tail = __ldg(bw + (st.end >> 2) - 1 - lane);
+    st.tail1 = __ldg(bw + (st.end >> 2));
+}
+
+// A word of 16 tier-2 digits (d) as 16 bytes into the warp's scratch at
+// word 4c: their escapes' from its tier-3 digits (d3), theirs from the bytes
+// (x). g3: the warp's most tier-3 digits a word, in fours.
+__device__ __forceinline__ void tier23(uint32_t d, uint32_t d3, uint32_t x[4], Tiers ts, uint32_t g3, uint32_t* s2, int c, const uint32_t* tab) {
+    uint32_t y[4] = {0u, 0u, 0u, 0u}, o[4];
+#pragma unroll
+    for (int q = 0; q < 4; q++)
+        if (q < (int)g3) y[q] = group(d3 >> (8 * q), ts.s3, x, tab);
+#pragma unroll
+    for (int q = 0; q < 4; q++) o[q] = group(d >> (8 * q), ts.s2, y, tab);
+    ((uint4*)s2)[c] = make_uint4(o[0], o[1], o[2], o[3]);
+}
+
+// A group's 32 exponents, 4 a word (ew). Every lane of the warp calls it
+// for the same step: lane c decodes the tier-2 digits of escapes 16c to
+// 16c + 15 (and 16(c + 32) on, past 512) with what they escape to, into
+// the warp's scratch (s2, S2_BYTES), where each lane reads its escapes'.
+__device__ __forceinline__ void exponents(const Step& st, Tiers ts, const uint8_t* __restrict__ blocks, int lane, uint32_t* s2, const uint32_t* tab, uint32_t ew[8]) {
+    uint32_t n1 = __popc(escapes(st.pd[0])) + __popc(escapes(st.pd[1]));
+    uint32_t T1 = __reduce_add_sync(FULL, n1), words = (T1 + 15) >> 4;
+    // Word c of the tier-2 digits: bytes [end - 4(c + 1), end - 4c).
+    uint32_t up = __shfl_up_sync(FULL, st.tail, 1);
+    uint32_t da = (uint32_t)lane < words ? __funnelshift_r(st.tail, lane ? up : st.tail1, 8 * (uint32_t)(st.end & 3)) : 0u, db = 0;
+    if (T1 > 512 && (uint32_t)lane + 32 < words) db = load4(blocks + st.end - 4 * (33 + lane));
+    uint32_t na = __popc(escapes(da)), nb = __popc(escapes(db)), tot;
+    uint32_t pre = scan(n1 | na << 11 | nb << 21, lane, tot);
+    uint32_t b1 = pre & 0x7FF, ta = (tot >> 11) & 0x3FF, T2 = ta + (tot >> 21);
+    // Their escapes' tier-3 digits, and those's escapes (bytes), all from bit o of the window.
+    uint32_t o = 8 * (uint32_t)(st.blk & 3), pa = o + 2 * ((pre >> 11) & 0x3FF), pb = o + 2 * (ta + (pre >> 21));
+    bool near = o + 2 * T2 + 32 < 992;
+    uint32_t d3a = near ? win_bits(st.win, pa) : mem_bits(blocks, st.blk, pa), d3b = 0;
+    if (T1 > 512) d3b = near ? win_bits(st.win, pb) : mem_bits(blocks, st.blk, pb);
+    uint32_t n3a = __popc(escapes(d3a) & first_digits(na)), n3b = __popc(escapes(d3b) & first_digits(nb)), t3;
+    uint32_t pre3 = scan(n3a | n3b << 16, lane, t3);
+    uint32_t r0 = o + 8 * ((2 * T2 + 7) >> 3), T3 = (t3 & 0xFFFF) + (t3 >> 16);
+    uint32_t ba = r0 + 8 * (pre3 & 0xFFFF), bb = r0 + 8 * ((t3 & 0xFFFF) + (pre3 >> 16));
+    uint32_t g3 = (__reduce_max_sync(FULL, max(na, nb)) + 3) >> 2;
+    bool many = __any_sync(FULL, max(n3a, n3b) > 8);
+    near = r0 + 8 * T3 + 128 < 992;
+    uint32_t x[4];
+    auto bytes = [&](uint32_t b) {
+#pragma unroll
+        for (int k = 0; k < 4; k++) x[k] = k < 2 || many ? (near ? win_bits(st.win, b + 32 * k) : mem_bits(blocks, st.blk, b + 32 * k)) : 0u;
+    };
+    bytes(ba);
+    tier23(da, d3a, x, ts, g3, s2, lane, tab);
+    if (T1 > 512) {
+        bytes(bb);
+        tier23(db, d3b, x, ts, g3, s2, lane + 32, tab);
+    }
+    __syncwarp();
+    // Tier 1, its escapes' from the scratch (this lane's: bytes b1 on).
+    uint32_t c = b1;
 #pragma unroll
     for (int q = 0; q < 8; q++) {
-        uint32_t x = field12(w, q);
-        ew[q] = (((x & 0x1C7u) * 0x401u) & 0x00070007u) + (((x & 0xE38u) * 0x8020u) & 0x07000700u) + base4;
+        uint32_t e = tab[(st.pd[q >> 2] >> (8 * (q & 3))) & 0xFF];
+        ew[q] = __byte_perm(ts.s1, __funnelshift_r(s2[c >> 2], s2[(c >> 2) + 1], c << 3), e);
+        c += e >> 16;
     }
+    __syncwarp();  // the scratch is read
 }
 
 // Pairs: [byte, exponent, byte, exponent] rotated right by one bit.
@@ -689,96 +826,11 @@ __device__ __forceinline__ void pairs(const uint32_t sw[8], const uint32_t ew[8]
     }
 }
 
-// A group's 32 weights as 16 bf16 pairs, the B fragments of its 8 n-tiles
-// (R[2n], R[2n + 1]), without branches: right for a lane with up to 8
-// escapes (n); decode_slow redoes one with more. Every lane of the warp
-// calls it for the same step (the escapes' order is a scan across the
-// lanes); at: the step's first escape, moved past its last; a0: the lane's
-// first. base4: the base in each byte; sel: the selectors.
-__device__ __forceinline__ void decode_fast(const uint32_t w[3], const uint32_t sw[8], uint32_t base4, const uint8_t* __restrict__ exc, int64_t& at, int lane, const uint32_t* sel, uint32_t R[16], uint32_t& n, int64_t& a0) {
-    // This lane's escapes: how many, where its first is, its first 8 bytes.
-    n = count7(w);
-    uint32_t before = n;
-#pragma unroll
-    for (int o = 1; o < 32; o <<= 1) {
-        uint32_t v = __shfl_up_sync(0xffffffff, before, o);
-        before += lane >= o ? v : 0;
-    }
-    a0 = at + before - n;
-    at += __shfl_sync(0xffffffff, before, 31);
-    const uint32_t* ap = (const uint32_t*)(exc + (a0 & ~(int64_t)3));  // exc is padded: a lane without escapes reads harmlessly
-    uint32_t e0 = __ldg(ap), e1 = __ldg(ap + 1), e2 = __ldg(ap + 2), sh = (uint32_t)(a0 & 3) * 8;
-    uint64_t eb = __funnelshift_r(e0, e1, sh) | (uint64_t)__funnelshift_r(e1, e2, sh) << 32;
+// A step's 32 weights a lane as the B fragments of its 8 n-tiles (R[2n], R[2n + 1]).
+__device__ __forceinline__ void decode_step(const Step& st, Tiers ts, const uint8_t* __restrict__ blocks, int lane, uint32_t* s2, const uint32_t* tab, uint32_t R[16]) {
     uint32_t ew[8];
-    exponents(w, base4, ew);
-    // Escaped exponents in their place: bit 3 of a byte's code + 1 marks one.
-    uint32_t plus1 = 0x01010101u - base4;
-#pragma unroll
-    for (int q = 0; q < 8; q++) {
-        uint32_t f = (ew[q] + plus1) & 0x08080808u;
-        ew[q] = __byte_perm(ew[q], (uint32_t)eb, sel[(f * 0x00204081u) >> 24 & 15]);
-        eb >>= 8 * __popc(f);
-    }
-    pairs(sw, ew, R);
-}
-
-// A lane's group with any number of escapes, from its first (a0).
-__device__ __forceinline__ void decode_slow(const uint32_t w[3], const uint32_t sw[8], uint32_t base4, const uint8_t* __restrict__ exc, int64_t a0, const uint32_t* sel, uint32_t R[16]) {
-    uint32_t ew[8], plus1 = 0x01010101u - base4;
-    exponents(w, base4, ew);
-#pragma unroll
-    for (int q = 0; q < 8; q++) {
-        uint32_t f = (ew[q] + plus1) & 0x08080808u;
-        ew[q] = __byte_perm(ew[q], load4(exc + a0), sel[(f * 0x00204081u) >> 24 & 15]);
-        a0 += __popc(f);
-    }
-    pairs(sw, ew, R);
-}
-
-__device__ __forceinline__ void decode_group(const uint32_t w[3], const uint32_t sw[8], uint32_t base4, const uint8_t* __restrict__ exc, int64_t& at, int lane, const uint32_t* sel, uint32_t R[16]) {
-    uint32_t n;
-    int64_t a0;
-    decode_fast(w, sw, base4, exc, at, lane, sel, R, n, a0);
-    if (n > 8) decode_slow(w, sw, base4, exc, a0, sel, R);
-}
-
-// The __byte_perm selector escape_selector gives, from a word's flags (bit
-// 3 of each byte set where its code is 7), by arithmetic: byte j of it
-// j + f_j (4 + r_j - j), r_j the flags before j, then its nibbles packed.
-__device__ __forceinline__ uint32_t escape_selector_of(uint32_t f8) {
-    uint32_t f = f8 >> 3, sb = 0x03020100u + ((f * 0x01010100u + 0x01020304u) & (f * 0xFFu));
-    return __byte_perm(sb | (sb >> 4), 0, 0x4420);
-}
-
-// decode_fast in two halves, for a kernel with other work to put between
-// them: the escapes' scan and loads (the step's first escape at at), then,
-// once those have come, the rest.
-__device__ __forceinline__ void decode_begin(const uint32_t w[3], const uint8_t* __restrict__ exc, int64_t at, int lane, uint32_t& n, int64_t& a0, uint32_t e[3]) {
-    n = count7(w);
-    uint32_t before = n;
-#pragma unroll
-    for (int o = 1; o < 32; o <<= 1) {
-        uint32_t v = __shfl_up_sync(0xffffffff, before, o);
-        before += lane >= o ? v : 0;
-    }
-    a0 = at + before - n;
-    const uint32_t* ap = (const uint32_t*)(exc + (a0 & ~(int64_t)3));
-    e[0] = __ldg(ap);
-    e[1] = __ldg(ap + 1);
-    e[2] = __ldg(ap + 2);
-}
-
-__device__ __forceinline__ void decode_end(const uint32_t w[3], const uint32_t sw[8], uint32_t base4, int64_t a0, const uint32_t e[3], const uint32_t* sel, uint32_t R[16]) {
-    uint32_t sh = (uint32_t)(a0 & 3) * 8, plus1 = 0x01010101u - base4, ew[8];
-    uint64_t eb = __funnelshift_r(e[0], e[1], sh) | (uint64_t)__funnelshift_r(e[1], e[2], sh) << 32;
-    exponents(w, base4, ew);
-#pragma unroll
-    for (int q = 0; q < 8; q++) {
-        uint32_t f = (ew[q] + plus1) & 0x08080808u;
-        ew[q] = __byte_perm(ew[q], (uint32_t)eb, escape_selector_of(f));
-        eb >>= 8 * __popc(f);
-    }
-    pairs(sw, ew, R);
+    exponents(st, ts, blocks, lane, s2, tab, ew);
+    pairs(st.sw, ew, R);
 }
 
 __device__ __forceinline__ void mma16816(float c[4], const uint32_t a[4], uint32_t b0, uint32_t b1) {
@@ -795,23 +847,22 @@ __device__ __forceinline__ void mma16816(float c[4], const uint32_t a[4], uint32
 // part to a slot, and the last to finish adds the parts in block order (the
 // same result every run). A warp's step: 1024 weights decoded into B
 // fragments, 8 MT tensor-core products. The next step's loads are issued
-// before this step's decode; a warp's steps are consecutive, so are their
-// escapes (one index to find, at its first).
+// before this step's decode.
 __device__ __forceinline__ int64_t block_of_step(int64_t x, int64_t nb, int64_t total) {
     return ((x + 1) * nb - 1) / total;  // block b runs steps [b total / nb, (b + 1) total / nb)
 }
 
 template <int MT>
-__global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(const uint8_t* __restrict__ data, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint32_t base, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
-    extern __shared__ float red[];  // [4 warps][16 MT rows][65]
+__global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(const uint8_t* __restrict__ data, const uint8_t* __restrict__ blocks, const int32_t* __restrict__ block_base, Tiers ts, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+    extern __shared__ __align__(128) float red[];  // [4 warps][16 MT rows][65], then the warps' scratch [8][S2_BYTES]
     __shared__ int last;
-    __shared__ uint32_t sel[16];
-    if (threadIdx.x < 16) sel[threadIdx.x] = escape_selector(threadIdx.x);
+    __shared__ uint32_t tab[256];
+    fill_groups(tab);
     __syncthreads();
     int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+    uint32_t* s2 = (uint32_t*)(red + 4 * MT * 16 * 65) + warp * (S2_BYTES / 4);
     int64_t KS = K / 16, total = O / 64 * KS, nb = gridDim.x;
     int64_t B1 = (blockIdx.x + 1) * total / nb;
-    uint32_t base4 = base * 0x01010101u;
     for (int64_t seg = blockIdx.x * total / nb; seg < B1;) {
         int64_t rb = seg / KS, sb = seg - rb * KS, se = min(B1, (rb + 1) * KS) - rb * KS;
         seg = rb * KS + se;
@@ -824,17 +875,11 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(const ui
             for (int nn = 0; nn < 8; nn++)
 #pragma unroll
                 for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
-        // The step's loads: codes, bytes, inputs.
-        uint32_t w[3], sw[8], a[MT][4];
+        // The step's loads: W's, then the inputs.
+        Step st;
+        uint32_t a[MT][4];
         auto load = [&](int64_t s) {
-            const uint32_t* cp = (const uint32_t*)(data + (rb * KS + s) * STEP_BYTES) + lane;
-            w[0] = __ldg(cp);
-            w[1] = __ldg(cp + 32);
-            w[2] = __ldg(cp + 64);
-            const uint4* sp = (const uint4*)(data + (rb * KS + s) * STEP_BYTES + 384) + lane * 2;
-            uint4 x0 = __ldg(sp), x1 = __ldg(sp + 1);
-            sw[0] = x0.x; sw[1] = x0.y; sw[2] = x0.z; sw[3] = x0.w;
-            sw[4] = x1.x; sw[5] = x1.y; sw[6] = x1.z; sw[7] = x1.w;
+            load_step(st, data, blocks, block_base, rb * KS + s, lane);
 #pragma unroll
             for (int mt = 0; mt < MT; mt++) {
                 int64_t r0 = mt * 16 + g, r1 = r0 + 8;
@@ -845,22 +890,17 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(const ui
                 a[mt][3] = r1 < M ? *(const uint32_t*)(xr + r1 * K + 8) : 0u;
             }
         };
-        int64_t at = 0;
-        if (s0 < s1) {
-            at = exc_base[rb * KS + s0];
-            load(s0);
-        }
+        if (s0 < s1) load(s0);
         for (int64_t s = s0; s < s1; s++) {
-            uint32_t cw[3] = {w[0], w[1], w[2]}, csw[8], ca[MT][4];
-#pragma unroll
-            for (int i = 0; i < 8; i++) csw[i] = sw[i];
+            Step cur = st;
+            uint32_t ca[MT][4];
 #pragma unroll
             for (int mt = 0; mt < MT; mt++)
 #pragma unroll
                 for (int q = 0; q < 4; q++) ca[mt][q] = a[mt][q];
             if (s + 1 < s1) load(s + 1);
             uint32_t R[16];
-            decode_group(cw, csw, base4, exc, at, lane, sel, R);
+            decode_step(cur, ts, blocks, lane, s2, tab, R);
 #pragma unroll
             for (int mt = 0; mt < MT; mt++)
 #pragma unroll
@@ -956,38 +996,27 @@ template <int THREADS> __device__ __forceinline__ void bar_sync(int id) { asm vo
 template <int THREADS> __device__ __forceinline__ void bar_arrive(int id) { asm volatile("bar.arrive %0, %1;\n" ::"r"(id), "n"(THREADS)); }
 
 template <int CW, int PW, int NB, int RBB>
-__global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big_kernel(const uint8_t* __restrict__ data, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint32_t base, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
+__global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big_kernel(const uint8_t* __restrict__ data, const uint8_t* __restrict__ blocks, const int32_t* __restrict__ block_base, Tiers ts, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
     using C = Big<CW, PW, NB, RBB>;
     extern __shared__ uint4 smem[];  // X's tiles [NB][TM rows][8 16-byte chunks, swizzled], then W's [NB][B_UINT4]
-    __shared__ uint32_t sel[16];
-    if (threadIdx.x < 16) sel[threadIdx.x] = escape_selector(threadIdx.x);
+    __shared__ uint32_t tab[256];
+    fill_groups(tab);
+    __syncthreads();
     const uint32_t a_base = (uint32_t)__cvta_generic_to_shared(smem);
     uint4* Bs = smem + NB * C::A_BYTES / 16;
     int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
     int64_t KS = K / 16, RB = O / 64, tile = blockIdx.x, pair = blockIdx.y;
     int64_t st0 = (int64_t)blockIdx.z * stages_per_split, nst = min(KS / BIG_KK, st0 + stages_per_split) - st0;
-    __syncthreads();  // sel
     if (warp >= CW) {
         // Producer p: X's chunks id = pt + 32 PW i of a stage's; W's steps STEPS p on of its 4 RBB (row block, step).
         int pt = tid - 32 * CW, p = warp - CW;
-        uint32_t base4 = base * 0x01010101u;
-        uint32_t w[C::STEPS][3], sw[C::STEPS][8];
-        int64_t at[C::STEPS];
+        Step st[C::STEPS];
         auto d_load = [&](int64_t j) {
 #pragma unroll
             for (int i = 0; i < C::STEPS; i++) {
                 int u = p * C::STEPS + i;  // of the stage's 4 RBB: row block u / 4, step u % 4
                 int64_t rb = min(pair * RBB + u / BIG_KK, RB - 1), s = min((st0 + j) * BIG_KK + u % BIG_KK, KS - 1);
-                const uint8_t* stp = data + (rb * KS + s) * STEP_BYTES;
-                const uint32_t* cp = (const uint32_t*)stp + lane;
-                w[i][0] = __ldg(cp);
-                w[i][1] = __ldg(cp + 32);
-                w[i][2] = __ldg(cp + 64);
-                const uint4* sp = (const uint4*)(stp + 384) + lane * 2;
-                uint4 x0 = __ldg(sp), x1 = __ldg(sp + 1);
-                sw[i][0] = x0.x; sw[i][1] = x0.y; sw[i][2] = x0.z; sw[i][3] = x0.w;
-                sw[i][4] = x1.x; sw[i][5] = x1.y; sw[i][6] = x1.z; sw[i][7] = x1.w;
-                at[i] = exc_base[rb * KS + s];
+                load_step(st[i], data, blocks, block_base, rb * KS + s, lane);
             }
         };
         d_load(0);
@@ -1003,26 +1032,16 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
                 cp_async16(slot + r * 128 + ((c ^ (r & 7)) << 4), X + (m < M ? m : 0) * K + col + c * 8, m < M ? 16 : 0);
             }
             asm volatile("cp.async.commit_group;\n" ::);
-            uint32_t cw[C::STEPS][3], csw[C::STEPS][8];
-            int64_t cat[C::STEPS];
+            Step cur[C::STEPS];
 #pragma unroll
-            for (int i = 0; i < C::STEPS; i++) {
-#pragma unroll
-                for (int k = 0; k < 3; k++) cw[i][k] = w[i][k];
-#pragma unroll
-                for (int k = 0; k < 8; k++) csw[i][k] = sw[i][k];
-                cat[i] = at[i];
-            }
+            for (int i = 0; i < C::STEPS; i++) cur[i] = st[i];
             if (j + 1 < nst) d_load(j + 1);
-            uint32_t n[C::STEPS], e[C::STEPS][3], R[16];
-            int64_t a0[C::STEPS];
-#pragma unroll
-            for (int i = 0; i < C::STEPS; i++) decode_begin(cw[i], exc, cat[i], lane, n[i], a0[i], e[i]);
 #pragma unroll
             for (int i = 0; i < C::STEPS; i++) {
-                decode_end(cw[i], csw[i], base4, a0[i], e[i], sel, R);
-                if (n[i] > 8) decode_slow(cw[i], csw[i], base4, exc, a0[i], sel, R);
-                uint4* d = Bs + b * C::B_UINT4 + ((p * C::STEPS + i) * 4) * 32 + lane;
+                uint32_t R[16];
+                uint4* slot = Bs + b * C::B_UINT4 + ((p * C::STEPS + i) * 4) * 32;
+                decode_step(cur[i], ts, blocks, lane, (uint32_t*)slot, tab, R);  // the step's slot its scratch till then
+                uint4* d = slot + lane;
 #pragma unroll
                 for (int q = 0; q < 4; q++) d[q * 32] = make_uint4(R[4 * q], R[4 * q + 1], R[4 * q + 2], R[4 * q + 3]);
             }
@@ -1111,22 +1130,19 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
 // The mma layout back to bf16, rows [row0, row0 + rows) of W (multiples of
 // 64) into out [rows, K] (checks, and the many-token path that multiplies
 // with PyTorch): a warp a step.
-__global__ void mma_unpack_kernel(const uint8_t* __restrict__ data, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint32_t base, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out) {
-    __shared__ uint32_t sel[16];
-    if (threadIdx.x < 16) sel[threadIdx.x] = escape_selector(threadIdx.x);
+__global__ void mma_unpack_kernel(const uint8_t* __restrict__ data, const uint8_t* __restrict__ blocks, const int32_t* __restrict__ block_base, Tiers ts, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out) {
+    __shared__ uint32_t tab[256];
+    fill_groups(tab);
     __syncthreads();
     int64_t KS = K / 16, local = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5;
     int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
     if (local >= rows / 64 * KS) return;
     int64_t step = row0 / 64 * KS + local, rb = local / KS, s = local % KS;
-    const uint32_t* cp = (const uint32_t*)(data + step * STEP_BYTES) + lane;
-    uint32_t w[3] = {cp[0], cp[32], cp[64]}, sw[8];
-    const uint4* sp = (const uint4*)(data + step * STEP_BYTES + 384) + lane * 2;
-    uint4 x0 = sp[0], x1 = sp[1];
-    sw[0] = x0.x; sw[1] = x0.y; sw[2] = x0.z; sw[3] = x0.w; sw[4] = x1.x; sw[5] = x1.y; sw[6] = x1.z; sw[7] = x1.w;
+    __shared__ uint4 scratch[8][S2_BYTES / 16];
+    Step st;
+    load_step(st, data, blocks, block_base, step, lane);
     uint32_t R[16];
-    int64_t at = exc_base[step];
-    decode_group(w, sw, base * 0x01010101u, exc, at, lane, sel, R);
+    decode_step(st, ts, blocks, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
     // R[2n]: row 8n + g, columns 2t and 2t + 1; R[2n + 1]: columns 8 + 2t, 9 + 2t.
     uint32_t* out32 = (uint32_t*)out;
 #pragma unroll
@@ -1277,7 +1293,12 @@ void fast_bgemv(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch
     if (nseg > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>((const float*)y32.data_ptr(), nseg, b, M, O, (__nv_bfloat16*)y.data_ptr());
 }
 
-void mma_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int64_t base, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+static Tiers tiers_of(const std::vector<int64_t>& t) {
+    TORCH_CHECK(t.size() == 3, "three tiers");
+    return Tiers{(uint32_t)t[0], (uint32_t)t[1], (uint32_t)t[2]};
+}
+
+void mma_gemm(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
     const c10::cuda::CUDAGuard guard(data.device());
     cudaStream_t cs = at::cuda::getCurrentCUDAStream();
     int64_t M = x.size(0);
@@ -1288,15 +1309,16 @@ void mma_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int
     torch::Tensor& done = (*done_of)[data.get_device()];
     if (!done.defined() || done.numel() < RB) done = torch::zeros({std::max<int64_t>(RB, 1 << 16)}, data.options().dtype(torch::kInt32));
     const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
+    Tiers ts = tiers_of(tiers);
     auto launch = [&](auto kernel, int mt) {
-        size_t shared = (size_t)4 * mt * 16 * 65 * sizeof(float);
+        size_t shared = (size_t)4 * mt * 16 * 65 * sizeof(float) + 8 * S2_BYTES;
         cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
         int per_sm = 1;
         cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kernel, 256, shared);
         // As many blocks as fit at once, but at least 32 steps (4 a warp) a block.
         int64_t nb = std::max<int64_t>(1, std::min<int64_t>((int64_t)std::max(per_sm, 1) * at::cuda::getCurrentDeviceProperties()->multiProcessorCount, total / 32));
         torch::Tensor parts = torch::empty({nb + RB, M, 64}, x.options().dtype(torch::kFloat32));
-        kernel<<<nb, 256, shared, cs>>>((const uint8_t*)data.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint32_t)base, O, K, M, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), (float*)parts.data_ptr(), (int*)done.data_ptr());
+        kernel<<<nb, 256, shared, cs>>>((const uint8_t*)data.data_ptr(), (const uint8_t*)blocks.data_ptr(), (const int32_t*)block_base.data_ptr(), ts, O, K, M, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), (float*)parts.data_ptr(), (int*)done.data_ptr());
     };
     if (M <= 16) launch(mma_gemm_kernel<1>, 1);
     else if (M <= 32) launch(mma_gemm_kernel<2>, 2);
@@ -1304,7 +1326,7 @@ void mma_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int
 }
 
 template <int CW, int PW, int NB, int RBB>
-static void mma_gemm_big_run(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int64_t base, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, cudaStream_t cs) {
+static void mma_gemm_big_run(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, Tiers ts, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, cudaStream_t cs) {
     using C = Big<CW, PW, NB, RBB>;
     auto kernel = mma_gemm_big_kernel<CW, PW, NB, RBB>;
     int64_t M = x.size(0), stages = K / 16 / BIG_KK, pairs = (O / 64 + RBB - 1) / RBB, tiles = (M + C::TM - 1) / C::TM;
@@ -1322,8 +1344,8 @@ static void mma_gemm_big_run(torch::Tensor data, torch::Tensor exc, torch::Tenso
     int64_t splits = 1;
     double best = 0;
     for (int64_t sp = 1; sp <= most; sp++) {
-        int64_t blocks = pairs * tiles * sp;
-        double fill = (double)blocks / (double)(((blocks + cap - 1) / cap) * cap);
+        int64_t nblocks = pairs * tiles * sp;
+        double fill = (double)nblocks / (double)(((nblocks + cap - 1) / cap) * cap);
         if (fill > best + 1e-9) best = fill, splits = sp;
         if (fill >= 0.85) break;
     }
@@ -1332,27 +1354,28 @@ static void mma_gemm_big_run(torch::Tensor data, torch::Tensor exc, torch::Tenso
     const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
     torch::Tensor y32;
     if (splits > 1) y32 = torch::empty({splits, M, O}, x.options().dtype(torch::kFloat32));
-    kernel<<<dim3(tiles, pairs, splits), C::THREADS, C::SHARED, cs>>>((const uint8_t*)data.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint32_t)base, O, K, M, per, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), splits > 1 ? (float*)y32.data_ptr() : nullptr);
+    kernel<<<dim3(tiles, pairs, splits), C::THREADS, C::SHARED, cs>>>((const uint8_t*)data.data_ptr(), (const uint8_t*)blocks.data_ptr(), (const int32_t*)block_base.data_ptr(), ts, O, K, M, per, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), splits > 1 ? (float*)y32.data_ptr() : nullptr);
     if (splits > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>((const float*)y32.data_ptr(), splits, b, M, O, (__nv_bfloat16*)y.data_ptr());
 }
 
-void mma_gemm_big(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int64_t base, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t variant) {
+void mma_gemm_big(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t variant) {
     const c10::cuda::CUDAGuard guard(data.device());
     cudaStream_t cs = at::cuda::getCurrentCUDAStream();
     TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
+    Tiers ts = tiers_of(tiers);
     // 4 consumer warps and 4 producers: blocks of 128 tokens by two row blocks (3 stages), or, past 128
     // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens).
     if (variant == 0) variant = x.size(0) > 128 ? 2 : 1;
-    if (variant == 2) mma_gemm_big_run<4, 4, 2, 1>(data, exc, exc_base, base, O, K, x, bias, y, cs);
-    else mma_gemm_big_run<4, 4, 3, 2>(data, exc, exc_base, base, O, K, x, bias, y, cs);
+    if (variant == 2) mma_gemm_big_run<4, 4, 2, 1>(data, blocks, block_base, ts, O, K, x, bias, y, cs);
+    else mma_gemm_big_run<4, 4, 3, 2>(data, blocks, block_base, ts, O, K, x, bias, y, cs);
 }
 
-void mma_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int64_t base, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
+void mma_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
     const c10::cuda::CUDAGuard guard(data.device());
     cudaStream_t cs = at::cuda::getCurrentCUDAStream();
     TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64");
     int64_t steps = rows / 64 * (K / 16);
-    mma_unpack_kernel<<<(steps * 32 + 255) / 256, 256, 0, cs>>>((const uint8_t*)data.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint32_t)base, K, row0, rows, (uint16_t*)out.data_ptr());
+    mma_unpack_kernel<<<(steps * 32 + 255) / 256, 256, 0, cs>>>((const uint8_t*)data.data_ptr(), (const uint8_t*)blocks.data_ptr(), (const int32_t*)block_base.data_ptr(), tiers_of(tiers), K, row0, rows, (uint16_t*)out.data_ptr());
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

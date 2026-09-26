@@ -29,6 +29,7 @@ ap.add_argument("--batch", type=str, default="1", help="generate for this many c
 ap.add_argument("--gpus", type=int, default=1, help="spread the layers over this many GPUs (bf16: accelerate's device map; glyd: layers balanced by packed size)")
 ap.add_argument("--ppl", default="", help="a text file: perplexity over windows of --ppl-window tokens (a forward pass each; 12800 tokens from its 10th MB), and how often the next-token choice is bf16's")
 ap.add_argument("--ppl-window", type=int, default=64)
+ap.add_argument("--profile", type=int, default=0, help="one sequence: GPU time by kernel over this many generated tokens, against the wall clock")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
 args = ap.parse_args()
 
@@ -36,6 +37,7 @@ tok = AutoTokenizer.from_pretrained(args.model)
 prompt = "The history of data compression began"
 ids = tok(prompt, return_tensors="pt").input_ids.cuda()
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
+HOPPER = torch.cuda.get_device_capability()[0] >= 9
 
 
 def prefill(model, label):
@@ -54,6 +56,27 @@ def prefill(model, label):
         out.append(f"{n} tokens {t * 1e3:.0f} ms ({n / t:.0f} tokens/s)")
     if out:
         print(f"{label} prefill: " + ", ".join(out))
+
+
+def profile(model, label):
+    """Where a generated token's time goes: the GPU's kernels, and the rest."""
+    if not args.profile:
+        return
+    from torch.profiler import profile as prof_, ProfilerActivity
+    n = args.profile
+    with torch.no_grad():
+        model.generate(ids, max_new_tokens=4, do_sample=False)
+        torch.cuda.synchronize()
+        with prof_(activities=[ProfilerActivity.CUDA]) as pr:
+            t = time.perf_counter()
+            model.generate(ids, max_new_tokens=n, min_new_tokens=n, do_sample=False)
+            torch.cuda.synchronize()
+            wall = (time.perf_counter() - t) / n
+    ev = [e for e in pr.key_averages() if e.device_type.name == "CUDA"]
+    busy = sum(e.device_time_total for e in ev) / n / 1000
+    print(f"{label} profile: {wall * 1000:.2f} ms a token, GPU busy {busy:.2f} ms")
+    for e in sorted(ev, key=lambda e: -e.device_time_total)[:6]:
+        print(f"   {e.device_time_total / n / 1000:7.3f} ms  {e.count / n:6.1f} a token  {e.key[:80]}")
 
 
 def perplexity(model, label):
@@ -131,7 +154,8 @@ class GLinear(nn.Module):
         O, K = self.p.shape
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)
-        if args.fused and isinstance(self.p, g.Mma) and (x2.shape[0] <= 64 or K % 64 == 0):
+        # Past 64 tokens on Hopper the tensor cores outrun our decode: decode the matrix, cuBLAS multiplies.
+        if args.fused and isinstance(self.p, g.Mma) and (x2.shape[0] <= 64 or (K % 64 == 0 and not HOPPER)):
             return (g.mma_gemm if x2.shape[0] <= 64 else g.mma_gemm_big)(self.p, x2, self.bias).view(*lead, O)
         if args.fused and x2.shape[0] == 1:
             f = g.fast_gemv if isinstance(self.p, g.Fast) else g.gemv
@@ -176,6 +200,7 @@ if args.baseline:
         model.cuda()
     logits_a, out_a = measure(model, f"bf16 (weights {weights_bf16 / 1e9:.2f} GB)")
     prefill(model, "bf16")
+    profile(model, "bf16")
     top_a = perplexity(model, "bf16")
     if args.gpus > 1:
         remove_hook_from_module(model, recurse=True)
@@ -231,6 +256,7 @@ scratch = sum(b.numel() * 2 for b in Scratch.buf.values())
 print(f"{args.format}{' fused' if args.fused else ''}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {scratch / 1e9:.2f} GB, VRAM in use {in_use / 1e9:.2f} GB on {args.gpus} GPU{'s' if args.gpus > 1 else ''}")
 logits_b, out_b = measure(model, f"glyd {args.format}{' fused' if args.fused else ''}")
 prefill(model, f"glyd {args.format}")
+profile(model, f"glyd {args.format}")
 top_b = perplexity(model, f"glyd {args.format}")
 if args.baseline and top_b is not None:
     print(f"next-token choice as bf16's: {(top_a.cuda() == top_b).float().mean().item() * 100:.2f}%")

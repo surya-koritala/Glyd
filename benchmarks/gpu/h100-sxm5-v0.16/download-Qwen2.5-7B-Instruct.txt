@@ -1,0 +1,9 @@
++ hf download Qwen/Qwen2.5-7B-Instruct --local-dir /home/ubuntu/./models/Qwen2.5-7B-Instruct
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+[90mHint: A new version of huggingface_hub (2.0.0) is available! You are using version 1.33.0.[0m
+Fetching 14 files:   0%|          | 0/14 [00:00<?, ?it/s]Still waiting to acquire lock on /home/ubuntu/models/Qwen2.5-7B-Instruct/.cache/huggingface/.gitignore.lock (elapsed: 0.1 seconds)
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 14 files:  14%|█▍        | 2/14 [00:00<00:00, 14.77it/s]Fetching 14 files:  57%|█████▋    | 8/14 [00:00<00:00, 37.02it/s]Fetching 14 files:  71%|███████▏  | 10/14 [00:20<00:00, 37.02it/s]Fetching 14 files:  79%|███████▊  | 11/14 [00:25<00:09,  3.09s/it]Fetching 14 files:  86%|████████▌ | 12/14 [00:26<00:05,  2.80s/it]Fetching 14 files: 100%|██████████| 14/14 [00:30<00:00,  2.17s/it]
+[32m✓ Downloaded[0m
+  path: /home/ubuntu/models/Qwen2.5-7B-Instruct

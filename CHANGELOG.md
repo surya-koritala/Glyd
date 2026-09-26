@@ -6,6 +6,31 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.17.0 — 2026-09-26
+
+- Model weights on the GPU ([gpu/](gpu/README.md)): the `mma` layout's
+  exponents in tiers of 2-bit digits — the tensor's 3 commonest
+  exponents, digit 3 going on to the next 3, then the next 3, then the
+  exponent itself: **10.80 bits a weight over Qwen2.5-7B's matrices,
+  32.5% under bf16** (was 11.25), every tensor bit for bit. A step's
+  escapes are decoded by the whole warp (each lane 16 of its tier-2
+  digits, placed by warp scans, through shared memory), so no lane
+  waits on another's. Qwen2.5-7B-Instruct on an RTX 4080 SUPER: 10.61
+  GB where bf16 takes 15.25 (was 11.05); **1.25-1.32x bf16's tokens/s
+  at 1 to 32 sequences** (one: 55.7, bf16 43.4; 32: 1,518.9, bf16
+  1,153.7), 1.13x at 48, 1.04x at 64; prompts of 16 to 128 tokens
+  19-29 ms (bf16 24-29), 256 to 4096 within 5-10%. Perplexity as
+  before (Wikipedia, 64-token windows 17.0052 vs bf16's 17.0015,
+  512-token 7.5660 vs 7.5677).
+- The GPU extension builds for the GPU it runs on (`sm_90a` on Hopper);
+  on Hopper `e2e.py` multiplies prompts past 64 tokens by decoding then
+  cuBLAS; `e2e.py --profile N` splits GPU time by kernel.
+  `scripts/gpu_lambda.sh` runs `gemm.py` and `e2e.py` on one Lambda
+  Cloud GPU instance launched for the run (a time cap, terminated and
+  checked on exit).
+- gpu/ is under the Business Source License 1.1 from this release (the
+  store's terms); the codec stays BSD-3-Clause OR GPL-2.0.
+
 ## v0.16.0 — 2026-09-25
 
 - Model weights on the GPU, several tokens at once

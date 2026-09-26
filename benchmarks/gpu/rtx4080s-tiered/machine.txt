@@ -1,0 +1,3 @@
+name, memory.total [MiB], driver_version
+NVIDIA GeForce RTX 4080 SUPER, 16376 MiB, 595.91.07
+torch 2.14.0+cu130 cuda 13.0

@@ -1,0 +1,39 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/339 [00:00<?, ?it/s]Loading weights: 100%|██████████| 339/339 [00:00<00:00, 8885.46it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-26 05:41:08 2569:2569 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 05:41:08 2569:2569 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 05:41:31 2569:2569 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 05:41:31 2569:2569 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16 (weights 15.23 GB): batch 1: 19.8 tokens/s (19.8 a sequence), peak VRAM 15.27 GB
+bf16 (weights 15.23 GB): batch 8: 201.5 tokens/s (25.2 a sequence), peak VRAM 15.32 GB
+bf16 (weights 15.23 GB): batch 32: 826.1 tokens/s (25.8 a sequence), peak VRAM 15.50 GB
+bf16 (weights 15.23 GB): batch 64: 1633.6 tokens/s (25.5 a sequence), peak VRAM 15.73 GB
+bf16 prefill: 64 tokens 14 ms (4465 tokens/s), 128 tokens 14 ms (8833 tokens/s), 512 tokens 16 ms (31139 tokens/s), 2048 tokens 55 ms (37466 tokens/s)
+bf16 profile: 20.08 ms a token, GPU busy 7.49 ms
+     2.860 ms    56.0 a token  nvjet_sm90_tst_256x8_64x6_4x1_v_bz_TNT
+     1.304 ms    28.0 a token  nvjet_sm90_tst_64x8_64x16_2x1_v_bz_splitK_TNT
+     0.357 ms     1.0 a token  nvjet_sm90_tst_384x8_64x4_2x1_v_bz_TNT
+     0.327 ms    28.0 a token  nvjet_sm90_tst_64x8_64x16_4x1_v_bz_bias_TNT
+     0.318 ms    28.0 a token  nvjet_sm90_tst_64x8_64x16_4x1_v_bz_TNT
+     0.293 ms    56.0 a token  nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_bias_TNT
+bf16 perplexity: 17.0178 (12600 tokens)
+mma fused: packed in 4 s; weights 10.75 GB against 15.23 GB bf16 (70.6%), scratch 0.27 GB, VRAM in use 11.06 GB on 1 GPU
+glyd mma fused: batch 1: 55.8 tokens/s (55.8 a sequence), peak VRAM 11.07 GB
+glyd mma fused: batch 8: 441.5 tokens/s (55.2 a sequence), peak VRAM 11.12 GB
+glyd mma fused: batch 32: 1765.0 tokens/s (55.2 a sequence), peak VRAM 11.29 GB
+glyd mma fused: batch 64: 3245.1 tokens/s (50.7 a sequence), peak VRAM 11.53 GB
+glyd mma prefill: 64 tokens 18 ms (3461 tokens/s), 128 tokens 23 ms (5588 tokens/s), 512 tokens 26 ms (19617 tokens/s), 2048 tokens 64 ms (32051 tokens/s)
+glyd mma profile: 19.89 ms a token, GPU busy 9.09 ms
+     7.266 ms   197.0 a token  void mma_gemm_kernel<1, true>(unsigned char const*, unsigned char const*, int co
+     0.258 ms   115.6 a token  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.162 ms   108.5 a token  void at::native::vectorized_elementwise_kernel<8, at::native::CUDAFunctor_add<c1
+     0.149 ms    57.0 a token  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.149 ms    59.0 a token  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+     0.127 ms    81.4 a token  void at::native::vectorized_elementwise_kernel<8, at::native::BinaryFunctor<c10:
+glyd mma perplexity: 17.0162 (12600 tokens)
+next-token choice as bf16's: 98.44%
+logits bit-identical: False
+generated tokens identical to bf16: 43 of 64
+text:  in the 1940s, when Claude Shannon and Alan Turing published theoretical work on information theory and machine computation. The first practical use of data compression was in the 1948

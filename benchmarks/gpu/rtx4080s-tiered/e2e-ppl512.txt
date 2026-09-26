@@ -1,0 +1,10 @@
+Loading weights:   0%|          | 0/339 [00:00<?, ?it/s]Loading weights: 100%|██████████| 339/339 [00:00<00:00, 19310.48it/s]
+bf16 (weights 15.23 GB): batch 1: 43.0 tokens/s (43.0 a sequence), peak VRAM 15.25 GB
+bf16 perplexity: 7.5677 (12775 tokens)
+mma fused: packed in 8 s; weights 10.32 GB against 15.23 GB bf16 (67.8%), scratch 0.27 GB, VRAM in use 10.60 GB on 1 GPU
+glyd mma fused: batch 1: 55.3 tokens/s (55.3 a sequence), peak VRAM 10.61 GB
+glyd mma perplexity: 7.5660 (12775 tokens)
+next-token choice as bf16's: 98.49%
+logits bit-identical: False
+generated tokens identical to bf16: 0 of 8
+text:  long before the computer era in the late

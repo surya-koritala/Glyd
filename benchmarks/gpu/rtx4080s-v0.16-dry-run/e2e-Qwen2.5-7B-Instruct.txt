@@ -1,0 +1,31 @@
+~/glyd-dry/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/339 [00:00<?, ?it/s]Loading weights: 100%|██████████| 339/339 [00:00<00:00, 18605.25it/s]
+In file included from ~/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/include/python3.12/Python.h:12,
+                 from ~/glyd-dry/gpuenv/lib/python3.12/site-packages/triton/backends/nvidia/driver.c:9:
+~/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/include/python3.12/pyconfig.h:1877:9: warning: ‘_POSIX_C_SOURCE’ redefined
+ 1877 | #define _POSIX_C_SOURCE 200809L
+      |         ^~~~~~~~~~~~~~~
+In file included from /usr/include/x86_64-linux-gnu/bits/libc-header-start.h:33,
+                 from /usr/include/stdlib.h:26,
+                 from ~/glyd-dry/gpuenv/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda.h:56,
+                 from ~/glyd-dry/gpuenv/lib/python3.12/site-packages/triton/backends/nvidia/driver.c:1:
+/usr/include/features.h:319:10: note: this is the location of the previous definition
+  319 | # define _POSIX_C_SOURCE        202405L
+      |          ^~~~~~~~~~~~~~~
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+bf16 (weights 15.23 GB): batch 1: 43.4 tokens/s (43.4 a sequence), peak VRAM 15.25 GB
+bf16 (weights 15.23 GB): batch 8: 332.3 tokens/s (41.5 a sequence), peak VRAM 15.30 GB
+bf16 (weights 15.23 GB): batch 32: 1154.1 tokens/s (36.1 a sequence), peak VRAM 15.48 GB
+bf16 prefill: 64 tokens 27 ms (2353 tokens/s), 128 tokens 29 ms (4424 tokens/s), 512 tokens 79 ms (6468 tokens/s), 2048 tokens 301 ms (6813 tokens/s)
+bf16 perplexity: 17.0015 (12600 tokens)
+mma fused: packed in 5 s; weights 10.75 GB against 15.23 GB bf16 (70.6%), scratch 0.27 GB, VRAM in use 11.03 GB on 1 GPU
+glyd mma fused: batch 1: 55.3 tokens/s (55.3 a sequence), peak VRAM 11.04 GB
+glyd mma fused: batch 8: 423.1 tokens/s (52.9 a sequence), peak VRAM 11.09 GB
+glyd mma fused: batch 32: 1535.3 tokens/s (48.0 a sequence), peak VRAM 11.27 GB
+glyd mma prefill: 64 tokens 22 ms (2864 tokens/s), 128 tokens 27 ms (4790 tokens/s), 512 tokens 84 ms (6099 tokens/s), 2048 tokens 323 ms (6349 tokens/s)
+glyd mma perplexity: 17.0052 (12600 tokens)
+next-token choice as bf16's: 98.13%
+logits bit-identical: False
+generated tokens identical to bf16: 0 of 64
+text:  long before the computer era in the late 1940s. In the early days, nearly all media were analog: sound was recorded on wax cylinders and magnetic tape, images were stored as

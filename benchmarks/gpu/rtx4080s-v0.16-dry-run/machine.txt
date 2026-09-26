@@ -1,0 +1,8 @@
+commit: 921fc76
+Sat Sep 26 03:52:16 AM UTC 2026
+name, memory.total [MiB], driver_version, clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA GeForce RTX 4080 SUPER, 16376 MiB, 595.91.07, 3105 MHz, 11501 MHz, 320.00 W
+32
+               total        used        free      shared  buff/cache   available
+Mem:              60           2          40           0          18          58
+15G	~/glyd-dry/models/Qwen2.5-7B-Instruct
