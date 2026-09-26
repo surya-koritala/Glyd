@@ -386,6 +386,58 @@ def pack_mma(w, tiers=None, chunk=1 << 22):
     return Mma((O, K), data.flatten(), blocks, torch.cumsum(size, 0).to(torch.int32), tiers)  # block_base: steps + 1 (the last's end)
 
 
+class Mma12(Mma):
+    """The 12-bit mma layout of a matrix [O, K]: the same order and sign-and-
+    mantissa bytes, the exponent a 4-bit code into the tensor's 15 commonest
+    (code 15: the step's exception list). A lighter decode than the tiered
+    code's, at 12 bits a weight (see glyd_gpu.cu, Nib)."""
+
+    def __init__(self, shape, data, exc, exc_base, sym):
+        self.shape, self.data, self.exc, self.exc_base, self.sym = shape, data, exc, exc_base, sym
+        self.sm = data
+        self.n = shape[0] * shape[1]
+
+    def nbytes(self):
+        return sum(t.numel() * t.element_size() for t in (self.data, self.exc, self.exc_base)) + 16
+
+
+def pack_mma12(w):
+    assert w.dtype == torch.bfloat16 and w.is_cuda and w.dim() == 2 and w.shape[0] % 64 == 0 and w.shape[1] % 16 == 0
+    O, K = w.shape
+    RB, KS, dev = O // 64, K // 16, w.device
+    u = w.contiguous().view(torch.int16)
+    top = torch.argsort(_hist(u.flatten()), descending=True, stable=True)[:15]
+    code = torch.full((256,), 15, dtype=torch.int64, device=dev)
+    code[top] = torch.arange(15, device=dev)
+    syms = top.tolist() + [0]
+    sym = [syms[4 * k] | syms[4 * k + 1] << 8 | syms[4 * k + 2] << 16 | syms[4 * k + 3] << 24 for k in range(4)]
+    steps = O * K // 1024
+    data = torch.empty(steps, 1536, dtype=torch.uint8, device=dev)  # a warp step: [32 lanes][16 bytes] of codes, then [32 lanes][32 bytes] as two halves
+    shifts = 4 * torch.arange(8, dtype=torch.int64, device=dev)
+    exc_parts, counts = [], []
+    per = max(1, (1 << 22) // (64 * K))  # row blocks a chunk
+    for b0 in range(0, RB, per):
+        b1 = min(RB, b0 + per)
+        v = u[b0 * 64 : b1 * 64].view(b1 - b0, 8, 8, KS, 2, 4, 2).permute(0, 3, 2, 5, 1, 4, 6).flatten().to(torch.int32) & 0xFFFF
+        a, z = b0 * 64 * K // 1024, b1 * 64 * K // 1024
+        e = (v >> 7) & 0xFF
+        c = code[e]
+        words = (c.view(-1, 32, 4, 8) << shifts).sum(-1)  # [steps, lanes, 4]: weight i at bits 4(i mod 8) of word i / 8
+        words = (words - (words >= 2**31).to(torch.int64) * 2**32).to(torch.int32)
+        data[a:z, :512] = words.contiguous().view(torch.uint8).view(-1, 512)
+        pr = v.view(-1, 2)
+        sign = (pr >> 15) & 1
+        data[a:z, 512:] = (((pr & 0x7F) << 1) | sign.flip(1)).to(torch.uint8).view(-1, 32, 2, 16).transpose(1, 2).reshape(-1, 1024)
+        m = (c == 15).view(z - a, 1024)
+        idx = torch.arange(1024, device=dev).expand(z - a, 1024)[m]  # lane * 32 + i
+        exc_parts.append((idx | e.view(z - a, 1024)[m].to(torch.int64) << 16).to(torch.int32))
+        counts.append(m.sum(1))
+    exc = torch.cat(exc_parts + [torch.zeros(1, dtype=torch.int32, device=dev)])
+    n = torch.cat(counts)
+    exc_base = torch.cat([torch.zeros(1, dtype=torch.int64, device=dev), torch.cumsum(n, 0)]).to(torch.int32)
+    return Mma12((O, K), data.flatten(), exc, exc_base, sym)
+
+
 def mma_cat(a, b):
     """Two packs with the same tiers and columns as one: a's rows, then b's."""
     assert a.tiers == b.tiers and a.shape[1] == b.shape[1]
@@ -400,7 +452,10 @@ def mma_unpack(p, out=None, row0=0, rows=None):
     rows = O - row0 if rows is None else rows
     if out is None:
         out = torch.empty(rows * K, dtype=torch.bfloat16, device=p.sm.device)
-    _ext.mma_unpack(p.data, p.blocks, p.block_base, p.tiers, K, row0, rows, out.view(torch.int16))
+    if isinstance(p, Mma12):
+        _ext.mma12_unpack(p.data, p.exc, p.exc_base, p.sym, K, row0, rows, out.view(torch.int16))
+    else:
+        _ext.mma_unpack(p.data, p.blocks, p.block_base, p.tiers, K, row0, rows, out.view(torch.int16))
     return out[: rows * K].view(rows, K)
 
 
@@ -410,7 +465,11 @@ def mma_gemm(p, x, bias=None):
     O, K = p.shape
     x = x.contiguous()
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
-    _ext.mma_gemm(p.data, p.blocks, p.block_base, p.tiers, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
+    b = bias if bias is not None else _none(x.device).to(torch.bfloat16)
+    if isinstance(p, Mma12):
+        _ext.mma12_gemm(p.data, p.exc, p.exc_base, p.sym, O, K, x, b, y)
+    else:
+        _ext.mma_gemm(p.data, p.blocks, p.block_base, p.tiers, O, K, x, b, y)
     return y
 
 
@@ -422,5 +481,9 @@ def mma_gemm_big(p, x, bias=None, variant=0):
     O, K = p.shape
     x = x.contiguous()
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
-    _ext.mma_gemm_big(p.data, p.blocks, p.block_base, p.tiers, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y, variant)
+    b = bias if bias is not None else _none(x.device).to(torch.bfloat16)
+    if isinstance(p, Mma12):
+        _ext.mma12_gemm_big(p.data, p.exc, p.exc_base, p.sym, O, K, x, b, y, variant)
+    else:
+        _ext.mma_gemm_big(p.data, p.blocks, p.block_base, p.tiers, O, K, x, b, y, variant)
     return y
