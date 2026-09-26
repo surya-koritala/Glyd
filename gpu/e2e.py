@@ -27,7 +27,8 @@ ap.add_argument("--prefill", type=str, default="", help="prompt lengths to time 
 ap.add_argument("--gemm-max", type=int, default=64, help="fused: steps of up to this many tokens multiply straight from the packed weights (fast format)")
 ap.add_argument("--batch", type=str, default="1", help="generate for this many copies of the prompt at once (comma list: each measured)")
 ap.add_argument("--gpus", type=int, default=1, help="spread the layers over this many GPUs (bf16: accelerate's device map; glyd: layers balanced by packed size)")
-ap.add_argument("--ppl", default="", help="a text file: perplexity over 200 windows of 64 tokens (a forward pass each; from its 10th MB), and how often the next-token choice is bf16's")
+ap.add_argument("--ppl", default="", help="a text file: perplexity over windows of --ppl-window tokens (a forward pass each; 12800 tokens from its 10th MB), and how often the next-token choice is bf16's")
+ap.add_argument("--ppl-window", type=int, default=64)
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
 args = ap.parse_args()
 
@@ -59,7 +60,8 @@ def perplexity(model, label):
     if not args.ppl:
         return None
     text = open(args.ppl, "rb").read()[10_000_000:10_400_000].decode("utf-8", "ignore")
-    windows = tok(text, return_tensors="pt").input_ids[0][: 200 * 64].view(200, 64).cuda()
+    n = 12800 // args.ppl_window
+    windows = tok(text, return_tensors="pt").input_ids[0][: n * args.ppl_window].view(n, args.ppl_window).cuda()
     nll, top = 0.0, []
     with torch.no_grad():
         for w in windows:
