@@ -481,10 +481,8 @@ def mma_gemm_wg(p, x, bias=None):
     x = x.contiguous()
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
     b = bias if bias is not None else _none(x.device).to(torch.bfloat16)
-    if isinstance(p, Mma12):
-        _ext.mma12_gemm_wg(p.data, p.exc, p.exc_base, p.sym, O, K, x, b, y)
-    else:
-        _ext.mma_gemm_wg(p.data, p.blocks, p.block_base, p.tiers, O, K, x, b, y)
+    assert isinstance(p, Mma12), "wgmma: the 12-bit layout (the tiered one is bound by its decode there)"
+    _ext.mma12_gemm_wg(p.data, p.exc, p.exc_base, p.sym, O, K, x, b, y)
     return y
 
 

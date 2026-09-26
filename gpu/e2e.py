@@ -244,7 +244,7 @@ class GLinear(nn.Module):
         # Past 64 tokens on Hopper the tensor cores outrun our decode: decode the matrix, cuBLAS multiplies.
         if args.fused and isinstance(self.p, g.Mma):
             M = x2.shape[0]
-            if HOPPER and M >= WG_MIN and K % 64 == 0:  # wgmma, weights decoded into shared memory
+            if HOPPER and M >= WG_MIN and K % 64 == 0 and isinstance(self.p, g.Mma12):  # wgmma, weights decoded into shared memory
                 return g.mma_gemm_wg(self.p, x2, self.bias).view(*lead, O)
             if M <= 64:
                 return g.mma_gemm(self.p, x2, self.bias).view(*lead, O)
