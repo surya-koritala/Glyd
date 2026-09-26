@@ -29,24 +29,28 @@ Wikipedia text (enwik8 from its 10th MB, 200 windows of 64 tokens):
 
 | | bf16 | Glyd `mma` |
 | :--- | ---: | ---: |
-| Peak VRAM | 15.25 GB | **11.04 GB** |
-| 1 sequence | 43.2 tokens/s | **55.5** (1.28x) |
-| 4 sequences | 167.6 | **216.7** (1.29x) |
-| 8 sequences | 331.4 | **418.3** (1.26x) |
-| 16 sequences | 649.6 | **809.4** (1.25x) |
-| 32 sequences | 1148.8 | **1516.6** (1.32x) |
-| 48 sequences | 1664.5 | **2014.5** (1.21x) |
+| Peak VRAM | 15.25 GB | **11.05 GB** |
+| 1 sequence | 43.3 tokens/s | **55.2** (1.27x) |
+| 4 sequences | 167.7 | **215.7** (1.29x) |
+| 16 sequences | 649.8 | **813.3** (1.25x) |
+| 32 sequences | 1149.0 | **1528.6** (1.33x) |
+| 48 sequences | 1658.4 | **2039.2** (1.23x) |
 | Prompt of 16 tokens | 24 ms | **19 ms** |
 | Prompt of 64 tokens | 27 ms | **22 ms** |
-| Prompt of 128 tokens | 29 ms | 60 ms |
-| Prompt of 512 tokens | 79 ms | 111 ms |
-| Perplexity | 17.0015 | 17.0052 |
+| Prompt of 128 tokens | 29 ms | **27 ms** |
+| Prompt of 256 tokens | 43 ms | 45 ms |
+| Prompt of 512 tokens | 79 ms | 85 ms |
+| Prompt of 1024 tokens | 154 ms | 162 ms |
+| Prompt of 2048 tokens | 301 ms | 327 ms |
+| Prompt of 4096 tokens | 645 ms | 696 ms |
+| Perplexity, 64-token windows | 17.0015 | 17.0052 |
+| Perplexity, 512-token windows | 7.5677 | 7.5660 |
 
 The weights are the model's to the bit; the product sums in another
 order than cuBLAS, which moves the logits by a rounding: the next token
-chosen is bf16's 98.13% of the time. bf16 against itself, two windows a
-pass instead of one: perplexity 17.0153, the same next token 98.33% of
-the time.
+chosen is bf16's 98.13% of the time (98.49% on the 512-token windows).
+bf16 against itself, two windows a pass instead of one: perplexity
+17.0153, the same next token 98.33% of the time.
 
 `mma_gemm` (1 to 64 tokens): a warp step is 1024 weights, 64 rows by
 16 columns, one 1408-byte run in the order `mma.sync.m16n8k16` takes its
@@ -59,8 +63,22 @@ sign). The steps are split evenly over the blocks (stream-K), a row
 block's parts added in a fixed order by its last block: the same result
 every run. On 7B's matrices it reads the packed weights at 95% of the
 bandwidth bf16's product reaches, 1.27-1.34x faster than bf16 at one
-token, 1.16-1.36x at 64. Longer prompts decode each matrix and use
-PyTorch's matmul, and there bf16 is still faster.
+token, 1.16-1.36x at 64.
+
+`mma_gemm_big` (more tokens: a prompt) is a tiled GEMM with its warps
+split: four produce, copying X's tile of each stage (64 columns) into
+shared memory by `cp.async` and decoding W's steps of it into B
+fragments there; four consume, each 64 tokens by 64 rows on the tensor
+cores with their fragments double-buffered, never waiting on a decode.
+Three stages are in flight, passed between the two by named barriers. A
+block is 128 tokens by 128 rows of W, or past 128 tokens 256 by 64 (a
+weight decoded once for twice the tokens); where the blocks would not
+fill the GPU, K is split and the parts added in a fixed order. Past 128
+tokens the product is bound by the tensor cores, not by memory, so the
+most it can be is bf16's time; it is within 4-9% of it. Measured on
+Qwen2.5-7B's matrices: the consumers alone come within 1-4% of cuBLAS
+(one warp an SM quarter keeps the tensor cores full: 106 TFLOPS, as
+cuBLAS's kernel); the rest is the producers' decoding sharing the SM.
 
 The other formats, 128 new tokens, one sequence:
 
