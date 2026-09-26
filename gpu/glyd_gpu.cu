@@ -1433,39 +1433,46 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
 #pragma unroll
         for (int i = 0; i < 5; i++) eb[i] = bs[i];
         int ea = bs[5];
+        // The stage's loads first (8 in flight at once), then its 4 steps' codes, then one run of exceptions for all 4.
+        uint32_t nw[4];
+        uint2 sw[4];
 #pragma unroll
         for (int kk = 0; kk < 4; kk++) {
             const uint8_t* q = sp + kk * STEP12;
-            uint32_t nw = *(const uint32_t*)(q + 16 * lane + 4 * w);
-            uint2 sw = *(const uint2*)(q + 512 + 512 * (w >> 1) + 16 * lane + 8 * (w & 1));
-            uint32_t ew[2];
+            nw[kk] = *(const uint32_t*)(q + 16 * lane + 4 * w);
+            sw[kk] = *(const uint2*)(q + 512 + 512 * (w >> 1) + 16 * lane + 8 * (w & 1));
+        }
+        uint32_t ew[8];  // step kk's exponent words 2w and 2w + 1 of each lane: ew[2kk], ew[2kk + 1]
 #pragma unroll
-            for (int h = 0; h < 2; h++) {
-                uint32_t c = nw >> (16 * h), c7 = c & 0x7777u;
-                ew[h] = __byte_perm(__byte_perm(f.sym[0], f.sym[1], c7), __byte_perm(f.sym[2], f.sym[3], c7), ((c >> 1) & 0x4444u) | 0x3210u);
-            }
-            // The step's exceptions in this warp's rows: weight i of a lane in word i / 4, words 2w and 2w + 1 here.
-            for (int k = eb[kk]; k < eb[kk + 1]; k++) {
-                uint32_t x = ea >= 0 ? se[k - ea] : __ldg(f.exc + k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
-                uint32_t hq = (int)((x >> 5) & 31) == lane && (int)(i >> 3) == w ? (i >> 2) & 1 : 2u;
+        for (int q = 0; q < 8; q++) {
+            uint32_t c = nw[q >> 1] >> (16 * (q & 1)), c7 = c & 0x7777u;
+            ew[q] = __byte_perm(__byte_perm(f.sym[0], f.sym[1], c7), __byte_perm(f.sym[2], f.sym[3], c7), ((c >> 1) & 0x4444u) | 0x3210u);
+        }
+        // The exceptions in this warp's rows: entry k is step kk's while eb[kk] <= k < eb[kk + 1]; weight i of a
+        // lane in word i / 4, words 2w and 2w + 1 here.
+        for (int k = eb[0]; k < eb[4]; k++) {
+            uint32_t x = ea >= 0 ? se[k - ea] : __ldg(f.exc + k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
+            uint32_t kk = (k >= eb[1]) + (k >= eb[2]) + (k >= eb[3]);
+            uint32_t hq = (int)((x >> 5) & 31) == lane && (int)(i >> 3) == w ? 2 * kk + ((i >> 2) & 1) : 8u;
 #pragma unroll
-                for (int h = 0; h < 2; h++) {
-                    uint32_t v = __byte_perm(ew[h], x >> 16, sel);
-                    ew[h] = hq == (uint32_t)h ? v : ew[h];
-                }
+            for (int q = 0; q < 8; q++) {
+                uint32_t v = __byte_perm(ew[q], x >> 16, sel);
+                ew[q] = hq == (uint32_t)q ? v : ew[q];
             }
-            // A fragment: rows g and g + 8 (words 2w and 2w + 1), columns 2t and 8 + 2t (bytes 0-1 and 2-3).
-            uint32_t y0 = __byte_perm(sw.x, ew[0], 0x5140), y1 = __byte_perm(sw.y, ew[1], 0x5140);
-            uint32_t y2 = __byte_perm(sw.x, ew[0], 0x7362), y3 = __byte_perm(sw.y, ew[1], 0x7362);
+        }
+        // A fragments: rows g and g + 8 (words 2w and 2w + 1), columns 2t and 8 + 2t (bytes 0-1 and 2-3).
+#pragma unroll
+        for (int kk = 0; kk < 4; kk++) {
+            uint32_t y0 = __byte_perm(sw[kk].x, ew[2 * kk], 0x5140), y1 = __byte_perm(sw[kk].y, ew[2 * kk + 1], 0x5140);
+            uint32_t y2 = __byte_perm(sw[kk].x, ew[2 * kk], 0x7362), y3 = __byte_perm(sw[kk].y, ew[2 * kk + 1], 0x7362);
             A[kk][0] = __funnelshift_r(y0, y0, 1);
             A[kk][1] = __funnelshift_r(y1, y1, 1);
             A[kk][2] = __funnelshift_r(y2, y2, 1);
             A[kk][3] = __funnelshift_r(y3, y3, 1);
         }
-        // X's tile address through a warp reduction, whose result ptxas knows is the same in every lane: the
-        // descriptors are then made on the uniform datapath, each in registers of its own (else they are moved
-        // in between the products, which serializes them).
-        uint32_t xs = __reduce_max_sync(FULL, base + sl * C::SLOT);
+        // (ptxas moves each product's descriptor into the same uniform registers just before it, so the four
+        // run one after another: "serialized", its C7513.)
+        uint32_t xs = base + sl * C::SLOT;
         uint64_t desc[4];
 #pragma unroll
         for (int kk = 0; kk < 4; kk++) desc[kk] = sw128_desc(xs + kk * 32);
