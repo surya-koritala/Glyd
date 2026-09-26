@@ -1,0 +1,33 @@
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading DFloat11 safetensors:   0%|          | 0/39 [00:00<?, ?it/s]Loading DFloat11 safetensors:  31%|███       | 12/39 [00:00<00:00, 112.80it/s]Loading DFloat11 safetensors:  67%|██████▋   | 26/39 [00:00<00:00, 125.23it/s]Loading DFloat11 safetensors: 100%|██████████| 39/39 [00:00<00:00, 125.68it/s]Loading DFloat11 safetensors: 100%|██████████| 39/39 [00:00<00:00, 124.27it/s]
+Total model size: 11.1565 GB
+DFloat11 /home/surya-koritala/data/ai/qwen3-8b-df11: loaded, GPU memory 11.16 GB
+The following generation flags are not valid and may be ignored: ['temperature', 'top_p', 'top_k']. Set `TRANSFORMERS_VERBOSITY=info` for more details.
+The attention mask is not set and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+Allocated 622329856 bf16 on device cuda:0
+DFloat11: batch 1: 13.8 tokens/s (13.8 a sequence), peak VRAM 12.43 GB
+DFloat11: batch 8: 104.7 tokens/s (13.1 a sequence), peak VRAM 12.56 GB
+DFloat11: batch 32: 387.5 tokens/s (12.1 a sequence), peak VRAM 12.85 GB
+DFloat11: batch 64: 746.2 tokens/s (11.7 a sequence), peak VRAM 13.29 GB
+/home/surya-koritala/dfenv/lib/python3.12/site-packages/torch/profiler/profiler.py:224: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+DFloat11 profile, batch 1: GPU busy 71.37 ms a step after the prompt (14 tokens/s of GPU time), 75.11 ms for the prompt and a token
+    47.757 ms  decode
+    16.065 ms  std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv
+     4.695 ms  std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv
+     0.399 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+DFloat11 profile, batch 8: GPU busy 74.90 ms a step after the prompt (107 tokens/s of GPU time), 94.79 ms for the prompt and a token
+    47.429 ms  decode
+    24.171 ms  void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x2_tn_align8
+     0.570 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.485 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+DFloat11 profile, batch 32: GPU busy 79.89 ms a step after the prompt (401 tokens/s of GPU time), 152.41 ms for the prompt and a token
+    47.521 ms  decode
+    13.897 ms  ampere_bf16_s16816gemm_bf16_64x128_ldg8_f2f_stages_32x6_tn
+     6.283 ms  ampere_bf16_s16816gemm_bf16_64x128_ldg8_f2f_stages_64x3_tn
+     6.059 ms  void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_32x32_128x2_tn_align8
+DFloat11 profile, batch 64: GPU busy 81.38 ms a step after the prompt (786 tokens/s of GPU time), 228.14 ms for the prompt and a token
+    47.491 ms  decode
+    14.738 ms  ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_tn
+    10.399 ms  ampere_bf16_s16816gemm_bf16_64x64_ldg8_f2f_stages_64x5_tn
+     2.064 ms  void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8
