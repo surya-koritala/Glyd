@@ -75,7 +75,7 @@ block is 128 tokens by 128 rows of W, or past 128 tokens 256 by 64 (a
 weight decoded once for twice the tokens); where the blocks would not
 fill the GPU, K is split and the parts added in a fixed order. Past 128
 tokens the product is bound by the tensor cores, not by memory, so the
-most it can be is bf16's time; it is within 4-9% of it. Measured on
+most it can be is bf16's time; it is within 5-9% of it. Measured on
 Qwen2.5-7B's matrices: the consumers alone come within 1-4% of cuBLAS
 (one warp an SM quarter keeps the tensor cores full: 106 TFLOPS, as
 cuBLAS's kernel); the rest is the producers' decoding sharing the SM.
