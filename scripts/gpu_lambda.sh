@@ -12,6 +12,7 @@
 #     (an instance launched from the console: run on it, and with the API
 #     key, terminate it at the end and at the cap)
 # Env: LAMBDA_KEY_FILE (~/.lambda/api_key), TYPE (gpu_1x_h100_sxm5),
+#      IMAGE (gpu-base-24-04: its driver runs CUDA 13; Lambda's default image's does not),
 #      REGION (the first with capacity), MAX_MIN (75),
 #      MODELS ("Qwen2.5-7B-Instruct Qwen2.5-32B-Instruct"), BATCH (1,8,32,64),
 #      RW (the remote work directory, relative to home: . on Lambda).
@@ -19,14 +20,15 @@ set -euo pipefail
 REF="${1:-HEAD}"
 KEY_FILE="${LAMBDA_KEY_FILE:-$HOME/.lambda/api_key}"
 TYPE="${TYPE:-gpu_1x_h100_sxm5}"
+IMAGE="${IMAGE:-gpu-base-24-04}"
 MAX_MIN="${MAX_MIN:-75}"
 MODELS="${MODELS:-Qwen2.5-7B-Instruct Qwen2.5-32B-Instruct}"
 BATCH="${BATCH:-1,8,32,64}"
 RW="${RW:-.}"
 API=https://cloud.lambda.ai/api/v1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT="$ROOT/benchmarks/gpu/lambda-$TYPE"
 RUN_ID="glyd-gpu-$(date +%Y%m%d-%H%M%S)"
+OUT="$ROOT/benchmarks/gpu/lambda-$TYPE-${RUN_ID#glyd-gpu-}"  # a folder a run
 TMP="$(mktemp -d)"
 ID=""; KEY_ID=""; PRICE=0; START=$(date +%s)
 
@@ -38,6 +40,9 @@ W=\$HOME/$RW
 mkdir -p \$W/results \$W/models
 R=\$W/results
 { echo "commit: $(git -C "$ROOT" rev-parse --short "$REF")"; date -u; nvidia-smi --query-gpu=name,memory.total,driver_version,clocks.max.sm,clocks.max.mem,power.limit --format=csv; nproc; free -g | head -2; } > \$R/machine.txt
+# PyTorch here is built for CUDA 13: the driver must run it (580 or newer).
+cv=\$(nvidia-smi | grep -o "CUDA Version: [0-9]*" | grep -o "[0-9]*\$")
+[ "\${cv:-0}" -ge 13 ] || { echo "DRIVER TOO OLD: CUDA \$cv" | tee \$R/FAILED; touch \$R/DONE; exit 1; }
 bash \$W/glyd/gpu/setup_env.sh \$W/gpuenv > \$R/setup.txt 2>&1 || { echo "SETUP FAILED" > \$R/FAILED; touch \$R/DONE; exit 1; }
 source \$W/gpuenv/cuda.sh
 export HF_HUB_ENABLE_HF_TRANSFER=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -161,7 +166,7 @@ regions = [r['name'] for r in d['regions_with_capacity_available']]
 print(regions[0] if regions else '-', d['instance_type']['price_cents_per_hour'])")
 REGION="${REGION:-$REGION_FOUND}"
 [ "$REGION" != "-" ] || { echo "no capacity for $TYPE now"; exit 1; }
-echo "$TYPE in $REGION at \$$(py "print($PRICE / 100)")/hour; cap $MAX_MIN min"
+echo "$TYPE in $REGION at \$$(py "print($PRICE / 100)")/hour, image $IMAGE; cap $MAX_MIN min"
 
 # A key for this run only.
 ssh-keygen -q -t ed25519 -N "" -f "$TMP/key" -C "$RUN_ID"
@@ -169,7 +174,7 @@ KEY_ID=$(api POST /ssh-keys -d "{\"name\": \"$RUN_ID\", \"public_key\": \"$(cat 
 SSH=(ssh -i "$TMP/key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=60)
 
 git -C "$ROOT" archive --format=tar -o "$TMP/glyd.tar" "$REF" gpu
-ID=$(api POST /instance-operations/launch -d "{\"region_name\": \"$REGION\", \"instance_type_name\": \"$TYPE\", \"ssh_key_names\": [\"$RUN_ID\"], \"name\": \"$RUN_ID\"}" | py 'import json,sys; print(json.load(sys.stdin)["data"]["instance_ids"][0])')
+ID=$(api POST /instance-operations/launch -d "{\"region_name\": \"$REGION\", \"instance_type_name\": \"$TYPE\", \"ssh_key_names\": [\"$RUN_ID\"], \"name\": \"$RUN_ID\", \"image\": {\"family\": \"$IMAGE\"}}" | py 'import json,sys; print(json.load(sys.stdin)["data"]["instance_ids"][0])')
 START=$(date +%s)
 echo "launched $ID"
 # Whatever happens here: terminate at the cap (a watcher of its own; the Mac kept awake meanwhile).
