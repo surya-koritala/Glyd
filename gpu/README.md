@@ -133,6 +133,67 @@ Past 64 tokens the fused kernel is not yet faster than decoding the matrix
 and multiplying (profiled: its loads queue up and stall, at 29%
 occupancy); a GEMM at cuBLAS's efficiency is what closes that.
 
+## Larger models
+
+On rented GPUs (`scripts/gpu_lambda.sh`: one Lambda Cloud instance a
+run, terminated at the end; raw logs in `benchmarks/gpu/lambda-*`), bf16
+and Glyd in the same run, 64 new tokens a sequence, MMLU on the same
+1,000 questions (0-shot):
+
+| Model, GPUs | Weights | Tokens/s at 1 / 8 / 32 / 64 sequences | Prompt of 2048 | Perplexity | MMLU |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-32B, bf16, 2x A6000 48 GB | 65.52 GB | 9.5 / 74.4 / 275.9 / 488.4 | 1332 ms | 17.0796 | 78.5% |
+| Qwen3-32B, Glyd, **1x** A6000 | **44.45 GB** | **11.8 / 94.9 / 289.9** / 400.5 | 2082 ms | 17.0788 | 78.0% |
+| Qwen2.5-72B, bf16, 4x A6000 | 145.41 GB | 4.5 / 35.0 / 134.6 / 254.3 | 2689 ms | 10.6035 | 81.9% |
+| Qwen2.5-72B, Glyd, **3x** A6000 | **97.80 GB** | **6.4 / 49.0 / 153.8** / 218.1 | 4195 ms | 10.5996 | 81.8% |
+| Qwen3-32B, bf16, H100 SXM 80 GB | 65.52 GB | 13.4 / 123.2 / 502.0 / 988.4 | 262 ms | 17.0814 | 78.2% |
+| Qwen3-32B, Glyd, H100 SXM | **44.45 GB** | 19.9 / 157.1 / 465.1 / 789.5 | 305 ms | 17.0849 | 78.2% |
+| Qwen2.5-7B, bf16, H100 SXM | 15.23 GB | 25.9 / 207.1 / 823.0 / 1670.2 | 55 ms | 17.0178 | 73.3% |
+| Qwen2.5-7B, Glyd, H100 SXM | **10.32 GB** | 57.4 / 455.5 / 1655.5 / 2807.1 | 64 ms | 17.0162 | 73.4% |
+
+The MMLU answers are bf16's on 99.2% (Qwen3-32B, A6000), 99.4%
+(Qwen2.5-72B), 100% (Qwen3-32B, H100) and 99.9% (Qwen2.5-7B, H100) of
+the questions. Across GPUs the A6000s run Glyd's model on fewer of them,
+so their pipeline has fewer stages. On the H100 Hugging Face's generation
+loop is bound by the CPU at few sequences (Qwen3-32B, profiled over 16
+tokens: 54.8 ms a token for bf16, 55.8 for Glyd), and the GPU's work is
+not Glyd's gain there: 40.6 ms of GPU time a token against bf16's 28.2,
+Qwen3-32B's MLP matrices 128 us against cuBLAS's 90 at one token (the
+decode is bound by arithmetic when memory moves 3.35 TB/s).
+
+## The KV cache
+
+The keys and values a model keeps for the tokens it has seen are bf16
+like its weights, and as compressible: on Qwen2.5-7B over 2,048 tokens of
+enwik8 the exponent carries 2.80 bits in the keys (2.59 given the
+channel) and 2.67 in the values, a floor of 10.5-10.6 bits a value, 34%
+under bf16. `kv.py` holds a Hugging Face model's cache that way:
+`GlydKVCache(config)` keeps each layer's newest tokens as they are and
+packs every full page of 64 in the mma layout's tiered code, keys by
+token and values transposed (the operands of attention's two products),
+the layer's tiers taken from its first page. With `fused=True` and
+`use_fused_attention(model)`, a step of one new token a sequence runs
+`attn_decode` on the packed pages: a block per KV head and run of pages,
+a page a warp, keys and values decoded in registers, the head's queries
+as one tensor-core tile, an online softmax, the blocks merged in a fixed
+order. Other steps (a prompt) get the keys and values decoded exactly.
+
+Qwen2.5-7B-Instruct, weights in the mma layout, RTX 4080 SUPER, an
+enwik8 prompt then 128 new tokens (`e2e.py --kv 1024,4096,16384`):
+
+| Prompt | KV cache, plain | Packed | A step, plain | Fused | Peak memory, plain | Packed |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,024 tokens | 66 MB | **46 MB** (70.4%) | 18.3 ms | 19.2 ms | 10.80 GB | 10.78 GB |
+| 4,096 tokens | 242 MB | **167 MB** (69.1%) | 19.1 ms | 19.6 ms | 11.41 GB | 11.34 GB |
+| 16,384 tokens | 947 MB | **651 MB** (68.7%) | 21.6 ms | 21.7 ms | 13.87 GB | 13.58 GB |
+
+Decoded back, the cache is the plain cache's bit for bit: the same 128
+tokens. Through `attn_decode` the sums run in another order than
+FlashAttention's, as with the weights: 256 tokens of the text fed one at
+a time after the prompt, perplexity 2.9895 / 4.3106 / 2.4778 against the
+plain cache's 2.9950 / 4.3130 / 2.4809, the next token the plain cache's
+97.3% / 99.6% / 99.6% of the time.
+
 ## Running
 
 Needs PyTorch with CUDA and nvcc (the extension builds on first import):
@@ -140,7 +201,8 @@ Needs PyTorch with CUDA and nvcc (the extension builds on first import):
     python check.py model.safetensors         # every tensor packed, unpacked, compared; speeds
     python shapes.py MODEL_DIR                # fused product against bf16, one layer's matrices
     python gemm.py MODEL_DIR 1,16,64          # several tokens: every product against bf16, one layer's matrices
-    python e2e.py MODEL_DIR --format mma --fused --baseline [--batch 1,8,32] [--prefill 16,64] [--ppl TEXT]
+    python e2e.py MODEL_DIR --format mma --fused --baseline [--batch 1,8,32] [--prefill 16,64] [--ppl TEXT] [--mmlu 1000] [--kv 1024,4096]
+    python kv.py                              # the KV cache packed and decoded bit for bit; attn_decode against SDPA
 
 ## License
 

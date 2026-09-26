@@ -1,0 +1,14 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/963 [00:00<?, ?it/s]Loading weights:  22%|██▏       | 216/963 [00:00<00:00, 2157.43it/s]Loading weights:  45%|████▍     | 432/963 [00:00<00:00, 1613.70it/s]Loading weights:  63%|██████▎   | 602/963 [00:00<00:00, 1577.75it/s]Loading weights: 100%|██████████| 963/963 [00:00<00:00, 2456.15it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+mma fused: packed in 140 s; weights 97.80 GB against 145.41 GB bf16 (67.3%), scratch 0.81 GB, VRAM in use 98.61 GB on 3 GPUs
+glyd mma fused: batch 1: 6.4 tokens/s (6.4 a sequence), peak VRAM 98.64 GB (34.1 + 32.0 + 32.5 GB on 3 GPUs)
+glyd mma fused: batch 8: 49.0 tokens/s (6.1 a sequence), peak VRAM 98.83 GB (34.2 + 32.1 + 32.6 GB on 3 GPUs)
+glyd mma fused: batch 32: 153.8 tokens/s (4.8 a sequence), peak VRAM 99.48 GB (34.4 + 32.3 + 32.8 GB on 3 GPUs)
+glyd mma fused: batch 64: 218.1 tokens/s (3.4 a sequence), peak VRAM 100.35 GB (34.8 + 32.5 + 33.0 GB on 3 GPUs)
+glyd mma prefill: 64 tokens 274 ms (233 tokens/s), 128 tokens 356 ms (360 tokens/s), 512 tokens 1071 ms (478 tokens/s), 2048 tokens 4195 ms (488 tokens/s)
+glyd mma perplexity: 10.5996 (12600 tokens)
+glyd mma MMLU: 81.80% of 1000 questions (0-shot)
+text:  with the standardization by CCITT of the first data compression algorithm for facsimile (fax) machines in 1968. In the last 40 years, a large number of

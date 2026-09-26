@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="742" height="866" viewBox="0 0 742 866" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13">
+<rect x="0" y="0" width="742" height="423" rx="8" fill="#0d1117"/>
+<rect x="0" y="0" width="742" height="34" rx="8" fill="#21262d"/><rect x="0" y="26" width="742" height="8" fill="#21262d"/>
+<circle cx="16" cy="17" r="6" fill="#ff5f56"/>
+<circle cx="34" cy="17" r="6" fill="#ffbd2e"/>
+<circle cx="52" cy="17" r="6" fill="#27c93f"/>
+<text x="371" y="22" fill="#c9d1d9" text-anchor="middle" font-weight="bold">bf16: Qwen3-32B across two 48 GB GPUs</text>
+<text x="16" y="62" fill="#7ee787" xml:space="preserve">$ nvidia-smi</text>
+<text x="16" y="79" fill="#8b949e" xml:space="preserve">| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |</text>
+<text x="16" y="96" fill="#8b949e" xml:space="preserve">| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |</text>
+<text x="16" y="113" fill="#8b949e" xml:space="preserve">|                                         |                        |               MIG M. |</text>
+<text x="16" y="130" fill="#8b949e" xml:space="preserve">|=========================================+========================+======================|</text>
+<text x="16" y="147" fill="#8b949e" xml:space="preserve">|   0  NVIDIA RTX A6000               On  |   00000000:06:00.0 Off |                  Off |</text>
+<text x="16" y="164" fill="#f0f6fc" font-weight="bold" xml:space="preserve">| 30%   34C    P2             73W /  300W |   44554MiB /  49140MiB |      0%      Default |</text>
+<text x="16" y="181" fill="#8b949e" xml:space="preserve">|                                         |                        |                  N/A |</text>
+<text x="16" y="198" fill="#8b949e" xml:space="preserve">+-----------------------------------------+------------------------+----------------------+</text>
+<text x="16" y="215" fill="#8b949e" xml:space="preserve">|   1  NVIDIA RTX A6000               On  |   00000000:07:00.0 Off |                  Off |</text>
+<text x="16" y="232" fill="#f0f6fc" font-weight="bold" xml:space="preserve">| 30%   29C    P2             69W /  300W |   18514MiB /  49140MiB |     28%      Default |</text>
+<text x="16" y="249" fill="#8b949e" xml:space="preserve">|                                         |                        |                  N/A |</text>
+<text x="16" y="266" fill="#8b949e" xml:space="preserve">+-----------------------------------------+------------------------+----------------------+</text>
+<text x="16" y="283" fill="#8b949e" xml:space="preserve">|   2  NVIDIA RTX A6000               On  |   00000000:08:00.0 Off |                  Off |</text>
+<text x="16" y="300" fill="#f0f6fc" font-weight="bold" xml:space="preserve">| 30%   26C    P8             27W /  300W |       5MiB /  49140MiB |      0%      Default |</text>
+<text x="16" y="317" fill="#8b949e" xml:space="preserve">|                                         |                        |                  N/A |</text>
+<text x="16" y="334" fill="#8b949e" xml:space="preserve">+-----------------------------------------+------------------------+----------------------+</text>
+<text x="16" y="351" fill="#8b949e" xml:space="preserve">|   3  NVIDIA RTX A6000               On  |   00000000:09:00.0 Off |                  Off |</text>
+<text x="16" y="368" fill="#f0f6fc" font-weight="bold" xml:space="preserve">| 30%   25C    P8             30W /  300W |       5MiB /  49140MiB |      0%      Default |</text>
+<text x="16" y="385" fill="#8b949e" xml:space="preserve">|                                         |                        |                  N/A |</text>
+<text x="16" y="402" fill="#8b949e" xml:space="preserve">+-----------------------------------------+------------------------+----------------------+</text>
+<rect x="0" y="443" width="742" height="423" rx="8" fill="#0d1117"/>
+<rect x="0" y="443" width="742" height="34" rx="8" fill="#21262d"/><rect x="0" y="469" width="742" height="8" fill="#21262d"/>
+<circle cx="16" cy="460" r="6" fill="#ff5f56"/>
+<circle cx="34" cy="460" r="6" fill="#ffbd2e"/>
+<circle cx="52" cy="460" r="6" fill="#27c93f"/>
+<text x="371" y="465" fill="#c9d1d9" text-anchor="middle" font-weight="bold">Glyd: Qwen3-32B on one 48 GB GPU</text>
+<text x="16" y="505" fill="#7ee787" xml:space="preserve">$ nvidia-smi</text>
+<text x="16" y="522" fill="#8b949e" xml:space="preserve">| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |</text>
+<text x="16" y="539" fill="#8b949e" xml:space="preserve">| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |</text>
+<text x="16" y="556" fill="#8b949e" xml:space="preserve">|                                         |                        |               MIG M. |</text>
+<text x="16" y="573" fill="#8b949e" xml:space="preserve">|=========================================+========================+======================|</text>
+<text x="16" y="590" fill="#8b949e" xml:space="preserve">|   0  NVIDIA RTX A6000               On  |   00000000:06:00.0 Off |                  Off |</text>
+<text x="16" y="607" fill="#f0f6fc" font-weight="bold" xml:space="preserve">| 37%   62C    P2             94W /  300W |   43338MiB /  49140MiB |      0%      Default |</text>
+<text x="16" y="624" fill="#8b949e" xml:space="preserve">|                                         |                        |                  N/A |</text>
+<text x="16" y="641" fill="#8b949e" xml:space="preserve">+-----------------------------------------+------------------------+----------------------+</text>
+<text x="16" y="658" fill="#8b949e" xml:space="preserve">|   1  NVIDIA RTX A6000               On  |   00000000:07:00.0 Off |                  Off |</text>
+<text x="16" y="675" fill="#f0f6fc" font-weight="bold" xml:space="preserve">| 30%   34C    P8             24W /  300W |       5MiB /  49140MiB |      0%      Default |</text>
+<text x="16" y="692" fill="#8b949e" xml:space="preserve">|                                         |                        |                  N/A |</text>
+<text x="16" y="709" fill="#8b949e" xml:space="preserve">+-----------------------------------------+------------------------+----------------------+</text>
+<text x="16" y="726" fill="#8b949e" xml:space="preserve">|   2  NVIDIA RTX A6000               On  |   00000000:08:00.0 Off |                  Off |</text>
+<text x="16" y="743" fill="#f0f6fc" font-weight="bold" xml:space="preserve">| 30%   26C    P8             27W /  300W |       5MiB /  49140MiB |      0%      Default |</text>
+<text x="16" y="760" fill="#8b949e" xml:space="preserve">|                                         |                        |                  N/A |</text>
+<text x="16" y="777" fill="#8b949e" xml:space="preserve">+-----------------------------------------+------------------------+----------------------+</text>
+<text x="16" y="794" fill="#8b949e" xml:space="preserve">|   3  NVIDIA RTX A6000               On  |   00000000:09:00.0 Off |                  Off |</text>
+<text x="16" y="811" fill="#f0f6fc" font-weight="bold" xml:space="preserve">| 30%   24C    P8             30W /  300W |       5MiB /  49140MiB |      0%      Default |</text>
+<text x="16" y="828" fill="#8b949e" xml:space="preserve">|                                         |                        |                  N/A |</text>
+<text x="16" y="845" fill="#8b949e" xml:space="preserve">+-----------------------------------------+------------------------+----------------------+</text>
+</svg>

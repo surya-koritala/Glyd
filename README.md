@@ -1,5 +1,5 @@
 <h1 align="center">Glyd</h1>
-<p align="center"><strong>Glyd - Fast lossless compression algorithm</strong></p>
+<p align="center"><strong>Glyd - Lossless compression for AI: model weights and KV cache in GPU memory, checkpoints on disk</strong></p>
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
@@ -13,7 +13,8 @@
 </p>
 
 <p align="center">
-<a href="#at-a-glance">At a glance</a> ·
+<a href="#ai-models-on-fewer-gpus">AI on the GPU</a> ·
+<a href="#at-a-glance">The codec</a> ·
 <a href="#what-glyd-saves-you">Savings</a> ·
 <a href="#quick-start">Quick start</a> ·
 <a href="#levels-and-modes">Levels and modes</a> ·
@@ -27,9 +28,57 @@
 
 ---
 
+## AI models on fewer GPUs
+
+A model's weights and KV cache are bf16 numbers whose sign and mantissa
+are noise and whose exponent carries under 3 of its 8 bits. Glyd holds
+them compressed in GPU memory, the model bit for bit, and decodes them on
+the GPU where they are used: inside the matrix product and inside
+attention ([gpu/](gpu/README.md)).
+
+<p align="center"><img src="docs/img/qwen3-32b-gpus.svg" width="100%" alt="nvidia-smi: Qwen3-32B in bf16 across two 48 GB GPUs (44,554 + 18,514 MiB), and with Glyd on one (43,338 MiB)"></p>
+
+<p align="center"><sub><code>nvidia-smi</code> during the runs, taken by <code>e2e.py --smi</code>: Lambda Cloud, 4x RTX A6000 (48 GB each), 2026-09-26. Raw output and every run's log: <a href="benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757">benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757</a>.</sub></p>
+
+| The same runs | bf16 | ⚡&nbsp;**Glyd** |
+| :--- | ---: | ---: |
+| Qwen3-32B: weights | 65.5 GB | **44.5 GB** |
+| Qwen3-32B: 48 GB GPUs it takes | 2 | **1** |
+| Qwen3-32B: tokens/s at 1 / 8 / 32 sequences | 9.5 / 74 / 276 | **11.8 / 95 / 290** |
+| Qwen3-32B: MMLU, 1,000 questions | 78.5% | 78.0% |
+| Qwen2.5-72B: weights | 145.4 GB | **97.8 GB** |
+| Qwen2.5-72B: 48 GB GPUs it takes | 4 | **3** |
+| Qwen2.5-72B: tokens/s at 1 / 8 / 32 sequences | 4.5 / 35 / 135 | **6.4 / 49 / 154** |
+| Qwen2.5-72B: MMLU, 1,000 questions | 81.9% | 81.8% |
+| KV cache, Qwen2.5-7B, 16K tokens | 947 MB | **651 MB** |
+
+- **Bit for bit.** Every weight and every cached key and value decodes to
+  itself. The products sum in another order than cuBLAS's and
+  FlashAttention's, as any two kernels do: MMLU answers are bf16's on
+  99.0-100% of the questions, perplexity within 0.05% (Qwen2.5-72B
+  10.5996 against 10.6035).
+- **Speed.** Generating for 1 to 32 sequences at once is 1.05-1.42x
+  bf16's tokens/s on the A6000s (the model on fewer GPUs) and 1.25-1.32x
+  on an RTX 4080 SUPER. At 64 sequences it is 0.82-0.86x on the A6000s
+  (1.04x on the 4080). Prompts take 1.2-1.6x bf16's time on the A6000s;
+  on the 4080 up to 128 tokens as fast or faster, past that 1.05-1.10x.
+  On an H100 the decode
+  is bound by arithmetic rather than memory: Qwen3-32B in 44.5 GB instead
+  of 65.5 with the same MMLU score (78.2%), but 40.6 ms of GPU time a token
+  against bf16's 28.2.
+- **The limit.** A bf16 number's sign and mantissa are noise, so no
+  lossless code takes more than about 34% off bf16 weights or KV cache
+  (measured: 10.5-10.6 bits a value); Glyd's 10.80 bits is 32.5% off.
+  Models shipped in FP8 have about 18% to take, in NVFP4 about 7%.
+- **On disk** the same exponent coding makes a bf16 checkpoint 33%
+  smaller, a fine-tune against its base 44% smaller, and a training
+  checkpoint with its optimizer state 17-23% smaller (below).
+
+---
+
 ## At a glance
 
-**Glyd** is a lossless compression library and CLI, written in Rust with a
+Underneath the GPU work, **Glyd** is a lossless compression library and CLI, written in Rust with a
 C ABI, for the workloads where storage and read CPU decide the bill:
 object storage, data lakes, logs and telemetry, backups and versioned
 exports, RPC payloads, caches. It is a drop-in alternative to **LZ4**,

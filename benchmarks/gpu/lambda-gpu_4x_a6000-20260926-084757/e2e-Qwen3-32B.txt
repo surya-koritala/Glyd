@@ -1,0 +1,43 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights:  17%|█▋        | 120/707 [00:00<00:00, 1197.57it/s]Loading weights:  34%|███▍      | 240/707 [00:00<00:00, 1192.14it/s]Loading weights:  52%|█████▏    | 369/707 [00:00<00:00, 1234.39it/s]Loading weights:  81%|████████▏ | 576/707 [00:00<00:00, 1562.84it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 1727.46it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+bf16 (weights 65.52 GB): batch 1: 9.5 tokens/s (9.5 a sequence), peak VRAM 65.56 GB (46.4 + 19.1 GB on 2 GPUs)
+bf16 (weights 65.52 GB): batch 8: 74.4 tokens/s (9.3 a sequence), peak VRAM 65.72 GB (46.6 + 19.2 GB on 2 GPUs)
+bf16 (weights 65.52 GB): batch 32: 275.9 tokens/s (8.6 a sequence), peak VRAM 66.24 GB (46.9 + 19.3 GB on 2 GPUs)
+bf16 (weights 65.52 GB): batch 64: 488.4 tokens/s (7.6 a sequence), peak VRAM 66.93 GB (47.5 + 19.5 GB on 2 GPUs)
+bf16 prefill: 64 tokens 123 ms (519 tokens/s), 128 tokens 130 ms (982 tokens/s), 512 tokens 336 ms (1525 tokens/s), 2048 tokens 1332 ms (1538 tokens/s)
+bf16 profile: 137.22 ms a token, GPU busy 100.02 ms
+    67.625 ms   180.0 a token  ampere_bf16_s16816gemm_bf16_64x64_ldg8_f2f_stages_64x5_tn
+    15.001 ms   120.0 a token  void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x2
+     5.519 ms    20.0 a token  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn
+     2.265 ms   120.0 a token  std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, __nv_bflo
+     2.191 ms     1.0 a token  void gemv2T_kernel_val<int, int, __nv_bfloat16, __nv_bfloat16, __nv_bfloat16, fl
+     0.911 ms   392.1 a token  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+bf16 perplexity: 17.0796 (12600 tokens)
+Generating test split:   0%|          | 0/14042 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 14042/14042 [00:00<00:00, 236348.60 examples/s]
+Generating validation split:   0%|          | 0/1531 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 1531/1531 [00:00<00:00, 130570.95 examples/s]
+Generating dev split:   0%|          | 0/285 [00:00<?, ? examples/s]Generating dev split: 100%|██████████| 285/285 [00:00<00:00, 48733.20 examples/s]
+Generating auxiliary_train split:   0%|          | 0/99842 [00:00<?, ? examples/s]Generating auxiliary_train split:  10%|█         | 10000/99842 [00:00<00:01, 84381.91 examples/s]Generating auxiliary_train split:  27%|██▋       | 27000/99842 [00:00<00:00, 124155.29 examples/s]Generating auxiliary_train split:  43%|████▎     | 43000/99842 [00:00<00:00, 133902.01 examples/s]Generating auxiliary_train split:  59%|█████▉    | 59000/99842 [00:00<00:00, 129739.89 examples/s]Generating auxiliary_train split:  81%|████████  | 81000/99842 [00:00<00:00, 157428.56 examples/s]Generating auxiliary_train split: 100%|██████████| 99842/99842 [00:00<00:00, 158203.57 examples/s]
+bf16 MMLU: 78.50% of 1000 questions (0-shot)
+mma fused: packed in 58 s; weights 44.45 GB against 65.52 GB bf16 (67.8%), scratch 0.54 GB, VRAM in use 45.01 GB on 2 GPUs
+glyd mma fused: batch 1: 8.0 tokens/s (8.0 a sequence), peak VRAM 45.03 GB (22.7 + 22.3 GB on 2 GPUs)
+glyd mma fused: batch 8: 63.3 tokens/s (7.9 a sequence), peak VRAM 45.19 GB (22.8 + 22.4 GB on 2 GPUs)
+glyd mma fused: batch 32: 248.1 tokens/s (7.8 a sequence), peak VRAM 45.72 GB (23.1 + 22.6 GB on 2 GPUs)
+glyd mma fused: batch 64: 413.7 tokens/s (6.5 a sequence), peak VRAM 46.44 GB (23.5 + 22.9 GB on 2 GPUs)
+glyd mma prefill: 64 tokens 143 ms (447 tokens/s), 128 tokens 176 ms (725 tokens/s), 512 tokens 511 ms (1002 tokens/s), 2048 tokens 2030 ms (1009 tokens/s)
+glyd mma profile: 136.03 ms a token, GPU busy 75.37 ms
+    68.163 ms   449.0 a token  void mma_gemm_kernel<1>(unsigned char const*, unsigned char const*, int const*, 
+     1.031 ms   392.1 a token  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.882 ms   257.0 a token  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.788 ms   259.0 a token  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+     0.494 ms   257.0 a token  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<a
+     0.455 ms   136.0 a token  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymo
+glyd mma perplexity: 17.0788 (12600 tokens)
+glyd mma MMLU: 78.00% of 1000 questions (0-shot)
+next-token choice as bf16's: 98.45%
+MMLU answer as bf16's: 99.20%
+logits bit-identical: False
+generated tokens identical to bf16: 64 of 64
+text:  in 1948 with the publication of A Mathematical Theory of Communication by the Bell Labs researcher Claude Shannon. In this paper, Shannon introduced the concept of entropy as a measure of the information content

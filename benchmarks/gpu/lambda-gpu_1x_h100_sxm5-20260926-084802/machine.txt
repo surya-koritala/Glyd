@@ -1,0 +1,9 @@
+commit: b90393f
+Sat Sep 26 12:51:58 UTC 2026
+name, memory.total [MiB], driver_version, clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA H100 80GB HBM3, 81559 MiB, 580.126.20, 1980 MHz, 2619 MHz, 700.00 W
+26
+               total        used        free      shared  buff/cache   available
+Mem:             221           2         219           0           0         218
+15G	/home/ubuntu/./models/Qwen2.5-7B-Instruct
+62G	/home/ubuntu/./models/Qwen3-32B
