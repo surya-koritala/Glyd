@@ -1,0 +1,9 @@
++ hf download Qwen/Qwen2.5-7B-Instruct --local-dir ~/glyd-dry/models/Qwen2.5-7B-Instruct
+~/glyd-dry/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+[90mHint: A new version of huggingface_hub (2.0.0) is available! You are using version 1.33.0.[0m
+[90mHint: The `hf-cli` skill is not installed. Run `hf skills add -g` to teach your AI agents how to use the `hf` CLI.[0m
+Fetching 14 files:   0%|          | 0/14 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 14 files:  21%|██▏       | 3/14 [00:00<00:00, 25.61it/s]Fetching 14 files:  71%|███████▏  | 10/14 [00:00<00:00, 40.15it/s]Fetching 14 files:  71%|███████▏  | 10/14 [00:20<00:00, 40.15it/s]Fetching 14 files:  79%|███████▊  | 11/14 [01:02<00:25,  8.41s/it]Fetching 14 files:  86%|████████▌ | 12/14 [01:02<00:14,  7.14s/it]Fetching 14 files: 100%|██████████| 14/14 [01:11<00:00,  5.07s/it]
+[32m✓ Downloaded[0m
+  path: ~/glyd-dry/models/Qwen2.5-7B-Instruct
