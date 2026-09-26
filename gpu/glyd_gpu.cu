@@ -1194,6 +1194,155 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
         }
 }
 
+// Many tokens on Hopper (sm_90a): the same split of work as the kernel above
+// (producer warps decode, consumers multiply) but the consumers are
+// warpgroups issuing wgmma, Hopper's tensor-core instruction, 64 tokens by
+// 128 of W's rows a warpgroup and 16 columns an instruction, reading both
+// operands from shared memory. A stage is 64 columns: X's tile copied by
+// cp.async and W's 128 rows decoded by the producer warpgroup, both laid
+// out as wgmma's 128-byte swizzle takes them (a row's 16-byte chunk c at
+// chunk c ^ (row mod 8) of its 128 bytes), then made visible to the tensor
+// cores' reads (fence.proxy.async) and handed over by named barriers.
+constexpr int WG_BN = 128;  // W's rows a block
+template <int CWG> struct Wg {
+    static constexpr int BM = 64 * CWG;                  // tokens a block
+    static constexpr int THREADS = 128 * (1 + CWG);      // a producer warpgroup, CWG consumers
+    static constexpr int X_BYTES = BM * 128, W_BYTES = WG_BN * 128, STAGE = X_BYTES + W_BYTES;
+};
+
+__device__ __forceinline__ uint64_t sw128_desc(uint32_t addr) {
+    // Start address >> 4, stride between 8-row groups 1024 bytes, 128-byte swizzle (K-major).
+    return (uint64_t)((addr & 0x3FFFF) >> 4) | ((uint64_t)(1024 >> 4) << 32) | ((uint64_t)1 << 62);
+}
+
+__device__ __forceinline__ void wgmma_m64n128(float d[64], uint64_t da, uint64_t db) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+    asm volatile(
+        "{\n.reg .pred p;\nsetp.ne.b32 p, %66, 0;\n"
+        "wgmma.mma_async.sync.aligned.m64n128k16.f32.bf16.bf16 {%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %16, %17, %18, %19, %20, %21, %22, %23, %24, %25, %26, %27, %28, %29, %30, %31, %32, %33, %34, %35, %36, %37, %38, %39, %40, %41, %42, %43, %44, %45, %46, %47, %48, %49, %50, %51, %52, %53, %54, %55, %56, %57, %58, %59, %60, %61, %62, %63}, %64, %65, p, 1, 1, 0, 0;\n}\n"
+        : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]), "+f"(d[6]), "+f"(d[7]), "+f"(d[8]), "+f"(d[9]), "+f"(d[10]), "+f"(d[11]), "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]), "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]), "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]), "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]), "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31]), "+f"(d[32]), "+f"(d[33]), "+f"(d[34]), "+f"(d[35]), "+f"(d[36]), "+f"(d[37]), "+f"(d[38]), "+f"(d[39]), "+f"(d[40]), "+f"(d[41]), "+f"(d[42]), "+f"(d[43]), "+f"(d[44]), "+f"(d[45]), "+f"(d[46]), "+f"(d[47]), "+f"(d[48]), "+f"(d[49]), "+f"(d[50]), "+f"(d[51]), "+f"(d[52]), "+f"(d[53]), "+f"(d[54]), "+f"(d[55]), "+f"(d[56]), "+f"(d[57]), "+f"(d[58]), "+f"(d[59]), "+f"(d[60]), "+f"(d[61]), "+f"(d[62]), "+f"(d[63])
+        : "l"(da), "l"(db), "r"(1));
+#endif
+}
+
+__device__ __forceinline__ void wg_fence() {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+    asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
+#endif
+}
+__device__ __forceinline__ void wg_commit_wait() {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+    asm volatile("wgmma.commit_group.sync.aligned;\nwgmma.wait_group.sync.aligned 0;\n" ::: "memory");
+#endif
+}
+__device__ __forceinline__ void proxy_fence() {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+    asm volatile("fence.proxy.async.shared::cta;\n" ::: "memory");
+#endif
+}
+
+template <class Fmt, int CWG, int NB>
+__global__ void __launch_bounds__(Wg<CWG>::THREADS, 1) mma_gemm_wg_kernel(Fmt f, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
+    using C = Wg<CWG>;
+    extern __shared__ __align__(1024) uint8_t smem_raw[];  // NB stages [X tile | W tile], each 1024-aligned; then (tiered) 4 warps' scratch
+    __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
+    if constexpr (Fmt::kTable) fill_groups(tab);
+    __syncthreads();
+    uint32_t raw = (uint32_t)__cvta_generic_to_shared(smem_raw), base = (raw + 1023) & ~1023u;
+    uint8_t* gbase = smem_raw + (base - raw);
+    int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    int64_t KS = K / 16, RB = O / 64, tile = blockIdx.x, ot = blockIdx.y;
+    int64_t st0 = (int64_t)blockIdx.z * stages_per_split, nst = min(K / 64, st0 + stages_per_split) - st0;
+    if (warp < 4) {
+        // Producer p: X's 16-byte chunks pt + 128 i of a stage; W's steps 2p and 2p + 1 of its 8 (row block u / 4, step u % 4).
+        int pt = tid, p = warp;
+        uint32_t* s2 = (uint32_t*)(gbase + NB * C::STAGE) + p * (S2_BYTES / 4);
+        typename Fmt::St st[2];
+        auto d_load = [&](int64_t j) {
+#pragma unroll
+            for (int i = 0; i < 2; i++) {
+                int u = 2 * p + i;
+                int64_t rb = min(ot * 2 + u / 4, RB - 1), s = (st0 + j) * 4 + u % 4;
+                f.load(st[i], rb * KS + s, lane);
+            }
+        };
+        if (nst > 0) d_load(0);
+        for (int64_t j = 0; j < nst; j++) {
+            int b = (int)(j % NB);
+            if (j >= NB) bar_sync<C::THREADS>(1 + NB + b);  // consumers are done with stage j - NB
+            uint32_t xs = base + b * C::STAGE, ws = xs + C::X_BYTES;
+            int64_t col = (st0 + j) * 64;
+#pragma unroll
+            for (int i = 0; i < C::BM * 8 / 128; i++) {
+                int id = pt + 128 * i, r = id >> 3, c = id & 7;
+                int64_t m = tile * C::BM + r;
+                cp_async16(xs + r * 128 + ((c ^ (r & 7)) << 4), X + (m < M ? m : 0) * K + col + c * 8, m < M ? 16 : 0);
+            }
+            asm volatile("cp.async.commit_group;\n" ::);
+            typename Fmt::St cur[2];
+            cur[0] = st[0];
+            cur[1] = st[1];
+            if (j + 1 < nst) d_load(j + 1);
+            int g = lane >> 2, t = lane & 3;
+#pragma unroll
+            for (int i = 0; i < 2; i++) {
+                int u = 2 * p + i, kk = u % 4;
+                uint32_t R[16];
+                f.decode(cur[i], lane, s2, tab, R);
+                // Row o = 64 (u / 4) + 8n + g: columns 16 kk + 2t (chunk 2 kk) and + 8 (chunk 2 kk + 1), at byte 4t of the chunk.
+#pragma unroll
+                for (int n = 0; n < 8; n++) {
+                    uint32_t o = 64 * (u / 4) + 8 * n + g, row = ws + o * 128 + 4 * t;
+                    asm volatile("st.shared.b32 [%0], %1;\n" ::"r"(row + (((2 * kk) ^ g) << 4)), "r"(R[2 * n]));
+                    asm volatile("st.shared.b32 [%0], %1;\n" ::"r"(row + (((2 * kk + 1) ^ g) << 4)), "r"(R[2 * n + 1]));
+                }
+            }
+            asm volatile("cp.async.wait_group 0;\n" ::);
+            proxy_fence();  // the stage's writes, to the tensor cores' reads
+            bar_arrive<C::THREADS>(1 + b);  // stage j is ready
+        }
+        return;
+    }
+    // Consumer warpgroup w: tokens 64 w on of the block's, all its 128 rows of W.
+    int w = (tid - 128) >> 7, ct = (tid - 128) & 127, cw = ct >> 5, cl = ct & 31;
+    float d[64];
+#pragma unroll
+    for (int i = 0; i < 64; i++) d[i] = 0.f;
+    for (int64_t j = 0; j < nst; j++) {
+        int b = (int)(j % NB);
+        bar_sync<C::THREADS>(1 + b);  // stage j is ready
+        uint32_t xs = base + b * C::STAGE + w * 64 * 128, ws = base + b * C::STAGE + C::X_BYTES;
+        wg_fence();
+#pragma unroll
+        for (int kk = 0; kk < 4; kk++) wgmma_m64n128(d, sw128_desc(xs + kk * 32), sw128_desc(ws + kk * 32));
+        wg_commit_wait();
+#pragma unroll
+        for (int i = 0; i < 64; i++) asm volatile("" : "+f"(d[i])::"memory");
+        if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + b);  // done with stage j's buffers
+    }
+    // d[4j..4j+3]: token rows 16 cw + cl / 4 (and + 8), W rows 8j + 2 (cl % 4) (and + 1).
+#pragma unroll
+    for (int jn = 0; jn < 16; jn++) {
+        int64_t o = ot * WG_BN + 8 * jn + 2 * (cl & 3);
+        if (o >= O) continue;
+#pragma unroll
+        for (int h = 0; h < 2; h++) {
+            int64_t m = tile * C::BM + w * 64 + 16 * cw + (cl >> 2) + 8 * h;
+            if (m >= M) continue;
+            float v0 = d[4 * jn + 2 * h], v1 = d[4 * jn + 2 * h + 1];
+            if (Y32) {
+                *(float2*)(Y32 + ((int64_t)blockIdx.z * M + m) * O + o) = make_float2(v0, v1);
+            } else {
+                if (bias) {
+                    v0 += __bfloat162float(bias[o]);
+                    v1 += __bfloat162float(bias[o + 1]);
+                }
+                *(__nv_bfloat162*)(Y + m * O + o) = __floats2bfloat162_rn(v0, v1);
+            }
+        }
+    }
+}
+
 // The mma layout back to bf16, rows [row0, row0 + rows) of W (multiples of
 // 64) into out [rows, K] (checks, and the many-token path that multiplies
 // with PyTorch): a warp a step.
@@ -1668,6 +1817,58 @@ void mma12_gemm_big(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_bas
     mma_gemm_big_any(nib_of(data, exc, exc_base, sym), data, O, K, x, bias, y, variant);
 }
 
+template <class Fmt, int CWG, int NB>
+static void mma_gemm_wg_run(Fmt f, torch::Tensor data, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, cudaStream_t cs) {
+    using C = Wg<CWG>;
+    auto kernel = mma_gemm_wg_kernel<Fmt, CWG, NB>;
+    int64_t M = x.size(0), stages = K / 64, ots = (O + WG_BN - 1) / WG_BN, tiles = (M + C::BM - 1) / C::BM;
+    int shared = NB * C::STAGE + 1024 + (Fmt::kTable ? 4 * S2_BYTES : 0);
+    static auto* per_sm_of = new std::map<int, int>;  // a device's blocks an SM for this kernel
+    int dev = data.get_device();
+    if (!per_sm_of->count(dev)) {
+        int n = 1;
+        cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared);
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&n, kernel, C::THREADS, shared);
+        (*per_sm_of)[dev] = std::max(n, 1);
+    }
+    // K split so the blocks fill their last wave, as mma_gemm_big_run's.
+    int64_t cap = (*per_sm_of)[dev] * at::cuda::getCurrentDeviceProperties()->multiProcessorCount, most = std::max<int64_t>(1, stages / 4);
+    int64_t splits = 1;
+    double best = 0;
+    for (int64_t sp = 1; sp <= most; sp++) {
+        int64_t nblocks = ots * tiles * sp;
+        double fill = (double)nblocks / (double)(((nblocks + cap - 1) / cap) * cap);
+        if (fill > best + 1e-9) best = fill, splits = sp;
+        if (fill >= 0.85) break;
+    }
+    int64_t per = (stages + splits - 1) / splits;
+    splits = (stages + per - 1) / per;
+    const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
+    torch::Tensor y32;
+    if (splits > 1) y32 = torch::empty({splits, M, O}, x.options().dtype(torch::kFloat32));
+    kernel<<<dim3(tiles, ots, splits), C::THREADS, shared, cs>>>(f, O, K, M, per, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), splits > 1 ? (float*)y32.data_ptr() : nullptr);
+    if (splits > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>((const float*)y32.data_ptr(), splits, b, M, O, (__nv_bfloat16*)y.data_ptr());
+}
+
+template <class Fmt>
+static void mma_gemm_wg_any(Fmt f, torch::Tensor data, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    const c10::cuda::CUDAGuard guard(data.device());
+    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
+    TORCH_CHECK(at::cuda::getCurrentDeviceProperties()->major >= 9, "wgmma: Hopper or later");
+    TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
+    // One consumer warpgroup (64 tokens a block) up to 64 tokens, else two.
+    if (x.size(0) <= 64) mma_gemm_wg_run<Fmt, 1, 4>(f, data, O, K, x, bias, y, cs);
+    else mma_gemm_wg_run<Fmt, 2, 4>(f, data, O, K, x, bias, y, cs);
+}
+
+void mma_gemm_wg(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    mma_gemm_wg_any(tiered_of(data, blocks, block_base, tiers), data, O, K, x, bias, y);
+}
+
+void mma12_gemm_wg(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    mma_gemm_wg_any(nib_of(data, exc, exc_base, sym), data, O, K, x, bias, y);
+}
+
 template <class Fmt>
 static void mma_unpack_run(Fmt f, torch::Tensor data, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
     const c10::cuda::CUDAGuard guard(data.device());
@@ -1715,6 +1916,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("mma12_gemm", &mma12_gemm);
     m.def("mma12_gemm_big", &mma12_gemm_big);
     m.def("mma12_unpack", &mma12_unpack);
+    m.def("mma_gemm_wg", &mma_gemm_wg);
+    m.def("mma12_gemm_wg", &mma12_gemm_wg);
     m.def("attn_decode", &attn_decode);
     m.def("mma_gemm_big", &mma_gemm_big);
     m.def("fast_bgemv", &fast_bgemv);

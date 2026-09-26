@@ -58,6 +58,11 @@ for name in names:
             e12 = ((g.mma_gemm(q12, x).float() - ref).abs().max() / ref.abs().max()).item()
             assert e12 < 1e-2 and torch.equal(g.mma_gemm(q12, x), g.mma_gemm(q12, x)), f"{name} mma12 M={M}: {e12}"
             tv += f" | mma12 {gpu_us(lambda: g.mma_gemm(q12, x)):6.0f}"
+        if M >= 16 and torch.cuda.get_device_capability()[0] >= 9 and w.shape[1] % 64 == 0:  # Hopper: wgmma, both layouts
+            for lab, pk in (("wg", q), ("wg12", q12)):
+                ew = ((g.mma_gemm_wg(pk, x).float() - ref).abs().max() / ref.abs().max()).item()
+                assert ew < 1e-2 and torch.equal(g.mma_gemm_wg(pk, x), g.mma_gemm_wg(pk, x)), f"{name} {lab} M={M}: {ew}"
+                tv += f" | {lab} {gpu_us(lambda: g.mma_gemm_wg(pk, x)):6.0f}"
         if M >= 32:
             eb = ((g.mma_gemm_big(q, x, variant=1).float() - ref).abs().max() / ref.abs().max()).item()
             assert eb < 1e-2, f"{name} mma big M={M}: {eb}"

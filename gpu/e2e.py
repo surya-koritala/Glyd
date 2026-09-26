@@ -11,7 +11,7 @@ cuBLAS's, as between any two GEMM kernels, so late tokens may differ.
 The bf16 model is never held on the GPU: every Linear is packed from
 the CPU copy, one at a time.
 """
-import argparse, math, time, torch
+import argparse, math, os, time, torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -41,6 +41,7 @@ prompt = "The history of data compression began"
 ids = tok(prompt, return_tensors="pt").input_ids.cuda()
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 HOPPER = torch.cuda.get_device_capability()[0] >= 9
+WG_MIN = int(os.environ.get("GLYD_WG_MIN", 17))  # Hopper: steps of this many tokens or more multiply by wgmma
 
 
 def prefill(model, label):
@@ -241,8 +242,14 @@ class GLinear(nn.Module):
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)
         # Past 64 tokens on Hopper the tensor cores outrun our decode: decode the matrix, cuBLAS multiplies.
-        if args.fused and isinstance(self.p, g.Mma) and (x2.shape[0] <= 64 or (K % 64 == 0 and not HOPPER)):
-            return (g.mma_gemm if x2.shape[0] <= 64 else g.mma_gemm_big)(self.p, x2, self.bias).view(*lead, O)
+        if args.fused and isinstance(self.p, g.Mma):
+            M = x2.shape[0]
+            if HOPPER and M >= WG_MIN and K % 64 == 0:  # wgmma, weights decoded into shared memory
+                return g.mma_gemm_wg(self.p, x2, self.bias).view(*lead, O)
+            if M <= 64:
+                return g.mma_gemm(self.p, x2, self.bias).view(*lead, O)
+            if K % 64 == 0 and not HOPPER:
+                return g.mma_gemm_big(self.p, x2, self.bias).view(*lead, O)
         if args.fused and x2.shape[0] == 1:
             f = g.fast_gemv if isinstance(self.p, g.Fast) else g.gemv
             return f(self.p, x2[0], self.bias).view(*lead, O)

@@ -473,6 +473,21 @@ def mma_gemm(p, x, bias=None):
     return y
 
 
+def mma_gemm_wg(p, x, bias=None):
+    """X W^T (+ bias) for many tokens on Hopper (x [M, K], K a multiple of
+    64): producer warps decode the weights into shared memory as wgmma
+    reads them, consumer warpgroups multiply with wgmma."""
+    O, K = p.shape
+    x = x.contiguous()
+    y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
+    b = bias if bias is not None else _none(x.device).to(torch.bfloat16)
+    if isinstance(p, Mma12):
+        _ext.mma12_gemm_wg(p.data, p.exc, p.exc_base, p.sym, O, K, x, b, y)
+    else:
+        _ext.mma_gemm_wg(p.data, p.blocks, p.block_base, p.tiers, O, K, x, b, y)
+    return y
+
+
 def mma_gemm_big(p, x, bias=None, variant=0):
     """X W^T (+ bias) for many tokens (x [M, K]; a prompt; K a multiple of
     64): a tiled GEMM, each weight decoded once for 128 or 256 tokens
