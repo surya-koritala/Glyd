@@ -129,8 +129,8 @@ class GLinear(nn.Module):
         O, K = self.p.shape
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)
-        if args.fused and isinstance(self.p, g.Mma) and x2.shape[0] <= 64:
-            return g.mma_gemm(self.p, x2, self.bias).view(*lead, O)
+        if args.fused and isinstance(self.p, g.Mma) and x2.shape[0] <= 1024:
+            return (g.mma_gemm if x2.shape[0] <= 64 else g.mma_gemm_big)(self.p, x2, self.bias).view(*lead, O)
         if args.fused and x2.shape[0] == 1:
             f = g.fast_gemv if isinstance(self.p, g.Fast) else g.gemv
             return f(self.p, x2[0], self.bias).view(*lead, O)

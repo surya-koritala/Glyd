@@ -367,3 +367,13 @@ def mma_gemm(p, x, bias=None):
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
     _ext.mma_gemm(p.data, p.exc, p.exc_base, p.base, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
     return y
+
+
+def mma_gemm_big(p, x, bias=None):
+    """X W^T (+ bias) for many tokens (x [M, K]; a prompt): each weight
+    decoded once for 128 tokens, into shared memory, on the tensor cores."""
+    O, K = p.shape
+    x = x.contiguous()
+    y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
+    _ext.mma_gemm_big(p.data, p.exc, p.exc_base, p.base, O, K, x, bias if bias is not None else _none(x.device).to(torch.bfloat16), y)
+    return y
