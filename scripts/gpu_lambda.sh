@@ -59,7 +59,7 @@ nvidia-smi --query-gpu=timestamp,clocks.sm,clocks.mem,power.draw,temperature.gpu
 CLK=\$!
 # Every product checked and timed first (a failure there: the models without bulk copies); every step bounded.
 first=\$(echo $MODELS | cut -d' ' -f1)
-timeout 900 python gemm.py \$W/models/\$first 1,16,64,256,2048 > \$R/gemm-\$first.txt 2>&1 || { echo "gemm.py failed: GLYD_GPU_TMA=0" >> \$R/machine.txt; export GLYD_GPU_TMA=0; }
+timeout 900 python gemm.py \$W/models/\$first 1,16,64,256,2048 > \$R/gemm-\$first.txt 2>&1
 for m in $MODELS; do
   timeout 1500 python e2e.py \$W/models/\$m --format mma --fused --baseline --tokens 64 --batch $BATCH --prefill 64,128,512,2048 --ppl \$W/enwik8 --profile 16 > \$R/e2e-\$m.txt 2>&1
 done

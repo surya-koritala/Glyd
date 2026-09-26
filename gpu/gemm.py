@@ -53,8 +53,6 @@ for name in names:
             em = ((g.mma_gemm(q, x).float() - ref).abs().max() / ref.abs().max()).item()
             assert em < 1e-2, f"{name} mma M={M}: {em}"
             tv += f" | mma {gpu_us(lambda: g.mma_gemm(q, x)):6.0f}"
-            if torch.cuda.get_device_capability()[0] >= 9:  # Hopper: bulk copies (above) against plain loads
-                tv += f" | mma loads {gpu_us(lambda: g.mma_gemm(q, x, variant=1)):6.0f}"
         if M >= 32:
             eb = ((g.mma_gemm_big(q, x, variant=1).float() - ref).abs().max() / ref.abs().max()).item()
             assert eb < 1e-2, f"{name} mma big M={M}: {eb}"

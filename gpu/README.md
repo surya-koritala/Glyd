@@ -10,7 +10,7 @@ mantissa byte as it is and code the exponent:
 | :--- | :--- | ---: | :--- |
 | `huffman` (`pack`) | per-tensor prefix code read by counting leading zeros (as short as Huffman's on every tensor measured), 32 streams a tile | 10.88 | a lane decodes its stream in turn |
 | `fast` (`pack_fast`) | 3-bit code into the tensor's 7 most common exponents, an escape to the exponent itself | 11.25 | bit operations, every weight in parallel |
-| `mma` (`pack_mma`) | `fast`'s codes into the tensor's densest run of 7 exponents, laid out in the order the tensor cores take their operand | 11.25 | in registers, straight into the tensor cores' operands |
+| `mma` (`pack_mma`) | 2-bit digits in tiers: the tensor's 3 commonest exponents, digit 3 going on to the next 3, then the next 3, then the exponent itself; laid out in the order the tensor cores take their operand | 10.80 | in registers, straight into the tensor cores' operands |
 
 The floor for any code that sees each tensor's exponents on their own
 is about 10.6 bits a weight.
@@ -29,20 +29,21 @@ Wikipedia text (enwik8 from its 10th MB, 200 windows of 64 tokens):
 
 | | bf16 | Glyd `mma` |
 | :--- | ---: | ---: |
-| Peak VRAM | 15.25 GB | **11.05 GB** |
-| 1 sequence | 43.3 tokens/s | **55.2** (1.27x) |
-| 4 sequences | 167.7 | **215.7** (1.29x) |
-| 16 sequences | 649.8 | **813.3** (1.25x) |
-| 32 sequences | 1149.0 | **1528.6** (1.33x) |
-| 48 sequences | 1658.4 | **2039.2** (1.23x) |
+| Peak VRAM | 15.25 GB | **10.61 GB** |
+| 1 sequence | 43.4 tokens/s | **55.7** (1.28x) |
+| 4 sequences | 167.9 | **217.5** (1.30x) |
+| 16 sequences | 652.0 | **814.2** (1.25x) |
+| 32 sequences | 1153.7 | **1518.9** (1.32x) |
+| 48 sequences | 1664.8 | **1882.5** (1.13x) |
+| 64 sequences | 2160.0 | **2244.7** (1.04x) |
 | Prompt of 16 tokens | 24 ms | **19 ms** |
-| Prompt of 64 tokens | 27 ms | **22 ms** |
-| Prompt of 128 tokens | 29 ms | **27 ms** |
+| Prompt of 64 tokens | 27 ms | **26 ms** |
+| Prompt of 128 tokens | 29 ms | 29 ms |
 | Prompt of 256 tokens | 43 ms | 45 ms |
 | Prompt of 512 tokens | 79 ms | 85 ms |
-| Prompt of 1024 tokens | 154 ms | 162 ms |
-| Prompt of 2048 tokens | 301 ms | 327 ms |
-| Prompt of 4096 tokens | 645 ms | 696 ms |
+| Prompt of 1024 tokens | 154 ms | 163 ms |
+| Prompt of 2048 tokens | 301 ms | 330 ms |
+| Prompt of 4096 tokens | 645 ms | 702 ms |
 | Perplexity, 64-token windows | 17.0015 | 17.0052 |
 | Perplexity, 512-token windows | 7.5677 | 7.5660 |
 
@@ -53,17 +54,23 @@ bf16 against itself, two windows a pass instead of one: perplexity
 17.0153, the same next token 98.33% of the time.
 
 `mma_gemm` (1 to 64 tokens): a warp step is 1024 weights, 64 rows by
-16 columns, one 1408-byte run in the order `mma.sync.m16n8k16` takes its
-B operand, so a lane's 32 weights arrive in four loads and are decoded
-in registers straight into its fragments: codes spread to exponent
-bytes by two products, a warp scan finds each lane's escapes, one byte
-permute puts them in place for 4 weights, and a pair of bf16s is one
-permute and one rotate (each weight's byte carries its pair's other
-sign). The steps are split evenly over the blocks (stream-K), a row
-block's parts added in a fixed order by its last block: the same result
-every run. On 7B's matrices it reads the packed weights at 95% of the
-bandwidth bf16's product reaches, 1.27-1.34x faster than bf16 at one
-token, 1.16-1.36x at 64.
+16 columns, in the order `mma.sync.m16n8k16` takes its B operand: 1280
+bytes (each lane's 32 tier-1 digits, then its 32 sign-and-mantissa
+bytes) and a block of the step's escapes (its tier-2 digits in words of
+16 back from the block's end, its tier-3 digits and exponent bytes from
+its start). A lane's weights arrive in four loads and two words of the
+block's ends; one warp scan places the tier-2 digits, each lane decodes
+16 of them (and their tier-3 digits, placed by a second scan) into
+shared memory, and each lane's tier-1 digits take their symbols or
+those bytes in one table lookup and one byte permute for 4 weights. A
+pair of bf16s is then one permute and one rotate (each weight's byte
+carries its pair's other sign). No lane waits on another's escapes:
+a step decodes in the same instructions however its escapes fall. The
+steps are split evenly over the blocks (stream-K), a row block's parts
+added in a fixed order by its last block: the same result every run. On
+7B's matrices it reads the packed weights at 94% of the bandwidth bf16's
+product reaches, 1.30-1.34x faster than bf16 at one token on the MLP's,
+1.06-1.19x at 64.
 
 `mma_gemm_big` (more tokens: a prompt) is a tiled GEMM with its warps
 split: four produce, copying X's tile of each stage (64 columns) into
@@ -75,7 +82,7 @@ block is 128 tokens by 128 rows of W, or past 128 tokens 256 by 64 (a
 weight decoded once for twice the tokens); where the blocks would not
 fill the GPU, K is split and the parts added in a fixed order. Past 128
 tokens the product is bound by the tensor cores, not by memory, so the
-most it can be is bf16's time; it is within 5-9% of it. Measured on
+most it can be is bf16's time; it is within 5-10% of it. Measured on
 Qwen2.5-7B's matrices: the consumers alone come within 1-4% of cuBLAS
 (one warp an SM quarter keeps the tensor cores full: 106 TFLOPS, as
 cuBLAS's kernel); the rest is the producers' decoding sharing the SM.
