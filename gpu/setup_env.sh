@@ -9,7 +9,7 @@ mkdir -p "$HOME/tools/uv"
 [ -x "$HOME/tools/uv/uv" ] || curl -sL https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz | tar xz --strip-components=1 -C "$HOME/tools/uv"
 UV="$HOME/tools/uv/uv"
 "$UV" venv -q --python 3.12 "$ENV"
-"$UV" pip install -q --python "$ENV/bin/python" torch safetensors numpy transformers accelerate hf_transfer ninja
+"$UV" pip install -q --python "$ENV/bin/python" torch safetensors numpy transformers accelerate hf_transfer ninja datasets
 CUDA_MM=$("$ENV/bin/python" -c "import torch; print(torch.version.cuda)")  # e.g. 13.0
 "$UV" pip install -q --python "$ENV/bin/python" "nvidia-cuda-nvcc==$CUDA_MM.*" "nvidia-cuda-cccl==$CUDA_MM.*" "nvidia-cuda-crt==$CUDA_MM.*" "nvidia-nvvm==$CUDA_MM.*"
 CUDA_HOME="$("$ENV/bin/python" -c "import nvidia, os; print(os.path.join(list(nvidia.__path__)[0], 'cu' + '$CUDA_MM'.split('.')[0]))")"

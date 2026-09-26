@@ -29,6 +29,8 @@ ap.add_argument("--batch", type=str, default="1", help="generate for this many c
 ap.add_argument("--gpus", type=int, default=1, help="spread the layers over this many GPUs (bf16: accelerate's device map; glyd: layers balanced by packed size)")
 ap.add_argument("--ppl", default="", help="a text file: perplexity over windows of --ppl-window tokens (a forward pass each; 12800 tokens from its 10th MB), and how often the next-token choice is bf16's")
 ap.add_argument("--ppl-window", type=int, default=64)
+ap.add_argument("--smi", default="", help="once a model is on its GPUs: nvidia-smi's report into PREFIX-bf16.txt / PREFIX-glyd.txt")
+ap.add_argument("--mmlu", type=int, default=0, help="MMLU (cais/mmlu, test split, a fixed shuffle): accuracy over this many questions, 0-shot, by the answer letter's logit")
 ap.add_argument("--profile", type=int, default=0, help="one sequence: GPU time by kernel over this many generated tokens, against the wall clock")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
 args = ap.parse_args()
@@ -94,6 +96,33 @@ def perplexity(model, label):
     top = torch.stack(top)
     print(f"{label} perplexity: {math.exp(nll / top.numel()):.4f} ({top.numel()} tokens)")
     return top
+
+
+def smi(what):
+    if args.smi:
+        import subprocess
+        torch.cuda.synchronize()
+        report = subprocess.run(["nvidia-smi"], capture_output=True, text=True).stdout
+        open(f"{args.smi}-{what}.txt", "w").write(report)
+
+
+def mmlu(model, label):
+    if not args.mmlu:
+        return None
+    from datasets import load_dataset
+    qs = load_dataset("cais/mmlu", "all", split="test").shuffle(seed=0).select(range(args.mmlu))
+    letters = [tok(f" {c}", add_special_tokens=False).input_ids[-1] for c in "ABCD"]
+    picks, right = [], 0
+    with torch.no_grad():
+        for q in qs:
+            prompt = f"The following is a multiple choice question about {q['subject'].replace('_', ' ')}.\n\n{q['question']}\n"
+            prompt += "".join(f"{c}. {a}\n" for c, a in zip("ABCD", q["choices"])) + "Answer:"
+            x = tok(prompt, return_tensors="pt").input_ids.cuda()
+            pick = int(model(x, logits_to_keep=1).logits[0, -1, letters].argmax())
+            picks.append(pick)
+            right += pick == q["answer"]
+    print(f"{label} MMLU: {100 * right / len(picks):.2f}% of {len(picks)} questions (0-shot)")
+    return torch.tensor(picks)
 
 
 def measure(model, label):
@@ -198,10 +227,12 @@ if args.baseline:
         dispatch_model(model, device_map=dm)
     else:
         model.cuda()
+    smi("bf16")
     logits_a, out_a = measure(model, f"bf16 (weights {weights_bf16 / 1e9:.2f} GB)")
     prefill(model, "bf16")
     profile(model, "bf16")
     top_a = perplexity(model, "bf16")
+    mmlu_a = mmlu(model, "bf16")
     if args.gpus > 1:
         remove_hook_from_module(model, recurse=True)
     model.cpu()
@@ -254,12 +285,16 @@ other = sum(p.numel() * p.element_size() for p in model.parameters()) + sum(m.bi
 in_use = sum(torch.cuda.memory_allocated(i) for i in range(torch.cuda.device_count()))
 scratch = sum(b.numel() * 2 for b in Scratch.buf.values())
 print(f"{args.format}{' fused' if args.fused else ''}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {scratch / 1e9:.2f} GB, VRAM in use {in_use / 1e9:.2f} GB on {args.gpus} GPU{'s' if args.gpus > 1 else ''}")
+smi("glyd")
 logits_b, out_b = measure(model, f"glyd {args.format}{' fused' if args.fused else ''}")
 prefill(model, f"glyd {args.format}")
 profile(model, f"glyd {args.format}")
 top_b = perplexity(model, f"glyd {args.format}")
+mmlu_b = mmlu(model, f"glyd {args.format}")
 if args.baseline and top_b is not None:
     print(f"next-token choice as bf16's: {(top_a.cuda() == top_b).float().mean().item() * 100:.2f}%")
+if args.baseline and mmlu_b is not None:
+    print(f"MMLU answer as bf16's: {(mmlu_a == mmlu_b).float().mean().item() * 100:.2f}%")
 if args.baseline:
     print("logits bit-identical:", torch.equal(logits_a.cuda().view(torch.int16), logits_b.view(torch.int16)))
     same = (out_a.cuda() == out_b).all(0).long().cumprod(0).sum().item() - ids.shape[1]
