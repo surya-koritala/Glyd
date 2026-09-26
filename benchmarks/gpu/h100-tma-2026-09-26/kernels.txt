@@ -1,0 +1,8 @@
+gate/up  25600x5120: M=1 bf16 88 mma 75 tma 78 | M=8 bf16 90 mma 78 tma 78 | M=16 bf16 89 mma 81 tma 79 | M=32 bf16 90 mma 113 tma 83 | M=64 bf16 94 mma 140 tma 92 | M=128 bf16 99 dec+mm 335 tma 124
+down     5120x25600: M=1 bf16 90 mma 74 tma 78 | M=8 bf16 91 mma 76 tma 78 | M=16 bf16 91 mma 78 tma 78 | M=32 bf16 92 mma 105 tma 83 | M=64 bf16 96 mma 127 tma 92 | M=128 bf16 98 dec+mm 328 tma 121
+q        8192x5120: M=1 bf16 29 mma 29 tma 31 | M=8 bf16 30 mma 31 tma 31 | M=16 bf16 30 mma 33 tma 31 | M=32 bf16 30 mma 45 tma 34 | M=64 bf16 31 mma 59 tma 40 | M=128 bf16 32 dec+mm 113 tma 48
+o        5120x8192: M=1 bf16 32 mma 29 tma 31 | M=8 bf16 32 mma 31 tma 30 | M=16 bf16 33 mma 33 tma 31 | M=32 bf16 34 mma 45 tma 34 | M=64 bf16 35 mma 59 tma 41 | M=128 bf16 32 dec+mm 103 tma 50
+gate/up  18944x3584: M=1 bf16 51 mma 44 tma 45 | M=8 bf16 51 mma 46 tma 45 | M=16 bf16 51 mma 49 tma 46 | M=32 bf16 51 mma 70 tma 50 | M=64 bf16 49 mma 93 tma 55 | M=128 bf16 52 dec+mm 180 tma 73
+down     3584x18944: M=1 bf16 49 mma 43 tma 44 | M=8 bf16 51 mma 45 tma 44 | M=16 bf16 50 mma 48 tma 44 | M=32 bf16 51 mma 63 tma 49 | M=64 bf16 52 mma 79 tma 58 | M=128 bf16 57 dec+mm 181 tma 71
+q/o      3584x3584: M=1 bf16 7 mma 14 tma 15 | M=8 bf16 7 mma 15 tma 15 | M=16 bf16 8 mma 17 tma 15 | M=32 bf16 7 mma 20 tma 17 | M=64 bf16 8 mma 31 tma 23 | M=128 bf16 9 dec+mm 37 tma 28
+k/v      512x3584: M=1 bf16 6 mma 7 tma 15 | M=8 bf16 6 mma 8 tma 15 | M=16 bf16 6 mma 9 tma 15 | M=32 bf16 6 mma 14 tma 17 | M=64 bf16 6 mma 23 tma 22 | M=128 bf16 7 dec+mm 12 tma 21

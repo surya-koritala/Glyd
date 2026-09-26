@@ -6,6 +6,23 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- On Hopper, steps of 17-128 tokens from the 12-bit layout by the copy
+  engine and wgmma (`mma_gemm_wg`, [gpu/](gpu/README.md#many-tokens-a-step-on-an-h100-the-copy-engine-and-wgmma)):
+  TMA bulk copies of the compressed steps and a tensor map for X's tiles
+  into a ring in shared memory, the weights decoded straight into
+  wgmma's registers, stream-K with a fixed-order sum (the same result
+  every run). On an H100 SXM, Qwen3-32B's MLP matrices at 32 and 64
+  tokens take 83 and 92 us against cuBLAS's 90-96 (the `mma_gemm` kernel
+  105-140); at 128 tokens 121-124 against 98-99 (decoded for cuBLAS
+  328-335). Small matrices still cost more than cuBLAS's, so end to end
+  32 and 64 sequences take 37.71 and 43.04 ms of GPU time a step against
+  bf16's 32.44 and 35.50 (Qwen3-32B, 25% less memory); one sequence
+  26.14 against 28.23. `pack_mma12` pads the exception list to a
+  multiple of four entries; `e2e.py --profile` measures every `--batch`
+  size.
+
 ## v0.19.0 — 2026-09-26
 
 - A second GPU layout, `mma12` ([gpu/](gpu/README.md#two-layouts-the-most-memory-or-the-lightest-decode)):

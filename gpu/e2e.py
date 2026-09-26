@@ -11,7 +11,7 @@ cuBLAS's, as between any two GEMM kernels, so late tokens may differ.
 The bf16 model is never held on the GPU: every Linear is packed from
 the CPU copy, one at a time.
 """
-import argparse, math, time, torch
+import argparse, math, os, time, torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -32,7 +32,7 @@ ap.add_argument("--ppl-window", type=int, default=64)
 ap.add_argument("--kv", type=str, default="", help="prompt lengths (tokens of enwik8, needs --ppl) to generate --tokens after with the KV cache compressed (gpu/kv.py) against the plain cache: the same tokens, its bytes, the time; with --batch's first size")
 ap.add_argument("--smi", default="", help="once a model is on its GPUs: nvidia-smi's report into PREFIX-bf16.txt / PREFIX-glyd.txt")
 ap.add_argument("--mmlu", type=int, default=0, help="MMLU (cais/mmlu, test split, a fixed shuffle): accuracy over this many questions, 0-shot, by the answer letter's logit")
-ap.add_argument("--profile", type=int, default=0, help="one sequence: GPU time by kernel over this many generated tokens, against the wall clock")
+ap.add_argument("--profile", type=int, default=0, help="GPU time by kernel over this many generated tokens, against the wall clock, at each --batch size")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
 args = ap.parse_args()
 
@@ -41,6 +41,7 @@ prompt = "The history of data compression began"
 ids = tok(prompt, return_tensors="pt").input_ids.cuda()
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 HOPPER = torch.cuda.get_device_capability()[0] >= 9
+WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
 
 
 def prefill(model, label):
@@ -67,19 +68,21 @@ def profile(model, label):
         return
     from torch.profiler import profile as prof_, ProfilerActivity
     n = args.profile
-    with torch.no_grad():
-        model.generate(ids, max_new_tokens=4, do_sample=False)
-        torch.cuda.synchronize()
-        with prof_(activities=[ProfilerActivity.CUDA]) as pr:
-            t = time.perf_counter()
-            model.generate(ids, max_new_tokens=n, min_new_tokens=n, do_sample=False)
+    for b in [int(v) for v in args.batch.split(",")]:
+        x = ids.repeat(b, 1)
+        with torch.no_grad():
+            model.generate(x, max_new_tokens=4, do_sample=False)
             torch.cuda.synchronize()
-            wall = (time.perf_counter() - t) / n
-    ev = [e for e in pr.key_averages() if e.device_type.name == "CUDA"]
-    busy = sum(e.device_time_total for e in ev) / n / 1000
-    print(f"{label} profile: {wall * 1000:.2f} ms a token, GPU busy {busy:.2f} ms")
-    for e in sorted(ev, key=lambda e: -e.device_time_total)[:6]:
-        print(f"   {e.device_time_total / n / 1000:7.3f} ms  {e.count / n:6.1f} a token  {e.key[:80]}")
+            with prof_(activities=[ProfilerActivity.CUDA]) as pr:
+                t = time.perf_counter()
+                model.generate(x, max_new_tokens=n, min_new_tokens=n, do_sample=False)
+                torch.cuda.synchronize()
+                wall = (time.perf_counter() - t) / n
+        ev = [e for e in pr.key_averages() if e.device_type.name == "CUDA"]
+        busy = sum(e.device_time_total for e in ev) / n / 1000
+        print(f"{label} profile, batch {b}: {wall * 1000:.2f} ms a step, GPU busy {busy:.2f} ms ({b / busy * 1000:.0f} tokens/s of GPU time)")
+        for e in sorted(ev, key=lambda e: -e.device_time_total)[:6]:
+            print(f"   {e.device_time_total / n / 1000:7.3f} ms  {e.count / n:6.1f} a step  {e.key[:80]}")
 
 
 def perplexity(model, label):
@@ -240,9 +243,15 @@ class GLinear(nn.Module):
         O, K = self.p.shape
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)
-        # Past 64 tokens on Hopper the tensor cores outrun our decode: decode the matrix, cuBLAS multiplies.
-        if args.fused and isinstance(self.p, g.Mma) and (x2.shape[0] <= 64 or (K % 64 == 0 and not HOPPER)):
-            return (g.mma_gemm if x2.shape[0] <= 64 else g.mma_gemm_big)(self.p, x2, self.bias).view(*lead, O)
+        # Past WG_MAX tokens on Hopper (a prompt) the tensor cores outrun our decode: decode the matrix, cuBLAS multiplies.
+        if args.fused and isinstance(self.p, g.Mma):
+            M = x2.shape[0]
+            if HOPPER and WG_MIN <= M <= WG_MAX and K % 64 == 0 and isinstance(self.p, g.Mma12):  # TMA and wgmma
+                return g.mma_gemm_wg(self.p, x2, self.bias).view(*lead, O)
+            if M <= 64:
+                return g.mma_gemm(self.p, x2, self.bias).view(*lead, O)
+            if K % 64 == 0 and not HOPPER:
+                return g.mma_gemm_big(self.p, x2, self.bias).view(*lead, O)
         if args.fused and x2.shape[0] == 1:
             f = g.fast_gemv if isinstance(self.p, g.Fast) else g.gemv
             return f(self.p, x2[0], self.bias).view(*lead, O)

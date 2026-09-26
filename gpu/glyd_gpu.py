@@ -432,8 +432,9 @@ def pack_mma12(w):
         idx = torch.arange(1024, device=dev).expand(z - a, 1024)[m]  # lane * 32 + i
         exc_parts.append((idx | e.view(z - a, 1024)[m].to(torch.int64) << 16).to(torch.int32))
         counts.append(m.sum(1))
-    exc = torch.cat(exc_parts + [torch.zeros(1, dtype=torch.int32, device=dev)])
     n = torch.cat(counts)
+    pad = 4 - int(n.sum()) % 4  # at least one entry, to a multiple of 4 (mma_gemm_wg copies runs widened to 16 bytes)
+    exc = torch.cat(exc_parts + [torch.zeros(pad, dtype=torch.int32, device=dev)])
     exc_base = torch.cat([torch.zeros(1, dtype=torch.int64, device=dev), torch.cumsum(n, 0)]).to(torch.int32)
     return Mma12((O, K), data.flatten(), exc, exc_base, sym)
 
@@ -473,6 +474,20 @@ def mma_gemm(p, x, bias=None):
     return y
 
 
+def mma_gemm_wg(p, x, bias=None):
+    """X W^T (+ bias) for many tokens on Hopper (x [M, K], K a multiple of
+    64): the TMA copies the compressed weights and X's tiles into shared
+    memory, consumer warpgroups decode the weights into wgmma's registers
+    and multiply."""
+    O, K = p.shape
+    x = x.contiguous()
+    y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
+    b = bias if bias is not None else _none(x.device).to(torch.bfloat16)
+    assert isinstance(p, Mma12), "wgmma: the 12-bit layout (the tiered one is bound by its decode there)"
+    _ext.mma12_gemm_wg(p.data, p.exc, p.exc_base, p.sym, O, K, x, b, y)
+    return y
+
+
 def mma_gemm_big(p, x, bias=None, variant=0):
     """X W^T (+ bias) for many tokens (x [M, K]; a prompt; K a multiple of
     64): a tiled GEMM, each weight decoded once for 128 or 256 tokens
@@ -487,3 +502,27 @@ def mma_gemm_big(p, x, bias=None, variant=0):
     else:
         _ext.mma_gemm_big(p.data, p.blocks, p.block_base, p.tiers, O, K, x, b, y, variant)
     return y
+
+
+if __name__ == "__main__":
+    # Hopper: mma_gemm_wg against the fp32 product. Odd row blocks, row groups shared by blocks, exceptions
+    # few and many (past 256 a stage: read from global memory), 1-600 tokens, bias; the same every run.
+    import torch.nn.functional as F
+    assert torch.cuda.get_device_capability()[0] >= 9, "mma_gemm_wg: Hopper"
+    torch.manual_seed(0)
+    for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02)]:
+        w = torch.randn(O, K, device="cuda") * 0.02
+        m = torch.rand(O, K, device="cuda") < wild  # this share of weights at exponents far from the commonest 15
+        w[m] = torch.randn(int(m.sum()), device="cuda") * torch.exp2(torch.randint(-40, 20, (int(m.sum()),), device="cuda").float())
+        w = w.to(torch.bfloat16)
+        q = pack_mma12(w)
+        assert torch.equal(mma_unpack(q).view(torch.int16), w.view(torch.int16))
+        bias = torch.randn(O, device="cuda").to(torch.bfloat16)
+        for M in [1, 7, 16, 17, 32, 33, 64, 65, 100, 128, 129, 256, 257, 600]:
+            x = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+            for b in (None, bias):
+                ref = F.linear(x.float(), w.float(), None if b is None else b.float())
+                y = mma_gemm_wg(q, x, b)
+                err = ((y.float() - ref).abs().max() / ref.abs().max()).item()
+                assert err < 1e-2 and torch.equal(y, mma_gemm_wg(q, x, b)), (O, K, wild, M, err)
+        print(f"mma_gemm_wg {O}x{K}, {int(q.exc_base[-1])} exceptions: 1-600 tokens within 1e-2, the same every run")
