@@ -237,9 +237,9 @@ rtx4080s-layouts-2026-09-26):
 | H100, Qwen3-32B | 27.90 / 29.78 / 31.44 / 33.52 ms | | **24.50 / 26.75** / 33.46 / 37.35 |
 
 So: on Ada the tiered layout, the smallest, is also the fastest to 32
-sequences (25-28% under bf16's time); on an A10 the 12-bit one is 13-28%
+sequences (24-28% under bf16's time); on an A10 the 12-bit one is 13-28%
 under at every count; on an A100 and an H100 the 12-bit one is 3-16%
-under to 8 sequences and 6-18% over at 32 and 64 (their small matrices).
+under to 8 sequences and 6-17% over at 32 and 64 (their small matrices).
 Perplexity as bf16's everywhere (17.00 against 17.01 on the A10, for
 one). `glyd_gpu.best_layout()` (and `e2e.py --format auto`) takes the
 tiered layout on Ada and wherever only it fits, the 12-bit one
