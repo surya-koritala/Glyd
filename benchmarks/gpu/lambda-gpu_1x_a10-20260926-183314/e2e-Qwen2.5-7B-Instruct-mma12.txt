@@ -1,0 +1,57 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/339 [00:00<?, ?it/s]Loading weights: 100%|██████████| 339/339 [00:00<00:00, 8674.38it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-26 22:39:59 2735:2735 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 22:39:59 2735:2735 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 22:39:59 2735:2735 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 22:40:00 2735:2735 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 22:40:02 2735:2735 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 22:40:02 2735:2735 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 22:40:02 2735:2735 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 22:40:02 2735:2735 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 22:40:04 2735:2735 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 22:40:05 2735:2735 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 22:40:05 2735:2735 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 22:40:05 2735:2735 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 22:40:07 2735:2735 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 22:40:07 2735:2735 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 22:40:08 2735:2735 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 22:40:08 2735:2735 SyncActivityProfilerHandler.cpp:46] profiler_stop
+merged: 56 groups of Linears as one product each
+mma12 fused: packed in 7 s; weights 11.42 GB against 15.23 GB bf16 (75.0%), scratch 0.27 GB, VRAM in use 11.69 GB on 1 GPU
+glyd mma12 fused: batch 1: 37.7 tokens/s (37.7 a sequence), peak VRAM 11.70 GB
+glyd mma12 fused: batch 8: 285.8 tokens/s (35.7 a sequence), peak VRAM 11.75 GB
+glyd mma12 fused: batch 32: 995.6 tokens/s (31.1 a sequence), peak VRAM 11.93 GB
+glyd mma12 fused: batch 64: 1698.4 tokens/s (26.5 a sequence), peak VRAM 12.16 GB
+glyd mma12 prefill: 64 tokens 34 ms (1896 tokens/s), 128 tokens 46 ms (2782 tokens/s), 512 tokens 144 ms (3550 tokens/s), 2048 tokens 713 ms (2871 tokens/s)
+glyd mma12 profile, batch 1: 29.94 ms a step, GPU busy 24.40 ms a step after the prompt (41 tokens/s of GPU time), 25.33 ms for the prompt and a token
+    21.808 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     0.333 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.233 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.225 ms  void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<c10::BFloat1
+     0.218 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+     0.209 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+glyd mma12 profile, batch 8: 30.18 ms a step, GPU busy 25.76 ms a step after the prompt (311 tokens/s of GPU time), 29.67 ms for the prompt and a token
+    22.467 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     0.701 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.399 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.376 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.240 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+     0.229 ms  void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<c10::BFloat1
+glyd mma12 profile, batch 32: 33.88 ms a step, GPU busy 29.03 ms a step after the prompt (1102 tokens/s of GPU time), 64.58 ms for the prompt and a token
+    24.455 ms  void mma12_mid_kernel<32, 2>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     0.915 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.646 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.523 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.322 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+     0.287 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 32, 4, false, false
+glyd mma12 profile, batch 64: 41.26 ms a step, GPU busy 33.05 ms a step after the prompt (1936 tokens/s of GPU time), 125.42 ms for the prompt and a token
+    26.919 ms  void mma12_mid_kernel<64, 2>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     1.189 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.674 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.672 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.501 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 32, 4, false, false
+     0.491 ms  Memcpy DtoD (Device -> Device)
+glyd mma12 perplexity: 16.9954 (12600 tokens)
+text:  in the 1940s, when Claude Shannon and Alan Turing published theoretical work on information theory and machine computation. The first practical use of data compression was in the 1948

@@ -1,0 +1,8 @@
+commit: 54c7223
+Sat Sep 26 21:11:17 UTC 2026
+name, memory.total [MiB], driver_version, clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA A100-SXM4-40GB, 40960 MiB, 580.126.20, 1410 MHz, 1215 MHz, 400.00 W
+30
+               total        used        free      shared  buff/cache   available
+Mem:             216           2         215           0           0         214
+15G	/home/ubuntu/./models/Qwen2.5-7B-Instruct

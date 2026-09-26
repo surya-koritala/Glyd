@@ -1,0 +1,48 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/339 [00:00<?, ?it/s]Loading weights: 100%|██████████| 339/339 [00:00<00:00, 3987.65it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-26 21:15:12 2681:2681 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 21:15:13 2681:2681 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 21:15:16 2681:2681 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 21:15:17 2681:2681 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 21:15:20 2681:2681 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 21:15:20 2681:2681 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 21:15:24 2681:2681 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 21:15:24 2681:2681 SyncActivityProfilerHandler.cpp:46] profiler_stop
+mma12 fused: packed in 5 s; weights 11.42 GB against 15.23 GB bf16 (75.0%), scratch 0.27 GB, VRAM in use 11.69 GB on 1 GPU
+glyd mma12 fused: batch 1: 37.2 tokens/s (37.2 a sequence), peak VRAM 11.70 GB
+glyd mma12 fused: batch 8: 293.5 tokens/s (36.7 a sequence), peak VRAM 11.75 GB
+glyd mma12 fused: batch 32: 1156.4 tokens/s (36.1 a sequence), peak VRAM 11.93 GB
+glyd mma12 fused: batch 64: 2268.1 tokens/s (35.4 a sequence), peak VRAM 12.16 GB
+glyd mma12 prefill: 64 tokens 27 ms (2407 tokens/s), 128 tokens 27 ms (4790 tokens/s), 512 tokens 60 ms (8571 tokens/s), 2048 tokens 206 ms (9953 tokens/s)
+glyd mma12 profile, batch 1: 41.58 ms a step, GPU busy 12.79 ms (78 tokens/s of GPU time)
+     9.705 ms   197.0 a step  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     0.379 ms   115.6 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.271 ms    59.5 a step  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymo
+     0.259 ms    59.0 a step  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+     0.245 ms    57.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.243 ms   108.5 a step  void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<c1
+glyd mma12 profile, batch 8: 37.48 ms a step, GPU busy 14.92 ms (536 tokens/s of GPU time)
+     9.790 ms   184.8 a step  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     1.154 ms    12.2 a step  void mma_gemm_kernel<Nib, 4>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     0.743 ms   169.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.478 ms    57.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.364 ms    59.5 a step  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymo
+     0.294 ms    59.0 a step  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+glyd mma12 profile, batch 32: 37.81 ms a step, GPU busy 19.60 ms (1633 tokens/s of GPU time)
+    13.032 ms   184.8 a step  void mma_gemm_kernel<Nib, 2>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     1.743 ms    12.2 a step  void mma_gemm_big_kernel<Nib, 4, 4, 2, 1>(Nib, long, long, long, long, __nv_bflo
+     0.760 ms   169.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.738 ms    57.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.400 ms    59.5 a step  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymo
+     0.324 ms    26.2 a step  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, fa
+glyd mma12 profile, batch 64: 39.42 ms a step, GPU busy 25.25 ms (2535 tokens/s of GPU time)
+    16.772 ms   184.8 a step  void mma_gemm_kernel<Nib, 4>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     3.004 ms    12.2 a step  void mma_gemm_big_kernel<Nib, 4, 4, 2, 1>(Nib, long, long, long, long, __nv_bflo
+     0.781 ms   169.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.723 ms    57.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.449 ms    26.2 a step  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, fa
+     0.421 ms    59.5 a step  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymo
+glyd mma12 perplexity: 16.9960 (12600 tokens)
+text:  in the 1940s, when Claude Shannon and Alan Turing published theoretical work on information theory and machine computation. The first practical use of data compression was in the 1948

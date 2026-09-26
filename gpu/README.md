@@ -218,6 +218,40 @@ overlapped with the kernel before it, a cheaper sum of shared rows) and
 prompts. `python glyd_gpu.py` checks `mma_gemm_wg` on a Hopper GPU
 (benchmarks/gpu/h100-tma-2026-09-26).
 
+### Which layout on which GPU
+
+Measured the way a server runs a model: q, k and v as one product and
+gate and up as another, for bf16 and Glyd alike (`e2e.py --merge`, as
+vLLM runs them), and the GPU time of a generated token apart from the
+prompt's (`--profile`: 17 steps less 1, over 16). Qwen2.5-7B-Instruct,
+GPU time a token at 1 / 8 / 32 / 64 sequences (logs:
+benchmarks/gpu/lambda-gpu_1x_*-2026092617*, -18*, and
+rtx4080s-layouts-2026-09-26):
+
+| GPU | bf16 | tiered (`mma`, 10.80 bits) | 12-bit (`mma12`, 12.04 bits) |
+| :--- | ---: | ---: | ---: |
+| RTX 4080 SUPER 16 GB | 21.97 / 22.85 / 26.19 / 27.67 ms | **16.52 / 17.37 / 18.80** / 25.14 | 17.48 / 18.25 / 19.67 / **21.66** |
+| A10 24 GB | 33.71 / 34.77 / 35.50 / 37.98 ms | 24.33 / 25.61 / 35.99 / 49.66 | **24.40 / 25.76 / 29.03 / 33.05** |
+| A100 40 GB | 14.18 / 14.87 / 16.18 / 17.80 ms | 15.34 / 16.00 / 23.99 / 28.81 | **11.84 / 13.77** / 17.16 / 19.95 |
+| H100 SXM 80 GB | 6.90 / 7.50 / 8.02 / 8.55 ms | | **6.55 / 7.24** / 8.69 / 9.99 |
+| H100, Qwen3-32B | 27.90 / 29.78 / 31.44 / 33.52 ms | | **24.50 / 26.75** / 33.46 / 37.35 |
+
+So: on Ada the tiered layout, the smallest, is also the fastest to 32
+sequences (24-28% under bf16's time); on an A10 the 12-bit one is 13-28%
+under at every count; on an A100 and an H100 the 12-bit one is 3-16%
+under to 8 sequences and 6-17% over at 32 and 64 (their small matrices).
+Perplexity as bf16's everywhere (17.00 against 17.01 on the A10, for
+one). `glyd_gpu.best_layout()` (and `e2e.py --format auto`) takes the
+tiered layout on Ada and wherever only it fits, the 12-bit one
+elsewhere.
+
+On GDDR Ampere and Ada, steps of 17 to 64 tokens run `mma_gemm_mid`, the
+TMA kernel's plan with this generation's instructions: a producer warp's
+cp.async onto each stage's mbarrier, X's tile read by ldmatrix, the rows
+decoded into mma.sync's registers. It takes an A10's 64 sequences from
+34.64 to 33.05 ms and an RTX 4080's from 21.99 to 21.66; on an A100 it
+was the slower (21.56 against 19.95), so there mma_gemm stays.
+
 ## Popular models
 
 `sizes.py MODEL_DIR ...` packs every Linear layer's matrix of a model in

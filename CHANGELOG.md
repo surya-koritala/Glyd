@@ -22,6 +22,17 @@ every earlier format.
   26.14 against 28.23. `pack_mma12` pads the exception list to a
   multiple of four entries; `e2e.py --profile` measures every `--batch`
   size.
+- The TMA kernel's stages decode with their eight loads in flight at once
+  and one run of exceptions: with q, k, v and gate, up as one product
+  each (`e2e.py --merge`, bf16 alike), Qwen3-32B on an H100 takes 24.50 /
+  26.75 / 33.46 / 37.35 ms of GPU time a token at 1 / 8 / 32 / 64
+  sequences against bf16's 27.90 / 29.78 / 31.44 / 33.52.
+- The layouts measured on an RTX 4080 SUPER, an A10, an A100 and an H100
+  ([gpu/](gpu/README.md#which-layout-on-which-gpu)); `best_layout()` and
+  `e2e.py --format auto` take the faster for the GPU (the tiered layout on
+  Ada and wherever only it fits). `mma_gemm_mid` for 17-64 tokens on GDDR
+  Ampere and Ada.
+- Side by side with DFloat11 and ZipServ ([README](README.md#related-work)).
 
 ## v0.19.0 — 2026-09-26
 

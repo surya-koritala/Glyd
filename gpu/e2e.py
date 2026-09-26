@@ -19,7 +19,7 @@ import glyd_gpu as g
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
-ap.add_argument("--format", default="fast", choices=["fast", "huffman", "mma", "mma12"], help="mma: the Linears in the mma layout (the embedding in fast), up to 64 tokens a step multiplied straight from it; mma12: its 12-bit layout (a lighter decode)")
+ap.add_argument("--format", default="fast", choices=["fast", "huffman", "mma", "mma12", "auto"], help="mma: the Linears in the mma layout (the embedding in fast), up to 64 tokens a step multiplied straight from it; mma12: its 12-bit layout (a lighter decode); auto: the one for this GPU (glyd_gpu.best_layout)")
 ap.add_argument("--fused", action="store_true")
 ap.add_argument("--baseline", action="store_true")
 ap.add_argument("--tokens", type=int, default=128)
@@ -32,7 +32,8 @@ ap.add_argument("--ppl-window", type=int, default=64)
 ap.add_argument("--kv", type=str, default="", help="prompt lengths (tokens of enwik8, needs --ppl) to generate --tokens after with the KV cache compressed (gpu/kv.py) against the plain cache: the same tokens, its bytes, the time; with --batch's first size")
 ap.add_argument("--smi", default="", help="once a model is on its GPUs: nvidia-smi's report into PREFIX-bf16.txt / PREFIX-glyd.txt")
 ap.add_argument("--mmlu", type=int, default=0, help="MMLU (cais/mmlu, test split, a fixed shuffle): accuracy over this many questions, 0-shot, by the answer letter's logit")
-ap.add_argument("--profile", type=int, default=0, help="GPU time by kernel over this many generated tokens, against the wall clock, at each --batch size")
+ap.add_argument("--profile", type=int, default=0, help="GPU time by kernel over this many generated tokens, against the wall clock, at each --batch size: a step after the prompt, and the prompt's")
+ap.add_argument("--merge", action="store_true", help="the Linears that take the same input (q, k, v; gate, up) as one product each, for bf16 and Glyd alike, as serving engines run them")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
 args = ap.parse_args()
 
@@ -42,6 +43,8 @@ ids = tok(prompt, return_tensors="pt").input_ids.cuda()
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 HOPPER = torch.cuda.get_device_capability()[0] >= 9
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
+MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # GDDR Ampere and Ada: steps of this many tokens to 64 by mma_gemm_mid
+MID = torch.cuda.get_device_capability() in ((8, 6), (8, 7), (8, 9))  # (on an A100 mma_gemm is the faster, measured)
 
 
 def prefill(model, label):
@@ -68,21 +71,28 @@ def profile(model, label):
         return
     from torch.profiler import profile as prof_, ProfilerActivity
     n = args.profile
+
+    def run(x, k):  # GPU time by kernel (us) and wall time (s) of generating k tokens
+        with prof_(activities=[ProfilerActivity.CUDA]) as pr:
+            t = time.perf_counter()
+            model.generate(x, max_new_tokens=k, min_new_tokens=k, do_sample=False)
+            torch.cuda.synchronize()
+            wall = time.perf_counter() - t
+        return {e.key: e.device_time_total for e in pr.key_averages() if e.device_type.name == "CUDA"}, wall
+
     for b in [int(v) for v in args.batch.split(",")]:
         x = ids.repeat(b, 1)
         with torch.no_grad():
             model.generate(x, max_new_tokens=4, do_sample=False)
             torch.cuda.synchronize()
-            with prof_(activities=[ProfilerActivity.CUDA]) as pr:
-                t = time.perf_counter()
-                model.generate(x, max_new_tokens=n, min_new_tokens=n, do_sample=False)
-                torch.cuda.synchronize()
-                wall = (time.perf_counter() - t) / n
-        ev = [e for e in pr.key_averages() if e.device_type.name == "CUDA"]
-        busy = sum(e.device_time_total for e in ev) / n / 1000
-        print(f"{label} profile, batch {b}: {wall * 1000:.2f} ms a step, GPU busy {busy:.2f} ms ({b / busy * 1000:.0f} tokens/s of GPU time)")
-        for e in sorted(ev, key=lambda e: -e.device_time_total)[:6]:
-            print(f"   {e.device_time_total / n / 1000:7.3f} ms  {e.count / n:6.1f} a step  {e.key[:80]}")
+            one, _ = run(x, 1)  # the prompt and a token
+            all_, wall = run(x, n + 1)
+        # A step after the prompt: n + 1 tokens' time less 1 token's, over n.
+        step = {k: (v - one.get(k, 0)) / n for k, v in all_.items()}
+        busy, prompt = sum(step.values()) / 1000, sum(one.values()) / 1000
+        print(f"{label} profile, batch {b}: {wall / (n + 1) * 1000:.2f} ms a step, GPU busy {busy:.2f} ms a step after the prompt ({b / busy * 1000:.0f} tokens/s of GPU time), {prompt:.2f} ms for the prompt and a token")
+        for k, v in sorted(step.items(), key=lambda kv: -kv[1])[:6]:
+            print(f"   {v / 1000:7.3f} ms  {k[:90]}")
 
 
 def perplexity(model, label):
@@ -248,6 +258,8 @@ class GLinear(nn.Module):
             M = x2.shape[0]
             if HOPPER and WG_MIN <= M <= WG_MAX and K % 64 == 0 and isinstance(self.p, g.Mma12):  # TMA and wgmma
                 return g.mma_gemm_wg(self.p, x2, self.bias).view(*lead, O)
+            if MID and MID_MIN <= M <= 64 and K % 64 == 0 and isinstance(self.p, g.Mma12):  # cp.async and mma.sync, the same plan
+                return g.mma_gemm_mid(self.p, x2, self.bias).view(*lead, O)
             if M <= 64:
                 return g.mma_gemm(self.p, x2, self.bias).view(*lead, O)
             if K % 64 == 0 and not HOPPER:
@@ -272,6 +284,54 @@ class GLinear(nn.Module):
         return y.view(*lead, O)
 
 
+class Merged(nn.Module):
+    """Linears that take the same input (q, k, v; gate, up) as one product, as
+    serving engines run them: the first member called computes all of them,
+    each member returns its slice (the input kept until all have)."""
+
+    def __init__(self, linears):
+        super().__init__()
+        w = torch.cat([l.weight.data for l in linears])
+        assert len({l.bias is None for l in linears}) == 1
+        self.lin = torch.nn.utils.skip_init(nn.Linear, w.shape[1], w.shape[0], bias=linears[0].bias is not None, dtype=w.dtype)
+        self.lin.weight = nn.Parameter(w, requires_grad=False)
+        if self.lin.bias is not None:
+            self.lin.bias = nn.Parameter(torch.cat([l.bias.data for l in linears]), requires_grad=False)
+        self.sizes = [l.weight.shape[0] for l in linears]
+        self.x = self.parts = None
+        self.left = 0
+
+    def part(self, i, x):
+        if self.x is not x:
+            self.x, self.parts, self.left = x, self.lin(x).split(self.sizes, -1), len(self.sizes)
+        y = self.parts[i]
+        self.left -= 1
+        if self.left == 0:
+            self.x = self.parts = None
+        return y
+
+
+class Part(nn.Module):
+    def __init__(self, group, i):
+        super().__init__()
+        self.i, self.group = i, [group]  # the group is its module's child, not this one's
+
+    def forward(self, x):
+        return self.group[0].part(self.i, x)
+
+
+def merge(model):
+    n = 0
+    for layer in model.model.layers:
+        for mod, names in ((layer.self_attn, ("q_proj", "k_proj", "v_proj")), (layer.mlp, ("gate_proj", "up_proj"))):
+            if all(isinstance(getattr(mod, c, None), nn.Linear) for c in names):
+                mod.merged = Merged([getattr(mod, c) for c in names])
+                for i, c in enumerate(names):
+                    setattr(mod, c, Part(mod.merged, i))
+                n += 1
+    print(f"merged: {n} groups of Linears as one product each")
+
+
 class GEmbedding(nn.Module):
     def __init__(self, p):
         super().__init__()
@@ -283,6 +343,9 @@ class GEmbedding(nn.Module):
 
 
 model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).eval()
+if args.merge:
+    with torch.no_grad():
+        merge(model)
 weights_bf16 = sum(p.numel() * p.element_size() for p in model.parameters())
 if args.baseline:
     if args.gpus > 1:
@@ -307,6 +370,11 @@ if args.baseline:
 # Where every decoder layer's weights go: contiguous runs of layers, balanced
 # by their bytes, over args.gpus GPUs; the embedding on the first, the final
 # norm and the output layer on the last.
+if args.format == "auto":
+    lin = [m.weight for m in model.modules() if isinstance(m, nn.Linear) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0]
+    lin_bytes = sum(w.numel() * 2 for w in lin)
+    args.format, why = g.best_layout(lin_bytes, weights_bf16 - lin_bytes, args.gpus)
+    print(f"auto: {args.format}, {why}")
 layers = model.model.layers
 layer_bytes = [sum(p.numel() for p in l.parameters()) for l in layers]
 per_gpu, acc, gpu_of = sum(layer_bytes) / args.gpus, 0, []
