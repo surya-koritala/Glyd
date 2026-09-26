@@ -1,0 +1,3 @@
+name, memory.total [MiB], driver_version
+NVIDIA H100 80GB HBM3, 81559 MiB, 580.126.20
+torch 2.14.0+cu130 transformers 5.17.0

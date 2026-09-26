@@ -1,0 +1,14 @@
+Loading weights:   0%|          | 0/291 [00:00<?, ?it/s]Loading weights: 100%|██████████| 291/291 [00:00<00:00, 5580.36it/s]
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+bf16 (weights 14.50 GB): batch 1: 16.6 tokens/s (16.6 a sequence), peak VRAM 14.54 GB
+bf16 perplexity: 12.1422 (12600 tokens)
+bf16 MMLU: 60.67% of 300 questions (0-shot)
+mma fused: packed in 8 s; weights 9.77 GB against 14.50 GB bf16 (67.4%), scratch 0.27 GB, VRAM in use 10.07 GB on 1 GPU
+glyd mma fused: batch 1: 38.7 tokens/s (38.7 a sequence), peak VRAM 10.08 GB
+glyd mma perplexity: 12.1473 (12600 tokens)
+glyd mma MMLU: 60.67% of 300 questions (0-shot)
+next-token choice as bf16's: 99.05%
+MMLU answer as bf16's: 100.00%
+logits bit-identical: False
+generated tokens identical to bf16: 32 of 32
+text: in the 1940s, when Claude Shannon published his paper "A Mathematical Theory of Communication". In this paper, Shannon introduced

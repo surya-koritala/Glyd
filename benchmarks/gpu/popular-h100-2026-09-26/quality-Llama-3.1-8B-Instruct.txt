@@ -1,0 +1,23 @@
+Loading weights:   0%|          | 0/291 [00:00<?, ?it/s]Loading weights: 100%|██████████| 291/291 [00:00<00:00, 5639.88it/s]
+[transformers] Both `max_new_tokens` (=4) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=32) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+bf16 (weights 16.06 GB): batch 1: 11.4 tokens/s (11.4 a sequence), peak VRAM 16.10 GB
+bf16 perplexity: 19.5915 (12600 tokens)
+Generating test split:   0%|          | 0/14042 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 14042/14042 [00:00<00:00, 263151.29 examples/s]
+Generating validation split:   0%|          | 0/1531 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 1531/1531 [00:00<00:00, 247646.72 examples/s]
+Generating dev split:   0%|          | 0/285 [00:00<?, ? examples/s]Generating dev split: 100%|██████████| 285/285 [00:00<00:00, 119765.22 examples/s]
+Generating auxiliary_train split:   0%|          | 0/99842 [00:00<?, ? examples/s]Generating auxiliary_train split:  11%|█         | 11000/99842 [00:00<00:00, 99528.10 examples/s]Generating auxiliary_train split:  38%|███▊      | 38000/99842 [00:00<00:00, 191074.51 examples/s]Generating auxiliary_train split:  71%|███████   | 71000/99842 [00:00<00:00, 248990.33 examples/s]Generating auxiliary_train split: 100%|██████████| 99842/99842 [00:00<00:00, 273246.29 examples/s]
+[transformers] Both `max_new_tokens` (=4) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=32) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Ignoring clean_up_tokenization_spaces=True for BPE tokenizer TokenizersBackend. The clean_up_tokenization post-processing step is designed for WordPiece tokenizers and is destructive for BPE (it strips spaces before punctuation). Set clean_up_tokenization_spaces=False to suppress this warning, or set clean_up_tokenization_spaces_for_bpe_even_though_it_will_corrupt_output=True to force cleanup anyway.
+bf16 MMLU: 71.67% of 300 questions (0-shot)
+mma fused: packed in 9 s; weights 10.83 GB against 16.06 GB bf16 (67.4%), scratch 0.27 GB, VRAM in use 11.13 GB on 1 GPU
+glyd mma fused: batch 1: 39.0 tokens/s (39.0 a sequence), peak VRAM 11.14 GB
+glyd mma perplexity: 19.5909 (12600 tokens)
+glyd mma MMLU: 72.00% of 300 questions (0-shot)
+next-token choice as bf16's: 98.68%
+MMLU answer as bf16's: 99.67%
+logits bit-identical: False
+generated tokens identical to bf16: 32 of 32
+text:  in the 19th century, when the first data compression algorithms were developed. These early algorithms were used to compress text and images, and were based on simple

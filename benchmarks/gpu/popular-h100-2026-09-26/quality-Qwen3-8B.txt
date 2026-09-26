@@ -1,0 +1,14 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 5601.56it/s]
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+bf16 (weights 16.38 GB): batch 1: 15.8 tokens/s (15.8 a sequence), peak VRAM 16.43 GB
+bf16 perplexity: 20.7490 (12600 tokens)
+bf16 MMLU: 74.00% of 300 questions (0-shot)
+mma fused: packed in 10 s; weights 11.15 GB against 16.38 GB bf16 (68.1%), scratch 0.27 GB, VRAM in use 11.45 GB on 1 GPU
+glyd mma fused: batch 1: 28.7 tokens/s (28.7 a sequence), peak VRAM 11.46 GB
+glyd mma perplexity: 20.7428 (12600 tokens)
+glyd mma MMLU: 74.33% of 300 questions (0-shot)
+next-token choice as bf16's: 98.47%
+MMLU answer as bf16's: 99.67%
+logits bit-identical: False
+generated tokens identical to bf16: 32 of 32
+text:  in the 1950s, with the development of algorithms that could reduce the size of data for more efficient storage and transmission. Early methods were based

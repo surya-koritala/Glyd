@@ -1,0 +1,15 @@
+Loading weights:   0%|          | 0/326 [00:00<?, ?it/s]Loading weights: 100%|██████████| 326/326 [00:00<00:00, 5812.77it/s]
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+[transformers] Ignoring clean_up_tokenization_spaces=True for BPE tokenizer TokenizersBackend. The clean_up_tokenization post-processing step is designed for WordPiece tokenizers and is destructive for BPE (it strips spaces before punctuation). Set clean_up_tokenization_spaces=False to suppress this warning, or set clean_up_tokenization_spaces_for_bpe_even_though_it_will_corrupt_output=True to force cleanup anyway.
+bf16 (weights 6.15 GB): batch 1: 11.1 tokens/s (11.1 a sequence), peak VRAM 6.19 GB
+bf16 perplexity: 29.1467 (12600 tokens)
+bf16 MMLU: 63.33% of 300 questions (0-shot)
+mma fused: packed in 3 s; weights 4.50 GB against 6.15 GB bf16 (73.2%), scratch 0.27 GB, VRAM in use 4.81 GB on 1 GPU
+glyd mma fused: batch 1: 44.8 tokens/s (44.8 a sequence), peak VRAM 4.81 GB
+glyd mma perplexity: 29.1422 (12600 tokens)
+glyd mma MMLU: 63.33% of 300 questions (0-shot)
+next-token choice as bf16's: 97.90%
+MMLU answer as bf16's: 99.67%
+logits bit-identical: False
+generated tokens identical to bf16: 32 of 32
+text:  with the need to store and transmit information efficiently. Early methods included using fewer bits to represent common symbols more frequently, a principle known as entropy coding. One of

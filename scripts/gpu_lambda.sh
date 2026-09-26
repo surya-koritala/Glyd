@@ -19,7 +19,9 @@
 #        Glyd alone on G; org Qwen when none), BATCH (1,8,32,64), MMLU (0:
 #        questions for the MMLU check), E2E_MIN (25: minutes an e2e run may take),
 #      FORMATS (mma: the layouts to run, each against bf16 in the first run only),
-#      RW (the remote work directory, relative to home: . on Lambda).
+#      RW (the remote work directory, relative to home: . on Lambda),
+#      DEV (a path: set up the instance, print how to reach it, and hold it
+#        until that file exists or the cap; then terminate as always).
 set -euo pipefail
 REF="${1:-HEAD}"
 KEY_FILE="${LAMBDA_KEY_FILE:-$HOME/.lambda/api_key}"
@@ -206,5 +208,11 @@ done
 H=(ubuntu@"$IP")
 until "${SSH[@]}" "${H[@]}" true 2> /dev/null; do sleep 5; done
 echo "active at $IP after $(( $(date +%s) - START )) s"
+if [ -n "${DEV:-}" ]; then
+    "${SSH[@]}" "${H[@]}" "mkdir -p glyd && tar -C glyd -xf - && bash glyd/gpu/setup_env.sh ~/gpuenv > setup.txt 2>&1" < "$TMP/glyd.tar"
+    echo "dev session: ssh -i $TMP/key ubuntu@$IP  (source ~/gpuenv/cuda.sh); to end it: touch $DEV"
+    until [ -f "$DEV" ]; do sleep 15; done
+    exit
+fi
 run_on
 echo "done: $RUN_ID"
