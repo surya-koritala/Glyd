@@ -842,7 +842,6 @@ struct Tiered {
     Tiers ts;
     typedef Step St;
     static constexpr bool kTable = true;  // decode needs the groups' table and a warp's scratch
-    static constexpr int kAhead = 1;      // steps a warp loads ahead of its decode (one token a step)
     __device__ __forceinline__ void load(St& st, int64_t step, int lane) const { load_step(st, data, blocks, block_base, step, lane); }
     __device__ __forceinline__ void decode(const St& st, int lane, uint32_t* s2, const uint32_t* tab, uint32_t R[16]) const { decode_step(st, ts, blocks, lane, s2, tab, R); }
 };
@@ -868,7 +867,6 @@ struct Nib {
         int e0, e1;
     };
     static constexpr bool kTable = false;
-    static constexpr int kAhead = 2;  // the decode is light: more bytes in flight to cover memory's latency
     __device__ __forceinline__ void load(St& st, int64_t step, int lane) const {
         const uint8_t* p = data + step * STEP12;
         uint4 c = __ldg((const uint4*)p + lane);
@@ -921,7 +919,7 @@ __device__ __forceinline__ int64_t block_of_step(int64_t x, int64_t nb, int64_t 
     return ((x + 1) * nb - 1) / total;  // block b runs steps [b total / nb, (b + 1) total / nb)
 }
 
-template <class Fmt, int MT, int PF>
+template <class Fmt, int MT>
 __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
     extern __shared__ __align__(128) float red[];  // [4 warps][16 MT rows][65], then (tiered) the warps' scratch [8][S2_BYTES]
     __shared__ int last;
@@ -944,42 +942,36 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(Fmt f, i
             for (int nn = 0; nn < 8; nn++)
 #pragma unroll
                 for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
-        // Steps loaded PF ahead, in a ring: W's, then the inputs.
-        typename Fmt::St st[PF];
-        uint32_t a[PF][MT][4];
-        auto load = [&](int j, int64_t s) {
-            f.load(st[j], rb * KS + s, lane);
+        // The step's loads: W's, then the inputs.
+        typename Fmt::St st;
+        uint32_t a[MT][4];
+        auto load = [&](int64_t s) {
+            f.load(st, rb * KS + s, lane);
 #pragma unroll
             for (int mt = 0; mt < MT; mt++) {
                 int64_t r0 = mt * 16 + g, r1 = r0 + 8;
                 const __nv_bfloat16* xr = X + s * 16 + t * 2;
-                a[j][mt][0] = r0 < M ? *(const uint32_t*)(xr + r0 * K) : 0u;
-                a[j][mt][2] = r0 < M ? *(const uint32_t*)(xr + r0 * K + 8) : 0u;
-                a[j][mt][1] = r1 < M ? *(const uint32_t*)(xr + r1 * K) : 0u;
-                a[j][mt][3] = r1 < M ? *(const uint32_t*)(xr + r1 * K + 8) : 0u;
+                a[mt][0] = r0 < M ? *(const uint32_t*)(xr + r0 * K) : 0u;
+                a[mt][2] = r0 < M ? *(const uint32_t*)(xr + r0 * K + 8) : 0u;
+                a[mt][1] = r1 < M ? *(const uint32_t*)(xr + r1 * K) : 0u;
+                a[mt][3] = r1 < M ? *(const uint32_t*)(xr + r1 * K + 8) : 0u;
             }
         };
+        if (s0 < s1) load(s0);
+        for (int64_t s = s0; s < s1; s++) {
+            typename Fmt::St cur = st;
+            uint32_t ca[MT][4];
 #pragma unroll
-        for (int j = 0; j < PF; j++)
-            if (s0 + j < s1) load(j, s0 + j);
-        for (int64_t s = s0; s < s1; s += PF) {
+            for (int mt = 0; mt < MT; mt++)
 #pragma unroll
-            for (int j = 0; j < PF; j++) {
-                if (s + j >= s1) break;
-                typename Fmt::St cur = st[j];
-                uint32_t ca[MT][4];
+                for (int q = 0; q < 4; q++) ca[mt][q] = a[mt][q];
+            if (s + 1 < s1) load(s + 1);
+            uint32_t R[16];
+            f.decode(cur, lane, s2, tab, R);
 #pragma unroll
-                for (int mt = 0; mt < MT; mt++)
+            for (int mt = 0; mt < MT; mt++)
 #pragma unroll
-                    for (int q = 0; q < 4; q++) ca[mt][q] = a[j][mt][q];
-                if (s + j + PF < s1) load(j, s + j + PF);
-                uint32_t R[16];
-                f.decode(cur, lane, s2, tab, R);
-#pragma unroll
-                for (int mt = 0; mt < MT; mt++)
-#pragma unroll
-                    for (int nn = 0; nn < 8; nn++) mma16816(acc[mt][nn], ca[mt], R[2 * nn], R[2 * nn + 1]);
-            }
+                for (int nn = 0; nn < 8; nn++) mma16816(acc[mt][nn], ca[mt], R[2 * nn], R[2 * nn + 1]);
         }
         // The warps' sums (C fragment rows g and g + 8, columns 2t and 2t + 1
         // of each n-tile): warps 4-7 put theirs in shared memory, 0-3 add
@@ -1589,7 +1581,7 @@ static Tiered tiered_of(torch::Tensor data, torch::Tensor blocks, torch::Tensor 
 }
 
 template <class Fmt>
-static void mma_gemm_run(Fmt f, torch::Tensor data, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t ahead = 0) {
+static void mma_gemm_run(Fmt f, torch::Tensor data, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
     const c10::cuda::CUDAGuard guard(data.device());
     cudaStream_t cs = at::cuda::getCurrentCUDAStream();
     int64_t M = x.size(0);
@@ -1610,21 +1602,17 @@ static void mma_gemm_run(Fmt f, torch::Tensor data, int64_t O, int64_t K, torch:
         torch::Tensor parts = torch::empty({nb + RB, M, 64}, x.options().dtype(torch::kFloat32));
         kernel<<<nb, 256, shared, cs>>>(f, O, K, M, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), (float*)parts.data_ptr(), (int*)done.data_ptr());
     };
-    // Steps a warp loads ahead at up to 16 tokens (0: the layout's own).
-    if (ahead == 0) ahead = Fmt::kAhead;
-    if (M <= 16 && ahead >= 3) launch(mma_gemm_kernel<Fmt, 1, 3>, 1);
-    else if (M <= 16 && ahead == 2) launch(mma_gemm_kernel<Fmt, 1, 2>, 1);
-    else if (M <= 16) launch(mma_gemm_kernel<Fmt, 1, 1>, 1);
-    else if (M <= 32) launch(mma_gemm_kernel<Fmt, 2, 1>, 2);
-    else launch(mma_gemm_kernel<Fmt, 4, 1>, 4);
+    if (M <= 16) launch(mma_gemm_kernel<Fmt, 1>, 1);
+    else if (M <= 32) launch(mma_gemm_kernel<Fmt, 2>, 2);
+    else launch(mma_gemm_kernel<Fmt, 4>, 4);
 }
 
 void mma_gemm(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
     mma_gemm_run(tiered_of(data, blocks, block_base, tiers), data, O, K, x, bias, y);
 }
 
-void mma12_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t ahead) {
-    mma_gemm_run(nib_of(data, exc, exc_base, sym), data, O, K, x, bias, y, ahead);
+void mma12_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    mma_gemm_run(nib_of(data, exc, exc_base, sym), data, O, K, x, bias, y);
 }
 
 template <class Fmt, int CW, int PW, int NB, int RBB>

@@ -1,0 +1,43 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights:  97%|█████████▋| 686/707 [00:00<00:00, 6858.88it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 6866.85it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+bf16 (weights 65.52 GB): batch 1: 10.6 tokens/s (10.6 a sequence), peak VRAM 65.58 GB
+bf16 (weights 65.52 GB): batch 8: 101.3 tokens/s (12.7 a sequence), peak VRAM 65.73 GB
+bf16 (weights 65.52 GB): batch 32: 409.5 tokens/s (12.8 a sequence), peak VRAM 66.25 GB
+bf16 (weights 65.52 GB): batch 64: 803.3 tokens/s (12.6 a sequence), peak VRAM 66.93 GB
+bf16 prefill: 64 tokens 49 ms (1313 tokens/s), 128 tokens 48 ms (2652 tokens/s), 512 tokens 73 ms (6996 tokens/s), 2048 tokens 268 ms (7638 tokens/s)
+bf16 profile: 67.08 ms a token, GPU busy 28.23 ms
+    11.090 ms   128.0 a token  nvjet_sm90_tst_128x8_64x12_4x1_v_bz_TNT
+     7.560 ms   128.0 a token  nvjet_sm90_tst_128x8_64x12_4x1_v_bz_splitK_TNT
+     1.920 ms    64.0 a token  nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
+     0.899 ms   392.1 a token  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.806 ms   128.0 a token  nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT
+     0.715 ms   259.0 a token  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+bf16 perplexity: 17.0817 (12600 tokens)
+Generating test split:   0%|          | 0/14042 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 14042/14042 [00:00<00:00, 574543.13 examples/s]
+Generating validation split:   0%|          | 0/1531 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 1531/1531 [00:00<00:00, 317533.47 examples/s]
+Generating dev split:   0%|          | 0/285 [00:00<?, ? examples/s]Generating dev split: 100%|██████████| 285/285 [00:00<00:00, 147832.88 examples/s]
+Generating auxiliary_train split:   0%|          | 0/99842 [00:00<?, ? examples/s]Generating auxiliary_train split:  37%|███▋      | 37000/99842 [00:00<00:00, 353663.35 examples/s]Generating auxiliary_train split:  91%|█████████ | 91000/99842 [00:00<00:00, 447525.66 examples/s]Generating auxiliary_train split: 100%|██████████| 99842/99842 [00:00<00:00, 458053.08 examples/s]
+bf16 MMLU: 78.30% of 1000 questions (0-shot)
+mma fused: packed in 28 s; weights 44.45 GB against 65.52 GB bf16 (67.8%), scratch 0.27 GB, VRAM in use 44.75 GB on 1 GPU
+glyd mma fused: batch 1: 15.8 tokens/s (15.8 a sequence), peak VRAM 44.78 GB
+glyd mma fused: batch 8: 125.0 tokens/s (15.6 a sequence), peak VRAM 44.93 GB
+glyd mma fused: batch 32: 463.0 tokens/s (14.5 a sequence), peak VRAM 45.44 GB
+glyd mma fused: batch 64: 787.0 tokens/s (12.3 a sequence), peak VRAM 46.13 GB
+glyd mma prefill: 64 tokens 79 ms (813 tokens/s), 128 tokens 84 ms (1518 tokens/s), 512 tokens 116 ms (4422 tokens/s), 2048 tokens 313 ms (6552 tokens/s)
+glyd mma profile: 69.87 ms a token, GPU busy 40.58 ms
+    34.738 ms   449.0 a token  void mma_gemm_kernel<Tiered, 1>(Tiered, long, long, long, __nv_bfloat16 const*, 
+     0.893 ms   392.1 a token  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.700 ms   259.0 a token  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+     0.644 ms   257.0 a token  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.466 ms   257.0 a token  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<a
+     0.347 ms   257.0 a token  void at::native::vectorized_elementwise_kernel<4, at::native::rsqrt_kernel_cuda(
+glyd mma perplexity: 17.0768 (12600 tokens)
+glyd mma MMLU: 78.20% of 1000 questions (0-shot)
+next-token choice as bf16's: 98.60%
+MMLU answer as bf16's: 99.90%
+logits bit-identical: False
+generated tokens identical to bf16: 64 of 64
+text:  in 1948 with the publication of A Mathematical Theory of Communication by the American mathematician and electrical engineer Claude Shannon. In this paper, Shannon introduced the concept of entropy as a measure of

@@ -151,8 +151,29 @@ three byte permutes and nothing across lanes. Qwen2.5-7B-Instruct, RTX
 | Prompt of 64 / 2048 tokens | 27 / 301 ms | 26 / 330 ms | **23** / 318 ms |
 | Perplexity; MMLU (1,000) | 17.0015; 73.50% | 17.0052; 73.50% | 17.0052; 73.50% |
 
-Per matrix (down_proj, 3584 x 18944): one token 141 us (`mma`), 155
-(`mma12`), 198 (bf16); 64 tokens 192, 174, 236.
+Per matrix (down_proj, 3584 x 18944): one token 141 us (`mma`), 152
+(`mma12`), 198 (bf16); 64 tokens 193, 170, 236.
+
+On an H100 SXM (HBM3, 3.35 TB/s) the order turns: the tiered decode is
+bound by arithmetic, the 12-bit one keeps up with memory. Qwen3-32B's
+layer 0, one token: down_proj 75-79 us (`mma12`), 126 (`mma`), 90
+(cuBLAS); gate and up 75-76, 130, 86-88; 16 tokens 80-82, 132-137, 89-91
+(at 64 tokens cuBLAS leads: 95 against 141-143). End to end, GPU time a
+generated token (Hugging Face's loop, bound by the CPU at about 68 ms a
+token for all three, over 16 tokens):
+
+| H100 SXM | bf16 | `mma` | `mma12` |
+| :--- | ---: | ---: | ---: |
+| Qwen3-32B: weights | 65.52 GB | **44.45 GB** | 49.23 GB |
+| Qwen3-32B: GPU time a token | 28.22 ms | 40.58 ms | **26.39 ms** |
+| Qwen3-32B: MMLU (1,000) | 78.3% | 78.2% | 78.1% |
+| Qwen2.5-7B: weights | 15.23 GB | **10.32 GB** | 11.42 GB |
+| Qwen2.5-7B: GPU time a token | 7.47 ms | 10.73 ms | **7.35 ms** |
+| Qwen2.5-7B: MMLU (1,000) | 73.2% | 73.2% | 73.3% |
+
+(benchmarks/gpu/lambda-gpu_1x_h100_sxm5-20260926-114529 for bf16 and
+`mma`, and -120552 for `mma12`; the first run's `mma12` kept its
+exponents in local memory, since fixed: same bytes, same answers.)
 
 ## Larger models
 

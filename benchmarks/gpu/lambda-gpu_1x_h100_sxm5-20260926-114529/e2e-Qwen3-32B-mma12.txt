@@ -1,0 +1,21 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights:  98%|█████████▊| 694/707 [00:00<00:00, 6930.09it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 6954.96it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+mma12 fused: packed in 16 s; weights 49.23 GB against 65.52 GB bf16 (75.1%), scratch 0.27 GB, VRAM in use 49.50 GB on 1 GPU
+glyd mma12 fused: batch 1: 12.7 tokens/s (12.7 a sequence), peak VRAM 49.53 GB
+glyd mma12 fused: batch 8: 98.8 tokens/s (12.3 a sequence), peak VRAM 49.68 GB
+glyd mma12 fused: batch 32: 389.6 tokens/s (12.2 a sequence), peak VRAM 50.22 GB
+glyd mma12 fused: batch 64: 685.5 tokens/s (10.7 a sequence), peak VRAM 50.91 GB
+glyd mma12 prefill: 64 tokens 60 ms (1063 tokens/s), 128 tokens 106 ms (1207 tokens/s), 512 tokens 137 ms (3735 tokens/s), 2048 tokens 327 ms (6254 tokens/s)
+glyd mma12 profile: 68.87 ms a token, GPU busy 33.65 ms
+    27.776 ms   449.0 a token  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     0.901 ms   392.1 a token  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.717 ms   259.0 a token  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+     0.642 ms   257.0 a token  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.465 ms   257.0 a token  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<a
+     0.355 ms   257.0 a token  void at::native::vectorized_elementwise_kernel<4, at::native::rsqrt_kernel_cuda(
+glyd mma12 perplexity: 17.0849 (12600 tokens)
+glyd mma12 MMLU: 78.10% of 1000 questions (0-shot)
+text:  in 1948 with the publication of A Mathematical Theory of Communication by the American mathematician and electrical engineer Claude Shannon. In this paper, Shannon introduced the concept of entropy as a measure of

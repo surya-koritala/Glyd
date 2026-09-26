@@ -6,6 +6,23 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.19.0 — 2026-09-26
+
+- A second GPU layout, `mma12` ([gpu/](gpu/README.md#two-layouts-the-most-memory-or-the-lightest-decode)):
+  a weight's exponent a 4-bit code into the tensor's 15 commonest, a
+  step's exceptions in a list; four weights are three byte permutes, so
+  the decode keeps up with an H100's HBM3 where the tiered one is bound by
+  arithmetic. 12.04 bits a weight, 25% under bf16, bit for bit. On an H100
+  SXM, **Qwen3-32B in 49.23 GB at 26.39 ms of GPU time a token against
+  bf16's 65.52 GB and 28.22 ms** (the tiered layout: 44.45 GB, 40.58 ms);
+  Qwen2.5-7B 7.35 ms against 7.47; the products at 1-16 tokens 1.1-1.2x
+  faster than cuBLAS's (Qwen3-32B's MLP at one token: 75-79 us against
+  86-90); MMLU 78.1% (bf16 78.3%). On an RTX 4080 SUPER, where memory is
+  the limit, the tiered layout stays the faster at 1-32 sequences and
+  `mma12` leads at 64 (2,455.9 tokens/s against 2,244.7; bf16 2,160.0).
+  `pack_mma12`; `mma_gemm`, `mma_gemm_big` and `mma_unpack` take either;
+  `e2e.py --format mma12`; the kernels are written once over both layouts.
+
 ## v0.18.0 — 2026-09-26
 
 - The KV cache compressed in GPU memory ([gpu/kv.py](gpu/kv.py)), bit
