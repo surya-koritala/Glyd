@@ -109,6 +109,11 @@ py() { python3 -c "$1"; }
 
 cleanup() {
     set +e
+    # Whatever carries this run's name, even if its launch's reply was lost.
+    for i in $(api GET /instances | py "import json,sys; print(' '.join(i['id'] for i in json.load(sys.stdin)['data'] if i.get('name') == '$RUN_ID' and i['id'] != '$ID'))" 2> /dev/null); do
+        echo "cleanup: terminating $i (by name)"
+        api POST /instance-operations/terminate -d "{\"instance_ids\": [\"$i\"]}" > /dev/null
+    done
     if [ -n "$ID" ]; then
         echo "cleanup: terminating $ID"
         api POST /instance-operations/terminate -d "{\"instance_ids\": [\"$ID\"]}" > /dev/null
