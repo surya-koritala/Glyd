@@ -6,6 +6,38 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.18.0 — 2026-09-26
+
+- The KV cache compressed in GPU memory ([gpu/kv.py](gpu/kv.py)), bit
+  for bit: `GlydKVCache(config)` for a Hugging Face model keeps each
+  layer's newest tokens as they are and packs every full page of 64 in
+  the mma layout's tiered code (keys by token, values transposed); with
+  `fused=True` a step of one new token a sequence runs `attn_decode`,
+  attention straight from the packed pages (keys and values decoded in
+  registers, both products on the tensor cores, an online softmax, a
+  fixed order: the same result every run). Qwen2.5-7B-Instruct on an RTX
+  4080 SUPER: **the cache 31% smaller** (16K tokens: 651 MB for 947),
+  peak memory below the plain cache's, a step as fast (21.7 ms against
+  21.6 at 16K; 19.2 against 18.3 at 1K); decoded, the cache is the plain
+  one's bit for bit (the same tokens); through `attn_decode`, 256 tokens
+  fed one at a time give perplexity 2.4778 against 2.4809 (16K).
+- Larger models on rented GPUs, bf16 and Glyd in the same runs, MMLU on
+  1,000 questions ([gpu/README.md](gpu/README.md#larger-models)):
+  **Qwen3-32B on one 48 GB RTX A6000** (44.45 GB; bf16 65.52 GB across
+  two) at 1.24-1.28x bf16's tokens/s for 1-8 sequences, MMLU 78.0%
+  (bf16 78.5%); **Qwen2.5-72B on three** (97.80 GB; bf16 145.41 GB
+  across four) at 1.40-1.42x, MMLU 81.8% (81.9%); on an H100 SXM
+  Qwen3-32B in 44.45 GB with MMLU 78.2% as bf16's, its products slower
+  than cuBLAS's (40.6 ms of GPU time a token against 28.2).
+- The README leads with the AI work: `nvidia-smi` from the runs
+  (`e2e.py --smi`, drawn by `scripts/term_svg.py`), the measured limits
+  (about 34% off bf16 weights or KV cache for any lossless code, 18% off
+  FP8, 7% off NVFP4).
+- `e2e.py --mmlu N`, `--kv LENGTHS`, `--smi PREFIX`; `pack_mma` takes
+  given tiers and a chunk size, `mma_cat` appends packs;
+  `gpu_lambda.sh` takes models as `[org/]name[:B[:G]]` (side by side on
+  B GPUs, then Glyd alone on G) and follows the run as it goes.
+
 ## v0.17.0 — 2026-09-26
 
 - Model weights on the GPU ([gpu/](gpu/README.md)): the `mma` layout's

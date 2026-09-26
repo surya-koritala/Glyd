@@ -14,7 +14,10 @@
 # Env: LAMBDA_KEY_FILE (~/.lambda/api_key), TYPE (gpu_1x_h100_sxm5),
 #      IMAGE (gpu-base-24-04: its driver runs CUDA 13; Lambda's default image's does not),
 #      REGION (the first with capacity), MAX_MIN (75),
-#      MODELS ("Qwen2.5-7B-Instruct Qwen2.5-32B-Instruct"), BATCH (1,8,32,64),
+#      MODELS ("Qwen2.5-7B-Instruct Qwen2.5-32B-Instruct"; an entry is
+#        [org/]name[:B[:G]]: bf16 and Glyd side by side on B GPUs (1), then
+#        Glyd alone on G; org Qwen when none), BATCH (1,8,32,64), MMLU (0:
+#        questions for the MMLU check), E2E_MIN (25: minutes an e2e run may take),
 #      RW (the remote work directory, relative to home: . on Lambda).
 set -euo pipefail
 REF="${1:-HEAD}"
@@ -48,20 +51,25 @@ source \$W/gpuenv/cuda.sh
 export HF_HUB_ENABLE_HF_TRANSFER=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd \$W/glyd/gpu
 python -c "import glyd_gpu" > \$R/build.txt 2>&1 &
-for m in $MODELS; do
-  [ -f \$W/models/\$m/config.json ] || (hf download Qwen/\$m --local-dir \$W/models/\$m || huggingface-cli download Qwen/\$m --local-dir \$W/models/\$m) > \$R/download-\$m.txt 2>&1 &
+for e in $MODELS; do
+  m=\${e%%:*}; case \$m in */*) ;; *) m=Qwen/\$m;; esac; n=\${m#*/}
+  [ -f \$W/models/\$n/config.json ] || (hf download \$m --local-dir \$W/models/\$n || huggingface-cli download \$m --local-dir \$W/models/\$n) > \$R/download-\$n.txt 2>&1 &
 done
 [ -f \$W/enwik8 ] || (curl -sL http://mattmahoney.net/dc/enwik8.zip -o \$W/enwik8.zip && python -c "import zipfile; zipfile.ZipFile('\$W/enwik8.zip').extractall('\$W')") &
 wait
 du -sh \$W/models/* >> \$R/machine.txt
-# The GPU's clocks, power and temperature every 5 s while the tests run.
-nvidia-smi --query-gpu=timestamp,clocks.sm,clocks.mem,power.draw,temperature.gpu,utilization.gpu --format=csv -l 5 > \$R/clocks.csv 2>&1 &
+# The GPUs' clocks, power, temperature and memory every 5 s while the tests run.
+nvidia-smi --query-gpu=timestamp,index,clocks.sm,clocks.mem,power.draw,temperature.gpu,utilization.gpu,memory.used --format=csv -l 5 > \$R/clocks.csv 2>&1 &
 CLK=\$!
-# Every product checked and timed first (a failure there: the models without bulk copies); every step bounded.
-first=\$(echo $MODELS | cut -d' ' -f1)
+# Every product checked and timed first; every step bounded.
+first=\$(echo $MODELS | cut -d' ' -f1); first=\${first%%:*}; first=\${first#*/}
 timeout 900 python gemm.py \$W/models/\$first 1,16,64,256,2048 > \$R/gemm-\$first.txt 2>&1
-for m in $MODELS; do
-  timeout 1500 python e2e.py \$W/models/\$m --format mma --fused --baseline --tokens 64 --batch $BATCH --prefill 64,128,512,2048 --ppl \$W/enwik8 --profile 16 > \$R/e2e-\$m.txt 2>&1
+E="--format mma --fused --tokens 64 --batch $BATCH --prefill 64,128,512,2048 --ppl \$W/enwik8 --mmlu ${MMLU:-0}"
+for e in $MODELS; do
+  m=\${e%%:*}; n=\${m#*/}; g=\${e#*:}; b=1; a=""
+  [ "\$g" != "\$e" ] && { b=\${g%%:*}; [ "\$b" != "\$g" ] && a=\${g#*:}; }
+  timeout $(( ${E2E_MIN:-25} * 60 )) python e2e.py \$W/models/\$n \$E --baseline --gpus \$b --profile 16 --smi \$R/smi-\$n-x\$b > \$R/e2e-\$n.txt 2>&1
+  [ -n "\$a" ] && timeout $(( ${E2E_MIN:-25} * 60 )) python e2e.py \$W/models/\$n \$E --gpus \$a --smi \$R/smi-\$n-x\$a > \$R/e2e-\$n-glyd-x\$a.txt 2>&1
 done
 kill \$CLK
 touch \$R/DONE
@@ -72,7 +80,7 @@ EOF
 run_on() {
     "${SSH[@]}" "${H[@]}" "mkdir -p $RW/glyd && rm -rf $RW/results $RW/run.log && tar -C $RW/glyd -xf -" < "$TMP/glyd.tar"
     run_remote | "${SSH[@]}" "${H[@]}" "cat > $RW/run.sh"
-    "${SSH[@]}" "${H[@]}" "cd $RW && nohup bash run.sh > run.log 2>&1 < /dev/null &"
+    "${SSH[@]}" "${H[@]}" "cd $RW; nohup bash run.sh > run.log 2>&1 < /dev/null &"  # only nohup in the background: ssh returns now
     LIVE="$TMP/results"; mkdir -p "$LIVE"
     while true; do
         sleep 60
@@ -82,7 +90,7 @@ run_on() {
         echo "$(( ($(date +%s) - START) / 60 )) min: $(ls "$LIVE" | tr '\n' ' ')"
     done
     rm -rf "$OUT"; mkdir -p "$OUT"; cp -R "$LIVE"/. "$OUT"/
-    grep -h -E "tokens/s|prefill|perplexity|choice|packed" "$OUT"/e2e-*.txt 2> /dev/null
+    grep -h -E "tokens/s|prefill|perplexity|choice|packed|MMLU" "$OUT"/e2e-*.txt 2> /dev/null
 }
 
 if [ -n "${HOST:-}" ]; then

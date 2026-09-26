@@ -1,0 +1,39 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/963 [00:00<?, ?it/s]Loading weights:  25%|██▌       | 245/963 [00:00<00:00, 2259.70it/s]Loading weights:  49%|████▉     | 471/963 [00:00<00:00, 1343.77it/s]Loading weights:  65%|██████▍   | 625/963 [00:00<00:00, 1293.34it/s]Loading weights: 100%|██████████| 963/963 [00:00<00:00, 2023.53it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+bf16 (weights 145.41 GB): batch 1: 4.5 tokens/s (4.5 a sequence), peak VRAM 145.48 GB (44.6 + 47.4 + 47.4 + 6.0 GB on 4 GPUs)
+bf16 (weights 145.41 GB): batch 8: 35.0 tokens/s (4.4 a sequence), peak VRAM 145.67 GB (44.7 + 47.5 + 47.5 + 6.0 GB on 4 GPUs)
+bf16 (weights 145.41 GB): batch 32: 134.6 tokens/s (4.2 a sequence), peak VRAM 146.32 GB (45.0 + 47.7 + 47.7 + 6.1 GB on 4 GPUs)
+bf16 (weights 145.41 GB): batch 64: 254.3 tokens/s (4.0 a sequence), peak VRAM 147.19 GB (45.3 + 47.9 + 47.9 + 6.1 GB on 4 GPUs)
+bf16 prefill: 64 tokens 238 ms (269 tokens/s), 128 tokens 263 ms (486 tokens/s), 512 tokens 859 ms (596 tokens/s), 2048 tokens 2689 ms (761 tokens/s)
+bf16 profile: 223.82 ms a token, GPU busy 215.36 ms
+   169.022 ms   250.0 a token  ampere_bf16_s16816gemm_bf16_64x64_ldg8_f2f_stages_64x5_tn
+    22.366 ms   226.0 a token  std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, __nv_bflo
+    14.883 ms    75.0 a token  void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x2
+     1.089 ms     5.0 a token  void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x64_32x4_
+     1.004 ms     5.0 a token  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_relu_f2f_stages_64x6_tn
+     0.786 ms   330.1 a token  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+bf16 perplexity: 10.6035 (12600 tokens)
+bf16 MMLU: 81.90% of 1000 questions (0-shot)
+mma fused: packed in 126 s; weights 97.80 GB against 145.41 GB bf16 (67.3%), scratch 1.07 GB, VRAM in use 98.91 GB on 4 GPUs
+glyd mma fused: batch 1: 6.3 tokens/s (6.3 a sequence), peak VRAM 98.94 GB (25.8 + 23.8 + 23.8 + 25.5 GB on 4 GPUs)
+glyd mma fused: batch 8: 48.6 tokens/s (6.1 a sequence), peak VRAM 99.14 GB (25.9 + 23.9 + 23.9 + 25.5 GB on 4 GPUs)
+glyd mma fused: batch 32: 155.5 tokens/s (4.9 a sequence), peak VRAM 99.80 GB (26.1 + 24.0 + 24.0 + 25.7 GB on 4 GPUs)
+glyd mma fused: batch 64: 218.6 tokens/s (3.4 a sequence), peak VRAM 100.68 GB (26.4 + 24.2 + 24.2 + 25.9 GB on 4 GPUs)
+glyd mma prefill: 64 tokens 274 ms (234 tokens/s), 128 tokens 353 ms (362 tokens/s), 512 tokens 1064 ms (481 tokens/s), 2048 tokens 4176 ms (490 tokens/s)
+glyd mma profile: 160.22 ms a token, GPU busy 152.70 ms
+   146.073 ms   561.0 a token  void mma_gemm_kernel<1>(unsigned char const*, unsigned char const*, int const*, 
+     0.956 ms   330.1 a token  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.632 ms   161.0 a token  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.577 ms   170.0 a token  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymo
+     0.515 ms   163.0 a token  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+     0.509 ms   310.0 a token  void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<c1
+glyd mma perplexity: 10.5996 (12600 tokens)
+glyd mma MMLU: 81.80% of 1000 questions (0-shot)
+next-token choice as bf16's: 98.80%
+MMLU answer as bf16's: 99.40%
+logits bit-identical: False
+generated tokens identical to bf16: 2 of 64
+text:  with the standardization by CCITT of the first data compression algorithm for facsimile (fax) machines in 1968. In the last 40 years, a large number of

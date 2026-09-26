@@ -1,0 +1,12 @@
+commit: b90393f
+Sat Sep 26 12:50:50 UTC 2026
+name, memory.total [MiB], driver_version, clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA RTX A6000, 49140 MiB, 580.126.20, 2100 MHz, 8001 MHz, 300.00 W
+NVIDIA RTX A6000, 49140 MiB, 580.126.20, 2100 MHz, 8001 MHz, 300.00 W
+NVIDIA RTX A6000, 49140 MiB, 580.126.20, 2100 MHz, 8001 MHz, 300.00 W
+NVIDIA RTX A6000, 49140 MiB, 580.126.20, 2100 MHz, 8001 MHz, 300.00 W
+56
+               total        used        free      shared  buff/cache   available
+Mem:             393           3         391           0           0         389
+136G	/home/ubuntu/./models/Qwen2.5-72B-Instruct
+62G	/home/ubuntu/./models/Qwen3-32B

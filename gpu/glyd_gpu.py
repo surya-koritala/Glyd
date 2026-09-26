@@ -325,22 +325,27 @@ class Mma:
         return self.nbytes() * 8 / self.n
 
 
-def pack_mma(w):
+def pack_mma(w, tiers=None, chunk=1 << 22):
+    """w [O, K] in the mma layout; tiers: another pack's (its exponents by
+    count), else this matrix's own. Packed about `chunk` weights at a time
+    (its scratch: some 100 bytes a weight)."""
     assert w.dtype == torch.bfloat16 and w.is_cuda and w.dim() == 2 and w.shape[0] % 64 == 0 and w.shape[1] % 16 == 0
     O, K = w.shape
     RB, KS, dev = O // 64, K // 16, w.device
     u = w.contiguous().view(torch.int16)
     # Exponents by count: ranks 0-2 tier 1's digits 0-2, 3-5 tier 2's, 6-8 tier 3's; digit 3 goes on a tier.
-    order = torch.argsort(_hist(u.flatten()), descending=True, stable=True)
-    rank = torch.empty(256, dtype=torch.int64, device=dev)
-    rank[order] = torch.arange(256, device=dev)
-    sym = order[:9].tolist()
-    tiers = [sym[3 * k] | sym[3 * k + 1] << 8 | sym[3 * k + 2] << 16 | 0xFF << 24 for k in range(3)]
+    if tiers is None:
+        sym = torch.argsort(_hist(u.flatten()), descending=True, stable=True)[:9].tolist()
+        tiers = [sym[3 * k] | sym[3 * k + 1] << 8 | sym[3 * k + 2] << 16 | 0xFF << 24 for k in range(3)]
+    else:
+        sym = [(tiers[k] >> (8 * j)) & 0xFF for k in range(3) for j in range(3)]
+    rank = torch.full((256,), 9, dtype=torch.int64, device=dev)  # past tier 3: the byte itself
+    rank[torch.tensor(sym, device=dev)] = torch.arange(9, device=dev)
     steps = O * K // 1024
     data = torch.empty(steps, 1280, dtype=torch.uint8, device=dev)  # a warp step: tier-1 digits [2 words][32 lanes], then [32 lanes][32 bytes] as two halves
     shifts = 2 * torch.arange(16, dtype=torch.int64, device=dev)
     block_parts, sizes = [], []
-    per = max(1, (1 << 22) // (64 * K))  # row blocks a chunk
+    per = max(1, chunk // (64 * K))  # row blocks a chunk
     for b0 in range(0, RB, per):
         b1 = min(RB, b0 + per)
         # [rb, n, g, ks, j >> 1, t, j & 1] -> [rb, ks, lane = 4g + t, 4n + j]
@@ -379,6 +384,14 @@ def pack_mma(w):
     size = torch.cat([torch.full((1,), 128, dtype=torch.int64, device=dev)] + sizes)
     assert blocks.numel() < 2**31
     return Mma((O, K), data.flatten(), blocks, torch.cumsum(size, 0).to(torch.int32), tiers)  # block_base: steps + 1 (the last's end)
+
+
+def mma_cat(a, b):
+    """Two packs with the same tiers and columns as one: a's rows, then b's."""
+    assert a.tiers == b.tiers and a.shape[1] == b.shape[1]
+    body = int(a.block_base[-1]) - 128  # a's blocks without their padding
+    blocks = torch.cat([a.blocks[: 128 + body], b.blocks[128:]])
+    return Mma((a.shape[0] + b.shape[0], a.shape[1]), torch.cat([a.data, b.data]), blocks, torch.cat([a.block_base[:-1], b.block_base + body]), a.tiers)
 
 
 def mma_unpack(p, out=None, row0=0, rows=None):

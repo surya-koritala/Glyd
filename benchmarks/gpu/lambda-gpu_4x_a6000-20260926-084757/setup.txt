@@ -1,0 +1,2 @@
+torch 2.14.0+cu130 CUDA 13.0 4 GPUs NVIDIA RTX A6000
+Build cuda_13.0.r13.0/compiler.36424714_0

@@ -29,6 +29,9 @@ ap.add_argument("--batch", type=str, default="1", help="generate for this many c
 ap.add_argument("--gpus", type=int, default=1, help="spread the layers over this many GPUs (bf16: accelerate's device map; glyd: layers balanced by packed size)")
 ap.add_argument("--ppl", default="", help="a text file: perplexity over windows of --ppl-window tokens (a forward pass each; 12800 tokens from its 10th MB), and how often the next-token choice is bf16's")
 ap.add_argument("--ppl-window", type=int, default=64)
+ap.add_argument("--kv", type=str, default="", help="prompt lengths (tokens of enwik8, needs --ppl) to generate --tokens after with the KV cache compressed (gpu/kv.py) against the plain cache: the same tokens, its bytes, the time; with --batch's first size")
+ap.add_argument("--smi", default="", help="once a model is on its GPUs: nvidia-smi's report into PREFIX-bf16.txt / PREFIX-glyd.txt")
+ap.add_argument("--mmlu", type=int, default=0, help="MMLU (cais/mmlu, test split, a fixed shuffle): accuracy over this many questions, 0-shot, by the answer letter's logit")
 ap.add_argument("--profile", type=int, default=0, help="one sequence: GPU time by kernel over this many generated tokens, against the wall clock")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
 args = ap.parse_args()
@@ -94,6 +97,89 @@ def perplexity(model, label):
     top = torch.stack(top)
     print(f"{label} perplexity: {math.exp(nll / top.numel()):.4f} ({top.numel()} tokens)")
     return top
+
+
+def smi(what):
+    if args.smi:
+        import subprocess
+        torch.cuda.synchronize()
+        report = subprocess.run(["nvidia-smi"], capture_output=True, text=True).stdout
+        open(f"{args.smi}-{what}.txt", "w").write(report)
+
+
+def kv_check(model, label):
+    if not args.kv:
+        return
+    from kv import GlydKVCache, use_fused_attention
+    use_fused_attention(model)  # SDPA's, save for a fused cache's one-token steps
+    text = open(args.ppl, "rb").read()[10_000_000:12_000_000].decode("utf-8", "ignore")
+    b = int(args.batch.split(",")[0])
+    for T in [int(x) for x in args.kv.split(",")]:
+        x = tok(text, return_tensors="pt").input_ids[:, :T].repeat(b, 1).cuda()
+        res = {}
+        for name in ("plain", "packed", "fused"):
+            make = lambda: None if name == "plain" else GlydKVCache(model.config, fused=name == "fused")
+            with torch.no_grad():
+                model.generate(x[:, :64], max_new_tokens=2, do_sample=False, past_key_values=make())  # warm-up
+                torch.cuda.synchronize()
+                t1 = time.perf_counter()
+                model.generate(x, max_new_tokens=1, do_sample=False, past_key_values=make())  # the prompt alone
+                torch.cuda.synchronize()
+                t1 = time.perf_counter() - t1
+                for i in range(torch.cuda.device_count()):
+                    torch.cuda.reset_peak_memory_stats(i)
+                t = time.perf_counter()
+                o = model.generate(x, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False, past_key_values=make(), return_dict_in_generate=True)
+                torch.cuda.synchronize()
+                t = time.perf_counter() - t
+            peak = sum(torch.cuda.max_memory_allocated(i) for i in range(torch.cuda.device_count())) / 1e9
+            kv = o.past_key_values
+            size = kv.nbytes() if name != "plain" else sum(l.keys.numel() * 2 + l.values.numel() * 2 for l in kv.layers)
+            res[name] = (o.sequences[:, T:], (t - t1) / (args.tokens - 1), peak, size)
+            del o, kv  # the next run's peak without this one's cache
+            torch.cuda.empty_cache()
+        # Quality through the fused steps: the text's next 256 tokens fed one at a time after the prompt.
+        y = tok(text, return_tensors="pt").input_ids[:, T : T + 257].cuda()
+        q = {}
+        for name in ("plain", "fused"):
+            with torch.no_grad():
+                out = model(x[:1], past_key_values=GlydKVCache(model.config, fused=True) if name == "fused" else None, use_cache=True, logits_to_keep=1)
+                kv, nll, top = out.past_key_values, 0.0, []
+                for i in range(256):
+                    out = model(y[:, i : i + 1], past_key_values=kv, use_cache=True)
+                    lg = out.logits[0, -1].float()
+                    nll += F.cross_entropy(lg[None], y[0, i + 1 : i + 2]).item()
+                    top.append(int(lg.argmax()))
+            q[name] = (math.exp(nll / 256), top)
+            del out, kv
+        agree = sum(a == b for a, b in zip(q["plain"][1], q["fused"][1])) / 256 * 100
+        print(f"{label} KV cache, {T}-token prompt, 256 steps fed: perplexity plain {q['plain'][0]:.4f}, fused {q['fused'][0]:.4f}; next token as plain's {agree:.2f}%")
+        sa, ta, pa, ka = res["plain"]
+        line = f"{label} KV cache, {T}-token prompt, batch {b}, {args.tokens} new tokens: plain {ka / 1e9:.3f} GB, {1000 * ta:.1f} ms a step, peak {pa:.2f} GB"
+        for name in ("packed", "fused"):
+            sb, tb, pb, kb = res[name]
+            same = (sa == sb).all(0).long().cumprod(0).sum().item()
+            line += f"; {name} {kb / 1e9:.3f} GB ({100 * kb / ka:.1f}%), {1000 * tb:.1f} ms a step, peak {pb:.2f} GB, tokens as plain's: {same} of {args.tokens}"
+        print(line)
+
+
+def mmlu(model, label):
+    if not args.mmlu:
+        return None
+    from datasets import load_dataset
+    qs = load_dataset("cais/mmlu", "all", split="test").shuffle(seed=0).select(range(args.mmlu))
+    letters = [tok(f" {c}", add_special_tokens=False).input_ids[-1] for c in "ABCD"]
+    picks, right = [], 0
+    with torch.no_grad():
+        for q in qs:
+            prompt = f"The following is a multiple choice question about {q['subject'].replace('_', ' ')}.\n\n{q['question']}\n"
+            prompt += "".join(f"{c}. {a}\n" for c, a in zip("ABCD", q["choices"])) + "Answer:"
+            x = tok(prompt, return_tensors="pt").input_ids.cuda()
+            pick = int(model(x, logits_to_keep=1).logits[0, -1, letters].argmax())
+            picks.append(pick)
+            right += pick == q["answer"]
+    print(f"{label} MMLU: {100 * right / len(picks):.2f}% of {len(picks)} questions (0-shot)")
+    return torch.tensor(picks)
 
 
 def measure(model, label):
@@ -198,10 +284,12 @@ if args.baseline:
         dispatch_model(model, device_map=dm)
     else:
         model.cuda()
+    smi("bf16")
     logits_a, out_a = measure(model, f"bf16 (weights {weights_bf16 / 1e9:.2f} GB)")
     prefill(model, "bf16")
     profile(model, "bf16")
     top_a = perplexity(model, "bf16")
+    mmlu_a = mmlu(model, "bf16")
     if args.gpus > 1:
         remove_hook_from_module(model, recurse=True)
     model.cpu()
@@ -254,12 +342,17 @@ other = sum(p.numel() * p.element_size() for p in model.parameters()) + sum(m.bi
 in_use = sum(torch.cuda.memory_allocated(i) for i in range(torch.cuda.device_count()))
 scratch = sum(b.numel() * 2 for b in Scratch.buf.values())
 print(f"{args.format}{' fused' if args.fused else ''}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {scratch / 1e9:.2f} GB, VRAM in use {in_use / 1e9:.2f} GB on {args.gpus} GPU{'s' if args.gpus > 1 else ''}")
+smi("glyd")
 logits_b, out_b = measure(model, f"glyd {args.format}{' fused' if args.fused else ''}")
 prefill(model, f"glyd {args.format}")
 profile(model, f"glyd {args.format}")
 top_b = perplexity(model, f"glyd {args.format}")
+mmlu_b = mmlu(model, f"glyd {args.format}")
+kv_check(model, f"glyd {args.format}")
 if args.baseline and top_b is not None:
     print(f"next-token choice as bf16's: {(top_a.cuda() == top_b).float().mean().item() * 100:.2f}%")
+if args.baseline and mmlu_b is not None:
+    print(f"MMLU answer as bf16's: {(mmlu_a == mmlu_b).float().mean().item() * 100:.2f}%")
 if args.baseline:
     print("logits bit-identical:", torch.equal(logits_a.cuda().view(torch.int16), logits_b.view(torch.int16)))
     same = (out_a.cuda() == out_b).all(0).long().cumprod(0).sum().item() - ids.shape[1]

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Glyd — compression that moves the storage bill</title>
+<title>Glyd — lossless compression for AI</title>
 <meta name="description" content="Glyd: a store that compresses across objects, 3.5× fewer bytes than zstd on a 1.2 TB bucket, 4.6× on a 39 GB one; base mode stores a new version of a dump, image or source tree for a few percent of its size, 15 kernel releases in 228 MB; record mode turns logs of any shape, dumps, CSV and JSON lines into typed columns; the cold level's context mixing stores 1.5–2× less than zstd -19; benchmarked against gzip, zstd, xz, brotli and LZ4 on 24 kinds of data, every decode byte-exact.">
 <style>
   :root { --fg:#111; --bg:#fff; --muted:#666; --line:#ddd; --accent:#0b5fff; --hl:#eef3ff; }
@@ -29,9 +29,9 @@
 </head>
 <body>
 <main>
-  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.17.0">v0.17.0 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-21.md">Benchmark report</a><a href="#landscape">Against zstd, xz, brotli</a><a href="savings.html">Savings calculator</a></nav>
+  <nav><a href="https://github.com/surya-koritala/Glyd">GitHub</a><a href="https://github.com/surya-koritala/Glyd/releases/tag/v0.18.0">v0.18.0 release</a><a href="https://github.com/surya-koritala/Glyd/blob/main/docs/benchmarks/suite-2026-09-21.md">Benchmark report</a><a href="#landscape">Against zstd, xz, brotli</a><a href="savings.html">Savings calculator</a></nav>
   <h1>Glyd</h1>
-  <p class="sub"><b>Fast lossless compression algorithm.</b> Rust, C ABI, CLI; v0.17.0, September 2026. Every number below is measured on public data and reproducible from the repository.</p>
+  <p class="sub"><b>Lossless compression for AI: model weights and KV cache in GPU memory, checkpoints on disk.</b> Rust, C ABI, CLI; v0.18.0, September 2026. Every number below is measured on public data and reproducible from the repository.</p>
 
   <a class="cta" href="savings.html">What would it save you?</a>
   <a class="cta" href="https://github.com/surya-koritala/Glyd#quick-start">Quick start</a>

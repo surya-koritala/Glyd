@@ -1,0 +1,4 @@
+bf16 MMLU: 73.50% of 1000 questions (0-shot)
+mma fused: packed in 8 s; weights 10.32 GB against 15.23 GB bf16 (67.8%), scratch 0.27 GB, VRAM in use 10.60 GB on 1 GPU
+glyd mma MMLU: 73.50% of 1000 questions (0-shot)
+MMLU answer as bf16's: 99.00%

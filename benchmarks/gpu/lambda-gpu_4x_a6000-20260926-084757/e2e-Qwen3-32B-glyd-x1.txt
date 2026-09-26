@@ -1,0 +1,14 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights:  21%|██▏       | 151/707 [00:00<00:00, 1509.05it/s]Loading weights:  48%|████▊     | 342/707 [00:00<00:00, 1742.97it/s]Loading weights:  73%|███████▎  | 517/707 [00:00<00:00, 1543.89it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 2016.11it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+mma fused: packed in 64 s; weights 44.45 GB against 65.52 GB bf16 (67.8%), scratch 0.27 GB, VRAM in use 44.72 GB on 1 GPU
+glyd mma fused: batch 1: 11.8 tokens/s (11.8 a sequence), peak VRAM 44.74 GB
+glyd mma fused: batch 8: 94.9 tokens/s (11.9 a sequence), peak VRAM 44.89 GB
+glyd mma fused: batch 32: 289.9 tokens/s (9.1 a sequence), peak VRAM 45.41 GB
+glyd mma fused: batch 64: 400.5 tokens/s (6.3 a sequence), peak VRAM 46.09 GB
+glyd mma prefill: 64 tokens 148 ms (431 tokens/s), 128 tokens 184 ms (695 tokens/s), 512 tokens 528 ms (970 tokens/s), 2048 tokens 2082 ms (983 tokens/s)
+glyd mma perplexity: 17.0788 (12600 tokens)
+glyd mma MMLU: 78.00% of 1000 questions (0-shot)
+text:  in 1948 with the publication of A Mathematical Theory of Communication by the Bell Labs researcher Claude Shannon. In this paper, Shannon introduced the concept of entropy as a measure of the information content
