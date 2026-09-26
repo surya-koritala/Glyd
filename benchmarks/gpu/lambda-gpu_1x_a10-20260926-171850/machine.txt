@@ -1,0 +1,8 @@
+commit: 61e2796
+Sat Sep 26 21:22:07 UTC 2026
+name, memory.total [MiB], driver_version, clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA A10, 23028 MiB, 580.126.20, 1695 MHz, 6251 MHz, 150.00 W
+30
+               total        used        free      shared  buff/cache   available
+Mem:             222           2         220           0           0         219
+15G	/home/ubuntu/./models/Qwen2.5-7B-Instruct

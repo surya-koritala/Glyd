@@ -43,7 +43,8 @@ ids = tok(prompt, return_tensors="pt").input_ids.cuda()
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 HOPPER = torch.cuda.get_device_capability()[0] >= 9
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
-MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 by mma_gemm_mid
+MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # GDDR Ampere and Ada: steps of this many tokens to 64 by mma_gemm_mid
+MID = torch.cuda.get_device_capability() in ((8, 6), (8, 7), (8, 9))  # (on an A100 mma_gemm is the faster, measured)
 
 
 def prefill(model, label):
@@ -257,7 +258,7 @@ class GLinear(nn.Module):
             M = x2.shape[0]
             if HOPPER and WG_MIN <= M <= WG_MAX and K % 64 == 0 and isinstance(self.p, g.Mma12):  # TMA and wgmma
                 return g.mma_gemm_wg(self.p, x2, self.bias).view(*lead, O)
-            if not HOPPER and MID_MIN <= M <= 64 and K % 64 == 0 and isinstance(self.p, g.Mma12):  # cp.async and mma.sync, the same plan
+            if MID and MID_MIN <= M <= 64 and K % 64 == 0 and isinstance(self.p, g.Mma12):  # cp.async and mma.sync, the same plan
                 return g.mma_gemm_mid(self.p, x2, self.bias).view(*lead, O)
             if M <= 64:
                 return g.mma_gemm(self.p, x2, self.bias).view(*lead, O)

@@ -1,0 +1,7 @@
+mma_gemm_wg 64x64, 0 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 192x128, 3 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 128x4096, 73 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 1024x2048, 324 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 5120x1024, 4660 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 192x4096, 59085 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 3072x5120, 238919 exceptions: 1-600 tokens within 1e-2, the same every run

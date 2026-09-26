@@ -1,0 +1,48 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/339 [00:00<?, ?it/s]Loading weights: 100%|██████████| 339/339 [00:00<00:00, 8578.29it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-26 21:14:57 2676:2676 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 21:14:57 2676:2676 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 21:14:59 2676:2676 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 21:15:00 2676:2676 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 21:15:02 2676:2676 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 21:15:03 2676:2676 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 21:15:05 2676:2676 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 21:15:06 2676:2676 SyncActivityProfilerHandler.cpp:46] profiler_stop
+mma12 fused: packed in 7 s; weights 11.42 GB against 15.23 GB bf16 (75.0%), scratch 0.27 GB, VRAM in use 11.69 GB on 1 GPU
+glyd mma12 fused: batch 1: 37.1 tokens/s (37.1 a sequence), peak VRAM 11.70 GB
+glyd mma12 fused: batch 8: 281.3 tokens/s (35.2 a sequence), peak VRAM 11.75 GB
+glyd mma12 fused: batch 32: 968.9 tokens/s (30.3 a sequence), peak VRAM 11.93 GB
+glyd mma12 fused: batch 64: 1569.6 tokens/s (24.5 a sequence), peak VRAM 12.16 GB
+glyd mma12 prefill: 64 tokens 36 ms (1771 tokens/s), 128 tokens 48 ms (2688 tokens/s), 512 tokens 149 ms (3439 tokens/s), 2048 tokens 670 ms (3057 tokens/s)
+glyd mma12 profile, batch 1: 30.74 ms a step, GPU busy 24.97 ms (40 tokens/s of GPU time)
+    22.430 ms   197.0 a step  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     0.326 ms   115.6 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.233 ms    57.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.216 ms   108.5 a step  void at::native::vectorized_elementwise_kernel<4, at::native::CUDAFunctor_add<c1
+     0.216 ms    59.5 a step  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymo
+     0.211 ms    59.0 a step  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+glyd mma12 profile, batch 8: 31.25 ms a step, GPU busy 26.62 ms (300 tokens/s of GPU time)
+    21.852 ms   184.8 a step  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     1.619 ms    12.2 a step  void mma_gemm_kernel<Nib, 4>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     0.559 ms   169.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.401 ms    57.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.261 ms    59.5 a step  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymo
+     0.235 ms    59.0 a step  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+glyd mma12 profile, batch 32: 35.40 ms a step, GPU busy 32.66 ms (980 tokens/s of GPU time)
+    24.325 ms   184.8 a step  void mma_gemm_kernel<Nib, 2>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     3.160 ms    12.2 a step  void mma_gemm_big_kernel<Nib, 4, 4, 2, 1>(Nib, long, long, long, long, __nv_bflo
+     0.678 ms   169.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.617 ms    57.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.456 ms    12.2 a step  finish_kernel(float const*, long, __nv_bfloat16 const*, long, long, __nv_bfloat1
+     0.328 ms    59.5 a step  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymo
+glyd mma12 profile, batch 64: 45.58 ms a step, GPU busy 42.82 ms (1495 tokens/s of GPU time)
+    29.103 ms   184.8 a step  void mma_gemm_kernel<Nib, 4>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     6.519 ms    12.2 a step  void mma_gemm_big_kernel<Nib, 4, 4, 2, 1>(Nib, long, long, long, long, __nv_bflo
+     0.866 ms   169.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.716 ms    57.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.500 ms    28.0 a step  void at::native::vectorized_elementwise_kernel<4, at::native::BinaryFunctor<c10:
+     0.492 ms     6.3 a step  Memcpy DtoD (Device -> Device)
+glyd mma12 perplexity: 17.0070 (12600 tokens)
+text:  long before the computer era in the late 1940s. In the early days, nearly all data was stored and transmitted as analog signals, which are inherently continuous and therefore difficult to compress
