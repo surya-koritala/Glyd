@@ -506,6 +506,21 @@ def mma_gemm_wg(p, x, bias=None):
     return y
 
 
+def mma_gemm_mid(p, x, bias=None):
+    """X W^T (+ bias) for many tokens on Ampere and Ada (x [M, K], K a
+    multiple of 64; the 12-bit layout): a producer warp copies the
+    compressed weights and X's tiles into shared memory with cp.async,
+    consumer warps decode the weights into mma.sync's registers and
+    multiply (mma_gemm_wg's plan, this generation's instructions)."""
+    O, K = p.shape
+    x = x.contiguous()
+    y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
+    b = bias if bias is not None else _none(x.device).to(torch.bfloat16)
+    assert isinstance(p, Mma12), "the 12-bit layout"
+    _ext.mma12_gemm_mid(p.data, p.exc, p.exc_base, p.sym, O, K, x, b, y)
+    return y
+
+
 def mma_gemm_big(p, x, bias=None, variant=0):
     """X W^T (+ bias) for many tokens (x [M, K]; a prompt; K a multiple of
     64): a tiled GEMM, each weight decoded once for 128 or 256 tokens
@@ -523,10 +538,13 @@ def mma_gemm_big(p, x, bias=None, variant=0):
 
 
 if __name__ == "__main__":
-    # Hopper: mma_gemm_wg against the fp32 product. Odd row blocks, row groups shared by blocks, exceptions
-    # few and many (past 256 a stage: read from global memory), 1-600 tokens, bias; the same every run.
+    # The many-token products against the fp32 product: mma_gemm_mid (Ampere on), mma_gemm_wg (Hopper). Odd row
+    # blocks, units shared by blocks, exceptions few and many (past a stage's copy: read from global memory),
+    # 1-600 tokens, bias; the same every run.
     import torch.nn.functional as F
-    assert torch.cuda.get_device_capability()[0] >= 9, "mma_gemm_wg: Hopper"
+    cc = torch.cuda.get_device_capability()[0]
+    assert cc >= 8, "Ampere or later"
+    products = [("mma_gemm_mid", mma_gemm_mid)] + ([("mma_gemm_wg", mma_gemm_wg)] if cc >= 9 else [])
     torch.manual_seed(0)
     for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02)]:
         w = torch.randn(O, K, device="cuda") * 0.02
@@ -536,11 +554,12 @@ if __name__ == "__main__":
         q = pack_mma12(w)
         assert torch.equal(mma_unpack(q).view(torch.int16), w.view(torch.int16))
         bias = torch.randn(O, device="cuda").to(torch.bfloat16)
-        for M in [1, 7, 16, 17, 32, 33, 64, 65, 100, 128, 129, 256, 257, 600]:
-            x = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
-            for b in (None, bias):
-                ref = F.linear(x.float(), w.float(), None if b is None else b.float())
-                y = mma_gemm_wg(q, x, b)
-                err = ((y.float() - ref).abs().max() / ref.abs().max()).item()
-                assert err < 1e-2 and torch.equal(y, mma_gemm_wg(q, x, b)), (O, K, wild, M, err)
-        print(f"mma_gemm_wg {O}x{K}, {int(q.exc_base[-1])} exceptions: 1-600 tokens within 1e-2, the same every run")
+        for name, prod in products:
+            for M in [1, 7, 16, 17, 32, 33, 64, 65, 100, 128, 129, 256, 257, 600]:
+                x = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+                for b in (None, bias):
+                    ref = F.linear(x.float(), w.float(), None if b is None else b.float())
+                    y = prod(q, x, b)
+                    err = ((y.float() - ref).abs().max() / ref.abs().max()).item()
+                    assert err < 1e-2 and torch.equal(y, prod(q, x, b)), (name, O, K, wild, M, err)
+            print(f"{name} {O}x{K}, {int(q.exc_base[-1])} exceptions: 1-600 tokens within 1e-2, the same every run")

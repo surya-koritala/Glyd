@@ -1233,16 +1233,22 @@ template <int N> __device__ __forceinline__ void wg_wait() {  // until at most N
 #endif
 }
 
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
-__device__ __forceinline__ void mbar_init(uint32_t bar, int count) { asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;\n" ::"r"(bar), "r"(count)); }
-__device__ __forceinline__ void mbar_expect_tx(uint32_t bar, uint32_t bytes) { asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n" ::"r"(bar), "r"(bytes) : "memory"); }
-__device__ __forceinline__ void mbar_arrive(uint32_t bar) { asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];\n" ::"r"(bar) : "memory"); }
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+__device__ __forceinline__ void mbar_init(uint32_t bar, int count) { asm volatile("mbarrier.init.shared.b64 [%0], %1;\n" ::"r"(bar), "r"(count)); }
+__device__ __forceinline__ void mbar_arrive(uint32_t bar) { asm volatile("{\n.reg .b64 st;\nmbarrier.arrive.shared.b64 st, [%0];\n}\n" ::"r"(bar) : "memory"); }
 __device__ __forceinline__ void mbar_wait(uint32_t bar, uint32_t parity) {
     uint32_t ok;
     do {
+#if __CUDA_ARCH__ >= 900
         asm volatile("{\n.reg .pred p;\nmbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2;\nselp.u32 %0, 1, 0, p;\n}\n" : "=r"(ok) : "r"(bar), "r"(parity) : "memory");
+#else
+        asm volatile("{\n.reg .pred p;\nmbarrier.test_wait.parity.shared.b64 p, [%1], %2;\nselp.u32 %0, 1, 0, p;\n}\n" : "=r"(ok) : "r"(bar), "r"(parity) : "memory");
+#endif
     } while (!ok);
 }
+#endif
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+__device__ __forceinline__ void mbar_expect_tx(uint32_t bar, uint32_t bytes) { asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n" ::"r"(bar), "r"(bytes) : "memory"); }
 // bytes (a multiple of 16) from global memory to shared, counted on the mbarrier;
 // once: read to be evicted from L2 first (data read once, in a stream).
 __device__ __forceinline__ void bulk_g2s(uint32_t dst, const void* src, uint32_t bytes, uint32_t bar, bool once = false) {
@@ -1313,6 +1319,120 @@ __device__ __forceinline__ void wgmma4_rs(float (&d)[128], const uint32_t (&a)[4
 }
 #endif
 
+// Shared by the TMA kernel and mma12_mid_kernel. A warp's 16 rows (16w to 16w + 15) of a row block's 4
+// steps (a stage), from shared memory into mma's A fragments, a register set a step: of each lane, the
+// codes' word w and the sign-and-mantissa bytes 8 (w mod 2) to 8 (w mod 2) + 7 of half w / 2 (its rows
+// g and g + 8); then the stage's run of exceptions, one run for the 4 steps (se: its copy, whose first
+// entry is ea; ea < 0: read from global memory; eb: exc_base at the 4 steps and the next).
+__device__ __forceinline__ void decode12_rows(const Nib& f, const uint8_t* sp, const uint32_t* se, const int (&eb)[5], int ea, int lane, int w, uint32_t (&A)[4][4]) {
+    uint32_t nw[4];
+    uint2 sw[4];
+#pragma unroll
+    for (int kk = 0; kk < 4; kk++) {  // the stage's loads first, 8 in flight at once
+        const uint8_t* q = sp + kk * STEP12;
+        nw[kk] = *(const uint32_t*)(q + 16 * lane + 4 * w);
+        sw[kk] = *(const uint2*)(q + 512 + 512 * (w >> 1) + 16 * lane + 8 * (w & 1));
+    }
+    uint32_t ew[8];  // step kk's exponent words 2w and 2w + 1 of each lane: ew[2kk], ew[2kk + 1]
+#pragma unroll
+    for (int q = 0; q < 8; q++) {
+        uint32_t c = nw[q >> 1] >> (16 * (q & 1)), c7 = c & 0x7777u;
+        ew[q] = __byte_perm(__byte_perm(f.sym[0], f.sym[1], c7), __byte_perm(f.sym[2], f.sym[3], c7), ((c >> 1) & 0x4444u) | 0x3210u);
+    }
+    // Entry k is step kk's while eb[kk] <= k < eb[kk + 1]; weight i of a lane in word i / 4.
+    for (int k = eb[0]; k < eb[4]; k++) {
+        uint32_t x = ea >= 0 ? se[k - ea] : __ldg(f.exc + k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
+        uint32_t kk = (k >= eb[1]) + (k >= eb[2]) + (k >= eb[3]);
+        uint32_t hq = (int)((x >> 5) & 31) == lane && (int)(i >> 3) == w ? 2 * kk + ((i >> 2) & 1) : 8u;
+#pragma unroll
+        for (int q = 0; q < 8; q++) {
+            uint32_t v = __byte_perm(ew[q], x >> 16, sel);
+            ew[q] = hq == (uint32_t)q ? v : ew[q];
+        }
+    }
+    // A fragments: rows g and g + 8 (words 2w and 2w + 1), columns 2t and 8 + 2t (bytes 0-1 and 2-3).
+#pragma unroll
+    for (int kk = 0; kk < 4; kk++) {
+        uint32_t y0 = __byte_perm(sw[kk].x, ew[2 * kk], 0x5140), y1 = __byte_perm(sw[kk].y, ew[2 * kk + 1], 0x5140);
+        uint32_t y2 = __byte_perm(sw[kk].x, ew[2 * kk], 0x7362), y3 = __byte_perm(sw[kk].y, ew[2 * kk + 1], 0x7362);
+        A[kk][0] = __funnelshift_r(y0, y0, 1);
+        A[kk][1] = __funnelshift_r(y1, y1, 1);
+        A[kk][2] = __funnelshift_r(y2, y2, 1);
+        A[kk][3] = __funnelshift_r(y3, y3, 1);
+    }
+}
+
+// exc_base at a stage's 4 steps and the next, for each of a unit's WG row blocks.
+template <int WG>
+__device__ __forceinline__ void stage_bounds(const Nib& f, int64_t RB, int64_t KS, int p, int s, int (&e)[5 * WG]) {
+#pragma unroll
+    for (int r = 0; r < WG; r++)
+#pragma unroll
+        for (int i = 0; i < 5; i++) e[5 * r + i] = __ldg(f.exc_base + min((int64_t)WG * p + r, RB - 1) * KS + 4 * s + i);
+}
+
+// A row block's exceptions for a stage as a copy: na entries from entry a (a multiple of 4), the run
+// widened to 16 bytes each way (pack_mma12 pads exc); na = -1 past cap bytes (read from global memory then).
+__device__ __forceinline__ void exc_copy(int lo, int hi, int cap, int& a, int& na) {
+    a = lo & ~3;
+    na = hi > lo ? ((hi + 3) & ~3) - a : 0;
+    if (4 * na > cap) na = -1;
+}
+
+// A unit's sum out (its WG row blocks, NT tokens), r in each thread's fragment order (rows 16w + g (+ 8)
+// of row block wg, tokens 8jn + 2t (+ 1): r[4jn + 2h + c]): to Y when the block covers the unit, else to
+// its slot, and the last of the unit's blocks to finish adds the slots in block order (the same result
+// every run). The WG warpgroups' threads (ct), named barrier 1.
+template <int NT, int WG>
+__device__ __forceinline__ void sum_out12(float (&r)[NT / 2], int p, int S, int64_t nb, int64_t U, float* parts, int* done, int& last, int ct, int64_t O, int64_t M, const __nv_bfloat16* bias, __nv_bfloat16* Y) {
+    constexpr int R = 64 * WG;
+    int wg = ct >> 7, w = (ct >> 5) & 3, g = (ct & 31) >> 2, t = ct & 3;
+    int64_t first = block_of_step((int64_t)p * S, nb, U), fin = block_of_step((int64_t)p * S + S - 1, nb, U);
+    if (first != fin) {
+        // Slots [NT / 8 float4s][threads]: each thread's r in order, coalesced; distinct for every (block, unit).
+        float4* pp = (float4*)(parts + ((int64_t)blockIdx.x + p) * (NT * R));
+#pragma unroll
+        for (int q = 0; q < NT / 8; q++) pp[q * 128 * WG + ct] = make_float4(r[4 * q], r[4 * q + 1], r[4 * q + 2], r[4 * q + 3]);
+        __threadfence();
+        bar_sync<128 * WG>(1);
+        if (ct == 0) {
+            last = atomicAdd(done + p, 1) == fin - first;
+            if (last) done[p] = 0;  // ready for the next product
+        }
+        bar_sync<128 * WG>(1);
+        if (last) {
+            __threadfence();
+#pragma unroll
+            for (int i = 0; i < NT / 2; i++) r[i] = 0.f;
+            for (int64_t b = first; b <= fin; b++) {
+                const float4* bp = (const float4*)(parts + (b + p) * (NT * R));
+#pragma unroll
+                for (int q = 0; q < NT / 8; q++) {
+                    float4 v = __ldcg(bp + q * 128 * WG + ct);
+                    r[4 * q] += v.x;
+                    r[4 * q + 1] += v.y;
+                    r[4 * q + 2] += v.z;
+                    r[4 * q + 3] += v.w;
+                }
+            }
+        }
+    }
+    if (first == fin || last) {
+#pragma unroll
+        for (int jn = 0; jn < NT / 8; jn++)
+#pragma unroll
+            for (int h = 0; h < 2; h++) {
+                int64_t o = ((int64_t)WG * p + wg) * 64 + 16 * w + g + 8 * h;
+                float bo = bias && o < O ? __bfloat162float(bias[o]) : 0.f;
+#pragma unroll
+                for (int c = 0; c < 2; c++) {
+                    int64_t m = 8 * jn + 2 * t + c;
+                    if (o < O && m < M) Y[m * O + o] = __float2bfloat16(r[4 * jn + 2 * h + c] + bo);
+                }
+            }
+    }
+}
+
 template <int NT, int WG> struct Tma12 {
     static constexpr int THREADS = 128 * WG + 32;  // WG consumer warpgroups (a warpgroup's first warp a multiple of 4), the TMA warp
     static constexpr int R = 64 * WG;              // W's rows a unit (a row block a warpgroup)
@@ -1353,16 +1473,9 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
         // was issued (a load pends for the whole warp: one register set a lane,
         // reloaded by one lane a stage, would wait out every load).
         int e[5 * WG], en[5 * WG];  // exc_base at the stage's 4 steps and the next, each row block: this batch's, the next's
-        auto bounds = [&](int p, int s) {
-#pragma unroll
-            for (int r = 0; r < WG; r++)
-#pragma unroll
-                for (int i = 0; i < 5; i++) en[5 * r + i] = __ldg(f.exc_base + min((int64_t)WG * p + r, RB - 1) * KS + 4 * s + i);
-        };
         auto ahead = [&](int p, int s, int k) {  // the stage k after (p, s)
             s += k;
-            p += s / S;
-            bounds(p, s % S);
+            stage_bounds<WG>(f, RB, KS, p + s / S, s % S, en);
         };
         if (lane < 8 && lane < n) ahead(p0, s0, lane);
         for (int j = 0, p = p0, s = s0; j < n; j++, s = s + 1 == S ? 0 : s + 1, p += s == 0) {
@@ -1379,11 +1492,7 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
                 int a[WG], na[WG];
 #pragma unroll
                 for (int r = 0; r < WG; r++) {
-                    // The exceptions' run, widened to 16 bytes each way (pack_mma12 pads exc); a longer one is read from global memory.
-                    int lo = e[5 * r], hi = e[5 * r + 4];
-                    a[r] = lo & ~3;
-                    na[r] = hi > lo ? ((hi + 3) & ~3) - a[r] : 0;
-                    if (4 * na[r] > C::EB) na[r] = -1;
+                    exc_copy(e[5 * r], e[5 * r + 4], C::EB, a[r], na[r]);
                     bytes += na[r] > 0 ? 4 * na[r] : 0;
                     int* bs = (int*)(gbase + sl * C::SLOT + C::XB + r * C::RBB + C::CB + C::EB);
 #pragma unroll
@@ -1405,8 +1514,8 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
     }
     // Consumer warpgroup wg: row block WG p + wg of each unit p; warp w its rows 16w to 16w + 15.
     // Two sets of A registers, used in turn: a stage's products may still run while the next decodes.
-    int ct = tid, wg = ct >> 7, w = (ct >> 5) & 3, g = lane >> 2, t = lane & 3;
-    float d[NT / 2];  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a row pair's first product
+    int ct = tid, wg = ct >> 7, w = (ct >> 5) & 3;
+    float d[NT / 2];  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a unit's first product
     uint32_t A0[4][4], A1[4][4];
     int held = -1;  // the slot whose products may still be running
     auto release = [&](int sl) {  // the slot is free for stage j + NS (lane 0 arrives, by predicate: no branch among the products)
@@ -1428,48 +1537,10 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
         mbar_wait(full + 8 * sl, (j / C::NS) & 1);
         const uint8_t* sp = gbase + sl * C::SLOT + C::XB + wg * C::RBB;
         const int* bs = (const int*)(sp + C::CB + C::EB);
-        const uint32_t* se = (const uint32_t*)(sp + C::CB);
         int eb[5];
 #pragma unroll
         for (int i = 0; i < 5; i++) eb[i] = bs[i];
-        int ea = bs[5];
-        // The stage's loads first (8 in flight at once), then its 4 steps' codes, then one run of exceptions for all 4.
-        uint32_t nw[4];
-        uint2 sw[4];
-#pragma unroll
-        for (int kk = 0; kk < 4; kk++) {
-            const uint8_t* q = sp + kk * STEP12;
-            nw[kk] = *(const uint32_t*)(q + 16 * lane + 4 * w);
-            sw[kk] = *(const uint2*)(q + 512 + 512 * (w >> 1) + 16 * lane + 8 * (w & 1));
-        }
-        uint32_t ew[8];  // step kk's exponent words 2w and 2w + 1 of each lane: ew[2kk], ew[2kk + 1]
-#pragma unroll
-        for (int q = 0; q < 8; q++) {
-            uint32_t c = nw[q >> 1] >> (16 * (q & 1)), c7 = c & 0x7777u;
-            ew[q] = __byte_perm(__byte_perm(f.sym[0], f.sym[1], c7), __byte_perm(f.sym[2], f.sym[3], c7), ((c >> 1) & 0x4444u) | 0x3210u);
-        }
-        // The exceptions in this warp's rows: entry k is step kk's while eb[kk] <= k < eb[kk + 1]; weight i of a
-        // lane in word i / 4, words 2w and 2w + 1 here.
-        for (int k = eb[0]; k < eb[4]; k++) {
-            uint32_t x = ea >= 0 ? se[k - ea] : __ldg(f.exc + k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
-            uint32_t kk = (k >= eb[1]) + (k >= eb[2]) + (k >= eb[3]);
-            uint32_t hq = (int)((x >> 5) & 31) == lane && (int)(i >> 3) == w ? 2 * kk + ((i >> 2) & 1) : 8u;
-#pragma unroll
-            for (int q = 0; q < 8; q++) {
-                uint32_t v = __byte_perm(ew[q], x >> 16, sel);
-                ew[q] = hq == (uint32_t)q ? v : ew[q];
-            }
-        }
-        // A fragments: rows g and g + 8 (words 2w and 2w + 1), columns 2t and 8 + 2t (bytes 0-1 and 2-3).
-#pragma unroll
-        for (int kk = 0; kk < 4; kk++) {
-            uint32_t y0 = __byte_perm(sw[kk].x, ew[2 * kk], 0x5140), y1 = __byte_perm(sw[kk].y, ew[2 * kk + 1], 0x5140);
-            uint32_t y2 = __byte_perm(sw[kk].x, ew[2 * kk], 0x7362), y3 = __byte_perm(sw[kk].y, ew[2 * kk + 1], 0x7362);
-            A[kk][0] = __funnelshift_r(y0, y0, 1);
-            A[kk][1] = __funnelshift_r(y1, y1, 1);
-            A[kk][2] = __funnelshift_r(y2, y2, 1);
-            A[kk][3] = __funnelshift_r(y3, y3, 1);
-        }
+        decode12_rows(f, sp, (const uint32_t*)(sp + C::CB), eb, bs[5], lane, w, A);
         // (ptxas moves each product's descriptor into the same uniform registers just before it, so the four
         // run one after another: "serialized", its C7513.)
         uint32_t xs = base + sl * C::SLOT;
@@ -1501,51 +1572,128 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
         float r[NT / 2];
 #pragma unroll
         for (int i = 0; i < NT / 2; i++) r[i] = d[i];
-        // The block's part of unit p: to Y, or to its slot, the last block to finish adding the slots in block order.
-        int64_t first = block_of_step((int64_t)p * S, nb, U), fin = block_of_step((int64_t)p * S + S - 1, nb, U);
-        if (first != fin) {
-            // Slots [NT / 8 float4s][threads]: each thread's d in order, coalesced; distinct for every (block, unit).
-            float4* pp = (float4*)(parts + ((int64_t)blockIdx.x + p) * (NT * C::R));
+        sum_out12<NT, WG>(r, p, S, nb, U, parts, done, last, ct, O, M, bias, Y);
+        j += len;
+    }
+#endif
+}
+
+// Many tokens on Ampere and Ada (sm_80 to sm_89), the 12-bit layout: mma12_tma_kernel's plan with this
+// generation's instructions. A producer warp copies each stage with cp.async, 16 bytes a thread, and the
+// stage's mbarrier completes once every lane's copies have landed (cp.async.mbarrier.arrive) and lane 0
+// has written the bounds; X's tile is laid out with a row's 16-byte chunk c at chunk c ^ (row mod 8), read
+// as B fragments by ldmatrix. The consumer warps decode their 16 rows into A fragments as the TMA
+// kernel's do and multiply with mma.sync, 16 rows by 8 tokens by 16 columns. Stream-K and the sum out as
+// there. NS stages in flight; WG 4 where a block may hold 140 KB of shared memory (sm_80), else 2.
+template <int NT, int WG> struct Mid12 {
+    static constexpr int THREADS = 128 * WG + 32;  // WG consumer warpgroups, the producer warp
+    static constexpr int NS = 4;
+    static constexpr int XB = NT * 128;
+    static constexpr int CB = 4 * (int)STEP12, EB = 512, BB = 32;  // a row block's steps a stage, its exceptions (up to 128), their bounds
+    static constexpr int RBB = CB + EB + BB;
+    static constexpr int SLOT = (XB + WG * RBB + 127) / 128 * 128;
+    static constexpr int SHARED = NS * SLOT + 128 + 16 * NS;  // alignment, the full and empty barriers
+};
+
+template <int NT, int WG>
+__global__ void __launch_bounds__(Mid12<NT, WG>::THREADS, 1) mma12_mid_kernel(Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    using C = Mid12<NT, WG>;
+    extern __shared__ __align__(128) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, exceptions, bounds | ...], the barriers
+    __shared__ int last;
+    uint32_t raw = (uint32_t)__cvta_generic_to_shared(smem_raw), base = (raw + 127) & ~127u;
+    uint8_t* gbase = smem_raw + (base - raw);
+    uint32_t full = base + C::NS * C::SLOT, empty = full + 8 * C::NS;
+    int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    int64_t KS = K / 16, RB = O / 64, U = (RB + WG - 1) / WG * (K / 64), nb = gridDim.x;
+    int S = (int)(K / 64);
+    int64_t u0 = blockIdx.x * U / nb;
+    int n = (int)((blockIdx.x + 1) * U / nb - u0);
+    int p0 = (int)(u0 / S), s0 = (int)(u0 - (int64_t)p0 * S);
+    if (tid == 0)
+        for (int i = 0; i < C::NS; i++) {
+            mbar_init(full + 8 * i, 33);  // the 32 lanes' copies, lane 0's bounds
+            mbar_init(empty + 8 * i, 4 * WG);
+        }
+    __syncthreads();
+    if (warp == 4 * WG) {
+        // The producer warp: every lane copies a share of stage j; lane j mod 8 holds its bounds, loaded
+        // with its batch of 8 stages while the batch before was copied (as the TMA warp's).
+        int e[5 * WG], en[5 * WG];
+        auto ahead = [&](int p, int s, int k) {
+            s += k;
+            stage_bounds<WG>(f, RB, KS, p + s / S, s % S, en);
+        };
+        if (lane < 8 && lane < n) ahead(p0, s0, lane);
+        for (int j = 0, p = p0, s = s0; j < n; j++, s = s + 1 == S ? 0 : s + 1, p += s == 0) {
+            if ((j & 7) == 0) {
 #pragma unroll
-            for (int q = 0; q < NT / 8; q++) pp[q * 128 * WG + ct] = make_float4(r[4 * q], r[4 * q + 1], r[4 * q + 2], r[4 * q + 3]);
-            __threadfence();
-            bar_sync<128 * WG>(1);
-            if (ct == 0) {
-                last = atomicAdd(done + p, 1) == fin - first;
-                if (last) done[p] = 0;  // ready for the next product
+                for (int i = 0; i < 5 * WG; i++) e[i] = en[i];
+                if (lane < 8 && j + 8 + lane < n) ahead(p, s, 8 + lane);
             }
-            bar_sync<128 * WG>(1);
-            if (last) {
-                __threadfence();
+            int eb[5 * WG];
 #pragma unroll
-                for (int i = 0; i < NT / 2; i++) r[i] = 0.f;
-                for (int64_t b = first; b <= fin; b++) {
-                    const float4* bp = (const float4*)(parts + (b + p) * (NT * C::R));
+            for (int i = 0; i < 5 * WG; i++) eb[i] = __shfl_sync(FULL, e[i], j & 7);
+            int sl = j % C::NS;
+            uint32_t xs = base + sl * C::SLOT;
+            if (j >= C::NS) mbar_wait(empty + 8 * sl, (j / C::NS - 1) & 1);  // the consumers are done with stage j - NS
+            for (int i = lane; i < NT * 8; i += 32) {  // X's tile; rows past M read as zeros
+                int rr = i >> 3, c = i & 7;
+                cp_async16(xs + rr * 128 + ((c ^ (rr & 7)) << 4), X + (rr < M ? (int64_t)rr * K : 0) + (int64_t)s * 64 + c * 8, rr < M ? 16 : 0);
+            }
 #pragma unroll
-                    for (int q = 0; q < NT / 8; q++) {
-                        float4 v = __ldcg(bp + q * 128 * WG + ct);
-                        r[4 * q] += v.x;
-                        r[4 * q + 1] += v.y;
-                        r[4 * q + 2] += v.z;
-                        r[4 * q + 3] += v.w;
-                    }
+            for (int r = 0; r < WG; r++) {
+                uint32_t cs = xs + C::XB + r * C::RBB;
+                const uint8_t* src = f.data + (min((int64_t)WG * p + r, RB - 1) * KS + 4 * s) * STEP12;
+                for (int i = lane; i < C::CB / 16; i += 32) cp_async16(cs + 16 * i, src + 16 * i, 16);
+                int a, na;
+                exc_copy(eb[5 * r], eb[5 * r + 4], C::EB, a, na);
+                for (int i = lane; 4 * i < na; i += 32) cp_async16(cs + C::CB + 16 * i, f.exc + a + 4 * i, 16);
+                if (lane == 0) {
+                    int* bs = (int*)(gbase + sl * C::SLOT + C::XB + r * C::RBB + C::CB + C::EB);
+#pragma unroll
+                    for (int i = 0; i < 5; i++) bs[i] = eb[5 * r + i];
+                    bs[5] = na < 0 ? -1 : a;
                 }
             }
+            asm volatile("cp.async.mbarrier.arrive.noinc.shared.b64 [%0];\n" ::"r"(full + 8 * sl) : "memory");
+            if (lane == 0) mbar_arrive(full + 8 * sl);
         }
-        if (first == fin || last) {
+        return;
+    }
+    // Consumer warpgroup wg: row block WG p + wg of each unit p; warp w its rows 16w to 16w + 15.
+    int ct = tid, wg = ct >> 7, w = (ct >> 5) & 3;
+    for (int j = 0, p = p0, s = s0; j < n; p++, s = 0) {
+        int len = min(S - s, n - j);
+        float d[NT / 2];  // n-tile jn's C fragment at d[4jn]: rows g, g + 8 by tokens 8jn + 2t, + 1
 #pragma unroll
-            for (int jn = 0; jn < NT / 8; jn++)
+        for (int i = 0; i < NT / 2; i++) d[i] = 0.f;
+        for (int k = 0; k < len; k++) {
+            int jj = j + k, sl = jj % C::NS;
+            mbar_wait(full + 8 * sl, (jj / C::NS) & 1);
+            const uint8_t* sp = gbase + sl * C::SLOT + C::XB + wg * C::RBB;
+            const int* bs = (const int*)(sp + C::CB + C::EB);
+            int eb[5];
 #pragma unroll
-                for (int h = 0; h < 2; h++) {
-                    int64_t o = ((int64_t)WG * p + wg) * 64 + 16 * w + g + 8 * h;
-                    float bo = bias && o < O ? __bfloat162float(bias[o]) : 0.f;
+            for (int i = 0; i < 5; i++) eb[i] = bs[i];
+            uint32_t A[4][4];
+            decode12_rows(f, sp, (const uint32_t*)(sp + C::CB), eb, bs[5], lane, w, A);
+            uint32_t xs = base + sl * C::SLOT;
 #pragma unroll
-                    for (int c = 0; c < 2; c++) {
-                        int64_t m = 8 * jn + 2 * t + c;
-                        if (o < O && m < M) Y[m * O + o] = __float2bfloat16(r[4 * jn + 2 * h + c] + bo);
-                    }
+            for (int kk = 0; kk < 4; kk++)
+#pragma unroll
+                for (int jp = 0; jp < NT / 16; jp++) {
+                    // Tokens 16jp to 16jp + 15, columns 16kk to 16kk + 15: B fragments of n-tiles 2jp and 2jp + 1.
+                    int rr = 16 * jp + (lane & 7) + ((lane >> 4) << 3), c = 2 * kk + ((lane >> 3) & 1);
+                    uint32_t b[4];
+                    ldmatrix_x4(b, xs + rr * 128 + ((c ^ (rr & 7)) << 4));
+                    mma16816(&d[8 * jp], A[kk], b[0], b[1]);
+                    mma16816(&d[8 * jp + 4], A[kk], b[2], b[3]);
                 }
+            __syncwarp();
+            if (lane == 0) mbar_arrive(empty + 8 * sl);  // the slot is free for stage jj + NS
         }
+        sum_out12<NT, WG>(d, p, S, nb, U, parts, done, last, ct, O, M, bias, Y);
         j += len;
     }
 #endif
@@ -2025,6 +2173,47 @@ void mma12_gemm_big(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_bas
     mma_gemm_big_any(nib_of(data, exc, exc_base, sym), data, O, K, x, bias, y, variant);
 }
 
+template <int NT, int WG>
+static void mma12_mid_run(Nib f, torch::Tensor data, int64_t O, int64_t K, const __nv_bfloat16* x, int64_t M, const __nv_bfloat16* b, __nv_bfloat16* y, cudaStream_t cs) {
+    using C = Mid12<NT, WG>;
+    auto kernel = mma12_mid_kernel<NT, WG>;
+    int dev = data.get_device();
+    static auto* per_sm_of = new std::map<int, int>;
+    if (!per_sm_of->count(dev)) {
+        cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, C::SHARED);
+        int n = 1;
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&n, kernel, C::THREADS, C::SHARED);
+        (*per_sm_of)[dev] = std::max(n, 1);
+    }
+    int64_t P = (O / 64 + WG - 1) / WG, U = P * (K / 64);
+    static auto* done_of = new std::map<int, torch::Tensor>;
+    torch::Tensor& done = (*done_of)[dev];
+    if (!done.defined() || done.numel() < P) done = torch::zeros({std::max<int64_t>(P, 1 << 16)}, data.options().dtype(torch::kInt32));
+    int64_t nb = std::max<int64_t>(1, std::min<int64_t>((int64_t)(*per_sm_of)[dev] * at::cuda::getCurrentDeviceProperties()->multiProcessorCount, U / 8));
+    torch::Tensor parts = torch::empty({nb + P, NT * 64 * WG}, data.options().dtype(torch::kFloat32));
+    kernel<<<nb, C::THREADS, C::SHARED, cs>>>(f, O, K, M, x, b, y, (float*)parts.data_ptr(), (int*)done.data_ptr());
+}
+
+// Many tokens on Ampere and Ada (to 64 a call, in chunks past that).
+void mma12_gemm_mid(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    const c10::cuda::CUDAGuard guard(data.device());
+    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
+    auto* prop = at::cuda::getCurrentDeviceProperties();
+    TORCH_CHECK(prop->major >= 8, "mma12_gemm_mid: Ampere or later");
+    TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
+    TORCH_CHECK((uintptr_t)data.data_ptr() % 16 == 0 && (uintptr_t)exc.data_ptr() % 16 == 0 && exc.numel() % 4 == 0, "the pack 16-byte aligned, exc padded to 4 (pack_mma12)");
+    Nib f = nib_of(data, exc, exc_base, sym);
+    const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
+    const __nv_bfloat16* xp = (const __nv_bfloat16*)x.data_ptr();
+    __nv_bfloat16* yp = (__nv_bfloat16*)y.data_ptr();
+    bool big = prop->sharedMemPerBlockOptin >= (size_t)Mid12<64, 4>::SHARED;  // sm_80: four warpgroups
+    for (int64_t m0 = 0, M = x.size(0); m0 < M; m0 += 64) {
+        int64_t mc = std::min<int64_t>(64, M - m0);
+        auto run = mc <= 16 ? (big ? mma12_mid_run<16, 4> : mma12_mid_run<16, 2>) : mc <= 32 ? (big ? mma12_mid_run<32, 4> : mma12_mid_run<32, 2>) : (big ? mma12_mid_run<64, 4> : mma12_mid_run<64, 2>);
+        run(f, data, O, K, xp + m0 * K, mc, b, yp + m0 * O, cs);
+    }
+}
+
 // cuTensorMapEncodeTiled from the driver, found at run time (no link to libcuda).
 static PFN_cuTensorMapEncodeTiled_v12000 tensor_map_encoder() {
     static PFN_cuTensorMapEncodeTiled_v12000 fn = nullptr;
@@ -2138,6 +2327,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("mma12_gemm_big", &mma12_gemm_big);
     m.def("mma12_unpack", &mma12_unpack);
     m.def("mma12_gemm_wg", &mma12_gemm_wg);
+    m.def("mma12_gemm_mid", &mma12_gemm_mid);
     m.def("attn_decode", &attn_decode);
     m.def("mma_gemm_big", &mma_gemm_big);
     m.def("fast_bgemv", &fast_bgemv);

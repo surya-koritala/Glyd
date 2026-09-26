@@ -67,7 +67,7 @@ nvidia-smi --query-gpu=timestamp,index,clocks.sm,clocks.mem,power.draw,temperatu
 CLK=\$!
 # Every product checked and timed first; every step bounded.
 first=\$(echo $MODELS | cut -d' ' -f1); first=\${first%%:*}; first=\${first#*/}
-[ "\$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | cut -d. -f1)" -ge 9 ] && timeout 900 python glyd_gpu.py > \$R/check-hopper.txt 2>&1  # mma_gemm_wg's edge cases
+timeout 900 python glyd_gpu.py > \$R/check-products.txt 2>&1  # the many-token products' edge cases
 timeout 900 python gemm.py \$W/models/\$first 1,16,64,256,2048 > \$R/gemm-\$first.txt 2>&1
 E="--fused --tokens 64 --batch $BATCH --prefill 64,128,512,2048 --ppl \$W/enwik8 --mmlu ${MMLU:-0}${MERGE:+ --merge}"
 for e in $MODELS; do
