@@ -54,9 +54,13 @@ for name in names:
             assert em < 1e-2, f"{name} mma M={M}: {em}"
             tv += f" | mma {gpu_us(lambda: g.mma_gemm(q, x)):6.0f}"
         if M >= 32:
-            eb = ((g.mma_gemm_big(q, x).float() - ref).abs().max() / ref.abs().max()).item()
+            eb = ((g.mma_gemm_big(q, x, variant=1).float() - ref).abs().max() / ref.abs().max()).item()
             assert eb < 1e-2, f"{name} mma big M={M}: {eb}"
-            tv += f" | mma big {gpu_us(lambda: g.mma_gemm_big(q, x)):6.0f}"
+            tv += f" | big128 {gpu_us(lambda: g.mma_gemm_big(q, x, variant=1)):6.0f}"
+            if M >= 256:
+                e2 = ((g.mma_gemm_big(q, x, variant=2).float() - ref).abs().max() / ref.abs().max()).item()
+                assert e2 < 1e-2, f"{name} mma big256 M={M}: {e2}"
+                tv += f" | big256 {gpu_us(lambda: g.mma_gemm_big(q, x, variant=2)):6.0f}"
         row.append(f"M={M}: bf16 {tb:6.0f} | decode+mm {td:6.0f} | fused {tf:6.0f}{tv} us")
     print(f"{name.split('.')[-2]:>10} {str(tuple(w.shape)):>14} fast {p.bits_per_weight():.2f} mma {q.bits_per_weight():.2f} bits  " + "  ".join(row))
     del w, p, q, scratch
