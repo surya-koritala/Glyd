@@ -1,0 +1,89 @@
+
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]
+Loading weights:  74%|███████▍  | 522/707 [00:00<00:00, 5216.85it/s]
+Loading weights: 100%|██████████| 707/707 [00:00<00:00, 6336.58it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-26 20:10:49 8579:8579 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 20:10:50 8579:8579 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 20:10:56 8579:8579 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 20:10:57 8579:8579 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 20:11:03 8579:8579 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 20:11:04 8579:8579 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 20:11:10 8579:8579 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 20:11:12 8579:8579 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 20:12:21 8579:8579 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 20:12:22 8579:8579 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 20:12:28 8579:8579 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 20:12:29 8579:8579 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 20:12:36 8579:8579 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 20:12:37 8579:8579 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-26 20:12:43 8579:8579 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-26 20:12:45 8579:8579 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16 (weights 65.52 GB): batch 1: 12.8 tokens/s (12.8 a sequence), peak VRAM 65.57 GB
+bf16 (weights 65.52 GB): batch 16: 203.9 tokens/s (12.7 a sequence), peak VRAM 65.77 GB
+bf16 (weights 65.52 GB): batch 32: 414.8 tokens/s (13.0 a sequence), peak VRAM 65.98 GB
+bf16 (weights 65.52 GB): batch 64: 819.0 tokens/s (12.8 a sequence), peak VRAM 66.39 GB
+bf16 profile, batch 1: 69.05 ms a step, GPU busy 28.23 ms (35 tokens/s of GPU time)
+    11.099 ms   128.0 a step  nvjet_sm90_tst_128x8_64x12_4x1_v_bz_TNT
+     7.550 ms   128.0 a step  nvjet_sm90_tst_128x8_64x12_4x1_v_bz_splitK_TNT
+     1.923 ms    64.0 a step  nvjet_sm90_tst_64x8_64x16_2x1_v_bz_TNT
+     0.900 ms   392.1 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.806 ms   128.0 a step  nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT
+     0.714 ms   259.0 a step  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+bf16 profile, batch 16: 70.46 ms a step, GPU busy 31.22 ms (512 tokens/s of GPU time)
+    10.736 ms   120.0 a step  nvjet_sm90_tst_128x16_64x11_4x1_v_bz_TNT
+     7.262 ms   120.0 a step  nvjet_sm90_tst_128x16_64x11_4x1_v_bz_splitK_TNT
+     1.885 ms    60.0 a step  nvjet_sm90_tst_64x16_64x16_2x1_v_bz_TNT
+     1.735 ms   257.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     1.429 ms   513.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.807 ms   259.0 a step  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+bf16 profile, batch 32: 69.64 ms a step, GPU busy 32.44 ms (987 tokens/s of GPU time)
+    10.898 ms   120.0 a step  nvjet_sm90_tst_128x32_64x10_4x1_v_bz_TNT
+     7.434 ms   120.0 a step  nvjet_sm90_tst_128x32_64x10_4x1_v_bz_splitK_TNT
+     1.932 ms    60.0 a step  nvjet_sm90_tst_64x32_64x16_2x1_v_bz_TNT
+     1.785 ms   257.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     1.498 ms   513.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.835 ms     8.0 a step  nvjet_sm90_tst_128x192_64x5_4x1_v_bz_coopB_TNN
+bf16 profile, batch 64: 69.27 ms a step, GPU busy 35.50 ms (1803 tokens/s of GPU time)
+    11.529 ms   120.0 a step  nvjet_sm90_tst_256x64_64x5_4x1_v_bz_TNT
+     5.595 ms    60.0 a step  nvjet_sm90_tst_128x64_64x8_4x1_v_bz_splitK_TNT
+     2.041 ms    60.0 a step  nvjet_sm90_tst_80x64_64x11_2x1_v_bz_splitK_TNN
+     2.019 ms    60.0 a step  nvjet_sm90_tst_64x64_64x13_2x1_v_bz_TNT
+     1.831 ms   257.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     1.655 ms   513.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+mma12 fused: packed in 16 s; weights 49.23 GB against 65.52 GB bf16 (75.1%), scratch 0.27 GB, VRAM in use 49.54 GB on 1 GPU
+glyd mma12 fused: batch 1: 15.5 tokens/s (15.5 a sequence), peak VRAM 49.55 GB
+glyd mma12 fused: batch 16: 246.2 tokens/s (15.4 a sequence), peak VRAM 49.75 GB
+glyd mma12 fused: batch 32: 496.9 tokens/s (15.5 a sequence), peak VRAM 49.96 GB
+glyd mma12 fused: batch 64: 982.3 tokens/s (15.3 a sequence), peak VRAM 50.37 GB
+glyd mma12 profile, batch 1: 70.20 ms a step, GPU busy 26.14 ms (38 tokens/s of GPU time)
+    20.285 ms   449.0 a step  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     0.902 ms   392.1 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.705 ms   259.0 a step  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+     0.645 ms   257.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     0.468 ms   257.0 a step  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<a
+     0.343 ms   257.0 a step  void at::native::vectorized_elementwise_kernel<4, at::native::rsqrt_kernel_cuda(
+glyd mma12 profile, batch 16: 70.90 ms a step, GPU busy 31.42 ms (509 tokens/s of GPU time)
+    21.069 ms   421.0 a step  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_b
+     2.374 ms    28.0 a step  void mma12_tma_kernel<128, 2>(CUtensorMap_st, Nib, long, long, long, __nv_bfloat
+     1.738 ms   257.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     1.424 ms   513.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.793 ms   259.0 a step  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+     0.531 ms   257.0 a step  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<a
+glyd mma12 profile, batch 32: 72.82 ms a step, GPU busy 37.71 ms (849 tokens/s of GPU time)
+    24.124 ms   421.0 a step  void mma12_tma_kernel<32, 4>(CUtensorMap_st, Nib, long, long, long, __nv_bfloat1
+     3.451 ms    28.0 a step  void mma_unpack_kernel<Nib>(Nib, long, long, long, unsigned short*)
+     1.778 ms   257.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     1.458 ms   513.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     0.850 ms     8.0 a step  nvjet_sm90_tst_128x192_64x5_4x1_v_bz_coopB_TNN
+     0.785 ms   259.0 a step  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+glyd mma12 profile, batch 64: 73.60 ms a step, GPU busy 43.04 ms (1487 tokens/s of GPU time)
+    27.493 ms   421.0 a step  void mma12_tma_kernel<64, 4>(CUtensorMap_st, Nib, long, long, long, __nv_bfloat1
+     3.470 ms    28.0 a step  void mma_unpack_kernel<Nib>(Nib, long, long, long, unsigned short*)
+     1.821 ms   257.0 a step  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::M
+     1.623 ms   513.0 a step  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<a
+     1.168 ms     8.0 a step  nvjet_sm90_tst_320x128_64x3_4x1_v_bz_coopB_TNT
+     0.852 ms   259.0 a step  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda
+logits bit-identical: False
+generated tokens identical to bf16: 23 of 32
+text:  in 1948 with the publication of A Mathematical Theory of Communication by the American mathematician and electrical engineer Claude Shannon. In this paper, Shannon introduced

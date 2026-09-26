@@ -28,9 +28,12 @@ Qwen3-32B on one 48 GB GPU and Qwen2.5-72B on three (bf16: two and
 four), MMLU within 0.5 points (v0.18.0); the KV cache 31% smaller, a step
 as fast through attention on the packed pages (v0.18.0). On an H100 the
 12-bit layout (v0.19.0): Qwen3-32B 25% smaller at 6.5% less GPU time a
-token than bf16. Next on the GPU: many tokens a step on Hopper (its
-tensor cores' wgmma rather than mma.sync), FP8 models (about 18% to
-take). A terabyte-year in S3
+token than bf16. Many tokens a step on Hopper by the copy engine and
+wgmma (unreleased): Qwen3-32B's MLP matrices at 32-64 tokens in 83-92 us
+against cuBLAS's 90-96. Next on the GPU: the small matrices there (the
+launch overlapped with the kernel before, a cheaper sum of shared rows),
+which still leave 32-64 sequences 16-21% behind bf16 in GPU time; FP8
+models (about 18% to take). A terabyte-year in S3
 read monthly: `--max -r` $61.7, zstd -3 $73.3.
 
 Measured floors, not to be retried: JSON API events and crawl indexes
