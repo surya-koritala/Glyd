@@ -4,7 +4,7 @@ Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
 
-## Where it stands (v0.16.0, 2026-09-25)
+## Where it stands (v0.17.0, 2026-09-26)
 
 The 8.7 GB real-data corpus on AWS Graviton3, 8 threads
 ([report](docs/benchmarks/suite-2026-09-21.md)): `--max` 3.94 (zstd -3
@@ -20,9 +20,10 @@ weights (safetensors, v0.14.9): 12–13% under zstd -19 at 25× its
 write speed; a checkpoint against the last, 24% under zstd -19's
 patch. PyTorch checkpoints with optimizer state (v0.15.0): 83% of their
 size alone, 77% against the one before (zstd -19 92%). Weights compressed
-in GPU memory (`gpu/`, v0.16.0): Qwen2.5-7B in 11.05 GB on a 16 GB
-card, where bf16 takes 15.25 GB, 1.23-1.33x bf16's tokens/s at 1 to 48
-sequences at once; prompts to 128 tokens faster, to 4096 within 5-9%. A
+in GPU memory (`gpu/`, v0.17.0): Qwen2.5-7B in 10.61 GB on a 16 GB
+card, where bf16 takes 15.25 GB (its matrices 32.5% smaller, bit for
+bit), 1.25-1.32x bf16's tokens/s at 1 to 32 sequences at once, 1.04x at
+64; prompts to 128 tokens as fast or faster, to 4096 within 5-10%. A
 terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
 
 Measured floors, not to be retried: JSON API events and crawl indexes
