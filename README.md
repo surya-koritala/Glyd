@@ -1,6 +1,5 @@
 <h1 align="center">Glyd</h1>
-<h3 align="center">Your LLM is one-third air.</h3>
-<p align="center"><strong>Glyd takes it out of GPU memory, losslessly: every weight bit for bit, a third fewer bytes.<br>Qwen3-32B on one GPU instead of two. Llama 3.3 70B's 137 GB of matrices in 92.</strong></p>
+<h3 align="center">Lossless AI compression: 33% less GPU memory, bit for bit.</h3>
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
