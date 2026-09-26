@@ -19,7 +19,7 @@ import glyd_gpu as g
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
-ap.add_argument("--format", default="fast", choices=["fast", "huffman", "mma", "mma12"], help="mma: the Linears in the mma layout (the embedding in fast), up to 64 tokens a step multiplied straight from it; mma12: its 12-bit layout (a lighter decode)")
+ap.add_argument("--format", default="fast", choices=["fast", "huffman", "mma", "mma12", "auto"], help="mma: the Linears in the mma layout (the embedding in fast), up to 64 tokens a step multiplied straight from it; mma12: its 12-bit layout (a lighter decode); auto: the one for this GPU (glyd_gpu.best_layout)")
 ap.add_argument("--fused", action="store_true")
 ap.add_argument("--baseline", action="store_true")
 ap.add_argument("--tokens", type=int, default=128)
@@ -366,6 +366,11 @@ if args.baseline:
 # Where every decoder layer's weights go: contiguous runs of layers, balanced
 # by their bytes, over args.gpus GPUs; the embedding on the first, the final
 # norm and the output layer on the last.
+if args.format == "auto":
+    lin = [m.weight for m in model.modules() if isinstance(m, nn.Linear) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0]
+    lin_bytes = sum(w.numel() * 2 for w in lin)
+    args.format, why = g.best_layout(lin_bytes, weights_bf16 - lin_bytes, args.gpus)
+    print(f"auto: {args.format}, {why}")
 layers = model.model.layers
 layer_bytes = [sum(p.numel() for p in l.parameters()) for l in layers]
 per_gpu, acc, gpu_of = sum(layer_bytes) / args.gpus, 0, []

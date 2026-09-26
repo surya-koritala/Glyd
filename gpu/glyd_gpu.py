@@ -439,6 +439,24 @@ def pack_mma12(w):
     return Mma12((O, K), data.flatten(), exc, exc_base, sym)
 
 
+def best_layout(linear_bytes, other_bytes=0, gpus=1, device=0):
+    """The layout for this GPU, and why: "mma" (tiered, 10.80 bits a weight)
+    or "mma12" (12.04 bits, the lighter decode), for Linears of
+    linear_bytes in bf16 and other_bytes besides. Measured (benchmarks/gpu,
+    2026-09-26): on Ada (RTX 40, L40S) the tiered decode is the faster one
+    at 1-32 sequences; on an A10, an A100 and an H100 the 12-bit one. Either
+    way the tiered layout when only it fits (2 GiB a GPU kept for
+    activations and the KV cache)."""
+    p = torch.cuda.get_device_properties(device)
+    room = gpus * (p.total_memory - 2 * 2**30)
+    tiered, twelve = linear_bytes * 10.80 / 16 + other_bytes, linear_bytes * 12.04 / 16 + other_bytes
+    if twelve > room >= tiered:
+        return "mma", f"only the tiered layout fits ({tiered / 1e9:.1f} GB; 12-bit {twelve / 1e9:.1f} GB, room {room / 1e9:.1f} GB)"
+    if (p.major, p.minor) == (8, 9):
+        return "mma", "Ada: the tiered decode keeps up with its memory"
+    return "mma12", "the 12-bit decode keeps up with this GPU's memory"
+
+
 def mma_cat(a, b):
     """Two packs with the same tiers and columns as one: a's rows, then b's."""
     assert a.tiers == b.tiers and a.shape[1] == b.shape[1]
