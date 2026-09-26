@@ -19,7 +19,7 @@ import glyd_gpu as g
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
-ap.add_argument("--format", default="fast", choices=["fast", "huffman", "mma"], help="mma: the Linears in the mma layout (the embedding in fast), up to 64 tokens a step multiplied straight from it")
+ap.add_argument("--format", default="fast", choices=["fast", "huffman", "mma", "mma12"], help="mma: the Linears in the mma layout (the embedding in fast), up to 64 tokens a step multiplied straight from it; mma12: its 12-bit layout (a lighter decode)")
 ap.add_argument("--fused", action="store_true")
 ap.add_argument("--baseline", action="store_true")
 ap.add_argument("--tokens", type=int, default=128)
@@ -310,8 +310,8 @@ last = args.gpus - 1
 
 
 def pack(w, linear):
-    if args.format == "mma" and linear and w.shape[0] % 64 == 0 and w.shape[1] % 16 == 0:
-        return g.pack_mma(w)
+    if args.format in ("mma", "mma12") and linear and w.shape[0] % 64 == 0 and w.shape[1] % 16 == 0:
+        return g.pack_mma12(w) if args.format == "mma12" else g.pack_mma(w)
     return (g.pack if args.format == "huffman" else g.pack_fast)(w)
 
 

@@ -62,10 +62,10 @@ attention ([gpu/](gpu/README.md)).
   on an RTX 4080 SUPER. At 64 sequences it is 0.82-0.86x on the A6000s
   (1.04x on the 4080). Prompts take 1.2-1.6x bf16's time on the A6000s;
   on the 4080 up to 128 tokens as fast or faster, past that 1.05-1.10x.
-  On an H100 the decode
-  is bound by arithmetic rather than memory: Qwen3-32B in 44.5 GB instead
-  of 65.5 with the same MMLU score (78.2%), but 40.6 ms of GPU time a token
-  against bf16's 28.2.
+  On an H100 the tiered decode is bound by arithmetic (Qwen3-32B: 40.6 ms
+  of GPU time a token against bf16's 28.2); the 12-bit layout (`mma12`)
+  keeps up with its HBM3: Qwen3-32B in 49.2 GB instead of 65.5 at 26.4 ms
+  of GPU time a token, its products at one token 1.1-1.2x faster than cuBLAS's.
 - **The limit.** A bf16 number's sign and mantissa are noise, so no
   lossless code takes more than about 34% off bf16 weights or KV cache
   (measured: 10.5-10.6 bits a value); Glyd's 10.80 bits is 32.5% off.

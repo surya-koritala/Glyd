@@ -18,6 +18,7 @@
 #        [org/]name[:B[:G]]: bf16 and Glyd side by side on B GPUs (1), then
 #        Glyd alone on G; org Qwen when none), BATCH (1,8,32,64), MMLU (0:
 #        questions for the MMLU check), E2E_MIN (25: minutes an e2e run may take),
+#      FORMATS (mma: the layouts to run, each against bf16 in the first run only),
 #      RW (the remote work directory, relative to home: . on Lambda).
 set -euo pipefail
 REF="${1:-HEAD}"
@@ -64,12 +65,16 @@ CLK=\$!
 # Every product checked and timed first; every step bounded.
 first=\$(echo $MODELS | cut -d' ' -f1); first=\${first%%:*}; first=\${first#*/}
 timeout 900 python gemm.py \$W/models/\$first 1,16,64,256,2048 > \$R/gemm-\$first.txt 2>&1
-E="--format mma --fused --tokens 64 --batch $BATCH --prefill 64,128,512,2048 --ppl \$W/enwik8 --mmlu ${MMLU:-0}"
+E="--fused --tokens 64 --batch $BATCH --prefill 64,128,512,2048 --ppl \$W/enwik8 --mmlu ${MMLU:-0}"
 for e in $MODELS; do
   m=\${e%%:*}; n=\${m#*/}; g=\${e#*:}; b=1; a=""
   [ "\$g" != "\$e" ] && { b=\${g%%:*}; [ "\$b" != "\$g" ] && a=\${g#*:}; }
-  timeout $(( ${E2E_MIN:-25} * 60 )) python e2e.py \$W/models/\$n \$E --baseline --gpus \$b --profile 16 --smi \$R/smi-\$n-x\$b > \$R/e2e-\$n.txt 2>&1
-  [ -n "\$a" ] && timeout $(( ${E2E_MIN:-25} * 60 )) python e2e.py \$W/models/\$n \$E --gpus \$a --smi \$R/smi-\$n-x\$a > \$R/e2e-\$n-glyd-x\$a.txt 2>&1
+  base=--baseline
+  for f in ${FORMATS:-mma}; do
+    timeout $(( ${E2E_MIN:-25} * 60 )) python e2e.py \$W/models/\$n \$E --format \$f \$base --gpus \$b --profile 16 --smi \$R/smi-\$n-\$f-x\$b > \$R/e2e-\$n-\$f.txt 2>&1
+    [ -n "\$a" ] && timeout $(( ${E2E_MIN:-25} * 60 )) python e2e.py \$W/models/\$n \$E --format \$f --gpus \$a --smi \$R/smi-\$n-\$f-x\$a > \$R/e2e-\$n-\$f-x\$a.txt 2>&1
+    base=
+  done
 done
 kill \$CLK
 touch \$R/DONE
