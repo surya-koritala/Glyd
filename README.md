@@ -5,6 +5,7 @@
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
 <a href="LICENSE"><img alt="License: BSD-3-Clause OR GPL-2.0" src="https://img.shields.io/badge/codec-BSD--3--Clause%20OR%20GPL--2.0-blue.svg"></a>
 <a href="glyd-store/LICENSE"><img alt="Store: BUSL-1.1" src="https://img.shields.io/badge/store-BUSL--1.1-blue.svg"></a>
+<a href="gpu/LICENSE"><img alt="GPU: BUSL-1.1" src="https://img.shields.io/badge/GPU-BUSL--1.1-blue.svg"></a>
 <img alt="Rust 1.80+" src="https://img.shields.io/badge/rust-1.80%2B-blue.svg">
 <img alt="SIMD: AVX2 | NEON" src="https://img.shields.io/badge/SIMD-AVX2%20%7C%20NEON-orange.svg">
 <a href="include/glyd.h"><img alt="C ABI" src="https://img.shields.io/badge/C%20ABI-include%2Fglyd.h-brightgreen.svg"></a>
@@ -881,13 +882,20 @@ whole of it is in [CONTRIBUTING.md](CONTRIBUTING.md); the
   your option, the [GNU GPL version 2](COPYING)**: the same licenses as
   zstd, so anything that may ship zstd may ship Glyd, GPLv2 projects such
   as the Linux kernel included. Use it, embed it, ship it, sell it; keep
-  the notice. That is everything in this repository except the store.
+  the notice. That is everything in this repository except the store
+  and the GPU weights.
 - **The store — the `glyd-store` crate and CLI — is under the
   [Business Source License 1.1](glyd-store/LICENSE)**: source available,
   free for personal, educational, research and other non-commercial use;
   any commercial production use needs a license
   (suryakoritala1324@gmail.com); each version converts to Apache-2.0
   four years after its release.
+- **The GPU weights — [gpu/](gpu/README.md), model weights held
+  compressed in GPU memory — are under the
+  [Business Source License 1.1](gpu/LICENSE)** on the same terms as the
+  store (from v0.17.0; earlier releases of gpu/ carry the codec's
+  licenses).
 
 Why the split: a codec is adopted by being embedded, and nothing is
-embedded under a source-available license; the store is the product.
+embedded under a source-available license; the store and the GPU weights
+are the products.

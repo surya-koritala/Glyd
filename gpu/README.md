@@ -141,3 +141,11 @@ Needs PyTorch with CUDA and nvcc (the extension builds on first import):
     python shapes.py MODEL_DIR                # fused product against bf16, one layer's matrices
     python gemm.py MODEL_DIR 1,16,64          # several tokens: every product against bf16, one layer's matrices
     python e2e.py MODEL_DIR --format mma --fused --baseline [--batch 1,8,32] [--prefill 16,64] [--ppl TEXT]
+
+## License
+
+The files under gpu/ are under the [Business Source License 1.1](LICENSE):
+source available, free for personal, educational, research and other
+non-commercial use; any commercial production use needs a license
+(suryakoritala1324@gmail.com); each version converts to Apache-2.0 four
+years after its release. The Glyd codec is BSD-3-Clause OR GPL-2.0.
