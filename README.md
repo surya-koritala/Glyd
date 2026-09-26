@@ -114,6 +114,41 @@ are bf16's on 99.3-100% of the questions.)
   smaller, a fine-tune against its base 44% smaller, and a training
   checkpoint with its optimizer state 17-23% smaller (below).
 
+### Related work
+
+Coding a bf16 weight's exponent losslessly is not new; what Glyd adds is
+the combination below.
+
+- [DFloat11](https://arxiv.org/abs/2504.11651) (Zhang et al., NeurIPS
+  2025): Huffman codes for the exponent, about 30% smaller, outputs bit
+  for bit; each transformer block is decompressed to bf16 before it
+  runs, which its authors report as about 2x bf16's time at one sequence.
+- [ZipServ](https://arxiv.org/abs/2603.17435) (ASPLOS 2026): a
+  fixed-length bitmap code decoded straight into tensor-core registers
+  inside the product, up to 30% smaller, up to 2.21x cuBLAS's speed per
+  product and 1.22x vLLM's end to end on GDDR GPUs.
+- [Approaching Shannon Bound with Lossless LLM Weight Compression](https://arxiv.org/abs/2606.15789)
+  (Tan et al., ISCA 2026): ANS codes within 0.01-0.05 bits of the
+  entropy bound for bf16, fp8 and integer formats, decoded a tile at a
+  time in SGLang.
+- [SplitZip](https://arxiv.org/abs/2605.01708) (2026): the KV cache's
+  exponents as 4-bit codes into the 16 commonest with escapes, for
+  moving it between servers, the scheme of Glyd's 12-bit layout.
+- [ZipNN](https://arxiv.org/abs/2411.05239) (2024) and
+  [NeuZip](https://arxiv.org/abs/2410.20650) (2024) for storage and
+  training memory, [Huff-LLM](https://arxiv.org/abs/2502.00922) (2025)
+  in hardware, [lossless compression of weights, checkpoints and K/V
+  caches in low-precision formats](https://arxiv.org/abs/2508.19263)
+  (2025), and Cloudflare's [Unweight](https://research.cloudflare.com/papers/unweight-2026.pdf)
+  (2026) for MLP weights.
+
+Where Glyd differs: 10.80 bits a weight (32.5% off) decoded inside the
+product itself (the others: about 30% so decoded, or at the bound with
+an ANS decoder); the KV cache held compressed, attention reading its
+pages (31%); the same result every run; the model on disk, fine-tunes
+against their base and training checkpoints by the same coding. The
+same GPUs, side by side: in progress.
+
 ---
 
 ## At a glance
