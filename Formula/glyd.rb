@@ -4,8 +4,8 @@
 class Glyd < Formula
   desc "Compression for object storage: record mode, packs, a cross-object store"
   homepage "https://github.com/surya-koritala/Glyd"
-  url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.16.0.tar.gz"
-  sha256 "31f0c5e550f5c0368f662e6b3ba65e56dc6b588b05b9b8d29571d1ea3f8a2f45"
+  url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.17.0.tar.gz"
+  sha256 "9fd33229cea3b6217a7b58feca776567bfa8d6019113ece001c1dd58a620bc64"
   # The codec and CLI: BSD-3-Clause or GPL-2.0; the glyd-store binary: BUSL-1.1.
   license all_of: [
     { any_of: ["BSD-3-Clause", "GPL-2.0-only"] },
