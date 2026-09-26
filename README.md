@@ -1,5 +1,6 @@
 <h1 align="center">Glyd</h1>
-<p align="center"><strong>Glyd - Lossless compression for AI: model weights and KV cache in GPU memory, checkpoints on disk</strong></p>
+<h3 align="center">Your LLM is one-third air.</h3>
+<p align="center"><strong>Glyd takes it out of GPU memory, losslessly: every weight bit for bit, a third fewer bytes.<br>Qwen3-32B on one GPU instead of two. Llama 3.3 70B's 137 GB of matrices in 92.</strong></p>
 
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
@@ -51,6 +52,29 @@ attention ([gpu/](gpu/README.md)).
 | Qwen2.5-72B: tokens/s at 1 / 8 / 32 sequences | 4.5 / 35 / 135 | **6.4 / 49 / 154** |
 | Qwen2.5-72B: MMLU, 1,000 questions | 81.9% | 81.8% |
 | KV cache, Qwen2.5-7B, 16K tokens | 947 MB | **651 MB** |
+
+The same on every popular open model measured, and the same model
+afterwards (`gpu/sizes.py`: every Linear layer's matrix packed and
+unpacked bit for bit; perplexity on enwik8 and MMLU on 300 questions,
+bf16 against Glyd in the same run; H100 SXM, 2026-09-26, logs in
+[benchmarks/gpu/popular-h100-2026-09-26](benchmarks/gpu/popular-h100-2026-09-26)):
+
+| Model | Matrices in bf16 | ⚡&nbsp;**Glyd** | Perplexity, bf16&nbsp;→&nbsp;Glyd | MMLU, bf16&nbsp;→&nbsp;Glyd |
+| :--- | ---: | ---: | ---: | ---: |
+| Llama 3.3 70B Instruct | 136.9 GB | **91.9 GB** (−32.9%) | | |
+| Qwen3 30B-A3B (MoE) | 59.8 GB | **40.2 GB** (−32.7%) | | |
+| Gemma 3 27B | 51.5 GB | **34.6 GB** (−32.8%) | | |
+| Mistral Small 3.2 24B | 45.3 GB | **30.3 GB** (−33.0%) | | |
+| Phi-4 (14B) | 27.3 GB | **18.3 GB** (−32.9%) | 14.7888&nbsp;→&nbsp;14.7855 | 76.7%&nbsp;→&nbsp;76.3% |
+| DeepSeek-R1-Distill-Qwen 14B | 26.4 GB | **18.0 GB** (−31.9%) | 27.1955&nbsp;→&nbsp;27.1975 | 78.0%&nbsp;→&nbsp;78.0% |
+| Llama 3.1 8B Instruct | 14.0 GB | **9.4 GB** (−32.8%) | 19.5915&nbsp;→&nbsp;19.5909 | 71.7%&nbsp;→&nbsp;72.0% |
+| Mistral 7B Instruct v0.3 | 14.0 GB | **9.4 GB** (−32.7%) | 12.1422&nbsp;→&nbsp;12.1473 | 60.7%&nbsp;→&nbsp;60.7% |
+| Qwen3 8B | 13.9 GB | **9.4 GB** (−32.1%) | 20.7490&nbsp;→&nbsp;20.7428 | 74.0%&nbsp;→&nbsp;74.3% |
+| SmolLM3 3B | 5.6 GB | **3.8 GB** (−32.9%) | 29.1467&nbsp;→&nbsp;29.1422 | 63.3%&nbsp;→&nbsp;63.3% |
+
+(The tiered layout; the 12-bit one takes 24.7-24.8% off each. Quality
+where the harness loads the model on one GPU in bf16: the MMLU answers
+are bf16's on 99.3-100% of the questions.)
 
 - **Bit for bit.** Every weight and every cached key and value decodes to
   itself. The products sum in another order than cuBLAS's and

@@ -1,0 +1,15 @@
+Loading weights:   0%|          | 0/243 [00:00<?, ?it/s]Loading weights: 100%|██████████| 243/243 [00:00<00:00, 5918.00it/s]
+[transformers] Token indices sequence length is longer than the specified maximum sequence length for this model (101016 > 16384). Running this sequence through the model will result in indexing errors
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+bf16 (weights 29.32 GB): batch 1: 15.3 tokens/s (15.3 a sequence), peak VRAM 29.36 GB
+bf16 perplexity: 14.7888 (12600 tokens)
+bf16 MMLU: 76.67% of 300 questions (0-shot)
+mma fused: packed in 19 s; weights 19.69 GB against 29.32 GB bf16 (67.2%), scratch 0.27 GB, VRAM in use 19.99 GB on 1 GPU
+glyd mma fused: batch 1: 31.8 tokens/s (31.8 a sequence), peak VRAM 20.00 GB
+glyd mma perplexity: 14.7855 (12600 tokens)
+glyd mma MMLU: 76.33% of 300 questions (0-shot)
+next-token choice as bf16's: 98.91%
+MMLU answer as bf16's: 99.33%
+logits bit-identical: False
+generated tokens identical to bf16: 32 of 32
+text:  with the invention of the telegraph in the 1830s. The telegraph was a revolutionary communication technology that allowed messages to be sent over long distances using

@@ -321,7 +321,7 @@ with torch.no_grad():
         for cname, child in list(m.named_children()):
             if isinstance(child, (nn.Linear, nn.Embedding)):
                 dev = torch.device("cuda", layer_of.get(id(child), 0 if isinstance(child, nn.Embedding) else last))
-                key = (child.weight.data_ptr(), dev)
+                key = (child.weight.data_ptr(), dev, isinstance(child, nn.Linear))  # a weight tied to embedding and output: a pack for each
                 if key not in packed:
                     packed[key] = pack(child.weight.data.to(dev), isinstance(child, nn.Linear))
                 p = packed[key]

@@ -1,0 +1,10 @@
+SmolLM3-3B: 2.81 B Linear weights, 5.62 GB in bf16; mma 3.77 GB (10.73 bits, 32.9% smaller), mma12 4.23 GB (12.04 bits, 24.8% smaller); every tensor bit for bit
+Mistral-7B-Instruct-v0.3: 6.98 B Linear weights, 13.96 GB in bf16; mma 9.40 GB (10.77 bits, 32.7% smaller), mma12 10.50 GB (12.04 bits, 24.7% smaller); every tensor bit for bit
+Llama-3.1-8B-Instruct: 6.98 B Linear weights, 13.96 GB in bf16; mma 9.39 GB (10.76 bits, 32.8% smaller), mma12 10.50 GB (12.04 bits, 24.8% smaller); every tensor bit for bit
+Qwen3-8B: 6.95 B Linear weights, 13.89 GB in bf16; mma 9.44 GB (10.87 bits, 32.1% smaller), mma12 10.46 GB (12.05 bits, 24.7% smaller); every tensor bit for bit
+DeepSeek-R1-Distill-Qwen-14B: 13.21 B Linear weights, 26.42 GB in bf16; mma 17.99 GB (10.89 bits, 31.9% smaller), mma12 19.89 GB (12.05 bits, 24.7% smaller); every tensor bit for bit
+phi-4: 13.63 B Linear weights, 27.26 GB in bf16; mma 18.28 GB (10.73 bits, 32.9% smaller), mma12 20.51 GB (12.04 bits, 24.8% smaller); every tensor bit for bit
+Mistral-Small-3.2-24B-Instruct-2506: 22.63 B Linear weights, 45.26 GB in bf16; mma 30.34 GB (10.72 bits, 33.0% smaller), mma12 34.05 GB (12.04 bits, 24.8% smaller); every tensor bit for bit
+gemma-3-27b-it: 25.74 B Linear weights, 51.48 GB in bf16; mma 34.58 GB (10.75 bits, 32.8% smaller), mma12 38.74 GB (12.04 bits, 24.8% smaller); every tensor bit for bit
+Qwen3-30B-A3B: 29.90 B Linear weights, 59.79 GB in bf16; mma 40.22 GB (10.76 bits, 32.7% smaller), mma12 44.98 GB (12.04 bits, 24.8% smaller); every tensor bit for bit
+Llama-3.3-70B-Instruct: 68.45 B Linear weights, 136.90 GB in bf16; mma 91.93 GB (10.74 bits, 32.9% smaller), mma12 103.00 GB (12.04 bits, 24.8% smaller); every tensor bit for bit
