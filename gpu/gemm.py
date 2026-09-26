@@ -49,7 +49,7 @@ for name in names:
             ev = ((yv - ref).abs().max() / ref.abs().max()).item()
             assert ev < 1e-2, f"{name} bgemv M={M}: {ev}"
             tv = f" | bgemv {gpu_us(lambda: g.fast_bgemv(p, x)):6.0f}"
-        if M <= 32:
+        if M <= 64:
             em = ((g.mma_gemm(q, x).float() - ref).abs().max() / ref.abs().max()).item()
             assert em < 1e-2, f"{name} mma M={M}: {em}"
             tv += f" | mma {gpu_us(lambda: g.mma_gemm(q, x)):6.0f}"

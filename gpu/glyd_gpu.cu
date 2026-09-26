@@ -745,8 +745,8 @@ __device__ __forceinline__ int64_t block_of_step(int64_t x, int64_t nb, int64_t 
 }
 
 template <int MT>
-__global__ void __launch_bounds__(256, 3 - MT) mma_gemm_kernel(const uint8_t* __restrict__ data, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint32_t base, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
-    extern __shared__ float red[];  // [8 warps][16 MT rows][65]
+__global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(const uint8_t* __restrict__ data, const uint8_t* __restrict__ exc, const int32_t* __restrict__ exc_base, uint32_t base, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+    extern __shared__ float red[];  // [4 warps][16 MT rows][65]
     __shared__ int last;
     __shared__ uint32_t sel[16];
     if (threadIdx.x < 16) sel[threadIdx.x] = escape_selector(threadIdx.x);
@@ -809,26 +809,38 @@ __global__ void __launch_bounds__(256, 3 - MT) mma_gemm_kernel(const uint8_t* __
 #pragma unroll
                 for (int nn = 0; nn < 8; nn++) mma16816(acc[mt][nn], ca[mt], R[2 * nn], R[2 * nn + 1]);
         }
-        // The warps' sums: C fragment rows g and g + 8, columns 2t and 2t + 1 of each n-tile.
-        float* mine = red + (int64_t)warp * MT * 16 * 65;
+        // The warps' sums (C fragment rows g and g + 8, columns 2t and 2t + 1
+        // of each n-tile): warps 4-7 put theirs in shared memory, 0-3 add
+        // them to theirs and put those.
+        float* mine = red + (int64_t)(warp & 3) * MT * 16 * 65;
+        for (int half = 1; half >= 0; half--) {
+            if ((warp >> 2) == half)
 #pragma unroll
-        for (int mt = 0; mt < MT; mt++)
+                for (int mt = 0; mt < MT; mt++)
 #pragma unroll
-            for (int nn = 0; nn < 8; nn++) {
-                int c = nn * 8 + t * 2;
-                mine[(mt * 16 + g) * 65 + c] = acc[mt][nn][0];
-                mine[(mt * 16 + g) * 65 + c + 1] = acc[mt][nn][1];
-                mine[(mt * 16 + g + 8) * 65 + c] = acc[mt][nn][2];
-                mine[(mt * 16 + g + 8) * 65 + c + 1] = acc[mt][nn][3];
-            }
-        __syncthreads();
+                    for (int nn = 0; nn < 8; nn++) {
+                        float* r0 = mine + (mt * 16 + g) * 65 + nn * 8 + t * 2;
+                        float* r1 = r0 + 8 * 65;
+                        if (!half) {
+                            acc[mt][nn][0] += r0[0];
+                            acc[mt][nn][1] += r0[1];
+                            acc[mt][nn][2] += r1[0];
+                            acc[mt][nn][3] += r1[1];
+                        }
+                        r0[0] = acc[mt][nn][0];
+                        r0[1] = acc[mt][nn][1];
+                        r1[0] = acc[mt][nn][2];
+                        r1[1] = acc[mt][nn][3];
+                    }
+            __syncthreads();
+        }
         int64_t first = block_of_step(rb * KS, nb, total), fin = block_of_step(rb * KS + KS - 1, nb, total);
         for (int i = threadIdx.x; i < MT * 16 * 64; i += 256) {
             int r = i / 64, c = i % 64;
             if (r >= M) continue;
             float v = 0.f;
 #pragma unroll
-            for (int ww = 0; ww < 8; ww++) v += red[(ww * MT * 16 + r) * 65 + c];
+            for (int ww = 0; ww < 4; ww++) v += red[(ww * MT * 16 + r) * 65 + c];
             if (first == fin) Y[r * O + rb * 64 + c] = __float2bfloat16(v + (bias ? __bfloat162float(bias[rb * 64 + c]) : 0.f));
             else parts[((blockIdx.x + rb) * M + r) * 64 + c] = v;  // slot b + rb: distinct for every (block, row block) pair
         }
@@ -1027,7 +1039,7 @@ void mma_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int
     const c10::cuda::CUDAGuard guard(data.device());
     cudaStream_t cs = at::cuda::getCurrentCUDAStream();
     int64_t M = x.size(0);
-    TORCH_CHECK(O % 64 == 0 && K % 16 == 0 && M <= 32 && x.is_contiguous() && x.size(1) == K, "O a multiple of 64, K of 16, up to 32 tokens, X contiguous [M, K]");
+    TORCH_CHECK(O % 64 == 0 && K % 16 == 0 && M <= 64 && x.is_contiguous() && x.size(1) == K, "O a multiple of 64, K of 16, up to 64 tokens, X contiguous [M, K]");
     int64_t KS = K / 16, RB = O / 64, total = RB * KS;
     // Row blocks' done counts: zero between products (the last block of a row block resets it).
     static auto* done_of = new std::map<int, torch::Tensor>;  // kept to the end (no teardown after CUDA's)
@@ -1035,7 +1047,7 @@ void mma_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int
     if (!done.defined() || done.numel() < RB) done = torch::zeros({std::max<int64_t>(RB, 1 << 16)}, data.options().dtype(torch::kInt32));
     const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
     auto launch = [&](auto kernel, int mt) {
-        size_t shared = (size_t)8 * mt * 16 * 65 * sizeof(float);
+        size_t shared = (size_t)4 * mt * 16 * 65 * sizeof(float);
         cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
         int per_sm = 1;
         cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kernel, 256, shared);
@@ -1044,7 +1056,9 @@ void mma_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int
         torch::Tensor parts = torch::empty({nb + RB, M, 64}, x.options().dtype(torch::kFloat32));
         kernel<<<nb, 256, shared, cs>>>((const uint8_t*)data.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint32_t)base, O, K, M, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), (float*)parts.data_ptr(), (int*)done.data_ptr());
     };
-    if (M <= 16) launch(mma_gemm_kernel<1>, 1); else launch(mma_gemm_kernel<2>, 2);
+    if (M <= 16) launch(mma_gemm_kernel<1>, 1);
+    else if (M <= 32) launch(mma_gemm_kernel<2>, 2);
+    else launch(mma_gemm_kernel<4>, 4);
 }
 
 void mma_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, int64_t base, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {

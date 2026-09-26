@@ -360,7 +360,7 @@ def mma_unpack(p, out=None, row0=0, rows=None):
 
 
 def mma_gemm(p, x, bias=None):
-    """X W^T (+ bias) for up to 32 tokens (x [M, K]) on the tensor cores,
+    """X W^T (+ bias) for up to 64 tokens (x [M, K]) on the tensor cores,
     the weights decoded in registers straight into their operands."""
     O, K = p.shape
     x = x.contiguous()

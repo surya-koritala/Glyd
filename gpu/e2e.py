@@ -11,7 +11,7 @@ cuBLAS's, as between any two GEMM kernels, so late tokens may differ.
 The bf16 model is never held on the GPU: every Linear is packed from
 the CPU copy, one at a time.
 """
-import argparse, time, torch
+import argparse, math, time, torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -19,7 +19,7 @@ import glyd_gpu as g
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
-ap.add_argument("--format", default="fast", choices=["fast", "huffman", "mma"], help="mma: the Linears in the mma layout (the embedding in fast)")
+ap.add_argument("--format", default="fast", choices=["fast", "huffman", "mma"], help="mma: the Linears in the mma layout (the embedding in fast), up to 64 tokens a step multiplied straight from it")
 ap.add_argument("--fused", action="store_true")
 ap.add_argument("--baseline", action="store_true")
 ap.add_argument("--tokens", type=int, default=128)
@@ -27,6 +27,7 @@ ap.add_argument("--prefill", type=str, default="", help="prompt lengths to time 
 ap.add_argument("--gemm-max", type=int, default=64, help="fused: steps of up to this many tokens multiply straight from the packed weights (fast format)")
 ap.add_argument("--batch", type=str, default="1", help="generate for this many copies of the prompt at once (comma list: each measured)")
 ap.add_argument("--gpus", type=int, default=1, help="spread the layers over this many GPUs (bf16: accelerate's device map; glyd: layers balanced by packed size)")
+ap.add_argument("--ppl", default="", help="a text file: perplexity over 200 windows of 64 tokens (a forward pass each; from its 10th MB), and how often the next-token choice is bf16's")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
 args = ap.parse_args()
 
@@ -52,6 +53,22 @@ def prefill(model, label):
         out.append(f"{n} tokens {t * 1e3:.0f} ms ({n / t:.0f} tokens/s)")
     if out:
         print(f"{label} prefill: " + ", ".join(out))
+
+
+def perplexity(model, label):
+    if not args.ppl:
+        return None
+    text = open(args.ppl, "rb").read()[10_000_000:10_400_000].decode("utf-8", "ignore")
+    windows = tok(text, return_tensors="pt").input_ids[0][: 200 * 64].view(200, 64).cuda()
+    nll, top = 0.0, []
+    with torch.no_grad():
+        for w in windows:
+            lg = model(w[None]).logits[0, :-1].float()
+            nll += F.cross_entropy(lg, w[1:], reduction="sum").item()
+            top.append(lg.argmax(-1))
+    top = torch.stack(top)
+    print(f"{label} perplexity: {math.exp(nll / top.numel()):.4f} ({top.numel()} tokens)")
+    return top
 
 
 def measure(model, label):
@@ -112,7 +129,7 @@ class GLinear(nn.Module):
         O, K = self.p.shape
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)
-        if args.fused and isinstance(self.p, g.Mma) and x2.shape[0] <= 32:
+        if args.fused and isinstance(self.p, g.Mma) and x2.shape[0] <= 64:
             return g.mma_gemm(self.p, x2, self.bias).view(*lead, O)
         if args.fused and x2.shape[0] == 1:
             f = g.fast_gemv if isinstance(self.p, g.Fast) else g.gemv
@@ -157,6 +174,7 @@ if args.baseline:
         model.cuda()
     logits_a, out_a = measure(model, f"bf16 (weights {weights_bf16 / 1e9:.2f} GB)")
     prefill(model, "bf16")
+    top_a = perplexity(model, "bf16")
     if args.gpus > 1:
         remove_hook_from_module(model, recurse=True)
     model.cpu()
@@ -211,6 +229,9 @@ scratch = sum(b.numel() * 2 for b in Scratch.buf.values())
 print(f"{args.format}{' fused' if args.fused else ''}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {scratch / 1e9:.2f} GB, VRAM in use {in_use / 1e9:.2f} GB on {args.gpus} GPU{'s' if args.gpus > 1 else ''}")
 logits_b, out_b = measure(model, f"glyd {args.format}{' fused' if args.fused else ''}")
 prefill(model, f"glyd {args.format}")
+top_b = perplexity(model, f"glyd {args.format}")
+if args.baseline and top_b is not None:
+    print(f"next-token choice as bf16's: {(top_a.cuda() == top_b).float().mean().item() * 100:.2f}%")
 if args.baseline:
     print("logits bit-identical:", torch.equal(logits_a.cuda().view(torch.int16), logits_b.view(torch.int16)))
     same = (out_a.cuda() == out_b).all(0).long().cumprod(0).sum().item() - ids.shape[1]

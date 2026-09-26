@@ -62,15 +62,14 @@ wait
 du -sh /data/Qwen2.5-* >> ~/results/machine.txt
 cd ~/glyd/gpu
 python -c "import glyd_gpu" > ~/results/build.txt 2>&1
-E="python e2e.py --fused --tokens 64 --batch 1,4 --prefill 128,512"
-# 32B: bf16 on 2 GPUs (it needs them), then packed on 1.
-$E /data/Qwen2.5-32B-Instruct --format huffman --baseline --gpus 2 > ~/results/32b-bf16-2gpu-huffman-2gpu.txt 2>&1
+E="python e2e.py --fused --tokens 64 --batch 1,4,16 --prefill 16,64,512"
+# 32B: bf16 on 2 GPUs (it needs them) and Glyd on the same 2, then Glyd on 1.
+$E /data/Qwen2.5-32B-Instruct --format mma --baseline --gpus 2 > ~/results/32b-bf16-2gpu-mma-2gpu.txt 2>&1
+$E /data/Qwen2.5-32B-Instruct --format mma --gpus 1 > ~/results/32b-mma-1gpu.txt 2>&1
 $E /data/Qwen2.5-32B-Instruct --format huffman --gpus 1 > ~/results/32b-huffman-1gpu.txt 2>&1
-$E /data/Qwen2.5-32B-Instruct --format fast --gpus 1 > ~/results/32b-fast-1gpu.txt 2>&1
-# 72B: bf16 on 4 GPUs, then packed on 3.
-$E /data/Qwen2.5-72B-Instruct --format huffman --baseline --gpus 4 > ~/results/72b-bf16-4gpu-huffman-4gpu.txt 2>&1
-$E /data/Qwen2.5-72B-Instruct --format huffman --gpus 3 > ~/results/72b-huffman-3gpu.txt 2>&1
-$E /data/Qwen2.5-72B-Instruct --format fast --gpus 3 > ~/results/72b-fast-3gpu.txt 2>&1
+# 72B: bf16 on 4 GPUs and Glyd on the same 4, then Glyd on 3.
+$E /data/Qwen2.5-72B-Instruct --format mma --baseline --gpus 4 > ~/results/72b-bf16-4gpu-mma-4gpu.txt 2>&1
+$E /data/Qwen2.5-72B-Instruct --format mma --gpus 3 > ~/results/72b-mma-3gpu.txt 2>&1
 touch ~/results/DONE
 '
 RUN="${RUN//COMMIT_PLACEHOLDER/$COMMIT}"
