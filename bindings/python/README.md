@@ -1,6 +1,9 @@
 # Glyd for Python
 
-    bindings/python/build.sh && pip install bindings/python
+    pip install glyd
+
+Wheels for Linux x86_64 and aarch64 and macOS arm64. From a checkout:
+`bindings/python/build.sh && pip install bindings/python`.
 
 ```python
 import glyd

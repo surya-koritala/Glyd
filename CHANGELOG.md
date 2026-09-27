@@ -6,8 +6,11 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.20.0 — 2026-09-27
 
+- The Python package on PyPI: `pip install glyd` (wheels for Linux x86_64
+  and aarch64 and macOS arm64), published from the release workflow by
+  trusted publishing.
 - Nine more open models measured, nineteen in all: GLM-4.5-Air, Llama 4
   Scout, Qwen3-Next 80B-A3B, Muse Glimmer 30B, Qwen3.8 27B, Gemma 4
   26B-A4B, Gemma 3 12B, Qwen3 4B 2507 and Llama 3.2 3B, every projection's
