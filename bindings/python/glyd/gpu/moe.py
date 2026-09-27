@@ -12,11 +12,14 @@ routing weights applied and each token's k rows added; no host sync. A gate
 of the model's own (gpt-oss's) or none: that product's rows written out,
 then the module's _apply_gate or act_fn on them. exact: the layer's
 experts the tokens are routed to decoded into the scratch buffer and run
-by the implementation bf16 took (the model's before "glyd"), which reads
-no other, so its outputs are bf16's bit for bit.
+by the implementation bf16 runs (the model's before "glyd"; while
+generate() decodes, batched_mm in grouped_mm's place, as transformers
+switches bf16's), which reads no other, so its outputs are bf16's bit for
+bit.
 
     moe.compress(model, "mma12", lambda m: torch.device("cuda"))   # a loaded model's experts, in place
 """
+import contextlib
 import torch
 import torch.nn as nn
 from transformers.activations import GELUTanh, SiLUActivation
@@ -107,15 +110,38 @@ def install(model, exact=False):
                 raise ValueError(f"glyd: an Experts module's {', '.join(sorted(set(names(m)) - set(packs)))} not in the checkpoint")
             up, down = (packs[n] for n in names(m))
             E = m.num_experts
-            bias = (getattr(m, names(m)[0] + "_bias").contiguous(), m.down_proj_bias.contiguous()) if m.has_bias else (None, None)
-            m.glyd, m.glyd_exact = (up, down, E, _act(m, up.shape[0] // E), *bias), exact
+            m.glyd, m.glyd_exact = (up, down, E, _act(m, up.shape[0] // E)), exact
     if mods:
         if hasattr(model, "set_experts_implementation"):
             model.set_experts_implementation(NAME)
         for m in mods:
             if m.config._experts_implementation != NAME:  # a config the model's call did not reach
                 m.config._experts_implementation_internal = NAME
+        _decoding(model, mods)
     return sum(1 for m in mods if getattr(m, "glyd", None) is not None)
+
+
+def _decoding(model, mods):
+    """transformers' generate() decodes with batched_mm where a model's experts run by grouped_mm
+    (GenerationMixin._optimize_model_for_decode, around its decoding loop): the model's own wrapped, so that the
+    reference (exact, a module not packed) follows it, the Experts modules mods told while it lasts."""
+    inner = getattr(model, "_optimize_model_for_decode", None)
+    if inner is None or getattr(inner, "glyd", False):
+        return
+
+    @contextlib.contextmanager
+    def decoding():
+        for m in mods:
+            m.glyd_decoding = True
+        try:
+            with inner():
+                yield
+        finally:
+            for m in mods:
+                m.glyd_decoding = False
+
+    decoding.glyd = True
+    model._optimize_model_for_decode = decoding
 
 
 @torch.no_grad()
@@ -160,12 +186,16 @@ class _Decoded:
 def _reference(self, hidden_states, top_k_index, top_k_weights):
     """The implementation the module ran by before "glyd", on its matrices decoded into the scratch buffer where
     they are packed: the experts the tokens are routed to, the only ones it reads (the rest of the buffer as it was)."""
-    fn = ALL_EXPERTS_FUNCTIONS.get_interface(self.glyd_ref, type(self).forward.__wrapped__)
+    ref = self.glyd_ref
+    if ref == "grouped_mm" and getattr(self, "glyd_decoding", False):
+        ref = "batched_mm"  # as generate() decodes bf16's
+    fn = ALL_EXPERTS_FUNCTIONS.get_interface(ref, type(self).forward.__wrapped__)
     packs = getattr(self, "glyd_packs", None)
     if not packs:
         return fn(self, hidden_states, top_k_index, top_k_weights)
     E = self.num_experts
-    plan = g.moe_route(top_k_index if top_k_index.dtype == torch.int64 else top_k_index.long(), E)
+    # batched_mm reads expert E - 1 for an id past it (clamped): decoded too
+    plan = g.moe_route(top_k_index.long().clamp(0, E - 1), E)
     buf, at, w = gm.Scratch.buf[next(iter(packs.values())).sm.device], 0, {}
     for name, p in packs.items():
         x = g.mma_moe_unpack(p, E, plan, top_k_index.numel(), buf[at : at + p.n]).view(E, p.shape[0] // E, p.shape[1])
@@ -180,7 +210,9 @@ def forward(self, hidden_states, top_k_index, top_k_weights):
     packs = getattr(self, "glyd", None)
     if packs is None or self.glyd_exact:
         return _reference(self, hidden_states, top_k_index, top_k_weights)
-    up, down, E, act, bu, bd = packs
+    up, down, E, act = packs
+    # The biases as the module holds them now (accelerate's dispatch puts new tensors in their place).
+    bu, bd = (getattr(self, names(self)[0] + "_bias"), self.down_proj_bias) if self.has_bias else (None, None)
     x = hidden_states if hidden_states.dtype == torch.bfloat16 else hidden_states.to(torch.bfloat16)
     ids = top_k_index if top_k_index.dtype == torch.int64 else top_k_index.long()
     w = top_k_weights if top_k_weights.dtype in (torch.bfloat16, torch.float32) else top_k_weights.float()
