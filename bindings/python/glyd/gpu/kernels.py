@@ -548,3 +548,34 @@ def mma_gemm_big(p, x, bias=None, variant=0):
         _ext.mma_gemm_big(p.data, p.blocks, p.block_base, p.tiers, O, K, x, b, y, variant)
     return y
 
+
+
+def moe_route(ids, E):
+    """A mixture-of-experts layer's pairs (ids [T, k], int64: each token's k experts) sorted by expert on the GPU:
+    the plan mma_moe takes."""
+    ids = ids.reshape(-1)
+    plan = torch.empty(2 + 2 * E + ids.numel(), dtype=torch.int32, device=ids.device)
+    _ext.moe_route(ids, E, plan)
+    return plan
+
+
+def mma_moe(p, E, x, plan, ids, act=0, bias=None, weights=None, gather=True):
+    """A mixture-of-experts layer's product, p its E experts' matrices [O, K]
+    stacked ([E O, K]), for the pairs of plan (moe_route(ids, E); ids [T, k]):
+    X's rows (gather: the tokens', [T, K]; else the pairs' in the plan's order,
+    [T k, K]) by each pair's expert. act 0: [T k, O], the pairs in the plan's
+    order (+ bias [E, O]); act 1 (SiLU) or 2 (GELU, tanh): [T k, O / 2], act(gate)
+    up, the gate an expert's first O / 2 rows; weights [T, k] (act 0): [T, O],
+    each token's k rows times their weights, added."""
+    O, K = p.shape[0] // E, p.shape[1]
+    T, k = ids.shape
+    x = x.contiguous()
+    y = torch.empty(T if weights is not None else T * k, O // 2 if act else O, dtype=torch.bfloat16, device=x.device)
+    none = _none(x.device)
+    w, i = (weights.reshape(-1).contiguous(), ids.reshape(-1)) if weights is not None else (none, none)
+    b = bias if bias is not None else none
+    if isinstance(p, Mma12):
+        _ext.mma12_moe(p.data, p.exc, p.exc_base, p.sym, E, O, K, x, k, int(gather), plan, act, b, w, i, y)
+    else:
+        _ext.mma_moe(p.data, p.blocks, p.block_base, p.tiers, E, O, K, x, k, int(gather), plan, act, b, w, i, y)
+    return y

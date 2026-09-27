@@ -42,8 +42,11 @@ _ARGS = {  # each function's arguments before its stream
     "mma_unpack": _PACK + [_I64, _I64, _I64, _P],
     "mma12_unpack": _PACK + [_I64, _I64, _I64, _P],
     "attn_decode": [_P, _I64, _P, _P, _P, _W, _P, _P, _P, _W, _P, _P, _I64, _I64, _I64, _I64, ctypes.c_double, _P, _P, _SZ, _P],
+    "moe_route": [_P, _I64, _I64, _P],
+    "mma_moe": _PACK + [_I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ],
+    "mma12_moe": _PACK + [_I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ],
 }
-_SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_big": 4, "mma12_gemm_big": 4, "mma12_gemm_mid": 3, "mma12_gemm_wg": 3, "attn_decode": 4}  # their workspace queries' sizes
+_SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_big": 4, "mma12_gemm_big": 4, "mma12_gemm_mid": 3, "mma12_gemm_wg": 3, "attn_decode": 4, "mma_moe": 7, "mma12_moe": 7}  # their workspace queries' sizes
 
 
 def load(path):
@@ -326,3 +329,36 @@ def attn_decode(q, kd, kb, kbb, kt, vd, vb, vbb, vt, tk, tv, tlen, pairs, G, P, 
     r = _fn["attn_decode"](q.data_ptr(), D, kd.data_ptr(), kb.data_ptr(), kbb.data_ptr(), k3, vd.data_ptr(), vb.data_ptr(), vbb.data_ptr(), v3, tk.data_ptr(), tv.data_ptr(), tlen, pairs, G, P, scale, out.data_ptr(), ws[1], ws[2], _counters("attn_decode", d, pairs, 1 << 12), s)
     if r:
         _fail("attn_decode", r)
+
+
+def moe_route(ids, E, plan):
+    d = ids.get_device()
+    if d != _device():
+        return _there(moe_route, d, ids, E, plan)
+    _check(ids.dtype == torch.int64 and ids.is_contiguous() and plan.dtype == torch.int32 and plan.numel() >= 2 + 2 * E + ids.numel(), "ids int64, plan int32 [2 + 2E + P]")
+    r = _fn["moe_route"](ids.data_ptr(), ids.numel(), E, plan.data_ptr(), _stream(d))
+    if r:
+        _fail("moe_route", r)
+
+
+def _moe(name, data, a, b, words, E, O, K, x, k, gather, plan, act, bias, w, ids, y):
+    """mma_moe, mma12_moe: a mixture-of-experts layer's product (w, ids: empty for none)."""
+    d = data.get_device()
+    if d != _device():
+        return _there(_moe, d, name, data, a, b, words, E, O, K, x, k, gather, plan, act, bias, w, ids, y)
+    weighted = w.numel() > 0
+    _check(x.is_contiguous() and x.size(1) == K and plan.dtype == torch.int32, "X contiguous [., K], plan int32")
+    _check(not weighted or (w.dtype in (torch.float32, torch.bfloat16) and ids.dtype == torch.int64), "weights bf16 or fp32, ids int64")
+    T, s = x.size(0) if gather else x.size(0) // k, _stream(d)
+    ws = _workspace(name, d, s, E, O, K, T, k, act, int(weighted))
+    r = _fn[name](data.data_ptr(), a.data_ptr(), b.data_ptr(), words, E, O, K, x.data_ptr(), T, k, gather, plan.data_ptr(), act, bias.data_ptr() if bias.numel() else None, w.data_ptr() if weighted else None, int(w.dtype == torch.float32), ids.data_ptr() if weighted else None, y.data_ptr(), ws[1], ws[2], s)
+    if r:
+        _fail(name, r)
+
+
+def mma_moe(data, blocks, block_base, tiers, E, O, K, x, k, gather, plan, act, bias, w, ids, y):
+    _moe("mma_moe", data, blocks, block_base, _words(tiers, 3, "three tiers"), E, O, K, x, k, gather, plan, act, bias, w, ids, y)
+
+
+def mma12_moe(data, exc, exc_base, sym, E, O, K, x, k, gather, plan, act, bias, w, ids, y):
+    _moe("mma12_moe", data, exc, exc_base, _words(sym, 4, "four words of symbols"), E, O, K, x, k, gather, plan, act, bias, w, ids, y)

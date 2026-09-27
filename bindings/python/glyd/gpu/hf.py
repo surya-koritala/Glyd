@@ -8,6 +8,7 @@ checkpoint's keys, places every tensor by the device map (several GPUs:
 device_map="auto", with accelerate) and ties the embeddings. The
 quantizer registered here as "glyd" packs: a Linear's weight as it
 arrives, a merged group's (q, k, v; gate, up) when its last weight is in,
+a mixture of experts' layer's experts as each 3-D weight arrives (moe.py),
 the embeddings and an output layer tied to one once everything is. The
 GPU holds the packed model and the weights not yet packed: the
 embedding, a group's members. A glyd-v1 checkpoint (glyd.json beside its
@@ -20,7 +21,7 @@ from transformers import AutoModelForCausalLM
 from transformers.core_model_loading import ConversionOps
 from transformers.quantizers import HfQuantizer, get_module_from_name, register_quantization_config, register_quantizer
 from transformers.utils.quantization_config import QuantizationConfigMixin
-from . import format as fmt, kernels as g, model as gm
+from . import format as fmt, kernels as g, model as gm, moe
 
 BITS = {"mma": 10.80, "mma12": 12.04}  # a weight, measured (best_layout's): the sizes the device map is planned by
 DTYPES = {"U8": torch.uint8, "I32": torch.int32}
@@ -116,6 +117,7 @@ class GlydQuantizer(HfQuantizer):
         super().__init__(quantization_config, **kwargs)
         self.targets = {}  # id(nn.Linear): [its path, its merged group or None, its place there]
         self.groups = []  # [members' paths, {place: bf16 weight} until all are in, the pack]
+        self.experts = {}  # id(Experts module): (its path, its 3-D weights packed) (moe.py)
         self.stored = None  # a glyd-v1 checkpoint's manifest
 
     def validate_environment(self, device_map=None, **kwargs):
@@ -130,13 +132,15 @@ class GlydQuantizer(HfQuantizer):
     def update_device_map(self, device_map):
         return device_map if device_map is not None else {"": torch.cuda.current_device()}
 
-    def param_element_size(self, model, param_name, param):
+    def _packed(self, model, param_name):
         module, name = get_module_from_name(model, param_name)
-        return BITS[self.quantization_config.layout] / 8 if name == "weight" and id(module) in self.targets else param.element_size()
+        return (name == "weight" and id(module) in self.targets) or name in self.experts.get(id(module), ((), ()))[1]
+
+    def param_element_size(self, model, param_name, param):
+        return BITS[self.quantization_config.layout] / 8 if self._packed(model, param_name) else param.element_size()
 
     def param_needs_quantization(self, model, param_name, **kwargs):
-        module, name = get_module_from_name(model, param_name)
-        return name == "weight" and id(module) in self.targets
+        return self._packed(model, param_name)
 
     def get_quantize_ops(self):
         return _Pack(self)
@@ -171,6 +175,7 @@ class GlydQuantizer(HfQuantizer):
         # tied to another (an output layer to the embedding) is packed at the end, as it is tied then.
         tied = getattr(model, "all_tied_weights_keys", None) or {}
         tied = set(tied) | set(tied.values())
+        self.experts = moe.targets(model)  # a mixture of experts' layers: each 3-D weight packed as it arrives
         paths = {}
         for name, m in model.named_modules():
             paths[id(m)] = name
@@ -190,6 +195,11 @@ class GlydQuantizer(HfQuantizer):
         """Tensor `name`, arrived on its GPU as w: packed onto its Linear, or held until its merged group is in (True);
         or not one to pack (False: loaded as it is)."""
         module, attr = get_module_from_name(model, name)
+        if attr in self.experts.get(id(module), ((), ()))[1]:
+            if w.dtype != torch.bfloat16:
+                raise ValueError(f"glyd: {name} came as {w.dtype}; packs hold bf16")
+            self.quantization_config.verified += moe.take(module, attr, w, self.quantization_config.layout, self.quantization_config.verify)
+            return True
         t = self.targets.get(id(module))
         if t is None or attr != "weight":
             return False
@@ -265,7 +275,8 @@ class GlydQuantizer(HfQuantizer):
                 if isinstance(m, nn.Linear) and hasattr(m, "glyd"):
                     _install(model, [self.targets[id(m)][0]], m.glyd, mode)
             gm.pack_modules(model, self._rest, lambda m: m.weight.device, **mode)
+            moe.install(model, q.exact)
             gm.set_scratch(model, q.exact)
-        self.targets, self.groups = {}, []
+        self.targets, self.groups, self.experts = {}, [], {}
         torch.cuda.empty_cache()
         return model
