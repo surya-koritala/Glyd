@@ -16,7 +16,7 @@ requires-python = ">=3.8"
 [project.optional-dependencies]
 # glyd.gpu: from_pretrained builds on transformers' quantizer API as of 5.17
 # (register_quantizer, on-the-fly quantize ops); fit needs none of these.
-gpu = ["torch>=2.5", "transformers>=5.17,<6", "safetensors>=0.8", "huggingface_hub>=1.5,<2"]
+gpu = ["torch>=2.5", "transformers>=5.17,<6", "accelerate>=1.1", "safetensors>=0.8", "huggingface_hub>=1.5,<2"]
 
 [tool.setuptools]
 packages = ["glyd", "glyd.gpu"]
