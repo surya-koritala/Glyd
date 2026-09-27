@@ -23,6 +23,24 @@ every earlier format.
   0.041; at the first token bf16 rounds " with" and " in" to a tie that
   fp32 and Glyd both break toward " with"), Qwen3-1.7B's as near (0.034
   against 0.032).
+- `glyd.from_pretrained` packs a mixture of experts. transformers 5.17
+  keeps a layer's experts as 3-D parameters of an Experts module (OLMoE,
+  granite MoE, Qwen3-MoE, Qwen3-Next, Gemma 4, GLM-4.5, Mixtral, gpt-oss
+  ...), and they stayed bf16; now each is packed as one matrix of its
+  experts as it arrives and run by `glyd`, an experts implementation
+  registered with transformers: each token's choices sorted by expert on
+  the GPU, a layer's experts in one grouped product for gate and up (the
+  activation applied as it is written out) and one for down (the routing
+  weights applied), no host sync; a long prompt's in tiles of 128 tokens an
+  expert. On an A10, OLMoE-1B-7B holds 9.28 GB in the tiered layout
+  (10.40 GB in the 12-bit one the A10 takes) against 13.84 GB in bf16, and
+  generates 58.9 tokens/s at one sequence against bf16's 48.7 and 391.3 at
+  eight different prompts against 103.0 (a step's GPU time 6.4 ms against
+  14.5, and 17.9 against 75.5); granite-3.1-3b-a800m 36.3 against 30.6 and
+  252.0 against 131.5; a 2048-token prompt 160 ms against 181. With
+  `exact=True` the experts the tokens are routed to are decoded and bf16's
+  own experts path runs on them: the logits bit for bit. glyd-v1
+  (`save_pretrained`) holds no packed experts yet.
 - `exact=True`: every product decodes its matrix and multiplies by
   `F.linear` as `nn.Linear` does, so the logits are bf16's bit for bit
   (Qwen3-0.6B and 1.7B, 32 of 32 tokens as bf16's; `e2e.py --exact` the
