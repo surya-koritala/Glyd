@@ -370,8 +370,14 @@ plain cache's 2.9950 / 4.3130 / 2.4809, the next token the plain cache's
 
 ## Running
 
-Needs PyTorch with CUDA and nvcc (the extension builds on first import):
+Needs PyTorch with CUDA, and nvcc (the extension builds on first import)
+or the prebuilt library: `bash build_lib.sh` builds libglyd_gpu_cuda13.so
+(the kernels behind a C API, the CUDA runtime linked in; code for sm_80,
+sm_86, sm_89 and sm_90a, PTX for the GPUs after them) next to
+glyd_gpu.py, which then uses it through ctypes (glyd_gpu_lib.py) instead
+of building; GLYD_GPU_LIB names another.
 
+    python check_capi.py [LIBRARY]            # every entry point through the library and through the JIT build, bit for bit
     python check.py model.safetensors         # every tensor packed, unpacked, compared; speeds
     python shapes.py MODEL_DIR                # fused product against bf16, one layer's matrices
     python gemm.py MODEL_DIR 1,16,64          # several tokens: every product against bf16, one layer's matrices

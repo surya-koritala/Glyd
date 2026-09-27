@@ -1,0 +1,221 @@
+"""glyd_gpu.cu's entry points through both of its hosts on the same random
+inputs: the pybind module (PyTorch's JIT build) and the prebuilt library's C
+API (glyd_gpu_lib.py over libglyd_gpu_cudaN.so). Every output compared bit
+for bit, and against the weights or an fp32 product so they are not both
+wrong: odd shapes, split rows, escapes and exceptions few and many, 1 to 600
+tokens, bias; the errors alike; the calls' host time.
+
+    python check_capi.py [LIBRARY]      (default: $GLYD_GPU_LIB, else the one next to glyd_gpu.py)"""
+import os, sys, time, torch
+import torch.nn.functional as F
+
+if len(sys.argv) > 1:
+    os.environ["GLYD_GPU_LIB"] = sys.argv[1]
+import glyd_gpu as g
+import glyd_gpu_lib
+
+assert g._ext is glyd_gpu_lib, "no library found: run build_lib.sh, or give its path"
+lib, jit = glyd_gpu_lib, g._jit()
+dev = "cuda"
+bf = torch.bfloat16
+none = torch.empty(0, dtype=bf, device=dev)  # no bias, as glyd_gpu.py passes it
+no_ids = torch.empty(0, dtype=torch.int64, device=dev)
+counts = {}
+
+
+def bits(t):
+    return t.contiguous().view(-1).view(torch.uint8)
+
+
+def exact(a, b):
+    return torch.equal(bits(a), bits(b))
+
+
+def both(name, *args, out=()):
+    """name through each host, the arguments at positions `out` (its outputs) fresh copies each time; its
+    outputs, or what it returns, compared bit for bit. The JIT host's back."""
+    got = []
+    for host in (jit, lib):
+        a = list(args)
+        for i in out:
+            a[i] = args[i].clone()
+        r = getattr(host, name)(*a)
+        got.append([r] if r is not None else [a[i] for i in out])
+    for x, y in zip(*got):
+        assert x.dtype == y.dtype and x.shape == y.shape and exact(x, y), name
+    counts[name] = counts.get(name, 0) + 1
+    return got[0][0]
+
+
+errors = []
+
+
+def both_fail(name, *args):
+    """name refused by each host."""
+    for host in (jit, lib):
+        try:
+            getattr(host, name)(*args)
+        except RuntimeError as e:
+            errors.append(f"{name} ({'jit' if host is jit else 'lib'}): {str(e).splitlines()[0][:100]}")
+            continue
+        raise AssertionError(f"{name}: no error from {host.__name__}")
+    counts[name + " (refused)"] = counts.get(name + " (refused)", 0) + 1
+
+
+def nan(*shape):
+    return torch.full(shape, float("nan"), dtype=bf, device=dev)
+
+
+def near(y, ref, tol=1e-2):
+    err = ((y.float() - ref).abs().max() / ref.abs().max()).item()
+    assert err < tol, err
+
+
+def weights(n, wild=0.0):
+    """n bf16 weights of a trained matrix's spread, `wild` of them at exponents far from the common ones."""
+    w = torch.randn(n, device=dev) * 0.02
+    m = torch.rand(n, device=dev) < wild
+    w[m] = torch.randn(int(m.sum()), device=dev) * torch.exp2(torch.randint(-40, 20, (int(m.sum()),), device=dev).float())
+    return w.to(bf)
+
+
+torch.manual_seed(0)
+
+# The dense format: lane_bits and write_codes (the packer's passes), decode (all tiles, some, staged or in
+# place), gemv (tiles of whole rows or splitting them, V 4 and 16, bias).
+for shape, wild in [((100_003,), 0.01), ((512, 1024), 0.0), ((300, 384), 0.02), ((64, 16384), 0.001), ((96, 8192), 0.05)]:
+    w = weights(shape[0] * (shape[1] if len(shape) > 1 else 1), wild).view(shape)
+    p = g.pack(w)
+    u = w.contiguous().view(torch.int16).flatten()
+    lengths, codes, _ = g.code_tables(g._hist(u).cpu().numpy())
+    len_t, code_t = torch.tensor(lengths, dtype=torch.uint8, device=dev), torch.tensor(codes, dtype=torch.int32, device=dev)
+    lanes = both("lane_bits", u, len_t, p.tw, p.V).to(torch.int64)
+    offs = (torch.cumsum(lanes, 0) - lanes).to(torch.int32)
+    assert exact(both("write_codes", u, len_t, code_t, offs, torch.zeros_like(p.stream), p.tw, p.V, out=(4,)), p.stream)
+    for tile_words in (p.tile_words, 0):
+        d = both("decode", p.sm, p.stream, p.offs, p.tables, p.n, p.tw, p.V, tile_words, no_ids, nan(p.n), out=(9,))
+        assert exact(d, u)
+    if p.rows_per_tile:
+        tiles = torch.tensor([3, 0, 1, 3], device=dev) % ((shape[0] + p.rows_per_tile - 1) // p.rows_per_tile)
+        d = both("decode", p.sm, p.stream, p.offs, p.tables, p.n, p.tw, p.V, p.tile_words, tiles, nan(tiles.numel() * p.tw), out=(9,))
+        assert exact(d.view(-1, p.rows_per_tile, shape[1])[1], w[: p.rows_per_tile])
+    if len(shape) == 2:
+        O, K = shape
+        x = torch.randn(K, dtype=bf, device=dev)
+        bias = torch.randn(O, dtype=bf, device=dev)
+        for b in (none, bias):
+            for tile_words in (p.tile_words, 0):
+                y = both("gemv", p.sm, p.stream, p.offs, p.tables, O, K, p.tw, p.V, tile_words, x, b, nan(O), p.sum, p.count, out=(11,))
+                near(y, F.linear(x.float(), w.float(), b.float() if b.numel() else None))
+    print(f"dense {shape}, V {p.V}, tiles of {p.tw}{', split rows' if p.split else ''}: {p.bits_per_weight():.2f} bits, the same through both")
+
+# The fast format: fast_decode (a range, listed rows), fast_gemv (4, 8 and 16 weights a lane, a row's warps
+# 1-4), fast_gemm (split K or not, 1-600 tokens; O a multiple of 16, refused otherwise), fast_bgemv (2-16
+# tokens, X in 1-4 segments).
+for (O, K), wild in [((1000, 512), 0.01), ((304, 2304), 0.02), ((17008, 384), 0.001), ((128, 4096), 0.05), ((80, 1536), 0.0)]:
+    w = weights(O * K, wild).view(O, K)
+    f = g.pack_fast(w)
+    fa = (f.sm, f.planes, f.exc, f.exc_base, f.top)
+    assert exact(both("fast_decode", *fa, 0, O, no_ids, K, nan(O * K), out=(9,)), w)
+    assert exact(both("fast_decode", *fa, O // 3, 7, no_ids, K, nan(7 * K), out=(9,)), w[O // 3 : O // 3 + 7])
+    ids = torch.randint(0, O, (9,), device=dev)
+    assert exact(both("fast_decode", *fa, 0, 0, ids, K, nan(9 * K), out=(9,)), w[ids])
+    bias = torch.randn(O, dtype=bf, device=dev)
+    for b in (none, bias):
+        bb = b.float() if b.numel() else None
+        x = torch.randn(K, dtype=bf, device=dev)
+        near(both("fast_gemv", *fa, O, K, x, b, nan(O), out=(9,)), F.linear(x.float(), w.float(), bb))
+        for M in [1, 5, 64, 65, 130, 600]:
+            x = torch.randn(M, K, dtype=bf, device=dev)
+            if O % 16:
+                if M == 1:
+                    both_fail("fast_gemm", *fa, O, K, x, b, nan(M, O))
+                continue
+            near(both("fast_gemm", *fa, O, K, x, b, nan(M, O), out=(9,)), F.linear(x.float(), w.float(), bb))
+        if K % 512 == 0:
+            for M in [2, 4, 8, 16]:
+                x = torch.randn(M, K, dtype=bf, device=dev)
+                near(both("fast_bgemv", *fa, O, K, x, b, nan(M, O), out=(9,)), F.linear(x.float(), w.float(), bb))
+    print(f"fast {(O, K)}: {int(f.exc.numel())} escapes, the same through both")
+
+# The mma layouts, tiered and 12-bit: unpack (all rows, a row block on), mma_gemm (1-64 tokens), mma_gemm_big
+# (65-600, both variants), mma12_gemm_mid (1-600), mma12_gemm_wg (Hopper: refused elsewhere), as the self-test's
+# matrices: odd row blocks, units shared by blocks, escapes and exceptions few and many.
+hopper = torch.cuda.get_device_capability()[0] == 9
+for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02)]:
+    w = weights(O * K, wild).view(O, K)
+    bias = torch.randn(O, dtype=bf, device=dev)
+    for q in (g.pack_mma(w), g.pack_mma12(w)):
+        twelve = isinstance(q, g.Mma12)
+        s = "mma12" if twelve else "mma"
+        pk = (q.data, q.exc, q.exc_base, q.sym) if twelve else (q.data, q.blocks, q.block_base, q.tiers)
+        assert exact(both(f"{s}_unpack", *pk, K, 0, O, nan(O * K), out=(7,)), w)
+        if O >= 128:
+            assert exact(both(f"{s}_unpack", *pk, K, 64, 64, nan(64 * K), out=(7,)), w[64:128])
+        for b in (none, bias):
+            bb = b.float() if b.numel() else None
+            for M in [1, 7, 16, 17, 32, 33, 64, 65, 100, 128, 129, 256, 257, 600]:
+                x = torch.randn(M, K, dtype=bf, device=dev)
+                ref = F.linear(x.float(), w.float(), bb)
+                if M <= 64:
+                    near(both("mma12_gemm" if twelve else "mma_gemm", *pk, O, K, x, b, nan(M, O), out=(8,)), ref)
+                else:
+                    for variant in ([0, 1, 2] if M in (65, 600) else [0]):
+                        near(both(f"{s}_gemm_big", *pk, O, K, x, b, nan(M, O), variant, out=(8,)), ref)
+                if twelve:
+                    near(both("mma12_gemm_mid", *pk, O, K, x, b, nan(M, O), out=(8,)), ref)
+                    if hopper:
+                        near(both("mma12_gemm_wg", *pk, O, K, x, b, nan(M, O), out=(8,)), ref)
+                    elif M in (1, 600) and b is none:
+                        both_fail("mma12_gemm_wg", *pk, O, K, x, b, nan(M, O))
+    print(f"mma {O}x{K}: {int(q.exc_base[-1])} exceptions (12-bit), the same through both")
+
+# Attention over packed KV pages: head_dim 64 and 128, 1-16 queries a KV head, pages and tails of 0-63 tokens.
+for D, G, pairs, P, tlen in [(128, 7, 8, 3, 5), (128, 1, 2, 1, 0), (64, 7, 4, 2, 63), (128, 16, 2, 2, 17), (128, 8, 16, 16, 40), (64, 2, 3, 5, 1)]:
+    k = (torch.randn(P * pairs * 64, D, device=dev) * torch.randn(1, D, device=dev).exp()).to(bf)
+    v = torch.randn(P * pairs * D, 64, device=dev).to(bf)
+    tk, tv = torch.randn(pairs, tlen, D, device=dev).to(bf), torch.randn(pairs, tlen, D, device=dev).to(bf)
+    kp, vp = g.pack_mma(k), g.pack_mma(v)
+    qq = torch.randn(pairs * G, D, device=dev).to(bf)
+    o = both("attn_decode", qq, kp.data, kp.blocks, kp.block_base, kp.tiers, vp.data, vp.blocks, vp.block_base, vp.tiers, tk, tv, tlen, pairs, G, P, D**-0.5, nan(pairs * G, D), out=(16,))
+    keys = torch.cat([k.view(P, pairs, 64, D).transpose(0, 1).reshape(pairs, P * 64, D), tk], 1).float()
+    vals = torch.cat([v.view(P, pairs, D, 64).permute(1, 0, 3, 2).reshape(pairs, P * 64, D), tv], 1).float()
+    att = torch.softmax(qq.float().view(pairs, G, D) @ keys.transpose(1, 2) * D**-0.5, -1) @ vals
+    near(o.view(pairs, G, D), att, 2e-2)
+print("attn_decode: head_dim 64 and 128, 1-16 queries a head, pages and tails, the same through both")
+
+# On a stream of its own: that stream handed to the library, the product ordered with the work around it.
+w = weights(128 * 256).view(128, 256)
+q = g.pack_mma12(w)
+pk = (q.data, q.exc, q.exc_base, q.sym)
+with torch.cuda.stream(torch.cuda.Stream()):
+    assert glyd_gpu_lib._stream() == torch.cuda.current_stream().cuda_stream != 0
+    x = torch.randn(33, 256, dtype=bf, device=dev)
+    near(both("mma12_gemm_mid", *pk, 128, 256, x, none, nan(33, 128), out=(8,)), F.linear(x.float(), w.float()))
+    near(both("mma12_gemm", *pk, 128, 256, x[:7], none, nan(7, 128), out=(8,)), F.linear(x[:7].float(), w.float()))
+torch.cuda.synchronize()
+
+# Refused alike: too many tokens, X not 16-byte aligned, rows not a multiple of 64.
+both_fail("mma12_gemm", *pk, 128, 256, torch.randn(65, 256, dtype=bf, device=dev), none, nan(65, 128))
+both_fail("mma12_gemm_mid", *pk, 128, 256, torch.randn(4 * 256 + 1, dtype=bf, device=dev)[1:].view(4, 256), none, nan(4, 128))
+both_fail("mma12_unpack", *pk, 256, 0, 100, nan(100 * 256))
+
+# A small product's time a call through each host: the host's time where it is the longer (ctypes'), else the kernel's.
+x = torch.randn(1, 256, dtype=bf, device=dev)
+for host in (jit, lib):
+    for name, args in [("mma12_gemm", (*pk, 128, 256, x, none, nan(1, 128))), ("mma12_gemm_mid", (*pk, 128, 256, x, none, nan(1, 128)))]:
+        f = getattr(host, name)
+        for _ in range(100):
+            f(*args)
+        torch.cuda.synchronize()
+        t = time.perf_counter()
+        for _ in range(2000):
+            f(*args)
+        torch.cuda.synchronize()
+        print(f"{'jit' if host is jit else 'lib'} {name}: {(time.perf_counter() - t) / 2000 * 1e6:.1f} us a call")
+
+for e in errors:
+    print("refused:", e)
+print(f"library {g._prebuilt()} (CUDA {lib.cuda_version()}), {torch.cuda.get_device_name()}: {sum(counts.values())} calls compared bit for bit, all identical")
+for name in sorted(counts):
+    print(f"  {name}: {counts[name]}")

@@ -24,12 +24,34 @@ def _arch_flags():
     return flags
 
 
-_ext = load(
-    name="glyd_gpu",
-    sources=[os.path.join(os.path.dirname(os.path.abspath(__file__)), "glyd_gpu.cu")],
-    extra_cuda_cflags=["-O3"] + _arch_flags() + (["-Xptxas", "-v"] if os.environ.get("GLYD_GPU_PTXAS") else []),
-    verbose=bool(os.environ.get("GLYD_GPU_PTXAS")),
-)
+def _jit():
+    """glyd_gpu.cu built here for this GPU by PyTorch's extension builder
+    (needs nvcc): the pybind module."""
+    return load(
+        name="glyd_gpu",
+        sources=[os.path.join(os.path.dirname(os.path.abspath(__file__)), "glyd_gpu.cu")],
+        extra_cuda_cflags=["-O3"] + _arch_flags() + (["-Xptxas", "-v"] if os.environ.get("GLYD_GPU_PTXAS") else []),
+        verbose=bool(os.environ.get("GLYD_GPU_PTXAS")),
+    )
+
+
+def _prebuilt():
+    """The prebuilt library (build_lib.sh): $GLYD_GPU_LIB, else
+    libglyd_gpu_cudaN.so next to this file for PyTorch's CUDA N; None if
+    neither."""
+    if os.environ.get("GLYD_GPU_LIB"):
+        return os.environ["GLYD_GPU_LIB"]
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"libglyd_gpu_cuda{(torch.version.cuda or '0').split('.')[0]}.so")
+    return path if os.path.exists(path) else None
+
+
+# The kernels: from the prebuilt library through glyd_gpu_lib.py (its C API,
+# the pybind module's functions) where it is found, else built here.
+if _prebuilt():
+    import glyd_gpu_lib as _ext
+    _ext.load(_prebuilt())
+else:
+    _ext = _jit()
 
 FLAT_TILE = 16384  # weights a tile when the tensor is not a matrix of rows
 ROW_TILE = 8192  # about as many a tile for a matrix: whole rows
