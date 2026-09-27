@@ -16,6 +16,7 @@ its C call and a few lookups: no Stream object, no device switch where the
 device is current, no allocation."""
 import ctypes
 import functools
+import threading
 import torch
 
 _lib = None
@@ -99,19 +100,25 @@ def _need(name, d, sizes):
 _kept = {}  # (device, stream): a workspace kept for the stream, (buffer, address, bytes)
 _KEEP = 16 << 20
 _NONE = (None, None, 0)
-fresh = False  # set while a torch.compile graph's node runs (model.py's ops): workspaces for the call alone, never kept
+
+
+class _Local(threading.local):
+    fresh = False  # a torch.compile graph's node runs on this thread (model.py's ops): workspaces for the call alone, never kept
+
+
+local = _Local()
 
 
 def _workspace(name, d, s, *sizes):
     """A product's workspace on device d for stream s, as (buffer, address, bytes): the library's size
     for these sizes; the stream's kept buffer, reused in stream order (grown where too small), up to
-    _KEEP bytes, else (or while fresh) one for the call; none for 0 bytes. A CUDA graph keeps the
+    _KEEP bytes, else (or while local.fresh) one for the call; none for 0 bytes. A CUDA graph keeps the
     addresses it was captured with, so its calls must not take a buffer that is later replaced, nor
     keep one made in its memory pool."""
     n = _need(name, d, sizes)
     if n == 0:
         return _NONE
-    if n > _KEEP or fresh:
+    if n > _KEEP or local.fresh:
         t = torch.empty(n, dtype=torch.uint8, device=torch.device("cuda", d))
         return t, t.data_ptr(), n
     w = _kept.get((d, s))
@@ -121,14 +128,17 @@ def _workspace(name, d, s, *sizes):
     return w
 
 
-_done = {}
+_done, _replaced = {}, []
 
 
 def _counters(name, d, n, least):
     """The address of a product's done counters on device d (at least n; least when first made): zero
-    between products."""
+    between products. One replaced by a bigger set is kept (a step's call, or a CUDA graph, holds its
+    address)."""
     c = _done.get((name, d))
     if c is None or c[2] < n:
+        if c is not None:
+            _replaced.append(c)
         t = torch.zeros(max(n, least), dtype=torch.int32, device=torch.device("cuda", d))
         c = _done[(name, d)] = (t, t.data_ptr(), t.numel())
     return c[1]
@@ -331,15 +341,17 @@ def attn_decode(q, kd, kb, kbb, kt, vd, vb, vbb, vt, tk, tv, tlen, pairs, G, P, 
         _fail("attn_decode", r)
 
 
-def step(data, a, b, words, shape, bias, names):
+def step(data, a, b, words, n_words, shape, bias, names):
     """A generation step's product over one pack in the mma layouts as one C call: what does not change between
     calls made once (the pack's addresses and words, O and K, the bias; each M's function, workspace bytes and done
-    counters at its first call), the checks that hold by the pack's making left out. names[M]: the function for M
-    tokens (mma_gemm, mma12_gemm, mma12_gemm_mid, mma12_gemm_wg), or None. run(x): Y [..., O] for X contiguous
-    [..., K] of M rows on the pack's device, the current one, where names[M] is one; else None (the checked path)."""
+    counters at its first call), the checks that hold by the pack's making left out. words: its n_words tiers (3)
+    or words of symbols (4). names[M]: the function for M tokens (mma_gemm, mma12_gemm, mma12_gemm_mid,
+    mma12_gemm_wg), or None. run(x): Y [..., O] for X contiguous [..., K] of M rows on the pack's device (made
+    current for the call where it is not: a layer on another GPU), where names[M] is one; else None (the checked
+    path)."""
     O, K = shape
     d, dev = data.get_device(), data.device
-    head = (data.data_ptr(), a.data_ptr(), b.data_ptr(), _words(words, len(words), "tiers or symbols"), O, K)
+    head = (data.data_ptr(), a.data_ptr(), b.data_ptr(), _words(words, n_words, "three tiers or four words of symbols"), O, K)
     bias = bias.data_ptr() if bias is not None else None
     for name in set(names) - {None}:
         _counters(name, d, O // 64, 1 << 16)  # made now: never in a CUDA graph's memory pool
@@ -347,8 +359,11 @@ def step(data, a, b, words, shape, bias, names):
     bf16 = torch.bfloat16
 
     def run(x):
-        if x.shape[-1] != K or not x.is_contiguous() or x.get_device() != d or _device() != d:
+        if x.shape[-1] != K or not x.is_contiguous() or x.get_device() != d:
             return None
+        if _device() != d:  # accelerate's device map leaves the first GPU current
+            with torch.cuda.device(d):
+                return run(x)
         M = x.numel() // K
         plan = plans[M] if M < len(plans) else False
         if plan is None:
@@ -359,7 +374,7 @@ def step(data, a, b, words, shape, bias, names):
         fn, name, need, done = plan
         s = _stream(d)
         w = _kept.get((d, s))
-        if fresh or w is None or w[2] < need:
+        if local.fresh or w is None or w[2] < need:
             w = _workspace(name, d, s, O, K, M)
         y = torch.empty(*x.shape[:-1], O, dtype=bf16, device=dev)
         r = fn(*head, x.data_ptr(), M, bias, y.data_ptr(), w[1], w[2], done, s)
@@ -372,14 +387,18 @@ def step(data, a, b, words, shape, bias, names):
 
 def lookup(sm, planes, exc, exc_base, top, K):
     """An embedding's lookup in the fast format as one C call (fast_decode): run(ids) -> its rows, bf16
-    [*ids.shape, K], for ids int64 and contiguous on the pack's device, the current one; else None."""
+    [*ids.shape, K], for ids int64 and contiguous on the pack's device (made current for the call where it is
+    not); else None."""
     d, dev, i64 = sm.get_device(), sm.device, torch.int64
     fn, head = _fn["fast_decode"], (sm.data_ptr(), planes.data_ptr(), exc.data_ptr(), exc_base.data_ptr(), top, 0, 0)
 
     def run(ids):
         n = ids.numel()
-        if not n or ids.dtype is not i64 or not ids.is_contiguous() or ids.get_device() != d or _device() != d:
+        if not n or ids.dtype is not i64 or not ids.is_contiguous() or ids.get_device() != d:
             return None
+        if _device() != d:
+            with torch.cuda.device(d):
+                return run(ids)
         out = torch.empty(*ids.shape, K, dtype=torch.bfloat16, device=dev)
         r = fn(*head, ids.data_ptr(), n, K, out.data_ptr(), _stream(d))
         if r:

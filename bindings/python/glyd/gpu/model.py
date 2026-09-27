@@ -33,6 +33,8 @@ MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # GDDR Ampere and Ada: steps 
 
 class Scratch:
     buf = {}  # one a device: {device: tensor}
+    graphed = set()  # the devices whose buffer a torch.compile graph's node has decoded into (a CUDA graph keeps its address)
+    replaced = []  # those buffers once a bigger one took their place: kept
 
 
 _modules = weakref.WeakValueDictionary()  # handle: its GLinear or GEmbedding, for the ops below
@@ -101,11 +103,13 @@ class GLinear(_Node, nn.Module):
         twelve = isinstance(p, g.Mma12)
         name = {g.mma_gemm: "mma12_gemm" if twelve else "mma_gemm", g.mma_gemm_mid: "mma12_gemm_mid", g.mma_gemm_wg: "mma12_gemm_wg"}
         names = [None] + [name.get(self.kernel(M)) for M in range(1, 65)]
-        return _lib.step(p.data, *((p.exc, p.exc_base, p.sym) if twelve else (p.blocks, p.block_base, p.tiers)), p.shape, self.bias, names)
+        return _lib.step(p.data, *((p.exc, p.exc_base, p.sym, 4) if twelve else (p.blocks, p.block_base, p.tiers, 3)), p.shape, self.bias, names)
 
     def decode_rows(self, r0, r1):
         p, K = self.p, self.p.shape[1]
         buf = Scratch.buf[p.sm.device]
+        if _lib.local.fresh:
+            Scratch.graphed.add(p.sm.device)
         out = buf[: (r1 - r0) * K]
         if isinstance(p, g.Mma):
             g.mma_unpack(p, out, r0, r1 - r0)
@@ -217,11 +221,11 @@ class GEmbedding(_Node, nn.Module):
 # torch.compile: a GLinear or GEmbedding is one node of the graph, an op that runs the module as eager, where a kernel's
 # workspace is made for the call alone (a CUDA graph keeps the addresses it captured; the kept ones are eager calls').
 def _run(handle, x):
-    _lib.fresh = True
+    _lib.local.fresh = True
     try:
         return _modules[handle].forward(x)
     finally:
-        _lib.fresh = False
+        _lib.local.fresh = False
 
 
 @torch.library.custom_op("glyd::linear", mutates_args=())
@@ -352,15 +356,21 @@ def pack_modules(model, pack_fn, device_of, **mode):
 
 def set_scratch(model, exact):
     """The buffer matrices are decoded into, one on each GPU holding packs: the largest pack's weights (exact: whole;
-    else up to SCRATCH, past which they are decoded in row blocks), never smaller than it was (another model's)."""
+    else up to SCRATCH, past which they are decoded in row blocks), never smaller than it was (another model's). One
+    a torch.compile graph's node has decoded into is kept when a bigger one takes its place: a CUDA graph captured
+    with it writes there when it is replayed."""
     need = {}
     for m in model.modules():
         if isinstance(m, (GLinear, GEmbedding)):
             d = m.p.sm.device
             need[d] = max(need.get(d, 0), m.p.n if exact else min(m.p.n, SCRATCH))
     for d, n in need.items():
-        if d not in Scratch.buf or Scratch.buf[d].numel() < n + 16384 * 8:
+        old = Scratch.buf.get(d)
+        if old is None or old.numel() < n + 16384 * 8:
             Scratch.buf[d] = torch.empty(n + 16384 * 8, dtype=torch.bfloat16, device=d)
+            if old is not None and d in Scratch.graphed:
+                Scratch.replaced.append(old)
+                Scratch.graphed.discard(d)
 
 
 @torch.no_grad()

@@ -11,6 +11,10 @@ beside glyd/gpu/kernels.py), against each model in bf16:
 - compiled, as transformers compiles generate() (a static cache, the
   forward under CUDA graphs), fullgraph, fused and exact: no graph break,
   no graph left to run uncaptured; the tokens against eager's;
+- first, with no model loaded yet: the first model compiled with
+  exact=True (its CUDA graph decodes into the scratch buffer, and keeps
+  its address), the second loaded (a bigger buffer takes its place), the
+  first's graph replayed: both models' logits as before;
 - save_pretrained, then from_pretrained(path, verify=True): every tensor's
   sha256 against glyd.json, the logits and tokens of the model saved;
   exact=True from the saved packs (merged groups split): bf16's logits;
@@ -36,7 +40,7 @@ from torch._dynamo.utils import counters
 from transformers import AutoModelForCausalLM, AutoTokenizer, CompileConfig
 import glyd
 import glyd.gpu
-from glyd.gpu.model import GEmbedding, GLinear
+from glyd.gpu.model import GEmbedding, GLinear, Scratch
 
 TOKENS = 32
 PROMPT = "The history of data compression began"
@@ -90,7 +94,26 @@ def packed_bytes(model):
     return sum(p.nbytes() for p in packs.values()) + rest + sum(m.bias.numel() * 2 for m in model.modules() if isinstance(m, GLinear) and m.bias is not None)
 
 
-for name in sys.argv[1:] or ["Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B"]:
+NAMES = sys.argv[1:] or ["Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B"]
+if len(NAMES) > 1:
+    with torch.no_grad():
+        a_ids = AutoTokenizer.from_pretrained(NAMES[0])(PROMPT, return_tensors="pt").input_ids.cuda()
+        b_ids = AutoTokenizer.from_pretrained(NAMES[1])(PROMPT, return_tensors="pt").input_ids.cuda()
+        a = glyd.from_pretrained(NAMES[0], exact=True)
+        f = torch.compile(a.forward, mode="reduce-overhead", fullgraph=True)
+        before = [f(a_ids, use_cache=False).logits.clone() for _ in range(3)][-1]  # warm-up, capture, replay
+        b = glyd.from_pretrained(NAMES[1], exact=True)
+        b_before = b(b_ids, use_cache=False).logits
+        after = f(a_ids, use_cache=False).logits.clone()
+        torch.cuda.synchronize()
+        assert exact(before, after) and exact(b_before, b(b_ids, use_cache=False).logits), "a CUDA graph replayed after a bigger scratch buffer took its place"
+    print(f"{NAMES[0]} exact compiled, {NAMES[1]} loaded after: the first's CUDA graph replayed, both models' logits as before")
+    del a, b, f
+    torch._dynamo.reset()
+    Scratch.buf.clear()  # the rest as in a process with no model loaded before (its memory lines count the buffer)
+    torch.cuda.empty_cache()
+
+for name in NAMES:
     tok = AutoTokenizer.from_pretrained(name)
     ids = tok(PROMPT, return_tensors="pt").input_ids.cuda()
 
