@@ -1,0 +1,39 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/254 [00:00<?, ?it/s]Loading weights: 100%|██████████| 254/254 [00:00<00:00, 8423.83it/s]
+[transformers] Both `max_new_tokens` (=4) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=64) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=4) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=64) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=4) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=64) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+merged: 56 groups of Linears as one product each
+bf16 (weights 6.43 GB): batch 1: 41.9 tokens/s (41.9 a sequence), peak VRAM 6.45 GB
+bf16 (weights 6.43 GB): batch 8: 363.3 tokens/s (45.4 a sequence), peak VRAM 6.52 GB
+bf16 (weights 6.43 GB): batch 32: 1440.3 tokens/s (45.0 a sequence), peak VRAM 6.78 GB
+bf16 perplexity: 25.1298 (12600 tokens)
+Generating test split:   0%|          | 0/14042 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 14042/14042 [00:00<00:00, 545407.89 examples/s]
+Generating validation split:   0%|          | 0/1531 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 1531/1531 [00:00<00:00, 424785.30 examples/s]
+Generating dev split:   0%|          | 0/285 [00:00<?, ? examples/s]Generating dev split: 100%|██████████| 285/285 [00:00<00:00, 141766.68 examples/s]
+Generating auxiliary_train split:   0%|          | 0/99842 [00:00<?, ? examples/s]Generating auxiliary_train split:  42%|████▏     | 42000/99842 [00:00<00:00, 401706.53 examples/s]Generating auxiliary_train split: 100%|██████████| 99842/99842 [00:00<00:00, 512006.68 examples/s]
+[transformers] Both `max_new_tokens` (=4) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=64) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=4) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=64) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=4) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Both `max_new_tokens` (=64) and `max_length`(=131072) seem to have been set. `max_new_tokens` will take precedence. Please refer to the documentation for more information. (https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)
+[transformers] Ignoring clean_up_tokenization_spaces=True for BPE tokenizer TokenizersBackend. The clean_up_tokenization post-processing step is designed for WordPiece tokenizers and is destructive for BPE (it strips spaces before punctuation). Set clean_up_tokenization_spaces=False to suppress this warning, or set clean_up_tokenization_spaces_for_bpe_even_though_it_will_corrupt_output=True to force cleanup anyway.
+bf16 MMLU: 63.67% of 300 questions (0-shot)
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 3 s; weights 5.39 GB against 6.43 GB bf16 (83.9%), scratch 0.27 GB, VRAM in use 5.67 GB on 1 GPU
+glyd mma12 fused: batch 1: 47.1 tokens/s (47.1 a sequence), peak VRAM 5.68 GB
+glyd mma12 fused: batch 8: 369.8 tokens/s (46.2 a sequence), peak VRAM 5.75 GB
+glyd mma12 fused: batch 32: 1479.4 tokens/s (46.2 a sequence), peak VRAM 6.02 GB
+glyd mma12 perplexity: 25.1437 (12600 tokens)
+glyd mma12 MMLU: 64.33% of 300 questions (0-shot)
+next-token choice as bf16's: 98.58%
+MMLU answer as bf16's: 98.00%
+logits bit-identical: False
+generated tokens identical to bf16: 12 of 64
+text:  in the 1950s, when the first computers were being developed. At that time, data storage was limited, and data compression was seen as a way to reduce the amount of storage space required

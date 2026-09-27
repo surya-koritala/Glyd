@@ -72,31 +72,45 @@ token.)
 The same on every popular open model measured, and the same model
 afterwards (`gpu/sizes.py`: every Linear layer's matrix packed and
 unpacked bit for bit; perplexity on enwik8 and MMLU on 300 questions,
-bf16 against Glyd in the same run; H100 SXM, 2026-09-26, logs in
-[benchmarks/gpu/popular-h100-2026-09-26](benchmarks/gpu/popular-h100-2026-09-26)):
+bf16 against Glyd in the same run; H100 SXM, 2026-09-26, and an A10 and
+an H100 PCIe, 2026-09-27; logs in
+[benchmarks/gpu/popular-h100-2026-09-26](benchmarks/gpu/popular-h100-2026-09-26),
+[open-models-a10-2026-09-27](benchmarks/gpu/open-models-a10-2026-09-27) and
+[lambda-gpu_1x_h100_pcie-20260926-213544](benchmarks/gpu/lambda-gpu_1x_h100_pcie-20260926-213544)):
 
 | Model | Matrices in bf16 | ⚡&nbsp;**Glyd** | Perplexity, bf16&nbsp;→&nbsp;Glyd | MMLU, bf16&nbsp;→&nbsp;Glyd |
 | :--- | ---: | ---: | ---: | ---: |
+| GLM-4.5-Air 106B (MoE) | 215.9 GB | **144.6 GB** (−33.0%) | | |
+| Llama 4 Scout 109B (MoE) | 211.9 GB | **142.2 GB** (−32.9%) | | |
+| Qwen3-Next 80B-A3B (MoE) | 161.3 GB | **109.4 GB** (−32.2%) | | |
 | Llama 3.3 70B Instruct | 136.9 GB | **91.9 GB** (−32.9%) | | |
 | Qwen3 30B-A3B (MoE) | 59.8 GB | **40.2 GB** (−32.7%) | | |
 | Gemma 3 27B | 51.5 GB | **34.6 GB** (−32.8%) | | |
+| Muse Glimmer 30B | 51.3 GB | **34.5 GB** (−32.8%) | | |
+| Qwen3.8 27B | 49.5 GB | **33.3 GB** (−32.8%) | 15.1946&nbsp;→&nbsp;15.1941 | 79.7%&nbsp;→&nbsp;80.0% |
+| Gemma 4 26B-A4B (MoE) | 49.0 GB | **32.9 GB** (−32.8%) | | |
 | Mistral Small 3.2 24B | 45.3 GB | **30.3 GB** (−33.0%) | | |
 | Phi-4 (14B) | 27.3 GB | **18.3 GB** (−32.9%) | 14.7888&nbsp;→&nbsp;14.7855 | 76.7%&nbsp;→&nbsp;76.3% |
 | DeepSeek-R1-Distill-Qwen 14B | 26.4 GB | **18.0 GB** (−31.9%) | 27.1955&nbsp;→&nbsp;27.1975 | 78.0%&nbsp;→&nbsp;78.0% |
+| Gemma 3 12B | 21.8 GB | **14.6 GB** (−32.9%) | | 74.0%&nbsp;→&nbsp;74.0% |
 | Llama 3.1 8B Instruct | 14.0 GB | **9.4 GB** (−32.8%) | 19.5915&nbsp;→&nbsp;19.5909 | 71.7%&nbsp;→&nbsp;72.0% |
 | Mistral 7B Instruct v0.3 | 14.0 GB | **9.4 GB** (−32.7%) | 12.1422&nbsp;→&nbsp;12.1473 | 60.7%&nbsp;→&nbsp;60.7% |
 | Qwen3 8B | 13.9 GB | **9.4 GB** (−32.1%) | 20.7490&nbsp;→&nbsp;20.7428 | 74.0%&nbsp;→&nbsp;74.3% |
+| Qwen3 4B 2507 | 7.3 GB | **4.9 GB** (−32.2%) | 22.4636&nbsp;→&nbsp;22.4672 | 71.0%&nbsp;→&nbsp;71.0% |
 | SmolLM3 3B | 5.6 GB | **3.8 GB** (−32.9%) | 29.1467&nbsp;→&nbsp;29.1422 | 63.3%&nbsp;→&nbsp;63.3% |
+| Llama 3.2 3B Instruct | 5.6 GB | **3.8 GB** (−32.8%) | 25.1298&nbsp;→&nbsp;25.1437 | 63.7%&nbsp;→&nbsp;64.3% |
 
-(The tiered layout; the 12-bit one takes 24.7-24.8% off each. Quality
+(The tiered layout; the 12-bit one takes 23.5-24.8% off each. Quality
 where the harness loads the model on one GPU in bf16: the MMLU answers
-are bf16's on 99.3-100% of the questions.)
+are bf16's on 98.0-100% of the questions. Gemma 3's perplexity is left
+out: the harness's windows start without the BOS token Gemma needs, which
+puts bf16 and Glyd alike near 12,000.)
 
 - **Bit for bit.** Every weight and every cached key and value decodes to
   itself. The products sum in another order than cuBLAS's and
   FlashAttention's, as any two kernels do: MMLU answers are bf16's on
-  99.0-100% of the questions, perplexity within 0.05% (Qwen2.5-72B
-  10.5996 against 10.6035).
+  98.0-100% of the questions, perplexity within 0.06% (Llama 3.2 3B
+  25.1298 against 25.1437).
 - **Speed.** Generating for 1 to 32 sequences at once is 1.05-1.42x
   bf16's tokens/s on the A6000s (the model on fewer GPUs) and 1.25-1.32x
   on an RTX 4080 SUPER. At 64 sequences it is 0.82-0.86x on the A6000s

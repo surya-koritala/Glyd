@@ -1,0 +1,20 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/883 [00:00<?, ?it/s]Loading weights:  83%|████████▎ | 729/883 [00:00<00:00, 7267.46it/s]Loading weights: 100%|██████████| 883/883 [00:00<00:00, 7427.94it/s]
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+merged: 68 groups of Linears as one product each
+bf16 (weights 8.60 GB): batch 1: 21.7 tokens/s (21.7 a sequence), peak VRAM 8.63 GB
+bf16 (weights 8.60 GB): batch 8: 175.8 tokens/s (22.0 a sequence), peak VRAM 8.74 GB
+bf16 perplexity: 720.0617 (12600 tokens)
+bf16 MMLU: 52.00% of 100 questions (0-shot)
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 5 s; weights 7.40 GB against 8.60 GB bf16 (86.1%), scratch 0.27 GB, VRAM in use 7.68 GB on 1 GPU
+glyd mma12 fused: batch 1: 22.4 tokens/s (22.4 a sequence), peak VRAM 7.70 GB
+glyd mma12 fused: batch 8: 176.8 tokens/s (22.1 a sequence), peak VRAM 7.81 GB
+glyd mma12 perplexity: 722.1397 (12600 tokens)
+glyd mma12 MMLU: 52.00% of 100 questions (0-shot)
+next-token choice as bf16's: 96.25%
+MMLU answer as bf16's: 100.00%
+logits bit-identical: False
+generated tokens identical to bf16: 15 of 64
+text:  in the early days of computing, driven by the need to store and transmit information more efficiently. Here's a breakdown of the key milestones and techniques:  **1. Early Days (19
