@@ -8,13 +8,21 @@ version = "0.20.0"
 description = "Compression for the data that fills object storage: record mode, packs, a store that compresses across objects, the fastest reads"
 readme = "README.md"
 # The binding and the codec: BSD-3-Clause or GPL-2.0; the bundled
-# libglyd_store (the Store class): BUSL-1.1, see LICENSE-glyd-store.
-license = { text = "BSD-3-Clause OR GPL-2.0-only; bundled libglyd_store BUSL-1.1" }
+# libglyd_store (the Store class): BUSL-1.1, see LICENSE-glyd-store;
+# glyd.gpu (the weights on the GPU): BUSL-1.1, see LICENSE-glyd-gpu.
+license = { text = "BSD-3-Clause OR GPL-2.0-only; bundled libglyd_store BUSL-1.1; glyd.gpu BUSL-1.1" }
 requires-python = ">=3.8"
 
+[project.optional-dependencies]
+# glyd.gpu: from_pretrained builds on transformers' quantizer API as of 5.17
+# (register_quantizer, on-the-fly quantize ops); fit needs none of these.
+gpu = ["torch>=2.5", "transformers>=5.17,<6", "accelerate>=1.1", "safetensors>=0.8", "huggingface_hub>=1.5,<2"]
+
 [tool.setuptools]
-packages = ["glyd"]
-license-files = ["LICENSE", "COPYING", "LICENSE-glyd-store"]
+packages = ["glyd", "glyd.gpu"]
+license-files = ["LICENSE", "COPYING", "LICENSE-glyd-store", "LICENSE-glyd-gpu"]
 
 [tool.setuptools.package-data]
 glyd = ["libglyd_store.dylib", "libglyd_store.so", "glyd_store.dll", "libglyd.dylib", "libglyd.so", "glyd.dll"]
+# The GPU kernels (gpu/build_lib.sh), for PyTorch built with CUDA 12 and with CUDA 13: in the Linux wheels.
+"glyd.gpu" = ["libglyd_gpu_cuda12.so", "libglyd_gpu_cuda13.so"]

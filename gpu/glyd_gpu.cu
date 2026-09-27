@@ -10,16 +10,25 @@
 // 256 bytes of bf16 written, or 128 products for a row. Each lane's
 // exponents are one bit stream (LSB first), the streams back to back; a
 // lane's stream starts at its bit offset (`offs`, 32 bits).
+//
+// The host side is a C API (glyd_gpu_*, at the end); PyTorch's JIT build
+// (glyd_gpu.py) adds a pybind module over it, build_lib.sh builds it alone
+// into a library for the glyd package's glyd/gpu/_lib.py.
+#ifdef TORCH_EXTENSION_NAME
 #include <torch/extension.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <map>
+#endif
 #include <cuda.h>
 #include <cudaTypedefs.h>
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <stdint.h>
 #include <mma.h>
-#include <map>
+#include <algorithm>
+#include <atomic>
+#include <cstdlib>
 
 __device__ __forceinline__ uint32_t exponent_of(uint16_t v) { return (v >> 7) & 0xff; }
 __device__ __forceinline__ uint32_t bf16_bits(uint32_t s, uint32_t e) { return ((s & 0x80) << 8) | (e << 7) | (s & 0x7f); }
@@ -1951,59 +1960,113 @@ __global__ void fast_decode_kernel(const uint8_t* __restrict__ sm, const uint32_
     }
 }
 
+// ---------------------------------------------------------------------------
+// The C API: device pointers and sizes in (bf16 as its bits, uint16_t), the
+// kernels launched on stream cs of the current device, every output and
+// scratch buffer the caller's; 0 back, or a cudaError_t (cudaErrorInvalidValue:
+// an argument out of range; cudaErrorNotSupported: not on this GPU). A
+// product's workspace: at least the bytes its glyd_gpu_*_workspace gives for
+// the same sizes on the same device (none where that is 0). Its `done`
+// counters (int32, as many as said): zero before its first call and left zero
+// by each, for one stream at a time. The pybind module (after it) and the
+// library (build_lib.sh) launch the same kernels with the same arguments.
+#ifdef TORCH_EXTENSION_NAME
+#define GLYD_GPU_API extern "C" __attribute__((visibility("hidden")))  // the pybind module's own
+#else
+#define GLYD_GPU_API extern "C" __attribute__((visibility("default")))
+#endif
+
 static int64_t tiles_for(int64_t n, int64_t tw) { return (n + tw - 1) / tw; }
 
 #define BY_V(V, CALL) do { if ((V) == 16) { constexpr int VV = 16; CALL; } else { constexpr int VV = 4; CALL; } } while (0)
 
-torch::Tensor lane_bits(torch::Tensor w, torch::Tensor len, int64_t tw, int64_t V) {
-    const c10::cuda::CUDAGuard guard(w.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    int64_t n = w.numel(), lanes = tiles_for(n, tw) * 32;
-    auto bits = torch::empty({lanes}, w.options().dtype(torch::kInt32));
-    BY_V(V, (lane_bits_kernel<VV><<<(lanes + 255) / 256, 256, 0, cs>>>((const uint16_t*)w.data_ptr(), n, tw, (const uint8_t*)len.data_ptr(), (uint32_t*)bits.data_ptr(), lanes)));
-    return bits;
+static int current_device() {
+    int dev = 0;
+    cudaGetDevice(&dev);
+    return dev;
 }
 
-void write_codes(torch::Tensor w, torch::Tensor len, torch::Tensor code, torch::Tensor offs, torch::Tensor out, int64_t tw, int64_t V) {
-    const c10::cuda::CUDAGuard guard(w.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    int64_t n = w.numel(), lanes = tiles_for(n, tw) * 32;
-    BY_V(V, (write_kernel<VV><<<(lanes + 255) / 256, 256, 0, cs>>>((const uint16_t*)w.data_ptr(), n, tw, (const uint8_t*)len.data_ptr(), (const uint32_t*)code.data_ptr(), (const uint32_t*)offs.data_ptr(), (uint32_t*)out.data_ptr(), lanes)));
+static int attribute(cudaDeviceAttr a, int dev) {
+    int v = 0;
+    cudaDeviceGetAttribute(&v, a, dev);
+    return v;
+}
+
+static int64_t sm_count(int dev) { return std::max(1, attribute(cudaDevAttrMultiProcessorCount, dev)); }
+
+// A kernel's blocks an SM on device dev with `shared` bytes of dynamic shared
+// memory (allowed first), found once a device (known: the kernel's own).
+constexpr int MAX_DEVICES = 64;
+static int64_t per_sm(const void* kernel, int threads, int shared, std::atomic<int>* known, int dev) {
+    int n = dev < MAX_DEVICES ? known[dev].load() : 0;
+    if (!n) {
+        cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, shared);
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&n, kernel, threads, shared);
+        n = std::max(n, 1);
+        if (dev < MAX_DEVICES) known[dev] = n;
+    }
+    return n;
+}
+
+// Room for need bytes at ws, which has `have`?
+static bool fits(const void* ws, size_t have, size_t need) { return !need || (ws && have >= need); }
+
+static const __nv_bfloat16* bf(const uint16_t* p) { return (const __nv_bfloat16*)p; }
+static __nv_bfloat16* bf(uint16_t* p) { return (__nv_bfloat16*)p; }
+
+// The CUDA runtime built in (e.g. 13000), and a status's text.
+GLYD_GPU_API int glyd_gpu_cuda_version() { return CUDART_VERSION; }
+GLYD_GPU_API const char* glyd_gpu_error_string(int status) { return cudaGetErrorString((cudaError_t)status); }
+
+// The dense format. lane_bits: bits [tiles * 32], the tiles of tw weights of w's n.
+GLYD_GPU_API int glyd_gpu_lane_bits(const uint16_t* w, int64_t n, const uint8_t* len, int64_t tw, int64_t V, uint32_t* bits, cudaStream_t cs) {
+    if (tw < 1) return cudaErrorInvalidValue;
+    int64_t lanes = tiles_for(n, tw) * 32;
+    BY_V(V, (lane_bits_kernel<VV><<<(lanes + 255) / 256, 256, 0, cs>>>(w, n, tw, len, bits, lanes)));
+    return cudaGetLastError();
+}
+
+GLYD_GPU_API int glyd_gpu_write_codes(const uint16_t* w, int64_t n, const uint8_t* len, const uint32_t* code, const uint32_t* offs, uint32_t* out, int64_t tw, int64_t V, cudaStream_t cs) {
+    if (tw < 1) return cudaErrorInvalidValue;
+    int64_t lanes = tiles_for(n, tw) * 32;
+    BY_V(V, (write_kernel<VV><<<(lanes + 255) / 256, 256, 0, cs>>>(w, n, tw, len, code, offs, out, lanes)));
+    return cudaGetLastError();
 }
 
 static void allow_shared(const void* kernel) { cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, 99 * 1024); }
 
-void decode(torch::Tensor sm, torch::Tensor stream, torch::Tensor offs, torch::Tensor tables, int64_t n, int64_t tw, int64_t V, int64_t tile_words, torch::Tensor tile_ids, torch::Tensor out) {
-    const c10::cuda::CUDAGuard guard(sm.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    bool all = tile_ids.numel() == 0;
-    int64_t tiles = all ? tiles_for(n, tw) : tile_ids.numel();
-    TORCH_CHECK(out.numel() >= (all ? n : tiles * tw), "the output is too small");
+// Every tile of the n weights into out [n], or (n_ids > 0) tiles tile_ids into out [n_ids * tw].
+GLYD_GPU_API int glyd_gpu_decode(const uint8_t* sm, const uint32_t* stream, int64_t stream_words, const uint32_t* offs, const uint32_t* tables, int64_t n, int64_t tw, int64_t V, int64_t tile_words, const int64_t* tile_ids, int64_t n_ids, uint16_t* out, cudaStream_t cs) {
+    if (tw < 1) return cudaErrorInvalidValue;
+    bool all = n_ids == 0;
+    int64_t tiles = all ? tiles_for(n, tw) : n_ids;
     int threads = 128;
     size_t shared = (threads / 32) * tile_words * sizeof(uint32_t);
-    BY_V(V, (allow_shared((const void*)decode_kernel<VV>), decode_kernel<VV><<<(tiles * 32 + threads - 1) / threads, threads, shared, cs>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)stream.data_ptr(), stream.numel(), (const uint32_t*)offs.data_ptr(), (const uint32_t*)tables.data_ptr(), n, tw, (int)tile_words, all ? nullptr : (const int64_t*)tile_ids.data_ptr(), tiles, (uint16_t*)out.data_ptr())));
+    BY_V(V, (allow_shared((const void*)decode_kernel<VV>), decode_kernel<VV><<<(tiles * 32 + threads - 1) / threads, threads, shared, cs>>>(sm, stream, stream_words, offs, tables, n, tw, (int)tile_words, all ? nullptr : tile_ids, tiles, out)));
+    return cudaGetLastError();
 }
 
-void gemv(torch::Tensor sm, torch::Tensor stream, torch::Tensor offs, torch::Tensor tables, int64_t O, int64_t K, int64_t tw, int64_t V, int64_t tile_words, torch::Tensor x, torch::Tensor bias, torch::Tensor y, torch::Tensor sum, torch::Tensor count) {
-    const c10::cuda::CUDAGuard guard(sm.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
+// y [O] = W x (+ bias; NULL: none) for W [O, K]; where tiles split rows (tw % K != 0), sum [O] and count [O]
+// (zero, and left zero).
+GLYD_GPU_API int glyd_gpu_gemv(const uint8_t* sm, const uint32_t* stream, int64_t stream_words, const uint32_t* offs, const uint32_t* tables, int64_t O, int64_t K, int64_t tw, int64_t V, int64_t tile_words, const uint16_t* x, const uint16_t* bias, uint16_t* y, float* sum, int* count, cudaStream_t cs) {
+    if (K < 1 || V < 1 || tw < 1) return cudaErrorInvalidValue;
     bool split = tw % K != 0;
-    TORCH_CHECK(K % (32 * V) == 0 && tw % (32 * V) == 0 && (!split || sum.numel() >= O), "gemv needs K and tiles multiples of 32 V, and row sums for split rows");
+    if (K % (32 * V) || tw % (32 * V) || (split && !(sum && count))) return cudaErrorInvalidValue;
     int64_t tiles = tiles_for(O * K, tw);
     int threads = 128;
     size_t shared = (threads / 32) * tile_words * sizeof(uint32_t);
     auto launch = [&](auto kernel) {
         allow_shared((const void*)kernel);
-        kernel<<<(tiles * 32 + threads - 1) / threads, threads, shared, cs>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)stream.data_ptr(), stream.numel(), (const uint32_t*)offs.data_ptr(), (const uint32_t*)tables.data_ptr(), O, K, tw, (int)tile_words, (const __nv_bfloat16*)x.data_ptr(), bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr, (__nv_bfloat16*)y.data_ptr(), tiles, split ? (float*)sum.data_ptr() : nullptr, split ? (int*)count.data_ptr() : nullptr);
+        kernel<<<(tiles * 32 + threads - 1) / threads, threads, shared, cs>>>(sm, stream, stream_words, offs, tables, O, K, tw, (int)tile_words, bf(x), bf(bias), bf(y), tiles, split ? sum : nullptr, split ? count : nullptr);
     };
     if (V == 16) { if (split) launch(gemv_kernel<16, true>); else launch(gemv_kernel<16, false>); }
     else { if (split) launch(gemv_kernel<4, true>); else launch(gemv_kernel<4, false>); }
+    return cudaGetLastError();
 }
 
-void fast_gemv(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch::Tensor exc_base, int64_t top, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
-    const c10::cuda::CUDAGuard guard(sm.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    TORCH_CHECK(K % 128 == 0, "rows a multiple of 128 long");
+// The fast format. y [O] = W x (+ bias) for W [O, K], K a multiple of 128.
+GLYD_GPU_API int glyd_gpu_fast_gemv(const uint8_t* sm, const uint32_t* planes, const uint8_t* exc, const int32_t* exc_base, uint64_t top, int64_t O, int64_t K, const uint16_t* x, const uint16_t* bias, uint16_t* y, cudaStream_t cs) {
+    if (K < 1 || K % 128) return cudaErrorInvalidValue;
     // Warps a row: enough for the GPU to hold ~16k warps of work, at most
     // one a segment and 8 a row.
     int64_t segs = (K + SEG - 1) / SEG;
@@ -2012,130 +2075,138 @@ void fast_gemv(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch:
     auto kernel = wpr == 1 ? fast_gemv_kernel<false> : fast_gemv_kernel<true>;
     if (K % 512 == 0) kernel = wpr == 1 ? fast_gemv_wide_kernel<16, false> : fast_gemv_wide_kernel<16, true>;
     else if (K % 256 == 0) kernel = wpr == 1 ? fast_gemv_wide_kernel<8, false> : fast_gemv_wide_kernel<8, true>;
-    kernel<<<(O + rows_per_block - 1) / rows_per_block, threads, 0, cs>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)planes.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint64_t)top, O, K, wpr, (const __nv_bfloat16*)x.data_ptr(), bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr, (__nv_bfloat16*)y.data_ptr());
+    kernel<<<(O + rows_per_block - 1) / rows_per_block, threads, 0, cs>>>(sm, planes, exc, exc_base, top, O, K, wpr, bf(x), bf(bias), bf(y));
+    return cudaGetLastError();
 }
 
-void fast_decode(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch::Tensor exc_base, int64_t top, int64_t row0, int64_t rows, torch::Tensor row_ids, int64_t K, torch::Tensor out) {
-    const c10::cuda::CUDAGuard guard(sm.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    if (row_ids.numel()) rows = row_ids.numel();
-    TORCH_CHECK(K % 128 == 0 && out.numel() >= rows * K, "rows a multiple of 128 long, room for them");
+// Rows [row0, row0 + rows) of W [., K], or (n_ids > 0) the n_ids rows row_ids, into out [rows, K].
+GLYD_GPU_API int glyd_gpu_fast_decode(const uint8_t* sm, const uint32_t* planes, const uint8_t* exc, const int32_t* exc_base, uint64_t top, int64_t row0, int64_t rows, const int64_t* row_ids, int64_t n_ids, int64_t K, uint16_t* out, cudaStream_t cs) {
+    if (K % 128) return cudaErrorInvalidValue;
+    if (n_ids) rows = n_ids;
     int threads = 256;
     int64_t warps = rows * ((K + SEG - 1) / SEG);
-    fast_decode_kernel<<<(warps * 32 + threads - 1) / threads, threads, 0, cs>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)planes.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint64_t)top, row0, row_ids.numel() ? (const int64_t*)row_ids.data_ptr() : nullptr, rows, K, (uint16_t*)out.data_ptr());
+    fast_decode_kernel<<<(warps * 32 + threads - 1) / threads, threads, 0, cs>>>(sm, planes, exc, exc_base, top, row0, n_ids ? row_ids : nullptr, rows, K, out);
+    return cudaGetLastError();
 }
 
-void fast_gemm(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch::Tensor exc_base, int64_t top, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
-    const c10::cuda::CUDAGuard guard(sm.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    TORCH_CHECK(K % GM_BK == 0 && x.is_contiguous() && x.size(1) == K, "K a multiple of 64, X contiguous [M, K]");
-    int64_t M = x.size(0);
-    int64_t bo = (O + GM_BO - 1) / GM_BO, bm = (M + GM_BM - 1) / GM_BM;
-    // Split K until the GPU has some `target` blocks, in whole steps.
+// Y [M, O] = X W^T (+ bias) for X [M, K], K a multiple of 64, O of 16 (a warp's 16 rows all in W or all
+// past it: past O a warp would split at its shuffle and hang). K split until the GPU has some `target`
+// blocks, in whole steps (kchunk columns a part); the workspace: the parts, [split][M][O] floats, past one.
+static int64_t fast_gemm_split(int64_t O, int64_t K, int64_t M, int64_t& kchunk) {
     static int64_t target = getenv("GLYD_GPU_GEMM_BLOCKS") ? atoll(getenv("GLYD_GPU_GEMM_BLOCKS")) : 1280;
+    int64_t bo = (O + GM_BO - 1) / GM_BO, bm = (M + GM_BM - 1) / GM_BM;
     int64_t split = std::max<int64_t>(1, std::min<int64_t>(K / (4 * GM_BK), target / (bo * bm)));
-    int64_t kchunk = (K / GM_BK + split - 1) / split * GM_BK;
-    split = (K + kchunk - 1) / kchunk;
-    const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
-    torch::Tensor y32;
-    if (split > 1) y32 = torch::empty({split, M, O}, x.options().dtype(torch::kFloat32));
-    fast_gemm_kernel<<<dim3(bo, bm, split), 128, 0, cs>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)planes.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint64_t)top, O, K, M, kchunk, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), split > 1 ? (float*)y32.data_ptr() : nullptr);
-    if (split > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>((const float*)y32.data_ptr(), split, b, M, O, (__nv_bfloat16*)y.data_ptr());
+    kchunk = (K / GM_BK + split - 1) / split * GM_BK;
+    return (K + kchunk - 1) / kchunk;
 }
 
-void fast_bgemv(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch::Tensor exc_base, int64_t top, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
-    const c10::cuda::CUDAGuard guard(sm.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    int64_t M = x.size(0);
-    TORCH_CHECK(K % 512 == 0 && x.is_contiguous() && x.size(1) == K && (M == 2 || M == 4 || M == 8 || M == 16), "K a multiple of 512, X contiguous [M, K], M 2, 4, 8 or 16");
-    // X's K segment in shared memory: up to 48 KB, whole segments of the escapes' index.
-    int64_t kseg = std::min<int64_t>(K, std::max<int64_t>(SEG, (48 * 1024 / (2 * M)) / SEG * SEG));
-    int64_t nseg = (K + kseg - 1) / kseg;
+GLYD_GPU_API int glyd_gpu_fast_gemm_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes) {
+    if (!bytes || O < 1 || O % 16 || M < 1 || K < 1 || K % GM_BK) return cudaErrorInvalidValue;
+    int64_t kchunk, split = fast_gemm_split(O, K, M, kchunk);
+    *bytes = split > 1 ? (size_t)(split * M * O) * sizeof(float) : 0;
+    return 0;
+}
+
+GLYD_GPU_API int glyd_gpu_fast_gemm(const uint8_t* sm, const uint32_t* planes, const uint8_t* exc, const int32_t* exc_base, uint64_t top, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
+    size_t need;
+    if (glyd_gpu_fast_gemm_workspace(O, K, M, &need) || !fits(workspace, workspace_bytes, need)) return cudaErrorInvalidValue;
+    int64_t kchunk, split = fast_gemm_split(O, K, M, kchunk);
+    int64_t bo = (O + GM_BO - 1) / GM_BO, bm = (M + GM_BM - 1) / GM_BM;
+    float* y32 = split > 1 ? (float*)workspace : nullptr;
+    fast_gemm_kernel<<<dim3(bo, bm, split), 128, 0, cs>>>(sm, planes, exc, exc_base, top, O, K, M, kchunk, bf(x), bf(bias), bf(y), y32);
+    if (split > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>(y32, split, bf(bias), M, O, bf(y));
+    return cudaGetLastError();
+}
+
+// Y [M, O] = X W^T (+ bias) for M = 2, 4, 8 or 16 tokens, K a multiple of 512. X's K segment in shared
+// memory: up to 48 KB, whole segments of the escapes' index; the workspace: the segments' parts,
+// [segments][M][O] floats, past one.
+static int64_t bgemv_kseg(int64_t K, int64_t M) { return std::min<int64_t>(K, std::max<int64_t>(SEG, (48 * 1024 / (2 * M)) / SEG * SEG)); }
+
+GLYD_GPU_API int glyd_gpu_fast_bgemv_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes) {
+    if (!bytes || O < 1 || K < 1 || K % 512 || !(M == 2 || M == 4 || M == 8 || M == 16)) return cudaErrorInvalidValue;
+    int64_t kseg = bgemv_kseg(K, M), nseg = (K + kseg - 1) / kseg;
+    *bytes = nseg > 1 ? (size_t)(nseg * M * O) * sizeof(float) : 0;
+    return 0;
+}
+
+GLYD_GPU_API int glyd_gpu_fast_bgemv(const uint8_t* sm, const uint32_t* planes, const uint8_t* exc, const int32_t* exc_base, uint64_t top, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
+    size_t need;
+    if (glyd_gpu_fast_bgemv_workspace(O, K, M, &need) || !fits(workspace, workspace_bytes, need)) return cudaErrorInvalidValue;
+    int64_t kseg = bgemv_kseg(K, M), nseg = (K + kseg - 1) / kseg;
     // Rows a block: enough blocks for every SM (4 an SM), at least 64 rows each.
     int64_t blocks = std::max<int64_t>(1, 320 / nseg);
     int64_t rows = std::max<int64_t>(64, (O + blocks - 1) / blocks);
     dim3 grid((O + rows - 1) / rows, nseg);
     size_t shared = M * kseg * 2;
-    const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
-    torch::Tensor y32;
-    if (nseg > 1) y32 = torch::empty({nseg, M, O}, x.options().dtype(torch::kFloat32));
-    float* p32 = nseg > 1 ? (float*)y32.data_ptr() : nullptr;
+    float* p32 = nseg > 1 ? (float*)workspace : nullptr;
     auto launch = [&](auto kernel) {
         cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, 99 * 1024);
-        kernel<<<grid, 256, shared, cs>>>((const uint8_t*)sm.data_ptr(), (const uint32_t*)planes.data_ptr(), (const uint8_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), (uint64_t)top, O, K, kseg, rows, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), p32);
+        kernel<<<grid, 256, shared, cs>>>(sm, planes, exc, exc_base, top, O, K, kseg, rows, bf(x), bf(bias), bf(y), p32);
     };
     if (M == 2) launch(fast_bgemv_kernel<2>);
     else if (M == 4) launch(fast_bgemv_kernel<4>);
     else if (M == 8) launch(fast_bgemv_kernel<8>);
     else launch(fast_bgemv_kernel<16>);
-    if (nseg > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>((const float*)y32.data_ptr(), nseg, b, M, O, (__nv_bfloat16*)y.data_ptr());
+    if (nseg > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>(p32, nseg, bf(bias), M, O, bf(y));
+    return cudaGetLastError();
 }
 
-static Tiers tiers_of(const std::vector<int64_t>& t) {
-    TORCH_CHECK(t.size() == 3, "three tiers");
-    return Tiers{(uint32_t)t[0], (uint32_t)t[1], (uint32_t)t[2]};
-}
-
-static Nib nib_of(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, const std::vector<int64_t>& sym) {
-    TORCH_CHECK(sym.size() == 4, "four words of symbols");
-    return Nib{(const uint8_t*)data.data_ptr(), (const uint32_t*)exc.data_ptr(), (const int32_t*)exc_base.data_ptr(), {(uint32_t)sym[0], (uint32_t)sym[1], (uint32_t)sym[2], (uint32_t)sym[3]}};
-}
-
-static Tiered tiered_of(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, const std::vector<int64_t>& tiers) {
-    return Tiered{(const uint8_t*)data.data_ptr(), (const uint8_t*)blocks.data_ptr(), (const int32_t*)block_base.data_ptr(), tiers_of(tiers)};
+// The mma layouts (tiered: tiers[3]; 12-bit: sym[4]). Y [M, O] = X W^T (+ bias) for up to 64 tokens: as
+// many blocks as fit at once, but at least 32 steps (4 a warp) a block; the workspace: their parts,
+// [blocks + O / 64][M][64] floats; done: O / 64. need: set to the workspace's bytes, nothing launched.
+template <class Fmt, int MT>
+static int mma_gemm_mt(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
+    auto kernel = mma_gemm_kernel<Fmt, MT>;
+    static std::atomic<int> known[MAX_DEVICES];
+    size_t shared = (size_t)4 * MT * 16 * 65 * sizeof(float) + (Fmt::kTable ? 8 * S2_BYTES : 0);
+    int dev = current_device();
+    int64_t RB = O / 64, total = RB * (K / 16);
+    int64_t nb = std::max<int64_t>(1, std::min<int64_t>(per_sm((const void*)kernel, 256, (int)shared, known, dev) * sm_count(dev), total / 32));
+    size_t bytes = (size_t)((nb + RB) * M * 64) * sizeof(float);
+    if (need) {
+        *need = bytes;
+        return cudaGetLastError();
+    }
+    if (!fits(ws, ws_bytes, bytes) || !done) return cudaErrorInvalidValue;
+    kernel<<<nb, 256, shared, cs>>>(f, O, K, M, bf(x), bf(bias), bf(y), (float*)ws, done);
+    return cudaGetLastError();
 }
 
 template <class Fmt>
-static void mma_gemm_run(Fmt f, torch::Tensor data, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
-    const c10::cuda::CUDAGuard guard(data.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    int64_t M = x.size(0);
-    TORCH_CHECK(O % 64 == 0 && K % 16 == 0 && M <= 64 && x.is_contiguous() && x.size(1) == K, "O a multiple of 64, K of 16, up to 64 tokens, X contiguous [M, K]");
-    int64_t KS = K / 16, RB = O / 64, total = RB * KS;
-    // Row blocks' done counts: zero between products (the last block of a row block resets it).
-    static auto* done_of = new std::map<int, torch::Tensor>;  // kept to the end (no teardown after CUDA's)
-    torch::Tensor& done = (*done_of)[data.get_device()];
-    if (!done.defined() || done.numel() < RB) done = torch::zeros({std::max<int64_t>(RB, 1 << 16)}, data.options().dtype(torch::kInt32));
-    const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
-    auto launch = [&](auto kernel, int mt) {
-        size_t shared = (size_t)4 * mt * 16 * 65 * sizeof(float) + (Fmt::kTable ? 8 * S2_BYTES : 0);
-        cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
-        int per_sm = 1;
-        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kernel, 256, shared);
-        // As many blocks as fit at once, but at least 32 steps (4 a warp) a block.
-        int64_t nb = std::max<int64_t>(1, std::min<int64_t>((int64_t)std::max(per_sm, 1) * at::cuda::getCurrentDeviceProperties()->multiProcessorCount, total / 32));
-        torch::Tensor parts = torch::empty({nb + RB, M, 64}, x.options().dtype(torch::kFloat32));
-        kernel<<<nb, 256, shared, cs>>>(f, O, K, M, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), (float*)parts.data_ptr(), (int*)done.data_ptr());
-    };
-    if (M <= 16) launch(mma_gemm_kernel<Fmt, 1>, 1);
-    else if (M <= 32) launch(mma_gemm_kernel<Fmt, 2>, 2);
-    else launch(mma_gemm_kernel<Fmt, 4>, 4);
+static int mma_gemm_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
+    if (O % 64 || K % 16 || M < 0 || M > 64) return cudaErrorInvalidValue;
+    auto run = M <= 16 ? mma_gemm_mt<Fmt, 1> : M <= 32 ? mma_gemm_mt<Fmt, 2> : mma_gemm_mt<Fmt, 4>;
+    return run(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
 }
 
-void mma_gemm(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
-    mma_gemm_run(tiered_of(data, blocks, block_base, tiers), data, O, K, x, bias, y);
+GLYD_GPU_API int glyd_gpu_mma_gemm_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes) {
+    return bytes ? mma_gemm_run(Tiered{}, O, K, nullptr, M, nullptr, nullptr, nullptr, 0, nullptr, 0, bytes) : cudaErrorInvalidValue;
 }
 
-void mma12_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
-    mma_gemm_run(nib_of(data, exc, exc_base, sym), data, O, K, x, bias, y);
+GLYD_GPU_API int glyd_gpu_mma_gemm(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    return mma_gemm_run(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, O, K, x, M, bias, y, workspace, workspace_bytes, done, cs, nullptr);
 }
 
+GLYD_GPU_API int glyd_gpu_mma12_gemm_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes) {
+    return bytes ? mma_gemm_run(Nib{}, O, K, nullptr, M, nullptr, nullptr, nullptr, 0, nullptr, 0, bytes) : cudaErrorInvalidValue;
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_gemm(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    return mma_gemm_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, O, K, x, M, bias, y, workspace, workspace_bytes, done, cs, nullptr);
+}
+
+// Many tokens (a prompt), K a multiple of 64, x 16-byte aligned. K split so the blocks fill their last wave:
+// the fewest splits that leave under 15% of it idle, else the fullest; at least 4 stages a split. The
+// workspace: the splits' parts, [splits][M][O] floats, past one.
 template <class Fmt, int CW, int PW, int NB, int RBB>
-static void mma_gemm_big_run(Fmt f, torch::Tensor data, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, cudaStream_t cs) {
+static int mma_gemm_big_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
     using C = Big<CW, PW, NB, RBB>;
     auto kernel = mma_gemm_big_kernel<Fmt, CW, PW, NB, RBB>;
-    int64_t M = x.size(0), stages = K / 16 / BIG_KK, pairs = (O / 64 + RBB - 1) / RBB, tiles = (M + C::TM - 1) / C::TM;
-    static auto* per_sm_of = new std::map<int, int>;  // a device's blocks an SM for this kernel (its shared memory allowed once)
-    int dev = data.get_device();
-    if (!per_sm_of->count(dev)) {
-        int n = 1;
-        cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, C::SHARED);
-        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&n, kernel, C::THREADS, C::SHARED);
-        (*per_sm_of)[dev] = std::max(n, 1);
-    }
-    // K split so the blocks fill their last wave: the fewest splits that
-    // leave under 15% of it idle, else the fullest; at least 4 stages a split.
-    int64_t cap = (*per_sm_of)[dev] * at::cuda::getCurrentDeviceProperties()->multiProcessorCount, most = std::max<int64_t>(1, stages / 4);
+    static std::atomic<int> known[MAX_DEVICES];  // a device's blocks an SM for this kernel (its shared memory allowed once)
+    int dev = current_device();
+    int64_t stages = K / 16 / BIG_KK, pairs = (O / 64 + RBB - 1) / RBB, tiles = (M + C::TM - 1) / C::TM;
+    int64_t cap = per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), most = std::max<int64_t>(1, stages / 4);
     int64_t splits = 1;
     double best = 0;
     for (int64_t sp = 1; sp <= most; sp++) {
@@ -2146,178 +2217,398 @@ static void mma_gemm_big_run(Fmt f, torch::Tensor data, int64_t O, int64_t K, to
     }
     int64_t per = (stages + splits - 1) / splits;
     splits = (stages + per - 1) / per;
-    const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
-    torch::Tensor y32;
-    if (splits > 1) y32 = torch::empty({splits, M, O}, x.options().dtype(torch::kFloat32));
-    kernel<<<dim3(tiles, pairs, splits), C::THREADS, C::SHARED, cs>>>(f, O, K, M, per, (const __nv_bfloat16*)x.data_ptr(), b, (__nv_bfloat16*)y.data_ptr(), splits > 1 ? (float*)y32.data_ptr() : nullptr);
-    if (splits > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>((const float*)y32.data_ptr(), splits, b, M, O, (__nv_bfloat16*)y.data_ptr());
+    size_t bytes = splits > 1 ? (size_t)(splits * M * O) * sizeof(float) : 0;
+    if (need) {
+        *need = bytes;
+        return cudaGetLastError();
+    }
+    if (!fits(ws, ws_bytes, bytes)) return cudaErrorInvalidValue;
+    float* y32 = splits > 1 ? (float*)ws : nullptr;
+    kernel<<<dim3(tiles, pairs, splits), C::THREADS, C::SHARED, cs>>>(f, O, K, M, per, bf(x), bf(bias), bf(y), y32);
+    if (splits > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>(y32, splits, bf(bias), M, O, bf(y));
+    return cudaGetLastError();
 }
 
 template <class Fmt>
-static void mma_gemm_big_any(Fmt f, torch::Tensor data, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t variant) {
-    const c10::cuda::CUDAGuard guard(data.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
+static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
+    if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16) return cudaErrorInvalidValue;
     // 4 consumer warps and 4 producers: blocks of 128 tokens by two row blocks (3 stages), or, past 128
     // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens).
-    if (variant == 0) variant = x.size(0) > 128 ? 2 : 1;
-    if (variant == 2) mma_gemm_big_run<Fmt, 4, 4, 2, 1>(f, data, O, K, x, bias, y, cs);
-    else mma_gemm_big_run<Fmt, 4, 4, 3, 2>(f, data, O, K, x, bias, y, cs);
+    if (variant == 0) variant = M > 128 ? 2 : 1;
+    auto run = variant == 2 ? mma_gemm_big_run<Fmt, 4, 4, 2, 1> : mma_gemm_big_run<Fmt, 4, 4, 3, 2>;
+    return run(f, O, K, x, M, bias, y, ws, ws_bytes, cs, need);
 }
 
-void mma_gemm_big(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t variant) {
-    mma_gemm_big_any(tiered_of(data, blocks, block_base, tiers), data, O, K, x, bias, y, variant);
+GLYD_GPU_API int glyd_gpu_mma_gemm_big_workspace(int64_t O, int64_t K, int64_t M, int64_t variant, size_t* bytes) {
+    return bytes ? mma_gemm_big_any(Tiered{}, O, K, nullptr, M, nullptr, nullptr, variant, nullptr, 0, 0, bytes) : cudaErrorInvalidValue;
 }
 
-void mma12_gemm_big(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t variant) {
-    mma_gemm_big_any(nib_of(data, exc, exc_base, sym), data, O, K, x, bias, y, variant);
+GLYD_GPU_API int glyd_gpu_mma_gemm_big(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
+    return mma_gemm_big_any(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, O, K, x, M, bias, y, variant, workspace, workspace_bytes, cs, nullptr);
 }
 
+GLYD_GPU_API int glyd_gpu_mma12_gemm_big_workspace(int64_t O, int64_t K, int64_t M, int64_t variant, size_t* bytes) {
+    return bytes ? mma_gemm_big_any(Nib{}, O, K, nullptr, M, nullptr, nullptr, variant, nullptr, 0, 0, bytes) : cudaErrorInvalidValue;
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_gemm_big(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
+    return mma_gemm_big_any(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, O, K, x, M, bias, y, variant, workspace, workspace_bytes, cs, nullptr);
+}
+
+// Many tokens on Ampere and Ada, the 12-bit layout: 64 tokens a launch (x + 64c on), in the smallest
+// tile that holds them. The workspace: the largest launch's slots, [blocks + units][NT 64 WG] floats (one
+// buffer for all: the launches are in stream order); done: O / 64. need: the largest's bytes, nothing launched.
 template <int NT, int WG>
-static void mma12_mid_run(Nib f, torch::Tensor data, int64_t O, int64_t K, const __nv_bfloat16* x, int64_t M, const __nv_bfloat16* b, __nv_bfloat16* y, cudaStream_t cs) {
+static int mma12_mid_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t m0, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
     using C = Mid12<NT, WG>;
     auto kernel = mma12_mid_kernel<NT, WG>;
-    int dev = data.get_device();
-    static auto* per_sm_of = new std::map<int, int>;
-    if (!per_sm_of->count(dev)) {
-        cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, C::SHARED);
-        int n = 1;
-        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&n, kernel, C::THREADS, C::SHARED);
-        (*per_sm_of)[dev] = std::max(n, 1);
-    }
+    static std::atomic<int> known[MAX_DEVICES];
+    int dev = current_device();
     int64_t P = (O / 64 + WG - 1) / WG, U = P * (K / 64);
-    static auto* done_of = new std::map<int, torch::Tensor>;
-    torch::Tensor& done = (*done_of)[dev];
-    if (!done.defined() || done.numel() < P) done = torch::zeros({std::max<int64_t>(P, 1 << 16)}, data.options().dtype(torch::kInt32));
-    int64_t nb = std::max<int64_t>(1, std::min<int64_t>((int64_t)(*per_sm_of)[dev] * at::cuda::getCurrentDeviceProperties()->multiProcessorCount, U / 8));
-    torch::Tensor parts = torch::empty({nb + P, NT * 64 * WG}, data.options().dtype(torch::kFloat32));
-    kernel<<<nb, C::THREADS, C::SHARED, cs>>>(f, O, K, M, x, b, y, (float*)parts.data_ptr(), (int*)done.data_ptr());
+    int64_t nb = std::max<int64_t>(1, std::min<int64_t>(per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), U / 8));
+    if (need) *need = std::max(*need, (size_t)((nb + P) * NT * 64 * WG) * sizeof(float));
+    else kernel<<<nb, C::THREADS, C::SHARED, cs>>>(f, O, K, M, bf(x) + m0 * K, bf(bias), bf(y) + m0 * O, parts, done);
+    return 0;
 }
 
-// Many tokens on Ampere and Ada (to 64 a call, in chunks past that).
-void mma12_gemm_mid(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
-    const c10::cuda::CUDAGuard guard(data.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    auto* prop = at::cuda::getCurrentDeviceProperties();
-    TORCH_CHECK(prop->major >= 8, "mma12_gemm_mid: Ampere or later");
-    TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
-    TORCH_CHECK((uintptr_t)data.data_ptr() % 16 == 0 && (uintptr_t)exc.data_ptr() % 16 == 0 && exc.numel() % 4 == 0, "the pack 16-byte aligned, exc padded to 4 (pack_mma12)");
-    Nib f = nib_of(data, exc, exc_base, sym);
-    const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
-    const __nv_bfloat16* xp = (const __nv_bfloat16*)x.data_ptr();
-    __nv_bfloat16* yp = (__nv_bfloat16*)y.data_ptr();
-    bool big = prop->sharedMemPerBlockOptin >= (size_t)Mid12<64, 4>::SHARED;  // sm_80: four warpgroups
-    for (int64_t m0 = 0, M = x.size(0); m0 < M; m0 += 64) {
+static int mma12_mid_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
+    int dev = current_device();
+    if (attribute(cudaDevAttrComputeCapabilityMajor, dev) < 8) return cudaErrorNotSupported;
+    if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16 || (uintptr_t)f.data % 16 || (uintptr_t)f.exc % 16) return cudaErrorInvalidValue;
+    bool big = attribute(cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) >= Mid12<64, 4>::SHARED;  // sm_80: four warpgroups
+    for (int64_t m0 = 0; m0 < M; m0 += 64) {
         int64_t mc = std::min<int64_t>(64, M - m0);
         auto run = mc <= 16 ? (big ? mma12_mid_run<16, 4> : mma12_mid_run<16, 2>) : mc <= 32 ? (big ? mma12_mid_run<32, 4> : mma12_mid_run<32, 2>) : (big ? mma12_mid_run<64, 4> : mma12_mid_run<64, 2>);
-        run(f, data, O, K, xp + m0 * K, mc, b, yp + m0 * O, cs);
+        run(f, O, K, x, m0, mc, bias, y, parts, done, cs, need);
     }
+    return cudaGetLastError();
 }
 
-// cuTensorMapEncodeTiled from the driver, found at run time (no link to libcuda).
+GLYD_GPU_API int glyd_gpu_mma12_gemm_mid_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes) {
+    if (!bytes) return cudaErrorInvalidValue;
+    *bytes = 0;
+    return mma12_mid_any(Nib{}, O, K, nullptr, M, nullptr, nullptr, nullptr, nullptr, 0, bytes);
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_gemm_mid(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    Nib f{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}};
+    size_t need = 0;
+    if (int r = mma12_mid_any(f, O, K, x, M, bias, y, nullptr, nullptr, cs, &need)) return r;
+    if (!fits(workspace, workspace_bytes, need) || !done) return cudaErrorInvalidValue;
+    return mma12_mid_any(f, O, K, x, M, bias, y, (float*)workspace, done, cs, nullptr);
+}
+
+// cuTensorMapEncodeTiled from the driver, found at run time (no link to libcuda); null where it has none.
 static PFN_cuTensorMapEncodeTiled_v12000 tensor_map_encoder() {
-    static PFN_cuTensorMapEncodeTiled_v12000 fn = nullptr;
-    if (!fn) {
+    static PFN_cuTensorMapEncodeTiled_v12000 fn = [] {
         void* p = nullptr;
-        cudaDriverEntryPointQueryResult q;
+        cudaDriverEntryPointQueryResult q = cudaDriverEntryPointSymbolNotFound;
 #if CUDART_VERSION >= 12050
         cudaGetDriverEntryPointByVersion("cuTensorMapEncodeTiled", &p, 12000, cudaEnableDefault, &q);
 #else
         cudaGetDriverEntryPoint("cuTensorMapEncodeTiled", &p, cudaEnableDefault, &q);
 #endif
-        TORCH_CHECK(p && q == cudaDriverEntryPointSuccess, "cuTensorMapEncodeTiled: not in this driver");
-        fn = (PFN_cuTensorMapEncodeTiled_v12000)p;
-    }
+        return p && q == cudaDriverEntryPointSuccess ? (PFN_cuTensorMapEncodeTiled_v12000)p : nullptr;
+    }();
     return fn;
 }
 
+// Many tokens on Hopper, the 12-bit layout: 256 tokens a launch, as mma12_mid_run's (the workspace:
+// [blocks + units][NT 64 WG] floats; done: O / 64).
 template <int NT, int WG>
-static void mma12_tma_run(Nib f, torch::Tensor data, int64_t O, int64_t K, const __nv_bfloat16* x, int64_t M, const __nv_bfloat16* b, __nv_bfloat16* y, cudaStream_t cs) {
+static int mma12_tma_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t m0, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
     using C = Tma12<NT, WG>;
     auto kernel = mma12_tma_kernel<NT, WG>;
-    int dev = data.get_device();
-    static auto* per_sm_of = new std::map<int, int>;  // a device's blocks an SM for this kernel
-    if (!per_sm_of->count(dev)) {
-        cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, C::SHARED);
-        int n = 1;
-        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&n, kernel, C::THREADS, C::SHARED);
-        (*per_sm_of)[dev] = std::max(n, 1);
-    }
+    static std::atomic<int> known[MAX_DEVICES];  // a device's blocks an SM for this kernel
+    int dev = current_device();
     int64_t P = (O / 64 + WG - 1) / WG, U = P * (K / 64);
-    // Units' done counts: zero between products (the last block of a unit resets it).
-    static auto* done_of = new std::map<int, torch::Tensor>;
-    torch::Tensor& done = (*done_of)[dev];
-    if (!done.defined() || done.numel() < P) done = torch::zeros({std::max<int64_t>(P, 1 << 16)}, data.options().dtype(torch::kInt32));
     // As many blocks as fit at once, but at least 8 stages a block.
-    int64_t nb = std::max<int64_t>(1, std::min<int64_t>((int64_t)(*per_sm_of)[dev] * at::cuda::getCurrentDeviceProperties()->multiProcessorCount, U / 8));
-    torch::Tensor parts = torch::empty({nb + P, NT * C::R}, data.options().dtype(torch::kFloat32));
+    int64_t nb = std::max<int64_t>(1, std::min<int64_t>(per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), U / 8));
+    if (need) {
+        *need = std::max(*need, (size_t)((nb + P) * NT * C::R) * sizeof(float));
+        return 0;
+    }
     // X [M, K] as tiles of NT tokens by 64 columns, 128-byte swizzle; rows past M read as zeros.
+    auto encode = tensor_map_encoder();
+    if (!encode) return cudaErrorNotSupported;
     CUtensorMap map;
     cuuint64_t dims[2] = {(cuuint64_t)K, (cuuint64_t)M}, strides[1] = {(cuuint64_t)K * 2};
     cuuint32_t box[2] = {64, NT}, unit[2] = {1, 1};
-    CUresult r = tensor_map_encoder()(&map, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)x, dims, strides, box, unit, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-    TORCH_CHECK(r == CUDA_SUCCESS, "X's tensor map: error ", (int)r);
-    kernel<<<nb, C::THREADS, C::SHARED, cs>>>(map, f, O, K, M, b, y, (float*)parts.data_ptr(), (int*)done.data_ptr());
+    CUresult r = encode(&map, CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 2, (void*)(x + m0 * K), dims, strides, box, unit, CU_TENSOR_MAP_INTERLEAVE_NONE, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B, CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+    if (r != CUDA_SUCCESS) return cudaErrorInvalidValue;
+    kernel<<<nb, C::THREADS, C::SHARED, cs>>>(map, f, O, K, M, bf(bias), bf(y) + m0 * O, parts, done);
+    return 0;
 }
 
-void mma12_gemm_wg(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
-    const c10::cuda::CUDAGuard guard(data.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    TORCH_CHECK(at::cuda::getCurrentDeviceProperties()->major >= 9, "wgmma: Hopper or later");
-    TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
-    TORCH_CHECK((uintptr_t)data.data_ptr() % 16 == 0 && (uintptr_t)exc.data_ptr() % 16 == 0 && exc.numel() % 4 == 0, "the pack 16-byte aligned, exc padded to 4 (pack_mma12)");
-    Nib f = nib_of(data, exc, exc_base, sym);
-    const __nv_bfloat16* b = bias.numel() ? (const __nv_bfloat16*)bias.data_ptr() : nullptr;
-    const __nv_bfloat16* xp = (const __nv_bfloat16*)x.data_ptr();
-    __nv_bfloat16* yp = (__nv_bfloat16*)y.data_ptr();
+static int mma12_wg_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
+    // The TMA kernel is sm_90a code alone (the library's compute_80 PTX, compiled for GPUs after Hopper, has none of it).
+    int dev = current_device();
+    if (attribute(cudaDevAttrComputeCapabilityMajor, dev) != 9 || attribute(cudaDevAttrComputeCapabilityMinor, dev) != 0) return cudaErrorNotSupported;
+    if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16 || (uintptr_t)f.data % 16 || (uintptr_t)f.exc % 16) return cudaErrorInvalidValue;
     // 256 tokens at a time, in the smallest tile that holds them.
-    for (int64_t m0 = 0, M = x.size(0); m0 < M; m0 += 256) {
+    for (int64_t m0 = 0; m0 < M; m0 += 256) {
         int64_t mc = std::min<int64_t>(256, M - m0);
         // Four warpgroups (256 rows a stage) to 64 tokens; past that two, for their registers.
         auto run = mc <= 16 ? mma12_tma_run<16, 4> : mc <= 32 ? mma12_tma_run<32, 4> : mc <= 64 ? mma12_tma_run<64, 4> : mc <= 128 ? mma12_tma_run<128, 2> : mma12_tma_run<256, 2>;
-        run(f, data, O, K, xp + m0 * K, mc, b, yp + m0 * O, cs);
+        if (int r = run(f, O, K, x, m0, mc, bias, y, parts, done, cs, need)) return r;
     }
+    return cudaGetLastError();
 }
 
+GLYD_GPU_API int glyd_gpu_mma12_gemm_wg_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes) {
+    if (!bytes) return cudaErrorInvalidValue;
+    *bytes = 0;
+    return mma12_wg_any(Nib{}, O, K, nullptr, M, nullptr, nullptr, nullptr, nullptr, 0, bytes);
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    Nib f{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}};
+    size_t need = 0;
+    if (int r = mma12_wg_any(f, O, K, x, M, bias, y, nullptr, nullptr, cs, &need)) return r;
+    if (!fits(workspace, workspace_bytes, need) || !done) return cudaErrorInvalidValue;
+    return mma12_wg_any(f, O, K, x, M, bias, y, (float*)workspace, done, cs, nullptr);
+}
+
+// Back to bf16: rows [row0, row0 + rows) of W [., K] (multiples of 64) into out [rows, K].
 template <class Fmt>
-static void mma_unpack_run(Fmt f, torch::Tensor data, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
-    const c10::cuda::CUDAGuard guard(data.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64");
+static int mma_unpack_run(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* out, cudaStream_t cs) {
+    if (row0 % 64 || rows % 64) return cudaErrorInvalidValue;
     int64_t steps = rows / 64 * (K / 16);
-    mma_unpack_kernel<Fmt><<<(steps * 32 + 255) / 256, 256, 0, cs>>>(f, K, row0, rows, (uint16_t*)out.data_ptr());
+    mma_unpack_kernel<Fmt><<<(steps * 32 + 255) / 256, 256, 0, cs>>>(f, K, row0, rows, out);
+    return cudaGetLastError();
 }
 
-void mma_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
-    mma_unpack_run(tiered_of(data, blocks, block_base, tiers), data, K, row0, rows, out);
+GLYD_GPU_API int glyd_gpu_mma_unpack(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t K, int64_t row0, int64_t rows, uint16_t* out, cudaStream_t cs) {
+    return mma_unpack_run(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, K, row0, rows, out, cs);
 }
 
-void mma12_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
-    mma_unpack_run(nib_of(data, exc, exc_base, sym), data, K, row0, rows, out);
+GLYD_GPU_API int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t K, int64_t row0, int64_t rows, uint16_t* out, cudaStream_t cs) {
+    return mma_unpack_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, K, row0, rows, out, cs);
 }
 
-void attn_decode(torch::Tensor q, torch::Tensor kd, torch::Tensor kb, torch::Tensor kbb, std::vector<int64_t> kt, torch::Tensor vd, torch::Tensor vb, torch::Tensor vbb, std::vector<int64_t> vt, torch::Tensor tk, torch::Tensor tv, int64_t tlen, int64_t pairs, int64_t G, int64_t P, double scale, torch::Tensor out) {
-    const c10::cuda::CUDAGuard guard(q.device());
-    cudaStream_t cs = at::cuda::getCurrentCUDAStream();
-    int64_t D = q.size(-1);
-    TORCH_CHECK((D == 64 || D == 128) && G >= 1 && G <= 16 && q.is_contiguous() && tlen < 64 && P + (tlen > 0) > 0, "head_dim 64 or 128, up to 16 queries a KV head");
-    static auto* done_of = new std::map<int, torch::Tensor>;  // a pair's finished blocks: zero between calls
-    torch::Tensor& done = (*done_of)[q.get_device()];
-    if (!done.defined() || done.numel() < pairs) done = torch::zeros({std::max<int64_t>(pairs, 1 << 12)}, q.options().dtype(torch::kInt32));
-    // Pages a block: enough blocks for four an SM, at least a page a warp.
-    int64_t units = P + (tlen > 0), sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
-    int64_t per = std::max<int64_t>(ATT_WARPS, (pairs * units + 4 * sms - 1) / (4 * sms));
+// Attention for one new token a sequence over the KV cache in the mma layout (gpu/kv.py): q [pairs x G, D]
+// (D 64 or 128, G up to 16), out the same. Pages a block: enough blocks for four an SM, at least a page a
+// warp; the workspace: the blocks' rows, [pairs][splits][16][D + 2] floats; done: pairs.
+static int64_t attn_splits(int64_t tlen, int64_t pairs, int64_t P, int64_t& per) {
+    int64_t units = P + (tlen > 0), sms = sm_count(current_device());
+    per = std::max<int64_t>(ATT_WARPS, (pairs * units + 4 * sms - 1) / (4 * sms));
     per = (per + ATT_WARPS - 1) / ATT_WARPS * ATT_WARPS;
-    int64_t splits = (units + per - 1) / per;
-    torch::Tensor part = torch::empty({pairs * splits * 16 * (D + 2)}, q.options().dtype(torch::kFloat32));
+    return (units + per - 1) / per;
+}
+
+GLYD_GPU_API int glyd_gpu_attn_decode_workspace(int64_t D, int64_t tlen, int64_t pairs, int64_t P, size_t* bytes) {
+    if (!bytes || !(D == 64 || D == 128) || tlen >= 64 || P + (tlen > 0) <= 0) return cudaErrorInvalidValue;
+    int64_t per, splits = attn_splits(tlen, pairs, P, per);
+    *bytes = (size_t)(pairs * splits * 16 * (D + 2)) * sizeof(float);
+    return 0;
+}
+
+GLYD_GPU_API int glyd_gpu_attn_decode(const uint16_t* q, int64_t D, const uint8_t* kd, const uint8_t* kb, const int32_t* kbb, const uint32_t kt[3], const uint8_t* vd, const uint8_t* vb, const int32_t* vbb, const uint32_t vt[3], const uint16_t* tk, const uint16_t* tv, int64_t tlen, int64_t pairs, int64_t G, int64_t P, double scale, uint16_t* out, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    size_t need;
+    if (G < 1 || G > 16 || glyd_gpu_attn_decode_workspace(D, tlen, pairs, P, &need) || !fits(workspace, workspace_bytes, need) || !done) return cudaErrorInvalidValue;
+    int64_t per, splits = attn_splits(tlen, pairs, P, per);
     float sl2 = (float)(scale * 1.4426950408889634);
-    const __nv_bfloat16* tkp = tlen ? (const __nv_bfloat16*)tk.data_ptr() : nullptr;
-    const __nv_bfloat16* tvp = tlen ? (const __nv_bfloat16*)tv.data_ptr() : nullptr;
+    Tiers kts{kt[0], kt[1], kt[2]}, vts{vt[0], vt[1], vt[2]};
     auto launch = [&](auto kernel) {
-        kernel<<<dim3(pairs, splits), 32 * ATT_WARPS, 0, cs>>>((const __nv_bfloat16*)q.data_ptr(), (const uint8_t*)kd.data_ptr(), (const uint8_t*)kb.data_ptr(), (const int32_t*)kbb.data_ptr(), tiers_of(kt), (const uint8_t*)vd.data_ptr(), (const uint8_t*)vb.data_ptr(), (const int32_t*)vbb.data_ptr(), tiers_of(vt), tkp, tvp, (int)tlen, (int)pairs, (int)G, (int)P, (int)per, sl2, (float*)part.data_ptr(), (int*)done.data_ptr(), (__nv_bfloat16*)out.data_ptr());
+        kernel<<<dim3(pairs, splits), 32 * ATT_WARPS, 0, cs>>>(bf(q), kd, kb, kbb, kts, vd, vb, vbb, vts, tlen ? bf(tk) : nullptr, tlen ? bf(tv) : nullptr, (int)tlen, (int)pairs, (int)G, (int)P, (int)per, sl2, (float*)workspace, done, bf(out));
     };
     if (D == 128) launch(attn_decode_kernel<128>);
     else launch(attn_decode_kernel<64>);
+    return cudaGetLastError();
+}
+
+#ifdef TORCH_EXTENSION_NAME
+// The pybind module: the C API on tensors, on the current stream of their
+// device; outputs, workspaces and counters allocated as PyTorch tensors.
+static cudaStream_t current_stream() { return at::cuda::getCurrentCUDAStream(); }
+static void ok(int r, const char* fn) { TORCH_CHECK(r == 0, fn, ": ", cudaGetErrorString((cudaError_t)r)); }
+template <class T> static T* ptr(const torch::Tensor& t) { return (T*)t.data_ptr(); }
+static const uint16_t* opt(const torch::Tensor& t) { return t.numel() ? ptr<const uint16_t>(t) : nullptr; }  // a bias: none when empty
+static void* addr(const torch::Tensor& t) { return t.defined() ? t.data_ptr() : nullptr; }
+
+// A product's workspace (none for 0 bytes).
+static torch::Tensor scratch(size_t bytes, const torch::Tensor& like) { return bytes ? torch::empty({(int64_t)bytes}, like.options().dtype(torch::kUInt8)) : torch::Tensor(); }
+
+// A product's done counters on like's device (at least n; least when first made): zero between products.
+static int* counters(std::map<int, torch::Tensor>& of, const torch::Tensor& like, int64_t n, int64_t least) {
+    torch::Tensor& t = of[like.get_device()];
+    if (!t.defined() || t.numel() < n) t = torch::zeros({std::max<int64_t>(n, least)}, like.options().dtype(torch::kInt32));
+    return ptr<int>(t);
+}
+
+static void words(const std::vector<int64_t>& v, size_t n, uint32_t* w, const char* what) {
+    TORCH_CHECK(v.size() == n, what);
+    for (size_t i = 0; i < n; i++) w[i] = (uint32_t)v[i];
+}
+
+torch::Tensor lane_bits(torch::Tensor w, torch::Tensor len, int64_t tw, int64_t V) {
+    const c10::cuda::CUDAGuard guard(w.device());
+    auto bits = torch::empty({tiles_for(w.numel(), tw) * 32}, w.options().dtype(torch::kInt32));
+    ok(glyd_gpu_lane_bits(ptr<uint16_t>(w), w.numel(), ptr<uint8_t>(len), tw, V, ptr<uint32_t>(bits), current_stream()), "lane_bits");
+    return bits;
+}
+
+void write_codes(torch::Tensor w, torch::Tensor len, torch::Tensor code, torch::Tensor offs, torch::Tensor out, int64_t tw, int64_t V) {
+    const c10::cuda::CUDAGuard guard(w.device());
+    ok(glyd_gpu_write_codes(ptr<uint16_t>(w), w.numel(), ptr<uint8_t>(len), ptr<uint32_t>(code), ptr<uint32_t>(offs), ptr<uint32_t>(out), tw, V, current_stream()), "write_codes");
+}
+
+void decode(torch::Tensor sm, torch::Tensor stream, torch::Tensor offs, torch::Tensor tables, int64_t n, int64_t tw, int64_t V, int64_t tile_words, torch::Tensor tile_ids, torch::Tensor out) {
+    const c10::cuda::CUDAGuard guard(sm.device());
+    bool all = tile_ids.numel() == 0;
+    TORCH_CHECK(out.numel() >= (all ? n : tile_ids.numel() * tw), "the output is too small");
+    ok(glyd_gpu_decode(ptr<uint8_t>(sm), ptr<uint32_t>(stream), stream.numel(), ptr<uint32_t>(offs), ptr<uint32_t>(tables), n, tw, V, tile_words, ptr<int64_t>(tile_ids), tile_ids.numel(), ptr<uint16_t>(out), current_stream()), "decode");
+}
+
+void gemv(torch::Tensor sm, torch::Tensor stream, torch::Tensor offs, torch::Tensor tables, int64_t O, int64_t K, int64_t tw, int64_t V, int64_t tile_words, torch::Tensor x, torch::Tensor bias, torch::Tensor y, torch::Tensor sum, torch::Tensor count) {
+    const c10::cuda::CUDAGuard guard(sm.device());
+    bool split = tw % K != 0;
+    TORCH_CHECK(K % (32 * V) == 0 && tw % (32 * V) == 0 && (!split || sum.numel() >= O), "gemv needs K and tiles multiples of 32 V, and row sums for split rows");
+    ok(glyd_gpu_gemv(ptr<uint8_t>(sm), ptr<uint32_t>(stream), stream.numel(), ptr<uint32_t>(offs), ptr<uint32_t>(tables), O, K, tw, V, tile_words, ptr<uint16_t>(x), opt(bias), ptr<uint16_t>(y), ptr<float>(sum), ptr<int>(count), current_stream()), "gemv");
+}
+
+void fast_gemv(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch::Tensor exc_base, int64_t top, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    const c10::cuda::CUDAGuard guard(sm.device());
+    TORCH_CHECK(K % 128 == 0, "rows a multiple of 128 long");
+    ok(glyd_gpu_fast_gemv(ptr<uint8_t>(sm), ptr<uint32_t>(planes), ptr<uint8_t>(exc), ptr<int32_t>(exc_base), (uint64_t)top, O, K, ptr<uint16_t>(x), opt(bias), ptr<uint16_t>(y), current_stream()), "fast_gemv");
+}
+
+void fast_decode(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch::Tensor exc_base, int64_t top, int64_t row0, int64_t rows, torch::Tensor row_ids, int64_t K, torch::Tensor out) {
+    const c10::cuda::CUDAGuard guard(sm.device());
+    int64_t ids = row_ids.numel();
+    TORCH_CHECK(K % 128 == 0 && out.numel() >= (ids ? ids : rows) * K, "rows a multiple of 128 long, room for them");
+    ok(glyd_gpu_fast_decode(ptr<uint8_t>(sm), ptr<uint32_t>(planes), ptr<uint8_t>(exc), ptr<int32_t>(exc_base), (uint64_t)top, row0, rows, ptr<int64_t>(row_ids), ids, K, ptr<uint16_t>(out), current_stream()), "fast_decode");
+}
+
+void fast_gemm(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch::Tensor exc_base, int64_t top, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    const c10::cuda::CUDAGuard guard(sm.device());
+    TORCH_CHECK(K % GM_BK == 0 && x.is_contiguous() && x.size(1) == K, "K a multiple of 64, X contiguous [M, K]");
+    int64_t M = x.size(0);
+    size_t bytes = 0;
+    ok(glyd_gpu_fast_gemm_workspace(O, K, M, &bytes), "fast_gemm");
+    auto ws = scratch(bytes, x);
+    ok(glyd_gpu_fast_gemm(ptr<uint8_t>(sm), ptr<uint32_t>(planes), ptr<uint8_t>(exc), ptr<int32_t>(exc_base), (uint64_t)top, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, current_stream()), "fast_gemm");
+}
+
+void fast_bgemv(torch::Tensor sm, torch::Tensor planes, torch::Tensor exc, torch::Tensor exc_base, int64_t top, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    const c10::cuda::CUDAGuard guard(sm.device());
+    int64_t M = x.size(0);
+    TORCH_CHECK(K % 512 == 0 && x.is_contiguous() && x.size(1) == K && (M == 2 || M == 4 || M == 8 || M == 16), "K a multiple of 512, X contiguous [M, K], M 2, 4, 8 or 16");
+    size_t bytes = 0;
+    ok(glyd_gpu_fast_bgemv_workspace(O, K, M, &bytes), "fast_bgemv");
+    auto ws = scratch(bytes, x);
+    ok(glyd_gpu_fast_bgemv(ptr<uint8_t>(sm), ptr<uint32_t>(planes), ptr<uint8_t>(exc), ptr<int32_t>(exc_base), (uint64_t)top, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, current_stream()), "fast_bgemv");
+}
+
+void mma_gemm(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    uint32_t t[3];
+    words(tiers, 3, t, "three tiers");
+    const c10::cuda::CUDAGuard guard(data.device());
+    int64_t M = x.size(0);
+    TORCH_CHECK(O % 64 == 0 && K % 16 == 0 && M <= 64 && x.is_contiguous() && x.size(1) == K, "O a multiple of 64, K of 16, up to 64 tokens, X contiguous [M, K]");
+    size_t bytes = 0;
+    ok(glyd_gpu_mma_gemm_workspace(O, K, M, &bytes), "mma_gemm");
+    auto ws = scratch(bytes, x);
+    static auto* done_of = new std::map<int, torch::Tensor>;  // kept to the end (no teardown after CUDA's)
+    ok(glyd_gpu_mma_gemm(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma_gemm");
+}
+
+void mma12_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    uint32_t s[4];
+    words(sym, 4, s, "four words of symbols");
+    const c10::cuda::CUDAGuard guard(data.device());
+    int64_t M = x.size(0);
+    TORCH_CHECK(O % 64 == 0 && K % 16 == 0 && M <= 64 && x.is_contiguous() && x.size(1) == K, "O a multiple of 64, K of 16, up to 64 tokens, X contiguous [M, K]");
+    size_t bytes = 0;
+    ok(glyd_gpu_mma12_gemm_workspace(O, K, M, &bytes), "mma12_gemm");
+    auto ws = scratch(bytes, x);
+    static auto* done_of = new std::map<int, torch::Tensor>;
+    ok(glyd_gpu_mma12_gemm(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma12_gemm");
+}
+
+void mma_gemm_big(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t variant) {
+    uint32_t t[3];
+    words(tiers, 3, t, "three tiers");
+    const c10::cuda::CUDAGuard guard(data.device());
+    TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
+    int64_t M = x.size(0);
+    size_t bytes = 0;
+    ok(glyd_gpu_mma_gemm_big_workspace(O, K, M, variant, &bytes), "mma_gemm_big");
+    auto ws = scratch(bytes, x);
+    ok(glyd_gpu_mma_gemm_big(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), variant, addr(ws), bytes, current_stream()), "mma_gemm_big");
+}
+
+void mma12_gemm_big(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t variant) {
+    uint32_t s[4];
+    words(sym, 4, s, "four words of symbols");
+    const c10::cuda::CUDAGuard guard(data.device());
+    TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
+    int64_t M = x.size(0);
+    size_t bytes = 0;
+    ok(glyd_gpu_mma12_gemm_big_workspace(O, K, M, variant, &bytes), "mma12_gemm_big");
+    auto ws = scratch(bytes, x);
+    ok(glyd_gpu_mma12_gemm_big(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), variant, addr(ws), bytes, current_stream()), "mma12_gemm_big");
+}
+
+// Many tokens on Ampere and Ada (to 64 a launch, in chunks past that).
+void mma12_gemm_mid(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    uint32_t s[4];
+    words(sym, 4, s, "four words of symbols");
+    const c10::cuda::CUDAGuard guard(data.device());
+    TORCH_CHECK(at::cuda::getCurrentDeviceProperties()->major >= 8, "mma12_gemm_mid: Ampere or later");
+    TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
+    TORCH_CHECK((uintptr_t)data.data_ptr() % 16 == 0 && (uintptr_t)exc.data_ptr() % 16 == 0 && exc.numel() % 4 == 0, "the pack 16-byte aligned, exc padded to 4 (pack_mma12)");
+    int64_t M = x.size(0);
+    size_t bytes = 0;
+    ok(glyd_gpu_mma12_gemm_mid_workspace(O, K, M, &bytes), "mma12_gemm_mid");
+    auto ws = scratch(bytes, data);
+    static auto* done_of = new std::map<int, torch::Tensor>;
+    ok(glyd_gpu_mma12_gemm_mid(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma12_gemm_mid");
+}
+
+void mma12_gemm_wg(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
+    uint32_t s[4];
+    words(sym, 4, s, "four words of symbols");
+    const c10::cuda::CUDAGuard guard(data.device());
+    TORCH_CHECK(at::cuda::getCurrentDeviceProperties()->major == 9 && at::cuda::getCurrentDeviceProperties()->minor == 0, "wgmma: Hopper (compute capability 9.0) alone");
+    TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
+    TORCH_CHECK((uintptr_t)data.data_ptr() % 16 == 0 && (uintptr_t)exc.data_ptr() % 16 == 0 && exc.numel() % 4 == 0, "the pack 16-byte aligned, exc padded to 4 (pack_mma12)");
+    int64_t M = x.size(0);
+    size_t bytes = 0;
+    ok(glyd_gpu_mma12_gemm_wg_workspace(O, K, M, &bytes), "mma12_gemm_wg");
+    auto ws = scratch(bytes, data);
+    static auto* done_of = new std::map<int, torch::Tensor>;
+    ok(glyd_gpu_mma12_gemm_wg(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma12_gemm_wg");
+}
+
+void mma_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
+    uint32_t t[3];
+    words(tiers, 3, t, "three tiers");
+    const c10::cuda::CUDAGuard guard(data.device());
+    TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64");
+    ok(glyd_gpu_mma_unpack(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, K, row0, rows, ptr<uint16_t>(out), current_stream()), "mma_unpack");
+}
+
+void mma12_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
+    uint32_t s[4];
+    words(sym, 4, s, "four words of symbols");
+    const c10::cuda::CUDAGuard guard(data.device());
+    TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64");
+    ok(glyd_gpu_mma12_unpack(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, K, row0, rows, ptr<uint16_t>(out), current_stream()), "mma12_unpack");
+}
+
+void attn_decode(torch::Tensor q, torch::Tensor kd, torch::Tensor kb, torch::Tensor kbb, std::vector<int64_t> kt, torch::Tensor vd, torch::Tensor vb, torch::Tensor vbb, std::vector<int64_t> vt, torch::Tensor tk, torch::Tensor tv, int64_t tlen, int64_t pairs, int64_t G, int64_t P, double scale, torch::Tensor out) {
+    uint32_t k3[3], v3[3];
+    words(kt, 3, k3, "three tiers");
+    words(vt, 3, v3, "three tiers");
+    const c10::cuda::CUDAGuard guard(q.device());
+    int64_t D = q.size(-1);
+    TORCH_CHECK((D == 64 || D == 128) && G >= 1 && G <= 16 && q.is_contiguous() && tlen < 64 && P + (tlen > 0) > 0, "head_dim 64 or 128, up to 16 queries a KV head");
+    size_t bytes = 0;
+    ok(glyd_gpu_attn_decode_workspace(D, tlen, pairs, P, &bytes), "attn_decode");
+    auto ws = scratch(bytes, q);
+    static auto* done_of = new std::map<int, torch::Tensor>;  // a pair's finished blocks: zero between calls
+    ok(glyd_gpu_attn_decode(ptr<uint16_t>(q), D, ptr<uint8_t>(kd), ptr<uint8_t>(kb), ptr<int32_t>(kbb), k3, ptr<uint8_t>(vd), ptr<uint8_t>(vb), ptr<int32_t>(vbb), v3, ptr<uint16_t>(tk), ptr<uint16_t>(tv), tlen, pairs, G, P, scale, ptr<uint16_t>(out), addr(ws), bytes, counters(*done_of, q, pairs, 1 << 12), current_stream()), "attn_decode");
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -2339,3 +2630,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("fast_gemv", &fast_gemv);
     m.def("fast_decode", &fast_decode);
 }
+#endif

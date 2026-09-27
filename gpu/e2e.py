@@ -1,26 +1,31 @@
 """End to end: a Hugging Face causal LM generating with its weights held
 compressed in VRAM (glyd_gpu), against the same model in bf16.
 
-    python e2e.py MODEL_DIR --format fast|huffman|mma [--fused] [--baseline] [--tokens N]
+    python e2e.py MODEL_DIR --format fast|huffman|mma [--fused | --exact] [--baseline] [--tokens N]
 
-Exact path (default): each matrix decoded into a scratch buffer, then
-PyTorch's own matmul: logits and tokens bit-identical to bf16. --fused:
+Decoded path (default): each matrix decoded into a scratch buffer (in
+row blocks past 128M weights), then PyTorch's own matmul. --exact: every
+matrix decoded whole, into one scratch buffer the size of the largest,
+and multiplied by F.linear on the input as it came, as the bf16 model's
+nn.Linear does: logits and tokens bit-identical to bf16's. --fused:
 one-token steps multiply straight from the packed weights (decoded in
 registers, never written out); their sums are in another order than
 cuBLAS's, as between any two GEMM kernels, so late tokens may differ.
 The bf16 model is never held on the GPU: every Linear is packed from
 the CPU copy, one at a time.
 """
-import argparse, math, os, time, torch
+import argparse, math, time, torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import glyd_gpu as g
+from glyd.gpu.model import GLinear, Scratch, decoder, merge_linears, pack_modules, set_scratch
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
 ap.add_argument("--format", default="fast", choices=["fast", "huffman", "mma", "mma12", "auto"], help="mma: the Linears in the mma layout (the embedding in fast), up to 64 tokens a step multiplied straight from it; mma12: its 12-bit layout (a lighter decode); auto: the one for this GPU (glyd_gpu.best_layout)")
 ap.add_argument("--fused", action="store_true")
+ap.add_argument("--exact", action="store_true", help="every Linear's matrix decoded whole into one scratch buffer, then F.linear as the bf16 model's: its logits bit for bit (overrides --fused)")
 ap.add_argument("--baseline", action="store_true")
 ap.add_argument("--tokens", type=int, default=128)
 ap.add_argument("--prefill", type=str, default="", help="prompt lengths to time one forward pass at, e.g. 128,512,2048")
@@ -40,11 +45,6 @@ args = ap.parse_args()
 tok = AutoTokenizer.from_pretrained(args.model)
 prompt = "The history of data compression began"
 ids = tok(prompt, return_tensors="pt").input_ids.cuda()
-SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
-HOPPER = torch.cuda.get_device_capability()[0] >= 9
-WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
-MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # GDDR Ampere and Ada: steps of this many tokens to 64 by mma_gemm_mid
-MID = torch.cuda.get_device_capability() in ((8, 6), (8, 7), (8, 9))  # (on an A100 mma_gemm is the faster, measured)
 
 
 def prefill(model, label):
@@ -217,148 +217,13 @@ def measure(model, label):
     return logits, out
 
 
-class Scratch:
-    buf = None  # one a device: {device: tensor}
-
-
-class GLinear(nn.Module):
-    def __init__(self, p, bias):
-        super().__init__()
-        self.p, self.bias = p, bias
-        O, K = p.shape
-        step = 64 if isinstance(p, g.Mma) else getattr(p, "rows_per_tile", 1) or 1
-        # Whole when it fits the scratch (a split matmul sums in another order).
-        self.block = O if O * K <= SCRATCH else max(step, SCRATCH // K // step * step)
-
-    def decode_rows(self, r0, r1):
-        p, K = self.p, self.p.shape[1]
-        buf = Scratch.buf[p.sm.device]
-        out = buf[: (r1 - r0) * K]
-        if isinstance(p, g.Mma):
-            g.mma_unpack(p, out, r0, r1 - r0)
-        elif isinstance(p, g.Fast):
-            g._ext.fast_decode(p.sm, p.planes, p.exc, p.exc_base, p.top, r0, r1 - r0, g._none(out.device), K, out.view(torch.int16))
-        elif p.split:  # tiles split its rows: decoded whole (it fits the scratch)
-            assert r0 == 0 and r1 == p.shape[0]
-            g.unpack(p, buf)
-        else:
-            T = p.rows_per_tile
-            tiles = torch.arange(r0 // T, (r1 + T - 1) // T, device=out.device)
-            full = buf[: tiles.numel() * p.tw]
-            g.decode_tiles(p, tiles, full)
-            out = full[: (r1 - r0) * K]
-        return out.view(r1 - r0, K)
-
-    def forward(self, x):
-        O, K = self.p.shape
-        lead = x.shape[:-1]
-        x2 = x.reshape(-1, K)
-        # Past WG_MAX tokens on Hopper (a prompt) the tensor cores outrun our decode: decode the matrix, cuBLAS multiplies.
-        if args.fused and isinstance(self.p, g.Mma):
-            M = x2.shape[0]
-            if HOPPER and WG_MIN <= M <= WG_MAX and K % 64 == 0 and isinstance(self.p, g.Mma12):  # TMA and wgmma
-                return g.mma_gemm_wg(self.p, x2, self.bias).view(*lead, O)
-            if MID and MID_MIN <= M <= 64 and K % 64 == 0 and isinstance(self.p, g.Mma12):  # cp.async and mma.sync, the same plan
-                return g.mma_gemm_mid(self.p, x2, self.bias).view(*lead, O)
-            if M <= 64:
-                return g.mma_gemm(self.p, x2, self.bias).view(*lead, O)
-            if K % 64 == 0 and not HOPPER:
-                return g.mma_gemm_big(self.p, x2, self.bias).view(*lead, O)
-        if args.fused and x2.shape[0] == 1:
-            f = g.fast_gemv if isinstance(self.p, g.Fast) else g.gemv
-            return f(self.p, x2[0], self.bias).view(*lead, O)
-        n = x2.shape[0]
-        if args.fused and isinstance(self.p, g.Fast) and 1 < n <= 16 and K % 512 == 0:
-            # A few tokens: the batched product, the tokens padded to 2, 4, 8 or 16.
-            m = 1 << (n - 1).bit_length()
-            xp = x2 if m == n else torch.cat([x2, x2.new_zeros(m - n, K)])
-            return g.fast_bgemv(self.p, xp, self.bias)[:n].view(*lead, O)
-        if args.fused and isinstance(self.p, g.Fast) and n <= args.gemm_max and K % 64 == 0:
-            return g.fast_gemm(self.p, x2, self.bias).view(*lead, O)
-        if self.block >= O:
-            return F.linear(x2, self.decode_rows(0, O), self.bias).view(*lead, O)
-        y = torch.empty(x2.shape[0], O, dtype=x.dtype, device=x.device)
-        for r0 in range(0, O, self.block):
-            r1 = min(O, r0 + self.block)
-            y[:, r0:r1] = F.linear(x2, self.decode_rows(r0, r1), None if self.bias is None else self.bias[r0:r1])
-        return y.view(*lead, O)
-
-
-class Merged(nn.Module):
-    """Linears that take the same input (q, k, v; gate, up) as one product, as
-    serving engines run them: the first member called computes all of them,
-    each member returns its slice (the input kept until all have)."""
-
-    def __init__(self, linears):
-        super().__init__()
-        w = torch.cat([l.weight.data for l in linears])
-        assert len({l.bias is None for l in linears}) == 1
-        self.lin = torch.nn.utils.skip_init(nn.Linear, w.shape[1], w.shape[0], bias=linears[0].bias is not None, dtype=w.dtype)
-        self.lin.weight = nn.Parameter(w, requires_grad=False)
-        if self.lin.bias is not None:
-            self.lin.bias = nn.Parameter(torch.cat([l.bias.data for l in linears]), requires_grad=False)
-        self.sizes = [l.weight.shape[0] for l in linears]
-        self.x = self.parts = None
-        self.left = 0
-
-    def part(self, i, x):
-        if self.x is not x:
-            self.x, self.parts, self.left = x, self.lin(x).split(self.sizes, -1), len(self.sizes)
-        y = self.parts[i]
-        self.left -= 1
-        if self.left == 0:
-            self.x = self.parts = None
-        return y
-
-
-class Part(nn.Module):
-    def __init__(self, group, i):
-        super().__init__()
-        self.i, self.group = i, [group]  # the group is its module's child, not this one's
-
-    def forward(self, x):
-        return self.group[0].part(self.i, x)
-
-
-def decoder(model):
-    """The decoder stack: model.model, or its language_model when the checkpoint also carries a vision tower (Gemma 3, Gemma 4)."""
-    return getattr(model.model, "language_model", model.model)
-
-
-def merge(model):
-    n = 0
-    for layer in decoder(model).layers:
-        # a linear-attention layer (Qwen3-Next, Qwen3.5) has no self_attn: only its MLP merges
-        for mod, names in ((getattr(layer, "self_attn", None), ("q_proj", "k_proj", "v_proj")), (getattr(layer, "mlp", None), ("gate_proj", "up_proj"))):
-            if mod is not None and all(isinstance(getattr(mod, c, None), nn.Linear) for c in names):
-                mod.merged = Merged([getattr(mod, c) for c in names])
-                for i, c in enumerate(names):
-                    setattr(mod, c, Part(mod.merged, i))
-                n += 1
-    print(f"merged: {n} groups of Linears as one product each")
-
-
-class GEmbedding(nn.Module):
-    def __init__(self, p, scale=None):
-        super().__init__()
-        self.p = p
-        # Gemma's embedding multiplies its rows by sqrt(hidden size) in the weights' dtype: the same product here
-        self.register_buffer("scale", scale, persistent=False)
-
-    def forward(self, ids):
-        rows = g.fast_rows(self.p, ids) if isinstance(self.p, g.Fast) else g.rows(self.p, ids)
-        rows = rows.view(*ids.shape, -1)
-        return rows if self.scale is None else rows * self.scale.to(rows.dtype)
-
-
 try:
     model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).eval()
 except ValueError:  # a checkpoint transformers loads only with its vision tower (Muse Glimmer)
     from transformers import AutoModelForImageTextToText
     model = AutoModelForImageTextToText.from_pretrained(args.model, dtype=torch.bfloat16).eval()
 if args.merge:
-    with torch.no_grad():
-        merge(model)
+    print(f"merged: {merge_linears(model)} groups of Linears as one product each")
 weights_bf16 = sum(p.numel() * p.element_size() for p in model.parameters())
 if args.baseline:
     if args.gpus > 1:
@@ -405,19 +270,9 @@ def pack(w, linear):
     return (g.pack if args.format == "huffman" else g.pack_fast)(w)
 
 
-packed, biggest, t0 = {}, {}, time.perf_counter()
+t0 = time.perf_counter()
 with torch.no_grad():
-    for name, m in list(model.named_modules()):
-        for cname, child in list(m.named_children()):
-            if isinstance(child, (nn.Linear, nn.Embedding)):
-                dev = torch.device("cuda", layer_of.get(id(child), 0 if isinstance(child, nn.Embedding) else last))
-                key = (child.weight.data_ptr(), dev, isinstance(child, nn.Linear))  # a weight tied to embedding and output: a pack for each
-                if key not in packed:
-                    packed[key] = pack(child.weight.data.to(dev), isinstance(child, nn.Linear))
-                p = packed[key]
-                bias = child.bias.data.to(dev) if isinstance(child, nn.Linear) and child.bias is not None else None
-                setattr(m, cname, GLinear(p, bias) if isinstance(child, nn.Linear) else GEmbedding(p, getattr(child, "embed_scale", None)))
-                biggest[dev] = max(biggest.get(dev, 0), min(p.n, SCRATCH))
+    packed = pack_modules(model, pack, lambda m: torch.device("cuda", layer_of.get(id(m), 0 if isinstance(m, nn.Embedding) else last)), fused=args.fused, exact=args.exact, gemm_max=args.gemm_max)
     if args.gpus > 1:
         from accelerate import dispatch_model
         # the decoder's layers where they were packed, its final norm on the last GPU, everything else
@@ -434,15 +289,16 @@ with torch.no_grad():
         dispatch_model(model, device_map=dm)
     else:
         model.cuda()
-    Scratch.buf = {dev: torch.empty(n + 16384 * 8, dtype=torch.bfloat16, device=dev) for dev, n in biggest.items()}
+    set_scratch(model, args.exact)
 torch.cuda.empty_cache()
 packed_bytes = sum(p.nbytes() for p in packed.values())
 other = sum(p.numel() * p.element_size() for p in model.parameters()) + sum(m.bias.numel() * 2 for m in model.modules() if isinstance(m, GLinear) and m.bias is not None)
 in_use = sum(torch.cuda.memory_allocated(i) for i in range(torch.cuda.device_count()))
 scratch = sum(b.numel() * 2 for b in Scratch.buf.values())
-print(f"{args.format}{' fused' if args.fused else ''}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {scratch / 1e9:.2f} GB, VRAM in use {in_use / 1e9:.2f} GB on {args.gpus} GPU{'s' if args.gpus > 1 else ''}")
+mode = " exact" if args.exact else " fused" if args.fused else ""
+print(f"{args.format}{mode}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {scratch / 1e9:.2f} GB, VRAM in use {in_use / 1e9:.2f} GB on {args.gpus} GPU{'s' if args.gpus > 1 else ''}")
 smi("glyd")
-logits_b, out_b = measure(model, f"glyd {args.format}{' fused' if args.fused else ''}")
+logits_b, out_b = measure(model, f"glyd {args.format}{mode}")
 prefill(model, f"glyd {args.format}")
 profile(model, f"glyd {args.format}")
 top_b = perplexity(model, f"glyd {args.format}")
