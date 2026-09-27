@@ -2846,7 +2846,7 @@ static int mma12_mid_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
 }
 
 template <int CW, int NB, int NW, int RBB, int MT>
-static int mma12_ws_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
+static int mma12_ws_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t m0, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
     using C = Ws12<CW, NB, NW, RBB, MT>;
     auto kernel = mma12_ws_kernel<CW, NB, NW, RBB, MT>;
     static std::atomic<int> known[MAX_DEVICES];
@@ -2854,7 +2854,7 @@ static int mma12_ws_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t 
     int64_t units = (O / 64 + RBB - 1) / RBB * ((M + C::TM - 1) / C::TM), T = units * (K / 64);
     int64_t nb = std::max<int64_t>(1, std::min<int64_t>(per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), T / 8));
     if (need) *need = std::max(*need, (size_t)((nb + units) * C::TM * 64 * RBB) * sizeof(float));
-    else kernel<<<nb, C::THREADS, C::SHARED, cs>>>(f, O, K, M, bf(x), bf(bias), bf(y), parts, done);
+    else kernel<<<nb, C::THREADS, C::SHARED, cs>>>(f, O, K, M, bf(x) + m0 * K, bf(bias), bf(y) + m0 * O, parts, done);
     return 0;
 }
 
@@ -2863,10 +2863,13 @@ static int mma12_mid_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
     if (attribute(cudaDevAttrComputeCapabilityMajor, dev) < 8) return cudaErrorNotSupported;
     if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16 || (uintptr_t)f.data % 16 || (uintptr_t)f.exc % 16) return cudaErrorInvalidValue;
     if (attribute(cudaDevAttrComputeCapabilityMajor, dev) == 8 && attribute(cudaDevAttrComputeCapabilityMinor, dev) == 0) {
-        // The A100: producer and consumer warps, 32 tokens a unit to 32, else 64 (past 64 in tiles of 64, each
-        // reading W again: prompts go to mma_gemm_big).
-        auto run = M <= 32 ? mma12_ws_run<4, 4, 5, 2, 1> : mma12_ws_run<4, 4, 4, 2, 2>;
-        run(f, O, K, x, M, bias, y, parts, done, cs, need);
+        // The A100: producer and consumer warps, 32 tokens a unit to 32, else 64; past 64 a launch a 64 (each
+        // reading W again: prompts go to mma_gemm_big), so the units and their done counters stay O / 128.
+        for (int64_t m0 = 0; m0 < M; m0 += 64) {
+            int64_t mc = std::min<int64_t>(64, M - m0);
+            auto run = mc <= 32 ? mma12_ws_run<4, 4, 5, 2, 1> : mma12_ws_run<4, 4, 4, 2, 2>;
+            run(f, O, K, x, m0, mc, bias, y, parts, done, cs, need);
+        }
         return cudaGetLastError();
     }
     bool big = attribute(cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) >= Mid12<64, 4>::SHARED;  // sm_80: four warpgroups
