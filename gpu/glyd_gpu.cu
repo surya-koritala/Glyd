@@ -2809,8 +2809,10 @@ template <class Fmt>
 static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
     if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16) return cudaErrorInvalidValue;
     // 4 consumer warps and 4 producers: blocks of 128 tokens by two row blocks (3 stages), or, past 128
-    // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens).
-    if (variant == 0) variant = M > 128 ? 2 : 1;
+    // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens) where the last block of 256
+    // would be more than half full (else its empty half costs more than the second decode: a Qwen3-4B layer's
+    // products take 0.79-0.89x the time in blocks of 128 at 300 tokens, 1.02-1.14x at 448, RTX 4080 SUPER).
+    if (variant == 0) variant = M > 128 && (M % 256 == 0 || M % 256 > 128) ? 2 : 1;
     auto run = variant == 2 ? mma_gemm_big_run<Fmt, 4, 4, 2, 1> : mma_gemm_big_run<Fmt, 4, 4, 3, 2>;
     return run(f, O, K, x, M, bias, y, ws, ws_bytes, cs, need);
 }
