@@ -2033,9 +2033,17 @@ __global__ void moe_sum_kernel(const float* __restrict__ y32, const int64_t* __r
 
 // The mma layout back to bf16, rows [row0, row0 + rows) of W (multiples of
 // 64) into out [rows, K] (checks, and the many-token path that multiplies
-// with PyTorch): a warp a step.
-template <class Fmt>
-__global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out) {
+// with PyTorch): a warp a step. MOE (exact, a mixture of experts' layer, W its
+// experts' matrices of `rows` rows stacked): blockIdx.y a hit expert of plan
+// (moe_route's; past those hit: nothing to do), its rows into the same rows
+// of out [E rows, K], the rest of out left as it is.
+template <class Fmt, bool MOE = false>
+__global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out, const int* __restrict__ plan = nullptr) {
+    if constexpr (MOE) {
+        if ((int)blockIdx.y >= __ldg(plan)) return;  // the whole block: no expert this far down the hits
+        row0 = (int64_t)__ldg(plan + 1 + blockIdx.y) * rows;
+        out += row0 * K;
+    }
     __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
     if constexpr (Fmt::kTable) fill_groups(tab);
     __syncthreads();
@@ -2709,6 +2717,25 @@ GLYD_GPU_API int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc,
     return mma_unpack_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, K, row0, rows, out, cs);
 }
 
+// Exact, a mixture of experts' layer (its E matrices [O, K] stacked): the experts the plan of P pairs hits back to
+// bf16, into their rows of out [E O, K]; the rest of out left as it is.
+template <class Fmt>
+static int mma_moe_unpack_run(Fmt f, int64_t E, int64_t O, int64_t K, int64_t P, const int32_t* plan, uint16_t* out, cudaStream_t cs) {
+    if (E < 1 || O < 64 || O % 64 || K < 16 || K % 16 || P < 0) return cudaErrorInvalidValue;
+    if (P == 0) return 0;
+    int64_t steps = O / 64 * (K / 16);
+    mma_unpack_kernel<Fmt, true><<<dim3((unsigned)((steps * 32 + 255) / 256), (unsigned)std::min(E, P)), 256, 0, cs>>>(f, K, 0, O, out, plan);
+    return cudaGetLastError();
+}
+
+GLYD_GPU_API int glyd_gpu_mma_moe_unpack(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t E, int64_t O, int64_t K, int64_t P, const int32_t* plan, uint16_t* out, cudaStream_t cs) {
+    return mma_moe_unpack_run(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, E, O, K, P, plan, out, cs);
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_moe_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t E, int64_t O, int64_t K, int64_t P, const int32_t* plan, uint16_t* out, cudaStream_t cs) {
+    return mma_moe_unpack_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, E, O, K, P, plan, out, cs);
+}
+
 // A mixture-of-experts layer (the E experts' [O, K] matrices stacked, [E O, K]). moe_route: the plan [2 + 2E + P]
 // (int32) of the P pairs whose experts are ids [P] (int64; pair j: token j / k, choice j mod k).
 GLYD_GPU_API int glyd_gpu_moe_route(const int64_t* ids, int64_t P, int64_t E, int32_t* plan, cudaStream_t cs) {
@@ -3022,6 +3049,22 @@ void mma12_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base,
     ok(glyd_gpu_mma12_unpack(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, K, row0, rows, ptr<uint16_t>(out), current_stream()), "mma12_unpack");
 }
 
+void mma_moe_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t E, int64_t O, int64_t K, int64_t P, torch::Tensor plan, torch::Tensor out) {
+    uint32_t t[3];
+    words(tiers, 3, t, "three tiers");
+    const c10::cuda::CUDAGuard guard(data.device());
+    TORCH_CHECK(plan.scalar_type() == torch::kInt32 && out.numel() >= E * O * K, "plan int32, out [E O, K]");
+    ok(glyd_gpu_mma_moe_unpack(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, E, O, K, P, ptr<int32_t>(plan), ptr<uint16_t>(out), current_stream()), "mma_moe_unpack");
+}
+
+void mma12_moe_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t E, int64_t O, int64_t K, int64_t P, torch::Tensor plan, torch::Tensor out) {
+    uint32_t s[4];
+    words(sym, 4, s, "four words of symbols");
+    const c10::cuda::CUDAGuard guard(data.device());
+    TORCH_CHECK(plan.scalar_type() == torch::kInt32 && out.numel() >= E * O * K, "plan int32, out [E O, K]");
+    ok(glyd_gpu_mma12_moe_unpack(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, E, O, K, P, ptr<int32_t>(plan), ptr<uint16_t>(out), current_stream()), "mma12_moe_unpack");
+}
+
 void moe_route(torch::Tensor ids, int64_t E, torch::Tensor plan) {
     const c10::cuda::CUDAGuard guard(ids.device());
     TORCH_CHECK(ids.scalar_type() == torch::kInt64 && ids.is_contiguous() && plan.scalar_type() == torch::kInt32 && plan.numel() >= 2 + 2 * E + ids.numel(), "ids int64, plan int32 [2 + 2E + P]");
@@ -3085,6 +3128,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("moe_route", &moe_route);
     m.def("mma_moe", &mma_moe);
     m.def("mma12_moe", &mma12_moe);
+    m.def("mma_moe_unpack", &mma_moe_unpack);
+    m.def("mma12_moe_unpack", &mma12_moe_unpack);
     m.def("mma_gemm_big", &mma_gemm_big);
     m.def("fast_bgemv", &fast_bgemv);
     m.def("fast_gemm", &fast_gemm);

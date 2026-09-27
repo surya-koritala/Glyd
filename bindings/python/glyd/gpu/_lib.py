@@ -43,6 +43,8 @@ _ARGS = {  # each function's arguments before its stream
     "mma12_unpack": _PACK + [_I64, _I64, _I64, _P],
     "attn_decode": [_P, _I64, _P, _P, _P, _W, _P, _P, _P, _W, _P, _P, _I64, _I64, _I64, _I64, ctypes.c_double, _P, _P, _SZ, _P],
     "moe_route": [_P, _I64, _I64, _P],
+    "mma_moe_unpack": _PACK + [_I64, _I64, _I64, _I64, _P, _P],
+    "mma12_moe_unpack": _PACK + [_I64, _I64, _I64, _I64, _P, _P],
     "mma_moe": _PACK + [_I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ, _P],
     "mma12_moe": _PACK + [_I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ, _P],
 }
@@ -363,3 +365,22 @@ def mma_moe(data, blocks, block_base, tiers, E, O, K, x, k, gather, plan, act, b
 
 def mma12_moe(data, exc, exc_base, sym, E, O, K, x, k, gather, plan, act, bias, w, ids, y):
     _moe("mma12_moe", data, exc, exc_base, _words(sym, 4, "four words of symbols"), E, O, K, x, k, gather, plan, act, bias, w, ids, y)
+
+
+def _moe_unpack(name, data, a, b, words, E, O, K, P, plan, out):
+    """mma_moe_unpack, mma12_moe_unpack."""
+    d = data.get_device()
+    if d != _device():
+        return _there(_moe_unpack, d, name, data, a, b, words, E, O, K, P, plan, out)
+    _check(plan.dtype == torch.int32 and out.numel() >= E * O * K, "plan int32, out [E O, K]")
+    r = _fn[name](data.data_ptr(), a.data_ptr(), b.data_ptr(), words, E, O, K, P, plan.data_ptr(), out.data_ptr(), _stream(d))
+    if r:
+        _fail(name, r)
+
+
+def mma_moe_unpack(data, blocks, block_base, tiers, E, O, K, P, plan, out):
+    _moe_unpack("mma_moe_unpack", data, blocks, block_base, _words(tiers, 3, "three tiers"), E, O, K, P, plan, out)
+
+
+def mma12_moe_unpack(data, exc, exc_base, sym, E, O, K, P, plan, out):
+    _moe_unpack("mma12_moe_unpack", data, exc, exc_base, _words(sym, 4, "four words of symbols"), E, O, K, P, plan, out)

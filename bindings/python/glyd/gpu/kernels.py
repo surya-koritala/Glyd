@@ -579,3 +579,15 @@ def mma_moe(p, E, x, plan, ids, act=0, bias=None, weights=None, gather=True):
     else:
         _ext.mma_moe(p.data, p.blocks, p.block_base, p.tiers, E, O, K, x, k, int(gather), plan, act, b, w, i, y)
     return y
+
+
+def mma_moe_unpack(p, E, plan, P, out):
+    """Exact, a mixture-of-experts layer (p its E experts' matrices [O, K]
+    stacked): the experts the plan of P pairs hits decoded into their rows of
+    out ([E O, K] bf16), the rest of out left as it is. out, viewed [E O, K]."""
+    O, K = p.shape[0] // E, p.shape[1]
+    if isinstance(p, Mma12):
+        _ext.mma12_moe_unpack(p.data, p.exc, p.exc_base, p.sym, E, O, K, P, plan, out.view(torch.int16))
+    else:
+        _ext.mma_moe_unpack(p.data, p.blocks, p.block_base, p.tiers, E, O, K, P, plan, out.view(torch.int16))
+    return out[: E * O * K].view(E * O, K)

@@ -11,9 +11,9 @@ activation applied as its sums are written out, one for down with the
 routing weights applied and each token's k rows added; no host sync. A gate
 of the model's own (gpt-oss's) or none: that product's rows written out,
 then the module's _apply_gate or act_fn on them. exact: the layer's
-matrices decoded whole into the scratch buffer and run by the
-implementation bf16 took (the model's before "glyd"), so its outputs are
-bf16's bit for bit.
+experts the tokens are routed to decoded into the scratch buffer and run
+by the implementation bf16 took (the model's before "glyd"), which reads
+no other, so its outputs are bf16's bit for bit.
 
     moe.compress(model, "mma12", lambda m: torch.device("cuda"))   # a loaded model's experts, in place
 """
@@ -159,15 +159,16 @@ class _Decoded:
 
 def _reference(self, hidden_states, top_k_index, top_k_weights):
     """The implementation the module ran by before "glyd", on its matrices decoded into the scratch buffer where
-    they are packed."""
+    they are packed: the experts the tokens are routed to, the only ones it reads (the rest of the buffer as it was)."""
     fn = ALL_EXPERTS_FUNCTIONS.get_interface(self.glyd_ref, type(self).forward.__wrapped__)
     packs = getattr(self, "glyd_packs", None)
     if not packs:
         return fn(self, hidden_states, top_k_index, top_k_weights)
     E = self.num_experts
+    plan = g.moe_route(top_k_index if top_k_index.dtype == torch.int64 else top_k_index.long(), E)
     buf, at, w = gm.Scratch.buf[next(iter(packs.values())).sm.device], 0, {}
     for name, p in packs.items():
-        x = g.mma_unpack(p, buf[at : at + p.n]).view(E, p.shape[0] // E, p.shape[1])
+        x = g.mma_moe_unpack(p, E, plan, top_k_index.numel(), buf[at : at + p.n]).view(E, p.shape[0] // E, p.shape[1])
         w[name] = x.transpose(1, 2).contiguous() if self.is_transposed else x
         at += p.n
     return fn(_Decoded(self, w), hidden_states, top_k_index, top_k_weights)

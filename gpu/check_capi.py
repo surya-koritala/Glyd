@@ -172,9 +172,10 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
     print(f"mma {O}x{K}: {int(q.exc_base[-1])} exceptions (12-bit), the same through both")
 
 # A mixture of experts' layer, its E matrices [O, K] stacked: moe_route (each token's k experts sorted by expert, a
-# few routed nowhere), mma_moe and mma12_moe (the rows by expert, + bias; the gate's SiLU and GELU fused; weighted
-# and each token's rows added, the weights bf16 and fp32), 1-300 tokens (passes of 16, 32 and 64, K split over
-# blocks or not; from 48 pairs an expert, mma_gemm_big_kernel's tiles), against fp32.
+# few routed nowhere), mma_moe_unpack and mma12_moe_unpack (the experts hit), mma_moe and mma12_moe (the rows by
+# expert, + bias; the gate's SiLU and GELU fused; weighted and each token's rows added, the weights bf16 and fp32),
+# 1-300 tokens (passes of 16, 32 and 64, K split over blocks or not; from 48 pairs an expert, mma_gemm_big_kernel's
+# tiles), against fp32.
 for E, O, K, k, T, wild in [(8, 256, 192, 2, 1, 0.01), (8, 256, 192, 2, 70, 0.02), (64, 128, 2048, 8, 8, 0.001), (40, 1024, 1536, 8, 3, 0.0), (16, 192, 64, 4, 33, 0.1), (4, 128, 256, 1, 17, 0.0), (4, 128, 208, 2, 150, 0.0), (4, 256, 256, 2, 300, 0.01), (6, 128, 320, 3, 200, 0.02), (5, 192, 128, 2, 160, 0.01), (2, 128, 528, 1, 150, 0.01)]:
     w = weights(E * O * K, wild).view(E, O, K)
     bias = torch.randn(E, O, dtype=bf, device=dev)
@@ -196,6 +197,11 @@ for E, O, K, k, T, wild in [(8, 256, 192, 2, 1, 0.01), (8, 256, 192, 2, 70, 0.02
         twelve = isinstance(q, g.Mma12)
         s = "mma12_moe" if twelve else "mma_moe"
         pk = (q.data, q.exc, q.exc_base, q.sym) if twelve else (q.data, q.blocks, q.block_base, q.tiers)
+        # exact: the experts hit decoded into their rows, the rest left as they were
+        u = both(f"{s}_unpack", *pk, E, O, K, P, plan, nan(E * O * K), out=(9,)).view(E, O, K)
+        hit = torch.zeros(E, dtype=torch.bool, device=dev)
+        hit[flat[valid]] = True
+        assert exact(u[hit], w[hit]) and torch.isnan(u[~hit].float()).all()
         for b in (none, bias):
             bb = b[expert].float() if b.numel() else 0
             y = both(s, *pk, E, O, K, x, k, 1, plan, 0, b, none, none, nan(P, O), out=(15,))
