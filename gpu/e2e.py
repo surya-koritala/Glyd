@@ -320,11 +320,17 @@ class Part(nn.Module):
         return self.group[0].part(self.i, x)
 
 
+def decoder(model):
+    """The decoder stack: model.model, or its language_model when the checkpoint also carries a vision tower (Gemma 3, Gemma 4)."""
+    return getattr(model.model, "language_model", model.model)
+
+
 def merge(model):
     n = 0
-    for layer in model.model.layers:
-        for mod, names in ((layer.self_attn, ("q_proj", "k_proj", "v_proj")), (layer.mlp, ("gate_proj", "up_proj"))):
-            if all(isinstance(getattr(mod, c, None), nn.Linear) for c in names):
+    for layer in decoder(model).layers:
+        # a linear-attention layer (Qwen3-Next, Qwen3.5) has no self_attn: only its MLP merges
+        for mod, names in ((getattr(layer, "self_attn", None), ("q_proj", "k_proj", "v_proj")), (getattr(layer, "mlp", None), ("gate_proj", "up_proj"))):
+            if mod is not None and all(isinstance(getattr(mod, c, None), nn.Linear) for c in names):
                 mod.merged = Merged([getattr(mod, c) for c in names])
                 for i, c in enumerate(names):
                     setattr(mod, c, Part(mod.merged, i))
@@ -333,16 +339,23 @@ def merge(model):
 
 
 class GEmbedding(nn.Module):
-    def __init__(self, p):
+    def __init__(self, p, scale=None):
         super().__init__()
         self.p = p
+        # Gemma's embedding multiplies its rows by sqrt(hidden size) in the weights' dtype: the same product here
+        self.register_buffer("scale", scale, persistent=False)
 
     def forward(self, ids):
         rows = g.fast_rows(self.p, ids) if isinstance(self.p, g.Fast) else g.rows(self.p, ids)
-        return rows.view(*ids.shape, -1)
+        rows = rows.view(*ids.shape, -1)
+        return rows if self.scale is None else rows * self.scale.to(rows.dtype)
 
 
-model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).eval()
+try:
+    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).eval()
+except ValueError:  # a checkpoint transformers loads only with its vision tower (Muse Glimmer)
+    from transformers import AutoModelForImageTextToText
+    model = AutoModelForImageTextToText.from_pretrained(args.model, dtype=torch.bfloat16).eval()
 if args.merge:
     with torch.no_grad():
         merge(model)
@@ -375,7 +388,7 @@ if args.format == "auto":
     lin_bytes = sum(w.numel() * 2 for w in lin)
     args.format, why = g.best_layout(lin_bytes, weights_bf16 - lin_bytes, args.gpus)
     print(f"auto: {args.format}, {why}")
-layers = model.model.layers
+layers = decoder(model).layers
 layer_bytes = [sum(p.numel() for p in l.parameters()) for l in layers]
 per_gpu, acc, gpu_of = sum(layer_bytes) / args.gpus, 0, []
 for b in layer_bytes:
@@ -403,12 +416,21 @@ with torch.no_grad():
                     packed[key] = pack(child.weight.data.to(dev), isinstance(child, nn.Linear))
                 p = packed[key]
                 bias = child.bias.data.to(dev) if isinstance(child, nn.Linear) and child.bias is not None else None
-                setattr(m, cname, GLinear(p, bias) if isinstance(child, nn.Linear) else GEmbedding(p))
+                setattr(m, cname, GLinear(p, bias) if isinstance(child, nn.Linear) else GEmbedding(p, getattr(child, "embed_scale", None)))
                 biggest[dev] = max(biggest.get(dev, 0), min(p.n, SCRATCH))
     if args.gpus > 1:
         from accelerate import dispatch_model
-        dm = {"model.embed_tokens": 0, "model.rotary_emb": 0, "model.norm": last, "lm_head": last}
-        dm.update({f"model.layers.{i}": d for i, d in enumerate(gpu_of)})
+        # the decoder's layers where they were packed, its final norm on the last GPU, everything else
+        # it holds (embeddings, rotary tables) and any vision tower beside it on the first
+        pre = next(n for n, m in model.named_modules() if m is decoder(model))
+        dm = {"lm_head": last}
+        for n, _ in decoder(model).named_children():
+            if n == "layers":
+                dm.update({f"{pre}.layers.{i}": d for i, d in enumerate(gpu_of)})
+            else:
+                dm[f"{pre}.{n}"] = last if n == "norm" else 0
+        if pre != "model":
+            dm.update({f"model.{n}": 0 for n, _ in model.model.named_children() if f"model.{n}" != pre})
         dispatch_model(model, device_map=dm)
     else:
         model.cuda()
