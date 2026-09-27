@@ -29,8 +29,9 @@ from . import _lib, kernels as g
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
 MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 by mma_gemm_mid
-# A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). Measured
-# on Ada (RTX 4080 SUPER), and taken on GDDR Ampere (the same SM); elsewhere the fused kernel or the decode as before.
+# A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). On Ada
+# (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, 640 in the 12-bit one (whose fused kernel is
+# the faster to there); elsewhere, until measured, the fused kernel or the decode as before.
 AHEAD_MIN = int(os.environ.get("GLYD_AHEAD_MIN", 0)) or None
 AHEAD_WARPS = int(os.environ.get("GLYD_AHEAD_WARPS", 0))  # a decode ahead's warps an SM (0: 3 tiered, 2 12-bit), few enough to sit beside a cuBLAS block
 AHEAD_RATE = float(os.environ.get("GLYD_AHEAD_RATE", 2.2e-3))  # weights decoded ahead beside a product, for each of its weights and tokens
@@ -228,13 +229,13 @@ class _Node:
 class GLinear(_Node, nn.Module):
     """nn.Linear over a packed matrix p (bias: bf16, or None). fused: products
     straight from the packed weights where a kernel takes the step (in the
-    mma layouts up to 64 tokens, and prompts but on Hopper, to 512 tokens on
-    Ada and GDDR Ampere; one-token steps in the others); else the matrix
-    decoded into the scratch buffer, then PyTorch's matmul (past 512 tokens
-    on Ada and GDDR Ampere, decoded ahead of its product: Ahead). exact:
-    every product the matrix decoded whole, then F.linear on the input as it
-    came, as nn.Linear does: its outputs bit for bit (over fused). gemm_max:
-    the fast format's fused steps, in tokens."""
+    mma layouts up to 64 tokens, and prompts but on Hopper, on Ada to 512
+    tokens tiered and 640 12-bit; one-token steps in the others); else the
+    matrix decoded into the scratch buffer, then PyTorch's matmul (a longer
+    prompt's on Ada decoded ahead of its product: Ahead). exact: every
+    product the matrix decoded whole, then F.linear on the input as it came,
+    as nn.Linear does: its outputs bit for bit (over fused). gemm_max: the
+    fast format's fused steps, in tokens."""
 
     def __init__(self, p, bias, fused=True, exact=False, gemm_max=64):
         super().__init__()
@@ -248,7 +249,7 @@ class GLinear(_Node, nn.Module):
         cc = torch.cuda.get_device_capability(p.sm.device)
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
         self.mid = cc in ((8, 0), (8, 6), (8, 7), (8, 9))  # (an A100 its own kernel: producer and consumer warps)
-        self.ahead = AHEAD_MIN or (513 if cc in ((8, 6), (8, 9)) else 1 << 62)  # prompts past 512 tokens: decoded ahead, then cuBLAS
+        self.ahead = AHEAD_MIN or ((641 if isinstance(p, g.Mma12) else 513) if cc == (8, 9) else 1 << 62)  # prompts decoded ahead, then cuBLAS
         self._node()
 
     def kernel(self, M):
@@ -261,8 +262,8 @@ class GLinear(_Node, nn.Module):
             return g.mma_gemm_mid
         if M <= 64:
             return g.mma_gemm
-        # A prompt: past WG_MAX tokens on Hopper the tensor cores outrun our decode, and past 512 on Ada and GDDR Ampere
-        # a matrix decoded ahead, beside the products before it, costs cuBLAS less than the fused kernel's decode.
+        # A prompt: past WG_MAX tokens on Hopper the tensor cores outrun our decode, and past self.ahead on Ada a
+        # matrix decoded ahead, beside the products before it, costs cuBLAS less than the fused kernel's decode.
         if K % 64 == 0 and not self.hopper and M < self.ahead:
             return g.mma_gemm_big
         return None
@@ -321,7 +322,9 @@ class GLinear(_Node, nn.Module):
             if y is not None:
                 return y
         O, K = self.out_features, self.in_features
-        if self.exact:  # as nn.Linear: F.linear on the input as it came, the matrix decoded whole
+        if self.exact:  # as nn.Linear: F.linear on the input as it came, the matrix decoded whole (a prompt's ahead)
+            if x.numel() < self.ahead * K:
+                return F.linear(x, self.decode_rows(0, O), self.bias)
             return self.whole(lambda w: F.linear(x, w, self.bias), x)
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)

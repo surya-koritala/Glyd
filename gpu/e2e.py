@@ -67,9 +67,9 @@ def batch_of(b):
 
 def prefill(model, label):
     """One forward pass over a prompt of each length: the prompt's tokens a second; and generate() to its first
-    token (the time to first token); each timed after two untimed (Glyd's first prompt past 512 tokens records the
-    order its matrices are decoded ahead in, model.Ahead). The prompt: token ids drawn below the model's vocabulary,
-    the same for bf16 and Glyd (a mixture of experts routes each its own way)."""
+    token (the time to first token); each timed after two untimed (Glyd's first prompt long enough to decode its
+    matrices ahead records their order, model.Ahead). The prompt: token ids drawn below the model's vocabulary, the
+    same for bf16 and Glyd (a mixture of experts routes each its own way)."""
     out = []
     for n in [int(x) for x in args.prefill.split(",") if x]:
         x = torch.randint(0, vocab, (1, n), generator=torch.Generator().manual_seed(n)).cuda()
