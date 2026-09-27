@@ -1,6 +1,20 @@
 # Glyd for Python
 
-    pip install glyd
+Lossless AI compression: 33% less GPU memory, bit for bit.
+
+    pip install "glyd[gpu]"   # models on the GPU: Linux x86_64 / aarch64, an NVIDIA GPU (Ampere or later)
+    pip install glyd          # the codec alone: Linux x86_64 / aarch64, macOS arm64
+
+```python
+import glyd
+model = glyd.from_pretrained("Qwen/Qwen3-8B")               # packed on the GPU as it loads
+model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits bit for bit bf16's
+```
+
+Every option: [on the GPU](https://github.com/surya-koritala/Glyd/tree/main/bindings/python#on-the-gpu-a-models-weights-held-compressed-bit-for-bit) below, and
+[getglyd.com](https://getglyd.com/docs/) for which models fit which GPU.
+
+## The codec
 
 Wheels for Linux x86_64 and aarch64 and macOS arm64. From a checkout:
 `bindings/python/build.sh && pip install bindings/python`.
