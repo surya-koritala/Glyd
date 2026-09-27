@@ -5,13 +5,33 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "glyd"
 version = "0.20.0"
-description = "Compression for the data that fills object storage: record mode, packs, a store that compresses across objects, the fastest reads"
+description = "Lossless AI compression: 33% less GPU memory, bit for bit. Models load with their weights packed on the GPU (glyd.from_pretrained); a codec for files and object storage."
+keywords = ["compression", "lossless", "llm", "gpu", "cuda", "bfloat16", "transformers", "pytorch", "object-storage"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Archiving :: Compression",
+    "Environment :: GPU :: NVIDIA CUDA :: 12",
+    "Environment :: GPU :: NVIDIA CUDA :: 13",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+]
 readme = "README.md"
 # The binding and the codec: BSD-3-Clause or GPL-2.0; the bundled
 # libglyd_store (the Store class): BUSL-1.1, see LICENSE-glyd-store;
 # glyd.gpu (the weights on the GPU): BUSL-1.1, see LICENSE-glyd-gpu.
 license = { text = "BSD-3-Clause OR GPL-2.0-only; bundled libglyd_store BUSL-1.1; glyd.gpu BUSL-1.1" }
 requires-python = ">=3.8"
+
+[project.urls]
+Homepage = "https://getglyd.com"
+Documentation = "https://getglyd.com/docs/"
+Source = "https://github.com/surya-koritala/Glyd"
+Changelog = "https://getglyd.com/changelog/"
+Issues = "https://github.com/surya-koritala/Glyd/issues"
 
 [project.optional-dependencies]
 # glyd.gpu: from_pretrained builds on transformers' quantizer API as of 5.17
