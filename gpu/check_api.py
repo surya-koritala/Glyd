@@ -5,8 +5,8 @@ beside glyd/gpu/kernels.py), against each model in bf16:
 - from_pretrained (fused, merged, best_layout's layout): 32 greedy tokens
   compared with bf16's as e2e.py compares them; the load's time, and its
   peak memory against the packed model's bytes and the largest tensor's;
-- compress() on the model loaded in bf16: the same packs, so the same
-  logits and tokens bit for bit;
+- glyd.gpu.compress on the model loaded in bf16: the same packs, so the
+  same logits and tokens bit for bit;
 - exact=True: logits bit for bit bf16's, the 32 tokens bf16's;
 - save_pretrained, then from_pretrained(path, verify=True): every tensor's
   sha256 against glyd.json, the logits and tokens of the model saved;
@@ -27,6 +27,7 @@ sys.path.insert(0, PACKAGE)
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import glyd
+import glyd.gpu
 from glyd.gpu.model import GEmbedding, GLinear
 
 TOKENS = 32
@@ -88,10 +89,10 @@ for name in sys.argv[1:] or ["Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B"]:
     print(f"   generated tokens identical to bf16: {same(out_a, out_b)} of {TOKENS}; logits bit-identical: {exact(logits_a, logits_b)}")
     print("   text:", tok.decode(out_b).replace("\n", " "))
 
-    c = glyd.compress(AutoModelForCausalLM.from_pretrained(name, dtype=torch.bfloat16))
+    c = glyd.gpu.compress(AutoModelForCausalLM.from_pretrained(name, dtype=torch.bfloat16))
     logits_c, out_c = run(c, ids)
-    assert exact(logits_b, logits_c) and torch.equal(out_b, out_c) and packed_bytes(c) == size, "compress() packs as from_pretrained does"
-    print(f"   compress(): the same {size / 1e9:.2f} GB, logits and tokens bit for bit")
+    assert exact(logits_b, logits_c) and torch.equal(out_b, out_c) and packed_bytes(c) == size, "glyd.gpu.compress packs as from_pretrained does"
+    print(f"   glyd.gpu.compress: the same {size / 1e9:.2f} GB, logits and tokens bit for bit")
     del c
     torch.cuda.empty_cache()
 

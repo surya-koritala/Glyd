@@ -70,9 +70,10 @@ shard.
 - `hf_kwargs`: transformers' `from_pretrained`'s (`revision`, `token`,
   `device_map`, `attn_implementation` ...); the dtype is bf16.
 
-`glyd.compress(model, *, layout="auto", exact=False, merge=True)` packs a
-model already loaded in bf16 in place, on the GPU its weights are on (the
-current one for weights on the CPU), and returns it.
+`glyd.gpu.compress(model, *, layout="auto", exact=False, merge=True)`
+packs a model already loaded in bf16 in place, on the GPU its weights are
+on (the current one for weights on the CPU), and returns it
+(`glyd.compress` is the codec's, for bytes).
 
 `glyd.save_pretrained(model, path)` writes glyd-v1: the packs in the
 tiered layout as safetensors (each packed Linear's buffers under its

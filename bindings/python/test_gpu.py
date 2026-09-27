@@ -144,13 +144,14 @@ import sys
 sys.modules["torch"] = None  # as if not installed
 import glyd, glyd.gpu
 assert callable(glyd.fit) and glyd.fit is glyd.gpu.fit and "torch" not in [m for m in sys.modules if sys.modules[m]]
+assert glyd.compress.__module__ == "glyd" and glyd.compress.__code__.co_varnames[:4] == ("data", "level", "records", "threads")  # the codec's
 for call in (lambda: glyd.from_pretrained("Qwen/Qwen3-8B"), lambda: glyd.gpu.compress(None)):
     try:
         call()
         raise AssertionError("the GPU half without torch")
     except ImportError as e:
         assert "glyd[gpu]" in str(e), e
-for call, error in ((glyd.version, OSError), (lambda: glyd.compress(b"abc", layout="mma"), TypeError), (lambda: glyd.no_such_name, AttributeError)):
+for call, error in ((glyd.version, OSError), (lambda: glyd.no_such_name, AttributeError)):
     try:
         call()
         raise AssertionError(error)

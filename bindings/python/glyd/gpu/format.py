@@ -108,7 +108,7 @@ def source_dir(repo, revision):
 
 
 def save_pretrained(model, path, shard_bytes=5 * 10**9):
-    """model (from glyd.from_pretrained or glyd.compress) saved in the
+    """model (from glyd.from_pretrained or glyd.gpu.compress) saved in the
     directory path as glyd-v1, in shards of about shard_bytes: its packs in
     the tiered layout (a 12-bit pack decoded and packed again), each tensor
     of each decoded for the sha256 of its bf16 bytes in glyd.json; the rest

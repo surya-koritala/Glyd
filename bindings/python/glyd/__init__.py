@@ -121,18 +121,10 @@ def _take(out, out_len):
     return b
 
 
-def compress(data, level="max", records=False, threads=0, **model_options):
+def compress(data, level="max", records=False, threads=0):
     """Compress bytes at a level ("default", "fast", "turbo", "max",
     "ultra", "cold"); records=True for logs, dumps, CSV and JSON lines;
-    threads=1 for one core. Given a PyTorch model instead, packs its
-    weights in place on the GPU and returns it (glyd.gpu.compress; the
-    options layout, exact, merge)."""
-    torch = sys.modules.get("torch")
-    if torch is not None and isinstance(data, torch.nn.Module):
-        from .gpu import compress as compress_model
-        return compress_model(data, **model_options)
-    if model_options:
-        raise TypeError(f"compress() got unexpected keyword arguments: {', '.join(model_options)}")
+    threads=1 for one core."""
     src, n = _buf(data)
     out, out_len = _u8p(), ctypes.c_size_t()
     if _lib.glyd_compress2(src, n, _LEVELS[level], int(bool(records)), threads, ctypes.byref(out), ctypes.byref(out_len)):

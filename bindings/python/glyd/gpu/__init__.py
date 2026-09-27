@@ -2,7 +2,7 @@
 bit for bit, and multiplied from there (pip install "glyd[gpu]").
 
     model = glyd.from_pretrained("Qwen/Qwen3-8B")      # packed as it loads, ready for generate()
-    model = glyd.compress(model)                        # a model already loaded, in place
+    model = glyd.gpu.compress(model)                    # a model already loaded, in place
     glyd.save_pretrained(model, "qwen3-8b-glyd")        # glyd-v1: loads without packing again
     print(glyd.fit("Qwen/Qwen3-32B", gpu="48GB"))       # bf16 against Glyd on one GPU
 
