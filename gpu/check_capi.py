@@ -280,7 +280,8 @@ for q, lin in zip(packs, a100):
             counts["GLinear.step"] += 1
 e = weights(1000 * 256).view(1000, 256)
 ids = torch.randint(0, 1000, (4, 3), device=dev)
-assert exact(gm.GEmbedding(g.pack_fast(e)).step(ids), e[ids])
+emb = gm.GEmbedding(g.pack_fast(e))  # held: its step keeps the pack's addresses, not the pack
+assert exact(emb.step(ids), e[ids])
 counts["GEmbedding.step"] = 1
 
 # Refused alike: too many tokens, X not 16-byte aligned, rows not a multiple of 64.
