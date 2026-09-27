@@ -33,19 +33,29 @@ every earlier format.
   activation applied as it is written out) and one for down (the routing
   weights applied), no host sync; a long prompt's in tiles of 128 tokens an
   expert. On an RTX 4080 SUPER (`gpu/e2e.py --from-pretrained --baseline
-  --prompts --merge --profile --prefill`), OLMoE-1B-7B holds 9.28 GB
-  against 13.84 GB in bf16 and generates 135.6 tokens/s at one sequence
-  against bf16's 99.1 and 607.9 at eight different prompts against 142.1
-  (a step's GPU time 4.3 ms against 8.8, and 11.8 against 55.7);
-  granite-3.1-3b-a800m holds 4.61 GB against 6.60 and generates 85.4
-  against 70.2 and 576.1 against 195.7; prompts of 16 to 2048 tokens take
-  less time than bf16's (2048 tokens: 98.7 ms against 110.5, 91.0 against
-  100.9). With `exact=True` the experts the tokens are routed to are
-  decoded and the path bf16 takes runs on them, grouped_mm and, while
-  `generate()` decodes, batched_mm (transformers switches bf16's so): the
-  logits are bf16's bit for bit at every step (both models, one sequence
-  and eight different prompts, 16 steps). glyd-v1 (`save_pretrained`)
-  holds no packed experts yet.
+  --prompts --merge --profile --prefill`), granite-3.1-3b-a800m holds 4.61
+  GB against 6.60 GB in bf16 and generates 90.0 tokens/s at one sequence
+  against bf16's 71.1 and 600.9 at eight different prompts against 195.6
+  (a step's GPU time 5.0 ms against 6.8, and 9.5 against 39.4); OLMoE-1B-7B,
+  measured before a step's product was one C call, holds 9.28 GB against
+  13.84 and generates 135.6 against 99.1 and 607.9 against 142.1 (4.3 ms
+  against 8.8, and 11.8 against 55.7). Prompts of 16 to 2048 tokens take
+  less time than bf16's (2048 tokens: granite 91.2 ms against 100.8, OLMoE
+  98.7 against 110.5). Compiled (`generate(...,
+  cache_implementation="static")` or `torch.compile(model.forward,
+  mode="reduce-overhead", fullgraph=True)`), a packed Experts module is one
+  op of the graph (`glyd::experts`), no graph break, its kernels in the
+  CUDA graph: granite generates 225.1 tokens/s at one sequence against
+  bf16's 170.0 compiled the same way, and 909.9 at eight prompts against
+  175.2 (`e2e.py --compile`). With `exact=True` the experts the tokens are
+  routed to are decoded and the path bf16 takes runs on them, grouped_mm
+  and, while `generate()` decodes, batched_mm (transformers switches
+  bf16's so): the logits are bf16's bit for bit at every step (both
+  models, one sequence and eight different prompts, 16 steps). Before
+  Hopper torch's grouped_mm copies to the host, which a CUDA graph's
+  capture refuses (bf16's own `torch.compile(model.forward, ...)` of a
+  mixture of experts stops there), so exact runs batched_mm while a graph
+  captures. glyd-v1 (`save_pretrained`) holds no packed experts yet.
 - `gpu/e2e.py` takes every timing before its first profile (`--profile`):
   a profiler session leaves each CUDA launch after it slower for the rest
   of the process, and Glyd, timed after bf16's profile, lost some 20% of
