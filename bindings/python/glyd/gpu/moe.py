@@ -15,7 +15,10 @@ experts the tokens are routed to decoded into the scratch buffer and run
 by the implementation bf16 runs (the model's before "glyd"; while
 generate() decodes, batched_mm in grouped_mm's place, as transformers
 switches bf16's), which reads no other, so its outputs are bf16's bit for
-bit.
+bit. Under torch.compile a packed module's forward is one node of the graph
+(glyd::experts), run as eager, its workspaces made for the call alone and
+its done counters before any capture, as model.py's ops: no graph break,
+and CUDA graphs capture its kernels.
 
     moe.compress(model, "mma12", lambda m: torch.device("cuda"))   # a loaded model's experts, in place
 """
@@ -24,7 +27,7 @@ import torch
 import torch.nn as nn
 from transformers.activations import GELUTanh, SiLUActivation
 from transformers.integrations.moe import ALL_EXPERTS_FUNCTIONS, ExpertsInterface, _default_apply_gate
-from . import kernels as g, model as gm
+from . import _lib, kernels as g, model as gm
 
 NAME = "glyd"
 
@@ -110,7 +113,14 @@ def install(model, exact=False):
                 raise ValueError(f"glyd: an Experts module's {', '.join(sorted(set(names(m)) - set(packs)))} not in the checkpoint")
             up, down = (packs[n] for n in names(m))
             E = m.num_experts
-            m.glyd, m.glyd_exact = (up, down, E, _act(m, up.shape[0] // E)), exact
+            act = _act(m, up.shape[0] // E)
+            m.glyd, m.glyd_exact = (up, down, E, act), exact
+            if getattr(m, "glyd_handle", None) is None:  # its name for the op below
+                m.glyd_handle = next(gm._handles)
+                gm._modules[m.glyd_handle] = m
+            if g.lib() is not None:  # the done counters made now: never in a CUDA graph's memory pool
+                for p, units in ((up, up.shape[0] // E // (128 if act else 64)), (down, down.shape[0] // E // 64)):
+                    _lib._counters("mma12_moe" if isinstance(p, g.Mma12) else "mma_moe", p.sm.get_device(), units * E, 1 << 16)
     if mods:
         if hasattr(model, "set_experts_implementation"):
             model.set_experts_implementation(NAME)
@@ -189,6 +199,11 @@ def _reference(self, hidden_states, top_k_index, top_k_weights):
     ref = self.glyd_ref
     if ref == "grouped_mm" and getattr(self, "glyd_decoding", False):
         ref = "batched_mm"  # as generate() decodes bf16's
+    elif ref == "grouped_mm" and torch.cuda.is_current_stream_capturing() and torch.cuda.get_device_capability(hidden_states.device) < (9, 0):
+        # A CUDA graph captures (torch.compile's reduce-overhead): before Hopper torch's grouped_mm copies its
+        # offsets to the host, which a capture refuses (bf16's own compiled forward stops there); batched_mm, as
+        # generate() runs bf16's decoding steps.
+        ref = "batched_mm"
     fn = ALL_EXPERTS_FUNCTIONS.get_interface(ref, type(self).forward.__wrapped__)
     packs = getattr(self, "glyd_packs", None)
     if not packs:
@@ -196,7 +211,10 @@ def _reference(self, hidden_states, top_k_index, top_k_weights):
     E = self.num_experts
     # batched_mm reads expert E - 1 for an id past it (clamped): decoded too
     plan = g.moe_route(top_k_index.long().clamp(0, E - 1), E)
-    buf, at, w = gm.Scratch.buf[next(iter(packs.values())).sm.device], 0, {}
+    d = next(iter(packs.values())).sm.device
+    if _lib.local.fresh:  # a compiled graph's node: the buffer's address kept by its CUDA graph (model.set_scratch)
+        gm.Scratch.graphed.add(d)
+    buf, at, w = gm.Scratch.buf[d], 0, {}
     for name, p in packs.items():
         x = g.mma_moe_unpack(p, E, plan, top_k_index.numel(), buf[at : at + p.n]).view(E, p.shape[0] // E, p.shape[1])
         w[name] = x.transpose(1, 2).contiguous() if self.is_transposed else x
@@ -207,6 +225,11 @@ def _reference(self, hidden_states, top_k_index, top_k_weights):
 def forward(self, hidden_states, top_k_index, top_k_weights):
     """The "glyd" experts implementation: hidden_states [T, H], each token's k experts (top_k_index [T, k]) and
     their weights (top_k_weights [T, k]) to [T, H]."""
+    if torch.compiler.is_compiling():
+        handle = getattr(self, "glyd_handle", None)
+        if handle is not None:  # packed: one node of the graph (glyd::experts), which runs what follows as eager
+            return torch.ops.glyd.experts(hidden_states, top_k_index, top_k_weights, handle)
+        return _reference(self, hidden_states, top_k_index, top_k_weights)  # not packed: bf16's, compiled as bf16's
     packs = getattr(self, "glyd", None)
     if packs is None or self.glyd_exact:
         return _reference(self, hidden_states, top_k_index, top_k_weights)
@@ -221,6 +244,20 @@ def forward(self, hidden_states, top_k_index, top_k_weights):
     if not act:
         h = self._apply_gate(h) if self.has_gate else self.act_fn(h)
     return g.mma_moe(down, E, h, plan, ids, 0, bd, w, gather=False).to(hidden_states.dtype)
+
+
+@torch.library.custom_op("glyd::experts", mutates_args=())
+def _experts(hidden_states: torch.Tensor, top_k_index: torch.Tensor, top_k_weights: torch.Tensor, handle: int) -> torch.Tensor:
+    _lib.local.fresh = True  # workspaces for the call alone (a CUDA graph keeps the addresses it captured)
+    try:
+        return forward(gm._modules[handle], hidden_states, top_k_index, top_k_weights)
+    finally:
+        _lib.local.fresh = False
+
+
+@_experts.register_fake
+def _(hidden_states, top_k_index, top_k_weights, handle):
+    return hidden_states.new_empty(hidden_states.shape)
 
 
 ExpertsInterface.register(NAME, forward)
