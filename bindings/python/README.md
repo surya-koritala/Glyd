@@ -29,8 +29,8 @@ crate, BSD-3-Clause OR GPL-2.0) everything but `Store` works.
 ## On the GPU: a model's weights held compressed, bit for bit
 
 Needs a CUDA GPU (Ampere or later) and `pip install "glyd[gpu]"`
-(PyTorch 2.5+ built for CUDA 12 or 13, transformers 5.17+, safetensors,
-huggingface_hub). The Linux wheels (x86_64, aarch64; glibc 2.28 or later)
+(PyTorch 2.5+ built for CUDA 12 or 13, transformers 5.17+, accelerate,
+safetensors, huggingface_hub). The Linux wheels (x86_64, aarch64; glibc 2.28 or later)
 carry the kernels, `libglyd_gpu_cuda12.so` and `libglyd_gpu_cuda13.so`
 (CUDA 12.8 and 13.0, their runtime linked in), and the one for PyTorch's
 CUDA is taken; `GLYD_GPU_LIB` names another. From a checkout,

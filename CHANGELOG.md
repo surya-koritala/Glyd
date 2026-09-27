@@ -6,6 +6,44 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- `pip install "glyd[gpu]"`: the Linux wheels (x86_64 and aarch64,
+  manylinux_2_28) carry the GPU kernels built for CUDA 12.8 and 13.0,
+  `libglyd_gpu_cuda12.so` and `libglyd_gpu_cuda13.so`, the one for
+  PyTorch's CUDA taken; no compiler and no checkout. The extra installs
+  PyTorch 2.5+, transformers 5.17+, accelerate, safetensors and
+  huggingface_hub ([bindings/python](bindings/python/README.md#on-the-gpu-a-models-weights-held-compressed-bit-for-bit)).
+- `glyd.from_pretrained("Qwen/Qwen3-8B")`: transformers loads the
+  checkpoint and every Linear's weight is packed on the GPU as it
+  arrives (a quantizer registered as `glyd`), in `best_layout()`'s
+  layout for the GPU, q, k, v and gate, up as one product each. On an
+  RTX 4080 SUPER, Qwen3-0.6B's logits from the fused kernels are nearer
+  the fp32 model's than bf16's are (mean |difference| 0.030 against
+  0.041; at the first token bf16 rounds " with" and " in" to a tie that
+  fp32 and Glyd both break toward " with"), Qwen3-1.7B's as near (0.034
+  against 0.032).
+- `exact=True`: every product decodes its matrix and multiplies by
+  `F.linear` as `nn.Linear` does, so the logits are bf16's bit for bit
+  (Qwen3-0.6B and 1.7B, 32 of 32 tokens as bf16's; `e2e.py --exact` the
+  same for the scripts).
+- `glyd.save_pretrained(model, path)` writes the glyd-v1 format (the
+  packs as safetensors, `glyd.json` with every tensor's sha256), which
+  `from_pretrained(path)` loads packed (Qwen3-1.7B in 2.52 GB of
+  safetensors); `verify=True` decodes every tensor and checks it.
+  `glyd.fit("Qwen/Qwen3-32B", gpu="48GB")` answers from the config and
+  the checkpoint's metadata, the measured sizes where there are some;
+  `python -m glyd.gpu fit|pack|verify`.
+- The kernels behind a C API (`gpu/build_lib.sh`), called through ctypes:
+  Qwen3-8B generates 48.4 tokens/s at one sequence through the library as
+  through a local build of the extension (363.6 and 363.4 at eight); on
+  models under 2B, where a step is mostly Python, 3-4% fewer.
+- `mma12_gemm_wg` on compute capability 9.0 alone (its code is sm_90a);
+  later GPUs take the kernels they would without it.
+- Homebrew installs the release's binaries on Apple silicon and Linux
+  (x86_64, arm64) in seconds; an Intel Mac and `--HEAD` build from
+  source. `scripts/bump_formula.py` points the formula at a release.
+
 ## v0.20.0 — 2026-09-27
 
 - The Python package on PyPI: `pip install glyd` (wheels for Linux x86_64

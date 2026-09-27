@@ -36,6 +36,15 @@ them compressed in GPU memory, the model bit for bit, and decodes them on
 the GPU where they are used: inside the matrix product and inside
 attention ([gpu/](gpu/README.md)).
 
+```bash
+pip install "glyd[gpu]"      # Linux x86_64 / aarch64, a CUDA GPU (Ampere or later), PyTorch for CUDA 12 or 13
+```
+```python
+import glyd
+model = glyd.from_pretrained("Qwen/Qwen3-8B")               # packed on the GPU as it loads: 11.2 GB of weights, not 16.4
+model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits bit for bit bf16's
+```
+
 <p align="center"><img src="docs/img/qwen3-32b-gpus.svg" width="100%" alt="nvidia-smi: Qwen3-32B in bf16 across two 48 GB GPUs (44,554 + 18,514 MiB), and with Glyd on one (43,338 MiB)"></p>
 
 <p align="center"><sub><code>nvidia-smi</code> during the runs, taken by <code>e2e.py --smi</code>: Lambda Cloud, 4x RTX A6000 (48 GB each), 2026-09-26. Raw output and every run's log: <a href="benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757">benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757</a>.</sub></p>
@@ -294,6 +303,7 @@ million a year at list price; the percentages above are what to multiply.
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 pip install glyd                             # Python: Linux x86_64 / aarch64, macOS arm64 (PyPI)
+pip install "glyd[gpu]"                      # models on the GPU: Linux x86_64 / aarch64 (glyd.from_pretrained)
 cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store   # from source
 ```
 
