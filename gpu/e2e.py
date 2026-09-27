@@ -12,7 +12,9 @@ one-token steps multiply straight from the packed weights (decoded in
 registers, never written out); their sums are in another order than
 cuBLAS's, as between any two GEMM kernels, so late tokens may differ.
 The bf16 model is never held on the GPU: every Linear is packed from
-the CPU copy, one at a time.
+the CPU copy, one at a time. --compile: generate() as transformers
+compiles it (a static cache, the forward under torch.compile's CUDA
+graphs), for bf16 and Glyd alike.
 """
 import argparse, math, time, torch
 import torch.nn as nn
@@ -37,14 +39,18 @@ ap.add_argument("--ppl-window", type=int, default=64)
 ap.add_argument("--kv", type=str, default="", help="prompt lengths (tokens of enwik8, needs --ppl) to generate --tokens after with the KV cache compressed (gpu/kv.py) against the plain cache: the same tokens, its bytes, the time; with --batch's first size")
 ap.add_argument("--smi", default="", help="once a model is on its GPUs: nvidia-smi's report into PREFIX-bf16.txt / PREFIX-glyd.txt")
 ap.add_argument("--mmlu", type=int, default=0, help="MMLU (cais/mmlu, test split, a fixed shuffle): accuracy over this many questions, 0-shot, by the answer letter's logit")
-ap.add_argument("--profile", type=int, default=0, help="GPU time by kernel over this many generated tokens, against the wall clock, at each --batch size: a step after the prompt, and the prompt's")
+ap.add_argument("--profile", type=int, default=0, help="GPU time by kernel over this many generated tokens, against the wall clock, at each --batch size: a step after the prompt, and the prompt's (every tokens/s line of the run then taken with CUPTI on, as after any profiler session: lower than without)")
 ap.add_argument("--merge", action="store_true", help="the Linears that take the same input (q, k, v; gate, up) as one product each, for bf16 and Glyd alike, as serving engines run them")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
+ap.add_argument("--compile", action="store_true", help="generate() compiled as transformers compiles it: a static cache, the forward under torch.compile (reduce-overhead: CUDA graphs); each batch's warm-up, of --tokens, compiles and captures")
 args = ap.parse_args()
 
 tok = AutoTokenizer.from_pretrained(args.model)
 prompt = "The history of data compression began"
 ids = tok(prompt, return_tensors="pt").input_ids.cuda()
+if args.profile:  # a profiler session leaves CUPTI's callbacks on, every launch after it slower: one first, so bf16's tokens/s and Glyd's are taken alike
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]):
+        pass
 
 
 def prefill(model, label):
@@ -198,16 +204,18 @@ def mmlu(model, label):
 def measure(model, label):
     torch.cuda.synchronize()
     out = None
+    kw = dict(cache_implementation="static") if args.compile else {}
+    label += " compiled" if args.compile else ""
     with torch.no_grad():
         logits = model(ids, logits_to_keep=1).logits
         for b in [int(x) for x in args.batch.split(",")]:
             batch = ids.repeat(b, 1)
-            model.generate(batch, max_new_tokens=4, do_sample=False)  # warm-up
+            model.generate(batch, max_new_tokens=args.tokens if args.compile else 4, do_sample=False, **kw)  # warm-up (compiled: its cache the timed run's size)
             torch.cuda.synchronize()
             for i in range(torch.cuda.device_count()):
                 torch.cuda.reset_peak_memory_stats(i)
             t = time.perf_counter()
-            o = model.generate(batch, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False)
+            o = model.generate(batch, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False, **kw)
             torch.cuda.synchronize()
             t = time.perf_counter() - t
             peaks = [torch.cuda.max_memory_allocated(i) / 1e9 for i in range(torch.cuda.device_count())]
@@ -242,6 +250,9 @@ if args.baseline:
     mmlu_a = mmlu(model, "bf16")
     if args.gpus > 1:
         remove_hook_from_module(model, recurse=True)
+    if args.compile:  # the bf16 graphs and their memory
+        torch._dynamo.reset()
+        model.__dict__.pop("_compiled_call", None)
     model.cpu()
     torch.cuda.empty_cache()
 
