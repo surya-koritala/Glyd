@@ -15,7 +15,10 @@ beside glyd/gpu/kernels.py), against each model in bf16:
   12-bit layout packed from bf16;
 - python -m glyd.gpu verify and fit.
 
-    python check_api.py [MODEL ...]      (default: Qwen/Qwen3-0.6B Qwen/Qwen3-1.7B)"""
+    python check_api.py [MODEL ...]      (default: Qwen/Qwen3-0.6B Qwen/Qwen3-1.7B)
+
+From this checkout it runs the package beside it (bindings/python); a copy
+of it run elsewhere runs the glyd installed (a wheel, its libraries in it)."""
 import os
 import subprocess
 import sys
@@ -23,7 +26,8 @@ import tempfile
 import time
 
 PACKAGE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bindings", "python"))
-sys.path.insert(0, PACKAGE)
+if os.path.isdir(os.path.join(PACKAGE, "glyd")):
+    sys.path.insert(0, PACKAGE)
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import glyd
@@ -131,9 +135,9 @@ for name in sys.argv[1:] or ["Qwen/Qwen3-0.6B", "Qwen/Qwen3-1.7B"]:
         print(f"   from_pretrained(path, layout={other!r}): the packs {'transcoded' if other == 'mma12' else 'as saved'}, logits and tokens as {other} packed from bf16")
         del r, s
         torch.cuda.empty_cache()
-        env = dict(os.environ, PYTHONPATH=PACKAGE)
+        env = dict(os.environ, PYTHONPATH=os.path.dirname(os.path.dirname(glyd.__file__)))  # the glyd this run imported
         for cmd in (["verify", d], ["fit", name, "--gpu", "16GB"]):
             out = subprocess.run([sys.executable, "-m", "glyd.gpu", *cmd], env=env, capture_output=True, text=True)
             assert out.returncode == 0, out.stderr
             print("   python -m glyd.gpu", cmd[0] + ":", out.stdout.strip())
-print("check_api: all passed")
+print(f"check_api: all passed ({glyd.__file__})")
