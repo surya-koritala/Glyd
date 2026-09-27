@@ -116,6 +116,17 @@ every earlier format.
 - The PyPI page leads with the models on the GPU (`pip install
   "glyd[gpu]"`, `from_pretrained`), with the project's links, keywords
   and classifiers.
+- Blackwell, measured on an RTX PRO 6000 Blackwell Server Edition
+  (compute capability 12.0, AWS g7e) with the wheel's library as it
+  ships (its compute_80 PTX, compiled by the driver): `gpu/check_api.py`
+  passes (dense, compiled, mixture of experts); Qwen3-8B's logits against
+  the fp32 model 0.0509 (bf16's 0.0517), `exact=True` bit for bit;
+  `generate()` 53.0 tokens/s at one sequence against bf16's 50.0,
+  compiled 93.0 against 75.9; a step's GPU time 11.22 ms against 13.42 at
+  one sequence, 16.34 against 16.35 at 64. Prompts are slower there (512
+  tokens 41.2 ms against 33.3, 2048 tokens 130.5 against 103.2). A
+  library of its own for compute 12.0 needs the wgmma kernels kept to
+  Hopper's code first (ptxas refuses wgmma for sm_120).
 - `mma12_gemm_wg` on compute capability 9.0 alone (its code is sm_90a);
   later GPUs take the kernels they would without it.
 - Homebrew installs the release's binaries on Apple silicon and Linux
