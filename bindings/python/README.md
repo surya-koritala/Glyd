@@ -96,6 +96,34 @@ packs a model already loaded in bf16 in place, on the GPU its weights are
 on (the current one for weights on the CPU), and returns it
 (`glyd.compress` is the codec's, for bytes).
 
+Compiled: `model.generate(..., cache_implementation="static")` compiles
+the forward as transformers does (`torch.compile`,
+`mode="reduce-overhead"`: CUDA graphs), and `torch.compile(model.forward,
+mode="reduce-overhead", fullgraph=True)` compiles it as it would the bf16
+model's: each GLinear and GEmbedding is one op of the graph
+(`glyd::linear`, `glyd::embedding`), with no graph break, and the CUDA
+graph captures Glyd's kernels, so a step's host time goes and what is
+left is its GPU time, less than bf16's. Tokens/s generating 128 tokens at
+1 / 8 sequences on an RTX 4080 SUPER, `from_pretrained` as above against
+transformers' bf16 model:
+
+| | bf16 eager | Glyd eager | bf16 compiled | Glyd compiled |
+| :--- | ---: | ---: | ---: | ---: |
+| Qwen3-1.7B | 88.9 / 693 | 98.3 / 780 | 151.9 / 1020 | **187.8 / 1282** |
+| Qwen3-4B-Instruct-2507 | 61.5 / 455 | 75.7 / 563 | 73.9 / 481 | **95.2 / 612** |
+| Qwen3-8B | does not fit | 48.5 / 364 | does not fit | **55.6 / 386** |
+
+Eager, a step's product is one C call, with less host time than
+`nn.Linear`'s. Compile the whole forward, as these do: an op names its
+module by a number the graph is specialized on, so compiling each layer
+on its own compiles every layer anew (and meets torch._dynamo's
+recompile limit). With `exact=True` each product in the graph is
+`F.linear`'s, as eager, but the logits are the bf16 model's compiled the
+same way bit for bit only with
+`torch._inductor.config.emulate_precision_casts = True`: by default
+Inductor keeps a bf16 value in fp32 across a fused kernel, and fuses
+differently around Glyd's op than around bf16's matmul.
+
 `glyd.save_pretrained(model, path)` writes glyd-v1: the packs in the
 tiered layout as safetensors (each packed Linear's buffers under its
 module path, `.glyd_data`, `.glyd_blocks`, `.glyd_block_base`), the rest

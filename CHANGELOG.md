@@ -38,6 +38,20 @@ every earlier format.
   Qwen3-8B generates 48.4 tokens/s at one sequence through the library as
   through a local build of the extension (363.6 and 363.4 at eight); on
   models under 2B, where a step is mostly Python, 3-4% fewer.
+- Compiled: `model.generate(..., cache_implementation="static")`
+  (transformers' compiled forward) and `torch.compile(model.forward,
+  mode="reduce-overhead", fullgraph=True)` take every GLinear and
+  GEmbedding as one op of the graph (`glyd::linear`, `glyd::embedding`),
+  with no graph break, and the CUDA graph captures Glyd's kernels: on an
+  RTX 4080 SUPER Qwen3-1.7B generates 187.8 tokens/s at one sequence
+  against bf16's 151.9 compiled the same way (1282 against 1020 at eight),
+  Qwen3-4B-Instruct-2507 95.2 against 73.9, Qwen3-8B 55.6. Eager, a step's
+  product is one C call, what does not change between calls made once:
+  4.7 us of host time against `F.linear`'s 5.4 (8.7 before), a Qwen3-1.7B
+  layer 295 us against bf16's 322 (344 before), so eager `generate()` is
+  faster than bf16's where the host is the bottleneck too (Qwen3-1.7B 98.3
+  tokens/s against 88.9, 86.8 before; Qwen3-4B-Instruct-2507 75.7 against
+  61.5).
 - `mma12_gemm_wg` on compute capability 9.0 alone (its code is sm_90a);
   later GPUs take the kernels they would without it.
 - Homebrew installs the release's binaries on Apple silicon and Linux

@@ -3,7 +3,9 @@ inputs: the pybind module (PyTorch's JIT build) and the prebuilt library's C
 API (the glyd package's glyd/gpu/_lib.py over libglyd_gpu_cudaN.so). Every
 output compared bit for bit, and against the weights or an fp32 product so
 they are not both wrong: odd shapes, split rows, escapes and exceptions few
-and many, 1 to 600 tokens, bias; the errors alike; the calls' host time.
+and many, 1 to 600 tokens, bias; the errors alike; the package's one-call
+paths (GLinear.step, GEmbedding.step) against the checked calls; the calls'
+host time.
 
     python check_capi.py [LIBRARY]      (default: $GLYD_GPU_LIB, else the one next to glyd_gpu.py)"""
 import os, sys, time, torch
@@ -194,6 +196,23 @@ with torch.cuda.stream(torch.cuda.Stream()):
     near(both("mma12_gemm_mid", *pk, 128, 256, x, none, nan(33, 128), out=(8,)), F.linear(x.float(), w.float()))
     near(both("mma12_gemm", *pk, 128, 256, x[:7], none, nan(7, 128), out=(8,)), F.linear(x[:7].float(), w.float()))
 torch.cuda.synchronize()
+
+# The package's one-call paths (_lib.step and _lib.lookup, as GLinear and GEmbedding call them) against the checked
+# calls: 1-64 tokens, both layouts, bias, and an embedding's rows.
+from glyd.gpu import model as gm
+
+w = weights(512 * 1024, 0.01).view(512, 1024)
+for q in (g.pack_mma(w), g.pack_mma12(w)):
+    for b in (None, torch.randn(512, dtype=bf, device=dev)):
+        lin = gm.GLinear(q, b)
+        for M in range(1, 65):
+            x = torch.randn(M, 1, 1024, dtype=bf, device=dev)
+            assert exact(lin.step(x), lin.kernel(M)(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
+        counts["GLinear.step"] = counts.get("GLinear.step", 0) + 64
+e = weights(1000 * 256).view(1000, 256)
+ids = torch.randint(0, 1000, (4, 3), device=dev)
+assert exact(gm.GEmbedding(g.pack_fast(e)).step(ids), e[ids])
+counts["GEmbedding.step"] = 1
 
 # Refused alike: too many tokens, X not 16-byte aligned, rows not a multiple of 64.
 both_fail("mma12_gemm", *pk, 128, 256, torch.randn(65, 256, dtype=bf, device=dev), none, nan(65, 128))
