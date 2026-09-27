@@ -1863,11 +1863,15 @@ __global__ void moe_route_kernel(const int64_t* __restrict__ ids, int64_t P, int
 // pair j. ACT 1 (SiLU) and 2 (GELU, tanh): a unit a row block of the gate's half (the first O / 2 rows of the
 // expert's) and the same of the up's (the rest): Y [pairs, O / 2] = act(gate) up, each + its bias. The 8 warps
 // split K as mma_gemm_kernel's (with the gate: even warps the gate's rows, odd the up's), each step's decode and
-// products as there; warps w and w + 4 are summed first, then the four in order.
+// products as there; warps w and w + 4 are summed first, then the four in order. Few units (few experts hit) split
+// K over gridDim.z blocks (blockIdx.z's share of the steps): each writes its sums to parts ([splits][P][units]
+// [64, or with the gate 128] floats, P the pairs), and the last of a unit's to finish (done: a counter a unit,
+// zero between products) adds them in order and writes the unit out: the same result every run.
 template <class Fmt, int MT, int ACT>
-__global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_moe_kernel(Fmt f, int64_t O, int64_t K, const int* __restrict__ plan, int E, int64_t k, int gather, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ w, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
+__global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_moe_kernel(Fmt f, int64_t O, int64_t K, const int* __restrict__ plan, int E, int64_t k, int gather, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, const void* __restrict__ w, int wf32, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32, int64_t P, float* __restrict__ parts, int* __restrict__ done) {
     extern __shared__ __align__(128) float red[];  // [4 warps][16 MT rows][65], then (tiered) the warps' scratch [8][S2_BYTES]
     __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
+    __shared__ int last;
     if ((int)blockIdx.y >= __ldg(plan)) return;  // the whole block: no expert this far down the hits
     if constexpr (Fmt::kTable) fill_groups(tab);
     __syncthreads();
@@ -1877,8 +1881,27 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_moe_kernel(Fmt f, in
     int e = __ldg(plan + 1 + blockIdx.y), p0 = __ldg(plan + 1 + E + blockIdx.y), p1 = __ldg(plan + 2 + E + blockIdx.y);
     int64_t RB = O / 64, KS = K / 16, chunks = ACT ? 4 : 8, chunk = ACT ? warp >> 1 : warp;
     int64_t rb = blockIdx.x + (ACT && (warp & 1) ? RB / 2 : 0);  // this warp's row block of the expert's
-    int64_t per = (KS + chunks - 1) / chunks, s0 = min(KS, chunk * per), s1 = min(KS, s0 + per);
+    int64_t k0 = blockIdx.z * KS / gridDim.z, k1 = (blockIdx.z + 1) * KS / gridDim.z;  // this block's steps
+    int64_t per = (k1 - k0 + chunks - 1) / chunks, s0 = min(k1, k0 + chunk * per), s1 = min(k1, s0 + per);
     int64_t base = ((int64_t)e * RB + rb) * KS;
+    constexpr int W = ACT ? 128 : 64;  // a unit's columns in parts
+    // A pair's sums (the i-th of the order; column c of the unit's; ACT: gate a, up b) written out.
+    auto finish = [&](int64_t i, int c, float a, float b) {
+        if (ACT) {
+            int64_t o = blockIdx.x * 64 + c, at = (int64_t)e * O + o;  // the gate's row; the up's O / 2 on
+            float gate = a + (bias ? __bfloat162float(bias[at]) : 0.f), up = b + (bias ? __bfloat162float(bias[at + O / 2]) : 0.f);
+            Y[i * (O / 2) + o] = __float2bfloat16((ACT == 1 ? silu(gate) : gelu_tanh(gate)) * up);
+        } else {
+            int64_t o = blockIdx.x * 64 + c;
+            float y = a + (bias ? __bfloat162float(bias[(int64_t)e * O + o]) : 0.f);
+            if (Y32) {
+                int j = __ldg(order + i);
+                Y32[(int64_t)j * O + o] = y * (wf32 ? ((const float*)w)[j] : __bfloat162float(((const __nv_bfloat16*)w)[j]));
+            } else {
+                Y[i * O + o] = __float2bfloat16(y);
+            }
+        }
+    };
     for (int m0 = p0; m0 < p1; m0 += 16 * MT) {
         int n = min(16 * MT, p1 - m0);
         // This thread's rows of X: rows g and g + 8 of each m-tile (none past the pairs).
@@ -1952,22 +1975,39 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_moe_kernel(Fmt f, in
             float v[4];
 #pragma unroll
             for (int ww = 0; ww < 4; ww++) v[ww] = red[(ww * MT * 16 + r) * 65 + c];
-            if (ACT) {
-                int64_t o = blockIdx.x * 64 + c, at = (int64_t)e * O + o;  // the gate's row; the up's O / 2 on
-                float gate = v[0] + v[2] + (bias ? __bfloat162float(bias[at]) : 0.f), up = v[1] + v[3] + (bias ? __bfloat162float(bias[at + O / 2]) : 0.f);
-                Y[(int64_t)(m0 + r) * (O / 2) + o] = __float2bfloat16((ACT == 1 ? silu(gate) : gelu_tanh(gate)) * up);
+            float a = ACT ? v[0] + v[2] : v[0] + v[1] + v[2] + v[3], b = ACT ? v[1] + v[3] : 0.f;
+            if (gridDim.z == 1) {
+                finish(m0 + r, c, a, b);
             } else {
-                int64_t o = rb * 64 + c;
-                float y = v[0] + v[1] + v[2] + v[3] + (bias ? __bfloat162float(bias[(int64_t)e * O + o]) : 0.f);
-                if (Y32) {
-                    int j = __ldg(order + m0 + r);
-                    Y32[(int64_t)j * O + o] = y * (wf32 ? ((const float*)w)[j] : __bfloat162float(((const __nv_bfloat16*)w)[j]));
-                } else {
-                    Y[(int64_t)(m0 + r) * O + o] = __float2bfloat16(y);
-                }
+                float* pp = parts + (((int64_t)blockIdx.z * P + m0 + r) * gridDim.x + blockIdx.x) * W + c;
+                pp[0] = a;
+                if (ACT) pp[64] = b;
             }
         }
         __syncthreads();  // red is reused
+    }
+    if (gridDim.z > 1) {
+        __threadfence();
+        __syncthreads();
+        if (threadIdx.x == 0) {
+            int* d = done + (int64_t)blockIdx.y * gridDim.x + blockIdx.x;
+            last = atomicAdd(d, 1) == (int)gridDim.z - 1;
+            if (last) *d = 0;  // ready for the next product
+        }
+        __syncthreads();
+        if (last) {
+            __threadfence();
+            for (int i = threadIdx.x; i < (p1 - p0) * 64; i += 256) {
+                int r = i / 64, c = i % 64;
+                float a = 0.f, b = 0.f;
+                for (int z = 0; z < (int)gridDim.z; z++) {
+                    const float* pp = parts + (((int64_t)z * P + p0 + r) * gridDim.x + blockIdx.x) * W + c;
+                    a += __ldcg(pp);
+                    if (ACT) b += __ldcg(pp + 64);
+                }
+                finish(p0 + r, c, a, b);
+            }
+        }
     }
 }
 
@@ -2683,9 +2723,11 @@ GLYD_GPU_API int glyd_gpu_moe_route(const int64_t* ids, int64_t P, int64_t E, in
 // rows, the up the rest, each + its bias (O / 2 a multiple of 64); w (act 0; bf16, or fp32: wf32): y [T, O] =
 // the sum of a token's k rows times their weights, added in fp32 in the workspace ([P, O] floats; none
 // otherwise), a pair routed nowhere adding nothing. 16, 32 or 64 pairs of an expert at a time (as T: a token
-// is routed to an expert once). need: set to the workspace's bytes, nothing launched.
+// is routed to an expert once), K split over blocks where the units are few (their sums in the workspace after
+// Y32's, [splits][P][O] floats; done: a counter a unit, O / 64 (O / 128 with the gate) by min(E, P), zero before,
+// left zero). need: set to the workspace's bytes, nothing launched.
 template <class Fmt, int MT, int ACT>
-static void mma_moe_launch(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t k, int64_t gather, const int32_t* plan, const uint16_t* bias, const void* w, int64_t wf32, uint16_t* y, float* y32, dim3 grid, cudaStream_t cs) {
+static void mma_moe_launch(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t k, int64_t gather, const int32_t* plan, const uint16_t* bias, const void* w, int64_t wf32, uint16_t* y, float* y32, int64_t P, float* parts, int* done, dim3 grid, cudaStream_t cs) {
     auto kernel = mma_moe_kernel<Fmt, MT, ACT>;
     size_t shared = (size_t)4 * MT * 16 * 65 * sizeof(float) + (Fmt::kTable ? 8 * S2_BYTES : 0);
     static std::atomic<int> allowed[MAX_DEVICES];  // the shared memory allowed on a device, once
@@ -2694,7 +2736,19 @@ static void mma_moe_launch(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_
         cudaFuncSetAttribute((const void*)kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)shared);
         if (dev < MAX_DEVICES) allowed[dev] = 1;
     }
-    kernel<<<grid, 256, shared, cs>>>(f, O, K, plan, (int)E, k, (int)gather, bf(x), bf(bias), w, (int)wf32, bf(y), y32);
+    kernel<<<grid, 256, shared, cs>>>(f, O, K, plan, (int)E, k, (int)gather, bf(x), bf(bias), w, (int)wf32, bf(y), y32, P, parts, done);
+}
+
+// Blocks splitting K for the experts' product (units: its units by the experts that can be hit): up to the blocks
+// the GPU holds at once (a wave more costs a block's whole time), at least 16 steps (two a warp) each. On a GDDR GPU
+// a block an SM keeps its memory busy (an A10: split, the product was slower, measured); an HBM part (A100, H100,
+// B200: two to six times the bandwidth an SM) takes two. GLYD_GPU_MOE_SLOTS: the blocks held at once (tests).
+static int64_t moe_splits(int64_t units, int64_t K) {
+    static int64_t forced = getenv("GLYD_GPU_MOE_SLOTS") ? atoll(getenv("GLYD_GPU_MOE_SLOTS")) : 0;
+    int dev = current_device(), major = attribute(cudaDevAttrComputeCapabilityMajor, dev);
+    bool hbm = attribute(cudaDevAttrComputeCapabilityMinor, dev) == 0 && major >= 8 && major <= 10;
+    int64_t slots = forced ? forced : sm_count(dev) * (hbm ? 2 : 1);
+    return std::max<int64_t>(1, std::min<int64_t>(slots / units, K / 256));
 }
 
 // Many pairs an expert (a prompt): mma_gemm_big_kernel's variant 1 (128 of them by two row blocks a block, a weight
@@ -2710,29 +2764,31 @@ static void mma_moe_big(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* 
 }
 
 template <class Fmt>
-static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
+static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
     if (E < 1 || E > 12288 || O < 64 || O % 64 || K < 16 || K % 16 || T < 0 || k < 1 || act < 0 || act > 2 || (act && (O % 128 || w))) return cudaErrorInvalidValue;
-    int64_t P = T * k;
-    size_t bytes = w ? (size_t)(P * O) * sizeof(float) : 0;
+    int64_t P = T * k, MT = T <= 16 ? 1 : T <= 32 ? 2 : 4, units = act ? O / 128 : O / 64, hits = std::min(E, P);
+    int64_t splits = P ? moe_splits(units * hits, K) : 1;
+    size_t bytes = ((w ? 1 : 0) + (splits > 1 ? splits : 0)) * (size_t)(P * O) * sizeof(float);  // [Y32][parts]
     if (need) {
         *need = bytes;
         return 0;
     }
-    if (!fits(ws, ws_bytes, bytes) || (w && !ids)) return cudaErrorInvalidValue;
+    if (!fits(ws, ws_bytes, bytes) || (w && !ids) || (splits > 1 && !done)) return cudaErrorInvalidValue;
     if (P == 0) return 0;
-    dim3 grid((unsigned)(act ? O / 128 : O / 64), (unsigned)std::min(E, P));
     float* y32 = w ? (float*)ws : nullptr;
+    float* parts = splits > 1 ? (float*)ws + (w ? P * O : 0) : nullptr;
+    dim3 grid((unsigned)units, (unsigned)hits, (unsigned)splits);
     auto run = [&](auto mt) {
-        constexpr int MT = decltype(mt)::value;
-        if (act == 1) mma_moe_launch<Fmt, MT, 1>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, grid, cs);
-        else if (act == 2) mma_moe_launch<Fmt, MT, 2>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, grid, cs);
-        else mma_moe_launch<Fmt, MT, 0>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, grid, cs);
+        constexpr int M = decltype(mt)::value;
+        if (act == 1) mma_moe_launch<Fmt, M, 1>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, P, parts, done, grid, cs);
+        else if (act == 2) mma_moe_launch<Fmt, M, 2>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, P, parts, done, grid, cs);
+        else mma_moe_launch<Fmt, M, 0>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, P, parts, done, grid, cs);
     };
     // From 48 pairs an expert, on average (a prompt): the tiled GEMM (measured on an A10, OLMoE-1B-7B).
     static int64_t big = getenv("GLYD_GPU_MOE_BIG") ? atoll(getenv("GLYD_GPU_MOE_BIG")) : 48;
     if (T * k >= big * E && K % 64 == 0 && (uintptr_t)x % 16 == 0) mma_moe_big(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, y, y32, cs);
-    else if (T <= 16) run(std::integral_constant<int, 1>());
-    else if (T <= 32) run(std::integral_constant<int, 2>());
+    else if (MT == 1) run(std::integral_constant<int, 1>());
+    else if (MT == 2) run(std::integral_constant<int, 2>());
     else run(std::integral_constant<int, 4>());
     if (w) moe_sum_kernel<<<(unsigned)((T * O / 4 + 255) / 256), 256, 0, cs>>>(y32, ids, (int)E, T, k, O, bf(y));
     return cudaGetLastError();
@@ -2740,19 +2796,19 @@ static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x
 
 GLYD_GPU_API int glyd_gpu_mma_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, size_t* bytes) {
     int64_t one = 1;  // a stand-in for the weights: only whether there are any counts
-    return bytes ? mma_moe_run(Tiered{}, E, O, K, nullptr, T, k, 0, nullptr, act, nullptr, weighted ? &one : nullptr, 0, nullptr, nullptr, nullptr, 0, 0, bytes) : cudaErrorInvalidValue;
+    return bytes ? mma_moe_run(Tiered{}, E, O, K, nullptr, T, k, 0, nullptr, act, nullptr, weighted ? &one : nullptr, 0, nullptr, nullptr, nullptr, 0, nullptr, 0, bytes) : cudaErrorInvalidValue;
 }
 
-GLYD_GPU_API int glyd_gpu_mma_moe(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
-    return mma_moe_run(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, cs, nullptr);
+GLYD_GPU_API int glyd_gpu_mma_moe(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    return mma_moe_run(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
 }
 
 GLYD_GPU_API int glyd_gpu_mma12_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted, size_t* bytes) {
     return glyd_gpu_mma_moe_workspace(E, O, K, T, k, act, weighted, bytes);  // the same for both layouts
 }
 
-GLYD_GPU_API int glyd_gpu_mma12_moe(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
-    return mma_moe_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, cs, nullptr);
+GLYD_GPU_API int glyd_gpu_mma12_moe(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    return mma_moe_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
 }
 
 // Attention for one new token a sequence over the KV cache in the mma layout (gpu/kv.py): q [pairs x G, D]
@@ -2982,22 +3038,24 @@ static void moe_product(const char* name, F run, torch::Tensor data, int64_t E, 
     size_t bytes = 0;
     ok(glyd_gpu_mma_moe_workspace(E, O, K, T, k, act, w.numel() > 0, &bytes), name);
     auto ws = scratch(bytes, x);
-    run(T, w.numel() ? w.data_ptr() : nullptr, w.scalar_type() == torch::kFloat32, addr(ws), bytes);
+    static auto* done_of = new std::map<int, torch::Tensor>;
+    int* done = counters(*done_of, data, (act ? O / 128 : O / 64) * std::min(E, T * k), 1 << 16);
+    run(T, w.numel() ? w.data_ptr() : nullptr, w.scalar_type() == torch::kFloat32, addr(ws), bytes, done);
 }
 
 void mma_moe(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t E, int64_t O, int64_t K, torch::Tensor x, int64_t k, int64_t gather, torch::Tensor plan, int64_t act, torch::Tensor bias, torch::Tensor w, torch::Tensor ids, torch::Tensor y) {
     uint32_t t[3];
     words(tiers, 3, t, "three tiers");
-    moe_product("mma_moe", [&](int64_t T, const void* wp, bool wf32, void* ws, size_t bytes) {
-        ok(glyd_gpu_mma_moe(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, E, O, K, ptr<uint16_t>(x), T, k, gather, ptr<int32_t>(plan), act, opt(bias), wp, wf32, ids.numel() ? ptr<int64_t>(ids) : nullptr, ptr<uint16_t>(y), ws, bytes, current_stream()), "mma_moe");
+    moe_product("mma_moe", [&](int64_t T, const void* wp, bool wf32, void* ws, size_t bytes, int* done) {
+        ok(glyd_gpu_mma_moe(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, E, O, K, ptr<uint16_t>(x), T, k, gather, ptr<int32_t>(plan), act, opt(bias), wp, wf32, ids.numel() ? ptr<int64_t>(ids) : nullptr, ptr<uint16_t>(y), ws, bytes, done, current_stream()), "mma_moe");
     }, data, E, O, K, x, k, gather, plan, act, bias, w, ids, y);
 }
 
 void mma12_moe(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t E, int64_t O, int64_t K, torch::Tensor x, int64_t k, int64_t gather, torch::Tensor plan, int64_t act, torch::Tensor bias, torch::Tensor w, torch::Tensor ids, torch::Tensor y) {
     uint32_t s[4];
     words(sym, 4, s, "four words of symbols");
-    moe_product("mma12_moe", [&](int64_t T, const void* wp, bool wf32, void* ws, size_t bytes) {
-        ok(glyd_gpu_mma12_moe(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, E, O, K, ptr<uint16_t>(x), T, k, gather, ptr<int32_t>(plan), act, opt(bias), wp, wf32, ids.numel() ? ptr<int64_t>(ids) : nullptr, ptr<uint16_t>(y), ws, bytes, current_stream()), "mma12_moe");
+    moe_product("mma12_moe", [&](int64_t T, const void* wp, bool wf32, void* ws, size_t bytes, int* done) {
+        ok(glyd_gpu_mma12_moe(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, E, O, K, ptr<uint16_t>(x), T, k, gather, ptr<int32_t>(plan), act, opt(bias), wp, wf32, ids.numel() ? ptr<int64_t>(ids) : nullptr, ptr<uint16_t>(y), ws, bytes, done, current_stream()), "mma12_moe");
     }, data, E, O, K, x, k, gather, plan, act, bias, w, ids, y);
 }
 
