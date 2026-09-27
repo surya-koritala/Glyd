@@ -175,11 +175,13 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
 # few routed nowhere), mma_moe_unpack and mma12_moe_unpack (the experts hit), mma_moe and mma12_moe (the rows by
 # expert, + bias; the gate's SiLU and GELU fused; weighted and each token's rows added, the weights bf16 and fp32),
 # 1-300 tokens (passes of 16, 32 and 64, K split over blocks or not; from 48 pairs an expert, mma_gemm_big_kernel's
-# tiles), against fp32.
-for E, O, K, k, T, wild in [(8, 256, 192, 2, 1, 0.01), (8, 256, 192, 2, 70, 0.02), (64, 128, 2048, 8, 8, 0.001), (40, 1024, 1536, 8, 3, 0.0), (16, 192, 64, 4, 33, 0.1), (4, 128, 256, 1, 17, 0.0), (4, 128, 208, 2, 150, 0.0), (4, 256, 256, 2, 300, 0.01), (6, 128, 320, 3, 200, 0.02), (5, 192, 128, 2, 160, 0.01), (2, 128, 528, 1, 150, 0.01)]:
+# tiles), against fp32; and (twice) tokens listing an expert twice, not as a top-k would: more pairs an expert than tokens.
+for E, O, K, k, T, wild, *twice in [(8, 256, 192, 2, 1, 0.01), (8, 256, 192, 2, 70, 0.02), (64, 128, 2048, 8, 8, 0.001), (40, 1024, 1536, 8, 3, 0.0), (16, 192, 64, 4, 33, 0.1), (4, 128, 256, 1, 17, 0.0), (4, 128, 208, 2, 150, 0.0), (4, 256, 256, 2, 300, 0.01), (6, 128, 320, 3, 200, 0.02), (5, 192, 128, 2, 160, 0.01), (2, 128, 528, 1, 150, 0.01), (4, 256, 256, 2, 300, 0.01, 1), (4, 128, 208, 2, 300, 0.0, 1)]:
     w = weights(E * O * K, wild).view(E, O, K)
     bias = torch.randn(E, O, dtype=bf, device=dev)
     ids = torch.stack([torch.randperm(E, device=dev)[:k] for _ in range(T)])
+    if twice:
+        ids[: 2 * T // 3] = 0  # expert 0 twice: some 450 pairs for 300 tokens
     if T > 2:
         ids[1, 0] = E  # routed nowhere, as an expert-parallel sentinel
     P, flat = T * k, ids.view(-1)
@@ -217,7 +219,7 @@ for E, O, K, k, T, wild in [(8, 256, 192, 2, 1, 0.01), (8, 256, 192, 2, 70, 0.02
                 ref = torch.zeros(P, O, device=dev)
                 ref[order] = (rows_s + bb) * wt.view(-1)[order, None].float()
                 near(y, ref.view(T, k, O).sum(1))
-    print(f"moe: {E} experts of {O}x{K}, {T} tokens by {k}, {n} experts hit: the same through both")
+    print(f"moe: {E} experts of {O}x{K}, {T} tokens by {k}{', one expert twice' if twice else ''}, {n} experts hit: the same through both")
 both_fail("mma12_moe", *pk, E, O, K, x, k, 1, plan, 1, none, wt, flat, nan(T, O))  # a gate and weights at once
 
 # Attention over packed KV pages: head_dim 64 and 128, 1-16 queries a KV head, pages and tails of 0-63 tokens.

@@ -337,7 +337,7 @@ def moe_route(ids, E, plan):
     d = ids.get_device()
     if d != _device():
         return _there(moe_route, d, ids, E, plan)
-    _check(ids.dtype == torch.int64 and ids.is_contiguous() and plan.dtype == torch.int32 and plan.numel() >= 2 + 2 * E + ids.numel(), "ids int64, plan int32 [2 + 2E + P]")
+    _check(ids.dtype == torch.int64 and ids.is_contiguous() and plan.dtype == torch.int32 and plan.numel() >= 2 + 2 * E + ids.numel() and plan.get_device() == d, "ids int64, plan int32 [2 + 2E + P] on the same GPU")
     r = _fn["moe_route"](ids.data_ptr(), ids.numel(), E, plan.data_ptr(), _stream(d))
     if r:
         _fail("moe_route", r)
@@ -351,6 +351,8 @@ def _moe(name, data, a, b, words, E, O, K, x, k, gather, plan, act, bias, w, ids
     weighted = w.numel() > 0
     _check(x.is_contiguous() and x.size(1) == K and plan.dtype == torch.int32, "X contiguous [., K], plan int32")
     _check(not weighted or (w.dtype in (torch.float32, torch.bfloat16) and ids.dtype == torch.int64), "weights bf16 or fp32, ids int64")
+    _check(not bias.numel() or (bias.dtype == torch.bfloat16 and bias.is_contiguous() and bias.numel() >= E * O and bias.get_device() == d), "bias bf16, contiguous [E, O], on the pack's GPU")
+    _check(x.get_device() == d and plan.get_device() == d and y.get_device() == d and (not weighted or (w.get_device() == d and ids.get_device() == d)), "every tensor on the pack's GPU")
     T, s = x.size(0) if gather else x.size(0) // k, _stream(d)
     ws = _workspace(name, d, s, E, O, K, T, k, act, int(weighted))
     done = _counters(name, d, (O // 128 if act else O // 64) * min(E, T * k), 1 << 16)
@@ -373,6 +375,7 @@ def _moe_unpack(name, data, a, b, words, E, O, K, P, plan, out):
     if d != _device():
         return _there(_moe_unpack, d, name, data, a, b, words, E, O, K, P, plan, out)
     _check(plan.dtype == torch.int32 and out.numel() >= E * O * K, "plan int32, out [E O, K]")
+    _check(plan.get_device() == d and out.get_device() == d, "every tensor on the pack's GPU")
     r = _fn[name](data.data_ptr(), a.data_ptr(), b.data_ptr(), words, E, O, K, P, plan.data_ptr(), out.data_ptr(), _stream(d))
     if r:
         _fail(name, r)
