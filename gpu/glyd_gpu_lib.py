@@ -7,14 +7,19 @@ names and arguments, for glyd_gpu.py where nvcc is not at hand.
     ext.mma_gemm(...)                    # as the JIT-built module's
 
 Each runs on the current stream of its tensors' device and allocates what
-the C++ allocates: its outputs, a product's workspace (the bytes the library
-asks for) and its done counters (zeroed once and kept, one set a device, as
-there)."""
-import contextlib
+the C++ allocates: its outputs, and a product's done counters (zeroed once
+and kept, a set a device, as there). A product's workspace (the bytes the
+library asks for) is kept for its stream and reused in stream order, up to
+16 MB (a prompt's larger one is allocated for the call, as there). A
+generation step calls a product for every Linear, so a call's host time is
+its C call and a few lookups: no Stream object, no device switch where the
+device is current, no allocation."""
 import ctypes
+import functools
 import torch
 
 _lib = None
+_fn, _query = {}, {}  # the C API's functions, argument types set; the workspace queries
 _P, _I64, _U64, _SZ, _W = ctypes.c_void_p, ctypes.c_int64, ctypes.c_uint64, ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint32)
 _PACK = [_P, _P, _P, _W]  # data, blocks (exc), block_base (exc_base), tiers[3] (sym[4])
 _FAST = [_P, _P, _P, _P, _U64]  # sm, planes, exc, exc_base, top
@@ -46,10 +51,10 @@ def load(path):
     global _lib
     lib = ctypes.CDLL(path)
     for name, args in _ARGS.items():
-        f = getattr(lib, "glyd_gpu_" + name)
+        f = _fn[name] = getattr(lib, "glyd_gpu_" + name)
         f.argtypes, f.restype = args + [_P], ctypes.c_int
     for name, n in _SIZES.items():
-        f = getattr(lib, f"glyd_gpu_{name}_workspace")
+        f = _query[name] = getattr(lib, f"glyd_gpu_{name}_workspace")
         f.argtypes, f.restype = [_I64] * n + [ctypes.POINTER(_SZ)], ctypes.c_int
     lib.glyd_gpu_error_string.argtypes, lib.glyd_gpu_error_string.restype = [ctypes.c_int], ctypes.c_char_p
     lib.glyd_gpu_cuda_version.restype = ctypes.c_int
@@ -67,66 +72,63 @@ def _check(ok, why):
 
 
 def _fail(name, r):
+    raise RuntimeError(f"{name}: {_lib.glyd_gpu_error_string(r).decode()}")
+
+
+_device = torch._C._cuda_getDevice
+# A device's current stream, torch.cuda.current_stream(d).cuda_stream, read without making a Stream object.
+_stream = getattr(torch._C, "_cuda_getCurrentRawStream", None) or (lambda d: torch.cuda.current_stream(d).cuda_stream)
+
+
+def _there(f, d, *args):
+    """f(*args) with device d made current (as the C++'s CUDAGuard), where it was not."""
+    with torch.cuda.device(d):
+        return f(*args)
+
+
+@functools.lru_cache(maxsize=1024)
+def _need(name, d, sizes):
+    """A product's workspace bytes for these sizes on device d (the current one), as the library gives them."""
+    b = _SZ()
+    r = _query[name](*sizes, ctypes.byref(b))
     if r:
-        raise RuntimeError(f"{name}: {_lib.glyd_gpu_error_string(r).decode()}")
+        _fail(name, r)
+    return b.value
 
 
-# A small product's host time counts in generation (a call a Linear a token): the device switched only where
-# it is not current, the stream read without building its Stream object, the sizes and words kept.
-_raw_stream = getattr(torch._C, "_cuda_getCurrentRawStream", None)
-_here = contextlib.nullcontext()
+_kept = {}  # (device, stream): a workspace kept for the stream, (buffer, address, bytes)
+_KEEP = 16 << 20
+_NONE = (None, None, 0)
 
 
-def _on(t):
-    """t's device made current for the call (as the C++'s CUDAGuard), where it is not already."""
-    i = t.get_device()
-    return _here if i == torch.cuda.current_device() else torch.cuda.device(i)
-
-
-def _stream():
-    """The current device's current stream: torch.cuda.current_stream().cuda_stream."""
-    return _raw_stream(torch.cuda.current_device()) if _raw_stream else torch.cuda.current_stream().cuda_stream
-
-
-def _call(name, *args):
-    """glyd_gpu_<name>(args, the current stream), tensors as their data; the device made current by the caller."""
-    _fail(name, getattr(_lib, "glyd_gpu_" + name)(*[a.data_ptr() if isinstance(a, torch.Tensor) else a for a in args], _stream()))
-
-
-_sizes = {}
-
-
-def _workspace(name, dev, *sizes):
-    """A product's workspace on dev (None where it needs none): the library's size for these sizes on this
-    device (asked once)."""
-    key = (name, dev.index, sizes)
-    n = _sizes.get(key)
-    if n is None:
-        b = _SZ()
-        _fail(name, getattr(_lib, f"glyd_gpu_{name}_workspace")(*sizes, ctypes.byref(b)))
-        n = _sizes[key] = b.value
-    return torch.empty(n, dtype=torch.uint8, device=dev) if n else None
-
-
-def _bytes(ws):
-    return ws.numel() if ws is not None else 0
-
-
-def _opt(t):
-    """A bias: none when empty."""
-    return t if t.numel() else None
+def _workspace(name, d, s, *sizes):
+    """A product's workspace on device d for stream s, as (buffer, address, bytes): the library's size
+    for these sizes; the stream's kept buffer, reused in stream order (grown where too small), up to
+    _KEEP bytes, else one for the call; none for 0 bytes."""
+    n = _need(name, d, sizes)
+    if n == 0:
+        return _NONE
+    if n > _KEEP:
+        t = torch.empty(n, dtype=torch.uint8, device=torch.device("cuda", d))
+        return t, t.data_ptr(), n
+    w = _kept.get((d, s))
+    if w is None or w[2] < n:
+        t = torch.empty(n, dtype=torch.uint8, device=torch.device("cuda", d))
+        w = _kept[(d, s)] = (t, t.data_ptr(), n)
+    return w
 
 
 _done = {}
 
 
-def _counters(name, like, n, least):
-    """A product's done counters on like's device (at least n; least when first made): zero between products."""
-    key = (name, like.get_device())
-    t = _done.get(key)
-    if t is None or t.numel() < n:
-        t = _done[key] = torch.zeros(max(n, least), dtype=torch.int32, device=like.device)
-    return t
+def _counters(name, d, n, least):
+    """The address of a product's done counters on device d (at least n; least when first made): zero
+    between products."""
+    c = _done.get((name, d))
+    if c is None or c[2] < n:
+        t = torch.zeros(max(n, least), dtype=torch.int32, device=torch.device("cuda", d))
+        c = _done[(name, d)] = (t, t.data_ptr(), t.numel())
+    return c[1]
 
 
 _arrays = {}
@@ -134,112 +136,155 @@ _arrays = {}
 
 def _words(v, n, what):
     """tiers (3) or sym (4) as the C API's words (a pack's are the same every call: kept)."""
-    _check(len(v) == n, what)
-    key = tuple(v)
+    key = (n, *v)
     a = _arrays.get(key)
     if a is None:
+        _check(len(v) == n, what)
         a = _arrays[key] = (ctypes.c_uint32 * n)(*[x & 0xFFFFFFFF for x in v])
     return a
 
 
 def lane_bits(w, len_, tw, V):
-    with _on(w):
-        bits = torch.empty((w.numel() + tw - 1) // tw * 32, dtype=torch.int32, device=w.device)
-        _call("lane_bits", w, w.numel(), len_, tw, V, bits)
+    d = w.get_device()
+    if d != _device():
+        return _there(lane_bits, d, w, len_, tw, V)
+    bits = torch.empty((w.numel() + tw - 1) // tw * 32, dtype=torch.int32, device=w.device)
+    r = _fn["lane_bits"](w.data_ptr(), w.numel(), len_.data_ptr(), tw, V, bits.data_ptr(), _stream(d))
+    if r:
+        _fail("lane_bits", r)
     return bits
 
 
 def write_codes(w, len_, code, offs, out, tw, V):
-    with _on(w):
-        _call("write_codes", w, w.numel(), len_, code, offs, out, tw, V)
+    d = w.get_device()
+    if d != _device():
+        return _there(write_codes, d, w, len_, code, offs, out, tw, V)
+    r = _fn["write_codes"](w.data_ptr(), w.numel(), len_.data_ptr(), code.data_ptr(), offs.data_ptr(), out.data_ptr(), tw, V, _stream(d))
+    if r:
+        _fail("write_codes", r)
 
 
 def decode(sm, stream, offs, tables, n, tw, V, tile_words, tile_ids, out):
+    d = sm.get_device()
+    if d != _device():
+        return _there(decode, d, sm, stream, offs, tables, n, tw, V, tile_words, tile_ids, out)
     ids = tile_ids.numel()
     _check(out.numel() >= (ids * tw if ids else n), "the output is too small")
-    with _on(sm):
-        _call("decode", sm, stream, stream.numel(), offs, tables, n, tw, V, tile_words, tile_ids, ids, out)
+    r = _fn["decode"](sm.data_ptr(), stream.data_ptr(), stream.numel(), offs.data_ptr(), tables.data_ptr(), n, tw, V, tile_words, tile_ids.data_ptr(), ids, out.data_ptr(), _stream(d))
+    if r:
+        _fail("decode", r)
 
 
 def gemv(sm, stream, offs, tables, O, K, tw, V, tile_words, x, bias, y, sum_, count):
+    d = sm.get_device()
+    if d != _device():
+        return _there(gemv, d, sm, stream, offs, tables, O, K, tw, V, tile_words, x, bias, y, sum_, count)
     split = tw % K != 0
     _check(K % (32 * V) == 0 and tw % (32 * V) == 0 and (not split or sum_.numel() >= O), "gemv needs K and tiles multiples of 32 V, and row sums for split rows")
-    with _on(sm):
-        _call("gemv", sm, stream, stream.numel(), offs, tables, O, K, tw, V, tile_words, x, _opt(bias), y, sum_, count)
+    r = _fn["gemv"](sm.data_ptr(), stream.data_ptr(), stream.numel(), offs.data_ptr(), tables.data_ptr(), O, K, tw, V, tile_words, x.data_ptr(), bias.data_ptr() if bias.numel() else None, y.data_ptr(), sum_.data_ptr(), count.data_ptr(), _stream(d))
+    if r:
+        _fail("gemv", r)
 
 
 def fast_gemv(sm, planes, exc, exc_base, top, O, K, x, bias, y):
+    d = sm.get_device()
+    if d != _device():
+        return _there(fast_gemv, d, sm, planes, exc, exc_base, top, O, K, x, bias, y)
     _check(K % 128 == 0, "rows a multiple of 128 long")
-    with _on(sm):
-        _call("fast_gemv", sm, planes, exc, exc_base, top, O, K, x, _opt(bias), y)
+    r = _fn["fast_gemv"](sm.data_ptr(), planes.data_ptr(), exc.data_ptr(), exc_base.data_ptr(), top, O, K, x.data_ptr(), bias.data_ptr() if bias.numel() else None, y.data_ptr(), _stream(d))
+    if r:
+        _fail("fast_gemv", r)
 
 
 def fast_decode(sm, planes, exc, exc_base, top, row0, rows, row_ids, K, out):
+    d = sm.get_device()
+    if d != _device():
+        return _there(fast_decode, d, sm, planes, exc, exc_base, top, row0, rows, row_ids, K, out)
     ids = row_ids.numel()
     _check(K % 128 == 0 and out.numel() >= (ids or rows) * K, "rows a multiple of 128 long, room for them")
-    with _on(sm):
-        _call("fast_decode", sm, planes, exc, exc_base, top, row0, rows, row_ids, ids, K, out)
+    r = _fn["fast_decode"](sm.data_ptr(), planes.data_ptr(), exc.data_ptr(), exc_base.data_ptr(), top, row0, rows, row_ids.data_ptr(), ids, K, out.data_ptr(), _stream(d))
+    if r:
+        _fail("fast_decode", r)
+
+
+def _fast_product(name, sm, planes, exc, exc_base, top, O, K, x, bias, y):
+    """fast_gemm, fast_bgemv: several tokens (the checks done)."""
+    d = sm.get_device()
+    if d != _device():
+        return _there(_fast_product, d, name, sm, planes, exc, exc_base, top, O, K, x, bias, y)
+    M, s = x.size(0), _stream(d)
+    ws = _workspace(name, d, s, O, K, M)
+    r = _fn[name](sm.data_ptr(), planes.data_ptr(), exc.data_ptr(), exc_base.data_ptr(), top, O, K, x.data_ptr(), M, bias.data_ptr() if bias.numel() else None, y.data_ptr(), ws[1], ws[2], s)
+    if r:
+        _fail(name, r)
 
 
 def fast_gemm(sm, planes, exc, exc_base, top, O, K, x, bias, y):
     _check(K % 64 == 0 and x.is_contiguous() and x.size(1) == K, "K a multiple of 64, X contiguous [M, K]")
-    M = x.size(0)
-    with _on(sm):
-        ws = _workspace("fast_gemm", x.device, O, K, M)
-        _call("fast_gemm", sm, planes, exc, exc_base, top, O, K, x, M, _opt(bias), y, ws, _bytes(ws))
+    _fast_product("fast_gemm", sm, planes, exc, exc_base, top, O, K, x, bias, y)
 
 
 def fast_bgemv(sm, planes, exc, exc_base, top, O, K, x, bias, y):
-    M = x.size(0)
-    _check(K % 512 == 0 and x.is_contiguous() and x.size(1) == K and M in (2, 4, 8, 16), "K a multiple of 512, X contiguous [M, K], M 2, 4, 8 or 16")
-    with _on(sm):
-        ws = _workspace("fast_bgemv", x.device, O, K, M)
-        _call("fast_bgemv", sm, planes, exc, exc_base, top, O, K, x, M, _opt(bias), y, ws, _bytes(ws))
+    _check(K % 512 == 0 and x.is_contiguous() and x.size(1) == K and x.size(0) in (2, 4, 8, 16), "K a multiple of 512, X contiguous [M, K], M 2, 4, 8 or 16")
+    _fast_product("fast_bgemv", sm, planes, exc, exc_base, top, O, K, x, bias, y)
 
 
-def _small(name, pack, words, O, K, x, bias, y):
-    """mma_gemm, mma12_gemm: up to 64 tokens."""
+def _small(name, data, a, b, words, O, K, x, bias, y):
+    """mma_gemm, mma12_gemm: up to 64 tokens (a generation step's product)."""
+    d = data.get_device()
+    if d != _device():
+        return _there(_small, d, name, data, a, b, words, O, K, x, bias, y)
     M = x.size(0)
     _check(O % 64 == 0 and K % 16 == 0 and M <= 64 and x.is_contiguous() and x.size(1) == K, "O a multiple of 64, K of 16, up to 64 tokens, X contiguous [M, K]")
-    with _on(pack[0]):
-        ws = _workspace(name, x.device, O, K, M)
-        _call(name, *pack, words, O, K, x, M, _opt(bias), y, ws, _bytes(ws), _counters(name, pack[0], O // 64, 1 << 16))
+    s = _stream(d)
+    ws = _workspace(name, d, s, O, K, M)
+    r = _fn[name](data.data_ptr(), a.data_ptr(), b.data_ptr(), words, O, K, x.data_ptr(), M, bias.data_ptr() if bias.numel() else None, y.data_ptr(), ws[1], ws[2], _counters(name, d, O // 64, 1 << 16), s)
+    if r:
+        _fail(name, r)
 
 
 def mma_gemm(data, blocks, block_base, tiers, O, K, x, bias, y):
-    _small("mma_gemm", (data, blocks, block_base), _words(tiers, 3, "three tiers"), O, K, x, bias, y)
+    _small("mma_gemm", data, blocks, block_base, _words(tiers, 3, "three tiers"), O, K, x, bias, y)
 
 
 def mma12_gemm(data, exc, exc_base, sym, O, K, x, bias, y):
-    _small("mma12_gemm", (data, exc, exc_base), _words(sym, 4, "four words of symbols"), O, K, x, bias, y)
+    _small("mma12_gemm", data, exc, exc_base, _words(sym, 4, "four words of symbols"), O, K, x, bias, y)
 
 
-def _big(name, pack, words, O, K, x, bias, y, variant):
+def _big(name, data, a, b, words, O, K, x, bias, y, variant):
     """mma_gemm_big, mma12_gemm_big: a prompt."""
+    d = data.get_device()
+    if d != _device():
+        return _there(_big, d, name, data, a, b, words, O, K, x, bias, y, variant)
     _check(O % 64 == 0 and K % 64 == 0 and x.is_contiguous() and x.size(1) == K and x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]")
-    M = x.size(0)
-    with _on(pack[0]):
-        ws = _workspace(name, x.device, O, K, M, variant)
-        _call(name, *pack, words, O, K, x, M, _opt(bias), y, variant, ws, _bytes(ws))
+    M, s = x.size(0), _stream(d)
+    ws = _workspace(name, d, s, O, K, M, variant)
+    r = _fn[name](data.data_ptr(), a.data_ptr(), b.data_ptr(), words, O, K, x.data_ptr(), M, bias.data_ptr() if bias.numel() else None, y.data_ptr(), variant, ws[1], ws[2], s)
+    if r:
+        _fail(name, r)
 
 
 def mma_gemm_big(data, blocks, block_base, tiers, O, K, x, bias, y, variant):
-    _big("mma_gemm_big", (data, blocks, block_base), _words(tiers, 3, "three tiers"), O, K, x, bias, y, variant)
+    _big("mma_gemm_big", data, blocks, block_base, _words(tiers, 3, "three tiers"), O, K, x, bias, y, variant)
 
 
 def mma12_gemm_big(data, exc, exc_base, sym, O, K, x, bias, y, variant):
-    _big("mma12_gemm_big", (data, exc, exc_base), _words(sym, 4, "four words of symbols"), O, K, x, bias, y, variant)
+    _big("mma12_gemm_big", data, exc, exc_base, _words(sym, 4, "four words of symbols"), O, K, x, bias, y, variant)
 
 
 def _staged(name, data, exc, exc_base, sym, O, K, x, bias, y):
     """mma12_gemm_mid, mma12_gemm_wg: many tokens, the 12-bit layout copied a stage at a time (the GPU checked by the library)."""
+    d = data.get_device()
+    if d != _device():
+        return _there(_staged, d, name, data, exc, exc_base, sym, O, K, x, bias, y)
     words = _words(sym, 4, "four words of symbols")
     _check(O % 64 == 0 and K % 64 == 0 and x.is_contiguous() and x.size(1) == K and x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]")
     _check(data.data_ptr() % 16 == 0 and exc.data_ptr() % 16 == 0 and exc.numel() % 4 == 0, "the pack 16-byte aligned, exc padded to 4 (pack_mma12)")
-    M = x.size(0)
-    with _on(data):
-        ws = _workspace(name, data.device, O, K, M)
-        _call(name, data, exc, exc_base, words, O, K, x, M, _opt(bias), y, ws, _bytes(ws), _counters(name, data, O // 64, 1 << 16))
+    M, s = x.size(0), _stream(d)
+    ws = _workspace(name, d, s, O, K, M)
+    r = _fn[name](data.data_ptr(), exc.data_ptr(), exc_base.data_ptr(), words, O, K, x.data_ptr(), M, bias.data_ptr() if bias.numel() else None, y.data_ptr(), ws[1], ws[2], _counters(name, d, O // 64, 1 << 16), s)
+    if r:
+        _fail(name, r)
 
 
 def mma12_gemm_mid(data, exc, exc_base, sym, O, K, x, bias, y):
@@ -250,24 +295,34 @@ def mma12_gemm_wg(data, exc, exc_base, sym, O, K, x, bias, y):
     _staged("mma12_gemm_wg", data, exc, exc_base, sym, O, K, x, bias, y)
 
 
-def mma_unpack(data, blocks, block_base, tiers, K, row0, rows, out):
-    words = _words(tiers, 3, "three tiers")
+def _unpack(name, data, a, b, words, K, row0, rows, out):
+    """mma_unpack, mma12_unpack."""
+    d = data.get_device()
+    if d != _device():
+        return _there(_unpack, d, name, data, a, b, words, K, row0, rows, out)
     _check(row0 % 64 == 0 and rows % 64 == 0 and out.numel() >= rows * K, "rows a multiple of 64")
-    with _on(data):
-        _call("mma_unpack", data, blocks, block_base, words, K, row0, rows, out)
+    r = _fn[name](data.data_ptr(), a.data_ptr(), b.data_ptr(), words, K, row0, rows, out.data_ptr(), _stream(d))
+    if r:
+        _fail(name, r)
+
+
+def mma_unpack(data, blocks, block_base, tiers, K, row0, rows, out):
+    _unpack("mma_unpack", data, blocks, block_base, _words(tiers, 3, "three tiers"), K, row0, rows, out)
 
 
 def mma12_unpack(data, exc, exc_base, sym, K, row0, rows, out):
-    words = _words(sym, 4, "four words of symbols")
-    _check(row0 % 64 == 0 and rows % 64 == 0 and out.numel() >= rows * K, "rows a multiple of 64")
-    with _on(data):
-        _call("mma12_unpack", data, exc, exc_base, words, K, row0, rows, out)
+    _unpack("mma12_unpack", data, exc, exc_base, _words(sym, 4, "four words of symbols"), K, row0, rows, out)
 
 
 def attn_decode(q, kd, kb, kbb, kt, vd, vb, vbb, vt, tk, tv, tlen, pairs, G, P, scale, out):
+    d = q.get_device()
+    if d != _device():
+        return _there(attn_decode, d, q, kd, kb, kbb, kt, vd, vb, vbb, vt, tk, tv, tlen, pairs, G, P, scale, out)
     k3, v3 = _words(kt, 3, "three tiers"), _words(vt, 3, "three tiers")
     D = q.size(-1)
     _check(D in (64, 128) and 1 <= G <= 16 and q.is_contiguous() and tlen < 64 and P + (tlen > 0) > 0, "head_dim 64 or 128, up to 16 queries a KV head")
-    with _on(q):
-        ws = _workspace("attn_decode", q.device, D, tlen, pairs, P)
-        _call("attn_decode", q, D, kd, kb, kbb, k3, vd, vb, vbb, v3, tk, tv, tlen, pairs, G, P, scale, out, ws, _bytes(ws), _counters("attn_decode", q, pairs, 1 << 12))
+    s = _stream(d)
+    ws = _workspace("attn_decode", d, s, D, tlen, pairs, P)
+    r = _fn["attn_decode"](q.data_ptr(), D, kd.data_ptr(), kb.data_ptr(), kbb.data_ptr(), k3, vd.data_ptr(), vb.data_ptr(), vbb.data_ptr(), v3, tk.data_ptr(), tv.data_ptr(), tlen, pairs, G, P, scale, out.data_ptr(), ws[1], ws[2], _counters("attn_decode", d, pairs, 1 << 12), s)
+    if r:
+        _fail("attn_decode", r)

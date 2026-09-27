@@ -189,7 +189,7 @@ w = weights(128 * 256).view(128, 256)
 q = g.pack_mma12(w)
 pk = (q.data, q.exc, q.exc_base, q.sym)
 with torch.cuda.stream(torch.cuda.Stream()):
-    assert glyd_gpu_lib._stream() == torch.cuda.current_stream().cuda_stream != 0
+    assert glyd_gpu_lib._stream(torch.cuda.current_device()) == torch.cuda.current_stream().cuda_stream != 0
     x = torch.randn(33, 256, dtype=bf, device=dev)
     near(both("mma12_gemm_mid", *pk, 128, 256, x, none, nan(33, 128), out=(8,)), F.linear(x.float(), w.float()))
     near(both("mma12_gemm", *pk, 128, 256, x[:7], none, nan(7, 128), out=(8,)), F.linear(x[:7].float(), w.float()))
