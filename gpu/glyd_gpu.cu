@@ -1716,7 +1716,7 @@ template <int N> __device__ __forceinline__ void cp_async_wait() { asm volatile(
 
 // Many tokens on the A100 (sm_80), the 12-bit layout: mma_gemm_big_kernel's split of the warps, with the
 // producers' reads staged. A producer warp a step of W's 4 RBB a stage (64 columns of RBB row blocks): it copies
-// its step and the step's exceptions by cp.async NW stages ahead into its share of a ring (the exceptions' bounds
+// its step and the step's exceptions by cp.async NW - 1 stages ahead into its share of a ring (the exceptions' bounds
 // loaded 32 stages ahead, a stage a lane), and decodes it from there into B fragments in shared memory; the
 // producers copy X's tile a stage ahead of its decode. CW consumer warps multiply, each 16 MT tokens by a row
 // block, on the tensor cores; named barriers pass a stage's buffers (NB of them) between the two. Stream-K over

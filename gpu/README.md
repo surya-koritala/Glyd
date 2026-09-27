@@ -255,8 +255,8 @@ On an A100 that plan was the slower (its waits on the mbarriers are polls
 on this generation), and `mma_gemm_mid` is a kernel of its own there:
 `mma_gemm_big`'s split of the warps, the producers' reads staged. Each
 producer warp takes one step of each stage (64 columns of two row
-blocks): it copies the step and the step's exceptions by cp.async four or
-five stages ahead into its share of a ring, and decodes them from there
+blocks): it copies the step and the step's exceptions by cp.async three or
+four stages ahead into its share of a ring, and decodes them from there
 into B fragments in shared memory; four consumer warps multiply, 16 or 32
 tokens by a row block each; named barriers pass the stages between the
 two, and the work is split evenly over the SMs (stream-K). Profiled
@@ -273,7 +273,7 @@ of one layer's matrices (q, k, v and gate, up merged), CUDA graphs, in us:
 | `mma_gemm_mid` | **273** | **276** | **310** | **311** |
 
 Qwen3-32B's layer 20 takes 0.79-0.87x cuBLAS's time at 17 to 64 tokens,
-every matrix under it; Qwen3-8B's gate, up and down 0.82-0.94x, its q, k,
+every matrix under it; Qwen3-8B's gate, up and down 0.81-0.94x, its q, k,
 v (6144 x 4096) and o (4096 x 4096) still longer past 32 tokens (1.12x
 and 1.36x at 64: few stages a block, so the pipeline's start and the sum
 of shared rows weigh). End to end (`e2e.py --format auto --fused --merge
