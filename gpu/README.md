@@ -273,14 +273,14 @@ of one layer's matrices (q, k, v and gate, up merged), CUDA graphs, in us:
 | `mma_gemm_mid` | **273** | **276** | **310** | **311** |
 
 Qwen3-32B's layer 20 takes 0.79-0.87x cuBLAS's time at 17 to 64 tokens,
-every matrix under it; Qwen3-8B's gate, up and down 0.81-0.94x, its q, k,
-v (6144 x 4096) and o (4096 x 4096) still longer past 32 tokens (1.12x
-and 1.36x at 64: few stages a block, so the pipeline's start and the sum
-of shared rows weigh). End to end (`e2e.py --format auto --fused --merge
---profile 32`), GPU time a step of Qwen3-8B at 1 / 8 / 32 / 64
-sequences: 15.83 / 19.69 / 19.79 / 21.80 ms against bf16's 17.45 / 20.12 /
-20.82 / 21.67 (with `mma_gemm`: 15.83 / 19.47 / 21.27 / 25.96). Past 64
-tokens `mma_gemm_big` runs, 1.18-1.20x cuBLAS's time at 96 and 128.
+every matrix under it; Qwen3-8B's gate, up and down 0.81-0.94x, its q,
+k, v (6144 x 4096) 1.01-1.13x and o (4096 x 4096) 1.24-1.36x (few stages
+a block, so the pipeline's start and the sum of shared rows weigh). End
+to end (`e2e.py --format auto --fused --merge --profile 32`), GPU time a
+step of Qwen3-8B at 1 / 8 / 32 / 64 sequences: 15.83 / 19.69 / 19.79 /
+21.80 ms against bf16's 17.45 / 20.12 / 20.82 / 21.67 (with `mma_gemm`:
+15.83 / 19.47 / 21.27 / 25.96). Past 64 tokens `mma_gemm_big` runs,
+1.18-1.20x cuBLAS's time at 96 and 128.
 
 ## Popular models
 
