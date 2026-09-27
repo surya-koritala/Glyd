@@ -249,8 +249,38 @@ On GDDR Ampere and Ada, steps of 17 to 64 tokens run `mma_gemm_mid`, the
 TMA kernel's plan with this generation's instructions: a producer warp's
 cp.async onto each stage's mbarrier, X's tile read by ldmatrix, the rows
 decoded into mma.sync's registers. It takes an A10's 64 sequences from
-34.64 to 33.05 ms and an RTX 4080's from 21.99 to 21.66; on an A100 it
-was the slower (21.56 against 19.95), so there mma_gemm stays.
+34.64 to 33.05 ms and an RTX 4080's from 21.99 to 21.66.
+
+On an A100 that plan was the slower (its waits on the mbarriers are polls
+on this generation), and `mma_gemm_mid` is a kernel of its own there:
+`mma_gemm_big`'s split of the warps, the producers' reads staged. Each
+producer warp takes one step of each stage (64 columns of two row
+blocks): it copies the step and the step's exceptions by cp.async three or
+four stages ahead into its share of a ring, and decodes them from there
+into B fragments in shared memory; four consumer warps multiply, 16 or 32
+tokens by a row block each; named barriers pass the stages between the
+two, and the work is split evenly over the SMs (stream-K). Profiled
+(Nsight Compute), `mma_gemm` at 64 tokens had kept 2 warps a scheduler,
+each waiting on its next step's loads, on its exceptions (a load that
+waits on another) and on X's rows, which every row block reads again from
+L2 (48 MB for q, k and v at 64 tokens, against the matrix's 38). GPU time
+of one layer's matrices (q, k, v and gate, up merged), CUDA graphs, in us:
+
+| Qwen3-8B, layer 12 | 17 tokens | 32 | 48 | 64 |
+| :--- | ---: | ---: | ---: | ---: |
+| cuBLAS on bf16 | 310 | 315 | 320 | 318 |
+| `mma_gemm` | 298 | 321 | 388 | 418 |
+| `mma_gemm_mid` | **273** | **276** | **310** | **311** |
+
+Qwen3-32B's layer 20 takes 0.79-0.87x cuBLAS's time at 17 to 64 tokens,
+every matrix under it; Qwen3-8B's gate, up and down 0.81-0.94x, its q,
+k, v (6144 x 4096) 1.01-1.13x and o (4096 x 4096) 1.24-1.36x (few stages
+a block, so the pipeline's start and the sum of shared rows weigh). End
+to end (`e2e.py --format auto --fused --merge --profile 32`), GPU time a
+step of Qwen3-8B at 1 / 8 / 32 / 64 sequences: 15.83 / 19.69 / 19.79 /
+21.80 ms against bf16's 17.45 / 20.12 / 20.82 / 21.67 (with `mma_gemm`:
+15.83 / 19.47 / 21.27 / 25.96). Past 64 tokens `mma_gemm_big` runs,
+1.18-1.20x cuBLAS's time at 96 and 128.
 
 ## Popular models
 

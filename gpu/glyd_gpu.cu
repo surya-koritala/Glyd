@@ -1830,6 +1830,279 @@ __global__ void __launch_bounds__(Mid12<NT, WG>::THREADS, 1) mma12_mid_kernel(Ni
 #endif
 }
 
+// A 16-byte copy of data read once (W's steps): evicted from L2 first.
+__device__ __forceinline__ void cp_async16_once(uint32_t dst, const void* src, uint64_t pol) {
+    asm volatile("cp.async.cg.shared.global.L2::cache_hint [%0], [%1], 16, %2;\n" ::"r"(dst), "l"(src), "l"(pol));
+}
+template <int N> __device__ __forceinline__ void cp_async_wait() { asm volatile("cp.async.wait_group %0;\n" ::"n"(N)); }
+
+// Many tokens on the A100 (sm_80), the 12-bit layout: mma_gemm_big_kernel's split of the warps, with the
+// producers' reads staged. A producer warp a step of W's 4 RBB a stage (64 columns of RBB row blocks): it copies
+// its step and the step's exceptions by cp.async NW - 1 stages ahead into its share of a ring (the exceptions' bounds
+// loaded 32 stages ahead, a stage a lane), and decodes it from there into B fragments in shared memory; the
+// producers copy X's tile a stage ahead of its decode. CW consumer warps multiply, each 16 MT tokens by a row
+// block, on the tensor cores; named barriers pass a stage's buffers (NB of them) between the two. Stream-K over
+// units (RBB row blocks by TM tokens) and their stages, as mma_gemm_kernel's: a unit covered by several blocks is
+// summed by the last to finish, in block order (the same result every run).
+template <int CW, int NB, int NW, int RBB, int MT> struct Ws12 {
+    static constexpr int PW = 4 * RBB, THREADS = 32 * (CW + PW), PT = 32 * PW, CT = 32 * CW;
+    static constexpr int TM = 16 * MT * CW / RBB;     // tokens a unit
+    static constexpr int A_BYTES = TM * 128;          // X's tile a stage
+    static constexpr int B_UINT4 = RBB * 4 * 4 * 32;  // W's fragments a stage: [row block][step][4][lane]
+    static constexpr int DSLOT = A_BYTES + B_UINT4 * 16;
+    static constexpr int EB = 128, SB = (int)STEP12 + EB + 16;  // a producer warp's share of a ring slot: its step, the step's exceptions (past EB bytes read from global memory), their bounds
+    static constexpr int WSLOT = PW * SB;
+    static constexpr int SHARED = NB * DSLOT + NW * WSLOT + 128;
+    static constexpr int XQ = TM * 8 / PT;            // X's chunks a producer thread
+    // NB >= 3: the producers copy stage j + 1's X tile before they decode stage j, into the slot the consumers
+    // free after stage j + 1 - NB, and the consumers ask for stage j + 1 before they free stage j.
+    static_assert(NB >= 3 && NW >= 2 && 2 * NB + 2 <= 15 && XQ * PT == TM * 8, "shapes");
+};
+
+template <int CW, int NB, int NW, int RBB, int MT>
+__global__ void __launch_bounds__(Ws12<CW, NB, NW, RBB, MT>::THREADS, 1) mma12_ws_kernel(Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+    using C = Ws12<CW, NB, NW, RBB, MT>;
+    constexpr int FULL0 = 1, EMPTY0 = 1 + NB, CBAR = 1 + 2 * NB;  // named barriers
+    extern __shared__ __align__(128) uint8_t smem_raw[];  // NB slots [X tile | B fragments], then the ring: NW slots [a producer warp's step, exceptions, bounds | ...]
+    __shared__ int last;
+    uint32_t raw = (uint32_t)__cvta_generic_to_shared(smem_raw), base = (raw + 127) & ~127u;
+    uint8_t* gbase = smem_raw + (base - raw);
+    int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    int64_t KS = K / 16, RB = O / 64;
+    int tiles = (int)((M + C::TM - 1) / C::TM), S = (int)(K / 64);
+    int64_t T = (RB + RBB - 1) / RBB * tiles * S, nb = gridDim.x, u0 = blockIdx.x * T / nb;
+    int n = (int)((blockIdx.x + 1) * T / nb - u0);  // the block's stages, u0 on: unit (tile of a pair of row blocks) u / S, stage u mod S
+    int p0 = (int)(u0 / S), s0 = (int)(u0 - (int64_t)p0 * S);
+    if (warp >= CW) {
+        // Producer warp pw: step kk of row block pw / 4 of each stage. Commit groups a stage j: X's tile of stage
+        // j + 1, then the warp's step of stage j + NW - 1.
+        int pt = tid - C::CT, pw = warp - CW, kk = pw & 3, xr = pt >> 3, xc = pt & 7;
+        uint64_t pol;
+        asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;\n" : "=l"(pol));
+        const uint32_t wbase = base + NB * C::DSLOT + pw * C::SB;
+        const uint8_t* gw = gbase + NB * C::DSLOT + pw * C::SB;
+        // The step's exceptions' bounds (exc_base at it and the next): lane i holds them for stage i of the batch of
+        // 32 (e0, e1), the next batch's (en0, en1) loaded meanwhile.
+        int e0 = 0, e1 = 0, en0 = 0, en1 = 0;
+        auto ahead = [&](int p, int s, int k) {  // the stage k after (p, s)
+            s += k;
+            p += s / S;
+            s %= S;
+            const int32_t* q = f.exc_base + min((int64_t)(p / tiles) * RBB + (pw >> 2), RB - 1) * KS + 4 * s + kk;
+            en0 = __ldg(q);
+            en1 = __ldg(q + 1);
+        };
+        if (lane < n) ahead(p0, s0, lane);
+        int cj = 0, cp = p0, cs = s0, csl = 0;  // the next step to copy: stage cj (unit cp, stage cs), slot csl
+        const uint8_t* wsrc = f.data + (min((int64_t)(p0 / tiles) * RBB + (pw >> 2), RB - 1) * KS + 4 * s0 + kk) * STEP12 + 16 * lane;
+        auto wcopy = [&]() {
+            if (cj < n) {
+                uint32_t d = wbase + csl * C::WSLOT + 16 * lane;
+#pragma unroll
+                for (int q = 0; q < (int)STEP12 / 512; q++) cp_async16_once(d + 512 * q, wsrc + 512 * q, pol);
+                if ((cj & 31) == 0) {
+                    e0 = en0, e1 = en1;
+                    if (cj + 32 + lane < n) ahead(cp, cs, 32 + lane);
+                }
+                int lo = __shfl_sync(FULL, e0, cj & 31), hi = __shfl_sync(FULL, e1, cj & 31), a, na;
+                exc_copy(lo, hi, C::EB, a, na);
+                if (4 * lane < na) cp_async16(wbase + csl * C::WSLOT + STEP12 + 16 * lane, f.exc + a + 4 * lane, 16);
+                if (lane == 0) *(int4*)(gw + csl * C::WSLOT + STEP12 + C::EB) = make_int4(lo, hi, na < 0 ? -1 : a, 0);
+                cj++;
+                csl = csl + 1 == NW ? 0 : csl + 1;
+                if (++cs == S) {
+                    cs = 0, cp++;
+                    wsrc = f.data + (min((int64_t)(cp / tiles) * RBB + (pw >> 2), RB - 1) * KS + kk) * STEP12 + 16 * lane;
+                } else {
+                    wsrc += 4 * STEP12;
+                }
+            }
+            asm volatile("cp.async.commit_group;\n" ::);
+        };
+        int xj = 0, xp = p0, xs = s0, xsl = 0;  // the next X tile to copy: stage xj (unit xp, stage xs), slot xsl; this thread's first row xm (none past M)
+        int64_t xm = (int64_t)(p0 % tiles) * C::TM + xr;
+        auto xcopy = [&]() {
+            if (xj < n) {
+                uint32_t d = base + xsl * C::DSLOT + xr * 128 + ((xc ^ (xr & 7)) << 4);
+#pragma unroll
+                for (int q = 0; q < C::XQ; q++)
+                    if (xm + C::PT / 8 * q < M) cp_async16(d + C::PT / 8 * 128 * q, X + (xm + C::PT / 8 * q) * K + (int64_t)xs * 64 + xc * 8, 16);
+                xj++;
+                xsl = xsl + 1 == NB ? 0 : xsl + 1;
+                if (++xs == S) {
+                    xs = 0, xp++;
+                    xm = (int64_t)(xp % tiles) * C::TM + xr;
+                }
+            }
+            asm volatile("cp.async.commit_group;\n" ::);
+        };
+#pragma unroll 1
+        for (int i = 1 - NW; i < 0; i++) {
+            if (i == -1) xcopy();
+            else asm volatile("cp.async.commit_group;\n" ::);
+            wcopy();
+        }
+        int wsl = 0, bsl = 0;  // stage j's ring slot, and its slot of fragments
+        uint4* bdst = (uint4*)(gbase + C::A_BYTES) + pw * 4 * 32 + lane;
+#pragma unroll 1
+        for (int j = 0; j < n; j++) {
+            cp_async_wait<2 * (NW - 2)>();
+            __syncwarp();  // stage j's step has landed
+            if (j + 1 < n && j + 1 >= NB) bar_sync<C::THREADS>(EMPTY0 + xsl);  // the consumers are done with stage j + 1 - NB (xsl: stage j + 1's slot)
+            xcopy();
+            wcopy();
+            // The step into B fragments, as Nib::decode's (its loads and exceptions from the ring).
+            const uint8_t* q = gw + wsl * C::WSLOT;
+            uint4 c4 = *(const uint4*)(q + 16 * lane), x0 = *(const uint4*)(q + 512 + 16 * lane), x1 = *(const uint4*)(q + 1024 + 16 * lane);
+            uint32_t nbw[4] = {c4.x, c4.y, c4.z, c4.w}, sw[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w}, ew[8];
+#pragma unroll
+            for (int h = 0; h < 8; h++) {
+                uint32_t cc = nbw[h >> 1] >> (16 * (h & 1)), n7 = cc & 0x7777u;
+                ew[h] = __byte_perm(__byte_perm(f.sym[0], f.sym[1], n7), __byte_perm(f.sym[2], f.sym[3], n7), ((cc >> 1) & 0x4444u) | 0x3210u);
+            }
+            int4 bd = *(const int4*)(q + STEP12 + C::EB);
+            const uint32_t* se = (const uint32_t*)(q + STEP12);
+            for (int k = bd.x; k < bd.y; k++) {  // each word takes its byte where the exception is this lane's and in it
+                uint32_t x = bd.z >= 0 ? se[k - bd.z] : __ldg(f.exc + k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
+                uint32_t wq = (int)((x >> 5) & 31) == lane ? i >> 2 : 8u;
+#pragma unroll
+                for (int h = 0; h < 8; h++) {
+                    uint32_t v = __byte_perm(ew[h], x >> 16, sel);
+                    ew[h] = wq == (uint32_t)h ? v : ew[h];
+                }
+            }
+            uint32_t R[16];
+            pairs(sw, ew, R);
+            uint4* d = bdst + bsl * (C::DSLOT / 16);
+#pragma unroll
+            for (int qq = 0; qq < 4; qq++) d[qq * 32] = make_uint4(R[4 * qq], R[4 * qq + 1], R[4 * qq + 2], R[4 * qq + 3]);
+            cp_async_wait<3>();                   // stage j's X tile has landed
+            bar_arrive<C::THREADS>(FULL0 + bsl);  // stage j is ready
+            wsl = wsl + 1 == NW ? 0 : wsl + 1;
+            bsl = bsl + 1 == NB ? 0 : bsl + 1;
+        }
+        cp_async_wait<0>();
+        return;
+    }
+    // Consumer: tokens 16 MT (warp mod (CW / RBB)) on of the unit's TM, row block warp / (CW / RBB) of its RBB.
+    int g = lane >> 2, t = lane & 3, wm = warp % (CW / RBB), rbl = warp / (CW / RBB);
+    float acc[MT][8][4];
+#pragma unroll
+    for (int mt = 0; mt < MT; mt++)
+#pragma unroll
+        for (int nn = 0; nn < 8; nn++)
+#pragma unroll
+            for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
+    uint32_t a_row = (uint32_t)(wm * 16 * MT + (lane & 7) + ((lane >> 3) & 1) * 8) * 128, a_half = lane >> 4, a_sw = lane & 7;
+    uint32_t fa[2][MT][4];
+    uint4 fb[2][4];
+    auto frags = [&](int bi, int kk, int fi) {
+        uint32_t slot = base + (uint32_t)bi * C::DSLOT;
+        const uint4* bsrc = (const uint4*)(gbase + bi * C::DSLOT + C::A_BYTES) + rbl * 4 * 4 * 32 + lane;
+#pragma unroll
+        for (int mt = 0; mt < MT; mt++) ldmatrix_x4(fa[fi][mt], slot + a_row + mt * 16 * 128 + (((2 * kk + a_half) ^ a_sw) << 4));
+#pragma unroll
+        for (int q = 0; q < 4; q++) fb[fi][q] = bsrc[(kk * 4 + q) * 32];
+    };
+    if (n > 0) {
+        bar_sync<C::THREADS>(FULL0);
+        frags(0, 0, 0);
+    }
+    int p = p0, s = s0, bsl = 0;
+#pragma unroll 1
+    for (int j = 0; j < n; j++) {
+        int nsl = bsl + 1 == NB ? 0 : bsl + 1;
+#pragma unroll
+        for (int kk = 0; kk < 4; kk++) {
+            int fi = kk & 1;
+            if (kk + 1 < 4) frags(bsl, kk + 1, fi ^ 1);
+            else if (j + 1 < n) {
+                bar_sync<C::THREADS>(FULL0 + nsl);  // stage j + 1 is ready
+                frags(nsl, 0, fi ^ 1);
+            }
+#pragma unroll
+            for (int mt = 0; mt < MT; mt++) {
+                mma16816(acc[mt][0], fa[fi][mt], fb[fi][0].x, fb[fi][0].y);
+                mma16816(acc[mt][1], fa[fi][mt], fb[fi][0].z, fb[fi][0].w);
+                mma16816(acc[mt][2], fa[fi][mt], fb[fi][1].x, fb[fi][1].y);
+                mma16816(acc[mt][3], fa[fi][mt], fb[fi][1].z, fb[fi][1].w);
+                mma16816(acc[mt][4], fa[fi][mt], fb[fi][2].x, fb[fi][2].y);
+                mma16816(acc[mt][5], fa[fi][mt], fb[fi][2].z, fb[fi][2].w);
+                mma16816(acc[mt][6], fa[fi][mt], fb[fi][3].x, fb[fi][3].y);
+                mma16816(acc[mt][7], fa[fi][mt], fb[fi][3].z, fb[fi][3].w);
+            }
+        }
+        if (j + NB < n) bar_arrive<C::THREADS>(EMPTY0 + bsl);  // done with stage j's buffers
+        bsl = nsl;
+        if (s == S - 1 || j == n - 1) {
+            // Unit p's sum out: to Y where this block covers it, else to its slot (the consumers' accumulators in
+            // thread order), the last of its blocks to finish adding the slots in block order.
+            int64_t first = block_of_step((int64_t)p * S, nb, T), fin = block_of_step((int64_t)p * S + S - 1, nb, T);
+            if (first != fin) {
+                float4* pp = (float4*)(parts + ((int64_t)blockIdx.x + p) * (C::TM * 64 * RBB));
+#pragma unroll
+                for (int mt = 0; mt < MT; mt++)
+#pragma unroll
+                    for (int nn = 0; nn < 8; nn++) pp[(mt * 8 + nn) * C::CT + tid] = make_float4(acc[mt][nn][0], acc[mt][nn][1], acc[mt][nn][2], acc[mt][nn][3]);
+                __threadfence();
+                bar_sync<C::CT>(CBAR);
+                if (tid == 0) {
+                    last = atomicAdd(done + p, 1) == fin - first;
+                    if (last) done[p] = 0;  // ready for the next product
+                }
+                bar_sync<C::CT>(CBAR);
+                if (last) {
+                    __threadfence();
+#pragma unroll
+                    for (int mt = 0; mt < MT; mt++)
+#pragma unroll
+                        for (int nn = 0; nn < 8; nn++)
+#pragma unroll
+                            for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
+                    for (int64_t b = first; b <= fin; b++) {
+                        const float4* bp = (const float4*)(parts + (b + p) * (C::TM * 64 * RBB));
+#pragma unroll
+                        for (int mt = 0; mt < MT; mt++)
+#pragma unroll
+                            for (int nn = 0; nn < 8; nn++) {
+                                float4 v = __ldcg(bp + (mt * 8 + nn) * C::CT + tid);
+                                acc[mt][nn][0] += v.x;
+                                acc[mt][nn][1] += v.y;
+                                acc[mt][nn][2] += v.z;
+                                acc[mt][nn][3] += v.w;
+                            }
+                    }
+                }
+            }
+            if (first == fin || last) {
+                int64_t rb = (int64_t)(p / tiles) * RBB + rbl, m0 = (int64_t)(p % tiles) * C::TM + wm * 16 * MT + g;
+                if (rb < RB)
+#pragma unroll
+                    for (int nn = 0; nn < 8; nn++) {
+                        int64_t o = rb * 64 + nn * 8 + t * 2;
+                        float b0 = bias ? __bfloat162float(bias[o]) : 0.f, b1 = bias ? __bfloat162float(bias[o + 1]) : 0.f;
+#pragma unroll
+                        for (int mt = 0; mt < MT; mt++)
+#pragma unroll
+                            for (int h = 0; h < 2; h++) {
+                                int64_t m = m0 + mt * 16 + h * 8;
+                                if (m < M) *(__nv_bfloat162*)(Y + m * O + o) = __floats2bfloat162_rn(acc[mt][nn][2 * h] + b0, acc[mt][nn][2 * h + 1] + b1);
+                            }
+                    }
+            }
+#pragma unroll
+            for (int mt = 0; mt < MT; mt++)
+#pragma unroll
+                for (int nn = 0; nn < 8; nn++)
+#pragma unroll
+                    for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
+        }
+        if (++s == S) s = 0, p++;
+    }
+#endif
+}
+
 // A mixture-of-experts layer: its E experts' matrices [O, K] stacked as one matrix [E O, K] in either mma
 // layout (expert e's rows e O to e O + O - 1; O a multiple of 64), each multiplied by the tokens routed to it.
 // A token's k choices are its pairs (pair j: token j / k, choice j mod k; ids[j] its expert). moe_route_kernel
@@ -2572,10 +2845,33 @@ static int mma12_mid_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
     return 0;
 }
 
+template <int CW, int NB, int NW, int RBB, int MT>
+static int mma12_ws_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t m0, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
+    using C = Ws12<CW, NB, NW, RBB, MT>;
+    auto kernel = mma12_ws_kernel<CW, NB, NW, RBB, MT>;
+    static std::atomic<int> known[MAX_DEVICES];
+    int dev = current_device();
+    int64_t units = (O / 64 + RBB - 1) / RBB * ((M + C::TM - 1) / C::TM), T = units * (K / 64);
+    int64_t nb = std::max<int64_t>(1, std::min<int64_t>(per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), T / 8));
+    if (need) *need = std::max(*need, (size_t)((nb + units) * C::TM * 64 * RBB) * sizeof(float));
+    else kernel<<<nb, C::THREADS, C::SHARED, cs>>>(f, O, K, M, bf(x) + m0 * K, bf(bias), bf(y) + m0 * O, parts, done);
+    return 0;
+}
+
 static int mma12_mid_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
     int dev = current_device();
     if (attribute(cudaDevAttrComputeCapabilityMajor, dev) < 8) return cudaErrorNotSupported;
     if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16 || (uintptr_t)f.data % 16 || (uintptr_t)f.exc % 16) return cudaErrorInvalidValue;
+    if (attribute(cudaDevAttrComputeCapabilityMajor, dev) == 8 && attribute(cudaDevAttrComputeCapabilityMinor, dev) == 0) {
+        // The A100: producer and consumer warps, 32 tokens a unit to 32, else 64; past 64 a launch a 64 (each
+        // reading W again: prompts go to mma_gemm_big), so the units and their done counters stay O / 128.
+        for (int64_t m0 = 0; m0 < M; m0 += 64) {
+            int64_t mc = std::min<int64_t>(64, M - m0);
+            auto run = mc <= 32 ? mma12_ws_run<4, 4, 5, 2, 1> : mma12_ws_run<4, 4, 4, 2, 2>;
+            run(f, O, K, x, m0, mc, bias, y, parts, done, cs, need);
+        }
+        return cudaGetLastError();
+    }
     bool big = attribute(cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) >= Mid12<64, 4>::SHARED;  // sm_80: four warpgroups
     for (int64_t m0 = 0; m0 < M; m0 += 64) {
         int64_t mc = std::min<int64_t>(64, M - m0);

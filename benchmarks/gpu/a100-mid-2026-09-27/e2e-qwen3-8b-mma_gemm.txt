@@ -1,0 +1,54 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 5326.26it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-27 19:37:53 15395:15395 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:37:54 15395:15395 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:37:54 15395:15395 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:37:56 15395:15395 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:38:05 15395:15395 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:38:05 15395:15395 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:38:06 15395:15395 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:38:08 15395:15395 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:38:17 15395:15395 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:38:17 15395:15395 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:38:17 15395:15395 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:38:19 15395:15395 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:38:29 15395:15395 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:38:29 15395:15395 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:38:29 15395:15395 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:38:31 15395:15395 SyncActivityProfilerHandler.cpp:46] profiler_stop
+merged: 72 groups of Linears as one product each
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.54 GB on 1 GPU
+glyd mma12 fused: batch 1: 22.4 tokens/s (22.4 a sequence), peak VRAM 12.56 GB
+glyd mma12 fused: batch 8: 177.7 tokens/s (22.2 a sequence), peak VRAM 12.67 GB
+glyd mma12 fused: batch 32: 706.9 tokens/s (22.1 a sequence), peak VRAM 12.98 GB
+glyd mma12 fused: batch 64: 1388.2 tokens/s (21.7 a sequence), peak VRAM 13.41 GB
+glyd mma12 profile, batch 1: 60.59 ms a step, GPU busy 15.83 ms a step after the prompt (63 tokens/s of GPU time), 16.85 ms for the prompt and a token
+     9.901 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     0.831 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.672 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+     0.631 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.466 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.391 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+glyd mma12 profile, batch 8: 60.82 ms a step, GPU busy 19.47 ms a step after the prompt (411 tokens/s of GPU time), 27.94 ms for the prompt and a token
+    10.995 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     1.671 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.156 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.842 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.625 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.465 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl<at::native::direct
+glyd mma12 profile, batch 32: 61.01 ms a step, GPU busy 21.27 ms a step after the prompt (1505 tokens/s of GPU time), 37.74 ms for the prompt and a token
+    13.321 ms  void mma_gemm_kernel<Nib, 2>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     1.408 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.324 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.849 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.606 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, false, false
+     0.522 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+glyd mma12 profile, batch 64: 61.39 ms a step, GPU busy 25.96 ms a step after the prompt (2465 tokens/s of GPU time), 64.60 ms for the prompt and a token
+    16.871 ms  void mma_gemm_kernel<Nib, 4>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     1.490 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.339 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.095 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.903 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, false, false
+     0.559 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to transmit information over long distances, and it used Morse code, which is a form

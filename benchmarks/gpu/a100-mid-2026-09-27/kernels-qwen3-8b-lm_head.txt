@@ -1,0 +1,13 @@
+NVIDIA A100-SXM4-40GB (8, 0) layer 12
+lm_head 151936x4096
+  M=   1  cuBLAS   852.2  mma12   678.6  mid   783.3   best mma12 0.80x
+  M=   8  cuBLAS   900.9  mma12   697.6  mid   783.4   best mma12 0.77x
+  M=  16  cuBLAS   909.7  mma12   711.6  mid   786.5   best mma12 0.78x
+  M=  32  cuBLAS   950.6  mma12   854.6  mid   799.4   best mid 0.84x
+  M=  64  cuBLAS   959.9  mma12  1029.7  mid   915.6   best mid 0.95x
+layer total (us):
+  M=   1  cuBLAS   852.2  mid   783.3  mma12   678.6  main   678.6  branch   678.6  best   678.6 0.80x  main 0.80x  branch 0.80x
+  M=   8  cuBLAS   900.9  mid   783.4  mma12   697.6  main   697.6  branch   697.6  best   697.6 0.77x  main 0.77x  branch 0.77x
+  M=  16  cuBLAS   909.7  mid   786.5  mma12   711.6  main   711.6  branch   711.6  best   711.6 0.78x  main 0.78x  branch 0.78x
+  M=  32  cuBLAS   950.6  mid   799.4  mma12   854.6  main   854.6  branch   799.4  best   799.4 0.84x  main 0.90x  branch 0.84x
+  M=  64  cuBLAS   959.9  mid   915.6  mma12  1029.7  main  1029.7  branch   915.6  best   915.6 0.95x  main 1.07x  branch 0.95x

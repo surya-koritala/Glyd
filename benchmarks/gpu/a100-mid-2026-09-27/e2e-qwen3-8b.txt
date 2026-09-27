@@ -1,0 +1,104 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 5269.19it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-27 19:35:15 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:35:15 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:35:15 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:35:17 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:35:26 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:35:26 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:35:26 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:35:28 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:35:38 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:35:38 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:35:39 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:35:41 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:35:49 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:35:50 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:35:50 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:35:52 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:36:32 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:36:33 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:36:33 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:36:35 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:36:44 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:36:45 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:36:45 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:36:47 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:36:57 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:36:57 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:36:57 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:36:59 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:37:12 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:37:12 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-27 19:37:12 15182:15182 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-27 19:37:14 15182:15182 SyncActivityProfilerHandler.cpp:46] profiler_stop
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 23.2 tokens/s (23.2 a sequence), peak VRAM 16.41 GB
+bf16 (weights 16.38 GB): batch 8: 185.1 tokens/s (23.1 a sequence), peak VRAM 16.52 GB
+bf16 (weights 16.38 GB): batch 32: 732.7 tokens/s (22.9 a sequence), peak VRAM 16.83 GB
+bf16 (weights 16.38 GB): batch 64: 1457.5 tokens/s (22.8 a sequence), peak VRAM 17.26 GB
+bf16 profile, batch 1: 57.89 ms a step, GPU busy 17.45 ms a step after the prompt (57 tokens/s of GPU time), 18.49 ms for the prompt and a token
+     5.427 ms  ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_32x6_tn
+     3.967 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn
+     1.473 ms  void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_64x64_64x6_tn_align8>(
+     0.849 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn
+     0.803 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.653 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+bf16 profile, batch 8: 57.86 ms a step, GPU busy 20.12 ms a step after the prompt (398 tokens/s of GPU time), 23.51 ms for the prompt and a token
+     5.492 ms  ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x3_tn
+     4.230 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn
+     2.415 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn
+     1.562 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.086 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.786 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+bf16 profile, batch 32: 58.22 ms a step, GPU busy 20.82 ms a step after the prompt (1537 tokens/s of GPU time), 35.90 ms for the prompt and a token
+     9.695 ms  ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn
+     2.940 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn
+     1.403 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.341 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.864 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.643 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, false, false
+bf16 profile, batch 64: 58.25 ms a step, GPU busy 21.67 ms a step after the prompt (2953 tokens/s of GPU time), 50.33 ms for the prompt and a token
+     6.621 ms  ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn
+     3.020 ms  ampere_s16816gemm_bf16_128x64_ldg8_stages_64x4_tn
+     1.678 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn
+     1.450 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.433 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn
+     1.315 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.55 GB on 1 GPU
+glyd mma12 fused: batch 1: 18.4 tokens/s (18.4 a sequence), peak VRAM 12.57 GB
+glyd mma12 fused: batch 8: 145.5 tokens/s (18.2 a sequence), peak VRAM 12.68 GB
+glyd mma12 fused: batch 32: 572.8 tokens/s (17.9 a sequence), peak VRAM 12.99 GB
+glyd mma12 fused: batch 64: 1134.9 tokens/s (17.7 a sequence), peak VRAM 13.42 GB
+glyd mma12 profile, batch 1: 59.34 ms a step, GPU busy 15.83 ms a step after the prompt (63 tokens/s of GPU time), 16.94 ms for the prompt and a token
+     9.915 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     0.837 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.671 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+     0.624 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.464 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.390 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+glyd mma12 profile, batch 8: 59.88 ms a step, GPU busy 19.69 ms a step after the prompt (406 tokens/s of GPU time), 26.18 ms for the prompt and a token
+    11.067 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     1.694 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.164 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.850 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.631 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.508 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl<at::native::direct
+glyd mma12 profile, batch 32: 61.04 ms a step, GPU busy 19.79 ms a step after the prompt (1617 tokens/s of GPU time), 41.95 ms for the prompt and a token
+    11.744 ms  void mma12_ws_kernel<4, 4, 5, 2, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bflo
+     1.407 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.362 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.881 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.645 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, false, false
+     0.534 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+glyd mma12 profile, batch 64: 61.68 ms a step, GPU busy 21.80 ms a step after the prompt (2936 tokens/s of GPU time), 64.30 ms for the prompt and a token
+    12.776 ms  void mma12_ws_kernel<4, 4, 4, 2, 2>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bflo
+     1.478 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.333 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.109 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.918 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, false, false
+     0.565 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+logits bit-identical: False
+generated tokens identical to bf16: 30 of 64
+text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to transmit information over long distances, and it used Morse code, which is a form
