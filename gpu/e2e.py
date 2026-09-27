@@ -210,7 +210,9 @@ def measure(model, label):
         logits = model(ids, logits_to_keep=1).logits
         for b in [int(x) for x in args.batch.split(",")]:
             batch = ids.repeat(b, 1)
-            model.generate(batch, max_new_tokens=args.tokens if args.compile else 4, do_sample=False, **kw)  # warm-up (compiled: its cache the timed run's size)
+            model.generate(batch, max_new_tokens=4, do_sample=False)  # warm-up, eager (the JIT build makes a kernel's done counters at its first call: never in a CUDA graph's memory pool)
+            if args.compile:
+                model.generate(batch, max_new_tokens=args.tokens, do_sample=False, **kw)  # compiles and captures, the static cache the timed run's size
             torch.cuda.synchronize()
             for i in range(torch.cuda.device_count()):
                 torch.cuda.reset_peak_memory_stats(i)

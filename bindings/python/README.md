@@ -100,10 +100,15 @@ transformers' bf16 model:
 | Qwen3-8B | does not fit | 48.5 / 364 | does not fit | **55.6 / 386** |
 
 Eager, a step's product is one C call, with less host time than
-`nn.Linear`'s. With `exact=True` each product in the graph is
-`F.linear`'s, as eager; the logits are the bf16 model's compiled the same
-way where Inductor rounds as eager does
-(`torch._inductor.config.emulate_precision_casts = True`).
+`nn.Linear`'s. Compile the whole forward, as these do: an op names its
+module by a number the graph is specialized on, so compiling each layer
+on its own compiles every layer anew (and meets torch._dynamo's
+recompile limit). With `exact=True` each product in the graph is
+`F.linear`'s, as eager, but the logits are the bf16 model's compiled the
+same way bit for bit only with
+`torch._inductor.config.emulate_precision_casts = True`: by default
+Inductor keeps a bf16 value in fp32 across a fused kernel, and fuses
+differently around Glyd's op than around bf16's matmul.
 
 `glyd.save_pretrained(model, path)` writes glyd-v1: the packs in the
 tiered layout as safetensors (each packed Linear's buffers under its
