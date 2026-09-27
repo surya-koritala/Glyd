@@ -1732,7 +1732,9 @@ template <int CW, int NB, int NW, int RBB, int MT> struct Ws12 {
     static constexpr int WSLOT = PW * SB;
     static constexpr int SHARED = NB * DSLOT + NW * WSLOT + 128;
     static constexpr int XQ = TM * 8 / PT;            // X's chunks a producer thread
-    static_assert(NW >= 2 && 2 * NB + 2 <= 15 && XQ * PT == TM * 8, "shapes");
+    // NB >= 3: the producers copy stage j + 1's X tile before they decode stage j, into the slot the consumers
+    // free after stage j + 1 - NB, and the consumers ask for stage j + 1 before they free stage j.
+    static_assert(NB >= 3 && NW >= 2 && 2 * NB + 2 <= 15 && XQ * PT == TM * 8, "shapes");
 };
 
 template <int CW, int NB, int NW, int RBB, int MT>
