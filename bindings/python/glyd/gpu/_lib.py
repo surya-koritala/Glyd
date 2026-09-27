@@ -326,3 +326,61 @@ def attn_decode(q, kd, kb, kbb, kt, vd, vb, vbb, vt, tk, tv, tlen, pairs, G, P, 
     r = _fn["attn_decode"](q.data_ptr(), D, kd.data_ptr(), kb.data_ptr(), kbb.data_ptr(), k3, vd.data_ptr(), vb.data_ptr(), vbb.data_ptr(), v3, tk.data_ptr(), tv.data_ptr(), tlen, pairs, G, P, scale, out.data_ptr(), ws[1], ws[2], _counters("attn_decode", d, pairs, 1 << 12), s)
     if r:
         _fail("attn_decode", r)
+
+
+def step(data, a, b, words, shape, bias, names):
+    """A generation step's product over one pack in the mma layouts as one C call: what does not change between
+    calls made once (the pack's addresses and words, O and K, the bias; each M's function, workspace bytes and done
+    counters at its first call), the checks that hold by the pack's making left out. names[M]: the function for M
+    tokens (mma_gemm, mma12_gemm, mma12_gemm_mid, mma12_gemm_wg), or None. run(x): Y [..., O] for X contiguous
+    [..., K] of M rows on the pack's device, the current one, where names[M] is one; else None (the checked path)."""
+    O, K = shape
+    d, dev = data.get_device(), data.device
+    head = (data.data_ptr(), a.data_ptr(), b.data_ptr(), _words(words, len(words), "tiers or symbols"), O, K)
+    bias = bias.data_ptr() if bias is not None else None
+    for name in set(names) - {None}:
+        _counters(name, d, O // 64, 1 << 16)  # made now
+    plans = [None] * len(names)
+    bf16 = torch.bfloat16
+
+    def run(x):
+        if x.shape[-1] != K or not x.is_contiguous() or x.get_device() != d or _device() != d:
+            return None
+        M = x.numel() // K
+        plan = plans[M] if M < len(plans) else False
+        if plan is None:
+            name = names[M]
+            plan = plans[M] = name is not None and (_fn[name], name, _need(name, d, (O, K, M)), _counters(name, d, O // 64, 1 << 16))
+        if not plan:
+            return None
+        fn, name, need, done = plan
+        s = _stream(d)
+        w = _kept.get((d, s))
+        if w is None or w[2] < need:
+            w = _workspace(name, d, s, O, K, M)
+        y = torch.empty(*x.shape[:-1], O, dtype=bf16, device=dev)
+        r = fn(*head, x.data_ptr(), M, bias, y.data_ptr(), w[1], w[2], done, s)
+        if r:
+            _fail(name, r)
+        return y
+
+    return run
+
+
+def lookup(sm, planes, exc, exc_base, top, K):
+    """An embedding's lookup in the fast format as one C call (fast_decode): run(ids) -> its rows, bf16
+    [*ids.shape, K], for ids int64 and contiguous on the pack's device, the current one; else None."""
+    d, dev, i64 = sm.get_device(), sm.device, torch.int64
+    fn, head = _fn["fast_decode"], (sm.data_ptr(), planes.data_ptr(), exc.data_ptr(), exc_base.data_ptr(), top, 0, 0)
+
+    def run(ids):
+        n = ids.numel()
+        if not n or ids.dtype is not i64 or not ids.is_contiguous() or ids.get_device() != d or _device() != d:
+            return None
+        out = torch.empty(*ids.shape, K, dtype=torch.bfloat16, device=dev)
+        r = fn(*head, ids.data_ptr(), n, K, out.data_ptr(), _stream(d))
+        if r:
+            _fail("fast_decode", r)
+        return out
+
+    return run

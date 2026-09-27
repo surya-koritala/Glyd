@@ -10,13 +10,16 @@ columns of 16) goes in the tiered layout (10.80 bits a weight) or the
 12-bit one (12.04, a lighter decode), best_layout's choice for the GPU;
 an embedding (rows a multiple of 128 long) in the fast format, its rows
 decoded as they are looked up; anything else stays as it is.
+
+Eager, a generation step's product through the prebuilt library is one C
+call (_lib.step: what does not change between calls made once).
 """
 import hashlib
 import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from . import kernels as g
+from . import _lib, kernels as g
 
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
@@ -27,7 +30,21 @@ class Scratch:
     buf = {}  # one a device: {device: tensor}
 
 
-class GLinear(nn.Module):
+class _Node:
+    """A module with an eager call over its own pack (step: _lib's), made again for a copy (copy.deepcopy, pickle)."""
+
+    def _node(self):
+        self.step = self._step()
+
+    def __getstate__(self):
+        return {**self.__dict__, "step": None}
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        self._node()
+
+
+class GLinear(_Node, nn.Module):
     """nn.Linear over a packed matrix p (bias: bf16, or None). fused: products
     straight from the packed weights where a kernel takes the step (in the
     mma layouts up to 64 tokens, and prompts but on Hopper; one-token steps
@@ -41,12 +58,38 @@ class GLinear(nn.Module):
         self.p, self.bias = p, bias
         self.fused, self.exact, self.gemm_max = fused, exact, gemm_max
         O, K = p.shape
-        step = 64 if isinstance(p, g.Mma) else getattr(p, "rows_per_tile", 1) or 1
+        self.in_features, self.out_features = K, O
+        rows = 64 if isinstance(p, g.Mma) else getattr(p, "rows_per_tile", 1) or 1
         # Whole when it fits the scratch (a split matmul sums in another order), and always for exact.
-        self.block = O if exact or O * K <= SCRATCH else max(step, SCRATCH // K // step * step)
+        self.block = O if exact or O * K <= SCRATCH else max(rows, SCRATCH // K // rows * rows)
         cc = torch.cuda.get_device_capability(p.sm.device)
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
         self.mid = cc in ((8, 6), (8, 7), (8, 9))  # (on an A100 mma_gemm is the faster, measured)
+        self._node()
+
+    def kernel(self, M):
+        """The fused product for M tokens in the mma layouts (kernels.py's), or None: decoded, then PyTorch's matmul."""
+        K, twelve = self.in_features, isinstance(self.p, g.Mma12)
+        if self.hopper and WG_MIN <= M <= WG_MAX and K % 64 == 0 and twelve:  # TMA and wgmma
+            return g.mma_gemm_wg
+        if self.mid and MID_MIN <= M <= 64 and K % 64 == 0 and twelve:  # cp.async and mma.sync, the same plan
+            return g.mma_gemm_mid
+        if M <= 64:
+            return g.mma_gemm
+        if K % 64 == 0 and not self.hopper:  # past WG_MAX tokens on Hopper (a prompt) the tensor cores outrun our decode
+            return g.mma_gemm_big
+        return None
+
+    def _step(self):
+        """A generation step's product (1-64 tokens) as one C call, where it is a fused one through the prebuilt
+        library: _lib.step over the pack, the function for each M; else None."""
+        p = self.p
+        if not self.fused or self.exact or not isinstance(p, g.Mma) or g.lib() is None:
+            return None
+        twelve = isinstance(p, g.Mma12)
+        name = {g.mma_gemm: "mma12_gemm" if twelve else "mma_gemm", g.mma_gemm_mid: "mma12_gemm_mid", g.mma_gemm_wg: "mma12_gemm_wg"}
+        names = [None] + [name.get(self.kernel(M)) for M in range(1, 65)]
+        return _lib.step(p.data, *((p.exc, p.exc_base, p.sym) if twelve else (p.blocks, p.block_base, p.tiers)), p.shape, self.bias, names)
 
     def decode_rows(self, r0, r1):
         p, K = self.p, self.p.shape[1]
@@ -68,22 +111,19 @@ class GLinear(nn.Module):
         return out.view(r1 - r0, K)
 
     def forward(self, x):
-        O, K = self.p.shape
+        if self.step is not None:  # a generation step's product: one C call
+            y = self.step(x)
+            if y is not None:
+                return y
+        O, K = self.out_features, self.in_features
         if self.exact:  # as nn.Linear: F.linear on the input as it came, the matrix decoded whole
             return F.linear(x, self.decode_rows(0, O), self.bias)
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)
-        # Past WG_MAX tokens on Hopper (a prompt) the tensor cores outrun our decode: decode the matrix, cuBLAS multiplies.
         if self.fused and isinstance(self.p, g.Mma):
-            M = x2.shape[0]
-            if self.hopper and WG_MIN <= M <= WG_MAX and K % 64 == 0 and isinstance(self.p, g.Mma12):  # TMA and wgmma
-                return g.mma_gemm_wg(self.p, x2, self.bias).view(*lead, O)
-            if self.mid and MID_MIN <= M <= 64 and K % 64 == 0 and isinstance(self.p, g.Mma12):  # cp.async and mma.sync, the same plan
-                return g.mma_gemm_mid(self.p, x2, self.bias).view(*lead, O)
-            if M <= 64:
-                return g.mma_gemm(self.p, x2, self.bias).view(*lead, O)
-            if K % 64 == 0 and not self.hopper:
-                return g.mma_gemm_big(self.p, x2, self.bias).view(*lead, O)
+            f = self.kernel(x2.shape[0])
+            if f is not None:
+                return f(self.p, x2, self.bias).view(*lead, O)
         if self.fused and x2.shape[0] == 1:
             f = g.fast_gemv if isinstance(self.p, g.Fast) else g.gemv
             return f(self.p, x2[0], self.bias).view(*lead, O)
@@ -108,21 +148,23 @@ class Merged(nn.Module):
     """Linears that take the same input (q, k, v; gate, up) as one product, as
     serving engines run them: lin computes them all (their rows stacked,
     `sizes` each); the first member called computes it, each member returns
-    its slice (the input kept until all have)."""
+    its slice (the input kept until all have: in a list, whose items cost
+    less to set than a module's attributes, and which torch.compile traces
+    as the list it is)."""
 
     def __init__(self, lin, sizes):
         super().__init__()
         self.lin, self.sizes = lin, list(sizes)
-        self.x = self.parts = None
-        self.left = 0
+        self.held = [None, None, 0]  # the input, its product's slices, the members yet to take theirs
 
     def part(self, i, x):
-        if self.x is not x:
-            self.x, self.parts, self.left = x, self.lin(x).split(self.sizes, -1), len(self.sizes)
-        y = self.parts[i]
-        self.left -= 1
-        if self.left == 0:
-            self.x = self.parts = None
+        h = self.held
+        if h[0] is not x:
+            h[0], h[1], h[2] = x, self.lin(x).split(self.sizes, -1), len(self.sizes)
+        h[2] -= 1
+        y = h[1][i]
+        if h[2] == 0:
+            h[0] = h[1] = None
         return y
 
 
@@ -135,16 +177,24 @@ class Part(nn.Module):
         return self.group[0].part(self.i, x)
 
 
-class GEmbedding(nn.Module):
+class GEmbedding(_Node, nn.Module):
     def __init__(self, p, scale=None):
         super().__init__()
         self.p = p
+        self.num_embeddings, self.embedding_dim = p.shape
         # Gemma's embedding multiplies its rows by sqrt(hidden size) in the weights' dtype: the same product here
         self.register_buffer("scale", scale, persistent=False)
+        self._node()
+
+    def _step(self):
+        """The fast format's lookup as one C call through the prebuilt library (_lib.lookup); else None."""
+        p = self.p
+        return _lib.lookup(p.sm, p.planes, p.exc, p.exc_base, p.top, self.embedding_dim) if isinstance(p, g.Fast) and g.lib() is not None else None
 
     def forward(self, ids):
-        rows = g.fast_rows(self.p, ids) if isinstance(self.p, g.Fast) else g.rows(self.p, ids)
-        rows = rows.view(*ids.shape, -1)
+        rows = self.step(ids) if self.step is not None else None
+        if rows is None:
+            rows = (g.fast_rows(self.p, ids) if isinstance(self.p, g.Fast) else g.rows(self.p, ids)).view(*ids.shape, -1)
         return rows if self.scale is None else rows * self.scale.to(rows.dtype)
 
 

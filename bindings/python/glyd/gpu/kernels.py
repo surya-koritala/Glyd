@@ -43,6 +43,15 @@ class _Load:
 
 _ext = _Load()  # the kernels: the pybind module's functions, by name
 
+
+def lib():
+    """_lib where the kernels are the prebuilt library's (loaded now if not yet), else None: the JIT build's, or no
+    library found (the first kernel's call says so)."""
+    if isinstance(_ext, _Load) and library() is not None:
+        _ext.cuda_version  # loads it: _ext is _lib from here on
+    return _lib if _ext is _lib else None
+
+
 FLAT_TILE = 16384  # weights a tile when the tensor is not a matrix of rows
 ROW_TILE = 8192  # about as many a tile for a matrix: whole rows
 MIN_TILES = 2048  # warps a matrix's product should keep busy
