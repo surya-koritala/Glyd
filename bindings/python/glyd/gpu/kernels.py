@@ -523,7 +523,9 @@ def mma_gemm_mid(p, x, bias=None):
     multiple of 64; the 12-bit layout): a producer warp copies the
     compressed weights and X's tiles into shared memory with cp.async,
     consumer warps decode the weights into mma.sync's registers and
-    multiply (mma_gemm_wg's plan, this generation's instructions)."""
+    multiply (mma_gemm_wg's plan, this generation's instructions). On an
+    A100, producer warps decode the weights into shared memory for the
+    consumers' products (mma_gemm_big's split, its reads staged)."""
     O, K = p.shape
     x = x.contiguous()
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)

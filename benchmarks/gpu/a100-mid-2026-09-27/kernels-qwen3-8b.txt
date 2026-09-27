@@ -1,0 +1,56 @@
+NVIDIA A100-SXM4-40GB (8, 0) layer 12
+qkv 6144x4096
+  M=   1  cuBLAS    41.1  mma12    35.4  mid    42.1   best mma12 0.86x
+  M=   8  cuBLAS    41.3  mma12    37.5  mid    42.1   best mma12 0.91x
+  M=  16  cuBLAS    41.6  mma12    39.9  mid    42.2   best mma12 0.96x
+  M=  17  cuBLAS    41.8  mma12    45.6  mid    42.4  big12    61.6   best mid 1.01x
+  M=  24  cuBLAS    42.0  mma12    46.9  mid    42.6  big12    62.0   best mid 1.01x
+  M=  32  cuBLAS    42.4  mma12    50.7  mid    42.8  big12    62.8   best mid 1.01x
+  M=  48  cuBLAS    42.5  mma12    61.5  mid    48.0  big12    64.4   best mid 1.13x
+  M=  64  cuBLAS    43.2  mma12    66.9  mid    48.5  big12    65.7   best mid 1.12x
+  M=  96  cuBLAS    54.3  mid    83.2  big12    68.3   best big12 1.26x
+  M= 128  cuBLAS    55.6  mid    83.9  big12    71.1   best big12 1.28x
+o 4096x4096
+  M=   1  cuBLAS    24.0  mma12    21.4  mid    29.9   best mma12 0.89x
+  M=   8  cuBLAS    23.6  mma12    22.9  mid    29.5   best mma12 0.97x
+  M=  16  cuBLAS    24.1  mma12    25.2  mid    30.6   best mma12 1.04x
+  M=  17  cuBLAS    24.2  mma12    29.2  mid    30.0  big12    38.8   best mma12 1.21x
+  M=  24  cuBLAS    24.0  mma12    30.4  mid    30.8  big12    38.8   best mma12 1.27x
+  M=  32  cuBLAS    25.1  mma12    33.0  mid    31.1  big12    39.1   best mid 1.24x
+  M=  48  cuBLAS    27.6  mma12    45.9  mid    36.3  big12    39.6   best mid 1.32x
+  M=  64  cuBLAS    26.9  mma12    49.6  mid    36.6  big12    41.6   best mid 1.36x
+  M=  96  cuBLAS    38.9  mid    59.2  big12    42.4   best big12 1.09x
+  M= 128  cuBLAS    41.3  mid    58.9  big12    46.3   best big12 1.12x
+gate_up 24576x4096
+  M=   1  cuBLAS   170.2  mma12   117.1  mid   127.0   best mma12 0.69x
+  M=   8  cuBLAS   154.3  mma12   121.7  mid   127.6   best mma12 0.79x
+  M=  16  cuBLAS   155.1  mma12   126.3  mid   128.1   best mma12 0.81x
+  M=  17  cuBLAS   156.9  mma12   145.5  mid   128.3  big12   191.1   best mid 0.82x
+  M=  24  cuBLAS   158.6  mma12   148.5  mid   128.5  big12   191.1   best mid 0.81x
+  M=  32  cuBLAS   159.6  mma12   153.0  mid   129.4  big12   191.4   best mid 0.81x
+  M=  48  cuBLAS   160.1  mma12   180.5  mid   144.3  big12   190.9   best mid 0.90x
+  M=  64  cuBLAS   160.8  mma12   192.5  mid   145.0  big12   191.6   best mid 0.90x
+  M=  96  cuBLAS   167.9  mid   280.4  big12   197.3   best big12 1.18x
+  M= 128  cuBLAS   170.0  mid   284.5  big12   199.4   best big12 1.17x
+down 4096x12288
+  M=   1  cuBLAS    87.8  mma12    63.2  mid    71.9   best mma12 0.72x
+  M=   8  cuBLAS    81.3  mma12    65.5  mid    71.4   best mma12 0.81x
+  M=  16  cuBLAS    81.4  mma12    68.6  mid    71.4   best mma12 0.84x
+  M=  17  cuBLAS    86.6  mma12    77.8  mid    72.0  big12   112.1   best mid 0.83x
+  M=  24  cuBLAS    87.2  mma12    79.8  mid    72.1  big12   112.4   best mid 0.83x
+  M=  32  cuBLAS    88.3  mma12    84.0  mid    72.3  big12   113.0   best mid 0.82x
+  M=  48  cuBLAS    89.7  mma12   100.3  mid    81.3  big12   113.8   best mid 0.91x
+  M=  64  cuBLAS    86.8  mma12   109.0  mid    81.3  big12   114.9   best mid 0.94x
+  M=  96  cuBLAS    98.7  mid   150.3  big12   116.7   best big12 1.18x
+  M= 128  cuBLAS    96.9  mid   151.1  big12   119.0   best big12 1.23x
+layer total (us):
+  M=   1  cuBLAS   323.1  mid   271.0  mma12   237.1  main   237.1  branch   237.1  best   237.1 0.73x  main 0.73x  branch 0.73x
+  M=   8  cuBLAS   300.4  mid   270.6  mma12   247.6  main   247.6  branch   247.6  best   247.6 0.82x  main 0.82x  branch 0.82x
+  M=  16  cuBLAS   302.2  mid   272.4  mma12   260.0  main   260.0  branch   260.0  best   260.0 0.86x  main 0.86x  branch 0.86x
+  M=  17  cuBLAS   309.5  big12   403.7  mid   272.6  mma12   298.1  main   298.1  branch   272.6  best   271.9 0.88x  main 0.96x  branch 0.88x
+  M=  24  cuBLAS   311.9  big12   404.3  mid   274.0  mma12   305.6  main   305.6  branch   274.0  best   273.6 0.88x  main 0.98x  branch 0.88x
+  M=  32  cuBLAS   315.3  big12   406.4  mid   275.5  mma12   320.7  main   320.7  branch   275.5  best   275.5 0.87x  main 1.02x  branch 0.87x
+  M=  48  cuBLAS   320.0  big12   408.7  mid   309.9  mma12   388.2  main   388.2  branch   309.9  best   309.9 0.97x  main 1.21x  branch 0.97x
+  M=  64  cuBLAS   317.7  big12   413.8  mid   311.4  mma12   418.0  main   418.0  branch   311.4  best   311.4 0.98x  main 1.32x  branch 0.98x
+  M=  96  cuBLAS   359.8  big12   424.7  mid   573.1  main   424.7  branch   424.7  best   424.7 1.18x  main 1.18x  branch 1.18x
+  M= 128  cuBLAS   363.8  big12   435.7  mid   578.5  main   435.7  branch   435.7  best   435.7 1.20x  main 1.20x  branch 1.20x

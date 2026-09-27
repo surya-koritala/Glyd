@@ -20,7 +20,7 @@ from . import kernels as g
 
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
-MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # GDDR Ampere and Ada: steps of this many tokens to 64 by mma_gemm_mid
+MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 by mma_gemm_mid
 
 
 class Scratch:
@@ -46,7 +46,7 @@ class GLinear(nn.Module):
         self.block = O if exact or O * K <= SCRATCH else max(step, SCRATCH // K // step * step)
         cc = torch.cuda.get_device_capability(p.sm.device)
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
-        self.mid = cc in ((8, 6), (8, 7), (8, 9))  # (on an A100 mma_gemm is the faster, measured)
+        self.mid = cc in ((8, 0), (8, 6), (8, 7), (8, 9))  # (an A100 its own kernel: producer and consumer warps)
 
     def decode_rows(self, r0, r1):
         p, K = self.p, self.p.shape[1]
@@ -78,7 +78,7 @@ class GLinear(nn.Module):
             M = x2.shape[0]
             if self.hopper and WG_MIN <= M <= WG_MAX and K % 64 == 0 and isinstance(self.p, g.Mma12):  # TMA and wgmma
                 return g.mma_gemm_wg(self.p, x2, self.bias).view(*lead, O)
-            if self.mid and MID_MIN <= M <= 64 and K % 64 == 0 and isinstance(self.p, g.Mma12):  # cp.async and mma.sync, the same plan
+            if self.mid and MID_MIN <= M <= 64 and K % 64 == 0 and isinstance(self.p, g.Mma12):  # cp.async and mma.sync
                 return g.mma_gemm_mid(self.p, x2, self.bias).view(*lead, O)
             if M <= 64:
                 return g.mma_gemm(self.p, x2, self.bias).view(*lead, O)
