@@ -148,6 +148,10 @@ class GlydQuantizer(HfQuantizer):
     def is_trainable(self):
         return False
 
+    @property
+    def is_compileable(self):
+        return True  # generate()'s compiled forward (a static cache): GLinear and GEmbedding are ops of its graph
+
     def _process_model_before_weight_loading(self, model, device_map=None, checkpoint_files=None, **kwargs):
         q = self.quantization_config
         devices = [_cuda(d) for d in device_map.values()] if isinstance(device_map, dict) else [torch.device("cuda", i) for i in range(torch.cuda.device_count())]

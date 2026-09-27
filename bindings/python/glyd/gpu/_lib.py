@@ -99,16 +99,19 @@ def _need(name, d, sizes):
 _kept = {}  # (device, stream): a workspace kept for the stream, (buffer, address, bytes)
 _KEEP = 16 << 20
 _NONE = (None, None, 0)
+fresh = False  # set while a torch.compile graph's node runs (model.py's ops): workspaces for the call alone, never kept
 
 
 def _workspace(name, d, s, *sizes):
     """A product's workspace on device d for stream s, as (buffer, address, bytes): the library's size
     for these sizes; the stream's kept buffer, reused in stream order (grown where too small), up to
-    _KEEP bytes, else one for the call; none for 0 bytes."""
+    _KEEP bytes, else (or while fresh) one for the call; none for 0 bytes. A CUDA graph keeps the
+    addresses it was captured with, so its calls must not take a buffer that is later replaced, nor
+    keep one made in its memory pool."""
     n = _need(name, d, sizes)
     if n == 0:
         return _NONE
-    if n > _KEEP:
+    if n > _KEEP or fresh:
         t = torch.empty(n, dtype=torch.uint8, device=torch.device("cuda", d))
         return t, t.data_ptr(), n
     w = _kept.get((d, s))
@@ -339,7 +342,7 @@ def step(data, a, b, words, shape, bias, names):
     head = (data.data_ptr(), a.data_ptr(), b.data_ptr(), _words(words, len(words), "tiers or symbols"), O, K)
     bias = bias.data_ptr() if bias is not None else None
     for name in set(names) - {None}:
-        _counters(name, d, O // 64, 1 << 16)  # made now
+        _counters(name, d, O // 64, 1 << 16)  # made now: never in a CUDA graph's memory pool
     plans = [None] * len(names)
     bf16 = torch.bfloat16
 
@@ -356,7 +359,7 @@ def step(data, a, b, words, shape, bias, names):
         fn, name, need, done = plan
         s = _stream(d)
         w = _kept.get((d, s))
-        if w is None or w[2] < need:
+        if fresh or w is None or w[2] < need:
             w = _workspace(name, d, s, O, K, M)
         y = torch.empty(*x.shape[:-1], O, dtype=bf16, device=dev)
         r = fn(*head, x.data_ptr(), M, bias, y.data_ptr(), w[1], w[2], done, s)

@@ -12,10 +12,15 @@ an embedding (rows a multiple of 128 long) in the fast format, its rows
 decoded as they are looked up; anything else stays as it is.
 
 Eager, a generation step's product through the prebuilt library is one C
-call (_lib.step: what does not change between calls made once).
+call (_lib.step: what does not change between calls made once); under
+torch.compile each GLinear and GEmbedding is one node of the graph
+(glyd::linear, glyd::embedding), run as eager, and CUDA graphs capture
+its kernels.
 """
 import hashlib
+import itertools
 import os
+import weakref
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -30,10 +35,17 @@ class Scratch:
     buf = {}  # one a device: {device: tensor}
 
 
+_modules = weakref.WeakValueDictionary()  # handle: its GLinear or GEmbedding, for the ops below
+_handles = itertools.count()
+
+
 class _Node:
-    """A module with an eager call over its own pack (step: _lib's), made again for a copy (copy.deepcopy, pickle)."""
+    """A module the ops below run: its handle, and its eager call (step: _lib's, over its own pack), made again for a
+    copy (copy.deepcopy, pickle)."""
 
     def _node(self):
+        self.handle = next(_handles)
+        _modules[self.handle] = self
         self.step = self._step()
 
     def __getstate__(self):
@@ -111,6 +123,8 @@ class GLinear(_Node, nn.Module):
         return out.view(r1 - r0, K)
 
     def forward(self, x):
+        if torch.compiler.is_compiling():  # one node of the graph (glyd::linear), which runs what follows (no gradient, as eager)
+            return torch.ops.glyd.linear(x.detach() if x.requires_grad else x, self.handle, self.out_features)
         if self.step is not None:  # a generation step's product: one C call
             y = self.step(x)
             if y is not None:
@@ -192,10 +206,42 @@ class GEmbedding(_Node, nn.Module):
         return _lib.lookup(p.sm, p.planes, p.exc, p.exc_base, p.top, self.embedding_dim) if isinstance(p, g.Fast) and g.lib() is not None else None
 
     def forward(self, ids):
+        if torch.compiler.is_compiling():  # one node of the graph (glyd::embedding), which runs what follows
+            return torch.ops.glyd.embedding(ids, self.handle, self.embedding_dim)
         rows = self.step(ids) if self.step is not None else None
         if rows is None:
             rows = (g.fast_rows(self.p, ids) if isinstance(self.p, g.Fast) else g.rows(self.p, ids)).view(*ids.shape, -1)
         return rows if self.scale is None else rows * self.scale.to(rows.dtype)
+
+
+# torch.compile: a GLinear or GEmbedding is one node of the graph, an op that runs the module as eager, where a kernel's
+# workspace is made for the call alone (a CUDA graph keeps the addresses it captured; the kept ones are eager calls').
+def _run(handle, x):
+    _lib.fresh = True
+    try:
+        return _modules[handle].forward(x)
+    finally:
+        _lib.fresh = False
+
+
+@torch.library.custom_op("glyd::linear", mutates_args=())
+def _linear(x: torch.Tensor, handle: int, out_features: int) -> torch.Tensor:
+    return _run(handle, x)
+
+
+@_linear.register_fake
+def _(x, handle, out_features):
+    return x.new_empty((*x.shape[:-1], out_features))
+
+
+@torch.library.custom_op("glyd::embedding", mutates_args=())
+def _embedding(ids: torch.Tensor, handle: int, embedding_dim: int) -> torch.Tensor:
+    return _run(handle, ids)
+
+
+@_embedding.register_fake
+def _(ids, handle, embedding_dim):
+    return ids.new_empty((*ids.shape, embedding_dim), dtype=torch.bfloat16)
 
 
 def decoder(model):
