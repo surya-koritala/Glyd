@@ -13,18 +13,26 @@ for d in sys.argv[1:]:
     for fn in files:
         with safe_open(os.path.join(d, fn), "pt", device="cuda") as f:
             for k in f.keys():
-                if not k.endswith("proj.weight"):
+                # a projection's matrix (q_proj.weight, in_proj_qkvz.weight ...), or all of a layer's
+                # experts as one tensor (experts.gate_up_proj in Gemma 4 and Llama 4): a matrix an expert
+                parts = k.split(".")
+                if not ((parts[-1] == "weight" and len(parts) > 1 and "proj" in parts[-2]) or parts[-1].endswith("_proj")):
                     continue
-                w = f.get_tensor(k)
-                if w.dtype != torch.bfloat16 or w.dim() != 2 or w.shape[0] % 64 or w.shape[1] % 16:
+                t = f.get_tensor(k)
+                if t.dtype != torch.bfloat16 or t.dim() not in (2, 3):
                     continue
-                for pack in (g.pack_mma, g.pack_mma12):
-                    q = pack(w)
-                    assert torch.equal(g.mma_unpack(q).view(torch.int16), w.view(torch.int16)), (d, k, pack.__name__)
-                    if pack is g.pack_mma:
-                        b16 += q.nbytes()
-                    else:
-                        b12 += q.nbytes()
-                    del q
-                n += w.numel()
+                for w in (t if t.dim() == 3 else [t]):
+                    if w.shape[0] % 64 or w.shape[1] % 16:
+                        w = w.t().contiguous()  # an expert tensor may keep a matrix as (in, out)
+                        if w.shape[0] % 64 or w.shape[1] % 16:
+                            continue
+                    for pack in (g.pack_mma, g.pack_mma12):
+                        q = pack(w)
+                        assert torch.equal(g.mma_unpack(q).view(torch.int16), w.view(torch.int16)), (d, k, pack.__name__)
+                        if pack is g.pack_mma:
+                            b16 += q.nbytes()
+                        else:
+                            b12 += q.nbytes()
+                        del q
+                    n += w.numel()
     print(f"{os.path.basename(d.rstrip('/'))}: {n / 1e9:.2f} B Linear weights, {2 * n / 1e9:.2f} GB in bf16; mma {b16 / 1e9:.2f} GB ({8 * b16 / n:.2f} bits, {100 * (1 - b16 / (2 * n)):.1f}% smaller), mma12 {b12 / 1e9:.2f} GB ({8 * b12 / n:.2f} bits, {100 * (1 - b12 / (2 * n)):.1f}% smaller); every tensor bit for bit", flush=True)
