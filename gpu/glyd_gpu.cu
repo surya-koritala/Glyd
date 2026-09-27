@@ -1074,9 +1074,35 @@ __device__ __forceinline__ void ldmatrix_x4(uint32_t r[4], uint32_t addr) {
 template <int THREADS> __device__ __forceinline__ void bar_sync(int id) { asm volatile("bar.sync %0, %1;\n" ::"r"(id), "n"(THREADS)); }
 template <int THREADS> __device__ __forceinline__ void bar_arrive(int id) { asm volatile("bar.arrive %0, %1;\n" ::"r"(id), "n"(THREADS)); }
 
-template <class Fmt, int CW, int PW, int NB, int RBB>
-__global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big_kernel(Fmt f, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32) {
+__device__ __forceinline__ float silu(float x) { return x / (1.f + __expf(-x)); }
+__device__ __forceinline__ float gelu_tanh(float x) { return 0.5f * x * (1.f + tanhf(0.7978845608028654f * (x + 0.044715f * x * x * x))); }
+
+// A mixture of experts' layer for mma_gemm_big_kernel (MOE; mma_moe_kernel has the plan and the rest): blockIdx.z a
+// hit expert, M its pairs (a block TM of them); X's rows the tokens' (gather) or the pairs'; the output's as
+// mma_moe_kernel's: with the gate's activation (act; RBB 2: blockIdx.y a row block of the gate's half, the
+// consumers of row block 1 taking the up's, their sums met in shared memory) or times the weights (w, into Y32).
+struct MoePairs {
+    const int* plan;
+    int E;
+    int64_t k;
+    int gather, act;
+    const void* w;
+    int wf32;
+};
+
+template <class Fmt, int CW, int PW, int NB, int RBB, bool MOE = false>
+__global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big_kernel(Fmt f, int64_t O, int64_t K, int64_t M, int64_t stages_per_split, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ Y32, MoePairs moe) {
     using C = Big<CW, PW, NB, RBB>;
+    int64_t e = 0, p0 = 0;  // MOE: the expert (its rows e O on of W's), its first pair in the plan's order
+    const int* order = nullptr;
+    if constexpr (MOE) {
+        if ((int)blockIdx.z >= __ldg(moe.plan)) return;  // the whole block: no expert this far down the hits
+        e = __ldg(moe.plan + 1 + blockIdx.z);
+        p0 = __ldg(moe.plan + 1 + moe.E + blockIdx.z);
+        M = __ldg(moe.plan + 2 + moe.E + blockIdx.z) - p0;
+        if ((int64_t)blockIdx.x * C::TM >= M) return;
+        order = moe.plan + 2 + 2 * moe.E;
+    }
     extern __shared__ uint4 smem[];  // X's tiles [NB][TM rows][8 16-byte chunks, swizzled], then W's [NB][B_UINT4]
     __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
     if constexpr (Fmt::kTable) fill_groups(tab);
@@ -1085,7 +1111,7 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
     uint4* Bs = smem + NB * C::A_BYTES / 16;
     int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
     int64_t KS = K / 16, RB = O / 64, tile = blockIdx.x, pair = blockIdx.y;
-    int64_t st0 = (int64_t)blockIdx.z * stages_per_split, nst = min(KS / BIG_KK, st0 + stages_per_split) - st0;
+    int64_t st0 = MOE ? 0 : (int64_t)blockIdx.z * stages_per_split, nst = MOE ? KS / BIG_KK : min(KS / BIG_KK, st0 + stages_per_split) - st0;
     if (warp >= CW) {
         // Producer p: X's chunks id = pt + 32 PW i of a stage's; W's steps STEPS p on of its 4 RBB (row block, step).
         int pt = tid - 32 * CW, p = warp - CW;
@@ -1095,9 +1121,21 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
             for (int i = 0; i < C::STEPS; i++) {
                 int u = p * C::STEPS + i;  // of the stage's 4 RBB: row block u / 4, step u % 4
                 int64_t rb = min(pair * RBB + u / BIG_KK, RB - 1), s = min((st0 + j) * BIG_KK + u % BIG_KK, KS - 1);
-                f.load(st[i], rb * KS + s, lane);
+                if constexpr (MOE) {
+                    if (moe.act) rb = pair + u / BIG_KK * (RB / 2);  // the gate's row block, then the up's
+                    f.load(st[i], (e * RB + rb) * KS + s, lane);
+                } else {
+                    f.load(st[i], rb * KS + s, lane);
+                }
             }
         };
+        int64_t xr[MOE ? C::CHUNKS : 1];  // MOE: X's row of each of this thread's chunks (-1: past the pairs)
+        if constexpr (MOE)
+#pragma unroll
+            for (int i = 0; i < C::CHUNKS; i++) {
+                int64_t m = tile * C::TM + ((pt + 32 * PW * i) >> 3);
+                xr[i] = m < M ? (moe.gather ? __ldg(order + p0 + m) / moe.k : p0 + m) : -1;
+            }
         d_load(0);
         for (int64_t j = 0; j < nst; j++) {
             int b = (int)(j % NB);
@@ -1107,8 +1145,12 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
 #pragma unroll
             for (int i = 0; i < C::CHUNKS; i++) {
                 int id = pt + 32 * PW * i, r = id >> 3, c = id & 7;
-                int64_t m = tile * C::TM + r;
-                cp_async16(slot + r * 128 + ((c ^ (r & 7)) << 4), X + (m < M ? m : 0) * K + col + c * 8, m < M ? 16 : 0);
+                if constexpr (MOE) {
+                    cp_async16(slot + r * 128 + ((c ^ (r & 7)) << 4), X + (xr[i] < 0 ? 0 : xr[i]) * K + col + c * 8, xr[i] < 0 ? 0 : 16);
+                } else {
+                    int64_t m = tile * C::TM + r;
+                    cp_async16(slot + r * 128 + ((c ^ (r & 7)) << 4), X + (m < M ? m : 0) * K + col + c * 8, m < M ? 16 : 0);
+                }
             }
             asm volatile("cp.async.commit_group;\n" ::);
             typename Fmt::St cur[C::STEPS];
@@ -1181,6 +1223,43 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
         if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + (int)(j % NB));  // done with stage j's buffers
     }
     // C fragments: token rows g and g + 8 of each m-tile, columns 2t and 2t + 1 of each n-tile.
+    if constexpr (MOE) {
+        if (moe.act) {
+            // The up's sums (row block 1) into shared memory, the stages' buffers once every consumer is done with
+            // them; the gate's warps of the same tokens take theirs, in the same fragment order.
+            float* up = (float*)smem + wm * 128 * 32 + lane;
+            bar_sync<32 * CW>(1 + 2 * NB);
+            if (rbl == 1)
+#pragma unroll
+                for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+                    for (int nn = 0; nn < 8; nn++)
+#pragma unroll
+                        for (int q = 0; q < 4; q++) up[((mt * 8 + nn) * 4 + q) * 32] = acc[mt][nn][q];
+            bar_sync<32 * CW>(1 + 2 * NB);
+            if (rbl == 1) return;
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+                for (int nn = 0; nn < 8; nn++) {
+                    int64_t o = pair * 64 + nn * 8 + t * 2, at = e * O + o;  // the gate's row; the up's O / 2 on
+#pragma unroll
+                    for (int h = 0; h < 2; h++) {
+                        int64_t m = tile * C::TM + wm * 64 + mt * 16 + g + h * 8;
+                        if (m >= M) continue;
+                        float v[2];
+#pragma unroll
+                        for (int c = 0; c < 2; c++) {
+                            float gate = acc[mt][nn][2 * h + c] + (bias ? __bfloat162float(bias[at + c]) : 0.f);
+                            float u = up[((mt * 8 + nn) * 4 + 2 * h + c) * 32] + (bias ? __bfloat162float(bias[at + O / 2 + c]) : 0.f);
+                            v[c] = (moe.act == 1 ? silu(gate) : gelu_tanh(gate)) * u;
+                        }
+                        *(__nv_bfloat162*)(Y + (p0 + m) * (O / 2) + o) = __floats2bfloat162_rn(v[0], v[1]);
+                    }
+                }
+            return;
+        }
+    }
     int64_t my_rb = pair * RBB + rbl;
     if (my_rb >= RB) return;
 #pragma unroll
@@ -1193,7 +1272,19 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
                 int64_t m = tile * C::TM + wm * 64 + mt * 16 + g + h * 8;
                 if (m >= M) continue;
                 float v0 = acc[mt][nn][2 * h], v1 = acc[mt][nn][2 * h + 1];
-                if (Y32) {
+                if constexpr (MOE) {
+                    if (bias) {
+                        v0 += __bfloat162float(bias[e * O + o]);
+                        v1 += __bfloat162float(bias[e * O + o + 1]);
+                    }
+                    if (Y32) {
+                        int64_t j = __ldg(order + p0 + m);
+                        float wj = moe.wf32 ? ((const float*)moe.w)[j] : __bfloat162float(((const __nv_bfloat16*)moe.w)[j]);
+                        *(float2*)(Y32 + j * O + o) = make_float2(v0 * wj, v1 * wj);
+                    } else {
+                        *(__nv_bfloat162*)(Y + (p0 + m) * O + o) = __floats2bfloat162_rn(v0, v1);
+                    }
+                } else if (Y32) {
                     *(float2*)(Y32 + ((int64_t)blockIdx.z * M + m) * O + o) = make_float2(v0, v1);
                 } else {
                     if (bias) {
@@ -1764,9 +1855,6 @@ __global__ void moe_route_kernel(const int64_t* __restrict__ ids, int64_t P, int
         __syncwarp();
     }
 }
-
-__device__ __forceinline__ float silu(float x) { return x / (1.f + __expf(-x)); }
-__device__ __forceinline__ float gelu_tanh(float x) { return 0.5f * x * (1.f + tanhf(0.7978845608028654f * (x + 0.044715f * x * x * x))); }
 
 // The experts' product for the pairs of a plan, 16 MT at a time: a block a unit of a hit expert's rows, blockIdx.y
 // the hit (past those hit: nothing to do), blockIdx.x the unit; X's row for the i-th pair of the order: token
@@ -2419,7 +2507,7 @@ static int mma_gemm_big_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
     }
     if (!fits(ws, ws_bytes, bytes)) return cudaErrorInvalidValue;
     float* y32 = splits > 1 ? (float*)ws : nullptr;
-    kernel<<<dim3(tiles, pairs, splits), C::THREADS, C::SHARED, cs>>>(f, O, K, M, per, bf(x), bf(bias), bf(y), y32);
+    kernel<<<dim3(tiles, pairs, splits), C::THREADS, C::SHARED, cs>>>(f, O, K, M, per, bf(x), bf(bias), bf(y), y32, MoePairs{});
     if (splits > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>(y32, splits, bf(bias), M, O, bf(y));
     return cudaGetLastError();
 }
@@ -2609,6 +2697,18 @@ static void mma_moe_launch(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_
     kernel<<<grid, 256, shared, cs>>>(f, O, K, plan, (int)E, k, (int)gather, bf(x), bf(bias), w, (int)wf32, bf(y), y32);
 }
 
+// Many pairs an expert (a prompt): mma_gemm_big_kernel's variant 1 (128 of them by two row blocks a block, a weight
+// decoded once for the 128), blockIdx.z the experts hit.
+template <class Fmt>
+static void mma_moe_big(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, uint16_t* y, float* y32, cudaStream_t cs) {
+    using C = Big<4, 4, 3, 2>;
+    auto kernel = mma_gemm_big_kernel<Fmt, 4, 4, 3, 2, true>;
+    static std::atomic<int> known[MAX_DEVICES];
+    per_sm((const void*)kernel, C::THREADS, C::SHARED, known, current_device());  // its shared memory allowed, once
+    dim3 grid((unsigned)((T + C::TM - 1) / C::TM), (unsigned)(act ? O / 128 : (O / 64 + 1) / 2), (unsigned)std::min(E, T * k));
+    kernel<<<grid, C::THREADS, C::SHARED, cs>>>(f, O, K, 0, 0, bf(x), bf(bias), bf(y), y32, MoePairs{plan, (int)E, k, (int)gather, (int)act, w, (int)wf32});
+}
+
 template <class Fmt>
 static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
     if (E < 1 || E > 12288 || O < 64 || O % 64 || K < 16 || K % 16 || T < 0 || k < 1 || act < 0 || act > 2 || (act && (O % 128 || w))) return cudaErrorInvalidValue;
@@ -2628,7 +2728,10 @@ static int mma_moe_run(Fmt f, int64_t E, int64_t O, int64_t K, const uint16_t* x
         else if (act == 2) mma_moe_launch<Fmt, MT, 2>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, grid, cs);
         else mma_moe_launch<Fmt, MT, 0>(f, E, O, K, x, k, gather, plan, bias, w, wf32, y, y32, grid, cs);
     };
-    if (T <= 16) run(std::integral_constant<int, 1>());
+    // From 48 pairs an expert, on average (a prompt): the tiled GEMM (measured on an A10, OLMoE-1B-7B).
+    static int64_t big = getenv("GLYD_GPU_MOE_BIG") ? atoll(getenv("GLYD_GPU_MOE_BIG")) : 48;
+    if (T * k >= big * E && K % 64 == 0 && (uintptr_t)x % 16 == 0) mma_moe_big(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, y, y32, cs);
+    else if (T <= 16) run(std::integral_constant<int, 1>());
     else if (T <= 32) run(std::integral_constant<int, 2>());
     else run(std::integral_constant<int, 4>());
     if (w) moe_sum_kernel<<<(unsigned)((T * O / 4 + 255) / 256), 256, 0, cs>>>(y32, ids, (int)E, T, k, O, bf(y));

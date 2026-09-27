@@ -172,8 +172,9 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
 
 # A mixture of experts' layer, its E matrices [O, K] stacked: moe_route (each token's k experts sorted by expert, a
 # few routed nowhere), mma_moe and mma12_moe (the rows by expert, + bias; the gate's SiLU and GELU fused; weighted
-# and each token's rows added, the weights bf16 and fp32), 1-150 tokens (passes of 16, 32 and 64), against fp32.
-for E, O, K, k, T, wild in [(8, 256, 192, 2, 1, 0.01), (8, 256, 192, 2, 70, 0.02), (64, 128, 2048, 8, 8, 0.001), (40, 1024, 1536, 8, 3, 0.0), (16, 192, 64, 4, 33, 0.1), (4, 128, 256, 1, 17, 0.0), (4, 128, 256, 2, 150, 0.0)]:
+# and each token's rows added, the weights bf16 and fp32), 1-300 tokens (passes of 16, 32 and 64; from 48 pairs an
+# expert, mma_gemm_big_kernel's tiles), against fp32.
+for E, O, K, k, T, wild in [(8, 256, 192, 2, 1, 0.01), (8, 256, 192, 2, 70, 0.02), (64, 128, 2048, 8, 8, 0.001), (40, 1024, 1536, 8, 3, 0.0), (16, 192, 64, 4, 33, 0.1), (4, 128, 256, 1, 17, 0.0), (4, 128, 208, 2, 150, 0.0), (4, 256, 256, 2, 300, 0.01), (6, 128, 320, 3, 200, 0.02), (5, 192, 128, 2, 160, 0.01)]:
     w = weights(E * O * K, wild).view(E, O, K)
     bias = torch.randn(E, O, dtype=bf, device=dev)
     ids = torch.stack([torch.randperm(E, device=dev)[:k] for _ in range(T)])
