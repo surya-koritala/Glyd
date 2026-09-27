@@ -107,6 +107,14 @@ def source_dir(repo, revision):
         return None
 
 
+def copy_source_files(src, path):
+    """The source's config, generation config and tokenizer files (FILES) into path: each once, its content only. The
+    Hub's cache keeps them read-only, and a copy of the mode made the saved ones so (tokenizer.model, which two
+    patterns match, then failed on its second copy)."""
+    for f in sorted({f for pattern in FILES for f in glob.glob(os.path.join(src, pattern))}):
+        shutil.copyfile(f, os.path.join(path, os.path.basename(f)))
+
+
 def save_pretrained(model, path, shard_bytes=5 * 10**9):
     """model (from glyd.from_pretrained or glyd.gpu.compress) saved in the
     directory path as glyd-v1, in shards of about shard_bytes: its packs in
@@ -187,9 +195,7 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9):
         json.dump(manifest(source, packs, __version__), f, indent=1)
     src = source_dir(model.config.name_or_path, getattr(model.config, "_commit_hash", None))
     if src and os.path.realpath(src) != os.path.realpath(path):
-        for pattern in FILES:
-            for f in glob.glob(os.path.join(src, pattern)):
-                shutil.copy(f, path)
+        copy_source_files(src, path)
     if not os.path.exists(os.path.join(path, "config.json")):  # no source at hand: the model's own
         config = model.config.to_diff_dict()
         config.pop("quantization_config", None)

@@ -166,6 +166,20 @@ print("ok")
     assert r.stdout.strip() == "ok", r.stderr
 
 
+def test_source_files_copied_once_and_writable():
+    names = ("config.json", "tokenizer.json", "tokenizer.model")  # tokenizer.model matches "tokenizer*" and "*.model"
+    with tempfile.TemporaryDirectory() as src, tempfile.TemporaryDirectory() as dst:
+        for name in names:
+            with open(os.path.join(src, name), "w") as f:
+                f.write(name)
+            os.chmod(os.path.join(src, name), 0o444)  # as the Hub's cache keeps them
+        fmt.copy_source_files(src, dst)
+        for name in names:
+            with open(os.path.join(dst, name)) as f:
+                assert f.read() == name
+            assert os.access(os.path.join(dst, name), os.W_OK)
+
+
 if __name__ == "__main__":
     for name, test in list(globals().items()):
         if name.startswith("test_"):
