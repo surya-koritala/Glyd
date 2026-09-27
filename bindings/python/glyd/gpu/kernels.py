@@ -32,8 +32,10 @@ class _Load:
     def __getattr__(self, name):
         global _ext
         path = library()
+        if path is None and not torch.version.cuda:
+            raise OSError("no Glyd GPU library for this PyTorch: it is built without CUDA")
         if path is None:
-            raise OSError(f"no Glyd GPU library: libglyd_gpu_cuda{(torch.version.cuda or '0').split('.')[0]}.so is not next to {__file__}; build it with gpu/build_lib.sh, or name it in GLYD_GPU_LIB")
+            raise OSError(f"no Glyd GPU library: libglyd_gpu_cuda{torch.version.cuda.split('.')[0]}.so is not next to {__file__} (the Linux wheels carry CUDA 12's and 13's); build it with gpu/build_lib.sh, or name it in GLYD_GPU_LIB")
         _lib.load(path)
         _ext = _lib
         return getattr(_lib, name)
