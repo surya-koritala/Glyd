@@ -293,8 +293,8 @@ million a year at list price; the percentages above are what to multiply.
 
 ```bash
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
-cargo install glyd glyd-store                # from crates.io
-pip install https://github.com/surya-koritala/Glyd/releases/latest/download/glyd-0.14.3-py3-none-macosx_11_0_arm64.whl   # or the manylinux x86_64 / aarch64 wheel
+pip install glyd                             # Python: Linux x86_64 / aarch64, macOS arm64 (PyPI)
+cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store   # from source
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -303,10 +303,6 @@ x86_64, Linux aarch64 and macOS arm64, plus a Python wheel for each.
 Bindings: [Python](bindings/python/README.md), [Go](bindings/go/glyd.go)
 (cgo over `include/glyd.h`), C (`include/glyd.h`). Formats:
 [docs/spec.md](docs/spec.md). lzbench: `contrib/lzbench/setup.sh <checkout>`.
-
-```bash
-cargo install --git https://github.com/surya-koritala/Glyd
-```
 
 ```bash
 glyd --max  events.json -o events.glyd            # the zstd -3 slot: fewer bytes, 3-7x faster reads
