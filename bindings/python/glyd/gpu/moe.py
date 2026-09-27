@@ -227,6 +227,7 @@ def _reference(self, hidden_states, top_k_index, top_k_weights):
     d = next(iter(packs.values())).sm.device
     if _lib.local.fresh:  # a compiled graph's node: the buffer's address kept by its CUDA graph (model.set_scratch)
         gm.Scratch.graphed.add(d)
+    gm.Ahead.stop(d)  # a prompt's decodes ahead into the buffer done first
     buf, at, w = gm.Scratch.buf[d], 0, {}
     for name, p in packs.items():
         x = g.mma_moe_unpack(p, E, plan, top_k_index.numel(), buf[at : at + p.n]).view(E, p.shape[0] // E, p.shape[1])

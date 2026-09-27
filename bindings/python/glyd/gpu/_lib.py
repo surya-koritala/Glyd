@@ -40,8 +40,9 @@ _ARGS = {  # each function's arguments before its stream
     "mma12_gemm_big": _PACK + [_I64, _I64, _P, _I64, _P, _P, _I64, _P, _SZ],
     "mma12_gemm_mid": _PACK + [_I64, _I64, _P, _I64, _P, _P, _P, _SZ, _P],
     "mma12_gemm_wg": _PACK + [_I64, _I64, _P, _I64, _P, _P, _P, _SZ, _P],
-    "mma_unpack": _PACK + [_I64, _I64, _I64, _P],
-    "mma12_unpack": _PACK + [_I64, _I64, _I64, _P],
+    "hold": [_I64],
+    "mma_unpack": _PACK + [_I64, _I64, _I64, _P, _I64],
+    "mma12_unpack": _PACK + [_I64, _I64, _I64, _P, _I64],
     "attn_decode": [_P, _I64, _P, _P, _P, _W, _P, _P, _P, _W, _P, _P, _I64, _I64, _I64, _I64, ctypes.c_double, _P, _P, _SZ, _P],
     "moe_route": [_P, _I64, _I64, _P],
     "mma_moe_unpack": _PACK + [_I64, _I64, _I64, _I64, _P, _P],
@@ -313,23 +314,30 @@ def mma12_gemm_wg(data, exc, exc_base, sym, O, K, x, bias, y):
     _staged("mma12_gemm_wg", data, exc, exc_base, sym, O, K, x, bias, y)
 
 
-def _unpack(name, data, a, b, words, K, row0, rows, out):
+def hold(ns):
+    """The current stream held ns nanoseconds."""
+    r = _fn["hold"](ns, _stream(_device()))
+    if r:
+        _fail("hold", r)
+
+
+def _unpack(name, data, a, b, words, K, row0, rows, out, warps):
     """mma_unpack, mma12_unpack."""
     d = data.get_device()
     if d != _device():
-        return _there(_unpack, d, name, data, a, b, words, K, row0, rows, out)
+        return _there(_unpack, d, name, data, a, b, words, K, row0, rows, out, warps)
     _check(row0 % 64 == 0 and rows % 64 == 0 and out.numel() >= rows * K, "rows a multiple of 64")
-    r = _fn[name](data.data_ptr(), a.data_ptr(), b.data_ptr(), words, K, row0, rows, out.data_ptr(), _stream(d))
+    r = _fn[name](data.data_ptr(), a.data_ptr(), b.data_ptr(), words, K, row0, rows, out.data_ptr(), warps, _stream(d))
     if r:
         _fail(name, r)
 
 
-def mma_unpack(data, blocks, block_base, tiers, K, row0, rows, out):
-    _unpack("mma_unpack", data, blocks, block_base, _words(tiers, 3, "three tiers"), K, row0, rows, out)
+def mma_unpack(data, blocks, block_base, tiers, K, row0, rows, out, warps):
+    _unpack("mma_unpack", data, blocks, block_base, _words(tiers, 3, "three tiers"), K, row0, rows, out, warps)
 
 
-def mma12_unpack(data, exc, exc_base, sym, K, row0, rows, out):
-    _unpack("mma12_unpack", data, exc, exc_base, _words(sym, 4, "four words of symbols"), K, row0, rows, out)
+def mma12_unpack(data, exc, exc_base, sym, K, row0, rows, out, warps):
+    _unpack("mma12_unpack", data, exc, exc_base, _words(sym, 4, "four words of symbols"), K, row0, rows, out, warps)
 
 
 def attn_decode(q, kd, kb, kbb, kt, vd, vb, vbb, vt, tk, tv, tlen, pairs, G, P, scale, out):

@@ -2276,10 +2276,11 @@ __global__ void moe_sum_kernel(const float* __restrict__ y32, const int64_t* __r
 
 // The mma layout back to bf16, rows [row0, row0 + rows) of W (multiples of
 // 64) into out [rows, K] (checks, and the many-token path that multiplies
-// with PyTorch): a warp a step. MOE (exact, a mixture of experts' layer, W its
-// experts' matrices of `rows` rows stacked): blockIdx.y a hit expert of plan
-// (moe_route's; past those hit: nothing to do), its rows into the same rows
-// of out [E rows, K], the rest of out left as it is.
+// with PyTorch): each warp its step, and on by the grid's warps (one step
+// each where the grid has a warp a step). MOE (exact, a mixture of experts'
+// layer, W its experts' matrices of `rows` rows stacked): blockIdx.y a hit
+// expert of plan (moe_route's; past those hit: nothing to do), its rows into
+// the same rows of out [E rows, K], the rest of out left as it is.
 template <class Fmt, bool MOE = false>
 __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out, const int* __restrict__ plan = nullptr) {
     if constexpr (MOE) {
@@ -2290,22 +2291,23 @@ __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, 
     __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
     if constexpr (Fmt::kTable) fill_groups(tab);
     __syncthreads();
-    int64_t KS = K / 16, local = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5;
+    int64_t KS = K / 16, total = rows / 64 * KS;
     int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
-    if (local >= rows / 64 * KS) return;
-    int64_t step = row0 / 64 * KS + local, rb = local / KS, s = local % KS;
     __shared__ uint4 scratch[8][Fmt::kTable ? S2_BYTES / 16 : 1];
-    typename Fmt::St st;
-    f.load(st, step, lane);
-    uint32_t R[16];
-    f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
-    // R[2n]: row 8n + g, columns 2t and 2t + 1; R[2n + 1]: columns 8 + 2t, 9 + 2t.
     uint32_t* out32 = (uint32_t*)out;
+    for (int64_t local = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5; local < total; local += (int64_t)gridDim.x * blockDim.x >> 5) {
+        int64_t step = row0 / 64 * KS + local, rb = local / KS, s = local % KS;
+        typename Fmt::St st;
+        f.load(st, step, lane);
+        uint32_t R[16];
+        f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
+        // R[2n]: row 8n + g, columns 2t and 2t + 1; R[2n + 1]: columns 8 + 2t, 9 + 2t.
 #pragma unroll
-    for (int n = 0; n < 8; n++) {
-        int64_t at2 = ((rb * 64 + 8 * n + g) * K + s * 16 + 2 * t) / 2;
-        out32[at2] = R[2 * n];
-        out32[at2 + 4] = R[2 * n + 1];
+        for (int n = 0; n < 8; n++) {
+            int64_t at2 = ((rb * 64 + 8 * n + g) * K + s * 16 + 2 * t) / 2;
+            out32[at2] = R[2 * n];
+            out32[at2 + 4] = R[2 * n + 1];
+        }
     }
 }
 
@@ -2966,21 +2968,52 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc
     return mma12_wg_any(f, O, K, x, M, bias, y, (float*)workspace, done, cs, nullptr);
 }
 
-// Back to bf16: rows [row0, row0 + rows) of W [., K] (multiples of 64) into out [rows, K].
-template <class Fmt>
-static int mma_unpack_run(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* out, cudaStream_t cs) {
-    if (row0 % 64 || rows % 64) return cudaErrorInvalidValue;
-    int64_t steps = rows / 64 * (K / 16);
-    mma_unpack_kernel<Fmt><<<(steps * 32 + 255) / 256, 256, 0, cs>>>(f, K, row0, rows, out);
+// A stream held for ns nanoseconds, by one thread: a decode ahead launched after it, beside a product that starts
+// as it does, starts once the product has placed its blocks (a decode placed first on an SM, in a carveout of its
+// own choosing, may leave the product's blocks no room there).
+__global__ void hold_kernel(int64_t ns) {
+    uint64_t t0, t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t0));
+    do {
+        __nanosleep(500);
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    } while (t - t0 < (uint64_t)ns);
+}
+
+GLYD_GPU_API int glyd_gpu_hold(int64_t ns, cudaStream_t cs) {
+    if (ns < 0) return cudaErrorInvalidValue;
+    hold_kernel<<<1, 1, 0, cs>>>(ns);
     return cudaGetLastError();
 }
 
-GLYD_GPU_API int glyd_gpu_mma_unpack(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t K, int64_t row0, int64_t rows, uint16_t* out, cudaStream_t cs) {
-    return mma_unpack_run(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, K, row0, rows, out, cs);
+// Back to bf16: rows [row0, row0 + rows) of W [., K] (multiples of 64) into out [rows, K]: a warp a step, or (warps
+// > 0) that many warps in a block an SM (up to 8 a block), each taking every so many steps: a decode that runs
+// beside a product on another stream (a prompt's next matrix), its blocks small enough for an SM to hold beside a
+// cuBLAS block. Its SMs keep the most shared memory (the carveout a block leaves them in is theirs until it ends:
+// with less, a product's blocks would not fit beside it).
+template <class Fmt>
+static int mma_unpack_run(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs) {
+    if (row0 % 64 || rows % 64 || warps < 0) return cudaErrorInvalidValue;
+    int64_t steps = rows / 64 * (K / 16);
+    if (warps) {
+        static std::atomic<int> most[MAX_DEVICES];
+        int dev = current_device();
+        if (dev >= MAX_DEVICES || !most[dev].exchange(1))
+            cudaFuncSetAttribute((const void*)mma_unpack_kernel<Fmt>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+        int64_t blocks = std::min(warps, sm_count(dev)), per = std::min<int64_t>(8, (warps + blocks - 1) / blocks);
+        mma_unpack_kernel<Fmt><<<(unsigned)blocks, (unsigned)(32 * per), 0, cs>>>(f, K, row0, rows, out);
+    } else {
+        mma_unpack_kernel<Fmt><<<(steps * 32 + 255) / 256, 256, 0, cs>>>(f, K, row0, rows, out);
+    }
+    return cudaGetLastError();
 }
 
-GLYD_GPU_API int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t K, int64_t row0, int64_t rows, uint16_t* out, cudaStream_t cs) {
-    return mma_unpack_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, K, row0, rows, out, cs);
+GLYD_GPU_API int glyd_gpu_mma_unpack(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs) {
+    return mma_unpack_run(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, K, row0, rows, out, warps, cs);
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs) {
+    return mma_unpack_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, K, row0, rows, out, warps, cs);
 }
 
 // Exact, a mixture of experts' layer (its E matrices [O, K] stacked): the experts the plan of P pairs hits back to
@@ -3299,20 +3332,22 @@ void mma12_gemm_wg(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base
     ok(glyd_gpu_mma12_gemm_wg(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma12_gemm_wg");
 }
 
-void mma_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
+void mma_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t K, int64_t row0, int64_t rows, torch::Tensor out, int64_t warps) {
     uint32_t t[3];
     words(tiers, 3, t, "three tiers");
     const c10::cuda::CUDAGuard guard(data.device());
     TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64");
-    ok(glyd_gpu_mma_unpack(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, K, row0, rows, ptr<uint16_t>(out), current_stream()), "mma_unpack");
+    ok(glyd_gpu_mma_unpack(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, K, row0, rows, ptr<uint16_t>(out), warps, current_stream()), "mma_unpack");
 }
 
-void mma12_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
+void hold(int64_t ns) { ok(glyd_gpu_hold(ns, current_stream()), "hold"); }
+
+void mma12_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t K, int64_t row0, int64_t rows, torch::Tensor out, int64_t warps) {
     uint32_t s[4];
     words(sym, 4, s, "four words of symbols");
     const c10::cuda::CUDAGuard guard(data.device());
     TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64");
-    ok(glyd_gpu_mma12_unpack(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, K, row0, rows, ptr<uint16_t>(out), current_stream()), "mma12_unpack");
+    ok(glyd_gpu_mma12_unpack(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, K, row0, rows, ptr<uint16_t>(out), warps, current_stream()), "mma12_unpack");
 }
 
 void mma_moe_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t E, int64_t O, int64_t K, int64_t P, torch::Tensor plan, torch::Tensor out) {
@@ -3388,6 +3423,7 @@ void attn_decode(torch::Tensor q, torch::Tensor kd, torch::Tensor kb, torch::Ten
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("mma_gemm", &mma_gemm);
     m.def("mma_unpack", &mma_unpack);
+    m.def("hold", &hold);
     m.def("mma12_gemm", &mma12_gemm);
     m.def("mma12_gemm_big", &mma12_gemm_big);
     m.def("mma12_unpack", &mma12_unpack);

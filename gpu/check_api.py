@@ -8,6 +8,10 @@ beside glyd/gpu/kernels.py), against each model in bf16:
 - glyd.gpu.compress on the model loaded in bf16: the same packs, so the
   same logits and tokens bit for bit;
 - exact=True: logits bit for bit bf16's, the 32 tokens bf16's;
+- a prompt of 2100 tokens, fused and exact, three times (the first records
+  the order its matrices are decoded ahead in, model.Ahead, where the GPU
+  takes that path; the others follow it): the logits as with each matrix
+  decoded on the current stream, bit for bit; exact's bf16's;
 - compiled, as transformers compiles generate() (a static cache, the
   forward under CUDA graphs), fullgraph, fused and exact: no graph break,
   no graph left to run uncaptured; the tokens against eager's;
@@ -46,6 +50,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, CompileConfig
 import glyd
 import glyd.gpu
 from glyd.gpu import moe
+from glyd.gpu import model as gm
 from glyd.gpu.model import GEmbedding, GLinear, Scratch
 
 TOKENS = 32
@@ -82,6 +87,21 @@ def compiled(model, ids):
     torch._dynamo.reset()
     model.__dict__.pop("_compiled_call", None)
     return out[0, ids.shape[1] :]
+
+
+def ahead(model, ids):
+    """A long prompt's last logits: three times (the first records the order its matrices are decoded ahead in,
+    the others follow it), then with no decode ahead (each matrix decoded on the current stream); the last two
+    and that one bit for bit."""
+    with torch.no_grad():
+        runs = [model(ids, logits_to_keep=1).logits for _ in range(3)]
+        get, gm.Ahead.get = gm.Ahead.get, staticmethod(lambda d: None)
+        try:
+            off = model(ids, logits_to_keep=1).logits
+        finally:
+            gm.Ahead.get = get
+    assert exact(runs[1], off) and exact(runs[2], off), "a prompt decoded ahead: its logits as each matrix decoded on the current stream"
+    return off
 
 
 def same(a, b):
@@ -127,6 +147,9 @@ for name in NAMES:
     ref, t, peak, held = loaded(lambda: AutoModelForCausalLM.from_pretrained(name, dtype=torch.bfloat16, device_map={"": "cuda:0"}))
     largest = max(p.numel() * p.element_size() for p in ref.parameters())
     logits_a, out_a = run(ref, ids)
+    long = torch.randint(0, ref.config.vocab_size, (1, 2100), generator=torch.Generator().manual_seed(0)).cuda()
+    with torch.no_grad():
+        long_a = ref(long, logits_to_keep=1).logits
     print(f"{name}: bf16 loaded in {t:.1f} s, peak {peak:.2f} GB, holds {held:.2f} GB, largest tensor {largest / 1e9:.2f} GB")
     del ref
     torch.cuda.empty_cache()
@@ -138,6 +161,9 @@ for name in NAMES:
     print(f"{name}: glyd {q.layout} fused loaded in {t:.1f} s, peak {peak:.2f} GB: packed weights {size / 1e9:.2f} GB + largest tensor {largest / 1e9:.2f} GB + {peak - (size + largest) / 1e9:.2f} GB; holds {held:.2f} GB")
     print(f"   generated tokens identical to bf16: {same(out_a, out_b)} of {TOKENS}; logits bit-identical: {exact(logits_a, logits_b)}")
     print("   text:", tok.decode(out_b).replace("\n", " "))
+    ahead(m, long)
+    a = gm.Ahead.of.get(torch.device("cuda", 0))
+    print(f"   a prompt of {long.shape[1]} tokens: " + (f"{len(a.chain)} products decoded ahead, logits as decoded on the current stream, bit for bit" if a and a.chain else "not decoded ahead on this GPU"))
 
     c = glyd.gpu.compress(AutoModelForCausalLM.from_pretrained(name, dtype=torch.bfloat16))
     logits_c, out_c = run(c, ids)
@@ -150,7 +176,8 @@ for name in NAMES:
     x, t, peak, held = loaded(lambda: glyd.from_pretrained(name, exact=True))
     logits_x, out_x = run(x, ids)
     assert exact(logits_a, logits_x) and torch.equal(out_a, out_x), "exact=True: bf16's logits and tokens"
-    print(f"{name}: glyd exact loaded in {t:.1f} s, peak {peak:.2f} GB, holds {held:.2f} GB; logits bit-identical: True; generated tokens identical to bf16: {TOKENS} of {TOKENS}")
+    assert exact(ahead(x, long), long_a), "exact=True: a long prompt's logits bf16's"
+    print(f"{name}: glyd exact loaded in {t:.1f} s, peak {peak:.2f} GB, holds {held:.2f} GB; logits bit-identical: True (and a prompt of {long.shape[1]} tokens'); generated tokens identical to bf16: {TOKENS} of {TOKENS}")
     print(f"   compiled: tokens as bf16's eager: {same(out_a, compiled(x, ids))} of {TOKENS}")
     del x
     torch.cuda.empty_cache()
