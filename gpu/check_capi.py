@@ -141,7 +141,7 @@ for (O, K), wild in [((1000, 512), 0.01), ((304, 2304), 0.02), ((17008, 384), 0.
 # The mma layouts, tiered and 12-bit: unpack (all rows, a row block on), mma_gemm (1-64 tokens), mma_gemm_big
 # (65-600, both variants), mma12_gemm_mid (1-600), mma12_gemm_wg (Hopper: refused elsewhere), as the self-test's
 # matrices: odd row blocks, units shared by blocks, escapes and exceptions few and many.
-hopper = torch.cuda.get_device_capability()[0] == 9
+hopper = torch.cuda.get_device_capability() == (9, 0)
 for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02)]:
     w = weights(O * K, wild).view(O, K)
     bias = torch.randn(O, dtype=bf, device=dev)

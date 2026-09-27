@@ -564,9 +564,8 @@ if __name__ == "__main__":
     # blocks, units shared by blocks, exceptions few and many (past a stage's copy: read from global memory),
     # 1-600 tokens, bias; the same every run.
     import torch.nn.functional as F
-    cc = torch.cuda.get_device_capability()[0]
-    assert cc >= 8, "Ampere or later"
-    products = [("mma_gemm_mid", mma_gemm_mid)] + ([("mma_gemm_wg", mma_gemm_wg)] if cc >= 9 else [])
+    assert torch.cuda.get_device_capability()[0] >= 8, "Ampere or later"
+    products = [("mma_gemm_mid", mma_gemm_mid)] + ([("mma_gemm_wg", mma_gemm_wg)] if torch.cuda.get_device_capability() == (9, 0) else [])
     torch.manual_seed(0)
     for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02)]:
         w = torch.randn(O, K, device="cuda") * 0.02

@@ -41,7 +41,7 @@ tok = AutoTokenizer.from_pretrained(args.model)
 prompt = "The history of data compression began"
 ids = tok(prompt, return_tensors="pt").input_ids.cuda()
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
-HOPPER = torch.cuda.get_device_capability()[0] >= 9
+HOPPER = torch.cuda.get_device_capability() == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
 MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # GDDR Ampere and Ada: steps of this many tokens to 64 by mma_gemm_mid
 MID = torch.cuda.get_device_capability() in ((8, 6), (8, 7), (8, 9))  # (on an A100 mma_gemm is the faster, measured)

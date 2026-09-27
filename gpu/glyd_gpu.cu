@@ -2342,7 +2342,8 @@ static int mma12_tma_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
 
 static int mma12_wg_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
     // The TMA kernel is sm_90a code alone (the library's compute_80 PTX, compiled for GPUs after Hopper, has none of it).
-    if (attribute(cudaDevAttrComputeCapabilityMajor, current_device()) != 9) return cudaErrorNotSupported;
+    int dev = current_device();
+    if (attribute(cudaDevAttrComputeCapabilityMajor, dev) != 9 || attribute(cudaDevAttrComputeCapabilityMinor, dev) != 0) return cudaErrorNotSupported;
     if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16 || (uintptr_t)f.data % 16 || (uintptr_t)f.exc % 16) return cudaErrorInvalidValue;
     // 256 tokens at a time, in the smallest tile that holds them.
     for (int64_t m0 = 0; m0 < M; m0 += 256) {
@@ -2569,7 +2570,7 @@ void mma12_gemm_wg(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base
     uint32_t s[4];
     words(sym, 4, s, "four words of symbols");
     const c10::cuda::CUDAGuard guard(data.device());
-    TORCH_CHECK(at::cuda::getCurrentDeviceProperties()->major >= 9, "wgmma: Hopper or later");
+    TORCH_CHECK(at::cuda::getCurrentDeviceProperties()->major == 9 && at::cuda::getCurrentDeviceProperties()->minor == 0, "wgmma: Hopper (compute capability 9.0) alone");
     TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
     TORCH_CHECK((uintptr_t)data.data_ptr() % 16 == 0 && (uintptr_t)exc.data_ptr() % 16 == 0 && exc.numel() % 4 == 0, "the pack 16-byte aligned, exc padded to 4 (pack_mma12)");
     int64_t M = x.size(0);
