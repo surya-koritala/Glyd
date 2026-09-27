@@ -1,0 +1,10 @@
++ nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
+name, memory.total [MiB], driver_version
+NVIDIA A10, 23028 MiB, 580.126.20
++ python -c 'import torch, transformers; print('\''torch'\'', torch.__version__, '\''transformers'\'', transformers.__version__)'
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+torch 2.14.0+cu130 transformers 5.17.0
++ df -h /home/ubuntu
++ tail -1
+/dev/vda1       1.4T   18G  1.4T   2% /

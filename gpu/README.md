@@ -255,20 +255,32 @@ was the slower (21.56 against 19.95), so there mma_gemm stays.
 ## Popular models
 
 `sizes.py MODEL_DIR ...` packs every Linear layer's matrix of a model in
-both layouts and unpacks it, compared bit for bit. Ten popular open
-models (H100 SXM, 2026-09-26; `benchmarks/gpu/popular-h100-2026-09-26`):
+both layouts and unpacks it, compared bit for bit: every projection's
+matrix, and a layer's experts kept as one tensor (Gemma 4, Llama 4) a
+matrix an expert. Nineteen popular open models (H100 SXM, 2026-09-26,
+`benchmarks/gpu/popular-h100-2026-09-26`; A10, 2026-09-27,
+`benchmarks/gpu/open-models-a10-2026-09-27`):
 
 | Model | Matrices | bf16 | `mma` | `mma12` |
 | :--- | ---: | ---: | ---: | ---: |
+| GLM-4.5-Air | 107.96 B | 215.92 GB | 144.58 GB (10.71 bits, −33.0%) | 162.43 GB (12.04, −24.8%) |
+| Llama 4 Scout 17B-16E | 105.97 B | 211.93 GB | 142.18 GB (10.73, −32.9%) | 159.42 GB (12.04, −24.8%) |
+| Qwen3-Next 80B-A3B | 80.64 B | 161.28 GB | 109.40 GB (10.85, −32.2%) | 123.34 GB (12.24, −23.5%) |
 | Llama 3.3 70B Instruct | 68.45 B | 136.90 GB | 91.93 GB (10.74 bits, −32.9%) | 103.00 GB (12.04, −24.8%) |
 | Qwen3 30B-A3B (MoE) | 29.90 B | 59.79 GB | 40.22 GB (10.76, −32.7%) | 44.98 GB (12.04, −24.8%) |
 | Gemma 3 27B | 25.74 B | 51.48 GB | 34.58 GB (10.75, −32.8%) | 38.74 GB (12.04, −24.8%) |
+| Muse Glimmer 30B | 25.66 B | 51.33 GB | 34.48 GB (10.75, −32.8%) | 38.61 GB (12.04, −24.8%) |
+| Qwen3.8 27B | 24.76 B | 49.52 GB | 33.28 GB (10.75, −32.8%) | 37.25 GB (12.04, −24.8%) |
+| Gemma 4 26B-A4B | 24.50 B | 49.00 GB | 32.92 GB (10.75, −32.8%) | 36.87 GB (12.04, −24.8%) |
 | Mistral Small 3.2 24B | 22.63 B | 45.26 GB | 30.34 GB (10.72, −33.0%) | 34.05 GB (12.04, −24.8%) |
 | Phi-4 | 13.63 B | 27.26 GB | 18.28 GB (10.73, −32.9%) | 20.51 GB (12.04, −24.8%) |
 | DeepSeek-R1-Distill-Qwen 14B | 13.21 B | 26.42 GB | 17.99 GB (10.89, −31.9%) | 19.89 GB (12.05, −24.7%) |
+| Gemma 3 12B | 10.90 B | 21.80 GB | 14.63 GB (10.74, −32.9%) | 16.41 GB (12.04, −24.8%) |
 | Llama 3.1 8B Instruct | 6.98 B | 13.96 GB | 9.39 GB (10.76, −32.8%) | 10.50 GB (12.04, −24.8%) |
 | Mistral 7B Instruct v0.3 | 6.98 B | 13.96 GB | 9.40 GB (10.77, −32.7%) | 10.50 GB (12.04, −24.7%) |
 | Qwen3 8B | 6.95 B | 13.89 GB | 9.44 GB (10.87, −32.1%) | 10.46 GB (12.05, −24.7%) |
+| Qwen3 4B 2507 | 3.63 B | 7.27 GB | 4.93 GB (10.85, −32.2%) | 5.47 GB (12.04, −24.8%) |
+| Llama 3.2 3B Instruct | 2.82 B | 5.64 GB | 3.79 GB (10.75, −32.8%) | 4.24 GB (12.04, −24.8%) |
 | SmolLM3 3B | 2.81 B | 5.62 GB | 3.77 GB (10.73, −32.9%) | 4.23 GB (12.04, −24.8%) |
 
 Llama and Gemma from `unsloth/` (the same weights, ungated). bf16 against
@@ -283,6 +295,17 @@ Glyd (`mma`) end to end, the same run (`e2e.py --baseline --ppl --mmlu
 | Mistral 7B Instruct v0.3 | 12.1422 / 12.1473 | 99.05% | 60.67% / 60.67% | 100% |
 | Qwen3 8B | 20.7490 / 20.7428 | 98.47% | 74.00% / 74.33% | 99.67% |
 | SmolLM3 3B | 29.1467 / 29.1422 | 97.90% | 63.33% / 63.33% | 99.67% |
+| Qwen3.8 27B (H100 PCIe) | 15.1946 / 15.1941 | 98.82% | 79.67% / 80.00% | 99.67% |
+| Gemma 3 12B (H100 PCIe) | | 95.56% | 74.00% / 74.00% | 99.33% |
+| Qwen3 4B 2507 (A10) | 22.4636 / 22.4672 | 98.53% | 71.00% / 71.00% | 99.33% |
+| Llama 3.2 3B Instruct (A10) | 25.1298 / 25.1437 | 98.58% | 63.67% / 64.33% | 98.00% |
+
+The last four with the 12-bit layout the GPU picks (`--format auto`) and
+q, k, v and gate, up merged (`--merge`). Qwen3.8 27B with Glyd uses
+41,071 MiB of GPU memory against bf16's 51,771 (nvidia-smi), under a
+48 GB card's 49,140; GPU time a token 34.73 / 51.42 / 84.52 ms at 1 / 8 /
+32 sequences against 40.21 / 50.60 / 85.19. Gemma 3's perplexity is left
+out: the windows start without the BOS token Gemma needs.
 
 ## Larger models
 

@@ -8,6 +8,19 @@ every earlier format.
 
 ## Unreleased
 
+- Nine more open models measured, nineteen in all: GLM-4.5-Air, Llama 4
+  Scout, Qwen3-Next 80B-A3B, Muse Glimmer 30B, Qwen3.8 27B, Gemma 4
+  26B-A4B, Gemma 3 12B, Qwen3 4B 2507 and Llama 3.2 3B, every projection's
+  matrix 32.2-33.0% smaller in the tiered layout, bit for bit. `sizes.py`
+  counts a layer's experts kept as one tensor (Gemma 4, Llama 4) a matrix
+  an expert, and every projection (the linear-attention inputs of
+  Qwen3-Next and Qwen3.8); `e2e.py` runs Gemma 3 and 4 (the decoder under
+  `language_model`, the scaled embedding), Qwen3.5-style linear-attention
+  layers and checkpoints that load only with their vision tower. Qwen3.8
+  27B, the highest-scoring open model that fits one GPU, uses 41,071 MiB
+  with Glyd against bf16's 51,771 (under a 48 GB card's 49,140),
+  perplexity 15.1941 against 15.1946, MMLU answers as bf16's on 99.67%
+  of 300 ([gpu/](gpu/README.md#popular-models)).
 - On Hopper, steps of 17-128 tokens from the 12-bit layout by the copy
   engine and wgmma (`mma_gemm_wg`, [gpu/](gpu/README.md#many-tokens-a-step-on-an-h100-the-copy-engine-and-wgmma)):
   TMA bulk copies of the compressed steps and a tensor map for X's tiles

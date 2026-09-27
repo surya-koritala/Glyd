@@ -1,0 +1,23 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 7519.86it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+merged: 72 groups of Linears as one product each
+bf16 (weights 8.04 GB): batch 1: 27.6 tokens/s (27.6 a sequence), peak VRAM 8.07 GB
+bf16 (weights 8.04 GB): batch 8: 218.1 tokens/s (27.3 a sequence), peak VRAM 8.16 GB
+bf16 (weights 8.04 GB): batch 32: 866.6 tokens/s (27.1 a sequence), peak VRAM 8.49 GB
+bf16 perplexity: 22.4636 (12600 tokens)
+bf16 MMLU: 71.00% of 300 questions (0-shot)
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 4 s; weights 6.60 GB against 8.04 GB bf16 (82.0%), scratch 0.27 GB, VRAM in use 6.88 GB on 1 GPU
+glyd mma12 fused: batch 1: 29.5 tokens/s (29.5 a sequence), peak VRAM 6.89 GB
+glyd mma12 fused: batch 8: 231.6 tokens/s (28.9 a sequence), peak VRAM 6.99 GB
+glyd mma12 fused: batch 32: 936.0 tokens/s (29.2 a sequence), peak VRAM 7.31 GB
+glyd mma12 perplexity: 22.4672 (12600 tokens)
+glyd mma12 MMLU: 71.00% of 300 questions (0-shot)
+next-token choice as bf16's: 98.53%
+MMLU answer as bf16's: 99.33%
+logits bit-identical: False
+generated tokens identical to bf16: 59 of 64
+text:  in the 1940s with the development of the first compression algorithms, such as the Lempel-Ziv (LZ) family of algorithms. These early algorithms laid the foundation for
