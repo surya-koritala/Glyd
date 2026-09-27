@@ -32,15 +32,28 @@ every earlier format.
   the GPU, a layer's experts in one grouped product for gate and up (the
   activation applied as it is written out) and one for down (the routing
   weights applied), no host sync; a long prompt's in tiles of 128 tokens an
-  expert. On an A10, OLMoE-1B-7B holds 9.28 GB in the tiered layout
-  (10.40 GB in the 12-bit one the A10 takes) against 13.84 GB in bf16, and
-  generates 58.9 tokens/s at one sequence against bf16's 48.7 and 391.3 at
-  eight different prompts against 103.0 (a step's GPU time 6.4 ms against
-  14.5, and 17.9 against 75.5); granite-3.1-3b-a800m 36.3 against 30.6 and
-  252.0 against 131.5; a 2048-token prompt 160 ms against 181. With
-  `exact=True` the experts the tokens are routed to are decoded and bf16's
-  own experts path runs on them: the logits bit for bit. glyd-v1
-  (`save_pretrained`) holds no packed experts yet.
+  expert. On an RTX 4080 SUPER (`gpu/e2e.py --from-pretrained --baseline
+  --prompts --merge --profile --prefill`), OLMoE-1B-7B holds 9.28 GB
+  against 13.84 GB in bf16 and generates 135.6 tokens/s at one sequence
+  against bf16's 99.1 and 607.9 at eight different prompts against 142.1
+  (a step's GPU time 4.3 ms against 8.8, and 11.8 against 55.7);
+  granite-3.1-3b-a800m holds 4.61 GB against 6.60 and generates 85.4
+  against 70.2 and 576.1 against 195.7; prompts of 16 to 2048 tokens take
+  less time than bf16's (2048 tokens: 98.7 ms against 110.5, 91.0 against
+  100.9). With `exact=True` the experts the tokens are routed to are
+  decoded and the path bf16 takes runs on them, grouped_mm and, while
+  `generate()` decodes, batched_mm (transformers switches bf16's so): the
+  logits are bf16's bit for bit at every step (both models, one sequence
+  and eight different prompts, 16 steps). glyd-v1 (`save_pretrained`)
+  holds no packed experts yet.
+- `gpu/e2e.py` takes every timing before its first profile (`--profile`):
+  a profiler session leaves each CUDA launch after it slower for the rest
+  of the process, and Glyd, timed after bf16's profile, lost some 20% of
+  its tokens/s (granite-3.1-3b-a800m at one sequence on an RTX 4080 SUPER:
+  68.6 against 85.4 without it); bf16's profile now runs last, on the
+  model loaded again. `--prompts` generates for different prompts, not
+  copies of one; `--from-pretrained` times the model `glyd.from_pretrained`
+  loads; `--prefill` draws its tokens within the model's vocabulary.
 - `exact=True`: every product decodes its matrix and multiplies by
   `F.linear` as `nn.Linear` does, so the logits are bf16's bit for bit
   (Qwen3-0.6B and 1.7B, 32 of 32 tokens as bf16's; `e2e.py --exact` the
