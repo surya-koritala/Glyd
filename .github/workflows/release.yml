@@ -150,17 +150,40 @@ jobs:
           ${{ matrix.python }} test_gpu.py
           # The GPU libraries load without a GPU (their CUDA runtime is linked in; the driver is looked for at the first call).
           cd / && ${{ matrix.python }} -c "import ctypes, glob, os, glyd.gpu; d = os.path.dirname(glyd.gpu.__file__); [print(os.path.basename(f), os.path.getsize(f), 'bytes, CUDA runtime', ctypes.CDLL(f).glyd_gpu_cuda_version()) for f in sorted(glob.glob(d + '/libglyd_gpu_cuda*.so'))]"
-      - name: Attach to the release
-        if: github.event_name == 'push' || inputs.tag != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          gh release upload "$TAG" glyd-*.tar.gz glyd-*.tar.gz.sha256 wheels/*.whl --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarballs-${{ matrix.name }}
+          path: |
+            glyd-*.tar.gz
+            glyd-*.tar.gz.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.name }}
           path: wheels/*.whl
+
+  attach:
+    # The Linux builds run in the manylinux containers, which have no gh: the release takes every build's files
+    # here, on the runner (v0.21.0's first run stopped at "gh: command not found").
+    needs: build
+    if: github.event_name == 'push' || inputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tarballs-*
+          path: out
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: out
+          merge-multiple: true
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la out
+          gh release upload "${{ github.event.inputs.tag || github.ref_name }}" out/* --clobber --repo "$GITHUB_REPOSITORY"
 
   publish:
     needs: build
