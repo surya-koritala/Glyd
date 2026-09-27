@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.21.0 — 2026-09-27
 
 - `pip install "glyd[gpu]"`: the Linux wheels (x86_64 and aarch64,
   manylinux_2_28) carry the GPU kernels built for CUDA 12.8 and 13.0,
@@ -97,6 +97,25 @@ every earlier format.
   faster than bf16's where the host is the bottleneck too (Qwen3-1.7B 98.3
   tokens/s against 88.9, 86.8 before; Qwen3-4B-Instruct-2507 75.7 against
   61.5).
+- On an A100, steps of 17-64 tokens (batched generation) through a
+  kernel of its own behind `mma_gemm_mid` (compute capability 8.0 only):
+  producer warps copy each stage's compressed step and its exceptions by
+  cp.async several stages ahead into a ring in shared memory, consumer
+  warps decode and multiply by mma.sync, stream-K with a fixed-order sum.
+  Qwen3-8B's layer at 17-64 tokens takes 0.87-0.98x cuBLAS's GPU time
+  (was 0.96-1.32x), Qwen3-32B's 0.79-0.87x; a Qwen3-8B step at 32
+  sequences 19.79 ms against bf16's 20.82 (was 21.27), at 64 21.80
+  against 21.67 (was 25.96). Every other GPU keeps its kernels bit for
+  bit ([benchmarks/gpu/a100-mid-2026-09-27](benchmarks/gpu/a100-mid-2026-09-27)).
+- `glyd.save_pretrained` copies the source's tokenizer files once and
+  their content only: the Hub's cache keeps them read-only, and
+  `tokenizer.model`, which two patterns match, failed on its second copy
+  (Mistral 7B). `gpu/check_models.py`: each model against bf16 and the
+  fp32 model over eight prompts, exact mode and save/verify; nine dense
+  models from Qwen3-0.6B to Llama 3.1 8B pass on an RTX 4080 SUPER.
+- The PyPI page leads with the models on the GPU (`pip install
+  "glyd[gpu]"`, `from_pretrained`), with the project's links, keywords
+  and classifiers.
 - `mma12_gemm_wg` on compute capability 9.0 alone (its code is sm_90a);
   later GPUs take the kernels they would without it.
 - Homebrew installs the release's binaries on Apple silicon and Linux
