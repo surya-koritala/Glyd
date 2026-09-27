@@ -1,0 +1,111 @@
+dense (100003,), V 4, tiles of 16384: 10.79 bits, the same through both
+dense (512, 1024), V 16, tiles of 4096: 10.85 bits, the same through both
+dense (300, 384), V 4, tiles of 3840: 11.09 bits, the same through both
+dense (64, 16384), V 16, tiles of 8192, split rows: 10.73 bits, the same through both
+dense (96, 8192), V 16, tiles of 8192: 11.20 bits, the same through both
+fast (1000, 512): 15209 escapes, the same through both
+fast (304, 2304): 26987 escapes, the same through both
+fast (17008, 384): 144197 escapes, the same through both
+fast (128, 4096): 33890 escapes, the same through both
+fast (80, 1536): 2683 escapes, the same through both
+mma 64x64: 0 exceptions (12-bit), the same through both
+mma 192x128: 5 exceptions (12-bit), the same through both
+mma 128x4096: 85 exceptions (12-bit), the same through both
+mma 1024x2048: 282 exceptions (12-bit), the same through both
+mma 5120x1024: 4791 exceptions (12-bit), the same through both
+mma 192x4096: 58981 exceptions (12-bit), the same through both
+mma 3072x5120: 237337 exceptions (12-bit), the same through both
+moe: 8 experts of 256x192, 1 tokens by 2, 2 experts hit: the same through both
+moe: 8 experts of 256x192, 70 tokens by 2, 8 experts hit: the same through both
+moe: 64 experts of 128x2048, 8 tokens by 8, 45 experts hit: the same through both
+moe: 40 experts of 1024x1536, 3 tokens by 8, 21 experts hit: the same through both
+moe: 16 experts of 192x64, 33 tokens by 4, 16 experts hit: the same through both
+moe: 4 experts of 128x256, 17 tokens by 1, 4 experts hit: the same through both
+moe: 4 experts of 128x208, 150 tokens by 2, 4 experts hit: the same through both
+moe: 4 experts of 256x256, 300 tokens by 2, 4 experts hit: the same through both
+moe: 6 experts of 128x320, 200 tokens by 3, 6 experts hit: the same through both
+moe: 5 experts of 192x128, 160 tokens by 2, 5 experts hit: the same through both
+moe: 2 experts of 128x528, 150 tokens by 1, 2 experts hit: the same through both
+moe: 4 experts of 256x256, 300 tokens by 2, one expert twice, 4 experts hit: the same through both
+moe: 4 experts of 128x208, 300 tokens by 2, one expert twice, 4 experts hit: the same through both
+attn_decode: head_dim 64 and 128, 1-16 queries a head, pages and tails, the same through both
+jit mma12_gemm: 5.5 us a call
+jit mma12_gemm_mid: 4.9 us a call
+lib mma12_gemm: 5.5 us a call
+lib mma12_gemm_mid: 4.9 us a call
+refused: fast_gemm (jit): fast_gemm: invalid argument
+refused: fast_gemm (lib): fast_gemm: invalid argument
+refused: fast_gemm (jit): fast_gemm: invalid argument
+refused: fast_gemm (lib): fast_gemm: invalid argument
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_moe (jit): mma12_moe: invalid argument
+refused: mma12_moe (lib): mma12_moe: invalid argument
+refused: mma12_gemm (jit): O a multiple of 64, K of 16, up to 64 tokens, X contiguous [M, K]
+refused: mma12_gemm (lib): O a multiple of 64, K of 16, up to 64 tokens, X contiguous [M, K]
+refused: mma12_gemm_mid (jit): O a multiple of 64, K of 64, X contiguous [M, K]
+refused: mma12_gemm_mid (lib): O a multiple of 64, K of 64, X contiguous [M, K]
+refused: mma12_unpack (jit): rows a multiple of 64
+refused: mma12_unpack (lib): rows a multiple of 64
+refused: hold (jit): hold: invalid argument
+refused: hold (lib): hold: invalid argument
+library /home/surya-koritala/p1p/lib/libglyd_gpu_cuda13.so (CUDA 13000), NVIDIA GeForce RTX 4080 SUPER: 1612 calls compared bit for bit, all identical
+  GEmbedding.step: 1
+  GLinear decoded ahead: 62
+  GLinear off the order (fused): 28
+  GLinear.step: 268
+  attn_decode: 6
+  decode: 13
+  fast_bgemv: 24
+  fast_decode: 15
+  fast_gemm: 48
+  fast_gemm (refused): 2
+  fast_gemv: 10
+  gemv: 16
+  hold: 1
+  hold (refused): 1
+  lane_bits: 5
+  mma12_gemm: 99
+  mma12_gemm (refused): 1
+  mma12_gemm_big: 154
+  mma12_gemm_mid: 197
+  mma12_gemm_mid (refused): 1
+  mma12_gemm_wg (refused): 14
+  mma12_moe: 122
+  mma12_moe (refused): 1
+  mma12_moe_unpack: 13
+  mma12_unpack: 52
+  mma12_unpack (refused): 1
+  mma_gemm: 98
+  mma_gemm_big: 154
+  mma_moe: 122
+  mma_moe_unpack: 13
+  mma_unpack: 52
+  moe_route: 13
+  write_codes: 5

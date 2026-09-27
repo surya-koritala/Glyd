@@ -8,6 +8,22 @@ every earlier format.
 
 ## Unreleased
 
+- Long prompts on Ada within 0.2-0.7% of bf16's time from 2048 tokens,
+  1.5-2.9% at 1024 (were 5-10% behind): past 512 tokens (640 in the
+  12-bit layout) each matrix is decoded once, for cuBLAS, on a second
+  stream beside the products before it, a few warps an SM beside
+  cuBLAS's blocks, where the fused kernel decoded each weight again for
+  every 256 tokens. On an RTX 4080 SUPER
+  (`gpu/e2e.py --prefill --merge`), Qwen3-4B-Instruct-2507's prompts of
+  1024 / 2048 / 4096 tokens take 97.5 / 199.5 / 447.5 ms tiered against
+  bf16's 96.1 / 198.3 / 445.4 (were 102.8 / 211.5 / 476.5), Qwen3-1.7B's
+  43.3 / 86.8 / 186.0 against 42.1 / 86.6 / 185.3 (were 45.9 / 91.5 /
+  190.1), Qwen3-8B's 175.2 / 345.1 / 767.6 (were 185.6 / 370.8 / 811.3);
+  the time to the first token with them; generation as before. With
+  `exact=True` the same path, the logits bf16's bit for bit. The fused
+  kernel runs blocks of 128 tokens where the last block of 256 would be
+  half empty or less (300 tokens: 0.79-0.89x the time). On an A100 and
+  an H100 the path is off until measured (`GLYD_AHEAD_MIN=513` takes it).
 - `pip install "glyd[gpu]"`: the Linux wheels (x86_64 and aarch64,
   manylinux_2_28) carry the GPU kernels built for CUDA 12.8 and 13.0,
   `libglyd_gpu_cuda12.so` and `libglyd_gpu_cuda13.so`, the one for
