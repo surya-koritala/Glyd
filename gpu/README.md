@@ -386,7 +386,7 @@ and the rest, is in bindings/python/README.md.
     python check.py model.safetensors         # every tensor packed, unpacked, compared; speeds
     python shapes.py MODEL_DIR                # fused product against bf16, one layer's matrices
     python gemm.py MODEL_DIR 1,16,64          # several tokens: every product against bf16, one layer's matrices
-    python e2e.py MODEL_DIR --format mma --fused --baseline [--batch 1,8,32] [--prefill 16,64] [--ppl TEXT] [--mmlu 1000] [--kv 1024,4096]
+    python e2e.py MODEL_DIR --format mma --fused --baseline [--batch 1,8,32] [--compile] [--prefill 16,64] [--ppl TEXT] [--mmlu 1000] [--kv 1024,4096]
     python kv.py                              # the KV cache packed and decoded bit for bit; attn_decode against SDPA
     python sizes.py MODEL_DIR ...             # every Linear's matrix in both layouts, bit for bit: bits a weight, GB
 

@@ -12,7 +12,9 @@ one-token steps multiply straight from the packed weights (decoded in
 registers, never written out); their sums are in another order than
 cuBLAS's, as between any two GEMM kernels, so late tokens may differ.
 The bf16 model is never held on the GPU: every Linear is packed from
-the CPU copy, one at a time.
+the CPU copy, one at a time. --compile: generate() as transformers
+compiles it (a static cache, the forward under torch.compile's CUDA
+graphs), for bf16 and Glyd alike.
 """
 import argparse, math, time, torch
 import torch.nn as nn
@@ -38,11 +40,12 @@ ap.add_argument("--ppl-window", type=int, default=64)
 ap.add_argument("--kv", type=str, default="", help="prompt lengths (tokens of enwik8, needs --ppl) to generate --tokens after with the KV cache compressed (gpu/kv.py) against the plain cache: the same tokens, its bytes, the time; with --batch's first size")
 ap.add_argument("--smi", default="", help="once a model is on its GPUs: nvidia-smi's report into PREFIX-bf16.txt / PREFIX-glyd.txt")
 ap.add_argument("--mmlu", type=int, default=0, help="MMLU (cais/mmlu, test split, a fixed shuffle): accuracy over this many questions, 0-shot, by the answer letter's logit")
-ap.add_argument("--profile", type=int, default=0, help="GPU time by kernel over this many generated tokens, against the wall clock, at each --batch size: a step after the prompt, and the prompt's")
+ap.add_argument("--profile", type=int, default=0, help="GPU time by kernel over this many generated tokens, against the wall clock, at each --batch size: a step after the prompt, and the prompt's; run once every timing of the run is taken (a profiler session leaves CUPTI's callbacks on, every launch after it slower), bf16's on the model loaded again")
 ap.add_argument("--from-pretrained", action="store_true", help="Glyd as glyd.from_pretrained loads it, the package's path (--format mma, mma12 or auto; --merge; --exact; one GPU), in place of this script's packing")
 ap.add_argument("--prompts", action="store_true", help="a batch of different prompts (left-padded), not copies of one: a mixture of experts routes each to its own experts")
 ap.add_argument("--merge", action="store_true", help="the Linears that take the same input (q, k, v; gate, up) as one product each, for bf16 and Glyd alike, as serving engines run them")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
+ap.add_argument("--compile", action="store_true", help="generate() compiled as transformers compiles it: a static cache, the forward under torch.compile (reduce-overhead: CUDA graphs); each batch's warm-up, of --tokens, compiles and captures")
 args = ap.parse_args()
 
 tok = AutoTokenizer.from_pretrained(args.model)
@@ -214,16 +217,20 @@ def mmlu(model, label):
 def measure(model, label):
     torch.cuda.synchronize()
     out = None
+    kw = dict(cache_implementation="static") if args.compile else {}
+    label += " compiled" if args.compile else ""
     with torch.no_grad():
         logits = model(ids, logits_to_keep=1).logits
         for b in [int(x) for x in args.batch.split(",")]:
             batch = batch_of(b)
-            model.generate(**batch, max_new_tokens=4, do_sample=False)  # warm-up
+            model.generate(**batch, max_new_tokens=4, do_sample=False)  # warm-up, eager (the JIT build makes a kernel's done counters at its first call: never in a CUDA graph's memory pool)
+            if args.compile:
+                model.generate(**batch, max_new_tokens=args.tokens, do_sample=False, **kw)  # compiles and captures, the static cache the timed run's size
             torch.cuda.synchronize()
             for i in range(torch.cuda.device_count()):
                 torch.cuda.reset_peak_memory_stats(i)
             t = time.perf_counter()
-            o = model.generate(**batch, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False)
+            o = model.generate(**batch, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False, **kw)
             torch.cuda.synchronize()
             t = time.perf_counter() - t
             peaks = [torch.cuda.max_memory_allocated(i) / 1e9 for i in range(torch.cuda.device_count())]
@@ -256,8 +263,9 @@ def on_gpus(m):
         m.cuda()
 
 
-# A profiler session leaves every CUDA launch after it in the process slower (on an RTX 4080 SUPER, Glyd's
-# tokens/s some 20% lower after bf16's profile than without it): every timing is taken first, the profiles last.
+# A profiler session leaves CUPTI's callbacks on for the process, every CUDA launch after it slower (on an RTX 4080
+# SUPER some 20% of Glyd's tokens/s, 9% of bf16's: more launches a second), so every timing of the run, bf16's and
+# Glyd's alike, is taken before the first profile; the profiles run last.
 model = load()
 weights_bf16 = sum(p.numel() * p.element_size() for p in model.parameters())
 vocab = model.get_input_embeddings().weight.shape[0]  # prefill's token ids are drawn below it
@@ -271,6 +279,9 @@ if args.baseline:
     if args.gpus > 1:
         from accelerate.hooks import remove_hook_from_module
         remove_hook_from_module(model, recurse=True)
+    if args.compile:  # the bf16 graphs and their memory
+        torch._dynamo.reset()
+        model.__dict__.pop("_compiled_call", None)
     model.cpu()
     torch.cuda.empty_cache()
 
@@ -352,6 +363,9 @@ if args.baseline:
 print("text:", tok.decode(out_b[0][ids.shape[1]:ids.shape[1] + 40]).replace("\n", " "))
 if args.baseline and args.profile:  # bf16's profile last, on the model loaded again
     import gc
+    if args.compile:  # Glyd's graphs and their memory
+        torch._dynamo.reset()
+        model.__dict__.pop("_compiled_call", None)
     del model, packed
     Scratch.buf.clear()
     gc.collect()
