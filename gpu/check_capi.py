@@ -3,7 +3,9 @@ inputs: the pybind module (PyTorch's JIT build) and the prebuilt library's C
 API (the glyd package's glyd/gpu/_lib.py over libglyd_gpu_cudaN.so). Every
 output compared bit for bit, and against the weights or an fp32 product so
 they are not both wrong: odd shapes, split rows, escapes and exceptions few
-and many, 1 to 600 tokens, bias; the errors alike; the calls' host time.
+and many, 1 to 600 tokens, bias; the errors alike; the package's one-call
+paths (GLinear.step, GEmbedding.step) against the checked calls; the calls'
+host time.
 
     python check_capi.py [LIBRARY]      (default: $GLYD_GPU_LIB, else the one next to glyd_gpu.py)"""
 import os, sys, time, torch
@@ -11,6 +13,7 @@ import torch.nn.functional as F
 
 if len(sys.argv) > 1:
     os.environ["GLYD_GPU_LIB"] = sys.argv[1]
+os.environ.setdefault("GLYD_GPU_MOE_SLOTS", "512")  # the experts' products split K where their units are few, as on an H100
 import glyd_gpu as g
 from glyd.gpu import _lib as glyd_gpu_lib
 
@@ -170,6 +173,57 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
                         both_fail("mma12_gemm_wg", *pk, O, K, x, b, nan(M, O))
     print(f"mma {O}x{K}: {int(q.exc_base[-1])} exceptions (12-bit), the same through both")
 
+# A mixture of experts' layer, its E matrices [O, K] stacked: moe_route (each token's k experts sorted by expert, a
+# few routed nowhere), mma_moe_unpack and mma12_moe_unpack (the experts hit), mma_moe and mma12_moe (the rows by
+# expert, + bias; the gate's SiLU and GELU fused; weighted and each token's rows added, the weights bf16 and fp32),
+# 1-300 tokens (passes of 16, 32 and 64, K split over blocks or not; from 48 pairs an expert, mma_gemm_big_kernel's
+# tiles), against fp32; and (twice) tokens listing an expert twice, not as a top-k would: more pairs an expert than tokens.
+for E, O, K, k, T, wild, *twice in [(8, 256, 192, 2, 1, 0.01), (8, 256, 192, 2, 70, 0.02), (64, 128, 2048, 8, 8, 0.001), (40, 1024, 1536, 8, 3, 0.0), (16, 192, 64, 4, 33, 0.1), (4, 128, 256, 1, 17, 0.0), (4, 128, 208, 2, 150, 0.0), (4, 256, 256, 2, 300, 0.01), (6, 128, 320, 3, 200, 0.02), (5, 192, 128, 2, 160, 0.01), (2, 128, 528, 1, 150, 0.01), (4, 256, 256, 2, 300, 0.01, 1), (4, 128, 208, 2, 300, 0.0, 1)]:
+    w = weights(E * O * K, wild).view(E, O, K)
+    bias = torch.randn(E, O, dtype=bf, device=dev)
+    ids = torch.stack([torch.randperm(E, device=dev)[:k] for _ in range(T)])
+    if twice:
+        ids[: 2 * T // 3] = 0  # expert 0 twice: some 450 pairs for 300 tokens
+    if T > 2:
+        ids[1, 0] = E  # routed nowhere, as an expert-parallel sentinel
+    P, flat = T * k, ids.view(-1)
+    plan = both("moe_route", flat, E, torch.full((2 + 2 * E + P,), -7, dtype=torch.int32, device=dev), out=(2,))
+    valid = (flat < E).nonzero().view(-1)
+    n, order = int(plan[0]), plan[2 + 2 * E : 2 + 2 * E + len(valid)].long()
+    assert torch.equal(plan[1 : 1 + n].long(), flat[valid].unique()) and int(plan[1 + E + n]) == len(valid)
+    assert torch.equal(order, valid[torch.sort(flat[valid], stable=True).indices]), "the pairs sorted by expert, in order within each"
+    expert = flat[order]
+    x = torch.randn(T, K, dtype=bf, device=dev)
+    xs = torch.randn(P, K, dtype=bf, device=dev)  # the down product's input: the pairs in the plan's order
+    rows = torch.einsum("pok,pk->po", w[expert].float(), x[order // k].float())  # [valid pairs, O], the plan's order
+    rows_s = torch.einsum("pok,pk->po", w[expert].float(), xs[: len(valid)].float())
+    for q in (g.pack_mma(w.view(E * O, K)), g.pack_mma12(w.view(E * O, K))):
+        twelve = isinstance(q, g.Mma12)
+        s = "mma12_moe" if twelve else "mma_moe"
+        pk = (q.data, q.exc, q.exc_base, q.sym) if twelve else (q.data, q.blocks, q.block_base, q.tiers)
+        # exact: the experts hit decoded into their rows, the rest left as they were
+        u = both(f"{s}_unpack", *pk, E, O, K, P, plan, nan(E * O * K), out=(9,)).view(E, O, K)
+        hit = torch.zeros(E, dtype=torch.bool, device=dev)
+        hit[flat[valid]] = True
+        assert exact(u[hit], w[hit]) and torch.isnan(u[~hit].float()).all()
+        for b in (none, bias):
+            bb = b[expert].float() if b.numel() else 0
+            y = both(s, *pk, E, O, K, x, k, 1, plan, 0, b, none, none, nan(P, O), out=(15,))
+            near(y[: len(valid)], rows + bb)
+            if O % 128 == 0:
+                gate, up = (rows + bb).chunk(2, -1)
+                for act, f in ((1, F.silu), (2, lambda v: F.gelu(v, approximate="tanh"))):
+                    y = both(s, *pk, E, O, K, x, k, 1, plan, act, b, none, none, nan(P, O // 2), out=(15,))
+                    near(y[: len(valid)], f(gate) * up)
+            for wd in (torch.bfloat16, torch.float32):
+                wt = torch.rand(T, k, device=dev).to(wd)
+                y = both(s, *pk, E, O, K, xs, k, 0, plan, 0, b, wt, flat, nan(T, O), out=(15,))
+                ref = torch.zeros(P, O, device=dev)
+                ref[order] = (rows_s + bb) * wt.view(-1)[order, None].float()
+                near(y, ref.view(T, k, O).sum(1))
+    print(f"moe: {E} experts of {O}x{K}, {T} tokens by {k}{', one expert twice' if twice else ''}, {n} experts hit: the same through both")
+both_fail("mma12_moe", *pk, E, O, K, x, k, 1, plan, 1, none, wt, flat, nan(T, O))  # a gate and weights at once
+
 # Attention over packed KV pages: head_dim 64 and 128, 1-16 queries a KV head, pages and tails of 0-63 tokens.
 for D, G, pairs, P, tlen in [(128, 7, 8, 3, 5), (128, 1, 2, 1, 0), (64, 7, 4, 2, 63), (128, 16, 2, 2, 17), (128, 8, 16, 16, 40), (64, 2, 3, 5, 1)]:
     k = (torch.randn(P * pairs * 64, D, device=dev) * torch.randn(1, D, device=dev).exp()).to(bf)
@@ -194,6 +248,23 @@ with torch.cuda.stream(torch.cuda.Stream()):
     near(both("mma12_gemm_mid", *pk, 128, 256, x, none, nan(33, 128), out=(8,)), F.linear(x.float(), w.float()))
     near(both("mma12_gemm", *pk, 128, 256, x[:7], none, nan(7, 128), out=(8,)), F.linear(x[:7].float(), w.float()))
 torch.cuda.synchronize()
+
+# The package's one-call paths (_lib.step and _lib.lookup, as GLinear and GEmbedding call them) against the checked
+# calls: 1-64 tokens, both layouts, bias, and an embedding's rows.
+from glyd.gpu import model as gm
+
+w = weights(512 * 1024, 0.01).view(512, 1024)
+for q in (g.pack_mma(w), g.pack_mma12(w)):
+    for b in (None, torch.randn(512, dtype=bf, device=dev)):
+        lin = gm.GLinear(q, b)
+        for M in range(1, 65):
+            x = torch.randn(M, 1, 1024, dtype=bf, device=dev)
+            assert exact(lin.step(x), lin.kernel(M)(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
+        counts["GLinear.step"] = counts.get("GLinear.step", 0) + 64
+e = weights(1000 * 256).view(1000, 256)
+ids = torch.randint(0, 1000, (4, 3), device=dev)
+assert exact(gm.GEmbedding(g.pack_fast(e)).step(ids), e[ids])
+counts["GEmbedding.step"] = 1
 
 # Refused alike: too many tokens, X not 16-byte aligned, rows not a multiple of 64.
 both_fail("mma12_gemm", *pk, 128, 256, torch.randn(65, 256, dtype=bf, device=dev), none, nan(65, 128))

@@ -12,14 +12,17 @@ one-token steps multiply straight from the packed weights (decoded in
 registers, never written out); their sums are in another order than
 cuBLAS's, as between any two GEMM kernels, so late tokens may differ.
 The bf16 model is never held on the GPU: every Linear is packed from
-the CPU copy, one at a time.
+the CPU copy, one at a time. --compile: generate() as transformers
+compiles it (a static cache, the forward under torch.compile's CUDA
+graphs), for bf16 and Glyd alike.
 """
 import argparse, math, time, torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import glyd_gpu as g
-from glyd.gpu.model import GLinear, Scratch, decoder, merge_linears, pack_modules, set_scratch
+from glyd.gpu import moe
+from glyd.gpu.model import GEmbedding, GLinear, Scratch, decoder, merge_linears, pack_modules, set_scratch
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
@@ -37,21 +40,37 @@ ap.add_argument("--ppl-window", type=int, default=64)
 ap.add_argument("--kv", type=str, default="", help="prompt lengths (tokens of enwik8, needs --ppl) to generate --tokens after with the KV cache compressed (gpu/kv.py) against the plain cache: the same tokens, its bytes, the time; with --batch's first size")
 ap.add_argument("--smi", default="", help="once a model is on its GPUs: nvidia-smi's report into PREFIX-bf16.txt / PREFIX-glyd.txt")
 ap.add_argument("--mmlu", type=int, default=0, help="MMLU (cais/mmlu, test split, a fixed shuffle): accuracy over this many questions, 0-shot, by the answer letter's logit")
-ap.add_argument("--profile", type=int, default=0, help="GPU time by kernel over this many generated tokens, against the wall clock, at each --batch size: a step after the prompt, and the prompt's")
+ap.add_argument("--profile", type=int, default=0, help="GPU time by kernel over this many generated tokens, against the wall clock, at each --batch size: a step after the prompt, and the prompt's; run once every timing of the run is taken (a profiler session leaves CUPTI's callbacks on, every launch after it slower), bf16's on the model loaded again")
+ap.add_argument("--from-pretrained", action="store_true", help="Glyd as glyd.from_pretrained loads it, the package's path (--format mma, mma12 or auto; --merge; --exact; one GPU), in place of this script's packing")
+ap.add_argument("--prompts", action="store_true", help="a batch of different prompts (left-padded), not copies of one: a mixture of experts routes each to its own experts")
 ap.add_argument("--merge", action="store_true", help="the Linears that take the same input (q, k, v; gate, up) as one product each, for bf16 and Glyd alike, as serving engines run them")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
+ap.add_argument("--compile", action="store_true", help="generate() compiled as transformers compiles it: a static cache, the forward under torch.compile (reduce-overhead: CUDA graphs); each batch's warm-up, of --tokens, compiles and captures")
 args = ap.parse_args()
 
 tok = AutoTokenizer.from_pretrained(args.model)
 prompt = "The history of data compression began"
 ids = tok(prompt, return_tensors="pt").input_ids.cuda()
+PROMPTS = [prompt, "def fibonacci(n):\n    \"\"\"Return the n-th Fibonacci number.\"\"\"\n", "Q: A train leaves at 3:40 pm and the trip takes 2 hours 35 minutes. When does it arrive?\nA:", "The capital of Australia is",
+           "Translate to French: The weather is lovely today, so we will walk to the market.", "In quantum mechanics, the uncertainty principle states that", "SELECT name, COUNT(*) FROM orders JOIN customers ON", "Once upon a time, in a village at the edge of a great forest,"]
+
+
+def batch_of(b):
+    """generate()'s inputs for b sequences: b copies of the prompt, or (--prompts) b of PROMPTS in turn, left-padded."""
+    if not args.prompts:
+        return {"inputs": ids.repeat(b, 1)}
+    tok.padding_side = "left"
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    return dict(tok([PROMPTS[i % len(PROMPTS)] for i in range(b)], return_tensors="pt", padding=True).to("cuda"), pad_token_id=tok.pad_token_id)
 
 
 def prefill(model, label):
-    """One forward pass over a prompt of each length: the prompt's tokens a second."""
+    """One forward pass over a prompt of each length: the prompt's tokens a second. The prompt: token ids drawn
+    below the model's vocabulary, the same for bf16 and Glyd (a mixture of experts routes each its own way)."""
     out = []
     for n in [int(x) for x in args.prefill.split(",") if x]:
-        x = torch.randint(0, 150000, (1, n), device="cuda")
+        x = torch.randint(0, vocab, (1, n), generator=torch.Generator().manual_seed(n)).cuda()
         with torch.no_grad():
             model(x, logits_to_keep=1)
             torch.cuda.synchronize()
@@ -60,7 +79,7 @@ def prefill(model, label):
                 model(x, logits_to_keep=1)
             torch.cuda.synchronize()
             t = (time.perf_counter() - t) / 3
-        out.append(f"{n} tokens {t * 1e3:.0f} ms ({n / t:.0f} tokens/s)")
+        out.append(f"{n} tokens {t * 1e3:.1f} ms ({n / t:.0f} tokens/s)")
     if out:
         print(f"{label} prefill: " + ", ".join(out))
 
@@ -75,15 +94,15 @@ def profile(model, label):
     def run(x, k):  # GPU time by kernel (us) and wall time (s) of generating k tokens
         with prof_(activities=[ProfilerActivity.CUDA]) as pr:
             t = time.perf_counter()
-            model.generate(x, max_new_tokens=k, min_new_tokens=k, do_sample=False)
+            model.generate(**x, max_new_tokens=k, min_new_tokens=k, do_sample=False)
             torch.cuda.synchronize()
             wall = time.perf_counter() - t
         return {e.key: e.device_time_total for e in pr.key_averages() if e.device_type.name == "CUDA"}, wall
 
     for b in [int(v) for v in args.batch.split(",")]:
-        x = ids.repeat(b, 1)
+        x = batch_of(b)
         with torch.no_grad():
-            model.generate(x, max_new_tokens=4, do_sample=False)
+            model.generate(**x, max_new_tokens=4, do_sample=False)
             torch.cuda.synchronize()
             one, _ = run(x, 1)  # the prompt and a token
             all_, wall = run(x, n + 1)
@@ -198,16 +217,20 @@ def mmlu(model, label):
 def measure(model, label):
     torch.cuda.synchronize()
     out = None
+    kw = dict(cache_implementation="static") if args.compile else {}
+    label += " compiled" if args.compile else ""
     with torch.no_grad():
         logits = model(ids, logits_to_keep=1).logits
         for b in [int(x) for x in args.batch.split(",")]:
-            batch = ids.repeat(b, 1)
-            model.generate(batch, max_new_tokens=4, do_sample=False)  # warm-up
+            batch = batch_of(b)
+            model.generate(**batch, max_new_tokens=4, do_sample=False)  # warm-up, eager (the JIT build makes a kernel's done counters at its first call: never in a CUDA graph's memory pool)
+            if args.compile:
+                model.generate(**batch, max_new_tokens=args.tokens, do_sample=False, **kw)  # compiles and captures, the static cache the timed run's size
             torch.cuda.synchronize()
             for i in range(torch.cuda.device_count()):
                 torch.cuda.reset_peak_memory_stats(i)
             t = time.perf_counter()
-            o = model.generate(batch, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False)
+            o = model.generate(**batch, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False, **kw)
             torch.cuda.synchronize()
             t = time.perf_counter() - t
             peaks = [torch.cuda.max_memory_allocated(i) / 1e9 for i in range(torch.cuda.device_count())]
@@ -217,31 +240,48 @@ def measure(model, label):
     return logits, out
 
 
-try:
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).eval()
-except ValueError:  # a checkpoint transformers loads only with its vision tower (Muse Glimmer)
-    from transformers import AutoModelForImageTextToText
-    model = AutoModelForImageTextToText.from_pretrained(args.model, dtype=torch.bfloat16).eval()
-if args.merge:
-    print(f"merged: {merge_linears(model)} groups of Linears as one product each")
-weights_bf16 = sum(p.numel() * p.element_size() for p in model.parameters())
-if args.baseline:
+def load():
+    """The model in bf16 on the host, its Linears merged with --merge."""
+    try:
+        m = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16).eval()
+    except ValueError:  # a checkpoint transformers loads only with its vision tower (Muse Glimmer)
+        from transformers import AutoModelForImageTextToText
+        m = AutoModelForImageTextToText.from_pretrained(args.model, dtype=torch.bfloat16).eval()
+    if args.merge:
+        print(f"merged: {merge_linears(m)} groups of Linears as one product each")
+    return m
+
+
+def on_gpus(m):
+    """bf16 on --gpus GPUs, as --baseline runs it (several: accelerate's device map)."""
     if args.gpus > 1:
         from accelerate import dispatch_model, infer_auto_device_map
-        from accelerate.hooks import remove_hook_from_module
         cap = args.gpu_mem or torch.cuda.get_device_properties(0).total_memory / 2**30 - 2
-        dm = infer_auto_device_map(model, max_memory={i: f"{cap}GiB" for i in range(args.gpus)}, no_split_module_classes=model._no_split_modules)
-        dispatch_model(model, device_map=dm)
+        dm = infer_auto_device_map(m, max_memory={i: f"{cap}GiB" for i in range(args.gpus)}, no_split_module_classes=m._no_split_modules)
+        dispatch_model(m, device_map=dm)
     else:
-        model.cuda()
+        m.cuda()
+
+
+# A profiler session leaves CUPTI's callbacks on for the process, every CUDA launch after it slower (on an RTX 4080
+# SUPER some 20% of Glyd's tokens/s, 9% of bf16's: more launches a second), so every timing of the run, bf16's and
+# Glyd's alike, is taken before the first profile; the profiles run last.
+model = load()
+weights_bf16 = sum(p.numel() * p.element_size() for p in model.parameters())
+vocab = model.get_input_embeddings().weight.shape[0]  # prefill's token ids are drawn below it
+if args.baseline:
+    on_gpus(model)
     smi("bf16")
     logits_a, out_a = measure(model, f"bf16 (weights {weights_bf16 / 1e9:.2f} GB)")
     prefill(model, "bf16")
-    profile(model, "bf16")
     top_a = perplexity(model, "bf16")
     mmlu_a = mmlu(model, "bf16")
     if args.gpus > 1:
+        from accelerate.hooks import remove_hook_from_module
         remove_hook_from_module(model, recurse=True)
+    if args.compile:  # the bf16 graphs and their memory
+        torch._dynamo.reset()
+        model.__dict__.pop("_compiled_call", None)
     model.cpu()
     torch.cuda.empty_cache()
 
@@ -250,60 +290,68 @@ if args.baseline:
 # norm and the output layer on the last.
 if args.format == "auto":
     lin = [m.weight for m in model.modules() if isinstance(m, nn.Linear) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0]
-    lin_bytes = sum(w.numel() * 2 for w in lin)
+    lin_bytes = sum(w.numel() * 2 for w in lin) + moe.packable_bytes(model)  # a mixture of experts' too
     args.format, why = g.best_layout(lin_bytes, weights_bf16 - lin_bytes, args.gpus)
     print(f"auto: {args.format}, {why}")
-layers = decoder(model).layers
-layer_bytes = [sum(p.numel() for p in l.parameters()) for l in layers]
-per_gpu, acc, gpu_of = sum(layer_bytes) / args.gpus, 0, []
-for b in layer_bytes:
-    gpu_of.append(min(args.gpus - 1, int(acc // per_gpu)))
-    acc += b
-layer_of = {id(m): gpu_of[i] for i, l in enumerate(layers) for m in l.modules()}
-last = args.gpus - 1
-
-
-
-def pack(w, linear):
-    if args.format in ("mma", "mma12") and linear and w.shape[0] % 64 == 0 and w.shape[1] % 16 == 0:
-        return g.pack_mma12(w) if args.format == "mma12" else g.pack_mma(w)
-    return (g.pack if args.format == "huffman" else g.pack_fast)(w)
-
-
 t0 = time.perf_counter()
-with torch.no_grad():
-    packed = pack_modules(model, pack, lambda m: torch.device("cuda", layer_of.get(id(m), 0 if isinstance(m, nn.Embedding) else last)), fused=args.fused, exact=args.exact, gemm_max=args.gemm_max)
-    if args.gpus > 1:
-        from accelerate import dispatch_model
-        # the decoder's layers where they were packed, its final norm on the last GPU, everything else
-        # it holds (embeddings, rotary tables) and any vision tower beside it on the first
-        pre = next(n for n, m in model.named_modules() if m is decoder(model))
-        dm = {"lm_head": last}
-        for n, _ in decoder(model).named_children():
-            if n == "layers":
-                dm.update({f"{pre}.layers.{i}": d for i, d in enumerate(gpu_of)})
-            else:
-                dm[f"{pre}.{n}"] = last if n == "norm" else 0
-        if pre != "model":
-            dm.update({f"model.{n}": 0 for n, _ in model.model.named_children() if f"model.{n}" != pre})
-        dispatch_model(model, device_map=dm)
-    else:
-        model.cuda()
-    set_scratch(model, args.exact)
+if args.from_pretrained:  # the package's path: the checkpoint loaded again, packed as it arrives
+    import gc
+    import glyd
+    assert args.format in ("mma", "mma12") and args.gpus == 1, "--from-pretrained: the mma layouts, one GPU"
+    del model
+    gc.collect()
+    model = glyd.from_pretrained(args.model, layout=args.format, exact=args.exact, merge=args.merge).eval()
+    packed = {id(m.p): m.p for m in model.modules() if isinstance(m, (GLinear, GEmbedding))}
+else:
+    layers = decoder(model).layers
+    layer_bytes = [sum(p.numel() for p in l.parameters()) for l in layers]
+    per_gpu, acc, gpu_of = sum(layer_bytes) / args.gpus, 0, []
+    for b in layer_bytes:
+        gpu_of.append(min(args.gpus - 1, int(acc // per_gpu)))
+        acc += b
+    layer_of = {id(m): gpu_of[i] for i, l in enumerate(layers) for m in l.modules()}
+    last = args.gpus - 1
+
+    def pack(w, linear):
+        if args.format in ("mma", "mma12") and linear and w.shape[0] % 64 == 0 and w.shape[1] % 16 == 0:
+            return g.pack_mma12(w) if args.format == "mma12" else g.pack_mma(w)
+        return (g.pack if args.format == "huffman" else g.pack_fast)(w)
+
+    with torch.no_grad():
+        packed = pack_modules(model, pack, lambda m: torch.device("cuda", layer_of.get(id(m), 0 if isinstance(m, nn.Embedding) else last)), fused=args.fused, exact=args.exact, gemm_max=args.gemm_max)
+        if args.format in ("mma", "mma12"):  # a mixture of experts: each layer's experts packed as one matrix (moe.py)
+            moe.compress(model, args.format, lambda m: torch.device("cuda", layer_of.get(id(m), 0)), exact=args.exact)
+        if args.gpus > 1:
+            from accelerate import dispatch_model
+            # the decoder's layers where they were packed, its final norm on the last GPU, everything else
+            # it holds (embeddings, rotary tables) and any vision tower beside it on the first
+            pre = next(n for n, m in model.named_modules() if m is decoder(model))
+            dm = {"lm_head": last}
+            for n, _ in decoder(model).named_children():
+                if n == "layers":
+                    dm.update({f"{pre}.layers.{i}": d for i, d in enumerate(gpu_of)})
+                else:
+                    dm[f"{pre}.{n}"] = last if n == "norm" else 0
+            if pre != "model":
+                dm.update({f"model.{n}": 0 for n, _ in model.model.named_children() if f"model.{n}" != pre})
+            dispatch_model(model, device_map=dm)
+        else:
+            model.cuda()
+        set_scratch(model, args.exact)
 torch.cuda.empty_cache()
-packed_bytes = sum(p.nbytes() for p in packed.values())
+packed_bytes = sum(p.nbytes() for p in packed.values()) + moe.nbytes(model)
 other = sum(p.numel() * p.element_size() for p in model.parameters()) + sum(m.bias.numel() * 2 for m in model.modules() if isinstance(m, GLinear) and m.bias is not None)
 in_use = sum(torch.cuda.memory_allocated(i) for i in range(torch.cuda.device_count()))
 scratch = sum(b.numel() * 2 for b in Scratch.buf.values())
 mode = " exact" if args.exact else " fused" if args.fused else ""
-print(f"{args.format}{mode}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {scratch / 1e9:.2f} GB, VRAM in use {in_use / 1e9:.2f} GB on {args.gpus} GPU{'s' if args.gpus > 1 else ''}")
+print(f"{args.format}{mode}{' (from_pretrained)' if args.from_pretrained else ''}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {scratch / 1e9:.2f} GB, VRAM in use {in_use / 1e9:.2f} GB on {args.gpus} GPU{'s' if args.gpus > 1 else ''}")
 smi("glyd")
 logits_b, out_b = measure(model, f"glyd {args.format}{mode}")
 prefill(model, f"glyd {args.format}")
-profile(model, f"glyd {args.format}")
 top_b = perplexity(model, f"glyd {args.format}")
 mmlu_b = mmlu(model, f"glyd {args.format}")
 kv_check(model, f"glyd {args.format}")
+profile(model, f"glyd {args.format}")
 if args.baseline and top_b is not None:
     print(f"next-token choice as bf16's: {(top_a.cuda() == top_b).float().mean().item() * 100:.2f}%")
 if args.baseline and mmlu_b is not None:
@@ -313,3 +361,15 @@ if args.baseline:
     same = (out_a.cuda() == out_b).all(0).long().cumprod(0).sum().item() - ids.shape[1]
     print(f"generated tokens identical to bf16: {same} of {args.tokens}")
 print("text:", tok.decode(out_b[0][ids.shape[1]:ids.shape[1] + 40]).replace("\n", " "))
+if args.baseline and args.profile:  # bf16's profile last, on the model loaded again
+    import gc
+    if args.compile:  # Glyd's graphs and their memory
+        torch._dynamo.reset()
+        model.__dict__.pop("_compiled_call", None)
+    del model, packed
+    Scratch.buf.clear()
+    gc.collect()
+    torch.cuda.empty_cache()
+    model = load()
+    on_gpus(model)
+    profile(model, "bf16")
