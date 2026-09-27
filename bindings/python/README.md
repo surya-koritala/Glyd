@@ -96,6 +96,14 @@ packs a model already loaded in bf16 in place, on the GPU its weights are
 on (the current one for weights on the CPU), and returns it
 (`glyd.compress` is the codec's, for bytes).
 
+A mixture of experts (the Experts modules of transformers 5.17: OLMoE,
+granite MoE ...) is packed too, each layer's experts as one matrix, and
+run by `glyd`, an experts implementation registered with transformers;
+with `exact=True` the experts the tokens are routed to are decoded and
+bf16's own implementation runs on them. glyd-v1 holds no packed experts
+yet, and a model with them can't be copied or pickled (`copy.deepcopy`,
+`torch.save`): load it again.
+
 Compiled: `model.generate(..., cache_implementation="static")` compiles
 the forward as transformers does (`torch.compile`,
 `mode="reduce-overhead"`: CUDA graphs), and `torch.compile(model.forward,

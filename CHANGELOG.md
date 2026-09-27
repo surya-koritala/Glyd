@@ -51,11 +51,15 @@ every earlier format.
   routed to are decoded and the path bf16 takes runs on them, grouped_mm
   and, while `generate()` decodes, batched_mm (transformers switches
   bf16's so): the logits are bf16's bit for bit at every step (both
-  models, one sequence and eight different prompts, 16 steps). Before
-  Hopper torch's grouped_mm copies to the host, which a CUDA graph's
-  capture refuses (bf16's own `torch.compile(model.forward, ...)` of a
-  mixture of experts stops there), so exact runs batched_mm while a graph
-  captures. glyd-v1 (`save_pretrained`) holds no packed experts yet.
+  models, one sequence and eight different prompts, 16 steps). torch's
+  grouped_mm runs on the GPU alone only on compute capability 9.x and
+  10.x (10.x from torch 2.9, as its source reads); on any other GPU it
+  copies to the host, which a CUDA graph's capture refuses (on an RTX 4080
+  SUPER bf16's own `torch.compile(model.forward, ...)` of a mixture of
+  experts stops there), so there exact runs batched_mm while a graph
+  captures. glyd-v1 (`save_pretrained`) holds no packed experts yet, and
+  a model with them can't be copied or pickled (`copy.deepcopy`,
+  `torch.save`): load it again.
 - `gpu/e2e.py` takes every timing before its first profile (`--profile`):
   a profiler session leaves each CUDA launch after it slower for the rest
   of the process, and Glyd, timed after bf16's profile, lost some 20% of
