@@ -3,9 +3,9 @@
 # or `brew install --build-from-source Formula/glyd.rb` from a checkout.
 class Glyd < Formula
   desc "Compression for object storage: record mode, packs, a cross-object store"
-  homepage "https://github.com/surya-koritala/Glyd"
-  url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.19.0.tar.gz"
-  sha256 "d8263468af72ecf71c4b82a204d4b1832c57e871e4ee76fc5ee2bdae28e96203"
+  homepage "https://getglyd.com"
+  url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.20.0.tar.gz"
+  sha256 "cd4116dc0b422f44083dddb186180cd645a68716c8c282041f97f7e9f81f8a30"
   # The codec and CLI: BSD-3-Clause or GPL-2.0; the glyd-store binary: BUSL-1.1.
   license all_of: [
     { any_of: ["BSD-3-Clause", "GPL-2.0-only"] },
