@@ -16,6 +16,12 @@ Binds the C ABI (include/glyd.h) through ctypes. The shared library is
 found next to this file (libglyd.dylib / .so / glyd.dll), at $GLYD_LIB,
 or on the system path; bindings/python/build.sh builds and places it.
 
+A bf16 model's weights held compressed on the GPU, bit for bit (glyd.gpu,
+imported at first use; pip install "glyd[gpu]"):
+
+    model = glyd.from_pretrained("Qwen/Qwen3-8B")   # packed as it loads, ready for generate()
+    glyd.save_pretrained(model, "qwen3-8b-glyd")
+    print(glyd.fit("Qwen/Qwen3-32B", gpu="48GB"))   # bf16 against Glyd on one GPU
 """
 import ctypes
 import os
@@ -115,10 +121,18 @@ def _take(out, out_len):
     return b
 
 
-def compress(data, level="max", records=False, threads=0):
+def compress(data, level="max", records=False, threads=0, **model_options):
     """Compress bytes at a level ("default", "fast", "turbo", "max",
     "ultra", "cold"); records=True for logs, dumps, CSV and JSON lines;
-    threads=1 for one core."""
+    threads=1 for one core. Given a PyTorch model instead, packs its
+    weights in place on the GPU and returns it (glyd.gpu.compress; the
+    options layout, exact, merge)."""
+    torch = sys.modules.get("torch")
+    if torch is not None and isinstance(data, torch.nn.Module):
+        from .gpu import compress as compress_model
+        return compress_model(data, **model_options)
+    if model_options:
+        raise TypeError(f"compress() got unexpected keyword arguments: {', '.join(model_options)}")
     src, n = _buf(data)
     out, out_len = _u8p(), ctypes.c_size_t()
     if _lib.glyd_compress2(src, n, _LEVELS[level], int(bool(records)), threads, ctypes.byref(out), ctypes.byref(out_len)):
@@ -268,3 +282,10 @@ class Store:
     def __len__(self):
         return _lib.glyd_store_count(self._h)
 
+
+def __getattr__(name):
+    """The GPU half, imported at first use: from_pretrained, save_pretrained and fit (glyd.gpu)."""
+    if name in ("from_pretrained", "save_pretrained", "fit"):
+        from . import gpu
+        return getattr(gpu, name)
+    raise AttributeError(f"module 'glyd' has no attribute {name!r}")

@@ -378,9 +378,11 @@ glyd_gpu.py, which then uses it through ctypes instead of building;
 GLYD_GPU_LIB names another. The Python side is the glyd package's
 (bindings/python/glyd/gpu: kernels.py, _lib.py over the library, and
 model.py, the modules e2e.py runs); glyd_gpu.py is it for the scripts
-here, taken from this checkout.
+here, taken from this checkout. The API a user types, glyd.from_pretrained
+and the rest, is in bindings/python/README.md.
 
     python check_capi.py [LIBRARY]            # every entry point through the library and through the JIT build, bit for bit
+    python check_api.py [MODEL ...]           # glyd.from_pretrained, compress, save_pretrained, verify: against bf16, bit for bit where exact
     python check.py model.safetensors         # every tensor packed, unpacked, compared; speeds
     python shapes.py MODEL_DIR                # fused product against bf16, one layer's matrices
     python gemm.py MODEL_DIR 1,16,64          # several tokens: every product against bf16, one layer's matrices

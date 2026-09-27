@@ -1,9 +1,17 @@
 """A model's weights held packed on the GPU: GLinear and GEmbedding in place
 of nn.Linear and nn.Embedding, Merged and Part for the Linears that take
 the same input run as one product (as serving engines run them), and
-pack_modules() to put them in a model's place, the packs made by a
-function given.
+compress() for a model already loaded (hf.py packs one as it loads).
+
+    model = compress(model)              # a bf16 transformers model, in place
+
+A Linear whose matrix the mma layouts take (rows a multiple of 64,
+columns of 16) goes in the tiered layout (10.80 bits a weight) or the
+12-bit one (12.04, a lighter decode), best_layout's choice for the GPU;
+an embedding (rows a multiple of 128 long) in the fast format, its rows
+decoded as they are looked up; anything else stays as it is.
 """
+import hashlib
 import os
 import torch
 import torch.nn as nn
@@ -182,6 +190,47 @@ def merge_linears(model):
     return len(gs)
 
 
+def pack(w, linear, layout):
+    """w (bf16, on its GPU) packed: for a Linear in `layout` ("mma" tiered, "mma12") where its rows are a multiple of 64
+    and its columns of 16, for an embedding in the fast format where its rows are a multiple of 128 long; else None."""
+    if w.dtype != torch.bfloat16 or w.dim() != 2:
+        return None
+    if linear and w.shape[0] % 64 == 0 and w.shape[1] % 16 == 0:
+        return (g.pack_mma12 if layout == "mma12" else g.pack_mma)(w)
+    if not linear and w.shape[1] % 128 == 0:
+        return g.pack_fast(w)
+    return None
+
+
+def unpack(p):
+    """A pack's matrix, bf16."""
+    if isinstance(p, g.Fast):
+        return g.fast_unpack(p)
+    return g.mma_unpack(p) if isinstance(p, g.Mma) else g.unpack(p)
+
+
+def check(p, w, name):
+    """p decodes to w bit for bit, else ValueError."""
+    if not torch.equal(unpack(p).view(torch.int16), w.view(torch.int16)):
+        raise ValueError(f"glyd: {name} decoded to other bits than its weights")
+
+
+def sha256(w):
+    """The sha256 of a tensor's bytes, row-major as safetensors holds them, copied to the host 256 MB at a time."""
+    h, b = hashlib.sha256(), w.contiguous().view(-1).view(torch.uint8)
+    for a in range(0, b.numel(), 1 << 28):
+        h.update(b[a : a + (1 << 28)].cpu().numpy())
+    return h.hexdigest()
+
+
+def auto_layout(model, gpus=1, device=0):
+    """best_layout for model's weights: its Linears the mma layouts take, against the rest (a tied weight once, as
+    once tied); (layout, why)."""
+    tied = getattr(model, "all_tied_weights_keys", None) or {}
+    lin = sum(m.weight.numel() * 2 for m in model.modules() if isinstance(m, nn.Linear) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0)
+    return g.best_layout(lin, sum(p.numel() * p.element_size() for n, p in model.named_parameters() if n not in tied) - lin, gpus, device)
+
+
 @torch.no_grad()
 def pack_modules(model, pack_fn, device_of, **mode):
     """Every nn.Linear and nn.Embedding of model replaced by a GLinear (mode: its options) or GEmbedding over its weight
@@ -216,3 +265,27 @@ def set_scratch(model, exact):
     for d, n in need.items():
         if d not in Scratch.buf or Scratch.buf[d].numel() < n + 16384 * 8:
             Scratch.buf[d] = torch.empty(n + 16384 * 8, dtype=torch.bfloat16, device=d)
+
+
+@torch.no_grad()
+def compress(model, *, layout="auto", exact=False, merge=True):
+    """Packs an already-loaded bf16 model in place on the GPU and returns it:
+    its Linears in `layout` ("auto": best_layout's pick for the GPU; "mma":
+    tiered; "mma12": 12-bit) and its embeddings in the fast format, each on
+    the GPU its weight is on (a weight on the CPU: the current GPU, and the
+    rest of the model with it unless it is spread over several). exact:
+    every product decodes its matrix whole and multiplies by F.linear, as
+    nn.Linear does: outputs bit for bit bf16's (and no merging). merge: q, k,
+    v and gate, up as one product each (not with exact)."""
+    cuda = {p.device for p in model.parameters() if p.is_cuda}
+    home = min(cuda, key=lambda d: d.index) if cuda else torch.device("cuda", torch.cuda.current_device())
+    if merge and not exact:
+        merge_linears(model)
+    if layout == "auto":
+        layout = auto_layout(model, max(1, len(cuda)), home)[0]
+    pack_modules(model, lambda w, linear: pack(w, linear, layout), lambda m: m.weight.device if m.weight.is_cuda else home, exact=exact)
+    if len(cuda) < 2:
+        model.to(home)
+    set_scratch(model, exact)
+    torch.cuda.empty_cache()
+    return model

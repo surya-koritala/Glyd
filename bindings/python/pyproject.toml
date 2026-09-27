@@ -13,6 +13,11 @@ readme = "README.md"
 license = { text = "BSD-3-Clause OR GPL-2.0-only; bundled libglyd_store BUSL-1.1; glyd.gpu BUSL-1.1" }
 requires-python = ">=3.8"
 
+[project.optional-dependencies]
+# glyd.gpu: from_pretrained builds on transformers' quantizer API as of 5.17
+# (register_quantizer, on-the-fly quantize ops); fit needs none of these.
+gpu = ["torch>=2.5", "transformers>=5.17,<6", "safetensors>=0.8", "huggingface_hub>=1.5,<2"]
+
 [tool.setuptools]
 packages = ["glyd", "glyd.gpu"]
 license-files = ["LICENSE", "COPYING", "LICENSE-glyd-store", "LICENSE-glyd-gpu"]
