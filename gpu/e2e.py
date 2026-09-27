@@ -1,10 +1,13 @@
 """End to end: a Hugging Face causal LM generating with its weights held
 compressed in VRAM (glyd_gpu), against the same model in bf16.
 
-    python e2e.py MODEL_DIR --format fast|huffman|mma [--fused] [--baseline] [--tokens N]
+    python e2e.py MODEL_DIR --format fast|huffman|mma [--fused | --exact] [--baseline] [--tokens N]
 
-Exact path (default): each matrix decoded into a scratch buffer, then
-PyTorch's own matmul: logits and tokens bit-identical to bf16. --fused:
+Decoded path (default): each matrix decoded into a scratch buffer (in
+row blocks past 128M weights), then PyTorch's own matmul. --exact: every
+matrix decoded whole, into one scratch buffer the size of the largest,
+and multiplied by F.linear on the input as it came, as the bf16 model's
+nn.Linear does: logits and tokens bit-identical to bf16's. --fused:
 one-token steps multiply straight from the packed weights (decoded in
 registers, never written out); their sums are in another order than
 cuBLAS's, as between any two GEMM kernels, so late tokens may differ.
@@ -21,6 +24,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("model")
 ap.add_argument("--format", default="fast", choices=["fast", "huffman", "mma", "mma12", "auto"], help="mma: the Linears in the mma layout (the embedding in fast), up to 64 tokens a step multiplied straight from it; mma12: its 12-bit layout (a lighter decode); auto: the one for this GPU (glyd_gpu.best_layout)")
 ap.add_argument("--fused", action="store_true")
+ap.add_argument("--exact", action="store_true", help="every Linear's matrix decoded whole into one scratch buffer, then F.linear as the bf16 model's: its logits bit for bit (overrides --fused)")
 ap.add_argument("--baseline", action="store_true")
 ap.add_argument("--tokens", type=int, default=128)
 ap.add_argument("--prefill", type=str, default="", help="prompt lengths to time one forward pass at, e.g. 128,512,2048")
@@ -227,8 +231,8 @@ class GLinear(nn.Module):
         self.p, self.bias = p, bias
         O, K = p.shape
         step = 64 if isinstance(p, g.Mma) else getattr(p, "rows_per_tile", 1) or 1
-        # Whole when it fits the scratch (a split matmul sums in another order).
-        self.block = O if O * K <= SCRATCH else max(step, SCRATCH // K // step * step)
+        # Whole when it fits the scratch (a split matmul sums in another order), and always for --exact.
+        self.block = O if args.exact or O * K <= SCRATCH else max(step, SCRATCH // K // step * step)
 
     def decode_rows(self, r0, r1):
         p, K = self.p, self.p.shape[1]
@@ -251,6 +255,8 @@ class GLinear(nn.Module):
 
     def forward(self, x):
         O, K = self.p.shape
+        if args.exact:  # as nn.Linear: F.linear on the input as it came, the matrix decoded whole
+            return F.linear(x, self.decode_rows(0, O), self.bias)
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)
         # Past WG_MAX tokens on Hopper (a prompt) the tensor cores outrun our decode: decode the matrix, cuBLAS multiplies.
@@ -417,7 +423,7 @@ with torch.no_grad():
                 p = packed[key]
                 bias = child.bias.data.to(dev) if isinstance(child, nn.Linear) and child.bias is not None else None
                 setattr(m, cname, GLinear(p, bias) if isinstance(child, nn.Linear) else GEmbedding(p, getattr(child, "embed_scale", None)))
-                biggest[dev] = max(biggest.get(dev, 0), min(p.n, SCRATCH))
+                biggest[dev] = max(biggest.get(dev, 0), p.n if args.exact else min(p.n, SCRATCH))
     if args.gpus > 1:
         from accelerate import dispatch_model
         # the decoder's layers where they were packed, its final norm on the last GPU, everything else
@@ -440,9 +446,10 @@ packed_bytes = sum(p.nbytes() for p in packed.values())
 other = sum(p.numel() * p.element_size() for p in model.parameters()) + sum(m.bias.numel() * 2 for m in model.modules() if isinstance(m, GLinear) and m.bias is not None)
 in_use = sum(torch.cuda.memory_allocated(i) for i in range(torch.cuda.device_count()))
 scratch = sum(b.numel() * 2 for b in Scratch.buf.values())
-print(f"{args.format}{' fused' if args.fused else ''}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {scratch / 1e9:.2f} GB, VRAM in use {in_use / 1e9:.2f} GB on {args.gpus} GPU{'s' if args.gpus > 1 else ''}")
+mode = " exact" if args.exact else " fused" if args.fused else ""
+print(f"{args.format}{mode}: packed in {time.perf_counter() - t0:.0f} s; weights {(packed_bytes + other) / 1e9:.2f} GB against {weights_bf16 / 1e9:.2f} GB bf16 ({100 * (packed_bytes + other) / weights_bf16:.1f}%), scratch {scratch / 1e9:.2f} GB, VRAM in use {in_use / 1e9:.2f} GB on {args.gpus} GPU{'s' if args.gpus > 1 else ''}")
 smi("glyd")
-logits_b, out_b = measure(model, f"glyd {args.format}{' fused' if args.fused else ''}")
+logits_b, out_b = measure(model, f"glyd {args.format}{mode}")
 prefill(model, f"glyd {args.format}")
 profile(model, f"glyd {args.format}")
 top_b = perplexity(model, f"glyd {args.format}")
