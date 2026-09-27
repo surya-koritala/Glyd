@@ -1,41 +1,95 @@
 name: Release
 
-# On a version tag: build the CLIs, the shared libraries and the Python
-# wheels for Linux (x86_64, aarch64) and macOS (arm64), attach them to
-# the GitHub release, and publish them: to PyPI by trusted publishing
-# (pypi.org trusts this workflow in the `pypi` environment, no token), to
-# crates.io when the CARGO_REGISTRY_TOKEN secret is set.
+# On a version tag: build the CLIs, the shared libraries, the GPU kernels'
+# libraries and the Python wheels for Linux (x86_64, aarch64: glibc 2.28,
+# manylinux_2_28) and macOS (arm64), attach them to the GitHub release,
+# and publish them: to PyPI by trusted publishing (pypi.org trusts this
+# workflow in the `pypi` environment, no token), to crates.io when the
+# CARGO_REGISTRY_TOKEN secret is set. Run by hand without a tag
+# (gh workflow run release.yml --ref BRANCH): the same builds and checks,
+# kept as the run's artifacts only; no release, no tag, no publishing.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release to attach the build of this ref to (e.g. v0.10.0)"
-        required: true
+        description: "Release to attach the build of this ref to (e.g. v0.10.0); empty: build only, as the run's artifacts"
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  gpu-lib:
+    # The GPU kernels behind their C API (gpu/build_lib.sh) for CUDA 12 and 13 on each Linux
+    # architecture, built on Rocky Linux 8 (glibc 2.28) for manylinux_2_28 systems, with GCC 13
+    # from gcc-toolset (its newer libstdc++ parts linked in, as on the manylinux images).
     strategy:
       fail-fast: false
       matrix:
         include:
+          - {os: ubuntu-latest, name: linux-x86_64, cuda: "12.8.2"}
+          - {os: ubuntu-latest, name: linux-x86_64, cuda: "13.0.3"}
+          - {os: ubuntu-24.04-arm, name: linux-aarch64, cuda: "12.8.2"}
+          - {os: ubuntu-24.04-arm, name: linux-aarch64, cuda: "13.0.3"}
+    runs-on: ${{ matrix.os }}
+    container: nvidia/cuda:${{ matrix.cuda }}-devel-rockylinux8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - name: Build
+        run: |
+          set -e
+          dnf install -y -q --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils
+          source /opt/rh/gcc-toolset-13/enable
+          time bash gpu/build_lib.sh lib
+      - name: Check (glibc 2.28, the system's libraries only)
+        run: |
+          set -e
+          source /opt/rh/gcc-toolset-13/enable
+          for f in lib/*.so; do
+            needed=$(readelf -d "$f" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort | tr '\n' ' ')
+            top() { objdump -T "$f" | grep -oE "$1_[0-9]+(\.[0-9]+)*" | sed "s/$1_//" | sort -uV | tail -1; }
+            echo "$f: $(stat -c %s "$f") bytes; needs $needed; GLIBC up to $(top GLIBC), GLIBCXX $(top GLIBCXX), CXXABI $(top CXXABI), GCC $(top GCC)"
+            other=$(echo $needed | tr ' ' '\n' | grep -vxE 'lib(c|m|dl|pthread|rt)\.so\.[0-9]+|libstdc\+\+\.so\.6|libgcc_s\.so\.1|ld-linux-(x86-64|aarch64)\.so\.[0-9]+' || true)
+            [ -z "$other" ] || { echo "$f needs more than the system's libraries: $other"; exit 1; }
+            [ "$(printf '%s\n' "$(top GLIBC)" 2.28 | sort -V | tail -1)" = 2.28 ] || { echo "$f needs GLIBC $(top GLIBC), past 2.28"; exit 1; }
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpu-lib-${{ matrix.name }}-cuda${{ matrix.cuda }}
+          path: lib/*.so
+
+  build:
+    needs: gpu-lib
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux: built in the manylinux_2_28 image (AlmaLinux 8, glibc 2.28, its gcc-toolset), so the
+          # libraries, the CLIs and the wheel run on any glibc 2.28 system, and auditwheel checks the tag.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             name: linux-x86_64
-            wheel: manylinux_2_35_x86_64
+            wheel: manylinux_2_28_x86_64
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            python: /opt/python/cp312-cp312/bin/python
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             name: linux-aarch64
-            wheel: manylinux_2_35_aarch64
+            wheel: manylinux_2_28_aarch64
+            container: quay.io/pypa/manylinux_2_28_aarch64
+            python: /opt/python/cp312-cp312/bin/python
           - os: macos-latest
             target: aarch64-apple-darwin
             name: macos-arm64
             wheel: macosx_11_0_arm64
+            python: python
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     env:
       RUSTFLAGS: ${{ matrix.name == 'linux-x86_64' && '-C target-cpu=x86-64-v3' || '' }}
     steps:
@@ -44,6 +98,7 @@ jobs:
           ref: ${{ github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
+        if: runner.os == 'macOS'
         with:
           python-version: "3.12"
       - name: Build
@@ -60,22 +115,43 @@ jobs:
           cp include/glyd.h LICENSE COPYING README.md "$DIR/"
           cp glyd-store/LICENSE "$DIR/LICENSE-glyd-store"
           tar -czf "$DIR.tar.gz" "$DIR"
-          shasum -a 256 "$DIR.tar.gz" > "$DIR.tar.gz.sha256"
+          (shasum -a 256 "$DIR.tar.gz" 2> /dev/null || sha256sum "$DIR.tar.gz") > "$DIR.tar.gz.sha256"
+      - uses: actions/download-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          pattern: gpu-lib-${{ matrix.name }}-*
+          path: bindings/python/glyd/gpu
+          merge-multiple: true
       - name: Build the Python wheel
         run: |
           set -e
           cp target/release/libglyd_store.* bindings/python/glyd/ 2>/dev/null || true
           cp LICENSE COPYING bindings/python/ && cp glyd-store/LICENSE bindings/python/LICENSE-glyd-store && cp gpu/LICENSE bindings/python/LICENSE-glyd-gpu
-          python -m pip install --quiet build wheel
-          python -m build --wheel --outdir wheels bindings/python
-          # The wheel carries this platform's shared library: tag it so.
-          python -m wheel tags --python-tag py3 --abi-tag none --platform-tag ${{ matrix.wheel }} --remove wheels/*.whl
-          ls wheels
+          ${{ matrix.python }} -m pip install --quiet build wheel
+          ${{ matrix.python }} -m build --wheel --outdir wheels bindings/python
+          # The wheel carries this platform's shared libraries: tag it so.
+          ${{ matrix.python }} -m wheel tags --python-tag py3 --abi-tag none --platform-tag ${{ matrix.wheel }} --remove wheels/*.whl
+          ls -l wheels
+      - name: Check the wheel's tag (auditwheel)
+        if: runner.os == 'Linux'
+        run: |
+          set -e
+          auditwheel show wheels/*.whl | tee auditwheel.txt
+          # The oldest tag the wheel's libraries allow: at most manylinux_2_28 (or an older alias).
+          tag=$(grep -oE 'platform tag: "[^"]+"' auditwheel.txt | head -1 | sed 's/.*"\(.*\)"/\1/')
+          v=$(echo "$tag" | sed -n 's/^manylinux_\([0-9]*\)_\([0-9]*\)_.*/\1.\2/p')
+          case "$tag" in manylinux1_*|manylinux2010_*|manylinux2014_*) v=2.17 ;; esac
+          [ -n "$v" ] && [ "$(printf '%s\n' "$v" 2.28 | sort -V | tail -1)" = 2.28 ] || { echo "the wheel needs $tag, past manylinux_2_28"; exit 1; }
       - name: Test the wheel
         run: |
-          python -m pip install --quiet wheels/*.whl
-          cd bindings/python && python -c "import glyd; import test_glyd; test_glyd.test_round_trips()"
+          set -e
+          ${{ matrix.python }} -m pip install --quiet wheels/*.whl
+          cd bindings/python && ${{ matrix.python }} -c "import glyd; import test_glyd; test_glyd.test_round_trips()"
+          ${{ matrix.python }} test_gpu.py
+          # The GPU libraries load without a GPU (their CUDA runtime is linked in; the driver is looked for at the first call).
+          cd / && ${{ matrix.python }} -c "import ctypes, glob, os, glyd.gpu; d = os.path.dirname(glyd.gpu.__file__); [print(os.path.basename(f), os.path.getsize(f), 'bytes, CUDA runtime', ctypes.CDLL(f).glyd_gpu_cuda_version()) for f in sorted(glob.glob(d + '/libglyd_gpu_cuda*.so'))]"
       - name: Attach to the release
+        if: github.event_name == 'push' || inputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -88,6 +164,7 @@ jobs:
 
   publish:
     needs: build
+    if: github.event_name == 'push' || inputs.tag != ''
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -105,6 +182,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/download-artifact@v4
         with:
+          pattern: wheels-*
           path: wheels
           merge-multiple: true
       - name: crates.io

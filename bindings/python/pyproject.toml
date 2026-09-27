@@ -24,3 +24,5 @@ license-files = ["LICENSE", "COPYING", "LICENSE-glyd-store", "LICENSE-glyd-gpu"]
 
 [tool.setuptools.package-data]
 glyd = ["libglyd_store.dylib", "libglyd_store.so", "glyd_store.dll", "libglyd.dylib", "libglyd.so", "glyd.dll"]
+# The GPU kernels (gpu/build_lib.sh), for PyTorch built with CUDA 12 and with CUDA 13: in the Linux wheels.
+"glyd.gpu" = ["libglyd_gpu_cuda12.so", "libglyd_gpu_cuda13.so"]
