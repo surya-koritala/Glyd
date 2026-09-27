@@ -24,14 +24,14 @@ fitmod = importlib.import_module("glyd.gpu.fit")
 
 
 def hub(data):
-    """fit's Hub reads served from test_gpu_site.json."""
+    """fit's Hub reads served from test_gpu_site.json (repo ids in any case, as the Hub takes them)."""
     def get(url):
         for repo, d in data.items():
-            if url == f"/api/models/{repo}":
+            if url.lower() == f"/api/models/{repo}".lower():
                 return {"safetensors": {"parameters": d["parameters"]}}
-            if url == f"/api/models/{repo}/tree/main":
+            if url.lower() == f"/api/models/{repo}/tree/main".lower():
                 return [{"type": "file", "path": p, "size": n} for p, n in d["files"]] + [{"type": "directory", "path": "original"}]
-            if url == f"/{repo}/resolve/main/config.json":
+            if url.lower() == f"/{repo}/resolve/main/config.json".lower():
                 return d["config"]
         raise AssertionError(url)
     return get
@@ -47,12 +47,12 @@ def test_fit_as_the_site():
             n = int(tier[:-2])
             assert f.bf16_fits == (s["gb"] is not None and s["gb"] <= n), (repo, tier, "bf16")
             assert f.glyd_fits == (s["gg"] is not None and s["gg"] <= n), (repo, tier, "glyd")
-        assert round(f.kv_cache / 1e9, 3) == s["kv8"] and f.format == s["fmt"], repo
-        assert abs(f.bf16_weights / 1e9 - s["bf"]) < 0.05, repo  # the site's measured totals (3 models) round the checkpoint's bytes
-        if s["est"]:  # else the site has a measured ratio: 0.671-0.681 against fit's 0.673
-            assert round(f.glyd_weights / 1e9, 2) == s["gl"], repo
+        assert round(f.kv_cache / 1e9, 3) == s["kv8"] and f.format == s["fmt"] and f.measured == (not s["est"]), repo
+        # the site's GB: a measured ratio (18 models), an end-to-end run's weights (3), else 0.673
+        assert (round(f.bf16_weights / 1e9, 2), round(f.glyd_weights / 1e9, 2)) == (s["bf"], s["gl"]), (repo, f.bf16_weights, f.glyd_weights)
     f = fit("Qwen/Qwen3-32B", gpu="48 GB")
-    assert repr(f) == "Qwen3-32B on a 48 GB GPU: bf16 needs 69.3 GB, no; Glyd 47.9 GB, fits", repr(f)
+    assert repr(f) == "Qwen3-32B on a 48 GB GPU: bf16 needs 69.3 GB, no; Glyd 48.3 GB, fits", repr(f)
+    assert repr(fit("qwen/qwen3-32b")) == repr(f).replace("Qwen3-32B", "qwen3-32b")  # the Hub's ids in any case
     assert fit("Qwen/Qwen3-32B", gpu=81559 * 2**20).bf16_fits and repr(fit("Qwen/Qwen3-8B", gpu=16 * 10**9)).startswith("Qwen3-8B on a 16.0 GB GPU:")
     try:
         fit("Qwen/Qwen3-8B", gpu="40GB")
@@ -89,7 +89,7 @@ def test_fit_a_directory():
         f = fit(d, gpu=2 * 10**9, context=1000)
         weights = os.path.getsize(os.path.join(d, "model.safetensors"))
         per = 2 * 2 * 64 * 2  # keys and values, 2 KV heads of 64, bf16: a token's bytes a layer
-        assert f.bf16_weights == weights and f.format == "bf16"
+        assert f.bf16_weights == weights and f.format == "bf16" and not f.measured
         assert f.glyd_weights == 1024 * 512 * 2 * fitmod.RATIO + (weights - 1024 * 512 * 2)
         assert f.kv_cache == 2 * per * 1000 + 2 * per * 256  # 2 full layers for 1000 tokens, 2 sliding ones for 256
         assert f.bf16_needs == weights + f.kv_cache + fitmod.RUNTIME and f.bf16_fits and f.model == os.path.basename(d)

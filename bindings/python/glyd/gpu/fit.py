@@ -2,14 +2,16 @@
 getglyd.com (its scripts/site_data.py), standard library only.
 
     >>> glyd.fit("Qwen/Qwen3-32B", gpu="48GB")
-    Qwen3-32B on a 48 GB GPU: bf16 needs 69.3 GB, no; Glyd 47.9 GB, fits
+    Qwen3-32B on a 48 GB GPU: bf16 needs 69.3 GB, no; Glyd 48.3 GB, fits
 
 A model needs its weights, a KV cache for `context` tokens and 1.5 GiB
 for the runtime, against the GPU's memory as nvidia-smi reports it. The
 weights: the checkpoint's safetensors files (those at its top; Mistral's
 consolidated copy left out where the repo has both); with Glyd, its bf16
-and f16 tensors at 0.673 of their bytes (the tiered layout's mean over
-the models measured) and the rest (FP8, 4-bit, f32) as they are. The KV
+and f16 tensors at the ratio measured for the model (measured.py, the
+site's), else at 0.673 (the tiered layout's mean over the models
+measured), and the rest (FP8, 4-bit, f32) as they are; for the models an
+end-to-end run measured whole, that run's bf16 and Glyd weights. The KV
 cache, bf16: every full-attention layer's keys and values for all the
 tokens, a sliding-window layer's for its window, an MLA layer's latent
 and rope key, none for a linear-attention layer. From the Hugging Face
@@ -22,8 +24,11 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from .format import MANIFEST, header
+from .measured import RATIOS, TOTALS
 
-RATIO = 0.673  # Glyd's bytes over bf16's, the tiered layout's mean
+RATIO = 0.673  # Glyd's bytes over bf16's, the tiered layout's mean: for a model not measured
+MEASURED = {k.lower(): v for k, v in RATIOS.items()}  # repo ids as the Hub takes them, any case
+WHOLE = {k.lower(): v for k, v in TOTALS.items()}
 RUNTIME = 1.5 * 2**30  # bytes the runtime takes: CUDA context, activations, allocator slack
 GPUS = {"16GB": 16376, "24GB": 24564, "32GB": 32607, "48GB": 49140, "80GB": 81559, "96GB": 97887, "141GB": 143771}  # MiB, as nvidia-smi reports them
 
@@ -35,6 +40,7 @@ class Fit:
     gpu_bytes: int
     context: int  # tokens in the KV cache
     format: str  # the checkpoint's weights: bf16, fp8 or 4-bit
+    measured: bool  # Glyd's size measured for this model (else estimated at 0.673)
     bf16_weights: float  # bytes
     glyd_weights: float
     kv_cache: float
@@ -145,7 +151,11 @@ def fit(name_or_path, gpu="48GB", context=8192):
     bf16 = 2 * (params.get("BF16", 0) + params.get("F16", 0))
     other = max(weights - bf16, 0)  # FP8, 4-bit, f32: kept as they are
     fmt = "bf16" if other < 0.05 * weights else "fp8" if params.get("F8_E4M3", 0) > max(params.get("U8", 0), params.get("I8", 0)) else "4-bit"
-    glyd = bf16 * RATIO + other
+    repo = "" if os.path.isdir(name_or_path) else name_or_path.lower()
+    if repo in WHOLE:
+        weights, glyd = (gb * 1e9 for gb in WHOLE[repo])
+    else:
+        glyd = bf16 * MEASURED.get(repo, RATIO) + other
     kv = kv_bytes(config, context)
-    return Fit(name_or_path.rstrip("/").split("/")[-1], label, memory, context, fmt, weights, glyd, kv, RUNTIME,
+    return Fit(name_or_path.rstrip("/").split("/")[-1], label, memory, context, fmt, repo in WHOLE or repo in MEASURED, weights, glyd, kv, RUNTIME,
                weights + kv + RUNTIME, glyd + kv + RUNTIME, weights + kv + RUNTIME <= memory, glyd + kv + RUNTIME <= memory)

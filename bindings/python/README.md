@@ -86,10 +86,11 @@ the 12-bit layout is the pick, it decodes and packs them again.
 
 `glyd.fit(name_or_path, gpu="48GB", context=8192)`: whether the model
 fits one GPU in bf16 and with Glyd, by the site's rule: the weights (with
-Glyd, bf16 tensors at 0.673 of their bytes, FP8 and 4-bit as they are),
-a KV cache for `context` tokens and 1.5 GiB for the runtime, against the
-memory nvidia-smi reports (`16GB` ... `141GB`, or a number of bytes).
-From the Hub's metadata for a repo id, from the files for a directory.
+Glyd, bf16 tensors at the ratio measured for the model, else 0.673 of
+their bytes; FP8 and 4-bit as they are), a KV cache for `context` tokens
+and 1.5 GiB for the runtime, against the memory nvidia-smi reports
+(`16GB` ... `141GB`, or a number of bytes). From the Hub's metadata for a
+repo id, from the files for a directory.
 
     python -m glyd.gpu fit Qwen/Qwen3-32B --gpu 48GB
     python -m glyd.gpu pack Qwen/Qwen3-8B qwen3-8b-glyd     # packed, checked, saved as glyd-v1
