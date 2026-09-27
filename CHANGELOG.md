@@ -96,7 +96,12 @@ every earlier format.
   layer 295 us against bf16's 322 (344 before), so eager `generate()` is
   faster than bf16's where the host is the bottleneck too (Qwen3-1.7B 98.3
   tokens/s against 88.9, 86.8 before; Qwen3-4B-Instruct-2507 75.7 against
-  61.5).
+  61.5). On a server's CPU too (AWS g5.2xlarge, an A10G, users' path:
+  the wheel installed, `generate()` a fresh process each): Qwen3-8B 26.1
+  tokens/s at one sequence against bf16's 23.0 and 201.1 against 182.3
+  at eight, compiled 37.1 against 27.1 and 256.5 against 197.5;
+  Qwen3-4B-Instruct-2507 compiled 58.3 against 45.8; granite-3.1-3b-a800m
+  (a mixture of experts) 31.4 against 25.3.
 - On an A100, steps of 17-64 tokens (batched generation) through a
   kernel of its own behind `mma_gemm_mid` (compute capability 8.0 only):
   producer warps copy each stage's compressed step and its exceptions by
