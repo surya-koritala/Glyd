@@ -12,6 +12,7 @@
 quick3_log.csv
 benchmarks/suite/*/DONE
 /bindings/python/glyd/libglyd*.*
+/gpu/libglyd_gpu*.so
 /bindings/python/glyd/glyd*.dll
 /bindings/python/build
 /bindings/python/*.egg-info
