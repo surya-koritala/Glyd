@@ -22,12 +22,15 @@ beside glyd/gpu/kernels.py), against each model in bf16:
   12-bit layout packed from bf16;
 - python -m glyd.gpu verify and fit.
 A mixture of experts' model (its Experts modules packed, run by "glyd")
-takes every check but saving: glyd-v1 holds no packed experts yet.
+takes every check but saving (glyd-v1 holds no packed experts yet), and
+two of its own: torch.compile(model.forward, mode="reduce-overhead",
+fullgraph=True) called with gradients on, and copy.deepcopy refused.
 
     python check_api.py [MODEL ...]      (default: Qwen/Qwen3-0.6B Qwen/Qwen3-1.7B)
 
 From this checkout it runs the package beside it (bindings/python); a copy
 of it run elsewhere runs the glyd installed (a wheel, its libraries in it)."""
+import copy
 import os
 import subprocess
 import sys
@@ -153,6 +156,21 @@ for name in NAMES:
     torch.cuda.empty_cache()
 
     if moe.nbytes(m):
+        # torch.compile(forward) as a user calls it, gradients on (a tied output layer stays nn.Linear: the logits
+        # need them): its warm-up, capture and replay; then a copy, refused
+        counters.clear()
+        f = torch.compile(m.forward, mode="reduce-overhead", fullgraph=True)
+        for _ in range(3):
+            shape = f(ids).logits.shape  # the outputs let go of before the next call (they wait for a backward)
+        assert shape[:2] == ids.shape and not counters["graph_break"] and not counters["inductor"]["cudagraph_skips"], (dict(counters["graph_break"]), counters["inductor"]["cudagraph_skips"])
+        del f
+        torch._dynamo.reset()
+        try:
+            copy.deepcopy(m)
+            raise AssertionError("a model with packed experts copied")
+        except TypeError:
+            pass
+        print("   torch.compile(forward, reduce-overhead, fullgraph), gradients on: no graph break, no CUDA graph skipped; copy.deepcopy refused")
         print(f"{name}: not saved: glyd-v1 holds no packed experts yet")
         del m
         torch.cuda.empty_cache()

@@ -18,7 +18,8 @@ switches bf16's), which reads no other, so its outputs are bf16's bit for
 bit. Under torch.compile a packed module's forward is one node of the graph
 (glyd::experts), run as eager, its workspaces made for the call alone and
 its done counters before any capture, as model.py's ops: no graph break,
-and CUDA graphs capture its kernels.
+and CUDA graphs capture its kernels. A model with packed experts can't be
+copied or pickled (a copy's op would name the first's module).
 
     moe.compress(model, "mma12", lambda m: torch.device("cuda"))   # a loaded model's experts, in place
 """
@@ -118,6 +119,8 @@ def install(model, exact=False):
             if getattr(m, "glyd_handle", None) is None:  # its name for the op below
                 m.glyd_handle = next(gm._handles)
                 gm._modules[m.glyd_handle] = m
+                # A copy would keep the handle, which names this module: copy.deepcopy, copy.copy and pickle refused.
+                object.__setattr__(m, "__reduce_ex__", _uncopyable)
             if g.lib() is not None:  # the done counters made now: never in a CUDA graph's memory pool
                 for p, units in ((up, up.shape[0] // E // (128 if act else 64)), (down, down.shape[0] // E // 64)):
                     _lib._counters("mma12_moe" if isinstance(p, g.Mma12) else "mma_moe", p.sm.get_device(), units * E, 1 << 16)
@@ -127,31 +130,35 @@ def install(model, exact=False):
         for m in mods:
             if m.config._experts_implementation != NAME:  # a config the model's call did not reach
                 m.config._experts_implementation_internal = NAME
-        _decoding(model, mods)
+        if hasattr(type(model), "_optimize_model_for_decode"):
+            model._optimize_model_for_decode = _Decoding(model)
     return sum(1 for m in mods if getattr(m, "glyd", None) is not None)
 
 
-def _decoding(model, mods):
+def _uncopyable(protocol):
+    raise TypeError("glyd: a model with packed experts can't be copied or pickled (copy.deepcopy, torch.save): load it again")
+
+
+class _Decoding:
     """transformers' generate() decodes with batched_mm where a model's experts run by grouped_mm
-    (GenerationMixin._optimize_model_for_decode, around its decoding loop): the model's own wrapped, so that the
-    reference (exact, a module not packed) follows it, the Experts modules mods told while it lasts."""
-    inner = getattr(model, "_optimize_model_for_decode", None)
-    if inner is None or getattr(inner, "glyd", False):
-        return
+    (GenerationMixin._optimize_model_for_decode, around its decoding loop): in its place on the model, so that the
+    reference (exact, a module not packed) follows it, the model's Experts modules told while it lasts. An object
+    holding its model, where a closure would hold the first: a copy's (copy.deepcopy, pickle) is the copy's."""
+
+    def __init__(self, model):
+        self.model = model
 
     @contextlib.contextmanager
-    def decoding():
+    def __call__(self):
+        mods = [m for m in self.model.modules() if is_experts(m)]
         for m in mods:
             m.glyd_decoding = True
         try:
-            with inner():
+            with type(self.model)._optimize_model_for_decode(self.model):
                 yield
         finally:
             for m in mods:
                 m.glyd_decoding = False
-
-    decoding.glyd = True
-    model._optimize_model_for_decode = decoding
 
 
 @torch.no_grad()
@@ -182,6 +189,13 @@ def scratch(model, exact):
     return need
 
 
+def _captures_grouped_mm(device):
+    """Whether a CUDA graph captures torch's grouped_mm on device: its GPU-only path is taken on compute capability
+    9.x and 10.x alone (10.x from torch 2.9); elsewhere it copies its offsets to the host, which a capture refuses."""
+    major = torch.cuda.get_device_capability(device)[0]
+    return major == 9 or (major == 10 and torch.__version__ >= "2.9")
+
+
 class _Decoded:
     """An Experts module as its reference implementation sees it, with its matrices decoded."""
 
@@ -197,15 +211,14 @@ def _reference(self, hidden_states, top_k_index, top_k_weights):
     """The implementation the module ran by before "glyd", on its matrices decoded into the scratch buffer where
     they are packed: the experts the tokens are routed to, the only ones it reads (the rest of the buffer as it was)."""
     ref = self.glyd_ref
+    packs = getattr(self, "glyd_packs", None)
     if ref == "grouped_mm" and getattr(self, "glyd_decoding", False):
         ref = "batched_mm"  # as generate() decodes bf16's
-    elif ref == "grouped_mm" and torch.cuda.is_current_stream_capturing() and torch.cuda.get_device_capability(hidden_states.device) < (9, 0):
-        # A CUDA graph captures (torch.compile's reduce-overhead): before Hopper torch's grouped_mm copies its
-        # offsets to the host, which a capture refuses (bf16's own compiled forward stops there); batched_mm, as
-        # generate() runs bf16's decoding steps.
+    elif ref == "grouped_mm" and packs and torch.cuda.is_current_stream_capturing() and not _captures_grouped_mm(hidden_states.device):
+        # A CUDA graph captures (torch.compile's reduce-overhead) where grouped_mm copies to the host (bf16's own
+        # compiled forward stops there): batched_mm, as generate() runs bf16's decoding steps.
         ref = "batched_mm"
     fn = ALL_EXPERTS_FUNCTIONS.get_interface(ref, type(self).forward.__wrapped__)
-    packs = getattr(self, "glyd_packs", None)
     if not packs:
         return fn(self, hidden_states, top_k_index, top_k_weights)
     E = self.num_experts
@@ -227,8 +240,10 @@ def forward(self, hidden_states, top_k_index, top_k_weights):
     their weights (top_k_weights [T, k]) to [T, H]."""
     if torch.compiler.is_compiling():
         handle = getattr(self, "glyd_handle", None)
-        if handle is not None:  # packed: one node of the graph (glyd::experts), which runs what follows as eager
-            return torch.ops.glyd.experts(hidden_states, top_k_index, top_k_weights, handle)
+        if handle is not None:  # packed: one node of the graph (glyd::experts), which runs what follows (no gradient, as eager)
+            x = hidden_states.detach() if hidden_states.requires_grad else hidden_states
+            w = top_k_weights.detach() if top_k_weights.requires_grad else top_k_weights
+            return torch.ops.glyd.experts(x, top_k_index, w, handle)
         return _reference(self, hidden_states, top_k_index, top_k_weights)  # not packed: bf16's, compiled as bf16's
     packs = getattr(self, "glyd", None)
     if packs is None or self.glyd_exact:
