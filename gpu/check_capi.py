@@ -1,9 +1,9 @@
 """glyd_gpu.cu's entry points through both of its hosts on the same random
 inputs: the pybind module (PyTorch's JIT build) and the prebuilt library's C
-API (glyd_gpu_lib.py over libglyd_gpu_cudaN.so). Every output compared bit
-for bit, and against the weights or an fp32 product so they are not both
-wrong: odd shapes, split rows, escapes and exceptions few and many, 1 to 600
-tokens, bias; the errors alike; the calls' host time.
+API (the glyd package's glyd/gpu/_lib.py over libglyd_gpu_cudaN.so). Every
+output compared bit for bit, and against the weights or an fp32 product so
+they are not both wrong: odd shapes, split rows, escapes and exceptions few
+and many, 1 to 600 tokens, bias; the errors alike; the calls' host time.
 
     python check_capi.py [LIBRARY]      (default: $GLYD_GPU_LIB, else the one next to glyd_gpu.py)"""
 import os, sys, time, torch
@@ -12,7 +12,7 @@ import torch.nn.functional as F
 if len(sys.argv) > 1:
     os.environ["GLYD_GPU_LIB"] = sys.argv[1]
 import glyd_gpu as g
-import glyd_gpu_lib
+from glyd.gpu import _lib as glyd_gpu_lib
 
 assert g._ext is glyd_gpu_lib, "no library found: run build_lib.sh, or give its path"
 lib, jit = glyd_gpu_lib, g._jit()

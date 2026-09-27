@@ -374,8 +374,11 @@ Needs PyTorch with CUDA, and nvcc (the extension builds on first import)
 or the prebuilt library: `bash build_lib.sh` builds libglyd_gpu_cuda13.so
 (the kernels behind a C API, the CUDA runtime linked in; code for sm_80,
 sm_86, sm_89 and sm_90a, PTX for the GPUs after them) next to
-glyd_gpu.py, which then uses it through ctypes (glyd_gpu_lib.py) instead
-of building; GLYD_GPU_LIB names another.
+glyd_gpu.py, which then uses it through ctypes instead of building;
+GLYD_GPU_LIB names another. The Python side is the glyd package's
+(bindings/python/glyd/gpu: kernels.py, _lib.py over the library, and
+model.py, the modules e2e.py runs); glyd_gpu.py is it for the scripts
+here, taken from this checkout.
 
     python check_capi.py [LIBRARY]            # every entry point through the library and through the JIT build, bit for bit
     python check.py model.safetensors         # every tensor packed, unpacked, compared; speeds

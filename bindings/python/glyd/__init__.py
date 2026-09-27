@@ -15,6 +15,7 @@
 Binds the C ABI (include/glyd.h) through ctypes. The shared library is
 found next to this file (libglyd.dylib / .so / glyd.dll), at $GLYD_LIB,
 or on the system path; bindings/python/build.sh builds and places it.
+
 """
 import ctypes
 import os
@@ -45,41 +46,56 @@ def _load():
     raise OSError(f"libglyd not found (set GLYD_LIB or run bindings/python/build.sh): {last}")
 
 
-_lib = _load()
+class _NoLibrary:
+    """The codec's library where none was found: the GPU half (glyd.gpu)
+    needs none, and a codec function raises the error at its call."""
+
+    def __init__(self, error):
+        self.error = error
+
+    def __getattr__(self, name):
+        raise self.error
+
+
+try:
+    _lib = _load()
+except OSError as e:
+    _lib = _NoLibrary(e)
 _u8p = ctypes.POINTER(ctypes.c_uint8)
-_lib.glyd_version.restype = ctypes.c_char_p
-_lib.glyd_free.argtypes = [_u8p, ctypes.c_size_t]
-_lib.glyd_compress2.argtypes = [_u8p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
-_lib.glyd_decompress2.argtypes = [_u8p, ctypes.c_size_t, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
-_lib.glyd_decompressed_len.argtypes = [_u8p, ctypes.c_size_t]
-_lib.glyd_decompressed_len.restype = ctypes.c_int64
-_lib.glyd_compress_with_base.argtypes = [_u8p, ctypes.c_size_t, _u8p, ctypes.c_size_t, ctypes.c_int, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
-_lib.glyd_decompress_with_base.argtypes = [_u8p, ctypes.c_size_t, _u8p, ctypes.c_size_t, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
-_lib.glyd_pack.argtypes = [ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t, ctypes.c_int, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
-_lib.glyd_unpack_object.argtypes = [_u8p, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
-_lib.glyd_pack_len.argtypes = [_u8p, ctypes.c_size_t]
-_lib.glyd_pack_len.restype = ctypes.c_int64
-_HAS_STORE = hasattr(_lib, "glyd_store_open")
-if _HAS_STORE:
-    _lib.glyd_store_open.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-_lib.glyd_store_open.restype = ctypes.c_void_p
-_lib.glyd_store_close.argtypes = [ctypes.c_void_p]
-_lib.glyd_store_put.argtypes = [ctypes.c_void_p, ctypes.c_char_p, _u8p, ctypes.c_size_t]
-_lib.glyd_store_put.restype = ctypes.c_int64
-_lib.glyd_store_get.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
-_lib.glyd_store_id_of.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-_lib.glyd_store_id_of.restype = ctypes.c_int64
-_lib.glyd_store_delete.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-_lib.glyd_store_compact.argtypes = [ctypes.c_void_p]
-_lib.glyd_store_compact.restype = ctypes.c_int64
-_lib.glyd_store_flush.argtypes = [ctypes.c_void_p]
-_lib.glyd_store_rebase.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-_lib.glyd_store_verify.argtypes = [ctypes.c_void_p]
-_lib.glyd_store_verify.restype = ctypes.c_int64
-_lib.glyd_store_stats.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64)]
-_lib.glyd_store_set_level.argtypes = [ctypes.c_void_p, ctypes.c_int]
-_lib.glyd_store_count.argtypes = [ctypes.c_void_p]
-_lib.glyd_store_count.restype = ctypes.c_int64
+_HAS_STORE = not isinstance(_lib, _NoLibrary) and hasattr(_lib, "glyd_store_open")
+if not isinstance(_lib, _NoLibrary):
+    _lib.glyd_version.restype = ctypes.c_char_p
+    _lib.glyd_free.argtypes = [_u8p, ctypes.c_size_t]
+    _lib.glyd_compress2.argtypes = [_u8p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
+    _lib.glyd_decompress2.argtypes = [_u8p, ctypes.c_size_t, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
+    _lib.glyd_decompressed_len.argtypes = [_u8p, ctypes.c_size_t]
+    _lib.glyd_decompressed_len.restype = ctypes.c_int64
+    _lib.glyd_compress_with_base.argtypes = [_u8p, ctypes.c_size_t, _u8p, ctypes.c_size_t, ctypes.c_int, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
+    _lib.glyd_decompress_with_base.argtypes = [_u8p, ctypes.c_size_t, _u8p, ctypes.c_size_t, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
+    _lib.glyd_pack.argtypes = [ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t), ctypes.c_size_t, ctypes.c_int, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
+    _lib.glyd_unpack_object.argtypes = [_u8p, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
+    _lib.glyd_pack_len.argtypes = [_u8p, ctypes.c_size_t]
+    _lib.glyd_pack_len.restype = ctypes.c_int64
+    if _HAS_STORE:
+        _lib.glyd_store_open.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+    _lib.glyd_store_open.restype = ctypes.c_void_p
+    _lib.glyd_store_close.argtypes = [ctypes.c_void_p]
+    _lib.glyd_store_put.argtypes = [ctypes.c_void_p, ctypes.c_char_p, _u8p, ctypes.c_size_t]
+    _lib.glyd_store_put.restype = ctypes.c_int64
+    _lib.glyd_store_get.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(_u8p), ctypes.POINTER(ctypes.c_size_t)]
+    _lib.glyd_store_id_of.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+    _lib.glyd_store_id_of.restype = ctypes.c_int64
+    _lib.glyd_store_delete.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    _lib.glyd_store_compact.argtypes = [ctypes.c_void_p]
+    _lib.glyd_store_compact.restype = ctypes.c_int64
+    _lib.glyd_store_flush.argtypes = [ctypes.c_void_p]
+    _lib.glyd_store_rebase.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    _lib.glyd_store_verify.argtypes = [ctypes.c_void_p]
+    _lib.glyd_store_verify.restype = ctypes.c_int64
+    _lib.glyd_store_stats.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64)]
+    _lib.glyd_store_set_level.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    _lib.glyd_store_count.argtypes = [ctypes.c_void_p]
+    _lib.glyd_store_count.restype = ctypes.c_int64
 
 
 def version():
@@ -251,3 +267,4 @@ class Store:
 
     def __len__(self):
         return _lib.glyd_store_count(self._h)
+

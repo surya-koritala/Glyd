@@ -20,3 +20,4 @@ __pycache__/
 bindings/python/LICENSE
 bindings/python/COPYING
 bindings/python/LICENSE-glyd-store
+bindings/python/LICENSE-glyd-gpu

@@ -8,6 +8,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cargo build --release --manifest-path "$ROOT/Cargo.toml" -p glyd-store
 cp "$ROOT/LICENSE" "$ROOT/COPYING" "$ROOT/bindings/python/"
 cp "$ROOT/glyd-store/LICENSE" "$ROOT/bindings/python/LICENSE-glyd-store"
+cp "$ROOT/gpu/LICENSE" "$ROOT/bindings/python/LICENSE-glyd-gpu"
 case "$(uname -s)" in
     Darwin) cp "$ROOT/target/release/libglyd_store.dylib" "$ROOT/bindings/python/glyd/" ;;
     *) cp "$ROOT/target/release/libglyd_store.so" "$ROOT/bindings/python/glyd/" ;;

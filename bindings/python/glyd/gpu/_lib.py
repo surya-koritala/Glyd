@@ -1,8 +1,8 @@
-"""glyd_gpu.cu's kernels from the prebuilt library (libglyd_gpu_cudaN.so,
-build_lib.sh) through its C API: the pybind module's functions, by the same
-names and arguments, for glyd_gpu.py where nvcc is not at hand.
+"""gpu/glyd_gpu.cu's kernels from the prebuilt library (libglyd_gpu_cudaN.so,
+gpu/build_lib.sh) through its C API: the pybind module's functions, by the
+same names and arguments, for kernels.py where nvcc is not at hand.
 
-    import glyd_gpu_lib as ext
+    from glyd.gpu import _lib as ext
     ext.load("libglyd_gpu_cuda13.so")
     ext.mma_gemm(...)                    # as the JIT-built module's
 

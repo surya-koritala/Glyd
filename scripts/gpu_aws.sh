@@ -32,7 +32,7 @@ cleanup() {
 }
 trap cleanup EXIT
 COMMIT="$(git -C "$ROOT" rev-parse --short "$REF")"
-git -C "$ROOT" archive --format=tar -o "$TARBALL" "$REF" gpu
+git -C "$ROOT" archive --format=tar -o "$TARBALL" "$REF" gpu bindings/python
 aws ec2 create-key-pair --key-name "$KEY" --query KeyMaterial > "$KEYFILE"
 chmod 600 "$KEYFILE"
 VPC="$(aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId')"

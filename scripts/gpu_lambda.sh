@@ -106,7 +106,7 @@ if [ -n "${HOST:-}" ]; then
     OUT="$ROOT/benchmarks/gpu/dry-$(echo "$HOST" | tr -c 'a-zA-Z0-9.\n' _)"
     SSH=(ssh -i "${SSH_KEY:-$HOME/.ssh/id_ed25519}" -o ConnectTimeout=10 -o ServerAliveInterval=60)
     H=("$HOST")
-    git -C "$ROOT" archive --format=tar -o "$TMP/glyd.tar" "$REF" gpu
+    git -C "$ROOT" archive --format=tar -o "$TMP/glyd.tar" "$REF" gpu bindings/python
     run_on
     rm -rf "$TMP"
     exit
@@ -117,7 +117,7 @@ if [ -n "${IP:-}" ] && [ ! -s "$KEY_FILE" ]; then
     SSH=(ssh -i "${SSH_KEY:-$HOME/.ssh/glyd-lambda}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=60)
     H=(ubuntu@"$IP")
     until "${SSH[@]}" "${H[@]}" true 2> /dev/null; do sleep 5; done
-    git -C "$ROOT" archive --format=tar -o "$TMP/glyd.tar" "$REF" gpu
+    git -C "$ROOT" archive --format=tar -o "$TMP/glyd.tar" "$REF" gpu bindings/python
     run_on
     rm -rf "$TMP"
     echo "done: TERMINATE THE INSTANCE IN THE CONSOLE NOW"
@@ -168,7 +168,7 @@ print(i['id'], (i.get('instance_type') or {}).get('price_cents_per_hour', 0))")
     SSH=(ssh -i "${SSH_KEY:-$HOME/.ssh/glyd-lambda}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=60)
     H=(ubuntu@"$IP")
     until "${SSH[@]}" "${H[@]}" true 2> /dev/null; do sleep 5; done
-    git -C "$ROOT" archive --format=tar -o "$TMP/glyd.tar" "$REF" gpu
+    git -C "$ROOT" archive --format=tar -o "$TMP/glyd.tar" "$REF" gpu bindings/python
     run_on
     echo "done: $IP"
     exit
@@ -190,7 +190,7 @@ ssh-keygen -q -t ed25519 -N "" -f "$TMP/key" -C "$RUN_ID"
 KEY_ID=$(api POST /ssh-keys -d "{\"name\": \"$RUN_ID\", \"public_key\": \"$(cat "$TMP/key.pub")\"}" | py 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')
 SSH=(ssh -i "$TMP/key" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=60)
 
-git -C "$ROOT" archive --format=tar -o "$TMP/glyd.tar" "$REF" gpu
+git -C "$ROOT" archive --format=tar -o "$TMP/glyd.tar" "$REF" gpu bindings/python
 ID=$(api POST /instance-operations/launch -d "{\"region_name\": \"$REGION\", \"instance_type_name\": \"$TYPE\", \"ssh_key_names\": [\"$RUN_ID\"], \"name\": \"$RUN_ID\", \"image\": {\"family\": \"$IMAGE\"}}" | py 'import json,sys; print(json.load(sys.stdin)["data"]["instance_ids"][0])')
 START=$(date +%s)
 echo "launched $ID"

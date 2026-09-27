@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # glyd_gpu.cu's kernels as a library behind its C API (no PyTorch in it), for
-# glyd_gpu.py to load through glyd_gpu_lib.py where nvcc is not at hand. The
+# glyd_gpu.py to load through glyd/gpu/_lib.py where nvcc is not at hand. The
 # CUDA runtime is linked in, so it needs only the driver; code for Ampere
 # (sm_80, sm_86), Ada (sm_89) and Hopper (sm_90a), and compute_80 PTX for the
 # GPUs after them (all but the TMA kernel, which is Hopper's). The name carries

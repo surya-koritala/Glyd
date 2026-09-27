@@ -13,7 +13,7 @@
 //
 // The host side is a C API (glyd_gpu_*, at the end); PyTorch's JIT build
 // (glyd_gpu.py) adds a pybind module over it, build_lib.sh builds it alone
-// into a library for glyd_gpu_lib.py.
+// into a library for the glyd package's glyd/gpu/_lib.py.
 #ifdef TORCH_EXTENSION_NAME
 #include <torch/extension.h>
 #include <c10/cuda/CUDAGuard.h>
