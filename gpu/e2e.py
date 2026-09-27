@@ -19,6 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import glyd_gpu as g
+from glyd.gpu import moe
 from glyd.gpu.model import GLinear, Scratch, decoder, merge_linears, pack_modules, set_scratch
 
 ap = argparse.ArgumentParser()
@@ -38,6 +39,7 @@ ap.add_argument("--kv", type=str, default="", help="prompt lengths (tokens of en
 ap.add_argument("--smi", default="", help="once a model is on its GPUs: nvidia-smi's report into PREFIX-bf16.txt / PREFIX-glyd.txt")
 ap.add_argument("--mmlu", type=int, default=0, help="MMLU (cais/mmlu, test split, a fixed shuffle): accuracy over this many questions, 0-shot, by the answer letter's logit")
 ap.add_argument("--profile", type=int, default=0, help="GPU time by kernel over this many generated tokens, against the wall clock, at each --batch size: a step after the prompt, and the prompt's")
+ap.add_argument("--prompts", action="store_true", help="a batch of different prompts (left-padded), not copies of one: a mixture of experts routes each to its own experts")
 ap.add_argument("--merge", action="store_true", help="the Linears that take the same input (q, k, v; gate, up) as one product each, for bf16 and Glyd alike, as serving engines run them")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
 args = ap.parse_args()
@@ -45,6 +47,18 @@ args = ap.parse_args()
 tok = AutoTokenizer.from_pretrained(args.model)
 prompt = "The history of data compression began"
 ids = tok(prompt, return_tensors="pt").input_ids.cuda()
+PROMPTS = [prompt, "def fibonacci(n):\n    \"\"\"Return the n-th Fibonacci number.\"\"\"\n", "Q: A train leaves at 3:40 pm and the trip takes 2 hours 35 minutes. When does it arrive?\nA:", "The capital of Australia is",
+           "Translate to French: The weather is lovely today, so we will walk to the market.", "In quantum mechanics, the uncertainty principle states that", "SELECT name, COUNT(*) FROM orders JOIN customers ON", "Once upon a time, in a village at the edge of a great forest,"]
+
+
+def batch_of(b):
+    """generate()'s inputs for b sequences: b copies of the prompt, or (--prompts) b of PROMPTS in turn, left-padded."""
+    if not args.prompts:
+        return {"inputs": ids.repeat(b, 1)}
+    tok.padding_side = "left"
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    return dict(tok([PROMPTS[i % len(PROMPTS)] for i in range(b)], return_tensors="pt", padding=True).to("cuda"), pad_token_id=tok.pad_token_id)
 
 
 def prefill(model, label):
@@ -75,15 +89,15 @@ def profile(model, label):
     def run(x, k):  # GPU time by kernel (us) and wall time (s) of generating k tokens
         with prof_(activities=[ProfilerActivity.CUDA]) as pr:
             t = time.perf_counter()
-            model.generate(x, max_new_tokens=k, min_new_tokens=k, do_sample=False)
+            model.generate(**x, max_new_tokens=k, min_new_tokens=k, do_sample=False)
             torch.cuda.synchronize()
             wall = time.perf_counter() - t
         return {e.key: e.device_time_total for e in pr.key_averages() if e.device_type.name == "CUDA"}, wall
 
     for b in [int(v) for v in args.batch.split(",")]:
-        x = ids.repeat(b, 1)
+        x = batch_of(b)
         with torch.no_grad():
-            model.generate(x, max_new_tokens=4, do_sample=False)
+            model.generate(**x, max_new_tokens=4, do_sample=False)
             torch.cuda.synchronize()
             one, _ = run(x, 1)  # the prompt and a token
             all_, wall = run(x, n + 1)
@@ -201,13 +215,13 @@ def measure(model, label):
     with torch.no_grad():
         logits = model(ids, logits_to_keep=1).logits
         for b in [int(x) for x in args.batch.split(",")]:
-            batch = ids.repeat(b, 1)
-            model.generate(batch, max_new_tokens=4, do_sample=False)  # warm-up
+            batch = batch_of(b)
+            model.generate(**batch, max_new_tokens=4, do_sample=False)  # warm-up
             torch.cuda.synchronize()
             for i in range(torch.cuda.device_count()):
                 torch.cuda.reset_peak_memory_stats(i)
             t = time.perf_counter()
-            o = model.generate(batch, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False)
+            o = model.generate(**batch, max_new_tokens=args.tokens, min_new_tokens=args.tokens, do_sample=False)
             torch.cuda.synchronize()
             t = time.perf_counter() - t
             peaks = [torch.cuda.max_memory_allocated(i) / 1e9 for i in range(torch.cuda.device_count())]
@@ -250,7 +264,7 @@ if args.baseline:
 # norm and the output layer on the last.
 if args.format == "auto":
     lin = [m.weight for m in model.modules() if isinstance(m, nn.Linear) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0]
-    lin_bytes = sum(w.numel() * 2 for w in lin)
+    lin_bytes = sum(w.numel() * 2 for w in lin) + moe.packable_bytes(model)  # a mixture of experts' too
     args.format, why = g.best_layout(lin_bytes, weights_bf16 - lin_bytes, args.gpus)
     print(f"auto: {args.format}, {why}")
 layers = decoder(model).layers
@@ -273,6 +287,8 @@ def pack(w, linear):
 t0 = time.perf_counter()
 with torch.no_grad():
     packed = pack_modules(model, pack, lambda m: torch.device("cuda", layer_of.get(id(m), 0 if isinstance(m, nn.Embedding) else last)), fused=args.fused, exact=args.exact, gemm_max=args.gemm_max)
+    if args.format in ("mma", "mma12"):  # a mixture of experts: each layer's experts packed as one matrix (moe.py)
+        moe.compress(model, args.format, lambda m: torch.device("cuda", layer_of.get(id(m), 0)), exact=args.exact)
     if args.gpus > 1:
         from accelerate import dispatch_model
         # the decoder's layers where they were packed, its final norm on the last GPU, everything else
@@ -291,7 +307,7 @@ with torch.no_grad():
         model.cuda()
     set_scratch(model, args.exact)
 torch.cuda.empty_cache()
-packed_bytes = sum(p.nbytes() for p in packed.values())
+packed_bytes = sum(p.nbytes() for p in packed.values()) + moe.nbytes(model)
 other = sum(p.numel() * p.element_size() for p in model.parameters()) + sum(m.bias.numel() * 2 for m in model.modules() if isinstance(m, GLinear) and m.bias is not None)
 in_use = sum(torch.cuda.memory_allocated(i) for i in range(torch.cuda.device_count()))
 scratch = sum(b.numel() * 2 for b in Scratch.buf.values())
