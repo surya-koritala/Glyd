@@ -326,8 +326,11 @@ def sha256(w):
 def auto_layout(model, gpus=1, device=0):
     """best_layout for model's weights: its Linears the mma layouts take, against the rest (a tied weight once, as
     once tied); (layout, why)."""
+    from . import moe
+
     tied = getattr(model, "all_tied_weights_keys", None) or {}
     lin = sum(m.weight.numel() * 2 for m in model.modules() if isinstance(m, nn.Linear) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0)
+    lin += moe.packable_bytes(model)  # a mixture of experts' layers, packed as the Linears
     return g.best_layout(lin, sum(p.numel() * p.element_size() for n, p in model.named_parameters() if n not in tied) - lin, gpus, device)
 
 
@@ -359,7 +362,9 @@ def set_scratch(model, exact):
     else up to SCRATCH, past which they are decoded in row blocks), never smaller than it was (another model's). One
     a torch.compile graph's node has decoded into is kept when a bigger one takes its place: a CUDA graph captured
     with it writes there when it is replayed."""
-    need = {}
+    from . import moe
+
+    need = moe.scratch(model, exact)  # exact: an Experts module's matrices, decoded at once
     for m in model.modules():
         if isinstance(m, (GLinear, GEmbedding)):
             d = m.p.sm.device
@@ -382,7 +387,8 @@ def compress(model, *, layout="auto", exact=False, merge=True):
     rest of the model with it unless it is spread over several). exact:
     every product decodes its matrix whole and multiplies by F.linear, as
     nn.Linear does: outputs bit for bit bf16's (and no merging). merge: q, k,
-    v and gate, up as one product each (not with exact)."""
+    v and gate, up as one product each (not with exact). A mixture of
+    experts' Experts modules packed too (moe.py)."""
     cuda = {p.device for p in model.parameters() if p.is_cuda}
     home = min(cuda, key=lambda d: d.index) if cuda else torch.device("cuda", torch.cuda.current_device())
     if merge and not exact:
@@ -390,6 +396,9 @@ def compress(model, *, layout="auto", exact=False, merge=True):
     if layout == "auto":
         layout = auto_layout(model, max(1, len(cuda)), home)[0]
     pack_modules(model, lambda w, linear: pack(w, linear, layout), lambda m: m.weight.device if m.weight.is_cuda else home, exact=exact)
+    from . import moe
+
+    moe.compress(model, layout, lambda m: next(m.parameters()).device if next(m.parameters()).is_cuda else home, exact)
     if len(cuda) < 2:
         model.to(home)
     set_scratch(model, exact)

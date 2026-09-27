@@ -128,6 +128,8 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9):
     from .. import __version__
     from . import kernels as g, model as gm
 
+    if any(getattr(m, "glyd_packs", None) for m in model.modules()):
+        raise NotImplementedError("glyd: glyd-v1 holds no packed experts yet; a mixture of experts is packed as it loads (from_pretrained)")
     old = glob.glob(os.path.join(path, "model*.safetensors")) + glob.glob(os.path.join(path, "model.safetensors.index.json"))
     if old and not os.path.exists(os.path.join(path, MANIFEST)):
         raise ValueError(f"glyd: {path} holds another checkpoint; save into a directory of its own")
