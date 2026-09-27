@@ -254,13 +254,30 @@ torch.cuda.synchronize()
 from glyd.gpu import model as gm
 
 w = weights(512 * 1024, 0.01).view(512, 1024)
-for q in (g.pack_mma(w), g.pack_mma12(w)):
+packs = (g.pack_mma(w), g.pack_mma12(w))
+for q in packs:
     for b in (None, torch.randn(512, dtype=bf, device=dev)):
         lin = gm.GLinear(q, b)
         for M in range(1, 65):
             x = torch.randn(M, 1, 1024, dtype=bf, device=dev)
             assert exact(lin.step(x), lin.kernel(M)(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
         counts["GLinear.step"] = counts.get("GLinear.step", 0) + 64
+# GLinear's routing on an A100 whatever this GPU is (compute capability 8.0 read while it is made): the 12-bit
+# layout's 17-64 tokens by mma_gemm_mid, the rest as elsewhere; the one-call path the same functions.
+cc = torch.cuda.get_device_capability
+torch.cuda.get_device_capability = lambda device=None: (8, 0)
+try:
+    a100 = [gm.GLinear(q, None) for q in packs]
+finally:
+    torch.cuda.get_device_capability = cc
+for q, lin in zip(packs, a100):
+    twelve = isinstance(q, g.Mma12)
+    for M in (1, 16, 17, 32, 33, 64, 65, 128):
+        assert lin.kernel(M) is (g.mma_gemm_mid if twelve and 17 <= M <= 64 else g.mma_gemm if M <= 64 else g.mma_gemm_big), ("A100 routing", type(q).__name__, M)
+        if M <= 64:
+            x = torch.randn(M, 1024, dtype=bf, device=dev)
+            assert exact(lin.step(x), lin.kernel(M)(q, x, None)), ("A100 GLinear.step", type(q).__name__, M)
+            counts["GLinear.step"] += 1
 e = weights(1000 * 256).view(1000, 256)
 ids = torch.randint(0, 1000, (4, 3), device=dev)
 assert exact(gm.GEmbedding(g.pack_fast(e)).step(ids), e[ids])
