@@ -27,7 +27,9 @@ import torch.nn.functional as F
 from . import _lib, kernels as g
 
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
-DEC_MIN = int(os.environ.get("GLYD_DEC_MIN", 769))  # an A100's prompts of this many tokens (12-bit): decoded, then cuBLAS
+# A prompt's products from this many tokens in the 12-bit layout: each matrix decoded, then cuBLAS, never fused
+# (GLinear.dec: an A100's from 769; elsewhere the fused kernel, or decoded ahead); set, on any GPU
+DEC_MIN = int(os.environ.get("GLYD_DEC_MIN", 0)) or None
 # Hopper: steps and prompts of this many tokens multiply by wgmma (tiles of 256 tokens past 128); past 512 decoded for
 # cuBLAS, which there is as fast or faster (Qwen3-8B's layer on an H100 PCIe: 638 us against 864 at 512 tokens, 1065
 # against 964 at 640; Qwen3-32B's 1622 against 2253, then within 6% either way to 1024)
@@ -315,8 +317,8 @@ class GLinear(_Node, nn.Module):
     """nn.Linear over a packed matrix p (bias: bf16, or None). fused: products
     straight from the packed weights where a kernel takes the step (in the
     mma layouts up to 64 tokens, an A100's 12-bit to 128, and prompts: on
-    Hopper to WG_MAX tokens, 512, on an A100 in the 12-bit layout to
-    DEC_MIN; one-token steps in the others); else the matrix decoded into
+    Hopper to WG_MAX tokens, 512, in the 12-bit layout to self.dec, an
+    A100's 768; one-token steps in the others); else the matrix decoded into
     the scratch buffer, then
     PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, past
     1792 12-bit fused and past 640 not, decoded ahead of its product where
@@ -344,6 +346,7 @@ class GLinear(_Node, nn.Module):
         ada = cc == (8, 9) and "GeForce" in torch.cuda.get_device_name(p.sm.device)
         twelve = 1793 if fused and not exact else 641
         self.ahead = AHEAD_MIN or ((twelve if isinstance(p, g.Mma12) else 513) if ada else 1 << 62)  # prompts decoded ahead, then cuBLAS
+        self.dec = (DEC_MIN or (769 if self.a100 else 1 << 62)) if isinstance(p, g.Mma12) else 1 << 62  # prompts decoded, then cuBLAS
         self._node()
 
     def kernel(self, M):
@@ -367,15 +370,15 @@ class GLinear(_Node, nn.Module):
 
     def decoded(self, M):
         """Whether a prompt of M tokens is decoded for cuBLAS, never fused (kernel(M) None, and no fused fallback in
-        whole()): an A100's in the 12-bit layout from DEC_MIN tokens, where cuBLAS on the decoded matrix outruns the
-        fused kernel."""
-        return self.a100 and M >= DEC_MIN and isinstance(self.p, g.Mma12)
+        whole()): from self.dec tokens in the 12-bit layout (an A100's 769), where cuBLAS on the decoded matrix
+        outruns the fused kernel."""
+        return M >= self.dec
 
     def _step(self):
         """A product as one C call where it is a fused one through the prebuilt library: a generation step's
         (kernel(M)'s functions to step_max tokens, 64, an A100's 128: mma_gemm_mid's), and a prompt's past the last
-        of them to self.ahead tokens (mma_gemm_big; an A100's in the 12-bit layout to DEC_MIN, from which it is
-        decoded for cuBLAS); _lib.step over the pack, the function for each M; else None."""
+        of them to self.ahead tokens (mma_gemm_big; to self.dec, from which it is decoded for cuBLAS); _lib.step
+        over the pack, the function for each M; else None."""
         p = self.p
         if not self.fused or self.exact or not isinstance(p, g.Mma) or g.lib() is None:
             return None
@@ -385,7 +388,7 @@ class GLinear(_Node, nn.Module):
         while len(names) > 1 and names[-1] is None:  # past the steps' functions: a prompt's (big) or none
             names.pop()
         big = ("mma12_gemm_big" if twelve else "mma_gemm_big") if self.kernel(len(names)) is g.mma_gemm_big else None
-        top = min(self.ahead, DEC_MIN) if self.a100 and twelve else self.ahead
+        top = min(self.ahead, self.dec)
         return _lib.step(p.data, *((p.exc, p.exc_base, p.sym, 4) if twelve else (p.blocks, p.block_base, p.tiers, 3)), p.shape, self.bias, names, big, top)
 
     def decode_rows(self, r0, r1):

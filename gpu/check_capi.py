@@ -311,7 +311,7 @@ for q in packs:
             assert exact(lin.step(x), f(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
             counts["GLinear.step"] = counts.get("GLinear.step", 0) + 1
 # GLinear's routing on an A100 whatever this GPU is (compute capability 8.0 read while it is made): the 12-bit
-# layout's GLYD_MID_MIN (17) to 128 tokens by mma_gemm_mid, GLYD_DEC_MIN (769) on decoded for cuBLAS (None), the rest
+# layout's GLYD_MID_MIN (17) to 128 tokens by mma_gemm_mid, from lin.dec (769) decoded for cuBLAS (None), the rest
 # as elsewhere; the one-call path the same functions.
 cc = torch.cuda.get_device_capability
 torch.cuda.get_device_capability = lambda device=None: (8, 0)
@@ -322,16 +322,16 @@ finally:
 for q, lin in zip(packs, a100):
     twelve = isinstance(q, g.Mma12)
     for M in (1, 16, 17, 32, 33, 64, 65, 128, 129, 768, 769, 4096):
-        want = g.mma_gemm_mid if twelve and gm.MID_MIN <= M <= 128 else None if twelve and M >= gm.DEC_MIN else g.mma_gemm if M <= 64 else g.mma_gemm_big
+        want = g.mma_gemm_mid if twelve and gm.MID_MIN <= M <= 128 else None if twelve and M >= lin.dec else g.mma_gemm if M <= 64 else g.mma_gemm_big
         assert lin.kernel(M) is want, ("A100 routing", type(q).__name__, M)
         if M <= 64 or want is g.mma_gemm_mid:
             x = torch.randn(M, 1024, dtype=bf, device=dev)
             assert exact(lin.step(x), lin.kernel(M)(q, x, None)), ("A100 GLinear.step", type(q).__name__, M)
             counts["GLinear.step"] += 1
-    if twelve:  # a prompt from DEC_MIN through forward: decoded for cuBLAS, not the fused kernel (nor whole()'s fallback to it)
+    if twelve:  # a prompt from lin.dec through forward: decoded for cuBLAS, not the fused kernel (nor whole()'s fallback to it)
         gm.set_scratch(torch.nn.ModuleList([lin]), False)
-        x = torch.randn(gm.DEC_MIN, 1024, dtype=bf, device=dev)
-        assert lin.step(x) is None and exact(lin(x), F.linear(x, g.mma_unpack(q))), "an A100's prompt past DEC_MIN, decoded"
+        x = torch.randn(lin.dec, 1024, dtype=bf, device=dev)
+        assert lin.step(x) is None and exact(lin(x), F.linear(x, g.mma_unpack(q))), "an A100's prompt past lin.dec, decoded"
         counts["A100 prompt decoded"] = 1
 # And on Hopper whatever this GPU is (9.0 while made): no prompt kernel for the one-call path, so a prompt's product is
 # the checked call's (mma_gemm_wg to WG_MAX tokens in the 12-bit layout, else decoded, then cuBLAS).
@@ -350,7 +350,7 @@ for q, lin in zip(packs, hopper):
 # the order there), then one past the order's end (the order to there again); another order between (recorded, then
 # followed), then the first again; at 600 tokens, then 2100 (the order kept). The products on the order (as many as
 # said, from the first) bit for bit as with their matrices decoded on the current stream, the rest the fused
-# kernel's (on Hopper, whose prompts past WG_MAX take no fused kernel, and an A100's 12-bit prompts from DEC_MIN
+# kernel's (on Hopper, whose prompts past WG_MAX take no fused kernel, and an A100's 12-bit prompts from lin.dec
 # tokens, which take none: decoded on the current stream too), below the threshold the step's kernel's. Then all of
 # it again with GLinears made as on an A100 (compute capability 8.0 read while they are made), where this GPU is not
 # one: its routes on this GPU's kernels.
