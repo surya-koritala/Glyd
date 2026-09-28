@@ -27,6 +27,7 @@ import torch.nn.functional as F
 from . import _lib, kernels as g
 
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
+DEC_MIN = int(os.environ.get("GLYD_DEC_MIN", 769))  # an A100's prompts of this many tokens (12-bit): decoded, then cuBLAS
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
 MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 by mma_gemm_mid
 
@@ -77,7 +78,7 @@ class GLinear(_Node, nn.Module):
         # Whole when it fits the scratch (a split matmul sums in another order), and always for exact.
         self.block = O if exact or O * K <= SCRATCH else max(rows, SCRATCH // K // rows * rows)
         cc = torch.cuda.get_device_capability(p.sm.device)
-        self.a100 = cc == (8, 0)  # its mid kernel takes steps to 128 tokens
+        self.a100 = cc == (8, 0)  # its mid kernel takes steps to 128 tokens; its prompts past 768 are decoded for cuBLAS
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
         self.mid = cc in ((8, 0), (8, 6), (8, 7), (8, 9))  # (an A100 its own kernel: producer and consumer warps)
         self._node()
@@ -89,6 +90,8 @@ class GLinear(_Node, nn.Module):
             return g.mma_gemm_wg
         if self.mid and MID_MIN <= M <= (128 if self.a100 else 64) and K % 64 == 0 and twelve:  # cp.async and mma.sync
             return g.mma_gemm_mid
+        if self.a100 and M >= DEC_MIN and twelve:  # past 768 tokens cuBLAS on the decoded matrix outruns the fused kernel
+            return None
         if M <= 64:
             return g.mma_gemm
         if K % 64 == 0 and not self.hopper:  # past WG_MAX tokens on Hopper (a prompt) the tensor cores outrun our decode

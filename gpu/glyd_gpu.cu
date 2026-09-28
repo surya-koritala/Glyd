@@ -1230,6 +1230,32 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
 #pragma unroll
                 for (int q = 0; q < 4; q++) fb[f][q] = bsrc[(kk * 4 + q) * 32];
             };
+            if constexpr (CW >= 8) {
+                // Eight consumer warps (a thread's 128 sums in 168 registers): a step's fragments loaded as it is
+                // multiplied, the B ones a pair of n-tiles at a time (each sum's products in the same order).
+                for (int64_t j = 0; j < nst; j++) {
+                    int bi = (int)(j % NB);
+                    bar_sync<C::THREADS>(1 + bi);  // stage j is ready
+                    uint32_t slot = a_base + (uint32_t)bi * C::A_BYTES;
+                    const uint4* bsrc = Bs + bi * C::B_UINT4 + rbl * BIG_KK * 4 * 32 + lane;
+#pragma unroll
+                    for (int kk = 0; kk < BIG_KK; kk++) {
+                        uint32_t a[4][4];
+#pragma unroll
+                        for (int mt = 0; mt < 4; mt++) ldmatrix_x4(a[mt], slot + a_row + mt * 16 * 128 + (((2 * kk + a_half) ^ a_sw) << 4));
+#pragma unroll
+                        for (int q = 0; q < 4; q++) {
+                            uint4 b = bsrc[(kk * 4 + q) * 32];
+#pragma unroll
+                            for (int mt = 0; mt < 4; mt++) {
+                                mma16816(acc[mt][2 * q], a[mt], b.x, b.y);
+                                mma16816(acc[mt][2 * q + 1], a[mt], b.z, b.w);
+                            }
+                        }
+                    }
+                    if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + bi);  // done with stage j's buffers
+                }
+            } else {
             if (nst > 0) {
                 bar_sync<C::THREADS>(1);  // stage 0 is ready
                 frags(0, 0, 0);
@@ -1256,6 +1282,7 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
                     }
                 }
                 if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + (int)(j % NB));  // done with stage j's buffers
+            }
             }
             // C fragments: token rows g and g + 8 of each m-tile, columns 2t and 2t + 1 of each n-tile.
             if constexpr (MOE) {
@@ -2844,7 +2871,7 @@ static int mma_gemm_big_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
         int64_t nblocks = pairs * tiles * sp;
         double fill = (double)nblocks / (double)(((nblocks + cap - 1) / cap) * cap);
         if (fill > best + 1e-9) best = fill, splits = sp;
-        if (fill >= 0.85) break;
+        if (fill >= (CW >= 8 ? 0.75 : 0.85)) break;  // (eight consumer warps: their blocks' parts cost more to add)
     }
     int64_t per = (stages + splits - 1) / splits;
     splits = (stages + per - 1) / per;
@@ -2863,6 +2890,15 @@ static int mma_gemm_big_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
 template <class Fmt>
 static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
     if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16) return cudaErrorInvalidValue;
+    if constexpr (std::is_same_v<Fmt, Nib>) {
+        // An A100's prompt in the 12-bit layout: blocks of 256 tokens by two row blocks, eight consumer warps (a weight
+        // decoded once for 256 tokens and X's tile read once for 128 rows: less of L2's traffic a product than 256 by
+        // one), but where the last block of 256 would be half empty or less (257-384 tokens): of 128 by two.
+        int dev = current_device();
+        if (variant == 0 && M > 128 && attribute(cudaDevAttrComputeCapabilityMajor, dev) == 8 && attribute(cudaDevAttrComputeCapabilityMinor, dev) == 0)
+            variant = M > 256 && M % 256 && M % 256 <= 128 ? 1 : 3;
+        if (variant == 3) return mma_gemm_big_run<Fmt, 8, 4, 2, 2>(f, O, K, x, M, bias, y, ws, ws_bytes, cs, need);
+    }
     // 4 consumer warps and 4 producers: blocks of 128 tokens by two row blocks (3 stages), or, past 128
     // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens).
     if (variant == 0) variant = M > 128 ? 2 : 1;

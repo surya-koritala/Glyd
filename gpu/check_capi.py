@@ -142,7 +142,7 @@ for (O, K), wild in [((1000, 512), 0.01), ((304, 2304), 0.02), ((17008, 384), 0.
     print(f"fast {(O, K)}: {int(f.exc.numel())} escapes, the same through both")
 
 # The mma layouts, tiered and 12-bit: unpack (all rows, a row block on), mma_gemm (1-64 tokens), mma_gemm_big
-# (65-600, both variants), mma12_gemm_mid (1-600), mma12_gemm_wg (Hopper: refused elsewhere), as the self-test's
+# (65-600, every variant), mma12_gemm_mid (1-600), mma12_gemm_wg (Hopper: refused elsewhere), as the self-test's
 # matrices: odd row blocks, units shared by blocks, escapes and exceptions few and many.
 hopper = torch.cuda.get_device_capability() == (9, 0)
 for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02)]:
@@ -163,7 +163,7 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
                 if M <= 64:
                     near(both("mma12_gemm" if twelve else "mma_gemm", *pk, O, K, x, b, nan(M, O), out=(8,)), ref)
                 else:
-                    for variant in ([0, 1, 2] if M in (65, 600) else [0]):
+                    for variant in ([0, 1, 2, 3] if M in (65, 600) else [0]):
                         near(both(f"{s}_gemm_big", *pk, O, K, x, b, nan(M, O), variant, out=(8,)), ref)
                 if twelve:
                     near(both("mma12_gemm_mid", *pk, O, K, x, b, nan(M, O), out=(8,)), ref)
@@ -263,8 +263,8 @@ for q in packs:
             assert exact(lin.step(x), lin.kernel(M)(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
         counts["GLinear.step"] = counts.get("GLinear.step", 0) + 64
 # GLinear's routing on an A100 whatever this GPU is (compute capability 8.0 read while it is made): the 12-bit
-# layout's GLYD_MID_MIN (17) to 128 tokens by mma_gemm_mid, the rest as elsewhere; the one-call path the same
-# functions.
+# layout's GLYD_MID_MIN (17) to 128 tokens by mma_gemm_mid, GLYD_DEC_MIN (769) on decoded for cuBLAS (None), the rest
+# as elsewhere; the one-call path the same functions.
 cc = torch.cuda.get_device_capability
 torch.cuda.get_device_capability = lambda device=None: (8, 0)
 try:
@@ -273,8 +273,8 @@ finally:
     torch.cuda.get_device_capability = cc
 for q, lin in zip(packs, a100):
     twelve = isinstance(q, g.Mma12)
-    for M in (1, 16, 17, 32, 33, 64, 65, 128, 129):
-        want = g.mma_gemm_mid if twelve and gm.MID_MIN <= M <= 128 else g.mma_gemm if M <= 64 else g.mma_gemm_big
+    for M in (1, 16, 17, 32, 33, 64, 65, 128, 129, 768, 769, 4096):
+        want = g.mma_gemm_mid if twelve and gm.MID_MIN <= M <= 128 else None if twelve and M >= gm.DEC_MIN else g.mma_gemm if M <= 64 else g.mma_gemm_big
         assert lin.kernel(M) is want, ("A100 routing", type(q).__name__, M)
         if M <= 64:
             x = torch.randn(M, 1024, dtype=bf, device=dev)

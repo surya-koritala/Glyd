@@ -547,8 +547,9 @@ def mma_gemm_mid(p, x, bias=None):
 def mma_gemm_big(p, x, bias=None, variant=0):
     """X W^T (+ bias) for many tokens (x [M, K]; a prompt; K a multiple of
     64): a tiled GEMM, each weight decoded once for 128 or 256 tokens
-    (variant 1 or 2; 0: by M) into shared memory by warps of its own while
-    others multiply on the tensor cores."""
+    (variant 1 or 2; 3, the 12-bit layout: 256 tokens by 128 rows, an
+    A100's past 128 tokens; 0: by M and the GPU) into shared memory by
+    warps of its own while others multiply on the tensor cores."""
     O, K = p.shape
     x = x.contiguous()
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)
