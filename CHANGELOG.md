@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.23.0 — 2026-09-28
 
 - Prompts on GeForce Ada (RTX 40) multiply faster, with the same bits:
   `mma_gemm_big`'s products there keep their four producer warps and have
