@@ -316,12 +316,13 @@ past 128 tokens), ms, bf16 / Glyd before / Glyd:
 
 | H100 PCIe, tokens | 129 | 192 | 256 | 384 | 512 | 1024 | 2048 | 4096 |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-8B | 26.8 / 33.9 / **22.3** | 22.7 / 35.1 / 23.2 | 23.4 / 36.7 / 24.5 | 25.9 / 41.6 / 33.2 | 32.6 / 47.7 / 39.2 | 55.8 / 71.1 / 69.9 | 110.4 / 126.9 / 125.0 | 224.5 / 242.6 / 242.3 |
+| Qwen3-8B | 26.8 / 33.9 / 22.3 | 22.7 / 35.1 / 23.2 | 23.4 / 36.7 / 24.5 | 25.9 / 41.6 / 33.2 | 32.6 / 47.7 / 39.2 | 55.8 / 71.1 / 69.9 | 110.4 / 126.9 / 125.0 | 224.5 / 242.6 / 242.3 |
 | Qwen3-32B | 58.6 / 131.1 / 63.1 | 64.1 / 140.1 / 69.1 | 70.3 / 142.1 / 79.7 | 89.3 / 165.3 / 118.3 | 113.1 / 189.8 / 141.0 | 217.2 / 295.4 / 296.7 | 426.6 / 517.2 / 519.6 | 866.2 / 981.0 / 974.5 |
 
-Qwen3-8B's pass at 129-256 tokens is mostly the host's launches (bf16's
-takes 23-27 ms at all three, and as much as 40 in another run), which
-hide the products' extra time. Every other length is still longer than
+Qwen3-8B's pass at 129-256 tokens is mostly the host's launches, and its
+time varies from run to run: in four runs of these builds bf16's took
+22.7-51.5 ms there and Glyd's 22.3-28.7, while a layer's products take
+1.12-1.43x cuBLAS's time. Every other length is still longer than
 bf16's. A chunk costs Qwen3-8B's layer about 250 us in tiles of 128
 tokens, 300 in 192 and 365 in 256, and no one part of it is what bounds
 it: builds that skip one (timing only) are 5-10% faster without X's
