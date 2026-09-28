@@ -1,0 +1,12 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 17401.66it/s]
+bf16 (weights 3.44 GB): batch 1: 87.1 tokens/s (87.1 a sequence), peak VRAM 3.46 GB
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+bf16 (weights 3.44 GB): batch 8: 692.6 tokens/s (86.6 a sequence), peak VRAM 3.51 GB
+bf16 prefill: 128 tokens 11.2 ms (11401 tokens/s), first token 12.9 ms, 512 tokens 22.7 ms (22527 tokens/s), first token 23.9 ms, 1024 tokens 41.5 ms (24665 tokens/s), first token 42.7 ms, 2048 tokens 86.3 ms (23736 tokens/s), first token 87.3 ms, 4096 tokens 185.6 ms (22074 tokens/s), first token 186.6 ms
+mma12 exact: packed in 1 s; weights 3.03 GB against 3.44 GB bf16 (87.9%), scratch 0.62 GB, VRAM in use 3.67 GB on 1 GPU
+glyd mma12 exact: batch 1: 61.9 tokens/s (61.9 a sequence), peak VRAM 3.68 GB
+glyd mma12 exact: batch 8: 481.2 tokens/s (60.2 a sequence), peak VRAM 3.74 GB
+glyd mma12 prefill: 128 tokens 17.9 ms (7134 tokens/s), first token 19.2 ms, 512 tokens 31.2 ms (16390 tokens/s), first token 32.4 ms, 1024 tokens 51.2 ms (20009 tokens/s), first token 52.3 ms, 2048 tokens 95.4 ms (21470 tokens/s), first token 96.5 ms, 4096 tokens 194.5 ms (21061 tokens/s), first token 195.6 ms
+logits bit-identical: True
+generated tokens identical to bf16: 32 of 32
+text:  in the 1950s with the advent of digital computing. The first practical data compression algorithms were developed in the 1970s,

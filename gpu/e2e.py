@@ -22,7 +22,7 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import glyd_gpu as g
 from glyd.gpu import moe
-from glyd.gpu.model import GEmbedding, GLinear, Scratch, decoder, merge_linears, pack_modules, set_scratch
+from glyd.gpu.model import GEmbedding, GLinear, Scratch, decoder, merge_linears, pack_modules, plain, set_scratch
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
@@ -31,7 +31,7 @@ ap.add_argument("--fused", action="store_true")
 ap.add_argument("--exact", action="store_true", help="every Linear's matrix decoded whole into one scratch buffer, then F.linear as the bf16 model's: its logits bit for bit (overrides --fused)")
 ap.add_argument("--baseline", action="store_true")
 ap.add_argument("--tokens", type=int, default=128)
-ap.add_argument("--prefill", type=str, default="", help="prompt lengths to time one forward pass at, e.g. 128,512,2048")
+ap.add_argument("--prefill", type=str, default="", help="prompt lengths to time one forward pass and generate() to its first token at, e.g. 128,512,2048")
 ap.add_argument("--gemm-max", type=int, default=64, help="fused: steps of up to this many tokens multiply straight from the packed weights (fast format)")
 ap.add_argument("--batch", type=str, default="1", help="generate for this many copies of the prompt at once (comma list: each measured)")
 ap.add_argument("--gpus", type=int, default=1, help="spread the layers over this many GPUs (bf16: accelerate's device map; glyd: layers balanced by packed size)")
@@ -66,20 +66,26 @@ def batch_of(b):
 
 
 def prefill(model, label):
-    """One forward pass over a prompt of each length: the prompt's tokens a second. The prompt: token ids drawn
-    below the model's vocabulary, the same for bf16 and Glyd (a mixture of experts routes each its own way)."""
+    """One forward pass over a prompt of each length: the prompt's tokens a second; and generate() to its first
+    token (the time to first token); each timed after two untimed (Glyd's first prompt long enough to decode its
+    matrices ahead records their order, model.Ahead). The prompt: token ids drawn below the model's vocabulary, the
+    same for bf16 and Glyd (a mixture of experts routes each its own way)."""
     out = []
     for n in [int(x) for x in args.prefill.split(",") if x]:
         x = torch.randint(0, vocab, (1, n), generator=torch.Generator().manual_seed(n)).cuda()
+        first = dict(attention_mask=torch.ones_like(x), max_new_tokens=1, do_sample=False, pad_token_id=tok.eos_token_id)
         with torch.no_grad():
-            model(x, logits_to_keep=1)
-            torch.cuda.synchronize()
-            t = time.perf_counter()
-            for _ in range(3):
-                model(x, logits_to_keep=1)
-            torch.cuda.synchronize()
-            t = (time.perf_counter() - t) / 3
-        out.append(f"{n} tokens {t * 1e3:.1f} ms ({n / t:.0f} tokens/s)")
+            ts = []
+            for f in (lambda: model(x, logits_to_keep=1), lambda: model.generate(x, **first)):
+                f()
+                f()
+                torch.cuda.synchronize()
+                t = time.perf_counter()
+                for _ in range(3):
+                    f()
+                torch.cuda.synchronize()
+                ts.append((time.perf_counter() - t) / 3)
+        out.append(f"{n} tokens {ts[0] * 1e3:.1f} ms ({n / ts[0]:.0f} tokens/s), first token {ts[1] * 1e3:.1f} ms")
     if out:
         print(f"{label} prefill: " + ", ".join(out))
 
@@ -289,9 +295,9 @@ if args.baseline:
 # by their bytes, over args.gpus GPUs; the embedding on the first, the final
 # norm and the output layer on the last.
 if args.format == "auto":
-    lin = [m.weight for m in model.modules() if isinstance(m, nn.Linear) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0]
-    lin_bytes = sum(w.numel() * 2 for w in lin) + moe.packable_bytes(model)  # a mixture of experts' too
-    args.format, why = g.best_layout(lin_bytes, weights_bf16 - lin_bytes, args.gpus)
+    experts = moe.packable_bytes(model)  # a mixture of experts' too
+    lin_bytes = sum(m.weight.numel() * 2 for m in model.modules() if plain(m) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0) + experts
+    args.format, why = g.best_layout(lin_bytes, weights_bf16 - lin_bytes, args.gpus, moe=experts > 0)
     print(f"auto: {args.format}, {why}")
 t0 = time.perf_counter()
 if args.from_pretrained:  # the package's path: the checkpoint loaded again, packed as it arrives
@@ -303,13 +309,12 @@ if args.from_pretrained:  # the package's path: the checkpoint loaded again, pac
     model = glyd.from_pretrained(args.model, layout=args.format, exact=args.exact, merge=args.merge).eval()
     packed = {id(m.p): m.p for m in model.modules() if isinstance(m, (GLinear, GEmbedding))}
 else:
-    layers = decoder(model).layers
-    layer_bytes = [sum(p.numel() for p in l.parameters()) for l in layers]
+    layer_bytes = [sum(p.numel() for p in l.parameters()) for l in decoder(model).layers]
     per_gpu, acc, gpu_of = sum(layer_bytes) / args.gpus, 0, []
     for b in layer_bytes:
         gpu_of.append(min(args.gpus - 1, int(acc // per_gpu)))
         acc += b
-    layer_of = {id(m): gpu_of[i] for i, l in enumerate(layers) for m in l.modules()}
+    layer_of = {id(m): gpu_of[i] for i, l in enumerate(decoder(model).layers) for m in l.modules()}  # (no name holding the layers: freed with the model)
     last = args.gpus - 1
 
     def pack(w, linear):
@@ -368,8 +373,10 @@ if args.baseline and args.profile:  # bf16's profile last, on the model loaded a
         model.__dict__.pop("_compiled_call", None)
     del model, packed
     Scratch.buf.clear()
+    Scratch.replaced.clear()
     gc.collect()
     torch.cuda.empty_cache()
+    print(f"glyd's model freed: {torch.cuda.memory_allocated() / 1e9:.2f} GB left in use")
     model = load()
     on_gpus(model)
     profile(model, "bf16")

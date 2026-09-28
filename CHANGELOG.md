@@ -6,6 +6,96 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- Short prompts on GeForce Ada faster: a prompt's fused product is one C
+  call, as a generation step's (it had cost 12 us of host time a call,
+  twice F.linear's), and on GeForce Ada runs by stream-K
+  (`mma_gemm_sk_kernel`: as many blocks as the GPU holds, each an equal
+  share of the tiles' stages, a tile several share summed by the last of
+  them in their order), where K was split and its parts summed by a
+  second kernel (as still on other GPUs, until measured there). On an RTX 4080
+  SUPER (`gpu/e2e.py --prefill --merge`), Qwen3-1.7B's prompts of 128 /
+  256 / 512 tokens take 10.3 / 14.6 / 23.8 ms tiered and 10.2 / 14.5 /
+  23.7 12-bit against bf16's 10.8 / 14.0 / 24.3 (0.21.0: 11.4 / 15.8 /
+  25.4 and 11.4 / 15.4 / 24.7), Qwen3-4B-Instruct-2507's 128 / 256 / 512
+  tokens 19.4 / 29.3 / 52.6 and 19.2 / 28.7 / 51.5 against 20.7 / 28.0 /
+  49.1 (were 19.7 / 29.9 / 53.3 and 18.6 / 29.3 / 52.0); at 384 tokens
+  Qwen3-1.7B's 20.1 / 19.2 against 18.7 (were 23.9 / 23.2), Qwen3-4B's
+  44.4 / 41.7 against 39.5 (were 50.2 / 49.3); the time to the first
+  token with them (Qwen3-1.7B at 128 tokens 11.6 / 11.8 ms against 13.0
+  / 12.8); generation as before. In the 12-bit layout the decode ahead
+  starts at 1024 tokens (was past 640) where the fused kernel takes the
+  prompt: it is now the faster one to there (exact and unfused products
+  past 640, as before). The C API's `glyd_gpu_mma_gemm_big` and
+  `glyd_gpu_mma12_gemm_big` take a product's done counters, and
+  `glyd_gpu_api_version` tells the C API's version (2; the package
+  refuses a library of another).
+- Products on two streams of one GPU at once no longer share done
+  counters (a set a stream, as the workspace): a small product's outputs
+  could come out wrong that way.
+- Long prompts on GeForce Ada within 0.2-0.7% of bf16's time from 2048
+  tokens, 1.5-2.9% at 1024 (were 5-10% behind): past 512 tokens (from
+  1024 in the 12-bit layout) each matrix is decoded once, for cuBLAS, on
+  a second stream beside the products before it, a few warps an SM
+  beside cuBLAS's blocks, where the fused kernel decoded each weight
+  again for every 256 tokens. On an RTX 4080 SUPER
+  (`gpu/e2e.py --prefill --merge`), Qwen3-4B-Instruct-2507's prompts of
+  1024 / 2048 / 4096 tokens take 97.5 / 199.5 / 447.5 ms tiered against
+  bf16's 96.1 / 198.3 / 445.4 (were 102.8 / 211.5 / 476.5), Qwen3-1.7B's
+  43.3 / 86.8 / 186.0 against 42.1 / 86.6 / 185.3 (were 45.9 / 91.5 /
+  190.1), Qwen3-8B's 175.2 / 345.1 / 767.6 (were 185.6 / 370.8 / 811.3);
+  the time to the first token with them; generation as before. With
+  `exact=True` the same path, the logits bf16's bit for bit. On GeForce
+  Ada the fused kernel runs blocks of 128 tokens where the last block of
+  256 would be half empty or less, to 1024 tokens tiered and 4224 12-bit
+  (300 tokens: 0.79-0.89x the time; past 1024 the tiered layout's cost
+  1.3-6.9% more from 1600 tokens, the 12-bit's 0.8-4.5% less to 4224;
+  elsewhere as before, until measured). The decode ahead is off until
+  measured on an A100, an H100 and the L4, L40S and RTX 6000 Ada
+  (`GLYD_AHEAD_MIN=513` takes it).
+- `glyd.save_pretrained` saves a mixture of experts: glyd-v1 holds each
+  layer's experts as one pack (their matrices stacked, under the module
+  holding them), and `glyd.json` the sha256 of each weight as the model
+  holds it; such a checkpoint's format is glyd-v2, which glyd 0.21 refuses
+  (a dense model's stays glyd-v1). `from_pretrained(path)` loads the packs
+  as saved (the 12-bit layout packed again from them), `verify=True`
+  checks every tensor, and `python -m glyd.gpu pack` and `verify` take
+  one. On an RTX 4080 SUPER, granite-3.1-3b-a800m saves in 7.4 s to 4.66
+  GB of safetensors (6.60 GB in bf16) and loads from them in 0.4 s (3.4 s
+  verified; 3.9 s from its bf16 checkpoint), its logits bit for bit the
+  model packed as it loaded.
+- Every mixture-of-experts family of transformers 5.17 packs its experts:
+  the 54 whose Experts modules transformers runs through an experts
+  implementation (run by `glyd`), and those whose own code runs them,
+  taken over where it multiplies: Llama 4, DBRX, Aria, JetMoE (its
+  attention experts too), Step 3.7 and LongCat-Flash, each one op under
+  `torch.compile` (but JetMoE, whose router calls `.tolist()`, as bf16's
+  does not compile); Switch Transformers' and NLLB-MoE's experts are
+  Linears, packed as such. Llama 4's experts stayed bf16, and transformers
+  runs every expert on every token there; Glyd runs each token's chosen
+  one alone: on an RTX 4080 SUPER a Scout MoE block at its real sizes
+  (hidden 5120, 16 experts of 8192) takes 0.66 ms at one token against
+  bf16's 6.17, 1.91 against 6.26 at 8 and 6.40 against 23.4 at 512, its
+  experts 2.70 GB against 4.03, exact bit for bit.
+  `bindings/python/test_gpu.py` builds each family as a tiny model on the
+  GPU: its experts packed, its logits as near fp32's as bf16's, exact bit
+  for bit, saved and loaded in both layouts. Along the way: a packed
+  Linear's or embedding's `.weight` reads as a model's own code reads it
+  (Llama 4's embedding device, Gemma 4's pad row: these models failed
+  before), a Linear subclass with a forward of its own is left as it is
+  (Llama 4's router), a weight a model keeps in fp32 is loaded as it is
+  (HunYuan V4's output layer: it failed to load), and a model with packed
+  experts let go of is freed at once (it held reference cycles).
+- `best_layout()` takes a mixture of experts into account: the tiered
+  layout on an A10 as on Ada, where its decode keeps up (on an A10 1-6%
+  less GPU time a step than the 12-bit one, on an RTX 4080 SUPER 6-7%)
+  and it is 10-11% smaller; the 12-bit one on an A100 and an H100.
+- `gpu/sizes.py` counts granite's and Mixtral's checkpoint names for their
+  experts (granite-3.1-3b-a800m: 3.22 B weights, was 0.20 B); `gpu/e2e.py`
+  frees the Glyd model before bf16's profile (Qwen3-30B-A3B ran out of
+  memory there on an H100).
+
 ## v0.21.0 — 2026-09-27
 
 - `pip install "glyd[gpu]"`: the Linux wheels (x86_64 and aarch64,

@@ -1,0 +1,14 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 18232.54it/s]
+merged: 56 groups of Linears as one product each
+bf16 (weights 3.44 GB): batch 1: 89.6 tokens/s (89.6 a sequence), peak VRAM 3.46 GB
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+bf16 (weights 3.44 GB): batch 8: 716.1 tokens/s (89.5 a sequence), peak VRAM 3.51 GB
+bf16 prefill: 128 tokens 10.9 ms (11729 tokens/s), first token 12.8 ms, 256 tokens 14.1 ms (18197 tokens/s), first token 15.2 ms, 384 tokens 18.7 ms (20507 tokens/s), first token 19.9 ms, 512 tokens 24.3 ms (21067 tokens/s), first token 25.4 ms, 640 tokens 25.9 ms (24754 tokens/s), first token 27.0 ms, 768 tokens 32.1 ms (23920 tokens/s), first token 33.2 ms, 896 tokens 38.2 ms (23444 tokens/s), first token 39.3 ms, 1024 tokens 42.3 ms (24208 tokens/s), first token 43.4 ms, 2048 tokens 86.5 ms (23678 tokens/s), first token 87.6 ms
+mma12 fused: packed in 1 s; weights 3.03 GB against 3.44 GB bf16 (87.9%), scratch 0.27 GB, VRAM in use 3.31 GB on 1 GPU
+glyd mma12 fused: batch 1: 98.3 tokens/s (98.3 a sequence), peak VRAM 3.32 GB
+glyd mma12 fused: batch 8: 773.1 tokens/s (96.6 a sequence), peak VRAM 3.38 GB
+glyd mma12 prefill: 128 tokens 10.2 ms (12607 tokens/s), first token 11.8 ms, 256 tokens 14.5 ms (17679 tokens/s), first token 15.7 ms, 384 tokens 19.2 ms (19970 tokens/s), first token 20.5 ms, 512 tokens 23.7 ms (21635 tokens/s), first token 24.8 ms, 640 tokens 27.9 ms (22962 tokens/s), first token 29.0 ms, 768 tokens 33.1 ms (23188 tokens/s), first token 34.3 ms, 896 tokens 39.0 ms (22973 tokens/s), first token 40.1 ms, 1024 tokens 43.5 ms (23549 tokens/s), first token 44.6 ms, 2048 tokens 87.2 ms (23473 tokens/s), first token 88.4 ms
+logits bit-identical: False
+generated tokens identical to bf16: 13 of 32
+text:  in the 1950s with the advent of digital storage and transmission. The first significant developments were in the field of information theory, where the concept
+exit 0
