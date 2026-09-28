@@ -1,5 +1,6 @@
 """glyd.gpu's parts that need no GPU and no PyTorch: fit against the site's
-answers, the glyd-v1 names and manifest, and import glyd without torch.
+answers, the glyd-v1 names and manifest, import glyd without torch, and the
+library's C header against the package's calls.
 Where a CUDA GPU, PyTorch and transformers are at hand (else skipped):
 every mixture-of-experts family of transformers as a tiny random model,
 packed and saved (test_moe_families), and the CLI's pack and verify on one.
@@ -11,9 +12,12 @@ data/sizes.json, 2026-09-27), the Hub metadata fit reads, trimmed (the
 config's attention fields; the safetensors at the repo's top, summed into
 one entry where the repo has no consolidated copy), and the site's
 answers."""
+import ast
+import ctypes
 import importlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -143,6 +147,35 @@ def test_manifest_and_names():
             raise AssertionError("another format")
         except ValueError:
             pass
+
+
+def test_c_header():
+    """gpu/glyd_gpu.h, the library's C API, as _lib.py calls it: every function by the same arguments (their ctypes
+    types, the stream last), its version API_VERSION; and the functions glyd_gpu.cu defines, which includes it (the
+    compiler holds each definition to its declaration there). Read as text: _lib.py's argument lists run alone, as
+    it imports torch."""
+    gpu = os.path.join(HERE, "..", "..", "gpu")
+    h = re.sub(r"/\*.*?\*/", "", open(os.path.join(gpu, "glyd_gpu.h")).read(), flags=re.S)
+    names = {"_P", "_I64", "_U64", "_SZ", "_W", "_PACK", "_FAST", "_DENSE", "_ARGS", "_SIZES", "API_VERSION"}
+    body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "_lib.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= names]
+    lib = {"ctypes": ctypes}
+    exec(compile(ast.Module(body, []), "_lib.py", "exec"), lib)
+    c, P = ctypes, ctypes.c_void_p
+    types = {"int64_t": c.c_int64, "uint64_t": c.c_uint64, "size_t": c.c_size_t, "double": c.c_double, "int": c.c_int, "cudaStream_t": P, "size_t*": c.POINTER(c.c_size_t)}
+
+    def ctype(a):  # "const uint8_t* data": P; "const uint32_t tiers[3]": the host words
+        t, name = " ".join(a.split()).replace(" *", "*").rsplit(" ", 1)
+        t = t.replace("const ", "")
+        return c.POINTER(c.c_uint32) if name.endswith("]") and t == "uint32_t" else types.get(t, P if t.endswith("*") else t)
+
+    declared = {name: (ret, [ctype(a) for a in args.split(",")] if args.strip() != "void" else []) for ret, name, args in re.findall(r"(int|const char\*) (glyd_gpu_\w+)\(([^)]*)\);", " ".join(h.split()))}
+    called = {f"glyd_gpu_{n}": ("int", a + [P]) for n, a in lib["_ARGS"].items()}
+    called.update({f"glyd_gpu_{n}_workspace": ("int", [c.c_int64] * k + [c.POINTER(c.c_size_t)]) for n, k in lib["_SIZES"].items()})
+    called.update(glyd_gpu_api_version=("int", []), glyd_gpu_cuda_version=("int", []), glyd_gpu_error_string=("const char*", [c.c_int]))
+    assert declared == called, [n for n in sorted(set(declared) | set(called)) if declared.get(n) != called.get(n)]
+    assert int(re.search(r"#define GLYD_GPU_API_VERSION (\d+)", h).group(1)) == lib["API_VERSION"], "GLYD_GPU_API_VERSION is not _lib.py's API_VERSION"
+    cu = open(os.path.join(gpu, "glyd_gpu.cu")).read()
+    assert set(re.findall(r"GLYD_GPU_API [^(]*?(glyd_gpu_\w+)\(", cu)) == set(declared), "glyd_gpu.cu's C API is not glyd_gpu.h's"
 
 
 def test_import_without_torch_or_library():

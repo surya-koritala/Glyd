@@ -1,0 +1,261 @@
+/*
+ * Glyd GPU: the C API of gpu/glyd_gpu.cu's kernels, which gpu/build_lib.sh
+ * builds into libglyd_gpu_cuda12.so and libglyd_gpu_cuda13.so (the CUDA
+ * runtime linked in: they need only the driver; code for Ampere and later).
+ * A bf16 matrix held compressed in GPU memory and decoded on the GPU bit for
+ * bit, whole or inside its products. The glyd Python package calls these
+ * through ctypes (bindings/python/glyd/gpu/_lib.py); C, C++, Rust or any
+ * language with a C FFI calls the same. gpu/examples/unpack.c decodes a
+ * saved model's matrix with them.
+ *
+ * License: BUSL-1.1 (gpu/LICENSE).
+ *
+ * Every call: arrays in device memory (bf16 as its bits, uint16_t) but for a
+ * layout's words (tiers[3], kt[3], vt[3], sym[4]) and a workspace query's
+ * bytes, in host memory; sizes as values. Its kernels are launched on stream
+ * cs (0: the default stream) of the current device and run after it returns,
+ * as any launch; every output, workspace and counter is the caller's. It
+ * returns 0, or a cudaError_t: cudaErrorInvalidValue for an argument out of
+ * range, cudaErrorNotSupported where the kernel is not for this GPU, else the
+ * launch's (glyd_gpu_error_string gives its text).
+ *
+ * A product with a workspace: glyd_gpu_NAME_workspace(its sizes, &bytes)
+ * first, on the device it will run on, then glyd_gpu_NAME with a buffer of at
+ * least those bytes (NULL where 0). Its done counters: int32, as many as it
+ * says, zero before its first call (cudaMemset) and left zero by each. A
+ * workspace and a set of counters serve one stream at a time.
+ */
+#ifndef GLYD_GPU_H
+#define GLYD_GPU_H
+
+#include <stddef.h>
+#include <stdint.h>
+#include <cuda_runtime_api.h> /* cudaStream_t */
+
+/* The C API's version, one more whenever a function's arguments change: 2
+ * from the prompt products' done counters, glyd_gpu_hold and the decode's
+ * warps (0.21.0's library has no glyd_gpu_api_version: 1). */
+#define GLYD_GPU_API_VERSION 2
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* The library's GLYD_GPU_API_VERSION: its functions are this header's where
+ * the two agree (check it: a C FFI does not see a call's arguments). */
+int glyd_gpu_api_version(void);
+/* The CUDA runtime built in, e.g. 13000. */
+int glyd_gpu_cuda_version(void);
+/* A status's text. */
+const char* glyd_gpu_error_string(int status);
+
+/* ------------------------------------------------------------------------
+ * The mma layouts: W [O, K] (O a multiple of 64, K of 16) as O K / 1024 warp
+ * steps of 64 rows by 16 columns, row block by row block, in the order the
+ * tensor cores take their operand; a weight's sign and mantissa a byte, its
+ * exponent coded. glyd.gpu's pack_mma and pack_mma12 make them, and
+ * glyd.save_pretrained saves the tiered one (a Linear's NAME.glyd_data,
+ * NAME.glyd_blocks, NAME.glyd_block_base; its tiers in glyd.json).
+ *
+ * Tiered (about 10.8 bits a weight): an exponent in 2-bit digits over three
+ * tiers of the matrix's commonest (3 a tier, digit 3 on to the next tier;
+ * past the third, the exponent's byte).
+ *   data        uint8 [steps][1280]: a step's tier-1 digits and its 1024 bytes
+ *   blocks      uint8: a step's escapes (its tier-2 and tier-3 digits and
+ *               exponent bytes) from block_base[step] to block_base[step + 1];
+ *               128 bytes before the first, 256 after the last
+ *   block_base  int32 [steps + 1]
+ *   tiers[3]    host words: tier k's three exponents in bytes 0-2 of word k
+ * 12-bit (about 12 bits a weight, a lighter decode): an exponent a 4-bit code
+ * into the matrix's 15 commonest, code 15 an exception.
+ *   data        uint8 [steps][1536]: a step's codes and its 1024 bytes
+ *   exc         int32: the exceptions, a weight's place in its step (bits 0-9)
+ *               and its exponent (bits 16-23), a step's from exc_base[step]
+ *               to exc_base[step + 1]; zeros after, to a multiple of 4 (1 at least)
+ *   exc_base    int32 [steps + 1]
+ *   sym[4]      host words: the 15 exponents, code c in byte c % 4 of word
+ *               c / 4 (code 15's: 0)
+ * glyd_gpu.cu has both to the bit.
+ * ---------------------------------------------------------------------- */
+
+/* Y [M, O] = X W^T (+ bias [O]; NULL: none) for 0 to 64 tokens (X [M, K], Y
+ * row-major): a generation step's product, the weights decoded in registers
+ * into the tensor cores' operands. done: O / 64 counters. */
+int glyd_gpu_mma_gemm_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes);
+int glyd_gpu_mma_gemm(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3],
+                      int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,
+                      void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs);
+int glyd_gpu_mma12_gemm_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes);
+int glyd_gpu_mma12_gemm(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
+                        int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,
+                        void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs);
+
+/* The same for many tokens (a prompt; K a multiple of 64, x 16-byte aligned):
+ * a tiled product, each weight decoded once for a block's tokens. variant 0:
+ * chosen by M and the GPU; 1: blocks of 128 tokens by 128 rows; 2: 256 by 64;
+ * 3 (12-bit): 256 by 128. done: (M + 127) / 128 x O / 64 counters. */
+int glyd_gpu_mma_gemm_big_workspace(int64_t O, int64_t K, int64_t M, int64_t variant, size_t* bytes);
+int glyd_gpu_mma_gemm_big(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base,
+                          const uint32_t tiers[3], int64_t O, int64_t K, const uint16_t* x, int64_t M,
+                          const uint16_t* bias, uint16_t* y, int64_t variant, void* workspace, size_t workspace_bytes,
+                          int* done, cudaStream_t cs);
+int glyd_gpu_mma12_gemm_big_workspace(int64_t O, int64_t K, int64_t M, int64_t variant, size_t* bytes);
+int glyd_gpu_mma12_gemm_big(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
+                            int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,
+                            int64_t variant, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs);
+
+/* Many tokens in the 12-bit layout (K a multiple of 64; x, data and exc
+ * 16-byte aligned), the compressed weights copied into shared memory a stage
+ * at a time: mid on Ampere and later (cudaErrorNotSupported before); wg on
+ * Hopper (compute capability 9.0) alone, by TMA and wgmma. done: O / 64
+ * counters. */
+int glyd_gpu_mma12_gemm_mid_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes);
+int glyd_gpu_mma12_gemm_mid(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
+                            int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,
+                            void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs);
+int glyd_gpu_mma12_gemm_wg_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes);
+int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
+                           int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,
+                           void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs);
+
+/* Rows [row0, row0 + rows) of W (multiples of 64) back to bf16, into out
+ * [rows, K]. warps 0: a warp a step; else that many warps in all, each taking
+ * every so many steps (a decode beside a product on another stream). */
+int glyd_gpu_mma_unpack(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3],
+                        int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs);
+int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
+                          int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs);
+
+/* Stream cs held ns nanoseconds by one thread: a decode launched after it
+ * there starts once a product launched with it on another stream has placed
+ * its blocks. */
+int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
+
+/* ------------------------------------------------------------------------
+ * Mixtures of experts: a layer's E experts' matrices [O, K] as one pack
+ * [E O, K]. A token's k choices are its pairs (P = T k for T tokens; pair j:
+ * token j / k, choice j mod k).
+ * ---------------------------------------------------------------------- */
+
+/* The plan (int32 [2 + 2E + P]): the pairs, whose experts are ids (int64
+ * [P]), sorted by expert; E up to 12288. */
+int glyd_gpu_moe_route(const int64_t* ids, int64_t P, int64_t E, int32_t* plan, cudaStream_t cs);
+
+/* The experts' product by the plan: X [T, K] (gather: a pair takes its
+ * token's row) or [P, K] (the pairs in the plan's order). act 0: Y [P, O] in
+ * the plan's order (+ bias [E, O]; NULL: none); act 1 (SiLU) or 2 (GELU,
+ * tanh): Y [P, O / 2] = act(gate) up, the gate an expert's first O / 2 rows
+ * (O a multiple of 128), each + its bias. w (act 0; bf16, or fp32 where
+ * wf32), the pairs' weights, with ids (int64 [T, k]): Y [T, O], a token's k
+ * rows times their weights, added (weighted: w given, for the workspace
+ * query). done: O / 64 (O / 128 with act) x min(E, P) counters. */
+int glyd_gpu_mma_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted,
+                               size_t* bytes);
+int glyd_gpu_mma_moe(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3],
+                     int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather,
+                     const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32,
+                     const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done,
+                     cudaStream_t cs);
+int glyd_gpu_mma12_moe_workspace(int64_t E, int64_t O, int64_t K, int64_t T, int64_t k, int64_t act, int64_t weighted,
+                                 size_t* bytes);
+int glyd_gpu_mma12_moe(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
+                       int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather,
+                       const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32,
+                       const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done,
+                       cudaStream_t cs);
+
+/* Exact: the experts the plan's P pairs hit back to bf16, into their rows of
+ * out [E O, K]; the rest of out left as it is. */
+int glyd_gpu_mma_moe_unpack(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base,
+                            const uint32_t tiers[3], int64_t E, int64_t O, int64_t K, int64_t P, const int32_t* plan,
+                            uint16_t* out, cudaStream_t cs);
+int glyd_gpu_mma12_moe_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
+                              int64_t E, int64_t O, int64_t K, int64_t P, const int32_t* plan, uint16_t* out,
+                              cudaStream_t cs);
+
+/* ------------------------------------------------------------------------
+ * Attention for one new token a sequence over a KV cache in the tiered layout
+ * (gpu/kv.py): q and out [pairs x G, D] (a pair: a sequence's KV head; G, 1 to
+ * 16, the queries it serves; D 64 or 128). The keys a pack of P pages of
+ * [pairs x 64 tokens, D] (kd, kb, kbb, kt), the values one of [pairs x D, 64
+ * tokens] (vd, vb, vbb, vt), then a tail of tlen (0 to 63) tokens as they
+ * are, tk and tv [pairs, tlen, D]. scale: the scores'. done: pairs counters.
+ * ---------------------------------------------------------------------- */
+int glyd_gpu_attn_decode_workspace(int64_t D, int64_t tlen, int64_t pairs, int64_t P, size_t* bytes);
+int glyd_gpu_attn_decode(const uint16_t* q, int64_t D, const uint8_t* kd, const uint8_t* kb, const int32_t* kbb,
+                         const uint32_t kt[3], const uint8_t* vd, const uint8_t* vb, const int32_t* vbb,
+                         const uint32_t vt[3], const uint16_t* tk, const uint16_t* tv, int64_t tlen, int64_t pairs,
+                         int64_t G, int64_t P, double scale, uint16_t* out, void* workspace, size_t workspace_bytes,
+                         int* done, cudaStream_t cs);
+
+/* ------------------------------------------------------------------------
+ * The fast format (embeddings): W [O, K] (K a multiple of 128), an exponent a
+ * 3-bit code into the matrix's 7 commonest, code 7 an escape.
+ *   sm          uint8 [O K]: each weight's sign (bit 7) and mantissa
+ *   planes      uint32 [O K / 32 x 3]: code bit b of weight 32g + i at bit i
+ *               of planes[3g + b]
+ *   exc         uint8: the escapes' exponents, in weight order
+ *   exc_base    int32 [O x ceil(K / 1024)]: the first escape of each 1024
+ *               weights of a row
+ *   top         the 7 exponents, code c in byte c
+ * ---------------------------------------------------------------------- */
+
+/* y [O] = W x (+ bias; NULL: none) for one token. */
+int glyd_gpu_fast_gemv(const uint8_t* sm, const uint32_t* planes, const uint8_t* exc, const int32_t* exc_base,
+                       uint64_t top, int64_t O, int64_t K, const uint16_t* x, const uint16_t* bias, uint16_t* y,
+                       cudaStream_t cs);
+/* Rows [row0, row0 + rows), or (n_ids > 0) the n_ids rows row_ids (int64),
+ * into out [rows, K]: an embedding's lookup. */
+int glyd_gpu_fast_decode(const uint8_t* sm, const uint32_t* planes, const uint8_t* exc, const int32_t* exc_base,
+                         uint64_t top, int64_t row0, int64_t rows, const int64_t* row_ids, int64_t n_ids, int64_t K,
+                         uint16_t* out, cudaStream_t cs);
+/* Y [M, O] = X W^T (+ bias) for X [M, K] (K a multiple of 64, O of 16), on
+ * the tensor cores. */
+int glyd_gpu_fast_gemm_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes);
+int glyd_gpu_fast_gemm(const uint8_t* sm, const uint32_t* planes, const uint8_t* exc, const int32_t* exc_base,
+                       uint64_t top, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias,
+                       uint16_t* y, void* workspace, size_t workspace_bytes, cudaStream_t cs);
+/* The same for M = 2, 4, 8 or 16 tokens (K a multiple of 512), on the CUDA
+ * cores. */
+int glyd_gpu_fast_bgemv_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes);
+int glyd_gpu_fast_bgemv(const uint8_t* sm, const uint32_t* planes, const uint8_t* exc, const int32_t* exc_base,
+                        uint64_t top, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias,
+                        uint16_t* y, void* workspace, size_t workspace_bytes, cudaStream_t cs);
+
+/* ------------------------------------------------------------------------
+ * The dense format: n weights in tiles of tw (a matrix's: whole rows, or
+ * pieces of long ones), a tile 32 lanes' bit streams of its exponents in a
+ * prefix code, V (4 or 16) weights a lane a step.
+ *   sm          uint8 [n]: each weight's sign (bit 7) and mantissa
+ *   stream      uint32 [stream_words]: the streams, back to back
+ *   offs        uint32 [tiles x 32]: where each lane's stream starts, in bits
+ *   tables      uint32 [64]: the code's 32 classes, then its 32 ranks
+ *   tile_words  the words a warp stages in shared memory (0: none)
+ * ---------------------------------------------------------------------- */
+
+/* The packer's first pass: bits [tiles x 32], each lane's stream's length,
+ * for len [256], each exponent's code length. */
+int glyd_gpu_lane_bits(const uint16_t* w, int64_t n, const uint8_t* len, int64_t tw, int64_t V, uint32_t* bits,
+                       cudaStream_t cs);
+/* Its second: the streams into out (zero before; the lengths' total / 32 + 4
+ * words, as the decode reads ahead) from offs (the lengths' sums before
+ * each), code [256] each exponent's code. */
+int glyd_gpu_write_codes(const uint16_t* w, int64_t n, const uint8_t* len, const uint32_t* code, const uint32_t* offs,
+                         uint32_t* out, int64_t tw, int64_t V, cudaStream_t cs);
+/* Every tile into out [n], or (n_ids > 0) tiles tile_ids (int64) into out
+ * [n_ids x tw]. */
+int glyd_gpu_decode(const uint8_t* sm, const uint32_t* stream, int64_t stream_words, const uint32_t* offs,
+                    const uint32_t* tables, int64_t n, int64_t tw, int64_t V, int64_t tile_words,
+                    const int64_t* tile_ids, int64_t n_ids, uint16_t* out, cudaStream_t cs);
+/* y [O] = W x (+ bias; NULL: none) for W [O, K] (K and tw multiples of 32 V);
+ * where tiles split rows (tw % K), sum (float) and count (int32) [O], zero
+ * before and left zero. */
+int glyd_gpu_gemv(const uint8_t* sm, const uint32_t* stream, int64_t stream_words, const uint32_t* offs,
+                  const uint32_t* tables, int64_t O, int64_t K, int64_t tw, int64_t V, int64_t tile_words,
+                  const uint16_t* x, const uint16_t* bias, uint16_t* y, float* sum, int* count, cudaStream_t cs);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* GLYD_GPU_H */

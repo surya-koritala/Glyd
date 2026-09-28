@@ -11,9 +11,10 @@
 // exponents are one bit stream (LSB first), the streams back to back; a
 // lane's stream starts at its bit offset (`offs`, 32 bits).
 //
-// The host side is a C API (glyd_gpu_*, at the end); PyTorch's JIT build
-// (glyd_gpu.py) adds a pybind module over it, build_lib.sh builds it alone
-// into a library for the glyd package's glyd/gpu/_lib.py.
+// The host side is a C API (glyd_gpu_*, at the end; glyd_gpu.h declares it);
+// PyTorch's JIT build (glyd_gpu.py) adds a pybind module over it,
+// build_lib.sh builds it alone into a library for the glyd package's
+// glyd/gpu/_lib.py and for C, C++, Rust or any language with a C FFI.
 #ifdef TORCH_EXTENSION_NAME
 #include <torch/extension.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -31,6 +32,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <type_traits>
+#include "glyd_gpu.h"  // every definition of the C API below held to its declaration there
 
 __device__ __forceinline__ uint32_t exponent_of(uint16_t v) { return (v >> 7) & 0xff; }
 __device__ __forceinline__ uint32_t bf16_bits(uint32_t s, uint32_t e) { return ((s & 0x80) << 8) | (e << 7) | (s & 0x7f); }
@@ -2895,6 +2897,7 @@ __global__ void fast_decode_kernel(const uint8_t* __restrict__ sm, const uint32_
 // counters (int32, as many as said): zero before its first call and left zero
 // by each, for one stream at a time. The pybind module (after it) and the
 // library (build_lib.sh) launch the same kernels with the same arguments.
+// glyd_gpu.h declares it for its callers, each function's arguments said.
 #ifdef TORCH_EXTENSION_NAME
 #define GLYD_GPU_API extern "C" __attribute__((visibility("hidden")))  // the pybind module's own
 #else
@@ -2954,9 +2957,9 @@ static __nv_bfloat16* bf(uint16_t* p) { return (__nv_bfloat16*)p; }
 
 // The CUDA runtime built in (e.g. 13000), and a status's text.
 GLYD_GPU_API int glyd_gpu_cuda_version() { return CUDART_VERSION; }
-// The C API's version, one more whenever a function's arguments change (the caller checks it: ctypes does not check
-// arguments): 2 from the prompt products' done counters, hold and the decode's warps (0.21.0's has none: 1).
-GLYD_GPU_API int glyd_gpu_api_version() { return 2; }
+// The C API's version (glyd_gpu.h: one more whenever a function's arguments change; the caller checks it, as ctypes
+// does not check arguments).
+GLYD_GPU_API int glyd_gpu_api_version() { return GLYD_GPU_API_VERSION; }
 GLYD_GPU_API const char* glyd_gpu_error_string(int status) { return cudaGetErrorString((cudaError_t)status); }
 
 // The dense format. lane_bits: bits [tiles * 32], the tiles of tw weights of w's n.
