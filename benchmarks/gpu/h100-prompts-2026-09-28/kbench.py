@@ -53,9 +53,6 @@ kern = {
     "big12": (lambda M: M > 16 and not hopper, g.mma_gemm_big),
     "dec": (lambda M: M > 16, decoded),
 }
-for extra in ("mma_gemm_ws",):
-    if hasattr(g, extra):
-        kern[extra] = (lambda M: True, getattr(g, extra))
 if only:
     kern = {k: v for k, v in kern.items() if k in only}
 # The GPU at its clocks first: a second of products.
