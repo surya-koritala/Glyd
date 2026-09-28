@@ -377,9 +377,10 @@ def auto_layout(model, gpus=1, device=0):
     from . import moe
 
     tied = getattr(model, "all_tied_weights_keys", None) or {}
-    lin = sum(m.weight.numel() * 2 for m in model.modules() if isinstance(m, nn.Linear) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0)
-    lin += moe.packable_bytes(model)  # a mixture of experts' layers, packed as the Linears
-    return g.best_layout(lin, sum(p.numel() * p.element_size() for n, p in model.named_parameters() if n not in tied) - lin, gpus, device)
+    lin = sum(m.weight.numel() * 2 for m in model.modules() if plain(m) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0)
+    experts = moe.packable_bytes(model)  # a mixture of experts' layers, packed as the Linears
+    lin += experts
+    return g.best_layout(lin, sum(p.numel() * p.element_size() for n, p in model.named_parameters() if n not in tied) - lin, gpus, device, moe=experts > 0)
 
 
 @torch.no_grad()

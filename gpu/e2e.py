@@ -22,7 +22,7 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import glyd_gpu as g
 from glyd.gpu import moe
-from glyd.gpu.model import GEmbedding, GLinear, Scratch, decoder, merge_linears, pack_modules, set_scratch
+from glyd.gpu.model import GEmbedding, GLinear, Scratch, decoder, merge_linears, pack_modules, plain, set_scratch
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
@@ -289,9 +289,9 @@ if args.baseline:
 # by their bytes, over args.gpus GPUs; the embedding on the first, the final
 # norm and the output layer on the last.
 if args.format == "auto":
-    lin = [m.weight for m in model.modules() if isinstance(m, nn.Linear) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0]
-    lin_bytes = sum(w.numel() * 2 for w in lin) + moe.packable_bytes(model)  # a mixture of experts' too
-    args.format, why = g.best_layout(lin_bytes, weights_bf16 - lin_bytes, args.gpus)
+    experts = moe.packable_bytes(model)  # a mixture of experts' too
+    lin_bytes = sum(m.weight.numel() * 2 for m in model.modules() if plain(m) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0) + experts
+    args.format, why = g.best_layout(lin_bytes, weights_bf16 - lin_bytes, args.gpus, moe=experts > 0)
     print(f"auto: {args.format}, {why}")
 t0 = time.perf_counter()
 if args.from_pretrained:  # the package's path: the checkpoint loaded again, packed as it arrives

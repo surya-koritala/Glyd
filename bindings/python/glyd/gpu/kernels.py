@@ -460,14 +460,22 @@ def pack_mma12(w):
     return Mma12((O, K), data.flatten(), exc, exc_base, sym)
 
 
-def best_layout(linear_bytes, other_bytes=0, gpus=1, device=0):
+def best_layout(linear_bytes, other_bytes=0, gpus=1, device=0, moe=False):
     """The layout for this GPU, and why: "mma" (tiered, 10.80 bits a weight)
     or "mma12" (12.04 bits, the lighter decode), for Linears of
-    linear_bytes in bf16 and other_bytes besides. Measured (benchmarks/gpu,
-    2026-09-26): on Ada (RTX 40, L40S) the tiered decode is the faster one
-    at 1-32 sequences; on an A10, an A100 and an H100 the 12-bit one. Either
-    way the tiered layout when only it fits (2 GiB a GPU kept for
-    activations and the KV cache)."""
+    linear_bytes in bf16 and other_bytes besides (moe: a mixture of
+    experts' among them). Measured (benchmarks/gpu, 2026-09-26): on Ada (RTX
+    40, L40S) the tiered decode is the faster one at 1-32 sequences; on an
+    A10, an A100 and an H100 the 12-bit one. A mixture of experts
+    (2026-09-27), whose steps read a few experts' matrices each: on an A10
+    the tiered layout as fast as the 12-bit one (OLMoE-1B-7B and
+    granite-3.1-3b-a800m, 1-6% less GPU time a step at 1 and 8 sequences)
+    and 11% smaller, so there as on Ada the tiered one; on an H100 PCIe the
+    12-bit one (Qwen3-30B-A3B, 26.2 and 191.0 tokens/s at 1 and 8
+    sequences against the tiered layout's 15.8 and 111.8), and so on an
+    A100 (not measured with one); Blackwell as for dense Linears until
+    measured. Either way the tiered layout when only it fits (2 GiB a GPU
+    kept for activations and the KV cache)."""
     p = torch.cuda.get_device_properties(device)
     room = gpus * (p.total_memory - 2 * 2**30)
     tiered, twelve = linear_bytes * 10.80 / 16 + other_bytes, linear_bytes * 12.04 / 16 + other_bytes
@@ -475,6 +483,8 @@ def best_layout(linear_bytes, other_bytes=0, gpus=1, device=0):
         return "mma", f"only the tiered layout fits ({tiered / 1e9:.1f} GB; 12-bit {twelve / 1e9:.1f} GB, room {room / 1e9:.1f} GB)"
     if (p.major, p.minor) == (8, 9):
         return "mma", "Ada: the tiered decode keeps up with its memory"
+    if moe and (p.major, p.minor) == (8, 6):
+        return "mma", "a mixture of experts on GDDR Ampere (an A10): the tiered decode as fast, and smaller"
     return "mma12", "the 12-bit decode keeps up with this GPU's memory"
 
 
