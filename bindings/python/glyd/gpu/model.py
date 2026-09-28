@@ -310,8 +310,9 @@ class _Weight:
 class GLinear(_Node, nn.Module):
     """nn.Linear over a packed matrix p (bias: bf16, or None). fused: products
     straight from the packed weights where a kernel takes the step (in the
-    mma layouts up to 64 tokens, and prompts but on Hopper; one-token steps
-    in the others); else the matrix decoded into the scratch buffer, then
+    mma layouts up to 64 tokens, and prompts: on Hopper to WG_MAX tokens,
+    512; one-token steps in the others); else the matrix decoded into the
+    scratch buffer, then
     PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, from
     1024 12-bit fused and past 640 not, decoded ahead of its product where
     Ahead takes it). exact: every

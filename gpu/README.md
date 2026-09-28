@@ -292,14 +292,15 @@ build bit for bit (benchmarks/gpu/rtx4080s-hopper-branch-2026-09-28).
 
 GLinear sends prompts of up to 512 tokens to `mma_gemm_wg` too
 (`GLYD_WG_MAX`); past that it decodes the matrix for cuBLAS, as before.
-Past 128 tokens the kernel's tile is 256 tokens, or 192 where that
-takes no more chunks (129-192 tokens, 257-384), so a weight is decoded
-once for up to 256 tokens. A launch takes up to two chunks (512 tokens:
-its units stay within the O / 64 done counters) in one stream-K split,
-chunk by chunk, so the blocks at work at once read the same weights. The
-TMA warp is the first of a warpgroup that hands its registers to the
-consumers (`setmaxnreg`: 40 a thread there, 232 a consumer's), which at
-256 tokens hold 128 sums a thread and still two sets of A registers.
+Past 128 tokens the kernel's tile is 256 tokens, or 192 where that takes
+no more chunks (129-192 tokens, 257-384), so a weight is decoded once
+for up to 256 tokens. A launch takes up to two chunks (512 tokens, where
+O / 64 is even; else one: its units stay within the O / 64 done
+counters) in one stream-K split, chunk by chunk, so the blocks at work
+at once read the same weights. The TMA warp is the first of a warpgroup
+that hands its registers to the consumers (`setmaxnreg`: 40 a thread
+there, 232 a consumer's), which at 256 tokens hold 128 sums a thread and
+still two sets of A registers.
 
 One decoder layer's products, weights read from memory (us; cuBLAS on
 bf16 / decoded for cuBLAS / `mma_gemm_wg`; GLinear's pick in bold):
@@ -332,9 +333,10 @@ issued a cycle a scheduler, whose two consumer warps wait on the
 decode's dependent instructions and on the stage's barrier. Next here:
 the parts' sums (a unit shared by fewer blocks), then the decode off the
 consumers' path. The whole blocks a unit above now apply only where they
-idle at most a sixth of the blocks and give a unit 3 or more, or the
-parts are 128 KB (tiles of 256): on other models' q, k, v and o the rule
-had cost up to 47% (Gemma-2-9B's q, k, v: 64 blocks of 114). Logs:
+idle at most a sixth of the blocks and give a unit 3 or more, or past
+128 tokens (parts of 96 and 128 KB in tiles of 192 and 256; timed at
+256): on other models' q, k, v and o the rule had cost up to 47%
+(Gemma-2-9B's q, k, v: 64 blocks of 114). Logs:
 benchmarks/gpu/h100-prompts-2026-09-28.
 
 ### Which layout on which GPU
@@ -643,16 +645,17 @@ plain cache's 2.9950 / 4.3130 / 2.4809, the next token the plain cache's
 ## Running
 
 Needs PyTorch with CUDA, and nvcc (the extension builds on first import)
-or the prebuilt library: `bash build_lib.sh` builds libglyd_gpu_cuda13.so
-(the kernels behind a C API, the CUDA runtime linked in; code for sm_80,
-sm_86, sm_89, sm_90a, sm_100 and sm_120, PTX for the GPUs after them; the
-Hopper kernel, wgmma's, in the sm_90a code alone) next to
-glyd_gpu.py, which then uses it through ctypes instead of building;
-GLYD_GPU_LIB names another. The Python side is the glyd package's
+or the prebuilt library: `bash build_lib.sh` builds
+libglyd_gpu_cuda13.so (the kernels behind a C API, the CUDA runtime
+linked in; code for sm_80, sm_86, sm_89, sm_90a, and sm_100 and sm_120
+where nvcc has them (CUDA 12.8 on), PTX for the GPUs after them; the
+Hopper kernel, wgmma's, in the sm_90a code alone) next to glyd_gpu.py,
+which then uses it through ctypes instead of building; GLYD_GPU_LIB
+names another. The Python side is the glyd package's
 (bindings/python/glyd/gpu: kernels.py, _lib.py over the library, and
 model.py, the modules e2e.py runs); glyd_gpu.py is it for the scripts
-here, taken from this checkout. The API a user types, glyd.from_pretrained
-and the rest, is in bindings/python/README.md.
+here, taken from this checkout. The API a user types,
+glyd.from_pretrained and the rest, is in bindings/python/README.md.
 
     python check_capi.py [LIBRARY]            # every entry point through the library and through the JIT build, bit for bit
     python check_api.py [MODEL ...]           # glyd.from_pretrained, compress, save_pretrained, verify: against bf16, bit for bit where exact

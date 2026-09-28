@@ -333,7 +333,7 @@ for q, lin in zip(packs, hopper):
 # the order there), then one past the order's end (the order to there again); another order between (recorded, then
 # followed), then the first again; at 600 tokens, then 2100 (the order kept). The products on the order (as many as
 # said, from the first) bit for bit as with their matrices decoded on the current stream, the rest the fused
-# kernel's (on Hopper, whose prompts take no fused kernel, decoded on the current stream too), below the threshold
+# kernel's (on Hopper, whose prompts past WG_MAX take no fused kernel, decoded on the current stream too), below the threshold
 # the step's kernel's.
 shapes = [(1024, 512), (512, 1024), (3072, 512), (512, 1536), (192, 512), (2048, 1024)]
 lins = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
