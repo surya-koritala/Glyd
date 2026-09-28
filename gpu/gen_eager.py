@@ -23,7 +23,7 @@ with torch.no_grad():
         m.generate(ids, max_new_tokens=N, min_new_tokens=N, do_sample=False, **kw)
         torch.cuda.synchronize()
         t = time.perf_counter() - t
-        compiled = {"_compiled_call", "glyd_compiled"} & m.__dict__.keys()  # (transformers' compiled forward; glyd's)
+        compiled = "_compiled_call" in m.__dict__ or m in glyd.gpu.model._COMPILED  # (transformers' compiled forward; glyd's)
         print(f"{which}{' compiled' if compiled else ''} {name} batch {B}: {B * N / t:.1f} tokens/s ({t / N * 1000:.2f} ms a step)", flush=True)
 if os.environ.get("THREADS"):
     import threading

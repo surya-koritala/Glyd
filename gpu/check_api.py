@@ -45,6 +45,7 @@ of it run elsewhere runs the glyd installed (a wheel, its libraries in it)."""
 import copy
 import gc
 import os
+import pickle
 import subprocess
 import sys
 import tempfile
@@ -97,8 +98,8 @@ def compiled(model, ids):
         out = model.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False, cache_implementation="static", compile_config=CompileConfig(fullgraph=True))
     assert not counters["graph_break"] and not counters["inductor"]["cudagraph_skips"], (dict(counters["graph_break"]), counters["inductor"]["cudagraph_skips"])
     torch._dynamo.reset()
-    model.__dict__.pop("_compiled_call", None)  # (transformers' compiled forward; the fast loop's, glyd_compiled)
-    model.__dict__.pop("glyd_compiled", None)
+    model.__dict__.pop("_compiled_call", None)  # (transformers' compiled forward; the fast loop's is in gm._COMPILED)
+    gm._COMPILED.pop(model, None)
     return out[0, ids.shape[1] :]
 
 
@@ -109,7 +110,7 @@ def fast_loop(e, ids, out_e):
     _prepare_generation_config) fails, its tokens eager's; a call that runs out of memory compiling raises it, and
     the next call compiles; a call that fails compiled (a backend that fails): one warning, the call run again eager,
     and the next eager, their tokens eager's."""
-    compiled = lambda: "glyd_compiled" in e.__dict__
+    compiled = lambda: e in gm._COMPILED
     os.environ["GLYD_COMPILE"] = "0"
     try:
         assert gm.fast_generate(e) is e and "glyd_fast" not in e.__dict__, "GLYD_COMPILE=0: generate() eager"
@@ -153,15 +154,15 @@ def fast_loop(e, ids, out_e):
         except torch._dynamo.exc.BackendCompilerFailed:
             pass
         torch._dynamo.reset()
-        e.__dict__.pop("glyd_compiled")
+        gm._COMPILED.pop(e)
         e.generate(ids, max_new_tokens=8, do_sample=False)
         assert not e.__dict__.get("glyd_eager") and compiled(), "out of memory compiling: the next call compiles"
         torch._dynamo.reset()
-        e.__dict__.pop("glyd_compiled")
+        gm._COMPILED.pop(e)
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             out = e.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False, compile_config=CompileConfig(backend=broken))
-            e.__dict__.pop("glyd_compiled", None)
+            gm._COMPILED.pop(e, None)
             again = e.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
         said = [str(x.message) for x in w if "compiled failed" in str(x.message)]
         assert len(said) == 1 and e.glyd_eager and not compiled() and torch.equal(out[0, ids.shape[1] :], out_e) and torch.equal(again[0, ids.shape[1] :], out_e), ("a call that fails compiled", said)
@@ -241,14 +242,15 @@ for name in NAMES:
     m, t, peak, held = loaded(lambda: glyd.from_pretrained(name))
     q, size = m.config.quantization_config, packed_bytes(m)
     logits_b, out_b = run(m, ids)
-    assert "glyd_compiled" in m.__dict__, "plain generate(): compiled (the fast loop)"
+    assert m in gm._COMPILED, "plain generate(): compiled (the fast loop)"
+    pickle.dumps(m)  # (after a compiled generate(): nothing unpicklable on the model)
     # The peak: the packed model, the embedding in bf16 until the end, and the packers' own scratch.
     print(f"{name}: glyd {q.layout} fused loaded in {t:.1f} s, peak {peak:.2f} GB: packed weights {size / 1e9:.2f} GB + largest tensor {largest / 1e9:.2f} GB + {peak - (size + largest) / 1e9:.2f} GB; holds {held:.2f} GB")
     print(f"   generated tokens identical to bf16: {same(out_a, out_b)} of {TOKENS}; logits bit-identical: {exact(logits_a, logits_b)}")
     print("   text:", tok.decode(out_b).replace("\n", " "))
     e = glyd.from_pretrained(name, compile=False)
     logits_e, out_e = run(e, ids)
-    assert "glyd_compiled" not in e.__dict__ and "_compiled_call" not in e.__dict__ and exact(logits_e, logits_b), "compile=False: generate() eager, the same packs"
+    assert e not in gm._COMPILED and "_compiled_call" not in e.__dict__ and exact(logits_e, logits_b), "compile=False: generate() eager, the same packs"
     print(f"   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's {same(out_e, out_b)} of {TOKENS}")
     fast_loop(e, ids, out_e)
     print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {e.glyd_fast} positions eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's")

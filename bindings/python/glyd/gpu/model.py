@@ -736,6 +736,7 @@ def set_scratch(model, exact):
 # GLYD_COMPILE_MAX sets it on any GPU.
 COMPILE_MAX = int(os.environ.get("GLYD_COMPILE_MAX", 0)) or None
 RECOMPILES = 64  # torch._dynamo's recompile_limit for the compiled calls (_compiled_call): a graph a model, a length
+_COMPILED = weakref.WeakKeyDictionary()  # model: (its compile config, its forward compiled), _compiled_call's
 # A generate() call whose merged generation config sets any of these runs as transformers runs it (_fast): the cache
 # handed back (a static one is neither cropped, as an assistant's is, nor continued past its length), compiling turned
 # off, multi-token prediction, attentions or hidden states out, a cache chosen
@@ -879,13 +880,14 @@ def _generate(self, own, *args, **kwargs):
 def _compiled_call(self, own, compile_config=None):
     """fast_generate's get_compiled_call (what transformers' decoding steps call): the forward compiled where
     transformers compiles it, as it does (torch.compile, compile_config or its default) but unbound, called with the
-    model (glyd_compiled: the model's, not referring to it; transformers' own, model.__call__ compiled and kept as
-    model._compiled_call, keeps the model until a garbage collection), and garbage collected after a call that
-    compiled (torch._dynamo's tracing leaves the model's modules in cycles): a model let go of is freed at del, as an
-    eager one. Its calls with torch._dynamo's recompile_limit RECOMPILES at least (for them alone: dynamo reads it
-    as it compiles): each model's forward is a graph of its own (its GLinears' handles are constants of it), all on
-    the one frame transformers' forwards share, where at the default 8 the 8th model a process loaded ran uncompiled,
-    with the static cache (Qwen3-0.6B: 80 tokens/s, eager 99, compiled 305)."""
+    model, and kept in _COMPILED by the model, not on it (transformers' own, model.__call__ compiled and kept as
+    model._compiled_call, keeps the model until a garbage collection, and a compiled function on the model stops it
+    pickling), and garbage collected after a call that compiled (torch._dynamo's tracing leaves the model's modules in
+    cycles): a model let go of is freed at del, as an eager one. Its calls with torch._dynamo's recompile_limit
+    RECOMPILES at least (for them alone: dynamo reads it as it compiles): each model's forward is a graph of its own
+    (its GLinears' handles are constants of it), all on the one frame transformers' forwards share, where at the
+    default 8 the 8th model a process loaded ran uncompiled, with the static cache (Qwen3-0.6B: 80 tokens/s, eager 99,
+    compiled 305)."""
     import torch._dynamo
     from torch._dynamo.utils import counters
 
@@ -893,9 +895,9 @@ def _compiled_call(self, own, compile_config=None):
     if self.__dict__.pop("_compiled_call", None) is None:  # (Llama 4's, which transformers runs eager)
         return f
     cfg = compile_config or self._default_compile_config()
-    c = self.__dict__.get("glyd_compiled")
+    c = _COMPILED.get(self)
     if c is None or c[0] != cfg:
-        c = self.glyd_compiled = (cfg, torch.compile(type(self).__call__, **cfg.to_dict()))
+        c = _COMPILED[self] = (cfg, torch.compile(type(self).__call__, **cfg.to_dict()))
 
     def call(*args, **kwargs):
         graphs = counters["stats"]["unique_graphs"]

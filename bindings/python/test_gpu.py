@@ -423,6 +423,7 @@ def test_compiled_generate_where_the_static_cache_works():
         return
     import warnings
     import glyd
+    from glyd.gpu import model as gm
 
     with tempfile.TemporaryDirectory() as d:
         for kind, kv, fast in (("deepseek_v3", 2, False), ("deepseek_v3", 4, True), ("llama4_text", None, False), ("qwen3_moe", None, True)):
@@ -435,7 +436,7 @@ def test_compiled_generate_where_the_static_cache_works():
                 warnings.simplefilter("always")
                 g.generate(x, attention_mask=torch.ones_like(x), max_new_tokens=4, do_sample=False, pad_token_id=0)
             said = [str(m.message) for m in w if "glyd" in str(m.message)]
-            assert ("glyd_fast" in g.__dict__, "glyd_compiled" in g.__dict__, said) == (fast, fast, []), (kind, kv, said)
+            assert ("glyd_fast" in g.__dict__, g in gm._COMPILED, said) == (fast, fast, []), (kind, kv, said)
             del g
             torch._dynamo.reset()
 
