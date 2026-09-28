@@ -2979,10 +2979,14 @@ static int mma12_tma_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
     int dev = current_device();
     int64_t P = (O / 64 + WG - 1) / WG * ((M + NT - 1) / NT), U = P * (K / 64);  // units: row units by chunks of NT tokens
     // As many blocks as fit at once, but at least 8 stages a block; where that leaves a block under 32 stages
-    // and there are fewer units than blocks, a whole number of blocks a unit: each unit's sum over as few
-    // parts, its blocks done together (Qwen3-8B's o, 4096 x 4096, 8% the faster on an H100).
+    // and there are fewer units than blocks, a whole number of blocks a unit (each unit's sum over as few parts,
+    // its blocks done together) if that idles at most a sixth of the blocks and gives a unit 3 or more, or the
+    // parts are large (tiles of 256 tokens: 128 KB a part). On an H100 PCIe Qwen3-8B's o (3 blocks a unit, 96 of
+    // 114) is 3-10% the faster at 17-256 tokens, its q, k, v (2) 1-3% the slower at 17-128 and 6% the faster at
+    // 256, Gemma-2-9B's q, k, v (1, 64 of 114) 47% the slower (benchmarks/gpu/h100-prompts-2026-09-28).
     int64_t nb = std::max<int64_t>(1, std::min<int64_t>(per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), U / 8));
-    if (P < nb && U < 32 * nb) nb = nb / P * P;
+    int64_t w = nb / P * P;
+    if (P < nb && U < 32 * nb && 6 * w >= 5 * nb && (w / P >= 3 || NT > 128)) nb = w;
     if (need) {
         *need = std::max(*need, (size_t)(2 * nb * NT * C::R) * sizeof(float));
         return 0;
