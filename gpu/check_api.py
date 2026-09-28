@@ -6,12 +6,17 @@ beside glyd/gpu/kernels.py), against each model in bf16:
   compared with bf16's as e2e.py compares them; the load's time, and its
   peak memory against the packed model's bytes and the largest tensor's;
 - generate() as a user calls it: compiled (model.fast_generate: a static
-  cache, CUDA graphs); with compile=False eager, the same logits; not
+  cache, CUDA graphs; the model pickled after it, but with packed experts,
+  which refuse a copy); with compile=False eager, the same logits; not
   with GLYD_COMPILE=0; a call with a cache of its own, several beams or a
   static cache past the model's cap (glyd_fast) as transformers runs it;
-  out of memory while compiling raised, and the next call compiled; a
-  call that fails compiled: one warning, run again eager, and eager from
-  there on;
+  disable_compile and return_dict_in_generate eager; as another model's
+  assistant, its tokens as with an eager one; out of memory while
+  compiling raised, and the next call compiled; a call that fails
+  compiled: one warning, run again eager (a skip_prompt TextStreamer's
+  text eager's), and eager from there on; two fresh threads in turn, the
+  second's cache longer, their tokens as this thread's; continuing from
+  return_dict_in_generate's cache as eager (in a process of its own);
 - glyd.gpu.compress on the model loaded in bf16: the same packs, so the
   same logits and tokens bit for bit;
 - exact=True: logits bit for bit bf16's, the 32 tokens bf16's;
@@ -49,6 +54,7 @@ import pickle
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import warnings
 
@@ -57,7 +63,7 @@ if os.path.isdir(os.path.join(PACKAGE, "glyd")):
     sys.path.insert(0, PACKAGE)
 import torch
 from torch._dynamo.utils import counters
-from transformers import AutoModelForCausalLM, AutoTokenizer, CompileConfig, DynamicCache
+from transformers import AutoModelForCausalLM, AutoTokenizer, CompileConfig, DynamicCache, TextStreamer
 import glyd
 import glyd.gpu
 from glyd.gpu import moe
@@ -103,14 +109,30 @@ def compiled(model, ids):
     return out[0, ids.shape[1] :]
 
 
-def fast_loop(e, ids, out_e):
+class Recorded(TextStreamer):
+    """A TextStreamer (skip_prompt) that keeps its text."""
+
+    def __init__(self, tok):
+        super().__init__(tok, skip_prompt=True)
+        self.text = ""
+
+    def on_finalized_text(self, text, stream_end=False):
+        self.text += text
+
+
+def fast_loop(m, e, tok, ids, out_e):
     """generate()'s fast loop on e, loaded with compile=False (eager; out_e its TOKENS tokens): GLYD_COMPILE=0 leaves it
     eager; set up (fast_generate), the calls it leaves as they come run eager (a cache of the call's own, two beams, a
-    static cache past its cap, glyd_fast), and so does a call whose gate's helper (transformers'
-    _prepare_generation_config) fails, its tokens eager's; a call that runs out of memory compiling raises it, and
-    the next call compiles; a call that fails compiled (a backend that fails): one warning, the call run again eager,
-    and the next eager, their tokens eager's."""
+    static cache past its cap, glyd_fast, disable_compile, return_dict_in_generate), and so does a call whose gate's
+    helper (transformers' _prepare_generation_config) fails, its tokens eager's; as m's assistant, m's tokens as with
+    it eager (transformers crops the cache an assistant hands back); a call that runs out of memory compiling raises
+    it, and the next call compiles; a call that fails compiled (a backend that fails): one warning, the call run again
+    eager, and the next eager, their tokens eager's, and a skip_prompt TextStreamer's text through it eager's."""
     compiled = lambda: e in gm._COMPILED
+    with torch.no_grad():
+        assisted = m.generate(ids, assistant_model=e, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
+        streamed = Recorded(tok)
+        e.generate(ids, streamer=streamed, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
     os.environ["GLYD_COMPILE"] = "0"
     try:
         assert gm.fast_generate(e) is e and "glyd_fast" not in e.__dict__, "GLYD_COMPILE=0: generate() eager"
@@ -118,9 +140,11 @@ def fast_loop(e, ids, out_e):
         del os.environ["GLYD_COMPILE"]
     gm.fast_generate(e)
     with torch.no_grad():
-        for kw in (dict(past_key_values=DynamicCache(config=e.config)), dict(num_beams=2), dict(max_new_tokens=e.glyd_fast, max_time=0.5)):
+        for kw in (dict(past_key_values=DynamicCache(config=e.config)), dict(num_beams=2), dict(max_new_tokens=e.glyd_fast, max_time=0.5), dict(disable_compile=True), dict(return_dict_in_generate=True)):
             e.generate(ids, **dict(dict(max_new_tokens=8, do_sample=False), **kw))
             assert not compiled(), ("a call the fast loop leaves as it came, compiled", list(kw))
+        out = m.generate(ids, assistant_model=e, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
+        assert torch.equal(out, assisted) and not compiled(), "as another model's assistant: its tokens as with the assistant eager"
         # transformers' private helper the gate reads (the merged generation config) failing: the call eager, as it came
         cls, calls = type(e), []
         own = cls._prepare_generation_config
@@ -159,14 +183,57 @@ def fast_loop(e, ids, out_e):
         assert not e.__dict__.get("glyd_eager") and compiled(), "out of memory compiling: the next call compiles"
         torch._dynamo.reset()
         gm._COMPILED.pop(e)
+        failed = Recorded(tok)
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            out = e.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False, compile_config=CompileConfig(backend=broken))
+            out = e.generate(ids, streamer=failed, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False, compile_config=CompileConfig(backend=broken))
             gm._COMPILED.pop(e, None)
             again = e.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
         said = [str(x.message) for x in w if "compiled failed" in str(x.message)]
         assert len(said) == 1 and e.glyd_eager and not compiled() and torch.equal(out[0, ids.shape[1] :], out_e) and torch.equal(again[0, ids.shape[1] :], out_e), ("a call that fails compiled", said)
+        assert failed.text == streamed.text, ("a streamer through a call that fails compiled: the eager run's text", failed.text, streamed.text)
     torch._dynamo.reset()
+
+
+def threads(m, ids):
+    """m's generate() compiled from two fresh threads in turn, the second's prompt longer (its cache a new length:
+    compiled again and a CUDA graph recorded in that thread): each call's tokens as the same call's in this thread."""
+    got, prompts = {}, (ids, torch.cat([ids, ids], 1))
+
+    def work(k, x):
+        try:
+            with torch.no_grad():
+                got[k] = m.generate(x, max_new_tokens=8, min_new_tokens=8, do_sample=False)
+        except Exception as e:  # (to this thread's assert)
+            got[k] = e
+
+    for k, x in enumerate(prompts):
+        t = threading.Thread(target=work, args=(k, x))
+        t.start()
+        t.join()
+    with torch.no_grad():
+        for k, x in enumerate(prompts):
+            assert isinstance(got[k], torch.Tensor) and torch.equal(got[k], m.generate(x, max_new_tokens=8, min_new_tokens=8, do_sample=False)), ("generate() in a fresh thread", k, got[k])
+
+
+CONTINUED = """
+import sys, torch, glyd
+from transformers import AutoTokenizer
+name = sys.argv[1]
+tok = AutoTokenizer.from_pretrained(name)
+ids = tok("The history of data compression began", return_tensors="pt").input_ids.cuda()
+more = tok(" and then", return_tensors="pt", add_special_tokens=False).input_ids.cuda()
+got = []
+for compile in (True, False):
+    m = glyd.from_pretrained(name, compile=compile)
+    with torch.no_grad():
+        out = m.generate(ids, max_new_tokens=16, min_new_tokens=16, do_sample=False, return_dict_in_generate=True)
+        x = torch.cat([out.sequences, more], 1)
+        got.append((type(out.past_key_values).__name__, m.generate(x, past_key_values=out.past_key_values, max_new_tokens=16, min_new_tokens=16, do_sample=False)))
+    del m
+assert got[0][0] == "DynamicCache" and torch.equal(got[0][1], got[1][1]), (got[0][0], got[1][0])
+print("continued as eager: 16 tokens past the returned cache")
+"""
 
 
 def ahead(model, ids):
@@ -243,7 +310,8 @@ for name in NAMES:
     q, size = m.config.quantization_config, packed_bytes(m)
     logits_b, out_b = run(m, ids)
     assert m in gm._COMPILED, "plain generate(): compiled (the fast loop)"
-    pickle.dumps(m)  # (after a compiled generate(): nothing unpicklable on the model)
+    if not moe.nbytes(m):  # (a model with packed experts refuses a copy: below)
+        pickle.dumps(m)  # after a compiled generate(), nothing unpicklable on the model
     # The peak: the packed model, the embedding in bf16 until the end, and the packers' own scratch.
     print(f"{name}: glyd {q.layout} fused loaded in {t:.1f} s, peak {peak:.2f} GB: packed weights {size / 1e9:.2f} GB + largest tensor {largest / 1e9:.2f} GB + {peak - (size + largest) / 1e9:.2f} GB; holds {held:.2f} GB")
     print(f"   generated tokens identical to bf16: {same(out_a, out_b)} of {TOKENS}; logits bit-identical: {exact(logits_a, logits_b)}")
@@ -252,10 +320,17 @@ for name in NAMES:
     logits_e, out_e = run(e, ids)
     assert e not in gm._COMPILED and "_compiled_call" not in e.__dict__ and exact(logits_e, logits_b), "compile=False: generate() eager, the same packs"
     print(f"   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's {same(out_e, out_b)} of {TOKENS}")
-    fast_loop(e, ids, out_e)
-    print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {e.glyd_fast} positions eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's")
+    fast_loop(m, e, tok, ids, out_e)
+    print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {e.glyd_fast} positions, disable_compile, return_dict_in_generate eager; as another model's assistant, its tokens as eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's, a streamer's text eager's")
     del e
     torch.cuda.empty_cache()
+    threads(m, ids)
+    print("   generate() compiled from two fresh threads in turn, the second's cache longer: tokens as this thread's")
+    if name == NAMES[0]:  # continuing from a returned cache (a static one's overrun would end the CUDA context: a process of its own)
+        env = dict(os.environ, PYTHONPATH=os.path.dirname(os.path.dirname(glyd.__file__)))
+        r = subprocess.run([sys.executable, "-c", CONTINUED, name], env=env, capture_output=True, text=True, timeout=900)
+        assert r.returncode == 0, r.stderr[-3000:]
+        print("   return_dict_in_generate: " + r.stdout.strip().splitlines()[-1])
     ahead(m, long)
     a = gm.Ahead.of.get(torch.device("cuda", 0))
     print(f"   a prompt of {long.shape[1]} tokens: " + (f"{len(a.chain)} products decoded ahead, logits as decoded on the current stream, bit for bit" if a and a.chain else "not decoded ahead on this GPU"))
