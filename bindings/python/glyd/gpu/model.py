@@ -119,10 +119,11 @@ class Ahead:
 
     @staticmethod
     def reset(d):
-        """The device's buffer about to be replaced: its decodes ahead done, the order recorded again."""
+        """The device's buffer about to be replaced: its decodes ahead done first (the old buffer is given out again
+        on the current stream), the order recorded again."""
         a = Ahead.of.pop(d, None)
         if a is not None:
-            a.side.synchronize()
+            torch.cuda.current_stream(d).wait_stream(a.side)
 
     def plan(self, chain, room):
         """The order's places in a ring of `room` weights, each where the last product before it that reads the
