@@ -306,7 +306,8 @@ A prompt's product is now one C call, as a generation step's
 (`_lib.step`), and on GeForce Ada the kernel runs by stream-K (above;
 other GPUs keep the grid until it is measured there). The 12-bit
 layout's fused kernel is then the faster one to 1024 tokens (the decode
-ahead starts there, was past 640). One forward pass
+ahead starts there, was past 640; for exact and unfused products still
+past 640). One forward pass
 (`e2e.py --prefill --merge`, bf16 and Glyd merged alike), RTX 4080
 SUPER, ms, main / now:
 

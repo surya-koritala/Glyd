@@ -25,8 +25,9 @@ every earlier format.
   44.4 / 41.7 against 39.5 (were 50.2 / 49.3); the time to the first
   token with them (Qwen3-1.7B at 128 tokens 11.6 / 11.8 ms against 13.0
   / 12.8); generation as before. In the 12-bit layout the decode ahead
-  starts at 1024 tokens (was past 640): its fused kernel is now the
-  faster one to there. The C API's `glyd_gpu_mma_gemm_big` and
+  starts at 1024 tokens (was past 640) where the fused kernel takes the
+  prompt: it is now the faster one to there (exact and unfused products
+  past 640, as before). The C API's `glyd_gpu_mma_gemm_big` and
   `glyd_gpu_mma12_gemm_big` take a product's done counters.
 - Long prompts on GeForce Ada within 0.2-0.7% of bf16's time from 2048
   tokens, 1.5-2.9% at 1024 (were 5-10% behind): past 512 tokens (from

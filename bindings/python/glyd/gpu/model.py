@@ -30,9 +30,9 @@ SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
 MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 by mma_gemm_mid
 # A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). On
-# GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, from 1024 in the 12-bit one (whose
-# fused kernel is the faster to there: Qwen3-4B-Instruct-2507's 768 tokens 76.3 ms fused, 77.5 decoded ahead; 1024
-# tokens 100.6 and 99.3); elsewhere, until measured, the fused kernel or the decode as before (the L4, L40S and RTX
+# GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, from 1024 in the 12-bit one where
+# its fused kernel takes the prompt (the faster to there: Qwen3-4B-Instruct-2507's 768 tokens 76.3 ms fused, 77.5
+# decoded ahead; 1024 tokens 100.6 and 99.3), else past 640 (exact, or not fused: each matrix decoded first); elsewhere, until measured, the fused kernel or the decode as before (the L4, L40S and RTX
 # 6000 Ada sum in fp32 at twice the rate: a product's time decodes half as much beside it).
 AHEAD_MIN = int(os.environ.get("GLYD_AHEAD_MIN", 0)) or None
 AHEAD_WARPS = int(os.environ.get("GLYD_AHEAD_WARPS", 0))  # a decode ahead's warps an SM (0: 3 tiered, 2 12-bit), few enough to sit beside a cuBLAS block
@@ -278,7 +278,8 @@ class GLinear(_Node, nn.Module):
     mma layouts up to 64 tokens, and prompts but on Hopper; one-token steps
     in the others); else the matrix decoded into the scratch buffer, then
     PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, from
-    1024 12-bit, decoded ahead of its product where Ahead takes it). exact: every
+    1024 12-bit fused and past 640 not, decoded ahead of its product where
+    Ahead takes it). exact: every
     product the matrix decoded whole, then F.linear on the input as it came,
     as nn.Linear does: its outputs bit for bit (over fused). gemm_max: the
     fast format's fused steps, in tokens."""
@@ -296,7 +297,8 @@ class GLinear(_Node, nn.Module):
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
         self.mid = cc in ((8, 0), (8, 6), (8, 7), (8, 9))  # (an A100 its own kernel: producer and consumer warps)
         ada = cc == (8, 9) and "GeForce" in torch.cuda.get_device_name(p.sm.device)
-        self.ahead = AHEAD_MIN or ((1024 if isinstance(p, g.Mma12) else 513) if ada else 1 << 62)  # prompts decoded ahead, then cuBLAS
+        twelve = 1024 if fused and not exact else 641
+        self.ahead = AHEAD_MIN or ((twelve if isinstance(p, g.Mma12) else 513) if ada else 1 << 62)  # prompts decoded ahead, then cuBLAS
         self._node()
 
     def kernel(self, M):
