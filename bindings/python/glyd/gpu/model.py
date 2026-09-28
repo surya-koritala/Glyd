@@ -909,9 +909,10 @@ def _compiled_call(self, own, compile_config=None):
     pickling), and garbage collected after a call that compiled (torch._dynamo's tracing leaves the model's modules in
     cycles): a model let go of is freed at del, as an eager one. Its calls with torch._dynamo's recompile_limit
     RECOMPILES at least (for them alone: dynamo reads it as it compiles): each model's forward is a graph of its own
-    (its GLinears' handles are constants of it), all on the one frame transformers' forwards share, where at the
-    default 8 the 8th model a process loaded ran uncompiled, with the static cache (Qwen3-0.6B: 80 tokens/s, eager 99,
-    compiled 305)."""
+    (its GLinears' handles are constants of it), all on the one frame transformers' forwards share, of which dynamo
+    compiles recompile_limit graphs at most (8 by default) and runs the rest uncompiled; ten Qwen3-0.6B models one
+    after another in a process all compiled, 296.5-301.3 tokens/s against 99.6 eager (RTX 4080 SUPER:
+    benchmarks/gpu/rtx4080s-fastloop-2026-09-28/checks-5d38f20/many.txt)."""
     import torch._dynamo
     from torch._dynamo.utils import counters
 

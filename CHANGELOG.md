@@ -47,8 +47,9 @@ every earlier format.
   call compiles. Each model's forward
   compiles to a graph of its own, so Glyd's compiled calls run with
   `torch._dynamo.config.recompile_limit` at 64 at least, for those calls
-  alone (at the default 8 the 8th model a process loaded ran uncompiled,
-  Qwen3-0.6B at 80 tokens/s against 305; the process's own setting is left
+  alone (dynamo compiles 8 graphs a frame by default and runs the rest
+  uncompiled; ten Qwen3-0.6B models one after another in a process all
+  compiled, 296.5-301.3 tokens/s against 99.6 eager; the process's own setting is left
   as it is). A model that has generated
   compiled is freed at `del`, as an eager one (its compiled forward does not
   refer to it, as transformers' own does). How: the model's class's
