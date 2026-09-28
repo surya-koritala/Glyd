@@ -1126,9 +1126,9 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(Fmt f, i
 // it (MOE), and a dense one but on GeForce Ada: there mma_gemm_sk_kernel, its
 // blocks by stream-K.
 constexpr int BIG_KK = 4;  // steps a stage
-template <int CW, int PW, int NB, int RBB> struct Big {
+template <int CW, int PW, int NB, int RBB, int CR = 64> struct Big {
     static constexpr int THREADS = 32 * (CW + PW);
-    static constexpr int TM = 64 * CW / RBB;             // tokens a block: CW / RBB slices of 64, by RBB row blocks
+    static constexpr int TM = CR * CW / RBB;             // tokens a block: its consumers of 64 tokens by CR rows, 64 / CR a row block, by RBB row blocks
     static constexpr int A_BYTES = TM * 64 * 2;          // X's tile a stage
     static constexpr int B_UINT4 = RBB * BIG_KK * 4 * 32;  // W's fragments a stage: [row block][step][4][lane]
     static constexpr int SHARED = NB * (A_BYTES + B_UINT4 * 16);
@@ -1415,9 +1415,14 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
 // that blocks share: each writes its sums to a slot (parts: two a block, for the unit it starts in and the one it
 // ends in, [2 gridDim.x][TM 64 RBB] floats in fragment order), and the last of them to finish adds the slots in
 // block order (the same sum every run) with the bias (done: a counter a unit, zero before, reset by the last).
-template <class Fmt, int CW, int PW, int NB, int RBB>
-__global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_sk_kernel(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
-    using C = Big<CW, PW, NB, RBB>;
+// A consumer multiplies 64 tokens by CR rows: 64 (4 consumers, 128 sums a thread) or 32, half a row block (8
+// consumers, 64 sums a thread, which with 4 producers fit the 168 registers a thread of 12 warps: two consumers a
+// scheduler, not one, each as lean: 2.2 instructions a product, and a weight still decoded once for TM tokens). The
+// sums' order is a unit's stages', whatever CR: the same bits for the same TM and RBB.
+template <class Fmt, int CW, int PW, int NB, int RBB, int CR = 64>
+__global__ void __launch_bounds__(Big<CW, PW, NB, RBB, CR>::THREADS, 1) mma_gemm_sk_kernel(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+    using C = Big<CW, PW, NB, RBB, CR>;
+    constexpr int NN = CR / 8, TW = C::TM / 64, HR = 64 / CR;  // a consumer's n-tiles; consumers along the tokens; a row block's
     constexpr int64_t SLOT = C::TM * 64 * RBB;
     extern __shared__ uint4 smem[];  // X's tiles [NB][TM rows][8 16-byte chunks, swizzled], then W's [NB][B_UINT4]
     __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
@@ -1482,18 +1487,19 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_sk_
         }
         return;
     }
-    // Consumer: tokens 64 (warp % (CW / RBB)) on of a unit's TM, row block warp / (CW / RBB) of its RBB.
-    int g = lane >> 2, t = lane & 3, wm = warp % (CW / RBB), rbl = warp / (CW / RBB);
-    float acc[4][8][4];
+    // Consumer: tokens 64 wm on of a unit's TM, rows CR hf on of row block rbl of its RBB (consumers by token slice,
+    // then half a row block, then row block).
+    int g = lane >> 2, t = lane & 3, wm = warp % TW, hf = warp / TW % HR, rbl = warp / (TW * HR);
+    float acc[4][NN][4];
 #pragma unroll
     for (int mt = 0; mt < 4; mt++)
 #pragma unroll
-        for (int nn = 0; nn < 8; nn++)
+        for (int nn = 0; nn < NN; nn++)
 #pragma unroll
             for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
     uint32_t a_row = (uint32_t)(wm * 64 + (lane & 7) + ((lane >> 3) & 1) * 8) * 128, a_half = lane >> 4, a_sw = lane & 7;
     uint32_t fa[2][4][4];
-    uint4 fb[2][4];
+    uint4 fb[2][NN / 2];
     auto frags = [&](int64_t j, int kk, int fi) {
         int bi = (int)(j % NB);
         uint32_t slot = a_base + (uint32_t)bi * C::A_BYTES;
@@ -1501,7 +1507,7 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_sk_
 #pragma unroll
         for (int mt = 0; mt < 4; mt++) ldmatrix_x4(fa[fi][mt], slot + a_row + mt * 16 * 128 + (((2 * kk + a_half) ^ a_sw) << 4));
 #pragma unroll
-        for (int q = 0; q < 4; q++) fb[fi][q] = bsrc[(kk * 4 + q) * 32];
+        for (int q = 0; q < NN / 2; q++) fb[fi][q] = bsrc[(kk * 4 + NN / 2 * hf + q) * 32];
     };
     auto next = [&](int64_t j, int fi) {  // stage j's first fragments, once it is ready
         bar_sync<C::THREADS>(1 + (int)(j % NB));
@@ -1517,16 +1523,12 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_sk_
             if (kk + 1 < BIG_KK) frags(j, kk + 1, fi ^ 1);
             else if (j + 1 < n) next(j + 1, fi ^ 1);
 #pragma unroll
-            for (int mt = 0; mt < 4; mt++) {
-                mma16816(acc[mt][0], fa[fi][mt], fb[fi][0].x, fb[fi][0].y);
-                mma16816(acc[mt][1], fa[fi][mt], fb[fi][0].z, fb[fi][0].w);
-                mma16816(acc[mt][2], fa[fi][mt], fb[fi][1].x, fb[fi][1].y);
-                mma16816(acc[mt][3], fa[fi][mt], fb[fi][1].z, fb[fi][1].w);
-                mma16816(acc[mt][4], fa[fi][mt], fb[fi][2].x, fb[fi][2].y);
-                mma16816(acc[mt][5], fa[fi][mt], fb[fi][2].z, fb[fi][2].w);
-                mma16816(acc[mt][6], fa[fi][mt], fb[fi][3].x, fb[fi][3].y);
-                mma16816(acc[mt][7], fa[fi][mt], fb[fi][3].z, fb[fi][3].w);
-            }
+            for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+                for (int q = 0; q < NN / 2; q++) {
+                    mma16816(acc[mt][2 * q], fa[fi][mt], fb[fi][q].x, fb[fi][q].y);
+                    mma16816(acc[mt][2 * q + 1], fa[fi][mt], fb[fi][q].z, fb[fi][q].w);
+                }
         }
         if (j + NB < n) bar_arrive<C::THREADS>(1 + NB + (int)(j % NB));  // done with stage j's buffers
         if (++s == S) s = 0;
@@ -1541,7 +1543,7 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_sk_
 #pragma unroll
             for (int mt = 0; mt < 4; mt++)
 #pragma unroll
-                for (int nn = 0; nn < 8; nn++) mine[(mt * 8 + nn) * 32 * CW] = make_float4(acc[mt][nn][0], acc[mt][nn][1], acc[mt][nn][2], acc[mt][nn][3]);
+                for (int nn = 0; nn < NN; nn++) mine[(mt * NN + nn) * 32 * CW] = make_float4(acc[mt][nn][0], acc[mt][nn][1], acc[mt][nn][2], acc[mt][nn][3]);
             __threadfence();
             bar_sync<32 * CW>(1 + 2 * NB);
             if (tid == 0) {
@@ -1555,15 +1557,15 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_sk_
 #pragma unroll
                 for (int mt = 0; mt < 4; mt++)
 #pragma unroll
-                    for (int nn = 0; nn < 8; nn++)
+                    for (int nn = 0; nn < NN; nn++)
 #pragma unroll
                         for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
 #pragma unroll
                 for (int mt = 0; mt < 4; mt++)  // (more at once: more registers than the kernel has)
                     for (int64_t b = first; b <= fin; b++) {
-                        const float4* sl = slot_of(b) + mt * 8 * 32 * CW;
+                        const float4* sl = slot_of(b) + mt * NN * 32 * CW;
 #pragma unroll
-                        for (int nn = 0; nn < 8; nn++) {
+                        for (int nn = 0; nn < NN; nn++) {
                             float4 w = __ldcg(sl + nn * 32 * CW);
                             acc[mt][nn][0] += w.x;
                             acc[mt][nn][1] += w.y;
@@ -1578,8 +1580,8 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_sk_
 #pragma unroll
             for (int mt = 0; mt < 4; mt++)
 #pragma unroll
-                for (int nn = 0; nn < 8; nn++) {
-                    int64_t o = my_rb * 64 + nn * 8 + t * 2;
+                for (int nn = 0; nn < NN; nn++) {
+                    int64_t o = my_rb * 64 + CR * hf + nn * 8 + t * 2;
 #pragma unroll
                     for (int h = 0; h < 2; h++) {
                         int64_t m = tile * C::TM + wm * 64 + mt * 16 + g + h * 8;
@@ -1596,7 +1598,7 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_sk_
 #pragma unroll
         for (int mt = 0; mt < 4; mt++)
 #pragma unroll
-            for (int nn = 0; nn < 8; nn++)
+            for (int nn = 0; nn < NN; nn++)
 #pragma unroll
                 for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
         u++;
@@ -3177,10 +3179,10 @@ static int mma_gemm_grid_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int
 // The same on GeForce Ada: mma_gemm_sk_kernel, as many blocks as the GPU holds (at most 8 a unit, at least 4
 // stages a block). The workspace: the blocks' slots, where they share a unit; done: a counter a unit (units: tiles
 // by pairs), zero.
-template <class Fmt, int CW, int PW, int NB, int RBB>
+template <class Fmt, int CW, int PW, int NB, int RBB, int CR = 64>
 static int mma_gemm_big_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
-    using C = Big<CW, PW, NB, RBB>;
-    auto kernel = mma_gemm_sk_kernel<Fmt, CW, PW, NB, RBB>;
+    using C = Big<CW, PW, NB, RBB, CR>;
+    auto kernel = mma_gemm_sk_kernel<Fmt, CW, PW, NB, RBB, CR>;
     static std::atomic<int> known[MAX_DEVICES];  // a device's blocks an SM for this kernel (its shared memory allowed once)
     int dev = current_device();
     int64_t S = K / 16 / BIG_KK, units = (M + C::TM - 1) / C::TM * ((O / 64 + RBB - 1) / RBB), total = units * S;
@@ -3222,7 +3224,11 @@ static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
         auto grid = variant == 2 ? mma_gemm_grid_run<Fmt, 4, 4, 2, 1> : mma_gemm_grid_run<Fmt, 4, 4, 3, 2>;
         return grid(f, O, K, x, M, bias, y, ws, ws_bytes, cs, need);
     }
-    auto run = variant == 2 ? mma_gemm_big_run<Fmt, 4, 4, 2, 1> : mma_gemm_big_run<Fmt, 4, 4, 3, 2>;
+    // Consumers of half a row block (two a scheduler) where they were measured the faster, RTX 4080 SUPER: blocks of
+    // 256 tokens in both layouts (a Qwen3-1.7B, 4B or 8B layer 2-5% faster 12-bit, 1-2% tiered, at 512-4096 tokens),
+    // and of 128 by two row blocks in the 12-bit layout (2-4% at 300-896); there the tiered layout's producers, a
+    // weight decoded for 128 tokens, do not keep up with them (11-14% slower than with consumers of a row block).
+    auto run = variant == 2 ? mma_gemm_big_run<Fmt, 8, 4, 2, 1, 32> : std::is_same_v<Fmt, Nib> ? mma_gemm_big_run<Fmt, 8, 4, 2, 2, 32> : mma_gemm_big_run<Fmt, 4, 4, 3, 2>;
     return run(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
 }
 
