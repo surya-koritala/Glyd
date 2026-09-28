@@ -736,9 +736,10 @@ def fast_generate(model):
     compile runs eager from there on, with one warning. Its class's generate
     and get_compiled_call taken over once (_taken), the model marked
     (glyd_fast): nothing of the model's refers to it. Not with
-    GLYD_COMPILE=0, nor a model over several GPUs (not measured there). The
-    model."""
-    if os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate"):
+    GLYD_COMPILE=0, nor for a family transformers does not compile whole
+    (_can_compile_fullgraph: MiniMax's own cache, DBRX's experts ...), nor
+    a model over several GPUs (not measured there). The model."""
+    if os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate") or not getattr(model, "_can_compile_fullgraph", False):
         return model
     devices = {m.p.sm.device for m in model.modules() if isinstance(m, (GLinear, GEmbedding))} | {t.device for t in model.parameters() if t.is_cuda}
     if len(devices) != 1:
