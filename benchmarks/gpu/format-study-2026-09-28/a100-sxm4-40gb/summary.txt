@@ -1,0 +1,40 @@
+machine: NVIDIA A100-SXM4-40GB, 8.0, 580.126.20, 40960 MiB, 1410 MHz, 1215 MHz, 400.00 W
+         torch 2.14.0+cu130 CUDA 13.0; nvcc 13.0 V13.0.88; sources: gpu-format 47c95d5e594559e0b4ceeec4c80c31805bfff9e5
+steps: [5 s] machine: NVIDIA A100-SXM4-40GB, 8.0; [125 s] builds: exit 0; [128 s] self-check: exit 0; [131 s] layer Qwen3-8B run 1: exit 0; [135 s] layer Qwen3-8B run 2: exit 0; [149 s] check Qwen3-8B: exit 0; [153 s] layer Qwen3-14B run 1: exit 0; [157 s] layer Qwen3-14B run 2: exit 0; [162 s] layer Qwen3-32B run 1: exit 0; [167 s] layer Qwen3-32B run 2: exit 0; [167 s] end
+self-check: 5 matrices ok, exit 0
+Qwen3-14B: M, cuBLAS us, then each kernel: 12-bit and split byte against cuBLAS, split / 12-bit (the runs' mean; n runs)
+  M=    1    581.6 | step 0.823 / 0.819 = 0.995 (2)
+  M=    8    586.8 | step 0.831 / 0.828 = 0.997 (2)
+  M=   16    585.7 | step 0.854 / 0.851 = 0.996 (2)
+  M=   32    632.3 | step 0.917 / 0.917 = 1.001 (2)
+  M=   64    672.8 | step 1.049 / 1.026 = 0.978 (2)
+  M=  128    726.5 | big 1.152 / 1.123 = 0.974 (2)
+  M=  256    840.2 | big 1.368 / 1.335 = 0.976 (2)
+  M=  512   1507.3 | big 1.446 / 1.418 = 0.980 (2)
+  M=  768   2107.4 | big 1.479 / 1.447 = 0.978 (2)
+Qwen3-32B: M, cuBLAS us, then each kernel: 12-bit and split byte against cuBLAS, split / 12-bit (the runs' mean; n runs)
+  M=    1    806.9 | step 0.808 / 0.804 = 0.995 (2)
+  M=    8    837.6 | step 0.793 / 0.790 = 0.997 (2)
+  M=   16    839.2 | step 0.805 / 0.803 = 0.997 (2)
+  M=   32    836.6 | step 0.954 / 0.961 = 1.007 (2)
+  M=   64    857.1 | step 1.155 / 1.127 = 0.976 (2)
+  M=  128    905.7 | big 1.134 / 1.091 = 0.962 (2)
+  M=  256   1111.0 | big 1.374 / 1.342 = 0.977 (2)
+  M=  512   1976.3 | big 1.455 / 1.424 = 0.978 (2)
+  M=  768   3044.8 | big 1.501 / 1.471 = 0.980 (2)
+Qwen3-8B: M, cuBLAS us, then each kernel: 12-bit and split byte against cuBLAS, split / 12-bit (the runs' mean; n runs)
+  M=    1    392.2 | step 0.864 / 0.849 = 0.982 (2)
+  M=    8    387.1 | step 0.895 / 0.877 = 0.979 (2)
+  M=   16    387.6 | step 0.921 / 0.902 = 0.980 (2)
+  M=   32    393.7 | step 1.043 / 1.025 = 0.983 (2)
+  M=   64    392.2 | step 1.303 / 1.281 = 0.983 (2)
+  M=  128    425.4 | big 1.126 / 1.071 = 0.951 (2)
+  M=  256    508.4 | big 1.311 / 1.272 = 0.970 (2)
+  M=  512    850.9 | big 1.475 / 1.442 = 0.978 (2)
+  M=  768   1247.2 | big 1.451 / 1.417 = 0.977 (2)
+check: Qwen/Qwen3-8B: 253 tensors, 7.568 B weights, every one bit for bit (sb12 and mma12, 11 s); sb12 12.040 bits a weight (24.75% smaller), 283 exceptions a million; mma12 12.045 (24.72%), 420
+check: 35 products the 12-bit layout's bits, 0 differ; within 1e-2 of fp32 and repeatable: all ok
+go criteria (format-report-1.md section 4):
+  A100, main's routes (1-16 tokens, 129-768): PASS (worst 0.997, Qwen3-32B M=16 step; limit 1.00; 18 points)
+  (not judged: the other kernels timed, worst 1.007: Qwen3-32B M=32 step)
+  products: PASS (every tensor bit for bit, every product the same bits)

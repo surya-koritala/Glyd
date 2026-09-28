@@ -15,6 +15,10 @@ lm_head apart).
   products against fp32 and against the 12-bit layout's.
 - `layer-*-run*.txt`: one layer's products (q,k,v and gate,up merged) at 1, 8, 32, 256 and 1024 tokens, cuBLAS against
   both layouts in the same kernels, two runs a model.
+- `h100-sxm5/`, `a100-sxm4-40gb/`: the same on an H100 SXM5 and an A100 SXM4 40 GB (Lambda, 2026-09-28), run by the
+  unattended job in `cloud/` (`format_job.sh`, its launchers and its summary; the sources `git archive` of 47c95d5's
+  gpu/glyd_gpu.cu and .h, gpu/experimental/format and bindings/python/glyd): the self-check, layer 10 of Qwen3-8B, 14B
+  and 32B at 1-512 tokens (H100) and 1-768 (A100), two runs each, and check.py on the whole Qwen3-8B.
 
 ## Bits a weight (and exceptions, share of weights)
 
@@ -72,3 +76,34 @@ memory, the prompt kernel's decode on producer warps, fp32-accumulating GeForce 
 within 0.7% of the 12-bit layout at 1-32 tokens (1.1-1.6% faster in the step kernel at 32 on Qwen3-4B) and 0.4-0.8%
 faster at 256-1024. The box reset at 17:35 EDT, before any GPU job of this study (its CPU study had ended at
 17:34:30); these runs were made after it, one at a time under the box's lock.
+
+## H100 SXM5 and A100 SXM4 40 GB (`h100-sxm5/`, `a100-sxm4-40gb/`)
+
+H100 80GB HBM3 (1980 MHz, 700 W) and A100-SXM4-40GB (1410 MHz, 400 W), driver 580.126.20, PyTorch 2.14.0 (CUDA 13.0),
+nvcc 13.0. The split byte's layer time against the 12-bit layout's in the same kernel, each of the 2 runs of the 3
+models (Qwen3-8B, 14B, 32B), on the kernel main runs there:
+
+| GPU | Tokens | Kernel | Split byte / 12-bit | 12-bit / cuBLAS | Split byte / cuBLAS |
+| :-- | :-- | :-- | :-- | :-- | :-- |
+| H100 | 1-16 | step | 0.983-0.998 | 0.86-0.99 | 0.85-0.98 |
+| H100 | 32-64 | TMA | 0.948-0.962 | 0.92-0.99 | 0.88-0.95 |
+| H100 | 128-512 | TMA | 0.955-0.969 | 1.11-1.66 | 1.06-1.59 |
+| A100 | 1-16 | step | 0.976-0.999 | 0.79-0.93 | 0.79-0.91 |
+| A100 | 256-768 | prompt (variant 3) | 0.969-0.981 | 1.31-1.50 | 1.27-1.47 |
+
+Also timed, not main's route there: on the H100 the step kernel at 32-64 tokens, 0.967-0.988; on the A100 the step
+kernel at 32 tokens, 0.981-1.010, at 64, 0.974-0.983, and the prompt kernel at 128, 0.949-0.975 (main runs the A100's
+own kernel at 17-128, which the prototype does not have).
+
+On both, every tensor of Qwen3-8B unpacked bit for bit in both layouts (253), and every product the 12-bit layout's
+bits, within 1e-2 of fp32 and the same on a second call (63 on the H100, the TMA kernel's among them; 35 on the A100).
+
+**Against the go criteria set before the run** (the H100 at most 0.95x the 12-bit layout's time at 128-512 tokens and
+1.00x at 1-64; the A100 at most 1.00x at 1-16 and 129-768; the same products): the H100's 128-512 criterion is not met
+(0.955-0.969); the other three are.
+
+**Where the projection was wrong.** It projected 5-9% less layer time on the H100 at 256-1024 tokens, from gpu-hopper2's
+ablation builds of its own wgp kernel (the decode's 21 integer instructions a k-block against 11). Main's TMA kernel,
+measured here at 128-512 tokens, gains 3.1-4.5%. Its consumers' loop holds 65 integer instructions a k-block
+(`count_lib.txt`) and the split byte removes 14 of them, a fifth; the loop's addresses, bounds and exception check stay.
+The A100's was projected at 0-3% and measured 1.9-3.1% at 256-768 tokens.

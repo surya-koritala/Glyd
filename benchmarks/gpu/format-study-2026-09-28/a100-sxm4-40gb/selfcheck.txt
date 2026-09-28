@@ -1,0 +1,6 @@
+64x64 spread 1.0: 12.109 bits, 7 exceptions, round trip and products ok
+256x1024 spread 1.0: 12.034 bits, 20 exceptions, round trip and products ok
+1024x4096 spread 1.0: 12.034 bits, 326 exceptions, round trip and products ok
+192x512 spread 8.0: 12.053 bits, 61 exceptions, round trip and products ok
+4096x1024 spread 30.0: 14.647 bits, 342797 exceptions, round trip and products ok
+exit 0

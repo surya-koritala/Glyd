@@ -1,0 +1,37 @@
+Qwen/Qwen3-8B: 253 tensors, 7.568 B weights, every one bit for bit (sb12 and mma12, 11 s); sb12 12.040 bits a weight (24.75% smaller), 283 exceptions a million; mma12 12.045 (24.72%), 420
+  10.mlp.down_proj.weight (4096, 12288) M=1 auto: max error 3.0e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.down_proj.weight (4096, 12288) M=8 auto: max error 2.3e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.down_proj.weight (4096, 12288) M=32 auto: max error 2.1e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.down_proj.weight (4096, 12288) M=256 auto: max error 2.1e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.down_proj.weight (4096, 12288) M=1024 auto: max error 2.6e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.gate_proj.weight (12288, 4096) M=1 auto: max error 2.1e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.gate_proj.weight (12288, 4096) M=8 auto: max error 2.2e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.gate_proj.weight (12288, 4096) M=32 auto: max error 2.9e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.gate_proj.weight (12288, 4096) M=256 auto: max error 2.0e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.gate_proj.weight (12288, 4096) M=1024 auto: max error 2.0e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.up_proj.weight (12288, 4096) M=1 auto: max error 2.3e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.up_proj.weight (12288, 4096) M=8 auto: max error 3.4e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.up_proj.weight (12288, 4096) M=32 auto: max error 1.9e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.up_proj.weight (12288, 4096) M=256 auto: max error 3.2e-03 of the largest, repeat same, as mma12 same bits
+  10.mlp.up_proj.weight (12288, 4096) M=1024 auto: max error 2.9e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.k_proj.weight (1024, 4096) M=1 auto: max error 2.4e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.k_proj.weight (1024, 4096) M=8 auto: max error 2.1e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.k_proj.weight (1024, 4096) M=32 auto: max error 2.3e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.k_proj.weight (1024, 4096) M=256 auto: max error 2.5e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.k_proj.weight (1024, 4096) M=1024 auto: max error 2.6e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.o_proj.weight (4096, 4096) M=1 auto: max error 2.4e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.o_proj.weight (4096, 4096) M=8 auto: max error 9.4e-04 of the largest, repeat same, as mma12 same bits
+  10.self_attn.o_proj.weight (4096, 4096) M=32 auto: max error 2.0e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.o_proj.weight (4096, 4096) M=256 auto: max error 2.3e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.o_proj.weight (4096, 4096) M=1024 auto: max error 3.1e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.q_proj.weight (4096, 4096) M=1 auto: max error 2.5e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.q_proj.weight (4096, 4096) M=8 auto: max error 3.1e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.q_proj.weight (4096, 4096) M=32 auto: max error 3.1e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.q_proj.weight (4096, 4096) M=256 auto: max error 2.1e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.q_proj.weight (4096, 4096) M=1024 auto: max error 2.6e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.v_proj.weight (1024, 4096) M=1 auto: max error 1.8e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.v_proj.weight (1024, 4096) M=8 auto: max error 2.0e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.v_proj.weight (1024, 4096) M=32 auto: max error 3.1e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.v_proj.weight (1024, 4096) M=256 auto: max error 2.8e-03 of the largest, repeat same, as mma12 same bits
+  10.self_attn.v_proj.weight (1024, 4096) M=1024 auto: max error 2.9e-03 of the largest, repeat same, as mma12 same bits
+Qwen/Qwen3-8B: layer 10's products all ok
