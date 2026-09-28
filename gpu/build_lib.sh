@@ -22,12 +22,19 @@ done
 # The kernels' flags as PyTorch's extension build has them (the same code; CUDA's headers as system
 # headers, as there: glibc 2.43 declares rsqrt too); only the C API exported, the runtime's symbols kept
 # inside; lib/ for the pip packages' libcudart_static.a (a toolkit's is in lib64/).
-"$NVCC" -O3 -std=c++20 --expt-relaxed-constexpr -isystem "$CUDA/include" \
-    -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ \
-    -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 \
-    -gencode arch=compute_90a,code=sm_90a $BLACKWELL \
-    -gencode arch=compute_80,code=compute_80 \
-    --threads 0 -shared -Xcompiler -fPIC,-fvisibility=hidden -Xlinker --exclude-libs,ALL \
-    -cudart static -L"$CUDA/lib" \
-    -o "$OUT/libglyd_gpu_cuda$MAJOR.so" "$HERE/glyd_gpu.cu"
+FLAGS=(-O3 -std=c++20 --expt-relaxed-constexpr -isystem "$CUDA/include"
+    -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__
+    -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89
+    -gencode arch=compute_90a,code=sm_90a $BLACKWELL
+    -gencode arch=compute_80,code=compute_80
+    -Xcompiler -fPIC,-fvisibility=hidden)
+# Compiled with a thread an architecture, then linked apart: in one command with --threads, nvcc's device link
+# runs an nvlink an architecture in parallel, each writing the one _dlink.reg.c (nvcc --dryrun), and CUDA 12.8's
+# release build failed on it ("nvlink fatal: Could not read file ..._dlink.reg.c (target: sm_100)", x86_64,
+# 2026-09-28).
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+"$NVCC" "${FLAGS[@]}" --threads 0 -c -o "$TMP/glyd_gpu.o" "$HERE/glyd_gpu.cu"
+"$NVCC" "${FLAGS[@]}" -shared -Xlinker --exclude-libs,ALL -cudart static -L"$CUDA/lib" \
+    -o "$OUT/libglyd_gpu_cuda$MAJOR.so" "$TMP/glyd_gpu.o"
 echo "$OUT/libglyd_gpu_cuda$MAJOR.so"
