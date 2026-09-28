@@ -2277,12 +2277,13 @@ __global__ void moe_sum_kernel(const float* __restrict__ y32, const int64_t* __r
 
 // The mma layout back to bf16, rows [row0, row0 + rows) of W (multiples of
 // 64) into out [rows, K] (checks, and the many-token path that multiplies
-// with PyTorch): each warp its step, and on by the grid's warps (one step
-// each where the grid has a warp a step). MOE (exact, a mixture of experts'
-// layer, W its experts' matrices of `rows` rows stacked): blockIdx.y a hit
-// expert of plan (moe_route's; past those hit: nothing to do), its rows into
-// the same rows of out [E rows, K], the rest of out left as it is.
-template <class Fmt, bool MOE = false>
+// with PyTorch): a warp a step; FEW (a decode ahead, a few warps an SM),
+// each warp its step and on by the grid's warps. MOE (exact, a mixture of
+// experts' layer, W its experts' matrices of `rows` rows stacked):
+// blockIdx.y a hit expert of plan (moe_route's; past those hit: nothing to
+// do), its rows into the same rows of out [E rows, K], the rest of out left
+// as it is.
+template <class Fmt, bool MOE = false, bool FEW = false>
 __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out, const int* __restrict__ plan = nullptr) {
     if constexpr (MOE) {
         if ((int)blockIdx.y >= __ldg(plan)) return;  // the whole block: no expert this far down the hits
@@ -2309,6 +2310,7 @@ __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, 
             out32[at2] = R[2 * n];
             out32[at2 + 4] = R[2 * n + 1];
         }
+        if constexpr (!FEW) break;
     }
 }
 
@@ -3007,7 +3009,8 @@ GLYD_GPU_API int glyd_gpu_hold(int64_t ns, cudaStream_t cs) {
 // > 0) that many warps in a block an SM (up to 8 a block), each taking every so many steps: a decode that runs
 // beside a product on another stream (a prompt's next matrix), its blocks small enough for an SM to hold beside a
 // cuBLAS block. Its SMs keep the most shared memory (the carveout a block leaves them in is theirs until it ends:
-// with less, a product's blocks would not fit beside it).
+// with less, a product's blocks would not fit beside it), a kernel of its own (FEW: a warp a step keeps its code
+// and carveout).
 template <class Fmt>
 static int mma_unpack_run(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs) {
     if (row0 % 64 || rows % 64 || warps < 0) return cudaErrorInvalidValue;
@@ -3016,9 +3019,9 @@ static int mma_unpack_run(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t
         static std::atomic<int> most[MAX_DEVICES];
         int dev = current_device();
         if (dev >= MAX_DEVICES || !most[dev].exchange(1))
-            cudaFuncSetAttribute((const void*)mma_unpack_kernel<Fmt>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute((const void*)mma_unpack_kernel<Fmt, false, true>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
         int64_t blocks = std::min(warps, sm_count(dev)), per = std::min<int64_t>(8, (warps + blocks - 1) / blocks);
-        mma_unpack_kernel<Fmt><<<(unsigned)blocks, (unsigned)(32 * per), 0, cs>>>(f, K, row0, rows, out);
+        mma_unpack_kernel<Fmt, false, true><<<(unsigned)blocks, (unsigned)(32 * per), 0, cs>>>(f, K, row0, rows, out);
     } else {
         mma_unpack_kernel<Fmt><<<(steps * 32 + 255) / 256, 256, 0, cs>>>(f, K, row0, rows, out);
     }
