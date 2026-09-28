@@ -431,7 +431,8 @@ def test_packed_weight_view():
 
 def test_cli_pack_and_verify():
     """python -m glyd.gpu pack, verify and fit on a tiny mixture of experts (Qwen3-MoE's): fit counts its experts'
-    bytes, and refuses the glyd-v1 checkpoint (fit the source)."""
+    bytes, and refuses the glyd-v1 checkpoint (fit the source); a save cut short (packs, no glyd.json) refused by
+    verify, and saved over by pack."""
     torch = cuda()
     if torch is None:
         print("test_cli_pack_and_verify: skipped (no CUDA GPU, PyTorch or transformers)")
@@ -449,6 +450,10 @@ def test_cli_pack_and_verify():
         assert f.bf16_weights == sum(os.path.getsize(os.path.join(d, "src", n)) for n in os.listdir(os.path.join(d, "src")) if n.endswith(".safetensors"))
         r = subprocess.run([sys.executable, "-m", "glyd.gpu", "fit", os.path.join(d, "out")], env=env, capture_output=True, text=True)
         assert r.returncode != 0 and "fit the source" in r.stderr, r.stderr[-2000:]
+        os.remove(os.path.join(d, "out", fmt.MANIFEST))  # as a save over it cut short once the manifest is gone: refused, then saved over
+        for args, ok in ((["verify", os.path.join(d, "out")], False), (["pack", os.path.join(d, "src"), os.path.join(d, "out")], True)):
+            r = subprocess.run([sys.executable, "-m", "glyd.gpu", *args], env=env, capture_output=True, text=True)
+            assert (r.returncode == 0) == ok and (ok or "a save cut short" in r.stderr), r.stderr[-2000:]
 
 
 if __name__ == "__main__":

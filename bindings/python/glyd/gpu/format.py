@@ -140,8 +140,10 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9):
     from . import kernels as g, model as gm, moe
 
     old = glob.glob(os.path.join(path, "model*.safetensors")) + glob.glob(os.path.join(path, "model.safetensors.index.json"))
-    if old and not os.path.exists(os.path.join(path, MANIFEST)):
-        raise ValueError(f"glyd: {path} holds another checkpoint; save into a directory of its own")
+    if old and not os.path.exists(os.path.join(path, MANIFEST)) and not stored([f for f in old if f.endswith(".safetensors")]):
+        raise ValueError(f"glyd: {path} holds another checkpoint; save into a directory of its own")  # (a glyd save cut short: saved over)
+    for f in glob.glob(os.path.join(path, "glyd-part-*.safetensors")):
+        os.remove(f)  # a save cut short's
     os.makedirs(path, exist_ok=True)
     ties = getattr(model, "all_tied_weights_keys", None) or {}
     tied, sources = set(ties), set(ties.values())  # a weight tied to another; one others are tied to (saved in bf16: tied as it loads)
@@ -211,6 +213,8 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9):
                 put(k, t)
         flush()
 
+    if os.path.exists(os.path.join(path, MANIFEST)):
+        os.remove(os.path.join(path, MANIFEST))  # first: a save cut short from here on has shards and no manifest, which a load refuses
     for f in old:
         os.remove(f)  # an earlier glyd save's
     names = shard_names(len(shards))

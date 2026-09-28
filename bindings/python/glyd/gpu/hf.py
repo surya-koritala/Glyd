@@ -174,6 +174,8 @@ class GlydQuantizer(HfQuantizer):
         if q.layout == "auto":
             q.layout = gm.auto_layout(model, len(set(devices)), devices[0])[0]
         self.stored = fmt.read_manifest(os.path.dirname(checkpoint_files[0])) if checkpoint_files else None
+        if self.stored is None and checkpoint_files and fmt.stored([f for f in checkpoint_files if f.endswith(".safetensors")]):
+            raise ValueError(f"glyd: {os.path.dirname(checkpoint_files[0])} holds packs but no {fmt.MANIFEST}: a save cut short; save it again")
         if self.stored is not None:  # a glyd-v1 checkpoint: its packs' buffers load in place of their Linears' weights
             heads = fmt.stored(checkpoint_files)
             for path, e in self.stored["packs"].items():
