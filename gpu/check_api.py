@@ -105,9 +105,10 @@ def compiled(model, ids):
 def fast_loop(e, ids, out_e):
     """generate()'s fast loop on e, loaded with compile=False (eager; out_e its TOKENS tokens): GLYD_COMPILE=0 leaves it
     eager; set up (fast_generate), the calls it leaves as they come run eager (a cache of the call's own, two beams, a
-    static cache past its cap, glyd_fast); a call that runs out of memory compiling raises it, and the next call
-    compiles; a call that fails compiled (a backend that fails): one warning, the call run again eager, and the next
-    eager, their tokens eager's."""
+    static cache past its cap, glyd_fast), and so does a call whose gate's helper (transformers'
+    _prepare_generation_config) fails, its tokens eager's; a call that runs out of memory compiling raises it, and
+    the next call compiles; a call that fails compiled (a backend that fails): one warning, the call run again eager,
+    and the next eager, their tokens eager's."""
     compiled = lambda: "glyd_compiled" in e.__dict__
     os.environ["GLYD_COMPILE"] = "0"
     try:
@@ -119,6 +120,26 @@ def fast_loop(e, ids, out_e):
         for kw in (dict(past_key_values=DynamicCache(config=e.config)), dict(num_beams=2), dict(max_new_tokens=e.glyd_fast, max_time=0.5)):
             e.generate(ids, **dict(dict(max_new_tokens=8, do_sample=False), **kw))
             assert not compiled(), ("a call the fast loop leaves as it came, compiled", list(kw))
+        # transformers' private helper the gate reads (the merged generation config) failing: the call eager, as it came
+        cls, calls = type(e), []
+        own = cls._prepare_generation_config
+
+        def fails_once(model, *a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("a helper that fails")
+            return own(model, *a, **k)
+
+        had = "_prepare_generation_config" in vars(cls)
+        cls._prepare_generation_config = fails_once
+        try:
+            out = e.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
+        finally:
+            if had:
+                cls._prepare_generation_config = own
+            else:
+                del cls._prepare_generation_config
+        assert len(calls) == 2 and not compiled() and torch.equal(out[0, ids.shape[1] :], out_e), "the gate's helper failing: the call eager"
 
         def broken(graph, inputs, **kwargs):
             raise RuntimeError("a backend that fails")

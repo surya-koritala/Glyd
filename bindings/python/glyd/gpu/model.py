@@ -21,6 +21,7 @@ import copy
 import functools
 import gc
 import hashlib
+import inspect
 import itertools
 import os
 import re
@@ -735,8 +736,10 @@ def set_scratch(model, exact):
 # GLYD_COMPILE_MAX sets it on any GPU.
 COMPILE_MAX = int(os.environ.get("GLYD_COMPILE_MAX", 0)) or None
 RECOMPILES = 64  # torch._dynamo's recompile_limit for the compiled calls (_compiled_call): a graph a model, a length
-# A call to generate() that sets any of these runs as transformers runs it (fast_generate)
-_OWN = ("past_key_values", "cache_implementation", "assistant_model", "custom_generate", "prompt_lookup_num_tokens", "assistant_early_exit", "output_attentions", "output_hidden_states")
+# A generate() call whose merged generation config sets any of these runs as transformers runs it (_fast): the cache
+# handed back (a static one is neither cropped, as an assistant's is, nor continued past its length), compiling turned
+# off, multi-token prediction, attentions or hidden states out, a cache chosen
+_OWN = ("return_dict_in_generate", "disable_compile", "use_mtp", "output_attentions", "output_hidden_states", "cache_implementation")
 
 
 def fast_generate(model):
@@ -748,7 +751,8 @@ def fast_generate(model):
     the call may reach from its first step (transformers keeps it as long
     as the longest call's) and each step reads all of it, so 1280 positions
     in all at most on a GeForce card and 2048 on another (COMPILE_MAX; the
-    model's glyd_fast); every other call as transformers runs it. The
+    model's glyd_fast; _fast says which calls); every other call as
+    transformers runs it. The
     prompt runs eager either way (transformers compiles the steps after
     it). A call that fails so runs again as it came, as do the model's
     later ones, with one warning. Its class's generate and get_compiled_call
@@ -817,32 +821,59 @@ def _taken(own, fast):
     return taken
 
 
+def _fast(self, own, args, kwargs):
+    """The call's arguments (inspect.BoundArguments over own's signature, self first) with the static cache asked for,
+    where the fast path takes the call; else None. Its generation config merged as transformers merges it for the
+    call (_prepare_generation_config: the call's config or the model's, the rest from the model's and the defaults, the
+    call's options over them), its mode greedy or sampled search (get_generation_mode: one beam, and no assistant,
+    prompt lookup, early exit or multi-token prediction), none of _OWN set, the cache used and not the call's own, no
+    custom_generate, and a static cache of at most glyd_fast positions in all (its sequences times the prompt and
+    max_new_tokens, else max_length, and at least the longest the model had). Those helpers are transformers' private
+    ones: any error, or anything else from them, is None (the call eager)."""
+    try:
+        b = inspect.signature(own).bind(self, *args, **kwargs)
+        a = b.arguments
+        if a.get("custom_generate") is not None:
+            return None
+        cfg, model_kwargs = self._prepare_generation_config(a.get("generation_config"), **a.get("kwargs", {}))
+        if cfg.get_generation_mode(a.get("assistant_model")) not in ("greedy_search", "sample"):
+            return None
+        if any(getattr(cfg, k, None) for k in _OWN) or cfg.use_cache is False or model_kwargs.get("past_key_values") is not None:
+            return None
+        x = a.get("inputs")
+        x = x if x is not None else model_kwargs.get("input_ids", model_kwargs.get("inputs_embeds"))
+        if not isinstance(x, torch.Tensor) or x.dim() < 2:
+            return None
+        n = max(x.shape[1] + (cfg.max_new_tokens if cfg.max_new_tokens is not None else cfg.max_length), getattr(self, "_previous_max_cache_length", 0))
+        if not x.shape[0] * (cfg.num_return_sequences or 1) * n <= self.glyd_fast:
+            return None
+    except Exception:
+        return None
+    if a.get("generation_config") is not None:
+        a["generation_config"] = copy.deepcopy(a["generation_config"])  # (the call's own left as it was)
+        a["generation_config"].cache_implementation = "static"
+    else:
+        a["kwargs"] = dict(a.get("kwargs", {}), cache_implementation="static")
+    return b
+
+
 def _generate(self, own, *args, **kwargs):
-    """fast_generate's generate(): the call with cache_implementation="static" where it takes it, else as it came;
-    one whose forward fails to compile (_compile_error) runs again as it came, from its start, and so do the model's
-    later calls, with one warning (where that fails too, its error is the call's); any other error is the call's, and
-    the next call compiles as before."""
-    cfg = kwargs.get("generation_config") or self.generation_config
-    get = lambda k: kwargs[k] if k in kwargs else getattr(cfg, k, None)
-    x = args[0] if args else next((kwargs[k] for k in ("inputs", "input_ids", "inputs_embeds") if kwargs.get(k) is not None), None)
-    if len(args) < 2 and isinstance(x, torch.Tensor) and x.dim() > 1 and not self.__dict__.get("glyd_eager") and not any(get(k) for k in _OWN) and get("use_cache") is not False and (get("num_beams") or 1) == 1:
-        n = get("max_new_tokens")
-        n = max(x.shape[1] + (n if n is not None else get("max_length") or 20), getattr(self, "_previous_max_cache_length", 0))  # the cache's positions
-        if x.shape[0] * (get("num_return_sequences") or 1) * n <= self.glyd_fast:
-            fast = dict(kwargs, cache_implementation="static")
-            if "generation_config" in kwargs:
-                fast = dict(kwargs, generation_config=copy.deepcopy(cfg))
-                fast["generation_config"].cache_implementation = "static"
-            try:
-                return own(self, *args, **fast)
-            except Exception as e:
-                if not _compile_error(e):
-                    raise
-                out = own(self, *args, **kwargs)
-                self.glyd_eager = True
-                warnings.warn(f"glyd: {type(self).__name__}'s generate() compiled failed ({type(e).__name__}: {str(e).splitlines()[0][:160] if str(e) else ''}); it runs as transformers runs it from here on", stacklevel=3)
-                return out
-    return own(self, *args, **kwargs)
+    """fast_generate's generate(): the call with the static cache where _fast takes it, else as it came; one whose
+    forward fails to compile (_compile_error) runs again as it came, from its start, and so do the model's later
+    calls, with one warning (where that fails too, its error is the call's); any other error is the call's, and the
+    next call compiles as before."""
+    b = None if self.__dict__.get("glyd_eager") else _fast(self, own, args, kwargs)
+    if b is None:
+        return own(self, *args, **kwargs)
+    try:
+        return own(*b.args, **b.kwargs)
+    except Exception as e:
+        if not _compile_error(e):
+            raise
+        out = own(self, *args, **kwargs)
+        self.glyd_eager = True
+        warnings.warn(f"glyd: {type(self).__name__}'s generate() compiled failed ({type(e).__name__}: {str(e).splitlines()[0][:160] if str(e) else ''}); it runs as transformers runs it from here on", stacklevel=3)
+        return out
 
 
 def _compiled_call(self, own, compile_config=None):
