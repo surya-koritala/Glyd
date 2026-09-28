@@ -1549,18 +1549,20 @@ __device__ __forceinline__ void exc_copy(int lo, int hi, int cap, int& a, int& n
     if (4 * na > cap) na = -1;
 }
 
-// A unit's sum out (its WG row blocks, NT tokens), r in each thread's fragment order (rows 16w + g (+ 8)
-// of row block wg, tokens 8jn + 2t (+ 1): r[4jn + 2h + c]): to Y when the block covers the unit, else to
-// its slot, and the last of the unit's blocks to finish adds the slots in block order (the same result
-// every run). The WG warpgroups' threads (ct), named barrier 1.
+// A unit's sum out (its WG row blocks, row unit pr, NT tokens m0 on), r in each thread's fragment order (rows
+// 16w + g (+ 8) of row block wg, tokens 8jn + 2t (+ 1): r[4jn + 2h + c]): to Y when the block covers the unit,
+// else to its slot, and the last of the unit's blocks to finish adds the slots in block order (the same result
+// every run). A block's slots: 2b for its first unit, 2b + 1 for its last (only those two may be shared). The WG
+// warpgroups' threads (ct), named barrier 1.
 template <int NT, int WG>
-__device__ __forceinline__ void sum_out12(float (&r)[NT / 2], int p, int S, int64_t nb, int64_t U, float* parts, int* done, int& last, int ct, int64_t O, int64_t M, const __nv_bfloat16* bias, __nv_bfloat16* Y) {
+__device__ __forceinline__ void sum_out12(float (&r)[NT / 2], int64_t p, int64_t pr, int64_t m0, int S, int64_t nb, int64_t U, float* parts, int* done, int& last, int ct, int64_t O, int64_t M, const __nv_bfloat16* bias, __nv_bfloat16* Y) {
     constexpr int R = 64 * WG;
     int wg = ct >> 7, w = (ct >> 5) & 3, g = (ct & 31) >> 2, t = ct & 3;
-    int64_t first = block_of_step((int64_t)p * S, nb, U), fin = block_of_step((int64_t)p * S + S - 1, nb, U);
+    int64_t first = block_of_step(p * S, nb, U), fin = block_of_step(p * S + S - 1, nb, U);
+    auto slot = [&](int64_t b) { return parts + (2 * b + (p != b * U / nb / S)) * (NT * R); };
     if (first != fin) {
-        // Slots [NT / 8 float4s][threads]: each thread's r in order, coalesced; distinct for every (block, unit).
-        float4* pp = (float4*)(parts + ((int64_t)blockIdx.x + p) * (NT * R));
+        // Slots [NT / 8 float4s][threads]: each thread's r in order, coalesced.
+        float4* pp = (float4*)slot(blockIdx.x);
 #pragma unroll
         for (int q = 0; q < NT / 8; q++) pp[q * 128 * WG + ct] = make_float4(r[4 * q], r[4 * q + 1], r[4 * q + 2], r[4 * q + 3]);
         __threadfence();
@@ -1575,7 +1577,7 @@ __device__ __forceinline__ void sum_out12(float (&r)[NT / 2], int p, int S, int6
 #pragma unroll
             for (int i = 0; i < NT / 2; i++) r[i] = 0.f;
             for (int64_t b = first; b <= fin; b++) {
-                const float4* bp = (const float4*)(parts + (b + p) * (NT * R));
+                const float4* bp = (const float4*)slot(b);
 #pragma unroll
                 for (int q = 0; q < NT / 8; q++) {
                     float4 v = __ldcg(bp + q * 128 * WG + ct);
@@ -1592,11 +1594,11 @@ __device__ __forceinline__ void sum_out12(float (&r)[NT / 2], int p, int S, int6
         for (int jn = 0; jn < NT / 8; jn++)
 #pragma unroll
             for (int h = 0; h < 2; h++) {
-                int64_t o = ((int64_t)WG * p + wg) * 64 + 16 * w + g + 8 * h;
+                int64_t o = ((int64_t)WG * pr + wg) * 64 + 16 * w + g + 8 * h;
                 float bo = bias && o < O ? __bfloat162float(bias[o]) : 0.f;
 #pragma unroll
                 for (int c = 0; c < 2; c++) {
-                    int64_t m = 8 * jn + 2 * t + c;
+                    int64_t m = m0 + 8 * jn + 2 * t + c;
                     if (o < O && m < M) Y[m * O + o] = __float2bfloat16(r[4 * jn + 2 * h + c] + bo);
                 }
             }
@@ -1604,7 +1606,12 @@ __device__ __forceinline__ void sum_out12(float (&r)[NT / 2], int p, int S, int6
 }
 
 template <int NT, int WG> struct Tma12 {
-    static constexpr int THREADS = 128 * WG + 32;  // WG consumer warpgroups (a warpgroup's first warp a multiple of 4), the TMA warp
+    // Past 128 tokens the TMA warp is a warpgroup's first, the warpgroup handing its registers to the consumers
+    // (setmaxnreg, within the block's own: 168 each at launch, 40 a thread there and CR a consumer's after): 128 of
+    // a consumer's are its sums.
+    static constexpr bool PWG = NT > 128;
+    static constexpr int CR = 232;
+    static constexpr int THREADS = 128 * WG + (PWG ? 128 : 32);  // WG consumer warpgroups (a warpgroup's first warp a multiple of 4), the TMA warp
     static constexpr int R = 64 * WG;              // W's rows a unit (a row block a warpgroup)
     static constexpr int XB = NT * 128;            // X's tile a stage: NT tokens by 64 columns
     static constexpr int CB = 4 * (int)STEP12, EB = 1024, BB = 32;  // a row block's steps a stage, its exceptions (up to 256), their bounds
@@ -1624,10 +1631,14 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
     uint8_t* gbase = smem_raw + (base - raw);
     uint32_t full = base + C::NS * C::SLOT, empty = full + 8 * C::NS;
     int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
-    int64_t KS = K / 16, RB = O / 64, U = (RB + WG - 1) / WG * (K / 64), nb = gridDim.x;
+    // Units: RU row units (WG row blocks) by TC chunks of NT tokens, unit p chunk p / RU and row unit p mod RU; the
+    // work, units by stages, split evenly over the blocks. Chunk by chunk: the blocks at work at once share few row
+    // units, a chunk's blocks each of theirs at about the same time (read from memory about once, not once a chunk).
+    int TC = (int)((M + NT - 1) / NT), RU = (int)((O / 64 + WG - 1) / WG);
+    int64_t KS = K / 16, RB = O / 64, U = (int64_t)RU * TC * (K / 64), nb = gridDim.x;
     int S = (int)(K / 64);
     int64_t u0 = blockIdx.x * U / nb;
-    int n = (int)((blockIdx.x + 1) * U / nb - u0);  // the block's stages, u0 on: unit (WG row blocks) u / S, stage u mod S
+    int n = (int)((blockIdx.x + 1) * U / nb - u0);  // the block's stages, u0 on: unit u / S, stage u mod S
     int p0 = (int)(u0 / S), s0 = (int)(u0 - (int64_t)p0 * S);
     if (tid == 0) {
         for (int i = 0; i < C::NS; i++) {
@@ -1637,7 +1648,11 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
         asm volatile("fence.mbarrier_init.release.cluster;\n" ::: "memory");
     }
     __syncthreads();
-    if (warp == 4 * WG) {
+    if (warp >= 4 * WG) {
+        if constexpr (C::PWG) {
+            asm volatile("setmaxnreg.dec.sync.aligned.u32 40;\n" ::: "memory");
+            if (warp != 4 * WG) return;
+        }
         // The TMA warp: lane j mod 8 issues stage j. Stages go in batches of 8,
         // lane l's bounds for stage l of the batch loaded while the batch before
         // was issued (a load pends for the whole warp: one register set a lane,
@@ -1645,7 +1660,7 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
         int e[5 * WG], en[5 * WG];  // exc_base at the stage's 4 steps and the next, each row block: this batch's, the next's
         auto ahead = [&](int p, int s, int k) {  // the stage k after (p, s)
             s += k;
-            stage_bounds<WG>(f, RB, KS, p + s / S, s % S, en);
+            stage_bounds<WG>(f, RB, KS, (p + s / S) % RU, s % S, en);
         };
         if (lane < 8 && lane < n) ahead(p0, s0, lane);
         for (int j = 0, p = p0, s = s0; j < n; j++, s = s + 1 == S ? 0 : s + 1, p += s == 0) {
@@ -1670,11 +1685,11 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
                     bs[5] = na[r] < 0 ? -1 : a[r];
                 }
                 mbar_expect_tx(fb, bytes);
-                tma_2d(xs, &xmap, (int)(s * 64), 0, fb);
+                tma_2d(xs, &xmap, (int)(s * 64), p / RU * NT, fb);
 #pragma unroll
                 for (int r = 0; r < WG; r++) {
                     uint32_t cs = xs + C::XB + r * C::RBB;
-                    bulk_g2s(cs, f.data + (min((int64_t)WG * p + r, RB - 1) * KS + 4 * s) * STEP12, C::CB, fb, true);
+                    bulk_g2s(cs, f.data + (min((int64_t)WG * (p % RU) + r, RB - 1) * KS + 4 * s) * STEP12, C::CB, fb, TC == 1);  // (read once but where the chunks share it)
                     if (na[r] > 0) bulk_g2s(cs + C::CB, f.exc + a[r], 4 * na[r], fb);
                 }
             }
@@ -1682,15 +1697,15 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
         }
         return;
     }
-    // Consumer warpgroup wg: row block WG p + wg of each unit p; warp w its rows 16w to 16w + 15.
+    // Consumer warpgroup wg: row block WG (p mod RU) + wg of each unit p; warp w its rows 16w to 16w + 15.
     // Two sets of A registers, used in turn: a stage's products may still run while the next decodes.
+    if constexpr (C::PWG) asm volatile("setmaxnreg.inc.sync.aligned.u32 %0;\n" ::"n"(C::CR) : "memory");
     int ct = tid, wg = ct >> 7, w = (ct >> 5) & 3;
     uint32_t* xw = (uint32_t*)(gbase + C::NS * C::SLOT + 16 * C::NS) + 256 * warp;  // this warp's exceptions' scratch
     ((uint4*)xw)[2 * lane] = ((uint4*)xw)[2 * lane + 1] = make_uint4(0u, 0u, 0u, 0u);
     __syncwarp();
     float d[NT / 2];  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a unit's first product
     uint32_t A0[4][4], A1[4][4];
-    constexpr bool SB = NT >= 256;  // one set of A registers, a stage's products waited for before the next decodes: the accumulators take the rest
     int held = -1;  // the slot whose products may still be running
     auto release = [&](int sl) {  // the slot is free for stage j + NS (lane 0 arrives, by predicate: no branch among the products)
         __syncwarp();
@@ -1722,40 +1737,29 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
         keep_d();
         wg_fence();
         wgmma4_rs(d, A, desc, !first);
-        if constexpr (SB) {
-            wg_wait<0>();  // this stage's products are done: A and the slot are free
-            keep(A);
-            keep_d();
-            release(sl);
-        } else {
-            wg_wait<1>();  // the stage before's products are done: its A set and its slot are free
-            keep(Aprev);
-            keep_d();
-            if (held >= 0) release(held);
-            held = sl;
-        }
+        wg_wait<1>();  // the stage before's products are done: its A set and its slot are free
+        keep(Aprev);
+        keep_d();
+        if (held >= 0) release(held);
+        held = sl;
     };
     // A unit's stages, then its sum out: no branch touches d while products run. The stages in pairs, an odd
     // one after them: every path gives each set of A registers to the products before it is decoded into
     // again (a pair's second stage skipped inside the loop had ptxas serialize every product, its C7513).
     for (int j = 0, p = p0, s = s0; j < n; p++, s = 0) {
         int len = min(S - s, n - j), k = 0;
-        if constexpr (SB) {
-            for (; k < len; k++) stage(j + k, k == 0, A0, A0);
-        } else {
-            for (; k + 1 < len; k += 2) {
-                stage(j + k, k == 0, A0, A1);
-                stage(j + k + 1, false, A1, A0);
-            }
-            if (k < len) stage(j + k, k == 0, A0, A1);
+        for (; k + 1 < len; k += 2) {
+            stage(j + k, k == 0, A0, A1);
+            stage(j + k + 1, false, A1, A0);
         }
+        if (k < len) stage(j + k, k == 0, A0, A1);
         wg_wait<0>();
         keep(A0);
-        if constexpr (!SB) keep(A1);
+        keep(A1);
         keep_d();
         if (held >= 0) release(held);
         held = -1;
-        sum_out12<NT, WG>(d, p, S, nb, U, parts, done, last, ct, O, M, bias, Y);  // (d, summed in place: the next unit's first product sets it)
+        sum_out12<NT, WG>(d, p, p % RU, (int64_t)(p / RU) * NT, S, nb, U, parts, done, last, ct, O, M, bias, Y);  // (d, summed in place: the next unit's first product sets it)
         j += len;
     }
 #endif
@@ -1879,7 +1883,7 @@ __global__ void __launch_bounds__(Mid12<NT, WG>::THREADS, 1) mma12_mid_kernel(Ni
             __syncwarp();
             if (lane == 0) mbar_arrive(empty + 8 * sl);  // the slot is free for stage jj + NS
         }
-        sum_out12<NT, WG>(d, p, S, nb, U, parts, done, last, ct, O, M, bias, Y);
+        sum_out12<NT, WG>(d, p, p, 0, S, nb, U, parts, done, last, ct, O, M, bias, Y);
         j += len;
     }
 #endif
@@ -2885,8 +2889,8 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_big(const uint8_t* data, const uint32_t* ex
 }
 
 // Many tokens on Ampere and Ada, the 12-bit layout: 64 tokens a launch (x + 64c on), in the smallest
-// tile that holds them. The workspace: the largest launch's slots, [blocks + units][NT 64 WG] floats (one
-// buffer for all: the launches are in stream order); done: O / 64. need: the largest's bytes, nothing launched.
+// tile that holds them. The workspace: the largest launch's slots, two a block, [2 blocks][NT 64 WG] floats
+// (one buffer for all: the launches are in stream order); done: O / 64. need: the largest's bytes, nothing launched.
 template <int NT, int WG>
 static int mma12_mid_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t m0, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
     using C = Mid12<NT, WG>;
@@ -2895,7 +2899,7 @@ static int mma12_mid_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
     int dev = current_device();
     int64_t P = (O / 64 + WG - 1) / WG, U = P * (K / 64);
     int64_t nb = std::max<int64_t>(1, std::min<int64_t>(per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), U / 8));
-    if (need) *need = std::max(*need, (size_t)((nb + P) * NT * 64 * WG) * sizeof(float));
+    if (need) *need = std::max(*need, (size_t)(2 * nb * NT * 64 * WG) * sizeof(float));
     else kernel<<<nb, C::THREADS, C::SHARED, cs>>>(f, O, K, M, bf(x) + m0 * K, bf(bias), bf(y) + m0 * O, parts, done);
     return 0;
 }
@@ -2965,22 +2969,22 @@ static PFN_cuTensorMapEncodeTiled_v12000 tensor_map_encoder() {
     return fn;
 }
 
-// Many tokens on Hopper, the 12-bit layout: 256 tokens a launch, as mma12_mid_run's (the workspace:
-// [blocks + units][NT 64 WG] floats; done: O / 64).
+// Many tokens on Hopper, the 12-bit layout, as mma12_mid_run's (the workspace: two slots a block, [2 blocks][NT
+// 64 WG] floats; done: a counter a unit, O / 64).
 template <int NT, int WG>
 static int mma12_tma_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t m0, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
     using C = Tma12<NT, WG>;
     auto kernel = mma12_tma_kernel<NT, WG>;
     static std::atomic<int> known[MAX_DEVICES];  // a device's blocks an SM for this kernel
     int dev = current_device();
-    int64_t P = (O / 64 + WG - 1) / WG, U = P * (K / 64);
+    int64_t P = (O / 64 + WG - 1) / WG * ((M + NT - 1) / NT), U = P * (K / 64);  // units: row units by chunks of NT tokens
     // As many blocks as fit at once, but at least 8 stages a block; where that leaves a block under 32 stages
     // and there are fewer units than blocks, a whole number of blocks a unit: each unit's sum over as few
     // parts, its blocks done together (Qwen3-8B's o, 4096 x 4096, 8% the faster on an H100).
     int64_t nb = std::max<int64_t>(1, std::min<int64_t>(per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), U / 8));
     if (P < nb && U < 32 * nb) nb = nb / P * P;
     if (need) {
-        *need = std::max(*need, (size_t)((nb + P) * NT * C::R) * sizeof(float));
+        *need = std::max(*need, (size_t)(2 * nb * NT * C::R) * sizeof(float));
         return 0;
     }
     // X [M, K] as tiles of NT tokens by 64 columns, 128-byte swizzle; rows past M read as zeros.
@@ -3001,11 +3005,14 @@ static int mma12_wg_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t 
     if (attribute(cudaDevAttrComputeCapabilityMajor, dev) != 9 || attribute(cudaDevAttrComputeCapabilityMinor, dev) != 0) return cudaErrorNotSupported;
     // (O at least 64: the partition below divides by its units)
     if (O < 64 || O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16 || (uintptr_t)f.data % 16 || (uintptr_t)f.exc % 16) return cudaErrorInvalidValue;
-    // 256 tokens at a time, in the smallest tile that holds them; two warpgroups (128 rows a stage): with four
-    // and the TMA warp (17 warps, 5 on one scheduler) a thread had 96 registers, and ptxas spilled and
-    // serialized the products (its C7512).
-    for (int64_t m0 = 0; m0 < M; m0 += 256) {
-        int64_t mc = std::min<int64_t>(256, M - m0);
+    // To 128 tokens the smallest tile that holds them; past that tiles of 256 (each weight decoded once for 256
+    // tokens), a launch's tokens in chunks of 256 inside it, as many as keep its units (row units of 128 rows by
+    // chunks) within the O / 64 done counters: 512 tokens a launch where O / 64 is even. Two warpgroups (128 rows a
+    // stage): with four and the TMA warp (17 warps, 5 on one scheduler) a thread had 96 registers, and ptxas
+    // spilled and serialized the products (its C7512).
+    int64_t per = 256 * std::max<int64_t>(1, O / 64 / (O / 64 / 2 + O / 64 % 2));
+    for (int64_t m0 = 0; m0 < M; m0 += per) {
+        int64_t mc = std::min<int64_t>(per, M - m0);
         auto run = mc <= 16 ? mma12_tma_run<16, 2> : mc <= 32 ? mma12_tma_run<32, 2> : mc <= 64 ? mma12_tma_run<64, 2> : mc <= 96 ? mma12_tma_run<96, 2> : mc <= 112 ? mma12_tma_run<112, 2> : mc <= 128 ? mma12_tma_run<128, 2> : mma12_tma_run<256, 2>;
         if (int r = run(f, O, K, x, m0, mc, bias, y, parts, done, cs, need)) return r;
     }
