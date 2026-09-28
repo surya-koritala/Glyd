@@ -5,10 +5,11 @@ bit for bit, whole or inside the matrix products: Glyd's CUDA kernels behind
 a C API, for engines in C, C++, Rust or any language with a C FFI. No Python,
 no PyTorch.
 
-- `libglyd_gpu_cudaN.so`: the kernels, CUDA N's runtime linked in: it needs
-  the NVIDIA driver and the system's C and C++ libraries alone (Linux, glibc
-  2.28 or later). Code for Ampere (sm_80, sm_86), Ada (sm_89), Hopper
-  (sm_90a) and Blackwell (sm_100, sm_120), PTX for the GPUs after them.
+- `libglyd_gpu_cudaN.so`: the kernels. It carries its own CUDA runtime,
+  linked in statically, so it needs only the NVIDIA driver and the system's
+  C and C++ libraries (Linux, glibc 2.28 or later). Code for Ampere (sm_80,
+  sm_86), Ada (sm_89), Hopper (sm_90a) and Blackwell (sm_100, sm_120), PTX
+  for the GPUs after them.
 - `glyd_gpu.h`: its C API. Every function; the arrays of a packed matrix;
   a product's workspace query, then its call; the stream; the return codes.
   Check `glyd_gpu_api_version()` against `GLYD_GPU_API_VERSION`: the
@@ -20,6 +21,11 @@ no PyTorch.
   personal, educational, research and other non-commercial use; any
   commercial production use needs a license (suryakoritala1324@gmail.com);
   each version converts to Apache-2.0 four years after its release.
+
+Take the download whose CUDA major version is your toolkit's and runtime's:
+cuda12 for CUDA 12, cuda13 for CUDA 13. Your program links its own CUDA
+runtime (for its memory and streams), which runs beside the one inside the
+library, on the same driver.
 
 The example, built in this directory with the CUDA toolkit's headers (for
 `cudaStream_t`) and runtime (for its own memory; `/usr/local/cuda`, or

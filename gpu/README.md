@@ -758,8 +758,12 @@ glyd.from_pretrained and the rest, is in bindings/python/README.md.
 ## The library
 
 `build_lib.sh` builds glyd_gpu.cu's kernels alone, behind their C API:
-libglyd_gpu_cuda12.so or libglyd_gpu_cuda13.so (nvcc's CUDA), with no
-PyTorch in it and the CUDA runtime linked in, so it needs only the driver.
+libglyd_gpu_cuda12.so or libglyd_gpu_cuda13.so by nvcc's CUDA major version,
+with no PyTorch in it. It carries its own CUDA runtime, linked in statically,
+so it needs only the driver. A program that calls it links its own runtime
+beside that one, so take the library whose CUDA major version is the
+program's toolkit and runtime: libglyd_gpu_cuda12.so for CUDA 12,
+libglyd_gpu_cuda13.so for CUDA 13.
 [glyd_gpu.h](glyd_gpu.h) declares every function and says what it takes: the
 arrays of a packed matrix (the tiered and 12-bit layouts, the fast and dense
 formats), a product's workspace query before its call, the stream, the return
