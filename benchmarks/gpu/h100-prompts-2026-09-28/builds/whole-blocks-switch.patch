@@ -1,0 +1,11 @@
+--- a/gpu/glyd_gpu.cu (84348d6)
++++ b/gpu/glyd_gpu.cu
+@@ -2982,7 +2982,7 @@
+     // and there are fewer units than blocks, a whole number of blocks a unit: each unit's sum over as few
+     // parts, its blocks done together (Qwen3-8B's o, 4096 x 4096, 8% the faster on an H100).
+     int64_t nb = std::max<int64_t>(1, std::min<int64_t>(per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), U / 8));
+-    if (P < nb && U < 32 * nb) nb = nb / P * P;
++    if (P < nb && U < 32 * nb && !getenv("GLYD_NO_WHOLE")) nb = nb / P * P;
+     if (need) {
+         *need = std::max(*need, (size_t)(2 * nb * NT * C::R) * sizeof(float));
+         return 0;

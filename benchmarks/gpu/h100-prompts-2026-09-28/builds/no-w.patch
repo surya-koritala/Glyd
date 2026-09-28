@@ -1,0 +1,16 @@
+--- a/gpu/glyd_gpu.cu (11f2a42)
++++ b/gpu/glyd_gpu.cu
+@@ -1691,12 +1691,12 @@
+                     for (int i = 0; i < 5; i++) bs[i] = e[5 * r + i];
+                     bs[5] = na[r] < 0 ? -1 : a[r];
+                 }
++                bytes -= WG * C::CB;  // EXPERIMENT: no W
+                 mbar_expect_tx(fb, bytes);
+                 tma_2d(xs, &xmap, (int)(s * 64), p / RU * NT, fb);
+ #pragma unroll
+                 for (int r = 0; r < WG; r++) {
+                     uint32_t cs = xs + C::XB + r * C::RBB;
+-                    bulk_g2s(cs, f.data + (min((int64_t)WG * (p % RU) + r, RB - 1) * KS + 4 * s) * STEP12, C::CB, fb, TC == 1);  // (read once but where the chunks share it)
+                     if (na[r] > 0) bulk_g2s(cs + C::CB, f.exc + a[r], 4 * na[r], fb);
+                 }
+             }

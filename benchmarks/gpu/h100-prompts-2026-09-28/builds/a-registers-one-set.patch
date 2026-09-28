@@ -1,0 +1,53 @@
+--- a/gpu/glyd_gpu.cu (11f2a42)
++++ b/gpu/glyd_gpu.cu
+@@ -1713,6 +1713,7 @@
+     __syncwarp();
+     float d[NT / 2];  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a unit's first product
+     uint32_t A0[4][4], A1[4][4];
++    constexpr bool SB = NT >= 192;
+     int held = -1;  // the slot whose products may still be running
+     auto release = [&](int sl) {  // the slot is free for stage j + NS (lane 0 arrives, by predicate: no branch among the products)
+         __syncwarp();
+@@ -1744,22 +1745,33 @@
+         keep_d();
+         wg_fence();
+         wgmma4_rs(d, A, desc, !first);
+-        wg_wait<1>();  // the stage before's products are done: its A set and its slot are free
+-        keep(Aprev);
+-        keep_d();
+-        if (held >= 0) release(held);
+-        held = sl;
++        if constexpr (SB) {
++            wg_wait<0>();
++            keep(A);
++            keep_d();
++            release(sl);
++        } else {
++            wg_wait<1>();  // the stage before's products are done: its A set and its slot are free
++            keep(Aprev);
++            keep_d();
++            if (held >= 0) release(held);
++            held = sl;
++        }
+     };
+     // A unit's stages, then its sum out: no branch touches d while products run. The stages in pairs, an odd
+     // one after them: every path gives each set of A registers to the products before it is decoded into
+     // again (a pair's second stage skipped inside the loop had ptxas serialize every product, its C7513).
+     for (int j = 0, p = p0, s = s0; j < n; p++, s = 0) {
+         int len = min(S - s, n - j), k = 0;
+-        for (; k + 1 < len; k += 2) {
+-            stage(j + k, k == 0, A0, A1);
+-            stage(j + k + 1, false, A1, A0);
++        if constexpr (SB) {
++            for (; k < len; k++) stage(j + k, k == 0, A0, A0);
++        } else {
++            for (; k + 1 < len; k += 2) {
++                stage(j + k, k == 0, A0, A1);
++                stage(j + k + 1, false, A1, A0);
++            }
++            if (k < len) stage(j + k, k == 0, A0, A1);
+         }
+-        if (k < len) stage(j + k, k == 0, A0, A1);
+         wg_wait<0>();
+         keep(A0);
+         keep(A1);

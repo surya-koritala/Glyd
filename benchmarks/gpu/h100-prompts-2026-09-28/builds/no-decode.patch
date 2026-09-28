@@ -1,0 +1,14 @@
+--- a/gpu/glyd_gpu.cu (11f2a42)
++++ b/gpu/glyd_gpu.cu
+@@ -1736,7 +1736,10 @@
+         int eb[5];
+ #pragma unroll
+         for (int i = 0; i < 5; i++) eb[i] = bs[i];
+-        decode12_rows(f, sp, (const uint32_t*)(sp + C::CB), eb, bs[5], lane, w, xw, A);
++#pragma unroll
++        for (int kk = 0; kk < 4; kk++)  // EXPERIMENT: no decode (A: one word of the stage's W a register)
++#pragma unroll
++            for (int i = 0; i < 4; i++) A[kk][i] = ((const uint32_t*)sp)[(lane + 32 * (4 * kk + i)) & 1023];
+         uint32_t xs = base + sl * C::SLOT;
+         uint64_t desc[4];
+ #pragma unroll

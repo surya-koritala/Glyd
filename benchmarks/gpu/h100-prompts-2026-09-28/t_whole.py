@@ -1,6 +1,6 @@
 # The whole-blocks rule (mma12_tma_run: nb rounded down to a whole number of blocks a unit) against the even split, on
 # other models' merged attention matrices (the rule's cases: few units, short blocks), synthetic weights, cold (copies
-# past the L2), CUDA graphs. GLYD_NO_WHOLE=1 (a test build's switch): the even split.
+# past the L2), CUDA graphs. GLYD_NO_WHOLE=1 (a build with builds/whole-blocks-switch.patch): the even split.
 #   python t_whole.py 17,32,64,96,128,256
 import os, sys, time, torch
 sys.path.insert(0, os.path.expanduser(os.environ.get("GLYD_SRC", "~/glyd/gpu")))

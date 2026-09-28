@@ -338,7 +338,14 @@ idle at most a sixth of the blocks and give a unit 3 or more, or past
 128 tokens (parts of 96 and 128 KB in tiles of 192 and 256; timed at
 256): on other models' q, k, v and o the rule had cost up to 47%
 (Gemma-2-9B's q, k, v: 64 blocks of 114). Logs:
-benchmarks/gpu/h100-prompts-2026-09-28.
+benchmarks/gpu/h100-prompts-2026-09-28; the builds that skip a part, and
+the A/B builds, are a commit and a patch (builds/*.patch): no-x, half-x,
+no-w, no-decode and a-registers-one-set on 11f2a42, no-parts-sum and
+a-from-shared-memory-no-decode on 2370b55, units-row-by-row and
+whole-blocks-switch on 84348d6 (the synthetic whole-blocks runs on its
+kernel as it was before RU was 32-bit), every-thread-fence on 709bb28;
+those that skip a part timed by kbench.py with its check against fp32
+taken out (`sed '/assert err < 1e-2/d'`).
 
 ### Which layout on which GPU
 
