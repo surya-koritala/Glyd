@@ -285,7 +285,8 @@ for q, lin in zip(packs, a100):
 # shapes, both layouts, called in turn as a prompt calls them, the first time recorded, then followed; a prompt that
 # leaves the order midway, a decode on the current stream midway, another order between (recorded, then followed),
 # then the first again; at 600 tokens, then 2100 (the order kept). The products on the order (as many as said, from
-# the first) bit for bit as with their matrices decoded on the current stream, the rest the fused kernel's.
+# the first) bit for bit as with their matrices decoded on the current stream, the rest the fused kernel's (on
+# Hopper, whose prompts take no fused kernel, decoded on the current stream too).
 shapes = [(1024, 512), (512, 1024), (3072, 512), (512, 1536), (192, 512), (2048, 1024)]
 lins = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
 other = [gm.GLinear(g.pack_mma(weights(O * K).view(O, K)), None) for O, K in shapes[:3]]
@@ -306,7 +307,7 @@ for M, first in ((600, 0), (2100, 6)):
                 lins[0].decode_rows(0, 64)
             x = torch.randn(M, lin.in_features, dtype=bf, device=dev, generator=gen)
             y = lin(x)
-            assert exact(y, F.linear(x, g.mma_unpack(lin.p)) if i < on else g.mma_gemm_big(lin.p, x)), ("a prompt decoded ahead", M, i, on)
+            assert exact(y, F.linear(x, g.mma_unpack(lin.p)) if i < on or lin.hopper else g.mma_gemm_big(lin.p, x)), ("a prompt decoded ahead", M, i, on)
         assert placed == list(range(on)), ("the order followed", M, placed, on)
         counts["GLinear decoded ahead"] = counts.get("GLinear decoded ahead", 0) + on
         counts["GLinear off the order (fused)"] = counts.get("GLinear off the order (fused)", 0) + len(ls) - on
