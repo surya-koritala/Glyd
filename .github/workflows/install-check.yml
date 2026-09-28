@@ -48,6 +48,7 @@ jobs:
             V=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
           fi
           V="${V#v}"
+          echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "not a version: $V"; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "tag=v$V" >> "$GITHUB_OUTPUT"
           echo "checking glyd $V (tag v$V)"
