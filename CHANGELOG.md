@@ -51,6 +51,17 @@ every earlier format.
   model of the class Glyd did not set up (bf16, or `compile=False`) runs
   transformers' own, and `compile=False` or `GLYD_COMPILE=0` takes nothing
   over.
+- Prompts on an A10 (150 W, full-rate tensor cores) decode each matrix
+  ahead of its product, beside the products before it, from 640 tokens in
+  the 12-bit layout and 512 in the tiered one, as GeForce Ada's do: the
+  fused kernel's decode costs the A10 clock at its power cap, more the
+  longer the prompt. Qwen3-8B, one forward pass, over bf16's time at 1024
+  / 2048 / 4096 tokens: +10.0 / +5.2 / +2.6% (were +30.3 / +38.8 /
+  +50.9%); to 639 tokens as before (+2.2% at 128, +15.8% at 512). The
+  scratch buffer holds two matrices there (Qwen3-8B's 0.40 GB, was 0.27).
+  The A10G (half-rate tensor cores, fused within 5% of bf16's) and the L4,
+  L40S and RTX 6000 Ada (half the A10's bandwidth a FLOP) keep their
+  routes until measured.
 - `GLYD_DEC_MIN` (a prompt's products decoded for cuBLAS from that many
   tokens, 12-bit layout) now applies on any GPU where it is set; unset, an
   A100's prompts are decoded from 769 tokens as before, and elsewhere none.

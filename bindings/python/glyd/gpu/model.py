@@ -23,6 +23,7 @@ import gc
 import hashlib
 import itertools
 import os
+import re
 import warnings
 import weakref
 import torch
@@ -41,9 +42,15 @@ WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLY
 MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 (an A100's to 128) by mma_gemm_mid
 # A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). On
 # GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, past 1792 in the 12-bit one where
-# its fused kernel takes the prompt, else past 640 (exact, or not fused: each matrix decoded first); elsewhere, until
-# measured, the fused kernel or the decode as before (the L4, L40S and RTX 6000 Ada sum in fp32 at twice the rate: a
-# product's time decodes half as much beside it). The 12-bit layout's length loses least across Qwen3-1.7B, 4B and 8B
+# its fused kernel takes the prompt, else past 640 (exact, or not fused: each matrix decoded first); on an A10 (150 W,
+# full-rate tensor cores: its fused kernel's decode costs it clocks at the power cap) from 640 tokens in the 12-bit
+# layout and 512 in the tiered one (Qwen3-8B's layer, a pass of 12, against cuBLAS: fused 1.23x at 512 and 640 tokens,
+# decoded ahead 1.42x and 1.21x, then 1.17x at 768 against 1.26x, 1.08x at 2048 against 1.54x; tiered 1.41x against
+# 1.48x at 512; a prompt's pass end to end +10.0 / +5.2 / +2.6% over bf16 at 1024 / 2048 / 4096 tokens, fused +30 /
+# +39 / +51%, each matrix decoded on the current stream +21 / +10 / +5.5%); elsewhere, until measured, the fused kernel
+# or the decode as before (the A10G has half-rate tensor cores, its fused prompts within 5% of bf16's; the L4, L40S
+# and RTX 6000 Ada sum in fp32 at twice the rate, as the A10, but have half its bandwidth a FLOP: a matrix decoded
+# costs them twice as much a token). The 12-bit layout's length loses least across Qwen3-1.7B, 4B and 8B
 # (one pass, fused against decoded ahead, 1024-4096 tokens): to 1792 Qwen3-1.7B's fused pass is the faster but at
 # 1280, Qwen3-4B-Instruct-2507's but at 1664, Qwen3-8B's at 1024, 1408 and 1536 alone (1.0-4.6% slower at the other
 # six); at 1793-2047 Qwen3-1.7B's is 3.5-4.0% faster, Qwen3-4B's 1.8-3.1% and Qwen3-8B's 0.7-4.3% slower.
@@ -325,8 +332,8 @@ class GLinear(_Node, nn.Module):
     A100's 768; one-token steps in the others); else the matrix decoded into
     the scratch buffer, then
     PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, past
-    1792 12-bit fused and past 640 not, decoded ahead of its product where
-    Ahead takes it). exact: every
+    1792 12-bit fused and past 640 not, on an A10 from 512 tiered and 640
+    12-bit, decoded ahead of its product where Ahead takes it). exact: every
     product the matrix decoded whole, then F.linear on the input as it came,
     as nn.Linear does: its outputs bit for bit (over fused). gemm_max: the
     fast format's fused steps, in tokens."""
@@ -347,9 +354,12 @@ class GLinear(_Node, nn.Module):
         self.step_max = 128 if self.a100 else 64  # tokens to which a step's kernel (not a prompt's) is one C call (_step)
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
         self.mid = cc in ((8, 0), (8, 6), (8, 7), (8, 9))  # (an A100 its own kernel: producer and consumer warps)
-        ada = cc == (8, 9) and "GeForce" in torch.cuda.get_device_name(p.sm.device)
+        name = torch.cuda.get_device_name(p.sm.device)
+        ada = cc == (8, 9) and "GeForce" in name
+        a10 = cc == (8, 6) and re.search(r"\bA10\b", name) is not None  # (not the A10G)
         twelve = 1793 if fused and not exact else 641
-        self.ahead = AHEAD_MIN or ((twelve if isinstance(p, g.Mma12) else 513) if ada else 1 << 62)  # prompts decoded ahead, then cuBLAS
+        ahead = (twelve if isinstance(p, g.Mma12) else 513) if ada else (640 if isinstance(p, g.Mma12) else 512) if a10 else 1 << 62
+        self.ahead = AHEAD_MIN or ahead  # prompts decoded ahead, then cuBLAS (AHEAD_MIN)
         self.dec = (DEC_MIN or (769 if self.a100 else 1 << 62)) if isinstance(p, g.Mma12) else 1 << 62  # prompts decoded, then cuBLAS
         self._node()
 

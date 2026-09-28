@@ -760,13 +760,37 @@ down projection (2048 x 6144) gets a single-stage kernel from cuBLAS,
 too slow beside a decode to host one. To 512 tokens the fused kernel
 stays: beside products that short, a decode costs more than it hides. On
 an A100 it was slower than each matrix decoded first, as measured
-(above). On an H100,
-whose cuBLAS kernels differ, and the L4, L40S and RTX 6000 Ada, which sum
-in fp32 at twice the GeForce rate (a product's time decodes half as much
-beside it), the path is off until measured:
+(above).
+
+On an A10 (150 W, full-rate tensor cores) the path is taken from 640
+tokens in the 12-bit layout and 512 in the tiered one. There the fused
+kernel's integer decode costs the SMs clock at the power cap (885-990 MHz
+at 1536-4096 tokens against cuBLAS's 1050-1110, at 128-153 W), and the
+longer the prompt the more it loses; a decode ahead keeps the products
+near cuBLAS's clocks (1020-1065 MHz). Qwen3-8B on Lambda Cloud's A10, one
+forward pass, 12-bit, each route forced and bf16 in the same run
+(`e2e.py --prefill --merge`), over bf16's time:
+
+| Prompt | 128 | 512 | 1024 | 2048 | 4096 |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| fused (was, and now to 639 tokens) | +2.2% | +15.8% | +30.3% | +38.8% | +50.9% |
+| decoded ahead (now from 640) | +100.2% | +27.0% | **+10.0%** | **+5.2%** | **+2.6%** |
+| each matrix decoded first | +104.4% | +37.1% | +20.7% | +10.3% | +5.5% |
+
+A pass of 12 layers of its products (layer 10's, `route_layer.py`), over
+cuBLAS's time, 12-bit: fused 1.23x at 512 and 640 tokens, 1.26x at 768,
+1.54x at 2048, 1.69x at 4096; decoded ahead 1.42x, 1.21x, 1.17x, 1.08x,
+1.04x; tiered at 512 tokens 1.48x fused against 1.41x ahead, at 4096
+1.71x against 1.05x. The A10G, the same chip at 300 W with half-rate
+tensor cores, keeps the fused kernel (within 5% of bf16's prompts, the
+sweep's). The L4, L40S and RTX 6000 Ada sum in fp32 at the A10's rate but
+have half its bandwidth a FLOP (400 FLOP a byte against 208), so a matrix
+decoded costs them about twice as much a token: with an H100, whose
+cuBLAS kernels differ, the path is off there until measured:
 `GLYD_AHEAD_MIN=513` takes it; `GLYD_AHEAD_WARPS`, `GLYD_AHEAD_RATE` and
 `GLYD_AHEAD_FLOPS` tune it (logs:
-benchmarks/gpu/rtx4080s-prompts-2026-09-27).
+benchmarks/gpu/rtx4080s-prompts-2026-09-27,
+benchmarks/gpu/lambda-a10-routes-2026-09-28).
 
 ## Popular models
 

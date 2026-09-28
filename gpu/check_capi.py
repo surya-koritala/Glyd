@@ -343,6 +343,23 @@ finally:
 for q, lin in zip(packs, hopper):
     for M in (65, 128, 600, 2100):
         assert lin.step(torch.randn(M, 1024, dtype=bf, device=dev)) is None, ("Hopper GLinear.step, a prompt", type(q).__name__, M)
+# And on an A10 whatever this GPU is (8.6 and its name while made): a prompt decoded ahead from 640 tokens in the 12-bit
+# layout and 512 tiered, fused below (the one-call path to there); on an A10G (half-rate tensor cores) fused throughout.
+name_ = torch.cuda.get_device_name
+for gpu, want in (("NVIDIA A10", (512, 640)), ("NVIDIA A10G", (1 << 62, 1 << 62))):
+    torch.cuda.get_device_capability = lambda device=None: (8, 6)
+    torch.cuda.get_device_name = lambda device=None, gpu=gpu: gpu
+    try:
+        a10 = [gm.GLinear(q, None) for q in packs]
+    finally:
+        torch.cuda.get_device_capability, torch.cuda.get_device_name = cc, name_
+    for q, lin in zip(packs, a10):
+        a = want[isinstance(q, g.Mma12)]
+        assert lin.ahead == a, (gpu, type(q).__name__, lin.ahead)
+        for M in (a - 1, a) if a < 1 << 62 else (1024,):
+            x = torch.randn(M, 1024, dtype=bf, device=dev)
+            assert (lin.kernel(M) is g.mma_gemm_big) == (M < a) and (lin.step(x) is None) == (M >= a), (gpu, type(q).__name__, M)
+            counts["GLinear's routes on an A10 / A10G"] = counts.get("GLinear's routes on an A10 / A10G", 0) + 1
 # A prompt's matrices decoded ahead (model.Ahead; made to on any GPU, beside products of any size): GLinears of odd
 # shapes, both layouts, called in turn as a prompt calls them: the first prompt stopped short (an error), recorded,
 # the order from it then made whole by the calls past its end; followed; a decode on the current stream midway; a
