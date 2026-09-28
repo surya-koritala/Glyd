@@ -374,8 +374,11 @@ k-blocks before it still multiply, so a weight is decoded once for 256
 tokens. Blocks go in clusters of two, X's tile copied once for both
 (TMA's multicast). The tiles in whole waves are each a cluster's own,
 summed in registers and written out; those left, fewer than a wave, are
-split by stages (stream-K) over up to three clusters each (all of them
-where the tiles are fewer than the clusters).
+split by stages (stream-K), over a whole number of clusters each (up to
+three) where that idles at most a sixth of the clusters, else over all
+of them, up to three a tile. Where the tiles are fewer than the
+clusters, each takes a whole number of them if that idles at most a
+sixth, else they share them all.
 
 One decoder layer's products (q, k, v and gate, up merged; layer 10's
 weights), each call timed alone after an L2 flush, against cuBLAS on bf16
@@ -401,9 +404,10 @@ At 2048 and 4096 tokens "now" is the same path as before (the decode,
 then cuBLAS): the new kernel alone took 1.38 / 1.37x (8B), 1.34 / 1.40x
 (14B) and 1.34 / 1.42x (32B). Every layer is faster at 129-1024 tokens
 but Qwen3-14B's at 129-160, which is level (1.141 / 1.136x against 1.137
-/ 1.128x before). A product alone can be slower than in the old kernel:
-Qwen3-8B's and 14B's o by 6-16% at 129-512 tokens, as measured (8B's at
-all six lengths, 14B's at 129-256), and a few others by 4% at most. One
+/ 1.128x before). A product alone could be slower than in the old
+kernel: Qwen3-8B's and 14B's o by 6-16% at 129-512 tokens, as measured
+(8B's at all six lengths, 14B's at 129-256), and a few others by 4% at
+most; whole tiles (below) have since taken about that off both o's. One
 forward pass over a prompt (`e2e.py --format auto --fused --merge
 --prefill`), ms, bf16 / before / now, the same machine:
 
@@ -417,9 +421,36 @@ in the library was main's, byte for byte; 8B's GPU time a step 8.39 /
 10.54 / 11.44 ms at 1 / 32 / 64 sequences against 8.37 / 10.55 / 11.30),
 until the TMA kernel's accumulator was zeroed (below).
 
-One change since, measured in one run on an H100 SXM against the kernel
-as above (each product timed as above, two rounds, the builds
+Two changes since, each measured in one run on an H100 SXM against the
+kernel as above (each product timed as above, two rounds, the builds
 interleaved; logs: benchmarks/gpu/h100-hopper2-cu12-2026-09-28).
+
+**Whole tiles.** Tiles split by stages over all the clusters (fewer
+tiles than clusters, or those left past the last whole wave) took an
+uneven share of them each, a cluster's stages running from one tile into
+the next. Now each tile takes a whole number of clusters where that
+idles at most a sixth of them. A product's time against cuBLAS's, before
+/ now where its tiles changed:
+
+| H100 SXM, product | 129 | 160 | 256 | 384 | 512 | 1024 tokens |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B o | 1.55 / **1.39** | 1.60 / **1.43** | 1.54 / **1.33** | 1.60 / **1.46** | 1.69 / **1.53** | 1.71 / **1.37** |
+| Qwen3-8B q, k, v | 1.34 | 1.32 | 1.46 | 1.67 | 1.73 | 1.55 / **1.52** |
+| Qwen3-14B o | 1.25 / **1.18** | 1.23 / **1.16** | 1.45 / **1.31** | 1.56 | 1.61 | 1.59 |
+| Qwen3-14B q, k, v | 1.24 / **1.20** | 1.23 / **1.19** | 1.40 / **1.30** | 1.61 / **1.49** | 1.42 / **1.25** | 1.31 |
+| Qwen3-32B o | 1.13 / **1.08** | 1.11 / **1.05** | 1.32 / **1.23** | 1.56 | 1.53 | 1.48 |
+
+Qwen3-8B's o now takes 8-19% less time at 129-1024 tokens and 14B's
+6-10% less at 129-256, about what they had been slower than in the TMA
+kernel. With one cluster for each of the 46 tiles left past the wave, on
+46 of the 66 clusters, 14B's q, k, v at 1024 tokens took 3% more
+(1.35x), so where a whole number would idle more than a sixth the tiles
+are split over all the clusters, as before. Where the tiles split
+differently, the sums add in another order, so some outputs past 128
+tokens differ from before in their last bits, each still within 1e-2 of
+the fp32 product and the same every run (in the run, 22 of 304 products
+on the self-test's matrices, without the bound above: 6 of them keep
+their old split with it).
 
 **CUDA 12.** The CUDA 12 library (`libglyd_gpu_cuda12.so`, built with
 CUDA 12.8 as the release builds it; the wheels load it for PyTorch built

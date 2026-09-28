@@ -3672,8 +3672,9 @@ static int mma12_tma_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
 }
 
 // Prompts on Hopper past 128 tokens: one launch of mma12_wgp_kernel, a block an SM, in clusters of CL (as many as
-// the GPU holds at once, at least 8 stages each). The workspace, where tiles are split: two slots a block that takes
-// part, [2 ncs CL][NT 128] floats; done: a counter a split tile a block of its cluster (fewer than the blocks).
+// the GPU holds at once, at least 8 stages each; or a whole number a tile where the tiles are fewer, below). The
+// workspace, where tiles are split: two slots a block that takes part, [2 ncs CL][NT 128] floats; done: a counter a
+// split tile a block of its cluster (fewer than the blocks).
 template <int NT, int CL>
 static int mma12_wgp_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, float* parts, int* done, cudaStream_t cs, size_t* need) {
     using C = Wgp12<NT, CL>;
@@ -3695,7 +3696,17 @@ static int mma12_wgp_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
         if (dev < MAX_DEVICES) known[dev] = most;
     }
     int64_t nc = std::max<int64_t>(1, std::min<int64_t>(most, T * S / 8));
-    int64_t R = T % nc, D = T - R, ncs = D ? std::min<int64_t>(nc, C::SPLIT * R) : nc;  // the tiles left past whole waves, split over ncs clusters (all where they are all the tiles)
+    // Fewer tiles than clusters: a whole number of clusters a tile, where that idles at most a sixth of them (a tile's
+    // stages split at the same places, its parts summed over as few), as the TMA kernel's blocks a unit. The tiles left
+    // past whole waves, split over ncs clusters: all of them where those are all the tiles, else a whole number a tile
+    // (up to SPLIT) where that too idles at most a sixth of them, else up to SPLIT a tile over all. On an H100 SXM (66
+    // clusters) whole tiles took 10-13% off Qwen3-8B's o at 129-256 tokens (16 tiles, 4 clusters each), 8-9% at 384-512
+    // (2 each), 19% at 1024 (1), 6-10% off 14B's o and 4-7% off 32B's at 129-256 (20 tiles, 3 each), 3-11% off 14B's
+    // q, k, v at 129-512 (28 or 56 tiles), and 2% off 8B's q, k, v at 1024 tokens (30 left past the wave: 2 each, 60
+    // clusters); 14B's there (46 left: 1 each, 46 clusters) took 3% more, and keeps its split over all 66.
+    if (T < nc && 6 * (nc / T * T) >= 5 * nc) nc = nc / T * T;
+    int64_t R = T % nc, D = T - R, w = R ? R * std::min<int64_t>(C::SPLIT, nc / R) : 0;
+    int64_t ncs = !D ? nc : 6 * w >= 5 * nc ? w : std::min<int64_t>(nc, C::SPLIT * R);
     if (need) {
         *need = std::max(*need, (size_t)(R ? 2 * ncs * CL * NT * 128 : 0) * sizeof(float));
         return 0;
@@ -3722,8 +3733,9 @@ static int mma12_wg_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t 
     // launch: tiles of 192 tokens where they take no more chunks than 256. Qwen3-8B's, 14B's and 32B's layers on an H100
     // SXM at 256 / 512 / 1024 tokens took 1.30 / 1.51 / 1.46x, 1.28 / 1.44 / 1.33x and 1.19 / 1.39 / 1.35x cuBLAS's
     // time against the TMA kernel's 1.33 / 1.55 / 1.69x, 1.30 / 1.45 / 1.51x and 1.24 / 1.42 / 1.51x. Every layer
-    // is faster but 14B's at 129-160 tokens (level); 8B's and 14B's o alone are 6-16% slower here than in the TMA
-    // kernel at 129-512 tokens (8B's at all six lengths measured, 14B's at 129-256), a few others 4% at most.
+    // was faster but 14B's at 129-160 tokens (level); 8B's and 14B's o alone were 6-16% slower here than in the TMA
+    // kernel at 129-512 tokens (8B's at all six lengths measured, 14B's at 129-256), a few others 4% at most. Whole
+    // tiles (mma12_wgp_run) have since taken 8-13% off 8B's o there and 6-10% off 14B's, as measured in another run.
     if (M > 128) {
         auto run = (M + 191) / 192 == (M + 255) / 256 ? mma12_wgp_run<192, 2> : mma12_wgp_run<256, 2>;
         if (int r = run(f, O, K, x, M, bias, y, parts, done, cs, need)) return r;

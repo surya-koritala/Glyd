@@ -24,9 +24,17 @@ every earlier format.
   1.17 / 1.24 / 1.42 / 1.88 / 1.68x); past 1024 tokens the matrices are
   decoded for cuBLAS as before (1.33-1.36x at 2048, 1.17-1.22x at 4096).
   Every layer is faster, but Qwen3-14B's at 129-160 tokens is level;
-  Qwen3-8B's and 14B's o alone are 6-16% slower than in the old kernel at
-  129-512 tokens (8B's at all six lengths measured, 14B's at 129-256), as
-  measured, and a few other products by 4% at most.
+  Qwen3-8B's and 14B's o alone were 6-16% slower than in the old kernel
+  at 129-512 tokens (8B's at all six lengths measured, 14B's at 129-256),
+  as measured, and a few other products by 4% at most. Since then the
+  tiles split by stages each take a whole number of clusters where that
+  idles at most a sixth of them (each had an uneven share of all of
+  them): in another run on an H100 SXM, Qwen3-8B's o takes 8-19% less
+  time at 129-1024 tokens and 14B's 6-10% less at 129-256, about what
+  they had been slower, 14B's q, k, v 3-11% less at 129-512 and 32B's o
+  4-7% less at 129-256; where a tile splits differently its sums add in
+  another order, so some outputs past 128 tokens differ from before in
+  their last bits.
   One forward pass (`gpu/e2e.py --prefill --merge`) at 1024 tokens:
   Qwen3-8B 45.9 ms (was 48.4; bf16 36.4), Qwen3-32B 166.3 ms (was 194.9;
   bf16 135.5); at 512 tokens Qwen3-32B 90.9 ms (was 94.2; bf16 73.7).
