@@ -9,7 +9,8 @@ const USAGE: &str = "usage:
   glyd pack MODEL OUT [--no-merge] [--layout mma|mma12] [--threads N]
       MODEL (a directory, or a Hugging Face repo id in the local cache) packed on the CPU, each pack
       checked against its weights, and saved in OUT as glyd-v1 (glyd-v2: a mixture of experts), as
-      python -m glyd.gpu pack saves it, byte for byte (Qwen3 and GraniteMoe; other families: python)
+      python -m glyd.gpu pack saves it, byte for byte (Qwen3, Qwen2, Llama, Mistral, Granite,
+      GraniteMoe; other families: python -m glyd.gpu pack)
       --no-merge      q, k, v and gate, up saved as packs of their own
       --layout mma12  the 12-bit layout (glyd-v3), which an A10, A100 or H100 loads without packing again
   glyd verify PATH [--device cpu|cuda:N] [--threads N]

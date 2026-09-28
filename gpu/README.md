@@ -1002,7 +1002,7 @@ The glyd-gpu crate's examples do the same from Rust: `examples/unpack.rs`
     cargo run --release -p glyd-gpu --example linear -- qwen3-0.6b-glyd model.layers.0.mlp.gate_proj
 
 And the saved model itself comes from Rust too, on the CPU, byte for byte as
-`python -m glyd.gpu pack` saves it (Qwen3 and GraniteMoe; the glyd-gpu
+`python -m glyd.gpu pack` saves it (Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe; the glyd-gpu
 command, which the glyd CLI runs):
 
     glyd pack Qwen/Qwen3-0.6B qwen3-0.6b-glyd

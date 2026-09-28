@@ -7,7 +7,8 @@
 //! Python saves what transformers' model holds, in its module order; here the
 //! families' layouts are written out (`Family`), each checked against
 //! Python's saves: Qwen3 (Qwen3-0.6B to 8B) and GraniteMoe
-//! (granite-3.1-3b-a800m). Anything else is refused, with Python's command.
+//! (granite-3.1-3b-a800m), and tiny random checkpoints of Llama, Qwen2,
+//! Mistral and Granite. Anything else is refused, with Python's command.
 
 use crate::json::{self, Value};
 use crate::pack;
@@ -114,7 +115,7 @@ const NORMS: &[Child] = &[Plain("input_layernorm.weight", ""), Plain("post_atten
 
 const FAMILIES: &[Family] = &[
     Family {
-        architectures: &["Qwen3ForCausalLM"],
+        architectures: &["Qwen3ForCausalLM", "Qwen2ForCausalLM", "LlamaForCausalLM", "MistralForCausalLM", "GraniteForCausalLM"],
         layer: &[("self_attn", ATTENTION, QKV), ("mlp", &[Linear("gate_proj"), Linear("up_proj"), Linear("down_proj")], &["gate_proj", "up_proj"]), ("", NORMS, &[])],
         experts: "",
     },
@@ -181,7 +182,10 @@ impl Plan {
     /// the output layer packed), then what its state_dict holds that is not packed.
     fn new(src: &Checkpoint, config: &Value, merge: bool) -> io::Result<Plan> {
         let arch = config.get("architectures").and_then(Value::as_array).and_then(|a| a.first()).and_then(Value::as_str).unwrap_or("");
-        let family = FAMILIES.iter().find(|f| f.architectures.contains(&arch)).ok_or_else(|| bad(format!("{arch}: not a family this packer knows (Qwen3ForCausalLM, GraniteMoeForCausalLM); python -m glyd.gpu pack packs any")))?;
+        let family = FAMILIES.iter().find(|f| f.architectures.contains(&arch)).ok_or_else(|| {
+            let known: Vec<&str> = FAMILIES.iter().flat_map(|f| f.architectures.iter().copied()).collect();
+            bad(format!("{arch}: not a family this packer knows ({}); python -m glyd.gpu pack packs any", known.join(", ")))
+        })?;
         let layers = config.get("num_hidden_layers").and_then(Value::as_u64).ok_or_else(|| bad("config.json: no num_hidden_layers"))? as usize;
         let get = |name: &str| src.get(name).map(|(_, t)| t.clone());
         let need = |name: &str| get(name).ok_or_else(|| bad(format!("{}: no {name}", src.dir.display())));

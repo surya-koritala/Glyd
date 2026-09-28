@@ -35,8 +35,10 @@ every earlier format.
   (`--device cuda:0`) on the GPU by the library, and checks each tensor's
   sha256 against glyd.json, as `python -m glyd.gpu verify` does
   (Qwen3-8B's 253 tensors in 7.5 s on 8 threads). The families are
-  written out as transformers 5.17 holds them: Qwen3 and GraniteMoe for
-  now, anything else refused with Python's command. The commands are the
+  written out as transformers 5.17 holds them: Qwen3, Qwen2, Llama,
+  Mistral, Granite and GraniteMoe for now (tiny random checkpoints of each
+  family save the same bytes too, both layouts), anything else refused
+  with Python's command. The commands are the
   `glyd-gpu` program's, under the Business Source License as the rest of
   the GPU code, which the glyd CLI runs (it ships beside glyd; a file
   named `pack` or `verify` is compressed as `./pack`).

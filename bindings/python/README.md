@@ -168,7 +168,8 @@ repo id, from the files for a directory.
 
 `glyd pack` and `glyd verify`, the Rust CLI's (the glyd-gpu command),
 do the same on the CPU with no Python, PyTorch or GPU, and save the same
-bytes (Qwen3 and GraniteMoe for now; other families: the commands above).
+bytes (Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe for now; other
+families: the commands above).
 
 `glyd.gpu` is under the Business Source License 1.1 (`LICENSE-glyd-gpu`),
 as the rest of Glyd's GPU code; the codec under BSD-3-Clause OR GPL-2.0.
