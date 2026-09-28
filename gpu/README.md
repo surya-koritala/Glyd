@@ -80,15 +80,16 @@ fragments there; four consume, each 64 tokens by 64 rows on the tensor
 cores with their fragments double-buffered, never waiting on a decode.
 Three stages are in flight, passed between the two by named barriers. A
 block is 128 tokens by 128 rows of W, or past 128 tokens 256 by 64 (a
-weight decoded once for twice the tokens) where the last block of 256
-would be more than half full; where the blocks would not fill the GPU, K
-is split and the parts added in a fixed order. Past 128 tokens the
-product is bound by the tensor cores, not by memory, so the most it can
-be is bf16's time; it is within 5-10% of it. Measured on Qwen2.5-7B's
-matrices: the consumers alone come within 1-4% of cuBLAS (one warp an SM
-quarter keeps the tensor cores full: 106 TFLOPS, as cuBLAS's kernel);
-the rest is the producers' decoding sharing the SM. Longer prompts on Ada
-decode each matrix once, ahead of its product (below: long prompts).
+weight decoded once for twice the tokens; on GeForce Ada only where the
+last block of 256 would be more than half full); where the blocks would
+not fill the GPU, K is split and the parts added in a fixed order. Past
+128 tokens the product is bound by the tensor cores, not by memory, so
+the most it can be is bf16's time; it is within 5-10% of it. Measured on
+Qwen2.5-7B's matrices: the consumers alone come within 1-4% of cuBLAS
+(one warp an SM quarter keeps the tensor cores full: 106 TFLOPS, as
+cuBLAS's kernel); the rest is the producers' decoding sharing the SM.
+Longer prompts on Ada decode each matrix once, ahead of its product
+(below: long prompts).
 
 The other formats, 128 new tokens, one sequence:
 
@@ -343,7 +344,8 @@ alike), RTX 4080 SUPER, ms, before and after:
 | Qwen3-8B, 12-bit | 30.2 | 91.0 | 175.7 | 345.7 | 762.7 |
 
 (bf16's Qwen3-8B does not fit 16 GB.) Between those lengths the fused
-kernel's blocks now fit the prompt too: Qwen3-4B's 300 tokens take 44.7
+kernel's blocks now fit the prompt too, on GeForce Ada (elsewhere as
+before, until measured): Qwen3-4B's 300 tokens take 44.7
 ms tiered and 39.9 12-bit against bf16's 38.2 (were 48.7 and 47.8), its
 640 tokens 67.1 and 66.5 against 62.9 (were 75.2 and 73.8). The time to
 the first token through `generate()` moves as the pass; generation is as

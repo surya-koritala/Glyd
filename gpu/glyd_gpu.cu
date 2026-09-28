@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <type_traits>
 
 __device__ __forceinline__ uint32_t exponent_of(uint16_t v) { return (v >> 7) & 0xff; }
@@ -2587,6 +2588,19 @@ static int64_t per_sm(const void* kernel, int threads, int shared, std::atomic<i
 // Room for need bytes at ws, which has `have`?
 static bool fits(const void* ws, size_t have, size_t need) { return !need || (ws && have >= need); }
 
+// Device dev a GeForce Ada (an RTX 40), where the prompts' choices below were measured (an RTX 4080 SUPER); asked
+// once a device.
+static bool geforce_ada(int dev) {
+    static std::atomic<int> known[MAX_DEVICES];  // 1 yes, 2 no
+    int k = dev < MAX_DEVICES ? known[dev].load() : 0;
+    if (!k) {
+        cudaDeviceProp p;
+        k = cudaGetDeviceProperties(&p, dev) == cudaSuccess && p.major == 8 && p.minor == 9 && strstr(p.name, "GeForce") ? 1 : 2;
+        if (dev < MAX_DEVICES) known[dev] = k;
+    }
+    return k == 1;
+}
+
 static const __nv_bfloat16* bf(const uint16_t* p) { return (const __nv_bfloat16*)p; }
 static __nv_bfloat16* bf(uint16_t* p) { return (__nv_bfloat16*)p; }
 
@@ -2809,10 +2823,11 @@ template <class Fmt>
 static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
     if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16) return cudaErrorInvalidValue;
     // 4 consumer warps and 4 producers: blocks of 128 tokens by two row blocks (3 stages), or, past 128
-    // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens) where the last block of 256
-    // would be more than half full (else its empty half costs more than the second decode: a Qwen3-4B layer's
-    // products take 0.79-0.89x the time in blocks of 128 at 300 tokens, 1.02-1.14x at 448, RTX 4080 SUPER).
-    if (variant == 0) variant = M > 128 && (M % 256 == 0 || M % 256 > 128) ? 2 : 1;
+    // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens); on GeForce Ada only where
+    // the last block of 256 would be more than half full (else its empty half costs more than the second
+    // decode: a Qwen3-4B layer's products take 0.79-0.89x the time in blocks of 128 at 300 tokens, 1.02-1.14x
+    // at 448, RTX 4080 SUPER; elsewhere not measured).
+    if (variant == 0) variant = M > 128 && (M % 256 == 0 || M % 256 > 128 || !geforce_ada(current_device())) ? 2 : 1;
     auto run = variant == 2 ? mma_gemm_big_run<Fmt, 4, 4, 2, 1> : mma_gemm_big_run<Fmt, 4, 4, 3, 2>;
     return run(f, O, K, x, M, bias, y, ws, ws_bytes, cs, need);
 }

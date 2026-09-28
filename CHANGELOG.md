@@ -20,10 +20,11 @@ every earlier format.
   43.3 / 86.8 / 186.0 against 42.1 / 86.6 / 185.3 (were 45.9 / 91.5 /
   190.1), Qwen3-8B's 175.2 / 345.1 / 767.6 (were 185.6 / 370.8 / 811.3);
   the time to the first token with them; generation as before. With
-  `exact=True` the same path, the logits bf16's bit for bit. The fused
-  kernel runs blocks of 128 tokens where the last block of 256 would be
-  half empty or less (300 tokens: 0.79-0.89x the time). On an A100 and
-  an H100 the path is off until measured (`GLYD_AHEAD_MIN=513` takes it).
+  `exact=True` the same path, the logits bf16's bit for bit. On GeForce
+  Ada the fused kernel runs blocks of 128 tokens where the last block of
+  256 would be half empty or less (300 tokens: 0.79-0.89x the time;
+  elsewhere as before, until measured). On an A100 and an H100 the path
+  is off until measured (`GLYD_AHEAD_MIN=513` takes it).
 
 ## v0.21.0 — 2026-09-27
 
