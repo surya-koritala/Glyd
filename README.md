@@ -43,6 +43,7 @@ pip install "glyd[gpu]"      # Linux x86_64 / aarch64, a CUDA GPU (Ampere or lat
 import glyd
 model = glyd.from_pretrained("Qwen/Qwen3-8B")               # packed on the GPU as it loads: 11.2 GB of weights, not 16.4
 model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits bit for bit bf16's
+# generate() runs compiled (a static cache, CUDA graphs); compile=False, or GLYD_COMPILE=0, runs it eager
 ```
 
 <p align="center"><img src="docs/img/qwen3-32b-gpus.svg" width="100%" alt="nvidia-smi: Qwen3-32B in bf16 across two 48 GB GPUs (44,554 + 18,514 MiB), and with Glyd on one (43,338 MiB)"></p>

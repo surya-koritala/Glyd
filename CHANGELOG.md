@@ -6,6 +6,39 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- `generate()` on a model from `glyd.from_pretrained` or `glyd.gpu.compress`
+  runs compiled by default, as `generate(...,
+  cache_implementation="static")` asks transformers to run it (a static
+  cache, the forward under `torch.compile` with CUDA graphs): a step's host
+  time goes. Tokens/s generating 128 tokens at 1 / 8 sequences on an RTX
+  4080 SUPER, plain `generate()`, each in a process of its own: Qwen3-1.7B
+  184.6 / 1260 (was 96.6 / 772; asked for with
+  `cache_implementation="static"` 184.9 / 1260),
+  Qwen3-4B-Instruct-2507 94.3 / 610 (was 75.1 / 563), Qwen3-8B 55.3 / 386
+  (was 48.6 / 365), granite-3.1-3b-a800m-instruct 232.3 / 1547 (was 90.3 /
+  699). The first call compiles: Qwen3-8B's took 17.5 s with PyTorch's
+  compile caches empty, 6.7 s in a later process. `compile=False`
+  (`from_pretrained`, `compress`) or `GLYD_COMPILE=0` runs it eager, as
+  before; so do `exact=True` (its tokens are bf16's eager ones), a family
+  transformers does not compile whole (its `_can_compile_fullgraph`), a
+  model over several GPUs, and a call that brings its own cache, several
+  beams, an assistant, or asks for attentions or hidden states. A call
+  whose static cache would hold more than `GLYD_COMPILE_MAX` positions in
+  all (1280: its sequences times the prompt and `max_new_tokens`) runs
+  eager too: the static cache holds every position the call may reach from
+  its first step and each step's attention reads all of it, and past that
+  the eager loop was as fast on the RTX 4080 SUPER (Qwen3-8B at one
+  sequence: 17.7 ms a step compiled with 80 positions held against 20.5
+  eager, 20.4 with 1024, 23.0 with 2048). A forward that does not compile
+  runs eager from there on, with one warning. A model that has generated
+  compiled is freed at `del`, as an eager one (its compiled forward does not
+  refer to it, as transformers' own does).
+- `GLYD_DEC_MIN` (a prompt's products decoded for cuBLAS from that many
+  tokens, 12-bit layout) now applies on any GPU where it is set; unset, an
+  A100's prompts are decoded from 769 tokens as before, and elsewhere none.
+
 ## v0.23.0 — 2026-09-28
 
 - Prompts on GeForce Ada (RTX 40) multiply faster, with the same bits:
