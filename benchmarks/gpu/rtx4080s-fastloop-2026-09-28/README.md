@@ -16,3 +16,5 @@ PyTorch 2.14.0 (CUDA 13.0), transformers 5.17.0; the library built from the bran
   test_gpu packs and 12 dense ones), `many.py` (ten models in one process), at 5d38f20.
 - `checks-3a32b9b/`: check_api dense and MoE at 3a32b9b; check_models got to Qwen3-8B's fp32 reference on the CPU,
   when the box reset (17:35 EDT) and the run ended there.
+- `checks-7acf9a0/`: at 7acf9a0 (the review's fixes), one at a time: check_capi, test_gpu, the self-test
+  (`glyd_gpu.py`), check_api dense (Qwen3-0.6B + 1.7B) and MoE (granite), check_models (Qwen3-1.7B).
