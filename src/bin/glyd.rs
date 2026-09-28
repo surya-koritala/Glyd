@@ -6,6 +6,8 @@ use std::time::Instant;
 fn print_usage() {
     eprintln!(r#"Glyd: compression for cloud storage
 Usage: glyd [OPTIONS] [INPUT] [-o OUTPUT]
+       glyd pack MODEL OUT | glyd verify PATH   (a model's weights for Glyd's GPU layouts:
+       packed and checked on the CPU by the glyd-gpu command; glyd pack --help)
        (the store, which compresses across objects, is the glyd-store command)
 
 Options:
@@ -67,11 +69,28 @@ fn print_version() {
     println!("SIMD: scalar");
 }
 
+/// `glyd pack` and `glyd verify`: the glyd-gpu command's (the GPU weights' packer and checker, a program of its own
+/// under their license), found beside this one, else on PATH; its exit status this one's.
+fn gpu_command(args: &[String]) -> ! {
+    let beside = env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("glyd-gpu"))).filter(|p| p.exists());
+    let exe = beside.unwrap_or_else(|| "glyd-gpu".into());
+    match std::process::Command::new(&exe).args(args).status() {
+        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+        Err(e) => {
+            eprintln!("glyd {}: the glyd-gpu command ({}): {e}; it ships beside glyd (cargo install --git https://github.com/surya-koritala/Glyd glyd-gpu)", args[0], exe.display());
+            std::process::exit(1);
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() == 1 {
         print_usage();
         return Ok(());
+    }
+    if matches!(args[1].as_str(), "pack" | "verify") {
+        gpu_command(&args[1..]); // (a file named pack or verify: ./pack)
     }
 
     let mut input_path: Option<String> = None;

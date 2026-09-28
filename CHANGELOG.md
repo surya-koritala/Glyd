@@ -6,6 +6,51 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- `glyd pack MODEL OUT` and `glyd verify PATH` in the Rust CLI: a bf16
+  checkpoint (a directory, or a repo in the local Hugging Face cache)
+  packed on the CPU and saved as glyd-v1 (glyd-v2 with a mixture of
+  experts' packs) with no Python, PyTorch or GPU, byte for byte as
+  `python -m glyd.gpu pack` saves it: every file of Qwen3-0.6B, 1.7B,
+  4B-Instruct-2507 and 8B and of granite-3.1-3b-a800m-instruct is
+  Python's (their sha256; glyd.json's hashes, the shards, the index), at
+  1.99 / 2.01 / 2.09 / 2.06 / 1.62 GB/s of bf16 on 8 threads of a Ryzen 9
+  7950X3D (Qwen3-8B's 16.4 GB in 7.9 s), each pack decoded back and
+  checked as it is made. `glyd verify` decodes every pack, on the CPU or
+  (`--device cuda:0`) on the GPU by the library, and checks each tensor's
+  sha256 against glyd.json, as `python -m glyd.gpu verify` does
+  (Qwen3-8B's 253 tensors in 7.5 s on 8 threads). The families are
+  written out as transformers 5.17 holds them: Qwen3 and GraniteMoe for
+  now, anything else refused with Python's command. The commands are the
+  `glyd-gpu` program's, under the Business Source License as the rest of
+  the GPU code, which the glyd CLI runs (it ships beside glyd; a file
+  named `pack` or `verify` is compressed as `./pack`).
+- The `glyd-gpu` crate: Rust over the GPU library's C API, the library
+  loaded at run time and refused where its API version is not the
+  crate's, each function typed (a test holds the declarations to
+  `glyd_gpu.h`), device pointers and streams the caller's, a product's
+  workspace query first, errors as `Result`, and the few CUDA driver calls
+  a caller without a runtime of its own needs; no dependency but sha2, and
+  nothing linked at build time. Its examples decode a saved model's packs
+  on the GPU against the bf16 checkpoint, bit for bit (`unpack.rs`, the C
+  example in Rust), and multiply by `linear` (`linear.rs`); its `pack`
+  module packs a matrix in either layout on the CPU, byte for byte as
+  glyd.gpu's `pack_mma` and `pack_mma12` do on the GPU.
+- The kernel a product for M tokens takes on a GPU is the library's:
+  `glyd_gpu_mma_route` and `glyd_gpu_mma12_route` give it (and the last
+  token count that takes it), as measured and as glyd.gpu chose it before
+  (a check on ten GPUs, 0-5000 tokens, both layouts); `GLYD_WG_MIN`,
+  `GLYD_WG_MAX`, `GLYD_MID_MIN` and `GLYD_DEC_MIN` are read there.
+  `glyd_gpu_mma_linear` and `glyd_gpu_mma12_linear` run a route's kernel;
+  the glyd package's Linears take their routes from the library and
+  multiply by `linear` in their one C call, so every caller routes alike.
+  C API version 3. The same bits (check_capi: 206773 calls through both
+  hosts, bit for bit) and the same speed (generate() eager, main's package
+  and library and these in turn, RTX 4080 SUPER: Qwen3-1.7B and
+  Qwen3-4B-Instruct-2507 within 1% at 1, 8 and 32 sequences, both
+  layouts).
+
 ## v0.23.0 — 2026-09-28
 
 - Prompts on GeForce Ada (RTX 40) multiply faster, with the same bits:
