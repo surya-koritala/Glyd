@@ -1,0 +1,13 @@
++ cd /home/ubuntu/b/ebc8f91/gpu
++ PYTHONPATH=/home/ubuntu/b/ebc8f91/bindings/python
++ GLYD_GPU_LIB=/home/ubuntu/b/ebc8f91/lib/libglyd_gpu_cuda13.so
++ timeout 15m python e2e.py /home/ubuntu/models/Qwen3-8B --format auto --fused --merge --tokens 8 --batch 1 --prefill 512,1024,2048
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights:  83%|████████▎ | 330/399 [00:00<00:00, 3299.75it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 3548.71it/s]
+merged: 72 groups of Linears as one product each
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.54 GB on 1 GPU
+glyd mma12 fused: batch 1: 28.5 tokens/s (28.5 a sequence), peak VRAM 12.55 GB
+glyd mma12 prefill: 512 tokens 37.9 ms (13498 tokens/s), 1024 tokens 67.8 ms (15098 tokens/s), 2048 tokens 121.1 ms (16915 tokens/s)
+text:  with the invention of the telegraph in

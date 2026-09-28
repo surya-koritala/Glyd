@@ -1,0 +1,2 @@
+bf16 Qwen/Qwen3-8B batch 1: 50.0 tokens/s (19.98 ms a step)
+glyd Qwen/Qwen3-8B batch 1: 53.3 tokens/s (18.75 ms a step)

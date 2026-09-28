@@ -1,0 +1,16 @@
++ cd /home/ubuntu/t
++ timeout 30m /home/ubuntu/wv/bin/python test_gpu.py
+test_fit_as_the_site ok
+test_fit_a_directory ok
+test_kv_cache ok
+test_manifest_and_names ok
+Traceback (most recent call last):
+  File "/home/ubuntu/t/test_gpu.py", line 487, in <module>
+    test()
+  File "/home/ubuntu/t/test_gpu.py", line 172, in test_import_without_torch_or_library
+    shutil.copytree(os.path.join(HERE, "glyd"), os.path.join(d, "glyd"), ignore=shutil.ignore_patterns("*.dylib", "*.so", "*.dll", "__pycache__"))
+  File "/usr/lib/python3.12/shutil.py", line 598, in copytree
+    with os.scandir(src) as itr:
+         ^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/ubuntu/t/glyd'
+exit 1

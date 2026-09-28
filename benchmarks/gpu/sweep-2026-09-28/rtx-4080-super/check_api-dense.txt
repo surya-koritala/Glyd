@@ -1,0 +1,60 @@
++ cd /home/surya-koritala/p3final/t
++ timeout 40m /home/surya-koritala/p3final/wv/bin/python check_api.py Qwen/Qwen3-0.6B Qwen/Qwen3-1.7B
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   1%|▏         | 4/311 [00:00<00:09, 32.97it/s]Loading weights:  23%|██▎       | 72/311 [00:00<00:00, 379.99it/s]Loading weights:  46%|████▋     | 144/311 [00:00<00:00, 526.98it/s]Loading weights:  69%|██████▉   | 214/311 [00:00<00:00, 589.63it/s]Loading weights:  92%|█████████▏| 285/311 [00:00<00:00, 631.57it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 555.90it/s]
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   2%|▏         | 6/311 [00:00<00:05, 56.80it/s]Loading weights:   9%|▉         | 28/311 [00:00<00:01, 147.25it/s]Loading weights:  16%|█▌        | 50/311 [00:00<00:01, 176.98it/s]Loading weights:  23%|██▎       | 72/311 [00:00<00:01, 191.35it/s]Loading weights:  30%|███       | 94/311 [00:00<00:01, 199.22it/s]Loading weights:  37%|███▋      | 116/311 [00:00<00:00, 203.74it/s]Loading weights:  44%|████▍     | 138/311 [00:00<00:00, 206.88it/s]Loading weights:  51%|█████▏    | 160/311 [00:00<00:00, 208.49it/s]Loading weights:  59%|█████▊    | 182/311 [00:00<00:00, 209.81it/s]Loading weights:  66%|██████▌   | 204/311 [00:01<00:00, 210.64it/s]Loading weights:  73%|███████▎  | 226/311 [00:01<00:00, 211.59it/s]Loading weights:  80%|███████▉  | 248/311 [00:01<00:00, 212.15it/s]Loading weights:  87%|████████▋ | 270/311 [00:01<00:00, 212.65it/s]Loading weights:  94%|█████████▍| 292/311 [00:01<00:00, 212.98it/s]Loading weights: 100%|██████████| 311/311 [00:01<00:00, 205.59it/s]
+Qwen/Qwen3-0.6B exact compiled, Qwen/Qwen3-1.7B loaded after: the first's CUDA graph replayed, both models' logits as before
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 4030.68it/s]
+Qwen/Qwen3-0.6B: bf16 loaded in 0.2 s, peak 1.66 GB, holds 1.19 GB, largest tensor 0.31 GB
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  16%|█▌        | 49/311 [00:00<00:00, 489.48it/s]Loading weights:  37%|███▋      | 116/311 [00:00<00:00, 592.56it/s]Loading weights:  61%|██████    | 189/311 [00:00<00:00, 647.15it/s]Loading weights:  83%|████████▎ | 259/311 [00:00<00:00, 654.26it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 648.42it/s]
+Qwen/Qwen3-0.6B: glyd mma fused loaded in 0.9 s, peak 2.19 GB: packed weights 1.02 GB + largest tensor 0.31 GB + 0.86 GB; holds 1.29 GB
+   generated tokens identical to bf16: 0 of 32; logits bit-identical: False
+   text:  with the invention of the first digital computer. This was a machine that could only store and process data in binary form, which is a two-state system. The
+   a prompt of 2100 tokens: 112 products decoded ahead, logits as decoded on the current stream, bit for bit
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 19881.55it/s]
+   glyd.gpu.compress: the same 1.02 GB, logits and tokens bit for bit
+   compiled (a static cache, CUDA graphs, fullgraph): tokens as eager's: 8 of 32
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  16%|█▌        | 49/311 [00:00<00:00, 479.23it/s]Loading weights:  39%|███▊      | 120/311 [00:00<00:00, 611.88it/s]Loading weights:  62%|██████▏   | 192/311 [00:00<00:00, 653.82it/s]Loading weights:  85%|████████▌ | 265/311 [00:00<00:00, 678.85it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 660.79it/s]
+Qwen/Qwen3-0.6B: glyd exact loaded in 0.9 s, peak 2.19 GB, holds 1.07 GB; logits bit-identical: True (and a prompt of 2100 tokens'); generated tokens identical to bf16: 32 of 32
+   compiled: tokens as bf16's eager: 32 of 32
+Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 3175.50it/s]
+Qwen/Qwen3-0.6B: saved in 0.7 s: 0.91 GB of safetensors; config.json, generation_config.json, glyd.json, merges.txt, model.safetensors, tokenizer.json, tokenizer_config.json, vocab.json
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 9754.60it/s]
+   from_pretrained(path, verify=False): 0 tensors verified, loaded in 0.4 s, peak 2.19 GB, holds 1.02 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 7958.46it/s]
+   from_pretrained(path, verify=True): 198 tensors verified, loaded in 0.7 s, peak 2.19 GB, holds 1.02 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 7995.85it/s]
+   from_pretrained(path, exact=True): merged groups split, loaded in 0.8 s; logits bit-identical to bf16: True
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 9307.53it/s]
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  36%|███▌      | 112/311 [00:00<00:00, 1113.31it/s]Loading weights:  88%|████████▊ | 274/311 [00:00<00:00, 1408.03it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 1394.12it/s]
+   from_pretrained(path, layout='mma12'): the packs transcoded, logits and tokens as mma12 packed from bf16
+   python -m glyd.gpu verify: /home/surya-koritala/p1/tmp/tmpa4lwyw6d: 198 tensors decode to glyd.json's sha256
+   python -m glyd.gpu fit: Qwen3-0.6B on a 16 GB GPU: bf16 needs 4.1 GB, fits; Glyd 3.6 GB, fits
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  27%|██▋       | 83/311 [00:00<00:00, 825.81it/s]Loading weights:  93%|█████████▎| 290/311 [00:00<00:00, 1551.49it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 1477.36it/s]
+Qwen/Qwen3-1.7B: bf16 loaded in 0.3 s, peak 4.37 GB, holds 3.44 GB, largest tensor 0.62 GB
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   2%|▏         | 6/311 [00:00<00:05, 58.32it/s]Loading weights:   9%|▉         | 28/311 [00:00<00:01, 148.15it/s]Loading weights:  16%|█▌        | 50/311 [00:00<00:01, 176.57it/s]Loading weights:  23%|██▎       | 72/311 [00:00<00:01, 190.21it/s]Loading weights:  30%|███       | 94/311 [00:00<00:01, 197.55it/s]Loading weights:  37%|███▋      | 116/311 [00:00<00:00, 201.85it/s]Loading weights:  44%|████▍     | 138/311 [00:00<00:00, 204.59it/s]Loading weights:  51%|█████▏    | 160/311 [00:00<00:00, 206.65it/s]Loading weights:  59%|█████▊    | 182/311 [00:00<00:00, 208.11it/s]Loading weights:  66%|██████▌   | 204/311 [00:01<00:00, 208.69it/s]Loading weights:  73%|███████▎  | 226/311 [00:01<00:00, 209.25it/s]Loading weights:  80%|███████▉  | 248/311 [00:01<00:00, 209.84it/s]Loading weights:  87%|████████▋ | 270/311 [00:01<00:00, 210.12it/s]Loading weights:  94%|█████████▍| 292/311 [00:01<00:00, 210.45it/s]Loading weights: 100%|██████████| 311/311 [00:01<00:00, 203.71it/s]
+Qwen/Qwen3-1.7B: glyd mma fused loaded in 2.2 s, peak 4.08 GB: packed weights 2.75 GB + largest tensor 0.62 GB + 0.70 GB; holds 2.75 GB
+   generated tokens identical to bf16: 13 of 32; logits bit-identical: False
+   text:  in the 1950s with the advent of digital storage and transmission. The first significant developments were in the field of information theory, where the concept
+   a prompt of 2100 tokens: 112 products decoded ahead, logits as decoded on the current stream, bit for bit
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 17698.93it/s]
+   glyd.gpu.compress: the same 2.75 GB, logits and tokens bit for bit
+   compiled (a static cache, CUDA graphs, fullgraph): tokens as eager's: 17 of 32
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   2%|▏         | 6/311 [00:00<00:05, 58.63it/s]Loading weights:   9%|▉         | 28/311 [00:00<00:01, 150.05it/s]Loading weights:  16%|█▌        | 50/311 [00:00<00:01, 179.44it/s]Loading weights:  23%|██▎       | 72/311 [00:00<00:01, 193.34it/s]Loading weights:  30%|███       | 94/311 [00:00<00:01, 200.99it/s]Loading weights:  37%|███▋      | 116/311 [00:00<00:00, 205.57it/s]Loading weights:  44%|████▍     | 138/311 [00:00<00:00, 208.52it/s]Loading weights:  51%|█████▏    | 160/311 [00:00<00:00, 210.56it/s]Loading weights:  59%|█████▊    | 182/311 [00:00<00:00, 211.84it/s]Loading weights:  66%|██████▌   | 204/311 [00:01<00:00, 212.54it/s]Loading weights:  73%|███████▎  | 226/311 [00:01<00:00, 213.19it/s]Loading weights:  80%|███████▉  | 248/311 [00:01<00:00, 213.72it/s]Loading weights:  87%|████████▋ | 270/311 [00:01<00:00, 213.95it/s]Loading weights:  94%|█████████▍| 292/311 [00:01<00:00, 214.27it/s]Loading weights: 100%|██████████| 311/311 [00:01<00:00, 207.40it/s]
+Qwen/Qwen3-1.7B: glyd exact loaded in 2.2 s, peak 4.08 GB, holds 3.37 GB; logits bit-identical: True (and a prompt of 2100 tokens'); generated tokens identical to bf16: 32 of 32
+   compiled: tokens as bf16's eager: 13 of 32
+Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 2946.82it/s]
+Qwen/Qwen3-1.7B: saved in 2.3 s: 2.52 GB of safetensors; config.json, generation_config.json, glyd.json, merges.txt, model.safetensors, tokenizer.json, tokenizer_config.json, vocab.json
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights:  76%|███████▋  | 344/450 [00:00<00:00, 3403.08it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 3603.24it/s]
+   from_pretrained(path, verify=False): 0 tensors verified, loaded in 0.7 s, peak 4.08 GB, holds 2.75 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights:  65%|██████▌   | 293/450 [00:00<00:00, 2912.21it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 3271.06it/s]
+   from_pretrained(path, verify=True): 198 tensors verified, loaded in 1.9 s, peak 4.31 GB, holds 2.75 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights:  76%|███████▌  | 341/450 [00:00<00:00, 3400.70it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 3586.97it/s]
+   from_pretrained(path, exact=True): merged groups split, loaded in 1.5 s; logits bit-identical to bf16: True
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights:  71%|███████▏  | 321/450 [00:00<00:00, 3206.66it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 3451.43it/s]
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   8%|▊         | 24/311 [00:00<00:01, 235.17it/s]Loading weights:  26%|██▌       | 81/311 [00:00<00:00, 428.46it/s]Loading weights:  44%|████▍     | 138/311 [00:00<00:00, 480.69it/s]Loading weights:  64%|██████▍   | 200/311 [00:00<00:00, 532.26it/s]Loading weights:  83%|████████▎ | 257/311 [00:00<00:00, 544.04it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 516.76it/s]
+   from_pretrained(path, layout='mma12'): the packs transcoded, logits and tokens as mma12 packed from bf16
+   python -m glyd.gpu verify: /home/surya-koritala/p1/tmp/tmphsisjsmn: 198 tensors decode to glyd.json's sha256
+   python -m glyd.gpu fit: Qwen3-1.7B on a 16 GB GPU: bf16 needs 6.6 GB, fits; Glyd 5.3 GB, fits
+check_api: all passed (/home/surya-koritala/p3final/wv/lib/python3.12/site-packages/glyd/__init__.py)
+exit 0

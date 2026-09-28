@@ -1,0 +1,34 @@
++ nvidia-smi
+Mon Sep 28 02:27:41 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.91.07              Driver Version: 595.91.07      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 4080 ...    Off |   00000000:01:00.0 Off |                  N/A |
+|  0%   33C    P8              6W /  320W |     225MiB /  16376MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A            3498      G   /usr/bin/gnome-shell                    168MiB |
+|    0   N/A  N/A            4002      G   /usr/bin/Xwayland                         4MiB |
++-----------------------------------------------------------------------------------------+
++ nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv
+name, compute_cap, driver_version, memory.total [MiB]
+NVIDIA GeForce RTX 4080 SUPER, 8.9, 595.91.07, 16376 MiB
++ nproc
+32
++ lscpu
++ grep 'Model name'
+Model name:                              AMD Ryzen 9 7950X3D 16-Core Processor
++ free -g
++ head -2
+               total        used        free      shared  buff/cache   available
+Mem:              60           2          34           0          24          58

@@ -1,0 +1,8 @@
++ cd /home/surya-koritala/p3final
++ COMPILE=1
++ timeout 20m /home/surya-koritala/p3final/wv/bin/python /home/surya-koritala/p3final/gen_eager.py Qwen/Qwen3-4B-Instruct-2507 bf16 1 128
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights:  15%|█▌        | 60/398 [00:00<00:00, 583.35it/s]Loading weights:  37%|███▋      | 147/398 [00:00<00:00, 744.59it/s]Loading weights:  59%|█████▉    | 234/398 [00:00<00:00, 796.30it/s]Loading weights:  80%|████████  | 319/398 [00:00<00:00, 814.98it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 799.03it/s]
+bf16 compiled Qwen/Qwen3-4B-Instruct-2507 batch 1: 73.2 tokens/s (13.66 ms a step)
+bf16 compiled Qwen/Qwen3-4B-Instruct-2507 batch 1: 73.9 tokens/s (13.53 ms a step)
+exit 0

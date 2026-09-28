@@ -1,0 +1,13 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights:  13%|█▎        | 90/707 [00:00<00:00, 899.82it/s]Loading weights:  50%|████▉     | 353/707 [00:00<00:00, 1913.83it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 2472.41it/s]
+merged: 128 groups of Linears as one product each
+bf16 (weights 65.52 GB): batch 1: 16.5 tokens/s (16.5 a sequence), peak VRAM 65.57 GB
+bf16 prefill: 512 tokens 109.5 ms (4677 tokens/s), first token 112.5 ms, 2048 tokens 410.9 ms (4984 tokens/s), first token 413.0 ms
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 16 s; weights 49.24 GB against 65.52 GB bf16 (75.1%), scratch 0.27 GB, VRAM in use 49.61 GB on 1 GPU
+glyd mma12 fused: batch 1: 25.0 tokens/s (25.0 a sequence), peak VRAM 49.61 GB
+glyd mma12 prefill: 512 tokens 133.8 ms (3826 tokens/s), first token 137.4 ms, 2048 tokens 495.5 ms (4133 tokens/s), first token 499.5 ms
+logits bit-identical: False
+generated tokens identical to bf16: 8 of 8
+text:  in 1948 with the

@@ -1,0 +1,2 @@
+bf16 compiled Qwen/Qwen3-8B batch 1: 63.6 tokens/s (15.72 ms a step)
+glyd compiled Qwen/Qwen3-8B batch 1: 77.4 tokens/s (12.91 ms a step)

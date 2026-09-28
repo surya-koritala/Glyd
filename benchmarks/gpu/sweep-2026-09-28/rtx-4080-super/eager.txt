@@ -1,0 +1,2 @@
+bf16 Qwen/Qwen3-4B-Instruct-2507 batch 1: 61.5 tokens/s (16.26 ms a step)
+glyd Qwen/Qwen3-4B-Instruct-2507 batch 1: 75.6 tokens/s (13.23 ms a step)
