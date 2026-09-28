@@ -402,9 +402,10 @@ through `generate()` is 3-5 ms more, alike):
 Still slower than bf16: prompts past 128 tokens (Qwen3-8B 6-33%,
 Qwen3-14B 12-35%), and Qwen3-8B's steps of 97-128 tokens (1.16x a
 layer). A prompt's matrices decoded ahead beside the products before
-them (as on GeForce Ada, `GLYD_AHEAD_MIN=129`) made every length slower
-on an A100, at 2, 3 or 4 warps an SM (Qwen3-8B, 2048 tokens: 214.8-274.3
-ms against the fused kernel's 237.1): not used here. Logs:
+them (as on GeForce Ada, `GLYD_AHEAD_MIN=129`) were slower on an A100
+than each matrix decoded before its product, at every length measured and
+2, 3 or 4 warps an SM (Qwen3-8B, 2048 tokens: 214.8-274.3 ms against
+195.7; the fused kernel took 237.1 there before): not used here. Logs:
 benchmarks/gpu/a100-ampere-2026-09-28.
 
 ### Short prompts: one C call a product, and stream-K
@@ -525,7 +526,8 @@ products before the first could not hide. At 1024 tokens Qwen3-1.7B's
 down projection (2048 x 6144) gets a single-stage kernel from cuBLAS,
 too slow beside a decode to host one. To 512 tokens the fused kernel
 stays: beside products that short, a decode costs more than it hides. On
-an A100 it made every length slower, as measured (above). On an H100,
+an A100 it was slower than each matrix decoded first, as measured
+(above). On an H100,
 whose cuBLAS kernels differ, and the L4, L40S and RTX 6000 Ada, which sum
 in fp32 at twice the GeForce rate (a product's time decodes half as much
 beside it), the path is off until measured:
