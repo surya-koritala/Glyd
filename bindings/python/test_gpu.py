@@ -1,5 +1,8 @@
 """glyd.gpu's parts that need no GPU and no PyTorch: fit against the site's
 answers, the glyd-v1 names and manifest, and import glyd without torch.
+Where a CUDA GPU, PyTorch and transformers are at hand (else skipped):
+every mixture-of-experts family of transformers as a tiny random model,
+packed and saved (test_moe_families), and the CLI's pack and verify on one.
 
     python test_gpu.py              (or pytest test_gpu.py)
 
@@ -178,6 +181,191 @@ def test_source_files_copied_once_and_writable():
             with open(os.path.join(dst, name)) as f:
                 assert f.read() == name
             assert os.access(os.path.join(dst, name), os.W_OK)
+
+
+# Every family of transformers (5.17) whose layers hold a mixture of experts: the model type a tiny config is made of,
+# and what the config needs besides TINY (text: its text config's; a vision or audio tower's own, small). compress:
+# packed by glyd.gpu.compress, not saved: a model glyd.from_pretrained does not load (token classification), or one
+# whose checkpoint does not run in bf16.
+TINY = dict(vocab_size=512, hidden_size=128, intermediate_size=128, moe_intermediate_size=64, shared_expert_intermediate_size=64, num_hidden_layers=2,
+            num_attention_heads=4, num_key_value_heads=2, head_dim=32, num_experts=8, num_local_experts=8, n_routed_experts=8, moe_num_experts=8,
+            num_experts_per_tok=2, moe_topk=2, n_group=1, topk_group=1, first_k_dense_replace=0, n_shared_experts=1, mlp_only_layers=[], decoder_sparse_step=1,
+            kv_lora_rank=32, q_lora_rank=64, qk_rope_head_dim=16, qk_nope_head_dim=16, v_head_dim=32, expert_ffn_hidden_size=64, sliding_window=64,
+            max_position_embeddings=512, pad_token_id=0, bos_token_id=1, eos_token_id=2, linear_key_head_dim=32, linear_value_head_dim=32,
+            linear_num_key_heads=2, linear_num_value_heads=4, linear_head_dim=32, linear_num_heads=4, index_head_dim=32, index_n_heads=4, index_topk=16, index_kpool=4)
+TOWER = dict(depth=1, num_hidden_layers=1, hidden_size=64, num_heads=2, num_attention_heads=2, intermediate_size=128, out_hidden_size=128, projection_intermediate_size=128)
+LIN, SPARSE = ["linear_attention", "full_attention"], ["sparse", "sparse"]
+ROPE = dict(rope_type="default", rope_theta=10000.0)
+FAMILIES = {
+    "afmoe": {}, "axk1": {}, "axk2": dict(num_key_value_heads=4), "cohere2_moe": {}, "deepseek_v2": {}, "deepseek_v3": {}, "deepseek_v32": dict(num_key_value_heads=4),
+    "deepseek_v4": dict(compress=True),  # (its bf16 checkpoint as transformers loads it hands fp32 norms' outputs to bf16 Linears)
+    "diffusion_gemma": dict(text=dict(top_k_experts=2)), "dots1": {}, "ernie4_5_moe": {}, "exaone_moe": {}, "flex_olmo": {},
+    "gemma4": dict(text=dict(enable_moe_block=True, top_k_experts=2)), "glm4_moe": {}, "glm4_moe_lite": dict(num_key_value_heads=4), "glm_moe_dsa": dict(num_key_value_heads=4),
+    "glm4v_moe": dict(text=dict(rope_parameters=dict(ROPE, mrope_section=[2, 3, 3], partial_rotary_factor=0.5))),
+    "glm5_next": dict(text=dict(num_key_value_heads=4, qk_rope_head_dim=0, qk_nope_head_dim=32, mlp_layer_types=SPARSE, layer_types=LIN, indexer_types=["full", "full"])),
+    "gpt_oss": {}, "granitemoe": {}, "granitemoeshared": {}, "granitemoe_swa": {}, "hunyuan_v1_moe": {}, "hy_v3": {}, "hy_v4": {}, "inkling_text": {},
+    "granitemoehybrid": dict(layer_types=["mamba", "attention"], mamba_n_heads=8, mamba_d_head=32, mamba_d_state=16, mamba_chunk_size=16),
+    "jamba": dict(attn_layer_period=2, attn_layer_offset=1, expert_layer_period=1, expert_layer_offset=0, use_mamba_kernels=False, mamba_d_state=16),
+    "kimi_linear": dict(layer_types=LIN, mlp_layer_types=SPARSE), "laguna": {}, "lfm2_moe": dict(layer_types=["conv", "full_attention"], num_dense_layers=0),
+    "mellum": {}, "mimo_v2_flash": {}, "minimax": {}, "minimax_m2": {}, "mistral4": {}, "mixtral": {}, "nemotron_h": {}, "olmoe": {}, "phimoe": {},
+    "minimax_m3_vl": dict(text_config=dict({k: TINY[k] for k in ("vocab_size", "hidden_size", "intermediate_size", "num_hidden_layers", "num_attention_heads", "num_key_value_heads", "head_dim", "num_experts_per_tok", "num_local_experts", "pad_token_id", "bos_token_id", "eos_token_id")},
+                                                model_type="minimax_m3_vl_text", dense_intermediate_size=128, shared_intermediate_size=64, index_n_heads=2, index_head_dim=32, index_block_size=4, index_topk_blocks=2, index_local_blocks=1),
+                          vision_config=dict(model_type="minimax_m3_vl_vision", hidden_size=64, intermediate_size=128, num_hidden_layers=1, num_attention_heads=2)),
+    "openai_privacy_filter": dict(compress=True), "qwen2_moe": {}, "qwen3_5_moe": dict(text=dict(layer_types=LIN)), "qwen3_moe": {}, "qwen3_next": dict(layer_types=LIN),
+    "qwen3_omni_moe_thinker": dict(audio_config=dict(encoder_layers=1, encoder_attention_heads=2, encoder_ffn_dim=128, d_model=64, output_dim=128, downsample_hidden_size=32),
+                                   vision_config=dict(TOWER, deepstack_visual_indexes=[0])),
+    "qwen3_vl_moe": {}, "solar_open": {}, "zaya": dict(num_experts_per_tok=1),
+    "qwen4_exp": dict(text=dict(layer_types=["linear_attention", "qwen_sparse_attention"], indexer_n_heads=2, indexer_kv_heads=1, indexer_head_dim=32, indexer_budget=16, indexer_compress_ratio=4)),
+    "deepseek_ocr2": dict(text=dict(mlp_layer_types=SPARSE), vision_config=dict(sam_config=dict(hidden_size=64, output_channels=64, num_hidden_layers=1, num_attention_heads=2, mlp_dim=128, global_attn_indexes=[0], downsample_channels=[64, 128]),
+                                                                            encoder_config=dict(hidden_size=128, intermediate_size=128, num_hidden_layers=1, num_attention_heads=4, num_key_value_heads=2))),
+    "ernie4_5_vl_moe": dict(text=dict(moe_intermediate_size=[64, 64], moe_k=2, rope_parameters=dict(ROPE, mrope_section=[6, 6, 4]))),
+    # run by the family's own code (moe.OWN)
+    "aria_text": {}, "jetmoe": {}, "llama4_text": dict(intermediate_size=64, intermediate_size_mlp=128, interleave_moe_layer_step=1, num_experts_per_tok=1),
+    "dbrx": dict(d_model=128, n_heads=4, n_layers=2, max_seq_len=512, attn_config=dict(kv_n_heads=2, rope_theta=10000.0, clip_qkv=8.0), ffn_config=dict(hidden_size=128, ffn_hidden_size=64, moe_num_experts=8, moe_top_k=2)),
+    "longcat_flash": dict(num_layers=1, qk_nope_head_dim=32, qk_rope_head_dim=16, head_dim=16, num_key_value_heads=4, zero_expert_num=2),
+    "step3p7": dict(text=dict(share_expert_dim=64, mlp_layer_types=SPARSE), vision_config=dict(TOWER, image_size=56, patch_size=14)),
+}  # Doge's experts, rows of two nn.Embedding, are packed as embeddings; its MoE layer does not run in 5.17 (a tuple where its layer takes a tensor)
+
+
+def cuda():
+    """torch with a CUDA GPU and transformers, else None (the tests that need them skipped)."""
+    try:
+        import torch
+        import transformers  # noqa: F401
+    except ImportError:
+        return None
+    return torch if torch.cuda.is_available() else None
+
+
+def tiny(kind, over):
+    """A tiny config of model type kind: TINY's fields it has, over's (text: its text config's), its towers' TOWER's."""
+    import dataclasses
+    from transformers import AutoConfig
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+    def small(cls, values):
+        names = ({f.name for f in dataclasses.fields(cls)} if dataclasses.is_dataclass(cls) else set()) | set(getattr(cls, "attribute_map", {}))
+        return {k: v for k, v in values.items() if k in names}
+
+    cls, over = CONFIG_MAPPING[kind], dict(over)
+    kw = small(cls, TINY)
+    for s, sub in (getattr(cls, "sub_configs", None) or {}).items():
+        if s == "text_config":
+            kw[s] = dict(small(sub, TINY), **over.pop("text", {}))
+        elif s == "vision_config":
+            kw[s] = small(sub, TOWER)
+    over.pop("compress", None)
+    return AutoConfig.for_model(kind, **dict(kw, **over))
+
+
+def experts(model):
+    """model's experts' weights: [(name, packed)]."""
+    from glyd.gpu import moe
+    from glyd.gpu.model import GEmbedding
+
+    out = []
+    for path, m in model.named_modules():
+        if moe.held(m):
+            out += [(f"{path}.{n}", n in (getattr(m, "glyd_packs", None) or {}) and getattr(m, n).numel() == 0) for n in moe.held(m)[0]]
+        elif type(m).__name__ == "DogeCDMoE":
+            out += [(f"{path}.{n}", isinstance(getattr(m, n), GEmbedding)) for n in ("down_embed", "up_embed")]
+    return out
+
+
+def moe_family(torch, kind, over, d):
+    """A tiny random model of kind on the GPU (fp32, then bf16) saved as a checkpoint in d, loaded by
+    glyd.from_pretrained: every expert's weight packed, in fewer bytes; logits as close to fp32's as bf16's (the
+    median over positions of a position's largest difference, as a routing near-tie moves a whole position); exact
+    bit for bit the bf16 model transformers loads from it; saved as glyd-v1 and loaded (verify: every tensor's
+    sha256), its logits the model's packed at load bit for bit, in both layouts; exact from it bf16's again. The two
+    medians, Glyd's (the tiered layout's) and bf16's."""
+    import copy
+    import glyd
+    from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoModelForTokenClassification
+    from glyd.gpu import format as fmt, moe
+
+    cfg = tiny(kind, over)
+    torch.manual_seed(0)  # what the model's initialization draws (attention sinks ...)
+    with torch.device("cuda"):
+        for auto in (AutoModelForCausalLM, AutoModelForImageTextToText, AutoModelForTokenClassification):
+            try:
+                fp32 = auto.from_config(cfg, dtype=torch.float32).eval()
+                break
+            except ValueError:
+                pass
+    gen = torch.Generator(device="cuda").manual_seed(0)
+    ids = torch.randint(0, cfg.get_text_config().vocab_size, (4, 16), device="cuda", generator=gen)
+    kw = dict(decoder_input_ids=ids) if kind == "diffusion_gemma" else {}  # its canvas, else drawn at random
+    run = lambda model: model(ids, **kw).logits.float()
+    with torch.no_grad():
+        for p in fp32.parameters():
+            if p.dim() >= 2 and p.is_floating_point():
+                p.normal_(0, 0.05, generator=gen)
+        l32 = run(fp32)
+        bf16 = fp32.to(torch.bfloat16)
+        experts_bytes = sum(p.numel() * 2 for n, p in bf16.named_parameters() if n in {e for e, _ in experts(bf16)})
+        err = lambda l: (l - l32).abs().amax(-1).median().item()
+        src, dst = os.path.join(d, kind), os.path.join(d, kind + "-glyd")
+        if over.get("compress"):  # not a model from_pretrained loads: packed in place, exact from a copy
+            ref, lb = copy.deepcopy(bf16), run(bf16)
+            import glyd.gpu as gg
+            g = gg.compress(bf16)
+            assert all(p for _, p in experts(g)) and moe.nbytes(g) < 0.8 * experts_bytes, (kind, experts(g))
+            eg = err(run(g))
+            assert eg <= 1.5 * err(lb), (kind, eg, err(lb))
+            assert torch.equal(run(gg.compress(ref, exact=True)), lb), kind
+            return eg, err(lb)
+        bf16.save_pretrained(src)
+        del fp32, bf16
+        lb = run(auto.from_pretrained(src, dtype=torch.bfloat16, device_map={"": "cuda:0"}).eval())  # (LongCat's differs from the model saved)
+        for layout in ("mma", "mma12"):
+            g = glyd.from_pretrained(src, layout=layout)
+            packed = experts(g)
+            assert packed and all(p for _, p in packed), (kind, packed)
+            assert kind == "doge" or moe.nbytes(g) < 0.8 * experts_bytes, (kind, moe.nbytes(g), experts_bytes)
+            lg = run(g)
+            assert err(lg) <= 1.5 * err(lb), (kind, layout, err(lg), err(lb))
+            if layout == "mma":
+                medians = err(lg), err(lb)
+            glyd.save_pretrained(g, dst)
+            del g
+            g = glyd.from_pretrained(dst, layout=layout, verify=True)
+            assert g.config.quantization_config.verified >= sum(len(e["tensors"]) for e in fmt.read_manifest(dst)["packs"].values()), kind  # and the embeddings packed again
+            assert torch.equal(run(g), lg), (kind, layout)
+            del g
+        for path in (src, dst):
+            assert torch.equal(run(glyd.from_pretrained(path, exact=True)), lb), (kind, path)
+        torch.cuda.empty_cache()
+    return medians
+
+
+def test_moe_families():
+    torch = cuda()
+    if torch is None:
+        print("test_moe_families: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    with tempfile.TemporaryDirectory() as d:
+        for kind, over in FAMILIES.items():
+            moe_family(torch, kind, over, d)
+            shutil.rmtree(d)
+            os.makedirs(d)
+
+
+def test_cli_pack_and_verify():
+    """python -m glyd.gpu pack and verify on a tiny mixture of experts (Qwen3-MoE's)."""
+    torch = cuda()
+    if torch is None:
+        print("test_cli_pack_and_verify: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    from transformers import AutoModelForCausalLM
+    with tempfile.TemporaryDirectory() as d:
+        with torch.device("cuda"):
+            AutoModelForCausalLM.from_config(tiny("qwen3_moe", {}), dtype=torch.bfloat16).save_pretrained(os.path.join(d, "src"))
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join([HERE] + [p for p in [os.environ.get("PYTHONPATH")] if p]))
+        for args, says in ((["pack", os.path.join(d, "src"), os.path.join(d, "out")], "tensors packed and checked"), (["verify", os.path.join(d, "out")], "tensors decode to glyd.json's sha256")):
+            r = subprocess.run([sys.executable, "-m", "glyd.gpu", *args], env=env, capture_output=True, text=True)
+            assert r.returncode == 0 and says in r.stdout, r.stderr[-2000:]
+        assert sum("experts" in e for e in fmt.read_manifest(os.path.join(d, "out"))["packs"].values()) == 4  # 2 layers' gate and up, down
 
 
 if __name__ == "__main__":

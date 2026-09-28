@@ -58,6 +58,38 @@ class _Node:
         self._node()
 
 
+class _Weight:
+    """A packed module's weight as a model's own code reads it (Llama 4: the embedding's device; HunYuan V4, DeepSeek
+    V3.2: a Linear's dtype; Gemma 4: the pad token's row): its device, dtype and shape as they are; its rows by index
+    (an embedding's: those rows alone decoded), anything else and a torch function on the matrix decoded."""
+
+    dtype, requires_grad = torch.bfloat16, False
+
+    def __init__(self, m):
+        self.m = m
+
+    device = property(lambda self: self.m.p.sm.device)
+    shape = property(lambda self: torch.Size(self.m.p.shape))
+
+    def tensor(self):
+        return unpack(self.m.p)
+
+    def __getitem__(self, i):
+        i = i if isinstance(i, tuple) else (i,)
+        if isinstance(self.m, GEmbedding) and isinstance(i[0], (int, torch.Tensor)):
+            ids = torch.as_tensor(i[0], device=self.device).remainder(self.shape[0])
+            return self.m.rows(ids.reshape(-1)).view(*ids.shape, -1)[(slice(None),) * ids.dim() + i[1:]]
+        return self.tensor()[i]
+
+    def __getattr__(self, name):
+        return getattr(self.tensor(), name)
+
+    @classmethod
+    def __torch_function__(cls, func, types, args=(), kwargs=None):
+        f = lambda a: a.tensor() if isinstance(a, cls) else a
+        return func(*map(f, args), **{k: f(v) for k, v in (kwargs or {}).items()})
+
+
 class GLinear(_Node, nn.Module):
     """nn.Linear over a packed matrix p (bias: bf16, or None). fused: products
     straight from the packed weights where a kernel takes the step (in the
@@ -66,6 +98,8 @@ class GLinear(_Node, nn.Module):
     PyTorch's matmul. exact: every product the matrix decoded whole, then
     F.linear on the input as it came, as nn.Linear does: its outputs bit for
     bit (over fused). gemm_max: the fast format's fused steps, in tokens."""
+
+    weight = property(_Weight)  # as a model's own code reads it
 
     def __init__(self, p, bias, fused=True, exact=False, gemm_max=64):
         super().__init__()
@@ -196,6 +230,8 @@ class Part(nn.Module):
 
 
 class GEmbedding(_Node, nn.Module):
+    weight = property(_Weight)  # as a model's own code reads it
+
     def __init__(self, p, scale=None):
         super().__init__()
         self.p = p
@@ -209,12 +245,17 @@ class GEmbedding(_Node, nn.Module):
         p = self.p
         return _lib.lookup(p.sm, p.planes, p.exc, p.exc_base, p.top, self.embedding_dim) if isinstance(p, g.Fast) and g.lib() is not None else None
 
-    def forward(self, ids):
-        if torch.compiler.is_compiling():  # one node of the graph (glyd::embedding), which runs what follows
-            return torch.ops.glyd.embedding(ids, self.handle, self.embedding_dim)
+    def rows(self, ids):
+        """Rows ids of the table, decoded."""
         rows = self.step(ids) if self.step is not None else None
         if rows is None:
             rows = (g.fast_rows(self.p, ids) if isinstance(self.p, g.Fast) else g.rows(self.p, ids)).view(*ids.shape, -1)
+        return rows
+
+    def forward(self, ids):
+        if torch.compiler.is_compiling():  # one node of the graph (glyd::embedding), which runs what follows
+            return torch.ops.glyd.embedding(ids, self.handle, self.embedding_dim)
+        rows = self.rows(ids)
         return rows if self.scale is None else rows * self.scale.to(rows.dtype)
 
 
@@ -253,6 +294,13 @@ def decoder(model):
     return getattr(model.model, "language_model", model.model)
 
 
+def plain(m):
+    """An nn.Linear that runs as one (its class's forward nn.Linear's), which a GLinear takes the place of; not a
+    module of a model's own that is one by class (Llama 4's and Phi-3.5-MoE's routers, DeepSeek V4's grouped output
+    projection)."""
+    return isinstance(m, nn.Linear) and type(m).forward is nn.Linear.forward
+
+
 def groups(model):
     """The Linears to run as one product, as (module, names): each decoder layer's q, k, v and gate, up where all are
     nn.Linear (a linear-attention layer, Qwen3-Next, Qwen3.5, has no self_attn: only its MLP merges)."""
@@ -263,7 +311,7 @@ def groups(model):
         return out
     for layer in layers:
         for mod, names in ((getattr(layer, "self_attn", None), ("q_proj", "k_proj", "v_proj")), (getattr(layer, "mlp", None), ("gate_proj", "up_proj"))):
-            if mod is not None and all(isinstance(getattr(mod, c, None), nn.Linear) for c in names):
+            if mod is not None and all(plain(getattr(mod, c, None)) for c in names):
                 out.append((mod, names))
     return out
 
@@ -343,7 +391,7 @@ def pack_modules(model, pack_fn, device_of, **mode):
     packed = {}
     for m in list(model.modules()):
         for cname, child in list(m.named_children()):
-            if isinstance(child, (nn.Linear, nn.Embedding)):
+            if plain(child) or isinstance(child, nn.Embedding):
                 linear = isinstance(child, nn.Linear)
                 dev = device_of(child)
                 key = (child.weight.data_ptr(), dev, linear)  # a weight tied to embedding and output: a pack for each
