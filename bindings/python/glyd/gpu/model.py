@@ -17,9 +17,12 @@ does not change between calls made once); under torch.compile each
 GLinear and GEmbedding is one node of the graph (glyd::linear,
 glyd::embedding), run as eager, and CUDA graphs capture its kernels.
 """
+import copy
 import hashlib
 import itertools
 import os
+import types
+import warnings
 import weakref
 import torch
 import torch.nn as nn
@@ -707,8 +710,88 @@ def set_scratch(model, exact):
                 Scratch.graphed.discard(d)
 
 
+# generate() compiled (fast_generate) where its static cache holds at most this many positions in all (its sequences
+# times the positions a call may reach, max_new_tokens' included): each step's attention reads the static cache whole,
+# masked (SDPA's kernel for a mask, whose time grows with the positions held, not the tokens in them), and past that
+# the eager loop was as fast or faster. A step's ms compiled against eager, RTX 4080 SUPER with a Ryzen 9 7950X3D:
+# Qwen3-8B at one sequence 17.7 against 20.5 with 80 positions held, 20.4 against 20.5 with 1024 (64 used), 23.0
+# against 20.5 with 2048; at 8 sequences 19.5 against 21.8 with 80 each, 26.7 against 24.8 with 576; Qwen3-4B-Instruct-
+# 2507 alike. A slower host (a server's CPU) gains more by compiling: set it higher there.
+COMPILE_MAX = int(os.environ.get("GLYD_COMPILE_MAX", 1280))
+# A call to generate() that sets any of these runs as transformers runs it (fast_generate)
+_OWN = ("past_key_values", "cache_implementation", "assistant_model", "custom_generate", "prompt_lookup_num_tokens", "assistant_early_exit", "output_attentions", "output_hidden_states")
+
+
+def fast_generate(model):
+    """model's generate() through transformers' static cache and compiled
+    forward (torch.compile, reduce-overhead: CUDA graphs), as
+    generate(..., cache_implementation="static") asks for it, where a call
+    leaves the cache and the search to the model (none of _OWN, one beam,
+    the cache used) and its static cache is short: it holds every position
+    the call may reach from its first step (transformers keeps it as long
+    as the longest call's), each step reads all of it, so COMPILE_MAX
+    positions in all at most, and half the memory the GPU has free; every
+    other call as transformers runs it. The prompt runs eager either way
+    (transformers compiles the steps after it). A forward that does not
+    compile runs eager from there on, with one warning. Not with
+    GLYD_COMPILE=0, nor a model over several GPUs (not measured there). The
+    model."""
+    if os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate"):
+        return model
+    devices = {m.p.sm.device for m in model.modules() if isinstance(m, (GLinear, GEmbedding))} | {t.device for t in model.parameters() if t.is_cuda}
+    if len(devices) != 1:
+        return model
+    c = model.config.get_text_config(decoder=True)
+    heads = getattr(c, "num_key_value_heads", None) or getattr(c, "num_attention_heads", 0)
+    dim = getattr(c, "head_dim", None) or getattr(c, "hidden_size", 0) // max(1, getattr(c, "num_attention_heads", 1))
+    model._glyd_fast = (4 * getattr(c, "num_hidden_layers", 0) * heads * dim, devices.pop())  # a position's K and V (bf16) in all layers; the GPU
+    model.generate = types.MethodType(_generate, model)
+    model.get_compiled_call = types.MethodType(_compiled_call, model)
+    return model
+
+
+def _generate(self, *args, **kwargs):
+    """fast_generate's generate(): the call with cache_implementation="static" where it takes it, else as it came."""
+    cfg = kwargs.get("generation_config") or self.generation_config
+    get = lambda k: kwargs[k] if k in kwargs else getattr(cfg, k, None)
+    x = args[0] if args else next((kwargs[k] for k in ("inputs", "input_ids", "inputs_embeds") if kwargs.get(k) is not None), None)
+    if len(args) < 2 and isinstance(x, torch.Tensor) and x.dim() > 1 and not self.__dict__.get("_glyd_eager") and not any(get(k) for k in _OWN) and get("use_cache") is not False and (get("num_beams") or 1) == 1:
+        kv, d = self._glyd_fast
+        n = get("max_new_tokens")
+        n = max(x.shape[1] + (n if n is not None else get("max_length") or 20), getattr(self, "_previous_max_cache_length", 0))  # the cache's positions
+        b = x.shape[0] * (get("num_return_sequences") or 1)
+        if b * n <= COMPILE_MAX and b * n * kv <= (torch.cuda.mem_get_info(d)[0] + torch.cuda.memory_reserved(d) - torch.cuda.memory_allocated(d)) // 2:
+            if "generation_config" in kwargs:
+                kwargs["generation_config"] = copy.deepcopy(cfg)
+                kwargs["generation_config"].cache_implementation = "static"
+            else:
+                kwargs["cache_implementation"] = "static"
+    return type(self).generate(self, *args, **kwargs)
+
+
+def _compiled_call(self, compile_config=None):
+    """fast_generate's get_compiled_call (what transformers' decoding steps call): the compiled forward, or, once it
+    fails to compile (torch._dynamo's or Inductor's error), a warning and the eager forward from there on."""
+    f = type(self).get_compiled_call(self, compile_config)
+
+    def call(*args, **kwargs):
+        if not self.__dict__.get("_glyd_eager"):
+            try:
+                return f(*args, **kwargs)
+            except Exception as e:
+                import torch._dynamo.exc as de
+                import torch._inductor.exc as ie
+                if not isinstance(e, (de.TorchDynamoException, getattr(ie, "InductorError", ()))):
+                    raise
+                self._glyd_eager = True
+                warnings.warn(f"glyd: {type(self).__name__}'s forward did not compile ({type(e).__name__}); generate() runs it eager from here on", stacklevel=2)
+        return self(*args, **kwargs)
+
+    return call
+
+
 @torch.no_grad()
-def compress(model, *, layout="auto", exact=False, merge=True):
+def compress(model, *, layout="auto", exact=False, merge=True, compile=True):
     """Packs an already-loaded bf16 model in place on the GPU and returns it:
     its Linears in `layout` ("auto": best_layout's pick for the GPU; "mma":
     tiered; "mma12": 12-bit) and its embeddings in the fast format, each on
@@ -716,8 +799,9 @@ def compress(model, *, layout="auto", exact=False, merge=True):
     rest of the model with it unless it is spread over several). exact:
     every product decodes its matrix whole and multiplies by F.linear, as
     nn.Linear does: outputs bit for bit bf16's (and no merging). merge: q, k,
-    v and gate, up as one product each (not with exact). A mixture of
-    experts' Experts modules packed too (moe.py)."""
+    v and gate, up as one product each (not with exact). compile: generate()
+    compiled (fast_generate; not with exact, whose tokens are bf16's eager
+    ones). A mixture of experts' Experts modules packed too (moe.py)."""
     cuda = {p.device for p in model.parameters() if p.is_cuda}
     home = min(cuda, key=lambda d: d.index) if cuda else torch.device("cuda", torch.cuda.current_device())
     if merge and not exact:
@@ -732,4 +816,4 @@ def compress(model, *, layout="auto", exact=False, merge=True):
         model.to(home)
     set_scratch(model, exact)
     torch.cuda.empty_cache()
-    return model
+    return fast_generate(model) if compile and not exact else model

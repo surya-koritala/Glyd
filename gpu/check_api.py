@@ -5,6 +5,11 @@ beside glyd/gpu/kernels.py), against each model in bf16:
 - from_pretrained (fused, merged, best_layout's layout): 32 greedy tokens
   compared with bf16's as e2e.py compares them; the load's time, and its
   peak memory against the packed model's bytes and the largest tensor's;
+- generate() as a user calls it: compiled (model.fast_generate: a static
+  cache, CUDA graphs); with compile=False eager, the same logits; not
+  with GLYD_COMPILE=0; a call with a cache of its own, several beams or a
+  static cache past COMPILE_MAX as transformers runs it; a forward that
+  fails to compile: one warning, and eager from there on;
 - glyd.gpu.compress on the model loaded in bf16: the same packs, so the
   same logits and tokens bit for bit;
 - exact=True: logits bit for bit bf16's, the 32 tokens bf16's;
@@ -14,7 +19,8 @@ beside glyd/gpu/kernels.py), against each model in bf16:
   decoded on the current stream, bit for bit; exact's bf16's;
 - compiled, as transformers compiles generate() (a static cache, the
   forward under CUDA graphs), fullgraph, fused and exact: no graph break,
-  no graph left to run uncaptured; the tokens against eager's;
+  no graph left to run uncaptured; the tokens against plain generate()'s
+  (exact: bf16's eager ones);
 - first, with no model loaded yet: the first model compiled with
   exact=True (its CUDA graph decodes into the scratch buffer, and keeps
   its address), the second loaded (a bigger buffer takes its place), the
@@ -40,13 +46,14 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
 
 PACKAGE = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bindings", "python"))
 if os.path.isdir(os.path.join(PACKAGE, "glyd")):
     sys.path.insert(0, PACKAGE)
 import torch
 from torch._dynamo.utils import counters
-from transformers import AutoModelForCausalLM, AutoTokenizer, CompileConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, CompileConfig, DynamicCache
 import glyd
 import glyd.gpu
 from glyd.gpu import moe
@@ -87,6 +94,37 @@ def compiled(model, ids):
     torch._dynamo.reset()
     model.__dict__.pop("_compiled_call", None)
     return out[0, ids.shape[1] :]
+
+
+def fast_loop(e, ids, out_e):
+    """generate()'s fast loop on e, loaded with compile=False (eager; out_e its TOKENS tokens): GLYD_COMPILE=0 leaves it
+    eager; set up (fast_generate), the calls it leaves as they come run eager (a cache of the call's own, two beams, a
+    static cache past COMPILE_MAX); a forward that does not compile (a backend that fails): one warning, the call and
+    the next eager."""
+    compiled = lambda: "_compiled_call" in e.__dict__
+    os.environ["GLYD_COMPILE"] = "0"
+    try:
+        assert gm.fast_generate(e) is e and "_glyd_fast" not in e.__dict__, "GLYD_COMPILE=0: generate() eager"
+    finally:
+        del os.environ["GLYD_COMPILE"]
+    gm.fast_generate(e)
+    with torch.no_grad():
+        for kw in (dict(past_key_values=DynamicCache(config=e.config)), dict(num_beams=2), dict(max_new_tokens=gm.COMPILE_MAX, max_time=0.5)):
+            e.generate(ids, **dict(dict(max_new_tokens=8, do_sample=False), **kw))
+            assert not compiled(), ("a call the fast loop leaves as it came, compiled", list(kw))
+
+        def broken(graph, inputs):
+            raise RuntimeError("a backend that fails")
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            out = e.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False, compile_config=CompileConfig(backend=broken))
+            e.__dict__.pop("_compiled_call")
+            again = e.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
+        said = [str(x.message) for x in w if "did not compile" in str(x.message)]
+        assert len(said) == 1 and e._glyd_eager and not compiled() and torch.equal(again[0, ids.shape[1] :], out_e), ("a forward that does not compile", said)
+    torch._dynamo.reset()
+    return same(out[0, ids.shape[1] :], out_e)
 
 
 def ahead(model, ids):
@@ -162,10 +200,18 @@ for name in NAMES:
     m, t, peak, held = loaded(lambda: glyd.from_pretrained(name))
     q, size = m.config.quantization_config, packed_bytes(m)
     logits_b, out_b = run(m, ids)
+    assert "_compiled_call" in m.__dict__, "plain generate(): compiled (the fast loop)"
     # The peak: the packed model, the embedding in bf16 until the end, and the packers' own scratch.
     print(f"{name}: glyd {q.layout} fused loaded in {t:.1f} s, peak {peak:.2f} GB: packed weights {size / 1e9:.2f} GB + largest tensor {largest / 1e9:.2f} GB + {peak - (size + largest) / 1e9:.2f} GB; holds {held:.2f} GB")
     print(f"   generated tokens identical to bf16: {same(out_a, out_b)} of {TOKENS}; logits bit-identical: {exact(logits_a, logits_b)}")
     print("   text:", tok.decode(out_b).replace("\n", " "))
+    e = glyd.from_pretrained(name, compile=False)
+    logits_e, out_e = run(e, ids)
+    assert "_compiled_call" not in e.__dict__ and exact(logits_e, logits_b), "compile=False: generate() eager, the same packs"
+    print(f"   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's {same(out_e, out_b)} of {TOKENS}")
+    print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {gm.COMPILE_MAX} positions eager; a backend that fails: one warning, eager from there on (the call's tokens as eager's: {fast_loop(e, ids, out_e)} of {TOKENS})")
+    del e
+    torch.cuda.empty_cache()
     ahead(m, long)
     a = gm.Ahead.of.get(torch.device("cuda", 0))
     print(f"   a prompt of {long.shape[1]} tokens: " + (f"{len(a.chain)} products decoded ahead, logits as decoded on the current stream, bit for bit" if a and a.chain else "not decoded ahead on this GPU"))
@@ -174,7 +220,7 @@ for name in NAMES:
     logits_c, out_c = run(c, ids)
     assert exact(logits_b, logits_c) and torch.equal(out_b, out_c) and packed_bytes(c) == size, "glyd.gpu.compress packs as from_pretrained does"
     print(f"   glyd.gpu.compress: the same {size / 1e9:.2f} GB, logits and tokens bit for bit")
-    print(f"   compiled (a static cache, CUDA graphs, fullgraph): tokens as eager's: {same(out_b, compiled(m, ids))} of {TOKENS}")
+    print(f"   compiled (a static cache, CUDA graphs, fullgraph): tokens as plain generate()'s: {same(out_b, compiled(m, ids))} of {TOKENS}")
     del c
     torch.cuda.empty_cache()
 
