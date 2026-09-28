@@ -16,8 +16,11 @@ every earlier format.
   layer's products take 1.7-4.3% less time in the 12-bit layout at 256-4096
   tokens (Qwen3-4B-Instruct-2507's 1.03-1.04x cuBLAS's at 512-4096, were
   1.06-1.08x) and about 1-2% less in the tiered layout; the 12-bit
-  layout's prompts are now fused to 2047 tokens (were to 1023), then
-  decoded ahead. One forward pass (`gpu/e2e.py --prefill --merge`), 12-bit,
+  layout's prompts are now fused to 1792 tokens (were to 1023), then
+  decoded ahead, the length that loses least across Qwen3-1.7B, 4B and 8B
+  (Qwen3-8B's fused pass is 1.0-4.6% slower than decoded ahead at six
+  lengths of nine to there, Qwen3-1.7B's 3.5-4.0% faster at 1793-2047).
+  One forward pass (`gpu/e2e.py --prefill --merge`), 12-bit,
   Qwen3-4B-Instruct-2507 at 256 / 384 / 512 / 640 / 768 tokens: 28.3 /
   40.8 / 50.9 / 64.2 / 75.2 ms against bf16's 28.1 / 39.5 / 49.1 / 62.7 /
   73.0 (were 28.9 / 41.9 / 51.8 / 65.8 / 76.6); Qwen3-1.7B at 384 / 640 /

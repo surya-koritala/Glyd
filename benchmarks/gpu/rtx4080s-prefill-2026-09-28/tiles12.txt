@@ -1,0 +1,21 @@
+Qwen3-1.7B layer 10: qkv (4096, 2048), o (2048, 2048), gate_up (12288, 2048), down (2048, 6144)
+  exceptions a step: qkv 0.220 (max 4), o 0.276 (max 7), gate_up 0.233 (max 5), down 0.261 (max 6)
+  mma12 M= 1152: layer cuBLAS    1242 us, v1    1267 (1.020x), v2    1336 (1.076x)  [qkv 209/217/227 | o 111/119/121 | gate_up 613/619/657 | down 310/312/331]
+  mma12 M= 1408: layer cuBLAS    1485 us, v1    1524 (1.026x), v2    1633 (1.100x)  [qkv 261/263/281 | o 138/140/150 | gate_up 718/746/801 | down 368/375/401]
+  mma12 M= 1664: layer cuBLAS    1712 us, v1    1784 (1.042x), v2    1896 (1.108x)  [qkv 312/303/327 | o 161/162/173 | gate_up 821/880/932 | down 418/439/465]
+  mma12 M= 1856: layer cuBLAS    1866 us, v1    1984 (1.063x), v2    2144 (1.149x)  [qkv 314/334/368 | o 162/174/194 | gate_up 926/991/1057 | down 465/485/526]
+  mma12 M= 1920: layer cuBLAS    1869 us, v1    1988 (1.064x), v2    2148 (1.149x)  [qkv 314/335/369 | o 163/174/194 | gate_up 926/994/1058 | down 466/484/527]
+Qwen3-4B-Instruct-2507 layer 10: qkv (6144, 2560), o (2560, 4096), gate_up (19456, 2560), down (2560, 9728)
+  exceptions a step: qkv 0.283 (max 10), o 0.275 (max 16), gate_up 0.220 (max 49), down 0.182 (max 13)
+  mma12 M= 1152: layer cuBLAS    2447 us, v1    2499 (1.021x), v2    2617 (1.070x)  [qkv 385/392/415 | o 265/268/282 | gate_up 1139/1241/1280 | down 657/597/641]
+  mma12 M= 1408: layer cuBLAS    2909 us, v1    3020 (1.038x), v2    3143 (1.080x)  [qkv 460/473/504 | o 313/319/332 | gate_up 1398/1507/1546 | down 738/721/762]
+  mma12 M= 1664: layer cuBLAS    3390 us, v1    3531 (1.042x), v2    3662 (1.080x)  [qkv 516/548/586 | o 408/375/389 | gate_up 1648/1764/1797 | down 818/844/890]
+  mma12 M= 1856: layer cuBLAS    3908 us, v1    4027 (1.031x), v2    4171 (1.067x)  [qkv 640/612/667 | o 409/424/439 | gate_up 1901/2019/2049 | down 958/972/1016]
+  mma12 M= 1920: layer cuBLAS    3925 us, v1    4045 (1.031x), v2    4189 (1.067x)  [qkv 644/617/670 | o 412/426/442 | gate_up 1911/2031/2060 | down 958/972/1017]
+Qwen3-8B layer 10: qkv (6144, 4096), o (4096, 4096), gate_up (24576, 4096), down (4096, 12288)
+  exceptions a step: qkv 0.258 (max 5), o 0.276 (max 14), gate_up 0.235 (max 4), down 0.212 (max 5)
+  mma12 M= 1152: layer cuBLAS    4425 us, v1    4542 (1.026x), v2    4906 (1.109x)  [qkv 605/602/648 | o 406/407/436 | gate_up 2211/2347/2549 | down 1202/1186/1273]
+  mma12 M= 1408: layer cuBLAS    5576 us, v1    5533 (0.992x), v2    5926 (1.063x)  [qkv 809/735/787 | o 513/494/529 | gate_up 2808/2856/3061 | down 1447/1448/1548]
+  mma12 M= 1664: layer cuBLAS    6310 us, v1    6518 (1.033x), v2    6952 (1.102x)  [qkv 819/862/925 | o 614/583/623 | gate_up 3224/3388/3600 | down 1653/1684/1804]
+  mma12 M= 1856: layer cuBLAS    7159 us, v1    7423 (1.037x), v2    7924 (1.107x)  [qkv 1019/974/1054 | o 617/655/707 | gate_up 3660/3884/4110 | down 1862/1910/2053]
+  mma12 M= 1920: layer cuBLAS    7161 us, v1    7424 (1.037x), v2    7934 (1.108x)  [qkv 1020/973/1052 | o 617/654/710 | gate_up 3662/3888/4118 | down 1862/1909/2055]
