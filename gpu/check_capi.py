@@ -356,6 +356,7 @@ for q, lin in zip(packs, hopper):
 # one: its routes on this GPU's kernels.
 shapes = [(1024, 512), (512, 1024), (3072, 512), (512, 1536), (192, 512), (2048, 1024)]
 flops, gm.AHEAD_FLOPS = gm.AHEAD_FLOPS, 0
+wg_max, gm.WG_MAX = gm.WG_MAX, 512  # (Hopper's 12-bit prompts at 600 tokens: through the order, not mma_gemm_wg's)
 product, placed = gm.Ahead.product, []
 gm.Ahead.product = lambda a, lin, j, f, M: (placed.append(j), product(a, lin, j, f, M))[1]
 dev_ = torch.device(dev, torch.cuda.current_device())
@@ -434,7 +435,7 @@ gm.GLinear(g.pack_mma(weights(512 * 512).view(512, 512)), None)(torch.randn(64, 
 assert not a.live and not gm.Ahead.queued, "a call below the threshold waits for what is queued"
 del junk, xs
 counts["GLinear decodes ahead past a prompt's end"] = 1
-gm.Ahead.product, gm.AHEAD_FLOPS = product, flops
+gm.Ahead.product, gm.AHEAD_FLOPS, gm.WG_MAX = product, flops, wg_max
 e = weights(1000 * 256).view(1000, 256)
 ids = torch.randint(0, 1000, (4, 3), device=dev)
 emb = gm.GEmbedding(g.pack_fast(e))  # held: its step keeps the pack's addresses, not the pack
