@@ -1614,15 +1614,18 @@ __device__ __forceinline__ void sum_out12(float (&r)[NT / 2], int64_t p, int64_t
         float4* pp = (float4*)slot(blockIdx.x);
 #pragma unroll
         for (int q = 0; q < NT / 8; q++) pp[q * 128 * WG + ct] = make_float4(r[4 * q], r[4 * q + 1], r[4 * q + 2], r[4 * q + 3]);
-        __threadfence();
+        // The warpgroups' slot written (the barrier), one thread's count with release and acquire: the others' parts
+        // seen by the last, whose threads read them after the second barrier (fences are cumulative; a fence a thread
+        // had held each up till its own writes landed).
         bar_sync<128 * WG>(1);
         if (ct == 0) {
-            last = atomicAdd(done + p, 1) == fin - first;
+            int before;
+            asm volatile("atom.acq_rel.gpu.global.add.s32 %0, [%1], 1;\n" : "=r"(before) : "l"(done + p) : "memory");
+            last = before == fin - first;
             if (last) done[p] = 0;  // ready for the next product
         }
         bar_sync<128 * WG>(1);
         if (last) {
-            __threadfence();
 #pragma unroll
             for (int i = 0; i < NT / 2; i++) r[i] = 0.f;
             for (int64_t b = first; b <= fin; b++) {
