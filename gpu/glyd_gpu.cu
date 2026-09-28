@@ -1608,7 +1608,9 @@ __device__ __forceinline__ void sum_out12(float (&r)[NT / 2], int64_t p, int64_t
     constexpr int R = 64 * WG;
     int wg = ct >> 7, w = (ct >> 5) & 3, g = (ct & 31) >> 2, t = ct & 3;
     int64_t first = block_of_step(p * S, nb, U), fin = block_of_step(p * S + S - 1, nb, U);
-    auto slot = [&](int64_t b) { return parts + (2 * b + (p != b * U / nb / S)) * (NT * R); };
+    // Block b's slot for the unit: 2b where the unit is b's first (b starts in it: every block of it but the first,
+    // which starts in it only at its start), else 2b + 1.
+    auto slot = [&](int64_t b) { return parts + (2 * b + (b == first && b * U / nb != p * S)) * (NT * R); };
     if (first != fin) {
         // Slots [NT / 8 float4s][threads]: each thread's r in order, coalesced.
         float4* pp = (float4*)slot(blockIdx.x);
@@ -1715,7 +1717,8 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
             stage_bounds<WG>(f, RB, KS, (p + s / S) % RU, s % S, en);
         };
         if (lane < 8 && lane < n) ahead(p0, s0, lane);
-        for (int j = 0, p = p0, s = s0; j < n; j++, s = s + 1 == S ? 0 : s + 1, p += s == 0) {
+        // (unit p's row unit pr and chunk pc kept as p goes: no division a stage, where a stage of few tokens is short)
+        for (int j = 0, p = p0, s = s0, pr = p0 % RU, pc = p0 / RU; j < n; j++) {
             if ((j & 7) == 0) {
 #pragma unroll
                 for (int i = 0; i < 5 * WG; i++) e[i] = en[i];
@@ -1737,15 +1740,19 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
                     bs[5] = na[r] < 0 ? -1 : a[r];
                 }
                 mbar_expect_tx(fb, bytes);
-                tma_2d(xs, &xmap, (int)(s * 64), p / RU * NT, fb);
+                tma_2d(xs, &xmap, (int)(s * 64), pc * NT, fb);
 #pragma unroll
                 for (int r = 0; r < WG; r++) {
                     uint32_t cs = xs + C::XB + r * C::RBB;
-                    bulk_g2s(cs, f.data + (min((int64_t)WG * (p % RU) + r, RB - 1) * KS + 4 * s) * STEP12, C::CB, fb, TC == 1);  // (read once but where the chunks share it)
+                    bulk_g2s(cs, f.data + (min((int64_t)WG * pr + r, RB - 1) * KS + 4 * s) * STEP12, C::CB, fb, TC == 1);  // (read once but where the chunks share it)
                     if (na[r] > 0) bulk_g2s(cs + C::CB, f.exc + a[r], 4 * na[r], fb);
                 }
             }
             __syncwarp();
+            if (++s == S) {
+                s = 0, p++;
+                if (++pr == RU) pr = 0, pc++;
+            }
         }
         return;
     }
