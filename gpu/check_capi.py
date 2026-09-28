@@ -311,6 +311,20 @@ for M, first in ((600, 0), (2100, 6)):
         counts["GLinear decoded ahead"] = counts.get("GLinear decoded ahead", 0) + on
         counts["GLinear off the order (fused)"] = counts.get("GLinear off the order (fused)", 0) + len(ls) - on
     assert any(gm.Ahead.of[dev_].schedule(M // 128 * 128)[0]), "decodes ahead in the order"
+# Where Ahead does not take a prompt's product, the fused kernel, as below the decode ahead (but on Hopper): under
+# torch.compile (a graph's node: _lib.local.fresh), and a matrix past the scratch (decoded in row blocks, never ahead).
+if not lins[0].hopper:
+    placed.clear()
+    glyd_gpu_lib.local.fresh = True
+    for lin in lins:
+        x = torch.randn(600, lin.in_features, dtype=bf, device=dev)
+        assert exact(lin(x), g.mma_gemm_big(lin.p, x)), ("a compiled prompt: fused", lin.p.shape)
+    glyd_gpu_lib.local.fresh = False
+    big = gm.GLinear(g.pack_mma(weights(1024 * 512).view(1024, 512)), None)
+    big.ahead, big.block = 513, 128  # as a matrix past the scratch
+    x = torch.randn(600, 512, dtype=bf, device=dev)
+    assert exact(big(x), g.mma_gemm_big(big.p, x)) and not placed, "past the scratch: fused"
+    counts["GLinear where Ahead does not take it (fused)"] = len(lins) + 1
 gm.Ahead.product, gm.AHEAD_FLOPS = product, flops
 e = weights(1000 * 256).view(1000, 256)
 ids = torch.randint(0, 1000, (4, 3), device=dev)

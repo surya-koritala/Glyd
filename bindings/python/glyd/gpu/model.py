@@ -229,10 +229,10 @@ class _Node:
 class GLinear(_Node, nn.Module):
     """nn.Linear over a packed matrix p (bias: bf16, or None). fused: products
     straight from the packed weights where a kernel takes the step (in the
-    mma layouts up to 64 tokens, and prompts but on Hopper, on Ada to 512
-    tokens tiered and 640 12-bit; one-token steps in the others); else the
-    matrix decoded into the scratch buffer, then PyTorch's matmul (a longer
-    prompt's on Ada decoded ahead of its product: Ahead). exact: every
+    mma layouts up to 64 tokens, and prompts but on Hopper; one-token steps
+    in the others); else the matrix decoded into the scratch buffer, then
+    PyTorch's matmul (on Ada a prompt past 512 tokens tiered, 640 12-bit,
+    decoded ahead of its product where Ahead takes it). exact: every
     product the matrix decoded whole, then F.linear on the input as it came,
     as nn.Linear does: its outputs bit for bit (over fused). gemm_max: the
     fast format's fused steps, in tokens."""
@@ -263,8 +263,9 @@ class GLinear(_Node, nn.Module):
         if M <= 64:
             return g.mma_gemm
         # A prompt: past WG_MAX tokens on Hopper the tensor cores outrun our decode, and past self.ahead on Ada a
-        # matrix decoded ahead, beside the products before it, costs cuBLAS less than the fused kernel's decode.
-        if K % 64 == 0 and not self.hopper and M < self.ahead:
+        # matrix decoded ahead, beside the products before it, costs cuBLAS less than the fused kernel's decode
+        # (whole; a matrix past the scratch is never decoded ahead: fused).
+        if K % 64 == 0 and not self.hopper and (M < self.ahead or self.block < self.out_features):
             return g.mma_gemm_big
         return None
 
@@ -303,14 +304,15 @@ class GLinear(_Node, nn.Module):
 
     def whole(self, product, x):
         """product(W), this matrix decoded whole into the scratch buffer, for input x: ahead, for a prompt of
-        self.ahead tokens or more where its order says this product comes next (Ahead); where the order is not
-        known yet (recorded now) or not followed, fused where a kernel takes the prompt; else decoded now."""
+        self.ahead tokens or more where its order says this product comes next (Ahead); where Ahead does not take
+        it (the order not known yet, recorded now, or not followed; under torch.compile; during a capture), fused
+        where a kernel takes the prompt; else decoded now."""
         M = x.numel() // self.in_features
         a = Ahead.get(self.p.sm.device) if M >= self.ahead and isinstance(self.p, g.Mma) else None
         j = a.find(self) if a is not None else None
         if j is not None:
             return a.product(self, j, product, M)
-        if a is not None and self.fused and not self.exact and not self.hopper and self.in_features % 64 == 0:
+        if isinstance(self.p, g.Mma) and self.fused and not self.exact and not self.hopper and self.in_features % 64 == 0:
             return g.mma_gemm_big(self.p, x, self.bias)
         return product(self.decode_rows(0, self.out_features))
 
