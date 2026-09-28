@@ -346,39 +346,50 @@ for q, lin in zip(packs, hopper):
 # the order there), then one past the order's end (the order to there again); another order between (recorded, then
 # followed), then the first again; at 600 tokens, then 2100 (the order kept). The products on the order (as many as
 # said, from the first) bit for bit as with their matrices decoded on the current stream, the rest the fused
-# kernel's (on Hopper, whose prompts take no fused kernel, decoded on the current stream too), below the threshold
-# the step's kernel's.
+# kernel's (on Hopper, and an A100's 12-bit prompts from DEC_MIN tokens, which take no fused kernel: decoded on the
+# current stream too), below the threshold the step's kernel's. Then all of it again with GLinears made as on an
+# A100 (compute capability 8.0 read while they are made), where this GPU is not one: its routes on this GPU's kernels.
 shapes = [(1024, 512), (512, 1024), (3072, 512), (512, 1536), (192, 512), (2048, 1024)]
-lins = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
-other = [gm.GLinear(g.pack_mma(weights(O * K).view(O, K)), None) for O, K in shapes[:3]]
-for lin in lins + other:
-    lin.ahead = 513
-    lin.step = lin._step()  # its one-call path to the new threshold
-gm.set_scratch(torch.nn.ModuleList(lins + other), False)
 flops, gm.AHEAD_FLOPS = gm.AHEAD_FLOPS, 0
 product, placed = gm.Ahead.product, []
 gm.Ahead.product = lambda a, lin, j, f, M: (placed.append(j), product(a, lin, j, f, M))[1]
 dev_ = torch.device(dev, torch.cuda.current_device())
-common = [(lins, 6, None, None), (lins, 4, 4, None), (lins[:3], 3, None, None), (lins, 6, None, None), (lins[:4], 3, None, 3), (lins, 3, None, None),
-          (lins, 6, None, None), (other, 0, None, None), (other, 3, None, None), (lins, 0, None, None), (lins, 6, None, None)]
-for M, seq in ((600, [(lins[:3], 0, None, None), (lins, 3, None, None)] + common), (2100, common)):
-    for ls, on, stop, short in seq:  # ls in turn at M tokens (from index short on at 64), a decode before index stop
-        gen = torch.Generator(device=dev).manual_seed(M)
-        placed.clear()
-        for i, lin in enumerate(ls):
-            if i == stop:
-                gm.Ahead.stop(dev_)
-                lins[0].decode_rows(0, 64)
-            x = torch.randn(64 if short is not None and i >= short else M, lin.in_features, dtype=bf, device=dev, generator=gen)
-            y = lin(x)
-            if short is not None and i >= short:
-                assert exact(y, lin.kernel(64)(lin.p, x)), ("below the threshold", M, i)
-                continue
-            assert exact(y, F.linear(x, g.mma_unpack(lin.p)) if i < on or lin.hopper else g.mma_gemm_big(lin.p, x)), ("a prompt decoded ahead", M, i, on)
-        assert placed == list(range(on)), ("the order followed", M, placed, on)
-        counts["GLinear decoded ahead"] = counts.get("GLinear decoded ahead", 0) + on
-        counts["GLinear off the order (fused)"] = counts.get("GLinear off the order (fused)", 0) + len(ls) - on
-    assert any(gm.Ahead.of[dev_].schedule(M // 128 * 128)[0]), "decodes ahead in the order"
+for route in [None] + ([] if torch.cuda.get_device_capability() == (8, 0) else [(8, 0)]):
+    if route:
+        torch.cuda.get_device_capability = lambda device=None: route
+    try:
+        lins = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
+        other = [gm.GLinear(g.pack_mma(weights(O * K).view(O, K)), None) for O, K in shapes[:3]]
+    finally:
+        torch.cuda.get_device_capability = cc
+    for lin in lins + other:
+        lin.ahead = 513
+        lin.step = lin._step()  # its one-call path to the new threshold
+    gm.Ahead.reset(dev_)  # (the route before's order done with)
+    gm.set_scratch(torch.nn.ModuleList(lins + other), False)
+    tag = " (as on an A100)" if route else ""
+    common = [(lins, 6, None, None), (lins, 4, 4, None), (lins[:3], 3, None, None), (lins, 6, None, None), (lins[:4], 3, None, 3), (lins, 3, None, None),
+              (lins, 6, None, None), (other, 0, None, None), (other, 3, None, None), (lins, 0, None, None), (lins, 6, None, None)]
+    for M, seq in ((600, [(lins[:3], 0, None, None), (lins, 3, None, None)] + common), (2100, common)):
+        for ls, on, stop, short in seq:  # ls in turn at M tokens (from index short on at 64), a decode before index stop
+            gen = torch.Generator(device=dev).manual_seed(M)
+            placed.clear()
+            for i, lin in enumerate(ls):
+                if i == stop:
+                    gm.Ahead.stop(dev_)
+                    lins[0].decode_rows(0, 64)
+                x = torch.randn(64 if short is not None and i >= short else M, lin.in_features, dtype=bf, device=dev, generator=gen)
+                y = lin(x)
+                if short is not None and i >= short:
+                    assert exact(y, lin.kernel(64)(lin.p, x)), ("below the threshold", route, M, i)
+                    continue
+                assert exact(y, F.linear(x, g.mma_unpack(lin.p)) if i < on or lin.hopper or lin.decoded(M) else g.mma_gemm_big(lin.p, x)), ("a prompt decoded ahead", route, M, i, on)
+                if i >= on and lin.decoded(M):
+                    counts["GLinear off the order, decoded" + tag] = counts.get("GLinear off the order, decoded" + tag, 0) + 1
+            assert placed == list(range(on)), ("the order followed", route, M, placed, on)
+            counts["GLinear decoded ahead" + tag] = counts.get("GLinear decoded ahead" + tag, 0) + on
+            counts["GLinear off the order" + tag] = counts.get("GLinear off the order" + tag, 0) + len(ls) - on
+        assert any(gm.Ahead.of[dev_].schedule(M // 128 * 128)[0]), ("decodes ahead in the order", route)
 # Where Ahead does not take a prompt's product, the fused kernel, as below the decode ahead (but on Hopper): under
 # torch.compile (a graph's node: _lib.local.fresh), and a matrix past the scratch (decoded in row blocks, never ahead).
 if not lins[0].hopper:
