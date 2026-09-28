@@ -129,6 +129,37 @@ const FAMILIES: &[Family] = &[
     },
 ];
 
+/// The layout packs are saved in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    /// The tiered layout (glyd-v1; glyd-v2 with a mixture of experts' packs): the smallest, what glyd 0.20 on reads.
+    Tiered,
+    /// The 12-bit layout (glyd-v3): what an A10, A100 or H100 runs, loaded there without packing again.
+    Twelve,
+}
+
+impl Layout {
+    /// Its name in glyd.json.
+    pub fn name(self) -> &'static str {
+        match self {
+            Layout::Tiered => "mma",
+            Layout::Twelve => "mma12",
+        }
+    }
+
+    fn by_name(name: &str) -> Option<Layout> {
+        [Layout::Tiered, Layout::Twelve].into_iter().find(|l| l.name() == name)
+    }
+
+    /// A pack's words' name in glyd.json.
+    fn words(self) -> &'static str {
+        match self {
+            Layout::Tiered => "tiers",
+            Layout::Twelve => "sym",
+        }
+    }
+}
+
 /// A save's plan: what it puts, in order.
 struct Plan {
     puts: Vec<Put>,
@@ -288,13 +319,14 @@ fn shape_value(s: &[u64]) -> Value {
     Value::Array(s.iter().map(|&d| Value::from(d)).collect())
 }
 
-/// A pack's glyd.json entry (format.py's entry): its matrix's shape, its tiers, its tensors (name, shape, sha256)
-/// in their order in its rows; an experts' weight's E and whether it is held transposed.
-fn entry(shape: [usize; 2], tiers: [u32; 3], tensors: Vec<(String, Vec<u64>, String)>, experts: Option<(usize, bool)>) -> Value {
+/// A pack's glyd.json entry (format.py's entry): its layout, its matrix's shape, its words (tiers, sym), its
+/// tensors (name, shape, sha256) in their order in its rows; an experts' weight's E and whether it is held
+/// transposed.
+fn entry(layout: Layout, shape: [usize; 2], words: &[u32], tensors: Vec<(String, Vec<u64>, String)>, experts: Option<(usize, bool)>) -> Value {
     let mut e = vec![
-        ("layout".to_string(), Value::from("mma")),
+        ("layout".to_string(), Value::from(layout.name())),
         ("shape".to_string(), shape_value(&[shape[0] as u64, shape[1] as u64])),
-        ("tiers".to_string(), Value::Array(tiers.iter().map(|&t| Value::from(t as u64)).collect())),
+        (layout.words().to_string(), Value::Array(words.iter().map(|&t| Value::from(t as u64)).collect())),
         ("tensors".to_string(), Value::Array(tensors.into_iter().map(|(n, s, h)| Value::Object(vec![("name".into(), Value::String(n)), ("shape".into(), shape_value(&s)), ("sha256".into(), Value::String(h))])).collect())),
     ];
     if let Some((n, tr)) = experts {
@@ -304,18 +336,37 @@ fn entry(shape: [usize; 2], tiers: [u32; 3], tensors: Vec<(String, Vec<u64>, Str
     Value::Object(e)
 }
 
-/// A matrix packed, decoded back and compared with its weights ("checked"), its three buffers as saved under `key`
-/// (`key`.glyd_data ...).
-fn packed(w: &[u16], rows: usize, cols: usize, key: &str, what: &str) -> io::Result<(Vec<Saved>, [u32; 3])> {
-    let p = pack::pack_tiered_checked(w, rows, cols).ok_or_else(|| bad(format!("{what}: decoded to other bits than its weights")))?;
+/// A matrix packed in `layout`, decoded back and compared with its weights ("checked"), its three buffers as saved
+/// under `key` (`key`data ...), and its words.
+fn packed(layout: Layout, w: &[u16], rows: usize, cols: usize, key: &str, what: &str) -> io::Result<(Vec<Saved>, Vec<u32>)> {
+    let differ = || bad(format!("{what}: decoded to other bits than its weights"));
     let steps = (rows * cols / pack::STEP) as u64;
-    let blocks = p.blocks.len() as u64;
-    let tensors = vec![
-        Saved { name: format!("{key}data"), dtype: "U8", shape: vec![steps * 1280], bytes: p.data },
-        Saved { name: format!("{key}blocks"), dtype: "U8", shape: vec![blocks], bytes: p.blocks },
-        Saved { name: format!("{key}block_base"), dtype: "I32", shape: vec![steps + 1], bytes: le_bytes(&p.block_base, i32::to_le_bytes) },
-    ];
-    Ok((tensors, p.tiers))
+    Ok(match layout {
+        Layout::Tiered => {
+            let p = pack::pack_tiered_checked(w, rows, cols).ok_or_else(differ)?;
+            let blocks = p.blocks.len() as u64;
+            let tensors = vec![
+                Saved { name: format!("{key}data"), dtype: "U8", shape: vec![steps * 1280], bytes: p.data },
+                Saved { name: format!("{key}blocks"), dtype: "U8", shape: vec![blocks], bytes: p.blocks },
+                Saved { name: format!("{key}block_base"), dtype: "I32", shape: vec![steps + 1], bytes: le_bytes(&p.block_base, i32::to_le_bytes) },
+            ];
+            (tensors, p.tiers.to_vec())
+        }
+        Layout::Twelve => {
+            let p = pack::pack_twelve(w, rows, cols);
+            let mut back = vec![0u16; w.len()];
+            if !pack::unpack_twelve(&p, &mut back) || back != w {
+                return Err(differ());
+            }
+            let exc = p.exc.len() as u64;
+            let tensors = vec![
+                Saved { name: format!("{key}data"), dtype: "U8", shape: vec![steps * 1536], bytes: p.data },
+                Saved { name: format!("{key}exc"), dtype: "I32", shape: vec![exc], bytes: le_bytes(&p.exc, i32::to_le_bytes) },
+                Saved { name: format!("{key}exc_base"), dtype: "I32", shape: vec![steps + 1], bytes: le_bytes(&p.exc_base, i32::to_le_bytes) },
+            ];
+            (tensors, p.sym.to_vec())
+        }
+    })
 }
 
 impl Put {
@@ -329,7 +380,7 @@ impl Put {
         }
     }
 
-    fn run(&self, src: &Checkpoint) -> io::Result<Done> {
+    fn run(&self, src: &Checkpoint, layout: Layout) -> io::Result<Done> {
         match self {
             Put::Copy { name, from } => {
                 let (f, t) = src.get(from).ok_or_else(|| bad(format!("no {from}")))?;
@@ -345,7 +396,7 @@ impl Put {
                     read_u16(src, &format!("{m}.weight"), &mut w[at..at + r * cols])?;
                     at += r * cols;
                 }
-                let (mut tensors, tiers) = packed(&w, w.len() / cols, cols, &format!("{}.glyd_", members[0]), &members.join(" + "))?;
+                let (mut tensors, words) = packed(layout, &w, w.len() / cols, cols, &format!("{}.glyd_", members[0]), &members.join(" + "))?;
                 let mut hashed = Vec::new();
                 let mut at = 0;
                 for (m, &r) in members.iter().zip(&rows) {
@@ -358,7 +409,7 @@ impl Put {
                     }
                 }
                 let n = hashed.len();
-                Ok(Done { tensors, entry: Some((members[0].clone(), entry([w.len() / cols, cols], tiers, hashed, None))), checked: n })
+                Ok(Done { tensors, entry: Some((members[0].clone(), entry(layout, [w.len() / cols, cols], &words, hashed, None))), checked: n })
             }
             Put::Experts { module, weight, from, experts, transposed } => {
                 let (_, t) = src.get(from).ok_or_else(|| bad(format!("no {from}")))?;
@@ -369,9 +420,9 @@ impl Put {
                 if *transposed {
                     return Err(bad(format!("{module}.{weight}: experts held transposed are not packed here")));
                 }
-                let (tensors, tiers) = packed(&w, e * a, b, &format!("{module}.glyd_{weight}_"), &format!("{module}.{weight}"))?;
+                let (tensors, words) = packed(layout, &w, e * a, b, &format!("{module}.glyd_{weight}_"), &format!("{module}.{weight}"))?;
                 let name = format!("{module}.{weight}");
-                Ok(Done { tensors, entry: Some((name.clone(), entry([e * a, b], tiers, vec![(name, t.shape.clone(), sha)], Some((e, *transposed))))), checked: 1 })
+                Ok(Done { tensors, entry: Some((name.clone(), entry(layout, [e * a, b], &words, vec![(name, t.shape.clone(), sha)], Some((e, *transposed))))), checked: 1 })
             }
         }
     }
@@ -476,11 +527,11 @@ pub struct Saving {
 }
 
 /// The checkpoint at `source` packed on `threads` threads and saved in `out` as glyd-v1 (glyd-v2 with a mixture of
-/// experts' packs), as save_pretrained saves it: shards of about `shard_bytes`, glyd.json, the index (several
-/// shards), the source's config, generation config and tokenizer files. merge: q, k, v and gate, up as one pack
-/// each (from_pretrained's merge). A shard is written once whole (the host holds a shard and the packs in flight). A
-/// directory holding another checkpoint is refused.
-pub fn save(source: &Source, out: &Path, threads: usize, shard_bytes: u64, merge: bool) -> io::Result<Saving> {
+/// experts' packs; glyd-v3 in the 12-bit layout), as save_pretrained saves it: shards of about `shard_bytes`,
+/// glyd.json, the index (several shards), the source's config, generation config and tokenizer files. merge: q, k,
+/// v and gate, up as one pack each (from_pretrained's merge). A shard is written once whole (the host holds two
+/// shards at most and the packs in flight). A directory holding another checkpoint is refused.
+pub fn save(source: &Source, out: &Path, threads: usize, shard_bytes: u64, merge: bool, layout: Layout) -> io::Result<Saving> {
     let config = json::parse(&std::fs::read_to_string(source.dir.join("config.json"))?).map_err(bad)?;
     let src = Checkpoint::open(&source.dir)?;
     let plan = Plan::new(&src, &config, merge)?;
@@ -527,7 +578,7 @@ pub fn save(source: &Source, out: &Path, threads: usize, shard_bytes: u64, merge
                 }
                 Ok(())
             };
-            in_order(&plan.puts, &big, threads, 4 * threads.max(1), |p| p.run(&src), |d: Done| {
+            in_order(&plan.puts, &big, threads, 4 * threads.max(1), |p| p.run(&src, layout), |d: Done| {
                 checked += d.checked;
                 if let Some((name, e)) = d.entry {
                     experts |= e.get("experts").is_some();
@@ -570,10 +621,10 @@ pub fn save(source: &Source, out: &Path, threads: usize, shard_bytes: u64, merge
     }
     let source_v = Value::Object(vec![("repo".into(), Value::String(source.repo.clone())), ("revision".into(), source.revision.clone().map_or(Value::Null, Value::String))]);
     let m = Value::Object(vec![
-        ("format".into(), Value::from(if experts { "glyd-v2" } else { "glyd-v1" })),
+        ("format".into(), Value::from(if layout == Layout::Twelve { "glyd-v3" } else if experts { "glyd-v2" } else { "glyd-v1" })),
         ("glyd".into(), Value::from(env!("CARGO_PKG_VERSION"))),
         ("source".into(), source_v),
-        ("layout".into(), Value::from("mma")),
+        ("layout".into(), Value::from(layout.name())),
         ("packs".into(), Value::Object(packs)),
     ]);
     std::fs::write(&manifest, json::to_python(&m, 1))?;
@@ -589,7 +640,7 @@ pub fn save(source: &Source, out: &Path, threads: usize, shard_bytes: u64, merge
 }
 
 /// The formats `verify` reads (format.py's FORMATS).
-const FORMATS: &[&str] = &["glyd-v1", "glyd-v2"];
+const FORMATS: &[&str] = &["glyd-v1", "glyd-v2", "glyd-v3"];
 
 /// Where a pack's matrix is decoded for `verify`: on the CPU, or on a GPU by the library.
 pub enum Decoder<'a> {
@@ -604,14 +655,14 @@ fn u64s(v: Option<&Value>) -> Option<Vec<u64>> {
 /// A pack of `dir` read and decoded: its entry in glyd.json, the matrix [rows, cols], bf16.
 fn decode(dir: &Checkpoint, name: &str, e: &Value, decoder: &Decoder) -> io::Result<(usize, usize, Vec<u16>)> {
     let what = |why: &str| bad(format!("{name}: {why}"));
+    let layout = e.get("layout").and_then(Value::as_str).and_then(Layout::by_name).ok_or_else(|| what("a layout this glyd does not read"))?;
     let shape = u64s(e.get("shape")).filter(|s| s.len() == 2).ok_or_else(|| what("no shape in glyd.json"))?;
-    let tiers = u64s(e.get("tiers")).filter(|t| t.len() == 3 && t.iter().all(|&x| x <= u32::MAX as u64)).ok_or_else(|| what("no tiers in glyd.json"))?;
+    let n_words = if layout == Layout::Tiered { 3 } else { 4 };
+    let words = u64s(e.get(layout.words())).filter(|t| t.len() == n_words && t.iter().all(|&x| x <= u32::MAX as u64)).ok_or_else(|| what(&format!("no {} in glyd.json", layout.words())))?;
+    let words: Vec<u32> = words.into_iter().map(|x| x as u32).collect();
     let (rows, cols) = (shape[0] as usize, shape[1] as usize);
     if rows == 0 || rows % 64 != 0 || cols == 0 || cols % 16 != 0 || rows > (1 << 40) / cols {
-        return Err(what("not a tiered pack's shape"));
-    }
-    if e.get("layout").and_then(Value::as_str) != Some("mma") {
-        return Err(what("a layout this glyd does not read"));
+        return Err(what("not an mma layout's shape"));
     }
     let key = match name.rsplit_once('.') {
         Some((module, weight)) if e.get("experts").is_some() => format!("{module}.glyd_{weight}_"),
@@ -624,35 +675,61 @@ fn decode(dir: &Checkpoint, name: &str, e: &Value, decoder: &Decoder) -> io::Res
         }
         f.read(t)
     };
+    let i32s = |b: Vec<u8>| -> Vec<i32> { b.as_chunks::<4>().0.iter().map(|x| i32::from_le_bytes(*x)).collect() };
     let steps = rows * cols / pack::STEP;
-    let (data, blocks, base) = (read("data", "U8")?, read("blocks", "U8")?, read("block_base", "I32")?);
-    if data.len() != steps * 1280 || base.len() != (steps + 1) * 4 {
-        return Err(what("its buffers are not its shape's"));
-    }
-    let block_base: Vec<i32> = base.as_chunks::<4>().0.iter().map(|b| i32::from_le_bytes(*b)).collect();
-    let p = pack::Tiered { rows, cols, data, blocks, block_base, tiers: [tiers[0] as u32, tiers[1] as u32, tiers[2] as u32] };
     let mut w = vec![0u16; rows * cols];
-    match decoder {
-        Decoder::Cpu => {
-            if !pack::unpack_tiered(&p, &mut w) {
-                return Err(what("its blocks do not hold its escapes"));
+    let pack = match layout {
+        Layout::Tiered => {
+            let (data, blocks, base) = (read("data", "U8")?, read("blocks", "U8")?, read("block_base", "I32")?);
+            if data.len() != steps * 1280 || base.len() != (steps + 1) * 4 {
+                return Err(what("its buffers are not its shape's"));
             }
-        }
-        Decoder::Gpu(lib, ctx) => {
+            let p = pack::Tiered { rows, cols, data, blocks, block_base: i32s(base), tiers: [words[0], words[1], words[2]] };
+            if let Decoder::Cpu = decoder {
+                if !pack::unpack_tiered(&p, &mut w) {
+                    return Err(what("its blocks do not hold its escapes"));
+                }
+                return Ok((rows, cols, w));
+            }
             // (block_base checked first: the kernel reads 128 bytes before a block, 256 past the last)
             let b = &p.block_base;
             if b.iter().enumerate().any(|(s, &x)| x < 128 || (s > 0 && x < b[s - 1]) || x as usize + 256 > p.blocks.len()) {
                 return Err(what("its block_base is not within its blocks"));
             }
-            let gpu = |r: crate::Result<()>| r.map_err(|e| bad(format!("{name}: {e}")));
-            let (d, bl, bb) = (ctx.upload(&p.data).map_err(bad)?, ctx.upload(&p.blocks).map_err(bad)?, ctx.upload(&p.block_base).map_err(bad)?);
-            let out = ctx.alloc(rows * cols * 2).map_err(bad)?;
-            let m = crate::Matrix { pack: crate::Pack::Tiered(crate::Tiered { data: d.ptr(), blocks: bl.ptr(), block_base: bb.ptr(), tiers: p.tiers }), rows: rows as i64, cols: cols as i64 };
-            // SAFETY: the pack's buffers uploaded whole, their sizes and block_base checked; out holds rows x cols.
-            gpu(unsafe { lib.unpack(&m, 0, rows as i64, out.ptr(), 0, crate::Stream::DEFAULT) })?;
-            gpu(ctx.synchronize())?;
-            gpu(out.read(&mut w))?;
+            (p.data, p.blocks, p.block_base)
         }
+        Layout::Twelve => {
+            let (data, exc, base) = (read("data", "U8")?, read("exc", "I32")?, read("exc_base", "I32")?);
+            if data.len() != steps * 1536 || base.len() != (steps + 1) * 4 || exc.len() % 16 != 0 {
+                return Err(what("its buffers are not its shape's"));
+            }
+            let p = pack::Twelve { rows, cols, data, exc: i32s(exc), exc_base: i32s(base), sym: [words[0], words[1], words[2], words[3]] };
+            if let Decoder::Cpu = decoder {
+                if !pack::unpack_twelve(&p, &mut w) {
+                    return Err(what("its exceptions are not within its exc"));
+                }
+                return Ok((rows, cols, w));
+            }
+            let b = &p.exc_base;
+            if b.iter().enumerate().any(|(s, &x)| x < 0 || (s > 0 && x < b[s - 1]) || x as usize > p.exc.len()) {
+                return Err(what("its exc_base is not within its exc"));
+            }
+            (p.data, le_bytes(&p.exc, i32::to_le_bytes), p.exc_base)
+        }
+    };
+    if let Decoder::Gpu(lib, ctx) = decoder {
+        let gpu = |r: crate::Result<()>| r.map_err(|e| bad(format!("{name}: {e}")));
+        let (d, a, b) = (ctx.upload(&pack.0).map_err(bad)?, ctx.upload(&pack.1).map_err(bad)?, ctx.upload(&pack.2).map_err(bad)?);
+        let out = ctx.alloc(rows * cols * 2).map_err(bad)?;
+        let p = match layout {
+            Layout::Tiered => crate::Pack::Tiered(crate::Tiered { data: d.ptr(), blocks: a.ptr(), block_base: b.ptr(), tiers: [words[0], words[1], words[2]] }),
+            Layout::Twelve => crate::Pack::Twelve(crate::Twelve { data: d.ptr(), exc: a.ptr(), exc_base: b.ptr(), sym: [words[0], words[1], words[2], words[3]] }),
+        };
+        let m = crate::Matrix { pack: p, rows: rows as i64, cols: cols as i64 };
+        // SAFETY: the pack's buffers uploaded whole, their sizes and bases checked; out holds rows x cols.
+        gpu(unsafe { lib.unpack(&m, 0, rows as i64, out.ptr(), 0, crate::Stream::DEFAULT) })?;
+        gpu(ctx.synchronize())?;
+        gpu(out.read(&mut w))?;
     }
     Ok((rows, cols, w))
 }
@@ -701,7 +778,7 @@ fn hashes_match(name: &str, e: &Value, rows: usize, cols: usize, w: &[u16]) -> i
     Ok(tensors.len())
 }
 
-/// A saved checkpoint (glyd-v1, glyd-v2) checked as `python -m glyd.gpu verify` checks it: every pack decoded (on
+/// A saved checkpoint (glyd-v1, glyd-v2, glyd-v3) checked as `python -m glyd.gpu verify` checks it: every pack decoded (on
 /// `threads` threads of the CPU, or on a GPU) and each of its tensors' sha256 compared with glyd.json's. The
 /// tensors checked.
 pub fn verify(dir: &Path, threads: usize, decoder: &Decoder) -> io::Result<usize> {
@@ -771,7 +848,7 @@ mod tests {
         }
         write_safetensors(&src.join("model.safetensors"), &mut ts).unwrap();
         let source = Source::find(src.to_str().unwrap()).unwrap();
-        let s = save(&source, &out, 3, 64 << 10, true).unwrap();
+        let s = save(&source, &out, 3, 64 << 10, true, Layout::Tiered).unwrap();
         assert_eq!((s.checked, s.shards > 1), (14, true));
         let m = json::parse(&std::fs::read_to_string(out.join("glyd.json")).unwrap()).unwrap();
         let packs: Vec<&str> = m.get("packs").unwrap().as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
@@ -787,6 +864,15 @@ mod tests {
         std::fs::write(&f.path, bytes).unwrap();
         let e = verify(&out, 2, &Decoder::Cpu).unwrap_err().to_string();
         assert!(e.contains("down_proj.weight decodes to other bytes"), "{e}");
+        // the 12-bit layout: glyd-v3, a pack's sym and its data, exc and exc_base
+        let out12 = dir.join("out12");
+        assert_eq!(save(&source, &out12, 2, 1 << 30, true, Layout::Twelve).unwrap().checked, 14);
+        let m = json::parse(&std::fs::read_to_string(out12.join("glyd.json")).unwrap()).unwrap();
+        assert_eq!((m.get("format").and_then(Value::as_str), m.get("layout").and_then(Value::as_str)), (Some("glyd-v3"), Some("mma12")));
+        let o = m.get("packs").unwrap().get("model.layers.1.self_attn.o_proj").unwrap();
+        assert!(o.get("sym").is_some() && o.get("tiers").is_none());
+        assert!(Checkpoint::open(&out12).unwrap().get("model.layers.1.self_attn.o_proj.glyd_exc_base").is_some());
+        assert_eq!(verify(&out12, 2, &Decoder::Cpu).unwrap(), 14);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

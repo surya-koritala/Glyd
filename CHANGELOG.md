@@ -8,6 +8,20 @@ every earlier format.
 
 ## Unreleased
 
+- Saved models in the 12-bit layout too: `glyd.save_pretrained(model,
+  path, layout="mma12")`, `python -m glyd.gpu pack MODEL OUT --layout
+  mma12` and `glyd pack MODEL OUT --layout mma12` write glyd-v3, the packs
+  as an A10, A100 or H100 runs them (each pack's `.glyd_data`, `.glyd_exc`,
+  `.glyd_exc_base`; its symbols' words, `sym`, in glyd.json), which
+  `from_pretrained` loads as saved where the 12-bit layout is the one
+  (else decodes and packs again, as it does a tiered save there; glyd 0.23
+  and before refuse glyd-v3 by its format). The same bytes from Rust and
+  Python for the five models above, and `glyd verify` reads it. Loaded for
+  the 12-bit layout on an RTX 4080 SUPER (`layout="mma12"`, warm cache):
+  granite-3.1-3b-a800m-instruct in 0.52 s against 1.35 s from the tiered
+  save and 1.45 s from the bf16 checkpoint, Qwen3-4B-Instruct-2507 in 0.88
+  s against 1.76 and 1.94, Qwen3-8B in 1.29 s against 3.1-6.4 and 4.3-6.0,
+  its peak 0.56 GB lower.
 - `glyd pack MODEL OUT` and `glyd verify PATH` in the Rust CLI: a bf16
   checkpoint (a directory, or a repo in the local Hugging Face cache)
   packed on the CPU and saved as glyd-v1 (glyd-v2 with a mixture of

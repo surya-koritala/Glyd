@@ -141,6 +141,11 @@ def test_manifest_and_names():
         assert x["experts"] == 8 and x["transposed"] and fmt.manifest(None, {"m.q_proj": e, "m.experts.down_proj": x}, "0.22.0")["format"] == "glyd-v2"
         json.dump(fmt.manifest(None, {"m.experts.down_proj": x}, "0.22.0"), open(os.path.join(d, fmt.MANIFEST), "w"))
         assert fmt.read_manifest(d)["packs"]["m.experts.down_proj"] == x  # glyd-v2, which glyd 0.21 refuses by its format
+        # the 12-bit layout (glyd-v3): a pack's words of symbols, its buffers data, exc and exc_base
+        y = fmt.entry((1024, 256), [1, 2, 3, 0xFFFFFFFF], [("m.o_proj.weight", (1024, 256), "ee")], layout="mma12")
+        assert list(y) == ["layout", "shape", "sym", "tensors"] and y["sym"][3] == 0xFFFFFFFF and fmt.LAYOUTS["mma12"] == ("data", "exc", "exc_base")
+        json.dump(fmt.manifest(None, {"m.o_proj": y}, "0.24.0", "mma12"), open(os.path.join(d, fmt.MANIFEST), "w"))
+        assert fmt.read_manifest(d)["format"] == "glyd-v3" and fmt.read_manifest(d)["layout"] == "mma12"
         json.dump(dict(m, format="glyd-v9"), open(os.path.join(d, fmt.MANIFEST), "w"))
         try:
             fmt.read_manifest(d)
@@ -513,6 +518,23 @@ def test_cli_pack_and_verify():
         for args, ok in ((["verify", os.path.join(d, "out")], False), (["pack", os.path.join(d, "src"), os.path.join(d, "out")], True)):
             r = subprocess.run([sys.executable, "-m", "glyd.gpu", *args], env=env, capture_output=True, text=True)
             assert (r.returncode == 0) == ok and (ok or "a save cut short" in r.stderr), r.stderr[-2000:]
+        # saved in the 12-bit layout (glyd-v3): verified; loaded for the 12-bit layout, its packs are the saved ones as
+        # they are, each the pack of its weights there (and loaded tiered, packed again, its tensors as saved)
+        for args, says in ((["pack", os.path.join(d, "src"), os.path.join(d, "out12"), "--layout", "mma12"], "tensors packed and checked"), (["verify", os.path.join(d, "out12")], "tensors decode to glyd.json's sha256")):
+            r = subprocess.run([sys.executable, "-m", "glyd.gpu", *args], env=env, capture_output=True, text=True)
+            assert r.returncode == 0 and says in r.stdout, r.stderr[-2000:]
+        m12 = fmt.read_manifest(os.path.join(d, "out12"))
+        assert m12["format"] == "glyd-v3" and all(e["layout"] == "mma12" and "sym" in e for e in m12["packs"].values())
+        from glyd.gpu import hf, kernels as g, model as gm
+        saved, fresh = hf.from_pretrained(os.path.join(d, "out12"), layout="mma12"), hf.from_pretrained(os.path.join(d, "src"), layout="mma12")
+        packs = lambda model: [m.p for m in model.modules() if isinstance(m, gm.GLinear)] + [p for m in model.modules() for p in (getattr(m, "glyd_packs", None) or {}).values()]
+        assert len(packs(saved)) == len(packs(fresh)) == len(m12["packs"])
+        for a, b in zip(packs(saved), packs(fresh)):
+            assert type(a) is g.Mma12 and a.sym == b.sym and all(torch.equal(getattr(a, t), getattr(b, t)) for t in ("data", "exc", "exc_base"))
+        del saved, fresh
+        tiered = hf.from_pretrained(os.path.join(d, "out12"), layout="mma", verify=True)
+        assert all(type(p) is g.Mma for p in packs(tiered))  # packed again, tiered
+        assert tiered.config.quantization_config.verified >= sum(len(e["tensors"]) for e in m12["packs"].values())  # (and the embeddings packed as it loads)
 
 
 if __name__ == "__main__":

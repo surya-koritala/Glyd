@@ -24,6 +24,7 @@ GraniteMoe; other families: Python), and `verify` checks a saved one. The
 `glyd-gpu` command runs them (`glyd pack`, `glyd verify` run it):
 
     glyd-gpu pack Qwen/Qwen3-8B qwen3-8b-glyd       # a directory, or a repo in the Hugging Face cache
+    glyd-gpu pack Qwen/Qwen3-8B qwen3-8b-glyd12 --layout mma12   # the 12-bit layout (glyd-v3)
     glyd-gpu verify qwen3-8b-glyd [--device cuda:0]  # every pack decoded, each tensor's sha256 checked
 
 Its one dependency is sha2 (the store's).

@@ -148,7 +148,11 @@ and tokenizer files. With a mixture of experts' packs the format is
 glyd-v2, which glyd 0.21 refuses by its format ("this glyd reads
 glyd-v1"): load it with 0.22 or later. `from_pretrained(path)` loads the packs as saved;
 on a GPU where the 12-bit layout is the pick, it decodes and packs them
-again.
+again. `save_pretrained(model, path, layout="mma12")` (`pack --layout
+mma12`) saves the packs in the 12-bit layout instead, as an A10, A100 or
+H100 runs them (`.glyd_data`, `.glyd_exc`, `.glyd_exc_base`; glyd-v3,
+which glyd 0.23 and before refuse): loaded there as saved, 2-3x faster
+than packing again (Qwen3-8B in 1.3 s on an RTX 4080 SUPER).
 
 `glyd.fit(name_or_path, gpu="48GB", context=8192)`: whether the model
 fits one GPU in bf16 and with Glyd, by the site's rule: the weights (with

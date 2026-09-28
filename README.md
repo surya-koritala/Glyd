@@ -45,7 +45,8 @@ model = glyd.from_pretrained("Qwen/Qwen3-8B")               # packed on the GPU 
 model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits bit for bit bf16's
 ```
 ```bash
-glyd pack Qwen/Qwen3-8B qwen3-8b-glyd   # saved packed on the CPU, no Python or GPU: python -m glyd.gpu pack's bytes (Qwen3, GraniteMoe)
+glyd pack Qwen/Qwen3-8B qwen3-8b-glyd                    # saved packed on the CPU, no Python or GPU: python -m glyd.gpu pack's bytes (Qwen3, GraniteMoe)
+glyd pack Qwen/Qwen3-8B qwen3-8b-glyd12 --layout mma12   # the 12-bit layout: an A10, A100 or H100 loads it as saved
 ```
 
 <p align="center"><img src="docs/img/qwen3-32b-gpus.svg" width="100%" alt="nvidia-smi: Qwen3-32B in bf16 across two 48 GB GPUs (44,554 + 18,514 MiB), and with Glyd on one (43,338 MiB)"></p>

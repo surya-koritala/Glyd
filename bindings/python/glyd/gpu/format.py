@@ -3,6 +3,7 @@ without packing them again.
 
     glyd.save_pretrained(model, "qwen3-8b-glyd")
     model = glyd.from_pretrained("qwen3-8b-glyd", verify=True)
+    glyd.save_pretrained(model, "qwen3-8b-glyd12", layout="mma12")   # glyd-v3: the 12-bit layout, as A10, A100 and H100 load it
 
 A directory (or a Hugging Face repo) of:
 - model.safetensors, or shards and model.safetensors.index.json as
@@ -15,6 +16,11 @@ A directory (or a Hugging Face repo) of:
   NAME.glyd_WEIGHT_data and so on; the rest as the model holds it, in
   bf16: embeddings (an output layer tied to one saved as it), norms,
   biases;
+- in the 12-bit layout instead (save_pretrained's layout="mma12":
+  glyd-v3, which glyd 0.23 and before refuse by the format): each pack's
+  NAME.glyd_data (uint8), NAME.glyd_exc and NAME.glyd_exc_base (int32), its
+  words of symbols in glyd.json ("sym"); loaded as saved where the 12-bit
+  layout is the one, else decoded and packed again;
 - glyd.json: the format (glyd-v2 where it holds a mixture of experts'
   packs: glyd 0.21 reads glyd-v1 alone, and refuses it by the format),
   the glyd version, the source repo and revision,
@@ -34,10 +40,14 @@ import os
 import shutil
 
 FORMAT = "glyd-v1"
-FORMATS = (FORMAT, "glyd-v2")  # glyd-v2: glyd-v1 with a mixture of experts' packs (glyd 0.21 reads glyd-v1 alone)
+# glyd-v2: glyd-v1 with a mixture of experts' packs (glyd 0.21 reads glyd-v1 alone); glyd-v3: the packs in the 12-bit
+# layout (glyd 0.23 reads glyd-v1 and glyd-v2)
+FORMATS = (FORMAT, "glyd-v2", "glyd-v3")
 MANIFEST = "glyd.json"
 BUFFERS = ("data", "blocks", "block_base")  # a tiered pack's tensors (kernels.Mma)
-DTYPES = {"data": "U8", "blocks": "U8", "block_base": "I32"}
+LAYOUTS = {"mma": BUFFERS, "mma12": ("data", "exc", "exc_base")}  # each layout's (kernels.Mma12's)
+WORDS = {"mma": "tiers", "mma12": "sym"}  # a pack's words, in glyd.json
+DTYPES = {"data": "U8", "blocks": "U8", "block_base": "I32", "exc": "I32", "exc_base": "I32"}
 FILES = ("config.json", "generation_config.json", "tokenizer*", "special_tokens_map.json", "added_tokens.json", "vocab*", "merges.txt", "*.model", "chat_template*", "preprocessor_config.json", "processor_config.json")  # copied from the source
 
 
@@ -47,10 +57,11 @@ def key(module, buffer, weight=None):
     return f"{module}.glyd_{weight + '_' if weight else ''}{buffer}"
 
 
-def entry(shape, tiers, tensors, experts=None, transposed=False):
-    """A pack's manifest entry: its matrix's shape, its tiers, the tensors it holds as [(name, shape, sha256)], in
-    their order in its rows; experts: E, an experts' weight's (transposed: its matrices held [in, out])."""
-    e = {"layout": "mma", "shape": list(shape), "tiers": [int(t) for t in tiers], "tensors": [{"name": n, "shape": list(s), "sha256": h} for n, s, h in tensors]}
+def entry(shape, tiers, tensors, experts=None, transposed=False, layout="mma"):
+    """A pack's manifest entry: its layout, its matrix's shape, its words (the tiered layout's tiers, the 12-bit
+    one's sym), the tensors it holds as [(name, shape, sha256)], in their order in its rows; experts: E, an experts'
+    weight's (transposed: its matrices held [in, out])."""
+    e = {"layout": layout, "shape": list(shape), WORDS[layout]: [int(t) for t in tiers], "tensors": [{"name": n, "shape": list(s), "sha256": h} for n, s, h in tensors]}
     return e if experts is None else dict(e, experts=int(experts), transposed=bool(transposed))
 
 
@@ -59,8 +70,9 @@ def members(e):
     return [t["name"][: -len(".weight")] for t in e["tensors"]], [t["shape"][0] for t in e["tensors"]]
 
 
-def manifest(source, packs, version):
-    return {"format": "glyd-v2" if any("experts" in e for e in packs.values()) else FORMAT, "glyd": version, "source": source, "layout": "mma", "packs": packs}
+def manifest(source, packs, version, layout="mma"):
+    form = "glyd-v3" if layout == "mma12" else "glyd-v2" if any("experts" in e for e in packs.values()) else FORMAT
+    return {"format": form, "glyd": version, "source": source, "layout": layout, "packs": packs}
 
 
 def read_manifest(directory):
@@ -125,10 +137,11 @@ def copy_source_files(src, path):
         shutil.copyfile(f, os.path.join(path, os.path.basename(f)))
 
 
-def save_pretrained(model, path, shard_bytes=5 * 10**9):
+def save_pretrained(model, path, shard_bytes=5 * 10**9, layout="mma"):
     """model (from glyd.from_pretrained or glyd.gpu.compress) saved in the
     directory path as glyd-v1, in shards of about shard_bytes: its packs in
-    the tiered layout (a 12-bit pack decoded and packed again), each tensor
+    the tiered layout (a 12-bit pack decoded and packed again; layout="mma12":
+    the 12-bit layout, glyd-v3, a tiered pack packed again), each tensor
     of each decoded for the sha256 of its bf16 bytes in glyd.json (a
     mixture of experts' weight as the model holds it); the rest as the
     model holds it; the source's config, generation config and tokenizer
@@ -139,6 +152,8 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9):
     from .. import __version__
     from . import kernels as g, model as gm, moe
 
+    kind, pack = (g.Mma12, g.pack_mma12) if layout == "mma12" else (g.Mma, g.pack_mma)  # (the type exactly: an Mma12 is an Mma)
+    words = WORDS[layout]
     old = glob.glob(os.path.join(path, "model*.safetensors")) + glob.glob(os.path.join(path, "model.safetensors.index.json"))
     if old and not os.path.exists(os.path.join(path, MANIFEST)) and not stored([f for f in old if f.endswith(".safetensors")]):
         raise ValueError(f"glyd: {path} holds another checkpoint; save into a directory of its own")  # (a glyd save cut short: saved over)
@@ -174,11 +189,11 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9):
                 if f"{name}.{weight}" in sources:
                     put(f"{name}.{weight}", moe.decoded(m, p, weight, gm.unpack(p)))
                     continue
-                q = p if type(p) is g.Mma else g.pack_mma(gm.unpack(p))
-                for b in BUFFERS:
+                q = p if type(p) is kind else pack(gm.unpack(p))
+                for b in LAYOUTS[layout]:
                     put(key(name, b, weight), getattr(q, b))
                 shape, transposed = m.glyd_held[weight]
-                packs[f"{name}.{weight}"] = entry(p.shape, q.tiers, [(f"{name}.{weight}", shape, moe.sha256(m, p, weight))], moe.held(m)[1], transposed)
+                packs[f"{name}.{weight}"] = entry(p.shape, getattr(q, words), [(f"{name}.{weight}", shape, moe.sha256(m, p, weight))], moe.held(m)[1], transposed, layout)
                 del q
             if isinstance(m, gm.Merged):
                 parent = name.rpartition(".")[0]
@@ -199,10 +214,10 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9):
                 if lin.bias is not None:
                     put(paths[0] + ".bias", lin.bias)
                 continue
-            p = lin.p if type(lin.p) is g.Mma else g.pack_mma(w)
-            for b in BUFFERS:
+            p = lin.p if type(lin.p) is kind else pack(w)
+            for b in LAYOUTS[layout]:
                 put(key(paths[0], b), getattr(p, b))
-            packs[paths[0]] = entry(w.shape, p.tiers, [(f"{n}.weight", x.shape, gm.sha256(x)) for n, x in zip(paths, w.split(rows))])
+            packs[paths[0]] = entry(w.shape, getattr(p, words), [(f"{n}.weight", x.shape, gm.sha256(x)) for n, x in zip(paths, w.split(rows))], layout=layout)
             if lin.bias is not None:
                 for n, b in zip(paths, lin.bias.split(rows)):
                     put(f"{n}.bias", b)
@@ -227,7 +242,7 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9):
     q = getattr(model.config, "quantization_config", None)
     source = getattr(q, "source", None) or {"repo": model.config.name_or_path or None, "revision": getattr(model.config, "_commit_hash", None)}
     with open(os.path.join(path, MANIFEST), "w") as f:
-        json.dump(manifest(source, packs, __version__), f, indent=1)
+        json.dump(manifest(source, packs, __version__, layout), f, indent=1)
     src = source_dir(model.config.name_or_path, getattr(model.config, "_commit_hash", None))
     if src and os.path.realpath(src) != os.path.realpath(path):
         copy_source_files(src, path)
