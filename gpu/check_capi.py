@@ -143,7 +143,7 @@ for (O, K), wild in [((1000, 512), 0.01), ((304, 2304), 0.02), ((17008, 384), 0.
     print(f"fast {(O, K)}: {int(f.exc.numel())} escapes, the same through both")
 
 # The mma layouts, tiered and 12-bit: unpack (all rows, a row block on; a warp a step, and a few warps taking every so
-# many), mma_gemm (1-64 tokens), mma_gemm_big (65-600, both variants), mma12_gemm_mid (1-600), mma12_gemm_wg (Hopper:
+# many), mma_gemm (1-64 tokens), mma_gemm_big (65-600, every variant), mma12_gemm_mid (1-600), mma12_gemm_wg (Hopper:
 # refused elsewhere), as the self-test's matrices: odd row blocks, units shared by blocks, escapes and exceptions few
 # and many.
 hopper = torch.cuda.get_device_capability() == (9, 0)
@@ -166,7 +166,7 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
                 if M <= 64:
                     near(both("mma12_gemm" if twelve else "mma_gemm", *pk, O, K, x, b, nan(M, O), out=(8,)), ref)
                 else:
-                    for variant in ([0, 1, 2] if M in (65, 600) else [0]):
+                    for variant in ([0, 1, 2, 3] if M in (65, 600) else [0]):
                         near(both(f"{s}_gemm_big", *pk, O, K, x, b, nan(M, O), variant, out=(8,)), ref)
                 if twelve:
                     near(both("mma12_gemm_mid", *pk, O, K, x, b, nan(M, O), out=(8,)), ref)
@@ -177,15 +177,24 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
     print(f"mma {O}x{K}: {int(q.exc_base[-1])} exceptions (12-bit), the same through both")
 
 # mma_gemm_big's own choice of blocks: of 128 tokens on GeForce Ada where the last of 256 would be half empty or
-# less, to 1024 tokens tiered and 4224 12-bit (as measured); of 256 past 128 tokens elsewhere.
+# less, to 1024 tokens tiered and 4224 12-bit (as measured), and on an A100 12-bit to 640 (its others of 256 by two
+# row blocks, variant 3); of 256 past 128 tokens elsewhere. On an A100 two candidates give the same bits where they
+# split K alike, so a matrix too whose two split K differently at every length GLinear fuses there (256 x 16384:
+# on 40 to 220 SMs at each of these lengths, by the grid's rule), and the other candidate's bits checked to differ.
 ada = torch.cuda.get_device_capability() == (8, 9) and "GeForce" in torch.cuda.get_device_name()
-w = weights(256 * 512).view(256, 512)
-for q, most in ((g.pack_mma(w), 1024), (g.pack_mma12(w), 4224)):
-    for M in (300, 800, 1025, 1100, 4200, 4353):
-        x = torch.randn(M, 512, dtype=bf, device=dev)
-        v = 1 if ada and 1 <= M % 256 <= 128 and M <= most else 2
-        assert exact(g.mma_gemm_big(q, x), g.mma_gemm_big(q, x, variant=v)), ("blocks of 128 or 256", type(q).__name__, M, v)
-counts["mma_gemm_big's blocks"] = 12
+a100 = torch.cuda.get_device_capability() == (8, 0)
+for (O, K), Ms in (((256, 512), (300, 600, 800, 1025, 1100, 4200, 4353)), ((256, 16384), (129, 256, 257, 384, 385, 512, 513, 640, 641, 768))):
+    w = weights(O * K).view(O, K)
+    for q, most in ((g.pack_mma(w), 1024), (g.pack_mma12(w), 4224)):
+        here = a100 and isinstance(q, g.Mma12)
+        for M in Ms:
+            x = torch.randn(M, K, dtype=bf, device=dev)
+            v = 1 if (ada or here) and 1 <= M % 256 <= 128 and M <= (640 if here else most) else 3 if here else 2
+            y = g.mma_gemm_big(q, x)
+            assert exact(y, g.mma_gemm_big(q, x, variant=v)), ("blocks of 128 or 256", type(q).__name__, (O, K), M, v)
+            if here and K == 16384:
+                assert not exact(y, g.mma_gemm_big(q, x, variant=4 - v)), ("an A100's candidates told apart", M, v)
+            counts["mma_gemm_big's blocks"] = counts.get("mma_gemm_big's blocks", 0) + 1
 
 # Prompt products on two streams at once on one GPU, through each host: each stream's done counters its own (the C
 # API's: one stream's products at a time on a set), so each product the same as alone. A small one: its few blocks
@@ -284,7 +293,8 @@ with torch.cuda.stream(torch.cuda.Stream()):
 torch.cuda.synchronize()
 
 # The package's one-call paths (_lib.step and _lib.lookup, as GLinear and GEmbedding call them) against the checked
-# calls: 1-64 tokens, a prompt's to the decode ahead (past it: none), both layouts, bias, and an embedding's rows.
+# calls: a step's (to step_max tokens), a prompt's to the decode ahead (past it: none), both layouts, bias, and an
+# embedding's rows.
 from glyd.gpu import model as gm
 
 w = weights(512 * 1024, 0.01).view(512, 1024)
@@ -295,13 +305,14 @@ for q in packs:
         for M in list(range(1, 65)) + [65, 100, 128, 129, 256, 300, 512, 600, 700]:
             x = torch.randn(M, 1, 1024, dtype=bf, device=dev)
             f = lin.kernel(M)
-            if f is None or (M > 64 and f is not g.mma_gemm_big):  # decoded (ahead), then cuBLAS; Hopper's mma_gemm_wg past 64 tokens: the checked call's
+            if f is None or (M > lin.step_max and f is not g.mma_gemm_big):  # decoded (ahead), then cuBLAS; a step's kernel past step_max (Hopper's mma_gemm_wg to GLYD_WG_MAX): the checked call's
                 assert lin.step(x) is None, ("GLinear.step past the fused kernels", type(q).__name__, M)
                 continue
             assert exact(lin.step(x), f(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
             counts["GLinear.step"] = counts.get("GLinear.step", 0) + 1
 # GLinear's routing on an A100 whatever this GPU is (compute capability 8.0 read while it is made): the 12-bit
-# layout's 17-64 tokens by mma_gemm_mid, the rest as elsewhere; the one-call path the same functions.
+# layout's GLYD_MID_MIN (17) to 128 tokens by mma_gemm_mid, GLYD_DEC_MIN (769) on decoded for cuBLAS (None), the rest
+# as elsewhere; the one-call path the same functions.
 cc = torch.cuda.get_device_capability
 torch.cuda.get_device_capability = lambda device=None: (8, 0)
 try:
@@ -310,12 +321,18 @@ finally:
     torch.cuda.get_device_capability = cc
 for q, lin in zip(packs, a100):
     twelve = isinstance(q, g.Mma12)
-    for M in (1, 16, 17, 32, 33, 64, 65, 128):
-        assert lin.kernel(M) is (g.mma_gemm_mid if twelve and 17 <= M <= 64 else g.mma_gemm if M <= 64 else g.mma_gemm_big), ("A100 routing", type(q).__name__, M)
-        if M <= 64:
+    for M in (1, 16, 17, 32, 33, 64, 65, 128, 129, 768, 769, 4096):
+        want = g.mma_gemm_mid if twelve and gm.MID_MIN <= M <= 128 else None if twelve and M >= gm.DEC_MIN else g.mma_gemm if M <= 64 else g.mma_gemm_big
+        assert lin.kernel(M) is want, ("A100 routing", type(q).__name__, M)
+        if M <= 64 or want is g.mma_gemm_mid:
             x = torch.randn(M, 1024, dtype=bf, device=dev)
             assert exact(lin.step(x), lin.kernel(M)(q, x, None)), ("A100 GLinear.step", type(q).__name__, M)
             counts["GLinear.step"] += 1
+    if twelve:  # a prompt from DEC_MIN through forward: decoded for cuBLAS, not the fused kernel (nor whole()'s fallback to it)
+        gm.set_scratch(torch.nn.ModuleList([lin]), False)
+        x = torch.randn(gm.DEC_MIN, 1024, dtype=bf, device=dev)
+        assert lin.step(x) is None and exact(lin(x), F.linear(x, g.mma_unpack(q))), "an A100's prompt past DEC_MIN, decoded"
+        counts["A100 prompt decoded"] = 1
 # And on Hopper whatever this GPU is (9.0 while made): no prompt kernel for the one-call path, so a prompt's product is
 # the checked call's (mma_gemm_wg to WG_MAX tokens in the 12-bit layout, else decoded, then cuBLAS).
 torch.cuda.get_device_capability = lambda device=None: (9, 0)
@@ -333,39 +350,51 @@ for q, lin in zip(packs, hopper):
 # the order there), then one past the order's end (the order to there again); another order between (recorded, then
 # followed), then the first again; at 600 tokens, then 2100 (the order kept). The products on the order (as many as
 # said, from the first) bit for bit as with their matrices decoded on the current stream, the rest the fused
-# kernel's (on Hopper, whose prompts past WG_MAX take no fused kernel, decoded on the current stream too), below the threshold
-# the step's kernel's.
+# kernel's (on Hopper, whose prompts past WG_MAX take no fused kernel, and an A100's 12-bit prompts from DEC_MIN
+# tokens, which take none: decoded on the current stream too), below the threshold the step's kernel's. Then all of
+# it again with GLinears made as on an A100 (compute capability 8.0 read while they are made), where this GPU is not
+# one: its routes on this GPU's kernels.
 shapes = [(1024, 512), (512, 1024), (3072, 512), (512, 1536), (192, 512), (2048, 1024)]
-lins = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
-other = [gm.GLinear(g.pack_mma(weights(O * K).view(O, K)), None) for O, K in shapes[:3]]
-for lin in lins + other:
-    lin.ahead = 513
-    lin.step = lin._step()  # its one-call path to the new threshold
-gm.set_scratch(torch.nn.ModuleList(lins + other), False)
 flops, gm.AHEAD_FLOPS = gm.AHEAD_FLOPS, 0
 product, placed = gm.Ahead.product, []
 gm.Ahead.product = lambda a, lin, j, f, M: (placed.append(j), product(a, lin, j, f, M))[1]
 dev_ = torch.device(dev, torch.cuda.current_device())
-common = [(lins, 6, None, None), (lins, 4, 4, None), (lins[:3], 3, None, None), (lins, 6, None, None), (lins[:4], 3, None, 3), (lins, 3, None, None),
-          (lins, 6, None, None), (other, 0, None, None), (other, 3, None, None), (lins, 0, None, None), (lins, 6, None, None)]
-for M, seq in ((600, [(lins[:3], 0, None, None), (lins, 3, None, None)] + common), (2100, common)):
-    for ls, on, stop, short in seq:  # ls in turn at M tokens (from index short on at 64), a decode before index stop
-        gen = torch.Generator(device=dev).manual_seed(M)
-        placed.clear()
-        for i, lin in enumerate(ls):
-            if i == stop:
-                gm.Ahead.stop(dev_)
-                lins[0].decode_rows(0, 64)
-            x = torch.randn(64 if short is not None and i >= short else M, lin.in_features, dtype=bf, device=dev, generator=gen)
-            y = lin(x)
-            if short is not None and i >= short:
-                assert exact(y, lin.kernel(64)(lin.p, x)), ("below the threshold", M, i)
-                continue
-            assert exact(y, F.linear(x, g.mma_unpack(lin.p)) if i < on or lin.hopper else g.mma_gemm_big(lin.p, x)), ("a prompt decoded ahead", M, i, on)
-        assert placed == list(range(on)), ("the order followed", M, placed, on)
-        counts["GLinear decoded ahead"] = counts.get("GLinear decoded ahead", 0) + on
-        counts["GLinear off the order (fused)"] = counts.get("GLinear off the order (fused)", 0) + len(ls) - on
-    assert any(gm.Ahead.of[dev_].schedule(M // 128 * 128)[0]), "decodes ahead in the order"
+for route in [None] + ([] if torch.cuda.get_device_capability() == (8, 0) else [(8, 0)]):
+    if route:
+        torch.cuda.get_device_capability = lambda device=None: route
+    try:
+        lins = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
+        other = [gm.GLinear(g.pack_mma(weights(O * K).view(O, K)), None) for O, K in shapes[:3]]
+    finally:
+        torch.cuda.get_device_capability = cc
+    for lin in lins + other:
+        lin.ahead = 513
+        lin.step = lin._step()  # its one-call path to the new threshold
+    gm.Ahead.reset(dev_)  # (the route before's order done with)
+    gm.set_scratch(torch.nn.ModuleList(lins + other), False)
+    tag = " (as on an A100)" if route else ""
+    common = [(lins, 6, None, None), (lins, 4, 4, None), (lins[:3], 3, None, None), (lins, 6, None, None), (lins[:4], 3, None, 3), (lins, 3, None, None),
+              (lins, 6, None, None), (other, 0, None, None), (other, 3, None, None), (lins, 0, None, None), (lins, 6, None, None)]
+    for M, seq in ((600, [(lins[:3], 0, None, None), (lins, 3, None, None)] + common), (2100, common)):
+        for ls, on, stop, short in seq:  # ls in turn at M tokens (from index short on at 64), a decode before index stop
+            gen = torch.Generator(device=dev).manual_seed(M)
+            placed.clear()
+            for i, lin in enumerate(ls):
+                if i == stop:
+                    gm.Ahead.stop(dev_)
+                    lins[0].decode_rows(0, 64)
+                x = torch.randn(64 if short is not None and i >= short else M, lin.in_features, dtype=bf, device=dev, generator=gen)
+                y = lin(x)
+                if short is not None and i >= short:
+                    assert exact(y, lin.kernel(64)(lin.p, x)), ("below the threshold", route, M, i)
+                    continue
+                assert exact(y, F.linear(x, g.mma_unpack(lin.p)) if i < on or lin.hopper or lin.decoded(M) else g.mma_gemm_big(lin.p, x)), ("a prompt decoded ahead", route, M, i, on)
+                if i >= on and lin.decoded(M):
+                    counts["GLinear off the order, decoded" + tag] = counts.get("GLinear off the order, decoded" + tag, 0) + 1
+            assert placed == list(range(on)), ("the order followed", route, M, placed, on)
+            counts["GLinear decoded ahead" + tag] = counts.get("GLinear decoded ahead" + tag, 0) + on
+            counts["GLinear off the order" + tag] = counts.get("GLinear off the order" + tag, 0) + len(ls) - on
+        assert any(gm.Ahead.of[dev_].schedule(M // 128 * 128)[0]), ("decodes ahead in the order", route)
 # Where Ahead does not take a prompt's product, the fused kernel, as below the decode ahead (but on Hopper): under
 # torch.compile (a graph's node: _lib.local.fresh), and a matrix past the scratch (decoded in row blocks, never ahead).
 if not lins[0].hopper:

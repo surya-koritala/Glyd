@@ -1,0 +1,10 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 5146.61it/s]
+bf16 (weights 16.38 GB): batch 1: 23.2 tokens/s (23.2 a sequence), peak VRAM 16.40 GB
+bf16 prefill: 128 tokens 43.5 ms (2940 tokens/s), first token 46.8 ms, 1024 tokens 92.3 ms (11098 tokens/s), first token 95.7 ms
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 exact: packed in 15 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 1.24 GB, VRAM in use 13.53 GB on 1 GPU
+glyd mma12 exact: batch 1: 17.5 tokens/s (17.5 a sequence), peak VRAM 13.54 GB
+glyd mma12 prefill: 128 tokens 56.7 ms (2256 tokens/s), first token 61.6 ms, 1024 tokens 116.8 ms (8767 tokens/s), first token 120.1 ms
+logits bit-identical: True
+generated tokens identical to bf16: 32 of 32
+text:  in the 1950s, with the development of algorithms that could reduce the size of data for more efficient storage and transmission. Early methods were based

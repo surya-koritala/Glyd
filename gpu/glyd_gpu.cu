@@ -891,6 +891,28 @@ struct Nib {
         st.e0 = __ldg(exc_base + step);
         st.e1 = __ldg(exc_base + step + 1);
     }
+    // A lane's codes (nb, 4 words) as its exponents, 4 a word (ew).
+    __device__ __forceinline__ void exponents(const uint32_t nb[4], uint32_t ew[8]) const {
+#pragma unroll
+        for (int q = 0; q < 8; q++) {
+            uint32_t n = nb[q >> 1] >> (16 * (q & 1)), n7 = n & 0x7777u;
+            ew[q] = __byte_perm(__byte_perm(sym[0], sym[1], n7), __byte_perm(sym[2], sym[3], n7), ((n >> 1) & 0x4444u) | 0x3210u);
+        }
+    }
+    // The step's exceptions, entries e0 to e1 (the same run for every lane of the warp; entry k is at(k)): each
+    // word takes its byte where the exception is this lane's and in it.
+    template <class At>
+    static __device__ __forceinline__ void patch(At at, int e0, int e1, int lane, uint32_t ew[8]) {
+        for (int k = e0; k < e1; k++) {
+            uint32_t x = at(k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
+            uint32_t w = (int)((x >> 5) & 31) == lane ? i >> 2 : 8u;
+#pragma unroll
+            for (int q = 0; q < 8; q++) {
+                uint32_t v = __byte_perm(ew[q], x >> 16, sel);
+                ew[q] = w == (uint32_t)q ? v : ew[q];
+            }
+        }
+    }
     // A step's decode where its block's steps have many exceptions (mma_gemm_kernel's heavy blocks): past 4 in the
     // step, through the warp's scratch (s2: 1 KB, a lane's 8 words, zero between steps) the lanes take the run's
     // entries 32 at a time, each setting its exponent byte there, which every lane then adds to its words (an
@@ -898,11 +920,7 @@ struct Nib {
     __device__ __forceinline__ void decode_x(const St& st, int lane, uint32_t* s2, uint32_t R[16]) const {
         if (st.e1 - st.e0 <= 4) return decode(st, lane, nullptr, nullptr, R);
         uint32_t ew[8];
-#pragma unroll
-        for (int q = 0; q < 8; q++) {
-            uint32_t n = st.nb[q >> 1] >> (16 * (q & 1)), n7 = n & 0x7777u;
-            ew[q] = __byte_perm(__byte_perm(sym[0], sym[1], n7), __byte_perm(sym[2], sym[3], n7), ((n >> 1) & 0x4444u) | 0x3210u);
-        }
+        exponents(st.nb, ew);
         for (int k = st.e0 + lane; k < st.e1; k += 32) {
             uint32_t x = __ldg(exc + k), i = x & 31;
             ((uint8_t*)s2)[(((x >> 5) & 31) * 8 + (i >> 2)) * 4 + (i & 3)] = (uint8_t)(x >> 16);
@@ -917,22 +935,9 @@ struct Nib {
     }
     __device__ __forceinline__ void decode(const St& st, int lane, uint32_t*, const uint32_t*, uint32_t R[16]) const {
         uint32_t ew[8];
-#pragma unroll
-        for (int q = 0; q < 8; q++) {
-            uint32_t n = st.nb[q >> 1] >> (16 * (q & 1)), n7 = n & 0x7777u;
-            ew[q] = __byte_perm(__byte_perm(sym[0], sym[1], n7), __byte_perm(sym[2], sym[3], n7), ((n >> 1) & 0x4444u) | 0x3210u);
-        }
-        // The step's exceptions (the same run for every lane of the warp):
-        // each word takes its byte where the exception is this lane's and in it.
-        for (int k = st.e0; k < st.e1; k++) {
-            uint32_t x = __ldg(exc + k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
-            uint32_t w = (int)((x >> 5) & 31) == lane ? i >> 2 : 8u;
-#pragma unroll
-            for (int q = 0; q < 8; q++) {
-                uint32_t v = __byte_perm(ew[q], x >> 16, sel);
-                ew[q] = w == (uint32_t)q ? v : ew[q];
-            }
-        }
+        exponents(st.nb, ew);
+        const uint32_t* e = exc;
+        patch([e](int k) { return __ldg(e + k); }, st.e0, st.e1, lane, ew);
         pairs(st.sw, ew, R);
     }
 };
@@ -1255,45 +1260,72 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
                     for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
             // ldmatrix rows: this lane's row of the 16 (0-7, then 8-15) and its 16-byte half of k.
             uint32_t a_row = (uint32_t)(wm * 64 + (lane & 7) + ((lane >> 3) & 1) * 8) * 128, a_half = lane >> 4, a_sw = lane & 7;
-            // Fragments double-buffered: a step's are asked for while the step
-            // before multiplies; a stage's first, during the last of the one before.
-            uint32_t fa[2][4][4];
-            uint4 fb[2][4];
-            auto frags = [&](int64_t j, int kk, int f) {
-                int bi = (int)(j % NB);
-                uint32_t slot = a_base + (uint32_t)bi * C::A_BYTES;
-                const uint4* bsrc = Bs + bi * C::B_UINT4 + rbl * BIG_KK * 4 * 32 + lane;
+            if constexpr (CW >= 8) {
+                // Eight consumer warps (a thread's 128 sums in 168 registers): a step's fragments loaded as it is
+                // multiplied, the B ones a pair of n-tiles at a time (each sum's products in the same order).
+                for (int64_t j = 0; j < nst; j++) {
+                    int bi = (int)(j % NB);
+                    bar_sync<C::THREADS>(1 + bi);  // stage j is ready
+                    uint32_t slot = a_base + (uint32_t)bi * C::A_BYTES;
+                    const uint4* bsrc = Bs + bi * C::B_UINT4 + rbl * BIG_KK * 4 * 32 + lane;
 #pragma unroll
-                for (int mt = 0; mt < 4; mt++) ldmatrix_x4(fa[f][mt], slot + a_row + mt * 16 * 128 + (((2 * kk + a_half) ^ a_sw) << 4));
+                    for (int kk = 0; kk < BIG_KK; kk++) {
+                        uint32_t a[4][4];
 #pragma unroll
-                for (int q = 0; q < 4; q++) fb[f][q] = bsrc[(kk * 4 + q) * 32];
-            };
-            if (nst > 0) {
-                bar_sync<C::THREADS>(1);  // stage 0 is ready
-                frags(0, 0, 0);
-            }
-            for (int64_t j = 0; j < nst; j++) {
+                        for (int mt = 0; mt < 4; mt++) ldmatrix_x4(a[mt], slot + a_row + mt * 16 * 128 + (((2 * kk + a_half) ^ a_sw) << 4));
 #pragma unroll
-                for (int kk = 0; kk < BIG_KK; kk++) {
-                    int f = kk & 1;
-                    if (kk + 1 < BIG_KK) frags(j, kk + 1, f ^ 1);
-                    else if (j + 1 < nst) {
-                        bar_sync<C::THREADS>(1 + (int)((j + 1) % NB));  // stage j + 1 is ready
-                        frags(j + 1, 0, f ^ 1);
+                        for (int q = 0; q < 4; q++) {
+                            uint4 b = bsrc[(kk * 4 + q) * 32];
+#pragma unroll
+                            for (int mt = 0; mt < 4; mt++) {
+                                mma16816(acc[mt][2 * q], a[mt], b.x, b.y);
+                                mma16816(acc[mt][2 * q + 1], a[mt], b.z, b.w);
+                            }
+                        }
                     }
-#pragma unroll
-                    for (int mt = 0; mt < 4; mt++) {
-                        mma16816(acc[mt][0], fa[f][mt], fb[f][0].x, fb[f][0].y);
-                        mma16816(acc[mt][1], fa[f][mt], fb[f][0].z, fb[f][0].w);
-                        mma16816(acc[mt][2], fa[f][mt], fb[f][1].x, fb[f][1].y);
-                        mma16816(acc[mt][3], fa[f][mt], fb[f][1].z, fb[f][1].w);
-                        mma16816(acc[mt][4], fa[f][mt], fb[f][2].x, fb[f][2].y);
-                        mma16816(acc[mt][5], fa[f][mt], fb[f][2].z, fb[f][2].w);
-                        mma16816(acc[mt][6], fa[f][mt], fb[f][3].x, fb[f][3].y);
-                        mma16816(acc[mt][7], fa[f][mt], fb[f][3].z, fb[f][3].w);
-                    }
+                    if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + bi);  // done with stage j's buffers
                 }
-                if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + (int)(j % NB));  // done with stage j's buffers
+            } else {
+                // Fragments double-buffered: a step's are asked for while the step
+                // before multiplies; a stage's first, during the last of the one before.
+                uint32_t fa[2][4][4];
+                uint4 fb[2][4];
+                auto frags = [&](int64_t j, int kk, int f) {
+                    int bi = (int)(j % NB);
+                    uint32_t slot = a_base + (uint32_t)bi * C::A_BYTES;
+                    const uint4* bsrc = Bs + bi * C::B_UINT4 + rbl * BIG_KK * 4 * 32 + lane;
+#pragma unroll
+                    for (int mt = 0; mt < 4; mt++) ldmatrix_x4(fa[f][mt], slot + a_row + mt * 16 * 128 + (((2 * kk + a_half) ^ a_sw) << 4));
+#pragma unroll
+                    for (int q = 0; q < 4; q++) fb[f][q] = bsrc[(kk * 4 + q) * 32];
+                };
+                if (nst > 0) {
+                    bar_sync<C::THREADS>(1);  // stage 0 is ready
+                    frags(0, 0, 0);
+                }
+                for (int64_t j = 0; j < nst; j++) {
+#pragma unroll
+                    for (int kk = 0; kk < BIG_KK; kk++) {
+                        int f = kk & 1;
+                        if (kk + 1 < BIG_KK) frags(j, kk + 1, f ^ 1);
+                        else if (j + 1 < nst) {
+                            bar_sync<C::THREADS>(1 + (int)((j + 1) % NB));  // stage j + 1 is ready
+                            frags(j + 1, 0, f ^ 1);
+                        }
+#pragma unroll
+                        for (int mt = 0; mt < 4; mt++) {
+                            mma16816(acc[mt][0], fa[f][mt], fb[f][0].x, fb[f][0].y);
+                            mma16816(acc[mt][1], fa[f][mt], fb[f][0].z, fb[f][0].w);
+                            mma16816(acc[mt][2], fa[f][mt], fb[f][1].x, fb[f][1].y);
+                            mma16816(acc[mt][3], fa[f][mt], fb[f][1].z, fb[f][1].w);
+                            mma16816(acc[mt][4], fa[f][mt], fb[f][2].x, fb[f][2].y);
+                            mma16816(acc[mt][5], fa[f][mt], fb[f][2].z, fb[f][2].w);
+                            mma16816(acc[mt][6], fa[f][mt], fb[f][3].x, fb[f][3].y);
+                            mma16816(acc[mt][7], fa[f][mt], fb[f][3].z, fb[f][3].w);
+                        }
+                    }
+                    if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + (int)(j % NB));  // done with stage j's buffers
+                }
             }
             // C fragments: token rows g and g + 8 of each m-tile, columns 2t and 2t + 1 of each n-tile.
             if constexpr (MOE) {
@@ -2274,26 +2306,14 @@ __global__ void __launch_bounds__(Ws12<CW, NB, NW, RBB, MT>::THREADS, 1) mma12_w
             if (j + 1 < n && j + 1 >= NB) bar_sync<C::THREADS>(EMPTY0 + xsl);  // the consumers are done with stage j + 1 - NB (xsl: stage j + 1's slot)
             xcopy();
             wcopy();
-            // The step into B fragments, as Nib::decode's (its loads and exceptions from the ring).
+            // The step into B fragments, as Nib::decode (its loads and exceptions from the ring).
             const uint8_t* q = gw + wsl * C::WSLOT;
             uint4 c4 = *(const uint4*)(q + 16 * lane), x0 = *(const uint4*)(q + 512 + 16 * lane), x1 = *(const uint4*)(q + 1024 + 16 * lane);
             uint32_t nbw[4] = {c4.x, c4.y, c4.z, c4.w}, sw[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w}, ew[8];
-#pragma unroll
-            for (int h = 0; h < 8; h++) {
-                uint32_t cc = nbw[h >> 1] >> (16 * (h & 1)), n7 = cc & 0x7777u;
-                ew[h] = __byte_perm(__byte_perm(f.sym[0], f.sym[1], n7), __byte_perm(f.sym[2], f.sym[3], n7), ((cc >> 1) & 0x4444u) | 0x3210u);
-            }
+            f.exponents(nbw, ew);
             int4 bd = *(const int4*)(q + STEP12 + C::EB);
-            const uint32_t* se = (const uint32_t*)(q + STEP12);
-            for (int k = bd.x; k < bd.y; k++) {  // each word takes its byte where the exception is this lane's and in it
-                uint32_t x = bd.z >= 0 ? se[k - bd.z] : __ldg(f.exc + k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
-                uint32_t wq = (int)((x >> 5) & 31) == lane ? i >> 2 : 8u;
-#pragma unroll
-                for (int h = 0; h < 8; h++) {
-                    uint32_t v = __byte_perm(ew[h], x >> 16, sel);
-                    ew[h] = wq == (uint32_t)h ? v : ew[h];
-                }
-            }
+            const uint32_t *se = (const uint32_t*)(q + STEP12), *ge = f.exc;
+            Nib::patch([&](int k) { return bd.z >= 0 ? se[k - bd.z] : __ldg(ge + k); }, bd.x, bd.y, lane, ew);
             uint32_t R[16];
             pairs(sw, ew, R);
             uint4* d = bdst + bsl * (C::DSLOT / 16);
@@ -2335,11 +2355,12 @@ __global__ void __launch_bounds__(Ws12<CW, NB, NW, RBB, MT>::THREADS, 1) mma12_w
 #pragma unroll 1
     for (int j = 0; j < n; j++) {
         int nsl = bsl + 1 == NB ? 0 : bsl + 1;
+        bool out = s == S - 1 || j == n - 1;  // the unit's last stage here: its sum out next
 #pragma unroll
         for (int kk = 0; kk < 4; kk++) {
             int fi = kk & 1;
             if (kk + 1 < 4) frags(bsl, kk + 1, fi ^ 1);
-            else if (j + 1 < n) {
+            else if (!out) {  // (at a unit's end, after its sum out: the next stage's fragments not held through it)
                 bar_sync<C::THREADS>(FULL0 + nsl);  // stage j + 1 is ready
                 frags(nsl, 0, fi ^ 1);
             }
@@ -2357,7 +2378,7 @@ __global__ void __launch_bounds__(Ws12<CW, NB, NW, RBB, MT>::THREADS, 1) mma12_w
         }
         if (j + NB < n) bar_arrive<C::THREADS>(EMPTY0 + bsl);  // done with stage j's buffers
         bsl = nsl;
-        if (s == S - 1 || j == n - 1) {
+        if (out) {
             // Unit p's sum out: to Y where this block covers it, else to its slot (the consumers' accumulators in
             // thread order), the last of its blocks to finish adding the slots in block order.
             int64_t first = block_of_step((int64_t)p * S, nb, T), fin = block_of_step((int64_t)p * S + S - 1, nb, T);
@@ -2419,6 +2440,10 @@ __global__ void __launch_bounds__(Ws12<CW, NB, NW, RBB, MT>::THREADS, 1) mma12_w
                 for (int nn = 0; nn < 8; nn++)
 #pragma unroll
                     for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
+            if (j + 1 < n) {
+                bar_sync<C::THREADS>(FULL0 + bsl);  // stage j + 1 is ready
+                frags(bsl, 0, 0);
+            }
         }
         if (++s == S) s = 0, p++;
     }
@@ -3113,8 +3138,9 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm(const uint8_t* data, const uint32_t* exc, c
 }
 
 // Many tokens (a prompt), K a multiple of 64, x 16-byte aligned, but on GeForce Ada: mma_gemm_big_kernel, K split
-// so the blocks fill their last wave: the fewest splits that leave under 15% of it idle, else the fullest; at
-// least 4 stages a split. The workspace: the splits' parts, [splits][M][O] floats, past one.
+// so the blocks fill their last wave: the fewest splits that leave under 15% of it idle (25% with eight consumer
+// warps, whose blocks' parts cost more to add), else the fullest; at least 4 stages a split. The workspace: the
+// splits' parts, [splits][M][O] floats, past one.
 template <class Fmt, int CW, int PW, int NB, int RBB>
 static int mma_gemm_grid_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
     using C = Big<CW, PW, NB, RBB>;
@@ -3129,7 +3155,7 @@ static int mma_gemm_grid_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int
         int64_t nblocks = pairs * tiles * sp;
         double fill = (double)nblocks / (double)(((nblocks + cap - 1) / cap) * cap);
         if (fill > best + 1e-9) best = fill, splits = sp;
-        if (fill >= 0.85) break;
+        if (fill >= (CW >= 8 ? 0.75 : 0.85)) break;
     }
     int64_t per = (stages + splits - 1) / splits;
     splits = (stages + per - 1) / per;
@@ -3178,10 +3204,17 @@ static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
     // at 448, RTX 4080 SUPER; elsewhere not measured), to 1024 tokens tiered and 4224 12-bit, as measured (past
     // 1024 blocks of 128 cost Qwen3-1.7B's and Qwen3-4B's tiered layers -0.2-1.3% more at 1025-1152 tokens and
     // 1.3-6.9% from 1600, and save their 12-bit layers 0.8-4.5% to 4224). Stream-K likewise on GeForce Ada only,
-    // where it was measured.
-    bool ada = geforce_ada(current_device());
-    int64_t most = std::is_same_v<Fmt, Nib> ? 4224 : 1024;
-    if (variant == 0) variant = M > 128 && (M % 256 == 0 || M % 256 > 128 || M > most || !ada) ? 2 : 1;
+    // where it was measured. An A100's 12-bit layout the same way to 640 tokens (its Qwen3-8B and Qwen3-14B
+    // layers 13-14% faster at 300 and 384 tokens in blocks of 128, 5-15% at 640; GLinear decodes its prompts for
+    // cuBLAS from 769), its blocks of 256 tokens by two row blocks and eight consumer warps (variant 3: a weight
+    // decoded once for 256 tokens and X's tile read once for 128 rows, less of L2's traffic a product than 256 by
+    // one; the 12-bit layout's on any GPU asked for it).
+    int dev = current_device();
+    bool ada = geforce_ada(dev), a100 = std::is_same_v<Fmt, Nib> && attribute(cudaDevAttrComputeCapabilityMajor, dev) == 8 && attribute(cudaDevAttrComputeCapabilityMinor, dev) == 0;
+    int64_t most = a100 ? 640 : std::is_same_v<Fmt, Nib> ? 4224 : 1024;
+    if (variant == 0) variant = M > 128 && (M % 256 == 0 || M % 256 > 128 || M > most || !(ada || a100)) ? (a100 ? 3 : 2) : 1;
+    if constexpr (std::is_same_v<Fmt, Nib>)
+        if (variant == 3) return mma_gemm_grid_run<Fmt, 8, 4, 2, 2>(f, O, K, x, M, bias, y, ws, ws_bytes, cs, need);
     if (!ada) {
         auto grid = variant == 2 ? mma_gemm_grid_run<Fmt, 4, 4, 2, 1> : mma_gemm_grid_run<Fmt, 4, 4, 3, 2>;
         return grid(f, O, K, x, M, bias, y, ws, ws_bytes, cs, need);
@@ -3242,11 +3275,13 @@ static int mma12_mid_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
     if (attribute(cudaDevAttrComputeCapabilityMajor, dev) < 8) return cudaErrorNotSupported;
     if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16 || (uintptr_t)f.data % 16 || (uintptr_t)f.exc % 16) return cudaErrorInvalidValue;
     if (attribute(cudaDevAttrComputeCapabilityMajor, dev) == 8 && attribute(cudaDevAttrComputeCapabilityMinor, dev) == 0) {
-        // The A100: producer and consumer warps, 32 tokens a unit to 32, else 64; past 64 a launch a 64 (each
-        // reading W again: prompts go to mma_gemm_big), so the units and their done counters stay O / 128.
-        for (int64_t m0 = 0; m0 < M; m0 += 64) {
-            int64_t mc = std::min<int64_t>(64, M - m0);
-            auto run = mc <= 32 ? mma12_ws_run<4, 4, 5, 2, 1> : mma12_ws_run<4, 4, 4, 2, 2>;
+        // The A100: producer and consumer warps, units of two row blocks by 32, 64, 96 or 128 tokens, the
+        // fewest that hold the step's (65-96: four consumer warps of 48 tokens; 97-128: eight of 32, as four of 64
+        // spill their sums); past 128 a launch a 128 (each reading W again: prompts go to mma_gemm_big or are
+        // decoded for cuBLAS), so the units and their done counters stay O / 128.
+        for (int64_t m0 = 0; m0 < M; m0 += 128) {
+            int64_t mc = std::min<int64_t>(128, M - m0);
+            auto run = mc <= 32 ? mma12_ws_run<4, 4, 5, 2, 1> : mc <= 64 ? mma12_ws_run<4, 4, 4, 2, 2> : mc <= 96 ? mma12_ws_run<4, 3, 4, 2, 3> : mma12_ws_run<8, 3, 4, 2, 2>;
             run(f, O, K, x, m0, mc, bias, y, parts, done, cs, need);
         }
         return cudaGetLastError();

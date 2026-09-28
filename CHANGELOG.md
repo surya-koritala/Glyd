@@ -92,8 +92,33 @@ every earlier format.
   (300 tokens: 0.79-0.89x the time; past 1024 the tiered layout's cost
   1.3-6.9% more from 1600 tokens, the 12-bit's 0.8-4.5% less to 4224;
   elsewhere as before, until measured). The decode ahead is off until
-  measured on an A100, an H100 and the L4, L40S and RTX 6000 Ada
-  (`GLYD_AHEAD_MIN=513` takes it).
+  measured on an H100 and the L4, L40S and RTX 6000 Ada
+  (`GLYD_AHEAD_MIN=513` takes it); on an A100 it is off, as measured
+  (below).
+- On an A100, batched steps of 65-128 tokens and prompts faster in the
+  12-bit layout. A step of 65-128 tokens runs `mma_gemm_mid`'s A100
+  kernel in one launch (units of two row blocks by 96 or 128 tokens), was
+  `mma_gemm_big`, and is one C call; its consumers no longer hold the
+  next stage's fragments through a unit's sums (the 64-token kernel had
+  spilled). A prompt runs `mma_gemm_big` in blocks of 256 tokens by two
+  row blocks with eight consumer warps (a weight decoded once for 256
+  tokens, X's tile read once for 128 rows; `variant=3`), in blocks of 128
+  where the last of 256 would be half empty or less, to 640 tokens; from
+  769 tokens (`GLYD_DEC_MIN`) each matrix is decoded for cuBLAS. On an
+  A100-SXM4-40GB (`gpu/e2e.py --merge --fused --profile 16`), Qwen3-8B's
+  GPU time a step at 32 / 64 / 128 sequences is 18.54 / 21.05 / 28.17
+  ms against bf16's 21.12 / 21.13 / 25.71 (was 19.14 / 21.69 / 29.45),
+  Qwen3-14B's 28.70 / 31.81 / 42.41 against 32.89 / 36.01 / 41.15 (was
+  29.24 / 32.95 / 49.23); Qwen3-8B generates 2993.6 tokens/s at 128
+  sequences against bf16's 2997.4 (was 2747.0). Qwen3-8B's prompts of 128
+  / 512 / 1024 / 2048 / 4096 tokens (`--prefill`) take 40.9 / 64.5 /
+  112.0 / 195.7 / 368.2 ms against bf16's 41.0 / 48.4 / 90.1 / 174.3 /
+  347.9 (were 44.9 / 68.3 / 120.7 / 237.1 / 489.2), Qwen3-14B's 512 /
+  1024 / 2048 / 4096 tokens 111.7 / 198.6 / 347.5 / 653.7 against 82.7 /
+  151.2 / 291.1 / 584.6 (were 113.1 / 207.3 / 416.6 / 855.4). The decode
+  ahead was slower there than each matrix decoded before its product at
+  every length measured (Qwen3-8B's 2048 tokens 214.8-274.3 ms at 2 to 4
+  warps an SM, against 195.7), so it stays off on an A100.
 - `glyd.save_pretrained` saves a mixture of experts: glyd-v1 holds each
   layer's experts as one pack (their matrices stacked, under the module
   holding them), and `glyd.json` the sha256 of each weight as the model

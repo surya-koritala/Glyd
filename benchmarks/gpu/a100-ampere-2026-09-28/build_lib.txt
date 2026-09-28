@@ -1,0 +1,7 @@
+ptxas info    : (C7512) Potential Performance Loss: wgmma.mma_async instructions are serialized due to insufficient register resources for the function '_Z16mma12_tma_kernelILi256ELi2EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi'
+/home/ubuntu/final/gpu/libglyd_gpu_cuda13.so
+
+real	0m52.809s
+user	4m4.734s
+sys	0m5.593s
+-rwxrwxr-x 1 ubuntu ubuntu 22771008 Sep 28 03:24 /home/ubuntu/final/gpu/libglyd_gpu_cuda13.so

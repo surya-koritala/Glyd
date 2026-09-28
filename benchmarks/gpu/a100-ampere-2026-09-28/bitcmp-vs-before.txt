@@ -1,0 +1,1 @@
+181 products compared bit for bit with /home/ubuntu/res/old.pt: 177 identical; differ: ['big12 1024x2048 300', 'big12 5120x1024 300', 'big12 3072x5120 300', 'big12 6144x4096 300']
