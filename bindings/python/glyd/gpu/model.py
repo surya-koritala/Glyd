@@ -764,12 +764,15 @@ def fast_generate(model):
     (_can_compile_fullgraph: MiniMax's own cache, DBRX's experts ...), nor a
     model over several GPUs (not measured there), nor where transformers'
     helpers _fast reads are not as 5.17 has them (one warning: else every
-    call would run eager, unsaid). The model."""
+    call would run eager, unsaid), nor for a generation of the model's own
+    with no search modes (DiffusionGemma's). The model."""
     if torch.__version__ < "2.13" or os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate") or not getattr(model, "_can_compile_fullgraph", False) or _static_fails(model):
         return model
     try:  # the helpers _fast reads, as transformers 5.17 has them
         cfg, _ = model._prepare_generation_config(None, do_sample=False, num_beams=1)
         ok = cfg.get_generation_mode(None) == "greedy_search"
+    except NotImplementedError:  # a generation of the model's own, with no search modes (DiffusionGemma's): eager
+        return model
     except Exception as e:
         ok = e
     if ok is not True:

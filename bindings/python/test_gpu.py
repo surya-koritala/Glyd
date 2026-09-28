@@ -468,7 +468,8 @@ def test_compiled_generate_from_torch_2_13():
 def test_compiled_generate_eager_where_transformers_differs():
     """fast_generate's probe of the helpers the gate reads (transformers 5.17's _prepare_generation_config and
     get_generation_mode): with the first gone, one warning, and the model left as it was (its generate() eager);
-    below PyTorch 2.13 no probe, nothing said."""
+    below PyTorch 2.13 no probe, nothing said. A generation of the model's own with no search modes (DiffusionGemma's
+    config refuses get_generation_mode): left as it was, nothing said."""
     torch = cuda()
     if torch is None:
         print("test_compiled_generate_eager_where_transformers_differs: skipped (no CUDA GPU, PyTorch or transformers)")
@@ -487,6 +488,12 @@ def test_compiled_generate_eager_where_transformers_differs():
     assert "glyd_fast" not in g.__dict__ and len(said) == (torch.__version__ >= "2.13"), said
     del g._prepare_generation_config
     assert ("glyd_fast" in gm.fast_generate(g).__dict__) == (torch.__version__ >= "2.13")
+    model, auto, cfg, ids, kw = tiny_model(torch, "diffusion_gemma", FAMILIES["diffusion_gemma"])
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        g = gg.compress(model.to(torch.bfloat16))
+    said = [str(m.message) for m in w if "glyd" in str(m.message)]
+    assert "glyd_fast" not in g.__dict__ and not said, said
 
 
 def test_hooks_put_before_the_packs():
