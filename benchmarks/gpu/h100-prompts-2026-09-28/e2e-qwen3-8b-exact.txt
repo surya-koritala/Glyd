@@ -1,0 +1,11 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights:  47%|████▋     | 189/399 [00:00<00:00, 1881.30it/s]Loading weights:  98%|█████████▊| 393/399 [00:00<00:00, 1974.01it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 1982.72it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 21.8 tokens/s (21.8 a sequence), peak VRAM 16.43 GB
+bf16 prefill: 256 tokens 23.0 ms (11129 tokens/s), 512 tokens 31.9 ms (16060 tokens/s)
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 exact: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 1.24 GB, VRAM in use 13.55 GB on 1 GPU
+glyd mma12 exact: batch 1: 30.7 tokens/s (30.7 a sequence), peak VRAM 13.56 GB
+glyd mma12 prefill: 256 tokens 37.9 ms (6761 tokens/s), 512 tokens 48.4 ms (10587 tokens/s)
+logits bit-identical: True
+generated tokens identical to bf16: 16 of 16
+text:  in the 1950s, with the development of algorithms that could
