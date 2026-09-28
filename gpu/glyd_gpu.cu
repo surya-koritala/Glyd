@@ -1717,7 +1717,8 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
             stage_bounds<WG>(f, RB, KS, (p + s / S) % RU, s % S, en);
         };
         if (lane < 8 && lane < n) ahead(p0, s0, lane);
-        // (unit p's row unit pr and chunk pc kept as p goes: no division a stage, where a stage of few tokens is short)
+        // (unit p's row unit pr and chunk pc kept as p goes to 128 tokens: no division a stage, where a stage is short;
+        // past that, in the warpgroup's 40 registers, divided out: two more held had made it the slower)
         for (int j = 0, p = p0, s = s0, pr = p0 % RU, pc = p0 / RU; j < n; j++) {
             if ((j & 7) == 0) {
 #pragma unroll
@@ -1740,11 +1741,11 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
                     bs[5] = na[r] < 0 ? -1 : a[r];
                 }
                 mbar_expect_tx(fb, bytes);
-                tma_2d(xs, &xmap, (int)(s * 64), pc * NT, fb);
+                tma_2d(xs, &xmap, (int)(s * 64), (C::PWG ? p / RU : pc) * NT, fb);
 #pragma unroll
                 for (int r = 0; r < WG; r++) {
                     uint32_t cs = xs + C::XB + r * C::RBB;
-                    bulk_g2s(cs, f.data + (min((int64_t)WG * pr + r, RB - 1) * KS + 4 * s) * STEP12, C::CB, fb, TC == 1);  // (read once but where the chunks share it)
+                    bulk_g2s(cs, f.data + (min((int64_t)WG * (C::PWG ? p % RU : pr) + r, RB - 1) * KS + 4 * s) * STEP12, C::CB, fb, TC == 1);  // (read once but where the chunks share it)
                     if (na[r] > 0) bulk_g2s(cs + C::CB, f.exc + a[r], 4 * na[r], fb);
                 }
             }
