@@ -1483,8 +1483,9 @@ __device__ __forceinline__ void wgmma4_rs(float (&d)[128], const uint32_t (&a)[4
 // entry is ea; ea < 0: read from global memory; eb: exc_base at the 4 steps and the next). The lanes take
 // the run's entries 32 at a time, each in this warp's rows setting its exponent byte in the warp's scratch
 // (xw: a lane's 8 words, 256 in all, zero between stages; an exception's code, 15, decodes to 0), which
-// every lane then adds to its words and clears: a stage's cost does not grow with its exceptions (a few
-// layers' matrices have dozens a stage).
+// every lane then adds to its words and clears: a stage's cost grows by a pass per 32 of its exceptions, not
+// by an entry per lane (a few layers' matrices have dozens a stage; past the stage's copy, 256 entries in the
+// TMA kernel and 128 in mma12_mid_kernel, they are read from global memory).
 __device__ __forceinline__ void decode12_rows(const Nib& f, const uint8_t* sp, const uint32_t* se, const int (&eb)[5], int ea, int lane, int w, uint32_t* xw, uint32_t (&A)[4][4]) {
     uint32_t nw[4];
     uint2 sw[4];
