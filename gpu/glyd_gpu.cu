@@ -3073,8 +3073,9 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm(const uint8_t* data, const uint32_t* exc, c
 }
 
 // Many tokens (a prompt), K a multiple of 64, x 16-byte aligned, but on GeForce Ada: mma_gemm_big_kernel, K split
-// so the blocks fill their last wave: the fewest splits that leave under 15% of it idle, else the fullest; at
-// least 4 stages a split. The workspace: the splits' parts, [splits][M][O] floats, past one.
+// so the blocks fill their last wave: the fewest splits that leave under 15% of it idle (25% with eight consumer
+// warps, whose blocks' parts cost more to add), else the fullest; at least 4 stages a split. The workspace: the
+// splits' parts, [splits][M][O] floats, past one.
 template <class Fmt, int CW, int PW, int NB, int RBB>
 static int mma_gemm_grid_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
     using C = Big<CW, PW, NB, RBB>;
@@ -3089,7 +3090,7 @@ static int mma_gemm_grid_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int
         int64_t nblocks = pairs * tiles * sp;
         double fill = (double)nblocks / (double)(((nblocks + cap - 1) / cap) * cap);
         if (fill > best + 1e-9) best = fill, splits = sp;
-        if (fill >= (CW >= 8 ? 0.75 : 0.85)) break;  // (eight consumer warps: their blocks' parts cost more to add)
+        if (fill >= (CW >= 8 ? 0.75 : 0.85)) break;
     }
     int64_t per = (stages + splits - 1) / splits;
     splits = (stages + per - 1) / per;

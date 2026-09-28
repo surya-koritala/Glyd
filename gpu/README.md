@@ -410,7 +410,8 @@ benchmarks/gpu/a100-ampere-2026-09-28.
 ### Short prompts: one C call a product, and stream-K
 
 To 512 tokens (tiered) or 1024 (12-bit) a prompt's products on GeForce
-Ada are `mma_gemm_big`'s, and on other GPUs but Hopper every prompt's.
+Ada are `mma_gemm_big`'s, and on other GPUs but Hopper every prompt's (an
+A100's 12-bit to 768 tokens).
 Two things set a short prompt's time against bf16's there. The host:
 Qwen3-1.7B's pass of 128 tokens is issued in about the time the GPU
 takes to run it, and a prompt's product cost 12 us of host time a call
@@ -512,20 +513,22 @@ alike), RTX 4080 SUPER, ms, before and after:
 | Qwen3-8B, 12-bit | 30.2 | 91.0 | 175.7 | 345.7 | 762.7 |
 
 (bf16's Qwen3-8B does not fit 16 GB.) Between those lengths the fused
-kernel's blocks now fit the prompt too, on GeForce Ada (elsewhere as
-before, until measured): Qwen3-4B's 300 tokens take 44.7 ms tiered and
-39.9 12-bit against bf16's 38.2 (were 48.7 and 47.8), its 640 tokens
-67.1 and 66.5 against 62.9 (were 75.2 and 73.8). The time to the first
-token through `generate()` moves as the pass; generation is as before.
+kernel's blocks now fit the prompt too, on GeForce Ada and in an A100's
+12-bit layout to 640 tokens (elsewhere as before, until measured):
+Qwen3-4B's 300 tokens take 44.7 ms tiered and 39.9 12-bit against
+bf16's 38.2 (were 48.7 and 47.8), its 640 tokens 67.1 and 66.5 against
+62.9 (were 75.2 and 73.8). The time to the first token through
+`generate()` moves as the pass; generation is as before.
 What is left over bf16's time past 1024 tokens is the decode's traffic
 (3.35-3.5 bytes a weight) beside cuBLAS's products, and what the
 products before the first could not hide. At 1024 tokens Qwen3-1.7B's
 down projection (2048 x 6144) gets a single-stage kernel from cuBLAS,
 too slow beside a decode to host one. To 512 tokens the fused kernel
 stays: beside products that short, a decode costs more than it hides. On
-an A100 and an H100, whose cuBLAS kernels differ, and the L4, L40S and
-RTX 6000 Ada, which sum in fp32 at twice the GeForce rate (a product's
-time decodes half as much beside it), the path is off until measured:
+an A100 it made every length slower, as measured (above). On an H100,
+whose cuBLAS kernels differ, and the L4, L40S and RTX 6000 Ada, which sum
+in fp32 at twice the GeForce rate (a product's time decodes half as much
+beside it), the path is off until measured:
 `GLYD_AHEAD_MIN=513` takes it; `GLYD_AHEAD_WARPS`, `GLYD_AHEAD_RATE` and
 `GLYD_AHEAD_FLOPS` tune it (logs:
 benchmarks/gpu/rtx4080s-prompts-2026-09-27).
