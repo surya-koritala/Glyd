@@ -1,0 +1,3 @@
+name, memory.total [MiB], driver_version, clocks.max.sm [MHz]
+NVIDIA GeForce RTX 4080 SUPER, 16376 MiB, 595.91.07, 3105 MHz
+Mon Sep 28 02:22:25 AM UTC 2026

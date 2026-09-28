@@ -460,14 +460,23 @@ def pack_mma12(w):
     return Mma12((O, K), data.flatten(), exc, exc_base, sym)
 
 
-def best_layout(linear_bytes, other_bytes=0, gpus=1, device=0):
+def best_layout(linear_bytes, other_bytes=0, gpus=1, device=0, moe=False):
     """The layout for this GPU, and why: "mma" (tiered, 10.80 bits a weight)
     or "mma12" (12.04 bits, the lighter decode), for Linears of
-    linear_bytes in bf16 and other_bytes besides. Measured (benchmarks/gpu,
-    2026-09-26): on Ada (RTX 40, L40S) the tiered decode is the faster one
-    at 1-32 sequences; on an A10, an A100 and an H100 the 12-bit one. Either
-    way the tiered layout when only it fits (2 GiB a GPU kept for
-    activations and the KV cache)."""
+    linear_bytes in bf16 and other_bytes besides (moe: a mixture of
+    experts' among them). Measured (benchmarks/gpu, 2026-09-26): on Ada (RTX
+    40, L40S) the tiered decode is the faster one at 1-32 sequences; on an
+    A10, an A100 and an H100 the 12-bit one. A mixture of experts
+    (2026-09-27), whose steps read a few experts' matrices each: on an A10
+    the tiered layout as fast as the 12-bit one (OLMoE-1B-7B and
+    granite-3.1-3b-a800m, 1-6% less GPU time a step at 1 and 8 sequences)
+    and 11% smaller, so there as on Ada the tiered one (granite on an RTX
+    4080 SUPER: 6-7% less GPU time a step, 10% smaller; its prompts 4-11%
+    slower); on an H100 PCIe the 12-bit one (Qwen3-30B-A3B, 26.2 and 191.0
+    tokens/s at 1 and 8 sequences against the tiered layout's 15.8 and
+    111.8), and so on an A100 (not measured with one); Blackwell as for
+    dense Linears until measured. Either way the tiered layout when only
+    it fits (2 GiB a GPU kept for activations and the KV cache)."""
     p = torch.cuda.get_device_properties(device)
     room = gpus * (p.total_memory - 2 * 2**30)
     tiered, twelve = linear_bytes * 10.80 / 16 + other_bytes, linear_bytes * 12.04 / 16 + other_bytes
@@ -475,6 +484,8 @@ def best_layout(linear_bytes, other_bytes=0, gpus=1, device=0):
         return "mma", f"only the tiered layout fits ({tiered / 1e9:.1f} GB; 12-bit {twelve / 1e9:.1f} GB, room {room / 1e9:.1f} GB)"
     if (p.major, p.minor) == (8, 9):
         return "mma", "Ada: the tiered decode keeps up with its memory"
+    if moe and (p.major, p.minor) == (8, 6):
+        return "mma", "a mixture of experts on GDDR Ampere (an A10): the tiered decode as fast, and smaller"
     return "mma12", "the 12-bit decode keeps up with this GPU's memory"
 
 
@@ -486,17 +497,26 @@ def mma_cat(a, b):
     return Mma((a.shape[0] + b.shape[0], a.shape[1]), torch.cat([a.data, b.data]), blocks, torch.cat([a.block_base[:-1], b.block_base + body]), a.tiers)
 
 
-def mma_unpack(p, out=None, row0=0, rows=None):
-    """Rows [row0, row0 + rows) of W (multiples of 64), bf16 [rows, K]."""
+def mma_unpack(p, out=None, row0=0, rows=None, warps=0):
+    """Rows [row0, row0 + rows) of W (multiples of 64), bf16 [rows, K]. warps: a
+    warp a step (0), or that many in all, each taking every so many steps (a
+    decode beside a product running on another stream)."""
     O, K = p.shape
     rows = O - row0 if rows is None else rows
     if out is None:
         out = torch.empty(rows * K, dtype=torch.bfloat16, device=p.sm.device)
     if isinstance(p, Mma12):
-        _ext.mma12_unpack(p.data, p.exc, p.exc_base, p.sym, K, row0, rows, out.view(torch.int16))
+        _ext.mma12_unpack(p.data, p.exc, p.exc_base, p.sym, K, row0, rows, out.view(torch.int16), warps)
     else:
-        _ext.mma_unpack(p.data, p.blocks, p.block_base, p.tiers, K, row0, rows, out.view(torch.int16))
+        _ext.mma_unpack(p.data, p.blocks, p.block_base, p.tiers, K, row0, rows, out.view(torch.int16), warps)
     return out[: rows * K].view(rows, K)
+
+
+def hold(ns):
+    """The current stream held ns nanoseconds (a kernel of one thread): a
+    decode ahead launched after it, beside a product launched as it is,
+    starts once the product has placed its blocks."""
+    _ext.hold(ns)
 
 
 def mma_gemm(p, x, bias=None):
@@ -548,8 +568,9 @@ def mma_gemm_big(p, x, bias=None, variant=0):
     """X W^T (+ bias) for many tokens (x [M, K]; a prompt; K a multiple of
     64): a tiled GEMM, each weight decoded once for 128 or 256 tokens
     (variant 1 or 2; 3, the 12-bit layout: 256 tokens by 128 rows, an
-    A100's past 128 tokens; 0: by M and the GPU) into shared memory by
-    warps of its own while others multiply on the tensor cores."""
+    A100's past 128 tokens but where blocks of 128 fit the prompt; 0: by M
+    and the GPU) into shared memory by warps of its own while others
+    multiply on the tensor cores."""
     O, K = p.shape
     x = x.contiguous()
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)

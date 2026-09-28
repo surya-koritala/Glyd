@@ -1,0 +1,13 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 17430.73it/s]
+merged: 56 groups of Linears as one product each
+bf16 (weights 3.44 GB): batch 1: 90.4 tokens/s (90.4 a sequence), peak VRAM 3.46 GB
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+bf16 (weights 3.44 GB): batch 8: 716.8 tokens/s (89.6 a sequence), peak VRAM 3.51 GB
+bf16 prefill: 128 tokens 10.6 ms (12032 tokens/s), first token 12.3 ms, 512 tokens 24.3 ms (21061 tokens/s), first token 25.4 ms, 1024 tokens 42.1 ms (24298 tokens/s), first token 43.4 ms, 2048 tokens 86.6 ms (23653 tokens/s), first token 87.7 ms, 4096 tokens 185.3 ms (22099 tokens/s), first token 186.4 ms
+mma fused: packed in 2 s; weights 2.75 GB against 3.44 GB bf16 (80.0%), scratch 0.27 GB, VRAM in use 3.06 GB on 1 GPU
+glyd mma fused: batch 1: 98.0 tokens/s (98.0 a sequence), peak VRAM 3.07 GB
+glyd mma fused: batch 8: 773.8 tokens/s (96.7 a sequence), peak VRAM 3.13 GB
+glyd mma prefill: 128 tokens 11.2 ms (11439 tokens/s), first token 12.7 ms, 512 tokens 25.2 ms (20308 tokens/s), first token 26.5 ms, 1024 tokens 43.3 ms (23644 tokens/s), first token 44.4 ms, 2048 tokens 86.8 ms (23594 tokens/s), first token 87.9 ms, 4096 tokens 186.0 ms (22027 tokens/s), first token 187.1 ms
+logits bit-identical: False
+generated tokens identical to bf16: 13 of 32
+text:  in the 1950s with the advent of digital storage and transmission. The first significant developments were in the field of information theory, where the concept
