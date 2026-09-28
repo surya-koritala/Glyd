@@ -1,0 +1,49 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights:  45%|████▍     | 318/707 [00:00<00:00, 3179.50it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 3873.83it/s]
+USDT:2026-09-28 01:07:53 10736:10736 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:07:53 10736:10736 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:07:54 10736:10736 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:07:55 10736:10736 SyncActivityProfilerHandler.cpp:46] profiler_stop
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-28 01:08:00 10736:10736 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:08:00 10736:10736 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:08:00 10736:10736 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:08:02 10736:10736 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:08:08 10736:10736 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:08:08 10736:10736 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:08:08 10736:10736 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:08:09 10736:10736 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:08:15 10736:10736 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:08:15 10736:10736 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:08:16 10736:10736 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:08:17 10736:10736 SyncActivityProfilerHandler.cpp:46] profiler_stop
+merged: 128 groups
+bf16 profile, batch 1: 81.09 ms a step, GPU busy 42.44 ms a step after the prompt (24 tokens/s of GPU time), 44.25 ms for the prompt and a token
+    18.806 ms  nvjet_sm90_tst_512x8_64x3_4x1_v_bz_TNT
+     9.553 ms  nvjet_sm90_tst_256x8_64x6_4x1_v_bz_splitK_TNT
+     3.703 ms  nvjet_sm90_tst_128x8_64x12_4x1_v_bz_TNT
+     3.005 ms  nvjet_sm90_tst_64x8_64x16_4x1_v_bz_TNT
+     0.947 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.856 ms  nvjet_sm90_tst_512x8_64x3_2x1_v_bz_TNT
+bf16 profile, batch 8: 81.12 ms a step, GPU busy 44.40 ms a step after the prompt (180 tokens/s of GPU time), 48.83 ms for the prompt and a token
+    18.882 ms  nvjet_sm90_tst_512x8_64x3_4x1_v_bz_TNT
+     9.683 ms  nvjet_sm90_tst_256x8_64x6_4x1_v_bz_splitK_TNT
+     3.811 ms  nvjet_sm90_tst_128x8_64x12_4x1_v_bz_TNT
+     3.093 ms  nvjet_sm90_tst_64x8_64x16_4x1_v_bz_TNT
+     1.643 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.296 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+bf16 profile, batch 32: 82.02 ms a step, GPU busy 47.10 ms a step after the prompt (679 tokens/s of GPU time), 61.40 ms for the prompt and a token
+    19.057 ms  nvjet_sm90_tst_512x32_64x3_4x1_v_bz_TNT
+     9.956 ms  nvjet_sm90_tst_256x32_64x5_4x1_v_bz_splitK_TNT
+     3.998 ms  nvjet_sm90_tst_128x32_64x10_4x1_v_bz_TNT
+     3.285 ms  nvjet_sm90_tst_64x32_64x16_4x1_v_bz_TNT
+     1.997 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.824 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+bf16 profile, batch 64: 84.81 ms a step, GPU busy 49.56 ms a step after the prompt (1291 tokens/s of GPU time), 88.06 ms for the prompt and a token
+    19.689 ms  nvjet_sm90_tst_512x64_64x2_4x1_v_bz_coopB_TNN
+     9.775 ms  nvjet_sm90_tst_144x64_64x8_4x1_v_bz_splitK_TNN
+     4.203 ms  nvjet_sm90_tst_112x64_64x9_4x1_v_bz_TNN
+     3.553 ms  nvjet_sm90_tst_64x64_64x13_4x1_v_bz_TNT
+     2.083 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     2.028 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo

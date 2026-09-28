@@ -179,17 +179,17 @@ exponents in local memory, since fixed: same bytes, same answers.)
 
 `mma_gemm_wg` (the 12-bit layout, Hopper) takes steps of 17 to 128
 tokens. One lane of a warp of its own hands the copy engine (TMA) a
-stage at a time: 64 columns of 256 of W's rows (128 past 64 tokens),
-their compressed steps as bulk copies of 6 KB, their exceptions, and X's
-tile through a tensor map in wgmma's 128-byte swizzle, into a ring of 4
-to 8 stages in shared memory, each landing on an mbarrier. Each consumer
-warpgroup decodes its 64 rows straight into wgmma's A registers, as
-Machete does with 4-bit weights, and multiplies with X read from shared
-memory. The work is split evenly over the SMs (stream-K); rows shared
-by blocks are summed by the last to finish, in a fixed order: the same
-result every run. Qwen3-32B's matrices on an H100 SXM, GPU time in us (bf16
-through cuBLAS / `mma_gemm` / `mma_gemm_wg`; at 128 tokens the middle
-column is the matrix decoded for cuBLAS):
+stage at a time: 64 columns of 128 of W's rows, their compressed steps
+as bulk copies of 6 KB, their exceptions, and X's tile through a tensor
+map in wgmma's 128-byte swizzle, into a ring of 4 to 8 stages in shared
+memory, each landing on an mbarrier. Each consumer warpgroup decodes its
+64 rows straight into wgmma's A registers, as Machete does with 4-bit
+weights, and multiplies with X read from shared memory. The work is
+split evenly over the SMs (stream-K); rows shared by blocks are summed
+by the last to finish, in a fixed order: the same result every run.
+Qwen3-32B's matrices on an H100 SXM, GPU time in us (bf16 through cuBLAS
+/ `mma_gemm` / `mma_gemm_wg`; at 128 tokens the middle column is the
+matrix decoded for cuBLAS):
 
 | Tokens | 1 | 16 | 32 | 64 | 128 |
 | :--- | ---: | ---: | ---: | ---: | ---: |
@@ -217,6 +217,47 @@ Perplexity through it (64-token windows): 17.0065 against bf16's
 overlapped with the kernel before it, a cheaper sum of shared rows) and
 prompts. `python glyd_gpu.py` checks `mma_gemm_wg` on a Hopper GPU
 (benchmarks/gpu/h100-tma-2026-09-26).
+
+On an H100 PCIe (2026-09-28) four things held it back, found by
+profiling a model's step kernel by kernel and the kernel stage by stage:
+
+- A stage's exceptions were set by every lane for every entry, and a few
+  layers' matrices have dozens a stage (Qwen3-8B's gate and up in layers
+  1-3: up to 85, 0.4% of their weights): those products took 421-577 us
+  against the other layers' 102. The lanes now take a stage's entries 32
+  at a time, each setting one byte in its warp's scratch (`mma_gemm_mid`
+  too); outputs bit for bit as before.
+- ptxas serialized every wgmma (its C7513): a pair of stages' second one
+  was skipped inside the loop, so a path ran a set of A registers into
+  its products while earlier ones read it. The stages now run in pairs
+  and an odd one after them. With four consumer warpgroups and the TMA
+  warp a thread had 96 registers (spills and C7512): two warpgroups now,
+  a unit of 128 rows, at every token count, and a unit's sums added in
+  place (a copy of them had held 64 more registers at 128 tokens).
+- Tiles of 96 and 112 tokens as well as 128 (X's tile a stage, beside
+  W's 12 KB, is the most read past 64 tokens).
+- A matrix of few units and short blocks (Qwen3-8B's o, 4096 x 4096)
+  takes a whole number of blocks a unit, summed over as few parts.
+
+GPU time a step (`e2e.py --format auto --fused --merge --profile`,
+bf16's from the same GPU):
+
+| H100 PCIe, GPU time a step | 1 | 8 | 32 | 64 sequences |
+| :--- | ---: | ---: | ---: | ---: |
+| Qwen3-8B, bf16 | 12.30 | 13.34 | 14.57 | 15.66 ms |
+| Qwen3-8B, `mma12`, before | 11.24 | 12.45 | 15.55 | 17.57 ms |
+| Qwen3-8B, `mma12` | **11.26** | **12.46** | **13.55** | **14.86 ms** |
+| Qwen3-32B, bf16 | 42.44 | 44.40 | 47.10 | 49.56 ms |
+| Qwen3-32B, `mma12`, before | 34.75 | 37.48 | 44.97 | 49.84 ms |
+| Qwen3-32B, `mma12` | **34.76** | **37.53** | **40.65** | **43.90 ms** |
+
+A layer's products against cuBLAS's (weights read from memory, as a
+model's step reads them), 32 / 64 / 96 / 128 tokens: Qwen3-8B 0.84x /
+0.86x / 0.95x / 1.01x (were 0.92x / 1.00x / 1.20x / 1.20x), Qwen3-32B
+0.77x / 0.84x / 0.91x / 1.04x; the output layer (151936 x 4096) 0.78x
+at 32 and 0.93x at 64. Still longer than cuBLAS's: the small matrices
+past 32 tokens (Qwen3-8B's q, k, v 1.04x and o 1.14x at 64), and 113-128
+tokens (benchmarks/gpu/h100-hopper-2026-09-28).
 
 ### Which layout on which GPU
 
@@ -403,7 +444,8 @@ plain cache's 2.9950 / 4.3130 / 2.4809, the next token the plain cache's
 Needs PyTorch with CUDA, and nvcc (the extension builds on first import)
 or the prebuilt library: `bash build_lib.sh` builds libglyd_gpu_cuda13.so
 (the kernels behind a C API, the CUDA runtime linked in; code for sm_80,
-sm_86, sm_89 and sm_90a, PTX for the GPUs after them) next to
+sm_86, sm_89, sm_90a, sm_100 and sm_120, PTX for the GPUs after them; the
+Hopper kernel, wgmma's, in the sm_90a code alone) next to
 glyd_gpu.py, which then uses it through ctypes instead of building;
 GLYD_GPU_LIB names another. The Python side is the glyd package's
 (bindings/python/glyd/gpu: kernels.py, _lib.py over the library, and

@@ -1,0 +1,15 @@
+NVIDIA H100 PCIe (9, 0) layer 12
+lm_head 151936x4096 (1 copies bf16, 1 packed)
+  M=   1  cuBLAS   677.9  mma12   500.4   best mma12 0.74x
+  M=   8  cuBLAS   688.1  mma12   517.8   best mma12 0.75x
+  M=  16  cuBLAS   694.6  mma12   529.2   best mma12 0.76x
+  M=  32  cuBLAS   700.8  mma12   709.3  wg   544.1   best wg 0.78x
+  M=  48  cuBLAS   709.3  mma12   852.2  wg   603.3   best wg 0.85x
+  M=  64  cuBLAS   708.6  mma12   933.2  wg   657.5   best wg 0.93x
+layer total (us):
+  M=   1  cuBLAS   677.9  mma12   500.4  glyd   500.4  best   500.4 0.74x  glyd 0.74x
+  M=   8  cuBLAS   688.1  mma12   517.8  glyd   517.8  best   517.8 0.75x  glyd 0.75x
+  M=  16  cuBLAS   694.6  mma12   529.2  glyd   529.2  best   529.2 0.76x  glyd 0.76x
+  M=  32  cuBLAS   700.8  mma12   709.3  wg   544.1  glyd   544.1  best   544.1 0.78x  glyd 0.78x
+  M=  48  cuBLAS   709.3  mma12   852.2  wg   603.3  glyd   603.3  best   603.3 0.85x  glyd 0.85x
+  M=  64  cuBLAS   708.6  mma12   933.2  wg   657.5  glyd   657.5  best   657.5 0.93x  glyd 0.93x
