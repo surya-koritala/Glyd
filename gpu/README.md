@@ -773,8 +773,9 @@ bindgen over the header, or its declarations written out).
 Every release carries it on its own for Linux x86_64 and aarch64 (glibc 2.28
 or later), CUDA 12 (built with 12.8) and 13:
 `glyd-gpu-TAG-linux-ARCH-cudaN.tar.gz`, holding the library, glyd_gpu.h,
-this directory's LICENSE and a README ([README-lib.md](README-lib.md)), each
-with its `.sha256`.
+examples/unpack.c, this directory's LICENSE and a README
+([README-lib.md](README-lib.md), with the example's build line for that
+download's library), each with its `.sha256`.
 
 [examples/unpack.c](examples/unpack.c), C and the C API alone: a matrix of a
 model saved by `glyd.save_pretrained` (glyd-v1: the packs' buffers in

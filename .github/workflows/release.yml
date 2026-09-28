@@ -2,10 +2,10 @@ name: Release
 
 # On a version tag: build the CLIs, the shared libraries, the GPU kernels'
 # libraries (in the wheels, and each as a tarball of its own with its C
-# header) and the Python wheels for Linux (x86_64, aarch64: glibc 2.28,
-# manylinux_2_28) and macOS (arm64), attach them to the GitHub release,
-# and publish them: to PyPI by trusted publishing (pypi.org trusts this
-# workflow in the `pypi` environment, no token), to crates.io when the
+# header and example) and the Python wheels for Linux (x86_64, aarch64:
+# glibc 2.28, manylinux_2_28) and macOS (arm64), attach them to the GitHub
+# release, and publish them: to PyPI by trusted publishing (pypi.org trusts
+# this workflow in the `pypi` environment, no token), to crates.io when the
 # CARGO_REGISTRY_TOKEN secret is set. Run by hand without a tag
 # (gh workflow run release.yml --ref BRANCH): the same builds and checks,
 # kept as the run's artifacts only; no release, no tag, no publishing.
@@ -63,15 +63,16 @@ jobs:
         with:
           name: gpu-lib-${{ matrix.name }}-cuda${{ matrix.cuda }}
           path: lib/*.so
-      - name: Package (the library on its own, with its header, license and README)
+      - name: Package (the library on its own, with its header, example, license and README)
         run: |
           set -e
           CUDA="${{ matrix.cuda }}"
           DIR="glyd-gpu-${{ github.event.inputs.tag || github.ref_name }}-${{ matrix.name }}-cuda${CUDA%%.*}"
           mkdir -p "$DIR"
-          cp "lib/libglyd_gpu_cuda${CUDA%%.*}.so" gpu/glyd_gpu.h "$DIR/"
+          cp "lib/libglyd_gpu_cuda${CUDA%%.*}.so" gpu/glyd_gpu.h gpu/examples/unpack.c "$DIR/"
           cp gpu/LICENSE "$DIR/LICENSE"
-          cp gpu/README-lib.md "$DIR/README.md"
+          # the README's lines name this download's library (cudaN: its CUDA major version)
+          sed "s/cudaN/cuda${CUDA%%.*}/g" gpu/README-lib.md > "$DIR/README.md"
           tar -czf "$DIR.tar.gz" "$DIR"
           sha256sum "$DIR.tar.gz" > "$DIR.tar.gz.sha256"
           tar -tvzf "$DIR.tar.gz" && cat "$DIR.tar.gz.sha256"

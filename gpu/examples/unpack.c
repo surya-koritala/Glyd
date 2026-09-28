@@ -9,9 +9,9 @@
  * (model.safetensors, or shards and model.safetensors.index.json); PACK: a
  * pack's name in glyd.json (default: the first). A pack of merged Linears
  * (q, k, v; gate, up) is checked tensor by tensor. Built with the library's
- * release files in LIB (libglyd_gpu_cuda13.so and glyd_gpu.h; or gpu/ and the
- * library built there) and the CUDA toolkit's headers and runtime in CUDA
- * (/usr/local/cuda):
+ * release files in LIB (a glyd-gpu download, this file among them: its README
+ * has the line for it; or gpu/ and the library built there) and the CUDA
+ * toolkit's headers and runtime in CUDA (/usr/local/cuda):
  *
  *   gcc -O2 -I LIB -I CUDA/include unpack.c -o unpack \
  *       -L LIB -lglyd_gpu_cuda13 -L CUDA/lib64 -lcudart -Wl,-rpath,LIB:CUDA/lib64
