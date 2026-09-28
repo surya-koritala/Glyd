@@ -86,8 +86,8 @@ class _Weight:
 
     @classmethod
     def __torch_function__(cls, func, types, args=(), kwargs=None):
-        f = lambda a: a.tensor() if isinstance(a, cls) else a
-        return func(*map(f, args), **{k: f(v) for k, v in (kwargs or {}).items()})
+        args, kwargs = torch.utils._pytree.tree_map(lambda a: a.tensor() if isinstance(a, cls) else a, (args, kwargs or {}))  # (nested: torch.cat's list)
+        return func(*args, **kwargs)
 
 
 class GLinear(_Node, nn.Module):

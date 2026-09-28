@@ -407,6 +407,28 @@ print("ok")
     assert r.stdout.strip().endswith("ok"), r.stderr[-3000:]
 
 
+def test_packed_weight_view():
+    """A packed Linear's and embedding's .weight as a model's own code reads it: its dtype, device and shape; rows by
+    index; a torch function on the matrix decoded, its arguments nested too (torch.cat's list)."""
+    torch = cuda()
+    if torch is None:
+        print("test_packed_weight_view: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    import torch.nn as nn
+    import glyd.gpu as gg
+
+    torch.manual_seed(0)
+    with torch.device("cuda"):
+        m = nn.Sequential(nn.Embedding(256, 128), nn.Linear(128, 64)).to(torch.bfloat16)
+    e, w = m[0].weight.detach().clone(), m[1].weight.detach().clone()
+    emb, lin = gg.compress(m)
+    assert (lin.weight.dtype, lin.weight.shape, lin.weight.device) == (torch.bfloat16, w.shape, w.device) and not lin.weight.requires_grad
+    assert torch.equal(torch.cat([lin.weight, lin.weight]), torch.cat([w, w])) and torch.equal(lin.weight.float(), w.float())
+    x = torch.randn(3, 128, device="cuda", dtype=torch.bfloat16)
+    assert torch.equal(nn.functional.linear(x, lin.weight), nn.functional.linear(x, w))
+    assert torch.equal(emb.weight[3, :], e[3]) and torch.equal(emb.weight[-1], e[-1]) and torch.equal(emb.weight[torch.tensor([1, 5], device="cuda")], e[[1, 5]])
+
+
 def test_cli_pack_and_verify():
     """python -m glyd.gpu pack, verify and fit on a tiny mixture of experts (Qwen3-MoE's): fit counts its experts'
     bytes, and refuses the glyd-v1 checkpoint (fit the source)."""
