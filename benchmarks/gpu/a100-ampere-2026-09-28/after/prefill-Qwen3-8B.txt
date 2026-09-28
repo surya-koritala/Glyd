@@ -1,0 +1,11 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 5092.76it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 23.4 tokens/s (23.4 a sequence), peak VRAM 16.40 GB
+bf16 prefill: 128 tokens 41.0 ms (3119 tokens/s), first token 44.7 ms, 256 tokens 41.1 ms (6229 tokens/s), first token 44.3 ms, 512 tokens 48.4 ms (10582 tokens/s), first token 51.8 ms, 640 tokens 59.6 ms (10732 tokens/s), first token 63.0 ms, 768 tokens 67.9 ms (11307 tokens/s), first token 71.2 ms, 1024 tokens 90.1 ms (11370 tokens/s), first token 93.2 ms, 2048 tokens 174.3 ms (11748 tokens/s), first token 177.2 ms, 4096 tokens 347.9 ms (11773 tokens/s), first token 351.1 ms
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.55 GB on 1 GPU
+glyd mma12 fused: batch 1: 25.2 tokens/s (25.2 a sequence), peak VRAM 12.56 GB
+glyd mma12 prefill: 128 tokens 40.9 ms (3132 tokens/s), first token 44.0 ms, 256 tokens 45.5 ms (5622 tokens/s), first token 48.9 ms, 512 tokens 64.5 ms (7935 tokens/s), first token 68.1 ms, 640 tokens 84.0 ms (7616 tokens/s), first token 87.5 ms, 768 tokens 89.9 ms (8543 tokens/s), first token 93.3 ms, 1024 tokens 112.0 ms (9145 tokens/s), first token 115.3 ms, 2048 tokens 195.7 ms (10463 tokens/s), first token 199.1 ms, 4096 tokens 368.2 ms (11126 tokens/s), first token 373.3 ms
+logits bit-identical: False
+generated tokens identical to bf16: 8 of 8
+text:  with the invention of the telegraph in

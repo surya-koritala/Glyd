@@ -1,0 +1,58 @@
+Loading weights:   0%|          | 0/443 [00:00<?, ?it/s]Loading weights: 100%|██████████| 443/443 [00:00<00:00, 5309.66it/s]
+USDT:2026-09-28 03:21:01 13764:13764 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:21:01 13764:13764 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:21:01 13764:13764 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:21:02 13764:13764 SyncActivityProfilerHandler.cpp:46] profiler_stop
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-28 03:21:08 13764:13764 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:21:08 13764:13764 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:21:08 13764:13764 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:21:09 13764:13764 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:21:15 13764:13764 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:21:15 13764:13764 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:21:15 13764:13764 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:21:16 13764:13764 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:21:21 13764:13764 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:21:21 13764:13764 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:21:22 13764:13764 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:21:23 13764:13764 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:21:28 13764:13764 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:21:28 13764:13764 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:21:29 13764:13764 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:21:30 13764:13764 SyncActivityProfilerHandler.cpp:46] profiler_stop
+merged: 80 groups
+bf16 profile, batch 1: 61.56 ms a step, GPU busy 26.76 ms a step after the prompt (37 tokens/s of GPU time), 31.45 ms for the prompt and a token
+    11.270 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn
+     7.029 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn
+     2.395 ms  ampere_bf16_s16816gemm_bf16_128x64_sliced1x2_ldg8_f2f_stages_64x6_tn
+     0.837 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.709 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+     0.637 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+bf16 profile, batch 8: 62.78 ms a step, GPU busy 28.92 ms a step after the prompt (277 tokens/s of GPU time), 35.02 ms for the prompt and a token
+    11.228 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x5_tn
+     5.440 ms  ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x3_tn
+     2.522 ms  ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn
+     1.861 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn
+     1.492 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.125 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+bf16 profile, batch 32: 62.15 ms a step, GPU busy 32.89 ms a step after the prompt (973 tokens/s of GPU time), 45.77 ms for the prompt and a token
+    20.520 ms  ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn
+     3.010 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn
+     1.635 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.586 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.863 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.686 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, false, false
+bf16 profile, batch 64: 62.15 ms a step, GPU busy 36.01 ms a step after the prompt (1777 tokens/s of GPU time), 67.73 ms for the prompt and a token
+    13.471 ms  ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_tn
+     6.982 ms  ampere_bf16_s16816gemm_bf16_256x64_ldg8_f2f_stages_64x3_tn
+     2.808 ms  ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn
+     2.217 ms  ampere_bf16_s16816gemm_bf16_64x64_sliced1x2_ldg8_f2f_stages_64x6_tn
+     1.761 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.659 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+bf16 profile, batch 128: 68.99 ms a step, GPU busy 41.15 ms a step after the prompt (3110 tokens/s of GPU time), 120.75 ms for the prompt and a token
+    25.396 ms  ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_64x3_tn
+     2.687 ms  ampere_bf16_s16816gemm_bf16_128x128_ldg8_f2f_stages_64x3_tn
+     2.131 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.789 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, false, false
+     1.693 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.459 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa

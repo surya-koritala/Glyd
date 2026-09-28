@@ -1,0 +1,71 @@
+NVIDIA A100-SXM4-40GB (8, 0) layer 20
+qkv 7168x5120 (3 copies bf16, 4 packed)
+  M=   1  cuBLAS     59.0  mma12     49.3  mid     54.3   best mma12 0.83x
+  M=   8  cuBLAS     64.2  mma12     52.2  mid     54.1   best mma12 0.81x
+  M=  16  cuBLAS     61.8  mma12     55.8  mid     54.5   best mid 0.88x
+  M=  17  cuBLAS     70.6  mma12     61.8  mid     54.5  big     83.9  dec    195.8   best mid 0.77x
+  M=  24  cuBLAS     71.3  mma12     63.5  mid     54.8  big     85.0  dec    196.4   best mid 0.77x
+  M=  32  cuBLAS     71.8  mma12     66.7  mid     55.2  big     87.1  dec    197.8   best mid 0.77x
+  M=  48  cuBLAS     63.1  mma12     81.0  mid     62.4  big     89.5  dec    188.8   best mid 0.99x
+  M=  64  cuBLAS     63.9  mma12     88.0  mid     62.6  big     92.5  dec    189.2   best mid 0.98x
+  M=  65  cuBLAS     80.0  mid    117.2  big     92.8  dec    204.5   best big 1.16x
+  M=  80  cuBLAS     82.0  mid    117.5  big     95.7  dec    206.9   best big 1.17x
+  M=  96  cuBLAS    103.3  mid    118.2  big     98.8  dec    228.1   best big 0.96x
+  M= 112  cuBLAS     81.0  mid    124.7  big    102.6  dec    205.2   best big 1.27x
+  M= 128  cuBLAS     82.7  mid    125.5  big    105.8  dec    208.1   best big 1.28x
+o 5120x5120 (4 copies bf16, 6 packed)
+  M=   1  cuBLAS     46.3  mma12     38.1  mid     40.6   best mma12 0.82x
+  M=   8  cuBLAS     42.6  mma12     40.3  mid     40.6   best mma12 0.94x
+  M=  16  cuBLAS     42.9  mma12     42.5  mid     40.8   best mid 0.95x
+  M=  17  cuBLAS     50.4  mma12     48.4  mid     40.9  big     57.5  dec    141.1   best mid 0.81x
+  M=  24  cuBLAS     51.1  mma12     49.9  mid     41.1  big     58.0  dec    141.1   best mid 0.80x
+  M=  32  cuBLAS     51.7  mma12     53.0  mid     41.3  big     59.1  dec    141.8   best mid 0.80x
+  M=  48  cuBLAS     43.8  mma12     65.8  mid     46.9  big     61.4  dec    136.7   best mid 1.07x
+  M=  64  cuBLAS     44.5  mma12     71.1  mid     47.3  big     63.0  dec    137.0   best mid 1.06x
+  M=  65  cuBLAS     57.3  mid     88.1  big     63.3  dec    151.0   best big 1.10x
+  M=  80  cuBLAS     57.7  mid     88.3  big     65.1  dec    151.8   best big 1.13x
+  M=  96  cuBLAS     59.1  mid     88.9  big     67.6  dec    151.8   best big 1.14x
+  M= 112  cuBLAS     60.4  mid     94.0  big     69.8  dec    151.9   best big 1.16x
+  M= 128  cuBLAS     61.1  mid     94.5  big     72.1  dec    152.8   best big 1.18x
+gate_up 34816x5120 (1 copies bf16, 1 packed)
+  M=   1  cuBLAS    290.4  mma12    200.9  mid    224.3   best mma12 0.69x
+  M=   8  cuBLAS    266.5  mma12    206.6  mid    224.3   best mma12 0.78x
+  M=  16  cuBLAS    270.4  mma12    212.4  mid    224.8   best mma12 0.79x
+  M=  17  cuBLAS    291.6  mma12    244.8  mid    225.2  big    337.3  dec    828.8   best mid 0.77x
+  M=  24  cuBLAS    292.8  mma12    249.4  mid    225.6  big    342.1  dec    829.8   best mid 0.77x
+  M=  32  cuBLAS    294.0  mma12    256.3  mid    227.3  big    348.7  dec    831.1   best mid 0.77x
+  M=  48  cuBLAS    343.1  mma12    304.0  mid    253.5  big    363.6  dec    886.1   best mid 0.74x
+  M=  64  cuBLAS    343.4  mma12    322.2  mid    254.2  big    372.8  dec    887.0   best mid 0.74x
+  M=  65  cuBLAS    343.7  mid    479.4  big    376.1  dec    886.6   best big 1.09x
+  M=  80  cuBLAS    344.3  mid    480.2  big    387.5  dec    887.9   best big 1.13x
+  M=  96  cuBLAS    345.6  mid    482.7  big    399.7  dec    888.1   best big 1.16x
+  M= 112  cuBLAS    348.0  mid    514.8  big    412.7  dec    888.2   best big 1.19x
+  M= 128  cuBLAS    348.1  mid    514.3  big    425.1  dec    888.9   best big 1.22x
+down 5120x17408 (2 copies bf16, 2 packed)
+  M=   1  cuBLAS    145.9  mma12    105.7  mid    114.5   best mma12 0.72x
+  M=   8  cuBLAS    141.8  mma12    108.1  mid    114.3   best mma12 0.76x
+  M=  16  cuBLAS    143.1  mma12    111.6  mid    114.7   best mma12 0.78x
+  M=  17  cuBLAS    145.8  mma12    126.4  mid    114.8  big    168.6  dec    424.2   best mid 0.79x
+  M=  24  cuBLAS    147.4  mma12    128.7  mid    115.2  big    169.4  dec    424.7   best mid 0.78x
+  M=  32  cuBLAS    149.0  mma12    132.4  mid    115.8  big    171.1  dec    424.9   best mid 0.78x
+  M=  48  cuBLAS    151.2  mma12    154.7  mid    130.0  big    174.1  dec    427.3   best mid 0.86x
+  M=  64  cuBLAS    152.0  mma12    164.3  mid    130.3  big    176.4  dec    429.1   best mid 0.86x
+  M=  65  cuBLAS    157.8  mid    245.2  big    176.4  dec    435.6   best big 1.12x
+  M=  80  cuBLAS    159.3  mid    245.6  big    178.6  dec    435.9   best big 1.12x
+  M=  96  cuBLAS    160.8  mid    246.5  big    181.7  dec    437.6   best big 1.13x
+  M= 112  cuBLAS    167.6  mid    260.3  big    183.9  dec    446.9   best big 1.10x
+  M= 128  cuBLAS    168.9  mid    260.6  big    186.7  dec    447.4   best big 1.11x
+layer total (us):
+  M=   1  cuBLAS    541.7 (1.00)  mid    433.6 (0.80)  mma12    394.0 (0.73)  best 0.73x
+  M=   8  cuBLAS    515.1 (1.00)  mid    433.3 (0.84)  mma12    407.3 (0.79)  best 0.79x
+  M=  16  cuBLAS    518.3 (1.00)  mid    434.9 (0.84)  mma12    422.3 (0.81)  best 0.81x
+  M=  17  cuBLAS    558.5 (1.00)  big    647.3 (1.16)  dec   1590.0 (2.85)  mid    435.3 (0.78)  mma12    481.4 (0.86)  best 0.78x
+  M=  24  cuBLAS    562.5 (1.00)  big    654.5 (1.16)  dec   1592.0 (2.83)  mid    436.7 (0.78)  mma12    491.6 (0.87)  best 0.78x
+  M=  32  cuBLAS    566.5 (1.00)  big    665.9 (1.18)  dec   1595.6 (2.82)  mid    439.5 (0.78)  mma12    508.4 (0.90)  best 0.78x
+  M=  48  cuBLAS    601.2 (1.00)  big    688.6 (1.15)  dec   1638.9 (2.73)  mid    492.8 (0.82)  mma12    605.5 (1.01)  best 0.82x
+  M=  64  cuBLAS    603.8 (1.00)  big    704.7 (1.17)  dec   1642.3 (2.72)  mid    494.4 (0.82)  mma12    645.7 (1.07)  best 0.82x
+  M=  65  cuBLAS    638.7 (1.00)  big    708.5 (1.11)  dec   1677.8 (2.63)  mid    929.8 (1.46)  best 1.11x
+  M=  80  cuBLAS    643.3 (1.00)  big    726.9 (1.13)  dec   1682.5 (2.62)  mid    931.6 (1.45)  best 1.13x
+  M=  96  cuBLAS    668.8 (1.00)  big    747.8 (1.12)  dec   1705.6 (2.55)  mid    936.4 (1.40)  best 1.12x
+  M= 112  cuBLAS    657.1 (1.00)  big    769.0 (1.17)  dec   1692.2 (2.58)  mid    993.7 (1.51)  best 1.17x
+  M= 128  cuBLAS    660.7 (1.00)  big    789.7 (1.20)  dec   1697.2 (2.57)  mid    994.9 (1.51)  best 1.20x

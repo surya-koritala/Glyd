@@ -1,0 +1,6 @@
+name, memory.total [MiB], driver_version, clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA A100-SXM4-40GB, 40960 MiB, 580.126.20, 1410 MHz, 1215 MHz, 400.00 W
+30
+torch 2.14.0+cu130 transformers 5.17.0
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0

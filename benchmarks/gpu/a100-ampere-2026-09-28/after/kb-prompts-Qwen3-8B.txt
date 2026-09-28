@@ -1,0 +1,61 @@
+NVIDIA A100-SXM4-40GB (8, 0) layer 12
+qkv 6144x4096 (5 copies bf16, 6 packed)
+  M= 129  cuBLAS     57.0  big     85.7  big128    109.4  big256     94.4  dec    136.7   best big 1.51x
+  M= 192  cuBLAS     58.1  big     88.5  big128    109.6  big256     93.6  dec    136.5   best big 1.52x
+  M= 256  cuBLAS     59.5  big     93.0  big128    110.0  big256     92.7  dec    136.0   best big256 1.56x
+  M= 300  cuBLAS     92.2  big    166.0  big128    166.0  big256    167.2  dec    167.1   best big 1.80x
+  M= 384  cuBLAS     92.8  big    172.5  big128    172.5  big256    167.8  dec    168.8   best big256 1.81x
+  M= 512  cuBLAS    103.7  big    155.6  big128    194.4  big256    171.5  dec    177.3   best big 1.50x
+  M= 640  cuBLAS    205.1  big    268.5  big128    269.6  big256    243.8  dec    276.4   best big256 1.19x
+  M= 768  cuBLAS    204.6  big    281.2  big128    278.1  big256    247.8  dec    276.8   best big256 1.21x
+  M=1024  cuBLAS    205.4  big    315.0  big128    347.7  big256    317.2  dec    278.2   best dec 1.35x
+  M=2048  cuBLAS    414.9  big    619.5  big128    688.5  big256    644.6  dec    488.7   best dec 1.18x
+  M=4096  cuBLAS    850.6  big   1228.5  big128   1350.9  big256   1309.6  dec    907.3   best dec 1.07x
+o 4096x4096 (7 copies bf16, 9 packed)
+  M= 129  cuBLAS     38.1  big     63.7  big128     75.0  big256     69.4  dec     89.8   best big 1.67x
+  M= 192  cuBLAS     54.9  big     65.5  big128     78.2  big256     71.7  dec    104.8   best big 1.19x
+  M= 256  cuBLAS     54.5  big     68.8  big128     83.2  big256     77.2  dec    105.6   best big 1.26x
+  M= 300  cuBLAS     54.8  big     93.0  big128     93.0  big256    130.2  dec    105.8   best big128 1.70x
+  M= 384  cuBLAS     55.1  big     93.3  big128     93.4  big256    136.8  dec    107.3   best big 1.69x
+  M= 512  cuBLAS     91.1  big    138.6  big128    158.5  big256    149.6  dec    142.9   best big 1.52x
+  M= 640  cuBLAS    103.2  big    168.3  big128    168.1  big256    159.3  dec    154.6   best dec 1.50x
+  M= 768  cuBLAS    103.6  big    154.9  big128    178.5  big256    161.3  dec    155.1   best big 1.50x
+  M=1024  cuBLAS    204.5  big    275.0  big128    272.8  big256    252.5  dec    256.3   best big256 1.23x
+  M=2048  cuBLAS    307.3  big    456.0  big128    441.8  big256    409.2  dec    359.2   best dec 1.17x
+  M=4096  cuBLAS    530.5  big    783.1  big128    906.9  big256    864.9  dec    584.3   best dec 1.10x
+gate_up 24576x4096 (2 copies bf16, 2 packed)
+  M= 129  cuBLAS    211.0  big    300.4  big128    346.1  big256    326.8  dec    496.7   best big 1.42x
+  M= 192  cuBLAS    210.6  big    303.6  big128    351.9  big256    323.4  dec    498.3   best big 1.44x
+  M= 256  cuBLAS    212.0  big    313.3  big128    356.9  big256    337.3  dec    500.5   best big 1.48x
+  M= 300  cuBLAS    310.0  big    521.8  big128    514.5  big256    618.0  dec    591.3   best big128 1.66x
+  M= 384  cuBLAS    312.8  big    533.0  big128    523.5  big256    623.4  dec    595.6   best big128 1.67x
+  M= 512  cuBLAS    421.0  big    619.9  big128    688.4  big256    648.1  dec    697.8   best big 1.47x
+  M= 640  cuBLAS    537.5  big    804.7  big128    796.9  big256    868.2  dec    801.7   best big128 1.48x
+  M= 768  cuBLAS    647.7  big    920.7  big128    948.8  big256    896.5  dec    917.5   best big256 1.38x
+  M=1024  cuBLAS    848.4  big   1217.2  big128   1279.3  big256   1200.1  dec   1122.1   best dec 1.32x
+  M=2048  cuBLAS   1638.6  big   2304.2  big128   2537.2  big256   2436.2  dec   1899.9   best dec 1.16x
+  M=4096  cuBLAS   3198.8  big   4508.9  big128   5193.7  big256   5041.6  dec   3460.2   best dec 1.08x
+down 4096x12288 (3 copies bf16, 3 packed)
+  M= 129  cuBLAS    114.1  big    156.5  big128    200.7  big256    184.9  dec    270.9   best big 1.37x
+  M= 192  cuBLAS    120.8  big    155.5  big128    202.9  big256    186.8  dec    279.3   best big 1.29x
+  M= 256  cuBLAS    121.2  big    161.3  big128    207.5  big256    192.7  dec    283.0   best big 1.33x
+  M= 300  cuBLAS    161.4  big    300.4  big128    300.5  big256    330.1  dec    317.3   best big 1.86x
+  M= 384  cuBLAS    161.7  big    300.9  big128    300.8  big256    339.1  dec    317.9   best big128 1.86x
+  M= 512  cuBLAS    218.6  big    333.3  big128    371.1  big256    356.5  dec    377.1   best big 1.52x
+  M= 640  cuBLAS    256.7  big    438.0  big128    429.1  big256    476.1  dec    411.0   best dec 1.60x
+  M= 768  cuBLAS    306.3  big    449.1  big128    491.4  big256    482.7  dec    455.7   best big 1.47x
+  M=1024  cuBLAS    428.0  big    704.1  big128    666.4  big256    650.5  dec    579.6   best dec 1.35x
+  M=2048  cuBLAS    816.4  big   1307.6  big128   1250.6  big256   1227.6  dec    966.3   best dec 1.18x
+  M=4096  cuBLAS   1598.6  big   2224.1  big128   2622.3  big256   2519.6  dec   1764.9   best dec 1.10x
+layer total (us):
+  M= 129  cuBLAS    420.1 (1.00)  big    606.3 (1.44)  big128    731.2 (1.74)  big256    675.6 (1.61)  dec    994.2 (2.37)  best 1.44x
+  M= 192  cuBLAS    444.4 (1.00)  big    613.0 (1.38)  big128    742.5 (1.67)  big256    675.5 (1.52)  dec   1018.9 (2.29)  best 1.38x
+  M= 256  cuBLAS    447.2 (1.00)  big    636.4 (1.42)  big128    757.6 (1.69)  big256    699.8 (1.56)  dec   1025.0 (2.29)  best 1.42x
+  M= 300  cuBLAS    618.4 (1.00)  big   1081.1 (1.75)  big128   1074.0 (1.74)  big256   1245.5 (2.01)  dec   1181.5 (1.91)  best 1.74x
+  M= 384  cuBLAS    622.4 (1.00)  big   1099.7 (1.77)  big128   1090.2 (1.75)  big256   1267.2 (2.04)  dec   1189.6 (1.91)  best 1.74x
+  M= 512  cuBLAS    834.4 (1.00)  big   1247.4 (1.49)  big128   1412.4 (1.69)  big256   1325.7 (1.59)  dec   1395.2 (1.67)  best 1.49x
+  M= 640  cuBLAS   1102.5 (1.00)  big   1679.4 (1.52)  big128   1663.8 (1.51)  big256   1747.4 (1.58)  dec   1643.8 (1.49)  best 1.46x
+  M= 768  cuBLAS   1262.2 (1.00)  big   1805.9 (1.43)  big128   1896.8 (1.50)  big256   1788.2 (1.42)  dec   1805.0 (1.43)  best 1.39x
+  M=1024  cuBLAS   1686.2 (1.00)  big   2511.3 (1.49)  big128   2566.3 (1.52)  big256   2420.2 (1.44)  dec   2236.2 (1.33)  best 1.32x
+  M=2048  cuBLAS   3177.3 (1.00)  big   4687.4 (1.48)  big128   4918.0 (1.55)  big256   4717.7 (1.48)  dec   3714.0 (1.17)  best 1.17x
+  M=4096  cuBLAS   6178.4 (1.00)  big   8744.6 (1.42)  big128  10073.7 (1.63)  big256   9735.7 (1.58)  dec   6716.6 (1.09)  best 1.09x

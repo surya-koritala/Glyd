@@ -323,6 +323,80 @@ step of Qwen3-8B at 1 / 8 / 32 / 64 sequences: 15.83 / 19.69 / 19.79 /
 15.83 / 19.47 / 21.27 / 25.96). Past 64 tokens `mma_gemm_big` runs,
 1.18-1.20x cuBLAS's time at 96 and 128.
 
+### Steps of 65-128 tokens and prompts on an A100
+
+On an A100 (SXM4 40 GB, 2026-09-28) `mma_gemm_mid` now takes steps of up
+to 128 tokens, in one launch: units of two row blocks by 96 tokens (four
+consumer warps of 48) or by 128 (eight of 32: four of 64 spill their
+sums). Its consumers take the next stage's fragments after a unit's sum
+out rather than holding them through it, which also ends the 64-token
+kernel's spill; its producers decode through `Nib`'s own code (bit for
+bit as before). A step of up to 128 tokens is one C call. A layer's
+products (q, k, v and gate, up merged; CUDA graphs, weights read from
+memory), cuBLAS on bf16 = 1.0:
+
+| Tokens | 17 | 32 | 48 | 64 | 65 | 96 | 128 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B, layer 12, before | 0.87 | 0.86 | 0.96 | 0.97 | 1.20 | 1.19 | 1.20 |
+| Qwen3-8B, layer 12 | 0.86 | 0.85 | **0.91** | **0.92** | **1.07** | **1.05** | 1.16 |
+| Qwen3-14B, layer 20, before | 0.78 | 0.78 | 0.82 | 0.82 | 1.11 | 1.12 | 1.20 |
+| Qwen3-14B, layer 20 | 0.78 | 0.78 | **0.78** | **0.78** | **0.92** | **0.90** | **1.01** |
+
+GPU time a step (`e2e.py --format auto --fused --merge --profile 16`;
+Qwen3-14B's bf16 from `bf16prof.py`, as bf16's and Glyd's copies do not
+fit 40 GB at once):
+
+| A100, GPU time a step | 1 | 8 | 32 | 64 | 128 sequences |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B, bf16 | 18.88 | 19.59 | 21.12 | 21.13 | 25.71 ms |
+| Qwen3-8B, `mma12`, before | 15.27 | 18.88 | 19.14 | 21.69 | 29.45 |
+| Qwen3-8B, `mma12` | **15.27** | **18.81** | **18.54** | **21.05** | 28.17 |
+| Qwen3-14B, bf16 | 26.76 | 28.92 | 32.89 | 36.01 | 41.15 ms |
+| Qwen3-14B, `mma12`, before | 23.10 | 25.24 | 29.24 | 32.95 | 49.23 |
+| Qwen3-14B, `mma12` | **23.11** | **25.05** | **28.70** | **31.81** | 42.41 |
+
+At 128 sequences Qwen3-8B generates 2993.6 tokens/s against bf16's
+2997.4 (was 2747.0 against 3018.1), Qwen3-14B 2594.0 against 2657.4.
+
+A prompt's products are bound by the traffic between L2 and the SMs:
+`mma_gemm_big`'s blocks of 256 tokens by 64 rows read 38 KB of it for a
+million products (X's tile for every 64 of W's rows), blocks of 256 by
+128 in bf16 (cuBLAS's shape here) 24 KB, and it took 1.57-1.60x cuBLAS's
+time at every length past 256 tokens, the ratio of the two. On an A100
+a 12-bit prompt now runs blocks of 256 tokens by 128 rows: eight
+consumer warps that load a step's fragments as they multiply it (a
+thread's 128 sums in 168 registers), four producer warps; blocks of 128
+tokens where the last block of 256 would be half empty or less (257-384
+tokens: 13-14% faster there); and past 768 tokens each matrix decoded
+for cuBLAS (2.9 ns a weight, bound by DRAM, while cuBLAS's time grows
+with the tokens). A layer's products, cuBLAS = 1.0 (Qwen3-8B /
+Qwen3-14B):
+
+| Tokens | 129 | 256 | 384 | 512 | 1024 | 2048 | 4096 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| before | 1.62 / 1.54 | 1.60 / 1.65 | 2.07 / 1.95 | 1.60 / 1.46 | 1.44 / 1.45 | 1.49 / 1.54 | 1.58 / 1.58 |
+| now | 1.44 / 1.42 | 1.42 / 1.43 | 1.77 / 1.70 | 1.49 / 1.43 | 1.33 / 1.35 | 1.17 / 1.18 | 1.09 / 1.09 |
+
+One forward pass (`e2e.py --prefill`), ms (the time to first token
+through `generate()` is 3-5 ms more, alike):
+
+| Prompt | 128 | 256 | 512 | 1024 | 2048 | 4096 tokens |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B, bf16 | 41.0 | 41.1 | 48.4 | 90.1 | 174.3 | 347.9 |
+| Qwen3-8B, `mma12`, before | 44.9 | | 68.3 | 120.7 | 237.1 | 489.2 |
+| Qwen3-8B, `mma12` | **40.9** | 45.5 | 64.5 | 112.0 | 195.7 | 368.2 |
+| Qwen3-14B, bf16 | 45.1 | 48.9 | 82.7 | 151.2 | 291.1 | 584.6 |
+| Qwen3-14B, `mma12`, before | 50.8 | | 113.1 | 207.3 | 416.6 | 855.4 |
+| Qwen3-14B, `mma12` | 45.3 | 62.9 | 111.7 | 198.6 | 347.5 | 653.7 |
+
+Still slower than bf16: prompts past 128 tokens (Qwen3-8B 6-33%,
+Qwen3-14B 12-35%), and Qwen3-8B's steps of 97-128 tokens (1.16x a
+layer). A prompt's matrices decoded ahead beside the products before
+them (as on GeForce Ada, `GLYD_AHEAD_MIN=129`) made every length slower
+on an A100, at 2, 3 or 4 warps an SM (Qwen3-8B, 2048 tokens: 214.8-274.3
+ms against the fused kernel's 237.1): not used here. Logs:
+benchmarks/gpu/a100-ampere-2026-09-28.
+
 ## Popular models
 
 `sizes.py MODEL_DIR ...` packs every Linear layer's matrix of a model in

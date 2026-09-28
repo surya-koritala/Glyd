@@ -1,0 +1,102 @@
+Loading weights:   0%|          | 0/443 [00:00<?, ?it/s]Loading weights: 100%|██████████| 443/443 [00:00<00:00, 4999.76it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-28 02:05:50 3401:3401 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 02:05:50 3401:3401 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 02:05:50 3401:3401 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 02:05:51 3401:3401 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 02:05:56 3401:3401 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 02:05:56 3401:3401 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 02:05:57 3401:3401 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 02:05:58 3401:3401 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 02:06:03 3401:3401 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 02:06:04 3401:3401 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 02:06:04 3401:3401 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 02:06:05 3401:3401 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 02:06:11 3401:3401 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 02:06:12 3401:3401 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 02:06:13 3401:3401 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 02:06:14 3401:3401 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 02:06:20 3401:3401 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 02:06:20 3401:3401 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 02:06:20 3401:3401 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 02:06:22 3401:3401 SyncActivityProfilerHandler.cpp:46] profiler_stop
+merged: 80 groups of Linears as one product each
+bf16 (weights 29.54 GB): batch 1: 22.0 tokens/s (22.0 a sequence), peak VRAM 29.56 GB
+bf16 (weights 29.54 GB): batch 8: 174.0 tokens/s (21.7 a sequence), peak VRAM 29.66 GB
+bf16 (weights 29.54 GB): batch 32: 701.5 tokens/s (21.9 a sequence), peak VRAM 30.02 GB
+bf16 (weights 29.54 GB): batch 64: 1380.2 tokens/s (21.6 a sequence), peak VRAM 30.48 GB
+bf16 (weights 29.54 GB): batch 128: 2628.2 tokens/s (20.5 a sequence), peak VRAM 31.42 GB
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 7 s; weights 22.16 GB against 29.54 GB bf16 (75.0%), scratch 0.27 GB, VRAM in use 22.44 GB on 1 GPU
+glyd mma12 fused: batch 1: 22.6 tokens/s (22.6 a sequence), peak VRAM 22.46 GB
+glyd mma12 fused: batch 8: 178.0 tokens/s (22.3 a sequence), peak VRAM 22.57 GB
+glyd mma12 fused: batch 32: 702.0 tokens/s (21.9 a sequence), peak VRAM 22.92 GB
+glyd mma12 fused: batch 64: 1375.5 tokens/s (21.5 a sequence), peak VRAM 23.39 GB
+glyd mma12 fused: batch 128: 2275.4 tokens/s (17.8 a sequence), peak VRAM 24.33 GB
+glyd mma12 profile, batch 1: 60.53 ms a step, GPU busy 23.10 ms a step after the prompt (43 tokens/s of GPU time), 25.10 ms for the prompt and a token
+    16.903 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     0.857 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.706 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+     0.663 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.478 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.406 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+glyd mma12 profile, batch 8: 60.93 ms a step, GPU busy 25.24 ms a step after the prompt (317 tokens/s of GPU time), 32.16 ms for the prompt and a token
+    17.684 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     1.489 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.127 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.715 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.533 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.434 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl<at::native::direct
+glyd mma12 profile, batch 32: 62.22 ms a step, GPU busy 29.24 ms a step after the prompt (1094 tokens/s of GPU time), 65.97 ms for the prompt and a token
+    20.359 ms  void mma12_ws_kernel<4, 4, 5, 2, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bflo
+     1.641 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.537 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.871 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.696 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, false, false
+     0.588 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+glyd mma12 profile, batch 64: 65.36 ms a step, GPU busy 32.95 ms a step after the prompt (1942 tokens/s of GPU time), 108.51 ms for the prompt and a token
+    22.740 ms  void mma12_ws_kernel<4, 4, 4, 2, 2>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bflo
+     1.725 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.662 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.070 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     1.026 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, false, false
+     0.654 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+glyd mma12 profile, batch 128: 77.67 ms a step, GPU busy 49.23 ms a step after the prompt (2600 tokens/s of GPU time), 171.37 ms for the prompt and a token
+    32.408 ms  void mma_gemm_big_kernel<Nib, 4, 4, 3, 2, false>(Nib, long, long, long, long, __nv_bfloat1
+     3.795 ms  finish_kernel(float const*, long, __nv_bfloat16 const*, long, long, __nv_bfloat16*)
+     2.144 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.810 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 64, 4, false, false
+     1.696 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.480 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+logits bit-identical: False
+generated tokens identical to bf16: 10 of 64
+text:  in the 1940s with the work of Shannon and Huffman, who laid the theoretical foundations for lossless compression. In the 1970s, Lempel and Z
+Loading weights:   0%|          | 0/443 [00:00<?, ?it/s]Loading weights: 100%|██████████| 443/443 [00:00<00:00, 5082.38it/s]
+[W928 02:06:34.388383465 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 20512768, total: 42404806656).
+[W928 02:06:34.398278009 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 20512768, total: 42404806656).
+merged: 80 groups of Linears as one product each
+Traceback (most recent call last):
+  File "/home/ubuntu/glyd/gpu/e2e.py", line 380, in <module>
+    on_gpus(model)
+  File "/home/ubuntu/glyd/gpu/e2e.py", line 269, in on_gpus
+    m.cuda()
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/transformers/modeling_utils.py", line 3645, in cuda
+    return super().cuda(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1098, in cuda
+    return self._apply(lambda t: t.cuda(device))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 933, in _apply
+    module._apply(fn)
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 933, in _apply
+    module._apply(fn)
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 933, in _apply
+    module._apply(fn)
+  [Previous line repeated 3 more times]
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 966, in _apply
+    param_applied = fn(param)
+                    ^^^^^^^^^
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1098, in <lambda>
+    return self._apply(lambda t: t.cuda(device))
+                                 ^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 340.00 MiB. GPU 0 has a total capacity of 39.49 GiB of which 239.56 MiB is free. Including non-PyTorch memory, this process has 39.25 GiB memory in use. Of the allocated memory 38.13 GiB is allocated by PyTorch, and 627.26 MiB is reserved by PyTorch but unallocated.
