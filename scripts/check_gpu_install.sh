@@ -25,14 +25,25 @@ command -v nvidia-smi >/dev/null || { step "no nvidia-smi: not a machine with an
 step "GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
 
 step "fresh venv: $WORK/venv"
-python3 -m venv "$WORK/venv"
+UV="$(command -v uv 2>/dev/null || true)"
+if [ -z "$UV" ] && [ -x "$HOME/tools/uv/uv" ]; then
+  UV="$HOME/tools/uv/uv"
+fi
+if [ -n "$UV" ]; then
+  "$UV" venv -q --python 3.12 "$WORK/venv"  # a plain venv either way; uv sidesteps a system Python with no ensurepip/venv package
+else
+  python3 -m venv "$WORK/venv"
+fi
 PY="$WORK/venv/bin/python"
-"$PY" -m pip install --quiet --upgrade pip
+pip_install() { # a uv-made venv has no pip module in it: install through uv itself, by --python, when it made the venv
+  if [ -n "$UV" ]; then "$UV" pip install -q --python "$PY" "$@"; else "$PY" -m pip install --quiet "$@"; fi
+}
+[ -n "$UV" ] || pip_install --upgrade pip
 
 step "pip install glyd[gpu]==$V from PyPI (retry: PyPI can lag the release)"
 ok=0
 for i in $(seq 1 40); do
-  "$PY" -m pip install --quiet --no-cache-dir "glyd[gpu]==$V" && { ok=1; break; }
+  pip_install "glyd[gpu]==$V" && { ok=1; break; }
   step "glyd[gpu]==$V not resolvable yet on PyPI (attempt $i/40); retrying in 30s"
   sleep 30
 done
