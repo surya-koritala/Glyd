@@ -34,10 +34,12 @@ DEC_MIN = int(os.environ.get("GLYD_DEC_MIN", 769))  # an A100's prompts of this 
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 512))
 MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 (an A100's to 128) by mma_gemm_mid
 # A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). On
-# GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, from 1024 in the 12-bit one where
-# its fused kernel takes the prompt (the faster to there: Qwen3-4B-Instruct-2507's 768 tokens 76.3 ms fused, 77.5
-# decoded ahead; 1024 tokens 100.6 and 99.3), else past 640 (exact, or not fused: each matrix decoded first); elsewhere, until measured, the fused kernel or the decode as before (the L4, L40S and RTX
-# 6000 Ada sum in fp32 at twice the rate: a product's time decodes half as much beside it).
+# GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, from 2048 in the 12-bit one where
+# its fused kernel takes the prompt (as fast or faster to there, its consumers of half a row block: a pass of
+# Qwen3-4B-Instruct-2507 at 1024-1792 tokens 0.5-2.4% faster at four lengths of seven, within 0.5% at the others,
+# Qwen3-1.7B's 2.5-7.4% faster at six, 3% slower at 1280; at 2048 Qwen3-4B's 3.3% slower), else past 640 (exact, or not fused: each matrix
+# decoded first); elsewhere, until measured, the fused kernel or the decode as before (the L4, L40S and RTX 6000 Ada
+# sum in fp32 at twice the rate: a product's time decodes half as much beside it).
 AHEAD_MIN = int(os.environ.get("GLYD_AHEAD_MIN", 0)) or None
 AHEAD_WARPS = int(os.environ.get("GLYD_AHEAD_WARPS", 0))  # a decode ahead's warps an SM (0: 3 tiered, 2 12-bit), few enough to sit beside a cuBLAS block
 AHEAD_RATE = float(os.environ.get("GLYD_AHEAD_RATE", 2.2e-3))  # weights decoded ahead beside a product, for each of its weights and tokens
@@ -316,7 +318,7 @@ class GLinear(_Node, nn.Module):
     DEC_MIN; one-token steps in the others); else the matrix decoded into
     the scratch buffer, then
     PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, from
-    1024 12-bit fused and past 640 not, decoded ahead of its product where
+    2048 12-bit fused and past 640 not, decoded ahead of its product where
     Ahead takes it). exact: every
     product the matrix decoded whole, then F.linear on the input as it came,
     as nn.Linear does: its outputs bit for bit (over fused). gemm_max: the
@@ -339,7 +341,7 @@ class GLinear(_Node, nn.Module):
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
         self.mid = cc in ((8, 0), (8, 6), (8, 7), (8, 9))  # (an A100 its own kernel: producer and consumer warps)
         ada = cc == (8, 9) and "GeForce" in torch.cuda.get_device_name(p.sm.device)
-        twelve = 1024 if fused and not exact else 641
+        twelve = 2048 if fused and not exact else 641
         self.ahead = AHEAD_MIN or ((twelve if isinstance(p, g.Mma12) else 513) if ada else 1 << 62)  # prompts decoded ahead, then cuBLAS
         self._node()
 
