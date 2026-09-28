@@ -19,6 +19,7 @@ glyd::embedding), run as eager, and CUDA graphs capture its kernels.
 """
 import copy
 import functools
+import gc
 import hashlib
 import itertools
 import os
@@ -729,25 +730,21 @@ def fast_generate(model):
     leaves the cache and the search to the model (none of _OWN, one beam,
     the cache used) and its static cache is short: it holds every position
     the call may reach from its first step (transformers keeps it as long
-    as the longest call's), each step reads all of it, so COMPILE_MAX
-    positions in all at most, and half the memory the GPU has free; every
-    other call as transformers runs it. The prompt runs eager either way
-    (transformers compiles the steps after it). A forward that does not
-    compile runs eager from there on, with one warning. Its class's generate
-    and get_compiled_call taken over once (_taken), the model marked
-    (glyd_fast): nothing of the model's refers to it. Not with
-    GLYD_COMPILE=0, nor for a family transformers does not compile whole
-    (_can_compile_fullgraph: MiniMax's own cache, DBRX's experts ...), nor
-    a model over several GPUs (not measured there). The model."""
+    as the longest call's) and each step reads all of it, so COMPILE_MAX
+    positions in all at most; every other call as transformers runs it. The
+    prompt runs eager either way (transformers compiles the steps after
+    it). A forward that does not compile runs eager from there on, with one
+    warning. Its class's generate and get_compiled_call taken over once
+    (_taken), the model marked (glyd_fast). Not with GLYD_COMPILE=0, nor for
+    a family transformers does not compile whole (_can_compile_fullgraph:
+    MiniMax's own cache, DBRX's experts ...), nor a model over several GPUs
+    (not measured there). The model."""
     if os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate") or not getattr(model, "_can_compile_fullgraph", False):
         return model
     devices = {m.p.sm.device for m in model.modules() if isinstance(m, (GLinear, GEmbedding))} | {t.device for t in model.parameters() if t.is_cuda}
     if len(devices) != 1:
         return model
-    c = model.config.get_text_config(decoder=True)
-    heads = getattr(c, "num_key_value_heads", None) or getattr(c, "num_attention_heads", 0)
-    dim = getattr(c, "head_dim", None) or getattr(c, "hidden_size", 0) // max(1, getattr(c, "num_attention_heads", 1))
-    model.glyd_fast = (4 * getattr(c, "num_hidden_layers", 0) * heads * dim, devices.pop())  # a position's K and V (bf16) in all layers; the GPU
+    model.glyd_fast = True
     cls = type(model)
     for name, fast in (("generate", _generate), ("get_compiled_call", _compiled_call)):
         own = getattr(cls, name)  # (read once: two threads taking it over at once wrap the class's own, the last one kept)
@@ -774,11 +771,9 @@ def _generate(self, own, *args, **kwargs):
     get = lambda k: kwargs[k] if k in kwargs else getattr(cfg, k, None)
     x = args[0] if args else next((kwargs[k] for k in ("inputs", "input_ids", "inputs_embeds") if kwargs.get(k) is not None), None)
     if len(args) < 2 and isinstance(x, torch.Tensor) and x.dim() > 1 and not self.__dict__.get("glyd_eager") and not any(get(k) for k in _OWN) and get("use_cache") is not False and (get("num_beams") or 1) == 1:
-        kv, d = self.glyd_fast
         n = get("max_new_tokens")
         n = max(x.shape[1] + (n if n is not None else get("max_length") or 20), getattr(self, "_previous_max_cache_length", 0))  # the cache's positions
-        b = x.shape[0] * (get("num_return_sequences") or 1)
-        if b * n <= COMPILE_MAX and b * n * kv <= (torch.cuda.mem_get_info(d)[0] + torch.cuda.memory_reserved(d) - torch.cuda.memory_allocated(d)) // 2:
+        if x.shape[0] * (get("num_return_sequences") or 1) * n <= COMPILE_MAX:
             if "generation_config" in kwargs:
                 kwargs["generation_config"] = copy.deepcopy(cfg)
                 kwargs["generation_config"].cache_implementation = "static"
@@ -788,12 +783,26 @@ def _generate(self, own, *args, **kwargs):
 
 
 def _compiled_call(self, own, compile_config=None):
-    """fast_generate's get_compiled_call (what transformers' decoding steps call): the compiled forward, or, once it
-    fails to compile (torch._dynamo's or Inductor's error), a warning and the eager forward from there on."""
+    """fast_generate's get_compiled_call (what transformers' decoding steps call): the forward compiled where
+    transformers compiles it, as it does (torch.compile, compile_config or its default) but unbound, called with the
+    model (glyd_compiled: the model's, not referring to it; transformers' own, model.__call__ compiled and kept as
+    model._compiled_call, keeps the model until a garbage collection), and garbage collected after a call that
+    compiled (torch._dynamo's tracing leaves the model's modules in cycles): a model let go of is freed at del, as an
+    eager one. Once it fails to compile (torch._dynamo's or Inductor's error), a warning and the forward eager from
+    there on."""
+    from torch._dynamo.utils import counters
+
     f = own(self, compile_config)
+    if self.__dict__.pop("_compiled_call", None) is not None:  # (not Llama 4's, which transformers runs eager)
+        cfg = compile_config or self._default_compile_config()
+        c = self.__dict__.get("glyd_compiled")
+        if c is None or c[0] != cfg:
+            c = self.glyd_compiled = (cfg, torch.compile(type(self).__call__, **cfg.to_dict()))
+        f = functools.partial(c[1], self)
 
     def call(*args, **kwargs):
         if not self.__dict__.get("glyd_eager"):
+            graphs = counters["stats"]["unique_graphs"]
             try:
                 return f(*args, **kwargs)
             except Exception as e:
@@ -803,6 +812,9 @@ def _compiled_call(self, own, compile_config=None):
                     raise
                 self.glyd_eager = True
                 warnings.warn(f"glyd: {type(self).__name__}'s forward did not compile ({type(e).__name__}); generate() runs it eager from here on", stacklevel=2)
+            finally:
+                if counters["stats"]["unique_graphs"] != graphs:
+                    gc.collect()
         return self(*args, **kwargs)
 
     return call

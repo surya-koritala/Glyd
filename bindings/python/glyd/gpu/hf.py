@@ -15,7 +15,6 @@ GPU holds the packed model and the weights not yet packed: the
 embedding, a group's members. A glyd-v1 checkpoint (glyd.json beside its
 safetensors, format.py) loads its packs' buffers in place of the weights.
 """
-import gc
 import os
 import torch
 import torch.nn as nn
@@ -59,7 +58,6 @@ def from_pretrained(name_or_path, *, device="cuda:0", layout="auto", exact=False
     hf_kwargs: transformers' from_pretrained's (revision, token,
       device_map, attn_implementation ...); the dtype is bf16.
     """
-    gc.collect()  # a model let go of that generated compiled freed first: transformers' compiled forward refers to it
     hub = {k: hf_kwargs[k] for k in ("revision", "token", "cache_dir", "local_files_only") if k in hf_kwargs}
     fmt.fetch_manifest(name_or_path, **hub)
     _refuse_quantized(name_or_path, dict(hub, **{k: hf_kwargs[k] for k in ("trust_remote_code",) if k in hf_kwargs}))
