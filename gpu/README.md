@@ -657,6 +657,24 @@ Measured and not taken (Qwen3-4B's layer, 12-bit):
   its tensor-core instructions some 40% of the time, and with two warps a
   scheduler the pipe idles whenever both are: 42.6% busy against cuBLAS's
   48.7%.
+- The same plan closer to Marlin's main loop (vLLM's 4-bit kernel, timed
+  beside it: 0.92-1.03x cuBLAS a Qwen3-4B layer at 256-4096 tokens,
+  0.90-1.00x Qwen3-8B's): units of 128 tokens by 256 rows, eight warps
+  of 128 tokens by 32 rows (a weight decoded once for 128 tokens), four
+  `cp.async` stages of 32 columns with the steps as packed, a sub-step's
+  fragments loaded before the stage's barrier and the next one's decoded
+  during its products, stream-K. With a third of the bytes and a
+  two-instruction decode, as Marlin's, it takes Marlin's time
+  (1.01-1.03x / 0.91-0.99x); the 12-bit layout's 1.5 bytes a weight and
+  paired bytes cost 1% more at most, its exponent table 2-4%, its
+  exceptions 3-9% (asked for at a stage's barrier, set through a warp's
+  scratch, a step's entries past 64 added after the loop): 1.08-1.12x /
+  0.99-1.06x in all, where the producer/consumer kernel takes 0.97-1.04x
+  / 0.91-1.02x. Nsight Compute, Qwen3-4B's gate,up at 1024 tokens: the
+  tensor pipe 45.5% active with Marlin's bytes (Marlin 46.0%, cuBLAS
+  46.1%), 44.6% with the exponent table, 42.8% with the exceptions; 88,
+  115 and 156 M instructions (Marlin 88, cuBLAS 58). Logs:
+  benchmarks/gpu/rtx4080s-marlin-2026-09-28.
 - W decoded a stage ahead into shared memory by all eight warps (each
   weight once a tile, a block barrier a stage): 1.22x, the barrier
   aligning every warp.
