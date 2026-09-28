@@ -330,6 +330,7 @@ class GLinear(_Node, nn.Module):
         self.block = O if exact or O * K <= SCRATCH else max(rows, SCRATCH // K // rows * rows)
         cc = torch.cuda.get_device_capability(p.sm.device)
         self.a100 = cc == (8, 0)  # its mid kernel takes steps to 128 tokens; its prompts past 768 are decoded for cuBLAS
+        self.step_max = 128  # tokens to which a step's kernel (not a prompt's) is one C call (_step)
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
         self.mid = cc in ((8, 0), (8, 6), (8, 7), (8, 9))  # (an A100 its own kernel: producer and consumer warps)
         ada = cc == (8, 9) and "GeForce" in torch.cuda.get_device_name(p.sm.device)
@@ -372,7 +373,7 @@ class GLinear(_Node, nn.Module):
             return None
         twelve = isinstance(p, g.Mma12)
         name = {g.mma_gemm: "mma12_gemm" if twelve else "mma_gemm", g.mma_gemm_mid: "mma12_gemm_mid", g.mma_gemm_wg: "mma12_gemm_wg"}
-        names = [None] + [name.get(self.kernel(M)) for M in range(1, 129)]
+        names = [None] + [name.get(self.kernel(M)) for M in range(1, self.step_max + 1)]
         while len(names) > 1 and names[-1] is None:  # past the steps' functions: a prompt's (big) or none
             names.pop()
         big = ("mma12_gemm_big" if twelve else "mma_gemm_big") if self.kernel(len(names)) is g.mma_gemm_big else None

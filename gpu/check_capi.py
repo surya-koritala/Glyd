@@ -305,7 +305,7 @@ for q in packs:
         for M in list(range(1, 65)) + [65, 100, 128, 129, 256, 300, 512, 600, 700]:
             x = torch.randn(M, 1, 1024, dtype=bf, device=dev)
             f = lin.kernel(M)
-            if f is None:  # decoded (ahead), then cuBLAS
+            if f is None or (M > lin.step_max and f is not g.mma_gemm_big):  # decoded (ahead), then cuBLAS; a step's kernel past step_max (Hopper's mma_gemm_wg to GLYD_WG_MAX): the checked call's
                 assert lin.step(x) is None, ("GLinear.step past the fused kernels", type(q).__name__, M)
                 continue
             assert exact(lin.step(x), f(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
