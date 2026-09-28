@@ -344,13 +344,15 @@ for q, lin in zip(packs, hopper):
     for M in (65, 128, 600, 2100):
         assert lin.step(torch.randn(M, 1024, dtype=bf, device=dev)) is None, ("Hopper GLinear.step, a prompt", type(q).__name__, M)
 # And on an A10 whatever this GPU is (8.6 and its name while made): a prompt decoded ahead from 640 tokens in the 12-bit
-# layout and 512 tiered, fused below (the one-call path to there); on an A10G (half-rate tensor cores) fused throughout.
+# layout and 512 tiered, fused below (the one-call path to there), but exact (as elsewhere: decoded on the current
+# stream); on an A10G (half-rate tensor cores) fused throughout.
 name_ = torch.cuda.get_device_name
 for gpu, want in (("NVIDIA A10", (512, 640)), ("NVIDIA A10G", (1 << 62, 1 << 62))):
     torch.cuda.get_device_capability = lambda device=None: (8, 6)
     torch.cuda.get_device_name = lambda device=None, gpu=gpu: gpu
     try:
         a10 = [gm.GLinear(q, None) for q in packs]
+        assert all(gm.GLinear(q, None, exact=True).ahead == 1 << 62 for q in packs), (gpu, "exact: no decode ahead")
     finally:
         torch.cuda.get_device_capability, torch.cuda.get_device_name = cc, name_
     for q, lin in zip(packs, a10):

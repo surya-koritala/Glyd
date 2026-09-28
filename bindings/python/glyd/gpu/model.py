@@ -334,7 +334,8 @@ class GLinear(_Node, nn.Module):
     the scratch buffer, then
     PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, past
     1792 12-bit fused and past 640 not, on an A10 from 512 tiered and 640
-    12-bit, decoded ahead of its product where Ahead takes it). exact: every
+    12-bit but exact, decoded ahead of its product where Ahead takes it).
+    exact: every
     product the matrix decoded whole, then F.linear on the input as it came,
     as nn.Linear does: its outputs bit for bit (over fused). gemm_max: the
     fast format's fused steps, in tokens."""
@@ -359,7 +360,7 @@ class GLinear(_Node, nn.Module):
         ada = cc == (8, 9) and "GeForce" in name
         a10 = cc == (8, 6) and re.search(r"\bA10\b", name) is not None  # (not the A10G)
         twelve = 1793 if fused and not exact else 641
-        ahead = (twelve if isinstance(p, g.Mma12) else 513) if ada else (640 if isinstance(p, g.Mma12) else 512) if a10 else 1 << 62
+        ahead = (twelve if isinstance(p, g.Mma12) else 513) if ada else (640 if isinstance(p, g.Mma12) else 512) if a10 and not exact else 1 << 62
         self.ahead = AHEAD_MIN or ahead  # prompts decoded ahead, then cuBLAS (AHEAD_MIN)
         self.dec = (DEC_MIN or (769 if self.a100 else 1 << 62)) if isinstance(p, g.Mma12) else 1 << 62  # prompts decoded, then cuBLAS
         self._node()
