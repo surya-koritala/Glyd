@@ -1,7 +1,8 @@
 name: Release
 
 # On a version tag: build the CLIs, the shared libraries, the GPU kernels'
-# libraries and the Python wheels for Linux (x86_64, aarch64: glibc 2.28,
+# libraries (in the wheels, and each as a tarball of its own with its C
+# header) and the Python wheels for Linux (x86_64, aarch64: glibc 2.28,
 # manylinux_2_28) and macOS (arm64), attach them to the GitHub release,
 # and publish them: to PyPI by trusted publishing (pypi.org trusts this
 # workflow in the `pypi` environment, no token), to crates.io when the
@@ -62,6 +63,25 @@ jobs:
         with:
           name: gpu-lib-${{ matrix.name }}-cuda${{ matrix.cuda }}
           path: lib/*.so
+      - name: Package (the library on its own, with its header, license and README)
+        run: |
+          set -e
+          CUDA="${{ matrix.cuda }}"
+          DIR="glyd-gpu-${{ github.event.inputs.tag || github.ref_name }}-${{ matrix.name }}-cuda${CUDA%%.*}"
+          mkdir -p "$DIR"
+          cp "lib/libglyd_gpu_cuda${CUDA%%.*}.so" gpu/glyd_gpu.h "$DIR/"
+          cp gpu/LICENSE "$DIR/LICENSE"
+          cp gpu/README-lib.md "$DIR/README.md"
+          tar -czf "$DIR.tar.gz" "$DIR"
+          sha256sum "$DIR.tar.gz" > "$DIR.tar.gz.sha256"
+          tar -tvzf "$DIR.tar.gz" && cat "$DIR.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          # tarballs-*: the attach job's, with the CLIs' tarballs
+          name: tarballs-gpu-${{ matrix.name }}-cuda${{ matrix.cuda }}
+          path: |
+            glyd-gpu-*.tar.gz
+            glyd-gpu-*.tar.gz.sha256
 
   build:
     needs: gpu-lib
