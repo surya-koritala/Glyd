@@ -3,7 +3,8 @@ answers, the glyd-v1 names and manifest, import glyd without torch, and the
 library's C header against the package's calls.
 Where a CUDA GPU, PyTorch and transformers are at hand (else skipped):
 every mixture-of-experts family of transformers as a tiny random model,
-packed and saved (test_moe_families), and the CLI's pack and verify on one.
+packed and saved (test_moe_families), generate() compiled where
+transformers' static cache works, and the CLI's pack and verify on one.
 
     python test_gpu.py              (or pytest test_gpu.py)
 
@@ -409,6 +410,34 @@ def test_moe_families():
             moe_family(torch, kind, over, d)
             shutil.rmtree(d)
             os.makedirs(d)
+
+
+def test_compiled_generate_where_the_static_cache_works():
+    """glyd.from_pretrained's generate() compiled (model.fast_generate) but where transformers 5.17's static cache
+    fails, which runs eager from the start (no failing first call, no warning): Llama 4, and a model with multi-head
+    latent attention whose config has fewer key/value heads than heads (DeepSeek V3's as the tiny config makes it);
+    with as many (as the released checkpoints have), and Qwen3-MoE, compiled."""
+    torch = cuda()
+    if torch is None:
+        print("test_compiled_generate_where_the_static_cache_works: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    import warnings
+    import glyd
+
+    with tempfile.TemporaryDirectory() as d:
+        for kind, kv, fast in (("deepseek_v3", 2, False), ("deepseek_v3", 4, True), ("llama4_text", None, False), ("qwen3_moe", None, True)):
+            model, auto, cfg, ids, kw = tiny_model(torch, kind, dict(FAMILIES[kind], **({"num_key_value_heads": kv} if kv else {})))
+            model.to(torch.bfloat16).save_pretrained(d)
+            del model
+            g = glyd.from_pretrained(d)
+            x = ids[:1, :8]
+            with warnings.catch_warnings(record=True) as w, torch.no_grad():
+                warnings.simplefilter("always")
+                g.generate(x, attention_mask=torch.ones_like(x), max_new_tokens=4, do_sample=False, pad_token_id=0)
+            said = [str(m.message) for m in w if "glyd" in str(m.message)]
+            assert ("glyd_fast" in g.__dict__, "glyd_compiled" in g.__dict__, said) == (fast, fast, []), (kind, kv, said)
+            del g
+            torch._dynamo.reset()
 
 
 def test_hooks_put_before_the_packs():

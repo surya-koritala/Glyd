@@ -146,10 +146,17 @@ against 21.8 at 8 sequences with 80 each, 26.7 against 24.8 with 576).
 A slower host (a server's CPU) gains more by compiling: set it higher
 there. Not with `exact=True` (below), a family transformers does not
 compile whole (its `_can_compile_fullgraph`) or the model over several
-GPUs, which run eager. A call that fails compiled runs again eager, and
-so do the model's later calls, with one warning: transformers 5.17's
-static cache fails for some families' attention (DeepSeek V2 and V3, Kimi
-Linear, Llama 4, bf16's too), which so run eager. Each model's forward
+GPUs, which run eager, nor where transformers 5.17's static cache fails
+(bf16's too), which run eager from the start: Llama 4 (transformers
+compiles none of its forwards), and a model with multi-head latent
+attention whose config has fewer key/value heads than heads (as tiny
+DeepSeek V2 and V3, Kimi Linear and AXK1 test models do; the released
+checkpoints, with as many as heads, compile). A call whose forward fails
+to compile anyway (torch._dynamo's or Inductor's error) runs again eager,
+from its start (a streamer sees the prompt again on that one call), and so
+do the model's later calls, with one warning; any other error (out of
+memory included) is the call's own, and the next call compiles as before.
+Each model's forward
 compiles to a graph of its own, so Glyd's compiled calls run with
 `torch._dynamo.config.recompile_limit` at 64 at least (at the default 8
 the 8th model a process loaded ran uncompiled), set for those calls alone:

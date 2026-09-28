@@ -31,10 +31,15 @@ every earlier format.
   its first step and each step's attention reads all of it, and past that
   the eager loop was as fast on the RTX 4080 SUPER (Qwen3-8B at one
   sequence: 17.7 ms a step compiled with 80 positions held against 20.5
-  eager, 20.4 with 1024, 23.0 with 2048). A call that fails compiled runs
-  again eager, and so do the model's later calls, with one warning
-  (transformers 5.17's static cache fails for DeepSeek V2's and V3's, Kimi
-  Linear's and Llama 4's attention, bf16's too). Each model's forward
+  eager, 20.4 with 1024, 23.0 with 2048). Where transformers 5.17's static
+  cache fails (bf16's too) it runs eager from the start: Llama 4, and a
+  model with multi-head latent attention whose config has fewer key/value
+  heads than heads (tiny DeepSeek V2, V3, Kimi Linear and AXK1 test models;
+  the released checkpoints compile). A call whose forward fails to compile
+  anyway runs again eager from its start (a streamer sees the prompt again
+  on that one call), and so do the model's later calls, with one warning;
+  any other error, out of memory included, is the call's own, and the next
+  call compiles. Each model's forward
   compiles to a graph of its own, so Glyd's compiled calls run with
   `torch._dynamo.config.recompile_limit` at 64 at least, for those calls
   alone (at the default 8 the 8th model a process loaded ran uncompiled,

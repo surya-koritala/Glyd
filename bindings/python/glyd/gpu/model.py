@@ -740,7 +740,7 @@ def fast_generate(model):
     GLYD_COMPILE=0, nor for a family transformers does not compile whole
     (_can_compile_fullgraph: MiniMax's own cache, DBRX's experts ...), nor a
     model over several GPUs (not measured there). The model."""
-    if os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate") or not getattr(model, "_can_compile_fullgraph", False):
+    if os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate") or not getattr(model, "_can_compile_fullgraph", False) or _static_fails(model):
         return model
     devices = {m.p.sm.device for m in model.modules() if isinstance(m, (GLinear, GEmbedding))} | {t.device for t in model.parameters() if t.is_cuda}
     if len(devices) != 1:
@@ -752,6 +752,36 @@ def fast_generate(model):
         if getattr(own, "glyd_own", None) is None:
             setattr(cls, name, _taken(own, fast))
     return model
+
+
+def _static_fails(model):
+    """Whether transformers (5.17) fails model's generate() with a static cache, or never compiles it: Llama 4 (its
+    get_compiled_call leaves it eager; its chunked attention's mask raises there), and a model with multi-head latent
+    attention (kv_lora_rank) whose config has fewer key/value heads than heads: it makes keys and values for every
+    head, and the static cache's masked attention repeats them num_attention_heads / num_key_value_heads times more
+    (test_gpu's tiny DeepSeek V2, V3, Kimi Linear and AXK1; the released DeepSeek V2 and V3, Kimi Linear, Moonlight
+    and Kimi K2 have as many as heads, and compile)."""
+    c = model.config.get_text_config(decoder=True)
+
+    def get(name):
+        try:
+            return getattr(c, name, None)
+        except Exception:  # (a config holding it per layer raises)
+            return None
+
+    return "llama4" in model.config.model_type or (get("kv_lora_rank") is not None and get("num_key_value_heads") not in (None, get("num_attention_heads")))
+
+
+def _compile_error(e):
+    """Whether e is torch.compile's failing (torch._dynamo's or Inductor's error), not what it met on the way (out of
+    GPU memory, anywhere in its chain)."""
+    import torch._dynamo.exc as de
+    import torch._inductor.exc as ie
+
+    chain = [e]
+    while len(chain) < 16 and (chain[-1].__cause__ or chain[-1].__context__) is not None:
+        chain.append(chain[-1].__cause__ or chain[-1].__context__)
+    return isinstance(e, (de.TorchDynamoException, getattr(ie, "InductorError", ()))) and not any(isinstance(x, torch.cuda.OutOfMemoryError) for x in chain)
 
 
 def _taken(own, fast):
@@ -768,9 +798,9 @@ def _taken(own, fast):
 
 def _generate(self, own, *args, **kwargs):
     """fast_generate's generate(): the call with cache_implementation="static" where it takes it, else as it came;
-    one that fails so (transformers' static cache for DeepSeek V3's, Kimi Linear's and Llama 4's attention in 5.17, a
-    forward that does not compile) runs again as it came, and so do the model's later calls, with one warning (where
-    that fails too, its error is the call's)."""
+    one whose forward fails to compile (_compile_error) runs again as it came, from its start, and so do the model's
+    later calls, with one warning (where that fails too, its error is the call's); any other error is the call's, and
+    the next call compiles as before."""
     cfg = kwargs.get("generation_config") or self.generation_config
     get = lambda k: kwargs[k] if k in kwargs else getattr(cfg, k, None)
     x = args[0] if args else next((kwargs[k] for k in ("inputs", "input_ids", "inputs_embeds") if kwargs.get(k) is not None), None)
@@ -785,6 +815,8 @@ def _generate(self, own, *args, **kwargs):
             try:
                 return own(self, *args, **fast)
             except Exception as e:
+                if not _compile_error(e):
+                    raise
                 out = own(self, *args, **kwargs)
                 self.glyd_eager = True
                 warnings.warn(f"glyd: {type(self).__name__}'s generate() compiled failed ({type(e).__name__}: {str(e).splitlines()[0][:160] if str(e) else ''}); it runs as transformers runs it from here on", stacklevel=3)
