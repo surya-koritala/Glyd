@@ -187,7 +187,8 @@ memory, each landing on an mbarrier. Each consumer warpgroup decodes its
 weights, and multiplies with X read from shared memory. The work is
 split evenly over the SMs (stream-K); rows shared by blocks are summed
 by the last to finish, in a fixed order: the same result every run.
-Qwen3-32B's matrices on an H100 SXM, GPU time in us (bf16 through cuBLAS
+As first built (2026-09-26, before the changes further below), on an
+H100 SXM, Qwen3-32B's matrices took, GPU time in us (bf16 through cuBLAS
 / `mma_gemm` / `mma_gemm_wg`; at 128 tokens the middle column is the
 matrix decoded for cuBLAS):
 
@@ -197,11 +198,11 @@ matrix decoded for cuBLAS):
 | down (5120 x 25600) | 90 / 74 / 78 | 91 / 78 / 78 | 92 / 105 / **83** | 96 / 127 / **92** | 98 / 328 / 121 |
 | q (8192 x 5120) | 29 / 29 / 31 | 30 / 33 / 31 | 30 / 45 / 34 | 31 / 59 / 40 | 32 / 113 / 48 |
 
-A small matrix has few stages a block, so a copy's latency at the start
-and the sum of shared rows at the end are not covered: Qwen2.5-7B's
-k_proj (512 x 3584) takes 15-22 us against cuBLAS's 6, q_proj and o_proj
+A small matrix had few stages a block, so a copy's latency at the start
+and the sum of shared rows at the end were not covered: Qwen2.5-7B's
+k_proj (512 x 3584) took 15-22 us against cuBLAS's 6, q_proj and o_proj
 (3584 x 3584) 15-23 against 7-8. End to end they still cost more than
-the large matrices save past 16 sequences (GPU time a step over 16
+the large matrices saved past 16 sequences (GPU time a step over 16
 tokens, the prompt's share included: 3.45 ms of Qwen3-32B's at 32 and
 64 sequences, decoded for cuBLAS):
 
@@ -213,10 +214,10 @@ tokens, the prompt's share included: 3.45 ms of Qwen3-32B's at 32 and
 | Qwen2.5-7B, `mma12` (11.42 GB) | **7.22** | 8.85 | 10.52 | 11.97 ms |
 
 Perplexity through it (64-token windows): 17.0065 against bf16's
-17.0178 (Qwen2.5-7B). Next here: the small matrices (the launch
-overlapped with the kernel before it, a cheaper sum of shared rows) and
-prompts. `python glyd_gpu.py` checks `mma_gemm_wg` on a Hopper GPU
-(benchmarks/gpu/h100-tma-2026-09-26).
+17.0178 (Qwen2.5-7B). Next then: the small matrices (the launch
+overlapped with the kernel before it, a cheaper sum of shared rows: the
+second done since, below) and prompts. `python glyd_gpu.py` checks
+`mma_gemm_wg` on a Hopper GPU (benchmarks/gpu/h100-tma-2026-09-26).
 
 On an H100 PCIe (2026-09-28) four things held it back, found by
 profiling a model's step kernel by kernel and the kernel stage by stage:
