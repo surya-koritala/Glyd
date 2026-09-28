@@ -253,7 +253,7 @@ with torch.cuda.stream(torch.cuda.Stream()):
 torch.cuda.synchronize()
 
 # The package's one-call paths (_lib.step and _lib.lookup, as GLinear and GEmbedding call them) against the checked
-# calls: 1-64 tokens, both layouts, bias, and an embedding's rows.
+# calls: 1-64 tokens, a prompt's to the decode ahead (past it: none), both layouts, bias, and an embedding's rows.
 from glyd.gpu import model as gm
 
 w = weights(512 * 1024, 0.01).view(512, 1024)
@@ -261,10 +261,14 @@ packs = (g.pack_mma(w), g.pack_mma12(w))
 for q in packs:
     for b in (None, torch.randn(512, dtype=bf, device=dev)):
         lin = gm.GLinear(q, b)
-        for M in range(1, 65):
+        for M in list(range(1, 65)) + [65, 100, 128, 129, 256, 300, 512, 600, 700]:
             x = torch.randn(M, 1, 1024, dtype=bf, device=dev)
-            assert exact(lin.step(x), lin.kernel(M)(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
-        counts["GLinear.step"] = counts.get("GLinear.step", 0) + 64
+            f = lin.kernel(M)
+            if f is None:  # decoded (ahead), then cuBLAS: not the one-call path's
+                assert lin.step(x) is None, ("GLinear.step past the fused kernels", type(q).__name__, M)
+                continue
+            assert exact(lin.step(x), f(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
+            counts["GLinear.step"] = counts.get("GLinear.step", 0) + 1
 # GLinear's routing on an A100 whatever this GPU is (compute capability 8.0 read while it is made): the 12-bit
 # layout's 17-64 tokens by mma_gemm_mid, the rest as elsewhere; the one-call path the same functions.
 cc = torch.cuda.get_device_capability
@@ -293,6 +297,7 @@ lins = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).
 other = [gm.GLinear(g.pack_mma(weights(O * K).view(O, K)), None) for O, K in shapes[:3]]
 for lin in lins + other:
     lin.ahead = 513
+    lin.step = lin._step()  # its one-call path to the new threshold
 gm.set_scratch(torch.nn.ModuleList(lins + other), False)
 flops, gm.AHEAD_FLOPS = gm.AHEAD_FLOPS, 0
 product, placed = gm.Ahead.product, []
@@ -324,6 +329,7 @@ if not lins[0].hopper:
     glyd_gpu_lib.local.fresh = False
     big = gm.GLinear(g.pack_mma(weights(1024 * 512).view(1024, 512)), None)
     big.ahead, big.block = 513, 128  # as a matrix past the scratch
+    big.step = big._step()
     x = torch.randn(600, 512, dtype=bf, device=dev)
     assert exact(big(x), g.mma_gemm_big(big.p, x)) and not placed, "past the scratch: fused"
     counts["GLinear where Ahead does not take it (fused)"] = len(lins) + 1
@@ -335,6 +341,7 @@ ls = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).vi
 xs = [torch.randn(600, lin.in_features, dtype=bf, device=dev) for lin in ls]
 for lin in ls:
     lin.ahead = 513
+    lin.step = lin._step()
 for n in (6, 6, 3):  # recorded, followed, then a prompt that ends before its order does
     for lin, x in zip(ls[:n], xs):
         lin(x)

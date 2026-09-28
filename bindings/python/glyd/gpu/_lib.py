@@ -354,14 +354,15 @@ def attn_decode(q, kd, kb, kbb, kt, vd, vb, vbb, vt, tk, tv, tlen, pairs, G, P, 
         _fail("attn_decode", r)
 
 
-def step(data, a, b, words, n_words, shape, bias, names):
-    """A generation step's product over one pack in the mma layouts as one C call: what does not change between
-    calls made once (the pack's addresses and words, O and K, the bias; each M's function, workspace bytes and done
-    counters at its first call), the checks that hold by the pack's making left out. words: its n_words tiers (3)
-    or words of symbols (4). names[M]: the function for M tokens (mma_gemm, mma12_gemm, mma12_gemm_mid,
-    mma12_gemm_wg), or None. run(x): Y [..., O] for X contiguous [..., K] of M rows on the pack's device (made
-    current for the call where it is not: a layer on another GPU), where names[M] is one; else None (the checked
-    path)."""
+def step(data, a, b, words, n_words, shape, bias, names, big=None, big_max=0):
+    """A product over one pack in the mma layouts as one C call, a generation step's or a prompt's: what does not
+    change between calls made once (the pack's addresses and words, O and K, the bias; each M's function, workspace
+    bytes and done counters at its first call), the checks that hold by the pack's making left out. words: its
+    n_words tiers (3) or words of symbols (4). names[M]: the function for M tokens (mma_gemm, mma12_gemm,
+    mma12_gemm_mid, mma12_gemm_wg), or None; big: a prompt's past them, to big_max tokens (mma_gemm_big,
+    mma12_gemm_big, in blocks of tokens of its own choice), or None. run(x): Y [..., O] for X contiguous [..., K]
+    of M rows on the pack's device (made current for the call where it is not: a layer on another GPU), where a
+    function takes M; else None (the checked path)."""
     O, K = shape
     d, dev = data.get_device(), data.device
     head = (data.data_ptr(), a.data_ptr(), b.data_ptr(), _words(words, n_words, "three tiers or four words of symbols"), O, K)
@@ -370,6 +371,7 @@ def step(data, a, b, words, n_words, shape, bias, names):
         _counters(name, d, O // 64, 1 << 16)  # made now: never in a CUDA graph's memory pool
     plans = [None] * len(names)
     bf16 = torch.bfloat16
+    prompt = _fn[big] if big else None
 
     def run(x):
         if x.shape[-1] != K or not x.is_contiguous() or x.get_device() != d:
@@ -378,6 +380,14 @@ def step(data, a, b, words, n_words, shape, bias, names):
             with torch.cuda.device(d):
                 return run(x)
         M = x.numel() // K
+        if M >= len(plans) and M < big_max:  # a prompt
+            s = _stream(d)
+            w = _workspace(big, d, s, O, K, M, 0)
+            y = torch.empty(*x.shape[:-1], O, dtype=bf16, device=dev)
+            r = prompt(*head, x.data_ptr(), M, bias, y.data_ptr(), 0, w[1], w[2], s)
+            if r:
+                _fail(big, r)
+            return y
         plan = plans[M] if M < len(plans) else False
         if plan is None:
             name = names[M]

@@ -11,11 +11,11 @@ columns of 16) goes in the tiered layout (10.80 bits a weight) or the
 an embedding (rows a multiple of 128 long) in the fast format, its rows
 decoded as they are looked up; anything else stays as it is.
 
-Eager, a generation step's product through the prebuilt library is one C
-call (_lib.step: what does not change between calls made once); under
-torch.compile each GLinear and GEmbedding is one node of the graph
-(glyd::linear, glyd::embedding), run as eager, and CUDA graphs capture
-its kernels.
+Eager, a fused product through the prebuilt library is one C call (a
+generation step's, and a prompt's to the decode ahead: _lib.step, what
+does not change between calls made once); under torch.compile each
+GLinear and GEmbedding is one node of the graph (glyd::linear,
+glyd::embedding), run as eager, and CUDA graphs capture its kernels.
 """
 import hashlib
 import itertools
@@ -304,15 +304,17 @@ class GLinear(_Node, nn.Module):
         return None
 
     def _step(self):
-        """A generation step's product (1-64 tokens) as one C call, where it is a fused one through the prebuilt
-        library: _lib.step over the pack, the function for each M; else None."""
+        """A product as one C call where it is a fused one through the prebuilt library: a generation step's
+        (1-64 tokens), and a prompt's to self.ahead tokens (mma_gemm_big); _lib.step over the pack, the function
+        for each M; else None."""
         p = self.p
         if not self.fused or self.exact or not isinstance(p, g.Mma) or g.lib() is None:
             return None
         twelve = isinstance(p, g.Mma12)
         name = {g.mma_gemm: "mma12_gemm" if twelve else "mma_gemm", g.mma_gemm_mid: "mma12_gemm_mid", g.mma_gemm_wg: "mma12_gemm_wg"}
         names = [None] + [name.get(self.kernel(M)) for M in range(1, 65)]
-        return _lib.step(p.data, *((p.exc, p.exc_base, p.sym, 4) if twelve else (p.blocks, p.block_base, p.tiers, 3)), p.shape, self.bias, names)
+        big = ("mma12_gemm_big" if twelve else "mma_gemm_big") if self.kernel(65) is g.mma_gemm_big else None
+        return _lib.step(p.data, *((p.exc, p.exc_base, p.sym, 4) if twelve else (p.blocks, p.block_base, p.tiers, 3)), p.shape, self.bias, names, big, self.ahead)
 
     def decode_rows(self, r0, r1):
         p, K = self.p, self.p.shape[1]
@@ -355,7 +357,7 @@ class GLinear(_Node, nn.Module):
             return torch.ops.glyd.linear(x.detach() if x.requires_grad else x, self.handle, self.out_features)
         if Ahead.queued and x.numel() < self.ahead * self.in_features:  # a prompt ended before its order did
             Ahead.settle()
-        if self.step is not None:  # a generation step's product: one C call
+        if self.step is not None:  # a fused product: one C call
             y = self.step(x)
             if y is not None:
                 return y
