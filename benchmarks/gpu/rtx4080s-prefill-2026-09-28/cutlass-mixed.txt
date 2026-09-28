@@ -1,0 +1,32 @@
+M 1024 N 19456 K 2560
+  u8 upcast 128x128x64 w64x64 4st                  1145 us   89.1 TFLOPS 
+  u8 upcast 128x256x64 w64x64 3st                  1076 us   94.8 TFLOPS 
+  u8 upcast 256x128x64 w64x64 3st              init failed
+  u8 upcast 128x256x32 w64x64 4st                  1078 us   94.6 TFLOPS 
+  u8 upcast 256x128x32 w64x64 4st                  1095 us   93.2 TFLOPS 
+  bf16 128x256x32 w64x64 3st                       1044 us   97.7 TFLOPS 
+  bf16 256x128x32 w64x64 3st                       1046 us   97.5 TFLOPS 
+M 4096 N 19456 K 2560
+  u8 upcast 128x128x64 w64x64 4st                  4353 us   93.7 TFLOPS 
+  u8 upcast 128x256x64 w64x64 3st                  4149 us   98.3 TFLOPS 
+  u8 upcast 256x128x64 w64x64 3st              init failed
+  u8 upcast 128x256x32 w64x64 4st                  4150 us   98.3 TFLOPS 
+  u8 upcast 256x128x32 w64x64 4st                  4217 us   96.8 TFLOPS 
+  bf16 128x256x32 w64x64 3st                       3899 us  104.6 TFLOPS 
+  bf16 256x128x32 w64x64 3st                       3898 us  104.7 TFLOPS 
+M 1024 N 2560 K 9728
+  u8 upcast 128x128x64 w64x64 4st                   521 us   97.9 TFLOPS 
+  u8 upcast 128x256x64 w64x64 3st                   492 us  103.8 TFLOPS 
+  u8 upcast 256x128x64 w64x64 3st              init failed
+  u8 upcast 128x256x32 w64x64 4st                   493 us  103.4 TFLOPS 
+  u8 upcast 256x128x32 w64x64 4st                   500 us  102.1 TFLOPS 
+  bf16 128x256x32 w64x64 3st                        474 us  107.6 TFLOPS 
+  bf16 256x128x32 w64x64 3st                        475 us  107.4 TFLOPS 
+M 4096 N 2560 K 9728
+  u8 upcast 128x128x64 w64x64 4st                  2073 us   98.4 TFLOPS 
+  u8 upcast 128x256x64 w64x64 3st                  1956 us  104.3 TFLOPS 
+  u8 upcast 256x128x64 w64x64 3st              init failed
+  u8 upcast 128x256x32 w64x64 4st                  1960 us  104.1 TFLOPS 
+  u8 upcast 256x128x32 w64x64 4st                  1986 us  102.7 TFLOPS 
+  bf16 128x256x32 w64x64 3st                       1889 us  108.0 TFLOPS 
+  bf16 256x128x32 w64x64 3st                       1891 us  107.9 TFLOPS 

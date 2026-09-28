@@ -1,0 +1,17 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 16817.45it/s]
+merged: 56 groups of Linears as one product each
+bf16 (weights 3.44 GB): batch 1: 90.1 tokens/s (90.1 a sequence), peak VRAM 3.46 GB
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+bf16 (weights 3.44 GB): batch 8: 706.0 tokens/s (88.2 a sequence), peak VRAM 3.56 GB
+bf16 (weights 3.44 GB): batch 32: 2766.4 tokens/s (86.5 a sequence), peak VRAM 3.81 GB
+bf16 (weights 3.44 GB): batch 64: 5167.8 tokens/s (80.7 a sequence), peak VRAM 4.18 GB
+bf16 prefill: 128 tokens 10.9 ms (11726 tokens/s), first token 12.6 ms, 256 tokens 14.1 ms (18217 tokens/s), first token 15.2 ms, 384 tokens 18.8 ms (20461 tokens/s), first token 19.9 ms, 512 tokens 24.4 ms (20979 tokens/s), first token 25.5 ms, 640 tokens 25.9 ms (24675 tokens/s), first token 27.0 ms, 768 tokens 32.2 ms (23862 tokens/s), first token 33.3 ms, 1024 tokens 42.3 ms (24223 tokens/s), first token 43.3 ms, 1536 tokens 63.0 ms (24381 tokens/s), first token 64.1 ms, 2048 tokens 86.6 ms (23663 tokens/s), first token 87.6 ms, 4096 tokens 184.6 ms (22187 tokens/s), first token 185.7 ms
+mma fused: packed in 2 s; weights 2.75 GB against 3.44 GB bf16 (80.0%), scratch 0.27 GB, VRAM in use 3.07 GB on 1 GPU
+glyd mma fused: batch 1: 96.5 tokens/s (96.5 a sequence), peak VRAM 3.08 GB
+glyd mma fused: batch 8: 762.2 tokens/s (95.3 a sequence), peak VRAM 3.18 GB
+glyd mma fused: batch 32: 2962.9 tokens/s (92.6 a sequence), peak VRAM 3.44 GB
+glyd mma fused: batch 64: 4873.0 tokens/s (76.1 a sequence), peak VRAM 3.80 GB
+glyd mma prefill: 128 tokens 10.8 ms (11816 tokens/s), first token 12.6 ms, 256 tokens 14.4 ms (17796 tokens/s), first token 15.6 ms, 384 tokens 20.0 ms (19242 tokens/s), first token 21.1 ms, 512 tokens 23.4 ms (21914 tokens/s), first token 24.5 ms, 640 tokens 28.4 ms (22545 tokens/s), first token 29.5 ms, 768 tokens 33.8 ms (22713 tokens/s), first token 35.1 ms, 1024 tokens 43.6 ms (23510 tokens/s), first token 44.7 ms, 1536 tokens 65.7 ms (23391 tokens/s), first token 66.8 ms, 2048 tokens 87.4 ms (23425 tokens/s), first token 88.5 ms, 4096 tokens 186.4 ms (21974 tokens/s), first token 187.4 ms
+logits bit-identical: False
+generated tokens identical to bf16: 13 of 64
+text:  in the 1950s with the advent of digital storage and transmission. The first significant developments were in the field of information theory, where the concept of entropy was introduced by Claude Shannon.

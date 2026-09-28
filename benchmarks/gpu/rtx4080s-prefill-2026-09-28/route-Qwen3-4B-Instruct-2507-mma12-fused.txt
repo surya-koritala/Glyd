@@ -1,0 +1,6 @@
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 17303.63it/s]
+merged: 72 groups of Linears as one product each
+mma12 fused: packed in 2 s; weights 6.60 GB against 8.04 GB bf16 (82.0%), scratch 0.27 GB, VRAM in use 6.87 GB on 1 GPU
+glyd mma12 fused: batch 1: 70.6 tokens/s (70.6 a sequence), peak VRAM 6.88 GB
+glyd mma12 prefill: 512 tokens 50.5 ms (10131 tokens/s), first token 51.6 ms, 640 tokens 63.8 ms (10037 tokens/s), first token 64.9 ms, 768 tokens 74.4 ms (10320 tokens/s), first token 77.2 ms, 896 tokens 89.4 ms (10018 tokens/s), first token 89.8 ms, 1024 tokens 99.7 ms (10271 tokens/s), first token 100.8 ms, 1536 tokens 151.0 ms (10173 tokens/s), first token 152.4 ms, 2048 tokens 205.8 ms (9954 tokens/s), first token 207.1 ms, 3072 tokens 327.3 ms (9386 tokens/s), first token 328.8 ms, 4096 tokens 464.4 ms (8820 tokens/s), first token 465.9 ms
+text:  in the 1940s
