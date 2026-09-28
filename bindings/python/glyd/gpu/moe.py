@@ -121,9 +121,9 @@ def install(model, exact=False):
                 gm._modules[m.glyd_handle] = m
                 # A copy would keep the handle, which names this module: copy.deepcopy, copy.copy and pickle refused.
                 object.__setattr__(m, "__reduce_ex__", _uncopyable)
-            if g.lib() is not None:  # the done counters made now: never in a CUDA graph's memory pool
+            if g.lib() is not None:  # the device's done counters made now: never in a CUDA graph's memory pool
                 for p, units in ((up, up.shape[0] // E // (128 if act else 64)), (down, down.shape[0] // E // 64)):
-                    _lib._counters("mma12_moe" if isinstance(p, g.Mma12) else "mma_moe", p.sm.get_device(), units * E, 1 << 16)
+                    _lib._counters("mma12_moe" if isinstance(p, g.Mma12) else "mma_moe", p.sm.get_device(), None, units * E, 1 << 16)
     if mods:
         if hasattr(model, "set_experts_implementation"):
             model.set_experts_implementation(NAME)
