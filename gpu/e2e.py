@@ -303,13 +303,12 @@ if args.from_pretrained:  # the package's path: the checkpoint loaded again, pac
     model = glyd.from_pretrained(args.model, layout=args.format, exact=args.exact, merge=args.merge).eval()
     packed = {id(m.p): m.p for m in model.modules() if isinstance(m, (GLinear, GEmbedding))}
 else:
-    layers = decoder(model).layers
-    layer_bytes = [sum(p.numel() for p in l.parameters()) for l in layers]
+    layer_bytes = [sum(p.numel() for p in l.parameters()) for l in decoder(model).layers]
     per_gpu, acc, gpu_of = sum(layer_bytes) / args.gpus, 0, []
     for b in layer_bytes:
         gpu_of.append(min(args.gpus - 1, int(acc // per_gpu)))
         acc += b
-    layer_of = {id(m): gpu_of[i] for i, l in enumerate(layers) for m in l.modules()}
+    layer_of = {id(m): gpu_of[i] for i, l in enumerate(decoder(model).layers) for m in l.modules()}  # (no name holding the layers: freed with the model)
     last = args.gpus - 1
 
     def pack(w, linear):
@@ -368,8 +367,10 @@ if args.baseline and args.profile:  # bf16's profile last, on the model loaded a
         model.__dict__.pop("_compiled_call", None)
     del model, packed
     Scratch.buf.clear()
+    Scratch.replaced.clear()
     gc.collect()
     torch.cuda.empty_cache()
+    print(f"glyd's model freed: {torch.cuda.memory_allocated() / 1e9:.2f} GB left in use")
     model = load()
     on_gpus(model)
     profile(model, "bf16")
