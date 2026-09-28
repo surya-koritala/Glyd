@@ -1,0 +1,6 @@
+             weights GB  perplexity  top token = bf16  answers = bf16    MMLU  MMLU answers changed
+bf16               8.04     11.2435           100.00%        50 of 50   68.30%            0 of 1000
+bf16-eager         8.04     11.2469            98.63%        35 of 50   68.30%           16 of 1000
+glyd-exact         6.78     11.2435           100.00%        50 of 50   68.30%            0 of 1000
+glyd               6.27     11.2436            99.99%        34 of 50   68.10%           13 of 1000
+fp8                4.41     11.2597            95.98%        14 of 50   68.10%           46 of 1000
