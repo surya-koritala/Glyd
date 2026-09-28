@@ -121,7 +121,9 @@ GEmbedding is one op of the graph (`glyd::linear`, `glyd::embedding`),
 with no graph break, and the CUDA graph captures Glyd's kernels; the
 prompt runs eager (transformers compiles the steps after it). Tokens/s
 generating 128 tokens at 1 / 8 sequences on an RTX 4080 SUPER (a Ryzen 9
-7950X3D), each in a process of its own (`gpu/gen_eager.py`):
+7950X3D), each in a process of its own, the median of 3 runs (logs:
+benchmarks/gpu/rtx4080s-fastloop-2026-09-28, `gen-main.txt` and
+`gen-branch.txt`):
 
 | | bf16 | bf16, `cache_implementation="static"` | Glyd, `compile=False` | **Glyd** |
 | :--- | ---: | ---: | ---: | ---: |
@@ -133,17 +135,18 @@ generating 128 tokens at 1 / 8 sequences on an RTX 4080 SUPER (a Ryzen 9
 The first call compiles and captures: Qwen3-8B's took 17.5 s with
 PyTorch's compile caches empty, 6.7 s in a later process (4-6 s for the
 others); a call whose cache is longer than any before it compiles again
-once, then captures a graph (Qwen3-4B-Instruct-2507, a chat's turns: 15.0
-s, then 5.6 s, then 0.8-0.9 s for 64 tokens). A call that brings its own
-cache (`past_key_values`), several beams, an assistant, or asks for
-attentions or hidden states runs as transformers runs it, as does one
-whose static cache would hold more positions in all (its sequences times
-the prompt and `max_new_tokens`) than 1280 on a GeForce card and 2048 on
-another: the static cache holds every position a call may reach from its
-first step and each step's attention reads all of it, so past that the
-eager loop is as fast, sooner the faster the host's CPU (what compiling
-saves is eager's host time a step). A step's ms compiled against eager,
-Qwen3-8B, the static cache that long with 64 positions used:
+once, then captures a graph (Qwen3-4B-Instruct-2507, a chat's turns:
+15.0 s, then 5.6 s, then 0.8-0.9 s for 64 tokens). A call that brings
+its own cache (`past_key_values`), several beams, an assistant, or asks
+for a dict (`return_dict_in_generate`), attentions or hidden states runs
+as transformers runs it, as does one whose static cache would hold more
+positions in all (its sequences times the prompt and `max_new_tokens`)
+than 1280 on a GeForce card and 2048 on another: the static cache holds
+every position a call may reach from its first step and each step's
+attention reads all of it, so past that the eager loop is as fast
+(Qwen3-8B), sooner the faster the host's CPU (what compiling saves is
+eager's host time a step). A step's ms compiled against eager, Qwen3-8B,
+the static cache that long with 64 positions used:
 
 | | 256 | 1024 | 2048 | 4096 positions | 8 sequences |
 | :--- | ---: | ---: | ---: | ---: | :--- |

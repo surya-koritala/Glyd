@@ -49,9 +49,9 @@ MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of th
 # decoded ahead 1.42x and 1.21x, then 1.17x at 768 against 1.26x, 1.08x at 2048 against 1.54x; tiered 1.41x against
 # 1.48x at 512; a prompt's pass end to end +10.0 / +5.2 / +2.6% over bf16 at 1024 / 2048 / 4096 tokens, fused +30 /
 # +39 / +51%, each matrix decoded on the current stream +21 / +10 / +5.5%); elsewhere, until measured, the fused kernel
-# or the decode as before (the A10G has half-rate tensor cores, its fused prompts within 5% of bf16's; the L4, L40S
-# and RTX 6000 Ada sum in fp32 at twice the rate, as the A10, but have half its bandwidth a FLOP: a matrix decoded
-# costs them twice as much a token). The 12-bit layout's length loses least across Qwen3-1.7B, 4B and 8B
+# or the decode as before (the A10G has half-rate tensor cores, its fused prompts at most +5.3% over bf16's; the L4,
+# L40S and RTX 6000 Ada sum in fp32 at twice the rate, as the A10, but have half its bandwidth a FLOP: a matrix
+# decoded costs them twice as much a token). The 12-bit layout's length loses least across Qwen3-1.7B, 4B and 8B
 # (one pass, fused against decoded ahead, 1024-4096 tokens): to 1792 Qwen3-1.7B's fused pass is the faster but at
 # 1280, Qwen3-4B-Instruct-2507's but at 1664, Qwen3-8B's at 1024, 1408 and 1536 alone (1.0-4.6% slower at the other
 # six); at 1793-2047 Qwen3-1.7B's is 3.5-4.0% faster, Qwen3-4B's 1.8-3.1% and Qwen3-8B's 0.7-4.3% slower.
@@ -327,18 +327,16 @@ class _Weight:
 
 class GLinear(_Node, nn.Module):
     """nn.Linear over a packed matrix p (bias: bf16, or None). fused: products
-    straight from the packed weights where a kernel takes the step (in the
-    mma layouts up to 64 tokens, an A100's 12-bit to 128, and prompts: on
-    Hopper to WG_MAX tokens, 512, in the 12-bit layout to self.dec, an
-    A100's 768; one-token steps in the others); else the matrix decoded into
-    the scratch buffer, then
-    PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, past
-    1792 12-bit fused and past 640 not, on an A10 from 512 tiered and 640
-    12-bit but exact, decoded ahead of its product where Ahead takes it).
-    exact: every
-    product the matrix decoded whole, then F.linear on the input as it came,
-    as nn.Linear does: its outputs bit for bit (over fused). gemm_max: the
-    fast format's fused steps, in tokens."""
+    straight from the packed weights where a kernel takes the step (in the mma
+    layouts up to 64 tokens, an A100's 12-bit to 128, and prompts: on Hopper
+    to WG_MAX tokens, 512, in the 12-bit layout to self.dec, an A100's 768;
+    one-token steps in the others); else the matrix decoded into the scratch
+    buffer, then PyTorch's matmul (on GeForce Ada a prompt past 512 tokens
+    tiered, past 1792 12-bit fused and past 640 not, on an A10, but exact,
+    from 512 tiered and 640 12-bit, decoded ahead of its product where Ahead
+    takes it). exact: every product the matrix decoded whole, then F.linear on
+    the input as it came, as nn.Linear does: its outputs bit for bit (over
+    fused). gemm_max: the fast format's fused steps, in tokens."""
 
     weight = property(_Weight)  # as a model's own code reads it
 
