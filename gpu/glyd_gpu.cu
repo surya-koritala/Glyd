@@ -1769,13 +1769,14 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
 #endif
 }
 
-// Many tokens on Ampere and Ada (sm_80 to sm_89), the 12-bit layout: mma12_tma_kernel's plan with this
+// Many tokens on Ampere and Ada (sm_86 to sm_89; the A100 its own kernel), the 12-bit layout: mma12_tma_kernel's plan with this
 // generation's instructions. A producer warp copies each stage with cp.async, 16 bytes a thread, and the
 // stage's mbarrier completes once every lane's copies have landed (cp.async.mbarrier.arrive) and lane 0
 // has written the bounds; X's tile is laid out with a row's 16-byte chunk c at chunk c ^ (row mod 8), read
 // as B fragments by ldmatrix. The consumer warps decode their 16 rows into A fragments as the TMA
 // kernel's do and multiply with mma.sync, 16 rows by 8 tokens by 16 columns. Stream-K and the sum out as
-// there. NS stages in flight; WG 4 where a block may hold 140 KB of shared memory (sm_80), else 2.
+// there. NS stages in flight; WG 4 where a block may hold 153 KB of shared memory (sm_87, sm_90, sm_100; an
+// A100 takes a kernel of its own), else 2 (sm_86, sm_89, sm_120).
 template <int NT, int WG> struct Mid12 {
     static constexpr int THREADS = 128 * WG + 32;  // WG consumer warpgroups, the producer warp
     static constexpr int NS = 4;
@@ -2935,7 +2936,7 @@ static int mma12_mid_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
         }
         return cudaGetLastError();
     }
-    bool big = attribute(cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) >= Mid12<64, 4>::SHARED;  // sm_80: four warpgroups
+    bool big = attribute(cudaDevAttrMaxSharedMemoryPerBlockOptin, dev) >= Mid12<64, 4>::SHARED;  // four warpgroups where 153 KB fit
     for (int64_t m0 = 0; m0 < M; m0 += 64) {
         int64_t mc = std::min<int64_t>(64, M - m0);
         auto run = mc <= 16 ? (big ? mma12_mid_run<16, 4> : mma12_mid_run<16, 2>) : mc <= 32 ? (big ? mma12_mid_run<32, 4> : mma12_mid_run<32, 2>) : (big ? mma12_mid_run<64, 4> : mma12_mid_run<64, 2>);
