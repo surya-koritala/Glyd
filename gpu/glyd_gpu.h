@@ -34,8 +34,9 @@
 
 /* The C API's version, one more whenever a function's arguments change: 2
  * from the prompt products' done counters, glyd_gpu_hold and the decode's
- * warps (0.21.0's library has no glyd_gpu_api_version: 1). */
-#define GLYD_GPU_API_VERSION 2
+ * warps (0.21.0's library has no glyd_gpu_api_version: 1); 3 from the
+ * routes and glyd_gpu_*_linear. */
+#define GLYD_GPU_API_VERSION 3
 
 #ifdef __cplusplus
 extern "C" {
@@ -130,6 +131,44 @@ int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc, const int32_
  * there starts once a product launched with it on another stream has placed
  * its blocks. */
 int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
+
+/* ------------------------------------------------------------------------
+ * Routes: how glyd.gpu multiplies by a packed W [O, K] for M tokens on a
+ * GPU, as measured there (gpu/README.md): the kernel it takes, or W decoded
+ * for a bf16 GEMM of the caller's own (cuBLAS) where that is the faster.
+ * glyd.gpu's Linears take their routes from here. A GPU as glyd_gpu_gpu
+ * gives it: its compute capability, major * 10 + minor, plus 1000 on a
+ * GeForce (1089: an RTX 40; 80: an A100; 90: an H100).
+ * ---------------------------------------------------------------------- */
+#define GLYD_GPU_ROUTE_DECODE 0 /* W decoded (glyd_gpu_*_unpack), then the caller's GEMM */
+#define GLYD_GPU_ROUTE_GEMM 1   /* glyd_gpu_mma_gemm, glyd_gpu_mma12_gemm */
+#define GLYD_GPU_ROUTE_MID 2    /* glyd_gpu_mma12_gemm_mid */
+#define GLYD_GPU_ROUTE_WG 3     /* glyd_gpu_mma12_gemm_wg */
+#define GLYD_GPU_ROUTE_BIG 4    /* glyd_gpu_mma_gemm_big, glyd_gpu_mma12_gemm_big: variant 0 */
+#define GLYD_GPU_ROUTE_AHEAD 5  /* DECODE, W decoded ahead beside the products before it (GeForce Ada's prompts) */
+
+/* The current device's GPU as the routes take it. */
+int glyd_gpu_gpu(int* gpu);
+/* The route of W [O, K] for M tokens on gpu, in the tiered layout or the
+ * 12-bit one; last (NULL: not asked): the last token count from M on that
+ * takes it (INT64_MAX: every one past M). GLYD_WG_MIN, GLYD_WG_MAX,
+ * GLYD_MID_MIN and GLYD_DEC_MIN in the environment move its thresholds
+ * (read at the first call). */
+int glyd_gpu_mma_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
+int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
+
+/* Y [M, O] = X W^T (+ bias) by a route (negative: the current GPU's for M):
+ * its kernel, its arguments as that kernel's; DECODE and AHEAD by the prompt
+ * kernel (BIG) but on Hopper (cudaErrorNotSupported: decode W there). done:
+ * (M + 127) / 128 x O / 64 counters. */
+int glyd_gpu_mma_linear_workspace(int64_t O, int64_t K, int64_t M, int64_t route, size_t* bytes);
+int glyd_gpu_mma_linear(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3],
+                        int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,
+                        int64_t route, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs);
+int glyd_gpu_mma12_linear_workspace(int64_t O, int64_t K, int64_t M, int64_t route, size_t* bytes);
+int glyd_gpu_mma12_linear(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
+                          int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,
+                          int64_t route, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs);
 
 /* ------------------------------------------------------------------------
  * Mixtures of experts: a layer's E experts' matrices [O, K] as one pack

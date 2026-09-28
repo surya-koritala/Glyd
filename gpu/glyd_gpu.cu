@@ -3406,6 +3406,132 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc
     return mma12_wg_any(f, O, K, x, M, bias, y, (float*)workspace, done, cs, nullptr);
 }
 
+// The routes: how glyd.gpu multiplies by W [O, K] for M tokens on a GPU, as measured there (gpu/README.md), for
+// model.py's GLinear and glyd_gpu_*_linear alike: a step's kernel to 64 tokens (in the 12-bit layout mma_gemm_mid
+// from 17 on Ampere and Ada, an A100's to 128, and mma_gemm_wg from 17 to 512 on Hopper), past that the prompt
+// kernel (mma_gemm_big), but where W decoded for a bf16 GEMM (cuBLAS) is the faster: an A100's 12-bit prompts from
+// 769 tokens and Hopper's past its wgmma kernel's (none on Hopper takes a prompt), and on GeForce Ada from 513
+// tokens tiered and 1793 12-bit with W decoded ahead, beside the products before it (AHEAD). GLYD_WG_MIN,
+// GLYD_WG_MAX, GLYD_MID_MIN and GLYD_DEC_MIN move those thresholds (read at the first call). A GPU is given as
+// glyd_gpu_gpu gives it: its compute capability, major * 10 + minor, plus 1000 on a GeForce.
+struct RouteMins {
+    int64_t wg_min, wg_max, mid_min, dec_min;
+};
+
+static const RouteMins& route_mins() {
+    auto get = [](const char* name, int64_t fallback) {
+        const char* v = getenv(name);
+        return v && *v ? (int64_t)atoll(v) : fallback;
+    };
+    static const RouteMins t{get("GLYD_WG_MIN", 17), get("GLYD_WG_MAX", 512), get("GLYD_MID_MIN", 17), get("GLYD_DEC_MIN", 769)};
+    return t;
+}
+
+static int route_for(bool twelve, int64_t gpu, int64_t K, int64_t M) {
+    const RouteMins& t = route_mins();
+    int64_t cc = gpu % 1000;
+    bool a100 = cc == 80, hopper = cc == 90, mid = cc == 80 || cc == 86 || cc == 87 || cc == 89, k64 = K % 64 == 0;
+    if (hopper && twelve && k64 && M >= t.wg_min && M <= t.wg_max) return GLYD_GPU_ROUTE_WG;  // TMA and wgmma
+    if (mid && twelve && k64 && M >= t.mid_min && M <= (a100 ? 128 : 64)) return GLYD_GPU_ROUTE_MID;  // cp.async, mma.sync
+    if (a100 && twelve && M >= t.dec_min) return GLYD_GPU_ROUTE_DECODE;
+    if (M <= 64) return GLYD_GPU_ROUTE_GEMM;
+    if (!k64 || hopper) return GLYD_GPU_ROUTE_DECODE;
+    bool ada = cc == 89 && gpu >= 1000;
+    return M < (ada ? (twelve ? 1793 : 513) : INT64_MAX) ? GLYD_GPU_ROUTE_BIG : GLYD_GPU_ROUTE_AHEAD;
+}
+
+// The current device as the routes take it (asked once a device).
+GLYD_GPU_API int glyd_gpu_gpu(int* gpu) {
+    static std::atomic<int> known[MAX_DEVICES];  // the code + 1
+    if (!gpu) return cudaErrorInvalidValue;
+    int dev = current_device(), k = dev < MAX_DEVICES ? known[dev].load() : 0;
+    if (!k) {
+        cudaDeviceProp p;
+        if (cudaError_t e = cudaGetDeviceProperties(&p, dev)) return e;
+        k = p.major * 10 + p.minor + (strstr(p.name, "GeForce") ? 1000 : 0) + 1;
+        if (dev < MAX_DEVICES) known[dev] = k;
+    }
+    *gpu = k - 1;
+    return 0;
+}
+
+// The route for M tokens, and (last) the last token count from M on that takes it: before the first threshold past
+// M where another starts.
+static int route_run(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last) {
+    if (!route || O < 1 || K < 1 || M < 0) return cudaErrorInvalidValue;
+    const RouteMins& t = route_mins();
+    int here = *route = route_for(twelve, gpu, K, M);
+    if (last) {
+        int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, t.dec_min, 513, 1793}, next = INT64_MAX;
+        for (int64_t c : cuts)
+            if (c > M && c < next && route_for(twelve, gpu, K, c) != here) next = c;
+        *last = next == INT64_MAX ? INT64_MAX : next - 1;
+    }
+    return 0;
+}
+
+GLYD_GPU_API int glyd_gpu_mma_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last) {
+    return route_run(false, gpu, O, K, M, route, last);
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last) {
+    return route_run(true, gpu, O, K, M, route, last);
+}
+
+// The 12-bit layout's staged products (mma12_mid_any, mma12_wg_any): need, or the call with its workspace checked.
+static int staged_run(int (*any)(Nib, int64_t, int64_t, const uint16_t*, int64_t, const uint16_t*, uint16_t*, float*, int*, cudaStream_t, size_t*), Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
+    size_t n = 0;
+    if (int r = any(f, O, K, x, M, bias, y, nullptr, nullptr, cs, &n)) return r;
+    if (need) {
+        *need = n;
+        return 0;
+    }
+    if (!fits(ws, ws_bytes, n) || !done) return cudaErrorInvalidValue;
+    return any(f, O, K, x, M, bias, y, (float*)ws, done, cs, nullptr);
+}
+
+// Y [M, O] = X W^T (+ bias) by a route (route_for's; negative: the current GPU's for M): its kernel; DECODE and
+// AHEAD, where glyd.gpu decodes W for a GEMM of its own, the prompt kernel but on Hopper (none measured there:
+// cudaErrorNotSupported). need: set to the workspace's bytes, nothing launched.
+template <class Fmt>
+static int mma_linear_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t route, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
+    constexpr bool twelve = std::is_same_v<Fmt, Nib>;
+    int gpu = 0;
+    if (int r = glyd_gpu_gpu(&gpu)) return r;
+    if (route < 0) route = route_for(twelve, gpu, K, M);
+    switch (route) {
+    case GLYD_GPU_ROUTE_GEMM:
+        return mma_gemm_run(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
+    case GLYD_GPU_ROUTE_MID:
+    case GLYD_GPU_ROUTE_WG:
+        if constexpr (twelve) return staged_run(route == GLYD_GPU_ROUTE_MID ? mma12_mid_any : mma12_wg_any, f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
+        return cudaErrorInvalidValue;  // the 12-bit layout's alone
+    case GLYD_GPU_ROUTE_DECODE:
+    case GLYD_GPU_ROUTE_AHEAD:
+        if (gpu % 1000 == 90) return cudaErrorNotSupported;
+        [[fallthrough]];
+    case GLYD_GPU_ROUTE_BIG:
+        return mma_gemm_big_any(f, O, K, x, M, bias, y, 0, ws, ws_bytes, done, cs, need);
+    }
+    return cudaErrorInvalidValue;
+}
+
+GLYD_GPU_API int glyd_gpu_mma_linear_workspace(int64_t O, int64_t K, int64_t M, int64_t route, size_t* bytes) {
+    return bytes ? mma_linear_run(Tiered{}, O, K, nullptr, M, nullptr, nullptr, route, nullptr, 0, nullptr, 0, bytes) : cudaErrorInvalidValue;
+}
+
+GLYD_GPU_API int glyd_gpu_mma_linear(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t route, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    return mma_linear_run(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, O, K, x, M, bias, y, route, workspace, workspace_bytes, done, cs, nullptr);
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_linear_workspace(int64_t O, int64_t K, int64_t M, int64_t route, size_t* bytes) {
+    return bytes ? mma_linear_run(Nib{}, O, K, nullptr, M, nullptr, nullptr, route, nullptr, 0, nullptr, 0, bytes) : cudaErrorInvalidValue;
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_linear(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t route, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    return mma_linear_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, O, K, x, M, bias, y, route, workspace, workspace_bytes, done, cs, nullptr);
+}
+
 // A stream held for ns nanoseconds, by one thread: a decode ahead launched after it, beside a product that starts
 // as it does, starts once the product has placed its blocks (a decode placed first on an SM, in a carveout of its
 // own choosing, may leave the product's blocks no room there).
@@ -3775,6 +3901,54 @@ void mma12_gemm_wg(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base
     ok(glyd_gpu_mma12_gemm_wg(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma12_gemm_wg");
 }
 
+// The routes: (route, last) for M tokens on gpu; the current device's gpu.
+std::tuple<int64_t, int64_t> mma_route(int64_t gpu, int64_t O, int64_t K, int64_t M) {
+    int r;
+    int64_t last;
+    ok(glyd_gpu_mma_route(gpu, O, K, M, &r, &last), "mma_route");
+    return {r, last};
+}
+
+std::tuple<int64_t, int64_t> mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M) {
+    int r;
+    int64_t last;
+    ok(glyd_gpu_mma12_route(gpu, O, K, M, &r, &last), "mma12_route");
+    return {r, last};
+}
+
+int64_t gpu() {
+    int g;
+    ok(glyd_gpu_gpu(&g), "gpu");
+    return g;
+}
+
+// A product by a route (negative: this GPU's for M).
+void mma_linear(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t route) {
+    uint32_t t[3];
+    words(tiers, 3, t, "three tiers");
+    const c10::cuda::CUDAGuard guard(data.device());
+    TORCH_CHECK(O % 64 == 0 && K % 16 == 0 && x.is_contiguous() && x.size(1) == K, "O a multiple of 64, K of 16, X contiguous [M, K]");
+    int64_t M = x.size(0);
+    size_t bytes = 0;
+    ok(glyd_gpu_mma_linear_workspace(O, K, M, route, &bytes), "mma_linear");
+    auto ws = scratch(bytes, x);
+    static auto* done_of = new Counters;
+    ok(glyd_gpu_mma_linear(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), route, addr(ws), bytes, counters(*done_of, data, (M + 127) / 128 * (O / 64), 1 << 18), current_stream()), "mma_linear");
+}
+
+void mma12_linear(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t route) {
+    uint32_t s[4];
+    words(sym, 4, s, "four words of symbols");
+    const c10::cuda::CUDAGuard guard(data.device());
+    TORCH_CHECK(O % 64 == 0 && K % 16 == 0 && x.is_contiguous() && x.size(1) == K, "O a multiple of 64, K of 16, X contiguous [M, K]");
+    int64_t M = x.size(0);
+    size_t bytes = 0;
+    ok(glyd_gpu_mma12_linear_workspace(O, K, M, route, &bytes), "mma12_linear");
+    auto ws = scratch(bytes, x);
+    static auto* done_of = new Counters;
+    ok(glyd_gpu_mma12_linear(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), route, addr(ws), bytes, counters(*done_of, data, (M + 127) / 128 * (O / 64), 1 << 18), current_stream()), "mma12_linear");
+}
+
 void mma_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t K, int64_t row0, int64_t rows, torch::Tensor out, int64_t warps) {
     uint32_t t[3];
     words(tiers, 3, t, "three tiers");
@@ -3879,6 +4053,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("mma_moe_unpack", &mma_moe_unpack);
     m.def("mma12_moe_unpack", &mma12_moe_unpack);
     m.def("mma_gemm_big", &mma_gemm_big);
+    m.def("mma_route", &mma_route);
+    m.def("mma12_route", &mma12_route);
+    m.def("gpu", &gpu);
+    m.def("mma_linear", &mma_linear);
+    m.def("mma12_linear", &mma12_linear);
     m.def("fast_bgemv", &fast_bgemv);
     m.def("fast_gemm", &fast_gemm);
     m.def("lane_bits", &lane_bits);

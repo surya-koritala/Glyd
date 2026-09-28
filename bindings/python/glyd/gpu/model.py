@@ -27,20 +27,20 @@ import torch.nn.functional as F
 from . import _lib, kernels as g
 
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
-DEC_MIN = int(os.environ.get("GLYD_DEC_MIN", 769))  # an A100's prompts of this many tokens (12-bit): decoded, then cuBLAS
-# Hopper: steps and prompts of this many tokens multiply by wgmma (tiles of 256 tokens past 128); past 512 decoded for
-# cuBLAS, which there is as fast or faster (Qwen3-8B's layer on an H100 PCIe: 638 us against 864 at 512 tokens, 1065
-# against 964 at 640; Qwen3-32B's 1622 against 2253, then within 6% either way to 1024)
-WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 512))
-MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 (an A100's to 128) by mma_gemm_mid
+# Which kernel a product for M tokens takes on a GPU is the library's route (glyd_gpu.cu's route_for, as measured:
+# GLYD_WG_MIN, GLYD_WG_MAX, GLYD_MID_MIN and GLYD_DEC_MIN move it there): Hopper's steps and prompts of 17 to 512
+# tokens by wgmma, past that decoded for cuBLAS (Qwen3-8B's layer on an H100 PCIe: 638 us against 864 at 512 tokens,
+# 1065 against 964 at 640; Qwen3-32B's 1622 against 2253, then within 6% either way to 1024); Ampere's and Ada's 17 to
+# 64 (an A100's to 128) by mma_gemm_mid; an A100's 12-bit prompts from 769 tokens decoded for cuBLAS.
 # A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). On
 # GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, past 1792 in the 12-bit one where
-# its fused kernel takes the prompt, else past 640 (exact, or not fused: each matrix decoded first); elsewhere, until
-# measured, the fused kernel or the decode as before (the L4, L40S and RTX 6000 Ada sum in fp32 at twice the rate: a
-# product's time decodes half as much beside it). The 12-bit layout's length loses least across Qwen3-1.7B, 4B and 8B
-# (one pass, fused against decoded ahead, 1024-4096 tokens): to 1792 Qwen3-1.7B's fused pass is the faster but at
-# 1280, Qwen3-4B-Instruct-2507's but at 1664, Qwen3-8B's at 1024, 1408 and 1536 alone (1.0-4.6% slower at the other
-# six); at 1793-2047 Qwen3-1.7B's is 3.5-4.0% faster, Qwen3-4B's 1.8-3.1% and Qwen3-8B's 0.7-4.3% slower.
+# its fused kernel takes the prompt (the library's route AHEAD), else past 640 (exact, or not fused: each matrix
+# decoded first); elsewhere, until measured, the fused kernel or the decode as before (the L4, L40S and RTX 6000 Ada
+# sum in fp32 at twice the rate: a product's time decodes half as much beside it). The 12-bit layout's length loses
+# least across Qwen3-1.7B, 4B and 8B (one pass, fused against decoded ahead, 1024-4096 tokens): to 1792 Qwen3-1.7B's
+# fused pass is the faster but at 1280, Qwen3-4B-Instruct-2507's but at 1664, Qwen3-8B's at 1024, 1408 and 1536 alone
+# (1.0-4.6% slower at the other six); at 1793-2047 Qwen3-1.7B's is 3.5-4.0% faster, Qwen3-4B's 1.8-3.1% and
+# Qwen3-8B's 0.7-4.3% slower.
 AHEAD_MIN = int(os.environ.get("GLYD_AHEAD_MIN", 0)) or None
 AHEAD_WARPS = int(os.environ.get("GLYD_AHEAD_WARPS", 0))  # a decode ahead's warps an SM (0: 3 tiered, 2 12-bit), few enough to sit beside a cuBLAS block
 AHEAD_RATE = float(os.environ.get("GLYD_AHEAD_RATE", 2.2e-3))  # weights decoded ahead beside a product, for each of its weights and tokens
@@ -314,10 +314,10 @@ class _Weight:
 class GLinear(_Node, nn.Module):
     """nn.Linear over a packed matrix p (bias: bf16, or None). fused: products
     straight from the packed weights where a kernel takes the step (in the
-    mma layouts up to 64 tokens, an A100's 12-bit to 128, and prompts: on
-    Hopper to WG_MAX tokens, 512, on an A100 in the 12-bit layout to
-    DEC_MIN; one-token steps in the others); else the matrix decoded into
-    the scratch buffer, then
+    mma layouts by the library's route: up to 64 tokens, an A100's 12-bit to
+    128, and prompts: on Hopper to 512 tokens, on an A100 in the 12-bit
+    layout to 768; one-token steps in the others); else the matrix decoded
+    into the scratch buffer, then
     PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, past
     1792 12-bit fused and past 640 not, decoded ahead of its product where
     Ahead takes it). exact: every
@@ -337,56 +337,63 @@ class GLinear(_Node, nn.Module):
         # Whole when it fits the scratch (a split matmul sums in another order), and always for exact.
         self.block = O if exact or O * K <= SCRATCH else max(rows, SCRATCH // K // rows * rows)
         cc = torch.cuda.get_device_capability(p.sm.device)
+        # the GPU as the library's routes take it: compute capability, major * 10 + minor, plus 1000 on a GeForce
+        self.gpu = cc[0] * 10 + cc[1] + (1000 if "GeForce" in torch.cuda.get_device_name(p.sm.device) else 0)
         self.a100 = cc == (8, 0)  # its mid kernel takes steps to 128 tokens; its prompts past 768 are decoded for cuBLAS
         self.step_max = 128 if self.a100 else 64  # tokens to which a step's kernel (not a prompt's) is one C call (_step)
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
-        self.mid = cc in ((8, 0), (8, 6), (8, 7), (8, 9))  # (an A100 its own kernel: producer and consumer warps)
-        ada = cc == (8, 9) and "GeForce" in torch.cuda.get_device_name(p.sm.device)
-        twelve = 1793 if fused and not exact else 641
-        self.ahead = AHEAD_MIN or ((twelve if isinstance(p, g.Mma12) else 513) if ada else 1 << 62)  # prompts decoded ahead, then cuBLAS
+        # prompts decoded ahead, then cuBLAS: fused, from the library's route AHEAD (GeForce Ada's)
+        if AHEAD_MIN or not (isinstance(p, g.Mma) and fused and not exact):
+            self.ahead = AHEAD_MIN or ((641 if isinstance(p, g.Mma12) else 513) if self.gpu == 1089 else 1 << 62)
+        else:
+            self.ahead = self.after(65, (g.AHEAD,))
         self._node()
+
+    def route(self, M):
+        """The library's route for M tokens on this GPU (kernels.py's DECODE, GEMM, MID, WG, BIG, AHEAD), and the last
+        token count from M on that takes it (the mma layouts)."""
+        return g.route(self.p, self.gpu, M)
+
+    def after(self, M, routes):
+        """The first token count from M on whose route is one of routes, else 1 << 62."""
+        while M < 1 << 62:
+            r, last = self.route(M)
+            if r in routes:
+                return M
+            M = last + 1
+        return 1 << 62
 
     def kernel(self, M):
         """The fused product for M tokens in the mma layouts (kernels.py's), or None: decoded, then PyTorch's matmul
-        (a prompt's matrices decoded ahead, Ahead)."""
-        K, twelve = self.in_features, isinstance(self.p, g.Mma12)
-        if self.hopper and WG_MIN <= M <= WG_MAX and K % 64 == 0 and twelve:  # TMA and wgmma
-            return g.mma_gemm_wg
-        if self.mid and MID_MIN <= M <= (128 if self.a100 else 64) and K % 64 == 0 and twelve:  # cp.async and mma.sync
-            return g.mma_gemm_mid
-        if self.decoded(M):
+        (a prompt's matrices decoded ahead, Ahead). The library's route, but from self.ahead tokens a prompt whose
+        matrix fits the scratch is decoded ahead, and one past it never is (fused)."""
+        r = self.route(M)[0]
+        if r in (g.BIG, g.AHEAD) and M >= self.ahead and self.block >= self.out_features:
             return None
-        if M <= 64:
-            return g.mma_gemm
-        # A prompt: past WG_MAX tokens on Hopper the tensor cores outrun our decode, and past self.ahead on Ada a
-        # matrix decoded ahead, beside the products before it, costs cuBLAS less than the fused kernel's decode
-        # (whole; a matrix past the scratch is never decoded ahead: fused).
-        if K % 64 == 0 and not self.hopper and (M < self.ahead or self.block < self.out_features):
-            return g.mma_gemm_big
-        return None
+        return {g.GEMM: g.mma_gemm, g.MID: g.mma_gemm_mid, g.WG: g.mma_gemm_wg, g.BIG: g.mma_gemm_big, g.AHEAD: g.mma_gemm_big}.get(r)
 
     def decoded(self, M):
         """Whether a prompt of M tokens is decoded for cuBLAS, never fused (kernel(M) None, and no fused fallback in
-        whole()): an A100's in the 12-bit layout from DEC_MIN tokens, where cuBLAS on the decoded matrix outruns the
-        fused kernel."""
-        return self.a100 and M >= DEC_MIN and isinstance(self.p, g.Mma12)
+        whole()): the library's route DECODE (an A100's in the 12-bit layout from 769 tokens, where cuBLAS on the
+        decoded matrix outruns the fused kernel; Hopper's past its wgmma kernel)."""
+        return self.route(M)[0] == g.DECODE
 
     def _step(self):
-        """A product as one C call where it is a fused one through the prebuilt library: a generation step's
-        (kernel(M)'s functions to step_max tokens, 64, an A100's 128: mma_gemm_mid's), and a prompt's past the last
-        of them to self.ahead tokens (mma_gemm_big; an A100's in the 12-bit layout to DEC_MIN, from which it is
-        decoded for cuBLAS); _lib.step over the pack, the function for each M; else None."""
+        """A product as one C call where it is a fused one through the prebuilt library (glyd_gpu_*_linear, by
+        kernel(M)'s route): a generation step's to step_max tokens (64, an A100's 128: mma_gemm_mid's), and a
+        prompt's past the last of them to self.ahead tokens by the prompt kernel (an A100's in the 12-bit layout to
+        768, from which it is decoded for cuBLAS); _lib.step over the pack; else None."""
         p = self.p
         if not self.fused or self.exact or not isinstance(p, g.Mma) or g.lib() is None:
             return None
+        small = {g.mma_gemm: g.GEMM, g.mma_gemm_mid: g.MID, g.mma_gemm_wg: g.WG}
+        routes = [None] + [small.get(self.kernel(M)) for M in range(1, self.step_max + 1)]
+        while len(routes) > 1 and routes[-1] is None:  # past the steps' kernels: a prompt's (big) or none
+            routes.pop()
+        big = self.kernel(len(routes)) is g.mma_gemm_big
+        top = min(self.ahead, self.after(len(routes), (g.DECODE,)))
         twelve = isinstance(p, g.Mma12)
-        name = {g.mma_gemm: "mma12_gemm" if twelve else "mma_gemm", g.mma_gemm_mid: "mma12_gemm_mid", g.mma_gemm_wg: "mma12_gemm_wg"}
-        names = [None] + [name.get(self.kernel(M)) for M in range(1, self.step_max + 1)]
-        while len(names) > 1 and names[-1] is None:  # past the steps' functions: a prompt's (big) or none
-            names.pop()
-        big = ("mma12_gemm_big" if twelve else "mma_gemm_big") if self.kernel(len(names)) is g.mma_gemm_big else None
-        top = min(self.ahead, DEC_MIN) if self.a100 and twelve else self.ahead
-        return _lib.step(p.data, *((p.exc, p.exc_base, p.sym, 4) if twelve else (p.blocks, p.block_base, p.tiers, 3)), p.shape, self.bias, names, big, top)
+        return _lib.step(p.data, *((p.exc, p.exc_base, p.sym, 4) if twelve else (p.blocks, p.block_base, p.tiers, 3)), p.shape, self.bias, routes, big, top)
 
     def decode_rows(self, r0, r1):
         p, K = self.p, self.p.shape[1]

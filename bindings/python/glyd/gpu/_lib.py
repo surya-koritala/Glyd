@@ -49,11 +49,15 @@ _ARGS = {  # each function's arguments before its stream
     "mma12_moe_unpack": _PACK + [_I64, _I64, _I64, _I64, _P, _P],
     "mma_moe": _PACK + [_I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ, _P],
     "mma12_moe": _PACK + [_I64, _I64, _I64, _P, _I64, _I64, _I64, _P, _I64, _P, _P, _I64, _P, _P, _P, _SZ, _P],
+    "mma_linear": _PACK + [_I64, _I64, _P, _I64, _P, _P, _I64, _P, _SZ, _P],
+    "mma12_linear": _PACK + [_I64, _I64, _P, _I64, _P, _P, _I64, _P, _SZ, _P],
 }
-_SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_big": 4, "mma12_gemm_big": 4, "mma12_gemm_mid": 3, "mma12_gemm_wg": 3, "attn_decode": 4, "mma_moe": 7, "mma12_moe": 7}  # their workspace queries' sizes
+_SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_big": 4, "mma12_gemm_big": 4, "mma12_gemm_mid": 3, "mma12_gemm_wg": 3, "attn_decode": 4, "mma_moe": 7, "mma12_moe": 7, "mma_linear": 4, "mma12_linear": 4}  # their workspace queries' sizes
+_PLAIN = {"gpu": [_P], "mma_route": [_I64] * 4 + [_P, _P], "mma12_route": [_I64] * 4 + [_P, _P]}  # the calls with no stream: the routes
 
 
-API_VERSION = 2  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+API_VERSION = 3  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+BIG = 4  # glyd_gpu.h's GLYD_GPU_ROUTE_BIG: the prompt kernel
 
 
 def load(path):
@@ -71,6 +75,9 @@ def load(path):
     for name, n in _SIZES.items():
         f = _query[name] = getattr(lib, f"glyd_gpu_{name}_workspace")
         f.argtypes, f.restype = [_I64] * n + [ctypes.POINTER(_SZ)], ctypes.c_int
+    for name, args in _PLAIN.items():
+        f = _fn[name] = getattr(lib, "glyd_gpu_" + name)
+        f.argtypes, f.restype = args, ctypes.c_int
     lib.glyd_gpu_error_string.argtypes, lib.glyd_gpu_error_string.restype = [ctypes.c_int], ctypes.c_char_p
     lib.glyd_gpu_cuda_version.restype = ctypes.c_int
     _lib = lib
@@ -313,6 +320,54 @@ def mma12_gemm_big(data, exc, exc_base, sym, O, K, x, bias, y, variant):
     _big("mma12_gemm_big", data, exc, exc_base, _words(sym, 4, "four words of symbols"), O, K, x, bias, y, variant)
 
 
+def gpu():
+    """The current device as the library's routes take it: its compute capability, major * 10 + minor, plus 1000 on a
+    GeForce."""
+    g = ctypes.c_int()
+    r = _fn["gpu"](ctypes.byref(g))
+    if r:
+        _fail("gpu", r)
+    return g.value
+
+
+def _route(name, gpu, O, K, M):
+    """mma_route, mma12_route: (route, last), the route for M tokens on gpu and the last token count that takes it."""
+    route, last = ctypes.c_int(), ctypes.c_int64()
+    r = _fn[name](gpu, O, K, M, ctypes.byref(route), ctypes.byref(last))
+    if r:
+        _fail(name, r)
+    return route.value, last.value
+
+
+def mma_route(gpu, O, K, M):
+    return _route("mma_route", gpu, O, K, M)
+
+
+def mma12_route(gpu, O, K, M):
+    return _route("mma12_route", gpu, O, K, M)
+
+
+def _linear(name, data, a, b, words, O, K, x, bias, y, route):
+    """mma_linear, mma12_linear: a product by a route (-1: this GPU's for M)."""
+    d = data.get_device()
+    if d != _device():
+        return _there(_linear, d, name, data, a, b, words, O, K, x, bias, y, route)
+    _check(O % 64 == 0 and K % 16 == 0 and x.is_contiguous() and x.size(1) == K, "O a multiple of 64, K of 16, X contiguous [M, K]")
+    M, s = x.size(0), _stream(d)
+    ws = _workspace(name, d, s, O, K, M, route)
+    r = _fn[name](data.data_ptr(), a.data_ptr(), b.data_ptr(), words, O, K, x.data_ptr(), M, bias.data_ptr() if bias.numel() else None, y.data_ptr(), route, ws[1], ws[2], _counters(name, d, s, _units(O, M), _UNITS), s)
+    if r:
+        _fail(name, r)
+
+
+def mma_linear(data, blocks, block_base, tiers, O, K, x, bias, y, route):
+    _linear("mma_linear", data, blocks, block_base, _words(tiers, 3, "three tiers"), O, K, x, bias, y, route)
+
+
+def mma12_linear(data, exc, exc_base, sym, O, K, x, bias, y, route):
+    _linear("mma12_linear", data, exc, exc_base, _words(sym, 4, "four words of symbols"), O, K, x, bias, y, route)
+
+
 def _staged(name, data, exc, exc_base, sym, O, K, x, bias, y):
     """mma12_gemm_mid, mma12_gemm_wg: many tokens, the 12-bit layout copied a stage at a time (the GPU checked by the library)."""
     d = data.get_device()
@@ -376,26 +431,23 @@ def attn_decode(q, kd, kb, kbb, kt, vd, vb, vbb, vt, tk, tv, tlen, pairs, G, P, 
         _fail("attn_decode", r)
 
 
-def step(data, a, b, words, n_words, shape, bias, names, big=None, big_max=0):
-    """A generation step's product over one pack in the mma layouts as one C call: what does not change between
-    calls made once (the pack's addresses and words, O and K, the bias; each M's function and workspace bytes at
-    its first call, and its stream's done counters), the checks that hold by the pack's making left out. words:
-    its n_words tiers (3) or words of symbols (4). names[M]: the function for M tokens (mma_gemm, mma12_gemm,
-    mma12_gemm_mid, mma12_gemm_wg), or None; big: a prompt's (mma_gemm_big, mma12_gemm_big, its own blocks of tokens) past them to
-    big_max tokens, or None. run(x): Y [..., O] for X contiguous [..., K] of M rows on the pack's device (made
-    current for the call where it is not: a layer on another GPU), where a function takes M; else None (the checked
-    path)."""
+def step(data, a, b, words, n_words, shape, bias, routes, big=False, big_max=0):
+    """A generation step's product over one pack in the mma layouts as one C call, glyd_gpu_*_linear by the route the
+    Linear takes: what does not change between calls made once (the pack's addresses and words, O and K, the bias;
+    each M's workspace bytes at its first call, and its stream's done counters), the checks that hold by the pack's
+    making left out. words: its n_words tiers (3) or words of symbols (4). routes[M]: the route for M tokens (the
+    library's: a step's kernel), or None; big: the prompt kernel's route past them to big_max tokens. run(x): Y [...,
+    O] for X contiguous [..., K] of M rows on the pack's device (made current for the call where it is not: a layer
+    on another GPU), where a route takes M; else None (the checked path)."""
     O, K = shape
     d, dev = data.get_device(), data.device
+    name = "mma12_linear" if n_words == 4 else "mma_linear"
+    fn = _fn[name]
     head = (data.data_ptr(), a.data_ptr(), b.data_ptr(), _words(words, n_words, "three tiers or four words of symbols"), O, K)
     bias = bias.data_ptr() if bias is not None else None
-    for name in set(names) - {None}:
-        _counters(name, d, None, O // 64, 1 << 16)  # the device's, made now: never in a CUDA graph's memory pool
-    if big:
-        _counters(big, d, None, 0, _UNITS)
-    plans = [None] * len(names)
+    _counters(name, d, None, 0, _UNITS)  # the device's, made now: never in a CUDA graph's memory pool
+    plans = [None] * len(routes)
     bf16 = torch.bfloat16
-    prompt = _fn[big] if big else None
 
     def run(x):
         if x.shape[-1] != K or not x.is_contiguous() or x.get_device() != d:
@@ -406,29 +458,29 @@ def step(data, a, b, words, n_words, shape, bias, names, big=None, big_max=0):
         M = x.numel() // K
         if big and M >= len(plans) and M < big_max:  # a prompt (big: none on Hopper, nor where K is not a multiple of 64)
             s = _stream(d)
-            w = _workspace(big, d, s, O, K, M, 0)
+            w = _workspace(name, d, s, O, K, M, BIG)
             y = torch.empty(*x.shape[:-1], O, dtype=bf16, device=dev)
-            r = prompt(*head, x.data_ptr(), M, bias, y.data_ptr(), 0, w[1], w[2], _counters(big, d, s, _units(O, M), _UNITS), s)
+            r = fn(*head, x.data_ptr(), M, bias, y.data_ptr(), BIG, w[1], w[2], _counters(name, d, s, _units(O, M), _UNITS), s)
             if r:
-                _fail(big, r)
+                _fail(name, r)
             return y
         plan = plans[M] if M < len(plans) else False
         if plan is None:
-            name = names[M]
-            plan = plans[M] = name is not None and [_fn[name], name, _need(name, d, (O, K, M)), None, None]
+            route = routes[M]
+            plan = plans[M] = route is not None and [route, _need(name, d, (O, K, M, route)), None, None]
         if not plan:
             return None
-        fn, name, need, cs, done = plan
+        route, need, cs, done = plan
         s = _stream(d)
         if s != cs:  # the stream's counters (kept for the next call but in a graph's node)
-            done = _counters(name, d, s, O // 64, 1 << 16)
+            done = _counters(name, d, s, _units(O, M), _UNITS)
             if not local.fresh:
-                plan[3], plan[4] = s, done
+                plan[2], plan[3] = s, done
         w = _kept.get((d, s))
         if local.fresh or w is None or w[2] < need:
-            w = _workspace(name, d, s, O, K, M)
+            w = _workspace(name, d, s, O, K, M, route)
         y = torch.empty(*x.shape[:-1], O, dtype=bf16, device=dev)
-        r = fn(*head, x.data_ptr(), M, bias, y.data_ptr(), w[1], w[2], done, s)
+        r = fn(*head, x.data_ptr(), M, bias, y.data_ptr(), route, w[1], w[2], done, s)
         if r:
             _fail(name, r)
         return y

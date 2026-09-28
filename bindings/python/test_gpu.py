@@ -156,7 +156,7 @@ def test_c_header():
     it imports torch."""
     gpu = os.path.join(HERE, "..", "..", "gpu")
     h = re.sub(r"/\*.*?\*/", "", open(os.path.join(gpu, "glyd_gpu.h")).read(), flags=re.S)
-    names = {"_P", "_I64", "_U64", "_SZ", "_W", "_PACK", "_FAST", "_DENSE", "_ARGS", "_SIZES", "API_VERSION"}
+    names = {"_P", "_I64", "_U64", "_SZ", "_W", "_PACK", "_FAST", "_DENSE", "_ARGS", "_SIZES", "_PLAIN", "API_VERSION"}
     body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "_lib.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= names]
     lib = {"ctypes": ctypes}
     exec(compile(ast.Module(body, []), "_lib.py", "exec"), lib)
@@ -171,6 +171,7 @@ def test_c_header():
     declared = {name: (ret, [ctype(a) for a in args.split(",")] if args.strip() != "void" else []) for ret, name, args in re.findall(r"(int|const char\*) (glyd_gpu_\w+)\(([^)]*)\);", " ".join(h.split()))}
     called = {f"glyd_gpu_{n}": ("int", a + [P]) for n, a in lib["_ARGS"].items()}
     called.update({f"glyd_gpu_{n}_workspace": ("int", [c.c_int64] * k + [c.POINTER(c.c_size_t)]) for n, k in lib["_SIZES"].items()})
+    called.update({f"glyd_gpu_{n}": ("int", a) for n, a in lib["_PLAIN"].items()})  # (no stream: the routes)
     called.update(glyd_gpu_api_version=("int", []), glyd_gpu_cuda_version=("int", []), glyd_gpu_error_string=("const char*", [c.c_int]))
     assert declared == called, [n for n in sorted(set(declared) | set(called)) if declared.get(n) != called.get(n)]
     assert int(re.search(r"#define GLYD_GPU_API_VERSION (\d+)", h).group(1)) == lib["API_VERSION"], "GLYD_GPU_API_VERSION is not _lib.py's API_VERSION"

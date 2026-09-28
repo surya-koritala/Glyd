@@ -33,7 +33,7 @@ pub mod safetensors;
 /// The C API this crate calls (glyd_gpu.h's `GLYD_GPU_API_VERSION`): a
 /// library of another version is refused, as a C FFI does not see a call's
 /// arguments.
-pub const API_VERSION: i32 = 2;
+pub const API_VERSION: i32 = 3;
 /// A status: `cudaErrorInvalidValue`, an argument out of range.
 pub const INVALID_VALUE: i32 = 1;
 /// A status: `cudaErrorNotSupported`, a kernel that is not for this GPU.
@@ -168,6 +168,14 @@ api! { Api, DECLARED;
     fn glyd_gpu_mma12_unpack(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, k: i64, row0: i64, rows: i64, out: *mut u16, warps: i64, cs: Stream) -> c_int;
     fn glyd_gpu_hold(ns: i64, cs: Stream) -> c_int;
 
+    fn glyd_gpu_gpu(gpu: *mut c_int) -> c_int;
+    fn glyd_gpu_mma_route(gpu: i64, o: i64, k: i64, m: i64, route: *mut c_int, last: *mut i64) -> c_int;
+    fn glyd_gpu_mma12_route(gpu: i64, o: i64, k: i64, m: i64, route: *mut c_int, last: *mut i64) -> c_int;
+    fn glyd_gpu_mma_linear_workspace(o: i64, k: i64, m: i64, route: i64, bytes: *mut usize) -> c_int;
+    fn glyd_gpu_mma_linear(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, o: i64, k: i64, x: *const u16, m: i64, bias: *const u16, y: *mut u16, route: i64, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream) -> c_int;
+    fn glyd_gpu_mma12_linear_workspace(o: i64, k: i64, m: i64, route: i64, bytes: *mut usize) -> c_int;
+    fn glyd_gpu_mma12_linear(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, o: i64, k: i64, x: *const u16, m: i64, bias: *const u16, y: *mut u16, route: i64, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream) -> c_int;
+
     fn glyd_gpu_moe_route(ids: *const i64, p: i64, e: i64, plan: *mut i32, cs: Stream) -> c_int;
     fn glyd_gpu_mma_moe_workspace(e: i64, o: i64, k: i64, t: i64, topk: i64, act: i64, weighted: i64, bytes: *mut usize) -> c_int;
     fn glyd_gpu_mma_moe(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, e: i64, o: i64, k: i64, x: *const u16, t: i64, topk: i64, gather: i64, plan: *const i32, act: i64, bias: *const u16, w: *const c_void, wf32: i64, ids: *const i64, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream) -> c_int;
@@ -190,6 +198,40 @@ api! { Api, DECLARED;
     fn glyd_gpu_write_codes(w: *const u16, n: i64, len: *const u8, code: *const u32, offs: *const u32, out: *mut u32, tw: i64, v: i64, cs: Stream) -> c_int;
     fn glyd_gpu_decode(sm: *const u8, stream: *const u32, stream_words: i64, offs: *const u32, tables: *const u32, n: i64, tw: i64, v: i64, tile_words: i64, tile_ids: *const i64, n_ids: i64, out: *mut u16, cs: Stream) -> c_int;
     fn glyd_gpu_gemv(sm: *const u8, stream: *const u32, stream_words: i64, offs: *const u32, tables: *const u32, o: i64, k: i64, tw: i64, v: i64, tile_words: i64, x: *const u16, bias: *const u16, y: *mut u16, sum: *mut f32, count: *mut c_int, cs: Stream) -> c_int;
+}
+
+/// How glyd.gpu multiplies by a packed matrix for m tokens on a GPU, as
+/// measured there (glyd_gpu.h's `GLYD_GPU_ROUTE_*`): the kernel its product
+/// takes, or the matrix decoded for a bf16 GEMM of the caller's own where
+/// that is the faster.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// Decoded ([`Library::unpack`]), then the caller's GEMM.
+    Decode = 0,
+    /// [`Library::gemm`]: 0 to 64 tokens.
+    Gemm = 1,
+    /// [`Library::gemm_mid`].
+    Mid = 2,
+    /// [`Library::gemm_wg`].
+    Wg = 3,
+    /// [`Library::gemm_big`], variant 0.
+    Big = 4,
+    /// As Decode, the decode run ahead beside the products before (GeForce Ada's prompts).
+    Ahead = 5,
+}
+
+impl Route {
+    fn from_c(r: c_int) -> Result<Route> {
+        Ok(match r {
+            0 => Route::Decode,
+            1 => Route::Gemm,
+            2 => Route::Mid,
+            3 => Route::Wg,
+            4 => Route::Big,
+            5 => Route::Ahead,
+            _ => return Err(Error::Cuda { call: "route", status: INVALID_VALUE, text: format!("route {r}, one this crate does not know") }),
+        })
+    }
 }
 
 /// A matrix in the tiered mma layout (about 10.8 bits a weight): `data`
@@ -527,6 +569,56 @@ impl Library {
     pub unsafe fn unpack(&self, w: &Matrix, row0: i64, rows: i64, out: *mut u16, warps: i64, cs: Stream) -> Result<()> {
         let r = mma!(self, w, glyd_gpu_mma_unpack, glyd_gpu_mma12_unpack, w.cols, row0, rows, out, warps, cs);
         self.check("unpack", r)
+    }
+
+    /// The current device as the routes take it: its compute capability,
+    /// major * 10 + minor, plus 1000 on a GeForce (1089: an RTX 40).
+    pub fn gpu(&self) -> Result<i32> {
+        let mut g = 0;
+        // SAFETY: a host out-pointer.
+        self.check("gpu", unsafe { (self.api.glyd_gpu_gpu)(&mut g) })?;
+        Ok(g)
+    }
+
+    /// The route of `w` for m tokens on `gpu` (as [`Library::gpu`] gives
+    /// it), and the last token count from m on that takes it (`i64::MAX`:
+    /// every one past m).
+    pub fn route(&self, gpu: i32, w: &Matrix, m: i64) -> Result<(Route, i64)> {
+        let (mut r, mut last) = (0, 0i64);
+        // SAFETY: sizes and host out-pointers.
+        let s = unsafe {
+            match w.pack {
+                Pack::Tiered(_) => (self.api.glyd_gpu_mma_route)(gpu as i64, w.rows, w.cols, m, &mut r, &mut last),
+                Pack::Twelve(_) => (self.api.glyd_gpu_mma12_route)(gpu as i64, w.rows, w.cols, m, &mut r, &mut last),
+            }
+        };
+        self.check("route", s)?;
+        Ok((Route::from_c(r)?, last))
+    }
+
+    /// Bytes of workspace [`Library::linear`] needs by `route` (None: the current GPU's).
+    pub fn linear_workspace(&self, w: &Matrix, m: i64, route: Option<Route>) -> Result<usize> {
+        let r = route.map_or(-1, |r| r as i64);
+        // SAFETY: sizes and a host out-pointer.
+        self.bytes("linear_workspace", |b| unsafe {
+            match w.pack {
+                Pack::Tiered(_) => (self.api.glyd_gpu_mma_linear_workspace)(w.rows, w.cols, m, r, b),
+                Pack::Twelve(_) => (self.api.glyd_gpu_mma12_linear_workspace)(w.rows, w.cols, m, r, b),
+            }
+        })
+    }
+
+    /// Y = X W^T (+ bias) for any number of tokens by a route (None: the
+    /// current GPU's for p.m): its kernel; [`Route::Decode`] and
+    /// [`Route::Ahead`] by the prompt kernel, but on Hopper
+    /// ([`NOT_SUPPORTED`]: decode W there). done: (m + 127) / 128 x rows / 64
+    /// counters.
+    ///
+    /// # Safety
+    /// See the crate's.
+    pub unsafe fn linear(&self, w: &Matrix, p: &Product, route: Option<Route>, cs: Stream) -> Result<()> {
+        let r = mma!(self, w, glyd_gpu_mma_linear, glyd_gpu_mma12_linear, w.rows, w.cols, p.x, p.m, null(p.bias), p.y, route.map_or(-1, |r| r as i64), p.workspace, p.workspace_bytes, p.done, cs);
+        self.check("linear", r)
     }
 
     /// Stream cs held ns nanoseconds by one thread.
