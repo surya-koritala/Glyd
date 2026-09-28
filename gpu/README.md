@@ -79,17 +79,20 @@ shared memory by `cp.async` and decoding W's steps of it into B
 fragments there; four consume, each 64 tokens by 64 rows on the tensor
 cores with their fragments double-buffered, never waiting on a decode.
 Three stages are in flight, passed between the two by named barriers. A
-block is 128 tokens by 128 rows of W, or past 128 tokens 256 by 64 (a
+tile is 128 tokens by 128 rows of W, or past 128 tokens 256 by 64 (a
 weight decoded once for twice the tokens; on GeForce Ada only where the
-last block of 256 would be more than half full); where the blocks would
-not fill the GPU, K is split and the parts added in a fixed order. Past
-128 tokens the product is bound by the tensor cores, not by memory, so
-the most it can be is bf16's time; it is within 5-10% of it. Measured on
-Qwen2.5-7B's matrices: the consumers alone come within 1-4% of cuBLAS
-(one warp an SM quarter keeps the tensor cores full: 106 TFLOPS, as
-cuBLAS's kernel); the rest is the producers' decoding sharing the SM.
-Longer prompts on GeForce Ada decode each matrix once, ahead of its
-product (below: long prompts).
+last tile of 256 would be more than half full). As many blocks as the
+GPU holds at once each take an equal share of the tiles' stages in turn,
+their stages in flight from one tile to the next (stream-K: no wave part
+empty, no pipeline filled again); a tile that several blocks share is
+summed by the last of them to finish, in their order (the same result
+every run). Past 128 tokens the product is bound by the tensor cores,
+not by memory, so the most it can be is bf16's time; it is within 5-10%
+of it. Measured on Qwen2.5-7B's matrices: the consumers alone come
+within 1-4% of cuBLAS (one warp an SM quarter keeps the tensor cores
+full: 106 TFLOPS, as cuBLAS's kernel); the rest is the producers'
+decoding sharing the SM. Longer prompts on GeForce Ada decode each
+matrix once, ahead of its product (below: long prompts).
 
 The other formats, 128 new tokens, one sequence:
 
