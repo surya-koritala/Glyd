@@ -1348,18 +1348,21 @@ __device__ __forceinline__ uint64_t sw128_desc(uint32_t addr) {
     return (uint64_t)((addr & 0x3FFFF) >> 4) | ((uint64_t)(1024 >> 4) << 32) | ((uint64_t)1 << 62);
 }
 
+// wgmma is sm_90a's alone (sm_90's PTX has none, nor Blackwell's sm_100 and sm_120): its code and the TMA
+// kernel's body compile for sm_90a only (__CUDA_ARCH_FEAT_SM90_ALL), empty for the other targets, where the
+// host never launches that kernel (compute capability 9.0 alone).
 __device__ __forceinline__ void wg_fence() {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
 #endif
 }
 __device__ __forceinline__ void wg_commit() {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
 #endif
 }
 template <int N> __device__ __forceinline__ void wg_wait() {  // until at most N groups of products are running
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     asm volatile("wgmma.wait_group.sync.aligned %0;\n" ::"n"(N) : "memory");
 #endif
 }
@@ -1396,6 +1399,8 @@ __device__ __forceinline__ void tma_2d(uint32_t dst, const CUtensorMap* map, int
     asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes [%0], [%1, {%2, %3}], [%4];\n" ::"r"(dst), "l"((uint64_t)map), "r"(c0), "r"(c1), "r"(bar) : "memory");
 }
 
+#endif
+#if defined(__CUDA_ARCH_FEAT_SM90_ALL)
 // A stage's 4 wgmma m64nNk16 (64 columns), A (W's 64 rows by 16 columns each) from registers, B (N tokens) from
 // shared memory, then their commit: D = A B + (acc ? D : 0) for the first, D += A B for the rest.
 __device__ __forceinline__ void wgmma4_rs(float (&d)[8], const uint32_t (&a)[4][4], const uint64_t (&db)[4], int acc) {
@@ -1577,7 +1582,7 @@ template <int NT, int WG> struct Tma12 {
 
 template <int NT, int WG>
 __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(const __grid_constant__ CUtensorMap xmap, Nib f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     using C = Tma12<NT, WG>;
     extern __shared__ __align__(1024) uint8_t smem_raw[];  // NS slots [X tile | a row block's steps, exceptions, bounds | the other's], the barriers
     __shared__ int last;

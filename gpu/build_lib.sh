@@ -2,9 +2,10 @@
 # glyd_gpu.cu's kernels as a library behind its C API (no PyTorch in it), for
 # glyd_gpu.py to load through glyd/gpu/_lib.py where nvcc is not at hand. The
 # CUDA runtime is linked in, so it needs only the driver; code for Ampere
-# (sm_80, sm_86), Ada (sm_89) and Hopper (sm_90a), and compute_80 PTX for the
-# GPUs after them (all but the TMA kernel, which is Hopper's). The name carries
-# the CUDA major version: libglyd_gpu_cuda13.so.
+# (sm_80, sm_86), Ada (sm_89), Hopper (sm_90a) and Blackwell (sm_100, sm_120),
+# and compute_80 PTX for the GPUs after them (all but the TMA kernel, which is
+# Hopper's: sm_90a alone). The name carries the CUDA major version:
+# libglyd_gpu_cuda13.so.
 #   bash gpu/build_lib.sh [OUT_DIR]      (default: next to glyd_gpu.py)
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,7 +20,8 @@ mkdir -p "$OUT"
 "$NVCC" -O3 -std=c++20 --expt-relaxed-constexpr -isystem "$CUDA/include" \
     -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ \
     -gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 \
-    -gencode arch=compute_90a,code=sm_90a -gencode arch=compute_80,code=compute_80 \
+    -gencode arch=compute_90a,code=sm_90a -gencode arch=compute_100,code=sm_100 -gencode arch=compute_120,code=sm_120 \
+    -gencode arch=compute_80,code=compute_80 \
     --threads 0 -shared -Xcompiler -fPIC,-fvisibility=hidden -Xlinker --exclude-libs,ALL \
     -cudart static -L"$CUDA/lib" \
     -o "$OUT/libglyd_gpu_cuda$MAJOR.so" "$HERE/glyd_gpu.cu"
