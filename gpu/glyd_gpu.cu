@@ -1552,7 +1552,7 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB, CR>::THREADS, 1) mma_gemm
             }
             bar_sync<32 * CW>(1 + 2 * NB);
             out = last;
-            if (out) {  // every block's slot in block order (this one's read back too), 8 loads in flight at a time
+            if (out) {  // every block's slot in block order (this one's read back too), NN loads in flight at a time
                 __threadfence();
 #pragma unroll
                 for (int mt = 0; mt < 4; mt++)
@@ -3202,7 +3202,8 @@ static int mma_gemm_big_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
 template <class Fmt>
 static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
     if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16) return cudaErrorInvalidValue;
-    // 4 consumer warps and 4 producers: blocks of 128 tokens by two row blocks (3 stages), or, past 128
+    // 4 producer warps and 4 consumers (on GeForce Ada 8 consumers of half a row block, but in the tiered layout's
+    // blocks of 128: below): blocks of 128 tokens by two row blocks (3 stages; 2 with 8 consumers), or, past 128
     // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens); on GeForce Ada only where
     // the last block of 256 would be more than half full (else its empty half costs more than the second
     // decode: a Qwen3-4B layer's products take 0.79-0.89x the time in blocks of 128 at 300 tokens, 1.02-1.14x
@@ -3226,8 +3227,9 @@ static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
     }
     // Consumers of half a row block (two a scheduler) where they were measured the faster, RTX 4080 SUPER: blocks of
     // 256 tokens in both layouts (a Qwen3-1.7B, 4B or 8B layer 2-5% faster 12-bit, 1-2% tiered, at 512-4096 tokens),
-    // and of 128 by two row blocks in the 12-bit layout (2-4% at 300-896); there the tiered layout's producers, a
-    // weight decoded for 128 tokens, do not keep up with them (11-14% slower than with consumers of a row block).
+    // and of 128 by two row blocks in the 12-bit layout (two stages, as prototyped: 2-4% at 300-896); there the
+    // tiered layout's producers, a weight decoded for 128 tokens, do not keep up with them (11-14% slower than with
+    // consumers of a row block).
     if (variant == 2) return mma_gemm_big_run<Fmt, 8, 4, 2, 1, 32>(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
     if constexpr (std::is_same_v<Fmt, Nib>) return mma_gemm_big_run<Fmt, 8, 4, 2, 2, 32>(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
     else return mma_gemm_big_run<Fmt, 4, 4, 3, 2>(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);

@@ -71,9 +71,9 @@ kernels._ext = _ext
 
 if __name__ == "__main__":
     # The many-token products against the fp32 product: mma_gemm_mid (Ampere on), mma_gemm_wg (Hopper), and a
-    # prompt's mma_gemm_big (Ampere and Ada, both layouts: on GeForce Ada its consumers of half a row block, blocks of
-    # 128 tokens and of 256, to 1100). Odd row blocks, units shared by blocks, exceptions few and many (past a stage's
-    # copy: read from global memory), 1-600 tokens, bias; the same every run.
+    # prompt's mma_gemm_big (every GPU but Hopper, both layouts: on GeForce Ada its consumers of half a row block,
+    # blocks of 128 tokens and of 256, to 1100). Odd row blocks, units shared by blocks, exceptions few and many (past
+    # a stage's copy: read from global memory), 1-600 tokens, bias; the same every run.
     import torch.nn.functional as F
     assert torch.cuda.get_device_capability()[0] >= 8, "Ampere or later"
     hopper = torch.cuda.get_device_capability() == (9, 0)

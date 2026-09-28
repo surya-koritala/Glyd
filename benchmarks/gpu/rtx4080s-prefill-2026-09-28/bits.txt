@@ -1,0 +1,2 @@
+1428 products saved to bits-main.json
+1428 products compared bit for bit with bits-main.json: 1428 identical

@@ -1,7 +1,10 @@
 """One layer's products (q,k,v and gate,up merged, as e2e --merge runs them) at M tokens: cuBLAS bf16 against
 mma_gemm_big variants, L2 flushed before each call, CUDA events, median of N. Real weights of layer L.
 
-    python mb.py MODEL_DIR [--layer 10] [--M 256,512,1024,2048,4096] [--fmt mma,mma12] [--variants 0,4] [--reps 7]
+    python mb.py MODEL_DIR [--layer 10] [--M 256,512,1024,2048,4096] [--fmt mma,mma12] [--variants 0,1,2] [--reps 7]
+
+Variants as the library in GLYD_GPU_LIB takes them: 0 its choice of blocks, 1 blocks of 128 tokens by two row blocks,
+2 of 256 by one (the logs' other numbers came from scratch builds: gpu/README.md, prompts on GeForce Ada).
 """
 import argparse, glob, json, os, sys, torch
 import torch.nn.functional as F

@@ -78,13 +78,14 @@ split: four produce, copying X's tile of each stage (64 columns) into
 shared memory by `cp.async` and decoding W's steps of it into B
 fragments there; four consume, each 64 tokens by 64 rows on the tensor
 cores with their fragments double-buffered, never waiting on a decode
-(on GeForce Ada eight, each 64 tokens by 32 rows: below, prompts on
-GeForce Ada).
-Three stages are in flight, passed between the two by named barriers. A
-tile is 128 tokens by 128 rows of W, or past 128 tokens 256 by 64 (a
-weight decoded once for twice the tokens; on GeForce Ada only where the
-last tile of 256 would be more than half full, or past 1024 tokens tiered
-and 4224 12-bit, as measured). On GeForce Ada as many
+(on GeForce Ada eight, each 64 tokens by 32 rows, but in the tiered
+layout's tiles of 128 tokens: below, prompts on GeForce Ada). Three
+stages are in flight in a tile of 128 tokens with four consumers, two
+otherwise, passed between the two by named barriers. A tile is 128
+tokens by 128 rows of W, or past 128 tokens 256 by 64 (a weight decoded
+once for twice the tokens; on GeForce Ada only where the last tile of
+256 would be more than half full, or past 1024 tokens tiered and 4224
+12-bit, as measured). On GeForce Ada as many
 blocks as the GPU holds at once each take an equal share of the tiles'
 stages in turn, their stages in flight from one tile to the next
 (stream-K: no wave part empty, no pipeline filled again); a tile that
@@ -505,9 +506,9 @@ ms of a Qwen3-1.7B pass at 128-512 tokens), and waves ran part empty.
 A prompt's product is now one C call, as a generation step's
 (`_lib.step`), and on GeForce Ada the kernel runs by stream-K (above;
 other GPUs keep the grid until it is measured there). The 12-bit
-layout's fused kernel is then the faster one to 1024 tokens (the decode
-ahead starts there, was past 640; for exact and unfused products still
-past 640). One forward pass
+layout's fused kernel was then the faster one to 1024 tokens (the decode
+ahead started there, was past 640; for exact and unfused products still
+past 640; now past 1792: prompts on GeForce Ada, below). One forward pass
 (`e2e.py --prefill --merge`, bf16 and Glyd merged alike), RTX 4080
 SUPER, ms, main / now:
 
@@ -550,8 +551,9 @@ instructions a product against 2.3). Blocks of 256 tokens take them in
 both layouts, blocks of 128 by two row blocks in the 12-bit layout; the
 tiered layout's blocks of 128 keep four (its producers, a weight decoded
 for 128 tokens, fall behind eight consumers: 11-14% slower). The order of
-the sums is a unit's stages' as before, so the bits are main's (1176
-products compared with main's kernel of the same tiling).
+the sums is a unit's stages' as before, so the bits are main's (1428
+products through main's library and this one, bits.py: 65-2100 tokens,
+the choice of blocks and each tiling).
 
 A layer's products (q,k,v and gate,up merged; each timed alone after an
 L2 flush, median of 9; layer 10's real weights), cuBLAS = 1.00 in the same
@@ -675,10 +677,15 @@ benchmarks/gpu/rtx4080s-prefill-2026-09-28 (layer-*: the per-layer table
 above; e2e-*: the pass; thr-*, thr2-*: the fused kernel against the
 decode ahead, tiles12: blocks of 128 against 256 there, route*: the same
 before, one run each, and route-final the routing as it is; gen128-*:
-128 sequences, step-*: a layer at 65-128 tokens; phase1*, groups2,
-tm128: the candidates as prototyped, v0 main's kernel, v18 all warps
+128 sequences, step-*: a layer at 65-128 tokens; bits: the bits' check;
+phase1*: the candidates as prototyped, v0 main's kernel, v18 all warps
 decoding in registers, v23 / v24 consumers of half a row block in blocks
-of 128 / 256, v26 v24 with two consumer barriers).
+of 128 / 256, v26 v24 with two consumer barriers; groups2 and tm128
+from scratch builds of this kernel, groups2 the tiered layout's blocks
+of 256, v8 main's kernel, v6 consumers of half a row block, v5 and v7
+those with two consumer barriers (a scheduler's two consumers in
+different groups, or in the same), tm128 blocks of 128 by two row
+blocks, v9 main's kernel, v7 consumers of half a row block).
 
 ### Long prompts: each matrix decoded once, beside the products before it
 
