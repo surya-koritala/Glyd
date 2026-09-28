@@ -470,11 +470,12 @@ def best_layout(linear_bytes, other_bytes=0, gpus=1, device=0, moe=False):
     (2026-09-27), whose steps read a few experts' matrices each: on an A10
     the tiered layout as fast as the 12-bit one (OLMoE-1B-7B and
     granite-3.1-3b-a800m, 1-6% less GPU time a step at 1 and 8 sequences)
-    and 11% smaller, so there as on Ada the tiered one; on an H100 PCIe the
-    12-bit one (Qwen3-30B-A3B, 26.2 and 191.0 tokens/s at 1 and 8
-    sequences against the tiered layout's 15.8 and 111.8), and so on an
-    A100 (not measured with one); Blackwell as for dense Linears until
-    measured. Either way the tiered layout when only it fits (2 GiB a GPU
+    and 11% smaller, so there as on Ada the tiered one (granite on an RTX
+    4080 SUPER: 6-7% less GPU time a step, 10% smaller; its prompts 4-11%
+    slower); on an H100 PCIe the 12-bit one (Qwen3-30B-A3B, 26.2 and 191.0
+    tokens/s at 1 and 8 sequences against the tiered layout's 15.8 and
+    111.8), and so on an A100 (not measured with one); Blackwell as for
+    dense Linears until measured. Either way the tiered layout when only it fits (2 GiB a GPU
     kept for activations and the KV cache)."""
     p = torch.cuda.get_device_properties(device)
     room = gpus * (p.total_memory - 2 * 2**30)

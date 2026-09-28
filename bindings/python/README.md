@@ -96,13 +96,15 @@ packs a model already loaded in bf16 in place, on the GPU its weights are
 on (the current one for weights on the CPU), and returns it
 (`glyd.compress` is the codec's, for bytes).
 
-A mixture of experts (the Experts modules of transformers 5.17: OLMoE,
-granite MoE ...) is packed too, each layer's experts as one matrix, and
-run by `glyd`, an experts implementation registered with transformers;
-with `exact=True` the experts the tokens are routed to are decoded and
-bf16's own implementation runs on them. glyd-v1 holds no packed experts
-yet, and a model with them can't be copied or pickled (`copy.deepcopy`,
-`torch.save`): load it again.
+A mixture of experts is packed too, each layer's experts as one matrix:
+every family of transformers 5.17, those whose Experts modules it runs
+through an experts implementation (OLMoE, granite MoE, Qwen3-MoE,
+gpt-oss, DeepSeek V3 ...) by `glyd`, one registered with it, and those
+whose own code runs their experts (Llama 4, DBRX, Aria, JetMoE, Step 3.7,
+LongCat-Flash) taken over where it multiplies; with `exact=True` the
+experts are decoded and bf16's own implementation runs on them. glyd-v1
+holds them packed, and a model with them can't be copied or pickled
+(`copy.deepcopy`, `torch.save`): load it again.
 
 Compiled: `model.generate(..., cache_implementation="static")` compiles
 the forward as transformers does (`torch.compile`,
@@ -134,12 +136,14 @@ differently around Glyd's op than around bf16's matmul.
 
 `glyd.save_pretrained(model, path)` writes glyd-v1: the packs in the
 tiered layout as safetensors (each packed Linear's buffers under its
-module path, `.glyd_data`, `.glyd_blocks`, `.glyd_block_base`), the rest
-of the model as it is, `glyd.json` (the format, the source repo and
-revision, and for every packed tensor its shape and the sha256 of its
-bf16 bytes), and the source's config, generation config and tokenizer
-files. `from_pretrained(path)` loads the packs as saved; on a GPU where
-the 12-bit layout is the pick, it decodes and packs them again.
+module path, `.glyd_data`, `.glyd_blocks`, `.glyd_block_base`; a mixture
+of experts' weight's under the module holding it, `.glyd_gate_up_proj_data`
+and so on), the rest of the model as it is, `glyd.json` (the format, the
+source repo and revision, and for every packed tensor its shape and the
+sha256 of its bf16 bytes), and the source's config, generation config
+and tokenizer files. `from_pretrained(path)` loads the packs as saved;
+on a GPU where the 12-bit layout is the pick, it decodes and packs them
+again.
 
 `glyd.fit(name_or_path, gpu="48GB", context=8192)`: whether the model
 fits one GPU in bf16 and with Glyd, by the site's rule: the weights (with
