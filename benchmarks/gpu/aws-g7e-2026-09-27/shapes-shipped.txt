@@ -1,0 +1,36 @@
+NVIDIA RTX PRO 6000 Blackwell Server Edition (12, 0) layer 12
+qkv 6144x4096
+  M=   1  cuBLAS    21.2  mma    23.3  mma12    13.6   best mma12 0.64x cuBLAS
+  M=   8  cuBLAS    22.0  mma    24.2  mma12    15.0   best mma12 0.68x cuBLAS
+  M=  16  cuBLAS    22.8  mma    26.2  mma12    17.1   best mma12 0.75x cuBLAS
+  M=  32  cuBLAS    19.8  mma    37.7  mma12    24.1   best mma12 1.22x cuBLAS
+  M=  64  cuBLAS    21.6  mma    55.1  mma12    39.2   best mma12 1.82x cuBLAS
+  M= 128  cuBLAS    29.0  mma_big    57.3   best mma_big 1.97x cuBLAS
+o 4096x4096
+  M=   1  cuBLAS    12.8  mma    18.8  mma12    12.1   best mma12 0.95x cuBLAS
+  M=   8  cuBLAS    13.7  mma    20.1  mma12    13.2   best mma12 0.96x cuBLAS
+  M=  16  cuBLAS    14.3  mma    22.1  mma12    15.4   best mma12 1.08x cuBLAS
+  M=  32  cuBLAS    14.5  mma    30.4  mma12    20.8   best mma12 1.44x cuBLAS
+  M=  64  cuBLAS    13.8  mma    43.6  mma12    32.8   best mma12 2.39x cuBLAS
+  M= 128  cuBLAS    19.7  mma_big    36.0   best mma_big 1.82x cuBLAS
+gate_up 24576x4096
+  M=   1  cuBLAS   137.6  mma    65.2  mma12    87.5   best mma 0.47x cuBLAS
+  M=   8  cuBLAS   135.1  mma    71.0  mma12    93.8   best mma 0.53x cuBLAS
+  M=  16  cuBLAS   136.3  mma    81.2  mma12   104.5   best mma 0.60x cuBLAS
+  M=  32  cuBLAS   139.4  mma   111.8  mma12   111.6   best mma12 0.80x cuBLAS
+  M=  64  cuBLAS   141.8  mma   179.9  mma12   135.1   best mma12 0.95x cuBLAS
+  M= 128  cuBLAS   151.3  mma_big   228.7   best mma_big 1.51x cuBLAS
+down 4096x12288
+  M=   1  cuBLAS    25.9  mma    37.0  mma12    20.5   best mma12 0.79x cuBLAS
+  M=   8  cuBLAS    33.1  mma    38.8  mma12    22.1   best mma12 0.67x cuBLAS
+  M=  16  cuBLAS    34.0  mma    41.4  mma12    25.0   best mma12 0.73x cuBLAS
+  M=  32  cuBLAS    28.3  mma    58.6  mma12    32.1   best mma12 1.13x cuBLAS
+  M=  64  cuBLAS    44.8  mma    87.9  mma12    54.7   best mma12 1.22x cuBLAS
+  M= 128  cuBLAS    51.7  mma_big    89.7   best mma_big 1.74x cuBLAS
+layer total (us):
+  M=   1  cuBLAS   197.6  best Glyd   111.5  0.56x
+  M=   8  cuBLAS   203.8  best Glyd   121.2  0.59x
+  M=  16  cuBLAS   207.4  best Glyd   138.7  0.67x
+  M=  32  cuBLAS   201.9  best Glyd   188.6  0.93x
+  M=  64  cuBLAS   222.0  best Glyd   261.8  1.18x
+  M= 128  cuBLAS   251.8  best Glyd   411.7  1.64x
