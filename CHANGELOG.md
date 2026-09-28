@@ -31,8 +31,10 @@ every earlier format.
   its first step and each step's attention reads all of it, and past that
   the eager loop was as fast on the RTX 4080 SUPER (Qwen3-8B at one
   sequence: 17.7 ms a step compiled with 80 positions held against 20.5
-  eager, 20.4 with 1024, 23.0 with 2048). A forward that does not compile
-  runs eager from there on, with one warning. A model that has generated
+  eager, 20.4 with 1024, 23.0 with 2048). A call that fails compiled runs
+  again eager, and so do the model's later calls, with one warning
+  (transformers 5.17's static cache fails for DeepSeek V2's and V3's, Kimi
+  Linear's and Llama 4's attention, bf16's too). A model that has generated
   compiled is freed at `del`, as an eager one (its compiled forward does not
   refer to it, as transformers' own does).
 - `GLYD_DEC_MIN` (a prompt's products decoded for cuBLAS from that many

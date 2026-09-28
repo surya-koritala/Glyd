@@ -733,12 +733,12 @@ def fast_generate(model):
     as the longest call's) and each step reads all of it, so COMPILE_MAX
     positions in all at most; every other call as transformers runs it. The
     prompt runs eager either way (transformers compiles the steps after
-    it). A forward that does not compile runs eager from there on, with one
-    warning. Its class's generate and get_compiled_call taken over once
-    (_taken), the model marked (glyd_fast). Not with GLYD_COMPILE=0, nor for
-    a family transformers does not compile whole (_can_compile_fullgraph:
-    MiniMax's own cache, DBRX's experts ...), nor a model over several GPUs
-    (not measured there). The model."""
+    it). A call that fails so runs again as it came, as do the model's
+    later ones, with one warning. Its class's generate and get_compiled_call
+    taken over once (_taken), the model marked (glyd_fast). Not with
+    GLYD_COMPILE=0, nor for a family transformers does not compile whole
+    (_can_compile_fullgraph: MiniMax's own cache, DBRX's experts ...), nor a
+    model over several GPUs (not measured there). The model."""
     if os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate") or not getattr(model, "_can_compile_fullgraph", False):
         return model
     devices = {m.p.sm.device for m in model.modules() if isinstance(m, (GLinear, GEmbedding))} | {t.device for t in model.parameters() if t.is_cuda}
@@ -766,7 +766,10 @@ def _taken(own, fast):
 
 
 def _generate(self, own, *args, **kwargs):
-    """fast_generate's generate(): the call with cache_implementation="static" where it takes it, else as it came."""
+    """fast_generate's generate(): the call with cache_implementation="static" where it takes it, else as it came;
+    one that fails so (transformers' static cache for DeepSeek V3's, Kimi Linear's and Llama 4's attention in 5.17, a
+    forward that does not compile) runs again as it came, and so do the model's later calls, with one warning (where
+    that fails too, its error is the call's)."""
     cfg = kwargs.get("generation_config") or self.generation_config
     get = lambda k: kwargs[k] if k in kwargs else getattr(cfg, k, None)
     x = args[0] if args else next((kwargs[k] for k in ("inputs", "input_ids", "inputs_embeds") if kwargs.get(k) is not None), None)
@@ -774,11 +777,17 @@ def _generate(self, own, *args, **kwargs):
         n = get("max_new_tokens")
         n = max(x.shape[1] + (n if n is not None else get("max_length") or 20), getattr(self, "_previous_max_cache_length", 0))  # the cache's positions
         if x.shape[0] * (get("num_return_sequences") or 1) * n <= COMPILE_MAX:
+            fast = dict(kwargs, cache_implementation="static")
             if "generation_config" in kwargs:
-                kwargs["generation_config"] = copy.deepcopy(cfg)
-                kwargs["generation_config"].cache_implementation = "static"
-            else:
-                kwargs["cache_implementation"] = "static"
+                fast = dict(kwargs, generation_config=copy.deepcopy(cfg))
+                fast["generation_config"].cache_implementation = "static"
+            try:
+                return own(self, *args, **fast)
+            except Exception as e:
+                out = own(self, *args, **kwargs)
+                self.glyd_eager = True
+                warnings.warn(f"glyd: {type(self).__name__}'s generate() compiled failed ({type(e).__name__}: {str(e).splitlines()[0][:160] if str(e) else ''}); it runs as transformers runs it from here on", stacklevel=3)
+                return out
     return own(self, *args, **kwargs)
 
 
@@ -788,34 +797,24 @@ def _compiled_call(self, own, compile_config=None):
     model (glyd_compiled: the model's, not referring to it; transformers' own, model.__call__ compiled and kept as
     model._compiled_call, keeps the model until a garbage collection), and garbage collected after a call that
     compiled (torch._dynamo's tracing leaves the model's modules in cycles): a model let go of is freed at del, as an
-    eager one. Once it fails to compile (torch._dynamo's or Inductor's error), a warning and the forward eager from
-    there on."""
+    eager one."""
     from torch._dynamo.utils import counters
 
     f = own(self, compile_config)
-    if self.__dict__.pop("_compiled_call", None) is not None:  # (not Llama 4's, which transformers runs eager)
-        cfg = compile_config or self._default_compile_config()
-        c = self.__dict__.get("glyd_compiled")
-        if c is None or c[0] != cfg:
-            c = self.glyd_compiled = (cfg, torch.compile(type(self).__call__, **cfg.to_dict()))
-        f = functools.partial(c[1], self)
+    if self.__dict__.pop("_compiled_call", None) is None:  # (Llama 4's, which transformers runs eager)
+        return f
+    cfg = compile_config or self._default_compile_config()
+    c = self.__dict__.get("glyd_compiled")
+    if c is None or c[0] != cfg:
+        c = self.glyd_compiled = (cfg, torch.compile(type(self).__call__, **cfg.to_dict()))
 
     def call(*args, **kwargs):
-        if not self.__dict__.get("glyd_eager"):
-            graphs = counters["stats"]["unique_graphs"]
-            try:
-                return f(*args, **kwargs)
-            except Exception as e:
-                import torch._dynamo.exc as de
-                import torch._inductor.exc as ie
-                if not isinstance(e, (de.TorchDynamoException, getattr(ie, "InductorError", ()))):
-                    raise
-                self.glyd_eager = True
-                warnings.warn(f"glyd: {type(self).__name__}'s forward did not compile ({type(e).__name__}); generate() runs it eager from here on", stacklevel=2)
-            finally:
-                if counters["stats"]["unique_graphs"] != graphs:
-                    gc.collect()
-        return self(*args, **kwargs)
+        graphs = counters["stats"]["unique_graphs"]
+        try:
+            return c[1](self, *args, **kwargs)
+        finally:
+            if counters["stats"]["unique_graphs"] != graphs:
+                gc.collect()
 
     return call
 

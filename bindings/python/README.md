@@ -146,8 +146,10 @@ against 21.8 at 8 sequences with 80 each, 26.7 against 24.8 with 576).
 A slower host (a server's CPU) gains more by compiling: set it higher
 there. Not with `exact=True` (below), a family transformers does not
 compile whole (its `_can_compile_fullgraph`) or the model over several
-GPUs, which run eager; a forward that does not compile runs eager from
-there on, with one warning. A model that has generated compiled is freed
+GPUs, which run eager. A call that fails compiled runs again eager, and
+so do the model's later calls, with one warning: transformers 5.17's
+static cache fails for some families' attention (DeepSeek V2 and V3, Kimi
+Linear, Llama 4, bf16's too), which so run eager. A model that has generated compiled is freed
 at `del`, as an eager one (its compiled forward does not refer to it).
 
 `torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)`

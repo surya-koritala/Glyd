@@ -8,8 +8,8 @@ beside glyd/gpu/kernels.py), against each model in bf16:
 - generate() as a user calls it: compiled (model.fast_generate: a static
   cache, CUDA graphs); with compile=False eager, the same logits; not
   with GLYD_COMPILE=0; a call with a cache of its own, several beams or a
-  static cache past COMPILE_MAX as transformers runs it; a forward that
-  fails to compile: one warning, and eager from there on;
+  static cache past COMPILE_MAX as transformers runs it; a call that
+  fails compiled: one warning, run again eager, and eager from there on;
 - glyd.gpu.compress on the model loaded in bf16: the same packs, so the
   same logits and tokens bit for bit;
 - exact=True: logits bit for bit bf16's, the 32 tokens bf16's;
@@ -103,8 +103,8 @@ def compiled(model, ids):
 def fast_loop(e, ids, out_e):
     """generate()'s fast loop on e, loaded with compile=False (eager; out_e its TOKENS tokens): GLYD_COMPILE=0 leaves it
     eager; set up (fast_generate), the calls it leaves as they come run eager (a cache of the call's own, two beams, a
-    static cache past COMPILE_MAX); a forward that does not compile (a backend that fails): one warning, the call and
-    the next eager."""
+    static cache past COMPILE_MAX); a call that fails compiled (a backend that fails): one warning, the call run again
+    eager, and the next eager, their tokens eager's."""
     compiled = lambda: "glyd_compiled" in e.__dict__
     os.environ["GLYD_COMPILE"] = "0"
     try:
@@ -123,12 +123,11 @@ def fast_loop(e, ids, out_e):
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             out = e.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False, compile_config=CompileConfig(backend=broken))
-            e.__dict__.pop("glyd_compiled")
+            e.__dict__.pop("glyd_compiled", None)
             again = e.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
-        said = [str(x.message) for x in w if "did not compile" in str(x.message)]
-        assert len(said) == 1 and e.glyd_eager and not compiled() and torch.equal(again[0, ids.shape[1] :], out_e), ("a forward that does not compile", said)
+        said = [str(x.message) for x in w if "compiled failed" in str(x.message)]
+        assert len(said) == 1 and e.glyd_eager and not compiled() and torch.equal(out[0, ids.shape[1] :], out_e) and torch.equal(again[0, ids.shape[1] :], out_e), ("a call that fails compiled", said)
     torch._dynamo.reset()
-    return same(out[0, ids.shape[1] :], out_e)
 
 
 def ahead(model, ids):
@@ -213,7 +212,8 @@ for name in NAMES:
     logits_e, out_e = run(e, ids)
     assert "glyd_compiled" not in e.__dict__ and "_compiled_call" not in e.__dict__ and exact(logits_e, logits_b), "compile=False: generate() eager, the same packs"
     print(f"   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's {same(out_e, out_b)} of {TOKENS}")
-    print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {gm.COMPILE_MAX} positions eager; a backend that fails: one warning, eager from there on (the call's tokens as eager's: {fast_loop(e, ids, out_e)} of {TOKENS})")
+    fast_loop(e, ids, out_e)
+    print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {gm.COMPILE_MAX} positions eager; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's")
     del e
     torch.cuda.empty_cache()
     ahead(m, long)
