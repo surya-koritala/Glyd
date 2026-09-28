@@ -220,13 +220,15 @@ def install(model, exact=False):
             n += 1
         elif kind == "Llama4TextMoe" and getattr(m.experts, "glyd_packs", None):
             e, p = m.experts, m.experts.glyd_packs
-            e.glyd = (p["gate_up_proj"], p["down_proj"], e.num_experts, _act(e, p["gate_up_proj"].shape[0] // e.num_experts, _default_apply_gate), None)
+            e.glyd = (p["gate_up_proj"], p["down_proj"], e.num_experts, _act(e, p["gate_up_proj"].shape[0] // e.num_experts, _default_apply_gate), None, False)
             for q in p.values():
                 _counters(q, e.num_experts)
             if exact:  # all of them: its products read them all
                 _take_over(e, _whole)
+                m.glyd_run = None  # the block's own forward (installed again, fused before)
             else:
                 _take_over(m, _llama4)
+                e.glyd_run = None
             _handle(e if exact else m)
             n += 1
         elif kind in ("AriaGroupedExpertsGemm", "JetMoeParallelExperts") and getattr(m, "glyd_packs", None):
@@ -248,10 +250,12 @@ def install(model, exact=False):
 
 def _unit(m, owner, packs, gate, own_gate, exact):
     """m (an Experts module, or one run as one) over owner's packs [up, down]: (up, down, E, act, a gate matrix of
-    its own and its activation (DBRX) or None), exact; its handle for the op below; its done counters."""
+    its own and its activation (DBRX) or None, zero-compute experts past E (LongCat's)), exact; its handle for the op
+    below; its done counters."""
     E = held(owner)[1]
     up, down = packs
-    m.glyd, m.glyd_exact = (up, down, E, 0 if own_gate else _act(m, up.shape[0] // E, gate), own_gate), exact
+    zero = bool(getattr(m, "zero_expert_num", 0))
+    m.glyd, m.glyd_exact = (up, down, E, 0 if own_gate else _act(m, up.shape[0] // E, gate), own_gate, zero), exact
     _handle(m)
     for p in owner.glyd_packs.values():
         _counters(p, E)
@@ -416,10 +420,10 @@ def forward(self, hidden_states, top_k_index, top_k_weights):
     packs = getattr(self, "glyd", None)
     if packs is None or self.glyd_exact:
         return _reference(self, hidden_states, top_k_index, top_k_weights)
-    up, down, E, act, own_gate = packs
+    up, down, E, act, own_gate, zero = packs
     # The biases as the module holds them now (accelerate's dispatch puts new tensors in their place).
     bu, bd = (getattr(self, names(self)[0] + "_bias"), self.down_proj_bias) if self.has_bias else (None, None)
-    x = hidden_states.reshape(-1, hidden_states.shape[-1])  # DBRX's [B, S, H]
+    x = hidden_states if hidden_states.dim() == 2 else hidden_states.reshape(-1, hidden_states.shape[-1])  # DBRX's [B, S, H]
     x = x if x.dtype == torch.bfloat16 else x.to(torch.bfloat16)
     ids = top_k_index if top_k_index.dtype == torch.int64 else top_k_index.long()
     w = top_k_weights if top_k_weights.dtype in (torch.bfloat16, torch.float32) else top_k_weights.float()
@@ -429,10 +433,10 @@ def forward(self, hidden_states, top_k_index, top_k_weights):
         h = own_gate[1](g.mma_moe(own_gate[0], E, x, plan, ids)) * h
     elif not act:
         h = getattr(type(self), "_apply_gate", _default_apply_gate)(self, h) if self.has_gate else self.act_fn(h)
-    y = g.mma_moe(down, E, h, plan, ids, 0, bd, w, gather=False)
-    if getattr(self, "zero_expert_num", 0):  # LongCat's zero-compute experts, past E: their tokens' rows as they are
+    y = g.mma_moe(down, E, h, plan, ids, 0, bd, w, gather=False).to(hidden_states.dtype)
+    if zero:  # LongCat's zero-compute experts, past E: their tokens' rows as they are
         y = y + x * (w * (ids >= E)).sum(-1, keepdim=True).to(x.dtype)
-    return y.to(hidden_states.dtype).view(hidden_states.shape)
+    return y if hidden_states.dim() == 2 else y.view(hidden_states.shape)
 
 
 def _llama4(self, hidden_states):
@@ -444,7 +448,7 @@ def _llama4(self, hidden_states):
     logits = nn.Linear.forward(self.router, x)
     top, ids = torch.topk(logits, self.top_k, dim=1)
     rows = (x.unsqueeze(1) * torch.sigmoid(top.float()).to(x.dtype).unsqueeze(-1)).view(-1, x.shape[1])  # a pair's row
-    up, down, E, act, _ = self.experts.glyd
+    up, down, E, act = self.experts.glyd[:4]
     pair = ids.reshape(-1, 1)  # each pair a token of its own, k = 1
     plan = g.moe_route(pair, E)
     h = g.mma_moe(up, E, rows, plan, pair, act)

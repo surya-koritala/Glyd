@@ -236,8 +236,12 @@ class GEmbedding(_Node, nn.Module):
         super().__init__()
         self.p = p
         self.num_embeddings, self.embedding_dim = p.shape
-        # Gemma's embedding multiplies its rows by sqrt(hidden size) in the weights' dtype: the same product here
-        self.register_buffer("scale", scale, persistent=False)
+        # Gemma's embedding multiplies its rows by sqrt(hidden size) in the weights' dtype, NLLB-MoE's by a float
+        # (a scalar kept in fp32 as the product runs): the same product here
+        if isinstance(scale, torch.Tensor) or scale is None:
+            self.register_buffer("scale", scale, persistent=False)
+        else:
+            self.scale = scale
         self._node()
 
     def _step(self):
@@ -256,7 +260,8 @@ class GEmbedding(_Node, nn.Module):
         if torch.compiler.is_compiling():  # one node of the graph (glyd::embedding), which runs what follows
             return torch.ops.glyd.embedding(ids, self.handle, self.embedding_dim)
         rows = self.rows(ids)
-        return rows if self.scale is None else rows * self.scale.to(rows.dtype)
+        s = self.scale
+        return rows if s is None else rows * (s.to(rows.dtype) if isinstance(s, torch.Tensor) else s)
 
 
 # torch.compile: a GLinear or GEmbedding is one node of the graph, an op that runs the module as eager, where a kernel's

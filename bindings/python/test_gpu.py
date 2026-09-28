@@ -224,6 +224,9 @@ FAMILIES = {
     "dbrx": dict(d_model=128, n_heads=4, n_layers=2, max_seq_len=512, attn_config=dict(kv_n_heads=2, rope_theta=10000.0, clip_qkv=8.0), ffn_config=dict(hidden_size=128, ffn_hidden_size=64, moe_num_experts=8, moe_top_k=2)),
     "longcat_flash": dict(num_layers=1, qk_nope_head_dim=32, qk_rope_head_dim=16, head_dim=16, num_key_value_heads=4, zero_expert_num=2),
     "step3p7": dict(text=dict(share_expert_dim=64, mlp_layer_types=SPARSE), vision_config=dict(TOWER, image_size=56, patch_size=14)),
+    # experts as Linears (encoder-decoder models: packed by compress)
+    "switch_transformers": dict(compress=True, d_model=128, d_kv=32, d_ff=128, num_layers=2, num_sparse_encoder_layers=1, num_decoder_layers=2, num_sparse_decoder_layers=1, num_heads=4),
+    "nllb-moe": dict(compress=True, d_model=128, encoder_layers=2, decoder_layers=2, encoder_ffn_dim=128, decoder_ffn_dim=128, encoder_attention_heads=4, decoder_attention_heads=4, encoder_sparse_step=1, decoder_sparse_step=1),
 }  # Doge's experts, rows of two nn.Embedding, are packed as embeddings; its MoE layer does not run in 5.17 (a tuple where its layer takes a tensor)
 
 
@@ -260,15 +263,16 @@ def tiny(kind, over):
 
 def experts(model):
     """model's experts' weights: [(name, packed)]."""
+    import torch.nn as nn
     from glyd.gpu import moe
-    from glyd.gpu.model import GEmbedding
+    from glyd.gpu.model import GLinear
 
     out = []
     for path, m in model.named_modules():
         if moe.held(m):
             out += [(f"{path}.{n}", n in (getattr(m, "glyd_packs", None) or {}) and getattr(m, n).numel() == 0) for n in moe.held(m)[0]]
-        elif type(m).__name__ == "DogeCDMoE":
-            out += [(f"{path}.{n}", isinstance(getattr(m, n), GEmbedding)) for n in ("down_embed", "up_embed")]
+        elif isinstance(m, nn.ModuleDict) and type(m).__name__.endswith("Experts"):  # Linears (Switch Transformers, NLLB-MoE)
+            out += [(f"{path}.{n}", isinstance(c, GLinear)) for n, c in m.named_modules() if isinstance(c, (nn.Linear, GLinear))]
     return out
 
 
@@ -281,13 +285,13 @@ def moe_family(torch, kind, over, d):
     medians, Glyd's (the tiered layout's) and bf16's."""
     import copy
     import glyd
-    from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoModelForTokenClassification
+    from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoModelForSeq2SeqLM, AutoModelForTokenClassification
     from glyd.gpu import format as fmt, moe
 
     cfg = tiny(kind, over)
     torch.manual_seed(0)  # what the model's initialization draws (attention sinks ...)
     with torch.device("cuda"):
-        for auto in (AutoModelForCausalLM, AutoModelForImageTextToText, AutoModelForTokenClassification):
+        for auto in (AutoModelForCausalLM, AutoModelForImageTextToText, AutoModelForTokenClassification, AutoModelForSeq2SeqLM):
             try:
                 fp32 = auto.from_config(cfg, dtype=torch.float32).eval()
                 break
@@ -295,7 +299,7 @@ def moe_family(torch, kind, over, d):
                 pass
     gen = torch.Generator(device="cuda").manual_seed(0)
     ids = torch.randint(0, cfg.get_text_config().vocab_size, (4, 16), device="cuda", generator=gen)
-    kw = dict(decoder_input_ids=ids) if kind == "diffusion_gemma" else {}  # its canvas, else drawn at random
+    kw = dict(decoder_input_ids=ids) if kind == "diffusion_gemma" or cfg.is_encoder_decoder else {}  # a decoder's tokens (DiffusionGemma's canvas, else drawn at random)
     run = lambda model: model(ids, **kw).logits.float()
     with torch.no_grad():
         for p in fp32.parameters():
@@ -310,7 +314,9 @@ def moe_family(torch, kind, over, d):
             ref, lb = copy.deepcopy(bf16), run(bf16)
             import glyd.gpu as gg
             g = gg.compress(bf16)
-            assert all(p for _, p in experts(g)) and moe.nbytes(g) < 0.8 * experts_bytes, (kind, experts(g))
+            packed = experts(g)
+            assert packed and all(p for _, p in packed), (kind, packed)
+            assert not moe.nbytes(g) or moe.nbytes(g) < 0.8 * experts_bytes, (kind, moe.nbytes(g), experts_bytes)  # (Linears: their GLinears' packs)
             eg = err(run(g))
             assert eg <= 1.5 * err(lb), (kind, eg, err(lb))
             assert torch.equal(run(gg.compress(ref, exact=True)), lb), kind
@@ -322,7 +328,7 @@ def moe_family(torch, kind, over, d):
             g = glyd.from_pretrained(src, layout=layout)
             packed = experts(g)
             assert packed and all(p for _, p in packed), (kind, packed)
-            assert kind == "doge" or moe.nbytes(g) < 0.8 * experts_bytes, (kind, moe.nbytes(g), experts_bytes)
+            assert moe.nbytes(g) < 0.8 * experts_bytes, (kind, moe.nbytes(g), experts_bytes)
             lg = run(g)
             assert err(lg) <= 1.5 * err(lb), (kind, layout, err(lg), err(lb))
             if layout == "mma":
@@ -352,7 +358,8 @@ def test_moe_families():
 
 
 def test_cli_pack_and_verify():
-    """python -m glyd.gpu pack and verify on a tiny mixture of experts (Qwen3-MoE's)."""
+    """python -m glyd.gpu pack, verify and fit on a tiny mixture of experts (Qwen3-MoE's): fit counts its experts'
+    bytes, and refuses the glyd-v1 checkpoint (fit the source)."""
     torch = cuda()
     if torch is None:
         print("test_cli_pack_and_verify: skipped (no CUDA GPU, PyTorch or transformers)")
@@ -366,6 +373,10 @@ def test_cli_pack_and_verify():
             r = subprocess.run([sys.executable, "-m", "glyd.gpu", *args], env=env, capture_output=True, text=True)
             assert r.returncode == 0 and says in r.stdout, r.stderr[-2000:]
         assert sum("experts" in e for e in fmt.read_manifest(os.path.join(d, "out"))["packs"].values()) == 4  # 2 layers' gate and up, down
+        f = fit(os.path.join(d, "src"), gpu=10**9)
+        assert f.bf16_weights == sum(os.path.getsize(os.path.join(d, "src", n)) for n in os.listdir(os.path.join(d, "src")) if n.endswith(".safetensors"))
+        r = subprocess.run([sys.executable, "-m", "glyd.gpu", "fit", os.path.join(d, "out")], env=env, capture_output=True, text=True)
+        assert r.returncode != 0 and "fit the source" in r.stderr, r.stderr[-2000:]
 
 
 if __name__ == "__main__":
