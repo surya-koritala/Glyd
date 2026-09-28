@@ -125,13 +125,14 @@ class Recorded(TextStreamer):
 def fast_loop(m, e, tok, ids, out_e):
     """generate()'s fast loop on e, loaded with compile=False (eager; out_e its TOKENS tokens): GLYD_COMPILE=0 leaves it
     eager; set up (fast_generate), the calls it leaves as they come run eager (a cache of the call's own, two beams, a
-    static cache past its cap, glyd_fast, disable_compile, return_dict_in_generate), and so does a call whose gate's
-    helper (transformers' _prepare_generation_config) fails, its tokens eager's; as m's assistant, m's tokens as with
-    it eager (transformers crops the cache an assistant hands back); a call that runs out of memory compiling raises
-    it, and the next call compiles; a call that fails compiled (a backend that fails): one warning, the call run again
-    eager, and the next eager, their tokens eager's, and a skip_prompt TextStreamer's text through it eager's; the same
-    sampled from a seed: its tokens and text as a seeded eager run's."""
+    static cache past its cap, glyd_fast, disable_compile, return_dict_in_generate: none makes a static cache), and so
+    does a call whose gate's helper (transformers' _prepare_generation_config) fails, its tokens eager's; as m's
+    assistant, m's tokens as with it eager (transformers crops the cache an assistant hands back); a call that runs out
+    of memory compiling raises it, and the next call compiles; a call that fails compiled (a backend that fails): one
+    warning, the call run again eager, and the next eager, their tokens eager's, and a skip_prompt TextStreamer's text
+    through it eager's; the same sampled from a seed: its tokens and text as a seeded eager run's."""
     compiled = lambda: e in gm._COMPILED
+    static = lambda: "_previous_max_cache_length" in e.__dict__  # (transformers' _prepare_static_cache sets it)
     with torch.no_grad():
         assisted = m.generate(ids, assistant_model=e, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
         streamed = Recorded(tok)
@@ -148,9 +149,9 @@ def fast_loop(m, e, tok, ids, out_e):
     with torch.no_grad():
         for kw in (dict(past_key_values=DynamicCache(config=e.config)), dict(num_beams=2), dict(max_new_tokens=e.glyd_fast, max_time=0.5), dict(disable_compile=True), dict(return_dict_in_generate=True)):
             e.generate(ids, **dict(dict(max_new_tokens=8, do_sample=False), **kw))
-            assert not compiled(), ("a call the fast loop leaves as it came, compiled", list(kw))
+            assert not compiled() and not static(), ("a call the fast loop leaves as it came, compiled or with a static cache", list(kw))
         out = m.generate(ids, assistant_model=e, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
-        assert torch.equal(out, assisted) and not compiled(), "as another model's assistant: its tokens as with the assistant eager"
+        assert torch.equal(out, assisted) and not compiled() and not static(), "as another model's assistant: its tokens as with the assistant eager"
         # transformers' private helper the gate reads (the merged generation config) failing: the call eager, as it came
         cls, calls = type(e), []
         own = cls._prepare_generation_config
@@ -170,7 +171,7 @@ def fast_loop(m, e, tok, ids, out_e):
                 cls._prepare_generation_config = own
             else:
                 del cls._prepare_generation_config
-        assert len(calls) == 2 and not compiled() and torch.equal(out[0, ids.shape[1] :], out_e), "the gate's helper failing: the call eager"
+        assert len(calls) == 2 and not compiled() and not static() and torch.equal(out[0, ids.shape[1] :], out_e), "the gate's helper failing: the call eager"
 
         def broken(graph, inputs, **kwargs):
             raise RuntimeError("a backend that fails")
