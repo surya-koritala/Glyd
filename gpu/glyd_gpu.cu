@@ -2805,6 +2805,9 @@ static __nv_bfloat16* bf(uint16_t* p) { return (__nv_bfloat16*)p; }
 
 // The CUDA runtime built in (e.g. 13000), and a status's text.
 GLYD_GPU_API int glyd_gpu_cuda_version() { return CUDART_VERSION; }
+// The C API's version, one more whenever a function's arguments change (the caller checks it: ctypes does not check
+// arguments): 2 from the prompt products' done counters, hold and the decode's warps (0.21.0's has none: 1).
+GLYD_GPU_API int glyd_gpu_api_version() { return 2; }
 GLYD_GPU_API const char* glyd_gpu_error_string(int status) { return cudaGetErrorString((cudaError_t)status); }
 
 // The dense format. lane_bits: bits [tiles * 32], the tiles of tw weights of w's n.

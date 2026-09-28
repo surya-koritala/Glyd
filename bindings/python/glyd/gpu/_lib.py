@@ -53,10 +53,18 @@ _ARGS = {  # each function's arguments before its stream
 _SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_big": 4, "mma12_gemm_big": 4, "mma12_gemm_mid": 3, "mma12_gemm_wg": 3, "attn_decode": 4, "mma_moe": 7, "mma12_moe": 7}  # their workspace queries' sizes
 
 
+API_VERSION = 2  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+
+
 def load(path):
-    """The library at path, for the functions below."""
+    """The library at path, for the functions below: refused where its C API is another version (ctypes does not
+    check a call's arguments)."""
     global _lib
     lib = ctypes.CDLL(path)
+    v = getattr(lib, "glyd_gpu_api_version", None)
+    v = v() if v is not None else 1
+    if v != API_VERSION:
+        raise RuntimeError(f"{path}: its C API is version {v}, this package's is {API_VERSION}: build the library from this package's release (gpu/build_lib.sh), or unset GLYD_GPU_LIB")
     for name, args in _ARGS.items():
         f = _fn[name] = getattr(lib, "glyd_gpu_" + name)
         f.argtypes, f.restype = args + [_P], ctypes.c_int
