@@ -171,16 +171,15 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9):
                 packed.add(f"{name}.{weight}")  # its parameter left empty: not saved
                 if f"{name}.{weight}" in tied:  # tied to another's (DiffusionGemma's encoder's to its decoder's)
                     continue
-                w = gm.unpack(p)
                 if f"{name}.{weight}" in sources:
-                    put(f"{name}.{weight}", moe.decoded(m, p, weight, w))
+                    put(f"{name}.{weight}", moe.decoded(m, p, weight, gm.unpack(p)))
                     continue
-                q = p if type(p) is g.Mma else g.pack_mma(w)
+                q = p if type(p) is g.Mma else g.pack_mma(gm.unpack(p))
                 for b in BUFFERS:
                     put(key(name, b, weight), getattr(q, b))
                 shape, transposed = m.glyd_held[weight]
-                packs[f"{name}.{weight}"] = entry(w.shape, q.tiers, [(f"{name}.{weight}", shape, gm.sha256(moe.decoded(m, p, weight, w)))], moe.held(m)[1], transposed)
-                del w, q
+                packs[f"{name}.{weight}"] = entry(p.shape, q.tiers, [(f"{name}.{weight}", shape, moe.sha256(m, p, weight))], moe.held(m)[1], transposed)
+                del q
             if isinstance(m, gm.Merged):
                 parent = name.rpartition(".")[0]
                 order = sorted((c.i, f"{parent}.{n}" if parent else n) for n, c in model.get_submodule(parent).named_children() if isinstance(c, gm.Part) and c.group[0] is m)

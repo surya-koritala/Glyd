@@ -312,15 +312,14 @@ class GlydQuantizer(HfQuantizer):
         for b in fmt.BUFFERS:
             delattr(host, f"glyd_{weight}_{b}")
         moe.put(host, weight, p, (tuple(e["tensors"][0]["shape"]), e["transposed"]))
-        w = gm.unpack(p) if q.verify or q.layout != "mma" else None
         if q.verify:
-            if gm.sha256(moe.decoded(host, p, weight, w)) != e["tensors"][0]["sha256"]:
+            if moe.sha256(host, p, weight) != e["tensors"][0]["sha256"]:
                 raise ValueError(f"glyd: {path} decodes to other bytes than glyd.json's sha256")
             q.verified += 1
         if q.layout != "mma":
-            moe.put(host, weight, gm.pack(w, True, q.layout), host.glyd_held[weight])
+            moe.put(host, weight, gm.pack(gm.unpack(p), True, q.layout), host.glyd_held[weight])
         setattr(host, weight, nn.Parameter(torch.empty(0, dtype=torch.bfloat16, device=p.sm.device), requires_grad=False))
-        del w, p
+        del p
 
     def _process_model_after_weight_loading(self, model, **kwargs):
         q = self.quantization_config

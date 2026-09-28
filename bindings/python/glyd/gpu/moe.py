@@ -36,6 +36,7 @@ Llama 4's block, glyd::whole for its experts exact, glyd::grouped).
     moe.compress(model, "mma12", lambda m: torch.device("cuda"))   # a loaded model's experts, in place
 """
 import contextlib
+import hashlib
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -146,6 +147,17 @@ def decoded(module, p, name, out):
     E = held(module)[1]
     x = out.view(E, p.shape[0] // E, p.shape[1])
     return (x.transpose(1, 2).contiguous() if transposed else x).view(shape)
+
+
+def sha256(module, p, name):
+    """The sha256 of module's weight `name` (pack p) as the module holds it, decoded an expert at a time: one expert's
+    matrix on the GPU more than the model, not the weight twice (decoded, and a transposed one copied)."""
+    h, E = hashlib.sha256(), held(module)[1]
+    O, transposed = p.shape[0] // E, module.glyd_held[name][1]
+    for e in range(E):
+        x = g.mma_unpack(p, None, e * O, O)
+        h.update((x.t().contiguous() if transposed else x).view(-1).view(torch.uint8).cpu().numpy())
+    return h.hexdigest()
 
 
 def _act(m, O, gate):

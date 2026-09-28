@@ -316,7 +316,7 @@ def moe_family(torch, kind, over, d):
     medians, Glyd's (the tiered layout's) and bf16's."""
     import copy
     import glyd
-    from glyd.gpu import format as fmt, moe
+    from glyd.gpu import format as fmt, model as gm, moe
 
     fp32, auto, cfg, ids, kw = tiny_model(torch, kind, over)
     run = lambda model: model(ids, **kw).logits.float()
@@ -345,6 +345,9 @@ def moe_family(torch, kind, over, d):
             packed = experts(g)
             assert packed and all(p for _, p in packed), (kind, packed)
             assert moe.nbytes(g) < 0.8 * experts_bytes, (kind, moe.nbytes(g), experts_bytes)
+            for m in g.modules():  # the sha256 glyd.json holds, an expert at a time: the whole weight's as held
+                for n, p in (getattr(m, "glyd_packs", None) or {}).items():
+                    assert moe.sha256(m, p, n) == gm.sha256(moe.decoded(m, p, n, gm.unpack(p))), (kind, n)
             lg = run(g)
             assert err(lg) <= 1.5 * err(lb), (kind, layout, err(lg), err(lb))
             if layout == "mma":
