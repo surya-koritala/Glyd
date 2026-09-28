@@ -42,9 +42,9 @@ pip_install() { # a uv-made venv has no pip module in it: install through uv its
 
 step "pip install glyd[gpu]==$V from PyPI (retry: PyPI can lag the release)"
 ok=0
-for i in $(seq 1 40); do
+for i in $(seq 1 80); do
   pip_install "glyd[gpu]==$V" && { ok=1; break; }
-  step "glyd[gpu]==$V not resolvable yet on PyPI (attempt $i/40); retrying in 30s"
+  step "glyd[gpu]==$V not resolvable yet on PyPI (attempt $i/80); retrying in 30s"
   sleep 30
 done
 [ "$ok" = 1 ] || { step "glyd[gpu]==$V never became installable from PyPI"; exit 1; }
