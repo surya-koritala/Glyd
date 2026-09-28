@@ -1,0 +1,66 @@
+NVIDIA H100 PCIe (9, 0) layer 12
+qkv 6144x4096
+  M= 129  cuBLAS    33.8  mma12_wg    44.8   best mma12_wg 1.33x cuBLAS
+  M= 160  cuBLAS    34.1  mma12_wg    45.1   best mma12_wg 1.32x cuBLAS
+  M= 192  cuBLAS    34.8  mma12_wg    46.0   best mma12_wg 1.32x cuBLAS
+  M= 256  cuBLAS    36.0  mma12_wg    51.3   best mma12_wg 1.42x cuBLAS
+  M= 320  cuBLAS    39.3  mma12_wg    74.6   best mma12_wg 1.90x cuBLAS
+  M= 384  cuBLAS    44.1  mma12_wg    75.8   best mma12_wg 1.72x cuBLAS
+  M= 512  cuBLAS    55.9  mma12_wg    90.4   best mma12_wg 1.62x cuBLAS
+  M= 640  cuBLAS    73.0  mma12_wg   147.0   best mma12_wg 2.01x cuBLAS
+  M= 768  cuBLAS    80.7  mma12_wg   149.0   best mma12_wg 1.85x cuBLAS
+  M=1024  cuBLAS   112.2  mma12_wg   192.9   best mma12_wg 1.72x cuBLAS
+  M=2048  cuBLAS   200.3  mma12_wg   426.6   best mma12_wg 2.13x cuBLAS
+  M=4096  cuBLAS   409.3  mma12_wg   923.6   best mma12_wg 2.26x cuBLAS
+o 4096x4096
+  M= 129  cuBLAS    19.9  mma12_wg    42.5   best mma12_wg 2.13x cuBLAS
+  M= 160  cuBLAS    22.4  mma12_wg    42.7   best mma12_wg 1.91x cuBLAS
+  M= 192  cuBLAS    22.5  mma12_wg    39.2   best mma12_wg 1.74x cuBLAS
+  M= 256  cuBLAS    21.6  mma12_wg    44.3   best mma12_wg 2.05x cuBLAS
+  M= 320  cuBLAS    41.5  mma12_wg    60.9   best mma12_wg 1.47x cuBLAS
+  M= 384  cuBLAS    30.3  mma12_wg    61.4   best mma12_wg 2.03x cuBLAS
+  M= 512  cuBLAS    40.0  mma12_wg    69.8   best mma12_wg 1.75x cuBLAS
+  M= 640  cuBLAS    47.9  mma12_wg   113.9   best mma12_wg 2.38x cuBLAS
+  M= 768  cuBLAS    55.2  mma12_wg   114.4   best mma12_wg 2.07x cuBLAS
+  M=1024  cuBLAS    70.5  mma12_wg   141.2   best mma12_wg 2.00x cuBLAS
+  M=2048  cuBLAS   142.9  mma12_wg   303.0   best mma12_wg 2.12x cuBLAS
+  M=4096  cuBLAS   289.4  mma12_wg   645.4   best mma12_wg 2.23x cuBLAS
+gate_up 24576x4096
+  M= 129  cuBLAS   125.5  mma12_wg   135.4   best mma12_wg 1.08x cuBLAS
+  M= 160  cuBLAS   129.2  mma12_wg   135.2   best mma12_wg 1.05x cuBLAS
+  M= 192  cuBLAS   125.3  mma12_wg   143.6   best mma12_wg 1.15x cuBLAS
+  M= 256  cuBLAS   128.1  mma12_wg   169.7   best mma12_wg 1.32x cuBLAS
+  M= 320  cuBLAS   148.2  mma12_wg   306.6   best mma12_wg 2.07x cuBLAS
+  M= 384  cuBLAS   167.3  mma12_wg   313.3   best mma12_wg 1.87x cuBLAS
+  M= 512  cuBLAS   248.5  mma12_wg   368.8   best mma12_wg 1.48x cuBLAS
+  M= 640  cuBLAS   297.1  mma12_wg   573.6   best mma12_wg 1.93x cuBLAS
+  M= 768  cuBLAS   351.7  mma12_wg   550.7   best mma12_wg 1.57x cuBLAS
+  M=1024  cuBLAS   436.0  mma12_wg   742.0   best mma12_wg 1.70x cuBLAS
+  M=2048  cuBLAS   882.0  mma12_wg  1500.4   best mma12_wg 1.70x cuBLAS
+  M=4096  cuBLAS  1835.3  mma12_wg  2868.2   best mma12_wg 1.56x cuBLAS
+down 4096x12288
+  M= 129  cuBLAS    73.2  mma12_wg    74.5   best mma12_wg 1.02x cuBLAS
+  M= 160  cuBLAS    74.1  mma12_wg    74.5   best mma12_wg 1.01x cuBLAS
+  M= 192  cuBLAS    66.5  mma12_wg    76.5   best mma12_wg 1.15x cuBLAS
+  M= 256  cuBLAS    68.8  mma12_wg    91.8   best mma12_wg 1.33x cuBLAS
+  M= 320  cuBLAS   110.7  mma12_wg   142.4   best mma12_wg 1.29x cuBLAS
+  M= 384  cuBLAS    86.4  mma12_wg   149.0   best mma12_wg 1.73x cuBLAS
+  M= 512  cuBLAS   111.4  mma12_wg   180.7   best mma12_wg 1.62x cuBLAS
+  M= 640  cuBLAS   138.8  mma12_wg   289.6   best mma12_wg 2.09x cuBLAS
+  M= 768  cuBLAS   187.0  mma12_wg   316.0   best mma12_wg 1.69x cuBLAS
+  M=1024  cuBLAS   234.8  mma12_wg   392.6   best mma12_wg 1.67x cuBLAS
+  M=2048  cuBLAS   464.9  mma12_wg   790.0   best mma12_wg 1.70x cuBLAS
+  M=4096  cuBLAS   909.6  mma12_wg  1589.8   best mma12_wg 1.75x cuBLAS
+layer total (us):
+  M= 129  cuBLAS   252.4  best Glyd   297.3  1.18x
+  M= 160  cuBLAS   259.7  best Glyd   297.4  1.15x
+  M= 192  cuBLAS   249.1  best Glyd   305.1  1.22x
+  M= 256  cuBLAS   254.5  best Glyd   357.1  1.40x
+  M= 320  cuBLAS   339.8  best Glyd   584.5  1.72x
+  M= 384  cuBLAS   328.1  best Glyd   599.6  1.83x
+  M= 512  cuBLAS   455.8  best Glyd   709.6  1.56x
+  M= 640  cuBLAS   556.8  best Glyd  1124.1  2.02x
+  M= 768  cuBLAS   674.6  best Glyd  1130.1  1.68x
+  M=1024  cuBLAS   853.5  best Glyd  1468.7  1.72x
+  M=2048  cuBLAS  1690.2  best Glyd  3020.1  1.79x
+  M=4096  cuBLAS  3443.6  best Glyd  6027.0  1.75x

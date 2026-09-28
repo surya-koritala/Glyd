@@ -1,0 +1,5 @@
+/home/ubuntu/hop/p4/final/lib/libglyd_gpu_cuda13.so
+
+real	0m45.631s
+user	3m27.484s
+sys	0m4.361s

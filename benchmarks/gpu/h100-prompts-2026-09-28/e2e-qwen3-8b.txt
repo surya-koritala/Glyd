@@ -1,0 +1,9 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights:  74%|███████▍  | 296/399 [00:00<00:00, 2946.61it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 3138.59it/s]
+merged: 72 groups of Linears as one product each
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.54 GB on 1 GPU
+glyd mma12 fused: batch 1: 25.2 tokens/s (25.2 a sequence), peak VRAM 12.55 GB
+glyd mma12 prefill: 129 tokens 24.2 ms (5327 tokens/s), 192 tokens 23.8 ms (8060 tokens/s), 256 tokens 25.1 ms (10205 tokens/s), 384 tokens 32.9 ms (11672 tokens/s), 512 tokens 39.0 ms (13132 tokens/s), 768 tokens 58.2 ms (13189 tokens/s), 1024 tokens 69.3 ms (14769 tokens/s), 2048 tokens 124.0 ms (16520 tokens/s), 4096 tokens 241.0 ms (16994 tokens/s)
+text:  with the invention of the telegraph in

@@ -1,0 +1,31 @@
+NVIDIA H100 PCIe (9, 0) layer 12
+qkv 6144x4096 (5 copies bf16, 6 packed)
+  M= 129  cuBLAS    31.9  wg    46.3   best wg 1.45x
+  M= 192  cuBLAS    33.4  wg    46.6   best wg 1.40x
+  M= 256  cuBLAS    34.7  wg    52.6   best wg 1.52x
+  M= 384  cuBLAS    43.2  wg    76.1   best wg 1.76x
+  M= 512  cuBLAS    54.9  wg    95.7   best wg 1.74x
+o 4096x4096 (7 copies bf16, 9 packed)
+  M= 129  cuBLAS    22.4  wg    36.8   best wg 1.65x
+  M= 192  cuBLAS    23.3  wg    37.0   best wg 1.59x
+  M= 256  cuBLAS    24.3  wg    42.4   best wg 1.74x
+  M= 384  cuBLAS    30.1  wg    56.8   best wg 1.89x
+  M= 512  cuBLAS    38.4  wg    70.1   best wg 1.82x
+gate_up 24576x4096 (2 copies bf16, 2 packed)
+  M= 129  cuBLAS   123.9  wg   135.7   best wg 1.10x
+  M= 192  cuBLAS   124.3  wg   166.2   best wg 1.34x
+  M= 256  cuBLAS   127.3  wg   205.6   best wg 1.61x
+  M= 384  cuBLAS   165.4  wg   356.9   best wg 2.16x
+  M= 512  cuBLAS   241.8  wg   390.3   best wg 1.61x
+down 4096x12288 (3 copies bf16, 3 packed)
+  M= 129  cuBLAS    71.4  wg    79.2   best wg 1.11x
+  M= 192  cuBLAS    64.6  wg    79.8   best wg 1.23x
+  M= 256  cuBLAS    66.7  wg   102.1   best wg 1.53x
+  M= 384  cuBLAS    84.3  wg   171.0   best wg 2.03x
+  M= 512  cuBLAS   113.8  wg   200.0   best wg 1.76x
+layer total (us):
+  M= 129  cuBLAS   249.5  wg   298.0  best   298.0 1.19x
+  M= 192  cuBLAS   245.6  wg   329.5  best   329.5 1.34x
+  M= 256  cuBLAS   253.1  wg   402.7  best   402.7 1.59x
+  M= 384  cuBLAS   323.0  wg   660.9  best   660.9 2.05x
+  M= 512  cuBLAS   449.0  wg   756.1  best   756.1 1.68x

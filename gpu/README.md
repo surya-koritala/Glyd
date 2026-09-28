@@ -178,7 +178,7 @@ exponents in local memory, since fixed: same bytes, same answers.)
 ### Many tokens a step on an H100: the copy engine and wgmma
 
 `mma_gemm_wg` (the 12-bit layout, Hopper) takes steps of 17 to 128
-tokens. One lane of a warp of its own hands the copy engine (TMA) a
+tokens, and prompts of up to 512 (below). One lane of a warp of its own hands the copy engine (TMA) a
 stage at a time: 64 columns of 128 of W's rows, their compressed steps
 as bulk copies of 6 KB, their exceptions, and X's tile through a tensor
 map in wgmma's 128-byte swizzle, into a ring of 4 to 8 stages in shared
@@ -261,6 +261,54 @@ model's step reads them), 32 / 64 / 96 / 128 tokens: Qwen3-8B 0.84x /
 at 32 and 0.93x at 64. Still longer than cuBLAS's: the small matrices
 past 32 tokens (Qwen3-8B's q, k, v 1.04x and o 1.14x at 64), and 113-128
 tokens (benchmarks/gpu/h100-hopper-2026-09-28).
+
+### Prompts on an H100
+
+GLinear sends prompts of up to 512 tokens to `mma_gemm_wg` too
+(`GLYD_WG_MAX`); past that it decodes the matrix for cuBLAS, as before.
+Past 128 tokens the kernel's tile is 256 tokens, or 192 where that
+takes no more chunks (129-192 tokens, 257-384), so a weight is decoded
+once for up to 256 tokens. A launch takes up to two chunks (512 tokens:
+its units stay within the O / 64 done counters) in one stream-K split,
+chunk by chunk, so the blocks at work at once read the same weights. The
+TMA warp is the first of a warpgroup that hands its registers to the
+consumers (`setmaxnreg`: 40 a thread there, 232 a consumer's), which at
+256 tokens hold 128 sums a thread and still two sets of A registers.
+
+One decoder layer's products, weights read from memory (us; cuBLAS on
+bf16 / decoded for cuBLAS / `mma_gemm_wg`; GLinear's pick in bold):
+
+| H100 PCIe, tokens | 129 | 192 | 256 | 384 | 512 | 640 | 1024 | 4096 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B | 250 / 661 / **289** | 247 / 682 / **310** | 254 / 699 / **373** | 326 / 772 / **621** | 449 / 896 / **713** | 535 / **1014** / 1102 | 842 / **1305** / 1473 | 3731 / **4069** / 5907 |
+| Qwen3-32B | 596 / 1721 / **646** | 612 / 1780 / **741** | 636 / 1836 / **932** | 832 / 1998 / **1522** | 1130 / 2409 / **1767** | 1550 / **2600** / 2502 | 2426 / **3510** / 3486 | 9558 / **10520** / 13666 |
+
+One forward pass over a prompt (`e2e.py --format auto --fused --merge
+--prefill`; before: `GLYD_WG_MAX=128`, the matrices decoded for cuBLAS
+past 128 tokens), ms, bf16 / Glyd before / Glyd:
+
+| H100 PCIe, tokens | 129 | 192 | 256 | 384 | 512 | 1024 | 2048 | 4096 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B | 24.3 / 33.4 / **24.2** | 23.9 / 34.5 / **23.8** | 24.2 / 36.0 / 25.1 | 26.4 / 40.9 / 32.9 | 32.0 / 46.8 / 39.0 | 55.1 / 70.0 / 69.3 | 109.0 / 125.6 / 124.0 | 222.9 / 240.5 / 241.0 |
+| Qwen3-32B | 58.6 / 130.6 / 69.9 | 64.1 / 139.0 / 71.4 | 69.7 / 141.6 / 79.6 | 89.0 / 164.4 / 118.2 | 112.7 / 188.4 / 138.5 | 215.5 / 293.5 / 294.6 | 424.2 / 512.9 / 516.5 | 861.7 / 976.0 / 973.2 |
+
+Qwen3-8B's pass at 129-256 tokens is mostly the host's launches (bf16's
+takes 24 ms at all three), which hide the products' extra time. Every
+other length is still longer than bf16's. A chunk costs Qwen3-8B's layer
+about 250 us in tiles of 128 tokens, 300 in 192 and 370 in 256, and
+neither memory stream is what bounds it: without X's copies the kernel
+is 5-10% faster, without W's 7-14% (builds that skip them, timing only). The consumers
+are: at 256 tokens ncu has the tensor cores busy 17% of the time (at its
+base clocks) and 0.31 instructions issued a cycle a scheduler, whose two
+consumer warps wait on the decode's dependent instructions and on the
+stage's barrier. Next here: the decode off the consumers' path (a
+warpgroup decoding W's tiles into shared memory for wgmma to read both
+operands there), and past 512 tokens the decode for cuBLAS overlapped
+with the layer before. The whole blocks a unit above now apply only
+where they idle at most a sixth of the blocks and give a unit 3 or more,
+or the parts are 128 KB (tiles of 256): on other models' q, k, v and o
+the rule had cost up to 47% (Gemma-2-9B's q, k, v: 64 blocks of 114).
+Logs: benchmarks/gpu/h100-prompts-2026-09-28.
 
 ### Which layout on which GPU
 
