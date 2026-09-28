@@ -35,9 +35,11 @@ every earlier format.
   again eager, and so do the model's later calls, with one warning
   (transformers 5.17's static cache fails for DeepSeek V2's and V3's, Kimi
   Linear's and Llama 4's attention, bf16's too). Each model's forward
-  compiles to a graph of its own, so `torch._dynamo.config.recompile_limit`
-  is raised to 64 (from 8: the 8th model a process loaded ran uncompiled,
-  Qwen3-0.6B at 80 tokens/s against 305). A model that has generated
+  compiles to a graph of its own, so Glyd's compiled calls run with
+  `torch._dynamo.config.recompile_limit` at 64 at least, for those calls
+  alone (at the default 8 the 8th model a process loaded ran uncompiled,
+  Qwen3-0.6B at 80 tokens/s against 305; the process's own setting is left
+  as it is). A model that has generated
   compiled is freed at `del`, as an eager one (its compiled forward does not
   refer to it, as transformers' own does).
 - `GLYD_DEC_MIN` (a prompt's products decoded for cuBLAS from that many

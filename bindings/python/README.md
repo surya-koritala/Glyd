@@ -150,9 +150,10 @@ GPUs, which run eager. A call that fails compiled runs again eager, and
 so do the model's later calls, with one warning: transformers 5.17's
 static cache fails for some families' attention (DeepSeek V2 and V3, Kimi
 Linear, Llama 4, bf16's too), which so run eager. Each model's forward
-compiles to a graph of its own, so `torch._dynamo.config.recompile_limit`
-is raised to 64 (from 8, past which the 8th model a process loads ran
-uncompiled). A model that has generated compiled is freed
+compiles to a graph of its own, so Glyd's compiled calls run with
+`torch._dynamo.config.recompile_limit` at 64 at least (at the default 8
+the 8th model a process loaded ran uncompiled), set for those calls alone:
+the process's own setting is left as it is. A model that has generated compiled is freed
 at `del`, as an eager one (its compiled forward does not refer to it).
 
 `torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)`
