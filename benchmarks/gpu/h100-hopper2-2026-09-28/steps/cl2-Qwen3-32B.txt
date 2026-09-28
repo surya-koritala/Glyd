@@ -1,0 +1,21 @@
+Qwen3-32B layer 10, 12-bit, NVIDIA H100 80GB HBM3, /home/ubuntu/h2/cl2.so: qkv (10240, 5120) 10017 exc, o (5120, 8192) 7284 exc, gate_up (51200, 5120) 38531 exc, down (5120, 25600) 19865 exc
+Qwen3-32B qkv 10240x5120 M=256: cuBLAS 53.7 us 1.000x | wg 70.6 us 1.314x
+Qwen3-32B o 5120x8192 M=256: cuBLAS 45.9 us 1.000x | wg 58.0 us 1.263x
+Qwen3-32B gate_up 51200x5120 M=256: cuBLAS 215.7 us 1.000x | wg 270.8 us 1.255x
+Qwen3-32B down 5120x25600 M=256: cuBLAS 121.5 us 1.000x | wg 142.6 us 1.174x
+Qwen3-32B layer M=256: cuBLAS 436.9 us 1.000x | wg 542.0 us 1.241x
+Qwen3-32B qkv 10240x5120 M=1024: cuBLAS 143.2 us 1.000x | wg 205.9 us 1.438x
+Qwen3-32B o 5120x8192 M=1024: cuBLAS 111.2 us 1.000x | wg 172.8 us 1.554x
+Qwen3-32B gate_up 51200x5120 M=1024: cuBLAS 689.4 us 1.000x | wg 913.2 us 1.325x
+Qwen3-32B down 5120x25600 M=1024: cuBLAS 330.1 us 1.000x | wg 478.8 us 1.450x
+Qwen3-32B layer M=1024: cuBLAS 1273.9 us 1.000x | wg 1770.7 us 1.390x
+Qwen3-32B qkv 10240x5120 M=2048: cuBLAS 271.3 us 1.000x | wg 383.5 us 1.413x
+Qwen3-32B o 5120x8192 M=2048: cuBLAS 215.5 us 1.000x | wg 302.2 us 1.402x
+Qwen3-32B gate_up 51200x5120 M=2048: cuBLAS 1361.6 us 1.000x | wg 1940.0 us 1.425x
+Qwen3-32B down 5120x25600 M=2048: cuBLAS 668.2 us 1.000x | wg 943.0 us 1.411x
+Qwen3-32B layer M=2048: cuBLAS 2516.6 us 1.000x | wg 3568.6 us 1.418x
+Qwen3-32B qkv 10240x5120 M=4096: cuBLAS 552.0 us 1.000x | wg 793.8 us 1.438x
+Qwen3-32B o 5120x8192 M=4096: cuBLAS 432.6 us 1.000x | wg 601.7 us 1.391x
+Qwen3-32B gate_up 51200x5120 M=4096: cuBLAS 2689.5 us 1.000x | wg 3966.3 us 1.475x
+Qwen3-32B down 5120x25600 M=4096: cuBLAS 1338.9 us 1.000x | wg 1881.1 us 1.405x
+Qwen3-32B layer M=4096: cuBLAS 5013.0 us 1.000x | wg 7242.8 us 1.445x

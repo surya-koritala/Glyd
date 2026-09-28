@@ -6,6 +6,34 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- Prompts of 129-1024 tokens on Hopper multiply in a new kernel,
+  `mma12_wgp_kernel` (`mma_gemm_wg` past 128 tokens; `GLYD_WG_MAX` is
+  1024, was 512): a block an SM staying for the whole product,
+  warp-specialized as CUTLASS 3.x's and vLLM's Hopper mixed-input main
+  loops are (a TMA warp filling a ring of stages, two consumer warpgroups
+  decoding a k-block at a time into wgmma's registers while the k-blocks
+  before it multiply), in clusters of two sharing X's tiles by TMA
+  multicast, the last wave's tiles split by stages. On an H100 SXM a
+  decoder layer's products (q, k, v and gate, up merged) take, against
+  cuBLAS's time, Qwen3-8B 1.22 / 1.30 / 1.51 / 1.57 / 1.46x at 129 / 256 /
+  512 / 768 / 1024 tokens (were 1.31 / 1.33 / 1.55 / 1.84 / 1.64x),
+  Qwen3-14B 1.14 / 1.28 / 1.44 / 1.41 / 1.33x (were 1.14 / 1.30 / 1.45 /
+  1.92 / 1.68x) and Qwen3-32B 1.12 / 1.19 / 1.39 / 1.36 / 1.35x (were
+  1.17 / 1.24 / 1.42 / 1.88 / 1.68x); past 1024 tokens the matrices are
+  decoded for cuBLAS as before (1.33-1.36x at 2048, 1.17-1.22x at 4096).
+  One forward pass (`gpu/e2e.py --prefill --merge`) at 1024 tokens:
+  Qwen3-8B 45.9 ms (was 48.4; bf16 36.4), Qwen3-32B 166.3 ms (was 194.9;
+  bf16 135.5); at 512 tokens Qwen3-32B 90.9 ms (was 94.2; bf16 73.7).
+  Generation runs the same machine code as before. A layer still takes
+  1.1-1.6x cuBLAS's time: the decode's integer instructions cost the
+  tensor cores a quarter to a third more time even beside them
+  (`gpu/README.md`).
+- The C API is version 3: `glyd_gpu_mma12_gemm_wg` takes at least 1024
+  done counters (as many as O / 64 where that is more); the package's
+  calls always gave it that many.
+
 ## v0.23.0 — 2026-09-28
 
 - Prompts on GeForce Ada (RTX 40) multiply faster, with the same bits:

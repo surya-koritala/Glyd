@@ -294,8 +294,10 @@ for bit (benchmarks/gpu/rtx4080s-hopper-branch-2026-09-28).
 
 ### Prompts on an H100
 
-GLinear sends prompts of up to 512 tokens to `mma_gemm_wg` too
-(`GLYD_WG_MAX`); past that it decodes the matrix for cuBLAS, as before.
+(Prompts past 128 tokens now take the kernel of the next section; this
+one is the TMA kernel as it took them to 2026-09-28, on an H100 PCIe.)
+GLinear sent prompts of up to 512 tokens to `mma_gemm_wg` too
+(`GLYD_WG_MAX`); past that it decoded the matrix for cuBLAS, as before.
 Past 128 tokens the kernel's tile is 256 tokens, or 192 where that takes
 no more chunks (129-192 tokens, 257-384), so a weight is decoded once
 for up to 256 tokens. A launch takes up to two chunks (512 tokens, where
@@ -350,6 +352,89 @@ whole-blocks-switch on 84348d6 (the synthetic whole-blocks runs on its
 kernel as it was before RU was 32-bit), every-thread-fence on 709bb28;
 those that skip a part timed by kbench.py with its check against fp32
 taken out (`sed '/assert err < 1e-2/d'`).
+
+### Prompts past 128 tokens on an H100: blocks that stay
+
+GLinear sends Hopper's prompts of up to 1024 tokens to `mma_gemm_wg`
+(`GLYD_WG_MAX`, was 512), and past 128 tokens that is now
+`mma12_wgp_kernel`, planned as the mixed-input GEMMs run on Hopper are
+(CUTLASS 3.x's warp-specialized main loop, vLLM's Machete), every line
+Glyd's; longer prompts are decoded for cuBLAS as before. A block an SM
+stays for the whole product, taking tile after tile of 128 of W's rows by
+256 tokens (192 where that takes no more chunks). One lane of a warp of
+its own copies each stage (64 columns: X's tile through a tensor map in
+wgmma's swizzle, W's two row blocks still compact, their exceptions) by
+TMA into a ring of 4 stages. Two consumer warpgroups decode a k-block (16
+columns) at a time into wgmma's A registers, a register set a k-block,
+while the two k-blocks before it still multiply, so a weight is decoded
+once for 256 tokens. Blocks go in clusters of two, X's tile copied once
+for both (TMA's multicast). The tiles in whole waves are each a
+cluster's own, summed in registers and written out; those left, fewer
+than a wave, are split by stages (stream-K) over up to three clusters
+each (all of them where the tiles are fewer than the clusters).
+
+One decoder layer's products (q, k, v and gate, up merged; layer 10's
+weights), each call timed alone after an L2 flush, against cuBLAS on bf16
+in the same process (median of two runs); before: main's path (the TMA
+kernel to 512 tokens, then the matrix decoded for cuBLAS); the yardstick:
+CUTLASS 3.x's own Hopper mixed-input main loop, convert only, the best of
+its tiles, on random 8-bit weights (u8) and 4-bit ones reordered offline
+(int4):
+
+| H100 SXM, time / cuBLAS's | 129 | 256 | 512 | 768 | 1024 | 2048 | 4096 tokens |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B, before | 1.31 | 1.33 | 1.55 | 1.84 | 1.64 | 1.33 | 1.17 |
+| Qwen3-8B, now | **1.22** | **1.30** | **1.51** | **1.57** | **1.46** | 1.33 | 1.17 |
+| Qwen3-8B, CUTLASS u8 / int4 | 1.45 / 1.15 | 0.95 / 0.91 | 1.01 / 0.94 | | 1.01 / 0.95 | 1.02 / 0.98 | 1.05 / 0.99 |
+| Qwen3-14B, before | 1.14 | 1.30 | 1.45 | 1.92 | 1.68 | 1.36 | 1.22 |
+| Qwen3-14B, now | 1.14 | **1.28** | **1.44** | **1.41** | **1.33** | 1.36 | 1.22 |
+| Qwen3-14B, CUTLASS u8 / int4 | 1.45 / 1.23 | 1.12 / 0.97 | 1.24 / 1.12 | | 1.14 / 1.00 | 1.12 / 1.03 | 1.10 / 1.04 |
+| Qwen3-32B, before | 1.17 | 1.24 | 1.42 | 1.88 | 1.68 | 1.35 | 1.21 |
+| Qwen3-32B, now | **1.12** | **1.19** | **1.39** | **1.36** | **1.35** | 1.35 | 1.21 |
+| Qwen3-32B, CUTLASS u8 / int4 | 1.50 / 1.23 | 1.14 / 1.03 | 1.24 / 1.15 | | 1.13 / 1.05 | 1.10 / 1.01 | 1.08 / 1.03 |
+
+At 2048 and 4096 tokens "now" is the same path as before (the decode,
+then cuBLAS): the new kernel alone took 1.38 / 1.37x (8B), 1.34 / 1.40x
+(14B) and 1.34 / 1.42x (32B). At 129-160 tokens Qwen3-14B's layer took 1.141 / 1.136x against
+1.137 / 1.128x before. One forward pass over a prompt (`e2e.py --format
+auto --fused --merge --prefill`), ms, bf16 / before / now, the same
+machine:
+
+| H100 SXM | 128 | 512 | 1024 | 2048 | 4096 tokens |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B | 27.3 / 30.0 / 30.0 | 27.8 / 29.8 / 29.5 | 36.4 / 48.4 / **45.9** | 71.3 / 82.5 / 82.2 | 142.6 / 155.7 / 155.1 |
+| Qwen3-32B | 51.1 / 53.3 / 53.6 | 73.7 / 94.2 / **90.9** | 135.5 / 194.9 / **166.3** | 276.9 / 336.0 / 332.5 | 544.0 / 623.4 / 622.6 |
+
+Generation runs the same machine code as before (the step kernels' SASS
+in the library is main's, byte for byte; 8B's GPU time a step 8.39 /
+10.54 / 11.44 ms at 1 / 32 / 64 sequences against 8.37 / 10.55 / 11.30).
+
+What bounds it, from builds for timing alone (their outputs wrong by
+design): with nothing decoded (A a constant, 5 stages) the layer took
+1.05-1.26x cuBLAS's time at 256-4096 tokens; with the stage's loads and
+exceptions but A their raw bytes 1.19-1.40x; half the decode's
+instructions (no exponent lookup) 1.23-1.47x; all of them 1.34-1.58x.
+The decode's integer instructions add about their issue time: at 256
+tokens a weight is decoded once for 256 of them, the most sums a
+warpgroup's registers hold, and that costs the tensor cores a quarter to
+a third more time. Moving some of them onto the multiply pipe (shifts as
+multiplies) was slower still, and having the two warpgroups take the
+tensor cores in turn, each decoding while the other's products run, no
+faster: the cost is the SM's, not the warp's. Each block copying X's
+tile itself instead of the multicast kept Qwen3-8B's gate_up at 4096
+tokens at 1.19x with nothing decoded (1.13x multicast; L2 into the SMs,
+about 6.7 TB/s, was the bound). The same kernel with 5 stages and a pass
+over the exceptions for each k-block (the scratch that fits beside 5
+stages) was 5-10% slower per layer than with 4 stages and one pass a
+stage. Layers at 1024 tokens (8B / 14B / 32B) by design step, each an
+earlier build of this kernel (not in the tree): the kernel with
+per-warp slot releases and no clusters 1.57 / 1.44 / 1.46x; one release a
+warpgroup 1.52 / 1.39 / 1.41x; clusters of two 1.52 / 1.39 / 1.39x; 5
+stages, a pass a k-block 1.58 / 1.45 / 1.51x; fewer decode instructions,
+a descriptor a stage, two k-blocks in flight, all clusters on few tiles
+1.57 / 1.43 / 1.47x; the TMA warp's lanes loading the next stage's bounds
+1.58 / 1.44 / 1.49x; 4 stages with one pass a stage (now) 1.46 / 1.33 /
+1.35x. Logs: benchmarks/gpu/h100-hopper2-2026-09-28.
 
 ### Which layout on which GPU
 
