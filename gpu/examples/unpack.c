@@ -119,7 +119,7 @@ static int string(const char* p, char* s, size_t cap) {
     return 1;
 }
 
-/* Up to most numbers of the array at p into v: how many, or -1 where it is none. */
+/* The numbers of the array at p into v: how many, or -1 where it is none or holds more than most. */
 static int numbers(const char* p, uint64_t* v, int most) {
     if (!p || *(p = ws(p)) != '[') return -1;
     int n = 0;
@@ -130,7 +130,7 @@ static int numbers(const char* p, uint64_t* v, int most) {
         p = ws(e);
         if (*p == ',') p = ws(p + 1);
     }
-    return n;
+    return *p == ']' ? n : -1;
 }
 
 /* Where tensor name of the checkpoint in dir is: its file (model.safetensors, or the shard its index names), where
