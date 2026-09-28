@@ -890,17 +890,20 @@ struct Nib {
         st.e0 = __ldg(exc_base + step);
         st.e1 = __ldg(exc_base + step + 1);
     }
-    __device__ __forceinline__ void decode(const St& st, int lane, uint32_t*, const uint32_t*, uint32_t R[16]) const {
-        uint32_t ew[8];
+    // A lane's codes (nb, 4 words) as its exponents, 4 a word (ew).
+    __device__ __forceinline__ void exponents(const uint32_t nb[4], uint32_t ew[8]) const {
 #pragma unroll
         for (int q = 0; q < 8; q++) {
-            uint32_t n = st.nb[q >> 1] >> (16 * (q & 1)), n7 = n & 0x7777u;
+            uint32_t n = nb[q >> 1] >> (16 * (q & 1)), n7 = n & 0x7777u;
             ew[q] = __byte_perm(__byte_perm(sym[0], sym[1], n7), __byte_perm(sym[2], sym[3], n7), ((n >> 1) & 0x4444u) | 0x3210u);
         }
-        // The step's exceptions (the same run for every lane of the warp):
-        // each word takes its byte where the exception is this lane's and in it.
-        for (int k = st.e0; k < st.e1; k++) {
-            uint32_t x = __ldg(exc + k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
+    }
+    // The step's exceptions, entries e0 to e1 (the same run for every lane of the warp; entry k is at(k)): each
+    // word takes its byte where the exception is this lane's and in it.
+    template <class At>
+    static __device__ __forceinline__ void patch(At at, int e0, int e1, int lane, uint32_t ew[8]) {
+        for (int k = e0; k < e1; k++) {
+            uint32_t x = at(k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
             uint32_t w = (int)((x >> 5) & 31) == lane ? i >> 2 : 8u;
 #pragma unroll
             for (int q = 0; q < 8; q++) {
@@ -908,6 +911,12 @@ struct Nib {
                 ew[q] = w == (uint32_t)q ? v : ew[q];
             }
         }
+    }
+    __device__ __forceinline__ void decode(const St& st, int lane, uint32_t*, const uint32_t*, uint32_t R[16]) const {
+        uint32_t ew[8];
+        exponents(st.nb, ew);
+        const uint32_t* e = exc;
+        patch([e](int k) { return __ldg(e + k); }, st.e0, st.e1, lane, ew);
         pairs(st.sw, ew, R);
     }
 };
@@ -2007,26 +2016,14 @@ __global__ void __launch_bounds__(Ws12<CW, NB, NW, RBB, MT>::THREADS, 1) mma12_w
             if (j + 1 < n && j + 1 >= NB) bar_sync<C::THREADS>(EMPTY0 + xsl);  // the consumers are done with stage j + 1 - NB (xsl: stage j + 1's slot)
             xcopy();
             wcopy();
-            // The step into B fragments, as Nib::decode's (its loads and exceptions from the ring).
+            // The step into B fragments, as Nib::decode (its loads and exceptions from the ring).
             const uint8_t* q = gw + wsl * C::WSLOT;
             uint4 c4 = *(const uint4*)(q + 16 * lane), x0 = *(const uint4*)(q + 512 + 16 * lane), x1 = *(const uint4*)(q + 1024 + 16 * lane);
             uint32_t nbw[4] = {c4.x, c4.y, c4.z, c4.w}, sw[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w}, ew[8];
-#pragma unroll
-            for (int h = 0; h < 8; h++) {
-                uint32_t cc = nbw[h >> 1] >> (16 * (h & 1)), n7 = cc & 0x7777u;
-                ew[h] = __byte_perm(__byte_perm(f.sym[0], f.sym[1], n7), __byte_perm(f.sym[2], f.sym[3], n7), ((cc >> 1) & 0x4444u) | 0x3210u);
-            }
+            f.exponents(nbw, ew);
             int4 bd = *(const int4*)(q + STEP12 + C::EB);
-            const uint32_t* se = (const uint32_t*)(q + STEP12);
-            for (int k = bd.x; k < bd.y; k++) {  // each word takes its byte where the exception is this lane's and in it
-                uint32_t x = bd.z >= 0 ? se[k - bd.z] : __ldg(f.exc + k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
-                uint32_t wq = (int)((x >> 5) & 31) == lane ? i >> 2 : 8u;
-#pragma unroll
-                for (int h = 0; h < 8; h++) {
-                    uint32_t v = __byte_perm(ew[h], x >> 16, sel);
-                    ew[h] = wq == (uint32_t)h ? v : ew[h];
-                }
-            }
+            const uint32_t *se = (const uint32_t*)(q + STEP12), *ge = f.exc;
+            Nib::patch([&](int k) { return bd.z >= 0 ? se[k - bd.z] : __ldg(ge + k); }, bd.x, bd.y, lane, ew);
             uint32_t R[16];
             pairs(sw, ew, R);
             uint4* d = bdst + bsl * (C::DSLOT / 16);
@@ -2068,11 +2065,12 @@ __global__ void __launch_bounds__(Ws12<CW, NB, NW, RBB, MT>::THREADS, 1) mma12_w
 #pragma unroll 1
     for (int j = 0; j < n; j++) {
         int nsl = bsl + 1 == NB ? 0 : bsl + 1;
+        bool out = s == S - 1 || j == n - 1;  // the unit's last stage here: its sum out next
 #pragma unroll
         for (int kk = 0; kk < 4; kk++) {
             int fi = kk & 1;
             if (kk + 1 < 4) frags(bsl, kk + 1, fi ^ 1);
-            else if (j + 1 < n) {
+            else if (!out) {  // (at a unit's end, after its sum out: the next stage's fragments not held through it)
                 bar_sync<C::THREADS>(FULL0 + nsl);  // stage j + 1 is ready
                 frags(nsl, 0, fi ^ 1);
             }
@@ -2090,7 +2088,7 @@ __global__ void __launch_bounds__(Ws12<CW, NB, NW, RBB, MT>::THREADS, 1) mma12_w
         }
         if (j + NB < n) bar_arrive<C::THREADS>(EMPTY0 + bsl);  // done with stage j's buffers
         bsl = nsl;
-        if (s == S - 1 || j == n - 1) {
+        if (out) {
             // Unit p's sum out: to Y where this block covers it, else to its slot (the consumers' accumulators in
             // thread order), the last of its blocks to finish adding the slots in block order.
             int64_t first = block_of_step((int64_t)p * S, nb, T), fin = block_of_step((int64_t)p * S + S - 1, nb, T);
@@ -2152,6 +2150,10 @@ __global__ void __launch_bounds__(Ws12<CW, NB, NW, RBB, MT>::THREADS, 1) mma12_w
                 for (int nn = 0; nn < 8; nn++)
 #pragma unroll
                     for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
+            if (j + 1 < n) {
+                bar_sync<C::THREADS>(FULL0 + bsl);  // stage j + 1 is ready
+                frags(bsl, 0, 0);
+            }
         }
         if (++s == S) s = 0, p++;
     }
