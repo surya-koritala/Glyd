@@ -30,10 +30,10 @@ moe: 2 experts of 128x528, 150 tokens by 1, 2 experts hit: the same through both
 moe: 4 experts of 256x256, 300 tokens by 2, one expert twice, 4 experts hit: the same through both
 moe: 4 experts of 128x208, 300 tokens by 2, one expert twice, 4 experts hit: the same through both
 attn_decode: head_dim 64 and 128, 1-16 queries a head, pages and tails, the same through both
-jit mma12_gemm: 10.8 us a call
-jit mma12_gemm_mid: 13.2 us a call
+jit mma12_gemm: 10.6 us a call
+jit mma12_gemm_mid: 13.1 us a call
 lib mma12_gemm: 13.3 us a call
-lib mma12_gemm_mid: 14.7 us a call
+lib mma12_gemm_mid: 14.3 us a call
 refused: fast_gemm (jit): fast_gemm: invalid argument
 refused: fast_gemm (lib): fast_gemm: invalid argument
 refused: fast_gemm (jit): fast_gemm: invalid argument
@@ -46,7 +46,7 @@ refused: mma12_gemm_mid (jit): O a multiple of 64, K of 64, X contiguous [M, K]
 refused: mma12_gemm_mid (lib): O a multiple of 64, K of 64, X contiguous [M, K]
 refused: mma12_unpack (jit): rows a multiple of 64
 refused: mma12_unpack (lib): rows a multiple of 64
-library /home/ubuntu/hh/lib/libglyd_gpu_cuda13.so (CUDA 13000), NVIDIA H100 PCIe: 1756 calls compared bit for bit, all identical
+library /home/ubuntu/hh5/lib/libglyd_gpu_cuda13.so (CUDA 13000), NVIDIA H100 PCIe: 1756 calls compared bit for bit, all identical
   GEmbedding.step: 1
   GLinear.step: 268
   attn_decode: 6

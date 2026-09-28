@@ -266,8 +266,13 @@ tokens (benchmarks/gpu/h100-hopper-2026-09-28).
 exceptions the same way where a block's steps have more than one each
 (Qwen3-8B's gate, up and down in layers 1-3: 4-5 a step), in a copy of
 its loop of its own: those layers take 210 us at 8 tokens, were 242-269,
-the others as before, and a step's GPU time at 1 / 8 sequences is 11.12
-/ 12.31 ms, was 11.24 / 12.47 (benchmarks/gpu/h100-prompts-2026-09-28).
+the others as before. With a unit's parts counted by one thread's
+acq_rel atomic (not every thread's fence) and no division a stage in the
+TMA kernel's producer, a step's GPU time at 1 / 8 / 32 / 64 sequences is
+11.13 / 12.32 / 13.48 / 14.64 ms on Qwen3-8B (was 11.26 / 12.46 / 13.55
+/ 14.86), 34.65 / 37.34 / 41.24 / 44.41 on Qwen3-32B (was 34.76 / 37.53
+/ 40.65 / 43.90: at 32-128 tokens its layer is still 2-5% over
+153fc96's, cause not found) (benchmarks/gpu/h100-prompts-2026-09-28).
 
 ### Prompts on an H100
 
@@ -287,8 +292,8 @@ bf16 / decoded for cuBLAS / `mma_gemm_wg`; GLinear's pick in bold):
 
 | H100 PCIe, tokens | 129 | 192 | 256 | 384 | 512 | 640 | 1024 | 4096 |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-8B | 250 / 661 / **289** | 247 / 682 / **310** | 254 / 699 / **373** | 326 / 772 / **621** | 449 / 896 / **713** | 535 / **1014** / 1102 | 842 / **1305** / 1473 | 3731 / **4069** / 5907 |
-| Qwen3-32B | 596 / 1721 / **646** | 612 / 1780 / **741** | 636 / 1836 / **932** | 832 / 1998 / **1522** | 1130 / 2409 / **1767** | 1550 / **2600** / 2502 | 2426 / **3510** / 3486 | 9558 / **10520** / 13666 |
+| Qwen3-8B | 251 / 666 / **280** | 247 / 677 / **302** | 254 / 697 / **364** | 322 / 781 / **634** | 465 / 921 / **736** | 549 / **983** / 1087 | 812 / **1300** / 1436 | 3620 / **4124** / 5761 |
+| Qwen3-32B | 598 / 1733 / **695** | 612 / 1753 / **733** | 629 / 1864 / **907** | 857 / 1975 / **1512** | 1103 / 2294 / **1665** | 1484 / **2633** / 2440 | 2436 / **3520** / 3418 | 9461 / **10474** / 13431 |
 
 One forward pass over a prompt (`e2e.py --format auto --fused --merge
 --prefill`; before: `GLYD_WG_MAX=128`, the matrices decoded for cuBLAS
@@ -296,25 +301,26 @@ past 128 tokens), ms, bf16 / Glyd before / Glyd:
 
 | H100 PCIe, tokens | 129 | 192 | 256 | 384 | 512 | 1024 | 2048 | 4096 |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-8B | 24.3 / 33.4 / **24.2** | 23.9 / 34.5 / **23.8** | 24.2 / 36.0 / 25.1 | 26.4 / 40.9 / 32.9 | 32.0 / 46.8 / 39.0 | 55.1 / 70.0 / 69.3 | 109.0 / 125.6 / 124.0 | 222.9 / 240.5 / 241.0 |
-| Qwen3-32B | 58.6 / 130.6 / 69.9 | 64.1 / 139.0 / 71.4 | 69.7 / 141.6 / 79.6 | 89.0 / 164.4 / 118.2 | 112.7 / 188.4 / 138.5 | 215.5 / 293.5 / 294.6 | 424.2 / 512.9 / 516.5 | 861.7 / 976.0 / 973.2 |
+| Qwen3-8B | 26.8 / 33.9 / **22.3** | 22.7 / 35.1 / 23.2 | 23.4 / 36.7 / 24.5 | 25.9 / 41.6 / 33.2 | 32.6 / 47.7 / 39.2 | 55.8 / 71.1 / 69.9 | 110.4 / 126.9 / 125.0 | 224.5 / 242.6 / 242.3 |
+| Qwen3-32B | 58.6 / 131.1 / 63.1 | 64.1 / 140.1 / 69.1 | 70.3 / 142.1 / 79.7 | 89.3 / 165.3 / 118.3 | 113.1 / 189.8 / 141.0 | 217.2 / 295.4 / 296.7 | 426.6 / 517.2 / 519.6 | 866.2 / 981.0 / 974.5 |
 
 Qwen3-8B's pass at 129-256 tokens is mostly the host's launches (bf16's
-takes 24 ms at all three), which hide the products' extra time. Every
-other length is still longer than bf16's. A chunk costs Qwen3-8B's layer
-about 250 us in tiles of 128 tokens, 300 in 192 and 370 in 256, and
-neither memory stream is what bounds it: without X's copies the kernel
-is 5-10% faster, without W's 7-14%, without the decode 8-16% (builds
-that skip them, timing only): at 192-512 tokens even the last is
-1.07-1.34x cuBLAS's time. At 256 tokens ncu has 0.31 instructions issued
-a cycle a scheduler, whose two consumer warps wait on the decode's
-dependent instructions and on the stage's barrier. Next here: the
-products themselves, then the decode off the consumers' path (a
-warpgroup decoding W's tiles into shared memory for wgmma). The whole
-blocks a unit above now apply only where they idle at most a sixth of
-the blocks and give a unit 3 or more, or the parts are 128 KB (tiles of
-256): on other models' q, k, v and o the rule had cost up to 47%
-(Gemma-2-9B's q, k, v: 64 blocks of 114). Logs:
+takes 23-27 ms at all three, and as much as 40 in another run), which
+hide the products' extra time. Every other length is still longer than
+bf16's. A chunk costs Qwen3-8B's layer about 250 us in tiles of 128
+tokens, 300 in 192 and 365 in 256, and no one part of it is what bounds
+it: builds that skip one (timing only) are 5-10% faster without X's
+copies, 7-14% without W's, 8-16% without the decode and 10-14% without
+the sum of a unit's parts, and without the decode still 1.07-1.34x
+cuBLAS's time at 192-512 tokens; wgmma reading A from shared memory in
+place of registers is no faster. At 256 tokens ncu has 0.31 instructions
+issued a cycle a scheduler, whose two consumer warps wait on the
+decode's dependent instructions and on the stage's barrier. Next here:
+the parts' sums (a unit shared by fewer blocks), then the decode off the
+consumers' path. The whole blocks a unit above now apply only where they
+idle at most a sixth of the blocks and give a unit 3 or more, or the
+parts are 128 KB (tiles of 256): on other models' q, k, v and o the rule
+had cost up to 47% (Gemma-2-9B's q, k, v: 64 blocks of 114). Logs:
 benchmarks/gpu/h100-prompts-2026-09-28.
 
 ### Which layout on which GPU
