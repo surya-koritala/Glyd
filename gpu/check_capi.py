@@ -178,17 +178,23 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
 
 # mma_gemm_big's own choice of blocks: of 128 tokens on GeForce Ada where the last of 256 would be half empty or
 # less, to 1024 tokens tiered and 4224 12-bit (as measured), and on an A100 12-bit to 640 (its others of 256 by two
-# row blocks, variant 3); of 256 past 128 tokens elsewhere.
+# row blocks, variant 3); of 256 past 128 tokens elsewhere. On an A100 two candidates give the same bits where they
+# split K alike, so a matrix too whose two split K differently at every length GLinear fuses there (256 x 16384:
+# on 40 to 220 SMs at each of these lengths, by the grid's rule), and the other candidate's bits checked to differ.
 ada = torch.cuda.get_device_capability() == (8, 9) and "GeForce" in torch.cuda.get_device_name()
 a100 = torch.cuda.get_device_capability() == (8, 0)
-w = weights(256 * 512).view(256, 512)
-for q, most in ((g.pack_mma(w), 1024), (g.pack_mma12(w), 4224)):
-    here = a100 and isinstance(q, g.Mma12)
-    for M in (300, 600, 800, 1025, 1100, 4200, 4353):
-        x = torch.randn(M, 512, dtype=bf, device=dev)
-        v = 1 if (ada or here) and 1 <= M % 256 <= 128 and M <= (640 if here else most) else 3 if here else 2
-        assert exact(g.mma_gemm_big(q, x), g.mma_gemm_big(q, x, variant=v)), ("blocks of 128 or 256", type(q).__name__, M, v)
-counts["mma_gemm_big's blocks"] = 14
+for (O, K), Ms in (((256, 512), (300, 600, 800, 1025, 1100, 4200, 4353)), ((256, 16384), (129, 256, 257, 384, 385, 512, 513, 640, 641, 768))):
+    w = weights(O * K).view(O, K)
+    for q, most in ((g.pack_mma(w), 1024), (g.pack_mma12(w), 4224)):
+        here = a100 and isinstance(q, g.Mma12)
+        for M in Ms:
+            x = torch.randn(M, K, dtype=bf, device=dev)
+            v = 1 if (ada or here) and 1 <= M % 256 <= 128 and M <= (640 if here else most) else 3 if here else 2
+            y = g.mma_gemm_big(q, x)
+            assert exact(y, g.mma_gemm_big(q, x, variant=v)), ("blocks of 128 or 256", type(q).__name__, (O, K), M, v)
+            if here and K == 16384:
+                assert not exact(y, g.mma_gemm_big(q, x, variant=4 - v)), ("an A100's candidates told apart", M, v)
+            counts["mma_gemm_big's blocks"] = counts.get("mma_gemm_big's blocks", 0) + 1
 
 # Prompt products on two streams at once on one GPU, through each host: each stream's done counters its own (the C
 # API's: one stream's products at a time on a set), so each product the same as alone. A small one: its few blocks
