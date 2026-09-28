@@ -1220,19 +1220,6 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
                     for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
             // ldmatrix rows: this lane's row of the 16 (0-7, then 8-15) and its 16-byte half of k.
             uint32_t a_row = (uint32_t)(wm * 64 + (lane & 7) + ((lane >> 3) & 1) * 8) * 128, a_half = lane >> 4, a_sw = lane & 7;
-            // Fragments double-buffered: a step's are asked for while the step
-            // before multiplies; a stage's first, during the last of the one before.
-            uint32_t fa[2][4][4];
-            uint4 fb[2][4];
-            auto frags = [&](int64_t j, int kk, int f) {
-                int bi = (int)(j % NB);
-                uint32_t slot = a_base + (uint32_t)bi * C::A_BYTES;
-                const uint4* bsrc = Bs + bi * C::B_UINT4 + rbl * BIG_KK * 4 * 32 + lane;
-#pragma unroll
-                for (int mt = 0; mt < 4; mt++) ldmatrix_x4(fa[f][mt], slot + a_row + mt * 16 * 128 + (((2 * kk + a_half) ^ a_sw) << 4));
-#pragma unroll
-                for (int q = 0; q < 4; q++) fb[f][q] = bsrc[(kk * 4 + q) * 32];
-            };
             if constexpr (CW >= 8) {
                 // Eight consumer warps (a thread's 128 sums in 168 registers): a step's fragments loaded as it is
                 // multiplied, the B ones a pair of n-tiles at a time (each sum's products in the same order).
@@ -1259,33 +1246,46 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
                     if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + bi);  // done with stage j's buffers
                 }
             } else {
-            if (nst > 0) {
-                bar_sync<C::THREADS>(1);  // stage 0 is ready
-                frags(0, 0, 0);
-            }
-            for (int64_t j = 0; j < nst; j++) {
+                // Fragments double-buffered: a step's are asked for while the step
+                // before multiplies; a stage's first, during the last of the one before.
+                uint32_t fa[2][4][4];
+                uint4 fb[2][4];
+                auto frags = [&](int64_t j, int kk, int f) {
+                    int bi = (int)(j % NB);
+                    uint32_t slot = a_base + (uint32_t)bi * C::A_BYTES;
+                    const uint4* bsrc = Bs + bi * C::B_UINT4 + rbl * BIG_KK * 4 * 32 + lane;
 #pragma unroll
-                for (int kk = 0; kk < BIG_KK; kk++) {
-                    int f = kk & 1;
-                    if (kk + 1 < BIG_KK) frags(j, kk + 1, f ^ 1);
-                    else if (j + 1 < nst) {
-                        bar_sync<C::THREADS>(1 + (int)((j + 1) % NB));  // stage j + 1 is ready
-                        frags(j + 1, 0, f ^ 1);
-                    }
+                    for (int mt = 0; mt < 4; mt++) ldmatrix_x4(fa[f][mt], slot + a_row + mt * 16 * 128 + (((2 * kk + a_half) ^ a_sw) << 4));
 #pragma unroll
-                    for (int mt = 0; mt < 4; mt++) {
-                        mma16816(acc[mt][0], fa[f][mt], fb[f][0].x, fb[f][0].y);
-                        mma16816(acc[mt][1], fa[f][mt], fb[f][0].z, fb[f][0].w);
-                        mma16816(acc[mt][2], fa[f][mt], fb[f][1].x, fb[f][1].y);
-                        mma16816(acc[mt][3], fa[f][mt], fb[f][1].z, fb[f][1].w);
-                        mma16816(acc[mt][4], fa[f][mt], fb[f][2].x, fb[f][2].y);
-                        mma16816(acc[mt][5], fa[f][mt], fb[f][2].z, fb[f][2].w);
-                        mma16816(acc[mt][6], fa[f][mt], fb[f][3].x, fb[f][3].y);
-                        mma16816(acc[mt][7], fa[f][mt], fb[f][3].z, fb[f][3].w);
-                    }
+                    for (int q = 0; q < 4; q++) fb[f][q] = bsrc[(kk * 4 + q) * 32];
+                };
+                if (nst > 0) {
+                    bar_sync<C::THREADS>(1);  // stage 0 is ready
+                    frags(0, 0, 0);
                 }
-                if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + (int)(j % NB));  // done with stage j's buffers
-            }
+                for (int64_t j = 0; j < nst; j++) {
+#pragma unroll
+                    for (int kk = 0; kk < BIG_KK; kk++) {
+                        int f = kk & 1;
+                        if (kk + 1 < BIG_KK) frags(j, kk + 1, f ^ 1);
+                        else if (j + 1 < nst) {
+                            bar_sync<C::THREADS>(1 + (int)((j + 1) % NB));  // stage j + 1 is ready
+                            frags(j + 1, 0, f ^ 1);
+                        }
+#pragma unroll
+                        for (int mt = 0; mt < 4; mt++) {
+                            mma16816(acc[mt][0], fa[f][mt], fb[f][0].x, fb[f][0].y);
+                            mma16816(acc[mt][1], fa[f][mt], fb[f][0].z, fb[f][0].w);
+                            mma16816(acc[mt][2], fa[f][mt], fb[f][1].x, fb[f][1].y);
+                            mma16816(acc[mt][3], fa[f][mt], fb[f][1].z, fb[f][1].w);
+                            mma16816(acc[mt][4], fa[f][mt], fb[f][2].x, fb[f][2].y);
+                            mma16816(acc[mt][5], fa[f][mt], fb[f][2].z, fb[f][2].w);
+                            mma16816(acc[mt][6], fa[f][mt], fb[f][3].x, fb[f][3].y);
+                            mma16816(acc[mt][7], fa[f][mt], fb[f][3].z, fb[f][3].w);
+                        }
+                    }
+                    if (j + NB < nst) bar_arrive<C::THREADS>(1 + NB + (int)(j % NB));  // done with stage j's buffers
+                }
             }
             // C fragments: token rows g and g + 8 of each m-tile, columns 2t and 2t + 1 of each n-tile.
             if constexpr (MOE) {
