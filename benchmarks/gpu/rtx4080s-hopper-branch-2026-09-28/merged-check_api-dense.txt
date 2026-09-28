@@ -1,0 +1,27 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 4276.73it/s]
+Qwen/Qwen3-0.6B: bf16 loaded in 0.2 s, peak 1.66 GB, holds 1.19 GB, largest tensor 0.31 GB
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   8%|▊         | 24/311 [00:00<00:01, 232.68it/s]Loading weights:  30%|███       | 94/311 [00:00<00:00, 491.98it/s]Loading weights:  54%|█████▎    | 167/311 [00:00<00:00, 592.73it/s]Loading weights:  76%|███████▌  | 237/311 [00:00<00:00, 623.07it/s]Loading weights: 100%|█████████▉| 310/311 [00:00<00:00, 657.22it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 602.83it/s]
+Qwen/Qwen3-0.6B: glyd mma fused loaded in 0.8 s, peak 2.21 GB: packed weights 1.02 GB + largest tensor 0.31 GB + 0.87 GB; holds 1.31 GB
+   generated tokens identical to bf16: 0 of 32; logits bit-identical: False
+   text:  with the invention of the first digital computer. This was a machine that could only store and process data in binary form, which is a two-state system. The
+   a prompt of 2100 tokens: 112 products decoded ahead, logits as decoded on the current stream, bit for bit
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 16863.98it/s]
+   glyd.gpu.compress: the same 1.02 GB, logits and tokens bit for bit
+   compiled (a static cache, CUDA graphs, fullgraph): tokens as eager's: 8 of 32
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  16%|█▌        | 49/311 [00:00<00:00, 482.60it/s]Loading weights:  39%|███▉      | 122/311 [00:00<00:00, 621.56it/s]Loading weights:  62%|██████▏   | 192/311 [00:00<00:00, 656.42it/s]Loading weights:  85%|████████▌ | 265/311 [00:00<00:00, 681.29it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 663.96it/s]
+Qwen/Qwen3-0.6B: glyd exact loaded in 0.9 s, peak 2.22 GB, holds 1.10 GB; logits bit-identical: True (and a prompt of 2100 tokens'); generated tokens identical to bf16: 32 of 32
+   compiled: tokens as bf16's eager: 32 of 32
+Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 2250.77it/s]
+Qwen/Qwen3-0.6B: saved in 0.7 s: 0.91 GB of safetensors; config.json, generation_config.json, glyd.json, merges.txt, model.safetensors, tokenizer.json, tokenizer_config.json, vocab.json
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 10181.23it/s]
+   from_pretrained(path, verify=False): 0 tensors verified, loaded in 0.3 s, peak 2.20 GB, holds 1.03 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 7844.45it/s]
+   from_pretrained(path, verify=True): 198 tensors verified, loaded in 0.7 s, peak 2.20 GB, holds 1.03 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 7557.94it/s]
+   from_pretrained(path, exact=True): merged groups split, loaded in 0.6 s; logits bit-identical to bf16: True
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 8698.11it/s]
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  36%|███▌      | 112/311 [00:00<00:00, 1119.73it/s]Loading weights:  89%|████████▉ | 277/311 [00:00<00:00, 1420.96it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 1401.53it/s]
+   from_pretrained(path, layout='mma12'): the packs transcoded, logits and tokens as mma12 packed from bf16
+   python -m glyd.gpu verify: /home/surya-koritala/p1/tmp/tmp2dn435ap: 198 tensors decode to glyd.json's sha256
+   python -m glyd.gpu fit: Qwen3-0.6B on a 16 GB GPU: bf16 needs 4.1 GB, fits; Glyd 3.6 GB, fits
+check_api: all passed (/home/surya-koritala/p2hopper/merged/bindings/python/glyd/__init__.py)
