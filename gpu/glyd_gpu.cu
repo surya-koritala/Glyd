@@ -1459,8 +1459,12 @@ __device__ __forceinline__ void wgmma4_rs(float (&d)[128], const uint32_t (&a)[4
 // steps (a stage), from shared memory into mma's A fragments, a register set a step: of each lane, the
 // codes' word w and the sign-and-mantissa bytes 8 (w mod 2) to 8 (w mod 2) + 7 of half w / 2 (its rows
 // g and g + 8); then the stage's run of exceptions, one run for the 4 steps (se: its copy, whose first
-// entry is ea; ea < 0: read from global memory; eb: exc_base at the 4 steps and the next).
-__device__ __forceinline__ void decode12_rows(const Nib& f, const uint8_t* sp, const uint32_t* se, const int (&eb)[5], int ea, int lane, int w, uint32_t (&A)[4][4]) {
+// entry is ea; ea < 0: read from global memory; eb: exc_base at the 4 steps and the next). The lanes take
+// the run's entries 32 at a time, each in this warp's rows setting its exponent byte in the warp's scratch
+// (xw: a lane's 8 words, 256 in all, zero between stages; an exception's code, 15, decodes to 0), which
+// every lane then adds to its words and clears: a stage's cost does not grow with its exceptions (a few
+// layers' matrices have dozens a stage).
+__device__ __forceinline__ void decode12_rows(const Nib& f, const uint8_t* sp, const uint32_t* se, const int (&eb)[5], int ea, int lane, int w, uint32_t* xw, uint32_t (&A)[4][4]) {
     uint32_t nw[4];
     uint2 sw[4];
 #pragma unroll
@@ -1475,15 +1479,25 @@ __device__ __forceinline__ void decode12_rows(const Nib& f, const uint8_t* sp, c
         uint32_t c = nw[q >> 1] >> (16 * (q & 1)), c7 = c & 0x7777u;
         ew[q] = __byte_perm(__byte_perm(f.sym[0], f.sym[1], c7), __byte_perm(f.sym[2], f.sym[3], c7), ((c >> 1) & 0x4444u) | 0x3210u);
     }
-    // Entry k is step kk's while eb[kk] <= k < eb[kk + 1]; weight i of a lane in word i / 4.
-    for (int k = eb[0]; k < eb[4]; k++) {
-        uint32_t x = ea >= 0 ? se[k - ea] : __ldg(f.exc + k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
-        uint32_t kk = (k >= eb[1]) + (k >= eb[2]) + (k >= eb[3]);
-        uint32_t hq = (int)((x >> 5) & 31) == lane && (int)(i >> 3) == w ? 2 * kk + ((i >> 2) & 1) : 8u;
-#pragma unroll
-        for (int q = 0; q < 8; q++) {
-            uint32_t v = __byte_perm(ew[q], x >> 16, sel);
-            ew[q] = hq == (uint32_t)q ? v : ew[q];
+    // Entry k is step kk's while eb[kk] <= k < eb[kk + 1]; weight i of lane (x >> 5) mod 32, byte i mod 4 of its
+    // word 2 kk + (i / 4 mod 2) here where i / 8 is this warp's.
+    if (eb[4] > eb[0]) {
+        bool mine = false;
+        for (int k = eb[0] + lane; k < eb[4]; k += 32) {
+            uint32_t x = ea >= 0 ? se[k - ea] : __ldg(f.exc + k), i = x & 31;
+            if ((int)(i >> 3) == w) {
+                uint32_t kk = (k >= eb[1]) + (k >= eb[2]) + (k >= eb[3]);
+                ((uint8_t*)xw)[(((x >> 5) & 31) * 8 + 2 * kk + ((i >> 2) & 1)) * 4 + (i & 3)] = (uint8_t)(x >> 16);
+                mine = true;
+            }
+        }
+        if (__any_sync(FULL, mine)) {
+            __syncwarp();
+            uint4* xl = (uint4*)(xw + 8 * lane);
+            uint4 a = xl[0], b = xl[1];
+            ew[0] |= a.x, ew[1] |= a.y, ew[2] |= a.z, ew[3] |= a.w, ew[4] |= b.x, ew[5] |= b.y, ew[6] |= b.z, ew[7] |= b.w;
+            xl[0] = xl[1] = make_uint4(0u, 0u, 0u, 0u);
+            __syncwarp();
         }
     }
     // A fragments: rows g and g + 8 (words 2w and 2w + 1), columns 2t and 8 + 2t (bytes 0-1 and 2-3).
@@ -1577,7 +1591,7 @@ template <int NT, int WG> struct Tma12 {
     static constexpr int RBB = CB + EB + BB;
     static constexpr int SLOT = (XB + WG * RBB + 1023) / 1024 * 1024;
     static constexpr int NS = 200 * 1024 / SLOT < 8 ? 200 * 1024 / SLOT : 8;  // stages in flight
-    static constexpr int SHARED = NS * SLOT + 1024 + 16 * NS;               // alignment, the full and empty barriers
+    static constexpr int SHARED = NS * SLOT + 1024 + 16 * NS + 4096 * WG;   // alignment, the full and empty barriers, the warps' exceptions' scratch
 };
 
 template <int NT, int WG>
@@ -1651,6 +1665,9 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
     // Consumer warpgroup wg: row block WG p + wg of each unit p; warp w its rows 16w to 16w + 15.
     // Two sets of A registers, used in turn: a stage's products may still run while the next decodes.
     int ct = tid, wg = ct >> 7, w = (ct >> 5) & 3;
+    uint32_t* xw = (uint32_t*)(gbase + C::NS * C::SLOT + 16 * C::NS) + 256 * warp;  // this warp's exceptions' scratch
+    ((uint4*)xw)[2 * lane] = ((uint4*)xw)[2 * lane + 1] = make_uint4(0u, 0u, 0u, 0u);
+    __syncwarp();
     float d[NT / 2];  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a unit's first product
     uint32_t A0[4][4], A1[4][4];
     int held = -1;  // the slot whose products may still be running
@@ -1676,7 +1693,7 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
         int eb[5];
 #pragma unroll
         for (int i = 0; i < 5; i++) eb[i] = bs[i];
-        decode12_rows(f, sp, (const uint32_t*)(sp + C::CB), eb, bs[5], lane, w, A);
+        decode12_rows(f, sp, (const uint32_t*)(sp + C::CB), eb, bs[5], lane, w, xw, A);
         // (ptxas moves each product's descriptor into the same uniform registers just before it, so the four
         // run one after another: "serialized", its C7513.)
         uint32_t xs = base + sl * C::SLOT;
@@ -1728,7 +1745,7 @@ template <int NT, int WG> struct Mid12 {
     static constexpr int CB = 4 * (int)STEP12, EB = 512, BB = 32;  // a row block's steps a stage, its exceptions (up to 128), their bounds
     static constexpr int RBB = CB + EB + BB;
     static constexpr int SLOT = (XB + WG * RBB + 127) / 128 * 128;
-    static constexpr int SHARED = NS * SLOT + 128 + 16 * NS;  // alignment, the full and empty barriers
+    static constexpr int SHARED = NS * SLOT + 128 + 16 * NS + 4096 * WG;  // alignment, the full and empty barriers, the warps' exceptions' scratch
 };
 
 template <int NT, int WG>
@@ -1799,6 +1816,9 @@ __global__ void __launch_bounds__(Mid12<NT, WG>::THREADS, 1) mma12_mid_kernel(Ni
     }
     // Consumer warpgroup wg: row block WG p + wg of each unit p; warp w its rows 16w to 16w + 15.
     int ct = tid, wg = ct >> 7, w = (ct >> 5) & 3;
+    uint32_t* xw = (uint32_t*)(gbase + C::NS * C::SLOT + 16 * C::NS) + 256 * warp;  // this warp's exceptions' scratch
+    ((uint4*)xw)[2 * lane] = ((uint4*)xw)[2 * lane + 1] = make_uint4(0u, 0u, 0u, 0u);
+    __syncwarp();
     for (int j = 0, p = p0, s = s0; j < n; p++, s = 0) {
         int len = min(S - s, n - j);
         float d[NT / 2];  // n-tile jn's C fragment at d[4jn]: rows g, g + 8 by tokens 8jn + 2t, + 1
@@ -1813,7 +1833,7 @@ __global__ void __launch_bounds__(Mid12<NT, WG>::THREADS, 1) mma12_mid_kernel(Ni
 #pragma unroll
             for (int i = 0; i < 5; i++) eb[i] = bs[i];
             uint32_t A[4][4];
-            decode12_rows(f, sp, (const uint32_t*)(sp + C::CB), eb, bs[5], lane, w, A);
+            decode12_rows(f, sp, (const uint32_t*)(sp + C::CB), eb, bs[5], lane, w, xw, A);
             uint32_t xs = base + sl * C::SLOT;
 #pragma unroll
             for (int kk = 0; kk < 4; kk++)
