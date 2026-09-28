@@ -29,8 +29,14 @@ python3 -m venv "$WORK/venv"
 PY="$WORK/venv/bin/python"
 "$PY" -m pip install --quiet --upgrade pip
 
-step "pip install glyd[gpu]==$V from PyPI"
-"$PY" -m pip install --quiet "glyd[gpu]==$V"
+step "pip install glyd[gpu]==$V from PyPI (retry: PyPI can lag the release)"
+ok=0
+for i in $(seq 1 40); do
+  "$PY" -m pip install --quiet --no-cache-dir "glyd[gpu]==$V" && { ok=1; break; }
+  step "glyd[gpu]==$V not resolvable yet on PyPI (attempt $i/40); retrying in 30s"
+  sleep 30
+done
+[ "$ok" = 1 ] || { step "glyd[gpu]==$V never became installable from PyPI"; exit 1; }
 
 got=$("$PY" -c "import glyd; print(glyd.__version__)")
 [ "$got" = "$V" ] || { step "installed glyd is $got, expected $V"; exit 1; }
