@@ -40,8 +40,9 @@ every earlier format.
   model with multi-head latent attention whose config has fewer key/value
   heads than heads (tiny DeepSeek V2, V3, Kimi Linear and AXK1 test models;
   the released checkpoints compile). A call whose forward fails to compile
-  anyway runs again eager from its start (a streamer sees the prompt again
-  on that one call), and so do the model's later calls, with one warning;
+  anyway runs again eager from its start (a streamer gets only what the
+  failed attempt had not streamed, its text the eager run's), and so do the
+  model's later calls, with one warning;
   any other error, out of memory included, is the call's own, and the next
   call compiles. Each model's forward
   compiles to a graph of its own, so Glyd's compiled calls run with

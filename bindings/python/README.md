@@ -160,8 +160,8 @@ has fewer key/value heads than heads (as tiny DeepSeek V2 and V3, Kimi
 Linear and AXK1 test models do; the released checkpoints, with as many
 as heads, compile). A call whose forward fails to compile anyway
 (torch._dynamo's or Inductor's error) runs again eager, from its start
-(a streamer sees the prompt again on that one call), and so do the
-model's later calls, with one warning; any other error (out of memory
+(a streamer gets only what the failed attempt had not streamed: its text
+is the eager run's), and so do the model's later calls, with one warning; any other error (out of memory
 included) is the call's own, and the next call compiles as before. Each
 model's forward compiles to a graph of its own, so Glyd's compiled calls
 run with `torch._dynamo.config.recompile_limit` at 64 at least (at the

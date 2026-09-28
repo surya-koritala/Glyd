@@ -859,20 +859,43 @@ def _fast(self, own, args, kwargs):
     return b
 
 
+class _Streamed:
+    """A streamer's calls passed on but for the first `skip` puts, counted (puts): the fast attempt's, or, for the call
+    run again eager after it failed to compile, those the attempt streamed (the prompt, and the tokens before its
+    first compiled step) left out, so that the streamer's text is the eager run's."""
+
+    def __init__(self, streamer, skip=0):
+        self.streamer, self.skip, self.puts = streamer, skip, 0
+
+    def put(self, value):
+        self.puts += 1
+        if self.puts > self.skip:
+            self.streamer.put(value)
+
+    def __getattr__(self, name):  # end(), and anything else
+        return getattr(self.streamer, name)
+
+
 def _generate(self, own, *args, **kwargs):
     """fast_generate's generate(): the call with the static cache where _fast takes it, else as it came; one whose
-    forward fails to compile (_compile_error) runs again as it came, from its start, and so do the model's later
-    calls, with one warning (where that fails too, its error is the call's); any other error is the call's, and the
-    next call compiles as before."""
+    forward fails to compile (_compile_error) runs again as it came, from its start (a streamer's text as the eager
+    run's: _Streamed), and so do the model's later calls, with one warning (where that fails too, its error is the
+    call's); any other error is the call's, and the next call compiles as before."""
     b = None if self.__dict__.get("glyd_eager") else _fast(self, own, args, kwargs)
     if b is None:
         return own(self, *args, **kwargs)
+    streamer = b.arguments.get("streamer")
+    if streamer is not None:
+        b.arguments["streamer"] = counted = _Streamed(streamer)
     try:
         return own(*b.args, **b.kwargs)
     except Exception as e:
         if not _compile_error(e):
             raise
-        out = own(self, *args, **kwargs)
+        again = inspect.signature(own).bind(self, *args, **kwargs)
+        if streamer is not None:
+            again.arguments["streamer"] = _Streamed(streamer, counted.puts)
+        out = own(*again.args, **again.kwargs)
         self.glyd_eager = True
         warnings.warn(f"glyd: {type(self).__name__}'s generate() compiled failed ({type(e).__name__}: {str(e).splitlines()[0][:160] if str(e) else ''}); it runs as transformers runs it from here on", stacklevel=3)
         return out
