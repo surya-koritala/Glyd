@@ -1,0 +1,6 @@
+$ python gpu/experimental/format/sb12.py (RTX 4080 SUPER 16 GB, max SM clock 3105 MHz, power limit 320 W; CUDA 13.0, PyTorch 2.14; 2026-09-28 18:00-18:07 EDT, under the box lock, nothing else on the GPU)
+64x64 spread 1.0: 12.109 bits, 7 exceptions, round trip and products ok
+256x1024 spread 1.0: 12.035 bits, 29 exceptions, round trip and products ok
+1024x4096 spread 1.0: 12.034 bits, 332 exceptions, round trip and products ok
+192x512 spread 8.0: 12.049 bits, 49 exceptions, round trip and products ok
+4096x1024 spread 30.0: 14.498 bits, 323349 exceptions, round trip and products ok
