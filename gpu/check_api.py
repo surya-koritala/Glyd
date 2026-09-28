@@ -17,9 +17,9 @@ beside glyd/gpu/kernels.py), against each model in bf16:
   compiling raised, and the next call compiled; a call that fails
   compiled: one warning, run again eager (a skip_prompt TextStreamer's
   text eager's; sampled from a seed, its tokens and text a seeded eager
-  run's), and eager from there on; two fresh threads in turn, the second's
-  cache longer, their tokens as this thread's; continuing from
-  return_dict_in_generate's cache as eager (in a process of its own);
+  run's), and eager from there on; two fresh threads in turn, each with a
+  cache longer than any before, their tokens as this thread's; continuing
+  from return_dict_in_generate's cache as eager (in a process of its own);
 - glyd.gpu.compress on the model loaded in bf16: the same packs, so the
   same logits and tokens bit for bit;
 - exact=True: logits bit for bit bf16's, the 32 tokens bf16's;
@@ -216,24 +216,25 @@ def fast_loop(m, e, tok, ids, out_e):
 
 
 def threads(m, ids):
-    """m's generate() compiled from two fresh threads in turn, the second's prompt longer (its cache a new length:
-    compiled again and a CUDA graph recorded in that thread): each call's tokens as the same call's in this thread."""
-    got, prompts = {}, (ids, torch.cat([ids, ids], 1))
+    """m's generate() from two fresh threads in turn, each prompt (ids 8 and 16 times over) longer than m's static cache
+    so far: its cache a new length, so compiled again and a CUDA graph recorded in that thread (from PyTorch 2.13;
+    eager below it); each call's tokens as the same call's in this thread right after it (its cache as long)."""
+    for x in (ids.repeat(1, 8), ids.repeat(1, 16)):
+        before, got = getattr(m, "_previous_max_cache_length", 0), []
 
-    def work(k, x):
-        try:
-            with torch.no_grad():
-                got[k] = m.generate(x, max_new_tokens=8, min_new_tokens=8, do_sample=False)
-        except Exception as e:  # (to this thread's assert)
-            got[k] = e
+        def work():
+            try:
+                with torch.no_grad():
+                    got.append(m.generate(x, max_new_tokens=8, min_new_tokens=8, do_sample=False))
+            except Exception as e:  # (to this thread's assert)
+                got.append(e)
 
-    for k, x in enumerate(prompts):
-        t = threading.Thread(target=work, args=(k, x))
+        t = threading.Thread(target=work)
         t.start()
         t.join()
-    with torch.no_grad():
-        for k, x in enumerate(prompts):
-            assert isinstance(got[k], torch.Tensor) and torch.equal(got[k], m.generate(x, max_new_tokens=8, min_new_tokens=8, do_sample=False)), ("generate() in a fresh thread", k, got[k])
+        grew = getattr(m, "_previous_max_cache_length", 0) > before
+        with torch.no_grad():
+            assert grew == FAST and isinstance(got[0], torch.Tensor) and torch.equal(got[0], m.generate(x, max_new_tokens=8, min_new_tokens=8, do_sample=False)), ("generate() in a fresh thread, its cache longer than any before", x.shape, before, got[0])
 
 
 CONTINUED = """
@@ -350,7 +351,7 @@ for name in NAMES:
     del e
     torch.cuda.empty_cache()
     threads(m, ids)
-    print("   generate() compiled from two fresh threads in turn, the second's cache longer: tokens as this thread's")
+    print(f"   generate() {'compiled ' if FAST else ''}from two fresh threads in turn, each cache longer than any before: tokens as this thread's")
     if name == NAMES[0]:  # continuing from a returned cache (a static one's overrun would end the CUDA context: a process of its own)
         env = dict(os.environ, PYTHONPATH=os.path.dirname(os.path.dirname(glyd.__file__)))
         r = subprocess.run([sys.executable, "-c", CONTINUED, name], env=env, capture_output=True, text=True, timeout=900)
