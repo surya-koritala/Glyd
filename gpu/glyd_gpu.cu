@@ -2999,7 +2999,8 @@ static int mma12_wg_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t 
     // The TMA kernel is sm_90a code alone (the library's compute_80 PTX, compiled for GPUs after Hopper, has none of it).
     int dev = current_device();
     if (attribute(cudaDevAttrComputeCapabilityMajor, dev) != 9 || attribute(cudaDevAttrComputeCapabilityMinor, dev) != 0) return cudaErrorNotSupported;
-    if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16 || (uintptr_t)f.data % 16 || (uintptr_t)f.exc % 16) return cudaErrorInvalidValue;
+    // (O at least 64: the partition below divides by its units)
+    if (O < 64 || O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16 || (uintptr_t)f.data % 16 || (uintptr_t)f.exc % 16) return cudaErrorInvalidValue;
     // 256 tokens at a time, in the smallest tile that holds them; two warpgroups (128 rows a stage): with four
     // and the TMA warp (17 warps, 5 on one scheduler) a thread had 96 registers, and ptxas spilled and
     // serialized the products (its C7512).
