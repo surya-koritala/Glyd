@@ -67,7 +67,7 @@ jobs:
           - os: macos-latest
             name: macos-arm64
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 55
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
@@ -78,9 +78,9 @@ jobs:
         run: |
           set -e
           ok=0
-          for i in $(seq 1 40); do
+          for i in $(seq 1 80); do
             python -m pip install --quiet --no-cache-dir "glyd==$V" && { ok=1; break; }
-            echo "glyd==$V not resolvable yet on PyPI (attempt $i/40); retrying in 30s"
+            echo "glyd==$V not resolvable yet on PyPI (attempt $i/80); retrying in 30s"
             sleep 30
           done
           [ "$ok" = 1 ] || { echo "glyd==$V never became installable from PyPI"; exit 1; }
@@ -103,9 +103,9 @@ jobs:
         run: |
           set -e
           ok=0
-          for i in $(seq 1 40); do
+          for i in $(seq 1 80); do
             python -m pip install --quiet --no-cache-dir "glyd[gpu]==$V" && { ok=1; break; }
-            echo "glyd[gpu]==$V not resolvable yet on PyPI (attempt $i/40); retrying in 30s"
+            echo "glyd[gpu]==$V not resolvable yet on PyPI (attempt $i/80); retrying in 30s"
             sleep 30
           done
           [ "$ok" = 1 ] || { echo "glyd[gpu]==$V never resolved from PyPI"; exit 1; }
@@ -118,7 +118,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 55
     env:
       V: ${{ needs.version.outputs.version }}
     steps:
@@ -129,10 +129,10 @@ jobs:
           brew tap surya-koritala/glyd
           got=""
           ok=0
-          for i in $(seq 1 40); do
+          for i in $(seq 1 80); do
             got=$(brew info --json=v2 surya-koritala/glyd/glyd | python3 -c "import json,sys; print(json.load(sys.stdin)['formulae'][0]['versions']['stable'])")
             [ "$got" = "$V" ] && { ok=1; break; }
-            echo "tap has $got, waiting for $V (attempt $i/40); retrying in 30s"
+            echo "tap has $got, waiting for $V (attempt $i/80); retrying in 30s"
             sleep 30
             brew update -q || true
           done
@@ -152,7 +152,7 @@ jobs:
   release-assets:
     needs: version
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     env:
       V: ${{ needs.version.outputs.version }}
       TAG: ${{ needs.version.outputs.tag }}
@@ -230,12 +230,12 @@ jobs:
           }
           ok=0
           src=""
-          for i in $(seq 1 30); do
+          for i in $(seq 1 80); do
             repo_formula=$(git -C "$GITHUB_WORKSPACE" show "origin/main:Formula/glyd.rb" 2>/dev/null || true)
             if matches "$repo_formula"; then ok=1; src="the repo's Formula/glyd.rb"; break; fi
             tap_formula=$(curl -sf https://raw.githubusercontent.com/surya-koritala/homebrew-glyd/main/Formula/glyd.rb || true)
             if matches "$tap_formula"; then ok=1; src="the tap"; break; fi
-            echo "Formula/glyd.rb not at $V with matching sha256 yet, in the repo or the tap (attempt $i/30); retrying in 30s"
+            echo "Formula/glyd.rb not at $V with matching sha256 yet, in the repo or the tap (attempt $i/80); retrying in 30s"
             git fetch origin main -q
             sleep 30
           done
