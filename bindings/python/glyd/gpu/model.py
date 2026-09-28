@@ -28,7 +28,10 @@ from . import _lib, kernels as g
 
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 DEC_MIN = int(os.environ.get("GLYD_DEC_MIN", 769))  # an A100's prompts of this many tokens (12-bit): decoded, then cuBLAS
-WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
+# Hopper: steps and prompts of this many tokens multiply by wgmma (tiles of 256 tokens past 128); past 512 decoded for
+# cuBLAS, which there is as fast or faster (Qwen3-8B's layer on an H100 PCIe: 638 us against 864 at 512 tokens, 1065
+# against 964 at 640; Qwen3-32B's 1622 against 2253, then within 6% either way to 1024)
+WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 512))
 MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 (an A100's to 128) by mma_gemm_mid
 # A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). On
 # GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, from 1024 in the 12-bit one where
@@ -308,9 +311,10 @@ class _Weight:
 class GLinear(_Node, nn.Module):
     """nn.Linear over a packed matrix p (bias: bf16, or None). fused: products
     straight from the packed weights where a kernel takes the step (in the
-    mma layouts up to 64 tokens, an A100's 12-bit to 128, and prompts but on
-    Hopper and an A100's 12-bit from DEC_MIN tokens; one-token steps in the
-    others); else the matrix decoded into the scratch buffer, then
+    mma layouts up to 64 tokens, an A100's 12-bit to 128, and prompts: on
+    Hopper to WG_MAX tokens, 512, on an A100 in the 12-bit layout to
+    DEC_MIN; one-token steps in the others); else the matrix decoded into
+    the scratch buffer, then
     PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, from
     1024 12-bit fused and past 640 not, decoded ahead of its product where
     Ahead takes it). exact: every

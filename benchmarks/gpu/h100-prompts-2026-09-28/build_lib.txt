@@ -1,0 +1,5 @@
+/home/ubuntu/hh5/lib/libglyd_gpu_cuda13.so
+
+real	0m46.765s
+user	3m25.976s
+sys	0m4.734s

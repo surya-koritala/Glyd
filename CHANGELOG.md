@@ -8,6 +8,46 @@ every earlier format.
 
 ## Unreleased
 
+- Prompts of 129-512 tokens on Hopper multiply straight from the packed
+  weights (`mma_gemm_wg`: `GLYD_WG_MAX` is 512, was 128), where each
+  matrix was decoded for cuBLAS first: tiles of 192 or 256 tokens, each
+  weight decoded once a tile, a launch's tokens in chunks of a tile (two
+  where O / 64 is even); past 512 tokens as before. On an H100 PCIe
+  (`gpu/e2e.py --prefill --merge`), Qwen3-32B's prompts of 129 / 256 /
+  384 / 512 tokens take 63.1 / 79.7 / 118.3 / 141.0 ms against bf16's
+  58.6 / 70.3 / 89.3 / 113.1 (were 131.1 / 142.1 / 165.3 / 189.8),
+  Qwen3-8B's of 384 / 512 tokens 33.2 / 39.2 against 25.9 / 32.6 (were
+  41.6 / 47.7); Qwen3-8B's pass at 129-256 tokens is mostly the host's
+  launches, 22.3-28.7 ms in four runs against bf16's 22.7-51.5 (was
+  33.4-36.7). A layer's products take 1.12-1.97x cuBLAS's time at
+  129-512 tokens (weights read from memory).
+- Steps of 17-128 tokens on Hopper faster: the TMA kernel's products no
+  longer wait on one another (ptxas had serialized every wgmma), a
+  stage's exceptions are taken 32 at a time, tiles of 96 and 112 tokens
+  as well as 128, and a unit's parts counted by one thread. On an H100
+  PCIe (`gpu/e2e.py --merge --profile`), a step's GPU time at 1 / 8 / 32
+  / 64 sequences is 11.13 / 12.32 / 13.48 / 14.64 ms for Qwen3-8B
+  against bf16's 12.30 / 13.34 / 14.57 / 15.66 (were 11.24 / 12.45 /
+  15.55 / 17.57), 34.65 / 37.34 / 41.24 / 44.41 for Qwen3-32B against
+  42.44 / 44.40 / 47.10 / 49.56 (were 34.75 / 37.48 / 44.97 / 49.84); a
+  layer's products (weights read from memory) take 0.85x / 0.86x / 0.96x
+  / 1.05x cuBLAS's time at 32 / 64 / 96 / 128 tokens for Qwen3-8B (were
+  0.92x / 1.00x / 1.20x / 1.20x), 0.78x / 0.81x / 0.95x / 1.08x for
+  Qwen3-32B, whose layer at 17-128 tokens takes 2-6% more than an
+  earlier build of these changes measured (the cause not found). Steps
+  of 1-16 tokens (on other GPUs to 64) take the exceptions of a layer
+  that has many 32 at a time (Qwen3-8B's gate, up and down in layers
+  1-3: 4-5 a step): those layers 210 us at 8 tokens against 242-269 on
+  an H100 PCIe, 2-3% faster on an RTX 4080 SUPER, the others as before;
+  outputs bit for bit as before.
+- The prebuilt library carries native Blackwell code (sm_100, sm_120)
+  where nvcc has it (CUDA 12.8 on: `gpu/build_lib.sh` builds without it
+  with an older nvcc). The Hopper kernel is sm_90a code alone: launched
+  from a build without it (PTX compiled for an H100) it traps, where it
+  returned its output untouched, and `GLYD_GPU_ARCH=sm_90` builds
+  sm_90a. `glyd_gpu_mma12_gemm_wg` and its workspace query return
+  cudaErrorInvalidValue for O under 64 (O = 0 returned success,
+  launching nothing).
 - Short prompts on GeForce Ada faster: a prompt's fused product is one C
   call, as a generation step's (it had cost 12 us of host time a call,
   twice F.linear's), and on GeForce Ada runs by stream-K

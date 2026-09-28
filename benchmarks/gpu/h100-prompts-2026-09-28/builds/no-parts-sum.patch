@@ -1,0 +1,20 @@
+--- a/gpu/glyd_gpu.cu (2370b55)
++++ b/gpu/glyd_gpu.cu
+@@ -1609,7 +1609,7 @@
+     int wg = ct >> 7, w = (ct >> 5) & 3, g = (ct & 31) >> 2, t = ct & 3;
+     int64_t first = block_of_step(p * S, nb, U), fin = block_of_step(p * S + S - 1, nb, U);
+     auto slot = [&](int64_t b) { return parts + (2 * b + (p != b * U / nb / S)) * (NT * R); };
+-    if (first != fin) {
++    if (false) {  // EXPERIMENT: no fixup
+         // Slots [NT / 8 float4s][threads]: each thread's r in order, coalesced.
+         float4* pp = (float4*)slot(blockIdx.x);
+ #pragma unroll
+@@ -1638,7 +1638,7 @@
+             }
+         }
+     }
+-    if (first == fin || last) {
++    if (true) {  // EXPERIMENT
+ #pragma unroll
+         for (int jn = 0; jn < NT / 8; jn++)
+ #pragma unroll

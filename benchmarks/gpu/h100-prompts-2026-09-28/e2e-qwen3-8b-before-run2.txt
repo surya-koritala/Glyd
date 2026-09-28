@@ -1,0 +1,13 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights:  45%|████▌     | 181/399 [00:00<00:00, 1808.25it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 2056.33it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 12.4 tokens/s (12.4 a sequence), peak VRAM 16.42 GB
+bf16 prefill: 129 tokens 51.5 ms (2506 tokens/s), 192 tokens 50.8 ms (3777 tokens/s), 256 tokens 24.6 ms (10388 tokens/s), 384 tokens 25.8 ms (14869 tokens/s), 512 tokens 32.2 ms (15893 tokens/s), 768 tokens 44.4 ms (17308 tokens/s), 1024 tokens 55.9 ms (18309 tokens/s), 2048 tokens 110.2 ms (18587 tokens/s), 4096 tokens 226.6 ms (18073 tokens/s)
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.57 GB on 1 GPU
+glyd mma12 fused: batch 1: 44.0 tokens/s (44.0 a sequence), peak VRAM 12.58 GB
+glyd mma12 prefill: 129 tokens 33.9 ms (3804 tokens/s), 192 tokens 35.0 ms (5479 tokens/s), 256 tokens 36.7 ms (6984 tokens/s), 384 tokens 41.8 ms (9196 tokens/s), 512 tokens 47.4 ms (10800 tokens/s), 768 tokens 59.1 ms (12992 tokens/s), 1024 tokens 70.6 ms (14512 tokens/s), 2048 tokens 127.3 ms (16087 tokens/s), 4096 tokens 240.8 ms (17011 tokens/s)
+logits bit-identical: False
+generated tokens identical to bf16: 0 of 8
+text:  with the invention of the telegraph in

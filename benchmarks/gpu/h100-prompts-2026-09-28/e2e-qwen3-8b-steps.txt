@@ -1,0 +1,44 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights:  62%|██████▏   | 249/399 [00:00<00:00, 2467.48it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 2657.14it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-28 03:30:24 33335:33335 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:30:24 33335:33335 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:30:24 33335:33335 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:30:25 33335:33335 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:30:28 33335:33335 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:30:28 33335:33335 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:30:28 33335:33335 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:30:29 33335:33335 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:30:33 33335:33335 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:30:33 33335:33335 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 03:30:33 33335:33335 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 03:30:33 33335:33335 SyncActivityProfilerHandler.cpp:46] profiler_stop
+merged: 72 groups of Linears as one product each
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.54 GB on 1 GPU
+glyd mma12 fused: batch 1: 14.9 tokens/s (14.9 a sequence), peak VRAM 12.55 GB
+glyd mma12 fused: batch 8: 155.2 tokens/s (19.4 a sequence), peak VRAM 12.61 GB
+glyd mma12 fused: batch 32: 635.8 tokens/s (19.9 a sequence), peak VRAM 12.83 GB
+glyd mma12 profile, batch 1: 33.43 ms a step, GPU busy 11.12 ms a step after the prompt (90 tokens/s of GPU time), 12.31 ms for the prompt and a token
+     7.566 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     0.514 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.454 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+     0.392 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.252 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.213 ms  void at::native::vectorized_elementwise_kernel<8, at::native::CUDAFunctor_add<c10::BFloat1
+glyd mma12 profile, batch 8: 34.65 ms a step, GPU busy 12.31 ms a step after the prompt (650 tokens/s of GPU time), 14.40 ms for the prompt and a token
+     7.943 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     0.911 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.639 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.326 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.299 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.282 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl<at::native::direct
+glyd mma12 profile, batch 32: 33.08 ms a step, GPU busy 13.82 ms a step after the prompt (2315 tokens/s of GPU time), 19.62 ms for the prompt and a token
+     8.710 ms  void mma12_tma_kernel<32, 2>(CUtensorMap_st, Nib, long, long, long, __nv_bfloat16 const*, 
+     0.937 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.936 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.460 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.318 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.281 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl<at::native::direct
+text:  with the invention of the telegraph in the 1830s. The telegraph was a revolutionary communication technology that allowed messages to be transmitted over long

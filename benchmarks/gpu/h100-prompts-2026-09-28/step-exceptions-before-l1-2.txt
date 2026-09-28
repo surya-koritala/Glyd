@@ -1,0 +1,21 @@
+NVIDIA H100 PCIe (9, 0) layer 1
+qkv 6144x4096 (5 copies bf16, 6 packed)
+  M=   1  cuBLAS    31.0  mma12    29.6   best mma12 0.95x
+  M=   8  cuBLAS    31.6  mma12    31.1   best mma12 0.98x
+  M=  16  cuBLAS    31.9  mma12    32.5   best mma12 1.02x
+o 4096x4096 (7 copies bf16, 9 packed)
+  M=   1  cuBLAS    21.2  mma12    23.0   best mma12 1.09x
+  M=   8  cuBLAS    21.4  mma12    24.0   best mma12 1.12x
+  M=  16  cuBLAS    21.4  mma12    25.8   best mma12 1.21x
+gate_up 24576x4096 (2 copies bf16, 2 packed)
+  M=   1  cuBLAS   114.1  mma12   125.7   best mma12 1.10x
+  M=   8  cuBLAS   115.2  mma12   128.2   best mma12 1.11x
+  M=  16  cuBLAS   116.1  mma12   130.4   best mma12 1.12x
+down 4096x12288 (3 copies bf16, 3 packed)
+  M=   1  cuBLAS    58.7  mma12    56.8   best mma12 0.97x
+  M=   8  cuBLAS    59.8  mma12    58.8   best mma12 0.98x
+  M=  16  cuBLAS    60.4  mma12    61.4   best mma12 1.02x
+layer total (us):
+  M=   1  cuBLAS   225.0  mma12   235.1  glyd   235.1  best   235.1 1.04x  glyd 1.04x
+  M=   8  cuBLAS   228.0  mma12   242.0  glyd   242.0  best   242.0 1.06x  glyd 1.06x
+  M=  16  cuBLAS   229.8  mma12   250.1  glyd   250.1  best   250.1 1.09x  glyd 1.09x

@@ -1,0 +1,10 @@
+ptxas info    : (C7513) Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions defining input registers of a wgmma between start and end of the pipeline stage in the function '_Z16mma12_tma_kernelILi16ELi4EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi'
+ptxas info    : (C7513) Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions defining input registers of a wgmma between start and end of the pipeline stage in the function '_Z16mma12_tma_kernelILi32ELi4EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi'
+ptxas info    : (C7513) Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions defining input registers of a wgmma between start and end of the pipeline stage in the function '_Z16mma12_tma_kernelILi64ELi4EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi'
+ptxas info    : (C7513) Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions defining input registers of a wgmma between start and end of the pipeline stage in the function '_Z16mma12_tma_kernelILi256ELi2EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi'
+ptxas info    : (C7513) Potential Performance Loss: wgmma.mma_async instructions are serialized due to non wgmma instructions defining input registers of a wgmma between start and end of the pipeline stage in the function '_Z16mma12_tma_kernelILi128ELi2EEv14CUtensorMap_st3NiblllPK13__nv_bfloat16PS2_PfPi'
+/home/surya-koritala/p2hopper/mainlib/libglyd_gpu_cuda13.so
+
+real	0m21.918s
+user	1m13.269s
+sys	0m1.656s

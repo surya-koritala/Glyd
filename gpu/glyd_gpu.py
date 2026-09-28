@@ -24,13 +24,15 @@ from glyd.gpu.kernels import _chunks, _hist, _none, _sign_mantissa  # noqa: F401
 
 def _arch_flags():
     """Code for this machine's GPU (Hopper as sm_90a, for its warpgroup
-    instructions); GLYD_GPU_ARCH=sm_89,sm_90a builds for several."""
+    instructions); GLYD_GPU_ARCH=sm_89,sm_90a builds for several (sm_90
+    there as sm_90a too: without it the TMA kernel is a trap)."""
     archs = os.environ.get("GLYD_GPU_ARCH")
     if not archs:
         major, minor = torch.cuda.get_device_capability()
         archs = f"sm_{major}{minor}" + ("a" if major == 9 else "")
     flags = []
     for a in archs.split(","):
+        a = "sm_90a" if a == "sm_90" else a
         flags += ["-gencode", f"arch=compute_{a[3:]},code={a}"]
     return flags
 
@@ -75,7 +77,7 @@ if __name__ == "__main__":
     assert torch.cuda.get_device_capability()[0] >= 8, "Ampere or later"
     products = [("mma_gemm_mid", mma_gemm_mid)] + ([("mma_gemm_wg", mma_gemm_wg)] if torch.cuda.get_device_capability() == (9, 0) else [])
     torch.manual_seed(0)
-    for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02)]:
+    for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02), (17408, 1024, 0.01)]:
         w = torch.randn(O, K, device="cuda") * 0.02
         m = torch.rand(O, K, device="cuda") < wild  # this share of weights at exponents far from the commonest 15
         w[m] = torch.randn(int(m.sum()), device="cuda") * torch.exp2(torch.randint(-40, 20, (int(m.sum()),), device="cuda").float())
