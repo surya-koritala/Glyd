@@ -724,11 +724,16 @@ def set_scratch(model, exact):
 # generate() compiled (fast_generate) where its static cache holds at most this many positions in all (its sequences
 # times the positions a call may reach, max_new_tokens' included): each step's attention reads the static cache whole,
 # masked (SDPA's kernel for a mask, whose time grows with the positions held, not the tokens in them), and past that
-# the eager loop was as fast or faster. A step's ms compiled against eager, RTX 4080 SUPER with a Ryzen 9 7950X3D:
-# Qwen3-8B at one sequence 17.7 against 20.5 with 80 positions held, 20.4 against 20.5 with 1024 (64 used), 23.0
-# against 20.5 with 2048; at 8 sequences 19.5 against 21.8 with 80 each, 26.7 against 24.8 with 576; Qwen3-4B-Instruct-
-# 2507 alike. A slower host (a server's CPU) gains more by compiling: set it higher there.
-COMPILE_MAX = int(os.environ.get("GLYD_COMPILE_MAX", 1280))
+# the eager loop was as fast or faster; it depends on the host's CPU (eager's host time a step is what compiling
+# saves), which the GPU tells: a GeForce card's is a desktop's, 1280; any other's a server's, 2048. A step's ms,
+# compiled against eager, Qwen3-8B, the static cache that many positions long and 64 of them used (loop.py):
+# - RTX 4080 SUPER, Ryzen 9 7950X3D: one sequence 18.2 against 20.5 with 256 positions, 20.4 against 20.5 with 1024,
+#   23.0 against 20.5 with 2048, 27.6 against 20.5 with 4096; 8 sequences, a whole cache used, 19.5 against 21.8 with
+#   80 each, 26.7 against 24.8 with 576;
+# - A10, Xeon Platinum 8358: one sequence 28.3 against 38.3 with 256, 31.3 against 36.9 with 1024, 34.9 against 37.2
+#   with 2048, 42.8 against 33.6 with 4096; 8 sequences 33.9 against 35.8 with 256 each, 52.6 against 33.6 with 1024.
+# GLYD_COMPILE_MAX sets it on any GPU.
+COMPILE_MAX = int(os.environ.get("GLYD_COMPILE_MAX", 0)) or None
 RECOMPILES = 64  # torch._dynamo's recompile_limit for the compiled calls (_compiled_call): a graph a model, a length
 # A call to generate() that sets any of these runs as transformers runs it (fast_generate)
 _OWN = ("past_key_values", "cache_implementation", "assistant_model", "custom_generate", "prompt_lookup_num_tokens", "assistant_early_exit", "output_attentions", "output_hidden_states")
@@ -741,8 +746,9 @@ def fast_generate(model):
     leaves the cache and the search to the model (none of _OWN, one beam,
     the cache used) and its static cache is short: it holds every position
     the call may reach from its first step (transformers keeps it as long
-    as the longest call's) and each step reads all of it, so COMPILE_MAX
-    positions in all at most; every other call as transformers runs it. The
+    as the longest call's) and each step reads all of it, so 1280 positions
+    in all at most on a GeForce card and 2048 on another (COMPILE_MAX; the
+    model's glyd_fast); every other call as transformers runs it. The
     prompt runs eager either way (transformers compiles the steps after
     it). A call that fails so runs again as it came, as do the model's
     later ones, with one warning. Its class's generate and get_compiled_call
@@ -755,7 +761,8 @@ def fast_generate(model):
     devices = {m.p.sm.device for m in model.modules() if isinstance(m, (GLinear, GEmbedding))} | {t.device for t in model.parameters() if t.is_cuda}
     if len(devices) != 1:
         return model
-    model.glyd_fast = True
+    d = devices.pop()
+    model.glyd_fast = COMPILE_MAX or (1280 if "GeForce" in torch.cuda.get_device_name(d) else 2048)  # its cap
     cls = type(model)
     for name, fast in (("generate", _generate), ("get_compiled_call", _compiled_call)):
         own = getattr(cls, name)  # (read once: two threads taking it over at once wrap the class's own, the last one kept)
@@ -817,7 +824,7 @@ def _generate(self, own, *args, **kwargs):
     if len(args) < 2 and isinstance(x, torch.Tensor) and x.dim() > 1 and not self.__dict__.get("glyd_eager") and not any(get(k) for k in _OWN) and get("use_cache") is not False and (get("num_beams") or 1) == 1:
         n = get("max_new_tokens")
         n = max(x.shape[1] + (n if n is not None else get("max_length") or 20), getattr(self, "_previous_max_cache_length", 0))  # the cache's positions
-        if x.shape[0] * (get("num_return_sequences") or 1) * n <= COMPILE_MAX:
+        if x.shape[0] * (get("num_return_sequences") or 1) * n <= self.glyd_fast:
             fast = dict(kwargs, cache_implementation="static")
             if "generation_config" in kwargs:
                 fast = dict(kwargs, generation_config=copy.deepcopy(cfg))

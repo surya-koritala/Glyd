@@ -8,9 +8,10 @@ beside glyd/gpu/kernels.py), against each model in bf16:
 - generate() as a user calls it: compiled (model.fast_generate: a static
   cache, CUDA graphs); with compile=False eager, the same logits; not
   with GLYD_COMPILE=0; a call with a cache of its own, several beams or a
-  static cache past COMPILE_MAX as transformers runs it; out of memory
-  while compiling raised, and the next call compiled; a call that fails
-  compiled: one warning, run again eager, and eager from there on;
+  static cache past the model's cap (glyd_fast) as transformers runs it;
+  out of memory while compiling raised, and the next call compiled; a
+  call that fails compiled: one warning, run again eager, and eager from
+  there on;
 - glyd.gpu.compress on the model loaded in bf16: the same packs, so the
   same logits and tokens bit for bit;
 - exact=True: logits bit for bit bf16's, the 32 tokens bf16's;
@@ -104,9 +105,9 @@ def compiled(model, ids):
 def fast_loop(e, ids, out_e):
     """generate()'s fast loop on e, loaded with compile=False (eager; out_e its TOKENS tokens): GLYD_COMPILE=0 leaves it
     eager; set up (fast_generate), the calls it leaves as they come run eager (a cache of the call's own, two beams, a
-    static cache past COMPILE_MAX); a call that runs out of memory compiling raises it, and the next call compiles; a
-    call that fails compiled (a backend that fails): one warning, the call run again eager, and the next eager, their
-    tokens eager's."""
+    static cache past its cap, glyd_fast); a call that runs out of memory compiling raises it, and the next call
+    compiles; a call that fails compiled (a backend that fails): one warning, the call run again eager, and the next
+    eager, their tokens eager's."""
     compiled = lambda: "glyd_compiled" in e.__dict__
     os.environ["GLYD_COMPILE"] = "0"
     try:
@@ -115,7 +116,7 @@ def fast_loop(e, ids, out_e):
         del os.environ["GLYD_COMPILE"]
     gm.fast_generate(e)
     with torch.no_grad():
-        for kw in (dict(past_key_values=DynamicCache(config=e.config)), dict(num_beams=2), dict(max_new_tokens=gm.COMPILE_MAX, max_time=0.5)):
+        for kw in (dict(past_key_values=DynamicCache(config=e.config)), dict(num_beams=2), dict(max_new_tokens=e.glyd_fast, max_time=0.5)):
             e.generate(ids, **dict(dict(max_new_tokens=8, do_sample=False), **kw))
             assert not compiled(), ("a call the fast loop leaves as it came, compiled", list(kw))
 
@@ -229,7 +230,7 @@ for name in NAMES:
     assert "glyd_compiled" not in e.__dict__ and "_compiled_call" not in e.__dict__ and exact(logits_e, logits_b), "compile=False: generate() eager, the same packs"
     print(f"   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's {same(out_e, out_b)} of {TOKENS}")
     fast_loop(e, ids, out_e)
-    print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {gm.COMPILE_MAX} positions eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's")
+    print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {e.glyd_fast} positions eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's")
     del e
     torch.cuda.empty_cache()
     ahead(m, long)

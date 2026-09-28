@@ -136,33 +136,38 @@ once, then captures a graph (Qwen3-4B-Instruct-2507, a chat's turns: 15.0
 s, then 5.6 s, then 0.8-0.9 s for 64 tokens). A call that brings its own
 cache (`past_key_values`), several beams, an assistant, or asks for
 attentions or hidden states runs as transformers runs it, as does one
-whose static cache would hold more than `GLYD_COMPILE_MAX` positions in
-all (1280: its sequences times the prompt and `max_new_tokens`): the
-static cache holds every position a call may reach from its first step
-and each step's attention reads all of it, so past that the eager loop
-is as fast (Qwen3-8B at one sequence: 17.7 ms a step compiled with 80
-positions held against 20.5 eager, 20.4 with 1024, 23.0 with 2048; 19.5
-against 21.8 at 8 sequences with 80 each, 26.7 against 24.8 with 576).
-A slower host (a server's CPU) gains more by compiling: set it higher
-there. Not with `exact=True` (below), a family transformers does not
-compile whole (its `_can_compile_fullgraph`) or the model over several
-GPUs, which run eager, nor where transformers 5.17's static cache fails
-(bf16's too), which run eager from the start: Llama 4 (transformers
-compiles none of its forwards), and a model with multi-head latent
-attention whose config has fewer key/value heads than heads (as tiny
-DeepSeek V2 and V3, Kimi Linear and AXK1 test models do; the released
-checkpoints, with as many as heads, compile). A call whose forward fails
-to compile anyway (torch._dynamo's or Inductor's error) runs again eager,
-from its start (a streamer sees the prompt again on that one call), and so
-do the model's later calls, with one warning; any other error (out of
-memory included) is the call's own, and the next call compiles as before.
-Each model's forward
-compiles to a graph of its own, so Glyd's compiled calls run with
-`torch._dynamo.config.recompile_limit` at 64 at least (at the default 8
-the 8th model a process loaded ran uncompiled), set for those calls alone:
-the process's own setting is left as it is. A model that has generated
-compiled is freed at `del`, as an eager one (its compiled forward does not
-refer to it).
+whose static cache would hold more positions in all (its sequences times
+the prompt and `max_new_tokens`) than 1280 on a GeForce card and 2048 on
+another: the static cache holds every position a call may reach from its
+first step and each step's attention reads all of it, so past that the
+eager loop is as fast, sooner the faster the host's CPU (what compiling
+saves is eager's host time a step). A step's ms compiled against eager,
+Qwen3-8B, the static cache that long with 64 positions used:
+
+| | 256 | 1024 | 2048 | 4096 positions | 8 sequences |
+| :--- | ---: | ---: | ---: | ---: | :--- |
+| RTX 4080 SUPER, Ryzen 9 7950X3D (a desktop) | 18.2 / 20.5 | 20.4 / 20.5 | 23.0 / 20.5 | 27.6 / 20.5 | 19.5 / 21.8 with 80 each |
+| A10, Xeon Platinum 8358 (a server) | 28.3 / 38.3 | 31.3 / 36.9 | 34.9 / 37.2 | 42.8 / 33.6 | 33.9 / 35.8 with 256 each, 52.6 / 33.6 with 1024 |
+
+`GLYD_COMPILE_MAX` sets the cap on any GPU. Not with `exact=True`
+(below), a family transformers does not compile whole (its
+`_can_compile_fullgraph`) or the model over several GPUs, which run
+eager, nor where transformers 5.17's static cache fails (bf16's too),
+which run eager from the start: Llama 4 (transformers compiles none of
+its forwards), and a model with multi-head latent attention whose config
+has fewer key/value heads than heads (as tiny DeepSeek V2 and V3, Kimi
+Linear and AXK1 test models do; the released checkpoints, with as many
+as heads, compile). A call whose forward fails to compile anyway
+(torch._dynamo's or Inductor's error) runs again eager, from its start
+(a streamer sees the prompt again on that one call), and so do the
+model's later calls, with one warning; any other error (out of memory
+included) is the call's own, and the next call compiles as before. Each
+model's forward compiles to a graph of its own, so Glyd's compiled calls
+run with `torch._dynamo.config.recompile_limit` at 64 at least (at the
+default 8 the 8th model a process loaded ran uncompiled), set for those
+calls alone: the process's own setting is left as it is. A model that
+has generated compiled is freed at `del`, as an eager one (its compiled
+forward does not refer to it).
 
 How: `from_pretrained` and `compress` take over the `generate` and
 `get_compiled_call` of the model's class, once for the process, as Glyd

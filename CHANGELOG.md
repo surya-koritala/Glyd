@@ -25,13 +25,16 @@ every earlier format.
   transformers does not compile whole (its `_can_compile_fullgraph`), a
   model over several GPUs, and a call that brings its own cache, several
   beams, an assistant, or asks for attentions or hidden states. A call
-  whose static cache would hold more than `GLYD_COMPILE_MAX` positions in
-  all (1280: its sequences times the prompt and `max_new_tokens`) runs
-  eager too: the static cache holds every position the call may reach from
-  its first step and each step's attention reads all of it, and past that
-  the eager loop was as fast on the RTX 4080 SUPER (Qwen3-8B at one
-  sequence: 17.7 ms a step compiled with 80 positions held against 20.5
-  eager, 20.4 with 1024, 23.0 with 2048). Where transformers 5.17's static
+  whose static cache would hold more positions in all (its sequences times
+  the prompt and `max_new_tokens`) than 1280 on a GeForce card and 2048 on
+  another (`GLYD_COMPILE_MAX` sets it) runs eager too: the static cache
+  holds every position the call may reach from its first step and each
+  step's attention reads all of it, and past that the eager loop was as
+  fast, sooner with a desktop's CPU (Qwen3-8B, a step's ms compiled
+  against eager with 1024 / 2048 / 4096 positions held and 64 used: 20.4 /
+  23.0 / 27.6 against 20.5 on an RTX 4080 SUPER with a Ryzen 9 7950X3D,
+  31.3 / 34.9 / 42.8 against 36.9 / 37.2 / 33.6 on an A10 with a Xeon
+  Platinum 8358). Where transformers 5.17's static
   cache fails (bf16's too) it runs eager from the start: Llama 4, and a
   model with multi-head latent attention whose config has fewer key/value
   heads than heads (tiny DeepSeek V2, V3, Kimi Linear and AXK1 test models;
