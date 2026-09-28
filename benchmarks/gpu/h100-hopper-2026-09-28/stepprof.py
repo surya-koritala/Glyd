@@ -25,8 +25,7 @@ with torch.no_grad():
         torch.cuda.synchronize()
 ev = [e for e in pr.events() if e.device_type.name == "CUDA"]
 ev.sort(key=lambda e: e.time_range.start)
-# The steps after the prompt: from the last N+1 lm_heads' ... simply: the kernels after the prompt's lm_head (the first big kernel run).
-names = [e.name for e in ev]
+# Every kernel over the prompt and the N + 1 steps, by name.
 tot = collections.defaultdict(float)
 cnt = collections.Counter()
 for e in ev:
@@ -52,8 +51,6 @@ for r in ["qkv", "o", "gate_up", "down", "lm_head"]:
 
 if os.environ.get("LAYERS"):
     for r in ["gate_up", "qkv", "o", "down"]:
-        k = ["qkv", "o", "gate_up", "down"].index(r)
-        v = [[acc[r][st * (per // 4) + l] for st in range(n)] for l in range(per // 4)] if False else None
         seq = acc[r]
         L = (per - 1) // 4
         lay = [sum(seq[st * L + l] for st in range(n)) / n for l in range(L)]
