@@ -1,0 +1,13 @@
++ cd /home/surya-koritala/p5fp8
++ timeout 40m /home/surya-koritala/p3final/wv/bin/python fp8_compare.py bf16 out/bf16.pt
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights:  15%|█▌        | 60/398 [00:00<00:00, 585.13it/s]Loading weights:  37%|███▋      | 147/398 [00:00<00:00, 750.44it/s]Loading weights:  59%|█████▉    | 234/398 [00:00<00:00, 803.83it/s]Loading weights:  80%|████████  | 319/398 [00:00<00:00, 818.82it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 801.68it/s]
+Generating test split:   0%|          | 0/4358 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 4358/4358 [00:00<00:00, 290702.26 examples/s]
+Generating train split:   0%|          | 0/36718 [00:00<?, ? examples/s]Generating train split: 100%|██████████| 36718/36718 [00:00<00:00, 1676753.49 examples/s]
+Generating validation split:   0%|          | 0/3760 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 3760/3760 [00:00<00:00, 1054324.31 examples/s]
+Generating test split:   0%|          | 0/14042 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 14042/14042 [00:00<00:00, 1373997.82 examples/s]
+Generating validation split:   0%|          | 0/1531 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 1531/1531 [00:00<00:00, 678803.32 examples/s]
+Generating dev split:   0%|          | 0/285 [00:00<?, ? examples/s]Generating dev split: 100%|██████████| 285/285 [00:00<00:00, 248829.44 examples/s]
+Generating auxiliary_train split:   0%|          | 0/99842 [00:00<?, ? examples/s]Generating auxiliary_train split:  50%|█████     | 50000/99842 [00:00<00:00, 486023.38 examples/s]Generating auxiliary_train split: 100%|██████████| 99842/99842 [00:00<00:00, 597799.76 examples/s]
+bf16: 8.04 GB, perplexity 11.2435, MMLU 68.30%
+exit 0

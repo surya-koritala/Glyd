@@ -1,0 +1,7 @@
++ cd /home/surya-koritala/p5fp8
++ timeout 40m /home/surya-koritala/p3final/wv/bin/python fp8_compare.py fp8 out/fp8.pt
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/651 [00:00<?, ?it/s]Loading weights:   0%|          | 2/651 [00:00<00:41, 15.63it/s]Loading weights:  73%|███████▎  | 474/651 [00:00<00:00, 2491.77it/s]Loading weights: 100%|██████████| 651/651 [00:00<00:00, 2331.50it/s]
+Fetching 11 files:   0%|          | 0/11 [00:00<?, ?it/s]Fetching 11 files:  27%|██▋       | 3/11 [00:00<00:00, 29.97it/s]Fetching 11 files: 100%|██████████| 11/11 [00:00<00:00, 51.31it/s]Fetching 11 files: 100%|██████████| 11/11 [00:00<00:00, 48.39it/s]
+fp8: 4.41 GB, perplexity 11.2597, MMLU 68.10%
+exit 0

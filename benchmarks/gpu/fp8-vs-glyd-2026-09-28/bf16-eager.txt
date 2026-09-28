@@ -1,0 +1,6 @@
++ cd /home/surya-koritala/p5fp8
++ timeout 40m /home/surya-koritala/p3final/wv/bin/python fp8_compare.py bf16-eager out/bf16-eager.pt
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights:  15%|█▍        | 59/398 [00:00<00:00, 587.54it/s]Loading weights:  37%|███▋      | 146/398 [00:00<00:00, 745.03it/s]Loading weights:  57%|█████▋    | 225/398 [00:00<00:00, 760.83it/s]Loading weights:  78%|███████▊  | 312/398 [00:00<00:00, 798.47it/s]Loading weights:  99%|█████████▉| 394/398 [00:00<00:00, 804.78it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 783.65it/s]
+bf16-eager: 8.04 GB, perplexity 11.2469, MMLU 68.30%
+exit 0
