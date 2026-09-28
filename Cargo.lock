@@ -497,6 +497,9 @@ dependencies = [
 [[package]]
 name = "glyd-gpu"
 version = "0.23.0"
+dependencies = [
+ "sha2",
+]
 
 [[package]]
 name = "glyd-preflate"

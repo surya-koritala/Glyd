@@ -28,7 +28,9 @@ use std::fmt;
 
 pub mod cuda;
 pub mod json;
+pub mod pack;
 pub mod safetensors;
+pub mod save;
 
 /// The C API this crate calls (glyd_gpu.h's `GLYD_GPU_API_VERSION`): a
 /// library of another version is refused, as a C FFI does not see a call's
