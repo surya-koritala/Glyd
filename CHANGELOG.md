@@ -11,10 +11,11 @@ every earlier format.
 - The GPU kernels as a library of their own, for engines in C, C++, Rust
   or any language with a C FFI, with no Python or PyTorch: every release
   carries `glyd-gpu-TAG-linux-ARCH-cudaN.tar.gz` for x86_64 and aarch64,
-  CUDA 12 and 13 (the library, its header, the example below, `gpu/LICENSE`
-  and a README with the example's build line), each with its `.sha256`. `gpu/glyd_gpu.h` declares the C API: its 37
-  functions, `GLYD_GPU_API_VERSION` (2), the arrays of each packed layout,
-  the workspace queries, the stream and the return codes. `glyd_gpu.cu`
+  CUDA 12 and 13 (the library, its header, the example below,
+  `gpu/LICENSE` and a README with the example's build line), each with its
+  `.sha256`. `gpu/glyd_gpu.h` declares the C API: its 37 functions,
+  `GLYD_GPU_API_VERSION` (2), the arrays of each packed layout, the
+  workspace queries, the stream and the return codes. `glyd_gpu.cu`
   includes it, so nvcc holds each definition to its declaration (the
   library's build and the JIT's), and `bindings/python/test_gpu.py` holds
   the package's ctypes calls to it. `gpu/examples/unpack.c` reads a
