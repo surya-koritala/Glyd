@@ -3051,9 +3051,12 @@ static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
     // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens); on GeForce Ada only where
     // the last block of 256 would be more than half full (else its empty half costs more than the second
     // decode: a Qwen3-4B layer's products take 0.79-0.89x the time in blocks of 128 at 300 tokens, 1.02-1.14x
-    // at 448, RTX 4080 SUPER; elsewhere not measured). Stream-K likewise on GeForce Ada only, where it was measured.
+    // at 448, RTX 4080 SUPER; elsewhere not measured), to 1024 tokens tiered and 4224 12-bit, as measured (past
+    // 1024 blocks of 128 cost Qwen3-1.7B's and Qwen3-4B's tiered layers 1-7% more from 1600 tokens, and save
+    // their 12-bit layers 1-4% to 4224). Stream-K likewise on GeForce Ada only, where it was measured.
     bool ada = geforce_ada(current_device());
-    if (variant == 0) variant = M > 128 && (M % 256 == 0 || M % 256 > 128 || !ada) ? 2 : 1;
+    int64_t most = std::is_same_v<Fmt, Nib> ? 4224 : 1024;
+    if (variant == 0) variant = M > 128 && (M % 256 == 0 || M % 256 > 128 || M > most || !ada) ? 2 : 1;
     if (!ada) {
         auto grid = variant == 2 ? mma_gemm_grid_run<Fmt, 4, 4, 2, 1> : mma_gemm_grid_run<Fmt, 4, 4, 3, 2>;
         return grid(f, O, K, x, M, bias, y, ws, ws_bytes, cs, need);

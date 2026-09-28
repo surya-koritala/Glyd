@@ -176,6 +176,17 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
                         both_fail("mma12_gemm_wg", *pk, O, K, x, b, nan(M, O))
     print(f"mma {O}x{K}: {int(q.exc_base[-1])} exceptions (12-bit), the same through both")
 
+# mma_gemm_big's own choice of blocks: of 128 tokens on GeForce Ada where the last of 256 would be half empty or
+# less, to 1024 tokens tiered and 4224 12-bit (as measured); of 256 past 128 tokens elsewhere.
+ada = torch.cuda.get_device_capability() == (8, 9) and "GeForce" in torch.cuda.get_device_name()
+w = weights(256 * 512).view(256, 512)
+for q, most in ((g.pack_mma(w), 1024), (g.pack_mma12(w), 4224)):
+    for M in (300, 800, 1025, 1100, 4200, 4353):
+        x = torch.randn(M, 512, dtype=bf, device=dev)
+        v = 1 if ada and 1 <= M % 256 <= 128 and M <= most else 2
+        assert exact(g.mma_gemm_big(q, x), g.mma_gemm_big(q, x, variant=v)), ("blocks of 128 or 256", type(q).__name__, M, v)
+counts["mma_gemm_big's blocks"] = 12
+
 # Prompt products on two streams at once on one GPU, through each host: each stream's done counters its own (the C
 # API's: one stream's products at a time on a set), so each product the same as alone. A small one: its few blocks
 # (a unit's stages shared) beside the other stream's (with a set a device, 4% of them wrong).

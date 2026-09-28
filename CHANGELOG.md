@@ -42,8 +42,10 @@ every earlier format.
   the time to the first token with them; generation as before. With
   `exact=True` the same path, the logits bf16's bit for bit. On GeForce
   Ada the fused kernel runs blocks of 128 tokens where the last block of
-  256 would be half empty or less (300 tokens: 0.79-0.89x the time;
-  elsewhere as before, until measured). The decode ahead is off until
+  256 would be half empty or less, to 1024 tokens tiered and 4224 12-bit
+  (300 tokens: 0.79-0.89x the time; past 1024 the tiered layout's cost
+  1-7% more from 1600 tokens, the 12-bit's 1-4% less; elsewhere as
+  before, until measured). The decode ahead is off until
   measured on an A100, an H100 and the L4, L40S and RTX 6000 Ada
   (`GLYD_AHEAD_MIN=513` takes it).
 

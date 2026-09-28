@@ -81,7 +81,8 @@ cores with their fragments double-buffered, never waiting on a decode.
 Three stages are in flight, passed between the two by named barriers. A
 tile is 128 tokens by 128 rows of W, or past 128 tokens 256 by 64 (a
 weight decoded once for twice the tokens; on GeForce Ada only where the
-last tile of 256 would be more than half full). On GeForce Ada as many
+last tile of 256 would be more than half full, or past 1024 tokens tiered
+and 4224 12-bit, as measured). On GeForce Ada as many
 blocks as the GPU holds at once each take an equal share of the tiles'
 stages in turn, their stages in flight from one tile to the next
 (stream-K: no wave part empty, no pipeline filled again); a tile that
