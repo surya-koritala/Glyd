@@ -17,7 +17,7 @@ safetensors, format.py) loads its packs' buffers in place of the weights.
 import os
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM
+from transformers import AutoConfig, AutoModelForCausalLM
 from transformers.core_model_loading import ConversionOps
 from transformers.quantizers import HfQuantizer, get_module_from_name, register_quantization_config, register_quantizer
 from transformers.utils.quantization_config import QuantizationConfigMixin
@@ -50,7 +50,9 @@ def from_pretrained(name_or_path, *, device="cuda:0", layout="auto", exact=False
     hf_kwargs: transformers' from_pretrained's (revision, token,
       device_map, attn_implementation ...); the dtype is bf16.
     """
-    fmt.fetch_manifest(name_or_path, **{k: hf_kwargs[k] for k in ("revision", "token", "cache_dir", "local_files_only") if k in hf_kwargs})
+    hub = {k: hf_kwargs[k] for k in ("revision", "token", "cache_dir", "local_files_only") if k in hf_kwargs}
+    fmt.fetch_manifest(name_or_path, **hub)
+    _refuse_quantized(name_or_path, dict(hub, **{k: hf_kwargs[k] for k in ("trust_remote_code",) if k in hf_kwargs}))
     hf_kwargs.setdefault("device_map", {"": device})
     hf_kwargs.pop("torch_dtype", None)
     hf_kwargs.update(dtype=torch.bfloat16, quantization_config=GlydConfig(layout=layout, exact=exact, merge=merge, verify=verify))
@@ -61,6 +63,15 @@ def from_pretrained(name_or_path, *, device="cuda:0", layout="auto", exact=False
             raise
         from transformers import AutoModelForImageTextToText
         return AutoModelForImageTextToText.from_pretrained(name_or_path, **hf_kwargs)
+
+
+def _refuse_quantized(name_or_path, kwargs):
+    """A checkpoint quantized already (gpt-oss's MXFP4, the FP8 releases) refused, with what to load instead (where
+    transformers' error asks for the same quantization config's class)."""
+    q = getattr(AutoConfig.from_pretrained(name_or_path, **kwargs), "quantization_config", None)
+    method = (q.get("quant_method") if isinstance(q, dict) else getattr(q, "quant_method", None)) if q is not None else None
+    if method not in (None, "glyd"):
+        raise ValueError(f"glyd: {name_or_path} is quantized already ({method}); glyd packs a bf16 checkpoint's weights, bit for bit: load its bf16 release")
 
 
 @register_quantization_config("glyd")

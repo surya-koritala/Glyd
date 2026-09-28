@@ -432,6 +432,25 @@ def test_packed_weight_view():
     assert torch.equal(emb.weight[3, :], e[3]) and torch.equal(emb.weight[-1], e[-1]) and torch.equal(emb.weight[torch.tensor([1, 5], device="cuda")], e[[1, 5]])
 
 
+def test_quantized_checkpoint_refused():
+    """A checkpoint quantized already (its config's quantization_config: gpt-oss's MXFP4, the FP8 releases) refused by
+    glyd.from_pretrained with what to load instead, before a weight is read."""
+    try:
+        import torch  # noqa: F401
+        import transformers  # noqa: F401
+    except ImportError:
+        print("test_quantized_checkpoint_refused: skipped (no PyTorch or transformers)")
+        return
+    import glyd
+    with tempfile.TemporaryDirectory() as d:
+        json.dump({"model_type": "qwen3_moe", "quantization_config": {"quant_method": "fp8", "weight_block_size": [128, 128]}}, open(os.path.join(d, "config.json"), "w"))
+        try:
+            glyd.from_pretrained(d)
+            raise AssertionError("a quantized checkpoint")
+        except ValueError as e:
+            assert "quantized already (fp8)" in str(e) and "bf16 release" in str(e), e
+
+
 def test_cli_pack_and_verify():
     """python -m glyd.gpu pack, verify and fit on a tiny mixture of experts (Qwen3-MoE's): fit counts its experts'
     bytes, and refuses the glyd-v1 checkpoint (fit the source); a save cut short (packs, no glyd.json) refused by
