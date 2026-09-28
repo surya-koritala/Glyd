@@ -10,10 +10,11 @@ every earlier format.
 
 - Short prompts on GeForce Ada faster: a prompt's fused product is one C
   call, as a generation step's (it had cost 12 us of host time a call,
-  twice F.linear's), and runs by stream-K (`mma_gemm_sk_kernel`: as many
-  blocks as the GPU holds, each an equal share of the tiles' stages, a
-  tile several share summed by the last of them in their order), where K
-  was split and its parts summed by a second kernel. On an RTX 4080
+  twice F.linear's), and on GeForce Ada runs by stream-K
+  (`mma_gemm_sk_kernel`: as many blocks as the GPU holds, each an equal
+  share of the tiles' stages, a tile several share summed by the last of
+  them in their order), where K was split and its parts summed by a
+  second kernel (as still on other GPUs, until measured there). On an RTX 4080
   SUPER (`gpu/e2e.py --prefill --merge`), Qwen3-1.7B's prompts of 128 /
   256 / 512 tokens take 10.3 / 14.6 / 23.8 ms tiered and 10.2 / 14.5 /
   23.7 12-bit against bf16's 10.8 / 14.0 / 24.3 (0.21.0: 11.4 / 15.8 /

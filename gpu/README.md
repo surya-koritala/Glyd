@@ -81,12 +81,14 @@ cores with their fragments double-buffered, never waiting on a decode.
 Three stages are in flight, passed between the two by named barriers. A
 tile is 128 tokens by 128 rows of W, or past 128 tokens 256 by 64 (a
 weight decoded once for twice the tokens; on GeForce Ada only where the
-last tile of 256 would be more than half full). As many blocks as the
-GPU holds at once each take an equal share of the tiles' stages in turn,
-their stages in flight from one tile to the next (stream-K: no wave part
-empty, no pipeline filled again); a tile that several blocks share is
-summed by the last of them to finish, in their order (the same result
-every run). Past 128 tokens the product is bound by the tensor cores,
+last tile of 256 would be more than half full). On GeForce Ada as many
+blocks as the GPU holds at once each take an equal share of the tiles'
+stages in turn, their stages in flight from one tile to the next
+(stream-K: no wave part empty, no pipeline filled again); a tile that
+several blocks share is summed by the last of them to finish, in their
+order (the same result every run). Elsewhere, until measured there, a
+block a tile, K split where the tiles would leave the last wave part
+empty, the parts summed by a second kernel in a fixed order. Past 128 tokens the product is bound by the tensor cores,
 not by memory, so the most it can be is bf16's time; it is within 5-10%
 of it. Measured on Qwen2.5-7B's matrices: the consumers alone come
 within 1-4% of cuBLAS (one warp an SM quarter keeps the tensor cores
@@ -300,7 +302,8 @@ F.linear's 6. And the kernel's grid: where its blocks would not fill
 the GPU, K was split and the parts summed by a second kernel (0.6-0.8
 ms of a Qwen3-1.7B pass at 128-512 tokens), and waves ran part empty.
 A prompt's product is now one C call, as a generation step's
-(`_lib.step`), and the kernel runs by stream-K (above). The 12-bit
+(`_lib.step`), and on GeForce Ada the kernel runs by stream-K (above;
+other GPUs keep the grid until it is measured there). The 12-bit
 layout's fused kernel is then the faster one to 1024 tokens (the decode
 ahead starts there, was past 640). One forward pass
 (`e2e.py --prefill --merge`, bf16 and Glyd merged alike), RTX 4080

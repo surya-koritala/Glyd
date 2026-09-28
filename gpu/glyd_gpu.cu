@@ -1074,7 +1074,8 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(Fmt f, i
 // buffers from producers to consumers (full) and back (empty). A weight
 // is decoded once for TM tokens. Blocks may split K (Y32: their parts,
 // added in a fixed order by finish_kernel). A mixture of experts' prompt runs
-// it (MOE); a dense one mma_gemm_sk_kernel, its blocks by stream-K.
+// it (MOE), and a dense one but on GeForce Ada: there mma_gemm_sk_kernel, its
+// blocks by stream-K.
 constexpr int BIG_KK = 4;  // steps a stage
 template <int CW, int PW, int NB, int RBB> struct Big {
     static constexpr int THREADS = 32 * (CW + PW);
@@ -1329,7 +1330,7 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
     }
 }
 
-// A prompt's product (not a mixture of experts'): mma_gemm_big_kernel's blocks, TM tokens by RBB row blocks, and its
+// A prompt's product on GeForce Ada (not a mixture of experts'): mma_gemm_big_kernel's blocks, TM tokens by RBB row blocks, and its
 // producer and consumer warps, as many blocks as the GPU holds at once, each taking an equal share of the units'
 // stages in turn (a unit: a tile of tokens by a pair of row blocks; units by pair, then tile), its stages kept in
 // flight from one unit to the next (stream-K: no wave part empty, no split of K summed by another kernel). A unit
@@ -2984,9 +2985,42 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm(const uint8_t* data, const uint32_t* exc, c
     return mma_gemm_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, O, K, x, M, bias, y, workspace, workspace_bytes, done, cs, nullptr);
 }
 
-// Many tokens (a prompt), K a multiple of 64, x 16-byte aligned: mma_gemm_sk_kernel, as many blocks as the GPU
-// holds (at most 8 a unit, at least 4 stages a block). The workspace: the blocks' slots, where they share a unit;
-// done: a counter a unit (units: tiles by pairs), zero.
+// Many tokens (a prompt), K a multiple of 64, x 16-byte aligned, but on GeForce Ada: mma_gemm_big_kernel, K split
+// so the blocks fill their last wave: the fewest splits that leave under 15% of it idle, else the fullest; at
+// least 4 stages a split. The workspace: the splits' parts, [splits][M][O] floats, past one.
+template <class Fmt, int CW, int PW, int NB, int RBB>
+static int mma_gemm_grid_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
+    using C = Big<CW, PW, NB, RBB>;
+    auto kernel = mma_gemm_big_kernel<Fmt, CW, PW, NB, RBB>;
+    static std::atomic<int> known[MAX_DEVICES];  // a device's blocks an SM for this kernel (its shared memory allowed once)
+    int dev = current_device();
+    int64_t stages = K / 16 / BIG_KK, pairs = (O / 64 + RBB - 1) / RBB, tiles = (M + C::TM - 1) / C::TM;
+    int64_t cap = per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), most = std::max<int64_t>(1, stages / 4);
+    int64_t splits = 1;
+    double best = 0;
+    for (int64_t sp = 1; sp <= most; sp++) {
+        int64_t nblocks = pairs * tiles * sp;
+        double fill = (double)nblocks / (double)(((nblocks + cap - 1) / cap) * cap);
+        if (fill > best + 1e-9) best = fill, splits = sp;
+        if (fill >= 0.85) break;
+    }
+    int64_t per = (stages + splits - 1) / splits;
+    splits = (stages + per - 1) / per;
+    size_t bytes = splits > 1 ? (size_t)(splits * M * O) * sizeof(float) : 0;
+    if (need) {
+        *need = bytes;
+        return cudaGetLastError();
+    }
+    if (!fits(ws, ws_bytes, bytes)) return cudaErrorInvalidValue;
+    float* y32 = splits > 1 ? (float*)ws : nullptr;
+    kernel<<<dim3(tiles, pairs, splits), C::THREADS, C::SHARED, cs>>>(f, O, K, M, per, bf(x), bf(bias), bf(y), y32, MoePairs{});
+    if (splits > 1) finish_kernel<<<(M * O + 255) / 256, 256, 0, cs>>>(y32, splits, bf(bias), M, O, bf(y));
+    return cudaGetLastError();
+}
+
+// The same on GeForce Ada: mma_gemm_sk_kernel, as many blocks as the GPU holds (at most 8 a unit, at least 4
+// stages a block). The workspace: the blocks' slots, where they share a unit; done: a counter a unit (units: tiles
+// by pairs), zero.
 template <class Fmt, int CW, int PW, int NB, int RBB>
 static int mma_gemm_big_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
     using C = Big<CW, PW, NB, RBB>;
@@ -3014,8 +3048,13 @@ static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
     // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens); on GeForce Ada only where
     // the last block of 256 would be more than half full (else its empty half costs more than the second
     // decode: a Qwen3-4B layer's products take 0.79-0.89x the time in blocks of 128 at 300 tokens, 1.02-1.14x
-    // at 448, RTX 4080 SUPER; elsewhere not measured).
-    if (variant == 0) variant = M > 128 && (M % 256 == 0 || M % 256 > 128 || !geforce_ada(current_device())) ? 2 : 1;
+    // at 448, RTX 4080 SUPER; elsewhere not measured). Stream-K likewise on GeForce Ada only, where it was measured.
+    bool ada = geforce_ada(current_device());
+    if (variant == 0) variant = M > 128 && (M % 256 == 0 || M % 256 > 128 || !ada) ? 2 : 1;
+    if (!ada) {
+        auto grid = variant == 2 ? mma_gemm_grid_run<Fmt, 4, 4, 2, 1> : mma_gemm_grid_run<Fmt, 4, 4, 3, 2>;
+        return grid(f, O, K, x, M, bias, y, ws, ws_bytes, cs, need);
+    }
     auto run = variant == 2 ? mma_gemm_big_run<Fmt, 4, 4, 2, 1> : mma_gemm_big_run<Fmt, 4, 4, 3, 2>;
     return run(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
 }
@@ -3024,7 +3063,8 @@ GLYD_GPU_API int glyd_gpu_mma_gemm_big_workspace(int64_t O, int64_t K, int64_t M
     return bytes ? mma_gemm_big_any(Tiered{}, O, K, nullptr, M, nullptr, nullptr, variant, nullptr, 0, nullptr, 0, bytes) : cudaErrorInvalidValue;
 }
 
-// done: (M + 127) / 128 times O / 64 counters at least, zero (the last block of a unit resets its own).
+// done: (M + 127) / 128 times O / 64 counters at least, zero (the last block of a unit resets its own; read on
+// GeForce Ada, where the product runs by stream-K).
 GLYD_GPU_API int glyd_gpu_mma_gemm_big(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
     return mma_gemm_big_any(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, O, K, x, M, bias, y, variant, workspace, workspace_bytes, done, cs, nullptr);
 }
