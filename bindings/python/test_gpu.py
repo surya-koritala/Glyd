@@ -189,14 +189,15 @@ def test_source_files_copied_once_and_writable():
             assert os.access(os.path.join(dst, name), os.W_OK)
 
 
-# Every family of transformers (5.17) whose layers hold a mixture of experts: the model type a tiny config is made of,
+# Every family of transformers (5.17) whose layers hold a mixture of experts: the model type a tiny config is made of
+# (an expert's matrices 384 x 128 and 128 x 192: none square, so a transposition taken wrong shows in the logits),
 # and what the config needs besides TINY (text: its text config's; a vision or audio tower's own, small). compress:
 # packed by glyd.gpu.compress, not saved: a model glyd.from_pretrained does not load (token classification), or one
 # whose checkpoint does not run in bf16.
-TINY = dict(vocab_size=512, hidden_size=128, intermediate_size=128, moe_intermediate_size=64, shared_expert_intermediate_size=64, num_hidden_layers=2,
+TINY = dict(vocab_size=512, hidden_size=128, intermediate_size=192, moe_intermediate_size=192, shared_expert_intermediate_size=64, num_hidden_layers=2,
             num_attention_heads=4, num_key_value_heads=2, head_dim=32, num_experts=8, num_local_experts=8, n_routed_experts=8, moe_num_experts=8,
             num_experts_per_tok=2, moe_topk=2, n_group=1, topk_group=1, first_k_dense_replace=0, n_shared_experts=1, mlp_only_layers=[], decoder_sparse_step=1,
-            kv_lora_rank=32, q_lora_rank=64, qk_rope_head_dim=16, qk_nope_head_dim=16, v_head_dim=32, expert_ffn_hidden_size=64, sliding_window=64,
+            kv_lora_rank=32, q_lora_rank=64, qk_rope_head_dim=16, qk_nope_head_dim=16, v_head_dim=32, expert_ffn_hidden_size=192, sliding_window=64,
             max_position_embeddings=512, pad_token_id=0, bos_token_id=1, eos_token_id=2, linear_key_head_dim=32, linear_value_head_dim=32,
             linear_num_key_heads=2, linear_num_value_heads=4, linear_head_dim=32, linear_num_heads=4, index_head_dim=32, index_n_heads=4, index_topk=16, index_kpool=4)
 TOWER = dict(depth=1, num_hidden_layers=1, hidden_size=64, num_heads=2, num_attention_heads=2, intermediate_size=128, out_hidden_size=128, projection_intermediate_size=128)
@@ -224,9 +225,9 @@ FAMILIES = {
     "qwen4_exp": dict(text=dict(layer_types=["linear_attention", "qwen_sparse_attention"], indexer_n_heads=2, indexer_kv_heads=1, indexer_head_dim=32, indexer_budget=16, indexer_compress_ratio=4)),
     "deepseek_ocr2": dict(text=dict(mlp_layer_types=SPARSE), vision_config=dict(sam_config=dict(hidden_size=64, output_channels=64, num_hidden_layers=1, num_attention_heads=2, mlp_dim=128, global_attn_indexes=[0], downsample_channels=[64, 128]),
                                                                             encoder_config=dict(hidden_size=128, intermediate_size=128, num_hidden_layers=1, num_attention_heads=4, num_key_value_heads=2))),
-    "ernie4_5_vl_moe": dict(text=dict(moe_intermediate_size=[64, 64], moe_k=2, rope_parameters=dict(ROPE, mrope_section=[6, 6, 4]))),
+    "ernie4_5_vl_moe": dict(text=dict(moe_intermediate_size=[192, 192], moe_k=2, rope_parameters=dict(ROPE, mrope_section=[6, 6, 4]))),
     # run by the family's own code (moe.OWN)
-    "aria_text": {}, "jetmoe": {}, "llama4_text": dict(intermediate_size=64, intermediate_size_mlp=128, interleave_moe_layer_step=1, num_experts_per_tok=1),
+    "aria_text": {}, "jetmoe": {}, "llama4_text": dict(intermediate_size_mlp=128, interleave_moe_layer_step=1, num_experts_per_tok=1),
     "dbrx": dict(d_model=128, n_heads=4, n_layers=2, max_seq_len=512, attn_config=dict(kv_n_heads=2, rope_theta=10000.0, clip_qkv=8.0), ffn_config=dict(hidden_size=128, ffn_hidden_size=64, moe_num_experts=8, moe_top_k=2)),
     "longcat_flash": dict(num_layers=1, qk_nope_head_dim=32, qk_rope_head_dim=16, head_dim=16, num_key_value_heads=4, zero_expert_num=2),
     "step3p7": dict(text=dict(share_expert_dim=64, mlp_layer_types=SPARSE), vision_config=dict(TOWER, image_size=56, patch_size=14)),
@@ -356,6 +357,8 @@ def moe_family(torch, kind, over, d):
             del g
         for path in (src, dst):
             assert torch.equal(run(glyd.from_pretrained(path, exact=True)), lb), (kind, path)
+        # a bf16 model of a class Glyd took over (moe.OWN) runs the class's own code
+        assert torch.equal(run(auto.from_pretrained(src, dtype=torch.bfloat16, device_map={"": "cuda:0"}).eval()), lb), kind
         torch.cuda.empty_cache()
     return medians
 
