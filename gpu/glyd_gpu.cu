@@ -2957,8 +2957,11 @@ static int mma12_tma_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
     static std::atomic<int> known[MAX_DEVICES];  // a device's blocks an SM for this kernel
     int dev = current_device();
     int64_t P = (O / 64 + WG - 1) / WG, U = P * (K / 64);
-    // As many blocks as fit at once, but at least 8 stages a block.
+    // As many blocks as fit at once, but at least 8 stages a block; where that leaves a block under 32 stages
+    // and there are fewer units than blocks, a whole number of blocks a unit: each unit's sum over as few
+    // parts, its blocks done together (Qwen3-8B's o, 4096 x 4096, 8% the faster on an H100).
     int64_t nb = std::max<int64_t>(1, std::min<int64_t>(per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), U / 8));
+    if (P < nb && U < 32 * nb) nb = nb / P * P;
     if (need) {
         *need = std::max(*need, (size_t)((nb + P) * NT * C::R) * sizeof(float));
         return 0;
