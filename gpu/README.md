@@ -412,9 +412,33 @@ forward pass over a prompt (`e2e.py --format auto --fused --merge
 | Qwen3-8B | 27.3 / 30.0 / 30.0 | 27.8 / 29.8 / 29.5 | 36.4 / 48.4 / **45.9** | 71.3 / 82.5 / 82.2 | 142.6 / 155.7 / 155.1 |
 | Qwen3-32B | 51.1 / 53.3 / 53.6 | 73.7 / 94.2 / **90.9** | 135.5 / 194.9 / **166.3** | 276.9 / 336.0 / 332.5 | 544.0 / 623.4 / 622.6 |
 
-Generation runs the same machine code as before (the step kernels' SASS
-in the library is main's, byte for byte; 8B's GPU time a step 8.39 /
-10.54 / 11.44 ms at 1 / 32 / 64 sequences against 8.37 / 10.55 / 11.30).
+Generation ran the same machine code as before (the step kernels' SASS
+in the library was main's, byte for byte; 8B's GPU time a step 8.39 /
+10.54 / 11.44 ms at 1 / 32 / 64 sequences against 8.37 / 10.55 / 11.30),
+until the TMA kernel's accumulator was zeroed (below).
+
+One change since, measured in one run on an H100 SXM against the kernel
+as above (each product timed as above, two rounds, the builds
+interleaved; logs: benchmarks/gpu/h100-hopper2-cu12-2026-09-28).
+
+**CUDA 12.** The CUDA 12 library (`libglyd_gpu_cuda12.so`, built with
+CUDA 12.8 as the release builds it; the wheels load it for PyTorch built
+for CUDA 12) ran the tensor-core products of the TMA kernel (as in
+v0.22.0 and v0.23.0) and of this kernel one at a time on Hopper. The
+accumulator, set by a tile's first product, was left unset before it,
+and CUDA 12.8's ptxas, seeing it defined inside the loop, serialized
+every wgmma (its warning C7515; in the SASS each HGMMA waits for all of
+them). CUDA 13's did not. It is zeroed now: no C7515, the waits as in
+CUDA 13's build, the same registers (168 in this kernel) and no spills.
+Over Qwen3-8B's four products and Qwen3-32B's o and gate_up at 17-1024
+tokens, the CUDA 12 library's products take a median 4% less time than
+before (up to 9%), Qwen3-8B's layer 2-8% less (1.58x cuBLAS's time at
+1024 tokens before, 1.45x now), as fast as the CUDA 13 library's (a
+median 0.3% apart). The CUDA 13 library's are as before (a median 0.2%
+apart; Qwen3-8B's o, the smallest, about 2% slower at 17-128 tokens in
+both rounds, its layer within 0.3%). The four builds' outputs (CUDA 12
+and 13, before and after) are the same, bit for bit (304 products on the
+self-test's matrices, 1-2100 tokens).
 
 What bounds it, from builds for timing alone (their outputs wrong by
 design): with nothing decoded (A a constant, 5 stages) the layer took

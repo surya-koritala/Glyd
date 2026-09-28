@@ -1969,7 +1969,9 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
     uint32_t* xw = (uint32_t*)(gbase + C::NS * C::SLOT + 16 * C::NS) + 256 * warp;  // this warp's exceptions' scratch
     ((uint4*)xw)[2 * lane] = ((uint4*)xw)[2 * lane + 1] = make_uint4(0u, 0u, 0u, 0u);
     __syncwarp();
-    float d[NT / 2];  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a unit's first product
+    float d[NT / 2] = {};  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a unit's first product
+    // (zeroed all the same: left unset, CUDA 12.8's ptxas saw it defined inside the loop and serialized every wgmma,
+    // its C7515, where CUDA 13's did not; on an H100 SXM the CUDA 12 library's products took a median 4% longer so)
     uint32_t A0[4][4], A1[4][4];
     int held = -1;  // the slot whose products may still be running
     auto release = [&](int sl) {  // the slot is free for stage j + NS (lane 0 arrives, by predicate: no branch among the products)
@@ -2308,7 +2310,8 @@ __global__ void __launch_bounds__(Wgp12<NT, CL>::THREADS, 1) mma12_wgp_kernel(co
     uint32_t* xw = (uint32_t*)(smem + C::NS * (C::XB + C::WB) + 16 * C::NS + 16) + 256 * warp;  // this warp's exceptions' scratch
     ((uint4*)xw)[2 * lane] = ((uint4*)xw)[2 * lane + 1] = make_uint4(0u, 0u, 0u, 0u);
     __syncwarp();
-    float d[NT / 2];  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a tile's first product
+    float d[NT / 2] = {};  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a tile's first product
+    // (zeroed all the same, as mma12_tma_kernel's: left unset, CUDA 12.8's ptxas serialized every wgmma, its C7515)
     uint32_t A[4][4];
     int held = -1;  // the slot of the stage before, whose products may still be running
     auto release = [&](int sl) {  // a warpgroup's first warp's lane i arrives on block i's barrier of the cluster, by predicate
