@@ -184,14 +184,14 @@ jobs:
             missing=0
             for f in "${expected[@]}"; do echo "$have" | grep -qxF "$f" || missing=1; done
             [ "$missing" = 0 ] && { ok=1; break; }
-            echo "release $TAG: still missing assets (attempt $i/40); retrying in 30s"
+            echo "release ${TAG}: still missing assets (attempt $i/40); retrying in 30s"
             sleep 30
           done
           [ "$ok" = 1 ] || { echo "release $TAG never got all expected assets. It has:"; echo "$have"; exit 1; }
           D="$(mktemp -d)"
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$D"
           echo "D=$D" >> "$GITHUB_ENV"
-          echo "release $TAG: all expected assets present ($(echo "$have" | wc -l) total)"
+          echo "release ${TAG}: all expected assets present ($(echo "$have" | wc -l) total)"
       - name: Every expected asset's sha256 matches
         run: |
           set -e
@@ -208,16 +208,16 @@ jobs:
           set -e
           COMMIT=$(git rev-list -n1 "$TAG")
           fail=0
-          v_cargo=$(git show "$COMMIT:Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
-          [ "$v_cargo" = "$V" ] || { echo "Cargo.toml at $TAG: $v_cargo != $V"; fail=1; }
-          v_store=$(git show "$COMMIT:glyd-store/Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
-          [ "$v_store" = "$V" ] || { echo "glyd-store/Cargo.toml at $TAG: $v_store != $V"; fail=1; }
-          v_py=$(git show "$COMMIT:bindings/python/pyproject.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
-          [ "$v_py" = "$V" ] || { echo "bindings/python/pyproject.toml at $TAG: $v_py != $V"; fail=1; }
-          v_init=$(git show "$COMMIT:bindings/python/glyd/__init__.py" | sed -n 's/^__version__ = "\(.*\)"/\1/p' | head -1)
-          [ "$v_init" = "$V" ] || { echo "bindings/python/glyd/__init__.py at $TAG: $v_init != $V"; fail=1; }
+          v_cargo=$(git show "${COMMIT}:Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          [ "$v_cargo" = "$V" ] || { echo "Cargo.toml at ${TAG}: $v_cargo != $V"; fail=1; }
+          v_store=$(git show "${COMMIT}:glyd-store/Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          [ "$v_store" = "$V" ] || { echo "glyd-store/Cargo.toml at ${TAG}: $v_store != $V"; fail=1; }
+          v_py=$(git show "${COMMIT}:bindings/python/pyproject.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          [ "$v_py" = "$V" ] || { echo "bindings/python/pyproject.toml at ${TAG}: $v_py != $V"; fail=1; }
+          v_init=$(git show "${COMMIT}:bindings/python/glyd/__init__.py" | sed -n 's/^__version__ = "\(.*\)"/\1/p' | head -1)
+          [ "$v_init" = "$V" ] || { echo "bindings/python/glyd/__init__.py at ${TAG}: $v_init != $V"; fail=1; }
           [ "$fail" -eq 0 ] || exit 1
-          echo "$TAG -> $COMMIT: every version file agrees on $V"
+          echo "$TAG -> ${COMMIT}: every version file agrees on $V"
       - name: Formula/glyd.rb's version and sha256 match the release (allow the bump PR to land; else check the tap)
         run: |
           set -e

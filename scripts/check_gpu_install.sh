@@ -19,7 +19,7 @@ MODEL="Qwen/Qwen3-0.6B"
 step() { echo "[check_gpu_install] $*"; }
 
 verdict=FAILED
-trap 'step "verdict: $verdict: glyd[gpu]==$V, $MODEL"' EXIT
+trap 'step "verdict: ${verdict}: glyd[gpu]==$V, $MODEL"' EXIT
 
 command -v nvidia-smi >/dev/null || { step "no nvidia-smi: not a machine with an NVIDIA GPU"; exit 1; }
 step "GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
@@ -36,7 +36,7 @@ got=$("$PY" -c "import glyd; print(glyd.__version__)")
 [ "$got" = "$V" ] || { step "installed glyd is $got, expected $V"; exit 1; }
 step "glyd.__version__ == $V"
 
-step "gpu/check_api.py on $MODEL: from_pretrained generating, exact=True bit for bit with bf16, save_pretrained and load back"
+step "gpu/check_api.py on ${MODEL}: from_pretrained generating, exact=True bit for bit with bf16, save_pretrained and load back"
 cp "$ROOT/gpu/check_api.py" "$WORK/check_api.py"
 "$PY" "$WORK/check_api.py" "$MODEL"
 
