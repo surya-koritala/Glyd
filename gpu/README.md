@@ -241,7 +241,9 @@ profiling a model's step kernel by kernel and the kernel stage by stage:
   takes a whole number of blocks a unit, summed over as few parts.
 
 GPU time a step (`e2e.py --format auto --fused --merge --profile`,
-bf16's from the same GPU):
+bf16's from the same GPU; Qwen3-32B's bf16 row from bf16prof.py, since
+e2e.py's own bf16 profile runs out of memory at 32B:
+e2e-qwen3-32b-bf16.txt):
 
 | H100 PCIe, GPU time a step | 1 | 8 | 32 | 64 sequences |
 | :--- | ---: | ---: | ---: | ---: |
