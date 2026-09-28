@@ -598,9 +598,12 @@ shorter prompts of the table's runs they came 0.3-1.2% apart, either way
 by model. The time to the first token moves with the pass. Generation
 (`--batch 1,8,32,64 --tokens 64`) is as before: every kernel a step runs
 has the same SASS as main's build (498 kernel builds compared; only the
-prompt kernel differs), and the runs agree within 1% (Qwen3-4B 12-bit
-73.2 / 551.7 / 1954.5 / 3381.2 tokens/s against main's 73.2 / 551.5 /
-1953.2 / 3381.2).
+prompt kernel differs), a step's GPU time is the same (Qwen3-1.7B tiered,
+profiled: 6.77-6.78 ms at 8 sequences, 8.24-8.26 at 32, either build), and
+the tokens/s agree within the host's spread (Qwen3-4B 12-bit 73.2 / 551.7
+/ 1954.5 / 3381.2 against main's 73.2 / 551.5 / 1953.2 / 3381.2; Qwen3-1.7B
+tiered's steps are host-bound, 14 ms of wall time against 7 of GPU time,
+and scatter 1-2% from run to run).
 
 Measured and not taken (Qwen3-4B's layer, 12-bit):
 

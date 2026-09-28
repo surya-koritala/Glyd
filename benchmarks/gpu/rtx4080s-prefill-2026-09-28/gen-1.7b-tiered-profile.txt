@@ -1,0 +1,8 @@
+main glyd mma profile, batch 8: 14.11 ms a step, GPU busy 6.78 ms a step after the prompt (1181 tokens/s of GPU time), 9.43 ms for the prompt and a token
+main glyd mma profile, batch 32: 14.55 ms a step, GPU busy 8.26 ms a step after the prompt (3875 tokens/s of GPU time), 13.52 ms for the prompt and a token
+fin glyd mma profile, batch 8: 14.08 ms a step, GPU busy 6.77 ms a step after the prompt (1182 tokens/s of GPU time), 9.41 ms for the prompt and a token
+fin glyd mma profile, batch 32: 14.42 ms a step, GPU busy 8.25 ms a step after the prompt (3876 tokens/s of GPU time), 13.32 ms for the prompt and a token
+main glyd mma profile, batch 8: 14.13 ms a step, GPU busy 6.78 ms a step after the prompt (1181 tokens/s of GPU time), 9.42 ms for the prompt and a token
+main glyd mma profile, batch 32: 14.61 ms a step, GPU busy 8.26 ms a step after the prompt (3874 tokens/s of GPU time), 13.51 ms for the prompt and a token
+fin glyd mma profile, batch 8: 14.07 ms a step, GPU busy 6.77 ms a step after the prompt (1181 tokens/s of GPU time), 9.41 ms for the prompt and a token
+fin glyd mma profile, batch 32: 14.52 ms a step, GPU busy 8.24 ms a step after the prompt (3882 tokens/s of GPU time), 13.35 ms for the prompt and a token
