@@ -67,9 +67,13 @@ class Ahead:
     (the order's first call starts it again); the calls off the order are
     recorded, and one that comes again makes them the order (another model,
     another path through this one). A prompt that ends before its order
-    does (its output layer at one token) leaves decodes ahead queued: the
-    next call below the threshold waits for them (settle), and the next
-    prompt ends the order where this one ended. Waits are the current
+    does leaves decodes ahead queued: the next call below the threshold
+    waits for them (settle); where that call is the order's next product
+    (the output layer at one token), the next prompt ends the order there,
+    and a prompt that stops short otherwise (an error: out of memory, an
+    interrupt) leaves the order whole. The calls a prompt makes past its
+    order's end (an order recorded from a prompt that stopped short, or
+    ended there before) are added to it as the next starts. Waits are the current
     stream's on the side stream's (the GPU's, never the host's), none while
     a CUDA graph is captured (it must not wait on work queued before it);
     the packs and the buffer are the side stream's too (record_stream), so
@@ -82,6 +86,7 @@ class Ahead:
         self.d, self.side = d, torch.cuda.Stream(d, priority=-1)  # high: its blocks placed as soon as launched
         self.sms = torch.cuda.get_device_properties(d).multi_processor_count
         self.rec, self.chain, self.pos, self.live, self.off = [], None, 0, False, False
+        self.tail, self.end = False, None  # rec: the calls past the order's end; the order to end at `end`
 
     @staticmethod
     def get(d):
@@ -102,10 +107,12 @@ class Ahead:
             self.live = False
 
     @staticmethod
-    def settle():
-        """Every device's decodes ahead waited for: a call below the threshold, after a prompt that ended before
-        its order did."""
+    def settle(h):
+        """Every device's decodes ahead waited for: a call below the threshold (module h's), after a prompt that
+        ended before its order did; where h is the order's next product, the order to end there."""
         for a in Ahead.of.values():
+            if a.live and a.pos and a.chain[a.pos] == h:
+                a.end = a.pos
             a.join()
         Ahead.queued = any(a.live for a in Ahead.of.values())
 
@@ -143,7 +150,7 @@ class Ahead:
         self.chain, self.offs, self.conf, self.plans = chain, offs, conf, {}
         self.gate = [torch.cuda.Event() for _ in chain]
         self.ready = [torch.cuda.Event() for _ in chain]
-        self.pos, self.off = 0, False  # (live kept: the last order's decodes ahead are waited for as this one starts)
+        self.pos, self.off, self.tail, self.end = 0, False, False, None  # (live kept: the last order's decodes ahead are waited for as this one starts)
         for h in chain:  # read and written by the side stream: none given out again before its work is done
             p = _modules[h].p
             for t in (p.data, p.exc, p.exc_base) if isinstance(p, g.Mma12) else (p.data, p.blocks, p.block_base):
@@ -180,7 +187,8 @@ class Ahead:
     def find(self, lin):
         """lin's place in the order where the prompt follows it, else None: a matrix the buffer does not hold twice,
         or a call off the order (or with none yet), recorded: a call that comes again ends the recording, the calls
-        from it on the new order (the order's own first call starts it again instead)."""
+        from it on the new order (the order's own first call starts it again instead: the order ended where the
+        last prompt went on below the threshold, or with the calls it made past its end added)."""
         room = Scratch.buf[self.d].numel() - 16384 * 8
         if 2 * lin.p.n > room:
             return None
@@ -191,10 +199,14 @@ class Ahead:
             if not self.off and c[self.pos] == h:
                 return self.pos
             if c[0] == h:
-                if self.pos and not self.off:  # the last prompt ended before its order did: the order to there
+                if self.tail and self.rec:  # the last prompt went on past the order's end: the order to there
+                    self.plan(c + self.rec, room)
+                elif self.end == self.pos and not self.off:  # it went on below the threshold from here: the order to here
                     self.plan(c[: self.pos], room)
-                self.rec = []
+                self.rec, self.tail, self.end = [], False, None
                 return 0
+            if not self.off:
+                self.tail = self.pos == 0  # past the order's end (else off its path)
             self.join()  # off the order: none of its decodes ahead left queued past here
             self.off = True
         if h in self.rec:
@@ -357,7 +369,7 @@ class GLinear(_Node, nn.Module):
         if torch.compiler.is_compiling():  # one node of the graph (glyd::linear), which runs what follows (no gradient, as eager)
             return torch.ops.glyd.linear(x.detach() if x.requires_grad else x, self.handle, self.out_features)
         if Ahead.queued and x.numel() < self.ahead * self.in_features:  # a prompt ended before its order did
-            Ahead.settle()
+            Ahead.settle(self.handle)
         if self.step is not None:  # a fused product: one C call
             y = self.step(x)
             if y is not None:

@@ -296,12 +296,14 @@ for q, lin in zip(packs, hopper):
     for M in (65, 128, 600, 2100):
         assert lin.step(torch.randn(M, 1024, dtype=bf, device=dev)) is None, ("Hopper GLinear.step, a prompt", type(q).__name__, M)
 # A prompt's matrices decoded ahead (model.Ahead; made to on any GPU, beside products of any size): GLinears of odd
-# shapes, both layouts, called in turn as a prompt calls them, the first time recorded, then followed; a decode on
-# the current stream midway, a prompt that ends before its order does (the next ends the order there), another
-# order between (recorded, then followed), then the first again; at 600 tokens, then 2100 (the order kept). The
-# products on the order (as many as said, from the first) bit for bit as with their matrices decoded on the current
-# stream, the rest the fused kernel's (on Hopper, whose prompts take no fused kernel, decoded on the current stream
-# too).
+# shapes, both layouts, called in turn as a prompt calls them: the first prompt stopped short (an error), recorded,
+# the order from it then made whole by the calls past its end; followed; a decode on the current stream midway; a
+# prompt stopped short (the order kept whole); one gone on below the threshold at its next product (the next ends
+# the order there), then one past the order's end (the order to there again); another order between (recorded, then
+# followed), then the first again; at 600 tokens, then 2100 (the order kept). The products on the order (as many as
+# said, from the first) bit for bit as with their matrices decoded on the current stream, the rest the fused
+# kernel's (on Hopper, whose prompts take no fused kernel, decoded on the current stream too), below the threshold
+# the step's kernel's.
 shapes = [(1024, 512), (512, 1024), (3072, 512), (512, 1536), (192, 512), (2048, 1024)]
 lins = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
 other = [gm.GLinear(g.pack_mma(weights(O * K).view(O, K)), None) for O, K in shapes[:3]]
@@ -313,16 +315,21 @@ flops, gm.AHEAD_FLOPS = gm.AHEAD_FLOPS, 0
 product, placed = gm.Ahead.product, []
 gm.Ahead.product = lambda a, lin, j, f, M: (placed.append(j), product(a, lin, j, f, M))[1]
 dev_ = torch.device(dev, torch.cuda.current_device())
-for M, first in ((600, 0), (2100, 6)):
-    for ls, stop, on in [(lins, None, first), (lins, None, 6), (lins, None, 6), (lins, 4, 4), (lins[:3], None, 3), (lins, None, 3), (other, None, 0), (other, None, 3), (lins, None, 0), (lins, None, 6)]:
+common = [(lins, 6, None, None), (lins, 4, 4, None), (lins[:3], 3, None, None), (lins, 6, None, None), (lins[:4], 3, None, 3), (lins, 3, None, None),
+          (lins, 6, None, None), (other, 0, None, None), (other, 3, None, None), (lins, 0, None, None), (lins, 6, None, None)]
+for M, seq in ((600, [(lins[:3], 0, None, None), (lins, 3, None, None)] + common), (2100, common)):
+    for ls, on, stop, short in seq:  # ls in turn at M tokens (from index short on at 64), a decode before index stop
         gen = torch.Generator(device=dev).manual_seed(M)
         placed.clear()
         for i, lin in enumerate(ls):
             if i == stop:
                 gm.Ahead.stop(dev_)
                 lins[0].decode_rows(0, 64)
-            x = torch.randn(M, lin.in_features, dtype=bf, device=dev, generator=gen)
+            x = torch.randn(64 if short is not None and i >= short else M, lin.in_features, dtype=bf, device=dev, generator=gen)
             y = lin(x)
+            if short is not None and i >= short:
+                assert exact(y, lin.kernel(64)(lin.p, x)), ("below the threshold", M, i)
+                continue
             assert exact(y, F.linear(x, g.mma_unpack(lin.p)) if i < on or lin.hopper else g.mma_gemm_big(lin.p, x)), ("a prompt decoded ahead", M, i, on)
         assert placed == list(range(on)), ("the order followed", M, placed, on)
         counts["GLinear decoded ahead"] = counts.get("GLinear decoded ahead", 0) + on
