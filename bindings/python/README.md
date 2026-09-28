@@ -141,7 +141,9 @@ of experts' weight's under the module holding it, `.glyd_gate_up_proj_data`
 and so on), the rest of the model as it is, `glyd.json` (the format, the
 source repo and revision, and for every packed tensor its shape and the
 sha256 of its bf16 bytes), and the source's config, generation config
-and tokenizer files. `from_pretrained(path)` loads the packs as saved;
+and tokenizer files. With a mixture of experts' packs the format is
+glyd-v2, which glyd 0.21 refuses by its format ("this glyd reads
+glyd-v1"): load it with 0.22 or later. `from_pretrained(path)` loads the packs as saved;
 on a GPU where the 12-bit layout is the pick, it decodes and packs them
 again.
 

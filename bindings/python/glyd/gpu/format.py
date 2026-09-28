@@ -15,7 +15,9 @@ A directory (or a Hugging Face repo) of:
   NAME.glyd_WEIGHT_data and so on; the rest as the model holds it, in
   bf16: embeddings (an output layer tied to one saved as it), norms,
   biases;
-- glyd.json: the format, the glyd version, the source repo and revision,
+- glyd.json: the format (glyd-v2 where it holds a mixture of experts'
+  packs: glyd 0.21 reads glyd-v1 alone, and refuses it by the format),
+  the glyd version, the source repo and revision,
   the layout, and for every pack its matrix's shape, its tiers and the
   tensors it holds: their names, shapes and the sha256 of their bf16
   bytes (an experts' weight: its E experts, and whether the model holds
@@ -32,6 +34,7 @@ import os
 import shutil
 
 FORMAT = "glyd-v1"
+FORMATS = (FORMAT, "glyd-v2")  # glyd-v2: glyd-v1 with a mixture of experts' packs (glyd 0.21 reads glyd-v1 alone)
 MANIFEST = "glyd.json"
 BUFFERS = ("data", "blocks", "block_base")  # a tiered pack's tensors (kernels.Mma)
 DTYPES = {"data": "U8", "blocks": "U8", "block_base": "I32"}
@@ -57,7 +60,7 @@ def members(e):
 
 
 def manifest(source, packs, version):
-    return {"format": FORMAT, "glyd": version, "source": source, "layout": "mma", "packs": packs}
+    return {"format": "glyd-v2" if any("experts" in e for e in packs.values()) else FORMAT, "glyd": version, "source": source, "layout": "mma", "packs": packs}
 
 
 def read_manifest(directory):
@@ -67,8 +70,8 @@ def read_manifest(directory):
         return None
     with open(path) as f:
         m = json.load(f)
-    if m.get("format") != FORMAT:
-        raise ValueError(f"{path}: format {m.get('format')!r}; this glyd reads {FORMAT}")
+    if m.get("format") not in FORMATS:
+        raise ValueError(f"{path}: format {m.get('format')!r}; this glyd reads {' and '.join(FORMATS)}")
     return m
 
 

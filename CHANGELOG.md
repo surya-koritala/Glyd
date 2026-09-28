@@ -11,12 +11,14 @@ every earlier format.
 - `glyd.save_pretrained` saves a mixture of experts: glyd-v1 holds each
   layer's experts as one pack (their matrices stacked, under the module
   holding them), and `glyd.json` the sha256 of each weight as the model
-  holds it. `from_pretrained(path)` loads the packs as saved (the 12-bit
-  layout packed again from them), `verify=True` checks every tensor, and
-  `python -m glyd.gpu pack` and `verify` take one. On an RTX 4080 SUPER,
-  granite-3.1-3b-a800m saves in 7.4 s to 4.66 GB of safetensors (6.60 GB
-  in bf16) and loads from them in 0.4 s (3.4 s verified; 3.9 s from its
-  bf16 checkpoint), its logits bit for bit the model packed as it loaded.
+  holds it; such a checkpoint's format is glyd-v2, which glyd 0.21 refuses
+  (a dense model's stays glyd-v1). `from_pretrained(path)` loads the packs
+  as saved (the 12-bit layout packed again from them), `verify=True`
+  checks every tensor, and `python -m glyd.gpu pack` and `verify` take
+  one. On an RTX 4080 SUPER, granite-3.1-3b-a800m saves in 7.4 s to 4.66
+  GB of safetensors (6.60 GB in bf16) and loads from them in 0.4 s (3.4 s
+  verified; 3.9 s from its bf16 checkpoint), its logits bit for bit the
+  model packed as it loaded.
 - Every mixture-of-experts family of transformers 5.17 packs its experts:
   the 54 whose Experts modules transformers runs through an experts
   implementation (run by `glyd`), and those whose own code runs them,

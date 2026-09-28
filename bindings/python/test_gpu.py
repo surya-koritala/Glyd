@@ -119,10 +119,12 @@ def test_kv_cache():
 
 def test_manifest_and_names():
     assert fmt.key("model.layers.0.self_attn.q_proj", "block_base") == "model.layers.0.self_attn.q_proj.glyd_block_base"
+    assert fmt.key("model.layers.0.mlp.experts", "data", "gate_up_proj") == "model.layers.0.mlp.experts.glyd_gate_up_proj_data"
     e = fmt.entry((6144, 4096), [1, 2, 0xFFFFFFFF], [("m.q_proj.weight", (4096, 4096), "aa"), ("m.k_proj.weight", (1024, 4096), "bb"), ("m.v_proj.weight", (1024, 4096), "cc")])
     assert fmt.members(e) == (["m.q_proj", "m.k_proj", "m.v_proj"], [4096, 1024, 1024])
     assert e["shape"] == [6144, 4096] and e["tiers"][2] == 0xFFFFFFFF and e["layout"] == "mma"
     m = fmt.manifest({"repo": "Qwen/Qwen3-8B", "revision": "abc"}, {"m.q_proj": e}, "0.20.0")
+    assert m["format"] == "glyd-v1"  # a dense model's: glyd 0.21 reads it
     assert fmt.shard_names(1) == ["model.safetensors"] and fmt.shard_names(3)[2] == "model-00003-of-00003.safetensors"
     with tempfile.TemporaryDirectory() as d:
         assert fmt.read_manifest(d) is None
@@ -131,6 +133,10 @@ def test_manifest_and_names():
         buffers = {fmt.key("m.q_proj", b): (fmt.DTYPES[b], [n]) for b, n in zip(fmt.BUFFERS, [30720, 5000, 25])}
         safetensors(os.path.join(d, "model.safetensors"), dict(buffers, **{"m.norm.weight": ("BF16", [4096])}), {"format": "pt"})
         assert fmt.stored([os.path.join(d, "model.safetensors")]) == {k: (shape, dtype) for k, (dtype, shape) in buffers.items()}
+        x = fmt.entry((1024, 256), [1, 2, 3], [("m.experts.down_proj", (8, 256, 128), "dd")], experts=8, transposed=True)  # E 8, held [E, in, out]
+        assert x["experts"] == 8 and x["transposed"] and fmt.manifest(None, {"m.q_proj": e, "m.experts.down_proj": x}, "0.22.0")["format"] == "glyd-v2"
+        json.dump(fmt.manifest(None, {"m.experts.down_proj": x}, "0.22.0"), open(os.path.join(d, fmt.MANIFEST), "w"))
+        assert fmt.read_manifest(d)["packs"]["m.experts.down_proj"] == x  # glyd-v2, which glyd 0.21 refuses by its format
         json.dump(dict(m, format="glyd-v9"), open(os.path.join(d, fmt.MANIFEST), "w"))
         try:
             fmt.read_manifest(d)

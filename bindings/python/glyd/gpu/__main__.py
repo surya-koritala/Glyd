@@ -1,7 +1,7 @@
 """python -m glyd.gpu fit MODEL [--gpu 48GB] [--context 8192]
     will MODEL (a Hugging Face repo id or a directory) fit the GPU, bf16 against Glyd
 python -m glyd.gpu pack MODEL OUT [--no-merge] [--device cuda:0]
-    MODEL packed on the GPU, each pack checked against its weights, and saved in OUT as glyd-v1
+    MODEL packed on the GPU, each pack checked against its weights, and saved in OUT as glyd-v1 (glyd-v2: a mixture of experts)
 python -m glyd.gpu verify PATH [--device cuda:0]
     a glyd-v1 checkpoint loaded, every tensor decoded and its sha256 checked against glyd.json"""
 import argparse
