@@ -8,10 +8,10 @@ every earlier format.
 
 ## Unreleased
 
-- Long prompts on Ada within 0.2-0.7% of bf16's time from 2048 tokens,
-  1.5-2.9% at 1024 (were 5-10% behind): past 512 tokens (640 in the
-  12-bit layout) each matrix is decoded once, for cuBLAS, on a second
-  stream beside the products before it, a few warps an SM beside
+- Long prompts on GeForce Ada within 0.2-0.7% of bf16's time from 2048
+  tokens, 1.5-2.9% at 1024 (were 5-10% behind): past 512 tokens (640 in
+  the 12-bit layout) each matrix is decoded once, for cuBLAS, on a
+  second stream beside the products before it, a few warps an SM beside
   cuBLAS's blocks, where the fused kernel decoded each weight again for
   every 256 tokens. On an RTX 4080 SUPER
   (`gpu/e2e.py --prefill --merge`), Qwen3-4B-Instruct-2507's prompts of
@@ -23,8 +23,9 @@ every earlier format.
   `exact=True` the same path, the logits bf16's bit for bit. On GeForce
   Ada the fused kernel runs blocks of 128 tokens where the last block of
   256 would be half empty or less (300 tokens: 0.79-0.89x the time;
-  elsewhere as before, until measured). On an A100 and an H100 the path
-  is off until measured (`GLYD_AHEAD_MIN=513` takes it).
+  elsewhere as before, until measured). The decode ahead is off until
+  measured on an A100, an H100 and the L4, L40S and RTX 6000 Ada
+  (`GLYD_AHEAD_MIN=513` takes it).
 
 ## v0.21.0 — 2026-09-27
 
