@@ -293,8 +293,8 @@ with torch.cuda.stream(torch.cuda.Stream()):
 torch.cuda.synchronize()
 
 # The package's one-call paths (_lib.step and _lib.lookup, as GLinear and GEmbedding call them) against the checked
-# calls: a step's (the kernels' to 128 tokens), a prompt's to the decode ahead (past it: none), both layouts, bias,
-# and an embedding's rows.
+# calls: a step's (to step_max tokens), a prompt's to the decode ahead (past it: none), both layouts, bias, and an
+# embedding's rows.
 from glyd.gpu import model as gm
 
 w = weights(512 * 1024, 0.01).view(512, 1024)
@@ -334,8 +334,7 @@ for q, lin in zip(packs, a100):
         assert lin.step(x) is None and exact(lin(x), F.linear(x, g.mma_unpack(q))), "an A100's prompt past DEC_MIN, decoded"
         counts["A100 prompt decoded"] = 1
 # And on Hopper whatever this GPU is (9.0 while made): no prompt kernel for the one-call path, so a prompt's product is
-# the checked call's (decoded, then cuBLAS; mma_gemm_wg's steps, to 128 tokens in the 12-bit layout, are the one-call
-# path's, on Hopper alone).
+# the checked call's (mma_gemm_wg to WG_MAX tokens in the 12-bit layout, else decoded, then cuBLAS).
 torch.cuda.get_device_capability = lambda device=None: (9, 0)
 try:
     hopper = [gm.GLinear(q, None) for q in packs]
@@ -343,8 +342,7 @@ finally:
     torch.cuda.get_device_capability = cc
 for q, lin in zip(packs, hopper):
     for M in (65, 128, 600, 2100):
-        if lin.kernel(M) is None:
-            assert lin.step(torch.randn(M, 1024, dtype=bf, device=dev)) is None, ("Hopper GLinear.step, a prompt", type(q).__name__, M)
+        assert lin.step(torch.randn(M, 1024, dtype=bf, device=dev)) is None, ("Hopper GLinear.step, a prompt", type(q).__name__, M)
 # A prompt's matrices decoded ahead (model.Ahead; made to on any GPU, beside products of any size): GLinears of odd
 # shapes, both layouts, called in turn as a prompt calls them: the first prompt stopped short (an error), recorded,
 # the order from it then made whole by the calls past its end; followed; a decode on the current stream midway; a

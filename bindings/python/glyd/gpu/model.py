@@ -330,7 +330,7 @@ class GLinear(_Node, nn.Module):
         self.block = O if exact or O * K <= SCRATCH else max(rows, SCRATCH // K // rows * rows)
         cc = torch.cuda.get_device_capability(p.sm.device)
         self.a100 = cc == (8, 0)  # its mid kernel takes steps to 128 tokens; its prompts past 768 are decoded for cuBLAS
-        self.step_max = 128  # tokens to which a step's kernel (not a prompt's) is one C call (_step)
+        self.step_max = 128 if self.a100 else 64  # tokens to which a step's kernel (not a prompt's) is one C call (_step)
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
         self.mid = cc in ((8, 0), (8, 6), (8, 7), (8, 9))  # (an A100 its own kernel: producer and consumer warps)
         ada = cc == (8, 9) and "GeForce" in torch.cuda.get_device_name(p.sm.device)
@@ -365,9 +365,9 @@ class GLinear(_Node, nn.Module):
 
     def _step(self):
         """A product as one C call where it is a fused one through the prebuilt library: a generation step's
-        (1-128 tokens: kernel(M)'s functions to the last M it has one for, mma_gemm_mid's to 128 on an A100), and a
-        prompt's past those to self.ahead tokens (mma_gemm_big; an A100's in the 12-bit layout to DEC_MIN, from
-        which it is decoded for cuBLAS); _lib.step over the pack, the function for each M; else None."""
+        (kernel(M)'s functions to step_max tokens, 64, an A100's 128: mma_gemm_mid's), and a prompt's past the last
+        of them to self.ahead tokens (mma_gemm_big; an A100's in the 12-bit layout to DEC_MIN, from which it is
+        decoded for cuBLAS); _lib.step over the pack, the function for each M; else None."""
         p = self.p
         if not self.fused or self.exact or not isinstance(p, g.Mma) or g.lib() is None:
             return None
