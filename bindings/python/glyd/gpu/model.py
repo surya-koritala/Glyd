@@ -18,10 +18,10 @@ GLinear and GEmbedding is one node of the graph (glyd::linear,
 glyd::embedding), run as eager, and CUDA graphs capture its kernels.
 """
 import copy
+import functools
 import hashlib
 import itertools
 import os
-import types
 import warnings
 import weakref
 import torch
@@ -733,7 +733,9 @@ def fast_generate(model):
     positions in all at most, and half the memory the GPU has free; every
     other call as transformers runs it. The prompt runs eager either way
     (transformers compiles the steps after it). A forward that does not
-    compile runs eager from there on, with one warning. Not with
+    compile runs eager from there on, with one warning. Its class's generate
+    and get_compiled_call taken over once (_taken), the model marked
+    (glyd_fast): nothing of the model's refers to it. Not with
     GLYD_COMPILE=0, nor a model over several GPUs (not measured there). The
     model."""
     if os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate"):
@@ -744,19 +746,34 @@ def fast_generate(model):
     c = model.config.get_text_config(decoder=True)
     heads = getattr(c, "num_key_value_heads", None) or getattr(c, "num_attention_heads", 0)
     dim = getattr(c, "head_dim", None) or getattr(c, "hidden_size", 0) // max(1, getattr(c, "num_attention_heads", 1))
-    model._glyd_fast = (4 * getattr(c, "num_hidden_layers", 0) * heads * dim, devices.pop())  # a position's K and V (bf16) in all layers; the GPU
-    model.generate = types.MethodType(_generate, model)
-    model.get_compiled_call = types.MethodType(_compiled_call, model)
+    model.glyd_fast = (4 * getattr(c, "num_hidden_layers", 0) * heads * dim, devices.pop())  # a position's K and V (bf16) in all layers; the GPU
+    cls = type(model)
+    for name, fast in (("generate", _generate), ("get_compiled_call", _compiled_call)):
+        own = getattr(cls, name)  # (read once: two threads taking it over at once wrap the class's own, the last one kept)
+        if getattr(own, "glyd_own", None) is None:
+            setattr(cls, name, _taken(own, fast))
     return model
 
 
-def _generate(self, *args, **kwargs):
+def _taken(own, fast):
+    """A class's method own, taken over: fast(model, own, ...) for a model fast_generate set up (glyd_fast), own for
+    any other (a bf16 model of the same class)."""
+
+    @functools.wraps(own)
+    def taken(self, *args, **kwargs):
+        return fast(self, own, *args, **kwargs) if "glyd_fast" in self.__dict__ else own(self, *args, **kwargs)
+
+    taken.glyd_own = own
+    return taken
+
+
+def _generate(self, own, *args, **kwargs):
     """fast_generate's generate(): the call with cache_implementation="static" where it takes it, else as it came."""
     cfg = kwargs.get("generation_config") or self.generation_config
     get = lambda k: kwargs[k] if k in kwargs else getattr(cfg, k, None)
     x = args[0] if args else next((kwargs[k] for k in ("inputs", "input_ids", "inputs_embeds") if kwargs.get(k) is not None), None)
-    if len(args) < 2 and isinstance(x, torch.Tensor) and x.dim() > 1 and not self.__dict__.get("_glyd_eager") and not any(get(k) for k in _OWN) and get("use_cache") is not False and (get("num_beams") or 1) == 1:
-        kv, d = self._glyd_fast
+    if len(args) < 2 and isinstance(x, torch.Tensor) and x.dim() > 1 and not self.__dict__.get("glyd_eager") and not any(get(k) for k in _OWN) and get("use_cache") is not False and (get("num_beams") or 1) == 1:
+        kv, d = self.glyd_fast
         n = get("max_new_tokens")
         n = max(x.shape[1] + (n if n is not None else get("max_length") or 20), getattr(self, "_previous_max_cache_length", 0))  # the cache's positions
         b = x.shape[0] * (get("num_return_sequences") or 1)
@@ -766,16 +783,16 @@ def _generate(self, *args, **kwargs):
                 kwargs["generation_config"].cache_implementation = "static"
             else:
                 kwargs["cache_implementation"] = "static"
-    return type(self).generate(self, *args, **kwargs)
+    return own(self, *args, **kwargs)
 
 
-def _compiled_call(self, compile_config=None):
+def _compiled_call(self, own, compile_config=None):
     """fast_generate's get_compiled_call (what transformers' decoding steps call): the compiled forward, or, once it
     fails to compile (torch._dynamo's or Inductor's error), a warning and the eager forward from there on."""
-    f = type(self).get_compiled_call(self, compile_config)
+    f = own(self, compile_config)
 
     def call(*args, **kwargs):
-        if not self.__dict__.get("_glyd_eager"):
+        if not self.__dict__.get("glyd_eager"):
             try:
                 return f(*args, **kwargs)
             except Exception as e:
@@ -783,7 +800,7 @@ def _compiled_call(self, compile_config=None):
                 import torch._inductor.exc as ie
                 if not isinstance(e, (de.TorchDynamoException, getattr(ie, "InductorError", ()))):
                     raise
-                self._glyd_eager = True
+                self.glyd_eager = True
                 warnings.warn(f"glyd: {type(self).__name__}'s forward did not compile ({type(e).__name__}); generate() runs it eager from here on", stacklevel=2)
         return self(*args, **kwargs)
 

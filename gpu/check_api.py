@@ -41,6 +41,7 @@ copy.deepcopy refused.
 From this checkout it runs the package beside it (bindings/python); a copy
 of it run elsewhere runs the glyd installed (a wheel, its libraries in it)."""
 import copy
+import gc
 import os
 import subprocess
 import sys
@@ -65,7 +66,9 @@ PROMPT = "The history of data compression began"
 
 
 def loaded(f):
-    """f()'s model, its load time (s), the GPU memory it peaked at and holds (GB, over what was held before)."""
+    """f()'s model, its load time (s), the GPU memory it peaked at and holds (GB, over what was held before: models let
+    go of freed first, a compiled one's at a garbage collection)."""
+    gc.collect()
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
@@ -104,7 +107,7 @@ def fast_loop(e, ids, out_e):
     compiled = lambda: "_compiled_call" in e.__dict__
     os.environ["GLYD_COMPILE"] = "0"
     try:
-        assert gm.fast_generate(e) is e and "_glyd_fast" not in e.__dict__, "GLYD_COMPILE=0: generate() eager"
+        assert gm.fast_generate(e) is e and "glyd_fast" not in e.__dict__, "GLYD_COMPILE=0: generate() eager"
     finally:
         del os.environ["GLYD_COMPILE"]
     gm.fast_generate(e)
@@ -122,7 +125,7 @@ def fast_loop(e, ids, out_e):
             e.__dict__.pop("_compiled_call")
             again = e.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
         said = [str(x.message) for x in w if "did not compile" in str(x.message)]
-        assert len(said) == 1 and e._glyd_eager and not compiled() and torch.equal(again[0, ids.shape[1] :], out_e), ("a forward that does not compile", said)
+        assert len(said) == 1 and e.glyd_eager and not compiled() and torch.equal(again[0, ids.shape[1] :], out_e), ("a forward that does not compile", said)
     torch._dynamo.reset()
     return same(out[0, ids.shape[1] :], out_e)
 
