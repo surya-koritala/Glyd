@@ -890,6 +890,30 @@ struct Nib {
         st.e0 = __ldg(exc_base + step);
         st.e1 = __ldg(exc_base + step + 1);
     }
+    // A step's decode where its block's steps have many exceptions (mma_gemm_kernel's heavy blocks): past 4 in the
+    // step, through the warp's scratch (s2: 1 KB, a lane's 8 words, zero between steps) the lanes take the run's
+    // entries 32 at a time, each setting its exponent byte there, which every lane then adds to its words (an
+    // exception's code, 15, decodes to 0) and clears, as decode12_rows does; else as decode.
+    __device__ __forceinline__ void decode_x(const St& st, int lane, uint32_t* s2, uint32_t R[16]) const {
+        if (st.e1 - st.e0 <= 4) return decode(st, lane, nullptr, nullptr, R);
+        uint32_t ew[8];
+#pragma unroll
+        for (int q = 0; q < 8; q++) {
+            uint32_t n = st.nb[q >> 1] >> (16 * (q & 1)), n7 = n & 0x7777u;
+            ew[q] = __byte_perm(__byte_perm(sym[0], sym[1], n7), __byte_perm(sym[2], sym[3], n7), ((n >> 1) & 0x4444u) | 0x3210u);
+        }
+        for (int k = st.e0 + lane; k < st.e1; k += 32) {
+            uint32_t x = __ldg(exc + k), i = x & 31;
+            ((uint8_t*)s2)[(((x >> 5) & 31) * 8 + (i >> 2)) * 4 + (i & 3)] = (uint8_t)(x >> 16);
+        }
+        __syncwarp();
+        uint4* xl = (uint4*)(s2 + 8 * lane);
+        uint4 a = xl[0], b = xl[1];
+        ew[0] |= a.x, ew[1] |= a.y, ew[2] |= a.z, ew[3] |= a.w, ew[4] |= b.x, ew[5] |= b.y, ew[6] |= b.z, ew[7] |= b.w;
+        xl[0] = xl[1] = make_uint4(0u, 0u, 0u, 0u);
+        __syncwarp();
+        pairs(st.sw, ew, R);
+    }
     __device__ __forceinline__ void decode(const St& st, int lane, uint32_t*, const uint32_t*, uint32_t R[16]) const {
         uint32_t ew[8];
 #pragma unroll
@@ -934,7 +958,7 @@ __device__ __forceinline__ int64_t block_of_step(int64_t x, int64_t nb, int64_t 
 // A warp's steps s0 to s1 of a row block (W's steps base + s): acc += X's rows by the step's 64 rows, 16 MT tokens
 // (xr: this thread's rows g and g + 8 of each m-tile, at X + row K + 2t; null past the tokens). The next step's
 // loads, W's and then the inputs, are issued before this step's decode. mma_gemm_kernel's and mma_moe_kernel's.
-template <class Fmt, int MT>
+template <class Fmt, int MT, bool X = false>  // X: decode_x (the 12-bit layout's heavy blocks)
 __device__ __forceinline__ void mma_steps(const Fmt& f, int64_t base, int64_t s0, int64_t s1, const __nv_bfloat16* const (&xr)[MT][2], int lane, uint32_t* s2, const uint32_t* tab, float (&acc)[MT][8][4]) {
     typename Fmt::St st;
     uint32_t a[MT][4];
@@ -958,7 +982,8 @@ __device__ __forceinline__ void mma_steps(const Fmt& f, int64_t base, int64_t s0
             for (int q = 0; q < 4; q++) ca[mt][q] = a[mt][q];
         if (s + 1 < s1) load(s + 1);
         uint32_t R[16];
-        f.decode(cur, lane, s2, tab, R);
+        if constexpr (X) f.decode_x(cur, lane, s2, R);
+        else f.decode(cur, lane, s2, tab, R);
 #pragma unroll
         for (int mt = 0; mt < MT; mt++)
 #pragma unroll
@@ -1020,6 +1045,16 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(Fmt f, i
     uint32_t* s2 = (uint32_t*)(red + 4 * MT * 16 * 65) + warp * (S2_BYTES / 4);
     int64_t KS = K / 16, total = O / 64 * KS, nb = gridDim.x;
     int64_t B1 = (blockIdx.x + 1) * total / nb;
+    // 12-bit: where the block's steps have more than an exception each on average (a few layers' matrices: 4-5),
+    // they go through the warp's scratch, 1 KB of red (zero between steps; the warps' sums take red only after
+    // every warp's steps), with decode_x; elsewhere decode as before (its code with decode_x's in it, or more
+    // shared memory a block, had cost the other layers 1%).
+    bool heavy = false;
+    if constexpr (!Fmt::kTable) {
+        int64_t B0 = blockIdx.x * total / nb;
+        heavy = __ldg(f.exc_base + B1) - __ldg(f.exc_base + B0) > B1 - B0;
+        s2 = heavy ? (uint32_t*)red + 256 * warp : nullptr;
+    }
     for (int64_t seg = blockIdx.x * total / nb; seg < B1;) {
         int64_t rb = seg / KS, sb = seg - rb * KS, se = min(B1, (rb + 1) * KS) - rb * KS;
         seg = rb * KS + se;
@@ -1040,7 +1075,14 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(Fmt f, i
                 int64_t r = mt * 16 + g + 8 * hh;
                 xr[mt][hh] = r < M ? X + r * K + t * 2 : nullptr;
             }
-        mma_steps<Fmt, MT>(f, rb * KS, s0, s1, xr, lane, s2, tab, acc);
+        if (!Fmt::kTable && heavy) {
+            ((uint4*)s2)[2 * lane] = ((uint4*)s2)[2 * lane + 1] = make_uint4(0u, 0u, 0u, 0u);
+            __syncwarp();
+            mma_steps<Fmt, MT, !Fmt::kTable>(f, rb * KS, s0, s1, xr, lane, s2, tab, acc);
+            __syncthreads();  // every warp's scratch done with
+        } else {
+            mma_steps<Fmt, MT>(f, rb * KS, s0, s1, xr, lane, s2, tab, acc);
+        }
         warp_sums<MT>(acc, red, warp, g, t);
         int64_t first = block_of_step(rb * KS, nb, total), fin = block_of_step(rb * KS + KS - 1, nb, total);
         for (int i = threadIdx.x; i < MT * 16 * 64; i += 256) {
