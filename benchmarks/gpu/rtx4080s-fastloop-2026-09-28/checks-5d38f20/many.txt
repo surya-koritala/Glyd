@@ -1,0 +1,13 @@
+model 0: 14.8 tokens/s, graphs 2, after del 0.27 GB allocated, 0.91 reserved
+model 1: 296.5 tokens/s, graphs 3, after del 0.27 GB allocated, 0.91 reserved
+model 2: 301.3 tokens/s, graphs 4, after del 0.27 GB allocated, 0.91 reserved
+model 3: 299.6 tokens/s, graphs 5, after del 0.27 GB allocated, 0.91 reserved
+model 4: 300.7 tokens/s, graphs 6, after del 0.27 GB allocated, 0.91 reserved
+model 5: 299.7 tokens/s, graphs 7, after del 0.27 GB allocated, 0.91 reserved
+model 6: 301.2 tokens/s, graphs 8, after del 0.27 GB allocated, 0.91 reserved
+model 7: 299.5 tokens/s, graphs 9, after del 0.27 GB allocated, 0.91 reserved
+model 8: 299.9 tokens/s, graphs 10, after del 0.27 GB allocated, 0.91 reserved
+model 9: 298.9 tokens/s, graphs 11, after del 0.27 GB allocated, 0.91 reserved
+model 10: 99.6 tokens/s, graphs 11, after del 0.27 GB allocated, 0.91 reserved
+recompile_limit after: 8
+many exit 0
