@@ -2920,11 +2920,13 @@ static int mma12_mid_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
     if (attribute(cudaDevAttrComputeCapabilityMajor, dev) < 8) return cudaErrorNotSupported;
     if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16 || (uintptr_t)f.data % 16 || (uintptr_t)f.exc % 16) return cudaErrorInvalidValue;
     if (attribute(cudaDevAttrComputeCapabilityMajor, dev) == 8 && attribute(cudaDevAttrComputeCapabilityMinor, dev) == 0) {
-        // The A100: producer and consumer warps, 32 tokens a unit to 32, else 64; past 64 a launch a 64 (each
-        // reading W again: prompts go to mma_gemm_big), so the units and their done counters stay O / 128.
-        for (int64_t m0 = 0; m0 < M; m0 += 64) {
-            int64_t mc = std::min<int64_t>(64, M - m0);
-            auto run = mc <= 32 ? mma12_ws_run<4, 4, 5, 2, 1> : mma12_ws_run<4, 4, 4, 2, 2>;
+        // The A100: producer and consumer warps, units of two row blocks by 32, 64, 96 or 128 tokens, the
+        // fewest that hold the step's (65-96: four consumer warps of 48 tokens; 97-128: eight of 32, as four of 64
+        // spill their sums); past 128 a launch a 128 (each reading W again: prompts go to mma_gemm_big or are
+        // decoded for cuBLAS), so the units and their done counters stay O / 128.
+        for (int64_t m0 = 0; m0 < M; m0 += 128) {
+            int64_t mc = std::min<int64_t>(128, M - m0);
+            auto run = mc <= 32 ? mma12_ws_run<4, 4, 5, 2, 1> : mc <= 64 ? mma12_ws_run<4, 4, 4, 2, 2> : mc <= 96 ? mma12_ws_run<4, 3, 4, 2, 3> : mma12_ws_run<8, 3, 4, 2, 2>;
             run(f, O, K, x, m0, mc, bias, y, parts, done, cs, need);
         }
         return cudaGetLastError();

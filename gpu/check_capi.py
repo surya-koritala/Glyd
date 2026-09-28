@@ -263,7 +263,8 @@ for q in packs:
             assert exact(lin.step(x), lin.kernel(M)(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
         counts["GLinear.step"] = counts.get("GLinear.step", 0) + 64
 # GLinear's routing on an A100 whatever this GPU is (compute capability 8.0 read while it is made): the 12-bit
-# layout's 17-64 tokens by mma_gemm_mid, the rest as elsewhere; the one-call path the same functions.
+# layout's GLYD_MID_MIN (17) to 128 tokens by mma_gemm_mid, the rest as elsewhere; the one-call path the same
+# functions.
 cc = torch.cuda.get_device_capability
 torch.cuda.get_device_capability = lambda device=None: (8, 0)
 try:
@@ -272,8 +273,9 @@ finally:
     torch.cuda.get_device_capability = cc
 for q, lin in zip(packs, a100):
     twelve = isinstance(q, g.Mma12)
-    for M in (1, 16, 17, 32, 33, 64, 65, 128):
-        assert lin.kernel(M) is (g.mma_gemm_mid if twelve and 17 <= M <= 64 else g.mma_gemm if M <= 64 else g.mma_gemm_big), ("A100 routing", type(q).__name__, M)
+    for M in (1, 16, 17, 32, 33, 64, 65, 128, 129):
+        want = g.mma_gemm_mid if twelve and gm.MID_MIN <= M <= 128 else g.mma_gemm if M <= 64 else g.mma_gemm_big
+        assert lin.kernel(M) is want, ("A100 routing", type(q).__name__, M)
         if M <= 64:
             x = torch.randn(M, 1024, dtype=bf, device=dev)
             assert exact(lin.step(x), lin.kernel(M)(q, x, None)), ("A100 GLinear.step", type(q).__name__, M)

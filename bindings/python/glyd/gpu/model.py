@@ -77,6 +77,7 @@ class GLinear(_Node, nn.Module):
         # Whole when it fits the scratch (a split matmul sums in another order), and always for exact.
         self.block = O if exact or O * K <= SCRATCH else max(rows, SCRATCH // K // rows * rows)
         cc = torch.cuda.get_device_capability(p.sm.device)
+        self.a100 = cc == (8, 0)  # its mid kernel takes steps to 128 tokens
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
         self.mid = cc in ((8, 0), (8, 6), (8, 7), (8, 9))  # (an A100 its own kernel: producer and consumer warps)
         self._node()
@@ -86,7 +87,7 @@ class GLinear(_Node, nn.Module):
         K, twelve = self.in_features, isinstance(self.p, g.Mma12)
         if self.hopper and WG_MIN <= M <= WG_MAX and K % 64 == 0 and twelve:  # TMA and wgmma
             return g.mma_gemm_wg
-        if self.mid and MID_MIN <= M <= 64 and K % 64 == 0 and twelve:  # cp.async and mma.sync
+        if self.mid and MID_MIN <= M <= (128 if self.a100 else 64) and K % 64 == 0 and twelve:  # cp.async and mma.sync
             return g.mma_gemm_mid
         if M <= 64:
             return g.mma_gemm
