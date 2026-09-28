@@ -14,10 +14,11 @@ beside glyd/gpu/kernels.py), against each model in bf16:
   return_dict_in_generate eager; as another model's assistant, its tokens
   as with an eager one; out of memory while compiling raised, and the next
   call compiled; a call that fails compiled: one warning, run again eager
-  (a skip_prompt TextStreamer's text eager's), and eager from there on;
-  two fresh threads in turn, the second's cache longer, their tokens as
-  this thread's; continuing from return_dict_in_generate's cache as eager
-  (in a process of its own);
+  (a skip_prompt TextStreamer's text eager's; sampled from a seed, its
+  tokens and text a seeded eager run's), and eager from there on; two
+  fresh threads in turn, the second's cache longer, their tokens as this
+  thread's; continuing from return_dict_in_generate's cache as eager (in a
+  process of its own);
 - glyd.gpu.compress on the model loaded in bf16: the same packs, so the
   same logits and tokens bit for bit;
 - exact=True: logits bit for bit bf16's, the 32 tokens bf16's;
@@ -128,12 +129,16 @@ def fast_loop(m, e, tok, ids, out_e):
     helper (transformers' _prepare_generation_config) fails, its tokens eager's; as m's assistant, m's tokens as with
     it eager (transformers crops the cache an assistant hands back); a call that runs out of memory compiling raises
     it, and the next call compiles; a call that fails compiled (a backend that fails): one warning, the call run again
-    eager, and the next eager, their tokens eager's, and a skip_prompt TextStreamer's text through it eager's."""
+    eager, and the next eager, their tokens eager's, and a skip_prompt TextStreamer's text through it eager's; the same
+    sampled from a seed: its tokens and text as a seeded eager run's."""
     compiled = lambda: e in gm._COMPILED
     with torch.no_grad():
         assisted = m.generate(ids, assistant_model=e, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
         streamed = Recorded(tok)
         e.generate(ids, streamer=streamed, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
+        torch.manual_seed(0)
+        drawn = Recorded(tok)
+        sampled = e.generate(ids, streamer=drawn, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=True)
     os.environ["GLYD_COMPILE"] = "0"
     try:
         assert gm.fast_generate(e) is e and "glyd_fast" not in e.__dict__, "GLYD_COMPILE=0: generate() eager"
@@ -193,6 +198,17 @@ def fast_loop(m, e, tok, ids, out_e):
         said = [str(x.message) for x in w if "compiled failed" in str(x.message)]
         assert len(said) == 1 and e.glyd_eager and not compiled() and torch.equal(out[0, ids.shape[1] :], out_e) and torch.equal(again[0, ids.shape[1] :], out_e), ("a call that fails compiled", said)
         assert failed.text == streamed.text, ("a streamer through a call that fails compiled: the eager run's text", failed.text, streamed.text)
+        # sampled, from a seed: the call run again from the random state it found, so it draws what the attempt drew
+        e.__dict__.pop("glyd_eager")
+        torch._dynamo.reset()
+        torch.manual_seed(0)
+        failed = Recorded(tok)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            out = e.generate(ids, streamer=failed, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=True, compile_config=CompileConfig(backend=broken))
+        gm._COMPILED.pop(e, None)
+        said = [str(x.message) for x in w if "compiled failed" in str(x.message)]
+        assert len(said) == 1 and e.glyd_eager and torch.equal(out, sampled) and failed.text == drawn.text, ("a sampled call that fails compiled, from a seed: a seeded eager run's tokens and text", said, failed.text, drawn.text)
     torch._dynamo.reset()
 
 
@@ -324,7 +340,7 @@ for name in NAMES:
     assert e not in gm._COMPILED and "_compiled_call" not in e.__dict__ and exact(logits_e, logits_b), "compile=False: generate() eager, the same packs"
     print(f"   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's {same(out_e, out_b)} of {TOKENS}")
     fast_loop(m, e, tok, ids, out_e)
-    print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {e.glyd_fast} positions, disable_compile, return_dict_in_generate eager; as another model's assistant, its tokens as eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's, a streamer's text eager's")
+    print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {e.glyd_fast} positions, disable_compile, return_dict_in_generate eager; as another model's assistant, its tokens as eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's, a streamer's text eager's; sampled from a seed, its tokens and text a seeded eager run's")
     del e
     torch.cuda.empty_cache()
     threads(m, ids)

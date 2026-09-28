@@ -45,14 +45,15 @@ every earlier format.
   DeepSeek V2, V3, Kimi Linear and AXK1 test models; the released
   checkpoints compile). A call whose forward fails to compile anyway runs
   again eager from its start (a streamer gets only what the failed attempt
-  had not streamed, its text the eager run's), and so do the model's later
-  calls, with one warning; any other error, out of memory included, is the
-  call's own, and the next call compiles. Each model's forward compiles to
-  a graph of its own, so Glyd's compiled calls run with
-  `torch._dynamo.config.recompile_limit` at 64 at least, for those calls
-  alone (dynamo compiles 8 graphs a frame by default and runs the rest
-  uncompiled; ten Qwen3-0.6B models one after another in a process all
-  compiled, 296.5-301.3 tokens/s against 99.6 eager; the process's own
+  had not streamed, and a sampled call draws again from the random state
+  it started with: its tokens and text are the eager run's), and so do the
+  model's later calls, with one warning; any other error, out of memory
+  included, is the call's own, and the next call compiles. Each model's
+  forward compiles to a graph of its own, so Glyd's compiled calls run
+  with `torch._dynamo.config.recompile_limit` at 64 at least, for those
+  calls alone (dynamo compiles 8 graphs a frame by default and runs the
+  rest uncompiled; ten Qwen3-0.6B models one after another in a process
+  all compiled, 296.5-301.3 tokens/s against 99.6 eager; the process's own
   setting is left as it is). A model that has generated compiled is freed
   at `del`, as an eager one (its compiled forward does not refer to it, as
   transformers' own does). How: the model's class's `generate` and

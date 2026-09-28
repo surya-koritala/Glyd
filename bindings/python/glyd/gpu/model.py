@@ -878,8 +878,10 @@ def _generate(self, own, *args, **kwargs):
     """fast_generate's generate(): the call with the static cache where _fast takes it, else as it came; one whose
     forward fails to compile (_compile_error) runs again as it came, from its start (a streamer's text as the eager
     run's: _Streamed), and so do the model's later calls, with one warning (where that fails too, its error is the
-    call's); any other error is the call's, and the next call compiles as before. TOKENIZERS_PARALLELISM, which
-    transformers sets to 0 for the process where it compiles, left as it was before the call, or unset."""
+    call's); any other error is the call's, and the next call compiles as before. The re-run from the random state the
+    call found (CPU and the model's GPU): a sampled call draws what the attempt drew, and returns what it would have
+    eager. TOKENIZERS_PARALLELISM, which transformers sets to 0 for the process where it compiles, left as it was
+    before the call, or unset."""
     b = None if self.__dict__.get("glyd_eager") else _fast(self, own, args, kwargs)
     if b is None:
         return own(self, *args, **kwargs)
@@ -887,11 +889,14 @@ def _generate(self, own, *args, **kwargs):
     if streamer is not None:
         b.arguments["streamer"] = counted = _Streamed(streamer)
     parallel = os.environ.get("TOKENIZERS_PARALLELISM")
+    rng = torch.get_rng_state(), torch.cuda.get_rng_state(self.device)
     try:
         return own(*b.args, **b.kwargs)
     except Exception as e:
         if not _compile_error(e):
             raise
+        torch.set_rng_state(rng[0])
+        torch.cuda.set_rng_state(rng[1], self.device)
         again = inspect.signature(own).bind(self, *args, **kwargs)
         if streamer is not None:
             again.arguments["streamer"] = _Streamed(streamer, counted.puts)
