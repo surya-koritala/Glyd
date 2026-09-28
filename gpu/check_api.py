@@ -5,20 +5,21 @@ beside glyd/gpu/kernels.py), against each model in bf16:
 - from_pretrained (fused, merged, best_layout's layout): 32 greedy tokens
   compared with bf16's as e2e.py compares them; the load's time, and its
   peak memory against the packed model's bytes and the largest tensor's;
-- generate() as a user calls it: compiled (model.fast_generate: a static
-  cache, CUDA graphs; TOKENIZERS_PARALLELISM as it was after it; the model
-  pickled after it, but with packed experts, which refuse a copy); with
-  compile=False eager, the same logits; not with GLYD_COMPILE=0; a call
-  with a cache of its own, several beams or a static cache past the
-  model's cap (glyd_fast) as transformers runs it; disable_compile and
-  return_dict_in_generate eager; as another model's assistant, its tokens
-  as with an eager one; out of memory while compiling raised, and the next
-  call compiled; a call that fails compiled: one warning, run again eager
-  (a skip_prompt TextStreamer's text eager's; sampled from a seed, its
-  tokens and text a seeded eager run's), and eager from there on; two
-  fresh threads in turn, the second's cache longer, their tokens as this
-  thread's; continuing from return_dict_in_generate's cache as eager (in a
-  process of its own);
+- generate() as a user calls it: compiled from PyTorch 2.13
+  (model.fast_generate: a static cache, CUDA graphs; below 2.13 eager, as
+  in 0.23, and the fast loop's cases skipped; TOKENIZERS_PARALLELISM as it
+  was after it; the model pickled after it, but with packed experts, which
+  refuse a copy); with compile=False eager, the same logits; not with
+  GLYD_COMPILE=0; a call with a cache of its own, several beams or a
+  static cache past the model's cap (glyd_fast) as transformers runs it;
+  disable_compile and return_dict_in_generate eager; as another model's
+  assistant, its tokens as with an eager one; out of memory while
+  compiling raised, and the next call compiled; a call that fails
+  compiled: one warning, run again eager (a skip_prompt TextStreamer's
+  text eager's; sampled from a seed, its tokens and text a seeded eager
+  run's), and eager from there on; two fresh threads in turn, the second's
+  cache longer, their tokens as this thread's; continuing from
+  return_dict_in_generate's cache as eager (in a process of its own);
 - glyd.gpu.compress on the model loaded in bf16: the same packs, so the
   same logits and tokens bit for bit;
 - exact=True: logits bit for bit bf16's, the 32 tokens bf16's;
@@ -74,6 +75,7 @@ from glyd.gpu.model import GEmbedding, GLinear, Scratch
 
 TOKENS = 32
 PROMPT = "The history of data compression began"
+FAST = torch.__version__ >= "2.13"  # generate() compiled by default (fast_generate); below 2.13 eager, as in 0.23
 
 
 def loaded(f):
@@ -328,7 +330,7 @@ for name in NAMES:
     q, size = m.config.quantization_config, packed_bytes(m)
     parallel = os.environ.get("TOKENIZERS_PARALLELISM")
     logits_b, out_b = run(m, ids)
-    assert m in gm._COMPILED, "plain generate(): compiled (the fast loop)"
+    assert (m in gm._COMPILED) == FAST, "plain generate(): compiled (the fast loop) from PyTorch 2.13, else eager"
     assert os.environ.get("TOKENIZERS_PARALLELISM") == parallel, "TOKENIZERS_PARALLELISM after a compiled generate(): as it was"
     if not moe.nbytes(m):  # (a model with packed experts refuses a copy: below)
         pickle.dumps(m)  # after a compiled generate(), nothing unpicklable on the model
@@ -339,9 +341,12 @@ for name in NAMES:
     e = glyd.from_pretrained(name, compile=False)
     logits_e, out_e = run(e, ids)
     assert e not in gm._COMPILED and "_compiled_call" not in e.__dict__ and exact(logits_e, logits_b), "compile=False: generate() eager, the same packs"
-    print(f"   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's {same(out_e, out_b)} of {TOKENS}")
-    fast_loop(m, e, tok, ids, out_e)
-    print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {e.glyd_fast} positions, disable_compile, return_dict_in_generate eager; as another model's assistant, its tokens as eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's, a streamer's text eager's; sampled from a seed, its tokens and text a seeded eager run's")
+    if not FAST:
+        print(f"   PyTorch {torch.__version__} (before 2.13): generate() eager, as in 0.23")
+    else:
+        print(f"   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's {same(out_e, out_b)} of {TOKENS}")
+        fast_loop(m, e, tok, ids, out_e)
+        print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {e.glyd_fast} positions, disable_compile, return_dict_in_generate eager; as another model's assistant, its tokens as eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's, a streamer's text eager's; sampled from a seed, its tokens and text a seeded eager run's")
     del e
     torch.cuda.empty_cache()
     threads(m, ids)
