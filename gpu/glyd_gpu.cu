@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cstring>
 #include <type_traits>
 
 __device__ __forceinline__ uint32_t exponent_of(uint16_t v) { return (v >> 7) & 0xff; }
@@ -1072,7 +1073,9 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_gemm_kernel(Fmt f, i
 // on the tensor cores, never waiting on a decode. Named barriers pass a stage's
 // buffers from producers to consumers (full) and back (empty). A weight
 // is decoded once for TM tokens. Blocks may split K (Y32: their parts,
-// added in a fixed order by finish_kernel).
+// added in a fixed order by finish_kernel). A mixture of experts' prompt runs
+// it (MOE), and a dense one but on GeForce Ada: there mma_gemm_sk_kernel, its
+// blocks by stream-K.
 constexpr int BIG_KK = 4;  // steps a stage
 template <int CW, int PW, int NB, int RBB> struct Big {
     static constexpr int THREADS = 32 * (CW + PW);
@@ -1324,6 +1327,201 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_big
         } while (0);
         if (!MOE || (tile + gridDim.x) * C::TM >= M) break;
         __syncthreads();
+    }
+}
+
+// A prompt's product on GeForce Ada (not a mixture of experts'): mma_gemm_big_kernel's blocks, TM tokens by RBB row blocks, and its
+// producer and consumer warps, as many blocks as the GPU holds at once, each taking an equal share of the units'
+// stages in turn (a unit: a tile of tokens by a pair of row blocks; units by pair, then tile), its stages kept in
+// flight from one unit to the next (stream-K: no wave part empty, no split of K summed by another kernel). A unit
+// that blocks share: each writes its sums to a slot (parts: two a block, for the unit it starts in and the one it
+// ends in, [2 gridDim.x][TM 64 RBB] floats in fragment order), and the last of them to finish adds the slots in
+// block order (the same sum every run) with the bias (done: a counter a unit, zero before, reset by the last).
+template <class Fmt, int CW, int PW, int NB, int RBB>
+__global__ void __launch_bounds__(Big<CW, PW, NB, RBB>::THREADS, 1) mma_gemm_sk_kernel(Fmt f, int64_t O, int64_t K, int64_t M, const __nv_bfloat16* __restrict__ X, const __nv_bfloat16* __restrict__ bias, __nv_bfloat16* __restrict__ Y, float* __restrict__ parts, int* __restrict__ done) {
+    using C = Big<CW, PW, NB, RBB>;
+    constexpr int64_t SLOT = C::TM * 64 * RBB;
+    extern __shared__ uint4 smem[];  // X's tiles [NB][TM rows][8 16-byte chunks, swizzled], then W's [NB][B_UINT4]
+    __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
+    __shared__ int last;
+    if constexpr (Fmt::kTable) fill_groups(tab);
+    __syncthreads();
+    const uint32_t a_base = (uint32_t)__cvta_generic_to_shared(smem);
+    uint4* Bs = smem + NB * C::A_BYTES / 16;
+    int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+    const int64_t KS = K / 16, RB = O / 64, tiles = (M + C::TM - 1) / C::TM, nb = gridDim.x;
+    const int S = (int)(KS / BIG_KK);  // stages a unit
+    const int64_t total = tiles * ((RB + RBB - 1) / RBB) * S, it0 = blockIdx.x * total / nb, n = (blockIdx.x + 1) * total / nb - it0;
+    const int64_t u0 = it0 / S;  // the unit this block starts in, at its stage s0 (then each stage's place kept in turn)
+    const int s0 = (int)(it0 - u0 * S);
+    if (warp >= CW) {
+        // Producer p: X's chunks id = pt + 32 PW i of a stage's; W's steps STEPS p on of its 4 RBB (row block, step).
+        int pt = tid - 32 * CW, p = warp - CW, s = s0;
+        int64_t tile = u0 % tiles, pair = u0 / tiles;
+        typename Fmt::St st[C::STEPS];
+        auto d_load = [&](int64_t pair, int s) {
+#pragma unroll
+            for (int i = 0; i < C::STEPS; i++) {
+                int u = p * C::STEPS + i;  // of the stage's 4 RBB: row block u / 4, step u % 4
+                f.load(st[i], min(pair * RBB + u / BIG_KK, RB - 1) * KS + s * BIG_KK + u % BIG_KK, lane);
+            }
+        };
+        if (n > 0) d_load(pair, s);
+        for (int64_t j = 0; j < n; j++) {
+            int ns = s + 1;  // the next stage's place
+            int64_t ntile = tile, npair = pair;
+            if (ns == S) {
+                ns = 0;
+                if (++ntile == tiles) ntile = 0, npair++;
+            }
+            int b = (int)(j % NB);
+            if (j >= NB) bar_sync<C::THREADS>(1 + NB + b);  // consumers are done with stage j - NB
+            uint32_t slot = a_base + (uint32_t)b * C::A_BYTES;
+            int64_t col = (int64_t)s * BIG_KK * 16;
+#pragma unroll
+            for (int i = 0; i < C::CHUNKS; i++) {
+                int id = pt + 32 * PW * i, r = id >> 3, c = id & 7;
+                int64_t m = tile * C::TM + r;
+                cp_async16(slot + r * 128 + ((c ^ (r & 7)) << 4), X + (m < M ? m : 0) * K + col + c * 8, m < M ? 16 : 0);
+            }
+            asm volatile("cp.async.commit_group;\n" ::);
+            typename Fmt::St cur[C::STEPS];
+#pragma unroll
+            for (int i = 0; i < C::STEPS; i++) cur[i] = st[i];
+            if (j + 1 < n) d_load(npair, ns);
+#pragma unroll
+            for (int i = 0; i < C::STEPS; i++) {
+                uint32_t R[16];
+                uint4* sl = Bs + b * C::B_UINT4 + ((p * C::STEPS + i) * 4) * 32;
+                f.decode(cur[i], lane, (uint32_t*)sl, tab, R);  // (tiered) the step's slot its scratch till then
+                uint4* d = sl + lane;
+#pragma unroll
+                for (int q = 0; q < 4; q++) d[q * 32] = make_uint4(R[4 * q], R[4 * q + 1], R[4 * q + 2], R[4 * q + 3]);
+            }
+            asm volatile("cp.async.wait_group 0;\n" ::);
+            bar_arrive<C::THREADS>(1 + b);  // stage j is ready
+            s = ns, tile = ntile, pair = npair;
+        }
+        return;
+    }
+    // Consumer: tokens 64 (warp % (CW / RBB)) on of a unit's TM, row block warp / (CW / RBB) of its RBB.
+    int g = lane >> 2, t = lane & 3, wm = warp % (CW / RBB), rbl = warp / (CW / RBB);
+    float acc[4][8][4];
+#pragma unroll
+    for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+        for (int nn = 0; nn < 8; nn++)
+#pragma unroll
+            for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
+    uint32_t a_row = (uint32_t)(wm * 64 + (lane & 7) + ((lane >> 3) & 1) * 8) * 128, a_half = lane >> 4, a_sw = lane & 7;
+    uint32_t fa[2][4][4];
+    uint4 fb[2][4];
+    auto frags = [&](int64_t j, int kk, int fi) {
+        int bi = (int)(j % NB);
+        uint32_t slot = a_base + (uint32_t)bi * C::A_BYTES;
+        const uint4* bsrc = Bs + bi * C::B_UINT4 + rbl * BIG_KK * 4 * 32 + lane;
+#pragma unroll
+        for (int mt = 0; mt < 4; mt++) ldmatrix_x4(fa[fi][mt], slot + a_row + mt * 16 * 128 + (((2 * kk + a_half) ^ a_sw) << 4));
+#pragma unroll
+        for (int q = 0; q < 4; q++) fb[fi][q] = bsrc[(kk * 4 + q) * 32];
+    };
+    auto next = [&](int64_t j, int fi) {  // stage j's first fragments, once it is ready
+        bar_sync<C::THREADS>(1 + (int)(j % NB));
+        frags(j, 0, fi);
+    };
+    if (n > 0) next(0, 0);
+    int s = s0;
+    for (int64_t j = 0, u = u0; j < n; j++) {
+        bool end = s == S - 1 || j + 1 == n;  // the unit's last stage here: its sums out after it
+#pragma unroll
+        for (int kk = 0; kk < BIG_KK; kk++) {
+            int fi = kk & 1;
+            if (kk + 1 < BIG_KK) frags(j, kk + 1, fi ^ 1);
+            else if (j + 1 < n) next(j + 1, fi ^ 1);
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++) {
+                mma16816(acc[mt][0], fa[fi][mt], fb[fi][0].x, fb[fi][0].y);
+                mma16816(acc[mt][1], fa[fi][mt], fb[fi][0].z, fb[fi][0].w);
+                mma16816(acc[mt][2], fa[fi][mt], fb[fi][1].x, fb[fi][1].y);
+                mma16816(acc[mt][3], fa[fi][mt], fb[fi][1].z, fb[fi][1].w);
+                mma16816(acc[mt][4], fa[fi][mt], fb[fi][2].x, fb[fi][2].y);
+                mma16816(acc[mt][5], fa[fi][mt], fb[fi][2].z, fb[fi][2].w);
+                mma16816(acc[mt][6], fa[fi][mt], fb[fi][3].x, fb[fi][3].y);
+                mma16816(acc[mt][7], fa[fi][mt], fb[fi][3].z, fb[fi][3].w);
+            }
+        }
+        if (j + NB < n) bar_arrive<C::THREADS>(1 + NB + (int)(j % NB));  // done with stage j's buffers
+        if (++s == S) s = 0;
+        if (!end) continue;
+        // The unit's stages here are done: its blocks, from the one its first stage is in to its last's; a block's
+        // slot for it: 2b + 1 for the one it started before it (first, where it did), else 2b.
+        int64_t first = block_of_step(u * S, nb, total), fin = block_of_step(u * S + S - 1, nb, total);
+        bool out = first == fin;
+        if (!out) {
+            auto slot_of = [&](int64_t b) { return (float4*)(parts + (2 * b + (b == first && first * total / nb < u * S)) * SLOT) + tid; };
+            float4* mine = slot_of(blockIdx.x);
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+                for (int nn = 0; nn < 8; nn++) mine[(mt * 8 + nn) * 32 * CW] = make_float4(acc[mt][nn][0], acc[mt][nn][1], acc[mt][nn][2], acc[mt][nn][3]);
+            __threadfence();
+            bar_sync<32 * CW>(1 + 2 * NB);
+            if (tid == 0) {
+                last = atomicAdd(done + u, 1) == fin - first;
+                if (last) done[u] = 0;  // ready for the next product
+            }
+            bar_sync<32 * CW>(1 + 2 * NB);
+            out = last;
+            if (out) {  // every block's slot in block order (this one's read back too), 8 loads in flight at a time
+                __threadfence();
+#pragma unroll
+                for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+                    for (int nn = 0; nn < 8; nn++)
+#pragma unroll
+                        for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
+#pragma unroll
+                for (int mt = 0; mt < 4; mt++)  // (more at once: more registers than the kernel has)
+                    for (int64_t b = first; b <= fin; b++) {
+                        const float4* sl = slot_of(b) + mt * 8 * 32 * CW;
+#pragma unroll
+                        for (int nn = 0; nn < 8; nn++) {
+                            float4 w = __ldcg(sl + nn * 32 * CW);
+                            acc[mt][nn][0] += w.x;
+                            acc[mt][nn][1] += w.y;
+                            acc[mt][nn][2] += w.z;
+                            acc[mt][nn][3] += w.w;
+                        }
+                    }
+            }
+        }
+        if (out) {
+            int64_t tile = u % tiles, my_rb = u / tiles * RBB + rbl;
+#pragma unroll
+            for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+                for (int nn = 0; nn < 8; nn++) {
+                    int64_t o = my_rb * 64 + nn * 8 + t * 2;
+#pragma unroll
+                    for (int h = 0; h < 2; h++) {
+                        int64_t m = tile * C::TM + wm * 64 + mt * 16 + g + h * 8;
+                        if (my_rb >= RB || m >= M) continue;
+                        float v0 = acc[mt][nn][2 * h], v1 = acc[mt][nn][2 * h + 1];
+                        if (bias) {
+                            v0 += __bfloat162float(bias[o]);
+                            v1 += __bfloat162float(bias[o + 1]);
+                        }
+                        *(__nv_bfloat162*)(Y + m * O + o) = __floats2bfloat162_rn(v0, v1);
+                    }
+                }
+        }
+#pragma unroll
+        for (int mt = 0; mt < 4; mt++)
+#pragma unroll
+            for (int nn = 0; nn < 8; nn++)
+#pragma unroll
+                for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
+        u++;
     }
 }
 
@@ -2276,11 +2474,13 @@ __global__ void moe_sum_kernel(const float* __restrict__ y32, const int64_t* __r
 
 // The mma layout back to bf16, rows [row0, row0 + rows) of W (multiples of
 // 64) into out [rows, K] (checks, and the many-token path that multiplies
-// with PyTorch): a warp a step. MOE (exact, a mixture of experts' layer, W its
-// experts' matrices of `rows` rows stacked): blockIdx.y a hit expert of plan
-// (moe_route's; past those hit: nothing to do), its rows into the same rows
-// of out [E rows, K], the rest of out left as it is.
-template <class Fmt, bool MOE = false>
+// with PyTorch): a warp a step; FEW (a decode ahead, a few warps an SM),
+// each warp its step and on by the grid's warps. MOE (exact, a mixture of
+// experts' layer, W its experts' matrices of `rows` rows stacked):
+// blockIdx.y a hit expert of plan (moe_route's; past those hit: nothing to
+// do), its rows into the same rows of out [E rows, K], the rest of out left
+// as it is.
+template <class Fmt, bool MOE = false, bool FEW = false>
 __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out, const int* __restrict__ plan = nullptr) {
     if constexpr (MOE) {
         if ((int)blockIdx.y >= __ldg(plan)) return;  // the whole block: no expert this far down the hits
@@ -2290,22 +2490,24 @@ __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, 
     __shared__ uint32_t tab[Fmt::kTable ? 256 : 1];
     if constexpr (Fmt::kTable) fill_groups(tab);
     __syncthreads();
-    int64_t KS = K / 16, local = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5;
+    int64_t KS = K / 16, total = rows / 64 * KS;
     int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
-    if (local >= rows / 64 * KS) return;
-    int64_t step = row0 / 64 * KS + local, rb = local / KS, s = local % KS;
     __shared__ uint4 scratch[8][Fmt::kTable ? S2_BYTES / 16 : 1];
-    typename Fmt::St st;
-    f.load(st, step, lane);
-    uint32_t R[16];
-    f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
-    // R[2n]: row 8n + g, columns 2t and 2t + 1; R[2n + 1]: columns 8 + 2t, 9 + 2t.
     uint32_t* out32 = (uint32_t*)out;
+    for (int64_t local = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5; local < total; local += (int64_t)gridDim.x * blockDim.x >> 5) {
+        int64_t step = row0 / 64 * KS + local, rb = local / KS, s = local % KS;
+        typename Fmt::St st;
+        f.load(st, step, lane);
+        uint32_t R[16];
+        f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
+        // R[2n]: row 8n + g, columns 2t and 2t + 1; R[2n + 1]: columns 8 + 2t, 9 + 2t.
 #pragma unroll
-    for (int n = 0; n < 8; n++) {
-        int64_t at2 = ((rb * 64 + 8 * n + g) * K + s * 16 + 2 * t) / 2;
-        out32[at2] = R[2 * n];
-        out32[at2 + 4] = R[2 * n + 1];
+        for (int n = 0; n < 8; n++) {
+            int64_t at2 = ((rb * 64 + 8 * n + g) * K + s * 16 + 2 * t) / 2;
+            out32[at2] = R[2 * n];
+            out32[at2 + 4] = R[2 * n + 1];
+        }
+        if constexpr (!FEW) break;
     }
 }
 
@@ -2585,11 +2787,27 @@ static int64_t per_sm(const void* kernel, int threads, int shared, std::atomic<i
 // Room for need bytes at ws, which has `have`?
 static bool fits(const void* ws, size_t have, size_t need) { return !need || (ws && have >= need); }
 
+// Device dev a GeForce Ada (an RTX 40), where the prompts' choices below were measured (an RTX 4080 SUPER); asked
+// once a device.
+static bool geforce_ada(int dev) {
+    static std::atomic<int> known[MAX_DEVICES];  // 1 yes, 2 no
+    int k = dev < MAX_DEVICES ? known[dev].load() : 0;
+    if (!k) {
+        cudaDeviceProp p;
+        k = cudaGetDeviceProperties(&p, dev) == cudaSuccess && p.major == 8 && p.minor == 9 && strstr(p.name, "GeForce") ? 1 : 2;
+        if (dev < MAX_DEVICES) known[dev] = k;
+    }
+    return k == 1;
+}
+
 static const __nv_bfloat16* bf(const uint16_t* p) { return (const __nv_bfloat16*)p; }
 static __nv_bfloat16* bf(uint16_t* p) { return (__nv_bfloat16*)p; }
 
 // The CUDA runtime built in (e.g. 13000), and a status's text.
 GLYD_GPU_API int glyd_gpu_cuda_version() { return CUDART_VERSION; }
+// The C API's version, one more whenever a function's arguments change (the caller checks it: ctypes does not check
+// arguments): 2 from the prompt products' done counters, hold and the decode's warps (0.21.0's has none: 1).
+GLYD_GPU_API int glyd_gpu_api_version() { return 2; }
 GLYD_GPU_API const char* glyd_gpu_error_string(int status) { return cudaGetErrorString((cudaError_t)status); }
 
 // The dense format. lane_bits: bits [tiles * 32], the tiles of tw weights of w's n.
@@ -2770,11 +2988,11 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm(const uint8_t* data, const uint32_t* exc, c
     return mma_gemm_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, O, K, x, M, bias, y, workspace, workspace_bytes, done, cs, nullptr);
 }
 
-// Many tokens (a prompt), K a multiple of 64, x 16-byte aligned. K split so the blocks fill their last wave:
-// the fewest splits that leave under 15% of it idle, else the fullest; at least 4 stages a split. The
-// workspace: the splits' parts, [splits][M][O] floats, past one.
+// Many tokens (a prompt), K a multiple of 64, x 16-byte aligned, but on GeForce Ada: mma_gemm_big_kernel, K split
+// so the blocks fill their last wave: the fewest splits that leave under 15% of it idle, else the fullest; at
+// least 4 stages a split. The workspace: the splits' parts, [splits][M][O] floats, past one.
 template <class Fmt, int CW, int PW, int NB, int RBB>
-static int mma_gemm_big_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
+static int mma_gemm_grid_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
     using C = Big<CW, PW, NB, RBB>;
     auto kernel = mma_gemm_big_kernel<Fmt, CW, PW, NB, RBB>;
     static std::atomic<int> known[MAX_DEVICES];  // a device's blocks an SM for this kernel (its shared memory allowed once)
@@ -2803,30 +3021,67 @@ static int mma_gemm_big_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
     return cudaGetLastError();
 }
 
+// The same on GeForce Ada: mma_gemm_sk_kernel, as many blocks as the GPU holds (at most 8 a unit, at least 4
+// stages a block). The workspace: the blocks' slots, where they share a unit; done: a counter a unit (units: tiles
+// by pairs), zero.
+template <class Fmt, int CW, int PW, int NB, int RBB>
+static int mma_gemm_big_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
+    using C = Big<CW, PW, NB, RBB>;
+    auto kernel = mma_gemm_sk_kernel<Fmt, CW, PW, NB, RBB>;
+    static std::atomic<int> known[MAX_DEVICES];  // a device's blocks an SM for this kernel (its shared memory allowed once)
+    int dev = current_device();
+    int64_t S = K / 16 / BIG_KK, units = (M + C::TM - 1) / C::TM * ((O / 64 + RBB - 1) / RBB), total = units * S;
+    int64_t nb = std::min(per_sm((const void*)kernel, C::THREADS, C::SHARED, known, dev) * sm_count(dev), std::min(8 * units, total / 4));
+    nb = total ? std::max<int64_t>(nb, 1) : 0;
+    bool shared = nb && (total % nb || total / nb % S);  // a unit's stages in several blocks
+    size_t bytes = shared ? (size_t)(2 * nb * C::TM * 64 * RBB) * sizeof(float) : 0;
+    if (need) {
+        *need = bytes;
+        return cudaGetLastError();
+    }
+    if (!fits(ws, ws_bytes, bytes) || (shared && !done)) return cudaErrorInvalidValue;
+    if (nb) kernel<<<nb, C::THREADS, C::SHARED, cs>>>(f, O, K, M, bf(x), bf(bias), bf(y), (float*)ws, done);
+    return cudaGetLastError();
+}
+
 template <class Fmt>
-static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* ws, size_t ws_bytes, cudaStream_t cs, size_t* need) {
+static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
     if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16) return cudaErrorInvalidValue;
     // 4 consumer warps and 4 producers: blocks of 128 tokens by two row blocks (3 stages), or, past 128
-    // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens).
-    if (variant == 0) variant = M > 128 ? 2 : 1;
+    // tokens, of 256 by one (2 stages; a weight decoded once for twice the tokens); on GeForce Ada only where
+    // the last block of 256 would be more than half full (else its empty half costs more than the second
+    // decode: a Qwen3-4B layer's products take 0.79-0.89x the time in blocks of 128 at 300 tokens, 1.02-1.14x
+    // at 448, RTX 4080 SUPER; elsewhere not measured), to 1024 tokens tiered and 4224 12-bit, as measured (past
+    // 1024 blocks of 128 cost Qwen3-1.7B's and Qwen3-4B's tiered layers -0.2-1.3% more at 1025-1152 tokens and
+    // 1.3-6.9% from 1600, and save their 12-bit layers 0.8-4.5% to 4224). Stream-K likewise on GeForce Ada only,
+    // where it was measured.
+    bool ada = geforce_ada(current_device());
+    int64_t most = std::is_same_v<Fmt, Nib> ? 4224 : 1024;
+    if (variant == 0) variant = M > 128 && (M % 256 == 0 || M % 256 > 128 || M > most || !ada) ? 2 : 1;
+    if (!ada) {
+        auto grid = variant == 2 ? mma_gemm_grid_run<Fmt, 4, 4, 2, 1> : mma_gemm_grid_run<Fmt, 4, 4, 3, 2>;
+        return grid(f, O, K, x, M, bias, y, ws, ws_bytes, cs, need);
+    }
     auto run = variant == 2 ? mma_gemm_big_run<Fmt, 4, 4, 2, 1> : mma_gemm_big_run<Fmt, 4, 4, 3, 2>;
-    return run(f, O, K, x, M, bias, y, ws, ws_bytes, cs, need);
+    return run(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
 }
 
 GLYD_GPU_API int glyd_gpu_mma_gemm_big_workspace(int64_t O, int64_t K, int64_t M, int64_t variant, size_t* bytes) {
-    return bytes ? mma_gemm_big_any(Tiered{}, O, K, nullptr, M, nullptr, nullptr, variant, nullptr, 0, 0, bytes) : cudaErrorInvalidValue;
+    return bytes ? mma_gemm_big_any(Tiered{}, O, K, nullptr, M, nullptr, nullptr, variant, nullptr, 0, nullptr, 0, bytes) : cudaErrorInvalidValue;
 }
 
-GLYD_GPU_API int glyd_gpu_mma_gemm_big(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
-    return mma_gemm_big_any(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, O, K, x, M, bias, y, variant, workspace, workspace_bytes, cs, nullptr);
+// done: (M + 127) / 128 times O / 64 counters at least, zero (the last block of a unit resets its own; read on
+// GeForce Ada, where the product runs by stream-K).
+GLYD_GPU_API int glyd_gpu_mma_gemm_big(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    return mma_gemm_big_any(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, O, K, x, M, bias, y, variant, workspace, workspace_bytes, done, cs, nullptr);
 }
 
 GLYD_GPU_API int glyd_gpu_mma12_gemm_big_workspace(int64_t O, int64_t K, int64_t M, int64_t variant, size_t* bytes) {
-    return bytes ? mma_gemm_big_any(Nib{}, O, K, nullptr, M, nullptr, nullptr, variant, nullptr, 0, 0, bytes) : cudaErrorInvalidValue;
+    return bytes ? mma_gemm_big_any(Nib{}, O, K, nullptr, M, nullptr, nullptr, variant, nullptr, 0, nullptr, 0, bytes) : cudaErrorInvalidValue;
 }
 
-GLYD_GPU_API int glyd_gpu_mma12_gemm_big(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* workspace, size_t workspace_bytes, cudaStream_t cs) {
-    return mma_gemm_big_any(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, O, K, x, M, bias, y, variant, workspace, workspace_bytes, cs, nullptr);
+GLYD_GPU_API int glyd_gpu_mma12_gemm_big(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
+    return mma_gemm_big_any(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, O, K, x, M, bias, y, variant, workspace, workspace_bytes, done, cs, nullptr);
 }
 
 // Many tokens on Ampere and Ada, the 12-bit layout: 64 tokens a launch (x + 64c on), in the smallest
@@ -2966,21 +3221,53 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc
     return mma12_wg_any(f, O, K, x, M, bias, y, (float*)workspace, done, cs, nullptr);
 }
 
-// Back to bf16: rows [row0, row0 + rows) of W [., K] (multiples of 64) into out [rows, K].
-template <class Fmt>
-static int mma_unpack_run(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* out, cudaStream_t cs) {
-    if (row0 % 64 || rows % 64) return cudaErrorInvalidValue;
-    int64_t steps = rows / 64 * (K / 16);
-    mma_unpack_kernel<Fmt><<<(steps * 32 + 255) / 256, 256, 0, cs>>>(f, K, row0, rows, out);
+// A stream held for ns nanoseconds, by one thread: a decode ahead launched after it, beside a product that starts
+// as it does, starts once the product has placed its blocks (a decode placed first on an SM, in a carveout of its
+// own choosing, may leave the product's blocks no room there).
+__global__ void hold_kernel(int64_t ns) {
+    uint64_t t0, t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t0));
+    do {
+        __nanosleep(500);
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    } while (t - t0 < (uint64_t)ns);
+}
+
+GLYD_GPU_API int glyd_gpu_hold(int64_t ns, cudaStream_t cs) {
+    if (ns < 0) return cudaErrorInvalidValue;
+    hold_kernel<<<1, 1, 0, cs>>>(ns);
     return cudaGetLastError();
 }
 
-GLYD_GPU_API int glyd_gpu_mma_unpack(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t K, int64_t row0, int64_t rows, uint16_t* out, cudaStream_t cs) {
-    return mma_unpack_run(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, K, row0, rows, out, cs);
+// Back to bf16: rows [row0, row0 + rows) of W [., K] (multiples of 64) into out [rows, K]: a warp a step, or (warps
+// > 0) that many warps in a block an SM (up to 8 a block), each taking every so many steps: a decode that runs
+// beside a product on another stream (a prompt's next matrix), its blocks small enough for an SM to hold beside a
+// cuBLAS block. Its SMs keep the most shared memory (the carveout a block leaves them in is theirs until it ends:
+// with less, a product's blocks would not fit beside it), a kernel of its own (FEW: a warp a step keeps its code
+// and carveout).
+template <class Fmt>
+static int mma_unpack_run(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs) {
+    if (row0 % 64 || rows % 64 || warps < 0) return cudaErrorInvalidValue;
+    int64_t steps = rows / 64 * (K / 16);
+    if (warps) {
+        static std::atomic<int> most[MAX_DEVICES];
+        int dev = current_device();
+        if (dev >= MAX_DEVICES || !most[dev].exchange(1))
+            cudaFuncSetAttribute((const void*)mma_unpack_kernel<Fmt, false, true>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+        int64_t blocks = std::min(warps, sm_count(dev)), per = std::min<int64_t>(8, (warps + blocks - 1) / blocks);
+        mma_unpack_kernel<Fmt, false, true><<<(unsigned)blocks, (unsigned)(32 * per), 0, cs>>>(f, K, row0, rows, out);
+    } else {
+        mma_unpack_kernel<Fmt><<<(steps * 32 + 255) / 256, 256, 0, cs>>>(f, K, row0, rows, out);
+    }
+    return cudaGetLastError();
 }
 
-GLYD_GPU_API int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t K, int64_t row0, int64_t rows, uint16_t* out, cudaStream_t cs) {
-    return mma_unpack_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, K, row0, rows, out, cs);
+GLYD_GPU_API int glyd_gpu_mma_unpack(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3], int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs) {
+    return mma_unpack_run(Tiered{data, blocks, block_base, {tiers[0], tiers[1], tiers[2]}}, K, row0, rows, out, warps, cs);
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs) {
+    return mma_unpack_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, K, row0, rows, out, warps, cs);
 }
 
 // Exact, a mixture of experts' layer (its E matrices [O, K] stacked): the experts the plan of P pairs hits back to
@@ -3147,9 +3434,11 @@ static void* addr(const torch::Tensor& t) { return t.defined() ? t.data_ptr() : 
 // A product's workspace (none for 0 bytes).
 static torch::Tensor scratch(size_t bytes, const torch::Tensor& like) { return bytes ? torch::empty({(int64_t)bytes}, like.options().dtype(torch::kUInt8)) : torch::Tensor(); }
 
-// A product's done counters on like's device (at least n; least when first made): zero between products.
-static int* counters(std::map<int, torch::Tensor>& of, const torch::Tensor& like, int64_t n, int64_t least) {
-    torch::Tensor& t = of[like.get_device()];
+// A product's done counters on like's device for the current stream (at least n; least when first made): zero
+// between products, a set a stream (one stream's products at a time on a set).
+using Counters = std::map<std::pair<int, cudaStream_t>, torch::Tensor>;
+static int* counters(Counters& of, const torch::Tensor& like, int64_t n, int64_t least) {
+    torch::Tensor& t = of[{like.get_device(), current_stream()}];
     if (!t.defined() || t.numel() < n) t = torch::zeros({std::max<int64_t>(n, least)}, like.options().dtype(torch::kInt32));
     return ptr<int>(t);
 }
@@ -3227,7 +3516,7 @@ void mma_gemm(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base
     size_t bytes = 0;
     ok(glyd_gpu_mma_gemm_workspace(O, K, M, &bytes), "mma_gemm");
     auto ws = scratch(bytes, x);
-    static auto* done_of = new std::map<int, torch::Tensor>;  // kept to the end (no teardown after CUDA's)
+    static auto* done_of = new Counters;  // kept to the end (no teardown after CUDA's)
     ok(glyd_gpu_mma_gemm(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma_gemm");
 }
 
@@ -3240,7 +3529,7 @@ void mma12_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, s
     size_t bytes = 0;
     ok(glyd_gpu_mma12_gemm_workspace(O, K, M, &bytes), "mma12_gemm");
     auto ws = scratch(bytes, x);
-    static auto* done_of = new std::map<int, torch::Tensor>;
+    static auto* done_of = new Counters;
     ok(glyd_gpu_mma12_gemm(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma12_gemm");
 }
 
@@ -3253,7 +3542,8 @@ void mma_gemm_big(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_
     size_t bytes = 0;
     ok(glyd_gpu_mma_gemm_big_workspace(O, K, M, variant, &bytes), "mma_gemm_big");
     auto ws = scratch(bytes, x);
-    ok(glyd_gpu_mma_gemm_big(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), variant, addr(ws), bytes, current_stream()), "mma_gemm_big");
+    static auto* done_of = new Counters;
+    ok(glyd_gpu_mma_gemm_big(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), variant, addr(ws), bytes, counters(*done_of, data, (M + 127) / 128 * (O / 64), 1 << 18), current_stream()), "mma_gemm_big");
 }
 
 void mma12_gemm_big(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t variant) {
@@ -3265,7 +3555,8 @@ void mma12_gemm_big(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_bas
     size_t bytes = 0;
     ok(glyd_gpu_mma12_gemm_big_workspace(O, K, M, variant, &bytes), "mma12_gemm_big");
     auto ws = scratch(bytes, x);
-    ok(glyd_gpu_mma12_gemm_big(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), variant, addr(ws), bytes, current_stream()), "mma12_gemm_big");
+    static auto* done_of = new Counters;
+    ok(glyd_gpu_mma12_gemm_big(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), variant, addr(ws), bytes, counters(*done_of, data, (M + 127) / 128 * (O / 64), 1 << 18), current_stream()), "mma12_gemm_big");
 }
 
 // Many tokens on Ampere and Ada (to 64 a launch, in chunks past that).
@@ -3280,7 +3571,7 @@ void mma12_gemm_mid(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_bas
     size_t bytes = 0;
     ok(glyd_gpu_mma12_gemm_mid_workspace(O, K, M, &bytes), "mma12_gemm_mid");
     auto ws = scratch(bytes, data);
-    static auto* done_of = new std::map<int, torch::Tensor>;
+    static auto* done_of = new Counters;
     ok(glyd_gpu_mma12_gemm_mid(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma12_gemm_mid");
 }
 
@@ -3295,24 +3586,26 @@ void mma12_gemm_wg(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base
     size_t bytes = 0;
     ok(glyd_gpu_mma12_gemm_wg_workspace(O, K, M, &bytes), "mma12_gemm_wg");
     auto ws = scratch(bytes, data);
-    static auto* done_of = new std::map<int, torch::Tensor>;
+    static auto* done_of = new Counters;
     ok(glyd_gpu_mma12_gemm_wg(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma12_gemm_wg");
 }
 
-void mma_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
+void mma_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t K, int64_t row0, int64_t rows, torch::Tensor out, int64_t warps) {
     uint32_t t[3];
     words(tiers, 3, t, "three tiers");
     const c10::cuda::CUDAGuard guard(data.device());
     TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64");
-    ok(glyd_gpu_mma_unpack(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, K, row0, rows, ptr<uint16_t>(out), current_stream()), "mma_unpack");
+    ok(glyd_gpu_mma_unpack(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, K, row0, rows, ptr<uint16_t>(out), warps, current_stream()), "mma_unpack");
 }
 
-void mma12_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t K, int64_t row0, int64_t rows, torch::Tensor out) {
+void hold(int64_t ns) { ok(glyd_gpu_hold(ns, current_stream()), "hold"); }
+
+void mma12_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t K, int64_t row0, int64_t rows, torch::Tensor out, int64_t warps) {
     uint32_t s[4];
     words(sym, 4, s, "four words of symbols");
     const c10::cuda::CUDAGuard guard(data.device());
     TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64");
-    ok(glyd_gpu_mma12_unpack(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, K, row0, rows, ptr<uint16_t>(out), current_stream()), "mma12_unpack");
+    ok(glyd_gpu_mma12_unpack(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, K, row0, rows, ptr<uint16_t>(out), warps, current_stream()), "mma12_unpack");
 }
 
 void mma_moe_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t E, int64_t O, int64_t K, int64_t P, torch::Tensor plan, torch::Tensor out) {
@@ -3350,7 +3643,7 @@ static void moe_product(const char* name, F run, torch::Tensor data, int64_t E, 
     size_t bytes = 0;
     ok(glyd_gpu_mma_moe_workspace(E, O, K, T, k, act, w.numel() > 0, &bytes), name);
     auto ws = scratch(bytes, x);
-    static auto* done_of = new std::map<int, torch::Tensor>;
+    static auto* done_of = new Counters;
     int* done = counters(*done_of, data, (act ? O / 128 : O / 64) * std::min(E, T * k), 1 << 16);
     run(T, w.numel() ? w.data_ptr() : nullptr, w.scalar_type() == torch::kFloat32, addr(ws), bytes, done);
 }
@@ -3381,13 +3674,14 @@ void attn_decode(torch::Tensor q, torch::Tensor kd, torch::Tensor kb, torch::Ten
     size_t bytes = 0;
     ok(glyd_gpu_attn_decode_workspace(D, tlen, pairs, P, &bytes), "attn_decode");
     auto ws = scratch(bytes, q);
-    static auto* done_of = new std::map<int, torch::Tensor>;  // a pair's finished blocks: zero between calls
+    static auto* done_of = new Counters;  // a pair's finished blocks: zero between calls
     ok(glyd_gpu_attn_decode(ptr<uint16_t>(q), D, ptr<uint8_t>(kd), ptr<uint8_t>(kb), ptr<int32_t>(kbb), k3, ptr<uint8_t>(vd), ptr<uint8_t>(vb), ptr<int32_t>(vbb), v3, ptr<uint16_t>(tk), ptr<uint16_t>(tv), tlen, pairs, G, P, scale, ptr<uint16_t>(out), addr(ws), bytes, counters(*done_of, q, pairs, 1 << 12), current_stream()), "attn_decode");
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("mma_gemm", &mma_gemm);
     m.def("mma_unpack", &mma_unpack);
+    m.def("hold", &hold);
     m.def("mma12_gemm", &mma12_gemm);
     m.def("mma12_gemm_big", &mma12_gemm_big);
     m.def("mma12_unpack", &mma12_unpack);

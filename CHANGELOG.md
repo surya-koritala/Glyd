@@ -8,6 +8,52 @@ every earlier format.
 
 ## Unreleased
 
+- Short prompts on GeForce Ada faster: a prompt's fused product is one C
+  call, as a generation step's (it had cost 12 us of host time a call,
+  twice F.linear's), and on GeForce Ada runs by stream-K
+  (`mma_gemm_sk_kernel`: as many blocks as the GPU holds, each an equal
+  share of the tiles' stages, a tile several share summed by the last of
+  them in their order), where K was split and its parts summed by a
+  second kernel (as still on other GPUs, until measured there). On an RTX 4080
+  SUPER (`gpu/e2e.py --prefill --merge`), Qwen3-1.7B's prompts of 128 /
+  256 / 512 tokens take 10.3 / 14.6 / 23.8 ms tiered and 10.2 / 14.5 /
+  23.7 12-bit against bf16's 10.8 / 14.0 / 24.3 (0.21.0: 11.4 / 15.8 /
+  25.4 and 11.4 / 15.4 / 24.7), Qwen3-4B-Instruct-2507's 128 / 256 / 512
+  tokens 19.4 / 29.3 / 52.6 and 19.2 / 28.7 / 51.5 against 20.7 / 28.0 /
+  49.1 (were 19.7 / 29.9 / 53.3 and 18.6 / 29.3 / 52.0); at 384 tokens
+  Qwen3-1.7B's 20.1 / 19.2 against 18.7 (were 23.9 / 23.2), Qwen3-4B's
+  44.4 / 41.7 against 39.5 (were 50.2 / 49.3); the time to the first
+  token with them (Qwen3-1.7B at 128 tokens 11.6 / 11.8 ms against 13.0
+  / 12.8); generation as before. In the 12-bit layout the decode ahead
+  starts at 1024 tokens (was past 640) where the fused kernel takes the
+  prompt: it is now the faster one to there (exact and unfused products
+  past 640, as before). The C API's `glyd_gpu_mma_gemm_big` and
+  `glyd_gpu_mma12_gemm_big` take a product's done counters, and
+  `glyd_gpu_api_version` tells the C API's version (2; the package
+  refuses a library of another).
+- Products on two streams of one GPU at once no longer share done
+  counters (a set a stream, as the workspace): a small product's outputs
+  could come out wrong that way.
+- Long prompts on GeForce Ada within 0.2-0.7% of bf16's time from 2048
+  tokens, 1.5-2.9% at 1024 (were 5-10% behind): past 512 tokens (from
+  1024 in the 12-bit layout) each matrix is decoded once, for cuBLAS, on
+  a second stream beside the products before it, a few warps an SM
+  beside cuBLAS's blocks, where the fused kernel decoded each weight
+  again for every 256 tokens. On an RTX 4080 SUPER
+  (`gpu/e2e.py --prefill --merge`), Qwen3-4B-Instruct-2507's prompts of
+  1024 / 2048 / 4096 tokens take 97.5 / 199.5 / 447.5 ms tiered against
+  bf16's 96.1 / 198.3 / 445.4 (were 102.8 / 211.5 / 476.5), Qwen3-1.7B's
+  43.3 / 86.8 / 186.0 against 42.1 / 86.6 / 185.3 (were 45.9 / 91.5 /
+  190.1), Qwen3-8B's 175.2 / 345.1 / 767.6 (were 185.6 / 370.8 / 811.3);
+  the time to the first token with them; generation as before. With
+  `exact=True` the same path, the logits bf16's bit for bit. On GeForce
+  Ada the fused kernel runs blocks of 128 tokens where the last block of
+  256 would be half empty or less, to 1024 tokens tiered and 4224 12-bit
+  (300 tokens: 0.79-0.89x the time; past 1024 the tiered layout's cost
+  1.3-6.9% more from 1600 tokens, the 12-bit's 0.8-4.5% less to 4224;
+  elsewhere as before, until measured). The decode ahead is off until
+  measured on an A100, an H100 and the L4, L40S and RTX 6000 Ada
+  (`GLYD_AHEAD_MIN=513` takes it).
 - `glyd.save_pretrained` saves a mixture of experts: glyd-v1 holds each
   layer's experts as one pack (their matrices stacked, under the module
   holding them), and `glyd.json` the sha256 of each weight as the model

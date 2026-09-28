@@ -170,9 +170,10 @@ def _act(m, O, gate):
 
 
 def _counters(p, E):
-    """p's products' done counters made now: never in a CUDA graph's memory pool."""
+    """p's products' done counters on its device made now (the device's own set: never in a CUDA graph's memory
+    pool)."""
     if g.lib() is not None:
-        _lib._counters("mma12_moe" if isinstance(p, g.Mma12) else "mma_moe", p.sm.get_device(), p.shape[0] // E // 64 * E, 1 << 16)
+        _lib._counters("mma12_moe" if isinstance(p, g.Mma12) else "mma_moe", p.sm.get_device(), None, p.shape[0] // E // 64 * E, 1 << 16)
 
 
 def _take_over(m, run):
@@ -379,9 +380,11 @@ class _Decoded:
 
 
 def _buffer(device):
-    """The scratch buffer on device (a compiled graph's node: its address kept by its CUDA graph, model.set_scratch)."""
+    """The scratch buffer on device, a prompt's decodes ahead into it done first (a compiled graph's node: its address
+    kept by its CUDA graph, model.set_scratch)."""
     if _lib.local.fresh:
         gm.Scratch.graphed.add(device)
+    gm.Ahead.stop(device)
     return gm.Scratch.buf[device]
 
 

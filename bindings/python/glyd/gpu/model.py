@@ -11,11 +11,11 @@ columns of 16) goes in the tiered layout (10.80 bits a weight) or the
 an embedding (rows a multiple of 128 long) in the fast format, its rows
 decoded as they are looked up; anything else stays as it is.
 
-Eager, a generation step's product through the prebuilt library is one C
-call (_lib.step: what does not change between calls made once); under
-torch.compile each GLinear and GEmbedding is one node of the graph
-(glyd::linear, glyd::embedding), run as eager, and CUDA graphs capture
-its kernels.
+Eager, a fused product through the prebuilt library is one C call (a
+generation step's, and a prompt's to the decode ahead: _lib.step, what
+does not change between calls made once); under torch.compile each
+GLinear and GEmbedding is one node of the graph (glyd::linear,
+glyd::embedding), run as eager, and CUDA graphs capture its kernels.
 """
 import hashlib
 import itertools
@@ -29,12 +29,226 @@ from . import _lib, kernels as g
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 128))  # Hopper: steps of this many tokens multiply by wgmma
 MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 by mma_gemm_mid
+# A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). On
+# GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, from 1024 in the 12-bit one where
+# its fused kernel takes the prompt (the faster to there: Qwen3-4B-Instruct-2507's 768 tokens 76.3 ms fused, 77.5
+# decoded ahead; 1024 tokens 100.6 and 99.3), else past 640 (exact, or not fused: each matrix decoded first); elsewhere, until measured, the fused kernel or the decode as before (the L4, L40S and RTX
+# 6000 Ada sum in fp32 at twice the rate: a product's time decodes half as much beside it).
+AHEAD_MIN = int(os.environ.get("GLYD_AHEAD_MIN", 0)) or None
+AHEAD_WARPS = int(os.environ.get("GLYD_AHEAD_WARPS", 0))  # a decode ahead's warps an SM (0: 3 tiered, 2 12-bit), few enough to sit beside a cuBLAS block
+AHEAD_RATE = float(os.environ.get("GLYD_AHEAD_RATE", 2.2e-3))  # weights decoded ahead beside a product, for each of its weights and tokens
+AHEAD_FLOPS = float(os.environ.get("GLYD_AHEAD_FLOPS", 30e9))  # and only beside products of this many flops (cuBLAS's kernels for fewer leave them no room, or slow down beside them)
+AHEAD_HOLD = 5000  # ns a product's decodes ahead wait for it to place its blocks
 
 
 class Scratch:
     buf = {}  # one a device: {device: tensor}
     graphed = set()  # the devices whose buffer a torch.compile graph's node has decoded into (a CUDA graph keeps its address)
     replaced = []  # those buffers once a bigger one took their place: kept
+
+
+class Ahead:
+    """A prompt's products on a GPU with its matrices decoded ahead, on a
+    second stream, beside the products before theirs. The order is recorded
+    from a prompt (the GLinears it calls whole, until the first comes again)
+    and each matrix given a place in the scratch buffer, used as a ring
+    (plan). A decode ahead runs beside one of the order's largest products
+    (hosts: cuBLAS's kernels for the small ones leave its blocks no room, or
+    slow down beside them), started as the product starts (the stream waits
+    for an event recorded before it, then AHEAD_HOLD ns, so that the
+    product's blocks are placed first), by a few warps an SM (so that an SM
+    holds them beside a cuBLAS block), and as much as the product's time
+    allows (AHEAD_RATE; schedule), taking the order's rows as their places
+    are free (the products that read them done); a product waits for its
+    matrix's decodes ahead (events between the streams, never the host) and
+    decodes the rest on the current stream (the order's first: all of it,
+    nothing to hide behind). A call off the order, or another decode into the
+    buffer, waits for the decodes ahead and ends the prompt's run of them
+    (the order's first call starts it again); the calls off the order are
+    recorded, and one that comes again makes them the order (another model,
+    another path through this one). A prompt that ends before its order
+    does leaves decodes ahead queued: the next call below the threshold
+    waits for them (settle); where that call is the order's next product
+    (the output layer at one token), the next prompt ends the order there,
+    and a prompt that stops short otherwise (an error: out of memory, an
+    interrupt) leaves the order whole. The calls a prompt makes past its
+    order's end (an order recorded from a prompt that stopped short, or
+    ended there before) are added to it as the next starts. Waits are the current
+    stream's on the side stream's (the GPU's, never the host's), none while
+    a CUDA graph is captured (it must not wait on work queued before it);
+    the packs and the buffer are the side stream's too (record_stream), so
+    that none is given out again before its decodes are done."""
+
+    of = {}  # {device: Ahead}
+    queued = False  # decodes ahead on some device not yet waited for
+
+    def __init__(self, d):
+        self.d, self.side = d, torch.cuda.Stream(d, priority=-1)  # high: its blocks placed as soon as launched
+        self.sms = torch.cuda.get_device_properties(d).multi_processor_count
+        self.rec, self.chain, self.pos, self.live, self.off = [], None, 0, False, False
+        self.tail, self.end = False, None  # rec: the calls past the order's end; the order to end at `end`
+
+    @staticmethod
+    def get(d):
+        """The device's, where a product may decode ahead: not in a torch.compile graph's node (its CUDA graph
+        keeps the addresses it captured) nor while a CUDA graph is captured; else None."""
+        if _lib.local.fresh or torch.cuda.is_current_stream_capturing():
+            return None
+        a = Ahead.of.get(d)
+        if a is None:
+            a = Ahead.of[d] = Ahead(d)
+        return a
+
+    def join(self):
+        """The current stream waits for the side stream's decodes ahead (on the GPU), but while a CUDA graph is
+        captured."""
+        if self.live and not torch.cuda.is_current_stream_capturing():
+            torch.cuda.current_stream(self.d).wait_stream(self.side)
+            self.live = False
+
+    @staticmethod
+    def settle(h):
+        """Every device's decodes ahead waited for: a call below the threshold (module h's), after a prompt that
+        ended before its order did; where h is the order's next product, the order to end there."""
+        for a in Ahead.of.values():
+            if a.live and a.pos and a.chain[a.pos] == h:
+                a.end = a.pos
+            a.join()
+        Ahead.queued = any(a.live for a in Ahead.of.values())
+
+    @staticmethod
+    def stop(d):
+        """Before a decode into the device's buffer on the current stream that is not the order's: the decodes ahead
+        done first, and the prompt's run of them ended (their places may be written)."""
+        a = Ahead.of.get(d)
+        if a is not None and a.live:
+            a.join()
+            a.off = True
+
+    @staticmethod
+    def reset(d):
+        """The device's buffer about to be replaced: its decodes ahead done first (the old buffer is given out again
+        on the current stream), the order recorded again."""
+        a = Ahead.of.pop(d, None)
+        if a is not None:
+            torch.cuda.current_stream(d).wait_stream(a.side)
+
+    def plan(self, chain, room):
+        """The order's places in a ring of `room` weights, each where the last product before it that reads the
+        place (conf) is earliest; places 256 weights apart, as PyTorch's allocator's are."""
+        ns = [_modules[h].p.n for h in chain]
+        offs, conf = [], []
+        for j, n in enumerate(ns):
+            best = None
+            for o in sorted({0} | {(offs[i] + ns[i] + 255) // 256 * 256 for i in range(max(0, j - 32), j)}):
+                if o + n <= room:
+                    c = next((i for i in range(j - 1, -1, -1) if offs[i] < o + n and o < offs[i] + ns[i]), -1)
+                    if best is None or c < best[0]:
+                        best = (c, o)
+            conf.append(best[0])
+            offs.append(best[1])
+        self.chain, self.offs, self.conf, self.plans = chain, offs, conf, {}
+        self.gate = [torch.cuda.Event() for _ in chain]
+        self.ready = [torch.cuda.Event() for _ in chain]
+        self.pos, self.off, self.tail, self.end = 0, False, False, None  # (live kept: the last order's decodes ahead are waited for as this one starts)
+        for h in chain:  # read and written by the side stream: none given out again before its work is done
+            p = _modules[h].p
+            for t in (p.data, p.exc, p.exc_base) if isinstance(p, g.Mma12) else (p.data, p.blocks, p.block_base):
+                t.record_stream(self.side)
+        Scratch.buf[self.d].record_stream(self.side)
+
+    def schedule(self, M):
+        """For prompts of M tokens: the rows each host starts decoding ahead, [(k, r0, r1)], as many as AHEAD_RATE
+        M times its weights, the order's matrices' in turn as their places are free; and each matrix's rows decoded
+        ahead (from its first: the rest are decoded before its product). Hosts: the order's first product, and
+        those of AHEAD_FLOPS and of 0.4 times the weights of the largest tenth's smallest at least."""
+        s = self.plans.get(M)
+        if s is None:
+            shapes = [_modules[h].p.shape for h in self.chain]
+            N = len(shapes)
+            beside, done = [[] for _ in range(N)], [0] * N
+            big = sorted(O * K for O, K in shapes)[(N - 1) * 9 // 10]  # (not the largest: an output layer would be)
+            for j in range(N):
+                n = shapes[j][0] * shapes[j][1]
+                budget = AHEAD_RATE * M * n if j == 0 or (n >= 0.4 * big and 2 * M * n >= AHEAD_FLOPS) else 0
+                for k in range(j + 1, N):
+                    O, K = shapes[k]
+                    if self.conf[k] >= j or done[k] == O:
+                        continue
+                    take = min(O - done[k], int(budget // (64 * K)) * 64)
+                    if take <= 0:
+                        break
+                    beside[j].append((k, done[k], done[k] + take))
+                    done[k] += take
+                    budget -= take * K
+            s = self.plans[M] = (beside, done)
+        return s
+
+    def find(self, lin):
+        """lin's place in the order where the prompt follows it, else None: a matrix the buffer does not hold twice,
+        or a call off the order (or with none yet), recorded: a call that comes again ends the recording, the calls
+        from it on the new order (the order's own first call starts it again instead: the order ended where the
+        last prompt went on below the threshold, or with the calls it made past its end added)."""
+        room = Scratch.buf[self.d].numel() - 16384 * 8
+        if 2 * lin.p.n > room:
+            return None
+        h, c = lin.handle, self.chain
+        if c is not None and (c[0] not in _modules or c[-1] not in _modules):  # a model let go
+            c = self.chain = None
+        if c is not None:
+            if not self.off and c[self.pos] == h:
+                return self.pos
+            if c[0] == h:
+                if self.tail and self.rec:  # the last prompt went on past the order's end: the order to there
+                    self.plan(c + self.rec, room)
+                elif self.end == self.pos and not self.off:  # it went on below the threshold from here: the order to here
+                    self.plan(c[: self.pos], room)
+                self.rec, self.tail, self.end = [], False, None
+                return 0
+            if not self.off:
+                self.tail = self.pos == 0  # past the order's end (else off its path)
+            self.join()  # off the order: none of its decodes ahead left queued past here
+            self.off = True
+        if h in self.rec:
+            self.plan(self.rec[self.rec.index(h) :], room)
+            self.rec = []
+            return 0
+        self.rec.append(h)
+        return None
+
+    def at(self, k, r0, r1):
+        """Rows [r0, r1) of the order's matrix k in its place."""
+        K = _modules[self.chain[k]].in_features
+        return Scratch.buf[self.d][self.offs[k] + r0 * K : self.offs[k] + r1 * K]
+
+    def product(self, lin, j, product, M):
+        """product(W) for lin's matrix W, place j of the order (M: the prompt's tokens)."""
+        main = torch.cuda.current_stream(self.d)
+        if j == 0:
+            self.join()  # a prompt ended off the order: its decodes ahead done first
+            self.off, self.m = False, M
+        beside, done = self.schedule(self.m // 128 * 128)  # (as for fewer tokens than it has: less time beside the products)
+        O = lin.out_features
+        if done[j]:
+            main.wait_event(self.ready[j])
+        if done[j] < O:
+            g.mma_unpack(lin.p, self.at(j, done[j], O), done[j], O - done[j])
+        if beside[j]:
+            self.gate[j].record(main)
+        y = product(self.at(j, 0, O).view(O, lin.in_features))
+        if beside[j]:
+            self.side.wait_event(self.gate[j])
+            with torch.cuda.stream(self.side):
+                g.hold(AHEAD_HOLD)
+                for k, r0, r1 in beside[j]:
+                    p = _modules[self.chain[k]].p
+                    g.mma_unpack(p, self.at(k, r0, r1), r0, r1 - r0, (AHEAD_WARPS or (2 if isinstance(p, g.Mma12) else 3)) * self.sms)
+                    if r1 == done[k]:
+                        self.ready[k].record(self.side)
+        self.pos = j + 1 if j + 1 < len(self.chain) else 0
+        self.live = self.pos > 0  # decodes ahead not yet waited for
+        Ahead.queued |= self.live
+        return y
 
 
 _modules = weakref.WeakValueDictionary()  # handle: its GLinear or GEmbedding, for the ops below
@@ -95,9 +309,12 @@ class GLinear(_Node, nn.Module):
     straight from the packed weights where a kernel takes the step (in the
     mma layouts up to 64 tokens, and prompts but on Hopper; one-token steps
     in the others); else the matrix decoded into the scratch buffer, then
-    PyTorch's matmul. exact: every product the matrix decoded whole, then
-    F.linear on the input as it came, as nn.Linear does: its outputs bit for
-    bit (over fused). gemm_max: the fast format's fused steps, in tokens."""
+    PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, from
+    1024 12-bit fused and past 640 not, decoded ahead of its product where
+    Ahead takes it). exact: every
+    product the matrix decoded whole, then F.linear on the input as it came,
+    as nn.Linear does: its outputs bit for bit (over fused). gemm_max: the
+    fast format's fused steps, in tokens."""
 
     weight = property(_Weight)  # as a model's own code reads it
 
@@ -113,10 +330,14 @@ class GLinear(_Node, nn.Module):
         cc = torch.cuda.get_device_capability(p.sm.device)
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
         self.mid = cc in ((8, 0), (8, 6), (8, 7), (8, 9))  # (an A100 its own kernel: producer and consumer warps)
+        ada = cc == (8, 9) and "GeForce" in torch.cuda.get_device_name(p.sm.device)
+        twelve = 1024 if fused and not exact else 641
+        self.ahead = AHEAD_MIN or ((twelve if isinstance(p, g.Mma12) else 513) if ada else 1 << 62)  # prompts decoded ahead, then cuBLAS
         self._node()
 
     def kernel(self, M):
-        """The fused product for M tokens in the mma layouts (kernels.py's), or None: decoded, then PyTorch's matmul."""
+        """The fused product for M tokens in the mma layouts (kernels.py's), or None: decoded, then PyTorch's matmul
+        (a prompt's matrices decoded ahead, Ahead)."""
         K, twelve = self.in_features, isinstance(self.p, g.Mma12)
         if self.hopper and WG_MIN <= M <= WG_MAX and K % 64 == 0 and twelve:  # TMA and wgmma
             return g.mma_gemm_wg
@@ -124,23 +345,29 @@ class GLinear(_Node, nn.Module):
             return g.mma_gemm_mid
         if M <= 64:
             return g.mma_gemm
-        if K % 64 == 0 and not self.hopper:  # past WG_MAX tokens on Hopper (a prompt) the tensor cores outrun our decode
+        # A prompt: past WG_MAX tokens on Hopper the tensor cores outrun our decode, and past self.ahead on Ada a
+        # matrix decoded ahead, beside the products before it, costs cuBLAS less than the fused kernel's decode
+        # (whole; a matrix past the scratch is never decoded ahead: fused).
+        if K % 64 == 0 and not self.hopper and (M < self.ahead or self.block < self.out_features):
             return g.mma_gemm_big
         return None
 
     def _step(self):
-        """A generation step's product (1-64 tokens) as one C call, where it is a fused one through the prebuilt
-        library: _lib.step over the pack, the function for each M; else None."""
+        """A product as one C call where it is a fused one through the prebuilt library: a generation step's
+        (1-64 tokens), and a prompt's to self.ahead tokens (mma_gemm_big); _lib.step over the pack, the function
+        for each M; else None."""
         p = self.p
         if not self.fused or self.exact or not isinstance(p, g.Mma) or g.lib() is None:
             return None
         twelve = isinstance(p, g.Mma12)
         name = {g.mma_gemm: "mma12_gemm" if twelve else "mma_gemm", g.mma_gemm_mid: "mma12_gemm_mid", g.mma_gemm_wg: "mma12_gemm_wg"}
         names = [None] + [name.get(self.kernel(M)) for M in range(1, 65)]
-        return _lib.step(p.data, *((p.exc, p.exc_base, p.sym, 4) if twelve else (p.blocks, p.block_base, p.tiers, 3)), p.shape, self.bias, names)
+        big = ("mma12_gemm_big" if twelve else "mma_gemm_big") if self.kernel(65) is g.mma_gemm_big else None
+        return _lib.step(p.data, *((p.exc, p.exc_base, p.sym, 4) if twelve else (p.blocks, p.block_base, p.tiers, 3)), p.shape, self.bias, names, big, self.ahead)
 
     def decode_rows(self, r0, r1):
         p, K = self.p, self.p.shape[1]
+        Ahead.stop(p.sm.device)
         buf = Scratch.buf[p.sm.device]
         if _lib.local.fresh:
             Scratch.graphed.add(p.sm.device)
@@ -160,16 +387,34 @@ class GLinear(_Node, nn.Module):
             out = full[: (r1 - r0) * K]
         return out.view(r1 - r0, K)
 
+    def whole(self, product, x):
+        """product(W), this matrix decoded whole into the scratch buffer, for input x: ahead, for a prompt of
+        self.ahead tokens or more where its order says this product comes next (Ahead); where Ahead does not take
+        it (the order not known yet, recorded now, or not followed; under torch.compile; during a capture), fused
+        where a kernel takes the prompt; else decoded now."""
+        M = x.numel() // self.in_features
+        a = Ahead.get(self.p.sm.device) if M >= self.ahead and isinstance(self.p, g.Mma) else None
+        j = a.find(self) if a is not None else None
+        if j is not None:
+            return a.product(self, j, product, M)
+        if isinstance(self.p, g.Mma) and self.fused and not self.exact and not self.hopper and self.in_features % 64 == 0:
+            return g.mma_gemm_big(self.p, x, self.bias)
+        return product(self.decode_rows(0, self.out_features))
+
     def forward(self, x):
         if torch.compiler.is_compiling():  # one node of the graph (glyd::linear), which runs what follows (no gradient, as eager)
             return torch.ops.glyd.linear(x.detach() if x.requires_grad else x, self.handle, self.out_features)
-        if self.step is not None:  # a generation step's product: one C call
+        if Ahead.queued and x.numel() < self.ahead * self.in_features:  # a prompt ended before its order did
+            Ahead.settle(self.handle)
+        if self.step is not None:  # a fused product: one C call
             y = self.step(x)
             if y is not None:
                 return y
         O, K = self.out_features, self.in_features
-        if self.exact:  # as nn.Linear: F.linear on the input as it came, the matrix decoded whole
-            return F.linear(x, self.decode_rows(0, O), self.bias)
+        if self.exact:  # as nn.Linear: F.linear on the input as it came, the matrix decoded whole (a prompt's ahead)
+            if x.numel() < self.ahead * K:
+                return F.linear(x, self.decode_rows(0, O), self.bias)
+            return self.whole(lambda w: F.linear(x, w, self.bias), x)
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)
         if self.fused and isinstance(self.p, g.Mma):
@@ -188,7 +433,7 @@ class GLinear(_Node, nn.Module):
         if self.fused and isinstance(self.p, g.Fast) and n <= self.gemm_max and K % 64 == 0:
             return g.fast_gemm(self.p, x2, self.bias).view(*lead, O)
         if self.block >= O:
-            return F.linear(x2, self.decode_rows(0, O), self.bias).view(*lead, O)
+            return self.whole(lambda w: F.linear(x2, w, self.bias), x2).view(*lead, O)
         y = torch.empty(x2.shape[0], O, dtype=x.dtype, device=x.device)
         for r0 in range(0, O, self.block):
             r1 = min(O, r0 + self.block)
@@ -422,10 +667,14 @@ def set_scratch(model, exact):
     for m in model.modules():
         if isinstance(m, (GLinear, GEmbedding)):
             d = m.p.sm.device
-            need[d] = max(need.get(d, 0), m.p.n if exact else min(m.p.n, SCRATCH))
+            n = m.p.n if exact else min(m.p.n, SCRATCH)
+            if isinstance(m, GLinear) and isinstance(m.p, g.Mma) and m.p.n <= SCRATCH and m.ahead < 1 << 62:
+                n = max(n, 2 * m.p.n)  # a prompt's matrices decoded ahead (Ahead): two at once at least
+            need[d] = max(need.get(d, 0), n)
     for d, n in need.items():
         old = Scratch.buf.get(d)
         if old is None or old.numel() < n + 16384 * 8:
+            Ahead.reset(d)  # its places were in the old buffer
             Scratch.buf[d] = torch.empty(n + 16384 * 8, dtype=torch.bfloat16, device=d)
             if old is not None and d in Scratch.graphed:
                 Scratch.replaced.append(old)

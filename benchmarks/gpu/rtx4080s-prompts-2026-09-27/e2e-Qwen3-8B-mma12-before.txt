@@ -1,0 +1,8 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 18354.31it/s]
+merged: 72 groups of Linears as one product each
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.54 GB on 1 GPU
+glyd mma12 fused: batch 1: 47.1 tokens/s (47.1 a sequence), peak VRAM 12.55 GB
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+glyd mma12 fused: batch 8: 357.6 tokens/s (44.7 a sequence), peak VRAM 12.62 GB
+glyd mma12 prefill: 128 tokens 30.3 ms (4231 tokens/s), first token 31.5 ms, 512 tokens 91.1 ms (5618 tokens/s), first token 92.3 ms, 1024 tokens 179.8 ms (5696 tokens/s), first token 182.0 ms, 2048 tokens 363.8 ms (5629 tokens/s), first token 364.9 ms, 4096 tokens 786.6 ms (5207 tokens/s), first token 787.7 ms
+text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to transmit information over long distances, but it

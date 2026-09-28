@@ -4,8 +4,9 @@ API (the glyd package's glyd/gpu/_lib.py over libglyd_gpu_cudaN.so). Every
 output compared bit for bit, and against the weights or an fp32 product so
 they are not both wrong: odd shapes, split rows, escapes and exceptions few
 and many, 1 to 600 tokens, bias; the errors alike; the package's one-call
-paths (GLinear.step, GEmbedding.step) against the checked calls; the calls'
-host time.
+paths (GLinear.step, GEmbedding.step) against the checked calls, and a
+prompt's matrices decoded ahead (model.Ahead) against decoded on the
+current stream; the calls' host time.
 
     python check_capi.py [LIBRARY]      (default: $GLYD_GPU_LIB, else the one next to glyd_gpu.py)"""
 import os, sys, time, torch
@@ -141,9 +142,10 @@ for (O, K), wild in [((1000, 512), 0.01), ((304, 2304), 0.02), ((17008, 384), 0.
                 near(both("fast_bgemv", *fa, O, K, x, b, nan(M, O), out=(9,)), F.linear(x.float(), w.float(), bb))
     print(f"fast {(O, K)}: {int(f.exc.numel())} escapes, the same through both")
 
-# The mma layouts, tiered and 12-bit: unpack (all rows, a row block on), mma_gemm (1-64 tokens), mma_gemm_big
-# (65-600, both variants), mma12_gemm_mid (1-600), mma12_gemm_wg (Hopper: refused elsewhere), as the self-test's
-# matrices: odd row blocks, units shared by blocks, escapes and exceptions few and many.
+# The mma layouts, tiered and 12-bit: unpack (all rows, a row block on; a warp a step, and a few warps taking every so
+# many), mma_gemm (1-64 tokens), mma_gemm_big (65-600, both variants), mma12_gemm_mid (1-600), mma12_gemm_wg (Hopper:
+# refused elsewhere), as the self-test's matrices: odd row blocks, units shared by blocks, escapes and exceptions few
+# and many.
 hopper = torch.cuda.get_device_capability() == (9, 0)
 for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02)]:
     w = weights(O * K, wild).view(O, K)
@@ -152,9 +154,10 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
         twelve = isinstance(q, g.Mma12)
         s = "mma12" if twelve else "mma"
         pk = (q.data, q.exc, q.exc_base, q.sym) if twelve else (q.data, q.blocks, q.block_base, q.tiers)
-        assert exact(both(f"{s}_unpack", *pk, K, 0, O, nan(O * K), out=(7,)), w)
-        if O >= 128:
-            assert exact(both(f"{s}_unpack", *pk, K, 64, 64, nan(64 * K), out=(7,)), w[64:128])
+        for warps in (0, 1, 7, 160):  # a warp a step; a few warps each taking every so many steps (a decode ahead)
+            assert exact(both(f"{s}_unpack", *pk, K, 0, O, nan(O * K), warps, out=(7,)), w)
+            if O >= 128:
+                assert exact(both(f"{s}_unpack", *pk, K, 64, 64, nan(64 * K), warps, out=(7,)), w[64:128])
         for b in (none, bias):
             bb = b.float() if b.numel() else None
             for M in [1, 7, 16, 17, 32, 33, 64, 65, 100, 128, 129, 256, 257, 600]:
@@ -172,6 +175,37 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
                     elif M in (1, 600) and b is none:
                         both_fail("mma12_gemm_wg", *pk, O, K, x, b, nan(M, O))
     print(f"mma {O}x{K}: {int(q.exc_base[-1])} exceptions (12-bit), the same through both")
+
+# mma_gemm_big's own choice of blocks: of 128 tokens on GeForce Ada where the last of 256 would be half empty or
+# less, to 1024 tokens tiered and 4224 12-bit (as measured); of 256 past 128 tokens elsewhere.
+ada = torch.cuda.get_device_capability() == (8, 9) and "GeForce" in torch.cuda.get_device_name()
+w = weights(256 * 512).view(256, 512)
+for q, most in ((g.pack_mma(w), 1024), (g.pack_mma12(w), 4224)):
+    for M in (300, 800, 1025, 1100, 4200, 4353):
+        x = torch.randn(M, 512, dtype=bf, device=dev)
+        v = 1 if ada and 1 <= M % 256 <= 128 and M <= most else 2
+        assert exact(g.mma_gemm_big(q, x), g.mma_gemm_big(q, x, variant=v)), ("blocks of 128 or 256", type(q).__name__, M, v)
+counts["mma_gemm_big's blocks"] = 12
+
+# Prompt products on two streams at once on one GPU, through each host: each stream's done counters its own (the C
+# API's: one stream's products at a time on a set), so each product the same as alone. A small one: its few blocks
+# (a unit's stages shared) beside the other stream's (with a set a device, 4% of them wrong).
+q = g.pack_mma(weights(192 * 1024).view(192, 1024))
+pk, x = (q.data, q.blocks, q.block_base, q.tiers), torch.randn(100, 1024, dtype=bf, device=dev)
+streams = [torch.cuda.Stream() for _ in range(2)]
+assert len({lib._counters("mma_gemm_big", torch.cuda.current_device(), t.cuda_stream, 1, 1) for t in streams}) == 2, "a set a stream"
+for host in (jit, lib):
+    alone = nan(100, 192)
+    host.mma_gemm_big(*pk, 192, 1024, x, none, alone, 0)
+    ys = [[nan(100, 192) for _ in range(1000)] for _ in streams]
+    torch.cuda.synchronize()
+    for i in range(1000):
+        for t, y in zip(streams, ys):
+            with torch.cuda.stream(t):
+                host.mma_gemm_big(*pk, 192, 1024, x, none, y[i], 0)
+    torch.cuda.synchronize()
+    assert all(exact(y, alone) for y in ys[0] + ys[1]), ("two streams' prompt products at once", host.__name__)
+counts["mma_gemm_big on two streams at once"] = 4000
 
 # A mixture of experts' layer, its E matrices [O, K] stacked: moe_route (each token's k experts sorted by expert, a
 # few routed nowhere), mma_moe_unpack and mma12_moe_unpack (the experts hit), mma_moe and mma12_moe (the rows by
@@ -250,7 +284,7 @@ with torch.cuda.stream(torch.cuda.Stream()):
 torch.cuda.synchronize()
 
 # The package's one-call paths (_lib.step and _lib.lookup, as GLinear and GEmbedding call them) against the checked
-# calls: 1-64 tokens, both layouts, bias, and an embedding's rows.
+# calls: 1-64 tokens, a prompt's to the decode ahead (past it: none), both layouts, bias, and an embedding's rows.
 from glyd.gpu import model as gm
 
 w = weights(512 * 1024, 0.01).view(512, 1024)
@@ -258,10 +292,14 @@ packs = (g.pack_mma(w), g.pack_mma12(w))
 for q in packs:
     for b in (None, torch.randn(512, dtype=bf, device=dev)):
         lin = gm.GLinear(q, b)
-        for M in range(1, 65):
+        for M in list(range(1, 65)) + [65, 100, 128, 129, 256, 300, 512, 600, 700]:
             x = torch.randn(M, 1, 1024, dtype=bf, device=dev)
-            assert exact(lin.step(x), lin.kernel(M)(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
-        counts["GLinear.step"] = counts.get("GLinear.step", 0) + 64
+            f = lin.kernel(M)
+            if f is None or (M > 64 and f is not g.mma_gemm_big):  # decoded (ahead), then cuBLAS; Hopper's mma_gemm_wg past 64 tokens: the checked call's
+                assert lin.step(x) is None, ("GLinear.step past the fused kernels", type(q).__name__, M)
+                continue
+            assert exact(lin.step(x), f(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
+            counts["GLinear.step"] = counts.get("GLinear.step", 0) + 1
 # GLinear's routing on an A100 whatever this GPU is (compute capability 8.0 read while it is made): the 12-bit
 # layout's 17-64 tokens by mma_gemm_mid, the rest as elsewhere; the one-call path the same functions.
 cc = torch.cuda.get_device_capability
@@ -278,6 +316,96 @@ for q, lin in zip(packs, a100):
             x = torch.randn(M, 1024, dtype=bf, device=dev)
             assert exact(lin.step(x), lin.kernel(M)(q, x, None)), ("A100 GLinear.step", type(q).__name__, M)
             counts["GLinear.step"] += 1
+# And on Hopper whatever this GPU is (9.0 while made): no prompt kernel for the one-call path, so a prompt's product is
+# the checked call's (mma_gemm_wg to WG_MAX tokens in the 12-bit layout, else decoded, then cuBLAS).
+torch.cuda.get_device_capability = lambda device=None: (9, 0)
+try:
+    hopper = [gm.GLinear(q, None) for q in packs]
+finally:
+    torch.cuda.get_device_capability = cc
+for q, lin in zip(packs, hopper):
+    for M in (65, 128, 600, 2100):
+        assert lin.step(torch.randn(M, 1024, dtype=bf, device=dev)) is None, ("Hopper GLinear.step, a prompt", type(q).__name__, M)
+# A prompt's matrices decoded ahead (model.Ahead; made to on any GPU, beside products of any size): GLinears of odd
+# shapes, both layouts, called in turn as a prompt calls them: the first prompt stopped short (an error), recorded,
+# the order from it then made whole by the calls past its end; followed; a decode on the current stream midway; a
+# prompt stopped short (the order kept whole); one gone on below the threshold at its next product (the next ends
+# the order there), then one past the order's end (the order to there again); another order between (recorded, then
+# followed), then the first again; at 600 tokens, then 2100 (the order kept). The products on the order (as many as
+# said, from the first) bit for bit as with their matrices decoded on the current stream, the rest the fused
+# kernel's (on Hopper, whose prompts take no fused kernel, decoded on the current stream too), below the threshold
+# the step's kernel's.
+shapes = [(1024, 512), (512, 1024), (3072, 512), (512, 1536), (192, 512), (2048, 1024)]
+lins = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
+other = [gm.GLinear(g.pack_mma(weights(O * K).view(O, K)), None) for O, K in shapes[:3]]
+for lin in lins + other:
+    lin.ahead = 513
+    lin.step = lin._step()  # its one-call path to the new threshold
+gm.set_scratch(torch.nn.ModuleList(lins + other), False)
+flops, gm.AHEAD_FLOPS = gm.AHEAD_FLOPS, 0
+product, placed = gm.Ahead.product, []
+gm.Ahead.product = lambda a, lin, j, f, M: (placed.append(j), product(a, lin, j, f, M))[1]
+dev_ = torch.device(dev, torch.cuda.current_device())
+common = [(lins, 6, None, None), (lins, 4, 4, None), (lins[:3], 3, None, None), (lins, 6, None, None), (lins[:4], 3, None, 3), (lins, 3, None, None),
+          (lins, 6, None, None), (other, 0, None, None), (other, 3, None, None), (lins, 0, None, None), (lins, 6, None, None)]
+for M, seq in ((600, [(lins[:3], 0, None, None), (lins, 3, None, None)] + common), (2100, common)):
+    for ls, on, stop, short in seq:  # ls in turn at M tokens (from index short on at 64), a decode before index stop
+        gen = torch.Generator(device=dev).manual_seed(M)
+        placed.clear()
+        for i, lin in enumerate(ls):
+            if i == stop:
+                gm.Ahead.stop(dev_)
+                lins[0].decode_rows(0, 64)
+            x = torch.randn(64 if short is not None and i >= short else M, lin.in_features, dtype=bf, device=dev, generator=gen)
+            y = lin(x)
+            if short is not None and i >= short:
+                assert exact(y, lin.kernel(64)(lin.p, x)), ("below the threshold", M, i)
+                continue
+            assert exact(y, F.linear(x, g.mma_unpack(lin.p)) if i < on or lin.hopper else g.mma_gemm_big(lin.p, x)), ("a prompt decoded ahead", M, i, on)
+        assert placed == list(range(on)), ("the order followed", M, placed, on)
+        counts["GLinear decoded ahead"] = counts.get("GLinear decoded ahead", 0) + on
+        counts["GLinear off the order (fused)"] = counts.get("GLinear off the order (fused)", 0) + len(ls) - on
+    assert any(gm.Ahead.of[dev_].schedule(M // 128 * 128)[0]), "decodes ahead in the order"
+# Where Ahead does not take a prompt's product, the fused kernel, as below the decode ahead (but on Hopper): under
+# torch.compile (a graph's node: _lib.local.fresh), and a matrix past the scratch (decoded in row blocks, never ahead).
+if not lins[0].hopper:
+    placed.clear()
+    glyd_gpu_lib.local.fresh = True
+    for lin in lins:
+        x = torch.randn(600, lin.in_features, dtype=bf, device=dev)
+        assert exact(lin(x), g.mma_gemm_big(lin.p, x)), ("a compiled prompt: fused", lin.p.shape)
+    glyd_gpu_lib.local.fresh = False
+    big = gm.GLinear(g.pack_mma(weights(1024 * 512).view(1024, 512)), None)
+    big.ahead, big.block = 513, 128  # as a matrix past the scratch
+    big.step = big._step()
+    x = torch.randn(600, 512, dtype=bf, device=dev)
+    assert exact(big(x), g.mma_gemm_big(big.p, x)) and not placed, "past the scratch: fused"
+    counts["GLinear where Ahead does not take it (fused)"] = len(lins) + 1
+# A prompt that ends before its order does leaves decodes ahead queued; here they wait 50 ms (the hold before each
+# host's), and meanwhile its modules are let go and memory of their sizes given out and written: none of it where
+# the queued decodes read (record_stream), no illegal address. A call below the threshold waits for what is queued.
+hold, gm.AHEAD_HOLD = gm.AHEAD_HOLD, 50_000_000
+ls = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
+xs = [torch.randn(600, lin.in_features, dtype=bf, device=dev) for lin in ls]
+for lin in ls:
+    lin.ahead = 513
+    lin.step = lin._step()
+for n in (6, 6, 3):  # recorded, followed, then a prompt that ends before its order does
+    for lin, x in zip(ls[:n], xs):
+        lin(x)
+a = gm.Ahead.of[dev_]
+assert a.live and gm.Ahead.queued and any(k >= 3 for k, _, _ in a.schedule(512)[0][2]), "decodes ahead queued past the prompt"
+held = {t.data_ptr(): t.numel() * t.element_size() for lin in ls for t in vars(lin.p).values() if isinstance(t, torch.Tensor)}
+del ls, lin
+junk = [torch.full((n,), 0x7F, dtype=torch.uint8, device=dev) for n in held.values()]  # offsets of 2^31 or so, where read
+assert not held.keys() & {j.data_ptr() for j in junk}, "memory the queued decodes read given out again"
+torch.cuda.synchronize()  # the queued decodes done: no illegal address
+gm.AHEAD_HOLD = hold
+gm.GLinear(g.pack_mma(weights(512 * 512).view(512, 512)), None)(torch.randn(64, 512, dtype=bf, device=dev))
+assert not a.live and not gm.Ahead.queued, "a call below the threshold waits for what is queued"
+del junk, xs
+counts["GLinear decodes ahead past a prompt's end"] = 1
+gm.Ahead.product, gm.AHEAD_FLOPS = product, flops
 e = weights(1000 * 256).view(1000, 256)
 ids = torch.randint(0, 1000, (4, 3), device=dev)
 emb = gm.GEmbedding(g.pack_fast(e))  # held: its step keeps the pack's addresses, not the pack
@@ -287,7 +415,11 @@ counts["GEmbedding.step"] = 1
 # Refused alike: too many tokens, X not 16-byte aligned, rows not a multiple of 64.
 both_fail("mma12_gemm", *pk, 128, 256, torch.randn(65, 256, dtype=bf, device=dev), none, nan(65, 128))
 both_fail("mma12_gemm_mid", *pk, 128, 256, torch.randn(4 * 256 + 1, dtype=bf, device=dev)[1:].view(4, 256), none, nan(4, 128))
-both_fail("mma12_unpack", *pk, 256, 0, 100, nan(100 * 256))
+both_fail("mma12_unpack", *pk, 256, 0, 100, nan(100 * 256), 0)
+for host in (jit, lib):  # a stream held, through each host
+    host.hold(2000)
+counts["hold"] = 1
+both_fail("hold", -1)
 
 # A small product's time a call through each host: the host's time where it is the longer (ctypes'), else the kernel's.
 x = torch.randn(1, 256, dtype=bf, device=dev)

@@ -497,17 +497,26 @@ def mma_cat(a, b):
     return Mma((a.shape[0] + b.shape[0], a.shape[1]), torch.cat([a.data, b.data]), blocks, torch.cat([a.block_base[:-1], b.block_base + body]), a.tiers)
 
 
-def mma_unpack(p, out=None, row0=0, rows=None):
-    """Rows [row0, row0 + rows) of W (multiples of 64), bf16 [rows, K]."""
+def mma_unpack(p, out=None, row0=0, rows=None, warps=0):
+    """Rows [row0, row0 + rows) of W (multiples of 64), bf16 [rows, K]. warps: a
+    warp a step (0), or that many in all, each taking every so many steps (a
+    decode beside a product running on another stream)."""
     O, K = p.shape
     rows = O - row0 if rows is None else rows
     if out is None:
         out = torch.empty(rows * K, dtype=torch.bfloat16, device=p.sm.device)
     if isinstance(p, Mma12):
-        _ext.mma12_unpack(p.data, p.exc, p.exc_base, p.sym, K, row0, rows, out.view(torch.int16))
+        _ext.mma12_unpack(p.data, p.exc, p.exc_base, p.sym, K, row0, rows, out.view(torch.int16), warps)
     else:
-        _ext.mma_unpack(p.data, p.blocks, p.block_base, p.tiers, K, row0, rows, out.view(torch.int16))
+        _ext.mma_unpack(p.data, p.blocks, p.block_base, p.tiers, K, row0, rows, out.view(torch.int16), warps)
     return out[: rows * K].view(rows, K)
+
+
+def hold(ns):
+    """The current stream held ns nanoseconds (a kernel of one thread): a
+    decode ahead launched after it, beside a product launched as it is,
+    starts once the product has placed its blocks."""
+    _ext.hold(ns)
 
 
 def mma_gemm(p, x, bias=None):

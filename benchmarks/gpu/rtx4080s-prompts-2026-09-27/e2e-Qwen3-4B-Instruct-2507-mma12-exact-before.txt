@@ -1,0 +1,12 @@
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 17906.69it/s]
+bf16 (weights 8.04 GB): batch 1: 61.6 tokens/s (61.6 a sequence), peak VRAM 8.12 GB
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+bf16 (weights 8.04 GB): batch 8: 461.1 tokens/s (57.6 a sequence), peak VRAM 8.18 GB
+bf16 prefill: 128 tokens 20.5 ms (6251 tokens/s), first token 21.7 ms, 512 tokens 49.6 ms (10323 tokens/s), first token 50.8 ms, 1024 tokens 96.5 ms (10617 tokens/s), first token 97.6 ms, 2048 tokens 198.3 ms (10327 tokens/s), first token 199.4 ms, 4096 tokens 451.4 ms (9075 tokens/s), first token 452.5 ms
+mma12 exact: packed in 2 s; weights 6.60 GB against 8.04 GB bf16 (82.0%), scratch 0.78 GB, VRAM in use 7.39 GB on 1 GPU
+glyd mma12 exact: batch 1: 33.8 tokens/s (33.8 a sequence), peak VRAM 7.40 GB
+glyd mma12 exact: batch 8: 259.9 tokens/s (32.5 a sequence), peak VRAM 7.46 GB
+glyd mma12 prefill: 128 tokens 36.6 ms (3499 tokens/s), first token 37.8 ms, 512 tokens 70.4 ms (7276 tokens/s), first token 71.6 ms, 1024 tokens 117.4 ms (8723 tokens/s), first token 118.5 ms, 2048 tokens 219.6 ms (9325 tokens/s), first token 220.7 ms, 4096 tokens 473.2 ms (8656 tokens/s), first token 474.4 ms
+logits bit-identical: True
+generated tokens identical to bf16: 32 of 32
+text:  in the 1940s with the development of the first compression algorithms, such as the Lempel-Ziv (LZ) family of algorithms
