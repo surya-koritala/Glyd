@@ -440,6 +440,29 @@ def test_compiled_generate_where_the_static_cache_works():
             torch._dynamo.reset()
 
 
+def test_compiled_generate_from_torch_2_13():
+    """generate() compiled (model.fast_generate) from PyTorch 2.13 on: with torch.__version__ an older one's, the model
+    is left as it was (its generate() eager, as in glyd 0.23); with the one installed (2.13 or later) it is set up."""
+    torch = cuda()
+    if torch is None:
+        print("test_compiled_generate_from_torch_2_13: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    import glyd.gpu as gg
+    from glyd.gpu import model as gm
+    from torch.torch_version import TorchVersion
+
+    model, auto, cfg, ids, kw = tiny_model(torch, "qwen3_moe", FAMILIES["qwen3_moe"])
+    g = gg.compress(model.to(torch.bfloat16), compile=False)
+    installed = torch.__version__
+    try:
+        for old in ("2.5.1", "2.11.0+cu128", "2.12.1", "2.13.0a0+git1234"):
+            torch.__version__ = TorchVersion(old)
+            assert "glyd_fast" not in gm.fast_generate(g).__dict__, old
+    finally:
+        torch.__version__ = installed
+    assert ("glyd_fast" in gm.fast_generate(g).__dict__) == (installed >= "2.13"), installed
+
+
 def test_hooks_put_before_the_packs():
     """The families run by their own code (moe.OWN) packed after accelerate's hooks were put on their modules, as a
     device map over several GPUs puts them before the packs are made (from_pretrained): the logits as without the

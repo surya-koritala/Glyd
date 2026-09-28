@@ -753,10 +753,14 @@ def fast_generate(model):
     it). A call that fails so runs again as it came, as do the model's
     later ones, with one warning. Its class's generate and get_compiled_call
     taken over once (_taken), the model marked (glyd_fast). Not with
-    GLYD_COMPILE=0, nor for a family transformers does not compile whole
-    (_can_compile_fullgraph: MiniMax's own cache, DBRX's experts ...), nor a
-    model over several GPUs (not measured there). The model."""
-    if os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate") or not getattr(model, "_can_compile_fullgraph", False) or _static_fails(model):
+    GLYD_COMPILE=0, nor below PyTorch 2.13 (measured on 2.14; before it
+    torch._dynamo has no recompile_limit to 2.6, its config's overrides are
+    the process's to 2.11, and a CUDA graph recorded in a thread other than
+    cudagraph_trees' own fails to 2.12), nor for a family transformers does
+    not compile whole (_can_compile_fullgraph: MiniMax's own cache, DBRX's
+    experts ...), nor a model over several GPUs (not measured there). The
+    model."""
+    if torch.__version__ < "2.13" or os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate") or not getattr(model, "_can_compile_fullgraph", False) or _static_fails(model):
         return model
     devices = {m.p.sm.device for m in model.modules() if isinstance(m, (GLinear, GEmbedding))} | {t.device for t in model.parameters() if t.is_cuda}
     if len(devices) != 1:

@@ -111,16 +111,17 @@ experts are decoded and bf16's own implementation runs on them. glyd-v1
 holds them packed, and a model with them can't be copied or pickled
 (`copy.deepcopy`, `torch.save`): load it again.
 
-`generate()` is compiled: a call runs as `generate(...,
-cache_implementation="static")` asks transformers to run it, a static
-cache and the forward compiled (`torch.compile`, `mode="reduce-overhead"`:
-CUDA graphs), so a step's host time goes and what is left is its GPU
-time, less than bf16's. Each GLinear and GEmbedding is one op of the
-graph (`glyd::linear`, `glyd::embedding`), with no graph break, and the
-CUDA graph captures Glyd's kernels; the prompt runs eager (transformers
-compiles the steps after it). Tokens/s generating 128 tokens at 1 / 8
-sequences on an RTX 4080 SUPER (a Ryzen 9 7950X3D), each in a process of
-its own (`gpu/gen_eager.py`):
+From PyTorch 2.13 on (measured on 2.14), `generate()` is compiled; below
+2.13 it runs eager, as in glyd 0.23. A compiled call runs as
+`generate(..., cache_implementation="static")` asks transformers to run
+it, a static cache and the forward compiled (`torch.compile`,
+`mode="reduce-overhead"`: CUDA graphs), so a step's host time goes and
+what is left is its GPU time, less than bf16's. Each GLinear and
+GEmbedding is one op of the graph (`glyd::linear`, `glyd::embedding`),
+with no graph break, and the CUDA graph captures Glyd's kernels; the
+prompt runs eager (transformers compiles the steps after it). Tokens/s
+generating 128 tokens at 1 / 8 sequences on an RTX 4080 SUPER (a Ryzen 9
+7950X3D), each in a process of its own (`gpu/gen_eager.py`):
 
 | | bf16 | bf16, `cache_implementation="static"` | Glyd, `compile=False` | **Glyd** |
 | :--- | ---: | ---: | ---: | ---: |

@@ -9,7 +9,8 @@ every earlier format.
 ## Unreleased
 
 - `generate()` on a model from `glyd.from_pretrained` or `glyd.gpu.compress`
-  runs compiled by default, as `generate(...,
+  runs compiled by default from PyTorch 2.13 on (measured on 2.14; below
+  2.13 it stays eager, as in 0.23), as `generate(...,
   cache_implementation="static")` asks transformers to run it (a static
   cache, the forward under `torch.compile` with CUDA graphs): a step's host
   time goes. Tokens/s generating 128 tokens at 1 / 8 sequences on an RTX
