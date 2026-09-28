@@ -397,7 +397,7 @@ for route in [None] + ([] if torch.cuda.get_device_capability() == (8, 0) else [
         assert any(gm.Ahead.of[dev_].schedule(M // 128 * 128)[0]), ("decodes ahead in the order", route)
 # Where Ahead does not take a prompt's product, the fused kernel, as below the decode ahead (but on Hopper): under
 # torch.compile (a graph's node: _lib.local.fresh), and a matrix past the scratch (decoded in row blocks, never ahead).
-if not lins[0].hopper:
+if cc() != (9, 0):  # this GPU (lins were last made as on an A100 where it is not one)
     placed.clear()
     glyd_gpu_lib.local.fresh = True
     for lin in lins:
