@@ -262,6 +262,13 @@ at 32 and 0.93x at 64. Still longer than cuBLAS's: the small matrices
 past 32 tokens (Qwen3-8B's q, k, v 1.04x and o 1.14x at 64), and 113-128
 tokens (benchmarks/gpu/h100-hopper-2026-09-28).
 
+`mma_gemm` (steps of 1-16 tokens on Hopper) now takes a step's
+exceptions the same way where a block's steps have more than one each
+(Qwen3-8B's gate, up and down in layers 1-3: 4-5 a step), in a copy of
+its loop of its own: those layers take 210 us at 8 tokens, were 242-269,
+the others as before, and a step's GPU time at 1 / 8 sequences is 11.12
+/ 12.31 ms, was 11.24 / 12.47 (benchmarks/gpu/h100-prompts-2026-09-28).
+
 ### Prompts on an H100
 
 GLinear sends prompts of up to 512 tokens to `mma_gemm_wg` too
