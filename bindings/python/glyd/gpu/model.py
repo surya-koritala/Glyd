@@ -880,13 +880,15 @@ def _generate(self, own, *args, **kwargs):
     """fast_generate's generate(): the call with the static cache where _fast takes it, else as it came; one whose
     forward fails to compile (_compile_error) runs again as it came, from its start (a streamer's text as the eager
     run's: _Streamed), and so do the model's later calls, with one warning (where that fails too, its error is the
-    call's); any other error is the call's, and the next call compiles as before."""
+    call's); any other error is the call's, and the next call compiles as before. TOKENIZERS_PARALLELISM, which
+    transformers sets to 0 for the process where it compiles, left as it was before the call, or unset."""
     b = None if self.__dict__.get("glyd_eager") else _fast(self, own, args, kwargs)
     if b is None:
         return own(self, *args, **kwargs)
     streamer = b.arguments.get("streamer")
     if streamer is not None:
         b.arguments["streamer"] = counted = _Streamed(streamer)
+    parallel = os.environ.get("TOKENIZERS_PARALLELISM")
     try:
         return own(*b.args, **b.kwargs)
     except Exception as e:
@@ -899,6 +901,11 @@ def _generate(self, own, *args, **kwargs):
         self.glyd_eager = True
         warnings.warn(f"glyd: {type(self).__name__}'s generate() compiled failed ({type(e).__name__}: {str(e).splitlines()[0][:160] if str(e) else ''}); it runs as transformers runs it from here on", stacklevel=3)
         return out
+    finally:
+        if parallel is None:
+            os.environ.pop("TOKENIZERS_PARALLELISM", None)
+        else:
+            os.environ["TOKENIZERS_PARALLELISM"] = parallel
 
 
 def _compiled_call(self, own, compile_config=None):

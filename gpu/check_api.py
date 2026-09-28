@@ -6,17 +6,18 @@ beside glyd/gpu/kernels.py), against each model in bf16:
   compared with bf16's as e2e.py compares them; the load's time, and its
   peak memory against the packed model's bytes and the largest tensor's;
 - generate() as a user calls it: compiled (model.fast_generate: a static
-  cache, CUDA graphs; the model pickled after it, but with packed experts,
-  which refuse a copy); with compile=False eager, the same logits; not
-  with GLYD_COMPILE=0; a call with a cache of its own, several beams or a
-  static cache past the model's cap (glyd_fast) as transformers runs it;
-  disable_compile and return_dict_in_generate eager; as another model's
-  assistant, its tokens as with an eager one; out of memory while
-  compiling raised, and the next call compiled; a call that fails
-  compiled: one warning, run again eager (a skip_prompt TextStreamer's
-  text eager's), and eager from there on; two fresh threads in turn, the
-  second's cache longer, their tokens as this thread's; continuing from
-  return_dict_in_generate's cache as eager (in a process of its own);
+  cache, CUDA graphs; TOKENIZERS_PARALLELISM as it was after it; the model
+  pickled after it, but with packed experts, which refuse a copy); with
+  compile=False eager, the same logits; not with GLYD_COMPILE=0; a call
+  with a cache of its own, several beams or a static cache past the
+  model's cap (glyd_fast) as transformers runs it; disable_compile and
+  return_dict_in_generate eager; as another model's assistant, its tokens
+  as with an eager one; out of memory while compiling raised, and the next
+  call compiled; a call that fails compiled: one warning, run again eager
+  (a skip_prompt TextStreamer's text eager's), and eager from there on;
+  two fresh threads in turn, the second's cache longer, their tokens as
+  this thread's; continuing from return_dict_in_generate's cache as eager
+  (in a process of its own);
 - glyd.gpu.compress on the model loaded in bf16: the same packs, so the
   same logits and tokens bit for bit;
 - exact=True: logits bit for bit bf16's, the 32 tokens bf16's;
@@ -308,8 +309,10 @@ for name in NAMES:
 
     m, t, peak, held = loaded(lambda: glyd.from_pretrained(name))
     q, size = m.config.quantization_config, packed_bytes(m)
+    parallel = os.environ.get("TOKENIZERS_PARALLELISM")
     logits_b, out_b = run(m, ids)
     assert m in gm._COMPILED, "plain generate(): compiled (the fast loop)"
+    assert os.environ.get("TOKENIZERS_PARALLELISM") == parallel, "TOKENIZERS_PARALLELISM after a compiled generate(): as it was"
     if not moe.nbytes(m):  # (a model with packed experts refuses a copy: below)
         pickle.dumps(m)  # after a compiled generate(), nothing unpicklable on the model
     # The peak: the packed model, the embedding in bf16 until the end, and the packers' own scratch.
