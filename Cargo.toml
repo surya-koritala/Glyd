@@ -11,7 +11,7 @@ license = "BSD-3-Clause OR GPL-2.0-only"
 exclude = ["corpus/", "benchmarks/", "experiments/", "docs/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/"]
 
 [workspace]
-members = [".", "glyd-store"]
+members = [".", "glyd-store", "glyd-gpu"]
 
 [features]
 default = ["deflate", "jpeg"]

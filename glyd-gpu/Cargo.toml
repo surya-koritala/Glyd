@@ -1,0 +1,11 @@
+[package]
+name = "glyd-gpu"
+version = "0.23.0"
+edition = "2021"
+description = "Glyd's GPU weights from Rust: the CUDA library's C API loaded at run time, a bf16 model's matrices held compressed in GPU memory and decoded bit for bit, whole or inside their products"
+repository = "https://github.com/surya-koritala/Glyd"
+readme = "README.md"
+keywords = ["cuda", "gpu", "compression", "llm", "inference"]
+categories = ["compression", "api-bindings"]
+license = "BUSL-1.1"
+
