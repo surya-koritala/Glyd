@@ -26,9 +26,9 @@ beside glyd/gpu/kernels.py), against each model in bf16:
   12-bit layout packed from bf16;
 - python -m glyd.gpu verify and fit.
 A mixture of experts' model (its Experts modules packed, run by "glyd")
-takes every check but saving (glyd-v1 holds no packed experts yet), and
-two of its own: torch.compile(model.forward, mode="reduce-overhead",
-fullgraph=True) called with gradients on, and copy.deepcopy refused.
+takes every check, and two of its own: torch.compile(model.forward,
+mode="reduce-overhead", fullgraph=True) called with gradients on, and
+copy.deepcopy refused.
 
     python check_api.py [MODEL ...]      (default: Qwen/Qwen3-0.6B Qwen/Qwen3-1.7B)
 
@@ -203,10 +203,6 @@ for name in NAMES:
         except TypeError:
             pass
         print("   torch.compile(forward, reduce-overhead, fullgraph), gradients on: no graph break, no CUDA graph skipped; copy.deepcopy refused")
-        print(f"{name}: not saved: glyd-v1 holds no packed experts yet")
-        del m
-        torch.cuda.empty_cache()
-        continue
     with tempfile.TemporaryDirectory() as d:
         t = time.perf_counter()
         glyd.save_pretrained(m, d)
