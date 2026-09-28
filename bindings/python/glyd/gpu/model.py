@@ -839,7 +839,7 @@ def _fast(self, own, args, kwargs):
     call's options over them), its mode greedy or sampled search (get_generation_mode: one beam, and no assistant,
     prompt lookup, early exit or multi-token prediction), none of _OWN set, the cache used and not the call's own, no
     custom_generate, and a static cache of at most glyd_fast positions in all (its sequences times the prompt and
-    max_new_tokens, else max_length, and at least the longest the model had). Those helpers are transformers' private
+    max_new_tokens, else max_length, and at least max_cache_len and the longest the model had). Those helpers are transformers' private
     ones: any error, or anything else from them, is None (the call eager)."""
     try:
         b = inspect.signature(own).bind(self, *args, **kwargs)
@@ -855,7 +855,7 @@ def _fast(self, own, args, kwargs):
         x = x if x is not None else model_kwargs.get("input_ids", model_kwargs.get("inputs_embeds"))
         if not isinstance(x, torch.Tensor) or x.dim() < 2:
             return None
-        n = max(x.shape[1] + (cfg.max_new_tokens if cfg.max_new_tokens is not None else cfg.max_length), getattr(self, "_previous_max_cache_length", 0))
+        n = max(x.shape[1] + (cfg.max_new_tokens if cfg.max_new_tokens is not None else cfg.max_length), getattr(cfg, "max_cache_len", None) or 0, getattr(self, "_previous_max_cache_length", 0))
         if not x.shape[0] * (cfg.num_return_sequences or 1) * n <= self.glyd_fast:
             return None
     except Exception:

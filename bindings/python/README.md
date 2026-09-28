@@ -140,13 +140,14 @@ once, then captures a graph (Qwen3-4B-Instruct-2507, a chat's turns:
 its own cache (`past_key_values`), several beams, an assistant, or asks
 for a dict (`return_dict_in_generate`), attentions or hidden states runs
 as transformers runs it, as does one whose static cache would hold more
-positions in all (its sequences times the prompt and `max_new_tokens`)
-than 1280 on a GeForce card and 2048 on another: the static cache holds
-every position a call may reach from its first step and each step's
-attention reads all of it, so past that the eager loop is as fast
-(Qwen3-8B), sooner the faster the host's CPU (what compiling saves is
-eager's host time a step). A step's ms compiled against eager, Qwen3-8B,
-the static cache that long with 64 positions used:
+positions in all (its sequences times the prompt and `max_new_tokens`,
+or `max_cache_len` where longer) than 1280 on a GeForce card and 2048 on
+another: the static cache holds every position a call may reach from its
+first step and each step's attention reads all of it, so past that the
+eager loop is as fast (Qwen3-8B), sooner the faster the host's CPU (what
+compiling saves is eager's host time a step). A step's ms compiled
+against eager, Qwen3-8B, the static cache that long with 64 positions
+used:
 
 | | 256 | 1024 | 2048 | 4096 positions | 8 sequences |
 | :--- | ---: | ---: | ---: | ---: | :--- |

@@ -149,7 +149,7 @@ def fast_loop(m, e, tok, ids, out_e):
         del os.environ["GLYD_COMPILE"]
     gm.fast_generate(e)
     with torch.no_grad():
-        for kw in (dict(past_key_values=DynamicCache(config=e.config)), dict(num_beams=2), dict(max_new_tokens=e.glyd_fast, max_time=0.5), dict(disable_compile=True), dict(return_dict_in_generate=True)):
+        for kw in (dict(past_key_values=DynamicCache(config=e.config)), dict(num_beams=2), dict(max_new_tokens=e.glyd_fast, max_time=0.5), dict(max_cache_len=e.glyd_fast + 1), dict(disable_compile=True), dict(return_dict_in_generate=True)):
             e.generate(ids, **dict(dict(max_new_tokens=8, do_sample=False), **kw))
             assert not compiled() and not static(), ("a call the fast loop leaves as it came, compiled or with a static cache", list(kw))
         out = m.generate(ids, assistant_model=e, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
@@ -346,7 +346,7 @@ for name in NAMES:
     else:
         print(f"   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's {same(out_e, out_b)} of {TOKENS}")
         fast_loop(m, e, tok, ids, out_e)
-        print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {e.glyd_fast} positions, disable_compile, return_dict_in_generate eager; as another model's assistant, its tokens as eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's, a streamer's text eager's; sampled from a seed, its tokens and text a seeded eager run's")
+        print(f"   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past {e.glyd_fast} positions (max_new_tokens or max_cache_len), disable_compile, return_dict_in_generate eager; as another model's assistant, its tokens as eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's, a streamer's text eager's; sampled from a seed, its tokens and text a seeded eager run's")
     del e
     torch.cuda.empty_cache()
     threads(m, ids)
