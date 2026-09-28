@@ -155,26 +155,28 @@ the static cache that long with 64 positions used:
 
 `GLYD_COMPILE_MAX` sets the cap on any GPU. Not with `exact=True`
 (below), a family transformers does not compile whole (its
-`_can_compile_fullgraph`) or the model over several GPUs, which run
-eager, nor where transformers 5.17's static cache fails (bf16's too),
-which run eager from the start: Llama 4 (transformers compiles none of
-its forwards), and a model with multi-head latent attention whose config
-has fewer key/value heads than heads (as tiny DeepSeek V2 and V3, Kimi
-Linear and AXK1 test models do; the released checkpoints, with as many
-as heads, compile). A call whose forward fails to compile anyway
-(torch._dynamo's or Inductor's error) runs again eager, from its start
-(a streamer gets only what the failed attempt had not streamed, and a
-sampled call draws again from the random state it started with: its
-tokens and text are the eager run's), and so do the model's later calls,
-with one warning; any other error (out of memory included) is the call's
-own, and the next call compiles as before. Each model's forward compiles
-to a graph of its own, so Glyd's compiled calls run with
-`torch._dynamo.config.recompile_limit` at 64 at least (dynamo compiles 8
-graphs a frame by default and runs the rest uncompiled; ten Qwen3-0.6B
-models one after another in a process all compiled, 296.5-301.3 tokens/s
-against 99.6 eager), set for those calls alone: the process's own
-setting is left as it is. A model that has generated compiled is freed
-at `del`, as an eager one (its compiled forward does not refer to it).
+`_can_compile_fullgraph`), the model over several GPUs, or a
+transformers whose generation helpers are not as 5.17 has them (one
+warning at the load), which run eager, nor where transformers 5.17's
+static cache fails (bf16's too), which run eager from the start: Llama 4
+(transformers compiles none of its forwards), and a model with
+multi-head latent attention whose config has fewer key/value heads than
+heads (as tiny DeepSeek V2 and V3, Kimi Linear and AXK1 test models do;
+the released checkpoints, with as many as heads, compile). A call whose
+forward fails to compile anyway (torch._dynamo's or Inductor's error)
+runs again eager, from its start (a streamer gets only what the failed
+attempt had not streamed, and a sampled call draws again from the random
+state it started with: its tokens and text are the eager run's), and so
+do the model's later calls, with one warning; any other error (out of
+memory included) is the call's own, and the next call compiles as
+before. Each model's forward compiles to a graph of its own, so Glyd's
+compiled calls run with `torch._dynamo.config.recompile_limit` at 64 at
+least (dynamo compiles 8 graphs a frame by default and runs the rest
+uncompiled; ten Qwen3-0.6B models one after another in a process all
+compiled, 296.5-301.3 tokens/s against 99.6 eager), set for those calls
+alone: the process's own setting is left as it is. A model that has
+generated compiled is freed at `del`, as an eager one (its compiled
+forward does not refer to it).
 
 How: `from_pretrained` and `compress` take over the `generate` and
 `get_compiled_call` of the model's class, once for the process, as Glyd

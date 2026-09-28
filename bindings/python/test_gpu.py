@@ -464,6 +464,30 @@ def test_compiled_generate_from_torch_2_13():
     assert ("glyd_fast" in gm.fast_generate(g).__dict__) == (installed >= "2.13"), installed
 
 
+def test_compiled_generate_eager_where_transformers_differs():
+    """fast_generate's probe of the helpers the gate reads (transformers 5.17's _prepare_generation_config and
+    get_generation_mode): with the first gone, one warning, and the model left as it was (its generate() eager);
+    below PyTorch 2.13 no probe, nothing said."""
+    torch = cuda()
+    if torch is None:
+        print("test_compiled_generate_eager_where_transformers_differs: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    import warnings
+    import glyd.gpu as gg
+    from glyd.gpu import model as gm
+
+    model, auto, cfg, ids, kw = tiny_model(torch, "qwen3_moe", FAMILIES["qwen3_moe"])
+    g = gg.compress(model.to(torch.bfloat16), compile=False)
+    g._prepare_generation_config = None  # (the model's own, over its class's: gone)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        gm.fast_generate(g)
+    said = [str(m.message) for m in w if "glyd" in str(m.message)]
+    assert "glyd_fast" not in g.__dict__ and len(said) == (torch.__version__ >= "2.13"), said
+    del g._prepare_generation_config
+    assert ("glyd_fast" in gm.fast_generate(g).__dict__) == (torch.__version__ >= "2.13")
+
+
 def test_hooks_put_before_the_packs():
     """The families run by their own code (moe.OWN) packed after accelerate's hooks were put on their modules, as a
     device map over several GPUs puts them before the packs are made (from_pretrained): the logits as without the

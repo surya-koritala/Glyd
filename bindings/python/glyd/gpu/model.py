@@ -762,9 +762,20 @@ def fast_generate(model):
     the process's to 2.11, and a CUDA graph recorded in a thread other than
     cudagraph_trees' own fails to 2.12), nor for a family transformers does
     not compile whole (_can_compile_fullgraph: MiniMax's own cache, DBRX's
-    experts ...), nor a model over several GPUs (not measured there). The
-    model."""
+    experts ...), nor a model over several GPUs (not measured there), nor
+    where transformers' helpers _fast reads are not as 5.17 has them (one
+    warning: else every call would run eager, unsaid). The model."""
     if torch.__version__ < "2.13" or os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate") or not getattr(model, "_can_compile_fullgraph", False) or _static_fails(model):
+        return model
+    try:  # the helpers _fast reads, as transformers 5.17 has them
+        cfg, _ = model._prepare_generation_config(None, do_sample=False, num_beams=1)
+        ok = cfg.get_generation_mode(None) == "greedy_search"
+    except Exception as e:
+        ok = e
+    if ok is not True:
+        import transformers
+
+        warnings.warn(f"glyd: generate() eager: transformers {transformers.__version__}'s generation helpers are not 5.17's ({ok!r})")
         return model
     devices = {m.p.sm.device for m in model.modules() if isinstance(m, (GLinear, GEmbedding))} | {t.device for t in model.parameters() if t.is_cuda}
     if len(devices) != 1:

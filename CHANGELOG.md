@@ -27,39 +27,41 @@ every earlier format.
   `compile=False` (`from_pretrained`, `compress`) or `GLYD_COMPILE=0` runs
   it eager, as before; so do `exact=True` (its tokens are bf16's eager
   ones), a family transformers does not compile whole (its
-  `_can_compile_fullgraph`), a model over several GPUs, and a call that
-  brings its own cache, several beams, an assistant, or asks for a dict
-  (`return_dict_in_generate`), attentions or hidden states. A call whose
-  static cache would hold more positions in all (its sequences times the
-  prompt and `max_new_tokens`) than 1280 on a GeForce card and 2048 on
-  another (`GLYD_COMPILE_MAX` sets it) runs eager too: the static cache
-  holds every position the call may reach from its first step and each
-  step's attention reads all of it, and past that the eager loop was as
-  fast, sooner with a desktop's CPU (Qwen3-8B, a step's ms compiled
-  against eager with 1024 / 2048 / 4096 positions held and 64 used: 20.4 /
-  23.0 / 27.6 against 20.5 on an RTX 4080 SUPER with a Ryzen 9 7950X3D,
-  31.3 / 34.9 / 42.8 against 36.9 / 37.2 / 33.6 on an A10 with a Xeon
-  Platinum 8358). Where transformers 5.17's static cache fails (bf16's
-  too) it runs eager from the start: Llama 4, and a model with multi-head
-  latent attention whose config has fewer key/value heads than heads (tiny
-  DeepSeek V2, V3, Kimi Linear and AXK1 test models; the released
-  checkpoints compile). A call whose forward fails to compile anyway runs
-  again eager from its start (a streamer gets only what the failed attempt
-  had not streamed, and a sampled call draws again from the random state
-  it started with: its tokens and text are the eager run's), and so do the
-  model's later calls, with one warning; any other error, out of memory
-  included, is the call's own, and the next call compiles. Each model's
-  forward compiles to a graph of its own, so Glyd's compiled calls run
-  with `torch._dynamo.config.recompile_limit` at 64 at least, for those
-  calls alone (dynamo compiles 8 graphs a frame by default and runs the
-  rest uncompiled; ten Qwen3-0.6B models one after another in a process
-  all compiled, 296.5-301.3 tokens/s against 99.6 eager; the process's own
-  setting is left as it is). A model that has generated compiled is freed
-  at `del`, as an eager one (its compiled forward does not refer to it, as
-  transformers' own does). How: the model's class's `generate` and
-  `get_compiled_call` are taken over once for the process; a model of the
-  class Glyd did not set up (bf16, or `compile=False`) runs transformers'
-  own, and `compile=False` or `GLYD_COMPILE=0` takes nothing over.
+  `_can_compile_fullgraph`), a model over several GPUs, a transformers
+  whose generation helpers are not as 5.17 has them (one warning at the
+  load), and a call that brings its own cache, several beams, an
+  assistant, or asks for a dict (`return_dict_in_generate`), attentions or
+  hidden states. A call whose static cache would hold more positions in
+  all (its sequences times the prompt and `max_new_tokens`) than 1280 on a
+  GeForce card and 2048 on another (`GLYD_COMPILE_MAX` sets it) runs eager
+  too: the static cache holds every position the call may reach from its
+  first step and each step's attention reads all of it, and past that the
+  eager loop was as fast, sooner with a desktop's CPU (Qwen3-8B, a step's
+  ms compiled against eager with 1024 / 2048 / 4096 positions held and 64
+  used: 20.4 / 23.0 / 27.6 against 20.5 on an RTX 4080 SUPER with a Ryzen
+  9 7950X3D, 31.3 / 34.9 / 42.8 against 36.9 / 37.2 / 33.6 on an A10 with
+  a Xeon Platinum 8358). Where transformers 5.17's static cache fails
+  (bf16's too) it runs eager from the start: Llama 4, and a model with
+  multi-head latent attention whose config has fewer key/value heads than
+  heads (tiny DeepSeek V2, V3, Kimi Linear and AXK1 test models; the
+  released checkpoints compile). A call whose forward fails to compile
+  anyway runs again eager from its start (a streamer gets only what the
+  failed attempt had not streamed, and a sampled call draws again from the
+  random state it started with: its tokens and text are the eager run's),
+  and so do the model's later calls, with one warning; any other error,
+  out of memory included, is the call's own, and the next call compiles.
+  Each model's forward compiles to a graph of its own, so Glyd's compiled
+  calls run with `torch._dynamo.config.recompile_limit` at 64 at least,
+  for those calls alone (dynamo compiles 8 graphs a frame by default and
+  runs the rest uncompiled; ten Qwen3-0.6B models one after another in a
+  process all compiled, 296.5-301.3 tokens/s against 99.6 eager; the
+  process's own setting is left as it is). A model that has generated
+  compiled is freed at `del`, as an eager one (its compiled forward does
+  not refer to it, as transformers' own does). How: the model's class's
+  `generate` and `get_compiled_call` are taken over once for the process;
+  a model of the class Glyd did not set up (bf16, or `compile=False`) runs
+  transformers' own, and `compile=False` or `GLYD_COMPILE=0` takes nothing
+  over.
 - Prompts on an A10 (150 W, full-rate tensor cores), but `exact=True`'s,
   decode each matrix ahead of its product, beside the products before it,
   from 640 tokens in the 12-bit layout and 512 in the tiered one, as
