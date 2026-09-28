@@ -343,6 +343,15 @@ finally:
 for q, lin in zip(packs, hopper):
     for M in (65, 128, 600, 2100):
         assert lin.step(torch.randn(M, 1024, dtype=bf, device=dev)) is None, ("Hopper GLinear.step, a prompt", type(q).__name__, M)
+    # Its routes: the 12-bit layout's GLYD_WG_MIN (17) to GLYD_WG_MAX tokens by mma_gemm_wg (past 128 in
+    # mma12_wgp_kernel), past WG_MAX decoded for cuBLAS (None); the tiered one's steps to 64 tokens by mma_gemm, past
+    # them decoded.
+    if isinstance(q, g.Mma12):
+        want = [(M, g.mma_gemm_wg) for M in (17, 128, 129, gm.WG_MAX)] + [(gm.WG_MAX + 1, None)]
+    else:
+        want = [(M, g.mma_gemm) for M in (1, 17, 64)] + [(M, None) for M in (65, 129, gm.WG_MAX, gm.WG_MAX + 1)]
+    for M, f in want:
+        assert lin.kernel(M) is f, ("Hopper routing", type(q).__name__, M)
 # A prompt's matrices decoded ahead (model.Ahead; made to on any GPU, beside products of any size): GLinears of odd
 # shapes, both layouts, called in turn as a prompt calls them: the first prompt stopped short (an error), recorded,
 # the order from it then made whole by the calls past its end; followed; a decode on the current stream midway; a
