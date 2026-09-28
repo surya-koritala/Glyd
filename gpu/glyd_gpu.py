@@ -24,13 +24,15 @@ from glyd.gpu.kernels import _chunks, _hist, _none, _sign_mantissa  # noqa: F401
 
 def _arch_flags():
     """Code for this machine's GPU (Hopper as sm_90a, for its warpgroup
-    instructions); GLYD_GPU_ARCH=sm_89,sm_90a builds for several."""
+    instructions); GLYD_GPU_ARCH=sm_89,sm_90a builds for several (sm_90
+    there as sm_90a too: without it the TMA kernel is a trap)."""
     archs = os.environ.get("GLYD_GPU_ARCH")
     if not archs:
         major, minor = torch.cuda.get_device_capability()
         archs = f"sm_{major}{minor}" + ("a" if major == 9 else "")
     flags = []
     for a in archs.split(","):
+        a = "sm_90a" if a == "sm_90" else a
         flags += ["-gencode", f"arch=compute_{a[3:]},code={a}"]
     return flags
 

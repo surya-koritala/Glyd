@@ -1349,8 +1349,9 @@ __device__ __forceinline__ uint64_t sw128_desc(uint32_t addr) {
 }
 
 // wgmma is sm_90a's alone (sm_90's PTX has none, nor Blackwell's sm_100 and sm_120): its code and the TMA
-// kernel's body compile for sm_90a only (__CUDA_ARCH_FEAT_SM90_ALL), empty for the other targets, where the
-// host never launches that kernel (compute capability 9.0 alone).
+// kernel's body compile for sm_90a only (__CUDA_ARCH_FEAT_SM90_ALL), a trap for the other targets, where the
+// host never launches that kernel (compute capability 9.0 alone): run anyway (an H100 on a build for sm_90
+// without the a, or on compute_80 PTX), it fails loudly rather than leave Y as it was.
 __device__ __forceinline__ void wg_fence() {
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
@@ -1762,6 +1763,8 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
         sum_out12<NT, WG>(d, p, p % RU, (int64_t)(p / RU) * NT, S, nb, U, parts, done, last, ct, O, M, bias, Y);  // (d, summed in place: the next unit's first product sets it)
         j += len;
     }
+#elif defined(__CUDA_ARCH__)
+    __trap();  // sm_90a code, launched from a build without it
 #endif
 }
 
