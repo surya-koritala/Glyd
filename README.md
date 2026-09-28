@@ -1045,6 +1045,21 @@ grant the project the right to use and relicense the contribution. The
 whole of it is in [CONTRIBUTING.md](CONTRIBUTING.md); the
 [code of conduct](CODE_OF_CONDUCT.md) applies to everyone taking part.
 
+Install checks: every release is installed the way a user installs it, on
+a fresh machine, by
+[.github/workflows/install-check.yml](.github/workflows/install-check.yml) —
+PyPI (with and without the `gpu` extra) on Linux x86_64, Linux aarch64 and
+macOS arm64 across the Python versions this project supports, Homebrew on
+macOS and Linux, and the release's own tarballs (every asset present, each
+`.sha256` matching, the tag's commit and `Formula/glyd.rb` agreeing with
+it). It runs when a release publishes, weekly, and by hand for a chosen
+version (`gh workflow run install-check.yml -f version=X.Y.Z`). GitHub's
+runners have no GPU, so `pip install "glyd[gpu]"` is checked there for
+resolving and for `python -m glyd.gpu fit` only; on a machine with an
+NVIDIA GPU, `scripts/check_gpu_install.sh X.Y.Z` installs `glyd[gpu]==X.Y.Z`
+from PyPI into a fresh venv and runs a model through it — generating,
+`exact=True` bit for bit with bf16, saved and loaded back.
+
 ---
 
 ## License
