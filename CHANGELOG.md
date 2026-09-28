@@ -24,7 +24,8 @@ every earlier format.
   implementation (run by `glyd`), and those whose own code runs them,
   taken over where it multiplies: Llama 4, DBRX, Aria, JetMoE (its
   attention experts too), Step 3.7 and LongCat-Flash, each one op under
-  `torch.compile`; Switch Transformers' and NLLB-MoE's experts are
+  `torch.compile` (but JetMoE, whose router calls `.tolist()`, as bf16's
+  does not compile); Switch Transformers' and NLLB-MoE's experts are
   Linears, packed as such. Llama 4's experts stayed bf16, and transformers
   runs every expert on every token there; Glyd runs each token's chosen
   one alone: on an RTX 4080 SUPER a Scout MoE block at its real sizes

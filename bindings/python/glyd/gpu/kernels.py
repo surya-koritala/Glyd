@@ -475,8 +475,8 @@ def best_layout(linear_bytes, other_bytes=0, gpus=1, device=0, moe=False):
     slower); on an H100 PCIe the 12-bit one (Qwen3-30B-A3B, 26.2 and 191.0
     tokens/s at 1 and 8 sequences against the tiered layout's 15.8 and
     111.8), and so on an A100 (not measured with one); Blackwell as for
-    dense Linears until measured. Either way the tiered layout when only it fits (2 GiB a GPU
-    kept for activations and the KV cache)."""
+    dense Linears until measured. Either way the tiered layout when only
+    it fits (2 GiB a GPU kept for activations and the KV cache)."""
     p = torch.cuda.get_device_properties(device)
     room = gpus * (p.total_memory - 2 * 2**30)
     tiered, twelve = linear_bytes * 10.80 / 16 + other_bytes, linear_bytes * 12.04 / 16 + other_bytes

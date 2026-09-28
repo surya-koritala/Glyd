@@ -73,11 +73,12 @@ shard.
 
 - `device`: the GPU. `device_map="auto"` (with accelerate) or a device map
   in `hf_kwargs` spreads the layers over several.
-- `layout`: `"auto"` picks for the GPU (the tiered layout on Ada, and
-  wherever only it fits; the 12-bit one on A10, A100 and H100); `"mma"`,
-  the tiered layout (10.8 bits a weight); `"mma12"`, the 12-bit layout
-  (12.0 bits, a lighter decode). Embeddings go in the fast format, their
-  rows decoded as they are looked up.
+- `layout`: `"auto"` picks for the GPU (the tiered layout on Ada, a
+  mixture of experts' on an A10 too, and wherever only it fits; the
+  12-bit one on A10, A100 and H100); `"mma"`, the tiered layout (10.8
+  bits a weight); `"mma12"`, the 12-bit layout (12.0 bits, a lighter
+  decode). Embeddings go in the fast format, their rows decoded as they
+  are looked up.
 - `exact`: every product decodes its matrix whole and multiplies as
   `nn.Linear` does, so the logits are bf16's bit for bit. By default the
   products run straight from the packed weights (decoded in registers):

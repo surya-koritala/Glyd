@@ -8,7 +8,8 @@ checkpoint's keys, places every tensor by the device map (several GPUs:
 device_map="auto", with accelerate) and ties the embeddings. The
 quantizer registered here as "glyd" packs: a Linear's weight as it
 arrives, a merged group's (q, k, v; gate, up) when its last weight is in,
-a mixture of experts' layer's experts as each 3-D weight arrives (moe.py),
+a mixture of experts' layer's experts as each of their weights arrives
+(moe.py: an Experts module's 3-D ones, DBRX's 2-D, Aria's and JetMoE's),
 the embeddings and an output layer tied to one once everything is. The
 GPU holds the packed model and the weights not yet packed: the
 embedding, a group's members. A glyd-v1 checkpoint (glyd.json beside its
@@ -140,7 +141,7 @@ class GlydQuantizer(HfQuantizer):
         super().__init__(quantization_config, **kwargs)
         self.targets = {}  # id(nn.Linear): [its path, its merged group or None, its place there]
         self.groups = []  # [members' paths, {place: bf16 weight} until all are in, the pack]
-        self.experts = {}  # id(Experts module): (its path, its 3-D weights packed) (moe.py)
+        self.experts = {}  # id(module holding experts' weights): (its path, those packed) (moe.py)
         self.stored = None  # a glyd-v1 checkpoint's manifest
 
     def validate_environment(self, device_map=None, **kwargs):
@@ -212,7 +213,7 @@ class GlydQuantizer(HfQuantizer):
         # tied to another (an output layer to the embedding) is packed at the end, as it is tied then.
         tied = getattr(model, "all_tied_weights_keys", None) or {}
         tied = set(tied) | set(tied.values())
-        # a mixture of experts' layers: each 3-D weight packed as it arrives (one tied: at the end)
+        # a mixture of experts' layers: each of their weights packed as it arrives (one tied: at the end)
         self.experts = {k: (n, ws) for k, (n, ws) in moe.targets(model).items() if not tied & {f"{n}.{w}" for w in ws}}
         paths = {}
         for name, m in model.named_modules():
