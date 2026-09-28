@@ -176,6 +176,26 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
                         both_fail("mma12_gemm_wg", *pk, O, K, x, b, nan(M, O))
     print(f"mma {O}x{K}: {int(q.exc_base[-1])} exceptions (12-bit), the same through both")
 
+# Prompt products on two streams at once on one GPU, through each host: each stream's done counters its own (the C
+# API's: one stream's products at a time on a set), so each product the same as alone. A small one: its few blocks
+# (a unit's stages shared) beside the other stream's (with a set a device, 4% of them wrong).
+q = g.pack_mma(weights(192 * 1024).view(192, 1024))
+pk, x = (q.data, q.blocks, q.block_base, q.tiers), torch.randn(100, 1024, dtype=bf, device=dev)
+streams = [torch.cuda.Stream() for _ in range(2)]
+assert len({lib._counters("mma_gemm_big", torch.cuda.current_device(), t.cuda_stream, 1, 1) for t in streams}) == 2, "a set a stream"
+for host in (jit, lib):
+    alone = nan(100, 192)
+    host.mma_gemm_big(*pk, 192, 1024, x, none, alone, 0)
+    ys = [[nan(100, 192) for _ in range(1000)] for _ in streams]
+    torch.cuda.synchronize()
+    for i in range(1000):
+        for t, y in zip(streams, ys):
+            with torch.cuda.stream(t):
+                host.mma_gemm_big(*pk, 192, 1024, x, none, y[i], 0)
+    torch.cuda.synchronize()
+    assert all(exact(y, alone) for y in ys[0] + ys[1]), ("two streams' prompt products at once", host.__name__)
+counts["mma_gemm_big on two streams at once"] = 4000
+
 # A mixture of experts' layer, its E matrices [O, K] stacked: moe_route (each token's k experts sorted by expert, a
 # few routed nowhere), mma_moe_unpack and mma12_moe_unpack (the experts hit), mma_moe and mma12_moe (the rows by
 # expert, + bias; the gate's SiLU and GELU fused; weighted and each token's rows added, the weights bf16 and fp32),

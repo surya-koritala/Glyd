@@ -3427,9 +3427,11 @@ static void* addr(const torch::Tensor& t) { return t.defined() ? t.data_ptr() : 
 // A product's workspace (none for 0 bytes).
 static torch::Tensor scratch(size_t bytes, const torch::Tensor& like) { return bytes ? torch::empty({(int64_t)bytes}, like.options().dtype(torch::kUInt8)) : torch::Tensor(); }
 
-// A product's done counters on like's device (at least n; least when first made): zero between products.
-static int* counters(std::map<int, torch::Tensor>& of, const torch::Tensor& like, int64_t n, int64_t least) {
-    torch::Tensor& t = of[like.get_device()];
+// A product's done counters on like's device for the current stream (at least n; least when first made): zero
+// between products, a set a stream (one stream's products at a time on a set).
+using Counters = std::map<std::pair<int, cudaStream_t>, torch::Tensor>;
+static int* counters(Counters& of, const torch::Tensor& like, int64_t n, int64_t least) {
+    torch::Tensor& t = of[{like.get_device(), current_stream()}];
     if (!t.defined() || t.numel() < n) t = torch::zeros({std::max<int64_t>(n, least)}, like.options().dtype(torch::kInt32));
     return ptr<int>(t);
 }
@@ -3507,7 +3509,7 @@ void mma_gemm(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base
     size_t bytes = 0;
     ok(glyd_gpu_mma_gemm_workspace(O, K, M, &bytes), "mma_gemm");
     auto ws = scratch(bytes, x);
-    static auto* done_of = new std::map<int, torch::Tensor>;  // kept to the end (no teardown after CUDA's)
+    static auto* done_of = new Counters;  // kept to the end (no teardown after CUDA's)
     ok(glyd_gpu_mma_gemm(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma_gemm");
 }
 
@@ -3520,7 +3522,7 @@ void mma12_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, s
     size_t bytes = 0;
     ok(glyd_gpu_mma12_gemm_workspace(O, K, M, &bytes), "mma12_gemm");
     auto ws = scratch(bytes, x);
-    static auto* done_of = new std::map<int, torch::Tensor>;
+    static auto* done_of = new Counters;
     ok(glyd_gpu_mma12_gemm(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma12_gemm");
 }
 
@@ -3533,7 +3535,7 @@ void mma_gemm_big(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_
     size_t bytes = 0;
     ok(glyd_gpu_mma_gemm_big_workspace(O, K, M, variant, &bytes), "mma_gemm_big");
     auto ws = scratch(bytes, x);
-    static auto* done_of = new std::map<int, torch::Tensor>;
+    static auto* done_of = new Counters;
     ok(glyd_gpu_mma_gemm_big(ptr<uint8_t>(data), ptr<uint8_t>(blocks), ptr<int32_t>(block_base), t, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), variant, addr(ws), bytes, counters(*done_of, data, (M + 127) / 128 * (O / 64), 1 << 18), current_stream()), "mma_gemm_big");
 }
 
@@ -3546,7 +3548,7 @@ void mma12_gemm_big(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_bas
     size_t bytes = 0;
     ok(glyd_gpu_mma12_gemm_big_workspace(O, K, M, variant, &bytes), "mma12_gemm_big");
     auto ws = scratch(bytes, x);
-    static auto* done_of = new std::map<int, torch::Tensor>;
+    static auto* done_of = new Counters;
     ok(glyd_gpu_mma12_gemm_big(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), variant, addr(ws), bytes, counters(*done_of, data, (M + 127) / 128 * (O / 64), 1 << 18), current_stream()), "mma12_gemm_big");
 }
 
@@ -3562,7 +3564,7 @@ void mma12_gemm_mid(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_bas
     size_t bytes = 0;
     ok(glyd_gpu_mma12_gemm_mid_workspace(O, K, M, &bytes), "mma12_gemm_mid");
     auto ws = scratch(bytes, data);
-    static auto* done_of = new std::map<int, torch::Tensor>;
+    static auto* done_of = new Counters;
     ok(glyd_gpu_mma12_gemm_mid(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma12_gemm_mid");
 }
 
@@ -3577,7 +3579,7 @@ void mma12_gemm_wg(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base
     size_t bytes = 0;
     ok(glyd_gpu_mma12_gemm_wg_workspace(O, K, M, &bytes), "mma12_gemm_wg");
     auto ws = scratch(bytes, data);
-    static auto* done_of = new std::map<int, torch::Tensor>;
+    static auto* done_of = new Counters;
     ok(glyd_gpu_mma12_gemm_wg(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, O, K, ptr<uint16_t>(x), M, opt(bias), ptr<uint16_t>(y), addr(ws), bytes, counters(*done_of, data, O / 64, 1 << 16), current_stream()), "mma12_gemm_wg");
 }
 
@@ -3634,7 +3636,7 @@ static void moe_product(const char* name, F run, torch::Tensor data, int64_t E, 
     size_t bytes = 0;
     ok(glyd_gpu_mma_moe_workspace(E, O, K, T, k, act, w.numel() > 0, &bytes), name);
     auto ws = scratch(bytes, x);
-    static auto* done_of = new std::map<int, torch::Tensor>;
+    static auto* done_of = new Counters;
     int* done = counters(*done_of, data, (act ? O / 128 : O / 64) * std::min(E, T * k), 1 << 16);
     run(T, w.numel() ? w.data_ptr() : nullptr, w.scalar_type() == torch::kFloat32, addr(ws), bytes, done);
 }
@@ -3665,7 +3667,7 @@ void attn_decode(torch::Tensor q, torch::Tensor kd, torch::Tensor kb, torch::Ten
     size_t bytes = 0;
     ok(glyd_gpu_attn_decode_workspace(D, tlen, pairs, P, &bytes), "attn_decode");
     auto ws = scratch(bytes, q);
-    static auto* done_of = new std::map<int, torch::Tensor>;  // a pair's finished blocks: zero between calls
+    static auto* done_of = new Counters;  // a pair's finished blocks: zero between calls
     ok(glyd_gpu_attn_decode(ptr<uint16_t>(q), D, ptr<uint8_t>(kd), ptr<uint8_t>(kb), ptr<int32_t>(kbb), k3, ptr<uint8_t>(vd), ptr<uint8_t>(vb), ptr<int32_t>(vbb), v3, ptr<uint16_t>(tk), ptr<uint16_t>(tv), tlen, pairs, G, P, scale, ptr<uint16_t>(out), addr(ws), bytes, counters(*done_of, q, pairs, 1 << 12), current_stream()), "attn_decode");
 }
 
