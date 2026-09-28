@@ -297,18 +297,18 @@ takes 24 ms at all three), which hide the products' extra time. Every
 other length is still longer than bf16's. A chunk costs Qwen3-8B's layer
 about 250 us in tiles of 128 tokens, 300 in 192 and 370 in 256, and
 neither memory stream is what bounds it: without X's copies the kernel
-is 5-10% faster, without W's 7-14% (builds that skip them, timing only). The consumers
-are: at 256 tokens ncu has the tensor cores busy 17% of the time (at its
-base clocks) and 0.31 instructions issued a cycle a scheduler, whose two
-consumer warps wait on the decode's dependent instructions and on the
-stage's barrier. Next here: the decode off the consumers' path (a
-warpgroup decoding W's tiles into shared memory for wgmma to read both
-operands there), and past 512 tokens the decode for cuBLAS overlapped
-with the layer before. The whole blocks a unit above now apply only
-where they idle at most a sixth of the blocks and give a unit 3 or more,
-or the parts are 128 KB (tiles of 256): on other models' q, k, v and o
-the rule had cost up to 47% (Gemma-2-9B's q, k, v: 64 blocks of 114).
-Logs: benchmarks/gpu/h100-prompts-2026-09-28.
+is 5-10% faster, without W's 7-14%, without the decode 8-16% (builds
+that skip them, timing only): at 192-512 tokens even the last is
+1.07-1.34x cuBLAS's time. At 256 tokens ncu has 0.31 instructions issued
+a cycle a scheduler, whose two consumer warps wait on the decode's
+dependent instructions and on the stage's barrier. Next here: the
+products themselves, then the decode off the consumers' path (a
+warpgroup decoding W's tiles into shared memory for wgmma). The whole
+blocks a unit above now apply only where they idle at most a sixth of
+the blocks and give a unit 3 or more, or the parts are 128 KB (tiles of
+256): on other models' q, k, v and o the rule had cost up to 47%
+(Gemma-2-9B's q, k, v: 64 blocks of 114). Logs:
+benchmarks/gpu/h100-prompts-2026-09-28.
 
 ### Which layout on which GPU
 
