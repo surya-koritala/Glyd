@@ -190,18 +190,20 @@ exponents in local memory, since fixed: same bytes, same answers.)
 ### Many tokens a step on an H100: the copy engine and wgmma
 
 `mma_gemm_wg` (the 12-bit layout, Hopper) takes steps of 17 to 128
-tokens, and prompts of up to 512 (below). One lane of a warp of its own hands the copy engine (TMA) a
-stage at a time: 64 columns of 128 of W's rows, their compressed steps
-as bulk copies of 6 KB, their exceptions, and X's tile through a tensor
-map in wgmma's 128-byte swizzle, into a ring of 4 to 8 stages in shared
-memory, each landing on an mbarrier. Each consumer warpgroup decodes its
-64 rows straight into wgmma's A registers, as Machete does with 4-bit
-weights, and multiplies with X read from shared memory. The work is
-split evenly over the SMs (stream-K); rows shared by blocks are summed
-by the last to finish, in a fixed order: the same result every run.
-As first built (2026-09-26, before the changes further below), on an
-H100 SXM, Qwen3-32B's matrices took, GPU time in us (bf16 through cuBLAS
-/ `mma_gemm` / `mma_gemm_wg`; at 128 tokens the middle column is the
+tokens in the kernel below, and prompts of up to 1024 (`GLYD_WG_MAX`),
+which past 128 tokens run in `mma12_wgp_kernel` (two sections on). One
+lane of a warp of its own hands the copy engine (TMA) a stage at a time:
+64 columns of 128 of W's rows, their compressed steps as bulk copies of
+6 KB, their exceptions, and X's tile through a tensor map in wgmma's
+128-byte swizzle, into a ring of 4 to 8 stages in shared memory, each
+landing on an mbarrier. Each consumer warpgroup decodes its 64 rows
+straight into wgmma's A registers, as Machete does with 4-bit weights,
+and multiplies with X read from shared memory. The work is split evenly
+over the SMs (stream-K); rows shared by blocks are summed by the last to
+finish, in a fixed order: the same result every run. As first built
+(2026-09-26, before the changes further below), on an H100 SXM,
+Qwen3-32B's matrices took, GPU time in us (bf16 through cuBLAS /
+`mma_gemm` / `mma_gemm_wg`; at 128 tokens the middle column is the
 matrix decoded for cuBLAS):
 
 | Tokens | 1 | 16 | 32 | 64 | 128 |
@@ -357,22 +359,23 @@ taken out (`sed '/assert err < 1e-2/d'`).
 ### Prompts past 128 tokens on an H100: blocks that stay
 
 GLinear sends Hopper's prompts of up to 1024 tokens to `mma_gemm_wg`
-(`GLYD_WG_MAX`, was 512), and past 128 tokens that is now
-`mma12_wgp_kernel`, planned as the mixed-input GEMMs run on Hopper are
-(CUTLASS 3.x's warp-specialized main loop, vLLM's Machete), every line
-Glyd's; longer prompts are decoded for cuBLAS as before. A block an SM
-stays for the whole product, taking tile after tile of 128 of W's rows by
-256 tokens (192 where that takes no more chunks). One lane of a warp of
-its own copies each stage (64 columns: X's tile through a tensor map in
-wgmma's swizzle, W's two row blocks still compact, their exceptions) by
-TMA into a ring of 4 stages. Two consumer warpgroups decode a k-block (16
-columns) at a time into wgmma's A registers, a register set a k-block,
-while the two k-blocks before it still multiply, so a weight is decoded
-once for 256 tokens. Blocks go in clusters of two, X's tile copied once
-for both (TMA's multicast). The tiles in whole waves are each a
-cluster's own, summed in registers and written out; those left, fewer
-than a wave, are split by stages (stream-K) over up to three clusters
-each (all of them where the tiles are fewer than the clusters).
+(`GLYD_WG_MAX`, was 512; 1024 as measured on an H100 SXM), and past 128
+tokens that is now `mma12_wgp_kernel`, planned as the mixed-input GEMMs
+run on Hopper are (CUTLASS 3.x's warp-specialized main loop, vLLM's
+Machete), every line Glyd's; longer prompts are decoded for cuBLAS as
+before. A block an SM stays for the whole product, taking tile after tile
+of 128 of W's rows by 256 tokens (192 where that takes no more chunks).
+One lane of a warp of its own copies each stage (64 columns: X's tile
+through a tensor map in wgmma's swizzle, W's two row blocks still
+compact, their exceptions) by TMA into a ring of 4 stages (5 in tiles of
+192 tokens). Two consumer warpgroups decode a k-block (16 columns) at a
+time into wgmma's A registers, a register set a k-block, while the two
+k-blocks before it still multiply, so a weight is decoded once for 256
+tokens. Blocks go in clusters of two, X's tile copied once for both
+(TMA's multicast). The tiles in whole waves are each a cluster's own,
+summed in registers and written out; those left, fewer than a wave, are
+split by stages (stream-K) over up to three clusters each (all of them
+where the tiles are fewer than the clusters).
 
 One decoder layer's products (q, k, v and gate, up merged; layer 10's
 weights), each call timed alone after an L2 flush, against cuBLAS on bf16
@@ -396,10 +399,13 @@ its tiles, on random 8-bit weights (u8) and 4-bit ones reordered offline
 
 At 2048 and 4096 tokens "now" is the same path as before (the decode,
 then cuBLAS): the new kernel alone took 1.38 / 1.37x (8B), 1.34 / 1.40x
-(14B) and 1.34 / 1.42x (32B). At 129-160 tokens Qwen3-14B's layer took 1.141 / 1.136x against
-1.137 / 1.128x before. One forward pass over a prompt (`e2e.py --format
-auto --fused --merge --prefill`), ms, bf16 / before / now, the same
-machine:
+(14B) and 1.34 / 1.42x (32B). Every layer is faster at 129-1024 tokens
+but Qwen3-14B's at 129-160, which is level (1.141 / 1.136x against 1.137
+/ 1.128x before). A product alone can be slower than in the old kernel:
+Qwen3-8B's and 14B's o by 6-16% at 129-512 tokens, as measured (8B's at
+all six lengths, 14B's at 129-256), and a few others by 4% at most. One
+forward pass over a prompt (`e2e.py --format auto --fused --merge
+--prefill`), ms, bf16 / before / now, the same machine:
 
 | H100 SXM | 128 | 512 | 1024 | 2048 | 4096 tokens |
 | :--- | ---: | ---: | ---: | ---: | ---: |

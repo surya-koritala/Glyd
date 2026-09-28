@@ -32,10 +32,11 @@
 #include <stdint.h>
 #include <cuda_runtime_api.h> /* cudaStream_t */
 
-/* The C API's version, one more whenever a function's arguments change: 2
- * from the prompt products' done counters, glyd_gpu_hold and the decode's
- * warps (0.21.0's library has no glyd_gpu_api_version: 1); 3 from
- * glyd_gpu_mma12_gemm_wg's counters, at least 1024. */
+/* The C API's version, one more whenever a function's arguments, or what
+ * they must hold, change: 2 from the prompt products' done counters,
+ * glyd_gpu_hold and the decode's warps (0.21.0's library has no
+ * glyd_gpu_api_version: 1); 3 from glyd_gpu_mma12_gemm_wg's counters, at
+ * least 1024. */
 #define GLYD_GPU_API_VERSION 3
 
 #ifdef __cplusplus
@@ -109,7 +110,7 @@ int glyd_gpu_mma12_gemm_big(const uint8_t* data, const uint32_t* exc, const int3
  * 16-byte aligned), the compressed weights copied into shared memory a stage
  * at a time: mid on Ampere and later (cudaErrorNotSupported before); wg on
  * Hopper (compute capability 9.0) alone, by TMA and wgmma. done: O / 64
- * counters (wg: at least 1024). */
+ * counters (wg: at least 1024, or O / 64 where that is more). */
 int glyd_gpu_mma12_gemm_mid_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes);
 int glyd_gpu_mma12_gemm_mid(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
                             int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,

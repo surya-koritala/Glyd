@@ -23,6 +23,10 @@ every earlier format.
   1.92 / 1.68x) and Qwen3-32B 1.12 / 1.19 / 1.39 / 1.36 / 1.35x (were
   1.17 / 1.24 / 1.42 / 1.88 / 1.68x); past 1024 tokens the matrices are
   decoded for cuBLAS as before (1.33-1.36x at 2048, 1.17-1.22x at 4096).
+  Every layer is faster, but Qwen3-14B's at 129-160 tokens is level;
+  Qwen3-8B's and 14B's o alone are 6-16% slower than in the old kernel at
+  129-512 tokens (8B's at all six lengths measured, 14B's at 129-256), as
+  measured, and a few other products by 4% at most.
   One forward pass (`gpu/e2e.py --prefill --merge`) at 1024 tokens:
   Qwen3-8B 45.9 ms (was 48.4; bf16 36.4), Qwen3-32B 166.3 ms (was 194.9;
   bf16 135.5); at 512 tokens Qwen3-32B 90.9 ms (was 94.2; bf16 73.7).

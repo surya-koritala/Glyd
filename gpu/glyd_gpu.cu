@@ -3258,8 +3258,8 @@ static __nv_bfloat16* bf(uint16_t* p) { return (__nv_bfloat16*)p; }
 
 // The CUDA runtime built in (e.g. 13000), and a status's text.
 GLYD_GPU_API int glyd_gpu_cuda_version() { return CUDART_VERSION; }
-// The C API's version (glyd_gpu.h: one more whenever a function's arguments change; the caller checks it, as ctypes
-// does not check arguments).
+// The C API's version (glyd_gpu.h: one more whenever a function's arguments, or what they must hold, change; the
+// caller checks it, as ctypes does not check arguments).
 GLYD_GPU_API int glyd_gpu_api_version() { return GLYD_GPU_API_VERSION; }
 GLYD_GPU_API const char* glyd_gpu_error_string(int status) { return cudaGetErrorString((cudaError_t)status); }
 
@@ -3718,7 +3718,9 @@ static int mma12_wg_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t 
     // Past 128 tokens mma12_wgp_kernel, its blocks staying, in clusters of 2 (X's tiles copied once for both), in one
     // launch: tiles of 192 tokens where they take no more chunks than 256. Qwen3-8B's, 14B's and 32B's layers on an H100
     // SXM at 256 / 512 / 1024 tokens took 1.30 / 1.51 / 1.46x, 1.28 / 1.44 / 1.33x and 1.19 / 1.39 / 1.35x cuBLAS's
-    // time against the TMA kernel's 1.33 / 1.55 / 1.69x, 1.30 / 1.45 / 1.51x and 1.24 / 1.42 / 1.51x.
+    // time against the TMA kernel's 1.33 / 1.55 / 1.69x, 1.30 / 1.45 / 1.51x and 1.24 / 1.42 / 1.51x. Every layer
+    // is faster but 14B's at 129-160 tokens (level); 8B's and 14B's o alone are 6-16% slower here than in the TMA
+    // kernel at 129-512 tokens (8B's at all six lengths measured, 14B's at 129-256), a few others 4% at most.
     if (M > 128) {
         auto run = (M + 191) / 192 == (M + 255) / 256 ? mma12_wgp_run<192, 2> : mma12_wgp_run<256, 2>;
         if (int r = run(f, O, K, x, M, bias, y, parts, done, cs, need)) return r;
