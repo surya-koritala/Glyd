@@ -1,0 +1,243 @@
+name: Install check
+
+# Every release installs the way a user installs it, on a fresh machine: PyPI (with and
+# without the gpu extra), Homebrew, and the release's own tarballs. Runs when a release is
+# published, weekly (catches the Homebrew tap or an index drifting after the fact), and by
+# hand for a chosen version (default: the latest release).
+#
+# No GPU runners here: the gpu extra is checked for its wheel resolving and its GPU-free CLI
+# (`python -m glyd.gpu fit`) only. scripts/check_gpu_install.sh runs the rest — an actual
+# model loaded and generating — on a machine with an NVIDIA GPU (see its header, and the
+# README's "Install checks" section).
+on:
+  release:
+    types: [published]
+  schedule:
+    - cron: "23 8 * * 1"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to check, e.g. 0.22.0 (default: the latest release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - name: Resolve the version to check
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT: ${{ github.event.inputs.version }}
+          EVENT: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -e
+          if [ "$EVENT" = release ]; then
+            V="$RELEASE_TAG"
+          elif [ -n "$INPUT" ]; then
+            V="$INPUT"
+          else
+            V=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          fi
+          V="${V#v}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=v$V" >> "$GITHUB_OUTPUT"
+          echo "checking glyd $V (tag v$V)"
+
+  pypi:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        python: ["3.8", "3.14"]
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+          - os: ubuntu-24.04-arm
+            name: linux-aarch64
+          - os: macos-latest
+            name: macos-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: "pip install glyd==V (retry: PyPI can lag the release)"
+        run: |
+          set -e
+          ok=0
+          for i in $(seq 1 40); do
+            python -m pip install --quiet --no-cache-dir "glyd==$V" && { ok=1; break; }
+            echo "glyd==$V not resolvable yet on PyPI (attempt $i/40); retrying in 30s"
+            sleep 30
+          done
+          [ "$ok" = 1 ] || { echo "glyd==$V never became installable from PyPI"; exit 1; }
+      - name: glyd.__version__, a codec round trip, import glyd.gpu without torch
+        run: |
+          set -e
+          python -c "
+          import os, sys
+          import glyd
+          v = os.environ['V']
+          assert glyd.__version__ == v, ('glyd.__version__', glyd.__version__, v)
+          data = b'glyd install check ' * 500
+          assert glyd.decompress(glyd.compress(data)) == data, 'codec round trip'
+          import glyd.gpu
+          assert 'torch' not in sys.modules, 'import glyd.gpu pulled in torch'
+          print(f'glyd {glyd.__version__}: version ok, round trip ok, import glyd.gpu ok (no torch)')
+          "
+      - name: "Linux x86_64 only: pip install glyd[gpu]==V resolves; python -m glyd.gpu fit answers (no GPU on the runner)"
+        if: matrix.name == 'linux-x86_64' && matrix.python == '3.14'
+        run: |
+          set -e
+          ok=0
+          for i in $(seq 1 40); do
+            python -m pip install --quiet --no-cache-dir "glyd[gpu]==$V" && { ok=1; break; }
+            echo "glyd[gpu]==$V not resolvable yet on PyPI (attempt $i/40); retrying in 30s"
+            sleep 30
+          done
+          [ "$ok" = 1 ] || { echo "glyd[gpu]==$V never resolved from PyPI"; exit 1; }
+          python -m glyd.gpu fit Qwen/Qwen3-0.6B --gpu 16GB
+
+  homebrew:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: Homebrew/actions/setup-homebrew@1f8e202ffddf94def7f42f6fa3a482e821489f9c # 2026.07.10.1
+      - name: "brew tap and install (retry: the formula PR can follow the release by minutes)"
+        run: |
+          set -e
+          brew tap surya-koritala/glyd
+          got=""
+          ok=0
+          for i in $(seq 1 40); do
+            got=$(brew info --json=v2 surya-koritala/glyd/glyd | python3 -c "import json,sys; print(json.load(sys.stdin)['formulae'][0]['versions']['stable'])")
+            [ "$got" = "$V" ] && { ok=1; break; }
+            echo "tap has $got, waiting for $V (attempt $i/40); retrying in 30s"
+            sleep 30
+            brew update -q || true
+          done
+          [ "$ok" = 1 ] || { echo "surya-koritala/homebrew-glyd never reached $V (still $got)"; exit 1; }
+          brew install surya-koritala/glyd/glyd
+      - name: glyd --version is V, a round trip of a file through the CLI
+        run: |
+          set -e
+          got=$(glyd --version | head -1 | awk '{print $2}')
+          [ "$got" = "$V" ] || { echo "glyd --version says $got, expected $V"; exit 1; }
+          printf 'glyd install check %.0s' $(seq 1 500) > a.txt
+          glyd --max a.txt -o a.glyd
+          glyd -d a.glyd -o b.txt
+          cmp a.txt b.txt
+          echo "brew: glyd $got, round trip ok"
+
+  release-assets:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      V: ${{ needs.version.outputs.version }}
+      TAG: ${{ needs.version.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Wait for and download the release's assets
+        run: |
+          set -e
+          # release.yml's tarballs (+.sha256) and wheels, today. gpu-clib (a branch, not yet
+          # merged) adds glyd-gpu-$TAG-linux-<arch>-cuda<major>.tar.gz (+.sha256) as release
+          # assets of their own: list them here once that has merged. Until then, and after,
+          # extra assets beyond this list are fine — only these are required.
+          expected=(
+            "glyd-$TAG-linux-x86_64.tar.gz" "glyd-$TAG-linux-x86_64.tar.gz.sha256"
+            "glyd-$TAG-linux-aarch64.tar.gz" "glyd-$TAG-linux-aarch64.tar.gz.sha256"
+            "glyd-$TAG-macos-arm64.tar.gz" "glyd-$TAG-macos-arm64.tar.gz.sha256"
+            "glyd-$V-py3-none-manylinux_2_28_x86_64.whl"
+            "glyd-$V-py3-none-manylinux_2_28_aarch64.whl"
+            "glyd-$V-py3-none-macosx_11_0_arm64.whl"
+          )
+          ok=0
+          have=""
+          for i in $(seq 1 40); do
+            have=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+            missing=0
+            for f in "${expected[@]}"; do echo "$have" | grep -qxF "$f" || missing=1; done
+            [ "$missing" = 0 ] && { ok=1; break; }
+            echo "release $TAG: still missing assets (attempt $i/40); retrying in 30s"
+            sleep 30
+          done
+          [ "$ok" = 1 ] || { echo "release $TAG never got all expected assets. It has:"; echo "$have"; exit 1; }
+          D="$(mktemp -d)"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$D"
+          echo "D=$D" >> "$GITHUB_ENV"
+          echo "release $TAG: all expected assets present ($(echo "$have" | wc -l) total)"
+      - name: Every expected asset's sha256 matches
+        run: |
+          set -e
+          cd "$D"
+          fail=0
+          for sidecar in *.sha256; do
+            [ -e "$sidecar" ] || continue
+            sha256sum -c --strict "$sidecar" || fail=1
+          done
+          [ "$fail" -eq 0 ] || exit 1
+          echo "every .sha256 in $D matches its file"
+      - name: The tag's commit has version V in Cargo.toml, glyd-store/Cargo.toml, pyproject.toml, glyd/__init__.py
+        run: |
+          set -e
+          COMMIT=$(git rev-list -n1 "$TAG")
+          fail=0
+          v_cargo=$(git show "$COMMIT:Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          [ "$v_cargo" = "$V" ] || { echo "Cargo.toml at $TAG: $v_cargo != $V"; fail=1; }
+          v_store=$(git show "$COMMIT:glyd-store/Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          [ "$v_store" = "$V" ] || { echo "glyd-store/Cargo.toml at $TAG: $v_store != $V"; fail=1; }
+          v_py=$(git show "$COMMIT:bindings/python/pyproject.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
+          [ "$v_py" = "$V" ] || { echo "bindings/python/pyproject.toml at $TAG: $v_py != $V"; fail=1; }
+          v_init=$(git show "$COMMIT:bindings/python/glyd/__init__.py" | sed -n 's/^__version__ = "\(.*\)"/\1/p' | head -1)
+          [ "$v_init" = "$V" ] || { echo "bindings/python/glyd/__init__.py at $TAG: $v_init != $V"; fail=1; }
+          [ "$fail" -eq 0 ] || exit 1
+          echo "$TAG -> $COMMIT: every version file agrees on $V"
+      - name: Formula/glyd.rb's version and sha256 match the release (allow the bump PR to land; else check the tap)
+        run: |
+          set -e
+          x86=$(awk '{print $1}' "$D/glyd-$TAG-linux-x86_64.tar.gz.sha256")
+          arm=$(awk '{print $1}' "$D/glyd-$TAG-linux-aarch64.tar.gz.sha256")
+          mac=$(awk '{print $1}' "$D/glyd-$TAG-macos-arm64.tar.gz.sha256")
+          matches() { # matches <formula text>: version V and all three tarball sha256s present
+            [ -n "$1" ] || return 1
+            echo "$1" | grep -q "version \"$V\"" && echo "$1" | grep -qi "$x86" && echo "$1" | grep -qi "$arm" && echo "$1" | grep -qi "$mac"
+          }
+          ok=0
+          src=""
+          for i in $(seq 1 30); do
+            repo_formula=$(git -C "$GITHUB_WORKSPACE" show "origin/main:Formula/glyd.rb" 2>/dev/null || true)
+            if matches "$repo_formula"; then ok=1; src="the repo's Formula/glyd.rb"; break; fi
+            tap_formula=$(curl -sf https://raw.githubusercontent.com/surya-koritala/homebrew-glyd/main/Formula/glyd.rb || true)
+            if matches "$tap_formula"; then ok=1; src="the tap"; break; fi
+            echo "Formula/glyd.rb not at $V with matching sha256 yet, in the repo or the tap (attempt $i/30); retrying in 30s"
+            git fetch origin main -q
+            sleep 30
+          done
+          [ "$ok" = 1 ] || { echo "neither the repo's Formula/glyd.rb nor the tap reached $V with matching sha256"; exit 1; }
+          echo "Formula/glyd.rb ($src): version $V, sha256 matches all three tarballs"
