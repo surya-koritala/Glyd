@@ -755,6 +755,54 @@ glyd.from_pretrained and the rest, is in bindings/python/README.md.
     python kv.py                              # the KV cache packed and decoded bit for bit; attn_decode against SDPA
     python sizes.py MODEL_DIR ...             # every Linear's matrix in both layouts, bit for bit: bits a weight, GB
 
+## The library
+
+`build_lib.sh` builds glyd_gpu.cu's kernels alone, behind their C API:
+libglyd_gpu_cuda12.so or libglyd_gpu_cuda13.so (nvcc's CUDA), with no
+PyTorch in it and the CUDA runtime linked in, so it needs only the driver.
+[glyd_gpu.h](glyd_gpu.h) declares every function and says what it takes: the
+arrays of a packed matrix (the tiered and 12-bit layouts, the fast and dense
+formats), a product's workspace query before its call, the stream, the return
+codes. glyd_gpu.cu includes it, so nvcc holds each definition to its
+declaration, in the library's build and the JIT's alike. The glyd package
+calls the library through ctypes (`_lib.py`, whose argument lists
+`bindings/python/test_gpu.py` checks against the header); an engine in C,
+C++, Rust or any language with a C FFI calls the same functions (Rust through
+bindgen over the header, or its declarations written out).
+
+Every release carries it on its own for Linux x86_64 and aarch64 (glibc 2.28
+or later), CUDA 12 (built with 12.8) and 13:
+`glyd-gpu-TAG-linux-ARCH-cudaN.tar.gz`, holding the library, glyd_gpu.h,
+this directory's LICENSE and a README ([README-lib.md](README-lib.md)), each
+with its `.sha256`.
+
+[examples/unpack.c](examples/unpack.c), C and the C API alone: a matrix of a
+model saved by `glyd.save_pretrained` (glyd-v1: the packs' buffers in
+safetensors, their shapes and tiers in glyd.json) decoded on the GPU by
+`glyd_gpu_mma_unpack` and checked against the bf16 checkpoint it was packed
+from, bit for bit; a merged pack tensor by tensor (the runtime's lib64, or
+lib in a toolkit from pip, as setup_env.sh's):
+
+    bash build_lib.sh .
+    gcc -O2 -I . -I $CUDA_HOME/include examples/unpack.c -o unpack \
+        -L . -lglyd_gpu_cuda13 -L $CUDA_HOME/lib64 -lcudart -Wl,-rpath,$PWD:$CUDA_HOME/lib64:$CUDA_HOME/lib
+    python -m glyd.gpu pack Qwen/Qwen3-0.6B qwen3-0.6b-glyd
+
+On an RTX 4080 SUPER (CUDA 13.0), the first pack, then a merged one (every
+one of Qwen3-0.6B's 112 packs, its 196 Linears, decodes to the checkpoint's
+bits so; a bit flipped in the checkpoint is found):
+
+    $ ./unpack qwen3-0.6b-glyd ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/*/
+    libglyd_gpu: C API 2, CUDA runtime 13000
+    model.layers.0.self_attn.o_proj: [1024, 2048], 10.86 bits a weight packed, decoded on the GPU
+      model.layers.0.self_attn.o_proj.weight [1024, 2048]: the checkpoint's, bit for bit
+    $ ./unpack qwen3-0.6b-glyd ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/*/ model.layers.0.self_attn.q_proj
+    libglyd_gpu: C API 2, CUDA runtime 13000
+    model.layers.0.self_attn.q_proj: [4096, 1024], 10.79 bits a weight packed, decoded on the GPU
+      model.layers.0.self_attn.q_proj.weight [2048, 1024]: the checkpoint's, bit for bit
+      model.layers.0.self_attn.k_proj.weight [1024, 1024]: the checkpoint's, bit for bit
+      model.layers.0.self_attn.v_proj.weight [1024, 1024]: the checkpoint's, bit for bit
+
 ## License
 
 The files under gpu/ are under the [Business Source License 1.1](LICENSE):

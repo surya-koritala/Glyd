@@ -49,7 +49,9 @@ carry the kernels, `libglyd_gpu_cuda12.so` and `libglyd_gpu_cuda13.so`
 (CUDA 12.8 and 13.0, their runtime linked in), and the one for PyTorch's
 CUDA is taken; `GLYD_GPU_LIB` names another. From a checkout,
 `bash gpu/build_lib.sh bindings/python/glyd/gpu` builds the one for your
-nvcc. `fit` needs none of it.
+nvcc. `fit` needs none of it. The kernels are a C library too, on every
+release by themselves with their header, for engines in C, C++, Rust or any
+language with a C FFI: [gpu/README.md](https://github.com/surya-koritala/Glyd/tree/main/gpu#the-library).
 
 ```python
 import glyd

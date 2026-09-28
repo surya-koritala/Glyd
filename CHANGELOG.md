@@ -6,6 +6,23 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- The GPU kernels as a library of their own, for engines in C, C++, Rust
+  or any language with a C FFI, with no Python or PyTorch: every release
+  carries `glyd-gpu-TAG-linux-ARCH-cudaN.tar.gz` for x86_64 and aarch64,
+  CUDA 12 and 13 (the library, its header, `gpu/LICENSE` and a README),
+  each with its `.sha256`. `gpu/glyd_gpu.h` declares the C API: its 37
+  functions, `GLYD_GPU_API_VERSION` (2), the arrays of each packed layout,
+  the workspace queries, the stream and the return codes. `glyd_gpu.cu`
+  includes it, so nvcc holds each definition to its declaration (the
+  library's build and the JIT's), and `bindings/python/test_gpu.py` holds
+  the package's ctypes calls to it. `gpu/examples/unpack.c` reads a
+  matrix of a model saved by `glyd.save_pretrained`, decodes it on the GPU
+  with the library and checks it against the bf16 checkpoint: on an RTX
+  4080 SUPER every one of Qwen3-0.6B's 112 packs (its 196 Linears, q, k,
+  v and gate, up merged) decodes to the checkpoint's bits.
+
 ## v0.22.0 — 2026-09-28
 
 - Prompts of 129-512 tokens on Hopper multiply straight from the packed
