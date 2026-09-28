@@ -111,19 +111,19 @@ experts are decoded and bf16's own implementation runs on them. glyd-v1
 holds them packed, and a model with them can't be copied or pickled
 (`copy.deepcopy`, `torch.save`): load it again.
 
-From PyTorch 2.13 on (measured on 2.14), `generate()` is compiled; below
-2.13 it runs eager, as in glyd 0.23. A compiled call runs as
-`generate(..., cache_implementation="static")` asks transformers to run
-it, a static cache and the forward compiled (`torch.compile`,
-`mode="reduce-overhead"`: CUDA graphs), so a step's host time goes and
-what is left is its GPU time, less than bf16's. Each GLinear and
-GEmbedding is one op of the graph (`glyd::linear`, `glyd::embedding`),
-with no graph break, and the CUDA graph captures Glyd's kernels; the
-prompt runs eager (transformers compiles the steps after it). Tokens/s
-generating 128 tokens at 1 / 8 sequences on an RTX 4080 SUPER (a Ryzen 9
-7950X3D), each in a process of its own, the median of 3 runs (logs:
-benchmarks/gpu/rtx4080s-fastloop-2026-09-28, `gen-main.txt` and
-`gen-branch.txt`):
+On PyTorch 2.13.0 or later (measured on 2.14), `generate()` is compiled;
+below it, a 2.13 pre-release included, it runs eager, as in glyd 0.23. A
+compiled call runs as `generate(..., cache_implementation="static")`
+asks transformers to run it, a static cache and the forward compiled
+(`torch.compile`, `mode="reduce-overhead"`: CUDA graphs), so a step's
+host time goes and what is left is its GPU time, less than bf16's. Each
+GLinear and GEmbedding is one op of the graph (`glyd::linear`,
+`glyd::embedding`), with no graph break, and the CUDA graph captures
+Glyd's kernels; the prompt runs eager (transformers compiles the steps
+after it). Tokens/s generating 128 tokens at 1 / 8 sequences on an RTX
+4080 SUPER (a Ryzen 9 7950X3D), each in a process of its own, the median
+of 3 runs (logs: benchmarks/gpu/rtx4080s-fastloop-2026-09-28,
+`gen-main.txt` and `gen-branch.txt`):
 
 | | bf16 | bf16, `cache_implementation="static"` | Glyd, `compile=False` | **Glyd** |
 | :--- | ---: | ---: | ---: | ---: |
@@ -132,22 +132,32 @@ benchmarks/gpu/rtx4080s-fastloop-2026-09-28, `gen-main.txt` and
 | Qwen3-8B | does not fit | does not fit | 48.6 / 365 | **55.3 / 386** |
 | granite-3.1-3b-a800m-instruct (a mixture of experts) | | | 90.3 / 699 | **232.3 / 1547** |
 
-The first call compiles and captures: Qwen3-8B's took 17.5 s with
-PyTorch's compile caches empty, 6.7 s in a later process (4-6 s for the
-others); a call whose cache is longer than any before it compiles again
-once, then captures a graph (Qwen3-4B-Instruct-2507, a chat's turns:
-15.0 s, then 5.6 s, then 0.8-0.9 s for 64 tokens). A call that brings
-its own cache (`past_key_values`), several beams, an assistant, or asks
-for a dict (`return_dict_in_generate`), attentions or hidden states runs
-as transformers runs it, as does one whose static cache would hold more
-positions in all (its sequences times the prompt and `max_new_tokens`,
-or `max_cache_len` where longer) than 1280 on a GeForce card and 2048 on
-another: the static cache holds every position a call may reach from its
-first step and each step's attention reads all of it, so past that the
-eager loop is as fast (Qwen3-8B), sooner the faster the host's CPU (what
-compiling saves is eager's host time a step). A step's ms compiled
-against eager, Qwen3-8B, the static cache that long with 64 positions
-used:
+Greedy tokens compiled can differ from 0.23's eager loop's, as a
+compiled bf16 model's can from its eager ones (the first 8 of 32 the
+same on Qwen3-0.6B, 17 on Qwen3-1.7B, 32 on
+granite-3.1-3b-a800m-instruct: `gpu/check_api.py`); `exact=True` is
+untouched. The first call compiles and captures: Qwen3-8B's took 17.5 s
+with PyTorch's compile caches empty, 6.7 s in a later process (4-6 s for
+the others); a call whose cache is longer than any before it compiles
+again once, then captures a graph (Qwen3-4B-Instruct-2507, a chat's
+turns: 15.0 s, then 5.6 s, then 0.8-0.9 s for 64 tokens). Before
+serving, warm up with one short `generate()`: the first compiled step
+comes after the first token is streamed, so a streamer's consumer waits
+through the compile (give a `TextIteratorStreamer` a `timeout` longer
+than it, or use `compile=False`). Only greedy and sampled calls compile:
+a call runs as transformers runs it if it uses several beams, an
+assistant or another assisted mode (prompt lookup, early exit,
+`use_mtp`), its own cache or a `cache_implementation`,
+`use_cache=False`, `return_dict_in_generate`, attentions or hidden
+states, `custom_generate`, or `disable_compile=True` (one call eager);
+so does one whose static cache would hold more positions in all (its
+sequences times the prompt and `max_new_tokens`, or `max_cache_len`
+where longer) than 1280 on a GeForce card and 2048 on another: the
+static cache holds every position a call may reach from its first step
+and each step's attention reads all of it, so past that the eager loop
+is as fast (Qwen3-8B), sooner the faster the host's CPU (what compiling
+saves is eager's host time a step). A step's ms compiled against eager,
+Qwen3-8B, the static cache that long with 64 positions used:
 
 | | 256 | 1024 | 2048 | 4096 positions | 8 sequences |
 | :--- | ---: | ---: | ---: | ---: | :--- |
@@ -174,17 +184,21 @@ before. Each model's forward compiles to a graph of its own, so Glyd's
 compiled calls run with `torch._dynamo.config.recompile_limit` at 64 at
 least (dynamo compiles 8 graphs a frame by default and runs the rest
 uncompiled; ten Qwen3-0.6B models one after another in a process all
-compiled, 296.5-301.3 tokens/s against 99.6 eager), set for those calls
-alone: the process's own setting is left as it is. A model that has
-generated compiled is freed at `del`, as an eager one (its compiled
-forward does not refer to it).
+compiled (graphs 2 to 11), the second to tenth at 296.5-301.3 tokens/s
+against 99.6 eager), set for those calls alone: the process's own
+setting is left as it is. A model that has generated compiled is freed
+at `del`, as an eager one (its compiled forward does not refer to it).
 
 How: `from_pretrained` and `compress` take over the `generate` and
 `get_compiled_call` of the model's class, once for the process, as Glyd
-takes over the forward of the mixture-of-experts classes it runs; a model
-of that class Glyd did not set up (a bf16 one, or one loaded with
+takes over the forward of the mixture-of-experts classes it runs; a
+model of that class Glyd did not set up (a bf16 one, or one loaded with
 `compile=False`) runs transformers' own. `compile=False`, or
-`GLYD_COMPILE=0` before the load, sets nothing up and takes nothing over.
+`GLYD_COMPILE=0` before the load, sets nothing up and takes nothing
+over. transformers sets `TOKENIZERS_PARALLELISM=0` for the process where
+it compiles; Glyd puts back the value it had, or its absence, after each
+compiled call (per call: two calls at once in two threads can leave it
+0, as transformers' own compiled calls do).
 
 `torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)`
 compiles the forward as it would the bf16 model's, likewise. Eager, a

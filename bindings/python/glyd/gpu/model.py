@@ -744,27 +744,27 @@ _OWN = ("return_dict_in_generate", "disable_compile", "use_mtp", "output_attenti
 
 def fast_generate(model):
     """model's generate() through transformers' static cache and compiled
-    forward (torch.compile, reduce-overhead: CUDA graphs), as
-    generate(..., cache_implementation="static") asks for it, where a call
-    leaves the cache and the search to the model (none of _OWN, one beam,
-    the cache used) and its static cache is short: it holds every position
-    the call may reach from its first step (transformers keeps it as long
-    as the longest call's) and each step reads all of it, so 1280 positions
-    in all at most on a GeForce card and 2048 on another (COMPILE_MAX; the
-    model's glyd_fast; _fast says which calls); every other call as
-    transformers runs it. The
-    prompt runs eager either way (transformers compiles the steps after
-    it). A call that fails so runs again as it came, as do the model's
-    later ones, with one warning. Its class's generate and get_compiled_call
-    taken over once (_taken), the model marked (glyd_fast). Not with
-    GLYD_COMPILE=0, nor below PyTorch 2.13 (measured on 2.14; before it
-    torch._dynamo has no recompile_limit to 2.6, its config's overrides are
-    the process's to 2.11, and a CUDA graph recorded in a thread other than
-    cudagraph_trees' own fails to 2.12), nor for a family transformers does
-    not compile whole (_can_compile_fullgraph: MiniMax's own cache, DBRX's
-    experts ...), nor a model over several GPUs (not measured there), nor
-    where transformers' helpers _fast reads are not as 5.17 has them (one
-    warning: else every call would run eager, unsaid). The model."""
+    forward (torch.compile, reduce-overhead: CUDA graphs), as generate(...,
+    cache_implementation="static") asks for it, where a call leaves the
+    cache and the search to the model (none of _OWN, one beam, the cache
+    used) and its static cache is short: it holds every position the call
+    may reach from its first step (transformers keeps it as long as the
+    longest call's) and each step reads all of it, so 1280 positions in all
+    at most on a GeForce card and 2048 on another (COMPILE_MAX; the model's
+    glyd_fast; _fast says which calls); every other call as transformers
+    runs it. The prompt runs eager either way (transformers compiles the
+    steps after it). A call that fails so runs again as it came, as do the
+    model's later ones, with one warning. Its class's generate and
+    get_compiled_call taken over once (_taken), the model marked
+    (glyd_fast). Not with GLYD_COMPILE=0, nor below PyTorch 2.13.0, a 2.13
+    pre-release included (measured on 2.14; before it torch._dynamo has no
+    recompile_limit to 2.6, its config's overrides are the process's to
+    2.11, and a CUDA graph recorded in a thread other than cudagraph_trees'
+    own fails to 2.12), nor for a family transformers does not compile whole
+    (_can_compile_fullgraph: MiniMax's own cache, DBRX's experts ...), nor a
+    model over several GPUs (not measured there), nor where transformers'
+    helpers _fast reads are not as 5.17 has them (one warning: else every
+    call would run eager, unsaid). The model."""
     if torch.__version__ < "2.13" or os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate") or not getattr(model, "_can_compile_fullgraph", False) or _static_fails(model):
         return model
     try:  # the helpers _fast reads, as transformers 5.17 has them
@@ -892,7 +892,7 @@ def _generate(self, own, *args, **kwargs):
     call's); any other error is the call's, and the next call compiles as before. The re-run from the random state the
     call found (CPU and the model's GPU): a sampled call draws what the attempt drew, and returns what it would have
     eager. TOKENIZERS_PARALLELISM, which transformers sets to 0 for the process where it compiles, left as it was
-    before the call, or unset."""
+    before the call, or unset (per call: two calls at once in two threads can leave it 0, as transformers' own do)."""
     b = None if self.__dict__.get("glyd_eager") else _fast(self, own, args, kwargs)
     if b is None:
         return own(self, *args, **kwargs)
@@ -932,8 +932,8 @@ def _compiled_call(self, own, compile_config=None):
     RECOMPILES at least (for them alone: dynamo reads it as it compiles): each model's forward is a graph of its own
     (its GLinears' handles are constants of it), all on the one frame transformers' forwards share, of which dynamo
     compiles recompile_limit graphs at most (8 by default) and runs the rest uncompiled; ten Qwen3-0.6B models one
-    after another in a process all compiled, 296.5-301.3 tokens/s against 99.6 eager (RTX 4080 SUPER:
-    benchmarks/gpu/rtx4080s-fastloop-2026-09-28/checks-5d38f20/many.txt)."""
+    after another in a process all compiled (graphs 2 to 11), the second to tenth at 296.5-301.3 tokens/s against
+    99.6 eager (RTX 4080 SUPER: benchmarks/gpu/rtx4080s-fastloop-2026-09-28/checks-5d38f20/many.txt)."""
     import torch._dynamo
     from torch._dynamo.utils import counters
 

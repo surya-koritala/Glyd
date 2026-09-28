@@ -50,11 +50,11 @@ def from_pretrained(name_or_path, *, device="cuda:0", layout="auto", exact=False
       its sha256 checked against glyd.json.
     compile: generate() through transformers' static cache and compiled
       forward (CUDA graphs), as cache_implementation="static" asks for it,
-      where a call leaves the cache and the search to the model and its
-      static cache is short (model.fast_generate: GLYD_COMPILE_MAX
-      positions in all); False, or GLYD_COMPILE=0: as transformers runs
-      it, eager. Not with exact (its tokens are bf16's eager ones) nor over
-      several GPUs.
+      on PyTorch 2.13.0 or later (a 2.13 pre-release runs eager), where a
+      call leaves the cache and the search to the model and its static cache
+      is short (model.fast_generate: GLYD_COMPILE_MAX positions in all);
+      False, or GLYD_COMPILE=0: as transformers runs it, eager. Not with
+      exact (its tokens are bf16's eager ones) nor over several GPUs.
     hf_kwargs: transformers' from_pretrained's (revision, token,
       device_map, attn_implementation ...); the dtype is bf16.
     """
