@@ -65,9 +65,17 @@ class Ahead:
     buffer, waits for the decodes ahead and ends the prompt's run of them
     (the order's first call starts it again); the calls off the order are
     recorded, and one that comes again makes them the order (another model,
-    another path through this one)."""
+    another path through this one). A prompt that ends before its order
+    does (its output layer at one token) leaves decodes ahead queued: the
+    next call below the threshold waits for them (settle), and the next
+    prompt ends the order where this one ended. Waits are the current
+    stream's on the side stream's (the GPU's, never the host's), none while
+    a CUDA graph is captured (it must not wait on work queued before it);
+    the packs and the buffer are the side stream's too (record_stream), so
+    that none is given out again before its decodes are done."""
 
     of = {}  # {device: Ahead}
+    queued = False  # decodes ahead on some device not yet waited for
 
     def __init__(self, d):
         self.d, self.side = d, torch.cuda.Stream(d, priority=-1)  # high: its blocks placed as soon as launched
@@ -85,14 +93,29 @@ class Ahead:
             a = Ahead.of[d] = Ahead(d)
         return a
 
+    def join(self):
+        """The current stream waits for the side stream's decodes ahead (on the GPU), but while a CUDA graph is
+        captured."""
+        if self.live and not torch.cuda.is_current_stream_capturing():
+            torch.cuda.current_stream(self.d).wait_stream(self.side)
+            self.live = False
+
+    @staticmethod
+    def settle():
+        """Every device's decodes ahead waited for: a call below the threshold, after a prompt that ended before
+        its order did."""
+        for a in Ahead.of.values():
+            a.join()
+        Ahead.queued = any(a.live for a in Ahead.of.values())
+
     @staticmethod
     def stop(d):
         """Before a decode into the device's buffer on the current stream that is not the order's: the decodes ahead
         done first, and the prompt's run of them ended (their places may be written)."""
         a = Ahead.of.get(d)
         if a is not None and a.live:
-            torch.cuda.current_stream(d).wait_stream(a.side)
-            a.live, a.off = False, True
+            a.join()
+            a.off = True
 
     @staticmethod
     def reset(d):
@@ -119,6 +142,11 @@ class Ahead:
         self.gate = [torch.cuda.Event() for _ in chain]
         self.ready = [torch.cuda.Event() for _ in chain]
         self.pos, self.off = 0, False  # (live kept: the last order's decodes ahead are waited for as this one starts)
+        for h in chain:  # read and written by the side stream: none given out again before its work is done
+            p = _modules[h].p
+            for t in (p.data, p.exc, p.exc_base) if isinstance(p, g.Mma12) else (p.data, p.blocks, p.block_base):
+                t.record_stream(self.side)
+        Scratch.buf[self.d].record_stream(self.side)
 
     def schedule(self, M):
         """For prompts of M tokens: the rows each host starts decoding ahead, [(k, r0, r1)], as many as AHEAD_RATE
@@ -161,8 +189,11 @@ class Ahead:
             if not self.off and c[self.pos] == h:
                 return self.pos
             if c[0] == h:
+                if self.pos and not self.off:  # the last prompt ended before its order did: the order to there
+                    self.plan(c[: self.pos], room)
                 self.rec = []
                 return 0
+            self.join()  # off the order: none of its decodes ahead left queued past here
             self.off = True
         if h in self.rec:
             self.plan(self.rec[self.rec.index(h) :], room)
@@ -180,8 +211,7 @@ class Ahead:
         """product(W) for lin's matrix W, place j of the order (M: the prompt's tokens)."""
         main = torch.cuda.current_stream(self.d)
         if j == 0:
-            if self.live:  # a prompt ended off the order: its decodes ahead done first
-                main.wait_stream(self.side)
+            self.join()  # a prompt ended off the order: its decodes ahead done first
             self.off, self.m = False, M
         beside, done = self.schedule(self.m // 128 * 128)  # (as for fewer tokens than it has: less time beside the products)
         O = lin.out_features
@@ -203,6 +233,7 @@ class Ahead:
                         self.ready[k].record(self.side)
         self.pos = j + 1 if j + 1 < len(self.chain) else 0
         self.live = self.pos > 0  # decodes ahead not yet waited for
+        Ahead.queued |= self.live
         return y
 
 
@@ -321,6 +352,8 @@ class GLinear(_Node, nn.Module):
     def forward(self, x):
         if torch.compiler.is_compiling():  # one node of the graph (glyd::linear), which runs what follows (no gradient, as eager)
             return torch.ops.glyd.linear(x.detach() if x.requires_grad else x, self.handle, self.out_features)
+        if Ahead.queued and x.numel() < self.ahead * self.in_features:  # a prompt ended before its order did
+            Ahead.settle()
         if self.step is not None:  # a generation step's product: one C call
             y = self.step(x)
             if y is not None:

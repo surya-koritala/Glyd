@@ -282,11 +282,12 @@ for q, lin in zip(packs, a100):
             assert exact(lin.step(x), lin.kernel(M)(q, x, None)), ("A100 GLinear.step", type(q).__name__, M)
             counts["GLinear.step"] += 1
 # A prompt's matrices decoded ahead (model.Ahead; made to on any GPU, beside products of any size): GLinears of odd
-# shapes, both layouts, called in turn as a prompt calls them, the first time recorded, then followed; a prompt that
-# leaves the order midway, a decode on the current stream midway, another order between (recorded, then followed),
-# then the first again; at 600 tokens, then 2100 (the order kept). The products on the order (as many as said, from
-# the first) bit for bit as with their matrices decoded on the current stream, the rest the fused kernel's (on
-# Hopper, whose prompts take no fused kernel, decoded on the current stream too).
+# shapes, both layouts, called in turn as a prompt calls them, the first time recorded, then followed; a decode on
+# the current stream midway, a prompt that ends before its order does (the next ends the order there), another
+# order between (recorded, then followed), then the first again; at 600 tokens, then 2100 (the order kept). The
+# products on the order (as many as said, from the first) bit for bit as with their matrices decoded on the current
+# stream, the rest the fused kernel's (on Hopper, whose prompts take no fused kernel, decoded on the current stream
+# too).
 shapes = [(1024, 512), (512, 1024), (3072, 512), (512, 1536), (192, 512), (2048, 1024)]
 lins = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
 other = [gm.GLinear(g.pack_mma(weights(O * K).view(O, K)), None) for O, K in shapes[:3]]
@@ -298,7 +299,7 @@ product, placed = gm.Ahead.product, []
 gm.Ahead.product = lambda a, lin, j, f, M: (placed.append(j), product(a, lin, j, f, M))[1]
 dev_ = torch.device(dev, torch.cuda.current_device())
 for M, first in ((600, 0), (2100, 6)):
-    for ls, stop, on in [(lins, None, first), (lins, None, 6), (lins, None, 6), (lins[:3], None, 3), (lins, 4, 4), (other, None, 0), (other, None, 3), (lins, None, 0), (lins, None, 6)]:
+    for ls, stop, on in [(lins, None, first), (lins, None, 6), (lins, None, 6), (lins, 4, 4), (lins[:3], None, 3), (lins, None, 3), (other, None, 0), (other, None, 3), (lins, None, 0), (lins, None, 6)]:
         gen = torch.Generator(device=dev).manual_seed(M)
         placed.clear()
         for i, lin in enumerate(ls):
@@ -326,6 +327,29 @@ if not lins[0].hopper:
     x = torch.randn(600, 512, dtype=bf, device=dev)
     assert exact(big(x), g.mma_gemm_big(big.p, x)) and not placed, "past the scratch: fused"
     counts["GLinear where Ahead does not take it (fused)"] = len(lins) + 1
+# A prompt that ends before its order does leaves decodes ahead queued; here they wait 50 ms (the hold before each
+# host's), and meanwhile its modules are let go and memory of their sizes given out and written: none of it where
+# the queued decodes read (record_stream), no illegal address. A call below the threshold waits for what is queued.
+hold, gm.AHEAD_HOLD = gm.AHEAD_HOLD, 50_000_000
+ls = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
+xs = [torch.randn(600, lin.in_features, dtype=bf, device=dev) for lin in ls]
+for lin in ls:
+    lin.ahead = 513
+for n in (6, 6, 3):  # recorded, followed, then a prompt that ends before its order does
+    for lin, x in zip(ls[:n], xs):
+        lin(x)
+a = gm.Ahead.of[dev_]
+assert a.live and gm.Ahead.queued and any(k >= 3 for k, _, _ in a.schedule(512)[0][2]), "decodes ahead queued past the prompt"
+held = {t.data_ptr(): t.numel() * t.element_size() for lin in ls for t in vars(lin.p).values() if isinstance(t, torch.Tensor)}
+del ls, lin
+junk = [torch.full((n,), 0x7F, dtype=torch.uint8, device=dev) for n in held.values()]  # offsets of 2^31 or so, where read
+assert not held.keys() & {j.data_ptr() for j in junk}, "memory the queued decodes read given out again"
+torch.cuda.synchronize()  # the queued decodes done: no illegal address
+gm.AHEAD_HOLD = hold
+gm.GLinear(g.pack_mma(weights(512 * 512).view(512, 512)), None)(torch.randn(64, 512, dtype=bf, device=dev))
+assert not a.live and not gm.Ahead.queued, "a call below the threshold waits for what is queued"
+del junk, xs
+counts["GLinear decodes ahead past a prompt's end"] = 1
 gm.Ahead.product, gm.AHEAD_FLOPS = product, flops
 e = weights(1000 * 256).view(1000, 256)
 ids = torch.randint(0, 1000, (4, 3), device=dev)
