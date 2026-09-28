@@ -1,0 +1,56 @@
+NVIDIA H100 PCIe (9, 0) layer 12
+qkv 6144x4096 (5 copies bf16, 6 packed)
+  M=   1  cuBLAS    30.7  mma12    29.5   best mma12 0.96x
+  M=   8  cuBLAS    31.6  mma12    31.1   best mma12 0.98x
+  M=  16  cuBLAS    32.0  mma12    32.7   best mma12 1.02x
+  M=  32  cuBLAS    32.3  mma12    41.5  wg    31.9   best wg 0.99x
+  M=  48  cuBLAS    33.1  mma12    51.4  wg    34.0   best wg 1.03x
+  M=  64  cuBLAS    33.1  mma12    55.4  wg    34.3   best wg 1.04x
+  M=  80  cuBLAS    33.1  wg    36.9   best wg 1.11x
+  M=  96  cuBLAS    32.4  wg    37.4   best wg 1.15x
+  M= 112  cuBLAS    33.1  wg    37.9   best wg 1.15x
+  M= 128  cuBLAS    31.9  wg    40.2   best wg 1.26x
+o 4096x4096 (7 copies bf16, 9 packed)
+  M=   1  cuBLAS    21.3  mma12    23.4   best mma12 1.10x
+  M=   8  cuBLAS    21.3  mma12    24.2   best mma12 1.14x
+  M=  16  cuBLAS    21.5  mma12    25.9   best mma12 1.20x
+  M=  32  cuBLAS    21.6  mma12    33.0  wg    23.5   best wg 1.08x
+  M=  48  cuBLAS    22.0  mma12    42.3  wg    25.1   best wg 1.14x
+  M=  64  cuBLAS    22.0  mma12    44.9  wg    25.1   best wg 1.14x
+  M=  80  cuBLAS    21.8  wg    27.5   best wg 1.26x
+  M=  96  cuBLAS    21.7  wg    27.6   best wg 1.27x
+  M= 112  cuBLAS    21.5  wg    28.5   best wg 1.32x
+  M= 128  cuBLAS    22.0  wg    30.1   best wg 1.37x
+gate_up 24576x4096 (2 copies bf16, 2 packed)
+  M=   1  cuBLAS   113.9  mma12    89.4   best mma12 0.78x
+  M=   8  cuBLAS   115.1  mma12    93.4   best mma12 0.81x
+  M=  16  cuBLAS   116.0  mma12    97.4   best mma12 0.84x
+  M=  32  cuBLAS   116.4  mma12   129.7  wg    89.1   best wg 0.77x
+  M=  48  cuBLAS   117.8  mma12   155.9  wg    93.3   best wg 0.79x
+  M=  64  cuBLAS   118.8  mma12   164.6  wg    93.8   best wg 0.79x
+  M=  80  cuBLAS   120.5  wg   103.8   best wg 0.86x
+  M=  96  cuBLAS   118.8  wg   106.9   best wg 0.90x
+  M= 112  cuBLAS   120.9  wg   109.6   best wg 0.91x
+  M= 128  cuBLAS   122.8  wg   115.1   best wg 0.94x
+down 4096x12288 (3 copies bf16, 3 packed)
+  M=   1  cuBLAS    58.7  mma12    50.2   best mma12 0.86x
+  M=   8  cuBLAS    59.8  mma12    52.6   best mma12 0.88x
+  M=  16  cuBLAS    60.4  mma12    55.5   best mma12 0.92x
+  M=  32  cuBLAS    61.9  mma12    68.7  wg    51.5   best wg 0.83x
+  M=  48  cuBLAS    63.1  mma12    81.9  wg    53.2   best wg 0.84x
+  M=  64  cuBLAS    64.9  mma12    87.9  wg    53.2   best wg 0.82x
+  M=  80  cuBLAS    66.6  wg    57.2   best wg 0.86x
+  M=  96  cuBLAS    67.4  wg    57.5   best wg 0.85x
+  M= 112  cuBLAS    68.9  wg    59.7   best wg 0.87x
+  M= 128  cuBLAS    68.5  wg    62.1   best wg 0.91x
+layer total (us):
+  M=   1  cuBLAS   224.6  mma12   192.5  glyd   192.5  best   192.5 0.86x  glyd 0.86x
+  M=   8  cuBLAS   227.7  mma12   201.3  glyd   201.3  best   201.3 0.88x  glyd 0.88x
+  M=  16  cuBLAS   229.8  mma12   211.5  glyd   211.5  best   211.5 0.92x  glyd 0.92x
+  M=  32  cuBLAS   232.3  mma12   272.8  wg   196.0  glyd   196.0  best   196.0 0.84x  glyd 0.84x
+  M=  48  cuBLAS   236.0  mma12   331.6  wg   205.6  glyd   205.6  best   205.6 0.87x  glyd 0.87x
+  M=  64  cuBLAS   238.8  mma12   352.8  wg   206.4  glyd   206.4  best   206.4 0.86x  glyd 0.86x
+  M=  80  cuBLAS   242.0  wg   225.2  glyd   225.2  best   225.2 0.93x  glyd 0.93x
+  M=  96  cuBLAS   240.2  wg   229.4  glyd   229.4  best   229.4 0.95x  glyd 0.95x
+  M= 112  cuBLAS   244.4  wg   235.6  glyd   235.6  best   235.6 0.96x  glyd 0.96x
+  M= 128  cuBLAS   245.3  wg   247.5  glyd   247.5  best   247.5 1.01x  glyd 1.01x

@@ -1,0 +1,56 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights:  41%|████      | 287/707 [00:00<00:00, 2841.13it/s]Loading weights:  99%|█████████▉| 700/707 [00:00<00:00, 3594.86it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 3504.73it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-28 01:30:23 13757:13757 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:30:23 13757:13757 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:30:24 13757:13757 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:30:25 13757:13757 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:30:30 13757:13757 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:30:30 13757:13757 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:30:31 13757:13757 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:30:32 13757:13757 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:30:38 13757:13757 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:30:38 13757:13757 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:30:38 13757:13757 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:30:40 13757:13757 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:30:47 13757:13757 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:30:47 13757:13757 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 01:30:47 13757:13757 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 01:30:48 13757:13757 SyncActivityProfilerHandler.cpp:46] profiler_stop
+merged: 128 groups of Linears as one product each
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 16 s; weights 49.24 GB against 65.52 GB bf16 (75.1%), scratch 0.27 GB, VRAM in use 49.57 GB on 1 GPU
+glyd mma12 fused: batch 1: 14.9 tokens/s (14.9 a sequence), peak VRAM 49.59 GB
+glyd mma12 fused: batch 8: 115.0 tokens/s (14.4 a sequence), peak VRAM 49.68 GB
+glyd mma12 fused: batch 32: 430.0 tokens/s (13.4 a sequence), peak VRAM 50.04 GB
+glyd mma12 fused: batch 64: 818.1 tokens/s (12.8 a sequence), peak VRAM 50.45 GB
+glyd mma12 profile, batch 1: 58.68 ms a step, GPU busy 34.76 ms a step after the prompt (29 tokens/s of GPU time), 37.35 ms for the prompt and a token
+    28.351 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     0.950 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.803 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+     0.733 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.488 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.392 ms  void at::native::vectorized_elementwise_kernel<8, at::native::CUDAFunctor_add<c10::BFloat1
+glyd mma12 profile, batch 8: 66.84 ms a step, GPU busy 37.53 ms a step after the prompt (213 tokens/s of GPU time), 43.18 ms for the prompt and a token
+    29.491 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     1.703 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.289 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.575 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.542 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.516 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl<at::native::direct
+glyd mma12 profile, batch 32: 68.69 ms a step, GPU busy 40.65 ms a step after the prompt (787 tokens/s of GPU time), 133.65 ms for the prompt and a token
+    30.983 ms  void mma12_tma_kernel<32, 2>(CUtensorMap_st, Nib, long, long, long, __nv_bfloat16 const*, 
+     2.007 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.789 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.849 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.598 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.545 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl<at::native::direct
+glyd mma12 profile, batch 64: 73.33 ms a step, GPU busy 43.90 ms a step after the prompt (1458 tokens/s of GPU time), 161.27 ms for the prompt and a token
+    32.676 ms  void mma12_tma_kernel<64, 2>(CUtensorMap_st, Nib, long, long, long, __nv_bfloat16 const*, 
+     2.079 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     2.035 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.181 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.720 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.701 ms  cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_1_64x32x128_4x1x1_cga1x1x1
+text:  in 1948 with the publication of A Mathematical Theory of Communication by the Bell Labs researcher Claude Shannon. In this paper, Shannon introduced the concept of

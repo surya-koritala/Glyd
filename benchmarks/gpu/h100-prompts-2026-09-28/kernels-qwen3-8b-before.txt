@@ -1,0 +1,36 @@
+NVIDIA H100 PCIe (9, 0) layer 12
+qkv 6144x4096 (5 copies bf16, 6 packed)
+  M= 129  cuBLAS    32.0  wg    58.2  dec    82.0   best wg 1.82x
+  M= 256  cuBLAS    34.5  wg    60.1  dec    86.3   best wg 1.74x
+  M= 512  cuBLAS    54.7  wg   121.1  dec   104.3   best dec 1.91x
+  M=1024  cuBLAS   108.7  wg   282.8  dec   169.5   best dec 1.56x
+  M=2048  cuBLAS   201.0  wg   596.9  dec   259.6   best dec 1.29x
+  M=4096  cuBLAS   429.8  wg  1094.4  dec   486.4   best dec 1.13x
+o 4096x4096 (7 copies bf16, 9 packed)
+  M= 129  cuBLAS    22.8  wg    48.7  dec    55.9   best wg 2.13x
+  M= 256  cuBLAS    24.3  wg    49.0  dec    56.9   best wg 2.02x
+  M= 512  cuBLAS    38.3  wg    94.5  dec    69.8   best dec 1.82x
+  M=1024  cuBLAS    69.3  wg   201.4  dec   101.4   best dec 1.46x
+  M=2048  cuBLAS   141.8  wg   431.4  dec   177.9   best dec 1.25x
+  M=4096  cuBLAS   288.9  wg   871.6  dec   329.9   best dec 1.14x
+gate_up 24576x4096 (2 copies bf16, 2 packed)
+  M= 129  cuBLAS   123.4  wg   206.1  dec   333.5   best wg 1.67x
+  M= 256  cuBLAS   127.1  wg   230.4  dec   356.2   best wg 1.81x
+  M= 512  cuBLAS   235.4  wg   464.2  dec   457.3   best dec 1.94x
+  M=1024  cuBLAS   425.3  wg   916.9  dec   641.7   best dec 1.51x
+  M=2048  cuBLAS   956.4  wg  1833.9  dec  1172.6   best dec 1.23x
+  M=4096  cuBLAS  1900.8  wg  3580.6  dec  2172.7   best dec 1.14x
+down 4096x12288 (3 copies bf16, 3 packed)
+  M= 129  cuBLAS    72.2  wg   101.4  dec   186.9   best wg 1.40x
+  M= 256  cuBLAS    67.0  wg   116.6  dec   188.7   best wg 1.74x
+  M= 512  cuBLAS   109.1  wg   258.8  dec   237.5   best dec 2.18x
+  M=1024  cuBLAS   207.3  wg   509.0  dec   332.5   best dec 1.60x
+  M=2048  cuBLAS   457.6  wg  1004.0  dec   573.1   best dec 1.25x
+  M=4096  cuBLAS   958.2  wg  1976.0  dec  1105.3   best dec 1.15x
+layer total (us):
+  M= 129  cuBLAS   250.4  dec   658.3  wg   414.5  glyd   658.3  best   414.5 1.66x  glyd 2.63x
+  M= 256  cuBLAS   252.9  dec   688.0  wg   456.1  glyd   688.0  best   456.1 1.80x  glyd 2.72x
+  M= 512  cuBLAS   437.4  dec   868.9  wg   938.7  glyd   868.9  best   868.9 1.99x  glyd 1.99x
+  M=1024  cuBLAS   810.7  dec  1245.1  wg  1910.1  glyd  1245.1  best  1245.1 1.54x  glyd 1.54x
+  M=2048  cuBLAS  1756.7  dec  2183.2  wg  3866.2  glyd  2183.2  best  2183.2 1.24x  glyd 1.24x
+  M=4096  cuBLAS  3577.7  dec  4094.3  wg  7522.6  glyd  4094.3  best  4094.3 1.14x  glyd 1.14x

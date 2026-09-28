@@ -1,0 +1,91 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights:  26%|██▌       | 183/707 [00:00<00:00, 1806.85it/s]Loading weights:  53%|█████▎    | 376/707 [00:00<00:00, 1867.19it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 2345.66it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-28 00:44:52 7620:7620 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 00:44:52 7620:7620 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 00:44:52 7620:7620 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 00:44:53 7620:7620 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 00:44:58 7620:7620 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 00:44:58 7620:7620 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 00:44:59 7620:7620 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 00:45:00 7620:7620 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 00:45:05 7620:7620 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 00:45:05 7620:7620 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 00:45:05 7620:7620 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 00:45:06 7620:7620 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 00:45:13 7620:7620 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 00:45:13 7620:7620 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 00:45:13 7620:7620 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 00:45:14 7620:7620 SyncActivityProfilerHandler.cpp:46] profiler_stop
+merged: 128 groups of Linears as one product each
+bf16 (weights 65.52 GB): batch 1: 13.9 tokens/s (13.9 a sequence), peak VRAM 65.57 GB
+bf16 (weights 65.52 GB): batch 8: 108.3 tokens/s (13.5 a sequence), peak VRAM 65.66 GB
+bf16 (weights 65.52 GB): batch 32: 411.2 tokens/s (12.8 a sequence), peak VRAM 65.98 GB
+bf16 (weights 65.52 GB): batch 64: 797.5 tokens/s (12.5 a sequence), peak VRAM 66.40 GB
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 14 s; weights 49.24 GB against 65.52 GB bf16 (75.1%), scratch 0.27 GB, VRAM in use 49.61 GB on 1 GPU
+glyd mma12 fused: batch 1: 25.0 tokens/s (25.0 a sequence), peak VRAM 49.62 GB
+glyd mma12 fused: batch 8: 186.6 tokens/s (23.3 a sequence), peak VRAM 49.72 GB
+glyd mma12 fused: batch 32: 611.3 tokens/s (19.1 a sequence), peak VRAM 50.05 GB
+glyd mma12 fused: batch 64: 1095.2 tokens/s (17.1 a sequence), peak VRAM 50.46 GB
+glyd mma12 profile, batch 1: 52.92 ms a step, GPU busy 34.75 ms a step after the prompt (29 tokens/s of GPU time), 37.29 ms for the prompt and a token
+    28.308 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     0.952 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.811 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+     0.725 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.486 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.408 ms  void at::native::vectorized_elementwise_kernel<8, at::native::CUDAFunctor_add<c10::BFloat1
+glyd mma12 profile, batch 8: 53.43 ms a step, GPU busy 37.48 ms a step after the prompt (213 tokens/s of GPU time), 49.44 ms for the prompt and a token
+    29.447 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     1.719 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.294 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.576 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.545 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.504 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl<at::native::direct
+glyd mma12 profile, batch 32: 61.28 ms a step, GPU busy 44.97 ms a step after the prompt (712 tokens/s of GPU time), 134.39 ms for the prompt and a token
+    35.349 ms  void mma12_tma_kernel<32, 4>(CUtensorMap_st, Nib, long, long, long, __nv_bfloat16 const*, 
+     1.980 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.792 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.850 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.592 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.556 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl<at::native::direct
+glyd mma12 profile, batch 64: 63.19 ms a step, GPU busy 49.84 ms a step after the prompt (1284 tokens/s of GPU time), 162.23 ms for the prompt and a token
+    38.699 ms  void mma12_tma_kernel<64, 4>(CUtensorMap_st, Nib, long, long, long, __nv_bfloat16 const*, 
+     2.098 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     1.989 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     1.174 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.714 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.703 ms  cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_1_64x32x128_4x1x1_cga1x1x1
+logits bit-identical: False
+generated tokens identical to bf16: 17 of 32
+text:  in 1948 with the publication of A Mathematical Theory of Communication by the Bell Labs researcher Claude Shannon. In this paper, Shannon introduced the concept of
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights:  39%|███▉      | 274/707 [00:00<00:00, 2738.19it/s]Loading weights:  97%|█████████▋| 686/707 [00:00<00:00, 3532.80it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 3476.01it/s]
+[W928 00:46:27.449883968 CUDACachingAllocator.cpp:3934] memory allocation failed with OOM on device 0 while trying to allocate 524288000 bytes (free: 232980480, total: 85017493504).
+[W928 00:46:27.450646564 CUDACachingAllocator.cpp:3934] memory allocation failed with OOM on device 0 while trying to allocate 524288000 bytes (free: 232980480, total: 85017493504).
+merged: 128 groups of Linears as one product each
+Traceback (most recent call last):
+  File "/home/ubuntu/hop/gpu/e2e.py", line 374, in <module>
+    on_gpus(model)
+  File "/home/ubuntu/hop/gpu/e2e.py", line 263, in on_gpus
+    m.cuda()
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/transformers/modeling_utils.py", line 3645, in cuda
+    return super().cuda(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1098, in cuda
+    return self._apply(lambda t: t.cuda(device))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 933, in _apply
+    module._apply(fn)
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 933, in _apply
+    module._apply(fn)
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 933, in _apply
+    module._apply(fn)
+  [Previous line repeated 3 more times]
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 966, in _apply
+    param_applied = fn(param)
+                    ^^^^^^^^^
+  File "/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/nn/modules/module.py", line 1098, in <lambda>
+    return self._apply(lambda t: t.cuda(device))
+                                 ^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 500.00 MiB. GPU 0 has a total capacity of 79.18 GiB of which 222.19 MiB is free. Including non-PyTorch memory, this process has 78.95 GiB memory in use. Of the allocated memory 74.78 GiB is allocated by PyTorch, and 3.56 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)

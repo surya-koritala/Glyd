@@ -147,7 +147,7 @@ for (O, K), wild in [((1000, 512), 0.01), ((304, 2304), 0.02), ((17008, 384), 0.
 # refused elsewhere), as the self-test's matrices: odd row blocks, units shared by blocks, escapes and exceptions few
 # and many.
 hopper = torch.cuda.get_device_capability() == (9, 0)
-for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02)]:
+for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02), (17408, 1024, 0.01)]:
     w = weights(O * K, wild).view(O, K)
     bias = torch.randn(O, dtype=bf, device=dev)
     for q in (g.pack_mma(w), g.pack_mma12(w)):
@@ -333,7 +333,7 @@ for q, lin in zip(packs, hopper):
 # the order there), then one past the order's end (the order to there again); another order between (recorded, then
 # followed), then the first again; at 600 tokens, then 2100 (the order kept). The products on the order (as many as
 # said, from the first) bit for bit as with their matrices decoded on the current stream, the rest the fused
-# kernel's (on Hopper, whose prompts take no fused kernel, decoded on the current stream too), below the threshold
+# kernel's (on Hopper, whose prompts past WG_MAX take no fused kernel, decoded on the current stream too), below the threshold
 # the step's kernel's.
 shapes = [(1024, 512), (512, 1024), (3072, 512), (512, 1536), (192, 512), (2048, 1024)]
 lins = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
