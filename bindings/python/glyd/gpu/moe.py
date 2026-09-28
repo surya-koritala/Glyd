@@ -165,7 +165,8 @@ def _counters(p, E):
 
 def _take_over(m, run):
     """m's forward run(m, ...) (m.glyd_run): its class's taken over once, the class's own where a module has none (not
-    packed, another model's). Nothing of m's refers to m, so a model let go of is freed with no garbage collection."""
+    packed, another model's). Nothing of m's refers to m, so a model let go of is freed with no garbage collection
+    (but where accelerate's hook, which refers to its module, is on it)."""
     cls = type(m)
     if getattr(cls.forward, "glyd_own", None) is None:
         own = cls.forward
@@ -176,6 +177,8 @@ def _take_over(m, run):
         forward_.glyd_own = own
         cls.forward = forward_
     m.glyd_run = run
+    if hasattr(m, "_old_forward"):  # accelerate's hook (a device map over several GPUs, put before the packs) calls the forward it found
+        m._old_forward = cls.forward.__get__(m)
     object.__setattr__(m, "__reduce_ex__", _uncopyable)  # (a copy would share the packs; refused, as a packed Experts module is)
 
 

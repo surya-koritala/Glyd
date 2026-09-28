@@ -276,6 +276,30 @@ def experts(model):
     return out
 
 
+def tiny_model(torch, kind, over):
+    """A tiny random model of kind on the GPU in fp32 (its weights N(0, 0.05), seeded): (the model, its Auto class,
+    its config, token ids [4, 16], the forward's other arguments)."""
+    from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoModelForSeq2SeqLM, AutoModelForTokenClassification
+
+    cfg = tiny(kind, over)
+    torch.manual_seed(0)  # what the model's initialization draws (attention sinks ...)
+    with torch.device("cuda"):
+        for auto in (AutoModelForCausalLM, AutoModelForImageTextToText, AutoModelForTokenClassification, AutoModelForSeq2SeqLM):
+            try:
+                model = auto.from_config(cfg, dtype=torch.float32).eval()
+                break
+            except ValueError:
+                pass
+    gen = torch.Generator(device="cuda").manual_seed(0)
+    ids = torch.randint(0, cfg.get_text_config().vocab_size, (4, 16), device="cuda", generator=gen)
+    with torch.no_grad():
+        for p in model.parameters():
+            if p.dim() >= 2 and p.is_floating_point():
+                p.normal_(0, 0.05, generator=gen)
+    kw = dict(decoder_input_ids=ids) if kind == "diffusion_gemma" or cfg.is_encoder_decoder else {}  # a decoder's tokens (DiffusionGemma's canvas, else drawn at random)
+    return model, auto, cfg, ids, kw
+
+
 def moe_family(torch, kind, over, d):
     """A tiny random model of kind on the GPU (fp32, then bf16) saved as a checkpoint in d, loaded by
     glyd.from_pretrained: every expert's weight packed, in fewer bytes; logits as close to fp32's as bf16's (the
@@ -285,26 +309,11 @@ def moe_family(torch, kind, over, d):
     medians, Glyd's (the tiered layout's) and bf16's."""
     import copy
     import glyd
-    from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoModelForSeq2SeqLM, AutoModelForTokenClassification
     from glyd.gpu import format as fmt, moe
 
-    cfg = tiny(kind, over)
-    torch.manual_seed(0)  # what the model's initialization draws (attention sinks ...)
-    with torch.device("cuda"):
-        for auto in (AutoModelForCausalLM, AutoModelForImageTextToText, AutoModelForTokenClassification, AutoModelForSeq2SeqLM):
-            try:
-                fp32 = auto.from_config(cfg, dtype=torch.float32).eval()
-                break
-            except ValueError:
-                pass
-    gen = torch.Generator(device="cuda").manual_seed(0)
-    ids = torch.randint(0, cfg.get_text_config().vocab_size, (4, 16), device="cuda", generator=gen)
-    kw = dict(decoder_input_ids=ids) if kind == "diffusion_gemma" or cfg.is_encoder_decoder else {}  # a decoder's tokens (DiffusionGemma's canvas, else drawn at random)
+    fp32, auto, cfg, ids, kw = tiny_model(torch, kind, over)
     run = lambda model: model(ids, **kw).logits.float()
     with torch.no_grad():
-        for p in fp32.parameters():
-            if p.dim() >= 2 and p.is_floating_point():
-                p.normal_(0, 0.05, generator=gen)
         l32 = run(fp32)
         bf16 = fp32.to(torch.bfloat16)
         experts_bytes = sum(p.numel() * 2 for n, p in bf16.named_parameters() if n in {e for e, _ in experts(bf16)})
@@ -355,6 +364,41 @@ def test_moe_families():
             moe_family(torch, kind, over, d)
             shutil.rmtree(d)
             os.makedirs(d)
+
+
+def test_hooks_put_before_the_packs():
+    """The families run by their own code (moe.OWN) packed after accelerate's hooks were put on their modules, as a
+    device map over several GPUs puts them before the packs are made (from_pretrained): the logits as without the
+    hooks, fused and exact. In a process of its own, where no class has been taken over yet (a hook put after
+    captures the forward that took over, the case that works anyway)."""
+    torch = cuda()
+    if torch is None:
+        print("test_hooks_put_before_the_packs: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    code = """
+import copy, torch
+import test_gpu as t
+import glyd.gpu as gg
+from accelerate.hooks import ModelHook, add_hook_to_module
+for kind in ("llama4_text", "dbrx", "aria_text", "jetmoe", "step3p7", "longcat_flash", "qwen3_moe"):
+    model, auto, cfg, ids, kw = t.tiny_model(torch, kind, t.FAMILIES[kind])
+    run = lambda m: m(ids, **kw).logits.float()
+    with torch.no_grad():
+        bf16 = model.to(torch.bfloat16)
+        hooked = [copy.deepcopy(bf16), copy.deepcopy(bf16)]
+        for m in hooked:
+            for mod in m.modules():
+                add_hook_to_module(mod, ModelHook())
+        gg.compress(hooked[0])
+        gg.compress(hooked[1], exact=True)
+        plain = gg.compress(copy.deepcopy(bf16))
+        assert torch.equal(run(hooked[0]), run(plain)), kind
+        assert torch.equal(run(hooked[1]), run(bf16)), kind
+print("ok")
+"""
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join([HERE] + [p for p in [os.environ.get("PYTHONPATH")] if p]))
+    r = subprocess.run([sys.executable, "-c", code], cwd=HERE, env=env, capture_output=True, text=True)
+    assert r.stdout.strip().endswith("ok"), r.stderr[-3000:]
 
 
 def test_cli_pack_and_verify():
