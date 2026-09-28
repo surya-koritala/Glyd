@@ -45,8 +45,8 @@ every earlier format.
   Ada the fused kernel runs blocks of 128 tokens where the last block of
   256 would be half empty or less, to 1024 tokens tiered and 4224 12-bit
   (300 tokens: 0.79-0.89x the time; past 1024 the tiered layout's cost
-  1-7% more from 1600 tokens, the 12-bit's 1-4% less; elsewhere as
-  before, until measured). The decode ahead is off until
+  1.3-6.9% more from 1600 tokens, the 12-bit's 0.8-4.5% less to 4224;
+  elsewhere as before, until measured). The decode ahead is off until
   measured on an A100, an H100 and the L4, L40S and RTX 6000 Ada
   (`GLYD_AHEAD_MIN=513` takes it).
 

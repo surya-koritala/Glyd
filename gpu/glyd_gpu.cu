@@ -3052,8 +3052,9 @@ static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
     // the last block of 256 would be more than half full (else its empty half costs more than the second
     // decode: a Qwen3-4B layer's products take 0.79-0.89x the time in blocks of 128 at 300 tokens, 1.02-1.14x
     // at 448, RTX 4080 SUPER; elsewhere not measured), to 1024 tokens tiered and 4224 12-bit, as measured (past
-    // 1024 blocks of 128 cost Qwen3-1.7B's and Qwen3-4B's tiered layers 1-7% more from 1600 tokens, and save
-    // their 12-bit layers 1-4% to 4224). Stream-K likewise on GeForce Ada only, where it was measured.
+    // 1024 blocks of 128 cost Qwen3-1.7B's and Qwen3-4B's tiered layers -0.2-1.3% more at 1025-1152 tokens and
+    // 1.3-6.9% from 1600, and save their 12-bit layers 0.8-4.5% to 4224). Stream-K likewise on GeForce Ada only,
+    // where it was measured.
     bool ada = geforce_ada(current_device());
     int64_t most = std::is_same_v<Fmt, Nib> ? 4224 : 1024;
     if (variant == 0) variant = M > 128 && (M % 256 == 0 || M % 256 > 128 || M > most || !ada) ? 2 : 1;
