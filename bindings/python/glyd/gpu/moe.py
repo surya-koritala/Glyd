@@ -168,8 +168,8 @@ def _take_over(m, run):
     packed, another model's). Nothing of m's refers to m, so a model let go of is freed with no garbage collection
     (but where accelerate's hook, which refers to its module, is on it)."""
     cls = type(m)
-    if getattr(cls.forward, "glyd_own", None) is None:
-        own = cls.forward
+    own = cls.forward  # read once: two threads taking it over at once wrap the class's own, the last one kept
+    if getattr(own, "glyd_own", None) is None:
 
         def forward_(self, *args, **kwargs):
             return (getattr(self, "glyd_run", None) or own)(self, *args, **kwargs)
@@ -282,7 +282,7 @@ def _decoding(cls):
     (GenerationMixin._optimize_model_for_decode, around its decoding loop): cls's taken over once to tell the
     model's Experts modules while it lasts, so that the reference (exact, a module not packed) follows it. The class's,
     not the model's: a copy (copy.deepcopy, pickle) follows it too, and nothing of the model's refers to it."""
-    own = cls._optimize_model_for_decode
+    own = cls._optimize_model_for_decode  # read once (see _take_over)
     if getattr(own, "glyd_own", None) is not None:
         return
 
