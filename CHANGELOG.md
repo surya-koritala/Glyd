@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.22.0 — 2026-09-28
 
 - Prompts of 129-512 tokens on Hopper multiply straight from the packed
   weights (`mma_gemm_wg`: `GLYD_WG_MAX` is 512, was 128), where each
