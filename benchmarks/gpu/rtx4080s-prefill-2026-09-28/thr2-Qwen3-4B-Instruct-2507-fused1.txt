@@ -1,0 +1,10 @@
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 17147.92it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 8.04 GB): batch 1: 62.3 tokens/s (62.3 a sequence), peak VRAM 8.12 GB
+bf16 prefill: 1024 tokens 95.7 ms (10696 tokens/s), first token 97.1 ms, 1088 tokens 111.1 ms (9796 tokens/s), first token 112.2 ms, 1152 tokens 113.1 ms (10184 tokens/s), first token 114.2 ms, 1280 tokens 121.6 ms (10531 tokens/s), first token 122.6 ms, 1408 tokens 136.5 ms (10314 tokens/s), first token 137.7 ms
+mma12 fused: packed in 2 s; weights 6.60 GB against 8.04 GB bf16 (82.0%), scratch 0.27 GB, VRAM in use 6.88 GB on 1 GPU
+glyd mma12 fused: batch 1: 72.7 tokens/s (72.7 a sequence), peak VRAM 6.89 GB
+glyd mma12 prefill: 1024 tokens 98.0 ms (10447 tokens/s), first token 99.2 ms, 1088 tokens 111.2 ms (9780 tokens/s), first token 112.4 ms, 1152 tokens 114.1 ms (10100 tokens/s), first token 115.2 ms, 1280 tokens 123.7 ms (10344 tokens/s), first token 124.9 ms, 1408 tokens 139.5 ms (10096 tokens/s), first token 140.6 ms
+logits bit-identical: False
+generated tokens identical to bf16: 8 of 8
+text:  in the 1940s

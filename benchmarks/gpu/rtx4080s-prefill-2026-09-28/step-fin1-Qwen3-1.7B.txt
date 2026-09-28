@@ -1,0 +1,8 @@
+Qwen3-1.7B layer 10: qkv (4096, 2048), o (2048, 2048), gate_up (12288, 2048), down (2048, 6144)
+  mma   M=   65: layer cuBLAS     241 us, v0     227 (0.942x)  [qkv 43/44 | o 24/30 | gate_up 111/94 | down 63/58]
+  mma   M=   96: layer cuBLAS     249 us, v0     231 (0.928x)  [qkv 41/45 | o 24/32 | gate_up 120/95 | down 65/59]
+  mma   M=  128: layer cuBLAS     259 us, v0     237 (0.914x)  [qkv 42/46 | o 24/33 | gate_up 128/97 | down 66/61]
+  exceptions a step: qkv 0.220 (max 4), o 0.276 (max 7), gate_up 0.233 (max 5), down 0.261 (max 6)
+  mma12 M=   65: layer cuBLAS     244 us, v0     224 (0.920x)  [qkv 43/44 | o 24/29 | gate_up 114/96 | down 63/55]
+  mma12 M=   96: layer cuBLAS     243 us, v0     230 (0.948x)  [qkv 41/46 | o 24/31 | gate_up 114/97 | down 65/57]
+  mma12 M=  128: layer cuBLAS     249 us, v0     234 (0.940x)  [qkv 41/48 | o 24/32 | gate_up 118/97 | down 66/58]

@@ -1,0 +1,10 @@
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 17290.37it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 8.04 GB): batch 1: 61.0 tokens/s (61.0 a sequence), peak VRAM 8.12 GB
+bf16 prefill: 512 tokens 48.9 ms (10475 tokens/s), first token 50.0 ms, 640 tokens 62.7 ms (10204 tokens/s), first token 63.8 ms, 768 tokens 72.9 ms (10528 tokens/s), first token 74.0 ms, 896 tokens 88.3 ms (10143 tokens/s), first token 89.4 ms, 1024 tokens 96.1 ms (10654 tokens/s), first token 97.2 ms, 1536 tokens 147.1 ms (10440 tokens/s), first token 148.2 ms, 2048 tokens 197.8 ms (10354 tokens/s), first token 198.9 ms, 3072 tokens 313.5 ms (9799 tokens/s), first token 314.6 ms, 4096 tokens 444.8 ms (9209 tokens/s), first token 445.8 ms
+mma12 fused: packed in 2 s; weights 6.60 GB against 8.04 GB bf16 (82.0%), scratch 0.27 GB, VRAM in use 6.88 GB on 1 GPU
+glyd mma12 fused: batch 1: 72.8 tokens/s (72.8 a sequence), peak VRAM 6.89 GB
+glyd mma12 prefill: 512 tokens 50.4 ms (10159 tokens/s), first token 51.6 ms, 640 tokens 63.6 ms (10057 tokens/s), first token 64.8 ms, 768 tokens 74.3 ms (10337 tokens/s), first token 76.4 ms, 896 tokens 89.2 ms (10047 tokens/s), first token 90.3 ms, 1024 tokens 99.9 ms (10253 tokens/s), first token 101.0 ms, 1536 tokens 149.5 ms (10271 tokens/s), first token 150.6 ms, 2048 tokens 199.2 ms (10282 tokens/s), first token 200.3 ms, 3072 tokens 315.1 ms (9750 tokens/s), first token 316.7 ms, 4096 tokens 446.1 ms (9182 tokens/s), first token 447.6 ms
+logits bit-identical: False
+generated tokens identical to bf16: 8 of 8
+text:  in the 1940s

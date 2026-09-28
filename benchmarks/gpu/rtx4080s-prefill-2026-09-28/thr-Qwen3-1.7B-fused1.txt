@@ -1,0 +1,10 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 20872.86it/s]
+merged: 56 groups of Linears as one product each
+bf16 (weights 3.44 GB): batch 1: 84.8 tokens/s (84.8 a sequence), peak VRAM 3.46 GB
+bf16 prefill: 1536 tokens 62.8 ms (24467 tokens/s), first token 63.9 ms, 1664 tokens 67.3 ms (24733 tokens/s), first token 68.3 ms, 1728 tokens 72.2 ms (23929 tokens/s), first token 73.3 ms, 1792 tokens 73.1 ms (24526 tokens/s), first token 74.1 ms, 1856 tokens 74.1 ms (25058 tokens/s), first token 75.2 ms, 1920 tokens 75.0 ms (25587 tokens/s), first token 76.1 ms, 1984 tokens 85.3 ms (23255 tokens/s), first token 86.4 ms, 2047 tokens 86.3 ms (23725 tokens/s), first token 87.3 ms, 2048 tokens 86.3 ms (23731 tokens/s), first token 87.3 ms, 2304 tokens 94.4 ms (24409 tokens/s), first token 95.5 ms, 2560 tokens 101.5 ms (25212 tokens/s), first token 102.6 ms, 3072 tokens 127.6 ms (24071 tokens/s), first token 128.8 ms, 4096 tokens 185.0 ms (22137 tokens/s), first token 186.0 ms
+mma12 fused: packed in 1 s; weights 3.03 GB against 3.44 GB bf16 (87.9%), scratch 0.27 GB, VRAM in use 3.31 GB on 1 GPU
+glyd mma12 fused: batch 1: 96.1 tokens/s (96.1 a sequence), peak VRAM 3.32 GB
+glyd mma12 prefill: 1536 tokens 62.8 ms (24473 tokens/s), first token 63.9 ms, 1664 tokens 67.6 ms (24601 tokens/s), first token 68.8 ms, 1728 tokens 72.4 ms (23851 tokens/s), first token 74.0 ms, 1792 tokens 73.7 ms (24329 tokens/s), first token 74.8 ms, 1856 tokens 76.5 ms (24258 tokens/s), first token 77.6 ms, 1920 tokens 77.3 ms (24824 tokens/s), first token 78.5 ms, 1984 tokens 83.4 ms (23798 tokens/s), first token 84.5 ms, 2047 tokens 84.3 ms (24277 tokens/s), first token 85.4 ms, 2048 tokens 84.3 ms (24286 tokens/s), first token 85.4 ms, 2304 tokens 95.6 ms (24106 tokens/s), first token 96.7 ms, 2560 tokens 106.0 ms (24152 tokens/s), first token 107.1 ms, 3072 tokens 130.6 ms (23520 tokens/s), first token 131.7 ms, 4096 tokens 180.7 ms (22664 tokens/s), first token 181.9 ms
+logits bit-identical: False
+generated tokens identical to bf16: 8 of 8
+text:  in the 1950s

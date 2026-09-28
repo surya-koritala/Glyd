@@ -70,12 +70,14 @@ kernels._ext = _ext
 
 
 if __name__ == "__main__":
-    # The many-token products against the fp32 product: mma_gemm_mid (Ampere on), mma_gemm_wg (Hopper). Odd row
-    # blocks, units shared by blocks, exceptions few and many (past a stage's copy: read from global memory),
-    # 1-600 tokens, bias; the same every run.
+    # The many-token products against the fp32 product: mma_gemm_mid (Ampere on), mma_gemm_wg (Hopper), and a
+    # prompt's mma_gemm_big (every GPU but Hopper, both layouts: on GeForce Ada its consumers of half a row block,
+    # blocks of 128 tokens and of 256, to 1100). Odd row blocks, units shared by blocks, exceptions few and many (past
+    # a stage's copy: read from global memory), 1-600 tokens, bias; the same every run.
     import torch.nn.functional as F
     assert torch.cuda.get_device_capability()[0] >= 8, "Ampere or later"
-    products = [("mma_gemm_mid", mma_gemm_mid)] + ([("mma_gemm_wg", mma_gemm_wg)] if torch.cuda.get_device_capability() == (9, 0) else [])
+    hopper = torch.cuda.get_device_capability() == (9, 0)
+    products = [("mma_gemm_mid", mma_gemm_mid)] + ([("mma_gemm_wg", mma_gemm_wg)] if hopper else [("mma_gemm_big", mma_gemm_big)])
     torch.manual_seed(0)
     for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02), (17408, 1024, 0.01)]:
         w = torch.randn(O, K, device="cuda") * 0.02
@@ -86,11 +88,13 @@ if __name__ == "__main__":
         assert torch.equal(mma_unpack(q).view(torch.int16), w.view(torch.int16))
         bias = torch.randn(O, device="cuda").to(torch.bfloat16)
         for name, prod in products:
-            for M in [1, 7, 16, 17, 32, 33, 64, 65, 100, 128, 129, 256, 257, 600]:
-                x = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
-                for b in (None, bias):
-                    ref = F.linear(x.float(), w.float(), None if b is None else b.float())
-                    y = prod(q, x, b)
-                    err = ((y.float() - ref).abs().max() / ref.abs().max()).item()
-                    assert err < 1e-2 and torch.equal(y, prod(q, x, b)), (name, O, K, wild, M, err)
-            print(f"{name} {O}x{K}, {int(q.exc_base[-1])} exceptions: 1-600 tokens within 1e-2, the same every run")
+            big = name == "mma_gemm_big"
+            for p in (q, pack_mma(w)) if big else (q,):
+                for M in [1, 7, 16, 17, 32, 33, 64, 65, 100, 128, 129, 256, 257, 600] + ([400, 1100] if big else []):
+                    x = torch.randn(M, K, dtype=torch.bfloat16, device="cuda")
+                    for b in (None, bias):
+                        ref = F.linear(x.float(), w.float(), None if b is None else b.float())
+                        y = prod(p, x, b)
+                        err = ((y.float() - ref).abs().max() / ref.abs().max()).item()
+                        assert err < 1e-2 and torch.equal(y, prod(p, x, b)), (name, type(p).__name__, O, K, wild, M, err)
+            print(f"{name} {O}x{K}, {int(q.exc_base[-1])} exceptions: 1-{1100 if big else 600} tokens within 1e-2, the same every run")

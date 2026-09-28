@@ -1,0 +1,9 @@
+main1 Qwen3-1.7B glyd mma12 prefill: 2048 tokens 87.1 ms (23512 tokens/s), first token 88.2 ms, 4096 tokens 185.4 ms (22092 tokens/s), first token 186.5 ms
+fin1 Qwen3-1.7B glyd mma12 prefill: 2048 tokens 86.9 ms (23554 tokens/s), first token 88.2 ms, 4096 tokens 185.0 ms (22146 tokens/s), first token 186.1 ms
+fin2 Qwen3-1.7B glyd mma12 prefill: 2048 tokens 87.3 ms (23470 tokens/s), first token 88.3 ms, 4096 tokens 185.4 ms (22093 tokens/s), first token 186.5 ms
+main2 Qwen3-1.7B glyd mma12 prefill: 2048 tokens 87.3 ms (23460 tokens/s), first token 88.4 ms, 4096 tokens 185.4 ms (22089 tokens/s), first token 186.5 ms
+main1 Qwen3-4B-Instruct-2507 glyd mma12 prefill: 2048 tokens 199.0 ms (10293 tokens/s), first token 200.1 ms, 4096 tokens 445.7 ms (9191 tokens/s), first token 446.8 ms
+fin1 Qwen3-4B-Instruct-2507 glyd mma12 prefill: 2048 tokens 199.0 ms (10291 tokens/s), first token 200.1 ms, 4096 tokens 445.7 ms (9191 tokens/s), first token 446.7 ms
+fin2 Qwen3-4B-Instruct-2507 glyd mma12 prefill: 2048 tokens 199.0 ms (10290 tokens/s), first token 200.1 ms, 4096 tokens 445.7 ms (9191 tokens/s), first token 446.8 ms
+main2 Qwen3-4B-Instruct-2507 glyd mma12 prefill: 2048 tokens 199.0 ms (10290 tokens/s), first token 200.1 ms, 4096 tokens 445.7 ms (9191 tokens/s), first token 446.8 ms
+LONG-DONE

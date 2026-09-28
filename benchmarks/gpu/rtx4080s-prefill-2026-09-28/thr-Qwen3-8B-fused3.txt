@@ -1,0 +1,6 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 18318.34it/s]
+merged: 72 groups of Linears as one product each
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.40 GB, VRAM in use 12.68 GB on 1 GPU
+glyd mma12 fused: batch 1: 46.7 tokens/s (46.7 a sequence), peak VRAM 12.68 GB
+glyd mma12 prefill: 1536 tokens 257.8 ms (5958 tokens/s), first token 259.2 ms, 1664 tokens 285.8 ms (5823 tokens/s), first token 286.9 ms, 1728 tokens 302.6 ms (5711 tokens/s), first token 303.7 ms, 1792 tokens 305.1 ms (5874 tokens/s), first token 306.2 ms, 1856 tokens 326.4 ms (5687 tokens/s), first token 327.5 ms, 1920 tokens 328.9 ms (5837 tokens/s), first token 330.0 ms, 1984 tokens 348.4 ms (5695 tokens/s), first token 349.5 ms, 2047 tokens 351.6 ms (5822 tokens/s), first token 352.7 ms, 2048 tokens 350.9 ms (5836 tokens/s), first token 352.1 ms, 2304 tokens 405.1 ms (5688 tokens/s), first token 406.1 ms, 2560 tokens 454.6 ms (5631 tokens/s), first token 454.6 ms, 3072 tokens 558.1 ms (5504 tokens/s), first token 560.8 ms, 4096 tokens 784.7 ms (5220 tokens/s), first token 786.0 ms
+text:  with the invention of the telegraph in

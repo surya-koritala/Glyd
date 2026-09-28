@@ -1,0 +1,18 @@
+Qwen3-8B layer 10: qkv (6144, 4096), o (4096, 4096), gate_up (24576, 4096), down (4096, 12288)
+  exceptions a step: qkv 0.258 (max 5), o 0.276 (max 14), gate_up 0.235 (max 4), down 0.212 (max 5)
+  mma12 M=  256: layer cuBLAS    1144 us, v0    1046 (0.915x)  [qkv 166/144 | o 107/101 | gate_up 608/530 | down 263/270]
+  mma12 M=  300: layer cuBLAS    1544 us, v0    1590 (1.030x)  [qkv 209/212 | o 142/151 | gate_up 807/817 | down 386/411]
+  mma12 M=  512: layer cuBLAS    2064 us, v0    2022 (0.980x)  [qkv 268/273 | o 184/188 | gate_up 1008/1035 | down 603/525]
+  mma12 M=  640: layer cuBLAS    2363 us, v0    2520 (1.066x)  [qkv 315/329 | o 212/222 | gate_up 1217/1332 | down 620/637]
+  mma12 M=  896: layer cuBLAS    3592 us, v0    3550 (0.988x)  [qkv 454/468 | o 313/322 | gate_up 1806/1842 | down 1019/918]
+  mma12 M= 1024: layer cuBLAS    4049 us, v0    3974 (0.981x)  [qkv 607/532 | o 407/360 | gate_up 2012/2052 | down 1023/1029]
+  mma12 M= 2048: layer cuBLAS    7764 us, v0    7852 (1.011x)  [qkv 1010/1044 | o 712/702 | gate_up 4004/4072 | down 2039/2033]
+  mma12 M= 4096: layer cuBLAS   15428 us, v0   15728 (1.019x)  [qkv 2011/2055 | o 1409/1380 | gate_up 7804/8236 | down 4204/4056]
+  mma   M=  256: layer cuBLAS    1150 us, v0    1093 (0.950x)  [qkv 166/152 | o 108/109 | gate_up 612/548 | down 264/285]
+  mma   M=  300: layer cuBLAS    1551 us, v0    1754 (1.131x)  [qkv 210/238 | o 143/167 | gate_up 811/889 | down 387/461]
+  mma   M=  512: layer cuBLAS    2073 us, v0    2099 (1.013x)  [qkv 269/286 | o 185/200 | gate_up 1013/1067 | down 606/547]
+  mma   M=  640: layer cuBLAS    2363 us, v0    2850 (1.206x)  [qkv 314/378 | o 212/258 | gate_up 1218/1469 | down 620/745]
+  mma   M=  896: layer cuBLAS    3598 us, v0    4003 (1.112x)  [qkv 455/528 | o 313/360 | gate_up 1810/2064 | down 1020/1050]
+  mma   M= 1024: layer cuBLAS    4046 us, v0    4115 (1.017x)  [qkv 607/549 | o 406/375 | gate_up 2011/2100 | down 1022/1091]
+  mma   M= 2048: layer cuBLAS    7812 us, v0    8112 (1.039x)  [qkv 1012/1076 | o 711/723 | gate_up 4011/4165 | down 2078/2148]
+  mma   M= 4096: layer cuBLAS   15487 us, v0   16562 (1.069x)  [qkv 2019/2160 | o 1418/1431 | gate_up 7817/8647 | down 4232/4325]

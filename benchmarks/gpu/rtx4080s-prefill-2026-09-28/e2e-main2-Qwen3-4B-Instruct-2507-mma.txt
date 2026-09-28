@@ -1,0 +1,17 @@
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 17112.76it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 8.04 GB): batch 1: 62.9 tokens/s (62.9 a sequence), peak VRAM 8.13 GB
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+bf16 (weights 8.04 GB): batch 8: 465.3 tokens/s (58.2 a sequence), peak VRAM 8.24 GB
+bf16 (weights 8.04 GB): batch 32: 1633.3 tokens/s (51.0 a sequence), peak VRAM 8.54 GB
+bf16 (weights 8.04 GB): batch 64: 2887.3 tokens/s (45.1 a sequence), peak VRAM 8.98 GB
+bf16 prefill: 128 tokens 20.7 ms (6189 tokens/s), first token 21.8 ms, 256 tokens 28.1 ms (9095 tokens/s), first token 29.3 ms, 384 tokens 39.5 ms (9731 tokens/s), first token 40.6 ms, 512 tokens 49.1 ms (10436 tokens/s), first token 50.2 ms, 640 tokens 62.7 ms (10210 tokens/s), first token 63.9 ms, 768 tokens 72.9 ms (10530 tokens/s), first token 74.0 ms, 1024 tokens 96.2 ms (10640 tokens/s), first token 97.8 ms, 1536 tokens 147.8 ms (10391 tokens/s), first token 148.9 ms, 2048 tokens 199.4 ms (10268 tokens/s), first token 200.5 ms, 4096 tokens 447.0 ms (9164 tokens/s), first token 448.0 ms
+mma fused: packed in 5 s; weights 6.00 GB against 8.04 GB bf16 (74.6%), scratch 0.27 GB, VRAM in use 6.32 GB on 1 GPU
+glyd mma fused: batch 1: 76.1 tokens/s (76.1 a sequence), peak VRAM 6.33 GB
+glyd mma fused: batch 8: 569.6 tokens/s (71.2 a sequence), peak VRAM 6.45 GB
+glyd mma fused: batch 32: 1961.8 tokens/s (61.3 a sequence), peak VRAM 6.76 GB
+glyd mma fused: batch 64: 2777.4 tokens/s (43.4 a sequence), peak VRAM 7.20 GB
+glyd mma prefill: 128 tokens 19.5 ms (6580 tokens/s), first token 20.7 ms, 256 tokens 29.3 ms (8747 tokens/s), first token 30.5 ms, 384 tokens 44.8 ms (8566 tokens/s), first token 46.0 ms, 512 tokens 53.0 ms (9665 tokens/s), first token 54.1 ms, 640 tokens 67.8 ms (9438 tokens/s), first token 69.1 ms, 768 tokens 76.7 ms (10007 tokens/s), first token 77.9 ms, 1024 tokens 98.3 ms (10422 tokens/s), first token 99.4 ms, 1536 tokens 150.2 ms (10227 tokens/s), first token 151.3 ms, 2048 tokens 200.3 ms (10226 tokens/s), first token 201.4 ms, 4096 tokens 450.5 ms (9092 tokens/s), first token 451.6 ms
+logits bit-identical: False
+generated tokens identical to bf16: 59 of 64
+text:  in the 1940s with the development of the first compression algorithms, such as the Lempel-Ziv (LZ) family of algorithms. These early algorithms laid the foundation for

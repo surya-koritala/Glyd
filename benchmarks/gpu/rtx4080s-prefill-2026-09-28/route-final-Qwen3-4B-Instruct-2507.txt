@@ -1,0 +1,1 @@
+glyd mma12 prefill: 1664 tokens 164.8 ms (10095 tokens/s), first token 166.7 ms, 1792 tokens 176.7 ms (10143 tokens/s), first token 177.8 ms, 1856 tokens 187.7 ms (9889 tokens/s), first token 188.8 ms, 2047 tokens 199.2 ms (10278 tokens/s), first token 200.4 ms

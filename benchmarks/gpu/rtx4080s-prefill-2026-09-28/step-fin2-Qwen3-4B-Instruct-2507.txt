@@ -1,0 +1,8 @@
+Qwen3-4B-Instruct-2507 layer 10: qkv (6144, 2560), o (2560, 4096), gate_up (19456, 2560), down (2560, 9728)
+  mma   M=   65: layer cuBLAS     483 us, v0     386 (0.799x)  [qkv 80/67 | o 52/53 | gate_up 229/171 | down 122/95]
+  mma   M=   96: layer cuBLAS     490 us, v0     391 (0.798x)  [qkv 82/68 | o 53/54 | gate_up 229/173 | down 125/96]
+  mma   M=  128: layer cuBLAS     498 us, v0     398 (0.799x)  [qkv 88/69 | o 52/54 | gate_up 229/176 | down 128/99]
+  exceptions a step: qkv 0.283 (max 10), o 0.275 (max 16), gate_up 0.220 (max 49), down 0.182 (max 13)
+  mma12 M=   65: layer cuBLAS     485 us, v0     416 (0.857x)  [qkv 81/68 | o 53/56 | gate_up 228/193 | down 123/99]
+  mma12 M=   96: layer cuBLAS     487 us, v0     421 (0.863x)  [qkv 81/68 | o 53/57 | gate_up 228/195 | down 125/101]
+  mma12 M=  128: layer cuBLAS     498 us, v0     426 (0.855x)  [qkv 89/70 | o 52/58 | gate_up 230/196 | down 127/102]

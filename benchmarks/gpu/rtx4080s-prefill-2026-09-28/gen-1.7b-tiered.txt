@@ -1,0 +1,6 @@
+main b1: 97.7  main b8: 776.9  main b32: 3025.7  main b64: 4885.1  
+fin b1: 96.5  fin b8: 775.4  fin b32: 3018.9  fin b64: 4884.7  
+fin b1: 97.1  fin b8: 772.6  fin b32: 2993.4  fin b64: 4884.5  
+main b1: 96.4  main b8: 776.2  main b32: 3016.2  main b64: 4884.5  
+main b1: 98.2  main b8: 780.1  main b32: 3032.0  main b64: 4887.1  
+fin b1: 95.7  fin b8: 760.8  fin b32: 2957.3  fin b64: 4880.1  
