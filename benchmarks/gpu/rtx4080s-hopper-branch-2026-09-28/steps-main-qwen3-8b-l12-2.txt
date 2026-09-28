@@ -1,0 +1,21 @@
+NVIDIA GeForce RTX 4080 SUPER (8, 9) layer 12
+qkv 6144x4096 (5 copies bf16, 6 packed)
+  M=   1  cuBLAS    73.7  mma12    58.0   best mma12 0.79x
+  M=   8  cuBLAS    74.0  mma12    58.5   best mma12 0.79x
+  M=  16  cuBLAS    74.4  mma12    59.4   best mma12 0.80x
+o 4096x4096 (7 copies bf16, 9 packed)
+  M=   1  cuBLAS    50.2  mma12    38.0   best mma12 0.76x
+  M=   8  cuBLAS    49.9  mma12    38.5   best mma12 0.77x
+  M=  16  cuBLAS    50.1  mma12    39.4   best mma12 0.79x
+gate_up 24576x4096 (2 copies bf16, 2 packed)
+  M=   1  cuBLAS   291.6  mma12   222.0   best mma12 0.76x
+  M=   8  cuBLAS   291.5  mma12   227.4   best mma12 0.78x
+  M=  16  cuBLAS   294.1  mma12   232.1   best mma12 0.79x
+down 4096x12288 (3 copies bf16, 3 packed)
+  M=   1  cuBLAS   145.8  mma12   113.1   best mma12 0.78x
+  M=   8  cuBLAS   147.7  mma12   114.9   best mma12 0.78x
+  M=  16  cuBLAS   148.5  mma12   116.8   best mma12 0.79x
+layer total (us):
+  M=   1  cuBLAS   561.3  mma12   431.0  glyd   431.0  best   431.0 0.77x  glyd 0.77x
+  M=   8  cuBLAS   563.1  mma12   439.4  glyd   439.4  best   439.4 0.78x  glyd 0.78x
+  M=  16  cuBLAS   567.0  mma12   447.7  glyd   447.7  best   447.7 0.79x  glyd 0.79x

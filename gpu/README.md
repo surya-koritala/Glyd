@@ -281,7 +281,12 @@ TMA kernel's producer, a step's GPU time at 1 / 8 / 32 / 64 sequences is
 11.13 / 12.32 / 13.48 / 14.64 ms on Qwen3-8B (was 11.26 / 12.46 / 13.55
 / 14.86), 34.65 / 37.34 / 41.24 / 44.41 on Qwen3-32B (was 34.76 / 37.53
 / 40.65 / 43.90: at 32-128 tokens its layer is still 2-5% over
-153fc96's, cause not found) (benchmarks/gpu/h100-prompts-2026-09-28).
+153fc96's, cause not found) (benchmarks/gpu/h100-prompts-2026-09-28). On
+an RTX 4080 SUPER the same changes leave `mma_gemm_mid` (17-64 tokens,
+two warpgroups there) at main's time, within 0.2% at 17-32 tokens and
+0.8% faster at 48-64 on Qwen2.5-7B's matrices, and the steps at main's
+but on Qwen3-8B's layer 2, 2-3% faster; main's library against this
+build bit for bit (benchmarks/gpu/rtx4080s-hopper-branch-2026-09-28).
 
 ### Prompts on an H100
 
