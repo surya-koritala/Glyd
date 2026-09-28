@@ -1,10 +1,12 @@
-"""e2e-{main,fin}{1,2}-MODEL-FMT.txt: one pass and the first token (ms) at each length, bf16 (the runs' median) and
-Glyd main / branch (the mean of each tree's two runs, with its spread), and generation tokens/s."""
-import glob, re, statistics, sys
-logs = sys.argv[1] if len(sys.argv) > 1 else "/home/surya-koritala/p6prefill/logs"
+"""e2e-{main,fin}N-MODEL-FMT.txt (or PREFIX-..., e.g. gen128): one pass and the first token (ms) at each length, bf16
+(the runs' median) and Glyd main / branch (the mean of each tree's runs, with their spread), generation tokens/s, and
+with --profile the GPU's time a step after the prompt (busy, ms).    python e2etab.py [LOGS] [PREFIX]"""
+import glob, os, re, statistics, sys
+logs = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
+pre = sys.argv[2] if len(sys.argv) > 2 else "e2e"
 data = {}
-for f in glob.glob(f"{logs}/e2e-*-*.txt"):
-    m = re.match(r".*/e2e-(main|fin)(\d)-(.+)-(mma12|mma)\.txt", f)
+for f in glob.glob(f"{logs}/{pre}-*-*.txt"):
+    m = re.match(rf".*/{pre}-(main|fin)(\d)-(.+)-(mma12|mma)\.txt", f)
     if not m:
         continue
     tree, rep, model, fmt = m.groups()
@@ -17,10 +19,13 @@ for f in glob.glob(f"{logs}/e2e-*-*.txt"):
         m2 = re.match(r"(bf16|glyd)[^:]*: batch (\d+): ([\d.]+) tokens/s", l)
         if m2:
             data.setdefault((model, fmt, "bf16" if m2.group(1) == "bf16" else tree, "gen", int(m2.group(2))), []).append(float(m2.group(3)))
+        m3 = re.match(r"(bf16|glyd)[^:]* profile, batch (\d+): [\d.]+ ms a step, GPU busy ([\d.]+) ms", l)
+        if m3:
+            data.setdefault((model, fmt, "bf16" if m3.group(1) == "bf16" else tree, "busy", int(m3.group(2))), []).append(float(m3.group(3)))
 models = sorted({k[0] for k in data})
 for model in models:
     for fmt in ("mma", "mma12"):
-        for what in ("pass", "ttft", "gen"):
+        for what in ("pass", "ttft", "gen", "busy"):
             Ns = sorted({k[4] for k in data if k[0] == model and k[1] == fmt and k[3] == what})
             if not Ns:
                 continue
@@ -35,5 +40,6 @@ for model in models:
                     mean = statistics.mean(v)
                     ref = statistics.median(data.get((model, fmt, "bf16", what, n), [mean]))
                     rel = "" if who == "bf16" else f" ({100 * (mean / ref - 1):+.1f}%)"
-                    cells.append(f"{mean:.1f}{rel}" + (f" [{min(v):.1f}-{max(v):.1f}]" if len(v) > 1 and who != "bf16" else ""))
+                    p = 2 if what == "busy" else 1
+                    cells.append(f"{mean:.{p}f}{rel}" + (f" [{min(v):.{p}f}-{max(v):.{p}f}]" if len(v) > 1 and who != "bf16" else ""))
                 print(f"  {who:5} " + " | ".join(cells))

@@ -1,10 +1,12 @@
-"""layer-{main,fin}{1,2}-MODEL.txt (mb.py, variant 0 through each tree's library): a layer's time over cuBLAS's in the
-same run, each tree's two runs averaged (their range), per model, layout and length."""
-import glob, re, statistics, sys
-logs = sys.argv[1] if len(sys.argv) > 1 else "/home/surya-koritala/p6prefill/logs"
+"""layer-{main,fin}N-MODEL.txt (or PREFIX-..., e.g. step; mb.py, variant 0 through each tree's library): a layer's time
+over cuBLAS's in the same run, each tree's runs averaged (their range), per model, layout and length.
+    python layertab.py [LOGS] [PREFIX]"""
+import glob, os, re, statistics, sys
+logs = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
+pre = sys.argv[2] if len(sys.argv) > 2 else "layer"
 d = {}
-for f in glob.glob(f"{logs}/layer-*-*.txt"):
-    m = re.match(r".*/layer-(main|fin)\d-(.+)\.txt", f)
+for f in glob.glob(f"{logs}/{pre}-*-*.txt"):
+    m = re.match(rf".*/{pre}-(main|fin)\d-(.+)\.txt", f)
     tree, model = m.groups()
     for l in open(f):
         m2 = re.match(r"\s+(mma12|mma)\s+M=\s*(\d+): layer cuBLAS\s+([\d.]+) us, v0\s+([\d.]+) \(([\d.]+)x\)", l)

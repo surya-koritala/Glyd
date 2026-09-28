@@ -614,15 +614,35 @@ At 2048 and 4096 tokens both decode ahead (code this change does not
 touch): alone in fresh processes they take the same time (Qwen3-4B 12-bit
 199.0 / 445.7 ms in all four runs, Qwen3-1.7B within 0.4 ms); after the
 shorter prompts of the table's runs they came 0.3-1.2% apart, either way
-by model. The time to the first token moves with the pass. Generation
-(`--batch 1,8,32,64 --tokens 64`) is as before: every kernel a step runs
-has the same SASS as main's build (498 kernel builds compared; only the
-prompt kernel differs), a step's GPU time is the same (Qwen3-1.7B tiered,
-profiled: 6.77-6.78 ms at 8 sequences, 8.24-8.26 at 32, either build), and
-the tokens/s agree within the host's spread (Qwen3-4B 12-bit 73.2 / 551.7
-/ 1954.5 / 3381.2 against main's 73.2 / 551.5 / 1953.2 / 3381.2; Qwen3-1.7B
-tiered's steps are host-bound, 14 ms of wall time against 7 of GPU time,
-and scatter 1-2% from run to run).
+by model. The time to the first token moves with the pass.
+
+Generation to 64 sequences (`--batch 1,8,32,64 --tokens 64`) is as
+before: every kernel such a step runs has the same SASS as main's build
+(498 kernel builds compared; only the prompt kernel differs), a step's
+GPU time is the same (Qwen3-1.7B tiered, profiled: 6.77-6.78 ms at 8
+sequences, 8.24-8.26 at 32, either build), and the tokens/s agree within
+the host's spread (Qwen3-4B 12-bit 73.2 / 551.7 / 1954.5 / 3381.2
+against main's 73.2 / 551.5 / 1953.2 / 3381.2; Qwen3-1.7B tiered's steps
+are host-bound, 14 ms of wall time against 7 of GPU time, and scatter
+1-2% from run to run). A step of 65 sequences or more multiplies by the
+prompt kernel, so it changes, with the same bits (to 128 tokens in
+blocks of 128: the 12-bit layout's eight consumers, the tiered layout's
+four as before, compiled a little differently). At 128 sequences
+(`--batch 128 --tokens 64 --profile 16`, three runs of each build in
+turn, fresh processes):
+
+| 128 sequences | tokens/s, main / now | GPU a step, ms, main / now |
+| :--- | ---: | ---: |
+| Qwen3-1.7B, bf16 | 8452 | 12.18 |
+| tiered | 8368 / 8384 | 12.41 / 12.40 |
+| 12-bit | 8699 / 8845 | 11.86 / 11.60 |
+| Qwen3-4B-Instruct-2507, bf16 | 4702 | 23.19 |
+| tiered | 4950 / 4971 | 21.79 / 21.73 |
+| 12-bit | 4977 / 5069 | 21.81 / 21.32 |
+
+A layer's products at 65, 96 and 128 tokens (mb.py, L2 flushed; main's
+library and this one in turn) take 2.5% less to 1.5% more time than
+before on Qwen3-1.7B, 4B and 8B, both layouts, most within 0.5%.
 
 Measured and not taken (Qwen3-4B's layer, 12-bit):
 
@@ -654,10 +674,11 @@ CUTLASS benchmark, e2etab.py, layertab.py and thrtab.py for the tables):
 benchmarks/gpu/rtx4080s-prefill-2026-09-28 (layer-*: the per-layer table
 above; e2e-*: the pass; thr-*, thr2-*: the fused kernel against the
 decode ahead, tiles12: blocks of 128 against 256 there, route*: the same
-before, one run each, and route-final the routing as it is; phase1*,
-groups2, tm128: the candidates as prototyped, v0 main's kernel, v18 all
-warps decoding in registers, v23 / v24 consumers of half a row block in
-blocks of 128 / 256, v26 v24 with two consumer barriers).
+before, one run each, and route-final the routing as it is; gen128-*:
+128 sequences, step-*: a layer at 65-128 tokens; phase1*, groups2,
+tm128: the candidates as prototyped, v0 main's kernel, v18 all warps
+decoding in registers, v23 / v24 consumers of half a row block in blocks
+of 128 / 256, v26 v24 with two consumer barriers).
 
 ### Long prompts: each matrix decoded once, beside the products before it
 

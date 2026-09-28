@@ -1,0 +1,34 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 17471.59it/s]
+merged: 56 groups of Linears as one product each
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+bf16 (weights 3.44 GB): batch 128: 8460.6 tokens/s (66.1 a sequence), peak VRAM 4.89 GB
+mma12 fused: packed in 1 s; weights 3.03 GB against 3.44 GB bf16 (87.9%), scratch 0.27 GB, VRAM in use 3.31 GB on 1 GPU
+glyd mma12 fused: batch 128: 8841.7 tokens/s (69.1 a sequence), peak VRAM 4.76 GB
+USDT:2026-09-28 13:15:52 126945:126945 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 13:15:52 126945:126945 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 13:15:52 126945:126945 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 13:15:52 126945:126945 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 profile, batch 128: 16.81 ms a step, GPU busy 11.60 ms a step after the prompt (11032 tokens/s of GPU time), 33.56 ms for the prompt and a token
+     6.197 ms  void mma_gemm_sk_kernel<Nib, 8, 4, 2, 2, 32>(Nib, long, long, long, __nv_bfloat16 const*, 
+     0.789 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 32, 4, false, false
+     0.688 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.597 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.489 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.487 ms  Memcpy DtoD (Device -> Device)
+logits bit-identical: False
+generated tokens identical to bf16: 17 of 64
+text:  in the 1950s with the advent of digital computing. The first practical data compression algorithm was the Huffman coding algorithm, developed by David Huffman in 1952. Huffman coding
+glyd's model freed: 0.02 GB left in use
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 17524.87it/s]
+merged: 56 groups of Linears as one product each
+USDT:2026-09-28 13:15:55 126945:126945 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 13:15:55 126945:126945 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 13:15:55 126945:126945 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 13:15:55 126945:126945 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16 profile, batch 128: 17.72 ms a step, GPU busy 12.16 ms a step after the prompt (10523 tokens/s of GPU time), 33.11 ms for the prompt and a token
+     2.967 ms  ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_tn
+     1.396 ms  void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x64_32x4_tn_align8>
+     1.041 ms  void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8
+     0.823 ms  ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_32x6_tn
+     0.791 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 32, 4, false, false
+     0.672 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa

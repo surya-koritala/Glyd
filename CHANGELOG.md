@@ -25,8 +25,12 @@ every earlier format.
   40.8 / 50.9 / 64.2 / 75.2 ms against bf16's 28.1 / 39.5 / 49.1 / 62.7 /
   73.0 (were 28.9 / 41.9 / 51.8 / 65.8 / 76.6); Qwen3-1.7B at 384 / 640 /
   1024 / 1536: 18.6 / 26.8 / 42.5 / 63.6 against 18.7 / 25.9 / 42.3 / 63.0
-  (were 19.2 / 27.8 / 43.5 / 67.8). Generation is unchanged: every kernel
-  a step runs is the same machine code as before.
+  (were 19.2 / 27.8 / 43.5 / 67.8). Generation to 64 sequences runs the
+  same machine code as before; a step of 65 sequences or more multiplies
+  by the prompt kernel (the same bits): at 128 sequences
+  Qwen3-4B-Instruct-2507 makes 5069 tokens/s 12-bit (were 4977; bf16
+  4702) and 4971 tiered (were 4950), Qwen3-1.7B 8845 and 8384 (were 8699
+  and 8368; bf16 8452).
 
 - The GPU kernels as a library of their own, for engines in C, C++, Rust
   or any language with a C FFI, with no Python or PyTorch: every release

@@ -1,0 +1,34 @@
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 17677.62it/s]
+merged: 72 groups of Linears as one product each
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+bf16 (weights 8.04 GB): batch 128: 4703.5 tokens/s (36.7 a sequence), peak VRAM 9.84 GB
+mma fused: packed in 5 s; weights 6.00 GB against 8.04 GB bf16 (74.6%), scratch 0.27 GB, VRAM in use 6.32 GB on 1 GPU
+glyd mma fused: batch 128: 4958.3 tokens/s (38.7 a sequence), peak VRAM 8.06 GB
+USDT:2026-09-28 13:18:36 128583:128583 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 13:18:36 128583:128583 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 13:18:36 128583:128583 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 13:18:36 128583:128583 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma profile, batch 128: 26.93 ms a step, GPU busy 21.80 ms a step after the prompt (5870 tokens/s of GPU time), 108.31 ms for the prompt and a token
+    14.675 ms  void mma_gemm_sk_kernel<Tiered, 4, 4, 3, 2>(Tiered, long, long, long, __nv_bfloat16 const*
+     1.036 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 32, 4, false, false
+     0.937 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.925 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.571 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.488 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+logits bit-identical: False
+generated tokens identical to bf16: 25 of 64
+text:  in the 1940s with the development of the first compression algorithms, such as the Lempel-Ziv (LZ) family of algorithms. These early algorithms laid the foundation for
+glyd's model freed: 0.02 GB left in use
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 16697.67it/s]
+merged: 72 groups of Linears as one product each
+USDT:2026-09-28 13:18:40 128583:128583 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 13:18:40 128583:128583 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 13:18:40 128583:128583 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 13:18:40 128583:128583 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16 profile, batch 128: 28.04 ms a step, GPU busy 23.19 ms a step after the prompt (5519 tokens/s of GPU time), 74.71 ms for the prompt and a token
+     7.389 ms  ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_tn
+     3.136 ms  void cutlass::Kernel2<cutlass_80_tensorop_s16816gemm_bf16_256x64_32x4_tn_align8>(cutlass_8
+     2.449 ms  ampere_bf16_s16816gemm_bf16_128x128_ldg8_f2f_stages_64x3_tn
+     1.542 ms  ampere_bf16_s16816gemm_bf16_128x64_ldg8_f2f_stages_64x4_tn
+     1.378 ms  void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8
+     1.039 ms  void pytorch_flash::flash_fwd_kernel<Flash_fwd_kernel_traits<128, 128, 32, 4, false, false
