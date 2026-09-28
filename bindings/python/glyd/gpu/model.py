@@ -99,14 +99,14 @@ class GLinear(_Node, nn.Module):
         return None
 
     def _step(self):
-        """A generation step's product (1-64 tokens) as one C call, where it is a fused one through the prebuilt
+        """A generation step's product (1-128 tokens) as one C call, where it is a fused one through the prebuilt
         library: _lib.step over the pack, the function for each M; else None."""
         p = self.p
         if not self.fused or self.exact or not isinstance(p, g.Mma) or g.lib() is None:
             return None
         twelve = isinstance(p, g.Mma12)
         name = {g.mma_gemm: "mma12_gemm" if twelve else "mma_gemm", g.mma_gemm_mid: "mma12_gemm_mid", g.mma_gemm_wg: "mma12_gemm_wg"}
-        names = [None] + [name.get(self.kernel(M)) for M in range(1, 65)]
+        names = [None] + [name.get(self.kernel(M)) for M in range(1, 129)]
         return _lib.step(p.data, *((p.exc, p.exc_base, p.sym, 4) if twelve else (p.blocks, p.block_base, p.tiers, 3)), p.shape, self.bias, names)
 
     def decode_rows(self, r0, r1):

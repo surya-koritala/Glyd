@@ -276,7 +276,7 @@ for q, lin in zip(packs, a100):
     for M in (1, 16, 17, 32, 33, 64, 65, 128, 129, 768, 769, 4096):
         want = g.mma_gemm_mid if twelve and gm.MID_MIN <= M <= 128 else None if twelve and M >= gm.DEC_MIN else g.mma_gemm if M <= 64 else g.mma_gemm_big
         assert lin.kernel(M) is want, ("A100 routing", type(q).__name__, M)
-        if M <= 64:
+        if M <= 64 or want is g.mma_gemm_mid:
             x = torch.randn(M, 1024, dtype=bf, device=dev)
             assert exact(lin.step(x), lin.kernel(M)(q, x, None)), ("A100 GLinear.step", type(q).__name__, M)
             counts["GLinear.step"] += 1
