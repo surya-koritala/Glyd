@@ -41,7 +41,11 @@ every earlier format.
   Qwen3-0.6B at 80 tokens/s against 305; the process's own setting is left
   as it is). A model that has generated
   compiled is freed at `del`, as an eager one (its compiled forward does not
-  refer to it, as transformers' own does).
+  refer to it, as transformers' own does). How: the model's class's
+  `generate` and `get_compiled_call` are taken over once for the process; a
+  model of the class Glyd did not set up (bf16, or `compile=False`) runs
+  transformers' own, and `compile=False` or `GLYD_COMPILE=0` takes nothing
+  over.
 - `GLYD_DEC_MIN` (a prompt's products decoded for cuBLAS from that many
   tokens, 12-bit layout) now applies on any GPU where it is set; unset, an
   A100's prompts are decoded from 769 tokens as before, and elsewhere none.

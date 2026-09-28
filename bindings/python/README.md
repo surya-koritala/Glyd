@@ -153,8 +153,16 @@ Linear, Llama 4, bf16's too), which so run eager. Each model's forward
 compiles to a graph of its own, so Glyd's compiled calls run with
 `torch._dynamo.config.recompile_limit` at 64 at least (at the default 8
 the 8th model a process loaded ran uncompiled), set for those calls alone:
-the process's own setting is left as it is. A model that has generated compiled is freed
-at `del`, as an eager one (its compiled forward does not refer to it).
+the process's own setting is left as it is. A model that has generated
+compiled is freed at `del`, as an eager one (its compiled forward does not
+refer to it).
+
+How: `from_pretrained` and `compress` take over the `generate` and
+`get_compiled_call` of the model's class, once for the process, as Glyd
+takes over the forward of the mixture-of-experts classes it runs; a model
+of that class Glyd did not set up (a bf16 one, or one loaded with
+`compile=False`) runs transformers' own. `compile=False`, or
+`GLYD_COMPILE=0` before the load, sets nothing up and takes nothing over.
 
 `torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)`
 compiles the forward as it would the bf16 model's, likewise. Eager, a
