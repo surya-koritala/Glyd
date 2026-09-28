@@ -1357,11 +1357,6 @@ __device__ __forceinline__ void wg_fence() {
     asm volatile("wgmma.fence.sync.aligned;\n" ::: "memory");
 #endif
 }
-__device__ __forceinline__ void wg_commit() {
-#if defined(__CUDA_ARCH_FEAT_SM90_ALL)
-    asm volatile("wgmma.commit_group.sync.aligned;\n" ::: "memory");
-#endif
-}
 template <int N> __device__ __forceinline__ void wg_wait() {  // until at most N groups of products are running
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
     asm volatile("wgmma.wait_group.sync.aligned %0;\n" ::"n"(N) : "memory");
