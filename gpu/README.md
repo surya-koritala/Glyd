@@ -295,7 +295,8 @@ for bit (benchmarks/gpu/rtx4080s-hopper-branch-2026-09-28).
 ### Prompts on an H100
 
 (Prompts past 128 tokens now take the kernel of the next section; this
-one is the TMA kernel as it took them to 2026-09-28, on an H100 PCIe.)
+one is the TMA kernel as it took them to 2026-09-28, on an H100 PCIe. Its
+past-128-token code is gone from the tree; it is at 1653818.)
 GLinear sent prompts of up to 512 tokens to `mma_gemm_wg` too
 (`GLYD_WG_MAX`); past that it decoded the matrix for cuBLAS, as before.
 Past 128 tokens the kernel's tile is 256 tokens, or 192 where that takes
