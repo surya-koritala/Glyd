@@ -149,7 +149,10 @@ compile whole (its `_can_compile_fullgraph`) or the model over several
 GPUs, which run eager. A call that fails compiled runs again eager, and
 so do the model's later calls, with one warning: transformers 5.17's
 static cache fails for some families' attention (DeepSeek V2 and V3, Kimi
-Linear, Llama 4, bf16's too), which so run eager. A model that has generated compiled is freed
+Linear, Llama 4, bf16's too), which so run eager. Each model's forward
+compiles to a graph of its own, so `torch._dynamo.config.recompile_limit`
+is raised to 64 (from 8, past which the 8th model a process loads ran
+uncompiled). A model that has generated compiled is freed
 at `del`, as an eager one (its compiled forward does not refer to it).
 
 `torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)`

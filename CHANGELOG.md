@@ -34,7 +34,10 @@ every earlier format.
   eager, 20.4 with 1024, 23.0 with 2048). A call that fails compiled runs
   again eager, and so do the model's later calls, with one warning
   (transformers 5.17's static cache fails for DeepSeek V2's and V3's, Kimi
-  Linear's and Llama 4's attention, bf16's too). A model that has generated
+  Linear's and Llama 4's attention, bf16's too). Each model's forward
+  compiles to a graph of its own, so `torch._dynamo.config.recompile_limit`
+  is raised to 64 (from 8: the 8th model a process loaded ran uncompiled,
+  Qwen3-0.6B at 80 tokens/s against 305). A model that has generated
   compiled is freed at `del`, as an eager one (its compiled forward does not
   refer to it, as transformers' own does).
 - `GLYD_DEC_MIN` (a prompt's products decoded for cuBLAS from that many
