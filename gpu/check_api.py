@@ -91,15 +91,20 @@ def compiled(model, ids):
 
 def ahead(model, ids):
     """A long prompt's last logits: three times (the first records the order its matrices are decoded ahead in,
-    the others follow it), then with no decode ahead (each matrix decoded on the current stream); the last two
-    and that one bit for bit."""
+    the others follow it), then with no decode ahead (each matrix decoded on the current stream: the fused kernel,
+    which takes a product Ahead does not, off too); the last two and that one bit for bit."""
     with torch.no_grad():
         runs = [model(ids, logits_to_keep=1).logits for _ in range(3)]
         get, gm.Ahead.get = gm.Ahead.get, staticmethod(lambda d: None)
+        fused = [m for m in model.modules() if isinstance(m, GLinear) and m.fused]
+        for m in fused:
+            m.fused = False
         try:
             off = model(ids, logits_to_keep=1).logits
         finally:
             gm.Ahead.get = get
+            for m in fused:
+                m.fused = True
     assert exact(runs[1], off) and exact(runs[2], off), "a prompt decoded ahead: its logits as each matrix decoded on the current stream"
     return off
 
