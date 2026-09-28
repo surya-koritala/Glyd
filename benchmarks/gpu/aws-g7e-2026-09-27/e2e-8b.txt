@@ -1,0 +1,18 @@
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 14967.47it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 47.2 tokens/s (47.2 a sequence), peak VRAM 16.43 GB
+bf16 (weights 16.38 GB): batch 8: 371.5 tokens/s (46.4 a sequence), peak VRAM 16.56 GB
+bf16 (weights 16.38 GB): batch 32: 1478.8 tokens/s (46.2 a sequence), peak VRAM 16.85 GB
+bf16 (weights 16.38 GB): batch 64: 2932.0 tokens/s (45.8 a sequence), peak VRAM 17.29 GB
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 3 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.57 GB on 1 GPU
+glyd mma12 fused: batch 1: 49.1 tokens/s (49.1 a sequence), peak VRAM 12.59 GB
+glyd mma12 fused: batch 8: 387.8 tokens/s (48.5 a sequence), peak VRAM 12.71 GB
+glyd mma12 fused: batch 32: 1550.3 tokens/s (48.4 a sequence), peak VRAM 13.03 GB
+glyd mma12 fused: batch 64: 3047.0 tokens/s (47.6 a sequence), peak VRAM 13.46 GB
+logits bit-identical: False
+generated tokens identical to bf16: 43 of 64
+text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to transmit information over long distances, and it used Morse code, which is a form
+exit 0
