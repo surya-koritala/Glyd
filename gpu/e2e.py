@@ -22,7 +22,7 @@ import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import glyd_gpu as g
 from glyd.gpu import moe
-from glyd.gpu.model import GEmbedding, GLinear, Scratch, decoder, merge_linears, pack_modules, set_scratch
+from glyd.gpu.model import GEmbedding, GLinear, Scratch, decoder, merge_linears, pack_modules, plain, set_scratch
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
@@ -289,9 +289,9 @@ if args.baseline:
 # by their bytes, over args.gpus GPUs; the embedding on the first, the final
 # norm and the output layer on the last.
 if args.format == "auto":
-    lin = [m.weight for m in model.modules() if isinstance(m, nn.Linear) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0]
-    lin_bytes = sum(w.numel() * 2 for w in lin) + moe.packable_bytes(model)  # a mixture of experts' too
-    args.format, why = g.best_layout(lin_bytes, weights_bf16 - lin_bytes, args.gpus)
+    experts = moe.packable_bytes(model)  # a mixture of experts' too
+    lin_bytes = sum(m.weight.numel() * 2 for m in model.modules() if plain(m) and m.weight.shape[0] % 64 == 0 and m.weight.shape[1] % 16 == 0) + experts
+    args.format, why = g.best_layout(lin_bytes, weights_bf16 - lin_bytes, args.gpus, moe=experts > 0)
     print(f"auto: {args.format}, {why}")
 t0 = time.perf_counter()
 if args.from_pretrained:  # the package's path: the checkpoint loaded again, packed as it arrives
@@ -303,13 +303,12 @@ if args.from_pretrained:  # the package's path: the checkpoint loaded again, pac
     model = glyd.from_pretrained(args.model, layout=args.format, exact=args.exact, merge=args.merge).eval()
     packed = {id(m.p): m.p for m in model.modules() if isinstance(m, (GLinear, GEmbedding))}
 else:
-    layers = decoder(model).layers
-    layer_bytes = [sum(p.numel() for p in l.parameters()) for l in layers]
+    layer_bytes = [sum(p.numel() for p in l.parameters()) for l in decoder(model).layers]
     per_gpu, acc, gpu_of = sum(layer_bytes) / args.gpus, 0, []
     for b in layer_bytes:
         gpu_of.append(min(args.gpus - 1, int(acc // per_gpu)))
         acc += b
-    layer_of = {id(m): gpu_of[i] for i, l in enumerate(layers) for m in l.modules()}
+    layer_of = {id(m): gpu_of[i] for i, l in enumerate(decoder(model).layers) for m in l.modules()}  # (no name holding the layers: freed with the model)
     last = args.gpus - 1
 
     def pack(w, linear):
@@ -368,8 +367,10 @@ if args.baseline and args.profile:  # bf16's profile last, on the model loaded a
         model.__dict__.pop("_compiled_call", None)
     del model, packed
     Scratch.buf.clear()
+    Scratch.replaced.clear()
     gc.collect()
     torch.cuda.empty_cache()
+    print(f"glyd's model freed: {torch.cuda.memory_allocated() / 1e9:.2f} GB left in use")
     model = load()
     on_gpus(model)
     profile(model, "bf16")

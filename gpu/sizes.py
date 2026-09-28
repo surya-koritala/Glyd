@@ -14,9 +14,12 @@ for d in sys.argv[1:]:
         with safe_open(os.path.join(d, fn), "pt", device="cuda") as f:
             for k in f.keys():
                 # a projection's matrix (q_proj.weight, in_proj_qkvz.weight ...), or all of a layer's
-                # experts as one tensor (experts.gate_up_proj in Gemma 4 and Llama 4): a matrix an expert
+                # experts as one tensor (experts.gate_up_proj in Gemma 4 and Llama 4; input_linear and
+                # output_linear in granite's checkpoints and JetMoE's), or an expert's (experts.0.w1.weight in
+                # Mixtral's): a matrix an expert
                 parts = k.split(".")
-                if not ((parts[-1] == "weight" and len(parts) > 1 and "proj" in parts[-2]) or parts[-1].endswith("_proj")):
+                if not ((parts[-1] == "weight" and len(parts) > 1 and ("proj" in parts[-2] or parts[-2] in ("input_linear", "output_linear")))
+                        or parts[-1].endswith("_proj") or ("experts" in parts[:-1] and not parts[-1].endswith("bias"))):
                     continue
                 t = f.get_tensor(k)
                 if t.dtype != torch.bfloat16 or t.dim() not in (2, 3):
