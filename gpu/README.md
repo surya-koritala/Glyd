@@ -288,6 +288,50 @@ step of Qwen3-8B at 1 / 8 / 32 / 64 sequences: 15.83 / 19.69 / 19.79 /
 15.83 / 19.47 / 21.27 / 25.96). Past 64 tokens `mma_gemm_big` runs,
 1.18-1.20x cuBLAS's time at 96 and 128.
 
+### Short prompts: one C call a product, and stream-K
+
+To 512 tokens (tiered) or 1024 (12-bit) a prompt's products on GeForce
+Ada are `mma_gemm_big`'s, and on other GPUs but Hopper every prompt's.
+Two things set a short prompt's time against bf16's there. The host:
+Qwen3-1.7B's pass of 128 tokens is issued in about the time the GPU
+takes to run it, and a prompt's product cost 12 us of host time a call
+(a Python path, and a second launch to sum a split K) against
+F.linear's 6. And the kernel's grid: where its blocks would not fill
+the GPU, K was split and the parts summed by a second kernel (0.6-0.8
+ms of a Qwen3-1.7B pass at 128-512 tokens), and waves ran part empty.
+A prompt's product is now one C call, as a generation step's
+(`_lib.step`), and the kernel runs by stream-K (above). The 12-bit
+layout's fused kernel is then the faster one to 1024 tokens (the decode
+ahead starts there, was past 640). One forward pass
+(`e2e.py --prefill --merge`, bf16 and Glyd merged alike), RTX 4080
+SUPER, ms, main / now:
+
+| Prompt | 128 | 256 | 384 | 512 | 640 | 768 | 896 | 1024 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-1.7B, bf16 | 10.8 | 14.0 | 18.7 | 24.3 | 25.9 | 32.1 | 38.2 | 42.3 |
+| tiered | 11.4 / 10.3 | 15.8 / 14.6 | 23.9 / 20.1 | 25.4 / 23.8 | 34.7 / 28.4 | 36.1 / 33.8 | 44.3 / 39.4 | 46.2 / 43.3 |
+| 12-bit | 11.4 / 10.2 | 15.4 / 14.5 | 23.2 / 19.2 | 24.7 / 23.7 | 33.8 / 27.9 | 35.4 / 33.1 | 43.3 / 39.0 | 45.2 / 43.5 |
+| Qwen3-4B-Instruct-2507, bf16 | 20.7 | 28.0 | 39.5 | 49.1 | 62.7 | 73.0 | 88.4 | 96.1 |
+| tiered | 19.7 / 19.4 | 29.9 / 29.3 | 50.2 / 44.4 | 53.3 / 52.6 | 75.4 / 67.4 | 79.0 / 76.2 | 100.2 / 90.6 | 104.0 / 97.5 |
+| 12-bit | 18.6 / 19.2 | 29.3 / 28.7 | 49.3 / 41.7 | 52.0 / 51.5 | 73.6 / 65.4 | 77.1 / 76.2 | 96.7 / 91.0 | 100.5 / 98.9 |
+
+(main: 0.21.0; the columns past 512 are the long prompts' change, below,
+as well.) The time to the first token through `generate()` moves as the
+pass (Qwen3-1.7B's at 128 tokens 11.6 ms tiered, 11.8 12-bit, against
+bf16's 13.0 and 12.8); generation is as before. At 128 tokens every one
+is under bf16's time, and Qwen3-1.7B's at 512. Past that the fused
+kernel's products stay 7-18% over cuBLAS's in a pass (both models at 256
+and 384 tokens, profiled): switched off one at a time (Qwen3-4B's layer
+at 512 tokens), its consumers alone come within 2% of cuBLAS, its
+producers' copies of X's tiles cost 4% (a tile of 64 rows reads X again
+for every 64 rows of W), W's loads 2.5%, the decode 1.6% (12-bit) or 6%
+(tiered); at 257-384 and 513-640 tokens (blocks of 128) each weight is
+decoded M / 128 times, which the tiered decode cannot keep up with
+(Qwen3-4B at 384: 1056 us a layer against the 12-bit layout's 903 and
+cuBLAS's 847). The SM clock is not it: 2640-2655 MHz against cuBLAS's
+2670 (290-304 W of 320). Logs:
+benchmarks/gpu/rtx4080s-short-prompts-2026-09-28.
+
 ### Long prompts: each matrix decoded once, beside the products before it
 
 A prompt's products are bound by the tensor cores. `mma_gemm_big`
@@ -296,9 +340,9 @@ decoding costs its consumers 5-10% of cuBLAS's time; decoded once into
 the scratch buffer, a matrix costs its decode, 0.44 ms a layer of
 Qwen3-4B on an RTX 4080 SUPER (6% of the layer's products at 4096
 tokens, 22% at 1024, 43% at 512), unless it runs beside something. On
-GeForce Ada a prompt past 512 tokens (640 in the 12-bit layout, whose
-fused kernel is the faster to there) now decodes each matrix ahead of
-its product, on a second stream, beside the products before it
+GeForce Ada a prompt past 512 tokens (from 1024 in the 12-bit layout,
+whose fused kernel is the faster to there) now decodes each matrix ahead
+of its product, on a second stream, beside the products before it
 (`model.Ahead`):
 
 - the order: the GLinears a prompt calls whole, recorded from the first

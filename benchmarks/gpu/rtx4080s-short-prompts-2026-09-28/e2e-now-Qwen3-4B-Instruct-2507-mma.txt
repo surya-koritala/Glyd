@@ -1,0 +1,14 @@
+Loading weights:   0%|          | 0/398 [00:00<?, ?it/s]Loading weights: 100%|██████████| 398/398 [00:00<00:00, 18361.27it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 8.04 GB): batch 1: 62.7 tokens/s (62.7 a sequence), peak VRAM 8.12 GB
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+bf16 (weights 8.04 GB): batch 8: 467.7 tokens/s (58.5 a sequence), peak VRAM 8.18 GB
+bf16 prefill: 128 tokens 20.7 ms (6196 tokens/s), first token 21.9 ms, 256 tokens 28.0 ms (9134 tokens/s), first token 29.3 ms, 384 tokens 39.5 ms (9720 tokens/s), first token 40.6 ms, 512 tokens 49.1 ms (10423 tokens/s), first token 50.3 ms, 640 tokens 62.7 ms (10209 tokens/s), first token 63.9 ms, 768 tokens 73.0 ms (10522 tokens/s), first token 74.1 ms, 896 tokens 88.4 ms (10137 tokens/s), first token 89.5 ms, 1024 tokens 96.1 ms (10651 tokens/s), first token 97.4 ms, 2048 tokens 198.1 ms (10336 tokens/s), first token 199.3 ms
+mma fused: packed in 5 s; weights 6.00 GB against 8.04 GB bf16 (74.6%), scratch 0.27 GB, VRAM in use 6.32 GB on 1 GPU
+glyd mma fused: batch 1: 76.1 tokens/s (76.1 a sequence), peak VRAM 6.33 GB
+glyd mma fused: batch 8: 570.3 tokens/s (71.3 a sequence), peak VRAM 6.39 GB
+glyd mma prefill: 128 tokens 19.4 ms (6604 tokens/s), first token 20.7 ms, 256 tokens 29.3 ms (8736 tokens/s), first token 30.6 ms, 384 tokens 44.4 ms (8642 tokens/s), first token 45.7 ms, 512 tokens 52.6 ms (9730 tokens/s), first token 53.8 ms, 640 tokens 67.4 ms (9490 tokens/s), first token 68.6 ms, 768 tokens 76.2 ms (10077 tokens/s), first token 77.3 ms, 896 tokens 90.6 ms (9887 tokens/s), first token 91.8 ms, 1024 tokens 97.5 ms (10504 tokens/s), first token 98.7 ms, 2048 tokens 199.6 ms (10262 tokens/s), first token 200.7 ms
+logits bit-identical: False
+generated tokens identical to bf16: 32 of 32
+text:  in the 1940s with the development of the first compression algorithms, such as the Lempel-Ziv (LZ) family of algorithms
+exit 0
