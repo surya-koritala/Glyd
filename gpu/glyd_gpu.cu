@@ -1670,6 +1670,7 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
     __syncwarp();
     float d[NT / 2];  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a unit's first product
     uint32_t A0[4][4], A1[4][4];
+    constexpr bool SB = NT >= 128;  // one set of A registers, a stage's products waited for before the next decodes: the accumulators take the rest
     int held = -1;  // the slot whose products may still be running
     auto release = [&](int sl) {  // the slot is free for stage j + NS (lane 0 arrives, by predicate: no branch among the products)
         __syncwarp();
@@ -1694,8 +1695,6 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
 #pragma unroll
         for (int i = 0; i < 5; i++) eb[i] = bs[i];
         decode12_rows(f, sp, (const uint32_t*)(sp + C::CB), eb, bs[5], lane, w, xw, A);
-        // (ptxas moves each product's descriptor into the same uniform registers just before it, so the four
-        // run one after another: "serialized", its C7513.)
         uint32_t xs = base + sl * C::SLOT;
         uint64_t desc[4];
 #pragma unroll
@@ -1703,22 +1702,36 @@ __global__ void __launch_bounds__(Tma12<NT, WG>::THREADS, 1) mma12_tma_kernel(co
         keep_d();
         wg_fence();
         wgmma4_rs(d, A, desc, !first);
-        wg_wait<1>();  // the stage before's products are done: its A set and its slot are free
-        keep(Aprev);
-        keep_d();
-        if (held >= 0) release(held);
-        held = sl;
+        if constexpr (SB) {
+            wg_wait<0>();  // this stage's products are done: A and the slot are free
+            keep(A);
+            keep_d();
+            release(sl);
+        } else {
+            wg_wait<1>();  // the stage before's products are done: its A set and its slot are free
+            keep(Aprev);
+            keep_d();
+            if (held >= 0) release(held);
+            held = sl;
+        }
     };
-    // A unit's stages, then its sum out: no branch touches d while products run.
+    // A unit's stages, then its sum out: no branch touches d while products run. The stages in pairs, an odd
+    // one after them: every path gives each set of A registers to the products before it is decoded into
+    // again (a pair's second stage skipped inside the loop had ptxas serialize every product, its C7513).
     for (int j = 0, p = p0, s = s0; j < n; p++, s = 0) {
-        int len = min(S - s, n - j);
-        for (int k = 0; k < len; k += 2) {
-            stage(j + k, k == 0, A0, A1);
-            if (k + 1 < len) stage(j + k + 1, false, A1, A0);
+        int len = min(S - s, n - j), k = 0;
+        if constexpr (SB) {
+            for (; k < len; k++) stage(j + k, k == 0, A0, A0);
+        } else {
+            for (; k + 1 < len; k += 2) {
+                stage(j + k, k == 0, A0, A1);
+                stage(j + k + 1, false, A1, A0);
+            }
+            if (k < len) stage(j + k, k == 0, A0, A1);
         }
         wg_wait<0>();
         keep(A0);
-        keep(A1);
+        if constexpr (!SB) keep(A1);
         keep_d();
         if (held >= 0) release(held);
         held = -1;
@@ -2967,11 +2980,12 @@ static int mma12_wg_any(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t 
     int dev = current_device();
     if (attribute(cudaDevAttrComputeCapabilityMajor, dev) != 9 || attribute(cudaDevAttrComputeCapabilityMinor, dev) != 0) return cudaErrorNotSupported;
     if (O % 64 || K < 1 || K % 64 || M < 0 || (uintptr_t)x % 16 || (uintptr_t)f.data % 16 || (uintptr_t)f.exc % 16) return cudaErrorInvalidValue;
-    // 256 tokens at a time, in the smallest tile that holds them.
+    // 256 tokens at a time, in the smallest tile that holds them; two warpgroups (128 rows a stage): with four
+    // and the TMA warp (17 warps, 5 on one scheduler) a thread had 96 registers, and ptxas spilled and
+    // serialized the products (its C7512).
     for (int64_t m0 = 0; m0 < M; m0 += 256) {
         int64_t mc = std::min<int64_t>(256, M - m0);
-        // Four warpgroups (256 rows a stage) to 64 tokens; past that two, for their registers.
-        auto run = mc <= 16 ? mma12_tma_run<16, 4> : mc <= 32 ? mma12_tma_run<32, 4> : mc <= 64 ? mma12_tma_run<64, 4> : mc <= 128 ? mma12_tma_run<128, 2> : mma12_tma_run<256, 2>;
+        auto run = mc <= 16 ? mma12_tma_run<16, 2> : mc <= 32 ? mma12_tma_run<32, 2> : mc <= 64 ? mma12_tma_run<64, 2> : mc <= 128 ? mma12_tma_run<128, 2> : mma12_tma_run<256, 2>;
         if (int r = run(f, O, K, x, m0, mc, bias, y, parts, done, cs, need)) return r;
     }
     return cudaGetLastError();
