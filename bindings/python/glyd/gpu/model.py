@@ -745,6 +745,15 @@ def fast_generate(model):
     if len(devices) != 1:
         return model
     model.glyd_fast = True
+    # Each model's forward compiles to a graph of its own (its GLinears' handles are constants of it), all on the one
+    # frame transformers' forwards share, where torch._dynamo compiles at most recompile_limit graphs (8): from the 8th
+    # model a process loads, generate() ran uncompiled with the static cache (Qwen3-0.6B: 80 tokens/s, eager 99,
+    # compiled 305). A model let go of leaves no GPU memory in its graphs, so 64 (transformers' own for chunked prompts).
+    import torch._dynamo
+
+    for name in ("recompile_limit", "cache_size_limit"):
+        if hasattr(torch._dynamo.config, name):
+            setattr(torch._dynamo.config, name, max(getattr(torch._dynamo.config, name), 64))
     cls = type(model)
     for name, fast in (("generate", _generate), ("get_compiled_call", _compiled_call)):
         own = getattr(cls, name)  # (read once: two threads taking it over at once wrap the class's own, the last one kept)
