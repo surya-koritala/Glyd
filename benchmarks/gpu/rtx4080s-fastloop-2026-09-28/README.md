@@ -2,6 +2,9 @@
 
 PyTorch 2.14.0 (CUDA 13.0), transformers 5.17.0; the library built from the branch; fresh processes.
 
+The scripts as they ran, at the commits named; from 5f27509 the compiled forward is in glyd.gpu.model._COMPILED
+(the scripts read `glyd_compiled` in the model's `__dict__`).
+
 - `gen-main.txt`: origin/main (1653818), `gen.py` for bf16 and Glyd, plain `generate()` (eager) and with
   `cache_implementation="static"` (transformers' compiled loop), 128 tokens at 1 and 8 sequences.
 - `gen-branch.txt`: the branch at 9611d6c, plain `generate()` (compiled by default), and Qwen3-8B's first call with
