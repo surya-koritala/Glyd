@@ -12,14 +12,23 @@
 set -euo pipefail
 V="${1:?usage: check_gpu_install.sh VERSION [WORKDIR]}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK="${2:-$(mktemp -d)}"
+AUTO_WORK=0
+WORK="${2:-}"
+if [ -z "$WORK" ]; then
+  WORK="$(mktemp -d)"
+  AUTO_WORK=1  # ours to remove when done; a WORKDIR named on the command line is the caller's
+fi
 mkdir -p "$WORK"
 MODEL="Qwen/Qwen3-0.6B"
 
 step() { echo "[check_gpu_install] $*"; }
 
 verdict=FAILED
-trap 'step "verdict: ${verdict}: glyd[gpu]==$V, $MODEL"' EXIT
+cleanup() {
+  step "verdict: ${verdict}: glyd[gpu]==$V, $MODEL"
+  [ "$AUTO_WORK" != 1 ] || rm -rf "$WORK"
+}
+trap cleanup EXIT
 
 command -v nvidia-smi >/dev/null || { step "no nvidia-smi: not a machine with an NVIDIA GPU"; exit 1; }
 step "GPU: $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
