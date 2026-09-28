@@ -264,7 +264,7 @@ for q in packs:
         for M in list(range(1, 65)) + [65, 100, 128, 129, 256, 300, 512, 600, 700]:
             x = torch.randn(M, 1, 1024, dtype=bf, device=dev)
             f = lin.kernel(M)
-            if f is None:  # decoded (ahead), then cuBLAS: not the one-call path's
+            if f is None or (M > 64 and f is not g.mma_gemm_big):  # decoded (ahead), then cuBLAS; Hopper's mma_gemm_wg past 64 tokens: the checked call's
                 assert lin.step(x) is None, ("GLinear.step past the fused kernels", type(q).__name__, M)
                 continue
             assert exact(lin.step(x), f(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
@@ -285,6 +285,16 @@ for q, lin in zip(packs, a100):
             x = torch.randn(M, 1024, dtype=bf, device=dev)
             assert exact(lin.step(x), lin.kernel(M)(q, x, None)), ("A100 GLinear.step", type(q).__name__, M)
             counts["GLinear.step"] += 1
+# And on Hopper whatever this GPU is (9.0 while made): no prompt kernel for the one-call path, so a prompt's product is
+# the checked call's (mma_gemm_wg to WG_MAX tokens in the 12-bit layout, else decoded, then cuBLAS).
+torch.cuda.get_device_capability = lambda device=None: (9, 0)
+try:
+    hopper = [gm.GLinear(q, None) for q in packs]
+finally:
+    torch.cuda.get_device_capability = cc
+for q, lin in zip(packs, hopper):
+    for M in (65, 128, 600, 2100):
+        assert lin.step(torch.randn(M, 1024, dtype=bf, device=dev)) is None, ("Hopper GLinear.step, a prompt", type(q).__name__, M)
 # A prompt's matrices decoded ahead (model.Ahead; made to on any GPU, beside products of any size): GLinears of odd
 # shapes, both layouts, called in turn as a prompt calls them, the first time recorded, then followed; a decode on
 # the current stream midway, a prompt that ends before its order does (the next ends the order there), another

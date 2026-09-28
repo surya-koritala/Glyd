@@ -390,7 +390,7 @@ def step(data, a, b, words, n_words, shape, bias, names, big=None, big_max=0):
             with torch.cuda.device(d):
                 return run(x)
         M = x.numel() // K
-        if M >= len(plans) and M < big_max:  # a prompt
+        if big and M >= len(plans) and M < big_max:  # a prompt (big: none on Hopper, nor where K is not a multiple of 64)
             s = _stream(d)
             w = _workspace(big, d, s, O, K, M, 0)
             y = torch.empty(*x.shape[:-1], O, dtype=bf16, device=dev)
