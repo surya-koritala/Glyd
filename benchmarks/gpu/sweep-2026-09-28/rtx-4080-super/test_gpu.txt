@@ -1,0 +1,16 @@
++ cd /home/surya-koritala/p3final/t
++ timeout 30m /home/surya-koritala/p3final/wv/bin/python test_gpu.py
+test_fit_as_the_site ok
+test_fit_a_directory ok
+test_kv_cache ok
+test_manifest_and_names ok
+Traceback (most recent call last):
+  File "/home/surya-koritala/p3final/t/test_gpu.py", line 487, in <module>
+    test()
+  File "/home/surya-koritala/p3final/t/test_gpu.py", line 172, in test_import_without_torch_or_library
+    shutil.copytree(os.path.join(HERE, "glyd"), os.path.join(d, "glyd"), ignore=shutil.ignore_patterns("*.dylib", "*.so", "*.dll", "__pycache__"))
+  File "/home/surya-koritala/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/shutil.py", line 598, in copytree
+    with os.scandir(src) as itr:
+         ^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/surya-koritala/p3final/t/glyd'
+exit 1

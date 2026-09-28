@@ -1,0 +1,39 @@
++ nvidia-smi
+Mon Sep 28 06:32:34 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.91.07              Driver Version: 595.91.07      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA RTX PRO 6000 Blac...    On  |   00000000:2B:00.0 Off |                    0 |
+| N/A   28C    P0             83W /  600W |       0MiB /  97887MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
++ nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv
+name, compute_cap, driver_version, memory.total [MiB]
+NVIDIA RTX PRO 6000 Blackwell Server Edition, 12.0, 595.91.07, 97887 MiB
++ nproc
+8
++ lscpu
++ grep 'Model name'
+Model name:                              Intel(R) Xeon(R) Platinum 8559C
++ free -g
++ head -2
+               total        used        free      shared  buff/cache   available
+Mem:              62           1          60           0           0          61
++ ls -d /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.9 /usr/local/cuda-13.0 /usr/local/cuda-13.2
+/usr/local/cuda
+/usr/local/cuda-12.8
+/usr/local/cuda-12.9
+/usr/local/cuda-13.0
+/usr/local/cuda-13.2

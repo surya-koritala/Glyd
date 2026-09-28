@@ -1,0 +1,11 @@
++ cd /home/ubuntu/src/gpu
++ timeout 20m /home/ubuntu/wv/bin/python glyd_gpu.py
+mma_gemm_mid 64x64, 0 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_mid 192x128, 3 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_mid 128x4096, 71 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_mid 1024x2048, 332 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_mid 5120x1024, 4635 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_mid 192x4096, 59109 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_mid 3072x5120, 239385 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_mid 17408x1024, 136556 exceptions: 1-600 tokens within 1e-2, the same every run
+exit 0

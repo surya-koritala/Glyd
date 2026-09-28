@@ -1,0 +1,13 @@
++ cd /home/ubuntu/b/4fd327d/gpu
++ PYTHONPATH=/home/ubuntu/b/4fd327d/bindings/python
++ GLYD_GPU_LIB=/home/ubuntu/b/4fd327d/lib/libglyd_gpu_cuda13.so
++ timeout 20m python e2e.py /home/ubuntu/models/Qwen3-32B --format auto --fused --merge --tokens 8 --batch 1 --prefill 512,2048
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights:  19%|█▊        | 132/707 [00:00<00:00, 1317.23it/s]Loading weights:  37%|███▋      | 264/707 [00:00<00:00, 668.83it/s] Loading weights:  49%|████▉     | 348/707 [00:00<00:00, 669.65it/s]Loading weights:  60%|██████    | 425/707 [00:00<00:00, 653.96it/s]Loading weights:  70%|███████   | 496/707 [00:00<00:00, 597.04it/s]Loading weights:  79%|███████▉  | 561/707 [00:00<00:00, 610.01it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 782.13it/s]
+merged: 128 groups of Linears as one product each
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 18 s; weights 49.24 GB against 65.52 GB bf16 (75.1%), scratch 0.27 GB, VRAM in use 49.57 GB on 1 GPU
+glyd mma12 fused: batch 1: 9.5 tokens/s (9.5 a sequence), peak VRAM 49.58 GB
+glyd mma12 prefill: 512 tokens 135.2 ms (3788 tokens/s), first token 142.3 ms, 2048 tokens 503.1 ms (4071 tokens/s), first token 502.7 ms
+text:  in 1948 with the

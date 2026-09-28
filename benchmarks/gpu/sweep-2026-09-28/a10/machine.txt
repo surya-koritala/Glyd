@@ -1,0 +1,37 @@
++ nvidia-smi
+Mon Sep 28 06:36:44 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.20             Driver Version: 580.126.20     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A10                     On  |   00000000:06:00.0 Off |                    0 |
+|  0%   27C    P8             15W /  150W |       0MiB /  23028MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
++ nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv
+name, compute_cap, driver_version, memory.total [MiB]
+NVIDIA A10, 8.6, 580.126.20, 23028 MiB
++ nproc
+30
++ lscpu
++ grep 'Model name'
+Model name:                              Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz
++ free -g
++ head -2
+               total        used        free      shared  buff/cache   available
+Mem:             222           3         214           0           6         218
++ ls -d /usr/local/cuda /usr/local/cuda-13 /usr/local/cuda-13.0
+/usr/local/cuda
+/usr/local/cuda-13
+/usr/local/cuda-13.0

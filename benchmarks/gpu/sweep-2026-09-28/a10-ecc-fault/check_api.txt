@@ -1,0 +1,45 @@
++ cd /home/ubuntu/t
++ timeout 40m /home/ubuntu/wv/bin/python check_api.py Qwen/Qwen3-0.6B Qwen/Qwen3-1.7B ibm-granite/granite-3.1-3b-a800m-instruct
+/home/ubuntu/wv/lib/python3.12/site-packages/huggingface_hub/constants.py:302: FutureWarning: The `HF_HUB_ENABLE_HF_TRANSFER` environment variable is deprecated as 'hf_transfer' is not used anymore. Please use `HF_XET_HIGH_PERFORMANCE` instead to enable high performance transfer with Xet. Visit https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables#hfxethighperformance for more details.
+  warnings.warn(
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   1%|▏         | 4/311 [00:00<00:15, 19.36it/s]Loading weights:  21%|██        | 64/311 [00:00<00:00, 255.19it/s]Loading weights:  40%|████      | 125/311 [00:00<00:00, 382.82it/s]Loading weights:  59%|█████▉    | 185/311 [00:00<00:00, 455.52it/s]Loading weights:  79%|███████▉  | 246/311 [00:00<00:00, 502.55it/s]Loading weights:  98%|█████████▊| 306/311 [00:00<00:00, 532.27it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 431.41it/s]
+Traceback (most recent call last):
+  File "/home/ubuntu/t/check_api.py", line 134, in <module>
+    a = glyd.from_pretrained(NAMES[0], exact=True)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/glyd/gpu/hf.py", line 61, in from_pretrained
+    return AutoModelForCausalLM.from_pretrained(name_or_path, **hf_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/transformers/models/auto/auto_factory.py", line 402, in from_pretrained
+    return model_class.from_pretrained(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/transformers/modeling_utils.py", line 4337, in from_pretrained
+    hf_quantizer.postprocess_model(
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/transformers/quantizers/base.py", line 194, in postprocess_model
+    return self._process_model_after_weight_loading(model, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/glyd/gpu/hf.py", line 337, in _process_model_after_weight_loading
+    gm.pack_modules(model, self._rest, lambda m: m.weight.device, **mode)
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/glyd/gpu/model.py", line 670, in pack_modules
+    packed[key] = pack_fn(child.weight.data.to(dev), linear)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/glyd/gpu/hf.py", line 269, in _rest
+    p = gm.pack(w, linear, q.layout)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/glyd/gpu/model.py", line 619, in pack
+    return g.pack_fast(w)
+           ^^^^^^^^^^^^^^
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/glyd/gpu/kernels.py", line 278, in pack_fast
+    exc_parts.append(e[esc].to(torch.uint8))
+                     ~^^^^^
+torch.AcceleratorError: CUDA error: uncorrectable ECC error encountered
+Search for `cudaErrorECCUncorrectable' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+The CUDA driver logged these messages, which may provide useful details:
+Returning 214 (CUDA_ERROR_ECC_UNCORRECTABLE) from cuStreamSynchronize
+
+
+exit 1

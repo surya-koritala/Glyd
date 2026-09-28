@@ -1,0 +1,20 @@
++ cd /home/ubuntu/src/gpu
++ timeout 20m /home/ubuntu/wv/bin/python glyd_gpu.py
+Traceback (most recent call last):
+  File "/home/ubuntu/src/gpu/glyd_gpu.py", line 68, in <module>
+    _ext = _jit()
+           ^^^^^^
+  File "/home/ubuntu/src/gpu/glyd_gpu.py", line 43, in _jit
+    return load(
+           ^^^^^
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 1937, in load
+    return _jit_compile(
+           ^^^^^^^^^^^^^
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 2398, in _jit_compile
+    _write_ninja_file_and_build_library(
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 2508, in _write_ninja_file_and_build_library
+    verify_ninja_availability()
+  File "/home/ubuntu/wv/lib/python3.12/site-packages/torch/utils/cpp_extension.py", line 2574, in verify_ninja_availability
+    raise RuntimeError("Ninja is required to load C++ extensions (pip install ninja to get it)")
+RuntimeError: Ninja is required to load C++ extensions (pip install ninja to get it)
+exit 1

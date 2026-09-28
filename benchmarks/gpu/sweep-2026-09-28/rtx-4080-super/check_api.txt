@@ -1,0 +1,140 @@
++ cd /home/surya-koritala/p3final/t
++ timeout 40m /home/surya-koritala/p3final/wv/bin/python check_api.py Qwen/Qwen3-0.6B Qwen/Qwen3-1.7B ibm-granite/granite-3.1-3b-a800m-instruct
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   1%|▏         | 4/311 [00:00<00:09, 32.79it/s]Loading weights:  23%|██▎       | 72/311 [00:00<00:00, 378.89it/s]Loading weights:  46%|████▋     | 144/311 [00:00<00:00, 525.25it/s]Loading weights:  69%|██████▉   | 214/311 [00:00<00:00, 587.47it/s]Loading weights:  92%|█████████▏| 285/311 [00:00<00:00, 628.10it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 553.24it/s]
+In file included from /home/surya-koritala/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/include/python3.12/Python.h:12,
+                 from /home/surya-koritala/p3final/wv/lib/python3.12/site-packages/triton/backends/nvidia/driver.c:9:
+/home/surya-koritala/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/include/python3.12/pyconfig.h:1877:9: warning: ‘_POSIX_C_SOURCE’ redefined
+ 1877 | #define _POSIX_C_SOURCE 200809L
+      |         ^~~~~~~~~~~~~~~
+In file included from /usr/include/x86_64-linux-gnu/bits/libc-header-start.h:33,
+                 from /usr/include/stdlib.h:26,
+                 from /home/surya-koritala/p3final/wv/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda.h:56,
+                 from /home/surya-koritala/p3final/wv/lib/python3.12/site-packages/triton/backends/nvidia/driver.c:1:
+/usr/include/features.h:319:10: note: this is the location of the previous definition
+  319 | # define _POSIX_C_SOURCE        202405L
+      |          ^~~~~~~~~~~~~~~
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   2%|▏         | 6/311 [00:00<00:05, 56.60it/s]Loading weights:   9%|▉         | 28/311 [00:00<00:01, 146.56it/s]Loading weights:  16%|█▌        | 50/311 [00:00<00:01, 175.89it/s]Loading weights:  23%|██▎       | 72/311 [00:00<00:01, 189.92it/s]Loading weights:  30%|███       | 94/311 [00:00<00:01, 197.72it/s]Loading weights:  37%|███▋      | 116/311 [00:00<00:00, 202.91it/s]Loading weights:  44%|████▍     | 138/311 [00:00<00:00, 206.33it/s]Loading weights:  51%|█████▏    | 160/311 [00:00<00:00, 208.88it/s]Loading weights:  59%|█████▊    | 182/311 [00:00<00:00, 210.26it/s]Loading weights:  66%|██████▌   | 204/311 [00:01<00:00, 210.95it/s]Loading weights:  73%|███████▎  | 226/311 [00:01<00:00, 211.72it/s]Loading weights:  80%|███████▉  | 248/311 [00:01<00:00, 212.21it/s]Loading weights:  87%|████████▋ | 270/311 [00:01<00:00, 212.57it/s]Loading weights:  94%|█████████▍| 292/311 [00:01<00:00, 212.61it/s]Loading weights: 100%|██████████| 311/311 [00:01<00:00, 205.21it/s]
+Qwen/Qwen3-0.6B exact compiled, Qwen/Qwen3-1.7B loaded after: the first's CUDA graph replayed, both models' logits as before
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 3926.42it/s]
+Qwen/Qwen3-0.6B: bf16 loaded in 0.2 s, peak 1.66 GB, holds 1.19 GB, largest tensor 0.31 GB
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  15%|█▌        | 48/311 [00:00<00:00, 479.63it/s]Loading weights:  37%|███▋      | 116/311 [00:00<00:00, 592.44it/s]Loading weights:  61%|██████    | 189/311 [00:00<00:00, 646.61it/s]Loading weights:  83%|████████▎ | 259/311 [00:00<00:00, 653.95it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 647.30it/s]
+Qwen/Qwen3-0.6B: glyd mma fused loaded in 0.9 s, peak 2.19 GB: packed weights 1.02 GB + largest tensor 0.31 GB + 0.86 GB; holds 1.29 GB
+   generated tokens identical to bf16: 0 of 32; logits bit-identical: False
+   text:  with the invention of the first digital computer. This was a machine that could only store and process data in binary form, which is a two-state system. The
+   a prompt of 2100 tokens: 112 products decoded ahead, logits as decoded on the current stream, bit for bit
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 19325.73it/s]
+   glyd.gpu.compress: the same 1.02 GB, logits and tokens bit for bit
+   compiled (a static cache, CUDA graphs, fullgraph): tokens as eager's: 8 of 32
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  15%|█▌        | 48/311 [00:00<00:00, 474.99it/s]Loading weights:  37%|███▋      | 116/311 [00:00<00:00, 591.83it/s]Loading weights:  61%|██████    | 189/311 [00:00<00:00, 651.73it/s]Loading weights:  83%|████████▎ | 258/311 [00:00<00:00, 665.98it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 653.96it/s]
+Qwen/Qwen3-0.6B: glyd exact loaded in 0.9 s, peak 2.19 GB, holds 1.07 GB; logits bit-identical: True (and a prompt of 2100 tokens'); generated tokens identical to bf16: 32 of 32
+   compiled: tokens as bf16's eager: 32 of 32
+Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 2899.96it/s]
+Qwen/Qwen3-0.6B: saved in 0.7 s: 0.91 GB of safetensors; config.json, generation_config.json, glyd.json, merges.txt, model.safetensors, tokenizer.json, tokenizer_config.json, vocab.json
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 9718.04it/s]
+   from_pretrained(path, verify=False): 0 tensors verified, loaded in 0.4 s, peak 2.19 GB, holds 1.02 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 8629.31it/s]
+   from_pretrained(path, verify=True): 198 tensors verified, loaded in 0.9 s, peak 1.59 GB, holds 0.42 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 8611.79it/s]
+   from_pretrained(path, exact=True): merged groups split, loaded in 0.6 s; logits bit-identical to bf16: True
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 8699.11it/s]
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  35%|███▌      | 109/311 [00:00<00:00, 1082.82it/s]Loading weights:  87%|████████▋ | 270/311 [00:00<00:00, 1379.03it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 1376.65it/s]
+   from_pretrained(path, layout='mma12'): the packs transcoded, logits and tokens as mma12 packed from bf16
+   python -m glyd.gpu verify: /home/surya-koritala/p1/tmp/tmpfllcn_m0: 198 tensors decode to glyd.json's sha256
+   python -m glyd.gpu fit: Qwen3-0.6B on a 16 GB GPU: bf16 needs 4.1 GB, fits; Glyd 3.6 GB, fits
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  28%|██▊       | 86/311 [00:00<00:00, 859.31it/s]Loading weights:  94%|█████████▎| 291/311 [00:00<00:00, 1556.53it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 1490.71it/s]
+Qwen/Qwen3-1.7B: bf16 loaded in 0.3 s, peak 4.37 GB, holds 3.44 GB, largest tensor 0.62 GB
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   2%|▏         | 6/311 [00:00<00:05, 57.95it/s]Loading weights:   9%|▉         | 28/311 [00:00<00:01, 147.76it/s]Loading weights:  16%|█▌        | 50/311 [00:00<00:01, 176.54it/s]Loading weights:  23%|██▎       | 72/311 [00:00<00:01, 189.90it/s]Loading weights:  30%|███       | 94/311 [00:00<00:01, 197.37it/s]Loading weights:  37%|███▋      | 116/311 [00:00<00:00, 201.82it/s]Loading weights:  44%|████▍     | 138/311 [00:00<00:00, 204.81it/s]Loading weights:  51%|█████▏    | 160/311 [00:00<00:00, 206.77it/s]Loading weights:  59%|█████▊    | 182/311 [00:00<00:00, 207.92it/s]Loading weights:  66%|██████▌   | 204/311 [00:01<00:00, 208.96it/s]Loading weights:  73%|███████▎  | 226/311 [00:01<00:00, 209.52it/s]Loading weights:  80%|███████▉  | 248/311 [00:01<00:00, 209.86it/s]Loading weights:  87%|████████▋ | 270/311 [00:01<00:00, 210.05it/s]Loading weights:  94%|█████████▍| 292/311 [00:01<00:00, 210.15it/s]Loading weights: 100%|██████████| 311/311 [00:01<00:00, 203.63it/s]
+Qwen/Qwen3-1.7B: glyd mma fused loaded in 2.2 s, peak 4.08 GB: packed weights 2.75 GB + largest tensor 0.62 GB + 0.70 GB; holds 2.75 GB
+   generated tokens identical to bf16: 13 of 32; logits bit-identical: False
+   text:  in the 1950s with the advent of digital storage and transmission. The first significant developments were in the field of information theory, where the concept
+   a prompt of 2100 tokens: 112 products decoded ahead, logits as decoded on the current stream, bit for bit
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 20340.38it/s]
+   glyd.gpu.compress: the same 2.75 GB, logits and tokens bit for bit
+   compiled (a static cache, CUDA graphs, fullgraph): tokens as eager's: 17 of 32
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   2%|▏         | 6/311 [00:00<00:05, 57.52it/s]Loading weights:   9%|▉         | 28/311 [00:00<00:01, 148.74it/s]Loading weights:  16%|█▌        | 50/311 [00:00<00:01, 178.39it/s]Loading weights:  23%|██▎       | 72/311 [00:00<00:01, 192.81it/s]Loading weights:  30%|███       | 94/311 [00:00<00:01, 200.66it/s]Loading weights:  37%|███▋      | 116/311 [00:00<00:00, 205.44it/s]Loading weights:  44%|████▍     | 138/311 [00:00<00:00, 208.24it/s]Loading weights:  51%|█████▏    | 160/311 [00:00<00:00, 210.31it/s]Loading weights:  59%|█████▊    | 182/311 [00:00<00:00, 211.66it/s]Loading weights:  66%|██████▌   | 204/311 [00:01<00:00, 212.60it/s]Loading weights:  73%|███████▎  | 226/311 [00:01<00:00, 213.32it/s]Loading weights:  80%|███████▉  | 248/311 [00:01<00:00, 213.61it/s]Loading weights:  87%|████████▋ | 270/311 [00:01<00:00, 214.00it/s]Loading weights:  94%|█████████▍| 292/311 [00:01<00:00, 214.14it/s]Loading weights: 100%|██████████| 311/311 [00:01<00:00, 207.07it/s]
+Qwen/Qwen3-1.7B: glyd exact loaded in 2.2 s, peak 4.08 GB, holds 3.37 GB; logits bit-identical: True (and a prompt of 2100 tokens'); generated tokens identical to bf16: 32 of 32
+   compiled: tokens as bf16's eager: 13 of 32
+Fetching 6 files:   0%|          | 0/6 [00:00<?, ?it/s]Fetching 6 files: 100%|██████████| 6/6 [00:00<00:00, 3318.28it/s]
+Qwen/Qwen3-1.7B: saved in 2.3 s: 2.52 GB of safetensors; config.json, generation_config.json, glyd.json, merges.txt, model.safetensors, tokenizer.json, tokenizer_config.json, vocab.json
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights:  66%|██████▌   | 296/450 [00:00<00:00, 2922.39it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 3288.04it/s]
+   from_pretrained(path, verify=False): 0 tensors verified, loaded in 0.7 s, peak 4.08 GB, holds 2.75 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights:  73%|███████▎  | 328/450 [00:00<00:00, 3244.34it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 3498.03it/s]
+   from_pretrained(path, verify=True): 198 tensors verified, loaded in 1.9 s, peak 4.31 GB, holds 2.75 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights:  66%|██████▌   | 296/450 [00:00<00:00, 2936.49it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 3298.12it/s]
+   from_pretrained(path, exact=True): merged groups split, loaded in 1.5 s; logits bit-identical to bf16: True
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights:  76%|███████▌  | 342/450 [00:00<00:00, 3395.92it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 3615.74it/s]
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   8%|▊         | 24/311 [00:00<00:01, 235.04it/s]Loading weights:  26%|██▌       | 81/311 [00:00<00:00, 429.35it/s]Loading weights:  44%|████▍     | 138/311 [00:00<00:00, 482.04it/s]Loading weights:  64%|██████▍   | 200/311 [00:00<00:00, 533.05it/s]Loading weights:  83%|████████▎ | 257/311 [00:00<00:00, 545.12it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 517.81it/s]
+   from_pretrained(path, layout='mma12'): the packs transcoded, logits and tokens as mma12 packed from bf16
+   python -m glyd.gpu verify: /home/surya-koritala/p1/tmp/tmpnrxpix4o: 198 tensors decode to glyd.json's sha256
+   python -m glyd.gpu fit: Qwen3-1.7B on a 16 GB GPU: bf16 needs 6.6 GB, fits; Glyd 5.3 GB, fits
+Loading weights:   0%|          | 0/290 [00:00<?, ?it/s]Loading weights:  31%|███       | 89/290 [00:00<00:00, 887.71it/s]Loading weights:  61%|██████▏   | 178/290 [00:00<00:00, 838.96it/s]Loading weights:  91%|█████████ | 263/290 [00:00<00:00, 824.82it/s]Loading weights: 100%|██████████| 290/290 [00:00<00:00, 848.84it/s]
+ibm-granite/granite-3.1-3b-a800m-instruct: bf16 loaded in 0.7 s, peak 6.07 GB, holds 4.70 GB, largest tensor 0.15 GB
+Loading weights:   0%|          | 0/290 [00:00<?, ?it/s]Loading weights:   1%|          | 3/290 [00:00<00:10, 27.91it/s]Loading weights:   4%|▍         | 12/290 [00:00<00:04, 60.71it/s]Loading weights:   7%|▋         | 21/290 [00:00<00:03, 72.60it/s]Loading weights:  10%|█         | 30/290 [00:00<00:03, 78.48it/s]Loading weights:  13%|█▎        | 39/290 [00:00<00:03, 81.94it/s]Loading weights:  17%|█▋        | 48/290 [00:00<00:02, 84.04it/s]Loading weights:  20%|█▉        | 57/290 [00:00<00:02, 85.42it/s]Loading weights:  23%|██▎       | 66/290 [00:00<00:02, 86.16it/s]Loading weights:  26%|██▌       | 75/290 [00:00<00:02, 86.63it/s]Loading weights:  29%|██▉       | 84/290 [00:01<00:02, 87.12it/s]Loading weights:  32%|███▏      | 93/290 [00:01<00:02, 87.49it/s]Loading weights:  35%|███▌      | 102/290 [00:01<00:02, 87.78it/s]Loading weights:  38%|███▊      | 111/290 [00:01<00:02, 87.91it/s]Loading weights:  41%|████▏     | 120/290 [00:01<00:01, 87.90it/s]Loading weights:  44%|████▍     | 129/290 [00:01<00:01, 87.88it/s]Loading weights:  48%|████▊     | 138/290 [00:01<00:01, 87.96it/s]Loading weights:  51%|█████     | 147/290 [00:01<00:01, 87.99it/s]Loading weights:  54%|█████▍    | 156/290 [00:01<00:01, 88.06it/s]Loading weights:  57%|█████▋    | 165/290 [00:01<00:01, 88.11it/s]Loading weights:  60%|██████    | 174/290 [00:02<00:01, 88.04it/s]Loading weights:  63%|██████▎   | 183/290 [00:02<00:01, 87.96it/s]Loading weights:  66%|██████▌   | 192/290 [00:02<00:01, 88.03it/s]Loading weights:  69%|██████▉   | 201/290 [00:02<00:01, 88.02it/s]Loading weights:  72%|███████▏  | 210/290 [00:02<00:00, 88.07it/s]Loading weights:  76%|███████▌  | 219/290 [00:02<00:00, 88.10it/s]Loading weights:  79%|███████▊  | 228/290 [00:02<00:00, 88.23it/s]Loading weights:  82%|████████▏ | 237/290 [00:02<00:00, 88.32it/s]Loading weights:  85%|████████▍ | 246/290 [00:02<00:00, 88.33it/s]Loading weights:  88%|████████▊ | 255/290 [00:02<00:00, 88.30it/s]Loading weights:  91%|█████████ | 264/290 [00:03<00:00, 88.28it/s]Loading weights:  94%|█████████▍| 273/290 [00:03<00:00, 88.37it/s]Loading weights:  97%|█████████▋| 282/290 [00:03<00:00, 88.25it/s]Loading weights: 100%|██████████| 290/290 [00:03<00:00, 88.25it/s]
+[transformers] Ignoring clean_up_tokenization_spaces=True for BPE tokenizer TokenizersBackend. The clean_up_tokenization post-processing step is designed for WordPiece tokenizers and is destructive for BPE (it strips spaces before punctuation). Set clean_up_tokenization_spaces=False to suppress this warning, or set clean_up_tokenization_spaces_for_bpe_even_though_it_will_corrupt_output=True to force cleanup anyway.
+ibm-granite/granite-3.1-3b-a800m-instruct: glyd mma fused loaded in 3.7 s, peak 5.55 GB: packed weights 4.61 GB + largest tensor 0.15 GB + 0.79 GB; holds 4.61 GB
+   generated tokens identical to bf16: 32 of 32; logits bit-identical: False
+   text:  with the development of the first computer, the ENIAC, in the 1940s. The ENIAC was a general-purpose computer
+   a prompt of 2100 tokens: 64 products decoded ahead, logits as decoded on the current stream, bit for bit
+Loading weights:   0%|          | 0/290 [00:00<?, ?it/s]Loading weights: 100%|██████████| 290/290 [00:00<00:00, 22404.23it/s]
+   glyd.gpu.compress: the same 4.61 GB, logits and tokens bit for bit
+   compiled (a static cache, CUDA graphs, fullgraph): tokens as eager's: 32 of 32
+Loading weights:   0%|          | 0/290 [00:00<?, ?it/s]Loading weights:   1%|          | 3/290 [00:00<00:10, 27.90it/s]Loading weights:   4%|▍         | 12/290 [00:00<00:04, 60.47it/s]Loading weights:   7%|▋         | 21/290 [00:00<00:03, 72.32it/s]Loading weights:  10%|█         | 30/290 [00:00<00:03, 78.20it/s]Loading weights:  13%|█▎        | 39/290 [00:00<00:03, 81.62it/s]Loading weights:  17%|█▋        | 48/290 [00:00<00:02, 83.66it/s]Loading weights:  20%|█▉        | 57/290 [00:00<00:02, 84.97it/s]Loading weights:  23%|██▎       | 66/290 [00:00<00:02, 85.86it/s]Loading weights:  26%|██▌       | 75/290 [00:00<00:02, 86.36it/s]Loading weights:  29%|██▉       | 84/290 [00:01<00:02, 86.81it/s]Loading weights:  32%|███▏      | 93/290 [00:01<00:02, 87.15it/s]Loading weights:  35%|███▌      | 102/290 [00:01<00:02, 87.34it/s]Loading weights:  38%|███▊      | 111/290 [00:01<00:02, 87.48it/s]Loading weights:  41%|████▏     | 120/290 [00:01<00:01, 87.60it/s]Loading weights:  44%|████▍     | 129/290 [00:01<00:01, 87.67it/s]Loading weights:  48%|████▊     | 138/290 [00:01<00:01, 87.78it/s]Loading weights:  51%|█████     | 147/290 [00:01<00:01, 87.77it/s]Loading weights:  54%|█████▍    | 156/290 [00:01<00:01, 87.77it/s]Loading weights:  57%|█████▋    | 165/290 [00:01<00:01, 87.87it/s]Loading weights:  60%|██████    | 174/290 [00:02<00:01, 87.96it/s]Loading weights:  63%|██████▎   | 183/290 [00:02<00:01, 87.90it/s]Loading weights:  66%|██████▌   | 192/290 [00:02<00:01, 87.87it/s]Loading weights:  69%|██████▉   | 201/290 [00:02<00:01, 87.77it/s]Loading weights:  72%|███████▏  | 210/290 [00:02<00:00, 87.84it/s]Loading weights:  76%|███████▌  | 219/290 [00:02<00:00, 87.89it/s]Loading weights:  79%|███████▊  | 228/290 [00:02<00:00, 87.92it/s]Loading weights:  82%|████████▏ | 237/290 [00:02<00:00, 87.91it/s]Loading weights:  85%|████████▍ | 246/290 [00:02<00:00, 87.89it/s]Loading weights:  88%|████████▊ | 255/290 [00:02<00:00, 87.88it/s]Loading weights:  91%|█████████ | 264/290 [00:03<00:00, 87.93it/s]Loading weights:  94%|█████████▍| 273/290 [00:03<00:00, 87.98it/s]Loading weights:  97%|█████████▋| 282/290 [00:03<00:00, 87.96it/s]Loading weights: 100%|██████████| 290/290 [00:03<00:00, 87.95it/s]
+ibm-granite/granite-3.1-3b-a800m-instruct: glyd exact loaded in 3.6 s, peak 5.55 GB, holds 4.61 GB; logits bit-identical: True (and a prompt of 2100 tokens'); generated tokens identical to bf16: 32 of 32
+   compiled: tokens as bf16's eager: 32 of 32
+   torch.compile(forward, reduce-overhead, fullgraph), gradients on: no graph break, no CUDA graph skipped; copy.deepcopy refused
+Fetching 8 files:   0%|          | 0/8 [00:00<?, ?it/s]Fetching 8 files: 100%|██████████| 8/8 [00:00<00:00, 2510.62it/s]
+ibm-granite/granite-3.1-3b-a800m-instruct: saved in 5.0 s: 4.66 GB of safetensors; added_tokens.json, config.json, generation_config.json, glyd.json, merges.txt, model.safetensors, special_tokens_map.json, tokenizer.json, tokenizer_config.json, vocab.json
+Loading weights:   0%|          | 0/483 [00:00<?, ?it/s]Loading weights:  45%|████▍     | 215/483 [00:00<00:00, 2134.33it/s]Loading weights:  89%|████████▉ | 429/483 [00:00<00:00, 2074.79it/s]Loading weights: 100%|██████████| 483/483 [00:00<00:00, 2119.61it/s]
+   from_pretrained(path, verify=False): 0 tensors verified, loaded in 0.4 s, peak 5.55 GB, holds 4.61 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/483 [00:00<?, ?it/s]Loading weights:  39%|███▉      | 188/483 [00:00<00:00, 1876.48it/s]Loading weights:  85%|████████▍ | 410/483 [00:00<00:00, 2053.45it/s]Loading weights: 100%|██████████| 483/483 [00:00<00:00, 2055.50it/s]
+   from_pretrained(path, verify=True): 193 tensors verified, loaded in 3.2 s, peak 5.55 GB, holds 4.61 GB; logits and tokens as the saved model's
+Loading weights:   0%|          | 0/483 [00:00<?, ?it/s]Loading weights:  42%|████▏     | 203/483 [00:00<00:00, 2025.46it/s]Loading weights:  88%|████████▊ | 425/483 [00:00<00:00, 2119.22it/s]Loading weights: 100%|██████████| 483/483 [00:00<00:00, 2118.53it/s]
+   from_pretrained(path, exact=True): merged groups split, loaded in 0.5 s; logits bit-identical to bf16: True
+Loading weights:   0%|          | 0/483 [00:00<?, ?it/s]Loading weights:  42%|████▏     | 203/483 [00:00<00:00, 1981.77it/s]Loading weights:  87%|████████▋ | 418/483 [00:00<00:00, 2077.92it/s]Loading weights: 100%|██████████| 483/483 [00:00<00:00, 2088.43it/s]
+Loading weights:   0%|          | 0/290 [00:00<?, ?it/s]Loading weights:   7%|▋         | 20/290 [00:00<00:01, 190.80it/s]Loading weights:  16%|█▌        | 47/290 [00:00<00:01, 218.69it/s]Loading weights:  26%|██▌       | 74/290 [00:00<00:00, 228.94it/s]Loading weights:  35%|███▍      | 101/290 [00:00<00:00, 234.25it/s]Loading weights:  44%|████▍     | 128/290 [00:00<00:00, 237.22it/s]Loading weights:  53%|█████▎    | 155/290 [00:00<00:00, 238.74it/s]Loading weights:  63%|██████▎   | 182/290 [00:00<00:00, 239.85it/s]Loading weights:  72%|███████▏  | 209/290 [00:00<00:00, 240.35it/s][W928 02:29:59.619502590 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+[W928 02:29:59.623953448 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+[W928 02:29:59.626113216 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+Loading weights:  81%|████████▏ | 236/290 [00:01<00:00, 235.22it/s][W928 02:29:59.647827940 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+[W928 02:29:59.651396233 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+[W928 02:29:59.653074580 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+[W928 02:29:59.664029802 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+[W928 02:29:59.666085910 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+[W928 02:29:59.672564295 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+[W928 02:29:59.672616895 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+[W928 02:29:59.676373669 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+[W928 02:29:59.676421120 CUDACachingAllocator.cpp:528] expandable_segments: memory mapping failed with OOM on device 0 while trying to map 20971520 bytes (free: 27459584, total: 16717119488).
+Loading weights:  87%|████████▋ | 253/290 [00:01<00:00, 242.91it/s]
+Traceback (most recent call last):
+  File "/home/surya-koritala/p3final/t/check_api.py", line 228, in <module>
+    s = glyd.from_pretrained(name, layout=other)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/surya-koritala/p3final/wv/lib/python3.12/site-packages/glyd/gpu/hf.py", line 61, in from_pretrained
+    return AutoModelForCausalLM.from_pretrained(name_or_path, **hf_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/surya-koritala/p3final/wv/lib/python3.12/site-packages/transformers/models/auto/auto_factory.py", line 402, in from_pretrained
+    return model_class.from_pretrained(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/surya-koritala/p3final/wv/lib/python3.12/site-packages/transformers/modeling_utils.py", line 4313, in from_pretrained
+    loading_info, disk_offload_index = cls._load_pretrained_model(model, state_dict, checkpoint_files, load_config)
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/surya-koritala/p3final/wv/lib/python3.12/site-packages/transformers/modeling_utils.py", line 4456, in _load_pretrained_model
+    loading_info, disk_offload_index = convert_and_load_state_dict_in_model(
+                                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/surya-koritala/p3final/wv/lib/python3.12/site-packages/transformers/core_model_loading.py", line 1754, in convert_and_load_state_dict_in_model
+    realized_value = mapping.convert(
+                     ^^^^^^^^^^^^^^^^
+  File "/home/surya-koritala/p3final/wv/lib/python3.12/site-packages/transformers/core_model_loading.py", line 1008, in convert
+    collected_tensors = self.materialize_tensors()
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/surya-koritala/p3final/wv/lib/python3.12/site-packages/transformers/core_model_loading.py", line 973, in materialize_tensors
+    tensors = [func() for func in tensors]
+               ^^^^^^
+  File "/home/surya-koritala/p3final/wv/lib/python3.12/site-packages/transformers/core_model_loading.py", line 1262, in _job
+    return _materialize_copy(tensor, device, dtype)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/surya-koritala/p3final/wv/lib/python3.12/site-packages/transformers/core_model_loading.py", line 1240, in _materialize_copy
+    tensor = tensor.to(device=device, dtype=dtype)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 120.00 MiB. GPU 0 has a total capacity of 15.57 GiB of which 26.19 MiB is free. Including non-PyTorch memory, this process has 15.32 GiB memory in use. Of the allocated memory 14.57 GiB is allocated by PyTorch, and 421.41 MiB is reserved by PyTorch but unallocated.
+exit 1

@@ -1,0 +1,39 @@
++ nvidia-smi
+Mon Sep 28 06:28:15 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.91.07              Driver Version: 595.91.07      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A10G                    Off |   00000000:00:1E.0 Off |                    0 |
+|  0%   28C    P0             58W /  300W |       0MiB /  23028MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
++ nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv
+name, compute_cap, driver_version, memory.total [MiB]
+NVIDIA A10G, 8.6, 595.91.07, 23028 MiB
++ nproc
+8
++ lscpu
++ grep 'Model name'
+Model name:                              AMD EPYC 7R32
++ free -g
++ head -2
+               total        used        free      shared  buff/cache   available
+Mem:              30           1          29           0           0          29
++ ls -d /usr/local/cuda /usr/local/cuda-12.8 /usr/local/cuda-12.9 /usr/local/cuda-13.0 /usr/local/cuda-13.2
+/usr/local/cuda
+/usr/local/cuda-12.8
+/usr/local/cuda-12.9
+/usr/local/cuda-13.0
+/usr/local/cuda-13.2
