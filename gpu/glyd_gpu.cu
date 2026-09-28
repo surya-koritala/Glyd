@@ -3228,8 +3228,9 @@ static int mma_gemm_big_any(Fmt f, int64_t O, int64_t K, const uint16_t* x, int6
     // 256 tokens in both layouts (a Qwen3-1.7B, 4B or 8B layer 2-5% faster 12-bit, 1-2% tiered, at 512-4096 tokens),
     // and of 128 by two row blocks in the 12-bit layout (2-4% at 300-896); there the tiered layout's producers, a
     // weight decoded for 128 tokens, do not keep up with them (11-14% slower than with consumers of a row block).
-    auto run = variant == 2 ? mma_gemm_big_run<Fmt, 8, 4, 2, 1, 32> : std::is_same_v<Fmt, Nib> ? mma_gemm_big_run<Fmt, 8, 4, 2, 2, 32> : mma_gemm_big_run<Fmt, 4, 4, 3, 2>;
-    return run(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
+    if (variant == 2) return mma_gemm_big_run<Fmt, 8, 4, 2, 1, 32>(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
+    if constexpr (std::is_same_v<Fmt, Nib>) return mma_gemm_big_run<Fmt, 8, 4, 2, 2, 32>(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
+    else return mma_gemm_big_run<Fmt, 4, 4, 3, 2>(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
 }
 
 GLYD_GPU_API int glyd_gpu_mma_gemm_big_workspace(int64_t O, int64_t K, int64_t M, int64_t variant, size_t* bytes) {
