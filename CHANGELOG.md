@@ -28,7 +28,14 @@ every earlier format.
   starts at 1024 tokens (was past 640) where the fused kernel takes the
   prompt: it is now the faster one to there (exact and unfused products
   past 640, as before). The C API's `glyd_gpu_mma_gemm_big` and
-  `glyd_gpu_mma12_gemm_big` take a product's done counters.
+  `glyd_gpu_mma12_gemm_big` take a product's done counters, and
+  `glyd_gpu_api_version` tells the C API's version (2; the package
+  refuses a library of another).
+- Products on two streams of one GPU at once no longer share done
+  counters (a set a stream, as the workspace): a small prompt product's
+  outputs had come out wrong that way. A prompt that stops short (out of
+  memory, an interrupt) no longer cuts the decode ahead's order short
+  for the rest of the process.
 - Long prompts on GeForce Ada within 0.2-0.7% of bf16's time from 2048
   tokens, 1.5-2.9% at 1024 (were 5-10% behind): past 512 tokens (from
   1024 in the 12-bit layout) each matrix is decoded once, for cuBLAS, on
