@@ -291,6 +291,9 @@ class GlydQuantizer(HfQuantizer):
         """A glyd-v1 checkpoint's experts' weight from its buffers, on the module holding it (moe.py), packed again
         into the 12-bit layout where that is the one; verify: its sha256 against glyd.json."""
         q = self.quantization_config
+        _, E, tr = moe.held(host)
+        if (e["experts"], e["transposed"]) != (E, weight in tr):  # (a transformers that holds the family otherwise)
+            raise ValueError(f"glyd: {path} saved as {e['experts']} experts' matrices{' transposed' if e['transposed'] else ''}; this model holds {E}{' transposed' if weight in tr else ''}")
         p = g.Mma(tuple(e["shape"]), *(getattr(host, f"glyd_{weight}_{b}") for b in fmt.BUFFERS), e["tiers"])
         for b in fmt.BUFFERS:
             delattr(host, f"glyd_{weight}_{b}")
