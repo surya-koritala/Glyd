@@ -1,9 +1,8 @@
-"""resp_job.sh's results in one page: python resp_summary.py RESULTS_DIR [--json OUT]. Each model's table, bf16 against
-Glyd (its default, compiled where fast_generate takes the call, and exact=True): time to first token at each prompt
-length, tokens a second at each batch, the two mixes (time to first token and total), each the median of its repeats
-(the warm-up apart); the load (GB, seconds, layout), which calls ran compiled, the first calls (the compile), and
-whether each mode's greedy tokens are bf16's; the GPU's clocks and power while each mode ran (smi-*.csv). --json: every
-result in one file."""
+"""resp_job.sh's results in one page: python resp_summary.py RESULTS_DIR [--json OUT]. Per model: the time to first
+token at each prompt length, the tokens a second at each batch and the two mixes, bf16 eager and compiled against
+Glyd's default and exact, each the median of its repeats (the warm-up apart), and Glyd's default over each bf16; the
+load (GB, seconds, layout), which calls ran compiled (c), the first calls (the compile), whether each mode's greedy
+tokens are bf16's; the GPU's clocks and power while each mode ran (smi-*.csv). --json: every result in one file."""
 import csv, glob, json, os, statistics, sys
 
 R = sys.argv[1]
@@ -14,77 +13,84 @@ for f in sorted(glob.glob(os.path.join(R, "*.json"))):
     except ValueError:
         continue
     if "mode" in r and "model" in r:
-        res.setdefault(os.path.basename(r["model"].rstrip("/")) if "snapshots" not in r["model"] else r["model"].split("models--")[-1].split("/")[0].split("--")[-1], {})[r["mode"]] = r
-MODES = ["bf16", "glyd", "exact"]
+        m = r["model"].rstrip("/")
+        res.setdefault(m.split("models--")[-1].split("/")[0].split("--")[-1] if "models--" in m else os.path.basename(m), {})[r["mode"]] = r
+MODES = ["bf16", "bf16c", "glyd", "exact"]
+LAB = {"bf16": "bf16 eager", "bf16c": "bf16 compiled", "glyd": "Glyd (default)", "exact": "Glyd exact"}
 
 
 def smi(model, mode):
     try:
-        rows = [r for r in csv.reader(open(os.path.join(R, f"smi-{model}-{mode}.csv"))) if len(r) >= 5]
+        rows = [r for r in csv.reader(open(os.path.join(R, f"smi-{model}-{mode}.csv"))) if len(r) >= 6]
     except OSError:
         return ""
-    num = lambda i: [float(r[i].split()[0]) for r in rows if r[i].split()[0].replace(".", "", 1).isdigit()]
-    sm, pw = num(1), num(3)
-    busy = [s for s, u in zip(sm, num(5) or [100] * len(sm)) if u > 50] or sm
-    return f"SM {statistics.median(busy):.0f} MHz, {statistics.median(pw):.0f} W (medians while busy)" if busy and pw else ""
+    num = lambda i: [float(r[i].split()[0]) for r in rows if r[i].split() and r[i].split()[0].replace(".", "", 1).isdigit()]
+    sm, pw, ut = num(1), num(3), num(5)
+    busy = [(s, p) for s, p, u in zip(sm, pw, ut) if u > 50] or list(zip(sm, pw))
+    return f"SM {statistics.median(s for s, _ in busy):.0f} MHz, {statistics.median(p for _, p in busy):.0f} W (medians while busy)" if busy else ""
 
 
 out, first = [], None
 for model, modes in res.items():
     first = first or next(iter(modes.values()))
     head = [m for m in MODES if m in modes]
-    lab = {"bf16": "bf16", "glyd": "Glyd (default)", "exact": "Glyd exact"}
+    get = lambda m, n: next((c for c in modes.get(m, {}).get("configs", []) if c["name"] == n), {})
     out += [f"## {model}", ""]
     for m in head:
         L = modes[m]["load"]
-        if not L.get("fits"):
-            out.append(f"- {lab[m]}: does not fit ({L.get('error', '')[:120]})")
-        else:
-            out.append(f"- {lab[m]}: {L['gb']} GB on the GPU after the load ({L['seconds']} s)" + (f", layout {L['layout']}" if L.get("layout") else "")
-                       + (f", generate() compiled to {L['compiled_cap']} positions" if L.get("compiled_cap") else "") + (f"; {smi(model, m)}" if smi(model, m) else ""))
-    cfgs = []
-    for m in head:
-        for c in modes[m].get("configs", []):
-            if c["name"] not in cfgs:
-                cfgs.append(c["name"])
-    rows = []
-    get = lambda m, n: next((c for c in modes[m].get("configs", []) if c["name"] == n), {})
-    for n in cfgs:
-        c0 = next(get(m, n) for m in head if get(m, n))
-        what = {"ttft": f"time to first token, {c0['prompt']}-token prompt", "rate": f"tokens/s, {c0['batch']} sequence{'s' if c0['batch'] > 1 else ''} ({c0['new']} new)",
-                "mix": f"{n.split()[1]}: {c0['prompt']}-token prompt, {c0['new']}-token reply"}[n.split()[0]]
-        cells = []
-        for m in head:
-            c = get(m, n)
-            if not c or c.get("skipped"):
-                cells.append(f"({c.get('skipped', 'not run')[:40]})" if c else "")
-                continue
-            if n.startswith("rate"):
-                v, b = c.get("tokens_per_s"), get("bf16", n).get("tokens_per_s")
-                cells.append(f"{v:.1f}" + (f" ({v / b:.2f}x)" if b and m != "bf16" else "") + (" c" if c.get("path") == "compiled" else "") if v else "")
-            elif n.startswith("ttft"):
-                v, b = c.get("ttft"), get("bf16", n).get("ttft")
-                cells.append(f"{v * 1e3:.0f} ms" + (f" ({v / b:.2f}x)" if b and m != "bf16" else "") + (" c" if c.get("path") == "compiled" else "") if v else "")
-            else:
-                v, t = c.get("ttft"), c.get("total")
-                cells.append(f"{v * 1e3:.0f} ms / {t:.2f} s" + (" c" if c.get("path") == "compiled" else "") if v else "")
-        rows.append((what, cells))
-    out += ["", "| | " + " | ".join(lab[m] for m in head) + " |", "| :-- |" + " --: |" * len(head)]
-    out += [f"| {w} | " + " | ".join(cells) + " |" for w, cells in rows]
-    warm = []
-    for m in head:
-        cs = [c for c in modes[m].get("configs", []) if "warmup" in c]
-        if cs:
-            warm.append(f"{lab[m]} {cs[0]['warmup']['total']:.1f} s ({cs[0]['name']}; median repeat {cs[0].get('total', float('nan')):.2f} s)")
+        s = smi(model, m)
+        out.append(f"- {LAB[m]}: does not fit ({L.get('error', '')[:120]})" if not L.get("fits") else
+                   f"- {LAB[m]}: {L['gb']} GB on the GPU after the load ({L['seconds']} s)" + (f", layout {L['layout']}" if L.get("layout") else "")
+                   + (f", generate() compiled to {L['compiled_cap']} positions" if L.get("compiled_cap") else "") + (f"; {s}" if s else ""))
+    names = list(dict.fromkeys(c["name"] for m in head for c in modes[m].get("configs", [])))
+    ratio = [b for b in ("bf16", "bf16c") if b in head and "glyd" in head]
+
+    def cell(c, key, fmt):
+        if not c:
+            return ""
+        if c.get("skipped"):
+            return f"({c['skipped'][:30]})"
+        v = c.get(key)
+        return (fmt(v) + (" c" if c.get("path") == "compiled" else "")) if v is not None else ""
+
+    def rel(n, key, b):
+        g, x = get("glyd", n).get(key), get(b, n).get(key)
+        return f"{g / x:.2f}x" if g and x else ""
+
+    tt = [n for n in names if n.startswith("ttft")]
+    if tt:
+        out += ["", "Time to first token, ms (Glyd's over bf16's: under 1 is sooner)", "",
+                "| prompt | " + " | ".join(LAB[m] for m in head) + "".join(f" | Glyd / {LAB[b]}" for b in ratio) + " |", "| ---: |" + " ---: |" * (len(head) + len(ratio))]
+        out += [f"| {get(head[0], n).get('prompt') or n.split()[1]} | " + " | ".join(cell(get(m, n), "ttft", lambda v: f"{v * 1e3:.0f}") for m in head)
+                + "".join(f" | {rel(n, 'ttft', b)}" for b in ratio) + " |" for n in tt]
+    rt = [n for n in names if n.startswith("rate")]
+    if rt:
+        new = get(head[0], rt[0]).get("new")
+        out += ["", f"Tokens a second after the first ({new} new, a 128-token prompt; Glyd's over bf16's: over 1 is faster)", "",
+                "| sequences | " + " | ".join(LAB[m] for m in head) + "".join(f" | Glyd / {LAB[b]}" for b in ratio) + " |", "| ---: |" + " ---: |" * (len(head) + len(ratio))]
+        out += [f"| {n.split()[1]} | " + " | ".join(cell(get(m, n), "tokens_per_s", lambda v: f"{v:.1f}") for m in head)
+                + "".join(f" | {rel(n, 'tokens_per_s', b)}" for b in ratio) + " |" for n in rt]
+    mx = [n for n in names if n.startswith("mix")]
+    if mx:
+        out += ["", "The mixes: time to first token, ms / total, s (Glyd's total over bf16's: under 1 is sooner)", "",
+                "| mix | " + " | ".join(LAB[m] for m in head) + "".join(f" | Glyd / {LAB[b]}" for b in ratio) + " |", "| :-- |" + " ---: |" * (len(head) + len(ratio))]
+        for n in mx:
+            c0 = get(head[0], n)
+            cells = []
+            for m in head:
+                c = get(m, n)
+                cells.append(f"({c['skipped'][:30]})" if c.get("skipped") else f"{c['ttft'] * 1e3:.0f} / {c['total']:.2f}" + (" c" if c.get("path") == "compiled" else "") if c.get("total") else "")
+            out.append(f"| {n.split()[1]}: {c0.get('prompt')} + {c0.get('new')} | " + " | ".join(cells) + "".join(f" | {rel(n, 'total', b)}" for b in ratio) + " |")
+    warm = [f"{LAB[m]} {cs[0]['warmup']['total']:.1f} s" for m in head for cs in [[c for c in modes[m].get("configs", []) if "warmup" in c]] if cs]
     same = []
     for m in head:
         if m != "bf16" and "bf16" in modes:
             both = [(c, get("bf16", c["name"])) for c in modes[m].get("configs", []) if c.get("sha") and get("bf16", c["name"]).get("sha")]
             if both:
-                same.append(f"{lab[m]} {sum(a['sha'] == b['sha'] for a, b in both)} of {len(both)}")
-    out += ["", "c: that call ran compiled (fast_generate). The first call of each mode, the compile's in the default mode: " + "; ".join(warm) + "."]
+                same.append(f"{LAB[m]} {sum(a['sha'] == b['sha'] for a, b in both)} of {len(both)}")
+    out += ["", "c: the call ran compiled (fast_generate). Each process's first call (excluded above; the compile's in a compiled mode): " + "; ".join(warm) + "."]
     if same:
-        out.append("Greedy tokens (the first sequence's) the same as bf16's, configurations: " + "; ".join(same) + ".")
+        out.append("Greedy tokens (the first sequence's) the same as bf16 eager's, configurations: " + "; ".join(same) + ".")
     out.append("")
 if first:
     out = [f"# How fast it responds: {first['gpu']} ({first['gpu_memory_gb']} GB; {first['smi']}), {first['cpu']} ({first['cpus']} CPUs, {first['host']})",

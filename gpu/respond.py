@@ -1,10 +1,12 @@
-"""How fast a model responds through generate(): its time to first token and its tokens a second, in one of three
+"""How fast a model responds through generate(): its time to first token and its tokens a second, in one of four
 modes, one mode a process (run each in a fresh one):
 
   bf16   transformers' own model in bf16 (AutoModelForCausalLM, dtype bf16), its generate() as it runs by default:
          eager, a dynamic cache;
-  glyd   glyd.from_pretrained(MODEL) as it loads by default (layout "auto"; generate() compiled, a static cache and
-         CUDA graphs, for a call whose cache holds at most 2048 positions in all, 1280 on a GeForce card; else eager);
+  bf16c  the same bf16 model, its generate() compiled as Glyd's default is (glyd.gpu.model.fast_generate: transformers'
+         static cache and torch.compile's CUDA graphs for a call whose cache holds at most 2048 positions in all, 1280
+         on a GeForce card; else eager): bf16 like for like with Glyd's default;
+  glyd   glyd.from_pretrained(MODEL) as it loads by default (layout "auto"; generate() compiled as bf16c's);
   exact  glyd.from_pretrained(MODEL, exact=True): every product the matrix decoded whole, then F.linear (eager).
 
 Greedy decoding; every call's new tokens forced to its count (min_new_tokens = max_new_tokens: no early end of
@@ -36,7 +38,7 @@ TEXT = ("The history of data compression begins long before computers. Telegraph
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
-ap.add_argument("--mode", required=True, choices=["bf16", "glyd", "exact"])
+ap.add_argument("--mode", required=True, choices=["bf16", "bf16c", "glyd", "exact"])
 ap.add_argument("--out", required=True)
 ap.add_argument("--prompts", default="128,512,2048,8192")
 ap.add_argument("--ttft-new", type=int, default=16)
@@ -83,8 +85,13 @@ tok = AutoTokenizer.from_pretrained(args.model)
 torch.cuda.reset_peak_memory_stats()
 t0 = time.perf_counter()
 try:
-    if args.mode == "bf16":
+    if args.mode in ("bf16", "bf16c"):
         model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.bfloat16, device_map="cuda:0").eval()
+        if args.mode == "bf16c":
+            import glyd
+            from glyd.gpu.model import fast_generate
+            R["glyd"] = glyd.__version__
+            model = fast_generate(model)
     else:
         import glyd
         R["glyd"] = glyd.__version__
@@ -100,7 +107,7 @@ R["load"] = {"fits": True, "seconds": round(time.perf_counter() - t0, 1), "gb": 
              "layout": getattr(q, "layout", None), "compiled_cap": getattr(model, "glyd_fast", None)}
 print(f"{args.mode}: loaded in {R['load']['seconds']} s, {R['load']['gb']} GB (layout {R['load']['layout']}, compiled calls to {R['load']['compiled_cap']} positions)", flush=True)
 path = {"compiled": None}
-if args.mode == "glyd":  # which calls fast_generate compiles: its _fast's answer, recorded
+if args.mode in ("glyd", "bf16c"):  # which calls fast_generate compiles: its _fast's answer, recorded
     import glyd.gpu.model as gm
     own_fast = gm._fast
 
@@ -140,7 +147,7 @@ def call(L, B, n):
     torch.cuda.synchronize()
     t1 = time.perf_counter()
     assert out.shape[1] == L + n and len(clock.t) == n + 1, (out.shape, len(clock.t))
-    r = {"ttft": clock.t[1] - t0, "total": t1 - t0, "path": "eager" if args.mode != "glyd" else "compiled" if path["compiled"] else "eager"}
+    r = {"ttft": clock.t[1] - t0, "total": t1 - t0, "path": "compiled" if path["compiled"] else "eager"}
     if n > 1:
         r["tokens_per_s"] = (n - 1) * B / (clock.t[-1] - clock.t[1])
     r["sha"] = hashlib.sha256(out[0, L:].cpu().numpy().tobytes()).hexdigest()[:16]

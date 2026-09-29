@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # How fast a model responds on this GPU: gpu/respond.py (time to first token and tokens a second through generate(),
-# bf16 against Glyd's default and Glyd exact=True, each mode a process of its own), unattended, on an x86_64 or aarch64
+# bf16 eager and compiled against Glyd's default and Glyd exact=True, each mode a process of its own), unattended, on an x86_64 or aarch64
 # host, riding along with another job's session (the GPU to itself while it runs). In ~: this and resp_src.tar (the
 # tree: gpu/, bindings/python, this directory; its COMMIT). In order:
 #   the library for this GPU alone (build_lib.sh's flags), the models downloading meanwhile (whole, in MODELS' order);
-#   then MODELS by mode, most wanted first: Qwen3-8B bf16 and Glyd, the big model's Glyd and bf16 (Qwen3-14B on a
-#   GPU under 30 GB, where Glyd fits and bf16 does not; 14B on one under 60 GB; 32B on one of 60 GB or more), Qwen3-8B
-#   exact, the big model's exact, and on a GPU under 30 GB Qwen3-4B-Instruct-2507's three. A mode that does not fit is
+#   then MODELS by mode, most wanted first: Qwen3-8B bf16, Glyd and bf16 compiled, the big model's Glyd, bf16 and
+#   bf16 compiled (Qwen3-14B on a GPU under 30 GB, where Glyd fits and bf16 does not; 14B on one under 60 GB; 32B on
+#   one of 60 GB or more), Qwen3-8B exact, the big model's exact, and on a GPU under 30 GB Qwen3-4B-Instruct-2507's
+#   four. A mode that does not fit is
 #   recorded so. Each mode gets an even share of the time left among it and the next RESP_SPREAD - 1 (4 in all: the
 #   first modes the most, the last what is left; respond.py's --deadline cuts its repeats, then its configurations)
 #   and a timeout at the job's end.
@@ -52,7 +53,7 @@ elif [ "$MIB" -lt 60000 ]; then BIG=Qwen/Qwen3-14B SMALL=
 else BIG=Qwen/Qwen3-32B SMALL=; fi
 M8=Qwen/Qwen3-8B
 # model:mode, most wanted first
-RUNS=${RESP_RUNS:-"$M8:bf16 $M8:glyd $BIG:glyd $BIG:bf16 $M8:exact $BIG:exact${SMALL:+ $SMALL:bf16 $SMALL:glyd $SMALL:exact}"}
+RUNS=${RESP_RUNS:-"$M8:bf16 $M8:glyd $M8:bf16c $BIG:glyd $BIG:bf16 $BIG:bf16c $M8:exact $BIG:exact${SMALL:+ $SMALL:bf16 $SMALL:glyd $SMALL:bf16c $SMALL:exact}"}
 MODELS=$(for r in $RUNS; do echo "${r%:*}"; done | awk '!s[$0]++' | tr '\n' ' ')
 
 step "environment"

@@ -1,11 +1,13 @@
 # How fast it responds: time to first token and tokens a second, 2026-09-29
 
-What a user of `generate()` waits for, bf16 against Glyd, on one GPU at a time: `gpu/respond.py` in three modes, each
+What a user of `generate()` waits for, bf16 against Glyd, on one GPU at a time: `gpu/respond.py` in four modes, each
 in a process of its own, the same prompts in each (a fixed English text's first N tokens; B copies for B sequences),
 greedy decoding, every reply forced to its length (`min_new_tokens`: no early end of sequence):
 
 - **bf16**: transformers' own model (`AutoModelForCausalLM`, bf16), its `generate()` as it runs by default (eager, a
   dynamic cache).
+- **bf16 compiled**: the same bf16 model, its `generate()` compiled as Glyd's default is (`fast_generate`:
+  transformers' static cache and `torch.compile`'s CUDA graphs for the same calls, the rest eager): bf16 like for like.
 - **Glyd (default)**: `glyd.from_pretrained(MODEL)` as it loads by default: the layout the GPU's (`"auto"`: tiered on
   Ada, 12-bit on an A10, A100 and H100, where it fits), `generate()` compiled (a static cache, CUDA graphs) where a
   call's cache holds at most 2048 positions in all (1280 on a GeForce card), else eager.
@@ -23,7 +25,7 @@ GPU's clocks and power are sampled while each mode runs (`nvidia-smi`, once a se
 
 | file | what |
 | :--- | :--- |
-| `gpu/respond.py` | one model in one mode: `python respond.py MODEL --mode bf16|glyd|exact --out RESULT.json` |
+| `gpu/respond.py` | one model in one mode: `python respond.py MODEL --mode bf16|bf16c|glyd|exact --out RESULT.json` |
 | `resp_job.sh` | the modes in turn, the library built for the GPU, the models downloaded: unattended, 20 minutes at most on a cloud GPU (an even share of the time left a mode; what does not fit its share is recorded so) |
 | `resp_summary.py` | the tables (summary.txt) and every result in one JSON (respond.json) |
 
