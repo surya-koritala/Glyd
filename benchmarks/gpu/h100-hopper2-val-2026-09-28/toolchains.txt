@@ -1,0 +1,4 @@
+CUDA 13: /home/ubuntu/gpuenv/lib/python3.12/site-packages/nvidia/cu13: Cuda compilation tools, release 13.0, V13.0.88 Build cuda_13.0.r13.0/compiler.36424714_0 
+CUDA 12: /home/ubuntu/valw/cu12: Cuda compilation tools, release 12.8, V12.8.93 Build cuda_12.8.r12.8/compiler.35583870_0 
+the instance's CUDA 12: none
+gcc: gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0

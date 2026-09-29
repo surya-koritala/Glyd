@@ -1,0 +1,14 @@
+00:08:23 (+4 s) machine
+00:08:23 (+4 s) sources (7 changed lines in cap.diff)
+00:08:31 (+12 s) CUDA 12 /home/ubuntu/valw/cu12
+00:09:35 (+76 s) builds: 3 of 3
+00:09:42 (+83 s) self-test and check cu13
+00:09:49 (+90 s) self-test and check cu12
+00:09:54 (+95 s) layers cu13 round 1
+00:09:59 (+100 s) layers cu12 round 1
+00:10:04 (+105 s) layers cu13 round 2
+00:10:10 (+111 s) layers cu12 round 2
+00:11:08 (+169 s) e2e cu13
+00:12:00 (+221 s) e2e cu12
+00:12:02 (+223 s) e 479139a
+00:12:02 (+223 s) done

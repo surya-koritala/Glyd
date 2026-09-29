@@ -1,0 +1,11 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 6548.86it/s]
+bf16 (weights 16.38 GB): batch 1: 20.2 tokens/s (20.2 a sequence), peak VRAM 16.42 GB
+bf16 prefill: 256 tokens 29.1 ms (8784 tokens/s), first token 31.7 ms, 1024 tokens 36.2 ms (28326 tokens/s), first token 39.5 ms
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 exact: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 1.24 GB, VRAM in use 13.55 GB on 1 GPU
+glyd mma12 exact: batch 1: 25.9 tokens/s (25.9 a sequence), peak VRAM 13.56 GB
+glyd mma12 prefill: 256 tokens 37.4 ms (6838 tokens/s), first token 40.7 ms, 1024 tokens 49.4 ms (20749 tokens/s), first token 52.8 ms
+logits bit-identical: True
+generated tokens identical to bf16: 8 of 8
+text:  in the 1950s
+exit 0

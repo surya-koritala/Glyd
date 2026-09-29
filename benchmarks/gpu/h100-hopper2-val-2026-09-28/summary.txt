@@ -1,0 +1,121 @@
+NVIDIA H100 80GB HBM3, 9.0, 1980 MHz, 700.00 W, 132 SMs; kernels timed: wg
+CUDA 13: /home/ubuntu/gpuenv/lib/python3.12/site-packages/nvidia/cu13: Cuda compilation tools, release 13.0, V13.0.88 Build cuda_13.0.r13.0/compiler.36424714_0 
+CUDA 12: /home/ubuntu/valw/cu12: Cuda compilation tools, release 12.8, V12.8.93 Build cuda_12.8.r12.8/compiler.35583870_0 
+the instance's CUDA 12: none
+gcc: gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+
+(a) Builds (sm_90a; ptxas -v): registers / spill bytes / C7515 (wgmma serialized) a kernel; SASS: HGMMAs each
+    followed by a wait for all (WARPGROUP.DEPBAR.LE gsb0, 0x0) out of all, in mma12_wgp_kernel<256> / mma12_tma_kernel<64>
+  cu13: built | wgp256 168/0/- wgp192 168/0/- tma16 112/0/- tma32 134/0/- tma64 168/0/- tma96 168/0/- tma112 168/0/- tma128 168/0/- | SASS: wgp256 1/4 HGMMAs waited out, tma64 1/12 HGMMAs waited out
+  cu12: built | wgp256 168/0/- wgp192 168/0/- tma16 112/0/- tma32 134/0/- tma64 168/0/- tma96 168/0/- tma112 168/0/- tma128 168/0/- | SASS: wgp256 1/4 HGMMAs waited out, tma64 1/12 HGMMAs waited out
+  old: built | wgp256 168/0/- wgp192 168/0/- tma16 112/0/- tma32 134/0/- tma64 168/0/- tma96 168/0/- tma112 168/0/- tma128 168/0/- | 
+
+(b) The self-test (glyd_gpu.py) through each library; its mma_gemm_wg outputs (val_check.py: the self-test's
+    matrices, 1-2100 tokens, bias and none) within 1e-2 of fp32, the same every run, and bit for bit
+  cu13 self-test: 18 product lines passed, exit 0
+  cu13 check: mma_gemm_wg 342 products, 0 off
+  cu12 self-test: 18 product lines passed, exit 0
+  cu12 check: mma_gemm_wg 342 products, 0 off
+  cu12 against cu13: 342 of 342 identical
+  cu13 against the h100f run's outputs where the committed rule takes base's split (or none) or fixn1's: base's 288 of 288 identical; fixn1's 16 of 16 identical; the new matrix's 38 were not in that run
+
+(c) Per product, kernel time / cuBLAS's (median of rounds); split past 128 tokens: nc / R / D / ncs on 66 clusters,
+    * where the committed rule's differs from fixn1's (the h100f run's fifth library), + where from 3add84a's
+  model product M: cuBLAS us | cu13 | cu12 | split
+  Qwen3-8B qkv M=17: 28.9 | 0.964x | 0.962x | 
+  Qwen3-8B qkv M=128: 29.0 | 1.232x | 1.214x | 
+  Qwen3-8B qkv M=129: 30.0 | 1.316x | 1.312x | 66/24/0/66
+  Qwen3-8B qkv M=256: 31.2 | 1.480x | 1.482x | 66/24/0/66
+  Qwen3-8B qkv M=512: 40.8 | 1.720x | 1.686x | 66/48/0/66
+  Qwen3-8B qkv M=1024: 70.8 | 1.519x | 1.509x | 66/30/66/60 +
+  Qwen3-8B o M=17: 20.8 | 1.033x | 1.034x | 
+  Qwen3-8B o M=128: 21.9 | 1.268x | 1.245x | 
+  Qwen3-8B o M=129: 22.9 | 1.352x | 1.335x | 64/16/0/64 +
+  Qwen3-8B o M=256: 27.1 | 1.354x | 1.346x | 64/16/0/64 +
+  Qwen3-8B o M=512: 30.9 | 1.545x | 1.527x | 64/32/0/64 +
+  Qwen3-8B o M=1024: 48.3 | 1.359x | 1.362x | 64/0/64/0 +
+  Qwen3-8B gate_up M=17: 80.2 | 0.947x | 0.943x | 
+  Qwen3-8B gate_up M=128: 82.8 | 1.129x | 1.128x | 
+  Qwen3-8B gate_up M=129: 83.2 | 1.133x | 1.137x | 66/30/66/60 +
+  Qwen3-8B gate_up M=256: 89.3 | 1.230x | 1.227x | 66/30/66/60 +
+  Qwen3-8B gate_up M=512: 139.6 | 1.336x | 1.333x | 66/60/132/60 +
+  Qwen3-8B gate_up M=1024: 263.6 | 1.365x | 1.362x | 66/54/330/66 *
+  Qwen3-8B down M=17: 49.2 | 0.879x | 0.872x | 
+  Qwen3-8B down M=128: 48.8 | 1.138x | 1.127x | 
+  Qwen3-8B down M=129: 53.4 | 1.040x | 1.025x | 64/16/0/64 +
+  Qwen3-8B down M=256: 59.0 | 1.071x | 1.069x | 64/16/0/64 +
+  Qwen3-8B down M=512: 73.2 | 1.387x | 1.371x | 64/32/0/64 +
+  Qwen3-8B down M=1024: 130.9 | 1.330x | 1.326x | 64/0/64/0 +
+  Qwen3-14B qkv M=17: 37.7 | 0.935x | 0.940x | 
+  Qwen3-14B qkv M=128: 38.9 | 1.149x | 1.150x | 
+  Qwen3-14B qkv M=129: 39.0 | 1.219x | 1.214x | 56/28/0/56 +
+  Qwen3-14B qkv M=256: 40.7 | 1.313x | 1.321x | 56/28/0/56 +
+  Qwen3-14B qkv M=512: 62.5 | 1.271x | 1.272x | 56/0/56/0 +
+  Qwen3-14B qkv M=1024: 112.3 | 1.297x | 1.295x | 66/46/66/66 *
+  Qwen3-14B o M=17: 28.7 | 0.953x | 0.956x | 
+  Qwen3-14B o M=128: 29.5 | 1.185x | 1.176x | 
+  Qwen3-14B o M=129: 31.9 | 1.173x | 1.167x | 60/20/0/60 +
+  Qwen3-14B o M=256: 33.5 | 1.301x | 1.288x | 60/20/0/60 +
+  Qwen3-14B o M=512: 44.5 | 1.601x | 1.597x | 66/40/0/66
+  Qwen3-14B o M=1024: 72.2 | 1.590x | 1.585x | 66/14/66/42
+  Sums over each model's products above (time / cuBLAS's)
+  Qwen3-8B M=17: 0.941x | 0.937x
+  Qwen3-8B M=128: 1.164x | 1.156x
+  Qwen3-8B M=129: 1.162x | 1.157x
+  Qwen3-8B M=256: 1.239x | 1.236x
+  Qwen3-8B M=512: 1.426x | 1.415x
+  Qwen3-8B M=1024: 1.377x | 1.373x
+  Qwen3-14B M=17: 0.943x | 0.947x
+  Qwen3-14B M=128: 1.165x | 1.161x
+  Qwen3-14B M=129: 1.198x | 1.193x
+  Qwen3-14B M=256: 1.308x | 1.306x
+  Qwen3-14B M=512: 1.409x | 1.407x
+  Qwen3-14B M=1024: 1.412x | 1.409x
+
+(d) e2e, the cu13 library:
+  bf16 prefill: 256 tokens 28.3 ms (9036 tokens/s), first token 31.2 ms, 1024 tokens 36.9 ms (27758 tokens/s), first token 40.1 ms
+  glyd mma12 fused: batch 1: 37.1 tokens/s (37.1 a sequence), peak VRAM 12.58 GB
+  glyd mma12 prefill: 256 tokens 30.9 ms (8291 tokens/s), first token 33.8 ms, 1024 tokens 45.0 ms (22779 tokens/s), first token 48.1 ms
+  logits bit-identical: False
+  generated tokens identical to bf16: 0 of 8
+  exit 0
+  bf16 prefill: 256 tokens 29.1 ms (8784 tokens/s), first token 31.7 ms, 1024 tokens 36.2 ms (28326 tokens/s), first token 39.5 ms
+  glyd mma12 exact: batch 1: 25.9 tokens/s (25.9 a sequence), peak VRAM 13.56 GB
+  glyd mma12 prefill: 256 tokens 37.4 ms (6838 tokens/s), first token 40.7 ms, 1024 tokens 49.4 ms (20749 tokens/s), first token 52.8 ms
+  logits bit-identical: True
+  generated tokens identical to bf16: 8 of 8
+  exit 0
+
+(d) e2e, the cu12 library:
+  bf16 prefill: 256 tokens 27.9 ms (9170 tokens/s), first token 30.6 ms, 1024 tokens 37.0 ms (27695 tokens/s), first token 40.2 ms
+  glyd mma12 fused: batch 1: 37.7 tokens/s (37.7 a sequence), peak VRAM 12.58 GB
+  glyd mma12 prefill: 256 tokens 30.5 ms (8390 tokens/s), first token 33.2 ms, 1024 tokens 45.2 ms (22645 tokens/s), first token 48.5 ms
+  logits bit-identical: False
+  generated tokens identical to bf16: 0 of 8
+  exit 0
+  bf16 prefill: 256 tokens 28.7 ms (8914 tokens/s), first token 31.3 ms, 1024 tokens 36.3 ms (28196 tokens/s), first token 39.4 ms
+  glyd mma12 exact: batch 1: 26.0 tokens/s (26.0 a sequence), peak VRAM 13.56 GB
+  glyd mma12 prefill: 256 tokens 37.3 ms (6868 tokens/s), first token 40.6 ms, 1024 tokens 49.4 ms (20725 tokens/s), first token 52.8 ms
+  logits bit-identical: True
+  generated tokens identical to bf16: 8 of 8
+  exit 0
+
+(e) 479139a's library (no cap), (8960, 128):
+  wg 8960x128 M=129: error 0.943; columns off: 256 (8448-8703)
+  wg 8960x128 M=160: error 0.0034; columns off: 0
+  wg 8960x128 M=256: error 0.0031; columns off: 0
+
+00:08:23 (+4 s) machine
+00:08:23 (+4 s) sources (7 changed lines in cap.diff)
+00:08:31 (+12 s) CUDA 12 /home/ubuntu/valw/cu12
+00:09:35 (+76 s) builds: 3 of 3
+00:09:42 (+83 s) self-test and check cu13
+00:09:49 (+90 s) self-test and check cu12
+00:09:54 (+95 s) layers cu13 round 1
+00:09:59 (+100 s) layers cu12 round 1
+00:10:04 (+105 s) layers cu13 round 2
+00:10:10 (+111 s) layers cu12 round 2
+00:11:08 (+169 s) e2e cu13
+00:12:00 (+221 s) e2e cu12
+00:12:02 (+223 s) e 479139a
+00:12:02 (+223 s) done
