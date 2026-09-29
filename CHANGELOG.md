@@ -12,13 +12,17 @@ every earlier format.
   stream, from 896 tokens in the tiered layout (the L4's default) and 2560
   in the 12-bit one; `exact=True`'s prompts as before. At its 72 W cap the
   fused prompt kernel lost to the decode from those lengths, more the
-  longer the prompt, and a decode ahead beside cuBLAS (the A10's route) was
-  no faster than one before it. Qwen3-8B, one forward pass, over bf16's
+  longer the prompt, and a decode ahead beside cuBLAS (the A10's route)
+  gained nothing (within 1% at 4096-8192 tokens, 1-7% slower at 896-2048).
+  Qwen3-8B, one forward pass, over bf16's
   time at 1024 / 2048 / 4096 / 8192 tokens: tiered +20.5 / +6.8 / +4.1 /
   -0.0% (were +27.8 / +31.0 / +37.9 / +98.4%), 12-bit +1.9 / +4.3 / +5.8 /
   +2.4% (were +7.2 / +11.0 / +19.8 / +105.0%); to 895 and 2559 tokens as
   before. The time to the first token through `generate()` moves with the
-  pass. The L4 is a class of its own in the library's GPU codes
+  pass. The tiered layout stays the L4's default (33% less memory); for the
+  fastest short prompts, at 25% less, load with `layout="mma12"`, whose
+  prompt kernel takes an L4's prompts in 6-18% less time to 2304 tokens.
+  The L4 is a class of its own in the library's GPU codes
   (`GLYD_GPU_L4`, 3000: "L4" in the name as a word; an L4 is 3089), so that
   the L40S, L40 and RTX 6000 Ada, which share its compute capability and
   were not measured, keep their routes; the glyd package and the glyd-gpu

@@ -1053,9 +1053,10 @@ from 896 tokens in the tiered layout (the L4's default) and 2560 in the
 12-bit one (`exact=True`'s prompts as before). Every route ran at its 72 W
 cap from about 512 tokens. The fused kernel ran at 1200-1360 MHz there,
 cuBLAS behind a decode at 1050-1155, yet the fused kernel lost from those
-lengths on, more the longer the prompt. A decode ahead beside cuBLAS was
-no faster than one before it (Qwen3-8B tiered: 1.08-1.49x its time at
-2048-8192 tokens), so the L4 takes the route DECODE, not AHEAD. It is a
+lengths on, more the longer the prompt. A decode ahead beside cuBLAS gained
+nothing (Qwen3-8B, both layouts: within 1% of a decode first at 4096-8192
+tokens, 1-7% slower at 896-2048), so the L4 takes the route DECODE, not
+AHEAD. It is a
 class of its own (`GLYD_GPU_L4`, "L4" in its name as a word: 3089), so
 the L40S, L40 and RTX 6000 Ada, which share its compute capability, keep
 their routes until measured. Qwen3-8B on an AWS g6.4xlarge, one forward
@@ -1064,14 +1065,18 @@ pass, over bf16's time in the same run:
 | Prompt | 128 | 512 | 1024 | 2048 | 4096 | 8192 |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | tiered, fused (was) | +5.6% | +17.6% | +27.8% | +31.0% | +37.9% | +98.4% |
-| tiered, decoded ahead | +48.7% | +23.7% | +26.8% | +20.4% | +20.1% | +56.5% |
 | tiered, now (decoded from 896) | +4.6% | +15.7% | +20.5% | +6.8% | +4.1% | -0.0% |
 | 12-bit, fused (was) | -9.0% | -0.8% | +7.2% | +11.0% | +19.8% | +105.0% |
 | 12-bit, now (decoded from 2560) | -10.5% | -6.6% | +1.9% | +4.3% | +5.8% | +2.4% |
 
-The 12-bit layout's fused kernel takes the L4's prompts in 6-18% less
-time than the tiered layout's to 2304 tokens (Qwen3-8B and
-Qwen3-4B-Instruct-2507; logs: benchmarks/gpu/l4-routes-2026-09-29).
+The tiered layout stays the L4's default (33% less memory). The 12-bit
+layout's fused kernel takes the L4's prompts in 6-18% less time than the
+tiered layout's to 2304 tokens (Qwen3-8B and Qwen3-4B-Instruct-2507): for
+the fastest short prompts, at 25% less memory, load with
+`layout="mma12"`. The L4's clock also falls as it heats at the cap: the
+same prompt pass (Qwen3-8B tiered, 2048 tokens, decoded) took 739 ms at 66
+C and 1148 MHz and 794 ms at 82 C and 1035 MHz, so compare its runs at
+like temperatures (logs: benchmarks/gpu/l4-routes-2026-09-29).
 
 ## Popular models
 

@@ -3831,11 +3831,12 @@ static int64_t ahead_min(bool twelve, int64_t gpu) {
 
 // A prompt decoded for cuBLAS, never fused, from this many tokens: in the 12-bit layout from GLYD_DEC_MIN tokens where
 // it is set (any GPU), else an A100's from 769; an L4's from 896 tiered and 2560 12-bit (72 W, full-rate tensor cores,
-// half an A10's bandwidth a FLOP: at its power cap the fused kernel runs at its clocks' ceiling while its decode's
-// share of the power grows with the prompt, and a decode ahead beside cuBLAS costs cuBLAS as much again; Qwen3-8B's
-// and Qwen3-4B-Instruct-2507's prompt passes, fused against decoded: tiered 4-5% slower decoded at 768 tokens, 9-11%
-// faster at 896 and 17-47% at 3072-8192; 12-bit 0.4-21% slower to 2304, 1-3% faster at 2560 and 7-49% at 4096-8192:
-// benchmarks/gpu/l4-routes-2026-09-29); else never.
+// half an A10's bandwidth a FLOP: at its power cap the fused kernel, decoding each weight again for every 256 tokens,
+// loses to the decode more the longer the prompt, and a decode ahead beside cuBLAS gains nothing there; Qwen3-8B's and
+// Qwen3-4B-Instruct-2507's prompt passes, fused against decoded: tiered 4-5% slower decoded at 768 tokens, 9-11%
+// faster at 896 and 17-47% at 3072-8192; 12-bit 0.4-21% slower to 2304, 1-3% faster at 2560 and 7-49% at 4096-8192;
+// decoded ahead within 1% of decoded first at 4096-8192 tokens, 1-7% slower at 896-2048: benchmarks/gpu/l4-routes-
+// 2026-09-29); else never.
 constexpr int64_t L4_TIERED = 896, L4_TWELVE = 2560;
 static int64_t dec_from(bool twelve, int64_t gpu, int64_t dec_min) {
     if (twelve && dec_min) return dec_min;

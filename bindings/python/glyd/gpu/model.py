@@ -42,12 +42,12 @@ SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 # 1024: benchmarks/gpu/h100-hopper2-val-2026-09-28); Ampere's and Ada's 17 to 64 (an A100's to 128) by mma_gemm_mid;
 # a 12-bit prompt decoded for cuBLAS, never fused, from GLYD_DEC_MIN tokens where it is set (any GPU), else an A100's
 # from 769; an L4's prompts decoded for cuBLAS on the current stream from 896 tokens tiered and 2560 12-bit, but exact
-# (its class by name: at its 72 W cap the fused kernel's decode costs its clocks more the longer the prompt, and a
-# decode ahead beside cuBLAS costs cuBLAS as much again; Qwen3-8B's and Qwen3-4B-Instruct-2507's prompt passes, fused
-# against decoded: tiered 4-5% slower decoded at 768 tokens, 9-11% faster at 896, 17-47% at 3072-8192; 12-bit
-# 0.4-21% slower to 2304, 1-3% faster at 2560, 7-49% at 4096-8192; decoded ahead no faster than decoded, Qwen3-8B's
-# tiered 1.08-1.49x its time at 2048-8192: benchmarks/gpu/l4-routes-2026-09-29); a prompt of a matrix whose K is not
-# a multiple of 64 decoded (the prompt kernel's blocks).
+# (its class by name: at its 72 W cap the fused kernel loses to the decode more the longer the prompt, and a decode
+# ahead beside cuBLAS gains nothing there; Qwen3-8B's and Qwen3-4B-Instruct-2507's prompt passes, fused against
+# decoded: tiered 4-5% slower decoded at 768 tokens, 9-11% faster at 896, 17-47% at 3072-8192; 12-bit 0.4-21% slower
+# to 2304, 1-3% faster at 2560, 7-49% at 4096-8192; decoded ahead within 1% of decoded first at 4096-8192 tokens,
+# 1-7% slower at 896-2048: benchmarks/gpu/l4-routes-2026-09-29); a prompt of a matrix whose K is not a multiple of
+# 64 decoded (the prompt kernel's blocks).
 # A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead; the
 # library's route AHEAD). On GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, past
 # 1792 in the 12-bit one where its fused kernel takes the prompt, else past 640 (exact, or not fused: each matrix

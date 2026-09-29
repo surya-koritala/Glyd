@@ -6,7 +6,8 @@ forced on every GLinear:
            past 64 tokens here unless told otherwise;
   decoded  each matrix decoded whole, then cuBLAS, on the current stream (the route DECODE);
   ahead    each matrix decoded ahead, on a second stream beside the products before it, then cuBLAS (model.Ahead,
-           the route AHEAD: GeForce Ada's and an A10's prompts);
+           the route AHEAD: GeForce Ada's and an A10's prompts), the scratch buffer holding two of the largest (as
+           set_scratch sizes it where a GLinear decodes ahead);
   default  the library's own routes, as the package takes them (nothing forced).
 Per length and route: two passes untimed (Ahead's first records the order), then REPS timed, the median; each
 window's wall-clock start and end, for the GPU's clock and power beside it (the job's nvidia-smi samples).
@@ -52,6 +53,8 @@ else:
             for m in lins:
                 m.ahead = own[id(m)] if name in ("fused", "default") else 65  # (a prompt's fused product below ahead: the step's C call too)
                 m.step = m._step()
+            if name == "ahead":  # the scratch buffer as a GPU whose route is AHEAD has it: two of its largest matrices
+                gm.set_scratch(model, False)  # (else Ahead leaves a matrix it cannot place twice to the fused kernel)
             gm.Ahead.get = staticmethod((lambda d: None) if name == "decoded" else own_get)
             gm.GLinear.decoded = (lambda self, M: True) if name == "decoded" else own_decoded
         return set_
