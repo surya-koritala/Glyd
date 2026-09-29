@@ -383,8 +383,10 @@ them all.
 
 One decoder layer's products (q, k, v and gate, up merged; layer 10's
 weights), each call timed alone after an L2 flush, against cuBLAS on bf16
-in the same process (median of two runs); before: main's path (the TMA
-kernel to 512 tokens, then the matrix decoded for cuBLAS); the yardstick:
+in the same process (median of two runs); new: the kernel as first
+written, before the two changes below (the committed state's numbers
+follow them); before: main's path (the TMA kernel to 512 tokens, then
+the matrix decoded for cuBLAS); the yardstick:
 CUTLASS 3.x's own Hopper mixed-input main loop, convert only, the best of
 its tiles, on random 8-bit weights (u8) and 4-bit ones reordered offline
 (int4):
@@ -392,25 +394,25 @@ its tiles, on random 8-bit weights (u8) and 4-bit ones reordered offline
 | H100 SXM, time / cuBLAS's | 129 | 256 | 512 | 768 | 1024 | 2048 | 4096 tokens |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Qwen3-8B, before | 1.31 | 1.33 | 1.55 | 1.84 | 1.64 | 1.33 | 1.17 |
-| Qwen3-8B, now | **1.22** | **1.30** | **1.51** | **1.57** | **1.46** | 1.33 | 1.17 |
+| Qwen3-8B, new | **1.22** | **1.30** | **1.51** | **1.57** | **1.46** | 1.33 | 1.17 |
 | Qwen3-8B, CUTLASS u8 / int4 | 1.45 / 1.15 | 0.95 / 0.91 | 1.01 / 0.94 | | 1.01 / 0.95 | 1.02 / 0.98 | 1.05 / 0.99 |
 | Qwen3-14B, before | 1.14 | 1.30 | 1.45 | 1.92 | 1.68 | 1.36 | 1.22 |
-| Qwen3-14B, now | 1.14 | **1.28** | **1.44** | **1.41** | **1.33** | 1.36 | 1.22 |
+| Qwen3-14B, new | 1.14 | **1.28** | **1.44** | **1.41** | **1.33** | 1.36 | 1.22 |
 | Qwen3-14B, CUTLASS u8 / int4 | 1.45 / 1.23 | 1.12 / 0.97 | 1.24 / 1.12 | | 1.14 / 1.00 | 1.12 / 1.03 | 1.10 / 1.04 |
 | Qwen3-32B, before | 1.17 | 1.24 | 1.42 | 1.88 | 1.68 | 1.35 | 1.21 |
-| Qwen3-32B, now | **1.12** | **1.19** | **1.39** | **1.36** | **1.35** | 1.35 | 1.21 |
+| Qwen3-32B, new | **1.12** | **1.19** | **1.39** | **1.36** | **1.35** | 1.35 | 1.21 |
 | Qwen3-32B, CUTLASS u8 / int4 | 1.50 / 1.23 | 1.14 / 1.03 | 1.24 / 1.15 | | 1.13 / 1.05 | 1.10 / 1.01 | 1.08 / 1.03 |
 
-At 2048 and 4096 tokens "now" is the same path as before (the decode,
+At 2048 and 4096 tokens "new" is the same path as before (the decode,
 then cuBLAS): the new kernel alone took 1.38 / 1.37x (8B), 1.34 / 1.40x
-(14B) and 1.34 / 1.42x (32B). Every layer is faster at 129-1024 tokens
-but Qwen3-14B's at 129-160, which is level (1.141 / 1.136x against 1.137
-/ 1.128x before). A product alone could be slower than in the old
+(14B) and 1.34 / 1.42x (32B). Every layer was faster at 129-1024 tokens
+but Qwen3-14B's at 129-160, which was level (1.141 / 1.136x against
+1.137 / 1.128x before). A product alone could be slower than in the old
 kernel: Qwen3-8B's and 14B's o by 6-16% at 129-512 tokens, as measured
 (8B's at all six lengths, 14B's at 129-256), and a few others by 4% at
 most; whole tiles (below) have since taken about that off both o's. One
 forward pass over a prompt (`e2e.py --format auto --fused --merge
---prefill`), ms, bf16 / before / now, the same machine:
+--prefill`), ms, bf16 / before / new, the same machine:
 
 | H100 SXM | 128 | 512 | 1024 | 2048 | 4096 tokens |
 | :--- | ---: | ---: | ---: | ---: | ---: |
@@ -422,8 +424,8 @@ in the library was main's, byte for byte; 8B's GPU time a step 8.39 /
 10.54 / 11.44 ms at 1 / 32 / 64 sequences against 8.37 / 10.55 / 11.30),
 until the TMA kernel's accumulator was zeroed (below).
 
-Two changes since, each measured in one run on an H100 SXM against the
-kernel as above (each product timed as above, two rounds, the builds
+Two changes since, each measured in a second run on an H100 SXM against
+the kernel as above (each product timed as above, two rounds, the builds
 interleaved; logs: benchmarks/gpu/h100-hopper2-cu12-2026-09-28).
 
 **Whole tiles.** Tiles split by stages over all the clusters (fewer
@@ -431,7 +433,7 @@ tiles than clusters, or those left past the last whole wave) took an
 uneven share of them each, a cluster's stages running from one tile into
 the next. Now each tile takes a whole number of clusters where that
 idles at most a sixth of them. A product's time against cuBLAS's, before
-/ now where its tiles changed:
+/ after where its tiles changed:
 
 | H100 SXM, product | 129 | 160 | 256 | 384 | 512 | 1024 tokens |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -441,19 +443,20 @@ idles at most a sixth of them. A product's time against cuBLAS's, before
 | Qwen3-14B q, k, v | 1.24 / **1.20** | 1.23 / **1.19** | 1.40 / **1.30** | 1.61 / **1.49** | 1.42 / **1.25** | 1.31 |
 | Qwen3-32B o | 1.13 / **1.08** | 1.11 / **1.05** | 1.32 / **1.23** | 1.56 | 1.53 | 1.48 |
 
-Qwen3-8B's o now takes 8-19% less time at 129-1024 tokens and 14B's
-6-10% less at 129-256, about what they had been slower than in the TMA
-kernel. Whole tiles also change the splits of Qwen3-8B's gate_up at
-129-512 tokens, 8B's down at 129-512 and 1024, 14B's and 32B's down at
-129-256 and 32B's q, k, v at 1024, not timed. With one cluster for each
-of the 46 tiles left past the wave, on 46 of the 66 clusters, 14B's q,
-k, v at 1024 tokens took 3% more (1.35x), so where a whole number would
-idle more than a sixth the tiles are split over all the clusters, as
-before. Where the tiles split differently, the sums add in another
-order, so some outputs past 128 tokens differ from before in their last
-bits, each still within 1e-2 of the fp32 product and the same every run
-(in the run, 22 of 304 products on the self-test's matrices, without the
-bound above: 6 of them keep their old split with it).
+Qwen3-8B's o took 8-19% less time at 129-1024 tokens and 14B's 6-10%
+less at 129-256, about what they had been slower than in the TMA kernel.
+Whole tiles also change the splits of Qwen3-8B's gate_up at 129-512
+tokens and its down at 129-512 and 1024 (timed in the committed state's
+layer below), and of 14B's and 32B's down at 129-256 and 32B's q, k, v
+at 1024, not timed. With one cluster for each of the 46 tiles left past
+the wave, on 46 of the 66 clusters, 14B's q, k, v at 1024 tokens took 3%
+more (1.35x), so where a whole number would idle more than a sixth the
+tiles are split over all the clusters, as before. Where the tiles split
+differently, the sums add in another order, so some outputs past 128
+tokens differ from before in their last bits, each still within 1e-2 of
+the fp32 product and the same every run (in the second run, 22 of 304
+products on the self-test's matrices, without the bound above: 6 of them
+keep their old split with it).
 
 **CUDA 12.** The CUDA 12 library (`libglyd_gpu_cuda12.so`, built with
 CUDA 12.8 as the release builds it; the wheels load it for PyTorch built
@@ -465,14 +468,28 @@ every wgmma (its warning C7515; in the SASS each HGMMA waits for all of
 them). CUDA 13's did not. It is zeroed now: no C7515, the waits as in
 CUDA 13's build, the same registers (168 in this kernel) and no spills.
 Over Qwen3-8B's four products and Qwen3-32B's o and gate_up at 17-1024
-tokens, the CUDA 12 library's products take a median 4% less time than
+tokens, the CUDA 12 library's products took a median 4% less time than
 before (up to 9%), Qwen3-8B's layer 2-8% less (1.58x cuBLAS's time at
 1024 tokens before, 1.45x with the zeroing alone), as fast as the CUDA
-13 library's (a median 0.3% apart). The CUDA 13 library's are as before
+13 library's (a median 0.3% apart). The CUDA 13 library's were as before
 (a median 0.2% apart; Qwen3-8B's o, the smallest, about 2% slower at
 17-128 tokens in both rounds, its layer within 0.3%). The four builds'
-outputs (CUDA 12 and 13, before and after) are the same, bit for bit
+outputs (CUDA 12 and 13, before and after) were the same, bit for bit
 (304 products on the self-test's matrices, 1-2100 tokens).
+
+**As committed.** A third run on an H100 SXM validated the state with
+both changes, through the library built for CUDA 13.0 and for CUDA 12.8
+(logs: benchmarks/gpu/h100-hopper2-val-2026-09-28). Qwen3-8B's layer,
+each product timed as above, took 0.94 / 1.16 / 1.16 / 1.24 / 1.43 /
+1.38x cuBLAS's time at 17 / 128 / 129 / 256 / 512 / 1024 tokens (the
+CUDA 12 library's within 0.8%), and one forward pass over 1024 tokens
+45.0 ms against bf16's 36.9 (over 256 tokens, where the host's launches
+weigh most, 30.9 against 28.3). The full self-test, the (8960, 128)
+matrix included, passed through both libraries; their outputs on its
+matrices are the same bit for bit (342 products, 1-2100 tokens), and on
+the second run's matrices they match that run's wherever the split is
+the same (304 of 304); `e2e.py --exact` gave bf16's logits bit for bit,
+8 of 8 tokens.
 
 What bounds it, from builds for timing alone (their outputs wrong by
 design): with nothing decoded (A a constant, 5 stages) the layer took

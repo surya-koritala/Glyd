@@ -29,9 +29,10 @@ from . import _lib, kernels as g
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 DEC_MIN = int(os.environ.get("GLYD_DEC_MIN", 769))  # an A100's prompts of this many tokens (12-bit): decoded, then cuBLAS
 # Hopper: steps and prompts of this many tokens multiply by wgmma (past 128 tokens the kernel whose blocks stay,
-# mma12_wgp_kernel); past 1024 decoded for cuBLAS (Qwen3-8B's, 14B's and 32B's layers on an H100 SXM: 1.46 / 1.33 /
-# 1.35x cuBLAS's time fused against 1.64 / 1.68 / 1.68x decoded at 1024 tokens; 1.38 / 1.34 / 1.34x against 1.33 /
-# 1.36 / 1.35x at 2048, within 4% either way; 1.37 / 1.40 / 1.42x against 1.17 / 1.22 / 1.21x at 4096)
+# mma12_wgp_kernel); past 1024 decoded for cuBLAS (Qwen3-8B's, 14B's and 32B's layers on an H100 SXM, the kernel as
+# first written: 1.46 / 1.33 / 1.35x cuBLAS's time fused against 1.64 / 1.68 / 1.68x decoded at 1024 tokens; 1.38 /
+# 1.34 / 1.34x against 1.33 / 1.36 / 1.35x at 2048, within 4% either way; 1.37 / 1.40 / 1.42x against 1.17 / 1.22 /
+# 1.21x at 4096; as committed, Qwen3-8B's 1.38x at 1024: benchmarks/gpu/h100-hopper2-val-2026-09-28)
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 1024))
 MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 (an A100's to 128) by mma_gemm_mid
 # A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). On
