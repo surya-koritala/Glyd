@@ -56,7 +56,7 @@ _SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_
 _PLAIN = {"gpu": [_P], "mma_route": [_I64] * 4 + [_P, _P], "mma12_route": [_I64] * 4 + [_P, _P]}  # the calls with no stream: the routes
 
 
-API_VERSION = 3  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+API_VERSION = 4  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
 BIG = 4  # glyd_gpu.h's GLYD_GPU_ROUTE_BIG: the prompt kernel
 
 
@@ -321,8 +321,8 @@ def mma12_gemm_big(data, exc, exc_base, sym, O, K, x, bias, y, variant):
 
 
 def gpu():
-    """The current device as the library's routes take it: its compute capability, major * 10 + minor, plus 1000 on a
-    GeForce."""
+    """The current device as the library's routes take it: its code (compute capability, major * 10 + minor, plus its
+    class by name, glyd_gpu.h)."""
     g = ctypes.c_int()
     r = _fn["gpu"](ctypes.byref(g))
     if r:

@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <type_traits>
 #include "glyd_gpu.h"  // every definition of the C API below held to its declaration there
@@ -3409,11 +3410,12 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc
 // The routes: how glyd.gpu multiplies by W [O, K] for M tokens on a GPU, as measured there (gpu/README.md), for
 // model.py's GLinear and glyd_gpu_*_linear alike: a step's kernel to 64 tokens (in the 12-bit layout mma_gemm_mid
 // from 17 on Ampere and Ada, an A100's to 128, and mma_gemm_wg from 17 to 512 on Hopper), past that the prompt
-// kernel (mma_gemm_big), but where W decoded for a bf16 GEMM (cuBLAS) is the faster: an A100's 12-bit prompts from
-// 769 tokens and Hopper's past its wgmma kernel's (none on Hopper takes a prompt), and on GeForce Ada from 513
-// tokens tiered and 1793 12-bit with W decoded ahead, beside the products before it (AHEAD). GLYD_WG_MIN,
-// GLYD_WG_MAX, GLYD_MID_MIN and GLYD_DEC_MIN move those thresholds (read at the first call). A GPU is given as
-// glyd_gpu_gpu gives it: its compute capability, major * 10 + minor, plus 1000 on a GeForce.
+// kernel (mma_gemm_big), but where W decoded for a bf16 GEMM (cuBLAS) is the faster (DECODE): an A100's 12-bit
+// prompts from 769 tokens, Hopper's past its wgmma kernel's (none on Hopper takes a prompt), and every prompt of a
+// matrix whose K is not a multiple of 64 (the prompt kernel's blocks); and on GeForce Ada from 513 tokens tiered and
+// 1793 12-bit, whatever K, with W decoded ahead, beside the products before it (AHEAD). GLYD_WG_MIN, GLYD_WG_MAX,
+// GLYD_MID_MIN and GLYD_DEC_MIN move those thresholds (read at the first call). A GPU is given as glyd_gpu_gpu gives
+// it: its compute capability, major * 10 + minor, plus 1000 times its class by name (gpu_class).
 struct RouteMins {
     int64_t wg_min, wg_max, mid_min, dec_min;
 };
@@ -3435,10 +3437,23 @@ static int route_for(bool twelve, int64_t gpu, int64_t K, int64_t M) {
     if (mid && twelve && k64 && M >= t.mid_min && M <= (a100 ? 128 : 64)) return GLYD_GPU_ROUTE_MID;  // cp.async, mma.sync
     if (a100 && twelve && M >= t.dec_min) return GLYD_GPU_ROUTE_DECODE;
     if (M <= 64) return GLYD_GPU_ROUTE_GEMM;
-    if (!k64 || hopper) return GLYD_GPU_ROUTE_DECODE;
-    bool ada = cc == 89 && gpu >= 1000;
-    return M < (ada ? (twelve ? 1793 : 513) : INT64_MAX) ? GLYD_GPU_ROUTE_BIG : GLYD_GPU_ROUTE_AHEAD;
+    if (gpu == GLYD_GPU_GEFORCE + 89 && M >= (twelve ? 1793 : 513)) return GLYD_GPU_ROUTE_AHEAD;  // (any K)
+    return k64 && !hopper ? GLYD_GPU_ROUTE_BIG : GLYD_GPU_ROUTE_DECODE;
 }
+
+// A GPU's class by its name, where its compute capability does not tell it apart (glyd_gpu.h): GLYD_GPU_GEFORCE with
+// "GeForce" in the name; GLYD_GPU_A10 with "A10" as a word, between characters that are not letters, digits or '_'
+// (an A10, not an A10G, A100 or A40: Python's re.search(r"\bA10\b", name, re.ASCII), as model.py's GLinear asks);
+// else 0.
+static bool has_word(const char* name, const char* word) {
+    size_t n = strlen(word);
+    auto part = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
+    for (const char* p = strstr(name, word); p; p = strstr(p + 1, word))
+        if ((p == name || !part(p[-1])) && !part(p[n])) return true;
+    return false;
+}
+
+static int gpu_class(const char* name) { return strstr(name, "GeForce") ? GLYD_GPU_GEFORCE : has_word(name, "A10") ? GLYD_GPU_A10 : 0; }
 
 // The current device as the routes take it (asked once a device).
 GLYD_GPU_API int glyd_gpu_gpu(int* gpu) {
@@ -3448,7 +3463,7 @@ GLYD_GPU_API int glyd_gpu_gpu(int* gpu) {
     if (!k) {
         cudaDeviceProp p;
         if (cudaError_t e = cudaGetDeviceProperties(&p, dev)) return e;
-        k = p.major * 10 + p.minor + (strstr(p.name, "GeForce") ? 1000 : 0) + 1;
+        k = p.major * 10 + p.minor + gpu_class(p.name) + 1;
         if (dev < MAX_DEVICES) known[dev] = k;
     }
     *gpu = k - 1;
@@ -3491,8 +3506,9 @@ static int staged_run(int (*any)(Nib, int64_t, int64_t, const uint16_t*, int64_t
 }
 
 // Y [M, O] = X W^T (+ bias) by a route (route_for's; negative: the current GPU's for M): its kernel; DECODE and
-// AHEAD, where glyd.gpu decodes W for a GEMM of its own, the prompt kernel but on Hopper (none measured there:
-// cudaErrorNotSupported). need: set to the workspace's bytes, nothing launched.
+// AHEAD, where glyd.gpu decodes W for a GEMM of its own, the prompt kernel, but on Hopper (none measured there) and
+// where K is not a multiple of 64 (the prompt kernel's blocks): cudaErrorNotSupported, decode W. need: set to the
+// workspace's bytes, nothing launched.
 template <class Fmt>
 static int mma_linear_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t route, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
     constexpr bool twelve = std::is_same_v<Fmt, Nib>;
@@ -3508,7 +3524,7 @@ static int mma_linear_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_
         return cudaErrorInvalidValue;  // the 12-bit layout's alone
     case GLYD_GPU_ROUTE_DECODE:
     case GLYD_GPU_ROUTE_AHEAD:
-        if (gpu % 1000 == 90) return cudaErrorNotSupported;
+        if (gpu % 1000 == 90 || K % 64) return cudaErrorNotSupported;
         [[fallthrough]];
     case GLYD_GPU_ROUTE_BIG:
         return mma_gemm_big_any(f, O, K, x, M, bias, y, 0, ws, ws_bytes, done, cs, need);

@@ -522,18 +522,19 @@ def hold(ns):
 # The library's routes (glyd_gpu.h's GLYD_GPU_ROUTE_*): how a product for M tokens is taken on a GPU. DECODE: the
 # matrix decoded, then cuBLAS; AHEAD: so, decoded ahead beside the products before it (model.Ahead).
 DECODE, GEMM, MID, WG, BIG, AHEAD = range(6)
+GEFORCE, A10 = 1000, 2000  # a GPU's classes by name in its code (glyd_gpu.h's GLYD_GPU_GEFORCE, GLYD_GPU_A10)
 
 
 def route(p, gpu, M):
-    """(route, last): the library's route for M tokens of pack p (the mma layouts) on gpu (its compute capability,
-    major * 10 + minor, plus 1000 on a GeForce), and the last token count from M on that takes it."""
+    """(route, last): the library's route for M tokens of pack p (the mma layouts) on gpu (its code, model.gpu_code:
+    compute capability and class), and the last token count from M on that takes it."""
     O, K = p.shape
     return (_ext.mma12_route if isinstance(p, Mma12) else _ext.mma_route)(gpu, O, K, M)
 
 
 def mma_linear(p, x, bias=None, route=-1):
     """X W^T (+ bias) by a route (-1: this GPU's for M), as a Linear's one-call path takes it: its kernel; DECODE and
-    AHEAD the prompt kernel."""
+    AHEAD the prompt kernel (refused on Hopper and where K is not a multiple of 64: decode W there)."""
     O, K = p.shape
     x = x.contiguous()
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)

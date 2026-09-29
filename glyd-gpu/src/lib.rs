@@ -35,7 +35,11 @@ pub mod save;
 /// The C API this crate calls (glyd_gpu.h's `GLYD_GPU_API_VERSION`): a
 /// library of another version is refused, as a C FFI does not see a call's
 /// arguments.
-pub const API_VERSION: i32 = 3;
+pub const API_VERSION: i32 = 4;
+/// A GPU's class by name in its code ([`Library::gpu`]): "GeForce" in its name.
+pub const GEFORCE: i32 = 1000;
+/// A GPU's class by name in its code: "A10" in its name as a word (an A10, not an A10G, A100 or A40).
+pub const A10: i32 = 2000;
 /// A status: `cudaErrorInvalidValue`, an argument out of range.
 pub const INVALID_VALUE: i32 = 1;
 /// A status: `cudaErrorNotSupported`, a kernel that is not for this GPU.
@@ -73,43 +77,73 @@ impl Stream {
     pub const DEFAULT: Stream = Stream(std::ptr::null_mut());
 }
 
-/// dlopen and dlsym, declared here (no crate): the library and the driver are
-/// found at run time.
+/// dlopen, dlsym and dlclose, declared here (no crate): the library and the
+/// driver are found at run time. Elsewhere than Unix none is found.
 pub(crate) mod dl {
-    use std::ffi::{c_char, c_int, c_void, CStr, CString};
+    use std::ffi::c_void;
 
-    #[cfg(target_os = "macos")]
-    const FLAGS: c_int = 0x2 | 0x4; // RTLD_NOW | RTLD_LOCAL
-    #[cfg(not(target_os = "macos"))]
-    const FLAGS: c_int = 0x2; // RTLD_NOW (RTLD_LOCAL is 0)
+    #[cfg(unix)]
+    mod sys {
+        use std::ffi::{c_char, c_int, c_void};
 
-    extern "C" {
-        fn dlopen(file: *const c_char, flags: c_int) -> *mut c_void;
-        fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
-        fn dlerror() -> *const c_char;
+        #[cfg(target_os = "macos")]
+        pub const FLAGS: c_int = 0x2 | 0x4; // RTLD_NOW | RTLD_LOCAL
+        #[cfg(not(target_os = "macos"))]
+        pub const FLAGS: c_int = 0x2; // RTLD_NOW (RTLD_LOCAL is 0)
+
+        extern "C" {
+            pub fn dlopen(file: *const c_char, flags: c_int) -> *mut c_void;
+            pub fn dlsym(handle: *mut c_void, name: *const c_char) -> *mut c_void;
+            pub fn dlerror() -> *const c_char;
+            pub fn dlclose(handle: *mut c_void) -> c_int;
+        }
     }
 
-    /// The shared library at `path` (a bare name: the loader's search), never
-    /// closed; else the loader's reason.
+    /// The shared library at `path` (a bare name: the loader's search); else
+    /// the loader's reason.
+    #[cfg(unix)]
     pub fn open(path: &str) -> Result<*mut c_void, String> {
+        use std::ffi::{CStr, CString};
         let c = CString::new(path).map_err(|_| format!("{path}: a NUL in the path"))?;
         // SAFETY: a NUL-terminated path; dlerror's text is copied before any other dl call.
         unsafe {
-            let h = dlopen(c.as_ptr(), FLAGS);
+            let h = sys::dlopen(c.as_ptr(), sys::FLAGS);
             if h.is_null() {
-                let e = dlerror();
+                let e = sys::dlerror();
                 return Err(if e.is_null() { format!("{path}: not loaded") } else { CStr::from_ptr(e).to_string_lossy().into_owned() });
             }
             Ok(h)
         }
     }
 
+    #[cfg(not(unix))]
+    pub fn open(path: &str) -> Result<*mut c_void, String> {
+        Err(format!("{path}: Glyd's GPU library runs on Linux"))
+    }
+
     /// Symbol `name` (NUL-terminated) of `handle`, or null.
     ///
     /// # Safety
     /// `handle` is one `open` gave.
+    #[cfg(unix)]
     pub unsafe fn sym(handle: *mut c_void, name: &str) -> *mut c_void {
-        dlsym(handle, name.as_ptr() as *const c_char)
+        sys::dlsym(handle, name.as_ptr() as *const std::ffi::c_char)
+    }
+
+    #[cfg(not(unix))]
+    pub unsafe fn sym(_: *mut c_void, _: &str) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+
+    /// `handle` closed: a library refused, none of its functions called but its version's.
+    ///
+    /// # Safety
+    /// `handle` is one `open` gave, and nothing of the library is used after.
+    pub unsafe fn close(handle: *mut c_void) {
+        #[cfg(unix)]
+        sys::dlclose(handle);
+        #[cfg(not(unix))]
+        let _ = handle;
     }
 }
 
@@ -403,12 +437,19 @@ impl Library {
                 std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> c_int>(f)()
             }
         };
-        if v != API_VERSION {
-            return Err(Error::Load(format!("{path}: its C API is version {v}, this crate's {API_VERSION}: take the library of this crate's release (gpu/build_lib.sh)")));
+        // SAFETY: the library's C API is the one declared above (its version checked); a library refused is closed
+        // before any other of its functions is called (none of its runtime left in the process).
+        let api = match v == API_VERSION {
+            true => unsafe { Api::load(h) }.map_err(|name| format!("{path}: no {name}")),
+            false => Err(format!("{path}: its C API is version {v}, this crate's {API_VERSION}: take the library of this crate's release (gpu/build_lib.sh)")),
+        };
+        match api {
+            Ok(api) => Ok(Library { api, path: path.to_string() }),
+            Err(why) => {
+                unsafe { dl::close(h) };
+                Err(Error::Load(why))
+            }
         }
-        // SAFETY: the library's C API is the one declared above (its version checked).
-        let api = unsafe { Api::load(h) }.map_err(|name| Error::Load(format!("{path}: no {name}")))?;
-        Ok(Library { api, path: path.to_string() })
     }
 
     /// `$GLYD_GPU_LIB`, else libglyd_gpu_cuda13.so or libglyd_gpu_cuda12.so
@@ -573,8 +614,10 @@ impl Library {
         self.check("unpack", r)
     }
 
-    /// The current device as the routes take it: its compute capability,
-    /// major * 10 + minor, plus 1000 on a GeForce (1089: an RTX 40).
+    /// The current device as the routes take it, its code: its compute
+    /// capability, major * 10 + minor, plus its class by name where that
+    /// does not tell GPUs apart ([`GEFORCE`], [`A10`]; glyd_gpu.h): 1089 an
+    /// RTX 40, 2086 an A10, 86 an A10G, A40 or RTX A6000, 80 an A100.
     pub fn gpu(&self) -> Result<i32> {
         let mut g = 0;
         // SAFETY: a host out-pointer.
@@ -610,10 +653,11 @@ impl Library {
         })
     }
 
-    /// Y = X W^T (+ bias) for any number of tokens by a route (None: the
-    /// current GPU's for p.m): its kernel; [`Route::Decode`] and
-    /// [`Route::Ahead`] by the prompt kernel, but on Hopper
-    /// ([`NOT_SUPPORTED`]: decode W there). done: (m + 127) / 128 x rows / 64
+    /// Y = X W^T (+ bias) by a route (None: the current GPU's for p.m): its
+    /// kernel, where it takes the product; [`Route::Decode`] and
+    /// [`Route::Ahead`] by the prompt kernel, but on Hopper and where cols is
+    /// not a multiple of 64 ([`NOT_SUPPORTED`]: decode W there, [`Library::unpack`],
+    /// then a GEMM of the caller's). done: (m + 127) / 128 x rows / 64
     /// counters.
     ///
     /// # Safety
@@ -827,7 +871,10 @@ mod tests {
     /// and result, and nothing else; its version API_VERSION.
     #[test]
     fn declarations_are_the_headers() {
-        let h = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../gpu/glyd_gpu.h")).unwrap();
+        let Ok(h) = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../gpu/glyd_gpu.h")) else {
+            eprintln!("skipped: ../gpu/glyd_gpu.h is not beside the crate (a published crate)");
+            return;
+        };
         let mut text = String::new();
         let mut rest = h.as_str();
         while let Some(i) = rest.find("/*") {
@@ -861,8 +908,13 @@ mod tests {
         for d in &mine {
             assert!(theirs.contains(d), "{} is declared here, not so in glyd_gpu.h: {:?}, the header's {:?}", d.0, d, theirs.iter().find(|t| t.0 == d.0));
         }
-        let v = h.split("#define GLYD_GPU_API_VERSION ").nth(1).unwrap().split_whitespace().next().unwrap();
-        assert_eq!(v.parse::<i32>().unwrap(), API_VERSION, "GLYD_GPU_API_VERSION is not API_VERSION");
+        let define = |name: &str| h.split(&format!("#define {name} ")).nth(1).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse::<i32>().ok()).unwrap_or_else(|| panic!("glyd_gpu.h has no {name}"));
+        assert_eq!(define("GLYD_GPU_API_VERSION"), API_VERSION, "GLYD_GPU_API_VERSION is not API_VERSION");
+        for (name, r) in [("DECODE", Route::Decode), ("GEMM", Route::Gemm), ("MID", Route::Mid), ("WG", Route::Wg), ("BIG", Route::Big), ("AHEAD", Route::Ahead)] {
+            assert_eq!(define(&format!("GLYD_GPU_ROUTE_{name}")), r as i32, "GLYD_GPU_ROUTE_{name}");
+            assert_eq!(Route::from_c(r as c_int).unwrap(), r);
+        }
+        assert_eq!((define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10")), (GEFORCE, A10));
     }
 
     #[test]

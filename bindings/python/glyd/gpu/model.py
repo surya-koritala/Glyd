@@ -20,6 +20,7 @@ glyd::embedding), run as eager, and CUDA graphs capture its kernels.
 import hashlib
 import itertools
 import os
+import re
 import weakref
 import torch
 import torch.nn as nn
@@ -31,7 +32,8 @@ SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 # GLYD_WG_MIN, GLYD_WG_MAX, GLYD_MID_MIN and GLYD_DEC_MIN move it there): Hopper's steps and prompts of 17 to 512
 # tokens by wgmma, past that decoded for cuBLAS (Qwen3-8B's layer on an H100 PCIe: 638 us against 864 at 512 tokens,
 # 1065 against 964 at 640; Qwen3-32B's 1622 against 2253, then within 6% either way to 1024); Ampere's and Ada's 17 to
-# 64 (an A100's to 128) by mma_gemm_mid; an A100's 12-bit prompts from 769 tokens decoded for cuBLAS.
+# 64 (an A100's to 128) by mma_gemm_mid; an A100's 12-bit prompts from 769 tokens decoded for cuBLAS; a prompt of a
+# matrix whose K is not a multiple of 64 decoded (the prompt kernel's blocks).
 # A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). On
 # GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, past 1792 in the 12-bit one where
 # its fused kernel takes the prompt (the library's route AHEAD), else past 640 (exact, or not fused: each matrix
@@ -116,10 +118,14 @@ class Ahead:
     @staticmethod
     def settle(h):
         """Every device's decodes ahead waited for: a call below the threshold (module h's), after a prompt that
-        ended before its order did; where h is the order's next product, the order to end there."""
+        ended before its order did; where h is the order's next product, the order to end there, else the prompt's
+        run of them ended (a call off the order midway: what it decodes may write their places)."""
         for a in Ahead.of.values():
-            if a.live and a.pos and a.chain[a.pos] == h:
-                a.end = a.pos
+            if a.live and a.pos:
+                if a.chain[a.pos] == h:
+                    a.end = a.pos
+                else:
+                    a.off = True
             a.join()
         Ahead.queued = any(a.live for a in Ahead.of.values())
 
@@ -337,16 +343,13 @@ class GLinear(_Node, nn.Module):
         # Whole when it fits the scratch (a split matmul sums in another order), and always for exact.
         self.block = O if exact or O * K <= SCRATCH else max(rows, SCRATCH // K // rows * rows)
         cc = torch.cuda.get_device_capability(p.sm.device)
-        # the GPU as the library's routes take it: compute capability, major * 10 + minor, plus 1000 on a GeForce
-        self.gpu = cc[0] * 10 + cc[1] + (1000 if "GeForce" in torch.cuda.get_device_name(p.sm.device) else 0)
+        self.gpu = gpu_code(cc, torch.cuda.get_device_name(p.sm.device))  # the GPU as the library's routes take it
         self.a100 = cc == (8, 0)  # its mid kernel takes steps to 128 tokens; its prompts past 768 are decoded for cuBLAS
         self.step_max = 128 if self.a100 else 64  # tokens to which a step's kernel (not a prompt's) is one C call (_step)
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
-        # prompts decoded ahead, then cuBLAS: fused, from the library's route AHEAD (GeForce Ada's)
-        if AHEAD_MIN or not (isinstance(p, g.Mma) and fused and not exact):
-            self.ahead = AHEAD_MIN or ((641 if isinstance(p, g.Mma12) else 513) if self.gpu == 1089 else 1 << 62)
-        else:
-            self.ahead = self.after(65, (g.AHEAD,))
+        # prompts decoded ahead, then cuBLAS, whatever K (the library's route AHEAD where fused and not exact)
+        twelve = 1793 if fused and not exact else 641
+        self.ahead = AHEAD_MIN or ((twelve if isinstance(p, g.Mma12) else 513) if self.gpu == g.GEFORCE + 89 else 1 << 62)
         self._node()
 
     def route(self, M):
@@ -365,12 +368,12 @@ class GLinear(_Node, nn.Module):
 
     def kernel(self, M):
         """The fused product for M tokens in the mma layouts (kernels.py's), or None: decoded, then PyTorch's matmul
-        (a prompt's matrices decoded ahead, Ahead). The library's route, but from self.ahead tokens a prompt whose
-        matrix fits the scratch is decoded ahead, and one past it never is (fused)."""
+        (a prompt's matrices decoded ahead, Ahead). The library's route, a prompt's by the prompt kernel (K a multiple
+        of 64) but from self.ahead tokens where the matrix fits the scratch: decoded ahead (one past it never is)."""
         r = self.route(M)[0]
-        if r in (g.BIG, g.AHEAD) and M >= self.ahead and self.block >= self.out_features:
-            return None
-        return {g.GEMM: g.mma_gemm, g.MID: g.mma_gemm_mid, g.WG: g.mma_gemm_wg, g.BIG: g.mma_gemm_big, g.AHEAD: g.mma_gemm_big}.get(r)
+        if r in (g.BIG, g.AHEAD):
+            return g.mma_gemm_big if self.in_features % 64 == 0 and (M < self.ahead or self.block < self.out_features) else None
+        return {g.GEMM: g.mma_gemm, g.MID: g.mma_gemm_mid, g.WG: g.mma_gemm_wg}.get(r)
 
     def decoded(self, M):
         """Whether a prompt of M tokens is decoded for cuBLAS, never fused (kernel(M) None, and no fused fallback in
@@ -567,6 +570,14 @@ def _embedding(ids: torch.Tensor, handle: int, embedding_dim: int) -> torch.Tens
 @_embedding.register_fake
 def _(ids, handle, embedding_dim):
     return ids.new_empty((*ids.shape, embedding_dim), dtype=torch.bfloat16)
+
+
+def gpu_code(cc, name):
+    """A GPU as the library's routes take it (glyd_gpu.h, glyd_gpu_gpu): its compute capability cc, major * 10 +
+    minor, plus its class by name: GEFORCE with "GeForce" in it, A10 with "A10" in it as a word (an A10, not an A10G,
+    A100 or A40), else none."""
+    cls = g.GEFORCE if "GeForce" in name else g.A10 if re.search(r"\bA10\b", name, re.ASCII) else 0
+    return cc[0] * 10 + cc[1] + cls
 
 
 def decoder(model):
