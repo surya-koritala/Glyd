@@ -213,7 +213,7 @@ H=(ubuntu@"$IP")
 until "${SSH[@]}" "${H[@]}" true 2> /dev/null; do sleep 5; done
 echo "active at $IP after $(( $(date +%s) - START )) s"
 if [ -n "${DEV:-}" ]; then
-    "${SSH[@]}" "${H[@]}" "mkdir -p glyd && tar -C glyd -xf - && bash glyd/gpu/setup_env.sh ~/gpuenv > setup.txt 2>&1" < "$TMP/glyd.tar"
+    "${SSH[@]}" "${H[@]}" "mkdir -p glyd && tar -C glyd -xf - && bash glyd/gpu/setup_env.sh ~/gpuenv > setup.txt 2>&1 || echo setup_env failed, see ~/setup.txt" < "$TMP/glyd.tar"
     echo "dev session: ssh -i $TMP/key ubuntu@$IP  (source ~/gpuenv/cuda.sh); to end it: touch $DEV"
     until [ -f "$DEV" ]; do sleep 15; done
     exit

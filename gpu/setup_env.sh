@@ -6,7 +6,7 @@
 set -euo pipefail
 ENV="${1:-$HOME/gpuenv}"
 mkdir -p "$HOME/tools/uv"
-[ -x "$HOME/tools/uv/uv" ] || curl -sL https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz | tar xz --strip-components=1 -C "$HOME/tools/uv"
+[ -x "$HOME/tools/uv/uv" ] || curl -sL https://github.com/astral-sh/uv/releases/latest/download/uv-$(uname -m)-unknown-linux-gnu.tar.gz | tar xz --strip-components=1 -C "$HOME/tools/uv"
 UV="$HOME/tools/uv/uv"
 "$UV" venv -q --python 3.12 "$ENV"
 "$UV" pip install -q --python "$ENV/bin/python" torch safetensors numpy transformers accelerate hf_transfer ninja datasets
