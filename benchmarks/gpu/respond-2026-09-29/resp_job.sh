@@ -7,15 +7,17 @@
 #   then MODELS by mode, most wanted first: Qwen3-8B bf16 and Glyd, the big model's Glyd and bf16 (Qwen3-14B on a
 #   GPU under 30 GB, where Glyd fits and bf16 does not; 14B on one under 60 GB; 32B on one of 60 GB or more), Qwen3-8B
 #   exact, the big model's exact, and on a GPU under 30 GB Qwen3-4B-Instruct-2507's three. A mode that does not fit is
-#   recorded so. Each mode gets an even share of the time left (respond.py's --deadline cuts its repeats, then its
-#   configurations) and a timeout at the job's end.
+#   recorded so. Each mode gets an even share of the time left among it and the next RESP_SPREAD - 1 (4 in all: the
+#   first modes the most, the last what is left; respond.py's --deadline cuts its repeats, then its configurations)
+#   and a timeout at the job's end.
 # results/summary.txt (resp_summary.py: each model's table) is rewritten after every mode, results/respond.json holds
 # every result, results/DONE is written by the exit trap however the job ends. No mode starts past RESP_BUDGET and none
 # runs past RESP_END, counted from the job's start: 20 minutes at most with ~/gpuenv (PyTorch with CUDA 13, nvcc 13,
 # transformers); where there is none, one is made here with uv first, inside the same 20 minutes.
 #   bash ~/resp_job.sh
-# Env: RESP_MODELS (by the GPU's memory), RESP_BUDGET (1080 s), RESP_END (1170 s), RESP_ARGS (respond.py's options, e.g.
-# "--reps-ttft 3"), FILES (~), R (~/results), W (~/respw), HF_HOME (~/hf); HF_HUB_OFFLINE=1: the models from the cache.
+# Env: RESP_RUNS (MODEL:MODE ..., by the GPU's memory), RESP_BUDGET (1080 s), RESP_END (1170 s), RESP_SPREAD (4),
+# RESP_ARGS (respond.py's options, e.g. "--reps-ttft 3"), FILES (~), R (~/results), W (~/respw), HF_HOME (~/hf);
+# HF_HUB_OFFLINE=1: the models from the cache.
 set -u
 R=${R:-$HOME/results}
 W=${W:-$HOME/respw}
@@ -51,7 +53,7 @@ else BIG=Qwen/Qwen3-32B SMALL=; fi
 M8=Qwen/Qwen3-8B
 # model:mode, most wanted first
 RUNS=${RESP_RUNS:-"$M8:bf16 $M8:glyd $BIG:glyd $BIG:bf16 $M8:exact $BIG:exact${SMALL:+ $SMALL:bf16 $SMALL:glyd $SMALL:exact}"}
-MODELS=${RESP_MODELS:-$(for r in $RUNS; do echo "${r%:*}"; done | awk '!s[$0]++' | tr '\n' ' ')}
+MODELS=$(for r in $RUNS; do echo "${r%:*}"; done | awk '!s[$0]++' | tr '\n' ' ')
 
 step "environment"
 envok() {  # PYTHON: the packages and a GPU; nvcc
@@ -125,7 +127,8 @@ while [ $# -gt 0 ]; do
   [ "$(el)" -lt "$BUDGET" ] || { done_ "$n $mode: over the budget, not run"; continue; }
   step "$n, $mode (waiting for its download)"
   d=$(got "$m") || { done_ "$n $mode: no model ($(tail -2 "$R/log/dl-$n.txt" 2> /dev/null | tr '\n' ' '))"; continue; }
-  share=$(( (END - 20 - $(el)) / ($# + 1) ))  # an even share of what is left
+  k=$(( $# + 1 )); [ "$k" -gt "${RESP_SPREAD:-4}" ] && k=${RESP_SPREAD:-4}
+  share=$(( (END - 20 - $(el)) / k ))  # an even share of what is left, among this mode and the next k - 1
   nvidia-smi --query-gpu=timestamp,clocks.sm,clocks.mem,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader -lms 1000 > "$R/smi-$n-$mode.csv" 2> /dev/null & S=$!
   ( cd "$W/src/gpu" && timeout "$(tmo $(( share + 120 )))" "$PY" -u respond.py "$d" --mode "$mode" --out "$R/$n-$mode.json" --deadline $(( $(date +%s) + share )) ${RESP_ARGS:-} ) > "$R/log/$n-$mode.txt" 2>&1
   e=$?; kill $S 2> /dev/null
