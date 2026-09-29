@@ -155,8 +155,7 @@ for name, L, B, n, reps in configs:
         try:
             torch.cuda.reset_peak_memory_stats()
             c["warmup"] = call(L, B, n)
-            left = (args.deadline - time.time()) if args.deadline else float("inf")
-            c["reps"] = max(0, min(reps, int(left // max(c["warmup"]["total"], 1e-3))))
+            c["reps"] = max(0, min(reps, int((args.deadline - time.time()) // max(c["warmup"]["total"], 1e-3)))) if args.deadline else reps
             runs = [call(L, B, n) for _ in range(c["reps"])]
             c["runs"] = runs
             c["peak_gb"] = round(torch.cuda.max_memory_allocated() / 1e9, 2)
