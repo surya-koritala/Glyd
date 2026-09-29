@@ -1,51 +1,28 @@
-== 13:25:17 Build cuda_13.0.r13.0/compiler.36424714_0; gcc (GCC) 13.3.1 20240611 (Red Hat 13.3.1-2); aarch64, 10 CPUs; main db8e7b0, this tree 7bbfb94
-main-once: 1 pragma added (main's Nib::patch)
-== 13:25:53 src: compile exit 0, link exit 0 (34.91 s, 368888 KB peak); warnings and errors: 0
-== 13:26:43 main: compile exit 0, link exit 0 (34.77 s, 376620 KB peak); warnings and errors: 0
-== 13:27:35 main-once: compile exit 0, link exit 0 (35.57 s, 370844 KB peak); warnings and errors: 0
-== SASS, main -> src:
+== 16:14:18 Build cuda_13.0.r13.0/compiler.36424714_0; gcc (GCC) 13.3.1 20240611 (Red Hat 13.3.1-2); aarch64, 10 CPUs; main db8e7b0, this tree aa7a6fc
+== 16:14:54 src: compile exit 0, link exit 0 (35.12 s, 373804 KB peak); warnings and errors: 0
+== 16:15:45 main: compile exit 0, link exit 0 (35.17 s, 376692 KB peak); warnings and errors: 0
+== SASS, main -> this tree:
    ## sm_80
    out/main/sm_80.sass -> out/src/sm_80.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
-   13 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
+   36 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
    ## sm_86
    out/main/sm_86.sass -> out/src/sm_86.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
-   14 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
+   38 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
    ## sm_89
    out/main/sm_89.sass -> out/src/sm_89.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
-   14 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
+   38 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
    ## sm_90a
    out/main/sm_90a.sass -> out/src/sm_90a.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
-   13 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
-== SASS, main -> main-once:
-   ## sm_80
-   out/main/sm_80.sass -> out/main-once/sm_80.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
-   14 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
-   ## sm_86
-   out/main/sm_86.sass -> out/main-once/sm_86.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
-   14 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
-   ## sm_89
-   out/main/sm_89.sass -> out/main-once/sm_89.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
-   14 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
-   ## sm_90a
-   out/main/sm_90a.sass -> out/main-once/sm_90a.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
-   14 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
-== SASS, main-once -> src:
-   ## sm_80
-   out/main-once/sm_80.sass -> out/src/sm_80.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
-   34 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
-   ## sm_86
-   out/main-once/sm_86.sass -> out/src/sm_86.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
-   35 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
-   ## sm_89
-   out/main-once/sm_89.sass -> out/src/sm_89.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
-   35 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
-   ## sm_90a
-   out/main-once/sm_90a.sass -> out/src/sm_90a.sass: 87 kernels; the 48 not of the 12-bit layout: 48 the same instructions in the same order
    32 of 39 kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions
-== 13:28:02 the JIT source, as PyTorch 2.14's extension build compiles it
-compile exit 0, link exit 0 (177.75 s, 3284944 KB peak); warnings not from torch's headers: 0
+== the exception loops: loads, branches and calls (LDG, LDS, BRA, CALL) as main's, and spill instructions (LDL, STL)
+   sm_80: 29 of 31 kernels with main's loads, branches and calls (not: mma_moe_kernel<Nib, 4, 2>, mma_moe_kernel<Nib, 4, 1>); spill instructions, main -> this tree: mma_moe_kernel<Nib, 4, 2> 4 -> 0; mma_moe_kernel<Nib, 4, 1> 4 -> 0; mma12_mid_kernel<64, 4> 13 -> 20; fewer instructions than main: 31 of 31
+   sm_86: 31 of 31 kernels with main's loads, branches and calls; spill instructions, main -> this tree: mma_moe_kernel<Nib, 4, 0> 2 -> 0; fewer instructions than main: 31 of 31
+   sm_89: 31 of 31 kernels with main's loads, branches and calls; spill instructions, main -> this tree: mma_moe_kernel<Nib, 4, 0> 2 -> 0; fewer instructions than main: 31 of 31
+   sm_90a: 39 of 39 kernels with main's loads, branches and calls; spill instructions, main -> this tree: mma12_mid_kernel<64, 4> 38 -> 36; fewer instructions than main: 39 of 39
+== 16:16:08 the JIT source, as PyTorch 2.14's extension build compiles it
+compile exit 0, link exit 0 (176.02 s, 3285388 KB peak); warnings not from torch's headers: 0
    sm_80: the JIT build's 87 kernels, the library's 87: 87 the same instructions
    sm_86: the JIT build's 87 kernels, the library's 87: 87 the same instructions
    sm_89: the JIT build's 87 kernels, the library's 87: 87 the same instructions
    sm_90a: the JIT build's 87 kernels, the library's 87: 87 the same instructions
-== 13:31:17 done
+== 16:19:22 done

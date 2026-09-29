@@ -1,0 +1,1 @@
+NVIDIA A10 (8.6, sm_86, 23028 MiB), x86_64 host, 30 CPUs; CLASS=a10; release tree 8a7769e (rust-splitbyte), main db8e7b0 (main)

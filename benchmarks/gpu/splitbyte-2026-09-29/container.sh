@@ -4,11 +4,11 @@
 # this one's (src/, git archive HEAD), both with gpu/ and bindings/python:
 #   docker run --rm --platform linux/arm64 -v "$PWD/work:/work" nvidia/cuda:13.0.3-devel-rockylinux8 bash /work/src/benchmarks/gpu/splitbyte-2026-09-29/container.sh
 # (1) Each library for sm_80, 86, 89 and 90a with build_lib.sh's flags and GCC 13 as the release builds it (compute_80's
-# PTX and Blackwell left out), and main's again with its exception loop kept to an entry a pass as this tree's is
-# (main-once/: the baseline for the schedule). (2) Each architecture's SASS compared by sass_diff.py: main -> this tree,
-# main -> main-once, main-once -> this tree. (3) This tree's JIT source (the pybind module) compiled as PyTorch 2.14's
-# extension build compiles it, against the headers of its CUDA 13 wheel, its SASS against the library's, and linked
-# with every symbol resolved (-z defs; libpython linked for the check). Logs in /work/out.
+# PTX and Blackwell left out). (2) Each architecture's SASS, main -> this tree, compared by sass_diff.py, and per kernel
+# of the 12-bit layout: its exception loops' loads, branches and calls (LDG, LDS, BRA, CALL) against main's, and its
+# spill instructions (LDL, STL). (3) This tree's JIT source (the pybind module) compiled as PyTorch 2.14's extension
+# build compiles it, against the headers of its CUDA 13 wheel, its SASS against the library's, and linked with every
+# symbol resolved (-z defs; libpython linked for the check). Logs in /work/out.
 set -u
 cd /work
 mkdir -p out
@@ -18,12 +18,9 @@ source /opt/rh/gcc-toolset-13/enable
 CU=/usr/local/cuda
 S=src/benchmarks/gpu/splitbyte-2026-09-29
 echo "== $(date -u +%T) $(nvcc --version | tail -1); $(gcc --version | head -1); $(uname -m), $(nproc) CPUs; main $(cat main/COMMIT 2>/dev/null), this tree $(cat src/COMMIT 2>/dev/null)"
-rm -rf main-once && cp -R main main-once
-sed -i '/static __device__ __forceinline__ void patch(At at, int e0, int e1, int lane, uint32_t ew\[8\]) {/a #pragma unroll 1' main-once/gpu/glyd_gpu.cu
-echo "main-once: $(( $(grep -c '^#pragma unroll 1$' main-once/gpu/glyd_gpu.cu) - $(grep -c '^#pragma unroll 1$' main/gpu/glyd_gpu.cu) )) pragma added (main's Nib::patch)"
 GEN="-gencode arch=compute_80,code=sm_80 -gencode arch=compute_86,code=sm_86 -gencode arch=compute_89,code=sm_89 -gencode arch=compute_90a,code=sm_90a"
 F="-O3 -std=c++20 --expt-relaxed-constexpr -isystem $CU/include -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ $GEN"
-for side in src main main-once; do
+for side in src main; do
   mkdir -p out/$side
   /usr/bin/time -f "%e s, %M KB peak" nvcc $F -Xcompiler -fPIC,-fvisibility=hidden --threads 4 -c -o out/$side/glyd_gpu.o $side/gpu/glyd_gpu.cu > out/$side/build.txt 2>&1
   e=$?
@@ -34,14 +31,39 @@ for side in src main main-once; do
     cuobjdump -res-usage -arch sm_$a out/$side/libglyd_gpu_cuda13.so > out/$side/sm_$a.res
   done
 done
-for pair in "main src" "main main-once" "main-once src"; do
-  set -- $pair
-  for a in 80 86 89 90a; do
-    echo "## sm_$a"
-    python3.11 $S/sass_diff.py out/$1/sm_$a.sass out/$2/sm_$a.sass out/$1/sm_$a.res out/$2/sm_$a.res
-  done > out/sass-$1-to-$2.txt 2>&1
-  echo "== SASS, $1 -> $2:"; grep -E "^## |kernels; the|kernels of the 12-bit" out/sass-$1-to-$2.txt | sed 's/^/   /'
-done
+for a in 80 86 89 90a; do
+  echo "## sm_$a"
+  python3.11 $S/sass_diff.py out/main/sm_$a.sass out/src/sm_$a.sass out/main/sm_$a.res out/src/sm_$a.res
+done > out/sass-main-to-branch.txt 2>&1
+echo "== SASS, main -> this tree:"; grep -E "^## |kernels; the|kernels of the 12-bit" out/sass-main-to-branch.txt | sed 's/^/   /'
+echo "== the exception loops: loads, branches and calls (LDG, LDS, BRA, CALL) as main's, and spill instructions (LDL, STL)"
+python3.11 - out <<'PY'
+import re, subprocess, sys
+from collections import Counter
+def fns(p):
+    f, n = {}, None
+    for line in open(p):
+        m = re.match(r"\s*Function : (\S+)", line)
+        if m:
+            n = m.group(1)
+            f[n] = []
+            continue
+        m = re.match(r"\s*/\*[0-9a-f]{4,}\*/\s+(?:@!?U?P\w+\s+)?([A-Z][A-Z0-9_.]*)", line)
+        if m and n:
+            f[n].append(m.group(1))
+    return f
+loop = lambda ops: Counter(o for o in ops if o.split(".")[0] in ("LDG", "LDS", "BRA", "CALL"))
+spill = lambda ops: sum(o.startswith(("LDL", "STL")) for o in ops)
+for a in ("80", "86", "89", "90a"):
+    M, B = fns(f"{sys.argv[1]}/main/sm_{a}.sass"), fns(f"{sys.argv[1]}/src/sm_{a}.sass")
+    k = [n for n in M if "3Nib" in n and len(M[n]) > 16]  # (the TMA and wgp kernels are sm_90a's alone: stubs elsewhere)
+    short = dict(zip(k, subprocess.run(["c++filt", "-p"], input="\n".join(k), capture_output=True, text=True).stdout.split("\n")))
+    other = [n for n in k if loop(M[n]) != loop(B[n])]
+    spills = [f"{short[n]} {spill(M[n])} -> {spill(B[n])}" for n in k if spill(M[n]) != spill(B[n])]
+    fewer = sum(len([o for o in B[n] if o != "NOP"]) < len([o for o in M[n] if o != "NOP"]) for n in k)
+    print(f"   sm_{a}: {len(k) - len(other)} of {len(k)} kernels with main's loads, branches and calls" + (f" (not: {', '.join(short[n] for n in other)})" if other else "")
+          + f"; spill instructions, main -> this tree: {'; '.join(spills) or 'as main'}; fewer instructions than main: {fewer} of {len(k)}")
+PY
 echo "== $(date -u +%T) the JIT source, as PyTorch 2.14's extension build compiles it"
 [ -d /opt/torchcu ] || { python3.11 -m pip download -q --no-deps --index-url https://download.pytorch.org/whl/cu130 "torch==2.14.0" -d /tmp/whl &&
   python3.11 -m zipfile -e /tmp/whl/torch-2.14.0+cu130-*.whl /opt/torchcu; }

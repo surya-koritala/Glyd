@@ -1,0 +1,88 @@
+CHECKS FAIL: 21 steps run; routes exit 1; test_gpu exit 1; xcheck-granite-3.1-3b-a800m-instruct exit 1; routes: not as expected; xcheck-granite-3.1-3b-a800m-instruct: no 'all the same bits'
+NVIDIA L4 (8.9, sm_89, 23034 MiB), x86_64 host, 16 CPUs; CLASS=ada; release tree 975bbb1 (rust-splitbyte), main db8e7b0 (main)
+environment: made here in /home/ubuntu/gpuenv (x86_64); torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+rust: cargo 1.98.1 (797e8a9bc 2026-08-05)
+
+check_api-dense: exit 0 | check_api: all passed (/home/ubuntu/r1w/src/bindings/python/glyd/__init__.py)
+check_api-moe: exit 0 | check_api: all passed (/home/ubuntu/r1w/src/bindings/python/glyd/__init__.py)
+check_capi: exit 0 | library /home/ubuntu/r1w/src/lib/libglyd_gpu_cuda13.so (CUDA 13000), NVIDIA L4: 6951 calls compared bit for bit, all identical; 220044 routes as main's rule (0.
+e2e12-main: exit 0
+e2e12-main2: exit 0
+e2e12-src: exit 0
+layer-Qwen3-4B-Instruct-2507-run1: exit 0
+layer-Qwen3-4B-Instruct-2507-run2: exit 0
+layer-Qwen3-8B-run1: exit 0
+layer-Qwen3-8B-run2: exit 0
+routes: exit 1 | KeyError: 'gpu'
+      lib, py = _lib.gpu(), gm.gpu_code(cc, name)
+rust-pack: exit 0 | Rust: all passed
+  mma: every file byte-identical to Python's (8 files)
+  mma12: every file byte-identical to Python's (8 files)
+rust-tests: exit 0 | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+selftest: exit 0 | every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too)
+test_gpu: exit 1 | RuntimeError: CUDNN_BACKEND_TENSOR_DESCRIPTOR cudnnFinalize failedptrDesc->finalize() cudnn_status: CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED
+xcheck-Qwen3-0.6B: exit 0 | all the same bits: 4572 calls (NVIDIA L4, compute capability 8.9)
+xcheck-Qwen3-1.7B: exit 0 | all the same bits: 4572 calls (NVIDIA L4, compute capability 8.9)
+xcheck-Qwen3-4B-Instruct-2507: exit 0 | all the same bits: 4627 calls (NVIDIA L4, compute capability 8.9)
+xcheck-Qwen3-8B: exit 0 | all the same bits: 4628 calls (NVIDIA L4, compute capability 8.9)
+xcheck-granite-3.1-3b-a800m-instruct: exit 1 | AssertionError: mma_moe act 1
+xcheck: exit 0 | all the same bits: 3205 calls (NVIDIA L4, compute capability 8.9)
+
+main twice: the same lines
+main and split byte: the same lines (20 logits, 4 generations)
+
+layer.py: split byte's time over main's 12-bit layout's (model, run, M, the route taken: by route | by kernel)
+  Qwen3-4B-Instruct-2507 run 1      1 (step): route 1.001 | step 0.997
+  Qwen3-4B-Instruct-2507 run 1      8 (step): route 1.001 | step 1.000
+  Qwen3-4B-Instruct-2507 run 1     32 (mid): route 0.999 | step 1.000 | mid 0.999
+  Qwen3-4B-Instruct-2507 run 1    256 (prompt): route 1.024 | prompt 1.027
+  Qwen3-4B-Instruct-2507 run 1   1024 (prompt): route 1.024 | prompt 1.020
+  Qwen3-4B-Instruct-2507 run 1 decode (decode): decode 0.998
+  Qwen3-4B-Instruct-2507 run 2      1 (step): route 0.996 | step 1.000
+  Qwen3-4B-Instruct-2507 run 2      8 (step): route 0.999 | step 1.000
+  Qwen3-4B-Instruct-2507 run 2     32 (mid): route 0.999 | step 0.995 | mid 1.000
+  Qwen3-4B-Instruct-2507 run 2    256 (prompt): route 1.029 | prompt 1.026
+  Qwen3-4B-Instruct-2507 run 2   1024 (prompt): route 1.022 | prompt 1.017
+  Qwen3-4B-Instruct-2507 run 2 decode (decode): decode 0.999
+  Qwen3-8B run 1      1 (step): route 1.003 | step 1.000
+  Qwen3-8B run 1      8 (step): route 0.999 | step 1.001
+  Qwen3-8B run 1     32 (mid): route 1.001 | step 1.001 | mid 1.000
+  Qwen3-8B run 1    256 (prompt): route 1.012 | prompt 1.012
+  Qwen3-8B run 1   1024 (prompt): route 1.012 | prompt 1.016
+  Qwen3-8B run 1 decode (decode): decode 1.001
+  Qwen3-8B run 2      1 (step): route 1.005 | step 1.001
+  Qwen3-8B run 2      8 (step): route 1.000 | step 1.001
+  Qwen3-8B run 2     32 (mid): route 1.000 | step 1.001 | mid 1.001
+  Qwen3-8B run 2    256 (prompt): route 1.012 | prompt 1.013
+  Qwen3-8B run 2   1024 (prompt): route 1.013 | prompt 1.013
+  Qwen3-8B run 2 decode (decode): decode 1.000
+  by the library's route: 0.996-1.029 over 20 rows
+
+steps:
+  14:39:56 (+26 s) machine and environment (made here in /home/ubuntu/gpuenv (x86_64))
+  14:41:41 (+105 s) builds (src exit 0, main exit 0, jit exit 0, rust exit 0)
+  14:41:45 (+109 s) selftest (exit 0)
+  14:41:50 (+114 s) xcheck (exit 0)
+  14:42:24 (+148 s) check_capi (exit 0)
+  14:42:25 (+149 s) routes (exit 1)
+  14:42:26 (+150 s) rust-tests (exit 0)
+  14:43:08 (+192 s) rust-pack (exit 0)
+  14:44:07 (+251 s) test_gpu (exit 1)
+  14:46:22 (+386 s) layer-Qwen3-8B-run1 (exit 0)
+  14:46:26 (+390 s) layer-Qwen3-4B-Instruct-2507-run1 (exit 0)
+  14:46:53 (+417 s) e2e12-main (exit 0)
+  14:47:21 (+445 s) e2e12-src (exit 0)
+  14:47:47 (+471 s) e2e12-main2 (exit 0)
+  14:47:47 (+471 s) e2e12 compared
+  14:53:34 (+818 s) check_api-dense (exit 0)
+  15:01:07 (+1271 s) check_api-moe (exit 0)
+  15:01:12 (+1276 s) xcheck-Qwen3-0.6B (exit 0)
+  15:01:21 (+1285 s) xcheck-Qwen3-1.7B (exit 0)
+  15:01:23 (+1287 s) xcheck-granite-3.1-3b-a800m-instruct (exit 1)
+  15:01:36 (+1300 s) xcheck-Qwen3-4B-Instruct-2507 (exit 0)
+  15:02:02 (+1326 s) xcheck-Qwen3-8B (exit 0)
+  15:02:07 (+1331 s) layer-Qwen3-8B-run2 (exit 0)
+  15:02:11 (+1335 s) layer-Qwen3-4B-Instruct-2507-run2 (exit 0)
+  15:02:11 (+1335 s) checks done
+  15:02:11 (+1335 s) done

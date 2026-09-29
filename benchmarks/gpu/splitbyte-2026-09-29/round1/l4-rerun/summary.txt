@@ -1,0 +1,38 @@
+CHECKS PASS: 5 steps run, each exit 0
+NVIDIA L4 (8.9, sm_89, 23034 MiB), x86_64 host, 16 CPUs; CLASS=ada; release tree 8a7769e (rust-splitbyte), main db8e7b0 (main)
+environment: made here in /home/ubuntu/gpuenv (x86_64); torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+rust: /home/ubuntu/r1_job.sh: line 129: cargo: command not found
+
+attr-loop-Qwen3-8B: exit 0
+attr-splitbyte-Qwen3-8B: exit 0
+routes: exit 0 | routes: as expected
+  NVIDIA L4, compute capability 8.9: the library's code 89, the package's 89
+    tiered: 1-64 G, 65-5000 B
+    12-bit: 1-16 G, 17-64 M, 65-5000 B
+  code 89: the routes route_for gives it
+test_gpu: exit 0 | test_cli_pack_and_verify ok
+xcheck-granite-3.1-3b-a800m-instruct: exit 0 | all the same bits: 3052 calls (NVIDIA L4, compute capability 8.9)
+
+
+layer.py: split byte's time over main's 12-bit layout's (model, run, M, the route taken: by route | by kernel); attr-loop:
+main-once's over main's (the exception loop alone), attr-splitbyte: the branch's over main-once's (split byte alone)
+  attr-loop-Qwen3-8B run -      1 (step): route 1.000 | step 1.001
+  attr-loop-Qwen3-8B run -    256 (prompt): route 1.022 | prompt 1.010
+  attr-loop-Qwen3-8B run -   1024 (prompt): route 1.022 | prompt 1.023
+  attr-loop-Qwen3-8B run - decode (decode): decode 1.000
+  attr-splitbyte-Qwen3-8B run -      1 (step): route 1.003 | step 0.999
+  attr-splitbyte-Qwen3-8B run -    256 (prompt): route 0.998 | prompt 0.997
+  attr-splitbyte-Qwen3-8B run -   1024 (prompt): route 0.990 | prompt 0.990
+  attr-splitbyte-Qwen3-8B run - decode (decode): decode 0.998
+
+steps:
+  15:44:56 (+17 s) machine and environment (made here in /home/ubuntu/gpuenv (x86_64))
+  15:45:43 (+47 s) builds (src exit 0, main exit 0, main-once exit 0, )
+  15:45:45 (+49 s) routes (exit 0)
+  15:47:55 (+179 s) test_gpu (exit 0)
+  15:47:59 (+183 s) attr-loop-Qwen3-8B (exit 0)
+  15:48:03 (+187 s) attr-splitbyte-Qwen3-8B (exit 0)
+  15:48:13 (+197 s) xcheck-granite-3.1-3b-a800m-instruct (exit 0)
+  15:48:13 (+197 s) checks done
+  15:48:13 (+197 s) done

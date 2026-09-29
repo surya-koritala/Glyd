@@ -1,0 +1,5 @@
+Qwen/Qwen3-1.7B: 197 tensors (1.720 B weights; 0 others left out) decoded bit for bit in both layouts; 12-bit 12.038 bits a weight, 223 exceptions a million; split byte 12.038, 198; layers [0, 1, 2, 14, 27]: 4817 calls the same bits (4 s)
+calls: mma_gemm 350, mma_gemm_big variant 0 280, mma_gemm_big variant 1 280, mma_gemm_big variant 2 280, mma_gemm_big variant 3 280, mma_gemm_mid 560, mma_gemm_wg 630, mma_linear route -1 560, mma_linear route 1 175, mma_linear route 2 315, mma_linear route 3 315, mma_linear route 4 315, mma_unpack 477
+refused by both: mma_linear route -1 70, mma_linear route 0 315, mma_linear route 1 140, mma_linear route 5 315
+all the same bits: 4817 calls (NVIDIA H100 PCIe, compute capability 9.0)
+exit 0

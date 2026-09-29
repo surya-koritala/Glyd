@@ -1,0 +1,7 @@
+--old-both: main's 12-bit layout on both sides, the second library /home/ubuntu/r1w/main-once/lib/libglyd_gpu_cuda13.so
+Qwen3-8B layer 10 on NVIDIA A10: qkv (6144, 4096), o (4096, 4096), gate_up (24576, 4096), down (4096, 12288); exceptions a step, 12-bit / split byte: qkv 0.258 / 0.258, o 0.276 / 0.276, gate_up 0.235 / 0.235, down 0.212 / 0.212
+  M=    1 (step): route    636.9 us, split byte    638.0 (1.002x) | step    637.8 us, split byte    638.0 (1.000x)  [qkv 90.1/90.1/90.1/90.1 | o 65.5/65.5/65.5/65.5 | gate_up 315.4/316.4/316.3/316.4 | down 165.9/165.9/165.9/165.9; us: route 12-bit/route split byte/step 12-bit/step split byte]
+  M=  256 (prompt): route   1587.2 us, split byte   1611.8 (1.015x) | prompt   1587.2 us, split byte   1617.0 (1.019x)  [qkv 222.2/228.4/221.2/227.3 | o 126.0/127.0/124.9/127.0 | gate_up 805.9/820.2/809.0/825.3 | down 433.2/436.2/432.1/437.3; us: route 12-bit/route split byte/prompt 12-bit/prompt split byte]
+  M= 1024 (ahead): route   7045.1 us, split byte   7102.5 (1.008x) | prompt   7084.0 us, split byte   7166.0 (1.012x)  [qkv 820.2/821.2/825.3/823.3 | o 546.8/556.0/548.9/558.1 | gate_up 3673.1/3712.0/3706.9/3776.5 | down 2005.0/2013.2/2002.9/2008.1; us: route 12-bit/route split byte/prompt 12-bit/prompt split byte]
+  decode (decode): decode   1573.8 us, split byte   1585.2 (1.007x)  [qkv 210.9/209.9 | o 141.3/142.3 | gate_up 806.9/815.1 | down 414.6/417.8; us: decode 12-bit/decode split byte]
+exit 0
