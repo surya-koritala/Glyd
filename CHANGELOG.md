@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.24.0 — 2026-09-28
 
 - `generate()` on a model from `glyd.from_pretrained` or
   `glyd.gpu.compress` runs compiled by default on PyTorch 2.13.0 or later
