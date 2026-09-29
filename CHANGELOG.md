@@ -16,56 +16,82 @@ every earlier format.
   `from_pretrained` loads as saved where the 12-bit layout is the one
   (else decodes and packs again, as it does a tiered save there; glyd 0.23
   and before refuse glyd-v3 by its format). The same bytes from Rust and
-  Python for the five models above, and `glyd verify` reads it. Loaded for
-  the 12-bit layout on an RTX 4080 SUPER (`layout="mma12"`, warm cache):
-  granite-3.1-3b-a800m-instruct in 0.52 s against 1.35 s from the tiered
-  save and 1.45 s from the bf16 checkpoint, Qwen3-4B-Instruct-2507 in 0.88
-  s against 1.76 and 1.94, Qwen3-8B in 1.29 s against 3.1-6.4 and 4.3-6.0,
-  its peak 0.56 GB lower.
+  Python for the five models of `glyd pack` below, and `glyd verify` reads
+  it. Loaded for the 12-bit layout on an RTX 4080 SUPER
+  (`layout="mma12"`, warm cache, three fresh processes each):
+  granite-3.1-3b-a800m-instruct in 0.49 s against 1.32-1.33 s from the
+  tiered save and 1.44-1.45 s from the bf16 checkpoint,
+  Qwen3-4B-Instruct-2507 in 0.84-0.85 s against 1.76-1.77 and 1.95,
+  Qwen3-8B in 1.17-1.18 s against 3.14-4.55 and 3.54-3.61 (2.1-3.9x
+  faster than packing again), its peak 0.56 GB below the tiered save's
+  (14.34 GB against 14.90)
+  ([benchmarks/gpu/rtx4080s-rust-2026-09-28](benchmarks/gpu/rtx4080s-rust-2026-09-28)).
+- glyd.json holds the sha256 of every tensor saved as it is too (its
+  `tensors`: the norms, biases, an embedding or output layer not packed),
+  and verify checks them: `python -m glyd.gpu verify`,
+  `from_pretrained(verify=True)` and `glyd verify` hold each file's
+  tensors back to back to its end, every tensor to a pack's buffer or one
+  of those sha256, and each pack's tensors to its own (its module's; a
+  merged group's q, k, v or gate, up), so a byte changed outside the packs,
+  bytes appended to a shard or a renamed member fails them. Both savers
+  write it alike; glyd 0.23 loads such a save and ignores it, and a save
+  from before verifies as it did, its other tensors counted unchecked.
 - `glyd pack MODEL OUT` and `glyd verify PATH` in the Rust CLI: a bf16
   checkpoint (a directory, or a repo in the local Hugging Face cache)
   packed on the CPU and saved as glyd-v1 (glyd-v2 with a mixture of
-  experts' packs) with no Python, PyTorch or GPU, byte for byte as
-  `python -m glyd.gpu pack` saves it: every file of Qwen3-0.6B, 1.7B,
-  4B-Instruct-2507 and 8B and of granite-3.1-3b-a800m-instruct is
-  Python's (their sha256; glyd.json's hashes, the shards, the index), at
-  1.99 / 2.01 / 2.09 / 2.06 / 1.62 GB/s of bf16 on 8 threads of a Ryzen 9
-  7950X3D (Qwen3-8B's 16.4 GB in 7.9 s), each pack decoded back and
-  checked as it is made. `glyd verify` decodes every pack, on the CPU or
-  (`--device cuda:0`) on the GPU by the library, and checks each tensor's
-  sha256 against glyd.json, as `python -m glyd.gpu verify` does
-  (Qwen3-8B's 253 tensors in 7.5 s on 8 threads). The families are
-  written out as transformers 5.17 holds them: Qwen3, Qwen2, Llama,
-  Mistral, Granite and GraniteMoe for now (tiny random checkpoints of each
-  family save the same bytes too, both layouts), anything else refused
-  with Python's command. The commands are the
-  `glyd-gpu` program's, under the Business Source License as the rest of
-  the GPU code, which the glyd CLI runs (it ships beside glyd; a file
+  experts' packs, glyd-v3 in the 12-bit layout) with no Python, PyTorch or
+  GPU, byte for byte as `python -m glyd.gpu pack` saves it: every file of
+  Qwen3-0.6B, 1.7B, 4B-Instruct-2507 and 8B and of
+  granite-3.1-3b-a800m-instruct is Python's in both layouts (their
+  sha256; glyd.json, the shards, the index), each pack decoded back and
+  checked as it is made. On 8 threads of a Ryzen 9 7950X3D, three rounds
+  each: 1.93-1.98 / 1.95-1.98 / 2.08-2.09 / 2.05-2.08 / 1.79-1.81 GB/s of
+  bf16 tiered and 2.56-2.62 / 2.55-2.56 / 2.87-2.91 / 2.36-3.03 /
+  2.44-2.48 GB/s in the 12-bit layout (Qwen3-8B's 16.4 GB in 7.9-8.0 s
+  and 5.4-7.0 s). A save holds two shards (about 5 GB each) and at most a
+  shard's worth of weights in flight past the one it waits for, whatever
+  the threads (Qwen3-8B: 9.0-10.3 GB peak RSS). `glyd verify` checks a
+  save as `python -m glyd.gpu verify` does, its packs decoded on the CPU
+  or (`--device cuda:0`) on the GPU by the library (Qwen3-8B's 253 packed
+  tensors and 146 saved as they are in 9.1-9.2 s tiered, 7.3-7.5 s 12-bit,
+  on 8 threads). The families are written out as transformers 5.17 holds
+  them: Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe for now (tiny
+  random checkpoints of each family save the same bytes too, both
+  layouts), anything else refused with Python's command. The commands are
+  the `glyd-gpu` program's, under the Business Source License as the rest
+  of the GPU code, which the glyd CLI runs (it ships beside glyd; a file
   named `pack` or `verify` is compressed as `./pack`).
 - The `glyd-gpu` crate: Rust over the GPU library's C API, the library
   loaded at run time and refused where its API version is not the
-  crate's, each function typed (a test holds the declarations to
-  `glyd_gpu.h`), device pointers and streams the caller's, a product's
-  workspace query first, errors as `Result`, and the few CUDA driver calls
-  a caller without a runtime of its own needs; no dependency but sha2, and
-  nothing linked at build time. Its examples decode a saved model's packs
-  on the GPU against the bf16 checkpoint, bit for bit (`unpack.rs`, the C
-  example in Rust), and multiply by `linear` (`linear.rs`); its `pack`
-  module packs a matrix in either layout on the CPU, byte for byte as
-  glyd.gpu's `pack_mma` and `pack_mma12` do on the GPU.
+  crate's, each function typed (a test holds the declarations, the routes'
+  numbers and the GPU classes to `glyd_gpu.h`), device pointers and
+  streams the caller's, a product's workspace query first, errors as
+  `Result`, and the few CUDA driver calls a caller without a runtime of
+  its own needs (a context stays on the thread that made it; copies take
+  plain integers and floats); no dependency but sha2, and nothing linked
+  at build time. Its examples decode a saved model's packs on the GPU
+  against the bf16 checkpoint, bit for bit (`unpack.rs`, the C example in
+  Rust), and multiply by `linear` (`linear.rs`); its `pack` module packs a
+  matrix in either layout on the CPU, byte for byte as glyd.gpu's
+  `pack_mma` and `pack_mma12` do on the GPU.
 - The kernel a product for M tokens takes on a GPU is the library's:
   `glyd_gpu_mma_route` and `glyd_gpu_mma12_route` give it (and the last
-  token count that takes it), as measured and as glyd.gpu chose it before
-  (a check on ten GPUs, 0-5000 tokens, both layouts); `GLYD_WG_MIN`,
-  `GLYD_WG_MAX`, `GLYD_MID_MIN` and `GLYD_DEC_MIN` are read there.
-  `glyd_gpu_mma_linear` and `glyd_gpu_mma12_linear` run a route's kernel;
-  the glyd package's Linears take their routes from the library and
-  multiply by `linear` in their one C call, so every caller routes alike.
-  C API version 3. The same bits (check_capi: 206773 calls through both
-  hosts, bit for bit) and the same speed (generate() eager, main's package
-  and library and these in turn, RTX 4080 SUPER: Qwen3-1.7B and
-  Qwen3-4B-Instruct-2507 within 1% at 1, 8 and 32 sequences, both
-  layouts).
+  token count that takes it), as glyd.gpu chose it before (a check
+  against that rule on eleven GPU codes, 0-5000 tokens, both layouts);
+  `GLYD_WG_MIN`, `GLYD_WG_MAX`, `GLYD_MID_MIN` and `GLYD_DEC_MIN` are read
+  there. A GPU's code is its compute capability plus a class where the
+  name tells GPUs apart (`GLYD_GPU_GEFORCE`; `GLYD_GPU_A10`, an A10 and
+  not an A10G, A40 or A6000). `glyd_gpu_mma_linear` and
+  `glyd_gpu_mma12_linear` run a route's kernel (where glyd decodes the
+  matrix for cuBLAS, the prompt kernel; on Hopper and where K is not a
+  multiple of 64 they refuse those routes: decode it there); the glyd
+  package's Linears take their routes from the library and multiply by
+  `linear` in their one C call, so every caller routes alike. C API
+  version 4. The same bits (check_capi: 227013 calls through both hosts,
+  bit for bit) and the same speed (generate() eager, main's package and
+  library and these in turn, four rounds, RTX 4080 SUPER: Qwen3-1.7B and
+  Qwen3-4B-Instruct-2507 at 1, 8 and 32 sequences in both layouts, each
+  round -1.1% to +1.3% of main's, their means -0.3% to +0.5%).
 
 ## v0.23.0 — 2026-09-28
 

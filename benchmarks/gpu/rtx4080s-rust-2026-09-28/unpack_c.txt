@@ -1,0 +1,10 @@
+# 2026-09-28 21:30:43: load 1.56 1.85 1.64; busiest:  5.4 localsearch-3; 0.1 kworker/u130:3-ext4-rsv-conversion; 0.1 gnome-shell;
+libglyd_gpu: C API 4, CUDA runtime 13000
+model.layers.0.self_attn.o_proj: [1024, 2048], 10.86 bits a weight packed, decoded on the GPU
+  model.layers.0.self_attn.o_proj.weight [1024, 2048]: the checkpoint's, bit for bit
+libglyd_gpu: C API 4, CUDA runtime 13000
+model.layers.0.self_attn.q_proj: [4096, 1024], 10.79 bits a weight packed, decoded on the GPU
+  model.layers.0.self_attn.q_proj.weight [2048, 1024]: the checkpoint's, bit for bit
+  model.layers.0.self_attn.k_proj.weight [1024, 1024]: the checkpoint's, bit for bit
+  model.layers.0.self_attn.v_proj.weight [1024, 1024]: the checkpoint's, bit for bit
+exit 0

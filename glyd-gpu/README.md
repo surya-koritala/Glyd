@@ -34,8 +34,12 @@ checked, and each tensor saved as it is. The `glyd-gpu` command runs them
 
 Memory: a save holds the shard its writer writes and the one it fills
 (about 5 GB each) and at most a shard's worth of bf16 weights being packed
-past the one it waits for, whatever the threads; a verify on the CPU, a
-pack and its matrix a thread and one more.
+past the one it waits for, whatever the threads (Qwen3-8B: 9.0-10.3 GB
+peak RSS on 8 threads); a verify on the CPU, a pack and its matrix a
+thread and one more (Qwen3-8B: 2.4 GB). On a Ryzen 9 7950X3D, 8 threads:
+Qwen3-8B packed at 2.05-2.08 GB/s of bf16 tiered, 2.36-3.03 in the 12-bit
+layout, and verified in 7.3-9.2 s
+([benchmarks/gpu/rtx4080s-rust-2026-09-28](../benchmarks/gpu/rtx4080s-rust-2026-09-28)).
 
 Its one dependency is sha2 (the store's).
 

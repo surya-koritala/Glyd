@@ -1,0 +1,4 @@
+glyd 0.23.0 from /home/surya-koritala/p9rust2/main/bindings/python/glyd/__init__.py
+/home/surya-koritala/p9rust2/out/Qwen3-0.6B-mma glyd-v1 True 114 sha256 saved as they are
+loaded and verified by main:  198 tensors
+exit 0
