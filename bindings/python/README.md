@@ -135,29 +135,35 @@ of 3 runs (logs: benchmarks/gpu/rtx4080s-fastloop-2026-09-28,
 Greedy tokens compiled can differ from 0.23's eager loop's, as a
 compiled bf16 model's can from its eager ones (the first 8 of 32 the
 same on Qwen3-0.6B, 17 on Qwen3-1.7B, 32 on
-granite-3.1-3b-a800m-instruct: `gpu/check_api.py`); `exact=True` is
-untouched. The first call compiles and captures: Qwen3-8B's took 17.5 s
-with PyTorch's compile caches empty, 6.7 s in a later process (4-6 s for
-the others); a call whose cache is longer than any before it compiles
-again once, then captures a graph (Qwen3-4B-Instruct-2507, a chat's
-turns: 15.0 s, then 5.6 s, then 0.8-0.9 s for 64 tokens). Before
-serving, warm up with one short `generate()`: the first compiled step
-comes after the first token is streamed, so a streamer's consumer waits
-through the compile (give a `TextIteratorStreamer` a `timeout` longer
-than it, or use `compile=False`). Only greedy and sampled calls compile:
-a call runs as transformers runs it if it uses several beams, an
-assistant or another assisted mode (prompt lookup, early exit,
-`use_mtp`), its own cache or a `cache_implementation`,
-`use_cache=False`, `return_dict_in_generate`, attentions or hidden
-states, `custom_generate`, or `disable_compile=True` (one call eager);
-so does one whose static cache would hold more positions in all (its
-sequences times the prompt and `max_new_tokens`, or `max_cache_len`
-where longer) than 1280 on a GeForce card and 2048 on another: the
-static cache holds every position a call may reach from its first step
-and each step's attention reads all of it, so past that the eager loop
-is as fast (Qwen3-8B), sooner the faster the host's CPU (what compiling
-saves is eager's host time a step). A step's ms compiled against eager,
-Qwen3-8B, the static cache that long with 64 positions used:
+granite-3.1-3b-a800m-instruct: `gpu/check_api.py`). In the default mode
+they can also vary within a process, between calls whose cache sizes
+compile differently (Qwen3-1.7B's first compiled call and its later
+ones, after a longer cache, shared 13 of 32 in one run of
+`gpu/check_api.py`:
+benchmarks/gpu/rtx4080s-fastloop-2026-09-28/checks-merge-6e17b3f);
+`exact=True` is never compiled and stays bit-identical to bf16. The
+first call compiles and captures: Qwen3-8B's took 17.5 s with PyTorch's
+compile caches empty, 6.7 s in a later process (4-6 s for the others); a
+call whose cache is longer than any before it compiles again once, then
+captures a graph (Qwen3-4B-Instruct-2507, a chat's turns: 15.0 s, then
+5.6 s, then 0.8-0.9 s for 64 tokens). Before serving, warm up with one
+short `generate()`: the first compiled step comes after the first token
+is streamed, so a streamer's consumer waits through the compile (give a
+`TextIteratorStreamer` a `timeout` longer than it, or use
+`compile=False`). Only greedy and sampled calls compile: a call runs as
+transformers runs it if it uses several beams, an assistant or another
+assisted mode (prompt lookup, early exit, `use_mtp`), its own cache or a
+`cache_implementation`, `use_cache=False`, `return_dict_in_generate`,
+attentions or hidden states, `custom_generate`, or
+`disable_compile=True` (one call eager); so does one whose static cache
+would hold more positions in all (its sequences times the prompt and
+`max_new_tokens`, or `max_cache_len` where longer) than 1280 on a
+GeForce card and 2048 on another: the static cache holds every position
+a call may reach from its first step and each step's attention reads all
+of it, so past that the eager loop is as fast (Qwen3-8B), sooner the
+faster the host's CPU (what compiling saves is eager's host time a
+step). A step's ms compiled against eager, Qwen3-8B, the static cache
+that long with 64 positions used:
 
 | | 256 | 1024 | 2048 | 4096 positions | 8 sequences |
 | :--- | ---: | ---: | ---: | ---: | :--- |

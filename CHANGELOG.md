@@ -25,7 +25,12 @@ every earlier format.
   through it). Greedy tokens compiled can differ from 0.23's eager loop's,
   as a compiled bf16 model's can from its eager ones (the first 8 of 32
   the same on Qwen3-0.6B, 17 on Qwen3-1.7B, 32 on
-  granite-3.1-3b-a800m-instruct: check_api); `exact=True` is untouched.
+  granite-3.1-3b-a800m-instruct: check_api). In the default mode they can
+  also vary within a process, between calls whose cache sizes compile
+  differently (Qwen3-1.7B's first compiled call and its later ones, after
+  a longer cache, shared 13 of 32 in one run of check_api:
+  benchmarks/gpu/rtx4080s-fastloop-2026-09-28/checks-merge-6e17b3f);
+  `exact=True` is never compiled and stays bit-identical to bf16.
   `compile=False` (`from_pretrained`, `compress`) or `GLYD_COMPILE=0` runs
   it eager, as before; so do `exact=True` (its tokens are bf16's eager
   ones), a family transformers does not compile whole (its
