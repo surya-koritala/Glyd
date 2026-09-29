@@ -41,3 +41,11 @@ beside it):
   main Qwen3-4B-Instruct-2507 12-bit.
 - pack-python.txt (the reference, not quoted for speed), 1 of 10: Qwen3-8B in the 12-bit layout; test_gpu.txt (a
   check).
+
+## merge-v0.24.0
+
+rust-gpu merged with v0.24.0 (main 44393a9) and its routes ported, checked on the same box as the merge commit has it
+but for text (CHANGELOG.md, a doc comment of lib.rs): `run.sh` built the library and the crate, then ran the crate's
+tests with the library and the GPU, the self-test, check_capi (227019 calls bit for bit), test_gpu.py, and check_api on
+Qwen3-0.6B and Qwen3-1.7B and on granite-3.1-3b-a800m-instruct, one at a time under the box's lock; each exits 0.
+
