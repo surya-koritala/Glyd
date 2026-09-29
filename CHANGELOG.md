@@ -8,17 +8,65 @@ every earlier format.
 
 ## Unreleased
 
+- The 12-bit layout is split byte: a weight's low byte (the exponent's
+  lowest bit and the mantissa) kept as it is, its high byte (the sign and
+  the exponent's other 7 bits) a 4-bit code, the sign and an offset 0-7
+  from the matrix's base `hb` (exponents 2·hb to 2·hb + 15: the window of
+  16 from an even exponent holding the most weights), any other weight in
+  its step's exception list as before. Its
+  decode is an AND and an add for four weights and a byte permute for two,
+  with no table (8.5 integer instructions a k-block in SASS against the
+  15-exponent code's 22.0), in every kernel of the layout: the step,
+  mid, prompt, Hopper TMA and wgp, A100 mid, mixture-of-experts and
+  decode kernels. The same size (12.04-12.07 bits a weight) and the same
+  bits decoded, so the same products: on an L4, an A10, an A100 SXM4 40
+  GB, an H100 PCIe and an H100 SXM (2026-09-29) every output of the
+  layout's kernels was main's bits; models' logits and greedy tokens,
+  fused and exact, the same as main's: Qwen3-1.7B and
+  granite-3.1-3b-a800m-instruct on the L4, A10, A100 and H100 PCIe
+  (round 1), and those two and Qwen3-4B-Instruct-2507 on an L4 on the
+  release candidate. A layer's time against the 12-bit layout's
+  before, main's library and this release's in one process (layer 10 of
+  Qwen3-8B with 4B-Instruct-2507, 14B or 32B, two runs each): faster on
+  the H100 SXM, 0.933-0.969 at 32-1024 tokens (wgmma: 3.1-6.7% less; the
+  H100 PCIe 0.942-0.991) and 0.986-0.992 at 1-16; faster on the A100,
+  0.923-0.987 at 64-128 (its mid kernel: 5.5-7.7% less at 128),
+  0.969-0.982 at 256-768 (prompts) and 0.976-0.998 at 1-16; the same
+  to 1.5% faster at 32 (0.985-1.003); the same on the A10 and the L4, 0.989-1.010 at
+  1-1024 tokens (the A10's from 640 by `linear`'s prompt kernel, where
+  glyd.gpu decodes those prompts ahead, below). Slower: a matrix decoded
+  whole, for cuBLAS and exact mode, takes 3.0-5.8% longer on the H100 SXM
+  and 1.0-1.6% on the A10 (0.998-1.012 on the A100, the same on the L4).
+  That decode is in Hopper's prompts past wgmma's 1024 tokens, the A100's
+  past 768, an A10's 12-bit prompts from 640 tokens (decoded ahead beside
+  cuBLAS; the prompt's time not measured) and every step of exact mode
+  ([benchmarks/gpu/splitbyte-2026-09-29](benchmarks/gpu/splitbyte-2026-09-29)).
+  The 12-bit layout's bytes and words change from 0.24's (a code into the
+  15 commonest exponents, v0.19-v0.24): the library refuses 0.24's words,
+  so pack those models again. The C API is version 5: a 12-bit
+  pack's `sym[4]` holds its base, `hb` in each byte of `sym[0]` and the
+  other three zero; any other words, 0.24's exponents among them, are
+  refused with `cudaErrorInvalidValue`. glyd.json's 12-bit packs
+  (glyd-v3) carry `hb`; a glyd-v3 save of the layout before (its `sym`) is
+  refused as it loads: save it again. `glyd pack --layout mma12` packs
+  split byte on the CPU, byte for byte as `pack_mma12` (the glyd-gpu
+  crate's test holds its bytes to a CPU port of it, every bf16 bit pattern
+  and the base at 0 and 120 among its matrices), and `glyd verify` decodes
+  it and refuses a 12-bit pack without `hb`. Tiered saves (glyd-v1,
+  glyd-v2) are unchanged.
 - Saved models in the 12-bit layout too: `glyd.save_pretrained(model,
   path, layout="mma12")`, `python -m glyd.gpu pack MODEL OUT --layout
   mma12` and `glyd pack MODEL OUT --layout mma12` write glyd-v3, the packs
   as an A10, A100 or H100 runs them (each pack's `.glyd_data`, `.glyd_exc`,
-  `.glyd_exc_base`; its symbols' words, `sym`, in glyd.json), which
+  `.glyd_exc_base`; its base, `hb`, in glyd.json), which
   `from_pretrained` loads as saved where the 12-bit layout is the one
   (else decodes and packs again, as it does a tiered save there; glyd 0.24
   and before refuse glyd-v3 by its format). The same bytes from Rust and
   Python for the five models of `glyd pack` below, and `glyd verify` reads
   it. Loaded for the 12-bit layout on an RTX 4080 SUPER
-  (`layout="mma12"`, warm cache, three fresh processes each):
+  (`layout="mma12"`, warm cache, three fresh processes each; measured on
+  the 12-bit layout before split byte, whose load reads the same buffers
+  and decodes nothing):
   granite-3.1-3b-a800m-instruct in 0.49 s against 1.32-1.33 s from the
   tiered save and 1.44-1.45 s from the bf16 checkpoint,
   Qwen3-4B-Instruct-2507 in 0.84-0.85 s against 1.76-1.77 and 1.95,
@@ -48,22 +96,30 @@ every earlier format.
   experts' packs, glyd-v3 in the 12-bit layout) with no Python, PyTorch or
   GPU, byte for byte as `python -m glyd.gpu pack` saves it: every file of
   Qwen3-0.6B, 1.7B, 4B-Instruct-2507 and 8B and of
-  granite-3.1-3b-a800m-instruct is Python's in both layouts (their
-  sha256; glyd.json, the shards, the index), each pack decoded back and
-  checked as it is made. On 8 threads of a Ryzen 9 7950X3D, three rounds
-  each: 1.93-1.98 / 1.95-1.98 / 2.08-2.09 / 2.05-2.08 / 1.79-1.81 GB/s of
-  bf16 tiered and 2.56-2.62 / 2.55-2.56 / 2.87-2.91 / 2.36-3.03 /
-  2.44-2.48 GB/s in the 12-bit layout (Qwen3-8B's 16.4 GB in 7.9-8.0 s
-  and 5.4-7.0 s). A save holds two shards (about 5 GB each) and at most a
-  shard's worth of weights in flight past the one it waits for, whatever
-  the threads (Qwen3-8B: 9.0-10.3 GB peak RSS). `glyd verify` checks a
-  save as `python -m glyd.gpu verify` does, its packs decoded on the CPU
-  or (`--device cuda:0`) on the GPU by the library (Qwen3-8B's 253 packed
-  tensors and 146 saved as they are in 9.1-9.2 s tiered, 7.3-7.5 s 12-bit,
-  on 8 threads). The families are written out as transformers 5.17 holds
-  them: Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe for now (tiny
-  random checkpoints of each family save the same bytes too, both
-  layouts), anything else refused with Python's command. The commands are
+  granite-3.1-3b-a800m-instruct (its experts glyd-v3's mixture of
+  experts) is Python's in both layouts, the 12-bit one in split byte
+  (their sha256; glyd.json, the shards, the index; three rounds each),
+  each pack decoded back and checked as it is made, and each Rust save
+  verified by `glyd verify` on the CPU and the GPU and by `python -m
+  glyd.gpu verify`. On the AWS dev machine (a g6.4xlarge: 16 vCPUs of an
+  AMD EPYC 7R13, an NVIDIA L4), 16 threads, three rounds each: 1.55 /
+  1.55-1.58 / 1.58-1.60 / 0.71-0.88 / 1.44-1.45 GB/s of bf16 tiered and
+  1.64-1.67 / 1.88-1.91 / 2.01-2.03 / 0.67-0.72 / 1.78-1.80 GB/s in the
+  12-bit layout (Qwen3-8B's 16.4 GB in 18.5-23.0 s and 22.8-24.6 s, at
+  the pace of the disk its shards were written to: 3.2-6.4 of the CPUs
+  busy). A save holds two shards (about 5 GB each) and at most a shard's
+  worth of weights in flight past the one it waits for (about 15 GB at
+  most for a model of several shards; Qwen3-8B measured 11.4-13.6 GB peak
+  RSS on 16 threads). `glyd verify` checks a save
+  as `python -m glyd.gpu verify` does, its packs decoded on the CPU or
+  (`--device cuda:0`) on the GPU by the library (Qwen3-8B's 253 packed
+  tensors and 146 saved as they are in 11.6-11.8 s tiered, 8.8-9.0 s
+  12-bit, on 16 threads)
+  ([benchmarks/gpu/l4-rust-2026-09-29](benchmarks/gpu/l4-rust-2026-09-29)).
+  The families are written out as transformers 5.17 holds them: Qwen3,
+  Qwen2, Llama, Mistral, Granite and GraniteMoe for now (tiny random
+  checkpoints of each family save the same bytes too, both layouts),
+  anything else refused with Python's command. The commands are
   the `glyd-gpu` program's, under the Business Source License as the rest
   of the GPU code, which the glyd CLI runs (it ships beside glyd; a file
   named `pack` or `verify` is compressed as `./pack`).
@@ -100,12 +156,15 @@ every earlier format.
   name tells GPUs apart (`GLYD_GPU_GEFORCE`; `GLYD_GPU_A10`, an A10 and
   not an A10G, A40 or A6000). `glyd_gpu_mma_linear` and
   `glyd_gpu_mma12_linear` run a route's kernel (where glyd decodes the
-  matrix for cuBLAS, the prompt kernel; on Hopper and where K is not a
-  multiple of 64 they refuse those routes: decode it there; the WG
+  matrix for cuBLAS, the prompt kernel, on every GPU; where K is not a
+  multiple of 64, past 64 tokens (12-bit: also from `GLYD_DEC_MIN` tokens
+  where that is lower), they refuse those routes with
+  `cudaErrorNotSupported`: decode it there for a GEMM of your own; the WG
   route's done counters at least 1024, as `glyd_gpu_mma12_gemm_wg`'s);
   the glyd package's Linears take their routes from the library and
   multiply by `linear` in their one C call, so every caller routes alike.
-  C API version 4. The same bits (check_capi on an RTX 4080 SUPER: 6975
+  C API version 5 (4 with the 12-bit layout before split byte: builds of
+  main alone, refused). The same bits (check_capi on an RTX 4080 SUPER: 6975
   calls through both hosts, bit for bit, and 220044 routes as 0.24's
   rule) and the same speed (generate()
   eager, before the merge with 0.24: main's package and library and these

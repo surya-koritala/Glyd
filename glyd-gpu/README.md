@@ -18,9 +18,12 @@ gives the kernel glyd takes for a matrix and a token count on a GPU (as
 glyd.gpu's Linears take it), `linear` runs it.
 
 `pack` packs a matrix on the CPU in either layout, byte for byte as
-glyd.gpu's `pack_mma` and `pack_mma12` do on the GPU; `save` packs a bf16
+glyd.gpu's `pack_mma` and `pack_mma12` do on the GPU (the 12-bit layout in
+split byte: a weight's low byte as it is, its high byte a sign and an offset
+from the matrix's base `hb`); `save` packs a bf16
 checkpoint and saves it as glyd-v1 (glyd-v2 with a mixture of experts'
-packs, glyd-v3 in the 12-bit layout), byte for byte as `python -m glyd.gpu
+packs, glyd-v3 in the 12-bit layout, each pack's base as `"hb"` in
+glyd.json), byte for byte as `python -m glyd.gpu
 pack` saves it (Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe; other
 families: Python), and `verify` checks a saved one as `python -m glyd.gpu
 verify` does: each file's tensors back to back, each a pack's buffer or of a
@@ -34,12 +37,15 @@ checked, and each tensor saved as it is. The `glyd-gpu` command runs them
 
 Memory: a save holds the shard its writer writes and the one it fills
 (about 5 GB each) and at most a shard's worth of bf16 weights being packed
-past the one it waits for, whatever the threads (Qwen3-8B: 9.0-10.3 GB
-peak RSS on 8 threads); a verify on the CPU, a pack and its matrix a
-thread and one more (Qwen3-8B: 2.4 GB). On a Ryzen 9 7950X3D, 8 threads:
-Qwen3-8B packed at 2.05-2.08 GB/s of bf16 tiered, 2.36-3.03 in the 12-bit
-layout, and verified in 7.3-9.2 s
-([benchmarks/gpu/rtx4080s-rust-2026-09-28](../benchmarks/gpu/rtx4080s-rust-2026-09-28)).
+past the one it waits for (about 15 GB at most for a model of several
+shards; Qwen3-8B measured 11.4-13.6 GB peak RSS on 16 threads); a verify on the CPU, a pack and its matrix a
+thread and one more (Qwen3-8B: 2.5-2.7 GB). On the AWS dev machine (a
+g6.4xlarge: 16 vCPUs of an AMD EPYC 7R13), 16 threads:
+Qwen3-4B-Instruct-2507 packed at 1.58-1.60 GB/s of bf16 tiered and
+2.01-2.03 in the 12-bit layout (Qwen3-8B at 0.67-0.88, at the pace of the
+disk its shards were written to), and Qwen3-8B verified in 8.8-11.8 s; the
+same bytes as Python's for five models and eight tiny ones in both layouts
+([benchmarks/gpu/l4-rust-2026-09-29](../benchmarks/gpu/l4-rust-2026-09-29)).
 
 Its one dependency is sha2 (the store's).
 

@@ -1,0 +1,56 @@
+$ sh gpu/experimental/format/count.sh   (nvcc 13.0 -O3, cuobjdump 13.1; the box's CPU, 2026-09-28 17:39 EDT)
+# Each kernel's main loop (one step: a lane's 32 weights, 8 mma.sync; or one stage of a warp's 16 rows: 4 k-blocks,
+# 32 weights a lane, 16 mma.sync), by kind: alu (the integer pipe: LOP3, SHF, PRMT, IADD3, ISETP, SEL ...), fma
+# (IMAD, FADD ...: the FMA pipe), uni (the uniform datapath), mem, mma, ctl. The decode is a candidate's count less
+# its Raw's (the same loads, the words as fragments). Per k-block (8 weights a lane) = the step's / 4.
+count_80.sass  _Z10stage_loopI7RawRowsEvPKhlT_Pf                                      loop: alu 48 fma 34 uni 0 mem 38 mma 16 ctl 18 total 154 | inner loop: alu 5 fma 2 mem 32 ctl 1
+count_80.sass  _Z10stage_loopI8Sb12RowsEvPKhlT_Pf                                     loop: alu 74 fma 40 uni 0 mem 38 mma 16 ctl 18 total 186 | inner loop: alu 4 fma 3 mem 32 ctl 1
+count_80.sass  _Z10stage_loopI9Mma12RowsEvPKhlT_Pf                                    loop: alu 129 fma 54 uni 2 mem 38 mma 16 ctl 18 total 257 | inner loop: alu 4 fma 3 mem 32 ctl 1
+count_80.sass  _Z9step_loopI3V11EvPKhlT_Pf                                            loop: alu 61 fma 5 uni 0 mem 11 mma 8 ctl 1 total 86
+count_80.sass  _Z9step_loopI3RawI5Sb11TILb0EEEEvPKhlT_Pf                              loop: alu 12 fma 2 uni 0 mem 11 mma 8 ctl 1 total 34
+count_80.sass  _Z9step_loopI5Sb11xEvPKhlT_Pf                                          loop: alu 126 fma 38 uni 13 mem 47 mma 8 ctl 18 total 250 | inner loop: alu 51 fma 17 mem 32 ctl 1
+count_80.sass  _Z9step_loopI5Sb11TILb1EEEvPKhlT_Pf                                    loop: alu 45 fma 5 uni 0 mem 11 mma 8 ctl 1 total 70
+count_80.sass  _Z9step_loopI5Sb11TILb0EEEvPKhlT_Pf                                    loop: alu 45 fma 5 uni 0 mem 11 mma 8 ctl 1 total 70
+count_80.sass  _Z9step_loopI5Sb12fEvPKhlT_Pf                                          loop: alu 41 fma 4 uni 0 mem 12 mma 8 ctl 1 total 66
+count_80.sass  _Z9step_loopI4Sb12EvPKhlT_Pf                                           loop: alu 41 fma 4 uni 0 mem 12 mma 8 ctl 1 total 66
+count_80.sass  _Z9step_loopI3V12EvPKhlT_Pf                                            loop: alu 56 fma 5 uni 0 mem 12 mma 8 ctl 1 total 82
+count_80.sass  _Z9step_loopI3RawI5Mma12EEvPKhlT_Pf                                    loop: alu 7 fma 2 uni 0 mem 12 mma 8 ctl 1 total 30
+count_80.sass  _Z9step_loopI5Mma12EvPKhlT_Pf                                          loop: alu 95 fma 15 uni 12 mem 12 mma 8 ctl 1 total 143
+count_89.sass  _Z10stage_loopI7RawRowsEvPKhlT_Pf                                      loop: alu 48 fma 34 uni 0 mem 38 mma 16 ctl 18 total 154 | inner loop: alu 5 fma 2 mem 32 ctl 1
+count_89.sass  _Z10stage_loopI8Sb12RowsEvPKhlT_Pf                                     loop: alu 74 fma 40 uni 0 mem 38 mma 16 ctl 18 total 186 | inner loop: alu 4 fma 3 mem 32 ctl 1
+count_89.sass  _Z10stage_loopI9Mma12RowsEvPKhlT_Pf                                    loop: alu 129 fma 54 uni 2 mem 38 mma 16 ctl 18 total 257 | inner loop: alu 4 fma 3 mem 32 ctl 1
+count_89.sass  _Z9step_loopI3V11EvPKhlT_Pf                                            loop: alu 61 fma 5 uni 0 mem 11 mma 8 ctl 1 total 86
+count_89.sass  _Z9step_loopI3RawI5Sb11TILb0EEEEvPKhlT_Pf                              loop: alu 12 fma 2 uni 0 mem 11 mma 8 ctl 1 total 34
+count_89.sass  _Z9step_loopI5Sb11xEvPKhlT_Pf                                          loop: alu 126 fma 38 uni 13 mem 47 mma 8 ctl 18 total 250 | inner loop: alu 51 fma 17 mem 32 ctl 1
+count_89.sass  _Z9step_loopI5Sb11TILb1EEEvPKhlT_Pf                                    loop: alu 45 fma 5 uni 0 mem 11 mma 8 ctl 1 total 70
+count_89.sass  _Z9step_loopI5Sb11TILb0EEEvPKhlT_Pf                                    loop: alu 45 fma 5 uni 0 mem 11 mma 8 ctl 1 total 70
+count_89.sass  _Z9step_loopI5Sb12fEvPKhlT_Pf                                          loop: alu 41 fma 4 uni 0 mem 12 mma 8 ctl 1 total 66
+count_89.sass  _Z9step_loopI4Sb12EvPKhlT_Pf                                           loop: alu 41 fma 4 uni 0 mem 12 mma 8 ctl 1 total 66
+count_89.sass  _Z9step_loopI3V12EvPKhlT_Pf                                            loop: alu 56 fma 5 uni 0 mem 12 mma 8 ctl 1 total 82
+count_89.sass  _Z9step_loopI3RawI5Mma12EEvPKhlT_Pf                                    loop: alu 7 fma 2 uni 0 mem 12 mma 8 ctl 1 total 30
+count_89.sass  _Z9step_loopI5Mma12EvPKhlT_Pf                                          loop: alu 95 fma 16 uni 12 mem 12 mma 8 ctl 1 total 144
+count_90a.sass _Z10stage_loopI7RawRowsEvPKhlT_Pf                                      loop: alu 50 fma 29 uni 10 mem 38 mma 16 ctl 19 total 162 | inner loop: alu 5 fma 2 mem 32 ctl 1
+count_90a.sass _Z10stage_loopI8Sb12RowsEvPKhlT_Pf                                     loop: alu 80 fma 33 uni 11 mem 38 mma 16 ctl 18 total 196 | inner loop: alu 5 fma 2 mem 32 ctl 1
+count_90a.sass _Z10stage_loopI9Mma12RowsEvPKhlT_Pf                                    loop: alu 131 fma 39 uni 11 mem 38 mma 16 ctl 19 total 254 | inner loop: alu 4 fma 3 mem 32 ctl 1
+count_90a.sass _Z9step_loopI3V11EvPKhlT_Pf                                            loop: alu 61 fma 5 uni 6 mem 11 mma 8 ctl 2 total 93
+count_90a.sass _Z9step_loopI3RawI5Sb11TILb0EEEEvPKhlT_Pf                              loop: alu 12 fma 2 uni 0 mem 11 mma 8 ctl 2 total 35
+count_90a.sass _Z9step_loopI5Sb11xEvPKhlT_Pf                                          loop: alu 141 fma 35 uni 8 mem 47 mma 8 ctl 19 total 258 | inner loop: alu 51 fma 17 mem 32 ctl 1
+count_90a.sass _Z9step_loopI5Sb11TILb1EEEvPKhlT_Pf                                    loop: alu 38 fma 10 uni 0 mem 11 mma 8 ctl 2 total 69
+count_90a.sass _Z9step_loopI5Sb11TILb0EEEvPKhlT_Pf                                    loop: alu 45 fma 10 uni 0 mem 11 mma 8 ctl 2 total 76
+count_90a.sass _Z9step_loopI5Sb12fEvPKhlT_Pf                                          loop: alu 34 fma 4 uni 0 mem 12 mma 8 ctl 2 total 60
+count_90a.sass _Z9step_loopI4Sb12EvPKhlT_Pf                                           loop: alu 41 fma 4 uni 0 mem 12 mma 8 ctl 2 total 67
+count_90a.sass _Z9step_loopI3V12EvPKhlT_Pf                                            loop: alu 57 fma 4 uni 0 mem 12 mma 8 ctl 2 total 83
+count_90a.sass _Z9step_loopI3RawI5Mma12EEvPKhlT_Pf                                    loop: alu 7 fma 2 uni 0 mem 12 mma 8 ctl 2 total 31
+count_90a.sass _Z9step_loopI5Mma12EvPKhlT_Pf                                          loop: alu 97 fma 10 uni 6 mem 12 mma 8 ctl 2 total 135
+# The decode (a candidate's count less its Raw's), a step = 32 weights a lane, sm_80 / sm_89 / sm_90a:
+#   Mma12 (today)  alu 88 / 88 / 90   fma 13 / 14 / 8   (+ 12 / 12 / 6 uniform)  -> 22.0 alu + 3.3 fma a k-block (sm_89)
+#   V12            alu 49 / 49 / 50   fma 3 / 3 / 2                               -> 12.3 + 0.8
+#   Sb12           alu 34 / 34 / 34   fma 2 / 2 / 2                               ->  8.5 + 0.5
+#   Sb12f          alu 34 / 34 / 27   fma 2 / 2 / 2  (the base a constant-bank operand on sm_80/89: LOP3 takes it with an immediate only on sm_90a)
+#   Sb11           alu 33 / 33 / 33   fma 3 / 3 / 8   (no escapes)               ->  8.3 + 0.8
+#   Sb11f          alu 33 / 33 / 26
+#   V11            alu 49 / 49 / 49   fma 3 / 3 / 3   (no escapes)               -> 12.3 + 0.8
+#   Sb11x          Sb11 + its escapes through the warp's scratch: statically alu 114 fma 36 (and an unrolled entry loop, about
+#                  6 instructions an entry); run, at 15-27 entries a step (one pass), about 33 more a step: ~16.5 a k-block
+# Stage decodes (a warp's 16 rows, 4 k-blocks), less RawRows: Mma12Rows alu 81 / 81 / 81 fma 20 / 20 / 10 -> 20.3 alu + 2.5-5 fma
+# a k-block; Sb12Rows alu 26 / 26 / 30 fma 6 / 6 / 4 -> 6.5-7.5 alu + 1-1.5 fma.

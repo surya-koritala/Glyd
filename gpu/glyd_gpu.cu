@@ -863,22 +863,24 @@ struct Tiered {
     __device__ __forceinline__ void decode(const St& st, int lane, uint32_t* s2, const uint32_t* tab, uint32_t R[16]) const { decode_step(st, ts, blocks, lane, s2, tab, R); }
 };
 
-// The 12-bit layout (mma12): a weight's exponent a 4-bit code into the
-// tensor's 15 commonest exponents, code 15 its step's exception list. A
-// warp step: its lanes' codes, 16 bytes a lane (weight i at bits 4(i mod 8)
-// of word i / 8), then its 1024 sign-and-mantissa bytes as the tiered
-// layout's (two halves). An exception: its weight (lane * 32 + i) and its
-// exponent << 16; a step's run from exc_base[step] to exc_base[step + 1].
-// Four codes are three byte permutes: the low eight symbols' and the high
-// eight's by the codes' low three bits, then each byte from one or the
-// other by the fourth.
+// The 12-bit layout (mma12), split byte: a weight's bf16 as its low byte (the exponent's lowest bit and the 7
+// mantissa bits), stored as it is, and its high byte (the sign and the exponent's other 7 bits), coded in 4 bits: the
+// sign and an offset 0-7 from the matrix's base hb (the 8 values of the high byte's 7 bits from hb, 16 exponents,
+// holding the most weights; hb 0-120, in each byte of hb4). A warp step: its lanes' codes, 16 bytes a lane, then its
+// 1024 low bytes as two halves (every lane's first 16, then every lane's last 16). Code word q of a lane holds n-tiles
+// 2q and 2q + 1 (weights 8q to 8q + 7): 2q's codes in bits {7, 2, 1, 0} of byte j (sign, offset), 2q + 1's rotated
+// by 4 (its sign in bit 3 of byte j, its offset in bits 4-6 of byte j - 1 mod 4). A lane's 4 high bytes are then an
+// AND and an add (2q + 1's a funnel shift first), a pair of bf16s one byte permute of [high, low, high, low]. A weight
+// outside the 8 (whatever its exponent: zeros, subnormals, infinities alike) is an exception, coded with offset 0: its
+// entry, its weight (lane * 32 + i) and the byte to XOR into its high byte (hb ^ the exponent >> 1) << 16; a step's run
+// from exc_base[step] to exc_base[step + 1].
 constexpr int64_t STEP12 = 1536;
 
 struct Nib {
     const uint8_t* data;
     const uint32_t* exc;
     const int32_t* exc_base;
-    uint32_t sym[4];  // the codes' exponents, 4 a word (code 15: 0)
+    uint32_t hb4;  // the high bytes' base, hb in each byte
     struct St {
         uint32_t nb[4], sw[8];
         int e0, e1;
@@ -895,36 +897,47 @@ struct Nib {
         st.e0 = __ldg(exc_base + step);
         st.e1 = __ldg(exc_base + step + 1);
     }
-    // A lane's codes (nb, 4 words) as its exponents, 4 a word (ew).
-    __device__ __forceinline__ void exponents(const uint32_t nb[4], uint32_t ew[8]) const {
+    // Code word q's high bytes: n-tile 2q's (h = 0), 2q + 1's (h = 1).
+    static __device__ __forceinline__ uint32_t high1(uint32_t nb, uint32_t hb4, int h) { return ((h ? __funnelshift_l(nb, nb, 4) : nb) & 0x87878787u) + hb4; }
+    // A lane's codes (nb, 4 words) as its high bytes, 4 a word (H).
+    __device__ __forceinline__ void high(const uint32_t nb[4], uint32_t H[8]) const {
 #pragma unroll
-        for (int q = 0; q < 8; q++) {
-            uint32_t n = nb[q >> 1] >> (16 * (q & 1)), n7 = n & 0x7777u;
-            ew[q] = __byte_perm(__byte_perm(sym[0], sym[1], n7), __byte_perm(sym[2], sym[3], n7), ((n >> 1) & 0x4444u) | 0x3210u);
-        }
+        for (int q = 0; q < 8; q++) H[q] = high1(nb[q >> 1], hb4, q & 1);
     }
-    // The step's exceptions, entries e0 to e1 (the same run for every lane of the warp; entry k is at(k)): each
-    // word takes its byte where the exception is this lane's and in it.
-    template <class At>
-    static __device__ __forceinline__ void patch(At at, int e0, int e1, int lane, uint32_t ew[8]) {
-        for (int k = e0; k < e1; k++) {
-            uint32_t x = at(k), i = x & 31, sel = 0x3210u + ((4u - (i & 3)) << (4 * (i & 3)));
+    // The step's exceptions, entries e0 to e1 (the same run for every lane of the warp; entry k is at(k)): each XORs
+    // its byte into this lane's word where the weight is this lane's. U: the loop unrolled U times, 0 as nvcc chooses
+    // (4 a pass in these kernels, as it did the 12-bit layout's before split byte). An entry a pass (1) where unrolled it
+    // spilled (mma_moe_kernel's 64-token products with an activation, sm_80: main's 4 spill instructions, 12
+    // unrolled, none so), and 2 in mma12_ws_kernel, as nvcc unrolled it there before split byte: kept a pass an entry,
+    // the L4's prompts took 1-2% longer (2026-09-29).
+    template <int U = 0, class At>
+    static __device__ __forceinline__ void patch(At at, int e0, int e1, int lane, uint32_t H[8]) {
+        auto one = [&](int k) {
+            uint32_t x = at(k), i = x & 31, v = (x >> 16 & 0xFFu) << (8 * (i & 3));
             uint32_t w = (int)((x >> 5) & 31) == lane ? i >> 2 : 8u;
 #pragma unroll
-            for (int q = 0; q < 8; q++) {
-                uint32_t v = __byte_perm(ew[q], x >> 16, sel);
-                ew[q] = w == (uint32_t)q ? v : ew[q];
-            }
+            for (int q = 0; q < 8; q++) H[q] ^= w == (uint32_t)q ? v : 0u;
+        };
+        if constexpr (U == 0) {
+            for (int k = e0; k < e1; k++) one(k);
+        } else {
+#pragma unroll U
+            for (int k = e0; k < e1; k++) one(k);
         }
+    }
+    // Pairs: [high, low, high, low], one byte permute each (a lane's low bytes L, 4 a word).
+    static __device__ __forceinline__ void pairs(const uint32_t L[8], const uint32_t H[8], uint32_t R[16]) {
+#pragma unroll
+        for (int p = 0; p < 16; p++) R[p] = __byte_perm(L[p >> 1], H[p >> 1], (p & 1) ? 0x7362 : 0x5140);
     }
     // A step's decode where its block's steps have many exceptions (mma_gemm_kernel's heavy blocks): past 4 in the
     // step, through the warp's scratch (s2: 1 KB, a lane's 8 words, zero between steps) the lanes take the run's
-    // entries 32 at a time, each setting its exponent byte there, which every lane then adds to its words (an
-    // exception's code, 15, decodes to 0) and clears, as decode12_rows does; else as decode.
+    // entries 32 at a time, each setting its byte there, which every lane then XORs into its words and clears, as
+    // decode12_rows does; else as decode.
     __device__ __forceinline__ void decode_x(const St& st, int lane, uint32_t* s2, uint32_t R[16]) const {
         if (st.e1 - st.e0 <= 4) return decode(st, lane, nullptr, nullptr, R);
-        uint32_t ew[8];
-        exponents(st.nb, ew);
+        uint32_t H[8];
+        high(st.nb, H);
         for (int k = st.e0 + lane; k < st.e1; k += 32) {
             uint32_t x = __ldg(exc + k), i = x & 31;
             ((uint8_t*)s2)[(((x >> 5) & 31) * 8 + (i >> 2)) * 4 + (i & 3)] = (uint8_t)(x >> 16);
@@ -932,17 +945,18 @@ struct Nib {
         __syncwarp();
         uint4* xl = (uint4*)(s2 + 8 * lane);
         uint4 a = xl[0], b = xl[1];
-        ew[0] |= a.x, ew[1] |= a.y, ew[2] |= a.z, ew[3] |= a.w, ew[4] |= b.x, ew[5] |= b.y, ew[6] |= b.z, ew[7] |= b.w;
+        H[0] ^= a.x, H[1] ^= a.y, H[2] ^= a.z, H[3] ^= a.w, H[4] ^= b.x, H[5] ^= b.y, H[6] ^= b.z, H[7] ^= b.w;
         xl[0] = xl[1] = make_uint4(0u, 0u, 0u, 0u);
         __syncwarp();
-        pairs(st.sw, ew, R);
+        pairs(st.sw, H, R);
     }
+    template <int U = 0>  // patch's unrolling
     __device__ __forceinline__ void decode(const St& st, int lane, uint32_t*, const uint32_t*, uint32_t R[16]) const {
-        uint32_t ew[8];
-        exponents(st.nb, ew);
+        uint32_t H[8];
+        high(st.nb, H);
         const uint32_t* e = exc;
-        patch([e](int k) { return __ldg(e + k); }, st.e0, st.e1, lane, ew);
-        pairs(st.sw, ew, R);
+        patch<U>([e](int k) { return __ldg(e + k); }, st.e0, st.e1, lane, H);
+        pairs(st.sw, H, R);
     }
 };
 
@@ -968,7 +982,7 @@ __device__ __forceinline__ int64_t block_of_step(int64_t x, int64_t nb, int64_t 
 // A warp's steps s0 to s1 of a row block (W's steps base + s): acc += X's rows by the step's 64 rows, 16 MT tokens
 // (xr: this thread's rows g and g + 8 of each m-tile, at X + row K + 2t; null past the tokens). The next step's
 // loads, W's and then the inputs, are issued before this step's decode. mma_gemm_kernel's and mma_moe_kernel's.
-template <class Fmt, int MT, bool X = false>  // X: decode_x (the 12-bit layout's heavy blocks)
+template <class Fmt, int MT, bool X = false, int U = 0>  // X: decode_x (the 12-bit layout's heavy blocks); U: Nib::patch's unrolling
 __device__ __forceinline__ void mma_steps(const Fmt& f, int64_t base, int64_t s0, int64_t s1, const __nv_bfloat16* const (&xr)[MT][2], int lane, uint32_t* s2, const uint32_t* tab, float (&acc)[MT][8][4]) {
     typename Fmt::St st;
     uint32_t a[MT][4];
@@ -993,6 +1007,7 @@ __device__ __forceinline__ void mma_steps(const Fmt& f, int64_t base, int64_t s0
         if (s + 1 < s1) load(s + 1);
         uint32_t R[16];
         if constexpr (X) f.decode_x(cur, lane, s2, R);
+        else if constexpr (U != 0) f.template decode<U>(cur, lane, s2, tab, R);
         else f.decode(cur, lane, s2, tab, R);
 #pragma unroll
         for (int mt = 0; mt < MT; mt++)
@@ -1618,8 +1633,8 @@ __global__ void __launch_bounds__(Big<CW, PW, NB, RBB, CR>::THREADS, 1) mma_gemm
 // wgmma's 128-byte swizzle (a row's 16-byte chunk c at chunk c ^ (row mod
 // 8)); each stage lands on an mbarrier, NS of them in flight. WG consumer
 // warpgroups, a row block each: a warp decodes its 16 rows of the stage's
-// 4 steps (its quarter of each: a word of codes and 8 sign-and-mantissa
-// bytes a lane) into A fragments, then 4 wgmma of 64 rows by NT tokens by
+// 4 steps (its quarter of each: a word of codes and 8 low bytes a lane)
+// into A fragments, then 4 wgmma of 64 rows by NT tokens by
 // 16 columns. The work (units by stages) is split evenly over the blocks
 // (stream-K, as mma_gemm_kernel's): a unit covered by several blocks is
 // summed by the last to finish, in block order.
@@ -1743,14 +1758,14 @@ __device__ __forceinline__ void wgmma4_rs(float (&d)[64], const uint32_t (&a)[4]
 
 // Shared by the TMA kernel and mma12_mid_kernel. A warp's 16 rows (16w to 16w + 15) of a row block's 4
 // steps (a stage), from shared memory into mma's A fragments, a register set a step: of each lane, the
-// codes' word w and the sign-and-mantissa bytes 8 (w mod 2) to 8 (w mod 2) + 7 of half w / 2 (its rows
-// g and g + 8); then the stage's run of exceptions, one run for the 4 steps (se: its copy, whose first
-// entry is ea; ea < 0: read from global memory; eb: exc_base at the 4 steps and the next). The lanes take
-// the run's entries 32 at a time, each in this warp's rows setting its exponent byte in the warp's scratch
-// (xw: a lane's 8 words, 256 in all, zero between stages; an exception's code, 15, decodes to 0), which
-// every lane then adds to its words and clears: a stage's cost grows by a pass per 32 of its exceptions, not
-// by an entry per lane (a few layers' matrices have dozens a stage; past the stage's copy, 256 entries in the
-// TMA kernel and 128 in mma12_mid_kernel, they are read from global memory).
+// codes' word w and the low bytes 8 (w mod 2) to 8 (w mod 2) + 7 of half w / 2 (its rows g and g + 8);
+// then the stage's run of exceptions, one run for the 4 steps (se: its copy, whose first entry is ea; ea <
+// 0: read from global memory; eb: exc_base at the 4 steps and the next). The lanes take the run's entries
+// 32 at a time, each in this warp's rows setting its byte in the warp's scratch (xw: a lane's 8 words, 256
+// in all, zero between stages), which every lane then XORs into its high bytes and clears: a stage's cost
+// grows by a pass per 32 of its exceptions, not by an entry per lane (a few layers' matrices have dozens a
+// stage; past the stage's copy, 256 entries in the TMA kernel and 128 in mma12_mid_kernel, they are read
+// from global memory).
 __device__ __forceinline__ void decode12_rows(const Nib& f, const uint8_t* sp, const uint32_t* se, const int (&eb)[5], int ea, int lane, int w, uint32_t* xw, uint32_t (&A)[4][4]) {
     uint32_t nw[4];
     uint2 sw[4];
@@ -1760,12 +1775,9 @@ __device__ __forceinline__ void decode12_rows(const Nib& f, const uint8_t* sp, c
         nw[kk] = *(const uint32_t*)(q + 16 * lane + 4 * w);
         sw[kk] = *(const uint2*)(q + 512 + 512 * (w >> 1) + 16 * lane + 8 * (w & 1));
     }
-    uint32_t ew[8];  // step kk's exponent words 2w and 2w + 1 of each lane: ew[2kk], ew[2kk + 1]
+    uint32_t ew[8];  // step kk's high-byte words 2w and 2w + 1 of each lane: ew[2kk], ew[2kk + 1]
 #pragma unroll
-    for (int q = 0; q < 8; q++) {
-        uint32_t c = nw[q >> 1] >> (16 * (q & 1)), c7 = c & 0x7777u;
-        ew[q] = __byte_perm(__byte_perm(f.sym[0], f.sym[1], c7), __byte_perm(f.sym[2], f.sym[3], c7), ((c >> 1) & 0x4444u) | 0x3210u);
-    }
+    for (int q = 0; q < 8; q++) ew[q] = Nib::high1(nw[q >> 1], f.hb4, q & 1);
     // Entry k is step kk's while eb[kk] <= k < eb[kk + 1]; weight i of lane (x >> 5) mod 32, byte i mod 4 of its
     // word 2 kk + (i / 4 mod 2) here where i / 8 is this warp's.
     if (eb[4] > eb[0]) {
@@ -1782,7 +1794,7 @@ __device__ __forceinline__ void decode12_rows(const Nib& f, const uint8_t* sp, c
             __syncwarp();
             uint4* xl = (uint4*)(xw + 8 * lane);
             uint4 a = xl[0], b = xl[1];
-            ew[0] |= a.x, ew[1] |= a.y, ew[2] |= a.z, ew[3] |= a.w, ew[4] |= b.x, ew[5] |= b.y, ew[6] |= b.z, ew[7] |= b.w;
+            ew[0] ^= a.x, ew[1] ^= a.y, ew[2] ^= a.z, ew[3] ^= a.w, ew[4] ^= b.x, ew[5] ^= b.y, ew[6] ^= b.z, ew[7] ^= b.w;
             xl[0] = xl[1] = make_uint4(0u, 0u, 0u, 0u);
             __syncwarp();
         }
@@ -1790,12 +1802,10 @@ __device__ __forceinline__ void decode12_rows(const Nib& f, const uint8_t* sp, c
     // A fragments: rows g and g + 8 (words 2w and 2w + 1), columns 2t and 8 + 2t (bytes 0-1 and 2-3).
 #pragma unroll
     for (int kk = 0; kk < 4; kk++) {
-        uint32_t y0 = __byte_perm(sw[kk].x, ew[2 * kk], 0x5140), y1 = __byte_perm(sw[kk].y, ew[2 * kk + 1], 0x5140);
-        uint32_t y2 = __byte_perm(sw[kk].x, ew[2 * kk], 0x7362), y3 = __byte_perm(sw[kk].y, ew[2 * kk + 1], 0x7362);
-        A[kk][0] = __funnelshift_r(y0, y0, 1);
-        A[kk][1] = __funnelshift_r(y1, y1, 1);
-        A[kk][2] = __funnelshift_r(y2, y2, 1);
-        A[kk][3] = __funnelshift_r(y3, y3, 1);
+        A[kk][0] = __byte_perm(sw[kk].x, ew[2 * kk], 0x5140);
+        A[kk][1] = __byte_perm(sw[kk].y, ew[2 * kk + 1], 0x5140);
+        A[kk][2] = __byte_perm(sw[kk].x, ew[2 * kk], 0x7362);
+        A[kk][3] = __byte_perm(sw[kk].y, ew[2 * kk + 1], 0x7362);
     }
 }
 
@@ -2070,7 +2080,7 @@ template <int NT, int CL> struct Wgp12 {
 };
 
 // A consumer warp's stage (its 16 rows of a row block's 4 steps at sp, as decode12_rows reads them): the codes' word w
-// and 8 sign-and-mantissa bytes of each step.
+// and 8 low bytes of each step.
 __device__ __forceinline__ void stage12(const uint8_t* sp, int lane, int w, uint32_t (&nw)[4], uint2 (&sw)[4]) {
 #pragma unroll
     for (int kk = 0; kk < 4; kk++) {
@@ -2081,7 +2091,7 @@ __device__ __forceinline__ void stage12(const uint8_t* sp, int lane, int w, uint
 }
 
 // A stage's exceptions in a warp's rows (bs: the run's bounds at the 4 steps and the next, then ea: the copy's first
-// entry, -1 where read from global memory) as bytes to add to its exponent words (xe[2kk], xe[2kk + 1]: step kk's),
+// entry, -1 where read from global memory) as bytes to XOR into its high-byte words (xe[2kk], xe[2kk + 1]: step kk's),
 // through the warp's scratch (xw: 8 words a lane, zero between stages), decode12_rows's plan: a pass per 32 entries.
 __device__ __forceinline__ void stage12_exc(const Nib& f, const uint32_t* se, const int* bs, int lane, int w, uint32_t* xw, uint32_t (&xe)[8]) {
     int eb[5];
@@ -2111,24 +2121,13 @@ __device__ __forceinline__ void stage12_exc(const Nib& f, const uint32_t* se, co
     }
 }
 
-// A byte permute whose selector's nibbles are 0 to 7 (__byte_perm's masks them first: one more instruction).
-__device__ __forceinline__ uint32_t prmt7(uint32_t a, uint32_t b, uint32_t s) {
-    uint32_t r;
-    asm("prmt.b32 %0, %1, %2, %3;" : "=r"(r) : "r"(a), "r"(b), "r"(s));
-    return r;
-}
-
 // Step kk of a stage as a warp's A fragments (rows g and g + 8 of its 16, columns 2t and 8 + 2t), from stage12's.
 __device__ __forceinline__ void step12(const Nib& f, uint32_t nw, uint2 sw, uint32_t x0, uint32_t x1, uint32_t (&A)[4]) {
-    uint32_t c7 = nw & 0x77777777u, sel = ((nw >> 1) & 0x44444444u) | 0x32103210u, c7h = c7 >> 16;
-    uint32_t e0 = prmt7(prmt7(f.sym[0], f.sym[1], c7), prmt7(f.sym[2], f.sym[3], c7), sel) | x0;
-    uint32_t e1 = prmt7(prmt7(f.sym[0], f.sym[1], c7h), prmt7(f.sym[2], f.sym[3], c7h), sel >> 16) | x1;
-    uint32_t y0 = __byte_perm(sw.x, e0, 0x5140), y1 = __byte_perm(sw.y, e1, 0x5140);
-    uint32_t y2 = __byte_perm(sw.x, e0, 0x7362), y3 = __byte_perm(sw.y, e1, 0x7362);
-    A[0] = __funnelshift_r(y0, y0, 1);
-    A[1] = __funnelshift_r(y1, y1, 1);
-    A[2] = __funnelshift_r(y2, y2, 1);
-    A[3] = __funnelshift_r(y3, y3, 1);
+    uint32_t e0 = Nib::high1(nw, f.hb4, 0) ^ x0, e1 = Nib::high1(nw, f.hb4, 1) ^ x1;
+    A[0] = __byte_perm(sw.x, e0, 0x5140);
+    A[1] = __byte_perm(sw.y, e1, 0x5140);
+    A[2] = __byte_perm(sw.x, e0, 0x7362);
+    A[3] = __byte_perm(sw.y, e1, 0x7362);
 }
 
 #if defined(__CUDA_ARCH_FEAT_SM90_ALL)
@@ -2619,12 +2618,12 @@ __global__ void __launch_bounds__(Ws12<CW, NB, NW, RBB, MT>::THREADS, 1) mma12_w
             const uint8_t* q = gw + wsl * C::WSLOT;
             uint4 c4 = *(const uint4*)(q + 16 * lane), x0 = *(const uint4*)(q + 512 + 16 * lane), x1 = *(const uint4*)(q + 1024 + 16 * lane);
             uint32_t nbw[4] = {c4.x, c4.y, c4.z, c4.w}, sw[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w}, ew[8];
-            f.exponents(nbw, ew);
+            f.high(nbw, ew);
             int4 bd = *(const int4*)(q + STEP12 + C::EB);
             const uint32_t *se = (const uint32_t*)(q + STEP12), *ge = f.exc;
-            Nib::patch([&](int k) { return bd.z >= 0 ? se[k - bd.z] : __ldg(ge + k); }, bd.x, bd.y, lane, ew);
+            Nib::patch<2>([&](int k) { return bd.z >= 0 ? se[k - bd.z] : __ldg(ge + k); }, bd.x, bd.y, lane, ew);
             uint32_t R[16];
-            pairs(sw, ew, R);
+            Nib::pairs(sw, ew, R);
             uint4* d = bdst + bsl * (C::DSLOT / 16);
 #pragma unroll
             for (int qq = 0; qq < 4; qq++) d[qq * 32] = make_uint4(R[4 * qq], R[4 * qq + 1], R[4 * qq + 2], R[4 * qq + 3]);
@@ -2879,7 +2878,12 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_moe_kernel(Fmt f, in
             for (int nn = 0; nn < 8; nn++)
 #pragma unroll
                 for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
-        mma_steps<Fmt, MT>(f, base, s0, s1, xr, lane, s2, tab, acc);
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
+        constexpr int U = std::is_same_v<Fmt, Nib> && MT == 4 && ACT ? 1 : 0;  // an exception a pass: see Nib::patch
+#else
+        constexpr int U = 0;
+#endif
+        mma_steps<Fmt, MT, false, U>(f, base, s0, s1, xr, lane, s2, tab, acc);
         warp_sums<MT>(acc, red, warp, g, t);
         for (int i = threadIdx.x; i < n * 64; i += 256) {
             int r = i / 64, c = i % 64;
@@ -3403,7 +3407,18 @@ GLYD_GPU_API int glyd_gpu_fast_bgemv(const uint8_t* sm, const uint32_t* planes, 
     return cudaGetLastError();
 }
 
-// The mma layouts (tiered: tiers[3]; 12-bit: sym[4]). Y [M, O] = X W^T (+ bias) for up to 64 tokens: as
+// A 12-bit pack's words (sym, host): sym[0] the high bytes' base hb (0-120) in each of its bytes, sym[1-3] zero; false
+// otherwise (cudaErrorInvalidValue). A pack of the 12-bit layout before split byte (0.24's, v0.19-v0.24) held its 15
+// commonest exponents there, 4 distinct ones in sym[0]: refused, never decoded as this layout.
+static bool nib12(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t* sym, Nib& f) {
+    if (!sym) return false;
+    uint32_t hb = sym[0] & 0xFFu;
+    if (sym[0] != hb * 0x01010101u || hb > 120 || sym[1] || sym[2] || sym[3]) return false;
+    f = Nib{data, exc, exc_base, sym[0]};
+    return true;
+}
+
+// The mma layouts (tiered: tiers[3]; 12-bit: sym[4], its base). Y [M, O] = X W^T (+ bias) for up to 64 tokens: as
 // many blocks as fit at once, but at least 32 steps (4 a warp) a block; the workspace: their parts,
 // [blocks + O / 64][M][64] floats; done: O / 64. need: set to the workspace's bytes, nothing launched.
 template <class Fmt, int MT>
@@ -3444,7 +3459,9 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_workspace(int64_t O, int64_t K, int64_t M, 
 }
 
 GLYD_GPU_API int glyd_gpu_mma12_gemm(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
-    return mma_gemm_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, O, K, x, M, bias, y, workspace, workspace_bytes, done, cs, nullptr);
+    Nib f;
+    if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
+    return mma_gemm_run(f, O, K, x, M, bias, y, workspace, workspace_bytes, done, cs, nullptr);
 }
 
 // Many tokens (a prompt), K a multiple of 64, x 16-byte aligned, but on GeForce Ada: mma_gemm_big_kernel, K split
@@ -3555,7 +3572,9 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_big_workspace(int64_t O, int64_t K, int64_t
 }
 
 GLYD_GPU_API int glyd_gpu_mma12_gemm_big(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t variant, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
-    return mma_gemm_big_any(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, O, K, x, M, bias, y, variant, workspace, workspace_bytes, done, cs, nullptr);
+    Nib f;
+    if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
+    return mma_gemm_big_any(f, O, K, x, M, bias, y, variant, workspace, workspace_bytes, done, cs, nullptr);
 }
 
 // Many tokens on Ampere and Ada, the 12-bit layout: 64 tokens a launch (x + 64c on), in the smallest
@@ -3619,7 +3638,8 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_mid_workspace(int64_t O, int64_t K, int64_t
 }
 
 GLYD_GPU_API int glyd_gpu_mma12_gemm_mid(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
-    Nib f{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}};
+    Nib f;
+    if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
     size_t need = 0;
     if (int r = mma12_mid_any(f, O, K, x, M, bias, y, nullptr, nullptr, cs, &need)) return r;
     if (!fits(workspace, workspace_bytes, need) || !done) return cudaErrorInvalidValue;
@@ -3762,7 +3782,8 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_wg_workspace(int64_t O, int64_t K, int64_t 
 }
 
 GLYD_GPU_API int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
-    Nib f{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}};
+    Nib f;
+    if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
     size_t need = 0;
     if (int r = mma12_wg_any(f, O, K, x, M, bias, y, nullptr, nullptr, cs, &need)) return r;
     if (!fits(workspace, workspace_bytes, need) || !done) return cudaErrorInvalidValue;
@@ -3885,9 +3906,10 @@ static int staged_run(int (*any)(Nib, int64_t, int64_t, const uint16_t*, int64_t
 }
 
 // Y [M, O] = X W^T (+ bias) by a route (route_for's; negative: the current GPU's for M): its kernel; DECODE and
-// AHEAD, where glyd.gpu decodes W for a GEMM of its own, the prompt kernel, but on Hopper (none measured there) and
-// where K is not a multiple of 64 (the prompt kernel's blocks): cudaErrorNotSupported, decode W. need: set to the
-// workspace's bytes, nothing launched.
+// AHEAD, where glyd.gpu decodes W for a GEMM of its own (cuBLAS, which this library does not call), the prompt kernel
+// on every GPU (Hopper's too, where glyd.gpu's own prompts take cuBLAS: not measured there); but where K is not a
+// multiple of 64 no kernel here takes them (the prompt kernel's blocks): cudaErrorNotSupported, the caller decodes W
+// for a GEMM of its own (glyd_gpu.h). need: set to the workspace's bytes, nothing launched.
 template <class Fmt>
 static int mma_linear_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t route, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
     constexpr bool twelve = std::is_same_v<Fmt, Nib>;
@@ -3903,7 +3925,7 @@ static int mma_linear_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_
         return cudaErrorInvalidValue;  // the 12-bit layout's alone
     case GLYD_GPU_ROUTE_DECODE:
     case GLYD_GPU_ROUTE_AHEAD:
-        if (gpu % 1000 == 90 || K % 64) return cudaErrorNotSupported;
+        if (K % 64) return cudaErrorNotSupported;
         [[fallthrough]];
     case GLYD_GPU_ROUTE_BIG:
         return mma_gemm_big_any(f, O, K, x, M, bias, y, 0, ws, ws_bytes, done, cs, need);
@@ -3924,7 +3946,9 @@ GLYD_GPU_API int glyd_gpu_mma12_linear_workspace(int64_t O, int64_t K, int64_t M
 }
 
 GLYD_GPU_API int glyd_gpu_mma12_linear(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t route, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
-    return mma_linear_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, O, K, x, M, bias, y, route, workspace, workspace_bytes, done, cs, nullptr);
+    Nib f;
+    if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
+    return mma_linear_run(f, O, K, x, M, bias, y, route, workspace, workspace_bytes, done, cs, nullptr);
 }
 
 // A stream held for ns nanoseconds, by one thread: a decode ahead launched after it, beside a product that starts
@@ -3973,7 +3997,9 @@ GLYD_GPU_API int glyd_gpu_mma_unpack(const uint8_t* data, const uint8_t* blocks,
 }
 
 GLYD_GPU_API int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs) {
-    return mma_unpack_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, K, row0, rows, out, warps, cs);
+    Nib f;
+    if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
+    return mma_unpack_run(f, K, row0, rows, out, warps, cs);
 }
 
 // Exact, a mixture of experts' layer (its E matrices [O, K] stacked): the experts the plan of P pairs hits back to
@@ -3992,7 +4018,9 @@ GLYD_GPU_API int glyd_gpu_mma_moe_unpack(const uint8_t* data, const uint8_t* blo
 }
 
 GLYD_GPU_API int glyd_gpu_mma12_moe_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t E, int64_t O, int64_t K, int64_t P, const int32_t* plan, uint16_t* out, cudaStream_t cs) {
-    return mma_moe_unpack_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, E, O, K, P, plan, out, cs);
+    Nib f;
+    if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
+    return mma_moe_unpack_run(f, E, O, K, P, plan, out, cs);
 }
 
 // A mixture-of-experts layer (the E experts' [O, K] matrices stacked, [E O, K]). moe_route: the plan [2 + 2E + P]
@@ -4094,7 +4122,9 @@ GLYD_GPU_API int glyd_gpu_mma12_moe_workspace(int64_t E, int64_t O, int64_t K, i
 }
 
 GLYD_GPU_API int glyd_gpu_mma12_moe(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t E, int64_t O, int64_t K, const uint16_t* x, int64_t T, int64_t k, int64_t gather, const int32_t* plan, int64_t act, const uint16_t* bias, const void* w, int64_t wf32, const int64_t* ids, uint16_t* y, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs) {
-    return mma_moe_run(Nib{data, exc, exc_base, {sym[0], sym[1], sym[2], sym[3]}}, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
+    Nib f;
+    if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
+    return mma_moe_run(f, E, O, K, x, T, k, gather, plan, act, bias, w, wf32, ids, y, workspace, workspace_bytes, done, cs, nullptr);
 }
 
 // Attention for one new token a sequence over the KV cache in the mma layout (gpu/kv.py): q [pairs x G, D]
@@ -4228,7 +4258,7 @@ void mma_gemm(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base
 
 void mma12_gemm(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
     uint32_t s[4];
-    words(sym, 4, s, "four words of symbols");
+    words(sym, 4, s, "the 12-bit layout's four words (its base)");
     const c10::cuda::CUDAGuard guard(data.device());
     int64_t M = x.size(0);
     TORCH_CHECK(O % 64 == 0 && K % 16 == 0 && M <= 64 && x.is_contiguous() && x.size(1) == K, "O a multiple of 64, K of 16, up to 64 tokens, X contiguous [M, K]");
@@ -4254,7 +4284,7 @@ void mma_gemm_big(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_
 
 void mma12_gemm_big(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t variant) {
     uint32_t s[4];
-    words(sym, 4, s, "four words of symbols");
+    words(sym, 4, s, "the 12-bit layout's four words (its base)");
     const c10::cuda::CUDAGuard guard(data.device());
     TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
     int64_t M = x.size(0);
@@ -4268,7 +4298,7 @@ void mma12_gemm_big(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_bas
 // Many tokens on Ampere and Ada (to 64 a launch, in chunks past that).
 void mma12_gemm_mid(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
     uint32_t s[4];
-    words(sym, 4, s, "four words of symbols");
+    words(sym, 4, s, "the 12-bit layout's four words (its base)");
     const c10::cuda::CUDAGuard guard(data.device());
     TORCH_CHECK(at::cuda::getCurrentDeviceProperties()->major >= 8, "mma12_gemm_mid: Ampere or later");
     TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
@@ -4283,7 +4313,7 @@ void mma12_gemm_mid(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_bas
 
 void mma12_gemm_wg(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y) {
     uint32_t s[4];
-    words(sym, 4, s, "four words of symbols");
+    words(sym, 4, s, "the 12-bit layout's four words (its base)");
     const c10::cuda::CUDAGuard guard(data.device());
     TORCH_CHECK(at::cuda::getCurrentDeviceProperties()->major == 9 && at::cuda::getCurrentDeviceProperties()->minor == 0, "wgmma: Hopper (compute capability 9.0) alone");
     TORCH_CHECK(O % 64 == 0 && K % 64 == 0 && x.is_contiguous() && x.size(1) == K && (uintptr_t)x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]");
@@ -4333,7 +4363,7 @@ void mma_linear(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_ba
 
 void mma12_linear(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t O, int64_t K, torch::Tensor x, torch::Tensor bias, torch::Tensor y, int64_t route) {
     uint32_t s[4];
-    words(sym, 4, s, "four words of symbols");
+    words(sym, 4, s, "the 12-bit layout's four words (its base)");
     const c10::cuda::CUDAGuard guard(data.device());
     TORCH_CHECK(O % 64 == 0 && K % 16 == 0 && x.is_contiguous() && x.size(1) == K, "O a multiple of 64, K of 16, X contiguous [M, K]");
     int64_t M = x.size(0);
@@ -4356,7 +4386,7 @@ void hold(int64_t ns) { ok(glyd_gpu_hold(ns, current_stream()), "hold"); }
 
 void mma12_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t K, int64_t row0, int64_t rows, torch::Tensor out, int64_t warps) {
     uint32_t s[4];
-    words(sym, 4, s, "four words of symbols");
+    words(sym, 4, s, "the 12-bit layout's four words (its base)");
     const c10::cuda::CUDAGuard guard(data.device());
     TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64");
     ok(glyd_gpu_mma12_unpack(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, K, row0, rows, ptr<uint16_t>(out), warps, current_stream()), "mma12_unpack");
@@ -4372,7 +4402,7 @@ void mma_moe_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor bloc
 
 void mma12_moe_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t E, int64_t O, int64_t K, int64_t P, torch::Tensor plan, torch::Tensor out) {
     uint32_t s[4];
-    words(sym, 4, s, "four words of symbols");
+    words(sym, 4, s, "the 12-bit layout's four words (its base)");
     const c10::cuda::CUDAGuard guard(data.device());
     TORCH_CHECK(plan.scalar_type() == torch::kInt32 && out.numel() >= E * O * K && plan.device() == data.device() && out.device() == data.device(), "plan int32, out [E O, K], on the pack's GPU");
     ok(glyd_gpu_mma12_moe_unpack(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, E, O, K, P, ptr<int32_t>(plan), ptr<uint16_t>(out), current_stream()), "mma12_moe_unpack");
@@ -4412,7 +4442,7 @@ void mma_moe(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base,
 
 void mma12_moe(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t E, int64_t O, int64_t K, torch::Tensor x, int64_t k, int64_t gather, torch::Tensor plan, int64_t act, torch::Tensor bias, torch::Tensor w, torch::Tensor ids, torch::Tensor y) {
     uint32_t s[4];
-    words(sym, 4, s, "four words of symbols");
+    words(sym, 4, s, "the 12-bit layout's four words (its base)");
     moe_product("mma12_moe", [&](int64_t T, const void* wp, bool wf32, void* ws, size_t bytes, int* done) {
         ok(glyd_gpu_mma12_moe(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, E, O, K, ptr<uint16_t>(x), T, k, gather, ptr<int32_t>(plan), act, opt(bias), wp, wf32, ids.numel() ? ptr<int64_t>(ids) : nullptr, ptr<uint16_t>(y), ws, bytes, done, current_stream()), "mma12_moe");
     }, data, E, O, K, x, k, gather, plan, act, bias, w, ids, y);

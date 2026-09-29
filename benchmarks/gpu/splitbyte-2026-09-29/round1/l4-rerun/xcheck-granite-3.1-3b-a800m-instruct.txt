@@ -1,0 +1,5 @@
+ibm-granite/granite-3.1-3b-a800m-instruct: 192 tensors (3.221 B weights; 0 others left out) decoded bit for bit in both layouts; 12-bit 12.074 bits a weight, 1344 exceptions a million; split byte 12.070, 1205; layers [0, 1, 2, 16, 31]: 3052 calls the same bits (8 s)
+calls: mma_gemm 200, mma_gemm_big variant 0 160, mma_gemm_big variant 1 160, mma_gemm_big variant 2 160, mma_gemm_big variant 3 160, mma_gemm_mid 320, mma_linear route -1 360, mma_linear route 0 180, mma_linear route 1 100, mma_linear route 2 180, mma_linear route 4 180, mma_linear route 5 180, mma_moe 80, mma_moe act 1 80, mma_moe act 2 80, mma_moe weighted 80, mma_moe_unpack 40, mma_unpack 352
+refused by both: mma_linear route 1 80, mma_linear route 3 180
+all the same bits: 3052 calls (NVIDIA L4, compute capability 8.9)
+exit 0

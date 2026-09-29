@@ -408,13 +408,20 @@ def pack_mma(w, tiers=None, chunk=1 << 22):
 
 
 class Mma12(Mma):
-    """The 12-bit mma layout of a matrix [O, K]: the same order and sign-and-
-    mantissa bytes, the exponent a 4-bit code into the tensor's 15 commonest
-    (code 15: the step's exception list). A lighter decode than the tiered
-    code's, at 12 bits a weight (see glyd_gpu.cu, Nib)."""
+    """The 12-bit mma layout of a matrix [O, K], split byte: the same order, a
+    weight's low byte (the exponent's lowest bit and the mantissa) as it is
+    and its high byte (sign and exponent >> 1) a 4-bit code, the sign and an
+    offset 0-7 from the matrix's base hb (0-120: the 8 values of exponent >> 1
+    from hb, 16 exponents, holding the most weights); any other weight (zeros
+    and specials among them) in its step's exception list. A lighter decode
+    than the tiered code's, at 12 bits a weight (see glyd_gpu.cu, Nib). sym:
+    the C API's four words, hb in each byte of the first."""
 
-    def __init__(self, shape, data, exc, exc_base, sym):
-        self.shape, self.data, self.exc, self.exc_base, self.sym = shape, data, exc, exc_base, sym
+    def __init__(self, shape, data, exc, exc_base, hb):
+        if type(hb) is not int or not 0 <= hb <= 120:
+            raise ValueError(f"a 12-bit pack's base hb {hb!r}: an int 0-120")
+        self.shape, self.data, self.exc, self.exc_base, self.hb = shape, data, exc, exc_base, hb
+        self.sym = [hb * 0x01010101, 0, 0, 0]
         self.sm = data
         self.n = shape[0] * shape[1]
 
@@ -423,41 +430,48 @@ class Mma12(Mma):
 
 
 def pack_mma12(w):
+    """w [O, K] (O a multiple of 64, K of 16) in the 12-bit layout. A warp
+    step's 1536 bytes: lane l's 16 bytes of codes (words q = 0-3, weights 8q
+    to 8q + 7: n-tile 2q's sign and offset in bits {7, 2, 1, 0} of byte j,
+    n-tile 2q + 1's rotated by 4: its sign in bit 3 of byte j, its offset in
+    bits 4-6 of byte j - 1 mod 4), then the low bytes, every lane's first 16
+    and then every lane's last 16. An exception's code has offset 0, its entry
+    its weight (lane * 32 + i) and the byte to XOR into its high byte, hb ^
+    (exponent >> 1), << 16."""
     assert w.dtype == torch.bfloat16 and w.is_cuda and w.dim() == 2 and w.shape[0] % 64 == 0 and w.shape[1] % 16 == 0
     O, K = w.shape
     RB, KS, dev = O // 64, K // 16, w.device
     u = w.contiguous().view(torch.int16)
-    top = torch.argsort(_hist(u.flatten()), descending=True, stable=True)[:15]
-    code = torch.full((256,), 15, dtype=torch.int64, device=dev)
-    code[top] = torch.arange(15, device=dev)
-    syms = top.tolist() + [0]
-    sym = [syms[4 * k] | syms[4 * k + 1] << 8 | syms[4 * k + 2] << 16 | syms[4 * k + 3] << 24 for k in range(4)]
+    c = F.pad(_hist(u.flatten()).view(128, 2).sum(1).cumsum(0), (1, 0))  # the high bytes' 7 bits (exponent >> 1), counted
+    hb = int((c[8:] - c[:-8]).argmax())  # the first window of 8 holding the most
     steps = O * K // 1024
     data = torch.empty(steps, 1536, dtype=torch.uint8, device=dev)  # a warp step: [32 lanes][16 bytes] of codes, then [32 lanes][32 bytes] as two halves
-    shifts = 4 * torch.arange(8, dtype=torch.int64, device=dev)
+    j = torch.arange(4, dtype=torch.int64, device=dev)
     exc_parts, counts = [], []
     per = max(1, (1 << 22) // (64 * K))  # row blocks a chunk
     for b0 in range(0, RB, per):
         b1 = min(RB, b0 + per)
+        # [rb, n, g, ks, j >> 1, t, j & 1] -> [rb, ks, lane = 4g + t, i = 4n + j]
         v = u[b0 * 64 : b1 * 64].view(b1 - b0, 8, 8, KS, 2, 4, 2).permute(0, 3, 2, 5, 1, 4, 6).flatten().to(torch.int32) & 0xFFFF
         a, z = b0 * 64 * K // 1024, b1 * 64 * K // 1024
-        e = (v >> 7) & 0xFF
-        c = code[e]
-        words = (c.view(-1, 32, 4, 8) << shifts).sum(-1)  # [steps, lanes, 4]: weight i at bits 4(i mod 8) of word i / 8
+        hi = (v >> 8) & 0x7F
+        off = hi - hb
+        esc = (off < 0) | (off > 7)
+        s4 = ((v >> 15) & 1).view(-1, 32, 4, 2, 4).to(torch.int64)  # [steps, lanes, word q, n-tile 2q + h, j]
+        o4 = torch.where(esc, 0, off).view(-1, 32, 4, 2, 4).to(torch.int64)
+        words = ((s4[..., 0, :] << 7 | o4[..., 0, :]) << (8 * j)).sum(-1) | (s4[..., 1, :] << (8 * j + 3)).sum(-1) | (o4[..., 1, :] << (8 * ((j - 1) % 4) + 4)).sum(-1)
         words = (words - (words >= 2**31).to(torch.int64) * 2**32).to(torch.int32)
         data[a:z, :512] = words.contiguous().view(torch.uint8).view(-1, 512)
-        pr = v.view(-1, 2)
-        sign = (pr >> 15) & 1
-        data[a:z, 512:] = (((pr & 0x7F) << 1) | sign.flip(1)).to(torch.uint8).view(-1, 32, 2, 16).transpose(1, 2).reshape(-1, 1024)
-        m = (c == 15).view(z - a, 1024)
+        data[a:z, 512:] = (v & 0xFF).to(torch.uint8).view(-1, 32, 2, 16).transpose(1, 2).reshape(-1, 1024)
+        m = esc.view(z - a, 1024)
         idx = torch.arange(1024, device=dev).expand(z - a, 1024)[m]  # lane * 32 + i
-        exc_parts.append((idx | e.view(z - a, 1024)[m].to(torch.int64) << 16).to(torch.int32))
+        exc_parts.append((idx | (hb ^ hi.view(z - a, 1024)[m]).to(torch.int64) << 16).to(torch.int32))
         counts.append(m.sum(1))
     n = torch.cat(counts)
     pad = 4 - int(n.sum()) % 4  # at least one entry, to a multiple of 4 (mma_gemm_wg copies runs widened to 16 bytes)
     exc = torch.cat(exc_parts + [torch.zeros(pad, dtype=torch.int32, device=dev)])
     exc_base = torch.cat([torch.zeros(1, dtype=torch.int64, device=dev), torch.cumsum(n, 0)]).to(torch.int32)
-    return Mma12((O, K), data.flatten(), exc, exc_base, sym)
+    return Mma12((O, K), data.flatten(), exc, exc_base, hb)
 
 
 def best_layout(linear_bytes, other_bytes=0, gpus=1, device=0, moe=False):
@@ -534,7 +548,7 @@ def route(p, gpu, M):
 
 def mma_linear(p, x, bias=None, route=-1):
     """X W^T (+ bias) by a route (-1: this GPU's for M), as a Linear's one-call path takes it: its kernel; DECODE and
-    AHEAD the prompt kernel (refused on Hopper and where K is not a multiple of 64: decode W there)."""
+    AHEAD the prompt kernel, on every GPU (refused where K is not a multiple of 64: decode W there)."""
     O, K = p.shape
     x = x.contiguous()
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)

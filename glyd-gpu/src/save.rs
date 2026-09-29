@@ -168,11 +168,11 @@ impl Layout {
         [Layout::Tiered, Layout::Twelve].into_iter().find(|l| l.name() == name)
     }
 
-    /// A pack's words' name in glyd.json.
+    /// A pack's words' name in glyd.json: the tiered layout's three tiers, the 12-bit layout's base hb (an int).
     fn words(self) -> &'static str {
         match self {
             Layout::Tiered => "tiers",
-            Layout::Twelve => "sym",
+            Layout::Twelve => "hb",
         }
     }
 
@@ -362,13 +362,18 @@ fn shape_value(s: &[u64]) -> Value {
     Value::Array(s.iter().map(|&d| Value::from(d)).collect())
 }
 
-/// A pack's glyd.json entry (format.py's entry): its layout, its matrix's shape, its words (tiers, sym), its
-/// tensors (name, shape, sha256) in their order in its rows; an experts' weight's E (held as [E, out, in]).
+/// A pack's glyd.json entry (format.py's entry): its layout, its matrix's shape, its words (the tiers; the 12-bit
+/// layout's base hb, an int: words[0]), its tensors (name, shape, sha256) in their order in its rows; an experts'
+/// weight's E (held as [E, out, in]).
 fn entry(layout: Layout, shape: [usize; 2], words: &[u32], tensors: Vec<(String, Vec<u64>, String)>, experts: Option<usize>) -> Value {
+    let words = match layout {
+        Layout::Tiered => Value::Array(words.iter().map(|&t| Value::from(t as u64)).collect()),
+        Layout::Twelve => Value::from(words[0] as u64),
+    };
     let mut e = vec![
         ("layout".to_string(), Value::from(layout.name())),
         ("shape".to_string(), shape_value(&[shape[0] as u64, shape[1] as u64])),
-        (layout.words().to_string(), Value::Array(words.iter().map(|&t| Value::from(t as u64)).collect())),
+        (layout.words().to_string(), words),
         ("tensors".to_string(), Value::Array(tensors.into_iter().map(|(n, s, h)| Value::Object(vec![("name".into(), Value::String(n)), ("shape".into(), shape_value(&s)), ("sha256".into(), Value::String(h))])).collect())),
     ];
     if let Some(n) = experts {
@@ -379,7 +384,7 @@ fn entry(layout: Layout, shape: [usize; 2], words: &[u32], tensors: Vec<(String,
 }
 
 /// A matrix packed in `layout`, each step decoded back and compared with its weights ("checked"), its three buffers
-/// as saved under `key` (`key`data ...), and its words.
+/// as saved under `key` (`key`data ...), and its words (the tiers; the 12-bit layout's base hb).
 fn packed(layout: Layout, w: &[u16], rows: usize, cols: usize, key: &str, what: &str) -> io::Result<(Vec<Saved>, Vec<u32>)> {
     let differ = || bad(format!("{what}: decoded to other bits than its weights"));
     let steps = (rows * cols / pack::STEP) as u64;
@@ -394,7 +399,8 @@ fn packed(layout: Layout, w: &[u16], rows: usize, cols: usize, key: &str, what: 
         Layout::Twelve => {
             let p = pack::pack_twelve_checked(w, rows, cols).ok_or_else(differ)?;
             let (exc, base) = (le_bytes(&p.exc, i32::to_le_bytes), le_bytes(&p.exc_base, i32::to_le_bytes));
-            (vec![buffer(format!("{key}data"), "U8", steps * 1536, p.data), buffer(format!("{key}exc"), "I32", p.exc.len() as u64, exc), buffer(format!("{key}exc_base"), "I32", steps + 1, base)], p.sym.to_vec())
+            let hb = p.hb() as u32;
+            (vec![buffer(format!("{key}data"), "U8", steps * 1536, p.data), buffer(format!("{key}exc"), "I32", p.exc.len() as u64, exc), buffer(format!("{key}exc_base"), "I32", steps + 1, base)], vec![hb])
         }
     })
 }
@@ -731,9 +737,14 @@ fn decode(dir: &Checkpoint, name: &str, e: &Value, decoder: &Decoder) -> io::Res
     let what = |why: &str| bad(format!("{name}: {why}"));
     let layout = e.get("layout").and_then(Value::as_str).and_then(Layout::by_name).ok_or_else(|| what("a layout this glyd does not read"))?;
     let shape = u64s(e.get("shape")).filter(|s| s.len() == 2).ok_or_else(|| what("no shape in glyd.json"))?;
-    let n_words = if layout == Layout::Tiered { 3 } else { 4 };
-    let words = u64s(e.get(layout.words())).filter(|t| t.len() == n_words && t.iter().all(|&x| x <= u32::MAX as u64)).ok_or_else(|| what(&format!("no {} in glyd.json", layout.words())))?;
-    let words: Vec<u32> = words.into_iter().map(|x| x as u32).collect();
+    // the C API's words: the tiered layout's three tiers; the 12-bit layout's base hb (0-120) in the first's bytes
+    let words: Vec<u32> = match layout {
+        Layout::Tiered => u64s(e.get("tiers")).filter(|t| t.len() == 3 && t.iter().all(|&x| x <= u32::MAX as u64)).ok_or_else(|| what("no tiers in glyd.json"))?.into_iter().map(|x| x as u32).collect(),
+        Layout::Twelve => match e.get("hb") {
+            None => return Err(what("a 12-bit pack with no hb, saved in the 12-bit layout before split byte (unreleased): save it again")),
+            Some(h) => pack::twelve_words(h.as_u64().filter(|&h| h <= 120).ok_or_else(|| what("its hb is not an int 0-120"))? as u8).to_vec(),
+        },
+    };
     let (rows, cols) = (shape[0] as usize, shape[1] as usize);
     if rows == 0 || rows % 64 != 0 || cols == 0 || cols % 16 != 0 || rows > (1 << 40) / cols {
         return Err(what("not an mma layout's shape"));
@@ -1172,15 +1183,32 @@ mod tests {
         assert!(text.contains("18446744073709551615"));
         std::fs::write(bad.join("glyd.json"), text).unwrap();
         refused("is not its pack's");
-        // the 12-bit layout: glyd-v3, a pack's sym and its data, exc and exc_base
+        // the 12-bit layout: glyd-v3, a pack's base hb (an int, in the place of the tiers) and its data, exc and
+        // exc_base; then refused: a pack with no hb (as saved before split byte, with its four words "sym"), and one
+        // whose hb is past 120
         let out12 = dir.join("out12");
         assert_eq!(save(&source, &out12, 2, 1 << 30, true, Layout::Twelve).unwrap().checked, 14);
-        let m = json::parse(&std::fs::read_to_string(out12.join("glyd.json")).unwrap()).unwrap();
+        let text12 = std::fs::read_to_string(out12.join("glyd.json")).unwrap();
+        let m = json::parse(&text12).unwrap();
         assert_eq!((m.get("format").and_then(Value::as_str), m.get("layout").and_then(Value::as_str)), (Some("glyd-v3"), Some("mma12")));
         let o = m.get("packs").unwrap().get("model.layers.1.self_attn.o_proj").unwrap();
-        assert!(o.get("sym").is_some() && o.get("tiers").is_none());
+        let keys: Vec<&str> = o.as_object().unwrap().iter().map(|(k, _)| k.as_str()).collect();
+        let hb = o.get("hb").and_then(Value::as_u64).unwrap();
+        assert!(keys == ["layout", "shape", "hb", "tensors"] && hb <= 120 && text12.contains(&format!("\"hb\": {hb},\n")), "{keys:?} {hb}");
         assert!(Checkpoint::open(&out12).unwrap().get("model.layers.1.self_attn.o_proj.glyd_exc_base").is_some());
         assert_eq!(verify(&out12, 2, &Decoder::Cpu).unwrap().packed, 14);
+        let bad12 = dir.join("bad12");
+        for (to, why) in [("\"sym\": [\n    1,\n    2,\n    3,\n    4\n   ]".to_string(), "a 12-bit pack with no hb"), ("\"hb\": 121".to_string(), "its hb is not an int 0-120")] {
+            let _ = std::fs::remove_dir_all(&bad12);
+            std::fs::create_dir_all(&bad12).unwrap();
+            for e in std::fs::read_dir(&out12).unwrap() {
+                let p = e.unwrap().path();
+                std::fs::copy(&p, bad12.join(p.file_name().unwrap())).unwrap();
+            }
+            std::fs::write(bad12.join("glyd.json"), text12.replacen(&format!("\"hb\": {hb}"), &to, 1)).unwrap();
+            let e = verify(&bad12, 2, &Decoder::Cpu).err().map(|e| e.to_string()).unwrap_or_default();
+            assert!(e.contains(why), "not refused for {why:?}: {e:?}");
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

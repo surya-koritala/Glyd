@@ -1,0 +1,20 @@
+# 2026-09-29 17:44:42: load 3.50 2.06 1.44; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.2 systemd;
+test cuda::tests::one_context_a_thread ... ok
+test json::tests::python_text ... ok
+test json::tests::refused ... ok
+test pack::tests::blocks_hold_their_escapes ... ok
+test pack::tests::by_count_is_torchs_stable_argsort ... ok
+test pack::tests::round_trips ... ok
+test pack::tests::twelve_is_pack_mma12s ... ok
+test safetensors::tests::tensors_back_to_back ... ok
+test save::tests::file_patterns ... ok
+test save::tests::in_order_keeps_its_order ... ok
+test save::tests::save_and_verify_a_tiny_qwen3 ... ok
+test save::tests::versions_as_python_reads_them ... ok
+test tests::declarations_are_the_headers ... ok
+test tests::linear_takes_every_route_but_one ... ok
+test tests::no_library_is_an_error ... ok
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+exit 0

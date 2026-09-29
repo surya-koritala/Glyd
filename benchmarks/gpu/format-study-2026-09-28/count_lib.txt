@@ -1,0 +1,28 @@
+$ sh gpu/experimental/format/count_lib.sh   (nvcc 13.0 -O3 as build_lib.sh, cuobjdump 13.1; the box's CPU, 2026-09-28 17:50 EDT)
+# The library's own kernels (lib_*: glyd_gpu.cu with sb12.cuh's policy instantiated beside Nib) and, for the kernels
+# whose consumers decode a stage (mma12_mid_kernel, Hopper's mma12_tma_kernel), a copy of glyd_gpu.cu whose
+# decode12_rows has the split-byte decode (libsb_*; the same edit sb12.py makes to build the prototype's mid kernel).
+# The two smallest loops holding mma instructions in each kernel, statically: every instruction of the loop body, the
+# exception paths' too (run only where a step or stage has exceptions: 75-86% of steps have none). The prompt kernel's
+# consumer loop (mma_gemm_sk_kernel) is the same for both: its producers decode, into shared memory.
+lib_89.sass      mma_gemm_kernel<Nib, 1>  (the step kernel, 1-16 tokens)        loop of 451: alu 350 fma 61 uni 2 mem 16 mma 8 ctl 14 | PRMT 96 LOP3 67 SHF 59 IADD3 24
+lib_89.sass      mma_gemm_kernel<Sb12, 1>                                      loop of 392: alu 306 fma 48 uni 0 mem 16 mma 8 ctl 14 | PRMT 16 LOP3 77 SHF 35 IADD3 18
+lib_89.sass      mma_gemm_kernel<Nib, 1>, heavy blocks (decode_x)             loop of 734: alu 490 fma 112 uni 2 mem 82 mma 8 ctl 40 | PRMT 112 LOP3 112 SHF 106 IADD3 37
+lib_89.sass      mma_gemm_kernel<Sb12, 1>, heavy blocks                       loop of 679: alu 450 fma 99 uni 0 mem 82 mma 8 ctl 40 | PRMT 32 LOP3 130 SHF 70 IADD3 39
+lib_89.sass      mma12_mid_kernel<64, 4>  (a stage: a warp's 16 rows, 4 k-blocks) loop of 505: alu 262 fma 111 uni 3 mem 56 mma 32 ctl 41 | PRMT 48 LOP3 74 SHF 55 IADD3 25
+libsb_89.sass    mma12_mid_kernel<64, 4>, split-byte                          loop of 431: alu 204 fma 97 uni 1 mem 56 mma 32 ctl 41 | PRMT 24 LOP3 58 SHF 31 IADD3 33
+lib_89.sass      mma12_mid_kernel<32, 4>                                      loop of 483: alu 256 fma 117 uni 3 mem 48 mma 16 ctl 43 | PRMT 48 LOP3 73 SHF 55 IADD3 21
+libsb_89.sass    mma12_mid_kernel<32, 4>, split-byte                          loop of 410: alu 200 fma 102 uni 1 mem 48 mma 16 ctl 43 | PRMT 24 LOP3 57 SHF 31 IADD3 29
+lib_89.sass      mma_gemm_sk_kernel<Nib, 8, 4, 2, 1, 32> consumers            loop of 1784: alu 834 fma 485 uni 3 mem 227 mma 64 ctl 171 | PRMT 66 LOP3 52 SHF 33 IADD3 147
+lib_89.sass      mma_gemm_sk_kernel<Sb12, 8, 4, 2, 1, 32> consumers           loop of 1784: alu 834 fma 485 uni 3 mem 227 mma 64 ctl 171 | PRMT 66 LOP3 52 SHF 33 IADD3 147
+lib_90a.sass     mma_gemm_kernel<Nib, 1>                                      loop of 442: alu 355 fma 45 uni 4 mem 16 mma 8 ctl 14 | PRMT 96 LOP3 67 SHF 59 IADD3 13
+lib_90a.sass     mma_gemm_kernel<Sb12, 1>                                     loop of 397: alu 310 fma 44 uni 5 mem 16 mma 8 ctl 14 | PRMT 16 LOP3 77 SHF 35 IADD3 7
+lib_90a.sass     mma12_tma_kernel<256, 2> consumers (2 stages a loop: 8 k-blocks) loop of 881: alu 523 fma 161 uni 48 mem 82 mma 12 ctl 55 | PRMT 96 LOP3 123 SHF 109 IADD3 19
+libsb_90a.sass   mma12_tma_kernel<256, 2>, split-byte                         loop of 763: alu 413 fma 151 uni 50 mem 82 mma 12 ctl 55 | PRMT 48 LOP3 91 SHF 61 IADD3 26
+lib_90a.sass     mma12_tma_kernel<64, 2>                                      loop of 874: alu 530 fma 180 uni 4 mem 82 mma 12 ctl 66 | PRMT 95 LOP3 127 SHF 113 IADD3 11
+libsb_90a.sass   mma12_tma_kernel<64, 2>, split-byte                          loop of 759: alu 426 fma 167 uni 6 mem 82 mma 12 ctl 66 | PRMT 47 LOP3 95 SHF 65 IADD3 22
+lib_90a.sass     mma12_mid_kernel<64, 4>                                      loop of 477: alu 268 fma 85 uni 10 mem 57 mma 32 ctl 25 | PRMT 48 LOP3 71 SHF 54 IADD3 5
+libsb_90a.sass   mma12_mid_kernel<64, 4>, split-byte                          loop of 417: alu 218 fma 83 uni 2 mem 57 mma 32 ctl 25 | PRMT 24 LOP3 57 SHF 32 IADD3 10
+# Per k-block of the Hopper TMA kernel's consumer loop (NT 256): alu 65.4 -> 51.6 (-21%), PRMT 12 -> 6, SHF 13.6 -> 7.6,
+# LOP3 15.4 -> 11.4, fma 20.1 -> 18.9 (-6%). The loop's other integer work (addresses, bounds, the exception check and
+# pass) stays; the decode's share of it falls from about 23 to about 9 a k-block (count.txt).

@@ -1,0 +1,77 @@
+CHECKS PASS: 11 steps run, each exit 0
+NVIDIA A100-SXM4-40GB (8.0, sm_80, 40960 MiB), x86_64 host, 30 CPUs; CLASS=a100; release tree 85ae892 (rust-splitbyte), main db8e7b0 (main)
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+rust: /home/ubuntu/r1_job.sh: line 131: cargo: command not found
+decoder test (option 2, results/dec): FAIL: round 1, option 2 (decode ahead on s SMs, cuBLAS on the rest) on NVIDIA A100-SXM4-40GB (108 SMs, compute 8.0, the model: A100-40GB): the decoder PASS, the layer FAIL, bit for bit PASS
+
+layer-Qwen3-14B-run1: exit 0
+layer-Qwen3-14B-run2: exit 0
+layer-Qwen3-8B-run1: exit 0
+layer-Qwen3-8B-run2: exit 0
+selftest: exit 0 | every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too)
+xcheck-Qwen3-0.6B: exit 0 | all the same bits: 4572 calls (NVIDIA A100-SXM4-40GB, compute capability 8.0)
+xcheck-Qwen3-1.7B: exit 0 | all the same bits: 4572 calls (NVIDIA A100-SXM4-40GB, compute capability 8.0)
+xcheck-Qwen3-4B-Instruct-2507: exit 0 | all the same bits: 4627 calls (NVIDIA A100-SXM4-40GB, compute capability 8.0)
+xcheck-Qwen3-8B: exit 0 | all the same bits: 4628 calls (NVIDIA A100-SXM4-40GB, compute capability 8.0)
+xcheck-granite-3.1-3b-a800m-instruct: exit 0 | all the same bits: 3052 calls (NVIDIA A100-SXM4-40GB, compute capability 8.0)
+xcheck: exit 0 | all the same bits: 3205 calls (NVIDIA A100-SXM4-40GB, compute capability 8.0)
+
+
+layer.py: split byte's time over main's 12-bit layout's (model, run, M, the route taken: by route | by kernel); attr-loop:
+main-once's over main's (the loop an entry a pass alone), attr-splitbyte: the branch's over main-once's (split byte; since aa7a6fc its loop main's)
+  Qwen3-14B run 1      1 (step): route 0.998 | step 0.994
+  Qwen3-14B run 1     16 (step): route 0.994 | step 0.998
+  Qwen3-14B run 1     32 (mid): route 0.985 | step 0.993 | mid 0.987
+  Qwen3-14B run 1     64 (mid): route 0.961 | step 0.981 | mid 0.966
+  Qwen3-14B run 1    128 (mid): route 0.924 | mid 0.927 | prompt 0.978
+  Qwen3-14B run 1    256 (prompt): route 0.979 | prompt 0.979
+  Qwen3-14B run 1    512 (prompt): route 0.981 | prompt 0.981
+  Qwen3-14B run 1    768 (prompt): route 0.979 | prompt 0.978
+  Qwen3-14B run 1 decode (decode): decode 1.000
+  Qwen3-14B run 2      1 (step): route 0.996 | step 0.996
+  Qwen3-14B run 2     16 (step): route 0.994 | step 0.996
+  Qwen3-14B run 2     32 (mid): route 0.985 | step 0.991 | mid 0.989
+  Qwen3-14B run 2     64 (mid): route 0.965 | step 0.981 | mid 0.964
+  Qwen3-14B run 2    128 (mid): route 0.923 | mid 0.924 | prompt 0.977
+  Qwen3-14B run 2    256 (prompt): route 0.979 | prompt 0.978
+  Qwen3-14B run 2    512 (prompt): route 0.982 | prompt 0.981
+  Qwen3-14B run 2    768 (prompt): route 0.979 | prompt 0.979
+  Qwen3-14B run 2 decode (decode): decode 0.998
+  Qwen3-8B run 1      1 (step): route 0.985 | step 0.982
+  Qwen3-8B run 1     16 (step): route 0.976 | step 0.985
+  Qwen3-8B run 1     32 (mid): route 1.000 | step 1.000 | mid 1.003
+  Qwen3-8B run 1     64 (mid): route 0.987 | step 0.979 | mid 0.981
+  Qwen3-8B run 1    128 (mid): route 0.945 | mid 0.941 | prompt 0.961
+  Qwen3-8B run 1    256 (prompt): route 0.969 | prompt 0.969
+  Qwen3-8B run 1    512 (prompt): route 0.976 | prompt 0.976
+  Qwen3-8B run 1    768 (prompt): route 0.977 | prompt 0.978
+  Qwen3-8B run 1 decode (decode): decode 1.012
+  Qwen3-8B run 2      1 (step): route 0.991 | step 0.987
+  Qwen3-8B run 2     16 (step): route 0.979 | step 0.982
+  Qwen3-8B run 2     32 (mid): route 1.003 | step 0.995 | mid 1.010
+  Qwen3-8B run 2     64 (mid): route 0.981 | step 0.977 | mid 0.985
+  Qwen3-8B run 2    128 (mid): route 0.945 | mid 0.938 | prompt 0.961
+  Qwen3-8B run 2    256 (prompt): route 0.969 | prompt 0.971
+  Qwen3-8B run 2    512 (prompt): route 0.978 | prompt 0.977
+  Qwen3-8B run 2    768 (prompt): route 0.977 | prompt 0.979
+  Qwen3-8B run 2 decode (decode): decode 1.012
+  by the library's route: 0.923-1.003 over 32 rows
+
+steps:
+  16:44:31 (+8 s) machine and environment (~/gpuenv)
+  16:45:22 (+51 s) builds (src exit 0, main exit 0, )
+  16:45:25 (+54 s) selftest (exit 0)
+  16:45:30 (+59 s) xcheck (exit 0)
+  16:45:34 (+63 s) layer-Qwen3-8B-run1 (exit 0)
+  16:45:38 (+67 s) layer-Qwen3-14B-run1 (exit 0)
+  16:45:44 (+73 s) xcheck-Qwen3-0.6B (exit 0)
+  16:45:53 (+82 s) xcheck-Qwen3-1.7B (exit 0)
+  16:46:01 (+90 s) xcheck-granite-3.1-3b-a800m-instruct (exit 0)
+  16:46:12 (+101 s) xcheck-Qwen3-4B-Instruct-2507 (exit 0)
+  16:46:31 (+120 s) xcheck-Qwen3-8B (exit 0)
+  16:46:34 (+123 s) layer-Qwen3-8B-run2 (exit 0)
+  16:46:39 (+128 s) layer-Qwen3-14B-run2 (exit 0)
+  16:46:39 (+128 s) checks done
+  16:48:52 (+261 s) decoder test (FAIL: round 1, option 2 (decode ahead on s SMs, cuBLAS on the rest) on NVIDIA A100-SXM4-40GB (108 SMs, compute 8.0, the )
+  16:48:52 (+261 s) done

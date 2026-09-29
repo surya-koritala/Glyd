@@ -1,0 +1,23 @@
+# 2026-09-29 18:05:44: load 1.26 2.57 2.51; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+libglyd_gpu: C API 5, CUDA runtime 13000
+model.layers.0.self_attn.o_proj: [1024, 2048], 10.86 bits a weight packed, decoded on the GPU
+  model.layers.0.self_attn.o_proj.weight [1024, 2048]: the checkpoint's, bit for bit
+libglyd_gpu: C API 5, CUDA runtime 13000
+model.layers.0.self_attn.q_proj: [4096, 1024], 10.79 bits a weight packed, decoded on the GPU
+  model.layers.0.self_attn.q_proj.weight [2048, 1024]: the checkpoint's, bit for bit
+  model.layers.0.self_attn.k_proj.weight [1024, 1024]: the checkpoint's, bit for bit
+  model.layers.0.self_attn.v_proj.weight [1024, 1024]: the checkpoint's, bit for bit
+model.layers.0.mlp.gate_proj [6144, 1024] on NVIDIA L4 (89), the library's C API 5
+     1 tokens: Gemm, linear bit for bit its kernel's, 2.4e-3 off f32
+     7 tokens: Gemm, linear bit for bit its kernel's
+    16 tokens: Gemm, linear bit for bit its kernel's
+    17 tokens: Gemm, linear bit for bit its kernel's
+    33 tokens: Gemm, linear bit for bit its kernel's
+    64 tokens: Gemm, linear bit for bit its kernel's
+    65 tokens: Big, linear bit for bit its kernel's
+   128 tokens: Big, linear bit for bit its kernel's
+   129 tokens: Big, linear bit for bit its kernel's
+   600 tokens: Big, linear bit for bit its kernel's
+  1100 tokens: Big, linear bit for bit its kernel's
+  2000 tokens: Big, linear bit for bit its kernel's
+exit 0

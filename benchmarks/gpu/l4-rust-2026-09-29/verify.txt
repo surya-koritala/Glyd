@@ -1,0 +1,260 @@
+# 2026-09-29 17:46:57: load 2.53 1.96 1.48; busiest:  100 ps; 1.1 nv-hostengine; 0.2 snapd;
+round 1: Qwen3-0.6B-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-0.6B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.71 s wall, 363928 KB peak RSS
+exit 0
+# 2026-09-29 17:46:58: load 2.53 1.96 1.48; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 2: Qwen3-0.6B-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-0.6B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.71 s wall, 371272 KB peak RSS
+exit 0
+# 2026-09-29 17:46:59: load 2.53 1.96 1.48; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 3: Qwen3-0.6B-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-0.6B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.71 s wall, 346768 KB peak RSS
+exit 0
+# 2026-09-29 17:47:00: load 2.53 1.96 1.48; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+Qwen3-0.6B-mma, cuda:0
+/home/ubuntu/rust-rc/out/Qwen3-0.6B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.55 s wall, 402744 KB peak RSS
+exit 0
+# 2026-09-29 17:47:01: load 2.40 1.94 1.47; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+Qwen3-0.6B-mma, python
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 5141.53it/s]
+/home/ubuntu/rust-rc/out/Qwen3-0.6B-mma: 198 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+6.38 s wall
+exit 0
+# 2026-09-29 17:47:20: load 2.25 1.93 1.47; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 1: Qwen3-0.6B-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-0.6B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.62 s wall, 347188 KB peak RSS
+exit 0
+# 2026-09-29 17:47:21: load 2.25 1.93 1.47; busiest:  100 ps; 1.1 nv-hostengine; 0.2 snapd;
+round 2: Qwen3-0.6B-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-0.6B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.62 s wall, 332736 KB peak RSS
+exit 0
+# 2026-09-29 17:47:21: load 2.15 1.91 1.47; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 3: Qwen3-0.6B-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-0.6B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.61 s wall, 339536 KB peak RSS
+exit 0
+# 2026-09-29 17:47:22: load 2.15 1.91 1.47; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+Qwen3-0.6B-mma12, cuda:0
+/home/ubuntu/rust-rc/out/Qwen3-0.6B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.37 s wall, 402496 KB peak RSS
+exit 0
+# 2026-09-29 17:47:23: load 2.15 1.91 1.47; busiest:  100 ps; 1.1 nv-hostengine; 0.2 snapd;
+Qwen3-0.6B-mma12, python
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 4883.32it/s]
+/home/ubuntu/rust-rc/out/Qwen3-0.6B-mma12: 198 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+7.49 s wall
+exit 0
+# 2026-09-29 17:48:00: load 2.84 2.06 1.53; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 1: Qwen3-1.7B-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-1.7B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+2.03 s wall, 976988 KB peak RSS
+exit 0
+# 2026-09-29 17:48:02: load 3.66 2.24 1.59; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 2: Qwen3-1.7B-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-1.7B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+2.04 s wall, 1011456 KB peak RSS
+exit 0
+# 2026-09-29 17:48:04: load 3.66 2.24 1.59; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 3: Qwen3-1.7B-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-1.7B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+2.05 s wall, 989012 KB peak RSS
+exit 0
+# 2026-09-29 17:48:06: load 3.44 2.22 1.59; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+Qwen3-1.7B-mma, cuda:0
+/home/ubuntu/rust-rc/out/Qwen3-1.7B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+4.77 s wall, 706460 KB peak RSS
+exit 0
+# 2026-09-29 17:48:11: load 3.44 2.22 1.59; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+Qwen3-1.7B-mma, python
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights:  54%|█████▍    | 245/450 [00:00<00:00, 2434.91it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 2491.67it/s]
+/home/ubuntu/rust-rc/out/Qwen3-1.7B-mma: 198 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+8.70 s wall
+exit 0
+# 2026-09-29 17:48:45: load 3.56 2.33 1.65; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 1: Qwen3-1.7B-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-1.7B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.71 s wall, 951232 KB peak RSS
+exit 0
+# 2026-09-29 17:48:46: load 4.24 2.49 1.70; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 2: Qwen3-1.7B-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-1.7B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.73 s wall, 948808 KB peak RSS
+exit 0
+# 2026-09-29 17:48:48: load 4.24 2.49 1.70; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 3: Qwen3-1.7B-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-1.7B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.64 s wall, 883812 KB peak RSS
+exit 0
+# 2026-09-29 17:48:50: load 4.24 2.49 1.70; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+Qwen3-1.7B-mma12, cuda:0
+/home/ubuntu/rust-rc/out/Qwen3-1.7B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+4.16 s wall, 706408 KB peak RSS
+exit 0
+# 2026-09-29 17:48:54: load 3.98 2.47 1.70; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+Qwen3-1.7B-mma12, python
+Loading weights:   0%|          | 0/450 [00:00<?, ?it/s]Loading weights:  52%|█████▏    | 235/450 [00:00<00:00, 2349.08it/s]Loading weights: 100%|██████████| 450/450 [00:00<00:00, 2278.83it/s]
+/home/ubuntu/rust-rc/out/Qwen3-1.7B-mma12: 198 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+12.61 s wall
+exit 0
+# 2026-09-29 17:49:58: load 4.10 2.69 1.82; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 1: granite-3.1-3b-a800m-instruct-mma, cpu
+/home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+3.67 s wall, 1193864 KB peak RSS
+exit 0
+# 2026-09-29 17:50:02: load 4.49 2.79 1.86; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 2: granite-3.1-3b-a800m-instruct-mma, cpu
+/home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+3.66 s wall, 1136580 KB peak RSS
+exit 0
+# 2026-09-29 17:50:06: load 4.49 2.79 1.86; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 3: granite-3.1-3b-a800m-instruct-mma, cpu
+/home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+3.85 s wall, 1219844 KB peak RSS
+exit 0
+# 2026-09-29 17:50:09: load 4.85 2.90 1.90; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+granite-3.1-3b-a800m-instruct-mma, cuda:0
+/home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+12.48 s wall, 344640 KB peak RSS
+exit 0
+# 2026-09-29 17:50:22: load 4.00 2.80 1.88; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+granite-3.1-3b-a800m-instruct-mma, python
+Loading weights:   0%|          | 0/483 [00:00<?, ?it/s]Loading weights:  30%|██▉       | 143/483 [00:00<00:00, 1370.70it/s]Loading weights:  58%|█████▊    | 281/483 [00:00<00:00, 1346.62it/s]Loading weights:  86%|████████▌ | 416/483 [00:00<00:00, 1317.46it/s]Loading weights: 100%|██████████| 483/483 [00:00<00:00, 1335.10it/s]
+/home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma: 193 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+10.03 s wall
+exit 0
+# 2026-09-29 17:51:15: load 3.36 2.78 1.92; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 1: granite-3.1-3b-a800m-instruct-mma12, cpu
+/home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma12: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+2.83 s wall, 1266816 KB peak RSS
+exit 0
+# 2026-09-29 17:51:18: load 3.81 2.88 1.96; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 2: granite-3.1-3b-a800m-instruct-mma12, cpu
+/home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma12: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+2.84 s wall, 1241848 KB peak RSS
+exit 0
+# 2026-09-29 17:51:21: load 3.81 2.88 1.96; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 3: granite-3.1-3b-a800m-instruct-mma12, cpu
+/home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma12: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+2.85 s wall, 1198280 KB peak RSS
+exit 0
+# 2026-09-29 17:51:24: load 3.58 2.85 1.95; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+granite-3.1-3b-a800m-instruct-mma12, cuda:0
+/home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma12: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+11.12 s wall, 344700 KB peak RSS
+exit 0
+# 2026-09-29 17:51:35: load 3.19 2.79 1.94; busiest:  100 ps; 1.0 nv-hostengine; 0.1 snapd;
+granite-3.1-3b-a800m-instruct-mma12, python
+Loading weights:   0%|          | 0/483 [00:00<?, ?it/s]Loading weights:  25%|██▍       | 119/483 [00:00<00:00, 1183.45it/s]Loading weights:  49%|████▉     | 238/483 [00:00<00:00, 1169.81it/s]Loading weights:  73%|███████▎  | 355/483 [00:00<00:00, 1148.97it/s]Loading weights:  98%|█████████▊| 471/483 [00:00<00:00, 1132.98it/s]Loading weights: 100%|██████████| 483/483 [00:00<00:00, 1166.26it/s]
+/home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma12: 193 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+19.00 s wall
+exit 0
+# 2026-09-29 17:52:55: load 2.57 2.66 1.96; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 1: Qwen3-4B-Instruct-2507-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+4.22 s wall, 1675924 KB peak RSS
+exit 0
+# 2026-09-29 17:52:59: load 3.73 2.89 2.04; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 2: Qwen3-4B-Instruct-2507-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+4.22 s wall, 1596524 KB peak RSS
+exit 0
+# 2026-09-29 17:53:04: load 3.91 2.95 2.06; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 3: Qwen3-4B-Instruct-2507-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+4.22 s wall, 1639460 KB peak RSS
+exit 0
+# 2026-09-29 17:53:08: load 4.32 3.05 2.10; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+Qwen3-4B-Instruct-2507-mma, cuda:0
+/home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+13.07 s wall, 858600 KB peak RSS
+exit 0
+# 2026-09-29 17:53:21: load 3.81 2.98 2.09; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+Qwen3-4B-Instruct-2507-mma, python
+Loading weights:   0%|          | 0/578 [00:00<?, ?it/s]Loading weights:  26%|██▋       | 152/578 [00:00<00:00, 1464.14it/s]Loading weights:  52%|█████▏    | 299/578 [00:00<00:00, 1432.08it/s]Loading weights:  77%|███████▋  | 443/578 [00:00<00:00, 1413.13it/s]Loading weights: 100%|██████████| 578/578 [00:00<00:00, 1420.09it/s]
+/home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma: 254 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+15.04 s wall
+exit 0
+# 2026-09-29 17:54:29: load 3.50 2.95 2.14; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 1: Qwen3-4B-Instruct-2507-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma12: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+3.44 s wall, 1612064 KB peak RSS
+exit 0
+# 2026-09-29 17:54:32: load 4.02 3.06 2.18; busiest:  0.9 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 2: Qwen3-4B-Instruct-2507-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma12: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+3.43 s wall, 1616352 KB peak RSS
+exit 0
+# 2026-09-29 17:54:36: load 4.02 3.06 2.18; busiest:  0.9 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 3: Qwen3-4B-Instruct-2507-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma12: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+3.45 s wall, 1640664 KB peak RSS
+exit 0
+# 2026-09-29 17:54:39: load 3.78 3.03 2.17; busiest:  0.9 nv-hostengine; 0.1 snapd; 0.1 systemd;
+Qwen3-4B-Instruct-2507-mma12, cuda:0
+/home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma12: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+11.38 s wall, 858664 KB peak RSS
+exit 0
+# 2026-09-29 17:54:51: load 3.35 2.96 2.16; busiest:  0.9 nv-hostengine; 0.1 snapd; 0.1 systemd;
+Qwen3-4B-Instruct-2507-mma12, python
+Loading weights:   0%|          | 0/578 [00:00<?, ?it/s]Loading weights:  22%|██▏       | 127/578 [00:00<00:00, 1267.59it/s]Loading weights:  44%|████▍     | 254/578 [00:00<00:00, 1256.04it/s]Loading weights:  66%|██████▌   | 380/578 [00:00<00:00, 1234.60it/s]Loading weights:  87%|████████▋ | 504/578 [00:00<00:00, 1222.71it/s]Loading weights: 100%|██████████| 578/578 [00:00<00:00, 1243.32it/s]
+/home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma12: 254 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+25.02 s wall
+exit 0
+# 2026-09-29 17:57:53: load 3.88 3.20 2.38; busiest:  0.9 nv-hostengine; 0.1 systemd; 0.1 snapd;
+round 1: Qwen3-8B-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-8B-mma: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+11.64 s wall, 2678476 KB peak RSS
+exit 0
+# 2026-09-29 17:58:05: load 4.62 3.39 2.45; busiest:  0.9 nv-hostengine; 0.1 systemd; 0.1 snapd;
+round 2: Qwen3-8B-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-8B-mma: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+11.77 s wall, 2653152 KB peak RSS
+exit 0
+# 2026-09-29 17:58:17: load 4.92 3.52 2.50; busiest:  100 ps; 0.9 nv-hostengine; 0.1 systemd;
+round 3: Qwen3-8B-mma, cpu
+/home/ubuntu/rust-rc/out/Qwen3-8B-mma: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+11.62 s wall, 2634828 KB peak RSS
+exit 0
+# 2026-09-29 17:58:28: load 5.58 3.71 2.58; busiest:  0.9 nv-hostengine; 0.1 systemd; 0.1 snapd;
+Qwen3-8B-mma, cuda:0
+/home/ubuntu/rust-rc/out/Qwen3-8B-mma: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+29.91 s wall, 2182688 KB peak RSS
+exit 0
+# 2026-09-29 17:58:58: load 4.17 3.55 2.56; busiest:  0.9 nv-hostengine; 0.1 systemd; 0.1 snapd;
+Qwen3-8B-mma, python
+Loading weights:   0%|          | 0/581 [00:00<?, ?it/s]Loading weights:   5%|▍         | 27/581 [00:00<00:02, 263.72it/s]Loading weights:  18%|█▊        | 105/581 [00:00<00:00, 564.25it/s]Loading weights:  32%|███▏      | 184/581 [00:00<00:00, 653.91it/s]Loading weights:  45%|████▌     | 264/581 [00:00<00:00, 699.38it/s]Loading weights:  59%|█████▉    | 343/581 [00:00<00:00, 721.62it/s]Loading weights:  72%|███████▏  | 420/581 [00:00<00:00, 728.68it/s]Loading weights:  86%|████████▋ | 502/581 [00:00<00:00, 747.75it/s]Loading weights: 100%|██████████| 581/581 [00:00<00:00, 707.42it/s]
+/home/ubuntu/rust-rc/out/Qwen3-8B-mma: 254 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+36.88 s wall
+exit 0
+# 2026-09-29 18:02:17: load 3.07 3.24 2.61; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:1-events_power_efficient; 0.1 kworker/u64:3+flush-259:1;
+round 1: Qwen3-8B-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-8B-mma12: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+8.83 s wall, 2459524 KB peak RSS
+exit 0
+# 2026-09-29 18:02:26: load 3.55 3.33 2.65; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:1-events_power_efficient; 0.1 kworker/u64:3+flush-259:1;
+round 2: Qwen3-8B-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-8B-mma12: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+8.96 s wall, 2485868 KB peak RSS
+exit 0
+# 2026-09-29 18:02:35: load 4.51 3.54 2.72; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3+flush-259:1; 0.1 kworker/u64:1-events_power_efficient;
+round 3: Qwen3-8B-mma12, cpu
+/home/ubuntu/rust-rc/out/Qwen3-8B-mma12: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+8.94 s wall, 2458020 KB peak RSS
+exit 0
+# 2026-09-29 18:02:44: load 5.23 3.73 2.79; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 kworker/u64:1-flush-259:1;
+Qwen3-8B-mma12, cuda:0
+/home/ubuntu/rust-rc/out/Qwen3-8B-mma12: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+26.61 s wall, 2268020 KB peak RSS
+exit 0
+# 2026-09-29 18:03:10: load 4.07 3.57 2.77; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-ext4-rsv-conversion; 0.1 kworker/u64:1-events_power_efficient;
+Qwen3-8B-mma12, python
+Loading weights:   0%|          | 0/581 [00:00<?, ?it/s]Loading weights:   5%|▌         | 30/581 [00:00<00:01, 296.96it/s]Loading weights:  18%|█▊        | 102/581 [00:00<00:00, 533.11it/s]Loading weights:  29%|██▉       | 169/581 [00:00<00:00, 577.44it/s]Loading weights:  42%|████▏     | 242/581 [00:00<00:00, 633.61it/s]Loading weights:  53%|█████▎    | 309/581 [00:00<00:00, 641.19it/s]Loading weights:  65%|██████▍   | 377/581 [00:00<00:00, 642.60it/s]Loading weights:  78%|███████▊  | 454/581 [00:00<00:00, 647.23it/s]Loading weights:  91%|█████████ | 529/581 [00:00<00:00, 676.33it/s]Loading weights: 100%|██████████| 581/581 [00:00<00:00, 638.94it/s]
+/home/ubuntu/rust-rc/out/Qwen3-8B-mma12: 254 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+153.33 s wall
+exit 0

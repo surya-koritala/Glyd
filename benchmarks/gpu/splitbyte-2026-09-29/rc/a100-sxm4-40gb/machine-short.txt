@@ -1,0 +1,1 @@
+NVIDIA A100-SXM4-40GB (8.0, sm_80, 40960 MiB), x86_64 host, 30 CPUs; CLASS=a100; release tree 85ae892 (rust-splitbyte), main db8e7b0 (main)

@@ -18,9 +18,9 @@ A directory (or a Hugging Face repo) of:
   biases;
 - in the 12-bit layout instead (save_pretrained's layout="mma12":
   glyd-v3, which glyd 0.24 and before refuse by the format): each pack's
-  NAME.glyd_data (uint8), NAME.glyd_exc and NAME.glyd_exc_base (int32), its
-  words of symbols in glyd.json ("sym"); loaded as saved where the 12-bit
-  layout is the one, else decoded and packed again;
+  NAME.glyd_data (uint8), NAME.glyd_exc and NAME.glyd_exc_base (int32), in
+  split byte (kernels.pack_mma12), its base in glyd.json ("hb"); loaded as
+  saved where the 12-bit layout is the one, else decoded and packed again;
 - glyd.json: the format (glyd-v2 where it holds a mixture of experts'
   packs: glyd 0.21 reads glyd-v1 alone, and refuses it by the format),
   the glyd version, the source repo and revision,
@@ -50,7 +50,7 @@ FORMATS = (FORMAT, "glyd-v2", "glyd-v3")
 MANIFEST = "glyd.json"
 BUFFERS = ("data", "blocks", "block_base")  # a tiered pack's tensors (kernels.Mma)
 LAYOUTS = {"mma": BUFFERS, "mma12": ("data", "exc", "exc_base")}  # each layout's (kernels.Mma12's)
-WORDS = {"mma": "tiers", "mma12": "sym"}  # a pack's words, in glyd.json
+WORDS = {"mma": "tiers", "mma12": "hb"}  # a pack's words in glyd.json: the tiered layout's three, the 12-bit one's base (an int)
 GROUPS = (("q_proj", "k_proj", "v_proj"), ("gate_proj", "up_proj"))  # the Linears merged, a layer's self_attn's and mlp's (model.groups)
 KEYS = ("format", "glyd", "source", "layout", "packs", "tensors")  # glyd.json's (glyd 0.21 on; "tensors" from 0.25): verify refuses another where this glyd or an older one saved it
 MAP_FROM = (0, 25)  # the first glyd whose saves carry "tensors": a glyd-v1 or v2 it saved without them is refused
@@ -66,9 +66,10 @@ def key(module, buffer, weight=None):
 
 def entry(shape, tiers, tensors, experts=None, transposed=False, layout="mma"):
     """A pack's manifest entry: its layout, its matrix's shape, its words (the tiered layout's tiers, the 12-bit
-    one's sym), the tensors it holds as [(name, shape, sha256)], in their order in its rows; experts: E, an experts'
-    weight's (transposed: its matrices held [in, out])."""
-    e = {"layout": layout, "shape": list(shape), WORDS[layout]: [int(t) for t in tiers], "tensors": [{"name": n, "shape": list(s), "sha256": h} for n, s, h in tensors]}
+    one's base hb), the tensors it holds as [(name, shape, sha256)], in their order in its rows; experts: E, an
+    experts' weight's (transposed: its matrices held [in, out])."""
+    words = int(tiers) if layout == "mma12" else [int(t) for t in tiers]
+    e = {"layout": layout, "shape": list(shape), WORDS[layout]: words, "tensors": [{"name": n, "shape": list(s), "sha256": h} for n, s, h in tensors]}
     return e if experts is None else dict(e, experts=int(experts), transposed=bool(transposed))
 
 

@@ -1,0 +1,128 @@
+CHECKS FAIL: 23 steps run; rust-pack exit 1; rust-pack: no 'Rust: all passed'
+NVIDIA H100 PCIe (9.0, sm_90a, 81559 MiB), x86_64 host, 26 CPUs; CLASS=hopper; release tree 8a7769e (rust-splitbyte), main db8e7b0 (main)
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+rust: cargo 1.98.1 (797e8a9bc 2026-08-05)
+decoder test (option 2, results/dec): INCOMPLETE: round 1, option 2 (decode ahead on s SMs, cuBLAS on the rest) on NVIDIA H100 PCIe (114 SMs, compute 9.0, the model: H100-PCIe): the decoder PASS, the layer PASS (partial), bit for bit PASS
+
+check_api-dense: exit 0 | check_api: all passed (/home/ubuntu/r1w/src/bindings/python/glyd/__init__.py)
+check_api-moe: exit 0 | check_api: all passed (/home/ubuntu/r1w/src/bindings/python/glyd/__init__.py)
+check_capi: exit 0 | library /home/ubuntu/r1w/src/lib/libglyd_gpu_cuda13.so (CUDA 13000), NVIDIA H100 PCIe: 7233 calls compared bit for bit, all identical; 220044 routes as main's r
+e2e12-main: exit 0
+e2e12-main2: exit 0
+e2e12-src: exit 0
+layer-Qwen3-14B-run1: exit 0
+layer-Qwen3-14B-run2: exit 0
+layer-Qwen3-32B-run1: exit 0
+layer-Qwen3-32B-run2: exit 0
+layer-Qwen3-8B-run1: exit 0
+layer-Qwen3-8B-run2: exit 0
+routes: exit 0 | routes: as expected
+  NVIDIA H100 PCIe, compute capability 9.0: the library's code 90, the package's 90
+    tiered: 1-64 G, 65-5000 D
+    12-bit: 1-16 G, 17-1024 W, 1025-5000 D
+  code 90: the routes route_for gives it
+rust-pack: exit 1 | FAIL: examples/linear.rs
+  mma: every file byte-identical to Python's (8 files)
+  mma12: every file byte-identical to Python's (8 files)
+rust-tests: exit 0 | test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+selftest: exit 0 | every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too)
+test_gpu: exit 0 | test_cli_pack_and_verify ok
+xcheck-Qwen3-0.6B: exit 0 | all the same bits: 4817 calls (NVIDIA H100 PCIe, compute capability 9.0)
+xcheck-Qwen3-1.7B: exit 0 | all the same bits: 4817 calls (NVIDIA H100 PCIe, compute capability 9.0)
+xcheck-Qwen3-4B-Instruct-2507: exit 0 | all the same bits: 4872 calls (NVIDIA H100 PCIe, compute capability 9.0)
+xcheck-Qwen3-8B: exit 0 | all the same bits: 4873 calls (NVIDIA H100 PCIe, compute capability 9.0)
+xcheck-granite-3.1-3b-a800m-instruct: exit 0 | all the same bits: 3192 calls (NVIDIA H100 PCIe, compute capability 9.0)
+xcheck: exit 0 | all the same bits: 3385 calls (NVIDIA H100 PCIe, compute capability 9.0)
+
+main twice: the same lines
+main and split byte: the same lines (20 logits, 4 generations)
+
+layer.py: split byte's time over main's 12-bit layout's (model, run, M, the route taken: by route | by kernel); attr-loop:
+main-once's over main's (the exception loop alone), attr-splitbyte: the branch's over main-once's (split byte alone)
+  Qwen3-14B run 1      1 (step): route 0.999 | step 0.998
+  Qwen3-14B run 1     16 (step): route 0.995 | step 0.993
+  Qwen3-14B run 1     32 (wg): route 0.983 | step 1.027 | mid 1.030
+  Qwen3-14B run 1     64 (wg): route 0.980 | step 1.060 | mid 0.971
+  Qwen3-14B run 1    128 (wg): route 0.960 | mid 0.967 | prompt 0.979
+  Qwen3-14B run 1    256 (wg): route 0.959 | prompt 1.026
+  Qwen3-14B run 1    512 (wg): route 0.962 | prompt 1.028
+  Qwen3-14B run 1   1024 (wg): route 0.951 | prompt 1.023
+  Qwen3-14B run 1 decode (decode): decode 1.024
+  Qwen3-14B run 2      1 (step): route 0.999 | step 0.994
+  Qwen3-14B run 2     16 (step): route 1.001 | step 0.993
+  Qwen3-14B run 2     32 (wg): route 0.985 | step 1.026 | mid 1.026
+  Qwen3-14B run 2     64 (wg): route 0.980 | step 1.058 | mid 0.973
+  Qwen3-14B run 2    128 (wg): route 0.961 | mid 0.970 | prompt 0.977
+  Qwen3-14B run 2    256 (wg): route 0.957 | prompt 1.025
+  Qwen3-14B run 2    512 (wg): route 0.960 | prompt 1.028
+  Qwen3-14B run 2   1024 (wg): route 0.949 | prompt 1.023
+  Qwen3-14B run 2 decode (decode): decode 1.025
+  Qwen3-32B run 1      1 (step): route 0.996 | step 0.991
+  Qwen3-32B run 1     16 (step): route 0.994 | step 0.989
+  Qwen3-32B run 1     32 (wg): route 0.988 | step 1.025 | mid 1.027
+  Qwen3-32B run 1     64 (wg): route 0.974 | step 1.047 | mid 0.974
+  Qwen3-32B run 1    128 (wg): route 0.959 | mid 0.971 | prompt 0.974
+  Qwen3-32B run 1    256 (wg): route 0.958 | prompt 1.017
+  Qwen3-32B run 1    512 (wg): route 0.961 | prompt 1.026
+  Qwen3-32B run 1   1024 (wg): route 0.942 | prompt 1.018
+  Qwen3-32B run 1 decode (decode): decode 1.026
+  Qwen3-32B run 2      1 (step): route 0.997 | step 0.993
+  Qwen3-32B run 2     16 (step): route 0.995 | step 0.990
+  Qwen3-32B run 2     32 (wg): route 0.990 | step 1.025 | mid 1.030
+  Qwen3-32B run 2     64 (wg): route 0.977 | step 1.046 | mid 0.976
+  Qwen3-32B run 2    128 (wg): route 0.956 | mid 0.970 | prompt 0.974
+  Qwen3-32B run 2    256 (wg): route 0.955 | prompt 1.020
+  Qwen3-32B run 2    512 (wg): route 0.963 | prompt 1.027
+  Qwen3-32B run 2   1024 (wg): route 0.946 | prompt 1.019
+  Qwen3-32B run 2 decode (decode): decode 1.026
+  Qwen3-8B run 1      1 (step): route 0.999 | step 1.000
+  Qwen3-8B run 1     16 (step): route 1.002 | step 0.999
+  Qwen3-8B run 1     32 (wg): route 0.989 | step 1.023 | mid 1.033
+  Qwen3-8B run 1     64 (wg): route 0.973 | step 1.047 | mid 0.972
+  Qwen3-8B run 1    128 (wg): route 0.973 | mid 0.970 | prompt 0.993
+  Qwen3-8B run 1    256 (wg): route 0.965 | prompt 1.061
+  Qwen3-8B run 1    512 (wg): route 0.958 | prompt 1.055
+  Qwen3-8B run 1   1024 (wg): route 0.948 | prompt 1.054
+  Qwen3-8B run 1 decode (decode): decode 1.025
+  Qwen3-8B run 2      1 (step): route 0.999 | step 0.996
+  Qwen3-8B run 2     16 (step): route 0.998 | step 0.998
+  Qwen3-8B run 2     32 (wg): route 0.991 | step 1.022 | mid 1.034
+  Qwen3-8B run 2     64 (wg): route 0.973 | step 1.049 | mid 0.973
+  Qwen3-8B run 2    128 (wg): route 0.972 | mid 0.969 | prompt 0.993
+  Qwen3-8B run 2    256 (wg): route 0.968 | prompt 1.063
+  Qwen3-8B run 2    512 (wg): route 0.959 | prompt 1.052
+  Qwen3-8B run 2   1024 (wg): route 0.950 | prompt 1.053
+  Qwen3-8B run 2 decode (decode): decode 1.023
+  by the library's route: 0.942-1.002 over 48 rows
+
+steps:
+  15:52:48 (+22 s) machine and environment (~/gpuenv)
+  15:54:33 (+105 s) builds (src exit 0, main exit 0, jit exit 0, rust exit 0, )
+  15:54:36 (+108 s) selftest (exit 0)
+  15:54:42 (+114 s) xcheck (exit 0)
+  15:55:08 (+140 s) check_capi (exit 0)
+  15:55:10 (+143 s) routes (exit 0)
+  15:55:12 (+144 s) rust-tests (exit 0)
+  15:56:02 (+194 s) rust-pack (exit 1)
+  15:58:28 (+340 s) test_gpu (exit 0)
+  15:58:32 (+344 s) layer-Qwen3-8B-run1 (exit 0)
+  15:58:37 (+349 s) layer-Qwen3-14B-run1 (exit 0)
+  15:58:42 (+354 s) layer-Qwen3-32B-run1 (exit 0)
+  15:59:11 (+383 s) e2e12-main (exit 0)
+  15:59:42 (+414 s) e2e12-src (exit 0)
+  16:00:06 (+438 s) e2e12-main2 (exit 0)
+  16:00:06 (+438 s) e2e12 compared
+  16:06:02 (+794 s) check_api-dense (exit 0)
+  16:13:14 (+1226 s) check_api-moe (exit 0)
+  16:13:19 (+1231 s) xcheck-Qwen3-0.6B (exit 0)
+  16:13:25 (+1237 s) xcheck-Qwen3-1.7B (exit 0)
+  16:13:32 (+1244 s) xcheck-granite-3.1-3b-a800m-instruct (exit 0)
+  16:13:41 (+1253 s) xcheck-Qwen3-4B-Instruct-2507 (exit 0)
+  16:13:56 (+1268 s) xcheck-Qwen3-8B (exit 0)
+  16:13:59 (+1271 s) layer-Qwen3-8B-run2 (exit 0)
+  16:14:04 (+1276 s) layer-Qwen3-14B-run2 (exit 0)
+  16:14:08 (+1280 s) layer-Qwen3-32B-run2 (exit 0)
+  16:14:09 (+1281 s) checks done
+  16:17:47 (+1499 s) decoder test (INCOMPLETE: round 1, option 2 (decode ahead on s SMs, cuBLAS on the rest) on NVIDIA H100 PCIe (114 SMs, compute 9.0, the)
+  16:17:48 (+1500 s) done

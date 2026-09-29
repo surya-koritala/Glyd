@@ -6,12 +6,15 @@
 //! 64 rows by 16 columns, row block by row block, a step's 1024 weights in
 //! the order the tensor cores take their operand: lane l = 4g + t and its
 //! weight i = 4n + 2jh + jl hold W[64 rb + 8n + g][16 ks + 8jh + 2t + jl].
-//! A weight's sign and mantissa is a byte (its mantissa above the sign of its
-//! pair's other weight, i ^ 1), its exponent coded: in the tiered layout by
-//! 2-bit digits over three tiers of the matrix's nine commonest exponents
-//! (digit 3 on to the next tier; past the third, the exponent's byte), in
-//! the 12-bit layout by a 4-bit code into its fifteen commonest (code 15: the
-//! step's exception list).
+//! In the tiered layout a weight's sign and mantissa is a byte (its mantissa
+//! above the sign of its pair's other weight, i ^ 1), its exponent 2-bit
+//! digits over three tiers of the matrix's nine commonest exponents (digit 3
+//! on to the next tier; past the third, the exponent's byte). In the 12-bit
+//! layout (split byte) a weight's low byte is kept as it is, its high byte
+//! (sign, exponent >> 1) a 4-bit code: the sign and an offset 0-7 from the
+//! matrix's base hb (0-120, the first of the 8 values of exponent >> 1 that
+//! hold the most weights); any other weight's offset is 0 and the byte to XOR
+//! into its high byte is in the step's exception list.
 
 /// Weights a step (64 rows by 16 columns).
 pub const STEP: usize = 1024;
@@ -93,20 +96,43 @@ pub struct Tiered {
     pub tiers: [u32; 3],
 }
 
-/// W [rows, cols] in the 12-bit layout.
+/// W [rows, cols] in the 12-bit layout (split byte).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Twelve {
     pub rows: usize,
     pub cols: usize,
-    /// [steps][1536]: a step's codes (four words a lane, lane-major), then its 1024 bytes.
+    /// [steps][1536]: a step's codes (four words a lane, lane-major: word q holds weights 8q to 8q + 7, byte j weight
+    /// 8q + j's sign in bit 7 and offset in bits 0-2, weight 8q + 4 + j's sign in bit 3, and weight 8q + 4 + (j + 1)
+    /// mod 4's offset in bits 4-6), then its 1024 low bytes (weight i of lane l at 512 (i / 16) + 16 l + i mod 16).
     pub data: Vec<u8>,
-    /// The exceptions, a weight's place in its step (bits 0-9) and its exponent (bits 16-23), a step's from
-    /// exc_base[step] to exc_base[step + 1]; zeros after, to a multiple of 4 (1 at least).
+    /// The exceptions, a weight's place in its step (bits 0-9) and the byte to XOR into its high byte, hb ^
+    /// (exponent >> 1) (bits 16-23), a step's from exc_base[step] to exc_base[step + 1]; zeros after, to a multiple of
+    /// 4 (1 at least).
     pub exc: Vec<i32>,
     /// [steps + 1].
     pub exc_base: Vec<i32>,
-    /// The 15 exponents, code c in byte c % 4 of word c / 4 (code 15's: 0).
+    /// The C API's words: the base hb (0-120) in each byte of the first, then 0, 0, 0 (`twelve_words`).
     pub sym: [u32; 4],
+}
+
+impl Twelve {
+    /// Its base hb (0-120), the first of the 8 values of exponent >> 1 its offsets count from.
+    pub fn hb(&self) -> u8 {
+        self.sym[0] as u8
+    }
+}
+
+/// The C API's four words of a 12-bit pack whose base is `hb`.
+pub fn twelve_words(hb: u8) -> [u32; 4] {
+    [hb as u32 * 0x0101_0101, 0, 0, 0]
+}
+
+/// The 12-bit layout's base: the smallest x0 in 0..=120 whose window of 8 values of exponent >> 1 (x0 to x0 + 7) holds
+/// the most weights (pack_mma12's argmax: the first maximum).
+fn twelve_base(h: &[u64; 256]) -> u8 {
+    let pairs: [u64; 128] = std::array::from_fn(|x| h[2 * x] + h[2 * x + 1]);
+    let window = |x0: usize| pairs[x0..x0 + 8].iter().sum::<u64>();
+    (0..=120).fold(0, |best, x0| if window(x0) > window(best) { x0 } else { best }) as u8
 }
 
 fn check_shape(w: &[u16], rows: usize, cols: usize) {
@@ -307,33 +333,39 @@ pub fn unpack_tiered(p: &Tiered, out: &mut [u16]) -> bool {
     true
 }
 
-/// A 12-bit step's exponents from its codes and exceptions (a weight's place in the step, bits 0-9; its exponent,
-/// bits 16-23), then its weights.
-fn twelve_unstep(d: &[u8], exc: &[i32], syms: &[u8; 16], out: &mut [u16; STEP]) {
-    let mut exp = [0u8; STEP];
+/// A 12-bit step decoded: each weight's high byte its sign and hb + its offset, an exception's then XORed with its
+/// entry's byte (bits 16-23; its place in the step, bits 0-9), above its low byte.
+fn twelve_unstep(d: &[u8], exc: &[i32], hb: u8, out: &mut [u16; STEP]) {
+    let mut high = [0u8; STEP];
     for lane in 0..32 {
-        for h in 0..4 {
-            let word = u32::from_le_bytes(d[lane * 16 + h * 4..lane * 16 + h * 4 + 4].try_into().unwrap());
-            for j in 0..8 {
-                exp[lane * 32 + 8 * h + j] = syms[((word >> (4 * j)) & 15) as usize];
+        for q in 0..4 {
+            let word = u32::from_le_bytes(d[lane * 16 + q * 4..lane * 16 + q * 4 + 4].try_into().unwrap());
+            for j in 0..4 {
+                let (b, rotated) = ((word >> (8 * j)) as u8, (word >> (8 * ((j + 3) % 4) + 4)) as u8);
+                high[lane * 32 + 8 * q + j] = (b & 0x80) | (hb + (b & 7));
+                high[lane * 32 + 8 * q + 4 + j] = (b & 8) << 4 | (hb + (rotated & 7));
             }
         }
     }
     for &x in exc {
-        exp[(x & 1023) as usize] = (x >> 16) as u8;
+        high[(x & 1023) as usize] ^= (x >> 16) as u8;
     }
-    weights_of(&d[512..], &exp, out);
+    for lane in 0..32 {
+        for i in 0..32 {
+            out[lane * 32 + i] = (high[lane * 32 + i] as u16) << 8 | d[512 + (i / 16) * 512 + lane * 16 + i % 16] as u16;
+        }
+    }
 }
 
 fn twelve(w: &[u16], rows: usize, cols: usize, check: bool) -> Option<Twelve> {
     check_shape(w, rows, cols);
-    let order = by_count(&histogram(w));
-    let mut code = [15u8; 256];
-    for (c, &e) in order[..15].iter().enumerate() {
-        code[e as usize] = c as u8;
-    }
-    let syms: [u8; 16] = std::array::from_fn(|c| if c < 15 { order[c] } else { 0 });
-    let sym: [u32; 4] = std::array::from_fn(|k| u32::from_le_bytes(syms[4 * k..4 * k + 4].try_into().unwrap()));
+    let hb = twelve_base(&histogram(w));
+    // a weight's code (sign in bit 3, offset in bits 0-2) and whether it is an exception
+    let code = |v: u16| -> (u32, bool) {
+        let off = ((v >> 8) & 0x7F) as i32 - hb as i32;
+        let esc = !(0..=7).contains(&off);
+        (((v >> 15) as u32) << 3 | if esc { 0 } else { off as u32 }, esc)
+    };
     let n = rows * cols / STEP;
     let places = places(cols);
     let mut data = vec![0u8; n * 1536];
@@ -345,31 +377,32 @@ fn twelve(w: &[u16], rows: usize, cols: usize, check: bool) -> Option<Twelve> {
         let first = exc.len();
         let d = &mut data[s * 1536..(s + 1) * 1536];
         for lane in 0..32 {
-            for h in 0..4 {
+            let v = &u[lane * 32..lane * 32 + 32];
+            for q in 0..4 {
                 let mut word = 0u32;
-                for i2 in 0..8 {
-                    let q = lane * 32 + 8 * h + i2;
-                    let e = (u[q] >> 7) as u8;
-                    let c = code[e as usize];
-                    word |= (c as u32) << (4 * i2);
-                    if c == 15 {
-                        exc.push(q as i32 | (e as i32) << 16);
-                    }
+                for j in 0..4 {
+                    let ((a, _), (b, _)) = (code(v[8 * q + j]), code(v[8 * q + 4 + j]));
+                    word |= ((a >> 3) << 7 | (a & 7)) << (8 * j) | (b >> 3) << (8 * j + 3) | (b & 7) << (8 * ((j + 3) % 4) + 4);
                 }
-                d[lane * 16 + h * 4..lane * 16 + h * 4 + 4].copy_from_slice(&word.to_le_bytes());
+                d[lane * 16 + q * 4..lane * 16 + q * 4 + 4].copy_from_slice(&word.to_le_bytes());
+            }
+            for (i, &x) in v.iter().enumerate() {
+                d[512 + (i / 16) * 512 + lane * 16 + i % 16] = x as u8;
+                if code(x).1 {
+                    exc.push((lane * 32 + i) as i32 | ((hb ^ ((x >> 8) & 0x7F) as u8) as i32) << 16);
+                }
             }
         }
-        sign_mantissa(&u, &mut d[512..]);
         exc_base.push(i32::try_from(exc.len()).expect("exceptions past 2^31"));
         if check {
-            twelve_unstep(&data[s * 1536..(s + 1) * 1536], &exc[first..], &syms, &mut back);
+            twelve_unstep(&data[s * 1536..(s + 1) * 1536], &exc[first..], hb, &mut back);
             if back != u {
                 return None;
             }
         }
     }
     exc.resize(exc.len() + 4 - exc.len() % 4, 0);
-    Some(Twelve { rows, cols, data, exc, exc_base, sym })
+    Some(Twelve { rows, cols, data, exc, exc_base, sym: twelve_words(hb) })
 }
 
 /// W [rows, cols] in the 12-bit layout, as pack_mma12 makes it.
@@ -383,13 +416,12 @@ pub fn pack_twelve_checked(w: &[u16], rows: usize, cols: usize) -> Option<Twelve
     twelve(w, rows, cols, true)
 }
 
-/// W back from the 12-bit layout, into out [rows, cols]; false where its buffers do not hold it.
+/// W back from the 12-bit layout, into out [rows, cols]; false where its buffers or words do not hold it.
 pub fn unpack_twelve(p: &Twelve, out: &mut [u16]) -> bool {
     let n = p.rows * p.cols / STEP;
-    if out.len() != p.rows * p.cols || p.data.len() != n * 1536 || p.exc_base.len() != n + 1 {
+    if out.len() != p.rows * p.cols || p.data.len() != n * 1536 || p.exc_base.len() != n + 1 || p.hb() > 120 || p.sym != twelve_words(p.hb()) {
         return false;
     }
-    let syms: [u8; 16] = std::array::from_fn(|c| (p.sym[c / 4] >> (8 * (c % 4))) as u8);
     let places = places(p.cols);
     let mut u = [0u16; STEP];
     for (s, at) in steps(p.cols, 0, n) {
@@ -397,7 +429,7 @@ pub fn unpack_twelve(p: &Twelve, out: &mut [u16]) -> bool {
         if p.exc_base[s] < 0 || a > b || b > p.exc.len() {
             return false;
         }
-        twelve_unstep(&p.data[s * 1536..(s + 1) * 1536], &p.exc[a..b], &syms, &mut u);
+        twelve_unstep(&p.data[s * 1536..(s + 1) * 1536], &p.exc[a..b], p.hb(), &mut u);
         for (q, &v) in u.iter().enumerate() {
             out[at + places[q]] = v;
         }
@@ -506,6 +538,40 @@ mod tests {
         end.blocks.truncate(end.blocks.len() - 1); // 255 bytes past the last block
         assert!(!hold(&end));
         assert!(!tiered_blocks_hold(&[0; 1280], &[0; 1024], &[128, -1])); // offsets falling to a negative one (no overflow)
+    }
+
+    /// The 12-bit packer against kernels.pack_mma12, byte for byte: each matrix's base, its exceptions, and the sha256
+    /// of its data, exc and exc_base (little-endian), as the format helper's CPU emulation of pack_mma12 packs the
+    /// same matrices (benchmarks/gpu/splitbyte-2026-09-29/emulate.py's pack12, with `weights` ported): a trained
+    /// matrix's spread with 0-100% wild weights, every bf16 bit pattern, and the base at 0 and at 120.
+    #[test]
+    fn twelve_is_pack_mma12s() {
+        use sha2::{Digest, Sha256};
+        let every: Vec<u16> = (0..65536u32).map(|i| i as u16 ^ 0x8000).collect();
+        let near = |f: fn(u16) -> u16| -> Vec<u16> { every.iter().enumerate().map(|(i, &v)| if i % 10 != 0 { f(v) } else { v }).collect() };
+        let mut cases: Vec<(Vec<u16>, usize, usize)> = [(64, 16, 0.0), (64, 64, 0.5), (128, 48, 0.02), (192, 1040, 0.001), (256, 4096, 0.1), (64, 16, 1.0)].iter().map(|&(o, k, wild)| (weights(o * k, wild, (o * k) as u64), o, k)).collect();
+        cases.push((every.clone(), 256, 256));
+        cases.push((near(|v| v & 0x807F), 256, 256));
+        cases.push((near(|v| v | 0x7F00), 256, 256));
+        let want = [
+            ("weights(1024, 0.0, 1024)", 57, 0, "27b2b8c015802cdb75e55b50ba1a9c1040fc8d6c7932014ff01e570825f395a7"),
+            ("weights(4096, 0.5, 4096)", 57, 1941, "4301f3d82554a2bc384fe7095e8b0b447d8b2641f2767dc7442dd271e45398b0"),
+            ("weights(6144, 0.02, 6144)", 57, 107, "8bfd176a4d52e5cb02204828855bc2029693de97ca8baaf461fd6fc6ff2f2cd8"),
+            ("weights(199680, 0.001, 199680)", 57, 214, "0734426ff83a7af220955e402b5f9b4e60d76f0f39015e1289c324cbd92666db"),
+            ("weights(1048576, 0.1, 1048576)", 57, 98349, "359001272bd4eeb92edc4a14ce524e727b943a97e017c593cfd823eb51d0b695"),
+            ("weights(1024, 1.0, 1024)", 75, 935, "3a1e9bfb33218a4d619672e02d84b412bef679176ff2a7335802545dc95ab361"),
+            ("every pattern", 0, 61440, "081fe3fd1fc08ec32ec60f972655405fc5aa90aeb55d8e829d78c0b2e2077c40"),
+            ("hb 0", 0, 6144, "d917573e7bc816d5ed90312be7f176fbcbd9cb609cae292d497b3587ce4befff"),
+            ("hb 120", 120, 6144, "f5ae65b3a161a39651d47e0d2f77e30febb5eab4a280300c1c9ac66323ebec0d"),
+        ];
+        for ((w, o, k), (name, hb, n, sha)) in cases.iter().zip(want) {
+            let q = pack_twelve(w, *o, *k);
+            let mut h = Sha256::new();
+            h.update(&q.data);
+            q.exc.iter().chain(&q.exc_base).for_each(|x| h.update(x.to_le_bytes()));
+            let got = h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>();
+            assert_eq!((q.hb(), *q.exc_base.last().unwrap() as usize, got.as_str(), q.sym), (hb, n, sha, twelve_words(hb)), "{name}");
+        }
     }
 
     #[test]

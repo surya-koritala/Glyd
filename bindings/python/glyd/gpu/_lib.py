@@ -56,7 +56,7 @@ _SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_
 _PLAIN = {"gpu": [_P], "mma_route": [_I64] * 4 + [_P, _P], "mma12_route": [_I64] * 4 + [_P, _P]}  # the calls with no stream: the routes
 
 
-API_VERSION = 4  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+API_VERSION = 5  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
 BIG = 4  # glyd_gpu.h's GLYD_GPU_ROUTE_BIG: the prompt kernel
 
 
@@ -175,7 +175,7 @@ _arrays = {}
 
 
 def _words(v, n, what):
-    """tiers (3) or sym (4) as the C API's words (a pack's are the same every call: kept)."""
+    """tiers (3) or sym (4: a 12-bit pack's base) as the C API's words (a pack's are the same every call: kept)."""
     key = (n, *v)
     a = _arrays.get(key)
     if a is None:
@@ -288,7 +288,7 @@ def mma_gemm(data, blocks, block_base, tiers, O, K, x, bias, y):
 
 
 def mma12_gemm(data, exc, exc_base, sym, O, K, x, bias, y):
-    _small("mma12_gemm", data, exc, exc_base, _words(sym, 4, "four words of symbols"), O, K, x, bias, y)
+    _small("mma12_gemm", data, exc, exc_base, _words(sym, 4, "the 12-bit layout's four words (its base)"), O, K, x, bias, y)
 
 
 def _units(O, M):
@@ -317,23 +317,38 @@ def mma_gemm_big(data, blocks, block_base, tiers, O, K, x, bias, y, variant):
 
 
 def mma12_gemm_big(data, exc, exc_base, sym, O, K, x, bias, y, variant):
-    _big("mma12_gemm_big", data, exc, exc_base, _words(sym, 4, "four words of symbols"), O, K, x, bias, y, variant)
+    _big("mma12_gemm_big", data, exc, exc_base, _words(sym, 4, "the 12-bit layout's four words (its base)"), O, K, x, bias, y, variant)
+
+
+def _loaded(name):
+    """The C API's function name (_fn's), the library loaded first where nothing has loaded it yet, as the kernels'
+    first call does (kernels._Load: GLYD_GPU_LIB, else the one beside the package; OSError, saying so, where there is
+    none): the calls that are not the kernels' (gpu, the routes) can come first."""
+    if name not in _fn:
+        from . import kernels  # (kernels imports this module: here, at the call)
+
+        if isinstance(kernels._ext, kernels._Load):
+            kernels._ext.cuda_version  # loads it, or raises its OSError
+        if name not in _fn:  # (the kernels are gpu/glyd_gpu.py's JIT build's: no library to ask)
+            raise OSError(f"glyd_gpu_{name}: the Glyd GPU library is not loaded (the kernels are the JIT build's)")
+    return _fn[name]
 
 
 def gpu():
     """The current device as the library's routes take it: its code (compute capability, major * 10 + minor, plus its
-    class by name, glyd_gpu.h)."""
+    class by name, glyd_gpu.h); the library loaded first where it is not yet."""
     g = ctypes.c_int()
-    r = _fn["gpu"](ctypes.byref(g))
+    r = _loaded("gpu")(ctypes.byref(g))
     if r:
         _fail("gpu", r)
     return g.value
 
 
 def _route(name, gpu, O, K, M):
-    """mma_route, mma12_route: (route, last), the route for M tokens on gpu and the last token count that takes it."""
+    """mma_route, mma12_route: (route, last), the route for M tokens on gpu and the last token count that takes it (the
+    library loaded first where it is not yet)."""
     route, last = ctypes.c_int(), ctypes.c_int64()
-    r = _fn[name](gpu, O, K, M, ctypes.byref(route), ctypes.byref(last))
+    r = _loaded(name)(gpu, O, K, M, ctypes.byref(route), ctypes.byref(last))
     if r:
         _fail(name, r)
     return route.value, last.value
@@ -365,7 +380,7 @@ def mma_linear(data, blocks, block_base, tiers, O, K, x, bias, y, route):
 
 
 def mma12_linear(data, exc, exc_base, sym, O, K, x, bias, y, route):
-    _linear("mma12_linear", data, exc, exc_base, _words(sym, 4, "four words of symbols"), O, K, x, bias, y, route)
+    _linear("mma12_linear", data, exc, exc_base, _words(sym, 4, "the 12-bit layout's four words (its base)"), O, K, x, bias, y, route)
 
 
 def _staged(name, data, exc, exc_base, sym, O, K, x, bias, y):
@@ -373,7 +388,7 @@ def _staged(name, data, exc, exc_base, sym, O, K, x, bias, y):
     d = data.get_device()
     if d != _device():
         return _there(_staged, d, name, data, exc, exc_base, sym, O, K, x, bias, y)
-    words = _words(sym, 4, "four words of symbols")
+    words = _words(sym, 4, "the 12-bit layout's four words (its base)")
     _check(O % 64 == 0 and K % 64 == 0 and x.is_contiguous() and x.size(1) == K and x.data_ptr() % 16 == 0, "O a multiple of 64, K of 64, X contiguous [M, K]")
     _check(data.data_ptr() % 16 == 0 and exc.data_ptr() % 16 == 0 and exc.numel() % 4 == 0, "the pack 16-byte aligned, exc padded to 4 (pack_mma12)")
     M, s = x.size(0), _stream(d)
@@ -414,7 +429,7 @@ def mma_unpack(data, blocks, block_base, tiers, K, row0, rows, out, warps):
 
 
 def mma12_unpack(data, exc, exc_base, sym, K, row0, rows, out, warps):
-    _unpack("mma12_unpack", data, exc, exc_base, _words(sym, 4, "four words of symbols"), K, row0, rows, out, warps)
+    _unpack("mma12_unpack", data, exc, exc_base, _words(sym, 4, "the 12-bit layout's four words (its base)"), K, row0, rows, out, warps)
 
 
 def attn_decode(q, kd, kb, kbb, kt, vd, vb, vbb, vt, tk, tv, tlen, pairs, G, P, scale, out):
@@ -435,15 +450,15 @@ def step(data, a, b, words, n_words, shape, bias, routes, big=False, big_max=0):
     """A generation step's product over one pack in the mma layouts as one C call, glyd_gpu_*_linear by the route the
     Linear takes: what does not change between calls made once (the pack's addresses and words, O and K, the bias;
     each M's workspace bytes at its first call, and its stream's done counters), the checks that hold by the pack's
-    making left out. words: its n_words tiers (3) or words of symbols (4). routes[M]: the route for M tokens (the
-    library's: a step's kernel), or None; big: the prompt kernel's route past them to big_max tokens. run(x): Y [...,
-    O] for X contiguous [..., K] of M rows on the pack's device (made current for the call where it is not: a layer
-    on another GPU), where a route takes M; else None (the checked path)."""
+    making left out. words: its n_words tiers (3) or the 12-bit layout's words (4, its base). routes[M]: the route for
+    M tokens (the library's: a step's kernel), or None; big: the prompt kernel's route past them to big_max tokens.
+    run(x): Y [..., O] for X contiguous [..., K] of M rows on the pack's device (made current for the call where it is
+    not: a layer on another GPU), where a route takes M; else None (the checked path)."""
     O, K = shape
     d, dev = data.get_device(), data.device
     name = "mma12_linear" if n_words == 4 else "mma_linear"
     fn = _fn[name]
-    head = (data.data_ptr(), a.data_ptr(), b.data_ptr(), _words(words, n_words, "three tiers or four words of symbols"), O, K)
+    head = (data.data_ptr(), a.data_ptr(), b.data_ptr(), _words(words, n_words, "three tiers or the 12-bit layout's four words (its base)"), O, K)
     bias = bias.data_ptr() if bias is not None else None
     _counters(name, d, None, 0, _UNITS)  # the device's, made now: never in a CUDA graph's memory pool
     plans = [None] * len(routes)
@@ -544,7 +559,7 @@ def mma_moe(data, blocks, block_base, tiers, E, O, K, x, k, gather, plan, act, b
 
 
 def mma12_moe(data, exc, exc_base, sym, E, O, K, x, k, gather, plan, act, bias, w, ids, y):
-    _moe("mma12_moe", data, exc, exc_base, _words(sym, 4, "four words of symbols"), E, O, K, x, k, gather, plan, act, bias, w, ids, y)
+    _moe("mma12_moe", data, exc, exc_base, _words(sym, 4, "the 12-bit layout's four words (its base)"), E, O, K, x, k, gather, plan, act, bias, w, ids, y)
 
 
 def _moe_unpack(name, data, a, b, words, E, O, K, P, plan, out):
@@ -564,4 +579,4 @@ def mma_moe_unpack(data, blocks, block_base, tiers, E, O, K, P, plan, out):
 
 
 def mma12_moe_unpack(data, exc, exc_base, sym, E, O, K, P, plan, out):
-    _moe_unpack("mma12_moe_unpack", data, exc, exc_base, _words(sym, 4, "four words of symbols"), E, O, K, P, plan, out)
+    _moe_unpack("mma12_moe_unpack", data, exc, exc_base, _words(sym, 4, "the 12-bit layout's four words (its base)"), E, O, K, P, plan, out)

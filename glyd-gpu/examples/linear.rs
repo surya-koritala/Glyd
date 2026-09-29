@@ -3,12 +3,15 @@
 //! `Library::linear` for 1 to 2000 tokens, the route this GPU takes for each
 //! count (as glyd.gpu's Linears take it), checked bit for bit against that
 //! route's kernel called on its own, and one token against the product of the
-//! matrix decoded, in f32.
+//! matrix decoded, in f32. Where no kernel takes the product (a prompt's
+//! Decode or Ahead, the pack's cols not a multiple of 64: glyd_gpu.h),
+//! `linear` refuses it with NOT_SUPPORTED, nothing launched: the caller
+//! multiplies by the matrix decoded (`unpack`) with a GEMM of its own.
 //!
 //!     cargo run --release -p glyd-gpu --example linear -- GLYD_DIR [PACK]
 
 use glyd_gpu::safetensors::Checkpoint;
-use glyd_gpu::{cuda, json, Library, Matrix, Pack, Product, Route, Stream, Tiered};
+use glyd_gpu::{cuda, json, Error, Library, Matrix, Pack, Product, Route, Stream, Tiered, NOT_SUPPORTED};
 use std::path::Path;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -73,7 +76,14 @@ fn run(args: &[String]) -> Result<()> {
         let mut done = ctx.alloc(units * 4)?;
         done.zero()?;
         let (y1, y2) = (ctx.alloc(m * o * 2)?, ctx.alloc(m * o * 2)?);
-        let need = lib.linear_workspace(&w, m as i64, None)?;
+        let need = match lib.linear_workspace(&w, m as i64, None) {
+            // no kernel takes it: the caller's GEMM by W decoded (`whole`, above)
+            Err(Error::Cuda { status: NOT_SUPPORTED, .. }) if k % 64 != 0 && matches!(route, Route::Decode | Route::Ahead) => {
+                println!("  {m:>4} tokens: {route:?}, refused (cols {k}, not a multiple of 64): W decoded for a GEMM of the caller's");
+                continue;
+            }
+            r => r?,
+        };
         let ws = ctx.alloc(need.max(1))?;
         let p = |y: &cuda::Buffer, bytes| Product { x: xg.ptr(), m: m as i64, bias: std::ptr::null(), y: y.ptr(), workspace: ws.ptr(), workspace_bytes: bytes, done: done.ptr() };
         // SAFETY: X [m, k] and Y [m, o] in device memory, the workspace of the query's bytes, the counters zeroed.

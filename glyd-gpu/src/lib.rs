@@ -35,7 +35,7 @@ pub mod save;
 /// The C API this crate calls (glyd_gpu.h's `GLYD_GPU_API_VERSION`): a
 /// library of another version is refused, as a C FFI does not see a call's
 /// arguments.
-pub const API_VERSION: i32 = 4;
+pub const API_VERSION: i32 = 5;
 /// A GPU's class by name in its code ([`Library::gpu`]): "GeForce" in its name.
 pub const GEFORCE: i32 = 1000;
 /// A GPU's class by name in its code: "A10" in its name as a word (an A10, not an A10G, A100 or A40).
@@ -281,8 +281,10 @@ pub struct Tiered {
     pub tiers: [u32; 3],
 }
 
-/// A matrix in the 12-bit mma layout: `data` [steps][1536], `exc`,
-/// `exc_base` [steps + 1] in device memory, its 15 exponents' words here.
+/// A matrix in the 12-bit mma layout (split byte): `data` [steps][1536],
+/// `exc`, `exc_base` [steps + 1] in device memory, its words here: its base
+/// hb (0-120) in each byte of the first, then 0, 0, 0
+/// ([`pack::twelve_words`]; the library refuses any others).
 #[derive(Clone, Copy, Debug)]
 pub struct Twelve {
     pub data: *const u8,
@@ -643,7 +645,8 @@ impl Library {
         Ok((Route::from_c(r)?, last))
     }
 
-    /// Bytes of workspace [`Library::linear`] needs by `route` (None: the current GPU's).
+    /// Bytes of workspace [`Library::linear`] needs by `route` (None: the current GPU's);
+    /// [`NOT_SUPPORTED`] where `linear` refuses the product (cols not a multiple of 64: see it).
     pub fn linear_workspace(&self, w: &Matrix, m: i64, route: Option<Route>) -> Result<usize> {
         let r = route.map_or(-1, |r| r as i64);
         // SAFETY: sizes and a host out-pointer.
@@ -656,11 +659,15 @@ impl Library {
     }
 
     /// Y = X W^T (+ bias) by a route (None: the current GPU's for p.m): its
-    /// kernel, where it takes the product; [`Route::Decode`] and
-    /// [`Route::Ahead`] by the prompt kernel, but on Hopper and where cols is
-    /// not a multiple of 64 ([`NOT_SUPPORTED`]: decode W there, [`Library::unpack`],
-    /// then a GEMM of the caller's). done: (m + 127) / 128 x rows / 64
-    /// counters, and at least 1024 (the WG route's, as [`Library::gemm_wg`]'s).
+    /// kernel; [`Route::Decode`] and [`Route::Ahead`] by the prompt kernel on
+    /// every GPU. Where cols is not a multiple of 64 no kernel takes those two,
+    /// and such a matrix's route is one of them past 64 tokens on every GPU
+    /// (in the 12-bit layout also from GLYD_DEC_MIN tokens where that is set
+    /// lower): there this and [`Library::linear_workspace`] return
+    /// [`Error::Cuda`] with status [`NOT_SUPPORTED`], nothing launched; decode
+    /// W ([`Library::unpack`]) for a GEMM of the caller's (glyd_gpu.h; the
+    /// linear example). done: (m + 127) / 128 x rows / 64 counters, and at
+    /// least 1024 (the WG route's, as [`Library::gemm_wg`]'s).
     ///
     /// # Safety
     /// See the crate's.
@@ -923,5 +930,33 @@ mod tests {
     fn no_library_is_an_error() {
         let e = Library::load("/no/such/libglyd_gpu_cuda13.so").err().unwrap();
         assert!(matches!(e, Error::Load(_)), "{e}");
+    }
+
+    /// With the library and a GPU (else nothing to check): `linear` takes every route this GPU's gives, in both
+    /// layouts (its workspace query answers), but a prompt's Decode and Ahead where cols is not a multiple of 64,
+    /// which it refuses with NOT_SUPPORTED (glyd_gpu.h).
+    #[test]
+    fn linear_takes_every_route_but_one() {
+        let (Ok(lib), Ok(_ctx)) = (Library::find(), cuda::Context::new(0)) else { return };
+        let gpu = lib.gpu().unwrap();
+        let none = std::ptr::null();
+        let packs = [
+            Pack::Tiered(Tiered { data: none, blocks: none, block_base: none as *const i32, tiers: [0; 3] }),
+            Pack::Twelve(Twelve { data: none, exc: none as *const u32, exc_base: none as *const i32, sym: pack::twelve_words(0) }),
+        ];
+        for pack in packs {
+            for cols in [1024, 1040] {
+                let w = Matrix { pack, rows: 128, cols };
+                for m in [1, 17, 64, 65, 129, 600, 769, 1100, 2000] {
+                    let (route, _) = lib.route(gpu, &w, m).unwrap();
+                    let got = lib.linear_workspace(&w, m, None);
+                    if cols % 64 != 0 && matches!(route, Route::Decode | Route::Ahead) {
+                        assert!(matches!(got, Err(Error::Cuda { status: NOT_SUPPORTED, .. })), "{pack:?} {cols} {m} {route:?}: {got:?}");
+                    } else {
+                        assert!(got.is_ok(), "{pack:?} {cols} {m} {route:?}: {got:?}");
+                    }
+                }
+            }
+        }
     }
 }

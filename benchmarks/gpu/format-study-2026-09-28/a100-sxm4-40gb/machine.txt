@@ -1,0 +1,78 @@
+Mon Sep 28 22:49:40 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.20             Driver Version: 580.126.20     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A100-SXM4-40GB          On  |   00000000:06:00.0 Off |                    0 |
+| N/A   30C    P0             44W /  400W |       0MiB /  40960MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA A100-SXM4-40GB, 8.0, 580.126.20, 40960 MiB, 1410 MHz, 1215 MHz, 400.00 W
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+torch 2.14.0+cu130 CUDA 13.0
+ninja 1.13.2.git.kitware.jobserver-pipe-1
+sources: gpu-format 47c95d5e594559e0b4ceeec4c80c31805bfff9e5
+
+==============NVSMI LOG==============
+
+Timestamp                                              : Mon Sep 28 22:49:42 2026
+Driver Version                                         : 580.126.20
+CUDA Version                                           : 13.0
+
+Attached GPUs                                          : 1
+GPU 00000000:06:00.0
+    Clocks
+        Graphics                                       : 1245 MHz
+        SM                                             : 1245 MHz
+        Memory                                         : 1215 MHz
+        Video                                          : 1125 MHz
+    Applications Clocks
+        Graphics                                       : 1095 MHz
+        Memory                                         : 1215 MHz
+    Default Applications Clocks
+        Graphics                                       : 1095 MHz
+        Memory                                         : 1215 MHz
+    Deferred Clocks
+        Memory                                         : N/A
+    Max Clocks
+        Graphics                                       : 1410 MHz
+        SM                                             : 1410 MHz
+        Memory                                         : 1215 MHz
+        Video                                          : 1290 MHz
+    Max Customer Boost Clocks
+        Graphics                                       : 1410 MHz
+    SM Clock Samples
+        Duration                                       : Not Found
+        Number of Samples                              : Not Found
+        Max                                            : Not Found
+        Min                                            : Not Found
+        Avg                                            : Not Found
+    Memory Clock Samples
+        Duration                                       : Not Found
+        Number of Samples                              : Not Found
+        Max                                            : Not Found
+        Min                                            : Not Found
+        Avg                                            : Not Found
+    Clock Policy
+        Auto Boost                                     : N/A
+        Auto Boost Default                             : N/A
+
+Model name:                              AMD EPYC 7J13 64-Core Processor
+8
+               total        used        free      shared  buff/cache   available
+Mem:             216           3         208           0           6         212
+/dev/vda1       495G   18G  478G   4% /
+Mon Sep 28 22:49:42 UTC 2026

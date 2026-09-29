@@ -1,0 +1,14 @@
+$ python cols.py ~/p1/hf/hub/models--Qwen--Qwen3-8B/snapshots/* (11 of its matrices; RTX 4080 SUPER box's CPU, 2026-09-28)
+# escapes a million weights with one window for the tensor, one a row, one a column (sb11: 4 values of e >> 1;
+# v11: 7 exponents; sb12: 8 values of e >> 1); the spread of rows' and columns' mean exponents
+model.layers.0.self_attn.q_proj.weight 4096x4096: sb11 tensor 16454 row 16302 col 16407 | v11 tensor 32715 row 24794 col 32406 | sb12 tensor 250 row 78 col 98 | mean-exponent std: cols 0.07 rows 0.34
+model.layers.0.mlp.down_proj.weight 4096x12288: sb11 tensor 15554 row 15513 col 15545 | v11 tensor 30905 row 28825 col 30265 | sb12 tensor 239 row 78 col 125 | mean-exponent std: cols 0.09 rows 0.16
+model.layers.10.self_attn.q_proj.weight 4096x4096: sb11 tensor 16555 row 16503 col 16464 | v11 tensor 32758 row 27668 col 31881 | sb12 tensor 253 row 105 col 112 | mean-exponent std: cols 0.11 rows 0.28
+model.layers.10.self_attn.k_proj.weight 1024x4096: sb11 tensor 16292 row 16101 col 16261 | v11 tensor 32208 row 28054 col 30517 | sb12 tensor 251 row 108 col 88 | mean-exponent std: cols 0.15 rows 0.30
+model.layers.10.self_attn.o_proj.weight 4096x4096: sb11 tensor 15690 row 15648 col 15690 | v11 tensor 31146 row 29707 col 29114 | sb12 tensor 247 row 105 col 125 | mean-exponent std: cols 0.17 rows 0.18
+model.layers.10.mlp.gate_proj.weight 12288x4096: sb11 tensor 14019 row 14012 col 14003 | v11 tensor 27691 row 26767 col 27632 | sb12 tensor 215 row 96 col 174 | mean-exponent std: cols 0.07 rows 0.22
+model.layers.10.mlp.up_proj.weight 12288x4096: sb11 tensor 15412 row 15412 col 15351 | v11 tensor 30781 row 29738 col 30063 | sb12 tensor 118 row 73 col 86 | mean-exponent std: cols 0.13 rows 0.08
+model.layers.10.mlp.down_proj.weight 4096x12288: sb11 tensor 15604 row 15597 col 15602 | v11 tensor 31132 row 30045 col 29844 | sb12 tensor 146 row 93 col 78 | mean-exponent std: cols 0.10 rows 0.16
+model.layers.30.mlp.down_proj.weight 4096x12288: sb11 tensor 14256 row 13975 col 14252 | v11 tensor 28411 row 26374 col 28051 | sb12 tensor 134 row 98 col 82 | mean-exponent std: cols 0.11 rows 0.27
+model.layers.35.mlp.down_proj.weight 4096x12288: sb11 tensor 17298 row 17288 col 16926 | v11 tensor 34439 row 33089 col 26241 | sb12 tensor 217 row 98 col 101 | mean-exponent std: cols 0.36 rows 0.07
+lm_head.weight 151936x4096: sb11 tensor 16873 row 15426 col 16836 | v11 tensor 33691 row 27151 col 31954 | sb12 tensor 85 row 73 col 76 | mean-exponent std: cols 0.12 rows 0.42

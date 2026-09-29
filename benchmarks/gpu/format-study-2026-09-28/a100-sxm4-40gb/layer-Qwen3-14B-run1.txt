@@ -1,0 +1,10 @@
+Qwen3-14B layer 10: qkv (7168, 5120), o (5120, 5120), gate_up (34816, 5120), down (5120, 17408); exceptions a step, 12-bit / split-byte: qkv 0.229 / 0.161, o 0.190 / 0.125, gate_up 0.152 / 0.090, down 0.154 / 0.090
+  M=    1: layer cuBLAS    581.6 us | step12    479.2 (0.824x) | stepsb    477.2 (0.820x)  [qkv 80.9/72.7/71.7 | o 63.5/57.3/57.3 | gate_up 283.6/222.2/221.2 | down 153.6/127.0/127.0; us: cublas/step12/stepsb]
+  M=    8: layer cuBLAS    587.8 us | step12    487.4 (0.829x) | stepsb    486.4 (0.828x)  [qkv 87.0/73.7/73.7 | o 63.5/58.4/58.4 | gate_up 276.5/226.3/225.3 | down 160.8/129.0/129.0; us: cublas/step12/stepsb]
+  M=   16: layer cuBLAS    585.7 us | step12    500.7 (0.855x) | stepsb    498.7 (0.851x)  [qkv 81.9/77.8/77.8 | o 63.5/60.4/59.4 | gate_up 279.6/231.4/230.4 | down 160.8/131.1/131.1; us: cublas/step12/stepsb]
+  M=   32: layer cuBLAS    631.8 us | step12    579.6 (0.917x) | stepsb    580.6 (0.919x)  [qkv 93.2/84.0/85.0 | o 72.7/71.7/72.7 | gate_up 303.1/272.4/271.4 | down 162.8/151.6/151.6; us: cublas/step12/stepsb]
+  M=   64: layer cuBLAS    672.8 us | step12    704.5 (1.047x) | stepsb    690.2 (1.026x)  [qkv 82.9/104.4/101.4 | o 64.5/94.2/90.1 | gate_up 359.4/326.7/320.5 | down 165.9/179.2/178.2; us: cublas/step12/stepsb]
+  M=  128: layer cuBLAS    727.0 us | big12    836.6 (1.151x) | bigsb    816.1 (1.123x)  [qkv 100.4/123.9/115.7 | o 78.8/87.0/85.0 | gate_up 361.5/428.0/426.0 | down 186.4/197.6/189.4; us: cublas/big12/bigsb]
+  M=  256: layer cuBLAS    839.7 us | big12   1150.0 (1.370x) | bigsb   1122.3 (1.337x)  [qkv 124.9/171.0/163.8 | o 86.0/120.8/117.8 | gate_up 406.5/569.3/558.1 | down 222.2/288.8/282.6; us: cublas/big12/bigsb]
+  M=  512: layer cuBLAS   1508.4 us | big12   2182.1 (1.447x) | bigsb   2140.2 (1.419x)  [qkv 260.1/321.5/316.4 | o 134.1/206.8/201.7 | gate_up 764.9/1132.5/1112.1 | down 349.2/521.2/510.0; us: cublas/big12/bigsb]
+  M=  768: layer cuBLAS   2107.4 us | big12   3117.1 (1.479x) | bigsb   3049.5 (1.447x)  [qkv 262.1/385.0/374.8 | o 259.1/328.7/322.6 | gate_up 1029.1/1512.4/1480.7 | down 557.1/890.9/871.4; us: cublas/big12/bigsb]

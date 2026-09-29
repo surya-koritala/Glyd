@@ -143,9 +143,9 @@ def test_manifest_and_names():
         assert x["experts"] == 8 and x["transposed"] and fmt.manifest(None, {"m.q_proj": e, "m.experts.down_proj": x}, "0.22.0")["format"] == "glyd-v2"
         json.dump(fmt.manifest(None, {"m.experts.down_proj": x}, "0.22.0"), open(os.path.join(d, fmt.MANIFEST), "w"))
         assert fmt.read_manifest(d)["packs"]["m.experts.down_proj"] == x  # glyd-v2, which glyd 0.21 refuses by its format
-        # the 12-bit layout (glyd-v3): a pack's words of symbols, its buffers data, exc and exc_base
-        y = fmt.entry((1024, 256), [1, 2, 3, 0xFFFFFFFF], [("m.o_proj.weight", (1024, 256), "ee")], layout="mma12")
-        assert list(y) == ["layout", "shape", "sym", "tensors"] and y["sym"][3] == 0xFFFFFFFF and fmt.LAYOUTS["mma12"] == ("data", "exc", "exc_base")
+        # the 12-bit layout (glyd-v3): a pack's base hb (split byte), its buffers data, exc and exc_base
+        y = fmt.entry((1024, 256), 58, [("m.o_proj.weight", (1024, 256), "ee")], layout="mma12")
+        assert list(y) == ["layout", "shape", "hb", "tensors"] and y["hb"] == 58 and fmt.LAYOUTS["mma12"] == ("data", "exc", "exc_base")
         json.dump(fmt.manifest(None, {"m.o_proj": y}, "0.24.0", "mma12"), open(os.path.join(d, fmt.MANIFEST), "w"))
         assert fmt.read_manifest(d)["format"] == "glyd-v3" and fmt.read_manifest(d)["layout"] == "mma12"
         json.dump(dict(m, format="glyd-v9"), open(os.path.join(d, fmt.MANIFEST), "w"))
@@ -282,6 +282,15 @@ def test_c_header():
     assert lib["BIG"] == defines["GLYD_GPU_ROUTE_BIG"] and (kern["GEFORCE"], kern["A10"]) == (defines["GLYD_GPU_GEFORCE"], defines["GLYD_GPU_A10"])
     cu = open(os.path.join(gpu, "glyd_gpu.cu")).read()
     assert set(re.findall(r"GLYD_GPU_API [^(]*?(glyd_gpu_\w+)\(", cu)) == set(declared), "glyd_gpu.cu's C API is not glyd_gpu.h's"
+
+
+def test_names_defined_once():
+    """No module of the package defines a function or class twice at its top: the later one would take every call
+    meant for the earlier (read as text, no torch)."""
+    for top, _, files in os.walk(os.path.join(HERE, "glyd")):
+        for f in (os.path.join(top, f) for f in files if f.endswith(".py")):
+            defs = [n.name for n in ast.parse(open(f).read()).body if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name != "_"]
+            assert len(defs) == len(set(defs)), (f, sorted({d for d in defs if defs.count(d) > 1}))
 
 
 def test_gpu_class_by_name():
@@ -721,6 +730,36 @@ print("ok")
     assert r.stdout.strip().endswith("ok"), r.stderr[-3000:]
 
 
+def test_gpu_code_loads_the_library():
+    """_lib.gpu() and the routes as a process's first calls, before any kernel has loaded the library: they load it
+    (GLYD_GPU_LIB, as the kernels do) and give the code gpu_code gives and a route; with no library anywhere, an OSError
+    that says so, not a KeyError; with the kernels a JIT build's (a module without the library's functions), an OSError
+    that says that."""
+    torch = cuda()
+    if torch is None:
+        print("test_gpu_code_loads_the_library: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    import glyd.gpu.kernels as g
+    from glyd.gpu import model as gm
+
+    if g.library() is None:
+        print("test_gpu_code_loads_the_library: skipped (no prebuilt library: GLYD_GPU_LIB)")
+        return
+    first = "from glyd.gpu import _lib; print(_lib.gpu(), _lib.mma12_route(_lib.gpu(), 512, 1024, 1)[0])"
+    r = subprocess.run([sys.executable, "-c", first], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-2000:]
+    code, route = map(int, r.stdout.split())
+    assert code == gm.gpu_code(torch.cuda.get_device_capability(), torch.cuda.get_device_name()) and route == g.GEMM, r.stdout
+    env = {k: v for k, v in os.environ.items() if k != "GLYD_GPU_LIB"}
+    env["PYTHONPATH"] = os.pathsep.join([HERE] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    r = subprocess.run([sys.executable, "-c", first], capture_output=True, text=True, env=env, cwd=tempfile.gettempdir())
+    beside = os.path.exists(os.path.join(os.path.dirname(g.__file__), f"libglyd_gpu_cuda{torch.version.cuda.split('.')[0]}.so"))
+    assert beside or (r.returncode != 0 and "OSError: no Glyd GPU library" in r.stderr and "KeyError" not in r.stderr), r.stderr[-2000:]
+    jit = "import types; from glyd.gpu import _lib, kernels; kernels._ext = types.ModuleType('glyd_gpu'); _lib.gpu()"
+    r = subprocess.run([sys.executable, "-c", jit], capture_output=True, text=True, env=env, cwd=tempfile.gettempdir())
+    assert r.returncode != 0 and "OSError: glyd_gpu_gpu: the Glyd GPU library is not loaded" in r.stderr, r.stderr[-2000:]
+
+
 def test_packed_weight_view():
     """A packed Linear's and embedding's .weight as a model's own code reads it: its dtype, device and shape; rows by
     index; a torch function on the matrix decoded, its arguments nested too (torch.cat's list)."""
@@ -793,18 +832,32 @@ def test_cli_pack_and_verify():
             r = subprocess.run([sys.executable, "-m", "glyd.gpu", *args], env=env, capture_output=True, text=True)
             assert r.returncode == 0 and says in r.stdout, r.stderr[-2000:]
         m12 = fmt.read_manifest(os.path.join(d, "out12"))
-        assert m12["format"] == "glyd-v3" and all(e["layout"] == "mma12" and "sym" in e for e in m12["packs"].values())
+        assert m12["format"] == "glyd-v3" and all(e["layout"] == "mma12" and type(e["hb"]) is int and "sym" not in e for e in m12["packs"].values())
         from glyd.gpu import hf, kernels as g, model as gm
         saved, fresh = hf.from_pretrained(os.path.join(d, "out12"), layout="mma12"), hf.from_pretrained(os.path.join(d, "src"), layout="mma12")
         packs = lambda model: [m.p for m in model.modules() if isinstance(m, gm.GLinear)] + [p for m in model.modules() for p in (getattr(m, "glyd_packs", None) or {}).values()]
         assert len(packs(saved)) == len(packs(fresh)) == len(m12["packs"])
         for a, b in zip(packs(saved), packs(fresh)):
-            assert type(a) is g.Mma12 and a.sym == b.sym and all(torch.equal(getattr(a, t), getattr(b, t)) for t in ("data", "exc", "exc_base"))
+            assert type(a) is g.Mma12 and a.hb == b.hb and a.sym == b.sym and all(torch.equal(getattr(a, t), getattr(b, t)) for t in ("data", "exc", "exc_base"))
         del saved, fresh
         tiered = hf.from_pretrained(os.path.join(d, "out12"), layout="mma", verify=True)
         assert all(type(p) is g.Mma for p in packs(tiered))  # packed again, tiered
         assert tiered.config.quantization_config.verified >= sum(len(e["tensors"]) for e in m12["packs"].values())  # (and the embeddings packed as it loads)
         del tiered
+        # a glyd-v3 save of the 12-bit layout before split byte (never released): its packs' words "sym", no "hb";
+        # refused as it loads, never decoded as split byte
+        old = os.path.join(d, "old12")
+        shutil.copytree(os.path.join(d, "out12"), old)
+        mm = json.loads(open(os.path.join(old, fmt.MANIFEST)).read())
+        for e in mm["packs"].values():
+            e["sym"] = [e.pop("hb")] * 4
+        json.dump(mm, open(os.path.join(old, fmt.MANIFEST), "w"))
+        try:
+            hf.from_pretrained(old, layout="mma12")
+            raise AssertionError("a 12-bit save without hb loaded")
+        except ValueError as e:
+            assert "no hb" in str(e), e
+        shutil.rmtree(old)
         # verify on a changed copy: a byte of a tensor saved as it is flipped, bytes appended to a shard, a merged
         # pack's member renamed by a letter in glyd.json (k_proj to k_prok), the map's key renamed: each refused
         m = fmt.read_manifest(os.path.join(d, "out"))

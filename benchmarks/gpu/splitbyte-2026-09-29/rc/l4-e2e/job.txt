@@ -1,0 +1,33 @@
+== 17:38:24 (+0 s) machine
+== 17:38:25 (+1 s) environment
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+rust: cargo 1.98.1 (797e8a9bc 2026-08-05)
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'
+NVIDIA L4 (8.9, sm_89, 23034 MiB), x86_64 host, 16 CPUs; CLASS=ada; release tree 85ae892 (rust-splitbyte), main db8e7b0 (main)
+== 17:38:31 (+0 s) the models in the background, in turn: Qwen/Qwen3-1.7B Qwen/Qwen3-4B-Instruct-2507 ibm-granite/granite-3.1-3b-a800m-instruct; layer 10 alone: none
+== 17:38:31 (+0 s) builds for sm_89: the branch's library and main's (build_lib.sh's flags), the branch's JIT build, the glyd-gpu crate
+build src: exit 0
+build main: exit 0
+selftest: left out (not in ONLY)
+xcheck: left out (not in ONLY)
+capi: left out (not in ONLY)
+routes: left out (not in ONLY)
+rust: left out (not in ONLY)
+test_gpu: left out (not in ONLY)
+layer: left out (not in ONLY)
+== 17:39:13 (+42 s) (g) e2e12.py: Qwen/Qwen3-1.7B Qwen/Qwen3-4B-Instruct-2507 ibm-granite/granite-3.1-3b-a800m-instruct, main's then the branch's then main's again
+no Qwen/Qwen3-1.7B
+no Qwen/Qwen3-4B-Instruct-2507
+no ibm-granite/granite-3.1-3b-a800m-instruct
+e2e12-main: exit 0
+e2e12-src: exit 0
+e2e12-main2: exit 0
+main twice: the same lines
+main and split byte: the same lines (30 logits, 6 generations)
+api: left out (not in ONLY)
+xmodels: left out (not in ONLY)
+layer2: left out (not in ONLY)
+== 17:41:28 (+177 s) the checks done in 177 s
+== 17:41:28 (+177 s) done in 184 s
