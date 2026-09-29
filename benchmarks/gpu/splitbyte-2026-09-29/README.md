@@ -3,8 +3,8 @@
 The checks for the 12-bit layout in split byte: main's 12-bit layout (origin/main, its package and library) and this
 tree's in the same kernels, on any GPU. Main's tree and library sit beside this tree's (`git archive origin/main`, each
 built by `gpu/build_lib.sh`); the scripts load both libraries into one process where they compare (`both.py`: main's
-through a second copy of `glyd.gpu._lib`, the C API being version 4 in both, and main's `pack_mma12` taken from its
-`kernels.py`).
+through a second copy of `glyd.gpu._lib` at main's C API version, 4, with the same functions and arguments as this
+tree's 5, and main's `pack_mma12` taken from its `kernels.py`).
 
 | script | what |
 | :--- | :--- |
