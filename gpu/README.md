@@ -1135,8 +1135,30 @@ codes. glyd_gpu.cu includes it, so nvcc holds each definition to its
 declaration, in the library's build and the JIT's alike. The glyd package
 calls the library through ctypes (`_lib.py`, whose argument lists
 `bindings/python/test_gpu.py` checks against the header); an engine in C,
-C++, Rust or any language with a C FFI calls the same functions (Rust through
-bindgen over the header, or its declarations written out).
+C++, Rust or any language with a C FFI calls the same functions, Rust through
+the [glyd-gpu](../glyd-gpu) crate (the library loaded at run time and held to
+its API version, each function typed, a product's workspace query first,
+errors as `Result`; a test holds its declarations to the header).
+
+Which kernel a product for M tokens takes on a GPU is the library's: its
+routes (`glyd_gpu_mma_route`, `glyd_gpu_mma12_route`, as measured and written
+up below: a step's kernel to 64 tokens, `mma_gemm_mid` from 17 on Ampere and
+Ada and an A100's to 128, `mma_gemm_wg` from 17 to 1024 on Hopper, the prompt
+kernel past them, and the matrix decoded for cuBLAS where that is the faster:
+an A100's 12-bit prompts from 769 tokens, Hopper's past its wgmma kernel,
+GeForce Ada's from 513 tiered and 1793 12-bit (641 exact) and an A10's from
+512 tiered and 640 12-bit (not exact), decoded ahead; `GLYD_WG_MIN`,
+`GLYD_WG_MAX`, `GLYD_MID_MIN` and `GLYD_DEC_MIN` move them, read once a
+process, at the library's first route: set them in the environment before
+the first model is loaded).
+`glyd_gpu_mma_linear` and `glyd_gpu_mma12_linear` run a route's kernel (where
+glyd.gpu decodes for cuBLAS, the prompt kernel, but on Hopper and where K is
+not a multiple of 64: `cudaErrorNotSupported`, the matrix decoded for a GEMM
+of the caller's there). A GPU's code, which the routes take, is its compute
+capability plus a class where the name tells GPUs apart (`GLYD_GPU_GEFORCE`,
+`GLYD_GPU_A10`: `glyd_gpu.h`). The glyd package's Linears take their routes
+from the library and multiply by `linear` in their one C call, so every
+caller routes the same way.
 
 Every release carries it on its own for Linux x86_64 and aarch64 (glibc 2.28
 or later), CUDA 12 (built with 12.8) and 13:
@@ -1162,19 +1184,33 @@ one of Qwen3-0.6B's 112 packs, its 196 Linears, decodes to the checkpoint's
 bits so; a bit flipped in the checkpoint is found):
 
     $ ./unpack qwen3-0.6b-glyd ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/*/
-    libglyd_gpu: C API 2, CUDA runtime 13000
+    libglyd_gpu: C API 4, CUDA runtime 13000
     model.layers.0.self_attn.o_proj: [1024, 2048], 10.86 bits a weight packed, decoded on the GPU
       model.layers.0.self_attn.o_proj.weight [1024, 2048]: the checkpoint's, bit for bit
     $ ./unpack qwen3-0.6b-glyd ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/*/ model.layers.0.self_attn.q_proj
-    libglyd_gpu: C API 2, CUDA runtime 13000
+    libglyd_gpu: C API 4, CUDA runtime 13000
     model.layers.0.self_attn.q_proj: [4096, 1024], 10.79 bits a weight packed, decoded on the GPU
       model.layers.0.self_attn.q_proj.weight [2048, 1024]: the checkpoint's, bit for bit
       model.layers.0.self_attn.k_proj.weight [1024, 1024]: the checkpoint's, bit for bit
       model.layers.0.self_attn.v_proj.weight [1024, 1024]: the checkpoint's, bit for bit
 
+The glyd-gpu crate's examples do the same from Rust: `examples/unpack.rs`
+(this one), and `examples/linear.rs`, a pack multiplied by `linear` for
+1-2000 tokens, bit for bit the kernel of the route this GPU takes:
+
+    cargo run --release -p glyd-gpu --example unpack -- qwen3-0.6b-glyd ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/*/
+    cargo run --release -p glyd-gpu --example linear -- qwen3-0.6b-glyd model.layers.0.mlp.gate_proj
+
+And the saved model itself comes from Rust too, on the CPU, byte for byte as
+`python -m glyd.gpu pack` saves it (Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe; the glyd-gpu
+command, which the glyd CLI runs):
+
+    glyd pack Qwen/Qwen3-0.6B qwen3-0.6b-glyd
+    glyd verify qwen3-0.6b-glyd [--device cuda:0]
+
 ## License
 
-The files under gpu/ are under the [Business Source License 1.1](LICENSE):
+The files under gpu/ (and the glyd-gpu crate) are under the [Business Source License 1.1](LICENSE):
 source available, free for personal, educational, research and other
 non-commercial use; any commercial production use needs a license
 (suryakoritala1324@gmail.com); each version converts to Apache-2.0 four

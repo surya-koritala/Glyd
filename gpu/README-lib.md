@@ -39,7 +39,16 @@ bf16 checkpoint it was packed from is in the Hugging Face cache:
     python -m glyd.gpu pack Qwen/Qwen3-0.6B qwen3-0.6b-glyd
     ./unpack qwen3-0.6b-glyd ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/*/ [PACK]
 
-Rust and other languages call the same functions through their C FFI
-(bindgen over `glyd_gpu.h`, or its declarations written out): device
-pointers as raw pointers, a stream as the CUDA runtime's or driver's handle.
+`glyd_gpu_mma_linear` and `glyd_gpu_mma12_linear` multiply by a packed
+matrix with the kernel glyd takes for that many tokens on this GPU
+(`glyd_gpu_mma_route` says which, as measured; where glyd decodes the
+matrix for cuBLAS, the prompt kernel). There, on Hopper and where K is not
+a multiple of 64, they return `cudaErrorNotSupported`: decode the matrix
+(`glyd_gpu_mma_unpack`) for a GEMM of your own.
+
+Rust calls them through the `glyd-gpu` crate in the Glyd repository (the
+library loaded at run time and held to its API version, each function
+typed, device pointers and streams the caller's); other languages through
+their C FFI: device pointers as raw pointers, a stream as the CUDA
+runtime's or driver's handle.
 The source: https://github.com/surya-koritala/Glyd/tree/main/gpu#the-library

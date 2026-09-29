@@ -89,8 +89,10 @@ shard.
 - `merge`: q, k, v and gate, up as one product each, as serving engines
   run them (not with `exact`).
 - `verify`: every pack decoded and compared with its weights bit for bit
-  as it is made; from a saved checkpoint, every tensor decoded and its
-  sha256 checked against `glyd.json`.
+  as it is made; from a saved checkpoint, every packed tensor decoded and
+  its sha256 checked against `glyd.json`, and every tensor saved as it is
+  by its own there (a save of glyd 0.25 on), each file's tensors back to
+  back, each a pack's buffer or of a sha256 there.
 - `compile`: `generate()` compiled (below); `False`, or `GLYD_COMPILE=0`
   in the environment, runs it eager, as transformers runs it.
 - `hf_kwargs`: transformers' `from_pretrained`'s (`revision`, `token`,
@@ -225,13 +227,20 @@ tiered layout as safetensors (each packed Linear's buffers under its
 module path, `.glyd_data`, `.glyd_blocks`, `.glyd_block_base`; a mixture
 of experts' weight's under the module holding it, `.glyd_gate_up_proj_data`
 and so on), the rest of the model as it is, `glyd.json` (the format, the
-source repo and revision, and for every packed tensor its shape and the
-sha256 of its bf16 bytes), and the source's config, generation config
+source repo and revision, for every packed tensor its shape and the
+sha256 of its bf16 bytes, and from glyd 0.25 the sha256 of every tensor
+saved as it is), and the source's config, generation config
 and tokenizer files. With a mixture of experts' packs the format is
 glyd-v2, which glyd 0.21 refuses by its format ("this glyd reads
 glyd-v1"): load it with 0.22 or later. `from_pretrained(path)` loads the packs as saved;
 on a GPU where the 12-bit layout is the pick, it decodes and packs them
-again.
+again. `save_pretrained(model, path, layout="mma12")` (`pack --layout
+mma12`) saves the packs in the 12-bit layout instead, as an A10, A100 or
+H100 runs them (`.glyd_data`, `.glyd_exc`, `.glyd_exc_base`; glyd-v3,
+which glyd 0.24 and before refuse): loaded there as saved, 2.7-3.9x
+faster than packing again (on an RTX 4080 SUPER, Qwen3-8B in 1.17-1.18 s
+against 3.14-4.55 s from a tiered save and 3.54-3.61 s from the bf16
+checkpoint; benchmarks/gpu/rtx4080s-rust-2026-09-28).
 
 `glyd.fit(name_or_path, gpu="48GB", context=8192)`: whether the model
 fits one GPU in bf16 and with Glyd, by the site's rule: the weights (with
@@ -244,6 +253,11 @@ repo id, from the files for a directory.
     python -m glyd.gpu fit Qwen/Qwen3-32B --gpu 48GB
     python -m glyd.gpu pack Qwen/Qwen3-8B qwen3-8b-glyd     # packed, checked, saved as glyd-v1
     python -m glyd.gpu verify qwen3-8b-glyd
+
+`glyd pack` and `glyd verify`, the Rust CLI's (the glyd-gpu command),
+do the same on the CPU with no Python, PyTorch or GPU, and save the same
+bytes (Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe for now; other
+families: the commands above).
 
 `glyd.gpu` is under the Business Source License 1.1 (`LICENSE-glyd-gpu`),
 as the rest of Glyd's GPU code; the codec under BSD-3-Clause OR GPL-2.0.

@@ -130,11 +130,12 @@ jobs:
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DIR="glyd-$TAG-${{ matrix.name }}"
           mkdir -p "$DIR"
-          cp target/release/glyd target/release/glyd-store "$DIR/"
+          cp target/release/glyd target/release/glyd-store target/release/glyd-gpu "$DIR/"
           cp target/release/libglyd_store.* target/release/libglyd.* "$DIR/" 2>/dev/null || true
           rm -f "$DIR"/*.d "$DIR"/*.rlib
           cp include/glyd.h LICENSE COPYING README.md "$DIR/"
           cp glyd-store/LICENSE "$DIR/LICENSE-glyd-store"
+          cp glyd-gpu/LICENSE "$DIR/LICENSE-glyd-gpu"
           tar -czf "$DIR.tar.gz" "$DIR"
           (shasum -a 256 "$DIR.tar.gz" 2> /dev/null || sha256sum "$DIR.tar.gz") > "$DIR.tar.gz.sha256"
       - uses: actions/download-artifact@v4

@@ -1,0 +1,36 @@
+# 2026-09-28 20:47:47: load 3.76 3.07 1.50; busiest:  4.9 localsearch-3; 0.7 localsearch-ext; 0.1 gnome-shell;
+Qwen/Qwen3-0.6B exact compiled, Qwen/Qwen3-1.7B loaded after: the first's CUDA graph replayed, both models' logits as before
+Qwen/Qwen3-0.6B: bf16 loaded in 0.1 s, peak 1.66 GB, holds 1.19 GB, largest tensor 0.31 GB
+Qwen/Qwen3-0.6B: glyd mma fused loaded in 0.8 s, peak 2.21 GB: packed weights 1.02 GB + largest tensor 0.31 GB + 0.87 GB; holds 1.31 GB
+   generated tokens identical to bf16: 0 of 32; logits bit-identical: False
+   text:  with the invention of the first digital computer. This was a machine that could only store and process data in binary form, which is a two-state system. The
+   a prompt of 2100 tokens: 112 products decoded ahead, logits as decoded on the current stream, bit for bit
+   glyd.gpu.compress: the same 1.02 GB, logits and tokens bit for bit
+   compiled (a static cache, CUDA graphs, fullgraph): tokens as eager's: 8 of 32
+Qwen/Qwen3-0.6B: glyd exact loaded in 0.7 s, peak 2.23 GB, holds 1.10 GB; logits bit-identical: True (and a prompt of 2100 tokens'); generated tokens identical to bf16: 32 of 32
+   compiled: tokens as bf16's eager: 32 of 32
+Qwen/Qwen3-0.6B: saved in 0.8 s: 0.91 GB of safetensors; config.json, generation_config.json, glyd.json, merges.txt, model.safetensors, tokenizer.json, tokenizer_config.json, vocab.json
+   from_pretrained(path, verify=False): 0 tensors verified, loaded in 0.3 s, peak 2.20 GB, holds 1.04 GB; logits and tokens as the saved model's
+   from_pretrained(path, verify=True): 198 tensors verified, loaded in 0.9 s, peak 2.20 GB, holds 1.04 GB; logits and tokens as the saved model's
+   from_pretrained(path, exact=True): merged groups split, loaded in 0.6 s; logits bit-identical to bf16: True
+   from_pretrained(path, layout='mma12'): the packs transcoded, logits and tokens as mma12 packed from bf16
+   python -m glyd.gpu verify: /home/surya-koritala/p9rust2/tmp/tmpvn5b_kl0: 198 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+   python -m glyd.gpu fit: Qwen3-0.6B on a 16 GB GPU: bf16 needs 4.1 GB, fits; Glyd 3.6 GB, fits
+Qwen/Qwen3-1.7B: bf16 loaded in 0.3 s, peak 4.38 GB, holds 3.44 GB, largest tensor 0.62 GB
+Qwen/Qwen3-1.7B: glyd mma fused loaded in 2.1 s, peak 4.12 GB: packed weights 2.75 GB + largest tensor 0.62 GB + 0.74 GB; holds 2.79 GB
+   generated tokens identical to bf16: 13 of 32; logits bit-identical: False
+   text:  in the 1950s with the advent of digital storage and transmission. The first significant developments were in the field of information theory, where the concept
+   a prompt of 2100 tokens: 112 products decoded ahead, logits as decoded on the current stream, bit for bit
+   glyd.gpu.compress: the same 2.75 GB, logits and tokens bit for bit
+   compiled (a static cache, CUDA graphs, fullgraph): tokens as eager's: 17 of 32
+Qwen/Qwen3-1.7B: glyd exact loaded in 2.0 s, peak 4.13 GB, holds 3.43 GB; logits bit-identical: True (and a prompt of 2100 tokens'); generated tokens identical to bf16: 32 of 32
+   compiled: tokens as bf16's eager: 13 of 32
+Qwen/Qwen3-1.7B: saved in 2.5 s: 2.52 GB of safetensors; config.json, generation_config.json, glyd.json, merges.txt, model.safetensors, tokenizer.json, tokenizer_config.json, vocab.json
+   from_pretrained(path, verify=False): 0 tensors verified, loaded in 0.7 s, peak 4.09 GB, holds 2.77 GB; logits and tokens as the saved model's
+   from_pretrained(path, verify=True): 198 tensors verified, loaded in 2.1 s, peak 4.32 GB, holds 2.77 GB; logits and tokens as the saved model's
+   from_pretrained(path, exact=True): merged groups split, loaded in 1.5 s; logits bit-identical to bf16: True
+   from_pretrained(path, layout='mma12'): the packs transcoded, logits and tokens as mma12 packed from bf16
+   python -m glyd.gpu verify: /home/surya-koritala/p9rust2/tmp/tmp6b116sui: 198 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+   python -m glyd.gpu fit: Qwen3-1.7B on a 16 GB GPU: bf16 needs 6.6 GB, fits; Glyd 5.3 GB, fits
+check_api: all passed (/home/surya-koritala/p9rust2/src/bindings/python/glyd/__init__.py)
+exit 0

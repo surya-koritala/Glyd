@@ -1,0 +1,5 @@
+# 2026-09-29 00:25:58: load 1.46 0.79 0.32; busiest:  3.6 localsearch-3; 0.3 localsearch-ext; 0.1 gnome-shell;
+GLYD_WG_MAX='1e3': ValueError: GLYD_WG_MAX='1e3': not a whole number, as the GPU library's routes read it
+GLYD_WG_MAX='': ValueError: GLYD_WG_MAX='': not a whole number, as the GPU library's routes read it
+GLYD_WG_MAX='2k': ValueError: GLYD_WG_MAX='2k': not a whole number, as the GPU library's routes read it
+GLYD_WG_MAX='512': imported

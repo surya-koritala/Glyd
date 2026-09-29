@@ -45,6 +45,10 @@ model = glyd.from_pretrained("Qwen/Qwen3-8B")               # packed on the GPU 
 model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits bit for bit bf16's
 # generate() runs compiled on PyTorch 2.13.0 or later (a static cache, CUDA graphs); compile=False, or GLYD_COMPILE=0, runs it eager
 ```
+```bash
+glyd pack Qwen/Qwen3-8B qwen3-8b-glyd                    # saved packed on the CPU, no Python or GPU: python -m glyd.gpu pack's bytes (Qwen3, Qwen2, Llama, Mistral, Granite)
+glyd pack Qwen/Qwen3-8B qwen3-8b-glyd12 --layout mma12   # the 12-bit layout: an A10, A100 or H100 loads it as saved
+```
 
 <p align="center"><img src="docs/img/qwen3-32b-gpus.svg" width="100%" alt="nvidia-smi: Qwen3-32B in bf16 across two 48 GB GPUs (44,554 + 18,514 MiB), and with Glyd on one (43,338 MiB)"></p>
 
@@ -305,7 +309,7 @@ million a year at list price; the percentages above are what to multiply.
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 pip install glyd                             # Python: Linux x86_64 / aarch64, macOS arm64 (PyPI)
 pip install "glyd[gpu]"                      # models on the GPU: Linux x86_64 / aarch64 (glyd.from_pretrained)
-cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store   # from source
+cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store glyd-gpu   # from source
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -1079,7 +1083,7 @@ from PyPI into a fresh venv and runs a model through it — generating,
   (suryakoritala1324@gmail.com); each version converts to Apache-2.0
   four years after its release.
 - **The GPU weights — [gpu/](gpu/README.md), model weights held
-  compressed in GPU memory — are under the
+  compressed in GPU memory, and the glyd-gpu crate and command — are under the
   [Business Source License 1.1](gpu/LICENSE)** on the same terms as the
   store (from v0.17.0; earlier releases of gpu/ carry the codec's
   licenses).

@@ -37,17 +37,20 @@ def from_pretrained(name_or_path, *, device="cuda:0", layout="auto", exact=False
 
     device: the GPU (hf_kwargs' device_map instead: several GPUs).
     layout: "auto" (best_layout's pick for the GPU), "mma" (tiered, 10.80
-      bits a weight) or "mma12" (12.04, a lighter decode); a glyd-v1
-      checkpoint is tiered, and packed again into the 12-bit layout where
-      that is the one.
+      bits a weight) or "mma12" (12.04, a lighter decode); a saved
+      checkpoint's packs load as saved where their layout is the one (a
+      glyd-v1 checkpoint is tiered, a glyd-v3 one 12-bit), else are
+      decoded and packed again.
     exact: every product decodes its matrix whole and multiplies by
       F.linear, as nn.Linear does: logits bit for bit bf16's (and no
       merging); else products straight from the packed weights.
     merge: q, k, v and gate, up as one product each, as serving engines
       run them (not with exact; a glyd-v1 checkpoint's as it was saved).
     verify: every pack decoded and compared with its weights bit for bit
-      as it is made; from a glyd-v1 checkpoint, every tensor decoded and
-      its sha256 checked against glyd.json.
+      as it is made; from a saved checkpoint, every packed tensor decoded
+      and its sha256 checked against glyd.json, and every tensor saved as
+      it is by its own there (a save of glyd 0.25 on), each file's tensors
+      back to back and each a pack's buffer or of a sha256 there.
     compile: generate() through transformers' static cache and compiled
       forward (CUDA graphs), as cache_implementation="static" asks for it,
       on PyTorch 2.13.0 or later (a 2.13 pre-release runs eager), where a
@@ -88,9 +91,10 @@ class GlydConfig(QuantizationConfigMixin):
     """from_pretrained's options as transformers carries them (after the load, model.config.quantization_config): the
     layout the packs are in, the tensors verified, a glyd-v1 checkpoint's source."""
 
-    def __init__(self, layout="auto", exact=False, merge=True, verify=False, verified=0, source=None, **kwargs):
+    def __init__(self, layout="auto", exact=False, merge=True, verify=False, verified=0, source=None, hashed=0, unhashed=0, **kwargs):
         self.quant_method = "glyd"
         self.layout, self.exact, self.merge, self.verify, self.verified, self.source = layout, exact, merge, verify, verified, source
+        self.hashed, self.unhashed = hashed, unhashed  # verify: a saved checkpoint's tensors saved as they are, checked by sha256 (and not: saved before glyd 0.25)
 
 
 def _unparam(model, name):
@@ -103,6 +107,11 @@ def _unparam(model, name):
     setattr(host, name.rpartition(".")[2], placeholder)
     host._is_hf_initialized = True
     return host
+
+
+def _saved(e, buffers):
+    """A saved pack from its entry in glyd.json and its buffers, in the layout it was saved in."""
+    return (g.Mma12 if e["layout"] == "mma12" else g.Mma)(tuple(e["shape"]), *buffers, e[fmt.WORDS[e["layout"]]])
 
 
 def _cuda(d):
@@ -197,12 +206,14 @@ class GlydQuantizer(HfQuantizer):
         if self.stored is None and checkpoint_files and fmt.stored([f for f in checkpoint_files if f.endswith(".safetensors")]):
             raise ValueError(f"glyd: {os.path.dirname(checkpoint_files[0])} holds packs but no {fmt.MANIFEST}: a save cut short; save it again")
         if self.stored is not None:  # a glyd-v1 checkpoint: its packs' buffers load in place of their Linears' weights
+            if q.verify:  # its files: every tensor a pack's buffer or of a sha256 in glyd.json, and those sha256
+                q.hashed, q.unhashed = fmt.check_files(os.path.dirname(checkpoint_files[0]), self.stored)
             heads = fmt.stored(checkpoint_files)
             for path, e in self.stored["packs"].items():
                 if "experts" in e:  # a mixture of experts' weight: its buffers on the module holding it, in its place
                     owner, _, weight = path.rpartition(".")
                     host = _unparam(model, path)
-                    for b in fmt.BUFFERS:
+                    for b in fmt.LAYOUTS[e["layout"]]:
                         shape, dtype = heads[fmt.key(owner, b, weight)]
                         host.register_buffer(f"glyd_{weight}_{b}", torch.empty(shape, dtype=DTYPES[dtype], device="meta"))
                     continue
@@ -212,7 +223,7 @@ class GlydQuantizer(HfQuantizer):
                     lin._is_hf_initialized = True
                     getattr(model, "all_tied_weights_keys", {}).pop(member + ".weight", None)
                 host = model.get_submodule(path)
-                for b in fmt.BUFFERS:
+                for b in fmt.LAYOUTS[e["layout"]]:
                     shape, dtype = heads[fmt.key(path, b)]
                     host.register_buffer("glyd_" + b, torch.empty(shape, dtype=DTYPES[dtype], device="meta"))
             self.pre_quantized = True  # its buffers load as stored (a model's fp32 patterns, HunYuan V4's "base", would cast block_base)
@@ -281,9 +292,9 @@ class GlydQuantizer(HfQuantizer):
         return p
 
     def _unstore(self, model, mode):
-        """A glyd-v1 checkpoint's packs from their buffers: installed as saved where this load wants them so (tiered,
-        its merged groups merged), else decoded and packed again (the 12-bit layout; a group split for exact or
-        merge=False). verify: every tensor's sha256 against glyd.json."""
+        """A saved checkpoint's packs from their buffers: installed as saved where this load wants them so (the
+        layout they are in, their merged groups merged), else decoded and packed again (the other layout; a group
+        split for exact or merge=False). verify: every tensor's sha256 against glyd.json."""
         q = self.quantization_config
         q.source = self.stored.get("source")
         for path, e in self.stored["packs"].items():
@@ -291,12 +302,12 @@ class GlydQuantizer(HfQuantizer):
                 self._unstore_experts(path, e, model.get_submodule(path.rpartition(".")[0]), path.rpartition(".")[2])
                 continue
             host = model.get_submodule(path)
-            p = g.Mma(tuple(e["shape"]), host.glyd_data, host.glyd_blocks, host.glyd_block_base, e["tiers"])
-            for b in fmt.BUFFERS:
+            p = _saved(e, [getattr(host, "glyd_" + b) for b in fmt.LAYOUTS[e["layout"]]])
+            for b in fmt.LAYOUTS[e["layout"]]:
                 delattr(host, "glyd_" + b)
             paths, rows = fmt.members(e)
             split = len(paths) > 1 and (q.exact or not q.merge)
-            w = gm.unpack(p) if q.verify or split or q.layout != "mma" else None
+            w = gm.unpack(p) if q.verify or split or q.layout != e["layout"] else None
             if q.verify:
                 for t, x in zip(e["tensors"], w.split(rows)):
                     if gm.sha256(x) != t["sha256"]:
@@ -306,25 +317,25 @@ class GlydQuantizer(HfQuantizer):
                 for member, x in zip(paths, w.split(rows)):
                     _install(model, [member], gm.pack(x.contiguous(), True, q.layout), mode)
             else:
-                _install(model, paths, p if w is None or q.layout == "mma" else gm.pack(w, True, q.layout), mode)
+                _install(model, paths, p if w is None or q.layout == e["layout"] else gm.pack(w, True, q.layout), mode)
             del w, p
 
     def _unstore_experts(self, path, e, host, weight):
-        """A glyd-v1 checkpoint's experts' weight from its buffers, on the module holding it (moe.py), packed again
-        into the 12-bit layout where that is the one; verify: its sha256 against glyd.json."""
+        """A saved checkpoint's experts' weight from its buffers, on the module holding it (moe.py), packed again
+        into the other layout where that is the one; verify: its sha256 against glyd.json."""
         q = self.quantization_config
         _, E, tr = moe.held(host)
         if (e["experts"], e["transposed"]) != (E, weight in tr):  # (a transformers that holds the family otherwise)
             raise ValueError(f"glyd: {path} saved as {e['experts']} experts' matrices{' transposed' if e['transposed'] else ''}; this model holds {E}{' transposed' if weight in tr else ''}")
-        p = g.Mma(tuple(e["shape"]), *(getattr(host, f"glyd_{weight}_{b}") for b in fmt.BUFFERS), e["tiers"])
-        for b in fmt.BUFFERS:
+        p = _saved(e, [getattr(host, f"glyd_{weight}_{b}") for b in fmt.LAYOUTS[e["layout"]]])
+        for b in fmt.LAYOUTS[e["layout"]]:
             delattr(host, f"glyd_{weight}_{b}")
         moe.put(host, weight, p, (tuple(e["tensors"][0]["shape"]), e["transposed"]))
         if q.verify:
             if moe.sha256(host, p, weight) != e["tensors"][0]["sha256"]:
                 raise ValueError(f"glyd: {path} decodes to other bytes than glyd.json's sha256")
             q.verified += 1
-        if q.layout != "mma":
+        if q.layout != e["layout"]:
             moe.put(host, weight, gm.pack(gm.unpack(p), True, q.layout), host.glyd_held[weight])
         setattr(host, weight, nn.Parameter(torch.empty(0, dtype=torch.bfloat16, device=p.sm.device), requires_grad=False))
         del p

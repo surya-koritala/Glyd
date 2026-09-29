@@ -1,0 +1,20 @@
+# 2026-09-28 23:04:18: load 1.68 0.62 0.37; busiest:  4.1 localsearch-3; 0.2 localsearch-ext; 0.1 gnome-shell;
+mma_gemm_mid 64x64, 0 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 64x64, 0 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 192x128, 0 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 192x128, 0 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 128x4096, 96 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 128x4096, 96 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 1024x2048, 292 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 1024x2048, 292 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 5120x1024, 4826 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 5120x1024, 4826 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 192x4096, 58814 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 192x4096, 58814 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 3072x5120, 238950 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 3072x5120, 238950 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 17408x1024, 137054 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 17408x1024, 137054 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 8960x128, 191 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 8960x128, 191 exceptions: 1-1100 tokens within 1e-2, the same every run
+exit 0

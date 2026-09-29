@@ -1,0 +1,17 @@
+# 2026-09-28 20:43:05: load 0.94 0.52 0.29; busiest:  4.6 localsearch-3; 0.1 gnome-shell; 0.0 kswapd0;
+/home/surya-koritala/p9rust2/lib/libglyd_gpu_cuda13.so
+
+real	0m27.832s
+user	2m10.365s
+sys	0m3.176s
+/home/surya-koritala/p9rust2/main/lib/libglyd_gpu_cuda13.so
+
+real	0m27.347s
+user	2m9.263s
+sys	0m3.138s
+
+warning: `glyd` (example "floor") generated 1 warning
+    Finished `release` profile [optimized] target(s) in 2m 00s
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

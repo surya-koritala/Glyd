@@ -1,0 +1,81 @@
+# 2026-09-28 21:09:21: load 2.61 1.72 1.47; busiest:  5.4 localsearch-3; 0.1 localsearch-ext; 0.1 gnome-shell;
+round 1
+ibm-granite/granite-3.1-3b-a800m-instruct layout mma12: 1.44 s, 6.07 GB peak, packs ['Mma12']
+# 2026-09-28 21:09:27: load 2.64 1.74 1.48; busiest:  5.4 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 1
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma layout mma12: 1.32 s, 6.08 GB peak, packs ['Mma12']
+# 2026-09-28 21:09:31: load 2.51 1.73 1.48; busiest:  5.4 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 1
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma12 layout mma12: 0.49 s, 6.06 GB peak, packs ['Mma12']
+# 2026-09-28 21:09:37: load 2.47 1.73 1.48; busiest:  5.4 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 2
+ibm-granite/granite-3.1-3b-a800m-instruct layout mma12: 1.44 s, 6.07 GB peak, packs ['Mma12']
+# 2026-09-28 21:09:43: load 2.35 1.72 1.48; busiest:  5.4 localsearch-3; 0.1 localsearch-ext; 0.1 gnome-shell;
+round 2
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma layout mma12: 1.33 s, 6.07 GB peak, packs ['Mma12']
+# 2026-09-28 21:09:47: load 2.32 1.73 1.48; busiest:  5.4 localsearch-3; 0.1 localsearch-ext; 0.1 gnome-shell;
+round 2
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma12 layout mma12: 0.49 s, 6.06 GB peak, packs ['Mma12']
+# 2026-09-28 21:09:52: load 2.21 1.72 1.48; busiest:  5.4 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 3
+ibm-granite/granite-3.1-3b-a800m-instruct layout mma12: 1.45 s, 6.07 GB peak, packs ['Mma12']
+# 2026-09-28 21:09:58: load 2.12 1.70 1.47; busiest:  5.4 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 3
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma layout mma12: 1.33 s, 6.08 GB peak, packs ['Mma12']
+# 2026-09-28 21:10:02: load 2.03 1.69 1.47; busiest:  5.4 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 3
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma12 layout mma12: 0.49 s, 6.06 GB peak, packs ['Mma12']
+# 2026-09-28 21:13:24: load 2.18 1.90 1.59; busiest:  5.3 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 1
+Qwen/Qwen3-4B-Instruct-2507 layout mma12: 1.95 s, 8.21 GB peak, packs ['Mma12']
+# 2026-09-28 21:13:28: load 2.17 1.90 1.59; busiest:  100 ps; 5.3 localsearch-3; 0.1 gnome-shell;
+round 1
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma layout mma12: 1.76 s, 8.21 GB peak, packs ['Mma12']
+# 2026-09-28 21:13:33: load 2.07 1.89 1.59; busiest:  5.3 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 1
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma12 layout mma12: 0.85 s, 8.21 GB peak, packs ['Mma12']
+# 2026-09-28 21:13:36: load 1.99 1.87 1.58; busiest:  5.3 localsearch-3; 0.1 localsearch-ext; 0.1 gnome-shell;
+round 2
+Qwen/Qwen3-4B-Instruct-2507 layout mma12: 1.95 s, 8.21 GB peak, packs ['Mma12']
+# 2026-09-28 21:13:40: load 1.91 1.86 1.58; busiest:  5.3 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 2
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma layout mma12: 1.77 s, 8.21 GB peak, packs ['Mma12']
+# 2026-09-28 21:13:44: load 1.91 1.86 1.58; busiest:  5.3 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 2
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma12 layout mma12: 0.84 s, 8.21 GB peak, packs ['Mma12']
+# 2026-09-28 21:13:47: load 1.83 1.84 1.58; busiest:  5.3 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 3
+Qwen/Qwen3-4B-Instruct-2507 layout mma12: 1.95 s, 8.21 GB peak, packs ['Mma12']
+# 2026-09-28 21:13:52: load 1.77 1.83 1.57; busiest:  5.3 localsearch-3; 0.1 gnome-shell; 0.0 localsearch-ext;
+round 3
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma layout mma12: 1.77 s, 8.21 GB peak, packs ['Mma12']
+# 2026-09-28 21:14:37: load 1.42 1.73 1.55; busiest: 99.8 cicc;50.0 localsearch-ext; 5.3 localsearch-3;
+round 3
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma12 layout mma12: 0.84 s, 8.21 GB peak, packs ['Mma12']
+# 2026-09-28 21:29:55: load 2.13 1.99 1.67; busiest:  100 localsearch-ext; 5.4 localsearch-3; 0.2 kworker/u130:3-ext4-rsv-conversion;
+round 1
+Qwen/Qwen3-8B layout mma12: 3.61 s, 14.34 GB peak, packs ['Mma12']
+# 2026-09-28 21:30:02: load 1.95 1.96 1.67; busiest:  5.4 localsearch-3; 0.2 localsearch-ext; 0.2 kworker/u130:3-ext4-rsv-conversion;
+round 1
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma layout mma12: 4.55 s, 14.90 GB peak, packs ['Mma12']
+# 2026-09-28 21:30:09: load 1.88 1.94 1.66; busiest:  5.4 localsearch-3; 0.2 kworker/u130:3-ext4-rsv-conversion; 0.1 localsearch-ext;
+round 1
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma12 layout mma12: 1.18 s, 14.34 GB peak, packs ['Mma12']
+# 2026-09-28 21:30:12: load 1.81 1.93 1.66; busiest:  5.4 localsearch-3; 0.2 kworker/u130:3-ext4-rsv-conversion; 0.1 localsearch-ext;
+round 2
+Qwen/Qwen3-8B layout mma12: 3.54 s, 14.34 GB peak, packs ['Mma12']
+# 2026-09-28 21:30:18: load 1.74 1.91 1.65; busiest:  5.4 localsearch-3; 0.2 kworker/u130:3-ext4-rsv-conversion; 0.1 gnome-shell;
+round 2
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma layout mma12: 3.15 s, 14.90 GB peak, packs ['Mma12']
+# 2026-09-28 21:30:24: load 1.68 1.90 1.65; busiest:  100 ps; 5.4 localsearch-3; 0.2 kworker/u130:3-ext4-rsv-conversion;
+round 2
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma12 layout mma12: 1.18 s, 14.34 GB peak, packs ['Mma12']
+# 2026-09-28 21:30:27: load 1.63 1.88 1.65; busiest:  5.4 localsearch-3; 0.1 kworker/u130:3-ext4-rsv-conversion; 0.1 gnome-shell;
+round 3
+Qwen/Qwen3-8B layout mma12: 3.55 s, 14.34 GB peak, packs ['Mma12']
+# 2026-09-28 21:30:33: load 1.58 1.87 1.64; busiest:  5.4 localsearch-3; 0.1 kworker/u130:3-ext4-rsv-conversion; 0.1 gnome-shell;
+round 3
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma layout mma12: 3.14 s, 14.90 GB peak, packs ['Mma12']
+# 2026-09-28 21:30:39: load 1.61 1.87 1.64; busiest:  5.4 localsearch-3; 0.1 kworker/u130:3-ext4-rsv-conversion; 0.1 gnome-shell;
+round 3
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma12 layout mma12: 1.17 s, 14.34 GB peak, packs ['Mma12']

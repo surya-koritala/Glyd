@@ -8,10 +8,10 @@ readme = "README.md"
 keywords = ["compression", "storage", "s3", "zstd", "deduplication"]
 categories = ["compression"]
 license = "BSD-3-Clause OR GPL-2.0-only"
-exclude = ["corpus/", "benchmarks/", "experiments/", "docs/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/"]
+exclude = ["corpus/", "benchmarks/", "experiments/", "docs/benchmarks/", "bindings/", "contrib/", "Formula/", "scripts/", ".github/", "glyd-store/", "gpu/", "glyd-gpu/"]
 
 [workspace]
-members = [".", "glyd-store"]
+members = [".", "glyd-store", "glyd-gpu"]
 
 [features]
 default = ["deflate", "jpeg"]

@@ -1,0 +1,101 @@
+    Finished `release` profile [optimized] target(s) in 5.99s
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 722.66it/s]
+llama LlamaForCausalLM ['lm_head.weight', 'model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1143.80it/s]
+llama-tied LlamaForCausalLM ['model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1222.12it/s]
+qwen2 Qwen2ForCausalLM ['lm_head.weight', 'model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.bias', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.bias', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.bias', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1424.70it/s]
+mistral MistralForCausalLM ['lm_head.weight', 'model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1508.74it/s]
+granite GraniteForCausalLM ['model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1748.36it/s]
+qwen3-odd Qwen3ForCausalLM ['model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_norm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_norm.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1318.55it/s]
+qwen3-untied Qwen3ForCausalLM ['lm_head.weight', 'model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_norm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_norm.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 1372.93it/s]
+granitemoe GraniteMoeForCausalLM ['model.embed_tokens.weight', 'model.layers.0.block_sparse_moe.input_linear.weight', 'model.layers.0.block_sparse_moe.output_linear.weight', 'model.layers.0.block_sparse_moe.router.layer.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+tiny/granite: 16 tensors packed and checked, saved in tinyout/py-granite-mma
+tiny/granite: 14 tensors packed and checked, saved in tinyout/rs-granite-mma (6 saved as they are, with their sha256)
+granite mma: every file byte-identical to Python's (4 files)
+tinyout/rs-granite-mma: 14 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tinyout/rs-granite-mma: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tiny/granite: 16 tensors packed and checked, saved in tinyout/py-granite-mma12
+tiny/granite: 14 tensors packed and checked, saved in tinyout/rs-granite-mma12 (6 saved as they are, with their sha256)
+granite mma12: every file byte-identical to Python's (4 files)
+tinyout/rs-granite-mma12: 14 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tinyout/rs-granite-mma12: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tiny/granitemoe: 14 tensors packed and checked, saved in tinyout/py-granitemoe-mma
+tiny/granitemoe: 12 tensors packed and checked, saved in tinyout/rs-granitemoe-mma (8 saved as they are, with their sha256)
+granitemoe mma: every file byte-identical to Python's (4 files)
+tinyout/rs-granitemoe-mma: 12 tensors decode to glyd.json's sha256, 8 saved as they are match theirs
+tinyout/rs-granitemoe-mma: 14 tensors decode to glyd.json's sha256, 8 saved as they are match theirs
+tiny/granitemoe: 14 tensors packed and checked, saved in tinyout/py-granitemoe-mma12
+tiny/granitemoe: 12 tensors packed and checked, saved in tinyout/rs-granitemoe-mma12 (8 saved as they are, with their sha256)
+granitemoe mma12: every file byte-identical to Python's (4 files)
+tinyout/rs-granitemoe-mma12: 12 tensors decode to glyd.json's sha256, 8 saved as they are match theirs
+tinyout/rs-granitemoe-mma12: 14 tensors decode to glyd.json's sha256, 8 saved as they are match theirs
+tiny/llama: 16 tensors packed and checked, saved in tinyout/py-llama-mma
+tiny/llama: 15 tensors packed and checked, saved in tinyout/rs-llama-mma (6 saved as they are, with their sha256)
+llama mma: every file byte-identical to Python's (4 files)
+tinyout/rs-llama-mma: 15 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tinyout/rs-llama-mma: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tiny/llama: 16 tensors packed and checked, saved in tinyout/py-llama-mma12
+tiny/llama: 15 tensors packed and checked, saved in tinyout/rs-llama-mma12 (6 saved as they are, with their sha256)
+llama mma12: every file byte-identical to Python's (4 files)
+tinyout/rs-llama-mma12: 15 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tinyout/rs-llama-mma12: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tiny/llama-tied: 16 tensors packed and checked, saved in tinyout/py-llama-tied-mma
+tiny/llama-tied: 14 tensors packed and checked, saved in tinyout/rs-llama-tied-mma (6 saved as they are, with their sha256)
+llama-tied mma: every file byte-identical to Python's (4 files)
+tinyout/rs-llama-tied-mma: 14 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tinyout/rs-llama-tied-mma: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tiny/llama-tied: 16 tensors packed and checked, saved in tinyout/py-llama-tied-mma12
+tiny/llama-tied: 14 tensors packed and checked, saved in tinyout/rs-llama-tied-mma12 (6 saved as they are, with their sha256)
+llama-tied mma12: every file byte-identical to Python's (4 files)
+tinyout/rs-llama-tied-mma12: 14 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tinyout/rs-llama-tied-mma12: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tiny/mistral: 16 tensors packed and checked, saved in tinyout/py-mistral-mma
+tiny/mistral: 15 tensors packed and checked, saved in tinyout/rs-mistral-mma (6 saved as they are, with their sha256)
+mistral mma: every file byte-identical to Python's (4 files)
+tinyout/rs-mistral-mma: 15 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tinyout/rs-mistral-mma: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tiny/mistral: 16 tensors packed and checked, saved in tinyout/py-mistral-mma12
+tiny/mistral: 15 tensors packed and checked, saved in tinyout/rs-mistral-mma12 (6 saved as they are, with their sha256)
+mistral mma12: every file byte-identical to Python's (4 files)
+tinyout/rs-mistral-mma12: 15 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tinyout/rs-mistral-mma12: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+tiny/qwen2: 16 tensors packed and checked, saved in tinyout/py-qwen2-mma
+tiny/qwen2: 15 tensors packed and checked, saved in tinyout/rs-qwen2-mma (12 saved as they are, with their sha256)
+qwen2 mma: every file byte-identical to Python's (4 files)
+tinyout/rs-qwen2-mma: 15 tensors decode to glyd.json's sha256, 12 saved as they are match theirs
+tinyout/rs-qwen2-mma: 16 tensors decode to glyd.json's sha256, 12 saved as they are match theirs
+tiny/qwen2: 16 tensors packed and checked, saved in tinyout/py-qwen2-mma12
+tiny/qwen2: 15 tensors packed and checked, saved in tinyout/rs-qwen2-mma12 (12 saved as they are, with their sha256)
+qwen2 mma12: every file byte-identical to Python's (4 files)
+tinyout/rs-qwen2-mma12: 15 tensors decode to glyd.json's sha256, 12 saved as they are match theirs
+tinyout/rs-qwen2-mma12: 16 tensors decode to glyd.json's sha256, 12 saved as they are match theirs
+tiny/qwen3-odd: 11 tensors packed and checked, saved in tinyout/py-qwen3-odd-mma
+tiny/qwen3-odd: 10 tensors packed and checked, saved in tinyout/rs-qwen3-odd-mma (14 saved as they are, with their sha256)
+qwen3-odd mma: every file byte-identical to Python's (4 files)
+tinyout/rs-qwen3-odd-mma: 10 tensors decode to glyd.json's sha256, 14 saved as they are match theirs
+tinyout/rs-qwen3-odd-mma: 11 tensors decode to glyd.json's sha256, 14 saved as they are match theirs
+tiny/qwen3-odd: 11 tensors packed and checked, saved in tinyout/py-qwen3-odd-mma12
+tiny/qwen3-odd: 10 tensors packed and checked, saved in tinyout/rs-qwen3-odd-mma12 (14 saved as they are, with their sha256)
+qwen3-odd mma12: every file byte-identical to Python's (4 files)
+tinyout/rs-qwen3-odd-mma12: 10 tensors decode to glyd.json's sha256, 14 saved as they are match theirs
+tinyout/rs-qwen3-odd-mma12: 11 tensors decode to glyd.json's sha256, 14 saved as they are match theirs
+tiny/qwen3-untied: 16 tensors packed and checked, saved in tinyout/py-qwen3-untied-mma
+tiny/qwen3-untied: 15 tensors packed and checked, saved in tinyout/rs-qwen3-untied-mma (10 saved as they are, with their sha256)
+qwen3-untied mma: every file byte-identical to Python's (4 files)
+tinyout/rs-qwen3-untied-mma: 15 tensors decode to glyd.json's sha256, 10 saved as they are match theirs
+tinyout/rs-qwen3-untied-mma: 16 tensors decode to glyd.json's sha256, 10 saved as they are match theirs
+tiny/qwen3-untied: 16 tensors packed and checked, saved in tinyout/py-qwen3-untied-mma12
+tiny/qwen3-untied: 15 tensors packed and checked, saved in tinyout/rs-qwen3-untied-mma12 (10 saved as they are, with their sha256)
+qwen3-untied mma12: every file byte-identical to Python's (4 files)
+tinyout/rs-qwen3-untied-mma12: 15 tensors decode to glyd.json's sha256, 10 saved as they are match theirs
+tinyout/rs-qwen3-untied-mma12: 16 tensors decode to glyd.json's sha256, 10 saved as they are match theirs
+done

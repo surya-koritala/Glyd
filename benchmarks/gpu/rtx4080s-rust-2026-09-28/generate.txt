@@ -1,0 +1,128 @@
+# 2026-09-28 21:30:43: load 1.56 1.85 1.64; busiest:  5.4 localsearch-3; 0.1 kworker/u130:3-ext4-rsv-conversion; 0.1 gnome-shell;
+round 1 main Qwen3-1.7B mma batch 1: 96.9 tokens/s
+round 1 main Qwen3-1.7B mma batch 8: 772.7 tokens/s
+round 1 main Qwen3-1.7B mma batch 32: 2956.8 tokens/s
+# 2026-09-28 21:31:03: load 1.40 1.80 1.63; busiest: 33.3 localsearch-ext; 5.4 localsearch-3; 0.1 kworker/u130:3-ext4-rsv-conversion;
+round 1 branch Qwen3-1.7B mma batch 1: 97.9 tokens/s
+round 1 branch Qwen3-1.7B mma batch 8: 782.5 tokens/s
+round 1 branch Qwen3-1.7B mma batch 32: 2985.4 tokens/s
+# 2026-09-28 21:31:20: load 1.29 1.74 1.61; busiest:  100 localsearch-ext; 100 ps; 5.4 localsearch-3;
+round 1 main Qwen3-1.7B mma12 batch 1: 98.5 tokens/s
+round 1 main Qwen3-1.7B mma12 batch 8: 773.9 tokens/s
+round 1 main Qwen3-1.7B mma12 batch 32: 2999.0 tokens/s
+# 2026-09-28 21:31:37: load 1.22 1.71 1.60; busiest:  100 localsearch-ext; 5.4 localsearch-3; 0.1 kworker/u130:3-ext4-rsv-conversion;
+round 1 branch Qwen3-1.7B mma12 batch 1: 98.0 tokens/s
+round 1 branch Qwen3-1.7B mma12 batch 8: 769.1 tokens/s
+round 1 branch Qwen3-1.7B mma12 batch 32: 3007.8 tokens/s
+# 2026-09-28 21:31:53: load 1.17 1.67 1.59; busiest: 66.6 localsearch-ext; 5.4 localsearch-3; 0.1 kworker/u130:3-ext4-rsv-conversion;
+round 1 main Qwen3-4B-Instruct-2507 mma batch 1: 75.6 tokens/s
+round 1 main Qwen3-4B-Instruct-2507 mma batch 8: 560.9 tokens/s
+round 1 main Qwen3-4B-Instruct-2507 mma batch 32: 1883.7 tokens/s
+# 2026-09-28 21:32:18: load 1.11 1.62 1.57; busiest:  100 localsearch-ext; 5.4 localsearch-3; 0.1 kworker/u130:3-ext4-rsv-conversion;
+round 1 branch Qwen3-4B-Instruct-2507 mma batch 1: 75.7 tokens/s
+round 1 branch Qwen3-4B-Instruct-2507 mma batch 8: 561.6 tokens/s
+round 1 branch Qwen3-4B-Instruct-2507 mma batch 32: 1877.5 tokens/s
+# 2026-09-28 21:32:43: load 1.07 1.57 1.56; busiest:  100 localsearch-ext; 5.4 localsearch-3; 0.1 kworker/u130:3-ext4-rsv-conversion;
+round 1 main Qwen3-4B-Instruct-2507 mma12 batch 1: 72.8 tokens/s
+round 1 main Qwen3-4B-Instruct-2507 mma12 batch 8: 542.9 tokens/s
+round 1 main Qwen3-4B-Instruct-2507 mma12 batch 32: 1869.6 tokens/s
+# 2026-09-28 21:33:06: load 1.05 1.52 1.54; busiest:  100 localsearch-ext; 5.4 localsearch-3; 0.1 kworker/u130:3-ext4-rsv-conversion;
+round 1 branch Qwen3-4B-Instruct-2507 mma12 batch 1: 72.9 tokens/s
+round 1 branch Qwen3-4B-Instruct-2507 mma12 batch 8: 543.9 tokens/s
+round 1 branch Qwen3-4B-Instruct-2507 mma12 batch 32: 1871.3 tokens/s
+# 2026-09-28 21:33:29: load 1.03 1.48 1.53; busiest: 50.0 localsearch-ext; 5.4 localsearch-3; 0.1 gnome-shell;
+round 2 branch Qwen3-1.7B mma batch 1: 96.9 tokens/s
+round 2 branch Qwen3-1.7B mma batch 8: 775.9 tokens/s
+round 2 branch Qwen3-1.7B mma batch 32: 2965.6 tokens/s
+# 2026-09-28 21:33:47: load 1.02 1.45 1.52; busiest: 50.0 localsearch-ext; 5.4 localsearch-3; 0.1 gnome-shell;
+round 2 main Qwen3-1.7B mma batch 1: 97.0 tokens/s
+round 2 main Qwen3-1.7B mma batch 8: 770.3 tokens/s
+round 2 main Qwen3-1.7B mma batch 32: 2958.1 tokens/s
+# 2026-09-28 21:34:04: load 1.02 1.43 1.51; busiest: 50.0 localsearch-ext; 5.4 localsearch-3; 0.1 gnome-shell;
+round 2 branch Qwen3-1.7B mma12 batch 1: 97.4 tokens/s
+round 2 branch Qwen3-1.7B mma12 batch 8: 762.1 tokens/s
+round 2 branch Qwen3-1.7B mma12 batch 32: 2985.3 tokens/s
+# 2026-09-28 21:34:21: load 1.01 1.40 1.50; busiest: 50.0 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 2 main Qwen3-1.7B mma12 batch 1: 97.1 tokens/s
+round 2 main Qwen3-1.7B mma12 batch 8: 761.8 tokens/s
+round 2 main Qwen3-1.7B mma12 batch 32: 2976.2 tokens/s
+# 2026-09-28 21:34:37: load 1.01 1.38 1.49; busiest:  100 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 2 branch Qwen3-4B-Instruct-2507 mma batch 1: 75.7 tokens/s
+round 2 branch Qwen3-4B-Instruct-2507 mma batch 8: 561.2 tokens/s
+round 2 branch Qwen3-4B-Instruct-2507 mma batch 32: 1877.4 tokens/s
+# 2026-09-28 21:35:03: load 1.12 1.38 1.48; busiest:  100 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 2 main Qwen3-4B-Instruct-2507 mma batch 1: 75.6 tokens/s
+round 2 main Qwen3-4B-Instruct-2507 mma batch 8: 561.0 tokens/s
+round 2 main Qwen3-4B-Instruct-2507 mma batch 32: 1878.4 tokens/s
+# 2026-09-28 21:35:28: load 1.08 1.35 1.47; busiest:  100 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 2 branch Qwen3-4B-Instruct-2507 mma12 batch 1: 72.9 tokens/s
+round 2 branch Qwen3-4B-Instruct-2507 mma12 batch 8: 543.7 tokens/s
+round 2 branch Qwen3-4B-Instruct-2507 mma12 batch 32: 1870.5 tokens/s
+# 2026-09-28 21:35:51: load 1.05 1.32 1.46; busiest:  100 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 2 main Qwen3-4B-Instruct-2507 mma12 batch 1: 72.9 tokens/s
+round 2 main Qwen3-4B-Instruct-2507 mma12 batch 8: 542.9 tokens/s
+round 2 main Qwen3-4B-Instruct-2507 mma12 batch 32: 1866.3 tokens/s
+# 2026-09-28 21:36:13: load 1.04 1.30 1.45; busiest:  100 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 3 main Qwen3-1.7B mma batch 1: 97.6 tokens/s
+round 3 main Qwen3-1.7B mma batch 8: 776.9 tokens/s
+round 3 main Qwen3-1.7B mma batch 32: 2976.0 tokens/s
+# 2026-09-28 21:36:31: load 1.02 1.28 1.44; busiest:  100 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 3 branch Qwen3-1.7B mma batch 1: 96.5 tokens/s
+round 3 branch Qwen3-1.7B mma batch 8: 771.5 tokens/s
+round 3 branch Qwen3-1.7B mma batch 32: 2961.8 tokens/s
+# 2026-09-28 21:36:49: load 1.02 1.26 1.43; busiest:  100 ps;66.6 localsearch-ext; 5.3 localsearch-3;
+round 3 main Qwen3-1.7B mma12 batch 1: 97.3 tokens/s
+round 3 main Qwen3-1.7B mma12 batch 8: 757.3 tokens/s
+round 3 main Qwen3-1.7B mma12 batch 32: 2969.4 tokens/s
+# 2026-09-28 21:37:05: load 1.01 1.25 1.42; busiest:  100 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 3 branch Qwen3-1.7B mma12 batch 1: 97.4 tokens/s
+round 3 branch Qwen3-1.7B mma12 batch 8: 764.6 tokens/s
+round 3 branch Qwen3-1.7B mma12 batch 32: 2985.2 tokens/s
+# 2026-09-28 21:37:22: load 1.07 1.25 1.42; busiest:  100 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 3 main Qwen3-4B-Instruct-2507 mma batch 1: 75.7 tokens/s
+round 3 main Qwen3-4B-Instruct-2507 mma batch 8: 561.1 tokens/s
+round 3 main Qwen3-4B-Instruct-2507 mma batch 32: 1883.6 tokens/s
+# 2026-09-28 21:37:47: load 1.05 1.23 1.40; busiest:  100 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 3 branch Qwen3-4B-Instruct-2507 mma batch 1: 75.8 tokens/s
+round 3 branch Qwen3-4B-Instruct-2507 mma batch 8: 561.3 tokens/s
+round 3 branch Qwen3-4B-Instruct-2507 mma batch 32: 1873.8 tokens/s
+# 2026-09-28 21:38:12: load 1.03 1.21 1.39; busiest:  5.3 localsearch-3; 0.1 gnome-shell; 0.0 kworker/u130:0-events_power_efficient;
+round 3 main Qwen3-4B-Instruct-2507 mma12 batch 1: 72.8 tokens/s
+round 3 main Qwen3-4B-Instruct-2507 mma12 batch 8: 542.8 tokens/s
+round 3 main Qwen3-4B-Instruct-2507 mma12 batch 32: 1869.4 tokens/s
+# 2026-09-28 21:38:35: load 1.02 1.19 1.38; busiest: 33.3 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 3 branch Qwen3-4B-Instruct-2507 mma12 batch 1: 72.9 tokens/s
+round 3 branch Qwen3-4B-Instruct-2507 mma12 batch 8: 544.0 tokens/s
+round 3 branch Qwen3-4B-Instruct-2507 mma12 batch 32: 1870.6 tokens/s
+# 2026-09-28 21:38:57: load 1.01 1.18 1.37; busiest: 50.0 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 4 branch Qwen3-1.7B mma batch 1: 97.7 tokens/s
+round 4 branch Qwen3-1.7B mma batch 8: 782.2 tokens/s
+round 4 branch Qwen3-1.7B mma batch 32: 2987.9 tokens/s
+# 2026-09-28 21:39:15: load 1.01 1.17 1.36; busiest:  100 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 4 main Qwen3-1.7B mma batch 1: 97.6 tokens/s
+round 4 main Qwen3-1.7B mma batch 8: 781.0 tokens/s
+round 4 main Qwen3-1.7B mma batch 32: 2979.0 tokens/s
+# 2026-09-28 21:39:33: load 1.44 1.27 1.39; busiest: 50.0 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 4 branch Qwen3-1.7B mma12 batch 1: 97.5 tokens/s
+round 4 branch Qwen3-1.7B mma12 batch 8: 764.7 tokens/s
+round 4 branch Qwen3-1.7B mma12 batch 32: 3001.1 tokens/s
+# 2026-09-28 21:39:49: load 1.34 1.25 1.38; busiest:  100 localsearch-ext; 5.2 localsearch-3; 0.1 gnome-shell;
+round 4 main Qwen3-1.7B mma12 batch 1: 97.4 tokens/s
+round 4 main Qwen3-1.7B mma12 batch 8: 760.4 tokens/s
+round 4 main Qwen3-1.7B mma12 batch 32: 2972.4 tokens/s
+# 2026-09-28 21:40:06: load 1.25 1.24 1.37; busiest:  100 localsearch-ext; 5.2 localsearch-3; 0.1 gnome-shell;
+round 4 branch Qwen3-4B-Instruct-2507 mma batch 1: 75.8 tokens/s
+round 4 branch Qwen3-4B-Instruct-2507 mma batch 8: 561.5 tokens/s
+round 4 branch Qwen3-4B-Instruct-2507 mma batch 32: 1877.9 tokens/s
+# 2026-09-28 21:40:31: load 1.16 1.22 1.36; busiest:  100 localsearch-ext; 5.2 localsearch-3; 0.1 gnome-shell;
+round 4 main Qwen3-4B-Instruct-2507 mma batch 1: 75.7 tokens/s
+round 4 main Qwen3-4B-Instruct-2507 mma batch 8: 561.0 tokens/s
+round 4 main Qwen3-4B-Instruct-2507 mma batch 32: 1879.4 tokens/s
+# 2026-09-28 21:40:56: load 1.10 1.20 1.35; busiest: 50.0 localsearch-ext; 5.2 localsearch-3; 0.1 gnome-shell;
+round 4 branch Qwen3-4B-Instruct-2507 mma12 batch 1: 72.9 tokens/s
+round 4 branch Qwen3-4B-Instruct-2507 mma12 batch 8: 543.7 tokens/s
+round 4 branch Qwen3-4B-Instruct-2507 mma12 batch 32: 1871.2 tokens/s
+# 2026-09-28 21:41:18: load 1.07 1.18 1.35; busiest:  100 localsearch-ext; 5.2 localsearch-3; 0.1 gnome-shell;
+round 4 main Qwen3-4B-Instruct-2507 mma12 batch 1: 72.8 tokens/s
+round 4 main Qwen3-4B-Instruct-2507 mma12 batch 8: 542.8 tokens/s
+round 4 main Qwen3-4B-Instruct-2507 mma12 batch 32: 1869.4 tokens/s

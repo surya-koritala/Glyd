@@ -1,0 +1,2 @@
+# 2026-09-29 00:23:22: load 0.33 0.08 0.02; busiest: 20.0 localsearch-ext; 3.6 localsearch-3; 0.1 gnome-shell;
+/home/surya-koritala/p9rust2/lib/libglyd_gpu_cuda13.so

@@ -1,0 +1,160 @@
+# 2026-09-28 20:57:06: load 1.64 1.62 1.40; busiest:  5.3 localsearch-3; 0.2 localsearch-ext; 0.1 gnome-shell;
+round 1: Qwen3-0.6B mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-0.6B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.52 s wall, 306864 KB peak RSS
+# 2026-09-28 20:57:07: load 1.64 1.62 1.40; busiest:  5.3 localsearch-3; 0.2 localsearch-ext; 0.1 gnome-shell;
+round 2: Qwen3-0.6B mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-0.6B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.50 s wall, 306976 KB peak RSS
+# 2026-09-28 20:57:08: load 1.64 1.62 1.40; busiest:  5.3 localsearch-3; 0.2 localsearch-ext; 0.1 gnome-shell;
+round 3: Qwen3-0.6B mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-0.6B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.49 s wall, 306952 KB peak RSS
+# 2026-09-28 20:57:08: load 1.64 1.62 1.40; busiest:  5.3 localsearch-3; 0.2 localsearch-ext; 0.1 gnome-shell;
+Qwen3-0.6B mma, cuda:0
+/home/surya-koritala/p9rust2/out/Qwen3-0.6B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.02 s wall, 402384 KB peak RSS
+# 2026-09-28 20:57:23: load 1.49 1.59 1.40; busiest:  5.3 localsearch-3; 0.4 localsearch-ext; 0.1 gnome-shell;
+round 1: Qwen3-0.6B mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-0.6B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.43 s wall, 306676 KB peak RSS
+# 2026-09-28 20:57:23: load 1.49 1.59 1.40; busiest:  5.3 localsearch-3; 0.4 localsearch-ext; 0.1 gnome-shell;
+round 2: Qwen3-0.6B mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-0.6B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.44 s wall, 306952 KB peak RSS
+# 2026-09-28 20:57:24: load 1.49 1.59 1.40; busiest:  5.3 localsearch-3; 0.4 localsearch-ext; 0.1 gnome-shell;
+round 3: Qwen3-0.6B mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-0.6B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.45 s wall, 306920 KB peak RSS
+# 2026-09-28 20:57:24: load 1.49 1.59 1.40; busiest:  5.3 localsearch-3; 0.4 localsearch-ext; 0.1 gnome-shell;
+Qwen3-0.6B mma12, cuda:0
+/home/surya-koritala/p9rust2/out/Qwen3-0.6B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+0.92 s wall, 401972 KB peak RSS
+# 2026-09-28 20:59:39: load 1.29 1.47 1.37; busiest:  5.4 localsearch-3; 0.1 gnome-shell; 0.0 kswapd0;
+round 1: Qwen3-1.7B mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-1.7B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.65 s wall, 610568 KB peak RSS
+# 2026-09-28 20:59:56: load 1.68 1.55 1.40; busiest:  5.4 localsearch-3; 0.8 localsearch-ext; 0.1 gnome-shell;
+round 2: Qwen3-1.7B mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-1.7B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.59 s wall, 610828 KB peak RSS
+# 2026-09-28 21:00:00: load 1.62 1.54 1.40; busiest:  5.4 localsearch-3; 0.3 localsearch-ext; 0.1 gnome-shell;
+round 3: Qwen3-1.7B mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-1.7B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.59 s wall, 610824 KB peak RSS
+# 2026-09-28 21:00:02: load 1.62 1.54 1.40; busiest:  5.4 localsearch-3; 0.2 localsearch-ext; 0.1 gnome-shell;
+Qwen3-1.7B mma, cuda:0
+/home/surya-koritala/p9rust2/out/Qwen3-1.7B-mma: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+3.07 s wall, 705616 KB peak RSS
+# 2026-09-28 21:02:47: load 1.19 1.46 1.39; busiest:  5.4 localsearch-3; 0.3 localsearch-ext; 0.1 gnome-shell;
+round 1: Qwen3-1.7B mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-1.7B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.38 s wall, 610772 KB peak RSS
+# 2026-09-28 21:02:51: load 1.17 1.45 1.39; busiest:  5.4 localsearch-3; 0.3 localsearch-ext; 0.1 gnome-shell;
+round 2: Qwen3-1.7B mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-1.7B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.37 s wall, 610836 KB peak RSS
+# 2026-09-28 21:02:55: load 1.16 1.44 1.39; busiest:  5.4 localsearch-3; 0.2 localsearch-ext; 0.1 gnome-shell;
+round 3: Qwen3-1.7B mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-1.7B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+1.38 s wall, 611040 KB peak RSS
+# 2026-09-28 21:02:57: load 1.16 1.44 1.39; busiest:  5.4 localsearch-3; 0.2 localsearch-ext; 0.1 gnome-shell;
+Qwen3-1.7B mma12, cuda:0
+/home/surya-koritala/p9rust2/out/Qwen3-1.7B-mma12: 196 tensors decode to glyd.json's sha256, 114 saved as they are match theirs
+2.69 s wall, 706216 KB peak RSS
+# 2026-09-28 21:07:25: load 1.05 1.21 1.30; busiest:  100 ps; 5.3 localsearch-3; 0.2 localsearch-ext;
+round 1: granite-3.1-3b-a800m-instruct mma, cpu
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+3.36 s wall, 711072 KB peak RSS
+# 2026-09-28 21:07:31: load 1.19 1.24 1.31; busiest:  5.3 localsearch-3; 0.1 localsearch-ext; 0.1 gnome-shell;
+round 2: granite-3.1-3b-a800m-instruct mma, cpu
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+3.35 s wall, 726068 KB peak RSS
+# 2026-09-28 21:07:37: load 1.25 1.25 1.31; busiest:  5.3 localsearch-3; 0.1 localsearch-ext; 0.1 gnome-shell;
+round 3: granite-3.1-3b-a800m-instruct mma, cpu
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+3.38 s wall, 715284 KB peak RSS
+# 2026-09-28 21:07:40: load 1.47 1.30 1.33; busiest:  100 ps; 5.3 localsearch-3; 0.1 localsearch-ext;
+granite-3.1-3b-a800m-instruct mma, cuda:0
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+7.86 s wall, 336160 KB peak RSS
+# 2026-09-28 21:08:58: load 2.40 1.60 1.43; busiest:  5.4 localsearch-3; 0.2 localsearch-ext; 0.1 gnome-shell;
+round 1: granite-3.1-3b-a800m-instruct mma12, cpu
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma12: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+2.70 s wall, 734788 KB peak RSS
+# 2026-09-28 21:09:03: load 2.61 1.65 1.45; busiest:  100 ps; 5.4 localsearch-3; 0.1 localsearch-ext;
+round 2: granite-3.1-3b-a800m-instruct mma12, cpu
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma12: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+2.68 s wall, 745868 KB peak RSS
+# 2026-09-28 21:09:09: load 2.80 1.71 1.46; busiest:  5.4 localsearch-3; 0.1 localsearch-ext; 0.1 gnome-shell;
+round 3: granite-3.1-3b-a800m-instruct mma12, cpu
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma12: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+2.74 s wall, 729860 KB peak RSS
+# 2026-09-28 21:09:11: load 2.90 1.75 1.48; busiest:  5.4 localsearch-3; 0.1 localsearch-ext; 0.1 gnome-shell;
+granite-3.1-3b-a800m-instruct mma12, cuda:0
+/home/surya-koritala/p9rust2/out/granite-3.1-3b-a800m-instruct-mma12: 192 tensors decode to glyd.json's sha256, 99 saved as they are match theirs
+7.08 s wall, 336904 KB peak RSS
+# 2026-09-28 21:11:30: load 2.07 1.76 1.51; busiest:  5.4 localsearch-3; 0.1 gnome-shell; 0.0 kworker/u130:4-writeback;
+round 1: Qwen3-4B-Instruct-2507 mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+3.43 s wall, 937528 KB peak RSS
+# 2026-09-28 21:11:36: load 1.98 1.75 1.51; busiest:  5.4 localsearch-3; 0.3 localsearch-ext; 0.1 gnome-shell;
+round 2: Qwen3-4B-Instruct-2507 mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+3.41 s wall, 931460 KB peak RSS
+# 2026-09-28 21:11:42: load 2.46 1.85 1.54; busiest:  5.4 localsearch-3; 0.1 localsearch-ext; 0.1 gnome-shell;
+round 3: Qwen3-4B-Instruct-2507 mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+3.42 s wall, 947748 KB peak RSS
+# 2026-09-28 21:11:46: load 2.83 1.94 1.57; busiest:  5.4 localsearch-3; 0.1 localsearch-ext; 0.1 gnome-shell;
+Qwen3-4B-Instruct-2507 mma, cuda:0
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+8.20 s wall, 857888 KB peak RSS
+# 2026-09-28 21:13:08: load 1.81 1.81 1.55; busiest:  100 localsearch-ext; 5.3 localsearch-3; 0.1 gnome-shell;
+round 1: Qwen3-4B-Instruct-2507 mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma12: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+2.82 s wall, 903580 KB peak RSS
+# 2026-09-28 21:13:11: load 2.22 1.90 1.58; busiest:  5.3 localsearch-3; 0.6 localsearch-ext; 0.1 gnome-shell;
+round 2: Qwen3-4B-Instruct-2507 mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma12: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+2.83 s wall, 890252 KB peak RSS
+# 2026-09-28 21:13:14: load 2.22 1.90 1.58; busiest:  5.3 localsearch-3; 0.3 localsearch-ext; 0.1 gnome-shell;
+round 3: Qwen3-4B-Instruct-2507 mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma12: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+2.84 s wall, 904708 KB peak RSS
+# 2026-09-28 21:13:17: load 2.28 1.91 1.59; busiest:  5.3 localsearch-3; 0.2 localsearch-ext; 0.1 gnome-shell;
+Qwen3-4B-Instruct-2507 mma12, cuda:0
+/home/surya-koritala/p9rust2/out/Qwen3-4B-Instruct-2507-mma12: 252 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+7.15 s wall, 858172 KB peak RSS
+# 2026-09-28 21:26:00: load 2.27 1.68 1.51; busiest:  100 localsearch-ext; 5.5 localsearch-3; 0.1 gnome-shell;
+round 1: Qwen3-8B mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+9.14 s wall, 2388004 KB peak RSS
+# 2026-09-28 21:26:10: load 2.57 1.75 1.53; busiest:  5.5 localsearch-3; 0.2 localsearch-ext; 0.1 gnome-shell;
+round 2: Qwen3-8B mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+9.14 s wall, 2370820 KB peak RSS
+# 2026-09-28 21:26:19: load 2.57 1.78 1.54; busiest:  5.5 localsearch-3; 0.1 gnome-shell; 0.1 localsearch-ext;
+round 3: Qwen3-8B mma, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+9.19 s wall, 2359928 KB peak RSS
+# 2026-09-28 21:26:28: load 3.11 1.92 1.59; busiest:  5.5 localsearch-3; 0.1 gnome-shell; 0.0 kworker/u130:2-flush-259:0;
+Qwen3-8B mma, cuda:0
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+18.78 s wall, 2175060 KB peak RSS
+# 2026-09-28 21:29:15: load 2.06 1.94 1.65; busiest:  100 localsearch-ext; 5.4 localsearch-3; 0.2 kworker/u130:3-ext4-rsv-conversion;
+round 1: Qwen3-8B mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma12: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+7.34 s wall, 2329024 KB peak RSS
+# 2026-09-28 21:29:23: load 2.38 2.01 1.67; busiest:  5.4 localsearch-3; 0.2 kworker/u130:3-ext4-rsv-conversion; 0.1 localsearch-ext;
+round 2: Qwen3-8B mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma12: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+7.35 s wall, 2329128 KB peak RSS
+# 2026-09-28 21:29:30: load 2.31 2.01 1.67; busiest:  5.4 localsearch-3; 0.2 kworker/u130:3-ext4-rsv-conversion; 0.2 localsearch-ext;
+round 3: Qwen3-8B mma12, cpu
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma12: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+7.46 s wall, 2329064 KB peak RSS
+# 2026-09-28 21:29:38: load 2.45 2.04 1.68; busiest:  5.4 localsearch-3; 0.2 kworker/u130:3-ext4-rsv-conversion; 0.1 localsearch-ext;
+Qwen3-8B mma12, cuda:0
+/home/surya-koritala/p9rust2/out/Qwen3-8B-mma12: 253 tensors decode to glyd.json's sha256, 146 saved as they are match theirs
+16.87 s wall, 2260072 KB peak RSS
