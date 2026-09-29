@@ -536,7 +536,7 @@ def hold(ns):
 # The library's routes (glyd_gpu.h's GLYD_GPU_ROUTE_*): how a product for M tokens is taken on a GPU. DECODE: the
 # matrix decoded, then cuBLAS; AHEAD: so, decoded ahead beside the products before it (model.Ahead).
 DECODE, GEMM, MID, WG, BIG, AHEAD = range(6)
-GEFORCE, A10 = 1000, 2000  # a GPU's classes by name in its code (glyd_gpu.h's GLYD_GPU_GEFORCE, GLYD_GPU_A10)
+GEFORCE, A10, L4 = 1000, 2000, 3000  # a GPU's classes by name in its code (glyd_gpu.h's GLYD_GPU_GEFORCE, GLYD_GPU_A10, GLYD_GPU_L4)
 
 
 def route(p, gpu, M):

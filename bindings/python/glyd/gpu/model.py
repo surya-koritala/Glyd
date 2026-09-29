@@ -41,7 +41,13 @@ SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 # within 4% either way; 1.37 / 1.40 / 1.42x against 1.17 / 1.22 / 1.21x at 4096; as committed, Qwen3-8B's 1.38x at
 # 1024: benchmarks/gpu/h100-hopper2-val-2026-09-28); Ampere's and Ada's 17 to 64 (an A100's to 128) by mma_gemm_mid;
 # a 12-bit prompt decoded for cuBLAS, never fused, from GLYD_DEC_MIN tokens where it is set (any GPU), else an A100's
-# from 769; a prompt of a matrix whose K is not a multiple of 64 decoded (the prompt kernel's blocks).
+# from 769; an L4's prompts decoded for cuBLAS on the current stream from 896 tokens tiered and 2560 12-bit, but exact
+# (its class by name: at its 72 W cap the fused kernel's decode costs its clocks more the longer the prompt, and a
+# decode ahead beside cuBLAS costs cuBLAS as much again; Qwen3-8B's and Qwen3-4B-Instruct-2507's prompt passes, fused
+# against decoded: tiered 4-5% slower decoded at 768 tokens, 9-11% faster at 896, 17-47% at 3072-8192; 12-bit
+# 0.4-21% slower to 2304, 1-3% faster at 2560, 7-49% at 4096-8192; decoded ahead no faster than decoded, Qwen3-8B's
+# tiered 1.08-1.49x its time at 2048-8192: benchmarks/gpu/l4-routes-2026-09-29); a prompt of a matrix whose K is not
+# a multiple of 64 decoded (the prompt kernel's blocks).
 # A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead; the
 # library's route AHEAD). On GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, past
 # 1792 in the 12-bit one where its fused kernel takes the prompt, else past 640 (exact, or not fused: each matrix
@@ -51,8 +57,9 @@ SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 # 1.08x at 2048 against 1.54x; tiered 1.41x against 1.48x at 512; a prompt's pass end to end +10.0 / +5.2 / +2.6% over
 # bf16 at 1024 / 2048 / 4096 tokens, fused +30 / +39 / +51%, each matrix decoded on the current stream +21 / +10 /
 # +5.5%); elsewhere, until measured, the fused kernel or the decode as before (the A10G has half-rate tensor cores,
-# its fused prompts at most +5.3% over bf16's; the L4, L40S and RTX 6000 Ada sum in fp32 at twice the rate, as the
-# A10, but have half its bandwidth a FLOP: a matrix decoded costs them twice as much a token). The 12-bit layout's
+# its fused prompts at most +5.3% over bf16's; the L40S and RTX 6000 Ada sum in fp32 at twice the rate, as the A10 and
+# the L4, and have half the A10's bandwidth a FLOP, as the L4, but more power to spend on it: 350 and 300 W for 864
+# and 960 GB/s, where the L4 has 72 W for 300). The 12-bit layout's
 # length loses least across Qwen3-1.7B, 4B and 8B (one pass, fused against decoded ahead, 1024-4096 tokens): to 1792
 # Qwen3-1.7B's fused pass is the faster but at 1280, Qwen3-4B-Instruct-2507's but at 1664, Qwen3-8B's at 1024, 1408
 # and 1536 alone (1.0-4.6% slower at the other six); at 1793-2047 Qwen3-1.7B's is 3.5-4.0% faster, Qwen3-4B's
@@ -605,8 +612,8 @@ def _(ids, handle, embedding_dim):
 def gpu_code(cc, name):
     """A GPU as the library's routes take it (glyd_gpu.h, glyd_gpu_gpu): its compute capability cc, major * 10 +
     minor, plus its class by name: GEFORCE with "GeForce" in it, A10 with "A10" in it as a word (an A10, not an A10G,
-    A100 or A40), else none."""
-    cls = g.GEFORCE if "GeForce" in name else g.A10 if re.search(r"\bA10\b", name, re.ASCII) else 0
+    A100 or A40), L4 with "L4" in it as a word (an L4, not an L40S or L40), else none."""
+    cls = g.GEFORCE if "GeForce" in name else g.A10 if re.search(r"\bA10\b", name, re.ASCII) else g.L4 if re.search(r"\bL4\b", name, re.ASCII) else 0
     return cc[0] * 10 + cc[1] + cls
 
 

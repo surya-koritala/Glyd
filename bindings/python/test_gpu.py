@@ -274,12 +274,12 @@ def test_c_header():
     # the routes' numbers and a GPU's classes: kernels.py's and _lib.py's the header's
     defines = {k: int(v) for k, v in re.findall(r"#define (GLYD_GPU_\w+) (\d+)", h)}
     kern = {}
-    names = {"DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD", "GEFORCE", "A10"}
+    names = {"DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD", "GEFORCE", "A10", "L4"}
     body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "kernels.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= names]
     exec(compile(ast.Module(body, []), "kernels.py", "exec"), kern)
     for r in ("DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD"):
         assert kern[r] == defines[f"GLYD_GPU_ROUTE_{r}"], r
-    assert lib["BIG"] == defines["GLYD_GPU_ROUTE_BIG"] and (kern["GEFORCE"], kern["A10"]) == (defines["GLYD_GPU_GEFORCE"], defines["GLYD_GPU_A10"])
+    assert lib["BIG"] == defines["GLYD_GPU_ROUTE_BIG"] and (kern["GEFORCE"], kern["A10"], kern["L4"]) == (defines["GLYD_GPU_GEFORCE"], defines["GLYD_GPU_A10"], defines["GLYD_GPU_L4"])
     cu = open(os.path.join(gpu, "glyd_gpu.cu")).read()
     assert set(re.findall(r"GLYD_GPU_API [^(]*?(glyd_gpu_\w+)\(", cu)) == set(declared), "glyd_gpu.cu's C API is not glyd_gpu.h's"
 
@@ -307,19 +307,20 @@ def test_gpu_class_by_name():
     cu, h = open(os.path.join(gpu, "glyd_gpu.cu")).read(), open(os.path.join(gpu, "glyd_gpu.h")).read()
     a = cu.index("static bool has_word(")
     b = cu.index("\n", cu.index("static int gpu_class("))
-    classes = re.findall(r"#define (GLYD_GPU_(?:GEFORCE|A10)) (\d+)", h)
-    assert len(classes) == 2
+    classes = re.findall(r"#define (GLYD_GPU_(?:GEFORCE|A10|L4)) (\d+)", h)
+    assert len(classes) == 3
     prog = "#include <cctype>\n#include <cstdio>\n#include <cstring>\n" + "".join(f"#define {k} {v}\n" for k, v in classes) + cu[a:b]
     prog += '\nint main() { char s[512]; while (fgets(s, sizeof s, stdin)) { s[strcspn(s, "\\n")] = 0; printf("%d\\n", gpu_class(s)); } }\n'
     tree = ast.parse(open(os.path.join(HERE, "glyd", "gpu", "model.py")).read())
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "gpu_code")
     kern = {}
-    body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "kernels.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= {"GEFORCE", "A10"}]
+    body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "kernels.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= {"GEFORCE", "A10", "L4"}]
     exec(compile(ast.Module(body, []), "kernels.py", "exec"), kern)
-    py = {"re": re, "g": types.SimpleNamespace(GEFORCE=kern["GEFORCE"], A10=kern["A10"])}
+    py = {"re": re, "g": types.SimpleNamespace(GEFORCE=kern["GEFORCE"], A10=kern["A10"], L4=kern["L4"])}
     exec(compile(ast.Module([fn], []), "model.py", "exec"), py)
     names = ["NVIDIA A10", "NVIDIA A10-24GB", "NVIDIA A10G", "NVIDIA A100-SXM4-80GB", "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA GeForce RTX 4080 SUPER", "A10", "NVIDIA A10_X",
-             "NVIDIA A16", "NVIDIA A2", "NVIDIA A10 PCIe", "A10 A10G", "A10G A10", "xA10", "A10x", "A10M", "NVIDIA GeForce A10", "(A10)", "A10.", "A10é", "éA10", "A10\u00a0", "", "NVIDIA H100 80GB HBM3"]
+             "NVIDIA A16", "NVIDIA A2", "NVIDIA A10 PCIe", "A10 A10G", "A10G A10", "xA10", "A10x", "A10M", "NVIDIA GeForce A10", "(A10)", "A10.", "A10é", "éA10", "A10\u00a0", "", "NVIDIA H100 80GB HBM3",
+             "NVIDIA L4", "L4", "NVIDIA L40S", "NVIDIA L40", "NVIDIA RTX 6000 Ada Generation", "NVIDIA L4 L40S", "L4-24GB", "xL4", "L4x", "NVIDIA GeForce L4", "NVIDIA A10 L4", "L4_X", "(L4)"]
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "cls.cpp"), "w") as f:
             f.write(prog)
