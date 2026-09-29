@@ -1,0 +1,9 @@
+/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218 bf16 bf16 on NVIDIA L40S: 16.38 GB
+    512 tokens, bf16   : 54.7 ms
+    768 tokens, bf16   : 75.9 ms
+   1024 tokens, bf16   : 86.7 ms
+   1536 tokens, bf16   : 137.0 ms
+   2048 tokens, bf16   : 170.9 ms
+   3072 tokens, bf16   : 268.9 ms
+   4096 tokens, bf16   : 373.6 ms
+   8192 tokens, bf16   : 867.2 ms

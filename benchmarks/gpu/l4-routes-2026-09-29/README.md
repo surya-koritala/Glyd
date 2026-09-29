@@ -26,7 +26,9 @@ run, and each cell gives its window's SM clock and power.
 - `gap/` (`run4.sh`, 910091c): `gap.py`, a prompt's time to its first token through generate() against a plain
   forward pass in one process (Glyd compiled and not, bf16); then decoded against ahead again, Qwen3-8B, both layouts,
   the scratch buffer holding two matrices.
-- `l40s_job.sh`: the same measurement on an L40S (AWS g6e.xlarge), for scratchpad/aws_gpu.sh.
+- `l40s/` (`l40s_job.sh`, 213ca87): the same measurement on an L40S (AWS g6e.xlarge: 46 GB, 350 W, 4 vCPUs; Deep
+  Learning AMI, driver 595.91.07, AMD EPYC 7R13; the AMI's nvcc 13.0), Qwen3-8B, both layouts, 512-8192 tokens, each run from about
+  the GPU's idle temperature, through scratchpad/aws_gpu.sh (14 minutes).
 
 The L4 ran every route at its 72 W cap from about 512 tokens up. The fused kernel ran at 1200-1360 MHz; cuBLAS behind
 a decode ran at 1050-1155 MHz; bf16's cuBLAS at 880-1110 MHz. The fused kernel still lost to the decode from 896
@@ -74,3 +76,25 @@ different temperatures. At its 72 W cap the L4's clock falls as it heats. The sa
 | gap/ | 794 | 1035 MHz | 82 C |
 
 The respond job's Glyd process ran after 20 minutes of bf16's.
+
+## An L40S (l40s/)
+
+The L40S has the L4's bandwidth per FLOP and more power to spend: 350 W for 864 GB/s, where the L4 has 72 W for 300.
+It ran 1755-2040 MHz, reaching 330-352 W past 1024 tokens. Past the fused kernel's lengths, decoding ahead beside cuBLAS
+(the A10's route) was the faster:
+- 0.4-5.3% ahead of decoding first at 1024-3072 and 8192 tokens;
+- 0.8-1.0% behind at 4096.
+
+So the L40S takes the route AHEAD, not exact's, from 1024 tokens tiered and 2048 12-bit. It is a class of its own
+(4089): the L40 and RTX 6000 Ada were not measured. Qwen3-8B, over bf16's time, fused against the route taken (the
+routes forced here: the library's new routes take them):
+
+| Prompt | 512 | 768 | 1024 | 1536 | 2048 | 3072 | 4096 | 8192 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tiered, fused | +20.6% | +27.9% | +38.1% | +34.1% | +41.2% | +37.3% | +39.4% | +35.0% |
+| tiered, ahead | +53.5% | +33.7% | +30.3% | +13.9% | +11.9% | +8.0% | +10.9% | +3.8% |
+| 12-bit, fused | -0.3% | +4.8% | +13.6% | +9.4% | +15.5% | +14.9% | +20.0% | +18.2% |
+| 12-bit, ahead | +56.3% | +36.5% | +35.0% | +17.8% | +12.9% | +7.7% | +11.3% | +3.9% |
+
+The 12-bit fused kernel runs at bf16's speed to 512 tokens (-0.3%), where the tiered one is +20.6%. The layout stays
+tiered by the owner's rule (33% less memory); `layout="mma12"` (25%) for the fastest short prompts.
