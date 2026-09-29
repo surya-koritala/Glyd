@@ -60,7 +60,9 @@ split = None  # this device's model.Split once a pass by the route has made it (
 
 
 def pass_(mode, X):
-    """A pass over the copies' products in order (mode: split, today or bf16): the first copy's outputs."""
+    """A pass over the copies' products in order (mode: split, today or bf16): the first copy's outputs. The device's
+    Split kept from pass to pass (a pass without it made anew would record the order again)."""
+    global split
     gm.Split.of.pop(dev, None)
     if mode == "today":
         gm.Split.of[dev] = False
@@ -72,6 +74,8 @@ def pass_(mode, X):
             y = F.linear(X[k], W[k]) if mode == "bf16" else lins[c][i](X[k])
             if c == 0:
                 out.append(y)
+    if mode == "split":
+        split = gm.Split.of.get(dev, split)
     return out
 
 
@@ -83,8 +87,6 @@ for M in [int(m) for m in args.M.split(",")]:
     for m in modes:  # untimed: the first records the order, the second follows it
         pass_(m, X)
         outs[m] = pass_(m, X)
-        if m == "split":
-            split = gm.Split.of.get(dev)
     torch.cuda.synchronize()
     for _ in range(args.reps):
         for m in modes:
@@ -95,7 +97,6 @@ for M in [int(m) for m in args.M.split(",")]:
             b.synchronize()
             ts[m].append(a.elapsed_time(b))
             if m == "split":
-                split = False if gm.Split.of.get(dev) is False else split  # (stopped: today's route from here)
                 assert all(torch.equal(p.view(torch.int16), q.view(torch.int16)) for p, q in zip(ys, outs[m])), f"M={M}: the route SPLIT's outputs differ pass to pass"
     worst = 0.0
     for k, y in zip(names, outs["split"]):

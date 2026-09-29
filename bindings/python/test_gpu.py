@@ -353,7 +353,7 @@ def test_split_order():
     tree = ast.parse(open(os.path.join(HERE, "glyd", "gpu", "model.py")).read())
     split = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Split")
     ns = {}
-    top = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("ring_chunks", "ring_plan") or isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "SPLIT_SLOT" for t in n.targets)]
+    top = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("ring_chunks", "ring_slot", "ring_plan") or isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "SPLIT_SLOT" for t in n.targets)]
     exec(compile(ast.Module(top + [n for n in split.body if isinstance(n, ast.FunctionDef) and n.name == "follow"], []), "model.py", "exec"), ns)
 
     class Fake:
@@ -389,13 +389,19 @@ def test_split_order():
     s = Fake()
     prompt(s, short)
     assert [prompt(s, short), prompt(s, full), prompt(s, full), prompt(s, short)] == [1, 3, 1, 1] and s.order == full, "the order takes in those it lacks"
-    # the ring for an order (ring_plan): Qwen3-8B's layers merged (q k v, gate up) in 100 MiB slots, gate up in two
-    # chunks, a layer's 5 chunks ahead; not merged, the gap to the last of a shape up to 7; Qwen3-0.6B's matrices whole
+    # the ring (ring_slot, ring_plan): Qwen3-8B's layers merged (q k v, gate up) in 100 MiB slots, gate up in two
+    # chunks, a layer's 5 chunks ahead, its lm_head (once) not setting the slot; not merged, the gap to the last of a
+    # shape up to 7; 14B's in slots of half its gate up; Qwen3-0.6B's matrices whole
     assert ns["ring_chunks"](24576, 4096, 100 << 20) == [(0, 12288), (12288, 12288)]
     layer = [(6144, 4096), (4096, 4096), (24576, 4096), (4096, 12288)]
-    assert ns["ring_plan"](layer * 36) == (100 << 20, 6, 6)
-    assert ns["ring_plan"]([(4096, 4096), (1024, 4096), (1024, 4096), (4096, 4096), (12288, 4096), (12288, 4096), (4096, 12288)] * 36) == (12288 * 4096 * 2, 8, 9)
-    assert ns["ring_plan"]([(4096, 1024), (1024, 2048), (6144, 1024), (1024, 3072)] * 28) == (6144 * 1024 * 2, 5, 6)
+    assert ns["ring_slot"](layer * 36) == ns["ring_slot"](layer * 36 + [(151936, 4096)]) == 100 << 20
+    assert ns["ring_plan"](layer * 36, 100 << 20) == (6, 6)
+    loose = [(4096, 4096), (1024, 4096), (1024, 4096), (4096, 4096), (12288, 4096), (12288, 4096), (4096, 12288)] * 36
+    assert ns["ring_slot"](loose) == 12288 * 4096 * 2 and ns["ring_plan"](loose, 12288 * 4096 * 2) == (8, 9)
+    big = [(7168, 5120), (5120, 5120), (34816, 5120), (5120, 17408)] * 40
+    assert ns["ring_slot"](big) == 17408 * 5120 * 2 and ns["ring_plan"](big, 17408 * 5120 * 2) == (6, 6)
+    small = [(4096, 1024), (1024, 2048), (6144, 1024), (1024, 3072)] * 28
+    assert ns["ring_slot"](small) == 6144 * 1024 * 2 and ns["ring_plan"](small, 6144 * 1024 * 2) == (5, 6)
 
 
 def test_names_defined_once():

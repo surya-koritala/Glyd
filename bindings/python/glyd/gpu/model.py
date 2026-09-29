@@ -306,16 +306,22 @@ def ring_chunks(O, K, slot):
     return [(r0, min(rows, O - r0)) for r0 in range(0, O, rows)]
 
 
-def ring_plan(shapes):
-    """The ring for an order of matrices (their shapes): (slot bytes, slots, how many matrices to keep queued past the
-    next product). Slots of the largest matrix that comes again in the order, whole where it is at most 100 MiB, else
-    half of it (at least 100 MiB: fewer, wider products); as many as a chunk's decode needs to wait for its gate alone
-    (the product of the last chunk of its shape before it: a layer's chunks ahead) and never for a slot, 3 to 16; a
-    layer's matrices and two queued."""
-    again = [sh for sh in set(shapes) if shapes.count(sh) > 1] or shapes
+def ring_slot(shapes):
+    """A ring slot's bytes for matrices of these shapes (a device's 12-bit Linears): the largest that comes again among
+    them (a layer's), whole where it is at most 100 MiB, else half of it, at least 100 MiB (fewer, wider products). A
+    device's ring keeps it: every product of a matrix is cut in the same row chunks, the same cuBLAS calls, the same bits
+    on every prompt (the order's recording and every schedule after)."""
+    again = [sh for sh in set(shapes) if shapes.count(sh) > 1] or shapes or [(64, 64)]
     O, K = max(again, key=lambda sh: sh[0] * sh[1])
     slot = O * K * 2 if O * K * 2 <= SPLIT_SLOT else max(SPLIT_SLOT, ((O + 1) // 2 + 63) // 64 * 64 * K * 2)
-    slot = (slot + 255) // 256 * 256
+    return (slot + 255) // 256 * 256
+
+
+def ring_plan(shapes, slot):
+    """The ring for an order of matrices (their shapes) in slots of slot bytes: (slots, how many matrices to keep queued
+    past the next product). As many slots as a chunk's decode needs to wait for its gate alone (the product of the last
+    chunk of its shape before it: a layer's chunks ahead) and never for a slot, 3 to 16; a layer's matrices and two
+    queued."""
 
     def gap(keys):  # the most keys between one and the last of its kind before it
         last, most = {}, 1
@@ -323,7 +329,7 @@ def ring_plan(shapes):
             most, last[k] = max(most, i - last.get(k, i)), i
         return most
 
-    return slot, max(3, min(16, gap([(sh, c) for sh in shapes for c in ring_chunks(*sh, slot)]) + 1)), gap(shapes) + 2
+    return max(3, min(16, gap([(sh, c) for sh in shapes for c in ring_chunks(*sh, slot)]) + 1)), gap(shapes) + 2
 
 
 class Split:
@@ -385,31 +391,35 @@ class Split:
 
     @staticmethod
     def make(d):
-        """The device's ring (three slots of 100 MiB while the order is recorded), or False (with a warning) where it
-        cannot run there."""
+        """The device's ring (its slot size from the device's 12-bit Linears, ring_slot, kept; three slots while the
+        order is recorded), or False (with a warning) where it cannot run there."""
         why = None
         fns = Split.blas_fns()
+        slot = ring_slot([m.p.shape for m in list(_modules.values()) if isinstance(m, GLinear) and isinstance(m.p, g.Mma12) and m.p.sm.device == d])
+        free = torch.cuda.mem_get_info(d)[0]
+        if 3 * slot + SPLIT_WS + SPLIT_ROOM > free:
+            slot = min(slot, SPLIT_SLOT)
         if fns is None or fns["cublasGemmEx"] is None or fns["cublasSetStream_v2"] is None:
             why = "PyTorch's cuBLAS not found"
         elif fns["cublasSetSmCountTarget"] is None and torch.cuda.get_device_capability(d)[0] >= 9:
             why = "no cublasSetSmCountTarget in PyTorch's cuBLAS (Hopper's products need it)"
-        elif 3 * SPLIT_SLOT + SPLIT_WS + SPLIT_ROOM > torch.cuda.mem_get_info(d)[0]:
-            why = f"no room for its ring ({3 * SPLIT_SLOT >> 20} MiB at least)"
+        elif 3 * slot + SPLIT_WS + SPLIT_ROOM > free:
+            why = f"no room for its ring ({3 * slot >> 20} MiB at least)"
         else:
             try:
                 with torch.cuda.device(d):
-                    return Split(d, fns)
+                    return Split(d, fns, slot)
             except RuntimeError as e:
                 why = str(e)
         warnings.warn(f"glyd: the route SPLIT cannot run on {torch.cuda.get_device_name(d)} ({why}): its prompts take the route without it")
         return False
 
-    def __init__(self, d, fns):
+    def __init__(self, d, fns, slot):
         self.d, self.ring, self.slot, self.slots = d, None, 0, 0
         self.ws = torch.empty(SPLIT_WS, dtype=torch.uint8, device=d)
         self.blas = _lib.Blas(None, fns["cublasGemmEx"], fns["cublasSetStream_v2"], fns["cublasGetStream_v2"], fns["cublasSetWorkspace_v2"],
                               fns["cublasSetSmCountTarget"], fns["cublasGetSmCountTarget"], self.ws.data_ptr(), SPLIT_WS)
-        self.remake(SPLIT_SLOT, 3)
+        self.remake(slot, 3)
         # the order (handles) and its recording; the queue's order indices, the next's place there, how many are queued,
         # how many to keep queued past it; the last one called
         self.order, self.rec, self.run_, self.pos, self.queued, self.ahead, self.at = None, [], [], 0, 0, 3, -1
@@ -424,16 +434,18 @@ class Split:
         self.buf, self.ring, self.slot, self.slots = buf, ring, slot, slots
 
     def plan(self):
-        """The ring for the order (ring_plan), as memory allows (GLYD_SPLIT_SLOTS, a measurement's, sets its slots)."""
+        """The ring's slots for the order (ring_plan, its slot size kept), as memory allows (GLYD_SPLIT_SLOTS, a
+        measurement's, sets them)."""
         mods = [_modules.get(h) for h in self.order]
         if any(m is None for m in mods):  # (a module gone: the next start records the order again)
             return
-        slot, slots, self.ahead = ring_plan([m.p.shape for m in mods])
+        slot = self.slot
+        slots, self.ahead = ring_plan([m.p.shape for m in mods], slot)
         slots = max(3, min(16, int(os.environ.get("GLYD_SPLIT_SLOTS") or slots)))
         free = torch.cuda.mem_get_info(self.d)[0] + torch.cuda.memory_reserved(self.d) - torch.cuda.memory_allocated(self.d) + self.buf.numel()
         while slots > 3 and slots * slot + SPLIT_ROOM > free:
             slots -= 1
-        if (slot, slots) != (self.slot, self.slots) and 3 * slot + SPLIT_ROOM <= free:
+        if slots != self.slots:
             try:
                 self.remake(slot, slots)
             except RuntimeError as e:  # (the ring there kept)
