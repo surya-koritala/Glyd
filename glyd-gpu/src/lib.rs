@@ -281,8 +281,10 @@ pub struct Tiered {
     pub tiers: [u32; 3],
 }
 
-/// A matrix in the 12-bit mma layout: `data` [steps][1536], `exc`,
-/// `exc_base` [steps + 1] in device memory, its 15 exponents' words here.
+/// A matrix in the 12-bit mma layout (split byte): `data` [steps][1536],
+/// `exc`, `exc_base` [steps + 1] in device memory, its words here: its base
+/// hb (0-120) in each byte of the first, then 0, 0, 0
+/// ([`pack::twelve_words`]; the library refuses any others).
 #[derive(Clone, Copy, Debug)]
 pub struct Twelve {
     pub data: *const u8,

@@ -32,8 +32,12 @@ every earlier format.
   (the 12-bit layout before, never released, held its exponents there)
   are refused with `cudaErrorInvalidValue`. glyd.json's 12-bit packs
   (glyd-v3) carry `hb`; a glyd-v3 save of the layout before (its `sym`) is
-  refused as it loads: save it again. Tiered saves (glyd-v1, glyd-v2) are
-  unchanged.
+  refused as it loads: save it again. `glyd pack --layout mma12` packs
+  split byte on the CPU, byte for byte as `pack_mma12` (the glyd-gpu
+  crate's test holds its bytes to a CPU port of it, every bf16 bit pattern
+  and the base at 0 and 120 among its matrices), and `glyd verify` decodes
+  it and refuses a 12-bit pack without `hb`. Tiered saves (glyd-v1,
+  glyd-v2) are unchanged.
 - Saved models in the 12-bit layout too: `glyd.save_pretrained(model,
   path, layout="mma12")`, `python -m glyd.gpu pack MODEL OUT --layout
   mma12` and `glyd pack MODEL OUT --layout mma12` write glyd-v3, the packs

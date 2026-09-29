@@ -18,9 +18,12 @@ gives the kernel glyd takes for a matrix and a token count on a GPU (as
 glyd.gpu's Linears take it), `linear` runs it.
 
 `pack` packs a matrix on the CPU in either layout, byte for byte as
-glyd.gpu's `pack_mma` and `pack_mma12` do on the GPU; `save` packs a bf16
+glyd.gpu's `pack_mma` and `pack_mma12` do on the GPU (the 12-bit layout in
+split byte: a weight's low byte as it is, its high byte a sign and an offset
+from the matrix's base `hb`); `save` packs a bf16
 checkpoint and saves it as glyd-v1 (glyd-v2 with a mixture of experts'
-packs, glyd-v3 in the 12-bit layout), byte for byte as `python -m glyd.gpu
+packs, glyd-v3 in the 12-bit layout, each pack's base as `"hb"` in
+glyd.json), byte for byte as `python -m glyd.gpu
 pack` saves it (Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe; other
 families: Python), and `verify` checks a saved one as `python -m glyd.gpu
 verify` does: each file's tensors back to back, each a pack's buffer or of a
