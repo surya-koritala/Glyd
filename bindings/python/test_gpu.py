@@ -721,6 +721,32 @@ print("ok")
     assert r.stdout.strip().endswith("ok"), r.stderr[-3000:]
 
 
+def test_gpu_code_loads_the_library():
+    """_lib.gpu() and the routes as a process's first calls, before any kernel has loaded the library: they load it
+    (GLYD_GPU_LIB, as the kernels do) and give the code gpu_code gives and a route; with no library anywhere, an OSError
+    that says so, not a KeyError."""
+    torch = cuda()
+    if torch is None:
+        print("test_gpu_code_loads_the_library: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    import glyd.gpu.kernels as g
+    from glyd.gpu import model as gm
+
+    if g.library() is None:
+        print("test_gpu_code_loads_the_library: skipped (no prebuilt library: GLYD_GPU_LIB)")
+        return
+    first = "from glyd.gpu import _lib; print(_lib.gpu(), _lib.mma12_route(_lib.gpu(), 512, 1024, 1)[0])"
+    r = subprocess.run([sys.executable, "-c", first], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr[-2000:]
+    code, route = map(int, r.stdout.split())
+    assert code == gm.gpu_code(torch.cuda.get_device_capability(), torch.cuda.get_device_name()) and route == g.GEMM, r.stdout
+    env = {k: v for k, v in os.environ.items() if k != "GLYD_GPU_LIB"}
+    env["PYTHONPATH"] = os.pathsep.join([HERE] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    r = subprocess.run([sys.executable, "-c", first], capture_output=True, text=True, env=env, cwd=tempfile.gettempdir())
+    beside = os.path.exists(os.path.join(os.path.dirname(g.__file__), f"libglyd_gpu_cuda{torch.version.cuda.split('.')[0]}.so"))
+    assert beside or (r.returncode != 0 and "OSError: no Glyd GPU library" in r.stderr and "KeyError" not in r.stderr), r.stderr[-2000:]
+
+
 def test_packed_weight_view():
     """A packed Linear's and embedding's .weight as a model's own code reads it: its dtype, device and shape; rows by
     index; a torch function on the matrix decoded, its arguments nested too (torch.cat's list)."""
