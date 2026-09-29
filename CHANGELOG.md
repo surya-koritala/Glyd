@@ -86,9 +86,17 @@ every earlier format.
   0.24's rule on eleven GPU codes, 0-5000 tokens, both layouts): Hopper's
   12-bit steps and prompts to 1024 tokens by wgmma, an A10's prompts
   decoded ahead from 512 tokens tiered and 640 12-bit (not exact),
-  GeForce Ada's past 512 and 1792; `GLYD_WG_MIN`, `GLYD_WG_MAX`,
+  GeForce Ada's past 512 and 1792. `GLYD_WG_MIN`, `GLYD_WG_MAX`,
   `GLYD_MID_MIN` and `GLYD_DEC_MIN` (any GPU's 12-bit prompts) are read
-  there. A GPU's code is its compute capability plus a class where the
+  there, once a process, at the library's first route (when the first
+  model is loaded or compressed; the prebuilt library and the JIT build
+  each at their own): set them in the environment before that. A later
+  change has no effect, nor has assigning glyd.gpu.model's `WG_MIN`,
+  `WG_MAX`, `MID_MIN` or `DEC_MIN`, or a GLinear's `dec` or `mid`, which
+  are gone (`GLYD_AHEAD_MIN` is read at import as before, and a GLinear's
+  `ahead` can still be set, then `lin.step = lin._step()`). A value that is
+  not a whole number fails the import of glyd.gpu.model, as it did at
+  `int()` (the library alone takes it as unset). A GPU's code is its compute capability plus a class where the
   name tells GPUs apart (`GLYD_GPU_GEFORCE`; `GLYD_GPU_A10`, an A10 and
   not an A10G, A40 or A6000). `glyd_gpu_mma_linear` and
   `glyd_gpu_mma12_linear` run a route's kernel (where glyd decodes the
@@ -97,8 +105,9 @@ every earlier format.
   route's done counters at least 1024, as `glyd_gpu_mma12_gemm_wg`'s);
   the glyd package's Linears take their routes from the library and
   multiply by `linear` in their one C call, so every caller routes alike.
-  C API version 4. The same bits (check_capi on an RTX 4080 SUPER: 227019
-  calls through both hosts, bit for bit) and the same speed (generate()
+  C API version 4. The same bits (check_capi on an RTX 4080 SUPER: 6975
+  calls through both hosts, bit for bit, and 220044 routes as 0.24's
+  rule) and the same speed (generate()
   eager, before the merge with 0.24: main's package and library and these
   in turn, four rounds, RTX 4080 SUPER: Qwen3-1.7B and
   Qwen3-4B-Instruct-2507 at 1, 8 and 32 sequences in both layouts, each

@@ -31,6 +31,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <cctype>
+#include <cerrno>
 #include <cstring>
 #include <type_traits>
 #include "glyd_gpu.h"  // every definition of the C API below held to its declaration there
@@ -3784,9 +3785,17 @@ struct RouteMins {
 };
 
 static const RouteMins& route_mins() {
+    // a whole number (strtoll's, base 10: spaces, a sign, digits, then spaces alone) within int64, else unset (the
+    // package refuses such a value at import, as glyd 0.24 did: model.py's route_env)
     auto get = [](const char* name, int64_t fallback) {
         const char* v = getenv(name);
-        return v && *v ? (int64_t)atoll(v) : fallback;
+        if (!v) return fallback;
+        char* end;
+        errno = 0;
+        long long x = strtoll(v, &end, 10);
+        bool number = end != v;  // (no digits: end is v)
+        while (isspace((unsigned char)*end)) end++;
+        return number && !*end && errno != ERANGE ? (int64_t)x : fallback;
     };
     static const RouteMins t{get("GLYD_WG_MIN", 17), get("GLYD_WG_MAX", 1024), get("GLYD_MID_MIN", 17), get("GLYD_DEC_MIN", 0)};
     return t;

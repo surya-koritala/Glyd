@@ -86,8 +86,9 @@ def manifest(source, packs, version, layout="mma", tensors=None):
 
 
 def version(v):
-    """glyd.json's glyd ("0.25.0") as (0, 25, 0), its patch 0 where there is none; None where it is not a version."""
-    m = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", str(v))
+    """glyd.json's glyd ("0.25.0") as (0, 25, 0), its patch 0 where there is none; None where it is not a version (a
+    string of ASCII digits, a point, digits from its start)."""
+    m = re.match(r"([0-9]+)\.([0-9]+)(?:\.([0-9]+))?", v) if isinstance(v, str) else None
     return (int(m[1]), int(m[2]), int(m[3] or 0)) if m else None
 
 

@@ -854,12 +854,17 @@ pub struct Verified {
     pub skipped: Vec<String>,
 }
 
-/// glyd.json's glyd ("0.25.0") as (0, 25, 0), its patch 0 where there is none (format.py's version).
+/// glyd.json's glyd ("0.25.0") as (0, 25, 0), its patch 0 where there is none, as format.py's version reads it from
+/// its start: ASCII digits, a point, digits (then a point and digits, or anything).
 fn version(v: &str) -> Option<(u64, u64, u64)> {
-    let mut parts = v.splitn(3, '.');
-    let num = |p: &str| p.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok(); // (its leading digits)
-    let (major, minor) = (num(parts.next()?)?, num(parts.next()?)?);
-    Some((major, minor, parts.next().and_then(num).unwrap_or(0)))
+    fn digits(s: &str) -> (Option<u64>, &str) {
+        let n = s.bytes().take_while(u8::is_ascii_digit).count();
+        (s[..n].parse().ok(), &s[n..])
+    }
+    let (major, rest) = digits(v);
+    let (minor, rest) = digits(rest.strip_prefix('.')?);
+    let patch = rest.strip_prefix('.').and_then(|r| digits(r).0).unwrap_or(0);
+    Some((major?, minor?, patch))
 }
 
 /// A saved checkpoint (glyd-v1, glyd-v2, glyd-v3) checked, as `python -m glyd.gpu verify` checks it: glyd.json's
@@ -985,6 +990,18 @@ mod tests {
     fn file_patterns() {
         assert!(matches("tokenizer*", "tokenizer.json") && matches("*.model", "spm.model") && matches("vocab*", "vocab.json"));
         assert!(!matches("*.model", "model") && !matches("config.json", "config.json.bak"));
+    }
+
+    /// glyd.json's glyd read as format.py's version reads it (its test holds the same list): from its start, ASCII
+    /// digits, a point, digits, then a point and digits or anything; else not a version (a separator one bit off).
+    #[test]
+    fn versions_as_python_reads_them() {
+        for (v, want) in [("0.25.0", Some((0, 25, 0))), ("0.25", Some((0, 25, 0))), ("0.25rc1.3", Some((0, 25, 0))), ("0.25.0.dev0", Some((0, 25, 0))), ("0.25.", Some((0, 25, 0))), ("12.3.4", Some((12, 3, 4)))] {
+            assert_eq!(version(v), want, "{v}");
+        }
+        for v in ["0/25.0", "0,25.0", "0x.25.0", ".25.0", "0.x", "", "v0.25", "0", "0.\u{0663}"] {
+            assert_eq!(version(v), None, "{v}");
+        }
     }
 
     /// in_order hands every result to `done` in order, whatever the threads, the weights and the budget (one item
@@ -1126,9 +1143,11 @@ mod tests {
             set(top, "glyd", Value::from("0.25.0"));
         });
         refused("no sha256 for the tensors saved as they are, which a glyd-v1 of glyd 0.25.0 has");
-        fresh(&bad);
-        edit(&|top| set(top, "glyd", Value::from("0.x")));
-        refused("glyd \"0.x\", not a version");
+        for v in ["0.x", "0/25.0"] {
+            fresh(&bad);
+            edit(&|top| set(top, "glyd", Value::from(v)));
+            refused(&format!("glyd {v:?}, not a version"));
+        }
         fresh(&bad);
         edit(&|top| {
             top.retain(|(k, _)| k != "tensors");

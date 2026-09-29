@@ -203,7 +203,13 @@ def test_check_files():
         assert any("'future', a key of glyd 99.0.0, newer than this one" in str(w.message) for w in said), [str(w.message) for w in said]
         for damaged in (None, [], "x"):
             refused(d, dict(m, tensors=damaged), '"tensors" is not an object of sha256')
-        refused(d, dict(m, glyd="0.x"), "not a version")
+        for v in ("0.x", "0/25.0", 0.25):  # (a separator one bit off; a number)
+            refused(d, dict(m, glyd=v), "not a version")
+        # glyd.json's glyd read as save.rs's version reads it (its test holds the same list)
+        for v, want in (("0.25.0", (0, 25, 0)), ("0.25", (0, 25, 0)), ("0.25rc1.3", (0, 25, 0)), ("0.25.0.dev0", (0, 25, 0)), ("0.25.", (0, 25, 0)), ("12.3.4", (12, 3, 4))):
+            assert fmt.version(v) == want, v
+        for v in ("0/25.0", "0,25.0", "0x.25.0", ".25.0", "0.x", "", "v0.25", "0", "0.\u0663"):
+            assert fmt.version(v) is None, v
         b = bytearray(open(f, "rb").read())
         b[-4096 - 100] ^= 1  # a byte of m.norm.weight, saved as it is
         open(f, "wb").write(bytes(b))
@@ -314,6 +320,53 @@ def test_gpu_class_by_name():
     want = {n: py["gpu_code"]((8, 6), n) - 86 for n in names}
     assert len(out) == len(names) and got == want, [(n, got.get(n), want[n]) for n in names if got.get(n) != want[n]]
     assert (want["NVIDIA A10"], want["NVIDIA A10G"], want["NVIDIA GeForce RTX 4080 SUPER"]) == (kern["A10"], 0, kern["GEFORCE"])
+
+
+def test_route_env():
+    """The library's route variables (GLYD_WG_MIN, GLYD_WG_MAX, GLYD_MID_MIN, GLYD_DEC_MIN) as it reads them (glyd_gpu.cu's
+    route_mins parse, compiled here alone with the host's C++ compiler) and as the package holds them at import
+    (model.route_env, taken from model.py with no torch): where the library reads a number, the package takes the same
+    one; where it would take the value as unset, the package refuses it (ValueError), as glyd 0.24 did at int() (skipped
+    where there is no C++ compiler)."""
+    cxx = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+    if cxx is None:
+        print("  (no C++ compiler: skipped)")
+        return
+    cu = open(os.path.join(HERE, "..", "..", "gpu", "glyd_gpu.cu")).read()
+    a = cu.index("    auto get = [](const char* name, int64_t fallback) {", cu.index("static const RouteMins& route_mins()"))
+    b = cu.index("    };\n", a) + len("    };\n")
+    prog = "#include <cctype>\n#include <cerrno>\n#include <cstdint>\n#include <cstdio>\n#include <cstdlib>\n#include <string>\n#include <iostream>\nint main() {\n" + cu[a:b]
+    prog += """    std::string line;
+    while (std::getline(std::cin, line)) {
+        std::string v;
+        for (size_t i = 0; i + 2 < line.size(); i += 3) v += (char)std::stoi(line.substr(i + 1, 2), nullptr, 16);  // a byte: its two hex digits after a backslash
+        setenv("GLYD_ROUTE_TEST", v.c_str(), 1);
+        long long x = get("GLYD_ROUTE_TEST", 1), y = get("GLYD_ROUTE_TEST", 2);
+        if (x == y) printf("%lld\\n", x); else printf("unset\\n");
+    }
+}
+"""
+    tree = ast.parse(open(os.path.join(HERE, "glyd", "gpu", "model.py")).read())
+    py = {"os": os, "re": re}
+    for n in tree.body:
+        if (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "ROUTE_ENV" for t in n.targets)) or (isinstance(n, ast.FunctionDef) and n.name == "route_env"):
+            exec(compile(ast.Module([n], []), "model.py", "exec"), py)
+    values = ["", " ", "12", " 12", "12 ", "\t12\n", "+12", "-12", "1e3", "2k", "0x10", "1_000", "\u0663", "12.0", "9223372036854775807", "9223372036854775808", "-9223372036854775808",
+              "-9223372036854775809", "- 5", "+", "-", "++1", "1 2", "\v7\f", "0", "00017", "\u00a012", "12\u00a0", "\r\n", "17 x", " -0 "]
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "env.cpp"), "w") as f:
+            f.write(prog)
+        subprocess.run([cxx, "-std=c++17", "-O1", "-o", os.path.join(d, "env"), os.path.join(d, "env.cpp")], check=True)
+        escaped = ["".join(f"\\{b:02x}" for b in v.encode()) for v in values]  # every byte as \\hh
+        out = subprocess.run([os.path.join(d, "env")], input="\n".join(escaped) + "\n", capture_output=True, text=True, check=True).stdout.split()
+    assert len(out) == len(values), out
+    for v, c in zip(values, out):
+        try:
+            py["route_env"]({n: v for n in py["ROUTE_ENV"]})
+            got = str(int(v))
+        except ValueError:
+            got = "unset"
+        assert got == c, (v, c, got)
 
 
 def test_import_without_torch_or_library():

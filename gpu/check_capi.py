@@ -336,6 +336,7 @@ def main_route(gpu, twelve, K, M):
     return g.AHEAD if M >= ahead else g.DECODE
 
 
+looked_up = 0  # the library's routes compared with main_route (lookups, apart from the calls compared through both hosts)
 for gpu in (80, 86, 87, 89, 1086, 1089, 2086, 90, 100, 120, 1120):
     for twelve in (False, True):
         for K in (1024, 1040):
@@ -345,7 +346,7 @@ for gpu in (80, 86, 87, 89, 1086, 1089, 2086, 90, 100, 120, 1120):
             for M, (r, last) in enumerate(got):
                 assert all(got[i][0] == r for i in range(M, min(last, 5000) + 1)) and (last >= 5000 or got[last + 1][0] != r), ("a route's last", gpu, twelve, K, M)
             assert jit.mma12_route(gpu, 512, K, 700) == got[700] if twelve else jit.mma_route(gpu, 512, K, 700) == got[700]
-            counts["routes"] = counts.get("routes", 0) + 5001
+            looked_up += 5001
 from glyd.gpu import model as gm
 
 # a GPU's code: its compute capability and its class by name, alike in the library (C) and the package (Python)
@@ -557,9 +558,11 @@ if cc() != (9, 0):  # this GPU (lins were last made as on an A100 where it is no
 # A prompt that ends before its order does leaves decodes ahead queued; here they wait 50 ms (the hold before each
 # host's), and meanwhile its modules are let go and memory of their sizes given out and written: none of it where
 # the queued decodes read (record_stream), no illegal address. A call below the threshold waits for what is queued.
+# (On Hopper the prompts are WG_MAX + 1 tokens: to WG_MAX its 12-bit ones are mma_gemm_wg's, never on the order.)
 hold, gm.AHEAD_HOLD = gm.AHEAD_HOLD, 50_000_000
 ls = [gm.GLinear((g.pack_mma12 if i % 2 else g.pack_mma)(weights(O * K, 0.01).view(O, K)), None) for i, (O, K) in enumerate(shapes)]
-xs = [torch.randn(600, lin.in_features, dtype=bf, device=dev) for lin in ls]
+P = WG_MAX + 1 if cc() == (9, 0) else 600
+xs = [torch.randn(P, lin.in_features, dtype=bf, device=dev) for lin in ls]
 for lin in ls:
     lin.ahead = 513
     lin.step = lin._step()
@@ -567,7 +570,7 @@ for n in (len(ls), len(ls), 3):  # recorded, followed, then a prompt that ends b
     for lin, x in zip(ls[:n], xs):
         lin(x)
 a = gm.Ahead.of[dev_]
-assert a.live and gm.Ahead.queued and any(k >= 3 for k, _, _ in a.schedule(512)[0][2]), "decodes ahead queued past the prompt"
+assert a.live and gm.Ahead.queued and any(k >= 3 for k, _, _ in a.schedule(P // 128 * 128)[0][2]), "decodes ahead queued past the prompt"
 held = {t.data_ptr(): t.numel() * t.element_size() for lin in ls for t in vars(lin.p).values() if isinstance(t, torch.Tensor)}
 del ls, lin
 junk = [torch.full((n,), 0x7F, dtype=torch.uint8, device=dev) for n in held.values()]  # offsets of 2^31 or so, where read
@@ -610,6 +613,6 @@ for host in (jit, lib):
 
 for e in errors:
     print("refused:", e)
-print(f"library {g._prebuilt()} (CUDA {lib.cuda_version()}), {torch.cuda.get_device_name()}: {sum(counts.values())} calls compared bit for bit, all identical")
+print(f"library {g._prebuilt()} (CUDA {lib.cuda_version()}), {torch.cuda.get_device_name()}: {sum(counts.values())} calls compared bit for bit, all identical; {looked_up} routes as main's rule (0.24.0's GLinear)")
 for name in sorted(counts):
     print(f"  {name}: {counts[name]}")

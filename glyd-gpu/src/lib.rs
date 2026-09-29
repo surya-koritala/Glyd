@@ -627,7 +627,9 @@ impl Library {
 
     /// The route of `w` for m tokens on `gpu` (as [`Library::gpu`] gives
     /// it), and the last token count from m on that takes it (`i64::MAX`:
-    /// every one past m).
+    /// every one past m). The library reads GLYD_WG_MIN, GLYD_WG_MAX,
+    /// GLYD_MID_MIN and GLYD_DEC_MIN once, at its first route; a value that
+    /// is not a whole number is taken as unset (glyd_gpu.h).
     pub fn route(&self, gpu: i32, w: &Matrix, m: i64) -> Result<(Route, i64)> {
         let (mut r, mut last) = (0, 0i64);
         // SAFETY: sizes and host out-pointers.

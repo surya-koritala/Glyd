@@ -57,6 +57,20 @@ SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 # Qwen3-1.7B's fused pass is the faster but at 1280, Qwen3-4B-Instruct-2507's but at 1664, Qwen3-8B's at 1024, 1408
 # and 1536 alone (1.0-4.6% slower at the other six); at 1793-2047 Qwen3-1.7B's is 3.5-4.0% faster, Qwen3-4B's
 # 1.8-3.1% and Qwen3-8B's 0.7-4.3% slower.
+ROUTE_ENV = ("GLYD_WG_MIN", "GLYD_WG_MAX", "GLYD_MID_MIN", "GLYD_DEC_MIN")  # the library's (glyd_gpu.h): read once, at its first route
+
+
+def route_env(environ=os.environ):
+    """The library's route variables held to what it reads as a number, a whole one in base 10 with spaces around it
+    and a sign (strtoll's, within int64): ValueError at import where one is set to anything else, as glyd 0.24 raised
+    at int() (the library would take it as unset)."""
+    for name in ROUTE_ENV:
+        v = environ.get(name)
+        if v is not None and not (re.fullmatch(r"\s*[+-]?[0-9]+\s*", v, re.ASCII) and -(1 << 63) <= int(v) < 1 << 63):
+            raise ValueError(f"{name}={v!r}: not a whole number, as the GPU library's routes read it")
+
+
+route_env()
 AHEAD_MIN = int(os.environ.get("GLYD_AHEAD_MIN", 0)) or None
 AHEAD_WARPS = int(os.environ.get("GLYD_AHEAD_WARPS", 0))  # a decode ahead's warps an SM (0: 3 tiered, 2 12-bit), few enough to sit beside a cuBLAS block
 AHEAD_RATE = float(os.environ.get("GLYD_AHEAD_RATE", 2.2e-3))  # weights decoded ahead beside a product, for each of its weights and tokens
@@ -470,7 +484,7 @@ class GLinear(_Node, nn.Module):
             f = self.kernel(x2.shape[0])
             if f is not None:
                 return f(self.p, x2, self.bias).view(*lead, O)
-        if self.fused and x2.shape[0] == 1:
+        if self.fused and x2.shape[0] == 1 and not isinstance(self.p, g.Mma):  # (an mma pack whose kernel(1) is none: decoded)
             f = g.fast_gemv if isinstance(self.p, g.Fast) else g.gemv
             return f(self.p, x2[0], self.bias).view(*lead, O)
         n = x2.shape[0]

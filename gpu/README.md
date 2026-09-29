@@ -1148,7 +1148,9 @@ kernel past them, and the matrix decoded for cuBLAS where that is the faster:
 an A100's 12-bit prompts from 769 tokens, Hopper's past its wgmma kernel,
 GeForce Ada's from 513 tiered and 1793 12-bit (641 exact) and an A10's from
 512 tiered and 640 12-bit (not exact), decoded ahead; `GLYD_WG_MIN`,
-`GLYD_WG_MAX`, `GLYD_MID_MIN` and `GLYD_DEC_MIN` move them).
+`GLYD_WG_MAX`, `GLYD_MID_MIN` and `GLYD_DEC_MIN` move them, read once a
+process, at the library's first route: set them in the environment before
+the first model is loaded).
 `glyd_gpu_mma_linear` and `glyd_gpu_mma12_linear` run a route's kernel (where
 glyd.gpu decodes for cuBLAS, the prompt kernel, but on Hopper and where K is
 not a multiple of 64: `cudaErrorNotSupported`, the matrix decoded for a GEMM

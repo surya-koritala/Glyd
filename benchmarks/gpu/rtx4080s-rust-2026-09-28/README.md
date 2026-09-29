@@ -46,6 +46,14 @@ beside it):
 
 rust-gpu merged with v0.24.0 (main 44393a9) and its routes ported, checked on the same box as the merge commit has it
 but for text (CHANGELOG.md, a doc comment of lib.rs): `run.sh` built the library and the crate, then ran the crate's
-tests with the library and the GPU, the self-test, check_capi (227019 calls bit for bit), test_gpu.py, and check_api on
+tests with the library and the GPU, the self-test, check_capi (6975 calls through both hosts bit for bit and 220044 routes
+as 0.24.0's rule, which its log sums as 227019 calls; check_capi prints them apart since), test_gpu.py, and check_api on
 Qwen3-0.6B and Qwen3-1.7B and on granite-3.1-3b-a800m-instruct, one at a time under the box's lock; each exits 0.
+
+## review-3
+
+Review 3's fixes, checked on the same box: `run.sh` built the library, then ran check_capi (6975 calls through both
+hosts bit for bit, 220044 routes as 0.24.0's rule) and test_gpu.py (test_route_env and the rest), one at a time under
+the box's lock, each exiting 0; `route_env.txt`: glyd.gpu.model's import refusing GLYD_WG_MAX set to 1e3, nothing and
+2k, and taking 512.
 

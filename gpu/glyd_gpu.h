@@ -160,9 +160,12 @@ int glyd_gpu_gpu(int* gpu);
 /* The route of W [O, K] for M tokens on gpu, in the tiered layout or the
  * 12-bit one; last (NULL: not asked): the last token count from M on that
  * takes it (INT64_MAX: every one past M). GLYD_WG_MIN, GLYD_WG_MAX,
- * GLYD_MID_MIN and GLYD_DEC_MIN in the environment move its thresholds
- * (read at the first call; GLYD_DEC_MIN: a 12-bit prompt decoded from that
- * many tokens on any GPU, where unset an A100's from 769). */
+ * GLYD_MID_MIN and GLYD_DEC_MIN in the environment move its thresholds:
+ * read once a process, at the first route (a later change has no effect),
+ * each a whole number in base 10 (spaces around it, a sign), else taken as
+ * unset (the glyd package refuses such a value at import); GLYD_DEC_MIN: a
+ * 12-bit prompt decoded from that many tokens on any GPU, where unset or 0
+ * an A100's from 769. */
 int glyd_gpu_mma_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
 int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
 
