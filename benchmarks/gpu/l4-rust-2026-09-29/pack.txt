@@ -1,0 +1,210 @@
+# 2026-09-29 17:46:53: load 1.35 1.72 1.40; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 1: Qwen/Qwen3-0.6B mma
+Qwen/Qwen3-0.6B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-0.6B-mma (114 saved as they are, with their sha256)
+1.19 GB of bf16 in 0.8 s (1.55 GB/s, 16 threads), 1 shard
+0.79 s wall, 1104728 KB peak RSS, 885% CPU
+Qwen3-0.6B mma: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:46:54: load 1.35 1.72 1.40; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 2: Qwen/Qwen3-0.6B mma
+Qwen/Qwen3-0.6B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-0.6B-mma (114 saved as they are, with their sha256)
+1.19 GB of bf16 in 0.8 s (1.55 GB/s, 16 threads), 1 shard
+0.79 s wall, 1105980 KB peak RSS, 893% CPU
+Qwen3-0.6B mma: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:46:56: load 1.35 1.72 1.40; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 3: Qwen/Qwen3-0.6B mma
+Qwen/Qwen3-0.6B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-0.6B-mma (114 saved as they are, with their sha256)
+1.19 GB of bf16 in 0.8 s (1.55 GB/s, 16 threads), 1 shard
+0.79 s wall, 1118152 KB peak RSS, 886% CPU
+Qwen3-0.6B mma: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:47:16: load 2.19 1.91 1.47; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 1: Qwen/Qwen3-0.6B mma12
+Qwen/Qwen3-0.6B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-0.6B-mma12 (114 saved as they are, with their sha256)
+1.19 GB of bf16 in 0.7 s (1.64 GB/s, 16 threads), 1 shard
+0.74 s wall, 1220676 KB peak RSS, 651% CPU
+Qwen3-0.6B mma12: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:47:17: load 2.25 1.93 1.47; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 2: Qwen/Qwen3-0.6B mma12
+Qwen/Qwen3-0.6B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-0.6B-mma12 (114 saved as they are, with their sha256)
+1.19 GB of bf16 in 0.7 s (1.67 GB/s, 16 threads), 1 shard
+0.74 s wall, 1210380 KB peak RSS, 656% CPU
+Qwen3-0.6B mma12: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:47:19: load 2.25 1.93 1.47; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 3: Qwen/Qwen3-0.6B mma12
+Qwen/Qwen3-0.6B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-0.6B-mma12 (114 saved as they are, with their sha256)
+1.19 GB of bf16 in 0.7 s (1.67 GB/s, 16 threads), 1 shard
+0.74 s wall, 1195620 KB peak RSS, 663% CPU
+Qwen3-0.6B mma12: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:47:48: load 1.76 1.84 1.46; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 1: Qwen/Qwen3-1.7B mma
+Qwen/Qwen3-1.7B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-1.7B-mma (114 saved as they are, with their sha256)
+3.44 GB of bf16 in 2.2 s (1.58 GB/s, 16 threads), 1 shard
+2.22 s wall, 3137592 KB peak RSS, 965% CPU
+Qwen3-1.7B mma: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:47:52: load 1.70 1.82 1.45; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 2: Qwen/Qwen3-1.7B mma
+Qwen/Qwen3-1.7B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-1.7B-mma (114 saved as they are, with their sha256)
+3.44 GB of bf16 in 2.2 s (1.56 GB/s, 16 threads), 1 shard
+2.25 s wall, 3114364 KB peak RSS, 956% CPU
+Qwen3-1.7B mma: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:47:56: load 1.70 1.82 1.45; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 3: Qwen/Qwen3-1.7B mma
+Qwen/Qwen3-1.7B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-1.7B-mma (114 saved as they are, with their sha256)
+3.44 GB of bf16 in 2.2 s (1.55 GB/s, 16 threads), 1 shard
+2.27 s wall, 3155136 KB peak RSS, 949% CPU
+Qwen3-1.7B mma: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:48:33: load 2.61 2.12 1.57; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 1: Qwen/Qwen3-1.7B mma12
+Qwen/Qwen3-1.7B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-1.7B-mma12 (114 saved as they are, with their sha256)
+3.44 GB of bf16 in 1.8 s (1.89 GB/s, 16 threads), 1 shard
+1.86 s wall, 3394952 KB peak RSS, 804% CPU
+Qwen3-1.7B mma12: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:48:37: load 2.48 2.10 1.57; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 2: Qwen/Qwen3-1.7B mma12
+Qwen/Qwen3-1.7B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-1.7B-mma12 (114 saved as they are, with their sha256)
+3.44 GB of bf16 in 1.8 s (1.91 GB/s, 16 threads), 1 shard
+1.84 s wall, 3312284 KB peak RSS, 806% CPU
+Qwen3-1.7B mma12: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:48:41: load 2.48 2.10 1.57; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+round 3: Qwen/Qwen3-1.7B mma12
+Qwen/Qwen3-1.7B: 196 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-1.7B-mma12 (114 saved as they are, with their sha256)
+3.44 GB of bf16 in 1.8 s (1.88 GB/s, 16 threads), 1 shard
+1.86 s wall, 3404268 KB peak RSS, 803% CPU
+Qwen3-1.7B mma12: every file byte-identical to Python's (8 files)
+exit 0
+# 2026-09-29 17:49:34: load 2.53 2.28 1.67; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 1: ibm-granite/granite-3.1-3b-a800m-instruct mma
+ibm-granite/granite-3.1-3b-a800m-instruct: 192 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma (99 saved as they are, with their sha256)
+6.75 GB of bf16 in 4.7 s (1.45 GB/s, 16 threads), 1 shard
+4.69 s wall, 5631420 KB peak RSS, 1030% CPU
+granite-3.1-3b-a800m-instruct mma: every file byte-identical to Python's (10 files)
+exit 0
+# 2026-09-29 17:49:42: load 3.47 2.50 1.75; busiest:  100 ps; 1.0 nv-hostengine; 0.1 snapd;
+round 2: ibm-granite/granite-3.1-3b-a800m-instruct mma
+ibm-granite/granite-3.1-3b-a800m-instruct: 192 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma (99 saved as they are, with their sha256)
+6.75 GB of bf16 in 4.7 s (1.44 GB/s, 16 threads), 1 shard
+4.72 s wall, 5675320 KB peak RSS, 1023% CPU
+granite-3.1-3b-a800m-instruct mma: every file byte-identical to Python's (10 files)
+exit 0
+# 2026-09-29 17:49:50: load 3.35 2.49 1.75; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 3: ibm-granite/granite-3.1-3b-a800m-instruct mma
+ibm-granite/granite-3.1-3b-a800m-instruct: 192 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma (99 saved as they are, with their sha256)
+6.75 GB of bf16 in 4.7 s (1.45 GB/s, 16 threads), 1 shard
+4.69 s wall, 5689180 KB peak RSS, 1030% CPU
+granite-3.1-3b-a800m-instruct mma: every file byte-identical to Python's (10 files)
+exit 0
+# 2026-09-29 17:50:53: load 2.87 2.65 1.86; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 1: ibm-granite/granite-3.1-3b-a800m-instruct mma12
+ibm-granite/granite-3.1-3b-a800m-instruct: 192 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma12 (99 saved as they are, with their sha256)
+6.75 GB of bf16 in 3.8 s (1.78 GB/s, 16 threads), 2 shards
+3.79 s wall, 6107916 KB peak RSS, 863% CPU
+granite-3.1-3b-a800m-instruct mma12: every file byte-identical to Python's (12 files)
+exit 0
+# 2026-09-29 17:51:00: load 2.72 2.62 1.85; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 2: ibm-granite/granite-3.1-3b-a800m-instruct mma12
+ibm-granite/granite-3.1-3b-a800m-instruct: 192 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma12 (99 saved as they are, with their sha256)
+6.75 GB of bf16 in 3.8 s (1.79 GB/s, 16 threads), 2 shards
+3.78 s wall, 6042268 KB peak RSS, 863% CPU
+granite-3.1-3b-a800m-instruct mma12: every file byte-identical to Python's (12 files)
+exit 0
+# 2026-09-29 17:51:08: load 3.56 2.81 1.93; busiest:  100 ps; 1.0 nv-hostengine; 0.1 snapd;
+round 3: ibm-granite/granite-3.1-3b-a800m-instruct mma12
+ibm-granite/granite-3.1-3b-a800m-instruct: 192 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/granite-3.1-3b-a800m-instruct-mma12 (99 saved as they are, with their sha256)
+6.75 GB of bf16 in 3.7 s (1.80 GB/s, 16 threads), 2 shards
+3.75 s wall, 6126688 KB peak RSS, 874% CPU
+granite-3.1-3b-a800m-instruct mma12: every file byte-identical to Python's (12 files)
+exit 0
+# 2026-09-29 17:52:28: load 2.00 2.53 1.90; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 1: Qwen/Qwen3-4B-Instruct-2507 mma
+Qwen/Qwen3-4B-Instruct-2507: 252 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma (146 saved as they are, with their sha256)
+8.04 GB of bf16 in 5.1 s (1.58 GB/s, 16 threads), 2 shards
+5.20 s wall, 6591888 KB peak RSS, 1075% CPU
+Qwen3-4B-Instruct-2507 mma: every file byte-identical to Python's (10 files)
+exit 0
+# 2026-09-29 17:52:37: load 3.02 2.74 1.98; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 2: Qwen/Qwen3-4B-Instruct-2507 mma
+Qwen/Qwen3-4B-Instruct-2507: 252 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma (146 saved as they are, with their sha256)
+8.04 GB of bf16 in 5.1 s (1.58 GB/s, 16 threads), 2 shards
+5.17 s wall, 6551364 KB peak RSS, 1083% CPU
+Qwen3-4B-Instruct-2507 mma: every file byte-identical to Python's (10 files)
+exit 0
+# 2026-09-29 17:52:46: load 2.86 2.71 1.97; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 3: Qwen/Qwen3-4B-Instruct-2507 mma
+Qwen/Qwen3-4B-Instruct-2507: 252 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma (146 saved as they are, with their sha256)
+8.04 GB of bf16 in 5.0 s (1.60 GB/s, 16 threads), 2 shards
+5.15 s wall, 6638532 KB peak RSS, 1087% CPU
+Qwen3-4B-Instruct-2507 mma: every file byte-identical to Python's (10 files)
+exit 0
+# 2026-09-29 17:54:04: load 2.38 2.71 2.04; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 1: Qwen/Qwen3-4B-Instruct-2507 mma12
+Qwen/Qwen3-4B-Instruct-2507: 252 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma12 (146 saved as they are, with their sha256)
+8.04 GB of bf16 in 4.0 s (2.02 GB/s, 16 threads), 2 shards
+4.07 s wall, 7275480 KB peak RSS, 924% CPU
+Qwen3-4B-Instruct-2507 mma12: every file byte-identical to Python's (10 files)
+exit 0
+# 2026-09-29 17:54:12: load 2.61 2.76 2.06; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 2: Qwen/Qwen3-4B-Instruct-2507 mma12
+Qwen/Qwen3-4B-Instruct-2507: 252 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma12 (146 saved as they are, with their sha256)
+8.04 GB of bf16 in 4.0 s (2.03 GB/s, 16 threads), 2 shards
+4.06 s wall, 7411196 KB peak RSS, 932% CPU
+Qwen3-4B-Instruct-2507 mma12: every file byte-identical to Python's (10 files)
+exit 0
+# 2026-09-29 17:54:20: load 2.56 2.74 2.06; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+round 3: Qwen/Qwen3-4B-Instruct-2507 mma12
+Qwen/Qwen3-4B-Instruct-2507: 252 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-4B-Instruct-2507-mma12 (146 saved as they are, with their sha256)
+8.04 GB of bf16 in 4.0 s (2.01 GB/s, 16 threads), 2 shards
+4.08 s wall, 7321340 KB peak RSS, 924% CPU
+Qwen3-4B-Instruct-2507 mma12: every file byte-identical to Python's (10 files)
+exit 0
+# 2026-09-29 17:56:27: load 1.97 2.65 2.13; busiest:  0.9 nv-hostengine; 0.1 systemd; 0.1 snapd;
+round 1: Qwen/Qwen3-8B mma
+Qwen/Qwen3-8B: 253 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-8B-mma (146 saved as they are, with their sha256)
+16.38 GB of bf16 in 18.5 s (0.88 GB/s, 16 threads), 3 shards
+18.58 s wall, 11425408 KB peak RSS, 635% CPU
+Qwen3-8B mma: every file byte-identical to Python's (11 files)
+exit 0
+# 2026-09-29 17:56:54: load 2.84 2.83 2.20; busiest:  100 ps; 0.9 nv-hostengine; 0.1 systemd;
+round 2: Qwen/Qwen3-8B mma
+Qwen/Qwen3-8B: 253 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-8B-mma (146 saved as they are, with their sha256)
+16.38 GB of bf16 in 23.0 s (0.71 GB/s, 16 threads), 3 shards
+23.09 s wall, 11510428 KB peak RSS, 489% CPU
+Qwen3-8B mma: every file byte-identical to Python's (11 files)
+exit 0
+# 2026-09-29 17:57:25: load 3.68 3.07 2.31; busiest:  0.9 nv-hostengine; 0.1 systemd; 0.1 snapd;
+round 3: Qwen/Qwen3-8B mma
+Qwen/Qwen3-8B: 253 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-8B-mma (146 saved as they are, with their sha256)
+16.38 GB of bf16 in 19.3 s (0.85 GB/s, 16 threads), 3 shards
+19.34 s wall, 11553364 KB peak RSS, 609% CPU
+Qwen3-8B mma: every file byte-identical to Python's (11 files)
+exit 0
+# 2026-09-29 18:00:38: load 2.50 3.14 2.51; busiest:  0.9 nv-hostengine; 0.1 systemd; 0.1 snapd;
+round 1: Qwen/Qwen3-8B mma12
+Qwen/Qwen3-8B: 253 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-8B-mma12 (146 saved as they are, with their sha256)
+16.38 GB of bf16 in 22.8 s (0.72 GB/s, 16 threads), 3 shards
+22.79 s wall, 13216476 KB peak RSS, 345% CPU
+Qwen3-8B mma12: every file byte-identical to Python's (11 files)
+exit 0
+# 2026-09-29 18:01:09: load 3.09 3.26 2.57; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:1+flush-259:1; 0.1 systemd;
+round 2: Qwen/Qwen3-8B mma12
+Qwen/Qwen3-8B: 253 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-8B-mma12 (146 saved as they are, with their sha256)
+16.38 GB of bf16 in 24.6 s (0.67 GB/s, 16 threads), 3 shards
+24.57 s wall, 13482520 KB peak RSS, 319% CPU
+Qwen3-8B mma12: every file byte-identical to Python's (11 files)
+exit 0
+# 2026-09-29 18:01:43: load 2.71 3.15 2.56; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:1-events_power_efficient; 0.1 systemd;
+round 3: Qwen/Qwen3-8B mma12
+Qwen/Qwen3-8B: 253 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/Qwen3-8B-mma12 (146 saved as they are, with their sha256)
+16.38 GB of bf16 in 24.4 s (0.67 GB/s, 16 threads), 3 shards
+24.39 s wall, 13553148 KB peak RSS, 323% CPU
+Qwen3-8B mma12: every file byte-identical to Python's (11 files)
+exit 0

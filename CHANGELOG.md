@@ -56,7 +56,9 @@ every earlier format.
   and before refuse glyd-v3 by its format). The same bytes from Rust and
   Python for the five models of `glyd pack` below, and `glyd verify` reads
   it. Loaded for the 12-bit layout on an RTX 4080 SUPER
-  (`layout="mma12"`, warm cache, three fresh processes each):
+  (`layout="mma12"`, warm cache, three fresh processes each; measured on
+  the 12-bit layout before split byte, whose load reads the same buffers
+  and decodes nothing):
   granite-3.1-3b-a800m-instruct in 0.49 s against 1.32-1.33 s from the
   tiered save and 1.44-1.45 s from the bf16 checkpoint,
   Qwen3-4B-Instruct-2507 in 0.84-0.85 s against 1.76-1.77 and 1.95,
@@ -86,22 +88,29 @@ every earlier format.
   experts' packs, glyd-v3 in the 12-bit layout) with no Python, PyTorch or
   GPU, byte for byte as `python -m glyd.gpu pack` saves it: every file of
   Qwen3-0.6B, 1.7B, 4B-Instruct-2507 and 8B and of
-  granite-3.1-3b-a800m-instruct is Python's in both layouts (their
-  sha256; glyd.json, the shards, the index), each pack decoded back and
-  checked as it is made. On 8 threads of a Ryzen 9 7950X3D, three rounds
-  each: 1.93-1.98 / 1.95-1.98 / 2.08-2.09 / 2.05-2.08 / 1.79-1.81 GB/s of
-  bf16 tiered and 2.56-2.62 / 2.55-2.56 / 2.87-2.91 / 2.36-3.03 /
-  2.44-2.48 GB/s in the 12-bit layout (Qwen3-8B's 16.4 GB in 7.9-8.0 s
-  and 5.4-7.0 s). A save holds two shards (about 5 GB each) and at most a
-  shard's worth of weights in flight past the one it waits for, whatever
-  the threads (Qwen3-8B: 9.0-10.3 GB peak RSS). `glyd verify` checks a
-  save as `python -m glyd.gpu verify` does, its packs decoded on the CPU
-  or (`--device cuda:0`) on the GPU by the library (Qwen3-8B's 253 packed
-  tensors and 146 saved as they are in 9.1-9.2 s tiered, 7.3-7.5 s 12-bit,
-  on 8 threads). The families are written out as transformers 5.17 holds
-  them: Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe for now (tiny
-  random checkpoints of each family save the same bytes too, both
-  layouts), anything else refused with Python's command. The commands are
+  granite-3.1-3b-a800m-instruct (its experts glyd-v3's mixture of
+  experts) is Python's in both layouts, the 12-bit one in split byte
+  (their sha256; glyd.json, the shards, the index; three rounds each),
+  each pack decoded back and checked as it is made, and each Rust save
+  verified by `glyd verify` on the CPU and the GPU and by `python -m
+  glyd.gpu verify`. On the AWS dev machine (a g6.4xlarge: 16 vCPUs of an
+  AMD EPYC 7R13, an NVIDIA L4), 16 threads, three rounds each: 1.55 /
+  1.55-1.58 / 1.58-1.60 / 0.71-0.88 / 1.44-1.45 GB/s of bf16 tiered and
+  1.64-1.67 / 1.88-1.91 / 2.01-2.03 / 0.67-0.72 / 1.78-1.80 GB/s in the
+  12-bit layout (Qwen3-8B's 16.4 GB in 18.5-23.0 s and 22.8-24.6 s, at
+  the pace of the disk its shards were written to: 3.2-6.4 of the CPUs
+  busy). A save holds two shards (about 5 GB each) and at most a shard's
+  worth of weights in flight past the one it waits for, whatever the
+  threads (Qwen3-8B: 11.4-13.6 GB peak RSS). `glyd verify` checks a save
+  as `python -m glyd.gpu verify` does, its packs decoded on the CPU or
+  (`--device cuda:0`) on the GPU by the library (Qwen3-8B's 253 packed
+  tensors and 146 saved as they are in 11.6-11.8 s tiered, 8.8-9.0 s
+  12-bit, on 16 threads)
+  ([benchmarks/gpu/l4-rust-2026-09-29](benchmarks/gpu/l4-rust-2026-09-29)).
+  The families are written out as transformers 5.17 holds them: Qwen3,
+  Qwen2, Llama, Mistral, Granite and GraniteMoe for now (tiny random
+  checkpoints of each family save the same bytes too, both layouts),
+  anything else refused with Python's command. The commands are
   the `glyd-gpu` program's, under the Business Source License as the rest
   of the GPU code, which the glyd CLI runs (it ships beside glyd; a file
   named `pack` or `verify` is compressed as `./pack`).

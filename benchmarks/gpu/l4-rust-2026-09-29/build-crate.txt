@@ -1,0 +1,7 @@
+   Compiling glyd-gpu v0.24.0 (/home/ubuntu/rust-rc/src/glyd-gpu)
+    Finished `release` profile [optimized] target(s) in 6.59s
+
+real	0m6.608s
+user	0m14.542s
+sys	0m1.041s
+  Executable unittests src/bin/glyd-gpu.rs (/home/ubuntu/rust-rc/target/release/deps/glyd_gpu-87917778f45c5064)

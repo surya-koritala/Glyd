@@ -1,0 +1,5 @@
+/home/ubuntu/rust-rc/lib/libglyd_gpu_cuda13.so
+
+real	1m1.811s
+user	4m32.468s
+sys	0m4.759s

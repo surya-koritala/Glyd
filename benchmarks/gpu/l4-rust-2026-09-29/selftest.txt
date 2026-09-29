@@ -1,0 +1,21 @@
+# 2026-09-29 17:44:30: load 4.21 2.11 1.45; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.2 systemd;
+mma_gemm_mid 64x64, 0 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 64x64, 0 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 192x128, 0 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 192x128, 0 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 128x4096, 49 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 128x4096, 49 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 1024x2048, 148 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 1024x2048, 148 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 5120x1024, 4259 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 5120x1024, 4259 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 192x4096, 57334 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 192x4096, 57334 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 3072x5120, 231729 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 3072x5120, 231729 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 17408x1024, 131692 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 17408x1024, 131692 exceptions: 1-1100 tokens within 1e-2, the same every run
+mma_gemm_mid 8960x128, 82 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_big 8960x128, 82 exceptions: 1-1100 tokens within 1e-2, the same every run
+every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too)
+exit 0

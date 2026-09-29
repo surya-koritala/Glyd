@@ -1,0 +1,130 @@
+# 2026-09-29 18:05:55: load 1.22 2.51 2.49; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  9.14it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  9.13it/s]
+llama LlamaForCausalLM ['lm_head.weight', 'model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 758.60it/s]
+llama-tied LlamaForCausalLM ['model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 641.43it/s]
+qwen2 Qwen2ForCausalLM ['lm_head.weight', 'model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.bias', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.bias', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.bias', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 715.14it/s]
+mistral MistralForCausalLM ['lm_head.weight', 'model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 759.42it/s]
+granite GraniteForCausalLM ['model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 846.65it/s]
+qwen3-odd Qwen3ForCausalLM ['model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_norm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_norm.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 668.20it/s]
+qwen3-untied Qwen3ForCausalLM ['lm_head.weight', 'model.embed_tokens.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.mlp.down_proj.weight', 'model.layers.0.mlp.gate_proj.weight', 'model.layers.0.mlp.up_proj.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_norm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_norm.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 711.26it/s]
+granitemoe GraniteMoeForCausalLM ['model.embed_tokens.weight', 'model.layers.0.block_sparse_moe.input_linear.weight', 'model.layers.0.block_sparse_moe.output_linear.weight', 'model.layers.0.block_sparse_moe.router.layer.weight', 'model.layers.0.input_layernorm.weight', 'model.layers.0.post_attention_layernorm.weight', 'model.layers.0.self_attn.k_proj.weight', 'model.layers.0.self_attn.o_proj.weight', 'model.layers.0.self_attn.q_proj.weight', 'model.layers.0.self_attn.v_proj.weight', 'model.norm.weight']
+exit 0
+# 2026-09-29 18:06:00: load 1.20 2.49 2.48; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/granite/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/granite/: 14 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (6 saved as they are, with their sha256)
+granite mma: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 14 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+exit 0
+# 2026-09-29 18:06:09: load 1.17 2.44 2.46; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/granite/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/granite/: 14 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (6 saved as they are, with their sha256)
+granite mma12: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 14 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+exit 0
+# 2026-09-29 18:06:18: load 1.14 2.39 2.45; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/granitemoe/: 14 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/granitemoe/: 12 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (8 saved as they are, with their sha256)
+granitemoe mma: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 12 tensors decode to glyd.json's sha256, 8 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 14 tensors decode to glyd.json's sha256, 8 saved as they are match theirs
+exit 0
+# 2026-09-29 18:06:28: load 1.19 2.36 2.44; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-flush-259:1; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/granitemoe/: 14 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/granitemoe/: 12 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (8 saved as they are, with their sha256)
+granitemoe mma12: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 12 tensors decode to glyd.json's sha256, 8 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 14 tensors decode to glyd.json's sha256, 8 saved as they are match theirs
+exit 0
+# 2026-09-29 18:06:37: load 1.16 2.32 2.42; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/llama-tied/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/llama-tied/: 14 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (6 saved as they are, with their sha256)
+llama-tied mma: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 14 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+exit 0
+# 2026-09-29 18:06:46: load 1.15 2.29 2.41; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/llama-tied/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/llama-tied/: 14 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (6 saved as they are, with their sha256)
+llama-tied mma12: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 14 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+exit 0
+# 2026-09-29 18:06:55: load 2.33 2.50 2.48; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_unbound; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/llama/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/llama/: 15 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (6 saved as they are, with their sha256)
+llama mma: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 15 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+exit 0
+# 2026-09-29 18:07:05: load 2.12 2.45 2.46; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/llama/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/llama/: 15 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (6 saved as they are, with their sha256)
+llama mma12: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 15 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+exit 0
+# 2026-09-29 18:07:14: load 1.95 2.40 2.45; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/mistral/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/mistral/: 15 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (6 saved as they are, with their sha256)
+mistral mma: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 15 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+exit 0
+# 2026-09-29 18:07:23: load 1.80 2.36 2.43; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/mistral/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/mistral/: 15 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (6 saved as they are, with their sha256)
+mistral mma12: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 15 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 6 saved as they are match theirs
+exit 0
+# 2026-09-29 18:07:33: load 1.68 2.31 2.42; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-flush-259:1; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/qwen2/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/qwen2/: 15 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (12 saved as they are, with their sha256)
+qwen2 mma: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 15 tensors decode to glyd.json's sha256, 12 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 12 saved as they are match theirs
+exit 0
+# 2026-09-29 18:07:42: load 1.58 2.27 2.40; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/qwen2/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/qwen2/: 15 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (12 saved as they are, with their sha256)
+qwen2 mma12: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 15 tensors decode to glyd.json's sha256, 12 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 12 saved as they are match theirs
+exit 0
+# 2026-09-29 18:07:51: load 1.49 2.22 2.38; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/qwen3-odd/: 11 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/qwen3-odd/: 10 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (14 saved as they are, with their sha256)
+qwen3-odd mma: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 10 tensors decode to glyd.json's sha256, 14 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 11 tensors decode to glyd.json's sha256, 14 saved as they are match theirs
+exit 0
+# 2026-09-29 18:08:01: load 1.45 2.20 2.38; busiest:  100 ps; 0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient;
+/home/ubuntu/rust-rc/tiny/qwen3-odd/: 11 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/qwen3-odd/: 10 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (14 saved as they are, with their sha256)
+qwen3-odd mma12: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 10 tensors decode to glyd.json's sha256, 14 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 11 tensors decode to glyd.json's sha256, 14 saved as they are match theirs
+exit 0
+# 2026-09-29 18:08:10: load 1.38 2.16 2.36; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-events_power_efficient; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/qwen3-untied/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/qwen3-untied/: 15 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (10 saved as they are, with their sha256)
+qwen3-untied mma: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 15 tensors decode to glyd.json's sha256, 10 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 10 saved as they are match theirs
+exit 0
+# 2026-09-29 18:08:19: load 1.32 2.12 2.35; busiest:  0.9 nv-hostengine; 0.1 kworker/u64:3-flush-259:1; 0.1 systemd;
+/home/ubuntu/rust-rc/tiny/qwen3-untied/: 16 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/tpy
+/home/ubuntu/rust-rc/tiny/qwen3-untied/: 15 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/trs (10 saved as they are, with their sha256)
+qwen3-untied mma12: every file byte-identical to Python's (4 files)
+/home/ubuntu/rust-rc/out/trs: 15 tensors decode to glyd.json's sha256, 10 saved as they are match theirs
+/home/ubuntu/rust-rc/out/trs: 16 tensors decode to glyd.json's sha256, 10 saved as they are match theirs
+exit 0
