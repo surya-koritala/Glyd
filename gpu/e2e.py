@@ -45,6 +45,7 @@ ap.add_argument("--from-pretrained", action="store_true", help="Glyd as glyd.fro
 ap.add_argument("--prompts", action="store_true", help="a batch of different prompts (left-padded), not copies of one: a mixture of experts routes each to its own experts")
 ap.add_argument("--merge", action="store_true", help="the Linears that take the same input (q, k, v; gate, up) as one product each, for bf16 and Glyd alike, as serving engines run them")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
+ap.add_argument("--without-split", action="store_true", help="--prefill again with the route SPLIT off (model.Split: the routes before it, v0.25.0's), in the same process")
 ap.add_argument("--compile", action="store_true", help="generate() compiled as transformers compiles it: a static cache, the forward under torch.compile (reduce-overhead: CUDA graphs); each batch's warm-up, of --tokens, compiles and captures")
 args = ap.parse_args()
 
@@ -353,6 +354,13 @@ print(f"{args.format}{mode}{' (from_pretrained)' if args.from_pretrained else ''
 smi("glyd")
 logits_b, out_b = measure(model, f"glyd {args.format}{mode}")
 prefill(model, f"glyd {args.format}")
+if args.without_split:
+    from glyd.gpu.model import Split
+    held = dict(Split.of)  # (each device's ring kept while it is off)
+    Split.of.update({torch.device("cuda", i): False for i in range(torch.cuda.device_count())})
+    prefill(model, f"glyd {args.format} without SPLIT")
+    Split.of.clear()
+    Split.of.update(held)
 top_b = perplexity(model, f"glyd {args.format}")
 mmlu_b = mmlu(model, f"glyd {args.format}")
 kv_check(model, f"glyd {args.format}")

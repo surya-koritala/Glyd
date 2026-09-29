@@ -391,10 +391,18 @@ class Split:
                               fns["cublasSetSmCountTarget"], fns["cublasGetSmCountTarget"], self.ws.data_ptr(), SPLIT_WS)
         self.order, self.rec, self.run_, self.pos, self.at = None, [], [], 0, -1  # the order (handles), its recording; the queue's (order indices), the next's, the last called's
 
+    @staticmethod
+    def stop(d):
+        """Device d's prompts by the route without SPLIT from here: its ring's work waited for by the current stream,
+        then its buffers let go (decodes queued ahead may still be writing there)."""
+        s = Split.of.get(d)
+        if s:
+            _lib.ring_reset(s.ring)
+        Split.of[d] = False
+
     def fail(self, r, what):
-        _lib.ring_reset(self.ring)  # (the current stream waits for the ring's work: its buffers are let go)
         warnings.warn(f"glyd: the route SPLIT stopped on {torch.cuda.get_device_name(self.d)} ({what}: {_lib.error_string(r)}): its prompts take the route without it")
-        Split.of[self.d] = False
+        Split.stop(self.d)
         return None
 
     def start(self, M, sms, i):
@@ -641,7 +649,7 @@ class GLinear(_Node, nn.Module):
             return self.whole(lambda w: F.linear(x, w, self.bias), x)
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)
-        if self.fused and isinstance(self.p, g.Mma12) and x2.shape[0] > 64 and self.route(x2.shape[0])[0] == g.SPLIT:  # (a prompt; else the route without it)
+        if self.fused and isinstance(self.p, g.Mma12) and x2.shape[0] > 64 and x2.dtype == torch.bfloat16 and self.route(x2.shape[0])[0] == g.SPLIT:  # (a prompt; else the route without it)
             y = Split.product(self, x2.contiguous())
             if y is not None:
                 return y.view(*lead, O)

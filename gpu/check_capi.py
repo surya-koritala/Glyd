@@ -743,7 +743,24 @@ if r == 0 and fns:
         for lin, x, w in zip(exact_lins, xs, ws_):
             assert exact(lin(x), F.linear(x, w)), ("exact never takes the route SPLIT", M)
         counts["GLinear by the route SPLIT (as on an A100)"] = counts.get("GLinear by the route SPLIT (as on an A100)", 0) + 3 * len(lins)
-    gm.Split.of[dev_] = False  # where it cannot run: today's route (decoded, then cuBLAS), bit for bit
+    # a CUDA graph capturing a prompt's product: today's route (Split.off while the stream is captured), replayed
+    x = torch.randn(1024, lins[0].in_features, dtype=bf, device=dev)
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side):
+        lins[0](x)
+    torch.cuda.current_stream().wait_stream(side)
+    graph = torch.cuda.CUDAGraph()
+    ran.clear()
+    with torch.cuda.graph(graph):
+        yg = lins[0](x)
+    graph.replay()
+    torch.cuda.synchronize()
+    assert not ran, "a captured prompt: today's route"
+    near(yg, F.linear(x.float(), ws_[0].float()))
+    counts["GLinear captured in a CUDA graph: today's route"] = 1
+    del graph
+    gm.Split.stop(dev_)  # where it cannot run: today's route (decoded, then cuBLAS), bit for bit
     for lin, q, w in zip(lins, qs, ws_):
         x = torch.randn(1024, w.shape[1], dtype=bf, device=dev)
         ran.clear()
