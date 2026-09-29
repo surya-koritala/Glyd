@@ -36,8 +36,9 @@
  * they must hold, change: 2 from the prompt products' done counters,
  * glyd_gpu_hold and the decode's warps (0.21.0's library has no
  * glyd_gpu_api_version: 1); 3 from glyd_gpu_mma12_gemm_wg's counters, at
- * least 1024 (0.24.0); 4 from the routes, glyd_gpu_*_linear and a GPU's
- * class in its code. */
+ * least 1024 (0.24.0); 4 from the routes, glyd_gpu_*_linear, a GPU's class
+ * in its code, and the 12-bit layout in split byte (its data, exc and sym[4]
+ * as below; the 12-bit layout before it, never released, is refused). */
 #define GLYD_GPU_API_VERSION 4
 
 #ifdef __cplusplus
@@ -55,29 +56,43 @@ const char* glyd_gpu_error_string(int status);
 /* ------------------------------------------------------------------------
  * The mma layouts: W [O, K] (O a multiple of 64, K of 16) as O K / 1024 warp
  * steps of 64 rows by 16 columns, row block by row block, in the order the
- * tensor cores take their operand; a weight's sign and mantissa a byte, its
- * exponent coded. glyd.gpu's pack_mma and pack_mma12 make them, and
- * glyd.save_pretrained saves the tiered one (a Linear's NAME.glyd_data,
- * NAME.glyd_blocks, NAME.glyd_block_base; its tiers in glyd.json).
+ * tensor cores take their operand: lane l = 4g + t of step (rb, ks) holds
+ * weights i = 4n + j (n 0-7, j 0-3), W[64 rb + 8n + g][16 ks + 8 (j >> 1) +
+ * 2t + (j & 1)]; a byte a weight as it is, the rest coded. glyd.gpu's
+ * pack_mma and pack_mma12 make them, and glyd.save_pretrained saves them (a
+ * Linear's NAME.glyd_data, NAME.glyd_blocks, NAME.glyd_block_base and its
+ * tiers in glyd.json; 12-bit, glyd-v3: NAME.glyd_data, NAME.glyd_exc,
+ * NAME.glyd_exc_base and its hb in glyd.json).
  *
- * Tiered (about 10.8 bits a weight): an exponent in 2-bit digits over three
- * tiers of the matrix's commonest (3 a tier, digit 3 on to the next tier;
- * past the third, the exponent's byte).
+ * Tiered (about 10.8 bits a weight): the byte a weight's sign and mantissa,
+ * its exponent in 2-bit digits over three tiers of the matrix's commonest (3
+ * a tier, digit 3 on to the next tier; past the third, the exponent's byte).
  *   data        uint8 [steps][1280]: a step's tier-1 digits and its 1024 bytes
  *   blocks      uint8: a step's escapes (its tier-2 and tier-3 digits and
  *               exponent bytes) from block_base[step] to block_base[step + 1];
  *               128 bytes before the first, 256 after the last
  *   block_base  int32 [steps + 1]
  *   tiers[3]    host words: tier k's three exponents in bytes 0-2 of word k
- * 12-bit (about 12 bits a weight, a lighter decode): an exponent a 4-bit code
- * into the matrix's 15 commonest, code 15 an exception.
- *   data        uint8 [steps][1536]: a step's codes and its 1024 bytes
- *   exc         int32: the exceptions, a weight's place in its step (bits 0-9)
- *               and its exponent (bits 16-23), a step's from exc_base[step]
- *               to exc_base[step + 1]; zeros after, to a multiple of 4 (1 at least)
+ * 12-bit, split byte (about 12 bits a weight, a lighter decode): the byte a
+ * weight's bf16 low byte (its exponent's lowest bit and its mantissa); its
+ * high byte (the sign, the exponent >> 1) a 4-bit code, the sign and an
+ * offset 0-7 from the matrix's base hb (0-120), hb + offset the exponent >> 1;
+ * any other weight an exception, coded with offset 0.
+ *   data        uint8 [steps][1536]: a step's codes, 16 bytes a lane (lane l's
+ *               at 16 l, words q 0-3 holding weights 8q to 8q + 7: weight
+ *               8q + j's sign in bit 8j + 7 of word q, its offset in bits 8j
+ *               to 8j + 2; weight 8q + 4 + j's sign in bit 8j + 3, its offset
+ *               in bits 8 ((j + 3) % 4) + 4 to + 6), then its 1024 low bytes
+ *               (weight i of lane l at 512 + 16 l + i for i < 16, at 1024 +
+ *               16 l + i - 16 for the rest)
+ *   exc         int32: the exceptions, a weight's place in its step, 32 l + i
+ *               (bits 0-9), and the byte XORed into its high byte, hb ^ (the
+ *               exponent >> 1) (bits 16-23), a step's in that order from
+ *               exc_base[step] to exc_base[step + 1]; zeros after, to a
+ *               multiple of 4 (1 at least)
  *   exc_base    int32 [steps + 1]
- *   sym[4]      host words: the 15 exponents, code c in byte c % 4 of word
- *               c / 4 (code 15's: 0)
+ *   sym[4]      host words: hb in each byte of sym[0], sym[1-3] zero (else
+ *               cudaErrorInvalidValue)
  * glyd_gpu.cu has both to the bit.
  * ---------------------------------------------------------------------- */
 
