@@ -1,0 +1,1 @@
+NVIDIA L4 (8.9, sm_89, 23034 MiB), x86_64 host, 16 CPUs; CLASS=ada; release tree 85ae892 (rust-splitbyte), main db8e7b0 (main)
