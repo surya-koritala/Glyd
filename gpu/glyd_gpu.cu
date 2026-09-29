@@ -3824,8 +3824,10 @@ static const RouteMins& route_mins() {
 
 // A prompt decoded ahead from this many tokens (the fused, not exact, product's): GeForce Ada's (measured on an RTX
 // 4080 SUPER) past 512 tiered and 1792 12-bit, an A10's (150 W, full-rate tensor cores: the fused kernel's decode costs
-// it clocks at the power cap) from 512 tiered and 640 12-bit (model.py's GLinear for the measurements); else never.
+// it clocks at the power cap) from 512 tiered and 640 12-bit, an L40S's (350 W, full-rate tensor cores, the L4's
+// bandwidth a FLOP) from 1024 tiered and 2048 12-bit (model.py's GLinear for the measurements); else never.
 static int64_t ahead_min(bool twelve, int64_t gpu) {
+    if (gpu == GLYD_GPU_L40S + 89) return twelve ? 2048 : 1024;
     return gpu == GLYD_GPU_GEFORCE + 89 ? (twelve ? 1793 : 513) : gpu == GLYD_GPU_A10 + 86 ? (twelve ? 640 : 512) : INT64_MAX;
 }
 
@@ -3859,7 +3861,7 @@ static int route_for(bool twelve, int64_t gpu, int64_t K, int64_t M) {
 // A GPU's class by its name, where its compute capability does not tell it apart (glyd_gpu.h): GLYD_GPU_GEFORCE with
 // "GeForce" in the name; GLYD_GPU_A10 with "A10" as a word, between characters that are not letters, digits or '_'
 // (an A10, not an A10G, A100 or A40: Python's re.search(r"\bA10\b", name, re.ASCII), as model.py's GLinear asks);
-// GLYD_GPU_L4 with "L4" as one (an L4, not an L40S or L40); else 0.
+// GLYD_GPU_L4 with "L4" as one (an L4, not an L40S or L40); GLYD_GPU_L40S with "L40S" as one (not an L40); else 0.
 static bool has_word(const char* name, const char* word) {
     size_t n = strlen(word);
     auto part = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
@@ -3868,7 +3870,7 @@ static bool has_word(const char* name, const char* word) {
     return false;
 }
 
-static int gpu_class(const char* name) { return strstr(name, "GeForce") ? GLYD_GPU_GEFORCE : has_word(name, "A10") ? GLYD_GPU_A10 : has_word(name, "L4") ? GLYD_GPU_L4 : 0; }
+static int gpu_class(const char* name) { return strstr(name, "GeForce") ? GLYD_GPU_GEFORCE : has_word(name, "A10") ? GLYD_GPU_A10 : has_word(name, "L4") ? GLYD_GPU_L4 : has_word(name, "L40S") ? GLYD_GPU_L40S : 0; }
 
 // The current device as the routes take it (asked once a device).
 GLYD_GPU_API int glyd_gpu_gpu(int* gpu) {
@@ -3892,7 +3894,7 @@ static int route_run(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M, 
     const RouteMins& t = route_mins();
     int here = *route = route_for(twelve, gpu, K, M);
     if (last) {
-        int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, dec_from(twelve, gpu, t.dec_min), 769, 512, 513, 640, 1793}, next = INT64_MAX;
+        int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, dec_from(twelve, gpu, t.dec_min), 769, ahead_min(twelve, gpu), 512, 513, 640, 1793}, next = INT64_MAX;
         for (int64_t c : cuts)
             if (c > M && c < next && route_for(twelve, gpu, K, c) != here) next = c;
         *last = next == INT64_MAX ? INT64_MAX : next - 1;

@@ -56,10 +56,14 @@ SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 # against cuBLAS: fused 1.23x at 512 and 640 tokens, decoded ahead 1.42x and 1.21x, then 1.17x at 768 against 1.26x,
 # 1.08x at 2048 against 1.54x; tiered 1.41x against 1.48x at 512; a prompt's pass end to end +10.0 / +5.2 / +2.6% over
 # bf16 at 1024 / 2048 / 4096 tokens, fused +30 / +39 / +51%, each matrix decoded on the current stream +21 / +10 /
-# +5.5%); elsewhere, until measured, the fused kernel or the decode as before (the A10G has half-rate tensor cores,
-# its fused prompts at most +5.3% over bf16's; the L40S and RTX 6000 Ada sum in fp32 at twice the rate, as the A10 and
-# the L4, and have half the A10's bandwidth a FLOP, as the L4, but more power to spend on it: 350 and 300 W for 864
-# and 960 GB/s, where the L4 has 72 W for 300). The 12-bit layout's
+# +5.5%); on an L40S (its class by name; 350 W, full-rate tensor cores, the L4's bandwidth a FLOP) from 1024 tokens
+# tiered and 2048 12-bit, but exact (Qwen3-8B's prompt pass over bf16's time: tiered fused +38.1 / +41.2 / +35.0% at
+# 1024 / 2048 / 8192 tokens, ahead +30.3 / +11.9 / +3.8%, fused +27.9% at 768 against ahead's +33.7%; 12-bit fused
+# +9.4% at 1536 against ahead's +17.8%, +15.5% at 2048 against +12.9%; decoded first 0.4-2.4% slower than ahead at
+# 2048-3072 and 8192, 0.8-1.0% faster at 4096, 4-5% slower at 1024-1536 tiered: benchmarks/gpu/l4-routes-2026-09-29/
+# l40s); elsewhere, until measured, the fused
+# kernel or the decode as before (the A10G has half-rate tensor cores, its fused prompts at most +5.3% over bf16's; the
+# L40 and RTX 6000 Ada, an L40S's compute capability, were not measured). The 12-bit layout's
 # length loses least across Qwen3-1.7B, 4B and 8B (one pass, fused against decoded ahead, 1024-4096 tokens): to 1792
 # Qwen3-1.7B's fused pass is the faster but at 1280, Qwen3-4B-Instruct-2507's but at 1664, Qwen3-8B's at 1024, 1408
 # and 1536 alone (1.0-4.6% slower at the other six); at 1793-2047 Qwen3-1.7B's is 3.5-4.0% faster, Qwen3-4B's
@@ -386,6 +390,8 @@ class GLinear(_Node, nn.Module):
         # Ada's, and an A10's (not an A10G: the GPU's class) but exact
         twelve, mma12 = (1793 if fused and not exact else 641), isinstance(p, g.Mma12)
         ahead = (twelve if mma12 else 513) if self.gpu == g.GEFORCE + 89 else (640 if mma12 else 512) if self.gpu == g.A10 + 86 and not exact else 1 << 62
+        if self.gpu == g.L40S + 89 and not exact:  # an L40S's (the library's route AHEAD), but exact
+            ahead = 2048 if mma12 else 1024
         self.ahead = AHEAD_MIN or ahead
         self._node()
 
@@ -612,8 +618,10 @@ def _(ids, handle, embedding_dim):
 def gpu_code(cc, name):
     """A GPU as the library's routes take it (glyd_gpu.h, glyd_gpu_gpu): its compute capability cc, major * 10 +
     minor, plus its class by name: GEFORCE with "GeForce" in it, A10 with "A10" in it as a word (an A10, not an A10G,
-    A100 or A40), L4 with "L4" in it as a word (an L4, not an L40S or L40), else none."""
-    cls = g.GEFORCE if "GeForce" in name else g.A10 if re.search(r"\bA10\b", name, re.ASCII) else g.L4 if re.search(r"\bL4\b", name, re.ASCII) else 0
+    A100 or A40), L4 with "L4" in it as a word (an L4, not an L40S or L40), L40S with "L40S" in it as a word (not an
+    L40), else none."""
+    cls = (g.GEFORCE if "GeForce" in name else g.A10 if re.search(r"\bA10\b", name, re.ASCII) else g.L4 if re.search(r"\bL4\b", name, re.ASCII)
+           else g.L40S if re.search(r"\bL40S\b", name, re.ASCII) else 0)
     return cc[0] * 10 + cc[1] + cls
 
 
