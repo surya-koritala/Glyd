@@ -86,6 +86,13 @@ fi
 { echo "environment: $ENVN; $("$PY" -c "import torch, transformers; print('torch', torch.__version__, 'CUDA', torch.version.cuda, '| transformers', transformers.__version__)")"
   echo "nvcc: $(nvcc --version | tail -1)"; } | tee "$R/env.txt"
 export HF_HOME=${HF_HOME:-$HOME/hf} HF_HUB_ENABLE_HF_TRANSFER=1 HF_XET_HIGH_PERFORMANCE=1 TOKENIZERS_PARALLELISM=false
+temp() { nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader | head -1; }
+IDLE=$(( $(temp) + 5 ))
+cool() {  # each mode from about the GPU's idle temperature (at most 60 s' wait): at its power cap a GPU slows as it
+  local i  # heats (an L4, the same prompt: 739 ms at 66 C, 794 ms at 82 C), and the modes run one after another
+  for i in $(seq 0 30); do [ "$(temp)" -le "$IDLE" ] && break; sleep 2; done
+  echo "the GPU at $(nvidia-smi --query-gpu=temperature.gpu,clocks.sm --format=csv,noheader | head -1) after $((i * 2)) s (idle $IDLE C)"
+}
 "$PY" -c "import hf_transfer" 2> /dev/null || unset HF_HUB_ENABLE_HF_TRANSFER
 rm -rf "$W/src" && mkdir -p "$W/src" && tar -C "$W/src" -xf "$FILES/resp_src.tar" || fail "no resp_src.tar in $FILES"
 D=$W/src/benchmarks/gpu/respond-2026-09-29
@@ -129,6 +136,7 @@ while [ $# -gt 0 ]; do
   step "$n, $mode (waiting for its download)"
   d=$(got "$m") || { done_ "$n $mode: no model ($(tail -2 "$R/log/dl-$n.txt" 2> /dev/null | tr '\n' ' '))"; continue; }
   k=$(( $# + 1 )); [ "$k" -gt "${RESP_SPREAD:-4}" ] && k=${RESP_SPREAD:-4}
+  cool
   share=$(( (END - 20 - $(el)) / k ))  # an even share of what is left, among this mode and the next k - 1
   nvidia-smi --query-gpu=timestamp,clocks.sm,clocks.mem,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader -lms 1000 > "$R/smi-$n-$mode.csv" 2> /dev/null & S=$!
   ( cd "$W/src/gpu" && timeout "$(tmo $(( share + 120 )))" "$PY" -u respond.py "$d" --mode "$mode" --out "$R/$n-$mode.json" --deadline $(( $(date +%s) + share )) ${RESP_ARGS:-} ) > "$R/log/$n-$mode.txt" 2>&1

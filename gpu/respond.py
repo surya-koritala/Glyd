@@ -161,7 +161,7 @@ configs += [(f"mix {m[0]}", int(m[1]), 1, int(m[2]), args.reps_mix) for m in mix
 configs += [(f"rate {B}", args.rate_prompt, B, args.new, args.reps_rate) for B in (int(x) for x in args.batches.split(",") if x)]
 configs += [(f"mix {m[0]}", int(m[1]), 1, int(m[2]), args.reps_mix) for m in mixes[1:]]
 for name, L, B, n, reps in configs:
-    c = {"name": name, "prompt": L, "batch": B, "new": n}
+    c = {"name": name, "prompt": L, "batch": B, "new": n, "gpu_at_start": smi("temperature.gpu,clocks.sm,power.draw")}
     R["configs"].append(c)
     if ctx and L + n > ctx:
         c["skipped"] = f"past the model's context ({ctx})"
