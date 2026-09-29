@@ -1,0 +1,1 @@
+mma_gemm_wg: 304 products, 0 not within 1e-2 or not the same every run

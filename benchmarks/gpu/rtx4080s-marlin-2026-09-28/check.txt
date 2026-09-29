@@ -1,0 +1,7 @@
+# The prototype (complete) against fp32 on synthetic matrices, a share of weights at far exponents (glyd_gpu.py's self-test's kind).
+256x2048, 82 exceptions (most a step 2, 0 steps past 64): 1-1100 tokens within 1e-2, the same every call
+512x1024, 481 exceptions (most a step 4, 0 steps past 64): 1-1100 tokens within 1e-2, the same every call
+256x4096, 78795 exceptions (most a step 104, 960 steps past 64): 1-1100 tokens within 1e-2, the same every call
+1024x2048, 31349 exceptions (most a step 31, 0 steps past 64): 1-1100 tokens within 1e-2, the same every call
+3072x5120, 238578 exceptions (most a step 32, 0 steps past 64): 1-1100 tokens within 1e-2, the same every call
+17408x1024, 135831 exceptions (most a step 24, 0 steps past 64): 1-1100 tokens within 1e-2, the same every call
