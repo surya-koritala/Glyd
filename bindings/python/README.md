@@ -89,8 +89,10 @@ shard.
 - `merge`: q, k, v and gate, up as one product each, as serving engines
   run them (not with `exact`).
 - `verify`: every pack decoded and compared with its weights bit for bit
-  as it is made; from a saved checkpoint, every tensor decoded and its
-  sha256 checked against `glyd.json`.
+  as it is made; from a saved checkpoint, every packed tensor decoded and
+  its sha256 checked against `glyd.json`, and every tensor saved as it is
+  by its own there (a save of glyd 0.25 on), each file's tensors back to
+  back, each a pack's buffer or of a sha256 there.
 - `hf_kwargs`: transformers' `from_pretrained`'s (`revision`, `token`,
   `device_map`, `attn_implementation` ...); the dtype is bf16.
 
@@ -142,8 +144,9 @@ tiered layout as safetensors (each packed Linear's buffers under its
 module path, `.glyd_data`, `.glyd_blocks`, `.glyd_block_base`; a mixture
 of experts' weight's under the module holding it, `.glyd_gate_up_proj_data`
 and so on), the rest of the model as it is, `glyd.json` (the format, the
-source repo and revision, and for every packed tensor its shape and the
-sha256 of its bf16 bytes), and the source's config, generation config
+source repo and revision, for every packed tensor its shape and the
+sha256 of its bf16 bytes, and from glyd 0.25 the sha256 of every tensor
+saved as it is), and the source's config, generation config
 and tokenizer files. With a mixture of experts' packs the format is
 glyd-v2, which glyd 0.21 refuses by its format ("this glyd reads
 glyd-v1"): load it with 0.22 or later. `from_pretrained(path)` loads the packs as saved;

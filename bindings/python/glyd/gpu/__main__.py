@@ -4,7 +4,8 @@ python -m glyd.gpu pack MODEL OUT [--no-merge] [--layout mma|mma12] [--device cu
     MODEL packed on the GPU, each pack checked against its weights, and saved in OUT as glyd-v1 (glyd-v2: a mixture of experts;
     --layout mma12: the 12-bit layout, glyd-v3, which an A10, A100 or H100 loads without packing again)
 python -m glyd.gpu verify PATH [--device cuda:0]
-    a saved checkpoint loaded, every tensor decoded and its sha256 checked against glyd.json"""
+    a saved checkpoint loaded, every packed tensor decoded and its sha256 checked against glyd.json, and every tensor
+    saved as it is by its own there (a save of glyd 0.25 on)"""
 import argparse
 import glyd.gpu as gg
 
@@ -33,4 +34,6 @@ elif args.command == "pack":
     print(f"{args.model}: {model.config.quantization_config.verified} tensors packed and checked, saved in {args.out}")
 else:
     model = gg.from_pretrained(args.path, device=args.device, verify=True)
-    print(f"{args.path}: {model.config.quantization_config.verified} tensors decode to glyd.json's sha256")
+    q = model.config.quantization_config
+    rest = f"{q.hashed} saved as they are match theirs" if not q.unhashed else f"{q.unhashed} saved as they are not checked (saved before glyd 0.25: no sha256 for them)"
+    print(f"{args.path}: {q.verified} tensors decode to glyd.json's sha256, {rest}")

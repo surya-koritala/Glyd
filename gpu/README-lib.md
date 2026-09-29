@@ -40,8 +40,11 @@ bf16 checkpoint it was packed from is in the Hugging Face cache:
     ./unpack qwen3-0.6b-glyd ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/*/ [PACK]
 
 `glyd_gpu_mma_linear` and `glyd_gpu_mma12_linear` multiply by a packed
-matrix for any number of tokens with the kernel glyd takes for that count
-on this GPU (`glyd_gpu_mma_route` says which, as measured).
+matrix with the kernel glyd takes for that many tokens on this GPU
+(`glyd_gpu_mma_route` says which, as measured; where glyd decodes the
+matrix for cuBLAS, the prompt kernel). There, on Hopper and where K is not
+a multiple of 64, they return `cudaErrorNotSupported`: decode the matrix
+(`glyd_gpu_mma_unpack`) for a GEMM of your own.
 
 Rust calls them through the `glyd-gpu` crate in the Glyd repository (the
 library loaded at run time and held to its API version, each function

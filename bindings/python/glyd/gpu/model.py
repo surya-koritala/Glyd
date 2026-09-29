@@ -25,7 +25,7 @@ import weakref
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from . import _lib, kernels as g
+from . import _lib, format as fmt, kernels as g
 
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 # Which kernel a product for M tokens takes on a GPU is the library's route (glyd_gpu.cu's route_for, as measured:
@@ -601,7 +601,7 @@ def groups(model):
     except AttributeError:  # not a decoder stack we know: nothing merged
         return out
     for layer in layers:
-        for mod, names in ((getattr(layer, "self_attn", None), ("q_proj", "k_proj", "v_proj")), (getattr(layer, "mlp", None), ("gate_proj", "up_proj"))):
+        for mod, names in zip((getattr(layer, "self_attn", None), getattr(layer, "mlp", None)), fmt.GROUPS):
             if mod is not None and all(plain(getattr(mod, c, None)) for c in names):
                 out.append((mod, names))
     return out

@@ -15,9 +15,12 @@ const USAGE: &str = "usage:
       --layout mma12  the 12-bit layout (glyd-v3), which an A10, A100 or H100 loads without packing again
   glyd verify PATH [--device cpu|cuda:N] [--threads N]
       a saved model's every pack decoded (on the CPU, or on a GPU by the Glyd GPU library:
-      $GLYD_GPU_LIB, else libglyd_gpu_cuda13.so or cuda12 on the loader's path) and each tensor's
-      sha256 checked against glyd.json
-  --threads N: at most N threads (default: $GLYD_THREADS, else every core)
+      $GLYD_GPU_LIB, else libglyd_gpu_cuda13.so or cuda12 on the loader's path) and each packed
+      tensor's sha256 checked against glyd.json; every tensor saved as it is by its own there (a save
+      of glyd 0.25 on); each file's tensors back to back, and each a pack's or of a sha256 there
+  --threads N: at most N threads (default: $GLYD_THREADS, else every core). Memory: pack holds two
+      shards (about 5 GB each) and at most a shard's worth of weights in flight, whatever N; verify on
+      the CPU a pack and its matrix a thread, and one more
   (glyd-gpu pack / glyd-gpu verify: the same)";
 
 /// The options: `--threads N`, `--device D`, flags; the rest in order.
@@ -70,19 +73,20 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             let source = save::Source::find(model)?;
             let s = save::save(&source, Path::new(out), a.threads, save::SHARD_BYTES, !a.no_merge, a.layout)?;
             let secs = t.elapsed().as_secs_f64();
-            println!("{model}: {} tensors packed and checked, saved in {out}", s.checked);
+            println!("{model}: {} tensors packed and checked, saved in {out} ({} saved as they are, with their sha256)", s.checked, s.hashed);
             eprintln!("{:.2} GB of bf16 in {secs:.1} s ({:.2} GB/s, {} threads), {} shard{}", s.bytes as f64 / 1e9, s.bytes as f64 / 1e9 / secs, a.threads, s.shards, if s.shards == 1 { "" } else { "s" });
             Ok(())
         }
         (Some("verify"), [path]) => {
-            let n = if a.device == "cpu" {
+            let v = if a.device == "cpu" {
                 save::verify(Path::new(path), a.threads, &save::Decoder::Cpu)?
             } else {
                 let ordinal = a.device.strip_prefix("cuda:").or(if a.device == "cuda" { Some("0") } else { None }).and_then(|n| n.parse().ok()).ok_or("--device takes cpu or cuda:N")?;
                 let (lib, ctx) = (Library::find()?, cuda::Context::new(ordinal)?);
                 save::verify(Path::new(path), a.threads, &save::Decoder::Gpu(&lib, &ctx))?
             };
-            println!("{path}: {n} tensors decode to glyd.json's sha256");
+            let rest = if v.unchecked > 0 { format!("{} saved as they are not checked (saved before glyd 0.25: no sha256 for them)", v.unchecked) } else { format!("{} saved as they are match theirs", v.hashed) };
+            println!("{path}: {} tensors decode to glyd.json's sha256, {rest}", v.packed);
             Ok(())
         }
         _ => Err(USAGE.into()),

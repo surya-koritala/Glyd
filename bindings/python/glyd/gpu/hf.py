@@ -47,8 +47,10 @@ def from_pretrained(name_or_path, *, device="cuda:0", layout="auto", exact=False
     merge: q, k, v and gate, up as one product each, as serving engines
       run them (not with exact; a glyd-v1 checkpoint's as it was saved).
     verify: every pack decoded and compared with its weights bit for bit
-      as it is made; from a glyd-v1 checkpoint, every tensor decoded and
-      its sha256 checked against glyd.json.
+      as it is made; from a saved checkpoint, every packed tensor decoded
+      and its sha256 checked against glyd.json, and every tensor saved as
+      it is by its own there (a save of glyd 0.25 on), each file's tensors
+      back to back and each a pack's buffer or of a sha256 there.
     hf_kwargs: transformers' from_pretrained's (revision, token,
       device_map, attn_implementation ...); the dtype is bf16.
     """
@@ -81,9 +83,10 @@ class GlydConfig(QuantizationConfigMixin):
     """from_pretrained's options as transformers carries them (after the load, model.config.quantization_config): the
     layout the packs are in, the tensors verified, a glyd-v1 checkpoint's source."""
 
-    def __init__(self, layout="auto", exact=False, merge=True, verify=False, verified=0, source=None, **kwargs):
+    def __init__(self, layout="auto", exact=False, merge=True, verify=False, verified=0, source=None, hashed=0, unhashed=0, **kwargs):
         self.quant_method = "glyd"
         self.layout, self.exact, self.merge, self.verify, self.verified, self.source = layout, exact, merge, verify, verified, source
+        self.hashed, self.unhashed = hashed, unhashed  # verify: a saved checkpoint's tensors saved as they are, checked by sha256 (and not: saved before glyd 0.25)
 
 
 def _unparam(model, name):
@@ -195,6 +198,8 @@ class GlydQuantizer(HfQuantizer):
         if self.stored is None and checkpoint_files and fmt.stored([f for f in checkpoint_files if f.endswith(".safetensors")]):
             raise ValueError(f"glyd: {os.path.dirname(checkpoint_files[0])} holds packs but no {fmt.MANIFEST}: a save cut short; save it again")
         if self.stored is not None:  # a glyd-v1 checkpoint: its packs' buffers load in place of their Linears' weights
+            if q.verify:  # its files: every tensor a pack's buffer or of a sha256 in glyd.json, and those sha256
+                q.hashed, q.unhashed = fmt.check_files(os.path.dirname(checkpoint_files[0]), self.stored)
             heads = fmt.stored(checkpoint_files)
             for path, e in self.stored["packs"].items():
                 if "experts" in e:  # a mixture of experts' weight: its buffers on the module holding it, in its place

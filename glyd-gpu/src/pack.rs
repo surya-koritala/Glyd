@@ -307,8 +307,25 @@ pub fn unpack_tiered(p: &Tiered, out: &mut [u16]) -> bool {
     true
 }
 
-/// W [rows, cols] in the 12-bit layout, as pack_mma12 makes it.
-pub fn pack_twelve(w: &[u16], rows: usize, cols: usize) -> Twelve {
+/// A 12-bit step's exponents from its codes and exceptions (a weight's place in the step, bits 0-9; its exponent,
+/// bits 16-23), then its weights.
+fn twelve_unstep(d: &[u8], exc: &[i32], syms: &[u8; 16], out: &mut [u16; STEP]) {
+    let mut exp = [0u8; STEP];
+    for lane in 0..32 {
+        for h in 0..4 {
+            let word = u32::from_le_bytes(d[lane * 16 + h * 4..lane * 16 + h * 4 + 4].try_into().unwrap());
+            for j in 0..8 {
+                exp[lane * 32 + 8 * h + j] = syms[((word >> (4 * j)) & 15) as usize];
+            }
+        }
+    }
+    for &x in exc {
+        exp[(x & 1023) as usize] = (x >> 16) as u8;
+    }
+    weights_of(&d[512..], &exp, out);
+}
+
+fn twelve(w: &[u16], rows: usize, cols: usize, check: bool) -> Option<Twelve> {
     check_shape(w, rows, cols);
     let order = by_count(&histogram(w));
     let mut code = [15u8; 256];
@@ -322,9 +339,10 @@ pub fn pack_twelve(w: &[u16], rows: usize, cols: usize) -> Twelve {
     let mut data = vec![0u8; n * 1536];
     let (mut exc, mut exc_base) = (Vec::new(), Vec::with_capacity(n + 1));
     exc_base.push(0i32);
-    let mut u = [0u16; STEP];
+    let (mut u, mut back) = ([0u16; STEP], [0u16; STEP]);
     for (s, at) in steps(cols, 0, n) {
         gather(w, at, &places, &mut u);
+        let first = exc.len();
         let d = &mut data[s * 1536..(s + 1) * 1536];
         for lane in 0..32 {
             for h in 0..4 {
@@ -343,9 +361,26 @@ pub fn pack_twelve(w: &[u16], rows: usize, cols: usize) -> Twelve {
         }
         sign_mantissa(&u, &mut d[512..]);
         exc_base.push(i32::try_from(exc.len()).expect("exceptions past 2^31"));
+        if check {
+            twelve_unstep(&data[s * 1536..(s + 1) * 1536], &exc[first..], &syms, &mut back);
+            if back != u {
+                return None;
+            }
+        }
     }
     exc.resize(exc.len() + 4 - exc.len() % 4, 0);
-    Twelve { rows, cols, data, exc, exc_base, sym }
+    Some(Twelve { rows, cols, data, exc, exc_base, sym })
+}
+
+/// W [rows, cols] in the 12-bit layout, as pack_mma12 makes it.
+pub fn pack_twelve(w: &[u16], rows: usize, cols: usize) -> Twelve {
+    twelve(w, rows, cols, false).unwrap()
+}
+
+/// The same, each step decoded back as it is made and compared with its weights: None where one is not its
+/// weights, bit for bit.
+pub fn pack_twelve_checked(w: &[u16], rows: usize, cols: usize) -> Option<Twelve> {
+    twelve(w, rows, cols, true)
 }
 
 /// W back from the 12-bit layout, into out [rows, cols]; false where its buffers do not hold it.
@@ -356,27 +391,51 @@ pub fn unpack_twelve(p: &Twelve, out: &mut [u16]) -> bool {
     }
     let syms: [u8; 16] = std::array::from_fn(|c| (p.sym[c / 4] >> (8 * (c % 4))) as u8);
     let places = places(p.cols);
-    let (mut exp, mut u) = ([0u8; STEP], [0u16; STEP]);
+    let mut u = [0u16; STEP];
     for (s, at) in steps(p.cols, 0, n) {
-        let d = &p.data[s * 1536..(s + 1) * 1536];
-        for lane in 0..32 {
-            for h in 0..4 {
-                let word = u32::from_le_bytes(d[lane * 16 + h * 4..lane * 16 + h * 4 + 4].try_into().unwrap());
-                for j in 0..8 {
-                    exp[lane * 32 + 8 * h + j] = syms[((word >> (4 * j)) & 15) as usize];
-                }
-            }
-        }
         let (a, b) = (p.exc_base[s] as usize, p.exc_base[s + 1] as usize);
-        if a > b || b > p.exc.len() {
+        if p.exc_base[s] < 0 || a > b || b > p.exc.len() {
             return false;
         }
-        for &x in &p.exc[a..b] {
-            exp[(x & 1023) as usize] = (x >> 16) as u8;
-        }
-        weights_of(&d[512..], &exp, &mut u);
+        twelve_unstep(&p.data[s * 1536..(s + 1) * 1536], &p.exc[a..b], &syms, &mut u);
         for (q, &v) in u.iter().enumerate() {
             out[at + places[q]] = v;
+        }
+    }
+    true
+}
+
+/// Whether a tiered pack's buffers are as its packer makes them wherever the GPU's decode reads by them: `data`
+/// [steps][1280], `block_base` [steps + 1] from 128 on, rising, 256 bytes of `blocks` past the last; each step's
+/// block exactly as long as its escapes take (the tier-3 digits and bytes from its start, the tier-2 digits' words
+/// back from its end, the counts read from the step's digits): the decode then reads inside its buffers. Its escapes'
+/// counts alone, not its weights (a decode does that).
+pub fn tiered_blocks_hold(data: &[u8], blocks: &[u8], block_base: &[i32]) -> bool {
+    let (n, b) = (data.len() / 1280, block_base);
+    if data.len() != n * 1280 || b.len() != n + 1 || b[0] < 128 || b[n] as usize + 256 > blocks.len() || b.windows(2).any(|w| w[1] < w[0]) {
+        return false;
+    }
+    for s in 0..n {
+        let d = &data[s * 1280..s * 1280 + 256];
+        let (start, end) = (b[s] as usize, b[s + 1] as usize);
+        let block = &blocks[start..end];
+        let size = block.len();
+        let t1: usize = d.as_chunks::<4>().0.iter().map(|w| {
+            let w = u32::from_le_bytes(*w);
+            (w & (w >> 1) & 0x5555_5555).count_ones() as usize
+        }).sum();
+        let digits = 4 * t1.div_ceil(16);
+        if digits > size {
+            return false;
+        }
+        let t2 = (0..t1).filter(|&k| (block[size - 4 * ((k >> 4) + 1) + ((k & 15) >> 2)] >> (2 * (k & 3))) & 3 == 3).count();
+        let r0 = (2 * t2 + 7) >> 3;
+        if r0 > size {
+            return false;
+        }
+        let t3 = (0..t2).filter(|&k| (block[k >> 2] >> (2 * (k & 3))) & 3 == 3).count();
+        if r0 + t3 + digits != size {
+            return false;
         }
     }
     true
@@ -419,11 +478,31 @@ mod tests {
             let mut back = vec![0u16; o * k];
             assert!(unpack_tiered(&t, &mut back) && back == w, "tiered {o}x{k} {wild}");
             assert_eq!((t.data.len(), t.block_base.len()), (o * k / 1024 * 1280, o * k / 1024 + 1));
+            assert!(tiered_blocks_hold(&t.data, &t.blocks, &t.block_base), "tiered {o}x{k} {wild}: its blocks");
             let q = pack_twelve(&w, o, k);
+            assert!(pack_twelve_checked(&w, o, k).as_ref() == Some(&q), "12-bit {o}x{k} {wild}: checked");
             let mut back = vec![0u16; o * k];
             assert!(unpack_twelve(&q, &mut back) && back == w, "12-bit {o}x{k} {wild}");
             assert!(q.exc.len().is_multiple_of(4) && q.exc.len() > *q.exc_base.last().unwrap() as usize);
         }
+    }
+
+    /// A tiered pack whose data or blocks were changed where the decode reads by them: its blocks no longer hold it.
+    #[test]
+    fn blocks_hold_their_escapes() {
+        let w = weights(128 * 256, 0.2, 5);
+        let t = pack_tiered(&w, 128, 256);
+        let hold = |p: &Tiered| tiered_blocks_hold(&p.data, &p.blocks, &p.block_base);
+        assert!(hold(&t));
+        let mut more = t.clone();
+        more.data[..256].fill(0xFF); // every weight of step 0 a tier-1 escape: its block too short for their digits
+        assert!(!hold(&more));
+        let mut shorter = t.clone();
+        shorter.block_base[1] -= 1; // step 0's block a byte short, step 1's a byte long
+        assert!(!hold(&shorter));
+        let mut end = t.clone();
+        end.blocks.truncate(end.blocks.len() - 1); // 255 bytes past the last block
+        assert!(!hold(&end));
     }
 
     #[test]

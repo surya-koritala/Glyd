@@ -28,13 +28,15 @@ A directory (or a Hugging Face repo) of:
   tensors it holds: their names, shapes and the sha256 of their bf16
   bytes (an experts' weight: its E experts, and whether the model holds
   their matrices transposed, [in, out]; its one tensor as the model holds
-  it);
+  it); and ("tensors", glyd 0.25 on) the sha256 of every tensor saved as
+  it is, which verify checks with the packs (readers before ignore it);
 - the source's config.json, generation_config.json and tokenizer files.
 
 The names and the manifest need only the standard library; saving needs
 PyTorch and safetensors.
 """
 import glob
+import hashlib
 import json
 import os
 import shutil
@@ -47,6 +49,7 @@ MANIFEST = "glyd.json"
 BUFFERS = ("data", "blocks", "block_base")  # a tiered pack's tensors (kernels.Mma)
 LAYOUTS = {"mma": BUFFERS, "mma12": ("data", "exc", "exc_base")}  # each layout's (kernels.Mma12's)
 WORDS = {"mma": "tiers", "mma12": "sym"}  # a pack's words, in glyd.json
+GROUPS = (("q_proj", "k_proj", "v_proj"), ("gate_proj", "up_proj"))  # the Linears merged, a layer's self_attn's and mlp's (model.groups)
 DTYPES = {"data": "U8", "blocks": "U8", "block_base": "I32", "exc": "I32", "exc_base": "I32"}
 FILES = ("config.json", "generation_config.json", "tokenizer*", "special_tokens_map.json", "added_tokens.json", "vocab*", "merges.txt", "*.model", "chat_template*", "preprocessor_config.json", "processor_config.json")  # copied from the source
 
@@ -70,9 +73,91 @@ def members(e):
     return [t["name"][: -len(".weight")] for t in e["tensors"]], [t["shape"][0] for t in e["tensors"]]
 
 
-def manifest(source, packs, version, layout="mma"):
+def manifest(source, packs, version, layout="mma", tensors=None):
+    """glyd.json: the format, version, source, layout, packs; tensors: {name: sha256} of the tensors saved as they
+    are, in their order (None: left out, as glyd 0.24 and before wrote it)."""
     form = "glyd-v3" if layout == "mma12" else "glyd-v2" if any("experts" in e for e in packs.values()) else FORMAT
-    return {"format": form, "glyd": version, "source": source, "layout": layout, "packs": packs}
+    m = {"format": form, "glyd": version, "source": source, "layout": layout, "packs": packs}
+    return m if tensors is None else dict(m, tensors=tensors)
+
+
+def check_files(directory, m):
+    """A saved checkpoint's files against its glyd.json m (verify, before its packs are decoded): each file's tensors
+    back to back from its data's start to its end, as the safetensors library reads them; the index, where there are
+    shards, naming the shard of each tensor; every tensor a pack's buffer or one whose sha256 glyd.json holds (glyd-v3,
+    and glyd-v1 and v2 saved by glyd 0.25 on; before, those are not checked); each pack's tensors its own (its module's
+    .weight, a merged group's q, k, v or gate, up under the first's path, an experts' weight's own name), in no other
+    pack and none also saved as it is; and the sha256 of every tensor saved as it is. The number of tensors checked by sha256, and of those not checked (a save of glyd 0.24 or
+    before); ValueError where any is not so. The standard library alone."""
+    index = os.path.join(directory, "model.safetensors.index.json")
+    weight_map = None
+    if os.path.exists(index):
+        with open(index) as f:
+            weight_map = json.load(f)["weight_map"]
+    where = {}  # name: (file, where its bytes start, how many)
+    for name in dict.fromkeys(weight_map.values()) if weight_map is not None else ["model.safetensors"]:
+        if name in ("", ".", "..") or os.path.basename(name) != name:
+            raise ValueError(f"{index}: a shard not a file of its directory: {name!r}")
+        path = os.path.join(directory, name)
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            n = int.from_bytes(f.read(8), "little")
+            if n > min(size - 8, 100_000_000):
+                raise ValueError(f"{path}: a header of {n} bytes, past the file's {size} (or 100 MB)")
+            head = json.loads(f.read(n))
+        pos = 0
+        for a, b, k in sorted((t["data_offsets"][0], t["data_offsets"][1], k) for k, t in head.items() if k != "__metadata__"):
+            if a != pos or b < a:
+                raise ValueError(f"{path}: {k}'s bytes do not follow the tensor's before (at {pos}): {[a, b]}")
+            if k in where:
+                raise ValueError(f"{path}: {k}, in two of the shards")
+            where[k], pos = (path, 8 + n + a, b - a), b
+            if weight_map is not None and weight_map.get(k) != name:
+                raise ValueError(f"{index}: {k} not named in {name}, its shard")
+        if 8 + n + pos != size:
+            raise ValueError(f"{path}: {size - 8 - n - pos} bytes past its last tensor")
+    if weight_map is not None and set(weight_map) != set(where):
+        raise ValueError(f"{index}: names {sorted(set(weight_map) - set(where))[:3]} that no shard holds")
+    buffers, names = set(), []
+    for p, e in m["packs"].items():
+        owner, _, weight = p.rpartition(".")
+        buffers.update(key(owner, b, weight) if "experts" in e else key(p, b) for b in LAYOUTS.get(e.get("layout"), ()))
+        ts = [t.get("name") for t in e.get("tensors", [])]
+        own = [p] if "experts" in e else [p + ".weight"] if len(ts) == 1 else [f"{owner}.{c}.weight" for g in GROUPS if g[0] == weight and len(g) == len(ts) for c in g]
+        if ts != own:
+            raise ValueError(f"glyd.json: {p}'s tensors are not its own: {ts[:3]}")
+        names += ts
+    if len(set(names)) != len(names):
+        raise ValueError("glyd.json: a tensor held by two packs, or twice by one")
+    hashes = m.get("tensors")
+    if set(names) & set(hashes or ()):
+        raise ValueError(f"glyd.json: {sorted(set(names) & set(hashes))[0]} both packed and saved as it is")
+    if hashes is None and m.get("format") == "glyd-v3":
+        raise ValueError("glyd.json: no sha256 for the tensors saved as they are (glyd-v3 has them)")
+    for b in buffers - where.keys():
+        raise ValueError(f"{b}: a pack's buffer, not in the safetensors")
+    unchecked = 0
+    for k in where.keys() - buffers:
+        if hashes is None:
+            unchecked += 1
+        elif k not in hashes:
+            raise ValueError(f"{k}: in the safetensors, but glyd.json neither packs it nor holds its sha256")
+    for k, want in (hashes or {}).items():
+        if k not in where:
+            raise ValueError(f"{k}: glyd.json's sha256, but not in the safetensors")
+        path, at, n = where[k]
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            f.seek(at)
+            while n:
+                b = f.read(min(n, 1 << 24))
+                if not b:
+                    raise ValueError(f"{path}: cut short in {k}")
+                h.update(b)
+                n -= len(b)
+        if h.hexdigest() != want:
+            raise ValueError(f"{k} is other bytes than glyd.json's sha256")
+    return len(hashes or {}), unchecked
 
 
 def read_manifest(directory):
@@ -165,6 +250,7 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9, layout="mma"):
     inside = {id(m.lin) for m in model.modules() if isinstance(m, gm.Merged)}
     packs, shards, part, packed = {}, [], {}, set()
     size = [0]
+    hashes = {}  # the sha256 of each tensor saved as it is, in the order put
 
     def flush():
         if part:
@@ -174,8 +260,10 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9, layout="mma"):
             part.clear()
             size[0] = 0
 
-    def put(name, t):
+    def put(name, t, buffer=False):
         part[name] = t.detach().to("cpu", copy=True).contiguous()
+        if not buffer:  # saved as it is, not a pack's buffer: its sha256 in glyd.json
+            hashes[name] = gm.sha256(part[name])
         size[0] += t.numel() * t.element_size()
         if size[0] >= shard_bytes:
             flush()
@@ -191,7 +279,7 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9, layout="mma"):
                     continue
                 q = p if type(p) is kind else pack(gm.unpack(p))
                 for b in LAYOUTS[layout]:
-                    put(key(name, b, weight), getattr(q, b))
+                    put(key(name, b, weight), getattr(q, b), True)
                 shape, transposed = m.glyd_held[weight]
                 packs[f"{name}.{weight}"] = entry(p.shape, getattr(q, words), [(f"{name}.{weight}", shape, moe.sha256(m, p, weight))], moe.held(m)[1], transposed, layout)
                 del q
@@ -216,7 +304,7 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9, layout="mma"):
                 continue
             p = lin.p if type(lin.p) is kind else pack(w)
             for b in LAYOUTS[layout]:
-                put(key(paths[0], b), getattr(p, b))
+                put(key(paths[0], b), getattr(p, b), True)
             packs[paths[0]] = entry(w.shape, getattr(p, words), [(f"{n}.weight", x.shape, gm.sha256(x)) for n, x in zip(paths, w.split(rows))], layout=layout)
             if lin.bias is not None:
                 for n, b in zip(paths, lin.bias.split(rows)):
@@ -242,7 +330,7 @@ def save_pretrained(model, path, shard_bytes=5 * 10**9, layout="mma"):
     q = getattr(model.config, "quantization_config", None)
     source = getattr(q, "source", None) or {"repo": model.config.name_or_path or None, "revision": getattr(model.config, "_commit_hash", None)}
     with open(os.path.join(path, MANIFEST), "w") as f:
-        json.dump(manifest(source, packs, __version__, layout), f, indent=1)
+        json.dump(manifest(source, packs, __version__, layout, hashes), f, indent=1)
     src = source_dir(model.config.name_or_path, getattr(model.config, "_commit_hash", None))
     if src and os.path.realpath(src) != os.path.realpath(path):
         copy_source_files(src, path)

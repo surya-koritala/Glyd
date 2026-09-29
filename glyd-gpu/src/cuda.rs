@@ -2,6 +2,11 @@
 //! runtime of its own needs: a device's primary context made current (the
 //! one the library's runtime then uses too), device memory, copies and
 //! streams. libcuda.so.1 is found at run time, as the library finds it.
+//!
+//! A [`Context`] is current on the thread that made it and stays there (it is
+//! neither Send nor Sync), with its memory and streams; copies take plain
+//! data alone ([`Plain`]: integers and floats, whose every bit pattern is a
+//! value and which have no padding).
 
 use crate::{api, Error, Result, Stream};
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
@@ -63,6 +68,18 @@ fn check(call: &'static str, status: c_int) -> Result<()> {
     Err(Error::Cuda { call, status, text })
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Plain data for a copy to or from the GPU: every bit pattern a value, no padding (sealed: these types alone).
+pub trait Plain: Copy + sealed::Sealed {}
+
+macro_rules! plain {
+    ($($t:ty),*) => {$(impl sealed::Sealed for $t {} impl Plain for $t {})*};
+}
+plain!(u8, i8, u16, i16, u32, i32, u64, i64, f32, f64);
+
 /// The driver's CUDA version, e.g. 13000.
 pub fn driver_version() -> Result<i32> {
     let d = driver()?;
@@ -83,9 +100,10 @@ pub fn device_count() -> Result<i32> {
 
 /// A GPU's primary context, current on the thread that made it (the context
 /// the library's CUDA runtime takes for that device): the context of its
-/// memory and streams, released when dropped.
+/// memory and streams, released when dropped; kept on that thread.
 pub struct Context {
     device: c_int,
+    _here: PhantomData<*const ()>, // neither Send nor Sync: current on its own thread alone
 }
 
 impl Context {
@@ -97,7 +115,7 @@ impl Context {
         unsafe {
             check("cuDeviceGet", (d.cuDeviceGet)(&mut device, ordinal))?;
             check("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, device))?;
-            let c = Context { device };
+            let c = Context { device, _here: PhantomData };
             check("cuCtxSetCurrent", (d.cuCtxSetCurrent)(ctx))?;
             Ok(c)
         }
@@ -140,7 +158,7 @@ impl Context {
     }
 
     /// Device memory holding `data`'s bytes.
-    pub fn upload<T: Copy>(&self, data: &[T]) -> Result<Buffer<'_>> {
+    pub fn upload<T: Plain>(&self, data: &[T]) -> Result<Buffer<'_>> {
         let mut b = self.alloc(std::mem::size_of_val(data))?;
         b.write(data)?;
         Ok(b)
@@ -190,7 +208,7 @@ impl Buffer<'_> {
     }
 
     /// `data` copied to its start (synchronously).
-    pub fn write<T: Copy>(&mut self, data: &[T]) -> Result<()> {
+    pub fn write<T: Plain>(&mut self, data: &[T]) -> Result<()> {
         let n = std::mem::size_of_val(data);
         self.fits(n, "cuMemcpyHtoD")?;
         // SAFETY: n bytes of host memory to n of this buffer's.
@@ -198,10 +216,10 @@ impl Buffer<'_> {
     }
 
     /// Its first bytes copied into `out` (synchronously, after the work queued before on the default stream).
-    pub fn read<T: Copy>(&self, out: &mut [T]) -> Result<()> {
+    pub fn read<T: Plain>(&self, out: &mut [T]) -> Result<()> {
         let n = std::mem::size_of_val(out);
         self.fits(n, "cuMemcpyDtoH")?;
-        // SAFETY: n of this buffer's bytes to n of host memory; T is plain data.
+        // SAFETY: n of this buffer's bytes to n of host memory; T is Plain: any bytes a value of it.
         check("cuMemcpyDtoH", unsafe { (driver()?.cuMemcpyDtoH_v2)(out.as_mut_ptr() as *mut c_void, self.ptr, n) })
     }
 

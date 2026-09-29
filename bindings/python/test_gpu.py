@@ -68,21 +68,22 @@ def test_fit_as_the_site():
         pass
 
 
-def safetensors(path, tensors, metadata=None):
-    """A safetensors file of zeros: tensors {name: (dtype, shape)}."""
+def safetensors(path, tensors, metadata=None, data=None):
+    """A safetensors file: tensors {name: (dtype, shape)}, their bytes data {name: bytes}, else zeros."""
     size = {"BF16": 2, "F32": 4, "U8": 1, "I32": 4, "F8_E4M3": 1}
-    h, at = {}, 0
+    h, at, body = {}, 0, b""
     for name, (dtype, shape) in tensors.items():
         n = size[dtype]
         for d in shape:
             n *= d
         h[name] = {"dtype": dtype, "shape": shape, "data_offsets": [at, at + n]}
+        body += (data or {}).get(name, bytes(n))
         at += n
     if metadata:
         h["__metadata__"] = metadata
     b = json.dumps(h).encode()
     with open(path, "wb") as f:
-        f.write(len(b).to_bytes(8, "little") + b + bytes(at))
+        f.write(len(b).to_bytes(8, "little") + b + body)
 
 
 def test_fit_a_directory():
@@ -154,6 +155,68 @@ def test_manifest_and_names():
             pass
 
 
+def test_check_files():
+    """verify's checks of a saved checkpoint's files (format.check_files), before its packs are decoded: a save passes
+    (one file, and in two shards); then each refused: a byte of a tensor saved as it is flipped, bytes appended to a
+    shard, a merged pack's member renamed in glyd.json (to the other's name, by a letter, to a saved tensor's), a pack
+    holding another's tensor or one saved as it is, a tensor neither packed nor hashed there, a pack's buffer missing,
+    the index naming another shard. A save without the sha256 map (glyd 0.24's) passes with its tensors unchecked;
+    glyd-v3 without it is refused."""
+    import hashlib
+    sha = lambda b: hashlib.sha256(b).hexdigest()
+    norm, emb = bytes(range(256)) * 2, bytes((7 * i) % 251 for i in range(4096))
+    tensors = {fmt.key("m.gate_proj", "data"): ("U8", [2560]), fmt.key("m.gate_proj", "blocks"): ("U8", [400]), fmt.key("m.gate_proj", "block_base"): ("I32", [3]), "m.norm.weight": ("BF16", [256]), "m.emb.weight": ("BF16", [16, 128])}
+    data = {"m.norm.weight": norm, "m.emb.weight": emb}
+    e = fmt.entry((128, 16), [1, 2, 3], [("m.gate_proj.weight", (64, 16), "aa"), ("m.up_proj.weight", (64, 16), "bb")])
+    m = fmt.manifest(None, {"m.gate_proj": e}, "0.25.0", tensors={"m.norm.weight": sha(norm), "m.emb.weight": sha(emb)})
+    assert list(m) == ["format", "glyd", "source", "layout", "packs", "tensors"]
+
+    def refused(d, mm, why):
+        try:
+            fmt.check_files(d, mm)
+        except ValueError as err:
+            assert why in str(err), err
+            return
+        raise AssertionError(f"not refused: {why}")
+
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "model.safetensors")
+        safetensors(f, tensors, {"format": "pt"}, data)
+        assert fmt.check_files(d, m) == (2, 0)
+        assert fmt.check_files(d, {k: v for k, v in m.items() if k != "tensors"}) == (0, 2)  # glyd 0.24's save: unchecked
+        refused(d, dict({k: v for k, v in m.items() if k != "tensors"}, format="glyd-v3"), "no sha256")
+        b = bytearray(open(f, "rb").read())
+        b[-4096 - 100] ^= 1  # a byte of m.norm.weight, saved as it is
+        open(f, "wb").write(bytes(b))
+        refused(d, m, "m.norm.weight is other bytes")
+        safetensors(f, tensors, {"format": "pt"}, data)
+        open(f, "ab").write(b"\0" * 16)
+        refused(d, m, "16 bytes past its last tensor")
+        safetensors(f, tensors, {"format": "pt"}, data)
+        for i, other in ((1, "m.gate_proj.weight"), (1, "m.up_prok.weight"), (1, "m.norm.weight"), (0, "m.up_proj.weight")):
+            mm = json.loads(json.dumps(m))
+            mm["packs"]["m.gate_proj"]["tensors"][i]["name"] = other
+            refused(d, mm, "m.gate_proj's tensors are not its own")
+        for p, why in (("m.up_proj", "two packs, or twice"), ("m.norm", "both packed and saved as it is")):
+            refused(d, dict(m, packs=dict(m["packs"], **{p: fmt.entry((64, 16), [1, 2, 3], [(p + ".weight", (64, 16), "cc")])})), why)
+        refused(d, dict(m, tensors={"m.norm.weight": sha(norm)}), "m.emb.weight: in the safetensors, but glyd.json neither packs it")
+        del tensors[fmt.key("m.gate_proj", "blocks")]
+        safetensors(f, tensors, {"format": "pt"}, data)
+        refused(d, m, "a pack's buffer, not in the safetensors")
+    with tempfile.TemporaryDirectory() as d:  # two shards and their index
+        names = list(tensors)
+        safetensors(os.path.join(d, "model-00001-of-00002.safetensors"), {k: tensors[k] for k in names[:2]}, {"format": "pt"}, data)
+        safetensors(os.path.join(d, "model-00002-of-00002.safetensors"), {k: tensors[k] for k in names[2:]}, {"format": "pt"}, data)
+        tensors[fmt.key("m.gate_proj", "blocks")] = ("U8", [400])
+        safetensors(os.path.join(d, "model-00001-of-00002.safetensors"), {k: tensors[k] for k in [names[0], fmt.key("m.gate_proj", "blocks"), names[1]]}, {"format": "pt"}, data)
+        wm = {k: "model-00001-of-00002.safetensors" for k in [names[0], fmt.key("m.gate_proj", "blocks"), names[1]]}
+        wm.update({k: "model-00002-of-00002.safetensors" for k in names[2:]})
+        json.dump({"metadata": {"total_size": 0}, "weight_map": wm}, open(os.path.join(d, "model.safetensors.index.json"), "w"))
+        assert fmt.check_files(d, m) == (2, 0)
+        json.dump({"metadata": {"total_size": 0}, "weight_map": dict(wm, **{"m.norm.weight": "model-00001-of-00002.safetensors"})}, open(os.path.join(d, "model.safetensors.index.json"), "w"))
+        refused(d, m, "not named in model-00002-of-00002.safetensors")
+
+
 def test_c_header():
     """gpu/glyd_gpu.h, the library's C API, as _lib.py calls it: every function by the same arguments (their ctypes
     types, the stream last), its version API_VERSION; and the functions glyd_gpu.cu defines, which includes it (the
@@ -161,7 +224,7 @@ def test_c_header():
     it imports torch."""
     gpu = os.path.join(HERE, "..", "..", "gpu")
     h = re.sub(r"/\*.*?\*/", "", open(os.path.join(gpu, "glyd_gpu.h")).read(), flags=re.S)
-    names = {"_P", "_I64", "_U64", "_SZ", "_W", "_PACK", "_FAST", "_DENSE", "_ARGS", "_SIZES", "_PLAIN", "API_VERSION"}
+    names = {"_P", "_I64", "_U64", "_SZ", "_W", "_PACK", "_FAST", "_DENSE", "_ARGS", "_SIZES", "_PLAIN", "API_VERSION", "BIG"}
     body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "_lib.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= names]
     lib = {"ctypes": ctypes}
     exec(compile(ast.Module(body, []), "_lib.py", "exec"), lib)
@@ -180,6 +243,15 @@ def test_c_header():
     called.update(glyd_gpu_api_version=("int", []), glyd_gpu_cuda_version=("int", []), glyd_gpu_error_string=("const char*", [c.c_int]))
     assert declared == called, [n for n in sorted(set(declared) | set(called)) if declared.get(n) != called.get(n)]
     assert int(re.search(r"#define GLYD_GPU_API_VERSION (\d+)", h).group(1)) == lib["API_VERSION"], "GLYD_GPU_API_VERSION is not _lib.py's API_VERSION"
+    # the routes' numbers and a GPU's classes: kernels.py's and _lib.py's the header's
+    defines = {k: int(v) for k, v in re.findall(r"#define (GLYD_GPU_\w+) (\d+)", h)}
+    kern = {}
+    names = {"DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD", "GEFORCE", "A10"}
+    body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "kernels.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= names]
+    exec(compile(ast.Module(body, []), "kernels.py", "exec"), kern)
+    for r in ("DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD"):
+        assert kern[r] == defines[f"GLYD_GPU_ROUTE_{r}"], r
+    assert lib["BIG"] == defines["GLYD_GPU_ROUTE_BIG"] and (kern["GEFORCE"], kern["A10"]) == (defines["GLYD_GPU_GEFORCE"], defines["GLYD_GPU_A10"])
     cu = open(os.path.join(gpu, "glyd_gpu.cu")).read()
     assert set(re.findall(r"GLYD_GPU_API [^(]*?(glyd_gpu_\w+)\(", cu)) == set(declared), "glyd_gpu.cu's C API is not glyd_gpu.h's"
 
@@ -535,6 +607,31 @@ def test_cli_pack_and_verify():
         tiered = hf.from_pretrained(os.path.join(d, "out12"), layout="mma", verify=True)
         assert all(type(p) is g.Mma for p in packs(tiered))  # packed again, tiered
         assert tiered.config.quantization_config.verified >= sum(len(e["tensors"]) for e in m12["packs"].values())  # (and the embeddings packed as it loads)
+        del tiered
+        # verify on a changed copy: a byte of a tensor saved as it is flipped, bytes appended to a shard, a merged
+        # pack's member renamed by a letter in glyd.json (k_proj to k_prok): each refused
+        m = fmt.read_manifest(os.path.join(d, "out"))
+        assert "model.norm.weight" in m["tensors"] and m["format"] == "glyd-v2"
+        group = next(p for p, e in m["packs"].items() if len(e["tensors"]) > 1)
+        for change, says in (("flip", "model.norm.weight is other bytes"), ("append", "bytes past its last tensor"), ("rename", f"{group}'s tensors are not its own")):
+            bad = os.path.join(d, "bad-" + change)
+            shutil.copytree(os.path.join(d, "out"), bad)
+            f = os.path.join(bad, "model.safetensors")
+            if change == "flip":
+                h = fmt.header(f)
+                at = 8 + int.from_bytes(open(f, "rb").read(8), "little") + h["model.norm.weight"]["data_offsets"][0]
+                b = bytearray(open(f, "rb").read())
+                b[at] ^= 0x10
+                open(f, "wb").write(bytes(b))
+            elif change == "append":
+                open(f, "ab").write(bytes(8))
+            else:
+                mm = json.loads(open(os.path.join(bad, fmt.MANIFEST)).read())
+                mm["packs"][group]["tensors"][1]["name"] = mm["packs"][group]["tensors"][1]["name"].replace("k_proj", "k_prok")
+                assert "k_prok" in mm["packs"][group]["tensors"][1]["name"]
+                json.dump(mm, open(os.path.join(bad, fmt.MANIFEST), "w"))
+            r = subprocess.run([sys.executable, "-m", "glyd.gpu", "verify", bad], env=env, capture_output=True, text=True)
+            assert r.returncode != 0 and says in r.stderr, (change, r.stderr[-2000:])
 
 
 if __name__ == "__main__":
