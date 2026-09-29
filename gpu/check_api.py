@@ -21,7 +21,9 @@ beside glyd/gpu/kernels.py), against each model in bf16:
   cache longer than any before, their tokens as this thread's; continuing
   from return_dict_in_generate's cache as eager (in a process of its own);
 - glyd.gpu.compress on the model loaded in bf16: the same packs, so the
-  same logits and tokens bit for bit;
+  same logits and tokens bit for bit (the tokens eager's, here and for the
+  models loaded from what was saved: a model's compiled calls can sum in
+  another order once it compiles again);
 - exact=True: logits bit for bit bf16's, the 32 tokens bf16's;
 - a prompt of 2100 tokens, fused and exact, three times (the first records
   the order its matrices are decoded ahead in, model.Ahead, where the GPU
@@ -98,6 +100,15 @@ def run(model, ids):
         logits = model(ids, logits_to_keep=1).logits
         out = model.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False)
     return logits, out[0, ids.shape[1] :]
+
+
+def eager(model, ids):
+    """TOKENS greedy tokens from generate() eager (disable_compile: the call as transformers runs it): the tokens two
+    models with the same packs agree on whatever each compiled before (a model's first graph and its later ones, a
+    longer cache's or dynamic shapes', can sum in another order: Qwen3-1.7B's first compiled call and its later ones
+    shared 13 of 32 tokens in one run)."""
+    with torch.no_grad():
+        return model.generate(ids, max_new_tokens=TOKENS, min_new_tokens=TOKENS, do_sample=False, disable_compile=True)[0, ids.shape[1] :]
 
 
 def compiled(model, ids):
@@ -363,7 +374,7 @@ for name in NAMES:
 
     c = glyd.gpu.compress(AutoModelForCausalLM.from_pretrained(name, dtype=torch.bfloat16))
     logits_c, out_c = run(c, ids)
-    assert exact(logits_b, logits_c) and torch.equal(out_b, out_c) and packed_bytes(c) == size, "glyd.gpu.compress packs as from_pretrained does"
+    assert exact(logits_b, logits_c) and torch.equal(eager(c, ids), out_e) and packed_bytes(c) == size, "glyd.gpu.compress packs as from_pretrained does"
     print(f"   glyd.gpu.compress: the same {size / 1e9:.2f} GB, logits and tokens bit for bit")
     print(f"   compiled (a static cache, CUDA graphs, fullgraph): tokens as plain generate()'s: {same(out_b, compiled(m, ids))} of {TOKENS}")
     del c
@@ -404,7 +415,7 @@ for name in NAMES:
         for verify in (False, True):
             r, t, peak, held = loaded(lambda: glyd.from_pretrained(d, verify=verify))
             logits_r, out_r = run(r, ids)
-            assert exact(logits_r, logits_b) and torch.equal(out_r, out_b), f"reloaded (verify={verify}): the saved model's logits and tokens"
+            assert exact(logits_r, logits_b) and torch.equal(eager(r, ids), out_e), f"reloaded (verify={verify}): the saved model's logits and tokens"
             print(f"   from_pretrained(path, verify={verify}): {r.config.quantization_config.verified} tensors verified, loaded in {t:.1f} s, peak {peak:.2f} GB, holds {held:.2f} GB; logits and tokens as the saved model's")
             del r
             torch.cuda.empty_cache()
@@ -418,7 +429,7 @@ for name in NAMES:
         r = glyd.from_pretrained(d, layout=other)
         s = glyd.from_pretrained(name, layout=other)
         (logits_r, out_r), (logits_s, out_s) = run(r, ids), run(s, ids)
-        assert exact(logits_r, logits_s) and torch.equal(out_r, out_s) and packed_bytes(r) == packed_bytes(s), f"{other} from the saved packs: as packed from bf16"
+        assert exact(logits_r, logits_s) and torch.equal(eager(r, ids), eager(s, ids)) and packed_bytes(r) == packed_bytes(s), f"{other} from the saved packs: as packed from bf16"
         print(f"   from_pretrained(path, layout={other!r}): the packs {'transcoded' if other == 'mma12' else 'as saved'}, logits and tokens as {other} packed from bf16")
         del r, s
         torch.cuda.empty_cache()
