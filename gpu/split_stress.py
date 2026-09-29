@@ -72,9 +72,9 @@ def ring_for(shapes):
     return slot, max(3, min(16, gap([(sh, c) for sh in shapes for c in chunks(*sh)]) + 1)), gap(shapes) + 2
 
 
+ws = torch.empty(32 << 20, dtype=torch.uint8, device=dev)  # (the device's context made first: cuBLAS's handle after it)
 fns = gm.Split.blas_fns()
 assert fns, "PyTorch's cuBLAS not found"
-ws = torch.empty(32 << 20, dtype=torch.uint8, device=dev)
 blas = lib.Blas(None, fns["cublasGemmEx"], fns["cublasSetStream_v2"], fns["cublasGetStream_v2"], fns["cublasSetWorkspace_v2"], fns["cublasSetSmCountTarget"], fns["cublasGetSmCountTarget"], ws.data_ptr(), 32 << 20)
 S = torch.cuda.get_device_properties(dev).multi_processor_count
 SMS = min(12, S // 4)
