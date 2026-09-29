@@ -58,7 +58,15 @@ def smi(q):
         return f"? ({e})"
 
 
-cpu = next((l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name")), platform.processor()) if os.path.exists("/proc/cpuinfo") else platform.processor()
+def cpu_name():  # lscpu's model name (an arm64 host's /proc/cpuinfo has none), else /proc/cpuinfo's, else platform's
+    try:
+        out = subprocess.run(["lscpu"], capture_output=True, text=True, timeout=30).stdout
+        return next(l.split(":", 1)[1].strip() for l in out.splitlines() if l.startswith("Model name"))
+    except Exception:
+        return next((l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name")), platform.processor()) if os.path.exists("/proc/cpuinfo") else platform.processor()
+
+
+cpu = cpu_name()
 R = {"model": args.model, "mode": args.mode, "greedy": True, "gpu": torch.cuda.get_device_name(), "capability": ".".join(map(str, torch.cuda.get_device_capability())),
      "gpu_memory_gb": round(torch.cuda.get_device_properties(0).total_memory / 1e9, 2), "smi": smi("driver_version,clocks.max.sm,clocks.max.mem,power.limit,power.default_limit"),
      "torch": torch.__version__, "cuda": torch.version.cuda, "transformers": __import__("transformers").__version__, "cpu": cpu, "cpus": os.cpu_count(),
