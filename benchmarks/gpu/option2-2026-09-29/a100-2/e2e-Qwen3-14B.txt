@@ -1,0 +1,24 @@
+Loading weights:   0%|          | 0/443 [00:00<?, ?it/s]Loading weights: 100%|██████████| 443/443 [00:00<00:00, 5190.84it/s]
+merged: 80 groups of Linears as one product each
+bf16 (weights 29.54 GB): batch 1: 22.1 tokens/s (22.1 a sequence), peak VRAM 29.56 GB
+bf16 prefill: 769 tokens 123.9 ms (6206 tokens/s), first token 127.1 ms, 1024 tokens 150.4 ms (6811 tokens/s), first token 153.8 ms, 2048 tokens 290.4 ms (7053 tokens/s), first token 293.2 ms, 4096 tokens 582.7 ms (7030 tokens/s), first token 586.5 ms, 8192 tokens 1221.4 ms (6707 tokens/s), first token 1222.9 ms
+mma12 fused: packed in 11 s; weights 22.15 GB against 29.54 GB bf16 (75.0%), scratch 0.27 GB, VRAM in use 22.43 GB on 1 GPU
+glyd mma12 fused: batch 1: 22.5 tokens/s (22.5 a sequence), peak VRAM 22.44 GB
+glyd mma12 prefill: 769 tokens 144.7 ms (5313 tokens/s), first token 148.8 ms, 1024 tokens 169.1 ms (6056 tokens/s), first token 173.0 ms, 2048 tokens 315.3 ms (6496 tokens/s), first token 318.5 ms, 4096 tokens 612.7 ms (6685 tokens/s), first token 618.2 ms, 8192 tokens 1319.7 ms (6207 tokens/s), first token 1324.9 ms
+glyd mma12 without SPLIT prefill: 769 tokens 174.1 ms (4417 tokens/s), first token 177.8 ms, 1024 tokens 198.9 ms (5148 tokens/s), first token 202.3 ms, 2048 tokens 348.5 ms (5877 tokens/s), first token 352.0 ms, 4096 tokens 653.9 ms (6264 tokens/s), first token 657.8 ms, 8192 tokens 1319.0 ms (6211 tokens/s), first token 1322.7 ms
+USDT:2026-09-29 18:45:32 3353:3353 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-29 18:45:33 3353:3353 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, SPLIT: a pass 171.0 ms, the host issues it in 82.6; GPU span 172.7 ms, idle 7.8; kernels: GEMMs 122.1 ms, the decode 83.0 (beside GEMMs 80.7, beside the rest 1.8, alone 0.5), attention 4.6, the rest 37.7
+USDT:2026-09-29 18:45:34 3353:3353 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-29 18:45:34 3353:3353 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, without SPLIT: a pass 199.8 ms, the host issues it in 116.4; GPU span 201.4 ms, idle 3.9; kernels: GEMMs 107.4 ms, the decode 42.5 (beside GEMMs 0.0, beside the rest 0.0, alone 42.5), attention 4.5, the rest 43.0
+USDT:2026-09-29 18:45:35 3353:3353 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-29 18:45:35 3353:3353 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 2048 tokens, SPLIT: a pass 319.9 ms, the host issues it in 153.7; GPU span 321.2 ms, idle 7.6; kernels: GEMMs 222.8 ms, the decode 124.7 (beside GEMMs 121.9, beside the rest 2.2, alone 0.6), attention 12.9, the rest 77.2
+USDT:2026-09-29 18:45:36 3353:3353 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-29 18:45:37 3353:3353 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 2048 tokens, without SPLIT: a pass 350.7 ms, the host issues it in 203.0; GPU span 351.2 ms, idle 3.7; kernels: GEMMs 203.7 ms, the decode 42.7 (beside GEMMs 0.0, beside the rest 0.0, alone 42.7), attention 12.7, the rest 88.5
+logits bit-identical: False
+generated tokens identical to bf16: 10 of 32
+text:  in the 1940s with the work of Shannon and Huffman, who laid the theoretical foundations for lossless compression. In the 197
+exit 0

@@ -1,0 +1,7 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 5323.64it/s]
+merged: 72 groups of Linears as one product each
+mma12 fused: packed in 6 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.54 GB on 1 GPU
+glyd mma12 fused: batch 1: 25.1 tokens/s (25.1 a sequence), peak VRAM 12.55 GB
+glyd mma12 prefill: 769 tokens 91.7 ms (8388 tokens/s), first token 95.1 ms, 1024 tokens 108.2 ms (9461 tokens/s), first token 111.6 ms
+text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to transmit information over long distances, and it
+exit 0
