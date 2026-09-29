@@ -1,5 +1,6 @@
-# generate() tokens/s as a user runs it: bf16 (transformers) or glyd.from_pretrained, eager or (COMPILE=1) compiled as
-# transformers compiles it (a static cache, CUDA graphs). argv: MODEL bf16|glyd [batch] [tokens]
+# generate() tokens/s as a user runs it: bf16 (transformers: eager) or glyd.from_pretrained (compiled: a static cache,
+# CUDA graphs; GLYD_COMPILE=0 eager), or (COMPILE=1) either with cache_implementation="static", as transformers
+# compiles it; the first generate() (its compile and capture) timed apart. argv: MODEL bf16|glyd [batch] [tokens]
 import os, sys, time, torch
 import glyd
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -12,14 +13,18 @@ ids = tok("The history of data compression began", return_tensors="pt").input_id
 m = glyd.from_pretrained(name) if which == "glyd" else AutoModelForCausalLM.from_pretrained(name, dtype=torch.bfloat16, device_map={"": "cuda:0"})
 kw = dict(cache_implementation="static") if os.environ.get("COMPILE") else {}
 with torch.no_grad():
-    m.generate(ids, max_new_tokens=N if kw else 8, do_sample=False, **kw)
+    t = time.perf_counter()
+    m.generate(ids, max_new_tokens=N, do_sample=False, **kw)  # (the static cache the timed runs' size)
+    torch.cuda.synchronize()
+    print(f"first generate(): {time.perf_counter() - t:.1f} s", flush=True)
     for _ in range(int(os.environ.get("REPS", 2))):
         torch.cuda.synchronize()
         t = time.perf_counter()
         m.generate(ids, max_new_tokens=N, min_new_tokens=N, do_sample=False, **kw)
         torch.cuda.synchronize()
         t = time.perf_counter() - t
-        print(f"{which}{' compiled' if kw else ''} {name} batch {B}: {B * N / t:.1f} tokens/s ({t / N * 1000:.2f} ms a step)", flush=True)
+        compiled = "_compiled_call" in m.__dict__ or (which == "glyd" and m in glyd.gpu.model._COMPILED)  # (transformers' compiled forward; glyd's)
+        print(f"{which}{' compiled' if compiled else ''} {name} batch {B}: {B * N / t:.1f} tokens/s ({t / N * 1000:.2f} ms a step)", flush=True)
 if os.environ.get("THREADS"):
     import threading
     print("python threads:", threading.enumerate())

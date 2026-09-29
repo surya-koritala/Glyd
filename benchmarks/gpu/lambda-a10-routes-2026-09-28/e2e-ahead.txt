@@ -1,0 +1,13 @@
+route ahead: GLYD_AHEAD_MIN=65
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 6718.75it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 25.3 tokens/s (25.3 a sequence), peak VRAM 16.40 GB
+bf16 prefill: 128 tokens 53.3 ms (2402 tokens/s), first token 53.4 ms, 512 tokens 141.8 ms (3612 tokens/s), first token 140.7 ms, 1024 tokens 265.7 ms (3854 tokens/s), first token 269.6 ms, 2048 tokens 541.6 ms (3781 tokens/s), first token 542.8 ms, 4096 tokens 1099.7 ms (3725 tokens/s), first token 1103.2 ms
+mma12 fused: packed in 8 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.40 GB, VRAM in use 12.68 GB on 1 GPU
+glyd mma12 fused: batch 1: 27.1 tokens/s (27.1 a sequence), peak VRAM 12.69 GB
+glyd mma12 prefill: 128 tokens 106.7 ms (1200 tokens/s), first token 109.0 ms, 512 tokens 180.1 ms (2843 tokens/s), first token 183.2 ms, 1024 tokens 292.2 ms (3504 tokens/s), first token 295.7 ms, 2048 tokens 569.9 ms (3593 tokens/s), first token 571.9 ms, 4096 tokens 1128.3 ms (3630 tokens/s), first token 1133.4 ms
+logits bit-identical: False
+generated tokens identical to bf16: 16 of 16
+text:  with the invention of the telegraph in the 1830s.
+e2e ahead exit 0

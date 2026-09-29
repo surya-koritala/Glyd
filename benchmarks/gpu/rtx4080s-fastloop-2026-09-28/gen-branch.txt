@@ -1,0 +1,27 @@
+glyd Qwen3-1.7B batch 1 plain: load 2.2 s, first generate() 4.3 s, then 184.6 tokens/s (median of 3: 183.8, 184.6, 187.2), compiled, graphs 1, peak 4.11 GB
+   text:  in the 1950s with the advent of digital storage and transmission. As technology advanced, the need for
+new exit 0
+glyd Qwen3-1.7B batch 8 plain: load 2.2 s, first generate() 4.4 s, then 1260.4 tokens/s (median of 3: 1256.5, 1260.4, 1261.1), compiled, graphs 1, peak 4.11 GB
+   text:  in the 1950s with the advent of digital computing. The first practical data compression algorithms were developed in
+new exit 0
+glyd Qwen3-4B-Instruct-2507 batch 1 plain: load 6.9 s, first generate() 5.8 s, then 94.3 tokens/s (median of 3: 94.3, 94.3, 95.1), compiled, graphs 1, peak 7.65 GB
+   text:  in the 1940s with the development of the first compression algorithms, such as the Lempel-Z
+new exit 0
+glyd Qwen3-4B-Instruct-2507 batch 8 plain: load 4.6 s, first generate() 6.1 s, then 609.6 tokens/s (median of 3: 606.7, 609.6, 609.6), compiled, graphs 1, peak 7.65 GB
+   text:  in the 1940s with the development of the first compression algorithms, such as the Lempel-Z
+new exit 0
+glyd Qwen3-8B batch 1 plain: load 8.6 s, first generate() 6.7 s, then 55.3 tokens/s (median of 3: 55.3, 55.3, 55.3), compiled, graphs 1, peak 13.25 GB
+   text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to
+new exit 0
+glyd Qwen3-8B batch 8 plain: load 8.6 s, first generate() 7.0 s, then 385.8 tokens/s (median of 3: 384.1, 385.8, 385.9), compiled, graphs 1, peak 13.25 GB
+   text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to
+new exit 0
+glyd granite-3.1-3b-a800m-instruct batch 1 plain: load 4.3 s, first generate() 4.3 s, then 232.3 tokens/s (median of 3: 231.6, 232.3, 232.6), compiled, graphs 1, peak 5.56 GB
+   text:  with the development of the first computer, the ENIAC, in the 1940s. The EN
+new exit 0
+glyd granite-3.1-3b-a800m-instruct batch 8 plain: load 3.6 s, first generate() 4.4 s, then 1546.5 tokens/s (median of 3: 1537.6, 1546.5, 1548.4), compiled, graphs 1, peak 5.56 GB
+   text:  with the development of the first computer, ENIAC, in the 1940s. ENIAC
+new exit 0
+glyd Qwen3-8B batch 1 plain: load 8.6 s, first generate() 17.5 s, then 55.3 tokens/s (median of 3: 55.3, 55.3, 55.4), compiled, graphs 1, peak 13.25 GB
+   text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to
+new exit 0

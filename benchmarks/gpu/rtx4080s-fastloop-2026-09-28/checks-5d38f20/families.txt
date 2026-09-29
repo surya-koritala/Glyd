@@ -1,0 +1,72 @@
+afmoe: compiled in 3.9 s; tokens as eager's 8 of 8
+axk1: eager in 0.0 s; tokens as eager's 8 of 8
+axk2: compiled in 2.5 s; tokens as eager's 8 of 8
+cohere2_moe: compiled in 2.1 s; tokens as eager's 8 of 8
+deepseek_v2: eager in 0.0 s; tokens as eager's 8 of 8
+deepseek_v3: eager in 0.0 s; tokens as eager's 8 of 8
+deepseek_v32: compiled in 2.1 s; tokens as eager's 8 of 8
+diffusion_gemma: skipped (AutoModelForImageTextToText, decoder inputs)
+dots1: compiled in 1.4 s; tokens as eager's 8 of 8
+ernie4_5_moe: compiled in 1.4 s; tokens as eager's 8 of 8
+exaone_moe: compiled in 2.5 s; tokens as eager's 8 of 8
+flex_olmo: compiled in 1.3 s; tokens as eager's 8 of 8
+gemma4: compiled in 5.1 s; tokens as eager's 8 of 8
+glm4_moe: compiled in 1.4 s; tokens as eager's 8 of 8
+glm4_moe_lite: compiled in 1.6 s; tokens as eager's 8 of 8
+glm_moe_dsa: compiled in 2.2 s; tokens as eager's 2 of 8
+glm4v_moe: skipped (AutoModelForImageTextToText)
+glm5_next: skipped (AutoModelForImageTextToText)
+gpt_oss: compiled in 2.6 s; tokens as eager's 8 of 8
+granitemoe: compiled in 1.2 s; tokens as eager's 8 of 8
+granitemoeshared: compiled in 1.1 s; tokens as eager's 8 of 8
+granitemoe_swa: compiled in 2.6 s; tokens as eager's 8 of 8
+hunyuan_v1_moe: compiled in 1.4 s; tokens as eager's 8 of 8
+hy_v3: compiled in 1.3 s; tokens as eager's 8 of 8
+hy_v4: compiled in 2.8 s; tokens as eager's 8 of 8
+inkling_text: eager in 0.0 s; tokens as eager's 8 of 8
+granitemoehybrid: compiled in 1.8 s; tokens as eager's 8 of 8
+jamba: compiled in 1.6 s; tokens as eager's 8 of 8
+kimi_linear: eager in 0.0 s; tokens as eager's 8 of 8
+laguna: compiled in 1.6 s; tokens as eager's 8 of 8
+lfm2_moe: compiled in 1.3 s; tokens as eager's 8 of 8
+mellum: compiled in 1.3 s; tokens as eager's 8 of 8
+mimo_v2_flash: compiled in 2.9 s; tokens as eager's 8 of 8
+minimax: eager in 0.0 s; tokens as eager's 8 of 8
+minimax_m2: compiled in 1.4 s; tokens as eager's 8 of 8
+mistral4: skipped (AutoModelForImageTextToText)
+mixtral: compiled in 2.3 s; tokens as eager's 8 of 8
+nemotron_h: compiled in 1.9 s; tokens as eager's 8 of 8
+olmoe: compiled in 1.4 s; tokens as eager's 8 of 8
+phimoe: compiled in 2.8 s; tokens as eager's 6 of 8
+minimax_m3_vl: skipped (AutoModelForImageTextToText)
+qwen2_moe: compiled in 1.3 s; tokens as eager's 8 of 8
+qwen3_5_moe: compiled in 2.8 s; tokens as eager's 8 of 8
+qwen3_moe: compiled in 1.3 s; tokens as eager's 8 of 8
+qwen3_next: compiled in 2.8 s; tokens as eager's 8 of 8
+qwen3_omni_moe_thinker: skipped (AutoModelForImageTextToText)
+qwen3_vl_moe: skipped (AutoModelForImageTextToText)
+solar_open: compiled in 1.3 s; tokens as eager's 8 of 8
+zaya: eager in 0.0 s; tokens as eager's 8 of 8
+qwen4_exp: compiled in 8.5 s; tokens as eager's 8 of 8
+deepseek_ocr2: skipped (AutoModelForImageTextToText)
+ernie4_5_vl_moe: skipped (AutoModelForImageTextToText)
+aria_text: eager in 0.0 s; tokens as eager's 8 of 8
+jetmoe: eager in 0.0 s; tokens as eager's 8 of 8
+llama4_text: eager in 0.0 s; tokens as eager's 8 of 8
+dbrx: eager in 0.0 s; tokens as eager's 8 of 8
+longcat_flash: eager in 0.0 s; tokens as eager's 8 of 8
+step3p7: skipped (AutoModelForImageTextToText)
+llama: compiled in 1.2 s; tokens as eager's 1 of 8
+mistral: compiled in 2.3 s; tokens as eager's 1 of 8
+qwen2: compiled in 1.1 s; tokens as eager's 1 of 8
+qwen3: compiled in 1.3 s; tokens as eager's 7 of 8
+gemma2: compiled in 2.7 s; tokens as eager's 8 of 8
+gemma3_text: compiled in 2.9 s; tokens as eager's 8 of 8
+phi3: compiled in 2.5 s; tokens as eager's 8 of 8
+olmo2: compiled in 1.4 s; tokens as eager's 8 of 8
+granite: compiled in 1.3 s; tokens as eager's 8 of 8
+cohere2: compiled in 2.4 s; tokens as eager's 8 of 8
+smollm3: compiled in 1.2 s; tokens as eager's 8 of 8
+glm4: compiled in 1.4 s; tokens as eager's 8 of 8
+families done
+families exit 0

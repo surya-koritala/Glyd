@@ -1,0 +1,15 @@
+test_fit_as_the_site ok
+test_fit_a_directory ok
+test_kv_cache ok
+test_manifest_and_names ok
+test_c_header ok
+test_import_without_torch_or_library ok
+test_source_files_copied_once_and_writable ok
+test_moe_families ok
+test_compiled_generate_where_the_static_cache_works ok
+test_compiled_generate_from_torch_2_13 ok
+test_hooks_put_before_the_packs ok
+test_packed_weight_view ok
+test_quantized_checkpoint_refused ok
+test_cli_pack_and_verify ok
+test_gpu exit 0

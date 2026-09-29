@@ -1,0 +1,19 @@
+Qwen/Qwen3-1.7B fast loop installed: True
+plain: compiled True, first 11.7 s
+   explicit static: tokens as plain's: True
+   compile=False: eager True ; tokens as plain's 17 of 32
+own ['past_key_values']: ok in 0.1 s, compiled False
+own ['num_beams']: ok in 0.2 s, compiled False
+own ['use_cache']: ok in 0.1 s, compiled False
+own ['cache_implementation']: ok in 0.1 s, compiled False
+own ['output_hidden_states', 'return_dict_in_generate']: ok in 0.1 s, compiled False
+own ['prompt_lookup_num_tokens']: ok in 0.1 s, compiled False
+generation_config: ok in 10.2 s, compiled True
+sampling: ok in 2.6 s, compiled True
+budget: max_new_tokens 1274 (COMPILE_MAX 1280): compiled True, 10.6 s
+budget: max_new_tokens 1275 (COMPILE_MAX 1280): compiled False, 1.0 s
+fail: warnings ["glyd: Qwen3ForCausalLM's generate() compiled failed (BackendCompilerFailed: backend='broken' raised:); it runs as transformers runs it from here on"]; tokens as eager's True and again True; eager after: True, static cache on the next call: True
+exact: fast loop installed: False
+exact: compiled False
+fast.py done
+fast exit 0

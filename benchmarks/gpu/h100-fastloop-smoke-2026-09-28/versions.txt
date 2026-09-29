@@ -1,0 +1,11 @@
+name, compute_cap, driver_version, clocks.max.sm [MHz], power.limit [W]
+NVIDIA H100 PCIe, 9.0, 580.126.20, 1755 MHz, 350.00 W
+python 3.12.3
+torch 2.14.0+cu130 CUDA 13.0
+transformers 5.17.0
+accelerate 1.15.0
+GPU NVIDIA H100 PCIe (9, 0) 114 SMs
+nvcc: Cuda compilation tools, release 13.0, V13.0.88 Build cuda_13.0.r13.0/compiler.36424714_0 
+Model name:                              Intel(R) Xeon(R) Platinum 8480+
+26 CPUs
+Tue Sep 29 01:31:59 UTC 2026

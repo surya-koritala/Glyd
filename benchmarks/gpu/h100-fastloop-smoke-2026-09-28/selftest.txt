@@ -1,0 +1,19 @@
+mma_gemm_mid 64x64, 0 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 64x64, 0 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 192x128, 2 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 192x128, 2 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 128x4096, 86 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 128x4096, 86 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 1024x2048, 331 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 1024x2048, 331 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 5120x1024, 4830 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 5120x1024, 4830 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 192x4096, 58994 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 192x4096, 58994 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 3072x5120, 238352 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 3072x5120, 238352 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 17408x1024, 136858 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 17408x1024, 136858 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 8960x128, 145 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 8960x128, 145 exceptions: 1-2100 tokens within 1e-2, the same every run
+selftest exit 0

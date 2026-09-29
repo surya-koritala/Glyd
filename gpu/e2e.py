@@ -306,7 +306,7 @@ if args.from_pretrained:  # the package's path: the checkpoint loaded again, pac
     assert args.format in ("mma", "mma12") and args.gpus == 1, "--from-pretrained: the mma layouts, one GPU"
     del model
     gc.collect()
-    model = glyd.from_pretrained(args.model, layout=args.format, exact=args.exact, merge=args.merge).eval()
+    model = glyd.from_pretrained(args.model, layout=args.format, exact=args.exact, merge=args.merge, compile=args.compile).eval()  # (eager but with --compile)
     packed = {id(m.p): m.p for m in model.modules() if isinstance(m, (GLinear, GEmbedding))}
 else:
     layer_bytes = [sum(p.numel() for p in l.parameters()) for l in decoder(model).layers]

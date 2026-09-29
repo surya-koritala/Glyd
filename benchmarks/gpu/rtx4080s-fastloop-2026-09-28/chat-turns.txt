@@ -1,0 +1,9 @@
+turn 0: context 40 + 64: 14.95 s, graphs 1, cache 103
+turn 1: context 144 + 64: 5.57 s, graphs 2, cache 207
+turn 2: context 248 + 64: 0.80 s, graphs 2, cache 311
+turn 3: context 352 + 64: 0.77 s, graphs 2, cache 415
+turn 4: context 456 + 64: 0.80 s, graphs 2, cache 519
+turn 5: context 560 + 64: 0.83 s, graphs 2, cache 623
+turn 6: context 664 + 64: 0.93 s, graphs 2, cache 727
+turn 7: context 768 + 64: 0.88 s, graphs 2, cache 831
+grow exit 0
