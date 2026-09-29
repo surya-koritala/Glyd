@@ -5,7 +5,10 @@ route for M on this GPU (mma_linear, route -1: a Linear's one-call path), the ke
 tokens, mid kernel 17-128, the prompt kernel past 64), and the whole matrix decoded (mma_unpack, as for cuBLAS and
 decode ahead). Real weights of layer L.
 
-    PYTHONPATH=TREE/bindings/python GLYD_GPU_LIB=TREE_LIB python layer.py MAIN_TREE MAIN_LIB MODEL [--layer 10] [--M 1,8,32,256,1024] [--reps 15]"""
+    PYTHONPATH=TREE/bindings/python GLYD_GPU_LIB=TREE_LIB python layer.py MAIN_TREE MAIN_LIB MODEL [--layer 10] [--M 1,8,32,256,1024] [--reps 15]
+
+--old-both: the 12-bit layout before split byte on both sides (main's packs), GLYD_GPU_LIB a second build of it (main's
+kernels with one change, say): the change's own cost, the columns still named "12-bit" and "split byte"."""
 import argparse, glob, json, os
 import torch
 from safetensors import safe_open
@@ -19,6 +22,7 @@ ap.add_argument("model")
 ap.add_argument("--layer", type=int, default=10)
 ap.add_argument("--M", default="1,8,32,256,1024")
 ap.add_argument("--reps", type=int, default=15)
+ap.add_argument("--old-both", action="store_true")
 args = ap.parse_args()
 old, old_pack = both.load(args.main_tree, args.main_lib)
 
@@ -41,7 +45,7 @@ W = {
     "gate_up": torch.cat([get(pre + f"mlp.{n}_proj.weight") for n in ("gate", "up")]),
     "down": get(pre + "mlp.down_proj.weight"),
 }
-P = {k: (old_pack(w), g.pack_mma12(w)) for k, w in W.items()}
+P = {k: (old_pack(w),) * 2 if args.old_both else (old_pack(w), g.pack_mma12(w)) for k, w in W.items()}
 for k, w in W.items():  # the same bits either way before anything is timed
     assert torch.equal(g.mma_unpack(P[k][1]).view(torch.int16), w.view(torch.int16))
     a, b = both.pair(old, lambda p: g.mma_unpack(p), *P[k])
@@ -68,7 +72,7 @@ def call(lib, f):
 
 gpu = new.gpu()
 name = os.path.basename(os.path.dirname(os.path.dirname(d))).split("--")[-1] if "snapshots" in d else os.path.basename(d.rstrip("/"))
-print(f"{name} layer {args.layer} on {torch.cuda.get_device_name()}: " + ", ".join(f"{k} {tuple(w.shape)}" for k, w in W.items())
+print(("--old-both: main's 12-bit layout on both sides, the second library " + os.environ["GLYD_GPU_LIB"] + "\n" if args.old_both else "") + f"{name} layer {args.layer} on {torch.cuda.get_device_name()}: " + ", ".join(f"{k} {tuple(w.shape)}" for k, w in W.items())
       + "; exceptions a step, 12-bit / split byte: " + ", ".join(f"{k} {int(P[k][0].exc_base[-1]) / (w.numel() / 1024):.3f} / {int(P[k][1].exc_base[-1]) / (w.numel() / 1024):.3f}" for k, w in W.items()), flush=True)
 routes = {g.DECODE: "decode", g.GEMM: "step", g.MID: "mid", g.WG: "wg", g.BIG: "prompt", g.AHEAD: "ahead"}
 for M in [int(m) for m in args.M.split(",")] + [0]:

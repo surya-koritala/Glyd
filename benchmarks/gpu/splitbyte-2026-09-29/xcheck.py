@@ -80,7 +80,9 @@ def products(w, po, pn, Ms=MS, scale=1.0):
 
 
 def moe(w, po, pn, k, Ts, scale=1.0):
-    """w [E, O, K] packed [E O, K]: a layer's products for T tokens by k experts each (a few routed nowhere)."""
+    """w [E, O, K] packed [E O, K]: a layer's products for T tokens by k experts each (a few routed nowhere). The rows
+    compared: those the kernel writes, one a pair of the plan; past them (a pair routed nowhere) mma_moe's output is
+    torch.empty's, never written, whatever memory the allocator hands out."""
     E, O, K = w.shape
     for T in Ts:
         ids = torch.stack([torch.randperm(E, device=dev)[:k] for _ in range(T)])
@@ -102,13 +104,13 @@ def moe(w, po, pn, k, Ts, scale=1.0):
         assert torch.equal(bits(u[hit]), bits(w[hit])) and torch.isnan(u[~hit].float()).all()
         for b in (None, torch.randn(E, O, dtype=bf, device=dev)):
             bb = b[expert].float() if b is not None else 0
-            y = pair("mma_moe", lambda p: g.mma_moe(p, E, x, plan, ids, 0, b), po, pn)
-            near(y[: len(valid)], rows + bb, ("mma_moe", T))
+            y = pair("mma_moe", lambda p: g.mma_moe(p, E, x, plan, ids, 0, b)[: len(valid)], po, pn)
+            near(y, rows + bb, ("mma_moe", T))
             if O % 128 == 0:
                 gate, up = (rows + bb).chunk(2, -1)
                 for act, f in ((1, F.silu), (2, lambda v: F.gelu(v, approximate="tanh"))):
-                    y = pair(f"mma_moe act {act}", lambda p: g.mma_moe(p, E, x, plan, ids, act, b), po, pn)
-                    near(y[: len(valid)], f(gate) * up, ("mma_moe", act, T))
+                    y = pair(f"mma_moe act {act}", lambda p: g.mma_moe(p, E, x, plan, ids, act, b)[: len(valid)], po, pn)
+                    near(y, f(gate) * up, ("mma_moe", act, T))
             wt = torch.rand(T, k, device=dev).to(bf)
             y = pair("mma_moe weighted", lambda p: g.mma_moe(p, E, xs, plan, ids, 0, b, wt, gather=False), po, pn)
             ref = torch.zeros(P, O, device=dev)
