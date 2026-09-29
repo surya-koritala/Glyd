@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "/home/ubuntu/r1w/src/benchmarks/gpu/splitbyte-2026-09-29/xcheck.py", line 191, in <module>
+    moe(t, po, pn, k or 2, (1, 8, 64, 300), 0.5)
+  File "/home/ubuntu/r1w/src/benchmarks/gpu/splitbyte-2026-09-29/xcheck.py", line 110, in moe
+    y = pair(f"mma_moe act {act}", lambda p: g.mma_moe(p, E, x, plan, ids, act, b), po, pn)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/r1w/src/benchmarks/gpu/splitbyte-2026-09-29/xcheck.py", line 37, in pair
+    assert a.dtype == b.dtype and a.shape == b.shape and torch.equal(bits(a), bits(b)), name
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: mma_moe act 1
+exit 1

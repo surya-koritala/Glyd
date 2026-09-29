@@ -1,0 +1,25 @@
+64x64: exceptions 0 (12-bit) / 0 (split byte, hb 54): the same bits
+192x128: exceptions 3 (12-bit) / 0 (split byte, hb 54): the same bits
+128x4096: exceptions 84 (12-bit) / 42 (split byte, hb 54): the same bits
+1024x2048: exceptions 318 (12-bit) / 158 (split byte, hb 54): the same bits
+5120x1024: exceptions 4735 (12-bit) / 4261 (split byte, hb 54): the same bits
+192x4096: exceptions 59154 (12-bit) / 57821 (split byte, hb 54): the same bits
+3072x5120: exceptions 237987 (12-bit) / 231436 (split byte, hb 54): the same bits
+17408x1024: exceptions 136896 (12-bit) / 132492 (split byte, hb 54): the same bits
+8960x128: exceptions 176 (12-bit) / 89 (split byte, hb 54): the same bits
+256x1040: exceptions 1998 (12-bit) / 1942 (split byte, hb 54): the same bits
+256x16384: exceptions 644 (12-bit) / 302 (split byte, hb 54): the same bits
+every bf16 bit pattern, shuffled: exceptions 61696 / 61440 (hb 0), decoded the same bits
+every bf16 bit pattern, in order: exceptions 61696 / 61440 (hb 0), decoded the same bits
+every bf16 bit pattern, hb 0: exceptions 5978 / 6113 (hb 0), decoded the same bits
+every bf16 bit pattern, hb 120: exceptions 5988 / 6121 (hb 120), decoded the same bits
+moe: 8 experts of 256x192 by 2, (1, 70) tokens: the same bits
+moe: 64 experts of 128x2048 by 8, (8,) tokens: the same bits
+moe: 16 experts of 192x64 by 4, (33,) tokens: the same bits
+moe: 4 experts of 256x256 by 2, (300,) tokens: the same bits
+moe: 40 experts of 1024x1536 by 8, (3, 64) tokens: the same bits
+synthetic: 3205 calls the same bits, 486 refused by both (3 s)
+calls: mma_gemm 220, mma_gemm_big variant 0 240, mma_gemm_big variant 1 240, mma_gemm_big variant 2 240, mma_gemm_big variant 3 240, mma_gemm_mid 400, mma_linear route -1 460, mma_linear route 0 220, mma_linear route 1 110, mma_linear route 2 220, mma_linear route 4 220, mma_linear route 5 220, mma_moe 14, mma_moe act 1 12, mma_moe act 2 12, mma_moe weighted 14, mma_moe_unpack 7, mma_unpack 116
+refused by both: mma_linear route -1 24, mma_linear route 0 22, mma_linear route 1 132, mma_linear route 2 22, mma_linear route 3 242, mma_linear route 4 22, mma_linear route 5 22
+all the same bits: 3205 calls (NVIDIA A10, compute capability 8.6)
+exit 0

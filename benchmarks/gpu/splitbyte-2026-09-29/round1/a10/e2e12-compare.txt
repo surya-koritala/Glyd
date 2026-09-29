@@ -1,0 +1,2 @@
+main twice: the same lines
+main and split byte: the same lines (20 logits, 4 generations)

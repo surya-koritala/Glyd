@@ -37,5 +37,16 @@ through a second copy of `glyd.gpu._lib`, the C API being version 4 in both, and
   of 39) takes the spills and those two loops in, and on sm_90a one or two BSSY/BSYNC pairs fewer or more in
   mma_moe_kernel's 16- and 64-token products: split byte's decode, the same with either loop.
 
-The GPU scripts run in round 1's jobs (Ada, an A10, an A100, Hopper), whose logs are kept with the release's checks;
-the first, on an L4, is summed up above for the exception loop.
+## Round 1 (round1/; 2026-09-29, the release's tree before aa7a6fc: 975bbb1 on the L4, 8a7769e elsewhere)
+
+The split-byte steps of the release's round-1 jobs (the Rust helper's r1_job.sh, from sb_job.sh), their logs as they
+came back: an L4 on AWS (l4/, and l4-rerun/: the MoE compare fixed in 8270a46 and the attribution), an A10 (a10/), an
+A100 SXM4 40 GB (a100-sxm4-40gb/) and an H100 PCIe (h100-pcie/). Each dir's summary.txt holds its layer.py ratios.
+
+- Every xcheck.py all the same bits (3052-4817 calls a run; the L4's first granite run failed on the harness's MoE
+  compare, fixed in 8270a46), every self-test and e2e12.py's lines main's (20 logits and 4 generations each).
+- Split byte / main, by the library's route: the H100's wgmma 0.942-0.991 at 32-1024 tokens, the A100's mid kernel
+  0.923-1.000 at 32-128 and prompts 0.975-0.989 at 256-768, steps 0.989-1.006 at 1-16 tokens on all four; the A10's
+  and L4's prompts (the grid kernel) 1.007-1.032, their decode-for-cuBLAS 0.998-1.026. That build walked the exceptions
+  an entry a pass: the loop alone 1.008-1.023 on those prompts, split byte alone 0.990-1.003 (attr-*); aa7a6fc unrolls it
+  as main does, and those rows wait for the release candidate's run.
