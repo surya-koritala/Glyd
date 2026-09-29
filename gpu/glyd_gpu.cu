@@ -905,15 +905,24 @@ struct Nib {
         for (int q = 0; q < 8; q++) H[q] = high1(nb[q >> 1], hb4, q & 1);
     }
     // The step's exceptions, entries e0 to e1 (the same run for every lane of the warp; entry k is at(k)): each XORs
-    // its byte into this lane's word where the weight is this lane's.
-    template <class At>
+    // its byte into this lane's word where the weight is this lane's. U: the loop unrolled U times, 0 as nvcc chooses
+    // (4 a pass in these kernels, as it did the 12-bit layout's before split byte). An entry a pass (1) where unrolled it
+    // spilled (mma_moe_kernel's 64-token products with an activation, sm_80: main's 4 spill instructions, 12
+    // unrolled, none so), and 2 in mma12_ws_kernel, as nvcc unrolled it there before split byte: kept a pass an entry,
+    // the L4's prompts took 1-2% longer (2026-09-29).
+    template <int U = 0, class At>
     static __device__ __forceinline__ void patch(At at, int e0, int e1, int lane, uint32_t H[8]) {
-#pragma unroll 1  // an entry at a time: a step holds 0-2 as a rule, and unrolled (2 or 4 a pass) the loop only grew the kernels
-        for (int k = e0; k < e1; k++) {
+        auto one = [&](int k) {
             uint32_t x = at(k), i = x & 31, v = (x >> 16 & 0xFFu) << (8 * (i & 3));
             uint32_t w = (int)((x >> 5) & 31) == lane ? i >> 2 : 8u;
 #pragma unroll
             for (int q = 0; q < 8; q++) H[q] ^= w == (uint32_t)q ? v : 0u;
+        };
+        if constexpr (U == 0) {
+            for (int k = e0; k < e1; k++) one(k);
+        } else {
+#pragma unroll U
+            for (int k = e0; k < e1; k++) one(k);
         }
     }
     // Pairs: [high, low, high, low], one byte permute each (a lane's low bytes L, 4 a word).
@@ -941,11 +950,12 @@ struct Nib {
         __syncwarp();
         pairs(st.sw, H, R);
     }
+    template <int U = 0>  // patch's unrolling
     __device__ __forceinline__ void decode(const St& st, int lane, uint32_t*, const uint32_t*, uint32_t R[16]) const {
         uint32_t H[8];
         high(st.nb, H);
         const uint32_t* e = exc;
-        patch([e](int k) { return __ldg(e + k); }, st.e0, st.e1, lane, H);
+        patch<U>([e](int k) { return __ldg(e + k); }, st.e0, st.e1, lane, H);
         pairs(st.sw, H, R);
     }
 };
@@ -972,7 +982,7 @@ __device__ __forceinline__ int64_t block_of_step(int64_t x, int64_t nb, int64_t 
 // A warp's steps s0 to s1 of a row block (W's steps base + s): acc += X's rows by the step's 64 rows, 16 MT tokens
 // (xr: this thread's rows g and g + 8 of each m-tile, at X + row K + 2t; null past the tokens). The next step's
 // loads, W's and then the inputs, are issued before this step's decode. mma_gemm_kernel's and mma_moe_kernel's.
-template <class Fmt, int MT, bool X = false>  // X: decode_x (the 12-bit layout's heavy blocks)
+template <class Fmt, int MT, bool X = false, int U = 0>  // X: decode_x (the 12-bit layout's heavy blocks); U: Nib::patch's unrolling
 __device__ __forceinline__ void mma_steps(const Fmt& f, int64_t base, int64_t s0, int64_t s1, const __nv_bfloat16* const (&xr)[MT][2], int lane, uint32_t* s2, const uint32_t* tab, float (&acc)[MT][8][4]) {
     typename Fmt::St st;
     uint32_t a[MT][4];
@@ -997,6 +1007,7 @@ __device__ __forceinline__ void mma_steps(const Fmt& f, int64_t base, int64_t s0
         if (s + 1 < s1) load(s + 1);
         uint32_t R[16];
         if constexpr (X) f.decode_x(cur, lane, s2, R);
+        else if constexpr (U != 0) f.template decode<U>(cur, lane, s2, tab, R);
         else f.decode(cur, lane, s2, tab, R);
 #pragma unroll
         for (int mt = 0; mt < MT; mt++)
@@ -2610,7 +2621,7 @@ __global__ void __launch_bounds__(Ws12<CW, NB, NW, RBB, MT>::THREADS, 1) mma12_w
             f.high(nbw, ew);
             int4 bd = *(const int4*)(q + STEP12 + C::EB);
             const uint32_t *se = (const uint32_t*)(q + STEP12), *ge = f.exc;
-            Nib::patch([&](int k) { return bd.z >= 0 ? se[k - bd.z] : __ldg(ge + k); }, bd.x, bd.y, lane, ew);
+            Nib::patch<2>([&](int k) { return bd.z >= 0 ? se[k - bd.z] : __ldg(ge + k); }, bd.x, bd.y, lane, ew);
             uint32_t R[16];
             Nib::pairs(sw, ew, R);
             uint4* d = bdst + bsl * (C::DSLOT / 16);
@@ -2867,7 +2878,12 @@ __global__ void __launch_bounds__(256, MT == 1 ? 2 : 1) mma_moe_kernel(Fmt f, in
             for (int nn = 0; nn < 8; nn++)
 #pragma unroll
                 for (int q = 0; q < 4; q++) acc[mt][nn][q] = 0.f;
-        mma_steps<Fmt, MT>(f, base, s0, s1, xr, lane, s2, tab, acc);
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
+        constexpr int U = std::is_same_v<Fmt, Nib> && MT == 4 && ACT ? 1 : 0;  // an exception a pass: see Nib::patch
+#else
+        constexpr int U = 0;
+#endif
+        mma_steps<Fmt, MT, false, U>(f, base, s0, s1, xr, lane, s2, tab, acc);
         warp_sums<MT>(acc, red, warp, g, t);
         for (int i = threadIdx.x; i < n * 64; i += 256) {
             int r = i / 64, c = i % 64;
