@@ -908,6 +908,7 @@ struct Nib {
     // its byte into this lane's word where the weight is this lane's.
     template <class At>
     static __device__ __forceinline__ void patch(At at, int e0, int e1, int lane, uint32_t H[8]) {
+#pragma unroll 1  // an entry at a time: a step holds 0-2 as a rule, and unrolled (2 or 4 a pass) the loop only grew the kernels
         for (int k = e0; k < e1; k++) {
             uint32_t x = at(k), i = x & 31, v = (x >> 16 & 0xFFu) << (8 * (i & 3));
             uint32_t w = (int)((x >> 5) & 31) == lane ? i >> 2 : 8u;
