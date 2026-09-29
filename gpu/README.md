@@ -195,7 +195,7 @@ which past 128 tokens run in `mma12_wgp_kernel` (two sections on). One
 lane of a warp of its own hands the copy engine (TMA) a stage at a time:
 64 columns of 128 of W's rows, their compressed steps as bulk copies of
 6 KB, their exceptions, and X's tile through a tensor map in wgmma's
-128-byte swizzle, into a ring of 4 to 8 stages in shared memory, each
+128-byte swizzle, into a ring of 6 to 8 stages in shared memory, each
 landing on an mbarrier. Each consumer warpgroup decodes its 64 rows
 straight into wgmma's A registers, as Machete does with 4-bit weights,
 and multiplies with X read from shared memory. The work is split evenly
@@ -301,14 +301,14 @@ one is the TMA kernel as it took them to 2026-09-28, on an H100 PCIe. Its
 past-128-token code is gone from the tree; it is at 1653818.)
 GLinear sent prompts of up to 512 tokens to `mma_gemm_wg` too
 (`GLYD_WG_MAX`); past that it decoded the matrix for cuBLAS, as before.
-Past 128 tokens the kernel's tile is 256 tokens, or 192 where that takes
-no more chunks (129-192 tokens, 257-384), so a weight is decoded once
-for up to 256 tokens. A launch takes up to two chunks (512 tokens, where
-O / 64 is even; else one: its units stay within the O / 64 done
+Past 128 tokens the kernel's tile was 256 tokens, or 192 where that took
+no more chunks (129-192 tokens, 257-384), so a weight was decoded once
+for up to 256 tokens. A launch took up to two chunks (512 tokens, where
+O / 64 is even; else one: its units stayed within the O / 64 done
 counters) in one stream-K split, chunk by chunk, so the blocks at work
-at once read the same weights. The TMA warp is the first of a warpgroup
-that hands its registers to the consumers (`setmaxnreg`: 40 a thread
-there, 232 a consumer's), which at 256 tokens hold 128 sums a thread and
+at once read the same weights. The TMA warp was the first of a warpgroup
+that handed its registers to the consumers (`setmaxnreg`: 40 a thread
+there, 232 a consumer's), which at 256 tokens held 128 sums a thread and
 still two sets of A registers.
 
 One decoder layer's products, weights read from memory (us; cuBLAS on
@@ -443,15 +443,17 @@ idles at most a sixth of them. A product's time against cuBLAS's, before
 
 Qwen3-8B's o now takes 8-19% less time at 129-1024 tokens and 14B's
 6-10% less at 129-256, about what they had been slower than in the TMA
-kernel. With one cluster for each of the 46 tiles left past the wave, on
-46 of the 66 clusters, 14B's q, k, v at 1024 tokens took 3% more
-(1.35x), so where a whole number would idle more than a sixth the tiles
-are split over all the clusters, as before. Where the tiles split
-differently, the sums add in another order, so some outputs past 128
-tokens differ from before in their last bits, each still within 1e-2 of
-the fp32 product and the same every run (in the run, 22 of 304 products
-on the self-test's matrices, without the bound above: 6 of them keep
-their old split with it).
+kernel. Whole tiles also change the splits of Qwen3-8B's gate_up at
+129-512 tokens, 8B's down at 129-512 and 1024, 14B's and 32B's down at
+129-256 and 32B's q, k, v at 1024, not timed. With one cluster for each
+of the 46 tiles left past the wave, on 46 of the 66 clusters, 14B's q,
+k, v at 1024 tokens took 3% more (1.35x), so where a whole number would
+idle more than a sixth the tiles are split over all the clusters, as
+before. Where the tiles split differently, the sums add in another
+order, so some outputs past 128 tokens differ from before in their last
+bits, each still within 1e-2 of the fp32 product and the same every run
+(in the run, 22 of 304 products on the self-test's matrices, without the
+bound above: 6 of them keep their old split with it).
 
 **CUDA 12.** The CUDA 12 library (`libglyd_gpu_cuda12.so`, built with
 CUDA 12.8 as the release builds it; the wheels load it for PyTorch built
@@ -465,12 +467,12 @@ CUDA 13's build, the same registers (168 in this kernel) and no spills.
 Over Qwen3-8B's four products and Qwen3-32B's o and gate_up at 17-1024
 tokens, the CUDA 12 library's products take a median 4% less time than
 before (up to 9%), Qwen3-8B's layer 2-8% less (1.58x cuBLAS's time at
-1024 tokens before, 1.45x now), as fast as the CUDA 13 library's (a
-median 0.3% apart). The CUDA 13 library's are as before (a median 0.2%
-apart; Qwen3-8B's o, the smallest, about 2% slower at 17-128 tokens in
-both rounds, its layer within 0.3%). The four builds' outputs (CUDA 12
-and 13, before and after) are the same, bit for bit (304 products on the
-self-test's matrices, 1-2100 tokens).
+1024 tokens before, 1.45x with the zeroing alone), as fast as the CUDA
+13 library's (a median 0.3% apart). The CUDA 13 library's are as before
+(a median 0.2% apart; Qwen3-8B's o, the smallest, about 2% slower at
+17-128 tokens in both rounds, its layer within 0.3%). The four builds'
+outputs (CUDA 12 and 13, before and after) are the same, bit for bit
+(304 products on the self-test's matrices, 1-2100 tokens).
 
 What bounds it, from builds for timing alone (their outputs wrong by
 design): with nothing decoded (A a constant, 5 stages) the layer took

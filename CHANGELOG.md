@@ -34,27 +34,30 @@ every earlier format.
   they had been slower, 14B's q, k, v 3-11% less at 129-512 and 32B's o
   4-7% less at 129-256; where a tile splits differently its sums add in
   another order, so some outputs past 128 tokens differ from before in
-  their last bits.
-  One forward pass (`gpu/e2e.py --prefill --merge`) at 1024 tokens:
-  Qwen3-8B 45.9 ms (was 48.4; bf16 36.4), Qwen3-32B 166.3 ms (was 194.9;
-  bf16 135.5); at 512 tokens Qwen3-32B 90.9 ms (was 94.2; bf16 73.7).
+  their last bits. The same change reaches Qwen3-8B's gate_up at 129-512
+  tokens, 8B's down at 129-512 and 1024, 14B's and 32B's down at 129-256
+  and 32B's q, k, v at 1024, not timed.
+  One forward pass (`gpu/e2e.py --prefill --merge`), before both changes
+  (whole tiles, and the zeroing below), at 1024 tokens: Qwen3-8B 45.9 ms
+  (was 48.4; bf16 36.4), Qwen3-32B 166.3 ms (was 194.9; bf16 135.5); at
+  512 tokens Qwen3-32B 90.9 ms (was 94.2; bf16 73.7).
   Generation runs the same machine code as before but for the TMA
   kernel's accumulator (below), whose products at 17-128 tokens take as
   long as before in the CUDA 13 library (a median 0.0% apart, 1.1% less
   to 2.2% more). A layer still takes 1.1-1.6x cuBLAS's time: the decode's
   integer instructions cost the tensor cores a quarter to a third more
   time even beside them (`gpu/README.md`).
-- On Hopper, the CUDA 12 library (`libglyd_gpu_cuda12.so`, built with
-  CUDA 12.8; the wheels load it for PyTorch built for CUDA 12) ran the
-  12-bit layout's tensor-core products one at a time, the TMA kernel's in
-  v0.22.0 and v0.23.0 too: the accumulator was left unset until a tile's
-  first product, and for that CUDA 12.8's ptxas serialized every wgmma
-  (its warning C7515; CUDA 13's did not). It is now zeroed first. On an
-  H100 SXM the CUDA 12 library's products (Qwen3-8B's four and Qwen3-32B's
-  o and gate_up at 17-1024 tokens) take a median 4% less time than
-  before, up to 9%, Qwen3-8B's layer 2-8% less (1.58x cuBLAS's time at
-  1024 tokens before, 1.45x now), as fast as the CUDA 13 library's (a
-  median 0.3% apart); the CUDA 13 library's take as long as before (a
+- On Hopper, the CUDA 12 library (`libglyd_gpu_cuda12.so`, built with CUDA
+  12.8; the wheels load it for PyTorch built for CUDA 12) ran the 12-bit
+  layout's tensor-core products one at a time, the TMA kernel's in v0.22.0
+  and v0.23.0 too: the accumulator was left unset until a tile's first
+  product, and for that CUDA 12.8's ptxas serialized every wgmma (its
+  warning C7515; CUDA 13's did not). It is now zeroed first. On an H100
+  SXM the CUDA 12 library's products (Qwen3-8B's four and Qwen3-32B's o
+  and gate_up at 17-1024 tokens) take a median 4% less time than before,
+  up to 9%, Qwen3-8B's layer 2-8% less (1.58x cuBLAS's time at 1024 tokens
+  before, 1.45x with the zeroing alone), as fast as the CUDA 13 library's
+  (a median 0.3% apart); the CUDA 13 library's take as long as before (a
   median 0.2% apart), and every output is the same, bit for bit
   (benchmarks/gpu/h100-hopper2-cu12-2026-09-28).
 - The C API is version 3: `glyd_gpu_mma12_gemm_wg` takes at least 1024
