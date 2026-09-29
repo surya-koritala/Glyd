@@ -1,0 +1,12 @@
+Loading weights:   0%|          | 0/443 [00:00<?, ?it/s]Loading weights: 100%|██████████| 443/443 [00:00<00:00, 5608.42it/s]
+merged: 80 groups of Linears as one product each
+bf16 (weights 29.54 GB): batch 1: 21.9 tokens/s (21.9 a sequence), peak VRAM 29.56 GB
+bf16 prefill: 769 tokens 124.6 ms (6171 tokens/s), first token 127.8 ms, 1024 tokens 151.6 ms (6753 tokens/s), first token 154.8 ms, 2048 tokens 292.2 ms (7009 tokens/s), first token 295.2 ms, 4096 tokens 587.9 ms (6967 tokens/s), first token 591.6 ms, 8192 tokens 1234.1 ms (6638 tokens/s), first token 1237.7 ms
+mma12 fused: packed in 11 s; weights 22.15 GB against 29.54 GB bf16 (75.0%), scratch 0.27 GB, VRAM in use 22.43 GB on 1 GPU
+glyd mma12 fused: batch 1: 22.8 tokens/s (22.8 a sequence), peak VRAM 22.44 GB
+glyd mma12 prefill: 769 tokens 157.1 ms (4896 tokens/s), first token 160.5 ms, 1024 tokens 184.8 ms (5540 tokens/s), first token 188.4 ms, 2048 tokens 332.5 ms (6159 tokens/s), first token 335.7 ms, 4096 tokens 632.9 ms (6472 tokens/s), first token 636.4 ms, 8192 tokens 1342.0 ms (6104 tokens/s), first token 1346.6 ms
+glyd mma12 without SPLIT prefill: 769 tokens 173.9 ms (4422 tokens/s), first token 177.8 ms, 1024 tokens 199.9 ms (5124 tokens/s), first token 203.4 ms, 2048 tokens 351.1 ms (5833 tokens/s), first token 354.2 ms, 4096 tokens 658.9 ms (6216 tokens/s), first token 661.9 ms, 8192 tokens 1328.3 ms (6167 tokens/s), first token 1331.5 ms
+logits bit-identical: False
+generated tokens identical to bf16: 10 of 32
+text:  in the 1940s with the work of Shannon and Huffman, who laid the theoretical foundations for lossless compression. In the 197
+exit 0
