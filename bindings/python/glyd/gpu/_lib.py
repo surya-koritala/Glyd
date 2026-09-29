@@ -53,7 +53,7 @@ _ARGS = {  # each function's arguments before its stream
 _SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_big": 4, "mma12_gemm_big": 4, "mma12_gemm_mid": 3, "mma12_gemm_wg": 3, "attn_decode": 4, "mma_moe": 7, "mma12_moe": 7}  # their workspace queries' sizes
 
 
-API_VERSION = 2  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+API_VERSION = 3  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
 
 
 def load(path):

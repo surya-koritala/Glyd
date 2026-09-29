@@ -343,6 +343,15 @@ finally:
 for q, lin in zip(packs, hopper):
     for M in (65, 128, 600, 2100):
         assert lin.step(torch.randn(M, 1024, dtype=bf, device=dev)) is None, ("Hopper GLinear.step, a prompt", type(q).__name__, M)
+    # Its routes: the 12-bit layout's GLYD_WG_MIN (17) to GLYD_WG_MAX tokens by mma_gemm_wg (past 128 in
+    # mma12_wgp_kernel), past WG_MAX decoded for cuBLAS (None); the tiered one's steps to 64 tokens by mma_gemm, past
+    # them decoded.
+    if isinstance(q, g.Mma12):
+        want = [(M, g.mma_gemm_wg) for M in (17, 128, 129, gm.WG_MAX)] + [(gm.WG_MAX + 1, None)]
+    else:
+        want = [(M, g.mma_gemm) for M in (1, 17, 64)] + [(M, None) for M in (65, 129, gm.WG_MAX, gm.WG_MAX + 1)]
+    for M, f in want:
+        assert lin.kernel(M) is f, ("Hopper routing", type(q).__name__, M)
 # A prompt's matrices decoded ahead (model.Ahead; made to on any GPU, beside products of any size): GLinears of odd
 # shapes, both layouts, called in turn as a prompt calls them: the first prompt stopped short (an error), recorded,
 # the order from it then made whole by the calls past its end; followed; a decode on the current stream midway; a
@@ -356,6 +365,7 @@ for q, lin in zip(packs, hopper):
 # one: its routes on this GPU's kernels.
 shapes = [(1024, 512), (512, 1024), (3072, 512), (512, 1536), (192, 512), (2048, 1024)]
 flops, gm.AHEAD_FLOPS = gm.AHEAD_FLOPS, 0
+wg_max, gm.WG_MAX = gm.WG_MAX, 512  # (Hopper's 12-bit prompts at 600 tokens: through the order, not mma_gemm_wg's)
 product, placed = gm.Ahead.product, []
 gm.Ahead.product = lambda a, lin, j, f, M: (placed.append(j), product(a, lin, j, f, M))[1]
 dev_ = torch.device(dev, torch.cuda.current_device())
@@ -434,7 +444,7 @@ gm.GLinear(g.pack_mma(weights(512 * 512).view(512, 512)), None)(torch.randn(64, 
 assert not a.live and not gm.Ahead.queued, "a call below the threshold waits for what is queued"
 del junk, xs
 counts["GLinear decodes ahead past a prompt's end"] = 1
-gm.Ahead.product, gm.AHEAD_FLOPS = product, flops
+gm.Ahead.product, gm.AHEAD_FLOPS, gm.WG_MAX = product, flops, wg_max
 e = weights(1000 * 256).view(1000, 256)
 ids = torch.randint(0, 1000, (4, 3), device=dev)
 emb = gm.GEmbedding(g.pack_fast(e))  # held: its step keeps the pack's addresses, not the pack

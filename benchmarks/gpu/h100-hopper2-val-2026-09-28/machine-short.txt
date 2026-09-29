@@ -1,0 +1,1 @@
+NVIDIA H100 80GB HBM3, 9.0, 1980 MHz, 700.00 W, 132 SMs; kernels timed: wg

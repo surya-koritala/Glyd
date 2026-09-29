@@ -1,0 +1,24 @@
+22:40:20 (+1 s) machine
+22:40:20 (+1 s) sources (13 changed lines in variants.diff)
+22:40:27 (+8 s) CUDA 12 /home/ubuntu/cu12w/cu12
+22:41:30 (+71 s) builds: 5 of 5
+22:41:33 (+74 s) check cu12-base
+22:41:36 (+77 s) check cu12-fix
+22:41:39 (+80 s) check cu13-base
+22:41:42 (+83 s) check cu13-fix
+22:41:44 (+85 s) check cu13-fixn1
+22:41:49 (+90 s) layers cu13-base round 1
+22:41:53 (+94 s) layers cu12-base round 1
+22:41:58 (+99 s) layers cu13-fix round 1
+22:42:02 (+103 s) layers cu12-fix round 1
+22:42:07 (+108 s) layers cu13-base round 2
+22:42:11 (+112 s) layers cu12-base round 2
+22:42:16 (+117 s) layers cu13-fix round 2
+22:42:20 (+121 s) layers cu12-fix round 2
+22:42:26 (+127 s) rule cu13-fix round 1
+22:42:32 (+133 s) rule cu13-fixn1 round 1
+22:42:38 (+139 s) rule cu13-fix round 2
+22:42:44 (+145 s) rule cu13-fixn1 round 2
+22:43:11 (+172 s) e2e Qwen3-8B cu13-fixn1
+22:43:33 (+194 s) e2e exact Qwen3-8B cu13-fixn1
+22:43:33 (+194 s) done

@@ -1,0 +1,14 @@
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights:  98%|█████████▊| 690/707 [00:00<00:00, 6896.92it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 6958.72it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+merged: 128 groups of Linears as one product each
+bf16 (weights 65.52 GB): batch 1: 13.8 tokens/s (13.8 a sequence), peak VRAM 65.57 GB
+bf16 (weights 65.52 GB): batch 64: 866.0 tokens/s (13.5 a sequence), peak VRAM 66.13 GB
+bf16 prefill: 128 tokens 48.8 ms (2621 tokens/s), first token 51.1 ms, 512 tokens 73.9 ms (6929 tokens/s), first token 76.3 ms, 1024 tokens 135.9 ms (7533 tokens/s), first token 138.4 ms, 2048 tokens 276.0 ms (7419 tokens/s), first token 276.1 ms, 4096 tokens 547.4 ms (7483 tokens/s), first token 549.2 ms
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 14 s; weights 49.24 GB against 65.52 GB bf16 (75.1%), scratch 0.27 GB, VRAM in use 49.61 GB on 1 GPU
+glyd mma12 fused: batch 1: 22.6 tokens/s (22.6 a sequence), peak VRAM 49.62 GB
+glyd mma12 fused: batch 64: 1332.4 tokens/s (20.8 a sequence), peak VRAM 50.19 GB
+glyd mma12 prefill: 128 tokens 53.3 ms (2401 tokens/s), first token 55.5 ms, 512 tokens 94.2 ms (5434 tokens/s), first token 97.7 ms, 1024 tokens 194.9 ms (5253 tokens/s), first token 197.3 ms, 2048 tokens 336.0 ms (6095 tokens/s), first token 338.1 ms, 4096 tokens 623.4 ms (6570 tokens/s), first token 626.6 ms
+logits bit-identical: False
+generated tokens identical to bf16: 16 of 16
+text:  in 1948 with the publication of A Mathematical Theory of Communication by

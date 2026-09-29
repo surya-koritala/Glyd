@@ -1,0 +1,42 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 6639.35it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+USDT:2026-09-28 20:58:42 21899:21899 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 20:58:42 21899:21899 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 20:58:43 21899:21899 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 20:58:43 21899:21899 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 20:58:46 21899:21899 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 20:58:46 21899:21899 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 20:58:47 21899:21899 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 20:58:47 21899:21899 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 20:58:51 21899:21899 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 20:58:51 21899:21899 SyncActivityProfilerHandler.cpp:46] profiler_stop
+USDT:2026-09-28 20:58:52 21899:21899 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-28 20:58:52 21899:21899 SyncActivityProfilerHandler.cpp:46] profiler_stop
+merged: 72 groups of Linears as one product each
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.54 GB on 1 GPU
+glyd mma12 fused: batch 1: 18.3 tokens/s (18.3 a sequence), peak VRAM 12.55 GB
+glyd mma12 fused: batch 32: 578.8 tokens/s (18.1 a sequence), peak VRAM 12.83 GB
+glyd mma12 fused: batch 64: 1157.1 tokens/s (18.1 a sequence), peak VRAM 13.12 GB
+glyd mma12 profile, batch 1: 36.53 ms a step, GPU busy 8.39 ms a step after the prompt (119 tokens/s of GPU time), 9.48 ms for the prompt and a token
+     5.222 ms  void mma_gemm_kernel<Nib, 1>(Nib, long, long, long, __nv_bfloat16 const*, __nv_bfloat16 co
+     0.471 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.375 ms  void at::native::unrolled_elementwise_kernel<at::native::direct_copy_kernel_cuda(at::Tenso
+     0.340 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.239 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.188 ms  void at::native::vectorized_elementwise_kernel<4, at::native::rsqrt_kernel_cuda(at::Tensor
+glyd mma12 profile, batch 32: 38.08 ms a step, GPU busy 10.54 ms a step after the prompt (3037 tokens/s of GPU time), 15.74 ms for the prompt and a token
+     6.009 ms  void mma12_tma_kernel<32, 2>(CUtensorMap_st, Nib, long, long, long, __nv_bfloat16 const*, 
+     0.874 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.839 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.401 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.290 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.251 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl<at::native::direct
+glyd mma12 profile, batch 64: 37.75 ms a step, GPU busy 11.44 ms a step after the prompt (5592 tokens/s of GPU time), 24.09 ms for the prompt and a token
+     6.383 ms  void mma12_tma_kernel<64, 2>(CUtensorMap_st, Nib, long, long, long, __nv_bfloat16 const*, 
+     0.934 ms  void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:
+     0.847 ms  void at::native::reduce_kernel<512, 1, at::native::ReduceOp<float, at::native::MeanOps<flo
+     0.525 ms  void at::native::(anonymous namespace)::CatArrayBatchedCopy<at::native::(anonymous namespa
+     0.327 ms  void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native:
+     0.263 ms  cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_1_64x32x128_4x1x1_cga1x1x1
+text:  in the 1950s, with the development of algorithms that could reduce the size of data for more efficient storage and transmission. Early methods were based

@@ -28,10 +28,12 @@ from . import _lib, kernels as g
 
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 DEC_MIN = int(os.environ.get("GLYD_DEC_MIN", 769))  # an A100's prompts of this many tokens (12-bit): decoded, then cuBLAS
-# Hopper: steps and prompts of this many tokens multiply by wgmma (tiles of 256 tokens past 128); past 512 decoded for
-# cuBLAS, which there is as fast or faster (Qwen3-8B's layer on an H100 PCIe: 638 us against 864 at 512 tokens, 1065
-# against 964 at 640; Qwen3-32B's 1622 against 2253, then within 6% either way to 1024)
-WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 512))
+# Hopper: steps and prompts of this many tokens multiply by wgmma (past 128 tokens the kernel whose blocks stay,
+# mma12_wgp_kernel); past 1024 decoded for cuBLAS (Qwen3-8B's, 14B's and 32B's layers on an H100 SXM, the kernel as
+# first written: 1.46 / 1.33 / 1.35x cuBLAS's time fused against 1.64 / 1.68 / 1.68x decoded at 1024 tokens; 1.38 /
+# 1.34 / 1.34x against 1.33 / 1.36 / 1.35x at 2048, within 4% either way; 1.37 / 1.40 / 1.42x against 1.17 / 1.22 /
+# 1.21x at 4096; as committed, Qwen3-8B's 1.38x at 1024: benchmarks/gpu/h100-hopper2-val-2026-09-28)
+WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 1024))
 MID_MIN = int(os.environ.get("GLYD_MID_MIN", 17))  # Ampere and Ada: steps of this many tokens to 64 (an A100's to 128) by mma_gemm_mid
 # A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). On
 # GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, past 1792 in the 12-bit one where
@@ -315,7 +317,7 @@ class GLinear(_Node, nn.Module):
     """nn.Linear over a packed matrix p (bias: bf16, or None). fused: products
     straight from the packed weights where a kernel takes the step (in the
     mma layouts up to 64 tokens, an A100's 12-bit to 128, and prompts: on
-    Hopper to WG_MAX tokens, 512, on an A100 in the 12-bit layout to
+    Hopper to WG_MAX tokens, 1024, on an A100 in the 12-bit layout to
     DEC_MIN; one-token steps in the others); else the matrix decoded into
     the scratch buffer, then
     PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, past

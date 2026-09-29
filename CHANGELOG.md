@@ -6,6 +6,77 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- Prompts of 129-1024 tokens on Hopper multiply in a new kernel,
+  `mma12_wgp_kernel` (`mma_gemm_wg` past 128 tokens; `GLYD_WG_MAX` is
+  1024, was 512): a block an SM staying for the whole product,
+  warp-specialized as CUTLASS 3.x's and vLLM's Hopper mixed-input main
+  loops are (a TMA warp filling a ring of stages, two consumer warpgroups
+  decoding a k-block at a time into wgmma's registers while the k-blocks
+  before it multiply), in clusters of two sharing X's tiles by TMA
+  multicast, the last wave's tiles split by stages, each over a whole
+  number of clusters where that idles at most a sixth of them. On an H100
+  SXM (benchmarks/gpu/h100-hopper2-val-2026-09-28) Qwen3-8B's decoder
+  layer (q, k, v and gate, up merged) takes 1.16 / 1.24 / 1.43 / 1.38x
+  cuBLAS's time at 129 / 256 / 512 / 1024 tokens, and one forward pass
+  over 1024 tokens (`gpu/e2e.py --prefill --merge`) 45.0 ms against bf16's
+  36.9; past 1024 tokens the matrices are decoded for cuBLAS as before. In
+  an earlier run (benchmarks/gpu/h100-hopper2-2026-09-28), with the kernel
+  as first written (before whole tiles and the zeroing below), main's path
+  took Qwen3-8B's layer 1.31 / 1.33 / 1.55 / 1.64x there and its pass 48.4
+  ms (bf16 36.4); the kernel took Qwen3-14B's layer 1.14 / 1.28 / 1.44 /
+  1.41 / 1.33x at 129 / 256 / 512 / 768 / 1024 tokens (main's 1.14 / 1.30
+  / 1.45 / 1.92 / 1.68x) and Qwen3-32B's 1.12 / 1.19 / 1.39 / 1.36 / 1.35x
+  (main's 1.17 / 1.24 / 1.42 / 1.88 / 1.68x), Qwen3-32B's pass over 1024
+  tokens 166.3 ms (main's 194.9; bf16 135.5) and over 512 90.9 (94.2;
+  73.7); every layer faster than main's but Qwen3-14B's at 129-160 tokens,
+  level, while Qwen3-8B's and 14B's o alone were 6-16% slower than in the
+  old kernel at 129-512 tokens (8B's at all six lengths measured, 14B's at
+  129-256), and a few other products by 4% at most. Whole tiles, timed in
+  a second run against the kernel before them
+  (benchmarks/gpu/h100-hopper2-cu12-2026-09-28), take 8-19% off Qwen3-8B's
+  o at 129-1024 tokens and 6-10% off 14B's at 129-256, about what they had
+  been slower, 3-11% off 14B's q, k, v at 129-512 and 4-7% off 32B's o at
+  129-256; they also change the splits of Qwen3-8B's gate_up at 129-512
+  tokens and its down at 129-512 and 1024 (in the 8B layer above), and of
+  14B's and 32B's down at 129-256 and 32B's q, k, v at 1024, not timed.
+  Where a tile splits differently its sums add in another order, so some
+  outputs past 128 tokens differ from before in their last bits.
+  Generation runs the same machine code as before but for the TMA kernel's
+  accumulator (below), whose products at 17-128 tokens took as long as
+  before in the second run's CUDA 13 libraries (a median 0.0% apart, 1.1%
+  less to 2.2% more). A layer still takes more than cuBLAS's time: the
+  decode's integer instructions cost the tensor cores a quarter to a third
+  more time even beside them (`gpu/README.md`).
+- On Hopper, the CUDA 12 library (`libglyd_gpu_cuda12.so`, built with CUDA
+  12.8; the wheels load it for PyTorch built for CUDA 12) ran the 12-bit
+  layout's tensor-core products one at a time, the TMA kernel's in v0.22.0
+  and v0.23.0 too: the accumulator was left unset until a tile's first
+  product, and for that CUDA 12.8's ptxas serialized every wgmma (its
+  warning C7515; CUDA 13's did not). It is now zeroed first. In the second
+  run's libraries (on an H100 SXM,
+  benchmarks/gpu/h100-hopper2-cu12-2026-09-28), the CUDA 12 library's
+  products (Qwen3-8B's four and Qwen3-32B's o and gate_up at 17-1024
+  tokens) took a median 4% less time than before, up to 9%, Qwen3-8B's
+  layer 2-8% less (1.58x cuBLAS's time at 1024 tokens before, 1.45x with
+  the zeroing alone), as fast as the CUDA 13 library's (a median 0.3%
+  apart); the CUDA 13 library's took as long as before (a median 0.2%
+  apart), and every output was the same, bit for bit. As committed, the
+  CUDA 12 library's Qwen3-8B layer takes 0.94-1.42x cuBLAS's time at
+  17-1024 tokens, within 0.8% of the CUDA 13 library's
+  (benchmarks/gpu/h100-hopper2-val-2026-09-28).
+- Validated as committed on an H100 SXM, with the library built for CUDA
+  12.8 and for CUDA 13.0 (benchmarks/gpu/h100-hopper2-val-2026-09-28): the
+  full self-test passed through both, a K = 128 matrix whose tiles of two
+  stages split over clusters included; the two libraries' 342
+  `mma_gemm_wg` outputs on the self-test's matrices (1-2100 tokens) are
+  the same, bit for bit; and `gpu/e2e.py --exact` gives bf16's logits bit
+  for bit through both, 8 of 8 tokens.
+- The C API is version 3: `glyd_gpu_mma12_gemm_wg` takes at least 1024
+  done counters (as many as O / 64 where that is more); the package's
+  calls always gave it that many.
+
 ## v0.23.0 — 2026-09-28
 
 - Prompts on GeForce Ada (RTX 40) multiply faster, with the same bits:
