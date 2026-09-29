@@ -162,7 +162,7 @@ import json,sys
 i = next(i for i in json.load(sys.stdin)['data'] if i.get('ip') == '$IP')
 print(i['id'], (i.get('instance_type') or {}).get('price_cents_per_hour', 0))")
     echo "instance $ID at $IP; cap $MAX_MIN min"
-    ( sleep $((MAX_MIN * 60)); echo "time cap reached"; kill -TERM $$ ) &
+    ( sleep $((MAX_MIN * 60)); echo "time cap reached"; api POST /instance-operations/terminate -d "{\"instance_ids\": [\"$ID\"]}" > /dev/null; kill -TERM $$; pkill -TERM -P $$ ) &
     WATCH=$!
     command -v caffeinate > /dev/null && caffeinate -i -w $$ &
     SSH=(ssh -i "${SSH_KEY:-$HOME/.ssh/glyd-lambda}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -o ServerAliveInterval=60)
@@ -194,8 +194,10 @@ git -C "$ROOT" archive --format=tar -o "$TMP/glyd.tar" "$REF" gpu bindings/pytho
 ID=$(api POST /instance-operations/launch -d "{\"region_name\": \"$REGION\", \"instance_type_name\": \"$TYPE\", \"ssh_key_names\": [\"$RUN_ID\"], \"name\": \"$RUN_ID\", \"image\": {\"family\": \"$IMAGE\"}}" | py 'import json,sys; print(json.load(sys.stdin)["data"]["instance_ids"][0])')
 START=$(date +%s)
 echo "launched $ID"
-# Whatever happens here: terminate at the cap (a watcher of its own; the Mac kept awake meanwhile).
-( sleep $((MAX_MIN * 60)); echo "time cap reached"; kill -TERM $$ ) &
+# Whatever happens here: terminate at the cap (a watcher of its own; the Mac kept awake meanwhile). The watcher
+# terminates the instance itself, then stops this script and its commands: bash runs the TERM trap only once the
+# command in the foreground returns, so a setup hung over ssh held an H100 past its cap (113 of 45 minutes).
+( sleep $((MAX_MIN * 60)); echo "time cap reached"; api POST /instance-operations/terminate -d "{\"instance_ids\": [\"$ID\"]}" > /dev/null; kill -TERM $$; pkill -TERM -P $$ ) &
 WATCH=$!
 command -v caffeinate > /dev/null && caffeinate -i -w $$ &
 
