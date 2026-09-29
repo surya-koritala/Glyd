@@ -1,0 +1,45 @@
+# How fast it responds: NVIDIA L4 (23.66 GB; 595.91.07, 2040 MHz, 6251 MHz, 72.00 W, 72.00 W), AMD EPYC 7R13 Processor (16 CPUs, x86_64)
+torch 2.14.0+cu130 (CUDA 13.0), transformers 5.17.0, glyd 0.25.0; greedy decoding, every reply forced to its length; median of repeats, each configuration's first call apart
+
+## Qwen3-4B-Instruct-2507
+
+- bf16: 8.04 GB on the GPU after the load (60.8 s); SM 1605 MHz, 72 W (medians while busy)
+- Glyd (default): 6.31 GB on the GPU after the load (12.9 s), layout mma, generate() compiled to 2048 positions; SM 1380 MHz, 72 W (medians while busy)
+- Glyd exact: 6.82 GB on the GPU after the load (12.8 s), layout mma; SM 1380 MHz, 72 W (medians while busy)
+
+| | bf16 | Glyd (default) | Glyd exact |
+| :-- | --: | --: | --: |
+| time to first token, 128-token prompt | 51 ms | 60 ms (1.18x) c | 89 ms (1.76x) |
+| time to first token, 512-token prompt | 104 ms | 135 ms (1.30x) c | 153 ms (1.47x) |
+| time to first token, 2048-token prompt | 420 ms | 524 ms (1.25x) | 453 ms (1.08x) |
+| time to first token, 8192-token prompt | 2124 ms | 2948 ms (1.39x) | 2153 ms (1.01x) |
+| chat: 200-token prompt, 300-token reply | 60 ms / 11.81 s | 75 ms / 8.99 s c | 109 ms / 22.12 s |
+| tokens/s, 1 sequence (256 new) | 25.5 | 33.6 (1.32x) c | 13.7 (0.53x) |
+| tokens/s, 8 sequences (256 new) | 183.7 | 212.5 (1.16x) | 101.2 (0.55x) |
+| tokens/s, 32 sequences (256 new) | 571.4 | 637.2 (1.12x) | 345.8 (0.61x) |
+| long: 2000-token prompt, 200-token reply | 406 ms / 8.60 s | 520 ms / 7.98 s | 465 ms / 15.86 s |
+
+c: that call ran compiled (fast_generate). The first call of each mode, the compile's in the default mode: bf16 1.4 s (ttft 128; median repeat 0.63 s); Glyd (default) 33.0 s (ttft 128; median repeat 0.46 s); Glyd exact 1.8 s (ttft 128; median repeat 1.18 s).
+Greedy tokens (the first sequence's) the same as bf16's, configurations: Glyd (default) 6 of 9; Glyd exact 9 of 9.
+
+## Qwen3-8B
+
+- bf16: 16.38 GB on the GPU after the load (125.1 s); SM 1575 MHz, 72 W (medians while busy)
+- Glyd (default): 11.45 GB on the GPU after the load (24.3 s), layout mma, generate() compiled to 2048 positions; SM 1260 MHz, 72 W (medians while busy)
+- Glyd exact: 12.41 GB on the GPU after the load (24.2 s), layout mma; SM 1365 MHz, 72 W (medians while busy)
+
+| | bf16 | Glyd (default) | Glyd exact |
+| :-- | --: | --: | --: |
+| time to first token, 128-token prompt | 85 ms | 98 ms (1.15x) c | 179 ms (2.09x) |
+| time to first token, 512-token prompt | 193 ms | 242 ms (1.25x) c | 310 ms (1.60x) |
+| time to first token, 2048-token prompt | 662 ms | 915 ms (1.38x) | 833 ms (1.26x) |
+| time to first token, 8192-token prompt | 3023 ms | 6356 ms (2.10x) | 3328 ms (1.10x) |
+| chat: 200-token prompt, 300-token reply | 105 ms / 19.81 s | 128 ms / 15.09 s c | 207 ms / 45.29 s |
+| tokens/s, 1 sequence (256 new) | 15.1 | 20.0 (1.32x) c | 6.6 (0.44x) |
+| tokens/s, 8 sequences (256 new) | 109.6 | 140.0 (1.28x) | 48.9 (0.45x) |
+| tokens/s, 32 sequences (256 new) | 358.8 | 438.9 (1.22x) | 180.1 (0.50x) |
+| long: 2000-token prompt, 200-token reply | 712 ms / 14.26 s | 910 ms / 11.70 s | 819 ms / 31.14 s |
+
+c: that call ran compiled (fast_generate). The first call of each mode, the compile's in the default mode: bf16 1.8 s (ttft 128; median repeat 1.06 s); Glyd (default) 33.4 s (ttft 128; median repeat 0.80 s); Glyd exact 3.1 s (ttft 128; median repeat 2.44 s).
+Greedy tokens (the first sequence's) the same as bf16's, configurations: Glyd (default) 6 of 9; Glyd exact 9 of 9.
+

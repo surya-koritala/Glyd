@@ -1,0 +1,80 @@
+== 19:46:24 (+0 s) machine
+== 19:46:24 (+0 s) environment
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+NVIDIA L4 (8.9, sm_89, 23034 MiB), x86_64 host, 16 CPUs; the tree d7b6ddf (respond-bench); runs: Qwen/Qwen3-8B:bf16 Qwen/Qwen3-8B:glyd Qwen/Qwen3-8B:exact Qwen/Qwen3-4B-Instruct-2507:bf16 Qwen/Qwen3-4B-Instruct-2507:glyd Qwen/Qwen3-4B-Instruct-2507:exact
+== 19:46:29 (+5 s) in the background, whole, in turn: Qwen/Qwen3-8B Qwen/Qwen3-4B-Instruct-2507 
+== 19:46:29 (+5 s) the library for sm_89 (build_lib.sh's flags)
+== 19:47:06 (+42 s) Qwen3-8B, bf16 (waiting for its download)
+Qwen3-8B bf16: exit 0
+bf16: loaded in 125.1 s, 16.38 GB (layout None, compiled calls to None positions)
+bf16 ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.08542 total 1.063 tokens_per_s 15.35 [warm-up 1.83 s, eager, 5 repeats]
+bf16 ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.193 total 1.179 tokens_per_s 15.21 [warm-up 1.18 s, eager, 5 repeats]
+bf16 ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.6616 total 1.675 tokens_per_s 14.81 [warm-up 1.68 s, eager, 5 repeats]
+bf16 ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 3.023 total 4.162 tokens_per_s 13.17 [warm-up 4.15 s, eager, 5 repeats]
+bf16 mix chat (200 + 300 tokens, 1 a batch): ttft 0.1051 total 19.81 tokens_per_s 15.18 [warm-up 19.77 s, eager, 3 repeats]
+bf16 rate 1 (128 + 256 tokens, 1 a batch): ttft 0.08669 total 16.92 tokens_per_s 15.15 [warm-up 16.89 s, eager, 3 repeats]
+bf16 rate 8 (128 + 256 tokens, 8 a batch): ttft 0.3524 total 18.96 tokens_per_s 109.6 [warm-up 18.96 s, eager, 3 repeats]
+bf16 rate 32 (128 + 256 tokens, 32 a batch): ttft 1.423 total 24.17 tokens_per_s 358.8 [warm-up 24.29 s, eager, 3 repeats]
+bf16 mix long (2000 + 200 tokens, 1 a batch): ttft 0.7118 total 14.26 tokens_per_s 14.69 [warm-up 14.28 s, eager, 3 repeats]
+== 19:56:22 (+598 s) Qwen3-8B, glyd (waiting for its download)
+Qwen3-8B glyd: exit 0
+glyd: loaded in 24.3 s, 11.45 GB (layout mma, compiled calls to 2048 positions)
+glyd ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.09811 total 0.8042 tokens_per_s 21.23 [warm-up 33.37 s, compiled, 5 repeats]
+glyd ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.2421 total 0.9877 tokens_per_s 20.12 [warm-up 45.10 s, compiled, 5 repeats]
+glyd ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.9147 total 1.723 tokens_per_s 18.56 [warm-up 1.72 s, eager, 5 repeats]
+glyd ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 6.356 total 7.28 tokens_per_s 16.24 [warm-up 7.20 s, eager, 5 repeats]
+glyd mix chat (200 + 300 tokens, 1 a batch): ttft 0.1281 total 15.09 tokens_per_s 19.99 [warm-up 15.14 s, compiled, 3 repeats]
+glyd rate 1 (128 + 256 tokens, 1 a batch): ttft 0.09876 total 12.85 tokens_per_s 20 [warm-up 12.86 s, compiled, 3 repeats]
+glyd rate 8 (128 + 256 tokens, 8 a batch): ttft 0.4413 total 15.01 tokens_per_s 140 [warm-up 15.05 s, eager, 3 repeats]
+glyd rate 32 (128 + 256 tokens, 32 a batch): ttft 1.925 total 20.52 tokens_per_s 438.9 [warm-up 20.72 s, eager, 3 repeats]
+glyd mix long (2000 + 200 tokens, 1 a batch): ttft 0.9096 total 11.7 tokens_per_s 18.44 [warm-up 11.64 s, eager, 3 repeats]
+== 20:04:16 (+1072 s) Qwen3-8B, exact (waiting for its download)
+Qwen3-8B exact: exit 0
+exact: loaded in 24.2 s, 12.41 GB (layout mma, compiled calls to None positions)
+exact ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.1787 total 2.436 tokens_per_s 6.645 [warm-up 3.10 s, eager, 5 repeats]
+exact ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.3097 total 2.576 tokens_per_s 6.619 [warm-up 2.58 s, eager, 5 repeats]
+exact ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.8328 total 3.119 tokens_per_s 6.562 [warm-up 3.12 s, eager, 5 repeats]
+exact ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 3.328 total 5.758 tokens_per_s 6.175 [warm-up 5.78 s, eager, 5 repeats]
+exact mix chat (200 + 300 tokens, 1 a batch): ttft 0.2067 total 45.29 tokens_per_s 6.633 [warm-up 45.31 s, eager, 3 repeats]
+exact rate 1 (128 + 256 tokens, 1 a batch): ttft 0.1787 total 38.59 tokens_per_s 6.639 [warm-up 38.62 s, eager, 3 repeats]
+exact rate 8 (128 + 256 tokens, 8 a batch): ttft 0.4535 total 42.14 tokens_per_s 48.93 [warm-up 42.14 s, eager, 3 repeats]
+exact rate 32 (128 + 256 tokens, 32 a batch): ttft 1.536 total 46.83 tokens_per_s 180.1 [warm-up 46.86 s, eager, 3 repeats]
+exact mix long (2000 + 200 tokens, 1 a batch): ttft 0.8193 total 31.14 tokens_per_s 6.563 [warm-up 31.14 s, eager, 3 repeats]
+== 20:19:45 (+2001 s) Qwen3-4B-Instruct-2507, bf16 (waiting for its download)
+Qwen3-4B-Instruct-2507 bf16: exit 0
+bf16: loaded in 60.8 s, 8.04 GB (layout None, compiled calls to None positions)
+bf16 ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.05085 total 0.635 tokens_per_s 25.68 [warm-up 1.40 s, eager, 5 repeats]
+bf16 ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.1038 total 0.6954 tokens_per_s 25.33 [warm-up 0.70 s, eager, 5 repeats]
+bf16 ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.4203 total 1.039 tokens_per_s 24.25 [warm-up 1.03 s, eager, 5 repeats]
+bf16 ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 2.124 total 2.866 tokens_per_s 20.23 [warm-up 2.86 s, eager, 5 repeats]
+bf16 mix chat (200 + 300 tokens, 1 a batch): ttft 0.05969 total 11.81 tokens_per_s 25.45 [warm-up 11.82 s, eager, 3 repeats]
+bf16 rate 1 (128 + 256 tokens, 1 a batch): ttft 0.05134 total 10.04 tokens_per_s 25.52 [warm-up 10.04 s, eager, 3 repeats]
+bf16 rate 8 (128 + 256 tokens, 8 a batch): ttft 0.2377 total 11.34 tokens_per_s 183.7 [warm-up 11.35 s, eager, 3 repeats]
+bf16 rate 32 (128 + 256 tokens, 32 a batch): ttft 0.8699 total 15.15 tokens_per_s 571.4 [warm-up 15.15 s, eager, 3 repeats]
+bf16 mix long (2000 + 200 tokens, 1 a batch): ttft 0.4057 total 8.602 tokens_per_s 24.28 [warm-up 8.62 s, eager, 3 repeats]
+== 20:25:11 (+2327 s) Qwen3-4B-Instruct-2507, glyd (waiting for its download)
+Qwen3-4B-Instruct-2507 glyd: exit 0
+glyd: loaded in 12.9 s, 6.31 GB (layout mma, compiled calls to 2048 positions)
+glyd ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.06008 total 0.4622 tokens_per_s 37.29 [warm-up 32.95 s, compiled, 5 repeats]
+glyd ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.1353 total 0.5781 tokens_per_s 33.88 [warm-up 44.90 s, compiled, 5 repeats]
+glyd ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.5244 total 1.073 tokens_per_s 27.36 [warm-up 1.07 s, eager, 5 repeats]
+glyd ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 2.948 total 3.563 tokens_per_s 24.45 [warm-up 3.56 s, eager, 5 repeats]
+glyd mix chat (200 + 300 tokens, 1 a batch): ttft 0.07492 total 8.992 tokens_per_s 33.53 [warm-up 9.00 s, compiled, 3 repeats]
+glyd rate 1 (128 + 256 tokens, 1 a batch): ttft 0.0615 total 7.653 tokens_per_s 33.59 [warm-up 7.68 s, compiled, 3 repeats]
+glyd rate 8 (128 + 256 tokens, 8 a batch): ttft 0.2468 total 9.845 tokens_per_s 212.5 [warm-up 9.85 s, eager, 3 repeats]
+glyd rate 32 (128 + 256 tokens, 32 a batch): ttft 1.13 total 13.94 tokens_per_s 637.2 [warm-up 13.97 s, eager, 3 repeats]
+glyd mix long (2000 + 200 tokens, 1 a batch): ttft 0.5197 total 7.976 tokens_per_s 26.69 [warm-up 7.95 s, eager, 3 repeats]
+== 20:30:35 (+2651 s) Qwen3-4B-Instruct-2507, exact (waiting for its download)
+Qwen3-4B-Instruct-2507 exact: exit 0
+exact: loaded in 12.8 s, 6.82 GB (layout mma, compiled calls to None positions)
+exact ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.0894 total 1.177 tokens_per_s 13.79 [warm-up 1.84 s, eager, 5 repeats]
+exact ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.1531 total 1.254 tokens_per_s 13.63 [warm-up 1.25 s, eager, 5 repeats]
+exact ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.4534 total 1.61 tokens_per_s 12.99 [warm-up 1.61 s, eager, 5 repeats]
+exact ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 2.153 total 3.443 tokens_per_s 11.62 [warm-up 3.43 s, eager, 5 repeats]
+exact mix chat (200 + 300 tokens, 1 a batch): ttft 0.1088 total 22.12 tokens_per_s 13.59 [warm-up 22.06 s, eager, 3 repeats]
+exact rate 1 (128 + 256 tokens, 1 a batch): ttft 0.08997 total 18.77 tokens_per_s 13.65 [warm-up 18.79 s, eager, 3 repeats]
+exact rate 8 (128 + 256 tokens, 8 a batch): ttft 0.2864 total 20.44 tokens_per_s 101.2 [warm-up 20.45 s, eager, 3 repeats]
+exact rate 32 (128 + 256 tokens, 32 a batch): ttft 0.9187 total 24.51 tokens_per_s 345.8 [warm-up 24.52 s, eager, 3 repeats]
+exact mix long (2000 + 200 tokens, 1 a batch): ttft 0.4646 total 15.86 tokens_per_s 12.93 [warm-up 15.89 s, eager, 3 repeats]
+== 20:38:25 (+3121 s) done in 3121 s
