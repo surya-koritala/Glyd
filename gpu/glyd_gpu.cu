@@ -3408,8 +3408,8 @@ GLYD_GPU_API int glyd_gpu_fast_bgemv(const uint8_t* sm, const uint32_t* planes, 
 }
 
 // A 12-bit pack's words (sym, host): sym[0] the high bytes' base hb (0-120) in each of its bytes, sym[1-3] zero; false
-// otherwise (cudaErrorInvalidValue). A pack of the 12-bit layout before split byte (unreleased) held its 15 commonest
-// exponents there, 4 distinct ones in sym[0]: refused, never decoded as this layout.
+// otherwise (cudaErrorInvalidValue). A pack of the 12-bit layout before split byte (0.24's, v0.19-v0.24) held its 15
+// commonest exponents there, 4 distinct ones in sym[0]: refused, never decoded as this layout.
 static bool nib12(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t* sym, Nib& f) {
     if (!sym) return false;
     uint32_t hb = sym[0] & 0xFFu;
