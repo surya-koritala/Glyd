@@ -21,3 +21,5 @@ The scripts as they ran, at the commits named; from 5f27509 the compiled forward
   when the box reset (17:35 EDT) and the run ended there.
 - `checks-7acf9a0/`: at 7acf9a0 (the review's fixes), one at a time: check_capi, test_gpu, the self-test
   (`glyd_gpu.py`), check_api dense (Qwen3-0.6B + 1.7B) and MoE (granite), check_models (Qwen3-1.7B).
+- `checks-d3cbba0/`: at d3cbba0 (the second review's fixes), one at a time: test_gpu, check_api dense (Qwen3-0.6B +
+  1.7B) and MoE (granite).
