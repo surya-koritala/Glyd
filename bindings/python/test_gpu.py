@@ -284,6 +284,15 @@ def test_c_header():
     assert set(re.findall(r"GLYD_GPU_API [^(]*?(glyd_gpu_\w+)\(", cu)) == set(declared), "glyd_gpu.cu's C API is not glyd_gpu.h's"
 
 
+def test_names_defined_once():
+    """No module of the package defines a function or class twice at its top: the later one would take every call
+    meant for the earlier (read as text, no torch)."""
+    for top, _, files in os.walk(os.path.join(HERE, "glyd")):
+        for f in (os.path.join(top, f) for f in files if f.endswith(".py")):
+            defs = [n.name for n in ast.parse(open(f).read()).body if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name != "_"]
+            assert len(defs) == len(set(defs)), (f, sorted({d for d in defs if defs.count(d) > 1}))
+
+
 def test_gpu_class_by_name():
     """A GPU's class by its name as the library gives it (glyd_gpu.cu's has_word and gpu_class, compiled here alone by
     the host's C++ compiler, the classes glyd_gpu.h's) and as GLinear does (model.gpu_code, taken from model.py with

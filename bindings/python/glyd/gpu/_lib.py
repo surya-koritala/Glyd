@@ -320,7 +320,7 @@ def mma12_gemm_big(data, exc, exc_base, sym, O, K, x, bias, y, variant):
     _big("mma12_gemm_big", data, exc, exc_base, _words(sym, 4, "the 12-bit layout's four words (its base)"), O, K, x, bias, y, variant)
 
 
-def _need(name):
+def _loaded(name):
     """The C API's function name (_fn's), the library loaded first where nothing has loaded it yet, as the kernels'
     first call does (kernels._Load: GLYD_GPU_LIB, else the one beside the package; OSError, saying so, where there is
     none): the calls that are not the kernels' (gpu, the routes) can come first."""
@@ -328,6 +328,8 @@ def _need(name):
         from . import kernels  # (kernels imports this module: here, at the call)
 
         kernels._ext.cuda_version  # loads it, or raises its OSError
+        if name not in _fn:  # (the kernels are gpu/glyd_gpu.py's JIT build's: no library to ask)
+            raise OSError(f"glyd_gpu_{name}: the Glyd GPU library is not loaded (the kernels are the JIT build's)")
     return _fn[name]
 
 
@@ -335,7 +337,7 @@ def gpu():
     """The current device as the library's routes take it: its code (compute capability, major * 10 + minor, plus its
     class by name, glyd_gpu.h); the library loaded first where it is not yet."""
     g = ctypes.c_int()
-    r = _need("gpu")(ctypes.byref(g))
+    r = _loaded("gpu")(ctypes.byref(g))
     if r:
         _fail("gpu", r)
     return g.value
@@ -345,7 +347,7 @@ def _route(name, gpu, O, K, M):
     """mma_route, mma12_route: (route, last), the route for M tokens on gpu and the last token count that takes it (the
     library loaded first where it is not yet)."""
     route, last = ctypes.c_int(), ctypes.c_int64()
-    r = _need(name)(gpu, O, K, M, ctypes.byref(route), ctypes.byref(last))
+    r = _loaded(name)(gpu, O, K, M, ctypes.byref(route), ctypes.byref(last))
     if r:
         _fail(name, r)
     return route.value, last.value
