@@ -18,6 +18,8 @@ through a second copy of `glyd.gpu._lib`, the C API being version 4 in both, and
 
 ## With no GPU (container.txt, sass-*.txt; nvcc 13.0, 2026-09-29)
 
+Run on 7bbfb94, 873b7ed before its message was reworded (the same tree).
+
 - The three libraries compile and link with no warning; the JIT source compiles with none of its own (only PyTorch's
   headers' `module` remarks) and links with every symbol resolved; its SASS is the library's, kernel for kernel (87 on
   each of the four).
