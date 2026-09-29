@@ -8,11 +8,37 @@ every earlier format.
 
 ## Unreleased
 
+- The 12-bit layout is split byte: a weight's low byte (the exponent's
+  lowest bit and the mantissa) kept as it is, its high byte (the sign and
+  the exponent's other 7 bits) a 4-bit code, the sign and an offset 0-7
+  from the matrix's base (`hb`: the 16 exponents holding the most
+  weights), any other weight in its step's exception list as before. Its
+  decode is an AND and an add for four weights and a byte permute for two,
+  with no table (8.5 integer instructions a k-block in SASS against the
+  15-exponent code's 22.0), in every kernel of the layout: the step,
+  mid, prompt, Hopper TMA and wgp, A100 mid, mixture-of-experts and
+  decode kernels. The same size (12.04-12.07 bits a weight) and the same
+  bits decoded, so the same products; a layer's time against the 12-bit
+  layout's before, in the same kernels (a build holding both decodes;
+  layer 10 of Qwen3-8B, 14B and 32B, two runs each): 0.955-0.969 on an
+  H100 SXM5 at 128-512 tokens (3.1-4.5% less) and 0.948-0.962 at 32-64,
+  0.969-0.981 on an A100 SXM4 40 GB at 256-768 (1.9-3.1% less),
+  0.976-0.999 on both at 1-16 tokens; on an RTX 4080 SUPER, where the
+  decode is hidden, within 0.7% at 1-32 tokens and 0.4-0.8% less at
+  256-1024
+  ([benchmarks/gpu/format-study-2026-09-28](benchmarks/gpu/format-study-2026-09-28)).
+  The C API stays at version 4: a 12-bit pack's `sym[4]` holds its base,
+  `hb` in each byte of `sym[0]` and the other three zero; any other words
+  (the 12-bit layout before, never released, held its exponents there)
+  are refused with `cudaErrorInvalidValue`. glyd.json's 12-bit packs
+  (glyd-v3) carry `hb`; a glyd-v3 save of the layout before (its `sym`) is
+  refused as it loads: save it again. Tiered saves (glyd-v1, glyd-v2) are
+  unchanged.
 - Saved models in the 12-bit layout too: `glyd.save_pretrained(model,
   path, layout="mma12")`, `python -m glyd.gpu pack MODEL OUT --layout
   mma12` and `glyd pack MODEL OUT --layout mma12` write glyd-v3, the packs
   as an A10, A100 or H100 runs them (each pack's `.glyd_data`, `.glyd_exc`,
-  `.glyd_exc_base`; its symbols' words, `sym`, in glyd.json), which
+  `.glyd_exc_base`; its base, `hb`, in glyd.json), which
   `from_pretrained` loads as saved where the 12-bit layout is the one
   (else decodes and packs again, as it does a tiered save there; glyd 0.24
   and before refuse glyd-v3 by its format). The same bytes from Rust and

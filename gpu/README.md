@@ -3,15 +3,18 @@
 A bf16 model's weights held compressed in VRAM, decoded on the GPU bit
 for bit. A bf16 weight is a sign, 8 exponent bits and 7 mantissa bits;
 in a trained model the sign and mantissa are noise, and the exponent
-carries about 2.6 bits of information. Both formats keep the sign and
-mantissa byte as it is and code the exponent:
+carries about 2.6 bits of information. Each format keeps a byte of every
+weight as it is and codes the rest: the sign-and-mantissa byte and the
+exponent, or (`mma12`, split byte) the bf16's low byte (the exponent's
+lowest bit and the mantissa) and its high byte (the sign and the
+exponent's other 7 bits):
 
 | Format | Exponent | Bits a weight (Qwen2.5) | Decode |
 | :--- | :--- | ---: | :--- |
 | `huffman` (`pack`) | per-tensor prefix code read by counting leading zeros (as short as Huffman's on every tensor measured), 32 streams a tile | 10.88 | a lane decodes its stream in turn |
 | `fast` (`pack_fast`) | 3-bit code into the tensor's 7 most common exponents, an escape to the exponent itself | 11.25 | bit operations, every weight in parallel |
 | `mma` (`pack_mma`) | 2-bit digits in tiers: the tensor's 3 commonest exponents, digit 3 going on to the next 3, then the next 3, then the exponent itself; laid out in the order the tensor cores take their operand | 10.80 | in registers, straight into the tensor cores' operands |
-| `mma12` (`pack_mma12`) | a 4-bit code into the tensor's 15 commonest exponents, the rest in a step's exception list; the same layout | 12.04 | three byte permutes per four weights: for GPUs whose memory outruns the tiered decode |
+| `mma12` (`pack_mma12`) | split byte: the high byte a 4-bit code, the sign and an offset 0-7 from the tensor's base (the 16 exponents holding the most weights), the rest in a step's exception list; the same layout | 12.04 | an AND and an add per four weights, a byte permute per pair: for GPUs whose memory outruns the tiered decode |
 
 The floor for any code that sees each tensor's exponents on their own
 is about 10.6 bits a weight.
@@ -153,8 +156,9 @@ costs the most arithmetic to decode; where memory is the limit, as on an
 RTX 4080 SUPER at a few tokens a step, that is the faster one too. Where
 the GPU's memory outruns the decode (an H100's HBM3, or many tokens a
 step), the 12-bit layout (`mma12`, 12.04 bits) decodes four weights with
-three byte permutes and nothing across lanes. Qwen2.5-7B-Instruct, RTX
-4080 SUPER, the same harness:
+an AND, an add and two byte permutes, nothing across lanes (five byte
+permutes and two rotates before split byte, which the measurements below
+were taken with). Qwen2.5-7B-Instruct, RTX 4080 SUPER, the same harness:
 
 | | bf16 | `mma` | `mma12` |
 | :--- | ---: | ---: | ---: |
@@ -186,6 +190,41 @@ token for all three, over 16 tokens):
 (benchmarks/gpu/lambda-gpu_1x_h100_sxm5-20260926-114529 for bf16 and
 `mma`, and -120552 for `mma12`; the first run's `mma12` kept its
 exponents in local memory, since fixed: same bytes, same answers.)
+
+### The 12-bit layout in split byte
+
+A bf16 splits at its byte boundary into a low byte (the exponent's
+lowest bit and the 7 mantissa bits), which the 12-bit layout keeps as it
+is, and a high byte (the sign and the exponent's other 7 bits), which it
+codes in 4 bits: the sign and an offset 0-7 from the tensor's base `hb`,
+the 8 values of the high byte's 7 bits (16 exponents) holding the most
+weights. A weight outside them is an exception of its step, coded with
+offset 0, its entry the byte to XOR into its high byte. A word of codes
+holds 8 weights' (the second 4 rotated by 4 bits), so their high bytes
+are an AND and an add (and a funnel shift for the second 4), and a pair
+of weights one byte permute of [high, low, high, low], with no table:
+8.5 integer instructions a k-block against 22.0 for the codes into the
+15 commonest exponents it replaces (SASS for sm_80, sm_89 and sm_90a).
+The same size (12.04-12.07 bits a weight on Qwen3-0.6B to 8B and
+granite-3.1-3b-a800m-instruct, 0.02-0.12% of the weights exceptions
+against 0.02-0.13%), the same kernels and each weight decoded to the
+same bits, so the same products. A layer's time against the 12-bit
+layout's before it in the same kernels (layer 10 of Qwen3-8B, 14B and
+32B, two runs each, measured with a build of the library's kernels
+holding both decodes):
+
+| GPU | Tokens | Kernel | Split byte / before |
+| :-- | :-- | :-- | :-- |
+| H100 SXM5 | 1-16 | step | 0.983-0.998 |
+| H100 SXM5 | 32-64 | TMA | 0.948-0.962 |
+| H100 SXM5 | 128-512 | TMA | 0.955-0.969 |
+| A100 SXM4 40 GB | 1-16 | step | 0.976-0.999 |
+| A100 SXM4 40 GB | 256-768 | prompt (blocks of 256 by 128) | 0.969-0.981 |
+
+On an RTX 4080 SUPER (Qwen3-8B and 4B-Instruct-2507, layer 10) within
+0.7% at 1-32 tokens and 0.4-0.8% faster at 256-1024: there the decode is
+hidden. Logs: [benchmarks/gpu/format-study-2026-09-28](../benchmarks/gpu/format-study-2026-09-28),
+with the other formats measured against it.
 
 ### Many tokens a step on an H100: the copy engine and wgmma
 
