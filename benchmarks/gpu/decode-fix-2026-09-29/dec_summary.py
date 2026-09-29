@@ -66,26 +66,27 @@ for (mode, what), d in e2e.items():
     out.append(f"  {mode} {what}: " + " | ".join(f"{v} {d[v]:.3f}" + (f" ({d[v] / base:.3f})" if base and v != "main" else "") for v in sorted(d, key=rank)))
 raw = os.path.join(R, "ncu", "raw.csv")
 prof = lines("prof.txt")
-if os.path.exists(raw):
-    rows = list(csv.reader(open(raw, errors="replace")))
-    head = next((i for i, r in enumerate(rows) if "ID" in r and "Kernel Name" in r), None)
-    if head is not None:
-        cols, units, data = rows[head], rows[head + 1], rows[head + 2:]
-        who = [re.sub(r"^launch \d+: ", "", l).split(",")[0] for l in prof if l.startswith("launch ")]
-        get = lambda r, c: r[cols.index(c)] if c in cols and cols.index(c) < len(r) else ""
-        out += ["", "Nsight Compute (dec_prof.py: one matrix, each variant once): time, DRAM throughput, bytes read and written,",
-                "achieved occupancy, registers, and the most warp-cycles an issue by stall reason"]
-        for i, r in enumerate(data):
-            stalls = sorted(((float(get(r, c) or 0), re.sub(r"smsp__average_warps_issue_stalled_(\w+?)_per_issue_active\.ratio", r"\1", c))
-                             for c in cols if re.match(r"smsp__average_warps_issue_stalled_\w+_per_issue_active\.ratio", c)), reverse=True)
-            unit = lambda c: units[cols.index(c)] if c in cols and cols.index(c) < len(units) else ""
-            cells = [f"{what} {get(r, c)} {unit(c)}".rstrip() for what, c in (
-                ("time", "gpu__time_duration.sum"), ("DRAM", "dram__throughput.avg.pct_of_peak_sustained_elapsed"),
-                ("read", "dram__bytes_read.sum"), ("written", "dram__bytes_write.sum"),
-                ("occupancy", "sm__warps_active.avg.pct_of_peak_sustained_active"), ("registers", "launch__registers_per_thread")) if get(r, c)]
-            out.append(f"  {who[i] if i < len(who) else '?'}: " + ", ".join(cells) + ("; stalls: " + ", ".join(f"{n} {v:.2f}" for v, n in stalls[:5]) if stalls else ""))
+rows = list(csv.reader(open(raw, errors="replace"))) if os.path.exists(raw) else []
+head = next((i for i, r in enumerate(rows) if "ID" in r and "Kernel Name" in r), None)
+if head is not None and rows[head + 2:]:
+    cols, units, data = rows[head], rows[head + 1], rows[head + 2:]
+    who = [re.sub(r"^launch \d+: ", "", l).split(",")[0] for l in prof if l.startswith("launch ")]
+    get = lambda r, c: r[cols.index(c)] if c in cols and cols.index(c) < len(r) else ""
+    out += ["", "Nsight Compute (dec_prof.py: one matrix, each variant once): time, DRAM throughput, bytes read and written,",
+            "achieved occupancy, registers, and the most warp-cycles an issue by stall reason"]
+    for i, r in enumerate(data):
+        stalls = sorted(((float(get(r, c) or 0), re.sub(r"smsp__average_warps_issue_stalled_(\w+?)_per_issue_active\.ratio", r"\1", c))
+                         for c in cols if re.match(r"smsp__average_warps_issue_stalled_\w+_per_issue_active\.ratio", c)), reverse=True)
+        unit = lambda c: units[cols.index(c)] if c in cols and cols.index(c) < len(units) else ""
+        cells = [f"{what} {get(r, c)} {unit(c)}".rstrip() for what, c in (
+            ("time", "gpu__time_duration.sum"), ("DRAM", "dram__throughput.avg.pct_of_peak_sustained_elapsed"),
+            ("read", "dram__bytes_read.sum"), ("written", "dram__bytes_write.sum"),
+            ("occupancy", "sm__warps_active.avg.pct_of_peak_sustained_active"), ("registers", "launch__registers_per_thread")) if get(r, c)]
+        out.append(f"  {who[i] if i < len(who) else '?'}: " + ", ".join(cells) + ("; stalls: " + ", ".join(f"{n} {v:.2f}" for v, n in stalls[:5]) if stalls else ""))
 elif prof:
     err = next((l for l in prof if "ERR_NVGPUCTRPERM" in l or "rror" in l), prof[-1])
     out += ["", f"Nsight Compute: no profile ({err.strip()[:200]})"]
+elif os.path.isdir(os.path.join(R, "ncu")) or any("ncu:" in l for l in lines("steps.txt")):
+    out += ["", "Nsight Compute: " + next((l.split("ncu", 1)[1] for l in lines("steps.txt") if " ncu" in l), " no profile")]
 out += ["", "steps:"] + ["  " + l for l in lines("steps.txt")]
 print("\n".join(out))
