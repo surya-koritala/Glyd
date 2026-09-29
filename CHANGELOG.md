@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.25.0 — 2026-09-29
 
 - The 12-bit layout is split byte: a weight's low byte (the exponent's
   lowest bit and the mantissa) kept as it is, its high byte (the sign and

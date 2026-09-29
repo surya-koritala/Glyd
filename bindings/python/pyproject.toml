@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glyd"
-version = "0.24.0"
+version = "0.25.0"
 description = "Lossless AI compression: 33% less GPU memory, bit for bit. Models load with their weights packed on the GPU (glyd.from_pretrained); a codec for files and object storage."
 keywords = ["compression", "lossless", "llm", "gpu", "cuda", "bfloat16", "transformers", "pytorch", "object-storage"]
 classifiers = [
