@@ -6,7 +6,8 @@ product (within 1e-2 of the largest output) so they are not both wrong.
 - The self-test's matrices and check_capi's (odd row blocks, units shared by blocks, exceptions few and many; K not a
   multiple of 64), and every bf16 bit pattern: mma_unpack (all rows, a row block on; a warp a step and a few warps
   each taking every so many), mma_gemm (1-64 tokens), mma_gemm_mid (1-600), mma_gemm_big (every variant, 65-2100),
-  mma_gemm_wg (Hopper, 1-2100), mma_linear by each route and by the library's (1-2100), with and without bias.
+  mma_gemm_wg (Hopper, 1-2100), mma_linear by each route and by the library's (1-2100), with and without bias (on
+  Hopper a prompt's DECODE and AHEAD, which main's refused there, this tree's prompt kernel's bits).
 - A mixture of experts' layer: mma_moe_unpack, mma_moe (the rows by expert, SiLU and GELU fused, weighted sums).
 - MODELs (their directories or Hub names in the cache): every Linear weight, lm_head and experts' packed by both and
   decoded bit for bit, their sizes; layers 0, 1, 2, the middle one and the last: their products as above at 1-1100
@@ -24,6 +25,7 @@ old, old_pack = both.load(sys.argv[1], sys.argv[2])
 dev, bf = "cuda", torch.bfloat16
 cc = torch.cuda.get_device_capability()
 hopper = cc == (9, 0)
+gpu = new.gpu()
 counts, refused = {}, {}
 
 
@@ -76,6 +78,12 @@ def products(w, po, pn, Ms=MS, scale=1.0):
             if hopper and K % 64 == 0:
                 near(pair("mma_gemm_wg", lambda p: g.mma_gemm_wg(p, x, b), po, pn), ref, ("mma_gemm_wg", M))
             for r in ROUTES if b is None else [-1]:
+                if hopper and K % 64 == 0 and (g.route(pn, gpu, M)[0] if r < 0 else r) in (g.DECODE, g.AHEAD):
+                    y = g.mma_linear(pn, x, b, r)  # (main refused these on Hopper: this tree's linear against its prompt kernel)
+                    assert torch.equal(bits(y), bits(g.mma_gemm_big(pn, x, b, 0))), ("mma_linear", r, M)
+                    counts[f"mma_linear route {r}, Hopper's prompt kernel"] = counts.get(f"mma_linear route {r}, Hopper's prompt kernel", 0) + 1
+                    near(y, ref, ("mma_linear", r, M))
+                    continue
                 near(pair(f"mma_linear route {r}", lambda p: g.mma_linear(p, x, b, r), po, pn), ref, ("mma_linear", r, M))
 
 

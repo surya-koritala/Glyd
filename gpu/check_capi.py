@@ -54,12 +54,13 @@ def both(name, *args, out=()):
 errors = []
 
 
-def both_fail(name, *args):
-    """name refused by each host."""
+def both_fail(name, *args, says=""):
+    """name refused by each host (its message saying says)."""
     for host in (jit, lib):
         try:
             getattr(host, name)(*args)
         except RuntimeError as e:
+            assert says in str(e), (name, says, str(e)[:300])
             errors.append(f"{name} ({'jit' if host is jit else 'lib'}): {str(e).splitlines()[0][:100]}")
             continue
         raise AssertionError(f"{name}: no error from {host.__name__}")
@@ -310,7 +311,9 @@ torch.cuda.synchronize()
 # whole()'s decode, ahead from its decode-ahead threshold (which never looked at K) and now below it; on each GPU (a
 # compute capability, plus its class by name: GeForce, A10), both layouts, K a multiple of 64 or not, 0-5000 tokens;
 # each run's last token count the last that takes its route. Then glyd_gpu_*_linear by this GPU's route (-1) and by each route given: its kernel's bits,
-# through both hosts, or refused alike where the route's kernel does not take the product.
+# through both hosts (DECODE and AHEAD the prompt kernel's, on every GPU), or refused alike where the route's kernel
+# does not take the product: DECODE and AHEAD where K is not a multiple of 64 with cudaErrorNotSupported, the one
+# refusal of a route the library gives (glyd_gpu.h), every such route past 64 tokens refused so.
 MID_MIN, DEC_MIN = int(os.environ.get("GLYD_MID_MIN", 17)), int(os.environ.get("GLYD_DEC_MIN", 0)) or None
 WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 1024))
 
@@ -380,9 +383,14 @@ for O, K, wild in [(192, 128, 0), (1024, 2048, 0.001), (192, 4096, 0.1), (192, 1
                 routes = {g.route(q, here, M)[0], g.GEMM if M <= 64 else g.BIG} | ({g.MID} if twelve else set())
                 for r in [-1] + sorted(routes):
                     k = g.route(q, here, M)[0] if r < 0 else r
-                    # refused: a prompt to be decoded (DECODE, AHEAD) on Hopper or where K is not a multiple of 64
-                    # (cudaErrorNotSupported), and a kernel given for K not a multiple of 64 that takes none such
-                    if (k in (g.DECODE, g.AHEAD) and (here % 1000 == 90 or K % 64)) or (k in (g.MID, g.WG, g.BIG) and K % 64):
+                    # refused: a prompt to be decoded (DECODE, AHEAD) where K is not a multiple of 64 (no kernel takes
+                    # it: cudaErrorNotSupported, the caller decodes W), and a kernel given for such a K
+                    if k in (g.DECODE, g.AHEAD) and K % 64:
+                        assert r >= 0 or M > 64 or (twelve and DEC_MIN and M >= DEC_MIN), ("refused by the route", s, K, M, k)
+                        both_fail(f"{s}_linear", *pk, O, K, x, b, nan(M, O), r, says="operation not supported")
+                        counts["linear refused, not supported (K not a multiple of 64)"] = counts.get("linear refused, not supported (K not a multiple of 64)", 0) + 1
+                        continue
+                    if k in (g.MID, g.WG, g.BIG) and K % 64:
                         both_fail(f"{s}_linear", *pk, O, K, x, b, nan(M, O), r)
                         continue
                     y = both(f"{s}_linear", *pk, O, K, x, b, nan(M, O), r, out=(8,))

@@ -186,8 +186,15 @@ int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* rout
 
 /* Y [M, O] = X W^T (+ bias) by a route (negative: the current GPU's for M):
  * its kernel, its arguments as that kernel's; DECODE and AHEAD by the prompt
- * kernel (BIG), but on Hopper and where K is not a multiple of 64
- * (cudaErrorNotSupported: decode W there). done: (M + 127) / 128 x O / 64
+ * kernel (BIG, variant 0) on every GPU, Hopper's too (not measured there:
+ * glyd.gpu's own prompts there are decoded for cuBLAS). No kernel here takes
+ * DECODE or AHEAD where K is not a multiple of 64 (the prompt kernel's
+ * blocks), and a matrix of such a K takes one of them for M past 64 on every
+ * GPU and in either layout (in the 12-bit layout also from GLYD_DEC_MIN
+ * tokens where that is set lower): there these functions and their
+ * workspace queries return cudaErrorNotSupported, nothing launched, and the
+ * caller decodes W (glyd_gpu_*_unpack, [O, K] bf16) for a GEMM of its own,
+ * Y = X W^T + bias, as glyd.gpu does. done: (M + 127) / 128 x O / 64
  * counters, and at least 1024 (the WG route's, as glyd_gpu_mma12_gemm_wg's). */
 int glyd_gpu_mma_linear_workspace(int64_t O, int64_t K, int64_t M, int64_t route, size_t* bytes);
 int glyd_gpu_mma_linear(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3],

@@ -130,8 +130,9 @@ every earlier format.
   name tells GPUs apart (`GLYD_GPU_GEFORCE`; `GLYD_GPU_A10`, an A10 and
   not an A10G, A40 or A6000). `glyd_gpu_mma_linear` and
   `glyd_gpu_mma12_linear` run a route's kernel (where glyd decodes the
-  matrix for cuBLAS, the prompt kernel; on Hopper and where K is not a
-  multiple of 64 they refuse those routes: decode it there; the WG
+  matrix for cuBLAS, the prompt kernel, on every GPU; where K is not a
+  multiple of 64, past 64 tokens, they refuse those routes with
+  `cudaErrorNotSupported`: decode it there for a GEMM of your own; the WG
   route's done counters at least 1024, as `glyd_gpu_mma12_gemm_wg`'s);
   the glyd package's Linears take their routes from the library and
   multiply by `linear` in their one C call, so every caller routes alike.

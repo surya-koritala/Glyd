@@ -1191,13 +1191,13 @@ GeForce Ada's from 513 tiered and 1793 12-bit (641 exact) and an A10's from
 process, at the library's first route: set them in the environment before
 the first model is loaded).
 `glyd_gpu_mma_linear` and `glyd_gpu_mma12_linear` run a route's kernel (where
-glyd.gpu decodes for cuBLAS, the prompt kernel, but on Hopper and where K is
-not a multiple of 64: `cudaErrorNotSupported`, the matrix decoded for a GEMM
-of the caller's there). A GPU's code, which the routes take, is its compute
-capability plus a class where the name tells GPUs apart (`GLYD_GPU_GEFORCE`,
-`GLYD_GPU_A10`: `glyd_gpu.h`). The glyd package's Linears take their routes
-from the library and multiply by `linear` in their one C call, so every
-caller routes the same way.
+glyd.gpu decodes for cuBLAS, the prompt kernel, on every GPU; where K is not a
+multiple of 64, past 64 tokens: `cudaErrorNotSupported`, the matrix decoded
+for a GEMM of the caller's there). A GPU's code, which the routes take, is its
+compute capability plus a class where the name tells GPUs apart
+(`GLYD_GPU_GEFORCE`, `GLYD_GPU_A10`: `glyd_gpu.h`). The glyd package's
+Linears take their routes from the library and multiply by `linear` in their
+one C call, so every caller routes the same way.
 
 Every release carries it on its own for Linux x86_64 and aarch64 (glibc 2.28
 or later), CUDA 12 (built with 12.8) and 13:

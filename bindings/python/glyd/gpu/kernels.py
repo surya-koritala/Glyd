@@ -548,7 +548,7 @@ def route(p, gpu, M):
 
 def mma_linear(p, x, bias=None, route=-1):
     """X W^T (+ bias) by a route (-1: this GPU's for M), as a Linear's one-call path takes it: its kernel; DECODE and
-    AHEAD the prompt kernel (refused on Hopper and where K is not a multiple of 64: decode W there)."""
+    AHEAD the prompt kernel, on every GPU (refused where K is not a multiple of 64: decode W there)."""
     O, K = p.shape
     x = x.contiguous()
     y = torch.empty(x.shape[0], O, dtype=torch.bfloat16, device=x.device)

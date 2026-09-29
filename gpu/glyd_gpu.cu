@@ -3890,9 +3890,10 @@ static int staged_run(int (*any)(Nib, int64_t, int64_t, const uint16_t*, int64_t
 }
 
 // Y [M, O] = X W^T (+ bias) by a route (route_for's; negative: the current GPU's for M): its kernel; DECODE and
-// AHEAD, where glyd.gpu decodes W for a GEMM of its own, the prompt kernel, but on Hopper (none measured there) and
-// where K is not a multiple of 64 (the prompt kernel's blocks): cudaErrorNotSupported, decode W. need: set to the
-// workspace's bytes, nothing launched.
+// AHEAD, where glyd.gpu decodes W for a GEMM of its own (cuBLAS, which this library does not call), the prompt kernel
+// on every GPU (Hopper's too, where glyd.gpu's own prompts take cuBLAS: not measured there); but where K is not a
+// multiple of 64 no kernel here takes them (the prompt kernel's blocks): cudaErrorNotSupported, the caller decodes W
+// for a GEMM of its own (glyd_gpu.h). need: set to the workspace's bytes, nothing launched.
 template <class Fmt>
 static int mma_linear_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, int64_t route, void* ws, size_t ws_bytes, int* done, cudaStream_t cs, size_t* need) {
     constexpr bool twelve = std::is_same_v<Fmt, Nib>;
@@ -3908,7 +3909,7 @@ static int mma_linear_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_
         return cudaErrorInvalidValue;  // the 12-bit layout's alone
     case GLYD_GPU_ROUTE_DECODE:
     case GLYD_GPU_ROUTE_AHEAD:
-        if (gpu % 1000 == 90 || K % 64) return cudaErrorNotSupported;
+        if (K % 64) return cudaErrorNotSupported;
         [[fallthrough]];
     case GLYD_GPU_ROUTE_BIG:
         return mma_gemm_big_any(f, O, K, x, M, bias, y, 0, ws, ws_bytes, done, cs, need);
