@@ -14,7 +14,7 @@ every earlier format.
   as an A10, A100 or H100 runs them (each pack's `.glyd_data`, `.glyd_exc`,
   `.glyd_exc_base`; its symbols' words, `sym`, in glyd.json), which
   `from_pretrained` loads as saved where the 12-bit layout is the one
-  (else decodes and packs again, as it does a tiered save there; glyd 0.23
+  (else decodes and packs again, as it does a tiered save there; glyd 0.24
   and before refuse glyd-v3 by its format). The same bytes from Rust and
   Python for the five models of `glyd pack` below, and `glyd verify` reads
   it. Loaded for the 12-bit layout on an RTX 4080 SUPER
@@ -35,11 +35,13 @@ every earlier format.
   of those sha256, and each pack's tensors to its own (its module's; a
   merged group's q, k, v or gate, up), so a byte changed outside the packs,
   bytes appended to a shard or a renamed member fails them. Both savers
-  write it alike; glyd 0.23 loads such a save and ignores it. verify
+  write it alike; glyd 0.24 and before load such a save and ignore it. verify
   requires the map where the save's format or glyd says it is there
   (glyd-v3, and a save of glyd 0.25 on) and refuses a key glyd.json does
-  not have, so a damaged map cannot pass for an older save; a save of glyd
-  0.24 or before verifies as it did, its other tensors counted unchecked.
+  not have in a save of this glyd or an older one, so a damaged map cannot
+  pass for an older save (a newer glyd's key is skipped with a warning,
+  the rest checked); a save of glyd 0.24 or before verifies as it did, its
+  other tensors counted unchecked.
 - `glyd pack MODEL OUT` and `glyd verify PATH` in the Rust CLI: a bf16
   checkpoint (a directory, or a repo in the local Hugging Face cache)
   packed on the CPU and saved as glyd-v1 (glyd-v2 with a mixture of
@@ -80,22 +82,183 @@ every earlier format.
   `pack_mma` and `pack_mma12` do on the GPU.
 - The kernel a product for M tokens takes on a GPU is the library's:
   `glyd_gpu_mma_route` and `glyd_gpu_mma12_route` give it (and the last
-  token count that takes it), as glyd.gpu chose it before (a check
-  against that rule on eleven GPU codes, 0-5000 tokens, both layouts);
-  `GLYD_WG_MIN`, `GLYD_WG_MAX`, `GLYD_MID_MIN` and `GLYD_DEC_MIN` are read
+  token count that takes it), as glyd.gpu 0.24 chose it (a check against
+  0.24's rule on eleven GPU codes, 0-5000 tokens, both layouts): Hopper's
+  12-bit steps and prompts to 1024 tokens by wgmma, an A10's prompts
+  decoded ahead from 512 tokens tiered and 640 12-bit (not exact),
+  GeForce Ada's past 512 and 1792; `GLYD_WG_MIN`, `GLYD_WG_MAX`,
+  `GLYD_MID_MIN` and `GLYD_DEC_MIN` (any GPU's 12-bit prompts) are read
   there. A GPU's code is its compute capability plus a class where the
   name tells GPUs apart (`GLYD_GPU_GEFORCE`; `GLYD_GPU_A10`, an A10 and
   not an A10G, A40 or A6000). `glyd_gpu_mma_linear` and
   `glyd_gpu_mma12_linear` run a route's kernel (where glyd decodes the
   matrix for cuBLAS, the prompt kernel; on Hopper and where K is not a
-  multiple of 64 they refuse those routes: decode it there); the glyd
-  package's Linears take their routes from the library and multiply by
-  `linear` in their one C call, so every caller routes alike. C API
-  version 4. The same bits (check_capi: 227013 calls through both hosts,
-  bit for bit) and the same speed (generate() eager, main's package and
-  library and these in turn, four rounds, RTX 4080 SUPER: Qwen3-1.7B and
+  multiple of 64 they refuse those routes: decode it there; the WG
+  route's done counters at least 1024, as `glyd_gpu_mma12_gemm_wg`'s);
+  the glyd package's Linears take their routes from the library and
+  multiply by `linear` in their one C call, so every caller routes alike.
+  C API version 4. The same bits (check_capi on an RTX 4080 SUPER: 227019
+  calls through both hosts, bit for bit) and the same speed (generate()
+  eager, before the merge with 0.24: main's package and library and these
+  in turn, four rounds, RTX 4080 SUPER: Qwen3-1.7B and
   Qwen3-4B-Instruct-2507 at 1, 8 and 32 sequences in both layouts, each
   round -1.1% to +1.3% of main's, their means -0.3% to +0.5%).
+
+## v0.24.0 — 2026-09-28
+
+- `generate()` on a model from `glyd.from_pretrained` or
+  `glyd.gpu.compress` runs compiled by default on PyTorch 2.13.0 or later
+  (measured on 2.14; below it, a 2.13 pre-release included, it stays
+  eager, as in 0.23), as `generate(..., cache_implementation="static")`
+  asks transformers to run it (a static cache, the forward under
+  `torch.compile` with CUDA graphs): a step's host time goes. Tokens/s
+  generating 128 tokens at 1 / 8 sequences on an RTX 4080 SUPER, plain
+  `generate()`, each in a process of its own: Qwen3-1.7B 184.6 / 1260 (was
+  96.6 / 772; asked for with `cache_implementation="static"` 184.9 /
+  1260), Qwen3-4B-Instruct-2507 94.3 / 610 (was 75.1 / 563), Qwen3-8B 55.3
+  / 386 (was 48.6 / 365), granite-3.1-3b-a800m-instruct 232.3 / 1547 (was
+  90.3 / 699). The first call compiles: Qwen3-8B's took 17.5 s with
+  PyTorch's compile caches empty, 6.7 s in a later process: warm up with
+  one short `generate()` before serving (a streamer's consumer waits
+  through it). Greedy tokens compiled can differ from 0.23's eager loop's,
+  as a compiled bf16 model's can from its eager ones (the first 8 of 32
+  the same on Qwen3-0.6B, 17 on Qwen3-1.7B, 32 on
+  granite-3.1-3b-a800m-instruct: check_api). In the default mode they can
+  also vary within a process, between calls whose cache sizes compile
+  differently (Qwen3-1.7B's first compiled call and its later ones, after
+  a longer cache, shared 13 of 32 in one run of check_api:
+  benchmarks/gpu/rtx4080s-fastloop-2026-09-28/checks-merge-6e17b3f);
+  `exact=True` is never compiled and stays bit-identical to bf16.
+  `compile=False` (`from_pretrained`, `compress`) or `GLYD_COMPILE=0` runs
+  it eager, as before; so do `exact=True` (its tokens are bf16's eager
+  ones), a family transformers does not compile whole (its
+  `_can_compile_fullgraph`), a model over several GPUs, and a transformers
+  whose generation helpers are not as 5.17 has them (one warning at the
+  load). Only greedy and sampled calls compile: a call runs as
+  transformers runs it if it uses several beams, an assistant or another
+  assisted mode (prompt lookup, early exit, `use_mtp`), its own cache or a
+  `cache_implementation`, `use_cache=False`, `return_dict_in_generate`,
+  attentions or hidden states, `custom_generate`, or
+  `disable_compile=True` (one call eager). A call whose static cache would
+  hold more positions in all (its sequences times the prompt and
+  `max_new_tokens`, or `max_cache_len` where longer) than 1280 on a
+  GeForce card and 2048 on another (`GLYD_COMPILE_MAX` sets it) runs eager
+  too: the static cache holds every position the call may reach from its
+  first step and each step's attention reads all of it, and past that the
+  eager loop was as fast, sooner with a desktop's CPU (Qwen3-8B, a step's
+  ms compiled against eager with 1024 / 2048 / 4096 positions held and 64
+  used: 20.4 / 23.0 / 27.6 against 20.5 on an RTX 4080 SUPER with a Ryzen
+  9 7950X3D, 31.3 / 34.9 / 42.8 against 36.9 / 37.2 / 33.6 on an A10 with
+  a Xeon Platinum 8358). Where transformers 5.17's static cache fails
+  (bf16's too) it runs eager from the start: Llama 4, and a model with
+  multi-head latent attention whose config has fewer key/value heads than
+  heads (tiny DeepSeek V2, V3, Kimi Linear and AXK1 test models; the
+  released checkpoints compile). A call whose forward fails to compile
+  anyway runs again eager from its start (a streamer gets only what the
+  failed attempt had not streamed, and a sampled call draws again from the
+  random state it started with: its tokens and text are the eager run's),
+  and so do the model's later calls, with one warning; any other error,
+  out of memory included, is the call's own, and the next call compiles.
+  Each model's forward compiles to a graph of its own, so Glyd's compiled
+  calls run with `torch._dynamo.config.recompile_limit` at 64 at least,
+  for those calls alone (dynamo compiles 8 graphs a frame by default and
+  runs the rest uncompiled; ten Qwen3-0.6B models one after another in a
+  process all compiled (graphs 2 to 11), the second to tenth at
+  296.5-301.3 tokens/s against 99.6 eager; the process's own setting is
+  left as it is). A model that has generated compiled is freed at `del`,
+  as an eager one (its compiled forward does not refer to it, as
+  transformers' own does). How: the model's class's `generate` and
+  `get_compiled_call` are taken over once for the process; a model of the
+  class Glyd did not set up (bf16, or `compile=False`) runs transformers'
+  own, and `compile=False` or `GLYD_COMPILE=0` takes nothing over.
+  transformers sets `TOKENIZERS_PARALLELISM=0` for the process where it
+  compiles; Glyd puts back the value it had, or its absence, after each
+  compiled call (per call: two calls at once in two threads can leave it
+  0, as transformers' own compiled calls do).
+- Prompts on an A10 (150 W, full-rate tensor cores), but `exact=True`'s,
+  decode each matrix ahead of its product, beside the products before it,
+  from 640 tokens in the 12-bit layout and 512 in the tiered one, as
+  GeForce Ada's do: the fused kernel's decode costs the A10 clock at its
+  power cap, more the longer the prompt. Qwen3-8B, one forward pass, over
+  bf16's time at 1024 / 2048 / 4096 tokens: +10.0 / +5.2 / +2.6% (were
+  +30.3 / +38.8 / +50.9%); to 639 tokens as before (+2.2% at 128, +15.8%
+  at 512). The scratch buffer holds two matrices there (Qwen3-8B's 0.40
+  GB, was 0.27). The A10G (half-rate tensor cores, its fused prompts at
+  most +5.3% over bf16's to 4096 tokens) and the L4, L40S and RTX 6000 Ada
+  (half the A10's bandwidth a FLOP) keep their routes until measured.
+- Prompts of 129-1024 tokens on Hopper multiply in a new kernel,
+  `mma12_wgp_kernel` (`mma_gemm_wg` past 128 tokens; `GLYD_WG_MAX` is
+  1024, was 512): a block an SM staying for the whole product,
+  warp-specialized as CUTLASS 3.x's and vLLM's Hopper mixed-input main
+  loops are (a TMA warp filling a ring of stages, two consumer warpgroups
+  decoding a k-block at a time into wgmma's registers while the k-blocks
+  before it multiply), in clusters of two sharing X's tiles by TMA
+  multicast, the last wave's tiles split by stages, each over a whole
+  number of clusters where that idles at most a sixth of them. On an H100
+  SXM (benchmarks/gpu/h100-hopper2-val-2026-09-28) Qwen3-8B's decoder
+  layer (q, k, v and gate, up merged) takes 1.16 / 1.24 / 1.43 / 1.38x
+  cuBLAS's time at 129 / 256 / 512 / 1024 tokens, and one forward pass
+  over 1024 tokens (`gpu/e2e.py --prefill --merge`) 45.0 ms against bf16's
+  36.9; past 1024 tokens the matrices are decoded for cuBLAS as before. In
+  an earlier run (benchmarks/gpu/h100-hopper2-2026-09-28), with the kernel
+  as first written (before whole tiles and the zeroing below), main's path
+  took Qwen3-8B's layer 1.31 / 1.33 / 1.55 / 1.64x there and its pass 48.4
+  ms (bf16 36.4); the kernel took Qwen3-14B's layer 1.14 / 1.28 / 1.44 /
+  1.41 / 1.33x at 129 / 256 / 512 / 768 / 1024 tokens (main's 1.14 / 1.30
+  / 1.45 / 1.92 / 1.68x) and Qwen3-32B's 1.12 / 1.19 / 1.39 / 1.36 / 1.35x
+  (main's 1.17 / 1.24 / 1.42 / 1.88 / 1.68x), Qwen3-32B's pass over 1024
+  tokens 166.3 ms (main's 194.9; bf16 135.5) and over 512 90.9 (94.2;
+  73.7); every layer faster than main's but Qwen3-14B's at 129-160 tokens,
+  level, while Qwen3-8B's and 14B's o alone were 6-16% slower than in the
+  old kernel at 129-512 tokens (8B's at all six lengths measured, 14B's at
+  129-256), and a few other products by 4% at most. Whole tiles, timed in
+  a second run against the kernel before them
+  (benchmarks/gpu/h100-hopper2-cu12-2026-09-28), take 8-19% off Qwen3-8B's
+  o at 129-1024 tokens and 6-10% off 14B's at 129-256, about what they had
+  been slower, 3-11% off 14B's q, k, v at 129-512 and 4-7% off 32B's o at
+  129-256; they also change the splits of Qwen3-8B's gate_up at 129-512
+  tokens and its down at 129-512 and 1024 (in the 8B layer above), and of
+  14B's and 32B's down at 129-256 and 32B's q, k, v at 1024, not timed.
+  Where a tile splits differently its sums add in another order, so some
+  outputs past 128 tokens differ from before in their last bits.
+  Generation runs the same machine code as before but for the TMA kernel's
+  accumulator (below), whose products at 17-128 tokens took as long as
+  before in the second run's CUDA 13 libraries (a median 0.0% apart, 1.1%
+  less to 2.2% more). A layer still takes more than cuBLAS's time: the
+  decode's integer instructions cost the tensor cores a quarter to a third
+  more time even beside them (`gpu/README.md`).
+- On Hopper, the CUDA 12 library (`libglyd_gpu_cuda12.so`, built with CUDA
+  12.8; the wheels load it for PyTorch built for CUDA 12) ran the 12-bit
+  layout's tensor-core products one at a time, the TMA kernel's in v0.22.0
+  and v0.23.0 too: the accumulator was left unset until a tile's first
+  product, and for that CUDA 12.8's ptxas serialized every wgmma (its
+  warning C7515; CUDA 13's did not). It is now zeroed first. In the second
+  run's libraries (on an H100 SXM,
+  benchmarks/gpu/h100-hopper2-cu12-2026-09-28), the CUDA 12 library's
+  products (Qwen3-8B's four and Qwen3-32B's o and gate_up at 17-1024
+  tokens) took a median 4% less time than before, up to 9%, Qwen3-8B's
+  layer 2-8% less (1.58x cuBLAS's time at 1024 tokens before, 1.45x with
+  the zeroing alone), as fast as the CUDA 13 library's (a median 0.3%
+  apart); the CUDA 13 library's took as long as before (a median 0.2%
+  apart), and every output was the same, bit for bit. As committed, the
+  CUDA 12 library's Qwen3-8B layer takes 0.94-1.42x cuBLAS's time at
+  17-1024 tokens, within 0.8% of the CUDA 13 library's
+  (benchmarks/gpu/h100-hopper2-val-2026-09-28).
+- Validated as committed on an H100 SXM, with the library built for CUDA
+  12.8 and for CUDA 13.0 (benchmarks/gpu/h100-hopper2-val-2026-09-28): the
+  full self-test passed through both, a K = 128 matrix whose tiles of two
+  stages split over clusters included; the two libraries' 342
+  `mma_gemm_wg` outputs on the self-test's matrices (1-2100 tokens) are
+  the same, bit for bit; and `gpu/e2e.py --exact` gives bf16's logits bit
+  for bit through both, 8 of 8 tokens.
+- `GLYD_DEC_MIN` (a prompt's products decoded for cuBLAS from that many
+  tokens, 12-bit layout) now applies on any GPU where it is set (on Hopper
+  the 12-bit layout's prompts to `GLYD_WG_MAX` tokens are still wgmma's);
+  unset, an A100's prompts are decoded from 769 tokens as before, and
+  elsewhere none.
+- The C API is version 3: `glyd_gpu_mma12_gemm_wg` takes at least 1024
+  done counters (as many as O / 64 where that is more); the package's
+  calls always gave it that many.
 
 ## v0.23.0 — 2026-09-28
 

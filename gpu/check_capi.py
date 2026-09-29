@@ -293,24 +293,33 @@ with torch.cuda.stream(torch.cuda.Stream()):
 torch.cuda.synchronize()
 
 # The routes: the library's (glyd_gpu_*_route, through both hosts) against GLinear's rule on main before the routes
-# moved into the library (model.py at 151d146), written out here: its kernel(M), else whole()'s decode, ahead from its
-# decode-ahead threshold (which never looked at K) and now below it; on each GPU (a compute capability, plus its class
-# by name: GeForce, A10), both layouts, K a multiple of 64 or not, 0-5000 tokens; each run's last token count the last
-# that takes its route. Then glyd_gpu_*_linear by this GPU's route (-1) and by each route given: its kernel's bits,
+# moved into the library, as main last had it (model.py at 44393a9, v0.24.0), written out here: its kernel(M), else
+# whole()'s decode, ahead from its decode-ahead threshold (which never looked at K) and now below it; on each GPU (a
+# compute capability, plus its class by name: GeForce, A10), both layouts, K a multiple of 64 or not, 0-5000 tokens;
+# each run's last token count the last that takes its route. Then glyd_gpu_*_linear by this GPU's route (-1) and by each route given: its kernel's bits,
 # through both hosts, or refused alike where the route's kernel does not take the product.
-MID_MIN, DEC_MIN = int(os.environ.get("GLYD_MID_MIN", 17)), int(os.environ.get("GLYD_DEC_MIN", 769))
-WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 512))
+MID_MIN, DEC_MIN = int(os.environ.get("GLYD_MID_MIN", 17)), int(os.environ.get("GLYD_DEC_MIN", 0)) or None
+WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLYD_WG_MAX", 1024))
 
 
 def main_ahead(gpu, twelve, fused=True, exact_=False):
-    """main's GLinear.ahead: a prompt's matrices decoded ahead from this many tokens (GeForce Ada's), whatever K."""
-    return ((1793 if fused and not exact_ else 641) if twelve else 513) if gpu == 1089 else 1 << 62
+    """main's GLinear.ahead: a prompt's matrices decoded ahead from this many tokens, whatever K: GeForce Ada's (513
+    tiered; 12-bit 1793 fused and not exact, else 641), an A10's but exact (512 tiered, 640 12-bit)."""
+    if gpu == 1089:
+        return (1793 if fused and not exact_ else 641) if twelve else 513
+    return (640 if twelve else 512) if gpu == 2086 and not exact_ else 1 << 62
+
+
+def main_dec(gpu, twelve):
+    """main's GLinear.dec: a 12-bit prompt decoded for cuBLAS, never fused, from GLYD_DEC_MIN tokens where it is set
+    (any GPU), else an A100's from 769."""
+    return (DEC_MIN or (769 if gpu % 1000 == 80 else 1 << 62)) if twelve else 1 << 62
 
 
 def main_route(gpu, twelve, K, M):
-    """main's GLinear, fused and not exact, its matrix within the scratch, as a route: kernel(M) (WG, MID, GEMM, BIG),
-    else whole()'s decode: ahead (AHEAD) from main_ahead, now (DECODE) below it (an A100's 12-bit prompts from
-    DEC_MIN, Hopper's past WG_MAX, K not a multiple of 64)."""
+    """main's GLinear, fused and not exact, its matrix within the scratch, as a route: kernel(M) (WG, MID, GEMM, BIG;
+    decoded(M) DECODE), else whole()'s decode: ahead (AHEAD) from main_ahead, now (DECODE) below it (Hopper's past
+    WG_MAX, K not a multiple of 64)."""
     cc = gpu % 1000
     a100, hopper, mid = cc == 80, cc == 90, cc in (80, 86, 87, 89)
     ahead = main_ahead(gpu, twelve)
@@ -318,7 +327,7 @@ def main_route(gpu, twelve, K, M):
         return g.WG
     if mid and MID_MIN <= M <= (128 if a100 else 64) and K % 64 == 0 and twelve:
         return g.MID
-    if a100 and M >= DEC_MIN and twelve:  # decoded(M)
+    if M >= main_dec(gpu, twelve):  # decoded(M)
         return g.DECODE
     if M <= 64:
         return g.GEMM
@@ -395,8 +404,8 @@ for q in packs:
             assert exact(lin.step(x), f(q, x.view(M, 1024), b)), ("GLinear.step", type(q).__name__, M)
             counts["GLinear.step"] = counts.get("GLinear.step", 0) + 1
 # GLinear's routing on an A100 whatever this GPU is (compute capability 8.0 read while it is made: the library's route
-# for an A100): the 12-bit layout's GLYD_MID_MIN (17) to 128 tokens by mma_gemm_mid, GLYD_DEC_MIN (769) on decoded for
-# cuBLAS (None), the rest as elsewhere; the one-call path the same functions.
+# for an A100): the 12-bit layout's GLYD_MID_MIN (17) to 128 tokens by mma_gemm_mid, from its decode threshold (769;
+# GLYD_DEC_MIN where set) decoded for cuBLAS (None), the rest as elsewhere; the one-call path the same functions.
 cc, gpu_name = torch.cuda.get_device_capability, torch.cuda.get_device_name
 
 
@@ -413,16 +422,16 @@ a100 = made_as((8, 0), "NVIDIA A100-SXM4-40GB", lambda: [gm.GLinear(q, None) for
 for q, lin in zip(packs, a100):
     twelve = isinstance(q, g.Mma12)
     for M in (1, 16, 17, 32, 33, 64, 65, 128, 129, 768, 769, 4096):
-        want = g.mma_gemm_mid if twelve and MID_MIN <= M <= 128 else None if twelve and M >= DEC_MIN else g.mma_gemm if M <= 64 else g.mma_gemm_big
+        want = g.mma_gemm_mid if twelve and MID_MIN <= M <= 128 else None if twelve and M >= main_dec(80, twelve) else g.mma_gemm if M <= 64 else g.mma_gemm_big
         assert lin.kernel(M) is want, ("A100 routing", type(q).__name__, M)
         if M <= 64 or want is g.mma_gemm_mid:
             x = torch.randn(M, 1024, dtype=bf, device=dev)
             assert exact(lin.step(x), lin.kernel(M)(q, x, None)), ("A100 GLinear.step", type(q).__name__, M)
             counts["GLinear.step"] += 1
-    if twelve:  # a prompt from DEC_MIN through forward: decoded for cuBLAS, not the fused kernel (nor whole()'s fallback to it)
+    if twelve:  # a prompt from its decode threshold through forward: decoded for cuBLAS, not the fused kernel (nor whole()'s fallback to it)
         gm.set_scratch(torch.nn.ModuleList([lin]), False)
-        x = torch.randn(DEC_MIN, 1024, dtype=bf, device=dev)
-        assert lin.step(x) is None and exact(lin(x), F.linear(x, g.mma_unpack(q))), "an A100's prompt past DEC_MIN, decoded"
+        x = torch.randn(main_dec(80, True), 1024, dtype=bf, device=dev)
+        assert lin.step(x) is None and exact(lin(x), F.linear(x, g.mma_unpack(q))), "an A100's prompt from its decode threshold, decoded"
         counts["A100 prompt decoded"] = 1
 # And on Hopper whatever this GPU is (9.0 while made): no prompt kernel for the one-call path, so a prompt's product is
 # the checked call's (mma_gemm_wg to WG_MAX tokens in the 12-bit layout, else decoded, then cuBLAS).
@@ -430,6 +439,29 @@ hopper = made_as((9, 0), "NVIDIA H100 PCIe", lambda: [gm.GLinear(q, None) for q 
 for q, lin in zip(packs, hopper):
     for M in (65, 128, 600, 2100):
         assert lin.step(torch.randn(M, 1024, dtype=bf, device=dev)) is None, ("Hopper GLinear.step, a prompt", type(q).__name__, M)
+    # Its routes: the 12-bit layout's GLYD_WG_MIN (17) to GLYD_WG_MAX tokens by mma_gemm_wg (past 128 in
+    # mma12_wgp_kernel), past WG_MAX decoded for cuBLAS (None); the tiered one's steps to 64 tokens by mma_gemm, past
+    # them decoded.
+    if isinstance(q, g.Mma12):
+        want = [(M, g.mma_gemm_wg) for M in (17, 128, 129, WG_MAX)] + [(WG_MAX + 1, None)]
+    else:
+        want = [(M, g.mma_gemm) for M in (1, 17, 64)] + [(M, None) for M in (65, 129, WG_MAX, WG_MAX + 1)]
+    for M, f in want:
+        assert lin.kernel(M) is f, ("Hopper routing", type(q).__name__, M)
+# And on an A10 whatever this GPU is (8.6 and its name while made; the library's routes by its class, 2086): a prompt
+# decoded ahead from 640 tokens in the 12-bit layout and 512 tiered, fused below (the one-call path to there), but exact
+# (as elsewhere: decoded on the current stream); on an A10G (half-rate tensor cores, no class) fused throughout.
+for name, want in (("NVIDIA A10", (512, 640)), ("NVIDIA A10G", (1 << 62, 1 << 62))):
+    a10 = made_as((8, 6), name, lambda: [gm.GLinear(q, None) for q in packs])
+    assert all(made_as((8, 6), name, lambda: gm.GLinear(q, None, exact=True)).ahead == 1 << 62 for q in packs), (name, "exact: no decode ahead")
+    for q, lin in zip(packs, a10):
+        twelve = isinstance(q, g.Mma12)
+        a = want[twelve]
+        assert lin.gpu == (g.A10 if name == "NVIDIA A10" else 0) + 86 and lin.ahead == a == main_ahead(lin.gpu, twelve), (name, type(q).__name__, lin.ahead)
+        for M in (a - 1, a) if a < 1 << 62 else (1024,):
+            x = torch.randn(M, 1024, dtype=bf, device=dev)
+            assert (lin.kernel(M) is g.mma_gemm_big) == (M < a) and (lin.step(x) is None) == (M >= a), (name, type(q).__name__, M)
+            counts["GLinear's routes on an A10 / A10G"] = counts.get("GLinear's routes on an A10 / A10G", 0) + 1
 # On GeForce Ada whatever this GPU is: GLinear's decode-ahead threshold main's whatever K (513 tiered; 12-bit 1793 fused
 # and not exact, 641 exact or not fused), and its kernel(M) main's, K a multiple of 64 or not (1024, 1040).
 for K in (1024, 1040):
@@ -449,11 +481,11 @@ for K in (1024, 1040):
 # the order from it then made whole by the calls past its end; followed; a decode on the current stream midway; a
 # prompt stopped short (the order kept whole); one gone on below the threshold at its next product (the next ends
 # the order there), then one past the order's end (the order to there again); another order between (recorded, then
-# followed), then the first again; at 600 tokens, then 2100 (the order kept). The products on the order (as many as
-# said, from the first) bit for bit as with their matrices decoded on the current stream, the rest the fused
-# kernel's (on Hopper, whose prompts past WG_MAX take no fused kernel, and an A100's 12-bit prompts from DEC_MIN
-# tokens, which take none, and a matrix whose K is not a multiple of 64, which none takes: decoded on the current
-# stream too), below the threshold the step's kernel's. Then all of it again with GLinears made as on an A100 (its
+# followed), then the first again; at 600 tokens (on Hopper WG_MAX + 1, past its wgmma kernel), then 2100 (the order
+# kept). The products on the order (as many as said, from the first) bit for bit as with their matrices decoded on
+# the current stream, the rest the fused kernel's (on Hopper, whose prompts past WG_MAX take no fused kernel, and an
+# A100's 12-bit prompts from 769 tokens, which take none, and a matrix whose K is not a multiple of 64, which none
+# takes: decoded on the current stream too), below the threshold the step's kernel's. Then all of it again with GLinears made as on an A100 (its
 # compute capability and name read while they are made), where this GPU is not one: its routes on this GPU's kernels.
 shapes = [(1024, 512), (512, 1024), (3072, 512), (512, 1536), (192, 512), (2048, 1024), (768, 1040)]  # (K 1040: never fused)
 flops, gm.AHEAD_FLOPS = gm.AHEAD_FLOPS, 0
@@ -472,7 +504,8 @@ for route in [None] + ([] if torch.cuda.get_device_capability() == (8, 0) else [
     n = len(lins)
     common = [(lins, n, None, None), (lins, 4, 4, None), (lins[:3], 3, None, None), (lins, n, None, None), (lins[:4], 3, None, 3), (lins, 3, None, None),
               (lins, n, None, None), (other, 0, None, None), (other, 3, None, None), (lins, 0, None, None), (lins, n, None, None)]
-    for M, seq in ((600, [(lins[:3], 0, None, None), (lins, 3, None, None)] + common), (2100, common)):
+    first = WG_MAX + 1 if route is None and cc() == (9, 0) else 600  # (Hopper's 12-bit prompts to WG_MAX: mma_gemm_wg's, never on the order)
+    for M, seq in ((first, [(lins[:3], 0, None, None), (lins, 3, None, None)] + common), (2100, common)):
         for ls, on, stop, short in seq:  # ls in turn at M tokens (from index short on at 64), a decode before index stop
             gen = torch.Generator(device=dev).manual_seed(M)
             placed.clear()

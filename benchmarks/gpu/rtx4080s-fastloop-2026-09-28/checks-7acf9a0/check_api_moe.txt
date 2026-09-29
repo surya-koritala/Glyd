@@ -1,0 +1,23 @@
+ibm-granite/granite-3.1-3b-a800m-instruct: bf16 loaded in 1.6 s, peak 6.60 GB, holds 6.60 GB, largest tensor 0.15 GB
+ibm-granite/granite-3.1-3b-a800m-instruct: glyd mma fused loaded in 3.5 s, peak 5.56 GB: packed weights 4.61 GB + largest tensor 0.15 GB + 0.80 GB; holds 4.78 GB
+   generated tokens identical to bf16: 32 of 32; logits bit-identical: False
+   text:  with the development of the first computer, the ENIAC, in the 1940s. The ENIAC was a general-purpose computer
+   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's 32 of 32
+   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past 1280 positions, disable_compile, return_dict_in_generate eager; as another model's assistant, its tokens as eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's, a streamer's text eager's
+   generate() compiled from two fresh threads in turn, the second's cache longer: tokens as this thread's
+   return_dict_in_generate: continued as eager: 16 tokens past the returned cache
+   a prompt of 2100 tokens: 64 products decoded ahead, logits as decoded on the current stream, bit for bit
+   glyd.gpu.compress: the same 4.61 GB, logits and tokens bit for bit
+   compiled (a static cache, CUDA graphs, fullgraph): tokens as plain generate()'s: 32 of 32
+ibm-granite/granite-3.1-3b-a800m-instruct: glyd exact loaded in 3.4 s, peak 5.56 GB, holds 4.66 GB; logits bit-identical: True (and a prompt of 2100 tokens'); generated tokens identical to bf16: 32 of 32
+   compiled: tokens as bf16's eager: 32 of 32
+   torch.compile(forward, reduce-overhead, fullgraph), gradients on: no graph break, no CUDA graph skipped; copy.deepcopy refused
+ibm-granite/granite-3.1-3b-a800m-instruct: saved in 5.5 s: 4.66 GB of safetensors; added_tokens.json, config.json, generation_config.json, glyd.json, merges.txt, model.safetensors, special_tokens_map.json, tokenizer.json, tokenizer_config.json, vocab.json
+   from_pretrained(path, verify=False): 0 tensors verified, loaded in 0.3 s, peak 5.55 GB, holds 4.61 GB; logits and tokens as the saved model's
+   from_pretrained(path, verify=True): 193 tensors verified, loaded in 3.3 s, peak 5.55 GB, holds 4.61 GB; logits and tokens as the saved model's
+   from_pretrained(path, exact=True): merged groups split, loaded in 0.5 s; logits bit-identical to bf16: True
+   from_pretrained(path, layout='mma12'): the packs transcoded, logits and tokens as mma12 packed from bf16
+   python -m glyd.gpu verify: /home/surya-koritala/p1/tmp/tmp5p74nzez: 193 tensors decode to glyd.json's sha256
+   python -m glyd.gpu fit: granite-3.1-3b-a800m-instruct on a 16 GB GPU: bf16 needs 8.7 GB, fits; Glyd 6.6 GB, fits
+check_api: all passed (/home/surya-koritala/p8fastloop2/bindings/python/glyd/__init__.py)
+check_api_moe exit 0

@@ -700,7 +700,8 @@ pub fn save(source: &Source, out: &Path, threads: usize, shard_bytes: u64, merge
 
 /// The formats `verify` reads (format.py's FORMATS).
 const FORMATS: &[&str] = &["glyd-v1", "glyd-v2", "glyd-v3"];
-/// glyd.json's keys (glyd 0.21 on; "tensors" from 0.25), format.py's KEYS: verify refuses any other (a key damaged).
+/// glyd.json's keys (glyd 0.21 on; "tensors" from 0.25), format.py's KEYS: verify refuses any other in a save of this
+/// glyd or an older one (a key damaged), and skips it in a newer one's.
 const KEYS: &[&str] = &["format", "glyd", "source", "layout", "packs", "tensors"];
 /// The first glyd whose saves carry "tensors" (format.py's MAP_FROM): a glyd-v1 or v2 saved by it or later without
 /// them is refused, as a glyd-v3 is.
@@ -849,10 +850,21 @@ pub struct Verified {
     pub hashed: usize,
     /// Tensors saved as they are with no sha256 in glyd.json to check (a save of glyd 0.24 or before).
     pub unchecked: usize,
+    /// glyd.json's keys this glyd does not have, of a newer glyd's save: skipped (the rest checked).
+    pub skipped: Vec<String>,
+}
+
+/// glyd.json's glyd ("0.25.0") as (0, 25, 0), its patch 0 where there is none (format.py's version).
+fn version(v: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = v.splitn(3, '.');
+    let num = |p: &str| p.chars().take_while(char::is_ascii_digit).collect::<String>().parse().ok(); // (its leading digits)
+    let (major, minor) = (num(parts.next()?)?, num(parts.next()?)?);
+    Some((major, minor, parts.next().and_then(num).unwrap_or(0)))
 }
 
 /// A saved checkpoint (glyd-v1, glyd-v2, glyd-v3) checked, as `python -m glyd.gpu verify` checks it: glyd.json's
-/// keys its own (a damaged one refused), its glyd a version, its map of sha256 an object, and there wherever its format
+/// keys its own (another refused where this glyd or an older one saved it: damaged; skipped where a newer one did,
+/// named in `skipped`), its glyd a version, its map of sha256 an object, and there wherever its format
 /// or its glyd says it is (glyd-v3; glyd-v1 and v2 saved by glyd 0.25 on); each file's tensors back to back to its
 /// end (the reader); the index, where there are shards, naming each tensor's shard; every tensor a pack's buffer or
 /// one whose sha256 glyd.json holds (a save of glyd 0.24 or before has none: those are counted as unchecked); each
@@ -865,23 +877,28 @@ pub fn verify(dir: &Path, threads: usize, decoder: &Decoder) -> io::Result<Verif
     let text = std::fs::read_to_string(&path).map_err(at(&path))?;
     let m = json::parse(&text).map_err(|e| bad(format!("{}: {e}", path.display())))?;
     let top = m.as_object().ok_or_else(|| bad(format!("{}: not an object", path.display())))?;
-    if let Some((k, _)) = top.iter().find(|(k, _)| !KEYS.contains(&k.as_str())) {
-        return Err(bad(format!("{}: {k:?}, a key glyd.json does not have (damaged?)", path.display())));
+    // the glyd that saved it; a key glyd.json does not have: damaged where this glyd or an older one saved it, a newer
+    // one's (skipped, the rest checked) where a newer one did
+    let glyd = m.get("glyd").and_then(Value::as_str).unwrap_or("");
+    let by = version(glyd).ok_or_else(|| bad(format!("{}: glyd {glyd:?}, not a version", path.display())))?;
+    let this = version(env!("CARGO_PKG_VERSION")).expect("the crate's version");
+    let mut skipped = Vec::new();
+    for (k, _) in top.iter().filter(|(k, _)| !KEYS.contains(&k.as_str())) {
+        if by <= this {
+            return Err(bad(format!("{}: {k:?}, a key glyd.json does not have (damaged?)", path.display())));
+        }
+        skipped.push(k.clone());
     }
     let format = m.get("format").and_then(Value::as_str).unwrap_or("");
     if !FORMATS.contains(&format) {
         return Err(bad(format!("{}: format {format:?}; this glyd reads {}", path.display(), FORMATS.join(" and "))));
     }
-    // the glyd that saved it, its major and minor version ("0.25.0": (0, 25))
-    let glyd = m.get("glyd").and_then(Value::as_str).unwrap_or("");
-    let mut parts = glyd.split('.').map(|x| x.parse::<u64>().ok());
-    let version = parts.next().flatten().zip(parts.next().flatten()).ok_or_else(|| bad(format!("{}: glyd {glyd:?}, not a version", path.display())))?;
     let hashes: Option<Vec<(String, Value)>> = match m.get("tensors") {
         None => None,
         Some(Value::Object(o)) => Some(o.to_vec()),
         Some(_) => return Err(bad(format!("{}: \"tensors\" is not an object of sha256", path.display()))),
     };
-    if hashes.is_none() && (format == "glyd-v3" || version >= MAP_FROM) {
+    if hashes.is_none() && (format == "glyd-v3" || (by.0, by.1) >= MAP_FROM) {
         return Err(bad(format!("{}: no sha256 for the tensors saved as they are, which a {format} of glyd {glyd} has", path.display())));
     }
     let saved = Checkpoint::open(dir)?;
@@ -957,7 +974,7 @@ pub fn verify(dir: &Path, threads: usize, decoder: &Decoder) -> io::Result<Verif
             }
         }
     }
-    Ok(Verified { packed: n, hashed: hashed.len(), unchecked })
+    Ok(Verified { packed: n, hashed: hashed.len(), unchecked, skipped })
 }
 
 #[cfg(test)]
@@ -1076,12 +1093,12 @@ mod tests {
         let text = std::fs::read_to_string(bad.join("glyd.json")).unwrap().replace("\"model.norm.weight\"", "\"model.norm.weight2\"");
         std::fs::write(bad.join("glyd.json"), text).unwrap();
         refused("model.norm.weight: in the safetensors, but glyd.json neither packs it");
-        // glyd.json's map damaged or gone: its key renamed "densors" (one bit), its value not an object, gone from a
-        // save of glyd 0.25 (and its glyd not a version): each refused; gone from a save of glyd 0.24, whose saves
-        // have none, its tensors unchecked
+        // glyd.json's map damaged or gone: its key renamed "densors" (one bit) in this glyd's save or an older one's, its
+        // value not an object, gone from a save of glyd 0.25 (and its glyd not a version): each refused; gone from a
+        // save of glyd 0.24, whose saves have none, its tensors unchecked. A key of a newer glyd's save: skipped, the
+        // rest checked (a byte of a tensor saved as it is flipped: refused)
         type Top = Vec<(String, Value)>; // glyd.json's entries
         let edit = |f: &dyn Fn(&mut Top)| {
-            fresh(&bad);
             let mut m = json::parse(&std::fs::read_to_string(bad.join("glyd.json")).unwrap()).unwrap();
             if let Value::Object(top) = &mut m {
                 f(top);
@@ -1089,23 +1106,47 @@ mod tests {
             std::fs::write(bad.join("glyd.json"), json::to_python(&m, 1)).unwrap();
         };
         let set = |top: &mut Top, k: &str, v: Value| top.iter_mut().find(|(n, _)| n == k).unwrap().1 = v;
-        edit(&|top| top.iter_mut().find(|(k, _)| k == "tensors").unwrap().0 = "densors".into());
+        let densors = |top: &mut Top| top.iter_mut().find(|(k, _)| k == "tensors").unwrap().0 = "densors".into();
+        assert_eq!(m.get("glyd").and_then(Value::as_str), Some(env!("CARGO_PKG_VERSION"))); // (this glyd's save)
+        fresh(&bad);
+        edit(&densors);
         refused("\"densors\", a key glyd.json does not have");
+        fresh(&bad);
+        edit(&|top| {
+            densors(top);
+            set(top, "glyd", Value::from("0.21.0"));
+        });
+        refused("\"densors\", a key glyd.json does not have");
+        fresh(&bad);
         edit(&|top| set(top, "tensors", Value::Null));
         refused("\"tensors\" is not an object of sha256");
+        fresh(&bad);
         edit(&|top| {
             top.retain(|(k, _)| k != "tensors");
             set(top, "glyd", Value::from("0.25.0"));
         });
         refused("no sha256 for the tensors saved as they are, which a glyd-v1 of glyd 0.25.0 has");
+        fresh(&bad);
         edit(&|top| set(top, "glyd", Value::from("0.x")));
         refused("glyd \"0.x\", not a version");
+        fresh(&bad);
         edit(&|top| {
             top.retain(|(k, _)| k != "tensors");
             set(top, "glyd", Value::from("0.24.0"));
         });
         let v = verify(&bad, 2, &Decoder::Cpu).unwrap();
-        assert_eq!((v.packed, v.hashed, v.unchecked), (14, 0, 10));
+        assert_eq!((v.packed, v.hashed, v.unchecked, v.skipped.len()), (14, 0, 10, 0));
+        let newer = |top: &mut Top| {
+            set(top, "glyd", Value::from("99.0.0"));
+            top.push(("future".into(), Value::Object(vec![("x".into(), Value::from(1u64))])));
+        };
+        fresh(&bad);
+        edit(&newer);
+        let v = verify(&bad, 2, &Decoder::Cpu).unwrap();
+        assert_eq!((v.packed, v.hashed, v.unchecked, v.skipped), (14, 10, 0, vec!["future".to_string()]));
+        flip(&bad, "model.layers.1.post_attention_layernorm.weight");
+        edit(&newer);
+        refused("post_attention_layernorm.weight is other bytes");
         // k_proj's rows (a merged pack's second member) past any matrix's: no arithmetic on glyd.json's numbers overflows
         fresh(&bad);
         let text = std::fs::read_to_string(bad.join("glyd.json")).unwrap().replacen("\"shape\": [\n      64,", "\"shape\": [\n      18446744073709551615,", 1);

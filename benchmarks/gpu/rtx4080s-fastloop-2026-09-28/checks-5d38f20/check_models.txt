@@ -1,0 +1,7 @@
+== Qwen/Qwen3-1.7B: 8 prompts, 108 positions
+   glyd mma: loaded in 2.1 s, peak 4.12 GB; against fp32 (cuda:0): mean |diff| 0.0773, top token fp32's 99.07%; bf16's 0.0846, 98.15%; tokens as bf16's: 13 of 32
+   text:  in the 1950s with the advent of digital storage and transmission. As technology advanced, the need for efficient data compression techniques became more apparent,
+   saved 2.52 GB; reloaded with 198 tensors verified, logits as before
+   exact=True: logits bit-identical to bf16's at all 108 positions
+check_models: all passed
+check_models exit 0

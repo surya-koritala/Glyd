@@ -1,0 +1,11 @@
+versions: torch 2.14.0+cu130 CUDA 13.0;transformers 5.17.0;GPU NVIDIA H100 PCIe (9, 0) 114 SMs; nvcc release 13.0
+sources: 7bfac10a34543a0def0c870dc55534d444345477 gpu-fastloop (README, CHANGELOG: in the default mode the compiled loop's g...)
+(a) build, sm_90a: exit 0
+(b) self-test: exit 0 (18 lines within 1e-2; 9 of them mma_gemm_wg's, 1-2100 tokens)
+(c) check_capi: exit 0 (6200 calls compared bit for bit, all identical)
+(d) test_gpu: exit 0 (15 ok; 0 skipped)
+(e) check_api dense: exit 124 (1 models compiled by default; tokens as eager's 8 of 32; Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Lo)
+(f) exit 125: gen-default-1: skipped, over the budget
+(f) exit 125: gen-eager-1: skipped, over the budget
+(f) exit 125: gen-default-8: skipped, over the budget
+(f) exit 125: gen-eager-8: skipped, over the budget

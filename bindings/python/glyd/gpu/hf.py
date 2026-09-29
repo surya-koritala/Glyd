@@ -28,7 +28,7 @@ BITS = {"mma": 10.80, "mma12": 12.04}  # a weight, measured (best_layout's): the
 DTYPES = {"U8": torch.uint8, "I32": torch.int32}
 
 
-def from_pretrained(name_or_path, *, device="cuda:0", layout="auto", exact=False, merge=True, verify=False, **hf_kwargs):
+def from_pretrained(name_or_path, *, device="cuda:0", layout="auto", exact=False, merge=True, verify=False, compile=True, **hf_kwargs):
     """A model from the Hugging Face Hub or a directory with its weights
     packed on the GPU as it loads, ready for generate(): a causal LM, else
     an image-text-to-text one (a checkpoint transformers loads only with
@@ -51,6 +51,13 @@ def from_pretrained(name_or_path, *, device="cuda:0", layout="auto", exact=False
       and its sha256 checked against glyd.json, and every tensor saved as
       it is by its own there (a save of glyd 0.25 on), each file's tensors
       back to back and each a pack's buffer or of a sha256 there.
+    compile: generate() through transformers' static cache and compiled
+      forward (CUDA graphs), as cache_implementation="static" asks for it,
+      on PyTorch 2.13.0 or later (a 2.13 pre-release runs eager), where a
+      call leaves the cache and the search to the model and its static cache
+      is short (model.fast_generate: GLYD_COMPILE_MAX positions in all);
+      False, or GLYD_COMPILE=0: as transformers runs it, eager. Not with
+      exact (its tokens are bf16's eager ones) nor over several GPUs.
     hf_kwargs: transformers' from_pretrained's (revision, token,
       device_map, attn_implementation ...); the dtype is bf16.
     """
@@ -61,12 +68,13 @@ def from_pretrained(name_or_path, *, device="cuda:0", layout="auto", exact=False
     hf_kwargs.pop("torch_dtype", None)
     hf_kwargs.update(dtype=torch.bfloat16, quantization_config=GlydConfig(layout=layout, exact=exact, merge=merge, verify=verify))
     try:
-        return AutoModelForCausalLM.from_pretrained(name_or_path, **hf_kwargs)
+        model = AutoModelForCausalLM.from_pretrained(name_or_path, **hf_kwargs)
     except ValueError as e:  # a checkpoint transformers loads only with its vision tower (Muse Glimmer)
         if "Unrecognized configuration class" not in str(e):
             raise
         from transformers import AutoModelForImageTextToText
-        return AutoModelForImageTextToText.from_pretrained(name_or_path, **hf_kwargs)
+        model = AutoModelForImageTextToText.from_pretrained(name_or_path, **hf_kwargs)
+    return gm.fast_generate(model) if compile and not exact else model
 
 
 def _refuse_quantized(name_or_path, kwargs):

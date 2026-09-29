@@ -1,0 +1,21 @@
+Qwen3-8B layer 10, 12-bit, NVIDIA H100 80GB HBM3, /home/ubuntu/main/lib90.so: qkv (6144, 4096) 6348 exc, o (4096, 4096) 4522 exc, gate_up (24576, 4096) 23112 exc, down (4096, 12288) 10403 exc
+Qwen3-8B qkv 6144x4096 M=160: cuBLAS 29.5 us 1.000x | wg 39.3 us 1.329x | dec 72.5 us 2.456x
+Qwen3-8B o 4096x4096 M=160: cuBLAS 22.0 us 1.000x | wg 30.6 us 1.388x | dec 50.4 us 2.288x
+Qwen3-8B gate_up 24576x4096 M=160: cuBLAS 83.6 us 1.000x | wg 102.9 us 1.230x | dec 241.1 us 2.883x
+Qwen3-8B down 4096x12288 M=160: cuBLAS 54.1 us 1.000x | wg 61.1 us 1.130x | dec 145.4 us 2.688x
+Qwen3-8B layer M=160: cuBLAS 189.3 us 1.000x | wg 233.9 us 1.236x | dec 509.4 us 2.691x
+Qwen3-8B qkv 6144x4096 M=192: cuBLAS 31.8 us 1.000x | wg 40.7 us 1.278x | dec 74.6 us 2.343x
+Qwen3-8B o 4096x4096 M=192: cuBLAS 22.5 us 1.000x | wg 30.1 us 1.340x | dec 51.6 us 2.295x
+Qwen3-8B gate_up 24576x4096 M=192: cuBLAS 85.1 us 1.000x | wg 104.0 us 1.222x | dec 242.7 us 2.852x
+Qwen3-8B down 4096x12288 M=192: cuBLAS 54.7 us 1.000x | wg 62.4 us 1.141x | dec 150.1 us 2.746x
+Qwen3-8B layer M=192: cuBLAS 194.0 us 1.000x | wg 237.2 us 1.222x | dec 518.9 us 2.674x
+Qwen3-8B qkv 6144x4096 M=384: cuBLAS 35.9 us 1.000x | wg 59.1 us 1.645x | dec 77.8 us 2.167x
+Qwen3-8B o 4096x4096 M=384: cuBLAS 29.8 us 1.000x | wg 42.7 us 1.432x | dec 55.8 us 1.871x
+Qwen3-8B gate_up 24576x4096 M=384: cuBLAS 107.9 us 1.000x | wg 181.7 us 1.684x | dec 265.5 us 2.461x
+Qwen3-8B down 4096x12288 M=384: cuBLAS 73.4 us 1.000x | wg 99.8 us 1.360x | dec 167.8 us 2.287x
+Qwen3-8B layer M=384: cuBLAS 247.0 us 1.000x | wg 383.3 us 1.552x | dec 566.9 us 2.295x
+Qwen3-8B qkv 6144x4096 M=768: cuBLAS 53.0 us 1.000x | wg 112.6 us 2.124x | dec 97.3 us 1.836x
+Qwen3-8B o 4096x4096 M=768: cuBLAS 37.4 us 1.000x | wg 80.1 us 2.140x | dec 69.5 us 1.856x
+Qwen3-8B gate_up 24576x4096 M=768: cuBLAS 197.8 us 1.000x | wg 321.0 us 1.623x | dec 355.2 us 1.796x
+Qwen3-8B down 4096x12288 M=768: cuBLAS 100.2 us 1.000x | wg 180.1 us 1.797x | dec 194.2 us 1.938x
+Qwen3-8B layer M=768: cuBLAS 388.4 us 1.000x | wg 693.8 us 1.786x | dec 716.2 us 1.844x

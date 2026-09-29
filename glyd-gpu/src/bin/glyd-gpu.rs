@@ -85,6 +85,9 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 let (lib, ctx) = (Library::find()?, cuda::Context::new(ordinal)?);
                 save::verify(Path::new(path), a.threads, &save::Decoder::Gpu(&lib, &ctx))?
             };
+            for k in &v.skipped {
+                eprintln!("glyd verify: warning: {path}/glyd.json: {k:?}, a key of a newer glyd's save than this one ({}): skipped, the rest checked", env!("CARGO_PKG_VERSION"));
+            }
             let rest = if v.unchecked > 0 { format!("{} saved as they are not checked (saved before glyd 0.25: no sha256 for them)", v.unchecked) } else { format!("{} saved as they are match theirs", v.hashed) };
             println!("{path}: {} tensors decode to glyd.json's sha256, {rest}", v.packed);
             Ok(())

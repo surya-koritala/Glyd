@@ -252,7 +252,7 @@ pub enum Route {
     Wg = 3,
     /// [`Library::gemm_big`], variant 0.
     Big = 4,
-    /// As Decode, the decode run ahead beside the products before (GeForce Ada's prompts).
+    /// As Decode, the decode run ahead beside the products before (GeForce Ada's and an A10's prompts).
     Ahead = 5,
 }
 
@@ -593,7 +593,7 @@ impl Library {
     }
 
     /// As [`Library::gemm_mid`] on Hopper (compute capability 9.0) alone, by
-    /// TMA and wgmma. done: rows / 64.
+    /// TMA and wgmma. done: at least 1024, or rows / 64 where that is more.
     ///
     /// # Safety
     /// See the crate's.
@@ -658,7 +658,7 @@ impl Library {
     /// [`Route::Ahead`] by the prompt kernel, but on Hopper and where cols is
     /// not a multiple of 64 ([`NOT_SUPPORTED`]: decode W there, [`Library::unpack`],
     /// then a GEMM of the caller's). done: (m + 127) / 128 x rows / 64
-    /// counters.
+    /// counters, and at least 1024 (the WG route's, as [`Library::gemm_wg`]'s).
     ///
     /// # Safety
     /// See the crate's.

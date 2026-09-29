@@ -43,6 +43,7 @@ pip install "glyd[gpu]"      # Linux x86_64 / aarch64, a CUDA GPU (Ampere or lat
 import glyd
 model = glyd.from_pretrained("Qwen/Qwen3-8B")               # packed on the GPU as it loads: 11.2 GB of weights, not 16.4
 model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits bit for bit bf16's
+# generate() runs compiled on PyTorch 2.13.0 or later (a static cache, CUDA graphs); compile=False, or GLYD_COMPILE=0, runs it eager
 ```
 ```bash
 glyd pack Qwen/Qwen3-8B qwen3-8b-glyd                    # saved packed on the CPU, no Python or GPU: python -m glyd.gpu pack's bytes (Qwen3, Qwen2, Llama, Mistral, Granite)

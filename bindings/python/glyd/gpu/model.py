@@ -17,10 +17,15 @@ does not change between calls made once); under torch.compile each
 GLinear and GEmbedding is one node of the graph (glyd::linear,
 glyd::embedding), run as eager, and CUDA graphs capture its kernels.
 """
+import copy
+import functools
+import gc
 import hashlib
+import inspect
 import itertools
 import os
 import re
+import warnings
 import weakref
 import torch
 import torch.nn as nn
@@ -29,20 +34,29 @@ from . import _lib, format as fmt, kernels as g
 
 SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 # Which kernel a product for M tokens takes on a GPU is the library's route (glyd_gpu.cu's route_for, as measured:
-# GLYD_WG_MIN, GLYD_WG_MAX, GLYD_MID_MIN and GLYD_DEC_MIN move it there): Hopper's steps and prompts of 17 to 512
-# tokens by wgmma, past that decoded for cuBLAS (Qwen3-8B's layer on an H100 PCIe: 638 us against 864 at 512 tokens,
-# 1065 against 964 at 640; Qwen3-32B's 1622 against 2253, then within 6% either way to 1024); Ampere's and Ada's 17 to
-# 64 (an A100's to 128) by mma_gemm_mid; an A100's 12-bit prompts from 769 tokens decoded for cuBLAS; a prompt of a
-# matrix whose K is not a multiple of 64 decoded (the prompt kernel's blocks).
-# A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead). On
-# GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, past 1792 in the 12-bit one where
-# its fused kernel takes the prompt (the library's route AHEAD), else past 640 (exact, or not fused: each matrix
-# decoded first); elsewhere, until measured, the fused kernel or the decode as before (the L4, L40S and RTX 6000 Ada
-# sum in fp32 at twice the rate: a product's time decodes half as much beside it). The 12-bit layout's length loses
-# least across Qwen3-1.7B, 4B and 8B (one pass, fused against decoded ahead, 1024-4096 tokens): to 1792 Qwen3-1.7B's
-# fused pass is the faster but at 1280, Qwen3-4B-Instruct-2507's but at 1664, Qwen3-8B's at 1024, 1408 and 1536 alone
-# (1.0-4.6% slower at the other six); at 1793-2047 Qwen3-1.7B's is 3.5-4.0% faster, Qwen3-4B's 1.8-3.1% and
-# Qwen3-8B's 0.7-4.3% slower.
+# GLYD_WG_MIN, GLYD_WG_MAX, GLYD_MID_MIN and GLYD_DEC_MIN move it there): Hopper's steps and prompts of 17 to 1024
+# tokens by wgmma (past 128 tokens the kernel whose blocks stay, mma12_wgp_kernel), past that decoded for cuBLAS
+# (Qwen3-8B's, 14B's and 32B's layers on an H100 SXM, the kernel as first written: 1.46 / 1.33 / 1.35x cuBLAS's time
+# fused against 1.64 / 1.68 / 1.68x decoded at 1024 tokens; 1.38 / 1.34 / 1.34x against 1.33 / 1.36 / 1.35x at 2048,
+# within 4% either way; 1.37 / 1.40 / 1.42x against 1.17 / 1.22 / 1.21x at 4096; as committed, Qwen3-8B's 1.38x at
+# 1024: benchmarks/gpu/h100-hopper2-val-2026-09-28); Ampere's and Ada's 17 to 64 (an A100's to 128) by mma_gemm_mid;
+# a 12-bit prompt decoded for cuBLAS, never fused, from GLYD_DEC_MIN tokens where it is set (any GPU), else an A100's
+# from 769; a prompt of a matrix whose K is not a multiple of 64 decoded (the prompt kernel's blocks).
+# A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead; the
+# library's route AHEAD). On GeForce Ada (measured on an RTX 4080 SUPER) past 512 tokens in the tiered layout, past
+# 1792 in the 12-bit one where its fused kernel takes the prompt, else past 640 (exact, or not fused: each matrix
+# decoded first); on an A10 (150 W, full-rate tensor cores: its fused kernel's decode costs it clocks at the power
+# cap) from 640 tokens in the 12-bit layout and 512 in the tiered one, but exact (Qwen3-8B's layer, a pass of 12,
+# against cuBLAS: fused 1.23x at 512 and 640 tokens, decoded ahead 1.42x and 1.21x, then 1.17x at 768 against 1.26x,
+# 1.08x at 2048 against 1.54x; tiered 1.41x against 1.48x at 512; a prompt's pass end to end +10.0 / +5.2 / +2.6% over
+# bf16 at 1024 / 2048 / 4096 tokens, fused +30 / +39 / +51%, each matrix decoded on the current stream +21 / +10 /
+# +5.5%); elsewhere, until measured, the fused kernel or the decode as before (the A10G has half-rate tensor cores,
+# its fused prompts at most +5.3% over bf16's; the L4, L40S and RTX 6000 Ada sum in fp32 at twice the rate, as the
+# A10, but have half its bandwidth a FLOP: a matrix decoded costs them twice as much a token). The 12-bit layout's
+# length loses least across Qwen3-1.7B, 4B and 8B (one pass, fused against decoded ahead, 1024-4096 tokens): to 1792
+# Qwen3-1.7B's fused pass is the faster but at 1280, Qwen3-4B-Instruct-2507's but at 1664, Qwen3-8B's at 1024, 1408
+# and 1536 alone (1.0-4.6% slower at the other six); at 1793-2047 Qwen3-1.7B's is 3.5-4.0% faster, Qwen3-4B's
+# 1.8-3.1% and Qwen3-8B's 0.7-4.3% slower.
 AHEAD_MIN = int(os.environ.get("GLYD_AHEAD_MIN", 0)) or None
 AHEAD_WARPS = int(os.environ.get("GLYD_AHEAD_WARPS", 0))  # a decode ahead's warps an SM (0: 3 tiered, 2 12-bit), few enough to sit beside a cuBLAS block
 AHEAD_RATE = float(os.environ.get("GLYD_AHEAD_RATE", 2.2e-3))  # weights decoded ahead beside a product, for each of its weights and tokens
@@ -321,15 +335,15 @@ class GLinear(_Node, nn.Module):
     """nn.Linear over a packed matrix p (bias: bf16, or None). fused: products
     straight from the packed weights where a kernel takes the step (in the
     mma layouts by the library's route: up to 64 tokens, an A100's 12-bit to
-    128, and prompts: on Hopper to 512 tokens, on an A100 in the 12-bit
-    layout to 768; one-token steps in the others); else the matrix decoded
-    into the scratch buffer, then
+    128, and prompts: on Hopper to 1024 tokens, in the 12-bit layout on an
+    A100 to 768, on any GPU to GLYD_DEC_MIN where it is set; one-token steps
+    in the others); else the matrix decoded into the scratch buffer, then
     PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, past
-    1792 12-bit fused and past 640 not, decoded ahead of its product where
-    Ahead takes it). exact: every
-    product the matrix decoded whole, then F.linear on the input as it came,
-    as nn.Linear does: its outputs bit for bit (over fused). gemm_max: the
-    fast format's fused steps, in tokens."""
+    1792 12-bit fused and past 640 not, on an A10, but exact, from 512
+    tiered and 640 12-bit, decoded ahead of its product where Ahead takes
+    it). exact: every product the matrix decoded whole, then F.linear on the
+    input as it came, as nn.Linear does: its outputs bit for bit (over
+    fused). gemm_max: the fast format's fused steps, in tokens."""
 
     weight = property(_Weight)  # as a model's own code reads it
 
@@ -347,9 +361,11 @@ class GLinear(_Node, nn.Module):
         self.a100 = cc == (8, 0)  # its mid kernel takes steps to 128 tokens; its prompts past 768 are decoded for cuBLAS
         self.step_max = 128 if self.a100 else 64  # tokens to which a step's kernel (not a prompt's) is one C call (_step)
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
-        # prompts decoded ahead, then cuBLAS, whatever K (the library's route AHEAD where fused and not exact)
-        twelve = 1793 if fused and not exact else 641
-        self.ahead = AHEAD_MIN or ((twelve if isinstance(p, g.Mma12) else 513) if self.gpu == g.GEFORCE + 89 else 1 << 62)
+        # prompts decoded ahead, then cuBLAS, whatever K (the library's route AHEAD where fused and not exact): GeForce
+        # Ada's, and an A10's (not an A10G: the GPU's class) but exact
+        twelve, mma12 = (1793 if fused and not exact else 641), isinstance(p, g.Mma12)
+        ahead = (twelve if mma12 else 513) if self.gpu == g.GEFORCE + 89 else (640 if mma12 else 512) if self.gpu == g.A10 + 86 and not exact else 1 << 62
+        self.ahead = AHEAD_MIN or ahead
         self._node()
 
     def route(self, M):
@@ -377,15 +393,15 @@ class GLinear(_Node, nn.Module):
 
     def decoded(self, M):
         """Whether a prompt of M tokens is decoded for cuBLAS, never fused (kernel(M) None, and no fused fallback in
-        whole()): the library's route DECODE (an A100's in the 12-bit layout from 769 tokens, where cuBLAS on the
-        decoded matrix outruns the fused kernel; Hopper's past its wgmma kernel)."""
+        whole()): the library's route DECODE (a 12-bit prompt from GLYD_DEC_MIN tokens where it is set, else an A100's
+        from 769, where cuBLAS on the decoded matrix outruns the fused kernel; Hopper's past its wgmma kernel)."""
         return self.route(M)[0] == g.DECODE
 
     def _step(self):
         """A product as one C call where it is a fused one through the prebuilt library (glyd_gpu_*_linear, by
         kernel(M)'s route): a generation step's to step_max tokens (64, an A100's 128: mma_gemm_mid's), and a
-        prompt's past the last of them to self.ahead tokens by the prompt kernel (an A100's in the 12-bit layout to
-        768, from which it is decoded for cuBLAS); _lib.step over the pack; else None."""
+        prompt's past the last of them to self.ahead tokens by the prompt kernel (to the route DECODE's first, an
+        A100's 12-bit 769, from which it is decoded for cuBLAS); _lib.step over the pack; else None."""
         p = self.p
         if not self.fused or self.exact or not isinstance(p, g.Mma) or g.lib() is None:
             return None
@@ -722,8 +738,247 @@ def set_scratch(model, exact):
                 Scratch.graphed.discard(d)
 
 
+# generate() compiled (fast_generate) where its static cache holds at most this many positions in all (its sequences
+# times the positions a call may reach, max_new_tokens' included): each step's attention reads the static cache whole,
+# masked (SDPA's kernel for a mask, whose time grows with the positions held, not the tokens in them), and past that
+# the eager loop was as fast or faster; it depends on the host's CPU (eager's host time a step is what compiling
+# saves), which the GPU tells: a GeForce card's is a desktop's, 1280; any other's a server's, 2048. A step's ms,
+# compiled against eager, Qwen3-8B, the static cache that many positions long and 64 of them used (loop.py):
+# - RTX 4080 SUPER, Ryzen 9 7950X3D: one sequence 18.2 against 20.5 with 256 positions, 20.4 against 20.5 with 1024,
+#   23.0 against 20.5 with 2048, 27.6 against 20.5 with 4096; 8 sequences, a whole cache used, 19.5 against 21.8 with
+#   80 each, 26.7 against 24.8 with 576;
+# - A10, Xeon Platinum 8358: one sequence 28.3 against 38.3 with 256, 31.3 against 36.9 with 1024, 34.9 against 37.2
+#   with 2048, 42.8 against 33.6 with 4096; 8 sequences 33.9 against 35.8 with 256 each, 52.6 against 33.6 with 1024.
+# GLYD_COMPILE_MAX sets it on any GPU.
+COMPILE_MAX = int(os.environ.get("GLYD_COMPILE_MAX", 0)) or None
+RECOMPILES = 64  # torch._dynamo's recompile_limit for the compiled calls (_compiled_call): a graph a model, a length
+_COMPILED = weakref.WeakKeyDictionary()  # model: (its compile config, its forward compiled), _compiled_call's
+# A generate() call whose merged generation config sets any of these runs as transformers runs it (_fast): the cache
+# handed back (a static one is neither cropped, as an assistant's is, nor continued past its length), compiling turned
+# off, multi-token prediction, attentions or hidden states out, a cache chosen
+_OWN = ("return_dict_in_generate", "disable_compile", "use_mtp", "output_attentions", "output_hidden_states", "cache_implementation")
+
+
+def fast_generate(model):
+    """model's generate() through transformers' static cache and compiled
+    forward (torch.compile, reduce-overhead: CUDA graphs), as generate(...,
+    cache_implementation="static") asks for it, where a call leaves the
+    cache and the search to the model (none of _OWN, one beam, the cache
+    used) and its static cache is short: it holds every position the call
+    may reach from its first step (transformers keeps it as long as the
+    longest call's) and each step reads all of it, so 1280 positions in all
+    at most on a GeForce card and 2048 on another (COMPILE_MAX; the model's
+    glyd_fast; _fast says which calls); every other call as transformers
+    runs it. The prompt runs eager either way (transformers compiles the
+    steps after it). A call that fails so runs again as it came, as do the
+    model's later ones, with one warning. Its class's generate and
+    get_compiled_call taken over once (_taken), the model marked
+    (glyd_fast). Not with GLYD_COMPILE=0, nor below PyTorch 2.13.0, a 2.13
+    pre-release included (measured on 2.14; before it torch._dynamo has no
+    recompile_limit to 2.6, its config's overrides are the process's to
+    2.11, and a CUDA graph recorded in a thread other than cudagraph_trees'
+    own fails to 2.12), nor for a family transformers does not compile whole
+    (_can_compile_fullgraph: MiniMax's own cache, DBRX's experts ...), nor a
+    model over several GPUs (not measured there), nor where transformers'
+    helpers _fast reads are not as 5.17 has them (one warning: else every
+    call would run eager, unsaid), nor for a generation of the model's own
+    with no search modes (DiffusionGemma's). The model."""
+    if torch.__version__ < "2.13" or os.environ.get("GLYD_COMPILE", "1") == "0" or not hasattr(model, "generate") or not getattr(model, "_can_compile_fullgraph", False) or _static_fails(model):
+        return model
+    try:  # the helpers _fast reads, as transformers 5.17 has them
+        cfg, _ = model._prepare_generation_config(None, do_sample=False, num_beams=1)
+        ok = cfg.get_generation_mode(None) == "greedy_search"
+    except NotImplementedError:  # a generation of the model's own, with no search modes (DiffusionGemma's): eager
+        return model
+    except Exception as e:
+        ok = e
+    if ok is not True:
+        import transformers
+
+        warnings.warn(f"glyd: generate() eager: transformers {transformers.__version__}'s generation helpers are not 5.17's ({ok!r})")
+        return model
+    devices = {m.p.sm.device for m in model.modules() if isinstance(m, (GLinear, GEmbedding))} | {t.device for t in model.parameters() if t.is_cuda}
+    if len(devices) != 1:
+        return model
+    d = devices.pop()
+    model.glyd_fast = COMPILE_MAX or (1280 if "GeForce" in torch.cuda.get_device_name(d) else 2048)  # its cap
+    cls = type(model)
+    for name, fast in (("generate", _generate), ("get_compiled_call", _compiled_call)):
+        own = getattr(cls, name)  # (read once: two threads taking it over at once wrap the class's own, the last one kept)
+        if getattr(own, "glyd_own", None) is None:
+            setattr(cls, name, _taken(own, fast))
+    return model
+
+
+def _static_fails(model):
+    """Whether transformers (5.17) fails model's generate() with a static cache, or never compiles it: Llama 4 (its
+    get_compiled_call leaves it eager; its chunked attention's mask raises there), and a model with multi-head latent
+    attention (kv_lora_rank) whose config has fewer key/value heads than heads: it makes keys and values for every
+    head, and the static cache's masked attention repeats them num_attention_heads / num_key_value_heads times more
+    (test_gpu's tiny DeepSeek V2, V3, Kimi Linear and AXK1; the released DeepSeek V2 and V3, Kimi Linear, Moonlight
+    and Kimi K2 have as many as heads, and compile)."""
+    c = model.config.get_text_config(decoder=True)
+
+    def get(name):
+        try:
+            return getattr(c, name, None)
+        except Exception:  # (a config holding it per layer raises)
+            return None
+
+    return "llama4" in model.config.model_type or (get("kv_lora_rank") is not None and get("num_key_value_heads") not in (None, get("num_attention_heads")))
+
+
+def _compile_error(e):
+    """Whether e is torch.compile's failing (torch._dynamo's or Inductor's error), not what it met on the way (out of
+    GPU memory, anywhere in its chain)."""
+    import torch._dynamo.exc as de
+    import torch._inductor.exc as ie
+
+    chain = [e]
+    while len(chain) < 16 and (chain[-1].__cause__ or chain[-1].__context__) is not None:
+        chain.append(chain[-1].__cause__ or chain[-1].__context__)
+    return isinstance(e, (de.TorchDynamoException, getattr(ie, "InductorError", ()))) and not any(isinstance(x, torch.cuda.OutOfMemoryError) for x in chain)
+
+
+def _taken(own, fast):
+    """A class's method own, taken over: fast(model, own, ...) for a model fast_generate set up (glyd_fast), own for
+    any other (a bf16 model of the same class)."""
+
+    @functools.wraps(own)
+    def taken(self, *args, **kwargs):
+        return fast(self, own, *args, **kwargs) if "glyd_fast" in self.__dict__ else own(self, *args, **kwargs)
+
+    taken.glyd_own = own
+    return taken
+
+
+def _fast(self, own, args, kwargs):
+    """The call's arguments (inspect.BoundArguments over own's signature, self first) with the static cache asked for,
+    where the fast path takes the call; else None. Its generation config merged as transformers merges it for the
+    call (_prepare_generation_config: the call's config or the model's, the rest from the model's and the defaults, the
+    call's options over them), its mode greedy or sampled search (get_generation_mode: one beam, and no assistant,
+    prompt lookup, early exit or multi-token prediction), none of _OWN set, the cache used and not the call's own, no
+    custom_generate, and a static cache of at most glyd_fast positions in all (its sequences times the prompt and
+    max_new_tokens, else max_length, and at least max_cache_len and the longest the model had). Those helpers are transformers' private
+    ones: any error, or anything else from them, is None (the call eager)."""
+    try:
+        b = inspect.signature(own).bind(self, *args, **kwargs)
+        a = b.arguments
+        if a.get("custom_generate") is not None:
+            return None
+        cfg, model_kwargs = self._prepare_generation_config(a.get("generation_config"), **a.get("kwargs", {}))
+        if cfg.get_generation_mode(a.get("assistant_model")) not in ("greedy_search", "sample"):
+            return None
+        if any(getattr(cfg, k, None) for k in _OWN) or cfg.use_cache is False or model_kwargs.get("past_key_values") is not None:
+            return None
+        x = a.get("inputs")
+        x = x if x is not None else model_kwargs.get("input_ids", model_kwargs.get("inputs_embeds"))
+        if not isinstance(x, torch.Tensor) or x.dim() < 2:
+            return None
+        n = max(x.shape[1] + (cfg.max_new_tokens if cfg.max_new_tokens is not None else cfg.max_length), getattr(cfg, "max_cache_len", None) or 0, getattr(self, "_previous_max_cache_length", 0))
+        if not x.shape[0] * (cfg.num_return_sequences or 1) * n <= self.glyd_fast:
+            return None
+    except Exception:
+        return None
+    if a.get("generation_config") is not None:
+        a["generation_config"] = copy.deepcopy(a["generation_config"])  # (the call's own left as it was)
+        a["generation_config"].cache_implementation = "static"
+    else:
+        a["kwargs"] = dict(a.get("kwargs", {}), cache_implementation="static")
+    return b
+
+
+class _Streamed:
+    """A streamer's calls passed on but for the first `skip` puts, counted (puts): the fast attempt's, or, for the call
+    run again eager after it failed to compile, those the attempt streamed (the prompt, and the tokens before its
+    first compiled step) left out, so that the streamer's text is the eager run's."""
+
+    def __init__(self, streamer, skip=0):
+        self.streamer, self.skip, self.puts = streamer, skip, 0
+
+    def put(self, value):
+        self.puts += 1
+        if self.puts > self.skip:
+            self.streamer.put(value)
+
+    def __getattr__(self, name):  # end(), and anything else
+        return getattr(self.streamer, name)
+
+
+def _generate(self, own, *args, **kwargs):
+    """fast_generate's generate(): the call with the static cache where _fast takes it, else as it came; one whose
+    forward fails to compile (_compile_error) runs again as it came, from its start (a streamer's text as the eager
+    run's: _Streamed), and so do the model's later calls, with one warning (where that fails too, its error is the
+    call's); any other error is the call's, and the next call compiles as before. The re-run from the random state the
+    call found (CPU and the model's GPU): a sampled call draws what the attempt drew, and returns what it would have
+    eager. TOKENIZERS_PARALLELISM, which transformers sets to 0 for the process where it compiles, left as it was
+    before the call, or unset (per call: two calls at once in two threads can leave it 0, as transformers' own do)."""
+    b = None if self.__dict__.get("glyd_eager") else _fast(self, own, args, kwargs)
+    if b is None:
+        return own(self, *args, **kwargs)
+    streamer = b.arguments.get("streamer")
+    if streamer is not None:
+        b.arguments["streamer"] = counted = _Streamed(streamer)
+    parallel = os.environ.get("TOKENIZERS_PARALLELISM")
+    rng = torch.get_rng_state(), torch.cuda.get_rng_state(self.device)
+    try:
+        return own(*b.args, **b.kwargs)
+    except Exception as e:
+        if not _compile_error(e):
+            raise
+        torch.set_rng_state(rng[0])
+        torch.cuda.set_rng_state(rng[1], self.device)
+        again = inspect.signature(own).bind(self, *args, **kwargs)
+        if streamer is not None:
+            again.arguments["streamer"] = _Streamed(streamer, counted.puts)
+        out = own(*again.args, **again.kwargs)
+        self.glyd_eager = True
+        warnings.warn(f"glyd: {type(self).__name__}'s generate() compiled failed ({type(e).__name__}: {str(e).splitlines()[0][:160] if str(e) else ''}); it runs as transformers runs it from here on", stacklevel=3)
+        return out
+    finally:
+        if parallel is None:
+            os.environ.pop("TOKENIZERS_PARALLELISM", None)
+        else:
+            os.environ["TOKENIZERS_PARALLELISM"] = parallel
+
+
+def _compiled_call(self, own, compile_config=None):
+    """fast_generate's get_compiled_call (what transformers' decoding steps call): the forward compiled where
+    transformers compiles it, as it does (torch.compile, compile_config or its default) but unbound, called with the
+    model, and kept in _COMPILED by the model, not on it (transformers' own, model.__call__ compiled and kept as
+    model._compiled_call, keeps the model until a garbage collection, and a compiled function on the model stops it
+    pickling), and garbage collected after a call that compiled (torch._dynamo's tracing leaves the model's modules in
+    cycles): a model let go of is freed at del, as an eager one. Its calls with torch._dynamo's recompile_limit
+    RECOMPILES at least (for them alone: dynamo reads it as it compiles): each model's forward is a graph of its own
+    (its GLinears' handles are constants of it), all on the one frame transformers' forwards share, of which dynamo
+    compiles recompile_limit graphs at most (8 by default) and runs the rest uncompiled; ten Qwen3-0.6B models one
+    after another in a process all compiled (graphs 2 to 11), the second to tenth at 296.5-301.3 tokens/s against
+    99.6 eager (RTX 4080 SUPER: benchmarks/gpu/rtx4080s-fastloop-2026-09-28/checks-5d38f20/many.txt)."""
+    import torch._dynamo
+    from torch._dynamo.utils import counters
+
+    f = own(self, compile_config)
+    if self.__dict__.pop("_compiled_call", None) is None:  # (Llama 4's, which transformers runs eager)
+        return f
+    cfg = compile_config or self._default_compile_config()
+    c = _COMPILED.get(self)
+    if c is None or c[0] != cfg:
+        c = _COMPILED[self] = (cfg, torch.compile(type(self).__call__, **cfg.to_dict()))
+
+    def call(*args, **kwargs):
+        graphs = counters["stats"]["unique_graphs"]
+        try:
+            with torch._dynamo.config.patch(recompile_limit=max(RECOMPILES, torch._dynamo.config.recompile_limit)):
+                return c[1](self, *args, **kwargs)
+        finally:
+            if counters["stats"]["unique_graphs"] != graphs:
+                gc.collect()
+
+    return call
+
+
 @torch.no_grad()
-def compress(model, *, layout="auto", exact=False, merge=True):
+def compress(model, *, layout="auto", exact=False, merge=True, compile=True):
     """Packs an already-loaded bf16 model in place on the GPU and returns it:
     its Linears in `layout` ("auto": best_layout's pick for the GPU; "mma":
     tiered; "mma12": 12-bit) and its embeddings in the fast format, each on
@@ -731,8 +986,9 @@ def compress(model, *, layout="auto", exact=False, merge=True):
     rest of the model with it unless it is spread over several). exact:
     every product decodes its matrix whole and multiplies by F.linear, as
     nn.Linear does: outputs bit for bit bf16's (and no merging). merge: q, k,
-    v and gate, up as one product each (not with exact). A mixture of
-    experts' Experts modules packed too (moe.py)."""
+    v and gate, up as one product each (not with exact). compile: generate()
+    compiled (fast_generate; not with exact, whose tokens are bf16's eager
+    ones). A mixture of experts' Experts modules packed too (moe.py)."""
     cuda = {p.device for p in model.parameters() if p.is_cuda}
     home = min(cuda, key=lambda d: d.index) if cuda else torch.device("cuda", torch.cuda.current_device())
     if merge and not exact:
@@ -747,4 +1003,4 @@ def compress(model, *, layout="auto", exact=False, merge=True):
         model.to(home)
     set_scratch(model, exact)
     torch.cuda.empty_cache()
-    return model
+    return fast_generate(model) if compile and not exact else model

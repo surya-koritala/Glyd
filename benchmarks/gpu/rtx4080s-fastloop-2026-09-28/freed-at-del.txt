@@ -1,0 +1,6 @@
+package: generate 0: 4.26 s (30.1 tokens/s); tokens [304, 279, 220, 16, 24, 20, 15, 82, 448, 279, 11345, 315]
+package: generate 1: 0.70 s (181.7 tokens/s); tokens [304, 279, 220, 16, 24, 20, 15, 82, 448, 279, 11345, 315]
+package: generate 2: 0.69 s (184.2 tokens/s); tokens [304, 279, 220, 16, 24, 20, 15, 82, 448, 279, 11345, 315]
+package: held 3.05 GB; after del 0.27 GB, the model freed
+package: after gc.collect() 0.27 GB, the model freed
+free exit 0

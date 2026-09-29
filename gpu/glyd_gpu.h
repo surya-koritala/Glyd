@@ -32,10 +32,12 @@
 #include <stdint.h>
 #include <cuda_runtime_api.h> /* cudaStream_t */
 
-/* The C API's version, one more whenever a function's arguments change: 2
- * from the prompt products' done counters, glyd_gpu_hold and the decode's
- * warps (0.21.0's library has no glyd_gpu_api_version: 1); 4 from the
- * routes, glyd_gpu_*_linear and a GPU's class in its code. */
+/* The C API's version, one more whenever a function's arguments, or what
+ * they must hold, change: 2 from the prompt products' done counters,
+ * glyd_gpu_hold and the decode's warps (0.21.0's library has no
+ * glyd_gpu_api_version: 1); 3 from glyd_gpu_mma12_gemm_wg's counters, at
+ * least 1024 (0.24.0); 4 from the routes, glyd_gpu_*_linear and a GPU's
+ * class in its code. */
 #define GLYD_GPU_API_VERSION 4
 
 #ifdef __cplusplus
@@ -109,7 +111,7 @@ int glyd_gpu_mma12_gemm_big(const uint8_t* data, const uint32_t* exc, const int3
  * 16-byte aligned), the compressed weights copied into shared memory a stage
  * at a time: mid on Ampere and later (cudaErrorNotSupported before); wg on
  * Hopper (compute capability 9.0) alone, by TMA and wgmma. done: O / 64
- * counters. */
+ * counters (wg: at least 1024, or O / 64 where that is more). */
 int glyd_gpu_mma12_gemm_mid_workspace(int64_t O, int64_t K, int64_t M, size_t* bytes);
 int glyd_gpu_mma12_gemm_mid(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
                             int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,
@@ -149,7 +151,7 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
 #define GLYD_GPU_ROUTE_MID 2    /* glyd_gpu_mma12_gemm_mid */
 #define GLYD_GPU_ROUTE_WG 3     /* glyd_gpu_mma12_gemm_wg */
 #define GLYD_GPU_ROUTE_BIG 4    /* glyd_gpu_mma_gemm_big, glyd_gpu_mma12_gemm_big: variant 0 */
-#define GLYD_GPU_ROUTE_AHEAD 5  /* DECODE, W decoded ahead beside the products before it (GeForce Ada's prompts) */
+#define GLYD_GPU_ROUTE_AHEAD 5  /* DECODE, W decoded ahead beside the products before it (GeForce Ada's, an A10's prompts) */
 #define GLYD_GPU_GEFORCE 1000   /* a GPU's class: "GeForce" in its name */
 #define GLYD_GPU_A10 2000       /* a GPU's class: "A10" in its name as a word */
 
@@ -159,7 +161,8 @@ int glyd_gpu_gpu(int* gpu);
  * 12-bit one; last (NULL: not asked): the last token count from M on that
  * takes it (INT64_MAX: every one past M). GLYD_WG_MIN, GLYD_WG_MAX,
  * GLYD_MID_MIN and GLYD_DEC_MIN in the environment move its thresholds
- * (read at the first call). */
+ * (read at the first call; GLYD_DEC_MIN: a 12-bit prompt decoded from that
+ * many tokens on any GPU, where unset an A100's from 769). */
 int glyd_gpu_mma_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
 int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
 
@@ -167,7 +170,7 @@ int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* rout
  * its kernel, its arguments as that kernel's; DECODE and AHEAD by the prompt
  * kernel (BIG), but on Hopper and where K is not a multiple of 64
  * (cudaErrorNotSupported: decode W there). done: (M + 127) / 128 x O / 64
- * counters. */
+ * counters, and at least 1024 (the WG route's, as glyd_gpu_mma12_gemm_wg's). */
 int glyd_gpu_mma_linear_workspace(int64_t O, int64_t K, int64_t M, int64_t route, size_t* bytes);
 int glyd_gpu_mma_linear(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3],
                         int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,

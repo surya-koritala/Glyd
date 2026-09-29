@@ -69,7 +69,7 @@ fn run(args: &[String]) -> Result<()> {
             .collect();
         let xg = ctx.upload(&x)?;
         let (route, _) = lib.route(gpu, &w, m as i64)?;
-        let units = m.div_ceil(128) * (o / 64);
+        let units = (m.div_ceil(128) * (o / 64)).max(1024); // (the WG route's: at least 1024)
         let mut done = ctx.alloc(units * 4)?;
         done.zero()?;
         let (y1, y2) = (ctx.alloc(m * o * 2)?, ctx.alloc(m * o * 2)?);

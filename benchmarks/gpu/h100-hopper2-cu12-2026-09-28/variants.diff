@@ -1,0 +1,38 @@
+--- /home/ubuntu/cu12w/base/gpu/glyd_gpu.cu	2026-09-28 21:44:46.000000000 +0000
++++ /home/ubuntu/cu12w/fix/gpu/glyd_gpu.cu	2026-09-28 22:40:20.613389608 +0000
+@@ -1969,7 +1969,8 @@
+     uint32_t* xw = (uint32_t*)(gbase + C::NS * C::SLOT + 16 * C::NS) + 256 * warp;  // this warp's exceptions' scratch
+     ((uint4*)xw)[2 * lane] = ((uint4*)xw)[2 * lane + 1] = make_uint4(0u, 0u, 0u, 0u);
+     __syncwarp();
+-    float d[NT / 2];  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a unit's first product
++    float d[NT / 2] = {};  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a unit's first product
++    // (zeroed once: left unset, CUDA 12.8's ptxas saw it defined inside the loop and serialized every wgmma, C7515)
+     uint32_t A0[4][4], A1[4][4];
+     int held = -1;  // the slot whose products may still be running
+     auto release = [&](int sl) {  // the slot is free for stage j + NS (lane 0 arrives, by predicate: no branch among the products)
+@@ -2308,7 +2309,8 @@
+     uint32_t* xw = (uint32_t*)(smem + C::NS * (C::XB + C::WB) + 16 * C::NS + 16) + 256 * warp;  // this warp's exceptions' scratch
+     ((uint4*)xw)[2 * lane] = ((uint4*)xw)[2 * lane + 1] = make_uint4(0u, 0u, 0u, 0u);
+     __syncwarp();
+-    float d[NT / 2];  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a tile's first product
++    float d[NT / 2] = {};  // rows 16w + g (+ 8), tokens 8jn + 2t (+ 1): d[4jn + 2h + c]; set by a tile's first product
++    // (zeroed once: left unset, CUDA 12.8's ptxas saw it defined inside the loop and serialized every wgmma, C7515)
+     uint32_t A[4][4];
+     int held = -1;  // the slot of the stage before, whose products may still be running
+     auto release = [&](int sl) {  // a warpgroup's first warp's lane i arrives on block i's barrier of the cluster, by predicate
+--- /home/ubuntu/cu12w/fix/gpu/glyd_gpu.cu	2026-09-28 22:40:20.613389608 +0000
++++ /home/ubuntu/cu12w/fixn1/gpu/glyd_gpu.cu	2026-09-28 22:40:20.614389603 +0000
+@@ -3694,7 +3694,12 @@
+         if (dev < MAX_DEVICES) known[dev] = most;
+     }
+     int64_t nc = std::max<int64_t>(1, std::min<int64_t>(most, T * S / 8));
+-    int64_t R = T % nc, D = T - R, ncs = D ? std::min<int64_t>(nc, C::SPLIT * R) : nc;  // the tiles left past whole waves, split over ncs clusters (all where they are all the tiles)
++    // Fewer tiles than clusters: a whole number of clusters a tile, where that idles at most a sixth of them (a tile's
++    // stages split at the same places, its parts summed over as few), as the TMA kernel's blocks a unit.
++    if (T < nc && 6 * (nc / T * T) >= 5 * nc) nc = nc / T * T;
++    // The tiles left past whole waves, split over ncs clusters: all of them where those are all the tiles, else a whole
++    // number a tile, up to 3.
++    int64_t R = T % nc, D = T - R, ncs = !R ? 0 : D ? R * std::min<int64_t>(C::SPLIT, nc / R) : nc;
+     if (need) {
+         *need = std::max(*need, (size_t)(R ? 2 * ncs * CL * NT * 128 : 0) * sizeof(float));
+         return 0;

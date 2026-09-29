@@ -1,0 +1,20 @@
+Qwen3-8B static batch 1: cache 256 (max_new_tokens 240), stopped at 64: 28.33 ms a step
+Qwen3-8B static batch 1: cache 1024 (max_new_tokens 1008), stopped at 64: 31.25 ms a step
+Qwen3-8B static batch 1: cache 2048 (max_new_tokens 2032), stopped at 64: 34.88 ms a step
+Qwen3-8B static batch 1: cache 4096 (max_new_tokens 4080), stopped at 64: 42.78 ms a step
+Qwen3-8B static batch 1: prompt 512, 64 new: 29.68 ms a step
+Qwen3-8B static batch 1: prompt 2048, 64 new: 35.87 ms a step
+Qwen3-8B eager batch 1: cache 256 (max_new_tokens 240), stopped at 64: 38.31 ms a step
+Qwen3-8B eager batch 1: cache 1024 (max_new_tokens 1008), stopped at 64: 36.91 ms a step
+Qwen3-8B eager batch 1: cache 2048 (max_new_tokens 2032), stopped at 64: 37.21 ms a step
+Qwen3-8B eager batch 1: cache 4096 (max_new_tokens 4080), stopped at 64: 33.60 ms a step
+Qwen3-8B eager batch 1: prompt 512, 64 new: 35.63 ms a step
+Qwen3-8B eager batch 1: prompt 2048, 64 new: 33.79 ms a step
+Qwen3-8B static batch 8: cache 256 (max_new_tokens 240), stopped at 64: 33.91 ms a step
+Qwen3-8B static batch 8: cache 1024 (max_new_tokens 1008), stopped at 64: 52.56 ms a step
+Qwen3-8B static batch 8: cache 2048 (max_new_tokens 2032), stopped at 64: 76.62 ms a step
+Qwen3-8B static batch 8: cache 4096 (max_new_tokens 4080), stopped at 64: 126.47 ms a step
+Qwen3-8B eager batch 8: cache 256 (max_new_tokens 240), stopped at 64: 35.77 ms a step
+Qwen3-8B eager batch 8: cache 1024 (max_new_tokens 1008), stopped at 64: 33.57 ms a step
+Qwen3-8B eager batch 8: cache 2048 (max_new_tokens 2032), stopped at 64: 35.79 ms a step
+Qwen3-8B eager batch 8: cache 4096 (max_new_tokens 4080), stopped at 64: 35.89 ms a step

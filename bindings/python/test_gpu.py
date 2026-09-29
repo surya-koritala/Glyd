@@ -3,7 +3,8 @@ answers, the glyd-v1 names and manifest, import glyd without torch, and the
 library's C header against the package's calls.
 Where a CUDA GPU, PyTorch and transformers are at hand (else skipped):
 every mixture-of-experts family of transformers as a tiny random model,
-packed and saved (test_moe_families), and the CLI's pack and verify on one.
+packed and saved (test_moe_families), generate() compiled where
+transformers' static cache works, and the CLI's pack and verify on one.
 
     python test_gpu.py              (or pytest test_gpu.py)
 
@@ -161,9 +162,12 @@ def test_check_files():
     shard, a merged pack's member renamed in glyd.json (to the other's name, by a letter, to a saved tensor's), a pack
     holding another's tensor or one saved as it is, a tensor neither packed nor hashed there, a pack's buffer missing,
     the index naming another shard; glyd.json's map damaged (its key, its value) or gone where its glyd (0.25 on) or
-    its format (glyd-v3) says it is there, its glyd not a version. A save of glyd 0.24 without the map passes with its
-    tensors unchecked."""
+    its format (glyd-v3) says it is there, its glyd not a version, a key glyd.json does not have in a save of this
+    glyd or an older one. A save of glyd 0.24 without the map passes with its tensors unchecked; a newer glyd's key is
+    skipped with a warning, the rest checked."""
+    import glyd
     import hashlib
+    import warnings
     sha = lambda b: hashlib.sha256(b).hexdigest()
     norm, emb = bytes(range(256)) * 2, bytes((7 * i) % 251 for i in range(4096))
     tensors = {fmt.key("m.gate_proj", "data"): ("U8", [2560]), fmt.key("m.gate_proj", "blocks"): ("U8", [400]), fmt.key("m.gate_proj", "block_base"): ("I32", [3]), "m.norm.weight": ("BF16", [256]), "m.emb.weight": ("BF16", [16, 128])}
@@ -190,7 +194,13 @@ def test_check_files():
         assert fmt.check_files(d, dict(old, glyd="0.24.0")) == (0, 2)
         refused(d, old, "no sha256 for the tensors saved as they are, which a glyd-v1 of glyd 0.25.0 has")
         refused(d, dict(old, glyd="0.24.0", format="glyd-v3"), "which a glyd-v3 of glyd 0.24.0 has")
-        refused(d, {("densors" if k == "tensors" else k): v for k, v in m.items()}, "'densors', a key glyd.json does not have")
+        for by in (glyd.__version__, "0.21.0"):  # this glyd's save, an older one's
+            refused(d, {("densors" if k == "tensors" else k): v for k, v in dict(m, glyd=by).items()}, "'densors', a key glyd.json does not have")
+        newer = dict(m, glyd="99.0.0", future={"x": 1})  # a newer glyd's save: its key skipped, with a warning
+        with warnings.catch_warnings(record=True) as said:
+            warnings.simplefilter("always")
+            assert fmt.check_files(d, newer) == (2, 0)
+        assert any("'future', a key of glyd 99.0.0, newer than this one" in str(w.message) for w in said), [str(w.message) for w in said]
         for damaged in (None, [], "x"):
             refused(d, dict(m, tensors=damaged), '"tensors" is not an object of sha256')
         refused(d, dict(m, glyd="0.x"), "not a version")
@@ -198,6 +208,9 @@ def test_check_files():
         b[-4096 - 100] ^= 1  # a byte of m.norm.weight, saved as it is
         open(f, "wb").write(bytes(b))
         refused(d, m, "m.norm.weight is other bytes")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            refused(d, newer, "m.norm.weight is other bytes")  # (the rest of a newer glyd's save checked)
         safetensors(f, tensors, {"format": "pt"}, data)
         open(f, "ab").write(b"\0" * 16)
         refused(d, m, "16 bytes past its last tensor")
@@ -534,6 +547,90 @@ def test_moe_families():
             moe_family(torch, kind, over, d)
             shutil.rmtree(d)
             os.makedirs(d)
+
+
+def test_compiled_generate_where_the_static_cache_works():
+    """glyd.from_pretrained's generate() compiled (model.fast_generate) but where transformers 5.17's static cache
+    fails, which runs eager from the start (no failing first call, no warning): Llama 4, and a model with multi-head
+    latent attention whose config has fewer key/value heads than heads (DeepSeek V3's as the tiny config makes it);
+    with as many (as the released checkpoints have), and Qwen3-MoE, compiled."""
+    torch = cuda()
+    if torch is None:
+        print("test_compiled_generate_where_the_static_cache_works: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    import warnings
+    import glyd
+    from glyd.gpu import model as gm
+
+    with tempfile.TemporaryDirectory() as d:
+        for kind, kv, fast in (("deepseek_v3", 2, False), ("deepseek_v3", 4, True), ("llama4_text", None, False), ("qwen3_moe", None, True)):
+            model, auto, cfg, ids, kw = tiny_model(torch, kind, dict(FAMILIES[kind], **({"num_key_value_heads": kv} if kv else {})))
+            model.to(torch.bfloat16).save_pretrained(d)
+            del model
+            g = glyd.from_pretrained(d)
+            x = ids[:1, :8]
+            with warnings.catch_warnings(record=True) as w, torch.no_grad():
+                warnings.simplefilter("always")
+                g.generate(x, attention_mask=torch.ones_like(x), max_new_tokens=4, do_sample=False, pad_token_id=0)
+            said = [str(m.message) for m in w if "glyd" in str(m.message)]
+            fast = fast and torch.__version__ >= "2.13"  # (below it, eager as in glyd 0.23)
+            assert ("glyd_fast" in g.__dict__, g in gm._COMPILED, said) == (fast, fast, []), (kind, kv, said)
+            del g
+            torch._dynamo.reset()
+
+
+def test_compiled_generate_from_torch_2_13():
+    """generate() compiled (model.fast_generate) from PyTorch 2.13 on: with torch.__version__ an older one's, the model
+    is left as it was (its generate() eager, as in glyd 0.23); with the one installed (2.13 or later) it is set up."""
+    torch = cuda()
+    if torch is None:
+        print("test_compiled_generate_from_torch_2_13: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    import glyd.gpu as gg
+    from glyd.gpu import model as gm
+    from torch.torch_version import TorchVersion
+
+    model, auto, cfg, ids, kw = tiny_model(torch, "qwen3_moe", FAMILIES["qwen3_moe"])
+    g = gg.compress(model.to(torch.bfloat16), compile=False)
+    installed = torch.__version__
+    try:
+        for old in ("2.5.1", "2.11.0+cu128", "2.12.1", "2.13.0a0+git1234"):
+            torch.__version__ = TorchVersion(old)
+            assert "glyd_fast" not in gm.fast_generate(g).__dict__, old
+    finally:
+        torch.__version__ = installed
+    assert ("glyd_fast" in gm.fast_generate(g).__dict__) == (installed >= "2.13"), installed
+
+
+def test_compiled_generate_eager_where_transformers_differs():
+    """fast_generate's probe of the helpers the gate reads (transformers 5.17's _prepare_generation_config and
+    get_generation_mode): with the first gone, one warning, and the model left as it was (its generate() eager);
+    below PyTorch 2.13 no probe, nothing said. A generation of the model's own with no search modes (DiffusionGemma's
+    config refuses get_generation_mode): left as it was, nothing said."""
+    torch = cuda()
+    if torch is None:
+        print("test_compiled_generate_eager_where_transformers_differs: skipped (no CUDA GPU, PyTorch or transformers)")
+        return
+    import warnings
+    import glyd.gpu as gg
+    from glyd.gpu import model as gm
+
+    model, auto, cfg, ids, kw = tiny_model(torch, "qwen3_moe", FAMILIES["qwen3_moe"])
+    g = gg.compress(model.to(torch.bfloat16), compile=False)
+    g._prepare_generation_config = None  # (the model's own, over its class's: gone)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        gm.fast_generate(g)
+    said = [str(m.message) for m in w if "glyd" in str(m.message)]
+    assert "glyd_fast" not in g.__dict__ and len(said) == (torch.__version__ >= "2.13"), said
+    del g._prepare_generation_config
+    assert ("glyd_fast" in gm.fast_generate(g).__dict__) == (torch.__version__ >= "2.13")
+    model, auto, cfg, ids, kw = tiny_model(torch, "diffusion_gemma", FAMILIES["diffusion_gemma"])
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        g = gg.compress(model.to(torch.bfloat16))
+    said = [str(m.message) for m in w if "glyd" in str(m.message)]
+    assert "glyd_fast" not in g.__dict__ and not said, said
 
 
 def test_hooks_put_before_the_packs():

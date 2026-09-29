@@ -1,0 +1,42 @@
+Qwen/Qwen3-0.6B exact compiled, Qwen/Qwen3-1.7B loaded after: the first's CUDA graph replayed, both models' logits as before
+Qwen/Qwen3-0.6B: bf16 loaded in 0.1 s, peak 1.66 GB, holds 1.19 GB, largest tensor 0.31 GB
+Qwen/Qwen3-0.6B: glyd mma fused loaded in 0.8 s, peak 2.21 GB: packed weights 1.02 GB + largest tensor 0.31 GB + 0.87 GB; holds 1.31 GB
+   generated tokens identical to bf16: 0 of 32; logits bit-identical: False
+   text:  with the invention of the first digital computer, which was a revolutionary step in the field of information processing. However, the development of data compression technology has not been
+   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's 8 of 32
+   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past 1280 positions (max_new_tokens or max_cache_len), disable_compile, return_dict_in_generate eager; as another model's assistant, its tokens as eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's, a streamer's text eager's; sampled from a seed, its tokens and text a seeded eager run's
+   generate() compiled from two fresh threads in turn, each cache longer than any before: tokens as this thread's
+   return_dict_in_generate: continued as eager: 16 tokens past the returned cache
+   a prompt of 2100 tokens: 112 products decoded ahead, logits as decoded on the current stream, bit for bit
+   glyd.gpu.compress: the same 1.02 GB, logits and tokens bit for bit
+   compiled (a static cache, CUDA graphs, fullgraph): tokens as plain generate()'s: 32 of 32
+Qwen/Qwen3-0.6B: glyd exact loaded in 0.8 s, peak 2.22 GB, holds 1.10 GB; logits bit-identical: True (and a prompt of 2100 tokens'); generated tokens identical to bf16: 32 of 32
+   compiled: tokens as bf16's eager: 32 of 32
+Qwen/Qwen3-0.6B: saved in 0.8 s: 0.91 GB of safetensors; config.json, generation_config.json, glyd.json, merges.txt, model.safetensors, tokenizer.json, tokenizer_config.json, vocab.json
+   from_pretrained(path, verify=False): 0 tensors verified, loaded in 0.4 s, peak 2.19 GB, holds 1.02 GB; logits and tokens as the saved model's
+   from_pretrained(path, verify=True): 198 tensors verified, loaded in 0.8 s, peak 2.19 GB, holds 1.03 GB; logits and tokens as the saved model's
+   from_pretrained(path, exact=True): merged groups split, loaded in 0.6 s; logits bit-identical to bf16: True
+   from_pretrained(path, layout='mma12'): the packs transcoded, logits and tokens as mma12 packed from bf16
+   python -m glyd.gpu verify: /home/surya-koritala/p1/tmp/tmplct71bxy: 198 tensors decode to glyd.json's sha256
+   python -m glyd.gpu fit: Qwen3-0.6B on a 16 GB GPU: bf16 needs 4.1 GB, fits; Glyd 3.6 GB, fits
+Qwen/Qwen3-1.7B: bf16 loaded in 0.3 s, peak 4.37 GB, holds 3.44 GB, largest tensor 0.62 GB
+Qwen/Qwen3-1.7B: glyd mma fused loaded in 2.1 s, peak 4.11 GB: packed weights 2.75 GB + largest tensor 0.62 GB + 0.74 GB; holds 2.79 GB
+   generated tokens identical to bf16: 13 of 32; logits bit-identical: False
+   text:  in the 1950s with the advent of digital storage and transmission. As technology advanced, the need for efficient data compression techniques became more apparent,
+   generate(): compiled by default (a static cache, CUDA graphs), eager with compile=False: tokens as eager's 17 of 32
+   GLYD_COMPILE=0 eager; a cache of the call's own, two beams, a static cache past 1280 positions (max_new_tokens or max_cache_len), disable_compile, return_dict_in_generate eager; as another model's assistant, its tokens as eager; out of memory compiling raised, the next call compiled; a backend that fails: one warning, the call run again eager, and the next, their tokens eager's, a streamer's text eager's; sampled from a seed, its tokens and text a seeded eager run's
+   generate() compiled from two fresh threads in turn, each cache longer than any before: tokens as this thread's
+   a prompt of 2100 tokens: 112 products decoded ahead, logits as decoded on the current stream, bit for bit
+   glyd.gpu.compress: the same 2.75 GB, logits and tokens bit for bit
+   compiled (a static cache, CUDA graphs, fullgraph): tokens as plain generate()'s: 13 of 32
+Qwen/Qwen3-1.7B: glyd exact loaded in 2.0 s, peak 4.12 GB, holds 3.42 GB; logits bit-identical: True (and a prompt of 2100 tokens'); generated tokens identical to bf16: 32 of 32
+   compiled: tokens as bf16's eager: 13 of 32
+Qwen/Qwen3-1.7B: saved in 2.2 s: 2.52 GB of safetensors; config.json, generation_config.json, glyd.json, merges.txt, model.safetensors, tokenizer.json, tokenizer_config.json, vocab.json
+   from_pretrained(path, verify=False): 0 tensors verified, loaded in 0.7 s, peak 4.08 GB, holds 2.75 GB; logits and tokens as the saved model's
+   from_pretrained(path, verify=True): 198 tensors verified, loaded in 1.9 s, peak 4.31 GB, holds 2.75 GB; logits and tokens as the saved model's
+   from_pretrained(path, exact=True): merged groups split, loaded in 1.5 s; logits bit-identical to bf16: True
+   from_pretrained(path, layout='mma12'): the packs transcoded, logits and tokens as mma12 packed from bf16
+   python -m glyd.gpu verify: /home/surya-koritala/p1/tmp/tmpivp63t3v: 198 tensors decode to glyd.json's sha256
+   python -m glyd.gpu fit: Qwen3-1.7B on a 16 GB GPU: bf16 needs 6.6 GB, fits; Glyd 5.3 GB, fits
+check_api: all passed (/home/surya-koritala/p8fastloop3/bindings/python/glyd/__init__.py)
+check_api_dense exit 0

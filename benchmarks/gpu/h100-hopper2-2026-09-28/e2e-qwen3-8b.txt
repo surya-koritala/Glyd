@@ -1,0 +1,18 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 6730.24it/s]
+[transformers] The attention mask is not set with a batched input, and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 16.8 tokens/s (16.8 a sequence), peak VRAM 16.43 GB
+bf16 (weights 16.38 GB): batch 8: 135.8 tokens/s (17.0 a sequence), peak VRAM 16.49 GB
+bf16 (weights 16.38 GB): batch 32: 564.2 tokens/s (17.6 a sequence), peak VRAM 16.70 GB
+bf16 (weights 16.38 GB): batch 64: 1129.4 tokens/s (17.6 a sequence), peak VRAM 16.99 GB
+bf16 prefill: 128 tokens 27.3 ms (4688 tokens/s), first token 30.1 ms, 512 tokens 27.8 ms (18449 tokens/s), first token 29.9 ms, 1024 tokens 36.4 ms (28111 tokens/s), first token 39.1 ms, 2048 tokens 71.3 ms (28708 tokens/s), first token 73.4 ms, 4096 tokens 142.6 ms (28727 tokens/s), first token 146.5 ms
+auto: mma12, the 12-bit decode keeps up with this GPU's memory
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.57 GB on 1 GPU
+glyd mma12 fused: batch 1: 39.5 tokens/s (39.5 a sequence), peak VRAM 12.59 GB
+glyd mma12 fused: batch 8: 315.7 tokens/s (39.5 a sequence), peak VRAM 12.66 GB
+glyd mma12 fused: batch 32: 1231.7 tokens/s (38.5 a sequence), peak VRAM 12.87 GB
+glyd mma12 fused: batch 64: 2382.7 tokens/s (37.2 a sequence), peak VRAM 13.15 GB
+glyd mma12 prefill: 128 tokens 30.0 ms (4263 tokens/s), first token 32.0 ms, 512 tokens 29.5 ms (17331 tokens/s), first token 31.9 ms, 1024 tokens 45.9 ms (22311 tokens/s), first token 48.6 ms, 2048 tokens 82.2 ms (24929 tokens/s), first token 85.4 ms, 4096 tokens 155.1 ms (26405 tokens/s), first token 156.5 ms
+logits bit-identical: False
+generated tokens identical to bf16: 0 of 32
+text:  in the 1950s, with the development of algorithms that could reduce the size of data for more efficient storage and transmission. Early methods were based

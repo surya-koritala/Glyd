@@ -1,0 +1,21 @@
+Qwen3-32B layer 10, 12-bit, NVIDIA H100 80GB HBM3, /home/ubuntu/main/lib90.so: qkv (10240, 5120) 10017 exc, o (5120, 8192) 7284 exc, gate_up (51200, 5120) 38531 exc, down (5120, 25600) 19865 exc
+Qwen3-32B qkv 10240x5120 M=160: cuBLAS 52.7 us 1.000x | wg 60.3 us 1.144x | dec 148.9 us 2.826x
+Qwen3-32B o 5120x8192 M=160: cuBLAS 46.8 us 1.000x | wg 52.9 us 1.131x | dec 116.2 us 2.483x
+Qwen3-32B gate_up 51200x5120 M=160: cuBLAS 202.7 us 1.000x | wg 230.4 us 1.136x | dec 665.2 us 3.282x
+Qwen3-32B down 5120x25600 M=160: cuBLAS 108.7 us 1.000x | wg 124.5 us 1.145x | dec 338.1 us 3.109x
+Qwen3-32B layer M=160: cuBLAS 410.9 us 1.000x | wg 468.1 us 1.139x | dec 1268.4 us 3.087x
+Qwen3-32B qkv 10240x5120 M=192: cuBLAS 54.0 us 1.000x | wg 61.5 us 1.139x | dec 151.1 us 2.797x
+Qwen3-32B o 5120x8192 M=192: cuBLAS 46.3 us 1.000x | wg 53.7 us 1.160x | dec 115.3 us 2.491x
+Qwen3-32B gate_up 51200x5120 M=192: cuBLAS 231.7 us 1.000x | wg 234.3 us 1.011x | dec 697.8 us 3.011x
+Qwen3-32B down 5120x25600 M=192: cuBLAS 111.2 us 1.000x | wg 125.0 us 1.124x | dec 339.0 us 3.048x
+Qwen3-32B layer M=192: cuBLAS 443.3 us 1.000x | wg 474.5 us 1.071x | dec 1303.1 us 2.940x
+Qwen3-32B qkv 10240x5120 M=384: cuBLAS 63.6 us 1.000x | wg 105.5 us 1.661x | dec 160.7 us 2.528x
+Qwen3-32B o 5120x8192 M=384: cuBLAS 54.1 us 1.000x | wg 85.0 us 1.571x | dec 123.7 us 2.287x
+Qwen3-32B gate_up 51200x5120 M=384: cuBLAS 291.2 us 1.000x | wg 424.3 us 1.457x | dec 754.2 us 2.590x
+Qwen3-32B down 5120x25600 M=384: cuBLAS 143.4 us 1.000x | wg 224.9 us 1.568x | dec 371.8 us 2.593x
+Qwen3-32B layer M=384: cuBLAS 552.3 us 1.000x | wg 839.7 us 1.520x | dec 1410.4 us 2.554x
+Qwen3-32B qkv 10240x5120 M=768: cuBLAS 109.4 us 1.000x | wg 189.1 us 1.729x | dec 206.2 us 1.886x
+Qwen3-32B o 5120x8192 M=768: cuBLAS 86.7 us 1.000x | wg 158.1 us 1.824x | dec 157.3 us 1.814x
+Qwen3-32B gate_up 51200x5120 M=768: cuBLAS 526.1 us 1.000x | wg 742.5 us 1.411x | dec 990.8 us 1.883x
+Qwen3-32B down 5120x25600 M=768: cuBLAS 256.8 us 1.000x | wg 407.9 us 1.588x | dec 485.5 us 1.890x
+Qwen3-32B layer M=768: cuBLAS 979.0 us 1.000x | wg 1497.6 us 1.530x | dec 1839.7 us 1.879x

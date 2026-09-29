@@ -1,0 +1,154 @@
+NVIDIA H100 80GB HBM3, 9.0, 1980 MHz, 700.00 W; kernels timed: wg
+CUDA 13: /home/ubuntu/gpuenv/lib/python3.12/site-packages/nvidia/cu13: Cuda compilation tools, release 13.0, V13.0.88 Build cuda_13.0.r13.0/compiler.36424714_0 
+CUDA 12: /home/ubuntu/cu12w/cu12: Cuda compilation tools, release 12.8, V12.8.93 Build cuda_12.8.r12.8/compiler.35583870_0 
+the instance's CUDA 12: none
+gcc: gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+
+(a) Builds (sm_90a; ptxas -v): registers / spill bytes / C7515 (wgmma serialized) a kernel; SASS: HGMMAs each
+    followed by a wait for all (WARPGROUP.DEPBAR.LE gsb0, 0x0) out of all, in mma12_wgp_kernel<256> / mma12_tma_kernel<64>
+  cu12-base: built | wgp256 168/0/C7515 wgp192 168/0/C7515 tma16 84/0/C7515 tma32 104/0/C7515 tma64 128/0/C7515 tma96 168/0/C7515 tma112 168/0/C7515 tma128 168/0/C7515 | SASS: wgp256 4/4 HGMMAs waited out, tma64 12/12 HGMMAs waited out
+  cu12-fix: built | wgp256 168/0/- wgp192 168/0/- tma16 112/0/- tma32 134/0/- tma64 168/0/- tma96 168/0/- tma112 168/0/- tma128 168/0/- | SASS: wgp256 1/4 HGMMAs waited out, tma64 1/12 HGMMAs waited out
+  cu13-base: built | wgp256 168/0/- wgp192 168/0/- tma16 112/0/- tma32 134/0/- tma64 168/0/- tma96 168/0/- tma112 168/0/- tma128 168/0/- | SASS: wgp256 1/4 HGMMAs waited out, tma64 1/12 HGMMAs waited out
+  cu13-fix: built | wgp256 168/0/- wgp192 168/0/- tma16 112/0/- tma32 134/0/- tma64 168/0/- tma96 168/0/- tma112 168/0/- tma128 168/0/- | SASS: wgp256 1/4 HGMMAs waited out, tma64 1/12 HGMMAs waited out
+  cu13-fixn1: built | wgp256 168/0/- wgp192 168/0/- tma16 112/0/- tma32 134/0/- tma64 168/0/- tma96 168/0/- tma112 168/0/- tma128 168/0/- | SASS: wgp256 1/4 HGMMAs waited out, tma64 1/12 HGMMAs waited out
+
+(a) Hopper products (cu12_check.py: the self-test's matrices, 1-2100 tokens, bias and none): within 1e-2 of fp32
+    and the same every run; then bit for bit against cu13-base
+  cu12-base: mma_gemm_wg 304 products, 0 off; against cu13-base: 304 of 304 identical
+  cu12-fix: mma_gemm_wg 304 products, 0 off; against cu13-base: 304 of 304 identical
+  cu13-base: mma_gemm_wg 304 products, 0 off
+  cu13-fix: mma_gemm_wg 304 products, 0 off; against cu13-base: 304 of 304 identical
+  cu13-fixn1: mma_gemm_wg 304 products, 0 off; against cu13-base: 282 of 304 identical (0 of the differing at 128 tokens or fewer; e.g. 1024x2048 M=1100 bias=0)
+
+(a) Per product, kernel time / cuBLAS's (median over rounds; M 17-128 the TMA kernel, 129-1024 mma12_wgp_kernel)
+  model product M: cuBLAS us | cu12-base | cu12-fix | cu13-base | cu13-fix
+  Qwen3-8B qkv M=17: 28.9 | 1.024x | 0.978x | 0.974x | 0.962x
+  Qwen3-8B qkv M=64: 28.4 | 1.111x | 1.063x | 1.067x | 1.081x
+  Qwen3-8B qkv M=128: 29.1 | 1.276x | 1.233x | 1.226x | 1.237x
+  Qwen3-8B qkv M=129: 29.8 | 1.351x | 1.314x | 1.324x | 1.331x
+  Qwen3-8B qkv M=256: 31.2 | 1.552x | 1.506x | 1.486x | 1.510x
+  Qwen3-8B qkv M=512: 40.7 | 1.781x | 1.727x | 1.715x | 1.729x
+  Qwen3-8B qkv M=1024: 70.6 | 1.678x | 1.561x | 1.560x | 1.565x
+  Qwen3-8B o M=17: 20.9 | 1.067x | 1.024x | 1.024x | 1.051x
+  Qwen3-8B o M=64: 21.4 | 1.132x | 1.093x | 1.089x | 1.113x
+  Qwen3-8B o M=128: 21.9 | 1.279x | 1.251x | 1.241x | 1.272x
+  Qwen3-8B o M=129: 22.4 | 1.553x | 1.530x | 1.526x | 1.562x
+  Qwen3-8B o M=256: 27.1 | 1.570x | 1.549x | 1.551x | 1.538x
+  Qwen3-8B o M=512: 31.1 | 1.791x | 1.727x | 1.706x | 1.703x
+  Qwen3-8B o M=1024: 47.5 | 1.859x | 1.729x | 1.720x | 1.737x
+  Qwen3-8B gate_up M=17: 80.4 | 0.958x | 0.933x | 0.940x | 0.936x
+  Qwen3-8B gate_up M=64: 81.1 | 1.012x | 0.971x | 0.978x | 0.972x
+  Qwen3-8B gate_up M=128: 82.9 | 1.148x | 1.129x | 1.138x | 1.131x
+  Qwen3-8B gate_up M=129: 82.8 | 1.198x | 1.161x | 1.166x | 1.159x
+  Qwen3-8B gate_up M=256: 89.4 | 1.339x | 1.269x | 1.270x | 1.267x
+  Qwen3-8B gate_up M=512: 138.6 | 1.517x | 1.410x | 1.415x | 1.411x
+  Qwen3-8B gate_up M=1024: 263.9 | 1.488x | 1.358x | 1.367x | 1.369x
+  Qwen3-8B down M=17: 49.0 | 0.917x | 0.889x | 0.895x | 0.892x
+  Qwen3-8B down M=64: 49.8 | 0.957x | 0.914x | 0.917x | 0.921x
+  Qwen3-8B down M=128: 48.7 | 1.163x | 1.132x | 1.139x | 1.147x
+  Qwen3-8B down M=129: 53.3 | 1.110x | 1.101x | 1.093x | 1.105x
+  Qwen3-8B down M=256: 59.8 | 1.199x | 1.141x | 1.133x | 1.141x
+  Qwen3-8B down M=512: 73.0 | 1.592x | 1.494x | 1.489x | 1.499x
+  Qwen3-8B down M=1024: 130.4 | 1.597x | 1.481x | 1.477x | 1.479x
+  Qwen3-32B o M=17: 42.5 | 0.942x | 0.907x | 0.909x | 0.916x
+  Qwen3-32B o M=64: 44.0 | 0.968x | 0.923x | 0.921x | 0.919x
+  Qwen3-32B o M=128: 42.3 | 1.180x | 1.145x | 1.156x | 1.146x
+  Qwen3-32B o M=129: 45.2 | 1.153x | 1.165x | 1.135x | 1.128x
+  Qwen3-32B o M=256: 45.2 | 1.402x | 1.347x | 1.336x | 1.335x
+  Qwen3-32B o M=512: 64.0 | 1.615x | 1.533x | 1.540x | 1.546x
+  Qwen3-32B o M=1024: 112.4 | 1.627x | 1.483x | 1.480x | 1.482x
+  Qwen3-32B gate_up M=17: 190.4 | 0.939x | 0.926x | 0.921x | 0.922x
+  Qwen3-32B gate_up M=64: 197.5 | 0.953x | 0.928x | 0.935x | 0.932x
+  Qwen3-32B gate_up M=128: 199.0 | 1.082x | 1.092x | 1.102x | 1.095x
+  Qwen3-32B gate_up M=129: 198.8 | 1.172x | 1.138x | 1.144x | 1.138x
+  Qwen3-32B gate_up M=256: 215.9 | 1.276x | 1.196x | 1.201x | 1.201x
+  Qwen3-32B gate_up M=512: 358.4 | 1.386x | 1.290x | 1.295x | 1.292x
+  Qwen3-32B gate_up M=1024: 690.5 | 1.360x | 1.260x | 1.263x | 1.310x
+  Sums over each model's products above (time / cuBLAS's)
+  Qwen3-8B M=17: 0.970x | 0.939x | 0.943x | 0.941x
+  Qwen3-8B M=64: 1.027x | 0.984x | 0.988x | 0.991x
+  Qwen3-8B M=128: 1.188x | 1.161x | 1.165x | 1.169x
+  Qwen3-8B M=129: 1.240x | 1.212x | 1.213x | 1.219x
+  Qwen3-8B M=256: 1.361x | 1.304x | 1.300x | 1.303x
+  Qwen3-8B M=512: 1.604x | 1.512x | 1.509x | 1.511x
+  Qwen3-8B M=1024: 1.576x | 1.452x | 1.455x | 1.458x
+  Qwen3-32B M=17: 0.939x | 0.923x | 0.919x | 0.921x
+  Qwen3-32B M=64: 0.956x | 0.927x | 0.933x | 0.930x
+  Qwen3-32B M=128: 1.099x | 1.101x | 1.112x | 1.104x
+  Qwen3-32B M=129: 1.169x | 1.143x | 1.143x | 1.136x
+  Qwen3-32B M=256: 1.298x | 1.222x | 1.224x | 1.224x
+  Qwen3-32B M=512: 1.421x | 1.327x | 1.332x | 1.330x
+  Qwen3-32B M=1024: 1.397x | 1.291x | 1.294x | 1.334x
+  cu12-fix / cu12-base, kernel time a product: median 0.960, 0.911-1.010 over 42
+  cu13-fix / cu13-base, kernel time a product: median 1.002, 0.989-1.038 over 42
+  cu12-fix / cu13-fix, kernel time a product: median 0.997, 0.962-1.014 over 42
+
+(b) The whole-tiles rule: cu13-fixn1 against cu13-fix (library 4), kernel time / cuBLAS's (median over rounds)
+  Qwen3-14B o M=129: fix 1.253x | fix + rule 1.177x | rule/fix 0.940
+  Qwen3-14B o M=160: fix 1.226x | fix + rule 1.155x | rule/fix 0.939
+  Qwen3-14B o M=256: fix 1.452x | fix + rule 1.309x | rule/fix 0.903
+  Qwen3-14B o M=384: fix 1.559x | fix + rule 1.559x | rule/fix 1.004
+  Qwen3-14B o M=512: fix 1.612x | fix + rule 1.614x | rule/fix 0.999
+  Qwen3-14B o M=1024: fix 1.594x | fix + rule 1.592x | rule/fix 0.997
+  Qwen3-14B qkv M=129: fix 1.238x | fix + rule 1.196x | rule/fix 0.963
+  Qwen3-14B qkv M=160: fix 1.232x | fix + rule 1.190x | rule/fix 0.966
+  Qwen3-14B qkv M=256: fix 1.396x | fix + rule 1.303x | rule/fix 0.932
+  Qwen3-14B qkv M=384: fix 1.612x | fix + rule 1.492x | rule/fix 0.932
+  Qwen3-14B qkv M=512: fix 1.418x | fix + rule 1.248x | rule/fix 0.886
+  Qwen3-14B qkv M=1024: fix 1.305x | fix + rule 1.351x | rule/fix 1.030
+  Qwen3-32B o M=129: fix 1.133x | fix + rule 1.082x | rule/fix 0.956
+  Qwen3-32B o M=160: fix 1.108x | fix + rule 1.051x | rule/fix 0.952
+  Qwen3-32B o M=256: fix 1.322x | fix + rule 1.229x | rule/fix 0.934
+  Qwen3-32B o M=384: fix 1.560x | fix + rule 1.596x | rule/fix 1.002
+  Qwen3-32B o M=512: fix 1.526x | fix + rule 1.533x | rule/fix 1.005
+  Qwen3-32B o M=1024: fix 1.476x | fix + rule 1.476x | rule/fix 1.001
+  Qwen3-8B o M=129: fix 1.551x | fix + rule 1.390x | rule/fix 0.898
+  Qwen3-8B o M=160: fix 1.597x | fix + rule 1.427x | rule/fix 0.898
+  Qwen3-8B o M=256: fix 1.543x | fix + rule 1.333x | rule/fix 0.872
+  Qwen3-8B o M=384: fix 1.598x | fix + rule 1.456x | rule/fix 0.917
+  Qwen3-8B o M=512: fix 1.692x | fix + rule 1.532x | rule/fix 0.907
+  Qwen3-8B o M=1024: fix 1.706x | fix + rule 1.373x | rule/fix 0.806
+  Qwen3-8B qkv M=129: fix 1.340x | fix + rule 1.349x | rule/fix 1.001
+  Qwen3-8B qkv M=160: fix 1.319x | fix + rule 1.327x | rule/fix 1.006
+  Qwen3-8B qkv M=256: fix 1.462x | fix + rule 1.477x | rule/fix 1.005
+  Qwen3-8B qkv M=384: fix 1.672x | fix + rule 1.601x | rule/fix 0.993
+  Qwen3-8B qkv M=512: fix 1.730x | fix + rule 1.746x | rule/fix 1.007
+  Qwen3-8B qkv M=1024: fix 1.554x | fix + rule 1.523x | rule/fix 0.977
+  all: rule/fix 0.963 over 30 products
+
+(c) e2e with the winning library, cu13-fixn1 (the model: steps below)
+  bf16 prefill: 256 tokens 25.6 ms (9996 tokens/s), first token 23.9 ms, 1024 tokens 36.8 ms (27857 tokens/s), first token 38.8 ms
+  glyd mma12 fused: batch 1: 48.9 tokens/s (48.9 a sequence), peak VRAM 12.58 GB
+  glyd mma12 prefill: 256 tokens 24.2 ms (10557 tokens/s), first token 26.0 ms, 1024 tokens 44.9 ms (22819 tokens/s), first token 46.8 ms
+  logits bit-identical: False
+  generated tokens identical to bf16: 0 of 8
+  bf16 prefill: 256 tokens 21.9 ms (11713 tokens/s), first token 23.7 ms, 1024 tokens 35.4 ms (28928 tokens/s), first token 37.5 ms
+  glyd mma12 exact: batch 1: 34.1 tokens/s (34.1 a sequence), peak VRAM 13.56 GB
+  glyd mma12 prefill: 256 tokens 29.6 ms (8655 tokens/s), first token 31.8 ms, 1024 tokens 48.7 ms (21038 tokens/s), first token 50.7 ms
+  logits bit-identical: True
+  generated tokens identical to bf16: 8 of 8
+
+22:40:20 (+1 s) machine
+22:40:20 (+1 s) sources (13 changed lines in variants.diff)
+22:40:27 (+8 s) CUDA 12 /home/ubuntu/cu12w/cu12
+22:41:30 (+71 s) builds: 5 of 5
+22:41:33 (+74 s) check cu12-base
+22:41:36 (+77 s) check cu12-fix
+22:41:39 (+80 s) check cu13-base
+22:41:42 (+83 s) check cu13-fix
+22:41:44 (+85 s) check cu13-fixn1
+22:41:49 (+90 s) layers cu13-base round 1
+22:41:53 (+94 s) layers cu12-base round 1
+22:41:58 (+99 s) layers cu13-fix round 1
+22:42:02 (+103 s) layers cu12-fix round 1
+22:42:07 (+108 s) layers cu13-base round 2
+22:42:11 (+112 s) layers cu12-base round 2
+22:42:16 (+117 s) layers cu13-fix round 2
+22:42:20 (+121 s) layers cu12-fix round 2
+22:42:26 (+127 s) rule cu13-fix round 1
+22:42:32 (+133 s) rule cu13-fixn1 round 1
+22:42:38 (+139 s) rule cu13-fix round 2
+22:42:44 (+145 s) rule cu13-fixn1 round 2
+22:43:11 (+172 s) e2e Qwen3-8B cu13-fixn1
+22:43:33 (+194 s) e2e exact Qwen3-8B cu13-fixn1
+22:43:33 (+194 s) done

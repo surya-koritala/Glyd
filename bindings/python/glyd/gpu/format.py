@@ -17,7 +17,7 @@ A directory (or a Hugging Face repo) of:
   bf16: embeddings (an output layer tied to one saved as it), norms,
   biases;
 - in the 12-bit layout instead (save_pretrained's layout="mma12":
-  glyd-v3, which glyd 0.23 and before refuse by the format): each pack's
+  glyd-v3, which glyd 0.24 and before refuse by the format): each pack's
   NAME.glyd_data (uint8), NAME.glyd_exc and NAME.glyd_exc_base (int32), its
   words of symbols in glyd.json ("sym"); loaded as saved where the 12-bit
   layout is the one, else decoded and packed again;
@@ -41,17 +41,18 @@ import json
 import os
 import re
 import shutil
+import warnings
 
 FORMAT = "glyd-v1"
 # glyd-v2: glyd-v1 with a mixture of experts' packs (glyd 0.21 reads glyd-v1 alone); glyd-v3: the packs in the 12-bit
-# layout (glyd 0.23 reads glyd-v1 and glyd-v2)
+# layout (glyd 0.23 and 0.24 read glyd-v1 and glyd-v2)
 FORMATS = (FORMAT, "glyd-v2", "glyd-v3")
 MANIFEST = "glyd.json"
 BUFFERS = ("data", "blocks", "block_base")  # a tiered pack's tensors (kernels.Mma)
 LAYOUTS = {"mma": BUFFERS, "mma12": ("data", "exc", "exc_base")}  # each layout's (kernels.Mma12's)
 WORDS = {"mma": "tiers", "mma12": "sym"}  # a pack's words, in glyd.json
 GROUPS = (("q_proj", "k_proj", "v_proj"), ("gate_proj", "up_proj"))  # the Linears merged, a layer's self_attn's and mlp's (model.groups)
-KEYS = ("format", "glyd", "source", "layout", "packs", "tensors")  # glyd.json's (glyd 0.21 on; "tensors" from 0.25)
+KEYS = ("format", "glyd", "source", "layout", "packs", "tensors")  # glyd.json's (glyd 0.21 on; "tensors" from 0.25): verify refuses another where this glyd or an older one saved it
 MAP_FROM = (0, 25)  # the first glyd whose saves carry "tensors": a glyd-v1 or v2 it saved without them is refused
 DTYPES = {"data": "U8", "blocks": "U8", "block_base": "I32", "exc": "I32", "exc_base": "I32"}
 FILES = ("config.json", "generation_config.json", "tokenizer*", "special_tokens_map.json", "added_tokens.json", "vocab*", "merges.txt", "*.model", "chat_template*", "preprocessor_config.json", "processor_config.json")  # copied from the source
@@ -84,6 +85,12 @@ def manifest(source, packs, version, layout="mma", tensors=None):
     return m if tensors is None else dict(m, tensors=tensors)
 
 
+def version(v):
+    """glyd.json's glyd ("0.25.0") as (0, 25, 0), its patch 0 where there is none; None where it is not a version."""
+    m = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", str(v))
+    return (int(m[1]), int(m[2]), int(m[3] or 0)) if m else None
+
+
 def check_files(directory, m):
     """A saved checkpoint's files against its glyd.json m (verify, before its packs are decoded): glyd.json's keys its
     own (KEYS: a damaged one refused), its glyd a version, its map of sha256 ("tensors") an object, and there wherever
@@ -92,18 +99,23 @@ def check_files(directory, m):
     shards, naming the shard of each tensor; every tensor a pack's buffer or one whose sha256 glyd.json holds (a save
     of glyd 0.24 or before has none: those are not checked); each pack's tensors its own (its module's .weight, a
     merged group's q, k, v or gate, up under the first's path, an experts' weight's own name), in no other pack and
-    none also saved as it is; and the sha256 of every tensor saved as it is. The number of tensors checked by sha256,
-    and of those not checked; ValueError where any is not so. The standard library alone."""
-    unknown = [k for k in m if k not in KEYS]
-    if unknown:
-        raise ValueError(f"glyd.json: {unknown[0]!r}, a key glyd.json does not have (damaged?)")
-    version = re.match(r"(\d+)\.(\d+)", str(m.get("glyd")))
-    if not version:
+    none also saved as it is; and the sha256 of every tensor saved as it is. A key glyd.json does not have is an error
+    where this glyd or an older one saved it (damaged), and skipped with a warning where a newer one did (the rest
+    checked). The number of tensors checked by sha256, and of those not checked; ValueError where any is not so. The
+    standard library alone."""
+    from .. import __version__
+
+    v = version(m.get("glyd"))
+    if v is None:
         raise ValueError(f"glyd.json: glyd {m.get('glyd')!r}, not a version")
+    for k in [k for k in m if k not in KEYS]:
+        if v <= version(__version__):
+            raise ValueError(f"glyd.json: {k!r}, a key glyd.json does not have (damaged?)")
+        warnings.warn(f"glyd.json: {k!r}, a key of glyd {m['glyd']}, newer than this one ({__version__}): skipped, the rest checked")
     hashes = m.get("tensors")
     if "tensors" in m and not isinstance(hashes, dict):
         raise ValueError('glyd.json: "tensors" is not an object of sha256')
-    if hashes is None and (m.get("format") == "glyd-v3" or (int(version[1]), int(version[2])) >= MAP_FROM):
+    if hashes is None and (m.get("format") == "glyd-v3" or v[:2] >= MAP_FROM):
         raise ValueError(f"glyd.json: no sha256 for the tensors saved as they are, which a {m.get('format')} of glyd {m.get('glyd')} has")
     index = os.path.join(directory, "model.safetensors.index.json")
     weight_map = None
