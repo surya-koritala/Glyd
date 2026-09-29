@@ -1241,11 +1241,11 @@ one of Qwen3-0.6B's 112 packs, its 196 Linears, decodes to the checkpoint's
 bits so; a bit flipped in the checkpoint is found):
 
     $ ./unpack qwen3-0.6b-glyd ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/*/
-    libglyd_gpu: C API 4, CUDA runtime 13000
+    libglyd_gpu: C API 5, CUDA runtime 13000
     model.layers.0.self_attn.o_proj: [1024, 2048], 10.86 bits a weight packed, decoded on the GPU
       model.layers.0.self_attn.o_proj.weight [1024, 2048]: the checkpoint's, bit for bit
     $ ./unpack qwen3-0.6b-glyd ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/*/ model.layers.0.self_attn.q_proj
-    libglyd_gpu: C API 4, CUDA runtime 13000
+    libglyd_gpu: C API 5, CUDA runtime 13000
     model.layers.0.self_attn.q_proj: [4096, 1024], 10.79 bits a weight packed, decoded on the GPU
       model.layers.0.self_attn.q_proj.weight [2048, 1024]: the checkpoint's, bit for bit
       model.layers.0.self_attn.k_proj.weight [1024, 1024]: the checkpoint's, bit for bit

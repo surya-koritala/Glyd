@@ -35,7 +35,7 @@ every earlier format.
   prompts past wgmma's 1024 tokens on Hopper (1-2% of such a prompt's
   time) and past 768 on the A100, and exact mode's steps
   ([benchmarks/gpu/splitbyte-2026-09-29](benchmarks/gpu/splitbyte-2026-09-29)).
-  The C API stays at version 4: a 12-bit pack's `sym[4]` holds its base,
+  The C API is version 5: a 12-bit pack's `sym[4]` holds its base,
   `hb` in each byte of `sym[0]` and the other three zero; any other words
   (the 12-bit layout before, never released, held its exponents there)
   are refused with `cudaErrorInvalidValue`. glyd.json's 12-bit packs
@@ -144,7 +144,8 @@ every earlier format.
   route's done counters at least 1024, as `glyd_gpu_mma12_gemm_wg`'s);
   the glyd package's Linears take their routes from the library and
   multiply by `linear` in their one C call, so every caller routes alike.
-  C API version 4. The same bits (check_capi on an RTX 4080 SUPER: 6975
+  C API version 5 (4 with the 12-bit layout before split byte: builds of
+  main alone, refused). The same bits (check_capi on an RTX 4080 SUPER: 6975
   calls through both hosts, bit for bit, and 220044 routes as 0.24's
   rule) and the same speed (generate()
   eager, before the merge with 0.24: main's package and library and these

@@ -733,7 +733,8 @@ print("ok")
 def test_gpu_code_loads_the_library():
     """_lib.gpu() and the routes as a process's first calls, before any kernel has loaded the library: they load it
     (GLYD_GPU_LIB, as the kernels do) and give the code gpu_code gives and a route; with no library anywhere, an OSError
-    that says so, not a KeyError."""
+    that says so, not a KeyError; with the kernels a JIT build's (a module without the library's functions), an OSError
+    that says that."""
     torch = cuda()
     if torch is None:
         print("test_gpu_code_loads_the_library: skipped (no CUDA GPU, PyTorch or transformers)")
@@ -754,6 +755,9 @@ def test_gpu_code_loads_the_library():
     r = subprocess.run([sys.executable, "-c", first], capture_output=True, text=True, env=env, cwd=tempfile.gettempdir())
     beside = os.path.exists(os.path.join(os.path.dirname(g.__file__), f"libglyd_gpu_cuda{torch.version.cuda.split('.')[0]}.so"))
     assert beside or (r.returncode != 0 and "OSError: no Glyd GPU library" in r.stderr and "KeyError" not in r.stderr), r.stderr[-2000:]
+    jit = "import types; from glyd.gpu import _lib, kernels; kernels._ext = types.ModuleType('glyd_gpu'); _lib.gpu()"
+    r = subprocess.run([sys.executable, "-c", jit], capture_output=True, text=True, env=env, cwd=tempfile.gettempdir())
+    assert r.returncode != 0 and "OSError: glyd_gpu_gpu: the Glyd GPU library is not loaded" in r.stderr, r.stderr[-2000:]
 
 
 def test_packed_weight_view():

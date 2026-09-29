@@ -36,10 +36,12 @@
  * they must hold, change: 2 from the prompt products' done counters,
  * glyd_gpu_hold and the decode's warps (0.21.0's library has no
  * glyd_gpu_api_version: 1); 3 from glyd_gpu_mma12_gemm_wg's counters, at
- * least 1024 (0.24.0); 4 from the routes, glyd_gpu_*_linear, a GPU's class
- * in its code, and the 12-bit layout in split byte (its data, exc and sym[4]
- * as below; the 12-bit layout before it, never released, is refused). */
-#define GLYD_GPU_API_VERSION 4
+ * least 1024 (0.24.0); 4 from the routes, glyd_gpu_*_linear and a GPU's
+ * class in its code (never released: builds of main alone); 5 from the
+ * 12-bit layout in split byte (its data, exc and sym[4] as below): 0.24's
+ * 12-bit layout, a code into its 15 commonest exponents, has other bytes
+ * and words, which the library refuses: pack it again. */
+#define GLYD_GPU_API_VERSION 5
 
 #ifdef __cplusplus
 extern "C" {
