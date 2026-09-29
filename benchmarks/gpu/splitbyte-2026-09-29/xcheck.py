@@ -12,7 +12,7 @@ product (within 1e-2 of the largest output) so they are not both wrong.
   decoded bit for bit, their sizes; layers 0, 1, 2, the middle one and the last: their products as above at 1-1100
   tokens (experts': 1-300 tokens by their top-k).
 
-    PYTHONPATH=TREE/bindings/python GLYD_GPU_LIB=TREE_LIB python xcheck.py MAIN_TREE MAIN_LIB [MODEL ...]"""
+    PYTHONPATH=TREE/bindings/python GLYD_GPU_LIB=TREE_LIB [SYNTHETIC=0] python xcheck.py MAIN_TREE MAIN_LIB [MODEL ...]"""
 import glob, json, os, sys, time
 import torch
 import torch.nn.functional as F
@@ -123,27 +123,32 @@ def weights(n, wild=0.0):
     return w.to(bf)
 
 
-torch.manual_seed(0)
-t0 = time.time()
-for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02), (17408, 1024, 0.01), (8960, 128, 0), (256, 1040, 0.01), (256, 16384, 0)]:
-    w = weights(O * K, wild).view(O, K)
-    po, pn = old_pack(w), g.pack_mma12(w)
-    unpacks(w, po, pn)
-    products(w, po, pn)
-    print(f"{O}x{K}: exceptions {int(po.exc_base[-1])} (12-bit) / {int(pn.exc_base[-1])} (split byte, hb {pn.hb}): the same bits", flush=True)
-every = (torch.arange(65536, device=dev) - 32768).to(torch.int16)
-most = torch.rand(65536, device=dev) < 0.9
-for name, u in (("shuffled", every[torch.randperm(65536, device=dev)]), ("in order", every), ("hb 0", torch.where(most, every & -32641, every)), ("hb 120", torch.where(most, every | 0x7F00, every))):
-    w = u.view(bf).view(256, 256)
-    po, pn = old_pack(w), g.pack_mma12(w)
-    unpacks(w, po, pn)
-    print(f"every bf16 bit pattern, {name}: exceptions {int(po.exc_base[-1])} / {int(pn.exc_base[-1])} (hb {pn.hb}), decoded the same bits", flush=True)
-for E, O, K, k, Ts, wild in [(8, 256, 192, 2, (1, 70), 0.01), (64, 128, 2048, 8, (8,), 0.001), (16, 192, 64, 4, (33,), 0.1), (4, 256, 256, 2, (300,), 0.01), (40, 1024, 1536, 8, (3, 64), 0.0)]:
-    w = weights(E * O * K, wild).view(E, O, K)
-    po, pn = old_pack(w.view(E * O, K)), g.pack_mma12(w.view(E * O, K))
-    moe(w, po, pn, k, Ts)
-    print(f"moe: {E} experts of {O}x{K} by {k}, {Ts} tokens: the same bits", flush=True)
-print(f"synthetic: {sum(counts.values())} calls the same bits, {sum(refused.values())} refused by both ({time.time() - t0:.0f} s)", flush=True)
+def synthetic():
+    torch.manual_seed(0)
+    t0 = time.time()
+    for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02), (17408, 1024, 0.01), (8960, 128, 0), (256, 1040, 0.01), (256, 16384, 0)]:
+        w = weights(O * K, wild).view(O, K)
+        po, pn = old_pack(w), g.pack_mma12(w)
+        unpacks(w, po, pn)
+        products(w, po, pn)
+        print(f"{O}x{K}: exceptions {int(po.exc_base[-1])} (12-bit) / {int(pn.exc_base[-1])} (split byte, hb {pn.hb}): the same bits", flush=True)
+    every = (torch.arange(65536, device=dev) - 32768).to(torch.int16)
+    most = torch.rand(65536, device=dev) < 0.9
+    for name, u in (("shuffled", every[torch.randperm(65536, device=dev)]), ("in order", every), ("hb 0", torch.where(most, every & -32641, every)), ("hb 120", torch.where(most, every | 0x7F00, every))):
+        w = u.view(bf).view(256, 256)
+        po, pn = old_pack(w), g.pack_mma12(w)
+        unpacks(w, po, pn)
+        print(f"every bf16 bit pattern, {name}: exceptions {int(po.exc_base[-1])} / {int(pn.exc_base[-1])} (hb {pn.hb}), decoded the same bits", flush=True)
+    for E, O, K, k, Ts, wild in [(8, 256, 192, 2, (1, 70), 0.01), (64, 128, 2048, 8, (8,), 0.001), (16, 192, 64, 4, (33,), 0.1), (4, 256, 256, 2, (300,), 0.01), (40, 1024, 1536, 8, (3, 64), 0.0)]:
+        w = weights(E * O * K, wild).view(E, O, K)
+        po, pn = old_pack(w.view(E * O, K)), g.pack_mma12(w.view(E * O, K))
+        moe(w, po, pn, k, Ts)
+        print(f"moe: {E} experts of {O}x{K} by {k}, {Ts} tokens: the same bits", flush=True)
+    print(f"synthetic: {sum(counts.values())} calls the same bits, {sum(refused.values())} refused by both ({time.time() - t0:.0f} s)", flush=True)
+
+
+if os.environ.get("SYNTHETIC", "1") != "0":  # SYNTHETIC=0: the models alone
+    synthetic()
 
 
 def model_dir(m):

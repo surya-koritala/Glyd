@@ -1,7 +1,8 @@
 """Two builds' SASS for one architecture (cuobjdump -sass of main's library and of this tree's), kernel by kernel. The
-12-bit layout's kernels (those of Nib): their instructions by kind, main's -> this tree's, and whether their memory,
-tensor-core, barrier and branch instructions are the same ones in the same order (the schedule), the decode's integer
-instructions and constant loads apart; every other kernel: the same instructions in the same order, or listed.
+12-bit layout's kernels (those of Nib): their instructions by kind, main's -> this tree's, registers and spills, and
+whether their memory, tensor-core, barrier and branch instructions are the same (each opcode with its modifiers, as
+many of each: ptxas orders them around the arithmetic, so their order is not compared); every other kernel: the same
+instructions in the same order, or listed.
 
     python sass_diff.py MAIN.sass TREE.sass [MAIN.res TREE.res]      (.res: cuobjdump -res-usage, for the registers)"""
 import re, subprocess, sys
@@ -50,12 +51,7 @@ def functions(path):
 
 
 def registers(path):
-    out = {}
-    for line in open(path):
-        m = re.search(r"Function (\S+):\s*REG:(\d+)", line)
-        if m:
-            out[m.group(1)] = int(m.group(2))
-    return out
+    return {m.group(1): f"{m.group(2)}/{m.group(3)}" for m in re.finditer(r"Function (\S+):\s*REG:(\d+) STACK:(\d+)", open(path).read())}
 
 
 a, b = functions(sys.argv[1]), functions(sys.argv[2])
@@ -73,13 +69,16 @@ print(f"{sys.argv[1]} -> {sys.argv[2]}: {len(names)} kernels; the {len(names) - 
 for n in names:
     if n not in twelve and a[n] != b[n]:
         print(f"  DIFFERS: {short.get(n, n)}")
-print(f"the 12-bit layout's {len(twelve)} kernels, main's -> this tree's (instructions by kind; schedule: memory, tensor-core, barrier and branch instructions in order):")
+print(f"the 12-bit layout's {len(twelve)} kernels, main's -> this tree's (instructions by kind; registers/stack bytes; spills: LDL and STL; the memory, tensor-core, barrier and branch instructions):")
 changed = 0
 for n in twelve:
     ca, cb = Counter(kind(o) for o in a[n]), Counter(kind(o) for o in b[n])
-    sched = [o for o in a[n] if kind(o) in ("mem", "mma", "ctl")] == [o for o in b[n] if kind(o) in ("mem", "mma", "ctl")]
-    changed += not sched
+    fixed = lambda ops: Counter(o for o in ops if kind(o) in ("mem", "mma", "ctl"))
+    fa, fb = fixed(a[n]), fixed(b[n])
+    sa, sb = sum(fa[o] for o in fa if o.startswith(("LDL", "STL"))), sum(fb[o] for o in fb if o.startswith(("LDL", "STL")))
+    changed += fa != fb
+    diff = ", ".join(f"{o} {fa[o]}->{fb[o]}" for o in sorted(set(fa) | set(fb)) if fa[o] != fb[o])
     regs = f"regs {ra.get(n, '?')}->{rb.get(n, '?')} " if ra else ""
-    print(f"  {short.get(n, n)[:90]:90s} {regs}" + " ".join(f"{k} {ca[k]}->{cb[k]}" if ca[k] != cb[k] else f"{k} {ca[k]}" for k in KINDS)
-          + f" | total {sum(ca.values()) - ca['nop']}->{sum(cb.values()) - cb['nop']} | schedule {'the same' if sched else 'CHANGED'}")
-print(f"schedule changed in {changed} of {len(twelve)} kernels of the 12-bit layout")
+    print(f"  {short.get(n, n)[:90]:90s} {regs}spills {sa}->{sb} " + " ".join(f"{k} {ca[k]}->{cb[k]}" if ca[k] != cb[k] else f"{k} {ca[k]}" for k in KINDS)
+          + f" | total {sum(ca.values()) - ca['nop']}->{sum(cb.values()) - cb['nop']} | " + (f"those DIFFER: {diff}" if diff else "the same memory, tensor-core, barrier and branch instructions"))
+print(f"{len(twelve) - changed} of {len(twelve)} kernels of the 12-bit layout with the same memory, tensor-core, barrier and branch instructions")
