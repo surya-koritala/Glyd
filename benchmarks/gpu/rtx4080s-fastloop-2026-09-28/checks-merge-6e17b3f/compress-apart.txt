@@ -1,0 +1,6 @@
+/home/surya-koritala/p8fastloop3/inductor-diag1: logits exact True; compiled tokens m/c 32 of 32, m again 32; eager tokens m/c 32 of 32; compiled/eager 17
+compress-apart exit 0
+/home/surya-koritala/p8fastloop3/inductor-diag2: logits exact True; compiled tokens m/c 32 of 32, m again 32; eager tokens m/c 32 of 32; compiled/eager 17
+compress-apart exit 0
+/home/surya-koritala/p8fastloop3/inductor-diag3: logits exact True; compiled tokens m/c 32 of 32, m again 32; eager tokens m/c 32 of 32; compiled/eager 17
+compress-apart exit 0

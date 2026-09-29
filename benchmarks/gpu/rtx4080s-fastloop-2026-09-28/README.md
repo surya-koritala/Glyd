@@ -23,3 +23,8 @@ The scripts as they ran, at the commits named; from 5f27509 the compiled forward
   (`glyd_gpu.py`), check_api dense (Qwen3-0.6B + 1.7B) and MoE (granite), check_models (Qwen3-1.7B).
 - `checks-d3cbba0/`: at d3cbba0 (the second review's fixes), one at a time: test_gpu, check_api dense (Qwen3-0.6B +
   1.7B) and MoE (granite).
+- `checks-merge-6e17b3f/`: main (6e17b3f, gpu-hopper2) merged in (6bef364), the library built from it, one at a
+  time: check_capi, test_gpu, the self-test; check_api dense at 6bef364 (`check_api_dense-6bef364.txt`: Qwen3-1.7B's
+  compress check failed; `-instrumented`: its first compiled call and its later ones share 13 of 32 tokens, compress's
+  model's are the later ones', the eager ones all the same; `compress-apart.txt`, `compress_apart.py`: the two models
+  alone, three fresh inductor caches, all the same) and at f4822f5 (`check_api_dense.txt`: the tokens compared eager).
