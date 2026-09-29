@@ -1,0 +1,12 @@
+64x64: hb 54, 0 exceptions (12.102 bits a weight): bytes as glyd_gpu.h writes them, Nib::decode the mma fragments of W bit for bit, decode12_rows / step12 the same fragments
+192x128: hb 54, 1 exceptions (12.043 bits a weight): bytes as glyd_gpu.h writes them, Nib::decode the mma fragments of W bit for bit, decode12_rows / step12 the same fragments
+128x1040 wild 0.01: hb 54, 995 exceptions (12.272 bits a weight): bytes as glyd_gpu.h writes them, Nib::decode the mma fragments of W bit for bit
+256x1024 wild 0.001: hb 54, 215 exceptions (12.058 bits a weight): bytes as glyd_gpu.h writes them, Nib::decode the mma fragments of W bit for bit, decode12_rows / step12 the same fragments
+128x512 wild 0.1: hb 54, 4736 exceptions (14.348 bits a weight): bytes as glyd_gpu.h writes them, Nib::decode the mma fragments of W bit for bit, decode12_rows / step12 the same fragments
+64x256 wild 0.5: hb 56, 5986 exceptions (23.736 bits a weight): bytes as glyd_gpu.h writes them, Nib::decode the mma fragments of W bit for bit, decode12_rows / step12 the same fragments
+every pattern, shuffled: hb 0, 61440 exceptions (42.036 bits a weight): bytes as glyd_gpu.h writes them, Nib::decode the mma fragments of W bit for bit, decode12_rows / step12 the same fragments
+every pattern, in order: hb 0, 61440 exceptions (42.036 bits a weight): bytes as glyd_gpu.h writes them, Nib::decode the mma fragments of W bit for bit, decode12_rows / step12 the same fragments
+hb 0: hb 0, 6059 exceptions (14.993 bits a weight): bytes as glyd_gpu.h writes them, Nib::decode the mma fragments of W bit for bit, decode12_rows / step12 the same fragments
+hb 120: hb 120, 6092 exceptions (15.010 bits a weight): bytes as glyd_gpu.h writes them, Nib::decode the mma fragments of W bit for bit, decode12_rows / step12 the same fragments
+all passed
+exit 0
