@@ -111,7 +111,7 @@ def _unparam(model, name):
 
 def _saved(e, buffers):
     """A saved pack from its entry in glyd.json and its buffers, in the layout it was saved in (a 12-bit pack without
-    its base hb: the 12-bit layout before split byte, never released, refused)."""
+    its base hb: a glyd-v3 save of the 12-bit layout before split byte, never released, refused)."""
     if e["layout"] == "mma12" and "hb" not in e:
         raise ValueError("glyd.json: a 12-bit pack with no hb, saved in the 12-bit layout before split byte (unreleased): save it again")
     return (g.Mma12 if e["layout"] == "mma12" else g.Mma)(tuple(e["shape"]), *buffers, e[fmt.WORDS[e["layout"]]])

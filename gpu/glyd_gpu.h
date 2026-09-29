@@ -93,6 +93,9 @@ const char* glyd_gpu_error_string(int status);
  *   exc_base    int32 [steps + 1]
  *   sym[4]      host words: hb in each byte of sym[0], sym[1-3] zero (else
  *               cudaErrorInvalidValue)
+ * These bytes and words change from 0.24's 12-bit layout (v0.19-v0.24: a
+ * code into its 15 commonest exponents, sym[4] those exponents), whose
+ * words the library refuses: pack such a matrix again.
  * glyd_gpu.cu has both to the bit.
  * ---------------------------------------------------------------------- */
 
