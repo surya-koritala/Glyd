@@ -15,8 +15,8 @@ for f in sorted(glob.glob(os.path.join(R, "*.json"))):
     if "mode" in r and "model" in r:
         m = r["model"].rstrip("/")
         res.setdefault(m.split("models--")[-1].split("/")[0].split("--")[-1] if "models--" in m else os.path.basename(m), {})[r["mode"]] = r
-MODES = ["bf16", "bf16c", "glyd", "exact"]
-LAB = {"bf16": "bf16 eager", "bf16c": "bf16 compiled", "glyd": "Glyd (default)", "exact": "Glyd exact"}
+MODES = ["bf16", "bf16c", "glyd", "glyd12", "exact"]
+LAB = {"bf16": "bf16 eager", "bf16c": "bf16 compiled", "glyd": "Glyd (default)", "glyd12": "Glyd 12-bit", "exact": "Glyd exact"}
 
 
 def smi(model, mode):

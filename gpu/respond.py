@@ -7,6 +7,7 @@ modes, one mode a process (run each in a fresh one):
          static cache and torch.compile's CUDA graphs for a call whose cache holds at most 2048 positions in all, 1280
          on a GeForce card; else eager): bf16 like for like with Glyd's default;
   glyd   glyd.from_pretrained(MODEL) as it loads by default (layout "auto"; generate() compiled as bf16c's);
+  glyd12 the same in the 12-bit layout (layout="mma12"), where the GPU's default is the tiered one (Ada);
   exact  glyd.from_pretrained(MODEL, exact=True): every product the matrix decoded whole, then F.linear (eager).
 
 Greedy decoding; every call's new tokens forced to its count (min_new_tokens = max_new_tokens: no early end of
@@ -38,7 +39,7 @@ TEXT = ("The history of data compression begins long before computers. Telegraph
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
-ap.add_argument("--mode", required=True, choices=["bf16", "bf16c", "glyd", "exact"])
+ap.add_argument("--mode", required=True, choices=["bf16", "bf16c", "glyd", "glyd12", "exact"])
 ap.add_argument("--out", required=True)
 ap.add_argument("--prompts", default="128,512,2048,8192")
 ap.add_argument("--ttft-new", type=int, default=16)
@@ -95,7 +96,7 @@ try:
     else:
         import glyd
         R["glyd"] = glyd.__version__
-        model = glyd.from_pretrained(args.model, exact=args.mode == "exact").eval()
+        model = glyd.from_pretrained(args.model, exact=args.mode == "exact", **({"layout": "mma12"} if args.mode == "glyd12" else {})).eval()
 except torch.cuda.OutOfMemoryError as e:
     R["load"] = {"fits": False, "error": f"{type(e).__name__}: {str(e)[:300]}", "seconds": round(time.perf_counter() - t0, 1)}
     save()
@@ -107,7 +108,7 @@ R["load"] = {"fits": True, "seconds": round(time.perf_counter() - t0, 1), "gb": 
              "layout": getattr(q, "layout", None), "compiled_cap": getattr(model, "glyd_fast", None)}
 print(f"{args.mode}: loaded in {R['load']['seconds']} s, {R['load']['gb']} GB (layout {R['load']['layout']}, compiled calls to {R['load']['compiled_cap']} positions)", flush=True)
 path = {"compiled": None}
-if args.mode in ("glyd", "bf16c"):  # which calls fast_generate compiles: its _fast's answer, recorded
+if args.mode in ("glyd", "glyd12", "bf16c"):  # which calls fast_generate compiles: its _fast's answer, recorded
     import glyd.gpu.model as gm
     own_fast = gm._fast
 
