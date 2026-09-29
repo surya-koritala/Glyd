@@ -18,28 +18,23 @@ every earlier format.
   15-exponent code's 22.0), in every kernel of the layout: the step,
   mid, prompt, Hopper TMA and wgp, A100 mid, mixture-of-experts and
   decode kernels. The same size (12.04-12.07 bits a weight) and the same
-  bits decoded, so the same products: round 1 on an L4, an A10, an A100
-  SXM4 40 GB and an H100 PCIe (2026-09-29) found every output of the
-  layout's kernels main's bits, and models' logits and greedy tokens
+  bits decoded, so the same products: on an L4, an A10, an A100 SXM4 40
+  GB, an H100 PCIe and an H100 SXM (2026-09-29) every output of the
+  layout's kernels was main's bits, and models' logits and greedy tokens
   (Qwen3-1.7B, Qwen3-4B-Instruct-2507, granite-3.1-3b-a800m-instruct,
   fused and exact) the same. A layer's time against the 12-bit layout's
-  before, main's library and this one in one process (layer 10 of
-  Qwen3-8B with 4B-Instruct-2507, 14B or 32B, two runs each): on the H100
-  PCIe 0.942-0.973 at 128-1024 tokens (wgmma: 2.7-5.8% less) and
-  0.973-0.991 at 32-64; on the A100 0.923-1.000 at 32-128 (its mid kernel:
-  7.7% less at 128) and 0.975-0.989 at 256-768 (the prompt kernel);
-  0.989-1.006 at 1-16 tokens on all four
+  before, main's library and this release's in one process (layer 10 of
+  Qwen3-8B with 4B-Instruct-2507, 14B or 32B, two runs each): faster on
+  the H100 SXM, 0.933-0.969 at 32-1024 tokens (wgmma: 3.1-6.7% less; the
+  H100 PCIe 0.942-0.991) and 0.986-0.992 at 1-16; faster on the A100,
+  0.923-1.003 at 32-128 (its mid kernel: 7.7% less at 128), 0.969-0.982
+  at 256-768 (prompts) and 0.976-0.998 at 1-16; the same on the A10 and
+  the L4, 0.989-1.010 at 1-1024 tokens. The decode for cuBLAS and exact
+  mode (a matrix decoded whole) takes 3.0-5.8% longer on the H100 SXM and
+  1.0-1.6% on the A10, 0.998-1.012 on the A100 and the same on the L4:
+  prompts past wgmma's 1024 tokens on Hopper (1-2% of such a prompt's
+  time) and past 768 on the A100, and exact mode's steps
   ([benchmarks/gpu/splitbyte-2026-09-29](benchmarks/gpu/splitbyte-2026-09-29)).
-  That build walked a step's exceptions an entry a pass, which cost the
-  L4's and the A10's prompts (the grid kernel) 0.8-2.3%: they took
-  1.007-1.032 of main's time, split byte alone 0.990-1.003; the release
-  unrolls the loop as main does (but in sm_80's mixture-of-experts
-  products of 64 tokens with an activation, where unrolled it spilled),
-  and those, the A100's mid and prompt kernels and the steps are measured
-  again on it (pending). The decode
-  for cuBLAS and exact mode took 1.3-2.6% longer on the A10, A100 and H100
-  (the A10's 2.1%: 0.7 the loop's, 1.2 split byte's) and the same on the
-  L4; measured again on the release (pending).
   The C API stays at version 4: a 12-bit pack's `sym[4]` holds its base,
   `hb` in each byte of `sym[0]` and the other three zero; any other words
   (the 12-bit layout before, never released, held its exponents there)

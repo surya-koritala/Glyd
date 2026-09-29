@@ -1,0 +1,65 @@
+CHECKS PASS: 6 steps run, each exit 0
+NVIDIA A10 (8.6, sm_86, 23028 MiB), x86_64 host, 30 CPUs; CLASS=a10; release tree 85ae892 (rust-splitbyte), main db8e7b0 (main)
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+rust: /home/ubuntu/r1_job.sh: line 131: cargo: command not found
+
+attr-loop-Qwen3-8B: exit 0
+attr-splitbyte-Qwen3-8B: exit 0
+layer-Qwen3-4B-Instruct-2507-run1: exit 0
+layer-Qwen3-4B-Instruct-2507-run2: exit 0
+layer-Qwen3-8B-run1: exit 0
+layer-Qwen3-8B-run2: exit 0
+
+
+layer.py: split byte's time over main's 12-bit layout's (model, run, M, the route taken: by route | by kernel); attr-loop:
+main-once's over main's (the loop an entry a pass alone), attr-splitbyte: the branch's over main-once's (split byte; since aa7a6fc its loop main's)
+  Qwen3-4B-Instruct-2507 run 1      1 (step): route 0.989 | step 0.994
+  Qwen3-4B-Instruct-2507 run 1      8 (step): route 0.996 | step 0.995
+  Qwen3-4B-Instruct-2507 run 1     32 (mid): route 0.997 | step 0.990 | mid 0.997
+  Qwen3-4B-Instruct-2507 run 1    256 (prompt): route 1.004 | prompt 1.008
+  Qwen3-4B-Instruct-2507 run 1    640 (ahead): route 0.998 | prompt 1.014
+  Qwen3-4B-Instruct-2507 run 1   1024 (ahead): route 0.997 | prompt 0.999
+  Qwen3-4B-Instruct-2507 run 1 decode (decode): decode 1.011
+  Qwen3-4B-Instruct-2507 run 2      1 (step): route 0.992 | step 0.989
+  Qwen3-4B-Instruct-2507 run 2      8 (step): route 0.997 | step 0.999
+  Qwen3-4B-Instruct-2507 run 2     32 (mid): route 0.997 | step 0.990 | mid 0.997
+  Qwen3-4B-Instruct-2507 run 2    256 (prompt): route 1.008 | prompt 1.015
+  Qwen3-4B-Instruct-2507 run 2    640 (ahead): route 0.998 | prompt 0.998
+  Qwen3-4B-Instruct-2507 run 2   1024 (ahead): route 0.999 | prompt 1.002
+  Qwen3-4B-Instruct-2507 run 2 decode (decode): decode 1.010
+  Qwen3-8B run 1      1 (step): route 1.002 | step 1.002
+  Qwen3-8B run 1      8 (step): route 0.998 | step 1.002
+  Qwen3-8B run 1     32 (mid): route 0.998 | step 0.994 | mid 0.995
+  Qwen3-8B run 1    256 (prompt): route 0.998 | prompt 1.001
+  Qwen3-8B run 1    640 (ahead): route 0.996 | prompt 1.000
+  Qwen3-8B run 1   1024 (ahead): route 0.991 | prompt 0.997
+  Qwen3-8B run 1 decode (decode): decode 1.015
+  Qwen3-8B run 2      1 (step): route 1.005 | step 1.002
+  Qwen3-8B run 2      8 (step): route 0.998 | step 1.000
+  Qwen3-8B run 2     32 (mid): route 1.000 | step 0.996 | mid 0.997
+  Qwen3-8B run 2    256 (prompt): route 0.999 | prompt 0.998
+  Qwen3-8B run 2    640 (ahead): route 0.996 | prompt 0.995
+  Qwen3-8B run 2   1024 (ahead): route 0.996 | prompt 1.000
+  Qwen3-8B run 2 decode (decode): decode 1.016
+  attr-loop-Qwen3-8B run -      1 (step): route 1.002 | step 1.001
+  attr-loop-Qwen3-8B run -    256 (prompt): route 1.013 | prompt 1.018
+  attr-loop-Qwen3-8B run -   1024 (ahead): route 1.003 | prompt 1.000
+  attr-loop-Qwen3-8B run - decode (decode): decode 1.010
+  attr-splitbyte-Qwen3-8B run -      1 (step): route 1.000 | step 1.002
+  attr-splitbyte-Qwen3-8B run -    256 (prompt): route 1.006 | prompt 0.981
+  attr-splitbyte-Qwen3-8B run -   1024 (ahead): route 0.993 | prompt 0.997
+  attr-splitbyte-Qwen3-8B run - decode (decode): decode 1.006
+  by the library's route: 0.989-1.008 over 24 rows
+
+steps:
+  16:44:06 (+6 s) machine and environment (~/gpuenv)
+  16:44:46 (+40 s) builds (src exit 0, main exit 0, main-once exit 0, )
+  16:44:50 (+44 s) layer-Qwen3-8B-run1 (exit 0)
+  16:44:54 (+48 s) layer-Qwen3-4B-Instruct-2507-run1 (exit 0)
+  16:44:57 (+51 s) attr-loop-Qwen3-8B (exit 0)
+  16:45:00 (+54 s) attr-splitbyte-Qwen3-8B (exit 0)
+  16:45:04 (+58 s) layer-Qwen3-8B-run2 (exit 0)
+  16:45:08 (+62 s) layer-Qwen3-4B-Instruct-2507-run2 (exit 0)
+  16:45:08 (+62 s) checks done
+  16:45:08 (+62 s) done

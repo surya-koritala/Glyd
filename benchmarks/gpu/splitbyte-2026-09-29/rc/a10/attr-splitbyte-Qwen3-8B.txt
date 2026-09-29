@@ -1,0 +1,6 @@
+Qwen3-8B layer 10 on NVIDIA A10: qkv (6144, 4096), o (4096, 4096), gate_up (24576, 4096), down (4096, 12288); exceptions a step, 12-bit / split byte: qkv 0.258 / 0.255, o 0.276 / 0.253, gate_up 0.235 / 0.232, down 0.212 / 0.149
+  M=    1 (step): route    639.9 us, split byte    640.0 (1.000x) | step    639.0 us, split byte    640.1 (1.002x)  [qkv 90.1/90.1/90.1/90.1 | o 65.5/65.5/65.5/65.5 | gate_up 318.5/319.5/318.5/319.6 | down 165.8/164.9/164.9/164.9; us: route 12-bit/route split byte/step 12-bit/step split byte]
+  M=  256 (prompt): route   1580.9 us, split byte   1590.3 (1.006x) | prompt   1613.8 us, split byte   1583.1 (0.981x)  [qkv 226.1/220.2/226.3/220.2 | o 124.9/122.9/124.9/122.9 | gate_up 797.7/818.2/832.5/813.1 | down 432.1/429.1/430.1/427.0; us: route 12-bit/route split byte/prompt 12-bit/prompt split byte]
+  M= 1024 (ahead): route   7017.5 us, split byte   6967.3 (0.993x) | prompt   7009.3 us, split byte   6989.8 (0.997x)  [qkv 801.8/793.6/800.8/798.7 | o 544.8/535.6/541.7/537.6 | gate_up 3672.1/3653.6/3686.4/3655.7 | down 1998.8/1984.5/1980.4/1997.8; us: route 12-bit/route split byte/prompt 12-bit/prompt split byte]
+  decode (decode): decode   1586.2 us, split byte   1596.4 (1.006x)  [qkv 210.9/212.0 | o 142.3/143.4 | gate_up 814.1/820.2 | down 418.8/420.9; us: decode 12-bit/decode split byte]
+exit 0
