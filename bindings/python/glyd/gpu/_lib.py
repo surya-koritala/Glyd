@@ -43,6 +43,7 @@ _ARGS = {  # each function's arguments before its stream
     "hold": [_I64],
     "mma_unpack": _PACK + [_I64, _I64, _I64, _P, _I64],
     "mma12_unpack": _PACK + [_I64, _I64, _I64, _P, _I64],
+    "mma12_unpack_split": _PACK + [_I64, _I64, _I64, _P, _I64],
     "attn_decode": [_P, _I64, _P, _P, _P, _W, _P, _P, _P, _W, _P, _P, _I64, _I64, _I64, _I64, ctypes.c_double, _P, _P, _SZ, _P],
     "moe_route": [_P, _I64, _I64, _P],
     "mma_moe_unpack": _PACK + [_I64, _I64, _I64, _I64, _P, _P],
@@ -53,10 +54,18 @@ _ARGS = {  # each function's arguments before its stream
     "mma12_linear": _PACK + [_I64, _I64, _P, _I64, _P, _P, _I64, _P, _SZ, _P],
 }
 _SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_gemm_big": 4, "mma12_gemm_big": 4, "mma12_gemm_mid": 3, "mma12_gemm_wg": 3, "attn_decode": 4, "mma_moe": 7, "mma12_moe": 7, "mma_linear": 4, "mma12_linear": 4}  # their workspace queries' sizes
-_PLAIN = {"gpu": [_P], "mma_route": [_I64] * 4 + [_P, _P], "mma12_route": [_I64] * 4 + [_P, _P]}  # the calls with no stream: the routes
+_PLAIN = {"gpu": [_P], "mma_route": [_I64] * 4 + [_P, _P], "mma12_route": [_I64] * 4 + [_P, _P], "mma12_split_sms": [_I64] * 4 + [_P]}  # the calls with no stream: the routes
+_RING = {  # the route SPLIT's ring (glyd_gpu.h), each call's arguments whole (a stream last where it takes one)
+    "ring_create": [_P, _SZ, _SZ, _P],
+    "ring_destroy": [_P],
+    "ring_split": [_P, _I64, _P, _P],
+    "ring_reset": [_P, _P],
+    "mma12_ring_queue": [_P, _I64] + _PACK + [_I64, _I64],
+    "mma12_ring_linear": [_P, _I64] + _PACK + [_I64, _I64, _P, _I64, _P, _P, _P, _P],
+}
 
 
-API_VERSION = 4  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+API_VERSION = 5  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
 BIG = 4  # glyd_gpu.h's GLYD_GPU_ROUTE_BIG: the prompt kernel
 
 
@@ -75,7 +84,7 @@ def load(path):
     for name, n in _SIZES.items():
         f = _query[name] = getattr(lib, f"glyd_gpu_{name}_workspace")
         f.argtypes, f.restype = [_I64] * n + [ctypes.POINTER(_SZ)], ctypes.c_int
-    for name, args in _PLAIN.items():
+    for name, args in (*_PLAIN.items(), *_RING.items()):
         f = _fn[name] = getattr(lib, "glyd_gpu_" + name)
         f.argtypes, f.restype = args, ctypes.c_int
     lib.glyd_gpu_error_string.argtypes, lib.glyd_gpu_error_string.restype = [ctypes.c_int], ctypes.c_char_p
@@ -429,6 +438,63 @@ def mma_unpack(data, blocks, block_base, tiers, K, row0, rows, out, warps):
 
 def mma12_unpack(data, exc, exc_base, sym, K, row0, rows, out, warps):
     _unpack("mma12_unpack", data, exc, exc_base, _words(sym, 4, "the 12-bit layout's four words (its base)"), K, row0, rows, out, warps)
+
+
+def mma12_unpack_split(data, exc, exc_base, sym, K, row0, rows, out, sms):
+    """The route SPLIT's decode: rows [row0, row0 + rows) into out, a grid for sms SMs (K a multiple of 64)."""
+    _check(K % 64 == 0 and out.data_ptr() % 16 == 0, "K a multiple of 64, out 16-byte aligned")
+    _unpack("mma12_unpack_split", data, exc, exc_base, _words(sym, 4, "the 12-bit layout's four words (its base)"), K, row0, rows, out, sms)
+
+
+def mma12_split_sms(gpu, O, K, M):
+    """The route SPLIT's SMs for the decode for M tokens of W [O, K] on gpu (0: another route)."""
+    sms = ctypes.c_int64()
+    r = _loaded("mma12_split_sms")(gpu, O, K, M, ctypes.byref(sms))
+    if r:
+        _fail("mma12_split_sms", r)
+    return sms.value
+
+
+class Blas(ctypes.Structure):
+    """glyd_gpu.h's glyd_gpu_blas: a cuBLAS handle and its functions' addresses (the caller's cuBLAS: PyTorch's)."""
+    _fields_ = [("handle", _P), ("gemm_ex", _P), ("set_stream", _P), ("get_stream", _P), ("set_workspace", _P), ("set_sm_count_target", _P),
+                ("get_sm_count_target", _P), ("workspace", _P), ("workspace_bytes", _SZ)]
+
+
+def ring_create(buffer, slot_bytes):
+    """A ring over buffer (uint8, on the current device) in slots of slot_bytes: its handle."""
+    h = ctypes.c_void_p()
+    r = _fn["ring_create"](buffer.data_ptr(), buffer.numel(), slot_bytes, ctypes.byref(h))
+    if r:
+        _fail("ring_create", r)
+    return h.value
+
+
+def ring_split(ring, sms):
+    """The split for a decode of sms SMs, made where it is not yet: (status, the decode's SMs, the products')."""
+    a, b = ctypes.c_int64(), ctypes.c_int64()
+    r = _fn["ring_split"](ring, sms, ctypes.byref(a), ctypes.byref(b))
+    return r, a.value, b.value
+
+
+def ring_reset(ring):
+    """The queue dropped, the current stream waiting for what it had queued: the status."""
+    return _fn["ring_reset"](ring, _stream(_device()))
+
+
+def mma12_ring_queue(ring, sms, data, exc, exc_base, sym, O, K):
+    """W queued for decoding ahead: the status."""
+    return _fn["mma12_ring_queue"](ring, sms, data.data_ptr(), exc.data_ptr(), exc_base.data_ptr(), _words(sym, 4, "the 12-bit layout's four words (its base)"), O, K)
+
+
+def mma12_ring_linear(ring, sms, data, exc, exc_base, sym, O, K, x, bias, y, blas):
+    """Y = X W^T (+ bias) through the ring on the current stream (x contiguous [M, K], y [M, O]): the status."""
+    return _fn["mma12_ring_linear"](ring, sms, data.data_ptr(), exc.data_ptr(), exc_base.data_ptr(), _words(sym, 4, "the 12-bit layout's four words (its base)"), O, K,
+                                    x.data_ptr(), x.size(0), bias.data_ptr() if bias is not None else None, y.data_ptr(), ctypes.byref(blas), _stream(_device()))
+
+
+def error_string(r):
+    return _lib.glyd_gpu_error_string(r).decode()
 
 
 def attn_decode(q, kd, kb, kbb, kt, vd, vb, vbb, vt, tk, tv, tlen, pairs, G, P, scale, out):

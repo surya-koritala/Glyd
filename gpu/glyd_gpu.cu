@@ -33,6 +33,8 @@
 #include <cctype>
 #include <cerrno>
 #include <cstring>
+#include <deque>
+#include <map>
 #include <type_traits>
 #include "glyd_gpu.h"  // every definition of the C API below held to its declaration there
 
@@ -2973,6 +2975,63 @@ __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, 
     }
 }
 
+// Option 2's decode (the route SPLIT: glyd_gpu_mma12_unpack_split, glyd_gpu_mma12_ring_*): the 12-bit layout's rows
+// [row0, row0 + rows) into out [rows, K] on the few SMs a green context sets apart for it, the products on the rest. A
+// warp takes units of 4 steps of a row block (64 rows x 64 columns), grid-stride, the next unit's steps loaded into
+// registers while this one's are decoded; each step's B-fragment words go into the warp's tile in shared memory
+// (16-byte chunk c of row r at c ^ (r & 7): its 32-bit stores and 16-byte loads without bank conflicts), and out in
+// whole 128-byte lines. mma_unpack_kernel's step a warp with 4-byte stores is bound by its latency on few SMs (2.7
+// weights a clock an SM on an RTX 4080 SUPER); this runs 9.6 on an A100 and 10.2-10.4 on an H100 SXM and PCIe on 16
+// SMs, its memory path the bound (benchmarks/gpu/research-2026-09-29/round1).
+constexpr int SPLIT_U = 4, SPLIT_WARPS = 4;
+
+__global__ void __launch_bounds__(32 * SPLIT_WARPS) mma12_split_kernel(Nib f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out) {
+    __shared__ __align__(16) uint32_t tiles[SPLIT_WARPS][64 * 32];  // a warp's unit: 64 rows of 32 words
+    const int lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+    uint32_t* tile = tiles[threadIdx.x >> 5];
+    const int KS = (int)(K / 16), per_rb = KS / SPLIT_U, units = (int)(rows / 64) * per_rb;  // (units < 2^31: split_decode)
+    const int gw = (blockIdx.x * blockDim.x + threadIdx.x) >> 5, nw = (gridDim.x * blockDim.x) >> 5;
+    const int64_t s0 = row0 / 64 * KS;
+    auto first = [&](int u) { return s0 + (int64_t)(u / per_rb) * KS + (u % per_rb) * SPLIT_U; };  // a unit's first step
+    Nib::St next[SPLIT_U];
+    if (gw < units) {
+#pragma unroll
+        for (int j = 0; j < SPLIT_U; j++) f.load(next[j], first(gw) + j, lane);
+    }
+    for (int u = gw; u < units; u += nw) {
+        Nib::St cur[SPLIT_U];
+#pragma unroll
+        for (int j = 0; j < SPLIT_U; j++) cur[j] = next[j];
+        if (u + nw < units) {
+#pragma unroll
+            for (int j = 0; j < SPLIT_U; j++) f.load(next[j], first(u + nw) + j, lane);
+        }
+#pragma unroll
+        for (int j = 0; j < SPLIT_U; j++) {
+            uint32_t R[16];
+            f.decode(cur[j], lane, nullptr, nullptr, R);
+#pragma unroll
+            for (int n = 0; n < 8; n++) {  // R[2n]: row 8n + g, word t of step j; R[2n + 1]: word 4 + t (and (8n + g) & 7 == g)
+                tile[(8 * n + g) * 32 + (((2 * j) ^ g) << 2) + t] = R[2 * n];
+                tile[(8 * n + g) * 32 + (((2 * j + 1) ^ g) << 2) + t] = R[2 * n + 1];
+            }
+        }
+        __syncwarp();
+        const int64_t rb = u / per_rb, col = (int64_t)(u % per_rb) * SPLIT_U * 16;
+#pragma unroll
+        for (int i = 0; i < 16; i++) {  // 8 lanes a 128-byte line, 4 rows an instruction
+            int r = 4 * i + (lane >> 3), c = lane & 7;
+            *(uint4*)(out + (rb * 64 + r) * K + col + 8 * c) = *(const uint4*)(tile + r * 32 + ((c ^ (r & 7)) << 2));
+        }
+        __syncwarp();
+    }
+}
+
+// A product's bias as its output's every row (the route SPLIT: cuBLAS then adds X W^T, one rounding).
+__global__ void bias_rows_kernel(uint16_t* __restrict__ y, const uint16_t* __restrict__ bias, int64_t M, int64_t O) {
+    for (int64_t i = blockIdx.x * (int64_t)blockDim.x + threadIdx.x; i < M * O; i += (int64_t)gridDim.x * blockDim.x) y[i] = bias[i % O];
+}
+
 // Attention for one new token a sequence (decoding) over a KV cache held in
 // the mma layout (gpu/kv.py): a layer's keys as [pages x pairs x 64 tokens,
 // D] (a pair: one sequence's KV head), its values as [pages x pairs x D, 64
@@ -3271,7 +3330,13 @@ GLYD_GPU_API int glyd_gpu_cuda_version() { return CUDART_VERSION; }
 // The C API's version (glyd_gpu.h: one more whenever a function's arguments, or what they must hold, change; the
 // caller checks it, as ctypes does not check arguments).
 GLYD_GPU_API int glyd_gpu_api_version() { return GLYD_GPU_API_VERSION; }
-GLYD_GPU_API const char* glyd_gpu_error_string(int status) { return cudaGetErrorString((cudaError_t)status); }
+GLYD_GPU_API const char* glyd_gpu_error_string(int status) {
+    static const char* blas[] = {"cuBLAS: success", "cuBLAS: not initialized", "cuBLAS status 2", "cuBLAS: allocation failed", "cuBLAS status 4", "cuBLAS status 5", "cuBLAS status 6",
+                                 "cuBLAS: invalid value", "cuBLAS: architecture mismatch", "cuBLAS status 9", "cuBLAS status 10", "cuBLAS: mapping error", "cuBLAS status 12",
+                                 "cuBLAS: execution failed", "cuBLAS: internal error", "cuBLAS: not supported", "cuBLAS: license error"};
+    if (status >= GLYD_GPU_BLAS_ERROR) return status - GLYD_GPU_BLAS_ERROR < 17 ? blas[status - GLYD_GPU_BLAS_ERROR] : "cuBLAS: an error";
+    return cudaGetErrorString((cudaError_t)status);
+}
 
 // The dense format. lane_bits: bits [tiles * 32], the tiles of tw weights of w's n.
 GLYD_GPU_API int glyd_gpu_lane_bits(const uint16_t* w, int64_t n, const uint8_t* len, int64_t tw, int64_t V, uint32_t* bits, cudaStream_t cs) {
@@ -3803,6 +3868,7 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc
 // (gpu_class).
 struct RouteMins {
     int64_t wg_min, wg_max, mid_min, dec_min;  // (dec_min 0: unset)
+    int64_t split_min, split_max, split_sms;   // (0: unset, the GPU's; split_min negative: never)
 };
 
 static const RouteMins& route_mins() {
@@ -3818,7 +3884,8 @@ static const RouteMins& route_mins() {
         while (isspace((unsigned char)*end)) end++;
         return number && !*end && errno != ERANGE ? (int64_t)x : fallback;
     };
-    static const RouteMins t{get("GLYD_WG_MIN", 17), get("GLYD_WG_MAX", 1024), get("GLYD_MID_MIN", 17), get("GLYD_DEC_MIN", 0)};
+    static const RouteMins t{get("GLYD_WG_MIN", 17), get("GLYD_WG_MAX", 1024), get("GLYD_MID_MIN", 17), get("GLYD_DEC_MIN", 0),
+                             get("GLYD_SPLIT_MIN", 0), get("GLYD_SPLIT_MAX", 0), get("GLYD_SPLIT_SMS", 0)};
     return t;
 }
 
@@ -3829,8 +3896,38 @@ static int64_t ahead_min(bool twelve, int64_t gpu) {
     return gpu == GLYD_GPU_GEFORCE + 89 ? (twelve ? 1793 : 513) : gpu == GLYD_GPU_A10 + 86 ? (twelve ? 640 : 512) : INT64_MAX;
 }
 
-static int route_for(bool twelve, int64_t gpu, int64_t K, int64_t M) {
+// Option 2 (the route SPLIT): a 12-bit prompt's matrices decoded ahead on SMs set apart (green contexts), cuBLAS on the
+// rest (glyd_gpu_mma12_ring_linear), where it beat v0.25.0's routes (benchmarks/gpu/research-2026-09-29/round1: an
+// A100-SXM4-40GB, an H100 SXM and an H100 PCIe, Qwen3-8B's and 32B's layers against bf16 cuBLAS): an A100's prompts
+// from 769 tokens (today's decoded path there; Qwen3-8B's layer 21% / 8% / 7% / 2% faster at 1024 / 2048 / 4096 / 8192,
+// 32B's 8% / 1.5% at 1024 / 2048, even at 4096, 1.4% slower at 8192), a matrix over two ring slots of 100 MiB (32B's,
+// 14B's gate and up) there to 4096, until slots its size are measured; Hopper's from 1024 (32B's 2% faster at 1024,
+// 13% / 1% / 6% at 2048 / 4096 / 8192; 8B's 8% / 12% / 4% / 5%), an H100 PCIe's at 1024 alone (its longer prompts not
+// yet measured against its own routes). Its SMs for the decode: an A100's 12 to 1535 tokens, 8 to 3071, then 4;
+// Hopper's 20 to 1535, 12 to 6143, then 4 (the split's granularity there: 8, cuBLAS a co-scheduled group); an H100
+// PCIe's 18 (as measured best). GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset: the GPU's; GLYD_SPLIT_MIN negative: never)
+// and GLYD_SPLIT_SMS move them, on any GPU from Ampere; a GPU's code with GLYD_GPU_NO_SPLIT never takes it (where the
+// split cannot run: no green contexts, a capture). The decode is the 12-bit layout's (K a multiple of 64).
+constexpr int64_t SPLIT_SLOT_WEIGHTS = 50 << 20;  // a ring slot of 100 MiB of bf16, as measured
+
+static int64_t split_sms(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M) {
     const RouteMins& t = route_mins();
+    int64_t code = gpu & ~(int64_t)GLYD_GPU_NO_SPLIT, cc = code % 1000;
+    bool a100 = cc == 80, hopper = cc == 90, pcie = code - cc == GLYD_GPU_PCIE;
+    if (!twelve || gpu & GLYD_GPU_NO_SPLIT || K % 64 || t.split_min < 0 || cc < 80) return 0;
+    int64_t lo = t.split_min ? t.split_min : a100 ? 769 : hopper ? 1024 : INT64_MAX;
+    int64_t hi = t.split_max ? t.split_max : hopper && pcie ? 1024 : a100 && O * K > 2 * SPLIT_SLOT_WEIGHTS ? 4096 : INT64_MAX;
+    if (M < lo || M > hi) return 0;
+    if (t.split_sms) return t.split_sms;
+    if (a100) return M < 1536 ? 12 : M < 3072 ? 8 : 4;
+    if (hopper) return pcie ? 18 : M < 1536 ? 20 : M < 6144 ? 12 : 4;
+    return 12;  // (GLYD_SPLIT_MIN set on another GPU: not measured)
+}
+
+static int route_for(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M) {
+    const RouteMins& t = route_mins();
+    if (split_sms(twelve, gpu, O, K, M)) return GLYD_GPU_ROUTE_SPLIT;
+    gpu &= ~(int64_t)GLYD_GPU_NO_SPLIT;
     int64_t cc = gpu % 1000;
     bool a100 = cc == 80, hopper = cc == 90, mid = cc == 80 || cc == 86 || cc == 87 || cc == 89, k64 = K % 64 == 0;
     if (hopper && twelve && k64 && M >= t.wg_min && M <= t.wg_max) return GLYD_GPU_ROUTE_WG;  // TMA and wgmma
@@ -3853,7 +3950,13 @@ static bool has_word(const char* name, const char* word) {
     return false;
 }
 
-static int gpu_class(const char* name) { return strstr(name, "GeForce") ? GLYD_GPU_GEFORCE : has_word(name, "A10") ? GLYD_GPU_A10 : 0; }
+static bool has_pcie(const char* name) {  // "PCIe" in any case (an A100-PCIE-40GB, an H100 PCIe)
+    for (const char* p = name; p[0] && p[1] && p[2] && p[3]; p++)
+        if (tolower((unsigned char)p[0]) == 'p' && tolower((unsigned char)p[1]) == 'c' && tolower((unsigned char)p[2]) == 'i' && tolower((unsigned char)p[3]) == 'e') return true;
+    return false;
+}
+
+static int gpu_class(const char* name) { return strstr(name, "GeForce") ? GLYD_GPU_GEFORCE : has_word(name, "A10") ? GLYD_GPU_A10 : has_pcie(name) ? GLYD_GPU_PCIE : 0; }
 
 // The current device as the routes take it (asked once a device).
 GLYD_GPU_API int glyd_gpu_gpu(int* gpu) {
@@ -3875,11 +3978,12 @@ GLYD_GPU_API int glyd_gpu_gpu(int* gpu) {
 static int route_run(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last) {
     if (!route || O < 1 || K < 1 || M < 0) return cudaErrorInvalidValue;
     const RouteMins& t = route_mins();
-    int here = *route = route_for(twelve, gpu, K, M);
+    int here = *route = route_for(twelve, gpu, O, K, M);
     if (last) {
-        int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, t.dec_min ? t.dec_min : 769, 512, 513, 640, 1793}, next = INT64_MAX;
+        int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, t.dec_min ? t.dec_min : 769, 512, 513, 640, 1793, 1024, 1025, 4097,
+                          t.split_min, t.split_max + 1}, next = INT64_MAX;
         for (int64_t c : cuts)
-            if (c > M && c < next && route_for(twelve, gpu, K, c) != here) next = c;
+            if (c > M && c < next && route_for(twelve, gpu, O, K, c) != here) next = c;
         *last = next == INT64_MAX ? INT64_MAX : next - 1;
     }
     return 0;
@@ -3915,7 +4019,7 @@ static int mma_linear_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_
     constexpr bool twelve = std::is_same_v<Fmt, Nib>;
     int gpu = 0;
     if (int r = glyd_gpu_gpu(&gpu)) return r;
-    if (route < 0) route = route_for(twelve, gpu, K, M);
+    if (route < 0) route = route_for(twelve, gpu, O, K, M);
     switch (route) {
     case GLYD_GPU_ROUTE_GEMM:
         return mma_gemm_run(f, O, K, x, M, bias, y, ws, ws_bytes, done, cs, need);
@@ -3925,6 +4029,7 @@ static int mma_linear_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_
         return cudaErrorInvalidValue;  // the 12-bit layout's alone
     case GLYD_GPU_ROUTE_DECODE:
     case GLYD_GPU_ROUTE_AHEAD:
+    case GLYD_GPU_ROUTE_SPLIT:  // (the pipelined product is glyd_gpu_mma12_ring_linear, with the caller's cuBLAS)
         if (K % 64) return cudaErrorNotSupported;
         [[fallthrough]];
     case GLYD_GPU_ROUTE_BIG:
@@ -4000,6 +4105,297 @@ GLYD_GPU_API int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc,
     Nib f;
     if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
     return mma_unpack_run(f, K, row0, rows, out, warps, cs);
+}
+
+// ---------------------------------------------------------------------------
+// The route SPLIT (option 2): route_for's rule above; here its decode on a few SMs (mma12_split_kernel), the SMs set
+// apart for it by the driver's green contexts, and the ring its matrices are decoded ahead into while the caller's
+// cuBLAS multiplies from it on the other SMs (glyd_gpu.h).
+
+// The decode for sms SMs: as many blocks of 4 warps an SM as fit (3 on an A100, its registers), on stream cs.
+static int split_decode(Nib f, int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t sms, cudaStream_t cs) {
+    if (K < 64 || K % 64 || row0 < 0 || row0 % 64 || rows < 64 || rows % 64 || sms < 1 || sms > 1024 || (uintptr_t)out % 16) return cudaErrorInvalidValue;
+    if (rows / 64 * (K / 64) + sms * 64 * SPLIT_WARPS >= (int64_t)1 << 31) return cudaErrorInvalidValue;  // (the kernel's units in 32 bits)
+    static std::atomic<int> known[MAX_DEVICES];
+    int64_t per = per_sm((const void*)mma12_split_kernel, 32 * SPLIT_WARPS, 0, known, current_device());
+    mma12_split_kernel<<<(unsigned)(sms * per), 32 * SPLIT_WARPS, 0, cs>>>(f, K, row0, rows, out);
+    return cudaGetLastError();
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_unpack_split(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t sms, cudaStream_t cs) {
+    Nib f;
+    if (!nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
+    return split_decode(f, K, row0, rows, out, sms, cs);
+}
+
+// A split of the device's SMs: a green context (CUgreenCtx) and a stream each for the decode and the products.
+struct SplitPart {
+    int64_t dec = 0, gemm = 0;  // the SMs each has
+    void *gd = nullptr, *gg = nullptr;
+    cudaStream_t sd = nullptr, sg = nullptr;
+};
+
+#if CUDA_VERSION >= 12050
+// The driver's green contexts, found at run time as the tensor-map encoder is (no link to libcuda): null where the
+// driver has none (before CUDA 12.4; a stream of one from 12.5).
+struct Green {
+    decltype(&cuDeviceGet) device;
+    decltype(&cuDeviceGetDevResource) resource;
+    decltype(&cuDevSmResourceSplitByCount) split;
+    decltype(&cuDevResourceGenerateDesc) desc;
+    decltype(&cuGreenCtxCreate) create;
+    decltype(&cuGreenCtxStreamCreate) stream;
+    decltype(&cuGreenCtxRecordEvent) record;
+    decltype(&cuGreenCtxDestroy) destroy;
+    decltype(&cuStreamDestroy) stream_destroy;
+};
+
+template <class F>
+static bool driver_fn(const char* name, int version, F& fn) {
+    void* p = nullptr;
+    cudaDriverEntryPointQueryResult q = cudaDriverEntryPointSymbolNotFound;
+    cudaGetDriverEntryPointByVersion(name, &p, version, cudaEnableDefault, &q);
+    fn = p && q == cudaDriverEntryPointSuccess ? (F)p : nullptr;
+    return fn != nullptr;
+}
+
+static const Green* green() {
+    static const Green* g = []() -> const Green* {
+        static Green x;
+        bool ok = driver_fn("cuDeviceGet", 2000, x.device) & driver_fn("cuDeviceGetDevResource", 12040, x.resource) &
+                  driver_fn("cuDevSmResourceSplitByCount", 12040, x.split) & driver_fn("cuDevResourceGenerateDesc", 12040, x.desc) &
+                  driver_fn("cuGreenCtxCreate", 12040, x.create) & driver_fn("cuGreenCtxStreamCreate", 12050, x.stream) &
+                  driver_fn("cuGreenCtxRecordEvent", 12040, x.record) & driver_fn("cuGreenCtxDestroy", 12040, x.destroy) &
+                  driver_fn("cuStreamDestroy", 2000, x.stream_destroy);
+        return ok ? &x : nullptr;
+    }();
+    return g;
+}
+
+static void part_free(SplitPart& p) {
+    const Green* G = green();
+    for (cudaStream_t s : {p.sd, p.sg})
+        if (s) cudaStreamSynchronize(s), G->stream_destroy((CUstream)s);
+    for (void* c : {p.gd, p.gg})
+        if (c) G->destroy((CUgreenCtx)c);
+    p = SplitPart{};
+}
+
+// The products' SMs a co-scheduled group of at least S - sms (their clusters launch there, on Hopper in groups of
+// 8), the decode's the rest: sms or a few fewer.
+static int part_make(int64_t sms, SplitPart& p) {
+    const Green* G = green();
+    if (!G) return cudaErrorNotSupported;
+    CUdevice d;
+    CUdevResource all, group, rest;
+    unsigned n = 1;
+    if (G->device(&d, current_device()) || G->resource(d, &all, CU_DEV_RESOURCE_TYPE_SM)) return cudaErrorNotSupported;
+    if (sms < 1 || sms >= (int64_t)all.sm.smCount) return cudaErrorInvalidValue;
+    if (G->split(&group, &n, &all, &rest, 0, (unsigned)(all.sm.smCount - sms)) || n != 1 || rest.sm.smCount < 1) return cudaErrorNotSupported;
+    CUdevResourceDesc dg, dd;
+    CUgreenCtx cg = nullptr, cd = nullptr;
+    CUstream a = nullptr, b = nullptr;
+    bool bad = G->desc(&dg, &group, 1) || G->desc(&dd, &rest, 1) || G->create(&cg, dg, d, CU_GREEN_CTX_DEFAULT_STREAM) ||
+               G->create(&cd, dd, d, CU_GREEN_CTX_DEFAULT_STREAM) || G->stream(&a, cd, CU_STREAM_NON_BLOCKING, 0) ||
+               G->stream(&b, cg, CU_STREAM_NON_BLOCKING, 0);
+    p.gg = cg, p.gd = cd, p.sd = (cudaStream_t)a, p.sg = (cudaStream_t)b, p.dec = rest.sm.smCount, p.gemm = group.sm.smCount;
+    if (bad) part_free(p);
+    return bad ? cudaErrorNotSupported : 0;
+}
+
+// An event recorded on a stream of a green context: cudaEventRecord (drivers take an event of the primary context
+// there), else cuGreenCtxRecordEvent (documented for one of its primary context; a stream a green context, the same
+// point).
+static int record_on(cudaEvent_t e, cudaStream_t s, void* c) {
+    cudaError_t r = cudaEventRecord(e, s);
+    if (r == cudaSuccess) return 0;
+    cudaGetLastError();
+    return green()->record((CUgreenCtx)c, (CUevent)e) == CUDA_SUCCESS ? 0 : (int)r;
+}
+#else  // (a CUDA before 12.5, as a JIT build may be: no green context's streams in its headers, the split refused)
+static void part_free(SplitPart& p) { p = SplitPart{}; }
+static int part_make(int64_t, SplitPart&) { return cudaErrorNotSupported; }
+static int record_on(cudaEvent_t e, cudaStream_t s, void*) { return (int)cudaEventRecord(e, s); }
+#endif
+
+constexpr int RING_MAX = 16;
+
+struct glyd_gpu_ring {
+    int dev;
+    uint8_t* buf;
+    size_t slot_bytes;
+    int slots;
+    std::map<int64_t, SplitPart> parts;  // by the SMs asked for the decode
+    SplitPart* cur = nullptr;            // the queue's split
+    struct Chunk {
+        Nib f;
+        int64_t O, K, row0, rows;
+        int slot;
+    };
+    std::deque<Chunk> q;  // queued, not yet multiplied; the first `issued` decoding or decoded
+    size_t issued = 0;
+    int next = 0;                                   // the slot the next decode takes
+    bool busy[RING_MAX] = {}, read[RING_MAX] = {};  // a decode there not yet multiplied; a product has read it
+    cudaEvent_t ready[RING_MAX], free_[RING_MAX], mark;
+};
+
+// The split for sms: made once and kept.
+static int ring_part(glyd_gpu_ring* g, int64_t sms, SplitPart** p) {
+    auto it = g->parts.find(sms);
+    if (it == g->parts.end()) {
+        SplitPart made;
+        if (int r = part_make(sms, made)) return r;
+        it = g->parts.emplace(sms, made).first;
+    }
+    *p = &it->second;
+    return 0;
+}
+
+// Decodes queued into the slots free, in order.
+static int ring_pump(glyd_gpu_ring* g) {
+    SplitPart* p = g->cur;
+    while (g->issued < g->q.size() && !g->busy[g->next]) {
+        glyd_gpu_ring::Chunk& c = g->q[g->issued];
+        int s = g->next;
+        if (g->read[s]) cudaStreamWaitEvent(p->sd, g->free_[s], 0);  // the product that read it done
+        if (int r = split_decode(c.f, c.K, c.row0, c.rows, (uint16_t*)(g->buf + s * g->slot_bytes), p->dec, p->sd)) return r;
+        if (int r = record_on(g->ready[s], p->sd, p->gd)) return r;
+        c.slot = s, g->busy[s] = true, g->next = (s + 1) % g->slots, g->issued++;
+    }
+    return 0;
+}
+
+// Stream cs waits for everything the ring has queued on split p's streams.
+static int ring_join(glyd_gpu_ring* g, SplitPart* p, cudaStream_t cs) {
+    for (int k = 0; k < 2; k++) {
+        if (int r = record_on(g->mark, k ? p->sg : p->sd, k ? p->gg : p->gd)) return r;
+        if (cudaError_t r = cudaStreamWaitEvent(cs, g->mark, 0)) return r;
+    }
+    return 0;
+}
+
+// The queue dropped (cs waits for its work), its split p from here (whose streams wait for the last one's).
+static int ring_restart(glyd_gpu_ring* g, SplitPart* p, cudaStream_t cs) {
+    if (g->cur) {
+        if (int r = ring_join(g, g->cur, cs)) return r;
+        if (g->cur != p)
+            for (cudaStream_t s : {p->sd, p->sg})
+                if (int r = ring_join(g, g->cur, s)) return r;
+    }
+    g->q.clear();
+    g->issued = 0;
+    std::fill(g->busy, g->busy + RING_MAX, false);  // (their decodes and products in stream order before the next)
+    g->cur = p;
+    return 0;
+}
+
+// W's rows in even chunks of at most a slot, multiples of 64, queued and their decodes started as slots are free.
+static int ring_queue(glyd_gpu_ring* g, Nib f, int64_t O, int64_t K) {
+    if (O < 64 || O % 64 || K < 64 || K % 64) return cudaErrorInvalidValue;
+    int64_t per = std::min<int64_t>(O, (int64_t)(g->slot_bytes / (2 * K)) / 64 * 64);
+    if (per < 64) return cudaErrorInvalidValue;  // not 64 rows to a slot
+    int64_t n = (O + per - 1) / per, rows = ((O + n - 1) / n + 63) / 64 * 64;
+    for (int64_t r0 = 0; r0 < O; r0 += rows) g->q.push_back({f, O, K, r0, std::min(rows, O - r0), -1});
+    return ring_pump(g);
+}
+
+GLYD_GPU_API int glyd_gpu_ring_create(void* buffer, size_t bytes, size_t slot_bytes, glyd_gpu_ring** ring) {
+    if (!ring || !buffer || (uintptr_t)buffer % 16 || !slot_bytes || slot_bytes % 256 || bytes / slot_bytes < 3) return cudaErrorInvalidValue;
+    glyd_gpu_ring* g = new glyd_gpu_ring;
+    g->dev = current_device(), g->buf = (uint8_t*)buffer, g->slot_bytes = slot_bytes, g->slots = (int)std::min<size_t>(RING_MAX, bytes / slot_bytes);
+    cudaError_t r = cudaEventCreateWithFlags(&g->mark, cudaEventDisableTiming);
+    for (int s = 0; s < g->slots && !r; s++)
+        if (!(r = cudaEventCreateWithFlags(&g->ready[s], cudaEventDisableTiming))) r = cudaEventCreateWithFlags(&g->free_[s], cudaEventDisableTiming);
+    if (r) {
+        delete g;  // (its events let go with the process: a failed start)
+        return r;
+    }
+    *ring = g;
+    return 0;
+}
+
+GLYD_GPU_API int glyd_gpu_ring_destroy(glyd_gpu_ring* ring) {
+    if (!ring) return cudaErrorInvalidValue;
+    for (auto& kv : ring->parts) part_free(kv.second);
+    cudaEventDestroy(ring->mark);
+    for (int s = 0; s < ring->slots; s++) cudaEventDestroy(ring->ready[s]), cudaEventDestroy(ring->free_[s]);
+    delete ring;
+    return 0;
+}
+
+GLYD_GPU_API int glyd_gpu_ring_split(glyd_gpu_ring* ring, int64_t sms, int64_t* decode_sms, int64_t* product_sms) {
+    SplitPart* p;
+    if (!ring) return cudaErrorInvalidValue;
+    if (int r = ring_part(ring, sms, &p)) return r;
+    if (decode_sms) *decode_sms = p->dec;
+    if (product_sms) *product_sms = p->gemm;
+    return 0;
+}
+
+GLYD_GPU_API int glyd_gpu_ring_reset(glyd_gpu_ring* ring, cudaStream_t cs) {
+    return ring ? ring_restart(ring, ring->cur, cs) : cudaErrorInvalidValue;
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_ring_queue(glyd_gpu_ring* ring, int64_t sms, const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K) {
+    Nib f;
+    SplitPart* p;
+    if (!ring || !nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
+    if (int r = ring_part(ring, sms, &p)) return r;
+    if (p != ring->cur) {
+        if (!ring->q.empty()) return cudaErrorInvalidValue;  // a queue's matrices on one split
+        if (int r = ring_restart(ring, p, ring->cur ? ring->cur->sd : p->sd)) return r;
+    }
+    return ring_queue(ring, f, O, K);
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_ring_linear(glyd_gpu_ring* ring, int64_t sms, const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y, const glyd_gpu_blas* blas, cudaStream_t cs) {
+    Nib f;
+    SplitPart* p;
+    if (!ring || !blas || !blas->handle || !blas->gemm_ex || !blas->set_stream || !nib12(data, exc, exc_base, sym, f)) return cudaErrorInvalidValue;
+    if (M < 1 || M > INT32_MAX || O > INT32_MAX || K > INT32_MAX || (uintptr_t)x % 16 || (uintptr_t)y % 16) return cudaErrorInvalidValue;
+    cudaStreamCaptureStatus cap;
+    if (cudaStreamIsCapturing(cs, &cap) || cap != cudaStreamCaptureStatusNone) return cudaErrorNotSupported;  // (a capture takes another route)
+    if (int r = ring_part(ring, sms, &p)) return r;
+    bool next = ring->cur == p && !ring->q.empty() && ring->q.front().f.data == data && ring->q.front().row0 == 0 && ring->q.front().O == O && ring->q.front().K == K;
+    if (!next) {  // off the queue: W alone, now
+        if (int r = ring_restart(ring, p, cs)) return r;
+        if (int r = ring_queue(ring, f, O, K)) return r;
+    }
+    // the products after cs's work (X); a bias into Y first, cuBLAS adding to it
+    if (int r = cudaEventRecord(ring->mark, cs)) return r;
+    if (int r = cudaStreamWaitEvent(p->sg, ring->mark, 0)) return r;
+    if (bias) bias_rows_kernel<<<(unsigned)std::max<int64_t>(1, std::min<int64_t>(p->gemm * 4, (M * O + 255) / 256)), 256, 0, p->sg>>>(y, bias, M, O);
+    const float one = 1.f, beta = bias ? 1.f : 0.f;
+    cudaStream_t was = nullptr;
+    int target = 0, r = 0, b = 0;
+    if (blas->get_stream) blas->get_stream(blas->handle, &was);
+    if (blas->get_sm_count_target) blas->get_sm_count_target(blas->handle, &target);
+    if ((b = blas->set_stream(blas->handle, p->sg)) == 0 && blas->set_workspace && blas->workspace)
+        b = blas->set_workspace(blas->handle, blas->workspace, blas->workspace_bytes);
+    if (!b && blas->set_sm_count_target) b = blas->set_sm_count_target(blas->handle, (int)p->gemm);
+    for (bool first = true; !b && !r && !ring->q.empty() && ring->q.front().f.data == data && (first || ring->q.front().row0); first = false) {
+        if ((r = ring_pump(ring))) break;  // (the front's decode started: its slot is free once the chunks before are read)
+        glyd_gpu_ring::Chunk c = ring->q.front();
+        if ((r = cudaStreamWaitEvent(p->sg, ring->ready[c.slot], 0))) break;
+        b = blas->gemm_ex(blas->handle, 1, 0, (int)c.rows, (int)M, (int)K, &one, ring->buf + c.slot * ring->slot_bytes, 14, (int)K, x, 14, (int)K, &beta, y + c.row0, 14, (int)O, 68, -1);  // op T, op N; CUDA_R_16BF; CUBLAS_COMPUTE_32F; CUBLAS_GEMM_DEFAULT
+        if (b || (r = record_on(ring->free_[c.slot], p->sg, p->gg))) break;
+        ring->read[c.slot] = true, ring->busy[c.slot] = false;
+        ring->q.pop_front();
+        ring->issued--;
+        r = ring_pump(ring);  // the next decodes, into the slot freed
+    }
+    if (blas->get_sm_count_target && blas->set_sm_count_target) blas->set_sm_count_target(blas->handle, target);
+    if (blas->get_stream) blas->set_stream(blas->handle, was);
+    if (b) return GLYD_GPU_BLAS_ERROR + b;
+    if (!r) r = record_on(ring->mark, p->sg, p->gg);
+    if (!r) r = cudaStreamWaitEvent(cs, ring->mark, 0);  // Y
+    return r ? r : (int)cudaGetLastError();
+}
+
+GLYD_GPU_API int glyd_gpu_mma12_split_sms(int64_t gpu, int64_t O, int64_t K, int64_t M, int64_t* sms) {
+    if (!sms || O < 1 || K < 1 || M < 0) return cudaErrorInvalidValue;
+    *sms = split_sms(true, gpu, O, K, M);
+    return 0;
 }
 
 // Exact, a mixture of experts' layer (its E matrices [O, K] stacked): the experts the plan of P pairs hits back to
@@ -4341,6 +4737,12 @@ std::tuple<int64_t, int64_t> mma12_route(int64_t gpu, int64_t O, int64_t K, int6
     return {r, last};
 }
 
+int64_t mma12_split_sms(int64_t gpu, int64_t O, int64_t K, int64_t M) {
+    int64_t sms;
+    ok(glyd_gpu_mma12_split_sms(gpu, O, K, M, &sms), "mma12_split_sms");
+    return sms;
+}
+
 int64_t gpu() {
     int g;
     ok(glyd_gpu_gpu(&g), "gpu");
@@ -4390,6 +4792,14 @@ void mma12_unpack(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base,
     const c10::cuda::CUDAGuard guard(data.device());
     TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64");
     ok(glyd_gpu_mma12_unpack(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, K, row0, rows, ptr<uint16_t>(out), warps, current_stream()), "mma12_unpack");
+}
+
+void mma12_unpack_split(torch::Tensor data, torch::Tensor exc, torch::Tensor exc_base, std::vector<int64_t> sym, int64_t K, int64_t row0, int64_t rows, torch::Tensor out, int64_t sms) {
+    uint32_t s[4];
+    words(sym, 4, s, "the 12-bit layout's four words (its base)");
+    const c10::cuda::CUDAGuard guard(data.device());
+    TORCH_CHECK(row0 % 64 == 0 && rows % 64 == 0 && K % 64 == 0 && out.numel() >= rows * K, "rows a multiple of 64, K of 64");
+    ok(glyd_gpu_mma12_unpack_split(ptr<uint8_t>(data), ptr<uint32_t>(exc), ptr<int32_t>(exc_base), s, K, row0, rows, ptr<uint16_t>(out), sms, current_stream()), "mma12_unpack_split");
 }
 
 void mma_moe_unpack(torch::Tensor data, torch::Tensor blocks, torch::Tensor block_base, std::vector<int64_t> tiers, int64_t E, int64_t O, int64_t K, int64_t P, torch::Tensor plan, torch::Tensor out) {
@@ -4469,6 +4879,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("mma12_gemm", &mma12_gemm);
     m.def("mma12_gemm_big", &mma12_gemm_big);
     m.def("mma12_unpack", &mma12_unpack);
+    m.def("mma12_unpack_split", &mma12_unpack_split);
+    m.def("mma12_split_sms", &mma12_split_sms);
     m.def("mma12_gemm_wg", &mma12_gemm_wg);
     m.def("mma12_gemm_mid", &mma12_gemm_mid);
     m.def("attn_decode", &attn_decode);
