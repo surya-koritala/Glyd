@@ -50,3 +50,19 @@ A100 SXM4 40 GB (a100-sxm4-40gb/) and an H100 PCIe (h100-pcie/). Each dir's summ
   and L4's prompts (the grid kernel) 1.007-1.032, their decode-for-cuBLAS 0.998-1.026. That build walked the exceptions
   an entry a pass: the loop alone 1.008-1.023 on those prompts, split byte alone 0.990-1.003 (attr-*); aa7a6fc unrolls it
   as main does, and those rows wait for the release candidate's run.
+
+## The release candidate (rc/; 85ae892: aa7a6fc's loop, 2026-09-29)
+
+The same steps on the final tree: an L4 on AWS (l4/), an A10 (a10/), an A100 SXM4 40 GB (a100-sxm4-40gb/) and an H100
+SXM (h100-sxm/), each summary.txt with its ratios; xcheck and the self-test on the A100 and the H100 (all the same
+bits: 3052-5517 calls a run).
+
+- Faster: the H100 SXM's wgmma 0.933-0.969 at 32-1024 tokens and its steps 0.986-0.992; the A100's mid kernel
+  0.923-1.003 at 32-128, its prompts 0.969-0.982 at 256-768 and its steps 0.976-0.998.
+- The same: the A10 and the L4 at 1-1024 tokens, 0.989-1.010 (the loop's cost gone: attr-loop, main against main
+  with an entry a pass, still 1.011-1.022 on their prompts).
+- Slower: the decode (mma_unpack, a warp a step: for cuBLAS and exact mode) 1.030-1.058 on the H100 SXM and
+  1.010-1.016 on the A10; the A100 0.998-1.012, the L4 0.999-1.002. Round 1's 1.021-1.023 on the A10 and 1.013-1.017
+  on the A100 had the loop's cost in them (the A10's attr-loop: 1.010 of its decode); what is left is split byte's
+  own, in a kernel with main's loads, stores and branches and a tenth fewer instructions, largest where the kernel runs
+  furthest from its memory's bandwidth (the H100 SXM at 2.25 of 3.35 TB/s).

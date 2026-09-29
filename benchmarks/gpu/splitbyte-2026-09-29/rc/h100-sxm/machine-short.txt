@@ -1,0 +1,1 @@
+NVIDIA H100 80GB HBM3 (9.0, sm_90a, 81559 MiB), x86_64 host, 26 CPUs; CLASS=hopper; release tree 85ae892 (rust-splitbyte), main db8e7b0 (main)

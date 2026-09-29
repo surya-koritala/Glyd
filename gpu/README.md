@@ -209,39 +209,39 @@ The same size (12.04-12.07 bits a weight on Qwen3-0.6B to 8B and
 granite-3.1-3b-a800m-instruct, 0.02-0.12% of the weights exceptions
 against 0.02-0.13%), the same kernels and each weight decoded to the
 same bits, so the same products: every output of the layout's kernels
-main's bits on an L4, an A10, an A100 and an H100 PCIe, and models'
-logits and greedy tokens the same (round 1, 2026-09-29). A layer's time
+main's bits on an L4, an A10, an A100, an H100 PCIe and an H100 SXM, and
+models' logits and greedy tokens the same (2026-09-29). A layer's time
 against the 12-bit layout's before, in the same kernels (layer 10 of
 Qwen3-8B with 4B-Instruct-2507, 14B or 32B, two runs each, main's
-library and this one in one process). Round 1's build walked a step's
-exceptions an entry a pass in the step, prompt, A100 mid, decode and
-mixture-of-experts kernels; the release unrolls that loop as main does
-(but in sm_80's mixture-of-experts products of 64 tokens with an
-activation, where unrolled it spilled), so those rows are measured again
-on it (pending); the mid, TMA and wgp kernels decode their stages
-without it:
+library and the release's in one process):
 
 | GPU | Tokens | Route (kernel) | Split byte / before | |
 | :-- | :-- | :-- | :-- | :-- |
-| H100 PCIe | 1-16 | step | 0.994-1.002 | pending |
-| H100 PCIe | 32-128 | wgmma (TMA kernel) | 0.956-0.991 | |
-| H100 PCIe | 256-1024 | wgmma (wgp kernel) | 0.942-0.968 | |
-| A100 SXM4 40 GB | 1-16 | step | 0.991-1.006 | pending |
-| A100 SXM4 40 GB | 32-128 | mid (the A100's own) | 0.923-1.000 | pending |
-| A100 SXM4 40 GB | 256-768 | prompt | 0.975-0.989 | pending |
-| A10 | 1-8 | step | 0.989-1.004 | pending |
-| A10 | 32 | mid | 0.995-1.002 | |
-| A10 | 256-1024 | prompt (grid) | 1.007-1.032 (the loop 1.008-1.019, split byte alone 0.996-1.003) | pending |
-| L4 | 1-8 | step | 0.996-1.005 | pending |
-| L4 | 32 | mid | 0.999-1.001 | |
-| L4 | 256-1024 | prompt (grid) | 1.012-1.029 (the loop 1.010-1.023, split byte alone 0.990-0.998) | pending |
-| A10, A100, H100 PCIe, L4 | whole matrices | decode (for cuBLAS, exact) | 1.021-1.023, 1.013-1.017, 1.023-1.026, 0.998-1.001 (the A10's: the loop 1.007, split byte alone 1.012) | pending |
+| H100 SXM | 1-16 | step | 0.986-0.992 | faster |
+| H100 SXM | 32-128 | wgmma (TMA kernel) | 0.956-0.969 | faster |
+| H100 SXM | 256-1024 | wgmma (wgp kernel) | 0.933-0.962 | faster |
+| A100 SXM4 40 GB | 1-16 | step | 0.976-0.998 | faster |
+| A100 SXM4 40 GB | 32-128 | mid (the A100's own) | 0.923-1.003 | faster |
+| A100 SXM4 40 GB | 256-768 | prompt | 0.969-0.982 | faster |
+| A10 | 1-8 | step | 0.989-1.005 | the same |
+| A10 | 32 | mid | 0.997-1.000 | the same |
+| A10 | 256-1024 | prompt (grid) | 0.991-1.008 | the same |
+| L4 | 1-8 | step | 0.998-1.004 | the same |
+| L4 | 32 | mid | 0.997-0.999 | the same |
+| L4 | 256-1024 | prompt (grid) | 0.990-1.010 | the same |
+| H100 SXM | whole matrices | decode (for cuBLAS, exact mode) | 1.030-1.058 | slower |
+| A10 | whole matrices | decode | 1.010-1.016 | slower |
+| A100 SXM4 40 GB | whole matrices | decode | 0.998-1.012 | the same to 1% slower |
+| L4 | whole matrices | decode | 0.999-1.002 | the same |
 
-A build holding both decodes measured the same trend on an H100 SXM5
-(0.955-0.969 at 128-512 tokens) and an A100 SXM4 (0.969-0.981 at
-256-768), and on an RTX 4080 SUPER, where the decode is hidden, within
-0.7%. Logs: [benchmarks/gpu/splitbyte-2026-09-29](../benchmarks/gpu/splitbyte-2026-09-29)
-(round1/), [benchmarks/gpu/format-study-2026-09-28](../benchmarks/gpu/format-study-2026-09-28)
+The H100 PCIe measured the same on wgmma (0.942-0.991 at 32-1024 tokens).
+The decode takes longer where its kernel runs furthest from its memory's
+bandwidth (the H100 SXM: 2.25 of 3.35 TB/s; the L4, at 87% of its, not
+at all), with the same loads, stores and branches as before and a tenth
+fewer instructions: the decode for prompts past wgmma's 1024 tokens on
+Hopper (1-2% of such a prompt's time) and past 768 on the A100, and
+exact mode's steps. Logs: [benchmarks/gpu/splitbyte-2026-09-29](../benchmarks/gpu/splitbyte-2026-09-29)
+(rc/, round1/), [benchmarks/gpu/format-study-2026-09-28](../benchmarks/gpu/format-study-2026-09-28)
 with the other formats measured against it.
 
 ### Many tokens a step on an H100: the copy engine and wgmma
