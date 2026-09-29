@@ -31,8 +31,8 @@ every earlier format.
   the H100 SXM, 0.933-0.969 at 32-1024 tokens (wgmma: 3.1-6.7% less; the
   H100 PCIe 0.942-0.991) and 0.986-0.992 at 1-16; faster on the A100,
   0.923-0.987 at 64-128 (its mid kernel: 5.5-7.7% less at 128),
-  0.969-0.982 at 256-768 (prompts) and 0.976-0.998 at 1-16, and
-  0.985-1.003 at 32; the same on the A10 and the L4, 0.989-1.010 at
+  0.969-0.982 at 256-768 (prompts) and 0.976-0.998 at 1-16; the same
+  to 1.5% faster at 32 (0.985-1.003); the same on the A10 and the L4, 0.989-1.010 at
   1-1024 tokens (the A10's from 640 by `linear`'s prompt kernel, where
   glyd.gpu decodes those prompts ahead, below). Slower: a matrix decoded
   whole, for cuBLAS and exact mode, takes 3.0-5.8% longer on the H100 SXM
@@ -108,8 +108,9 @@ every earlier format.
   12-bit layout (Qwen3-8B's 16.4 GB in 18.5-23.0 s and 22.8-24.6 s, at
   the pace of the disk its shards were written to: 3.2-6.4 of the CPUs
   busy). A save holds two shards (about 5 GB each) and at most a shard's
-  worth of weights in flight past the one it waits for, whatever the
-  threads (Qwen3-8B: 11.4-13.6 GB peak RSS). `glyd verify` checks a save
+  worth of weights in flight past the one it waits for (about 15 GB at
+  most for a model of several shards; Qwen3-8B measured 11.4-13.6 GB peak
+  RSS on 16 threads). `glyd verify` checks a save
   as `python -m glyd.gpu verify` does, its packs decoded on the CPU or
   (`--device cuda:0`) on the GPU by the library (Qwen3-8B's 253 packed
   tensors and 146 saved as they are in 11.6-11.8 s tiered, 8.8-9.0 s

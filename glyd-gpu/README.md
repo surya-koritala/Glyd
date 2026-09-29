@@ -37,8 +37,8 @@ checked, and each tensor saved as it is. The `glyd-gpu` command runs them
 
 Memory: a save holds the shard its writer writes and the one it fills
 (about 5 GB each) and at most a shard's worth of bf16 weights being packed
-past the one it waits for, whatever the threads (Qwen3-8B: 11.4-13.6 GB
-peak RSS on 16 threads); a verify on the CPU, a pack and its matrix a
+past the one it waits for (about 15 GB at most for a model of several
+shards; Qwen3-8B measured 11.4-13.6 GB peak RSS on 16 threads); a verify on the CPU, a pack and its matrix a
 thread and one more (Qwen3-8B: 2.5-2.7 GB). On the AWS dev machine (a
 g6.4xlarge: 16 vCPUs of an AMD EPYC 7R13), 16 threads:
 Qwen3-4B-Instruct-2507 packed at 1.58-1.60 GB/s of bf16 tiered and
