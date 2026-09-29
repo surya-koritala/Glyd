@@ -707,6 +707,31 @@ if r == 0 and fns:
                     near(y, F.linear(x.float(), w.float(), b.float() if use_bias else None))
                 assert all(exact(a, b) for a, b in zip(*outs)), ("the route SPLIT: run to run", tag, M, use_bias)
                 counts["the route SPLIT's products (" + tag + ")"] = counts.get("the route SPLIT's products (" + tag + ")", 0) + 2 * len(qs)
+    # two layers of the same matrices queued: each chunk's decode gated by the product of the last chunk of its shape
+    # (the layer before: 5 chunks back in 4 MiB slots) in a ring of 16 slots, the same bits as a 3-slot ring's of the
+    # same chunks, whose slots gate it before that; the second layer's products the first's
+    narrow, wide = torch.empty(3 * (4 << 20), dtype=torch.uint8, device=dev), torch.empty(16 * (4 << 20), dtype=torch.uint8, device=dev)
+    ring_narrow, ring_wide = lib.ring_create(narrow, 4 << 20), lib.ring_create(wide, 4 << 20)
+    for M in (769, 2000):
+        xs = [torch.randn(M, w.shape[1], dtype=bf, device=dev) for w in ws_]
+        outs = []
+        for rg in (ring_narrow, ring_wide):
+            assert lib.ring_reset(rg) == 0
+            for q in qs + qs:
+                assert lib.mma12_ring_queue(rg, 12, q.data, q.exc, q.exc_base, q.sym, *q.shape) == 0
+            ys = []
+            for q, w, x in zip(qs + qs, ws_ + ws_, xs + xs):
+                y = nan(M, w.shape[0])
+                blas.handle = torch.cuda.current_blas_handle()
+                assert lib.mma12_ring_linear(rg, 12, q.data, q.exc, q.exc_base, q.sym, *q.shape, x, None, y, blas) == 0
+                ys.append(y)
+            outs.append(ys)
+        assert all(exact(a, b) for a, b in zip(*outs)), ("the route SPLIT: gated decodes, the 3-slot ring's bits", M)
+        assert all(exact(a, b) for a, b in zip(outs[1][:len(qs)], outs[1][len(qs):])), ("the route SPLIT: the second layer's products the first's", M)
+        for y, w, x in zip(outs[1], ws_, xs):
+            near(y, F.linear(x.float(), w.float()))
+        counts["the route SPLIT's gated decodes (two layers)"] = counts.get("the route SPLIT's gated decodes (two layers)", 0) + 2 * len(qs)
+    assert lib.ring_destroy(ring_wide) == 0 and lib.ring_destroy(ring_narrow) == 0
     with torch.cuda.stream(torch.cuda.Stream()):  # on a stream of its own, off the queue
         x = torch.randn(1000, 2048, dtype=bf, device=dev)
         y = nan(1000, 1024)

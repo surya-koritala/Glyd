@@ -46,6 +46,7 @@ ap.add_argument("--prompts", action="store_true", help="a batch of different pro
 ap.add_argument("--merge", action="store_true", help="the Linears that take the same input (q, k, v; gate, up) as one product each, for bf16 and Glyd alike, as serving engines run them")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
 ap.add_argument("--without-split", action="store_true", help="--prefill again with the route SPLIT off (model.Split: the routes before it, v0.25.0's), in the same process")
+ap.add_argument("--breakdown", type=str, default="", help="prompt lengths to break a forward pass down at, with the route SPLIT and without: the host's time to issue a pass against the pass's, then from a profile of one pass the GPU's span and idle time and its kernels by kind (GEMMs, the decode, attention, the rest), the decode's time beside GEMMs, beside the rest and alone; run after every other timing (a profiler session slows the launches after it)")
 ap.add_argument("--compile", action="store_true", help="generate() compiled as transformers compiles it: a static cache, the forward under torch.compile (reduce-overhead: CUDA graphs); each batch's warm-up, of --tokens, compiles and captures")
 args = ap.parse_args()
 
@@ -89,6 +90,82 @@ def prefill(model, label):
         out.append(f"{n} tokens {ts[0] * 1e3:.1f} ms ({n / ts[0]:.0f} tokens/s), first token {ts[1] * 1e3:.1f} ms")
     if out:
         print(f"{label} prefill: " + ", ".join(out))
+
+
+def breakdown(model, label):
+    """Where a prompt's pass goes, with the route SPLIT and without (model.Split off: today's route): the host's time to
+    issue a pass (model() returning, the GPU not waited for) against the pass's, before any profile; then a profile of
+    one pass each (after two), its kernels on every stream: the GPU's span and its idle time (no kernel running), each
+    kind's kernel time (GEMMs: cuBLAS's and Glyd's products; the decode: SPLIT's on its SMs, today's route's on all;
+    attention; the rest: norms, activations, rotary, copies), and the decode's time beside GEMMs, beside the rest and
+    alone."""
+    if not args.breakdown:
+        return
+    import re
+    from torch.profiler import profile as prof_, ProfilerActivity
+    from glyd.gpu.model import Split
+    held = dict(Split.of)
+
+    def mode(off):
+        Split.of.clear()
+        Split.of.update(held)
+        if off:
+            Split.of.update({torch.device("cuda", i): False for i in range(torch.cuda.device_count())})
+
+    def union(iv):
+        out = []
+        for a, b in sorted(iv):
+            if out and a <= out[-1][1]:
+                out[-1][1] = max(out[-1][1], b)
+            else:
+                out.append([a, b])
+        return out
+
+    def both(u, v):  # time in both unions
+        i = j = t = 0
+        while i < len(u) and j < len(v):
+            t += max(0, min(u[i][1], v[j][1]) - max(u[i][0], v[j][0]))
+            i, j = (i + 1, j) if u[i][1] < v[j][1] else (i, j + 1)
+        return t
+
+    kind = lambda k: "decode" if re.search(r"mma12_split_kernel|mma_unpack_kernel", k) else "attention" if re.search(r"flash|fmha|attention|attn|softmax", k, re.I) else "gemm" if re.search(r"gemm|xmma|cutlass|nvjet|s16816", k, re.I) else "rest"
+    runs = [(n, name, off) for n in [int(v) for v in args.breakdown.split(",") if v] for name, off in (("SPLIT", False), ("without SPLIT", True))]
+    xs = {n: torch.randint(0, vocab, (1, n), generator=torch.Generator().manual_seed(n)).cuda() for n, _, _ in runs}
+    host = {}
+    with torch.no_grad():
+        for n, name, off in runs:
+            mode(off)
+            for _ in range(3):
+                model(xs[n], logits_to_keep=1)
+            torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            model(xs[n], logits_to_keep=1)
+            t1 = time.perf_counter()
+            torch.cuda.synchronize()
+            host[n, name] = (t1 - t0, time.perf_counter() - t0)
+        for n, name, off in runs:
+            mode(off)
+            for _ in range(2):
+                model(xs[n], logits_to_keep=1)
+            torch.cuda.synchronize()
+            with prof_(activities=[ProfilerActivity.CUDA]) as pr:
+                model(xs[n], logits_to_keep=1)
+                torch.cuda.synchronize()
+            ks = [(kind(e.name), e.time_range.start, e.time_range.end) for e in pr.events() if e.device_type == torch.autograd.DeviceType.CUDA]
+            if not ks:
+                print(f"{label} breakdown, {n} tokens, {name}: no kernels in the profile")
+                continue
+            u = {k: union([(a, b) for c, a, b in ks if c == k]) for k in ("gemm", "decode", "attention", "rest")}
+            everything, other = union([(a, b) for _, a, b in ks]), union(u["attention"] + u["rest"])
+            span = max(b for _, _, b in ks) - min(a for _, a, _ in ks)
+            took = {k: sum(b - a for c, a, b in ks if c == k) / 1e3 for k in u}
+            dg, dr = both(u["decode"], u["gemm"]), both(u["decode"], other)
+            dalone = sum(b - a for a, b in u["decode"]) - both(u["decode"], union(u["gemm"] + other))
+            print(f"{label} breakdown, {n} tokens, {name}: a pass {host[n, name][1] * 1e3:.1f} ms, the host issues it in {host[n, name][0] * 1e3:.1f}; "
+                  f"GPU span {span / 1e3:.1f} ms, idle {(span - sum(b - a for a, b in everything)) / 1e3:.1f}; kernels: GEMMs {took['gemm']:.1f} ms, "
+                  f"the decode {took['decode']:.1f} (beside GEMMs {dg / 1e3:.1f}, beside the rest {dr / 1e3:.1f}, alone {dalone / 1e3:.1f}), "
+                  f"attention {took['attention']:.1f}, the rest {took['rest']:.1f}", flush=True)
+    mode(False)
 
 
 def profile(model, label):
@@ -361,6 +438,7 @@ if args.without_split:
     prefill(model, f"glyd {args.format} without SPLIT")
     Split.of.clear()
     Split.of.update(held)
+breakdown(model, f"glyd {args.format}")
 top_b = perplexity(model, f"glyd {args.format}")
 mmlu_b = mmlu(model, f"glyd {args.format}")
 kv_check(model, f"glyd {args.format}")

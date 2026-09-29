@@ -234,10 +234,15 @@ int glyd_gpu_mma12_linear(const uint8_t* data, const uint32_t* exc, const int32_
  * driver's green contexts, while the caller's cuBLAS multiplies from the ring
  * on the rest (told its SMs), the two sides ordered by events (the host never
  * waits). A matrix is decoded in row chunks of at most a slot, a slot a chunk
- * as slots come free, the matrices in the order queued: queue a prompt's
- * matrices as its first product starts, then call each product; a product
- * whose matrix is not next in the queue drops it and decodes its own, chunk
- * by chunk, beside its products. Its products are cuBLAS's own on the
+ * as slots come free, the matrices in the order queued, each chunk's decode
+ * once the product of the last chunk of its shape queued before it has
+ * started (in a model's order: the same matrix of the layer before), so that
+ * the decodes run beside the products, not beside the kernels between them
+ * (norms, activations, attention), whose memory bandwidth they took; give the
+ * ring slots for a layer's chunks and one. Queue a prompt's matrices as its
+ * first product starts (or a few ahead of its products as they go), then call
+ * each product; a product whose matrix is not next in the queue drops it and
+ * decodes its own, chunk by chunk, beside its products. Its products are cuBLAS's own on the
  * decoded bf16 (a row chunk a call): not bit for bit a whole-matrix product.
  * A ring serves one host thread and one device (the current one when made);
  * cudaErrorNotSupported where the split cannot run (a driver before CUDA

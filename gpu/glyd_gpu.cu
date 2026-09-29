@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <mma.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdlib>
 #include <cctype>
@@ -4218,8 +4219,13 @@ static int part_make(int64_t, SplitPart&) { return cudaErrorNotSupported; }
 static int record_on(cudaEvent_t e, cudaStream_t s, void*) { return (int)cudaEventRecord(e, s); }
 #endif
 
-constexpr int RING_MAX = 16;
+constexpr int RING_MAX = 16, RING_STARTS = 64;
 
+// A chunk's decode waits for the product of the last chunk of its shape queued before it to start (its gate: in a
+// model's order, the same matrix of the layer before), so that the decode runs beside the products, whose tensor-core
+// work leaves memory bandwidth to spare, and not beside the norms, activations and attention between them, which it
+// slowed by taking a third of it (an A100: Qwen3-8B's prompt of 1024 tokens lost 15 of the layers' 18.5 ms so,
+// benchmarks/gpu/option2-2026-09-29); the ring holds a layer's chunks ahead where it has the slots.
 struct glyd_gpu_ring {
     int dev;
     uint8_t* buf;
@@ -4231,12 +4237,15 @@ struct glyd_gpu_ring {
         Nib f;
         int64_t O, K, row0, rows;
         int slot;
+        int64_t seq, gate;  // its number, and its gate's (-1: none)
     };
     std::deque<Chunk> q;  // queued, not yet multiplied; the first `issued` decoding or decoded
     size_t issued = 0;
     int next = 0;                                   // the slot the next decode takes
+    int64_t seq = 0, started = -1;                  // the next chunk's number; the last whose product has started
+    std::map<std::array<int64_t, 4>, int64_t> last; // the last chunk queued of each shape (O, K, row0, rows)
     bool busy[RING_MAX] = {}, read[RING_MAX] = {};  // a decode there not yet multiplied; a product has read it
-    cudaEvent_t ready[RING_MAX], free_[RING_MAX], mark;
+    cudaEvent_t ready[RING_MAX], free_[RING_MAX], start[RING_STARTS], mark;
 };
 
 // The split for sms: made once and kept.
@@ -4251,13 +4260,14 @@ static int ring_part(glyd_gpu_ring* g, int64_t sms, SplitPart** p) {
     return 0;
 }
 
-// Decodes queued into the slots free, in order.
+// Decodes queued into the slots free, in order, each once its gate's product has been issued (it waits for it to start).
 static int ring_pump(glyd_gpu_ring* g) {
     SplitPart* p = g->cur;
-    while (g->issued < g->q.size() && !g->busy[g->next]) {
+    while (g->issued < g->q.size() && !g->busy[g->next] && g->q[g->issued].gate <= g->started) {
         glyd_gpu_ring::Chunk& c = g->q[g->issued];
         int s = g->next;
         if (g->read[s]) cudaStreamWaitEvent(p->sd, g->free_[s], 0);  // the product that read it done
+        if (c.gate >= 0 && g->started - c.gate < RING_STARTS) cudaStreamWaitEvent(p->sd, g->start[c.gate % RING_STARTS], 0);
         if (int r = split_decode(c.f, c.K, c.row0, c.rows, (uint16_t*)(g->buf + s * g->slot_bytes), p->dec, p->sd)) return r;
         if (int r = record_on(g->ready[s], p->sd, p->gd)) return r;
         c.slot = s, g->busy[s] = true, g->next = (s + 1) % g->slots, g->issued++;
@@ -4283,19 +4293,26 @@ static int ring_restart(glyd_gpu_ring* g, SplitPart* p, cudaStream_t cs) {
                 if (int r = ring_join(g, g->cur, s)) return r;
     }
     g->q.clear();
+    g->last.clear();
     g->issued = 0;
     std::fill(g->busy, g->busy + RING_MAX, false);  // (their decodes and products in stream order before the next)
     g->cur = p;
     return 0;
 }
 
-// W's rows in even chunks of at most a slot, multiples of 64, queued and their decodes started as slots are free.
+// W's rows in even chunks of at most a slot, multiples of 64, queued (each gated by the last chunk of its shape queued
+// since the queue started) and their decodes started as slots are free.
 static int ring_queue(glyd_gpu_ring* g, Nib f, int64_t O, int64_t K) {
     if (O < 64 || O % 64 || K < 64 || K % 64) return cudaErrorInvalidValue;
     int64_t per = std::min<int64_t>(O, (int64_t)(g->slot_bytes / (2 * K)) / 64 * 64);
     if (per < 64) return cudaErrorInvalidValue;  // not 64 rows to a slot
     int64_t n = (O + per - 1) / per, rows = ((O + n - 1) / n + 63) / 64 * 64;
-    for (int64_t r0 = 0; r0 < O; r0 += rows) g->q.push_back({f, O, K, r0, std::min(rows, O - r0), -1});
+    for (int64_t r0 = 0; r0 < O; r0 += rows) {
+        int64_t k = std::min(rows, O - r0);
+        auto it = g->last.try_emplace({O, K, r0, k}, -1).first;
+        g->q.push_back({f, O, K, r0, k, -1, g->seq, it->second});
+        it->second = g->seq++;
+    }
     return ring_pump(g);
 }
 
@@ -4306,6 +4323,7 @@ GLYD_GPU_API int glyd_gpu_ring_create(void* buffer, size_t bytes, size_t slot_by
     cudaError_t r = cudaEventCreateWithFlags(&g->mark, cudaEventDisableTiming);
     for (int s = 0; s < g->slots && !r; s++)
         if (!(r = cudaEventCreateWithFlags(&g->ready[s], cudaEventDisableTiming))) r = cudaEventCreateWithFlags(&g->free_[s], cudaEventDisableTiming);
+    for (int s = 0; s < RING_STARTS && !r; s++) r = cudaEventCreateWithFlags(&g->start[s], cudaEventDisableTiming);
     if (r) {
         delete g;  // (its events let go with the process: a failed start)
         return r;
@@ -4319,6 +4337,7 @@ GLYD_GPU_API int glyd_gpu_ring_destroy(glyd_gpu_ring* ring) {
     for (auto& kv : ring->parts) part_free(kv.second);
     cudaEventDestroy(ring->mark);
     for (int s = 0; s < ring->slots; s++) cudaEventDestroy(ring->ready[s]), cudaEventDestroy(ring->free_[s]);
+    for (int s = 0; s < RING_STARTS; s++) cudaEventDestroy(ring->start[s]);
     delete ring;
     return 0;
 }
@@ -4374,9 +4393,16 @@ GLYD_GPU_API int glyd_gpu_mma12_ring_linear(glyd_gpu_ring* ring, int64_t sms, co
         b = blas->set_workspace(blas->handle, blas->workspace, blas->workspace_bytes);
     if (!b && blas->set_sm_count_target) b = blas->set_sm_count_target(blas->handle, (int)p->gemm);
     for (bool first = true; !b && !r && !ring->q.empty() && ring->q.front().f.data == data && (first || ring->q.front().row0); first = false) {
-        if ((r = ring_pump(ring))) break;  // (the front's decode started: its slot is free once the chunks before are read)
+        if ((r = ring_pump(ring))) break;  // (the front's decode issued: its gate's product came before it, its slot is free)
         glyd_gpu_ring::Chunk c = ring->q.front();
+        if (c.slot < 0) {  // (never: the front's gate is a chunk multiplied before it)
+            r = cudaErrorIllegalState;
+            break;
+        }
         if ((r = cudaStreamWaitEvent(p->sg, ring->ready[c.slot], 0))) break;
+        if ((r = record_on(ring->start[c.seq % RING_STARTS], p->sg, p->gg))) break;  // its product's start: the gate of the decodes waiting for it
+        ring->started = c.seq;
+        if ((r = ring_pump(ring))) break;
         b = blas->gemm_ex(blas->handle, 1, 0, (int)c.rows, (int)M, (int)K, &one, ring->buf + c.slot * ring->slot_bytes, 14, (int)K, x, 14, (int)K, &beta, y + c.row0, 14, (int)O, 68, -1);  // op T, op N; CUDA_R_16BF; CUBLAS_COMPUTE_32F; CUBLAS_GEMM_DEFAULT
         if (b || (r = record_on(ring->free_[c.slot], p->sg, p->gg))) break;
         ring->read[c.slot] = true, ring->busy[c.slot] = false;

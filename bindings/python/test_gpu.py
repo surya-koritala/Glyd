@@ -306,7 +306,7 @@ def test_split_route():
     else:
         w = (torch.randn(512, 1024, device="cuda") * 0.02).to(torch.bfloat16)
         q = g.pack_mma12(w)
-        big = g.Mma12((131072, 1024), q.data, q.exc, q.exc_base, q.sym)  # (its shape alone read by the routes)
+        big = g.Mma12((131072, 1024), q.data, q.exc, q.exc_base, q.hb)  # (its shape alone read by the routes)
         for gpu, M, route, sms in [(80, 768, g.BIG, 0), (80, 769, g.SPLIT, 12), (80, 1536, g.SPLIT, 8), (80, 8192, g.SPLIT, 4), (3080, 769, g.SPLIT, 12),
                                    (90, 1023, g.WG, 0), (90, 1024, g.SPLIT, 20), (90, 2048, g.SPLIT, 12), (90, 6144, g.SPLIT, 4), (3090, 1024, g.SPLIT, 18),
                                    (3090, 1025, g.DECODE, 0), (86, 4096, g.BIG, 0), (89, 4096, g.BIG, 0)]:
@@ -353,13 +353,20 @@ def test_split_order():
     tree = ast.parse(open(os.path.join(HERE, "glyd", "gpu", "model.py")).read())
     split = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Split")
     ns = {}
-    exec(compile(ast.Module([n for n in split.body if isinstance(n, ast.FunctionDef) and n.name == "follow"], []), "model.py", "exec"), ns)
+    top = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("ring_chunks", "ring_plan") or isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "SPLIT_SLOT" for t in n.targets)]
+    exec(compile(ast.Module(top + [n for n in split.body if isinstance(n, ast.FunctionDef) and n.name == "follow"], []), "model.py", "exec"), ns)
 
     class Fake:
         follow = ns["follow"]
 
         def __init__(self):
             self.order, self.rec, self.run_, self.pos, self.at = None, [], [], 0, -1
+
+        def plan(self):
+            pass
+
+        def top_up(self, sms):
+            return 0
 
         def start(self, M, sms, i):  # as Split.start: the order's Linears from its i-th on that take the route now
             self.starts += 1
@@ -382,6 +389,13 @@ def test_split_order():
     s = Fake()
     prompt(s, short)
     assert [prompt(s, short), prompt(s, full), prompt(s, full), prompt(s, short)] == [1, 3, 1, 1] and s.order == full, "the order takes in those it lacks"
+    # the ring for an order (ring_plan): Qwen3-8B's layers merged (q k v, gate up) in 100 MiB slots, gate up in two
+    # chunks, a layer's 5 chunks ahead; not merged, the gap to the last of a shape up to 7; Qwen3-0.6B's matrices whole
+    assert ns["ring_chunks"](24576, 4096, 100 << 20) == [(0, 12288), (12288, 12288)]
+    layer = [(6144, 4096), (4096, 4096), (24576, 4096), (4096, 12288)]
+    assert ns["ring_plan"](layer * 36) == (100 << 20, 6, 6)
+    assert ns["ring_plan"]([(4096, 4096), (1024, 4096), (1024, 4096), (4096, 4096), (12288, 4096), (12288, 4096), (4096, 12288)] * 36) == (12288 * 4096 * 2, 8, 9)
+    assert ns["ring_plan"]([(4096, 1024), (1024, 2048), (6144, 1024), (1024, 3072)] * 28) == (6144 * 1024 * 2, 5, 6)
 
 
 def test_names_defined_once():

@@ -352,6 +352,7 @@ def gpu():
     return g.value
 
 
+@functools.lru_cache(maxsize=4096)
 def _route(name, gpu, O, K, M):
     """mma_route, mma12_route: (route, last), the route for M tokens on gpu and the last token count that takes it (the
     library loaded first where it is not yet)."""
@@ -446,6 +447,7 @@ def mma12_unpack_split(data, exc, exc_base, sym, K, row0, rows, out, sms):
     _unpack("mma12_unpack_split", data, exc, exc_base, _words(sym, 4, "the 12-bit layout's four words (its base)"), K, row0, rows, out, sms)
 
 
+@functools.lru_cache(maxsize=4096)
 def mma12_split_sms(gpu, O, K, M):
     """The route SPLIT's SMs for the decode for M tokens of W [O, K] on gpu (0: another route)."""
     sms = ctypes.c_int64()
@@ -475,6 +477,11 @@ def ring_split(ring, sms):
     a, b = ctypes.c_int64(), ctypes.c_int64()
     r = _fn["ring_split"](ring, sms, ctypes.byref(a), ctypes.byref(b))
     return r, a.value, b.value
+
+
+def ring_destroy(ring):
+    """The ring let go, its streams' work waited for first: the status."""
+    return _fn["ring_destroy"](ring)
 
 
 def ring_reset(ring):
