@@ -143,9 +143,9 @@ def test_manifest_and_names():
         assert x["experts"] == 8 and x["transposed"] and fmt.manifest(None, {"m.q_proj": e, "m.experts.down_proj": x}, "0.22.0")["format"] == "glyd-v2"
         json.dump(fmt.manifest(None, {"m.experts.down_proj": x}, "0.22.0"), open(os.path.join(d, fmt.MANIFEST), "w"))
         assert fmt.read_manifest(d)["packs"]["m.experts.down_proj"] == x  # glyd-v2, which glyd 0.21 refuses by its format
-        # the 12-bit layout (glyd-v3): a pack's words of symbols, its buffers data, exc and exc_base
-        y = fmt.entry((1024, 256), [1, 2, 3, 0xFFFFFFFF], [("m.o_proj.weight", (1024, 256), "ee")], layout="mma12")
-        assert list(y) == ["layout", "shape", "sym", "tensors"] and y["sym"][3] == 0xFFFFFFFF and fmt.LAYOUTS["mma12"] == ("data", "exc", "exc_base")
+        # the 12-bit layout (glyd-v3): a pack's base hb (split byte), its buffers data, exc and exc_base
+        y = fmt.entry((1024, 256), 58, [("m.o_proj.weight", (1024, 256), "ee")], layout="mma12")
+        assert list(y) == ["layout", "shape", "hb", "tensors"] and y["hb"] == 58 and fmt.LAYOUTS["mma12"] == ("data", "exc", "exc_base")
         json.dump(fmt.manifest(None, {"m.o_proj": y}, "0.24.0", "mma12"), open(os.path.join(d, fmt.MANIFEST), "w"))
         assert fmt.read_manifest(d)["format"] == "glyd-v3" and fmt.read_manifest(d)["layout"] == "mma12"
         json.dump(dict(m, format="glyd-v9"), open(os.path.join(d, fmt.MANIFEST), "w"))
@@ -793,18 +793,32 @@ def test_cli_pack_and_verify():
             r = subprocess.run([sys.executable, "-m", "glyd.gpu", *args], env=env, capture_output=True, text=True)
             assert r.returncode == 0 and says in r.stdout, r.stderr[-2000:]
         m12 = fmt.read_manifest(os.path.join(d, "out12"))
-        assert m12["format"] == "glyd-v3" and all(e["layout"] == "mma12" and "sym" in e for e in m12["packs"].values())
+        assert m12["format"] == "glyd-v3" and all(e["layout"] == "mma12" and type(e["hb"]) is int and "sym" not in e for e in m12["packs"].values())
         from glyd.gpu import hf, kernels as g, model as gm
         saved, fresh = hf.from_pretrained(os.path.join(d, "out12"), layout="mma12"), hf.from_pretrained(os.path.join(d, "src"), layout="mma12")
         packs = lambda model: [m.p for m in model.modules() if isinstance(m, gm.GLinear)] + [p for m in model.modules() for p in (getattr(m, "glyd_packs", None) or {}).values()]
         assert len(packs(saved)) == len(packs(fresh)) == len(m12["packs"])
         for a, b in zip(packs(saved), packs(fresh)):
-            assert type(a) is g.Mma12 and a.sym == b.sym and all(torch.equal(getattr(a, t), getattr(b, t)) for t in ("data", "exc", "exc_base"))
+            assert type(a) is g.Mma12 and a.hb == b.hb and a.sym == b.sym and all(torch.equal(getattr(a, t), getattr(b, t)) for t in ("data", "exc", "exc_base"))
         del saved, fresh
         tiered = hf.from_pretrained(os.path.join(d, "out12"), layout="mma", verify=True)
         assert all(type(p) is g.Mma for p in packs(tiered))  # packed again, tiered
         assert tiered.config.quantization_config.verified >= sum(len(e["tensors"]) for e in m12["packs"].values())  # (and the embeddings packed as it loads)
         del tiered
+        # a glyd-v3 save of the 12-bit layout before split byte (never released): its packs' words "sym", no "hb";
+        # refused as it loads, never decoded as split byte
+        old = os.path.join(d, "old12")
+        shutil.copytree(os.path.join(d, "out12"), old)
+        mm = json.loads(open(os.path.join(old, fmt.MANIFEST)).read())
+        for e in mm["packs"].values():
+            e["sym"] = [e.pop("hb")] * 4
+        json.dump(mm, open(os.path.join(old, fmt.MANIFEST), "w"))
+        try:
+            hf.from_pretrained(old, layout="mma12")
+            raise AssertionError("a 12-bit save without hb loaded")
+        except ValueError as e:
+            assert "no hb" in str(e), e
+        shutil.rmtree(old)
         # verify on a changed copy: a byte of a tensor saved as it is flipped, bytes appended to a shard, a merged
         # pack's member renamed by a letter in glyd.json (k_proj to k_prok), the map's key renamed: each refused
         m = fmt.read_manifest(os.path.join(d, "out"))

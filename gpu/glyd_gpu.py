@@ -82,7 +82,7 @@ if __name__ == "__main__":
     torch.manual_seed(0)
     for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02), (17408, 1024, 0.01), (8960, 128, 0)]:
         w = torch.randn(O, K, device="cuda") * 0.02
-        m = torch.rand(O, K, device="cuda") < wild  # this share of weights at exponents far from the commonest 15
+        m = torch.rand(O, K, device="cuda") < wild  # this share of weights at exponents far from the commonest (exceptions)
         w[m] = torch.randn(int(m.sum()), device="cuda") * torch.exp2(torch.randint(-40, 20, (int(m.sum()),), device="cuda").float())
         w = w.to(torch.bfloat16)
         q = pack_mma12(w)
@@ -99,3 +99,15 @@ if __name__ == "__main__":
                         err = ((y.float() - ref).abs().max() / ref.abs().max()).item()
                         assert err < 1e-2 and torch.equal(y, prod(p, x, b)), (name, type(p).__name__, O, K, wild, M, err)
             print(f"{name} {O}x{K}, {int(q.exc_base[-1])} exceptions: 1-{1100 if big else 2100 if name == 'mma_gemm_wg' else 600} tokens within 1e-2, the same every run")
+    # Every bf16 bit pattern (NaNs, infinities, zeros and subnormals among them) in both layouts, bit for bit, shuffled
+    # and in order; and with 90% of them moved to either end of the 12-bit layout's base (hb 0: exponent 0, zeros and
+    # subnormals; hb 120: the exponent's top 7 bits set, infinities and NaNs), the rest its exceptions.
+    every = (torch.arange(65536, device="cuda") - 32768).to(torch.int16)
+    most = torch.rand(65536, device="cuda") < 0.9
+    ends = [torch.where(most, every & -32641, every), torch.where(most, every | 0x7F00, every)]  # -32641: 0x807F
+    for u in [every[torch.randperm(65536, device="cuda")], every] + ends:
+        w = u.view(torch.bfloat16).view(256, 256)
+        for p in (pack_mma12(w), pack_mma(w)):
+            assert torch.equal(mma_unpack(p).view(torch.int16), w.view(torch.int16)), type(p).__name__
+    assert [pack_mma12(u.view(torch.bfloat16).view(256, 256)).hb for u in ends] == [0, 120]
+    print("every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too)")

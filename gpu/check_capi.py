@@ -176,6 +176,19 @@ for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), 
                         both_fail("mma12_gemm_wg", *pk, O, K, x, b, nan(M, O))
     print(f"mma {O}x{K}: {int(q.exc_base[-1])} exceptions (12-bit), the same through both")
 
+# The 12-bit layout's words: its base hb (0-120) in each byte of sym[0], sym[1-3] zero; any other words refused by
+# its entry points, through both hosts (the 12-bit layout before split byte held its 15 commonest exponents there).
+q = g.pack_mma12(weights(128 * 256).view(128, 256))
+x = torch.randn(8, 256, dtype=bf, device=dev)
+for sym in ([0x7B7A7978, 0x7F7E7D7C, 0x83828180, 0x868584], [121 * 0x01010101, 0, 0, 0], [q.sym[0], 1, 0, 0], [q.sym[0] ^ 1, 0, 0, 0]):
+    pk = (q.data, q.exc, q.exc_base, sym)
+    both_fail("mma12_gemm", *pk, 128, 256, x, none, nan(8, 128))
+    both_fail("mma12_gemm_mid", *pk, 128, 256, x, none, nan(8, 128))
+    both_fail("mma12_gemm_big", *pk, 128, 256, x, none, nan(8, 128), 0)
+    both_fail("mma12_linear", *pk, 128, 256, x, none, nan(8, 128), -1)
+    both_fail("mma12_unpack", *pk, 256, 0, 128, nan(128 * 256), 0)
+print("the 12-bit layout's words other than its base refused alike")
+
 # mma_gemm_big's own choice of blocks: of 128 tokens on GeForce Ada where the last of 256 would be half empty or
 # less, to 1024 tokens tiered and 4224 12-bit (as measured), and on an A100 12-bit to 640 (its others of 256 by two
 # row blocks, variant 3); of 256 past 128 tokens elsewhere. On an A100 two candidates give the same bits where they
