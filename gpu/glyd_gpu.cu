@@ -2153,7 +2153,8 @@ __device__ __forceinline__ void wgmma1_rs(float (&d)[128], const uint32_t (&a)[4
 // alone: to Y. Else split tile q of the cluster tiles past whole waves, covered by clusters first to fin (U: the split
 // tiles' stages, over nc clusters): to the block's slot (2 (cluster CL + rank) for the cluster's first split tile, + 1
 // for its last), and the last of the tile's blocks to finish adds the slots in cluster order (the same every run);
-// done: a counter a split tile a rank.
+// done: a counter a split tile a rank. nc (mma12_wgp_run's ncs) <= U, as capped there, so every cluster from first to
+// fin has a stage of the tile and arrives here: the last finds fin - first before it.
 template <int NT, int CL>
 __device__ __forceinline__ void sum_out_wgp(float (&r)[NT / 2], int64_t q, int rank, int64_t pr, int64_t m0, int S, int64_t nc, int64_t U, float* parts, int* done, int& last, int ct, int64_t O, int64_t M, const __nv_bfloat16* bias, __nv_bfloat16* Y) {
     constexpr int R = 128;
@@ -3706,7 +3707,9 @@ static int mma12_wgp_run(Nib f, int64_t O, int64_t K, const uint16_t* x, int64_t
     // clusters); 14B's there (46 left: 1 each, 46 clusters) took 3% more, and keeps its split over all 66.
     if (T < nc && 6 * (nc / T * T) >= 5 * nc) nc = nc / T * T;
     int64_t R = T % nc, D = T - R, w = R ? R * std::min<int64_t>(C::SPLIT, nc / R) : 0;
-    int64_t ncs = !D ? nc : 6 * w >= 5 * nc ? w : std::min<int64_t>(nc, C::SPLIT * R);
+    // ncs <= U, the split stages (R S): so every cluster from a split tile's first to its last has a stage of the tile
+    // and arrives on its counter (sum_out_wgp). Past U (only at K = 128) a cluster with none left a tile unwritten.
+    int64_t ncs = std::min<int64_t>(R * S, !D ? nc : 6 * w >= 5 * nc ? w : std::min<int64_t>(nc, C::SPLIT * R));
     if (need) {
         *need = std::max(*need, (size_t)(R ? 2 * ncs * CL * NT * 128 : 0) * sizeof(float));
         return 0;

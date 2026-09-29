@@ -73,14 +73,14 @@ if __name__ == "__main__":
     # The many-token products against the fp32 product: mma_gemm_mid (Ampere on), mma_gemm_wg (Hopper), and a
     # prompt's mma_gemm_big (every GPU but Hopper, both layouts: on GeForce Ada its consumers of half a row block,
     # blocks of 128 tokens and of 256, to 1100). Odd row blocks, units shared by blocks, exceptions few and many (past
-    # a stage's copy: read from global memory), 1-600 tokens (mma_gemm_wg to 2100: several chunks, split tiles), bias;
-    # the same every run.
+    # a stage's copy: read from global memory), 1-600 tokens (mma_gemm_wg to 2100: several chunks, split tiles, and at
+    # K = 128 tiles of two stages split over clusters), bias; the same every run.
     import torch.nn.functional as F
     assert torch.cuda.get_device_capability()[0] >= 8, "Ampere or later"
     hopper = torch.cuda.get_device_capability() == (9, 0)
     products = [("mma_gemm_mid", mma_gemm_mid)] + ([("mma_gemm_wg", mma_gemm_wg)] if hopper else [("mma_gemm_big", mma_gemm_big)])
     torch.manual_seed(0)
-    for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02), (17408, 1024, 0.01)]:
+    for O, K, wild in [(64, 64, 0), (192, 128, 0), (128, 4096, 0), (1024, 2048, 0), (5120, 1024, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02), (17408, 1024, 0.01), (8960, 128, 0)]:
         w = torch.randn(O, K, device="cuda") * 0.02
         m = torch.rand(O, K, device="cuda") < wild  # this share of weights at exponents far from the commonest 15
         w[m] = torch.randn(int(m.sum()), device="cuda") * torch.exp2(torch.randint(-40, 20, (int(m.sum()),), device="cuda").float())

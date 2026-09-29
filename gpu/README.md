@@ -376,9 +376,10 @@ tokens. Blocks go in clusters of two, X's tile copied once for both
 summed in registers and written out; those left, fewer than a wave, are
 split by stages (stream-K), over a whole number of clusters each (up to
 three) where that idles at most a sixth of the clusters, else over all
-of them, up to three a tile. Where the tiles are fewer than the
-clusters, each takes a whole number of them if that idles at most a
-sixth, else they share them all.
+of them, up to three a tile, and never over more clusters than they
+have stages. Where the tiles are fewer than the clusters, each takes a
+whole number of them if that idles at most a sixth, else they share
+them all.
 
 One decoder layer's products (q, k, v and gate, up merged; layer 10's
 weights), each call timed alone after an L2 flush, against cuBLAS on bf16
