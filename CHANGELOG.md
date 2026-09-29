@@ -11,8 +11,9 @@ every earlier format.
 - The 12-bit layout is split byte: a weight's low byte (the exponent's
   lowest bit and the mantissa) kept as it is, its high byte (the sign and
   the exponent's other 7 bits) a 4-bit code, the sign and an offset 0-7
-  from the matrix's base (`hb`: the 16 exponents holding the most
-  weights), any other weight in its step's exception list as before. Its
+  from the matrix's base `hb` (exponents 2·hb to 2·hb + 15: the window of
+  16 from an even exponent holding the most weights), any other weight in
+  its step's exception list as before. Its
   decode is an AND and an add for four weights and a byte permute for two,
   with no table (8.5 integer instructions a k-block in SASS against the
   15-exponent code's 22.0), in every kernel of the layout: the step,
@@ -20,25 +21,32 @@ every earlier format.
   decode kernels. The same size (12.04-12.07 bits a weight) and the same
   bits decoded, so the same products: on an L4, an A10, an A100 SXM4 40
   GB, an H100 PCIe and an H100 SXM (2026-09-29) every output of the
-  layout's kernels was main's bits, and models' logits and greedy tokens
-  (Qwen3-1.7B, Qwen3-4B-Instruct-2507, granite-3.1-3b-a800m-instruct,
-  fused and exact) the same. A layer's time against the 12-bit layout's
+  layout's kernels was main's bits; models' logits and greedy tokens,
+  fused and exact, the same as main's: Qwen3-1.7B and
+  granite-3.1-3b-a800m-instruct on the L4, A10, A100 and H100 PCIe
+  (round 1), and those two and Qwen3-4B-Instruct-2507 on an L4 on the
+  release candidate. A layer's time against the 12-bit layout's
   before, main's library and this release's in one process (layer 10 of
   Qwen3-8B with 4B-Instruct-2507, 14B or 32B, two runs each): faster on
   the H100 SXM, 0.933-0.969 at 32-1024 tokens (wgmma: 3.1-6.7% less; the
   H100 PCIe 0.942-0.991) and 0.986-0.992 at 1-16; faster on the A100,
-  0.923-1.003 at 32-128 (its mid kernel: 7.7% less at 128), 0.969-0.982
-  at 256-768 (prompts) and 0.976-0.998 at 1-16; the same on the A10 and
-  the L4, 0.989-1.010 at 1-1024 tokens. The decode for cuBLAS and exact
-  mode (a matrix decoded whole) takes 3.0-5.8% longer on the H100 SXM and
-  1.0-1.6% on the A10, 0.998-1.012 on the A100 and the same on the L4:
-  prompts past wgmma's 1024 tokens on Hopper (1-2% of such a prompt's
-  time) and past 768 on the A100, and exact mode's steps
+  0.923-0.987 at 64-128 (its mid kernel: 5.5-7.7% less at 128),
+  0.969-0.982 at 256-768 (prompts) and 0.976-0.998 at 1-16, and
+  0.985-1.003 at 32; the same on the A10 and the L4, 0.989-1.010 at
+  1-1024 tokens (the A10's from 640 by `linear`'s prompt kernel, where
+  glyd.gpu decodes those prompts ahead, below). Slower: a matrix decoded
+  whole, for cuBLAS and exact mode, takes 3.0-5.8% longer on the H100 SXM
+  and 1.0-1.6% on the A10 (0.998-1.012 on the A100, the same on the L4).
+  That decode is in Hopper's prompts past wgmma's 1024 tokens, the A100's
+  past 768, an A10's 12-bit prompts from 640 tokens (decoded ahead beside
+  cuBLAS; the prompt's time not measured) and every step of exact mode
   ([benchmarks/gpu/splitbyte-2026-09-29](benchmarks/gpu/splitbyte-2026-09-29)).
-  The C API is version 5: a 12-bit pack's `sym[4]` holds its base,
-  `hb` in each byte of `sym[0]` and the other three zero; any other words
-  (the 12-bit layout before, never released, held its exponents there)
-  are refused with `cudaErrorInvalidValue`. glyd.json's 12-bit packs
+  The 12-bit layout's bytes and words change from 0.24's (a code into the
+  15 commonest exponents, v0.19-v0.24): the library refuses 0.24's words,
+  so pack those models again. The C API is version 5: a 12-bit
+  pack's `sym[4]` holds its base, `hb` in each byte of `sym[0]` and the
+  other three zero; any other words, 0.24's exponents among them, are
+  refused with `cudaErrorInvalidValue`. glyd.json's 12-bit packs
   (glyd-v3) carry `hb`; a glyd-v3 save of the layout before (its `sym`) is
   refused as it loads: save it again. `glyd pack --layout mma12` packs
   split byte on the CPU, byte for byte as `pack_mma12` (the glyd-gpu
@@ -148,7 +156,8 @@ every earlier format.
   not an A10G, A40 or A6000). `glyd_gpu_mma_linear` and
   `glyd_gpu_mma12_linear` run a route's kernel (where glyd decodes the
   matrix for cuBLAS, the prompt kernel, on every GPU; where K is not a
-  multiple of 64, past 64 tokens, they refuse those routes with
+  multiple of 64, past 64 tokens (12-bit: also from `GLYD_DEC_MIN` tokens
+  where that is lower), they refuse those routes with
   `cudaErrorNotSupported`: decode it there for a GEMM of your own; the WG
   route's done counters at least 1024, as `glyd_gpu_mma12_gemm_wg`'s);
   the glyd package's Linears take their routes from the library and

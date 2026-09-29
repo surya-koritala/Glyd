@@ -1,0 +1,8 @@
+17:38:31 (+7 s) machine and environment (~/gpuenv)
+17:39:13 (+42 s) builds (src exit 0, main exit 0, )
+17:40:01 (+90 s) e2e12-main (exit 0)
+17:40:45 (+134 s) e2e12-src (exit 0)
+17:41:28 (+177 s) e2e12-main2 (exit 0)
+17:41:28 (+177 s) e2e12 compared
+17:41:28 (+177 s) checks done
+17:41:28 (+177 s) done

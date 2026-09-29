@@ -1,0 +1,22 @@
+CHECKS PASS: 3 steps run, each exit 0
+NVIDIA L4 (8.9, sm_89, 23034 MiB), x86_64 host, 16 CPUs; CLASS=ada; release tree 85ae892 (rust-splitbyte), main db8e7b0 (main)
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+rust: cargo 1.98.1 (797e8a9bc 2026-08-05)
+
+e2e12-main: exit 0
+e2e12-main2: exit 0
+e2e12-src: exit 0
+
+main twice: the same lines
+main and split byte: the same lines (30 logits, 6 generations)
+
+steps:
+  17:38:31 (+7 s) machine and environment (~/gpuenv)
+  17:39:13 (+42 s) builds (src exit 0, main exit 0, )
+  17:40:01 (+90 s) e2e12-main (exit 0)
+  17:40:45 (+134 s) e2e12-src (exit 0)
+  17:41:28 (+177 s) e2e12-main2 (exit 0)
+  17:41:28 (+177 s) e2e12 compared
+  17:41:28 (+177 s) checks done
+  17:41:28 (+177 s) done

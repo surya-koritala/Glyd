@@ -161,7 +161,8 @@ the combination below.
   time in SGLang.
 - [SplitZip](https://arxiv.org/abs/2605.01708) (2026): the KV cache's
   exponents as 4-bit codes into the 16 commonest with escapes, for
-  moving it between servers, the scheme of Glyd's 12-bit layout.
+  moving it between servers, the scheme of Glyd's 12-bit layout before
+  split byte (v0.19-v0.24).
 - [ZipNN](https://arxiv.org/abs/2411.05239) (2024) and
   [NeuZip](https://arxiv.org/abs/2410.20650) (2024) for storage and
   training memory, [Huff-LLM](https://arxiv.org/abs/2502.00922) (2025)
