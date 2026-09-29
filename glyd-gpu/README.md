@@ -45,7 +45,7 @@ Its one dependency is sha2 (the store's).
 
 ```rust
 let lib = glyd_gpu::Library::find()?;            // $GLYD_GPU_LIB, else libglyd_gpu_cuda13.so / cuda12
-let ctx = glyd_gpu::cuda::Context::new(0)?;       // GPU 0's primary context, current on this thread
+let ctx = glyd_gpu::cuda::Context::new(0)?;       // GPU 0's primary context, current on this thread (one a thread)
 let w = glyd_gpu::Matrix { pack, rows, cols };    // a pack's arrays in device memory
 unsafe { lib.unpack(&w, 0, rows, out.ptr(), 0, glyd_gpu::Stream::DEFAULT)? };
 ```

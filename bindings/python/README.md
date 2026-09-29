@@ -154,7 +154,7 @@ on a GPU where the 12-bit layout is the pick, it decodes and packs them
 again. `save_pretrained(model, path, layout="mma12")` (`pack --layout
 mma12`) saves the packs in the 12-bit layout instead, as an A10, A100 or
 H100 runs them (`.glyd_data`, `.glyd_exc`, `.glyd_exc_base`; glyd-v3,
-which glyd 0.23 and before refuse): loaded there as saved, 2.1-3.9x
+which glyd 0.23 and before refuse): loaded there as saved, 2.7-3.9x
 faster than packing again (on an RTX 4080 SUPER, Qwen3-8B in 1.17-1.18 s
 against 3.14-4.55 s from a tiered save and 3.54-3.61 s from the bf16
 checkpoint; benchmarks/gpu/rtx4080s-rust-2026-09-28).

@@ -412,7 +412,8 @@ pub fn unpack_twelve(p: &Twelve, out: &mut [u16]) -> bool {
 /// counts alone, not its weights (a decode does that).
 pub fn tiered_blocks_hold(data: &[u8], blocks: &[u8], block_base: &[i32]) -> bool {
     let (n, b) = (data.len() / 1280, block_base);
-    if data.len() != n * 1280 || b.len() != n + 1 || b[0] < 128 || b[n] as usize + 256 > blocks.len() || b.windows(2).any(|w| w[1] < w[0]) {
+    // (rising from 128 first: b[n] is then no negative number cast)
+    if data.len() != n * 1280 || b.len() != n + 1 || b[0] < 128 || b.windows(2).any(|w| w[1] < w[0]) || b[n] as usize + 256 > blocks.len() {
         return false;
     }
     for s in 0..n {
@@ -487,7 +488,8 @@ mod tests {
         }
     }
 
-    /// A tiered pack whose data or blocks were changed where the decode reads by them: its blocks no longer hold it.
+    /// A tiered pack whose data or blocks were changed where the decode reads by them: its blocks no longer hold it
+    /// (and offsets that fall to a negative one are refused before any sum of them, in a debug build too).
     #[test]
     fn blocks_hold_their_escapes() {
         let w = weights(128 * 256, 0.2, 5);
@@ -503,6 +505,7 @@ mod tests {
         let mut end = t.clone();
         end.blocks.truncate(end.blocks.len() - 1); // 255 bytes past the last block
         assert!(!hold(&end));
+        assert!(!tiered_blocks_hold(&[0; 1280], &[0; 1024], &[128, -1])); // offsets falling to a negative one (no overflow)
     }
 
     #[test]

@@ -4,14 +4,23 @@
 //! streams. libcuda.so.1 is found at run time, as the library finds it.
 //!
 //! A [`Context`] is current on the thread that made it and stays there (it is
-//! neither Send nor Sync), with its memory and streams; copies take plain
-//! data alone ([`Plain`]: integers and floats, whose every bit pattern is a
-//! value and which have no padding).
+//! neither Send nor Sync), with its memory and streams, and is that thread's
+//! one: the driver's calls (and the library's) act on the thread's current
+//! context, so a second Context on the thread is refused while the first
+//! lives (a thread for each GPU). Copies take plain data alone ([`Plain`]:
+//! integers and floats, whose every bit pattern is a value and which have no
+//! padding).
 
 use crate::{api, Error, Result, Stream};
+use std::cell::Cell;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 use std::marker::PhantomData;
 use std::sync::OnceLock;
+
+thread_local! {
+    /// Whether a Context lives on this thread (one at a time: Context::new and its drop).
+    static LIVE: Cell<bool> = const { Cell::new(false) };
+}
 
 api! { Driver, DRIVER_DECLARED;
     fn cuInit(flags: c_uint) -> c_int;
@@ -100,21 +109,28 @@ pub fn device_count() -> Result<i32> {
 
 /// A GPU's primary context, current on the thread that made it (the context
 /// the library's CUDA runtime takes for that device): the context of its
-/// memory and streams, released when dropped; kept on that thread.
+/// memory and streams, released when dropped; kept on that thread, and the
+/// thread's one while it lives.
 pub struct Context {
     device: c_int,
     _here: PhantomData<*const ()>, // neither Send nor Sync: current on its own thread alone
 }
 
 impl Context {
-    /// GPU `ordinal`'s primary context, made current on this thread.
+    /// GPU `ordinal`'s primary context, made current on this thread; refused
+    /// where another Context lives on the thread (its calls would go to this
+    /// one's GPU).
     pub fn new(ordinal: i32) -> Result<Context> {
+        if LIVE.get() {
+            return Err(Error::Cuda { call: "Context::new", status: crate::INVALID_VALUE, text: "a Context lives on this thread already: one a thread (a thread for each GPU)".into() });
+        }
         let d = driver()?;
         let (mut device, mut ctx) = (0, std::ptr::null_mut());
         // SAFETY: host out-pointers; the context retained is released in drop.
         unsafe {
             check("cuDeviceGet", (d.cuDeviceGet)(&mut device, ordinal))?;
             check("cuDevicePrimaryCtxRetain", (d.cuDevicePrimaryCtxRetain)(&mut ctx, device))?;
+            LIVE.set(true);
             let c = Context { device, _here: PhantomData };
             check("cuCtxSetCurrent", (d.cuCtxSetCurrent)(ctx))?;
             Ok(c)
@@ -175,6 +191,7 @@ impl Context {
 
 impl Drop for Context {
     fn drop(&mut self) {
+        LIVE.set(false);
         if let Ok(d) = driver() {
             // SAFETY: retained in new.
             unsafe { (d.cuDevicePrimaryCtxRelease_v2)(self.device) };
@@ -264,5 +281,22 @@ impl Drop for OwnedStream<'_> {
             // SAFETY: made by Context::stream, destroyed once.
             unsafe { (d.cuStreamDestroy_v2)(self.stream) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One Context a thread: a second refused while the first lives, taken again once it is dropped, and one on
+    /// another thread meanwhile (where there is a GPU; else nothing to check).
+    #[test]
+    fn one_context_a_thread() {
+        let Ok(a) = Context::new(0) else { return };
+        let e = Context::new(0).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(e.contains("a Context lives on this thread already"), "{e}");
+        std::thread::spawn(|| assert!(Context::new(0).is_ok())).join().unwrap();
+        drop(a);
+        assert!(Context::new(0).is_ok());
     }
 }

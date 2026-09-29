@@ -22,8 +22,9 @@ every earlier format.
   granite-3.1-3b-a800m-instruct in 0.49 s against 1.32-1.33 s from the
   tiered save and 1.44-1.45 s from the bf16 checkpoint,
   Qwen3-4B-Instruct-2507 in 0.84-0.85 s against 1.76-1.77 and 1.95,
-  Qwen3-8B in 1.17-1.18 s against 3.14-4.55 and 3.54-3.61 (2.1-3.9x
-  faster than packing again), its peak 0.56 GB below the tiered save's
+  Qwen3-8B in 1.17-1.18 s against 3.14-4.55 and 3.54-3.61 (2.7-3.9x
+  faster than packing again; 2.1-3.9x across the three), its peak 0.56 GB
+  below the tiered save's
   (14.34 GB against 14.90)
   ([benchmarks/gpu/rtx4080s-rust-2026-09-28](benchmarks/gpu/rtx4080s-rust-2026-09-28)).
 - glyd.json holds the sha256 of every tensor saved as it is too (its
@@ -34,8 +35,11 @@ every earlier format.
   of those sha256, and each pack's tensors to its own (its module's; a
   merged group's q, k, v or gate, up), so a byte changed outside the packs,
   bytes appended to a shard or a renamed member fails them. Both savers
-  write it alike; glyd 0.23 loads such a save and ignores it, and a save
-  from before verifies as it did, its other tensors counted unchecked.
+  write it alike; glyd 0.23 loads such a save and ignores it. verify
+  requires the map where the save's format or glyd says it is there
+  (glyd-v3, and a save of glyd 0.25 on) and refuses a key glyd.json does
+  not have, so a damaged map cannot pass for an older save; a save of glyd
+  0.24 or before verifies as it did, its other tensors counted unchecked.
 - `glyd pack MODEL OUT` and `glyd verify PATH` in the Rust CLI: a bf16
   checkpoint (a directory, or a repo in the local Hugging Face cache)
   packed on the CPU and saved as glyd-v1 (glyd-v2 with a mixture of

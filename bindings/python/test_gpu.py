@@ -160,8 +160,9 @@ def test_check_files():
     (one file, and in two shards); then each refused: a byte of a tensor saved as it is flipped, bytes appended to a
     shard, a merged pack's member renamed in glyd.json (to the other's name, by a letter, to a saved tensor's), a pack
     holding another's tensor or one saved as it is, a tensor neither packed nor hashed there, a pack's buffer missing,
-    the index naming another shard. A save without the sha256 map (glyd 0.24's) passes with its tensors unchecked;
-    glyd-v3 without it is refused."""
+    the index naming another shard; glyd.json's map damaged (its key, its value) or gone where its glyd (0.25 on) or
+    its format (glyd-v3) says it is there, its glyd not a version. A save of glyd 0.24 without the map passes with its
+    tensors unchecked."""
     import hashlib
     sha = lambda b: hashlib.sha256(b).hexdigest()
     norm, emb = bytes(range(256)) * 2, bytes((7 * i) % 251 for i in range(4096))
@@ -183,8 +184,16 @@ def test_check_files():
         f = os.path.join(d, "model.safetensors")
         safetensors(f, tensors, {"format": "pt"}, data)
         assert fmt.check_files(d, m) == (2, 0)
-        assert fmt.check_files(d, {k: v for k, v in m.items() if k != "tensors"}) == (0, 2)  # glyd 0.24's save: unchecked
-        refused(d, dict({k: v for k, v in m.items() if k != "tensors"}, format="glyd-v3"), "no sha256")
+        # the map gone: a save of glyd 0.24 (which has none) passes, its tensors unchecked; one of glyd 0.25, or a
+        # glyd-v3, is refused; the map's key damaged ("densors": one bit), its value not an object, glyd not a version
+        old = {k: v for k, v in m.items() if k != "tensors"}
+        assert fmt.check_files(d, dict(old, glyd="0.24.0")) == (0, 2)
+        refused(d, old, "no sha256 for the tensors saved as they are, which a glyd-v1 of glyd 0.25.0 has")
+        refused(d, dict(old, glyd="0.24.0", format="glyd-v3"), "which a glyd-v3 of glyd 0.24.0 has")
+        refused(d, {("densors" if k == "tensors" else k): v for k, v in m.items()}, "'densors', a key glyd.json does not have")
+        for damaged in (None, [], "x"):
+            refused(d, dict(m, tensors=damaged), '"tensors" is not an object of sha256')
+        refused(d, dict(m, glyd="0.x"), "not a version")
         b = bytearray(open(f, "rb").read())
         b[-4096 - 100] ^= 1  # a byte of m.norm.weight, saved as it is
         open(f, "wb").write(bytes(b))
@@ -254,6 +263,44 @@ def test_c_header():
     assert lib["BIG"] == defines["GLYD_GPU_ROUTE_BIG"] and (kern["GEFORCE"], kern["A10"]) == (defines["GLYD_GPU_GEFORCE"], defines["GLYD_GPU_A10"])
     cu = open(os.path.join(gpu, "glyd_gpu.cu")).read()
     assert set(re.findall(r"GLYD_GPU_API [^(]*?(glyd_gpu_\w+)\(", cu)) == set(declared), "glyd_gpu.cu's C API is not glyd_gpu.h's"
+
+
+def test_gpu_class_by_name():
+    """A GPU's class by its name as the library gives it (glyd_gpu.cu's has_word and gpu_class, compiled here alone by
+    the host's C++ compiler, the classes glyd_gpu.h's) and as GLinear does (model.gpu_code, taken from model.py with
+    no torch, the classes kernels.py's): the same over check_capi's names and their neighbours, "A10" among other
+    letters, digits, '_', punctuation and non-ASCII (skipped where there is no C++ compiler)."""
+    import types
+    cxx = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
+    if cxx is None:
+        print("  (no C++ compiler: skipped)")
+        return
+    gpu = os.path.join(HERE, "..", "..", "gpu")
+    cu, h = open(os.path.join(gpu, "glyd_gpu.cu")).read(), open(os.path.join(gpu, "glyd_gpu.h")).read()
+    a = cu.index("static bool has_word(")
+    b = cu.index("\n", cu.index("static int gpu_class("))
+    classes = re.findall(r"#define (GLYD_GPU_(?:GEFORCE|A10)) (\d+)", h)
+    assert len(classes) == 2
+    prog = "#include <cctype>\n#include <cstdio>\n#include <cstring>\n" + "".join(f"#define {k} {v}\n" for k, v in classes) + cu[a:b]
+    prog += '\nint main() { char s[512]; while (fgets(s, sizeof s, stdin)) { s[strcspn(s, "\\n")] = 0; printf("%d\\n", gpu_class(s)); } }\n'
+    tree = ast.parse(open(os.path.join(HERE, "glyd", "gpu", "model.py")).read())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "gpu_code")
+    kern = {}
+    body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "kernels.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= {"GEFORCE", "A10"}]
+    exec(compile(ast.Module(body, []), "kernels.py", "exec"), kern)
+    py = {"re": re, "g": types.SimpleNamespace(GEFORCE=kern["GEFORCE"], A10=kern["A10"])}
+    exec(compile(ast.Module([fn], []), "model.py", "exec"), py)
+    names = ["NVIDIA A10", "NVIDIA A10-24GB", "NVIDIA A10G", "NVIDIA A100-SXM4-80GB", "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA GeForce RTX 4080 SUPER", "A10", "NVIDIA A10_X",
+             "NVIDIA A16", "NVIDIA A2", "NVIDIA A10 PCIe", "A10 A10G", "A10G A10", "xA10", "A10x", "A10M", "NVIDIA GeForce A10", "(A10)", "A10.", "A10é", "éA10", "A10\u00a0", "", "NVIDIA H100 80GB HBM3"]
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "cls.cpp"), "w") as f:
+            f.write(prog)
+        subprocess.run([cxx, "-std=c++17", "-O1", "-o", os.path.join(d, "cls"), os.path.join(d, "cls.cpp")], check=True)
+        out = subprocess.run([os.path.join(d, "cls")], input="\n".join(names) + "\n", capture_output=True, text=True, encoding="utf-8", check=True).stdout.split()
+    got = dict(zip(names, map(int, out)))
+    want = {n: py["gpu_code"]((8, 6), n) - 86 for n in names}
+    assert len(out) == len(names) and got == want, [(n, got.get(n), want[n]) for n in names if got.get(n) != want[n]]
+    assert (want["NVIDIA A10"], want["NVIDIA A10G"], want["NVIDIA GeForce RTX 4080 SUPER"]) == (kern["A10"], 0, kern["GEFORCE"])
 
 
 def test_import_without_torch_or_library():
@@ -609,11 +656,11 @@ def test_cli_pack_and_verify():
         assert tiered.config.quantization_config.verified >= sum(len(e["tensors"]) for e in m12["packs"].values())  # (and the embeddings packed as it loads)
         del tiered
         # verify on a changed copy: a byte of a tensor saved as it is flipped, bytes appended to a shard, a merged
-        # pack's member renamed by a letter in glyd.json (k_proj to k_prok): each refused
+        # pack's member renamed by a letter in glyd.json (k_proj to k_prok), the map's key renamed: each refused
         m = fmt.read_manifest(os.path.join(d, "out"))
         assert "model.norm.weight" in m["tensors"] and m["format"] == "glyd-v2"
         group = next(p for p, e in m["packs"].items() if len(e["tensors"]) > 1)
-        for change, says in (("flip", "model.norm.weight is other bytes"), ("append", "bytes past its last tensor"), ("rename", f"{group}'s tensors are not its own")):
+        for change, says in (("flip", "model.norm.weight is other bytes"), ("append", "bytes past its last tensor"), ("rename", f"{group}'s tensors are not its own"), ("key", "'densors', a key glyd.json does not have")):
             bad = os.path.join(d, "bad-" + change)
             shutil.copytree(os.path.join(d, "out"), bad)
             f = os.path.join(bad, "model.safetensors")
@@ -625,11 +672,15 @@ def test_cli_pack_and_verify():
                 open(f, "wb").write(bytes(b))
             elif change == "append":
                 open(f, "ab").write(bytes(8))
-            else:
+            elif change == "rename":
                 mm = json.loads(open(os.path.join(bad, fmt.MANIFEST)).read())
                 mm["packs"][group]["tensors"][1]["name"] = mm["packs"][group]["tensors"][1]["name"].replace("k_proj", "k_prok")
                 assert "k_prok" in mm["packs"][group]["tensors"][1]["name"]
                 json.dump(mm, open(os.path.join(bad, fmt.MANIFEST), "w"))
+            else:  # the map's key "densors" (one bit), which a save before glyd 0.25 would not have had either
+                mm = json.loads(open(os.path.join(bad, fmt.MANIFEST)).read())
+                mm = {("densors" if k == "tensors" else k): v for k, v in mm.items()}
+                json.dump(mm, open(os.path.join(bad, fmt.MANIFEST), "w"), indent=1)
             r = subprocess.run([sys.executable, "-m", "glyd.gpu", "verify", bad], env=env, capture_output=True, text=True)
             assert r.returncode != 0 and says in r.stderr, (change, r.stderr[-2000:])
 

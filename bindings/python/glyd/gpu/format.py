@@ -39,6 +39,7 @@ import glob
 import hashlib
 import json
 import os
+import re
 import shutil
 
 FORMAT = "glyd-v1"
@@ -50,6 +51,8 @@ BUFFERS = ("data", "blocks", "block_base")  # a tiered pack's tensors (kernels.M
 LAYOUTS = {"mma": BUFFERS, "mma12": ("data", "exc", "exc_base")}  # each layout's (kernels.Mma12's)
 WORDS = {"mma": "tiers", "mma12": "sym"}  # a pack's words, in glyd.json
 GROUPS = (("q_proj", "k_proj", "v_proj"), ("gate_proj", "up_proj"))  # the Linears merged, a layer's self_attn's and mlp's (model.groups)
+KEYS = ("format", "glyd", "source", "layout", "packs", "tensors")  # glyd.json's (glyd 0.21 on; "tensors" from 0.25)
+MAP_FROM = (0, 25)  # the first glyd whose saves carry "tensors": a glyd-v1 or v2 it saved without them is refused
 DTYPES = {"data": "U8", "blocks": "U8", "block_base": "I32", "exc": "I32", "exc_base": "I32"}
 FILES = ("config.json", "generation_config.json", "tokenizer*", "special_tokens_map.json", "added_tokens.json", "vocab*", "merges.txt", "*.model", "chat_template*", "preprocessor_config.json", "processor_config.json")  # copied from the source
 
@@ -82,13 +85,26 @@ def manifest(source, packs, version, layout="mma", tensors=None):
 
 
 def check_files(directory, m):
-    """A saved checkpoint's files against its glyd.json m (verify, before its packs are decoded): each file's tensors
+    """A saved checkpoint's files against its glyd.json m (verify, before its packs are decoded): glyd.json's keys its
+    own (KEYS: a damaged one refused), its glyd a version, its map of sha256 ("tensors") an object, and there wherever
+    its format or its glyd says it is (glyd-v3; glyd-v1 and v2 saved by glyd 0.25 on, MAP_FROM); each file's tensors
     back to back from its data's start to its end, as the safetensors library reads them; the index, where there are
-    shards, naming the shard of each tensor; every tensor a pack's buffer or one whose sha256 glyd.json holds (glyd-v3,
-    and glyd-v1 and v2 saved by glyd 0.25 on; before, those are not checked); each pack's tensors its own (its module's
-    .weight, a merged group's q, k, v or gate, up under the first's path, an experts' weight's own name), in no other
-    pack and none also saved as it is; and the sha256 of every tensor saved as it is. The number of tensors checked by sha256, and of those not checked (a save of glyd 0.24 or
-    before); ValueError where any is not so. The standard library alone."""
+    shards, naming the shard of each tensor; every tensor a pack's buffer or one whose sha256 glyd.json holds (a save
+    of glyd 0.24 or before has none: those are not checked); each pack's tensors its own (its module's .weight, a
+    merged group's q, k, v or gate, up under the first's path, an experts' weight's own name), in no other pack and
+    none also saved as it is; and the sha256 of every tensor saved as it is. The number of tensors checked by sha256,
+    and of those not checked; ValueError where any is not so. The standard library alone."""
+    unknown = [k for k in m if k not in KEYS]
+    if unknown:
+        raise ValueError(f"glyd.json: {unknown[0]!r}, a key glyd.json does not have (damaged?)")
+    version = re.match(r"(\d+)\.(\d+)", str(m.get("glyd")))
+    if not version:
+        raise ValueError(f"glyd.json: glyd {m.get('glyd')!r}, not a version")
+    hashes = m.get("tensors")
+    if "tensors" in m and not isinstance(hashes, dict):
+        raise ValueError('glyd.json: "tensors" is not an object of sha256')
+    if hashes is None and (m.get("format") == "glyd-v3" or (int(version[1]), int(version[2])) >= MAP_FROM):
+        raise ValueError(f"glyd.json: no sha256 for the tensors saved as they are, which a {m.get('format')} of glyd {m.get('glyd')} has")
     index = os.path.join(directory, "model.safetensors.index.json")
     weight_map = None
     if os.path.exists(index):
@@ -129,11 +145,8 @@ def check_files(directory, m):
         names += ts
     if len(set(names)) != len(names):
         raise ValueError("glyd.json: a tensor held by two packs, or twice by one")
-    hashes = m.get("tensors")
     if set(names) & set(hashes or ()):
         raise ValueError(f"glyd.json: {sorted(set(names) & set(hashes))[0]} both packed and saved as it is")
-    if hashes is None and m.get("format") == "glyd-v3":
-        raise ValueError("glyd.json: no sha256 for the tensors saved as they are (glyd-v3 has them)")
     for b in buffers - where.keys():
         raise ValueError(f"{b}: a pack's buffer, not in the safetensors")
     unchecked = 0
