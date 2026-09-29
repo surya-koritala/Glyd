@@ -897,6 +897,48 @@ struct Nib {
         st.e0 = __ldg(exc_base + step);
         st.e1 = __ldg(exc_base + step + 1);
     }
+    // The decode kernel's step (mma_unpack_kernel) with its loads in an order of their own, ORDER (load() issues the
+    // codes, the low bytes and the step's exception bounds at once): 1, the codes and the bounds, then the low bytes
+    // once those are in, as the 12-bit layout's decode had them before split byte on Hopper (nvcc issued them after the
+    // exponents' first half); 2, the low bytes once the high bytes are patched, as late as can be; 3, the low bytes and
+    // the bounds, then the codes once those are in. A load waits on words by adding after(their sum), 0: the sum
+    // shuffled from its own lane, less the sum (a shuffle the compiler does not see through), so the same bytes, bit for
+    // bit, in any order. then(): the kernel's own work (its row block and step, a division), once the step's last load
+    // is issued, as before split byte (behind the low bytes' loads).
+    template <int ORDER, class Then>
+    __device__ __forceinline__ void load_decode(int64_t step, int lane, uint32_t R[16], Then then) const {
+        const uint8_t* p = data + step * STEP12;
+        auto after = [lane](uint32_t v) { return __shfl_sync(0xffffffffu, v, lane) - v; };
+        int e0 = __ldg(exc_base + step), e1 = __ldg(exc_base + step + 1);
+        uint4 c, x0, x1;
+        if constexpr (ORDER == 3) {
+            const uint4* sp = (const uint4*)(p + 512) + lane;
+            x0 = __ldg(sp);
+            x1 = __ldg(sp + 32);
+            c = __ldg((const uint4*)(p + after(x0.x + x1.x + e0 + e1)) + lane);
+            then();
+        } else {
+            c = __ldg((const uint4*)p + lane);
+        }
+        uint32_t nb[4] = {c.x, c.y, c.z, c.w}, H[8];
+        high(nb, H);
+        if constexpr (ORDER == 1) {
+            const uint4* sp = (const uint4*)(p + 512 + after(c.x + e0 + e1)) + lane;
+            x0 = __ldg(sp);
+            x1 = __ldg(sp + 32);
+            then();
+        }
+        const uint32_t* e = exc;
+        patch([e](int k) { return __ldg(e + k); }, e0, e1, lane, H);
+        if constexpr (ORDER == 2) {
+            const uint4* sp = (const uint4*)(p + 512 + after(H[7])) + lane;
+            x0 = __ldg(sp);
+            x1 = __ldg(sp + 32);
+            then();
+        }
+        uint32_t L[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+        pairs(L, H, R);
+    }
     // Code word q's high bytes: n-tile 2q's (h = 0), 2q + 1's (h = 1).
     static __device__ __forceinline__ uint32_t high1(uint32_t nb, uint32_t hb4, int h) { return ((h ? __funnelshift_l(nb, nb, 4) : nb) & 0x87878787u) + hb4; }
     // A lane's codes (nb, 4 words) as its high bytes, 4 a word (H).
@@ -2942,7 +2984,7 @@ __global__ void moe_sum_kernel(const float* __restrict__ y32, const int64_t* __r
 // blockIdx.y a hit expert of plan (moe_route's; past those hit: nothing to
 // do), its rows into the same rows of out [E rows, K], the rest of out left
 // as it is.
-template <class Fmt, bool MOE = false, bool FEW = false>
+template <class Fmt, bool MOE = false, bool FEW = false, int ORDER = 0>  // ORDER: Nib::load_decode's (0: load(), decode())
 __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out, const int* __restrict__ plan = nullptr) {
     if constexpr (MOE) {
         if ((int)blockIdx.y >= __ldg(plan)) return;  // the whole block: no expert this far down the hits
@@ -2957,11 +2999,16 @@ __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, 
     __shared__ uint4 scratch[8][Fmt::kTable ? S2_BYTES / 16 : 1];
     uint32_t* out32 = (uint32_t*)out;
     for (int64_t local = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5; local < total; local += (int64_t)gridDim.x * blockDim.x >> 5) {
-        int64_t step = row0 / 64 * KS + local, rb = local / KS, s = local % KS;
-        typename Fmt::St st;
-        f.load(st, step, lane);
+        int64_t step = row0 / 64 * KS + local, rb, s;
         uint32_t R[16];
-        f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
+        if constexpr (ORDER != 0) {
+            f.template load_decode<ORDER>(step, lane, R, [&] { rb = local / KS, s = local % KS; });
+        } else {
+            rb = local / KS, s = local % KS;
+            typename Fmt::St st;
+            f.load(st, step, lane);
+            f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
+        }
         // R[2n]: row 8n + g, columns 2t and 2t + 1; R[2n + 1]: columns 8 + 2t, 9 + 2t.
 #pragma unroll
         for (int n = 0; n < 8; n++) {
@@ -3975,20 +4022,37 @@ GLYD_GPU_API int glyd_gpu_hold(int64_t ns, cudaStream_t cs) {
 // cuBLAS block. Its SMs keep the most shared memory (the carveout a block leaves them in is theirs until it ends:
 // with less, a product's blocks would not fit beside it), a kernel of its own (FEW: a warp a step keeps its code
 // and carveout).
-template <class Fmt>
-static int mma_unpack_run(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs) {
-    if (row0 % 64 || rows % 64 || warps < 0) return cudaErrorInvalidValue;
+// The 12-bit layout's decode kernel's load schedule (Nib::load_decode's ORDER): 1 unless GLYD_DEC_ORDER names another,
+// 0-3 (read at each call: the decode-fix measurements time them in one process).
+static int dec_order() {
+    const char* v = getenv("GLYD_DEC_ORDER");
+    int o = v ? atoi(v) : 1;
+    return o >= 0 && o <= 3 ? o : 1;
+}
+
+template <class Fmt, int ORDER>
+static void mma_unpack_launch(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs) {
     int64_t steps = rows / 64 * (K / 16);
     if (warps) {
         static std::atomic<int> most[MAX_DEVICES];
         int dev = current_device();
         if (dev >= MAX_DEVICES || !most[dev].exchange(1))
-            cudaFuncSetAttribute((const void*)mma_unpack_kernel<Fmt, false, true>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
+            cudaFuncSetAttribute((const void*)mma_unpack_kernel<Fmt, false, true, ORDER>, cudaFuncAttributePreferredSharedMemoryCarveout, cudaSharedmemCarveoutMaxShared);
         int64_t blocks = std::min(warps, sm_count(dev)), per = std::min<int64_t>(8, (warps + blocks - 1) / blocks);
-        mma_unpack_kernel<Fmt, false, true><<<(unsigned)blocks, (unsigned)(32 * per), 0, cs>>>(f, K, row0, rows, out);
+        mma_unpack_kernel<Fmt, false, true, ORDER><<<(unsigned)blocks, (unsigned)(32 * per), 0, cs>>>(f, K, row0, rows, out);
     } else {
-        mma_unpack_kernel<Fmt><<<(steps * 32 + 255) / 256, 256, 0, cs>>>(f, K, row0, rows, out);
+        mma_unpack_kernel<Fmt, false, false, ORDER><<<(steps * 32 + 255) / 256, 256, 0, cs>>>(f, K, row0, rows, out);
     }
+}
+
+template <class Fmt>
+static int mma_unpack_run(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs) {
+    if (row0 % 64 || rows % 64 || warps < 0) return cudaErrorInvalidValue;
+    int order = std::is_same_v<Fmt, Nib> ? dec_order() : 0;
+    if (order == 1) mma_unpack_launch<Fmt, std::is_same_v<Fmt, Nib> ? 1 : 0>(f, K, row0, rows, out, warps, cs);
+    else if (order == 2) mma_unpack_launch<Fmt, std::is_same_v<Fmt, Nib> ? 2 : 0>(f, K, row0, rows, out, warps, cs);
+    else if (order == 3) mma_unpack_launch<Fmt, std::is_same_v<Fmt, Nib> ? 3 : 0>(f, K, row0, rows, out, warps, cs);
+    else mma_unpack_launch<Fmt, 0>(f, K, row0, rows, out, warps, cs);
     return cudaGetLastError();
 }
 
@@ -4009,7 +4073,12 @@ static int mma_moe_unpack_run(Fmt f, int64_t E, int64_t O, int64_t K, int64_t P,
     if (E < 1 || O < 64 || O % 64 || K < 16 || K % 16 || P < 0) return cudaErrorInvalidValue;
     if (P == 0) return 0;
     int64_t steps = O / 64 * (K / 16);
-    mma_unpack_kernel<Fmt, true><<<dim3((unsigned)((steps * 32 + 255) / 256), (unsigned)std::min(E, P)), 256, 0, cs>>>(f, K, 0, O, out, plan);
+    dim3 grid((unsigned)((steps * 32 + 255) / 256), (unsigned)std::min(E, P));
+    int order = std::is_same_v<Fmt, Nib> ? dec_order() : 0;
+    if (order == 1) mma_unpack_kernel<Fmt, true, false, std::is_same_v<Fmt, Nib> ? 1 : 0><<<grid, 256, 0, cs>>>(f, K, 0, O, out, plan);
+    else if (order == 2) mma_unpack_kernel<Fmt, true, false, std::is_same_v<Fmt, Nib> ? 2 : 0><<<grid, 256, 0, cs>>>(f, K, 0, O, out, plan);
+    else if (order == 3) mma_unpack_kernel<Fmt, true, false, std::is_same_v<Fmt, Nib> ? 3 : 0><<<grid, 256, 0, cs>>>(f, K, 0, O, out, plan);
+    else mma_unpack_kernel<Fmt, true><<<grid, 256, 0, cs>>>(f, K, 0, O, out, plan);
     return cudaGetLastError();
 }
 
