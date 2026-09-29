@@ -1,0 +1,503 @@
+DEBUG 09-29 21:54:41 [plugins/__init__.py:44] No plugins for group vllm.platform_plugins found.
+DEBUG 09-29 21:54:41 [platforms/__init__.py:36] Checking if TPU platform is available.
+DEBUG 09-29 21:54:41 [platforms/__init__.py:55] TPU platform is not available because: No module named 'libtpu'
+DEBUG 09-29 21:54:41 [platforms/__init__.py:61] Checking if CUDA platform is available.
+DEBUG 09-29 21:54:41 [platforms/__init__.py:84] Confirmed CUDA platform is available.
+DEBUG 09-29 21:54:41 [platforms/__init__.py:112] Checking if ROCm platform is available.
+DEBUG 09-29 21:54:41 [platforms/__init__.py:126] ROCm platform is not available because: No module named 'amdsmi'
+DEBUG 09-29 21:54:41 [platforms/__init__.py:147] Checking if XPU platform is available.
+DEBUG 09-29 21:54:41 [platforms/__init__.py:177] Checking if CPU platform is available.
+DEBUG 09-29 21:54:41 [platforms/__init__.py:61] Checking if CUDA platform is available.
+DEBUG 09-29 21:54:41 [platforms/__init__.py:84] Confirmed CUDA platform is available.
+DEBUG 09-29 21:54:41 [platforms/__init__.py:280] Automatically detected platform cuda.
+DEBUG 09-29 21:54:46 [plugins/__init__.py:52] Available plugins for group vllm.general_plugins:
+DEBUG 09-29 21:54:46 [plugins/__init__.py:54] - glyd -> glyd.gpu.vllm_plugin:register
+DEBUG 09-29 21:54:46 [plugins/__init__.py:54] - lora_filesystem_resolver -> vllm.plugins.lora_resolvers.filesystem_resolver:register_filesystem_resolver
+DEBUG 09-29 21:54:46 [plugins/__init__.py:54] - lora_hf_hub_resolver -> vllm.plugins.lora_resolvers.hf_hub_resolver:register_hf_hub_resolver
+DEBUG 09-29 21:54:46 [plugins/__init__.py:57] All plugins in this group will be loaded. Set `VLLM_PLUGINS` to control which plugins to load.
+DEBUG 09-29 21:54:46 [utils/flashinfer.py:90] flashinfer-cubin package was not found
+INFO 09-29 21:54:46 [engine/arg_utils.py:849] HF_HUB_OFFLINE is True, replace model_id [Qwen/Qwen3-8B] to model_path [/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218]
+INFO 09-29 21:54:46 [entrypoints/.../utils/api_utils.py:286] non-default args: {'dtype': 'bfloat16', 'max_model_len': 4096, 'gpu_memory_utilization': 0.85, 'disable_log_stats': True, 'enforce_eager': True, 'model': '/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218'}
+WARNING 09-29 21:54:46 [engine/arg_utils.py:1812] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+DEBUG 09-29 21:54:46 [model_executor/models/registry.py:995] Cached model info file for class vllm.model_executor.models.qwen3.Qwen3ForCausalLM not found
+DEBUG 09-29 21:54:46 [model_executor/models/registry.py:1066] Cache model info for class vllm.model_executor.models.qwen3.Qwen3ForCausalLM miss. Loading model instead.
+DEBUG 09-29 21:54:54 [model_executor/models/registry.py:1076] Loaded model info for class vllm.model_executor.models.qwen3.Qwen3ForCausalLM
+DEBUG 09-29 21:54:54 [logging_utils/log_time.py:29] Registry inspect model class: Elapsed time 7.8263854 secs
+INFO 09-29 21:54:54 [config/model.py:692] Resolved architecture: Qwen3ForCausalLM
+INFO 09-29 21:54:54 [config/model.py:2030] Using max model len 4096
+DEBUG 09-29 21:54:54 [config/model.py:2095] Generative models support chunked prefill.
+DEBUG 09-29 21:54:54 [config/model.py:2150] Generative models support prefix caching.
+DEBUG 09-29 21:54:54 [engine/arg_utils.py:2803] Enabling chunked prefill by default
+DEBUG 09-29 21:54:54 [engine/arg_utils.py:2831] Enabling prefix caching by default
+DEBUG 09-29 21:54:54 [engine/arg_utils.py:2979] Defaulting max_num_batched_tokens to 8192 for LLM_CLASS usage context.
+DEBUG 09-29 21:54:54 [engine/arg_utils.py:2989] Defaulting max_num_seqs to 256 for LLM_CLASS usage context.
+INFO 09-29 21:54:54 [config/scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=8192.
+WARNING 09-29 21:54:54 [config/vllm.py:1547] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 09-29 21:54:54 [config/vllm.py:1570] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+DEBUG 09-29 21:54:54 [config/kernel.py:398] Setting platform-specific IR op priority defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native']), user-defined: IrOpPriorityConfig(rms_norm=[], fused_add_rms_norm=[], gelu_and_mul_sparse=[])
+INFO 09-29 21:54:54 [config/kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 09-29 21:54:54 [config/vllm.py:1780] Cudagraph is disabled under eager mode
+INFO 09-29 21:54:54 [config/compilation.py:336] Enabled custom fusions: norm_quant, act_quant
+DEBUG 09-29 21:54:54 [tokenizers/registry.py:90] Loading CachedHfTokenizer for tokenizer_mode='hf'
+DEBUG 09-29 21:54:55 [renderers/registry.py:60] Loading HfRenderer for renderer_mode='hf'
+INFO 09-29 21:54:57 [v1/engine/core.py:123] Initializing a V1 LLM engine (v0.30.0) with config: model='/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218', speculative_config=None, tokenizer='/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [8192], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None)
+DEBUG 09-29 21:54:57 [utils/import_utils.py:73] Loading module triton_kernels from /home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/vllm/third_party/triton_kernels/__init__.py.
+DEBUG 09-29 21:54:57 [config/kernel.py:88] Setting IR op priority for rms_norm to ['vllm_c', 'native']
+DEBUG 09-29 21:54:57 [ir/op.py:422] Priority for vllm.ir.rms_norm set to ['vllm_c', 'native']
+DEBUG 09-29 21:54:57 [config/kernel.py:88] Setting IR op priority for fused_add_rms_norm to ['vllm_c', 'native']
+DEBUG 09-29 21:54:57 [ir/op.py:422] Priority for vllm.ir.fused_add_rms_norm set to ['vllm_c', 'native']
+DEBUG 09-29 21:54:57 [config/kernel.py:88] Setting IR op priority for gelu_and_mul_sparse to ['triton', 'native']
+DEBUG 09-29 21:54:57 [ir/op.py:422] Priority for vllm.ir.gelu_and_mul_sparse set to ['triton', 'native']
+DEBUG 09-29 21:54:57 [distributed/parallel_state.py:1783] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///tmp/vllm_dist_cbea2a4bd1794baa9d0f3b78c1304974 backend=nccl
+INFO 09-29 21:54:57 [distributed/parallel_state.py:1827] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///tmp/vllm_dist_cbea2a4bd1794baa9d0f3b78c1304974 backend=nccl
+DEBUG 09-29 21:54:57 [distributed/parallel_state.py:1916] Detected 1 nodes in the distributed environment
+INFO 09-29 21:54:57 [distributed/parallel_state.py:2267] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, ETP rank 0, EP rank N/A, EPLB rank N/A
+INFO 09-29 21:54:57 [v1/worker/gpu_worker.py:441] Using V2 Model Runner
+DEBUG 09-29 21:54:57 [v1/worker/gpu_worker.py:453] worker init memory snapshot: torch_peak=0.0GiB, torch_allocated=0.0GiB, free_memory=21.85GiB, total_memory=22.04GiB, cuda_memory=0.19GiB, torch_memory=0.0GiB, non_torch_memory=0.19GiB, timestamp=1790718897.9585166, auto_measure=True
+DEBUG 09-29 21:54:57 [v1/worker/gpu_worker.py:454] worker requested memory: 18.73GiB
+DEBUG 09-29 21:54:57 [model_executor/offloader/base.py:136] Offloader set to NoopOffloader (no offloading).
+INFO 09-29 21:54:58 [v1/worker/gpu/model_runner.py:396] Loading model from scratch...
+DEBUG 09-29 21:54:58 [platforms/cuda.py:497] Some attention backends are not valid for cuda with AttentionSelectorConfig(head_size=128, dtype=torch.bfloat16, kv_cache_dtype=auto, block_size=None, use_mla=False, has_sink=False, use_sparse=False, use_mm_prefix=False, use_per_head_quant_scales=False, attn_type=AttentionType.DECODER, has_sliding_window=False, use_non_causal=False, use_batch_invariant=False, use_kv_connector=False, use_adaptive_verification=False, use_pcp=False, use_dcp=False, use_rswa=False). Reasons: {TURBOQUANT: [kv_cache_dtype not supported]}.
+INFO 09-29 21:54:58 [platforms/cuda.py:538] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+INFO 09-29 21:54:58 [v1/attention/backends/flash_attn.py:1116] Using FlashAttention version 2
+DEBUG 09-29 21:54:58 [config/model.py:1993] head dtype: torch.bfloat16
+DEBUG 09-29 21:54:59 [config/compilation.py:1335] enabled custom ops: Counter({'rms_norm': 145, 'silu_and_mul': 36, 'rotary_embedding': 1, 'apply_rotary_emb': 1})
+DEBUG 09-29 21:54:59 [config/compilation.py:1336] disabled custom ops: Counter()
+DEBUG 09-29 21:54:59 [model_executor/model_loader/base_loader.py:74] Loading weights on cuda ...
+INFO 09-29 21:54:59 [model_executor/model_loader/weight_utils.py:895] Filesystem type for checkpoints: EXT4. Checkpoint size: 15.26 GiB. Available RAM: 56.95 GiB.
+INFO 09-29 21:54:59 [model_executor/model_loader/weight_utils.py:918] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+Loading safetensors checkpoint shards:   0% Completed | 0/5 [00:00<?, ?it/s]
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight embed_tokens.weight with shape torch.Size([151936, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.0.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.0.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.0.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.0.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.0.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.0.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.0.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.0.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.0.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.0.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.0.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.1.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.1.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.1.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.1.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.1.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.1.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.1.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.1.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.1.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.1.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.1.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.2.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.2.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.2.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.2.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.2.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.2.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.2.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.2.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.2.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.2.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.2.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.3.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.3.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.3.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.3.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.3.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.3.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.3.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.3.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.3.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.3.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.3.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.4.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.4.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.4.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.4.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.4.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.4.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.4.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.4.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.4.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.4.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.4.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.5.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.5.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.5.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.5.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.5.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.5.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.5.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.5.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.5.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.5.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.5.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.6.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.6.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.6.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.6.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.6.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.6.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.6.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.6.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.6.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.6.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.6.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.7.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.7.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.7.self_attn.qkv_proj.weight
+Loading safetensors checkpoint shards:  20% Completed | 1/5 [00:00<00:01,  2.94it/s]
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.10.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.10.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.10.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.10.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.10.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.10.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.10.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.10.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.10.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.10.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.10.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.11.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.11.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.11.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.11.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.11.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.11.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.11.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.11.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.11.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.11.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.11.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.12.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.12.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.12.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.12.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.12.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.12.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.12.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.12.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.12.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.12.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.12.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.13.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.13.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.13.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.13.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.13.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.13.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.13.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.13.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.13.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.13.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.13.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.14.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.14.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.14.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.14.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.14.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.14.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.14.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.14.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.14.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.14.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.14.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.15.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.15.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.15.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.15.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.15.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.15.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.15.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.15.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.15.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.15.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.15.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.16.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.16.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.16.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.16.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.16.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.16.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.16.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.16.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.16.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.16.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.16.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.17.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.17.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.17.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.17.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.17.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.17.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.17.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.7.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.7.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.7.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.7.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.7.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.7.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.7.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.7.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.8.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.8.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.8.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.8.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.8.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.8.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.8.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.8.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.8.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.8.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.8.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.9.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.9.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.9.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.9.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.9.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.9.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.9.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.9.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.9.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.9.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.9.self_attn.qkv_proj.weight
+Loading safetensors checkpoint shards:  40% Completed | 2/5 [00:00<00:01,  2.85it/s]
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.17.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.17.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.17.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.17.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.18.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.18.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.18.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.18.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.18.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.18.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.18.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.18.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.18.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.18.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.18.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.19.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.19.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.19.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.19.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.19.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.19.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.19.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.19.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.19.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.19.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.19.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.20.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.20.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.20.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.20.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.20.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.20.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.20.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.20.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.20.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.20.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.20.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.21.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.21.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.21.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.21.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.21.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.21.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.21.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.21.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.21.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.21.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.21.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.22.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.22.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.22.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.22.mlp.gate_up_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.22.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.22.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.22.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.22.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.22.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.22.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.22.self_attn.qkv_proj.weight
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.23.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:54:59 [model_executor/models/utils.py:311] Loaded weight layers.23.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:54:59 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.23.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.23.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.23.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.23.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.23.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.23.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.23.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.23.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.23.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.24.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.24.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.24.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.24.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.24.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.24.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.24.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.24.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.24.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.24.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.24.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.25.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.25.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.25.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.25.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.25.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.25.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.25.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.25.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.25.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.25.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.25.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.26.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.26.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.26.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.26.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.26.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.26.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.26.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.26.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.26.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.26.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.26.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.27.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.27.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.27.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.27.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.27.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.27.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.27.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.27.self_attn.qkv_proj.weight
+Loading safetensors checkpoint shards:  60% Completed | 3/5 [00:01<00:00,  2.83it/s]
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.27.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.27.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.27.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.28.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.28.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.28.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.28.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.28.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.28.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.28.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.28.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.28.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.28.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.28.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.29.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.29.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.29.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.29.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.29.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.29.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.29.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.29.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.29.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.29.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.29.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.30.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.30.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.30.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.30.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.30.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.30.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.30.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.30.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.30.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.30.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.30.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.31.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.31.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.31.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.31.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.31.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.31.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.31.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.31.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.31.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.31.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.31.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.32.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.32.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.32.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.32.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.32.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.32.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.32.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.32.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.32.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.32.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.32.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.33.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.33.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.33.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.33.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.33.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.33.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.33.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.33.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.33.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.33.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.33.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.34.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.34.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.34.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.34.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.34.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.34.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.34.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.34.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.34.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.34.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.34.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.35.input_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.35.mlp.down_proj.weight with shape torch.Size([4096, 12288])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 0 with shape torch.Size([12288, 4096]) into model.layers.35.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:985] Loaded shard 1 with shape torch.Size([12288, 4096]) into model.layers.35.mlp.gate_up_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.35.post_attention_layernorm.weight with shape torch.Size([4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.35.self_attn.k_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard k with shape torch.Size([1024, 4096]) into model.layers.35.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.35.self_attn.o_proj.weight with shape torch.Size([4096, 4096])
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight layers.35.self_attn.q_norm.weight with shape torch.Size([128])
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard q with shape torch.Size([4096, 4096]) into model.layers.35.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/layers/linear.py:1339] Loaded shard v with shape torch.Size([1024, 4096]) into model.layers.35.self_attn.qkv_proj.weight
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight norm.weight with shape torch.Size([4096])
+Loading safetensors checkpoint shards:  80% Completed | 4/5 [00:01<00:00,  3.05it/s]
+DEBUG 09-29 21:55:00 [model_executor/models/utils.py:311] Loaded weight lm_head.weight with shape torch.Size([151936, 4096])
+Loading safetensors checkpoint shards: 100% Completed | 5/5 [00:01<00:00,  4.04it/s]
+Loading safetensors checkpoint shards: 100% Completed | 5/5 [00:01<00:00,  3.45it/s]
+
+INFO 09-29 21:55:00 [model_executor/model_loader/default_loader.py:430] Loading weights took 1.46 seconds
+DEBUG 09-29 21:55:00 [model_executor/model_loader/base_loader.py:81] Peak GPU memory after loading weights: 15.27 GiB
+INFO 09-29 21:55:01 [v1/worker/gpu/model_runner.py:428] Model loading took 15.27 GiB memory and 3.216226 seconds
+INFO 09-29 21:55:01 [v1/sample/ops/topk_topp_sampler.py:78] Using FlashInfer for top-p & top-k sampling.
+INFO 09-29 21:55:01 [v1/attention/backends/utils.py:320] Using LBNHC KV cache layout.
+DEBUG 09-29 21:55:04 [v1/worker/gpu_worker.py:628] Initial free memory: 21.85 GiB; Requested memory: 0.850000 (util), 18.73 GiB
+DEBUG 09-29 21:55:04 [v1/worker/gpu_worker.py:634] Free memory after profiling: 6.34 GiB (total), 3.23 GiB (within requested)
+DEBUG 09-29 21:55:04 [v1/worker/gpu_worker.py:639] Memory profiling takes 3.25 seconds. Total non KV cache memory: 16.32GiB; torch peak memory increase: 0.82GiB; total consumed (from mem_get_info): 15.5GiB; weights memory: 15.27GiB.
+INFO 09-29 21:55:04 [v1/worker/gpu_worker.py:640] Available KV cache memory: 2.41 GiB
+INFO 09-29 21:55:04 [v1/core/kv_cache_utils.py:2395] GPU KV cache size: 17,568 tokens, Maximum concurrency for 4,096 tokens per request: 4.29x
+INFO 09-29 21:55:04 [model_executor/warmup/kernel_warmup.py:172] JIT kernel warmup starting.
+INFO 09-29 21:55:04 [model_executor/warmup/kernel_warmup.py:185] JIT kernel warmup finished in 0.00s.
+DEBUG 09-29 21:55:05 [compilation/decorators.py:223] Inferred dynamic dimensions for forward method of <class 'vllm.model_executor.models.qwen3_dflash.DFlashQwen3Model'>: ['input_ids', 'positions', 'input_embeds']
+DEBUG 09-29 21:55:05 [compilation/decorators.py:223] Inferred dynamic dimensions for forward method of <class 'vllm.model_executor.models.deepseek_v2.DeepseekV2Model'>: ['input_ids', 'positions', 'intermediate_tensors', 'inputs_embeds']
+DEBUG 09-29 21:55:05 [compilation/decorators.py:223] Inferred dynamic dimensions for forward method of <class 'vllm.model_executor.models.deepseek_mtp.DeepSeekMTP'>: ['input_ids', 'positions', 'hidden_states', 'intermediate_tensors', 'inputs_embeds']
+DEBUG 09-29 21:55:05 [model_executor/warmup/cutedsl_warmup.py:104] Skipping CuTeDSL warmup because no compile units were requested.
+INFO 09-29 21:55:05 [v1/worker/gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.85, 18.73 GiB). Actual usage is 15.5 GiB for consumed memory (weights + non-torch), 0.81 GiB for peak activation, and 0.0 GiB for CUDAGraph memory. Replace gpu_memory_utilization config with `--kv-cache-memory=2435161396` (2.27 GiB) to fit into requested memory, or `--kv-cache-memory=5780924928` (5.38 GiB) to fully utilize gpu memory. Current kv cache memory in use is 2.41 GiB.
+INFO 09-29 21:55:06 [utils/jit_monitor.py:85] Kernel JIT monitor activated; monitored JIT compilations during inference will use mode=warn.
+DEBUG 09-29 21:55:06 [utils/gc_utils.py:40] GC Debug Config. enabled:False,top_objects:-1
+INFO 09-29 21:55:06 [utils/torch_utils.py:287] Reducing Torch threads from 8 to 1 for serving. Set OMP_NUM_THREADS in the external environment to override.
+INFO 09-29 21:55:06 [v1/engine/core.py:379] init engine (profile, create kv cache, warmup model) took 5.33 s
+DEBUG 09-29 21:55:06 [v1/engine/core.py:215] Batch queue is enabled with size 2
+DEBUG 09-29 21:55:06 [utils/gc_utils.py:40] GC Debug Config. enabled:False,top_objects:-1
+DEBUG 09-29 21:55:06 [renderers/base.py:360] Warming up chat template processing...
+INFO 09-29 21:55:06 [renderers/hf.py:642] Detected the chat template content format to be 'string'. You can set `--chat-template-content-format` to override this.
+DEBUG 09-29 21:55:06 [renderers/base.py:366] Chat template warmup completed in 0.311s
+DEBUG 09-29 21:55:06 [contextlib.py:478] [shutdown] HfRenderer
+[rank0]:[W929 21:55:06.279770468 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
