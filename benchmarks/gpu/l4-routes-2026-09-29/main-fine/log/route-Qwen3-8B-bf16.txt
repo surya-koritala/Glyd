@@ -1,0 +1,10 @@
+/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218 bf16 bf16 on NVIDIA L4: 16.38 GB
+    896 tokens, bf16   : 280.4 ms
+   1024 tokens, bf16   : 340.6 ms
+   1280 tokens, bf16   : 410.9 ms
+   1536 tokens, bf16   : 514.8 ms
+   1792 tokens, bf16   : 576.9 ms
+   2048 tokens, bf16   : 706.7 ms
+   2304 tokens, bf16   : 777.0 ms
+   2560 tokens, bf16   : 910.2 ms
+   3072 tokens, bf16   : 1081.7 ms

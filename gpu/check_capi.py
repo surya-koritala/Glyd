@@ -661,6 +661,6 @@ for host in (jit, lib):
 
 for e in errors:
     print("refused:", e)
-print(f"library {g._prebuilt()} (CUDA {lib.cuda_version()}), {torch.cuda.get_device_name()}: {sum(counts.values())} calls compared bit for bit, all identical; {looked_up} routes as main's rule (0.24.0's GLinear)")
+print(f"library {g._prebuilt()} (CUDA {lib.cuda_version()}), {torch.cuda.get_device_name()}: {sum(counts.values())} calls compared bit for bit, all identical; {looked_up} routes as main's rule (0.24.0's GLinear, with the L4's decode since)")
 for name in sorted(counts):
     print(f"  {name}: {counts[name]}")

@@ -1037,7 +1037,7 @@ cuBLAS's time, 12-bit: fused 1.23x at 512 and 640 tokens, 1.26x at 768,
 1.04x; tiered at 512 tokens 1.48x fused against 1.41x ahead, at 4096
 1.71x against 1.05x. The A10G, the same chip at 300 W with half-rate
 tensor cores, keeps the fused kernel (its prompts at most +5.3% over
-bf16's to 4096 tokens, the sweep's). The L4, L40S and RTX 6000 Ada sum in
+bf16's to 4096 tokens, the sweep's). The L40S and RTX 6000 Ada sum in
 fp32 at the A10's rate but have half its bandwidth a FLOP, so a matrix
 decoded costs them about twice as much a token: with an H100, whose
 cuBLAS kernels differ, the path is off there until measured:
@@ -1046,6 +1046,32 @@ cuBLAS kernels differ, the path is off there until measured:
 benchmarks/gpu/rtx4080s-prompts-2026-09-27,
 benchmarks/gpu/lambda-a10-routes-2026-09-28,
 benchmarks/gpu/sweep-2026-09-28/a10g-aws-g5).
+
+On an L4 (72 W, full-rate tensor cores, half the A10's bandwidth a FLOP)
+a prompt decodes each matrix first, on the current stream, then cuBLAS,
+from 896 tokens in the tiered layout (the L4's default) and 2560 in the
+12-bit one (`exact=True`'s prompts as before). Every route ran at its 72 W
+cap from about 512 tokens. The fused kernel ran at 1200-1360 MHz there,
+cuBLAS behind a decode at 1050-1155, yet the fused kernel lost from those
+lengths on, more the longer the prompt. A decode ahead beside cuBLAS was
+no faster than one before it (Qwen3-8B tiered: 1.08-1.49x its time at
+2048-8192 tokens), so the L4 takes the route DECODE, not AHEAD. It is a
+class of its own (`GLYD_GPU_L4`, "L4" in its name as a word: 3089), so
+the L40S, L40 and RTX 6000 Ada, which share its compute capability, keep
+their routes until measured. Qwen3-8B on an AWS g6.4xlarge, one forward
+pass, over bf16's time in the same run:
+
+| Prompt | 128 | 512 | 1024 | 2048 | 4096 | 8192 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| tiered, fused (was) | +5.6% | +17.6% | +27.8% | +31.0% | +37.9% | +98.4% |
+| tiered, decoded ahead | +48.7% | +23.7% | +26.8% | +20.4% | +20.1% | +56.5% |
+| tiered, now (decoded from 896) | +4.6% | +15.7% | +20.5% | +6.8% | +4.1% | -0.0% |
+| 12-bit, fused (was) | -9.0% | -0.8% | +7.2% | +11.0% | +19.8% | +105.0% |
+| 12-bit, now (decoded from 2560) | -10.5% | -6.6% | +1.9% | +4.3% | +5.8% | +2.4% |
+
+The 12-bit layout's fused kernel takes the L4's prompts in 6-18% less
+time than the tiered layout's to 2304 tokens (Qwen3-8B and
+Qwen3-4B-Instruct-2507; logs: benchmarks/gpu/l4-routes-2026-09-29).
 
 ## Popular models
 
@@ -1214,8 +1240,9 @@ up below: a step's kernel to 64 tokens, `mma_gemm_mid` from 17 on Ampere and
 Ada and an A100's to 128, `mma_gemm_wg` from 17 to 1024 on Hopper, the prompt
 kernel past them, and the matrix decoded for cuBLAS where that is the faster:
 an A100's 12-bit prompts from 769 tokens, Hopper's past its wgmma kernel,
-GeForce Ada's from 513 tiered and 1793 12-bit (641 exact) and an A10's from
-512 tiered and 640 12-bit (not exact), decoded ahead; `GLYD_WG_MIN`,
+an L4's from 896 tiered and 2560 12-bit, GeForce Ada's from 513 tiered and
+1793 12-bit (641 exact) and an A10's from 512 tiered and 640 12-bit (not
+exact), decoded ahead; `GLYD_WG_MIN`,
 `GLYD_WG_MAX`, `GLYD_MID_MIN` and `GLYD_DEC_MIN` move them, read once a
 process, at the library's first route: set them in the environment before
 the first model is loaded).
@@ -1224,8 +1251,8 @@ glyd.gpu decodes for cuBLAS, the prompt kernel, on every GPU; where K is not a
 multiple of 64, past 64 tokens (12-bit: also from `GLYD_DEC_MIN` where that is
 lower): `cudaErrorNotSupported`, the matrix decoded for a GEMM of the caller's
 there). A GPU's code, which the routes take, is its compute capability plus a
-class where the name tells GPUs apart (`GLYD_GPU_GEFORCE`, `GLYD_GPU_A10`:
-`glyd_gpu.h`). The glyd package's Linears take their routes from the library
+class where the name tells GPUs apart (`GLYD_GPU_GEFORCE`, `GLYD_GPU_A10`,
+`GLYD_GPU_L4`: `glyd_gpu.h`). The glyd package's Linears take their routes from the library
 and multiply by `linear` in their one C call, so every caller routes the same
 way.
 

@@ -6,6 +6,27 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- An L4's prompts decode each matrix for cuBLAS first, on the current
+  stream, from 896 tokens in the tiered layout (the L4's default) and 2560
+  in the 12-bit one; `exact=True`'s prompts as before. At its 72 W cap the
+  fused prompt kernel lost to the decode from those lengths, more the
+  longer the prompt, and a decode ahead beside cuBLAS (the A10's route) was
+  no faster than one before it. Qwen3-8B, one forward pass, over bf16's
+  time at 1024 / 2048 / 4096 / 8192 tokens: tiered +20.5 / +6.8 / +4.1 /
+  -0.0% (were +27.8 / +31.0 / +37.9 / +98.4%), 12-bit +1.9 / +4.3 / +5.8 /
+  +2.4% (were +7.2 / +11.0 / +19.8 / +105.0%); to 895 and 2559 tokens as
+  before. The time to the first token through `generate()` moves with the
+  pass. The L4 is a class of its own in the library's GPU codes
+  (`GLYD_GPU_L4`, 3000: "L4" in the name as a word; an L4 is 3089), so that
+  the L40S, L40 and RTX 6000 Ada, which share its compute capability and
+  were not measured, keep their routes; the glyd package and the glyd-gpu
+  crate have it too (`L4`). `GLYD_DEC_MIN` still sets any GPU's 12-bit
+  threshold. check_capi pins the L4's routes and an L40S's; on an L4 it
+  passes, as do test_gpu.py and the crate's tests
+  ([benchmarks/gpu/l4-routes-2026-09-29](benchmarks/gpu/l4-routes-2026-09-29)).
+
 ## v0.25.0 — 2026-09-29
 
 - The 12-bit layout is split byte: a weight's low byte (the exponent's

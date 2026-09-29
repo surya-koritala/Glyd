@@ -1,0 +1,9 @@
+/home/ubuntu/hf/hub/models--Qwen--Qwen3-4B-Instruct-2507/snapshots/cdbee75f17c01a7cc42f958dc650907174af0554 glyd mma12 on NVIDIA L4: 6.87 GB
+    128 tokens, default: 42.9 ms
+    256 tokens, default: 62.8 ms
+    512 tokens, default: 121.5 ms
+    768 tokens, default: 161.8 ms
+   1024 tokens, default: 205.5 ms
+   2048 tokens, default: 446.9 ms
+   4096 tokens, default: 981.9 ms
+   8192 tokens, default: 2159.7 ms
