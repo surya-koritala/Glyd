@@ -204,12 +204,15 @@ every earlier format.
   same path. On a GH200 (v0.25.1), its tokens a second over bf16
   compiled's at 1 / 8 / 32 sequences: Qwen3-8B 1.06 / 1.21 / 1.20x,
   Qwen3-32B 1.19 / 1.33 / 1.30x; on an L4 (Qwen3-8B, its routes as in
-  v0.25.1) 1.27 / 1.27 / 1.22x. On the GH200 greedy tokens did not repeat
-  from one identical call to the next at 8 and 32 sequences, bf16 eager's
-  own included, nor compiled at one sequence, so no mode's tokens there
-  are compared with bf16's; where bf16 eager's repeated, exact's were its
-  tokens (`benchmarks/gpu/repro-2026-09-30`: a job to find the operation
-  that does not repeat). `resp_job.sh` runs the modes unattended in 35
+  v0.25.1) 1.27 / 1.27 / 1.22x; on an A10 (Qwen3-8B, v0.25.1) 1.31 / 0.94
+  / 1.11x (at 8 sequences, both eager, the GPU busy 68-73% of each second
+  under Glyd against 96-98% under bf16), where Qwen3-14B's Glyd default
+  ran at 20.54 GB and its bf16 did not fit. On the GH200 greedy tokens
+  did not repeat from one identical call to the next at 8 and 32
+  sequences, bf16 eager's own included, nor compiled at one sequence, so
+  no mode's tokens there are compared with bf16's; where bf16 eager's
+  repeated, exact's were its tokens (`benchmarks/gpu/repro-2026-09-30`: a
+  job to find the operation that does not repeat). `resp_job.sh` runs the modes unattended in 35
   minutes on a GH200 (Qwen3-8B and 32B), an A100 or an A10
   ([benchmarks/gpu/respond-2026-09-29](benchmarks/gpu/respond-2026-09-29)).
 
