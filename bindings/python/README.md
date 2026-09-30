@@ -2,6 +2,9 @@
 
 Lossless AI compression: 33% less GPU memory, bit for bit.
 
+    curl -LsSf https://getglyd.com/install.sh | sh   # a model on your GPU in two commands: Linux, an NVIDIA GPU, driver 580 or newer
+    glyd run Qwen/Qwen3-8B                           # downloads it, starts it packed, and chats (glyd serve, glyd doctor)
+
     pip install "glyd[gpu]"   # models on the GPU: Linux x86_64 / aarch64, an NVIDIA GPU (Ampere or later)
     pip install "glyd[vllm]"  # and serving them: vllm serve MODEL --quantization glyd (vLLM 0.30)
     pip install glyd          # the codec alone: Linux x86_64 / aarch64, macOS arm64
@@ -262,8 +265,14 @@ families: the commands above).
 
 ### Serving with vLLM
 
-`pip install "glyd[vllm]"` installs vLLM 0.30 and the plugin, which vLLM
-finds by itself (the package's `vllm.general_plugins` entry point):
+`glyd run MODEL` and `glyd serve MODEL` (installed by the script above, or by
+`pip install "glyd[vllm]"` in a virtual environment) start vLLM with the
+plugin and the settings worked out from the GPU: memory share, context,
+eager or compiled, the tool-call and reasoning parsers; `glyd doctor` checks
+the machine. [gpu/vllm](https://github.com/surya-koritala/Glyd/tree/main/gpu/vllm)
+has the steps. By hand, `pip install "glyd[vllm]"` installs vLLM 0.30 and
+the plugin, which vLLM finds by itself (the package's `vllm.general_plugins`
+entry point):
 
     vllm serve Qwen/Qwen3-8B --quantization glyd       # a bf16 checkpoint, packed as it loads
     vllm serve ./qwen3-8b-glyd --quantization glyd     # a glyd save, as saved
