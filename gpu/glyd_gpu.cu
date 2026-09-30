@@ -3898,30 +3898,32 @@ static int64_t ahead_min(bool twelve, int64_t gpu) {
 }
 
 // Option 2 (the route SPLIT): a 12-bit prompt's matrices decoded ahead on SMs set apart (green contexts), cuBLAS on the
-// rest (glyd_gpu_mma12_ring_linear), where it beat v0.25.0's routes (benchmarks/gpu/research-2026-09-29/round1: an
-// A100-SXM4-40GB, an H100 SXM and an H100 PCIe, Qwen3-8B's and 32B's layers against bf16 cuBLAS): an A100's prompts
-// from 769 tokens (today's decoded path there; Qwen3-8B's layer 21% / 8% / 7% / 2% faster at 1024 / 2048 / 4096 / 8192,
-// 32B's 8% / 1.5% at 1024 / 2048, even at 4096, 1.4% slower at 8192), a matrix over two ring slots of 100 MiB (32B's,
-// 14B's gate and up) there to 4096, until slots its size are measured; Hopper's from 1024 (32B's 2% faster at 1024,
-// 13% / 1% / 6% at 2048 / 4096 / 8192; 8B's 8% / 12% / 4% / 5%), an H100 PCIe's at 1024 alone (its longer prompts not
-// yet measured against its own routes). Its SMs for the decode: an A100's 12 to 1535 tokens, 8 to 3071, then 4;
-// Hopper's 20 to 1535, 12 to 6143, then 4 (the split's granularity there: 8, cuBLAS a co-scheduled group); an H100
-// PCIe's 18 (as measured best). GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset: the GPU's; GLYD_SPLIT_MIN negative: never)
-// and GLYD_SPLIT_SMS move them, on any GPU from Ampere; a GPU's code with GLYD_GPU_NO_SPLIT never takes it (where the
-// split cannot run: no green contexts, a capture). The decode is the 12-bit layout's (K a multiple of 64).
+// rest (glyd_gpu_mma12_ring_linear), where a model's forward pass took less time than by v0.25.0's routes, measured end
+// to end (e2e.py --prefill, the Linears merged; benchmarks/gpu/option2-2026-09-29): an A100 SXM's prompts from 769 to
+// 8192 tokens (Qwen3-8B's pass 0.851-0.988x, 14B's 0.832-1.000x, on an A100-SXM4-40GB), a matrix over 2 x 50 M weights
+// (14B's gate and up) there to 4096 alone (past it by today's route: 1.021x a layer by SPLIT at 8192); a Hopper's (an
+// H100 SXM, H200, GH200: measured on a GH200) from 2048 to 8192 tokens for a large matrix, O and K both at least 4096,
+// every matrix of a layer of hidden size 4096 or more with q, k, v and gate, up merged (Qwen3-32B's pass 0.895-0.938x,
+// 8B's 0.978-0.992x; at 1024 tokens both slower, 32B's 1.012x and 8B's 1.106x, its pass issued by the host no faster
+// than the GPU ran it). Never on a PCIe card (an A100 PCIe, an H100 PCIe: not measured end to end), nor past 8192
+// tokens (not measured). Its SMs for the decode: an A100's 12 to 1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143,
+// then 4 (the split's granularity there: 8, cuBLAS a co-scheduled group). GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset:
+// the GPU's; GLYD_SPLIT_MIN negative: never) and GLYD_SPLIT_SMS move them, on any GPU from Ampere and any matrix; a
+// GPU's code with GLYD_GPU_NO_SPLIT never takes it (where the split cannot run: no green contexts, a capture). The
+// decode is the 12-bit layout's (K a multiple of 64).
 constexpr int64_t SPLIT_SLOT_WEIGHTS = 50 << 20;  // a ring slot of 100 MiB of bf16, as measured
 
 static int64_t split_sms(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M) {
     const RouteMins& t = route_mins();
     int64_t code = gpu & ~(int64_t)GLYD_GPU_NO_SPLIT, cc = code % 1000;
-    bool a100 = cc == 80, hopper = cc == 90, pcie = code - cc == GLYD_GPU_PCIE;
+    bool pcie = code - cc == GLYD_GPU_PCIE, a100 = cc == 80 && !pcie, hopper = cc == 90 && !pcie, large = O >= 4096 && K >= 4096;
     if (!twelve || gpu & GLYD_GPU_NO_SPLIT || K % 64 || t.split_min < 0 || cc < 80) return 0;
-    int64_t lo = t.split_min ? t.split_min : a100 ? 769 : hopper ? 1024 : INT64_MAX;
-    int64_t hi = t.split_max ? t.split_max : hopper && pcie ? 1024 : a100 && O * K > 2 * SPLIT_SLOT_WEIGHTS ? 4096 : INT64_MAX;
+    int64_t lo = t.split_min ? t.split_min : a100 ? 769 : hopper && large ? 2048 : INT64_MAX;
+    int64_t hi = t.split_max ? t.split_max : a100 && O * K > 2 * SPLIT_SLOT_WEIGHTS ? 4096 : 8192;
     if (M < lo || M > hi) return 0;
     if (t.split_sms) return t.split_sms;
     if (a100) return M < 1536 ? 12 : M < 3072 ? 8 : 4;
-    if (hopper) return pcie ? 18 : M < 1536 ? 20 : M < 6144 ? 12 : 4;
+    if (hopper) return M < 6144 ? 12 : 4;
     return 12;  // (GLYD_SPLIT_MIN set on another GPU: not measured)
 }
 
@@ -3981,8 +3983,8 @@ static int route_run(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M, 
     const RouteMins& t = route_mins();
     int here = *route = route_for(twelve, gpu, O, K, M);
     if (last) {
-        int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, t.dec_min ? t.dec_min : 769, 512, 513, 640, 1793, 1024, 1025, 4097,
-                          t.split_min, t.split_max + 1}, next = INT64_MAX;
+        int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, t.dec_min ? t.dec_min : 769, 512, 513, 640, 1793, 1024, 1025, 2048, 4097,
+                          8193, t.split_min, t.split_max + 1}, next = INT64_MAX;
         for (int64_t c : cuts)
             if (c > M && c < next && route_for(twelve, gpu, O, K, c) != here) next = c;
         *last = next == INT64_MAX ? INT64_MAX : next - 1;

@@ -204,12 +204,14 @@ int glyd_gpu_mma_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route,
 int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
 /* The route SPLIT's SMs for the decode, where the route is SPLIT (else 0): a
  * 12-bit prompt decoded ahead on SMs set apart (green contexts), cuBLAS on
- * the rest, where that beat the routes before it (gpu/README.md): an A100's
- * from 769 tokens (a matrix over 2 x 50 M weights to 4096), Hopper's from
- * 1024 (an H100 PCIe's at 1024 alone); the decode's SMs 4 to 20 by the GPU
- * and M. GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset: the GPU's; a negative
- * GLYD_SPLIT_MIN: never) and GLYD_SPLIT_SMS move them, on any GPU from
- * Ampere, read as the routes' others. K a multiple of 64. */
+ * the rest, where a forward pass took less time so than by the routes
+ * before it (gpu/README.md): an A100 SXM's from 769 to 8192 tokens (a matrix
+ * over 2 x 50 M weights to 4096), a Hopper's (not a PCIe card's) from 2048
+ * to 8192 for a matrix whose O and K are both at least 4096; the decode's
+ * SMs 4 to 12 by the GPU and M. GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset:
+ * the GPU's; a negative GLYD_SPLIT_MIN: never) and GLYD_SPLIT_SMS move them,
+ * on any GPU from Ampere and any matrix, read as the routes' others. K a
+ * multiple of 64. */
 int glyd_gpu_mma12_split_sms(int64_t gpu, int64_t O, int64_t K, int64_t M, int64_t* sms);
 
 /* Y [M, O] = X W^T (+ bias) by a route (negative: the current GPU's for M):

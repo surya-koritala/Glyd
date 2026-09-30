@@ -287,8 +287,8 @@ def test_c_header():
 
 def test_split_route():
     """The route SPLIT (option 2) through the library where it and a GPU are here (else skipped): its rule's pins (an
-    A100 from 769 tokens, a matrix over 2 x 50 M weights to 4096; Hopper from 1024; an H100 PCIe's at 1024 alone; its
-    decode's SMs), GLYD_GPU_NO_SPLIT today's routes; a GLinear made as on an A100 by it at 1024 tokens: within 1e-2 of
+    A100 SXM from 769 to 8192 tokens, a matrix over 2 x 50 M weights to 4096; Hopper from 2048 to 8192, O and K at
+    least 4096; no PCIe card; its decode's SMs), GLYD_GPU_NO_SPLIT today's routes; a GLinear made as on an A100 by it at 1024 tokens: within 1e-2 of
     fp32 and the same bits run to run, its decode bit for bit the pack's, exact bit for bit F.linear, and today's route
     (decoded, then cuBLAS) where the route cannot run."""
     torch = cuda()
@@ -307,12 +307,14 @@ def test_split_route():
         w = (torch.randn(512, 1024, device="cuda") * 0.02).to(torch.bfloat16)
         q = g.pack_mma12(w)
         big = g.Mma12((131072, 1024), q.data, q.exc, q.exc_base, q.hb)  # (its shape alone read by the routes)
-        for gpu, M, route, sms in [(80, 768, g.BIG, 0), (80, 769, g.SPLIT, 12), (80, 1536, g.SPLIT, 8), (80, 8192, g.SPLIT, 4), (3080, 769, g.SPLIT, 12),
-                                   (90, 1023, g.WG, 0), (90, 1024, g.SPLIT, 20), (90, 2048, g.SPLIT, 12), (90, 6144, g.SPLIT, 4), (3090, 1024, g.SPLIT, 18),
-                                   (3090, 1025, g.DECODE, 0), (86, 4096, g.BIG, 0), (89, 4096, g.BIG, 0)]:
-            assert g.route(q, gpu, M)[0] == route and g.split_sms(q, gpu, M) == sms, (gpu, M)
-        assert g.route(big, 80, 4096)[0] == g.SPLIT and g.route(big, 80, 4097)[0] == g.DECODE and g.route(big, 90, 8192)[0] == g.SPLIT
-        assert g.route(q, 80 | g.NO_SPLIT, 1024)[0] == g.DECODE and g.route(q, 90 | g.NO_SPLIT, 1024)[0] == g.WG
+        wide = g.Mma12((4096, 4096), q.data, q.exc, q.exc_base, q.hb)  # (a large matrix on Hopper)
+        for p, gpu, M, route, sms in [(q, 80, 768, g.BIG, 0), (q, 80, 769, g.SPLIT, 12), (q, 80, 1536, g.SPLIT, 8), (q, 80, 8192, g.SPLIT, 4), (q, 80, 8193, g.DECODE, 0),
+                                      (q, 3080, 769, g.DECODE, 0), (q, 90, 2048, g.DECODE, 0), (wide, 90, 1024, g.WG, 0), (wide, 90, 2047, g.DECODE, 0),
+                                      (wide, 90, 2048, g.SPLIT, 12), (wide, 90, 6144, g.SPLIT, 4), (wide, 90, 8193, g.DECODE, 0), (wide, 3090, 2048, g.DECODE, 0),
+                                      (q, 86, 4096, g.BIG, 0), (q, 89, 4096, g.BIG, 0)]:
+            assert g.route(p, gpu, M)[0] == route and g.split_sms(p, gpu, M) == sms, (p.shape, gpu, M)
+        assert g.route(big, 80, 4096)[0] == g.SPLIT and g.route(big, 80, 4097)[0] == g.DECODE and g.route(big, 90, 8192)[0] == g.DECODE
+        assert g.route(q, 80 | g.NO_SPLIT, 1024)[0] == g.DECODE and g.route(wide, 90 | g.NO_SPLIT, 2048)[0] == g.DECODE
         assert g.route(g.pack_mma(w), 80, 1024)[0] == g.BIG  # (the tiered layout's: never)
     torch.manual_seed(0)
     w = (torch.randn(3072, 2048, device="cuda") * 0.02).to(torch.bfloat16)
