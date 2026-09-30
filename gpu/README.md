@@ -1128,7 +1128,7 @@ ran about 10 C cooler than the one above (medians 66-72 C against 78-81
 C), and its times are lower throughout, the unchanged routes' too (logs:
 benchmarks/gpu/l4-routes-2026-09-29).
 
-### Long prompts on an A100 SXM and a GH200: the decode on SMs set apart
+### Long prompts on an A100 SXM4 40 GB and a GH200: the decode on SMs set apart
 
 Decoded first, a matrix of a long prompt costs its decode on every SM
 before its product; decoded ahead beside the products (above), it takes
@@ -1165,8 +1165,8 @@ routes unless it asks and runs the ring:
   go with its model.
 
 The routes, as measured end to end, where a forward pass took at least 2%
-less time than by the routes without it: an A100 SXM's 12-bit prompts from
-769 to 4096 tokens, and to 8192 for a matrix whose O and K are both at
+less time than by the routes without it: an A100 SXM4 40 GB's 12-bit prompts
+from 769 to 4096 tokens, and to 8192 for a matrix whose O and K are both at
 least 5120, as Qwen3-14B's (its pass 0.968 of the time at 8192; Qwen3-8B's
 0.994 there, not taken); a GH200's from 2048 to 8192 for such a matrix, as
 Qwen3-32B's (its pass 0.909 / 0.940 / 0.952 of the time at 2048 / 4096 /
@@ -1197,12 +1197,21 @@ Qwen3-8B not taken:
 | v0.25.1's routes | | | 335.7 | 636.2 | 1279.9 |
 | SPLIT | | | 305.1 | 598.7 | 1218.4 |
 
+The ratios in the text are each round's SPLIT time over v0.25.1's, the
+median of the 3 (Qwen3-8B at 1024 tokens on the A100: rounds 0.867, 0.879,
+0.876, median 0.876), not the ratio of the table's medians (101.2 / 115.1 =
+0.879).
+
 (At 1024 tokens the GH200's first session, against v0.25.0's routes, had
 the route lose: Qwen3-8B's pass was issued by the host in 47.6 of its 48.0
 ms, the route's calls costing the host more than the GPU saved; 32B's took
 1.2% longer. Hopper keeps its wgmma kernel to 1024 and the matrix decoded
-first to 2047.) It runs only on the GPUs measured: an A100 SXM with its
-108 SMs and a GH200 with its 132, not a MIG slice. Where it cannot run, a
+first to 2047.) Measured on an A100-SXM4-40GB (108 SMs) and a GH200 480GB
+(132 SMs). The rule goes by a GPU's code (its compute capability and its
+class by name) and its SM count, so the glyd package's Linears ask for the
+route on an A100 SXM4 80 GB or an A800 SXM4 too (compute capability 8.0, no
+PCIe in the name, 108 SMs): by class and SM count, not measured there.
+Never on a MIG slice. Where it cannot run, a
 prompt takes the routes before it, never an error: the JIT build (the
 ring is the prebuilt library's), the driver's green contexts not available
 (a driver before CUDA 12.5, or one that refuses them: a warning says so),
@@ -1393,9 +1402,9 @@ an A100's 12-bit prompts from 769 tokens, Hopper's past its wgmma kernel,
 an L4's from 896 tiered and 2560 12-bit, GeForce Ada's from 513 tiered and
 1793 12-bit (641 exact), an A10's from 512 tiered and 640 12-bit and an
 L40S's from 1024 tiered and 2048 12-bit (not exact), decoded ahead; an A100
-SXM's 12-bit prompts from 769 to 4096 tokens (to 8192 for a matrix whose O
-and K are both at least 5120) and a GH200's from 2048 to 8192 for such a
-matrix decoded on SMs set apart, the route SPLIT, above;
+SXM4 40 GB's 12-bit prompts from 769 to 4096 tokens (to 8192 for a matrix
+whose O and K are both at least 5120) and a GH200's from 2048 to 8192 for
+such a matrix decoded on SMs set apart, the route SPLIT, above;
 `GLYD_WG_MIN`, `GLYD_WG_MAX`, `GLYD_MID_MIN`, `GLYD_DEC_MIN` and the
 `GLYD_SPLIT_*` ones move them, read once a process, at the library's first
 route: set them in the environment before the first model is loaded).
@@ -1411,7 +1420,11 @@ compute capability plus a class where the name tells GPUs apart
 to it asks for the route SPLIT, which only glyd.gpu's Linears do (opt-in:
 without it the routes and `linear` are v0.25.1's). The glyd package's Linears take their routes from the library
 and multiply by `linear` in their one C call, so every caller routes the same
-way.
+way. The routes are measured on an RTX 4080 SUPER, an L4, an L40S, an A10,
+an A100 SXM4 40 GB, an H100 (SXM5 and PCIe) and a GH200 (logs:
+benchmarks/gpu); a GPU with the same code takes the same routes, not
+measured there: an A100 SXM4 80 GB and an A800 SXM4 have an A100 SXM4's
+(80), an H200 an H100 SXM's (90).
 
 Every release carries it on its own for Linux x86_64 and aarch64 (glibc 2.28
 or later), CUDA 12 (built with 12.8) and 13:

@@ -5,28 +5,98 @@ name: Release
 # header and example) and the Python wheels for Linux (x86_64, aarch64:
 # glibc 2.28, manylinux_2_28) and macOS (arm64), attach them to the GitHub
 # release, and publish them: to PyPI by trusted publishing (pypi.org trusts
-# this workflow in the `pypi` environment, no token), to crates.io when the
-# CARGO_REGISTRY_TOKEN secret is set. Run by hand without a tag
-# (gh workflow run release.yml --ref BRANCH): the same builds and checks,
-# kept as the run's artifacts only; no release, no tag, no publishing.
+# this workflow file, in the `pypi` environment, no token), to crates.io when
+# the CARGO_REGISTRY_TOKEN secret is set.
+#
+# What publishes: a pushed v* tag, or a dispatch whose `tag` is one, that exists, whose
+# commit is on main or a release-* branch, and whose version files all say the tag's version
+# (scripts/bump_version.py --check TAG). The `plan` job decides that once; every later job
+# builds the commit it names, and a dispatch builds the tag's commit, not the ref it was run
+# on (run it on a branch with a fixed workflow to re-run a tag whose own run failed).
+# Run by hand without a tag (gh workflow run release.yml --ref BRANCH): the same builds and
+# checks of that branch, kept as the run's artifacts only; no release, no tag, no publishing.
+#
+# Permissions: read everywhere but `attach` (it uploads to the release). `publish-pypi` alone has
+# id-token: write, and runs only Python's setup, the wheels' download and PyPI's action; the
+# crates.io token is in the environment of the one step that publishes. Every action is a commit,
+# with its version in the comment.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release to attach the build of this ref to (e.g. v0.10.0); empty: build only, as the run's artifacts"
+        description: "Release to publish (e.g. v0.26.0): that tag's commit is built and published; it must exist and be on main or a release-* branch. Empty: build only, of the ref chosen, as the run's artifacts"
         required: false
         default: ""
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  plan:
+    # What this run builds (a commit, not a ref: a tag can move between jobs) and whether it publishes.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      tag: ${{ steps.plan.outputs.tag }}
+      label: ${{ steps.plan.outputs.label }}
+      version: ${{ steps.plan.outputs.version }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # every branch and tag: which branches hold the tag's commit
+          persist-credentials: false
+      - name: Plan
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          set -euo pipefail
+          fail() { printf '::error::%s\n' "$*"; exit 1; }
+          case "$EVENT" in
+            push) tag="$REF_NAME" ;;
+            workflow_dispatch) tag="$INPUT_TAG" ;;
+            *) fail "release.yml does not run on $EVENT" ;;
+          esac
+          if [ -z "$tag" ]; then
+            # no tag: build this ref as it stands, publish nothing
+            sha="$GITHUB_SHA"; label="dev-${GITHUB_SHA:0:7}"; publish=false
+            python3 scripts/bump_version.py --check
+          else
+            [[ "$tag" =~ ^v[0-9][0-9A-Za-z._-]*$ ]] || fail "$(printf '%q' "$tag") is not a v* version tag"
+            git rev-parse -q --verify "refs/tags/$tag^{commit}" > /dev/null || fail "$tag is not a tag of this repository"
+            sha=$(git rev-parse "refs/tags/$tag^{commit}")
+            on=$(git branch -r --contains "$sha" --format='%(refname:short)' | grep -E '^origin/(main|release-.+)$' || true)
+            [ -n "$on" ] || fail "$tag is at $sha, which is on neither main nor a release-* branch"
+            echo "$tag is $sha, on: $(echo "$on" | tr '\n' ' ')"
+            git checkout -q --detach "$sha"
+            [ -f scripts/bump_version.py ] || fail "$tag has no scripts/bump_version.py, which checks its version files"
+            python3 scripts/bump_version.py --check "$tag"
+            label="$tag"; publish=true
+          fi
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail "$sha is not a commit"
+          {
+            echo "sha=$sha"
+            echo "tag=$tag"
+            echo "label=$label"
+            echo "version=$(grep -m1 '^version = ' bindings/python/pyproject.toml | cut -d'"' -f2)"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
   gpu-lib:
     # The GPU kernels behind their C API (gpu/build_lib.sh) for CUDA 12 and 13 on each Linux
     # architecture, built on Rocky Linux 8 (glibc 2.28) for manylinux_2_28 systems, with GCC 13
     # from gcc-toolset (its newer libstdc++ parts linked in, as on the manylinux images).
+    needs: plan
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -38,9 +108,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     container: nvidia/cuda:${{ matrix.cuda }}-devel-rockylinux8
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ github.ref }}
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
       - name: Build
         run: |
           set -e
@@ -59,15 +130,17 @@ jobs:
             [ -z "$other" ] || { echo "$f needs more than the system's libraries: $other"; exit 1; }
             [ "$(printf '%s\n' "$(top GLIBC)" 2.28 | sort -V | tail -1)" = 2.28 ] || { echo "$f needs GLIBC $(top GLIBC), past 2.28"; exit 1; }
           done
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: gpu-lib-${{ matrix.name }}-cuda${{ matrix.cuda }}
           path: lib/*.so
       - name: Package (the library on its own, with its header, example, license and README)
+        env:
+          TAG: ${{ needs.plan.outputs.label }}
         run: |
           set -e
           CUDA="${{ matrix.cuda }}"
-          DIR="glyd-gpu-${{ github.event.inputs.tag || github.ref_name }}-${{ matrix.name }}-cuda${CUDA%%.*}"
+          DIR="glyd-gpu-$TAG-${{ matrix.name }}-cuda${CUDA%%.*}"
           mkdir -p "$DIR"
           cp "lib/libglyd_gpu_cuda${CUDA%%.*}.so" gpu/glyd_gpu.h gpu/examples/unpack.c "$DIR/"
           cp gpu/LICENSE "$DIR/LICENSE"
@@ -76,7 +149,7 @@ jobs:
           tar -czf "$DIR.tar.gz" "$DIR"
           sha256sum "$DIR.tar.gz" > "$DIR.tar.gz.sha256"
           tar -tvzf "$DIR.tar.gz" && cat "$DIR.tar.gz.sha256"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           # tarballs-*: the attach job's, with the CLIs' tarballs
           name: tarballs-gpu-${{ matrix.name }}-cuda${{ matrix.cuda }}
@@ -85,7 +158,9 @@ jobs:
             glyd-gpu-*.tar.gz.sha256
 
   build:
-    needs: gpu-lib
+    needs: [plan, gpu-lib]
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -114,20 +189,24 @@ jobs:
     env:
       RUSTFLAGS: ${{ matrix.name == 'linux-x86_64' && '-C target-cpu=x86-64-v3' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         if: runner.os == 'macOS'
         with:
           python-version: "3.12"
       - name: Build
         run: cargo build --release --workspace
       - name: Package binaries
+        env:
+          TAG: ${{ needs.plan.outputs.label }}
         run: |
           set -e
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DIR="glyd-$TAG-${{ matrix.name }}"
           mkdir -p "$DIR"
           cp target/release/glyd target/release/glyd-store target/release/glyd-gpu "$DIR/"
@@ -138,13 +217,15 @@ jobs:
           cp glyd-gpu/LICENSE "$DIR/LICENSE-glyd-gpu"
           tar -czf "$DIR.tar.gz" "$DIR"
           (shasum -a 256 "$DIR.tar.gz" 2> /dev/null || sha256sum "$DIR.tar.gz") > "$DIR.tar.gz.sha256"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         if: runner.os == 'Linux'
         with:
           pattern: gpu-lib-${{ matrix.name }}-*
           path: bindings/python/glyd/gpu
           merge-multiple: true
       - name: Build the Python wheel
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
         run: |
           set -e
           cp target/release/libglyd_store.* bindings/python/glyd/ 2>/dev/null || true
@@ -154,6 +235,8 @@ jobs:
           # The wheel carries this platform's shared libraries: tag it so.
           ${{ matrix.python }} -m wheel tags --python-tag py3 --abi-tag none --platform-tag ${{ matrix.wheel }} --remove wheels/*.whl
           ls -l wheels
+          # plan checked the version files (a release's against its tag); this, that the build made that version
+          [ "$(ls wheels)" = "glyd-$VERSION-py3-none-${{ matrix.wheel }}.whl" ] || { echo "the wheel is not glyd-$VERSION-py3-none-${{ matrix.wheel }}.whl"; exit 1; }
       - name: Check the wheel's tag (auditwheel)
         if: runner.os == 'Linux'
         run: |
@@ -170,15 +253,31 @@ jobs:
           ${{ matrix.python }} -m pip install --quiet wheels/*.whl
           cd bindings/python && ${{ matrix.python }} -c "import glyd; import test_glyd; test_glyd.test_round_trips()"
           ${{ matrix.python }} test_gpu.py
-          # The GPU libraries load without a GPU (their CUDA runtime is linked in; the driver is looked for at the first call).
-          cd / && ${{ matrix.python }} -c "import ctypes, glob, os, glyd.gpu; d = os.path.dirname(glyd.gpu.__file__); [print(os.path.basename(f), os.path.getsize(f), 'bytes, CUDA runtime', ctypes.CDLL(f).glyd_gpu_cuda_version()) for f in sorted(glob.glob(d + '/libglyd_gpu_cuda*.so'))]"
-      - uses: actions/upload-artifact@v4
+          # From outside the source tree, so it is the installed wheel that is looked at: its GPU libraries load without
+          # a GPU (their CUDA runtime is linked in; the driver is looked for at the first call), both CUDA majors are
+          # there on Linux, each answers the C API the package's calls are written for (stale libraries do not), and
+          # vLLM's entry point is registered.
+          cd / && ${{ matrix.python }} - <<'EOF'
+          import ctypes, glob, os, re, sys
+          from importlib.metadata import entry_points
+          import glyd.gpu
+          d = os.path.dirname(glyd.gpu.__file__)
+          api = int(re.search(r"^API_VERSION = (\d+)", open(d + "/_lib.py").read(), re.M).group(1))
+          libs = sorted(glob.glob(d + "/libglyd_gpu_cuda*.so"))
+          for f in libs:
+              lib = ctypes.CDLL(f)
+              print(os.path.basename(f), os.path.getsize(f), "bytes, CUDA runtime", lib.glyd_gpu_cuda_version(), "C API", lib.glyd_gpu_api_version())
+              assert lib.glyd_gpu_api_version() == api, f"{f}: its C API is not the package's ({api})"
+          assert sys.platform != "linux" or len(libs) == 2, libs
+          assert {e.name: e.value for e in entry_points(group="vllm.general_plugins")}.get("glyd") == "glyd.gpu.vllm_entry:register"
+          EOF
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: tarballs-${{ matrix.name }}
           path: |
             glyd-*.tar.gz
             glyd-*.tar.gz.sha256
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: wheels-${{ matrix.name }}
           path: wheels/*.whl
@@ -186,16 +285,18 @@ jobs:
   attach:
     # The Linux builds run in the manylinux containers, which have no gh: the release takes every build's files
     # here, on the runner (v0.21.0's first run stopped at "gh: command not found").
-    needs: build
-    if: github.event_name == 'push' || inputs.tag != ''
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true' && (github.event_name == 'push' || inputs.tag != '')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: tarballs-*
           path: out
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: wheels-*
           path: out
@@ -203,41 +304,64 @@ jobs:
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
         run: |
           ls -la out
-          gh release upload "${{ github.event.inputs.tag || github.ref_name }}" out/* --clobber --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" out/* --clobber --repo "$GITHUB_REPOSITORY"
 
-  publish:
-    needs: build
-    if: github.event_name == 'push' || inputs.tag != ''
+  publish-pypi:
+    # Trusted publishing: pypi.org trusts this workflow file in the `pypi` environment, so no token. The one
+    # job with id-token: write; it has no source tree, no Rust and no secret.
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true' && (github.event_name == 'push' || inputs.tag != '')
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       contents: read
       id-token: write
-    env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: wheels-*
           path: wheels
           merge-multiple: true
+      - name: PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: wheels/
+          skip-existing: true
+
+  publish-crates:
+    # crates.io, when the CARGO_REGISTRY_TOKEN secret is set. No id-token here; the token is in the environment
+    # of the steps that need it, not of the whole job (nor of the Rust toolchain's action).
+    needs: [plan, build]
+    if: needs.plan.outputs.publish == 'true' && (github.event_name == 'push' || inputs.tag != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Is the token set?
+        id: token
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: echo "set=$([ -n "$CARGO_REGISTRY_TOKEN" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: steps.token.outputs.set == 'true'
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        if: steps.token.outputs.set == 'true'
+        with:
+          toolchain: stable
       - name: crates.io
-        if: ${{ env.CARGO_REGISTRY_TOKEN != '' }}
+        if: steps.token.outputs.set == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           cargo publish -p glyd || echo "glyd: already published or refused"
           sleep 60
           cargo publish -p glyd-store || echo "glyd-store: already published or refused"
-      - name: PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: wheels/
-          skip-existing: true
