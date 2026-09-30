@@ -1,5 +1,6 @@
 """bench_serve.sh's results as a table: each request rate, bf16 against Glyd: requests/s, output tokens/s, time to
-first token (TTFT, mean and p99), time per output token (TPOT, mean and p99), and each mode's KV cache.
+first token (TTFT, mean and p99), time per output token (TPOT, mean and p99), the GPU's median SM clock and its
+hottest (nvidia-smi's each second, where logged), and each mode's KV cache.
 
     python bench_summary.py RESULTS_DIR"""
 import glob
@@ -18,8 +19,20 @@ for m in modes:
     load = re.search(r"Model loading took ([\d.]+) GiB", kv)
     print(f"{m}: weights {load.group(1) if load else '?'} GiB, KV cache {tokens.group(1) if tokens else '?'} tokens, max concurrency {conc.group(2) + 'x at ' + conc.group(1) + ' tokens' if conc else '?'}")
 print()
-print("| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed |")
-print("| :--- | :--- | ---: | ---: | ---: | ---: | ---: |")
+print("| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |")
+print("| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
+
+
+def smi(p):
+    """nvidia-smi's samples (timestamp, temperature, SM clock, power): the median clock (MHz) and the hottest (C)."""
+    try:
+        rows = [r.split(", ") for r in open(p).read().splitlines() if r.count(",") == 3]
+        clocks, temps = sorted(float(r[2]) for r in rows), [float(r[1]) for r in rows]
+        return f"{clocks[len(clocks) // 2]:.0f} MHz, {max(temps):.0f} C"
+    except (OSError, ValueError, IndexError):
+        return ""
+
+
 for rate in rates:
     for m in modes:
         p = os.path.join(R, f"{m}-rate{rate}.json")
@@ -27,4 +40,5 @@ for rate in rates:
             continue
         d = json.load(open(p))
         f = lambda k: d.get(k, float("nan"))
-        print(f"| {rate} | {m} | {f('request_throughput'):.2f} | {f('output_throughput'):.1f} | {f('mean_ttft_ms'):.0f} / {f('p99_ttft_ms'):.0f} | {f('mean_tpot_ms'):.1f} / {f('p99_tpot_ms'):.1f} | {d.get('completed', '?')} |")
+        gpu = smi(os.path.join(R, f"smi-{m}-rate{rate}.csv"))
+        print(f"| {rate} | {m} | {f('request_throughput'):.2f} | {f('output_throughput'):.1f} | {f('mean_ttft_ms'):.0f} / {f('p99_ttft_ms'):.0f} | {f('mean_tpot_ms'):.1f} / {f('p99_tpot_ms'):.1f} | {d.get('completed', '?')} | {gpu} |")
