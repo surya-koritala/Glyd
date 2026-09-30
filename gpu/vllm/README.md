@@ -182,7 +182,8 @@ Every run and its log: [benchmarks/gpu/l4-vllm-spec-2026-09-30](../../benchmarks
 
 ## Not supported yet
 
-Each of these is refused at start, with a message saying why; none runs wrong:
+Each of these is refused at start, with a message saying why; none runs wrong. What vLLM's config tells is refused as
+the engine builds it, before any worker starts, so over several GPUs too Glyd's message is the error the user sees:
 
 - dual-batch overlap (`--enable-dbo`), whose two streams would share the GPU's done counters;
 - LoRA;
@@ -202,7 +203,8 @@ Tensor parallelism packs each rank's shard (measured over two RTX A6000s above).
     experts decoded.
   - Tokens and logprobs against bf16's own noise, and exact mode.
   - The compile cache: a graph for each layout and mode, each loaded again.
-  - Flags: `--saves` (saves, as saved and in the other layout), `--quick`, `--brief`, `--tp N`, `--out DIR`.
+  - Flags: `--saves` (saves, as saved and in the other layout), `--quick`, `--brief`, `--tp N`, `--mp` (vLLM's workers
+    in processes of their own, as over several GPUs, on one), `--out DIR`.
 - `bench_serve.sh [MODEL]`, `bench_summary.py`: `vllm bench serve`, bf16 against Glyd at several rates. `WARM=1`
   notes the cold start and measures warm. The summary adds the GPU's clock and temperature.
 - `profile_steps.py [MODEL]`: a step's GPU time by kind of kernel (Glyd's, GEMMs, attention, the rest), bf16 against

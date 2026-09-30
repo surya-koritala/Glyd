@@ -30,14 +30,16 @@ a process of its own:
   and its logits against bf16's as before; bf16 compiled again on an empty
   cache, against its first compile (the compiled graph's own variation).
 
-    python check_vllm.py [--saves] [--quick | --brief] [--tp N] [--out DIR] [MODEL ...]
+    python check_vllm.py [--saves] [--quick | --brief] [--tp N] [--mp] [--out DIR] [MODEL ...]
 
 --quick leaves out the two runs that only describe bf16's own noise (its
 prompts one at a time, and compiled again on an empty cache): every check
 stays. --brief, for a model too big to load a dozen times in a job: bf16
 with CUDA graphs and eager, Glyd in the layout the GPU's best (auto) with
 its layers checked, and exact eager; its checks alone. --tp N: every run
-over N GPUs (tensor parallel), bf16's too.
+over N GPUs (tensor parallel), bf16's too. --mp: vLLM's workers in
+processes of their own (its multiprocessing executor), as over several
+GPUs, on one.
 
 A mixture of experts' model: its experts' products checked beside the
 Linears' (against its experts decoded, in float32); exact mode's experts
@@ -81,13 +83,15 @@ def child(spec):
 
     out = {"spec": spec}
     try:
-        llm = LLM(model=spec["model"], quantization=spec.get("quantization"), dtype="bfloat16", gpu_memory_utilization=0.85, max_model_len=4096, enforce_eager=spec.get("eager", False), seed=0, tensor_parallel_size=spec.get("tp", 1), **({"compilation_config": spec["compilation_config"]} if spec.get("compilation_config") else {}))
+        llm = LLM(model=spec["model"], quantization=spec.get("quantization"), dtype="bfloat16", gpu_memory_utilization=0.85, max_model_len=4096, enforce_eager=spec.get("eager", False), seed=0, tensor_parallel_size=spec.get("tp", 1), **({"compilation_config": spec["compilation_config"]} if spec.get("compilation_config") else {}), **({"distributed_executor_backend": "mp"} if spec.get("mp") else {}))
     except Exception as e:  # (exact under compile: refused)
         out["error"] = f"{type(e).__name__}: {e}"
         return out
     cfg = llm.llm_engine.vllm_config
     out["blocks"], out["block_size"] = cfg.cache_config.num_gpu_blocks, cfg.cache_config.block_size
     out["glyd"] = cfg.additional_config.get("glyd") if isinstance(cfg.additional_config, dict) else None
+    if out["glyd"] is None and spec.get("quantization") and (spec.get("tp", 1) > 1 or spec.get("mp")):  # (the workers' config holds it)
+        out["glyd"] = llm.collective_rpc(_glyd_key)[0]
     greedy = SamplingParams(temperature=0, max_tokens=TOKENS, logprobs=0)
     batches = [[p] for p in PROMPTS] if spec.get("one_by_one") else [PROMPTS]
     outs = [o for b in batches for o in llm.generate(b, greedy, use_tqdm=False)]
@@ -106,6 +110,12 @@ def child(spec):
         ranks = llm.apply_model(_layers)
         out["layers"] = {k: (max if k == "worst_rel_error" else all if k == "same_bits" else sum)(r[k] for r in ranks) if k in ("packed", "verified", "moe", "moe_verified", "biased", "worst_rel_error", "same_bits") else ranks[0][k] for k in ranks[0]}
     return out
+
+
+def _glyd_key(worker):
+    """A worker's Glyd key (its vLLM config's additional_config["glyd"]): over several processes the engine's config
+    does not hold it."""
+    return worker.vllm_config.additional_config.get("glyd")
 
 
 def _layers(model):
@@ -198,7 +208,7 @@ def run(spec, out_dir, name, env=None):
     """spec in a vLLM of its own (this script, --child), its JSON in out_dir/name.json."""
     path = os.path.join(out_dir, name + ".json")
     e = dict(os.environ, VLLM_ENABLE_V1_MULTIPROCESSING="0", **(env or {}))
-    if spec.get("tp", 1) > 1:  # (LLM.apply_model sends its function to the other ranks' processes)
+    if spec.get("tp", 1) > 1 or spec.get("mp"):  # (LLM.apply_model sends its function to the workers' processes)
         e["VLLM_ALLOW_INSECURE_SERIALIZATION"] = "1"
     with open(os.path.join(out_dir, name + ".log"), "w") as log:
         r = subprocess.run([sys.executable, os.path.abspath(__file__), "--child", json.dumps(spec), path], env=e, stdout=log, stderr=subprocess.STDOUT, timeout=1800)
@@ -236,6 +246,7 @@ def main():
     quick = brief or "--quick" in args
     out_dir = args[args.index("--out") + 1] if "--out" in args else "check_vllm_results"
     tp = int(args[args.index("--tp") + 1]) if "--tp" in args else 1
+    mp = "--mp" in args  # (vLLM's workers in processes of their own, as over several GPUs, on one)
     models = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] not in ("--out", "--tp"))] or ["Qwen/Qwen3-1.7B"]
     os.makedirs(out_dir, exist_ok=True)
     report, failed = [], []
@@ -250,8 +261,8 @@ def main():
         tag = model.split("/")[-1] + (f"-tp{tp}" if tp > 1 else "")
         cache = tempfile.mkdtemp(prefix="vllm-cache-")  # one compile cache for every run of the model (its layouts and modes in turn)
         env = {"VLLM_CACHE_ROOT": cache}
-        R = lambda name, spec, extra=None: run(dict(spec, model=spec.get("model", model), tp=tp), out_dir, f"{tag}-{name}", dict(env, **(extra or {})))
-        run1 = lambda spec, name, extra: run(dict(spec, tp=tp), out_dir, f"{tag}-{name}", extra)
+        R = lambda name, spec, extra=None: run(dict(spec, model=spec.get("model", model), tp=tp, mp=mp), out_dir, f"{tag}-{name}", dict(env, **(extra or {})))
+        run1 = lambda spec, name, extra: run(dict(spec, tp=tp, mp=mp), out_dir, f"{tag}-{name}", extra)
         bf16 = R("bf16", {"make_long": True})
         long = {"long_ids": bf16["long_ids"]}
         eager = R("bf16-eager", dict(long, eager=True))
@@ -289,7 +300,7 @@ def main():
             shutil.rmtree(cache, ignore_errors=True)
             continue
         xc = R("glyd-exact-compiled", dict(long, quantization="glyd"), {"GLYD_EXACT": "1"})
-        check("error" in xc and "enforce-eager" in xc["error"], f"{tag} exact under torch.compile: refused ({xc.get('error', 'not refused')[:120]})")
+        check("error" in xc and "glyd: exact mode" in xc["error"] and "enforce-eager" in xc["error"], f"{tag} exact under torch.compile: refused, with Glyd's message ({xc.get('error', 'not refused')[:120]})")
         fresh = lambda: {"VLLM_CACHE_ROOT": tempfile.mkdtemp(prefix="vllm-cache-")}  # (each run a compile of its own)
         det = dict(long, model=model, compilation_config=DETERMINISTIC)
         bd = run1(det, "bf16-det", fresh())
@@ -302,7 +313,7 @@ def main():
         gc = fresh()
         ga, gb = (run1(dict(det, quantization="glyd"), f"glyd-det-{n}", gc) for n in "ab")
         c = compare(ga, gb)
-        check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"], f"{tag} fused, compiled, inductor deterministic: the same bits from one run to the next, the second on the first's graphs ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']}; layout {ga['glyd']['layout']})")
+        check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"], f"{tag} fused, compiled, inductor deterministic: the same bits from one run to the next, the second on the first's graphs ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']}; layout {(ga.get('glyd') or {}).get('layout', '?')})")
         if saves:
             for layout in ("mma", "mma12"):
                 d = tempfile.mkdtemp(prefix=f"glyd-save-{tag}-{layout}-")

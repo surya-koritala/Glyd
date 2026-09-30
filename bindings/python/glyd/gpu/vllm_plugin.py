@@ -85,11 +85,12 @@ It copies none of vLLM's code. Under the Business Source License 1.1
 import hashlib
 import json
 import os
+import sys
 import types
 import torch
 import torch.nn.functional as F
 from vllm import envs
-from vllm.config import CompilationMode, CUDAGraphMode, get_current_vllm_config_or_none
+from vllm.config import CompilationMode, CUDAGraphMode, VllmConfig, get_current_vllm_config_or_none
 from vllm.logger import init_logger
 from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase, MergedColumnParallelLinear, QKVParallelLinear, UnquantizedLinearMethod
 from vllm.model_executor.layers.quantization import register_quantization_config
@@ -348,15 +349,20 @@ class GlydConfig(QuantizationConfig):
             try:
                 d = os.path.dirname(hf_hub_download(model_name, fmt.MANIFEST, revision=revision))
             except EntryNotFoundError:  # none: a bf16 checkpoint
-                return
-        self.manifest = fmt.read_manifest(d)
-        if self.manifest is None:
-            return
-        self.dir = d
-        arch = (getattr(hf_config, "architectures", None) or [None])[0]
-        if arch not in SAVES:
-            src = (self.manifest.get("source") or {}).get("repo")
-            raise ValueError(f"glyd: a glyd save of {arch} does not load in vLLM yet (saves of {', '.join(SAVES)} do): serve its bf16 checkpoint{f' ({src})' if src else ''} with --quantization glyd, which packs it as it loads")
+                d = None
+        self.manifest = fmt.read_manifest(d) if d else None
+        if self.manifest is not None:
+            self.dir = d
+            arch = (getattr(hf_config, "architectures", None) or [None])[0]
+            if arch not in SAVES:
+                src = (self.manifest.get("source") or {}).get("repo")
+                raise ValueError(f"glyd: a glyd save of {arch} does not load in vLLM yet (saves of {', '.join(SAVES)} do): serve its bf16 checkpoint{f' ({src})' if src else ''} with --quantization glyd, which packs it as it loads")
+        # Refused here too, in the engine's process before its workers start (vLLM 0.30 makes this config inside
+        # VllmConfig.__post_init__, the config there to read): over several GPUs a worker's refusal reaches the engine
+        # as "WorkerProc initialization failed". The workers' resolve refuses the same, with what only they know.
+        vc = _building_config()
+        if vc is not None and getattr(vc.model_config, "hf_config", None) is hf_config and isinstance(vc.additional_config, dict):
+            _refusals(vc, _options(vc.additional_config.get(KEY) or {}, self.given, _env())[1], self.manifest)  # (the model's own, not a draft's)
 
     def resolve(self):
         """The options in effect (_options); the layout "auto" best_layout's for this GPU (a save's own where that is
@@ -367,8 +373,7 @@ class GlydConfig(QuantizationConfig):
             raise RuntimeError("glyd: vLLM's config is not set where the model is made")
         if not isinstance(vc.additional_config, dict):
             raise ValueError("glyd: vLLM's additional_config is not a dict: Glyd keys vLLM's compile cache by it")
-        env = {"layout": os.environ.get("GLYD_LAYOUT"), "exact": os.environ.get("GLYD_EXACT"), "verify": os.environ.get("GLYD_VERIFY")}
-        layout, exact, verify = _options(vc.additional_config.get(KEY) or {}, self.given, env)
+        layout, exact, verify = _options(vc.additional_config.get(KEY) or {}, self.given, _env())
         pc, mc = vc.parallel_config, vc.model_config
         _refusals(vc, exact, self.manifest)
         # A mixture of experts' shared experts run on a side stream beside the rest by default: their products and the
@@ -466,6 +471,22 @@ class GlydConfig(QuantizationConfig):
         return torch.OutOfMemoryError(f"glyd: {name}: out of GPU memory packing it, after {len(_PACKS)} layers packed; the model's weights take about {self.need / 2**30:.1f} GiB a GPU packed in the {self.opts['layout']} layout, with {self.free / 2**30:.1f} GiB free before loading: serve it over more GPUs (--tensor-parallel-size), in the tiered layout (layout mma), or a smaller model ({e})")
 
 
+def _env():
+    return {"layout": os.environ.get("GLYD_LAYOUT"), "exact": os.environ.get("GLYD_EXACT"), "verify": os.environ.get("GLYD_VERIFY")}
+
+
+def _building_config():
+    """The VllmConfig vLLM is building where it makes a quantization config (vLLM 0.30: in VllmConfig.__post_init__, in
+    the engine's process), found up the calling frames; None elsewhere (a draft's config, made in a worker)."""
+    f = sys._getframe(2)
+    while f is not None:
+        obj = f.f_locals.get("self")
+        if isinstance(obj, VllmConfig):
+            return obj
+        f = f.f_back
+    return None
+
+
 def _digest():
     return hashlib.sha256(json.dumps(sorted(_PACKS.items())).encode()).hexdigest()[:16] if _PACKS else ""
 
@@ -485,7 +506,10 @@ def _refusals(vc, exact, manifest):
     if getattr(mc, "enable_sleep_mode", False):
         raise ValueError("glyd: sleep mode is not supported yet")
     icc, cc = vc.compilation_config.inductor_compile_config, vc.compilation_config
-    if exact and not (mc.enforce_eager or (cc.mode == CompilationMode.NONE and cc.cudagraph_mode == CUDAGraphMode.NONE) or (icc.get("deterministic") and icc.get("benchmark_combo_kernel") is False)):
+    # (in the engine's process vLLM has not settled the compile mode yet: unset counts as compiled, as it will be
+    # unless eager)
+    eager = mc.enforce_eager or (cc.mode == CompilationMode.NONE and cc.cudagraph_mode in (None, CUDAGraphMode.NONE))
+    if exact and not (eager or (icc.get("deterministic") and icc.get("benchmark_combo_kernel") is False)):
         raise ValueError("glyd: exact mode gives vLLM's bf16 logits bit for bit eager (--enforce-eager), or compiled with inductor's deterministic mode, with which vLLM's compiled bf16 is itself the same from one run to the next: --compilation-config '{\"inductor_compile_config\": {\"deterministic\": true, \"combo_kernels\": true, \"benchmark_combo_kernel\": false}}' (the bf16 run to compare with the same). Without it inductor times some of its kernels' variants on the GPU, and compiled logits, bf16's too, are not always the same from one run to the next. Add one of the two, or leave exact off")
     if manifest is not None:
         if pc.tensor_parallel_size > 1 or pc.pipeline_parallel_size > 1:
