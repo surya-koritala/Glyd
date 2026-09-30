@@ -1,0 +1,18 @@
+== 01:58:42 bf16: vllm serve Qwen/Qwen3-8B  (the GPU at 50 C)
+Model loading took 15.27 GiB memory and 3.198445 seconds
+GPU KV cache size: 27,024 tokens, Maximum concurrency for 4,096 tokens per request: 6.60x
+== 01:59:33 bf16: rate 0.25, 32 prompts
+   exit 0
+== 02:04:13 glyd: vllm serve Qwen/Qwen3-8B --quantization glyd (the GPU at 55 C)
+glyd: mma layout
+Model loading took 11.64 GiB memory and 23.008643 seconds
+GPU KV cache size: 52,496 tokens, Maximum concurrency for 4,096 tokens per request: 12.82x
+== 02:05:43 glyd: rate 0.25, 32 prompts
+   exit 0
+bf16: weights 15.27 GiB, KV cache 27,024 tokens, max concurrency 6.60x at 4,096 tokens
+glyd: weights 11.64 GiB, KV cache 52,496 tokens, max concurrency 12.82x at 4,096 tokens
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.25 | bf16 | 0.22 | 56.5 | 458 / 903 | 69.9 / 73.2 | 32 | 1605 MHz, 74 C |
+| 0.25 | glyd | 0.23 | 58.1 | 594 / 1263 | 54.8 / 59.0 | 32 | 1260 MHz, 72 C |

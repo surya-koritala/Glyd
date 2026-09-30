@@ -1,0 +1,4 @@
+glyd-graphs against glyd-graphs-again (one compile cache, its graph loaded): prompts bit for bit 0 of 8; continuation bit for bit False
+glyd-nographs against glyd-nographs-again (one compile cache, its graph loaded): prompts bit for bit 0 of 8; continuation bit for bit False
+bf16-graphs against bf16-graphs-again (one compile cache, its graph loaded): prompts bit for bit 8 of 8; continuation bit for bit True
+bf16-nographs against bf16-nographs-again (one compile cache, its graph loaded): prompts bit for bit 8 of 8; continuation bit for bit True
