@@ -1,0 +1,63 @@
+NVIDIA GH200 480GB, /home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218, library /home/ubuntu/hdecw/fix/lib/libglyd_gpu_cuda13.so
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights:   0%|          | 1/399 [00:00<02:21,  2.82it/s]Loading weights:   1%|          | 2/399 [00:00<01:26,  4.59it/s]Loading weights:   4%|▍         | 15/399 [00:00<00:10, 38.13it/s]Loading weights:   7%|▋         | 27/399 [00:00<00:06, 58.53it/s]Loading weights:  10%|▉         | 39/399 [00:00<00:04, 72.78it/s]Loading weights:  14%|█▎        | 54/399 [00:00<00:03, 92.98it/s]Loading weights:  17%|█▋        | 67/399 [00:01<00:03, 102.97it/s]Loading weights:  20%|██        | 81/399 [00:01<00:02, 107.39it/s]Loading weights:  23%|██▎       | 93/399 [00:01<00:02, 105.99it/s]Loading weights:  26%|██▋       | 105/399 [00:01<00:02, 105.27it/s]Loading weights:  30%|███       | 120/399 [00:01<00:02, 116.60it/s]Loading weights:  34%|███▎      | 134/399 [00:01<00:02, 122.58it/s]Loading weights:  37%|███▋      | 147/399 [00:01<00:02, 120.30it/s]Loading weights:  40%|████      | 160/399 [00:01<00:02, 110.98it/s]Loading weights:  44%|████▍     | 175/399 [00:01<00:01, 120.07it/s]Loading weights:  47%|████▋     | 188/399 [00:02<00:01, 121.50it/s]Loading weights:  51%|█████     | 202/399 [00:02<00:01, 120.59it/s]Loading weights:  54%|█████▍    | 215/399 [00:02<00:01, 112.29it/s]Loading weights:  58%|█████▊    | 230/399 [00:02<00:01, 121.68it/s]Loading weights:  61%|██████    | 243/399 [00:02<00:01, 123.14it/s]Loading weights:  64%|██████▍   | 257/399 [00:02<00:01, 121.72it/s]Loading weights:  68%|██████▊   | 270/399 [00:02<00:01, 111.63it/s]Loading weights:  71%|███████▏  | 285/399 [00:02<00:00, 119.90it/s]Loading weights:  75%|███████▍  | 298/399 [00:02<00:00, 121.50it/s]Loading weights:  78%|███████▊  | 312/399 [00:03<00:00, 119.84it/s]Loading weights:  81%|████████▏ | 325/399 [00:03<00:00, 111.44it/s]Loading weights:  85%|████████▌ | 340/399 [00:03<00:00, 120.27it/s]Loading weights:  88%|████████▊ | 353/399 [00:03<00:00, 121.87it/s]Loading weights:  92%|█████████▏| 366/399 [00:03<00:00, 123.86it/s]Loading weights:  95%|█████████▍| 379/399 [00:03<00:00, 106.71it/s]Loading weights:  98%|█████████▊| 391/399 [00:03<00:00, 95.96it/s] Loading weights: 100%|██████████| 399/399 [00:03<00:00, 103.03it/s]
+exact: loaded in 5 s
+exact order 0: 64 tokens sha256 cdef5c0d0e15bf0a
+exact order 0: 1280-token prompt's logits sha256 ed0b65d1202006c9
+exact order 0: 2048-token prompt's logits sha256 ab231db0aecf4288
+exact order 0: 4096-token prompt's logits sha256 ae900ab3cdf58a96
+exact order 1: 64 tokens sha256 cdef5c0d0e15bf0a
+exact order 1: 1280-token prompt's logits sha256 ed0b65d1202006c9
+exact order 1: 2048-token prompt's logits sha256 ab231db0aecf4288
+exact order 1: 4096-token prompt's logits sha256 ae900ab3cdf58a96
+exact order 2: 64 tokens sha256 cdef5c0d0e15bf0a
+exact order 2: 1280-token prompt's logits sha256 ed0b65d1202006c9
+exact order 2: 2048-token prompt's logits sha256 ab231db0aecf4288
+exact order 2: 4096-token prompt's logits sha256 ae900ab3cdf58a96
+exact order 3: 64 tokens sha256 cdef5c0d0e15bf0a
+exact order 3: 1280-token prompt's logits sha256 ed0b65d1202006c9
+exact order 3: 2048-token prompt's logits sha256 ab231db0aecf4288
+exact order 3: 4096-token prompt's logits sha256 ae900ab3cdf58a96
+exact order 0: steps 53.018 ms a token (18.86 tokens/s)  [runs of 64, ms a token: 52.677 52.767 53.535 53.018 53.084]
+exact order 0: prompt 1280 tokens 54.21 ms  [runs, ms: 55.16 54.32 53.74 54.21 54.11]
+exact order 0: prompt 2048 tokens 78.96 ms  [runs, ms: 78.97 78.86 78.25 78.96 79.20]
+exact order 0: prompt 4096 tokens 149.39 ms  [runs, ms: 149.90 149.34 150.93 149.39 149.29]
+exact order 1: steps 53.013 ms a token (18.86 tokens/s)  [runs of 64, ms a token: 53.172 52.774 53.013 52.896 53.136]
+exact order 1: prompt 1280 tokens 54.11 ms  [runs, ms: 54.03 54.23 54.11 54.05 55.26]
+exact order 1: prompt 2048 tokens 78.66 ms  [runs, ms: 78.61 78.73 79.25 78.66 78.31]
+exact order 1: prompt 4096 tokens 149.76 ms  [runs, ms: 149.86 149.76 149.40 150.41 149.50]
+exact order 2: steps 52.840 ms a token (18.93 tokens/s)  [runs of 64, ms a token: 52.840 52.301 52.833 53.255 53.158]
+exact order 2: prompt 1280 tokens 54.27 ms  [runs, ms: 54.21 54.28 54.09 54.33 54.27]
+exact order 2: prompt 2048 tokens 78.43 ms  [runs, ms: 78.43 79.78 77.78 78.11 79.15]
+exact order 2: prompt 4096 tokens 149.60 ms  [runs, ms: 149.60 149.65 150.81 148.59 148.83]
+exact order 3: steps 52.900 ms a token (18.90 tokens/s)  [runs of 64, ms a token: 52.625 52.533 53.284 53.167 52.900]
+exact order 3: prompt 1280 tokens 53.70 ms  [runs, ms: 53.61 53.70 54.46 54.13 53.40]
+exact order 3: prompt 2048 tokens 78.22 ms  [runs, ms: 77.56 78.22 76.74 78.77 78.29]
+exact order 3: prompt 4096 tokens 149.02 ms  [runs, ms: 148.49 148.99 149.53 149.31 149.02]
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights:   0%|          | 1/399 [00:00<01:44,  3.79it/s]Loading weights:   1%|          | 2/399 [00:00<01:09,  5.73it/s]Loading weights:   4%|▍         | 15/399 [00:00<00:08, 44.04it/s]Loading weights:   7%|▋         | 27/399 [00:00<00:05, 66.42it/s]Loading weights:  10%|▉         | 39/399 [00:00<00:04, 75.68it/s]Loading weights:  14%|█▎        | 54/399 [00:00<00:03, 95.23it/s]Loading weights:  17%|█▋        | 68/399 [00:00<00:03, 105.63it/s]Loading weights:  20%|██        | 81/399 [00:01<00:02, 106.35it/s]Loading weights:  23%|██▎       | 93/399 [00:01<00:02, 107.88it/s]Loading weights:  26%|██▋       | 105/399 [00:01<00:02, 102.01it/s]Loading weights:  30%|███       | 120/399 [00:01<00:02, 113.90it/s]Loading weights:  34%|███▎      | 134/399 [00:01<00:02, 119.74it/s]Loading weights:  37%|███▋      | 147/399 [00:01<00:02, 117.65it/s]Loading weights:  40%|███▉      | 159/399 [00:01<00:02, 116.72it/s]Loading weights:  43%|████▎     | 171/399 [00:01<00:02, 108.36it/s]Loading weights:  47%|████▋     | 186/399 [00:01<00:01, 118.17it/s]Loading weights:  50%|█████     | 200/399 [00:02<00:01, 123.08it/s]Loading weights:  53%|█████▎    | 213/399 [00:02<00:01, 120.32it/s]Loading weights:  57%|█████▋    | 226/399 [00:02<00:01, 112.13it/s]Loading weights:  60%|██████    | 241/399 [00:02<00:01, 121.61it/s]Loading weights:  64%|██████▍   | 255/399 [00:02<00:01, 125.89it/s]Loading weights:  67%|██████▋   | 268/399 [00:02<00:01, 121.56it/s]Loading weights:  70%|███████   | 281/399 [00:02<00:01, 111.73it/s]Loading weights:  74%|███████▍  | 296/399 [00:02<00:00, 120.54it/s]Loading weights:  78%|███████▊  | 310/399 [00:02<00:00, 124.56it/s]Loading weights:  81%|████████  | 323/399 [00:03<00:00, 120.81it/s]Loading weights:  84%|████████▍ | 336/399 [00:03<00:00, 112.26it/s]Loading weights:  88%|████████▊ | 351/399 [00:03<00:00, 121.11it/s]Loading weights:  91%|█████████ | 364/399 [00:03<00:00, 121.04it/s]Loading weights:  94%|█████████▍| 377/399 [00:03<00:00, 116.77it/s]Loading weights:  97%|█████████▋| 389/399 [00:03<00:00, 104.27it/s]Loading weights: 100%|██████████| 399/399 [00:03<00:00, 104.97it/s]
+fused: loaded in 5 s
+fused order 0: 1280-token prompt's logits sha256 e35912699ca8bff3
+fused order 0: 2048-token prompt's logits sha256 f090bbe5b19fac8b
+fused order 0: 4096-token prompt's logits sha256 94b975ec38a46ea0
+fused order 1: 1280-token prompt's logits sha256 e35912699ca8bff3
+fused order 1: 2048-token prompt's logits sha256 f090bbe5b19fac8b
+fused order 1: 4096-token prompt's logits sha256 94b975ec38a46ea0
+fused order 2: 1280-token prompt's logits sha256 e35912699ca8bff3
+fused order 2: 2048-token prompt's logits sha256 f090bbe5b19fac8b
+fused order 2: 4096-token prompt's logits sha256 94b975ec38a46ea0
+fused order 3: 1280-token prompt's logits sha256 e35912699ca8bff3
+fused order 3: 2048-token prompt's logits sha256 f090bbe5b19fac8b
+fused order 3: 4096-token prompt's logits sha256 94b975ec38a46ea0
+fused order 0: prompt 1280 tokens 57.07 ms  [runs, ms: 56.87 57.36 56.76 57.07 57.38]
+fused order 0: prompt 2048 tokens 80.75 ms  [runs, ms: 80.54 80.75 80.48 80.98 81.01]
+fused order 0: prompt 4096 tokens 154.18 ms  [runs, ms: 154.03 154.67 154.14 154.18 154.21]
+fused order 1: prompt 1280 tokens 57.13 ms  [runs, ms: 57.20 57.06 56.75 57.16 57.13]
+fused order 1: prompt 2048 tokens 80.95 ms  [runs, ms: 81.19 80.78 80.80 80.95 80.97]
+fused order 1: prompt 4096 tokens 154.05 ms  [runs, ms: 154.05 154.34 153.32 154.55 153.96]
+fused order 2: prompt 1280 tokens 57.17 ms  [runs, ms: 57.30 57.60 57.17 57.16 57.17]
+fused order 2: prompt 2048 tokens 81.11 ms  [runs, ms: 81.20 81.03 81.37 80.70 81.11]
+fused order 2: prompt 4096 tokens 154.45 ms  [runs, ms: 154.71 154.45 154.43 153.19 154.52]
+fused order 3: prompt 1280 tokens 56.55 ms  [runs, ms: 56.24 56.38 56.55 56.58 56.56]
+fused order 3: prompt 2048 tokens 80.57 ms  [runs, ms: 80.66 80.29 80.57 79.92 81.10]
+fused order 3: prompt 4096 tokens 153.69 ms  [runs, ms: 154.39 154.52 152.77 153.53 153.69]
+median of 5
+exit 0

@@ -8,6 +8,21 @@ every earlier format.
 
 ## Unreleased
 
+- On Hopper the 12-bit layout's decode of a whole matrix (for cuBLAS,
+  prompts past wgmma's 1024 tokens; `exact=True`'s steps and prompts; a
+  mixture of experts' exact decode) loads a step's low bytes and
+  exception bounds first, then its codes once those are in. v0.25.0
+  issued all three at once, and its decode there took 3.0-6.0% longer
+  than the 12-bit layout's before split byte (H100 SXM, GH200). On a
+  GH200, layer 10 of Qwen3-8B, 14B and 32B, over the decode before split
+  byte: 0.964-0.975 (v0.25.0 1.035-1.060). The decode ahead of a
+  prompt's products (a few warps an SM: GeForce Ada's, an A10's and an
+  L40S's prompts) keeps v0.25.0's loads, the faster for it (0.703-0.725
+  on the GH200; the new order 1.058-1.068), as does every other GPU's
+  decode (on an L4 the new order took 1.9-2.2% longer; the others were
+  not measured). The same bits: the self-test and xcheck.py on the GH200
+  and the L4
+  ([benchmarks/gpu/decode-fix-2026-09-29](benchmarks/gpu/decode-fix-2026-09-29)).
 - An L4's prompts decode each matrix for cuBLAS first, on the current
   stream, from 896 tokens in the tiered layout (the L4's default) and 2560
   in the 12-bit one; `exact=True`'s prompts as before. At its 72 W cap the
@@ -54,6 +69,10 @@ every earlier format.
 - `glyd_gpu_*_route` at M = INT64_MAX tokens gives the route before it,
   as `last` says (v0.25.0 gave AHEAD in the tiered layout and DECODE in
   the 12-bit one there, on every GPU).
+- This release's code (dc490e4) built by build_lib.sh and checked on an
+  L4: the self-test, xcheck.py, check_capi.py (also with `GLYD_DEC_MIN`
+  1000 and 3000), test_gpu.py and the crate's tests pass
+  ([benchmarks/gpu/decode-fix-2026-09-29/l4-head](benchmarks/gpu/decode-fix-2026-09-29/l4-head)).
 
 ## v0.25.0 — 2026-09-29
 

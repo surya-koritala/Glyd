@@ -1,0 +1,365 @@
+{
+ "model": "/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218",
+ "mode": "bf16c",
+ "greedy": true,
+ "gpu": "NVIDIA GH200 480GB",
+ "capability": "9.0",
+ "gpu_memory_gb": 101.47,
+ "smi": "580.126.20, 1980 MHz, 2619 MHz, 900.00 W, 900.00 W",
+ "torch": "2.14.0+cu130",
+ "cuda": "13.0",
+ "transformers": "5.17.0",
+ "cpu": "Neoverse-V2",
+ "cpus": 64,
+ "host": "aarch64",
+ "args": {
+  "model": "/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218",
+  "mode": "bf16c",
+  "out": "/home/ubuntu/results/Qwen3-8B-bf16c.json",
+  "prompts": "128,512,2048,8192",
+  "ttft_new": 16,
+  "batches": "1,8,32",
+  "rate_prompt": 128,
+  "new": 256,
+  "mixes": "chat:200:300,long:2000:200",
+  "reps_ttft": 5,
+  "reps_rate": 3,
+  "reps_mix": 3,
+  "deadline": 1790728032.0
+ },
+ "configs": [
+  {
+   "name": "ttft 128",
+   "prompt": 128,
+   "batch": 1,
+   "new": 16,
+   "warmup": {
+    "ttft": 1.4239144470000156,
+    "total": 37.27805331599984,
+    "path": "compiled",
+    "tokens_per_s": 0.41836592570846104,
+    "sha": "aad5dc04f67b8144"
+   },
+   "reps": 3,
+   "runs": [
+    {
+     "ttft": 0.061661015000026964,
+     "total": 0.18189553100000921,
+     "path": "compiled",
+     "tokens_per_s": 125.03292637938267,
+     "sha": "aad5dc04f67b8144"
+    },
+    {
+     "ttft": 0.05327391500009071,
+     "total": 0.1735972970000148,
+     "path": "compiled",
+     "tokens_per_s": 124.94803723492417,
+     "sha": "aad5dc04f67b8144"
+    },
+    {
+     "ttft": 0.0531475440000122,
+     "total": 0.17321280900000602,
+     "path": "compiled",
+     "tokens_per_s": 125.19927133357427,
+     "sha": "aad5dc04f67b8144"
+    }
+   ],
+   "peak_gb": 16.5,
+   "ttft": 0.05327391500009071,
+   "total": 0.1735972970000148,
+   "tokens_per_s": 125.03292637938267,
+   "path": "compiled",
+   "sha": "aad5dc04f67b8144",
+   "same_tokens": true
+  },
+  {
+   "name": "ttft 512",
+   "prompt": 512,
+   "batch": 1,
+   "new": 16,
+   "warmup": {
+    "ttft": 0.10897705899992616,
+    "total": 48.11623206299987,
+    "path": "compiled",
+    "tokens_per_s": 0.31245515150897785,
+    "sha": "2ab1ad73f90a2447"
+   },
+   "reps": 1,
+   "runs": [
+    {
+     "ttft": 0.0648894600001313,
+     "total": 0.22381605700002183,
+     "path": "compiled",
+     "tokens_per_s": 94.54354176341447,
+     "sha": "2ab1ad73f90a2447"
+    }
+   ],
+   "peak_gb": 16.59,
+   "ttft": 0.0648894600001313,
+   "total": 0.22381605700002183,
+   "tokens_per_s": 94.54354176341447,
+   "path": "compiled",
+   "sha": "2ab1ad73f90a2447",
+   "same_tokens": true
+  },
+  {
+   "name": "ttft 2048",
+   "prompt": 2048,
+   "batch": 1,
+   "new": 16,
+   "warmup": {
+    "ttft": 0.1287514140001349,
+    "total": 1.249119852000149,
+    "path": "eager",
+    "tokens_per_s": 13.390884247143287,
+    "sha": "858cbda26ab79883"
+   },
+   "reps": 5,
+   "runs": [
+    {
+     "ttft": 0.0700741000000562,
+     "total": 0.7283097389999966,
+     "path": "eager",
+     "tokens_per_s": 22.7953996111653,
+     "sha": "858cbda26ab79883"
+    },
+    {
+     "ttft": 0.06867065000005823,
+     "total": 0.7288795740000751,
+     "path": "eager",
+     "tokens_per_s": 22.72720137763455,
+     "sha": "858cbda26ab79883"
+    },
+    {
+     "ttft": 0.06963377200008836,
+     "total": 0.7344983030000094,
+     "path": "eager",
+     "tokens_per_s": 22.567738817063365,
+     "sha": "858cbda26ab79883"
+    },
+    {
+     "ttft": 0.06964833300003193,
+     "total": 0.7303324980000525,
+     "path": "eager",
+     "tokens_per_s": 22.710151681558614,
+     "sha": "858cbda26ab79883"
+    },
+    {
+     "ttft": 0.07020837499999288,
+     "total": 0.7325064589999783,
+     "path": "eager",
+     "tokens_per_s": 22.655990664426813,
+     "sha": "858cbda26ab79883"
+    }
+   ],
+   "peak_gb": 16.94,
+   "ttft": 0.06964833300003193,
+   "total": 0.7303324980000525,
+   "tokens_per_s": 22.710151681558614,
+   "path": "eager",
+   "sha": "858cbda26ab79883",
+   "same_tokens": true
+  },
+  {
+   "name": "ttft 8192",
+   "prompt": 8192,
+   "batch": 1,
+   "new": 16,
+   "warmup": {
+    "ttft": 0.39762373199982903,
+    "total": 1.505836267999939,
+    "path": "eager",
+    "tokens_per_s": 13.5381182140051,
+    "sha": "458b17874e4bad10"
+   },
+   "reps": 5,
+   "runs": [
+    {
+     "ttft": 0.28788895899992895,
+     "total": 0.9454059310000957,
+     "path": "eager",
+     "tokens_per_s": 22.819505260554433,
+     "sha": "458b17874e4bad10"
+    },
+    {
+     "ttft": 0.288287303000061,
+     "total": 0.9450863090000894,
+     "path": "eager",
+     "tokens_per_s": 22.844309976814678,
+     "sha": "458b17874e4bad10"
+    },
+    {
+     "ttft": 0.29107113099985327,
+     "total": 0.9439016159999483,
+     "path": "eager",
+     "tokens_per_s": 22.98387695281233,
+     "sha": "458b17874e4bad10"
+    },
+    {
+     "ttft": 0.289672992000078,
+     "total": 0.9444167609999568,
+     "path": "eager",
+     "tokens_per_s": 22.915999804711788,
+     "sha": "458b17874e4bad10"
+    },
+    {
+     "ttft": 0.2882865359999869,
+     "total": 0.9429839360000187,
+     "path": "eager",
+     "tokens_per_s": 22.91771067342625,
+     "sha": "458b17874e4bad10"
+    }
+   ],
+   "peak_gb": 18.5,
+   "ttft": 0.288287303000061,
+   "total": 0.9444167609999568,
+   "tokens_per_s": 22.915999804711788,
+   "path": "eager",
+   "sha": "458b17874e4bad10",
+   "same_tokens": true
+  },
+  {
+   "name": "mix chat",
+   "prompt": 200,
+   "batch": 1,
+   "new": 300,
+   "warmup": {
+    "ttft": 0.45130776999985756,
+    "total": 2.98750985699985,
+    "path": "compiled",
+    "tokens_per_s": 117.91037042639554,
+    "sha": "f96e76521e75ea57"
+   },
+   "reps": 3,
+   "runs": [
+    {
+     "ttft": 0.059225036000043474,
+     "total": 2.5568937709999773,
+     "path": "compiled",
+     "tokens_per_s": 119.72818036732163,
+     "sha": "f96e76521e75ea57"
+    },
+    {
+     "ttft": 0.05304700099986803,
+     "total": 2.544696651999857,
+     "path": "compiled",
+     "tokens_per_s": 120.01402890945508,
+     "sha": "f96e76521e75ea57"
+    },
+    {
+     "ttft": 0.05309241000009024,
+     "total": 2.545082966000109,
+     "path": "compiled",
+     "tokens_per_s": 119.99862169342961,
+     "sha": "f96e76521e75ea57"
+    }
+   ],
+   "peak_gb": 16.54,
+   "ttft": 0.05309241000009024,
+   "total": 2.545082966000109,
+   "tokens_per_s": 119.99862169342961,
+   "path": "compiled",
+   "sha": "f96e76521e75ea57",
+   "same_tokens": true
+  },
+  {
+   "name": "rate 1",
+   "prompt": 128,
+   "batch": 1,
+   "new": 256,
+   "warmup": {
+    "ttft": 0.09005482499992468,
+    "total": 2.253667510000014,
+    "path": "compiled",
+    "tokens_per_s": 117.87545719169715,
+    "sha": "2448cde889a0cc4f"
+   },
+   "reps": 3,
+   "runs": [
+    {
+     "ttft": 0.05803880600001321,
+     "total": 2.1846599909999895,
+     "path": "compiled",
+     "tokens_per_s": 119.92726329648048,
+     "sha": "9aaa03dcf7f91142"
+    },
+    {
+     "ttft": 0.052833556999985376,
+     "total": 2.1788737730000776,
+     "path": "compiled",
+     "tokens_per_s": 119.95643391186346,
+     "sha": "8841f21a5670bc09"
+    },
+    {
+     "ttft": 0.05214362499987146,
+     "total": 2.179190325000036,
+     "path": "compiled",
+     "tokens_per_s": 119.9037678878781,
+     "sha": "2448cde889a0cc4f"
+    }
+   ],
+   "peak_gb": 16.51,
+   "ttft": 0.052833556999985376,
+   "total": 2.179190325000036,
+   "tokens_per_s": 119.92726329648048,
+   "path": "compiled",
+   "sha": "2448cde889a0cc4f",
+   "same_tokens": false
+  },
+  {
+   "name": "rate 8",
+   "prompt": 128,
+   "batch": 8,
+   "new": 256,
+   "warmup": {
+    "ttft": 0.1033790719998251,
+    "total": 18.91754144699985,
+    "path": "eager",
+    "tokens_per_s": 108.43061556923253,
+    "sha": "3392ced92cd0214e"
+   },
+   "reps": 0,
+   "runs": [],
+   "peak_gb": 16.9,
+   "path": "eager",
+   "sha": "3392ced92cd0214e",
+   "same_tokens": true
+  },
+  {
+   "name": "rate 32",
+   "prompt": 128,
+   "batch": 32,
+   "new": 256,
+   "warmup": {
+    "ttft": 0.20086862799985283,
+    "total": 19.71036289199992,
+    "path": "eager",
+    "tokens_per_s": 418.2628824892543,
+    "sha": "e0b4673a1251a806"
+   },
+   "reps": 0,
+   "runs": [],
+   "peak_gb": 18.34,
+   "path": "eager",
+   "sha": "e0b4673a1251a806",
+   "same_tokens": true
+  },
+  {
+   "name": "mix long",
+   "prompt": 2000,
+   "batch": 1,
+   "new": 200,
+   "skipped": "past the deadline"
+  }
+ ],
+ "glyd": "0.25.0",
+ "load": {
+  "fits": true,
+  "seconds": 3.1,
+  "gb": 16.38,
+  "peak_gb": 16.38,
+  "layout": null,
+  "compiled_cap": 2048
+ },
+ "done": true
+}

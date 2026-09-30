@@ -1,0 +1,20 @@
+mma_gemm_mid 64x64, 0 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 64x64, 0 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 192x128, 2 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 192x128, 2 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 128x4096, 45 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 128x4096, 45 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 1024x2048, 167 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 1024x2048, 167 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 5120x1024, 4239 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 5120x1024, 4239 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 192x4096, 58027 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 192x4096, 58027 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 3072x5120, 232357 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 3072x5120, 232357 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 17408x1024, 131927 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 17408x1024, 131927 exceptions: 1-2100 tokens within 1e-2, the same every run
+mma_gemm_mid 8960x128, 93 exceptions: 1-600 tokens within 1e-2, the same every run
+mma_gemm_wg 8960x128, 93 exceptions: 1-2100 tokens within 1e-2, the same every run
+every bf16 bit pattern, both layouts, bit for bit (the 12-bit layout's base at 0 and at 120 too)
+exit 0

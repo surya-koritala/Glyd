@@ -1,0 +1,1 @@
+ncu: /home/ubuntu/hdecw/ncu/target/linux-v4l_l4t-t210-a64/ncu (Version 2025.3.1.0 (build 36398880) (public-release))

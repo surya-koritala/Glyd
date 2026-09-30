@@ -1,0 +1,34 @@
+BITS PASS: 15 steps run, each exit 0; e2e: 21 sha256 lines, 3 outputs, the same in every variant and tree
+NVIDIA L4 (8.9, sm_89), x86_64 host, 16 CPUs; v0.25.1 fd24666 (decode-fix: v0.25.1's code), orders 73b9560 (decode-fix), v0.25.0 bfb2c4e (rust-splitbyte, v0.25.0's tree), main db8e7b0 (origin/main)
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+
+The decode a layer (dec_time.py; median of its repetitions), us, each over main's; whole: a warp a step (for cuBLAS,
+exact mode), ahead: 2 warps an SM (decode ahead). v0.25.0: its library; order N: 73b9560's, GLYD_DEC_ORDER=N (0 v0.25.0's
+kernel); v0.25.1: the fix as merged, as machine-short.txt names it (fd24666: the whole decode in order 3's loads on
+every GPU; dc490e4: on Hopper alone, elsewhere order 0's; the decode ahead order 0's in both).
+  Qwen3-4B-Instruct-2507 run 1 whole: main 1561.6 | v0.25.0 1565.7 (1.003) | order 0 1566.7 (1.003) | order 1 1588.3 (1.017) | order 2 1589.2 (1.018) | order 3 1591.3 (1.019) | v0.25.1 1595.4 (1.022)  [GB/s 226 226 226 223 223 222 222]
+  Qwen3-4B-Instruct-2507 run 1 ahead: main 1637.4 | v0.25.0 1627.3 (0.994) | order 0 1628.0 (0.994) | order 1 1842.2 (1.125) | order 2 1849.2 (1.129) | order 3 1853.4 (1.132) | v0.25.1 1629.2 (0.995)  [GB/s 216 217 217 192 191 191 217]
+  Qwen3-4B-Instruct-2507 run 2 whole: main 1560.8 | v0.25.0 1567.7 (1.004) | order 0 1565.7 (1.003) | order 1 1592.5 (1.020) | order 2 1590.2 (1.019) | order 3 1595.3 (1.022) | v0.25.1 1594.3 (1.021)  [GB/s 227 226 226 222 222 222 222]
+  Qwen3-4B-Instruct-2507 run 2 ahead: main 1638.4 | v0.25.0 1625.1 (0.992) | order 0 1624.9 (0.992) | order 1 1841.2 (1.124) | order 2 1848.3 (1.128) | order 3 1858.6 (1.134) | v0.25.1 1628.2 (0.994)  [GB/s 216 218 218 192 191 190 217]
+  Qwen3-8B run 1 whole: main 2925.4 | v0.25.0 2929.7 (1.001) | order 0 2930.7 (1.002) | order 1 2968.6 (1.015) | order 2 2966.6 (1.014) | order 3 2983.9 (1.020) | v0.25.1 2983.9 (1.020)  [GB/s 231 231 231 228 228 227 227]
+  Qwen3-8B run 1 ahead: main 3011.6 | v0.25.0 2993.2 (0.994) | order 0 2992.1 (0.994) | order 1 3319.9 (1.102) | order 2 3308.6 (1.099) | order 3 3329.9 (1.106) | v0.25.1 2993.2 (0.994)  [GB/s 225 226 226 204 204 203 226]
+  Qwen3-8B run 2 whole: main 2922.5 | v0.25.0 2927.5 (1.002) | order 0 2925.6 (1.001) | order 1 2968.6 (1.016) | order 2 2964.9 (1.015) | order 3 2983.9 (1.021) | v0.25.1 2983.9 (1.021)  [GB/s 231 231 231 228 228 227 227]
+  Qwen3-8B run 2 ahead: main 3014.7 | v0.25.0 2996.1 (0.994) | order 0 2997.1 (0.994) | order 1 3318.9 (1.101) | order 2 3312.6 (1.099) | order 3 3335.3 (1.106) | v0.25.1 3000.1 (0.995)  [GB/s 224 226 226 204 204 203 225]
+
+End to end (dec_e2e.py), each over main's: exact mode's steps (ms a token) and prompts (ms)
+  exact steps: main 155.037 | v0.25.0 154.946 (0.999) | order 0 155.312 (1.002) | order 1 156.469 (1.009) | order 2 156.138 (1.007) | order 3 155.816 (1.005) | v0.25.1 155.454 (1.003)
+  exact prompt 1024 tokens: main 424.070 | v0.25.0 421.640 (0.994) | order 0 426.080 (1.005) | order 1 424.590 (1.001) | order 2 423.780 (0.999) | order 3 424.420 (1.001) | v0.25.1 421.760 (0.995)
+  exact prompt 4096 tokens: main 1548.450 | v0.25.0 1544.870 (0.998) | order 0 1557.120 (1.006) | order 1 1555.290 (1.004) | order 2 1556.860 (1.005) | order 3 1558.770 (1.007) | v0.25.1 1544.320 (0.997)
+
+steps:
+  01:12:30 (+3 s) builds: v0.25.1 by build_lib.sh (every architecture), 73b9560, v0.25.0 and main for sm_89 (its flags), at once
+  01:28:15 (+3 s) bits: v0.25.1's self-test, then xcheck.py's synthetic part (against main's library)
+  01:28:22 (+10 s) checks at v0.25.1's head: check_capi.py (then with GLYD_DEC_MIN 1000 and 3000), test_gpu.py, cargo test
+  01:33:32 (+320 s) kernel: dec_time.py, Qwen/Qwen3-8B, run 1
+  01:33:37 (+325 s) kernel: dec_time.py, Qwen/Qwen3-4B-Instruct-2507, run 1
+  01:33:41 (+329 s) e2e: dec_e2e.py, Qwen3-8B, exact: 73b9560's orders 0-3, then main's, v0.25.0's and v0.25.1's
+  01:44:07 (+955 s) kernel: dec_time.py, Qwen/Qwen3-8B, run 2
+  01:44:12 (+960 s) kernel: dec_time.py, Qwen/Qwen3-4B-Instruct-2507, run 2
+  01:44:16 (+964 s) host: dec_e2e.py, Qwen3-0.6B, exact steps: the same processes, then each again
+  01:51:57 (+1425 s) done in 1425 s

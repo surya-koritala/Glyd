@@ -1,0 +1,29 @@
+NVIDIA L4, Qwen/Qwen3-8B, library /home/ubuntu/dfx/w/fix/lib/libglyd_gpu_cuda13.so
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights:   0%|          | 1/399 [00:00<04:44,  1.40it/s]Loading weights:   1%|          | 4/399 [00:00<01:08,  5.76it/s]Loading weights:   3%|▎         | 10/399 [00:00<00:25, 15.20it/s]Loading weights:   4%|▍         | 16/399 [00:01<00:16, 23.67it/s]Loading weights:   7%|▋         | 26/399 [00:01<00:09, 37.72it/s]Loading weights:   8%|▊         | 32/399 [00:01<00:08, 41.46it/s]Loading weights:  10%|▉         | 38/399 [00:01<00:08, 44.55it/s]Loading weights:  12%|█▏        | 48/399 [00:01<00:06, 53.76it/s]Loading weights:  14%|█▎        | 54/399 [00:01<00:06, 53.30it/s]Loading weights:  15%|█▌        | 60/399 [00:01<00:06, 53.01it/s]Loading weights:  18%|█▊        | 70/399 [00:01<00:05, 59.66it/s]Loading weights:  19%|█▉        | 77/399 [00:02<00:05, 59.86it/s]Loading weights:  21%|██        | 84/399 [00:02<00:05, 53.79it/s]Loading weights:  23%|██▎       | 93/399 [00:02<00:05, 57.66it/s]Loading weights:  26%|██▌       | 103/399 [00:02<00:04, 62.52it/s]Loading weights:  28%|██▊       | 110/399 [00:02<00:04, 61.94it/s]Loading weights:  29%|██▉       | 117/399 [00:02<00:05, 55.34it/s]Loading weights:  32%|███▏      | 126/399 [00:02<00:04, 58.62it/s]Loading weights:  34%|███▍      | 136/399 [00:03<00:04, 63.22it/s]Loading weights:  36%|███▌      | 143/399 [00:03<00:04, 62.45it/s]Loading weights:  38%|███▊      | 150/399 [00:03<00:04, 55.66it/s]Loading weights:  40%|███▉      | 159/399 [00:03<00:04, 58.90it/s]Loading weights:  42%|████▏     | 169/399 [00:03<00:03, 63.28it/s]Loading weights:  44%|████▍     | 176/399 [00:03<00:03, 62.47it/s]Loading weights:  46%|████▌     | 183/399 [00:03<00:03, 55.76it/s]Loading weights:  48%|████▊     | 192/399 [00:04<00:03, 58.83it/s]Loading weights:  51%|█████     | 202/399 [00:04<00:03, 63.27it/s]Loading weights:  52%|█████▏    | 209/399 [00:04<00:03, 62.48it/s]Loading weights:  54%|█████▍    | 216/399 [00:04<00:03, 55.71it/s]Loading weights:  56%|█████▋    | 225/399 [00:04<00:02, 58.92it/s]Loading weights:  59%|█████▉    | 235/399 [00:04<00:02, 63.30it/s]Loading weights:  61%|██████    | 242/399 [00:04<00:02, 62.50it/s]Loading weights:  62%|██████▏   | 249/399 [00:04<00:02, 55.78it/s]Loading weights:  65%|██████▍   | 258/399 [00:05<00:02, 58.90it/s]Loading weights:  67%|██████▋   | 268/399 [00:05<00:02, 63.29it/s]Loading weights:  69%|██████▉   | 275/399 [00:05<00:01, 62.49it/s]Loading weights:  71%|███████   | 282/399 [00:05<00:02, 55.72it/s]Loading weights:  73%|███████▎  | 291/399 [00:05<00:01, 58.91it/s]Loading weights:  75%|███████▌  | 301/399 [00:05<00:01, 63.29it/s]Loading weights:  77%|███████▋  | 308/399 [00:05<00:01, 62.51it/s]Loading weights:  79%|███████▉  | 315/399 [00:06<00:01, 55.77it/s]Loading weights:  81%|████████  | 324/399 [00:06<00:01, 58.90it/s]Loading weights:  84%|████████▎ | 334/399 [00:06<00:01, 63.40it/s]Loading weights:  85%|████████▌ | 341/399 [00:06<00:00, 62.53it/s]Loading weights:  87%|████████▋ | 348/399 [00:06<00:00, 55.71it/s]Loading weights:  89%|████████▉ | 357/399 [00:06<00:00, 58.89it/s]Loading weights:  92%|█████████▏| 367/399 [00:06<00:00, 63.21it/s]Loading weights:  94%|█████████▎| 374/399 [00:07<00:00, 62.44it/s]Loading weights:  95%|█████████▌| 381/399 [00:07<00:00, 55.74it/s]Loading weights:  98%|█████████▊| 390/399 [00:07<00:00, 58.97it/s]Loading weights: 100%|██████████| 399/399 [00:07<00:00, 54.00it/s]
+exact: loaded in 9 s
+exact order 0: 32 tokens sha256 8a240048e3fd15f0
+exact order 0: 1024-token prompt's logits sha256 eeb0dc93cde70630
+exact order 0: 4096-token prompt's logits sha256 6cf74b62251b947d
+exact order 1: 32 tokens sha256 8a240048e3fd15f0
+exact order 1: 1024-token prompt's logits sha256 eeb0dc93cde70630
+exact order 1: 4096-token prompt's logits sha256 6cf74b62251b947d
+exact order 2: 32 tokens sha256 8a240048e3fd15f0
+exact order 2: 1024-token prompt's logits sha256 eeb0dc93cde70630
+exact order 2: 4096-token prompt's logits sha256 6cf74b62251b947d
+exact order 3: 32 tokens sha256 8a240048e3fd15f0
+exact order 3: 1024-token prompt's logits sha256 eeb0dc93cde70630
+exact order 3: 4096-token prompt's logits sha256 6cf74b62251b947d
+exact order 0: steps 155.312 ms a token (6.44 tokens/s)  [runs of 32, ms a token: 155.015 155.312 155.475]
+exact order 0: prompt 1024 tokens 426.08 ms  [runs, ms: 418.60 426.08 426.96]
+exact order 0: prompt 4096 tokens 1557.12 ms  [runs, ms: 1546.63 1557.12 1565.59]
+exact order 1: steps 156.469 ms a token (6.39 tokens/s)  [runs of 32, ms a token: 156.336 156.469 156.756]
+exact order 1: prompt 1024 tokens 424.59 ms  [runs, ms: 423.24 424.59 428.99]
+exact order 1: prompt 4096 tokens 1555.29 ms  [runs, ms: 1552.20 1555.29 1569.51]
+exact order 2: steps 156.138 ms a token (6.40 tokens/s)  [runs of 32, ms a token: 156.044 156.138 156.321]
+exact order 2: prompt 1024 tokens 423.78 ms  [runs, ms: 423.78 423.13 426.21]
+exact order 2: prompt 4096 tokens 1556.86 ms  [runs, ms: 1556.22 1556.86 1561.78]
+exact order 3: steps 155.816 ms a token (6.42 tokens/s)  [runs of 32, ms a token: 155.686 155.816 155.920]
+exact order 3: prompt 1024 tokens 424.42 ms  [runs, ms: 424.29 424.42 428.60]
+exact order 3: prompt 4096 tokens 1558.77 ms  [runs, ms: 1558.77 1557.11 1561.19]
+median of 3
+exit 0

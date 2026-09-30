@@ -43,7 +43,8 @@ out = [f"BITS {'PASS' if steps and not bad else 'FAIL'}: {len(steps)} steps run"
 out += lines("machine-short.txt")[:1] + lines("env.txt")[:2]
 out += ["", "The decode a layer (dec_time.py; median of its repetitions), us, each over main's; whole: a warp a step (for cuBLAS,",
         "exact mode), ahead: 2 warps an SM (decode ahead). v0.25.0: its library; order N: 73b9560's, GLYD_DEC_ORDER=N (0 v0.25.0's",
-        "kernel); v0.25.1: the fix as merged (whole: order 3's loads, ahead: order 0's)."]
+        "kernel); v0.25.1: the fix as merged, as machine-short.txt names it (fd24666: the whole decode in order 3's loads on",
+        "every GPU; dc490e4: on Hopper alone, elsewhere order 0's; the decode ahead order 0's in both)."]
 for f in sorted(glob.glob(os.path.join(R, "time-*.txt"))):
     b = os.path.basename(f)
     model, run = re.match(r"time-(.+)-run(\d+)\.txt", b).groups()

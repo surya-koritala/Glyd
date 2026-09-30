@@ -1,0 +1,1 @@
+NVIDIA GH200 480GB (9.0, sm_90a), aarch64 host, 64 CPUs; mode hopper; decode-fix 73b9560 (decode-fix), v0.25.0 bfb2c4e (rust-splitbyte, v0.25.0's tree), main db8e7b0 (origin/main)
