@@ -179,8 +179,8 @@ call's query, key, value and output over the continuation's one pass (1,542 toke
 CUDA graphs off so every call runs its Python), each run a process of its own, the first compiling and the others
 loading its graphs (`dbg1.sh`, `dbg2.sh`: v0.25.0's library).
 
-- Across 12 pairs of processes, the library's product never gave another output for the same input, nor did
-  FlashAttention.
+- Across 12 pairs of processes, the library's product never gave another output for the same input; nor did
+  FlashAttention, in the 9 pairs where it was hooked too (`dbg2.sh`).
 - The first tensor to differ was always attention's query or key, its value the same, after a qkv product that
   matched. Between the two run the q and k RMSNorm and the rotary embedding, which vLLM leaves to inductor (its custom
   ops off) and has it group into combo kernels, benchmarked (`combo_kernels` and `benchmark_combo_kernel`, vLLM's
