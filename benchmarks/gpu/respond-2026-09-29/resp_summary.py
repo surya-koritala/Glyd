@@ -85,15 +85,20 @@ for model, modes in res.items():
                 cells.append(f"({c['skipped'][:30]})" if c.get("skipped") else f"{c['ttft'] * 1e3:.0f} / {c['total']:.2f}" + (" c" if c.get("path") == "compiled" else "") if c.get("total") else "")
             out.append(f"| {n.split()[1]}: {c0.get('prompt')} + {c0.get('new')} | " + " | ".join(cells) + "".join(f" | {rel(n, 'total', b)}" for b in ratio) + " |")
     warm = [f"{LAB[m]} {cs[0]['warmup']['total']:.1f} s" for m in head for cs in [[c for c in modes[m].get("configs", []) if "warmup" in c]] if cs]
-    same = []
+    same, own = [], []
     for m in head:
-        if m != "bf16" and "bf16" in modes:
-            both = [(c, get("bf16", c["name"])) for c in modes[m].get("configs", []) if c.get("sha") and get("bf16", c["name"]).get("sha")]
+        cs = [c for c in modes[m].get("configs", []) if c.get("runs")]
+        if cs:  # a mode's own calls: its warm-up's tokens and every repeat's the same
+            own.append(f"{LAB[m]} {sum(bool(c.get('same_tokens')) for c in cs)} of {len(cs)}")
+        if m != "bf16" and "bf16" in modes:  # against bf16 eager's, where bf16 eager's own calls repeat
+            both = [(c, get("bf16", c["name"])) for c in modes[m].get("configs", []) if c.get("sha") and get("bf16", c["name"]).get("sha") and get("bf16", c["name"]).get("same_tokens")]
             if both:
                 same.append(f"{LAB[m]} {sum(a['sha'] == b['sha'] for a, b in both)} of {len(both)}")
     out += ["", "c: the call ran compiled (fast_generate). Each process's first call (excluded above; the compile's in a compiled mode): " + "; ".join(warm) + "."]
+    if own:
+        out.append("Greedy tokens (the first sequence's), each mode's own calls the same (its first call and every repeat), configurations: " + "; ".join(own) + ".")
     if same:
-        out.append("Greedy tokens (the first sequence's) the same as bf16 eager's, configurations: " + "; ".join(same) + ".")
+        out.append("The same as bf16 eager's, in the configurations whose bf16 eager calls gave the same tokens each time: " + "; ".join(same) + ".")
     out.append("")
 if first:
     out = [f"# How fast it responds: {first['gpu']} ({first['gpu_memory_gb']} GB; {first['smi']}), {first['cpu']} ({first['cpus']} CPUs, {first['host']})",

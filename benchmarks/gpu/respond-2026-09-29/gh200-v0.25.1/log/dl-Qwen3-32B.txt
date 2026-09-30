@@ -1,0 +1,2 @@
+Fetching 24 files:   0%|          | 0/24 [00:00<?, ?it/s]Fetching 24 files: 100%|██████████| 24/24 [00:00<00:00, 3128.42it/s]
+exit 0 at +5 s

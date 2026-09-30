@@ -1,0 +1,73 @@
+# How fast it responds: NVIDIA GH200 480GB (101.47 GB; 580.126.20, 1980 MHz, 2619 MHz, 900.00 W, 900.00 W), Neoverse-V2 (64 CPUs, aarch64)
+torch 2.14.0+cu130 (CUDA 13.0), transformers 5.17.0, glyd 0.25.1; greedy decoding, every reply forced to its length; median of repeats, each configuration's first call apart
+
+## Qwen3-32B
+
+- bf16 eager: 65.52 GB on the GPU after the load (11.3 s); SM 1530 MHz, 479 W (medians while busy)
+- bf16 compiled: 65.52 GB on the GPU after the load (11.3 s), generate() compiled to 2048 positions; SM 1980 MHz, 476 W (medians while busy)
+- Glyd (default): 49.5 GB on the GPU after the load (20.3 s), layout mma12, generate() compiled to 2048 positions; SM 1980 MHz, 526 W (medians while busy)
+- Glyd exact: 50.78 GB on the GPU after the load (21.0 s), layout mma12; SM 1980 MHz, 448 W (medians while busy)
+
+Time to first token, ms (Glyd's default over bf16 compiled, the same path: under 1 is sooner)
+
+| prompt | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / bf16 compiled |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 128 | 81 | 96 c | 85 c | 104 | 0.88x |
+| 512 | 79 | 106 c | 107 c | 119 | 1.00x |
+| 2048 | 270 | 269 | 329 | 313 | 1.22x |
+| 8192 | 1141 | 1145 | 1270 | 1185 | 1.11x |
+
+Tokens a second after the first (256 new, a 128-token prompt; Glyd's default over bf16 compiled, the same path: over 1 is faster)
+
+| sequences | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / bf16 compiled |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 13.1 | 39.3 c | 46.8 c | 10.1 | 1.19x |
+| 8 | 105.9 | 100.3 | 133.1 | 80.3 | 1.33x |
+| 32 | 421.4 | 400.6 | 522.8 | (past the deadline) | 1.30x |
+
+The mixes: time to first token, ms / total, s (Glyd's default's total over bf16 compiled's, the same path: under 1 is sooner)
+
+| mix | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / bf16 compiled |
+| :-- | ---: | ---: | ---: | ---: | ---: |
+| chat: 200 + 300 | 84 / 22.72 | 102 / 7.69 c | 85 / 6.51 c | 106 / 29.76 | 0.85x |
+| long: 2000 + 200 | 259 / 15.41 | 266 / 16.04 | 328 / 12.49 | 308 / 20.24 | 0.78x |
+
+c: the call ran compiled (fast_generate). Each process's first call (excluded above; the compile's in a compiled mode): bf16 eager 2.3 s; bf16 compiled 64.8 s; Glyd (default) 55.5 s; Glyd exact 2.6 s.
+Greedy tokens (the first sequence's), each mode's own calls the same (its first call and every repeat), configurations: bf16 eager 7 of 9; bf16 compiled 6 of 9; Glyd (default) 6 of 9; Glyd exact 7 of 8.
+The same as bf16 eager's, in the configurations whose bf16 eager calls gave the same tokens each time: bf16 compiled 5 of 7; Glyd (default) 6 of 7; Glyd exact 7 of 7.
+
+## Qwen3-8B
+
+- bf16 eager: 16.38 GB on the GPU after the load (3.1 s); SM 1950 MHz, 259 W (medians while busy)
+- bf16 compiled: 16.38 GB on the GPU after the load (3.1 s), generate() compiled to 2048 positions; SM 1980 MHz, 368 W (medians while busy)
+- Glyd (default): 12.54 GB on the GPU after the load (5.4 s), layout mma12, generate() compiled to 2048 positions; SM 1980 MHz, 387 W (medians while busy)
+- Glyd exact: 13.51 GB on the GPU after the load (5.6 s), layout mma12; SM 1965 MHz, 388 W (medians while busy)
+
+Time to first token, ms (Glyd's default over bf16 compiled, the same path: under 1 is sooner)
+
+| prompt | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / bf16 compiled |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 128 | 48 | 55 c | 61 c | 58 | 1.12x |
+| 512 | 49 | 62 c | 52 c | 58 | 0.85x |
+| 2048 | 69 | 70 | 81 | 80 | 1.17x |
+| 8192 | 291 | 294 | 310 | 302 | 1.05x |
+
+Tokens a second after the first (256 new, a 128-token prompt; Glyd's default over bf16 compiled, the same path: over 1 is faster)
+
+| sequences | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / bf16 compiled |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 21.9 | 119.1 c | 125.9 c | 18.0 | 1.06x |
+| 8 | 174.3 | 178.7 | 217.1 | 144.3 | 1.21x |
+| 32 | 701.1 | 716.5 | 857.7 | 579.1 | 1.20x |
+
+The mixes: time to first token, ms / total, s (Glyd's default's total over bf16 compiled's, the same path: under 1 is sooner)
+
+| mix | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / bf16 compiled |
+| :-- | ---: | ---: | ---: | ---: | ---: |
+| chat: 200 + 300 | 54 / 13.66 | 55 / 2.57 c | 53 / 2.43 c | 62 / 16.70 | 0.95x |
+| long: 2000 + 200 | 69 / 9.21 | 70 / 9.00 | 82 / 7.46 | 80 / 11.22 | 0.83x |
+
+c: the call ran compiled (fast_generate). Each process's first call (excluded above; the compile's in a compiled mode): bf16 eager 2.0 s; bf16 compiled 36.7 s; Glyd (default) 33.9 s; Glyd exact 1.8 s.
+Greedy tokens (the first sequence's), each mode's own calls the same (its first call and every repeat), configurations: bf16 eager 7 of 9; bf16 compiled 6 of 9; Glyd (default) 6 of 9; Glyd exact 7 of 9.
+The same as bf16 eager's, in the configurations whose bf16 eager calls gave the same tokens each time: bf16 compiled 6 of 7; Glyd (default) 6 of 7; Glyd exact 7 of 7.
+
