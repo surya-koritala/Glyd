@@ -1051,53 +1051,72 @@ On an L4 (72 W, full-rate tensor cores, half the A10's bandwidth a FLOP)
 a prompt decodes each matrix first, on the current stream, then cuBLAS,
 from 896 tokens in the tiered layout (the L4's default) and 2560 in the
 12-bit one (`exact=True`'s prompts as before). Every route ran at its 72 W
-cap from about 512 tokens. The fused kernel ran at 1200-1360 MHz there,
-cuBLAS behind a decode at 1050-1155, yet the fused kernel lost from those
-lengths on, more the longer the prompt. A decode ahead beside cuBLAS gained
-nothing (Qwen3-8B, both layouts: within 1% of a decode first at 4096-8192
-tokens, 1-7% slower at 896-2048), so the L4 takes the route DECODE, not
-AHEAD. It is a
-class of its own (`GLYD_GPU_L4`, "L4" in its name as a word: 3089), so
-the L40S, L40 and RTX 6000 Ada, which share its compute capability, keep
-their routes until measured. Qwen3-8B on an AWS g6.4xlarge, one forward
-pass, over bf16's time in the same run:
+cap from about 512 tokens: the tiered fused kernel at 1200-1360 MHz there
+(Qwen3-8B's at 885 at 8192 tokens), the 12-bit one at 1035-1170, cuBLAS
+behind a decode at 960-1155. Yet the fused kernel lost to the decode from
+those lengths on, by more the longer the prompt (Qwen3-4B-Instruct-2507's
+tiered two were even at 1024 tokens: the fused kernel takes a prompt in
+blocks of 256 tokens). A decode ahead beside cuBLAS gained nothing
+(Qwen3-8B, both layouts: within 1% of a decode first at 4096-8192 tokens,
+1-7% slower at 896-2048), so the L4 takes the route DECODE, not AHEAD. It
+is a class of its own (`GLYD_GPU_L4`, 3000, "L4" in its name as a word: an
+L4's code is 3089), so the L40 and RTX 6000 Ada, which share its compute
+capability, keep their routes until measured. Qwen3-8B on an AWS
+g6.4xlarge, one forward pass, over bf16's time in the same run (the rows
+"now" its decoded pass where the route changed, below 896 and 2560 tokens
+the fused one, unchanged):
 
 | Prompt | 128 | 512 | 1024 | 2048 | 4096 | 8192 |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | tiered, fused (was) | +5.6% | +17.6% | +27.8% | +31.0% | +37.9% | +98.4% |
-| tiered, now (decoded from 896) | +4.6% | +15.7% | +20.5% | +6.8% | +4.1% | -0.0% |
+| tiered, now (decoded from 896) | +5.6% | +17.6% | +25.5% | +11.3% | +8.4% | +4.7% |
 | 12-bit, fused (was) | -9.0% | -0.8% | +7.2% | +11.0% | +19.8% | +105.0% |
-| 12-bit, now (decoded from 2560) | -10.5% | -6.6% | +1.9% | +4.3% | +5.8% | +2.4% |
+| 12-bit, now (decoded from 2560) | -9.0% | -0.8% | +7.2% | +11.0% | +9.3% | +4.4% |
+
+Qwen3-4B-Instruct-2507 in the same run, tiered at 1024 / 2048 / 4096 /
+8192 tokens: +12.9 / +14.0 / +10.1 / +4.3% (were +9.5 / +30.9 / +33.2 /
++43.0%; at 1024 tokens the fused pass was the faster in this run, even
+with the decode in main-fine/); 12-bit at 4096 / 8192 +6.8 / +5.0% (were
++14.8 / +30.8%).
 
 On an L40S (350 W for the L4's bandwidth a FLOP: 864 GB/s) the path is
 taken from 1024 tokens in the tiered layout and 2048 in the 12-bit one
-(`exact=True`'s prompts as before), the route AHEAD as on an A10: with
-the power to spare, the decode ahead beside cuBLAS was 0.4-5.3% faster
-than a decode first at 1024-3072 and 8192 tokens, 0.8-1.0% slower at
-4096. The L40S is a class of its own too (`GLYD_GPU_L40S`: 4089), so the
-L40 and RTX 6000 Ada keep their routes until measured. Qwen3-8B on an AWS
-g6e.xlarge, one forward pass, over bf16's time in the same run (the rows
-"now" the routes' own times, each forced there):
+(`exact=True`'s prompts as before), the route AHEAD as on an A10: the
+decode ahead beside cuBLAS took 0.4-5.1% less time than a decode first at
+1024-3072 and 8192 tokens, 0.8-1.0% more at 4096. From 2048 tokens every
+route ran at the 350 W cap (the decode ahead at 1718-1935 MHz), below it
+at 1024 tokens tiered (2040 MHz, 325 W). The L40S is a class of its own too
+(`GLYD_GPU_L40S`, 4000: an L40S's code is 4089), so the L40 and RTX 6000
+Ada keep their routes until measured. Qwen3-8B on an AWS g6e.xlarge, one
+forward pass, over bf16's time in the same run (the rows "now" the routes'
+own times, each forced there):
 
-| Prompt | 512 | 768 | 1024 | 1536 | 2048 | 3072 | 8192 |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| tiered, fused (was) | +20.6% | +27.9% | +38.1% | +34.1% | +41.2% | +37.3% | +35.0% |
-| tiered, now (decoded ahead from 1024) | +20.6% | +27.9% | +30.3% | +13.9% | +11.9% | +8.0% | +3.8% |
-| 12-bit, fused (was) | -0.3% | +4.8% | +13.6% | +9.4% | +15.5% | +14.9% | +18.2% |
-| 12-bit, now (decoded ahead from 2048) | -0.3% | +4.8% | +13.6% | +9.4% | +12.9% | +7.7% | +3.9% |
+| Prompt | 512 | 768 | 1024 | 1536 | 2048 | 3072 | 4096 | 8192 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tiered, fused (was) | +20.6% | +27.9% | +38.1% | +34.1% | +41.2% | +37.3% | +39.4% | +35.0% |
+| tiered, now (decoded ahead from 1024) | +20.6% | +27.9% | +30.3% | +13.9% | +11.9% | +8.0% | +10.9% | +3.8% |
+| 12-bit, fused (was) | -0.3% | +4.8% | +13.6% | +9.4% | +15.5% | +14.9% | +20.0% | +18.2% |
+| 12-bit, now (decoded ahead from 2048) | -0.3% | +4.8% | +13.6% | +9.4% | +12.9% | +7.7% | +11.3% | +3.9% |
 
-The L40S's 12-bit fused kernel takes its prompts at bf16's speed to 512
-tokens (-0.3%), where the tiered one's is +20.6%; the layout stays the
-tiered one there too (33% less memory; `layout="mma12"`: 25%).
+At 4096 tokens a decode first was the faster (tiered +10.0%, 12-bit
++10.1%). The L40S's 12-bit prompts took 17.3 / 18.1 / 12.8 / 4.0% less
+time than the tiered layout's at 512 / 768 / 1024 / 1536 tokens (its fused
+kernel at 512 tokens -0.3% over bf16's time, the tiered one's +20.6%) and
+were within 0.9% of them from 2048; the layout stays the tiered one there
+too (33% less memory; `layout="mma12"`: 25%).
 
 The tiered layout stays the L4's default (33% less memory). The 12-bit
-layout's fused kernel takes the L4's prompts in 6-18% less time than the
-tiered layout's to 2304 tokens (Qwen3-8B and Qwen3-4B-Instruct-2507): for
+layout's prompts took 5-20% less time than the tiered layout's to 1536
+tokens on the L4, and about the same from 1792 (2.4% more to 3.6% less;
+Qwen3-8B and Qwen3-4B-Instruct-2507, each layout by its own routes): for
 the fastest short prompts, at 25% less memory, load with
 `layout="mma12"`. The L4's clock also falls as it heats at the cap: the
 same prompt pass (Qwen3-8B tiered, 2048 tokens, decoded) took 739 ms at 66
 C and 1148 MHz and 794 ms at 82 C and 1035 MHz, so compare its runs at
-like temperatures (logs: benchmarks/gpu/l4-routes-2026-09-29).
+like temperatures: the branch's own run (l4-routes/, the routes as built)
+ran about 10 C cooler than the one above (medians 66-72 C against 78-81
+C), and its times are lower throughout, the unchanged routes' too (logs:
+benchmarks/gpu/l4-routes-2026-09-29).
 
 ## Popular models
 

@@ -11,41 +11,49 @@ every earlier format.
 - An L4's prompts decode each matrix for cuBLAS first, on the current
   stream, from 896 tokens in the tiered layout (the L4's default) and 2560
   in the 12-bit one; `exact=True`'s prompts as before. At its 72 W cap the
-  fused prompt kernel lost to the decode from those lengths, more the
-  longer the prompt, and a decode ahead beside cuBLAS (the A10's route)
-  gained nothing (within 1% at 4096-8192 tokens, 1-7% slower at 896-2048).
-  Qwen3-8B, one forward pass, over bf16's
-  time at 1024 / 2048 / 4096 / 8192 tokens: tiered +20.5 / +6.8 / +4.1 /
-  -0.0% (were +27.8 / +31.0 / +37.9 / +98.4%), 12-bit +1.9 / +4.3 / +5.8 /
-  +2.4% (were +7.2 / +11.0 / +19.8 / +105.0%); to 895 and 2559 tokens as
-  before. The time to the first token through `generate()` moves with the
-  pass. The tiered layout stays the L4's default (33% less memory); for the
-  fastest short prompts, at 25% less, load with `layout="mma12"`, whose
-  prompt kernel takes an L4's prompts in 6-18% less time to 2304 tokens.
-  The L4 is a class of its own in the library's GPU codes
-  (`GLYD_GPU_L4`, 3000: "L4" in the name as a word; an L4 is 3089), so that
-  the L40S, L40 and RTX 6000 Ada, which share its compute capability and
-  were not measured, keep their routes; the glyd package and the glyd-gpu
-  crate have it too (`L4`). `GLYD_DEC_MIN` still sets any GPU's 12-bit
-  threshold. check_capi pins the L4's routes and an L40's; on an L4 it
-  passes, as do test_gpu.py and the crate's tests
+  fused prompt kernel lost to the decode from those lengths, by more the
+  longer the prompt (Qwen3-4B-Instruct-2507's tiered two were even at 1024
+  tokens), and a decode ahead beside cuBLAS (the A10's route) gained
+  nothing (within 1% at 4096-8192 tokens, 1-7% slower at 896-2048).
+  Qwen3-8B, one forward pass, over bf16's time in the same run at 1024 /
+  2048 / 4096 / 8192 tokens: tiered +25.5 / +11.3 / +8.4 / +4.7% (were
+  +27.8 / +31.0 / +37.9 / +98.4%), 12-bit at 4096 / 8192 +9.3 / +4.4%
+  (were +19.8 / +105.0%); to 895 and 2559 tokens as before. The time to
+  the first token through `generate()` moves with the pass. The tiered
+  layout stays the L4's default (33% less memory); for the fastest short
+  prompts, at 25% less, load with `layout="mma12"`: its prompts took 5-20%
+  less time than the tiered layout's to 1536 tokens, and about the same
+  from 1792 (Qwen3-8B and Qwen3-4B-Instruct-2507). The L4 is a class of
+  its own in the library's GPU codes (`GLYD_GPU_L4`, 3000: "L4" in the
+  name as a word; an L4's code is 3089), so that the L40 and RTX 6000 Ada,
+  which share its compute capability and were not measured, keep their
+  routes; the glyd package and the glyd-gpu crate have it too (`L4`).
+  `GLYD_DEC_MIN` still sets any GPU's 12-bit threshold. check_capi pins
+  the L4's routes and an L40's
   ([benchmarks/gpu/l4-routes-2026-09-29](benchmarks/gpu/l4-routes-2026-09-29)).
 - An L40S's prompts decode each matrix ahead of its product, beside the
   products before it (the route AHEAD, as an A10's), from 1024 tokens in
   the tiered layout and 2048 in the 12-bit one; `exact=True`'s prompts as
   before. Qwen3-8B on an AWS g6e.xlarge, one forward pass, over bf16's
-  time at 1024 / 2048 / 3072 / 8192 tokens: tiered +30.3 / +11.9 / +8.0 /
-  +3.8% (were +38.1 / +41.2 / +37.3 / +35.0%), 12-bit at 2048 / 3072 /
-  8192 +12.9 / +7.7 / +3.9% (were +15.5 / +14.9 / +18.2%); to 1023 and
-  2047 tokens as before. A decode first was 0.4-5.3% slower than the
-  decode ahead at 1024-3072 and 8192 tokens and 0.8-1.0% faster at 4096.
-  The L40S's
-  12-bit fused kernel takes its prompts at bf16's speed to 512 tokens
-  (-0.3%) where the tiered one's is +20.6%; the tiered layout stays its
-  default (33% less memory; `layout="mma12"` for 25%). The L40S is a class
-  of its own (`GLYD_GPU_L40S`, 4000: "L40S" in the name as a word; an L40S
-  is 4089; the package and the crate have it too), so the L40 and RTX 6000
-  Ada keep their routes until measured; check_capi pins its routes.
+  time in the same run at 1024 / 2048 / 3072 / 4096 / 8192 tokens: tiered
+  +30.3 / +11.9 / +8.0 / +10.9 / +3.8% (were +38.1 / +41.2 / +37.3 /
+  +39.4 / +35.0%), 12-bit at 2048 / 3072 / 4096 / 8192 +12.9 / +7.7 /
+  +11.3 / +3.9% (were +15.5 / +14.9 / +20.0 / +18.2%); to 1023 and 2047
+  tokens as before. The decode ahead took 0.4-5.1% less time than a
+  decode first at 1024-3072 and 8192 tokens and 0.8-1.0% more at 4096.
+  The scratch buffer holds two matrices there (Qwen3-8B's 0.40 GB, was
+  0.27). The L40S's 12-bit prompts took 17.3 / 18.1 / 12.8 / 4.0% less
+  time than the tiered layout's at 512 / 768 / 1024 / 1536 tokens (its
+  fused kernel at 512 tokens -0.3% over bf16's time, the tiered one's
+  +20.6%) and were within 0.9% of them from 2048; the tiered layout stays
+  its default (33% less memory; `layout="mma12"` for 25%). The L40S is a
+  class of its own (`GLYD_GPU_L40S`, 4000: "L40S" in the name as a word;
+  an L40S's code is 4089; the package and the crate have it too), so the
+  L40 and RTX 6000 Ada keep their routes until measured; check_capi pins
+  its routes.
+- `glyd_gpu_*_route` at M = INT64_MAX tokens gives the route before it,
+  as `last` says (v0.25.0 gave AHEAD in the tiered layout and DECODE in
+  the 12-bit one there, on every GPU).
 
 ## v0.25.0 — 2026-09-29
 
