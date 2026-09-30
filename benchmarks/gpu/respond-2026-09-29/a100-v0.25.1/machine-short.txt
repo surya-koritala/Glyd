@@ -1,0 +1,1 @@
+NVIDIA A100-SXM4-40GB (8.0, sm_80, 40960 MiB), x86_64 host, 30 CPUs; the tree 15d9c04 (respond-bench, v0.25.1); plan a100; runs (expected s): Qwen/Qwen3-8B:glyd:200 Qwen/Qwen3-8B:bf16c:220 Qwen/Qwen3-8B:bf16:180 Qwen/Qwen3-14B:glyd:235 Qwen/Qwen3-14B:bf16c:255 Qwen/Qwen3-14B:bf16:205 Qwen/Qwen3-8B:exact:145 Qwen/Qwen3-14B:exact:210 

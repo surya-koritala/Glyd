@@ -1,0 +1,121 @@
+Linux host 6.8.0-1046-nvidia #49-Ubuntu SMP PREEMPT_DYNAMIC Wed Jan 28 19:07:52 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+Wed Sep 30 14:59:38 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.20             Driver Version: 580.126.20     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A100-SXM4-40GB          On  |   00000000:06:00.0 Off |                    0 |
+| N/A   42C    P0            100W /  400W |       0MiB /  40960MiB |    100%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], clocks.max.memory [MHz], power.limit [W]
+NVIDIA A100-SXM4-40GB, 8.0, 580.126.20, 40960 MiB, 1410 MHz, 1215 MHz, 400.00 W
+pid, process_name, used_gpu_memory [MiB]
+
+==============NVSMI LOG==============
+
+Timestamp                                              : Wed Sep 30 14:59:39 2026
+Driver Version                                         : 580.126.20
+CUDA Version                                           : 13.0
+
+Attached GPUs                                          : 1
+GPU 00000000:06:00.0
+    Performance State                                  : P0
+    Clocks Event Reasons
+        Idle                                           : Not Active
+        Applications Clocks Setting                    : Not Active
+        SW Power Cap                                   : Not Active
+        HW Slowdown                                    : Not Active
+            HW Thermal Slowdown                        : Not Active
+            HW Power Brake Slowdown                    : Not Active
+        Sync Boost                                     : Not Active
+        SW Thermal Slowdown                            : Not Active
+        Display Clock Setting                          : Not Active
+    Clocks Event Reasons Counters
+        SW Power Capping                               : 0 us
+        Sync Boost                                     : 0 us
+        SW Thermal Slowdown                            : 0 us
+        HW Thermal Slowdown                            : 0 us
+        HW Power Braking                               : 0 us
+    Sparse Operation Mode                              : N/A
+    GPU Power Readings
+        Average Power Draw                             : N/A
+        Instantaneous Power Draw                       : 101.53 W
+        Current Power Limit                            : 400.00 W
+        Requested Power Limit                          : 400.00 W
+        Default Power Limit                            : 400.00 W
+        Min Power Limit                                : 100.00 W
+        Max Power Limit                                : 400.00 W
+    Power Samples
+        Duration                                       : 2.42 sec
+        Number of Samples                              : 119
+        Max                                            : 459.62 W
+        Min                                            : 78.55 W
+        Avg                                            : 170.17 W
+    GPU Memory Power Readings 
+        Average Power Draw                             : N/A
+        Instantaneous Power Draw                       : N/A
+    Module Power Readings
+        Average Power Draw                             : N/A
+        Instantaneous Power Draw                       : N/A
+        Current Power Limit                            : N/A
+        Requested Power Limit                          : N/A
+        Default Power Limit                            : N/A
+        Min Power Limit                                : N/A
+        Max Power Limit                                : N/A
+    Clocks
+        Graphics                                       : 1410 MHz
+        SM                                             : 1410 MHz
+        Memory                                         : 1215 MHz
+        Video                                          : 1275 MHz
+    Applications Clocks
+        Graphics                                       : 1095 MHz
+        Memory                                         : 1215 MHz
+    Default Applications Clocks
+        Graphics                                       : 1095 MHz
+        Memory                                         : 1215 MHz
+    Deferred Clocks
+        Memory                                         : N/A
+    Max Clocks
+        Graphics                                       : 1410 MHz
+        SM                                             : 1410 MHz
+        Memory                                         : 1215 MHz
+        Video                                          : 1290 MHz
+    Max Customer Boost Clocks
+        Graphics                                       : 1410 MHz
+    SM Clock Samples
+        Duration                                       : Not Found
+        Number of Samples                              : Not Found
+        Max                                            : Not Found
+        Min                                            : Not Found
+        Avg                                            : Not Found
+    Memory Clock Samples
+        Duration                                       : Not Found
+        Number of Samples                              : Not Found
+        Max                                            : Not Found
+        Min                                            : Not Found
+        Avg                                            : Not Found
+    Clock Policy
+        Auto Boost                                     : N/A
+        Auto Boost Default                             : N/A
+
+Architecture:                            x86_64
+Model name:                              AMD EPYC 7J13 64-Core Processor
+30
+               total        used        free      shared  buff/cache   available
+Mem:             216           3         154           0          59         212
+/dev/vda1       495G   69G  426G  14% /
+gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Wed Sep 30 14:59:39 UTC 2026
+host LD_LIBRARY_PATH (unset for the job): (none)

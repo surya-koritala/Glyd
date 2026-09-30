@@ -32,6 +32,7 @@ b39563d: 3, and at least one then as many as fit 12 s). The GPU's clocks and pow
 | `resp_summary.py` | the tables (summary.txt) and every result in one JSON (respond.json) |
 | `gh200-v0.25.1/` | resp_job.sh at 15d9c04 (v0.25.1) on a GH200, Qwen3-8B and Qwen3-32B, below |
 | `a10-v0.25.1/` | resp_job.sh at 15d9c04 (v0.25.1) on an A10, Qwen3-8B and Qwen3-14B (Glyd's alone fits), below |
+| `a100-v0.25.1/` | resp_job.sh at 15d9c04 (v0.25.1's routes) on an A100 SXM4 40 GB, Qwen3-8B and Qwen3-14B, below |
 | `l4-smoke/` | resp_job.sh at b39563d on the AWS dev L4, Qwen3-0.6B's four modes (`run.sh`: 15 minutes, each run's expected time given): every configuration of every mode run, in 10.4 minutes with the library's build; a check that the job runs, not a result |
 
 ## An L4 (l4/; AWS g6.4xlarge, AMD EPYC 7R13, 16 vCPUs; 2026-09-29)
@@ -183,3 +184,43 @@ memory). Its time to first token 138 / 355 / 1261 ms at 128 / 512 / 2048 tokens,
   time it was given, not the time it took): Qwen3-8B Glyd 246 s (230 expected), bf16 compiled 272 (250), bf16 eager
   170 (200), exact 348 (240, its 8 and 32 sequences run in the time left); Qwen3-14B Glyd 338 (365); bf16, bf16
   compiled and exact did not fit, 30, 30 and 61 s.
+
+## An A100 SXM4 40 GB on v0.25.1 (a100-v0.25.1/; Lambda, 2026-09-30)
+
+resp_job.sh at 15d9c04 (the plan a100): an A100-SXM4-40GB (400 W; an AMD EPYC 7J13 host, 30 vCPUs), Qwen3-8B and
+Qwen3-14B, 29.4 minutes with the library's build, every configuration of every mode. These are v0.25.1's routes: from
+v0.26.0 an A100 SXM's 12-bit prompts of 769-4096 tokens take the route SPLIT (option 2), which this run predates.
+Glyd's layout there is the 12-bit one. Every mode's own calls repeated in every configuration, and exact's tokens were
+bf16 eager's in all 9 of each model.
+
+| Qwen3-8B | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / compiled |
+| :-- | --: | --: | --: | --: | --: |
+| time to first token, 128-token prompt | 47 ms | 56 ms c | 54 ms c | 65 ms | 0.96x |
+| 512 | 53 ms | 64 ms c | 76 ms c | 77 ms | 1.18x |
+| 2048 | 184 ms | 185 ms | 201 ms | 208 ms | 1.09x |
+| 8192 | 749 ms | 747 ms | 772 ms | 776 ms | 1.03x |
+| tokens/s, 1 sequence (256 new) | 23.0 | 58.8 c | 72.1 c | 16.7 | 1.23x |
+| 8 sequences | 181.7 | 184.7 | 194.1 | 132.0 | 1.05x |
+| 32 sequences | 725.5 | 746.4 | 773.4 | 531.4 | 1.04x |
+| chat: 200 + 300 (first token / total) | 48 ms / 13.08 s | 56 ms / 5.13 s c | 55 ms / 4.22 s c | 64 ms / 17.98 s | 0.82x |
+| long: 2000 + 200 | 183 ms / 8.84 s | 184 ms / 8.73 s | 202 ms / 8.30 s | 208 ms / 12.17 s | 0.95x |
+
+| Qwen3-14B | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / compiled |
+| :-- | --: | --: | --: | --: | --: |
+| time to first token, 128-token prompt | 53 ms | 62 ms c | 60 ms c | 90 ms | 0.97x |
+| 512 | 84 ms | 94 ms c | 123 ms c | 129 ms | 1.31x |
+| 2048 | 299 ms | 300 ms | 357 ms | 345 ms | 1.19x |
+| 8192 | 1257 ms | 1256 ms | 1353 ms | 1308 ms | 1.08x |
+| tokens/s, 1 sequence (256 new) | 20.4 | 36.9 c | 46.8 c | 12.7 | 1.27x |
+| 8 sequences | 161.5 | 163.7 | 171.6 | 98.5 | 1.05x |
+| 32 sequences | 646.2 | 653.3 | 687.0 | 372.7 | 1.05x |
+| chat: 200 + 300 (first token / total) | 56 ms / 14.70 s | 70 ms / 8.22 s c | 76 ms / 6.50 s c | 103 ms / 23.58 s | 0.79x |
+| long: 2000 + 200 | 299 ms / 9.99 s | 301 ms / 9.86 s | 358 ms / 9.51 s | 346 ms / 16.11 s | 0.96x |
+
+- **Memory on the GPU after the load:** Qwen3-8B bf16 16.38 GB, Glyd 12.54, exact 13.51; Qwen3-14B bf16 29.54 GB,
+  Glyd 22.43, exact 23.71.
+- **First calls (the compile, excluded above):** bf16 compiled 48.4 s (8B) and 53.8 s (14B), Glyd's default 43.7 and
+  48.7 s.
+- **The plan's times** (from steps.txt's times of day; its "its time" is each run's window): Qwen3-8B Glyd 216 s (200
+  expected), bf16 compiled 227 (220), bf16 eager 137 (180), exact 190 with its several-sequence rates (145 without);
+  Qwen3-14B 251 (235), 264 (255), 162 (205), exact 260 with them (210 without).
