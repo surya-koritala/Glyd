@@ -1,0 +1,1 @@
+NVIDIA A100-SXM4-40GB (8.0, sm_80, 40960 MiB, power limit 400.00 W), x86_64 host, 30 CPUs; tree gpu-route-split 4687dd4; SPLIT: the shipping route (an A100 SXM, 108 SMs: 769-4096 tokens); at 8192 forced by GLYD_SPLIT_MAX=8192

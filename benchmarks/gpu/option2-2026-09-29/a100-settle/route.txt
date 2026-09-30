@@ -1,0 +1,1 @@
+SPLIT: the shipping route (an A100 SXM, 108 SMs: 769-4096 tokens); at 8192 forced by GLYD_SPLIT_MAX=8192
