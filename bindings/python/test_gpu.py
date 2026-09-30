@@ -347,6 +347,34 @@ def test_split_route():
             gm.Split.of[d] = was
 
 
+def test_split_stress():
+    """The route SPLIT's ring under stress (gpu/split_stress.py, quick): Qwen3-0.6B's, 8B's and 14B's layers through the
+    ring at 769 and 2048 tokens, rings of 3 slots and of the planned count, the order queued whole and a few ahead, 3
+    passes each, then GLinear's recording pass and 3 after: every product the same bits across layers, passes and slot
+    counts, within 1e-2 of fp32 on the pack's weights. Where a GPU from Ampere, the prebuilt library, its split (green
+    contexts) and the repository's gpu/ are here (else skipped)."""
+    torch = cuda()
+    script = os.path.normpath(os.path.join(HERE, "..", "..", "gpu", "split_stress.py"))
+    if torch is None or not os.path.exists(script) or torch.cuda.get_device_capability()[0] < 8:
+        print("  (no GPU from Ampere, or not in the repository: skipped)")
+        return
+    from glyd.gpu import _lib, kernels as g
+
+    if g.lib() is None:
+        print("  (no prebuilt library: the ring is the library's; skipped)")
+        return
+    buf = torch.empty(3 << 20, dtype=torch.uint8, device="cuda")
+    ring = _lib.ring_create(buf, 1 << 20)
+    r = _lib.ring_split(ring, 4)[0]
+    _lib.ring_destroy(ring)
+    if r:
+        print(f"  (the split cannot run here, {_lib.error_string(r)}: skipped)")
+        return
+    out = subprocess.run([sys.executable, "-u", script, "--models", "0.6B,8B,14B", "--ms", "769,2048", "--passes", "3", "--quick"], capture_output=True, text=True, cwd=os.path.dirname(script))
+    assert out.returncode == 0 and " 0 failures" in out.stdout, (out.stdout[-4000:], out.stderr[-2000:])
+    print("  " + next(l for l in out.stdout.splitlines() if l.startswith("split_stress:")))
+
+
 def test_split_order():
     """The route SPLIT's order (model.Split.follow, taken from model.py with no torch, its queue faked): recorded from a
     prompt, then one queue a prompt; where the Linears that take the route change with the prompt's length (an A100's
