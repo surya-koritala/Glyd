@@ -1,0 +1,1 @@
+NVIDIA L4 (8.9, sm_89), x86_64 host, 16 CPUs; the tree working tree on 15d9c04 (respond-bench); Qwen/Qwen3-0.6B

@@ -1,0 +1,10 @@
+glyd: loaded in 24.3 s, 11.45 GB (layout mma, compiled calls to 2048 positions)
+glyd ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.1001 total 0.8092 tokens_per_s 21.15 [warm-up 9.53 s, compiled, 5 repeats]
+glyd ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.2455 total 0.9949 tokens_per_s 20.02 [warm-up 11.34 s, compiled, 5 repeats]
+glyd ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.8042 total 1.619 tokens_per_s 18.41 [warm-up 1.76 s, eager, 5 repeats]
+glyd ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 3.276 total 4.198 tokens_per_s 16.26 [warm-up 4.23 s, eager, 5 repeats]
+glyd mix chat (200 + 300 tokens, 1 a batch): ttft 0.1278 total 15.08 tokens_per_s 20 [warm-up 15.20 s, compiled, 3 repeats]
+glyd rate 1 (128 + 256 tokens, 1 a batch): ttft 0.1015 total 12.84 tokens_per_s 20.01 [warm-up 12.87 s, compiled, 3 repeats]
+glyd rate 8 (128 + 256 tokens, 8 a batch): ttft 0.4497 total 15.06 tokens_per_s 139.7 [warm-up 15.17 s, eager, 3 repeats]
+glyd rate 32 (128 + 256 tokens, 32 a batch): ttft 1.501 total 20.14 tokens_per_s 437.8 [warm-up 20.38 s, eager, 3 repeats]
+glyd mix long (2000 + 200 tokens, 1 a batch): ttft 0.7873 total 11.59 tokens_per_s 18.41 [warm-up 11.62 s, eager, 3 repeats]

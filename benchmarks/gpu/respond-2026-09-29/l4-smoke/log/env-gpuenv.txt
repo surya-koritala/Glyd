@@ -1,0 +1,1 @@
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/nvidia/cu13/bin/nvcc

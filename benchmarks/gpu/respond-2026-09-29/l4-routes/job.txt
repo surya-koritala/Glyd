@@ -1,0 +1,80 @@
+== 21:55:58 (+0 s) machine
+== 21:55:58 (+0 s) environment
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+NVIDIA L4 (8.9, sm_89, 23034 MiB), x86_64 host, 16 CPUs; the tree l4-routes 72a46e2 with respond-bench bcb540e's respond.py and job; runs: Qwen/Qwen3-8B:bf16 Qwen/Qwen3-8B:bf16c Qwen/Qwen3-8B:glyd Qwen/Qwen3-4B-Instruct-2507:bf16 Qwen/Qwen3-4B-Instruct-2507:bf16c Qwen/Qwen3-4B-Instruct-2507:glyd
+== 21:56:03 (+5 s) in the background, whole, in turn: Qwen/Qwen3-8B Qwen/Qwen3-4B-Instruct-2507 
+== 21:56:03 (+5 s) the library for sm_89 (build_lib.sh's flags)
+== 21:56:40 (+42 s) Qwen3-8B, bf16 (waiting for its download)
+Qwen3-8B bf16: exit 0
+bf16: loaded in 1.6 s, 16.38 GB (layout None, compiled calls to None positions)
+bf16 ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.08632 total 1.07 tokens_per_s 15.26 [warm-up 1.83 s, eager, 5 repeats]
+bf16 ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.2054 total 1.198 tokens_per_s 15.11 [warm-up 1.20 s, eager, 5 repeats]
+bf16 ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.6928 total 1.712 tokens_per_s 14.71 [warm-up 1.71 s, eager, 5 repeats]
+bf16 ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 3.141 total 4.285 tokens_per_s 13.11 [warm-up 4.26 s, eager, 5 repeats]
+bf16 mix chat (200 + 300 tokens, 1 a batch): ttft 0.105 total 19.88 tokens_per_s 15.12 [warm-up 19.86 s, eager, 3 repeats]
+bf16 rate 1 (128 + 256 tokens, 1 a batch): ttft 0.08681 total 16.92 tokens_per_s 15.15 [warm-up 16.92 s, eager, 3 repeats]
+bf16 rate 8 (128 + 256 tokens, 8 a batch): ttft 0.3486 total 18.95 tokens_per_s 109.7 [warm-up 18.97 s, eager, 3 repeats]
+bf16 rate 32 (128 + 256 tokens, 32 a batch): ttft 1.406 total 24.12 tokens_per_s 359.3 [warm-up 24.16 s, eager, 3 repeats]
+bf16 mix long (2000 + 200 tokens, 1 a batch): ttft 0.7229 total 14.29 tokens_per_s 14.67 [warm-up 14.28 s, eager, 3 repeats]
+== 22:03:54 (+476 s) Qwen3-8B, bf16c (waiting for its download)
+Qwen3-8B bf16c: exit 0
+W0929 22:04:18.989000 58137 torch/_inductor/utils.py:1806] [0/0] Not enough SMs to use max_autotune_gemm mode
+bf16c ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.09504 total 1.023 tokens_per_s 16.17 [warm-up 37.25 s, compiled, 5 repeats]
+bf16c ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.2084 total 1.161 tokens_per_s 15.76 [warm-up 48.39 s, compiled, 5 repeats]
+bf16c ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.6984 total 1.72 tokens_per_s 14.68 [warm-up 1.72 s, eager, 5 repeats]
+bf16c ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 3.155 total 4.302 tokens_per_s 13.1 [warm-up 4.29 s, eager, 5 repeats]
+bf16c mix chat (200 + 300 tokens, 1 a batch): ttft 0.1125 total 19.12 tokens_per_s 15.73 [warm-up 19.16 s, compiled, 3 repeats]
+bf16c rate 1 (128 + 256 tokens, 1 a batch): ttft 0.09541 total 16.3 tokens_per_s 15.74 [warm-up 16.32 s, compiled, 3 repeats]
+bf16c rate 8 (128 + 256 tokens, 8 a batch): ttft 0.3518 total 18.97 tokens_per_s 109.6 [warm-up 18.96 s, eager, 3 repeats]
+bf16c rate 32 (128 + 256 tokens, 32 a batch): ttft 1.426 total 24.16 tokens_per_s 358.9 [warm-up 24.16 s, eager, 3 repeats]
+bf16c mix long (2000 + 200 tokens, 1 a batch): ttft 0.7158 total 14.34 tokens_per_s 14.61 [warm-up 14.33 s, eager, 3 repeats]
+== 22:12:27 (+989 s) Qwen3-8B, glyd (waiting for its download)
+Qwen3-8B glyd: exit 0
+glyd: loaded in 24.3 s, 11.45 GB (layout mma, compiled calls to 2048 positions)
+glyd ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.1001 total 0.8092 tokens_per_s 21.15 [warm-up 9.53 s, compiled, 5 repeats]
+glyd ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.2455 total 0.9949 tokens_per_s 20.02 [warm-up 11.34 s, compiled, 5 repeats]
+glyd ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.8042 total 1.619 tokens_per_s 18.41 [warm-up 1.76 s, eager, 5 repeats]
+glyd ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 3.276 total 4.198 tokens_per_s 16.26 [warm-up 4.23 s, eager, 5 repeats]
+glyd mix chat (200 + 300 tokens, 1 a batch): ttft 0.1278 total 15.08 tokens_per_s 20 [warm-up 15.20 s, compiled, 3 repeats]
+glyd rate 1 (128 + 256 tokens, 1 a batch): ttft 0.1015 total 12.84 tokens_per_s 20.01 [warm-up 12.87 s, compiled, 3 repeats]
+glyd rate 8 (128 + 256 tokens, 8 a batch): ttft 0.4497 total 15.06 tokens_per_s 139.7 [warm-up 15.17 s, eager, 3 repeats]
+glyd rate 32 (128 + 256 tokens, 32 a batch): ttft 1.501 total 20.14 tokens_per_s 437.8 [warm-up 20.38 s, eager, 3 repeats]
+glyd mix long (2000 + 200 tokens, 1 a batch): ttft 0.7873 total 11.59 tokens_per_s 18.41 [warm-up 11.62 s, eager, 3 repeats]
+== 22:19:02 (+1384 s) Qwen3-4B-Instruct-2507, bf16 (waiting for its download)
+Qwen3-4B-Instruct-2507 bf16: exit 0
+bf16: loaded in 0.9 s, 8.04 GB (layout None, compiled calls to None positions)
+bf16 ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.05086 total 0.6433 tokens_per_s 25.34 [warm-up 1.42 s, eager, 5 repeats]
+bf16 ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.1065 total 0.705 tokens_per_s 25.08 [warm-up 0.70 s, eager, 5 repeats]
+bf16 ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.432 total 1.053 tokens_per_s 24.15 [warm-up 1.04 s, eager, 5 repeats]
+bf16 ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 2.147 total 2.89 tokens_per_s 20.2 [warm-up 2.90 s, eager, 5 repeats]
+bf16 mix chat (200 + 300 tokens, 1 a batch): ttft 0.05982 total 11.89 tokens_per_s 25.27 [warm-up 11.91 s, eager, 3 repeats]
+bf16 rate 1 (128 + 256 tokens, 1 a batch): ttft 0.051 total 10.16 tokens_per_s 25.21 [warm-up 10.19 s, eager, 3 repeats]
+bf16 rate 8 (128 + 256 tokens, 8 a batch): ttft 0.2374 total 11.35 tokens_per_s 183.6 [warm-up 11.33 s, eager, 3 repeats]
+bf16 rate 32 (128 + 256 tokens, 32 a batch): ttft 0.8561 total 15.11 tokens_per_s 572.2 [warm-up 15.15 s, eager, 3 repeats]
+bf16 mix long (2000 + 200 tokens, 1 a batch): ttft 0.4191 total 8.662 tokens_per_s 24.14 [warm-up 8.66 s, eager, 3 repeats]
+== 22:23:29 (+1651 s) Qwen3-4B-Instruct-2507, bf16c (waiting for its download)
+Qwen3-4B-Instruct-2507 bf16c: exit 0
+W0929 22:23:53.368000 58926 torch/_inductor/utils.py:1806] [0/0] Not enough SMs to use max_autotune_gemm mode
+bf16c ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.06123 total 0.586 tokens_per_s 28.57 [warm-up 36.45 s, compiled, 5 repeats]
+bf16c ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.107 total 0.6579 tokens_per_s 27.24 [warm-up 47.55 s, compiled, 5 repeats]
+bf16c ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.4184 total 1.039 tokens_per_s 24.15 [warm-up 1.03 s, eager, 5 repeats]
+bf16c ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 2.099 total 2.841 tokens_per_s 20.25 [warm-up 2.84 s, eager, 5 repeats]
+bf16c mix chat (200 + 300 tokens, 1 a batch): ttft 0.06788 total 11.03 tokens_per_s 27.28 [warm-up 11.06 s, compiled, 3 repeats]
+bf16c rate 1 (128 + 256 tokens, 1 a batch): ttft 0.06193 total 9.42 tokens_per_s 27.25 [warm-up 9.45 s, compiled, 3 repeats]
+bf16c rate 8 (128 + 256 tokens, 8 a batch): ttft 0.2343 total 11.37 tokens_per_s 183.3 [warm-up 11.37 s, eager, 3 repeats]
+bf16c rate 32 (128 + 256 tokens, 32 a batch): ttft 0.856 total 15.14 tokens_per_s 571.2 [warm-up 15.16 s, eager, 3 repeats]
+bf16c mix long (2000 + 200 tokens, 1 a batch): ttft 0.4151 total 8.635 tokens_per_s 24.2 [warm-up 8.64 s, eager, 3 repeats]
+== 22:29:13 (+1995 s) Qwen3-4B-Instruct-2507, glyd (waiting for its download)
+Qwen3-4B-Instruct-2507 glyd: exit 0
+glyd: loaded in 13.0 s, 6.31 GB (layout mma, compiled calls to 2048 positions)
+glyd ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.06139 total 0.4689 tokens_per_s 36.83 [warm-up 9.18 s, compiled, 5 repeats]
+glyd ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.1378 total 0.5863 tokens_per_s 33.57 [warm-up 10.93 s, compiled, 5 repeats]
+glyd ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.4662 total 1.026 tokens_per_s 26.57 [warm-up 1.11 s, eager, 5 repeats]
+glyd ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 2.181 total 2.798 tokens_per_s 24.31 [warm-up 2.82 s, eager, 5 repeats]
+glyd mix chat (200 + 300 tokens, 1 a batch): ttft 0.07395 total 8.915 tokens_per_s 33.82 [warm-up 8.96 s, compiled, 3 repeats]
+glyd rate 1 (128 + 256 tokens, 1 a batch): ttft 0.06033 total 7.631 tokens_per_s 33.68 [warm-up 7.62 s, compiled, 3 repeats]
+glyd rate 8 (128 + 256 tokens, 8 a batch): ttft 0.2584 total 9.873 tokens_per_s 212.2 [warm-up 9.92 s, eager, 3 repeats]
+glyd rate 32 (128 + 256 tokens, 32 a batch): ttft 0.8826 total 13.57 tokens_per_s 643 [warm-up 13.70 s, eager, 3 repeats]
+glyd mix long (2000 + 200 tokens, 1 a batch): ttft 0.4505 total 7.916 tokens_per_s 26.66 [warm-up 7.93 s, eager, 3 repeats]
+== 22:33:32 (+2254 s) done in 2254 s

@@ -1,0 +1,10 @@
+bf16: loaded in 60.8 s, 8.04 GB (layout None, compiled calls to None positions)
+bf16 ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.05085 total 0.635 tokens_per_s 25.68 [warm-up 1.40 s, eager, 5 repeats]
+bf16 ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.1038 total 0.6954 tokens_per_s 25.33 [warm-up 0.70 s, eager, 5 repeats]
+bf16 ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.4203 total 1.039 tokens_per_s 24.25 [warm-up 1.03 s, eager, 5 repeats]
+bf16 ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 2.124 total 2.866 tokens_per_s 20.23 [warm-up 2.86 s, eager, 5 repeats]
+bf16 mix chat (200 + 300 tokens, 1 a batch): ttft 0.05969 total 11.81 tokens_per_s 25.45 [warm-up 11.82 s, eager, 3 repeats]
+bf16 rate 1 (128 + 256 tokens, 1 a batch): ttft 0.05134 total 10.04 tokens_per_s 25.52 [warm-up 10.04 s, eager, 3 repeats]
+bf16 rate 8 (128 + 256 tokens, 8 a batch): ttft 0.2377 total 11.34 tokens_per_s 183.7 [warm-up 11.35 s, eager, 3 repeats]
+bf16 rate 32 (128 + 256 tokens, 32 a batch): ttft 0.8699 total 15.15 tokens_per_s 571.4 [warm-up 15.15 s, eager, 3 repeats]
+bf16 mix long (2000 + 200 tokens, 1 a batch): ttft 0.4057 total 8.602 tokens_per_s 24.28 [warm-up 8.62 s, eager, 3 repeats]
