@@ -72,9 +72,44 @@ after bf16 (`bench-Qwen3-8B-low/`, `bench-Qwen3-8B-warm/`), on the same L4. It r
 
 This session's pair replaces it in the docs.
 
+## Checks after review 1 (`checks/`)
+
+The plugin at e7ac9e9, the review's fixes, on this L4 with v0.25.1's library:
+
+| Run | Result |
+| :--- | :--- |
+| `test_vllm.py` (no GPU: options, a save's names, pieces loaded, refusals, the version rule) | 5 of 5 |
+| `check_vllm.py --quick`, Qwen2.5-1.5B-Instruct (Linears with biases) | all 15 passed |
+| `check_vllm.py --quick`, granite-3.1-3b-a800m-instruct (a mixture of experts) | all 15 passed |
+| `check_vllm.py --quick`, Qwen3-8B | all 15 passed |
+| `check_vllm.py --quick --saves`, Yi-1.5-6B-Chat (the Llama architecture, its own LM head) | all 19 passed |
+| `b2check.py`: Qwen3-0.6B's checkpoint without layer 3's k_proj weight | refused by Glyd, naming the layer and the piece; bf16 loaded it |
+
+- **Qwen2.5-1.5B-Instruct:**
+  - every pack (112) decoded to its weights bit for bit;
+  - every product within 6.20e-3 (tiered) and 4.27e-3 (12-bit) of the same product on its matrix decoded;
+  - top-1 0.9948 and 0.9929 on bf16's continuation, against bf16 eager's 0.9922;
+  - exact eager bf16 eager's bits (8 of 8 prompts, and the continuation);
+  - exact compiled refused in inductor's deterministic mode, its 28 packed Linears having biases.
+- **Qwen3-8B:** top-1 0.9929 in both layouts against bf16 eager's 0.9909; products within 4.67e-3.
+- **Yi-1.5-6B-Chat:** each save (tiered and 12-bit) loaded as saved and in the other layout with verify on (its
+  tensors saved as they are checked by sha256, its LM head decoded in place): the bf16 checkpoint packed at load, bit
+  for bit.
+- **granite:** as before the fixes (`../l4-vllm-m4-2026-09-30`).
+
+The runs are `m5_checks.sh`, `m5_checks2.sh` and `m5_checks3.sh`, with their logs:
+
+- The first Qwen2.5 run refused its own checkpoint, flagging a bias piece as missing. vLLM loads a layer's first bias
+  piece before its loads are recorded, and the bias is a GPU tensor of its own, so nothing was missing; the check now
+  looks at the weight alone.
+- The first granite run met the tree synced between two of its runs: vLLM's compile cache refused a graph whose source
+  had changed.
+- `m5_checks2.sh` and `m5_checks3.sh` ran both again on the final tree.
+
 ## Files
 
 - `m5_l4.sh`: the run; `run.log`, its console; `bench-Qwen3-8B.txt`, `bench_serve.sh`'s.
+- `checks/`: the checks after review 1, each model's console output and a JSON and a vLLM log a run.
 - `bench-Qwen3-8B/`:
   - vLLM's result JSONs and console output;
   - each server's log and KV cache, cold and warm;
