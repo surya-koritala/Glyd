@@ -9,7 +9,9 @@ no PyTorch.
   linked in statically, so it needs only the NVIDIA driver and the system's
   C and C++ libraries (Linux, glibc 2.28 or later). Code for Ampere (sm_80,
   sm_86), Ada (sm_89), Hopper (sm_90a) and Blackwell (sm_100, sm_120), PTX
-  for the GPUs after them.
+  for the GPUs after them. Blackwell's native code is built, not yet run
+  on a GPU (an RTX PRO 6000 Blackwell Server Edition ran v0.21.0's
+  compute_80 PTX).
 - `glyd_gpu.h`: its C API. Every function; the arrays of a packed matrix;
   a product's workspace query, then its call; the stream; the return codes.
   Check `glyd_gpu_api_version()` against `GLYD_GPU_API_VERSION`: the
@@ -41,8 +43,11 @@ bf16 checkpoint it was packed from is in the Hugging Face cache:
 
 `glyd_gpu_mma_linear` and `glyd_gpu_mma12_linear` multiply by a packed
 matrix with the kernel glyd takes for that many tokens on this GPU
-(`glyd_gpu_mma_route` says which, as measured; where glyd decodes the
-matrix for cuBLAS, the prompt kernel, on every GPU). Where K is not a
+(`glyd_gpu_mma_route` says which, as measured on an RTX 4080 SUPER, an
+L4, an L40S, an A10, an A100 SXM4 40 GB, an H100 and a GH200, and the same
+for a GPU of the same code, not measured there: an A100 SXM4 80 GB, an A800,
+an H200; where glyd decodes the matrix for cuBLAS, the prompt kernel, on
+every GPU). Where K is not a
 multiple of 64 no kernel takes those prompts: past 64 tokens (in the 12-bit
 layout also from `GLYD_DEC_MIN` where that is set lower) they return
 `cudaErrorNotSupported`, nothing launched: decode the matrix
@@ -51,7 +56,7 @@ layout also from `GLYD_DEC_MIN` where that is set lower) they return
 The route SPLIT is opt-in: `glyd_gpu_mma12_route` gives it only for a GPU's
 code with `GLYD_GPU_WITH_SPLIT`, and `glyd_gpu_mma12_linear`'s own route (-1)
 never is, so without the flag the routes are v0.25.1's. Asked for, a prompt
-of the 12-bit layout on an A100 SXM (769-4096 tokens, and to 8192 for a
+of the 12-bit layout on an A100 SXM4 40 GB (769-4096 tokens, and to 8192 for a
 matrix whose O and K are both at least 5120) or a GH200 (2048-8192, such a
 matrix alone; an H100 SXM, an H200 and the
 PCIe cards not yet, until measured) takes the route SPLIT (`glyd_gpu_mma12_route`, `glyd_gpu_mma12_split_sms`): its
@@ -64,10 +69,14 @@ the ring on the others. The library does not link cuBLAS: give
 ring was made on. Where the split cannot run (the driver's green contexts
 not available: a driver before CUDA 12.5, or one that refuses them; a
 stream being captured) it returns `cudaErrorNotSupported`: take the route
-the GPU's code without the flag gives. The route's rule goes by the GPU's
-code alone; glyd.gpu's Linears also ask only on the GPUs measured (an A100
-SXM's 108 SMs, a GH200's 132, not a MIG slice). `glyd_gpu_mma12_linear` given SPLIT takes it by the prompt
-kernel.
+the GPU's code without the flag gives. Measured on an A100-SXM4-40GB and a
+GH200 480GB. The library's rule goes by the GPU's code alone, so any GPU of
+an A100 SXM4's code (compute capability 8.0, no PCIe in its name: an A100
+SXM4 80 GB, an A800, an A30) or a GH200's gets the route where it is asked
+for, not measured there; glyd.gpu's Linears also ask only with an A100
+SXM4's 108 SMs or a GH200's 132 (by class and SM count: an A100 SXM4 80 GB
+and an A800 SXM4 have the 40 GB's 108), never on a MIG slice.
+`glyd_gpu_mma12_linear` given SPLIT takes it by the prompt kernel.
 
 Rust calls them through the `glyd-gpu` crate in the Glyd repository (the
 library loaded at run time and held to its API version, each function

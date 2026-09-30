@@ -35,7 +35,12 @@ every earlier format.
   other layout against the save. The options key vLLM's compile cache,
   with a digest of the process's packs (a draft model's with the
   target's), so another layout, mode or checkpoint never loads another's
-  compiled graph ([gpu/vllm/README.md](gpu/vllm/README.md)).
+  compiled graph ([gpu/vllm/README.md](gpu/vllm/README.md)). The plugin ran
+  on an L4, an A10, an A100 SXM4 40 GB, a GH200 and two RTX A6000s (the
+  checks and benches below). Any GPU from Ampere loads it, and an H100
+  (SXM or PCIe), an H200, an A100 80 GB, an A800 and Blackwell were not
+  run: they take the library's routes for their class, not measured
+  through vLLM.
 - Measured with `vllm bench serve`, bf16 against Glyd at the same
   `--gpu-memory-utilization 0.9`, servers warm, 1,024 tokens in and 256
   out, v0.25.1's library. On an L4, an A10 and an A100 40 GB (Qwen3-8B;
@@ -68,12 +73,13 @@ every earlier format.
   runs for bf16, its `UnquantizedLinearMethod`'s (F.linear by default, a
   FlashInfer `--linear-backend`'s, the batch-invariant one under
   `VLLM_BATCH_INVARIANT`). With `--enforce-eager` the logits are vLLM's
-  bf16 eager's bit for bit; compiled, they are compiled bf16's in
-  inductor's deterministic mode (`--compilation-config
-  '{"inductor_compile_config": {"deterministic": true, "combo_kernels":
-  true, "benchmark_combo_kernel": false}}'`). Without that mode inductor
-  picks some of its kernels' variants by timing them on the GPU, and
-  compiled logits, bf16's too, differ from one process to the next:
+  bf16 eager's bit for bit on every model and GPU checked (above);
+  compiled, they are compiled bf16's in inductor's deterministic mode
+  (`--compilation-config '{"inductor_compile_config": {"deterministic":
+  true, "combo_kernels": true, "benchmark_combo_kernel": false}}'`).
+  Without that mode inductor picks some of its kernels' variants by
+  timing them on the GPU, and compiled logits, bf16's too, differ from one
+  process to the next:
   `exact` compiled is refused without it. It is refused compiled too where
   a packed Linear has a bias (Qwen2.5's q, k and v), since inductor adds a
   bf16 Linear's bias apart from its matmul, rounding before the add;
@@ -137,39 +143,46 @@ every earlier format.
   family other than Qwen3's and Llama's (their bf16 checkpoints load);
   exact under torch.compile where a packed Linear has a bias; fused
   products under `VLLM_BATCH_INVARIANT`.
-- Long prompts on an A100 SXM and a GH200 decode on SMs set apart (the
-  route SPLIT): each 12-bit matrix is decoded ahead into a ring of slots on
-  a few SMs the driver's green contexts set apart, while cuBLAS multiplies
-  from the ring on the others, told how many. Each decode waits for the
-  product of the same matrix of the layer before to start, so it runs
-  beside the products and not beside the norms, activations and attention
-  between them. One forward pass against v0.25.1's routes, the same model
-  and prompt in one process, the median of 3 rounds each way in turn
-  (`e2e.py --prefill --merge --without-split --rounds 3`): on an
-  A100-SXM4-40GB, Qwen3-8B's 0.899 / 0.876 / 0.959 / 0.971 / 0.994 at 769
-  / 1024 / 2048 / 4096 / 8192 tokens (101.2 ms at 1024 against 115.1,
-  bf16's 93.0) and 14B's 0.845 / 0.864 / 0.916 / 0.947 / 0.968; on a GH200,
-  Qwen3-32B's 0.909 / 0.940 / 0.952 at 2048 / 4096 / 8192 and 8B's 0.978 /
-  0.994 / 0.994. So the routes, where a pass took at least 2% less time:
-  an A100 SXM's 12-bit prompts from 769 to 4096 tokens, and to 8192 for a
-  matrix whose O and K are both at least 5120, as Qwen3-14B's (8B's at
-  8192 not taken); a GH200's from 2048 to 8192 for such a matrix, as
-  Qwen3-32B's (8B's matrices, 4096 on a side, not taken: 2.2% at 2048
-  alone, for a ring of 600 MiB; at 1024 tokens the GH200's first session
-  had the route lose, 1.106 and 1.012 of v0.25.0's routes' time). An H100 SXM, an H200
-  and the PCIe cards keep v0.25.1's routes until a session measures them,
-  and nothing past 8192 tokens takes it, not measured. The ring holds a
+- Long prompts on an A100 SXM4 40 GB and a GH200 decode on SMs set apart
+  (the route SPLIT): each 12-bit matrix is decoded ahead into a ring of
+  slots on a few SMs the driver's green contexts set apart, while cuBLAS
+  multiplies from the ring on the others, told how many. Each decode
+  waits for the product of the same matrix of the layer before to start,
+  so it runs beside the products and not beside the norms, activations
+  and attention between them. One forward pass against v0.25.1's routes,
+  the same model and prompt in one process, the median of 3 rounds each
+  way in turn (`e2e.py --prefill --merge --without-split --rounds 3`): on
+  an A100-SXM4-40GB, Qwen3-8B's 0.899 / 0.876 / 0.959 / 0.971 / 0.994 at
+  769 / 1024 / 2048 / 4096 / 8192 tokens (each the median of the rounds'
+  own ratios, so not quite the ratio of the times' medians: 101.2 ms at
+  1024 against 115.1 is 0.879; bf16's 93.0) and 14B's 0.845 / 0.864 /
+  0.916 / 0.947 / 0.968; on a GH200, Qwen3-32B's 0.909 / 0.940 / 0.952 at
+  2048 / 4096 / 8192 and 8B's 0.978 / 0.994 / 0.994. So the routes, where
+  a pass took at least 2% less time: an A100 SXM4 40 GB's 12-bit prompts
+  from 769 to 4096 tokens, and to 8192 for a matrix whose O and K are
+  both at least 5120, as Qwen3-14B's (8B's at 8192 not taken); a GH200's
+  from 2048 to 8192 for such a matrix, as Qwen3-32B's (8B's matrices,
+  4096 on a side, not taken: 2.2% at 2048 alone, for a ring of 600 MiB;
+  at 1024 tokens the GH200's first session had the route lose, 1.106 and
+  1.012 of v0.25.0's routes' time). An H100 SXM, an H200 and the PCIe
+  cards keep v0.25.1's routes until a session measures them, and nothing
+  past 8192 tokens takes it, not measured. The ring holds a
   layer's chunks ahead: 600 MiB for Qwen3-8B, 1.0 GiB for 14B, 1.5 GiB for
   32B, and a 32 MiB cuBLAS workspace. Its products are cuBLAS's own on the
   decoded bf16, a row chunk a call: the same bits run to run and prompt to
   prompt within a process, not bit for bit a whole-matrix product, so
-  `exact=True` never takes it. The ring is let go with its model. It runs
-  only on the GPUs measured (an A100 SXM's 108 SMs, a GH200's 132; not a
-  MIG slice). Where it cannot run (the JIT build, the driver's green
+  `exact=True` never takes it. The ring is let go with its model.
+  Measured on an A100-SXM4-40GB (108 SMs) and a GH200 480GB (132). The
+  rule goes by a GPU's code (its compute capability and its class by
+  name) and its SM count, so glyd.gpu's Linears ask for the route on an
+  A100 SXM4 80 GB or an A800 SXM4 too (compute capability 8.0, no PCIe in
+  the name, 108 SMs): by class and SM count, not measured there. Never on
+  a MIG slice. Where it cannot run (the JIT build, the driver's green
   contexts not available, as before CUDA 12.5, with a warning; too little
   memory, a CUDA graph capture, a torch.compile graph's node) a prompt
   takes the routes before it; `GLYD_SPLIT_MIN=-1` turns it off,
-  `GLYD_SPLIT_MIN`, `GLYD_SPLIT_MAX` and `GLYD_SPLIT_SMS` move it. A stress check (`gpu/split_stress.py`, in test_gpu.py quick): every
+  `GLYD_SPLIT_MIN`, `GLYD_SPLIT_MAX` and `GLYD_SPLIT_SMS` move it. A
+  stress check (`gpu/split_stress.py`, in test_gpu.py quick): every
   Qwen3 layer's matrices, 0.6B-32B, at 769-4096 tokens, rings of 3-16
   slots, 36 passes; 16,512 products the same bits across layers, passes
   and slot counts, within 1e-2 of fp32, on an L4, an A100 and a GH200, and
