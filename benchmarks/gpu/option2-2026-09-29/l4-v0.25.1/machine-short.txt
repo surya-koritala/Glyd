@@ -1,0 +1,1 @@
+gpu-route-split baba5f2 (check_capi.py as 0fb28e7), the merge of v0.25.1 (3cf52be): NVIDIA L4 (Ada, sm_89), driver 595.91.07, 23034 MiB, CUDA 13.0, torch 2.14.0+cu130
