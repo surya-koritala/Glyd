@@ -2,9 +2,10 @@
 # vllm bench serve, bf16 against Glyd (--quantization glyd), on this GPU: one server a mode, the same
 # --gpu-memory-utilization, the random dataset (IN tokens in, OUT out, --ignore-eos) at request rates 0.25, 1, 4, 16 and inf,
 # a result JSON a (mode, rate); the server's KV cache (its log's "GPU KV cache size" and "Maximum concurrency") and
-# nvidia-smi's memory; each mode from about the GPU's idle temperature (COOL, 50 C: at most 2 minutes' wait), since at
-# its power cap an L4 slows as it heats, and nvidia-smi's temperature, SM clock and power each second of a rate
-# (smi-MODE-rateR.csv); then bench_summary.py's table.
+# nvidia-smi's memory; each mode on a GPU no other process is on (at most 30 minutes' wait, else not run) and from
+# about its idle temperature (COOL, 50 C: at most 2 minutes' wait), since at its power cap an L4 slows as it heats, and
+# nvidia-smi's temperature, SM clock and power each second of a rate (smi-MODE-rateR.csv); then bench_summary.py's
+# table.
 #   bash bench_serve.sh [MODEL]       (default Qwen/Qwen3-8B)
 # Env: VLLM (the vllm command), R (results; default ./bench-MODEL), UTIL (0.9), IN (1024), OUT (256), RATES
 # ("0.25 1 4 16 inf"), PROMPTS (per rate: "32 64 128 256 256"), MODES ("bf16 glyd"), GLYD_* (the plugin's options).
@@ -20,8 +21,11 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SV= SMI=
 trap '[ -n "$SV" ] && kill $SV 2> /dev/null; [ -n "$SMI" ] && kill $SMI 2> /dev/null; wait 2> /dev/null' EXIT
 temp() { nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | head -1; }
+others() { nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -c .; }
 for mode in ${MODES:-bf16 glyd}; do
   q=(); [ "$mode" = bf16 ] || q=(--quantization glyd)
+  for i in $(seq 1 180); do [ "$(others)" -eq 0 ] && break; sleep 10; done
+  if [ "$(others)" -ne 0 ]; then echo "$mode: another process is on the GPU (nvidia-smi): not run"; continue; fi
   for i in $(seq 1 24); do [ "$(temp)" -le "${COOL:-50}" ] && break; sleep 5; done
   echo "== $(date -u +%T) $mode: vllm serve $MODEL ${q[*]} (the GPU at $(temp) C)"
   "$VLLM" serve "$MODEL" "${q[@]}" --max-model-len 4096 --gpu-memory-utilization "$UTIL" --port "$PORT" > "$R/serve-$mode.txt" 2>&1 &
