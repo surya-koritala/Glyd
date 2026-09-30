@@ -157,10 +157,11 @@ class Chat:
         self.api, self.model, self.window, self.think = api, model, window, think
         self.out, self.err, self.log = out or sys.stdout, err or sys.stderr, log
         self.messages, self.used, self.interactive = [], 0, True
-        self.color = self.out.isatty() and "NO_COLOR" not in os.environ
+        self.color = "NO_COLOR" not in os.environ
 
-    def dim(self, text):
-        return f"\x1b[2m{text}\x1b[0m" if self.color else text
+    def dim(self, text, err=False):
+        """Text in the terminal's dim style (nothing added where the stream is not a terminal)."""
+        return f"\x1b[2m{text}\x1b[0m" if self.color and (self.err if err else self.out).isatty() else text
 
     def say(self, text="", end="\n", err=False):
         f = self.err if err else self.out
@@ -178,12 +179,12 @@ class Chat:
             if kind == "reasoning":
                 if not thinking:
                     thinking = True
-                    self.say(self.dim("Thinking..."), err=to_err)
-                self.say(self.dim(piece), end="", err=to_err)
+                    self.say(self.dim("Thinking...", to_err), err=to_err)
+                self.say(self.dim(piece, to_err), end="", err=to_err)
             else:
                 if thinking:
                     thinking = False
-                    self.say("\n" + self.dim("...done thinking.") + "\n", err=to_err)
+                    self.say("\n" + self.dim("...done thinking.", to_err) + "\n", err=to_err)
                 self.say(piece, end="")
                 answer.append(piece)
 
@@ -214,7 +215,7 @@ class Chat:
             return ""
         reply = "".join(answer)
         if thinking:
-            self.say("\n" + self.dim("...done thinking."), err=to_err)
+            self.say("\n" + self.dim("...done thinking.", to_err), err=to_err)
         if reply:
             self.say()
         self.messages.append({"role": "assistant", "content": reply})
@@ -224,7 +225,7 @@ class Chat:
             advice = ("Start a new chat with /clear" + ("" if reply else ", or turn thinking off with /think")) if self.interactive else "Ask for less, or start glyd with a larger --context"
             self.say(f"\n({what}: the conversation reached the model's window" + (f" ({self.window:,} tokens)" if self.window else "") + f". {advice}.)", err=True)
         elif self.window and self.used >= 0.8 * self.window:
-            self.say(self.dim(f"({self.used:,} of {self.window:,} tokens of this conversation used; /clear starts a new chat)"), err=True)
+            self.say(self.dim(f"({self.used:,} of {self.window:,} tokens of this conversation used; /clear starts a new chat)", True), err=True)
         return reply
 
     def once(self, prompt):
