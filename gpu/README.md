@@ -1373,8 +1373,9 @@ an A100's 12-bit prompts from 769 tokens, Hopper's past its wgmma kernel,
 an L4's from 896 tiered and 2560 12-bit, GeForce Ada's from 513 tiered and
 1793 12-bit (641 exact), an A10's from 512 tiered and 640 12-bit and an
 L40S's from 1024 tiered and 2048 12-bit (not exact), decoded ahead; an A100
-SXM's 12-bit prompts from 769 to 8192 tokens and a GH200's large matrices'
-from 2048 to 8192 decoded on SMs set apart, the route SPLIT, above;
+SXM's 12-bit prompts from 769 to 4096 tokens and a GH200's from 2048 to 8192
+for a matrix whose O and K are both at least 5120 decoded on SMs set apart,
+the route SPLIT, above;
 `GLYD_WG_MIN`, `GLYD_WG_MAX`, `GLYD_MID_MIN`, `GLYD_DEC_MIN` and the
 `GLYD_SPLIT_*` ones move them, read once a process, at the library's first
 route: set them in the environment before the first model is loaded).

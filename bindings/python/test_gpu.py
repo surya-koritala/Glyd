@@ -288,8 +288,8 @@ def test_c_header():
 
 def test_split_route():
     """The route SPLIT (option 2) through the library where it and a GPU are here (else skipped): its rule's pins (an
-    A100 SXM from 769 to 8192 tokens, a matrix over 2 x 50 M weights to 4096; a GH200 from 2048 to 8192, O and K at
-    least 4096; no H100 SXM, H200 or PCIe card; its decode's SMs), asked for (GLYD_GPU_WITH_SPLIT), and without the flag
+    A100 SXM from 769 to 4096 tokens; a GH200 from 2048 to 8192, O and K at least 5120; no H100 SXM, H200 or PCIe card;
+    its decode's SMs), asked for (GLYD_GPU_WITH_SPLIT), and without the flag
     today's routes (v0.25.1's); a GLinear made as on an A100 by it at 1024 tokens: within 1e-2 of
     fp32 and the same bits run to run, its decode bit for bit the pack's, exact bit for bit F.linear, and today's route
     (decoded, then cuBLAS) where the route cannot run."""
@@ -309,10 +309,12 @@ def test_split_route():
         w = (torch.randn(512, 1024, device="cuda") * 0.02).to(torch.bfloat16)
         q = g.pack_mma12(w)
         big = g.Mma12((131072, 1024), q.data, q.exc, q.exc_base, q.hb)  # (its shape alone read by the routes)
-        wide = g.Mma12((4096, 4096), q.data, q.exc, q.exc_base, q.hb)  # (a large matrix on Hopper)
-        for p, gpu, M, route, sms in [(q, 80, 768, g.BIG, 0), (q, 80, 769, g.SPLIT, 12), (q, 80, 1536, g.SPLIT, 8), (q, 80, 8192, g.SPLIT, 4), (q, 80, 8193, g.DECODE, 0),
-                                      (q, 5080, 769, g.DECODE, 0), (q, 90, 2048, g.DECODE, 0), (wide, 6090, 1024, g.WG, 0), (wide, 6090, 2047, g.DECODE, 0),
-                                      (wide, 6090, 2048, g.SPLIT, 12), (wide, 6090, 6144, g.SPLIT, 4), (wide, 6090, 8193, g.DECODE, 0), (wide, 5090, 2048, g.DECODE, 0),
+        wide = g.Mma12((5120, 5120), q.data, q.exc, q.exc_base, q.hb)  # (a large matrix on Hopper)
+        eight = g.Mma12((4096, 12288), q.data, q.exc, q.exc_base, q.hb)  # (Qwen3-8B's class there: not large)
+        for p, gpu, M, route, sms in [(q, 80, 768, g.BIG, 0), (q, 80, 769, g.SPLIT, 12), (q, 80, 1536, g.SPLIT, 8), (q, 80, 4096, g.SPLIT, 4), (q, 80, 4097, g.DECODE, 0),
+                                      (q, 80, 8192, g.DECODE, 0), (q, 5080, 769, g.DECODE, 0), (q, 90, 2048, g.DECODE, 0), (wide, 6090, 1024, g.WG, 0), (wide, 6090, 2047, g.DECODE, 0),
+                                      (wide, 6090, 2048, g.SPLIT, 12), (wide, 6090, 6144, g.SPLIT, 4), (wide, 6090, 8192, g.SPLIT, 4), (wide, 6090, 8193, g.DECODE, 0),
+                                      (eight, 6090, 2048, g.DECODE, 0), (eight, 6090, 8192, g.DECODE, 0), (wide, 5090, 2048, g.DECODE, 0),
                                       (wide, 90, 2048, g.DECODE, 0), (wide, 90, 8192, g.DECODE, 0), (q, 3089, 4096, g.DECODE, 0), (q, 4089, 4096, g.AHEAD, 0),
                                       (q, 86, 4096, g.BIG, 0), (q, 89, 4096, g.BIG, 0)]:
             assert g.route(p, gpu | g.WITH_SPLIT, M)[0] == route and g.split_sms(p, gpu | g.WITH_SPLIT, M) == sms, (p.shape, gpu, M)

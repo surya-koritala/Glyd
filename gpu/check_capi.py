@@ -422,8 +422,8 @@ for O, K, wild in [(192, 128, 0), (1024, 2048, 0.001), (192, 4096, 0.1), (192, 1
 print(f"routes on 13 GPUs as main's GLinear took them (the L4's decode and the L40S's decode ahead since); linear by this GPU's ({here}) and by each route, as the route's kernel")
 
 # The route SPLIT (option 2): its rule pinned, as measured end to end (benchmarks/gpu/option2-2026-09-29): a 12-bit
-# prompt, K a multiple of 64, on an A100 SXM (80) from 769 to 8192 tokens (a matrix over 2 x 50 M weights to 4096), on
-# a GH200 (6090) from 2048 to 8192 for a matrix of O and K at least 4096, on an H100 SXM or H200 (90) and a PCIe card
+# prompt, K a multiple of 64, on an A100 SXM (80) from 769 to 4096 tokens, on a GH200 (6090) from 2048 to 8192 for a
+# matrix of O and K at least 5120, on an H100 SXM or H200 (90) and a PCIe card
 # (5080, 5090) never (not measured); its decode's
 # SMs by the GPU and M, asked for (GLYD_GPU_WITH_SPLIT); every other route main's, through both hosts; without the flag
 # none of it, every route main's (the C API's other callers: v0.25.1's routes). The route's 'last'
@@ -437,8 +437,8 @@ def split_rule(gpu, twelve, O, K, M):
     a100, hopper = gpu == 80, gpu == g.GH200 + 90
     if not twelve or K % 64 or SPLIT_MIN < 0 or cc < 80:
         return 0
-    lo = SPLIT_MIN or (769 if a100 else 2048 if hopper and O >= 4096 and K >= 4096 else 1 << 62)
-    hi = SPLIT_MAX or (4096 if a100 and O * K > 2 * (50 << 20) else 8192)
+    lo = SPLIT_MIN or (769 if a100 else 2048 if hopper and O >= 5120 and K >= 5120 else 1 << 62)
+    hi = SPLIT_MAX or (4096 if a100 else 8192)
     if not lo <= M <= hi:
         return 0
     if SPLIT_SMS:
@@ -453,7 +453,7 @@ def split_rule(gpu, twelve, O, K, M):
 pinned = 0
 for gpu in (80, 5080, 90, 5090, 6090, 86, 89, 1089, 2086, 3089, 4089, 100, 120):
     for twelve in (False, True):
-        for O, K in ((512, 1024), (512, 1040), (131072, 1024), (4096, 4096), (4032, 8192), (8192, 4032)):  # (a matrix over 2 x 50 M weights; one large on Hopper; each side under 4096)
+        for O, K in ((512, 1024), (512, 1040), (131072, 1024), (4096, 4096), (5120, 5120), (5056, 8192), (8192, 5056)):  # (8B's class on Hopper; one large there; each side under 5120)
             name = "mma12_route" if twelve else "mma_route"
             Ms = sorted({*range(0, 2100, 7), 767, 768, 769, 1023, 1024, 1025, 1535, 1536, 2047, 2048, 3071, 3072, 4096, 4097, 6143, 6144, 8192, 8193})
             for M in Ms:
@@ -466,7 +466,7 @@ for gpu in (80, 5080, 90, 5090, 6090, 86, 89, 1089, 2086, 3089, 4089, 100, 120):
                 if last < 1 << 62:
                     assert lib._route(name, asked, O, K, last)[0] == r and lib._route(name, asked, O, K, last + 1)[0] != r, ("the route SPLIT's last", gpu, O, K, M, last)
                 pinned += 1
-print(f"the route SPLIT's rule: {pinned} routes pinned, asked (an A100 SXM's from 769 to 8192, a matrix over 2 x 50 M weights to 4096; a GH200's from 2048 to 8192, O and K at least 4096; no H100 SXM, H200 or PCIe card) and not (main's), its SMs alike through both hosts")
+print(f"the route SPLIT's rule: {pinned} routes pinned, asked (an A100 SXM's from 769 to 4096; a GH200's from 2048 to 8192, O and K at least 5120; no H100 SXM, H200 or PCIe card) and not (main's), its SMs alike through both hosts")
 
 # Its decode, built for few SMs: every row bit for bit as the pack's (rows from 0 and a row block on; grids for 1, 3,
 # 16 and 200 SMs), through both hosts; K not a multiple of 64 refused alike.

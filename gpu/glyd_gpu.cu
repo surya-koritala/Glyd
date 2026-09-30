@@ -3954,30 +3954,29 @@ static int64_t dec_from(bool twelve, int64_t gpu, int64_t dec_min) {
 }
 
 // Option 2 (the route SPLIT): a 12-bit prompt's matrices decoded ahead on SMs set apart (green contexts), cuBLAS on the
-// rest (glyd_gpu_mma12_ring_linear), where a model's forward pass took less time than by v0.25.0's routes, measured end
-// to end (e2e.py --prefill, the Linears merged; benchmarks/gpu/option2-2026-09-29): an A100 SXM's prompts from 769 to
-// 8192 tokens (Qwen3-8B's pass 0.851-0.988x, 14B's 0.832-1.000x, on an A100-SXM4-40GB), a matrix over 2 x 50 M weights
-// (14B's gate and up) there to 4096 alone (past it by today's route: 1.021x a layer by SPLIT at 8192); a GH200's (the
-// Hopper measured; its class by name) from 2048 to 8192 tokens for a large matrix, O and K both at least 4096,
-// every matrix of a layer of hidden size 4096 or more with q, k, v and gate, up merged (Qwen3-32B's pass 0.895-0.938x,
-// 8B's 0.978-0.992x; at 1024 tokens both slower, 32B's 1.012x and 8B's 1.106x, its pass issued by the host no faster
-// than the GPU ran it). Never on a PCIe card (an A100 PCIe, an H100 PCIe), an H100 SXM or an H200 (not measured end to
-// end: an H100 SXM's 3.35 TB/s and 700 W against the GH200's 4 TB/s and larger budget), nor past 8192 tokens (not
-// measured). Its SMs for the decode: an A100's 12 to 1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143,
+// rest (glyd_gpu_mma12_ring_linear), where a model's forward pass took at least 2% less time than by the routes without
+// it, measured end to end (e2e.py --prefill, the Linears merged; benchmarks/gpu/option2-2026-09-29): an A100 SXM's
+// prompts from 769 to 4096 tokens (on an A100-SXM4-40GB against v0.25.0's routes, which v0.25.1 left as they were
+// there: Qwen3-8B's pass 0.851-0.964x, 14B's 0.832-0.935x; at 8192 0.988x and 1.000x, not taken); a GH200's (the
+// Hopper measured; its class by name) from 2048 to 8192 tokens for a matrix whose O and K are both at least 5120,
+// every matrix of a layer of hidden size 5120 or more with q, k, v and gate, up merged (against v0.25.1's routes, the
+// median of 3 rounds: Qwen3-32B's pass 0.909-0.952x; 8B's, hidden size 4096, 0.978x at 2048 and 0.994x at 4096 and
+// 8192, not taken: 2.2% at 2048 alone, for a ring of 600 MiB; at 1024 tokens both slower in the first session, 32B's
+// 1.012x and 8B's 1.106x). Never on a PCIe card (an A100 PCIe, an H100 PCIe), an H100 SXM or an H200 (not measured
+// end to end: an H100 SXM's 3.35 TB/s and 700 W against the GH200's 4 TB/s and larger budget), nor past 8192 tokens
+// (not measured). Its SMs for the decode: an A100's 12 to 1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143,
 // then 4 (the split's granularity there: 8, cuBLAS a co-scheduled group). GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset:
 // the GPU's; GLYD_SPLIT_MIN negative: never) and GLYD_SPLIT_SMS move them, on any GPU from Ampere and any matrix. The
 // route is opt-in: a GPU's code with GLYD_GPU_WITH_SPLIT asks for it (a caller that runs the ring: glyd.gpu's GLinear,
 // where the split can run); without the flag no route is SPLIT and glyd_gpu_*_linear's own route never is (v0.25.1's
 // routes, for the C API's other callers). The decode is the 12-bit layout's (K a multiple of 64).
-constexpr int64_t SPLIT_SLOT_WEIGHTS = 50 << 20;  // a ring slot of 100 MiB of bf16, as measured
-
 static int64_t split_sms(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M) {
     const RouteMins& t = route_mins();
     int64_t code = gpu & ~(int64_t)GLYD_GPU_WITH_SPLIT, cc = code % 1000;
-    bool a100 = code == 80, gh200 = code == GLYD_GPU_GH200 + 90, large = O >= 4096 && K >= 4096;
+    bool a100 = code == 80, gh200 = code == GLYD_GPU_GH200 + 90, large = O >= 5120 && K >= 5120;
     if (!twelve || !(gpu & GLYD_GPU_WITH_SPLIT) || K % 64 || t.split_min < 0 || cc < 80) return 0;
     int64_t lo = t.split_min ? t.split_min : a100 ? 769 : gh200 && large ? 2048 : INT64_MAX;
-    int64_t hi = t.split_max ? t.split_max : a100 && O * K > 2 * SPLIT_SLOT_WEIGHTS ? 4096 : 8192;
+    int64_t hi = t.split_max ? t.split_max : a100 ? 4096 : 8192;
     if (M < lo || M > hi) return 0;
     if (t.split_sms) return t.split_sms;
     if (a100) return M < 1536 ? 12 : M < 3072 ? 8 : 4;

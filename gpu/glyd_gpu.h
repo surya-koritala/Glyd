@@ -212,11 +212,11 @@ int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* rout
 /* The route SPLIT's SMs for the decode, where the route of the code with
  * GLYD_GPU_WITH_SPLIT is SPLIT (else 0; without the flag, 0): a 12-bit
  * prompt decoded ahead on SMs set apart (green contexts), cuBLAS on the rest,
- * where a forward pass took less time so than by the routes before it
- * (gpu/README.md): an A100 SXM's from 769 to 8192 tokens (a matrix over 2 x
- * 50 M weights to 4096), a GH200's from 2048 to 8192 for a matrix whose O and
- * K are both at least 4096 (an H100 SXM, an H200 and the PCIe cards: never,
- * until measured); the decode's SMs 4 to 12 by the GPU and M. The route is
+ * where a forward pass took at least 2% less time by it than by the routes
+ * without it (gpu/README.md): an A100 SXM's from 769 to 4096 tokens, a
+ * GH200's from 2048 to 8192 for a matrix whose O and K are both at least 5120
+ * (an H100 SXM, an H200 and the PCIe cards: never, until measured); the
+ * decode's SMs 4 to 12 by the GPU and M. The route is
  * opt-in: glyd_gpu_*_route give it only for a code with GLYD_GPU_WITH_SPLIT,
  * and glyd_gpu_*_linear's own route (-1) never is. GLYD_SPLIT_MIN,
  * GLYD_SPLIT_MAX (0 or unset: the GPU's; a negative GLYD_SPLIT_MIN: never)
