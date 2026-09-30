@@ -12,7 +12,7 @@ a process of its own:
   for bit; exact under torch.compile refused, with why, but with inductor's
   deterministic mode (DETERMINISTIC), where compiled bf16's bit for bit
   (the same mode, CUDA graphs on); fused Glyd compiled in that mode the same
-  bits from one compile to the next (each on an empty compile cache);
+  bits from one run to the next (the second loading the first's graphs);
 - per layer (LLM.apply_model): every packed layer's product against
   F.linear on its decoded matrix at 1-4096 tokens, within 1e-2 and the same
   bits every run; with GLYD_VERIFY=1 every pack checked against its
@@ -29,7 +29,11 @@ a process of its own:
   and its logits against bf16's as before; bf16 compiled again on an empty
   cache, against its first compile (the compiled graph's own variation).
 
-    python check_vllm.py [--saves] [--out DIR] [MODEL ...]
+    python check_vllm.py [--saves] [--quick] [--out DIR] [MODEL ...]
+
+--quick leaves out the two runs that only describe bf16's own noise (its
+prompts one at a time, and compiled again on an empty cache): every check
+stays.
 
 Needs vLLM (glyd[vllm]) and the library (GLYD_GPU_LIB); --saves makes its
 saves with glyd[gpu]'s transformers path (GLYD_SAVE_PYTHON: a Python that
@@ -181,7 +185,7 @@ def compare(a, b):
 
 def main():
     args = sys.argv[1:]
-    saves = "--saves" in args
+    saves, quick = "--saves" in args, "--quick" in args
     out_dir = args[args.index("--out") + 1] if "--out" in args else "check_vllm_results"
     models = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] != "--out")] or ["Qwen/Qwen3-1.7B"]
     os.makedirs(out_dir, exist_ok=True)
@@ -201,10 +205,13 @@ def main():
         bf16 = R("bf16", {"make_long": True})
         long = {"long_ids": bf16["long_ids"]}
         eager = R("bf16-eager", dict(long, eager=True))
-        one = R("bf16-one-by-one", {"one_by_one": True})
-        again = run(dict(long, model=model), out_dir, f"{tag}-bf16-recompiled", {"VLLM_CACHE_ROOT": tempfile.mkdtemp(prefix="vllm-cache-")})
         floor = compare(eager, bf16)
-        print(f"{tag}: bf16 KV cache {bf16['blocks'] * bf16['block_size']} tokens; its noise: graphs against eager {floor}; one by one against batched {compare(one, bf16)}; compiled again on an empty cache {compare(again, bf16)}", flush=True)
+        noise = ""
+        if not quick:
+            one = R("bf16-one-by-one", {"one_by_one": True})
+            again = run(dict(long, model=model), out_dir, f"{tag}-bf16-recompiled", {"VLLM_CACHE_ROOT": tempfile.mkdtemp(prefix="vllm-cache-")})
+            noise = f"; one by one against batched {compare(one, bf16)}; compiled again on an empty cache {compare(again, bf16)}"
+        print(f"{tag}: bf16 KV cache {bf16['blocks'] * bf16['block_size']} tokens; its noise: graphs against eager {floor}{noise}", flush=True)
         for layout in ("mma", "mma12"):
             r = R(f"glyd-{layout}", dict(long, quantization="glyd", layers=True), {"GLYD_LAYOUT": layout, "GLYD_VERIFY": "1"})
             c = compare(r, bf16)
@@ -232,9 +239,10 @@ def main():
         xd = run(dict(det, quantization="glyd"), out_dir, f"{tag}-glyd-exact-det", dict(fresh(), GLYD_EXACT="1"))
         c = compare(xd, bd)
         check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"], f"{tag} exact under torch.compile, inductor deterministic: compiled bf16's tokens, logprobs and prompt_logprobs (the same mode) bit for bit ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']})")
-        ga, gb = (run(dict(det, quantization="glyd"), out_dir, f"{tag}-glyd-det-{n}", fresh()) for n in "ab")
+        gc = fresh()
+        ga, gb = (run(dict(det, quantization="glyd"), out_dir, f"{tag}-glyd-det-{n}", gc) for n in "ab")
         c = compare(ga, gb)
-        check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"], f"{tag} fused, compiled, inductor deterministic: the same bits from one compile to the next ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']}; layout {ga['glyd']['layout']})")
+        check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"], f"{tag} fused, compiled, inductor deterministic: the same bits from one run to the next, the second on the first's graphs ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']}; layout {ga['glyd']['layout']})")
         if saves:
             for layout in ("mma", "mma12"):
                 d = tempfile.mkdtemp(prefix=f"glyd-save-{tag}-{layout}-")
