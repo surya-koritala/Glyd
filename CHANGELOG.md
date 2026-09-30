@@ -6,6 +6,52 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- Long prompts on an A100 SXM and Hopper decode on SMs set apart (the
+  route SPLIT): each 12-bit matrix is decoded ahead into a ring of slots on
+  a few SMs the driver's green contexts set apart, while cuBLAS multiplies
+  from the ring on the others, told how many. Each decode waits for the
+  product of the same matrix of the layer before to start, so it runs
+  beside the products and not beside the norms, activations and attention
+  between them. One forward pass against v0.25.0's routes, the same model
+  and prompt in one process (`e2e.py --prefill --merge`): on an
+  A100-SXM4-40GB, Qwen3-8B's 0.887 / 0.851 / 0.952 / 0.964 / 0.988 at 769 /
+  1024 / 2048 / 4096 / 8192 tokens (95.5 ms at 1024 against 112.2, bf16's
+  90.0) and 14B's 0.832 / 0.849 / 0.904 / 0.935 / 1.000; on a GH200,
+  Qwen3-32B's 0.895 / 0.935 / 0.938 at 2048 / 4096 / 8192 and 8B's 0.978 /
+  0.991 / 0.992. So the routes: an A100 SXM's 12-bit prompts from 769 to
+  8192 tokens (a matrix over 2 x 50 M weights, as 14B's gate and up, to
+  4096), a Hopper's from 2048 to 8192 for a matrix whose O and K are both
+  at least 4096 (at 1024 tokens the GH200 lost: 1.106 and 1.012); no PCIe
+  card and nothing past 8192 tokens, not measured. The ring holds a
+  layer's chunks ahead: 600 MiB for Qwen3-8B, 1.0 GiB for 14B, 1.5 GiB for
+  32B, and a 32 MiB cuBLAS workspace. Its products are cuBLAS's own on the
+  decoded bf16, a row chunk a call: the same bits run to run and prompt to
+  prompt, not bit for bit a whole-matrix product, so `exact=True` never
+  takes it. Where it cannot run (the JIT build, a driver before CUDA 12.4,
+  MIG or MPS, too little memory, a CUDA graph capture, a torch.compile
+  graph's node) a prompt takes the routes before it; `GLYD_SPLIT_MIN=-1`
+  turns it off, `GLYD_SPLIT_MIN`, `GLYD_SPLIT_MAX` and `GLYD_SPLIT_SMS` move
+  it. A stress check (`gpu/split_stress.py`, in test_gpu.py quick): every
+  Qwen3 layer's matrices, 0.6B-32B, at 769-4096 tokens, rings of 3-16
+  slots, 36 passes; 16,512 products the same bits across layers, passes
+  and slot counts, within 1e-2 of fp32, on an L4, an A100 and a GH200
+  ([benchmarks/gpu/option2-2026-09-29](benchmarks/gpu/option2-2026-09-29)).
+- C API version 6: the ring (`glyd_gpu_ring_create`, `_destroy`, `_split`,
+  `_reset`, `glyd_gpu_mma12_ring_queue`, `glyd_gpu_mma12_ring_linear`,
+  with the caller's cuBLAS as `glyd_gpu_blas`: the library does not link
+  it), its decode (`glyd_gpu_mma12_unpack_split`), the route
+  `GLYD_GPU_ROUTE_SPLIT` and its SMs (`glyd_gpu_mma12_split_sms`), a GPU's
+  PCIe class in its code (`GLYD_GPU_PCIE`) and `GLYD_GPU_NO_SPLIT` (a
+  code's routes without SPLIT). `glyd_gpu_mma12_linear` takes SPLIT by the
+  prompt kernel. v0.25.0's library (version 5) is refused by this package
+  and the glyd-gpu crate (`Route::Split`, `PCIE`, `NO_SPLIT`,
+  `Library::split_sms`; the ring declared, not wrapped yet).
+- `gpu/e2e.py --without-split` times a prompt again with the route off in
+  the same process; `--breakdown` gives a pass's host time and its GPU
+  time by kind of kernel.
+
 ## v0.25.0 — 2026-09-29
 
 - The 12-bit layout is split byte: a weight's low byte (the exponent's

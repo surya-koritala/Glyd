@@ -1047,6 +1047,75 @@ benchmarks/gpu/rtx4080s-prompts-2026-09-27,
 benchmarks/gpu/lambda-a10-routes-2026-09-28,
 benchmarks/gpu/sweep-2026-09-28/a10g-aws-g5).
 
+### Long prompts on an A100 SXM and Hopper: the decode on SMs set apart
+
+Decoded first, a matrix of a long prompt costs its decode on every SM
+before its product; decoded ahead beside the products (above), it takes
+their SMs as it goes. The route SPLIT sets a few SMs apart for the decode
+instead, with the driver's green contexts (no library of their own: the
+driver's entry points), and cuBLAS multiplies on the rest, told how many
+(`cublasSetSmCountTarget` on PyTorch's own handle):
+
+- the decode: the 12-bit layout's steps, four at a time a warp, their
+  next four loaded while these are decoded, written out through shared
+  memory in whole 128-byte lines (146 registers, no spills; 9.6 weights a
+  clock an SM on an A100, 10.3 on an H100);
+- the ring: slots in device memory, a layer's row chunks ahead (Qwen3-8B's
+  6 of 100 MiB, 14B's 6 of 170 MiB, 32B's 6 of 250 MiB, and a cuBLAS
+  workspace of 32 MiB); the order recorded from a prompt, as the decode
+  ahead's; each chunk's decode waits for the product of the same matrix
+  of the layer before to start, so that it runs beside that product,
+  whose tensor-core work leaves memory bandwidth to spare, and not beside
+  the norms, activations and attention between the products: before that
+  gate, the rest of a Qwen3-8B pass of 1024 tokens took 43.5 ms on an A100
+  against 29 by the other routes, a third of the bandwidth gone to the
+  decode;
+- its products are cuBLAS's own on the decoded bf16, a row chunk a call:
+  the same bits run to run and prompt to prompt (a device's ring keeps
+  one slot size), but not bit for bit a whole-matrix product, so
+  `exact=True` never takes it.
+
+The routes, as measured end to end: an A100 SXM's 12-bit prompts from 769
+to 8192 tokens (a matrix over 2 x 50 M weights to 4096, as 14B's gate and
+up), a Hopper's (an H100 SXM, H200, GH200: measured on a GH200) from 2048
+to 8192 for a matrix whose O and K are both at least 4096; no PCIe card
+and nothing past 8192 tokens, until measured. Its SMs for the decode: an
+A100's 12 to 1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143, then 4.
+One forward pass (`e2e.py --prefill --merge`, bf16 and v0.25.0's routes
+in the same process), ms:
+
+| Prompt | 769 | 1024 | 2048 | 4096 | 8192 |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| A100-SXM4-40GB, Qwen3-8B, bf16 | 79.4 | 90.0 | 173.8 | 346.1 | 725.5 |
+| v0.25.0's routes | 101.5 | 112.2 | 196.0 | 369.2 | 754.8 |
+| SPLIT | 90.0 | 95.5 | 186.5 | 355.8 | 746.1 |
+| Qwen3-14B, bf16 | 124.2 | 150.8 | 290.9 | 583.4 | 1224.4 |
+| v0.25.0's routes | 174.0 | 199.0 | 348.5 | 654.6 | 1319.6 |
+| SPLIT | 144.7 | 168.9 | 315.1 | 612.2 | 1320.0 |
+| GH200, Qwen3-8B, bf16 | | 39.3 | 71.9 | 146.2 | 302.5 |
+| v0.25.0's routes | | 43.3 | 81.3 | 154.7 | 311.9 |
+| SPLIT | | 47.9 | 79.5 | 153.3 | 309.4 |
+| Qwen3-32B, bf16 | | 140.3 | 278.0 | 559.1 | 1187.9 |
+| v0.25.0's routes | | 161.0 | 333.9 | 626.8 | 1280.1 |
+| SPLIT | | 163.0 | 299.0 | 586.0 | 1200.5 |
+
+(At 1024 tokens on the GH200 the route lost: Qwen3-8B's pass was issued
+by the host in 47.6 of its 48.0 ms, the route's calls costing the host
+more than the GPU saved; 32B's took 1.2% longer. Hopper keeps its wgmma
+kernel to 1024 and the matrix decoded first to 2047.) Where it cannot run,
+a prompt takes the routes before it, never an error: the JIT build (the
+ring is the prebuilt library's), a driver before CUDA 12.4, MIG or MPS
+refusing the split, too little memory for its ring, a CUDA graph being
+captured or a torch.compile graph's node (a compiled `generate()` runs its
+prompt eager, as before). `GLYD_SPLIT_MIN=-1` turns it off;
+`GLYD_SPLIT_MIN`, `GLYD_SPLIT_MAX` and `GLYD_SPLIT_SMS` move it, on any
+GPU from Ampere and any matrix (read at the library's first route, as the
+routes' others). A stress check holds the ring to its ordering
+(`split_stress.py`: every Qwen3 layer's matrices, 0.6B-32B, at 769-4096
+tokens, rings of 3-16 slots, 36 passes; 16,512 products the same bits
+across layers, passes and slot counts and within 1e-2 of fp32 on an L4, an
+A100 and a GH200; logs: benchmarks/gpu/option2-2026-09-29).
+
 ## Popular models
 
 `sizes.py MODEL_DIR ...` packs every Linear layer's matrix of a model in
@@ -1215,17 +1284,21 @@ Ada and an A100's to 128, `mma_gemm_wg` from 17 to 1024 on Hopper, the prompt
 kernel past them, and the matrix decoded for cuBLAS where that is the faster:
 an A100's 12-bit prompts from 769 tokens, Hopper's past its wgmma kernel,
 GeForce Ada's from 513 tiered and 1793 12-bit (641 exact) and an A10's from
-512 tiered and 640 12-bit (not exact), decoded ahead; `GLYD_WG_MIN`,
-`GLYD_WG_MAX`, `GLYD_MID_MIN` and `GLYD_DEC_MIN` move them, read once a
-process, at the library's first route: set them in the environment before
-the first model is loaded).
+512 tiered and 640 12-bit (not exact), decoded ahead; an A100 SXM's 12-bit
+prompts from 769 to 8192 tokens and a Hopper's large matrices' from 2048 to
+8192 decoded on SMs set apart, the route SPLIT, above; `GLYD_WG_MIN`,
+`GLYD_WG_MAX`, `GLYD_MID_MIN`, `GLYD_DEC_MIN` and the `GLYD_SPLIT_*` ones move
+them, read once a process, at the library's first route: set them in the
+environment before the first model is loaded).
 `glyd_gpu_mma_linear` and `glyd_gpu_mma12_linear` run a route's kernel (where
 glyd.gpu decodes for cuBLAS, the prompt kernel, on every GPU; where K is not a
 multiple of 64, past 64 tokens (12-bit: also from `GLYD_DEC_MIN` where that is
 lower): `cudaErrorNotSupported`, the matrix decoded for a GEMM of the caller's
-there). A GPU's code, which the routes take, is its compute capability plus a
-class where the name tells GPUs apart (`GLYD_GPU_GEFORCE`, `GLYD_GPU_A10`:
-`glyd_gpu.h`). The glyd package's Linears take their routes from the library
+there; SPLIT, whose products are the caller's cuBLAS on the ring, through
+`glyd_gpu_mma12_ring_linear`). A GPU's code, which the routes take, is its
+compute capability plus a class where the name tells GPUs apart
+(`GLYD_GPU_GEFORCE`, `GLYD_GPU_A10`, `GLYD_GPU_PCIE`: `glyd_gpu.h`), and
+`GLYD_GPU_NO_SPLIT` gives its routes without SPLIT. The glyd package's Linears take their routes from the library
 and multiply by `linear` in their one C call, so every caller routes the same
 way.
 
