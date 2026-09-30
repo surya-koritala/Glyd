@@ -1,0 +1,7 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 7546.74it/s]
+merged: 72 groups of Linears as one product each
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.54 GB on 1 GPU
+glyd mma12 fused: batch 1: 16.5 tokens/s (16.5 a sequence), peak VRAM 12.55 GB
+glyd mma12 prefill: 1024 tokens 49.0 ms (20915 tokens/s), first token 52.1 ms
+text:  in the 1950s, with the development of algorithms that could reduce the size of data for more efficient storage and transmission. Early methods were based
+exit 0

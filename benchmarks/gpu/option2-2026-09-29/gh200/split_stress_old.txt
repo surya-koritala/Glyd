@@ -1,0 +1,30 @@
+14B M=769: 0 failures; GLinear's ring 6 x 170 MiB (3 s)
+14B M=1024: 0 failures; GLinear's ring 6 x 170 MiB (3 s)
+32B M=769: 24 failures; GLinear's ring 6 x 250 MiB (4 s)
+32B M=1024: 0 failures; GLinear's ring 6 x 250 MiB (5 s)
+split_stress: 1984 products checked, 24 failures
+  32B M=769 GLinear, pass 1, layer 0, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 1, layer 1, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 1, layer 2, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 1, layer 3, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 2, layer 0, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 2, layer 1, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 2, layer 2, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 2, layer 3, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 3, layer 0, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 3, layer 1, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 3, layer 2, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 3, layer 3, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 4, layer 0, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 4, layer 1, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 4, layer 2, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 4, layer 3, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 5, layer 0, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 5, layer 1, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 5, layer 2, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 5, layer 3, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 6, layer 0, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 6, layer 1, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 6, layer 2, matrix (5120, 25600): not the same bits as the first pass's
+  32B M=769 GLinear, pass 6, layer 3, matrix (5120, 25600): not the same bits as the first pass's
+exit 1

@@ -1,0 +1,13 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 7898.13it/s]
+merged: 72 groups of Linears as one product each
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.54 GB on 1 GPU
+glyd mma12 fused: batch 1: 17.0 tokens/s (17.0 a sequence), peak VRAM 12.55 GB
+glyd mma12 prefill: 1024 tokens 46.6 ms (21973 tokens/s), first token 48.8 ms
+USDT:2026-09-30 00:06:39 4905:4905 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-30 00:06:39 4905:4905 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, SPLIT: a pass 47.2 ms, the host issues it in 45.7; GPU span 65.5 ms, idle 19.8; kernels: GEMMs 21.3 ms, the decode 19.8 (beside GEMMs 3.5, beside the rest 11.6, alone 4.8), attention 1.2, the rest 18.5
+USDT:2026-09-30 00:06:39 4905:4905 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-30 00:06:39 4905:4905 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, without SPLIT: a pass 44.3 ms, the host issues it in 37.6; GPU span 54.5 ms, idle 14.2; kernels: GEMMs 0.3 ms, the decode 0.0 (beside GEMMs 0.0, beside the rest 0.0, alone 0.0), attention 1.1, the rest 38.9
+text:  in the 1950s, with the development of algorithms that could reduce the size of data for more efficient storage and transmission. Early methods were based
+exit 0
