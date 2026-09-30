@@ -1,0 +1,55 @@
+NVIDIA L4 (8.9, sm_89), x86_64 host, 16 CPUs; v0.25.1 fd24666 (decode-fix: v0.25.1's code), orders 73b9560 (decode-fix), v0.25.0 bfb2c4e (rust-splitbyte, v0.25.0's tree), main db8e7b0 (origin/main)
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+== 01:12:30 (+3 s) builds: v0.25.1 by build_lib.sh (every architecture), 73b9560, v0.25.0 and main for sm_89 (its flags), at once
+NVIDIA L4 (8.9, sm_89), x86_64 host, 16 CPUs; v0.25.1 fd24666 (decode-fix: v0.25.1's code), orders 73b9560 (decode-fix), v0.25.0 bfb2c4e (rust-splitbyte, v0.25.0's tree), main db8e7b0 (origin/main)
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+build final: exit 0
+build fix: exit 0
+build rel: exit 0
+build main: exit 0
+== 01:28:15 (+3 s) bits: v0.25.1's self-test, then xcheck.py's synthetic part (against main's library)
+selftest-v0.25.1: exit 0
+xcheck-v0.25.1: exit 0
+== 01:28:22 (+10 s) checks at v0.25.1's head: check_capi.py (then with GLYD_DEC_MIN 1000 and 3000), test_gpu.py, cargo test
+check_capi: exit 0
+test_gpu: exit 0
+cargo_test: exit 0
+check_capi-dec_min1000: exit 0
+check_capi-dec_min3000: exit 0
+== 01:33:32 (+320 s) kernel: dec_time.py, Qwen/Qwen3-8B, run 1
+time-Qwen3-8B-run1: exit 0
+== 01:33:37 (+325 s) kernel: dec_time.py, Qwen/Qwen3-4B-Instruct-2507, run 1
+time-Qwen3-4B-Instruct-2507-run1: exit 0
+== 01:33:41 (+329 s) e2e: dec_e2e.py, Qwen3-8B, exact: 73b9560's orders 0-3, then main's, v0.25.0's and v0.25.1's
+e2e-fix: 51 C after 0 s (start 48 C)
+e2e-fix: exit 0
+e2e-main: 57 C after 121 s (start 48 C)
+e2e-main: exit 0
+e2e-v0.25.0: 54 C after 121 s (start 48 C)
+e2e-v0.25.0: exit 0
+e2e-v0.25.1: 53 C after 121 s (start 48 C)
+e2e-v0.25.1: exit 0
+== 01:44:07 (+955 s) kernel: dec_time.py, Qwen/Qwen3-8B, run 2
+time-Qwen3-8B-run2: exit 0
+== 01:44:12 (+960 s) kernel: dec_time.py, Qwen/Qwen3-4B-Instruct-2507, run 2
+time-Qwen3-4B-Instruct-2507-run2: exit 0
+== 01:44:16 (+964 s) host: dec_e2e.py, Qwen3-0.6B, exact steps: the same processes, then each again
+e2e-fix: 52 C after 120 s (start 48 C)
+e2e-fix: exit 0
+e2e-main: 51 C after 41 s (start 48 C)
+e2e-main: exit 0
+e2e-v0.25.0: 51 C after 10 s (start 48 C)
+e2e-v0.25.0: exit 0
+e2e-v0.25.1: 50 C after 0 s (start 48 C)
+e2e-v0.25.1: exit 0
+e2e-fix-2: 51 C after 1 s (start 48 C)
+e2e-fix-2: exit 0
+e2e-main2: 51 C after 5 s (start 48 C)
+e2e-main2: exit 0
+e2e-v0.25.0-2: 51 C after 0 s (start 48 C)
+e2e-v0.25.0-2: exit 0
+e2e-v0.25.1-2: 51 C after 5 s (start 48 C)
+e2e-v0.25.1-2: exit 0
+== 01:51:57 (+1425 s) done in 1425 s

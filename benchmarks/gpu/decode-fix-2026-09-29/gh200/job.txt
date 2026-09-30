@@ -1,0 +1,44 @@
+== 00:10:49 (+0 s) machine
+== 00:10:49 (+0 s) environment
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+NVIDIA GH200 480GB (9.0, sm_90a), aarch64 host, 64 CPUs; mode hopper; decode-fix 73b9560 (decode-fix), v0.25.0 bfb2c4e (rust-splitbyte, v0.25.0's tree), main db8e7b0 (origin/main)
+== 00:10:53 (+2 s) in the background: layer 10 of Qwen/Qwen3-8B Qwen/Qwen3-14B Qwen/Qwen3-32B, then Qwen/Qwen3-8B whole
+== 00:10:53 (+2 s) builds for sm_90a: decode-fix, v0.25.0 and main (build_lib.sh's flags), at once
+build fix: exit 0
+build rel: exit 0
+build main: exit 0
+== 00:11:29 (+38 s) bits, GLYD_DEC_ORDER=0: the self-test, then xcheck.py's synthetic part (against main's library)
+selftest-o0: exit 0
+xcheck-o0: exit 0
+== 00:11:35 (+44 s) bits, GLYD_DEC_ORDER=1: the self-test, then xcheck.py's synthetic part (against main's library)
+selftest-o1: exit 0
+xcheck-o1: exit 0
+== 00:11:40 (+49 s) bits, GLYD_DEC_ORDER=2: the self-test, then xcheck.py's synthetic part (against main's library)
+selftest-o2: exit 0
+xcheck-o2: exit 0
+== 00:11:46 (+55 s) bits, GLYD_DEC_ORDER=3: the self-test, then xcheck.py's synthetic part (against main's library)
+selftest-o3: exit 0
+xcheck-o3: exit 0
+== 00:11:51 (+60 s) kernel: dec_time.py, Qwen/Qwen3-8B, run 1 (waiting for its download)
+time-Qwen3-8B-run1: exit 0
+== 00:11:53 (+62 s) kernel: dec_time.py, Qwen/Qwen3-14B, run 1 (waiting for its download)
+time-Qwen3-14B-run1: exit 0
+== 00:11:56 (+65 s) kernel: dec_time.py, Qwen/Qwen3-32B, run 1 (waiting for its download)
+time-Qwen3-32B-run1: exit 0
+== 00:11:58 (+67 s) ncu: dec_prof.py, the layer-10 gate,up of Qwen/Qwen3-8B, each variant once (whole)
+ncu: /home/ubuntu/hdecw/ncu/target/linux-v4l_l4t-t210-a64/ncu (Version 2025.3.1.0 (build 36398880) (public-release))
+prof: exit 0
+== 00:11:58 (+67 s) e2e: dec_e2e.py, Qwen/Qwen3-8B (waiting for its download): this tree's orders 0-3, then main's, then v0.25.0's
+e2e-fix: exit 0
+e2e-main: exit 0
+e2e-v0.25.0: exit 0
+== 00:15:19 (+268 s) kernel: dec_time.py, Qwen/Qwen3-8B, run 2 (waiting for its download)
+time-Qwen3-8B-run2: exit 0
+== 00:15:21 (+270 s) kernel: dec_time.py, Qwen/Qwen3-14B, run 2 (waiting for its download)
+time-Qwen3-14B-run2: exit 0
+== 00:15:23 (+272 s) kernel: dec_time.py, Qwen/Qwen3-32B, run 2 (waiting for its download)
+time-Qwen3-32B-run2: exit 0
+== 00:15:26 (+275 s) e2e: main's again
+e2e-main2: exit 0
+== 00:16:07 (+316 s) done in 316 s

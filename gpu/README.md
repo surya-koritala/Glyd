@@ -240,15 +240,24 @@ library and the release's in one process):
 | L4 | whole matrices | decode | 0.999-1.002 | the same |
 
 The H100 PCIe measured the same on wgmma (0.942-0.991 at 32-1024 tokens).
-Slower: a matrix decoded whole takes 3.0-5.8% longer on the H100 SXM and
-1.0-1.6% on the A10. That decode is in Hopper's prompts past wgmma's 1024
-tokens, the A100's past 768, an A10's 12-bit prompts from 640 tokens
+Slower in v0.25.0, and on the A10 still: a matrix decoded whole took
+3.0-5.8% longer on the H100 SXM and 1.0-1.6% on the A10. That decode is in
+Hopper's prompts past
+wgmma's 1024 tokens, the A100's past 768, an A10's 12-bit prompts from 640 tokens
 (decoded ahead beside cuBLAS; the prompt's time not measured) and every
 step of exact mode. It takes longer where the kernel runs furthest from
 its memory's bandwidth: on the H100 SXM at 1.8-2.0 of 3.35 TB/s (a
 weight's 12.04-12.07 bits read and 16 written, about 3.5 bytes), and on
 the L4, at 75-77% of its 300 GB/s, not at all; with the same loads,
 stores and branches as before and a tenth fewer instructions.
+v0.25.1 changes that on Hopper: its whole-matrix decode there loads a
+step's low bytes and exception bounds first, then its codes (a GH200,
+layer 10 of Qwen3-8B, 14B and 32B: 0.964-0.975 of the time before split
+byte, v0.25.0's 1.035-1.060; the H100 SXM not run again). The decode ahead
+keeps loading all three at once (0.703-0.725 there, the new order
+1.058-1.068), as every other GPU's decode does: on an L4 the new order
+took 1.6-1.9% longer than all three at once
+([benchmarks/gpu/decode-fix-2026-09-29](../benchmarks/gpu/decode-fix-2026-09-29)).
 Logs: [benchmarks/gpu/splitbyte-2026-09-29](../benchmarks/gpu/splitbyte-2026-09-29)
 (rc/, round1/), [benchmarks/gpu/format-study-2026-09-28](../benchmarks/gpu/format-study-2026-09-28)
 with the other formats measured against it.
@@ -1037,7 +1046,7 @@ cuBLAS's time, 12-bit: fused 1.23x at 512 and 640 tokens, 1.26x at 768,
 1.04x; tiered at 512 tokens 1.48x fused against 1.41x ahead, at 4096
 1.71x against 1.05x. The A10G, the same chip at 300 W with half-rate
 tensor cores, keeps the fused kernel (its prompts at most +5.3% over
-bf16's to 4096 tokens, the sweep's). The L4, L40S and RTX 6000 Ada sum in
+bf16's to 4096 tokens, the sweep's). The L40 and RTX 6000 Ada sum in
 fp32 at the A10's rate but have half its bandwidth a FLOP, so a matrix
 decoded costs them about twice as much a token: with an H100, whose
 cuBLAS kernels differ, the path is off there until measured:
@@ -1046,6 +1055,78 @@ cuBLAS kernels differ, the path is off there until measured:
 benchmarks/gpu/rtx4080s-prompts-2026-09-27,
 benchmarks/gpu/lambda-a10-routes-2026-09-28,
 benchmarks/gpu/sweep-2026-09-28/a10g-aws-g5).
+
+On an L4 (72 W, full-rate tensor cores, half the A10's bandwidth a FLOP)
+a prompt decodes each matrix first, on the current stream, then cuBLAS,
+from 896 tokens in the tiered layout (the L4's default) and 2560 in the
+12-bit one (`exact=True`'s prompts as before). Every route ran at its 72 W
+cap from about 512 tokens: the tiered fused kernel at 1200-1360 MHz there
+(Qwen3-8B's at 885 at 8192 tokens), the 12-bit one at 1035-1170, cuBLAS
+behind a decode at 960-1155. Yet the fused kernel lost to the decode from
+those lengths on, by more the longer the prompt (Qwen3-4B-Instruct-2507's
+tiered two were even at 1024 tokens: the fused kernel takes a prompt in
+blocks of 256 tokens). A decode ahead beside cuBLAS gained nothing
+(Qwen3-8B, both layouts: within 1% of a decode first at 4096-8192 tokens,
+1-7% slower at 896-2048), so the L4 takes the route DECODE, not AHEAD. It
+is a class of its own (`GLYD_GPU_L4`, 3000, "L4" in its name as a word: an
+L4's code is 3089), so the L40 and RTX 6000 Ada, which share its compute
+capability, keep their routes until measured. Qwen3-8B on an AWS
+g6.4xlarge, one forward pass, over bf16's time in the same run (the rows
+"now" its decoded pass where the route changed, below 896 and 2560 tokens
+the fused one, unchanged):
+
+| Prompt | 128 | 512 | 1024 | 2048 | 4096 | 8192 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| tiered, fused (was) | +5.6% | +17.6% | +27.8% | +31.0% | +37.9% | +98.4% |
+| tiered, now (decoded from 896) | +5.6% | +17.6% | +25.5% | +11.3% | +8.4% | +4.7% |
+| 12-bit, fused (was) | -9.0% | -0.8% | +7.2% | +11.0% | +19.8% | +105.0% |
+| 12-bit, now (decoded from 2560) | -9.0% | -0.8% | +7.2% | +11.0% | +9.3% | +4.4% |
+
+Qwen3-4B-Instruct-2507 in the same run, tiered at 1024 / 2048 / 4096 /
+8192 tokens: +12.9 / +14.0 / +10.1 / +4.3% (were +9.5 / +30.9 / +33.2 /
++43.0%; at 1024 tokens the fused pass was the faster in this run, even
+with the decode in main-fine/); 12-bit at 4096 / 8192 +6.8 / +5.0% (were
++14.8 / +30.8%).
+
+On an L40S (350 W for the L4's bandwidth a FLOP: 864 GB/s) the path is
+taken from 1024 tokens in the tiered layout and 2048 in the 12-bit one
+(`exact=True`'s prompts as before), the route AHEAD as on an A10: the
+decode ahead beside cuBLAS took 0.4-5.1% less time than a decode first at
+1024-3072 and 8192 tokens, 0.8-1.0% more at 4096. From 2048 tokens every
+route but the tiered fused kernel ran at the 350 W cap (the decode ahead
+at 1718-1935 MHz; the fused kernel at 2040 MHz, 331-335 W); the decode
+ahead below it at 1024 tokens tiered (2040 MHz, 325 W). The L40S is a class of its own too
+(`GLYD_GPU_L40S`, 4000: an L40S's code is 4089), so the L40 and RTX 6000
+Ada keep their routes until measured. Qwen3-8B on an AWS g6e.xlarge, one
+forward pass, over bf16's time in the same run (the rows "now" the routes'
+own times, each forced there):
+
+| Prompt | 512 | 768 | 1024 | 1536 | 2048 | 3072 | 4096 | 8192 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tiered, fused (was) | +20.6% | +27.9% | +38.1% | +34.1% | +41.2% | +37.3% | +39.4% | +35.0% |
+| tiered, now (decoded ahead from 1024) | +20.6% | +27.9% | +30.3% | +13.9% | +11.9% | +8.0% | +10.9% | +3.8% |
+| 12-bit, fused (was) | -0.3% | +4.8% | +13.6% | +9.4% | +15.5% | +14.9% | +20.0% | +18.2% |
+| 12-bit, now (decoded ahead from 2048) | -0.3% | +4.8% | +13.6% | +9.4% | +12.9% | +7.7% | +11.3% | +3.9% |
+
+At 4096 tokens a decode first was the faster (tiered +10.0%, 12-bit
++10.1%). The L40S's 12-bit prompts took 17.3 / 18.1 / 12.8 / 4.0% less
+time than the tiered layout's at 512 / 768 / 1024 / 1536 tokens (its fused
+kernel at 512 tokens -0.3% over bf16's time, the tiered one's +20.6%) and
+were within 0.9% of them from 2048; the layout stays the tiered one there
+too (33% less memory; `layout="mma12"`: 25%).
+
+The tiered layout stays the L4's default (33% less memory). The 12-bit
+layout's prompts took 5-20% less time than the tiered layout's to 1536
+tokens on the L4, and about the same from 1792 (2.4% more to 3.6% less;
+Qwen3-8B and Qwen3-4B-Instruct-2507, each layout by its own routes): for
+the fastest short prompts, at 25% less memory, load with
+`layout="mma12"`. The L4's clock also falls as it heats at the cap: the
+same prompt pass (Qwen3-8B tiered, 2048 tokens, decoded) took 739 ms at 66
+C and 1148 MHz and 794 ms at 82 C and 1035 MHz, so compare its runs at
+like temperatures: the branch's own run (l4-routes/, the routes as built)
+ran about 10 C cooler than the one above (medians 66-72 C against 78-81
+C), and its times are lower throughout, the unchanged routes' too (logs:
+benchmarks/gpu/l4-routes-2026-09-29).
 
 ### Long prompts on an A100 SXM and Hopper: the decode on SMs set apart
 
@@ -1283,13 +1364,14 @@ up below: a step's kernel to 64 tokens, `mma_gemm_mid` from 17 on Ampere and
 Ada and an A100's to 128, `mma_gemm_wg` from 17 to 1024 on Hopper, the prompt
 kernel past them, and the matrix decoded for cuBLAS where that is the faster:
 an A100's 12-bit prompts from 769 tokens, Hopper's past its wgmma kernel,
-GeForce Ada's from 513 tiered and 1793 12-bit (641 exact) and an A10's from
-512 tiered and 640 12-bit (not exact), decoded ahead; an A100 SXM's 12-bit
-prompts from 769 to 8192 tokens and a Hopper's large matrices' from 2048 to
-8192 decoded on SMs set apart, the route SPLIT, above; `GLYD_WG_MIN`,
-`GLYD_WG_MAX`, `GLYD_MID_MIN`, `GLYD_DEC_MIN` and the `GLYD_SPLIT_*` ones move
-them, read once a process, at the library's first route: set them in the
-environment before the first model is loaded).
+an L4's from 896 tiered and 2560 12-bit, GeForce Ada's from 513 tiered and
+1793 12-bit (641 exact), an A10's from 512 tiered and 640 12-bit and an
+L40S's from 1024 tiered and 2048 12-bit (not exact), decoded ahead; an A100
+SXM's 12-bit prompts from 769 to 8192 tokens and a Hopper's large matrices'
+from 2048 to 8192 decoded on SMs set apart, the route SPLIT, above;
+`GLYD_WG_MIN`, `GLYD_WG_MAX`, `GLYD_MID_MIN`, `GLYD_DEC_MIN` and the
+`GLYD_SPLIT_*` ones move them, read once a process, at the library's first
+route: set them in the environment before the first model is loaded).
 `glyd_gpu_mma_linear` and `glyd_gpu_mma12_linear` run a route's kernel (where
 glyd.gpu decodes for cuBLAS, the prompt kernel, on every GPU; where K is not a
 multiple of 64, past 64 tokens (12-bit: also from `GLYD_DEC_MIN` where that is
@@ -1297,8 +1379,9 @@ lower): `cudaErrorNotSupported`, the matrix decoded for a GEMM of the caller's
 there; SPLIT, whose products are the caller's cuBLAS on the ring, through
 `glyd_gpu_mma12_ring_linear`). A GPU's code, which the routes take, is its
 compute capability plus a class where the name tells GPUs apart
-(`GLYD_GPU_GEFORCE`, `GLYD_GPU_A10`, `GLYD_GPU_PCIE`: `glyd_gpu.h`), and
-`GLYD_GPU_NO_SPLIT` gives its routes without SPLIT. The glyd package's Linears take their routes from the library
+(`GLYD_GPU_GEFORCE`, `GLYD_GPU_A10`, `GLYD_GPU_L4`, `GLYD_GPU_L40S`,
+`GLYD_GPU_PCIE`: `glyd_gpu.h`), and `GLYD_GPU_NO_SPLIT` gives its routes
+without SPLIT. The glyd package's Linears take their routes from the library
 and multiply by `linear` in their one C call, so every caller routes the same
 way.
 

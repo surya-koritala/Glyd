@@ -1,0 +1,34 @@
+== 21:25:22 (+2 s) the library (build_lib.sh's flags), the tree f62a9d3 (origin/main, before the L4's routes)
+build exit 0
+== 21:26:00 (+40 s) Qwen3-8B mma
+Qwen3-8B mma: exit 0
+   2560 tokens, decoded: 960.2 ms
+   3072 tokens, fused  : 1459.1 ms
+   3072 tokens, decoded: 1149.8 ms
+== 21:28:04 (+164 s) Qwen3-8B mma12
+Qwen3-8B mma12: exit 0
+   2560 tokens, decoded: 979.5 ms
+   3072 tokens, fused  : 1227.1 ms
+   3072 tokens, decoded: 1168.7 ms
+== 21:29:46 (+266 s) Qwen3-8B bf16
+Qwen3-8B bf16: exit 0
+   2304 tokens, bf16   : 777.0 ms
+   2560 tokens, bf16   : 910.2 ms
+   3072 tokens, bf16   : 1081.7 ms
+== 21:30:32 (+312 s) Qwen3-4B-Instruct-2507 mma
+Qwen3-4B-Instruct-2507 mma: exit 0
+   2560 tokens, decoded: 562.4 ms
+   3072 tokens, fused  : 857.0 ms
+   3072 tokens, decoded: 701.2 ms
+== 21:31:47 (+387 s) Qwen3-4B-Instruct-2507 mma12
+Qwen3-4B-Instruct-2507 mma12: exit 0
+   2560 tokens, decoded: 566.8 ms
+   3072 tokens, fused  : 722.8 ms
+   3072 tokens, decoded: 702.8 ms
+== 21:32:49 (+449 s) Qwen3-4B-Instruct-2507 bf16
+Qwen3-4B-Instruct-2507 bf16: exit 0
+   2304 tokens, bf16   : 454.8 ms
+   2560 tokens, bf16   : 524.2 ms
+   3072 tokens, bf16   : 646.0 ms
+summary exit 0
+== 21:33:18 (+478 s) done

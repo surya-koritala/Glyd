@@ -307,9 +307,11 @@ with torch.cuda.stream(torch.cuda.Stream()):
 torch.cuda.synchronize()
 
 # The routes: the library's (glyd_gpu_*_route, through both hosts) against GLinear's rule on main before the routes
-# moved into the library, as main last had it (model.py at 44393a9, v0.24.0), written out here: its kernel(M), else
-# whole()'s decode, ahead from its decode-ahead threshold (which never looked at K) and now below it; on each GPU (a
-# compute capability, plus its class by name: GeForce, A10), both layouts, K a multiple of 64 or not, 0-5000 tokens;
+# moved into the library, as main last had it (model.py at 44393a9, v0.24.0), written out here, with the L4's decode
+# for cuBLAS since (its class 3089: from 896 tokens tiered and 2560 12-bit) and the L40S's decode ahead (its class 4089:
+# from 1024 tiered and 2048 12-bit): its kernel(M), else whole()'s decode, ahead from its decode-ahead threshold (which
+# never looked at K) and now below it; on each GPU (a compute capability, plus its class by name: GeForce, A10, L4,
+# L40S), both layouts, K a multiple of 64 or not, 0-5000 tokens;
 # each run's last token count the last that takes its route. Then glyd_gpu_*_linear by this GPU's route (-1) and by each route given: its kernel's bits,
 # through both hosts (DECODE and AHEAD the prompt kernel's, on every GPU), or refused alike where the route's kernel
 # does not take the product: DECODE and AHEAD where K is not a multiple of 64 with cudaErrorNotSupported, the one
@@ -320,16 +322,24 @@ WG_MIN, WG_MAX = int(os.environ.get("GLYD_WG_MIN", 17)), int(os.environ.get("GLY
 
 def main_ahead(gpu, twelve, fused=True, exact_=False):
     """main's GLinear.ahead: a prompt's matrices decoded ahead from this many tokens, whatever K: GeForce Ada's (513
-    tiered; 12-bit 1793 fused and not exact, else 641), an A10's but exact (512 tiered, 640 12-bit)."""
+    tiered; 12-bit 1793 fused and not exact, else 641), an A10's but exact (512 tiered, 640 12-bit); and since, an
+    L40S's but exact (its class, 4089: 1024 tiered, 2048 12-bit)."""
     if gpu == 1089:
         return (1793 if fused and not exact_ else 641) if twelve else 513
+    if gpu == 4089:
+        return (2048 if twelve else 1024) if not exact_ else 1 << 62
     return (640 if twelve else 512) if gpu == 2086 and not exact_ else 1 << 62
 
 
 def main_dec(gpu, twelve):
     """main's GLinear.dec: a 12-bit prompt decoded for cuBLAS, never fused, from GLYD_DEC_MIN tokens where it is set
-    (any GPU), else an A100's from 769."""
-    return (DEC_MIN or (769 if gpu % 1000 == 80 else 1 << 62)) if twelve else 1 << 62
+    (any GPU), else an A100's from 769; and since, an L4's (its class, 3089) from 2560 tokens 12-bit and 896
+    tiered."""
+    if twelve and DEC_MIN:
+        return DEC_MIN
+    if gpu == 3089:
+        return 2560 if twelve else 896
+    return 769 if twelve and gpu % 1000 == 80 else 1 << 62
 
 
 def main_route(gpu, twelve, K, M):
@@ -353,7 +363,7 @@ def main_route(gpu, twelve, K, M):
 
 
 looked_up = 0  # the library's routes compared with main_route (lookups, apart from the calls compared through both hosts)
-for gpu in (80, 86, 87, 89, 1086, 1089, 2086, 90, 100, 120, 1120):
+for gpu in (80, 86, 87, 89, 1086, 1089, 2086, 3089, 4089, 90, 100, 120, 1120):
     for twelve in (False, True):
         for K in (1024, 1040):
             name = "mma12_route" if twelve else "mma_route"
@@ -369,6 +379,7 @@ gm.Split.of[torch.device(dev, torch.cuda.current_device())] = False  # (the GLin
 # a GPU's code: its compute capability and its class by name, alike in the library (C) and the package (Python)
 assert jit.gpu() == lib.gpu() == gm.gpu_code(torch.cuda.get_device_capability(), torch.cuda.get_device_name())
 for name, cls in (("NVIDIA A10", g.A10), ("NVIDIA A10-24GB", g.A10), ("NVIDIA A10G", 0), ("NVIDIA A100-SXM4-80GB", 0), ("NVIDIA A40", 0), ("NVIDIA RTX A6000", 0), ("NVIDIA GeForce RTX 4080 SUPER", g.GEFORCE), ("A10", g.A10), ("NVIDIA A10_X", 0),
+                  ("NVIDIA L4", g.L4), ("L4", g.L4), ("NVIDIA L40S", g.L40S), ("L40S", g.L40S), ("NVIDIA L40", 0), ("NVIDIA RTX 6000 Ada Generation", 0),
                   ("NVIDIA H100 PCIe", g.PCIE), ("NVIDIA A100-PCIE-40GB", g.PCIE), ("NVIDIA A10 PCIe", g.A10), ("NVIDIA H100 80GB HBM3", 0), ("NVIDIA GH200 480GB", 0)):
     assert gm.gpu_code((8, 6), name) == 86 + cls, (name, cls)
 here = lib.gpu()
@@ -408,11 +419,11 @@ for O, K, wild in [(192, 128, 0), (1024, 2048, 0.001), (192, 4096, 0.1), (192, 1
                         getattr(lib, f"{s}_gemm_big")(*pk, O, K, x, b, want, 0)
                     assert exact(y, want), ("linear", s, O, K, M, r)
                     counts["linear, its route's kernel"] = counts.get("linear, its route's kernel", 0) + 1
-print(f"routes on 11 GPUs as main's GLinear took them; linear by this GPU's ({here}) and by each route, as the route's kernel")
+print(f"routes on 13 GPUs as main's GLinear took them (the L4's decode and the L40S's decode ahead since); linear by this GPU's ({here}) and by each route, as the route's kernel")
 
 # The route SPLIT (option 2): its rule pinned, as measured end to end (benchmarks/gpu/option2-2026-09-29): a 12-bit
 # prompt, K a multiple of 64, on an A100 SXM (80) from 769 to 8192 tokens (a matrix over 2 x 50 M weights to 4096), on
-# Hopper (90) from 2048 to 8192 for a matrix of O and K at least 4096, on a PCIe card (3080, 3090) never; its decode's
+# Hopper (90) from 2048 to 8192 for a matrix of O and K at least 4096, on a PCIe card (5080, 5090) never; its decode's
 # SMs by the GPU and M; every other route main's, through both hosts; GLYD_GPU_NO_SPLIT none of it. The route's 'last'
 # as every route's.
 SPLIT_MIN, SPLIT_MAX, SPLIT_SMS = (int(os.environ.get(v, 0)) for v in ("GLYD_SPLIT_MIN", "GLYD_SPLIT_MAX", "GLYD_SPLIT_SMS"))
@@ -438,7 +449,7 @@ def split_rule(gpu, twelve, O, K, M):
 
 
 pinned = 0
-for gpu in (80, 3080, 90, 3090, 86, 89, 1089, 2086, 100, 120):
+for gpu in (80, 5080, 90, 5090, 86, 89, 1089, 2086, 3089, 4089, 100, 120):
     for twelve in (False, True):
         for O, K in ((512, 1024), (512, 1040), (131072, 1024), (4096, 4096), (4032, 8192), (8192, 4032)):  # (a matrix over 2 x 50 M weights; one large on Hopper; each side under 4096)
             name = "mma12_route" if twelve else "mma_route"
@@ -540,10 +551,49 @@ for name, want in (("NVIDIA A10", (512, 640)), ("NVIDIA A10G", (1 << 62, 1 << 62
         twelve = isinstance(q, g.Mma12)
         a = want[twelve]
         assert lin.gpu == (g.A10 if name == "NVIDIA A10" else 0) + 86 and lin.ahead == a == main_ahead(lin.gpu, twelve), (name, type(q).__name__, lin.ahead)
+        b = min(a, main_dec(lin.gpu, twelve))  # fused below (a 12-bit prompt decoded from GLYD_DEC_MIN where it is set)
         for M in (a - 1, a) if a < 1 << 62 else (1024,):
             x = torch.randn(M, 1024, dtype=bf, device=dev)
-            assert (lin.kernel(M) is g.mma_gemm_big) == (M < a) and (lin.step(x) is None) == (M >= a), (name, type(q).__name__, M)
+            assert (lin.kernel(M) is g.mma_gemm_big) == (M < b) and (lin.step(x) is None) == (M >= b), (name, type(q).__name__, M)
             counts["GLinear's routes on an A10 / A10G"] = counts.get("GLinear's routes on an A10 / A10G", 0) + 1
+# And on an L4 whatever this GPU is (8.9 and its name while made; the library's routes by its class, 3089): a prompt
+# decoded for cuBLAS on the current stream from 896 tokens tiered and 2560 12-bit (GLYD_DEC_MIN where set), fused
+# below (the one-call path to there), never ahead, exact as elsewhere (decoded on the current stream); on an L40 (the
+# same compute capability, no class) fused throughout, but a 12-bit prompt from GLYD_DEC_MIN where it is set. (An
+# L40S's, decoded ahead from its thresholds: below.)
+for name, want in (("NVIDIA L4", (main_dec(3089, False), main_dec(3089, True))), ("NVIDIA L40", (main_dec(89, False), main_dec(89, True)))):
+    l4 = made_as((8, 9), name, lambda: [gm.GLinear(q, None) for q in packs])
+    assert all(made_as((8, 9), name, lambda: gm.GLinear(q, None, exact=True)).ahead == 1 << 62 for q in packs), (name, "exact: no decode ahead")
+    for q, lin in zip(packs, l4):
+        twelve = isinstance(q, g.Mma12)
+        d = want[twelve]
+        assert lin.gpu == (g.L4 if name == "NVIDIA L4" else 0) + 89 and lin.ahead == 1 << 62, (name, type(q).__name__, lin.gpu, lin.ahead)
+        for M in (d - 1, d) if d < 1 << 62 else (896, 2560, 5000):
+            x = torch.randn(M, 1024, dtype=bf, device=dev)
+            assert (lin.kernel(M) is g.mma_gemm_big) == (M < d) and lin.decoded(M) == (M >= d) and (lin.step(x) is None) == (M >= d), (name, type(q).__name__, M)
+            counts["GLinear's routes on an L4 / L40"] = counts.get("GLinear's routes on an L4 / L40", 0) + 1
+        if d < 1 << 62:  # a prompt from its decode threshold through forward: decoded for cuBLAS, not the fused kernel
+            gm.set_scratch(torch.nn.ModuleList([lin]), False)
+            x = torch.randn(d, 1024, dtype=bf, device=dev)
+            assert exact(lin(x), F.linear(x, g.mma_unpack(q))), (name, type(q).__name__, "a prompt from its decode threshold, decoded")
+            counts["L4 prompt decoded"] = counts.get("L4 prompt decoded", 0) + 1
+# And on an L40S whatever this GPU is (8.9 and its name while made; the library's routes by its class, 4089): a prompt
+# decoded ahead from 1024 tokens tiered and 2048 12-bit (the route AHEAD), fused below (the one-call path to there),
+# but exact (decoded on the current stream, as elsewhere); its scratch buffer holding two of its matrices. A 12-bit
+# prompt from GLYD_DEC_MIN tokens where it is set: the route DECODE (decoded, as the ahead does; main's semantics).
+l40s = made_as((8, 9), "NVIDIA L40S", lambda: [gm.GLinear(q, None) for q in packs])
+assert all(made_as((8, 9), "NVIDIA L40S", lambda: gm.GLinear(q, None, exact=True)).ahead == 1 << 62 for q in packs), ("L40S", "exact: no decode ahead")
+for q, lin in zip(packs, l40s):
+    twelve = isinstance(q, g.Mma12)
+    a, d = main_ahead(4089, twelve), main_dec(4089, twelve)
+    assert lin.gpu == g.L40S + 89 and lin.ahead == a == (2048 if twelve else 1024), ("L40S", type(q).__name__, lin.gpu, lin.ahead)
+    for M in (a - 1, a):
+        x = torch.randn(M, 1024, dtype=bf, device=dev)
+        route = g.DECODE if M >= d else g.AHEAD if M >= a else g.BIG
+        assert (lin.kernel(M) is g.mma_gemm_big) == (route == g.BIG) and lin.decoded(M) == (M >= d) and (lin.step(x) is None) == (route != g.BIG) and lin.route(M)[0] == route, ("L40S", type(q).__name__, M)
+        counts["GLinear's routes on an L40S"] = counts.get("GLinear's routes on an L40S", 0) + 1
+    gm.set_scratch(torch.nn.ModuleList([lin]), False)
+    assert gm.Scratch.buf[q.sm.device].numel() >= 2 * q.n, ("L40S", "the scratch buffer holds two of its matrices")
 # On GeForce Ada whatever this GPU is: GLinear's decode-ahead threshold main's whatever K (513 tiered; 12-bit 1793 fused
 # and not exact, 641 exact or not fused), and its kernel(M) main's, K a multiple of 64 or not (1024, 1040).
 for K in (1024, 1040):
@@ -824,6 +874,6 @@ for host in (jit, lib):
 
 for e in errors:
     print("refused:", e)
-print(f"library {g._prebuilt()} (CUDA {lib.cuda_version()}), {torch.cuda.get_device_name()}: {sum(counts.values())} calls compared bit for bit, all identical; {looked_up} routes as main's rule (0.24.0's GLinear)")
+print(f"library {g._prebuilt()} (CUDA {lib.cuda_version()}), {torch.cuda.get_device_name()}: {sum(counts.values())} calls compared bit for bit, all identical; {looked_up} routes as main's rule (0.24.0's GLinear, with the L4's decode since)")
 for name in sorted(counts):
     print(f"  {name}: {counts[name]}")

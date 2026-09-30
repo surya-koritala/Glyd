@@ -1,0 +1,6 @@
+01:52:04 (+3 s) builds: v0.25.1 (final2) by build_lib.sh (every architecture), 73b9560, v0.25.0 and main for sm_89 (its flags), at once, each not yet built
+01:52:52 (+51 s) bits: v0.25.1's self-test, then xcheck.py's synthetic part (against main's library)
+01:53:00 (+59 s) checks at v0.25.1's head: check_capi.py (then with GLYD_DEC_MIN 1000 and 3000), test_gpu.py, cargo test
+01:58:09 (+368 s) kernel: dec_time.py, Qwen/Qwen3-8B, run 1
+01:58:13 (+372 s) kernel: dec_time.py, Qwen/Qwen3-4B-Instruct-2507, run 1
+01:58:17 (+376 s) done in 376 s

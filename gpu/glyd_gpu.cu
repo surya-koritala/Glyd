@@ -900,6 +900,31 @@ struct Nib {
         st.e0 = __ldg(exc_base + step);
         st.e1 = __ldg(exc_base + step + 1);
     }
+    // The whole-matrix decode's step (mma_unpack_kernel, a warp a step: for cuBLAS, exact mode and the experts'), its
+    // loads in two batches: the low bytes and the step's exception bounds, then the codes once those are in (load()
+    // issues all at once). The codes' address waits on the first batch through after(its sum), 0: the sum shuffled
+    // from its own lane, less the sum (a shuffle the compiler does not see through), so the same bytes, bit for bit.
+    // then(): the kernel's own work (its row block and step, a division), once the codes' load is issued. Hopper's
+    // alone: on a GH200 (layer 10 of Qwen3-8B, 14B and 32B, 2026-09-29) the layer's decode takes 0.964-0.975 of the
+    // time of the 12-bit layout's before split byte, load()'s all at once 1.035-1.060; on an L4 (Qwen3-8B and 4B)
+    // 1.020-1.022 against load()'s 1.001-1.003. The decode ahead (a few warps an SM) keeps load() everywhere: on the
+    // GH200 0.703-0.725, this order 1.058-1.068; on the L4 0.994-0.995 against 1.106-1.134.
+    template <class Then>
+    __device__ __forceinline__ void load_decode(int64_t step, int lane, uint32_t R[16], Then then) const {
+        const uint8_t* p = data + step * STEP12;
+        auto after = [lane](uint32_t v) { return __shfl_sync(0xffffffffu, v, lane) - v; };
+        int e0 = __ldg(exc_base + step), e1 = __ldg(exc_base + step + 1);
+        const uint4* sp = (const uint4*)(p + 512) + lane;
+        uint4 x0 = __ldg(sp), x1 = __ldg(sp + 32);
+        uint4 c = __ldg((const uint4*)(p + after(x0.x + x1.x + e0 + e1)) + lane);
+        then();
+        uint32_t nb[4] = {c.x, c.y, c.z, c.w}, H[8];
+        high(nb, H);
+        const uint32_t* e = exc;
+        patch([e](int k) { return __ldg(e + k); }, e0, e1, lane, H);
+        uint32_t L[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+        pairs(L, H, R);
+    }
     // Code word q's high bytes: n-tile 2q's (h = 0), 2q + 1's (h = 1).
     static __device__ __forceinline__ uint32_t high1(uint32_t nb, uint32_t hb4, int h) { return ((h ? __funnelshift_l(nb, nb, 4) : nb) & 0x87878787u) + hb4; }
     // A lane's codes (nb, 4 words) as its high bytes, 4 a word (H).
@@ -2944,7 +2969,10 @@ __global__ void moe_sum_kernel(const float* __restrict__ y32, const int64_t* __r
 // experts' layer, W its experts' matrices of `rows` rows stacked):
 // blockIdx.y a hit expert of plan (moe_route's; past those hit: nothing to
 // do), its rows into the same rows of out [E rows, K], the rest of out left
-// as it is.
+// as it is. The 12-bit layout's steps: a warp a step on Hopper by
+// Nib::load_decode (the low bytes first), elsewhere and FEW by load() (all at
+// once), each as it measured fastest (Hopper measured on a GH200 alone; any
+// other GPU not measured, as it was).
 template <class Fmt, bool MOE = false, bool FEW = false>
 __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out, const int* __restrict__ plan = nullptr) {
     if constexpr (MOE) {
@@ -2960,11 +2988,21 @@ __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, 
     __shared__ uint4 scratch[8][Fmt::kTable ? S2_BYTES / 16 : 1];
     uint32_t* out32 = (uint32_t*)out;
     for (int64_t local = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5; local < total; local += (int64_t)gridDim.x * blockDim.x >> 5) {
-        int64_t step = row0 / 64 * KS + local, rb = local / KS, s = local % KS;
-        typename Fmt::St st;
-        f.load(st, step, lane);
+        int64_t step = row0 / 64 * KS + local, rb, s;
         uint32_t R[16];
-        f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
+#if __CUDA_ARCH__ == 900
+        constexpr bool low_first = std::is_same_v<Fmt, Nib> && !FEW;
+#else
+        constexpr bool low_first = false;
+#endif
+        if constexpr (low_first) {
+            f.load_decode(step, lane, R, [&] { rb = local / KS, s = local % KS; });
+        } else {
+            rb = local / KS, s = local % KS;
+            typename Fmt::St st;
+            f.load(st, step, lane);
+            f.decode(st, lane, (uint32_t*)scratch[threadIdx.x >> 5], tab, R);
+        }
         // R[2n]: row 8n + g, columns 2t and 2t + 1; R[2n + 1]: columns 8 + 2t, 9 + 2t.
 #pragma unroll
         for (int n = 0; n < 8; n++) {
@@ -3860,13 +3898,13 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc
 // model.py's GLinear and glyd_gpu_*_linear alike: a step's kernel to 64 tokens (in the 12-bit layout mma_gemm_mid
 // from 17 on Ampere and Ada, an A100's to 128, and mma_gemm_wg from 17 to 1024 on Hopper, mma12_wgp_kernel past 128),
 // past that the prompt kernel (mma_gemm_big), but where W decoded for a bf16 GEMM (cuBLAS) is the faster (DECODE): a
-// 12-bit prompt from GLYD_DEC_MIN tokens where it is set (any GPU), else an A100's from 769, Hopper's past its wgmma
-// kernel's (none on Hopper takes a prompt), and every prompt of a matrix whose K is not a multiple of 64 (the prompt
-// kernel's blocks); and with W decoded ahead, beside the products before it (AHEAD), whatever K: GeForce Ada's from
-// 513 tokens tiered and 1793 12-bit, an A10's from 512 and 640 (ahead_min). GLYD_WG_MIN, GLYD_WG_MAX, GLYD_MID_MIN
-// and GLYD_DEC_MIN move those thresholds (read at the first call; GLYD_DEC_MIN 0 or unset: an A100's 769 alone). A
-// GPU is given as glyd_gpu_gpu gives it: its compute capability, major * 10 + minor, plus its class by name
-// (gpu_class).
+// 12-bit prompt from GLYD_DEC_MIN tokens where it is set (any GPU), else an A100's from 769 and an L4's from 2560, an
+// L4's tiered one from 896 (dec_from), Hopper's past its wgmma kernel's (none on Hopper takes a prompt), and every
+// prompt of a matrix whose K is not a multiple of 64 (the prompt kernel's blocks); and with W decoded ahead, beside the
+// products before it (AHEAD), whatever K: GeForce Ada's from 513 tokens tiered and 1793 12-bit, an A10's from 512 and
+// 640, an L40S's from 1024 and 2048 (ahead_min). GLYD_WG_MIN, GLYD_WG_MAX, GLYD_MID_MIN and GLYD_DEC_MIN move those
+// thresholds (read at the first call; GLYD_DEC_MIN 0 or unset: the A100's and the L4's 12-bit ones above). A GPU is
+// given as glyd_gpu_gpu gives it: its compute capability, major * 10 + minor, plus its class by name (gpu_class).
 struct RouteMins {
     int64_t wg_min, wg_max, mid_min, dec_min;  // (dec_min 0: unset)
     int64_t split_min, split_max, split_sms;   // (0: unset, the GPU's; split_min negative: never)
@@ -3892,9 +3930,27 @@ static const RouteMins& route_mins() {
 
 // A prompt decoded ahead from this many tokens (the fused, not exact, product's): GeForce Ada's (measured on an RTX
 // 4080 SUPER) past 512 tiered and 1792 12-bit, an A10's (150 W, full-rate tensor cores: the fused kernel's decode costs
-// it clocks at the power cap) from 512 tiered and 640 12-bit (model.py's GLinear for the measurements); else never.
+// it clocks at the power cap) from 512 tiered and 640 12-bit, an L40S's (350 W, full-rate tensor cores, the L4's
+// bandwidth a FLOP) from 1024 tiered and 2048 12-bit (model.py's GLinear for the measurements); else never.
 static int64_t ahead_min(bool twelve, int64_t gpu) {
+    if (gpu == GLYD_GPU_L40S + 89) return twelve ? 2048 : 1024;
     return gpu == GLYD_GPU_GEFORCE + 89 ? (twelve ? 1793 : 513) : gpu == GLYD_GPU_A10 + 86 ? (twelve ? 640 : 512) : INT64_MAX;
+}
+
+// A prompt decoded for cuBLAS, never fused, from this many tokens: in the 12-bit layout from GLYD_DEC_MIN tokens where
+// it is set (any GPU), else an A100's from 769; an L4's from 896 tiered and 2560 12-bit (72 W, full-rate tensor cores,
+// half an A10's bandwidth a FLOP: at its power cap the fused kernel, decoding each weight again for every 256 tokens,
+// loses to the decode, by more the longer the prompt, and a decode ahead beside cuBLAS gains nothing there; Qwen3-8B's
+// and Qwen3-4B-Instruct-2507's prompt passes, fused against decoded: tiered 4-5% slower decoded at 768 tokens, 9-11%
+// faster at 896 (the 4B's even at 1024) and 17-47% at 3072-8192; 12-bit 0.4-21% slower to 2304, 1-3% faster at 2560
+// and 7-49% at 4096-8192;
+// decoded ahead within 1% of decoded first at 4096-8192 tokens, 1-7% slower at 896-2048: benchmarks/gpu/l4-routes-
+// 2026-09-29); else never (INT64_MAX, here and in ahead_min: route_for takes no prompt there, whatever its M).
+constexpr int64_t L4_TIERED = 896, L4_TWELVE = 2560;
+static int64_t dec_from(bool twelve, int64_t gpu, int64_t dec_min) {
+    if (twelve && dec_min) return dec_min;
+    if (gpu == GLYD_GPU_L4 + 89) return twelve ? L4_TWELVE : L4_TIERED;
+    return twelve && gpu % 1000 == 80 ? 769 : INT64_MAX;
 }
 
 // Option 2 (the route SPLIT): a 12-bit prompt's matrices decoded ahead on SMs set apart (green contexts), cuBLAS on the
@@ -3935,16 +3991,18 @@ static int route_for(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M) 
     bool a100 = cc == 80, hopper = cc == 90, mid = cc == 80 || cc == 86 || cc == 87 || cc == 89, k64 = K % 64 == 0;
     if (hopper && twelve && k64 && M >= t.wg_min && M <= t.wg_max) return GLYD_GPU_ROUTE_WG;  // TMA and wgmma
     if (mid && twelve && k64 && M >= t.mid_min && M <= (a100 ? 128 : 64)) return GLYD_GPU_ROUTE_MID;  // cp.async, mma.sync
-    if (twelve && M >= (t.dec_min ? t.dec_min : a100 ? 769 : INT64_MAX)) return GLYD_GPU_ROUTE_DECODE;
+    int64_t dec = dec_from(twelve, gpu, t.dec_min), ahead = ahead_min(twelve, gpu);  // (INT64_MAX: never)
+    if (dec != INT64_MAX && M >= dec) return GLYD_GPU_ROUTE_DECODE;
     if (M <= 64) return GLYD_GPU_ROUTE_GEMM;
-    if (M >= ahead_min(twelve, gpu)) return GLYD_GPU_ROUTE_AHEAD;  // (any K)
+    if (ahead != INT64_MAX && M >= ahead) return GLYD_GPU_ROUTE_AHEAD;  // (any K)
     return k64 && !hopper ? GLYD_GPU_ROUTE_BIG : GLYD_GPU_ROUTE_DECODE;
 }
 
 // A GPU's class by its name, where its compute capability does not tell it apart (glyd_gpu.h): GLYD_GPU_GEFORCE with
 // "GeForce" in the name; GLYD_GPU_A10 with "A10" as a word, between characters that are not letters, digits or '_'
 // (an A10, not an A10G, A100 or A40: Python's re.search(r"\bA10\b", name, re.ASCII), as model.py's GLinear asks);
-// else 0.
+// GLYD_GPU_L4 with "L4" as one (an L4, not an L40S or L40); GLYD_GPU_L40S with "L40S" as one (not an L40);
+// GLYD_GPU_PCIE with "PCIe" in any case (an A100 PCIe, an H100 PCIe); else 0.
 static bool has_word(const char* name, const char* word) {
     size_t n = strlen(word);
     auto part = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
@@ -3959,7 +4017,7 @@ static bool has_pcie(const char* name) {  // "PCIe" in any case (an A100-PCIE-40
     return false;
 }
 
-static int gpu_class(const char* name) { return strstr(name, "GeForce") ? GLYD_GPU_GEFORCE : has_word(name, "A10") ? GLYD_GPU_A10 : has_pcie(name) ? GLYD_GPU_PCIE : 0; }
+static int gpu_class(const char* name) { return strstr(name, "GeForce") ? GLYD_GPU_GEFORCE : has_word(name, "A10") ? GLYD_GPU_A10 : has_word(name, "L4") ? GLYD_GPU_L4 : has_word(name, "L40S") ? GLYD_GPU_L40S : has_pcie(name) ? GLYD_GPU_PCIE : 0; }
 
 // The current device as the routes take it (asked once a device).
 GLYD_GPU_API int glyd_gpu_gpu(int* gpu) {
@@ -3983,8 +4041,9 @@ static int route_run(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M, 
     const RouteMins& t = route_mins();
     int here = *route = route_for(twelve, gpu, O, K, M);
     if (last) {
-        int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, t.dec_min ? t.dec_min : 769, 512, 513, 640, 1793, 1024, 1025, 2048, 4097,
-                          8193, t.split_min, t.split_max + 1}, next = INT64_MAX;
+        int64_t plain = gpu & ~(int64_t)GLYD_GPU_NO_SPLIT;  // (dec_from and ahead_min take the code without the flag)
+        int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, dec_from(twelve, plain, t.dec_min), 769, ahead_min(twelve, plain), 512, 513, 640, 1793,
+                          1024, 1025, 2048, 4097, 8193, t.split_min, t.split_max + 1}, next = INT64_MAX;
         for (int64_t c : cuts)
             if (c > M && c < next && route_for(twelve, gpu, O, K, c) != here) next = c;
         *last = next == INT64_MAX ? INT64_MAX : next - 1;

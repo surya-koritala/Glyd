@@ -1,0 +1,9 @@
+Fetching 12 files:   0%|          | 0/12 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 12 files:  42%|████▏     | 5/12 [00:00<00:00, 42.20it/s]
+Fetching 12 files:  58%|█████▊    | 7/12 [00:20<00:00, 42.20it/s]
+Fetching 12 files:  67%|██████▋   | 8/12 [01:10<00:43, 10.77s/it]
+Fetching 12 files:  75%|███████▌  | 9/12 [02:30<01:10, 23.37s/it]
+Fetching 12 files:  83%|████████▎ | 10/12 [03:05<00:51, 25.70s/it]
+Fetching 12 files:  92%|█████████▏| 11/12 [03:06<00:20, 20.06s/it]
+Fetching 12 files: 100%|██████████| 12/12 [03:06<00:00, 15.54s/it]
+exit 0 at +207 s
