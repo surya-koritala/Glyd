@@ -1,0 +1,124 @@
+NVIDIA L4 (8.9, sm_89), x86_64 host, 16 CPUs; the tree working tree on 15d9c04 (respond-bench); Qwen/Qwen3-0.6B
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 cuDNN 92400 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+
+== run-b1-bf16
+bf16, batch 1, 128 + 32 tokens, attention default (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 2b3b53933df82872 B 2b3b53933df82872 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b1-exact
+exact, batch 1, 128 + 32 tokens, attention default (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 2b3b53933df82872 B 2b3b53933df82872 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b32-bf16
+bf16, batch 32, 128 + 32 tokens, attention default (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 2b3b53933df82872 B 2b3b53933df82872 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b32-cublas-bf16
+bf16, batch 32, 128 + 32 tokens, attention default (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 2b3b53933df82872 B 2b3b53933df82872 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b32-cublaslt-bf16
+bf16, batch 32, 128 + 32 tokens, attention default (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 166c6242ee632153 B 166c6242ee632153 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b32-cudnn-bf16
+            ^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/diagtest/w/src/benchmarks/gpu/repro-2026-09-30/diag.py", line 156, in generate
+    with torch.no_grad(), attn:
+  File "/usr/lib/python3.12/contextlib.py", line 135, in __enter__
+    del self.args, self.kwds, self.func
+        ^^^^^^^^^
+AttributeError: '_GeneratorContextManager' object has no attribute 'args'
+exit 1
+== run-b32-det-bf16
+bf16, batch 32, 128 + 32 tokens, attention default, deterministic (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 2b3b53933df82872 B 2b3b53933df82872 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b32-det-exact
+exact, batch 32, 128 + 32 tokens, attention default, deterministic (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 2b3b53933df82872 B 2b3b53933df82872 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b32-efficient-bf16
+            ^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/diagtest/w/src/benchmarks/gpu/repro-2026-09-30/diag.py", line 156, in generate
+    with torch.no_grad(), attn:
+  File "/usr/lib/python3.12/contextlib.py", line 135, in __enter__
+    del self.args, self.kwds, self.func
+        ^^^^^^^^^
+AttributeError: '_GeneratorContextManager' object has no attribute 'args'
+exit 1
+== run-b32-exact
+exact, batch 32, 128 + 32 tokens, attention default (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 2b3b53933df82872 B 2b3b53933df82872 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b32-flash-bf16
+            ^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/diagtest/w/src/benchmarks/gpu/repro-2026-09-30/diag.py", line 156, in generate
+    with torch.no_grad(), attn:
+  File "/usr/lib/python3.12/contextlib.py", line 135, in __enter__
+    del self.args, self.kwds, self.func
+        ^^^^^^^^^
+AttributeError: '_GeneratorContextManager' object has no attribute 'args'
+exit 1
+== run-b32-math-bf16
+            ^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/diagtest/w/src/benchmarks/gpu/repro-2026-09-30/diag.py", line 156, in generate
+    with torch.no_grad(), attn:
+  File "/usr/lib/python3.12/contextlib.py", line 135, in __enter__
+    del self.args, self.kwds, self.func
+        ^^^^^^^^^
+AttributeError: '_GeneratorContextManager' object has no attribute 'args'
+exit 1
+== run-b32-math-exact
+            ^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/diagtest/w/src/benchmarks/gpu/repro-2026-09-30/diag.py", line 156, in generate
+    with torch.no_grad(), attn:
+  File "/usr/lib/python3.12/contextlib.py", line 135, in __enter__
+    del self.args, self.kwds, self.func
+        ^^^^^^^^^
+AttributeError: '_GeneratorContextManager' object has no attribute 'args'
+exit 1
+== run-b8-bf16
+bf16, batch 8, 128 + 32 tokens, attention default (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 2b3b53933df82872 B 2b3b53933df82872 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b8-exact
+exact, batch 8, 128 + 32 tokens, attention default (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 2b3b53933df82872 B 2b3b53933df82872 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== compare-b1
+/home/ubuntu/diagtest/results/run-b1-bf16.json (bf16) run A against /home/ubuntu/diagtest/results/run-b1-exact.json (exact) run A: batch 1, attention default
+  tokens (every sequence): the same; calls 7200 and 7200
+  linear calls with the same inputs: 6304, of them with another output: 0
+  the prompt's linear calls' weights: 197 of 197 the same words
+  every call's output the same
+== compare-b32-det
+/home/ubuntu/diagtest/results/run-b32-det-bf16.json (bf16) run A against /home/ubuntu/diagtest/results/run-b32-det-exact.json (exact) run A: batch 32, attention default, deterministic
+  tokens (every sequence): the same; calls 7200 and 7200
+  linear calls with the same inputs: 6304, of them with another output: 0
+  the prompt's linear calls' weights: 197 of 197 the same words
+  every call's output the same
+== compare-b32
+/home/ubuntu/diagtest/results/run-b32-bf16.json (bf16) run A against /home/ubuntu/diagtest/results/run-b32-exact.json (exact) run A: batch 32, attention default
+  tokens (every sequence): the same; calls 7200 and 7200
+  linear calls with the same inputs: 6304, of them with another output: 0
+  the prompt's linear calls' weights: 197 of 197 the same words
+  every call's output the same
+== compare-b8
+/home/ubuntu/diagtest/results/run-b8-bf16.json (bf16) run A against /home/ubuntu/diagtest/results/run-b8-exact.json (exact) run A: batch 8, attention default
+  tokens (every sequence): the same; calls 7200 and 7200
+  linear calls with the same inputs: 6304, of them with another output: 0
+  the prompt's linear calls' weights: 197 of 197 the same words
+  every call's output the same
+
+09:43:01 (+0 s) machine
+09:43:01 (+0 s) environment
+09:43:06 (+5 s) in the background: Qwen/Qwen3-0.6B, whole
+09:43:06 (+5 s) the library for sm_89 (build_lib.sh's flags)
+09:43:44 (+43 s) run b32, bf16: --batch 32
+09:44:07 (+66 s) run b32, exact: --batch 32
+09:44:33 (+92 s) run b1, bf16: --batch 1
+09:44:53 (+112 s) run b1, exact: --batch 1
+09:45:15 (+134 s) run b32-det, bf16: --batch 32 --det
+09:45:41 (+160 s) run b32-det, exact: --batch 32 --det
+09:46:10 (+189 s) run b32-math, bf16: --batch 32 --attn math
+09:46:22 (+201 s) run b32-math, exact: --batch 32 --attn math
+09:46:36 (+215 s) run b8, bf16: --batch 8
+09:46:56 (+235 s) run b8, exact: --batch 8
+09:47:19 (+258 s) run b32-efficient, bf16: --batch 32 --attn efficient
+09:47:29 (+268 s) run b32-flash, bf16: --batch 32 --attn flash
+09:47:40 (+279 s) run b32-cudnn, bf16: --batch 32 --attn cudnn
+09:47:54 (+293 s) run b32-cublas, bf16: --batch 32 --blas cublas
+09:48:17 (+316 s) run b32-cublaslt, bf16: --batch 32 --blas cublaslt
+09:48:41 (+340 s) done in 340 s

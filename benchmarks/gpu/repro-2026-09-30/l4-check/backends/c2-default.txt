@@ -1,0 +1,5 @@
+r2-default-bf16.json (bf16) run A against r2-default-exact.json (exact) run A: batch 8, attention default
+  tokens (every sequence): the same; calls 1800 and 1800
+  linear calls with the same inputs: 1576, of them with another output: 0
+  the prompt's linear calls' weights: 197 of 197 the same words
+  every call's output the same

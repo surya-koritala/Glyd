@@ -1,0 +1,3 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|█████████▉| 310/311 [00:00<00:00, 3099.58it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 3100.48it/s]
+bf16, batch 8, 128 + 8 tokens, attention flash (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 3b5c0c94f6ca06af B 3b5c0c94f6ca06af (the same; every sequence the same in each: True, True); 1800 calls, 0 with the same inputs and another output; every call's output the same
+exit 0

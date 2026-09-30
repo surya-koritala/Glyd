@@ -1,0 +1,12 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 3167.11it/s]
+Traceback (most recent call last):
+  File "/home/ubuntu/diagtest/w/src/benchmarks/gpu/repro-2026-09-30/diag.py", line 177, in <module>
+    B, tb = generate(args.new)
+            ^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/diagtest/w/src/benchmarks/gpu/repro-2026-09-30/diag.py", line 156, in generate
+    with torch.no_grad(), attn:
+  File "/usr/lib/python3.12/contextlib.py", line 135, in __enter__
+    del self.args, self.kwds, self.func
+        ^^^^^^^^^
+AttributeError: '_GeneratorContextManager' object has no attribute 'args'
+exit 1

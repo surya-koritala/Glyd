@@ -1,0 +1,3 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  96%|█████████▌| 298/311 [00:00<00:00, 2970.67it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 3012.69it/s]
+bf16, batch 32, 128 + 32 tokens, attention default, deterministic (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 2b3b53933df82872 B 2b3b53933df82872 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
