@@ -1016,24 +1016,27 @@ def test_install_sh():
         os_name_arg = "Linux"  # (the fake uname: the Linux path on this Mac)
     else:
         os_name_arg = None
+    import glyd
+    V = glyd.__version__  # (the release the script pins is the tree's: scripts/bump_version.py keeps them one)
+    assert f'GLYD_VERSION="${{GLYD_VERSION:-{V}}}"' in open(INSTALL).read()
     rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg)  # Linux, an NVIDIA GPU, uv present
     assert rc == 0, (out, err)
-    assert calls[0] == "uv tool install --force --managed-python --python 3.12 glyd[vllm]==0.26.0", calls  # (pinned: no --prerelease)
+    assert calls[0] == f"uv tool install --force --managed-python --python 3.12 glyd[vllm]=={V}", calls  # (pinned: no --prerelease)
     assert "--prerelease" not in " ".join(calls) and "uv tool dir --bin" in calls and "glyd doctor" in calls[-1] and not err.strip(), (calls, err)
     rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, env={"GLYD_VERSION": "0.26.0rc3"})  # (a pre-release is named, and only that one is taken)
     assert calls[0].endswith("glyd[vllm]==0.26.0rc3")
     rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, env={"GLYD_SPEC": "/tmp/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]"})
     assert calls[0].endswith("--python 3.12 /tmp/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]")
     rc, out, err, calls = run_install(nvidia=None, os_name=os_name_arg)  # (Linux, no GPU: the compression tools alone, said so)
-    assert calls[0].endswith("glyd==0.26.0") and "no NVIDIA GPU" in err and rc == 0
+    assert calls[0].endswith(f"glyd=={V}") and "no NVIDIA GPU" in err and rc == 0
     rc, out, err, calls = run_install(nvidia="550.163.01", os_name=os_name_arg)  # (an older driver: a warning, before the big download)
-    assert "older than 580" in err and calls[0].endswith("glyd[vllm]==0.26.0")
+    assert "older than 580" in err and calls[0].endswith(f"glyd[vllm]=={V}")
     rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, uv=False)  # (uv missing: its own installer, then the tool)
     assert calls[0].startswith("curl -LsSf https://astral.sh/uv/install.sh") and any(c.startswith("uv tool install") for c in calls) and rc == 0, (calls, err)
     rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, other_glyd=True)  # (the compression program first on PATH: said so)
     assert "another glyd" in err and "no 'run'" in err
     rc, out, err, calls = run_install(nvidia="595.91.07", os_name="Darwin", arch="arm64")
-    assert calls[0].endswith("glyd==0.26.0") and "Linux and an NVIDIA GPU" in err
+    assert calls[0].endswith(f"glyd=={V}") and "Linux and an NVIDIA GPU" in err
     rc, out, err, calls = run_install(os_name="FreeBSD")
     assert rc == 1 and "Linux and macOS" in err and not calls
 

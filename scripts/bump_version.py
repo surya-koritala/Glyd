@@ -13,7 +13,7 @@ own ecosystem's, and --check fails on a file in the other's. Only X.Y.Z and its 
 pre-releases (X.Y.Zrc3, X.Y.Za1, X.Y.Zb2) exist here.
 
 What carries it: the three Cargo.toml (and glyd-store's dependency on glyd), the three glyd entries in
-Cargo.lock, pyproject.toml and glyd/__init__.py, in every version. In a release (X.Y.Z) also ROADMAP.md,
+Cargo.lock, pyproject.toml, glyd/__init__.py and scripts/install.sh (the release it installs), in every version. In a release (X.Y.Z) also ROADMAP.md,
 docs/adoption.md and docs/index.html, where they name the current release, and CHANGELOG.md's heading
 (`## Unreleased` or `## vX.Y.Z (Unreleased)` becomes `## vX.Y.Z` with the date). Formula/glyd.rb is not
 here: it needs the release's files to exist, see scripts/bump_formula.py.
@@ -41,6 +41,7 @@ CODE = [
     ("Cargo.lock", "cargo", r'^name = "glyd(?:-gpu|-store)?"\nversion = "(?P<v>[^"]+)"', 3),
     ("bindings/python/pyproject.toml", "py", r'^version = "(?P<v>[^"]+)"', 1),
     ("bindings/python/glyd/__init__.py", "py", r'^__version__ = "(?P<v>[^"]+)"', 1),
+    ("scripts/install.sh", "py", r'^GLYD_VERSION="\$\{GLYD_VERSION:-(?P<v>[^}]+)\}"', 1),  # the release the installer pins
 ]
 # where a release is named in prose: the text (version in group v) and what a release writes there
 DOCS = [
@@ -156,13 +157,14 @@ def selftest():
         assert 'version = "9.9.9-rc.1"' in read(root, "Cargo.toml") and read(root, "Cargo.lock").count('version = "9.9.9-rc.1"') == 3
         assert 'glyd = { version = "9.9.9-rc.1"' in read(root, "glyd-store/Cargo.toml")
         assert 'version = "9.9.9rc1"' in read(root, "bindings/python/pyproject.toml") and '__version__ = "9.9.9rc1"' in read(root, "bindings/python/glyd/__init__.py")
+        assert 'GLYD_VERSION="${GLYD_VERSION:-9.9.9rc1}"' in read(root, "scripts/install.sh")
         assert all(read(root, p) == t for p, t in docs.items()) and "## v9.9.9 (Unreleased)" in read(root, CHANGELOG)
 
         bump(root, "v9.9.9-rc.2", day)  # rc to rc
         assert not problems(root) and "9.9.9rc2" in read(root, "bindings/python/pyproject.toml")
 
-        changed = bump(root, "9.9.9", day)  # the release: the docs and the heading too (v0.25.1's ten files)
-        assert not problems(root) and len(changed) == 10, changed
+        changed = bump(root, "9.9.9", day)  # the release: the docs and the heading too (v0.25.1's ten files, and the installer's pin)
+        assert not problems(root) and len(changed) == 11, changed
         assert f"## v9.9.9 {DASH} 2031-02-03\n" in read(root, CHANGELOG) and "(Unreleased)" not in read(root, CHANGELOG)
         assert "(v9.9.9, 2031-02-03)" in read(root, "ROADMAP.md") and "(v9.9.9, February 2031)" in read(root, "docs/adoption.md")
         assert "CLI; v9.9.9, February 2031." in read(root, "docs/index.html")
@@ -171,6 +173,7 @@ def selftest():
         for path, old, new in [  # each slip is found
             ("bindings/python/pyproject.toml", 'version = "9.9.9"', 'version = "9.9.9-rc.1"'),
             ("bindings/python/glyd/__init__.py", '"9.9.9"', '"9.9.8"'),
+            ("scripts/install.sh", "GLYD_VERSION:-9.9.9}", "GLYD_VERSION:-9.9.8}"),
             ("glyd-store/Cargo.toml", 'glyd = { version = "9.9.9"', 'glyd = { version = "9.9.8"'),
             ("glyd-gpu/Cargo.toml", 'version = "9.9.9"', 'version = "9.9.8"'),
             ("Cargo.lock", 'name = "glyd-gpu"\nversion = "9.9.9"', 'name = "glyd-gpu"\nversion = "9.9.8"'),
