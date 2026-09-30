@@ -140,7 +140,9 @@ def _layers(model):
     packed_layers, plain_layers = set(), set()  # the decoder layers with a packed Linear or experts, and with vLLM's own method
     for name, m in model.named_modules():
         i = _layer_of(name)
-        if i is not None and getattr(m, "quant_method", None) is not None:
+        # (only layers a quantization config was given to: a model builds some without one, a mixture of experts' router gate
+        # for one, and they run vLLM's own method whatever the fraction)
+        if i is not None and getattr(m, "quant_method", None) is not None and getattr(m, "quant_config", None) is not None:
             (packed_layers if getattr(m, "glyd_words", None) is not None or getattr(m, "glyd_moe", None) is not None else plain_layers).add(i)
     for m in model.modules():
         if getattr(m, "glyd_moe", None) is not None:

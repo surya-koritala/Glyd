@@ -173,7 +173,8 @@ a second and 256 at once, against bf16 in the same session):
 - **Checked** (`check_vllm.py --quick --fraction 0.5`, Qwen3-8B, all 18 passed): every pack decoded to its weights bit for
   bit, every product within 4.2e-3 of its matrix decoded, the layers packed the rule's, exact eager and exact compiled in
   the deterministic mode bf16's bits. Fraction 0 in eager gave bf16 eager's tokens, logprobs and prompt_logprobs bit for
-  bit, nothing packed, with the same KV cache.
+  bit, nothing packed, with the same KV cache. granite-3.1-3b-a800m-instruct (a mixture of experts, `--brief`, all 7
+  passed): 16 of 32 layers packed, their experts too, the other 16 vLLM's own methods.
 - **The GH200,** where fraction 1 served 0.88x bf16's requests a second with Qwen3-32B, is not measured with it yet.
 
 Runs and logs: [benchmarks/gpu/l4-vllm-fraction-2026-09-30](../../benchmarks/gpu/l4-vllm-fraction-2026-09-30).

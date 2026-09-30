@@ -1,0 +1,21 @@
+gpu used 0 MiB at 19:23:13
+== 19:23:13 json-1.5
+exit 1
+(APIServer pid=118870) pydantic_core._pydantic_core.ValidationError: 1 validation error for VllmConfig
+(APIServer pid=118870)   Value error, glyd: fraction 1.5: a number from 0 to 1 (the share of the decoder layers packed) [type=value_error, input_value=ArgsKwargs((), {'model_co... 'shutdown_timeout': 0}), input_type=ArgsKwargs]
+== 19:23:32 json-minus
+exit 1
+(APIServer pid=118996) pydantic_core._pydantic_core.ValidationError: 1 validation error for VllmConfig
+(APIServer pid=118996)   Value error, glyd: fraction -0.25: a number from 0 to 1 (the share of the decoder layers packed) [type=value_error, input_value=ArgsKwargs((), {'model_co... 'shutdown_timeout': 0}), input_type=ArgsKwargs]
+== 19:23:42 json-half-word
+exit 1
+(APIServer pid=119081) pydantic_core._pydantic_core.ValidationError: 1 validation error for VllmConfig
+(APIServer pid=119081)   Value error, glyd: fraction 'half': a number from 0 to 1 (the share of the decoder layers packed) [type=value_error, input_value=ArgsKwargs((), {'model_co... 'shutdown_timeout': 0}), input_type=ArgsKwargs]
+== 19:23:52 env-abc
+exit 1
+(APIServer pid=119171) pydantic_core._pydantic_core.ValidationError: 1 validation error for VllmConfig
+(APIServer pid=119171)   Value error, glyd: fraction 'abc': a number from 0 to 1 (the share of the decoder layers packed) [type=value_error, input_value=ArgsKwargs((), {'model_co... 'shutdown_timeout': 0}), input_type=ArgsKwargs]
+== 19:24:02 env-2
+exit 1
+(APIServer pid=119260) pydantic_core._pydantic_core.ValidationError: 1 validation error for VllmConfig
+(APIServer pid=119260)   Value error, glyd: fraction '2': a number from 0 to 1 (the share of the decoder layers packed) [type=value_error, input_value=ArgsKwargs((), {'model_co... 'shutdown_timeout': 0}), input_type=ArgsKwargs]

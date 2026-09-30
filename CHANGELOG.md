@@ -158,9 +158,11 @@ every earlier format.
   `check_vllm.py --quick --fraction 0.5` passed all 18 checks on it: every
   pack decoded bit for bit, the layers packed the rule's, exact eager and
   compiled (deterministic mode) bf16's bits; fraction 0 in eager gave
-  bf16 eager's tokens, logprobs and prompt_logprobs bit for bit. Not
-  measured yet on a GH200, where fraction 1 served 0.88x bf16's requests
-  a second with Qwen3-32B.
+  bf16 eager's tokens, logprobs and prompt_logprobs bit for bit; on
+  granite-3.1-3b-a800m-instruct (a mixture of experts) 16 of 32 layers,
+  their experts too, were packed, all 7 checks passed. Not measured yet
+  on a GH200, where fraction 1 served 0.88x bf16's requests a second with
+  Qwen3-32B.
 
 ## v0.25.1 — 2026-09-29
 
