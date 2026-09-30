@@ -430,6 +430,8 @@ def cmd_run(argv):
         name, window = api.model()
         chat = Chat(api, name, window, think=not a.no_think, log=server.log)
         if a.prompt is not None:
+            if not a.prompt.strip():
+                raise pf.Refusal("the prompt is empty", "Give one: --prompt \"Say hello\"")
             return chat.once(a.prompt)
         if not sys.stdin.isatty():
             prompt = sys.stdin.read().strip()
@@ -497,6 +499,9 @@ def doctor_lines(environ=None, run=pf._run):
         rows.append(("fail", "C compiler", ("no C compiler" if not cc else f"{cc}, but no Python.h") + ": vLLM cannot start without them. " + pf.compiler_hint()))
     nvcc = pf.have_nvcc(env)
     rows.append(("ok", "CUDA compiler", "found" if nvcc else "not found: not needed (glyd run turns FlashInfer's sampler off, which would compile)"))
+    users = pf.other_users(run) if gpu.free < 0.8 * gpu.total else []
+    if users:
+        rows.append(("warn", "GPU in use", ", ".join(f"{n} ({pf.gb(b)})" for n, b in users[:4]) + ": memory these hold is not free for a model"))
     cache = pf.hub_cache()
     free = pf.disk_free(cache)
     rows.append(("ok" if free > 20e9 else "warn", "Disk", f"{pf.gb(free)} free for models, in {cache}"))
@@ -520,7 +525,11 @@ def cmd_doctor(argv):
                 s = pf.settings(m, gpu, "run")
                 print(f"  {repo:<16} {pf.gb(s.weights):>8} on the GPU (bf16 {pf.gb(m.bf16)}): fits, a {s.context:,}-token context")
             except pf.Refusal:
-                print(f"  {repo:<16} {pf.gb(weights):>8} on the GPU (bf16 {pf.gb(m.bf16)}): does not fit; it needs {pf.gb(needs)} free")
+                try:  # (would it fit if nothing else held the GPU?)
+                    s = pf.settings(m, replace(gpu, free=gpu.total), "run")
+                    print(f"  {repo:<16} {pf.gb(weights):>8} on the GPU (bf16 {pf.gb(m.bf16)}): not now ({pf.gb(gpu.free)} free, it needs {pf.gb(needs)}); on an idle GPU a {s.context:,}-token context")
+                except pf.Refusal:
+                    print(f"  {repo:<16} {pf.gb(weights):>8} on the GPU (bf16 {pf.gb(m.bf16)}): does not fit; it needs {pf.gb(needs)} free")
         for repo, cfg in pf.LADDERS["qwen"]:
             try:
                 pf.settings(pf.model_of(repo, cfg), gpu, "run")

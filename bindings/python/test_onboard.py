@@ -456,6 +456,9 @@ def test_doctor():
     labels = {r[1]: r for r in rows}
     assert labels["GPU"][0] == "ok" and "NVIDIA L4" in labels["GPU"][2] and "Driver" in labels and "C compiler" in labels and "Disk" in labels
     assert gpu.name == "NVIDIA L4"
+    busy = "0, NVIDIA L4, 23034, 2000, 469, 595.91.07, 8.9, Disabled\n"  # (another program holds the GPU: said, and what fits an idle one)
+    rows, gpu = run.doctor_lines(environ={}, run=smi(busy, apps="9, VLLM::EngineCore, 20000\n"))
+    assert any(r[0] == "warn" and "GPU in use" == r[1] and "VLLM::EngineCore" in r[2] for r in rows)
     rows, gpu = run.doctor_lines(environ={}, run=lambda cmd: None)
     assert rows[-1][0] == "fail" and "no NVIDIA GPU" in rows[-1][2] and gpu is None
     rows, _ = run.doctor_lines(environ={}, run=smi("0, NVIDIA T4, 15360, 14000, 400, 550.1, 7.5, Disabled\n"))
