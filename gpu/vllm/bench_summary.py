@@ -12,12 +12,21 @@ import sys
 R = sys.argv[1]
 modes = [m for m in ("bf16", "glyd") if glob.glob(os.path.join(R, f"{m}-rate*.json"))]
 rates = sorted({re.search(r"rate(.+)\.json$", p).group(1) for p in glob.glob(os.path.join(R, "*-rate*.json"))}, key=lambda r: float("inf") if r == "inf" else float(r))
+def kv(m, suffix=""):
+    """A server's weights, KV cache and max concurrency from its log's lines (kv-MODE[-cold].txt), or None."""
+    p = os.path.join(R, f"kv-{m}{suffix}.txt")
+    if not os.path.exists(p):
+        return None
+    t = open(p).read()
+    tokens = re.search(r"GPU KV cache size: ([\d,]+) tokens", t)
+    conc = re.search(r"Maximum concurrency for ([\d,]+) tokens per request: ([\d.]+)x", t)
+    load = re.search(r"Model loading took ([\d.]+) GiB", t)
+    return f"weights {load.group(1) if load else '?'} GiB, KV cache {tokens.group(1) if tokens else '?'} tokens, max concurrency {conc.group(2) + 'x at ' + conc.group(1) + ' tokens' if conc else '?'}"
+
+
 for m in modes:
-    kv = open(os.path.join(R, f"kv-{m}.txt")).read() if os.path.exists(os.path.join(R, f"kv-{m}.txt")) else ""
-    tokens = re.search(r"GPU KV cache size: ([\d,]+) tokens", kv)
-    conc = re.search(r"Maximum concurrency for ([\d,]+) tokens per request: ([\d.]+)x", kv)
-    load = re.search(r"Model loading took ([\d.]+) GiB", kv)
-    print(f"{m}: weights {load.group(1) if load else '?'} GiB, KV cache {tokens.group(1) if tokens else '?'} tokens, max concurrency {conc.group(2) + 'x at ' + conc.group(1) + ' tokens' if conc else '?'}")
+    cold = kv(m, "-cold")
+    print(f"{m}: {kv(m) or 'no server'}" + (f" (started cold, on an empty compile cache: {cold})" if cold else ""))
 print()
 print("| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |")
 print("| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
