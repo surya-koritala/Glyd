@@ -1,17 +1,18 @@
 # The route SPLIT (option 2), 2026-09-29
 
 A 12-bit prompt's matrices decoded ahead on SMs set apart by the driver's green contexts, while cuBLAS multiplies from
-a ring of slots on the other SMs. The measurements that set its routes: models' forward passes by it and by v0.25.0's
-routes in one process, a layer's products, where a pass's time goes, and a stress check of the ring. Every session ran
+a ring of slots on the other SMs. The measurements that set its routes: models' forward passes by it and by the routes
+without it (v0.25.0's, then v0.25.1's) in one process, a layer's products, where a pass's time goes, and a stress check
+of the ring. Every session ran
 unattended (`jobs/`), its tree a `git archive` of this branch with a COMMIT file.
 
 | script | what |
 | :--- | :--- |
-| `gpu/e2e.py MODEL --baseline --format mma12 --fused --merge --prefill LENGTHS --without-split --breakdown LENGTHS` | bf16, then Glyd (the Linears merged: q, k, v and gate, up one product each): a forward pass over a prompt of each length and generate() to its first token, each the mean of 3 after 2; again with the route SPLIT off (v0.25.0's routes) in the same process; then `--breakdown`: the host's time to issue a pass against the pass's, and a profile of one pass each way, the GPU's idle time and its kernels by kind (GEMMs, the decode beside GEMMs, beside the rest and alone, attention, the rest) |
+| `gpu/e2e.py MODEL --baseline --format mma12 --fused --merge --prefill LENGTHS --without-split --breakdown LENGTHS` | bf16, then Glyd (the Linears merged: q, k, v and gate, up one product each): a forward pass over a prompt of each length and generate() to its first token, each the mean of 3 after 2; again with the route SPLIT off (the routes without it) in the same process (`--rounds N`: N times each way in turn, SPLIT first, then the other first, ...); then `--breakdown`: the host's time to issue a pass against the pass's, and a profile of one pass each way, the GPU's idle time and its kernels by kind (GEMMs, the decode beside GEMMs, beside the rest and alone, attention, the rest) |
 | `layer.py MODEL` | layer 10's products through GLinear in a prompt's order, 8 layers' Linears over the same packs a pass, each pass timed whole, the median of 5: the route SPLIT, today's route and bf16; the route's outputs within 1e-2 of fp32 and the same bits pass to pass |
 | `gpu/split_stress.py` | every Qwen3 layer's matrices (0.6B-32B, weights of a trained matrix's spread, a few far out) through the ring at 769-4096 tokens, rings of 3-16 slots of three sizes, the order queued whole or a few ahead, 36 passes, then GLinear's recording pass and 6 after: every product the same bits across layers, passes and slot counts, within 1e-2 of fp32 |
 | `ring_model.py` | a model of the ring's ordering (glyd_gpu.cu's ring_pump, ring_restart, ring_queue, mma12_ring_linear) on CUDA's stream and event rules, random schedules: every slot written after its last reader's product and read after its decode |
-| `jobs/` | `o2_job.sh` (the steps, their budget; `o2_summary.py` writes summary.txt), `o2_a100.sh` and `o2_hopper.sh` (a GPU class's lists) |
+| `jobs/` | `o2_job.sh` (the steps, their budget; `o2_summary.py` writes summary.txt), `o2_a100.sh` and `o2_hopper.sh` (a GPU class's lists); `o3_job.sh` and `o3_summary.py`, the settle on one Hopper GPU against v0.25.1's routes (a GH200: the route as shipped; any other: forced on, a measurement, not a route), its summary a DECIDES line per model and length |
 
 ## The sessions
 
@@ -22,6 +23,7 @@ unattended (`jobs/`), its tree a `git archive` of this branch with a COMMIT file
 | `l4-stress` | L4 | e744311 | split_stress.py on this tree and on 4516ea2 |
 | `a100-3` | A100-SXM4-40GB | 8f10750 | the A100's routes: checks, the stress, layer.py, e2e.py with its breakdown |
 | `gh200` | GH200 480GB (132 SMs) | 8f10750 | Hopper's routes: checks, the stress, layer.py, e2e.py with its breakdown, the decode's SMs at 1024, the scheduling before the gates |
+| `gh200-settle` | GH200 480GB (132 SMs) | 9c218a1 | the settle against v0.25.1's routes: checks, the stress, e2e.py 3 rounds each way in turn, layer.py |
 
 ## Results
 
@@ -38,9 +40,26 @@ A forward pass by the route SPLIT against v0.25.0's routes (today's), the same m
 On the A100, Qwen3-8B's pass at 1024 tokens took 95.5 ms by the route against 112.2 ms by today's and 90.0 ms in
 bf16; 14B's gate and up (178 M weights) took today's route past 4096 tokens (their layer 1.021x by the route at 8192).
 On the GH200, 8B's pass at 1024 was issued by the host in 47.6 of its 48.0 ms (its breakdown): the route's calls cost
-the host more than the GPU saved; 32B's at 1024 1.012x. The routes: an A100 SXM's prompts from 769 to 8192 tokens, a
-GH200's from 2048 to 8192 for a matrix whose O and K are both at least 4096 (an H100 SXM, an H200 and the PCIe cards on
-v0.25.1's routes until measured); nothing past 8192.
+the host more than the GPU saved; 32B's at 1024 1.012x. v0.25.1 left an A100's routes as they were (v0.25.0's and
+v0.25.1's libraries: every route and its last token count the same for its code; the one kernel change, the decode's
+load order, Hopper's alone), so the A100's ratios stand against v0.25.1.
+
+The settle on the GH200 against v0.25.1's routes (`gh200-settle/`: e2e-*.txt, summary.txt), a forward pass's time
+over theirs, the median of 3 rounds each way in turn (each round's):
+
+| model | 2048 | 4096 | 8192 |
+| :--- | ---: | ---: | ---: |
+| Qwen3-8B | 0.978 (0.973, 0.978, 0.980) | 0.994 (0.994, 0.991, 0.994) | 0.994 (0.994, 0.995, 0.990) |
+| Qwen3-32B | 0.909 (0.913, 0.909, 0.908) | 0.940 (0.940, 0.941, 0.940) | 0.952 (0.942, 0.952, 0.953) |
+
+The GPU was at its power cap in 96-100% of the samples of both ways' phases, their SM clocks alike (8B's 1721 MHz on
+average by SPLIT against 1713, 32B's 1580 against 1617; the tree then gave 8B's matrices the route too, O and K at least
+4096).
+
+The routes, where a pass took at least 2% less time: an A100 SXM's prompts from 769 to 4096 tokens, every matrix; a
+GH200's from 2048 to 8192 for a matrix whose O and K are both at least 5120, as Qwen3-32B's (8B's, 4096 on a side:
+2.2% at 2048 alone, for a ring of 600 MiB, not taken). An H100 SXM, an H200 and the PCIe cards on v0.25.1's routes
+until measured; nothing past 8192.
 
 Where the time went before the gates (`a100-1` against a layer's products): the rest of a Qwen3-8B pass at 1024 tokens
 (norms, activations, rotary, attention) took 43.5 ms by the route against 28.5 in bf16 and 28.9 by today's route: the

@@ -1,0 +1,10 @@
+08:20:38 (+5 s) machine and environment (~/gpuenv)
+08:22:06 (+93 s) builds (lib exit 0, jit exit 0)
+08:22:38 (+125 s) check_capi (exit 0)
+08:22:42 (+129 s) test_split (exit 0)
+08:23:02 (+149 s) split_stress (exit 0)
+08:24:05 (+212 s) e2e-Qwen3-8B (exit 0)
+08:24:10 (+217 s) layer-Qwen3-8B (exit 0)
+08:28:02 (+449 s) e2e-Qwen3-32B (exit 0)
+08:28:10 (+457 s) layer-Qwen3-32B (exit 0)
+08:28:10 (+457 s) done

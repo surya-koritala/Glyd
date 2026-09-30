@@ -14,21 +14,22 @@ every earlier format.
   from the ring on the others, told how many. Each decode waits for the
   product of the same matrix of the layer before to start, so it runs
   beside the products and not beside the norms, activations and attention
-  between them. One forward pass against v0.25.0's routes, the same model
-  and prompt in one process (`e2e.py --prefill --merge`): on an
-  A100-SXM4-40GB, Qwen3-8B's 0.887 / 0.851 / 0.952 / 0.964 / 0.988 at 769 /
-  1024 / 2048 / 4096 / 8192 tokens (95.5 ms at 1024 against 112.2, bf16's
-  90.0) and 14B's 0.832 / 0.849 / 0.904 / 0.935 / 1.000; on a GH200,
-  Qwen3-32B's 0.895 / 0.935 / 0.938 at 2048 / 4096 / 8192 and 8B's 0.978 /
-  0.991 / 0.992. So the routes: an A100 SXM's 12-bit prompts from 769 to
-  8192 tokens (a matrix over 2 x 50 M weights, as 14B's gate and up, to
-  4096), a GH200's from 2048 to 8192 for a matrix whose O and K are both
-  at least 4096 (at 1024 tokens the GH200 lost: 1.106 and 1.012). An H100
-  SXM, an H200 and the PCIe cards keep v0.25.1's routes until a session
-  measures them, and nothing past 8192 tokens takes it, not measured. The
-  GH200's ratios were taken against v0.25.0's routes, before v0.25.1's
-  faster Hopper decode for cuBLAS (that decode was 7-8% of those passes at
-  4096 tokens, its breakdown). The ring holds a
+  between them. One forward pass against the routes without it, the same
+  model and prompt in one process (`e2e.py --prefill --merge`): on an
+  A100-SXM4-40GB against v0.25.0's routes (v0.25.1 left an A100's as they
+  were), Qwen3-8B's 0.887 / 0.851 / 0.952 / 0.964 / 0.988 at 769 / 1024 /
+  2048 / 4096 / 8192 tokens (95.5 ms at 1024 against 112.2, bf16's 90.0)
+  and 14B's 0.832 / 0.849 / 0.904 / 0.935 / 1.000; on a GH200 against
+  v0.25.1's routes, the median of 3 rounds each way in turn, Qwen3-32B's
+  0.909 / 0.940 / 0.952 at 2048 / 4096 / 8192 and 8B's 0.978 / 0.994 /
+  0.994. So the routes, where a pass took at least 2% less time: an A100
+  SXM's 12-bit prompts from 769 to 4096 tokens, a GH200's from 2048 to
+  8192 for a matrix whose O and K are both at least 5120, as Qwen3-32B's
+  (8B's matrices, 4096 on a side, not taken: 2.2% at 2048 alone, for a
+  ring of 600 MiB; at 1024 tokens the GH200's first session had the route
+  lose, 1.106 and 1.012 of v0.25.0's routes' time). An H100 SXM, an H200
+  and the PCIe cards keep v0.25.1's routes until a session measures them,
+  and nothing past 8192 tokens takes it, not measured. The ring holds a
   layer's chunks ahead: 600 MiB for Qwen3-8B, 1.0 GiB for 14B, 1.5 GiB for
   32B, and a 32 MiB cuBLAS workspace. Its products are cuBLAS's own on the
   decoded bf16, a row chunk a call: the same bits run to run and prompt to
@@ -58,8 +59,8 @@ every earlier format.
   and the glyd-gpu crate (`Route::Split`, `PCIE`, `GH200`, `WITH_SPLIT`,
   `Library::split_sms`; the ring declared, not wrapped yet).
 - `gpu/e2e.py --without-split` times a prompt again with the route off in
-  the same process; `--breakdown` gives a pass's host time and its GPU
-  time by kind of kernel.
+  the same process (`--rounds N`: N times each way in turn); `--breakdown`
+  gives a pass's host time and its GPU time by kind of kernel.
 
 ## v0.25.1 — 2026-09-29
 

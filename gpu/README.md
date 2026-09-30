@@ -1160,16 +1160,22 @@ routes unless it asks and runs the ring:
   one slot size), but not bit for bit a whole-matrix product, so
   `exact=True` never takes it.
 
-The routes, as measured end to end: an A100 SXM's 12-bit prompts from 769
-to 8192 tokens (a matrix over 2 x 50 M weights to 4096, as 14B's gate and
-up), a GH200's from 2048 to 8192 for a matrix whose O and K are both at
-least 4096. An H100 SXM, an H200 and the PCIe cards (an A100 PCIe, an H100
-PCIe) keep v0.25.1's routes until a session measures them (an H100 SXM
-has the GH200's 132 SMs but 3.35 TB/s against its 4 and a 700 W budget),
-and nothing past 8192 tokens takes it, not measured. Its SMs for the decode: an
-A100's 12 to 1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143, then 4.
-One forward pass (`e2e.py --prefill --merge`, bf16 and v0.25.0's routes
-in the same process), ms:
+The routes, as measured end to end, where a forward pass took at least 2%
+less time than by the routes without it: an A100 SXM's 12-bit prompts from
+769 to 4096 tokens (at 8192 Qwen3-8B's pass took 0.988 of the time, 14B's
+1.000), a GH200's from 2048 to 8192 for a matrix whose O and K are both at
+least 5120, as Qwen3-32B's (its pass 0.909 / 0.940 / 0.952 of the time at
+2048 / 4096 / 8192; Qwen3-8B's matrices, 4096 on a side, 0.978 / 0.994 /
+0.994: 2.2% at 2048 alone, for a ring of 600 MiB, not taken). An H100 SXM,
+an H200 and the PCIe cards (an A100 PCIe, an H100 PCIe) keep v0.25.1's
+routes until a session measures them (an H100 SXM has the GH200's 132 SMs
+but 3.35 TB/s against its 4 and a 700 W budget), and nothing past 8192
+tokens takes it, not measured. Its SMs for the decode: an A100's 12 to
+1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143, then 4. One forward
+pass (`e2e.py --prefill --merge`, bf16 and the routes without SPLIT in the
+same process: on the A100 v0.25.0's, which v0.25.1 left as they were
+there; on the GH200 v0.25.1's, the medians of 3 rounds each way in turn),
+ms, the A100's at 8192 and the GH200's Qwen3-8B not taken:
 
 | Prompt | 769 | 1024 | 2048 | 4096 | 8192 |
 | :--- | ---: | ---: | ---: | ---: | ---: |
@@ -1179,17 +1185,18 @@ in the same process), ms:
 | Qwen3-14B, bf16 | 124.2 | 150.8 | 290.9 | 583.4 | 1224.4 |
 | v0.25.0's routes | 174.0 | 199.0 | 348.5 | 654.6 | 1319.6 |
 | SPLIT | 144.7 | 168.9 | 315.1 | 612.2 | 1320.0 |
-| GH200, Qwen3-8B, bf16 | | 39.3 | 71.9 | 146.2 | 302.5 |
-| v0.25.0's routes | | 43.3 | 81.3 | 154.7 | 311.9 |
-| SPLIT | | 47.9 | 79.5 | 153.3 | 309.4 |
-| Qwen3-32B, bf16 | | 140.3 | 278.0 | 559.1 | 1187.9 |
-| v0.25.0's routes | | 161.0 | 333.9 | 626.8 | 1280.1 |
-| SPLIT | | 163.0 | 299.0 | 586.0 | 1200.5 |
+| GH200, Qwen3-8B, bf16 | | | 72.1 | 146.7 | 306.7 |
+| v0.25.1's routes | | | 81.5 | 155.4 | 314.8 |
+| SPLIT | | | 79.7 | 154.0 | 312.3 |
+| Qwen3-32B, bf16 | | | 280.1 | 564.5 | 1190.1 |
+| v0.25.1's routes | | | 335.7 | 636.2 | 1279.9 |
+| SPLIT | | | 305.1 | 598.7 | 1218.4 |
 
-(At 1024 tokens on the GH200 the route lost: Qwen3-8B's pass was issued
-by the host in 47.6 of its 48.0 ms, the route's calls costing the host
-more than the GPU saved; 32B's took 1.2% longer. Hopper keeps its wgmma
-kernel to 1024 and the matrix decoded first to 2047.) Where it cannot run,
+(At 1024 tokens the GH200's first session, against v0.25.0's routes, had
+the route lose: Qwen3-8B's pass was issued by the host in 47.6 of its 48.0
+ms, the route's calls costing the host more than the GPU saved; 32B's took
+1.2% longer. Hopper keeps its wgmma kernel to 1024 and the matrix decoded
+first to 2047.) Where it cannot run,
 a prompt takes the routes before it, never an error: the JIT build (the
 ring is the prebuilt library's), a driver before CUDA 12.4, MIG or MPS
 refusing the split, too little memory for its ring, a CUDA graph being
