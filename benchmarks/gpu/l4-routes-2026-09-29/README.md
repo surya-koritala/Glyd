@@ -31,7 +31,7 @@ run, and each cell gives its window's SM clock and power.
   the GPU's idle temperature, through scratchpad/aws_gpu.sh (14 minutes).
 - `l40s-class/` (1f4343b, the L40S's class and routes): on the L4, the library built by build_lib.sh, then check_capi
   (the L40S's routes and GLinear's on an L40S made as one), test_gpu.py and the crate's tests, all passing. The
-  release's head is checked in benchmarks/gpu/decode-fix-2026-09-29/l4.
+  release's head is checked in benchmarks/gpu/decode-fix-2026-09-29/l4-head.
 
 The L4 ran every route at its 72 W cap from about 512 tokens up. The tiered fused kernel ran at 1200-1360 MHz
 (Qwen3-8B's at 885 at 8192 tokens), the 12-bit one at 1035-1170; cuBLAS behind a decode at 960-1155 MHz; bf16's cuBLAS
@@ -91,9 +91,10 @@ The respond job's Glyd process ran after 20 minutes of bf16's.
 ## An L40S (l40s/)
 
 The L40S has the L4's bandwidth per FLOP: 350 W for 864 GB/s, where the L4 has 72 W for 300. From 2048 tokens every
-route ran at its 350 W cap (the decode ahead's medians 342-352 W and 1718-1935 MHz, the software power cap set in every
-sample); at 1024 tokens tiered it had power to spare (2040 MHz, 325 W). Past the fused kernel's lengths, decoding ahead beside
-cuBLAS (the A10's route) was the faster:
+route but the tiered fused kernel ran at its 350 W cap (the decode ahead's medians 342-352 W and 1718-1935 MHz, the
+software power cap set in every sample; the tiered fused kernel at 2040 MHz and 331-335 W, the cap set in 4 of its 69
+samples); at 1024 tokens tiered the decode ahead had power to spare (2040 MHz, 325 W). Past the fused kernel's lengths,
+decoding ahead beside cuBLAS (the A10's route) was the faster:
 - 0.4-5.1% less time than decoding first at 1024-3072 and 8192 tokens;
 - 0.8-1.0% more at 4096.
 
@@ -110,5 +111,5 @@ routes forced here: the library's new routes take them):
 
 The 12-bit fused kernel takes 512 tokens at bf16's time (-0.3%), where the tiered one is +20.6%. Each layout by its own
 routes, the 12-bit layout's prompts took 17.3 / 18.1 / 12.8 / 4.0% less time than the tiered layout's at 512 / 768 /
-1024 / 1536 tokens and were within 0.9% of them from 2048. The layout stays tiered by the owner's rule (33% less
+1024 / 1536 tokens and were within 0.9% of them from 2048. The layout stays tiered (33% less
 memory); `layout="mma12"` (25%) for the fastest short prompts.

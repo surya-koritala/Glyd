@@ -240,8 +240,9 @@ library and the release's in one process):
 | L4 | whole matrices | decode | 0.999-1.002 | the same |
 
 The H100 PCIe measured the same on wgmma (0.942-0.991 at 32-1024 tokens).
-Slower in v0.25.0: a matrix decoded whole took 3.0-5.8% longer on the H100
-SXM and 1.0-1.6% on the A10. That decode is in Hopper's prompts past
+Slower in v0.25.0, and on the A10 still: a matrix decoded whole took
+3.0-5.8% longer on the H100 SXM and 1.0-1.6% on the A10. That decode is in
+Hopper's prompts past
 wgmma's 1024 tokens, the A100's past 768, an A10's 12-bit prompts from 640 tokens
 (decoded ahead beside cuBLAS; the prompt's time not measured) and every
 step of exact mode. It takes longer where the kernel runs furthest from
@@ -249,12 +250,13 @@ its memory's bandwidth: on the H100 SXM at 1.8-2.0 of 3.35 TB/s (a
 weight's 12.04-12.07 bits read and 16 written, about 3.5 bytes), and on
 the L4, at 75-77% of its 300 GB/s, not at all; with the same loads,
 stores and branches as before and a tenth fewer instructions.
-v0.25.1 takes that back on Hopper: its whole-matrix decode there loads a
+v0.25.1 changes that on Hopper: its whole-matrix decode there loads a
 step's low bytes and exception bounds first, then its codes (a GH200,
 layer 10 of Qwen3-8B, 14B and 32B: 0.964-0.975 of the time before split
-byte, v0.25.0's 1.035-1.060). The decode ahead keeps loading all three at
-once (0.703-0.725 there, the new order 1.058-1.068), as every other GPU's
-decode does: on an L4 the new order took 1.9-2.2% longer
+byte, v0.25.0's 1.035-1.060; the H100 SXM not run again). The decode ahead
+keeps loading all three at once (0.703-0.725 there, the new order
+1.058-1.068), as every other GPU's decode does: on an L4 the new order
+took 1.6-1.9% longer than all three at once
 ([benchmarks/gpu/decode-fix-2026-09-29](../benchmarks/gpu/decode-fix-2026-09-29)).
 Logs: [benchmarks/gpu/splitbyte-2026-09-29](../benchmarks/gpu/splitbyte-2026-09-29)
 (rc/, round1/), [benchmarks/gpu/format-study-2026-09-28](../benchmarks/gpu/format-study-2026-09-28)
@@ -1091,8 +1093,9 @@ taken from 1024 tokens in the tiered layout and 2048 in the 12-bit one
 (`exact=True`'s prompts as before), the route AHEAD as on an A10: the
 decode ahead beside cuBLAS took 0.4-5.1% less time than a decode first at
 1024-3072 and 8192 tokens, 0.8-1.0% more at 4096. From 2048 tokens every
-route ran at the 350 W cap (the decode ahead at 1718-1935 MHz), below it
-at 1024 tokens tiered (2040 MHz, 325 W). The L40S is a class of its own too
+route but the tiered fused kernel ran at the 350 W cap (the decode ahead
+at 1718-1935 MHz; the fused kernel at 2040 MHz, 331-335 W); the decode
+ahead below it at 1024 tokens tiered (2040 MHz, 325 W). The L40S is a class of its own too
 (`GLYD_GPU_L40S`, 4000: an L40S's code is 4089), so the L40 and RTX 6000
 Ada keep their routes until measured. Qwen3-8B on an AWS g6e.xlarge, one
 forward pass, over bf16's time in the same run (the rows "now" the routes'

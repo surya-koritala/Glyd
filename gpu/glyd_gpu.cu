@@ -905,7 +905,7 @@ struct Nib {
     // alone: on a GH200 (layer 10 of Qwen3-8B, 14B and 32B, 2026-09-29) the layer's decode takes 0.964-0.975 of the
     // time of the 12-bit layout's before split byte, load()'s all at once 1.035-1.060; on an L4 (Qwen3-8B and 4B)
     // 1.020-1.022 against load()'s 1.001-1.003. The decode ahead (a few warps an SM) keeps load() everywhere: on the
-    // GH200 0.703-0.725, this order 1.058-1.068; on the L4 0.994-0.995 against 1.106-1.132.
+    // GH200 0.703-0.725, this order 1.058-1.068; on the L4 0.994-0.995 against 1.106-1.134.
     template <class Then>
     __device__ __forceinline__ void load_decode(int64_t step, int lane, uint32_t R[16], Then then) const {
         const uint8_t* p = data + step * STEP12;
@@ -2968,7 +2968,8 @@ __global__ void moe_sum_kernel(const float* __restrict__ y32, const int64_t* __r
 // do), its rows into the same rows of out [E rows, K], the rest of out left
 // as it is. The 12-bit layout's steps: a warp a step on Hopper by
 // Nib::load_decode (the low bytes first), elsewhere and FEW by load() (all at
-// once), each as it measured fastest (a GPU not measured as it was).
+// once), each as it measured fastest (Hopper measured on a GH200 alone; any
+// other GPU not measured, as it was).
 template <class Fmt, bool MOE = false, bool FEW = false>
 __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out, const int* __restrict__ plan = nullptr) {
     if constexpr (MOE) {

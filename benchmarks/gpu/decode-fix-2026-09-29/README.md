@@ -81,8 +81,9 @@ The decode of layer 10, each over main's, the median of 21, two runs:
 | Qwen3-8B | ahead | 3012-3015 | 0.994 | 0.994 | 1.101-1.102 | 1.099 | 1.106 |
 | Qwen3-4B-Instruct-2507 | ahead | 1637-1638 | 0.992-0.994 | 0.992-0.994 | 1.124-1.125 | 1.128-1.129 | 1.132-1.134 |
 
-Here the whole decode runs at 74-77% of the L4's 300 GB/s, and order 3 took 1.9-2.2% longer than all three at once (fd24666's library as built: 1.020-1.022; its decode ahead, v0.25.0's loads,
-0.994-0.995). So v0.25.1 loads the low bytes first on Hopper alone: dc490e4's kernels for sm_89 are l4-routes' and
+Here the whole decode runs at 74-77% of the L4's 300 GB/s, and order 3 took 1.6-1.9% longer than all three at once
+(1.016-1.019 of v0.25.0's time in the same process; fd24666's library as built 1.017-1.019, its decode ahead, v0.25.0's
+loads, 1.000-1.002). So v0.25.1 loads the low bytes first on Hopper alone: dc490e4's kernels for sm_89 are l4-routes' and
 v0.25.0's instructions (sass-final.txt): on the L4 its whole decode took 1.002-1.003 of main's (v0.25.0's 1.001,
 order 3's 1.019-1.021 in the same run), its decode ahead 0.993-0.994 (l4-head/).
 
