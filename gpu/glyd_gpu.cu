@@ -901,10 +901,11 @@ struct Nib {
     // loads in two batches: the low bytes and the step's exception bounds, then the codes once those are in (load()
     // issues all at once). The codes' address waits on the first batch through after(its sum), 0: the sum shuffled
     // from its own lane, less the sum (a shuffle the compiler does not see through), so the same bytes, bit for bit.
-    // then(): the kernel's own work (its row block and step, a division), once the codes' load is issued. On a GH200
-    // (layer 10 of Qwen3-8B, 14B and 32B, 2026-09-29) the layer's decode takes 0.964-0.975 of the time of the 12-bit
-    // layout's before split byte, load()'s all at once 1.035-1.060; the decode ahead (a few warps an SM) keeps load():
-    // 0.703-0.725 there, this order 1.058-1.068.
+    // then(): the kernel's own work (its row block and step, a division), once the codes' load is issued. Hopper's
+    // alone: on a GH200 (layer 10 of Qwen3-8B, 14B and 32B, 2026-09-29) the layer's decode takes 0.964-0.975 of the
+    // time of the 12-bit layout's before split byte, load()'s all at once 1.035-1.060; on an L4 (Qwen3-8B and 4B)
+    // 1.020-1.022 against load()'s 1.001-1.003. The decode ahead (a few warps an SM) keeps load() everywhere: on the
+    // GH200 0.703-0.725, this order 1.058-1.068; on the L4 0.994-0.995 against 1.106-1.132.
     template <class Then>
     __device__ __forceinline__ void load_decode(int64_t step, int lane, uint32_t R[16], Then then) const {
         const uint8_t* p = data + step * STEP12;
@@ -2965,8 +2966,9 @@ __global__ void moe_sum_kernel(const float* __restrict__ y32, const int64_t* __r
 // experts' layer, W its experts' matrices of `rows` rows stacked):
 // blockIdx.y a hit expert of plan (moe_route's; past those hit: nothing to
 // do), its rows into the same rows of out [E rows, K], the rest of out left
-// as it is. The 12-bit layout's steps: a warp a step by Nib::load_decode (the
-// low bytes first), FEW by load() (all at once), each as it measured fastest.
+// as it is. The 12-bit layout's steps: a warp a step on Hopper by
+// Nib::load_decode (the low bytes first), elsewhere and FEW by load() (all at
+// once), each as it measured fastest (a GPU not measured as it was).
 template <class Fmt, bool MOE = false, bool FEW = false>
 __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out, const int* __restrict__ plan = nullptr) {
     if constexpr (MOE) {
@@ -2984,7 +2986,12 @@ __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, 
     for (int64_t local = (blockIdx.x * (int64_t)blockDim.x + threadIdx.x) >> 5; local < total; local += (int64_t)gridDim.x * blockDim.x >> 5) {
         int64_t step = row0 / 64 * KS + local, rb, s;
         uint32_t R[16];
-        if constexpr (std::is_same_v<Fmt, Nib> && !FEW) {
+#if __CUDA_ARCH__ == 900
+        constexpr bool low_first = std::is_same_v<Fmt, Nib> && !FEW;
+#else
+        constexpr bool low_first = false;
+#endif
+        if constexpr (low_first) {
             f.load_decode(step, lane, R, [&] { rb = local / KS, s = local % KS; });
         } else {
             rb = local / KS, s = local % KS;
