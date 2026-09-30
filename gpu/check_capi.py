@@ -855,6 +855,7 @@ gm.Split.of.pop(dev_, None)
 own = [(1024, 4096), (4096, 4096)]
 wts = [weights(O * K, 0.01).view(O, K) for O, K in own]
 lins = [gm.GLinear(g.pack_mma12(w), None) for w in wts]
+gm.set_scratch(torch.nn.ModuleList(lins), False)
 for M in (769, 1024, 2048, 4096, 8192):
     for lin, w, (O, K) in zip(lins, wts, own):
         takes = split_rule(here, True, O, K, M) > 0
