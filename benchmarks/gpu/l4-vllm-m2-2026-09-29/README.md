@@ -15,8 +15,10 @@ models, and `vllm bench serve` on Qwen3-8B.
   with 563da8e's `bench_serve.sh`, for the rest. The commits between take the GPU's code from the library (the same
   code on an L4 with this library) and add the scripts' options. `determinism/` ran minutes before 6adc96e, on its code
   but for the exact refusal's wording and a save's placeholders.
-- **Models:** Qwen3-1.7B, Qwen3-4B-Instruct-2507 and Qwen3-8B, from the box's cache. Llama-3.1-8B was not run: the
-  box holds no Llama.
+- **Models:** Qwen3-1.7B, Qwen3-4B-Instruct-2507 and Qwen3-8B, from the box's cache. Llama-3.1-8B is gated (its
+  weights need a Hugging Face token, which is not handled here), so the Llama architecture was checked on
+  `01-ai/Yi-1.5-6B-Chat` after M2 (Apache-2.0, ungated; its config names `LlamaForCausalLM`, so vLLM runs it with its
+  Llama model code; hidden 4096, 32 layers, grouped-query attention, an LM head of its own), on v0.25.1's library.
 - Every run held the box's lock, one GPU job at a time.
 
 ## Files
@@ -28,14 +30,20 @@ models, and `vllm bench serve` on Qwen3-8B.
   - `m2_extra.sh`: the bench at 0.25 requests a second, then `repro.sh`;
   - `m2_extra2.sh`: the bench again at 1 request a second and at once, warm;
   - `m2_extra3.sh`: `repeat.py`, then the l4-routes library: its build, Qwen3-8B's check run and the bench;
-  - `m2_extra4.sh`: `opcheck.py` under compute-sanitizer (m2_extra3.sh's run of it stopped before its first product:
-    it had not loaded the library).
+  - `m2_extra4.sh`: `opcheck.py` (now `diag/opcheck-m2.py`) under compute-sanitizer (m2_extra3.sh's run of it stopped
+    before its first product: it had not loaded the library).
+  - after M2, on v0.25.1's library (main at 617c027 with the plugin): `nondeterminism/` (`dbg1.sh` to `dbg4.sh`,
+    `detcost.sh`), then `m3_prep.sh` (the library for sm_89, `dbg4.sh`, Yi-1.5-6B-Chat's download and check, the
+    sanitizer runs), `chain2.sh` (M3's job's dry run, `detcost.sh`, `m3_prep.sh` again for the Yi check with the LM
+    head fix), then `sanitizer/midrace.sh`.
 - `check/`: each model's console output (`check-MODEL.txt`), and a JSON and a vLLM log a run (`check-MODEL/`).
 - `bench/`: `bench-Qwen3-8B/` (cold), `bench-Qwen3-8B-low/` and `bench-Qwen3-8B-warm/` (warm),
   `bench-Qwen3-8B-l4routes/`: vLLM's result JSONs and console output, each server's log and KV cache, nvidia-smi's
   samples (from the low-load bench on), and `summary.txt`.
-- `determinism/` (`determinism.sh`), `repro/` (`repro.sh`) and `diag/` (`repeat.py`, `opcheck.py`): the same model and
-  options in fresh processes and in one, and the kernels under compute-sanitizer.
+- `determinism/` (`determinism.sh`), `repro/` (`repro.sh`) and `diag/` (`repeat.py`, `opcheck-m2.py`): the same model
+  and options in fresh processes and in one, and v0.25.0's kernels under compute-sanitizer's initcheck and memcheck.
+- `nondeterminism/`: where two compiled processes part, and inductor's deterministic mode; `yi/`: Yi-1.5-6B-Chat's
+  check; `sanitizer/`: v0.25.1's kernels under compute-sanitizer's racecheck, synccheck, initcheck and memcheck.
 - `l4routes/`: Qwen3-8B on the l4-routes branch's library, and its build's output.
 
 ## Checks (`check_vllm.py`): all passed
@@ -46,18 +54,19 @@ each, and bf16's own continuation of the first prompt (1,536 tokens) fed back th
 Serving). "Top-1" is the share of the continuation's tokens that each run also ranks first; "|Δ|" is the mean
 |logprob difference| of those tokens from bf16's, CUDA graphs against CUDA graphs.
 
-| | Qwen3-1.7B | Qwen3-4B-Instruct-2507 | Qwen3-8B |
-| :--- | ---: | ---: | ---: |
-| Weights: bf16 / tiered / 12-bit (GiB) | 3.22 / 2.48 / 2.90 | 7.64 / 5.52 / 6.44 | 15.27 / 11.64 / 12.34 |
-| KV cache: bf16 / tiered / 12-bit (tokens) | 128,064 / 139,760 / 134,480 | 70,192 / 84,368 / 78,672 | 11,056 / 36,144 / 31,872 |
-| Packs decoded to their weights, bit for bit | 112 of 112 | 144 of 144 | 144 of 144 |
-| Worst layer against F.linear, 1-4,096 tokens (relative) | 3.70e-3 | 3.72e-3 | 3.66e-3 |
-| bf16 eager against bf16: top-1 / \|Δ\| (the floor) | 0.9870 / 1.24e-2 | 0.9929 / 9.56e-3 | 0.9922 / 9.08e-3 |
-| Glyd tiered against bf16: top-1 / \|Δ\| | 0.9916 / 1.16e-2 | 0.9935 / 7.87e-3 | 0.9942 / 8.40e-3 |
-| Glyd 12-bit against bf16: top-1 / \|Δ\| | 0.9890 / 1.25e-2 | 0.9935 / 7.87e-3 | 0.9942 / 8.40e-3 |
-| Exact, eager: bf16 eager's tokens, logprobs and continuation, bit for bit | 8 of 8, yes | 8 of 8, yes | 8 of 8, yes |
-| Exact under torch.compile | refused | refused | refused |
-| Saves, tiered and 12-bit, each loaded in both layouts | bit for bit | bit for bit | not run |
+| | Qwen3-1.7B | Qwen3-4B-Instruct-2507 | Qwen3-8B | Yi-1.5-6B-Chat (after M2) |
+| :--- | ---: | ---: | ---: | ---: |
+| Weights: bf16 / tiered / 12-bit (GiB) | 3.22 / 2.48 / 2.90 | 7.64 / 5.52 / 6.44 | 15.27 / 11.64 / 12.34 | 11.29 / 8.63 / 9.05 |
+| KV cache: bf16 / tiered / 12-bit (tokens) | 128,064 / 139,760 / 134,480 | 70,192 / 84,368 / 78,672 | 11,056 / 36,144 / 31,872 | 101,568 / 143,488 / 137,664 |
+| Packs decoded to their weights, bit for bit | 112 of 112 | 144 of 144 | 144 of 144 | 128 of 128 |
+| Worst layer against F.linear, 1-4,096 tokens (relative) | 3.70e-3 | 3.72e-3 | 3.66e-3 | 3.61e-3 |
+| bf16 eager against bf16: top-1 / \|Δ\| (the floor) | 0.9870 / 1.24e-2 | 0.9929 / 9.56e-3 | 0.9922 / 9.08e-3 | 0.9942 / 5.93e-3 |
+| Glyd tiered against bf16: top-1 / \|Δ\| | 0.9916 / 1.16e-2 | 0.9935 / 7.87e-3 | 0.9942 / 8.40e-3 | 0.9948 / 4.97e-3 |
+| Glyd 12-bit against bf16: top-1 / \|Δ\| | 0.9890 / 1.25e-2 | 0.9935 / 7.87e-3 | 0.9942 / 8.40e-3 | 0.9929 / 5.34e-3 |
+| Exact, eager: bf16 eager's tokens, logprobs and continuation, bit for bit | 8 of 8, yes | 8 of 8, yes | 8 of 8, yes | 8 of 8, yes |
+| Exact under torch.compile | refused | refused | refused | refused; with inductor deterministic, compiled bf16's bit for bit (8 of 8, yes) |
+| Fused, compiled, inductor deterministic, a run and a restart on its graphs | | | | the same bits (8 of 8, yes) |
+| Saves, tiered and 12-bit, each loaded in both layouts | bit for bit | bit for bit | not run | bit for bit (after the LM head fix) |
 
 - **Every layer's product** matched F.linear on its decoded matrix within 1e-2 at 13 batch sizes, and gave the same
   bits on a second call.
@@ -69,7 +78,13 @@ Serving). "Top-1" is the share of the continuation's tokens that each run also r
 - **Saves:** `glyd.save_pretrained` of each layout, loaded as saved and in the other layout (decoded and packed again),
   gave the tokens, logprobs and continuation of the bf16 checkpoint packed at load in that layout, bit for bit (eager).
 - **bf16 compiled again on an empty cache,** against its first compile: bit for bit on Qwen3-1.7B and Qwen3-8B; on
-  Qwen3-4B-Instruct-2507, 0 of 8 prompts bit for bit and the continuation not.
+  Qwen3-4B-Instruct-2507 and Yi-1.5-6B-Chat, 0 of 8 prompts bit for bit and the continuation not.
+- **Yi-1.5-6B-Chat** (`yi/`, `m3_prep.sh`): all 19 checks passed with v0.25.1's library, on which an L4's tiered
+  prompts from 896 tokens are decoded for cuBLAS (the continuation's pass among them). Its first run found that a glyd
+  save of a model with its own LM head did not load: `glyd.save_pretrained` packs `lm_head`, and vLLM's LM head had no
+  parameter for its tensors: vLLM stopped at "There is no module or parameter named 'lm_head.glyd_block_base' in
+  LlamaForCausalLM" (Qwen3-1.7B and 4B tie theirs; Llama-3.1-8B and Qwen3-8B would have met it). The plugin now loads
+  that pack as saved and decodes it into the bf16 weight vLLM's LM head runs on; `yi/` is the run with the fix.
 
 ## Serving Qwen3-8B (`bench_serve.sh`)
 
@@ -154,17 +169,51 @@ process of its own; `repeat.py` generates three times in one process (prefix cac
 | Compiled without CUDA graphs, likewise | 0 of 8, no | 8 of 8, yes |
 | Compiled, three times in one process (the prompts alone) | 8 of 8, twice | 8 of 8, twice |
 
-- **bf16 compiled again on an empty cache,** in the checks: bit for bit on Qwen3-1.7B and Qwen3-8B, 0 of 8 on
-  Qwen3-4B-Instruct-2507. So vLLM's own compiled bf16 is not always the same from one compile to the next.
-- **Glyd compiled is the same within a process and not from one process to the next,** with CUDA graphs or without,
-  where bf16 on one compile cache is; eager Glyd is the same in every process. The cause is not isolated yet. The
-  library's routed linear on random packs of Qwen3-8B's shapes (both layouts, 1-1,024 tokens: the L4's GEMM, MID and
-  BIG routes) ran clean under compute-sanitizer's initcheck (no read of memory never written) and memcheck (no access
-  out of bounds), within 3.4e-3 of the decoded matrix's product: `diag/opcheck-*.txt`.
-- **Exact mode** (each matrix decoded, then vLLM's F.linear) gives bf16 eager's bits on all three models. Under
-  torch.compile it gave 0 of 8 prompts bit for bit against compiled bf16, with the decode inside the op (M2) or as an
-  op of its own before vLLM's GEMM (the M1 spike), so it is refused there, with a message that says to add
-  `--enforce-eager`.
+bf16 compiled again on an empty cache, in the checks: bit for bit on Qwen3-1.7B and Qwen3-8B, 0 of 8 on
+Qwen3-4B-Instruct-2507. So vLLM's own compiled bf16 is not always the same from one compile to the next.
+
+### The cause (`nondeterminism/`, after M2)
+
+Not Glyd's kernels. `dbg_hash.py` hashes, in call order, every product's input and output and every FlashAttention
+call's query, key, value and output over the continuation's one pass (1,542 tokens; Qwen3-1.7B, tiered, compiled with
+CUDA graphs off so every call runs its Python), each run a process of its own, the first compiling and the others
+loading its graphs (`dbg1.sh`, `dbg2.sh`: v0.25.0's library).
+
+- Across 12 pairs of processes, the library's product never gave another output for the same input, nor did
+  FlashAttention.
+- The first tensor to differ was always attention's query or key, its value the same, after a qkv product that
+  matched. Between the two run the q and k RMSNorm and the rotary embedding, which vLLM leaves to inductor (its custom
+  ops off) and has it group into combo kernels, benchmarked (`combo_kernels` and `benchmark_combo_kernel`, vLLM's
+  defaults, for this fusion).
+- With combo kernels off, or on without their benchmark: the processes still parted, at the same place.
+- With inductor's deterministic mode (`"deterministic": true`: no on-device benchmarking that moves numerics, such as
+  choosing a reduction's block sizes by timing; it refuses the combo kernels' benchmark, which vLLM turns on, so
+  `"benchmark_combo_kernel": false` with it), three processes, one compiling and two loading, gave the same bits:
+  every product, every attention call and all 1,541 logprobs, Glyd's and bf16's (`dbg3.sh`).
+- In that mode, compiled with CUDA graphs as vLLM runs by default, each run on an empty compile cache (`dbg4.sh`,
+  v0.25.1's library): bf16 against bf16 8 of 8 prompts and the continuation bit for bit; fused Glyd against fused Glyd
+  the same; and exact mode, its refusal lifted for the test, against bf16: 8 of 8 and the continuation bit for bit.
+  Fused Glyd's continuation (1,542 tokens) was bf16's bit for bit too: v0.25.1 sends an L4's tiered prompts from 896
+  tokens to a decode and cuBLAS.
+
+Inductor's deterministic mode costs nothing measurable here (`detcost.py`: Qwen3-8B, CUDA graphs on, each on an empty
+compile cache; tokens/s at 1, 8 and 32 sequences, then 8 prompts of 1,024 tokens):
+
+| | Default | Deterministic |
+| :--- | :--- | :--- |
+| bf16 | 16.7 / 126.3 / 449.5 tokens/s; 2.179 s | 16.7 / 126.1 / 448.6 tokens/s; 2.183 s |
+| Glyd tiered | 21.7 / 168.0 / 584.9 tokens/s; 2.284 s | 21.6 / 167.5 / 589.2 tokens/s; 2.240 s |
+
+Its compiles were faster, having no combo kernels to benchmark: Glyd's cold start took 118 s against 153.
+
+Why vLLM's compiled bf16 agreed on one cache in these pairs while Glyd's did not is not shown here. One difference:
+Glyd's compiled graph has an artifact for each layer (its packs' words are constants of each layer's graph: 29
+artifacts for Qwen3-1.7B, where bf16's layers share 3), so each process makes more of these choices.
+
+So exact mode now runs compiled where inductor is deterministic, `--compilation-config '{"inductor_compile_config":
+{"deterministic": true, "combo_kernels": true, "benchmark_combo_kernel": false}}'`, and is refused compiled without
+it, the message giving both ways; check_vllm.py checks both (Yi-1.5-6B-Chat below). Exact mode eager is bf16 eager's
+bit for bit on all four models.
 
 ## The l4-routes library (`l4routes/`, `bench-Qwen3-8B-l4routes/`)
 
@@ -192,3 +241,26 @@ then cuBLAS. The plugin takes the library's routes, so with that library built a
   1.39x the requests a second (1.29x) and a token every 148.7 ms against 109.6 (+36%; +48%).
 - It ran as hot as v0.25.0's library's bench or hotter (76-80 C at most, against 70-80 C) and at a lower median clock
   (1,140-1,230 MHz, against 1,215-1,260).
+
+## compute-sanitizer on v0.25.1's kernels (`sanitizer/`)
+
+`opcheck.py` runs the library's routed linear (route -1: the L4's GEMM, MID and BIG routes) and its whole-matrix
+decode on random packs, both layouts, shapes 2048x2048 and 1024x4096, at 1, 16, 17, 33, 64, 65, 129, 300 and 1,024
+tokens, each product checked against the decoded matrix's.
+
+- **synccheck, initcheck, memcheck:** 0 errors.
+- **racecheck:** hazards in `mma12_mid_kernel` alone, the 12-bit layout's MID route (17-64 tokens on Ampere and Ada, to
+  128 on an A100), the one kernel on these GPUs that hands stages from a producer warp to the consumers through
+  mbarriers. Every hazard is between the producer's writes into a stage's slot and the consumers' reads of it; built
+  with line info (`mid-racecheck-lineinfo.txt`), the ones displayed are the producer's `cp_async16` into X's tile
+  (glyd_gpu.cu:1182) against a consumer's `ldmatrix_x4` of it (glyd_gpu.cu:1186), "potential" WAR hazards.
+  - The kernel orders them through the slot's two mbarriers. A consumer warp's reads are done once their ldmatrix
+    results are consumed by mma.sync; then `__syncwarp`, and its lane 0 arrives on the slot's `empty` barrier. The
+    producer waits on `empty` before it copies the next stage into that slot, and the consumers wait on `full` (the
+    copies' `cp.async.mbarrier.arrive.noinc`, and lane 0's arrive for the bounds it stores) before they read.
+  - racecheck flags them all the same, so it does not credit that chain; the kernels synchronized by `__syncthreads`
+    and named barriers were clean.
+  - Called 2,000 times a shape (2048x2048, 6144x2048, 2048x6144, 12288x2048) and M (17, 33, 64), the MID route gave the
+    same bits on every call, within 1.9-3.1e-3 of the decoded matrix's product (`mid-stress.txt`); the tiered step
+    kernel beside it likewise. So these read as false positives, not a race; the tiered layout, whose products never
+    differed for the same inputs across processes, does not take this route.

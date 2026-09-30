@@ -1,0 +1,4 @@
+c1:c2: 112 and 112 products; first input differing #1 (layer 0 o, O 2048 K 2048 M 1542); first output differing #1 (layer 0 o, O 2048 K 2048 M 1542); same input, other output: 0 products; logprobs differing 1370 of 1541; counters not zero 0, 0
+c2:c3: 112 and 112 products; first input differing #13 (layer 3 o, O 2048 K 2048 M 1542); first output differing #13 (layer 3 o, O 2048 K 2048 M 1542); same input, other output: 0 products; logprobs differing 1375 of 1541; counters not zero 0, 0
+c1:c3: 112 and 112 products; first input differing #1 (layer 0 o, O 2048 K 2048 M 1542); first output differing #1 (layer 0 o, O 2048 K 2048 M 1542); same input, other output: 0 products; logprobs differing 1379 of 1541; counters not zero 0, 0
+e1:e2: 112 and 112 products; first input differing none; first output differing none; same input, other output: 0 products; logprobs differing 0 of 1541; counters not zero 0, 0

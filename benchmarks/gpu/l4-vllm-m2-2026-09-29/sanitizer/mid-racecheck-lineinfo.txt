@@ -1,0 +1,207 @@
+========= COMPUTE-SANITIZER
+2048 2048 mma 17 2.05e-03
+2048 2048 mma 64 2.65e-03
+========= Error: Potential WAR hazard detected at __shared__ 0x90 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 25, Incoming Value : 164
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x91 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 191, Incoming Value : 63
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x92 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 136, Incoming Value : 39
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x93 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 190, Incoming Value : 191
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x94 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 6, Incoming Value : 158
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x95 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 64, Incoming Value : 191
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x96 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 195, Incoming Value : 67
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x97 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 63, Incoming Value : 63
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x98 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 25, Incoming Value : 91
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x99 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 191, Incoming Value : 191
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x9a in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 193, Incoming Value : 10
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x9b in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 63, Incoming Value : 63
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x9c in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 148, Incoming Value : 35
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x9d in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 63, Incoming Value : 61
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x9e in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 98, Incoming Value : 214
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0x9f in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2220 in glyd_gpu.cu:1186
+=========     Write Thread (257,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 63, Incoming Value : 191
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xb0 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 109, Incoming Value : 192
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xb1 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 62, Incoming Value : 63
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xb2 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 178, Incoming Value : 161
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xb3 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 189, Incoming Value : 191
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xb4 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 247, Incoming Value : 164
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xb5 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 191, Incoming Value : 63
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xb6 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 93, Incoming Value : 131
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xb7 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 187, Incoming Value : 63
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xb8 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 56, Incoming Value : 132
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xb9 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 62, Incoming Value : 63
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xba in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 58, Incoming Value : 93
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xbb in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 190, Incoming Value : 191
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xbc in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 139, Incoming Value : 179
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xbd in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 63, Incoming Value : 62
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xbe in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 139, Incoming Value : 140
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xbf in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2270 in glyd_gpu.cu:1186
+=========     Write Thread (259,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 191, Incoming Value : 191
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xd0 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2300 in glyd_gpu.cu:1186
+=========     Write Thread (261,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 212, Incoming Value : 43
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xd1 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2300 in glyd_gpu.cu:1186
+=========     Write Thread (261,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 191, Incoming Value : 191
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xd2 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2300 in glyd_gpu.cu:1186
+=========     Write Thread (261,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 203, Incoming Value : 165
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xd3 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2300 in glyd_gpu.cu:1186
+=========     Write Thread (261,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 62, Incoming Value : 191
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xd4 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2300 in glyd_gpu.cu:1186
+=========     Write Thread (261,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 133, Incoming Value : 54
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xd5 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2300 in glyd_gpu.cu:1186
+=========     Write Thread (261,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 191, Incoming Value : 63
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xd6 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2300 in glyd_gpu.cu:1186
+=========     Write Thread (261,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 163, Incoming Value : 8
+========= 
+========= Error: Potential WAR hazard detected at __shared__ 0xd7 in block (47,0,0) :
+=========     Read Thread (8,0,0) at ldmatrix_x4(unsigned int *, unsigned int)+0x2300 in glyd_gpu.cu:1186
+=========     Write Thread (261,0,0) at cp_async16(unsigned int, const void *, int)+0x8210 in glyd_gpu.cu:1182
+=========     Current Value : 191, Incoming Value : 190
+========= 
+2048 2048 mma12 17 2.12e-03
+2048 2048 mma12 64 1.78e-03
+opcheck: done
+========= RACECHECK SUMMARY: 40 hazards displayed (10000030 errors, 0 warnings)

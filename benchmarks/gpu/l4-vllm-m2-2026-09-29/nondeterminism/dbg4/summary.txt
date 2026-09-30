@@ -1,0 +1,5 @@
+bf16A against bf16B: prompts bit for bit 8 of 8, continuation bit for bit True, top-1 0.9870, mean |d| 0.00e+00
+glydA against glydB: prompts bit for bit 8 of 8, continuation bit for bit True, top-1 0.9870, mean |d| 0.00e+00
+exact against bf16A: prompts bit for bit 8 of 8, continuation bit for bit True, top-1 0.9870, mean |d| 0.00e+00
+exact against bf16B: prompts bit for bit 8 of 8, continuation bit for bit True, top-1 0.9870, mean |d| 0.00e+00
+glydA against bf16A: prompts bit for bit 0 of 8, continuation bit for bit True, top-1 0.9870, mean |d| 0.00e+00

@@ -1,0 +1,41 @@
+== 03:27:14 d1
+d1 exit 0
+compiled: 112 products hashed; counters not zero: 0
+== 03:28:30 d2
+d2 exit 0
+compiled: 112 products hashed; counters not zero: 0
+== 03:28:55 d3
+d3 exit 0
+compiled: 112 products hashed; counters not zero: 0
+== 03:29:20 f1
+f1 exit 1
+== 03:29:20 f2
+f2 exit 1
+== 03:29:20 f3
+f3 exit 1
+Traceback (most recent call last):
+d1:d2: 112 and 112 products; first input differing none; first output differing none; same input, other output: 0 products; logprobs differing 0 of 1541; attention (28 calls): first input differing None, first output differing None, same inputs other output 0; counters not zero 0, 0
+d2:d3: 112 and 112 products; first input differing none; first output differing none; same input, other output: 0 products; logprobs differing 0 of 1541; attention (28 calls): first input differing None, first output differing None, same inputs other output 0; counters not zero 0, 0
+d1:d3: 112 and 112 products; first input differing none; first output differing none; same input, other output: 0 products; logprobs differing 0 of 1541; attention (28 calls): first input differing None, first output differing None, same inputs other output 0; counters not zero 0, 0
+  File "/home/ubuntu/vllm-work/dbg_cmp.py", line 9, in <module>
+    a, b = (json.load(open(f"{D}/{n}.json")) for n in pair.split(":"))
+    ^^^^
+  File "/home/ubuntu/vllm-work/dbg_cmp.py", line 9, in <genexpr>
+    a, b = (json.load(open(f"{D}/{n}.json")) for n in pair.split(":"))
+                      ^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/ubuntu/vllm-work/m2/dbg3/f1.json'
+== 03:29:54 f1
+f1 exit 0
+compiled: 0 products hashed; counters not zero: 0
+== 03:30:37 f2
+f2 exit 0
+compiled: 0 products hashed; counters not zero: 0
+== 03:30:56 f3
+f3 exit 0
+compiled: 0 products hashed; counters not zero: 0
+d1:d2: 112 and 112 products; first input differing none; first output differing none; same input, other output: 0 products; logprobs differing 0 of 1541; attention (28 calls): first input differing None, first output differing None, same inputs other output 0; counters not zero 0, 0
+d2:d3: 112 and 112 products; first input differing none; first output differing none; same input, other output: 0 products; logprobs differing 0 of 1541; attention (28 calls): first input differing None, first output differing None, same inputs other output 0; counters not zero 0, 0
+d1:d3: 112 and 112 products; first input differing none; first output differing none; same input, other output: 0 products; logprobs differing 0 of 1541; attention (28 calls): first input differing None, first output differing None, same inputs other output 0; counters not zero 0, 0
+f1:f2: 0 and 0 products; first input differing none; first output differing none; same input, other output: 0 products; logprobs differing 0 of 1541; attention (28 calls): first input differing None, first output differing None, same inputs other output 0; counters not zero 0, 0
+f2:f3: 0 and 0 products; first input differing none; first output differing none; same input, other output: 0 products; logprobs differing 0 of 1541; attention (28 calls): first input differing None, first output differing None, same inputs other output 0; counters not zero 0, 0
+f1:f3: 0 and 0 products; first input differing none; first output differing none; same input, other output: 0 products; logprobs differing 0 of 1541; attention (28 calls): first input differing None, first output differing None, same inputs other output 0; counters not zero 0, 0

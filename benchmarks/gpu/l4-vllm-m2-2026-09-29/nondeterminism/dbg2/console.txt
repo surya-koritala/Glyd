@@ -1,0 +1,36 @@
+== 03:16:23 v1
+v1 exit 0
+compiled: 112 products hashed; counters not zero: 0
+== 03:17:58 v2
+v2 exit 0
+compiled: 112 products hashed; counters not zero: 0
+== 03:18:26 v3
+v3 exit 0
+compiled: 112 products hashed; counters not zero: 0
+== 03:18:52 n1
+n1 exit 0
+compiled: 112 products hashed; counters not zero: 0
+== 03:20:14 n2
+n2 exit 0
+compiled: 112 products hashed; counters not zero: 0
+== 03:20:41 n3
+n3 exit 0
+compiled: 112 products hashed; counters not zero: 0
+== 03:21:09 b1
+b1 exit 0
+compiled: 112 products hashed; counters not zero: 0
+== 03:22:35 b2
+b2 exit 0
+compiled: 112 products hashed; counters not zero: 0
+== 03:23:02 b3
+b3 exit 0
+compiled: 112 products hashed; counters not zero: 0
+v1:v2: 112 and 112 products; first input differing #33 (layer 8 o, O 2048 K 2048 M 1542); first output differing #33 (layer 8 o, O 2048 K 2048 M 1542); same input, other output: 0 products; logprobs differing 1322 of 1541; attention (28 calls): first input differing 8 (query, key, value: differ, same, same), first output differing 8, same inputs other output 0; counters not zero 0, 0
+v2:v3: 112 and 112 products; first input differing #5 (layer 1 o, O 2048 K 2048 M 1542); first output differing #5 (layer 1 o, O 2048 K 2048 M 1542); same input, other output: 0 products; logprobs differing 1355 of 1541; attention (28 calls): first input differing 1 (query, key, value: same, differ, same), first output differing 1, same inputs other output 0; counters not zero 0, 0
+v1:v3: 112 and 112 products; first input differing #5 (layer 1 o, O 2048 K 2048 M 1542); first output differing #5 (layer 1 o, O 2048 K 2048 M 1542); same input, other output: 0 products; logprobs differing 1347 of 1541; attention (28 calls): first input differing 1 (query, key, value: same, differ, same), first output differing 1, same inputs other output 0; counters not zero 0, 0
+n1:n2: 112 and 112 products; first input differing #1 (layer 0 o, O 2048 K 2048 M 1542); first output differing #1 (layer 0 o, O 2048 K 2048 M 1542); same input, other output: 0 products; logprobs differing 1380 of 1541; attention (28 calls): first input differing 0 (query, key, value: same, differ, same), first output differing 0, same inputs other output 0; counters not zero 0, 0
+n2:n3: 112 and 112 products; first input differing #1 (layer 0 o, O 2048 K 2048 M 1542); first output differing #1 (layer 0 o, O 2048 K 2048 M 1542); same input, other output: 0 products; logprobs differing 1369 of 1541; attention (28 calls): first input differing 0 (query, key, value: same, differ, same), first output differing 0, same inputs other output 0; counters not zero 0, 0
+n1:n3: 112 and 112 products; first input differing #5 (layer 1 o, O 2048 K 2048 M 1542); first output differing #5 (layer 1 o, O 2048 K 2048 M 1542); same input, other output: 0 products; logprobs differing 1352 of 1541; attention (28 calls): first input differing 1 (query, key, value: same, differ, same), first output differing 1, same inputs other output 0; counters not zero 0, 0
+b1:b2: 112 and 112 products; first input differing #33 (layer 8 o, O 2048 K 2048 M 1542); first output differing #33 (layer 8 o, O 2048 K 2048 M 1542); same input, other output: 0 products; logprobs differing 1365 of 1541; attention (28 calls): first input differing 8 (query, key, value: differ, differ, same), first output differing 8, same inputs other output 0; counters not zero 0, 0
+b2:b3: 112 and 112 products; first input differing #33 (layer 8 o, O 2048 K 2048 M 1542); first output differing #33 (layer 8 o, O 2048 K 2048 M 1542); same input, other output: 0 products; logprobs differing 1365 of 1541; attention (28 calls): first input differing 8 (query, key, value: differ, differ, same), first output differing 8, same inputs other output 0; counters not zero 0, 0
+b1:b3: 112 and 112 products; first input differing none; first output differing none; same input, other output: 0 products; logprobs differing 0 of 1541; attention (28 calls): first input differing None, first output differing None, same inputs other output 0; counters not zero 0, 0

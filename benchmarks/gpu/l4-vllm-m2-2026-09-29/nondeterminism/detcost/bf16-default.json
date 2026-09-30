@@ -1,0 +1,1 @@
+{"mode": "bf16", "how": "default", "start_s": 273.8, "tokens_per_s_1": 16.7, "tokens_per_s_8": 126.3, "tokens_per_s_32": 449.5, "prompts_8x1024_s": 2.179}

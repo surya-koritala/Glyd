@@ -1,0 +1,1 @@
+{"mode": "bf16", "how": "deterministic", "start_s": 60.6, "tokens_per_s_1": 16.7, "tokens_per_s_8": 126.1, "tokens_per_s_32": 448.6, "prompts_8x1024_s": 2.183}
