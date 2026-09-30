@@ -1214,7 +1214,9 @@ routes' others). A stress check holds the ring to its ordering
 (`split_stress.py`: every Qwen3 layer's matrices, 0.6B-32B, at 769-4096
 tokens, rings of 3-16 slots, 36 passes; 16,512 products the same bits
 across layers, passes and slot counts and within 1e-2 of fp32 on an L4, an
-A100 and a GH200; logs: benchmarks/gpu/option2-2026-09-29).
+A100 and a GH200, and on the L4 30,336 more with the split skewed both
+ways, the products on 2 SMs, then the decode on 2 (`--sms=-2,1`); logs:
+benchmarks/gpu/option2-2026-09-29).
 
 ## Popular models
 

@@ -1,0 +1,2 @@
+gpu-route-split d26efb4 (option 2 review 1's fixes) on the dev L4: a probe of Split.measured and the cuBLAS lookup, check_capi, test_gpu.py whole, split_stress.py at the default split and skewed both ways
+NVIDIA L4, 595.91.07, 23034 MiB, Cuda compilation tools, release 13.0, V13.0.88, torch 2.14.0+cu130

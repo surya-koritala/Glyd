@@ -43,7 +43,9 @@ every earlier format.
   `GLYD_SPLIT_MIN`, `GLYD_SPLIT_MAX` and `GLYD_SPLIT_SMS` move it. A stress check (`gpu/split_stress.py`, in test_gpu.py quick): every
   Qwen3 layer's matrices, 0.6B-32B, at 769-4096 tokens, rings of 3-16
   slots, 36 passes; 16,512 products the same bits across layers, passes
-  and slot counts, within 1e-2 of fp32, on an L4, an A100 and a GH200
+  and slot counts, within 1e-2 of fp32, on an L4, an A100 and a GH200, and
+  on the L4 30,336 more with the split skewed both ways (the products on 2
+  SMs, then the decode on 2)
   ([benchmarks/gpu/option2-2026-09-29](benchmarks/gpu/option2-2026-09-29)).
 - C API version 7: the ring (`glyd_gpu_ring_create`, `_destroy`, `_split`,
   `_reset`, `glyd_gpu_mma12_ring_queue`, `glyd_gpu_mma12_ring_linear`,

@@ -11,7 +11,7 @@ alone), to skew it either way: the products on 2 SMs (a decode that did not wait
 overwrite it under a slow product), the decode on 1 (a product that did not wait for its decode would read a slot half
 written); where the GPU cannot split so, the nearest it can on the decode's side, the split as made printed.
 
-    python split_stress.py [LIBRARY] [--models 0.6B,8B,14B,32B] [--passes 6] [--layers 4] [--ms 769,1024,2048,4096] [--sms -2,1]"""
+    python split_stress.py [LIBRARY] [--models 0.6B,8B,14B,32B] [--passes 6] [--layers 4] [--ms 769,1024,2048,4096] [--sms=-2,1]"""
 import argparse, os, sys, time
 import torch
 import torch.nn.functional as F

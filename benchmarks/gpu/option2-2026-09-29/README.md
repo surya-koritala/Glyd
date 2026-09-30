@@ -12,7 +12,7 @@ unattended (`jobs/`), its tree a `git archive` of this branch with a COMMIT file
 | `layer.py MODEL` | layer 10's products through GLinear in a prompt's order, 8 layers' Linears over the same packs a pass, each pass timed whole, the median of 5: the route SPLIT, today's route and bf16; the route's outputs within 1e-2 of fp32 and the same bits pass to pass |
 | `gpu/split_stress.py` | every Qwen3 layer's matrices (0.6B-32B, weights of a trained matrix's spread, a few far out) through the ring at 769-4096 tokens, rings of 3-16 slots of three sizes, the order queued whole or a few ahead, 36 passes, then GLinear's recording pass and 6 after: every product the same bits across layers, passes and slot counts, within 1e-2 of fp32 |
 | `ring_model.py` | a model of the ring's ordering (glyd_gpu.cu's ring_pump, ring_restart, ring_queue, mma12_ring_linear) on CUDA's stream and event rules, random schedules: every slot written after its last reader's product and read after its decode |
-| `jobs/` | `o2_job.sh` (the steps, their budget; `o2_summary.py` writes summary.txt), `o2_a100.sh` and `o2_hopper.sh` (a GPU class's lists); `o3_job.sh` and `o3_summary.py`, the settle on one Hopper GPU against v0.25.1's routes (a GH200: the route as shipped; any other: forced on, a measurement, not a route), its summary a DECIDES line per model and length |
+| `jobs/` | `o2_job.sh` (the steps, their budget; `o2_summary.py` writes summary.txt), `o2_a100.sh` and `o2_hopper.sh` (a GPU class's lists); `o3_job.sh` and `o3_summary.py`, the settle on one Hopper GPU against v0.25.1's routes (a GH200: the route as shipped; any other: forced on, a measurement, not a route), its summary a DECIDES line per model and length; `o4_job.sh`, the same on an A100 (Qwen3-8B and 14B at 769-8192 tokens, 8192 forced past the route's end: a measurement), with the checks, the stress skewed both ways and test_gpu.py whole |
 
 ## The sessions
 
@@ -24,6 +24,7 @@ unattended (`jobs/`), its tree a `git archive` of this branch with a COMMIT file
 | `a100-3` | A100-SXM4-40GB | 8f10750 | the A100's routes: checks, the stress, layer.py, e2e.py with its breakdown |
 | `gh200` | GH200 480GB (132 SMs) | 8f10750 | Hopper's routes: checks, the stress, layer.py, e2e.py with its breakdown, the decode's SMs at 1024, the scheduling before the gates |
 | `gh200-settle` | GH200 480GB (132 SMs) | 9c218a1 | the settle against v0.25.1's routes: checks, the stress, e2e.py 3 rounds each way in turn, layer.py |
+| `l4-v0.25.1/review-1` | L4 | d26efb4 | review 1's fixes: check_capi, test_gpu.py whole, the stress at the default split and skewed both ways (`--sms=-2,1`: 30,336 products), a probe of Split.measured and the cuBLAS lookup |
 
 ## Results
 

@@ -1,4 +1,4 @@
-"""o3_job.sh's results in one page: python o3_summary.py RESULTS_DIR. First line: CHECKS PASS or FAIL (every step run
+"""o3_job.sh's and o4_job.sh's results in one page: python o3_summary.py RESULTS_DIR. First line: CHECKS PASS or FAIL (every step run
 exited 0; check_capi's ring ran; the split tests and the stress passed; the ring ran in every e2e.py run). Then the
 GPU, and whether SPLIT is the shipping route (a GH200) or forced on (a measurement, not a route); e2e.py's forward
 pass and first token per model and length (bf16; v0.25.1's routes and SPLIT, the medians of the rounds; SPLIT over
@@ -37,7 +37,7 @@ for n in ("check_capi", "test_split", "split_stress"):
         bad.append(f"{n}: not run")
 stress = next((l for l in lines("split_stress.txt") if l.startswith("split_stress:")), None)
 route = (lines("route.txt") or ["SPLIT: (no route.txt)"])[0]
-forced = "forced" in route
+force = dict((l.split(" ", 1) + [""])[:2] for l in lines("forced.txt"))  # {length, or "*" for every one: why SPLIT was forced there}
 expect = lines("expect.txt")  # the models (their names) and the lengths the job asked for
 models = expect[0].split() if expect else []
 lengths = [int(x) for x in expect[1].split(",")] if len(expect) > 1 else []
@@ -149,18 +149,20 @@ out += [f"{n}: exit {e}" for n, e in steps.items()]
 out += ["steps: " + l for l in lines("steps.txt")[-3:]]
 out.append("")
 
-# DECIDES, a line per model and length (the lengths asked, else those run)
-tag = f" [{route[len('SPLIT '):] if route.startswith('SPLIT ') else route}]" if forced else ""
+# DECIDES, a line per model and length (the lengths asked, else those run); where SPLIT was forced, a measurement
+def tag(n):
+    why = force.get(str(n)) or force.get("*")
+    return f" [{why}]" if why else ""
 for model in models:
     for n in lengths or sorted({n for runs in e2e.get(model, {}).values() for r in runs for n in r}):
         rs, st = rounds(model, n), rings.get(model)
         why = "not run" if model not in e2e else "the ring's state not logged" if not st else f"the ring {st}" if "ran" not in st else None if rs else "no round of both ways"
         if why:
-            out.append(f"DECIDES {model} {n} tokens: no numbers ({why}){tag}")
+            out.append(f"DECIDES {model} {n} tokens: no numbers ({why}){tag(n)}")
             continue
         ratio = med(r[0] / r[1] for r in rs)
         gain = 100 * (1 - ratio)
         verdict = f"SPLIT stays ({gain:.1f}% faster, at least 2%)" if ratio <= STAYS else f"SPLIT dropped ({gain:.1f}% faster, under 2%)" if gain > 0 else f"SPLIT dropped ({-gain:.1f}% slower)"
         out.append(f"DECIDES {model} {n} tokens: SPLIT/v0.25.1 {ratio:.3f}, a forward pass, the median of {len(rs)} rounds ({', '.join(f'{r[0] / r[1]:.3f}' for r in rs)}; "
-                   f"SPLIT {med(r[0] for r in rs):.1f} ms, v0.25.1 {med(r[1] for r in rs):.1f} ms; first token {med(r[2] / r[3] for r in rs):.3f}): {verdict}{tag}")
+                   f"SPLIT {med(r[0] for r in rs):.1f} ms, v0.25.1 {med(r[1] for r in rs):.1f} ms; first token {med(r[2] / r[3] for r in rs):.3f}): {verdict}{tag(n)}")
 print("\n".join(out))
