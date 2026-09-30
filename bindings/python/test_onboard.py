@@ -8,6 +8,7 @@ where vLLM is installed, else that test is skipped.
     python test_onboard.py              (or pytest test_onboard.py)
     python test_onboard.py --serve 8011   a fake server with the chat page, to try the page in a browser"""
 import asyncio
+import glob
 import http.server
 import json
 import os
@@ -578,6 +579,143 @@ def test_commands_with_a_running_server():
     finally:
         srv.shutdown()
         shutil.rmtree(d)
+
+
+# --- glyd run against a fake vLLM: real processes, signals and logs --------------------------------------------------------------
+
+FAKE_MAIN = '''
+import os, signal, subprocess, sys, time
+sys.path.insert(0, os.environ["FAKE_HERE"])
+from test_onboard import Fake
+
+
+def main():
+    args = sys.argv[2:]  # serve MODEL --flags
+    port = int(args[args.index("--port") + 1])
+    mode = open(os.environ["FAKE_MODE"]).read().strip() if os.path.exists(os.environ["FAKE_MODE"]) else "ok"
+    window = int(args[args.index("--max-model-len") + 1]) if "--max-model-len" in args and args[args.index("--max-model-len") + 1].isdigit() else 4096
+    print("(EngineCore pid=1) Loading safetensors checkpoint shards:  40% Completed | 2/5 [00:13<00:20,  6.7s/it]", flush=True)
+    if mode == "context-once":  # (vLLM's own words; the next start works)
+        open(os.environ["FAKE_MODE"], "w").write("ok")
+        print("(EngineCore pid=1) ValueError: To serve at least one request with the model's max seq len (%d), (1.3 GiB KV cache is needed, which is larger than the available KV cache memory (1.0 GiB). Based on the available memory, the estimated maximum model length is 7000. Try increasing" % window, flush=True)
+        sys.exit(1)
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])  # (the engine process)
+    open(os.environ["FAKE_CHILD"], "w").write(str(child.pid))
+    if mode == "slow":
+        time.sleep(60)
+    print("(EngineCore pid=1) INFO [model_runner.py:428] Model loading took 11.31 GiB memory and 34.1 seconds", flush=True)
+    Fake(window=window, port=port, start=True)
+    print("INFO:     Application startup complete.", flush=True)
+    signal.signal(signal.SIGTERM, lambda *a: (child.kill(), os._exit(0)))
+    while True:
+        time.sleep(1)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:  # (a zombie is not alive)
+        return subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()[:1] not in ("Z", "")
+    except OSError:
+        return True
+
+
+def test_end_to_end_with_a_fake_vllm():
+    import signal
+    import socket
+
+    d, state = tempfile.mkdtemp(), tempfile.mkdtemp()
+    saved = {k: os.environ.get(k) for k in ("PYTHONPATH", "FAKE_HERE", "FAKE_MODE", "FAKE_CHILD", "XDG_STATE_HOME", "HF_HUB_OFFLINE")}
+    try:
+        for sub in ("vllm/entrypoints/cli",):
+            os.makedirs(os.path.join(d, sub))
+        for pkg in ("vllm", "vllm/entrypoints", "vllm/entrypoints/cli"):
+            open(os.path.join(d, pkg, "__init__.py"), "w").write('__version__ = "0.30.0"\n' if pkg == "vllm" else "")
+        open(os.path.join(d, "vllm/entrypoints/cli/main.py"), "w").write(FAKE_MAIN)
+        model = os.path.join(d, "qwen3-8b")  # (a folder: a config and a safetensors file of 1,000 weights)
+        os.makedirs(model)
+        json.dump(QWEN["Qwen/Qwen3-8B"], open(os.path.join(model, "config.json"), "w"))
+        header = json.dumps({"w": {"dtype": "BF16", "shape": [1000], "data_offsets": [0, 2000]}}).encode()
+        with open(os.path.join(model, "model.safetensors"), "wb") as f:
+            f.write(len(header).to_bytes(8, "little") + header + b"\0" * 2000)
+        os.environ.update(PYTHONPATH=d + os.pathsep + HERE, FAKE_HERE=HERE, FAKE_MODE=os.path.join(d, "mode"), FAKE_CHILD=os.path.join(d, "child.pid"), XDG_STATE_HOME=state)
+        free_port = lambda: (lambda s: (s.bind(("127.0.0.1", 0)), s.getsockname()[1], s.close())[1])(socket.socket())
+        ui_out = Sink()
+        patches = dict(pf__probe_gpus=lambda: [L4_GPU], pf__setup_checks=lambda gpus=None: (L4_GPU, []), pf__have_cc=lambda *a, **k: True, pf__have_nvcc=lambda *a, **k: False)
+
+        def go(argv, out, err, cancel_when=None):
+            real = sys.stdout, sys.stderr
+            sys.stdout, sys.stderr = out, err
+
+            def cancel():  # (Ctrl-C, once the terminal has shown this)
+                for _ in range(600):
+                    if cancel_when in err.text():
+                        time.sleep(0.5)
+                        return os.kill(os.getpid(), signal.SIGINT)
+                    time.sleep(0.1)
+
+            if cancel_when:
+                threading.Thread(target=cancel, daemon=True).start()
+            try:
+                return run.main("run" if argv[0] != "serve" else "serve", argv[1:] if argv[0] == "serve" else argv)
+            finally:
+                sys.stdout, sys.stderr = real
+
+        with Patched(**patches):
+            # one answer: the server starts, answers and is gone
+            port = free_port()
+            out, err = Sink(), Sink()
+            assert go([model, "--prompt", "hi", "--port", str(port)], out, err) == 0, err.text()
+            assert out.text() == "Hello there, friend.\n", (out.text(), err.text())
+            text = err.text()
+            assert "Settings: " in text and "40,960-token context (the model's own limit)" in text and "Ready in" in text and "Stopping the server..." in text and "PyTorch sampler" in text
+            log = glob.glob(os.path.join(state, "glyd", "logs", "run-*.log"))[0]
+            first = open(log).read().splitlines()[0]
+            assert first.startswith("$ ") and "--quantization glyd" in first and "--middleware glyd.gpu.page.ChatPage" in first and "VLLM_USE_FLASHINFER_SAMPLER=0" in first and "--enforce-eager" in first
+            assert "--enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3" in first
+            child = int(open(os.environ["FAKE_CHILD"]).read())
+            time.sleep(0.3)
+            assert not alive(child), "the engine process outlived the server's stop"
+            try:
+                chat.Api(f"http://127.0.0.1:{port}").get("/v1/models", timeout=1)
+                raise AssertionError("the server was left running")
+            except OSError:
+                pass
+            # vLLM says the context does not fit: one more start, at the number it gives
+            open(os.environ["FAKE_MODE"], "w").write("context-once")
+            out, err = Sink(), Sink()
+            assert go([model, "--prompt", "hi", "--port", str(free_port()), "--context", "9000"], out, err) == 0, err.text()
+            assert "starting again with 6,144" in err.text() or "room for 7,000 tokens" in err.text(), err.text()
+            assert out.text() == "Hello there, friend.\n"
+            # Ctrl-C while it loads: the server is stopped, the status is 130
+            open(os.environ["FAKE_MODE"], "w").write("slow")
+            out, err = Sink(), Sink()
+            assert go([model, "--prompt", "hi", "--port", str(free_port())], out, err, cancel_when="with Glyd: ") == 130 and "Stopped." in err.text()
+            time.sleep(0.5)
+            assert not alive(int(open(os.environ["FAKE_CHILD"]).read()))
+            # serve: up with its address, stopped by Ctrl-C
+            open(os.environ["FAKE_MODE"], "w").write("ok")
+            out, err = Sink(), Sink()
+            port = free_port()
+            assert go(["serve", model, "--port", str(port)], out, err, cancel_when="Press Ctrl-C to stop.") == 130, err.text()
+            assert f"OpenAI API   http://127.0.0.1:{port}/v1" in err.text() and f"Chat page    http://127.0.0.1:{port}" in err.text() and "Press Ctrl-C to stop." in err.text()
+            time.sleep(0.5)
+            assert not alive(int(open(os.environ["FAKE_CHILD"]).read()))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(d)
+        shutil.rmtree(state)
 
 
 # --- the `glyd` command -----------------------------------------------------------------------------------------------------------
