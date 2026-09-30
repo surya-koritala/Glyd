@@ -44,7 +44,6 @@ code.
 import hashlib
 import json
 import os
-import re
 import torch
 import torch.nn.functional as F
 from vllm.config import CompilationMode, CUDAGraphMode, get_current_vllm_config_or_none
@@ -76,8 +75,8 @@ def _flag(v):
 def _gpu(d):
     code = _GPU.get(d)
     if code is None:
-        cc, name = torch.cuda.get_device_capability(d), torch.cuda.get_device_name(d)
-        code = _GPU[d] = cc[0] * 10 + cc[1] + (g.GEFORCE if "GeForce" in name else g.A10 if re.search(r"\bA10\b", name) else 0)
+        with torch.cuda.device(d):
+            code = _GPU[d] = _lib.gpu()  # the library's own (glyd_gpu_gpu): its routes' classes by name, whatever they are
     return code
 
 
