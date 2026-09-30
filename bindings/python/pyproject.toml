@@ -42,8 +42,9 @@ gpu = ["torch>=2.5", "transformers>=5.17,<6", "accelerate>=1.1", "safetensors>=0
 vllm = ["vllm>=0.30,<0.31", "safetensors>=0.8", "huggingface_hub>=1.5,<2"]
 
 [project.entry-points."vllm.general_plugins"]
-# vllm serve MODEL --quantization glyd: vLLM calls it in every process it starts (glyd.gpu.vllm_plugin)
-glyd = "glyd.gpu.vllm_plugin:register"
+# vllm serve MODEL --quantization glyd: vLLM calls it in every process it starts; it loads glyd.gpu.vllm_plugin where
+# vLLM is the release it is tested with, and never raises
+glyd = "glyd.gpu.vllm_entry:register"
 
 [tool.setuptools]
 packages = ["glyd", "glyd.gpu"]

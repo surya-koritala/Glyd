@@ -5,7 +5,8 @@
 For each: the kernels' GPU time a step by kind (Glyd's products and decodes, cuBLAS/CUTLASS GEMMs, attention, the
 rest), the linear layers' share of it (Glyd's and the GEMMs'), the step's wall time, and its costliest kernels.
     VLLM_ENABLE_V1_MULTIPROCESSING=0 python profile_steps.py MODE OUT.json [MODEL]    (MODE: bf16 or glyd)
-Env: BATCHES ("1 8 32 64 128 256"), PROMPTS ("512 2048 8192"), UTIL (0.9)."""
+Env: BATCHES ("1 8 32 64 128 256"), PROMPTS ("512 2048 8192"), UTIL (0.9). The model's length and a step's tokens
+are made to take the longest prompt whole; the JSON is written after each window, so what ran is kept."""
 import json
 import os
 import re
@@ -27,7 +28,10 @@ def kind(name):
     return "glyd" if GLYD.search(name) else "gemm" if GEMM.search(name) else "attention" if ATTN.search(name) else "other"
 
 
-llm = LLM(model=model, quantization="glyd" if mode == "glyd" else None, dtype="bfloat16", gpu_memory_utilization=float(os.environ.get("UTIL", "0.9")), max_model_len=4096, seed=0, enable_prefix_caching=False)
+BATCHES = [int(b) for b in os.environ.get("BATCHES", "1 8 32 64 128 256").split()]
+PROMPTS = [int(m) for m in os.environ.get("PROMPTS", "512 2048 8192").split()]
+longest = max(PROMPTS + [4096])  # (a prompt of M tokens and its one token: one step of M)
+llm = LLM(model=model, quantization="glyd" if mode == "glyd" else None, dtype="bfloat16", gpu_memory_utilization=float(os.environ.get("UTIL", "0.9")), max_model_len=longest + 64, max_num_batched_tokens=max(longest, 8192), seed=0, enable_prefix_caching=False)
 eng, n = llm.llm_engine, [0]
 
 
@@ -57,7 +61,7 @@ def window(steps):
 
 
 res = {"mode": mode, "model": model, "gpu": torch.cuda.get_device_name(), "vllm_glyd": (llm.llm_engine.vllm_config.additional_config or {}).get("glyd"), "decode": [], "prompt": []}
-for B in [int(b) for b in os.environ.get("BATCHES", "1 8 32 64 128 256").split()]:
+for B in BATCHES:
     ids = [add(32, 64) for _ in range(B)]
     for _ in range(6):  # their prompts, then 5 decode steps
         eng.step()
@@ -66,8 +70,9 @@ for B in [int(b) for b in os.environ.get("BATCHES", "1 8 32 64 128 256").split()
     while eng.has_unfinished_requests():
         eng.step()
     res["decode"].append({"M": B, "gpu_ms": by, "wall_ms": wall, "top": top})
+    json.dump(res, open(out, "w"), indent=1)
     print(f"{mode} decode B={B}: {by} wall {wall:.2f} ms", flush=True)
-for M in [int(m) for m in os.environ.get("PROMPTS", "512 2048 8192").split()]:
+for M in PROMPTS:
     runs = []
     for _ in range(3):
         add(M, 1)
@@ -77,8 +82,8 @@ for M in [int(m) for m in os.environ.get("PROMPTS", "512 2048 8192").split()]:
         runs.append((sum(by.values()), by, wall, top))
     tot, by, wall, top = sorted(runs, key=lambda r: r[0])[1]  # the median by GPU time
     res["prompt"].append({"M": M, "gpu_ms": by, "wall_ms": wall, "top": top})
+    json.dump(res, open(out, "w"), indent=1)
     print(f"{mode} prompt M={M}: {by} wall {wall:.2f} ms", flush=True)
-json.dump(res, open(out, "w"), indent=1)
 print(f"| Step | M | GPU ms | linear (Glyd + GEMMs) | Glyd | GEMMs | attention | other | wall ms |")
 print("| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
 for k in ("decode", "prompt"):

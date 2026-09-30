@@ -1,86 +1,158 @@
-"""Glyd in vLLM: a model's Linears held packed on the GPU, bit for bit, as
-vLLM loads them, and multiplied from there by the library's kernels.
+"""Glyd in vLLM: a model's Linears, and a mixture of experts' experts, held
+packed on the GPU, bit for bit, as vLLM loads them, and multiplied from there
+by the library's kernels.
 
     pip install "glyd[vllm]"
     vllm serve Qwen/Qwen3-8B --quantization glyd                  # a bf16 checkpoint, packed as it loads
     vllm serve ./qwen3-8b-glyd --quantization glyd                # a glyd save, its packs as saved
     vllm serve Qwen/Qwen3-8B --quantization glyd --additional-config '{"glyd": {"layout": "mma12"}}'
 
-vLLM calls register() in every process it starts (the entry point
-vllm.general_plugins: glyd): the quantization method "glyd".
+vLLM calls glyd.gpu.vllm_entry.register() in every process it starts (the
+entry point vllm.general_plugins: glyd); where vLLM is the minor release this
+is tested with, it calls register() here: the quantization method "glyd".
 
 Options, in --additional-config's "glyd" (or a checkpoint's, or
 --hf-overrides', quantization_config; else GLYD_LAYOUT, GLYD_EXACT,
-GLYD_VERIFY):
+GLYD_VERIFY); another key, or a flag not true or false, refused:
 - layout: "auto" (best_layout's choice for the GPU: the tiered layout on
-  Ada and where only it fits, the 12-bit one elsewhere), "mma" or "mma12";
+  Ada, for a mixture of experts on an A10 too, and where only it fits; the
+  12-bit one elsewhere), "mma" or "mma12";
 - exact: each product's matrix decoded whole, then the GEMM vLLM runs for
-  bf16 (F.linear): its logits bf16's bit for bit, eager (--enforce-eager),
-  or compiled with inductor's deterministic mode, with which vLLM's
-  compiled bf16 is itself the same from one run to the next:
-  --compilation-config '{"inductor_compile_config": {"deterministic": true,
-  "combo_kernels": true, "benchmark_combo_kernel": false}}' (inductor
-  otherwise times some of its kernels' variants on the GPU, and compiled
-  logits, bf16's too, are not always the same from one run to the next).
-  Refused compiled without it, never silently inexact;
+  bf16 (UnquantizedLinearMethod's apply: F.linear by default, a FlashInfer
+  --linear-backend's, VLLM_BATCH_INVARIANT's): its logits bf16's bit for
+  bit, eager (--enforce-eager), or compiled with inductor's deterministic
+  mode, with which vLLM's compiled bf16 is itself the same from one run to
+  the next: --compilation-config '{"inductor_compile_config":
+  {"deterministic": true, "combo_kernels": true, "benchmark_combo_kernel":
+  false}}' (inductor otherwise times some of its kernels' variants on the
+  GPU, and compiled logits, bf16's too, are not always the same from one
+  run to the next). Refused compiled without it, and compiled where a packed
+  Linear has a bias (inductor adds bf16's apart from its matmul, rounding
+  before it), never silently inexact;
 - verify: every pack decoded as it is made and compared with its weights
-  bit for bit (a glyd save's by glyd.json's sha256).
+  bit for bit (a glyd save's by glyd.json's sha256, and its tensors saved as
+  they are; a save packed again in the other layout against the save).
+Fused products (exact off) are refused under VLLM_BATCH_INVARIANT: the
+library's kernels are chosen by the batch's tokens.
 The options in effect, with a digest of the packs (their layouts, words and
-sizes), are written into vLLM's additional_config, which vLLM's compile
-cache keys by: another layout, mode or checkpoint never finds another's
-compiled graph.
+sizes; one a process, a draft model's with the target's), are written into
+vLLM's additional_config, which vLLM's compile cache keys by: another
+layout, mode or checkpoint never finds another's compiled graph.
 
 A Linear's weight (bf16) is held on the meta device and packed a layer at a
 time as vLLM's layerwise online processing completes it (the peak: the
-packs and a layer); a glyd save's packs load as saved (TP 1, the same
-layout; else decoded and packed again). A product is one op,
+packs and a layer), once every piece of the weight has loaded (else refused,
+naming the layer); a glyd save's packs load as saved (TP 1, the same layout, the
+families checked; else decoded and packed again). A product is one op,
 glyd::vllm_linear, over the pack's tensors: the library's route by the
 batch's tokens (glyd_gpu_mma[12]_linear), and where it routes a prompt to
 cuBLAS (DECODE, AHEAD) the matrix decoded into the GPU's scratch buffer,
 then F.linear. vLLM's torch.compile takes it as one node, its CUDA graphs
-capture its kernels. Embeddings, the LM head, norms, attention and the KV
-cache stay vLLM's (a save's packed LM head decoded to bf16 as it loads); a
-mixture of experts' experts too (bf16), for now.
-Under the Business Source License 1.1 (LICENSE-glyd-gpu), as the rest of
-Glyd's GPU code; it uses vLLM's plugin interfaces, and copies none of its
-code.
+capture its kernels. A mixture of experts' experts: GlydMoEMethod.
+Embeddings, the LM head, norms, attention and the KV cache stay vLLM's (a
+save's packed LM head decoded to bf16 as it loads).
+
+vLLM's internals it relies on, beyond its plugin entry point and
+register_quantization_config (vLLM 0.30; the entry point refuses another
+minor release):
+- QuantizationConfig (from_config, maybe_update_config, get_quant_method);
+  LinearBase, LinearMethodBase, QKVParallelLinear and
+  MergedColumnParallelLinear (their loaders' shard ids), and
+  UnquantizedLinearMethod (exact's GEMM); VocabParallelEmbedding and
+  UnquantizedEmbeddingMethod; ModelWeightParameter and set_weight_attrs;
+- the layerwise online processing of model_loader.reload.layerwise
+  (initialize_online_processing; get_layerwise_info's loaded_weights and
+  load counts, for the pieces loaded);
+- get_current_vllm_config_or_none, and the config's additional_config
+  (the compile cache's key), parallel_config (tensor and pipeline parallel,
+  ubatching), lora_config, offload_config, model_config (enforce_eager,
+  enable_sleep_mode, hf_text_config), compilation_config (mode,
+  cudagraph_mode, inductor_compile_config) and scheduler_config
+  (max_num_batched_tokens); vllm.envs (VLLM_BATCH_INVARIANT,
+  VLLM_DISABLE_SHARED_EXPERTS_STREAM);
+- for a mixture of experts (without them, experts stay bf16): RoutedExperts
+  (moe_config, layer_name, top_k, activation, expert_map,
+  apply_router_weight_on_input), OnlineMoEMethodBase,
+  FusedMoEQuantConfig.make, MoEActivation, and UnquantizedFusedMoEMethod
+  (unquantized_backend, _init_moe_kernel, moe_kernel.apply's keyword
+  arguments) with UnquantizedMoeBackend.
+It copies none of vLLM's code. Under the Business Source License 1.1
+(LICENSE-glyd-gpu), as the rest of Glyd's GPU code.
 """
 import hashlib
 import json
 import os
+import types
 import torch
 import torch.nn.functional as F
+from vllm import envs
 from vllm.config import CompilationMode, CUDAGraphMode, get_current_vllm_config_or_none
 from vllm.logger import init_logger
-from vllm.model_executor.layers.fused_moe import RoutedExperts
-from vllm.model_executor.layers.fused_moe.activation import MoEActivation
-from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
-from vllm.model_executor.layers.fused_moe.oracle.unquantized import UnquantizedMoeBackend
-from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import UnquantizedFusedMoEMethod
-from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase, UnquantizedLinearMethod
+from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase, MergedColumnParallelLinear, QKVParallelLinear, UnquantizedLinearMethod
 from vllm.model_executor.layers.quantization import register_quantization_config
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
-from vllm.model_executor.layers.quantization.online.moe_base import OnlineMoEMethodBase
 from vllm.model_executor.layers.vocab_parallel_embedding import UnquantizedEmbeddingMethod, VocabParallelEmbedding
-from vllm.model_executor.model_loader.reload.layerwise import initialize_online_processing
+from vllm.model_executor.model_loader.reload.layerwise import get_layerwise_info, initialize_online_processing
 from vllm.model_executor.parameter import ModelWeightParameter
 from vllm.model_executor.utils import set_weight_attrs
 from .. import __version__
 from . import _lib, format as fmt, kernels as g
 
+try:  # a mixture of experts' internals: without them (another vLLM) a model's experts stay vLLM's bf16
+    from vllm.model_executor.layers.fused_moe import RoutedExperts
+    from vllm.model_executor.layers.fused_moe.activation import MoEActivation
+    from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
+    from vllm.model_executor.layers.fused_moe.oracle.unquantized import UnquantizedMoeBackend
+    from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import UnquantizedFusedMoEMethod
+    from vllm.model_executor.layers.quantization.online.moe_base import OnlineMoEMethodBase
+
+    _NO_MOE = None
+except ImportError as _e:
+    RoutedExperts, OnlineMoEMethodBase, _NO_MOE = None, object, f"{type(_e).__name__}: {_e}"
+
 log = init_logger("vllm.glyd")
 NAME = "glyd"
 KEY = "glyd"  # vllm_config.additional_config's: the options (and the packs' digest), in vLLM's compile cache key
 LAYOUTS = ("auto", "mma", "mma12")
+OPTIONS = ("layout", "exact", "verify")
+IGNORED = ("quant_method", "merge", "verified", "source", "hashed", "unhashed")  # (transformers' glyd config's own)
+BITS = {"mma": 10.80, "mma12": 12.04}
+SAVES = ("Qwen3ForCausalLM", "LlamaForCausalLM")  # the families whose glyd saves are checked in vLLM (check_vllm.py --saves)
 BUFFERS = {"mma": ("glyd_data", "glyd_blocks", "glyd_block_base"), "mma12": ("glyd_data", "glyd_exc", "glyd_exc_base")}  # a save's names
 _OPS = []  # the ops' library (they live as long as it does)
 _SCRATCH = {}  # a device's buffer matrices are decoded into (bf16): made at load, never replaced after
 _ROUTES = {}  # (gpu, words, O, K, M): the library's route
 _GPU = {}  # a device's code, as the library's routes take it
+_BF16 = []  # exact: vLLM's bf16 method, whose GEMM exact's products run (made where vLLM's config is current)
+_PACKS = {}  # every layer packed in this process (a draft model's too): (layout, words, sizes), for the digest
 
 
-def _flag(v):
-    return str(v).strip().lower() in ("1", "true", "yes", "on")
+def _flag(name, v):
+    """An option's true or false: a bool, 0 or 1, or 1, true, yes, on / 0, false, no, off (any case); else refused."""
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("", "0", "false", "no", "off"):
+        return False
+    raise ValueError(f"glyd: {name} {v!r}: true or false (1, true, yes, on / 0, false, no, off)")
+
+
+def _options(extra, given, env):
+    """The options in effect (layout, exact, verify): --additional-config's "glyd" (extra), else the given ones (a
+    checkpoint's or --hf-overrides' quantization_config), else the environment's; another key refused."""
+    if not isinstance(extra, dict):
+        raise ValueError(f"glyd: --additional-config's \"glyd\" is a {type(extra).__name__}, not an object of options ({', '.join(OPTIONS)})")
+    extra = {k: v for k, v in extra.items() if k not in ("glyd", "packs")}  # (what resolve writes there: the key)
+    bad = [k for k in extra if k not in OPTIONS]
+    if bad:
+        raise ValueError(f"glyd: --additional-config's \"glyd\": {', '.join(map(repr, bad))}, not an option ({', '.join(OPTIONS)})")
+    pick = {k: extra[k] if k in extra else given[k] if k in given else env.get(k) for k in OPTIONS}
+    layout = str(pick["layout"] or "auto").lower()
+    if layout not in LAYOUTS:
+        raise ValueError(f"glyd: layout {pick['layout']!r}: one of {', '.join(LAYOUTS)}")
+    return layout, _flag("exact", pick["exact"] or False), _flag("verify", pick["verify"] or False)
 
 
 def _gpu(d):
@@ -113,7 +185,7 @@ def _unpack(data, a, b, words, O, K):
 def _define():
     """glyd::vllm_linear: X W^T (+ bias) over a pack (data and its two tensors; its words: the tiered layout's three
     tiers, the 12-bit one's four), fused by the library's route for X's rows on this GPU, or the matrix decoded, then
-    F.linear (exact, or where the route says so)."""
+    F.linear (where the route says so), or (exact) the GEMM vLLM's bf16 runs."""
     if _OPS:
         return
     lib = torch.library.Library("glyd", "FRAGMENT")
@@ -121,9 +193,12 @@ def _define():
 
     def linear(x, data, a, b, words, bias, out_features, exact):
         K = x.shape[-1]
+        if exact:  # bf16's own GEMM (UnquantizedLinearMethod.apply: its linear backend, or batch-invariant) on the matrix
+            return _BF16[0].apply(types.SimpleNamespace(weight=_unpack(data, a, b, words, out_features, K)), x, bias)
+        torch._check(x.dtype == torch.bfloat16, lambda: f"glyd: bf16 activations, not {x.dtype}")
         x2 = x.reshape(-1, K)
         M = x2.shape[0]
-        if exact or (M and _decoded(data.device.index, words, out_features, K, M)):
+        if M and _decoded(data.device.index, words, out_features, K, M):
             return F.linear(x2, _unpack(data, a, b, words, out_features, K), bias).view(*x.shape[:-1], out_features)
         if not x2.is_contiguous():
             x2 = x2.contiguous()
@@ -153,15 +228,17 @@ def _nobias(dev):
 
 
 def register():
-    """vLLM's general plugin: the "glyd" quantization method and its op, in this process (again: the same)."""
+    """The "glyd" quantization method and its op, in this process (again: the same). vllm_entry.register() calls it
+    where vLLM is the release this is tested with."""
     _define()
     register_quantization_config(NAME)(GlydConfig)
 
 
 def _linear_bytes(mc):
-    """A model's Linears and experts (bf16 bytes) and the rest, from its config (for best_layout's fit): a mixture of
-    experts' layer its E experts' matrices (moe_intermediate_size each, else intermediate_size); (0, 0) where
-    unknown."""
+    """A model's Linears and experts (bf16 bytes), the rest (its embeddings and LM head), and whether it has experts,
+    from its config (for best_layout's fit and the memory check); (0, 0, False) where unknown. The Linears' count takes
+    a gated MLP (gate, up and down; a mixture of experts' layer its E experts' matrices, moe_intermediate_size each,
+    else intermediate_size): at most a third over for a model without a gate."""
     try:
         c = mc.hf_text_config
         h, L = c.hidden_size, c.num_hidden_layers
@@ -172,9 +249,45 @@ def _linear_bytes(mc):
         hd = getattr(c, "head_dim", None) or h // nh
         per = h * (nh + 2 * nkv) * hd + nh * hd * h + 3 * h * I
         other = c.vocab_size * h * (1 if getattr(c, "tie_word_embeddings", False) else 2)
-        return 2 * L * per, 2 * other
+        return 2 * L * per, 2 * other, bool(E)
     except (AttributeError, TypeError):
-        return 0, 0
+        return 0, 0, False
+
+
+def _missing(kind, loaded, n=0):
+    """The pieces of a weight a checkpoint did not give, from its loader calls' shard ids (loaded: loaded_shard_id each;
+    None, the tensor whole): kind "qkv" (q, k, v), "merged" (its n members by number) or "one"."""
+    got = set()
+    for s in loaded:
+        got.update(s if isinstance(s, tuple) else (s,))
+    if None in got:
+        return []
+    want = {"q", "k", "v"} if kind == "qkv" else set(range(n)) if kind == "merged" else {None}
+    return sorted(want - got, key=str)
+
+
+def _check_loaded(layer, name):
+    """Refused where the checkpoint did not give every piece of layer's weight (held on the meta device: vLLM's layerwise
+    processing hands over fresh memory for it, then replays the loads it recorded; their shard ids tell the pieces, a
+    merged qkv's q, k, v or a merged Linear's members). Not the bias, a tensor of its own on the GPU that vLLM's loaders
+    fill as they do bf16's (its first piece before the layer's loads are recorded); nor a layer whose weight's shard ids
+    are another's, which vLLM's record cannot tell apart."""
+    kind, n = ("qkv", 0) if isinstance(layer, QKVParallelLinear) else ("merged", len(layer.output_sizes)) if isinstance(layer, MergedColumnParallelLinear) else ("one", 0)
+    ids = [args.arguments.get("loaded_shard_id") for p, args in get_layerwise_info(layer).loaded_weights if p == "weight"]
+    if kind == "one" and any(s is not None for s in ids):
+        return
+    miss = ["weight" if s is None else f"weight {s}" for s in _missing(kind, ids, n)]
+    if miss:
+        raise ValueError(f"glyd: {name}: the checkpoint has no {', '.join(miss)} for it: its pack would hold memory never written")
+
+
+def _experts_missing(loaded, E):
+    """A mixture of experts' layer's pieces the checkpoint did not give, from its loader calls' (expert_id, shard_id)
+    (w1, w3: w13's gate and up; w2), for its E experts; None where the loader took another way (not w1, w2, w3)."""
+    got = set(loaded)
+    if not {s for _, s in got} <= {"w1", "w2", "w3"}:
+        return None
+    return [f"expert {e}'s {s}" for e, s in sorted({(e, s) for e in range(E) for s in ("w1", "w3", "w2")} - got)]
 
 
 class GlydConfig(QuantizationConfig):
@@ -184,9 +297,9 @@ class GlydConfig(QuantizationConfig):
     def __init__(self, layout=None, exact=None, verify=None):
         super().__init__()
         self.given = {k: v for k, v in (("layout", layout), ("exact", exact), ("verify", verify)) if v is not None}
-        self.manifest = None  # a glyd save's glyd.json
+        self.manifest, self.dir = None, None  # a glyd save's glyd.json, and its directory
         self.opts = None  # {"layout", "exact", "verify"}: resolved at the model's first Linear
-        self.packs = {}  # a packed layer's prefix: (layout, shape, words, sizes), for the digest
+        self.compiled, self.need, self.free, self.files_checked = False, 0, 0, False
 
     def __getstate__(self):  # (vLLM pickles its config to start its engine's process: not the worker's own)
         return {**self.__dict__, "_vc": None}
@@ -207,73 +320,88 @@ class GlydConfig(QuantizationConfig):
 
     @classmethod
     def from_config(cls, config):
+        bad = [k for k in config if k not in OPTIONS + IGNORED]
+        if bad:
+            raise ValueError(f"glyd: the quantization_config's {', '.join(map(repr, bad))}: not an option ({', '.join(OPTIONS)})")
         return cls(config.get("layout"), config.get("exact"), config.get("verify"))
 
     def maybe_update_config(self, model_name, hf_config=None, revision=None):
-        """A glyd save: its glyd.json, beside its weights (a Hub repo's fetched into its snapshot)."""
+        """A glyd save: its glyd.json, beside its weights (a Hub repo's fetched into its snapshot); refused where its
+        family's saves are not checked in vLLM yet."""
         d = model_name
         if not os.path.isdir(d):
-            try:
-                from huggingface_hub import hf_hub_download
+            from huggingface_hub import hf_hub_download
+            from huggingface_hub.errors import EntryNotFoundError
 
+            try:
                 d = os.path.dirname(hf_hub_download(model_name, fmt.MANIFEST, revision=revision))
-            except Exception:  # none: a bf16 checkpoint (or a repo transformers will name)
+            except EntryNotFoundError:  # none: a bf16 checkpoint
                 return
         self.manifest = fmt.read_manifest(d)
+        if self.manifest is None:
+            return
+        self.dir = d
+        arch = (getattr(hf_config, "architectures", None) or [None])[0]
+        if arch not in SAVES:
+            src = (self.manifest.get("source") or {}).get("repo")
+            raise ValueError(f"glyd: a glyd save of {arch} does not load in vLLM yet (saves of {', '.join(SAVES)} do): serve its bf16 checkpoint{f' ({src})' if src else ''} with --quantization glyd, which packs it as it loads")
 
     def resolve(self):
-        """The options in effect: --additional-config's "glyd", else the given ones, else GLYD_LAYOUT, GLYD_EXACT,
-        GLYD_VERIFY; the layout "auto" best_layout's for this GPU (a save's own where that is the one). What Glyd
-        does not do yet refused, with why. The options written into vLLM's additional_config (its compile cache's
-        key)."""
+        """The options in effect (_options); the layout "auto" best_layout's for this GPU (a save's own where that is
+        the one). What Glyd does not do yet refused, with why, and a model whose packs cannot fit the GPU. The options
+        written into vLLM's additional_config (its compile cache's key)."""
         vc = get_current_vllm_config_or_none()
         if vc is None:
             raise RuntimeError("glyd: vLLM's config is not set where the model is made")
         if not isinstance(vc.additional_config, dict):
             raise ValueError("glyd: vLLM's additional_config is not a dict: Glyd keys vLLM's compile cache by it")
-        extra = vc.additional_config.get(KEY) or {}
         env = {"layout": os.environ.get("GLYD_LAYOUT"), "exact": os.environ.get("GLYD_EXACT"), "verify": os.environ.get("GLYD_VERIFY")}
-        pick = {k: extra[k] if k in extra else self.given[k] if k in self.given else env[k] for k in env}
-        layout, exact, verify = str(pick["layout"] or "auto").lower(), _flag(pick["exact"] or 0), _flag(pick["verify"] or 0)
-        if layout not in LAYOUTS:
-            raise ValueError(f"glyd: layout {layout!r}: one of {', '.join(LAYOUTS)}")
+        layout, exact, verify = _options(vc.additional_config.get(KEY) or {}, self.given, env)
         pc, mc = vc.parallel_config, vc.model_config
-        if pc.use_ubatching:
-            raise ValueError("glyd: dual-batch overlap (--enable-dbo, ubatching) runs two batches' products at once on two streams, which Glyd's kernels do not share a GPU's done counters for yet: run without it")
-        if vc.lora_config is not None:
-            raise ValueError("glyd: LoRA on packed layers is not supported yet: serve without --enable-lora, or without --quantization glyd")
-        oc = vc.offload_config
-        if oc is not None and (oc.uva.cpu_offload_gb > 0 or oc.prefetch.offload_group_size > 0):
-            raise ValueError("glyd: weight offloading (--cpu-offload-gb, prefetch offload) moves parameters, not Glyd's packs: not supported")
-        if getattr(mc, "enable_sleep_mode", False):
-            raise ValueError("glyd: sleep mode is not supported yet")
+        _refusals(vc, exact, self.manifest)
         # A mixture of experts' shared experts run on a side stream beside the rest by default: their products and the
         # main stream's would share the device's done counters. Off, before vLLM makes them (and caches its env).
         os.environ["VLLM_DISABLE_SHARED_EXPERTS_STREAM"] = "1"
-        icc = vc.compilation_config.inductor_compile_config
-        if exact and not (mc.enforce_eager or (vc.compilation_config.mode == CompilationMode.NONE and vc.compilation_config.cudagraph_mode == CUDAGraphMode.NONE) or (icc.get("deterministic") and icc.get("benchmark_combo_kernel") is False)):
-            raise ValueError("glyd: exact mode gives vLLM's bf16 logits bit for bit eager (--enforce-eager), or compiled with inductor's deterministic mode, with which vLLM's compiled bf16 is itself the same from one run to the next: --compilation-config '{\"inductor_compile_config\": {\"deterministic\": true, \"combo_kernels\": true, \"benchmark_combo_kernel\": false}}' (the bf16 run to compare with the same). Without it inductor times some of its kernels' variants on the GPU, and compiled logits, bf16's too, are not always the same from one run to the next. Add one of the two, or leave exact off")
-        if self.manifest is not None:
-            if pc.tensor_parallel_size > 1 or pc.pipeline_parallel_size > 1:
-                raise ValueError("glyd: a glyd save loads on one GPU for now (tensor and pipeline parallel: from its bf16 checkpoint)")
-            if any("experts" in e for e in self.manifest["packs"].values()):
-                raise ValueError("glyd: a save with a mixture of experts' packs (glyd-v2) is not supported in vLLM yet: load its bf16 checkpoint")
-        elif pc.tensor_parallel_size > 1:
+        cc = vc.compilation_config
+        self.compiled = not (mc.enforce_eager or (cc.mode == CompilationMode.NONE and cc.cudagraph_mode == CUDAGraphMode.NONE))
+        if not self.manifest and pc.tensor_parallel_size > 1:
             log.warning("glyd: tensor parallel %d: each rank packs its own shard (not measured yet)", pc.tensor_parallel_size)
+        try:
+            dev = torch.cuda.current_device()
+            _gpu(dev)  # the library, loaded now: not at the first forward
+        except Exception as e:
+            raise RuntimeError(f"glyd: Glyd's GPU library did not load ({type(e).__name__}: {e}): a CUDA build of PyTorch and the glyd wheel's library (or GLYD_GPU_LIB) are needed") from e
+        lin, other, moe = _linear_bytes(mc)
+        n = max(1, pc.tensor_parallel_size) * max(1, pc.pipeline_parallel_size)
         if layout == "auto":
-            if self.manifest is not None:
-                layout = self.manifest["layout"]
-            else:
-                lin, other = _linear_bytes(mc)
-                layout = g.best_layout(lin // max(1, pc.tensor_parallel_size), other, 1, torch.cuda.current_device())[0]
+            layout = self.manifest["layout"] if self.manifest else g.best_layout(lin // n, other // n, 1, dev, moe=moe)[0]
+        self.free = torch.cuda.mem_get_info(dev)[0]
+        self.need = (lin * BITS[layout] / 16 + other) / n
+        low = (lin * 2 / 3 * BITS[layout] / 16 + other) / n  # (at least: the Linears' count less a gate's third)
+        if lin and low > self.free:  # (they cannot fit: refused here, not by an OutOfMemoryError deep in the load)
+            tiered = f"; the tiered layout (layout mma, {BITS['mma']} bits) takes about {(lin * BITS['mma'] / 16 + other) / n / 2**30:.1f} GiB" if layout == "mma12" else ""
+            raise ValueError(f"glyd: the model's weights take about {self.need / 2**30:.1f} GiB a GPU packed in the {layout} layout ({BITS[layout]} bits a weight), at least {low / 2**30:.1f}, and the GPU has {self.free / 2**30:.1f} GiB free{tiered}: serve it over more GPUs (--tensor-parallel-size), or a smaller model")
+        if exact:
+            _BF16[:] = [UnquantizedLinearMethod()]  # (vLLM's config current: its linear backend)
         self.opts, self._vc = {"layout": layout, "exact": exact, "verify": verify}, vc
-        vc.additional_config[KEY] = {**self.opts, "glyd": __version__, "packs": ""}
+        vc.additional_config[KEY] = {**self.opts, "glyd": __version__, "packs": _digest()}  # (a draft's resolve keeps the packs made)
         log.info("glyd: %s layout%s%s", layout, ", exact" if exact else "", ", verified" if verify else "")
 
+    def check_files(self):
+        """verify: a glyd save's files against its glyd.json, its tensors saved as they are by their sha256 (once, when
+        the first pack is loaded: the weights are there by then, a Hub repo's too)."""
+        if self.files_checked or self.manifest is None or not self.opts["verify"]:
+            return
+        checked, unchecked = fmt.check_files(self.dir, self.manifest)
+        self.files_checked = True
+        log.info("glyd: %s: %d tensors saved as they are checked by sha256%s", self.dir, checked, f", {unchecked} not (saved before glyd 0.25)" if unchecked else "")
+
     def get_quant_method(self, layer, prefix):
-        if isinstance(layer, RoutedExperts):  # a mixture of experts' layer
+        if RoutedExperts is not None and isinstance(layer, RoutedExperts):  # a mixture of experts' layer
             if self.opts is None:
                 self.resolve()
+            if not envs.VLLM_DISABLE_SHARED_EXPERTS_STREAM:
+                raise RuntimeError("glyd: VLLM_DISABLE_SHARED_EXPERTS_STREAM is not on in this process (vLLM read its environment before Glyd set it): set VLLM_DISABLE_SHARED_EXPERTS_STREAM=1, since shared experts on a side stream would share the GPU's done counters with the rest")
             why = GlydMoEMethod.unsupported(layer)
             if why:
                 log.warning("glyd: %s: experts kept bf16 (%s)", prefix, why)
@@ -290,29 +418,65 @@ class GlydConfig(QuantizationConfig):
             return None
         if self.opts is None:
             self.resolve()
+            if _NO_MOE:
+                log.warning("glyd: vLLM's mixture of experts internals did not import (%s): a model's experts stay bf16", _NO_MOE)
         return GlydLinearMethod(self, self.saved(prefix))
 
     def saved(self, prefix):
         """A glyd save's manifest entry for vLLM's layer prefix, or None: its pack as saved (q, k, v and gate, up are one
-        pack each, under q_proj's and gate_proj's paths, as vLLM's qkv_proj and gate_up_proj hold them)."""
+        pack each, under q_proj's and gate_proj's paths, as vLLM's qkv_proj and gate_up_proj hold them; else the
+        layer's own path, as a family that keeps them fused on disk saves them). Refused where the pack holds another
+        count of tensors than vLLM's layer."""
         if self.manifest is None:
             return None
         packs = self.manifest["packs"]
-        for merged, first, n in (("qkv_proj", "q_proj", 3), ("gate_up_proj", "gate_proj", 2)):
-            if prefix.endswith("." + merged):
-                e = packs.get(prefix[: -len(merged)] + first)
-                return e if e is not None and len(e["tensors"]) == n else None
-        e = packs.get(prefix)
-        return e if e is not None and len(e["tensors"]) == 1 else None
+        e, n = packs.get(prefix), 1
+        for merged, first, members in (("qkv_proj", "q_proj", 3), ("gate_up_proj", "gate_proj", 2)):
+            if prefix.endswith("." + merged) and packs.get(prefix[: -len(merged)] + first) is not None:
+                e, n = packs[prefix[: -len(merged)] + first], members
+        if e is not None and len(e["tensors"]) != n:
+            raise ValueError(f"glyd: {prefix}: the save's pack holds {len(e['tensors'])} tensors, vLLM's layer {n}")
+        return e
 
     def packed(self, name, layout, words, t):
-        """A layer packed (name: its prefix): into the digest of the packs, which vLLM's compile cache keys by
+        """A layer packed (name: its prefix): into the process's digest of the packs, which vLLM's compile cache keys by
         (additional_config)."""
-        self.packs[name] = [layout, list(words), [int(x.numel()) for x in t]]
-        digest = hashlib.sha256(json.dumps(sorted(self.packs.items())).encode()).hexdigest()[:16]
+        _PACKS[name] = [layout, list(words), [int(x.numel()) for x in t]]
         vc = getattr(self, "_vc", None) or get_current_vllm_config_or_none()
         if vc is not None and isinstance(vc.additional_config, dict) and KEY in vc.additional_config:
-            vc.additional_config[KEY]["packs"] = digest
+            vc.additional_config[KEY]["packs"] = _digest()
+
+    def out_of_memory(self, name, e):
+        """An OutOfMemoryError while packing name, with what was packed so far and the model's estimate."""
+        return torch.OutOfMemoryError(f"glyd: {name}: out of GPU memory packing it, after {len(_PACKS)} layers packed; the model's weights take about {self.need / 2**30:.1f} GiB a GPU packed in the {self.opts['layout']} layout, with {self.free / 2**30:.1f} GiB free before loading: serve it over more GPUs (--tensor-parallel-size), in the tiered layout (layout mma), or a smaller model ({e})")
+
+
+def _digest():
+    return hashlib.sha256(json.dumps(sorted(_PACKS.items())).encode()).hexdigest()[:16] if _PACKS else ""
+
+
+def _refusals(vc, exact, manifest):
+    """What Glyd does not do yet, refused with why: vLLM's config (vc), exact mode, a glyd save's glyd.json."""
+    pc, mc = vc.parallel_config, vc.model_config
+    if envs.VLLM_BATCH_INVARIANT and not exact:
+        raise ValueError("glyd: VLLM_BATCH_INVARIANT asks for every product's bits not to depend on the batch, and Glyd's fused kernels are chosen by the batch's tokens: serve with exact (vLLM's batch-invariant GEMM on the decoded weights), or without VLLM_BATCH_INVARIANT")
+    if pc.use_ubatching:
+        raise ValueError("glyd: dual-batch overlap (--enable-dbo, ubatching) runs two batches' products at once on two streams, which Glyd's kernels do not share a GPU's done counters for yet: run without it")
+    if vc.lora_config is not None:
+        raise ValueError("glyd: LoRA on packed layers is not supported yet: serve without --enable-lora, or without --quantization glyd")
+    oc = vc.offload_config
+    if oc is not None and (oc.uva.cpu_offload_gb > 0 or oc.prefetch.offload_group_size > 0):
+        raise ValueError("glyd: weight offloading (--cpu-offload-gb, prefetch offload) moves parameters, not Glyd's packs: not supported")
+    if getattr(mc, "enable_sleep_mode", False):
+        raise ValueError("glyd: sleep mode is not supported yet")
+    icc, cc = vc.compilation_config.inductor_compile_config, vc.compilation_config
+    if exact and not (mc.enforce_eager or (cc.mode == CompilationMode.NONE and cc.cudagraph_mode == CUDAGraphMode.NONE) or (icc.get("deterministic") and icc.get("benchmark_combo_kernel") is False)):
+        raise ValueError("glyd: exact mode gives vLLM's bf16 logits bit for bit eager (--enforce-eager), or compiled with inductor's deterministic mode, with which vLLM's compiled bf16 is itself the same from one run to the next: --compilation-config '{\"inductor_compile_config\": {\"deterministic\": true, \"combo_kernels\": true, \"benchmark_combo_kernel\": false}}' (the bf16 run to compare with the same). Without it inductor times some of its kernels' variants on the GPU, and compiled logits, bf16's too, are not always the same from one run to the next. Add one of the two, or leave exact off")
+    if manifest is not None:
+        if pc.tensor_parallel_size > 1 or pc.pipeline_parallel_size > 1:
+            raise ValueError("glyd: a glyd save loads on one GPU for now (tensor and pipeline parallel: from its bf16 checkpoint)")
+        if any("experts" in e for e in manifest["packs"].values()):
+            raise ValueError("glyd: a save with a mixture of experts' packs (glyd-v2) is not supported in vLLM yet: load its bf16 checkpoint")
 
 
 def _take_whole(param, loaded_weight, *shard):
@@ -328,19 +492,20 @@ def _placeholders(layer, layout):
         layer.register_parameter(name, p)
 
 
-def _saved_pack(layer, e, verify):
-    """A save's pack from the tensors loaded into layer (its words from glyd.json's entry e), checked by its sha256s with
-    verify."""
+def _saved_pack(layer, e, verify, out=None):
+    """A save's pack from the tensors loaded into layer (its words from glyd.json's entry e). With verify, or an out
+    (bf16, the pack's rows by its columns), decoded (into out where given) and, with verify, checked by its sha256s."""
     data, a, b = (getattr(layer, n).data for n in BUFFERS[e["layout"]])
     if not data.numel():
         raise ValueError(f"glyd: {getattr(layer, 'prefix', '')}: the save's pack did not load")
     shape = tuple(e["shape"])
     p = g.Mma12(shape, data, a, b, int(e["hb"])) if e["layout"] == "mma12" else g.Mma(shape, data, a, b, [int(x) for x in e["tiers"]])
-    if verify:
+    if verify or out is not None:
         from .model import sha256
 
-        w, r = g.mma_unpack(p), 0
-        for t in e["tensors"]:
+        w = g.mma_unpack(p, None if out is None else out.view(-1))
+        r = 0
+        for t in e["tensors"] if verify else ():
             if sha256(w[r : r + t["shape"][0]]) != t["sha256"]:
                 raise ValueError(f"glyd: {t['name']} decodes to other bits than glyd.json's sha256")
             r += t["shape"][0]
@@ -363,11 +528,12 @@ class GlydSavedEmbeddingMethod(UnquantizedEmbeddingMethod):
     def process_weights_after_loading(self, layer):
         if getattr(layer, "glyd_decoded", False):  # (vLLM calls it again after the load)
             return
-        w = g.mma_unpack(_saved_pack(layer, self.saved, self.config.opts["verify"]))
-        if w.shape[1] != layer.weight.shape[1] or w.shape[0] > layer.weight.shape[0]:
-            raise ValueError(f"glyd: {getattr(layer, 'prefix', '')}: the save's pack is {list(w.shape)}, vLLM's layer {list(layer.weight.shape)}")
-        layer.weight.data[: w.shape[0]].copy_(w)
-        layer.weight.data[w.shape[0] :].zero_()  # (the vocabulary's padding)
+        self.config.check_files()
+        V, K = self.saved["shape"]
+        if K != layer.weight.shape[1] or V > layer.weight.shape[0]:
+            raise ValueError(f"glyd: {getattr(layer, 'prefix', '')}: the save's pack is {[V, K]}, vLLM's layer {list(layer.weight.shape)}")
+        _saved_pack(layer, self.saved, self.config.opts["verify"], out=layer.weight.data[:V])  # (decoded in place)
+        layer.weight.data[V:].zero_()  # (the vocabulary's padding)
         for name in BUFFERS[self.saved["layout"]]:
             layer._parameters.pop(name, None)
         layer.glyd_decoded = True
@@ -406,36 +572,48 @@ class GlydLinearMethod(LinearMethodBase):
             return self.plain.process_weights_after_loading(layer)
         if getattr(layer, "glyd_words", None) is not None:  # (vLLM calls it again after the load)
             return
-        opts = self.config.opts
+        opts, name = self.config.opts, getattr(layer, "prefix", "")
         layout = opts["layout"]
-        if self.saved is not None:
-            p = _saved_pack(layer, self.saved, opts["verify"])
-            dev = p.data.device
-            if isinstance(p, g.Mma12) != (layout == "mma12"):  # another layout asked for: decoded and packed again
-                p = (g.pack_mma12 if layout == "mma12" else g.pack_mma)(g.mma_unpack(p))
-        else:
-            w = layer.weight.data
-            dev = w.device
-            p = (g.pack_mma12 if layout == "mma12" else g.pack_mma)(w)
-            if opts["verify"] and not torch.equal(g.mma_unpack(p).view(torch.int16), w.view(torch.int16)):
-                raise ValueError(f"glyd: {getattr(layer, 'prefix', '')} decoded to other bits than its weights")
+        if opts["exact"] and self.config.compiled and getattr(layer, "bias", None) is not None:
+            raise ValueError(f"glyd: {name} has a bias, and exact mode under torch.compile is not bit for bit there yet: inductor adds a bf16 Linear's bias apart from its matmul, rounding before the add, where exact's product adds it in the GEMM. Serve exact with --enforce-eager (vLLM's bf16 eager's bits), or compiled without exact")
+        pack = g.pack_mma12 if layout == "mma12" else g.pack_mma
+        try:
+            if self.saved is not None:
+                self.config.check_files()
+                p = _saved_pack(layer, self.saved, opts["verify"])
+                dev = p.data.device
+                if isinstance(p, g.Mma12) != (layout == "mma12"):  # another layout asked for: decoded and packed again
+                    w = g.mma_unpack(p)
+                    p = pack(w)
+                    if opts["verify"] and not torch.equal(g.mma_unpack(p).view(torch.int16), w.view(torch.int16)):
+                        raise ValueError(f"glyd: {name}: the save packed again in the {layout} layout decoded to other bits than the save")
+                    del w
+            else:
+                _check_loaded(layer, name)
+                w = layer.weight.data
+                dev = w.device
+                p = pack(w)
+                if opts["verify"] and not torch.equal(g.mma_unpack(p).view(torch.int16), w.view(torch.int16)):
+                    raise ValueError(f"glyd: {name} decoded to other bits than its weights")
+        except torch.OutOfMemoryError as e:
+            raise self.config.out_of_memory(name, e) from e
         g.lib()  # the library loaded (the op's calls are its C API's)
         t = (p.data, p.exc, p.exc_base) if isinstance(p, g.Mma12) else (p.data, p.blocks, p.block_base)
-        for name in {n for names in BUFFERS.values() for n in names}:
-            layer._parameters.pop(name, None)
-        for name, x in zip(("glyd_data", "glyd_a", "glyd_b"), t):
-            layer.register_buffer(name, x, persistent=False)
+        for n in {n for names in BUFFERS.values() for n in names}:
+            layer._parameters.pop(n, None)
+        for n, x in zip(("glyd_data", "glyd_a", "glyd_b"), t):
+            layer.register_buffer(n, x, persistent=False)
         O, K = p.shape
         layer.glyd_words = list(p.sym if isinstance(p, g.Mma12) else p.tiers)
         layer.glyd_out, layer.glyd_exact, layer.glyd_verified = O, opts["exact"], opts["verify"]
         layer._parameters.pop("weight", None)
         layer.weight = torch.nn.Parameter(torch.empty(0, K, dtype=torch.bfloat16, device=dev), requires_grad=False)  # (read for its dtype and K)
-        self.config.packed(getattr(layer, "prefix", ""), layout, layer.glyd_words, t)
+        self.config.packed(name, layout, layer.glyd_words, t)
         need = O * K if opts["exact"] or self._decodes(dev, layer.glyd_words, O, K) else 0
         if need and (dev not in _SCRATCH or _SCRATCH[dev].numel() < need):
             _SCRATCH[dev] = torch.empty(need, dtype=torch.bfloat16, device=dev)  # (at load: no CUDA graph holds the old one)
-        for name in ("mma12_linear", "mma_linear"):  # the device's done counters, made now: never in a CUDA graph's pool
-            _lib._counters(name, dev.index, None, 0, _lib._UNITS)
+        for n in ("mma12_linear", "mma_linear"):  # the device's done counters, made now: never in a CUDA graph's pool
+            _lib._counters(n, dev.index, None, 0, _lib._UNITS)
 
     def _decodes(self, dev, words, O, K):
         """Whether any product up to vLLM's batch of tokens decodes the matrix for cuBLAS (the scratch buffer it needs)."""
@@ -458,12 +636,13 @@ class GlydLinearMethod(LinearMethodBase):
 class GlydMoEMethod(OnlineMoEMethodBase):
     """A mixture of experts' layer's experts (vLLM's RoutedExperts: w13 [E, 2I, H], gate then up, and w2 [E, H, I]),
     each weight packed as one matrix of its E experts' stacked ([E 2I, H], [E H, I]) as vLLM's layerwise processing
-    completes the layer, from its bf16 on the meta device (the peak: the packs and a layer's experts). Their products
-    the library's grouped ones: each token's k choices (its pairs) sorted by expert on the GPU (moe_route), gate and
-    up with SiLU applied as its sums are written out, down with the router's weights applied and each token's k rows
-    added (mma_moe); no host sync, in the CUDA graphs vLLM captures around its MoE op. exact: the experts the tokens
-    are routed to decoded into the device's scratch buffer (mma_moe_unpack), then the kernel vLLM runs bf16's experts
-    by (its Triton one; refused where vLLM picks another, whose weights it lays out otherwise)."""
+    completes the layer, from its bf16 on the meta device (the peak: the packs and a layer's experts), once every
+    expert's pieces have loaded (else refused, naming the layer). Their products the library's grouped ones: each
+    token's k choices (its pairs) sorted by expert on the GPU (moe_route), gate and up with SiLU applied as its sums
+    are written out, down with the router's weights applied and each token's k rows added (mma_moe); no host sync, in
+    the CUDA graphs vLLM captures around its MoE op. exact: the experts the tokens are routed to decoded into the
+    device's scratch buffer (mma_moe_unpack), then the kernel vLLM runs bf16's experts by (its Triton one; refused where
+    vLLM picks another, whose weights it lays out otherwise)."""
 
     def __init__(self, config, moe):
         super().__init__(moe)
@@ -492,6 +671,8 @@ class GlydMoEMethod(OnlineMoEMethodBase):
         if layer.params_dtype != torch.bfloat16:
             return f"{layer.params_dtype}, not bf16"
         H, I = mc.hidden_dim, mc.intermediate_size_per_partition
+        if H != getattr(mc, "hidden_dim_unpadded", H) or I != getattr(mc, "intermediate_size_per_partition_unpadded", I):
+            return f"hidden {H} or intermediate {I} padded for this backend"
         if (2 * I) % 128 or H % 64 or I % 16:
             return f"hidden {H} or intermediate {I} (a rank's) off the packs' multiples (2I of 128, H of 64, I of 16)"
         return None
@@ -510,13 +691,22 @@ class GlydMoEMethod(OnlineMoEMethodBase):
         layout = opts["layout"]
         pack = g.pack_mma12 if layout == "mma12" else g.pack_mma
         E = layer.w13_weight.shape[0]
+        info = get_layerwise_info(layer)
+        miss = _experts_missing([(args.arguments.get("expert_id"), args.arguments.get("shard_id")) for p, args in info.loaded_weights if p in ("w13_weight", "w2_weight")], E)
+        if miss is None and info.load_numel_total and info.load_numel < info.load_numel_total:  # (another loader's way: vLLM's count)
+            miss = [f"{info.load_numel_total - info.load_numel:,} of its experts' weights"]
+        if miss:
+            raise ValueError(f"glyd: {layer.layer_name}: the checkpoint has no {', '.join(miss[:8])}{' ...' if len(miss) > 8 else ''} for it: its packs would hold memory never written")
         packs = []
         for name in ("w13", "w2"):
             w = getattr(layer, name + "_weight").data
             m = w.reshape(-1, w.shape[2])  # E experts' matrices stacked, [E out, in]
-            p = pack(m)
-            if opts["verify"] and not torch.equal(g.mma_unpack(p).view(torch.int16), m.view(torch.int16)):
-                raise ValueError(f"glyd: {layer.layer_name}'s {name} decoded to other bits than its weights")
+            try:
+                p = pack(m)
+                if opts["verify"] and not torch.equal(g.mma_unpack(p).view(torch.int16), m.view(torch.int16)):
+                    raise ValueError(f"glyd: {layer.layer_name}'s {name} decoded to other bits than its weights")
+            except torch.OutOfMemoryError as e:
+                raise self.config.out_of_memory(f"{layer.layer_name}'s {name}", e) from e
             t = (p.data, p.exc, p.exc_base) if isinstance(p, g.Mma12) else (p.data, p.blocks, p.block_base)
             for part, x in zip(("data", "a", "b"), t):
                 layer.register_buffer(f"glyd_{name}_{part}", x, persistent=False)

@@ -168,7 +168,8 @@ out; low load 1 request a second, 0.25 on the L4):
 More requests at once on every GPU, and more a second on the L4, A10
 and A100; on the GH200 fewer a second saturated, not profiled yet. At
 low load the first token comes 4-28% later. `exact` gives vLLM's bf16
-logits bit for bit, eager or compiled in inductor's deterministic mode.
+logits bit for bit, eager, or compiled in inductor's deterministic mode
+where the packed Linears have no biases.
 Options, exact mode, mixtures of experts, the checks against vLLM's bf16
 and every rate: [gpu/vllm/README.md](gpu/vllm/README.md); logs in
 [benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m5-2026-09-30`,

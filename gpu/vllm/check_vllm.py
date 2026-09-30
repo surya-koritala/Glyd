@@ -11,7 +11,8 @@ a process of its own:
 - glyd exact, eager: tokens, logprobs and prompt_logprobs bf16 eager's bit
   for bit; exact under torch.compile refused, with why, but with inductor's
   deterministic mode (DETERMINISTIC), where compiled bf16's bit for bit
-  (the same mode, CUDA graphs on); fused Glyd compiled in that mode the same
+  (the same mode, CUDA graphs on; refused there too where the packed
+  Linears have biases); fused Glyd compiled in that mode the same
   bits from one run to the next (the second loading the first's graphs);
 - per layer (LLM.apply_model): every packed layer's product against
   F.linear on its decoded matrix at 1-4096 tokens, within 1e-2 and the same
@@ -103,7 +104,7 @@ def child(spec):
         out["long_top1"] = [d[t].rank == 1 for d, t in zip(pl, ids[1:])]
     if spec.get("layers"):  # (a rank's each, added up)
         ranks = llm.apply_model(_layers)
-        out["layers"] = {k: (max if k == "worst_rel_error" else all if k == "same_bits" else sum)(r[k] for r in ranks) if k in ("packed", "verified", "moe", "moe_verified", "worst_rel_error", "same_bits") else ranks[0][k] for k in ranks[0]}
+        out["layers"] = {k: (max if k == "worst_rel_error" else all if k == "same_bits" else sum)(r[k] for r in ranks) if k in ("packed", "verified", "moe", "moe_verified", "biased", "worst_rel_error", "same_bits") else ranks[0][k] for k in ranks[0]}
     return out
 
 
@@ -116,7 +117,7 @@ def _layers(model):
     import torch.nn.functional as F
     from glyd.gpu import kernels as g
 
-    worst, same, n, verified, moe, moe_verified = 0.0, True, 0, 0, 0, 0
+    worst, same, n, verified, moe, moe_verified, biased = 0.0, True, 0, 0, 0, 0, 0
     torch.manual_seed(0)
     for m in model.modules():
         if getattr(m, "glyd_moe", None) is not None:
@@ -129,6 +130,7 @@ def _layers(model):
             continue
         n += 1
         verified += bool(m.glyd_verified)
+        biased += m.bias is not None
         O, K = m.glyd_out, m.weight.shape[1]
         p = g.Mma12((O, K), m.glyd_data, m.glyd_a, m.glyd_b, m.glyd_words[0] & 0xFF) if len(m.glyd_words) == 4 else g.Mma((O, K), m.glyd_data, m.glyd_a, m.glyd_b, m.glyd_words)
         w = g.mma_unpack(p).float()
@@ -138,7 +140,7 @@ def _layers(model):
             ref = F.linear(x.float(), w, None if m.bias is None else m.bias.float())
             worst = max(worst, ((y.float() - ref).abs().max() / ref.abs().max()).item())
             same &= torch.equal(y, torch.ops.glyd.vllm_linear(x, m.glyd_data, m.glyd_a, m.glyd_b, m.glyd_words, m.bias, O, False))
-    return {"packed": n, "verified": verified, "moe": moe, "moe_verified": moe_verified, "worst_rel_error": worst, "same_bits": same, **_host(model)}
+    return {"packed": n, "verified": verified, "moe": moe, "moe_verified": moe_verified, "biased": biased, "worst_rel_error": worst, "same_bits": same, **_host(model)}
 
 
 def _moe(m, ts):
@@ -292,8 +294,11 @@ def main():
         det = dict(long, model=model, compilation_config=DETERMINISTIC)
         bd = run1(det, "bf16-det", fresh())
         xd = run1(dict(det, quantization="glyd"), "glyd-exact-det", dict(fresh(), GLYD_EXACT="1"))
-        c = compare(xd, bd) if "error" not in xd else {"bit_identical": 0, "long_bit_identical": xd["error"][:200]}
-        check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"] is True, f"{tag} exact under torch.compile, inductor deterministic: compiled bf16's tokens, logprobs and prompt_logprobs (the same mode) bit for bit ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']})")
+        if r["layers"]["biased"]:  # (packed Linears with biases: exact compiled refused, inductor adds bf16's apart)
+            check("error" in xd and "bias" in xd["error"], f"{tag} exact under torch.compile, inductor deterministic: refused, its packed Linears having biases ({r['layers']['biased']}; {xd.get('error', 'not refused')[:120]})")
+        else:
+            c = compare(xd, bd) if "error" not in xd else {"bit_identical": 0, "long_bit_identical": xd["error"][:200]}
+            check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"] is True, f"{tag} exact under torch.compile, inductor deterministic: compiled bf16's tokens, logprobs and prompt_logprobs (the same mode) bit for bit ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']})")
         gc = fresh()
         ga, gb = (run1(dict(det, quantization="glyd"), f"glyd-det-{n}", gc) for n in "ab")
         c = compare(ga, gb)
