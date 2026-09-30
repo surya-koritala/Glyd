@@ -15,14 +15,17 @@ sequence); the same prompts in every mode (a fixed text's first N tokens, B copi
 timed by a streamer, a put a token after the prompt's (transformers syncs each step on a GPU): its time to first token
 (TTFT: from the call to the first new token's put), its tokens a second after that ((new - 1) x B over the first
 put to the last), and its total. Per configuration, in this order (a compiled mode's static cache only grows, so the
-shorter first): TTFT at each of --prompts (--ttft-new tokens after each), the chat mix, tokens a second at each of
---batches (--new tokens after a --rate-prompt-token prompt), the long-document mix. Each configuration's first call is
-a warm-up (the first compile, a CUDA graph's capture, cuBLAS's plans), kept apart; then the median of its repeats.
-A configuration past the model's context, out of memory or past --deadline is recorded so, and the rest go on; the
-JSON is rewritten after each one.
+shorter first; the several-sequence rates last, the first cut): TTFT at each of --prompts (--ttft-new tokens after
+each), the chat mix, tokens a second at one sequence (--new tokens after a --rate-prompt-token prompt), the
+long-document mix, tokens a second at the rest of --batches. Each configuration's first call is a warm-up (the first
+compile, a CUDA graph's capture, cuBLAS's plans, the allocator's blocks for each step's cache), kept apart; then the
+median of its repeats: at least one, then more while they fit --rep-budget seconds and --deadline (each timed by the
+last). A configuration past the model's context, out of memory or past --deadline is recorded so, and the rest go on;
+the JSON is rewritten after each one.
 
     python respond.py MODEL --mode bf16|glyd|exact --out RESULT.json [--prompts 128,512,2048,8192] [--batches 1,8,32]
-        [--new 256] [--mixes chat:200:300,long:2000:200] [--reps-ttft 5] [--reps-rate 3] [--reps-mix 3] [--deadline EPOCH]
+        [--new 256] [--mixes chat:200:300,long:2000:200] [--reps-ttft 5] [--reps-rate 3] [--reps-mix 3] [--rep-budget S]
+        [--deadline EPOCH]
 """
 import argparse, hashlib, json, os, platform, statistics, subprocess, time
 import torch
@@ -50,6 +53,7 @@ ap.add_argument("--mixes", default="chat:200:300,long:2000:200")
 ap.add_argument("--reps-ttft", type=int, default=5)
 ap.add_argument("--reps-rate", type=int, default=3)
 ap.add_argument("--reps-mix", type=int, default=3)
+ap.add_argument("--rep-budget", type=float, default=0, help="seconds: a configuration's repeats past the first while their time fits it (0: all)")
 ap.add_argument("--deadline", type=float, default=0, help="seconds since the epoch: no configuration starts past it, and repeats are cut to fit")
 args = ap.parse_args()
 
@@ -158,8 +162,10 @@ def call(L, B, n):
 configs = [(f"ttft {L}", L, 1, args.ttft_new, args.reps_ttft) for L in sorted(int(x) for x in args.prompts.split(",") if x)]
 mixes = [m.split(":") for m in args.mixes.split(",") if m]
 configs += [(f"mix {m[0]}", int(m[1]), 1, int(m[2]), args.reps_mix) for m in mixes[:1]]
-configs += [(f"rate {B}", args.rate_prompt, B, args.new, args.reps_rate) for B in (int(x) for x in args.batches.split(",") if x)]
+batches = [int(x) for x in args.batches.split(",") if x]
+configs += [(f"rate {B}", args.rate_prompt, B, args.new, args.reps_rate) for B in batches if B == 1]
 configs += [(f"mix {m[0]}", int(m[1]), 1, int(m[2]), args.reps_mix) for m in mixes[1:]]
+configs += [(f"rate {B}", args.rate_prompt, B, args.new, args.reps_rate) for B in batches if B != 1]
 for name, L, B, n, reps in configs:
     c = {"name": name, "prompt": L, "batch": B, "new": n, "gpu_at_start": smi("temperature.gpu,clocks.sm,power.draw")}
     R["configs"].append(c)
@@ -171,9 +177,13 @@ for name, L, B, n, reps in configs:
         try:
             torch.cuda.reset_peak_memory_stats()
             c["warmup"] = call(L, B, n)
-            c["reps"] = max(0, min(reps, int((args.deadline - time.time()) // max(c["warmup"]["total"], 1e-3)))) if args.deadline else reps
-            runs = [call(L, B, n) for _ in range(c["reps"])]
-            c["runs"] = runs
+            runs = []
+            while len(runs) < reps:  # one at least; then while the next (as long as the last) fits the budget and deadline
+                if runs and (args.deadline and time.time() + runs[-1]["total"] > args.deadline
+                             or args.rep_budget and sum(r["total"] for r in runs) + runs[-1]["total"] > args.rep_budget):
+                    break
+                runs.append(call(L, B, n))
+            c["reps"], c["runs"] = len(runs), runs
             c["peak_gb"] = round(torch.cuda.max_memory_allocated() / 1e9, 2)
             for k in ("ttft", "total", "tokens_per_s"):
                 if runs and k in runs[0]:

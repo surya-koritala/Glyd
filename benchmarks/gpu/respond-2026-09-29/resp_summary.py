@@ -1,6 +1,8 @@
 """resp_job.sh's results in one page: python resp_summary.py RESULTS_DIR [--json OUT]. Per model: the time to first
 token at each prompt length, the tokens a second at each batch and the two mixes, bf16 eager and compiled against
-Glyd's default and exact, each the median of its repeats (the warm-up apart), and Glyd's default over each bf16; the
+Glyd's default and exact, each the median of its repeats (the warm-up apart), and Glyd's default over bf16 compiled
+where both calls ran the same path (like for like: fast_generate's compiled calls, else eager; never over bf16
+eager, whose one-sequence calls run eager where Glyd's default compiles them); the
 load (GB, seconds, layout), which calls ran compiled (c), the first calls (the compile), whether each mode's greedy
 tokens are bf16's; the GPU's clocks and power while each mode ran (smi-*.csv). --json: every result in one file."""
 import csv, glob, json, os, statistics, sys
@@ -43,7 +45,7 @@ for model, modes in res.items():
                    f"- {LAB[m]}: {L['gb']} GB on the GPU after the load ({L['seconds']} s)" + (f", layout {L['layout']}" if L.get("layout") else "")
                    + (f", generate() compiled to {L['compiled_cap']} positions" if L.get("compiled_cap") else "") + (f"; {s}" if s else ""))
     names = list(dict.fromkeys(c["name"] for m in head for c in modes[m].get("configs", [])))
-    ratio = [b for b in ("bf16", "bf16c") if b in head and "glyd" in head]
+    ratio = ["bf16c"] if "bf16c" in head and "glyd" in head else []
 
     def cell(c, key, fmt):
         if not c:
@@ -53,26 +55,27 @@ for model, modes in res.items():
         v = c.get(key)
         return (fmt(v) + (" c" if c.get("path") == "compiled" else "")) if v is not None else ""
 
-    def rel(n, key, b):
-        g, x = get("glyd", n).get(key), get(b, n).get(key)
-        return f"{g / x:.2f}x" if g and x else ""
+    def rel(n, key, b):  # like for like alone: both calls compiled, or both eager
+        cg, cb = get("glyd", n), get(b, n)
+        g, x = cg.get(key), cb.get(key)
+        return f"{g / x:.2f}x" if g and x and cg.get("path") == cb.get("path") else ""
 
     tt = [n for n in names if n.startswith("ttft")]
     if tt:
-        out += ["", "Time to first token, ms (Glyd's over bf16's: under 1 is sooner)", "",
+        out += ["", "Time to first token, ms (Glyd's default over bf16 compiled, the same path: under 1 is sooner)", "",
                 "| prompt | " + " | ".join(LAB[m] for m in head) + "".join(f" | Glyd / {LAB[b]}" for b in ratio) + " |", "| ---: |" + " ---: |" * (len(head) + len(ratio))]
         out += [f"| {get(head[0], n).get('prompt') or n.split()[1]} | " + " | ".join(cell(get(m, n), "ttft", lambda v: f"{v * 1e3:.0f}") for m in head)
                 + "".join(f" | {rel(n, 'ttft', b)}" for b in ratio) + " |" for n in tt]
     rt = [n for n in names if n.startswith("rate")]
     if rt:
         new = get(head[0], rt[0]).get("new")
-        out += ["", f"Tokens a second after the first ({new} new, a 128-token prompt; Glyd's over bf16's: over 1 is faster)", "",
+        out += ["", f"Tokens a second after the first ({new} new, a 128-token prompt; Glyd's default over bf16 compiled, the same path: over 1 is faster)", "",
                 "| sequences | " + " | ".join(LAB[m] for m in head) + "".join(f" | Glyd / {LAB[b]}" for b in ratio) + " |", "| ---: |" + " ---: |" * (len(head) + len(ratio))]
         out += [f"| {n.split()[1]} | " + " | ".join(cell(get(m, n), "tokens_per_s", lambda v: f"{v:.1f}") for m in head)
                 + "".join(f" | {rel(n, 'tokens_per_s', b)}" for b in ratio) + " |" for n in rt]
     mx = [n for n in names if n.startswith("mix")]
     if mx:
-        out += ["", "The mixes: time to first token, ms / total, s (Glyd's total over bf16's: under 1 is sooner)", "",
+        out += ["", "The mixes: time to first token, ms / total, s (Glyd's default's total over bf16 compiled's, the same path: under 1 is sooner)", "",
                 "| mix | " + " | ".join(LAB[m] for m in head) + "".join(f" | Glyd / {LAB[b]}" for b in ratio) + " |", "| :-- |" + " ---: |" * (len(head) + len(ratio))]
         for n in mx:
             c0 = get(head[0], n)
