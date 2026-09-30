@@ -17,8 +17,8 @@ are about 39 GiB tiered and 44 GiB 12-bit, with 2.9 GiB of embeddings and LM hea
 
 ## Glyd against bf16, by GPU and load
 
-Everything measured with `vllm bench serve` so far, this GPU's runs among them. Each server was started warm, on
-the compile cache its first (cold) start filled, at `--gpu-memory-utilization 0.9` for both. The random dataset was
+Everything measured with `vllm bench serve` so far, M2's L4 and M3's A10, A100 and GH200. Each server was started warm,
+on the compile cache its first (cold) start filled, at `--gpu-memory-utilization 0.9` for both. The random dataset was
 1,024 tokens in and 256 out. A ratio or a percentage is Glyd's against bf16's.
 
 | GPU (Glyd's layout) | Model | KV cache, warm | Load (req/s) | Requests/s | TTFT mean | TPOT mean | Request's time (E2E mean) |
@@ -35,22 +35,40 @@ the compile cache its first (cold) start filled, at `--gpu-memory-utilization 0.
 | **A100 40 GB (12-bit)** | Qwen3-14B | 1.77x | 1 | 1.03x (0.84 to 0.86) | +18% (209 to 248 ms) | -13% (26.3 to 22.8 ms) | -12% |
 | **A100 40 GB (12-bit)** | Qwen3-14B | 1.77x | 4 | 1.15x (2.38 to 2.73) | -30% (418 to 292 ms) | -12% (37.8 to 33.2 ms) | -13% |
 | **A100 40 GB (12-bit)** | Qwen3-14B | 1.77x | inf | 1.65x (2.65 to 4.37) | -57% (17,726 to 7,636 ms) | +4% (48.4 to 50.2 ms) | -32% |
+| GH200 (12-bit) | Qwen3-8B | 1.04x | 1 | 1.00x (0.98 to 0.98) | +4% (45 to 46 ms) | +1% (6.0 to 6.1 ms) | +1% |
+| GH200 (12-bit) | Qwen3-8B | 1.04x | 4 | 1.00x (3.81 to 3.80) | +6% (37 to 39 ms) | +6% (6.7 to 7.0 ms) | +6% |
+| GH200 (12-bit) | Qwen3-8B | 1.04x | inf | 0.92x (27.60 to 25.43) | +4% (1,448 to 1,501 ms) | +9% (29.7 to 32.5 ms) | +9% |
+| GH200 (12-bit) | Qwen3-32B | 1.66x | 1 | 1.01x (0.85 to 0.86) | +28% (178 to 228 ms) | -6% (23.1 to 21.7 ms) | -5% |
+| GH200 (12-bit) | Qwen3-32B | 1.66x | 4 | 0.96x (2.85 to 2.75) | +37% (180 to 246 ms) | +14% (28.8 to 32.7 ms) | +14% |
+| GH200 (12-bit) | Qwen3-32B | 1.66x | inf | 0.88x (5.55 to 4.89) | -52% (6,342 to 3,047 ms) | +82% (37.7 to 68.4 ms) | +28% |
 
-The L4's runs are in `../l4-vllm-m2-2026-09-29` and the A10's in `../vllm-m3-a10-2026-09-30`.
+The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vllm-m3-a100-40gb-2026-09-30` and
+`../vllm-m3-gh200-2026-09-30`.
 
 - **Wins:**
-  - Capacity: 1.14-1.94x the KV cache.
-  - Requests a second, once bf16 runs short of KV cache: 1.15-1.65x.
-  - Each request's whole time at every load measured: 2-32% less.
-  - The time per output token below saturation: 2-22% less (10-22% at each GPU's lowest load).
-  - The time to the first token once bf16 queues: 23-73% less.
+  - Capacity: 1.04-1.94x the KV cache. The low end is Qwen3-8B on the 96 GB GH200, which bf16 barely fills; Qwen3-32B
+    there gets 1.66x.
+  - Requests a second where bf16 runs short of KV cache (the L4, A10 and A100): 1.15-1.65x.
+  - The first token once bf16 queues: 23-73% sooner on the L4, A10 and A100, and 52% on the GH200 with Qwen3-32B.
+  - The time per output token below saturation: 2-22% less on the L4, A10 and A100, and 6% on the GH200 with
+    Qwen3-32B at 1 request a second.
+  - Each request's whole time on the L4, A10 and A100: 2-32% less at every load measured.
 - **Losses:**
-  - **The first token below saturation: 15-18% later on the A10 and A100 (1 and 4 requests a second, where bf16 is
-    not queueing), 30% on the L4 at 0.25.** At 1,024 tokens the library's routes decode each matrix before cuBLAS
-    on these GPUs (on the L4 with v0.25.0, the fused prompt kernel), where bf16 goes to cuBLAS at once.
-  - The time per output token at saturation: 30-32% more on the A10 and 48% on the L4, where each step carries more
-    requests. On the A100 it was within 4%.
-  - The inter-token p99, the steps with a prompt in them: 13-25% more on the A10 and A100.
+  - **The first token below saturation:** 15-18% later on the A10 and A100 (1 and 4 requests a second, where bf16 is
+    not queueing), 30% on the L4 at 0.25. On the GH200: 4-6% later with Qwen3-8B, 28-37% with Qwen3-32B.
+  - **On the GH200 at saturation:**
+    - requests a second: 0.92x with Qwen3-8B and 0.88x with Qwen3-32B;
+    - the time per output token: 9% and 82% more;
+    - each request's whole time: 9% and 28% more;
+    - SM clock: Glyd's kernels ran lower (median 1,845 against 1,972 MHz with Qwen3-8B, 1,890 against 1,965 with
+      Qwen3-32B).
+
+    Hopper's gap is not profiled yet.
+  - **On the GH200 below saturation, Qwen3-8B:** parity in requests a second at 1 and 4 a second, with the time per
+    output token 1-6% more.
+  - **The time per output token at saturation on the other GPUs:** 30-32% more on the A10 and 48% on the L4, where
+    each step carries more requests; within 4% on the A100.
+  - **The inter-token p99** (the steps with a prompt in them): 13-25% more on the A10 and A100.
 
 ## Check: all 15 passed (`check/`, 1,057 s)
 

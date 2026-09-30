@@ -1,0 +1,21 @@
+NVIDIA GH200 480GB (compute 9.0, sm_90a, 97871 MiB), aarch64 host, 64 CPUs; tree 766746a (vllm-plugin, v0.25.1 with the plugin); steps big; model Qwen/Qwen3-8B, big Qwen/Qwen3-32B
+06:35:00 (+0 s) machine
+06:35:09 (+9 s) env: vLLM and nvcc in 9 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA GH200 480GB)
+06:35:11 (+11 s) build: sm_90a in 2 s (library: C API 5 | GPU code 90)
+06:53:39 (+1119 s) bench Qwen3-32B: exit 0 in 1063 s
+download dl-Qwen3-32B: exit 0: 65540268929 bytes in 53 s (at +53 s)
+06:53:39 (+1119 s) done
+
+== bench-Qwen3-32B
+bf16: weights 61.03 GiB, KV cache 79,760 tokens, max concurrency 19.47x at 4,096 tokens (started cold, on an empty compile cache: weights 61.03 GiB, KV cache 73,456 tokens, max concurrency 17.93x at 4,096 tokens)
+glyd: weights 48.27 GiB, KV cache 132,144 tokens, max concurrency 32.26x at 4,096 tokens (started cold, on an empty compile cache: weights 48.27 GiB, KV cache 125,840 tokens, max concurrency 30.72x at 4,096 tokens)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.85 | 218.3 | 178 / 429 | 23.1 / 24.4 | 32 | 1980 MHz, 59 C |
+| 1 | glyd | 0.86 | 221.4 | 228 / 547 | 21.7 / 23.4 | 32 | 1980 MHz, 58 C |
+| 4 | bf16 | 2.85 | 730.5 | 180 / 560 | 28.8 / 35.9 | 64 | 1980 MHz, 60 C |
+| 4 | glyd | 2.75 | 704.5 | 246 / 870 | 32.7 / 42.9 | 64 | 1980 MHz, 60 C |
+| inf | bf16 | 5.55 | 1421.5 | 6342 / 16097 | 37.7 / 79.0 | 128 | 1965 MHz, 61 C |
+| inf | glyd | 4.89 | 1252.5 | 3047 / 7541 | 68.4 / 76.1 | 128 | 1890 MHz, 61 C |
+
