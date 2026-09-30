@@ -92,7 +92,12 @@ every earlier format.
   (which did not fit the L4 at vLLM's default memory settings, bf16's
   weights and the draft leaving no KV cache); n-gram prompt lookup, 35.5
   and 22.1. With speculation, exact eager gave bf16 eager's tokens, 10 of
-  10 requests with each draft. vLLM keeps an EAGLE-3 draft bf16 under
+  10 requests with each draft. Speculation's greedy tokens can differ from
+  plain decoding's, in vLLM's bf16 too (eager, 5 and 7 of 10 requests
+  parted with n-gram and EAGLE-3): a verify step multiplies up to 1 + k
+  tokens at once, and the GEMMs and attention round by that shape. Under
+  `VLLM_BATCH_INVARIANT=1` they are plain decoding's, bf16's and exact
+  mode's alike (10 of 10). vLLM keeps an EAGLE-3 draft bf16 under
   `--quantization glyd`; with `"quantization": "glyd"` in
   `--speculative-config` it is packed too, sized by its own config
   ([benchmarks/gpu/l4-vllm-spec-2026-09-30](benchmarks/gpu/l4-vllm-spec-2026-09-30)).

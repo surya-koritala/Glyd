@@ -5,7 +5,8 @@
 For each: the kernels' GPU time a step by kind (Glyd's products and decodes, cuBLAS/CUTLASS GEMMs, attention, the
 rest), the linear layers' share of it (Glyd's and the GEMMs'), the step's wall time, and its costliest kernels.
     VLLM_ENABLE_V1_MULTIPROCESSING=0 python profile_steps.py MODE OUT.json [MODEL]    (MODE: bf16 or glyd)
-Env: BATCHES ("1 8 32 64 128 256"), PROMPTS ("512 2048 8192"), UTIL (0.9). The model's length and a step's tokens
+Env: BATCHES ("1 8 32 64 128 256"), PROMPTS ("512 2048 8192"), UTIL (0.9), KERNELS (6: the costliest kernels kept a
+window). The model's length and a step's tokens
 are made to take the longest prompt whole; the JSON is written after each window, so what ran is kept."""
 import json
 import os
@@ -58,7 +59,7 @@ def window(steps):
             ms = e.device_time_total / 1e3 if hasattr(e, "device_time_total") else e.cuda_time_total / 1e3
             by[kind(e.name)] += ms / steps
             top[e.name[:90]] = top.get(e.name[:90], 0.0) + ms / steps
-    return by, wall, sorted(top.items(), key=lambda x: -x[1])[:6]
+    return by, wall, sorted(top.items(), key=lambda x: -x[1])[: int(os.environ.get("KERNELS", "6"))]
 
 
 res = {"mode": mode, "model": model, "gpu": torch.cuda.get_device_name(), "vllm_glyd": (llm.llm_engine.vllm_config.additional_config or {}).get("glyd"), "decode": [], "prompt": []}
