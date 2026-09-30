@@ -1,0 +1,32 @@
+Linux 6.8.0-1046-nvidia #49-Ubuntu SMP PREEMPT_DYNAMIC Wed Jan 28 19:07:52 UTC 2026 x86_64 GNU/Linux
+Wed Sep 30 06:08:42 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.20             Driver Version: 580.126.20     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A10                     On  |   00000000:06:00.0 Off |                    0 |
+|  0%   56C    P0            104W /  150W |       0MiB /  23028MiB |    100%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
+NVIDIA A10, 8.6, 580.126.20, 23028 MiB, 1695 MHz, 150.00 W
+pid, process_name, used_gpu_memory [MiB]
+Architecture:                            x86_64
+Model name:                              Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz
+30
+               total        used        free      shared  buff/cache   available
+Mem:             222           3         189           0          31         218
+/dev/vda1       1.4T   42G  1.3T   4% /
+Wed Sep 30 06:08:42 UTC 2026
+host LD_LIBRARY_PATH (unset for the job): (none)

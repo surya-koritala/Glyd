@@ -1,0 +1,590 @@
+(APIServer pid=9125) INFO 09-30 06:21:15 [api_utils.py:347] 
+(APIServer pid=9125) INFO 09-30 06:21:15 [api_utils.py:347]        █     █     █▄   ▄█
+(APIServer pid=9125) INFO 09-30 06:21:15 [api_utils.py:347]  ▄▄ ▄█ █     █     █ ▀▄▀ █  version 0.30.0
+(APIServer pid=9125) INFO 09-30 06:21:15 [api_utils.py:347]   █▄█▀ █     █     █     █  model   Qwen/Qwen3-8B
+(APIServer pid=9125) INFO 09-30 06:21:15 [api_utils.py:347]    ▀▀  ▀▀▀▀▀ ▀▀▀▀▀ ▀     ▀
+(APIServer pid=9125) INFO 09-30 06:21:15 [api_utils.py:347] 
+(APIServer pid=9125) INFO 09-30 06:21:15 [api_utils.py:286] non-default args: {'model_tag': 'Qwen/Qwen3-8B', 'port': 8012, 'model': 'Qwen/Qwen3-8B', 'max_model_len': 4096, 'quantization': 'glyd', 'gpu_memory_utilization': 0.9}
+(APIServer pid=9125) INFO 09-30 06:21:15 [arg_utils.py:849] HF_HUB_OFFLINE is True, replace model_id [Qwen/Qwen3-8B] to model_path [/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218]
+(APIServer pid=9125) INFO 09-30 06:21:15 [model.py:692] Resolved architecture: Qwen3ForCausalLM
+(APIServer pid=9125) INFO 09-30 06:21:15 [model.py:2030] Using max model len 4096
+(APIServer pid=9125) INFO 09-30 06:21:16 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
+(EngineCore pid=9272) INFO 09-30 06:21:28 [core.py:123] Initializing a V1 LLM engine (v0.30.0) with config: model='/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218', speculative_config=None, tokenizer='/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=glyd, quantization_config=None, enforce_eager=False, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.VLLM_COMPILE: 3>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['none'], 'ir_enable_torch_wrap': True, 'splitting_ops': ['vllm::unified_attention_with_output', 'vllm::unified_mla_attention_with_output', 'vllm::mamba_mixer2', 'vllm::mamba_mixer', 'vllm::short_conv', 'vllm::qwen4_exp_ple_short_conv', 'vllm::qwen4_exp_qsa_with_output', 'vllm::linear_attention', 'vllm::qwen_gdn_attention_core', 'vllm::qwen_gdn_attention_core_fused_norm_packed', 'vllm::gdn_attention_core_xpu', 'vllm::olmo_hybrid_gdn_full_forward', 'vllm::sparse_attn_indexer', 'vllm::rocm_aiter_sparse_attn_indexer', 'vllm::deepseek_v4_attention', 'vllm::hpc_rope_norm_forward', 'vllm::unified_kv_cache_update', 'vllm::unified_mla_kv_cache_update'], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [2048], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.FULL_AND_PIECEWISE: (2, 1)>, 'cudagraph_num_of_warmups': 1, 'cudagraph_capture_sizes': [1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 272, 288, 304, 320, 336, 352, 368, 384, 400, 416, 432, 448, 464, 480, 496, 512], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': False, 'fuse_act_quant': False, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 512, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None)
+(EngineCore pid=9272) INFO 09-30 06:21:29 [parallel_state.py:1827] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///home/ubuntu/vllmw/tmp/vllm_dist_eb1fa40fd12d48eb8dc605acabd8f0f5 backend=nccl
+(EngineCore pid=9272) INFO 09-30 06:21:29 [parallel_state.py:2267] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, ETP rank 0, EP rank N/A, EPLB rank N/A
+(EngineCore pid=9272) INFO 09-30 06:21:29 [gpu_worker.py:441] Using V2 Model Runner
+(EngineCore pid=9272) INFO 09-30 06:21:30 [model_runner.py:396] Loading model from scratch...
+(EngineCore pid=9272) INFO 09-30 06:21:30 [vllm_plugin.py:258] glyd: mma12 layout
+(EngineCore pid=9272) INFO 09-30 06:21:31 [cuda.py:538] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+(EngineCore pid=9272) INFO 09-30 06:21:31 [flash_attn.py:1116] Using FlashAttention version 2
+(EngineCore pid=9272) INFO 09-30 06:21:31 [weight_utils.py:895] Filesystem type for checkpoints: EXT4. Checkpoint size: 15.26 GiB. Available RAM: 210.65 GiB.
+(EngineCore pid=9272) INFO 09-30 06:21:31 [weight_utils.py:918] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+(EngineCore pid=9272) Loading safetensors checkpoint shards:   0% Completed | 0/5 [00:00<?, ?it/s]
+(EngineCore pid=9272) Loading safetensors checkpoint shards:  20% Completed | 1/5 [00:01<00:04,  1.21s/it]
+(EngineCore pid=9272) Loading safetensors checkpoint shards:  40% Completed | 2/5 [00:02<00:03,  1.33s/it]
+(EngineCore pid=9272) Loading safetensors checkpoint shards:  60% Completed | 3/5 [00:04<00:02,  1.39s/it]
+(EngineCore pid=9272) Loading safetensors checkpoint shards:  80% Completed | 4/5 [00:05<00:01,  1.31s/it]
+(EngineCore pid=9272) Loading safetensors checkpoint shards: 100% Completed | 5/5 [00:05<00:00,  1.06it/s]
+(EngineCore pid=9272) Loading safetensors checkpoint shards: 100% Completed | 5/5 [00:05<00:00,  1.11s/it]
+(EngineCore pid=9272) 
+(EngineCore pid=9272) INFO 09-30 06:21:37 [default_loader.py:430] Loading weights took 5.61 seconds
+(EngineCore pid=9272) INFO 09-30 06:21:37 [model_runner.py:428] Model loading took 12.53 GiB memory and 7.645426 seconds
+(EngineCore pid=9272) INFO 09-30 06:21:37 [topk_topp_sampler.py:78] Using FlashInfer for top-p & top-k sampling.
+(EngineCore pid=9272) INFO 09-30 06:21:37 [utils.py:320] Using LBNHC KV cache layout.
+(EngineCore pid=9272) INFO 09-30 06:21:40 [caching.py:343] reconstructed serializable fn from standalone compile artifacts. num_artifacts=37 num_submods=37
+(EngineCore pid=9272) INFO 09-30 06:21:40 [decorators.py:313] Directly load AOT compilation from path /home/ubuntu/vllmw/cache/bench-Qwen3-8B/torch_compile_cache/torch_aot_compile/5c2a24e28425971a94403a7b23179b9e18b7269c949255ba49355986a8611986/rank_0_0/model
+(EngineCore pid=9272) INFO 09-30 06:21:40 [monitor.py:53] torch.compile took 1.89 s in total
+(EngineCore pid=9272) INFO 09-30 06:21:40 [monitor.py:81] Initial profiling/warmup run took 0.16 s
+(EngineCore pid=9272) Capturing CUDA graphs (PIECEWISE):   0%|          | 0/51 [00:00<?, ?it/s]Capturing CUDA graphs (PIECEWISE):   2%|▏         | 1/51 [00:00<00:05,  8.58it/s]Capturing CUDA graphs (PIECEWISE):   4%|▍         | 2/51 [00:00<00:05,  9.15it/s]Capturing CUDA graphs (PIECEWISE):   6%|▌         | 3/51 [00:00<00:05,  9.39it/s]Capturing CUDA graphs (PIECEWISE):   8%|▊         | 4/51 [00:00<00:04,  9.50it/s]Capturing CUDA graphs (PIECEWISE):  10%|▉         | 5/51 [00:00<00:04,  9.57it/s]Capturing CUDA graphs (PIECEWISE):  12%|█▏        | 6/51 [00:00<00:04,  9.63it/s]Capturing CUDA graphs (PIECEWISE):  14%|█▎        | 7/51 [00:00<00:04,  9.68it/s]Capturing CUDA graphs (PIECEWISE):  16%|█▌        | 8/51 [00:00<00:04,  9.73it/s]Capturing CUDA graphs (PIECEWISE):  20%|█▉        | 10/51 [00:01<00:04, 10.06it/s]Capturing CUDA graphs (PIECEWISE):  24%|██▎       | 12/51 [00:01<00:03, 10.21it/s]Capturing CUDA graphs (PIECEWISE):  27%|██▋       | 14/51 [00:01<00:03, 10.33it/s]Capturing CUDA graphs (PIECEWISE):  31%|███▏      | 16/51 [00:01<00:03, 10.42it/s]Capturing CUDA graphs (PIECEWISE):  35%|███▌      | 18/51 [00:01<00:02, 11.18it/s]Capturing CUDA graphs (PIECEWISE):  39%|███▉      | 20/51 [00:01<00:02, 11.83it/s]Capturing CUDA graphs (PIECEWISE):  43%|████▎     | 22/51 [00:02<00:02, 12.28it/s]Capturing CUDA graphs (PIECEWISE):  47%|████▋     | 24/51 [00:02<00:02, 12.66it/s]Capturing CUDA graphs (PIECEWISE):  51%|█████     | 26/51 [00:02<00:01, 12.99it/s]Capturing CUDA graphs (PIECEWISE):  55%|█████▍    | 28/51 [00:02<00:01, 13.25it/s]Capturing CUDA graphs (PIECEWISE):  59%|█████▉    | 30/51 [00:02<00:01, 13.44it/s]Capturing CUDA graphs (PIECEWISE):  63%|██████▎   | 32/51 [00:02<00:01, 13.61it/s]Capturing CUDA graphs (PIECEWISE):  67%|██████▋   | 34/51 [00:02<00:01, 13.57it/s]Capturing CUDA graphs (PIECEWISE):  71%|███████   | 36/51 [00:03<00:01, 13.81it/s]Capturing CUDA graphs (PIECEWISE):  75%|███████▍  | 38/51 [00:03<00:00, 13.95it/s]Capturing CUDA graphs (PIECEWISE):  78%|███████▊  | 40/51 [00:03<00:00, 14.05it/s]Capturing CUDA graphs (PIECEWISE):  82%|████████▏ | 42/51 [00:03<00:00, 14.21it/s]Capturing CUDA graphs (PIECEWISE):  86%|████████▋ | 44/51 [00:03<00:00, 14.24it/s]Capturing CUDA graphs (PIECEWISE):  90%|█████████ | 46/51 [00:03<00:00, 14.34it/s]Capturing CUDA graphs (PIECEWISE):  94%|█████████▍| 48/51 [00:03<00:00, 14.44it/s]Capturing CUDA graphs (PIECEWISE):  98%|█████████▊| 50/51 [00:04<00:00, 14.49it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 51/51 [00:04<00:00, 12.47it/s]
+(EngineCore pid=9272) Capturing CUDA graphs (FULL):   0%|          | 0/2 [00:00<?, ?it/s]Capturing CUDA graphs (FULL): 100%|██████████| 2/2 [00:00<00:00, 18.42it/s]Capturing CUDA graphs (FULL): 100%|██████████| 2/2 [00:00<00:00, 18.40it/s]
+(EngineCore pid=9272) INFO 09-30 06:21:46 [model_runner.py:1066] Graph capturing finished in 5 secs, took 0.39 GiB
+(EngineCore pid=9272) INFO 09-30 06:21:47 [gpu_worker.py:640] Available KV cache memory: 22.07 GiB
+(EngineCore pid=9272) INFO 09-30 06:21:47 [gpu_worker.py:655] CUDA graph memory profiling is enabled (default since v0.21.0). The current --gpu-memory-utilization=0.9000 is equivalent to --gpu-memory-utilization=0.8884 without CUDA graph memory profiling. To maintain the same effective KV cache size as before, increase --gpu-memory-utilization to 0.9116. To disable, set VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0.
+(EngineCore pid=9272) INFO 09-30 06:21:47 [kv_cache_utils.py:2395] GPU KV cache size: 160,720 tokens, Maximum concurrency for 4,096 tokens per request: 39.24x
+(EngineCore pid=9272) INFO 09-30 06:21:47 [kernel_warmup.py:172] JIT kernel warmup starting.
+(EngineCore pid=9272) INFO 09-30 06:21:47 [kernel_warmup.py:185] JIT kernel warmup finished in 0.00s.
+(EngineCore pid=9272) Capturing CUDA graphs (PIECEWISE):   0%|          | 0/51 [00:00<?, ?it/s]Capturing CUDA graphs (PIECEWISE):   2%|▏         | 1/51 [00:00<00:06,  7.67it/s]Capturing CUDA graphs (PIECEWISE):   4%|▍         | 2/51 [00:00<00:06,  8.05it/s]Capturing CUDA graphs (PIECEWISE):   6%|▌         | 3/51 [00:00<00:05,  8.49it/s]Capturing CUDA graphs (PIECEWISE):   8%|▊         | 4/51 [00:00<00:05,  8.98it/s]Capturing CUDA graphs (PIECEWISE):  10%|▉         | 5/51 [00:00<00:04,  9.28it/s]Capturing CUDA graphs (PIECEWISE):  12%|█▏        | 6/51 [00:00<00:04,  9.48it/s]Capturing CUDA graphs (PIECEWISE):  14%|█▎        | 7/51 [00:00<00:04,  9.62it/s]Capturing CUDA graphs (PIECEWISE):  16%|█▌        | 8/51 [00:00<00:04,  9.72it/s]Capturing CUDA graphs (PIECEWISE):  20%|█▉        | 10/51 [00:01<00:04, 10.10it/s]Capturing CUDA graphs (PIECEWISE):  24%|██▎       | 12/51 [00:01<00:03, 10.29it/s]Capturing CUDA graphs (PIECEWISE):  27%|██▋       | 14/51 [00:01<00:03, 10.42it/s]Capturing CUDA graphs (PIECEWISE):  31%|███▏      | 16/51 [00:01<00:03, 10.51it/s]Capturing CUDA graphs (PIECEWISE):  35%|███▌      | 18/51 [00:01<00:02, 11.40it/s]Capturing CUDA graphs (PIECEWISE):  39%|███▉      | 20/51 [00:01<00:02, 12.09it/s]Capturing CUDA graphs (PIECEWISE):  43%|████▎     | 22/51 [00:02<00:02, 12.63it/s]Capturing CUDA graphs (PIECEWISE):  47%|████▋     | 24/51 [00:02<00:02, 13.04it/s]Capturing CUDA graphs (PIECEWISE):  51%|█████     | 26/51 [00:02<00:01, 13.37it/s]Capturing CUDA graphs (PIECEWISE):  55%|█████▍    | 28/51 [00:02<00:01, 13.61it/s]Capturing CUDA graphs (PIECEWISE):  59%|█████▉    | 30/51 [00:02<00:01, 13.81it/s]Capturing CUDA graphs (PIECEWISE):  63%|██████▎   | 32/51 [00:02<00:01, 13.97it/s]Capturing CUDA graphs (PIECEWISE):  67%|██████▋   | 34/51 [00:02<00:01, 13.89it/s]Capturing CUDA graphs (PIECEWISE):  71%|███████   | 36/51 [00:03<00:01, 14.07it/s]Capturing CUDA graphs (PIECEWISE):  75%|███████▍  | 38/51 [00:03<00:00, 14.14it/s]Capturing CUDA graphs (PIECEWISE):  78%|███████▊  | 40/51 [00:03<00:00, 14.24it/s]Capturing CUDA graphs (PIECEWISE):  82%|████████▏ | 42/51 [00:03<00:00, 14.34it/s]Capturing CUDA graphs (PIECEWISE):  86%|████████▋ | 44/51 [00:03<00:00, 14.36it/s]Capturing CUDA graphs (PIECEWISE):  90%|█████████ | 46/51 [00:03<00:00, 14.44it/s]Capturing CUDA graphs (PIECEWISE):  94%|█████████▍| 48/51 [00:03<00:00, 14.51it/s]Capturing CUDA graphs (PIECEWISE):  98%|█████████▊| 50/51 [00:04<00:00, 14.58it/s]Capturing CUDA graphs (PIECEWISE): 100%|██████████| 51/51 [00:04<00:00, 12.54it/s]
+(EngineCore pid=9272) Capturing CUDA graphs (FULL):   0%|          | 0/35 [00:00<?, ?it/s]Capturing CUDA graphs (FULL):   6%|▌         | 2/35 [00:00<00:01, 19.21it/s]Capturing CUDA graphs (FULL):  11%|█▏        | 4/35 [00:00<00:01, 19.02it/s]Capturing CUDA graphs (FULL):  17%|█▋        | 6/35 [00:00<00:01, 19.07it/s]Capturing CUDA graphs (FULL):  23%|██▎       | 8/35 [00:00<00:01, 19.11it/s]Capturing CUDA graphs (FULL):  29%|██▊       | 10/35 [00:00<00:01, 19.03it/s]Capturing CUDA graphs (FULL):  34%|███▍      | 12/35 [00:00<00:01, 19.11it/s]Capturing CUDA graphs (FULL):  40%|████      | 14/35 [00:00<00:01, 19.27it/s]Capturing CUDA graphs (FULL):  46%|████▌     | 16/35 [00:00<00:00, 19.44it/s]Capturing CUDA graphs (FULL):  54%|█████▍    | 19/35 [00:00<00:00, 19.70it/s]Capturing CUDA graphs (FULL):  63%|██████▎   | 22/35 [00:01<00:00, 19.86it/s]Capturing CUDA graphs (FULL):  71%|███████▏  | 25/35 [00:01<00:00, 20.05it/s]Capturing CUDA graphs (FULL):  77%|███████▋  | 27/35 [00:01<00:00, 19.99it/s]Capturing CUDA graphs (FULL):  86%|████████▌ | 30/35 [00:01<00:00, 20.16it/s]Capturing CUDA graphs (FULL):  94%|█████████▍| 33/35 [00:01<00:00, 20.12it/s]Capturing CUDA graphs (FULL): 100%|██████████| 35/35 [00:01<00:00, 19.80it/s]
+(EngineCore pid=9272) INFO 09-30 06:21:54 [model_runner.py:1066] Graph capturing finished in 7 secs, took 0.23 GiB
+(EngineCore pid=9272) INFO 09-30 06:21:54 [gpu_worker.py:825] CUDA graph pool memory: 0.23 GiB (actual), 0.46 GiB (estimated), difference: 0.22 GiB (96.6%).
+(EngineCore pid=9272) INFO 09-30 06:21:54 [gpu_worker.py:888] Free memory on device (39.08/39.49 GiB) on startup. Desired GPU memory utilization is (0.9, 35.54 GiB). Actual usage is 12.83 GiB for consumed memory (weights + non-torch), 0.64 GiB for peak activation, and 0.23 GiB for CUDAGraph memory. Replace gpu_memory_utilization config with `--kv-cache-memory=23293415527` (21.69 GiB) to fit into requested memory, or `--kv-cache-memory=27088448000` (25.23 GiB) to fully utilize gpu memory. Current kv cache memory in use is 22.07 GiB.
+(EngineCore pid=9272) INFO 09-30 06:21:55 [jit_monitor.py:85] Kernel JIT monitor activated; monitored JIT compilations during inference will use mode=warn.
+(EngineCore pid=9272) INFO 09-30 06:21:55 [torch_utils.py:287] Reducing Torch threads from 30 to 1 for serving. Set OMP_NUM_THREADS in the external environment to override.
+(EngineCore pid=9272) INFO 09-30 06:21:55 [core.py:372] init engine (profile, create kv cache, warmup model) took 17.95 s (compilation: 1.89 s)
+(EngineCore pid=9272) INFO 09-30 06:21:56 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['native'], fused_add_rms_norm=['native'], gelu_and_mul_sparse=['triton', 'native'])
+(APIServer pid=9125) INFO 09-30 06:21:56 [entry.py:135] Supported tasks: ['generate']
+(APIServer pid=9125) INFO 09-30 06:21:56 [factories.py:76] Scale-out endpoints are disabled. Set --enable-scale-out to enable them.
+(APIServer pid=9125) INFO 09-30 06:21:56 [hf.py:642] Detected the chat template content format to be 'string'. You can set `--chat-template-content-format` to override this.
+(APIServer pid=9125) WARNING 09-30 06:21:56 [model.py:1772] Default vLLM sampling parameters have been overridden by the model's `generation_config.json`: `{'temperature': 0.6, 'top_k': 20, 'top_p': 0.95}`. If this is not intended, please relaunch vLLM instance with `--generation-config vllm`.
+(APIServer pid=9125) INFO 09-30 06:21:56 [entry.py:139] Starting vLLM server on http://0.0.0.0:8012
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:61] Available routes are:
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /openapi.json, Methods: GET, HEAD
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /docs, Methods: GET, HEAD
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /docs/oauth2-redirect, Methods: GET, HEAD
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /redoc, Methods: GET, HEAD
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /load, Methods: GET
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /version, Methods: GET
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /health, Methods: GET
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /metrics, Methods: GET
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /tokenize, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /detokenize, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /v1/models, Methods: GET
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /ping, Methods: GET
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /ping, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /invocations, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /v1/chat/completions, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /v1/chat/completions/batch, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /v1/responses, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /v1/responses/{response_id}, Methods: GET
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /v1/responses/{response_id}/cancel, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /v1/completions, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /v1/messages, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /v1/messages/count_tokens, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /generative_scoring, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /scale_elastic_ep, Methods: POST
+(APIServer pid=9125) INFO 09-30 06:21:56 [launcher.py:70] Route: /is_scaling_elastic_ep, Methods: POST
+(APIServer pid=9125) INFO:     Started server process [9125]
+(APIServer pid=9125) INFO:     Waiting for application startup.
+(APIServer pid=9125) INFO:     Application startup complete.
+(APIServer pid=9125) INFO:     127.0.0.1:45720 - "GET /v1/models HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42712 - "POST /tokenize HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42726 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42730 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:22:17 [loggers.py:315] Engine 000: Avg prompt throughput: 409.6 tokens/s, Avg generation throughput: 54.5 tokens/s, Running: 3 reqs, Waiting: 0 reqs, GPU KV cache usage: 2.1%, Prefix cache hit rate: 0.0%
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42726 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34870 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42730 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34870 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:22:27 [loggers.py:315] Engine 000: Avg prompt throughput: 716.6 tokens/s, Avg generation throughput: 189.2 tokens/s, Running: 3 reqs, Waiting: 0 reqs, GPU KV cache usage: 2.2%, Prefix cache hit rate: 0.0%
+(APIServer pid=9125) INFO:     127.0.0.1:42730 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34870 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42730 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:45864 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34870 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:22:37 [loggers.py:315] Engine 000: Avg prompt throughput: 921.6 tokens/s, Avg generation throughput: 240.7 tokens/s, Running: 2 reqs, Waiting: 0 reqs, GPU KV cache usage: 1.4%, Prefix cache hit rate: 0.0%
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34870 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49184 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49188 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:22:47 [loggers.py:315] Engine 000: Avg prompt throughput: 716.7 tokens/s, Avg generation throughput: 163.5 tokens/s, Running: 4 reqs, Waiting: 0 reqs, GPU KV cache usage: 2.9%, Prefix cache hit rate: 0.0%
+(APIServer pid=9125) INFO:     127.0.0.1:34870 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49184 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49188 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34870 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55292 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49184 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49188 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:22:57 [loggers.py:315] Engine 000: Avg prompt throughput: 1126.3 tokens/s, Avg generation throughput: 285.6 tokens/s, Running: 3 reqs, Waiting: 0 reqs, GPU KV cache usage: 2.2%, Prefix cache hit rate: 0.0%
+(APIServer pid=9125) INFO:     127.0.0.1:34870 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55292 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49184 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49188 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34870 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55292 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49184 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34604 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34606 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:23:07 [loggers.py:315] Engine 000: Avg prompt throughput: 1228.7 tokens/s, Avg generation throughput: 262.4 tokens/s, Running: 6 reqs, Waiting: 0 reqs, GPU KV cache usage: 4.3%, Prefix cache hit rate: 0.0%
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49188 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34870 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55292 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49184 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34604 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34606 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:42716 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49188 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:53974 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:53988 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34870 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:34860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:23:17 [loggers.py:315] Engine 000: Avg prompt throughput: 1433.4 tokens/s, Avg generation throughput: 321.5 tokens/s, Running: 8 reqs, Waiting: 0 reqs, GPU KV cache usage: 5.7%, Prefix cache hit rate: 0.0%
+(APIServer pid=9125) INFO:     127.0.0.1:55292 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:49184 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:23:27 [loggers.py:315] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 121.0 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 0.0%
+(APIServer pid=9125) INFO:     127.0.0.1:55342 - "POST /tokenize HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55348 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55348 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55348 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55360 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55374 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55384 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55400 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55402 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55418 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55428 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55430 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55440 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55348 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55454 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55360 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:23:37 [loggers.py:315] Engine 000: Avg prompt throughput: 27.2 tokens/s, Avg generation throughput: 213.7 tokens/s, Running: 10 reqs, Waiting: 0 reqs, GPU KV cache usage: 7.3%, Prefix cache hit rate: 16.5%
+(APIServer pid=9125) INFO:     127.0.0.1:55374 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55384 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55400 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46564 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55402 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55418 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55428 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55430 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55440 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55348 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55454 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55360 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55374 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55384 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55400 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46564 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55402 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55418 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55428 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46570 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46580 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46592 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46594 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55430 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46606 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55440 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55348 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55454 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55360 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55374 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55384 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55400 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46564 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55402 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55418 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46612 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46616 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55428 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46570 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:23:47 [loggers.py:315] Engine 000: Avg prompt throughput: 68.8 tokens/s, Avg generation throughput: 895.1 tokens/s, Running: 16 reqs, Waiting: 0 reqs, GPU KV cache usage: 11.4%, Prefix cache hit rate: 44.0%
+(APIServer pid=9125) INFO:     127.0.0.1:46580 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46592 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46594 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55430 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46606 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55440 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58468 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58474 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58480 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55348 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55454 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55360 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58484 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58496 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55374 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55384 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55400 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58500 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46564 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55402 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55418 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46612 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46616 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55428 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46570 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46580 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46592 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46594 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55430 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58510 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58518 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58520 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46606 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55440 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58526 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58542 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58544 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58468 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58474 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58480 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55348 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55454 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55360 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58484 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58496 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55374 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55384 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55400 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58500 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40180 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:23:57 [loggers.py:315] Engine 000: Avg prompt throughput: 3928.9 tokens/s, Avg generation throughput: 994.3 tokens/s, Running: 32 reqs, Waiting: 0 reqs, GPU KV cache usage: 22.5%, Prefix cache hit rate: 37.8%
+(APIServer pid=9125) INFO:     127.0.0.1:40194 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46564 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55402 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40202 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40210 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40220 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40222 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55418 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46612 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46616 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55428 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46570 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46580 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46592 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46594 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55430 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58510 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58518 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58520 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:46606 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55440 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58526 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58542 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58544 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58468 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:58474 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:24:07 [loggers.py:315] Engine 000: Avg prompt throughput: 2662.1 tokens/s, Avg generation throughput: 1108.4 tokens/s, Running: 9 reqs, Waiting: 0 reqs, GPU KV cache usage: 6.8%, Prefix cache hit rate: 32.6%
+(APIServer pid=9125) INFO:     127.0.0.1:46564 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:55402 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:24:17 [loggers.py:315] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 64.9 tokens/s, Running: 0 reqs, Waiting: 0 reqs, GPU KV cache usage: 0.0%, Prefix cache hit rate: 32.6%
+(APIServer pid=9125) INFO:     127.0.0.1:39488 - "POST /tokenize HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39494 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39494 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39494 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39510 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39512 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39518 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39528 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39540 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39546 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39560 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39576 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39584 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39592 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39598 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39600 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39616 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39624 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39638 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39650 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39656 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39658 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39674 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39688 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39696 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39706 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39714 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39730 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39746 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39762 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39770 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39784 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39796 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39812 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39818 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39830 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39840 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39844 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39860 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39864 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39880 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39890 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39902 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39916 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39926 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39928 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39940 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39956 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39972 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39974 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39980 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:39996 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40002 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40010 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40018 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40026 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40036 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40038 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40046 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40052 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40064 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40070 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40084 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40086 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40098 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40100 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40116 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40128 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40142 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40152 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40168 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40176 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40190 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40198 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40200 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40206 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40212 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40220 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40234 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40236 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40240 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40252 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40256 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40262 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40274 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40282 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40294 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40308 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40314 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40318 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40324 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40340 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40356 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40364 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40370 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40380 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40384 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40390 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40404 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40418 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40424 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40436 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40448 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40460 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40476 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40482 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40490 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40494 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40502 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40506 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40518 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40532 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40538 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40542 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40554 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40560 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40572 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40588 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40604 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40620 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40628 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40640 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40646 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40650 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40664 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40676 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40678 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40694 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40710 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40722 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40734 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40740 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40756 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40766 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40770 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40782 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40796 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40808 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40822 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40830 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40832 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40846 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40862 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40874 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40886 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40894 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40908 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40910 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40914 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40924 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40928 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40934 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40936 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40938 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40946 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40954 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40956 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40966 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40982 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40992 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41004 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41020 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41028 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41044 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41060 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41074 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41076 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41080 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41082 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41088 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41094 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41106 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41120 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41130 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41132 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41134 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41150 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41160 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41170 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41174 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41188 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41202 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41214 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41224 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41234 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41250 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41260 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41262 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41266 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41270 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41274 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41276 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41280 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41288 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41292 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41308 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41322 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41336 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41344 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41352 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41366 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41372 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41384 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41398 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41400 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41408 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41410 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41412 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41414 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41416 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41424 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41426 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41432 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41448 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41458 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41472 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41478 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41484 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41494 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41496 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41512 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41516 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41522 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41528 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41540 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41552 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41564 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41570 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41574 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41586 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41602 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41610 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41626 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41636 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41640 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41652 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41656 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41670 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41680 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41686 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41696 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41706 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41718 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41724 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41730 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41740 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41756 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41758 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41762 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41766 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41782 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41798 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41804 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41810 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41826 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41834 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41846 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41858 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:41864 - "POST /v1/completions HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:24:27 [loggers.py:315] Engine 000: Avg prompt throughput: 3199.5 tokens/s, Avg generation throughput: 548.6 tokens/s, Running: 150 reqs, Waiting: 106 reqs, GPU KV cache usage: 99.8%, Prefix cache hit rate: 53.5%
+(APIServer pid=9125) INFO 09-30 06:24:37 [loggers.py:315] Engine 000: Avg prompt throughput: 0.0 tokens/s, Avg generation throughput: 2950.0 tokens/s, Running: 92 reqs, Waiting: 119 reqs, GPU KV cache usage: 72.3%, Prefix cache hit rate: 53.5%
+(APIServer pid=9125) INFO 09-30 06:24:47 [loggers.py:315] Engine 000: Avg prompt throughput: 9215.8 tokens/s, Avg generation throughput: 378.2 tokens/s, Running: 116 reqs, Waiting: 10 reqs, GPU KV cache usage: 77.6%, Prefix cache hit rate: 42.1%
+(APIServer pid=9125) INFO:     127.0.0.1:40862 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO:     127.0.0.1:40874 - "GET /metrics HTTP/1.1" 200 OK
+(APIServer pid=9125) INFO 09-30 06:24:56 [launcher.py:129] [shutdown] API server: shutdown triggered
+(APIServer pid=9125) INFO 09-30 06:24:56 [launcher.py:145] [shutdown] API server: stopping engine client mode=abort timeout=0s
+(APIServer pid=9125) INFO 09-30 06:24:56 [core_client.py:744] [shutdown] MPClient: start timeout=0s
+(APIServer pid=9125) INFO 09-30 06:24:56 [core_client.py:746] [shutdown] MPClient: stopping engine manager
+(APIServer pid=9125) INFO 09-30 06:24:56 [utils.py:632] [shutdown] Process manager: send sigterm to process EngineCore
+(APIServer pid=9125) WARNING 09-30 06:24:56 [utils.py:652] [shutdown] Process manager: force killing remaining processes count=1
+(APIServer pid=9125) WARNING 09-30 06:24:56 [utils.py:657] [shutdown] Process manager: force killing remaining process EngineCore pid 9272
+(EngineCore pid=9272) INFO 09-30 06:24:56 [core.py:1342] [shutdown] EngineCore: trigger received signal=SIGTERM
+(EngineCore pid=9272) INFO 09-30 06:24:56 [core.py:1493] [shutdown] EngineCore: start mode=abort timeout=0s
+(EngineCore pid=9272) INFO 09-30 06:24:56 [core.py:1524] [shutdown] EngineCore: request processing complete; starting resource teardown
+(EngineCore pid=9272) INFO 09-30 06:24:56 [core.py:1355] [shutdown] EngineCore: exiting busy loop
+(APIServer pid=9125) INFO 09-30 06:24:56 [core_client.py:748] [shutdown] MPClient: engine manager stopped
+(APIServer pid=9125) INFO 09-30 06:24:56 [core_client.py:749] [shutdown] MPClient: cleaning up background resources
+(APIServer pid=9125) INFO 09-30 06:24:56 [core_client.py:751] [shutdown] MPClient: complete
+(APIServer pid=9125) INFO 09-30 06:24:56 [launcher.py:154] [shutdown] API server: engine client stopped
+(APIServer pid=9125) INFO 09-30 06:24:56 [launcher.py:157] [shutdown] API server: signalling HTTP server shutdown
+(APIServer pid=9125) INFO 09-30 06:24:56 [launcher.py:179] [shutdown] API server: shutting down FastAPI HTTP server
+(APIServer pid=9125) INFO:     Shutting down
+(APIServer pid=9125) INFO:     Waiting for application shutdown.
+(APIServer pid=9125) INFO:     Application shutdown complete.
+/usr/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '

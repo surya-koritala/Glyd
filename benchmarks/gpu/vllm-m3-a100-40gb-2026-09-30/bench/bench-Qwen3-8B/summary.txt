@@ -1,0 +1,11 @@
+bf16: weights 15.27 GiB, KV cache 141,040 tokens, max concurrency 34.43x at 4,096 tokens (started cold, on an empty compile cache: weights 15.27 GiB, KV cache 133,776 tokens, max concurrency 32.66x at 4,096 tokens)
+glyd: weights 12.53 GiB, KV cache 160,720 tokens, max concurrency 39.24x at 4,096 tokens (started cold, on an empty compile cache: weights 12.53 GiB, KV cache 153,472 tokens, max concurrency 37.47x at 4,096 tokens)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.95 | 242.1 | 106 / 166 | 14.7 / 16.2 | 64 | 1410 MHz, 56 C |
+| 1 | glyd | 0.95 | 243.6 | 125 / 211 | 13.2 / 15.2 | 64 | 1410 MHz, 55 C |
+| 4 | bf16 | 3.56 | 912.0 | 97 / 257 | 19.4 / 26.6 | 128 | 1410 MHz, 58 C |
+| 4 | glyd | 3.59 | 919.8 | 112 / 367 | 18.9 / 28.2 | 128 | 1410 MHz, 60 C |
+| inf | bf16 | 6.36 | 1627.0 | 13452 / 35863 | 58.7 / 103.4 | 256 | 1350 MHz, 64 C |
+| inf | glyd | 7.55 | 1931.8 | 9098 / 25869 | 57.5 / 110.5 | 256 | 1365 MHz, 64 C |
