@@ -12,8 +12,9 @@
 #           several sequences 3.2 more.
 #   a100    (an A100): Qwen3-32B with 60 GB or more, else Qwen3-14B. Scaled from the GH200's (eager as host-bound
 #           there, 24 tokens a second for Qwen3-8B on a Lambda A100) and the A100's bandwidth for the compiled calls.
-#   a10     (an A10, and any other GPU): Qwen3-14B, whose bf16 does not fit 24 GB (recorded so) where Glyd does.
-#           Scaled from an A10G's rates (Qwen3-8B eager 23-26 tokens a second, compiled 27 and 37).
+#   a10     (an A10, and any other GPU): Qwen3-14B, whose bf16 and exact do not fit 24 GB (recorded so) where Glyd's
+#           default does. Expected from an A10's run (tree 15d9c04, a10-v0.25.1): 8B 250, 275, 175 and 240 s; 14B 340,
+#           30, 30 and 60 s.
 # Each run's deadline leaves the later runs their expected time (and it at least its own): a run past its time takes
 # it from the last ones. respond.py cuts repeats first (at least one, more while they fit --rep-budget), then a run's
 # last configurations (its several-sequence rates last: exact's, whose expected time leaves them out, go first).
@@ -63,7 +64,7 @@ RUNS=${RESP_RUNS:-"$M8:glyd $M8:bf16c $M8:bf16 $BIG:glyd $BIG:bf16c $BIG:bf16 $M
 case $PLAN in
   hopper) EST="8:glyd:195 8:bf16c:213 8:bf16:175 8:exact:139 32:glyd:326 32:bf16c:354 32:bf16:268 32:exact:236" ;;
   a100) EST="8:glyd:200 8:bf16c:220 8:bf16:180 8:exact:145 32:glyd:355 32:bf16c:375 32:bf16:275 32:exact:285 14:glyd:235 14:bf16c:255 14:bf16:205 14:exact:210" ;;
-  *) EST="8:glyd:230 8:bf16c:250 8:bf16:200 8:exact:240 14:glyd:365 14:bf16c:40 14:bf16:40 14:exact:355" ;;
+  *) EST="8:glyd:250 8:bf16c:275 8:bf16:175 8:exact:240 14:glyd:340 14:bf16c:30 14:bf16:30 14:exact:60" ;;  # (an A10's run, a10-v0.25.1)
 esac
 secs() {  # RUN: its seconds, given (MODEL:MODE:SECONDS) or the plan's (else 240)
   local r=$1 m s e; [ "${r//[^:]/}" = "::" ] && { echo "${r##*:}"; return; }
@@ -157,10 +158,11 @@ while [ $# -gt 0 ]; do
   win=$(( left - later )); [ "$win" -lt "$own" ] && win=$own; [ "$win" -gt "$left" ] && win=$left  # the later runs' time kept, at least its own
   [ "$win" -ge 60 ] || { done_ "$n $mode: under a minute left, not run"; continue; }
   nvidia-smi --query-gpu=timestamp,clocks.sm,clocks.mem,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader -lms 1000 > "$R/smi-$n-$mode.csv" 2> /dev/null & S=$!
+  t0=$(el)
   ( cd "$W/src/gpu" && timeout "$(tmo $(( win + MARGIN )))" "$PY" -u respond.py "$d" --mode "$mode" --out "$R/$n-$mode.json" --deadline $(( $(date +%s) + win )) ${RESP_ARGS:---reps-ttft 3 --rep-budget 12} ) > "$R/log/$n-$mode.txt" 2>&1
   e=$?; kill $S 2> /dev/null
   echo "$n $mode: exit $e"; tail -n 12 "$R/log/$n-$mode.txt" | grep -v "^\s*$" | tail -n 10
-  done_ "$n $mode (exit $e, its time $win s, expected $own s)"
+  done_ "$n $mode (exit $e, took $(( $(el) - t0 )) s of its window $win s, expected $own s)"
 done
 step "done in $(el) s"
 done_ "done"

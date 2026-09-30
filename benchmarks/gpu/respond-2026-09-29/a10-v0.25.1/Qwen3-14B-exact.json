@@ -1,0 +1,38 @@
+{
+ "model": "/home/ubuntu/hf/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18",
+ "mode": "exact",
+ "greedy": true,
+ "gpu": "NVIDIA A10",
+ "capability": "8.6",
+ "gpu_memory_gb": 23.68,
+ "smi": "580.126.20, 1695 MHz, 6251 MHz, 150.00 W, 150.00 W",
+ "torch": "2.14.0+cu130",
+ "cuda": "13.0",
+ "transformers": "5.17.0",
+ "cpu": "Intel(R) Xeon(R) Platinum 8358 CPU @ 2.60GHz",
+ "cpus": 30,
+ "host": "x86_64",
+ "args": {
+  "model": "/home/ubuntu/hf/hub/models--Qwen--Qwen3-14B/snapshots/40c069824f4251a91eefaf281ebe4c544efd3e18",
+  "mode": "exact",
+  "out": "/home/ubuntu/results/Qwen3-14B-exact.json",
+  "prompts": "128,512,2048,8192",
+  "ttft_new": 16,
+  "batches": "1,8,32",
+  "rate_prompt": 128,
+  "new": 256,
+  "mixes": "chat:200:300,long:2000:200",
+  "reps_ttft": 3,
+  "reps_rate": 3,
+  "reps_mix": 3,
+  "rep_budget": 12.0,
+  "deadline": 1790780423.0
+ },
+ "configs": [],
+ "glyd": "0.25.1",
+ "load": {
+  "fits": false,
+  "error": "OutOfMemoryError: CUDA out of memory. Tried to allocate 1.45 GiB. GPU 0 has a total capacity of 22.06 GiB of which 1.18 GiB is free. Including non-PyTorch memory, this process has 20.88 GiB memory in use. Of the allocated memory 18.77 GiB is allocated by PyTorch, and 1.85 GiB is reserved by PyTorch but unallocated. I",
+  "seconds": 34.7
+ }
+}
