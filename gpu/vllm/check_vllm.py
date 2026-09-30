@@ -9,7 +9,10 @@ a process of its own:
   back (prompt_logprobs): top-1 agreement with bf16 at least 97%, and the
   mean |logprob difference| of its tokens within twice bf16's noise floor;
 - glyd exact, eager: tokens, logprobs and prompt_logprobs bf16 eager's bit
-  for bit; exact under torch.compile refused, with why;
+  for bit; exact under torch.compile refused, with why, but with inductor's
+  deterministic mode (DETERMINISTIC), where compiled bf16's bit for bit
+  (the same mode, CUDA graphs on); fused Glyd compiled in that mode the same
+  bits from one compile to the next (each on an empty compile cache);
 - per layer (LLM.apply_model): every packed layer's product against
   F.linear on its decoded matrix at 1-4096 tokens, within 1e-2 and the same
   bits every run; with GLYD_VERIFY=1 every pack checked against its
@@ -53,6 +56,7 @@ PROMPTS = [
 ]
 MS = (1, 7, 16, 17, 33, 64, 65, 128, 129, 512, 513, 1024, 4096)
 AGREE, FLOOR = 0.97, 2.0  # fused: top-1 agreement at least; mean |logprob difference| at most this times bf16's floor
+DETERMINISTIC = {"inductor_compile_config": {"deterministic": True, "combo_kernels": True, "benchmark_combo_kernel": False}}  # vLLM's compilation_config
 
 
 def child(spec):
@@ -222,6 +226,15 @@ def main():
         check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"], f"{tag} exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']})")
         xc = R("glyd-exact-compiled", dict(long, quantization="glyd"), {"GLYD_EXACT": "1"})
         check("error" in xc and "enforce-eager" in xc["error"], f"{tag} exact under torch.compile: refused ({xc.get('error', 'not refused')[:120]})")
+        fresh = lambda: {"VLLM_CACHE_ROOT": tempfile.mkdtemp(prefix="vllm-cache-")}  # (each run a compile of its own)
+        det = dict(long, model=model, compilation_config=DETERMINISTIC)
+        bd = run(det, out_dir, f"{tag}-bf16-det", fresh())
+        xd = run(dict(det, quantization="glyd"), out_dir, f"{tag}-glyd-exact-det", dict(fresh(), GLYD_EXACT="1"))
+        c = compare(xd, bd)
+        check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"], f"{tag} exact under torch.compile, inductor deterministic: compiled bf16's tokens, logprobs and prompt_logprobs (the same mode) bit for bit ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']})")
+        ga, gb = (run(dict(det, quantization="glyd"), out_dir, f"{tag}-glyd-det-{n}", fresh()) for n in "ab")
+        c = compare(ga, gb)
+        check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"], f"{tag} fused, compiled, inductor deterministic: the same bits from one compile to the next ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']}; layout {ga['glyd']['layout']})")
         if saves:
             for layout in ("mma", "mma12"):
                 d = tempfile.mkdtemp(prefix=f"glyd-save-{tag}-{layout}-")
