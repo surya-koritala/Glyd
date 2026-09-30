@@ -157,7 +157,7 @@ out; low load 1 request a second, 0.25 on the L4):
 
 | GPU (Glyd's layout) | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
 | :--- | :--- | ---: | ---: | :--- | :--- |
-| L4 (tiered) | Qwen3-8B | 1.89x | **1.39x** | +17%, −23% | −28%, +36% |
+| L4 (tiered) | Qwen3-8B | 1.89x | **1.33x** | +16%, −21% | −25%, +42% |
 | A10 (12-bit) | Qwen3-8B | 1.73x | **1.31x** | +16%, −21% | −25%, +30% |
 | A100 40 GB (12-bit) | Qwen3-8B | 1.14x | **1.19x** | +18%, −10% | −32%, −2% |
 | A100 40 GB (12-bit) | Qwen3-14B | 1.77x | **1.65x** | +18%, −13% | −57%, +4% |
@@ -171,7 +171,7 @@ low load the first token comes 4-28% later. `exact` gives vLLM's bf16
 logits bit for bit, eager or compiled in inductor's deterministic mode.
 Options, exact mode, mixtures of experts, the checks against vLLM's bf16
 and every rate: [gpu/vllm/README.md](gpu/vllm/README.md); logs in
-[benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m2-2026-09-29`,
+[benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m5-2026-09-30`,
 `vllm-m3-*-2026-09-30`).
 
 ### Related work

@@ -32,13 +32,13 @@ every earlier format.
   Qwen3-14B too on the A100), Glyd held 1.14-1.89x bf16's KV cache and
   served 1.19-1.65x its requests a second saturated, the first token
   25-57% sooner. At low load (1 request a second, 0.25 on the L4) each
-  token came 10-23% sooner there, and the first 16-18% later. Saturated,
-  each token took 30-36% longer on the L4 and A10, and was within 4% on
+  token came 10-21% sooner there, and the first 16-18% later. Saturated,
+  each token took 30-42% longer on the L4 and A10, and was within 4% on
   the A100. On a GH200, Qwen3-8B and Qwen3-32B: 1.04x and 1.66x the KV
   cache, but 0.92x and 0.88x the requests a second saturated (Hopper's gap
   is not profiled yet), each token at saturation 9% and 82% slower, and at
   low load the first token 4% and 28% later
-  ([benchmarks/gpu/l4-vllm-m2-2026-09-29](benchmarks/gpu/l4-vllm-m2-2026-09-29),
+  ([benchmarks/gpu/l4-vllm-m5-2026-09-30](benchmarks/gpu/l4-vllm-m5-2026-09-30),
   [vllm-m3-a10-2026-09-30](benchmarks/gpu/vllm-m3-a10-2026-09-30),
   [vllm-m3-a100-40gb-2026-09-30](benchmarks/gpu/vllm-m3-a100-40gb-2026-09-30),
   [vllm-m3-gh200-2026-09-30](benchmarks/gpu/vllm-m3-gh200-2026-09-30)).

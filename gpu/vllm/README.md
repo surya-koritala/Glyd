@@ -90,7 +90,7 @@ Glyd's against bf16's; for the times, less is better.
 
 | GPU (Glyd's layout) | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
 | :--- | :--- | ---: | ---: | :--- | :--- |
-| L4 (tiered) | Qwen3-8B | 1.89x | 1.39x | +17%, -23% | -28%, +36% |
+| L4 (tiered) | Qwen3-8B | 1.89x | 1.33x | +16%, -21% | -25%, +42% |
 | A10 (12-bit) | Qwen3-8B | 1.73x | 1.31x | +16%, -21% | -25%, +30% |
 | A100 40 GB (12-bit) | Qwen3-8B | 1.14x | 1.19x | +18%, -10% | -32%, -2% |
 | A100 40 GB (12-bit) | Qwen3-14B | 1.77x | 1.65x | +18%, -13% | -57%, +4% |
@@ -102,18 +102,17 @@ Glyd's against bf16's; for the times, less is better.
   - 1.04-1.89x the KV cache, so more requests at once.
   - 1.19-1.65x the requests a second saturated on the L4, A10 and A100.
   - At saturation, the first token 25-57% sooner there, and 52% sooner on the GH200 with Qwen3-32B.
-  - At low load, each token 6-23% sooner, but for Qwen3-8B on the GH200 (1% slower).
+  - At low load, each token 6-21% sooner, but for Qwen3-8B on the GH200 (1% slower).
 - **Losses:**
   - At low load, the first token 4-28% later.
   - On the GH200 at saturation, 0.88-0.92x bf16's requests a second, with Qwen3-32B although bf16 ran short of KV
     cache there. Hopper's gap is not profiled yet.
-  - At saturation, each token 30-36% slower on the L4 and A10, where each step carries more requests; within 4% on the
+  - At saturation, each token 30-42% slower on the L4 and A10, where each step carries more requests; within 4% on the
     A100. On the GH200, 9% slower with Qwen3-8B and 82% with Qwen3-32B.
-- **The L4's Glyd run** came after its bf16 run, on the same L4 within the hour. Glyd in the same session as bf16, with
-  v0.25.0's library: the first token at low load +30%, and 1.29x the requests a second saturated. v0.25.1 decodes an
-  L4's prompts from 896 tokens for cuBLAS.
+- **The L4's pair** ran back to back in one session. An earlier pair, Glyd's run within the hour after bf16's, gave
+  1.39x saturated, +17% and -23% at low load, and -28% and +36% saturated (`l4-vllm-m2-2026-09-29`).
 
-Every rate and percentile, and the logs: [L4](../../benchmarks/gpu/l4-vllm-m2-2026-09-29),
+Every rate and percentile, and the logs: [L4](../../benchmarks/gpu/l4-vllm-m5-2026-09-30),
 [A10](../../benchmarks/gpu/vllm-m3-a10-2026-09-30), [A100](../../benchmarks/gpu/vllm-m3-a100-40gb-2026-09-30),
 [GH200](../../benchmarks/gpu/vllm-m3-gh200-2026-09-30).
 
