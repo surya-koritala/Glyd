@@ -275,21 +275,21 @@ def test_c_header():
     # the routes' numbers and a GPU's classes: kernels.py's and _lib.py's the header's
     defines = {k: int(v) for k, v in re.findall(r"#define (GLYD_GPU_\w+) (\d+)", h)}
     kern = {}
-    names = {"DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD", "SPLIT", "GEFORCE", "A10", "L4", "L40S", "PCIE", "NO_SPLIT"}
+    names = {"DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD", "SPLIT", "GEFORCE", "A10", "L4", "L40S", "PCIE", "GH200", "NO_SPLIT"}
     body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "kernels.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= names]
     exec(compile(ast.Module(body, []), "kernels.py", "exec"), kern)
     for r in ("DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD", "SPLIT"):
         assert kern[r] == defines[f"GLYD_GPU_ROUTE_{r}"], r
-    assert lib["BIG"] == defines["GLYD_GPU_ROUTE_BIG"] and (kern["GEFORCE"], kern["A10"], kern["L4"], kern["L40S"], kern["PCIE"], kern["NO_SPLIT"]) == (
-        defines["GLYD_GPU_GEFORCE"], defines["GLYD_GPU_A10"], defines["GLYD_GPU_L4"], defines["GLYD_GPU_L40S"], defines["GLYD_GPU_PCIE"], defines["GLYD_GPU_NO_SPLIT"])
+    assert lib["BIG"] == defines["GLYD_GPU_ROUTE_BIG"] and (kern["GEFORCE"], kern["A10"], kern["L4"], kern["L40S"], kern["PCIE"], kern["GH200"], kern["NO_SPLIT"]) == (
+        defines["GLYD_GPU_GEFORCE"], defines["GLYD_GPU_A10"], defines["GLYD_GPU_L4"], defines["GLYD_GPU_L40S"], defines["GLYD_GPU_PCIE"], defines["GLYD_GPU_GH200"], defines["GLYD_GPU_NO_SPLIT"])
     cu = open(os.path.join(gpu, "glyd_gpu.cu")).read()
     assert set(re.findall(r"GLYD_GPU_API [^(]*?(glyd_gpu_\w+)\(", cu)) == set(declared), "glyd_gpu.cu's C API is not glyd_gpu.h's"
 
 
 def test_split_route():
     """The route SPLIT (option 2) through the library where it and a GPU are here (else skipped): its rule's pins (an
-    A100 SXM from 769 to 8192 tokens, a matrix over 2 x 50 M weights to 4096; Hopper from 2048 to 8192, O and K at
-    least 4096; no PCIe card; its decode's SMs), GLYD_GPU_NO_SPLIT today's routes; a GLinear made as on an A100 by it at 1024 tokens: within 1e-2 of
+    A100 SXM from 769 to 8192 tokens, a matrix over 2 x 50 M weights to 4096; a GH200 from 2048 to 8192, O and K at
+    least 4096; no H100 SXM, H200 or PCIe card; its decode's SMs), GLYD_GPU_NO_SPLIT today's routes; a GLinear made as on an A100 by it at 1024 tokens: within 1e-2 of
     fp32 and the same bits run to run, its decode bit for bit the pack's, exact bit for bit F.linear, and today's route
     (decoded, then cuBLAS) where the route cannot run."""
     torch = cuda()
@@ -310,12 +310,13 @@ def test_split_route():
         big = g.Mma12((131072, 1024), q.data, q.exc, q.exc_base, q.hb)  # (its shape alone read by the routes)
         wide = g.Mma12((4096, 4096), q.data, q.exc, q.exc_base, q.hb)  # (a large matrix on Hopper)
         for p, gpu, M, route, sms in [(q, 80, 768, g.BIG, 0), (q, 80, 769, g.SPLIT, 12), (q, 80, 1536, g.SPLIT, 8), (q, 80, 8192, g.SPLIT, 4), (q, 80, 8193, g.DECODE, 0),
-                                      (q, 5080, 769, g.DECODE, 0), (q, 90, 2048, g.DECODE, 0), (wide, 90, 1024, g.WG, 0), (wide, 90, 2047, g.DECODE, 0),
-                                      (wide, 90, 2048, g.SPLIT, 12), (wide, 90, 6144, g.SPLIT, 4), (wide, 90, 8193, g.DECODE, 0), (wide, 5090, 2048, g.DECODE, 0), (q, 3089, 4096, g.DECODE, 0), (q, 4089, 4096, g.AHEAD, 0),
+                                      (q, 5080, 769, g.DECODE, 0), (q, 90, 2048, g.DECODE, 0), (wide, 6090, 1024, g.WG, 0), (wide, 6090, 2047, g.DECODE, 0),
+                                      (wide, 6090, 2048, g.SPLIT, 12), (wide, 6090, 6144, g.SPLIT, 4), (wide, 6090, 8193, g.DECODE, 0), (wide, 5090, 2048, g.DECODE, 0),
+                                      (wide, 90, 2048, g.DECODE, 0), (wide, 90, 8192, g.DECODE, 0), (q, 3089, 4096, g.DECODE, 0), (q, 4089, 4096, g.AHEAD, 0),
                                       (q, 86, 4096, g.BIG, 0), (q, 89, 4096, g.BIG, 0)]:
             assert g.route(p, gpu, M)[0] == route and g.split_sms(p, gpu, M) == sms, (p.shape, gpu, M)
-        assert g.route(big, 80, 4096)[0] == g.SPLIT and g.route(big, 80, 4097)[0] == g.DECODE and g.route(big, 90, 8192)[0] == g.DECODE
-        assert g.route(q, 80 | g.NO_SPLIT, 1024)[0] == g.DECODE and g.route(wide, 90 | g.NO_SPLIT, 2048)[0] == g.DECODE
+        assert g.route(big, 80, 4096)[0] == g.SPLIT and g.route(big, 80, 4097)[0] == g.DECODE and g.route(big, 6090, 8192)[0] == g.DECODE
+        assert g.route(q, 80 | g.NO_SPLIT, 1024)[0] == g.DECODE and g.route(wide, 6090 | g.NO_SPLIT, 2048)[0] == g.DECODE
         assert g.route(g.pack_mma(w), 80, 1024)[0] == g.BIG  # (the tiered layout's: never)
     torch.manual_seed(0)
     w = (torch.randn(3072, 2048, device="cuda") * 0.02).to(torch.bfloat16)
@@ -458,22 +459,23 @@ def test_gpu_class_by_name():
     cu, h = open(os.path.join(gpu, "glyd_gpu.cu")).read(), open(os.path.join(gpu, "glyd_gpu.h")).read()
     a = cu.index("static bool has_word(")
     b = cu.index("\n", cu.index("static int gpu_class("))
-    classes = re.findall(r"#define (GLYD_GPU_(?:GEFORCE|A10|L4|L40S|PCIE)) (\d+)", h)
-    assert len(classes) == 5
+    classes = re.findall(r"#define (GLYD_GPU_(?:GEFORCE|A10|L4|L40S|PCIE|GH200)) (\d+)", h)
+    assert len(classes) == 6
     prog = "#include <cctype>\n#include <cstdio>\n#include <cstring>\n" + "".join(f"#define {k} {v}\n" for k, v in classes) + cu[a:b]
     prog += '\nint main() { char s[512]; while (fgets(s, sizeof s, stdin)) { s[strcspn(s, "\\n")] = 0; printf("%d\\n", gpu_class(s)); } }\n'
     tree = ast.parse(open(os.path.join(HERE, "glyd", "gpu", "model.py")).read())
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "gpu_code")
     kern = {}
-    body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "kernels.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= {"GEFORCE", "A10", "L4", "L40S", "PCIE"}]
+    body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "kernels.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= {"GEFORCE", "A10", "L4", "L40S", "PCIE", "GH200"}]
     exec(compile(ast.Module(body, []), "kernels.py", "exec"), kern)
-    py = {"re": re, "g": types.SimpleNamespace(GEFORCE=kern["GEFORCE"], A10=kern["A10"], L4=kern["L4"], L40S=kern["L40S"], PCIE=kern["PCIE"])}
+    py = {"re": re, "g": types.SimpleNamespace(GEFORCE=kern["GEFORCE"], A10=kern["A10"], L4=kern["L4"], L40S=kern["L40S"], PCIE=kern["PCIE"], GH200=kern["GH200"])}
     exec(compile(ast.Module([fn], []), "model.py", "exec"), py)
     names = ["NVIDIA A10", "NVIDIA A10-24GB", "NVIDIA A10G", "NVIDIA A100-SXM4-80GB", "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA GeForce RTX 4080 SUPER", "A10", "NVIDIA A10_X",
              "NVIDIA A16", "NVIDIA A2", "NVIDIA A10 PCIe", "A10 A10G", "A10G A10", "xA10", "A10x", "A10M", "NVIDIA GeForce A10", "(A10)", "A10.", "A10é", "éA10", "A10\u00a0", "", "NVIDIA H100 80GB HBM3",
              "NVIDIA L4", "L4", "NVIDIA L40S", "NVIDIA L40", "NVIDIA RTX 6000 Ada Generation", "NVIDIA L4 L40S", "L4-24GB", "xL4", "L4x", "NVIDIA GeForce L4", "NVIDIA A10 L4", "L4_X", "(L4)",
              "L40S", "NVIDIA L40S-48GB", "xL40S", "L40Sx", "NVIDIA L40S L4", "NVIDIA GeForce L40S", "NVIDIA L40SX", "L40S_",
-             "NVIDIA H100 PCIe", "NVIDIA A100-PCIE-40GB", "pcie", "PCI", "PCIé", "xPCIEx", "NVIDIA GH200 480GB", "NVIDIA GeForce RTX 4090 PCIe", "NVIDIA L4 PCIe", "NVIDIA L40S PCIe"]
+             "NVIDIA H100 PCIe", "NVIDIA A100-PCIE-40GB", "pcie", "PCI", "PCIé", "xPCIEx", "NVIDIA GH200 480GB", "NVIDIA GeForce RTX 4090 PCIe", "NVIDIA L4 PCIe", "NVIDIA L40S PCIe",
+             "GH200", "NVIDIA GH200 144G HBM3e", "xGH200", "GH200x", "NVIDIA GH200-96GB", "NVIDIA GH200 PCIe", "NVIDIA H200", "NVIDIA H200 NVL"]
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "cls.cpp"), "w") as f:
             f.write(prog)
@@ -483,8 +485,8 @@ def test_gpu_class_by_name():
     want = {n: py["gpu_code"]((8, 6), n) - 86 for n in names}
     assert len(out) == len(names) and got == want, [(n, got.get(n), want[n]) for n in names if got.get(n) != want[n]]
     pinned = ("NVIDIA A10", "NVIDIA A10G", "NVIDIA GeForce RTX 4080 SUPER", "NVIDIA L4", "NVIDIA L40S", "NVIDIA L40", "NVIDIA RTX 6000 Ada Generation",
-              "NVIDIA H100 PCIe", "NVIDIA A100-PCIE-40GB", "NVIDIA A10 PCIe", "NVIDIA GH200 480GB", "NVIDIA H100 80GB HBM3")
-    assert [want[n] for n in pinned] == [kern["A10"], 0, kern["GEFORCE"], kern["L4"], kern["L40S"], 0, 0, kern["PCIE"], kern["PCIE"], kern["A10"], 0, 0], [(n, want[n]) for n in pinned]
+              "NVIDIA H100 PCIe", "NVIDIA A100-PCIE-40GB", "NVIDIA A10 PCIe", "NVIDIA GH200 480GB", "NVIDIA H100 80GB HBM3", "NVIDIA H200")
+    assert [want[n] for n in pinned] == [kern["A10"], 0, kern["GEFORCE"], kern["L4"], kern["L40S"], 0, 0, kern["PCIE"], kern["PCIE"], kern["A10"], kern["GH200"], 0, 0], [(n, want[n]) for n in pinned]
 
 
 def test_route_env():

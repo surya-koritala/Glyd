@@ -173,10 +173,11 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
  * characters that are not ASCII letters, digits or '_': an A10, not an A10G,
  * A100 or A40), GLYD_GPU_L4 with "L4" in it as a word (an L4, not an L40S or
  * L40), GLYD_GPU_L40S with "L40S" in it as a word (not an L40), GLYD_GPU_PCIE
- * with "PCIe" in it in any case, else none. 1089: an RTX 40; 3089: an L4;
- * 4089: an L40S; 89: an L40 or RTX 6000 Ada; 2086: an A10; 86: an A10G, A40
- * or RTX A6000; 80: an A100 SXM4; 5080: an A100 PCIe; 90: an H100 SXM, H200 or
- * GH200; 5090: an H100 PCIe. GLYD_GPU_NO_SPLIT added to a code: its routes
+ * with "PCIe" in it in any case, GLYD_GPU_GH200 with "GH200" in it as a word,
+ * else none. 1089: an RTX 40; 3089: an L4; 4089: an L40S; 89: an L40 or RTX
+ * 6000 Ada; 2086: an A10; 86: an A10G, A40 or RTX A6000; 80: an A100 SXM4;
+ * 5080: an A100 PCIe; 90: an H100 SXM or H200; 6090: a GH200; 5090: an H100
+ * PCIe. GLYD_GPU_NO_SPLIT added to a code: its routes
  * where the route SPLIT cannot run (no green contexts, a CUDA graph being
  * captured).
  * ---------------------------------------------------------------------- */
@@ -192,6 +193,7 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
 #define GLYD_GPU_L4 3000        /* a GPU's class: "L4" in its name as a word */
 #define GLYD_GPU_L40S 4000      /* a GPU's class: "L40S" in its name as a word */
 #define GLYD_GPU_PCIE 5000      /* a GPU's class: "PCIe" in its name */
+#define GLYD_GPU_GH200 6000     /* a GPU's class: "GH200" in its name as a word */
 #define GLYD_GPU_NO_SPLIT 1048576 /* a flag in a GPU's code (1 << 20): the routes without SPLIT */
 
 /* The current device's GPU as the routes take it: its code. */
@@ -211,8 +213,9 @@ int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* rout
  * 12-bit prompt decoded ahead on SMs set apart (green contexts), cuBLAS on
  * the rest, where a forward pass took less time so than by the routes
  * before it (gpu/README.md): an A100 SXM's from 769 to 8192 tokens (a matrix
- * over 2 x 50 M weights to 4096), a Hopper's (not a PCIe card's) from 2048
- * to 8192 for a matrix whose O and K are both at least 4096; the decode's
+ * over 2 x 50 M weights to 4096), a GH200's from 2048 to 8192 for a matrix
+ * whose O and K are both at least 4096 (an H100 SXM, H200 or H100 PCIe:
+ * never, until measured); the decode's
  * SMs 4 to 12 by the GPU and M. GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset:
  * the GPU's; a negative GLYD_SPLIT_MIN: never) and GLYD_SPLIT_SMS move them,
  * on any GPU from Ampere and any matrix, read as the routes' others. K a

@@ -8,7 +8,7 @@ every earlier format.
 
 ## v0.26.0 (Unreleased)
 
-- Long prompts on an A100 SXM and Hopper decode on SMs set apart (the
+- Long prompts on an A100 SXM and a GH200 decode on SMs set apart (the
   route SPLIT): each 12-bit matrix is decoded ahead into a ring of slots on
   a few SMs the driver's green contexts set apart, while cuBLAS multiplies
   from the ring on the others, told how many. Each decode waits for the
@@ -22,9 +22,13 @@ every earlier format.
   Qwen3-32B's 0.895 / 0.935 / 0.938 at 2048 / 4096 / 8192 and 8B's 0.978 /
   0.991 / 0.992. So the routes: an A100 SXM's 12-bit prompts from 769 to
   8192 tokens (a matrix over 2 x 50 M weights, as 14B's gate and up, to
-  4096), a Hopper's from 2048 to 8192 for a matrix whose O and K are both
-  at least 4096 (at 1024 tokens the GH200 lost: 1.106 and 1.012); no PCIe
-  card and nothing past 8192 tokens, not measured. The ring holds a
+  4096), a GH200's from 2048 to 8192 for a matrix whose O and K are both
+  at least 4096 (at 1024 tokens the GH200 lost: 1.106 and 1.012). An H100
+  SXM, an H200 and the PCIe cards keep v0.25.1's routes until a session
+  measures them, and nothing past 8192 tokens takes it, not measured. The
+  GH200's ratios were taken against v0.25.0's routes, before v0.25.1's
+  faster Hopper decode for cuBLAS (that decode was 7-8% of those passes at
+  4096 tokens, its breakdown). The ring holds a
   layer's chunks ahead: 600 MiB for Qwen3-8B, 1.0 GiB for 14B, 1.5 GiB for
   32B, and a 32 MiB cuBLAS workspace. Its products are cuBLAS's own on the
   decoded bf16, a row chunk a call: the same bits run to run and prompt to
@@ -43,10 +47,11 @@ every earlier format.
   with the caller's cuBLAS as `glyd_gpu_blas`: the library does not link
   it), its decode (`glyd_gpu_mma12_unpack_split`), the route
   `GLYD_GPU_ROUTE_SPLIT` and its SMs (`glyd_gpu_mma12_split_sms`), a GPU's
-  PCIe class in its code (`GLYD_GPU_PCIE`) and `GLYD_GPU_NO_SPLIT` (a
-  code's routes without SPLIT). `glyd_gpu_mma12_linear` takes SPLIT by the
-  prompt kernel. v0.25.0's library (version 5) is refused by this package
-  and the glyd-gpu crate (`Route::Split`, `PCIE`, `NO_SPLIT`,
+  PCIe and GH200 classes in its code (`GLYD_GPU_PCIE`, `GLYD_GPU_GH200`:
+  an A100 PCIe 5080, an H100 PCIe 5090, a GH200 6090) and
+  `GLYD_GPU_NO_SPLIT` (a code's routes without SPLIT). `glyd_gpu_mma12_linear` takes SPLIT by the
+  prompt kernel. v0.25's libraries (version 5) are refused by this package
+  and the glyd-gpu crate (`Route::Split`, `PCIE`, `GH200`, `NO_SPLIT`,
   `Library::split_sms`; the ring declared, not wrapped yet).
 - `gpu/e2e.py --without-split` times a prompt again with the route off in
   the same process; `--breakdown` gives a pass's host time and its GPU

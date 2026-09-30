@@ -49,8 +49,8 @@ layout also from `GLYD_DEC_MIN` where that is set lower) they return
 (`glyd_gpu_mma_unpack`) for a GEMM of your own.
 
 A prompt of the 12-bit layout on an A100 SXM (769-8192 tokens) or a
-Hopper (2048-8192, a matrix whose O and K are both at least 4096) takes the
-route SPLIT (`glyd_gpu_mma12_route`, `glyd_gpu_mma12_split_sms`): its
+GH200 (2048-8192, a matrix whose O and K are both at least 4096; an H100 SXM,
+an H200 and the PCIe cards not yet, until measured) takes the route SPLIT (`glyd_gpu_mma12_route`, `glyd_gpu_mma12_split_sms`): its
 matrices decoded ahead into a ring of slots in your device memory on a few
 SMs the driver's green contexts set apart, while your cuBLAS multiplies from
 the ring on the others. The library does not link cuBLAS: give

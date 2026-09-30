@@ -1128,7 +1128,7 @@ ran about 10 C cooler than the one above (medians 66-72 C against 78-81
 C), and its times are lower throughout, the unchanged routes' too (logs:
 benchmarks/gpu/l4-routes-2026-09-29).
 
-### Long prompts on an A100 SXM and Hopper: the decode on SMs set apart
+### Long prompts on an A100 SXM and a GH200: the decode on SMs set apart
 
 Decoded first, a matrix of a long prompt costs its decode on every SM
 before its product; decoded ahead beside the products (above), it takes
@@ -1158,9 +1158,11 @@ driver's entry points), and cuBLAS multiplies on the rest, told how many
 
 The routes, as measured end to end: an A100 SXM's 12-bit prompts from 769
 to 8192 tokens (a matrix over 2 x 50 M weights to 4096, as 14B's gate and
-up), a Hopper's (an H100 SXM, H200, GH200: measured on a GH200) from 2048
-to 8192 for a matrix whose O and K are both at least 4096; no PCIe card
-and nothing past 8192 tokens, until measured. Its SMs for the decode: an
+up), a GH200's from 2048 to 8192 for a matrix whose O and K are both at
+least 4096. An H100 SXM, an H200 and the PCIe cards (an A100 PCIe, an H100
+PCIe) keep v0.25.1's routes until a session measures them (an H100 SXM
+has the GH200's 132 SMs but 3.35 TB/s against its 4 and a 700 W budget),
+and nothing past 8192 tokens takes it, not measured. Its SMs for the decode: an
 A100's 12 to 1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143, then 4.
 One forward pass (`e2e.py --prefill --merge`, bf16 and v0.25.0's routes
 in the same process), ms:
@@ -1367,7 +1369,7 @@ an A100's 12-bit prompts from 769 tokens, Hopper's past its wgmma kernel,
 an L4's from 896 tiered and 2560 12-bit, GeForce Ada's from 513 tiered and
 1793 12-bit (641 exact), an A10's from 512 tiered and 640 12-bit and an
 L40S's from 1024 tiered and 2048 12-bit (not exact), decoded ahead; an A100
-SXM's 12-bit prompts from 769 to 8192 tokens and a Hopper's large matrices'
+SXM's 12-bit prompts from 769 to 8192 tokens and a GH200's large matrices'
 from 2048 to 8192 decoded on SMs set apart, the route SPLIT, above;
 `GLYD_WG_MIN`, `GLYD_WG_MAX`, `GLYD_MID_MIN`, `GLYD_DEC_MIN` and the
 `GLYD_SPLIT_*` ones move them, read once a process, at the library's first
@@ -1380,7 +1382,7 @@ there; SPLIT, whose products are the caller's cuBLAS on the ring, through
 `glyd_gpu_mma12_ring_linear`). A GPU's code, which the routes take, is its
 compute capability plus a class where the name tells GPUs apart
 (`GLYD_GPU_GEFORCE`, `GLYD_GPU_A10`, `GLYD_GPU_L4`, `GLYD_GPU_L40S`,
-`GLYD_GPU_PCIE`: `glyd_gpu.h`), and `GLYD_GPU_NO_SPLIT` gives its routes
+`GLYD_GPU_PCIE`, `GLYD_GPU_GH200`: `glyd_gpu.h`), and `GLYD_GPU_NO_SPLIT` gives its routes
 without SPLIT. The glyd package's Linears take their routes from the library
 and multiply by `linear` in their one C call, so every caller routes the same
 way.

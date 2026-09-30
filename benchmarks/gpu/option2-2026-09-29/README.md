@@ -39,7 +39,8 @@ On the A100, Qwen3-8B's pass at 1024 tokens took 95.5 ms by the route against 11
 bf16; 14B's gate and up (178 M weights) took today's route past 4096 tokens (their layer 1.021x by the route at 8192).
 On the GH200, 8B's pass at 1024 was issued by the host in 47.6 of its 48.0 ms (its breakdown): the route's calls cost
 the host more than the GPU saved; 32B's at 1024 1.012x. The routes: an A100 SXM's prompts from 769 to 8192 tokens, a
-Hopper's from 2048 to 8192 for a matrix whose O and K are both at least 4096; no PCIe card, nothing past 8192.
+GH200's from 2048 to 8192 for a matrix whose O and K are both at least 4096 (an H100 SXM, an H200 and the PCIe cards on
+v0.25.1's routes until measured); nothing past 8192.
 
 Where the time went before the gates (`a100-1` against a layer's products): the rest of a Qwen3-8B pass at 1024 tokens
 (norms, activations, rotary, attention) took 43.5 ms by the route against 28.5 in bf16 and 28.9 by today's route: the

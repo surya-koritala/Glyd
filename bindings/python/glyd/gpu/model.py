@@ -346,7 +346,7 @@ def ring_plan(shapes, slot):
 
 class Split:
     """The route SPLIT (glyd_gpu.h; option 2): a 12-bit prompt's products (an A100 SXM's from 769 to 8192 tokens, a
-    Hopper's from 2048 to 8192 for a matrix of O and K at least 4096) with each matrix decoded ahead into a ring of slots on SMs set apart by the driver's
+    GH200's from 2048 to 8192 for a matrix of O and K at least 4096) with each matrix decoded ahead into a ring of slots on SMs set apart by the driver's
     green contexts, while cuBLAS multiplies from the ring on the others, told how many (cublasSetSmCountTarget on
     PyTorch's own handle, with a workspace of the ring's for its stream), the two ordered by events, never the host.
     A chunk's decode waits for the product of the last chunk of its shape before it to start (the same matrix of the
@@ -867,9 +867,10 @@ def gpu_code(cc, name):
     """A GPU as the library's routes take it (glyd_gpu.h, glyd_gpu_gpu): its compute capability cc, major * 10 +
     minor, plus its class by name: GEFORCE with "GeForce" in it, A10 with "A10" in it as a word (an A10, not an A10G,
     A100 or A40), L4 with "L4" in it as a word (an L4, not an L40S or L40), L40S with "L40S" in it as a word (not an
-    L40), PCIE with "PCIe" in it in any case, else none."""
+    L40), PCIE with "PCIe" in it in any case, GH200 with "GH200" in it as a word, else none."""
     cls = (g.GEFORCE if "GeForce" in name else g.A10 if re.search(r"\bA10\b", name, re.ASCII) else g.L4 if re.search(r"\bL4\b", name, re.ASCII)
-           else g.L40S if re.search(r"\bL40S\b", name, re.ASCII) else g.PCIE if re.search("pcie", name, re.ASCII | re.I) else 0)
+           else g.L40S if re.search(r"\bL40S\b", name, re.ASCII) else g.PCIE if re.search("pcie", name, re.ASCII | re.I)
+           else g.GH200 if re.search(r"\bGH200\b", name, re.ASCII) else 0)
     return cc[0] * 10 + cc[1] + cls
 
 

@@ -46,6 +46,8 @@ pub const L4: i32 = 3000;
 pub const L40S: i32 = 4000;
 /// A GPU's class by name in its code: "PCIe" in its name in any case (an A100 PCIe, an H100 PCIe).
 pub const PCIE: i32 = 5000;
+/// A GPU's class by name in its code: "GH200" in its name as a word.
+pub const GH200: i32 = 6000;
 /// A flag added to a GPU's code for [`Library::route`]: its routes without [`Route::Split`] (where the split cannot
 /// run, or its ring is not used).
 pub const NO_SPLIT: i32 = 1 << 20;
@@ -965,8 +967,8 @@ mod tests {
             assert_eq!(Route::from_c(r as c_int).unwrap(), r);
         }
         assert_eq!(
-            (define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10"), define("GLYD_GPU_L4"), define("GLYD_GPU_L40S"), define("GLYD_GPU_PCIE"), define("GLYD_GPU_NO_SPLIT")),
-            (GEFORCE, A10, L4, L40S, PCIE, NO_SPLIT)
+            (define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10"), define("GLYD_GPU_L4"), define("GLYD_GPU_L40S"), define("GLYD_GPU_PCIE"), define("GLYD_GPU_GH200"), define("GLYD_GPU_NO_SPLIT")),
+            (GEFORCE, A10, L4, L40S, PCIE, GH200, NO_SPLIT)
         );
     }
 

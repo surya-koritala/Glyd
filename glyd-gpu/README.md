@@ -16,7 +16,7 @@ linked at build time: the crate builds anywhere, and its calls return
 built for Linux). The library also routes: `route`
 gives the kernel glyd takes for a matrix and a token count on a GPU (as
 glyd.gpu's Linears take it), `linear` runs it. `Route::Split` (an A100
-SXM's and a Hopper's long 12-bit prompts: each matrix decoded ahead on SMs
+SXM's and a GH200's long 12-bit prompts: each matrix decoded ahead on SMs
 set apart, the caller's cuBLAS on the rest) `linear` takes by the prompt
 kernel; the crate declares the ring's functions (C API 6) but does not wrap
 them yet: ask the route of the GPU's code plus `NO_SPLIT` for the routes
