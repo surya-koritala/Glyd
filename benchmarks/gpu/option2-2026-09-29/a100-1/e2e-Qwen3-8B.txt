@@ -1,0 +1,12 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 5844.20it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 24.2 tokens/s (24.2 a sequence), peak VRAM 16.40 GB
+bf16 prefill: 769 tokens 79.3 ms (9701 tokens/s), first token 82.6 ms, 1024 tokens 90.0 ms (11381 tokens/s), first token 93.2 ms, 2048 tokens 173.9 ms (11776 tokens/s), first token 176.8 ms, 4096 tokens 347.6 ms (11784 tokens/s), first token 351.0 ms, 8192 tokens 726.6 ms (11274 tokens/s), first token 735.3 ms
+mma12 fused: packed in 6 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.55 GB on 1 GPU
+glyd mma12 fused: batch 1: 25.2 tokens/s (25.2 a sequence), peak VRAM 12.56 GB
+glyd mma12 prefill: 769 tokens 95.7 ms (8034 tokens/s), first token 99.3 ms, 1024 tokens 107.8 ms (9499 tokens/s), first token 111.3 ms, 2048 tokens 197.0 ms (10398 tokens/s), first token 200.3 ms, 4096 tokens 367.6 ms (11144 tokens/s), first token 371.3 ms, 8192 tokens 759.6 ms (10785 tokens/s), first token 765.8 ms
+glyd mma12 without SPLIT prefill: 769 tokens 101.2 ms (7599 tokens/s), first token 104.7 ms, 1024 tokens 111.8 ms (9155 tokens/s), first token 115.2 ms, 2048 tokens 197.2 ms (10385 tokens/s), first token 200.5 ms, 4096 tokens 372.2 ms (11006 tokens/s), first token 375.1 ms, 8192 tokens 760.8 ms (10768 tokens/s), first token 764.0 ms
+logits bit-identical: False
+generated tokens identical to bf16: 30 of 32
+text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to transmit information over long distances, and it
+exit 0

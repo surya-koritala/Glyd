@@ -357,17 +357,19 @@ for gpu in (80, 86, 87, 89, 1086, 1089, 2086, 90, 100, 120, 1120):
     for twelve in (False, True):
         for K in (1024, 1040):
             name = "mma12_route" if twelve else "mma_route"
-            got = [lib._route(name, gpu, 512, K, M) for M in range(5001)]
+            got = [lib._route(name, gpu | g.NO_SPLIT, 512, K, M) for M in range(5001)]  # (without the route SPLIT: main's rule; SPLIT's below)
             assert [r for r, _ in got] == [main_route(gpu, twelve, K, M) for M in range(5001)], ("routes", gpu, twelve, K)
             for M, (r, last) in enumerate(got):
                 assert all(got[i][0] == r for i in range(M, min(last, 5000) + 1)) and (last >= 5000 or got[last + 1][0] != r), ("a route's last", gpu, twelve, K, M)
-            assert jit.mma12_route(gpu, 512, K, 700) == got[700] if twelve else jit.mma_route(gpu, 512, K, 700) == got[700]
+            assert jit.mma12_route(gpu | g.NO_SPLIT, 512, K, 700) == got[700] if twelve else jit.mma_route(gpu | g.NO_SPLIT, 512, K, 700) == got[700]
             looked_up += 5001
 from glyd.gpu import model as gm
 
+gm.Split.of[torch.device(dev, torch.cuda.current_device())] = False  # (the GLinears below take today's routes; the route SPLIT's own checks at the end)
 # a GPU's code: its compute capability and its class by name, alike in the library (C) and the package (Python)
 assert jit.gpu() == lib.gpu() == gm.gpu_code(torch.cuda.get_device_capability(), torch.cuda.get_device_name())
-for name, cls in (("NVIDIA A10", g.A10), ("NVIDIA A10-24GB", g.A10), ("NVIDIA A10G", 0), ("NVIDIA A100-SXM4-80GB", 0), ("NVIDIA A40", 0), ("NVIDIA RTX A6000", 0), ("NVIDIA GeForce RTX 4080 SUPER", g.GEFORCE), ("A10", g.A10), ("NVIDIA A10_X", 0)):
+for name, cls in (("NVIDIA A10", g.A10), ("NVIDIA A10-24GB", g.A10), ("NVIDIA A10G", 0), ("NVIDIA A100-SXM4-80GB", 0), ("NVIDIA A40", 0), ("NVIDIA RTX A6000", 0), ("NVIDIA GeForce RTX 4080 SUPER", g.GEFORCE), ("A10", g.A10), ("NVIDIA A10_X", 0),
+                  ("NVIDIA H100 PCIe", g.PCIE), ("NVIDIA A100-PCIE-40GB", g.PCIE), ("NVIDIA A10 PCIe", g.A10), ("NVIDIA H100 80GB HBM3", 0), ("NVIDIA GH200 480GB", 0)):
     assert gm.gpu_code((8, 6), name) == 86 + cls, (name, cls)
 here = lib.gpu()
 for O, K, wild in [(192, 128, 0), (1024, 2048, 0.001), (192, 4096, 0.1), (192, 1040, 0.01)]:
@@ -407,6 +409,62 @@ for O, K, wild in [(192, 128, 0), (1024, 2048, 0.001), (192, 4096, 0.1), (192, 1
                     assert exact(y, want), ("linear", s, O, K, M, r)
                     counts["linear, its route's kernel"] = counts.get("linear, its route's kernel", 0) + 1
 print(f"routes on 11 GPUs as main's GLinear took them; linear by this GPU's ({here}) and by each route, as the route's kernel")
+
+# The route SPLIT (option 2): its rule pinned, as the verdict set it (benchmarks/gpu/research-2026-09-29/round1): a
+# 12-bit prompt, K a multiple of 64, on an A100 (80; its PCIe, 3080) from 769 tokens (a matrix over 2 x 50 M weights to
+# 4096), on Hopper (90) from 1024, on an H100 PCIe (3090) at 1024 alone; its decode's SMs by the GPU and M; every other
+# route main's, through both hosts; GLYD_GPU_NO_SPLIT none of it. The route's 'last' as every route's.
+SPLIT_MIN, SPLIT_MAX, SPLIT_SMS = (int(os.environ.get(v, 0)) for v in ("GLYD_SPLIT_MIN", "GLYD_SPLIT_MAX", "GLYD_SPLIT_SMS"))
+
+
+def split_rule(gpu, twelve, O, K, M):
+    """The route SPLIT's decode SMs by the rule (0: another route)."""
+    cc, pcie = gpu % 1000, gpu - gpu % 1000 == g.PCIE
+    if not twelve or K % 64 or SPLIT_MIN < 0 or cc < 80:
+        return 0
+    lo = SPLIT_MIN or (769 if cc == 80 else 1024 if cc == 90 else 1 << 62)
+    hi = SPLIT_MAX or (1024 if cc == 90 and pcie else 4096 if cc == 80 and O * K > 2 * (50 << 20) else 1 << 62)
+    if not lo <= M <= hi:
+        return 0
+    if SPLIT_SMS:
+        return SPLIT_SMS
+    if cc == 80:
+        return 12 if M < 1536 else 8 if M < 3072 else 4
+    if cc == 90:
+        return 18 if pcie else 20 if M < 1536 else 12 if M < 6144 else 4
+    return 12
+
+
+pinned = 0
+for gpu in (80, 3080, 90, 3090, 86, 89, 1089, 2086, 100, 120):
+    for twelve in (False, True):
+        for O, K in ((512, 1024), (512, 1040), (131072, 1024)):  # (the last over 2 x 50 M weights)
+            name = "mma12_route" if twelve else "mma_route"
+            Ms = sorted({*range(0, 2100, 7), 767, 768, 769, 1023, 1024, 1025, 1535, 1536, 3071, 3072, 4096, 4097, 6143, 6144, 8192})
+            for M in Ms:
+                r, last = lib._route(name, gpu, O, K, M)
+                sms = split_rule(gpu, twelve, O, K, M)
+                assert (r == g.SPLIT) == (sms > 0) and (sms or r == main_route(gpu, twelve, K, M)), ("the route SPLIT's rule", gpu, twelve, O, K, M, r)
+                assert (lib.mma12_split_sms(gpu, O, K, M) == jit.mma12_split_sms(gpu, O, K, M) == sms) if twelve else True, ("the route SPLIT's SMs", gpu, O, K, M)
+                assert lib._route(name, gpu | g.NO_SPLIT, O, K, M)[0] == main_route(gpu, twelve, K, M), ("GLYD_GPU_NO_SPLIT", gpu, O, K, M)
+                if last < 1 << 62:
+                    assert lib._route(name, gpu, O, K, last)[0] == r and lib._route(name, gpu, O, K, last + 1)[0] != r, ("the route SPLIT's last", gpu, O, K, M, last)
+                pinned += 1
+print(f"the route SPLIT's rule: {pinned} routes pinned (A100 from 769, a large matrix's to 4096; Hopper from 1024, an H100 PCIe's at 1024), its SMs alike through both hosts")
+
+# Its decode, built for few SMs: every row bit for bit as the pack's (rows from 0 and a row block on; grids for 1, 3,
+# 16 and 200 SMs), through both hosts; K not a multiple of 64 refused alike.
+for O, K, wild in [(64, 64, 0), (192, 128, 0), (1024, 2048, 0.001), (192, 4096, 0.1), (3072, 5120, 0.02), (17408, 1024, 0.01)]:
+    w = weights(O * K, wild).view(O, K)
+    q = g.pack_mma12(w)
+    pk = (q.data, q.exc, q.exc_base, q.sym)
+    for sms in (1, 3, 16, 200):
+        assert exact(both("mma12_unpack_split", *pk, K, 0, O, nan(O * K), sms, out=(7,)), w), ("the route SPLIT's decode", O, K, sms)
+        if O >= 128:
+            assert exact(both("mma12_unpack_split", *pk, K, 64, O - 64, nan((O - 64) * K), sms, out=(7,)), w[64:]), ("the route SPLIT's decode, from row 64", O, K, sms)
+    print(f"the route SPLIT's decode {O}x{K}: {int(q.exc_base[-1])} exceptions, bit for bit on 1-200 SMs, the same through both")
+q = g.pack_mma12(weights(128 * 1040).view(128, 1040))
+both_fail("mma12_unpack_split", q.data, q.exc, q.exc_base, q.sym, 1040, 0, 128, nan(128 * 1040), 16, says="")
 
 # The package's one-call paths (_lib.step and _lib.lookup, as GLinear and GEmbedding call them) against the checked
 # calls: a step's (to step_max tokens), a prompt's to the decode ahead (past it: none), both layouts, bias, and an
@@ -608,6 +666,136 @@ ids = torch.randint(0, 1000, (4, 3), device=dev)
 emb = gm.GEmbedding(g.pack_fast(e))  # held: its step keeps the pack's addresses, not the pack
 assert exact(emb.step(ids), e[ids])
 counts["GEmbedding.step"] = 1
+
+# The route SPLIT's products (the library alone: the ring and PyTorch's cuBLAS; the JIT host has no ring), on this GPU's
+# SMs set apart by green contexts where they can be: each within 1e-2 of fp32 and the same bits run to run, with and
+# without a bias; W in one chunk and in several (a small slot); matrices queued and multiplied in order, one off the
+# queue, on a stream of its own; refused during a CUDA graph's capture. Then GLinear by it (made as on an A100, from 769
+# tokens): its products as the ring's, never exact's (bit for bit F.linear), and today's route where it cannot run.
+dev_ = torch.device(dev, torch.cuda.current_device())
+del gm.Split.of[dev_]
+fns = gm.Split.blas_fns()
+ring_buf = torch.empty(3 * (64 << 20), dtype=torch.uint8, device=dev)
+ring = lib.ring_create(ring_buf, 64 << 20)
+r, dsms, gsms = lib.ring_split(ring, 12)
+if r == 0 and fns:
+    ws = torch.empty(32 << 20, dtype=torch.uint8, device=dev)
+    blas = lib.Blas(None, fns["cublasGemmEx"], fns["cublasSetStream_v2"], fns["cublasGetStream_v2"], fns["cublasSetWorkspace_v2"], fns["cublasSetSmCountTarget"], fns["cublasGetSmCountTarget"], ws.data_ptr(), 32 << 20)
+    small = torch.empty(3 * (1 << 20), dtype=torch.uint8, device=dev)
+    ring_small = lib.ring_create(small, 1 << 20)  # a slot of 1 MiB: W in several chunks
+    cases = [((1024, 2048), 0.001), ((3072, 1024), 0.02), ((192, 4096), 0.1), ((4096, 512), 0.0)]
+    ws_ = [weights(O * K, wild).view(O, K) for (O, K), wild in cases]
+    qs = [g.pack_mma12(w) for w in ws_]
+    for rg, tag in ((ring, "a chunk a matrix"), (ring_small, "several chunks")):
+        for M in (65, 769, 2000):
+            xs = [torch.randn(M, w.shape[1], dtype=bf, device=dev) for w in ws_]
+            bias = [torch.randn(w.shape[0], dtype=bf, device=dev) for w in ws_]
+            for use_bias in (False, True):
+                assert lib.ring_reset(rg) == 0
+                for q in qs:  # queued in order, then multiplied in order
+                    assert lib.mma12_ring_queue(rg, 12, q.data, q.exc, q.exc_base, q.sym, *q.shape) == 0
+                outs = []
+                for rep in range(2):
+                    ys = []
+                    for q, w, x, b in zip(qs, ws_, xs, bias):
+                        y = nan(M, w.shape[0])
+                        blas.handle = torch.cuda.current_blas_handle()
+                        assert lib.mma12_ring_linear(rg, 12, q.data, q.exc, q.exc_base, q.sym, *q.shape, x, b if use_bias else None, y, blas) == 0
+                        ys.append(y)
+                    outs.append(ys)
+                for y, w, x, b in zip(outs[0], ws_, xs, bias):
+                    near(y, F.linear(x.float(), w.float(), b.float() if use_bias else None))
+                assert all(exact(a, b) for a, b in zip(*outs)), ("the route SPLIT: run to run", tag, M, use_bias)
+                counts["the route SPLIT's products (" + tag + ")"] = counts.get("the route SPLIT's products (" + tag + ")", 0) + 2 * len(qs)
+    # two layers of the same matrices queued: each chunk's decode gated by the product of the last chunk of its shape
+    # (the layer before: 5 chunks back in 4 MiB slots) in a ring of 16 slots, the same bits as a 3-slot ring's of the
+    # same chunks, whose slots gate it before that; the second layer's products the first's
+    narrow, wide = torch.empty(3 * (4 << 20), dtype=torch.uint8, device=dev), torch.empty(16 * (4 << 20), dtype=torch.uint8, device=dev)
+    ring_narrow, ring_wide = lib.ring_create(narrow, 4 << 20), lib.ring_create(wide, 4 << 20)
+    for M in (769, 2000):
+        xs = [torch.randn(M, w.shape[1], dtype=bf, device=dev) for w in ws_]
+        outs = []
+        for rg in (ring_narrow, ring_wide):
+            assert lib.ring_reset(rg) == 0
+            for q in qs + qs:
+                assert lib.mma12_ring_queue(rg, 12, q.data, q.exc, q.exc_base, q.sym, *q.shape) == 0
+            ys = []
+            for q, w, x in zip(qs + qs, ws_ + ws_, xs + xs):
+                y = nan(M, w.shape[0])
+                blas.handle = torch.cuda.current_blas_handle()
+                assert lib.mma12_ring_linear(rg, 12, q.data, q.exc, q.exc_base, q.sym, *q.shape, x, None, y, blas) == 0
+                ys.append(y)
+            outs.append(ys)
+        assert all(exact(a, b) for a, b in zip(*outs)), ("the route SPLIT: gated decodes, the 3-slot ring's bits", M)
+        assert all(exact(a, b) for a, b in zip(outs[1][:len(qs)], outs[1][len(qs):])), ("the route SPLIT: the second layer's products the first's", M)
+        for y, w, x in zip(outs[1], ws_, xs):
+            near(y, F.linear(x.float(), w.float()))
+        counts["the route SPLIT's gated decodes (two layers)"] = counts.get("the route SPLIT's gated decodes (two layers)", 0) + 2 * len(qs)
+    assert lib.ring_destroy(ring_wide) == 0 and lib.ring_destroy(ring_narrow) == 0
+    with torch.cuda.stream(torch.cuda.Stream()):  # on a stream of its own, off the queue
+        x = torch.randn(1000, 2048, dtype=bf, device=dev)
+        y = nan(1000, 1024)
+        blas.handle = torch.cuda.current_blas_handle()
+        assert lib.mma12_ring_linear(ring, 12, qs[0].data, qs[0].exc, qs[0].exc_base, qs[0].sym, 1024, 2048, x, None, y, blas) == 0
+        near(y, F.linear(x.float(), ws_[0].float()))
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    x, y = torch.randn(1000, 2048, dtype=bf, device=dev), nan(1000, 1024)
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side):
+        graph.capture_begin()
+        refused = lib.mma12_ring_linear(ring, 12, qs[0].data, qs[0].exc, qs[0].exc_base, qs[0].sym, 1024, 2048, x, None, y, blas)
+        graph.capture_end()
+    assert refused == 801, ("the route SPLIT refused in a capture: cudaErrorNotSupported", refused)
+    # GLinear by the route, made as on an A100 (its route from 769 tokens)
+    ran, run = [], gm.Split.run
+    gm.Split.run = lambda s, lin, x: (ran.append(lin.handle), run(s, lin, x))[1]
+    lins = made_as((8, 0), "NVIDIA A100-SXM4-40GB", lambda: [gm.GLinear(q, None) for q in qs])
+    exact_lins = made_as((8, 0), "NVIDIA A100-SXM4-40GB", lambda: [gm.GLinear(q, None, exact=True) for q in qs])
+    gm.set_scratch(torch.nn.ModuleList(lins + exact_lins), False)
+    for M in (768, 769, 1024, 3000):
+        xs = [torch.randn(M, w.shape[1], dtype=bf, device=dev) for w in ws_]
+        for rep in range(3):  # recorded, then followed twice: the same bits
+            ran.clear()
+            ys = [lin(x) for lin, x in zip(lins, xs)]
+            assert (len(ran) == len(lins)) == (M >= 769), ("GLinear by the route SPLIT from 769 tokens (an A100)", M, len(ran))
+            if rep == 0:
+                first = ys
+            assert all(exact(a, b) for a, b in zip(first, ys)), ("GLinear by the route SPLIT: run to run", M, rep)
+        for y, w, x in zip(ys, ws_, xs):
+            near(y, F.linear(x.float(), w.float()))
+        for lin, x, w in zip(exact_lins, xs, ws_):
+            assert exact(lin(x), F.linear(x, w)), ("exact never takes the route SPLIT", M)
+        counts["GLinear by the route SPLIT (as on an A100)"] = counts.get("GLinear by the route SPLIT (as on an A100)", 0) + 3 * len(lins)
+    # a CUDA graph capturing a prompt's product: today's route (Split.off while the stream is captured), replayed
+    x = torch.randn(1024, lins[0].in_features, dtype=bf, device=dev)
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side):
+        lins[0](x)
+    torch.cuda.current_stream().wait_stream(side)
+    graph = torch.cuda.CUDAGraph()
+    ran.clear()
+    with torch.cuda.graph(graph):
+        yg = lins[0](x)
+    graph.replay()
+    torch.cuda.synchronize()
+    assert not ran, "a captured prompt: today's route"
+    near(yg, F.linear(x.float(), ws_[0].float()))
+    counts["GLinear captured in a CUDA graph: today's route"] = 1
+    del graph
+    gm.Split.stop(dev_)  # where it cannot run: today's route (decoded, then cuBLAS), bit for bit
+    for lin, q, w in zip(lins, qs, ws_):
+        x = torch.randn(1024, w.shape[1], dtype=bf, device=dev)
+        ran.clear()
+        assert exact(lin(x), F.linear(x, g.mma_unpack(q))) and not ran, "the route SPLIT off: today's route"
+    counts["GLinear, the route SPLIT off: today's route"] = len(lins)
+    gm.Split.run = run
+    print(f"the route SPLIT: a split of {dsms} + {gsms} SMs; products within 1e-2 of fp32, the same bits run to run; GLinear by it as on an A100")
+else:
+    print(f"the route SPLIT cannot run on this GPU ({lib.error_string(r) if r else 'no cuBLAS found'}): GLinear takes today's route")
+    gm.Split.of[dev_] = False
 
 # Refused alike: too many tokens, X not 16-byte aligned, rows not a multiple of 64.
 both_fail("mma12_gemm", *pk, 128, 256, torch.randn(65, 256, dtype=bf, device=dev), none, nan(65, 128))

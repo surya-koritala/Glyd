@@ -252,7 +252,7 @@ def test_c_header():
     it imports torch."""
     gpu = os.path.join(HERE, "..", "..", "gpu")
     h = re.sub(r"/\*.*?\*/", "", open(os.path.join(gpu, "glyd_gpu.h")).read(), flags=re.S)
-    names = {"_P", "_I64", "_U64", "_SZ", "_W", "_PACK", "_FAST", "_DENSE", "_ARGS", "_SIZES", "_PLAIN", "API_VERSION", "BIG"}
+    names = {"_P", "_I64", "_U64", "_SZ", "_W", "_PACK", "_FAST", "_DENSE", "_ARGS", "_SIZES", "_PLAIN", "_RING", "API_VERSION", "BIG"}
     body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "_lib.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= names]
     lib = {"ctypes": ctypes}
     exec(compile(ast.Module(body, []), "_lib.py", "exec"), lib)
@@ -268,20 +268,140 @@ def test_c_header():
     called = {f"glyd_gpu_{n}": ("int", a + [P]) for n, a in lib["_ARGS"].items()}
     called.update({f"glyd_gpu_{n}_workspace": ("int", [c.c_int64] * k + [c.POINTER(c.c_size_t)]) for n, k in lib["_SIZES"].items()})
     called.update({f"glyd_gpu_{n}": ("int", a) for n, a in lib["_PLAIN"].items()})  # (no stream: the routes)
+    called.update({f"glyd_gpu_{n}": ("int", a) for n, a in lib["_RING"].items()})  # (the route SPLIT's ring: each list whole)
     called.update(glyd_gpu_api_version=("int", []), glyd_gpu_cuda_version=("int", []), glyd_gpu_error_string=("const char*", [c.c_int]))
     assert declared == called, [n for n in sorted(set(declared) | set(called)) if declared.get(n) != called.get(n)]
     assert int(re.search(r"#define GLYD_GPU_API_VERSION (\d+)", h).group(1)) == lib["API_VERSION"], "GLYD_GPU_API_VERSION is not _lib.py's API_VERSION"
     # the routes' numbers and a GPU's classes: kernels.py's and _lib.py's the header's
     defines = {k: int(v) for k, v in re.findall(r"#define (GLYD_GPU_\w+) (\d+)", h)}
     kern = {}
-    names = {"DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD", "GEFORCE", "A10"}
+    names = {"DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD", "SPLIT", "GEFORCE", "A10", "PCIE", "NO_SPLIT"}
     body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "kernels.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= names]
     exec(compile(ast.Module(body, []), "kernels.py", "exec"), kern)
-    for r in ("DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD"):
+    for r in ("DECODE", "GEMM", "MID", "WG", "BIG", "AHEAD", "SPLIT"):
         assert kern[r] == defines[f"GLYD_GPU_ROUTE_{r}"], r
-    assert lib["BIG"] == defines["GLYD_GPU_ROUTE_BIG"] and (kern["GEFORCE"], kern["A10"]) == (defines["GLYD_GPU_GEFORCE"], defines["GLYD_GPU_A10"])
+    assert lib["BIG"] == defines["GLYD_GPU_ROUTE_BIG"] and (kern["GEFORCE"], kern["A10"], kern["PCIE"], kern["NO_SPLIT"]) == (defines["GLYD_GPU_GEFORCE"], defines["GLYD_GPU_A10"], defines["GLYD_GPU_PCIE"], defines["GLYD_GPU_NO_SPLIT"])
     cu = open(os.path.join(gpu, "glyd_gpu.cu")).read()
     assert set(re.findall(r"GLYD_GPU_API [^(]*?(glyd_gpu_\w+)\(", cu)) == set(declared), "glyd_gpu.cu's C API is not glyd_gpu.h's"
+
+
+def test_split_route():
+    """The route SPLIT (option 2) through the library where it and a GPU are here (else skipped): its rule's pins (an
+    A100 from 769 tokens, a matrix over 2 x 50 M weights to 4096; Hopper from 1024; an H100 PCIe's at 1024 alone; its
+    decode's SMs), GLYD_GPU_NO_SPLIT today's routes; a GLinear made as on an A100 by it at 1024 tokens: within 1e-2 of
+    fp32 and the same bits run to run, its decode bit for bit the pack's, exact bit for bit F.linear, and today's route
+    (decoded, then cuBLAS) where the route cannot run."""
+    torch = cuda()
+    if torch is None:
+        print("  (no GPU: skipped)")
+        return
+    import torch.nn.functional as F
+    from glyd.gpu import kernels as g, model as gm
+
+    if g.lib() is None:
+        print("  (no library: skipped)")
+        return
+    if any(os.environ.get(v) for v in ("GLYD_SPLIT_MIN", "GLYD_SPLIT_MAX", "GLYD_SPLIT_SMS")):
+        print("  (GLYD_SPLIT_* set: pins skipped)")
+    else:
+        w = (torch.randn(512, 1024, device="cuda") * 0.02).to(torch.bfloat16)
+        q = g.pack_mma12(w)
+        big = g.Mma12((131072, 1024), q.data, q.exc, q.exc_base, q.hb)  # (its shape alone read by the routes)
+        for gpu, M, route, sms in [(80, 768, g.BIG, 0), (80, 769, g.SPLIT, 12), (80, 1536, g.SPLIT, 8), (80, 8192, g.SPLIT, 4), (3080, 769, g.SPLIT, 12),
+                                   (90, 1023, g.WG, 0), (90, 1024, g.SPLIT, 20), (90, 2048, g.SPLIT, 12), (90, 6144, g.SPLIT, 4), (3090, 1024, g.SPLIT, 18),
+                                   (3090, 1025, g.DECODE, 0), (86, 4096, g.BIG, 0), (89, 4096, g.BIG, 0)]:
+            assert g.route(q, gpu, M)[0] == route and g.split_sms(q, gpu, M) == sms, (gpu, M)
+        assert g.route(big, 80, 4096)[0] == g.SPLIT and g.route(big, 80, 4097)[0] == g.DECODE and g.route(big, 90, 8192)[0] == g.SPLIT
+        assert g.route(q, 80 | g.NO_SPLIT, 1024)[0] == g.DECODE and g.route(q, 90 | g.NO_SPLIT, 1024)[0] == g.WG
+        assert g.route(g.pack_mma(w), 80, 1024)[0] == g.BIG  # (the tiered layout's: never)
+    torch.manual_seed(0)
+    w = (torch.randn(3072, 2048, device="cuda") * 0.02).to(torch.bfloat16)
+    q = g.pack_mma12(w)
+    assert torch.equal(g.mma_unpack_split(q, 16).view(torch.int16), w.view(torch.int16)), "the route SPLIT's decode: the pack's bits"
+    cap, name = torch.cuda.get_device_capability, torch.cuda.get_device_name
+    torch.cuda.get_device_capability, torch.cuda.get_device_name = lambda device=None: (8, 0), lambda device=None: "NVIDIA A100-SXM4-40GB"
+    try:
+        lin, ex = gm.GLinear(q, None), gm.GLinear(q, None, exact=True)
+    finally:
+        torch.cuda.get_device_capability, torch.cuda.get_device_name = cap, name
+    gm.set_scratch(torch.nn.ModuleList([lin, ex]), False)
+    x = torch.randn(1024, 2048, dtype=torch.bfloat16, device="cuda")
+    ys = [lin(x) for _ in range(3)]
+    d = w.device
+    if gm.Split.of.get(d) is False:
+        print("  (the route SPLIT cannot run on this GPU: its fallback alone checked)")
+    ref = F.linear(x.float(), w.float())
+    assert ((ys[0].float() - ref).abs().max() / ref.abs().max()).item() < 1e-2
+    assert all(torch.equal(y.view(torch.int16), ys[0].view(torch.int16)) for y in ys), "the route SPLIT: the same bits run to run"
+    assert torch.equal(ex(x).view(torch.int16), F.linear(x, w).view(torch.int16)), "exact never takes the route SPLIT"
+    was = gm.Split.of.get(d)
+    gm.Split.of[d] = False
+    try:
+        assert torch.equal(lin(x).view(torch.int16), F.linear(x, g.mma_unpack(q)).view(torch.int16)), "the route SPLIT off: today's route"
+    finally:
+        if was is None:
+            del gm.Split.of[d]
+        else:
+            gm.Split.of[d] = was
+
+
+def test_split_order():
+    """The route SPLIT's order (model.Split.follow, taken from model.py with no torch, its queue faked): recorded from a
+    prompt, then one queue a prompt; where the Linears that take the route change with the prompt's length (an A100's
+    biggest matrices to 4096 tokens alone), the queue leaves out those that do not, and the order takes in those it
+    lacks (a queue again from each such one, that prompt alone)."""
+    tree = ast.parse(open(os.path.join(HERE, "glyd", "gpu", "model.py")).read())
+    split = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Split")
+    ns = {}
+    top = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("ring_chunks", "ring_slot", "ring_plan") or isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "SPLIT_SLOT" for t in n.targets)]
+    exec(compile(ast.Module(top + [n for n in split.body if isinstance(n, ast.FunctionDef) and n.name == "follow"], []), "model.py", "exec"), ns)
+
+    class Fake:
+        follow = ns["follow"]
+
+        def __init__(self):
+            self.order, self.rec, self.run_, self.pos, self.at = None, [], [], 0, -1
+
+        def plan(self):
+            pass
+
+        def top_up(self, sms):
+            return 0
+
+        def start(self, M, sms, i):  # as Split.start: the order's Linears from its i-th on that take the route now
+            self.starts += 1
+            self.run_, self.pos = [j for j in range(i, len(self.order)) if self.order[j] in self.takes], 0
+            return 0
+
+    def prompt(s, calls):  # the queues a prompt's calls made (the Linears that take the route: calls)
+        s.takes, s.starts = set(calls), 0
+        for h in calls:
+            assert s.follow(h, 1024, 12) == 0
+        return s.starts
+
+    full = ["qkv0", "o0", "gate_up0", "down0", "qkv1", "o1", "gate_up1", "down1"]
+    short = [h for h in full if not h.startswith("gate_up")]
+    s = Fake()
+    assert prompt(s, full) == 0 and s.rec == full, "recorded"
+    assert [prompt(s, full) for _ in range(2)] == [1, 1] and s.order == full, "followed"
+    assert [prompt(s, short) for _ in range(2)] == [1, 1], "the queue leaves out those that do not take the route"
+    assert prompt(s, full) == 1, "and takes them again"
+    s = Fake()
+    prompt(s, short)
+    assert [prompt(s, short), prompt(s, full), prompt(s, full), prompt(s, short)] == [1, 3, 1, 1] and s.order == full, "the order takes in those it lacks"
+    # the ring (ring_slot, ring_plan): Qwen3-8B's layers merged (q k v, gate up) in 100 MiB slots, gate up in two
+    # chunks, a layer's 5 chunks ahead, its lm_head (once) not setting the slot; not merged, the gap to the last of a
+    # shape up to 7; 14B's in slots of half its gate up; Qwen3-0.6B's matrices whole
+    assert ns["ring_chunks"](24576, 4096, 100 << 20) == [(0, 12288), (12288, 12288)]
+    layer = [(6144, 4096), (4096, 4096), (24576, 4096), (4096, 12288)]
+    assert ns["ring_slot"](layer * 36) == ns["ring_slot"](layer * 36 + [(151936, 4096)]) == 100 << 20
+    assert ns["ring_plan"](layer * 36, 100 << 20) == (6, 6)
+    loose = [(4096, 4096), (1024, 4096), (1024, 4096), (4096, 4096), (12288, 4096), (12288, 4096), (4096, 12288)] * 36
+    assert ns["ring_slot"](loose) == 12288 * 4096 * 2 and ns["ring_plan"](loose, 12288 * 4096 * 2) == (8, 9)
+    big = [(7168, 5120), (5120, 5120), (34816, 5120), (5120, 17408)] * 40
+    assert ns["ring_slot"](big) == 17408 * 5120 * 2 and ns["ring_plan"](big, 17408 * 5120 * 2) == (6, 6)
+    small = [(4096, 1024), (1024, 2048), (6144, 1024), (1024, 3072)] * 28
+    assert ns["ring_slot"](small) == 6144 * 1024 * 2 and ns["ring_plan"](small, 6144 * 1024 * 2) == (5, 6)
 
 
 def test_names_defined_once():
@@ -307,19 +427,20 @@ def test_gpu_class_by_name():
     cu, h = open(os.path.join(gpu, "glyd_gpu.cu")).read(), open(os.path.join(gpu, "glyd_gpu.h")).read()
     a = cu.index("static bool has_word(")
     b = cu.index("\n", cu.index("static int gpu_class("))
-    classes = re.findall(r"#define (GLYD_GPU_(?:GEFORCE|A10)) (\d+)", h)
-    assert len(classes) == 2
+    classes = re.findall(r"#define (GLYD_GPU_(?:GEFORCE|A10|PCIE)) (\d+)", h)
+    assert len(classes) == 3
     prog = "#include <cctype>\n#include <cstdio>\n#include <cstring>\n" + "".join(f"#define {k} {v}\n" for k, v in classes) + cu[a:b]
     prog += '\nint main() { char s[512]; while (fgets(s, sizeof s, stdin)) { s[strcspn(s, "\\n")] = 0; printf("%d\\n", gpu_class(s)); } }\n'
     tree = ast.parse(open(os.path.join(HERE, "glyd", "gpu", "model.py")).read())
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "gpu_code")
     kern = {}
-    body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "kernels.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= {"GEFORCE", "A10"}]
+    body = [n for n in ast.parse(open(os.path.join(HERE, "glyd", "gpu", "kernels.py")).read()).body if isinstance(n, ast.Assign) and {x.id for t in n.targets for x in ast.walk(t) if isinstance(x, ast.Name)} <= {"GEFORCE", "A10", "PCIE"}]
     exec(compile(ast.Module(body, []), "kernels.py", "exec"), kern)
-    py = {"re": re, "g": types.SimpleNamespace(GEFORCE=kern["GEFORCE"], A10=kern["A10"])}
+    py = {"re": re, "g": types.SimpleNamespace(GEFORCE=kern["GEFORCE"], A10=kern["A10"], PCIE=kern["PCIE"])}
     exec(compile(ast.Module([fn], []), "model.py", "exec"), py)
     names = ["NVIDIA A10", "NVIDIA A10-24GB", "NVIDIA A10G", "NVIDIA A100-SXM4-80GB", "NVIDIA A40", "NVIDIA RTX A6000", "NVIDIA GeForce RTX 4080 SUPER", "A10", "NVIDIA A10_X",
-             "NVIDIA A16", "NVIDIA A2", "NVIDIA A10 PCIe", "A10 A10G", "A10G A10", "xA10", "A10x", "A10M", "NVIDIA GeForce A10", "(A10)", "A10.", "A10é", "éA10", "A10\u00a0", "", "NVIDIA H100 80GB HBM3"]
+             "NVIDIA A16", "NVIDIA A2", "NVIDIA A10 PCIe", "A10 A10G", "A10G A10", "xA10", "A10x", "A10M", "NVIDIA GeForce A10", "(A10)", "A10.", "A10é", "éA10", "A10\u00a0", "", "NVIDIA H100 80GB HBM3",
+             "NVIDIA H100 PCIe", "NVIDIA A100-PCIE-40GB", "pcie", "PCI", "PCIé", "xPCIEx", "NVIDIA GH200 480GB", "NVIDIA GeForce RTX 4090 PCIe"]
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "cls.cpp"), "w") as f:
             f.write(prog)
@@ -329,10 +450,11 @@ def test_gpu_class_by_name():
     want = {n: py["gpu_code"]((8, 6), n) - 86 for n in names}
     assert len(out) == len(names) and got == want, [(n, got.get(n), want[n]) for n in names if got.get(n) != want[n]]
     assert (want["NVIDIA A10"], want["NVIDIA A10G"], want["NVIDIA GeForce RTX 4080 SUPER"]) == (kern["A10"], 0, kern["GEFORCE"])
+    assert (want["NVIDIA H100 PCIe"], want["NVIDIA A100-PCIE-40GB"], want["NVIDIA A10 PCIe"], want["NVIDIA GH200 480GB"]) == (kern["PCIE"], kern["PCIE"], kern["A10"], 0)
 
 
 def test_route_env():
-    """The library's route variables (GLYD_WG_MIN, GLYD_WG_MAX, GLYD_MID_MIN, GLYD_DEC_MIN) as it reads them (glyd_gpu.cu's
+    """The library's route variables (GLYD_WG_MIN, GLYD_WG_MAX, GLYD_MID_MIN, GLYD_DEC_MIN, GLYD_SPLIT_*) as it reads them (glyd_gpu.cu's
     route_mins parse, compiled here alone with the host's C++ compiler) and as the package holds them at import
     (model.route_env, taken from model.py with no torch): where the library reads a number, the package takes the same
     one; where it would take the value as unset, the package refuses it (ValueError), as glyd 0.24 did at int() (skipped

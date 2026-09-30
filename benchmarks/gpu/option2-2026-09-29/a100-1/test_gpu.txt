@@ -1,0 +1,16 @@
+test_fit_as_the_site ok
+test_fit_a_directory ok
+test_kv_cache ok
+test_manifest_and_names ok
+test_check_files ok
+test_c_header ok
+Traceback (most recent call last):
+  File "/home/ubuntu/o2w/src/bindings/python/test_gpu.py", line 992, in <module>
+    test()
+  File "/home/ubuntu/o2w/src/bindings/python/test_gpu.py", line 309, in test_split_route
+    big = g.Mma12((131072, 1024), q.data, q.exc, q.exc_base, q.sym)  # (its shape alone read by the routes)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/o2w/src/bindings/python/glyd/gpu/kernels.py", line 422, in __init__
+    raise ValueError(f"a 12-bit pack's base hb {hb!r}: an int 0-120")
+ValueError: a 12-bit pack's base hb [909522486, 0, 0, 0]: an int 0-120
+exit 1

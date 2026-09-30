@@ -143,11 +143,16 @@ int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc, const int32
 
 /* Rows [row0, row0 + rows) of W (multiples of 64) back to bf16, into out
  * [rows, K]. warps 0: a warp a step; else that many warps in all, each taking
- * every so many steps (a decode beside a product on another stream). */
+ * every so many steps (a decode beside a product on another stream). Also,
+ * 12-bit: the route SPLIT's decode (K a multiple of 64, out 16-byte
+ * aligned), built for the few SMs a green context sets apart for it: a grid
+ * for sms SMs (glyd_gpu_ring_* below run it on theirs). */
 int glyd_gpu_mma_unpack(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3],
                         int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs);
 int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
                           int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs);
+int glyd_gpu_mma12_unpack_split(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
+                                int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t sms, cudaStream_t cs);
 
 /* Stream cs held ns nanoseconds by one thread: a decode launched after it
  * there starts once a product launched with it on another stream has placed
@@ -163,8 +168,11 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
  * compute capability does not tell GPUs apart: GLYD_GPU_GEFORCE with
  * "GeForce" in its name, GLYD_GPU_A10 with "A10" in it as a word (between
  * characters that are not ASCII letters, digits or '_': an A10, not an A10G,
- * A100 or A40), else none. 1089: an RTX 40; 2086: an A10; 86: an A10G, A40
- * or RTX A6000; 80: an A100; 90: an H100.
+ * A100 or A40), GLYD_GPU_PCIE with "PCIe" in it in any case, else none.
+ * 1089: an RTX 40; 2086: an A10; 86: an A10G, A40 or RTX A6000; 80: an A100
+ * SXM4; 3080: an A100 PCIe; 90: an H100 SXM, H200 or GH200; 3090: an H100
+ * PCIe. GLYD_GPU_NO_SPLIT added to a code: its routes where the route SPLIT
+ * cannot run (no green contexts, a CUDA graph being captured).
  * ---------------------------------------------------------------------- */
 #define GLYD_GPU_ROUTE_DECODE 0 /* W decoded (glyd_gpu_*_unpack), then the caller's GEMM */
 #define GLYD_GPU_ROUTE_GEMM 1   /* glyd_gpu_mma_gemm, glyd_gpu_mma12_gemm */
@@ -172,8 +180,11 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
 #define GLYD_GPU_ROUTE_WG 3     /* glyd_gpu_mma12_gemm_wg */
 #define GLYD_GPU_ROUTE_BIG 4    /* glyd_gpu_mma_gemm_big, glyd_gpu_mma12_gemm_big: variant 0 */
 #define GLYD_GPU_ROUTE_AHEAD 5  /* DECODE, W decoded ahead beside the products before it (GeForce Ada's, an A10's prompts) */
+#define GLYD_GPU_ROUTE_SPLIT 6  /* 12-bit: W decoded ahead on SMs set apart, the caller's cuBLAS on the rest (glyd_gpu_mma12_ring_linear) */
 #define GLYD_GPU_GEFORCE 1000   /* a GPU's class: "GeForce" in its name */
 #define GLYD_GPU_A10 2000       /* a GPU's class: "A10" in its name as a word */
+#define GLYD_GPU_PCIE 3000      /* a GPU's class: "PCIe" in its name */
+#define GLYD_GPU_NO_SPLIT 1048576 /* a flag in a GPU's code (1 << 20): the routes without SPLIT */
 
 /* The current device's GPU as the routes take it: its code. */
 int glyd_gpu_gpu(int* gpu);
@@ -188,6 +199,15 @@ int glyd_gpu_gpu(int* gpu);
  * an A100's from 769. */
 int glyd_gpu_mma_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
 int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
+/* The route SPLIT's SMs for the decode, where the route is SPLIT (else 0): a
+ * 12-bit prompt decoded ahead on SMs set apart (green contexts), cuBLAS on
+ * the rest, where that beat the routes before it (gpu/README.md): an A100's
+ * from 769 tokens (a matrix over 2 x 50 M weights to 4096), Hopper's from
+ * 1024 (an H100 PCIe's at 1024 alone); the decode's SMs 4 to 20 by the GPU
+ * and M. GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset: the GPU's; a negative
+ * GLYD_SPLIT_MIN: never) and GLYD_SPLIT_SMS move them, on any GPU from
+ * Ampere, read as the routes' others. K a multiple of 64. */
+int glyd_gpu_mma12_split_sms(int64_t gpu, int64_t O, int64_t K, int64_t M, int64_t* sms);
 
 /* Y [M, O] = X W^T (+ bias) by a route (negative: the current GPU's for M):
  * its kernel, its arguments as that kernel's; DECODE and AHEAD by the prompt
@@ -209,6 +229,76 @@ int glyd_gpu_mma12_linear_workspace(int64_t O, int64_t K, int64_t M, int64_t rou
 int glyd_gpu_mma12_linear(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
                           int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,
                           int64_t route, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs);
+
+/* ------------------------------------------------------------------------
+ * The route SPLIT: a prompt's matrices decoded ahead, into a ring of slots in
+ * the caller's device memory, on SMs set apart for the decode by the
+ * driver's green contexts, while the caller's cuBLAS multiplies from the ring
+ * on the rest (told its SMs), the two sides ordered by events (the host never
+ * waits). A matrix is decoded in row chunks of at most a slot, a slot a chunk
+ * as slots come free, the matrices in the order queued, each chunk's decode
+ * once the product of the last chunk of its shape queued before it has
+ * started (in a model's order: the same matrix of the layer before), so that
+ * the decodes run beside the products, not beside the kernels between them
+ * (norms, activations, attention), whose memory bandwidth they took; give the
+ * ring slots for a layer's chunks and one. Queue a prompt's matrices as its
+ * first product starts (or a few ahead of its products as they go), then call
+ * each product; a product whose matrix is not next in the queue drops it and
+ * decodes its own, chunk by chunk, beside its products. Its products are cuBLAS's own on the
+ * decoded bf16 (a row chunk a call): not bit for bit a whole-matrix product.
+ * A ring serves one host thread and one device (the current one when made);
+ * cudaErrorNotSupported where the split cannot run (a driver before CUDA
+ * 12.4, one that refuses the split: MIG, MPS; stream cs being captured into
+ * a CUDA graph): take the route the code with GLYD_GPU_NO_SPLIT gives.
+ * ---------------------------------------------------------------------- */
+typedef struct glyd_gpu_ring glyd_gpu_ring;
+
+/* The caller's cuBLAS, which the library does not link: a handle and its
+ * functions (the calls' own types, int for their enums and status; get_* and
+ * set_workspace may be NULL). A call sets the handle's stream to the ring's
+ * product stream, its workspace to workspace (where given: the ring's stream
+ * alone uses it) and its SM count target to the products' SMs, and puts back
+ * the stream and target it had where get_stream and get_sm_count_target are
+ * given. A cuBLAS status s is returned as GLYD_GPU_BLAS_ERROR + s. */
+typedef struct glyd_gpu_blas {
+    void* handle; /* cublasHandle_t */
+    int (*gemm_ex)(void* handle, int transa, int transb, int m, int n, int k, const void* alpha, const void* A, int Atype, int lda,
+                   const void* B, int Btype, int ldb, const void* beta, void* C, int Ctype, int ldc, int computeType,
+                   int algo); /* cublasGemmEx */
+    int (*set_stream)(void* handle, cudaStream_t stream);           /* cublasSetStream */
+    int (*get_stream)(void* handle, cudaStream_t* stream);          /* cublasGetStream */
+    int (*set_workspace)(void* handle, void* workspace, size_t bytes); /* cublasSetWorkspace */
+    int (*set_sm_count_target)(void* handle, int sms);              /* cublasSetSmCountTarget */
+    int (*get_sm_count_target)(void* handle, int* sms);             /* cublasGetSmCountTarget */
+    void* workspace;
+    size_t workspace_bytes;
+} glyd_gpu_blas;
+#define GLYD_GPU_BLAS_ERROR 10000
+
+/* A ring over buffer (bytes long, 16-byte aligned) in slots of slot_bytes (a
+ * multiple of 256; 3 to 16 of them), on the current device. */
+int glyd_gpu_ring_create(void* buffer, size_t bytes, size_t slot_bytes, glyd_gpu_ring** ring);
+/* Its streams waited for, its green contexts let go. */
+int glyd_gpu_ring_destroy(glyd_gpu_ring* ring);
+/* The split for a decode of sms SMs (glyd_gpu_mma12_split_sms's): made where
+ * it is not yet (a green context of the remaining SMs, a co-scheduled group,
+ * for the products; the decode's of the SMs left) and kept; the SMs each side
+ * has. */
+int glyd_gpu_ring_split(glyd_gpu_ring* ring, int64_t sms, int64_t* decode_sms, int64_t* product_sms);
+/* The queue dropped: stream cs waits for everything the ring has queued. */
+int glyd_gpu_ring_reset(glyd_gpu_ring* ring, cudaStream_t cs);
+/* W [O, K] queued after the matrices before it, decoded on the split of sms
+ * SMs as slots come free (the queue's split: a queue's matrices share one). */
+int glyd_gpu_mma12_ring_queue(glyd_gpu_ring* ring, int64_t sms, const uint8_t* data, const uint32_t* exc,
+                              const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K);
+/* Y [M, O] = X W^T (+ bias) by W's chunks from the ring (decoded ahead where
+ * W is next in the queue, else queued alone now), each multiplied by cuBLAS
+ * on the split's product stream (bf16, fp32 sums; a bias written into Y
+ * first, then added by cuBLAS); X taken once the work queued on cs before is
+ * done, and cs waits for Y. x and y 16-byte aligned, rows of K and O. */
+int glyd_gpu_mma12_ring_linear(glyd_gpu_ring* ring, int64_t sms, const uint8_t* data, const uint32_t* exc,
+                               const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x,
+                               int64_t M, const uint16_t* bias, uint16_t* y, const glyd_gpu_blas* blas, cudaStream_t cs);
 
 /* ------------------------------------------------------------------------
  * Mixtures of experts: a layer's E experts' matrices [O, K] as one pack

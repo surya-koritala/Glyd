@@ -18,6 +18,7 @@ GLinear and GEmbedding is one node of the graph (glyd::linear,
 glyd::embedding), run as eager, and CUDA graphs capture its kernels.
 """
 import copy
+import ctypes
 import functools
 import gc
 import hashlib
@@ -57,7 +58,7 @@ SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 # Qwen3-1.7B's fused pass is the faster but at 1280, Qwen3-4B-Instruct-2507's but at 1664, Qwen3-8B's at 1024, 1408
 # and 1536 alone (1.0-4.6% slower at the other six); at 1793-2047 Qwen3-1.7B's is 3.5-4.0% faster, Qwen3-4B's
 # 1.8-3.1% and Qwen3-8B's 0.7-4.3% slower.
-ROUTE_ENV = ("GLYD_WG_MIN", "GLYD_WG_MAX", "GLYD_MID_MIN", "GLYD_DEC_MIN")  # the library's (glyd_gpu.h): read once, at its first route
+ROUTE_ENV = ("GLYD_WG_MIN", "GLYD_WG_MAX", "GLYD_MID_MIN", "GLYD_DEC_MIN", "GLYD_SPLIT_MIN", "GLYD_SPLIT_MAX", "GLYD_SPLIT_SMS")  # the library's (glyd_gpu.h): read once, at its first route
 
 
 def route_env(environ=os.environ):
@@ -292,6 +293,243 @@ class Ahead:
         return y
 
 
+SPLIT_SLOT = 100 << 20  # a ring slot's bytes: 100 MiB (as measured), a matrix of up to that whole, else half of it where that is more
+SPLIT_WS = 32 << 20  # the products' cuBLAS workspace on the ring's stream
+SPLIT_ROOM = 1 << 30  # memory the ring leaves free on its device
+
+
+def ring_chunks(O, K, slot):
+    """W [O, K]'s row chunks in ring slots of slot bytes, (row0, rows) each: as glyd_gpu.cu's ring_queue cuts them."""
+    per = max(64, min(O, slot // (2 * K) // 64 * 64))
+    n = -(-O // per)
+    rows = (-(-O // n) + 63) // 64 * 64
+    return [(r0, min(rows, O - r0)) for r0 in range(0, O, rows)]
+
+
+def ring_slot(shapes):
+    """A ring slot's bytes for matrices of these shapes (a device's 12-bit Linears): the largest that comes again among
+    them (a layer's), whole where it is at most 100 MiB, else half of it, at least 100 MiB (fewer, wider products). A
+    device's ring keeps it: every product of a matrix is cut in the same row chunks, the same cuBLAS calls, the same bits
+    on every prompt (the order's recording and every schedule after)."""
+    again = [sh for sh in set(shapes) if shapes.count(sh) > 1] or shapes or [(64, 64)]
+    O, K = max(again, key=lambda sh: sh[0] * sh[1])
+    slot = O * K * 2 if O * K * 2 <= SPLIT_SLOT else max(SPLIT_SLOT, ((O + 1) // 2 + 63) // 64 * 64 * K * 2)
+    return (slot + 255) // 256 * 256
+
+
+def ring_plan(shapes, slot):
+    """The ring for an order of matrices (their shapes) in slots of slot bytes: (slots, how many matrices to keep queued
+    past the next product). As many slots as a chunk's decode needs to wait for its gate alone (the product of the last
+    chunk of its shape before it: a layer's chunks ahead) and never for a slot, 3 to 16; a layer's matrices and two
+    queued."""
+
+    def gap(keys):  # the most keys between one and the last of its kind before it
+        last, most = {}, 1
+        for i, k in enumerate(keys):
+            most, last[k] = max(most, i - last.get(k, i)), i
+        return most
+
+    return max(3, min(16, gap([(sh, c) for sh in shapes for c in ring_chunks(*sh, slot)]) + 1)), gap(shapes) + 2
+
+
+class Split:
+    """The route SPLIT (glyd_gpu.h; option 2): a 12-bit prompt's products (an A100's from 769 tokens, Hopper's from
+    1024, an H100 PCIe's at 1024) with each matrix decoded ahead into a ring of slots on SMs set apart by the driver's
+    green contexts, while cuBLAS multiplies from the ring on the others, told how many (cublasSetSmCountTarget on
+    PyTorch's own handle, with a workspace of the ring's for its stream), the two ordered by events, never the host.
+    A chunk's decode waits for the product of the last chunk of its shape before it to start (the same matrix of the
+    layer before), so that it runs beside the products and not beside the norms, activations and attention between
+    them, whose memory bandwidth it took; the ring has slots for a layer's chunks ahead (plan). The order: recorded
+    from a prompt (the Linears it calls by this route, until the first comes again), then, from its first product on,
+    the order's matrices that take the route at the prompt's length queued a few ahead of the products; a call off the
+    order queues again from there (a Linear the order lacks put in). Its products are cuBLAS's own on the decoded bf16,
+    a row chunk a call: not bit for bit a whole-matrix product, so exact never takes it. Where it cannot run (the kernels
+    are the JIT build's, not the prebuilt library's; a driver without green contexts, before CUDA 12.4; MIG or MPS
+    refusing the split; no cublasSetSmCountTarget on Hopper, where cuBLAS untold ran 1.3-1.4x slower; too little memory
+    for the ring; a CUDA graph being captured, or a torch.compile graph's node: its streams and events are not the
+    graph's) the Linear takes the route the library gives without it (GLYD_GPU_NO_SPLIT): today's, never an error. A
+    compiled generate() runs its prompt eager, as before: the route there; its captured steps are far below it."""
+
+    of = {}  # {device: Split, or False where it cannot run}
+    _blas = None  # PyTorch's cuBLAS: its functions' addresses (or False)
+
+    @staticmethod
+    def off(d):
+        """Whether a call on device d now takes the route without SPLIT."""
+        return Split.of.get(d) is False or _lib.local.fresh or g.lib() is None or torch.cuda.is_current_stream_capturing()
+
+    @staticmethod
+    def blas_fns():
+        """cublasGemmEx and the handle calls the ring makes, from the cuBLAS PyTorch loaded ({name: address}), else
+        None (a cuBLAS without cublasSetSmCountTarget: its address None)."""
+        if Split._blas is None:
+            Split._blas = False
+            try:
+                torch.cuda.current_blas_handle()  # PyTorch's cuBLAS loaded, its handle made
+                path = next(line.split(None, 5)[5].strip() for line in open("/proc/self/maps") if "/libcublas.so" in line)
+                lib = ctypes.CDLL(path)
+                names = ("cublasGemmEx", "cublasSetStream_v2", "cublasGetStream_v2", "cublasSetWorkspace_v2", "cublasSetSmCountTarget", "cublasGetSmCountTarget")
+                Split._blas = {n: ctypes.cast(getattr(lib, n), ctypes.c_void_p).value if hasattr(lib, n) else None for n in names}
+            except (OSError, StopIteration, RuntimeError):
+                pass
+        return Split._blas or None
+
+    @staticmethod
+    def product(lin, x):
+        """lin's product for x [M, K] (contiguous) by the route SPLIT on its device, or None where it cannot run there
+        (Split.of[d] False from then on: the route without it)."""
+        d = lin.p.sm.device
+        s = Split.of.get(d)
+        if s is None:
+            s = Split.of[d] = Split.make(d)
+        if not s:
+            return None
+        if _lib._device() != d.index:
+            with torch.cuda.device(d):
+                return s.run(lin, x)
+        return s.run(lin, x)
+
+    @staticmethod
+    def make(d):
+        """The device's ring (its slot size from the device's 12-bit Linears, ring_slot, kept; three slots while the
+        order is recorded), or False (with a warning) where it cannot run there."""
+        why = None
+        fns = Split.blas_fns()
+        slot = ring_slot([m.p.shape for m in list(_modules.values()) if isinstance(m, GLinear) and isinstance(m.p, g.Mma12) and m.p.sm.device == d])
+        free = torch.cuda.mem_get_info(d)[0]
+        if 3 * slot + SPLIT_WS + SPLIT_ROOM > free:
+            slot = min(slot, SPLIT_SLOT)
+        if fns is None or fns["cublasGemmEx"] is None or fns["cublasSetStream_v2"] is None:
+            why = "PyTorch's cuBLAS not found"
+        elif fns["cublasSetSmCountTarget"] is None and torch.cuda.get_device_capability(d)[0] >= 9:
+            why = "no cublasSetSmCountTarget in PyTorch's cuBLAS (Hopper's products need it)"
+        elif 3 * slot + SPLIT_WS + SPLIT_ROOM > free:
+            why = f"no room for its ring ({3 * slot >> 20} MiB at least)"
+        else:
+            try:
+                with torch.cuda.device(d):
+                    return Split(d, fns, slot)
+            except RuntimeError as e:
+                why = str(e)
+        warnings.warn(f"glyd: the route SPLIT cannot run on {torch.cuda.get_device_name(d)} ({why}): its prompts take the route without it")
+        return False
+
+    def __init__(self, d, fns, slot):
+        self.d, self.ring, self.slot, self.slots = d, None, 0, 0
+        self.ws = torch.empty(SPLIT_WS, dtype=torch.uint8, device=d)
+        self.blas = _lib.Blas(None, fns["cublasGemmEx"], fns["cublasSetStream_v2"], fns["cublasGetStream_v2"], fns["cublasSetWorkspace_v2"],
+                              fns["cublasSetSmCountTarget"], fns["cublasGetSmCountTarget"], self.ws.data_ptr(), SPLIT_WS)
+        self.remake(slot, 3)
+        # the order (handles) and its recording; the queue's order indices, the next's place there, how many are queued,
+        # how many to keep queued past it; the last one called
+        self.order, self.rec, self.run_, self.pos, self.queued, self.ahead, self.at = None, [], [], 0, 0, 3, -1
+
+    def remake(self, slot, slots):
+        """The ring over a buffer of slots x slot bytes in place of the one there (made first; the old one's work waited
+        for as it is let go: glyd_gpu_ring_destroy)."""
+        buf = torch.empty(slots * slot, dtype=torch.uint8, device=self.d)
+        ring = _lib.ring_create(buf, slot)
+        if self.ring is not None:
+            _lib.ring_destroy(self.ring)
+        self.buf, self.ring, self.slot, self.slots = buf, ring, slot, slots
+
+    def plan(self):
+        """The ring's slots for the order (ring_plan, its slot size kept), as memory allows (GLYD_SPLIT_SLOTS, a
+        measurement's, sets them)."""
+        mods = [_modules.get(h) for h in self.order]
+        if any(m is None for m in mods):  # (a module gone: the next start records the order again)
+            return
+        slot = self.slot
+        slots, self.ahead = ring_plan([m.p.shape for m in mods], slot)
+        slots = max(3, min(16, int(os.environ.get("GLYD_SPLIT_SLOTS") or slots)))
+        free = torch.cuda.mem_get_info(self.d)[0] + torch.cuda.memory_reserved(self.d) - torch.cuda.memory_allocated(self.d) + self.buf.numel()
+        while slots > 3 and slots * slot + SPLIT_ROOM > free:
+            slots -= 1
+        if slots != self.slots:
+            try:
+                self.remake(slot, slots)
+            except RuntimeError as e:  # (the ring there kept)
+                warnings.warn(f"glyd: the route SPLIT's ring of {slots} slots of {slot >> 20} MiB not made ({e}): {self.slots} of {self.slot >> 20} MiB kept")
+
+    @staticmethod
+    def stop(d):
+        """Device d's prompts by the route without SPLIT from here: its ring's work waited for by the current stream,
+        then its buffers let go (decodes queued ahead may still be writing there)."""
+        s = Split.of.get(d)
+        if s:
+            _lib.ring_reset(s.ring)
+        Split.of[d] = False
+
+    def fail(self, r, what):
+        warnings.warn(f"glyd: the route SPLIT stopped on {torch.cuda.get_device_name(self.d)} ({what}: {_lib.error_string(r)}): its prompts take the route without it")
+        Split.stop(self.d)
+        return None
+
+    def start(self, M, sms, i):
+        """The queue dropped, then the order's matrices from its i-th on that take the route at M (by sms SMs) to be
+        queued, followed from there; where a module of the order is gone, the order recorded again."""
+        mods = [_modules.get(h) for h in self.order]
+        if any(m is None for m in mods):
+            self.order, self.rec, self.run_, self.at = None, [], [], -1
+            return 0
+        self.run_, self.pos, self.queued = [j for j in range(i, len(mods)) if g.split_sms(mods[j].p, mods[j].gpu, M) == sms], 0, 0
+        return _lib.ring_reset(self.ring) or self.top_up(sms)
+
+    def top_up(self, sms):
+        """The queue's matrices queued to self.ahead past the next product's: the status."""
+        while self.queued < min(len(self.run_), self.pos + self.ahead):
+            m = _modules.get(self.order[self.run_[self.queued]])
+            if m is None:  # (gone: the queue stops there, and the call is off the order)
+                self.run_ = self.run_[: self.queued]
+                return 0
+            p = m.p
+            r = _lib.mma12_ring_queue(self.ring, sms, p.data, p.exc, p.exc_base, p.sym, *p.shape)
+            if r:
+                return r
+            self.queued += 1
+        return 0
+
+    def follow(self, h, M, sms):
+        """The order's bookkeeping for a call of Linear h (M tokens, sms SMs): recorded (a prompt's Linears by the
+        route, until its first comes again: then the ring planned for it); next in the queue; else (a prompt's start,
+        or off the order) queued again from h on, h put in after the last one called where the order lacks it (a Linear
+        that takes the route at this length alone, as an A100's biggest matrices to 4096 tokens): the status."""
+        if self.order is None:
+            if h not in self.rec:
+                self.rec.append(h)
+                return 0
+            self.order, self.rec = self.rec[self.rec.index(h) :], []
+            self.plan()
+        if self.pos < len(self.run_) and self.order[self.run_[self.pos]] == h:
+            self.at, self.pos = self.run_[self.pos], self.pos + 1
+            return self.top_up(sms)
+        if h not in self.order:
+            self.order.insert(self.at + 1, h)
+        self.at = self.order.index(h)
+        r = self.start(M, sms, self.at)
+        if self.order is None:  # (recorded again, from h)
+            self.rec = [h]
+            return r
+        self.pos = 1
+        return r or self.top_up(sms)
+
+    def run(self, lin, x):
+        M, h, p = x.shape[0], lin.handle, lin.p
+        sms = g.split_sms(p, lin.gpu, M)
+        r = self.follow(h, M, sms)
+        if r:
+            return self.fail(r, "its queue")
+        if x.data_ptr() % 16:
+            x = x.clone()
+        O, K = p.shape
+        y = torch.empty(M, O, dtype=torch.bfloat16, device=x.device)
+        self.blas.handle = torch.cuda.current_blas_handle()
+        r = _lib.mma12_ring_linear(self.ring, sms, p.data, p.exc, p.exc_base, p.sym, O, K, x, lin.bias, y, self.blas)
+        if r:
+            return self.fail(r, "a product")
+        return y
+
+
 _modules = weakref.WeakValueDictionary()  # handle: its GLinear or GEmbedding, for the ops below
 _handles = itertools.count()
 
@@ -383,9 +621,10 @@ class GLinear(_Node, nn.Module):
         self._node()
 
     def route(self, M):
-        """The library's route for M tokens on this GPU (kernels.py's DECODE, GEMM, MID, WG, BIG, AHEAD), and the last
-        token count from M on that takes it (the mma layouts)."""
-        return g.route(self.p, self.gpu, M)
+        """The library's route for M tokens on this GPU (kernels.py's DECODE, GEMM, MID, WG, BIG, AHEAD, SPLIT), and
+        the last token count from M on that takes it (the mma layouts); where SPLIT cannot run now (Split.off), the
+        route without it."""
+        return g.route(self.p, self.gpu | g.NO_SPLIT if Split.off(self.p.sm.device) else self.gpu, M)
 
     def after(self, M, routes):
         """The first token count from M on whose route is one of routes, else 1 << 62."""
@@ -408,8 +647,9 @@ class GLinear(_Node, nn.Module):
     def decoded(self, M):
         """Whether a prompt of M tokens is decoded for cuBLAS, never fused (kernel(M) None, and no fused fallback in
         whole()): the library's route DECODE (a 12-bit prompt from GLYD_DEC_MIN tokens where it is set, else an A100's
-        from 769, where cuBLAS on the decoded matrix outruns the fused kernel; Hopper's past its wgmma kernel)."""
-        return self.route(M)[0] == g.DECODE
+        from 769, where cuBLAS on the decoded matrix outruns the fused kernel; Hopper's past its wgmma kernel), or
+        SPLIT (decoded ahead on SMs set apart)."""
+        return self.route(M)[0] in (g.DECODE, g.SPLIT)
 
     def _step(self):
         """A product as one C call where it is a fused one through the prebuilt library (glyd_gpu_*_linear, by
@@ -424,7 +664,7 @@ class GLinear(_Node, nn.Module):
         while len(routes) > 1 and routes[-1] is None:  # past the steps' kernels: a prompt's (big) or none
             routes.pop()
         big = self.kernel(len(routes)) is g.mma_gemm_big
-        top = min(self.ahead, self.after(len(routes), (g.DECODE,)))
+        top = min(self.ahead, self.after(len(routes), (g.DECODE, g.SPLIT)))
         twelve = isinstance(p, g.Mma12)
         return _lib.step(p.data, *((p.exc, p.exc_base, p.sym, 4) if twelve else (p.blocks, p.block_base, p.tiers, 3)), p.shape, self.bias, routes, big, top)
 
@@ -480,6 +720,10 @@ class GLinear(_Node, nn.Module):
             return self.whole(lambda w: F.linear(x, w, self.bias), x)
         lead = x.shape[:-1]
         x2 = x.reshape(-1, K)
+        if self.fused and isinstance(self.p, g.Mma12) and x2.shape[0] > 64 and x2.dtype == torch.bfloat16 and self.route(x2.shape[0])[0] == g.SPLIT:  # (a prompt; else the route without it)
+            y = Split.product(self, x2.contiguous())
+            if y is not None:
+                return y.view(*lead, O)
         if self.fused and isinstance(self.p, g.Mma):
             f = self.kernel(x2.shape[0])
             if f is not None:
@@ -605,8 +849,8 @@ def _(ids, handle, embedding_dim):
 def gpu_code(cc, name):
     """A GPU as the library's routes take it (glyd_gpu.h, glyd_gpu_gpu): its compute capability cc, major * 10 +
     minor, plus its class by name: GEFORCE with "GeForce" in it, A10 with "A10" in it as a word (an A10, not an A10G,
-    A100 or A40), else none."""
-    cls = g.GEFORCE if "GeForce" in name else g.A10 if re.search(r"\bA10\b", name, re.ASCII) else 0
+    A100 or A40), PCIE with "PCIe" in it in any case, else none."""
+    cls = g.GEFORCE if "GeForce" in name else g.A10 if re.search(r"\bA10\b", name, re.ASCII) else g.PCIE if re.search("pcie", name, re.ASCII | re.I) else 0
     return cc[0] * 10 + cc[1] + cls
 
 

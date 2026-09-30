@@ -1,0 +1,68 @@
+CHECKS FAIL: 8 steps run; test_split exit 1 (ValueError: a 12-bit pack's base hb [909522486, 0, 0, 0]: an int 0-120); test_gpu exit 1 (ValueError: a 12-bit pack's base hb [909522486, 0, 0, 0]: an int 0-120)
+NVIDIA A100-SXM4-40GB (8.0, sm_80, 40960 MiB), x86_64 host, 30 CPUs; CLASS=a100; tree gpu-option2 7165037
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+driver: 580.126.20, CUDA 13.0
+the route SPLIT: a split of 12 + 96 SMs; products within 1e-2 of fp32, the same bits run to run; GLinear by it as on an A100
+DECIDES: e2e Qwen3-14B, a forward pass by the route SPLIT over today's: 769 0.903x (faster), 1024 0.924x (faster), 2048 0.947x (faster), 4096 0.961x (faster), 8192 1.010x (slower) | e2e Qwen3-8B, a forward pass by the route SPLIT over today's: 769 0.946x (faster), 1024 0.964x (faster), 2048 0.999x (even), 4096 0.988x (faster), 8192 0.998x (even) | per layer Qwen3-14B, SPLIT over today's: 768 1.002x, 769 0.768x, 1024 0.792x, 2048 0.878x, 4096 0.932x, 4097 0.992x, 8192 1.022x | per layer Qwen3-8B, SPLIT over today's: 768 1.000x, 769 0.815x, 1024 0.776x, 2048 0.922x, 4096 0.949x, 4097 0.994x, 8192 0.998x | CUDA_DEVICE_MAX_CONNECTIONS=32 over unset, SPLIT per layer Qwen3-8B: 768 0.881x, 769 0.999x, 1024 1.012x, 2048 1.014x, 4096 1.012x, 4097 1.021x, 8192 1.012x
+
+e2e.py Qwen3-14B (a forward pass ms; the first token ms), bf16 | today's route | the route SPLIT:
+    769: bf16 124.6 (127.8), today 173.9 (177.8), SPLIT 157.1 (160.5) | SPLIT/bf16 1.261, today/bf16 1.396, SPLIT/today 0.903 (first token 0.903)
+   1024: bf16 151.6 (154.8), today 199.9 (203.4), SPLIT 184.8 (188.4) | SPLIT/bf16 1.219, today/bf16 1.319, SPLIT/today 0.924 (first token 0.926)
+   2048: bf16 292.2 (295.2), today 351.1 (354.2), SPLIT 332.5 (335.7) | SPLIT/bf16 1.138, today/bf16 1.202, SPLIT/today 0.947 (first token 0.948)
+   4096: bf16 587.9 (591.6), today 658.9 (661.9), SPLIT 632.9 (636.4) | SPLIT/bf16 1.077, today/bf16 1.121, SPLIT/today 0.961 (first token 0.961)
+   8192: bf16 1234.1 (1237.7), today 1328.3 (1331.5), SPLIT 1342.0 (1346.6) | SPLIT/bf16 1.087, today/bf16 1.076, SPLIT/today 1.010 (first token 1.011)
+e2e.py Qwen3-8B (a forward pass ms; the first token ms), bf16 | today's route | the route SPLIT:
+    769: bf16 79.3 (82.6), today 101.2 (104.7), SPLIT 95.7 (99.3) | SPLIT/bf16 1.207, today/bf16 1.276, SPLIT/today 0.946 (first token 0.948)
+   1024: bf16 90.0 (93.2), today 111.8 (115.2), SPLIT 107.8 (111.3) | SPLIT/bf16 1.198, today/bf16 1.242, SPLIT/today 0.964 (first token 0.966)
+   2048: bf16 173.9 (176.8), today 197.2 (200.5), SPLIT 197.0 (200.3) | SPLIT/bf16 1.133, today/bf16 1.134, SPLIT/today 0.999 (first token 0.999)
+   4096: bf16 347.6 (351.0), today 372.2 (375.1), SPLIT 367.6 (371.3) | SPLIT/bf16 1.058, today/bf16 1.071, SPLIT/today 0.988 (first token 0.990)
+   8192: bf16 726.6 (735.3), today 760.8 (764.0), SPLIT 759.6 (765.8) | SPLIT/bf16 1.045, today/bf16 1.047, SPLIT/today 0.998 (first token 1.002)
+layer-Qwen3-14B (a layer, ms): bf16 | today's route | the route SPLIT
+    768: 2.121 | 3.110 (1.466x) | 3.116 (1.469x bf16, 1.002x today's); qkv BIG, o BIG, gate_up BIG, down BIG; the ring not made
+    769: 2.346 | 3.656 (1.558x) | 2.808 (1.197x bf16, 0.768x today's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   1024: 2.772 | 4.053 (1.462x) | 3.209 (1.158x bf16, 0.792x today's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   2048: 5.217 | 6.772 (1.298x) | 5.944 (1.139x bf16, 0.878x today's); qkv SPLIT (8 SMs), o SPLIT (8 SMs), gate_up SPLIT (8 SMs), down SPLIT (8 SMs); the ring ran
+   4096: 10.363 | 12.093 (1.167x) | 11.267 (1.087x bf16, 0.932x today's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+   4097: 11.115 | 12.785 (1.150x) | 12.687 (1.141x bf16, 0.992x today's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up DECODE, down SPLIT (4 SMs); the ring ran
+   8192: 20.746 | 22.800 (1.099x) | 23.294 (1.123x bf16, 1.022x today's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up DECODE, down SPLIT (4 SMs); the ring ran
+layer-Qwen3-8B (a layer, ms): bf16 | today's route | the route SPLIT
+    768: 1.569 | 2.218 (1.414x) | 2.217 (1.413x bf16, 1.000x today's); qkv BIG, o BIG, gate_up BIG, down BIG; the ring not made
+    769: 1.562 | 2.158 (1.382x) | 1.758 (1.125x bf16, 0.815x today's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   1024: 1.708 | 2.302 (1.348x) | 1.787 (1.046x bf16, 0.776x today's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   2048: 3.167 | 3.759 (1.187x) | 3.465 (1.094x bf16, 0.922x today's); qkv SPLIT (8 SMs), o SPLIT (8 SMs), gate_up SPLIT (8 SMs), down SPLIT (8 SMs); the ring ran
+   4096: 6.110 | 6.727 (1.101x) | 6.381 (1.044x bf16, 0.949x today's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+   4097: 6.398 | 6.996 (1.093x) | 6.952 (1.087x bf16, 0.994x today's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+   8192: 12.197 | 12.697 (1.041x) | 12.666 (1.038x bf16, 0.998x today's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+layer32-Qwen3-8B (a layer, ms): bf16 | today's route | the route SPLIT
+    768: 1.371 | 1.953 (1.425x) | 1.954 (1.425x bf16, 1.001x today's); qkv BIG, o BIG, gate_up BIG, down BIG; the ring not made
+    769: 1.566 | 2.154 (1.375x) | 1.756 (1.121x bf16, 0.815x today's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   1024: 1.733 | 2.337 (1.349x) | 1.808 (1.043x bf16, 0.774x today's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   2048: 3.212 | 3.817 (1.188x) | 3.515 (1.094x bf16, 0.921x today's); qkv SPLIT (8 SMs), o SPLIT (8 SMs), gate_up SPLIT (8 SMs), down SPLIT (8 SMs); the ring ran
+   4096: 6.239 | 6.837 (1.096x) | 6.457 (1.035x bf16, 0.944x today's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+   4097: 6.509 | 7.103 (1.091x) | 7.100 (1.091x bf16, 1.000x today's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+   8192: 12.371 | 12.970 (1.048x) | 12.814 (1.036x bf16, 0.988x today's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+      0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+  ptxas info    : Used 146 registers, used 0 barriers, 32768 bytes smem, 416 bytes cmem[0]
+
+clocks and power (1745 samples): step: SM MHz mean (min-max), W mean (max), temperature max, samples power-capped (0x4) / thermal (0x20, 0x40)
+  check_capi: 1099 (210-1410) MHz, 57 (180) W, 34 C, 0% / 0%
+  test_split: 901 (285-1410) MHz, 58 (76) W, 32 C, 0% / 0%
+  layer-Qwen3-8B: 1220 (315-1410) MHz, 218 (420) W, 52 C, 46% / 0%
+  e2e-Qwen3-8B: 1280 (210-1410) MHz, 261 (453) W, 63 C, 46% / 0%
+  layer-Qwen3-14B: 1315 (1095-1410) MHz, 268 (422) W, 62 C, 60% / 0%
+  e2e-Qwen3-14B: 1276 (210-1410) MHz, 272 (444) W, 66 C, 57% / 0%
+  layer32-Qwen3-8B: 1329 (1095-1410) MHz, 221 (446) W, 63 C, 43% / 0%
+  test_gpu: 1049 (225-1410) MHz, 72 (91) W, 50 C, 0% / 0%
+
+check_capi: exit 0
+test_split: exit 1
+layer-Qwen3-8B: exit 0
+e2e-Qwen3-8B: exit 0
+layer-Qwen3-14B: exit 0
+e2e-Qwen3-14B: exit 0
+layer32-Qwen3-8B: exit 0
+test_gpu: exit 1
+steps: 18:04:42 (+434 s) layer32-Qwen3-8B (exit 0)
+steps: 18:04:45 (+437 s) test_gpu (exit 1)
+steps: 18:04:46 (+438 s) done

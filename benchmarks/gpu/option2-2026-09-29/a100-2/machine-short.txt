@@ -1,0 +1,1 @@
+NVIDIA A100-SXM4-40GB (8.0, sm_80, 40960 MiB), x86_64 host, 30 CPUs; CLASS=a100; tree gpu-option2 4516ea2
