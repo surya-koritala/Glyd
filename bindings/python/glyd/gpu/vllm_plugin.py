@@ -17,9 +17,9 @@ GLYD_VERIFY):
 - exact: each product's matrix decoded whole, then the GEMM vLLM runs for
   bf16 (F.linear): its logits bf16's bit for bit, with --enforce-eager
   alone (under vLLM's torch.compile the product runs inside Glyd's op, not
-  in the compiled graph as bf16's does, and inductor tunes that graph's
-  kernels as it runs, so that vLLM's compiled bf16 itself differs from one
-  process to the next: exact is refused there, never silently inexact);
+  in the compiled graph as bf16's does, and the logits differ from compiled
+  bf16's, which is not always the same from one compile to the next
+  either: exact is refused there, never silently inexact);
 - verify: every pack decoded as it is made and compared with its weights
   bit for bit (a glyd save's by glyd.json's sha256).
 The options in effect, with a digest of the packs (their layouts, words and
@@ -233,7 +233,7 @@ class GlydConfig(QuantizationConfig):
         if getattr(mc, "enable_sleep_mode", False):
             raise ValueError("glyd: sleep mode is not supported yet")
         if exact and not (mc.enforce_eager or (vc.compilation_config.mode == CompilationMode.NONE and vc.compilation_config.cudagraph_mode == CUDAGraphMode.NONE)):
-            raise ValueError("glyd: exact mode gives vLLM's bf16 logits bit for bit with --enforce-eager alone: under torch.compile the product runs inside Glyd's op, not in vLLM's compiled graph as bf16's does, and inductor tunes that graph's kernels as it runs (vLLM's compiled bf16 differs from one process to the next too), so no compiled run can promise bf16's bits: add --enforce-eager, or leave exact off")
+            raise ValueError("glyd: exact mode gives vLLM's bf16 logits bit for bit only with --enforce-eager: under torch.compile the product runs inside Glyd's op, not in vLLM's compiled graph as bf16's does, and the logits differ from compiled bf16's (which is not always the same from one compile to the next either). Add --enforce-eager, or leave exact off")
         if self.manifest is not None:
             if pc.tensor_parallel_size > 1 or pc.pipeline_parallel_size > 1:
                 raise ValueError("glyd: a glyd save loads on one GPU for now (tensor and pipeline parallel: from its bf16 checkpoint)")

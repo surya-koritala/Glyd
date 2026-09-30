@@ -18,8 +18,8 @@ a process of its own:
   layouts; --saves): loaded as saved, its tokens and logprobs those of the
   bf16 checkpoint packed at load in that layout, bit for bit; in the other
   layout (decoded and packed again) likewise (eager, which gives the same
-  bits in every process: compiled, inductor tunes the graph's own kernels as
-  it runs, bf16's too);
+  bits in every process: compiled, Glyd did not, even on one compile
+  cache);
 - the compile cache: the layouts and modes in turn on one VLLM_CACHE_ROOT,
   each in a cache of its own (vLLM's additional_config: three caches for
   bf16 and the two layouts); each layout again on it, its own graphs loaded
@@ -227,7 +227,7 @@ def main():
                 d = tempfile.mkdtemp(prefix=f"glyd-save-{tag}-{layout}-")
                 # (GLYD_SAVE_PYTHON: a Python with glyd[gpu]'s transformers path, where vLLM's venv lacks accelerate)
                 subprocess.run([os.environ.get("GLYD_SAVE_PYTHON", sys.executable), "-c", "import sys, glyd; m = glyd.from_pretrained(sys.argv[1], layout=sys.argv[3], compile=False); glyd.save_pretrained(m, sys.argv[2], layout=sys.argv[3])", model, d, layout], check=True, timeout=1800)
-                # eager: bit for bit from one process to the next (compiled, inductor tunes the graph's own kernels as it runs)
+                # eager: bit for bit from one process to the next (compiled, Glyd is not, even on one compile cache)
                 ref = run(dict(long, model=model, quantization="glyd", eager=True), out_dir, f"{tag}-glyd-{layout}-ref", {"VLLM_CACHE_ROOT": cache, "GLYD_LAYOUT": layout})
                 for as_layout in (layout, "mma12" if layout == "mma" else "mma"):
                     s = R(f"save-{layout}-as-{as_layout}", dict(long, model=d, quantization="glyd", eager=True), {"GLYD_LAYOUT": as_layout, "GLYD_VERIFY": "1"})
