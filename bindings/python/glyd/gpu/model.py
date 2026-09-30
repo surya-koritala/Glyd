@@ -346,8 +346,8 @@ def ring_plan(shapes, slot):
 
 
 class Split:
-    """The route SPLIT (glyd_gpu.h; option 2): a 12-bit prompt's products (an A100 SXM's from 769 to 4096 tokens, a
-    GH200's from 2048 to 8192 for a matrix of O and K at least 5120) with each matrix decoded ahead into a ring of slots on SMs set apart by the driver's
+    """The route SPLIT (glyd_gpu.h; option 2): a 12-bit prompt's products (an A100 SXM's from 769 to 4096 tokens and to
+    8192 for a matrix of O and K at least 5120, a GH200's from 2048 to 8192 for such a matrix) with each matrix decoded ahead into a ring of slots on SMs set apart by the driver's
     green contexts, while cuBLAS multiplies from the ring on the others, told how many (cublasSetSmCountTarget on
     PyTorch's own handle, with a workspace of the ring's for its stream), the two ordered by events, never the host.
     A chunk's decode waits for the product of the last chunk of its shape before it to start (the same matrix of the

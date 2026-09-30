@@ -51,8 +51,9 @@ layout also from `GLYD_DEC_MIN` where that is set lower) they return
 The route SPLIT is opt-in: `glyd_gpu_mma12_route` gives it only for a GPU's
 code with `GLYD_GPU_WITH_SPLIT`, and `glyd_gpu_mma12_linear`'s own route (-1)
 never is, so without the flag the routes are v0.25.1's. Asked for, a prompt
-of the 12-bit layout on an A100 SXM (769-4096 tokens) or a GH200 (2048-8192,
-a matrix whose O and K are both at least 5120; an H100 SXM, an H200 and the
+of the 12-bit layout on an A100 SXM (769-4096 tokens, and to 8192 for a
+matrix whose O and K are both at least 5120) or a GH200 (2048-8192, such a
+matrix alone; an H100 SXM, an H200 and the
 PCIe cards not yet, until measured) takes the route SPLIT (`glyd_gpu_mma12_route`, `glyd_gpu_mma12_split_sms`): its
 matrices decoded ahead into a ring of slots in your device memory on a few
 SMs the driver's green contexts set apart, while your cuBLAS multiplies from

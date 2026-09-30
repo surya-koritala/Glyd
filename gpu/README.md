@@ -1166,29 +1166,30 @@ routes unless it asks and runs the ring:
 
 The routes, as measured end to end, where a forward pass took at least 2%
 less time than by the routes without it: an A100 SXM's 12-bit prompts from
-769 to 4096 tokens (at 8192 Qwen3-8B's pass took 0.988 of the time, 14B's
-1.000), a GH200's from 2048 to 8192 for a matrix whose O and K are both at
-least 5120, as Qwen3-32B's (its pass 0.909 / 0.940 / 0.952 of the time at
-2048 / 4096 / 8192; Qwen3-8B's matrices, 4096 on a side, 0.978 / 0.994 /
-0.994: 2.2% at 2048 alone, for a ring of 600 MiB, not taken). An H100 SXM,
+769 to 4096 tokens, and to 8192 for a matrix whose O and K are both at
+least 5120, as Qwen3-14B's (its pass 0.968 of the time at 8192; Qwen3-8B's
+0.994 there, not taken); a GH200's from 2048 to 8192 for such a matrix, as
+Qwen3-32B's (its pass 0.909 / 0.940 / 0.952 of the time at 2048 / 4096 /
+8192; Qwen3-8B's matrices, 4096 on a side, 0.978 / 0.994 / 0.994: 2.2% at
+2048 alone, for a ring of 600 MiB, not taken). An H100 SXM,
 an H200 and the PCIe cards (an A100 PCIe, an H100 PCIe) keep v0.25.1's
 routes until a session measures them (an H100 SXM has the GH200's 132 SMs
 but 3.35 TB/s against its 4 and a 700 W budget), and nothing past 8192
 tokens takes it, not measured. Its SMs for the decode: an A100's 12 to
 1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143, then 4. One forward
-pass (`e2e.py --prefill --merge`, bf16 and the routes without SPLIT in the
-same process: on the A100 v0.25.0's, which v0.25.1 left as they were
-there; on the GH200 v0.25.1's, the medians of 3 rounds each way in turn),
-ms, the A100's at 8192 and the GH200's Qwen3-8B not taken:
+pass (`e2e.py --prefill --merge`, bf16 and v0.25.1's routes in the same
+process, the medians of 3 rounds each way in turn), ms, the A100's
+Qwen3-8B at 8192 (SPLIT forced there, a measurement) and the GH200's
+Qwen3-8B not taken:
 
 | Prompt | 769 | 1024 | 2048 | 4096 | 8192 |
 | :--- | ---: | ---: | ---: | ---: | ---: |
-| A100-SXM4-40GB, Qwen3-8B, bf16 | 79.4 | 90.0 | 173.8 | 346.1 | 725.5 |
-| v0.25.0's routes | 101.5 | 112.2 | 196.0 | 369.2 | 754.8 |
-| SPLIT | 90.0 | 95.5 | 186.5 | 355.8 | 746.1 |
-| Qwen3-14B, bf16 | 124.2 | 150.8 | 290.9 | 583.4 | 1224.4 |
-| v0.25.0's routes | 174.0 | 199.0 | 348.5 | 654.6 | 1319.6 |
-| SPLIT | 144.7 | 168.9 | 315.1 | 612.2 | 1320.0 |
+| A100-SXM4-40GB, Qwen3-8B, bf16 | 80.9 | 93.0 | 181.9 | 363.0 | 766.3 |
+| v0.25.1's routes | 103.3 | 115.1 | 204.4 | 386.7 | 792.5 |
+| SPLIT | 92.9 | 101.2 | 196.6 | 375.8 | 787.1 |
+| Qwen3-14B, bf16 | 128.9 | 156.7 | 303.5 | 611.6 | 1282.6 |
+| v0.25.1's routes | 179.5 | 205.9 | 362.1 | 680.9 | 1373.9 |
+| SPLIT | 151.7 | 178.0 | 332.0 | 644.5 | 1329.6 |
 | GH200, Qwen3-8B, bf16 | | | 72.1 | 146.7 | 306.7 |
 | v0.25.1's routes | | | 81.5 | 155.4 | 314.8 |
 | SPLIT | | | 79.7 | 154.0 | 312.3 |
@@ -1388,9 +1389,9 @@ an A100's 12-bit prompts from 769 tokens, Hopper's past its wgmma kernel,
 an L4's from 896 tiered and 2560 12-bit, GeForce Ada's from 513 tiered and
 1793 12-bit (641 exact), an A10's from 512 tiered and 640 12-bit and an
 L40S's from 1024 tiered and 2048 12-bit (not exact), decoded ahead; an A100
-SXM's 12-bit prompts from 769 to 4096 tokens and a GH200's from 2048 to 8192
-for a matrix whose O and K are both at least 5120 decoded on SMs set apart,
-the route SPLIT, above;
+SXM's 12-bit prompts from 769 to 4096 tokens (to 8192 for a matrix whose O
+and K are both at least 5120) and a GH200's from 2048 to 8192 for such a
+matrix decoded on SMs set apart, the route SPLIT, above;
 `GLYD_WG_MIN`, `GLYD_WG_MAX`, `GLYD_MID_MIN`, `GLYD_DEC_MIN` and the
 `GLYD_SPLIT_*` ones move them, read once a process, at the library's first
 route: set them in the environment before the first model is loaded).
