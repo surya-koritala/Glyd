@@ -50,7 +50,10 @@ cuBLAS (DECODE, AHEAD) the matrix decoded into the GPU's scratch buffer,
 then F.linear. vLLM's torch.compile takes it as one node, its CUDA graphs
 capture its kernels. A mixture of experts' experts: GlydMoEMethod.
 Embeddings, the LM head, norms, attention and the KV cache stay vLLM's (a
-save's packed LM head decoded to bf16 as it loads).
+save's packed LM head decoded to bf16 as it loads). A speculative draft:
+vLLM keeps an EAGLE-3 draft bf16 under --quantization glyd, and packs it
+where --speculative-config asks for "quantization": "glyd" (a GlydConfig of
+its own, sized by the draft's config, its packs in the process's digest).
 
 vLLM's internals it relies on, beyond its plugin entry point and
 register_quantization_config (vLLM 0.30; the entry point refuses another
@@ -234,13 +237,12 @@ def register():
     register_quantization_config(NAME)(GlydConfig)
 
 
-def _linear_bytes(mc):
+def _linear_bytes(c):
     """A model's Linears and experts (bf16 bytes), the rest (its embeddings and LM head), and whether it has experts,
-    from its config (for best_layout's fit and the memory check); (0, 0, False) where unknown. The Linears' count takes
-    a gated MLP (gate, up and down; a mixture of experts' layer its E experts' matrices, moe_intermediate_size each,
-    else intermediate_size): at most a third over for a model without a gate."""
+    from its (text) config c (for best_layout's fit and the memory check); (0, 0, False) where unknown. The Linears'
+    count takes a gated MLP (gate, up and down; a mixture of experts' layer its E experts' matrices,
+    moe_intermediate_size each, else intermediate_size): at most a third over for a model without a gate."""
     try:
-        c = mc.hf_text_config
         h, L = c.hidden_size, c.num_hidden_layers
         E = next((getattr(c, n) for n in ("num_experts", "num_local_experts", "n_routed_experts") if getattr(c, n, None)), 0)
         I = (getattr(c, "moe_intermediate_size", None) or c.intermediate_size) * E if E else c.intermediate_size
@@ -252,6 +254,14 @@ def _linear_bytes(mc):
         return 2 * L * per, 2 * other, bool(E)
     except (AttributeError, TypeError):
         return 0, 0, False
+
+
+def _estimate(lin, other, layout, n, draft=False):
+    """A model's weights a GPU packed in layout, bytes, and at least (the Linears' count less a gate's third), over n
+    GPUs: its Linears (lin, bf16 bytes) packed and the rest (other) as they are; a draft's Linears alone (it shares its
+    target's embeddings; its LM head is its own smaller one)."""
+    other = 0 if draft else other
+    return (lin * BITS[layout] / 16 + other) / n, (lin * 2 / 3 * BITS[layout] / 16 + other) / n
 
 
 def _missing(kind, loaded, n=0):
@@ -297,7 +307,7 @@ class GlydConfig(QuantizationConfig):
     def __init__(self, layout=None, exact=None, verify=None):
         super().__init__()
         self.given = {k: v for k, v in (("layout", layout), ("exact", exact), ("verify", verify)) if v is not None}
-        self.manifest, self.dir = None, None  # a glyd save's glyd.json, and its directory
+        self.manifest, self.dir, self.hf_config = None, None, None  # a glyd save's glyd.json and directory; the model's config
         self.opts = None  # {"layout", "exact", "verify"}: resolved at the model's first Linear
         self.compiled, self.need, self.free, self.files_checked = False, 0, 0, False
 
@@ -326,8 +336,10 @@ class GlydConfig(QuantizationConfig):
         return cls(config.get("layout"), config.get("exact"), config.get("verify"))
 
     def maybe_update_config(self, model_name, hf_config=None, revision=None):
-        """A glyd save: its glyd.json, beside its weights (a Hub repo's fetched into its snapshot); refused where its
-        family's saves are not checked in vLLM yet."""
+        """The model this config is for (vLLM's model or, for a draft asked to be packed, the draft's): its config, and
+        where it is a glyd save its glyd.json, beside its weights (a Hub repo's fetched into its snapshot); refused
+        where its family's saves are not checked in vLLM yet."""
+        self.hf_config = hf_config
         d = model_name
         if not os.path.isdir(d):
             from huggingface_hub import hf_hub_download
@@ -371,13 +383,16 @@ class GlydConfig(QuantizationConfig):
             _gpu(dev)  # the library, loaded now: not at the first forward
         except Exception as e:
             raise RuntimeError(f"glyd: Glyd's GPU library did not load ({type(e).__name__}: {e}): a CUDA build of PyTorch and the glyd wheel's library (or GLYD_GPU_LIB) are needed") from e
-        lin, other, moe = _linear_bytes(mc)
+        hf = self.hf_config  # (this config's model: a draft's own, not the target's vc.model_config)
+        lin, other, moe = _linear_bytes(hf.get_text_config() if hf is not None and hasattr(hf, "get_text_config") else hf if hf is not None else mc.hf_text_config)
         n = max(1, pc.tensor_parallel_size) * max(1, pc.pipeline_parallel_size)
         if layout == "auto":
             layout = self.manifest["layout"] if self.manifest else g.best_layout(lin // n, other // n, 1, dev, moe=moe)[0]
-        self.free = torch.cuda.mem_get_info(dev)[0]
-        self.need = (lin * BITS[layout] / 16 + other) / n
-        low = (lin * 2 / 3 * BITS[layout] / 16 + other) / n  # (at least: the Linears' count less a gate's third)
+        # Free: the driver's, and what PyTorch holds cached but unused (a draft is made after the target's packing freed
+        # its temporaries into PyTorch's cache). A draft (a config of its own, not vLLM's model's) counted by its
+        # Linears alone: it shares the target's embeddings, and its LM head is its own smaller one.
+        self.free = torch.cuda.mem_get_info(dev)[0] + torch.cuda.memory_reserved(dev) - torch.cuda.memory_allocated(dev)
+        self.need, low = _estimate(lin, other, layout, n, draft=hf is not None and hf is not getattr(mc, "hf_config", None))
         if lin and low > self.free:  # (they cannot fit: refused here, not by an OutOfMemoryError deep in the load)
             tiered = f"; the tiered layout (layout mma, {BITS['mma']} bits) takes about {(lin * BITS['mma'] / 16 + other) / n / 2**30:.1f} GiB" if layout == "mma12" else ""
             raise ValueError(f"glyd: the model's weights take about {self.need / 2**30:.1f} GiB a GPU packed in the {layout} layout ({BITS[layout]} bits a weight), at least {low / 2**30:.1f}, and the GPU has {self.free / 2**30:.1f} GiB free{tiered}: serve it over more GPUs (--tensor-parallel-size), or a smaller model")

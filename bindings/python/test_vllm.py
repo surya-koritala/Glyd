@@ -1,6 +1,7 @@
 """glyd.gpu's vLLM plugin, its logic that needs no GPU: the entry point's version rule; the options' precedence and
-what is refused among them; a save's packs by vLLM's layer names; the pieces a checkpoint gave; and what is refused
-in vLLM's config. Needs vLLM (glyd[vllm]) but for the version rule, else skipped.
+what is refused among them; a save's packs by vLLM's layer names; the pieces a checkpoint gave; what is refused in
+vLLM's config; and a draft model asked for --quantization glyd (its own size, its packs in the digest). Needs vLLM
+(glyd[vllm]) but for the version rule, else skipped.
 
     python test_vllm.py              (or pytest test_vllm.py)"""
 import os
@@ -109,6 +110,44 @@ def test_refusals():
         vp._refusals(vc(eager=True), True, None)  # (exact: vLLM's batch-invariant GEMM on the decoded weights)
     finally:
         os.environ.pop("VLLM_BATCH_INVARIANT") if was is None else os.environ.update(VLLM_BATCH_INVARIANT=was)
+
+
+def test_draft():
+    """A draft asked for --quantization glyd too (vLLM builds it a GlydConfig of its own): sized by its own config, not
+    the target's, and its packs added to the process's digest, never resetting the target's."""
+    if vp is None:
+        return print("test_draft: skipped (no vLLM)")
+    import tempfile
+    import torch
+
+    ns = types.SimpleNamespace
+    target = ns(hidden_size=4096, num_hidden_layers=36, num_attention_heads=32, num_key_value_heads=8, head_dim=128, intermediate_size=12288, vocab_size=151936, tie_word_embeddings=False)
+    draft = ns(**{**vars(target), "num_hidden_layers": 1})
+    lt, ot, mt = vp._linear_bytes(target)
+    ld, od, md = vp._linear_bytes(draft)
+    assert lt == 36 * ld and not mt and not md and ot == od
+    assert vp._linear_bytes(ns(hidden_size=8)) == (0, 0, False)  # (a config it cannot read: no estimate)
+    need, low = vp._estimate(ld, od, "mma", 1)
+    dneed, dlow = vp._estimate(ld, od, "mma", 1, draft=True)  # (a draft: its Linears alone)
+    assert dneed == ld * 10.80 / 16 and dlow == ld * 2 / 3 * 10.80 / 16 and need == dneed + od and low == dlow + od
+    assert vp._estimate(lt, ot, "mma12", 2)[0] == (lt * 12.04 / 16 + ot) / 2
+    c = vp.GlydConfig()
+    with tempfile.TemporaryDirectory() as d:
+        c.maybe_update_config(d, hf_config=draft)  # (a directory without glyd.json: not a save)
+    assert c.hf_config is draft and c.manifest is None
+    was = dict(vp._PACKS)
+    vp._PACKS.clear()
+    try:
+        key = {"glyd": {"packs": ""}}
+        a, b = vp.GlydConfig(), vp.GlydConfig()
+        a._vc = b._vc = ns(additional_config=key)
+        a.packed("model.layers.0.self_attn.qkv_proj", "mma", [1, 2, 3], [torch.empty(4)])
+        first = key["glyd"]["packs"]
+        b.packed("model.layers.36.self_attn.qkv_proj", "mma", [1, 2, 3], [torch.empty(4)])  # (the draft's layers: their own names)
+        assert first and key["glyd"]["packs"] != first and len(vp._PACKS) == 2 and key["glyd"]["packs"] == vp._digest()
+    finally:
+        vp._PACKS.clear()
+        vp._PACKS.update(was)
 
 
 if __name__ == "__main__":
