@@ -1,0 +1,25 @@
+64x64: exceptions 0 (12-bit) / 0 (split byte, hb 54): the same bits
+192x128: exceptions 3 (12-bit) / 0 (split byte, hb 54): the same bits
+128x4096: exceptions 88 (12-bit) / 43 (split byte, hb 54): the same bits
+1024x2048: exceptions 332 (12-bit) / 171 (split byte, hb 54): the same bits
+5120x1024: exceptions 4766 (12-bit) / 4291 (split byte, hb 54): the same bits
+192x4096: exceptions 59300 (12-bit) / 57924 (split byte, hb 54): the same bits
+3072x5120: exceptions 237664 (12-bit) / 231299 (split byte, hb 54): the same bits
+17408x1024: exceptions 136273 (12-bit) / 131978 (split byte, hb 54): the same bits
+8960x128: exceptions 172 (12-bit) / 89 (split byte, hb 54): the same bits
+256x1040: exceptions 2056 (12-bit) / 1993 (split byte, hb 54): the same bits
+256x16384: exceptions 606 (12-bit) / 292 (split byte, hb 54): the same bits
+every bf16 bit pattern, shuffled: exceptions 61696 / 61440 (hb 0), decoded the same bits
+every bf16 bit pattern, in order: exceptions 61696 / 61440 (hb 0), decoded the same bits
+every bf16 bit pattern, hb 0: exceptions 6019 / 6140 (hb 0), decoded the same bits
+every bf16 bit pattern, hb 120: exceptions 6026 / 6151 (hb 120), decoded the same bits
+moe: 8 experts of 256x192 by 2, (1, 70) tokens: the same bits
+moe: 64 experts of 128x2048 by 8, (8,) tokens: the same bits
+moe: 16 experts of 192x64 by 4, (33,) tokens: the same bits
+moe: 4 experts of 256x256 by 2, (300,) tokens: the same bits
+moe: 40 experts of 1024x1536 by 8, (3, 64) tokens: the same bits
+synthetic: 3865 calls the same bits, 266 refused by both (2 s)
+calls: mma_gemm 220, mma_gemm_big variant 0 240, mma_gemm_big variant 1 240, mma_gemm_big variant 2 240, mma_gemm_big variant 3 240, mma_gemm_mid 400, mma_gemm_wg 440, mma_linear route -1 420, mma_linear route -1, Hopper's prompt kernel 40, mma_linear route 0, Hopper's prompt kernel 220, mma_linear route 1 110, mma_linear route 2 220, mma_linear route 3 220, mma_linear route 4 220, mma_linear route 5, Hopper's prompt kernel 220, mma_moe 14, mma_moe act 1 12, mma_moe act 2 12, mma_moe weighted 14, mma_moe_unpack 7, mma_unpack 116
+refused by both: mma_linear route -1 24, mma_linear route 0 22, mma_linear route 1 132, mma_linear route 2 22, mma_linear route 3 22, mma_linear route 4 22, mma_linear route 5 22
+all the same bits: 3865 calls (NVIDIA GH200 480GB, compute capability 9.0)
+exit 0

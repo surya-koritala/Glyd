@@ -1,0 +1,55 @@
+BITS PASS: 19 steps run, each exit 0; e2e: 49 sha256 lines, 7 outputs, the same in every variant and tree
+NVIDIA GH200 480GB (9.0, sm_90a), aarch64 host, 64 CPUs; mode hopper; decode-fix 73b9560 (decode-fix), v0.25.0 bfb2c4e (rust-splitbyte, v0.25.0's tree), main db8e7b0 (origin/main)
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+
+The decode a layer (dec_time.py; median of its repetitions), us, each over main's; whole: a warp a step (for cuBLAS,
+exact mode), ahead: 2 warps an SM (decode ahead). v0.25.0: its library; order N: this tree's, GLYD_DEC_ORDER=N (0 v0.25.0's kernel).
+  Qwen3-14B run 1 whole: main 513.4 | v0.25.0 539.8 (1.051) | order 0 539.8 (1.051) | order 1 520.6 (1.014) | order 2 544.8 (1.061) | order 3 498.1 (0.970)  [GB/s 2254 2144 2144 2223 2124 2324]
+  Qwen3-14B run 1 ahead: main 1516.7 | v0.25.0 1072.4 (0.707) | order 0 1072.5 (0.707) | order 1 1473.6 (0.972) | order 2 1502.6 (0.991) | order 3 1606.5 (1.059)  [GB/s 763 1079 1079 785 770 721]
+  Qwen3-14B run 2 whole: main 514.1 | v0.25.0 540.7 (1.052) | order 0 540.6 (1.052) | order 1 520.6 (1.013) | order 2 545.0 (1.060) | order 3 498.8 (0.970)  [GB/s 2251 2141 2141 2223 2124 2320]
+  Qwen3-14B run 2 ahead: main 1518.1 | v0.25.0 1072.7 (0.707) | order 0 1073.3 (0.707) | order 1 1474.2 (0.971) | order 2 1502.2 (0.990) | order 3 1608.2 (1.059)  [GB/s 762 1079 1078 785 771 720]
+  Qwen3-32B run 1 whole: main 722.9 | v0.25.0 766.0 (1.060) | order 0 766.1 (1.060) | order 1 735.5 (1.017) | order 2 769.7 (1.065) | order 3 698.7 (0.966)  [GB/s 2364 2231 2230 2323 2220 2446]
+  Qwen3-32B run 1 ahead: main 2222.4 | v0.25.0 1563.1 (0.703) | order 0 1563.8 (0.704) | order 1 2162.1 (0.973) | order 2 2195.1 (0.988) | order 3 2352.3 (1.058)  [GB/s 769 1093 1093 790 778 726]
+  Qwen3-32B run 2 whole: main 723.4 | v0.25.0 766.4 (1.059) | order 0 766.8 (1.060) | order 1 735.1 (1.016) | order 2 769.1 (1.063) | order 3 698.5 (0.966)  [GB/s 2362 2230 2228 2324 2222 2446]
+  Qwen3-32B run 2 ahead: main 2220.8 | v0.25.0 1563.7 (0.704) | order 0 1564.5 (0.704) | order 1 2162.2 (0.974) | order 2 2193.2 (0.988) | order 3 2350.7 (1.058)  [GB/s 769 1093 1092 790 779 727]
+  Qwen3-8B run 1 whole: main 283.2 | v0.25.0 293.7 (1.037) | order 0 294.6 (1.040) | order 1 294.7 (1.041) | order 2 304.2 (1.074) | order 3 276.0 (0.975)  [GB/s 2388 2303 2295 2295 2223 2450]
+  Qwen3-8B run 1 ahead: main 905.1 | v0.25.0 655.9 (0.725) | order 0 655.8 (0.725) | order 1 873.3 (0.965) | order 2 903.6 (0.998) | order 3 966.6 (1.068)  [GB/s 747 1031 1031 774 748 700]
+  Qwen3-8B run 2 whole: main 285.4 | v0.25.0 295.4 (1.035) | order 0 295.3 (1.035) | order 1 295.8 (1.037) | order 2 305.4 (1.070) | order 3 275.1 (0.964)  [GB/s 2370 2289 2290 2286 2214 2458]
+  Qwen3-8B run 2 ahead: main 905.5 | v0.25.0 656.3 (0.725) | order 0 656.4 (0.725) | order 1 872.0 (0.963) | order 2 903.9 (0.998) | order 3 966.4 (1.067)  [GB/s 747 1030 1030 775 748 700]
+
+End to end (dec_e2e.py), each over main's: exact mode's steps (ms a token) and prompts (ms)
+  exact steps: main 54.865 | main2 54.754 (0.998) | v0.25.0 56.306 (1.026) | order 0 53.018 (0.966) | order 1 53.013 (0.966) | order 2 52.840 (0.963) | order 3 52.900 (0.964)
+  exact prompt 1280 tokens: main 55.620 | main2 55.750 (1.002) | v0.25.0 57.410 (1.032) | order 0 54.210 (0.975) | order 1 54.110 (0.973) | order 2 54.270 (0.976) | order 3 53.700 (0.965)
+  exact prompt 2048 tokens: main 78.350 | main2 78.120 (0.997) | v0.25.0 78.320 (1.000) | order 0 78.960 (1.008) | order 1 78.660 (1.004) | order 2 78.430 (1.001) | order 3 78.220 (0.998)
+  exact prompt 4096 tokens: main 149.660 | main2 149.270 (0.997) | v0.25.0 150.330 (1.004) | order 0 149.390 (0.998) | order 1 149.760 (1.001) | order 2 149.600 (1.000) | order 3 149.020 (0.996)
+  fused prompt 1280 tokens: main 57.020 | main2 56.830 (0.997) | v0.25.0 57.420 (1.007) | order 0 57.070 (1.001) | order 1 57.130 (1.002) | order 2 57.170 (1.003) | order 3 56.550 (0.992)
+  fused prompt 2048 tokens: main 80.700 | main2 80.540 (0.998) | v0.25.0 81.310 (1.008) | order 0 80.750 (1.001) | order 1 80.950 (1.003) | order 2 81.110 (1.005) | order 3 80.570 (0.998)
+  fused prompt 4096 tokens: main 153.820 | main2 153.460 (0.998) | v0.25.0 155.120 (1.008) | order 0 154.180 (1.002) | order 1 154.050 (1.001) | order 2 154.450 (1.004) | order 3 153.690 (0.999)
+
+Nsight Compute: no profile (exit 0)
+
+steps:
+  00:10:53 (+2 s) machine and environment (~/gpuenv)
+  00:11:29 (+38 s) builds (fix exit 0, rel exit 0, main exit 0)
+  00:11:31 (+40 s) selftest-o0 (exit 0)
+  00:11:35 (+44 s) xcheck-o0 (exit 0)
+  00:11:37 (+46 s) selftest-o1 (exit 0)
+  00:11:40 (+49 s) xcheck-o1 (exit 0)
+  00:11:42 (+51 s) selftest-o2 (exit 0)
+  00:11:46 (+55 s) xcheck-o2 (exit 0)
+  00:11:48 (+57 s) selftest-o3 (exit 0)
+  00:11:51 (+60 s) xcheck-o3 (exit 0)
+  00:11:53 (+62 s) time-Qwen3-8B-run1 (exit 0)
+  00:11:56 (+65 s) time-Qwen3-14B-run1 (exit 0)
+  00:11:58 (+67 s) time-Qwen3-32B-run1 (exit 0)
+  00:11:58 (+67 s) prof (exit 0)
+  00:11:58 (+67 s) ncu (version.txt )
+  00:13:55 (+184 s) e2e-fix (exit 0)
+  00:14:36 (+225 s) e2e-main (exit 0)
+  00:15:19 (+268 s) e2e-v0.25.0 (exit 0)
+  00:15:21 (+270 s) time-Qwen3-8B-run2 (exit 0)
+  00:15:23 (+272 s) time-Qwen3-14B-run2 (exit 0)
+  00:15:26 (+275 s) time-Qwen3-32B-run2 (exit 0)
+  00:16:07 (+316 s) e2e-main2 (exit 0)
+  00:16:07 (+316 s) done

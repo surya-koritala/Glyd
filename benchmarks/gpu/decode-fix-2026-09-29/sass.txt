@@ -1,0 +1,101 @@
+== Build cuda_13.0.r13.0/compiler.36424714_0; gcc (GCC) 13.3.1 20240611 (Red Hat 13.3.1-2); aarch64; main db8e7b0 (origin/main), v0.25.0 bfb2c4e (rust-splitbyte, v0.25.0's tree), this tree 0489522 (decode-fix)
+main sm_90a: build exit 0, warnings 0
+main sm_86: build exit 0, warnings 0
+rel sm_90a: build exit 0, warnings 0
+rel sm_86: build exit 0, warnings 0
+fix sm_90a: build exit 0, warnings 0
+fix sm_86: build exit 0, warnings 0
+## sm_90a
+out/rel-90a.sass -> out/fix-90a.sass: 87 of 87 kernels the same instructions; 9 added:
+   whole ORDER 1: 536 instructions
+   whole ORDER 2: 536 instructions
+   whole ORDER 3: 536 instructions
+   ahead ORDER 1: 616 instructions
+   ahead ORDER 2: 616 instructions
+   ahead ORDER 3: 616 instructions
+   moe ORDER 1: 552 instructions
+   moe ORDER 2: 552 instructions
+   moe ORDER 3: 552 instructions
+out/main-90a.sass moe as built (584 instructions, 40 registers):
+   3:LDG 36:LDG+0x4 60:LDG.128 63:LDG 102:LDG+0x4 105:LDG.128+0x400 106:LDG.128+0x200 132:CALL 177:LDG 220:LDG 221:LDG+0x4 222:LDG+0x8 223:LDG+0xc STG x16 409-489
+out/main-90a.sass whole as built (576 instructions, 40 registers):
+   47:LDG.128 51:LDG 52:LDG+0x4 85:LDG.128+0x200 86:LDG.128+0x400 120:CALL 167:LDG 208:LDG 209:LDG+0x4 210:LDG+0x8 211:LDG+0xc STG x16 387-471
+out/main-90a.sass ahead as built (656 instructions, 40 registers):
+   58:LDG.128 85:LDG.128+0x400 93:LDG 95:LDG+0x4 96:LDG.128+0x200 130:CALL 171:LDG 206:LDG+0x4 240:LDG+0x8 279:LDG 280:LDG+0x4 281:LDG+0x8 282:LDG+0xc STG x16 461-544
+out/rel-90a.sass moe as built (536 instructions, 40 registers):
+   3:LDG 36:LDG+0x4 58:LDG.128 62:LDG.128+0x200 65:LDG.128+0x400 66:LDG 67:LDG+0x4 91:CALL 138:LDG 184:LDG 185:LDG+0x4 209:LDG+0xc 220:LDG+0x8 STG x16 378-441
+out/rel-90a.sass whole as built (520 instructions, 40 registers):
+   46:LDG.128 50:LDG.128+0x200 52:LDG.128+0x400 53:LDG 54:LDG+0x4 79:CALL 122:LDG 170:LDG 171:LDG+0x4 172:LDG+0x8 173:LDG+0xc STG x16 367-421
+out/rel-90a.sass ahead as built (608 instructions, 40 registers):
+   57:LDG.128 60:LDG.128+0x400 62:LDG.128+0x200 65:LDG 67:LDG+0x4 90:CALL 131:LDG 170:LDG+0x4 209:LDG+0x8 255:LDG 256:LDG+0x4 315:LDG+0x8 316:LDG+0xc STG x16 441-508
+out/fix-90a.sass moe ORDER 0 (536 instructions, 40 registers):
+   3:LDG 36:LDG+0x4 58:LDG.128 62:LDG.128+0x200 65:LDG.128+0x400 66:LDG 67:LDG+0x4 91:CALL 138:LDG 184:LDG 185:LDG+0x4 209:LDG+0xc 220:LDG+0x8 STG x16 378-441
+out/fix-90a.sass moe ORDER 3 (552 instructions, 39 registers):
+   3:LDG 36:LDG+0x4 61:LDG 63:LDG+0x4 64:LDG.128+0x200 65:LDG.128+0x400 68:SHFL 75:LDG.128 101:CALL 146:LDG 194:LDG 195:LDG+0x4 196:LDG+0x8 197:LDG+0xc STG x16 396-452
+out/fix-90a.sass moe ORDER 2 (552 instructions, 39 registers):
+   3:LDG 36:LDG+0x4 60:LDG 62:LDG+0x4 63:LDG.128 96:LDG 142:LDG 143:LDG+0x4 144:LDG+0x8 145:LDG+0xc 276:SHFL 285:LDG.128+0x200 286:LDG.128+0x400 292:CALL STG x16 394-451
+out/fix-90a.sass moe ORDER 1 (552 instructions, 39 registers):
+   3:LDG 36:LDG+0x4 61:LDG 63:LDG+0x4 64:LDG.128 68:SHFL 86:LDG.128+0x200 89:LDG.128+0x400 100:CALL 145:LDG 193:LDG 194:LDG+0x4 195:LDG+0x8 196:LDG+0xc STG x16 395-451
+out/fix-90a.sass whole ORDER 0 (520 instructions, 40 registers):
+   46:LDG.128 50:LDG.128+0x200 52:LDG.128+0x400 53:LDG 54:LDG+0x4 79:CALL 122:LDG 170:LDG 171:LDG+0x4 172:LDG+0x8 173:LDG+0xc STG x16 367-421
+out/fix-90a.sass ahead ORDER 0 (608 instructions, 40 registers):
+   57:LDG.128 60:LDG.128+0x400 62:LDG.128+0x200 65:LDG 67:LDG+0x4 90:CALL 131:LDG 170:LDG+0x4 209:LDG+0x8 255:LDG 256:LDG+0x4 315:LDG+0x8 316:LDG+0xc STG x16 441-508
+out/fix-90a.sass whole ORDER 3 (536 instructions, 38 registers):
+   48:LDG 50:LDG+0x4 51:LDG.128+0x200 52:LDG.128+0x400 55:SHFL 63:LDG.128 89:CALL 138:LDG 184:LDG 185:LDG+0x4 186:LDG+0x8 187:LDG+0xc STG x16 377-436
+out/fix-90a.sass ahead ORDER 3 (616 instructions, 45 registers):
+   56:LDG 57:LDG+0x4 61:LDG.128+0x200 62:LDG.128+0x400 67:SHFL 75:LDG.128 101:CALL 143:LDG 182:LDG+0x4 221:LDG+0x8 265:LDG 266:LDG+0x4 267:LDG+0x8 268:LDG+0xc STG x16 457-518
+out/fix-90a.sass whole ORDER 2 (536 instructions, 32 registers):
+   49:LDG.128 50:LDG 51:LDG+0x4 89:LDG 137:LDG 138:LDG+0x4 139:LDG+0x8 140:LDG+0xc 271:SHFL 280:LDG.128+0x200 281:LDG.128+0x400 287:CALL STG x16 372-435
+out/fix-90a.sass ahead ORDER 2 (616 instructions, 37 registers):
+   59:LDG.128 60:LDG 61:LDG+0x4 91:LDG 130:LDG+0x4 169:LDG+0x8 213:LDG 214:LDG+0x4 215:LDG+0x8 216:LDG+0xc 347:SHFL 356:LDG.128+0x200 357:LDG.128+0x400 363:CALL STG x16 454-516
+out/fix-90a.sass whole ORDER 1 (536 instructions, 40 registers):
+   48:LDG 50:LDG+0x4 51:LDG.128 54:SHFL 61:LDG.128+0x200 62:LDG.128+0x400 88:CALL 135:LDG 183:LDG 184:LDG+0x4 185:LDG+0x8 186:LDG+0xc STG x16 380-434
+out/fix-90a.sass ahead ORDER 1 (616 instructions, 45 registers):
+   57:LDG 60:LDG+0x4 62:LDG.128 85:SHFL 93:LDG.128+0x200 94:LDG.128+0x400 100:CALL 142:LDG 181:LDG+0x4 220:LDG+0x8 264:LDG 265:LDG+0x4 266:LDG+0x8 267:LDG+0xc STG x16 454-517
+## sm_86
+out/rel-86.sass -> out/fix-86.sass: 87 of 87 kernels the same instructions; 9 added:
+   whole ORDER 1: 528 instructions
+   whole ORDER 2: 528 instructions
+   whole ORDER 3: 528 instructions
+   ahead ORDER 1: 624 instructions
+   ahead ORDER 2: 624 instructions
+   ahead ORDER 3: 624 instructions
+   moe ORDER 1: 544 instructions
+   moe ORDER 2: 544 instructions
+   moe ORDER 3: 544 instructions
+out/main-86.sass moe as built (600 instructions, 40 registers):
+   4:LDG 36:LDG+0x4 57:LDG.128 66:LDG.128+0x200 67:LDG.128+0x400 69:LDG 71:LDG+0x4 142:CALL 190:LDG 234:LDG 235:LDG+0x4 236:LDG+0x8 237:LDG+0xc STG x16 419-503
+out/main-86.sass whole as built (584 instructions, 38 registers):
+   44:LDG.128 47:LDG.128+0x200 50:LDG.128+0x400 51:LDG 52:LDG+0x4 131:CALL 178:LDG 219:LDG 220:LDG+0x4 221:LDG+0x8 222:LDG+0xc STG x16 408-482
+out/main-86.sass ahead as built (664 instructions, 40 registers):
+   53:LDG.128 61:LDG.128+0x200 63:LDG.128+0x400 65:LDG 66:LDG+0x4 141:CALL 182:LDG 217:LDG+0x4 251:LDG+0x8 290:LDG 291:LDG+0x4 292:LDG+0x8 293:LDG+0xc 558:CALL STG x16 468-557
+out/rel-86.sass moe as built (536 instructions, 40 registers):
+   4:LDG 36:LDG+0x4 57:LDG.128 62:LDG.128+0x200 64:LDG 65:LDG+0x4 66:LDG.128+0x400 89:CALL 134:LDG 182:LDG 183:LDG+0x4 184:LDG+0x8 185:LDG+0xc STG x16 373-439
+out/rel-86.sass whole as built (512 instructions, 40 registers):
+   45:LDG.128 48:LDG.128+0x200 49:LDG 50:LDG+0x4 52:LDG.128+0x400 76:CALL 119:LDG 167:LDG 168:LDG+0x4 169:LDG+0x8 170:LDG+0xc STG x16 363-417
+out/rel-86.sass ahead as built (608 instructions, 40 registers):
+   56:LDG.128 58:LDG.128+0x400 60:LDG.128+0x200 63:LDG 65:LDG+0x4 88:CALL 131:LDG 170:LDG+0x4 209:LDG+0x8 255:LDG 256:LDG+0x4 315:LDG+0x8 316:LDG+0xc 509:CALL STG x16 441-508
+out/fix-86.sass moe ORDER 0 (536 instructions, 40 registers):
+   4:LDG 36:LDG+0x4 57:LDG.128 62:LDG.128+0x200 64:LDG 65:LDG+0x4 66:LDG.128+0x400 89:CALL 134:LDG 182:LDG 183:LDG+0x4 184:LDG+0x8 185:LDG+0xc STG x16 373-439
+out/fix-86.sass moe ORDER 3 (544 instructions, 38 registers):
+   4:LDG 36:LDG+0x4 58:LDG 60:LDG+0x4 61:LDG.128+0x200 62:LDG.128+0x400 66:SHFL 72:LDG.128 98:CALL 141:LDG 187:LDG 188:LDG+0x4 189:LDG+0x8 190:LDG+0xc STG x16 389-445
+out/fix-86.sass moe ORDER 2 (544 instructions, 38 registers):
+   4:LDG 36:LDG+0x4 58:LDG 60:LDG+0x4 61:LDG.128 93:LDG 138:LDG 139:LDG+0x4 140:LDG+0x8 141:LDG+0xc 272:SHFL 280:LDG.128+0x200 281:LDG.128+0x400 287:CALL STG x16 389-445
+out/fix-86.sass moe ORDER 1 (544 instructions, 38 registers):
+   4:LDG 36:LDG+0x4 58:LDG 60:LDG+0x4 61:LDG.128 66:SHFL 79:LDG.128+0x200 82:LDG.128+0x400 97:CALL 140:LDG 186:LDG 187:LDG+0x4 188:LDG+0x8 189:LDG+0xc STG x16 388-444
+out/fix-86.sass whole ORDER 0 (512 instructions, 40 registers):
+   45:LDG.128 48:LDG.128+0x200 49:LDG 50:LDG+0x4 52:LDG.128+0x400 76:CALL 119:LDG 167:LDG 168:LDG+0x4 169:LDG+0x8 170:LDG+0xc STG x16 363-417
+out/fix-86.sass ahead ORDER 0 (608 instructions, 40 registers):
+   56:LDG.128 58:LDG.128+0x400 60:LDG.128+0x200 63:LDG 65:LDG+0x4 88:CALL 131:LDG 170:LDG+0x4 209:LDG+0x8 255:LDG 256:LDG+0x4 315:LDG+0x8 316:LDG+0xc 509:CALL STG x16 441-508
+out/fix-86.sass whole ORDER 3 (528 instructions, 38 registers):
+   45:LDG 47:LDG+0x4 48:LDG.128+0x200 49:LDG.128+0x400 53:SHFL 59:LDG.128 85:CALL 133:LDG 179:LDG 180:LDG+0x4 181:LDG+0x8 182:LDG+0xc STG x16 373-430
+out/fix-86.sass ahead ORDER 3 (624 instructions, 46 registers):
+   58:LDG 59:LDG+0x4 60:LDG.128+0x200 61:LDG.128+0x400 66:CALL 69:SHFL 77:LDG.128 103:CALL 148:LDG 187:LDG+0x4 226:LDG+0x8 270:LDG 271:LDG+0x4 272:LDG+0x8 273:LDG+0xc 524:CALL 613:SHFL STG x16 458-523
+out/fix-86.sass whole ORDER 2 (528 instructions, 36 registers):
+   46:LDG.128 47:LDG 48:LDG+0x4 81:LDG 127:LDG 128:LDG+0x4 129:LDG+0x8 130:LDG+0xc 261:SHFL 269:LDG.128+0x200 270:LDG.128+0x400 276:CALL STG x16 370-427
+out/fix-86.sass ahead ORDER 2 (624 instructions, 36 registers):
+   57:LDG.128 58:LDG 59:LDG+0x4 90:LDG 129:LDG+0x4 168:LDG+0x8 212:LDG 213:LDG+0x4 214:LDG+0x8 215:LDG+0xc 348:CALL 351:SHFL 359:LDG.128+0x200 360:LDG.128+0x400 366:CALL 523:CALL 612:SHFL STG x16 457-522
+out/fix-86.sass whole ORDER 1 (528 instructions, 40 registers):
+   45:LDG 47:LDG+0x4 48:LDG.128 51:SHFL 57:LDG.128+0x200 58:LDG.128+0x400 84:CALL 131:LDG 179:LDG 180:LDG+0x4 181:LDG+0x8 182:LDG+0xc STG x16 375-429
+out/fix-86.sass ahead ORDER 1 (624 instructions, 46 registers):
+   58:LDG 59:LDG.128 60:LDG+0x4 84:CALL 87:SHFL 95:LDG.128+0x200 96:LDG.128+0x400 102:CALL 147:LDG 186:LDG+0x4 225:LDG+0x8 269:LDG 270:LDG+0x4 271:LDG+0x8 272:LDG+0xc 523:CALL 612:SHFL STG x16 457-522

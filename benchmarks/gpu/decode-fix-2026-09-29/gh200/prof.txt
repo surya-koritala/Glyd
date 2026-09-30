@@ -1,0 +1,2 @@
+==WARNING== Insufficient privileges to launch app for profiling. Launch app with root privileges
+exit 0
