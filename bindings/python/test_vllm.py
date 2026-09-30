@@ -1,7 +1,7 @@
 """glyd.gpu's vLLM plugin, its logic that needs no GPU: the entry point's version rule; the options' precedence and
-what is refused among them; a save's packs by vLLM's layer names; the pieces a checkpoint gave; what is refused in
-vLLM's config; and a draft model asked for --quantization glyd (its own size, its packs in the digest). Needs vLLM
-(glyd[vllm]) but for the version rule, else skipped.
+what is refused among them; the layers a fraction packs (how many, how spread); a save's packs by vLLM's layer names;
+the pieces a checkpoint gave; what is refused in vLLM's config; and a draft model asked for --quantization glyd (its
+own size, its packs in the digest). Needs vLLM (glyd[vllm]) but for the version rule, else skipped.
 
     python test_vllm.py              (or pytest test_vllm.py)"""
 import os
@@ -36,18 +36,89 @@ def test_version_rule():
 def test_options():
     if vp is None:
         return print("test_options: skipped (no vLLM)")
-    none = {"layout": None, "exact": None, "verify": None}
-    assert vp._options({}, {}, none) == ("auto", False, False)
-    assert vp._options({"layout": "MMA12"}, {"layout": "mma"}, dict(none, layout="mma")) == ("mma12", False, False)  # --additional-config first
-    assert vp._options({}, {"exact": True}, dict(none, exact="0")) == ("auto", True, False)  # then the quantization_config
-    assert vp._options({}, {}, {"layout": "mma", "exact": "Yes", "verify": "off"}) == ("mma", True, False)  # then the environment
+    none = {"layout": None, "exact": None, "verify": None, "fraction": None}
+    assert vp._options({}, {}, none) == ("auto", False, False, 1.0)
+    assert vp._options({"layout": "MMA12"}, {"layout": "mma"}, dict(none, layout="mma")) == ("mma12", False, False, 1.0)  # --additional-config first
+    assert vp._options({}, {"exact": True}, dict(none, exact="0")) == ("auto", True, False, 1.0)  # then the quantization_config
+    assert vp._options({}, {}, {"layout": "mma", "exact": "Yes", "verify": "off", "fraction": "0.5"}) == ("mma", True, False, 0.5)  # then the environment
+    assert vp._options({"fraction": 0.25}, {"fraction": 0.5}, dict(none, fraction="0.75"))[3] == 0.25  # (fraction as the others)
+    assert vp._options({}, {"fraction": 0.5}, dict(none, fraction="0.75"))[3] == 0.5 and vp._options({}, {}, dict(none, fraction="0.75"))[3] == 0.75
+    assert vp._options({"fraction": 0}, {}, dict(none, fraction="1"))[3] == 0.0 and vp._options({}, {}, dict(none, fraction="0"))[3] == 0.0  # (0 is a value, not unset)
+    assert vp._options({"fraction": 1}, {}, none)[3] == 1.0 and vp._options({}, {}, dict(none, fraction=""))[3] == 1.0 and vp._options({"fraction": " 0.5 "}, {}, none)[3] == 0.5
     assert vp._options({"layout": "mma", "glyd": "0.26.0", "packs": "0123"}, {}, none)[0] == "mma"  # (resolve's own keys)
     raises(lambda: vp._options({"exat": True}, {}, none), "not an option")
     raises(lambda: vp._options("mma12", {}, none), "not an object of options")
     raises(lambda: vp._options({}, {}, dict(none, exact="ture")), "true or false")
     raises(lambda: vp._options({"layout": "fast"}, {}, none), "one of auto, mma, mma12")
+    for bad in (1.5, -0.1, "half", True, "nan", "inf", [0.5], {"a": 1}):  # (a fraction: a number from 0 to 1)
+        raises(lambda: vp._options({"fraction": bad}, {}, none), "a number from 0 to 1")
+    raises(lambda: vp._options({}, {}, dict(none, fraction="1.01")), "fraction '1.01': a number from 0 to 1")
     assert vp.GlydConfig.from_config({"quant_method": "glyd", "layout": "mma", "merge": True}).given == {"layout": "mma"}
+    assert vp.GlydConfig.from_config({"fraction": 0.5}).given == {"fraction": 0.5}
     raises(lambda: vp.GlydConfig.from_config({"layot": "mma"}), "not an option")
+
+
+def test_fraction():
+    """The layers a fraction packs: floor((i + 1) f) > floor(i f). Of the first L layers exactly floor(L f), spread evenly
+    (any run of w layers holds floor(w f) or one more), none at 0, all at 1; 0.29 of 100 layers is 29 (a float's
+    0.29 * 100 is 28.999999999999996); a module's layer by the first number in its name; what packs() says of it."""
+    if vp is None:
+        return print("test_fraction: skipped (no vLLM)")
+    from fractions import Fraction
+    from math import floor
+
+    packed = lambda f, L: [i for i in range(L) if vp._packs(i, f)]
+    assert packed(0.5, 36) == list(range(1, 36, 2)) and packed(0.25, 36) == list(range(3, 36, 4))  # (Qwen3-8B's 36 layers)
+    assert packed(0.75, 8) == [1, 2, 3, 5, 6, 7] and packed(0.34, 9) == [2, 5, 8]
+    for L in (1, 2, 3, 28, 36, 40, 64, 80, 100, 126):
+        assert packed(0.0, L) == [] and packed(1.0, L) == list(range(L)), L  # 0: none, 1: every layer, today's
+    for f in (0.0, 0.05, 0.1, 0.25, 0.29, 0.3, 0.33, 0.5, 0.57, 0.58, 0.6, 0.7, 0.75, 0.9, 0.99, 1.0):
+        q = Fraction(repr(f))
+        for L in (1, 3, 28, 36, 64, 100):
+            assert len(packed(f, L)) == floor(L * q), (f, L)
+        for w in (1, 2, 5, 7, 16):  # (spread: no run holds more than one over its share, or fewer than it)
+            for a in range(0, 40):
+                n = sum(vp._packs(i, f) for i in range(a, a + w))
+                assert floor(w * q) <= n <= floor(w * q) + 1, (f, a, w, n)
+    assert len(packed(0.29, 100)) == 29 and len(packed(0.57, 100)) == 57 and len(packed(0.58, 100)) == 58
+    assert vp._fraction(0.3) == 0.3 and vp._fraction("1") == 1.0 and vp._fraction(None) == 1.0
+    assert [vp._layer_of(n) for n in ("model.layers.12.mlp.down_proj", "transformer.h.3.attn.c_attn", "model.decoder.layers.0.self_attn.qkv_proj", "model.layers.36.self_attn.o_proj", "model.layers.3.mlp.experts", "lm_head", "model.embed_tokens", "multi_modal_projector.linear_1", "model.layers.\u0663.x", "")] == [12, 3, 0, 36, 3, None, None, None, None, None]
+    c = vp.GlydConfig()
+    c.opts = {"fraction": 0.5}
+    assert [c.packs(f"model.layers.{i}.self_attn.qkv_proj") for i in range(4)] == [False, True, False, True]
+    assert all(c.packs(f"model.layers.1.{m}") for m in ("self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj", "mlp.down_proj", "mlp.experts"))  # (a layer's together)
+    assert not any(c.packs(f"model.layers.0.{m}") for m in ("self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj", "mlp.down_proj", "mlp.experts"))
+    assert not c.packs("multi_modal_projector.linear_1")  # (outside the numbered layers: only at fraction 1)
+    c.opts = {"fraction": 1.0}
+    assert c.packs("multi_modal_projector.linear_1") and c.packs("model.layers.0.mlp.down_proj")
+    c.opts = {"fraction": 0.0}
+    assert not c.packs("multi_modal_projector.linear_1") and not any(c.packs(f"model.layers.{i}.mlp.down_proj") for i in range(64))
+    lin, other = 1000.0, 100.0  # (the fit: the Linears not packed count their bf16 bytes)
+    assert vp._estimate(lin, other, "mma", 1, fraction=0.0) == (lin + other, lin + other) and vp._estimate(lin, other, "mma", 1)[0] == (lin * 10.80 / 16 + other)
+    full, half, bf16 = (vp._estimate(lin, other, "mma12", 1, fraction=f)[0] for f in (1.0, 0.5, 0.0))
+    assert full < half < bf16 and abs(half - (lin * 0.5 * 12.04 / 16 + lin * 0.5 + other)) < 1e-9
+    assert vp._estimate(lin, other, "mma", 2, draft=True, fraction=0.5)[0] == (lin * 0.5 * 10.80 / 16 + lin * 0.5) / 2
+
+
+def test_quant_method():
+    """get_quant_method under a fraction: a layer's Linears go to Glyd or, left out, to vLLM's own
+    UnquantizedLinearMethod (what vLLM gives a layer with no quantization), by the layer's number; every Linear of a
+    layer alike; the embeddings and the LM head as without a fraction."""
+    if vp is None:
+        return print("test_quant_method: skipped (no vLLM)")
+    c = vp.GlydConfig()
+    lin = object.__new__(vp.LinearBase)  # (a Linear, without its weights: get_quant_method reads its class and its prefix)
+    kinds = lambda parts: [[type(c.get_quant_method(lin, f"model.layers.{i}.{p}")).__name__ for p in parts] for i in range(4)]
+    parts = ("self_attn.qkv_proj", "self_attn.o_proj", "mlp.gate_up_proj", "mlp.down_proj")
+    glyd, plain = ["GlydLinearMethod"] * 4, ["UnquantizedLinearMethod"] * 4
+    c.opts = {"layout": "mma", "exact": False, "verify": False, "fraction": 0.5}
+    assert kinds(parts) == [plain, glyd, plain, glyd]
+    assert type(c.get_quant_method(lin, "visual.merger.linear_fc1")).__name__ == "UnquantizedLinearMethod"  # (outside the layers)
+    c.opts["fraction"] = 0.0
+    assert kinds(parts) == [plain] * 4
+    c.opts["fraction"] = 1.0
+    assert kinds(parts) == [glyd] * 4 and type(c.get_quant_method(lin, "visual.merger.linear_fc1")).__name__ == "GlydLinearMethod"
+    assert c.get_quant_method(object.__new__(vp.VocabParallelEmbedding), "lm_head") is None  # (a bf16 checkpoint's: vLLM's own, as before)
 
 
 def test_saved():
@@ -102,6 +173,9 @@ def test_refusals():
     raises(lambda: vp._refusals(vc(offload=4), False, None), "weight offloading")
     raises(lambda: vp._refusals(vc(sleep=True), False, None), "sleep mode")
     raises(lambda: vp._refusals(vc(tp=2), False, {"packs": {}}), "one GPU")
+    vp._refusals(vc(), False, {"packs": {}}, 1.0)  # (a save at fraction 1; a bf16 checkpoint at any)
+    vp._refusals(vc(), False, None, 0.5)
+    raises(lambda: vp._refusals(vc(), False, {"packs": {}}, 0.5), "fraction 0.5 leaves some layers bf16")
     raises(lambda: vp._refusals(vc(), False, {"packs": {"m.experts.w13": {"experts": 8}}}), "mixture of experts' packs")
     was = os.environ.get("VLLM_BATCH_INVARIANT")
     os.environ["VLLM_BATCH_INVARIANT"] = "1"

@@ -13,7 +13,8 @@ is tested with, it calls register() here: the quantization method "glyd".
 
 Options, in --additional-config's "glyd" (or a checkpoint's, or
 --hf-overrides', quantization_config; else GLYD_LAYOUT, GLYD_EXACT,
-GLYD_VERIFY); another key, or a flag not true or false, refused:
+GLYD_VERIFY, GLYD_FRACTION); another key, or a flag not true or false,
+refused:
 - layout: "auto" (best_layout's choice for the GPU: the tiered layout on
   Ada, for a mixture of experts on an A10 too, and where only it fits; the
   12-bit one elsewhere), "mma" or "mma12";
@@ -31,7 +32,18 @@ GLYD_VERIFY); another key, or a flag not true or false, refused:
   before it), never silently inexact;
 - verify: every pack decoded as it is made and compared with its weights
   bit for bit (a glyd save's by glyd.json's sha256, and its tensors saved as
-  they are; a save packed again in the other layout against the save).
+  they are; a save packed again in the other layout against the save);
+- fraction: the share of the decoder layers packed, 0 to 1 (default 1: every
+  one). Layer i's Linears (qkv, o, gate_up, down; a mixture of experts'
+  experts too) are packed where floor((i + 1) * fraction) > floor(i *
+  fraction), so floor(L * fraction) of L layers, spread evenly over the
+  depth; the rest stay vLLM's own bf16 (UnquantizedLinearMethod,
+  UnquantizedFusedMoEMethod), exactly as it runs without --quantization
+  glyd: 0 is bf16 itself, and a packed layer trades a rebuild each step for
+  its memory. Layers are told by the first number in a module's name
+  (model.layers.12.mlp.down_proj: 12); a Linear outside the numbered layers
+  is packed at fraction 1 only. Embeddings and the LM head as without it. A
+  glyd save's layers are packed on disk: with a save, only fraction 1.
 Fused products (exact off) are refused under VLLM_BATCH_INVARIANT: the
 library's kernels are chosen by the batch's tokens.
 The options in effect, with a digest of the packs (their layouts, words and
@@ -87,6 +99,8 @@ import json
 import os
 import sys
 import types
+from fractions import Fraction
+from math import floor
 import torch
 import torch.nn.functional as F
 from vllm import envs
@@ -118,7 +132,7 @@ log = init_logger("vllm.glyd")
 NAME = "glyd"
 KEY = "glyd"  # vllm_config.additional_config's: the options (and the packs' digest), in vLLM's compile cache key
 LAYOUTS = ("auto", "mma", "mma12")
-OPTIONS = ("layout", "exact", "verify")
+OPTIONS = ("layout", "exact", "verify", "fraction")
 IGNORED = ("quant_method", "merge", "verified", "source", "hashed", "unhashed")  # (transformers' glyd config's own)
 BITS = {"mma": 10.80, "mma12": 12.04}
 # Tokens a step from which a mixture of experts' layer decodes its routed experts for vLLM's Triton kernel instead of the
@@ -147,9 +161,35 @@ def _flag(name, v):
     raise ValueError(f"glyd: {name} {v!r}: true or false (1, true, yes, on / 0, false, no, off)")
 
 
+def _fraction(v):
+    """The option fraction: a number from 0 to 1 (a string or int too; 1 where not given); else refused."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return 1.0
+    try:
+        f = float("nan") if isinstance(v, bool) else float(v)
+    except (TypeError, ValueError):
+        f = float("nan")
+    if not 0.0 <= f <= 1.0:  # (nan is neither)
+        raise ValueError(f"glyd: fraction {v!r}: a number from 0 to 1 (the share of the decoder layers packed)")
+    return f
+
+
+def _layer_of(prefix):
+    """The decoder layer a module is in, by the first number in its name (vLLM's prefix: model.layers.12.mlp.down_proj is
+    12, transformer.h.3.attn.c_attn 3); None where it has none (outside the numbered layers)."""
+    return next((int(p) for p in prefix.split(".") if p.isascii() and p.isdigit()), None)
+
+
+def _packs(i, f):
+    """Whether decoder layer i is packed at fraction f: floor((i + 1) f) > floor(i f), f as the decimal it was written
+    (0.3 is 3/10, whatever its float). Of any L layers from the first, floor(L f) are, spread evenly: 0 packs none, 1 all."""
+    q = Fraction(repr(f))
+    return floor((i + 1) * q) > floor(i * q)
+
+
 def _options(extra, given, env):
-    """The options in effect (layout, exact, verify): --additional-config's "glyd" (extra), else the given ones (a
-    checkpoint's or --hf-overrides' quantization_config), else the environment's; another key refused."""
+    """The options in effect (layout, exact, verify, fraction): --additional-config's "glyd" (extra), else the given ones
+    (a checkpoint's or --hf-overrides' quantization_config), else the environment's; another key refused."""
     if not isinstance(extra, dict):
         raise ValueError(f"glyd: --additional-config's \"glyd\" is a {type(extra).__name__}, not an object of options ({', '.join(OPTIONS)})")
     extra = {k: v for k, v in extra.items() if k not in ("glyd", "packs")}  # (what resolve writes there: the key)
@@ -160,7 +200,7 @@ def _options(extra, given, env):
     layout = str(pick["layout"] or "auto").lower()
     if layout not in LAYOUTS:
         raise ValueError(f"glyd: layout {pick['layout']!r}: one of {', '.join(LAYOUTS)}")
-    return layout, _flag("exact", pick["exact"] or False), _flag("verify", pick["verify"] or False)
+    return layout, _flag("exact", pick["exact"] or False), _flag("verify", pick["verify"] or False), _fraction(pick["fraction"])
 
 
 def _gpu(d):
@@ -273,12 +313,13 @@ def _moe_decode_min():
     return None if n < 0 else n
 
 
-def _estimate(lin, other, layout, n, draft=False):
+def _estimate(lin, other, layout, n, draft=False, fraction=1.0):
     """A model's weights a GPU packed in layout, bytes, and at least (the Linears' count less a gate's third), over n
-    GPUs: its Linears (lin, bf16 bytes) packed and the rest (other) as they are; a draft's Linears alone (it shares its
-    target's embeddings; its LM head is its own smaller one)."""
+    GPUs: its Linears (lin, bf16 bytes) packed, but for the share (1 - fraction) left bf16, and the rest (other) as they
+    are; a draft's Linears alone (it shares its target's embeddings; its LM head is its own smaller one)."""
     other = 0 if draft else other
-    return (lin * BITS[layout] / 16 + other) / n, (lin * 2 / 3 * BITS[layout] / 16 + other) / n
+    packed, plain = lin * fraction, lin * (1 - fraction)
+    return (packed * BITS[layout] / 16 + plain + other) / n, (packed * 2 / 3 * BITS[layout] / 16 + plain + other) / n
 
 
 def _missing(kind, loaded, n=0):
@@ -321,11 +362,11 @@ class GlydConfig(QuantizationConfig):
     """The "glyd" quantization method: the options given (a checkpoint's or --hf-overrides' quantization_config), a
     glyd save's glyd.json where the model is one, and the options in effect once vLLM makes the model (resolve)."""
 
-    def __init__(self, layout=None, exact=None, verify=None):
+    def __init__(self, layout=None, exact=None, verify=None, fraction=None):
         super().__init__()
-        self.given = {k: v for k, v in (("layout", layout), ("exact", exact), ("verify", verify)) if v is not None}
+        self.given = {k: v for k, v in (("layout", layout), ("exact", exact), ("verify", verify), ("fraction", fraction)) if v is not None}
         self.manifest, self.dir, self.hf_config = None, None, None  # a glyd save's glyd.json and directory; the model's config
-        self.opts = None  # {"layout", "exact", "verify"}: resolved at the model's first Linear
+        self.opts = None  # {"layout", "exact", "verify", "fraction"}: resolved at the model's first Linear
         self.compiled, self.need, self.free, self.files_checked = False, 0, 0, False
 
     def __getstate__(self):  # (vLLM pickles its config to start its engine's process: not the worker's own)
@@ -350,7 +391,7 @@ class GlydConfig(QuantizationConfig):
         bad = [k for k in config if k not in OPTIONS + IGNORED]
         if bad:
             raise ValueError(f"glyd: the quantization_config's {', '.join(map(repr, bad))}: not an option ({', '.join(OPTIONS)})")
-        return cls(config.get("layout"), config.get("exact"), config.get("verify"))
+        return cls(config.get("layout"), config.get("exact"), config.get("verify"), config.get("fraction"))
 
     def maybe_update_config(self, model_name, hf_config=None, revision=None):
         """The model this config is for (vLLM's model or, for a draft asked to be packed, the draft's): its config, and
@@ -378,7 +419,8 @@ class GlydConfig(QuantizationConfig):
         # as "WorkerProc initialization failed". The workers' resolve refuses the same, with what only they know.
         vc = _building_config()
         if vc is not None and getattr(vc.model_config, "hf_config", None) is hf_config and isinstance(vc.additional_config, dict):
-            _refusals(vc, _options(vc.additional_config.get(KEY) or {}, self.given, _env())[1], self.manifest)  # (the model's own, not a draft's)
+            o = _options(vc.additional_config.get(KEY) or {}, self.given, _env())
+            _refusals(vc, o[1], self.manifest, o[3])  # (the model's own, not a draft's)
 
     def resolve(self):
         """The options in effect (_options); the layout "auto" best_layout's for this GPU (a save's own where that is
@@ -389,39 +431,47 @@ class GlydConfig(QuantizationConfig):
             raise RuntimeError("glyd: vLLM's config is not set where the model is made")
         if not isinstance(vc.additional_config, dict):
             raise ValueError("glyd: vLLM's additional_config is not a dict: Glyd keys vLLM's compile cache by it")
-        layout, exact, verify = _options(vc.additional_config.get(KEY) or {}, self.given, _env())
+        layout, exact, verify, fraction = _options(vc.additional_config.get(KEY) or {}, self.given, _env())
         pc, mc = vc.parallel_config, vc.model_config
-        _refusals(vc, exact, self.manifest)
+        _refusals(vc, exact, self.manifest, fraction)
         # A mixture of experts' shared experts run on a side stream beside the rest by default: their products and the
-        # main stream's would share the device's done counters. Off, before vLLM makes them (and caches its env).
-        os.environ["VLLM_DISABLE_SHARED_EXPERTS_STREAM"] = "1"
+        # main stream's would share the device's done counters. Off, before vLLM makes them (and caches its env), where
+        # anything is packed (fraction 0 is bf16 as vLLM runs it).
+        if fraction > 0:
+            os.environ["VLLM_DISABLE_SHARED_EXPERTS_STREAM"] = "1"
         cc = vc.compilation_config
         self.compiled = not (mc.enforce_eager or (cc.mode == CompilationMode.NONE and cc.cudagraph_mode == CUDAGraphMode.NONE))
         if not self.manifest and pc.tensor_parallel_size > 1:
             log.warning("glyd: tensor parallel %d: each rank packs its own shard (not measured yet)", pc.tensor_parallel_size)
         try:
             dev = torch.cuda.current_device()
-            _gpu(dev)  # the library, loaded now: not at the first forward
+            if fraction > 0:
+                _gpu(dev)  # the library, loaded now: not at the first forward (fraction 0 packs nothing: it stays unloaded)
         except Exception as e:
             raise RuntimeError(f"glyd: Glyd's GPU library did not load ({type(e).__name__}: {e}): a CUDA build of PyTorch and the glyd wheel's library (or GLYD_GPU_LIB) are needed") from e
         hf = self.hf_config  # (this config's model: a draft's own, not the target's vc.model_config)
-        lin, other, moe = _linear_bytes(hf.get_text_config() if hf is not None and hasattr(hf, "get_text_config") else hf if hf is not None else mc.hf_text_config)
+        tc = hf.get_text_config() if hf is not None and hasattr(hf, "get_text_config") else hf if hf is not None else mc.hf_text_config
+        lin, other, moe = _linear_bytes(tc)
         n = max(1, pc.tensor_parallel_size) * max(1, pc.pipeline_parallel_size)
+        packed = int(lin * fraction)  # (the Linears packed, bf16 bytes: the rest stay as vLLM runs them)
         if layout == "auto":
-            layout = self.manifest["layout"] if self.manifest else g.best_layout(lin // n, other // n, 1, dev, moe=moe)[0]
+            layout = self.manifest["layout"] if self.manifest else g.best_layout(packed // n, (other + lin - packed) // n, 1, dev, moe=moe)[0]
         # Free: the driver's, and what PyTorch holds cached but unused (a draft is made after the target's packing freed
         # its temporaries into PyTorch's cache). A draft (a config of its own, not vLLM's model's) counted by its
         # Linears alone: it shares the target's embeddings, and its LM head is its own smaller one.
         self.free = torch.cuda.mem_get_info(dev)[0] + torch.cuda.memory_reserved(dev) - torch.cuda.memory_allocated(dev)
-        self.need, low = _estimate(lin, other, layout, n, draft=hf is not None and hf is not getattr(mc, "hf_config", None))
+        draft = hf is not None and hf is not getattr(mc, "hf_config", None)
+        self.need, low = _estimate(lin, other, layout, n, draft=draft, fraction=fraction)
         if lin and low > self.free:  # (they cannot fit: refused here, not by an OutOfMemoryError deep in the load)
-            tiered = f"; the tiered layout (layout mma, {BITS['mma']} bits) takes about {(lin * BITS['mma'] / 16 + other) / n / 2**30:.1f} GiB" if layout == "mma12" else ""
-            raise ValueError(f"glyd: the model's weights take about {self.need / 2**30:.1f} GiB a GPU packed in the {layout} layout ({BITS[layout]} bits a weight), at least {low / 2**30:.1f}, and the GPU has {self.free / 2**30:.1f} GiB free{tiered}: serve it over more GPUs (--tensor-parallel-size), or a smaller model")
+            tiered = f"; the tiered layout (layout mma, {BITS['mma']} bits) takes about {_estimate(lin, other, 'mma', n, draft=draft, fraction=fraction)[0] / 2**30:.1f} GiB" if layout == "mma12" else ""
+            share = f", fraction {fraction:g} of the layers, the rest bf16" if fraction < 1 else ""
+            raise ValueError(f"glyd: the model's weights take about {self.need / 2**30:.1f} GiB a GPU packed in the {layout} layout ({BITS[layout]} bits a weight{share}), at least {low / 2**30:.1f}, and the GPU has {self.free / 2**30:.1f} GiB free{tiered}: serve it over more GPUs (--tensor-parallel-size), or a smaller model")
         if exact:
             _BF16[:] = [UnquantizedLinearMethod()]  # (vLLM's config current: its linear backend)
-        self.opts, self._vc = {"layout": layout, "exact": exact, "verify": verify}, vc
+        self.opts, self._vc = {"layout": layout, "exact": exact, "verify": verify, "fraction": fraction}, vc
         vc.additional_config[KEY] = {**self.opts, "glyd": __version__, "packs": _digest()}  # (a draft's resolve keeps the packs made)
-        log.info("glyd: %s layout%s%s", layout, ", exact" if exact else "", ", verified" if verify else "")
+        L = getattr(tc, "num_hidden_layers", 0) or 0
+        log.info("glyd: %s layout%s%s%s", layout, ", exact" if exact else "", ", verified" if verify else "", f", {sum(_packs(i, fraction) for i in range(L))} of {L} layers packed (fraction {fraction:g})" if fraction < 1 else "")
 
     def check_files(self):
         """verify: a glyd save's files against its glyd.json, its tensors saved as they are by their sha256 (once, when
@@ -436,6 +486,8 @@ class GlydConfig(QuantizationConfig):
         if RoutedExperts is not None and isinstance(layer, RoutedExperts):  # a mixture of experts' layer
             if self.opts is None:
                 self.resolve()
+            if not self.packs(prefix):  # (fraction: this layer's experts stay as vLLM runs them)
+                return UnquantizedFusedMoEMethod(layer.moe_config)
             if not envs.VLLM_DISABLE_SHARED_EXPERTS_STREAM:
                 raise RuntimeError("glyd: VLLM_DISABLE_SHARED_EXPERTS_STREAM is not on in this process (vLLM read its environment before Glyd set it): set VLLM_DISABLE_SHARED_EXPERTS_STREAM=1, since shared experts on a side stream would share the GPU's done counters with the rest")
             why = GlydMoEMethod.unsupported(layer)
@@ -456,7 +508,15 @@ class GlydConfig(QuantizationConfig):
             self.resolve()
             if _NO_MOE:
                 log.warning("glyd: vLLM's mixture of experts internals did not import (%s): a model's experts stay bf16", _NO_MOE)
+        if not self.packs(prefix):  # (fraction: this layer's Linears stay as vLLM runs them without a quantization)
+            return UnquantizedLinearMethod()
         return GlydLinearMethod(self, self.saved(prefix))
+
+    def packs(self, prefix):
+        """Whether the layer at vLLM's prefix is packed (fraction): its decoder layer's turn (_packs), or, outside the
+        numbered layers, only where every layer is."""
+        i, f = _layer_of(prefix), self.opts["fraction"]
+        return f >= 1 if i is None else _packs(i, f)
 
     def saved(self, prefix):
         """A glyd save's manifest entry for vLLM's layer prefix, or None: its pack as saved (q, k, v and gate, up are one
@@ -488,7 +548,7 @@ class GlydConfig(QuantizationConfig):
 
 
 def _env():
-    return {"layout": os.environ.get("GLYD_LAYOUT"), "exact": os.environ.get("GLYD_EXACT"), "verify": os.environ.get("GLYD_VERIFY")}
+    return {"layout": os.environ.get("GLYD_LAYOUT"), "exact": os.environ.get("GLYD_EXACT"), "verify": os.environ.get("GLYD_VERIFY"), "fraction": os.environ.get("GLYD_FRACTION")}
 
 
 def _building_config():
@@ -507,8 +567,9 @@ def _digest():
     return hashlib.sha256(json.dumps(sorted(_PACKS.items())).encode()).hexdigest()[:16] if _PACKS else ""
 
 
-def _refusals(vc, exact, manifest):
-    """What Glyd does not do yet, refused with why: vLLM's config (vc), exact mode, a glyd save's glyd.json."""
+def _refusals(vc, exact, manifest, fraction=1.0):
+    """What Glyd does not do yet, refused with why: vLLM's config (vc), exact mode, a glyd save's glyd.json (and with it
+    a fraction under 1: its layers are packed on disk)."""
     pc, mc = vc.parallel_config, vc.model_config
     if envs.VLLM_BATCH_INVARIANT and not exact:
         raise ValueError("glyd: VLLM_BATCH_INVARIANT asks for every product's bits not to depend on the batch, and Glyd's fused kernels are chosen by the batch's tokens: serve with exact (vLLM's batch-invariant GEMM on the decoded weights), or without VLLM_BATCH_INVARIANT")
@@ -528,6 +589,8 @@ def _refusals(vc, exact, manifest):
     if exact and not (eager or (icc.get("deterministic") and icc.get("benchmark_combo_kernel") is False)):
         raise ValueError("glyd: exact mode gives vLLM's bf16 logits bit for bit eager (--enforce-eager), or compiled with inductor's deterministic mode, with which vLLM's compiled bf16 is itself the same from one run to the next: --compilation-config '{\"inductor_compile_config\": {\"deterministic\": true, \"combo_kernels\": true, \"benchmark_combo_kernel\": false}}' (the bf16 run to compare with the same). Without it inductor times some of its kernels' variants on the GPU, and compiled logits, bf16's too, are not always the same from one run to the next. Add one of the two, or leave exact off")
     if manifest is not None:
+        if fraction < 1:
+            raise ValueError(f"glyd: fraction {fraction:g} leaves some layers bf16, and a glyd save's layers are packed on disk: serve its bf16 checkpoint with a fraction (packed as it loads), or the save with fraction 1")
         if pc.tensor_parallel_size > 1 or pc.pipeline_parallel_size > 1:
             raise ValueError("glyd: a glyd save loads on one GPU for now (tensor and pipeline parallel: from its bf16 checkpoint)")
         if any("experts" in e for e in manifest["packs"].values()):
