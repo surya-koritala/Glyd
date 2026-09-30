@@ -1,0 +1,6 @@
+name, driver_version, clocks.max.sm [MHz], memory.total [MiB], power.limit [W]
+NVIDIA GeForce RTX 4080 SUPER, 595.91.07, 3105 MHz, 16376 MiB, 320.00 W
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+2.14.0+cu130
+7.0.0-34-generic

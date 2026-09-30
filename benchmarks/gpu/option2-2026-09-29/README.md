@@ -73,4 +73,6 @@ before 244baf4, GLinear's passes after its first were not its bits (96 of 1,984 
 GH200): a device's first prompt, the order being recorded, cut its matrices in 100 MiB row chunks, the prompts after
 it in the planned slots' (Qwen3-14B's 178 MB, 32B's 262 MB), other cuBLAS calls; since, a device's ring keeps one slot
 size. layer.py's reference in `a100-2` was such a recording pass (its Split dropped between passes), the "differ pass
-to pass" that stopped it; the ring's ordering held in ring_model.py's 1,300 schedules and in every stress run.
+to pass" that stopped it; the ring's ordering held in ring_model.py's 1,500 schedules (`ring_model.txt`; with the
+decode's wait on its slot's last product taken out, 142 of 300 fail, with the product's on its decode, 273) and in every
+stress run.

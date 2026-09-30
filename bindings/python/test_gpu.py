@@ -289,10 +289,10 @@ def test_c_header():
 def test_split_route():
     """The route SPLIT (option 2) through the library where it and a GPU are here (else skipped): its rule's pins (an
     A100 SXM from 769 to 4096 tokens; a GH200 from 2048 to 8192, O and K at least 5120; no H100 SXM, H200 or PCIe card;
-    its decode's SMs), asked for (GLYD_GPU_WITH_SPLIT), and without the flag
-    today's routes (v0.25.1's); a GLinear made as on an A100 by it at 1024 tokens: within 1e-2 of
-    fp32 and the same bits run to run, its decode bit for bit the pack's, exact bit for bit F.linear, and today's route
-    (decoded, then cuBLAS) where the route cannot run."""
+    its decode's SMs), asked for (GLYD_GPU_WITH_SPLIT), and without the flag today's routes (v0.25.1's); a GLinear
+    made as on an A100 SXM by it at 1024 tokens (Split.run called, where the split can run here): within 1e-2 of fp32
+    and the same bits run to run, its decode bit for bit the pack's, exact never by it (F.linear's bits), today's route
+    (decoded, then cuBLAS) where the route cannot run, and its ring let go with its model, the next one's made anew."""
     torch = cuda()
     if torch is None:
         print("  (no GPU: skipped)")
@@ -333,24 +333,47 @@ def test_split_route():
     finally:
         torch.cuda.get_device_capability, torch.cuda.get_device_name = cap, name
     gm.set_scratch(torch.nn.ModuleList([lin, ex]), False)
-    x = torch.randn(1024, 2048, dtype=torch.bfloat16, device="cuda")
-    ys = [lin(x) for _ in range(3)]
+    measured, run, ran = gm.Split.measured, gm.Split.run, []
+    gm.Split.measured = staticmethod(lambda d, gpu: True)  # (as an A100 SXM's: its 108 SMs)
+    gm.Split.run = lambda s, lin_, x_: (ran.append(lin_.handle), run(s, lin_, x_))[1]
     d = w.device
-    if gm.Split.of.get(d) is False:
-        print("  (the route SPLIT cannot run on this GPU: its fallback alone checked)")
-    ref = F.linear(x.float(), w.float())
-    assert ((ys[0].float() - ref).abs().max() / ref.abs().max()).item() < 1e-2
-    assert all(torch.equal(y.view(torch.int16), ys[0].view(torch.int16)) for y in ys), "the route SPLIT: the same bits run to run"
-    assert torch.equal(ex(x).view(torch.int16), F.linear(x, w).view(torch.int16)), "exact never takes the route SPLIT"
-    was = gm.Split.of.get(d)
-    gm.Split.of[d] = False
     try:
-        assert torch.equal(lin(x).view(torch.int16), F.linear(x, g.mma_unpack(q)).view(torch.int16)), "the route SPLIT off: today's route"
+        x = torch.randn(1024, 2048, dtype=torch.bfloat16, device="cuda")
+        ys = [lin(x) for _ in range(3)]
+        runs = gm.Split.of.get(d) is not False
+        if not runs:
+            print("  (the route SPLIT cannot run on this GPU: its fallback alone checked)")
+        assert ran == ([lin.handle] * 3 if runs else []), ("GLinear by the route SPLIT where it can run", ran)
+        ref = F.linear(x.float(), w.float())
+        assert ((ys[0].float() - ref).abs().max() / ref.abs().max()).item() < 1e-2
+        assert all(torch.equal(y.view(torch.int16), ys[0].view(torch.int16)) for y in ys), "the route SPLIT: the same bits run to run"
+        ran.clear()
+        assert torch.equal(ex(x).view(torch.int16), F.linear(x, w).view(torch.int16)) and not ran, "exact never takes the route SPLIT"
+        was = gm.Split.of.get(d)
+        gm.Split.of[d] = False
+        try:
+            assert torch.equal(lin(x).view(torch.int16), F.linear(x, g.mma_unpack(q)).view(torch.int16)) and not ran, "the route SPLIT off: today's route"
+        finally:
+            if was is None:
+                del gm.Split.of[d]
+            else:
+                gm.Split.of[d] = was
+        if runs:  # its model deleted: the ring let go at once (the order's first Linear's finalizer), the next model's made anew
+            s = gm.Split.of[d]
+            del lin
+            import gc
+            gc.collect()
+            assert d not in gm.Split.of and s.ring is None and s.buf is None, "the route SPLIT's ring let go with its model"
+            torch.cuda.get_device_capability, torch.cuda.get_device_name = lambda device=None: (8, 0), lambda device=None: "NVIDIA A100-SXM4-40GB"
+            try:
+                lin = gm.GLinear(q, None)
+            finally:
+                torch.cuda.get_device_capability, torch.cuda.get_device_name = cap, name
+            assert torch.equal(lin(x).view(torch.int16), ys[0].view(torch.int16)) and isinstance(gm.Split.of.get(d), gm.Split) and gm.Split.of[d] is not s, "a new ring, the same bits"
     finally:
-        if was is None:
-            del gm.Split.of[d]
-        else:
-            gm.Split.of[d] = was
+        gm.Split.measured, gm.Split.run = measured, run
+        gm.Split.stop(d)
+        gm.Split.of.pop(d, None)
 
 
 def test_split_stress():
@@ -396,7 +419,7 @@ def test_split_order():
         follow = ns["follow"]
 
         def __init__(self):
-            self.order, self.rec, self.run_, self.pos, self.at = None, [], [], 0, -1
+            self.order, self.rec, self.run_, self.pos, self.at, self.sms, self.hi, self.end = None, [], [], 0, -1, 0, -1, 0
 
         def plan(self):
             pass
@@ -406,7 +429,7 @@ def test_split_order():
 
         def start(self, M, sms, i):  # as Split.start: the order's Linears from its i-th on that take the route now
             self.starts += 1
-            self.run_, self.pos = [j for j in range(i, len(self.order)) if self.order[j] in self.takes], 0
+            self.run_, self.pos, self.sms = [j for j in range(i, len(self.order)) if self.order[j] in self.takes], 0, sms
             return 0
 
     def prompt(s, calls):  # the queues a prompt's calls made (the Linears that take the route: calls)
@@ -438,6 +461,105 @@ def test_split_order():
     assert ns["ring_slot"](big) == 17408 * 5120 * 2 and ns["ring_plan"](big, 17408 * 5120 * 2) == (6, 6)
     small = [(4096, 1024), (1024, 2048), (6144, 1024), (1024, 3072)] * 28
     assert ns["ring_slot"](small) == 6144 * 1024 * 2 and ns["ring_plan"](small, 6144 * 1024 * 2) == (5, 6)
+
+
+def test_split_queue():
+    """The route SPLIT's queue: model.Split's own follow, start and top_up (taken from model.py, no torch) against a
+    fake library that keeps the ring's queue as glyd_gpu.cu does (a queue on one split; a product takes the front
+    where it is its pack, else drops the queue and decodes its own). A model's queue left by a prompt cut short (a
+    Linear followed, its product never run), the model deleted and another loaded at the same addresses: dropped
+    before the other's first product, which would take the dead model's matrix as its own. A prompt whose Linears run
+    on two splits (a vision tower's at 2000 tokens, the language model's at 1000, an A100's 8 and 12 SMs): every call
+    by the route, none refused. A Linear one prompt called (a full-logits pass's lm_head) and the next did not: not
+    queued again, until a prompt calls it."""
+    import types
+    tree = ast.parse(open(os.path.join(HERE, "glyd", "gpu", "model.py")).read())
+    split = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Split")
+    fns = [n for n in split.body if isinstance(n, ast.FunctionDef) and n.name in ("follow", "start", "top_up")]
+    mods = {}
+
+    class Lib:  # the ring's queue, as glyd_gpu.cu keeps it: each entry the pack and the Linear it was queued for
+        def __init__(self):
+            self.q, self.split, self.queued, self.stale = [], None, [], []
+
+        def ring_reset(self, ring):
+            self.q.clear()
+            return 0
+
+        def mma12_ring_queue(self, ring, sms, data, exc, exc_base, sym, O, K):
+            if sms != self.split and self.q:
+                return 1  # (cudaErrorInvalidValue: a queue's matrices on one split)
+            self.split = sms
+            key = (data, exc, exc_base, tuple(sym))
+            self.q.append((key, next(h for h, m in mods.items() if (m.p.data, m.p.exc, m.p.exc_base, tuple(m.p.sym)) == key)))
+            self.queued.append(self.q[-1][1])
+            return 0
+
+        def product(self, h):  # mma12_ring_linear: the front where it is h's pack whole, else the queue dropped and W alone
+            p = mods[h].p
+            if self.q and self.q[0][0] == (p.data, p.exc, p.exc_base, tuple(p.sym)):
+                if self.q.pop(0)[1] != h:
+                    self.stale.append(h)
+            else:
+                self.q.clear()
+
+    lib = Lib()
+    g = types.SimpleNamespace(WITH_SPLIT=1 << 20, split_sms=lambda p, gpu, M: 12 if M < 1536 else 8)  # (an A100's SMs by M)
+    ns = {"_lib": lib, "_modules": mods, "g": g}
+    exec(compile(ast.Module(fns, []), "model.py", "exec"), ns)
+
+    class S:
+        follow, start, top_up = ns["follow"], ns["start"], ns["top_up"]
+
+        def __init__(self):
+            self.ring, self.order, self.rec, self.run_, self.pos, self.queued, self.ahead, self.sms, self.at, self.hi, self.end = 1, None, [], [], 0, 0, 3, 0, -1, -1, 0
+
+        def plan(self):
+            pass
+
+    def model(first, base, n=8):  # n Linears, their packs at base on (another model's may take the same)
+        hs = list(range(first, first + n))
+        for i, h in enumerate(hs):
+            mods[h] = types.SimpleNamespace(p=types.SimpleNamespace(data=base + i, exc=base + 100 + i, exc_base=base + 200 + i, sym=[0, 0, 0, 0], shape=(4096, 4096)), gpu=80)
+        return hs
+
+    def call(s, h, M):  # a call by the route: the order's bookkeeping, then the product
+        assert s.follow(h, M, g.split_sms(None, 0, M)) == 0, ("refused", h, M)
+        lib.product(h)
+
+    # a prompt cut short after its first Linear's follow, the model deleted, another loaded at its addresses
+    s = S()
+    a = model(0, 1000)
+    for h in a:  # recorded
+        call(s, h, 1000)
+    assert s.follow(a[0], 1000, 12) == 0 and lib.q and lib.q[0][1] == a[0]  # (the next prompt cut short: its head followed, its product never run)
+    for h in a:
+        del mods[h]
+    b = model(100, 1000)
+    for h in b + b:
+        call(s, h, 1000)
+    assert not lib.stale, ("a dead model's matrix taken as another's", lib.stale)
+    # a prompt on two splits: a vision tower at 2000 tokens (8 SMs), the language model at 1000 (12)
+    s, lib.q = S(), []
+    tower, lm = model(200, 2000, 4), model(300, 3000, 4)
+    for p in range(3):
+        for h in tower:
+            call(s, h, 2000)
+        for h in lm:
+            call(s, h, 1000)
+    assert not lib.stale
+    # an lm_head called in one prompt (a full-logits pass), not in the next: not queued again, until called
+    s, lib.q = S(), []
+    *body, head = model(400, 4000, 4)
+    for h in body + [head] + body:  # recorded with it; then a prompt without it
+        call(s, h, 1000)
+    lib.queued.clear()
+    for h in body:
+        call(s, h, 1000)
+    assert head not in lib.queued and set(lib.queued) == set(body), lib.queued
+    for h in body + [head]:
+        call(s, h, 1000)
+    assert head in lib.queued and not lib.stale
 
 
 def test_names_defined_once():

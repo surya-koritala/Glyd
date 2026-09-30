@@ -42,9 +42,11 @@
  * 12-bit layout, a code into its 15 commonest exponents, has other bytes
  * and words, which the library refuses: pack it again; 6 from the route
  * SPLIT (glyd_gpu_ring_*, glyd_gpu_mma12_ring_*, glyd_gpu_mma12_unpack_split,
- * glyd_gpu_mma12_split_sms), a GPU's PCIe class and GLYD_GPU_WITH_SPLIT in its
- * code (0.26.0). */
-#define GLYD_GPU_API_VERSION 6
+ * glyd_gpu_mma12_split_sms), a GPU's PCIe class and GLYD_GPU_NO_SPLIT in its
+ * code (never released: builds of the route's branch alone); 7 from
+ * GLYD_GPU_WITH_SPLIT in its place, the route opt-in, and a GPU's PCIe class
+ * 5000 (0.26.0). */
+#define GLYD_GPU_API_VERSION 7
 
 #ifdef __cplusplus
 extern "C" {
@@ -261,9 +263,10 @@ int glyd_gpu_mma12_linear(const uint8_t* data, const uint32_t* exc, const int32_
  * each product; a product whose matrix is not next in the queue drops it and
  * decodes its own, chunk by chunk, beside its products. Its products are cuBLAS's own on the
  * decoded bf16 (a row chunk a call): not bit for bit a whole-matrix product.
- * A ring serves one host thread and one device (the current one when made);
- * cudaErrorNotSupported where the split cannot run (a driver before CUDA
- * 12.4, one that refuses the split: MIG, MPS; stream cs being captured into
+ * A ring serves one host thread and one device (the current one when made:
+ * cudaErrorInvalidDevice with another current); cudaErrorNotSupported where
+ * the split cannot run (the driver's green contexts not available: a driver
+ * before CUDA 12.5, or one that refuses them; stream cs being captured into
  * a CUDA graph): take the route the code without GLYD_GPU_WITH_SPLIT gives.
  * ---------------------------------------------------------------------- */
 typedef struct glyd_gpu_ring glyd_gpu_ring;
@@ -273,8 +276,9 @@ typedef struct glyd_gpu_ring glyd_gpu_ring;
  * set_workspace may be NULL). A call sets the handle's stream to the ring's
  * product stream, its workspace to workspace (where given: the ring's stream
  * alone uses it) and its SM count target to the products' SMs, and puts back
- * the stream and target it had where get_stream and get_sm_count_target are
- * given. A cuBLAS status s is returned as GLYD_GPU_BLAS_ERROR + s. */
+ * the stream and target it had where get_stream and get_sm_count_target read
+ * them (the target is set only where it can be read back). A cuBLAS status s
+ * is returned as GLYD_GPU_BLAS_ERROR + s. */
 typedef struct glyd_gpu_blas {
     void* handle; /* cublasHandle_t */
     int (*gemm_ex)(void* handle, int transa, int transb, int m, int n, int k, const void* alpha, const void* A, int Atype, int lda,
@@ -293,7 +297,9 @@ typedef struct glyd_gpu_blas {
 /* A ring over buffer (bytes long, 16-byte aligned) in slots of slot_bytes (a
  * multiple of 256; 3 to 16 of them), on the current device. */
 int glyd_gpu_ring_create(void* buffer, size_t bytes, size_t slot_bytes, glyd_gpu_ring** ring);
-/* Its streams waited for, its green contexts let go. */
+/* Its streams waited for, its green contexts, streams and events let go (on
+ * its device, whichever is current): the first failure's status (then its
+ * buffer may still be written: keep it). */
 int glyd_gpu_ring_destroy(glyd_gpu_ring* ring);
 /* The split for a decode of sms SMs (glyd_gpu_mma12_split_sms's): made where
  * it is not yet (a green context of the remaining SMs, a co-scheduled group,

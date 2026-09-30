@@ -1,0 +1,27 @@
+FAIL: round 1, option 2 (decode ahead on s SMs, cuBLAS on the rest) on NVIDIA A100-SXM4-40GB (108 SMs, compute 8.0, the model: A100-40GB): the decoder PASS, the layer FAIL, bit for bit PASS
+GATE (a) PASS: the decoder alone, split byte, ldg D1 NT1 on 16 SMs: 9.58 weights a clock an SM (line: at least 6.0), 13.51 G weights/s an SM (the A100 needs 7-9) at 1410 MHz, 194 W
+GATE (c) FAIL: the layer over bf16 cuBLAS at 1024 / 2048 / 4096 tokens (lines: the model's b1 + 0.03): 8B 1.065 (<= 1.197) / 1.085 (<= 1.144) / 1.022 (<= 1.097); 32B 1.268 (<= 1.191) / 1.175 (<= 1.144) / 1.092 (<= 1.096)
+LOSSLESS PASS: 8 of 8 layout, path and configuration checks bit for bit on every chunk (Qwen3-32B, Qwen3-8B)
+environment: 2.14.0+cu130 (CUDA 13.0), driver API 13000, cuBLAS 130101, cuda.bindings 13.4.3; SM partitions: alignment 2, at least 4
+
+(a) the decoder alone: weights a clock an SM (G weights/s an SM) by s; the configuration fastest at the s nearest 16
+| layout, path | s=4 | s=8 | s=16 | s=24 | s=108 |
+| :-- | --: | --: | --: | --: | --: |
+| sb cpa D2 NT1 w1 |  |  | 5.39 (7.6) |  |  |
+| sb cpa D3 NT1 w1 |  |  | 6.02 (8.5) |  |  |
+| sb cpa D4 NT1 w1 | 7.30 (10.3) | 7.19 (10.1) | 6.98 (9.8) | 6.81 (9.6) | 2.13 (3.0) |
+| sb ldg D1 NT1 w4 | 10.05 (14.2) | 9.86 (13.9) | 9.58 (13.5) | 8.89 (12.5) | 2.13 (3.0) |
+
+(c) the layer over bf16 cuBLAS on all SMs (the better of our cuBLAS call and PyTorch's): the best s and target at each length; at best = the slower of its two parts alone; b1 = the model; today = today's route (the logs, else the model)
+| model | M | layer | s | target | at best | b1 | today | clock, power (bf16) | clock, power (layer) |
+| :-- | --: | --: | --: | --: | --: | --: | --: | --: | --: |
+| Qwen3-32B | 512 | 1.274 | 16 | 92 | 1.167 | 1.254 | 1.430 | 1268 MHz 388 W | 1215 MHz 403 W |
+| Qwen3-32B | 1024 | 1.268 | 8 | 100 | 1.204 | 1.161 | 1.350 | 1200 MHz 391 W | 1260 MHz 401 W |
+| Qwen3-32B | 2048 | 1.175 | 12 | 96 | 1.149 | 1.114 | 1.180 | 1200 MHz 393 W | 1245 MHz 403 W |
+| Qwen3-32B | 4096 | 1.092 | 4 | 0 | 1.069 | 1.066 | 1.090 | 1200 MHz 396 W | 1230 MHz 392 W |
+| Qwen3-32B | 8192 | 1.063 | 4 | 104 | 1.055 | 1.043 | 1.054 | 1200 MHz 396 W | 1215 MHz 394 W |
+| Qwen3-8B | 512 | 1.391 | 16 | 92 | 1.277 | 1.265 | 1.490 | 1410 MHz 188 W | 1335 MHz 405 W |
+| Qwen3-8B | 1024 | 1.065 | 12 | 96 | 1.020 | 1.167 | 1.330 | 1290 MHz 394 W | 1230 MHz 395 W |
+| Qwen3-8B | 2048 | 1.085 | 8 | 100 | 1.057 | 1.114 | 1.170 | 1245 MHz 401 W | 1245 MHz 397 W |
+| Qwen3-8B | 4096 | 1.022 | 4 | 104 | 1.010 | 1.067 | 1.090 | 1215 MHz 394 W | 1230 MHz 398 W |
+| Qwen3-8B | 8192 | 1.025 | 4 | 0 | 1.014 | 1.043 | 1.054 | 1215 MHz 402 W | 1230 MHz 398 W |

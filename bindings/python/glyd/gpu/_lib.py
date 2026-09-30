@@ -65,7 +65,7 @@ _RING = {  # the route SPLIT's ring (glyd_gpu.h), each call's arguments whole (a
 }
 
 
-API_VERSION = 6  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+API_VERSION = 7  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
 BIG = 4  # glyd_gpu.h's GLYD_GPU_ROUTE_BIG: the prompt kernel
 
 

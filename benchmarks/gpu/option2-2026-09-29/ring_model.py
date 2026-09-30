@@ -6,9 +6,12 @@ queued whole or a few ahead: every slot written only after its last reader's pro
 decode ended and before the next decode there began. Taking out either wait (the decode's on its slot's last product,
 the product's on its decode) fails it.
 
-    python ring_model.py [SEED]      (300 schedules from SEED)
+    python ring_model.py [SEED] [--without free|ready]      (300 schedules from SEED; --without: that wait taken out,
+                                                             the schedules that then fail counted)
 """
 import random, sys
+
+WITHOUT = sys.argv[sys.argv.index("--without") + 1] if "--without" in sys.argv else ""
 
 class Rec:  # one record of an event: done when its stream reaches it
     def __init__(self): self.done = None  # time
@@ -58,7 +61,7 @@ class Ring:  # the C ring, as written
         sd, sg = self.cur
         while self.issued < len(self.q) and not self.busy[self.next] and self.q[self.issued]["gate"] <= self.started:
             c = self.q[self.issued]; s = self.next
-            if self.read[s]: sd.wait(self.free_[s])
+            if self.read[s] and WITHOUT != "free": sd.wait(self.free_[s])
             if c["gate"] >= 0 and self.started - c["gate"] < self.STARTS: sd.wait(self.start[c["gate"] % self.STARTS])
             sd.kernel(("dec", s, c["id"]), dur(c))
             sd.record(self.ready[s])
@@ -98,7 +101,7 @@ class Ring:  # the C ring, as written
             self.pump(dur)
             c = dict(self.q[0])
             assert c["slot"] >= 0, "front not issued"
-            sg.wait(self.ready[c["slot"]])
+            if WITHOUT != "ready": sg.wait(self.ready[c["slot"]])
             sg.record(self.start[c["seq"] % self.STARTS]); self.started = c["seq"]
             self.pump(dur)
             sg.kernel(("gemm", c["slot"], c["id"]), gemm_dur(c))
@@ -132,7 +135,8 @@ def check(kernels):
     return True
 
 if __name__ == "__main__":
-    seed0 = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+    seed0 = int(next((a for a in sys.argv[1:] if a.lstrip("-").isdigit()), 0))
+    failed = []
     for seed in range(seed0, seed0 + 300):
         rnd = random.Random(seed)
         layer = [dict(name="qkv", O=7168, K=5120), dict(name="o", O=5120, K=5120), dict(name="gu", O=34816, K=5120), dict(name="down", O=5120, K=17408)]
@@ -163,6 +167,13 @@ if __name__ == "__main__":
                 cs.kernel(("rest", None, None), rnd.uniform(0, 1))
                 ring.linear(sms, W, cs, dur, gdur)
         streams = [cs] + [s for part in ring.parts.values() for s in part]
-        ks = run(streams)
-        check(ks)
-    print("ok", seed0, seed0 + 300)
+        try:
+            check(run(streams))
+        except AssertionError as e:
+            if not WITHOUT:
+                raise
+            failed.append((seed, str(e)[:100]))
+    if WITHOUT:
+        print(f"without the {WITHOUT} wait: {len(failed)} of 300 schedules from {seed0} fail" + (f" (the first, seed {failed[0][0]}: {failed[0][1]})" if failed else ""))
+    else:
+        print("ok", seed0, seed0 + 300)

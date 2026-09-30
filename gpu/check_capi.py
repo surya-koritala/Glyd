@@ -725,8 +725,9 @@ counts["GEmbedding.step"] = 1
 # The route SPLIT's products (the library alone: the ring and PyTorch's cuBLAS; the JIT host has no ring), on this GPU's
 # SMs set apart by green contexts where they can be: each within 1e-2 of fp32 and the same bits run to run, with and
 # without a bias; W in one chunk and in several (a small slot); matrices queued and multiplied in order, one off the
-# queue, on a stream of its own; refused during a CUDA graph's capture. Then GLinear by it (made as on an A100, from 769
-# tokens): its products as the ring's, never exact's (bit for bit F.linear), and today's route where it cannot run.
+# queue, on a stream of its own; the queue's front a pack whole, not its data alone; refused during a CUDA graph's
+# capture. Then GLinear by it (made as on an A100 SXM, from 769 tokens): its products as the ring's (Split.run called),
+# never exact's (F.linear's bits, Split.run not called), and today's route where it cannot run.
 dev_ = torch.device(dev, torch.cuda.current_device())
 del gm.Split.of[dev_]
 fns = gm.Split.blas_fns()
@@ -793,6 +794,16 @@ if r == 0 and fns:
         blas.handle = torch.cuda.current_blas_handle()
         assert lib.mma12_ring_linear(ring, 12, qs[0].data, qs[0].exc, qs[0].exc_base, qs[0].sym, 1024, 2048, x, None, y, blas) == 0
         near(y, F.linear(x.float(), ws_[0].float()))
+    # W queued, then a pack of W's data and exceptions but another base multiplied (a pack freed and its addresses taken
+    # again): decoded from its own, not W's slot taken as its
+    q0 = qs[0]
+    other = g.Mma12(q0.shape, q0.data, q0.exc, q0.exc_base, q0.hb + 1 if q0.hb < 120 else q0.hb - 1)
+    assert lib.ring_reset(ring) == 0 and lib.mma12_ring_queue(ring, 12, q0.data, q0.exc, q0.exc_base, q0.sym, *q0.shape) == 0
+    x, y = torch.randn(1000, 2048, dtype=bf, device=dev), nan(1000, 1024)
+    blas.handle = torch.cuda.current_blas_handle()
+    assert lib.mma12_ring_linear(ring, 12, other.data, other.exc, other.exc_base, other.sym, *other.shape, x, None, y, blas) == 0
+    near(y, F.linear(x.float(), g.mma_unpack(other).float()))
+    counts["the route SPLIT: the queue's front a pack whole"] = 1
     torch.cuda.synchronize()
     graph = torch.cuda.CUDAGraph()
     x, y = torch.randn(1000, 2048, dtype=bf, device=dev), nan(1000, 1024)
@@ -804,8 +815,9 @@ if r == 0 and fns:
         graph.capture_end()
     assert refused == 801, ("the route SPLIT refused in a capture: cudaErrorNotSupported", refused)
     # GLinear by the route, made as on an A100 (its route from 769 tokens)
-    ran, run = [], gm.Split.run
+    ran, run, measured = [], gm.Split.run, gm.Split.measured
     gm.Split.run = lambda s, lin, x: (ran.append(lin.handle), run(s, lin, x))[1]
+    gm.Split.measured = staticmethod(lambda d, gpu: True)  # (as an A100 SXM's: its 108 SMs)
     lins = made_as((8, 0), "NVIDIA A100-SXM4-40GB", lambda: [gm.GLinear(q, None) for q in qs])
     exact_lins = made_as((8, 0), "NVIDIA A100-SXM4-40GB", lambda: [gm.GLinear(q, None, exact=True) for q in qs])
     gm.set_scratch(torch.nn.ModuleList(lins + exact_lins), False)
@@ -821,7 +833,8 @@ if r == 0 and fns:
         for y, w, x in zip(ys, ws_, xs):
             near(y, F.linear(x.float(), w.float()))
         for lin, x, w in zip(exact_lins, xs, ws_):
-            assert exact(lin(x), F.linear(x, w)), ("exact never takes the route SPLIT", M)
+            ran.clear()
+            assert exact(lin(x), F.linear(x, w)) and not ran, ("exact never takes the route SPLIT", M)
         counts["GLinear by the route SPLIT (as on an A100)"] = counts.get("GLinear by the route SPLIT (as on an A100)", 0) + 3 * len(lins)
     # a CUDA graph capturing a prompt's product: today's route (Split.off while the stream is captured), replayed
     x = torch.randn(1024, lins[0].in_features, dtype=bf, device=dev)
@@ -846,7 +859,7 @@ if r == 0 and fns:
         ran.clear()
         assert exact(lin(x), F.linear(x, g.mma_unpack(q))) and not ran, "the route SPLIT off: today's route"
     counts["GLinear, the route SPLIT off: today's route"] = len(lins)
-    gm.Split.run = run
+    gm.Split.run, gm.Split.measured = run, measured
     print(f"the route SPLIT: a split of {dsms} + {gsms} SMs; products within 1e-2 of fp32, the same bits run to run; GLinear by it as on an A100")
 else:
     print(f"the route SPLIT cannot run on this GPU ({lib.error_string(r) if r else 'no cuBLAS found'}): GLinear takes today's route")

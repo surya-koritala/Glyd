@@ -33,17 +33,19 @@ every earlier format.
   layer's chunks ahead: 600 MiB for Qwen3-8B, 1.0 GiB for 14B, 1.5 GiB for
   32B, and a 32 MiB cuBLAS workspace. Its products are cuBLAS's own on the
   decoded bf16, a row chunk a call: the same bits run to run and prompt to
-  prompt, not bit for bit a whole-matrix product, so `exact=True` never
-  takes it. Where it cannot run (the JIT build, a driver before CUDA 12.4,
-  MIG or MPS, too little memory, a CUDA graph capture, a torch.compile
-  graph's node) a prompt takes the routes before it; `GLYD_SPLIT_MIN=-1`
-  turns it off, `GLYD_SPLIT_MIN`, `GLYD_SPLIT_MAX` and `GLYD_SPLIT_SMS` move
-  it. A stress check (`gpu/split_stress.py`, in test_gpu.py quick): every
+  prompt within a process, not bit for bit a whole-matrix product, so
+  `exact=True` never takes it. The ring is let go with its model. It runs
+  only on the GPUs measured (an A100 SXM's 108 SMs, a GH200's 132; not a
+  MIG slice). Where it cannot run (the JIT build, the driver's green
+  contexts not available, as before CUDA 12.5, with a warning; too little
+  memory, a CUDA graph capture, a torch.compile graph's node) a prompt
+  takes the routes before it; `GLYD_SPLIT_MIN=-1` turns it off,
+  `GLYD_SPLIT_MIN`, `GLYD_SPLIT_MAX` and `GLYD_SPLIT_SMS` move it. A stress check (`gpu/split_stress.py`, in test_gpu.py quick): every
   Qwen3 layer's matrices, 0.6B-32B, at 769-4096 tokens, rings of 3-16
   slots, 36 passes; 16,512 products the same bits across layers, passes
   and slot counts, within 1e-2 of fp32, on an L4, an A100 and a GH200
   ([benchmarks/gpu/option2-2026-09-29](benchmarks/gpu/option2-2026-09-29)).
-- C API version 6: the ring (`glyd_gpu_ring_create`, `_destroy`, `_split`,
+- C API version 7: the ring (`glyd_gpu_ring_create`, `_destroy`, `_split`,
   `_reset`, `glyd_gpu_mma12_ring_queue`, `glyd_gpu_mma12_ring_linear`,
   with the caller's cuBLAS as `glyd_gpu_blas`: the library does not link
   it), its decode (`glyd_gpu_mma12_unpack_split`), the route
@@ -55,7 +57,8 @@ every earlier format.
   for where the split can run; `glyd_gpu_*_linear`'s own route (-1) never
   is, so the C API's other callers (the glyd-gpu crate, the vLLM plugin)
   keep v0.25.1's routes. `glyd_gpu_mma12_linear` given SPLIT takes it by the
-  prompt kernel. v0.25's libraries (version 5) are refused by this package
+  prompt kernel. v0.25's libraries (version 5) and builds of the route's
+  branch before it was opt-in (version 6) are refused by this package
   and the glyd-gpu crate (`Route::Split`, `PCIE`, `GH200`, `WITH_SPLIT`,
   `Library::split_sms`; the ring declared, not wrapped yet).
 - `gpu/e2e.py --without-split` times a prompt again with the route off in

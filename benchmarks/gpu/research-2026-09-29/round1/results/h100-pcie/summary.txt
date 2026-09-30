@@ -1,0 +1,61 @@
+INCOMPLETE: round 1, option 2 (decode ahead on s SMs, cuBLAS on the rest) on NVIDIA H100 PCIe (114 SMs, compute 9.0, the model: H100-PCIe): the decoder PASS, the layer PASS (partial), bit for bit PASS
+GATE (a) PASS: the decoder alone, split byte, ldg D1 NT1 on 16 SMs: 10.39 weights a clock an SM (line: at least 10.0), 18.24 G weights/s an SM at 1755 MHz, 94 W
+GATE (c) PASS: the layer over bf16 cuBLAS at 1024 / 2048 / 4096 tokens (lines: the model's b1 + 0.03): 8B 1.165 (<= 1.267) / - (<= 1.151) / - (<= 1.146); 32B 1.194 (<= 1.254) / - (<= 1.145) / - (<= 1.142)
+LOSSLESS PASS: 32 of 32 layout, path and configuration checks bit for bit on every chunk (Qwen3-32B, Qwen3-8B)
+(b) cuBLAS on S - s SMs: the SM count target changes its time by 0.921-1.429x (untold / told); beside a decode loop cuBLAS takes 0.975-1.301x its time alone, the decode beside cuBLAS 1.007-1.738x; work queues: default (<CUresult.CUDA_ERROR_INVALID_RESOURCE_TYPE: 914>)
+environment: 2.14.0+cu130 (CUDA 13.0), driver API 13000, cuBLAS 130101, cuda.bindings 13.4.3; SM partitions: alignment 8, at least 8
+
+(a) the decoder alone: weights a clock an SM (G weights/s an SM) by s; the configuration fastest at the s nearest 16
+| layout, path | s=4 | s=8 | s=16 | s=24 | s=114 |
+| :-- | --: | --: | --: | --: | --: |
+| nib cpa D2 NT1 w1 |  |  | 6.89 (12.1) |  |  |
+| nib cpa D3 NT1 w1 | 7.36 (12.9) | 7.23 (12.7) | 7.07 (12.4) | 6.81 (12.0) | 2.16 (3.8) |
+| nib cpa D4 NT1 w1 |  |  | 6.15 (10.8) |  |  |
+| nib ldg D1 NT1 w4 | 9.65 (16.9) | 9.45 (16.6) | 9.18 (16.1) | 8.92 (15.7) | 2.22 (3.9) |
+| nib tma D2 NT2 w1 | 8.56 (15.0) | 8.43 (14.8) | 8.28 (14.5) | 8.05 (14.1) | 2.19 (3.8) |
+| nib tma D3 NT1 w1 |  |  | 8.07 (14.2) |  |  |
+| nib tma D3 NT2 w1 |  |  | 6.95 (12.2) |  |  |
+| nib tma D4 NT2 w1 |  |  | 6.02 (10.6) |  |  |
+| sb cpa D2 NT1 w1 |  |  | 8.71 (15.3) |  |  |
+| sb cpa D3 NT1 w1 | 9.23 (16.2) | 9.09 (16.0) | 8.85 (15.5) | 8.32 (14.6) | 2.19 (3.8) |
+| sb cpa D4 NT1 w1 |  |  | 7.83 (13.7) |  |  |
+| sb ldg D1 NT1 w4 | 10.65 (18.7) | 10.47 (18.4) | 10.39 (18.2) | 9.67 (17.0) | 2.23 (3.9) |
+| sb tma D2 NT2 w1 | 10.69 (18.8) | 10.52 (18.5) | 10.28 (18.0) | 9.45 (16.6) | 2.20 (3.9) |
+| sb tma D3 NT1 w1 |  |  | 10.27 (18.0) |  |  |
+| sb tma D3 NT2 w1 |  |  | 8.76 (15.4) |  |  |
+| sb tma D4 NT2 w1 |  |  | 7.60 (13.3) |  |  |
+
+(b) cuBLAS from the ring's chunks: on all SMs, and on S - s (untold / told S - s); beside the decode; the decode alone and beside
+M=512 s=2 (gemm): cuBLAS 0.373 / 0.370 ms (bf16 whole on all SMs 0.467), beside the decode 0.482; decode 5.163, beside 5.198 (1755 MHz, 207 W)
+M=512 s=10 (gemm): cuBLAS 0.593 / 0.515 ms (bf16 whole on all SMs 0.467), beside the decode 0.512; decode 1.079, beside 1.226 (1740 MHz, 258 W)
+M=512 s=18 (gemm): cuBLAS 0.705 / 0.493 ms (bf16 whole on all SMs 0.467), beside the decode 0.558; decode 0.628, beside 1.015 (1725 MHz, 299 W)
+M=512 s=16 (dec): cuBLAS 0.750 / 0.814 ms (bf16 whole on all SMs 0.467), beside the decode 0.854; decode 0.681, beside 0.945 (1740 MHz, 298 W)
+M=2048 s=2 (gemm): cuBLAS 1.994 / 1.895 ms (bf16 whole on all SMs 1.851), beside the decode 1.849; decode 4.992, beside 7.019 (1140 MHz, 275 W)
+M=2048 s=10 (gemm): cuBLAS 2.243 / 1.866 ms (bf16 whole on all SMs 1.851), beside the decode 2.000; decode 1.061, beside 1.781 (1125 MHz, 264 W)
+M=2048 s=18 (gemm): cuBLAS 2.430 / 1.902 ms (bf16 whole on all SMs 1.851), beside the decode 1.997; decode 0.640, beside 1.015 (1185 MHz, 293 W)
+M=2048 s=16 (dec): cuBLAS 2.415 / 2.357 ms (bf16 whole on all SMs 1.851), beside the decode 2.459; decode 0.693, beside 1.017 (1410 MHz, 272 W)
+M=8192 s=2 (gemm): cuBLAS 7.695 / 7.514 ms (bf16 whole on all SMs 7.647), beside the decode 7.388; decode 5.069, beside 8.442 (1095 MHz, 275 W)
+M=8192 s=10 (gemm): cuBLAS 8.114 / 7.537 ms (bf16 whole on all SMs 7.647), beside the decode 7.753; decode 1.058, beside 1.839 (1080 MHz, 230 W)
+M=8192 s=18 (gemm): cuBLAS 8.282 / 7.935 ms (bf16 whole on all SMs 7.647), beside the decode 7.967; decode 0.630, beside 1.042 (1185 MHz, 268 W)
+M=8192 s=16 (dec): cuBLAS 8.851 / 8.313 ms (bf16 whole on all SMs 7.647), beside the decode 8.680; decode 0.697, beside 1.114 (1245 MHz, 271 W)
+
+(c) the layer over bf16 cuBLAS on all SMs (the better of our cuBLAS call and PyTorch's): the best s and target at each length; at best = the slower of its two parts alone; b1 = the model; today = today's route (the logs, else the model)
+| model | M | layer | s | target | at best | b1 | today | clock, power (bf16) | clock, power (layer) |
+| :-- | --: | --: | --: | --: | --: | --: | --: | --: | --: |
+| Qwen3-32B | 1 | 2.937 | 34 | 80 | 2.079 | - | - | 1755 MHz 118 W | 1755 MHz 294 W |
+| Qwen3-32B | 16 | 2.901 | 34 | 80 | 2.038 | - | - | 1755 MHz 296 W | 1755 MHz 301 W |
+| Qwen3-32B | 32 | 2.862 | 34 | 80 | 2.016 | - | - | 1755 MHz 306 W | 1755 MHz 315 W |
+| Qwen3-32B | 64 | 2.820 | 34 | 80 | 1.954 | - | - | 1755 MHz 315 W | 1740 MHz 330 W |
+| Qwen3-32B | 128 | 2.901 | 42 | 0 | 1.997 | - | - | 1755 MHz 334 W | 1605 MHz 340 W |
+| Qwen3-32B | 256 | 2.538 | 42 | 72 | 1.716 | - | - | 1740 MHz 344 W | 1425 MHz 345 W |
+| Qwen3-32B | 512 | 1.452 | 26 | 88 | 1.115 | 1.502 | 1.387 | 945 MHz 347 W | 1050 MHz 346 W |
+| Qwen3-32B | 1024 | 1.194 | 18 | 96 | 1.046 | 1.224 | 1.346 | 990 MHz 348 W | 952 MHz 348 W |
+| Qwen3-8B | 1 | 2.801 | 42 | 72 | 2.054 | - | - | 1755 MHz 99 W | 1755 MHz 288 W |
+| Qwen3-8B | 16 | 2.733 | 42 | 72 | 1.998 | - | - | 1755 MHz 290 W | 1755 MHz 295 W |
+| Qwen3-8B | 32 | 2.720 | 34 | 0 | 1.914 | - | - | 1755 MHz 300 W | 1755 MHz 286 W |
+| Qwen3-8B | 64 | 2.723 | 34 | 80 | 1.883 | - | - | 1755 MHz 310 W | 1755 MHz 312 W |
+| Qwen3-8B | 128 | 2.600 | 42 | 0 | 1.831 | - | - | 1755 MHz 327 W | 1658 MHz 345 W |
+| Qwen3-8B | 256 | 2.467 | 42 | 72 | 1.735 | - | - | 1605 MHz 343 W | 1365 MHz 347 W |
+| Qwen3-8B | 512 | 1.388 | 26 | 88 | 1.038 | 1.569 | 1.426 | 1380 MHz 347 W | 1260 MHz 344 W |
+| Qwen3-8B | 1024 | 1.165 | 18 | 96 | 0.996 | 1.237 | 1.377 | 1185 MHz 345 W | 1110 MHz 344 W |
+today's 12-bit layout through the same pipeline (best s): 32B 1 2.980; 32B 16 2.940; 32B 32 2.900; 32B 64 2.843; 32B 128 2.982; 32B 256 2.482; 32B 512 1.490; 32B 1024 1.201; 8B 1 2.821; 8B 16 2.755; 8B 32 2.739; 8B 64 2.744; 8B 128 2.670; 8B 256 2.480; 8B 512 1.481; 8B 1024 1.201

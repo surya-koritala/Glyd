@@ -1143,8 +1143,10 @@ routes unless it asks and runs the ring:
 
 - the decode: the 12-bit layout's steps, four at a time a warp, their
   next four loaded while these are decoded, written out through shared
-  memory in whole 128-byte lines (146 registers, no spills; 9.6 weights a
-  clock an SM on an A100, 10.3 on an H100);
+  memory in whole 128-byte lines (146 registers, no spills; on 16 SMs 9.6
+  weights a clock an SM on an A100, 10.2 on an H100 SXM and 10.4 on an H100
+  PCIe, where the whole-matrix decode's warp a step takes 2.7 on an RTX 4080
+  SUPER: benchmarks/gpu/research-2026-09-29);
 - the ring: slots in device memory, a layer's row chunks ahead (Qwen3-8B's
   6 of 100 MiB, 14B's 6 of 170 MiB, 32B's 6 of 250 MiB, and a cuBLAS
   workspace of 32 MiB); the order recorded from a prompt, as the decode
@@ -1156,9 +1158,11 @@ routes unless it asks and runs the ring:
   against 29 by the other routes, a third of the bandwidth gone to the
   decode;
 - its products are cuBLAS's own on the decoded bf16, a row chunk a call:
-  the same bits run to run and prompt to prompt (a device's ring keeps
-  one slot size), but not bit for bit a whole-matrix product, so
-  `exact=True` never takes it.
+  the same bits run to run and prompt to prompt within a process (a
+  device's ring keeps one slot size, set by its 12-bit Linears and free
+  memory at its first prompt by the route), but not bit for bit a
+  whole-matrix product, so `exact=True` never takes it; the ring is let
+  go with its model.
 
 The routes, as measured end to end, where a forward pass took at least 2%
 less time than by the routes without it: an A100 SXM's 12-bit prompts from
@@ -1196,14 +1200,16 @@ ms, the A100's at 8192 and the GH200's Qwen3-8B not taken:
 the route lose: Qwen3-8B's pass was issued by the host in 47.6 of its 48.0
 ms, the route's calls costing the host more than the GPU saved; 32B's took
 1.2% longer. Hopper keeps its wgmma kernel to 1024 and the matrix decoded
-first to 2047.) Where it cannot run,
-a prompt takes the routes before it, never an error: the JIT build (the
-ring is the prebuilt library's), a driver before CUDA 12.4, MIG or MPS
-refusing the split, too little memory for its ring, a CUDA graph being
-captured or a torch.compile graph's node (a compiled `generate()` runs its
-prompt eager, as before). `GLYD_SPLIT_MIN=-1` turns it off;
-`GLYD_SPLIT_MIN`, `GLYD_SPLIT_MAX` and `GLYD_SPLIT_SMS` move it, on any
-GPU from Ampere and any matrix (read at the library's first route, as the
+first to 2047.) It runs only on the GPUs measured: an A100 SXM with its
+108 SMs and a GH200 with its 132, not a MIG slice. Where it cannot run, a
+prompt takes the routes before it, never an error: the JIT build (the
+ring is the prebuilt library's), the driver's green contexts not available
+(a driver before CUDA 12.5, or one that refuses them: a warning says so),
+too little memory for its ring, a CUDA graph being captured or a
+torch.compile graph's node (a compiled `generate()` runs its prompt eager,
+as before). `GLYD_SPLIT_MIN=-1` turns it off; `GLYD_SPLIT_MIN`,
+`GLYD_SPLIT_MAX` and `GLYD_SPLIT_SMS` move it, on any GPU from Ampere but a
+MIG slice and any matrix (read at the library's first route, as the
 routes' others). A stress check holds the ring to its ordering
 (`split_stress.py`: every Qwen3 layer's matrices, 0.6B-32B, at 769-4096
 tokens, rings of 3-16 slots, 36 passes; 16,512 products the same bits

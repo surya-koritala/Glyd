@@ -6,8 +6,12 @@ and 4096 tokens, in rings of 3 slots to 16 (the exact fit ring_plan gives, where
 the order queued whole or a few matrices ahead of the products, PASSES passes each: every copy's product the same
 bits as the first copy's and pass to pass, and within 1e-2 of fp32 on the decoded weights (W bit for bit the pack's).
 Then GLinear (made as on an A100, model.Split: the ring planned for the order) over the same copies, pass to pass.
+--sms: the decode's SMs asked of the split (a list, each in turn; negative: all but so many, the products on those
+alone), to skew it either way: the products on 2 SMs (a decode that did not wait for its slot's last product would
+overwrite it under a slow product), the decode on 1 (a product that did not wait for its decode would read a slot half
+written); where the GPU cannot split so, the nearest it can on the decode's side, the split as made printed.
 
-    python split_stress.py [LIBRARY] [--models 0.6B,8B,14B,32B] [--passes 6] [--layers 4] [--ms 769,1024,2048,4096]"""
+    python split_stress.py [LIBRARY] [--models 0.6B,8B,14B,32B] [--passes 6] [--layers 4] [--ms 769,1024,2048,4096] [--sms -2,1]"""
 import argparse, os, sys, time
 import torch
 import torch.nn.functional as F
@@ -19,6 +23,7 @@ ap.add_argument("--ms", default="769,1024,2048,4096")
 ap.add_argument("--passes", type=int, default=6)
 ap.add_argument("--layers", type=int, default=4)
 ap.add_argument("--quick", action="store_true", help="the rings of ring_plan's slots alone (3 and planned), 3 passes")
+ap.add_argument("--sms", default="", help="the decode's SMs asked of the split, a comma list (negative: all but so many); default min(12, SMs / 4)")
 args = ap.parse_args()
 if args.library:
     os.environ["GLYD_GPU_LIB"] = args.library
@@ -77,7 +82,17 @@ fns = gm.Split.blas_fns()
 assert fns, "PyTorch's cuBLAS not found"
 blas = lib.Blas(None, fns["cublasGemmEx"], fns["cublasSetStream_v2"], fns["cublasGetStream_v2"], fns["cublasSetWorkspace_v2"], fns["cublasSetSmCountTarget"], fns["cublasGetSmCountTarget"], ws.data_ptr(), 32 << 20)
 S = torch.cuda.get_device_properties(dev).multi_processor_count
-SMS = min(12, S // 4)
+splits = []  # (the decode's SMs asked of the ring, the decode's SMs made, the products')
+probe = torch.empty(3 << 20, dtype=torch.uint8, device=dev)
+for a in [int(v) for v in args.sms.split(",") if v] or [min(12, S // 4)]:
+    a = a if a > 0 else S + a
+    ring = lib.ring_create(probe, 1 << 20)
+    made = next(((v, *lib.ring_split(ring, v)[1:]) for v in range(max(1, a), min(S, a + 9)) if lib.ring_split(ring, v)[0] == 0), None)
+    assert lib.ring_destroy(ring) == 0
+    assert made, f"the split cannot be made near {a} of {S} SMs"
+    splits.append(made)
+    print(f"split: asked the decode {a} of {S} SMs, made {made[1]} for the decode and {made[2]} for the products", flush=True)
+del probe
 failures, checked = [], 0
 t0 = time.time()
 for name in args.models.split(","):
@@ -92,8 +107,8 @@ for name in args.models.split(","):
     for M in [int(m) for m in args.ms.split(",")]:
         X = [torch.randn(M, K, dtype=bf, device=dev) for _, K in shapes]
         ref = [F.linear(x.float(), w.float()) for x, w in zip(X, W)]
-        firsts = {}  # by slot size (the same chunks, the same products): the first pass's first layer's products
-        for slot_bytes, n in rings:
+        firsts = {}  # by slot size and split (the same chunks and SM target, the same products): the first pass's first layer's products
+        for (slot_bytes, n), (SMS, dec, gemm) in [(r, sp) for sp in splits for r in rings]:
             n = max(3, min(16, n))
             if slot_bytes < 64 * 2 * max(K for _, K in shapes):
                 continue
@@ -121,13 +136,13 @@ for name in args.models.split(","):
                         assert r == 0, (name, M, lib.error_string(r))
                         ys.append(y)
                     torch.cuda.synchronize()
-                    first = firsts.setdefault(slot_bytes, [])
+                    first = firsts.setdefault((slot_bytes, SMS), [])
                     for (i, c), y in zip(order, ys):
                         checked += 1
                         err = ((y.float() - ref[i]).abs().max() / ref[i].abs().max()).item()
                         if len(first) < len(shapes) and c == 0:
                             first.append(y)
-                        tag = f"{name} M={M} ring {n} x {slot_bytes >> 20} MiB ({how}), pass {pas}, layer {c}, matrix {shapes[i]}"
+                        tag = f"{name} M={M} ring {n} x {slot_bytes >> 20} MiB ({how}), split {dec} + {gemm}, pass {pas}, layer {c}, matrix {shapes[i]}"
                         if not err < 1e-2:
                             failures.append(f"{tag}: {err:.2e} off fp32")
                         elif not torch.equal(bits(y), bits(first[i])):
@@ -144,6 +159,7 @@ for name in args.models.split(","):
             lins = [[gm.GLinear(p, None) for p in P] for _ in range(args.layers)]
         finally:
             torch.cuda.get_device_capability, torch.cuda.get_device_name = cc, nm
+        gm.Split.measured = staticmethod(lambda d, gpu: True)  # (as an A100 SXM's: its 108 SMs)
         gm.set_scratch(torch.nn.ModuleList([m for c in lins for m in c]), False)
         gm.Split.of.pop(dev, None)
         outs = None
@@ -161,10 +177,8 @@ for name in args.models.split(","):
             outs = outs or ys[: len(shapes)]
         s = gm.Split.of.get(dev)
         print(f"{name} M={M}: {sum(1 for f in failures if f.startswith(f'{name} M={M}'))} failures; GLinear's ring {getattr(s, 'slots', '-')} x {getattr(s, 'slot', 0) >> 20} MiB ({time.time() - t0:.0f} s)", flush=True)
-        gm.Split.stop(dev)
+        gm.Split.stop(dev)  # (its ring let go)
         gm.Split.of.pop(dev, None)
-        if s:
-            lib.ring_destroy(s.ring)
         del lins, X, ref
     del W, P
     torch.cuda.empty_cache()

@@ -59,10 +59,13 @@ SMs the driver's green contexts set apart, while your cuBLAS multiplies from
 the ring on the others. The library does not link cuBLAS: give
 `glyd_gpu_mma12_ring_linear` your handle and its functions
 (`glyd_gpu_blas`); queue a prompt's matrices in their order
-(`glyd_gpu_mma12_ring_queue`), then call each product. Where the split
-cannot run (a driver before CUDA 12.4, MIG, MPS, a stream being captured)
-it returns `cudaErrorNotSupported`: take the route the GPU's code without
-the flag gives. `glyd_gpu_mma12_linear` given SPLIT takes it by the prompt
+(`glyd_gpu_mma12_ring_queue`), then call each product, on the device the
+ring was made on. Where the split cannot run (the driver's green contexts
+not available: a driver before CUDA 12.5, or one that refuses them; a
+stream being captured) it returns `cudaErrorNotSupported`: take the route
+the GPU's code without the flag gives. The route's rule goes by the GPU's
+code alone; glyd.gpu's Linears also ask only on the GPUs measured (an A100
+SXM's 108 SMs, a GH200's 132, not a MIG slice). `glyd_gpu_mma12_linear` given SPLIT takes it by the prompt
 kernel.
 
 Rust calls them through the `glyd-gpu` crate in the Glyd repository (the

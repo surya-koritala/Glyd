@@ -3020,8 +3020,8 @@ __global__ void mma_unpack_kernel(Fmt f, int64_t K, int64_t row0, int64_t rows, 
 // registers while this one's are decoded; each step's B-fragment words go into the warp's tile in shared memory
 // (16-byte chunk c of row r at c ^ (r & 7): its 32-bit stores and 16-byte loads without bank conflicts), and out in
 // whole 128-byte lines. mma_unpack_kernel's step a warp with 4-byte stores is bound by its latency on few SMs (2.7
-// weights a clock an SM on an RTX 4080 SUPER); this runs 9.6 on an A100 and 10.2-10.4 on an H100 SXM and PCIe on 16
-// SMs, its memory path the bound (benchmarks/gpu/research-2026-09-29/round1).
+// weights a clock an SM on an RTX 4080 SUPER, research-2026-09-29/box/dec2.txt); this runs 9.6 on an A100 and 10.2-10.4
+// on an H100 SXM and PCIe on 16 SMs, its memory path the bound (benchmarks/gpu/research-2026-09-29/round1).
 constexpr int SPLIT_U = 4, SPLIT_WARPS = 4;
 
 __global__ void __launch_bounds__(32 * SPLIT_WARPS) mma12_split_kernel(Nib f, int64_t K, int64_t row0, int64_t rows, uint16_t* __restrict__ out) {
@@ -4200,7 +4200,7 @@ struct SplitPart {
 
 #if CUDA_VERSION >= 12050
 // The driver's green contexts, found at run time as the tensor-map encoder is (no link to libcuda): null where the
-// driver has none (before CUDA 12.4; a stream of one from 12.5).
+// driver lacks any of these (a green context's stream: CUDA 12.5 on).
 struct Green {
     decltype(&cuDeviceGet) device;
     decltype(&cuDeviceGetDevResource) resource;
@@ -4229,19 +4229,28 @@ static const Green* green() {
                   driver_fn("cuDevSmResourceSplitByCount", 12040, x.split) & driver_fn("cuDevResourceGenerateDesc", 12040, x.desc) &
                   driver_fn("cuGreenCtxCreate", 12040, x.create) & driver_fn("cuGreenCtxStreamCreate", 12050, x.stream) &
                   driver_fn("cuGreenCtxRecordEvent", 12040, x.record) & driver_fn("cuGreenCtxDestroy", 12040, x.destroy) &
-                  driver_fn("cuStreamDestroy", 2000, x.stream_destroy);
+                  driver_fn("cuStreamDestroy", 4000, x.stream_destroy);  // (cuda.h's cuStreamDestroy_v2)
         return ok ? &x : nullptr;
     }();
     return g;
 }
 
-static void part_free(SplitPart& p) {
+// Its streams' work waited for, then its streams and contexts let go: the first failure's status.
+static int part_free(SplitPart& p) {
     const Green* G = green();
+    int r = 0;
     for (cudaStream_t s : {p.sd, p.sg})
-        if (s) cudaStreamSynchronize(s), G->stream_destroy((CUstream)s);
+        if (s) {
+            int a = (int)cudaStreamSynchronize(s), b = (int)G->stream_destroy((CUstream)s);
+            r = r ? r : a ? a : b;
+        }
     for (void* c : {p.gd, p.gg})
-        if (c) G->destroy((CUgreenCtx)c);
+        if (c) {
+            int a = (int)G->destroy((CUgreenCtx)c);
+            r = r ? r : a;
+        }
     p = SplitPart{};
+    return r;
 }
 
 // The products' SMs a co-scheduled group of at least S - sms (their clusters launch there, on Hopper in groups of
@@ -4276,7 +4285,7 @@ static int record_on(cudaEvent_t e, cudaStream_t s, void* c) {
     return green()->record((CUgreenCtx)c, (CUevent)e) == CUDA_SUCCESS ? 0 : (int)r;
 }
 #else  // (a CUDA before 12.5, as a JIT build may be: no green context's streams in its headers, the split refused)
-static void part_free(SplitPart& p) { p = SplitPart{}; }
+static int part_free(SplitPart& p) { p = SplitPart{}; return 0; }
 static int part_make(int64_t, SplitPart&) { return cudaErrorNotSupported; }
 static int record_on(cudaEvent_t e, cudaStream_t s, void*) { return (int)cudaEventRecord(e, s); }
 #endif
@@ -4310,8 +4319,13 @@ struct glyd_gpu_ring {
     cudaEvent_t ready[RING_MAX], free_[RING_MAX], start[RING_STARTS], mark;
 };
 
-// The split for sms: made once and kept.
+// The same pack: its data, exceptions, their bases and its base (a pack's addresses alone may be another's, freed and
+// taken again).
+static bool same_pack(const Nib& a, const Nib& b) { return a.data == b.data && a.exc == b.exc && a.exc_base == b.exc_base && a.hb4 == b.hb4; }
+
+// The split for sms: made once and kept (on the ring's device alone).
 static int ring_part(glyd_gpu_ring* g, int64_t sms, SplitPart** p) {
+    if (current_device() != g->dev) return cudaErrorInvalidDevice;
     auto it = g->parts.find(sms);
     if (it == g->parts.end()) {
         SplitPart made;
@@ -4328,8 +4342,10 @@ static int ring_pump(glyd_gpu_ring* g) {
     while (g->issued < g->q.size() && !g->busy[g->next] && g->q[g->issued].gate <= g->started) {
         glyd_gpu_ring::Chunk& c = g->q[g->issued];
         int s = g->next;
-        if (g->read[s]) cudaStreamWaitEvent(p->sd, g->free_[s], 0);  // the product that read it done
-        if (c.gate >= 0 && g->started - c.gate < RING_STARTS) cudaStreamWaitEvent(p->sd, g->start[c.gate % RING_STARTS], 0);
+        if (g->read[s])  // the product that read it done
+            if (cudaError_t r = cudaStreamWaitEvent(p->sd, g->free_[s], 0)) return r;
+        if (c.gate >= 0 && g->started - c.gate < RING_STARTS)
+            if (cudaError_t r = cudaStreamWaitEvent(p->sd, g->start[c.gate % RING_STARTS], 0)) return r;
         if (int r = split_decode(c.f, c.K, c.row0, c.rows, (uint16_t*)(g->buf + s * g->slot_bytes), p->dec, p->sd)) return r;
         if (int r = record_on(g->ready[s], p->sd, p->gd)) return r;
         c.slot = s, g->busy[s] = true, g->next = (s + 1) % g->slots, g->issued++;
@@ -4396,12 +4412,15 @@ GLYD_GPU_API int glyd_gpu_ring_create(void* buffer, size_t bytes, size_t slot_by
 
 GLYD_GPU_API int glyd_gpu_ring_destroy(glyd_gpu_ring* ring) {
     if (!ring) return cudaErrorInvalidValue;
-    for (auto& kv : ring->parts) part_free(kv.second);
-    cudaEventDestroy(ring->mark);
-    for (int s = 0; s < ring->slots; s++) cudaEventDestroy(ring->ready[s]), cudaEventDestroy(ring->free_[s]);
-    for (int s = 0; s < RING_STARTS; s++) cudaEventDestroy(ring->start[s]);
+    int was = current_device(), r = was == ring->dev ? 0 : (int)cudaSetDevice(ring->dev);  // (its streams, contexts and events the ring's device's)
+    auto keep = [&r](int e) { r = r ? r : e; };
+    for (auto& kv : ring->parts) keep(part_free(kv.second));
+    keep((int)cudaEventDestroy(ring->mark));
+    for (int s = 0; s < ring->slots; s++) keep((int)cudaEventDestroy(ring->ready[s])), keep((int)cudaEventDestroy(ring->free_[s]));
+    for (int s = 0; s < RING_STARTS; s++) keep((int)cudaEventDestroy(ring->start[s]));
+    if (was != ring->dev) cudaSetDevice(was);
     delete ring;
-    return 0;
+    return r;
 }
 
 GLYD_GPU_API int glyd_gpu_ring_split(glyd_gpu_ring* ring, int64_t sms, int64_t* decode_sms, int64_t* product_sms) {
@@ -4414,7 +4433,8 @@ GLYD_GPU_API int glyd_gpu_ring_split(glyd_gpu_ring* ring, int64_t sms, int64_t* 
 }
 
 GLYD_GPU_API int glyd_gpu_ring_reset(glyd_gpu_ring* ring, cudaStream_t cs) {
-    return ring ? ring_restart(ring, ring->cur, cs) : cudaErrorInvalidValue;
+    if (!ring) return cudaErrorInvalidValue;
+    return current_device() != ring->dev ? cudaErrorInvalidDevice : ring_restart(ring, ring->cur, cs);
 }
 
 GLYD_GPU_API int glyd_gpu_mma12_ring_queue(glyd_gpu_ring* ring, int64_t sms, const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K) {
@@ -4437,7 +4457,7 @@ GLYD_GPU_API int glyd_gpu_mma12_ring_linear(glyd_gpu_ring* ring, int64_t sms, co
     cudaStreamCaptureStatus cap;
     if (cudaStreamIsCapturing(cs, &cap) || cap != cudaStreamCaptureStatusNone) return cudaErrorNotSupported;  // (a capture takes another route)
     if (int r = ring_part(ring, sms, &p)) return r;
-    bool next = ring->cur == p && !ring->q.empty() && ring->q.front().f.data == data && ring->q.front().row0 == 0 && ring->q.front().O == O && ring->q.front().K == K;
+    bool next = ring->cur == p && !ring->q.empty() && same_pack(ring->q.front().f, f) && ring->q.front().row0 == 0 && ring->q.front().O == O && ring->q.front().K == K;
     if (!next) {  // off the queue: W alone, now
         if (int r = ring_restart(ring, p, cs)) return r;
         if (int r = ring_queue(ring, f, O, K)) return r;
@@ -4445,16 +4465,20 @@ GLYD_GPU_API int glyd_gpu_mma12_ring_linear(glyd_gpu_ring* ring, int64_t sms, co
     // the products after cs's work (X); a bias into Y first, cuBLAS adding to it
     if (int r = cudaEventRecord(ring->mark, cs)) return r;
     if (int r = cudaStreamWaitEvent(p->sg, ring->mark, 0)) return r;
-    if (bias) bias_rows_kernel<<<(unsigned)std::max<int64_t>(1, std::min<int64_t>(p->gemm * 4, (M * O + 255) / 256)), 256, 0, p->sg>>>(y, bias, M, O);
+    if (bias) {
+        bias_rows_kernel<<<(unsigned)std::max<int64_t>(1, std::min<int64_t>(p->gemm * 4, (M * O + 255) / 256)), 256, 0, p->sg>>>(y, bias, M, O);
+        if (cudaError_t r = cudaGetLastError()) return r;
+    }
     const float one = 1.f, beta = bias ? 1.f : 0.f;
     cudaStream_t was = nullptr;
     int target = 0, r = 0, b = 0;
-    if (blas->get_stream) blas->get_stream(blas->handle, &was);
-    if (blas->get_sm_count_target) blas->get_sm_count_target(blas->handle, &target);
+    // the handle's stream and SM count target put back after, each where it was read (the target set only so)
+    bool stream_read = blas->get_stream && blas->get_stream(blas->handle, &was) == 0;
+    bool target_read = blas->set_sm_count_target && blas->get_sm_count_target && blas->get_sm_count_target(blas->handle, &target) == 0;
     if ((b = blas->set_stream(blas->handle, p->sg)) == 0 && blas->set_workspace && blas->workspace)
         b = blas->set_workspace(blas->handle, blas->workspace, blas->workspace_bytes);
-    if (!b && blas->set_sm_count_target) b = blas->set_sm_count_target(blas->handle, (int)p->gemm);
-    for (bool first = true; !b && !r && !ring->q.empty() && ring->q.front().f.data == data && (first || ring->q.front().row0); first = false) {
+    if (!b && target_read) b = blas->set_sm_count_target(blas->handle, (int)p->gemm);
+    for (bool first = true; !b && !r && !ring->q.empty() && same_pack(ring->q.front().f, f) && (first || ring->q.front().row0); first = false) {
         if ((r = ring_pump(ring))) break;  // (the front's decode issued: its gate's product came before it, its slot is free)
         glyd_gpu_ring::Chunk c = ring->q.front();
         if (c.slot < 0) {  // (never: the front's gate is a chunk multiplied before it)
@@ -4472,8 +4496,8 @@ GLYD_GPU_API int glyd_gpu_mma12_ring_linear(glyd_gpu_ring* ring, int64_t sms, co
         ring->issued--;
         r = ring_pump(ring);  // the next decodes, into the slot freed
     }
-    if (blas->get_sm_count_target && blas->set_sm_count_target) blas->set_sm_count_target(blas->handle, target);
-    if (blas->get_stream) blas->set_stream(blas->handle, was);
+    if (target_read) blas->set_sm_count_target(blas->handle, target);
+    if (stream_read) blas->set_stream(blas->handle, was);
     if (b) return GLYD_GPU_BLAS_ERROR + b;
     if (!r) r = record_on(ring->mark, p->sg, p->gg);
     if (!r) r = cudaStreamWaitEvent(cs, ring->mark, 0);  // Y

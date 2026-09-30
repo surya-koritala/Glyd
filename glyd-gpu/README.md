@@ -19,7 +19,7 @@ glyd.gpu's Linears take it), `linear` runs it. `Route::Split` (an A100
 SXM's and a GH200's long 12-bit prompts: each matrix decoded ahead on SMs
 set apart, the caller's cuBLAS on the rest) is opt-in: `route` gives it only
 for a GPU's code plus `WITH_SPLIT`, which this crate does not ask (it
-declares the ring's functions, C API 6, but does not wrap them yet), so its
+declares the ring's functions, C API 7, but does not wrap them yet), so its
 routes are v0.25.1's.
 
 `pack` packs a matrix on the CPU in either layout, byte for byte as

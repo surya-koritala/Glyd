@@ -1,0 +1,15 @@
+ring_model.py (this directory), run on the Mac, Python 3.14.6, 2026-09-30: 300 random schedules a seed
+$ python ring_model.py 0
+ok 0 300
+$ python ring_model.py 300
+ok 300 600
+$ python ring_model.py 600
+ok 600 900
+$ python ring_model.py 900
+ok 900 1200
+$ python ring_model.py 1200
+ok 1200 1500
+$ python ring_model.py 0 --without free
+without the free wait: 142 of 300 schedules from 0 fail (the first, seed 0: ("another decode wrote the slot between the decode and the gemm's end", 0, ('gu0', 8704, 3), (2.6693)
+$ python ring_model.py 0 --without ready
+without the ready wait: 273 of 300 schedules from 0 fail (the first, seed 0: ('gemm read before its decode ended', 0, ('qkv0', 0, 0), 0.3146142769134992, 0.1397457849666789))
