@@ -196,10 +196,12 @@ class Server:
     log: str = ""
     proc: object = None  # None where an existing server was attached to
 
-    def stop(self):
+    def stop(self, ui=None):
         """Stop the server this run started (its process group: the engine too), waiting for the GPU's memory to be let go."""
         if self.proc is None or self.proc.poll() is not None or self.proc.pid <= 1:  # (pid <= 1: never signal a group that is not ours)
             return
+        if ui is not None:
+            ui.line("Stopping the server...")
         for sig, wait in ((signal.SIGTERM, 30), (signal.SIGKILL, 10)):
             try:
                 os.killpg(self.proc.pid, sig)
@@ -230,7 +232,7 @@ STAGES = (("Capturing CUDA graph", "capturing CUDA graphs"), ("torch.compile", "
 
 
 def stage(log):
-    """What the server's log says it is doing (its last 8 KB)."""
+    """What the server's log says it is doing (its last 8 KB): the stage, and for the weights the shard it is at."""
     try:
         with open(log, "rb") as f:
             f.seek(0, 2)
@@ -239,7 +241,13 @@ def stage(log):
     except OSError:
         return ""
     best = max(((tail.rfind(key), what) for key, what in STAGES), default=(-1, ""))
-    return best[1] if best[0] >= 0 else ""
+    if best[0] < 0:
+        return ""
+    if best[1] == "loading the weights":
+        shards = re.findall(r"Loading safetensors checkpoint shards:\s+\d+% Completed \| (\d+)/(\d+)", tail)
+        if shards:
+            return f"loading the weights, {shards[-1][0]} of {shards[-1][1]} parts"
+    return best[1]
 
 
 @dataclass
@@ -431,7 +439,7 @@ def cmd_run(argv):
         ui.line(f"Chat here, or open {server.base} in a browser.")
         return chat.loop()
     finally:
-        server.stop()
+        server.stop(ui)
 
 
 def cmd_serve(argv):
@@ -449,7 +457,7 @@ def cmd_serve(argv):
         f = diagnose(log_tail(server.log))
         raise pf.Refusal(f"the server stopped: {f.what}", f"The server's log: {server.log}")
     finally:
-        server.stop()
+        server.stop(ui)
 
 
 def doctor_lines(environ=None, run=pf._run):

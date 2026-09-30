@@ -20,8 +20,12 @@ HELP = """  /bye           leave (or Ctrl-D)
   \"\"\"            start and end a message of several lines"""
 
 
-def full_message(window):
-    return f"This conversation is longer than the model's window ({window:,} tokens). Start a new chat with /clear." if window else "This conversation is longer than the model's window. Start a new chat with /clear."
+def full_message(window, chat=True):
+    """A conversation (or, for one answer, a prompt) longer than the model's window, and what to do."""
+    size = f" ({window:,} tokens)" if window else ""
+    if not chat:
+        return f"This prompt is longer than the model's window{size}. Shorten it, or start glyd with a larger --context."
+    return f"This conversation is longer than the model's window{size}. Start a new chat with /clear."
 
 
 class ApiError(Exception):
@@ -152,7 +156,7 @@ class Chat:
     def __init__(self, api, model, window=0, think=True, out=None, err=None, log=""):
         self.api, self.model, self.window, self.think = api, model, window, think
         self.out, self.err, self.log = out or sys.stdout, err or sys.stderr, log
-        self.messages, self.used = [], 0
+        self.messages, self.used, self.interactive = [], 0, True
         self.color = self.out.isatty() and "NO_COLOR" not in os.environ
 
     def dim(self, text):
@@ -198,7 +202,7 @@ class Chat:
                 show(k, piece)
         except ApiError as e:
             self.messages.pop()
-            self.say("\n" + (full_message(self.window) if e.context_full else f"The server refused the request: {e.message}"), err=True)
+            self.say("\n" + (full_message(self.window, self.interactive) if e.context_full else f"The server refused the request: {e.message}"), err=True)
             return ""
         except KeyboardInterrupt:
             self.messages.pop()
@@ -217,13 +221,15 @@ class Chat:
         self.used = used
         if finish == "length":
             what = "The answer was cut off" if reply else "The model was still thinking"
-            self.say(f"\n({what}: the conversation reached the model's window" + (f" ({self.window:,} tokens)" if self.window else "") + ". Start a new chat with /clear" + ("" if reply else ", or turn thinking off with /think") + ".)", err=True)
+            advice = ("Start a new chat with /clear" + ("" if reply else ", or turn thinking off with /think")) if self.interactive else "Ask for less, or start glyd with a larger --context"
+            self.say(f"\n({what}: the conversation reached the model's window" + (f" ({self.window:,} tokens)" if self.window else "") + f". {advice}.)", err=True)
         elif self.window and self.used >= 0.8 * self.window:
             self.say(self.dim(f"({self.used:,} of {self.window:,} tokens of this conversation used; /clear starts a new chat)"), err=True)
         return reply
 
     def once(self, prompt):
         """One answer for a prompt: the answer on stdout, the thinking and any notice on stderr. Returns the exit status."""
+        self.interactive = False
         return 0 if self.turn(prompt, to_err=True) else 1
 
     def loop(self, read=input):

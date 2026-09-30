@@ -381,6 +381,23 @@ class Sink:
         return "".join(self.buf)
 
 
+def test_stage_of_a_log():
+    d = tempfile.mkdtemp()
+    try:
+        log = os.path.join(d, "x.log")
+        assert run.stage(os.path.join(d, "none.log")) == ""
+        open(log, "w").write("$ vllm serve\n(APIServer pid=1) INFO Resolved architecture: Qwen3ForCausalLM\n")
+        assert run.stage(log) == ""
+        open(log, "a").write("(EngineCore pid=2) Loading safetensors checkpoint shards:   0% Completed | 0/5 [00:00<?, ?it/s]\r(EngineCore pid=2) Loading safetensors checkpoint shards:  40% Completed | 2/5 [00:13<00:20,  6.7s/it]\n")
+        assert run.stage(log) == "loading the weights, 2 of 5 parts"
+        open(log, "a").write("(EngineCore pid=2) INFO [model_runner.py:428] Model loading took 11.31 GiB memory and 34.1 seconds\n")
+        assert run.stage(log) == "warming up"
+        open(log, "a").write("(EngineCore pid=2) INFO Capturing CUDA graphs (mixed prefill-decode, PIECEWISE): 10%\n")
+        assert run.stage(log) == "capturing CUDA graphs"
+    finally:
+        shutil.rmtree(d)
+
+
 def test_progress():
     d = tempfile.mkdtemp()
     try:
@@ -716,6 +733,8 @@ def test_chat_context_full():
         assert c.turn(long_question) == "" and c.messages == []  # (refused by the server: the question is taken back)
         assert "This conversation is longer than the model's window (30 tokens). Start a new chat with /clear." in err.text()
         assert "Traceback" not in err.text() + out.text()
+        c, out, err = new_chat(srv)
+        assert c.once(long_question) == 1 and "This prompt is longer than the model's window (30 tokens)" in err.text() and "--context" in err.text()  # (one answer: no chat to start)
         c, out, err = new_chat(srv)
         c.turn("LONGANSWER")  # (the answer itself fills the window)
         assert "reached the model's window (30 tokens)" in err.text() and "/clear" in err.text()
