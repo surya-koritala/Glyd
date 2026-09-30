@@ -207,7 +207,11 @@ every earlier format.
   v0.25.1) 1.27 / 1.27 / 1.22x; on an A10 (Qwen3-8B, v0.25.1) 1.31 / 0.94
   / 1.11x (at 8 sequences, both eager, the GPU busy 68-73% of each second
   under Glyd against 96-98% under bf16), where Qwen3-14B's Glyd default
-  ran at 20.54 GB and its bf16 did not fit. On the GH200 greedy tokens
+  ran at 20.54 GB and its bf16 did not fit; on an A100 SXM4 40 GB at
+  v0.25.1's routes (before this release's route SPLIT, which takes its
+  12-bit prompts of 769-4096 tokens) Qwen3-8B 1.23 / 1.05 / 1.04x and
+  Qwen3-14B 1.27 / 1.05 / 1.05x, the chat mix's total 0.82x and 0.79x.
+  On the GH200 greedy tokens
   did not repeat from one identical call to the next at 8 and 32
   sequences, bf16 eager's own included, nor compiled at one sequence, so
   no mode's tokens there are compared with bf16's; where bf16 eager's
