@@ -52,9 +52,15 @@ import torch
 import torch.nn.functional as F
 from vllm.config import CompilationMode, CUDAGraphMode, get_current_vllm_config_or_none
 from vllm.logger import init_logger
+from vllm.model_executor.layers.fused_moe import RoutedExperts
+from vllm.model_executor.layers.fused_moe.activation import MoEActivation
+from vllm.model_executor.layers.fused_moe.config import FusedMoEQuantConfig
+from vllm.model_executor.layers.fused_moe.oracle.unquantized import UnquantizedMoeBackend
+from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import UnquantizedFusedMoEMethod
 from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase, UnquantizedLinearMethod
 from vllm.model_executor.layers.quantization import register_quantization_config
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
+from vllm.model_executor.layers.quantization.online.moe_base import OnlineMoEMethodBase
 from vllm.model_executor.layers.vocab_parallel_embedding import UnquantizedEmbeddingMethod, VocabParallelEmbedding
 from vllm.model_executor.model_loader.reload.layerwise import initialize_online_processing
 from vllm.model_executor.parameter import ModelWeightParameter
@@ -153,10 +159,14 @@ def register():
 
 
 def _linear_bytes(mc):
-    """A dense model's Linears (bf16 bytes) and the rest, from its config (for best_layout's fit); (0, 0) where unknown."""
+    """A model's Linears and experts (bf16 bytes) and the rest, from its config (for best_layout's fit): a mixture of
+    experts' layer its E experts' matrices (moe_intermediate_size each, else intermediate_size); (0, 0) where
+    unknown."""
     try:
         c = mc.hf_text_config
-        h, L, I = c.hidden_size, c.num_hidden_layers, c.intermediate_size
+        h, L = c.hidden_size, c.num_hidden_layers
+        E = next((getattr(c, n) for n in ("num_experts", "num_local_experts", "n_routed_experts") if getattr(c, n, None)), 0)
+        I = (getattr(c, "moe_intermediate_size", None) or c.intermediate_size) * E if E else c.intermediate_size
         nh = c.num_attention_heads
         nkv = getattr(c, "num_key_value_heads", None) or nh
         hd = getattr(c, "head_dim", None) or h // nh
@@ -237,6 +247,9 @@ class GlydConfig(QuantizationConfig):
             raise ValueError("glyd: weight offloading (--cpu-offload-gb, prefetch offload) moves parameters, not Glyd's packs: not supported")
         if getattr(mc, "enable_sleep_mode", False):
             raise ValueError("glyd: sleep mode is not supported yet")
+        # A mixture of experts' shared experts run on a side stream beside the rest by default: their products and the
+        # main stream's would share the device's done counters. Off, before vLLM makes them (and caches its env).
+        os.environ["VLLM_DISABLE_SHARED_EXPERTS_STREAM"] = "1"
         icc = vc.compilation_config.inductor_compile_config
         if exact and not (mc.enforce_eager or (vc.compilation_config.mode == CompilationMode.NONE and vc.compilation_config.cudagraph_mode == CUDAGraphMode.NONE) or (icc.get("deterministic") and icc.get("benchmark_combo_kernel") is False)):
             raise ValueError("glyd: exact mode gives vLLM's bf16 logits bit for bit eager (--enforce-eager), or compiled with inductor's deterministic mode, with which vLLM's compiled bf16 is itself the same from one run to the next: --compilation-config '{\"inductor_compile_config\": {\"deterministic\": true, \"combo_kernels\": true, \"benchmark_combo_kernel\": false}}' (the bf16 run to compare with the same). Without it inductor times some of its kernels' variants on the GPU, and compiled logits, bf16's too, are not always the same from one run to the next. Add one of the two, or leave exact off")
@@ -258,6 +271,14 @@ class GlydConfig(QuantizationConfig):
         log.info("glyd: %s layout%s%s", layout, ", exact" if exact else "", ", verified" if verify else "")
 
     def get_quant_method(self, layer, prefix):
+        if isinstance(layer, RoutedExperts):  # a mixture of experts' layer
+            if self.opts is None:
+                self.resolve()
+            why = GlydMoEMethod.unsupported(layer)
+            if why:
+                log.warning("glyd: %s: experts kept bf16 (%s)", prefix, why)
+                return UnquantizedFusedMoEMethod(layer.moe_config)
+            return GlydMoEMethod(self, layer.moe_config)
         if isinstance(layer, VocabParallelEmbedding):  # (the LM head too): a save's pack decoded to bf16 at load
             e = self.saved(prefix)
             if e is None:
@@ -284,9 +305,10 @@ class GlydConfig(QuantizationConfig):
         e = packs.get(prefix)
         return e if e is not None and len(e["tensors"]) == 1 else None
 
-    def packed(self, layer, layout, words, t):
-        """A layer packed: into the digest of the packs, which vLLM's compile cache keys by (additional_config)."""
-        self.packs[getattr(layer, "prefix", str(id(layer)))] = [layout, list(words), [int(x.numel()) for x in t]]
+    def packed(self, name, layout, words, t):
+        """A layer packed (name: its prefix): into the digest of the packs, which vLLM's compile cache keys by
+        (additional_config)."""
+        self.packs[name] = [layout, list(words), [int(x.numel()) for x in t]]
         digest = hashlib.sha256(json.dumps(sorted(self.packs.items())).encode()).hexdigest()[:16]
         vc = getattr(self, "_vc", None) or get_current_vllm_config_or_none()
         if vc is not None and isinstance(vc.additional_config, dict) and KEY in vc.additional_config:
@@ -408,7 +430,7 @@ class GlydLinearMethod(LinearMethodBase):
         layer.glyd_out, layer.glyd_exact, layer.glyd_verified = O, opts["exact"], opts["verify"]
         layer._parameters.pop("weight", None)
         layer.weight = torch.nn.Parameter(torch.empty(0, K, dtype=torch.bfloat16, device=dev), requires_grad=False)  # (read for its dtype and K)
-        self.config.packed(layer, layout, layer.glyd_words, t)
+        self.config.packed(getattr(layer, "prefix", ""), layout, layer.glyd_words, t)
         need = O * K if opts["exact"] or self._decodes(dev, layer.glyd_words, O, K) else 0
         if need and (dev not in _SCRATCH or _SCRATCH[dev].numel() < need):
             _SCRATCH[dev] = torch.empty(need, dtype=torch.bfloat16, device=dev)  # (at load: no CUDA graph holds the old one)
@@ -431,3 +453,102 @@ class GlydLinearMethod(LinearMethodBase):
         if self.plain is not None:
             return self.plain.apply(layer, x, bias)
         return torch.ops.glyd.vllm_linear(x, layer.glyd_data, layer.glyd_a, layer.glyd_b, layer.glyd_words, bias, layer.glyd_out, layer.glyd_exact)
+
+
+class GlydMoEMethod(OnlineMoEMethodBase):
+    """A mixture of experts' layer's experts (vLLM's RoutedExperts: w13 [E, 2I, H], gate then up, and w2 [E, H, I]),
+    each weight packed as one matrix of its E experts' stacked ([E 2I, H], [E H, I]) as vLLM's layerwise processing
+    completes the layer, from its bf16 on the meta device (the peak: the packs and a layer's experts). Their products
+    the library's grouped ones: each token's k choices (its pairs) sorted by expert on the GPU (moe_route), gate and
+    up with SiLU applied as its sums are written out, down with the router's weights applied and each token's k rows
+    added (mma_moe); no host sync, in the CUDA graphs vLLM captures around its MoE op. exact: the experts the tokens
+    are routed to decoded into the device's scratch buffer (mma_moe_unpack), then the kernel vLLM runs bf16's experts
+    by (its Triton one; refused where vLLM picks another, whose weights it lays out otherwise)."""
+
+    def __init__(self, config, moe):
+        super().__init__(moe)
+        self.config, self.ref = config, None
+        if config.opts["exact"]:
+            self.ref = UnquantizedFusedMoEMethod(moe)  # (bf16's: the backend vLLM picks for this layer)
+            if self.ref.unquantized_backend != UnquantizedMoeBackend.TRITON:
+                raise ValueError(f"glyd: exact mode runs a mixture of experts' layers by vLLM's Triton kernel on their experts decoded; vLLM picks {self.ref.unquantized_backend.value} for bf16's here, whose weights it lays out otherwise: leave exact off")
+
+    @property
+    def topk_indices_dtype(self):
+        return self.ref.topk_indices_dtype if self.ref is not None else None
+
+    @staticmethod
+    def unsupported(layer):
+        """Why the library's grouped products do not take this layer's experts (they stay bf16), or None."""
+        mc = layer.moe_config
+        if mc.moe_parallel_config.use_ep:
+            return "expert parallel"
+        if mc.has_bias:
+            return "experts with biases"
+        if mc.activation != MoEActivation.SILU:
+            return f"activation {mc.activation.value}, not SiLU"
+        if layer.apply_router_weight_on_input:
+            return "router weights applied to the input"
+        if layer.params_dtype != torch.bfloat16:
+            return f"{layer.params_dtype}, not bf16"
+        H, I = mc.hidden_dim, mc.intermediate_size_per_partition
+        if (2 * I) % 128 or H % 64 or I % 16:
+            return f"hidden {H} or intermediate {I} (a rank's) off the packs' multiples (2I of 128, H of 64, I of 16)"
+        return None
+
+    @property
+    def supports_eplb(self):
+        return False
+
+    def get_fused_moe_quant_config(self, layer):
+        return FusedMoEQuantConfig.make()  # (bf16 activations, as vLLM's own bf16 experts)
+
+    def process_weights_after_loading(self, layer):
+        if getattr(layer, "glyd_moe", None) is not None:  # (vLLM calls it again after the load)
+            return
+        opts = self.config.opts
+        layout = opts["layout"]
+        pack = g.pack_mma12 if layout == "mma12" else g.pack_mma
+        E = layer.w13_weight.shape[0]
+        packs = []
+        for name in ("w13", "w2"):
+            w = getattr(layer, name + "_weight").data
+            m = w.reshape(-1, w.shape[2])  # E experts' matrices stacked, [E out, in]
+            p = pack(m)
+            if opts["verify"] and not torch.equal(g.mma_unpack(p).view(torch.int16), m.view(torch.int16)):
+                raise ValueError(f"glyd: {layer.layer_name}'s {name} decoded to other bits than its weights")
+            t = (p.data, p.exc, p.exc_base) if isinstance(p, g.Mma12) else (p.data, p.blocks, p.block_base)
+            for part, x in zip(("data", "a", "b"), t):
+                layer.register_buffer(f"glyd_{name}_{part}", x, persistent=False)
+            dev = w.device
+            layer._parameters.pop(name + "_weight", None)
+            setattr(layer, name + "_weight", torch.nn.Parameter(torch.empty(0, dtype=torch.bfloat16, device=dev), requires_grad=False))
+            self.config.packed(f"{layer.layer_name}.{name}", layout, list(p.sym if isinstance(p, g.Mma12) else p.tiers), t)
+            packs.append(p)
+        g.lib()
+        layer.glyd_moe, layer.glyd_verified = (packs[0], packs[1], E), opts["verify"]
+        for name in ("mma12_moe", "mma_moe"):  # the device's done counters, made now: never in a CUDA graph's pool
+            _lib._counters(name, dev.index, None, 0, 1 << 16)
+        if self.ref is not None:  # exact: bf16's kernel (it takes the weights at each call), the scratch for both
+            self.ref._init_moe_kernel(layer)
+            need = sum(p.shape[0] * p.shape[1] for p in packs)
+            if dev not in _SCRATCH or _SCRATCH[dev].numel() < need:
+                _SCRATCH[dev] = torch.empty(need, dtype=torch.bfloat16, device=dev)  # (at load: no CUDA graph holds the old one)
+
+    def apply(self, layer, x, topk_weights, topk_ids, shared_experts, shared_experts_input):
+        up, down, E = layer.glyd_moe
+        if not x.shape[0]:
+            return torch.empty_like(x)
+        fresh, _lib.local.fresh = _lib.local.fresh, True  # workspaces for the call alone (in a capture: the graph's pool)
+        try:
+            ids = topk_ids if topk_ids.dtype == torch.int64 else topk_ids.long()
+            plan = g.moe_route(ids, E)
+            if self.ref is not None:  # exact: the routed experts decoded (the rest of the buffer as it was, unread)
+                buf, n13 = _SCRATCH[x.device], up.shape[0] * up.shape[1]
+                w1 = g.mma_moe_unpack(up, E, plan, ids.numel(), buf[:n13]).view(E, -1, up.shape[1])
+                w2 = g.mma_moe_unpack(down, E, plan, ids.numel(), buf[n13 : n13 + down.shape[0] * down.shape[1]]).view(E, -1, down.shape[1])
+                return self.ref.moe_kernel.apply(hidden_states=x, w1=w1, w2=w2, topk_weights=topk_weights, topk_ids=topk_ids, activation=layer.activation, apply_router_weight_on_input=layer.apply_router_weight_on_input, global_num_experts=layer.global_num_experts, expert_map=layer.expert_map, shared_experts=shared_experts, shared_experts_input=shared_experts_input)
+            h = g.mma_moe(up, E, x, plan, ids, 1)  # [T k, I]: SiLU(gate) up, the pairs in the plan's order
+            return g.mma_moe(down, E, h, plan, ids, 0, None, topk_weights, gather=False)  # [T, H]
+        finally:
+            _lib.local.fresh = fresh

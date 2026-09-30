@@ -29,11 +29,19 @@ a process of its own:
   and its logits against bf16's as before; bf16 compiled again on an empty
   cache, against its first compile (the compiled graph's own variation).
 
-    python check_vllm.py [--saves] [--quick] [--out DIR] [MODEL ...]
+    python check_vllm.py [--saves] [--quick | --brief] [--tp N] [--out DIR] [MODEL ...]
 
 --quick leaves out the two runs that only describe bf16's own noise (its
 prompts one at a time, and compiled again on an empty cache): every check
-stays.
+stays. --brief, for a model too big to load a dozen times in a job: bf16
+with CUDA graphs and eager, Glyd in the layout the GPU's best (auto) with
+its layers checked, and exact eager; its checks alone. --tp N: every run
+over N GPUs (tensor parallel), bf16's too.
+
+A mixture of experts' model: its experts' products checked beside the
+Linears' (against its experts decoded, in float32); exact mode's experts
+the routed ones decoded, then bf16's own MoE kernel, bit for bit as the
+rest.
 
 Needs vLLM (glyd[vllm]) and the library (GLYD_GPU_LIB); --saves makes its
 saves with glyd[gpu]'s transformers path (GLYD_SAVE_PYTHON: a Python that
@@ -72,7 +80,7 @@ def child(spec):
 
     out = {"spec": spec}
     try:
-        llm = LLM(model=spec["model"], quantization=spec.get("quantization"), dtype="bfloat16", gpu_memory_utilization=0.85, max_model_len=4096, enforce_eager=spec.get("eager", False), seed=0, **({"compilation_config": spec["compilation_config"]} if spec.get("compilation_config") else {}))
+        llm = LLM(model=spec["model"], quantization=spec.get("quantization"), dtype="bfloat16", gpu_memory_utilization=0.85, max_model_len=4096, enforce_eager=spec.get("eager", False), seed=0, tensor_parallel_size=spec.get("tp", 1), **({"compilation_config": spec["compilation_config"]} if spec.get("compilation_config") else {}))
     except Exception as e:  # (exact under compile: refused)
         out["error"] = f"{type(e).__name__}: {e}"
         return out
@@ -93,21 +101,30 @@ def child(spec):
         pl = o.prompt_logprobs[1:]
         out["long_logprobs"] = [d[t].logprob for d, t in zip(pl, ids[1:])]
         out["long_top1"] = [d[t].rank == 1 for d, t in zip(pl, ids[1:])]
-    if spec.get("layers"):
-        out["layers"] = llm.apply_model(_layers)[0]
+    if spec.get("layers"):  # (a rank's each, added up)
+        ranks = llm.apply_model(_layers)
+        out["layers"] = {k: (max if k == "worst_rel_error" else all if k == "same_bits" else sum)(r[k] for r in ranks) if k in ("packed", "verified", "moe", "moe_verified", "worst_rel_error", "same_bits") else ranks[0][k] for k in ranks[0]}
     return out
 
 
 def _layers(model):
-    """Every packed layer's product (glyd::vllm_linear, fused) against F.linear on its decoded matrix, at MS tokens:
-    the largest relative error, and whether a second call gave the same bits; the layers packed, and verified."""
+    """Every packed layer's product (glyd::vllm_linear, fused) against F.linear on its decoded matrix, at MS tokens,
+    and every mixture of experts' layer's (its experts packed: the library's grouped products) against its experts
+    decoded, in float32 (_moe): the largest relative error, and whether a second call gave the same bits; the layers
+    packed, and verified."""
     import torch
     import torch.nn.functional as F
     from glyd.gpu import kernels as g
 
-    worst, same, n, verified = 0.0, True, 0, 0
+    worst, same, n, verified, moe, moe_verified = 0.0, True, 0, 0, 0, 0
     torch.manual_seed(0)
     for m in model.modules():
+        if getattr(m, "glyd_moe", None) is not None:
+            moe += 1
+            moe_verified += bool(m.glyd_verified)
+            e, b = _moe(m, (1, 7, 64, 300) if moe <= 2 else (7,))
+            worst, same = max(worst, e), same and b
+            continue
         if getattr(m, "glyd_words", None) is None:
             continue
         n += 1
@@ -121,7 +138,33 @@ def _layers(model):
             ref = F.linear(x.float(), w, None if m.bias is None else m.bias.float())
             worst = max(worst, ((y.float() - ref).abs().max() / ref.abs().max()).item())
             same &= torch.equal(y, torch.ops.glyd.vllm_linear(x, m.glyd_data, m.glyd_a, m.glyd_b, m.glyd_words, m.bias, O, False))
-    return {"packed": n, "verified": verified, "worst_rel_error": worst, "same_bits": same, **_host(model)}
+    return {"packed": n, "verified": verified, "moe": moe, "moe_verified": moe_verified, "worst_rel_error": worst, "same_bits": same, **_host(model)}
+
+
+def _moe(m, ts):
+    """A mixture of experts' layer's product (its method's apply: the library's grouped products) against its experts
+    decoded, in float32 (SiLU(gate) up rounded to bf16 as the kernel writes it, then down, each token's k rows times
+    their weights added), for T random tokens each of ts routed to k random experts: the largest relative error, and
+    whether a second call gave the same bits."""
+    import torch
+    import torch.nn.functional as F
+    from glyd.gpu import kernels as g
+
+    up, down, E = m.glyd_moe
+    W1, W2 = g.mma_unpack(up).float().view(E, -1, up.shape[1]), g.mma_unpack(down).float().view(E, -1, down.shape[1])
+    I, k = W1.shape[1] // 2, m.top_k
+    worst, same = 0.0, True
+    for T in ts:
+        x = torch.randn(T, W1.shape[2], dtype=torch.bfloat16, device=W1.device)
+        ids = torch.stack([torch.randperm(E, device=W1.device)[:k] for _ in range(T)]).to(torch.int32)
+        w = torch.softmax(torch.randn(T, k, device=W1.device), dim=-1)
+        y = m.quant_method.apply(m, x, w, ids, None, None)
+        gu = torch.stack([W1[ids[t].long()] @ x[t].float() for t in range(T)])  # [T, k, 2I]
+        h = (F.silu(gu[..., :I]) * gu[..., I:]).to(torch.bfloat16).float()
+        ref = torch.stack([(w[t, :, None] * torch.stack([W2[ids[t, j].long()] @ h[t, j] for j in range(k)])).sum(0) for t in range(T)])
+        worst = max(worst, ((y.float() - ref).abs().max() / ref.abs().max()).item())
+        same &= torch.equal(y, m.quant_method.apply(m, x, w, ids, None, None))
+    return worst, same
 
 
 def _host(model):
@@ -153,6 +196,8 @@ def run(spec, out_dir, name, env=None):
     """spec in a vLLM of its own (this script, --child), its JSON in out_dir/name.json."""
     path = os.path.join(out_dir, name + ".json")
     e = dict(os.environ, VLLM_ENABLE_V1_MULTIPROCESSING="0", **(env or {}))
+    if spec.get("tp", 1) > 1:  # (LLM.apply_model sends its function to the other ranks' processes)
+        e["VLLM_ALLOW_INSECURE_SERIALIZATION"] = "1"
     with open(os.path.join(out_dir, name + ".log"), "w") as log:
         r = subprocess.run([sys.executable, os.path.abspath(__file__), "--child", json.dumps(spec), path], env=e, stdout=log, stderr=subprocess.STDOUT, timeout=1800)
     if r.returncode or not os.path.exists(path):
@@ -185,9 +230,11 @@ def compare(a, b):
 
 def main():
     args = sys.argv[1:]
-    saves, quick = "--saves" in args, "--quick" in args
+    saves, brief = "--saves" in args, "--brief" in args
+    quick = brief or "--quick" in args
     out_dir = args[args.index("--out") + 1] if "--out" in args else "check_vllm_results"
-    models = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] != "--out")] or ["Qwen/Qwen3-1.7B"]
+    tp = int(args[args.index("--tp") + 1]) if "--tp" in args else 1
+    models = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] not in ("--out", "--tp"))] or ["Qwen/Qwen3-1.7B"]
     os.makedirs(out_dir, exist_ok=True)
     report, failed = [], []
 
@@ -198,10 +245,11 @@ def main():
             failed.append(what)
 
     for model in models:
-        tag = model.split("/")[-1]
+        tag = model.split("/")[-1] + (f"-tp{tp}" if tp > 1 else "")
         cache = tempfile.mkdtemp(prefix="vllm-cache-")  # one compile cache for every run of the model (its layouts and modes in turn)
         env = {"VLLM_CACHE_ROOT": cache}
-        R = lambda name, spec, extra=None: run(dict(spec, model=spec.get("model", model)), out_dir, f"{tag}-{name}", dict(env, **(extra or {})))
+        R = lambda name, spec, extra=None: run(dict(spec, model=spec.get("model", model), tp=tp), out_dir, f"{tag}-{name}", dict(env, **(extra or {})))
+        run1 = lambda spec, name, extra: run(dict(spec, tp=tp), out_dir, f"{tag}-{name}", extra)
         bf16 = R("bf16", {"make_long": True})
         long = {"long_ids": bf16["long_ids"]}
         eager = R("bf16-eager", dict(long, eager=True))
@@ -209,38 +257,45 @@ def main():
         noise = ""
         if not quick:
             one = R("bf16-one-by-one", {"one_by_one": True})
-            again = run(dict(long, model=model), out_dir, f"{tag}-bf16-recompiled", {"VLLM_CACHE_ROOT": tempfile.mkdtemp(prefix="vllm-cache-")})
+            again = run1(dict(long, model=model), "bf16-recompiled", {"VLLM_CACHE_ROOT": tempfile.mkdtemp(prefix="vllm-cache-")})
             noise = f"; one by one against batched {compare(one, bf16)}; compiled again on an empty cache {compare(again, bf16)}"
         print(f"{tag}: bf16 KV cache {bf16['blocks'] * bf16['block_size']} tokens; its noise: graphs against eager {floor}{noise}", flush=True)
-        for layout in ("mma", "mma12"):
+        for layout in ("auto",) if brief else ("mma", "mma12"):
             r = R(f"glyd-{layout}", dict(long, quantization="glyd", layers=True), {"GLYD_LAYOUT": layout, "GLYD_VERIFY": "1"})
             c = compare(r, bf16)
             print(f"{tag} glyd {layout}: KV cache {r['blocks'] * r['block_size']} tokens (bf16 {bf16['blocks'] * bf16['block_size']}); against bf16 {c}; layers {r['layers']}; additional_config {r['glyd']}", flush=True)
-            check(r["layers"]["verified"] == r["layers"]["packed"] > 0, f"{tag} {layout}: every pack ({r['layers']['packed']}) decoded to its weights bit for bit")
-            check(r["layers"]["worst_rel_error"] < 1e-2 and r["layers"]["same_bits"], f"{tag} {layout}: each layer's product within 1e-2 of F.linear ({r['layers']['worst_rel_error']:.2e}) and the same bits every run")
+            moe = r["layers"]["moe"]
+            experts = f" and {moe} mixture of experts' layers' experts" if moe else ""
+            check(r["layers"]["verified"] == r["layers"]["packed"] > 0 and r["layers"]["moe_verified"] == moe, f"{tag} {layout}: every pack ({r['layers']['packed']}{experts}) decoded to its weights bit for bit")
+            check(r["layers"]["worst_rel_error"] < 1e-2 and r["layers"]["same_bits"], f"{tag} {layout}: each layer's product within 1e-2 of F.linear{', the experts of their decoded matrices' if moe else ''} ({r['layers']['worst_rel_error']:.2e}) and the same bits every run")
             check(c["long_top1"] >= AGREE, f"{tag} {layout}: top-1 agreement with bf16 on its continuation {c['long_top1']:.4f} (at least {AGREE}; bf16 eager's {floor['long_top1']:.4f})")
             check(c["long_mean_abs_dlogprob"] <= FLOOR * max(floor["long_mean_abs_dlogprob"], 1e-6), f"{tag} {layout}: mean |logprob difference| {c['long_mean_abs_dlogprob']:.2e}, at most {FLOOR}x bf16 eager's against its graphs ({floor['long_mean_abs_dlogprob']:.2e})")
-        for layout in ("mma", "mma12"):  # again on the shared cache, the same options: its own graphs loaded, not another's
+        for layout in () if brief else ("mma", "mma12"):  # again on the shared cache, the same options: its own graphs loaded, not another's
             again = R(f"glyd-{layout}-again", dict(long, quantization="glyd"), {"GLYD_LAYOUT": layout, "GLYD_VERIFY": "1"})
             loaded = "Directly load AOT compilation" in open(os.path.join(out_dir, f"{tag}-glyd-{layout}-again.log")).read()
             c = compare(again, bf16)
             check(loaded and c["long_top1"] >= AGREE and c["long_mean_abs_dlogprob"] <= FLOOR * max(floor["long_mean_abs_dlogprob"], 1e-6), f"{tag} {layout}: again on the shared compile cache, its graphs loaded ({loaded}), against bf16 as before (top-1 {c['long_top1']:.4f}, mean |diff| {c['long_mean_abs_dlogprob']:.2e})")
         aot = os.path.join(cache, "torch_compile_cache", "torch_aot_compile")
         dirs = sorted(os.listdir(aot)) if os.path.isdir(aot) else []
-        check(len(dirs) == 3, f"{tag}: a compile cache for each of bf16, glyd tiered and glyd 12-bit on the one VLLM_CACHE_ROOT ({len(dirs)}), none reused by another")
+        if not brief:
+            # (3 on one GPU; over several a rank's packs, and so its key, its own: a layout's ranks each a cache)
+            check(len(dirs) == 3 if tp == 1 else len(dirs) >= 3, f"{tag}: a compile cache for each of bf16, glyd tiered and glyd 12-bit on the one VLLM_CACHE_ROOT ({len(dirs)}), none reused by another")
         x = R("glyd-exact-eager", dict(long, quantization="glyd", eager=True), {"GLYD_EXACT": "1"})
-        c = compare(x, eager)
-        check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"], f"{tag} exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']})")
+        c = compare(x, eager) if "error" not in x else {"bit_identical": 0, "long_bit_identical": x["error"][:200]}
+        check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"] is True, f"{tag} exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']})")
+        if brief:
+            shutil.rmtree(cache, ignore_errors=True)
+            continue
         xc = R("glyd-exact-compiled", dict(long, quantization="glyd"), {"GLYD_EXACT": "1"})
         check("error" in xc and "enforce-eager" in xc["error"], f"{tag} exact under torch.compile: refused ({xc.get('error', 'not refused')[:120]})")
         fresh = lambda: {"VLLM_CACHE_ROOT": tempfile.mkdtemp(prefix="vllm-cache-")}  # (each run a compile of its own)
         det = dict(long, model=model, compilation_config=DETERMINISTIC)
-        bd = run(det, out_dir, f"{tag}-bf16-det", fresh())
-        xd = run(dict(det, quantization="glyd"), out_dir, f"{tag}-glyd-exact-det", dict(fresh(), GLYD_EXACT="1"))
-        c = compare(xd, bd)
-        check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"], f"{tag} exact under torch.compile, inductor deterministic: compiled bf16's tokens, logprobs and prompt_logprobs (the same mode) bit for bit ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']})")
+        bd = run1(det, "bf16-det", fresh())
+        xd = run1(dict(det, quantization="glyd"), "glyd-exact-det", dict(fresh(), GLYD_EXACT="1"))
+        c = compare(xd, bd) if "error" not in xd else {"bit_identical": 0, "long_bit_identical": xd["error"][:200]}
+        check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"] is True, f"{tag} exact under torch.compile, inductor deterministic: compiled bf16's tokens, logprobs and prompt_logprobs (the same mode) bit for bit ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']})")
         gc = fresh()
-        ga, gb = (run(dict(det, quantization="glyd"), out_dir, f"{tag}-glyd-det-{n}", gc) for n in "ab")
+        ga, gb = (run1(dict(det, quantization="glyd"), f"glyd-det-{n}", gc) for n in "ab")
         c = compare(ga, gb)
         check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"], f"{tag} fused, compiled, inductor deterministic: the same bits from one run to the next, the second on the first's graphs ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']}; layout {ga['glyd']['layout']})")
         if saves:

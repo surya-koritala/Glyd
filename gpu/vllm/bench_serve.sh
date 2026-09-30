@@ -10,7 +10,7 @@
 #   bash bench_serve.sh [MODEL]       (default Qwen/Qwen3-8B)
 # Env: VLLM (the vllm command), R (results; default ./bench-MODEL), UTIL (0.9), IN (1024), OUT (256), RATES
 # ("0.25 1 4 16 inf"), PROMPTS (per rate: "32 64 128 256 256"), MODES ("bf16 glyd"), WARM, BUSYWAIT, COOL, COOLWAIT,
-# GLYD_* (the plugin's options).
+# TP (1: the servers over that many GPUs, tensor parallel), GLYD_* (the plugin's options).
 set -u
 MODEL=${1:-Qwen/Qwen3-8B}
 VLLM=${VLLM:-vllm}
@@ -25,7 +25,7 @@ trap '[ -n "$SV" ] && kill $SV 2> /dev/null; [ -n "$SMI" ] && kill $SMI 2> /dev/
 temp() { nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | head -1; }
 others() { nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -c .; }
 serve() {  # LOG: vllm serve for this mode (SV its pid) once it answers; else stopped, 1
-  "$VLLM" serve "$MODEL" "${q[@]}" --max-model-len 4096 --gpu-memory-utilization "$UTIL" --port "$PORT" > "$1" 2>&1 &
+  "$VLLM" serve "$MODEL" "${q[@]}" --max-model-len 4096 --gpu-memory-utilization "$UTIL" --tensor-parallel-size "${TP:-1}" --port "$PORT" > "$1" 2>&1 &
   SV=$!
   for i in $(seq 1 180); do curl -sf "localhost:$PORT/v1/models" > /dev/null && return 0; kill -0 $SV 2> /dev/null || break; sleep 5; done
   kill $SV 2> /dev/null; wait $SV 2> /dev/null; SV=
