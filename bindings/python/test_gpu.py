@@ -330,7 +330,8 @@ def test_gpu_class_by_name():
     got = dict(zip(names, map(int, out)))
     want = {n: py["gpu_code"]((8, 6), n) - 86 for n in names}
     assert len(out) == len(names) and got == want, [(n, got.get(n), want[n]) for n in names if got.get(n) != want[n]]
-    assert (want["NVIDIA A10"], want["NVIDIA A10G"], want["NVIDIA GeForce RTX 4080 SUPER"]) == (kern["A10"], 0, kern["GEFORCE"])
+    pinned = ("NVIDIA A10", "NVIDIA A10G", "NVIDIA GeForce RTX 4080 SUPER", "NVIDIA L4", "NVIDIA L40S", "NVIDIA L40", "NVIDIA RTX 6000 Ada Generation")
+    assert [want[n] for n in pinned] == [kern["A10"], 0, kern["GEFORCE"], kern["L4"], kern["L40S"], 0, 0], [(n, want[n]) for n in pinned]
 
 
 def test_route_env():

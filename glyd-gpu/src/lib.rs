@@ -256,7 +256,7 @@ pub enum Route {
     Wg = 3,
     /// [`Library::gemm_big`], variant 0.
     Big = 4,
-    /// As Decode, the decode run ahead beside the products before (GeForce Ada's and an A10's prompts).
+    /// As Decode, the decode run ahead beside the products before (GeForce Ada's, an A10's and an L40S's prompts).
     Ahead = 5,
 }
 

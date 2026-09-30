@@ -42,10 +42,11 @@ SCRATCH = 128 << 20  # weights; bigger matrices are decoded in row blocks
 # 1024: benchmarks/gpu/h100-hopper2-val-2026-09-28); Ampere's and Ada's 17 to 64 (an A100's to 128) by mma_gemm_mid;
 # a 12-bit prompt decoded for cuBLAS, never fused, from GLYD_DEC_MIN tokens where it is set (any GPU), else an A100's
 # from 769; an L4's prompts decoded for cuBLAS on the current stream from 896 tokens tiered and 2560 12-bit, but exact
-# (its class by name: at its 72 W cap the fused kernel loses to the decode more the longer the prompt, and a decode
-# ahead beside cuBLAS gains nothing there; Qwen3-8B's and Qwen3-4B-Instruct-2507's prompt passes, fused against
-# decoded: tiered 4-5% slower decoded at 768 tokens, 9-11% faster at 896, 17-47% at 3072-8192; 12-bit 0.4-21% slower
-# to 2304, 1-3% faster at 2560, 7-49% at 4096-8192; decoded ahead within 1% of decoded first at 4096-8192 tokens,
+# (its class by name: at its 72 W cap the fused kernel loses to the decode, by more the longer the prompt, and a
+# decode ahead beside cuBLAS gains nothing there; Qwen3-8B's and Qwen3-4B-Instruct-2507's prompt passes, fused against
+# decoded: tiered 4-5% slower decoded at 768 tokens, 9-11% faster at 896 (the 4B's even at 1024), 17-47% at
+# 3072-8192; 12-bit 0.4-21% slower to 2304, 1-3% faster at 2560, 7-49% at 4096-8192; decoded ahead within 1% of
+# decoded first at 4096-8192 tokens,
 # 1-7% slower at 896-2048: benchmarks/gpu/l4-routes-2026-09-29); a prompt of a matrix whose K is not a multiple of
 # 64 decoded (the prompt kernel's blocks).
 # A prompt's products from this many tokens: each matrix decoded for cuBLAS, the next ones meanwhile (Ahead; the
@@ -361,14 +362,16 @@ class GLinear(_Node, nn.Module):
     straight from the packed weights where a kernel takes the step (in the
     mma layouts by the library's route: up to 64 tokens, an A100's 12-bit to
     128, and prompts: on Hopper to 1024 tokens, in the 12-bit layout on an
-    A100 to 768, on any GPU to GLYD_DEC_MIN where it is set; one-token steps
-    in the others); else the matrix decoded into the scratch buffer, then
-    PyTorch's matmul (on GeForce Ada a prompt past 512 tokens tiered, past
-    1792 12-bit fused and past 640 not, on an A10, but exact, from 512
-    tiered and 640 12-bit, decoded ahead of its product where Ahead takes
-    it). exact: every product the matrix decoded whole, then F.linear on the
-    input as it came, as nn.Linear does: its outputs bit for bit (over
-    fused). gemm_max: the fast format's fused steps, in tokens."""
+    A100 to 768, on an L4 to 895 tiered and 2559 12-bit, on any GPU to
+    GLYD_DEC_MIN where it is set; one-token steps in the others); else the
+    matrix decoded into the scratch buffer, then PyTorch's matmul (on
+    GeForce Ada a prompt past 512 tokens tiered, past 1792 12-bit fused and
+    past 640 not, on an A10, but exact, from 512 tiered and 640 12-bit, on
+    an L40S, but exact, from 1024 tiered and 2048 12-bit, decoded ahead of
+    its product where Ahead takes it). exact: every product the matrix
+    decoded whole, then F.linear on the input as it came, as nn.Linear
+    does: its outputs bit for bit (over fused). gemm_max: the fast format's
+    fused steps, in tokens."""
 
     weight = property(_Weight)  # as a model's own code reads it
 
@@ -387,7 +390,7 @@ class GLinear(_Node, nn.Module):
         self.step_max = 128 if self.a100 else 64  # tokens to which a step's kernel (not a prompt's) is one C call (_step)
         self.hopper = cc == (9, 0)  # the TMA and wgmma kernel is sm_90a code: Hopper alone
         # prompts decoded ahead, then cuBLAS, whatever K (the library's route AHEAD where fused and not exact): GeForce
-        # Ada's, and an A10's (not an A10G: the GPU's class) but exact
+        # Ada's, and an A10's (not an A10G: the GPU's class) and an L40S's but exact
         twelve, mma12 = (1793 if fused and not exact else 641), isinstance(p, g.Mma12)
         ahead = (twelve if mma12 else 513) if self.gpu == g.GEFORCE + 89 else (640 if mma12 else 512) if self.gpu == g.A10 + 86 and not exact else 1 << 62
         if self.gpu == g.L40S + 89 and not exact:  # an L40S's (the library's route AHEAD), but exact
@@ -421,14 +424,16 @@ class GLinear(_Node, nn.Module):
     def decoded(self, M):
         """Whether a prompt of M tokens is decoded for cuBLAS, never fused (kernel(M) None, and no fused fallback in
         whole()): the library's route DECODE (a 12-bit prompt from GLYD_DEC_MIN tokens where it is set, else an A100's
-        from 769, where cuBLAS on the decoded matrix outruns the fused kernel; Hopper's past its wgmma kernel)."""
+        from 769 and an L4's from 2560, an L4's tiered one from 896, where cuBLAS on the decoded matrix outruns the
+        fused kernel; Hopper's past its wgmma kernel)."""
         return self.route(M)[0] == g.DECODE
 
     def _step(self):
         """A product as one C call where it is a fused one through the prebuilt library (glyd_gpu_*_linear, by
         kernel(M)'s route): a generation step's to step_max tokens (64, an A100's 128: mma_gemm_mid's), and a
         prompt's past the last of them to self.ahead tokens by the prompt kernel (to the route DECODE's first, an
-        A100's 12-bit 769, from which it is decoded for cuBLAS); _lib.step over the pack; else None."""
+        A100's 12-bit 769, an L4's 896 tiered and 2560 12-bit, from which it is decoded for cuBLAS); _lib.step over the
+        pack; else None."""
         p = self.p
         if not self.fused or self.exact or not isinstance(p, g.Mma) or g.lib() is None:
             return None

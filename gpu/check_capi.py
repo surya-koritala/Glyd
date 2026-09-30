@@ -491,15 +491,17 @@ for name, want in (("NVIDIA A10", (512, 640)), ("NVIDIA A10G", (1 << 62, 1 << 62
         twelve = isinstance(q, g.Mma12)
         a = want[twelve]
         assert lin.gpu == (g.A10 if name == "NVIDIA A10" else 0) + 86 and lin.ahead == a == main_ahead(lin.gpu, twelve), (name, type(q).__name__, lin.ahead)
+        b = min(a, main_dec(lin.gpu, twelve))  # fused below (a 12-bit prompt decoded from GLYD_DEC_MIN where it is set)
         for M in (a - 1, a) if a < 1 << 62 else (1024,):
             x = torch.randn(M, 1024, dtype=bf, device=dev)
-            assert (lin.kernel(M) is g.mma_gemm_big) == (M < a) and (lin.step(x) is None) == (M >= a), (name, type(q).__name__, M)
+            assert (lin.kernel(M) is g.mma_gemm_big) == (M < b) and (lin.step(x) is None) == (M >= b), (name, type(q).__name__, M)
             counts["GLinear's routes on an A10 / A10G"] = counts.get("GLinear's routes on an A10 / A10G", 0) + 1
 # And on an L4 whatever this GPU is (8.9 and its name while made; the library's routes by its class, 3089): a prompt
 # decoded for cuBLAS on the current stream from 896 tokens tiered and 2560 12-bit (GLYD_DEC_MIN where set), fused
 # below (the one-call path to there), never ahead, exact as elsewhere (decoded on the current stream); on an L40 (the
-# same compute capability, no class) fused throughout. (An L40S's, decoded ahead from its thresholds: below.)
-for name, want in (("NVIDIA L4", (main_dec(3089, False), main_dec(3089, True))), ("NVIDIA L40", (1 << 62, 1 << 62))):
+# same compute capability, no class) fused throughout, but a 12-bit prompt from GLYD_DEC_MIN where it is set. (An
+# L40S's, decoded ahead from its thresholds: below.)
+for name, want in (("NVIDIA L4", (main_dec(3089, False), main_dec(3089, True))), ("NVIDIA L40", (main_dec(89, False), main_dec(89, True)))):
     l4 = made_as((8, 9), name, lambda: [gm.GLinear(q, None) for q in packs])
     assert all(made_as((8, 9), name, lambda: gm.GLinear(q, None, exact=True)).ahead == 1 << 62 for q in packs), (name, "exact: no decode ahead")
     for q, lin in zip(packs, l4):
@@ -517,16 +519,18 @@ for name, want in (("NVIDIA L4", (main_dec(3089, False), main_dec(3089, True))),
             counts["L4 prompt decoded"] = counts.get("L4 prompt decoded", 0) + 1
 # And on an L40S whatever this GPU is (8.9 and its name while made; the library's routes by its class, 4089): a prompt
 # decoded ahead from 1024 tokens tiered and 2048 12-bit (the route AHEAD), fused below (the one-call path to there),
-# but exact (decoded on the current stream, as elsewhere); its scratch buffer holding two of its matrices.
+# but exact (decoded on the current stream, as elsewhere); its scratch buffer holding two of its matrices. A 12-bit
+# prompt from GLYD_DEC_MIN tokens where it is set: the route DECODE (decoded, as the ahead does; main's semantics).
 l40s = made_as((8, 9), "NVIDIA L40S", lambda: [gm.GLinear(q, None) for q in packs])
 assert all(made_as((8, 9), "NVIDIA L40S", lambda: gm.GLinear(q, None, exact=True)).ahead == 1 << 62 for q in packs), ("L40S", "exact: no decode ahead")
 for q, lin in zip(packs, l40s):
     twelve = isinstance(q, g.Mma12)
-    a = main_ahead(4089, twelve)
+    a, d = main_ahead(4089, twelve), main_dec(4089, twelve)
     assert lin.gpu == g.L40S + 89 and lin.ahead == a == (2048 if twelve else 1024), ("L40S", type(q).__name__, lin.gpu, lin.ahead)
     for M in (a - 1, a):
         x = torch.randn(M, 1024, dtype=bf, device=dev)
-        assert (lin.kernel(M) is g.mma_gemm_big) == (M < a) and not lin.decoded(M) and (lin.step(x) is None) == (M >= a) and lin.route(M)[0] == (g.AHEAD if M >= a else g.BIG), ("L40S", type(q).__name__, M)
+        route = g.DECODE if M >= d else g.AHEAD if M >= a else g.BIG
+        assert (lin.kernel(M) is g.mma_gemm_big) == (route == g.BIG) and lin.decoded(M) == (M >= d) and (lin.step(x) is None) == (route != g.BIG) and lin.route(M)[0] == route, ("L40S", type(q).__name__, M)
         counts["GLinear's routes on an L40S"] = counts.get("GLinear's routes on an L40S", 0) + 1
     gm.set_scratch(torch.nn.ModuleList([lin]), False)
     assert gm.Scratch.buf[q.sm.device].numel() >= 2 * q.n, ("L40S", "the scratch buffer holds two of its matrices")

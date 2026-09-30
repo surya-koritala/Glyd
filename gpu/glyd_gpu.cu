@@ -3824,13 +3824,13 @@ GLYD_GPU_API int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc
 // model.py's GLinear and glyd_gpu_*_linear alike: a step's kernel to 64 tokens (in the 12-bit layout mma_gemm_mid
 // from 17 on Ampere and Ada, an A100's to 128, and mma_gemm_wg from 17 to 1024 on Hopper, mma12_wgp_kernel past 128),
 // past that the prompt kernel (mma_gemm_big), but where W decoded for a bf16 GEMM (cuBLAS) is the faster (DECODE): a
-// 12-bit prompt from GLYD_DEC_MIN tokens where it is set (any GPU), else an A100's from 769, Hopper's past its wgmma
-// kernel's (none on Hopper takes a prompt), and every prompt of a matrix whose K is not a multiple of 64 (the prompt
-// kernel's blocks); and with W decoded ahead, beside the products before it (AHEAD), whatever K: GeForce Ada's from
-// 513 tokens tiered and 1793 12-bit, an A10's from 512 and 640 (ahead_min). GLYD_WG_MIN, GLYD_WG_MAX, GLYD_MID_MIN
-// and GLYD_DEC_MIN move those thresholds (read at the first call; GLYD_DEC_MIN 0 or unset: an A100's 769 alone). A
-// GPU is given as glyd_gpu_gpu gives it: its compute capability, major * 10 + minor, plus its class by name
-// (gpu_class).
+// 12-bit prompt from GLYD_DEC_MIN tokens where it is set (any GPU), else an A100's from 769 and an L4's from 2560, an
+// L4's tiered one from 896 (dec_from), Hopper's past its wgmma kernel's (none on Hopper takes a prompt), and every
+// prompt of a matrix whose K is not a multiple of 64 (the prompt kernel's blocks); and with W decoded ahead, beside the
+// products before it (AHEAD), whatever K: GeForce Ada's from 513 tokens tiered and 1793 12-bit, an A10's from 512 and
+// 640, an L40S's from 1024 and 2048 (ahead_min). GLYD_WG_MIN, GLYD_WG_MAX, GLYD_MID_MIN and GLYD_DEC_MIN move those
+// thresholds (read at the first call; GLYD_DEC_MIN 0 or unset: the A100's and the L4's 12-bit ones above). A GPU is
+// given as glyd_gpu_gpu gives it: its compute capability, major * 10 + minor, plus its class by name (gpu_class).
 struct RouteMins {
     int64_t wg_min, wg_max, mid_min, dec_min;  // (dec_min 0: unset)
 };
@@ -3864,11 +3864,12 @@ static int64_t ahead_min(bool twelve, int64_t gpu) {
 // A prompt decoded for cuBLAS, never fused, from this many tokens: in the 12-bit layout from GLYD_DEC_MIN tokens where
 // it is set (any GPU), else an A100's from 769; an L4's from 896 tiered and 2560 12-bit (72 W, full-rate tensor cores,
 // half an A10's bandwidth a FLOP: at its power cap the fused kernel, decoding each weight again for every 256 tokens,
-// loses to the decode more the longer the prompt, and a decode ahead beside cuBLAS gains nothing there; Qwen3-8B's and
-// Qwen3-4B-Instruct-2507's prompt passes, fused against decoded: tiered 4-5% slower decoded at 768 tokens, 9-11%
-// faster at 896 and 17-47% at 3072-8192; 12-bit 0.4-21% slower to 2304, 1-3% faster at 2560 and 7-49% at 4096-8192;
+// loses to the decode, by more the longer the prompt, and a decode ahead beside cuBLAS gains nothing there; Qwen3-8B's
+// and Qwen3-4B-Instruct-2507's prompt passes, fused against decoded: tiered 4-5% slower decoded at 768 tokens, 9-11%
+// faster at 896 (the 4B's even at 1024) and 17-47% at 3072-8192; 12-bit 0.4-21% slower to 2304, 1-3% faster at 2560
+// and 7-49% at 4096-8192;
 // decoded ahead within 1% of decoded first at 4096-8192 tokens, 1-7% slower at 896-2048: benchmarks/gpu/l4-routes-
-// 2026-09-29); else never.
+// 2026-09-29); else never (INT64_MAX, here and in ahead_min: route_for takes no prompt there, whatever its M).
 constexpr int64_t L4_TIERED = 896, L4_TWELVE = 2560;
 static int64_t dec_from(bool twelve, int64_t gpu, int64_t dec_min) {
     if (twelve && dec_min) return dec_min;
@@ -3882,9 +3883,10 @@ static int route_for(bool twelve, int64_t gpu, int64_t K, int64_t M) {
     bool a100 = cc == 80, hopper = cc == 90, mid = cc == 80 || cc == 86 || cc == 87 || cc == 89, k64 = K % 64 == 0;
     if (hopper && twelve && k64 && M >= t.wg_min && M <= t.wg_max) return GLYD_GPU_ROUTE_WG;  // TMA and wgmma
     if (mid && twelve && k64 && M >= t.mid_min && M <= (a100 ? 128 : 64)) return GLYD_GPU_ROUTE_MID;  // cp.async, mma.sync
-    if (M >= dec_from(twelve, gpu, t.dec_min)) return GLYD_GPU_ROUTE_DECODE;
+    int64_t dec = dec_from(twelve, gpu, t.dec_min), ahead = ahead_min(twelve, gpu);  // (INT64_MAX: never)
+    if (dec != INT64_MAX && M >= dec) return GLYD_GPU_ROUTE_DECODE;
     if (M <= 64) return GLYD_GPU_ROUTE_GEMM;
-    if (M >= ahead_min(twelve, gpu)) return GLYD_GPU_ROUTE_AHEAD;  // (any K)
+    if (ahead != INT64_MAX && M >= ahead) return GLYD_GPU_ROUTE_AHEAD;  // (any K)
     return k64 && !hopper ? GLYD_GPU_ROUTE_BIG : GLYD_GPU_ROUTE_DECODE;
 }
 
