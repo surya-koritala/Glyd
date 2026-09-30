@@ -1,0 +1,24 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 5164.35it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 24.4 tokens/s (24.4 a sequence), peak VRAM 16.40 GB
+bf16 prefill: 769 tokens 79.4 ms (9680 tokens/s), first token 82.8 ms, 1024 tokens 90.0 ms (11372 tokens/s), first token 93.2 ms, 2048 tokens 173.8 ms (11786 tokens/s), first token 176.9 ms, 4096 tokens 346.1 ms (11835 tokens/s), first token 349.7 ms, 8192 tokens 725.5 ms (11291 tokens/s), first token 732.7 ms
+mma12 fused: packed in 6 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.55 GB on 1 GPU
+glyd mma12 fused: batch 1: 25.3 tokens/s (25.3 a sequence), peak VRAM 12.56 GB
+glyd mma12 prefill: 769 tokens 90.0 ms (8541 tokens/s), first token 93.5 ms, 1024 tokens 95.5 ms (10721 tokens/s), first token 99.0 ms, 2048 tokens 186.5 ms (10984 tokens/s), first token 189.9 ms, 4096 tokens 355.8 ms (11514 tokens/s), first token 359.7 ms, 8192 tokens 746.1 ms (10980 tokens/s), first token 748.6 ms
+glyd mma12 without SPLIT prefill: 769 tokens 101.5 ms (7575 tokens/s), first token 105.0 ms, 1024 tokens 112.2 ms (9127 tokens/s), first token 116.2 ms, 2048 tokens 196.0 ms (10450 tokens/s), first token 199.6 ms, 4096 tokens 369.2 ms (11094 tokens/s), first token 373.0 ms, 8192 tokens 754.8 ms (10853 tokens/s), first token 758.6 ms
+USDT:2026-09-29 19:43:16 3421:3421 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-29 19:43:16 3421:3421 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, SPLIT: a pass 96.9 ms, the host issues it in 52.4; GPU span 98.5 ms, idle 6.8; kernels: GEMMs 61.2 ms, the decode 43.8 (beside GEMMs 42.3, beside the rest 0.8, alone 0.6), attention 3.4, the rest 26.5
+USDT:2026-09-29 19:43:16 3421:3421 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-29 19:43:16 3421:3421 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, without SPLIT: a pass 112.8 ms, the host issues it in 57.5; GPU span 114.5 ms, idle 3.5; kernels: GEMMs 59.5 ms, the decode 22.0 (beside GEMMs 0.0, beside the rest 0.0, alone 22.0), attention 3.4, the rest 26.1
+USDT:2026-09-29 19:43:17 3421:3421 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-29 19:43:17 3421:3421 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 2048 tokens, SPLIT: a pass 187.4 ms, the host issues it in 79.5; GPU span 190.5 ms, idle 7.0; kernels: GEMMs 118.2 ms, the decode 65.3 (beside GEMMs 63.6, beside the rest 1.4, alone 0.4), attention 9.8, the rest 55.1
+USDT:2026-09-29 19:43:18 3421:3421 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-29 19:43:19 3421:3421 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 2048 tokens, without SPLIT: a pass 196.5 ms, the host issues it in 99.7; GPU span 198.5 ms, idle 3.1; kernels: GEMMs 108.9 ms, the decode 22.0 (beside GEMMs 0.0, beside the rest 0.0, alone 22.0), attention 9.7, the rest 54.8
+logits bit-identical: False
+generated tokens identical to bf16: 30 of 32
+text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to transmit information over long distances, and it
+exit 0

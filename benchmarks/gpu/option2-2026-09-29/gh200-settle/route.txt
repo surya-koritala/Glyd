@@ -1,0 +1,1 @@
+SPLIT: the shipping route (a GH200: 2048-8192 tokens, O and K at least 4096)

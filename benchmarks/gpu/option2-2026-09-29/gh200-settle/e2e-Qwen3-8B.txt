@@ -1,0 +1,17 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 7758.37it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 12.8 tokens/s (12.8 a sequence), peak VRAM 16.43 GB
+bf16 prefill: 2048 tokens 72.1 ms (28387 tokens/s), first token 73.7 ms, 4096 tokens 146.7 ms (27918 tokens/s), first token 149.2 ms, 8192 tokens 306.7 ms (26714 tokens/s), first token 306.4 ms; from 2026/09/30 08:23:13 to 2026/09/30 08:23:20
+mma12 fused: packed in 3 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.57 GB on 1 GPU
+glyd mma12 fused: batch 1: 28.1 tokens/s (28.1 a sequence), peak VRAM 12.58 GB
+glyd mma12 prefill: 2048 tokens 79.5 ms (25750 tokens/s), first token 82.0 ms, 4096 tokens 154.6 ms (26494 tokens/s), first token 155.7 ms, 8192 tokens 312.9 ms (26180 tokens/s), first token 314.3 ms; from 2026/09/30 08:23:31 to 2026/09/30 08:23:37
+the route SPLIT's ring: cuda:0 ran
+glyd mma12 without SPLIT prefill: 2048 tokens 81.7 ms (25066 tokens/s), first token 83.3 ms, 4096 tokens 155.6 ms (26317 tokens/s), first token 156.6 ms, 8192 tokens 314.8 ms (26026 tokens/s), first token 315.8 ms; from 2026/09/30 08:23:37 to 2026/09/30 08:23:42
+glyd mma12 without SPLIT prefill: 2048 tokens 81.5 ms (25133 tokens/s), first token 83.5 ms, 4096 tokens 155.4 ms (26359 tokens/s), first token 157.1 ms, 8192 tokens 313.4 ms (26138 tokens/s), first token 315.8 ms; from 2026/09/30 08:23:42 to 2026/09/30 08:23:48
+glyd mma12 prefill: 2048 tokens 79.7 ms (25702 tokens/s), first token 81.3 ms, 4096 tokens 154.0 ms (26604 tokens/s), first token 155.2 ms, 8192 tokens 311.9 ms (26264 tokens/s), first token 314.0 ms; from 2026/09/30 08:23:48 to 2026/09/30 08:23:53
+glyd mma12 prefill: 2048 tokens 79.8 ms (25678 tokens/s), first token 81.5 ms, 4096 tokens 154.0 ms (26594 tokens/s), first token 155.4 ms, 8192 tokens 312.3 ms (26235 tokens/s), first token 314.3 ms; from 2026/09/30 08:23:53 to 2026/09/30 08:23:59
+glyd mma12 without SPLIT prefill: 2048 tokens 81.4 ms (25174 tokens/s), first token 83.0 ms, 4096 tokens 155.0 ms (26421 tokens/s), first token 156.9 ms, 8192 tokens 315.5 ms (25966 tokens/s), first token 316.4 ms; from 2026/09/30 08:23:59 to 2026/09/30 08:24:04
+logits bit-identical: False
+generated tokens identical to bf16: 0 of 32
+text:  in the 1950s, with the development of algorithms that could reduce the size of data for more efficient storage and transmission. Early methods were based
+exit 0

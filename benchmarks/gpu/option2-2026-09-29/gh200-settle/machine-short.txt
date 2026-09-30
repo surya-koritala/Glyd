@@ -1,0 +1,1 @@
+NVIDIA GH200 480GB (9.0, sm_90a, 97871 MiB, power limit 900.00 W), aarch64 host, 64 CPUs; tree gpu-route-split 9c218a1; SPLIT: the shipping route (a GH200: 2048-8192 tokens, O and K at least 4096)

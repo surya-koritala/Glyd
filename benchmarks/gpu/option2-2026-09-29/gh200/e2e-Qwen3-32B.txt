@@ -1,0 +1,24 @@
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 7256.49it/s]
+merged: 128 groups of Linears as one product each
+bf16 (weights 65.52 GB): batch 1: 10.7 tokens/s (10.7 a sequence), peak VRAM 65.57 GB
+bf16 prefill: 1024 tokens 140.3 ms (7300 tokens/s), first token 141.9 ms, 2048 tokens 278.0 ms (7367 tokens/s), first token 278.6 ms, 4096 tokens 559.1 ms (7326 tokens/s), first token 560.4 ms, 8192 tokens 1187.9 ms (6896 tokens/s), first token 1191.9 ms
+mma12 fused: packed in 15 s; weights 49.22 GB against 65.52 GB bf16 (75.1%), scratch 0.27 GB, VRAM in use 49.52 GB on 1 GPU
+glyd mma12 fused: batch 1: 16.7 tokens/s (16.7 a sequence), peak VRAM 49.54 GB
+glyd mma12 prefill: 1024 tokens 163.0 ms (6284 tokens/s), first token 164.6 ms, 2048 tokens 299.0 ms (6850 tokens/s), first token 300.6 ms, 4096 tokens 586.0 ms (6990 tokens/s), first token 587.4 ms, 8192 tokens 1200.5 ms (6824 tokens/s), first token 1203.9 ms
+glyd mma12 without SPLIT prefill: 1024 tokens 161.0 ms (6361 tokens/s), first token 162.1 ms, 2048 tokens 333.9 ms (6133 tokens/s), first token 335.4 ms, 4096 tokens 626.8 ms (6534 tokens/s), first token 626.6 ms, 8192 tokens 1280.1 ms (6400 tokens/s), first token 1280.1 ms
+USDT:2026-09-30 00:06:19 4657:4657 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-30 00:06:19 4657:4657 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, SPLIT: a pass 164.5 ms, the host issues it in 112.0; GPU span 162.6 ms, idle 9.1; kernels: GEMMs 105.6 ms, the decode 101.6 (beside GEMMs 99.0, beside the rest 1.8, alone 0.8), attention 3.7, the rest 43.5
+USDT:2026-09-30 00:06:20 4657:4657 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-30 00:06:20 4657:4657 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, without SPLIT: a pass 161.4 ms, the host issues it in 113.6; GPU span 162.9 ms, idle 6.4; kernels: GEMMs 0.4 ms, the decode 0.0 (beside GEMMs 0.0, beside the rest 0.0, alone 0.0), attention 3.5, the rest 152.6
+USDT:2026-09-30 00:06:22 4657:4657 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-30 00:06:23 4657:4657 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 4096 tokens, SPLIT: a pass 588.5 ms, the host issues it in 397.5; GPU span 594.4 ms, idle 9.7; kernels: GEMMs 380.9 ms, the decode 169.8 (beside GEMMs 167.7, beside the rest 1.7, alone 0.3), attention 34.7, the rest 168.8
+USDT:2026-09-30 00:06:24 4657:4657 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-30 00:06:25 4657:4657 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 4096 tokens, without SPLIT: a pass 625.0 ms, the host issues it in 474.9; GPU span 636.0 ms, idle 7.7; kernels: GEMMs 341.0 ms, the decode 48.8 (beside GEMMs 0.0, beside the rest 0.0, alone 48.8), attention 34.8, the rest 203.7
+logits bit-identical: False
+generated tokens identical to bf16: 17 of 32
+text:  in 1948 with the publication of A Mathematical Theory of Communication by the American mathematician and electrical engineer Claude Shannon. In this paper, Shannon introduced
+exit 0

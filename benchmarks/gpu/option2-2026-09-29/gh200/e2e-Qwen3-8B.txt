@@ -1,0 +1,24 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 7835.75it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 13.0 tokens/s (13.0 a sequence), peak VRAM 16.43 GB
+bf16 prefill: 1024 tokens 39.3 ms (26065 tokens/s), first token 40.8 ms, 2048 tokens 71.9 ms (28488 tokens/s), first token 73.5 ms, 4096 tokens 146.2 ms (28022 tokens/s), first token 147.2 ms, 8192 tokens 302.5 ms (27079 tokens/s), first token 303.1 ms
+mma12 fused: packed in 4 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.57 GB on 1 GPU
+glyd mma12 fused: batch 1: 28.6 tokens/s (28.6 a sequence), peak VRAM 12.58 GB
+glyd mma12 prefill: 1024 tokens 47.9 ms (21376 tokens/s), first token 50.9 ms, 2048 tokens 79.5 ms (25747 tokens/s), first token 81.3 ms, 4096 tokens 153.3 ms (26717 tokens/s), first token 154.9 ms, 8192 tokens 309.4 ms (26474 tokens/s), first token 310.6 ms
+glyd mma12 without SPLIT prefill: 1024 tokens 43.3 ms (23652 tokens/s), first token 45.4 ms, 2048 tokens 81.3 ms (25189 tokens/s), first token 83.1 ms, 4096 tokens 154.7 ms (26484 tokens/s), first token 156.7 ms, 8192 tokens 311.9 ms (26268 tokens/s), first token 312.4 ms
+USDT:2026-09-30 00:03:01 4365:4365 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-30 00:03:01 4365:4365 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, SPLIT: a pass 48.0 ms, the host issues it in 47.6; GPU span 70.7 ms, idle 31.0; kernels: GEMMs 22.1 ms, the decode 20.4 (beside GEMMs 17.8, beside the rest 0.3, alone 2.2), attention 1.1, the rest 14.3
+USDT:2026-09-30 00:03:02 4365:4365 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-30 00:03:02 4365:4365 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, without SPLIT: a pass 43.8 ms, the host issues it in 38.2; GPU span 60.2 ms, idle 20.0; kernels: GEMMs 0.3 ms, the decode 0.0 (beside GEMMs 0.0, beside the rest 0.0, alone 0.0), attention 1.1, the rest 38.8
+USDT:2026-09-30 00:03:02 4365:4365 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-30 00:03:02 4365:4365 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 4096 tokens, SPLIT: a pass 153.5 ms, the host issues it in 65.6; GPU span 154.3 ms, idle 5.7; kernels: GEMMs 80.7 ms, the decode 36.9 (beside GEMMs 36.1, beside the rest 0.6, alone 0.2), attention 9.9, the rest 57.7
+USDT:2026-09-30 00:03:03 4365:4365 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-30 00:03:03 4365:4365 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 4096 tokens, without SPLIT: a pass 155.2 ms, the host issues it in 83.6; GPU span 157.4 ms, idle 4.1; kernels: GEMMs 74.6 ms, the decode 10.4 (beside GEMMs 0.0, beside the rest 0.0, alone 10.4), attention 10.2, the rest 58.1
+logits bit-identical: False
+generated tokens identical to bf16: 0 of 32
+text:  in the 1950s, with the development of algorithms that could reduce the size of data for more efficient storage and transmission. Early methods were based
+exit 0

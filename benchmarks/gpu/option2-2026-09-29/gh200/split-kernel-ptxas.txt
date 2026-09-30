@@ -1,0 +1,2 @@
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 146 registers, used 0 barriers, 32768 bytes smem

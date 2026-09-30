@@ -35,7 +35,7 @@ pub mod save;
 /// The C API this crate calls (glyd_gpu.h's `GLYD_GPU_API_VERSION`): a
 /// library of another version is refused, as a C FFI does not see a call's
 /// arguments.
-pub const API_VERSION: i32 = 5;
+pub const API_VERSION: i32 = 7;
 /// A GPU's class by name in its code ([`Library::gpu`]): "GeForce" in its name.
 pub const GEFORCE: i32 = 1000;
 /// A GPU's class by name in its code: "A10" in its name as a word (an A10, not an A10G, A100 or A40).
@@ -44,6 +44,13 @@ pub const A10: i32 = 2000;
 pub const L4: i32 = 3000;
 /// A GPU's class by name in its code: "L40S" in its name as a word (not an L40).
 pub const L40S: i32 = 4000;
+/// A GPU's class by name in its code: "PCIe" in its name in any case (an A100 PCIe, an H100 PCIe).
+pub const PCIE: i32 = 5000;
+/// A GPU's class by name in its code: "GH200" in its name as a word.
+pub const GH200: i32 = 6000;
+/// A flag added to a GPU's code for [`Library::route`]: its routes with [`Route::Split`], which the caller runs
+/// (opt-in: without it no route is Split, v0.25.1's routes).
+pub const WITH_SPLIT: i32 = 1 << 20;
 /// A status: `cudaErrorInvalidValue`, an argument out of range.
 pub const INVALID_VALUE: i32 = 1;
 /// A status: `cudaErrorNotSupported`, a kernel that is not for this GPU.
@@ -157,7 +164,7 @@ pub(crate) mod dl {
 /// holds to the C header.
 macro_rules! api {
     ($table:ident, $list:ident; $(fn $name:ident($($arg:ident: $ty:ty),* $(,)?) -> $ret:ty;)*) => {
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, dead_code)] // (dead_code: the ring's functions, declared, not wrapped: see Route::Split)
         pub(crate) struct $table {
             $(pub(crate) $name: unsafe extern "C" fn($($ty),*) -> $ret,)*
         }
@@ -206,15 +213,24 @@ api! { Api, DECLARED;
     fn glyd_gpu_mma12_gemm_wg(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, o: i64, k: i64, x: *const u16, m: i64, bias: *const u16, y: *mut u16, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream) -> c_int;
     fn glyd_gpu_mma_unpack(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, k: i64, row0: i64, rows: i64, out: *mut u16, warps: i64, cs: Stream) -> c_int;
     fn glyd_gpu_mma12_unpack(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, k: i64, row0: i64, rows: i64, out: *mut u16, warps: i64, cs: Stream) -> c_int;
+    fn glyd_gpu_mma12_unpack_split(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, k: i64, row0: i64, rows: i64, out: *mut u16, sms: i64, cs: Stream) -> c_int;
     fn glyd_gpu_hold(ns: i64, cs: Stream) -> c_int;
 
     fn glyd_gpu_gpu(gpu: *mut c_int) -> c_int;
     fn glyd_gpu_mma_route(gpu: i64, o: i64, k: i64, m: i64, route: *mut c_int, last: *mut i64) -> c_int;
     fn glyd_gpu_mma12_route(gpu: i64, o: i64, k: i64, m: i64, route: *mut c_int, last: *mut i64) -> c_int;
+    fn glyd_gpu_mma12_split_sms(gpu: i64, o: i64, k: i64, m: i64, sms: *mut i64) -> c_int;
     fn glyd_gpu_mma_linear_workspace(o: i64, k: i64, m: i64, route: i64, bytes: *mut usize) -> c_int;
     fn glyd_gpu_mma_linear(data: *const u8, blocks: *const u8, block_base: *const i32, tiers: *const u32, o: i64, k: i64, x: *const u16, m: i64, bias: *const u16, y: *mut u16, route: i64, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream) -> c_int;
     fn glyd_gpu_mma12_linear_workspace(o: i64, k: i64, m: i64, route: i64, bytes: *mut usize) -> c_int;
     fn glyd_gpu_mma12_linear(data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, o: i64, k: i64, x: *const u16, m: i64, bias: *const u16, y: *mut u16, route: i64, workspace: *mut c_void, workspace_bytes: usize, done: *mut c_int, cs: Stream) -> c_int;
+
+    fn glyd_gpu_ring_create(buffer: *mut c_void, bytes: usize, slot_bytes: usize, ring: *mut *mut c_void) -> c_int;
+    fn glyd_gpu_ring_destroy(ring: *mut c_void) -> c_int;
+    fn glyd_gpu_ring_split(ring: *mut c_void, sms: i64, decode_sms: *mut i64, product_sms: *mut i64) -> c_int;
+    fn glyd_gpu_ring_reset(ring: *mut c_void, cs: Stream) -> c_int;
+    fn glyd_gpu_mma12_ring_queue(ring: *mut c_void, sms: i64, data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, o: i64, k: i64) -> c_int;
+    fn glyd_gpu_mma12_ring_linear(ring: *mut c_void, sms: i64, data: *const u8, exc: *const u32, exc_base: *const i32, sym: *const u32, o: i64, k: i64, x: *const u16, m: i64, bias: *const u16, y: *mut u16, blas: *const c_void, cs: Stream) -> c_int;
 
     fn glyd_gpu_moe_route(ids: *const i64, p: i64, e: i64, plan: *mut i32, cs: Stream) -> c_int;
     fn glyd_gpu_mma_moe_workspace(e: i64, o: i64, k: i64, t: i64, topk: i64, act: i64, weighted: i64, bytes: *mut usize) -> c_int;
@@ -258,6 +274,11 @@ pub enum Route {
     Big = 4,
     /// As Decode, the decode run ahead beside the products before (GeForce Ada's, an A10's and an L40S's prompts).
     Ahead = 5,
+    /// 12-bit: W decoded ahead on SMs set apart (the driver's green contexts), cuBLAS on the rest, through the
+    /// library's ring (glyd_gpu.h's `glyd_gpu_mma12_ring_*`, with a cuBLAS of the caller's; [`Library::split_sms`]
+    /// the decode's SMs): an A100 SXM's and a GH200's prompts, only for a code with [`WITH_SPLIT`] (opt-in: without it,
+    /// never). This crate does not wrap the ring yet: it does not ask.
+    Split = 6,
 }
 
 impl Route {
@@ -269,6 +290,7 @@ impl Route {
             3 => Route::Wg,
             4 => Route::Big,
             5 => Route::Ahead,
+            6 => Route::Split,
             _ => return Err(Error::Cuda { call: "route", status: INVALID_VALUE, text: format!("route {r}, one this crate does not know") }),
         })
     }
@@ -650,6 +672,16 @@ impl Library {
         Ok((Route::from_c(r)?, last))
     }
 
+    /// The decode's SMs where the route of `w` for m tokens on `gpu` (with [`WITH_SPLIT`]) is [`Route::Split`], else 0.
+    pub fn split_sms(&self, gpu: i32, w: &Matrix, m: i64) -> Result<i64> {
+        let mut sms = 0i64;
+        if let Pack::Twelve(_) = w.pack {
+            // SAFETY: sizes and a host out-pointer.
+            self.check("split_sms", unsafe { (self.api.glyd_gpu_mma12_split_sms)(gpu as i64, w.rows, w.cols, m, &mut sms) })?;
+        }
+        Ok(sms)
+    }
+
     /// Bytes of workspace [`Library::linear`] needs by `route` (None: the current GPU's);
     /// [`NOT_SUPPORTED`] where `linear` refuses the product (cols not a multiple of 64: see it).
     pub fn linear_workspace(&self, w: &Matrix, m: i64, route: Option<Route>) -> Result<usize> {
@@ -664,7 +696,7 @@ impl Library {
     }
 
     /// Y = X W^T (+ bias) by a route (None: the current GPU's for p.m): its
-    /// kernel; [`Route::Decode`] and [`Route::Ahead`] by the prompt kernel on
+    /// kernel; [`Route::Decode`], [`Route::Ahead`] and [`Route::Split`] by the prompt kernel on
     /// every GPU. Where cols is not a multiple of 64 no kernel takes those two,
     /// and such a matrix's route is one of them past 64 tokens on every GPU
     /// (in the 12-bit layout also from GLYD_DEC_MIN tokens where that is set
@@ -858,6 +890,10 @@ mod tests {
             Some(b) => (b, true),
             None => (ty, false),
         };
+        let (base, ptr2) = match base.strip_suffix('*') {
+            Some(b) => (b, true), // a pointer to a pointer (glyd_gpu_ring**): *mut *mut
+            None => (base, false),
+        };
         let base = match base {
             "int64_t" => "i64",
             "uint64_t" => "u64",
@@ -872,12 +908,14 @@ mod tests {
             "uint32_t" => "u32",
             "float" => "f32",
             "cudaStream_t" => "Stream",
+            "glyd_gpu_ring" | "glyd_gpu_blas" => "c_void", // (opaque here)
             other => panic!("a C type this test does not know: {other}"),
         };
+        let base = if ptr2 { format!("*mut {base}") } else { base.to_string() };
         match (ptr, konst) {
             (true, true) => format!("*const {base}"),
             (true, false) => format!("*mut {base}"),
-            _ => base.to_string(),
+            _ => base,
         }
     }
 
@@ -924,11 +962,14 @@ mod tests {
         }
         let define = |name: &str| h.split(&format!("#define {name} ")).nth(1).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse::<i32>().ok()).unwrap_or_else(|| panic!("glyd_gpu.h has no {name}"));
         assert_eq!(define("GLYD_GPU_API_VERSION"), API_VERSION, "GLYD_GPU_API_VERSION is not API_VERSION");
-        for (name, r) in [("DECODE", Route::Decode), ("GEMM", Route::Gemm), ("MID", Route::Mid), ("WG", Route::Wg), ("BIG", Route::Big), ("AHEAD", Route::Ahead)] {
+        for (name, r) in [("DECODE", Route::Decode), ("GEMM", Route::Gemm), ("MID", Route::Mid), ("WG", Route::Wg), ("BIG", Route::Big), ("AHEAD", Route::Ahead), ("SPLIT", Route::Split)] {
             assert_eq!(define(&format!("GLYD_GPU_ROUTE_{name}")), r as i32, "GLYD_GPU_ROUTE_{name}");
             assert_eq!(Route::from_c(r as c_int).unwrap(), r);
         }
-        assert_eq!((define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10"), define("GLYD_GPU_L4"), define("GLYD_GPU_L40S")), (GEFORCE, A10, L4, L40S));
+        assert_eq!(
+            (define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10"), define("GLYD_GPU_L4"), define("GLYD_GPU_L40S"), define("GLYD_GPU_PCIE"), define("GLYD_GPU_GH200"), define("GLYD_GPU_WITH_SPLIT")),
+            (GEFORCE, A10, L4, L40S, PCIE, GH200, WITH_SPLIT)
+        );
     }
 
     #[test]

@@ -15,7 +15,12 @@ linked at build time: the crate builds anywhere, and its calls return
 `Error::Load` where the library or a GPU is not there (the library is
 built for Linux). The library also routes: `route`
 gives the kernel glyd takes for a matrix and a token count on a GPU (as
-glyd.gpu's Linears take it), `linear` runs it.
+glyd.gpu's Linears take it), `linear` runs it. `Route::Split` (an A100
+SXM's and a GH200's long 12-bit prompts: each matrix decoded ahead on SMs
+set apart, the caller's cuBLAS on the rest) is opt-in: `route` gives it only
+for a GPU's code plus `WITH_SPLIT`, which this crate does not ask (it
+declares the ring's functions, C API 7, but does not wrap them yet), so its
+routes are v0.25.1's.
 
 `pack` packs a matrix on the CPU in either layout, byte for byte as
 glyd.gpu's `pack_mma` and `pack_mma12` do on the GPU (the 12-bit layout in

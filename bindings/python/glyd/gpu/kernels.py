@@ -535,15 +535,34 @@ def hold(ns):
 
 # The library's routes (glyd_gpu.h's GLYD_GPU_ROUTE_*): how a product for M tokens is taken on a GPU. DECODE: the
 # matrix decoded, then cuBLAS; AHEAD: so, decoded ahead beside the products before it (model.Ahead).
-DECODE, GEMM, MID, WG, BIG, AHEAD = range(6)
-GEFORCE, A10, L4, L40S = 1000, 2000, 3000, 4000  # a GPU's classes by name in its code (glyd_gpu.h's GLYD_GPU_GEFORCE, GLYD_GPU_A10, GLYD_GPU_L4, GLYD_GPU_L40S)
+DECODE, GEMM, MID, WG, BIG, AHEAD, SPLIT = range(7)
+GEFORCE, A10, L4, L40S, PCIE, GH200 = 1000, 2000, 3000, 4000, 5000, 6000  # a GPU's classes by name in its code (glyd_gpu.h's GLYD_GPU_GEFORCE, _A10, _L4, _L40S, _PCIE, _GH200)
+WITH_SPLIT = 1 << 20  # in a GPU's code: its routes with SPLIT (glyd_gpu.h's GLYD_GPU_WITH_SPLIT: opt-in, asked by GLinear, which runs the ring)
 
 
 def route(p, gpu, M):
     """(route, last): the library's route for M tokens of pack p (the mma layouts) on gpu (its code, model.gpu_code:
-    compute capability and class), and the last token count from M on that takes it."""
+    compute capability and class; plus WITH_SPLIT for the route SPLIT, opt-in), and the last token count from M on that
+    takes it."""
     O, K = p.shape
     return (_ext.mma12_route if isinstance(p, Mma12) else _ext.mma_route)(gpu, O, K, M)
+
+
+def split_sms(p, gpu, M):
+    """The route SPLIT's SMs for the decode for M tokens of pack p on gpu (its code with WITH_SPLIT; 0: another route,
+    or no flag; the 12-bit layout's alone)."""
+    O, K = p.shape
+    return _ext.mma12_split_sms(gpu, O, K, M) if isinstance(p, Mma12) else 0
+
+
+def mma_unpack_split(p, sms, out=None, row0=0, rows=None):
+    """Rows [row0, row0 + rows) of a 12-bit W by the route SPLIT's decode, a grid for sms SMs: bf16 [rows, K]."""
+    O, K = p.shape
+    rows = O - row0 if rows is None else rows
+    if out is None:
+        out = torch.empty(rows * K, dtype=torch.bfloat16, device=p.sm.device)
+    _ext.mma12_unpack_split(p.data, p.exc, p.exc_base, p.sym, K, row0, rows, out.view(torch.int16), sms)
+    return out[: rows * K].view(rows, K)
 
 
 def mma_linear(p, x, bias=None, route=-1):

@@ -1,0 +1,5 @@
+NVIDIA GH200 480GB (code 6090, 132 SMs), layer 10 of b968826d9c46dd6066d109eabc6255188de91218: qkv [6144, 4096], o [4096, 4096], gate_up [24576, 4096], down [4096, 12288]; 8 copies a pass; CUDA_DEVICE_MAX_CONNECTIONS=(unset)
+M=2048: a layer bf16 1.217 ms, today's route 1.540 ms (1.265x bf16), SPLIT 1.462 ms (1.202x bf16, 0.950x today's); routes: qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran; 2.4e-03 off fp32, the same bits pass to pass; SPLIT's passes 1.139-2.411 ms
+M=4096: a layer bf16 2.418 ms, today's route 2.746 ms (1.136x bf16), SPLIT 2.772 ms (1.146x bf16, 1.009x today's); routes: qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran; 2.4e-03 off fp32, the same bits pass to pass; SPLIT's passes 2.354-5.528 ms
+M=8192: a layer bf16 4.891 ms, today's route 5.198 ms (1.063x bf16), SPLIT 5.124 ms (1.048x bf16, 0.986x today's); routes: qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran; 2.7e-03 off fp32, the same bits pass to pass; SPLIT's passes 5.025-10.200 ms
+exit 0

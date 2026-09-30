@@ -1,0 +1,83 @@
+CHECKS PASS: 11 steps run, each exit 0 (and the stress on the tree before the fix)
+NVIDIA GH200 480GB (9.0, sm_90a, 97871 MiB), aarch64 host, 64 CPUs; CLASS=hopper; tree gpu-option2 8f10750
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+driver: 580.126.20, CUDA 13.0
+the route SPLIT: a split of 12 + 120 SMs; products within 1e-2 of fp32, the same bits run to run; GLinear by it as on an A100
+the stress, this tree: split_stress: 16512 products checked, 0 failures
+the stress, the tree before the fix: split_stress: 1984 products checked, 24 failures (it should fail there)
+DECIDES: e2e Qwen3-32B, a forward pass by the route SPLIT over today's: 1024 1.012x (slower), 2048 0.895x (faster), 4096 0.935x (faster), 8192 0.938x (faster) | e2e Qwen3-32B, SPLIT over bf16: 1024 1.162x, 2048 1.076x, 4096 1.048x, 8192 1.011x | e2e Qwen3-8B, a forward pass by the route SPLIT over today's: 1024 1.106x (slower), 2048 0.978x (faster), 4096 0.991x (even), 8192 0.992x (even) | e2e Qwen3-8B, SPLIT over bf16: 1024 1.219x, 2048 1.106x, 4096 1.049x, 8192 1.023x | e2e Qwen3-8B, the last session's scheduling (3 slots): 1024 46.6 ms against the gated 47.9 | e2e Qwen3-8B, the decode on 12 SMs over the route's: 1024 1.023x | e2e Qwen3-8B, the decode on 28 SMs over the route's: 1024 1.031x | breakdown Qwen3-32B 1024: decode beside the rest 1.8 ms of 101.6, the rest 47.2 ms against 156.1 without, idle 9.1, host 112.0 of 164.5 | breakdown Qwen3-32B 4096: decode beside the rest 1.7 ms of 169.8, the rest 203.5 ms against 238.5 without, idle 9.7, host 397.5 of 588.5 | breakdown Qwen3-8B 1024: decode beside the rest 0.3 ms of 20.4, the rest 15.4 ms against 39.9 without, idle 31.0, host 47.6 of 48.0 | breakdown Qwen3-8B 4096: decode beside the rest 0.6 ms of 36.9, the rest 67.6 ms against 68.3 without, idle 5.7, host 65.6 of 153.5 | breakdown Qwen3-8B (slots3) 1024: decode beside the rest 11.6 ms of 19.8, the rest 19.7 ms against 40.0 without, idle 19.8, host 45.7 of 47.2 | per layer Qwen3-32B, SPLIT over today's: 1023 0.999x, 1024 0.939x, 2048 0.840x, 4096 0.948x, 8192 0.904x | per layer Qwen3-8B, SPLIT over today's: 1023 0.993x, 1024 0.943x, 2048 0.945x, 4096 0.991x, 8192 0.989x
+
+e2e.py Qwen3-32B (a forward pass ms; the first token ms), bf16 | today's route | the route SPLIT:
+   1024: bf16 140.3 (141.9), today 161.0 (162.1), SPLIT 163.0 (164.6) | SPLIT/today 1.012 (first token 1.015), SPLIT/bf16 1.162, today/bf16 1.148
+   2048: bf16 278.0 (278.6), today 333.9 (335.4), SPLIT 299.0 (300.6) | SPLIT/today 0.895 (first token 0.896), SPLIT/bf16 1.076, today/bf16 1.201
+   4096: bf16 559.1 (560.4), today 626.8 (626.6), SPLIT 586.0 (587.4) | SPLIT/today 0.935 (first token 0.937), SPLIT/bf16 1.048, today/bf16 1.121
+   8192: bf16 1187.9 (1191.9), today 1280.1 (1280.1), SPLIT 1200.5 (1203.9) | SPLIT/today 0.938 (first token 0.940), SPLIT/bf16 1.011, today/bf16 1.078
+e2e.py Qwen3-8B (a forward pass ms; the first token ms), bf16 | today's route | the route SPLIT:
+   1024: bf16 39.3 (40.8), today 43.3 (45.4), SPLIT 47.9 (50.9) | SPLIT/today 1.106 (first token 1.121), SPLIT/bf16 1.219, today/bf16 1.102
+   2048: bf16 71.9 (73.5), today 81.3 (83.1), SPLIT 79.5 (81.3) | SPLIT/today 0.978 (first token 0.978), SPLIT/bf16 1.106, today/bf16 1.131
+   4096: bf16 146.2 (147.2), today 154.7 (156.7), SPLIT 153.3 (154.9) | SPLIT/today 0.991 (first token 0.989), SPLIT/bf16 1.049, today/bf16 1.058
+   8192: bf16 302.5 (303.1), today 311.9 (312.4), SPLIT 309.4 (310.6) | SPLIT/today 0.992 (first token 0.994), SPLIT/bf16 1.023, today/bf16 1.031
+e2e.py Qwen3-8B slots3 (a forward pass ms; the first token ms), bf16 | today's route | the route SPLIT:
+   1024: bf16 -, today -, SPLIT 46.6 (48.8)
+e2e.py Qwen3-8B sms12 (a forward pass ms; the first token ms), bf16 | today's route | the route SPLIT:
+   1024: bf16 -, today -, SPLIT 49.0 (52.1)
+e2e.py Qwen3-8B sms28 (a forward pass ms; the first token ms), bf16 | today's route | the route SPLIT:
+   1024: bf16 -, today -, SPLIT 49.4 (51.4)
+breakdown Qwen3-32B (ms): a pass, the host's issue; GPU span, idle; GEMMs; the decode (beside GEMMs / the rest / alone); attention; the rest
+   1024         SPLIT: 164.5, 112.0; 162.6, 9.1; 105.6; 101.6 (99.0 / 1.8 / 0.8); 3.7; 43.5
+   1024 without SPLIT: 161.4, 113.6; 162.9, 6.4; 0.4; 0.0 (0.0 / 0.0 / 0.0); 3.5; 152.6
+   4096         SPLIT: 588.5, 397.5; 594.4, 9.7; 380.9; 169.8 (167.7 / 1.7 / 0.3); 34.7; 168.8
+   4096 without SPLIT: 625.0, 474.9; 636.0, 7.7; 341.0; 48.8 (0.0 / 0.0 / 48.8); 34.8; 203.7
+breakdown Qwen3-8B (ms): a pass, the host's issue; GPU span, idle; GEMMs; the decode (beside GEMMs / the rest / alone); attention; the rest
+   1024         SPLIT: 48.0, 47.6; 70.7, 31.0; 22.1; 20.4 (17.8 / 0.3 / 2.2); 1.1; 14.3
+   1024 without SPLIT: 43.8, 38.2; 60.2, 20.0; 0.3; 0.0 (0.0 / 0.0 / 0.0); 1.1; 38.8
+   4096         SPLIT: 153.5, 65.6; 154.3, 5.7; 80.7; 36.9 (36.1 / 0.6 / 0.2); 9.9; 57.7
+   4096 without SPLIT: 155.2, 83.6; 157.4, 4.1; 74.6; 10.4 (0.0 / 0.0 / 10.4); 10.2; 58.1
+breakdown Qwen3-8B slots3 (ms): a pass, the host's issue; GPU span, idle; GEMMs; the decode (beside GEMMs / the rest / alone); attention; the rest
+   1024         SPLIT: 47.2, 45.7; 65.5, 19.8; 21.3; 19.8 (3.5 / 11.6 / 4.8); 1.2; 18.5
+   1024 without SPLIT: 44.3, 37.6; 54.5, 14.2; 0.3; 0.0 (0.0 / 0.0 / 0.0); 1.1; 38.9
+layer-Qwen3-32B (a layer, ms): bf16 | today's route | the route SPLIT
+   1023: 1.453 | 1.985 (1.366x) | 1.983 (1.365x bf16, 0.999x today's); qkv WG, o WG, gate_up WG, down WG; the ring not made
+   1024: 1.520 | 2.043 (1.344x) | 1.919 (1.262x bf16, 0.939x today's); qkv SPLIT (20 SMs), o SPLIT (20 SMs), gate_up SPLIT (20 SMs), down SPLIT (20 SMs); the ring ran
+   2048: 2.994 | 4.133 (1.380x) | 3.473 (1.160x bf16, 0.840x today's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   4096: 5.927 | 7.309 (1.233x) | 6.931 (1.169x bf16, 0.948x today's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   8192: 12.093 | 14.042 (1.161x) | 12.694 (1.050x bf16, 0.904x today's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+layer-Qwen3-8B (a layer, ms): bf16 | today's route | the route SPLIT
+   1023: 0.527 | 0.704 (1.336x) | 0.699 (1.326x bf16, 0.993x today's); qkv WG, o WG, gate_up WG, down WG; the ring not made
+   1024: 0.606 | 0.786 (1.297x) | 0.741 (1.223x bf16, 0.943x today's); qkv SPLIT (20 SMs), o SPLIT (20 SMs), gate_up SPLIT (20 SMs), down SPLIT (20 SMs); the ring ran
+   2048: 1.207 | 1.519 (1.258x) | 1.436 (1.190x bf16, 0.945x today's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   4096: 2.423 | 2.731 (1.127x) | 2.706 (1.117x bf16, 0.991x today's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   8192: 4.796 | 5.128 (1.069x) | 5.072 (1.058x bf16, 0.989x today's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+      0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+  ptxas info    : Used 146 registers, used 0 barriers, 32768 bytes smem
+
+clocks and power (2208 samples): step: SM MHz mean (min-max), W mean (max), temperature max, samples power-capped (0x4) / thermal (0x20, 0x40)
+  check_capi: 1885 (345-1980) MHz, 134 (171) W, 36 C, 0% / 0%
+  test_split: 1980 (1980-1980) MHz, 140 (147) W, 35 C, 0% / 0%
+  split_stress: 1919 (1545-1980) MHz, 412 (637) W, 54 C, 42% / 0%
+  split_stress_old: 1979 (1965-1980) MHz, 278 (586) W, 51 C, 4% / 0%
+  layer-Qwen3-8B: 1848 (1410-1980) MHz, 335 (618) W, 57 C, 36% / 0%
+  e2e-Qwen3-8B: 1808 (345-1980) MHz, 375 (668) W, 56 C, 45% / 0%
+  layer-Qwen3-32B: 1712 (1395-1980) MHz, 410 (655) W, 60 C, 57% / 0%
+  e2e-Qwen3-32B: 1819 (345-1980) MHz, 365 (675) W, 60 C, 42% / 0%
+  e2e-slots3-Qwen3-8B: 1735 (345-1980) MHz, 207 (601) W, 58 C, 7% / 0%
+  e2e-sms12-Qwen3-8B: 1748 (345-1980) MHz, 186 (409) W, 52 C, 5% / 0%
+  e2e-sms28-Qwen3-8B: 1793 (345-1980) MHz, 185 (381) W, 52 C, 0% / 0%
+  test_gpu: 1973 (345-1980) MHz, 142 (381) W, 52 C, 0% / 0%
+
+check_capi: exit 0
+test_split: exit 0
+split_stress: exit 0
+split_stress_old: exit 1
+layer-Qwen3-8B: exit 0
+e2e-Qwen3-8B: exit 0
+layer-Qwen3-32B: exit 0
+e2e-Qwen3-32B: exit 0
+e2e-slots3-Qwen3-8B: exit 0
+e2e-sms12-Qwen3-8B: exit 0
+e2e-sms28-Qwen3-8B: exit 0
+test_gpu: exit 0
+steps: 00:07:05 (+445 s) e2e-sms28-Qwen3-8B (exit 0)
+steps: 00:08:52 (+552 s) test_gpu (exit 0)
+steps: 00:08:52 (+552 s) done

@@ -1,0 +1,61 @@
+CHECKS PASS: 7 steps run, each exit 0
+NVIDIA GH200 480GB (9.0, sm_90a, 97871 MiB, power limit 900.00 W), aarch64 host, 64 CPUs; tree gpu-route-split 9c218a1; SPLIT: the shipping route (a GH200: 2048-8192 tokens, O and K at least 4096)
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+driver: 580.126.20, CUDA 13.0
+the route SPLIT: a split of 12 + 120 SMs; products within 1e-2 of fp32, the same bits run to run; GLinear by it as on an A100
+the stress: split_stress: 16512 products checked, 0 failures
+e2e Qwen3-32B, the route SPLIT's ring: cuda:0 ran
+e2e Qwen3-8B, the route SPLIT's ring: cuda:0 ran
+
+e2e.py Qwen3-8B (a forward pass ms, the first token ms): bf16 | v0.25.1's routes | SPLIT, the medians of 3 rounds | SPLIT/v0.25.1, the median of the rounds' ratios (each round's)
+   2048: bf16 72.1 (73.7) | v0.25.1 81.5 (83.3) | SPLIT 79.7 (81.5) | SPLIT/v0.25.1 0.978 (first token 0.982; rounds 0.973, 0.978, 0.980) | SPLIT/bf16 1.105, v0.25.1/bf16 1.130
+   4096: bf16 146.7 (149.2) | v0.25.1 155.4 (156.9) | SPLIT 154.0 (155.4) | SPLIT/v0.25.1 0.994 (first token 0.990; rounds 0.994, 0.991, 0.994) | SPLIT/bf16 1.050, v0.25.1/bf16 1.059
+   8192: bf16 306.7 (306.4) | v0.25.1 314.8 (315.8) | SPLIT 312.3 (314.3) | SPLIT/v0.25.1 0.994 (first token 0.994; rounds 0.994, 0.995, 0.990) | SPLIT/bf16 1.018, v0.25.1/bf16 1.026
+e2e.py Qwen3-32B (a forward pass ms, the first token ms): bf16 | v0.25.1's routes | SPLIT, the medians of 3 rounds | SPLIT/v0.25.1, the median of the rounds' ratios (each round's)
+   2048: bf16 280.1 (279.8) | v0.25.1 335.7 (337.9) | SPLIT 305.1 (307.7) | SPLIT/v0.25.1 0.909 (first token 0.909; rounds 0.913, 0.909, 0.908) | SPLIT/bf16 1.089, v0.25.1/bf16 1.199
+   4096: bf16 564.5 (564.7) | v0.25.1 636.2 (634.9) | SPLIT 598.7 (600.0) | SPLIT/v0.25.1 0.940 (first token 0.943; rounds 0.940, 0.941, 0.940) | SPLIT/bf16 1.061, v0.25.1/bf16 1.127
+   8192: bf16 1190.1 (1192.4) | v0.25.1 1279.9 (1279.7) | SPLIT 1218.4 (1220.9) | SPLIT/v0.25.1 0.952 (first token 0.954; rounds 0.942, 0.952, 0.953) | SPLIT/bf16 1.024, v0.25.1/bf16 1.075
+layer.py Qwen3-32B, layer 10 (ms): bf16 | v0.25.1's route | SPLIT
+   2048: 3.038 | 4.146 (1.365x) | 3.511 (1.156x bf16, 0.847x v0.25.1's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   4096: 5.995 | 7.364 (1.228x) | 7.016 (1.170x bf16, 0.953x v0.25.1's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   8192: 12.237 | 14.063 (1.149x) | 12.788 (1.045x bf16, 0.909x v0.25.1's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+layer.py Qwen3-8B, layer 10 (ms): bf16 | v0.25.1's route | SPLIT
+   2048: 1.217 | 1.540 (1.265x) | 1.462 (1.201x bf16, 0.949x v0.25.1's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   4096: 2.418 | 2.746 (1.136x) | 2.772 (1.146x bf16, 1.009x v0.25.1's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   8192: 4.891 | 5.198 (1.063x) | 5.124 (1.048x bf16, 0.986x v0.25.1's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+  0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+  ptxas info    : Used 146 registers, used 0 barriers, 32768 bytes smem
+
+clocks and power (1823 samples): SM MHz mean (min-max), W mean (max), temperature max, samples power-capped (0x4) / thermal (0x20, 0x40)
+  step check_capi: 1881 (345-1980) MHz, 136 (174) W, 37 C, 0% / 0%
+  step test_split: 1821 (375-1980) MHz, 139 (153) W, 37 C, 0% / 0%
+  step split_stress: 1912 (1545-1980) MHz, 416 (633) W, 63 C, 42% / 0%
+  step e2e-Qwen3-8B: 1770 (345-1980) MHz, 467 (669) W, 68 C, 62% / 0%
+  step layer-Qwen3-8B: 1852 (1395-1980) MHz, 317 (621) W, 68 C, 38% / 0%
+  step e2e-Qwen3-32B: 1713 (345-1980) MHz, 495 (692) W, 76 C, 66% / 0%
+  step layer-Qwen3-32B: 1728 (1365-1980) MHz, 410 (658) W, 76 C, 57% / 0%
+  e2e Qwen3-8B, the SPLIT phases: 1721 (1650-1980) MHz, 634 (668) W, 67 C, 96% / 0%
+  e2e Qwen3-8B, the v0.25.1 phases: 1713 (1665-1965) MHz, 663 (669) W, 68 C, 100% / 0%
+  e2e Qwen3-8B, the bf16 phases: 1786 (1650-1980) MHz, 490 (665) W, 61 C, 75% / 0%
+  e2e Qwen3-32B, the SPLIT phases: 1580 (1485-1980) MHz, 658 (675) W, 75 C, 98% / 0%
+  e2e Qwen3-32B, the v0.25.1 phases: 1617 (1500-1980) MHz, 664 (692) W, 76 C, 99% / 0%
+  e2e Qwen3-32B, the bf16 phases: 1575 (1500-1980) MHz, 649 (673) W, 68 C, 99% / 0%
+
+check_capi: exit 0
+test_split: exit 0
+split_stress: exit 0
+e2e-Qwen3-8B: exit 0
+layer-Qwen3-8B: exit 0
+e2e-Qwen3-32B: exit 0
+layer-Qwen3-32B: exit 0
+steps: 08:28:02 (+449 s) e2e-Qwen3-32B (exit 0)
+steps: 08:28:10 (+457 s) layer-Qwen3-32B (exit 0)
+steps: 08:28:10 (+457 s) done
+
+DECIDES Qwen3-8B 2048 tokens: SPLIT/v0.25.1 0.978, a forward pass, the median of 3 rounds (0.973, 0.978, 0.980; SPLIT 79.7 ms, v0.25.1 81.5 ms; first token 0.982): SPLIT stays (2.2% faster, at least 2%)
+DECIDES Qwen3-8B 4096 tokens: SPLIT/v0.25.1 0.994, a forward pass, the median of 3 rounds (0.994, 0.991, 0.994; SPLIT 154.0 ms, v0.25.1 155.4 ms; first token 0.990): SPLIT dropped (0.6% faster, under 2%)
+DECIDES Qwen3-8B 8192 tokens: SPLIT/v0.25.1 0.994, a forward pass, the median of 3 rounds (0.994, 0.995, 0.990; SPLIT 312.3 ms, v0.25.1 314.8 ms; first token 0.994): SPLIT dropped (0.6% faster, under 2%)
+DECIDES Qwen3-32B 2048 tokens: SPLIT/v0.25.1 0.909, a forward pass, the median of 3 rounds (0.913, 0.909, 0.908; SPLIT 305.1 ms, v0.25.1 335.7 ms; first token 0.909): SPLIT stays (9.1% faster, at least 2%)
+DECIDES Qwen3-32B 4096 tokens: SPLIT/v0.25.1 0.940, a forward pass, the median of 3 rounds (0.940, 0.941, 0.940; SPLIT 598.7 ms, v0.25.1 636.2 ms; first token 0.943): SPLIT stays (6.0% faster, at least 2%)
+DECIDES Qwen3-32B 8192 tokens: SPLIT/v0.25.1 0.952, a forward pass, the median of 3 rounds (0.942, 0.952, 0.953; SPLIT 1218.4 ms, v0.25.1 1279.9 ms; first token 0.954): SPLIT stays (4.8% faster, at least 2%)

@@ -1,0 +1,31 @@
+FAIL: round 1, option 2 (decode ahead on s SMs, cuBLAS on the rest) on NVIDIA H100 80GB HBM3 (132 SMs, compute 9.0, the model: H100-SXM): the decoder PASS, the layer FAIL, bit for bit PASS
+GATE (a) PASS: the decoder alone, split byte, tma D3 NT1 on 16 SMs: 10.28 weights a clock an SM (line: at least 10.0), 20.36 G weights/s an SM at 1980 MHz, 258 W
+GATE (c) FAIL: the layer over bf16 cuBLAS at 1024 / 2048 / 4096 tokens (lines: the model's b1 + 0.03): 8B 1.199 (<= 1.342) / 1.157 (<= 1.233) / 1.113 (<= 1.138); 32B 1.229 (<= 1.329) / 1.148 (<= 1.225) / 1.149 (<= 1.132)
+LOSSLESS PASS: 16 of 16 layout, path and configuration checks bit for bit on every chunk (Qwen3-32B, Qwen3-8B)
+environment: 2.14.0+cu130 (CUDA 13.0), driver API 13000, cuBLAS 130101, cuda.bindings 13.4.3; SM partitions: alignment 8, at least 8
+
+(a) the decoder alone: weights a clock an SM (G weights/s an SM) by s; the configuration fastest at the s nearest 16
+| layout, path | s=4 | s=8 | s=16 | s=24 | s=132 |
+| :-- | --: | --: | --: | --: | --: |
+| sb cpa D2 NT1 w1 |  |  | 8.73 (17.3) |  |  |
+| sb cpa D3 NT1 w1 | 9.24 (18.3) | 9.11 (18.0) | 8.86 (17.6) | 8.58 (17.0) | 2.69 (5.3) |
+| sb cpa D4 NT1 w1 |  |  | 7.85 (15.5) |  |  |
+| sb ldg D1 NT1 w4 | 10.65 (21.1) | 10.50 (20.8) | 10.24 (20.3) | 10.04 (19.9) | 2.72 (5.4) |
+| sb tma D2 NT2 w1 |  |  | 10.28 (20.3) |  |  |
+| sb tma D3 NT1 w1 | 10.72 (21.2) | 10.55 (20.9) | 10.28 (20.4) | 10.00 (19.8) | 2.70 (5.4) |
+| sb tma D3 NT2 w1 |  |  | 8.77 (17.4) |  |  |
+| sb tma D4 NT2 w1 |  |  | 7.62 (15.1) |  |  |
+
+(c) the layer over bf16 cuBLAS on all SMs (the better of our cuBLAS call and PyTorch's): the best s and target at each length; at best = the slower of its two parts alone; b1 = the model; today = today's route (the logs, else the model)
+| model | M | layer | s | target | at best | b1 | today | clock, power (bf16) | clock, power (layer) |
+| :-- | --: | --: | --: | --: | --: | --: | --: | --: | --: |
+| Qwen3-32B | 512 | 1.773 | 28 | 104 | 1.285 | 1.519 | 1.387 | 1980 MHz 144 W | 1748 MHz 643 W |
+| Qwen3-32B | 1024 | 1.229 | 20 | 112 | 1.082 | 1.299 | 1.346 | 1350 MHz 700 W | 1395 MHz 695 W |
+| Qwen3-32B | 2048 | 1.148 | 12 | 120 | 1.085 | 1.195 | 1.348 | 1365 MHz 701 W | 1402 MHz 696 W |
+| Qwen3-32B | 4096 | 1.149 | 20 | 112 | 1.114 | 1.102 | 1.208 | 1380 MHz 698 W | 1635 MHz 690 W |
+| Qwen3-32B | 8192 | 1.018 | 4 | 128 | 1.002 | 1.101 | 1.084 | 1350 MHz 698 W | 1365 MHz 698 W |
+| Qwen3-8B | 512 | 1.690 | 28 | 104 | 1.285 | 1.517 | 1.426 | 1980 MHz 122 W | 1965 MHz 600 W |
+| Qwen3-8B | 1024 | 1.199 | 20 | 112 | 1.100 | 1.312 | 1.377 | 1800 MHz 676 W | 1680 MHz 680 W |
+| Qwen3-8B | 2048 | 1.157 | 12 | 120 | 1.063 | 1.203 | 1.334 | 1560 MHz 698 W | 1425 MHz 680 W |
+| Qwen3-8B | 4096 | 1.113 | 12 | 120 | 1.052 | 1.108 | 1.168 | 1440 MHz 698 W | 1388 MHz 699 W |
+| Qwen3-8B | 8192 | 1.020 | 4 | 128 | 1.029 | 1.103 | 1.084 | 1365 MHz 700 W | 1380 MHz 699 W |

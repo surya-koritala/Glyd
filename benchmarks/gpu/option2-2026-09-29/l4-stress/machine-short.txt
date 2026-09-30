@@ -1,0 +1,1 @@
+NVIDIA L4 (Ada, sm_89, 58 SMs), driver 595.91.07, CUDA 13.0, torch 2.14.0+cu130: split_stress.py (e744311 as run, the decode on 12 SMs, GLinear made as an A100): this tree, and the tree before 244baf4 (4516ea2) quick: 14B, 32B at 769, 1024

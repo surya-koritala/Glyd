@@ -48,6 +48,26 @@ layout also from `GLYD_DEC_MIN` where that is set lower) they return
 `cudaErrorNotSupported`, nothing launched: decode the matrix
 (`glyd_gpu_mma_unpack`) for a GEMM of your own.
 
+The route SPLIT is opt-in: `glyd_gpu_mma12_route` gives it only for a GPU's
+code with `GLYD_GPU_WITH_SPLIT`, and `glyd_gpu_mma12_linear`'s own route (-1)
+never is, so without the flag the routes are v0.25.1's. Asked for, a prompt
+of the 12-bit layout on an A100 SXM (769-4096 tokens) or a GH200 (2048-8192,
+a matrix whose O and K are both at least 5120; an H100 SXM, an H200 and the
+PCIe cards not yet, until measured) takes the route SPLIT (`glyd_gpu_mma12_route`, `glyd_gpu_mma12_split_sms`): its
+matrices decoded ahead into a ring of slots in your device memory on a few
+SMs the driver's green contexts set apart, while your cuBLAS multiplies from
+the ring on the others. The library does not link cuBLAS: give
+`glyd_gpu_mma12_ring_linear` your handle and its functions
+(`glyd_gpu_blas`); queue a prompt's matrices in their order
+(`glyd_gpu_mma12_ring_queue`), then call each product, on the device the
+ring was made on. Where the split cannot run (the driver's green contexts
+not available: a driver before CUDA 12.5, or one that refuses them; a
+stream being captured) it returns `cudaErrorNotSupported`: take the route
+the GPU's code without the flag gives. The route's rule goes by the GPU's
+code alone; glyd.gpu's Linears also ask only on the GPUs measured (an A100
+SXM's 108 SMs, a GH200's 132, not a MIG slice). `glyd_gpu_mma12_linear` given SPLIT takes it by the prompt
+kernel.
+
 Rust calls them through the `glyd-gpu` crate in the Glyd repository (the
 library loaded at run time and held to its API version, each function
 typed, device pointers and streams the caller's); other languages through
