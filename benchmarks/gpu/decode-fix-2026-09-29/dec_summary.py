@@ -42,14 +42,15 @@ out = [f"BITS {'PASS' if steps and not bad else 'FAIL'}: {len(steps)} steps run"
        + (f"; e2e: {sum(len(d) for d in sha.values())} sha256 lines, {len(sha)} outputs, the same in every variant and tree" if sha and not differ else "")]
 out += lines("machine-short.txt")[:1] + lines("env.txt")[:2]
 out += ["", "The decode a layer (dec_time.py; median of its repetitions), us, each over main's; whole: a warp a step (for cuBLAS,",
-        "exact mode), ahead: 2 warps an SM (decode ahead). v0.25.0: its library; order N: this tree's, GLYD_DEC_ORDER=N (0 v0.25.0's kernel)."]
+        "exact mode), ahead: 2 warps an SM (decode ahead). v0.25.0: its library; order N: 73b9560's, GLYD_DEC_ORDER=N (0 v0.25.0's",
+        "kernel); v0.25.1: the fix as merged (whole: order 3's loads, ahead: order 0's)."]
 for f in sorted(glob.glob(os.path.join(R, "time-*.txt"))):
     b = os.path.basename(f)
     model, run = re.match(r"time-(.+)-run(\d+)\.txt", b).groups()
     for l in lines(b):
         m = re.match(r"\s+(whole|ahead)( \(\d+ warps\))? layer: (.*?)\s+\[GB/s: (.*)\]", l)
         if m:
-            cells = re.findall(r"(main|v0\.25\.0|order \d) ([\d.]+) us(?: \(([\d.]+) main)?", m.group(3))
+            cells = re.findall(r"(main|v0\.25\.[01]|order \d) ([\d.]+) us(?: \(([\d.]+) main)?", m.group(3))
             out.append(f"  {model} run {run} {m.group(1)}: " + " | ".join(f"{v} {t}" + (f" ({r})" if r else "") for v, t, r in cells)
                        + f"  [GB/s {m.group(4)}]")
 out += ["", "End to end (dec_e2e.py), each over main's: exact mode's steps (ms a token) and prompts (ms)"]
@@ -59,8 +60,10 @@ for f in sorted(glob.glob(os.path.join(R, "e2e-*.txt"))):
     for l in lines(os.path.basename(f)):
         m = re.match(r"(exact|fused) (as built|order \d): (steps|prompt \d+ tokens) ([\d.]+) ms", l)
         if m:
-            e2e.setdefault((m.group(1), m.group(3)), {})[tree if m.group(2) == "as built" else m.group(2)] = float(m.group(4))
-rank = lambda v: ["main", "main2", "v0.25.0"].index(v) if v in ("main", "main2", "v0.25.0") else 3 + int(v[-1]) if v.startswith("order") else 9
+            label = tree if m.group(2) == "as built" else m.group(2) + ("" if tree == "fix" else f" ({tree})")
+            e2e.setdefault((m.group(1), m.group(3)), {})[label] = float(m.group(4))
+FIRST = ["main", "main2", "v0.25.0", "v0.25.0-2"]
+rank = lambda v: (0, FIRST.index(v), "") if v in FIRST else (1, int(v[6]), v) if v.startswith("order") else (2, 0, v)
 for (mode, what), d in e2e.items():
     base = d.get("main")
     out.append(f"  {mode} {what}: " + " | ".join(f"{v} {d[v]:.3f}" + (f" ({d[v] / base:.3f})" if base and v != "main" else "") for v in sorted(d, key=rank)))

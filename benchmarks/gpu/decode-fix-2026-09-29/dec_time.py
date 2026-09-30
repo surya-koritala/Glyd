@@ -7,7 +7,7 @@ default); ahead: 2 warps an SM, each taking every so many steps (as model.Ahead 
 ahead of their products: GeForce Ada's and an A10's).
 
     PYTHONPATH=FIX/bindings/python GLYD_GPU_LIB=FIX_LIB python dec_time.py MAIN_TREE MAIN_LIB REL_LIB MODEL [--layer 10] [--reps 21] [--kinds whole,ahead]"""
-import argparse, glob, importlib.util, json, os, sys
+import argparse, ctypes, glob, importlib.util, json, os, sys
 import torch
 from safetensors import safe_open
 
@@ -24,12 +24,21 @@ ap.add_argument("--layer", type=int, default=10)
 ap.add_argument("--reps", type=int, default=21)
 ap.add_argument("--kinds", default="whole,ahead")
 ap.add_argument("--orders", default="0,1,2,3")
+ap.add_argument("--final")
 args = ap.parse_args()
 old, old_pack = both.load(args.main_tree, args.main_lib)
-spec = importlib.util.spec_from_file_location("rel_lib", new.__file__)  # v0.25.0's library: a third copy of _lib
-rel = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(rel)
-rel.load(args.rel_lib)
+
+
+def copy(name, path, api=None):  # another library through a copy of _lib (api: its C API, where not this tree's)
+    spec = importlib.util.spec_from_file_location(name, new.__file__)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    m.API_VERSION = api or m.API_VERSION
+    m.load(path)
+    return m
+
+
+rel = copy("rel_lib", args.rel_lib)  # v0.25.0's
 
 d = args.model
 if not os.path.exists(os.path.join(d, "config.json")):
@@ -53,6 +62,8 @@ W = {
 PO = {k: old_pack(w) for k, w in W.items()}
 PN = {k: g.pack_mma12(w) for k, w in W.items()}
 V = [("main", old, PO, None), ("v0.25.0", rel, PN, None)] + [(f"order {o}", new, PN, o) for o in args.orders.split(",") if o]
+# v0.25.1's C API is 5: 73b9560's 4 renumbered for the release (the same functions, arguments and 12-bit bytes).
+V += [("v0.25.1", copy("final_lib", args.final, ctypes.CDLL(args.final).glyd_gpu_api_version()), PN, None)] if args.final else []
 sms = torch.cuda.get_device_properties(0).multi_processor_count
 KINDS = {"whole": 0, "ahead": 2 * sms}
 kinds = [k for k in args.kinds.split(",") if k]

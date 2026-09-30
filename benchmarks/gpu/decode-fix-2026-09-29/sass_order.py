@@ -4,6 +4,11 @@
                                                       loads, shuffles, calls and stores by instruction index
     python sass_order.py --same REL.sass FIX.sass    every kernel of REL the same instructions in FIX (a decode kernel
                                                       of REL as FIX's ORDER 0), and FIX's kernels REL has not
+    python sass_order.py --final BASE.sass FIX.sass FINAL.sass
+                                                      FINAL (the order fixed a path, no ORDER) against BASE (the tree it
+                                                      was merged onto) and FIX (0489522-73b9560, the orders a choice):
+                                                      the same kernels, each BASE's instructions but the 12-bit whole and
+                                                      experts' decodes, which are FIX's ORDER 3's
 
 In the sequences: LDG.128 the step's codes, LDG.128+0x200 and +0x400 its low bytes, the first LDG and LDG+0x4 its
 exception bounds (exc_base; in the mixture-of-experts kernel, after its plan's two), later LDGs the exception entries;
@@ -58,6 +63,15 @@ if sys.argv[1] == "--same":
     for n in new:
         print(f"   {name_of(n)}: {len(fix[n])} instructions")
     sys.exit(0 if len(same) == len(rel) else 1)
+if sys.argv[1] == "--final":
+    base, fix, fin = (kernels(a) for a in sys.argv[2:5])
+    as3 = lambda n: re.sub(r"^(_Z17mma_unpack_kernelI3NibLb[01]ELb0E)(E)", r"\1Li3E\2", n)
+    changed = [n for n in base if fin.get(n) != base[n]]
+    order3 = [n for n in changed if n != as3(n) and fin.get(n) == fix.get(as3(n))]
+    extra = sorted(set(fin) - set(base))
+    print(f"{sys.argv[2]} -> {sys.argv[4]}: {len(base) - len(changed)} of {len(base)} kernels the same instructions, {len(extra)} added; "
+          + "changed: " + (", ".join(f"{name_of(n)}: " + ("FIX's ORDER 3's instructions" if n in order3 else "NOT FIX's ORDER 3's") for n in changed) or "none"))
+    sys.exit(0 if not extra and len(order3) == len(changed) == 2 else 1)
 args = sys.argv[1:]
 while args:
     sass, res = args[0], args[1] if len(args) > 1 and args[1].endswith(".res") else None

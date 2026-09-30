@@ -1,0 +1,44 @@
+== Build cuda_13.0.r13.0/compiler.36424714_0; gcc (GCC) 13.3.1 20240611 (Red Hat 13.3.1-2); aarch64; base 1f4343b (l4-routes), fix 73b9560 (decode-fix, the orders a choice), final the decode fix as merged (0152ee2 and the order fixed a path)
+base sm_80: build exit 0, warnings 0
+fix sm_80: build exit 0, warnings 0
+final sm_80: build exit 0, warnings 0
+base sm_86: build exit 0, warnings 0
+fix sm_86: build exit 0, warnings 0
+final sm_86: build exit 0, warnings 0
+base sm_89: build exit 0, warnings 0
+fix sm_89: build exit 0, warnings 0
+final sm_89: build exit 0, warnings 0
+base sm_90a: build exit 0, warnings 0
+fix sm_90a: build exit 0, warnings 0
+final sm_90a: build exit 0, warnings 0
+base sm_100: build exit 0, warnings 0
+fix sm_100: build exit 0, warnings 0
+final sm_100: build exit 0, warnings 0
+base sm_120: build exit 0, warnings 0
+fix sm_120: build exit 0, warnings 0
+final sm_120: build exit 0, warnings 0
+## sm_80
+out/base-80.sass -> out/final-80.sass: 85 of 87 kernels the same instructions, 0 added; changed: moe as built: FIX's ORDER 3's instructions, whole as built: FIX's ORDER 3's instructions
+exit 0
+## sm_86
+out/base-86.sass -> out/final-86.sass: 85 of 87 kernels the same instructions, 0 added; changed: moe as built: FIX's ORDER 3's instructions, whole as built: FIX's ORDER 3's instructions
+exit 0
+## sm_89
+out/base-89.sass -> out/final-89.sass: 85 of 87 kernels the same instructions, 0 added; changed: moe as built: FIX's ORDER 3's instructions, whole as built: FIX's ORDER 3's instructions
+exit 0
+## sm_90a
+out/base-90a.sass -> out/final-90a.sass: 85 of 87 kernels the same instructions, 0 added; changed: moe as built: FIX's ORDER 3's instructions, whole as built: FIX's ORDER 3's instructions
+exit 0
+## sm_100
+out/base-100.sass -> out/final-100.sass: 85 of 87 kernels the same instructions, 0 added; changed: moe as built: FIX's ORDER 3's instructions, whole as built: FIX's ORDER 3's instructions
+exit 0
+## sm_120
+out/base-120.sass -> out/final-120.sass: 85 of 87 kernels the same instructions, 0 added; changed: moe as built: FIX's ORDER 3's instructions, whole as built: FIX's ORDER 3's instructions
+exit 0
+## sm_90a, the decode kernels' loads
+out/final-90a.sass moe as built (552 instructions):
+   3:LDG 36:LDG+0x4 61:LDG 63:LDG+0x4 64:LDG.128+0x200 65:LDG.128+0x400 68:SHFL 75:LDG.128 101:CALL 146:LDG 194:LDG 195:LDG+0x4 196:LDG+0x8 197:LDG+0xc STG x16 396-452
+out/final-90a.sass whole as built (536 instructions):
+   48:LDG 50:LDG+0x4 51:LDG.128+0x200 52:LDG.128+0x400 55:SHFL 63:LDG.128 89:CALL 138:LDG 184:LDG 185:LDG+0x4 186:LDG+0x8 187:LDG+0xc STG x16 377-436
+out/final-90a.sass ahead as built (608 instructions):
+   57:LDG.128 60:LDG.128+0x400 62:LDG.128+0x200 65:LDG 67:LDG+0x4 90:CALL 131:LDG 170:LDG+0x4 209:LDG+0x8 255:LDG 256:LDG+0x4 315:LDG+0x8 316:LDG+0xc STG x16 441-508
