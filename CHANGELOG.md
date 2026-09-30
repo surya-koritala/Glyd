@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.25.1 — 2026-09-29
 
 - On Hopper the 12-bit layout's decode of a whole matrix (for cuBLAS,
   prompts past wgmma's 1024 tokens; `exact=True`'s steps and prompts; a
