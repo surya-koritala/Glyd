@@ -66,18 +66,21 @@ class Bar:
     """One download bar: what is done of the total, at what rate, how long to go (a line at each 10% where there is no terminal)."""
 
     def __init__(self, ui, title, total):
-        self.ui, self.title, self.total, self.t0, self.tick, self.tenth = ui, title, max(total, 1), time.time(), [], 0
+        self.ui, self.title, self.total, self.t0, self.tick, self.tenth, self.done = ui, title, max(total, 1), time.time(), [], 0, 0
 
-    def update(self, done):
+    def update(self, done, final=False):
         now = time.time()
-        done = min(done, self.total)
+        self.done = done = min(max(done, self.done), self.total)  # (never backwards)
         self.tick = [t for t in self.tick if now - t[0] < 8] + [(now, done)]
         rate = (done - self.tick[0][1]) / (now - self.tick[0][0]) if now > self.tick[0][0] else 0
         frac = done / self.total
         if self.ui.tty:
             width = 24
-            eta = f", {fmt_time((self.total - done) / rate)} left" if rate > 1e5 and done < self.total else ""
-            self.ui.status(f"{self.title}  [{'#' * int(frac * width):<{width}}] {frac * 100:3.0f}%  {pf.gb(done)} of {pf.gb(self.total)}{f'  {rate / 1e6:.0f} MB/s' if rate > 1e5 else ''}{eta}")
+            if done >= self.total and not final:
+                tail = "  finishing..."
+            else:
+                tail = (f"  {rate / 1e6:.0f} MB/s" if rate > 1e5 else "") + (f", {fmt_time((self.total - done) / rate)} left" if rate > 1e5 and done < self.total else "")
+            self.ui.status(f"{self.title}  [{'#' * int(frac * width):<{width}}] {frac * 100:3.0f}%  {pf.gb(done)} of {pf.gb(self.total)}{tail}")
         elif int(frac * 10) > self.tenth:
             self.tenth = int(frac * 10)
             self.ui.line(f"{self.title}: {self.tenth * 10}% ({pf.gb(done)} of {pf.gb(self.total)})")
@@ -137,9 +140,9 @@ def download(m, ui):
         except BaseException as e:  # (raised again in the main thread)
             failed.append(e)
 
-    def done():
-        seen = [b.n for b in bars if getattr(b, "unit", "") == "B"]
-        return base + max(seen) if seen else progress_bytes(m.repo)
+    def done():  # (the slowest stage that has begun: xet's network bytes lead its disk bytes by seconds)
+        seen = [b.n for b in bars if getattr(b, "unit", "") == "B" and b.n]
+        return base + min(seen) if seen else progress_bytes(m.repo)
 
     worker = threading.Thread(target=work, daemon=True)
     worker.start()
@@ -154,7 +157,7 @@ def download(m, ui):
         if isinstance(e, KeyboardInterrupt):
             raise e
         raise pf.Refusal(f"the download of {m.repo} stopped ({type(e).__name__}: {e})", "Check the network connection and run the same command again: it resumes where it stopped")
-    bar.update(total)
+    bar.update(total, final=True)
     ui.line(f"Downloaded {m.name} ({pf.gb(total)}).")
 
 
