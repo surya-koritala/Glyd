@@ -117,14 +117,67 @@ The hog that held the L4's memory, the GeForce emulation, every run and its log:
 ## Options
 
 Each option is read from the first of these that sets it: `--additional-config '{"glyd": {...}}'`, the checkpoint's
-`quantization_config` (or `--hf-overrides`'), or the environment (`GLYD_LAYOUT`, `GLYD_EXACT`, `GLYD_VERIFY`). Another
-key, or a flag other than true or false (`1`, `true`, `yes`, `on`; `0`, `false`, `no`, `off`), is refused.
+`quantization_config` (or `--hf-overrides`'), or the environment (`GLYD_LAYOUT`, `GLYD_EXACT`, `GLYD_VERIFY`,
+`GLYD_FRACTION`). Another key, a flag other than true or false (`1`, `true`, `yes`, `on`; `0`, `false`, `no`, `off`), or a
+fraction outside 0 to 1 is refused.
 
 | Option | Values | What it does |
 | :--- | :--- | :--- |
 | `layout` | `auto` (default), `mma`, `mma12` | `auto` takes `best_layout`'s choice for the GPU: the tiered layout on Ada (L4, L40S, RTX 40), for a mixture of experts on an A10 too, and wherever only it fits; else the 12-bit one (A10, A100, H100, GH200). A save loads in its own. |
 | `exact` | `false` (default), `true` | Each product's matrix decoded whole, then the GEMM vLLM runs for bf16, so the logits are bf16's bit for bit (below). |
 | `verify` | `false` (default), `true` | Every pack decoded at load and compared with its weights bit for bit. A save's packs by glyd.json's sha256, its other tensors too, and a save packed again in the other layout against the save. |
+| `fraction` | `1` (default), a number from 0 to 1 | The share of the decoder layers packed; the rest stay vLLM's own bf16 ([below](#a-fraction-of-the-layers)). `0` is bf16, `1` every layer. A glyd save takes only `1`. |
+
+## A fraction of the layers
+
+A packed layer saves memory and costs a rebuild of its weights at every step; a layer left as it is saves nothing and
+costs nothing extra. `fraction` says how many layers are packed: `0` packs none, which is vLLM's own bf16, and `1` every
+layer, as before.
+
+```bash
+vllm serve Qwen/Qwen3-8B --quantization glyd --additional-config '{"glyd": {"fraction": 0.5}}'
+GLYD_FRACTION=0.5 vllm serve Qwen/Qwen3-8B --quantization glyd
+```
+
+- **Which layers.** Layer i's Linears (qkv, o, gate and up, down) are packed where floor((i + 1) × fraction) >
+  floor(i × fraction): floor(L × fraction) of a model's L layers, spread evenly over its depth (0.5 packs layers 1, 3,
+  5 and so on; 0.25 packs 3, 7, 11). All of a layer's Linears go together, and a mixture of experts' layer's experts
+  with them. The fraction counts as the decimal it is written in: 0.29 of 100 layers is 29. A layer is found by the
+  first number in a module's name (`model.layers.12.mlp.down_proj`); a Linear outside the numbered layers is packed at
+  `1` only. Embeddings and the LM head are as without the option.
+- **The others** run vLLM's own methods, `UnquantizedLinearMethod` and `UnquantizedFusedMoEMethod`, as vLLM runs a model
+  with no quantization. At `0` nothing is packed, Glyd's library is not loaded, and a mixture of experts' shared experts
+  keep their side stream.
+- **Exact mode** is unaffected: a layer left as it is gives bf16's bits, and a packed layer's decoded matrix goes through
+  the same GEMM as before.
+- **A glyd save** takes only `1`, its layers being packed on disk; a bf16 checkpoint takes any fraction. A fraction outside
+  0 to 1 is refused.
+- **The compile cache** is keyed by the fraction with the other options.
+
+**Measured** on an L4 with Qwen3-8B (the tiered layout, `vllm bench serve` as above, servers warm, 64 prompts at 1 request
+a second and 256 at once, against bf16 in the same session):
+
+| | Weights | KV cache | Requests/s, at once | First token at 1 a second | Each token at 1 a second |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| bf16 | 15.27 GiB | 27,024 tokens | 0.75 | 3,351 ms | 100.2 ms |
+| fraction 0 | 15.27 GiB | 27,024 tokens | 0.76 | 3,539 ms | 100.8 ms |
+| fraction 0.5 | 13.65 GiB | 37,904 tokens | 0.96 | 1,095 ms | 99.9 ms |
+| fraction 1 | 11.83 GiB | 51,040 tokens | 1.04 | 772 ms | 95.6 ms |
+
+- **Fraction 0 is bf16:** the same weights and KV cache, the same requests a second (0.755 against 0.754 at once), each
+  token within 1% at 1 a second and at once. Its first token at 1 a second came 6% later, where bf16 is already queueing
+  (0.66 requests a second completed of 1 offered).
+- **Half the layers** gave 1.40x the KV cache and 1.27x the requests a second at once, against fraction 1's 1.89x and 1.38x.
+  That is 71% of fraction 1's gain in requests a second, for 34% of its extra time per token at once (125.4 ms against
+  bf16's 111.2 and fraction 1's 152.4); at 1 a second each token took as long as bf16's (99.9 against 100.2 ms).
+- **Checked** (`check_vllm.py --quick --fraction 0.5`, Qwen3-8B, all 18 passed): every pack decoded to its weights bit for
+  bit, every product within 4.2e-3 of its matrix decoded, the layers packed the rule's, exact eager and exact compiled in
+  the deterministic mode bf16's bits. Fraction 0 in eager gave bf16 eager's tokens, logprobs and prompt_logprobs bit for
+  bit, nothing packed, with the same KV cache. granite-3.1-3b-a800m-instruct (a mixture of experts, `--brief`, all 7
+  passed): 16 of 32 layers packed, their experts too, the other 16 vLLM's own methods.
+- **The GH200,** where fraction 1 served 0.88x bf16's requests a second with Qwen3-32B, is not measured with it yet.
+
+Runs and logs: [benchmarks/gpu/l4-vllm-fraction-2026-09-30](../../benchmarks/gpu/l4-vllm-fraction-2026-09-30).
 
 ## Exact mode
 
@@ -261,6 +314,7 @@ the engine builds it, before any worker starts, so over several GPUs too Glyd's 
 - weight offloading (`--cpu-offload-gb`) and sleep mode;
 - a glyd save over several GPUs, one with a mixture of experts' packs, or one of a family other than Qwen3's and
   Llama's; their bf16 checkpoints load;
+- a glyd save with a `fraction` below 1: its layers are packed on disk, and its bf16 checkpoint takes a fraction;
 - exact under torch.compile where a packed Linear has a bias (exact eager runs), and fused products under
   `VLLM_BATCH_INVARIANT`.
 
@@ -274,18 +328,22 @@ Tensor parallelism packs each rank's shard (measured over two RTX A6000s above).
     experts decoded.
   - Tokens and logprobs against bf16's own noise, and exact mode.
   - The compile cache: a graph for each layout and mode, each loaded again.
-  - Flags: `--saves` (saves, as saved and in the other layout), `--quick`, `--brief`, `--tp N`, `--mp` (vLLM's workers
-    in processes of their own, as over several GPUs, on one), `--out DIR`.
+  - Flags: `--saves` (saves, as saved and in the other layout), `--quick`, `--brief`, `--fraction F` (Glyd's runs at
+    that fraction, with which layers are packed checked against the rule, and fraction 0 in eager against bf16 eager's
+    bits), `--tp N`, `--mp` (vLLM's workers in processes of their own, as over several GPUs, on one), `--out DIR`.
 - `bench_serve.sh [MODEL]`, `bench_summary.py`: `vllm bench serve`, bf16 against Glyd at several rates. `WARM=1`
-  notes the cold start and measures warm. The summary adds the GPU's clock and temperature.
+  notes the cold start and measures warm. The summary adds the GPU's clock and temperature. A mode `glyd@F` in `MODES`
+  is Glyd at fraction F (`MODES="bf16 glyd@0.5 glyd@1"`), and the summary then adds each mode's weights, KV cache,
+  requests a second, TTFT and TPOT against bf16's. `SERVE_ARGS` adds arguments to every `vllm serve`.
 - `profile_steps.py [MODEL]`: a step's GPU time by kind of kernel (Glyd's, GEMMs, attention, the rest), bf16 against
   Glyd, at decode steps of B sequences and prompt steps of M tokens.
 - `moe_routes.py [MODEL]`: a mixture of experts' layer by tokens a step, the grouped products against the routed
   experts decoded for vLLM's Triton kernel, and bf16's own layer (the threshold `GLYD_MOE_DECODE_MIN` routes by).
 - `spec_decode.py`, `spec_summary.py`: one user's tokens/s, first token and speculation's acceptance for a configuration
   (bf16 or Glyd, n-gram or EAGLE-3, eager, exact), and the runs' tables and token-for-token comparisons.
-- `bindings/python/test_vllm.py`: the plugin's logic that needs no GPU (options, a save's packs by vLLM's layer names,
-  the pieces a checkpoint gave, what is refused, the entry point's version rule), with vLLM installed.
+- `bindings/python/test_vllm.py`: the plugin's logic that needs no GPU (options, the layers a fraction packs and the
+  method each layer gets, a save's packs by vLLM's layer names, the pieces a checkpoint gave, what is refused, the entry
+  point's version rule), with vLLM installed.
 
 ## vLLM's internals
 

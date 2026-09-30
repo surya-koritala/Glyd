@@ -1,0 +1,54 @@
+(APIServer pid=118870) INFO 09-30 19:23:22 [api_utils.py:347] 
+(APIServer pid=118870) INFO 09-30 19:23:22 [api_utils.py:347]        █     █     █▄   ▄█
+(APIServer pid=118870) INFO 09-30 19:23:22 [api_utils.py:347]  ▄▄ ▄█ █     █     █ ▀▄▀ █  version 0.30.0
+(APIServer pid=118870) INFO 09-30 19:23:22 [api_utils.py:347]   █▄█▀ █     █     █     █  model   Qwen/Qwen3-0.6B
+(APIServer pid=118870) INFO 09-30 19:23:22 [api_utils.py:347]    ▀▀  ▀▀▀▀▀ ▀▀▀▀▀ ▀     ▀
+(APIServer pid=118870) INFO 09-30 19:23:22 [api_utils.py:347] 
+(APIServer pid=118870) INFO 09-30 19:23:22 [api_utils.py:286] non-default args: {'model_tag': 'Qwen/Qwen3-0.6B', 'port': 8041, 'quantization': 'glyd', 'additional_config': {'glyd': {'fraction': 1.5}}}
+(APIServer pid=118870) INFO 09-30 19:23:22 [arg_utils.py:849] HF_HUB_OFFLINE is True, replace model_id [Qwen/Qwen3-0.6B] to model_path [/home/ubuntu/hf/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca]
+(APIServer pid=118870) INFO 09-30 19:23:30 [model.py:692] Resolved architecture: Qwen3ForCausalLM
+(APIServer pid=118870) INFO 09-30 19:23:30 [model.py:2030] Using max model len 40960
+(APIServer pid=118870) Traceback (most recent call last):
+(APIServer pid=118870)   File "/home/ubuntu/mmoedry/w/venv/bin/vllm", line 10, in <module>
+(APIServer pid=118870)     sys.exit(main())
+(APIServer pid=118870)              ^^^^^^
+(APIServer pid=118870)   File "/home/ubuntu/mmoedry/w/venv/lib/python3.12/site-packages/vllm/entrypoints/cli/main.py", line 106, in main
+(APIServer pid=118870)     args.dispatch_function(args)
+(APIServer pid=118870)   File "/home/ubuntu/mmoedry/w/venv/lib/python3.12/site-packages/vllm/entrypoints/cli/serve.py", line 154, in cmd
+(APIServer pid=118870)     uvloop.run(run_server(args))
+(APIServer pid=118870)   File "/home/ubuntu/mmoedry/w/venv/lib/python3.12/site-packages/uvloop/__init__.py", line 96, in run
+(APIServer pid=118870)     return __asyncio.run(
+(APIServer pid=118870)            ^^^^^^^^^^^^^^
+(APIServer pid=118870)   File "/usr/lib/python3.12/asyncio/runners.py", line 194, in run
+(APIServer pid=118870)     return runner.run(main)
+(APIServer pid=118870)            ^^^^^^^^^^^^^^^^
+(APIServer pid=118870)   File "/usr/lib/python3.12/asyncio/runners.py", line 118, in run
+(APIServer pid=118870)     return self._loop.run_until_complete(task)
+(APIServer pid=118870)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=118870)   File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=118870)   File "/home/ubuntu/mmoedry/w/venv/lib/python3.12/site-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=118870)     return await main
+(APIServer pid=118870)            ^^^^^^^^^^
+(APIServer pid=118870)   File "/home/ubuntu/mmoedry/w/venv/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 176, in run_server
+(APIServer pid=118870)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=118870)   File "/home/ubuntu/mmoedry/w/venv/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 190, in run_server_worker
+(APIServer pid=118870)     async with build_async_engine_client(
+(APIServer pid=118870)   File "/usr/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=118870)     return await anext(self.gen)
+(APIServer pid=118870)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=118870)   File "/home/ubuntu/mmoedry/w/venv/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 58, in build_async_engine_client
+(APIServer pid=118870)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=118870)   File "/usr/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=118870)     return await anext(self.gen)
+(APIServer pid=118870)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=118870)   File "/home/ubuntu/mmoedry/w/venv/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 82, in build_async_engine_client_from_engine_args
+(APIServer pid=118870)     vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+(APIServer pid=118870)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=118870)   File "/home/ubuntu/mmoedry/w/venv/lib/python3.12/site-packages/vllm/engine/arg_utils.py", line 2647, in create_engine_config
+(APIServer pid=118870)     config = VllmConfig(
+(APIServer pid=118870)              ^^^^^^^^^^^
+(APIServer pid=118870)   File "/home/ubuntu/mmoedry/w/venv/lib/python3.12/site-packages/pydantic/_internal/_dataclasses.py", line 121, in __init__
+(APIServer pid=118870)     s.__pydantic_validator__.validate_python(ArgsKwargs(args, kwargs), self_instance=s)
+(APIServer pid=118870) pydantic_core._pydantic_core.ValidationError: 1 validation error for VllmConfig
+(APIServer pid=118870)   Value error, glyd: fraction 1.5: a number from 0 to 1 (the share of the decoder layers packed) [type=value_error, input_value=ArgsKwargs((), {'model_co... 'shutdown_timeout': 0}), input_type=ArgsKwargs]
+(APIServer pid=118870)     For further information visit https://errors.pydantic.dev/2.13/v/value_error

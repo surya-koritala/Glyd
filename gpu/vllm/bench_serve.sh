@@ -7,10 +7,14 @@
 # and nvidia-smi's temperature, SM clock and power each second of a rate (smi-MODE-rateR.csv); then bench_summary.py's
 # table. WARM=1: each mode's server started twice, the first on VLLM_CACHE_ROOT as it is (on an empty one, a cold
 # start: its compile, and its KV cache in kv-MODE-cold.txt), the one measured after it (its graphs loaded).
+# A mode glyd@F is Glyd packing the fraction F of the layers (GLYD_FRACTION=F for its server: glyd@0 is vLLM's own bf16
+# method through the plugin, glyd@1 is glyd), its results in files of its own.
 #   bash bench_serve.sh [MODEL]       (default Qwen/Qwen3-8B)
+#   MODES="bf16 glyd@0 glyd@0.5 glyd@1" RATES="1 inf" bash bench_serve.sh [MODEL]
 # Env: VLLM (the vllm command), R (results; default ./bench-MODEL), UTIL (0.9), IN (1024), OUT (256), RATES
 # ("0.25 1 4 16 inf"), PROMPTS (per rate: "32 64 128 256 256"), MODES ("bf16 glyd"), WARM, BUSYWAIT, COOL, COOLWAIT,
-# TP (1: the servers over that many GPUs, tensor parallel), GLYD_* (the plugin's options).
+# TP (1: the servers over that many GPUs, tensor parallel), SERVE_ARGS (more arguments for every vllm serve), GLYD_*
+# (the plugin's options).
 set -u
 MODEL=${1:-Qwen/Qwen3-8B}
 VLLM=${VLLM:-vllm}
@@ -25,15 +29,17 @@ trap '[ -n "$SV" ] && kill $SV 2> /dev/null; [ -n "$SMI" ] && kill $SMI 2> /dev/
 temp() { nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | head -1; }
 others() { nvidia-smi --query-compute-apps=pid --format=csv,noheader | grep -c .; }
 serve() {  # LOG: vllm serve for this mode (SV its pid) once it answers; else stopped, 1
-  "$VLLM" serve "$MODEL" "${q[@]}" --max-model-len 4096 --gpu-memory-utilization "$UTIL" --tensor-parallel-size "${TP:-1}" --port "$PORT" > "$1" 2>&1 &
+  "$VLLM" serve "$MODEL" "${q[@]}" --max-model-len 4096 --gpu-memory-utilization "$UTIL" --tensor-parallel-size "${TP:-1}" --port "$PORT" ${SERVE_ARGS:-} > "$1" 2>&1 &
   SV=$!
   for i in $(seq 1 180); do curl -sf "localhost:$PORT/v1/models" > /dev/null && return 0; kill -0 $SV 2> /dev/null || break; sleep 5; done
   kill $SV 2> /dev/null; wait $SV 2> /dev/null; SV=
   return 1
 }
 kv() { grep -h "GPU KV cache size\|Maximum concurrency\|Model loading took\|glyd:" "$1" | sed 's/.*\] //'; nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader; }
+GF=${GLYD_FRACTION-}
 for mode in ${MODES:-bf16 glyd}; do
   q=(); [ "$mode" = bf16 ] || q=(--quantization glyd)
+  case $mode in glyd@*) export GLYD_FRACTION=${mode#glyd@} ;; *) export GLYD_FRACTION=$GF ;; esac
   for i in $(seq 1 $(( ${BUSYWAIT:-1800} / 10 ))); do [ "$(others)" -eq 0 ] && break; sleep 10; done
   if [ "$(others)" -ne 0 ]; then echo "$mode: another process is on the GPU (nvidia-smi): not run"; continue; fi
   if [ "${WARM:-0}" = 1 ]; then

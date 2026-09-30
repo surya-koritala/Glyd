@@ -30,7 +30,7 @@ a process of its own:
   and its logits against bf16's as before; bf16 compiled again on an empty
   cache, against its first compile (the compiled graph's own variation).
 
-    python check_vllm.py [--saves] [--quick | --brief] [--tp N] [--mp] [--out DIR] [MODEL ...]
+    python check_vllm.py [--saves] [--quick | --brief] [--fraction F] [--tp N] [--mp] [--out DIR] [MODEL ...]
 
 --quick leaves out the two runs that only describe bf16's own noise (its
 prompts one at a time, and compiled again on an empty cache): every check
@@ -39,7 +39,12 @@ with CUDA graphs and eager, Glyd in the layout the GPU's best (auto) with
 its layers checked, and exact eager; its checks alone. --tp N: every run
 over N GPUs (tensor parallel), bf16's too. --mp: vLLM's workers in
 processes of their own (its multiprocessing executor), as over several
-GPUs, on one.
+GPUs, on one. --fraction F: Glyd's runs at that fraction of the layers
+(GLYD_FRACTION), every check as before on the packed ones, and one more
+each: which layers are packed is the rule's (floor(L F) of the L, layer i
+where floor((i + 1) F) > floor(i F), each with all its Linears, the rest
+vLLM's own bf16 method), and fraction 0 in eager is bf16 eager's tokens,
+logprobs and prompt_logprobs bit for bit with nothing packed.
 
 A mixture of experts' model: its experts' products checked beside the
 Linears' (against its experts decoded, in float32); exact mode's experts
@@ -56,6 +61,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from fractions import Fraction
 
 TOKENS = 64
 LONG = 1536  # bf16's continuation fed back (prompt_logprobs)
@@ -89,6 +95,7 @@ def child(spec):
         return out
     cfg = llm.llm_engine.vllm_config
     out["blocks"], out["block_size"] = cfg.cache_config.num_gpu_blocks, cfg.cache_config.block_size
+    out["num_layers"] = getattr(cfg.model_config.hf_text_config, "num_hidden_layers", None)
     out["glyd"] = cfg.additional_config.get("glyd") if isinstance(cfg.additional_config, dict) else None
     if out["glyd"] is None and spec.get("quantization") and (spec.get("tp", 1) > 1 or spec.get("mp")):  # (the workers' config holds it)
         out["glyd"] = llm.collective_rpc(_glyd_key)[0]
@@ -126,9 +133,17 @@ def _layers(model):
     import torch
     import torch.nn.functional as F
     from glyd.gpu import kernels as g
+    from glyd.gpu.vllm_plugin import _layer_of
 
     worst, same, n, verified, moe, moe_verified, biased = 0.0, True, 0, 0, 0, 0, 0
     torch.manual_seed(0)
+    packed_layers, plain_layers = set(), set()  # the decoder layers with a packed Linear or experts, and with vLLM's own method
+    for name, m in model.named_modules():
+        i = _layer_of(name)
+        # (only layers a quantization config was given to: a model builds some without one, a mixture of experts' router gate
+        # for one, and they run vLLM's own method whatever the fraction)
+        if i is not None and getattr(m, "quant_method", None) is not None and getattr(m, "quant_config", None) is not None:
+            (packed_layers if getattr(m, "glyd_words", None) is not None or getattr(m, "glyd_moe", None) is not None else plain_layers).add(i)
     for m in model.modules():
         if getattr(m, "glyd_moe", None) is not None:
             moe += 1
@@ -150,7 +165,7 @@ def _layers(model):
             ref = F.linear(x.float(), w, None if m.bias is None else m.bias.float())
             worst = max(worst, ((y.float() - ref).abs().max() / ref.abs().max()).item())
             same &= torch.equal(y, torch.ops.glyd.vllm_linear(x, m.glyd_data, m.glyd_a, m.glyd_b, m.glyd_words, m.bias, O, False))
-    return {"packed": n, "verified": verified, "moe": moe, "moe_verified": moe_verified, "biased": biased, "worst_rel_error": worst, "same_bits": same, **_host(model)}
+    return {"packed": n, "verified": verified, "moe": moe, "moe_verified": moe_verified, "biased": biased, "worst_rel_error": worst, "same_bits": same, "packed_layers": sorted(packed_layers), "plain_layers": sorted(plain_layers), **_host(model)}
 
 
 def _moe(m, ts):
@@ -186,7 +201,9 @@ def _host(model):
     import torch
     import torch.nn.functional as F
 
-    m = next(m for m in model.modules() if getattr(m, "glyd_words", None) is not None)
+    m = next((m for m in model.modules() if getattr(m, "glyd_words", None) is not None), None)
+    if m is None:  # (fraction 0: nothing packed)
+        return {}
     O, K = m.glyd_out, m.weight.shape[1]
     w = torch.randn(O, K, dtype=torch.bfloat16, device=m.glyd_data.device)
     out = {}
@@ -247,7 +264,10 @@ def main():
     out_dir = args[args.index("--out") + 1] if "--out" in args else "check_vllm_results"
     tp = int(args[args.index("--tp") + 1]) if "--tp" in args else 1
     mp = "--mp" in args  # (vLLM's workers in processes of their own, as over several GPUs, on one)
-    models = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] not in ("--out", "--tp"))] or ["Qwen/Qwen3-1.7B"]
+    fraction = args[args.index("--fraction") + 1] if "--fraction" in args else None  # (Glyd's runs at this share of the layers)
+    if fraction is not None:
+        os.environ["GLYD_FRACTION"] = fraction
+    models = [a for i, a in enumerate(args) if not a.startswith("--") and (i == 0 or args[i - 1] not in ("--out", "--tp", "--fraction"))] or ["Qwen/Qwen3-1.7B"]
     os.makedirs(out_dir, exist_ok=True)
     report, failed = [], []
 
@@ -283,6 +303,11 @@ def main():
             check(r["layers"]["worst_rel_error"] < 1e-2 and r["layers"]["same_bits"], f"{tag} {layout}: each layer's product within 1e-2 of F.linear{', the experts of their decoded matrices' if moe else ''} ({r['layers']['worst_rel_error']:.2e}) and the same bits every run")
             check(c["long_top1"] >= AGREE, f"{tag} {layout}: top-1 agreement with bf16 on its continuation {c['long_top1']:.4f} (at least {AGREE}; bf16 eager's {floor['long_top1']:.4f})")
             check(c["long_mean_abs_dlogprob"] <= FLOOR * max(floor["long_mean_abs_dlogprob"], 1e-6), f"{tag} {layout}: mean |logprob difference| {c['long_mean_abs_dlogprob']:.2e}, at most {FLOOR}x bf16 eager's against its graphs ({floor['long_mean_abs_dlogprob']:.2e})")
+            if fraction is not None:
+                lay, L, q = r["layers"], r["num_layers"], Fraction(fraction)
+                want = [i for i in range(L) if (i + 1) * q // 1 > i * q // 1]  # (the rule, as the plugin's docstring has it)
+                ok = lay["packed_layers"] == want and len(want) == L * q // 1 and not set(lay["packed_layers"]) & set(lay["plain_layers"]) and set(lay["packed_layers"]) | set(lay["plain_layers"]) == set(range(L))
+                check(ok, f"{tag} {layout}, fraction {fraction}: {len(want)} of {L} layers packed, spread evenly (layer i where floor((i + 1) f) > floor(i f)), each with all its Linears, the other {L - len(want)} vLLM's own method (packed {lay['packed_layers']})")
         for layout in () if brief else ("mma", "mma12"):  # again on the shared cache, the same options: its own graphs loaded, not another's
             again = R(f"glyd-{layout}-again", dict(long, quantization="glyd"), {"GLYD_LAYOUT": layout, "GLYD_VERIFY": "1"})
             loaded = "Directly load AOT compilation" in open(os.path.join(out_dir, f"{tag}-glyd-{layout}-again.log")).read()
@@ -296,6 +321,11 @@ def main():
         x = R("glyd-exact-eager", dict(long, quantization="glyd", eager=True), {"GLYD_EXACT": "1"})
         c = compare(x, eager) if "error" not in x else {"bit_identical": 0, "long_bit_identical": x["error"][:200]}
         check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"] is True, f"{tag} exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']})")
+        if fraction is not None:  # (fraction 0: bf16, through the plugin, with nothing packed)
+            z = R("glyd-fraction0-eager", dict(long, quantization="glyd", eager=True, layers=True), {"GLYD_FRACTION": "0"})
+            c = compare(z, eager) if "error" not in z else {"bit_identical": 0, "long_bit_identical": z["error"][:200]}
+            lay = z.get("layers", {})
+            check(c["bit_identical"] == len(PROMPTS) and c["long_bit_identical"] is True and lay.get("packed") == 0 and lay.get("moe") == 0 and not lay.get("packed_layers"), f"{tag} fraction 0, eager: nothing packed, bf16 eager's tokens, logprobs and prompt_logprobs bit for bit ({c['bit_identical']} of {len(PROMPTS)}; continuation {c['long_bit_identical']}; KV cache {z.get('blocks', 0) * z.get('block_size', 0)} tokens, bf16 eager's {eager['blocks'] * eager['block_size']})")
         if brief:
             shutil.rmtree(cache, ignore_errors=True)
             continue
