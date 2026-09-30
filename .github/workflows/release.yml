@@ -44,7 +44,7 @@ jobs:
       - name: Build
         run: |
           set -e
-          dnf install -y -q --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils
+          dnf install -y -q --disablerepo="cuda*" --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils
           source /opt/rh/gcc-toolset-13/enable
           time bash gpu/build_lib.sh lib
       - name: Check (glibc 2.28, the system's libraries only)
