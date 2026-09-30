@@ -45,7 +45,8 @@ ap.add_argument("--from-pretrained", action="store_true", help="Glyd as glyd.fro
 ap.add_argument("--prompts", action="store_true", help="a batch of different prompts (left-padded), not copies of one: a mixture of experts routes each to its own experts")
 ap.add_argument("--merge", action="store_true", help="the Linears that take the same input (q, k, v; gate, up) as one product each, for bf16 and Glyd alike, as serving engines run them")
 ap.add_argument("--gpu-mem", type=float, default=0, help="GiB a GPU may hold of bf16 weights (the baseline's device map); default: all but 2 GiB")
-ap.add_argument("--without-split", action="store_true", help="--prefill again with the route SPLIT off (model.Split: the routes before it, v0.25.0's), in the same process")
+ap.add_argument("--without-split", action="store_true", help="--prefill again with the route SPLIT off (model.Split off: the routes without it, v0.25.1's), in the same process")
+ap.add_argument("--rounds", type=int, default=1, help="with --without-split: --prefill this many times each way, in turn (SPLIT, without; without, SPLIT; ...: each way first as often as last), for a median of each")
 ap.add_argument("--breakdown", type=str, default="", help="prompt lengths to break a forward pass down at, with the route SPLIT and without: the host's time to issue a pass against the pass's, then from a profile of one pass the GPU's span and idle time and its kernels by kind (GEMMs, the decode, attention, the rest), the decode's time beside GEMMs, beside the rest and alone; run after every other timing (a profiler session slows the launches after it)")
 ap.add_argument("--compile", action="store_true", help="generate() compiled as transformers compiles it: a static cache, the forward under torch.compile (reduce-overhead: CUDA graphs); each batch's warm-up, of --tokens, compiles and captures")
 args = ap.parse_args()
@@ -72,7 +73,7 @@ def prefill(model, label):
     token (the time to first token); each timed after two untimed (Glyd's first prompt long enough to decode its
     matrices ahead records their order, model.Ahead). The prompt: token ids drawn below the model's vocabulary, the
     same for bf16 and Glyd (a mixture of experts routes each its own way)."""
-    out = []
+    out, a = [], time.strftime("%Y/%m/%d %H:%M:%S")
     for n in [int(x) for x in args.prefill.split(",") if x]:
         x = torch.randint(0, vocab, (1, n), generator=torch.Generator().manual_seed(n)).cuda()
         first = dict(attention_mask=torch.ones_like(x), max_new_tokens=1, do_sample=False, pad_token_id=tok.eos_token_id)
@@ -89,7 +90,7 @@ def prefill(model, label):
                 ts.append((time.perf_counter() - t) / 3)
         out.append(f"{n} tokens {ts[0] * 1e3:.1f} ms ({n / ts[0]:.0f} tokens/s), first token {ts[1] * 1e3:.1f} ms")
     if out:
-        print(f"{label} prefill: " + ", ".join(out))
+        print(f"{label} prefill: " + ", ".join(out) + f"; from {a} to {time.strftime('%Y/%m/%d %H:%M:%S')}", flush=True)
 
 
 def breakdown(model, label):
@@ -434,10 +435,14 @@ prefill(model, f"glyd {args.format}")
 if args.without_split:
     from glyd.gpu.model import Split
     held = dict(Split.of)  # (each device's ring kept while it is off)
-    Split.of.update({torch.device("cuda", i): False for i in range(torch.cuda.device_count())})
-    prefill(model, f"glyd {args.format} without SPLIT")
-    Split.of.clear()
-    Split.of.update(held)
+    print("the route SPLIT's ring: " + ", ".join(f"cuda:{i} " + ("ran" if s else "could not run" if s is False else "not made (no product by the route)")
+                                                 for i, s in ((i, held.get(torch.device("cuda", i))) for i in range(torch.cuda.device_count()))), flush=True)
+    for off in [True] + [o for r in range(1, args.rounds) for o in ((True, False) if r % 2 else (False, True))]:  # (SPLIT, without; without, SPLIT; ...)
+        if off:
+            Split.of.update({torch.device("cuda", i): False for i in range(torch.cuda.device_count())})
+        prefill(model, f"glyd {args.format}" + (" without SPLIT" if off else ""))
+        Split.of.clear()
+        Split.of.update(held)
 breakdown(model, f"glyd {args.format}")
 top_b = perplexity(model, f"glyd {args.format}")
 mmlu_b = mmlu(model, f"glyd {args.format}")

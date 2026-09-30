@@ -2,7 +2,7 @@
 called through GLinear in a prompt's order, --copies layers of them (Linears of their own over the same packs, so that
 the order recorded spans them all, as a model's does), each pass timed whole (CUDA events on the current stream; the
 median of --reps, the modes in turn, after 2 passes each untimed, the first of which records the order): the route
-SPLIT as the library routes M on this GPU, today's route (v0.25.0's: model.Split off on this device), and bf16
+SPLIT as the library routes M on this GPU, today's route (v0.25.1's: model.Split off on this device), and bf16
 (F.linear on the weights, the same inputs). The route SPLIT's outputs within 1e-2 of fp32 (the first copy's) and the
 same bits pass to pass. Real weights of layer L of MODEL (a directory, or a Hub repo in the cache).
 
