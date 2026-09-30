@@ -848,6 +848,25 @@ if r == 0 and fns:
 else:
     print(f"the route SPLIT cannot run on this GPU ({lib.error_string(r) if r else 'no cuBLAS found'}): GLinear takes today's route")
     gm.Split.of[dev_] = False
+# On this GPU as it is (its own code): a 12-bit GLinear's prompt takes the route SPLIT where the rule gives it, else
+# today's route (the library's without SPLIT), within 1e-2 of fp32, no ring made for it (on Ada, an A10 or a PCIe card:
+# every prompt so)
+gm.Split.of.pop(dev_, None)
+own = [(1024, 4096), (4096, 4096)]
+wts = [weights(O * K, 0.01).view(O, K) for O, K in own]
+lins = [gm.GLinear(g.pack_mma12(w), None) for w in wts]
+for M in (769, 1024, 2048, 4096, 8192):
+    for lin, w, (O, K) in zip(lins, wts, own):
+        takes = split_rule(here, True, O, K, M) > 0
+        assert (lin.route(M)[0] == g.SPLIT) == takes, ("this GPU's route SPLIT by the rule", here, O, K, M)
+        if not takes:
+            assert lin.route(M)[0] == g.route(lin.p, here | g.NO_SPLIT, M)[0], ("today's route", here, O, K, M)
+            x = torch.randn(M, K, dtype=bf, device=dev)
+            near(lin(x), F.linear(x.float(), w.float()))
+            assert dev_ not in gm.Split.of, ("no ring made", here, O, K, M)
+            counts["GLinear on this GPU's own code, not SPLIT: today's route, no ring"] = counts.get("GLinear on this GPU's own code, not SPLIT: today's route, no ring", 0) + 1
+gm.Split.stop(dev_)
+del lins, wts
 
 # Refused alike: too many tokens, X not 16-byte aligned, rows not a multiple of 64.
 both_fail("mma12_gemm", *pk, 128, 256, torch.randn(65, 256, dtype=bf, device=dev), none, nan(65, 128))
