@@ -128,6 +128,8 @@ def download(m, ui):
 
     class Quiet(hub_tqdm):
         def __init__(self, *args, **kwargs):
+            self.glyd_name = kwargs.get("name") or ""
+            kwargs["disable"] = False  # (the hub's bars are off where stderr is not a terminal, and would count nothing)
             super().__init__(*args, **kwargs)
             bars.append(self)
 
@@ -140,9 +142,10 @@ def download(m, ui):
         except BaseException as e:  # (raised again in the main thread)
             failed.append(e)
 
-    def done():  # (the slowest stage that has begun: xet's network bytes lead its disk bytes by seconds)
-        seen = [b.n for b in bars if getattr(b, "unit", "") == "B" and b.n]
-        return base + min(seen) if seen else progress_bytes(m.repo)
+    def done():  # (the bytes of the files: xet also reports its network bytes, which count what it had to fetch, so not those)
+        seen = [b for b in bars if getattr(b, "unit", "") == "B" and b.n]
+        whole = [b.n for b in seen if not b.glyd_name.endswith("transfer")] or [b.n for b in seen]
+        return base + max(whole) if whole else progress_bytes(m.repo)
 
     worker = threading.Thread(target=work, daemon=True)
     worker.start()
