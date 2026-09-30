@@ -144,6 +144,37 @@ an L4, and Qwen3-8B on an L4, A10, A100 and GH200:
 - Exact mode gives bf16's bits: eager, and compiled in the deterministic mode (refused there for Qwen2.5's biases).
 - Tensor parallel (Qwen3-8B over two GPUs) and Qwen3-30B-A3B: pending.
 
+## Speculative decoding
+
+vLLM's speculation runs on Glyd's packs as on bf16's weights. Qwen3-8B on an L4, one user, greedy, the tiered layout,
+in two mixes of five prompts: "edit" (fix, annotate, convert, rewrite or summarize a given text, code or data) and
+"chat". The drafts are n-gram (5 tokens) and EAGLE-3 (`RedHatAI/Qwen3-8B-speculator.eagle3`, Apache-2.0, 3 tokens).
+
+| Output tokens/s, one user | Edit | Chat | Draft tokens accepted (edit, chat) |
+| :--- | ---: | ---: | :--- |
+| bf16 | 16.6 | 16.7 | |
+| bf16, n-gram | 27.1 | 16.7 | 40%, 12% |
+| bf16, EAGLE-3 (`--gpu-memory-utilization 0.95 --max-num-batched-tokens 2048`) | 43.3 | 30.3 | 73%, 39% |
+| Glyd | 21.2 | 21.5 | |
+| Glyd, n-gram | 35.5 | 22.1 | 40%, 12% |
+| Glyd, EAGLE-3 | 55.0 | 38.9 | 74%, 39% |
+
+- **Speed.** Glyd with EAGLE-3 made 3.3x bf16's tokens a second on the edit mix, and 2.3x on chat. That is 1.27-1.28x
+  bf16 with the same draft.
+- **Memory.** bf16 with the draft did not fit the L4 at vLLM's defaults: no memory was left for the KV cache.
+- **First token.** Glyd's came later on the edit mix's longer prompts (178 against 150 ms) and sooner on chat's (61
+  against 82 ms).
+- **Exact.** With speculation, exact eager gave bf16 eager's tokens, request for request: 10 of 10 with each draft.
+- **Tokens against plain decoding.** A verify step multiplies up to 1 + k tokens at once, and GEMMs and attention round
+  by that shape. So speculative decoding's greedy tokens differ from plain decoding's, bf16's too: eager bf16 parted in
+  5 of 10 requests with n-gram and 7 of 10 with EAGLE-3. Under `VLLM_BATCH_INVARIANT=1` they are the same: bf16 with
+  n-gram, 10 of 10, and Glyd exact with n-gram, 10 of 10.
+- **The draft.** Under `--quantization glyd`, vLLM leaves an EAGLE-3 draft bf16. With `"quantization": "glyd"` in
+  `--speculative-config` it is packed too, with the same speed and exact's same tokens.
+
+Every run and its log: [benchmarks/gpu/l4-vllm-spec-2026-09-30](../../benchmarks/gpu/l4-vllm-spec-2026-09-30).
+`spec_decode.py` runs one configuration; `spec_summary.py` makes the tables.
+
 ## Not supported yet
 
 Each of these is refused at start, with a message saying why; none runs wrong:
@@ -171,6 +202,8 @@ Tensor parallelism packs each rank's shard; its two-GPU measurements are pending
   notes the cold start and measures warm. The summary adds the GPU's clock and temperature.
 - `profile_steps.py [MODEL]`: a step's GPU time by kind of kernel (Glyd's, GEMMs, attention, the rest), bf16 against
   Glyd, at decode steps of B sequences and prompt steps of M tokens.
+- `spec_decode.py`, `spec_summary.py`: one user's tokens/s, first token and speculation's acceptance for a configuration
+  (bf16 or Glyd, n-gram or EAGLE-3, eager, exact), and the runs' tables and token-for-token comparisons.
 - `bindings/python/test_vllm.py`: the plugin's logic that needs no GPU (options, a save's packs by vLLM's layer names,
   the pieces a checkpoint gave, what is refused, the entry point's version rule), with vLLM installed.
 

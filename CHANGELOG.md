@@ -84,6 +84,18 @@ every earlier format.
   under `VLLM_BATCH_INVARIANT`, which asks for every product's bits not to
   depend on the batch: the library's kernels are chosen by the batch's
   tokens.
+- Speculative decoding in vLLM runs on Glyd's packs. On an L4, Qwen3-8B,
+  one user, greedy: Glyd with an EAGLE-3 draft
+  (`RedHatAI/Qwen3-8B-speculator.eagle3`) made 55.0 tokens a second on
+  prompts that edit a given text or code and 38.9 on chat, against bf16's
+  16.6 and 16.7 without speculation, and 43.3 and 30.3 with the same draft
+  (which did not fit the L4 at vLLM's default memory settings, bf16's
+  weights and the draft leaving no KV cache); n-gram prompt lookup, 35.5
+  and 22.1. With speculation, exact eager gave bf16 eager's tokens, 10 of
+  10 requests with each draft. vLLM keeps an EAGLE-3 draft bf16 under
+  `--quantization glyd`; with `"quantization": "glyd"` in
+  `--speculative-config` it is packed too, sized by its own config
+  ([benchmarks/gpu/l4-vllm-spec-2026-09-30](benchmarks/gpu/l4-vllm-spec-2026-09-30)).
 - Mixtures of experts in vLLM (its fused MoE layer): each layer's experts
   packed as one matrix, their products the library's grouped ones (each
   token's choices sorted by expert on the GPU, SiLU applied as gate and
