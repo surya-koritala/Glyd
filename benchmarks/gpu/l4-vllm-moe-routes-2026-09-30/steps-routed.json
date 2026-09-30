@@ -1,0 +1,376 @@
+{
+ "mode": "glyd",
+ "model": "ibm-granite/granite-3.1-3b-a800m-instruct",
+ "gpu": "NVIDIA L4",
+ "vllm_glyd": {
+  "layout": "mma",
+  "exact": false,
+  "verify": false,
+  "glyd": "0.25.1",
+  "packs": "8236719903eb5620"
+ },
+ "decode": [
+  {
+   "M": 1,
+   "gpu_ms": {
+    "glyd": 5.493415249999982,
+    "gemm": 1.1090173999999948,
+    "attention": 0.06471695000001416,
+    "other": 0.5895069500000057
+   },
+   "wall_ms": 13.535516550018656,
+   "top": [
+    [
+     "void mma_moe_kernel<Tiered, 1, 1>(Tiered, long, long, int const*, int, long, int, __nv_bfl",
+     2.42685484999999
+    ],
+    [
+     "void mma_gemm_kernel<Tiered, 1>(Tiered, long, long, long, __nv_bfloat16 const*, __nv_bfloa",
+     1.6182231000000031
+    ],
+    [
+     "void mma_moe_kernel<Tiered, 1, 0>(Tiered, long, long, int const*, int, long, int, __nv_bfl",
+     1.3014550499999893
+    ],
+    [
+     "std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv",
+     0.6884287500000188
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<64, 64, 256, 4, false, false,",
+     0.26146434999999435
+    ],
+    [
+     "void vllm::moe::moeTopK<256, int>(float const*, bool const*, float*, int*, int*, int, int,",
+     0.21327099999998916
+    ]
+   ]
+  },
+  {
+   "M": 8,
+   "gpu_ms": {
+    "glyd": 12.997120649999912,
+    "gemm": 1.8465143499999963,
+    "attention": 0.08341530000000315,
+    "other": 0.8399881000000164
+   },
+   "wall_ms": 21.988727000007202,
+   "top": [
+    [
+     "void mma_moe_kernel<Tiered, 1, 1>(Tiered, long, long, int const*, int, long, int, __nv_bfl",
+     7.304806399999988
+    ],
+    [
+     "void mma_moe_kernel<Tiered, 1, 0>(Tiered, long, long, int const*, int, long, int, __nv_bfl",
+     3.682738499999988
+    ],
+    [
+     "void mma_gemm_kernel<Tiered, 1>(Tiered, long, long, long, __nv_bfloat16 const*, __nv_bfloa",
+     1.8136426000000054
+    ],
+    [
+     "void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x2_tn_align8",
+     0.6070456500000043
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<64, 64, 256, 4, false, false,",
+     0.5960207500000024
+    ],
+    [
+     "void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x1_tn_align8",
+     0.47744034999997204
+    ]
+   ]
+  },
+  {
+   "M": 32,
+   "gpu_ms": {
+    "glyd": 19.670131250000015,
+    "gemm": 1.8275856500000103,
+    "attention": 0.09161099999996884,
+    "other": 0.9828311499999903
+   },
+   "wall_ms": 28.716209449976304,
+   "top": [
+    [
+     "void mma_moe_kernel<Tiered, 2, 1>(Tiered, long, long, int const*, int, long, int, __nv_bfl",
+     10.856082900000018
+    ],
+    [
+     "void mma_moe_kernel<Tiered, 2, 0>(Tiered, long, long, int const*, int, long, int, __nv_bfl",
+     6.305823449999992
+    ],
+    [
+     "void mma_gemm_kernel<Tiered, 2>(Tiered, long, long, long, __nv_bfloat16 const*, __nv_bfloa",
+     2.213934599999966
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<64, 64, 128, 4, false, false,",
+     0.6885843000000214
+    ],
+    [
+     "ampere_bf16_s16816gemm_bf16_128x128_ldg8_f2f_stages_64x3_tn",
+     0.6774646499999959
+    ],
+    [
+     "void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_32x32_128x2_tn_align8",
+     0.4615367000000087
+    ]
+   ]
+  },
+  {
+   "M": 64,
+   "gpu_ms": {
+    "glyd": 25.769247300000032,
+    "gemm": 2.054397499999968,
+    "attention": 0.09628879999997297,
+    "other": 1.0858317999999993
+   },
+   "wall_ms": 35.67334184999709,
+   "top": [
+    [
+     "void mma_moe_kernel<Tiered, 4, 1>(Tiered, long, long, int const*, int, long, int, __nv_bfl",
+     13.00305734999999
+    ],
+    [
+     "void mma_moe_kernel<Tiered, 4, 0>(Tiered, long, long, int const*, int, long, int, __nv_bfl",
+     9.134438649999993
+    ],
+    [
+     "void mma_gemm_kernel<Tiered, 4>(Tiered, long, long, long, __nv_bfloat16 const*, __nv_bfloa",
+     3.1748847999999956
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<64, 64, 128, 4, false, false,",
+     1.1649549999999627
+    ],
+    [
+     "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8",
+     0.7064756999999973
+    ],
+    [
+     "moe_route_kernel(long const*, long, int, int*)",
+     0.3211294999999853
+    ]
+   ]
+  },
+  {
+   "M": 128,
+   "gpu_ms": {
+    "glyd": 30.193853100000002,
+    "gemm": 2.9998524999998706,
+    "attention": 0.11394780000001199,
+    "other": 1.272887149999882
+   },
+   "wall_ms": 41.82798289994025,
+   "top": [
+    [
+     "void mma_moe_kernel<Tiered, 4, 1>(Tiered, long, long, int const*, int, long, int, __nv_bfl",
+     15.149677949999976
+    ],
+    [
+     "void mma_moe_kernel<Tiered, 4, 0>(Tiered, long, long, int const*, int, long, int, __nv_bfl",
+     11.222980550000049
+    ],
+    [
+     "void mma_gemm_big_kernel<Tiered, 4, 4, 3, 2, false>(Tiered, long, long, long, long, __nv_b",
+     2.68834320000001
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<64, 64, 128, 4, false, false,",
+     2.059166649999961
+    ],
+    [
+     "ampere_bf16_s1688gemm_bf16_128x128_ldg8_f2f_stages_32x1_tn",
+     0.7347475999999926
+    ],
+    [
+     "moe_route_kernel(long const*, long, int, int*)",
+     0.5944917500000043
+    ]
+   ]
+  },
+  {
+   "M": 256,
+   "gpu_ms": {
+    "glyd": 40.287094250000095,
+    "gemm": 5.062092049999919,
+    "attention": 0.16719955000009923,
+    "other": 1.7213860499999556
+   },
+   "wall_ms": 54.46717519998856,
+   "top": [
+    [
+     "void mma_gemm_big_kernel<Tiered, 4, 4, 3, 2, true>(Tiered, long, long, long, long, __nv_bf",
+     34.91141860000001
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<64, 64, 128, 4, false, false,",
+     3.9748171499998834
+    ],
+    [
+     "void mma_gemm_big_kernel<Tiered, 4, 4, 2, 1, false>(Tiered, long, long, long, long, __nv_b",
+     3.423399399999944
+    ],
+    [
+     "moe_route_kernel(long const*, long, int, int*)",
+     1.1118503499999641
+    ],
+    [
+     "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8",
+     0.8327761000000017
+    ],
+    [
+     "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:",
+     0.46784910000002533
+    ]
+   ]
+  }
+ ],
+ "prompt": [
+  {
+   "M": 512,
+   "gpu_ms": {
+    "glyd": 47.680486999999964,
+    "gemm": 2.221210999999954,
+    "attention": 0.2232649999999935,
+    "other": 1.446429000000031
+   },
+   "wall_ms": 62.2450699993351,
+   "top": [
+    [
+     "void mma_gemm_big_kernel<Tiered, 4, 4, 3, 2, true>(Tiered, long, long, long, long, __nv_bf",
+     38.35111100000001
+    ],
+    [
+     "void mma_gemm_big_kernel<Tiered, 4, 4, 2, 1, false>(Tiered, long, long, long, long, __nv_b",
+     5.327694999999998
+    ],
+    [
+     "moe_sum_kernel(float const*, long const*, int, long, long, long, __nv_bfloat16*)",
+     1.6776610000000092
+    ],
+    [
+     "moe_route_kernel(long const*, long, int, int*)",
+     1.4724429999999995
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<64, 64, 256, 4, false, false,",
+     1.4099489999999704
+    ],
+    [
+     "finish_kernel(float const*, long, __nv_bfloat16 const*, long, long, __nv_bfloat16*)",
+     0.8515769999999848
+    ]
+   ]
+  },
+  {
+   "M": 1024,
+   "gpu_ms": {
+    "glyd": 75.53239700000006,
+    "gemm": 10.410611999999933,
+    "attention": 0.39302199999997267,
+    "other": 2.6067479999999854
+   },
+   "wall_ms": 101.38225800073997,
+   "top": [
+    [
+     "void mma_gemm_big_kernel<Tiered, 4, 4, 3, 2, true>(Tiered, long, long, long, long, __nv_bf",
+     64.11568200000002
+    ],
+    [
+     "moe_sum_kernel(float const*, long const*, int, long, long, long, __nv_bfloat16*)",
+     6.27011900000001
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<64, 64, 256, 4, false, false,",
+     3.7922409999999904
+    ],
+    [
+     "ampere_bf16_s1688gemm_bf16_128x128_ldg8_f2f_stages_32x1_tn",
+     3.402801999999979
+    ],
+    [
+     "moe_route_kernel(long const*, long, int, int*)",
+     3.263949000000009
+    ],
+    [
+     "ampere_bf16_s16816gemm_bf16_256x128_ldg8_f2f_stages_32x3_tn",
+     2.110227999999986
+    ]
+   ]
+  },
+  {
+   "M": 2048,
+   "gpu_ms": {
+    "glyd": 58.50551099999997,
+    "gemm": 26.040356999999947,
+    "attention": 0.8321250000000564,
+    "other": 72.24265200000028
+   },
+   "wall_ms": 171.5181189993018,
+   "top": [
+    [
+     "fused_moe_kernel",
+     59.620711000000064
+    ],
+    [
+     "void mma_unpack_kernel<Tiered, true, false>(Tiered, long, long, long, unsigned short*, int",
+     39.833867999999995
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<64, 64, 256, 4, false, false,",
+     12.628468999999997
+    ],
+    [
+     "moe_route_kernel(long const*, long, int, int*)",
+     9.805851999999973
+    ],
+    [
+     "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8",
+     7.368705999999953
+    ],
+    [
+     "void vllm::moe::moe_sum_vec_kernel<c10::BFloat16, int, 8, false>(c10::BFloat16*, c10::BFlo",
+     6.955974000000015
+    ]
+   ]
+  },
+  {
+   "M": 4096,
+   "gpu_ms": {
+    "glyd": 78.50972799999988,
+    "gemm": 69.89072400000002,
+    "attention": 2.0410799999998743,
+    "other": 134.46088700000047
+   },
+   "wall_ms": 297.2081010011607,
+   "top": [
+    [
+     "fused_moe_kernel",
+     104.78976099999981
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<64, 64, 256, 4, false, false,",
+     42.84217799999995
+    ],
+    [
+     "void mma_unpack_kernel<Tiered, true, false>(Tiered, long, long, long, unsigned short*, int",
+     40.067211999999955
+    ],
+    [
+     "ampere_bf16_s1688gemm_bf16_128x128_ldg8_f2f_stages_32x1_tn",
+     25.021096999999997
+    ],
+    [
+     "moe_route_kernel(long const*, long, int, int*)",
+     20.836692000000067
+    ],
+    [
+     "void vllm::moe::moe_sum_vec_kernel<c10::BFloat16, int, 8, false>(c10::BFloat16*, c10::BFlo",
+     15.514885999999944
+    ]
+   ]
+  }
+ ]
+}

@@ -150,6 +150,26 @@ def test_draft():
         vp._PACKS.update(was)
 
 
+def test_moe_route():
+    """The tokens a step from which a mixture of experts' layer takes its routed experts decoded: GLYD_MOE_DECODE_MIN,
+    else the measured default; negative, never; anything but a number refused."""
+    if vp is None:
+        return print("test_moe_route: skipped (no vLLM)")
+    was = os.environ.pop("GLYD_MOE_DECODE_MIN", None)
+    try:
+        assert vp._moe_decode_min() == vp.MOE_DECODE_MIN > 0
+        os.environ["GLYD_MOE_DECODE_MIN"] = "1"
+        assert vp._moe_decode_min() == 1
+        os.environ["GLYD_MOE_DECODE_MIN"] = "-1"
+        assert vp._moe_decode_min() is None
+        os.environ["GLYD_MOE_DECODE_MIN"] = "lots"
+        raises(vp._moe_decode_min, "a number of tokens a step")
+    finally:
+        os.environ.pop("GLYD_MOE_DECODE_MIN", None)
+        if was is not None:
+            os.environ["GLYD_MOE_DECODE_MIN"] = was
+
+
 if __name__ == "__main__":
     for name, test in list(globals().items()):
         if name.startswith("test_"):

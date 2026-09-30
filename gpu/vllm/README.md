@@ -37,6 +37,11 @@ the entry point logs one line and loads nothing, and `--quantization glyd` stops
     run with SiLU applied as their sums are written out; down runs with the router's weights, each token's rows
     added.
   - None of it syncs with the host, so vLLM's CUDA graphs capture it.
+  - From 1,152 tokens a step (a prompt's), the layer decodes the experts its tokens are routed to and runs vLLM's own
+    Triton MoE kernel on them instead, exact mode's way, the faster there: granite's layer on an L4 took 0.97x the
+    grouped products' time at 1,152 tokens and 0.65x at 8,192. `GLYD_MOE_DECODE_MIN` moves the threshold (-1: never).
+    It holds one layer's experts decoded in a scratch buffer
+    ([benchmarks/gpu/l4-vllm-moe-routes-2026-09-30](../../benchmarks/gpu/l4-vllm-moe-routes-2026-09-30)).
   - These stay bf16, with a warning: experts with biases, activations other than SiLU, expert parallelism, and sizes
     off the packs' multiples.
 - **Embeddings, the LM head, norms, attention and the KV cache stay vLLM's.**
@@ -209,6 +214,8 @@ Tensor parallelism packs each rank's shard (measured over two RTX A6000s above).
   notes the cold start and measures warm. The summary adds the GPU's clock and temperature.
 - `profile_steps.py [MODEL]`: a step's GPU time by kind of kernel (Glyd's, GEMMs, attention, the rest), bf16 against
   Glyd, at decode steps of B sequences and prompt steps of M tokens.
+- `moe_routes.py [MODEL]`: a mixture of experts' layer by tokens a step, the grouped products against the routed
+  experts decoded for vLLM's Triton kernel, and bf16's own layer (the threshold `GLYD_MOE_DECODE_MIN` routes by).
 - `spec_decode.py`, `spec_summary.py`: one user's tokens/s, first token and speculation's acceptance for a configuration
   (bf16 or Glyd, n-gram or EAGLE-3, eager, exact), and the runs' tables and token-for-token comparisons.
 - `bindings/python/test_vllm.py`: the plugin's logic that needs no GPU (options, a save's packs by vLLM's layer names,

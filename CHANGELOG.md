@@ -104,9 +104,17 @@ every earlier format.
   are decoded and vLLM's own Triton MoE kernel runs on them; it is refused
   where vLLM picks another kernel for bf16's experts. Experts with biases,
   activations other than SiLU, expert parallelism, or sizes off the packs'
-  multiples stay bf16, with a warning. granite-3.1-3b-a800m-instruct on an
-  L4 passed every check, exact eager and compiled in the deterministic
-  mode bf16's bits
+  multiples stay bf16, with a warning. From 1,152 tokens a step (a
+  prompt's), a layer decodes the experts its tokens are routed to and runs
+  vLLM's Triton kernel on them instead, the faster there:
+  granite-3.1-3b-a800m-instruct's layer on an L4 took 0.97x the grouped
+  products' time at 1,152 tokens and 0.65x at 8,192, and a prompt of 4,096
+  tokens 19% less GPU time a step; one layer's experts decoded are held in
+  a scratch buffer, and `GLYD_MOE_DECODE_MIN` moves the threshold (-1:
+  never)
+  ([benchmarks/gpu/l4-vllm-moe-routes-2026-09-30](benchmarks/gpu/l4-vllm-moe-routes-2026-09-30)).
+  granite-3.1-3b-a800m-instruct on an L4 passed every check, exact eager
+  and compiled in the deterministic mode bf16's bits
   ([benchmarks/gpu/l4-vllm-m4-2026-09-30](benchmarks/gpu/l4-vllm-m4-2026-09-30)).
   Over two RTX A6000s, tensor parallel (each rank packs its shard):
   Qwen3-8B's and granite's checks passed but one, where exact compiled was
@@ -116,12 +124,14 @@ every earlier format.
   second at 1 a second, each token 7% sooner, but from 4 a second
   0.87-0.88x, each token 28-59% later
   ([benchmarks/gpu/vllm-m4-2xa6000-2026-09-30](benchmarks/gpu/vllm-m4-2xa6000-2026-09-30)).
-- Refused at start in vLLM, with why: dual-batch overlap (`--enable-dbo`),
-  LoRA, weight offloading and sleep mode; a glyd save over several GPUs,
-  one with a mixture of experts' packs, or one of a family other than
-  Qwen3's and Llama's (their bf16 checkpoints load); exact under
-  torch.compile where a packed Linear has a bias; fused products under
-  `VLLM_BATCH_INVARIANT`.
+- Refused at start in vLLM, with why, as the engine's process builds
+  vLLM's config and before any worker starts, so that over several GPUs
+  too Glyd's message is the error the user sees: dual-batch overlap
+  (`--enable-dbo`), LoRA, weight offloading and sleep mode; a glyd save
+  over several GPUs, one with a mixture of experts' packs, or one of a
+  family other than Qwen3's and Llama's (their bf16 checkpoints load);
+  exact under torch.compile where a packed Linear has a bias; fused
+  products under `VLLM_BATCH_INVARIANT`.
 
 ## v0.25.1 — 2026-09-29
 

@@ -1,0 +1,57 @@
+INFO 09-30 13:38:21 [arg_utils.py:849] HF_HUB_OFFLINE is True, replace model_id [ibm-granite/granite-3.1-3b-a800m-instruct] to model_path [/home/ubuntu/hf/hub/models--ibm-granite--granite-3.1-3b-a800m-instruct/snapshots/a02780686e08a03fe0d2679a293b5c74a90efa89]
+INFO 09-30 13:38:21 [api_utils.py:286] non-default args: {'dtype': 'bfloat16', 'max_model_len': 4096, 'gpu_memory_utilization': 0.85, 'disable_log_stats': True, 'enforce_eager': True, 'model': '/home/ubuntu/hf/hub/models--ibm-granite--granite-3.1-3b-a800m-instruct/snapshots/a02780686e08a03fe0d2679a293b5c74a90efa89'}
+WARNING 09-30 13:38:21 [arg_utils.py:1812] The global random seed is set to 0. Since VLLM_ENABLE_V1_MULTIPROCESSING is set to False, this may affect the random state of the Python process that launched vLLM.
+INFO 09-30 13:38:21 [model.py:692] Resolved architecture: GraniteMoeForCausalLM
+INFO 09-30 13:38:21 [model.py:2030] Using max model len 4096
+INFO 09-30 13:38:21 [scheduler.py:288] Chunked prefill is enabled with max_num_batched_tokens=8192.
+WARNING 09-30 13:38:21 [vllm.py:1547] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+WARNING 09-30 13:38:21 [vllm.py:1570] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+INFO 09-30 13:38:21 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native'])
+INFO 09-30 13:38:21 [vllm.py:1780] Cudagraph is disabled under eager mode
+INFO 09-30 13:38:21 [compilation.py:336] Enabled custom fusions: norm_quant, act_quant
+INFO 09-30 13:38:21 [core.py:123] Initializing a V1 LLM engine (v0.30.0) with config: model='/home/ubuntu/hf/hub/models--ibm-granite--granite-3.1-3b-a800m-instruct/snapshots/a02780686e08a03fe0d2679a293b5c74a90efa89', speculative_config=None, tokenizer='/home/ubuntu/hf/hub/models--ibm-granite--granite-3.1-3b-a800m-instruct/snapshots/a02780686e08a03fe0d2679a293b5c74a90efa89', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=4096, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=None, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=/home/ubuntu/hf/hub/models--ibm-granite--granite-3.1-3b-a800m-instruct/snapshots/a02780686e08a03fe0d2679a293b5c74a90efa89, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [8192], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None)
+INFO 09-30 13:38:22 [parallel_state.py:1827] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///home/ubuntu/vllm-work/tmp/vllm_dist_4e9f240609f44805917d7aa770c3edb2 backend=nccl
+INFO 09-30 13:38:22 [parallel_state.py:2267] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, ETP rank 0, EP rank 0, EPLB rank N/A
+INFO 09-30 13:38:22 [gpu_worker.py:441] Using V2 Model Runner
+INFO 09-30 13:38:22 [model_runner.py:396] Loading model from scratch...
+INFO 09-30 13:38:23 [cuda.py:538] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+INFO 09-30 13:38:23 [flash_attn.py:1116] Using FlashAttention version 2
+INFO 09-30 13:38:23 [unquantized.py:319] Using TRITON Unquantized MoE backend out of potential backends: ['FlashInfer TRTLLM', 'FlashInfer CUTLASS', 'TRITON', 'BATCHED_TRITON'].
+INFO 09-30 13:38:23 [weight_utils.py:895] Filesystem type for checkpoints: EXT4. Checkpoint size: 6.14 GiB. Available RAM: 57.67 GiB.
+INFO 09-30 13:38:23 [weight_utils.py:918] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+Loading safetensors checkpoint shards:   0% Completed | 0/2 [00:00<?, ?it/s]
+Loading safetensors checkpoint shards:  50% Completed | 1/2 [00:00<00:00,  1.31it/s]
+Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:01<00:00,  2.10it/s]
+Loading safetensors checkpoint shards: 100% Completed | 2/2 [00:01<00:00,  1.93it/s]
+
+INFO 09-30 13:38:24 [default_loader.py:430] Loading weights took 1.05 seconds
+INFO 09-30 13:38:24 [unquantized.py:400] Using MoEPrepareAndFinalizeNoDPEPModular
+INFO 09-30 13:38:24 [unquantized.py:401] Using TritonExperts MoE backend
+INFO 09-30 13:38:25 [model_runner.py:428] Model loading took 6.17 GiB memory and 2.778349 seconds
+INFO 09-30 13:38:25 [topk_topp_sampler.py:78] Using FlashInfer for top-p & top-k sampling.
+INFO 09-30 13:38:25 [utils.py:320] Using LBNHC KV cache layout.
+WARNING 09-30 13:38:25 [fused_moe.py:1167] Using default MoE config. Performance might be sub-optimal! Config file not found at /home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/vllm/model_executor/layers/fused_moe/configs/E=40,N=512,device_name=NVIDIA_L4.json
+INFO 09-30 13:38:27 [gpu_worker.py:640] Available KV cache memory: 11.88 GiB
+INFO 09-30 13:38:27 [kv_cache_utils.py:2395] GPU KV cache size: 194,560 tokens, Maximum concurrency for 4,096 tokens per request: 47.50x
+INFO 09-30 13:38:27 [kernel_warmup.py:172] JIT kernel warmup starting.
+INFO 09-30 13:38:27 [kernel_warmup.py:185] JIT kernel warmup finished in 0.00s.
+INFO 09-30 13:38:27 [gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.85, 18.73 GiB). Actual usage is 6.72 GiB for consumed memory (weights + non-torch), 0.13 GiB for peak activation, and 0.0 GiB for CUDAGraph memory. Replace gpu_memory_utilization config with `--kv-cache-memory=12593765684` (11.73 GiB) to fit into requested memory, or `--kv-cache-memory=15939529216` (14.84 GiB) to fully utilize gpu memory. Current kv cache memory in use is 11.88 GiB.
+INFO 09-30 13:38:28 [jit_monitor.py:85] Kernel JIT monitor activated; monitored JIT compilations during inference will use mode=warn.
+INFO 09-30 13:38:28 [torch_utils.py:287] Reducing Torch threads from 8 to 1 for serving. Set OMP_NUM_THREADS in the external environment to override.
+INFO 09-30 13:38:28 [core.py:379] init engine (profile, create kv cache, warmup model) took 3.17 s
+INFO 09-30 13:38:28 [hf.py:642] Detected the chat template content format to be 'string'. You can set `--chat-template-content-format` to override this.
+WARNING 09-30 13:38:28 [jit_monitor.py:141] Triton kernel JIT compilation during inference: fused_moe_kernel. This causes a latency spike; consider extending warmup to cover this shape/config.
+{'T': 1, 'bf16_ms': 0.35225600004196167}
+{'T': 2, 'bf16_ms': 0.5416960120201111}
+{'T': 4, 'bf16_ms': 0.6727679967880249}
+{'T': 8, 'bf16_ms': 0.8499199748039246}
+{'T': 16, 'bf16_ms': 0.9574400186538696}
+{'T': 32, 'bf16_ms': 1.001471996307373}
+{'T': 64, 'bf16_ms': 1.0199999809265137}
+{'T': 128, 'bf16_ms': 1.1100159883499146}
+{'T': 256, 'bf16_ms': 1.1407359838485718}
+{'T': 512, 'bf16_ms': 1.2165119647979736}
+{'T': 1024, 'bf16_ms': 1.4398399591445923}
+{'T': 2048, 'bf16_ms': 2.4842240810394287}
+{'T': 4096, 'bf16_ms': 4.563968181610107}
+[rank0]:[W930 13:38:29.645314172 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())

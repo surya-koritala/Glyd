@@ -121,6 +121,10 @@ LAYOUTS = ("auto", "mma", "mma12")
 OPTIONS = ("layout", "exact", "verify")
 IGNORED = ("quant_method", "merge", "verified", "source", "hashed", "unhashed")  # (transformers' glyd config's own)
 BITS = {"mma": 10.80, "mma12": 12.04}
+# Tokens a step from which a mixture of experts' layer decodes its routed experts for vLLM's Triton kernel instead of the
+# library's grouped products: granite-3.1-3b-a800m-instruct's layer on an L4, the decoded route the faster from 1,152
+# tokens (2.89 against 2.99 ms; 1,024: 2.84 against 2.75), 0.65x at 8,192 (benchmarks/gpu/l4-vllm-moe-routes-2026-09-30)
+MOE_DECODE_MIN = 1152
 SAVES = ("Qwen3ForCausalLM", "LlamaForCausalLM")  # the families whose glyd saves are checked in vLLM (check_vllm.py --saves)
 BUFFERS = {"mma": ("glyd_data", "glyd_blocks", "glyd_block_base"), "mma12": ("glyd_data", "glyd_exc", "glyd_exc_base")}  # a save's names
 _OPS = []  # the ops' library (they live as long as it does)
@@ -255,6 +259,18 @@ def _linear_bytes(c):
         return 2 * L * per, 2 * other, bool(E)
     except (AttributeError, TypeError):
         return 0, 0, False
+
+
+def _moe_decode_min():
+    """Tokens a step from which a mixture of experts' layer decodes the experts its tokens are routed to and runs vLLM's
+    Triton kernel on them, instead of the library's grouped products (fused mode): GLYD_MOE_DECODE_MIN, else
+    MOE_DECODE_MIN; None (a negative number): never."""
+    v = os.environ.get("GLYD_MOE_DECODE_MIN", "").strip()
+    try:
+        n = int(v) if v else MOE_DECODE_MIN
+    except ValueError:
+        raise ValueError(f"glyd: GLYD_MOE_DECODE_MIN {v!r}: a number of tokens a step (negative: never)") from None
+    return None if n < 0 else n
 
 
 def _estimate(lin, other, layout, n, draft=False):
@@ -679,17 +695,23 @@ class GlydMoEMethod(OnlineMoEMethodBase):
     expert's pieces have loaded (else refused, naming the layer). Their products the library's grouped ones: each
     token's k choices (its pairs) sorted by expert on the GPU (moe_route), gate and up with SiLU applied as its sums
     are written out, down with the router's weights applied and each token's k rows added (mma_moe); no host sync, in
-    the CUDA graphs vLLM captures around its MoE op. exact: the experts the tokens are routed to decoded into the
-    device's scratch buffer (mma_moe_unpack), then the kernel vLLM runs bf16's experts by (its Triton one; refused where
-    vLLM picks another, whose weights it lays out otherwise)."""
+    the CUDA graphs vLLM captures around its MoE op. From decode_min tokens a step (_moe_decode_min; exact: always)
+    the experts the tokens are routed to are decoded into the device's scratch buffer (mma_moe_unpack) instead, then run
+    by the kernel vLLM runs bf16's experts by (its Triton one; where vLLM picks another, whose weights it lays out
+    otherwise, exact is refused and fused mode keeps the grouped products throughout)."""
 
     def __init__(self, config, moe):
         super().__init__(moe)
         self.config, self.ref = config, None
-        if config.opts["exact"]:
-            self.ref = UnquantizedFusedMoEMethod(moe)  # (bf16's: the backend vLLM picks for this layer)
-            if self.ref.unquantized_backend != UnquantizedMoeBackend.TRITON:
-                raise ValueError(f"glyd: exact mode runs a mixture of experts' layers by vLLM's Triton kernel on their experts decoded; vLLM picks {self.ref.unquantized_backend.value} for bf16's here, whose weights it lays out otherwise: leave exact off")
+        self.decode_min = 0 if config.opts["exact"] else _moe_decode_min()
+        if self.decode_min is not None:
+            ref = UnquantizedFusedMoEMethod(moe)  # (bf16's: the backend vLLM picks for this layer)
+            if ref.unquantized_backend == UnquantizedMoeBackend.TRITON:
+                self.ref = ref
+            elif config.opts["exact"]:
+                raise ValueError(f"glyd: exact mode runs a mixture of experts' layers by vLLM's Triton kernel on their experts decoded; vLLM picks {ref.unquantized_backend.value} for bf16's here, whose weights it lays out otherwise: leave exact off")
+            else:
+                self.decode_min = None
 
     @property
     def topk_indices_dtype(self):
@@ -758,7 +780,7 @@ class GlydMoEMethod(OnlineMoEMethodBase):
         layer.glyd_moe, layer.glyd_verified = (packs[0], packs[1], E), opts["verify"]
         for name in ("mma12_moe", "mma_moe"):  # the device's done counters, made now: never in a CUDA graph's pool
             _lib._counters(name, dev.index, None, 0, 1 << 16)
-        if self.ref is not None:  # exact: bf16's kernel (it takes the weights at each call), the scratch for both
+        if self.ref is not None:  # (the decoded route) bf16's kernel (it takes the weights at each call), the scratch for both
             self.ref._init_moe_kernel(layer)
             need = sum(p.shape[0] * p.shape[1] for p in packs)
             if dev not in _SCRATCH or _SCRATCH[dev].numel() < need:
@@ -772,7 +794,7 @@ class GlydMoEMethod(OnlineMoEMethodBase):
         try:
             ids = topk_ids if topk_ids.dtype == torch.int64 else topk_ids.long()
             plan = g.moe_route(ids, E)
-            if self.ref is not None:  # exact: the routed experts decoded (the rest of the buffer as it was, unread)
+            if self.ref is not None and x.shape[0] >= self.decode_min:  # the routed experts decoded (the rest of the buffer as it was, unread)
                 buf, n13 = _SCRATCH[x.device], up.shape[0] * up.shape[1]
                 w1 = g.mma_moe_unpack(up, E, plan, ids.numel(), buf[:n13]).view(E, -1, up.shape[1])
                 w2 = g.mma_moe_unpack(down, E, plan, ids.numel(), buf[n13 : n13 + down.shape[0] * down.shape[1]]).view(E, -1, down.shape[1])

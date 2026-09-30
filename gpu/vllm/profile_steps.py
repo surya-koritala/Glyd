@@ -33,12 +33,13 @@ PROMPTS = [int(m) for m in os.environ.get("PROMPTS", "512 2048 8192").split()]
 longest = max(PROMPTS + [4096])  # (a prompt of M tokens and its one token: one step of M)
 llm = LLM(model=model, quantization="glyd" if mode == "glyd" else None, dtype="bfloat16", gpu_memory_utilization=float(os.environ.get("UTIL", "0.9")), max_model_len=longest + 64, max_num_batched_tokens=max(longest, 8192), seed=0, enable_prefix_caching=False)
 eng, n = llm.llm_engine, [0]
+vocab = llm.llm_engine.model_config.get_vocab_size() - 200  # (the prompts' token ids: the model's own)
 
 
 def add(tokens, max_tokens):
     n[0] += 1
     rid = f"r{n[0]}"
-    eng.add_request(rid, {"prompt_token_ids": [(n[0] * 7919 + j * 104729) % 150000 + 100 for j in range(tokens)]}, SamplingParams(temperature=0, max_tokens=max_tokens, ignore_eos=True))
+    eng.add_request(rid, {"prompt_token_ids": [(n[0] * 7919 + j * 104729) % vocab + 100 for j in range(tokens)]}, SamplingParams(temperature=0, max_tokens=max_tokens, ignore_eos=True))
     return rid
 
 
