@@ -97,8 +97,7 @@ def say_refusal(r, ui):
 # --- the download ------------------------------------------------------------------------------------------------------------
 
 def progress_bytes(repo):
-    """Bytes of a repo in the hub cache now, complete files and the part of each download written so far (a download is a sparse file
-    until it is whole: the blocks written are counted)."""
+    """Bytes of a repo in the hub cache now, complete files and the blocks written of each download (for a hub that reports none itself)."""
     total = 0
     for f in glob.glob(os.path.join(pf.hub_cache(), "models--" + repo.replace("/", "--"), "blobs", "*")):
         try:
@@ -110,29 +109,43 @@ def progress_bytes(repo):
 
 
 def download(m, ui):
-    """The model's files in the Hub cache, with one bar. A model already there (every file, at its size) is left alone."""
+    """The model's files in the Hub cache, with one bar. A model already there (every file, at its size) is left alone. The bar is
+    fed by the byte counts huggingface_hub reports (its own bars are kept quiet); a hub that reports none is read from the cache's blocks."""
     total = sum(n for _, n in m.files)
-    if not m.files or pf.cached_bytes(m.repo, m.files) >= total:
+    base = pf.cached_bytes(m.repo, m.files)
+    if not m.files or base >= total:
         if m.files:
             ui.line(f"{m.name} is downloaded already.")
         return
     from huggingface_hub import snapshot_download
-    from huggingface_hub.utils import disable_progress_bars
+    from huggingface_hub.utils import logging as hub_logging, tqdm as hub_tqdm
 
-    disable_progress_bars()
-    failed = []
+    hub_logging.set_verbosity_error()  # (no advice about tokens in the middle of the bar)
+    bars, failed = [], []
+
+    class Quiet(hub_tqdm):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            bars.append(self)
+
+        def display(self, *args, **kwargs):
+            pass
 
     def work():
         try:
-            snapshot_download(m.repo, allow_patterns=[p for p, _ in m.files])
+            snapshot_download(m.repo, allow_patterns=[p for p, _ in m.files], tqdm_class=Quiet)
         except BaseException as e:  # (raised again in the main thread)
             failed.append(e)
+
+    def done():
+        seen = [b.n for b in bars if getattr(b, "unit", "") == "B"]
+        return base + max(seen) if seen else progress_bytes(m.repo)
 
     worker = threading.Thread(target=work, daemon=True)
     worker.start()
     bar = Bar(ui, f"Downloading {m.name}", total)
     while worker.is_alive():
-        bar.update(progress_bytes(m.repo))
+        bar.update(done())
         worker.join(0.25)
     if failed:
         e = failed[0]
