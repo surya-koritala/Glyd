@@ -1,0 +1,46 @@
+{
+ "model": "Qwen/Qwen3-8B",
+ "turns": [
+  {
+   "user": "Hi! In two sentences, what is lossless compression?",
+   "ttft_s": 0.0942139019998649,
+   "tokens": 32,
+   "prompt_tokens": 35,
+   "tok_s": 22.239260652424015,
+   "text": "Lossless compression is a data compression method that reduces file size without losing any information. It allows the original data to be perfectly reconstructed from the compressed data.",
+   "reasoning": ""
+  },
+  {
+   "user": "Give me one everyday example of it, and one of lossy compression.",
+   "ttft_s": 0.11969485600002372,
+   "tokens": 65,
+   "prompt_tokens": 91,
+   "tok_s": 21.58212958367406,
+   "text": "An everyday example of lossless compression is when you compress a document or image using ZIP format, allowing you to open the original file without any quality loss. An example of lossy compression is when you compress a photo using JPEG format, which reduces file size by removing some data, resulting in a slightly lower quality image.",
+   "reasoning": ""
+  },
+  {
+   "user": "Now summarize our conversation so far in one sentence.",
+   "ttft_s": 0.12605040700054815,
+   "tokens": 23,
+   "prompt_tokens": 175,
+   "tok_s": 22.169162682632265,
+   "text": "We discussed lossless and lossy compression, with examples like ZIP for lossless and JPEG for lossy.",
+   "reasoning": ""
+  }
+ ],
+ "long": {
+  "ttft_s": 0.10430742700009432,
+  "tokens": 512,
+  "prompt_tokens": 22,
+  "tok_s": 21.124172936620766
+ },
+ "thinking": {
+  "ttft_s": 0.05696022800020728,
+  "tokens": 1024,
+  "prompt_tokens": 18,
+  "tok_s": 20.96364463040672,
+  "answer": "ty:\n\n10*20 + 10*3 + 7*20 + 7*3 = 200 + 30 + 140 + 21 = 200 + 30 is 230, plus 140 is 370, plus 21 is 391. Yep, same answer again.\n\nAnother way: Maybe using the fact that 23 is 10 + 10 + 3. So, 17*10 + ",
+  "reasoning_chars": 0
+ }
+}

@@ -1,0 +1,25 @@
+== 15:34:53 build_lib.sh
+
+real	0m51.259s
+user	3m58.073s
+sys	0m4.922s
+/home/ubuntu/quick/src/lib/libglyd_gpu_cuda13.so
+== 15:35:45 cargo
+
+real	1m9.715s
+user	2m30.324s
+sys	0m7.866s
+    Finished `release` profile [optimized] target(s) in 1m 09s
+!!
+Successfully built glyd-0.25.1-py3-none-any.whl
+glyd-0.25.1-py3-none-manylinux_2_28_x86_64.whl
+total 9244
+drwxrwxr-x 2 ubuntu ubuntu    4096 Sep 30 15:37 .
+drwxrwxr-x 6 ubuntu ubuntu    4096 Sep 30 15:36 ..
+-rw-rw-r-- 1 ubuntu ubuntu 9457381 Sep 30 15:37 glyd-0.25.1-py3-none-manylinux_2_28_x86_64.whl
+  5610536  2026-09-30 15:36   glyd/libglyd_store.so
+ 25928968  2026-09-30 15:36   glyd/gpu/libglyd_gpu_cuda13.so
+     2851  2026-09-30 15:32   glyd/gpu/vllm_entry.py
+    50495  2026-09-30 15:32   glyd/gpu/vllm_plugin.py
+       59  2026-09-30 15:36   glyd-0.25.1.dist-info/entry_points.txt
+== 15:37:02 built

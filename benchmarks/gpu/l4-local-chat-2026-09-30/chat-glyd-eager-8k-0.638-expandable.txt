@@ -1,0 +1,8 @@
+turn 1: prompt 35 tokens, first token 115 ms, 30 tokens at 22.3/s
+  assistant: Lossless compression is a method of reducing file size without losing any data. It allows the original data to be perfectly reconstructed from the compressed data.
+turn 2: prompt 89 tokens, first token 119 ms, 61 tokens at 21.7/s
+  assistant: An everyday example of lossless compression is when you compress a document or image using ZIP format, as it retains all the original data. An example of lossy compression is when you compress a photo using JPEG format, which reduces file size by removing some data that is less noticeable to the hum
+turn 3: prompt 169 tokens, first token 123 ms, 23 tokens at 22.3/s
+  assistant: We discussed lossless and lossy compression, providing examples like ZIP for lossless and JPEG for lossy.
+long: first token 99 ms, 512 tokens at 21.2/s
+thinking on: first token 56 ms, 1024 tokens at 21.0/s; answer: '\n\nNow add 51 and 340: 51 + 340 = 391. \n\nAll right, same result. Maybe I can check with another multiplication trick. For'

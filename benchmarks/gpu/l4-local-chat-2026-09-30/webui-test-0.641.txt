@@ -1,0 +1,6 @@
+health: {"status":true}
+models: ['Qwen/Qwen3-8B', 'arena-model']
+chat, whole: 1.68 s, usage {'prompt_tokens': 22, 'total_tokens': 57, 'completion_tokens': 35, 'prompt_tokens_details': None, 'completion_tokens_details': None}
+  assistant: <think>  </think>  Lossless compression is a data compression method that reduces file size without losing any information, allowing the original data to be perfectly reconstructed from the compressed data.
+chat, streamed: 300 chunks, first at 97 ms, 21.2 chunks/s after it
+  assistant: <think>  </think>  **The Keeper of the Sea**  On the edge of the world, where the Atlantic met the sky, stood the Lighthouse of Elmsworth. It was a solitary structure, weathered by time and salt, its white stone worn smooth by the hands of the sea. For over thirty years, it had been tended by a man 

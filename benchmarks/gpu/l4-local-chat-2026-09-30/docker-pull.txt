@@ -1,0 +1,56 @@
+main: Pulling from open-webui/open-webui
+4f4fb700ef54: Pulling fs layer
+774043ccc8cc: Pulling fs layer
+246ac8b7cadc: Pulling fs layer
+dc22b8c341d9: Pulling fs layer
+f57cecf87087: Pulling fs layer
+549bcd15ccc3: Pulling fs layer
+4f4fb700ef54: Pulling fs layer
+504ce00b5115: Pulling fs layer
+98e2b506acc1: Pulling fs layer
+4f4fb700ef54: Pulling fs layer
+4f4fb700ef54: Pulling fs layer
+fe16d1bec350: Pulling fs layer
+7f4fdb06b2a6: Pulling fs layer
+b4e83434a081: Pulling fs layer
+4f4fb700ef54: Pulling fs layer
+ab293f967cac: Pulling fs layer
+99461fbfbbb0: Pulling fs layer
+b4d57fa1bf12: Pulling fs layer
+2ff9aa2266d3: Pulling fs layer
+98e2b506acc1: Download complete
+4f4fb700ef54: Download complete
+246ac8b7cadc: Download complete
+dc22b8c341d9: Download complete
+f57cecf87087: Download complete
+504ce00b5115: Download complete
+2ff9aa2266d3: Download complete
+549bcd15ccc3: Download complete
+44136fa355b3: Download complete
+774043ccc8cc: Download complete
+ab293f967cac: Download complete
+99461fbfbbb0: Download complete
+7f4fdb06b2a6: Download complete
+774043ccc8cc: Pull complete
+246ac8b7cadc: Pull complete
+e7dea52d088e: Download complete
+b4d57fa1bf12: Download complete
+32bd4010d444: Download complete
+dc22b8c341d9: Pull complete
+f57cecf87087: Pull complete
+98e2b506acc1: Pull complete
+504ce00b5115: Pull complete
+549bcd15ccc3: Pull complete
+fe16d1bec350: Download complete
+fe16d1bec350: Pull complete
+7f4fdb06b2a6: Pull complete
+b4e83434a081: Download complete
+b4e83434a081: Pull complete
+2ff9aa2266d3: Pull complete
+ab293f967cac: Pull complete
+b4d57fa1bf12: Pull complete
+4f4fb700ef54: Pull complete
+99461fbfbbb0: Pull complete
+Digest: sha256:8b432fe0a65b91116afc7961365c6cca5379cc923171386a96691f3471f3cae9
+Status: Downloaded newer image for ghcr.io/open-webui/open-webui:main
+ghcr.io/open-webui/open-webui:main
