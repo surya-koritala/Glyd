@@ -1,9 +1,10 @@
 """Main's 12-bit layout beside this tree's split byte in one process, for xcheck.py and layer.py: main's library
-through a second copy of glyd.gpu._lib (the C API is version 4 in both), main's pack_mma12 taken from its kernels.py,
-and pair(), a call through each with its own pack.
+through a second copy of glyd.gpu._lib (the same functions and arguments: main's C API 4, this tree's 5, which
+split byte's words alone set apart), main's pack_mma12 taken from its kernels.py, and pair(), a call through each with
+its own pack.
 
     PYTHONPATH=TREE/bindings/python GLYD_GPU_LIB=TREE_LIB python SCRIPT MAIN_TREE MAIN_LIB ..."""
-import ast, importlib.util, os
+import ast, importlib.util, os, re
 import torch
 import torch.nn.functional as F
 from glyd.gpu import _lib as new, kernels as g
@@ -28,6 +29,7 @@ def load(main_tree, main_lib):
     spec = importlib.util.spec_from_file_location("main_lib", new.__file__)
     old = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(old)
+    old.API_VERSION = int(re.search(r"#define GLYD_GPU_API_VERSION (\d+)", open(os.path.join(main_tree, "gpu/glyd_gpu.h")).read()).group(1))
     old.load(main_lib)
     src, here = open(os.path.join(main_tree, "bindings/python/glyd/gpu/kernels.py")).read(), open(g.__file__).read()
     hist = [ast.get_source_segment(s, _function(s, "_hist")) for s in (src, here)]

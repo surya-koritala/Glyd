@@ -1,0 +1,14 @@
+# 2026-09-29 17:43:28: load 0.14 0.95 1.05; busiest:  100 ps; 1.1 nv-hostengine; 0.5 systemd;
+gf/src: 2 of the GeForce tests patched
+gf/main: 2 of the GeForce tests patched
+build-release: real	1m1.811s
+build-main: real	0m46.527s
+build-gf-src: real	0m56.486s
+build-gf-main: real	0m46.180s
+build-crate: real	0m6.608s
+-rwxrwxr-x 1 ubuntu ubuntu  4739552 Sep 29 17:44 /home/ubuntu/rust-rc/gf/main/lib/libglyd_gpu_cuda13.so
+-rwxrwxr-x 1 ubuntu ubuntu  4710880 Sep 29 17:44 /home/ubuntu/rust-rc/gf/src/lib/libglyd_gpu_cuda13.so
+-rwxrwxr-x 1 ubuntu ubuntu 25469424 Sep 29 17:44 /home/ubuntu/rust-rc/lib/libglyd_gpu_cuda13.so
+-rwxrwxr-x 1 ubuntu ubuntu  4739552 Sep 29 17:44 /home/ubuntu/rust-rc/main/lib/libglyd_gpu_cuda13.so
+-rwxrwxr-x 2 ubuntu ubuntu  1123920 Sep 29 17:43 /home/ubuntu/rust-rc/target/release/glyd-gpu
+exit 0

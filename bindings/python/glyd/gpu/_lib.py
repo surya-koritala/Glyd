@@ -56,7 +56,7 @@ _SIZES = {"fast_gemm": 3, "fast_bgemv": 3, "mma_gemm": 3, "mma12_gemm": 3, "mma_
 _PLAIN = {"gpu": [_P], "mma_route": [_I64] * 4 + [_P, _P], "mma12_route": [_I64] * 4 + [_P, _P]}  # the calls with no stream: the routes
 
 
-API_VERSION = 4  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
+API_VERSION = 5  # the C API these calls are written for (glyd_gpu_api_version; 0.21.0's library has none: 1)
 BIG = 4  # glyd_gpu.h's GLYD_GPU_ROUTE_BIG: the prompt kernel
 
 
@@ -327,7 +327,8 @@ def _loaded(name):
     if name not in _fn:
         from . import kernels  # (kernels imports this module: here, at the call)
 
-        kernels._ext.cuda_version  # loads it, or raises its OSError
+        if isinstance(kernels._ext, kernels._Load):
+            kernels._ext.cuda_version  # loads it, or raises its OSError
         if name not in _fn:  # (the kernels are gpu/glyd_gpu.py's JIT build's: no library to ask)
             raise OSError(f"glyd_gpu_{name}: the Glyd GPU library is not loaded (the kernels are the JIT build's)")
     return _fn[name]

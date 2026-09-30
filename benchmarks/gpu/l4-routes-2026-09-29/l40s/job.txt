@@ -1,0 +1,27 @@
+== 23:36:48 (+0 s) machine
+NVIDIA L40S, 8.9, 46068 MiB, 2520 MHz, 350.00 W; x86_64, 4 CPUs
+== 23:36:50 (+2 s) environment: uv, PyTorch 2.14.0 (CUDA 13), transformers 5.17.0
+torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0 | NVIDIA L40S
+== 23:37:08 (+20 s) Qwen3-8B, in the background
+== 23:37:08 (+20 s) the library for sm_89 (build_lib.sh's flags, the AMI's nvcc 13.0)
+build exit 0 (/usr/local/cuda-13.0, the tree 213ca87 (l4-routes))
+== 23:38:51 (+123 s) waiting for the download
+== 23:40:15 (+207 s) route_e2e.py, Qwen3-8B, mma
+the GPU at 37, 2040 MHz after 0 s (idle 40 C)
+mma: exit 0
+   8192 tokens, fused  : 1170.5 ms
+   8192 tokens, decoded: 904.8 ms
+   8192 tokens, ahead  : 900.1 ms
+== 23:41:30 (+282 s) route_e2e.py, Qwen3-8B, mma12
+the GPU at 44, 2040 MHz after 60 s (idle 40 C)
+mma12: exit 0
+   8192 tokens, fused  : 1024.8 ms
+   8192 tokens, decoded: 904.9 ms
+   8192 tokens, ahead  : 901.0 ms
+== 23:43:17 (+389 s) route_e2e.py, Qwen3-8B, bf16
+the GPU at 47, 2040 MHz after 60 s (idle 40 C)
+bf16: exit 0
+   3072 tokens, bf16   : 268.9 ms
+   4096 tokens, bf16   : 373.6 ms
+   8192 tokens, bf16   : 867.2 ms
+== 23:44:37 (+469 s) done in 469 s

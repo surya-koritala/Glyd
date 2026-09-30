@@ -2,9 +2,10 @@
 
 Candidates for a layout about as small as the tiered one with a decode about a third of the 12-bit one's, measured
 on the CPU (sizes, exceptions) and in SASS (instructions), and the one picked (split byte, 12 bits) prototyped in the
-library's own kernels (`gpu/experimental/format`) and timed on the RTX 4080 SUPER. Models: the box's cached Qwen3-0.6B,
-1.7B, 4B-Instruct-2507 and 8B and granite-3.1-3b-a800m-instruct (their Linear weights as `gpu/sizes.py` packs them;
-lm_head apart).
+library's own kernels (`gpu/experimental/format`) and timed on the RTX 4080 SUPER. `gpu/experimental/format` and the
+scripts these logs name are on the branch gpu-format (d3fd2e6), not in this tree: the release's split byte is its own
+code, in gpu/glyd_gpu.cu. Models: the box's cached Qwen3-0.6B, 1.7B, 4B-Instruct-2507 and 8B and
+granite-3.1-3b-a800m-instruct (their Linear weights as `gpu/sizes.py` packs them; lm_head apart).
 
 - `study.py`, `study.txt`: bits a weight and exceptions of each candidate, per tensor and per model, and how the
   exceptions fall in the kernels' steps and stages.

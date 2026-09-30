@@ -3455,8 +3455,8 @@ GLYD_GPU_API int glyd_gpu_fast_bgemv(const uint8_t* sm, const uint32_t* planes, 
 }
 
 // A 12-bit pack's words (sym, host): sym[0] the high bytes' base hb (0-120) in each of its bytes, sym[1-3] zero; false
-// otherwise (cudaErrorInvalidValue). A pack of the 12-bit layout before split byte (unreleased) held its 15 commonest
-// exponents there, 4 distinct ones in sym[0]: refused, never decoded as this layout.
+// otherwise (cudaErrorInvalidValue). A pack of the 12-bit layout before split byte (0.24's, v0.19-v0.24) held its 15
+// commonest exponents there, 4 distinct ones in sym[0]: refused, never decoded as this layout.
 static bool nib12(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t* sym, Nib& f) {
     if (!sym) return false;
     uint32_t hb = sym[0] & 0xFFu;
@@ -3871,9 +3871,26 @@ static const RouteMins& route_mins() {
 
 // A prompt decoded ahead from this many tokens (the fused, not exact, product's): GeForce Ada's (measured on an RTX
 // 4080 SUPER) past 512 tiered and 1792 12-bit, an A10's (150 W, full-rate tensor cores: the fused kernel's decode costs
-// it clocks at the power cap) from 512 tiered and 640 12-bit (model.py's GLinear for the measurements); else never.
+// it clocks at the power cap) from 512 tiered and 640 12-bit, an L40S's (350 W, full-rate tensor cores, the L4's
+// bandwidth a FLOP) from 1024 tiered and 2048 12-bit (model.py's GLinear for the measurements); else never.
 static int64_t ahead_min(bool twelve, int64_t gpu) {
+    if (gpu == GLYD_GPU_L40S + 89) return twelve ? 2048 : 1024;
     return gpu == GLYD_GPU_GEFORCE + 89 ? (twelve ? 1793 : 513) : gpu == GLYD_GPU_A10 + 86 ? (twelve ? 640 : 512) : INT64_MAX;
+}
+
+// A prompt decoded for cuBLAS, never fused, from this many tokens: in the 12-bit layout from GLYD_DEC_MIN tokens where
+// it is set (any GPU), else an A100's from 769; an L4's from 896 tiered and 2560 12-bit (72 W, full-rate tensor cores,
+// half an A10's bandwidth a FLOP: at its power cap the fused kernel, decoding each weight again for every 256 tokens,
+// loses to the decode more the longer the prompt, and a decode ahead beside cuBLAS gains nothing there; Qwen3-8B's and
+// Qwen3-4B-Instruct-2507's prompt passes, fused against decoded: tiered 4-5% slower decoded at 768 tokens, 9-11%
+// faster at 896 and 17-47% at 3072-8192; 12-bit 0.4-21% slower to 2304, 1-3% faster at 2560 and 7-49% at 4096-8192;
+// decoded ahead within 1% of decoded first at 4096-8192 tokens, 1-7% slower at 896-2048: benchmarks/gpu/l4-routes-
+// 2026-09-29); else never.
+constexpr int64_t L4_TIERED = 896, L4_TWELVE = 2560;
+static int64_t dec_from(bool twelve, int64_t gpu, int64_t dec_min) {
+    if (twelve && dec_min) return dec_min;
+    if (gpu == GLYD_GPU_L4 + 89) return twelve ? L4_TWELVE : L4_TIERED;
+    return twelve && gpu % 1000 == 80 ? 769 : INT64_MAX;
 }
 
 static int route_for(bool twelve, int64_t gpu, int64_t K, int64_t M) {
@@ -3882,7 +3899,7 @@ static int route_for(bool twelve, int64_t gpu, int64_t K, int64_t M) {
     bool a100 = cc == 80, hopper = cc == 90, mid = cc == 80 || cc == 86 || cc == 87 || cc == 89, k64 = K % 64 == 0;
     if (hopper && twelve && k64 && M >= t.wg_min && M <= t.wg_max) return GLYD_GPU_ROUTE_WG;  // TMA and wgmma
     if (mid && twelve && k64 && M >= t.mid_min && M <= (a100 ? 128 : 64)) return GLYD_GPU_ROUTE_MID;  // cp.async, mma.sync
-    if (twelve && M >= (t.dec_min ? t.dec_min : a100 ? 769 : INT64_MAX)) return GLYD_GPU_ROUTE_DECODE;
+    if (M >= dec_from(twelve, gpu, t.dec_min)) return GLYD_GPU_ROUTE_DECODE;
     if (M <= 64) return GLYD_GPU_ROUTE_GEMM;
     if (M >= ahead_min(twelve, gpu)) return GLYD_GPU_ROUTE_AHEAD;  // (any K)
     return k64 && !hopper ? GLYD_GPU_ROUTE_BIG : GLYD_GPU_ROUTE_DECODE;
@@ -3891,7 +3908,7 @@ static int route_for(bool twelve, int64_t gpu, int64_t K, int64_t M) {
 // A GPU's class by its name, where its compute capability does not tell it apart (glyd_gpu.h): GLYD_GPU_GEFORCE with
 // "GeForce" in the name; GLYD_GPU_A10 with "A10" as a word, between characters that are not letters, digits or '_'
 // (an A10, not an A10G, A100 or A40: Python's re.search(r"\bA10\b", name, re.ASCII), as model.py's GLinear asks);
-// else 0.
+// GLYD_GPU_L4 with "L4" as one (an L4, not an L40S or L40); GLYD_GPU_L40S with "L40S" as one (not an L40); else 0.
 static bool has_word(const char* name, const char* word) {
     size_t n = strlen(word);
     auto part = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
@@ -3900,7 +3917,7 @@ static bool has_word(const char* name, const char* word) {
     return false;
 }
 
-static int gpu_class(const char* name) { return strstr(name, "GeForce") ? GLYD_GPU_GEFORCE : has_word(name, "A10") ? GLYD_GPU_A10 : 0; }
+static int gpu_class(const char* name) { return strstr(name, "GeForce") ? GLYD_GPU_GEFORCE : has_word(name, "A10") ? GLYD_GPU_A10 : has_word(name, "L4") ? GLYD_GPU_L4 : has_word(name, "L40S") ? GLYD_GPU_L40S : 0; }
 
 // The current device as the routes take it (asked once a device).
 GLYD_GPU_API int glyd_gpu_gpu(int* gpu) {
@@ -3924,7 +3941,7 @@ static int route_run(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M, 
     const RouteMins& t = route_mins();
     int here = *route = route_for(twelve, gpu, K, M);
     if (last) {
-        int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, t.dec_min ? t.dec_min : 769, 512, 513, 640, 1793}, next = INT64_MAX;
+        int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, dec_from(twelve, gpu, t.dec_min), 769, ahead_min(twelve, gpu), 512, 513, 640, 1793}, next = INT64_MAX;
         for (int64_t c : cuts)
             if (c > M && c < next && route_for(twelve, gpu, K, c) != here) next = c;
         *last = next == INT64_MAX ? INT64_MAX : next - 1;

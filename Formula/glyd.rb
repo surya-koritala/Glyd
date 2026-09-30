@@ -6,7 +6,7 @@
 class Glyd < Formula
   desc "Compression for object storage: record mode, packs, a cross-object store"
   homepage "https://getglyd.com"
-  version "0.24.0"
+  version "0.25.0"
   # The codec and CLI: BSD-3-Clause or GPL-2.0; the glyd-store binary: BUSL-1.1.
   license all_of: [
     { any_of: ["BSD-3-Clause", "GPL-2.0-only"] },
@@ -20,23 +20,23 @@ class Glyd < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.24.0/glyd-v0.24.0-macos-arm64.tar.gz"
-      sha256 "4c75f63a293a7dcaef524c5eee09c31982405c90ad1d911949575a9e85ce1ec6"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.25.0/glyd-v0.25.0-macos-arm64.tar.gz"
+      sha256 "611e74ff076b624a964e612f5c8a5fd4eb687a3be094da30bf2a2fb62712d6ad"
     end
     on_intel do
-      url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.24.0.tar.gz"
-      sha256 "53439c8a6e2d5e0964bb417a8b652958c3f44285aef44579410d3d122e97ddb1"
+      url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.25.0.tar.gz"
+      sha256 "a8cb165eb10fe2937cb1c4243193a3f496c707388b95920fe15e55073ba47d22"
       depends_on "rust" => :build
     end
   end
   on_linux do
     on_intel do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.24.0/glyd-v0.24.0-linux-x86_64.tar.gz"
-      sha256 "f82e2e988d6b568868d1c4c74e159a9832bc1b377c62804a06289587ef47edd5"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.25.0/glyd-v0.25.0-linux-x86_64.tar.gz"
+      sha256 "ac91d0f4c933e95d64b582a6cd6cd2ad208b73a68c9c670a3786e9187cd7a48f"
     end
     on_arm do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.24.0/glyd-v0.24.0-linux-aarch64.tar.gz"
-      sha256 "a26d9c64522ea2f667edc6164913f647f5f6253640a4b6d7fb86aa5e4e7e5c81"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.25.0/glyd-v0.25.0-linux-aarch64.tar.gz"
+      sha256 "2d43d284b74ad2b32eb9454642fd4ee60e05f8500e22c2623173ef91a2c2fc5d"
     end
   end
 
@@ -44,9 +44,10 @@ class Glyd < Formula
     if File.exist?("Cargo.toml")
       system "cargo", "install", *std_cargo_args
       system "cargo", "install", *std_cargo_args(path: "glyd-store")
+      system "cargo", "install", *std_cargo_args(path: "glyd-gpu")
       include.install "include/glyd.h"
     else
-      bin.install "glyd", "glyd-store"
+      bin.install "glyd", "glyd-store", "glyd-gpu"
       include.install "glyd.h"
     end
   end

@@ -1,0 +1,25 @@
+/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218 glyd mma12 on NVIDIA L4: 12.54 GB
+    128 tokens, fused  : 76.6 ms
+    128 tokens, decoded: 178.3 ms
+    128 tokens, ahead  : 121.3 ms
+    256 tokens, fused  : 120.0 ms
+    256 tokens, decoded: 210.6 ms
+    256 tokens, ahead  : 144.8 ms
+    512 tokens, fused  : 196.9 ms
+    512 tokens, decoded: 280.2 ms
+    512 tokens, ahead  : 241.9 ms
+    768 tokens, fused  : 283.9 ms
+    768 tokens, decoded: 360.4 ms
+    768 tokens, ahead  : 339.3 ms
+   1024 tokens, fused  : 360.7 ms
+   1024 tokens, decoded: 436.4 ms
+   1024 tokens, ahead  : 422.9 ms
+   2048 tokens, fused  : 762.7 ms
+   2048 tokens, decoded: 790.6 ms
+   2048 tokens, ahead  : 770.6 ms
+   4096 tokens, fused  : 1733.7 ms
+   4096 tokens, decoded: 1582.0 ms
+   4096 tokens, ahead  : 1587.0 ms
+   8192 tokens, fused  : 6425.4 ms
+   8192 tokens, decoded: 3271.7 ms
+   8192 tokens, ahead  : 4577.5 ms

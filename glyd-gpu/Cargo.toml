@@ -1,6 +1,6 @@
 [package]
 name = "glyd-gpu"
-version = "0.24.0"
+version = "0.25.0"
 edition = "2021"
 description = "Glyd's GPU weights from Rust: the CUDA library's C API loaded at run time (a bf16 model's matrices held compressed in GPU memory, decoded bit for bit, whole or inside their products), and models packed and checked on the CPU (glyd pack, glyd verify)"
 repository = "https://github.com/surya-koritala/Glyd"

@@ -1,0 +1,50 @@
+# 2026-09-29 17:46:44: load 1.42 1.74 1.40; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+Qwen/Qwen3-0.6B mma:
+Qwen/Qwen3-0.6B: 198 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/py
+8.39 s wall
+exit 0
+# 2026-09-29 17:47:08: load 2.29 1.92 1.47; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+Qwen/Qwen3-0.6B mma12:
+Qwen/Qwen3-0.6B: 198 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/py
+7.34 s wall
+exit 0
+# 2026-09-29 17:47:31: load 1.97 1.88 1.47; busiest:  1.1 nv-hostengine; 0.2 snapd; 0.1 systemd;
+Qwen/Qwen3-1.7B mma:
+Qwen/Qwen3-1.7B: 198 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/py
+14.92 s wall
+exit 0
+# 2026-09-29 17:48:20: load 3.07 2.18 1.58; busiest:  1.0 nv-hostengine; 0.2 snapd; 0.1 systemd;
+Qwen/Qwen3-1.7B mma12:
+Qwen/Qwen3-1.7B: 198 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/py
+11.63 s wall
+exit 0
+# 2026-09-29 17:49:08: load 3.32 2.40 1.69; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+ibm-granite/granite-3.1-3b-a800m-instruct mma:
+ibm-granite/granite-3.1-3b-a800m-instruct: 193 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/py
+23.01 s wall
+exit 0
+# 2026-09-29 17:50:33: load 3.62 2.76 1.88; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+ibm-granite/granite-3.1-3b-a800m-instruct mma12:
+ibm-granite/granite-3.1-3b-a800m-instruct: 193 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/py
+17.05 s wall
+exit 0
+# 2026-09-29 17:51:55: load 2.79 2.72 1.94; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+Qwen/Qwen3-4B-Instruct-2507 mma:
+Qwen/Qwen3-4B-Instruct-2507: 254 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/py
+29.19 s wall
+exit 0
+# 2026-09-29 17:53:37: load 3.09 2.87 2.07; busiest:  1.0 nv-hostengine; 0.1 snapd; 0.1 systemd;
+Qwen/Qwen3-4B-Instruct-2507 mma12:
+Qwen/Qwen3-4B-Instruct-2507: 254 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/py
+22.15 s wall
+exit 0
+# 2026-09-29 17:55:16: load 3.41 3.04 2.21; busiest:  100 ps; 0.9 nv-hostengine; 0.1 snapd;
+Qwen/Qwen3-8B mma:
+Qwen/Qwen3-8B: 254 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/py
+62.12 s wall
+exit 0
+# 2026-09-29 17:59:36: load 2.81 3.28 2.50; busiest:  0.9 nv-hostengine; 0.1 systemd; 0.1 snapd;
+Qwen/Qwen3-8B mma12:
+Qwen/Qwen3-8B: 254 tensors packed and checked, saved in /home/ubuntu/rust-rc/out/py
+52.62 s wall
+exit 0
