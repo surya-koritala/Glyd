@@ -15,6 +15,72 @@ The `glyd` package registers the plugin with vLLM through its `vllm.general_plug
 needed. It is tested with vLLM 0.30.0, and `glyd[vllm]` pins `vllm>=0.30,<0.31`. With another minor release of vLLM
 the entry point logs one line and loads nothing, and `--quantization glyd` stops with why.
 
+## Local chat, like Ollama
+
+One server command, then a chat page in the browser, on a 16 GB GeForce card such as an RTX 4080 SUPER. Qwen3-8B's bf16
+weights (15.26 GiB) leave such a card no room for a chat. Packed by Glyd they take 11.83 GiB.
+
+```bash
+pip install "glyd[vllm]"
+vllm serve Qwen/Qwen3-8B --quantization glyd --enforce-eager --max-model-len 8192 \
+  --gpu-memory-utilization 0.88 --host 127.0.0.1
+```
+
+The server answers on http://localhost:8000 once it logs `Application startup complete`.
+
+- **`--gpu-memory-utilization 0.88`** is vLLM's share of the card's total memory, for the weights, the KV cache and the
+  working memory. On a 16,376 MiB card (an RTX 4080 SUPER's) it is 14.07 GiB, the budget the tests ran with (14.06 to
+  14.13 GiB). The server's CUDA context and the desktop live outside it: the server held 14,958 MiB of the L4 in the
+  test, so about 1.4 GiB of a 16,376 MiB card stays free. If something else holds more, vLLM stops at start with "Free
+  memory on device ... is less than desired GPU memory utilization". Close that program, or lower the number.
+- **`--enforce-eager`** runs without torch.compile and CUDA graphs. At this budget vLLM's defaults gave no server (-0.83
+  GiB left for the KV cache). A compiled server (context 4,096, 8 sequences, 512 tokens a step) started on its second
+  try, from the compile cache. Eager started at once, and one user's tokens a second were within 2% of compiled's.
+- **`--max-model-len 8192`** is the longest chat, in tokens. The KV cache holds 1.52 of them. A longer chat is refused
+  with "maximum context length is 8192 tokens".
+- **`--host 127.0.0.1`** keeps the server on this machine. Without it vLLM listens on every interface, with no key.
+
+The chat page is Open WebUI, which talks to the server's OpenAI API. It uses no GPU memory.
+
+```bash
+docker run -d --name open-webui --network=host -e PORT=3000 -e HOST=127.0.0.1 \
+  -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 -e OPENAI_API_KEY=none -e WEBUI_AUTH=False \
+  -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:main
+```
+
+Open http://localhost:3000. `--network=host` lets the container reach the server on 127.0.0.1, and `HOST=127.0.0.1`
+keeps the page, which has no login here, on this machine. To test the server alone:
+
+```bash
+curl localhost:8000/v1/models
+curl localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d '{
+  "model": "Qwen/Qwen3-8B",
+  "messages": [{"role": "user", "content": "What is lossless compression? Answer in one sentence. /no_think"}],
+  "max_tokens": 100}'
+```
+
+Qwen3 thinks before it answers. `/no_think` at the end of a message skips that.
+
+**Measured** on an L4 held to 15.5 GiB free (about 16 GB: an RTX 4080 SUPER's memory less 500 MiB for a desktop),
+with the plugin reading it as a GeForce Ada card; vLLM 0.30.0, Open WebUI 0.11.4. It was not run on an RTX 4080 SUPER,
+and these are not its speeds. The L4 takes 0.638 where a 16,376 MiB card takes 0.88, for the same budget of 14.1 GiB.
+
+- **One user:** 21-22 tokens/s (three chat turns 21.6-22.2, a 512-token answer 21.1, a thinking answer of 1,024
+  tokens 21.0), the first token 57-126 ms after the request. Through Open WebUI's API the stream ran at 21.2
+  tokens/s, the first token at 99 ms.
+- **KV cache:** 1.71 GiB, 12,432 tokens, at the 14.06 GiB budget (1.77 GiB, 12,912 tokens, at 14.13 GiB).
+- **bf16's weights leave no room:** its server did not start with the same flags (without `--quantization glyd`). It ran
+  out of memory loading the weights, 15.26 GiB into about 15.3 GiB free.
+- **Loading** took 22 s for the weights and 39 s to a running server. While it loads, the server takes nearly all the
+  free GPU memory: 1 MiB was the lowest free, and under 512 MiB for 8 s. No desktop ran in the test, so what one does in
+  those seconds is not measured.
+- **Open WebUI:** its model list showed Qwen/Qwen3-8B, and a chat through its API completed. Its page was not opened.
+- **A tip:** `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` before `vllm serve` gave 2.13 GiB of KV cache (15,504
+  tokens) at the same budget, the same tokens a second, and a load 10 s longer (one run each).
+
+The hog that held the L4's memory, the GeForce emulation, every run and its log:
+[benchmarks/gpu/l4-local-chat-2026-09-30](../../benchmarks/gpu/l4-local-chat-2026-09-30).
+
 ## What it does
 
 - **At load.** Each Linear's bf16 weight is held on the meta device. As vLLM's layerwise loading completes a layer,

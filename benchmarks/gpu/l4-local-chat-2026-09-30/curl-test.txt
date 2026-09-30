@@ -1,0 +1,5 @@
+$ curl localhost:8000/v1/models
+{'id': 'Qwen/Qwen3-8B', 'max_model_len': 8192}
+
+$ curl localhost:8000/v1/chat/completions ...
+{"id":"chatcmpl-8be2adb063f5ef84","object":"chat.completion","created":1790789378,"model":"Qwen/Qwen3-8B","choices":[{"index":0,"message":{"role":"assistant","content":"<think>\n\n</think>\n\nLossless compression is a data compression method that reduces file size without losing any information, allowing the original data to be perfectly reconstructed from the compressed data.","refusal":null,"annotations":null,"audio":null,"function_call":null,"reasoning":null},"logprobs":null,"finish_reason":"stop","stop_reason":null,"token_ids":null,"routed_experts":null}],"service_tier":null,"system_fingerprint":"vllm-0.30.0-6a5b955a","usage":{"prompt_tokens":23,"total_tokens":58,"completion_tokens":35,"prompt_tokens_details":null,"completion_tokens_details":null},"prompt_logprobs":null,"prompt_token_ids":null,"prompt_text":null,"kv_transfer_params":null,"ec_transfer_params":null,"metrics":null}

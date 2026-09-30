@@ -1,0 +1,155 @@
+* Creating isolated environment: venv+pip...
+* Installing packages in isolated environment:
+  - setuptools>=61
+* Getting build dependencies for wheel...
+running egg_info
+creating glyd.egg-info
+writing glyd.egg-info/PKG-INFO
+writing dependency_links to glyd.egg-info/dependency_links.txt
+writing entry points to glyd.egg-info/entry_points.txt
+writing requirements to glyd.egg-info/requires.txt
+writing top-level names to glyd.egg-info/top_level.txt
+writing manifest file 'glyd.egg-info/SOURCES.txt'
+reading manifest file 'glyd.egg-info/SOURCES.txt'
+adding license file 'LICENSE'
+adding license file 'COPYING'
+adding license file 'LICENSE-glyd-store'
+adding license file 'LICENSE-glyd-gpu'
+writing manifest file 'glyd.egg-info/SOURCES.txt'
+WARNING `project.license` as a TOML table is deprecated
+!!
+
+        ********************************************************************************
+        Please use a simple string containing a SPDX expression for `project.license`. You can also use `project.license-files`. (Both options available on setuptools>=77.0.0).
+
+        By 2027-Feb-18, you need to update your project and remove deprecated calls
+        or your builds will no longer be supported.
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+        ********************************************************************************
+
+!!
+WARNING 'tool.setuptools.license-files' is deprecated in favor of 'project.license-files' (available on setuptools>=77.0.0).
+!!
+
+        ********************************************************************************
+
+        By 2027-Feb-18, you need to update your project and remove deprecated calls
+        or your builds will no longer be supported.
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license-files for details.
+        ********************************************************************************
+
+!!
+* Installed build dependency versions:
+  - setuptools==84.0.0
+* Building wheel...
+running bdist_wheel
+running build
+running build_py
+creating build/lib/glyd
+copying glyd/__init__.py -> build/lib/glyd
+creating build/lib/glyd/gpu
+copying glyd/gpu/model.py -> build/lib/glyd/gpu
+copying glyd/gpu/__init__.py -> build/lib/glyd/gpu
+copying glyd/gpu/format.py -> build/lib/glyd/gpu
+copying glyd/gpu/measured.py -> build/lib/glyd/gpu
+copying glyd/gpu/_lib.py -> build/lib/glyd/gpu
+copying glyd/gpu/moe.py -> build/lib/glyd/gpu
+copying glyd/gpu/hf.py -> build/lib/glyd/gpu
+copying glyd/gpu/vllm_plugin.py -> build/lib/glyd/gpu
+copying glyd/gpu/vllm_entry.py -> build/lib/glyd/gpu
+copying glyd/gpu/__main__.py -> build/lib/glyd/gpu
+copying glyd/gpu/fit.py -> build/lib/glyd/gpu
+copying glyd/gpu/kernels.py -> build/lib/glyd/gpu
+running egg_info
+writing glyd.egg-info/PKG-INFO
+writing dependency_links to glyd.egg-info/dependency_links.txt
+writing entry points to glyd.egg-info/entry_points.txt
+writing requirements to glyd.egg-info/requires.txt
+writing top-level names to glyd.egg-info/top_level.txt
+reading manifest file 'glyd.egg-info/SOURCES.txt'
+adding license file 'LICENSE'
+adding license file 'COPYING'
+adding license file 'LICENSE-glyd-store'
+adding license file 'LICENSE-glyd-gpu'
+writing manifest file 'glyd.egg-info/SOURCES.txt'
+copying glyd/libglyd_store.so -> build/lib/glyd
+copying glyd/gpu/libglyd_gpu_cuda13.so -> build/lib/glyd/gpu
+installing to build/bdist.linux-x86_64/wheel
+running install
+running install_lib
+creating build/bdist.linux-x86_64/wheel
+creating build/bdist.linux-x86_64/wheel/glyd
+copying build/lib/glyd/libglyd_store.so -> build/bdist.linux-x86_64/wheel/./glyd
+copying build/lib/glyd/__init__.py -> build/bdist.linux-x86_64/wheel/./glyd
+creating build/bdist.linux-x86_64/wheel/glyd/gpu
+copying build/lib/glyd/gpu/model.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/__init__.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/format.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/measured.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/_lib.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/moe.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/hf.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/vllm_plugin.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/vllm_entry.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/libglyd_gpu_cuda13.so -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/__main__.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/fit.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+copying build/lib/glyd/gpu/kernels.py -> build/bdist.linux-x86_64/wheel/./glyd/gpu
+running install_egg_info
+Copying glyd.egg-info to build/bdist.linux-x86_64/wheel/./glyd-0.25.1-py3.12.egg-info
+running install_scripts
+creating build/bdist.linux-x86_64/wheel/glyd-0.25.1.dist-info/WHEEL
+creating '/home/ubuntu/quick/wheels/.tmp-gyf18orz/glyd-0.25.1-py3-none-any.whl' and adding 'build/bdist.linux-x86_64/wheel' to it
+adding 'glyd/__init__.py'
+adding 'glyd/libglyd_store.so'
+adding 'glyd/gpu/__init__.py'
+adding 'glyd/gpu/__main__.py'
+adding 'glyd/gpu/_lib.py'
+adding 'glyd/gpu/fit.py'
+adding 'glyd/gpu/format.py'
+adding 'glyd/gpu/hf.py'
+adding 'glyd/gpu/kernels.py'
+adding 'glyd/gpu/libglyd_gpu_cuda13.so'
+adding 'glyd/gpu/measured.py'
+adding 'glyd/gpu/model.py'
+adding 'glyd/gpu/moe.py'
+adding 'glyd/gpu/vllm_entry.py'
+adding 'glyd/gpu/vllm_plugin.py'
+adding 'glyd-0.25.1.dist-info/licenses/COPYING'
+adding 'glyd-0.25.1.dist-info/licenses/LICENSE'
+adding 'glyd-0.25.1.dist-info/licenses/LICENSE-glyd-gpu'
+adding 'glyd-0.25.1.dist-info/licenses/LICENSE-glyd-store'
+adding 'glyd-0.25.1.dist-info/METADATA'
+adding 'glyd-0.25.1.dist-info/WHEEL'
+adding 'glyd-0.25.1.dist-info/entry_points.txt'
+adding 'glyd-0.25.1.dist-info/top_level.txt'
+adding 'glyd-0.25.1.dist-info/RECORD'
+removing build/bdist.linux-x86_64/wheel
+WARNING `project.license` as a TOML table is deprecated
+!!
+
+        ********************************************************************************
+        Please use a simple string containing a SPDX expression for `project.license`. You can also use `project.license-files`. (Both options available on setuptools>=77.0.0).
+
+        By 2027-Feb-18, you need to update your project and remove deprecated calls
+        or your builds will no longer be supported.
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+        ********************************************************************************
+
+!!
+WARNING 'tool.setuptools.license-files' is deprecated in favor of 'project.license-files' (available on setuptools>=77.0.0).
+!!
+
+        ********************************************************************************
+
+        By 2027-Feb-18, you need to update your project and remove deprecated calls
+        or your builds will no longer be supported.
+
+        See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license-files for details.
+        ********************************************************************************
+
+!!
+Successfully built glyd-0.25.1-py3-none-any.whl
