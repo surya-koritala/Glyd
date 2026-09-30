@@ -405,6 +405,8 @@ def load_model(name, hub=_hub, local=_local):
     saved = any(p == MANIFEST for p, _ in files)
     bf16 = 2 * (params.get("BF16", 0) + params.get("F16", 0)) if params else weights
     if not saved and weights - bf16 >= 0.05 * weights:
+        if params.get("F32", 0) * 4 > 0.5 * weights:
+            raise Refusal(f"{name} is stored in 32-bit floats, and Glyd packs bf16 weights", "Run a bf16 version of the model if there is one (most models publish one)")
         fmt = "FP8" if params.get("F8_E4M3", 0) > max(params.get("U8", 0), params.get("I8", 0)) else "4-bit"
         raise Refusal(f"{name} is already quantized ({fmt}), and Glyd packs bf16 weights", "Run the model's bf16 version: usually the same name without -FP8, -AWQ or -GPTQ")
     local_copy = os.path.isdir(name) or cached

@@ -288,6 +288,8 @@ def test_load_model_and_hub_errors():
     fp8 = {"F8_E4M3": 7_000_000_000, "BF16": 1_000_000_000}
     r = raises(lambda: pf.load_model("Qwen/Qwen3-8B-FP8", hub=hub_answer(cfg, fp8, [("model.safetensors", 9_000_000_000)])), "already quantized (FP8)")
     assert "bf16 version" in r.fix
+    r = raises(lambda: pf.load_model("old/Model-F32", hub=hub_answer(cfg, {"F32": 2_000_000_000}, [("model.safetensors", 8_000_000_000)])), "32-bit floats")
+    assert "bf16 version" in r.fix
     raises(lambda: pf.load_model("x/y", hub=hub_answer(cfg, {}, [("config.json", 1)])), "no safetensors")
     down = lambda repo: (_ for _ in ()).throw(OSError("Network is unreachable"))
     raises(lambda: pf.load_model("Qwen/Qwen3-8B", hub=down), "cannot read Qwen/Qwen3-8B from the Hugging Face Hub")
