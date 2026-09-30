@@ -1,0 +1,47 @@
+    Updating crates.io index
+     Locking 10 packages to latest compatible versions
+   Compiling typenum v1.20.1
+   Compiling const-oid v0.10.2
+   Compiling cfg-if v1.0.5
+   Compiling cpufeatures v0.3.1
+   Compiling hybrid-array v0.4.15
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling digest v0.11.3
+   Compiling sha2 v0.11.0
+   Compiling glyd-gpu v0.25.0 (/home/ubuntu/l40schk/w/glyd-gpu)
+    Finished `release` profile [optimized] target(s) in 5.82s
+     Running unittests src/lib.rs (target/release/deps/glyd_gpu-39d0d418aae51f09)
+
+running 15 tests
+test cuda::tests::one_context_a_thread ... ok
+test json::tests::python_text ... ok
+test json::tests::refused ... ok
+test pack::tests::blocks_hold_their_escapes ... ok
+test pack::tests::by_count_is_torchs_stable_argsort ... ok
+test pack::tests::round_trips ... ok
+test pack::tests::twelve_is_pack_mma12s ... ok
+test safetensors::tests::tensors_back_to_back ... ok
+test save::tests::file_patterns ... ok
+test save::tests::in_order_keeps_its_order ... ok
+test save::tests::save_and_verify_a_tiny_qwen3 ... ok
+test save::tests::versions_as_python_reads_them ... ok
+test tests::declarations_are_the_headers ... ok
+test tests::linear_takes_every_route_but_one ... ok
+test tests::no_library_is_an_error ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+
+     Running unittests src/bin/glyd-gpu.rs (target/release/deps/glyd_gpu-b3b5a20cf04d64fb)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests glyd_gpu
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+cargo test exit 0

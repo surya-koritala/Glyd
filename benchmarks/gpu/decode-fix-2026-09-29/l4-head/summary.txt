@@ -1,0 +1,23 @@
+BITS PASS: 9 steps run, each exit 0
+NVIDIA L4 (8.9, sm_89), x86_64 host, 16 CPUs; v0.25.1 dc490e4 (decode-fix: v0.25.1's code, the low bytes first on Hopper alone), orders 73b9560 (decode-fix), v0.25.0 bfb2c4e (rust-splitbyte, v0.25.0's tree), main db8e7b0 (origin/main)
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+
+The decode a layer (dec_time.py; median of its repetitions), us, each over main's; whole: a warp a step (for cuBLAS,
+exact mode), ahead: 2 warps an SM (decode ahead). v0.25.0: its library; order N: 73b9560's, GLYD_DEC_ORDER=N (0 v0.25.0's
+kernel); v0.25.1: the fix as merged, as machine-short.txt names it (fd24666: the whole decode in order 3's loads on
+every GPU; dc490e4: on Hopper alone, elsewhere order 0's; the decode ahead order 0's in both).
+  Qwen3-4B-Instruct-2507 run 1 whole: main 1563.6 | v0.25.0 1565.7 (1.001) | order 0 1566.7 (1.002) | order 1 1590.3 (1.017) | order 2 1588.4 (1.016) | order 3 1592.5 (1.019) | v0.25.1 1567.7 (1.003)  [GB/s 226 226 226 222 223 222 226]
+  Qwen3-4B-Instruct-2507 run 1 ahead: main 1641.5 | v0.25.0 1628.2 (0.992) | order 0 1627.0 (0.991) | order 1 1840.1 (1.121) | order 2 1849.1 (1.127) | order 3 1856.5 (1.131) | v0.25.1 1630.2 (0.993)  [GB/s 215 217 217 192 191 191 217]
+  Qwen3-8B run 1 whole: main 2923.5 | v0.25.0 2927.6 (1.001) | order 0 2927.5 (1.001) | order 1 2966.5 (1.015) | order 2 2962.4 (1.013) | order 3 2983.9 (1.021) | v0.25.1 2928.6 (1.002)  [GB/s 231 231 231 228 228 227 231]
+  Qwen3-8B run 1 ahead: main 3012.4 | v0.25.0 2990.1 (0.993) | order 0 2992.2 (0.993) | order 1 3317.8 (1.101) | order 2 3312.8 (1.100) | order 3 3329.2 (1.105) | v0.25.1 2995.0 (0.994)  [GB/s 224 226 226 204 204 203 226]
+
+End to end (dec_e2e.py), each over main's: exact mode's steps (ms a token) and prompts (ms)
+
+steps:
+  01:52:04 (+3 s) builds: v0.25.1 (final2) by build_lib.sh (every architecture), 73b9560, v0.25.0 and main for sm_89 (its flags), at once, each not yet built
+  01:52:52 (+51 s) bits: v0.25.1's self-test, then xcheck.py's synthetic part (against main's library)
+  01:53:00 (+59 s) checks at v0.25.1's head: check_capi.py (then with GLYD_DEC_MIN 1000 and 3000), test_gpu.py, cargo test
+  01:58:09 (+368 s) kernel: dec_time.py, Qwen/Qwen3-8B, run 1
+  01:58:13 (+372 s) kernel: dec_time.py, Qwen/Qwen3-4B-Instruct-2507, run 1
+  01:58:17 (+376 s) done in 376 s

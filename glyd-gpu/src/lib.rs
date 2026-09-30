@@ -40,6 +40,10 @@ pub const API_VERSION: i32 = 5;
 pub const GEFORCE: i32 = 1000;
 /// A GPU's class by name in its code: "A10" in its name as a word (an A10, not an A10G, A100 or A40).
 pub const A10: i32 = 2000;
+/// A GPU's class by name in its code: "L4" in its name as a word (an L4, not an L40S or L40).
+pub const L4: i32 = 3000;
+/// A GPU's class by name in its code: "L40S" in its name as a word (not an L40).
+pub const L40S: i32 = 4000;
 /// A status: `cudaErrorInvalidValue`, an argument out of range.
 pub const INVALID_VALUE: i32 = 1;
 /// A status: `cudaErrorNotSupported`, a kernel that is not for this GPU.
@@ -252,7 +256,7 @@ pub enum Route {
     Wg = 3,
     /// [`Library::gemm_big`], variant 0.
     Big = 4,
-    /// As Decode, the decode run ahead beside the products before (GeForce Ada's and an A10's prompts).
+    /// As Decode, the decode run ahead beside the products before (GeForce Ada's, an A10's and an L40S's prompts).
     Ahead = 5,
 }
 
@@ -618,8 +622,9 @@ impl Library {
 
     /// The current device as the routes take it, its code: its compute
     /// capability, major * 10 + minor, plus its class by name where that
-    /// does not tell GPUs apart ([`GEFORCE`], [`A10`]; glyd_gpu.h): 1089 an
-    /// RTX 40, 2086 an A10, 86 an A10G, A40 or RTX A6000, 80 an A100.
+    /// does not tell GPUs apart ([`GEFORCE`], [`A10`], [`L4`], [`L40S`];
+    /// glyd_gpu.h): 1089 an RTX 40, 3089 an L4, 4089 an L40S, 89 an L40,
+    /// 2086 an A10, 86 an A10G, A40 or RTX A6000, 80 an A100.
     pub fn gpu(&self) -> Result<i32> {
         let mut g = 0;
         // SAFETY: a host out-pointer.
@@ -923,7 +928,7 @@ mod tests {
             assert_eq!(define(&format!("GLYD_GPU_ROUTE_{name}")), r as i32, "GLYD_GPU_ROUTE_{name}");
             assert_eq!(Route::from_c(r as c_int).unwrap(), r);
         }
-        assert_eq!((define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10")), (GEFORCE, A10));
+        assert_eq!((define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10"), define("GLYD_GPU_L4"), define("GLYD_GPU_L40S")), (GEFORCE, A10, L4, L40S));
     }
 
     #[test]

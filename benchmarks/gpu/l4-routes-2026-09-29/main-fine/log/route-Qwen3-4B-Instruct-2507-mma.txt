@@ -1,0 +1,19 @@
+/home/ubuntu/hf/hub/models--Qwen--Qwen3-4B-Instruct-2507/snapshots/cdbee75f17c01a7cc42f958dc650907174af0554 glyd mma on NVIDIA L4: 6.31 GB
+    896 tokens, fused  : 233.7 ms
+    896 tokens, decoded: 212.3 ms
+   1024 tokens, fused  : 252.6 ms
+   1024 tokens, decoded: 253.6 ms
+   1280 tokens, fused  : 319.1 ms
+   1280 tokens, decoded: 297.5 ms
+   1536 tokens, fused  : 391.2 ms
+   1536 tokens, decoded: 347.7 ms
+   1792 tokens, fused  : 447.7 ms
+   1792 tokens, decoded: 385.8 ms
+   2048 tokens, fused  : 522.1 ms
+   2048 tokens, decoded: 444.2 ms
+   2304 tokens, fused  : 602.3 ms
+   2304 tokens, decoded: 511.5 ms
+   2560 tokens, fused  : 679.8 ms
+   2560 tokens, decoded: 562.4 ms
+   3072 tokens, fused  : 857.0 ms
+   3072 tokens, decoded: 701.2 ms

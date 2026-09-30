@@ -1,0 +1,369 @@
+dense (100003,), V 4, tiles of 16384: 10.79 bits, the same through both
+dense (512, 1024), V 16, tiles of 4096: 10.85 bits, the same through both
+dense (300, 384), V 4, tiles of 3840: 11.09 bits, the same through both
+dense (64, 16384), V 16, tiles of 8192, split rows: 10.73 bits, the same through both
+dense (96, 8192), V 16, tiles of 8192: 11.21 bits, the same through both
+fast (1000, 512): 15332 escapes, the same through both
+fast (304, 2304): 26901 escapes, the same through both
+fast (17008, 384): 144433 escapes, the same through both
+fast (128, 4096): 33825 escapes, the same through both
+fast (80, 1536): 2621 escapes, the same through both
+mma 64x64: 1 exceptions (12-bit), the same through both
+mma 192x128: 5 exceptions (12-bit), the same through both
+mma 128x4096: 46 exceptions (12-bit), the same through both
+mma 1024x2048: 157 exceptions (12-bit), the same through both
+mma 5120x1024: 4163 exceptions (12-bit), the same through both
+mma 192x4096: 57679 exceptions (12-bit), the same through both
+mma 3072x5120: 230881 exceptions (12-bit), the same through both
+mma 17408x1024: 132008 exceptions (12-bit), the same through both
+the 12-bit layout's words other than its base refused alike
+moe: 8 experts of 256x192, 1 tokens by 2, 2 experts hit: the same through both
+moe: 8 experts of 256x192, 70 tokens by 2, 8 experts hit: the same through both
+moe: 64 experts of 128x2048, 8 tokens by 8, 41 experts hit: the same through both
+moe: 40 experts of 1024x1536, 3 tokens by 8, 20 experts hit: the same through both
+moe: 16 experts of 192x64, 33 tokens by 4, 16 experts hit: the same through both
+moe: 4 experts of 128x256, 17 tokens by 1, 4 experts hit: the same through both
+moe: 4 experts of 128x208, 150 tokens by 2, 4 experts hit: the same through both
+moe: 4 experts of 256x256, 300 tokens by 2, 4 experts hit: the same through both
+moe: 6 experts of 128x320, 200 tokens by 3, 6 experts hit: the same through both
+moe: 5 experts of 192x128, 160 tokens by 2, 5 experts hit: the same through both
+moe: 2 experts of 128x528, 150 tokens by 1, 2 experts hit: the same through both
+moe: 4 experts of 256x256, 300 tokens by 2, one expert twice, 4 experts hit: the same through both
+moe: 4 experts of 128x208, 300 tokens by 2, one expert twice, 4 experts hit: the same through both
+attn_decode: head_dim 64 and 128, 1-16 queries a head, pages and tails, the same through both
+routes on 13 GPUs as main's GLinear took them (the L4's decode and the L40S's decode ahead since); linear by this GPU's (3089) and by each route, as the route's kernel
+jit mma12_gemm: 7.9 us a call
+jit mma12_gemm_mid: 6.6 us a call
+lib mma12_gemm: 7.9 us a call
+lib mma12_gemm_mid: 8.4 us a call
+refused: fast_gemm (jit): fast_gemm: invalid argument
+refused: fast_gemm (lib): fast_gemm: invalid argument
+refused: fast_gemm (jit): fast_gemm: invalid argument
+refused: fast_gemm (lib): fast_gemm: invalid argument
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm_wg (jit): wgmma: Hopper (compute capability 9.0) alone
+refused: mma12_gemm_wg (lib): mma12_gemm_wg: operation not supported
+refused: mma12_gemm (jit): mma12_gemm: invalid argument
+refused: mma12_gemm (lib): mma12_gemm: invalid argument
+refused: mma12_gemm_mid (jit): mma12_gemm_mid: invalid argument
+refused: mma12_gemm_mid (lib): mma12_gemm_mid: invalid argument
+refused: mma12_gemm_big (jit): mma12_gemm_big: invalid argument
+refused: mma12_gemm_big (lib): mma12_gemm_big: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_unpack (jit): mma12_unpack: invalid argument
+refused: mma12_unpack (lib): mma12_unpack: invalid argument
+refused: mma12_gemm (jit): mma12_gemm: invalid argument
+refused: mma12_gemm (lib): mma12_gemm: invalid argument
+refused: mma12_gemm_mid (jit): mma12_gemm_mid: invalid argument
+refused: mma12_gemm_mid (lib): mma12_gemm_mid: invalid argument
+refused: mma12_gemm_big (jit): mma12_gemm_big: invalid argument
+refused: mma12_gemm_big (lib): mma12_gemm_big: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_unpack (jit): mma12_unpack: invalid argument
+refused: mma12_unpack (lib): mma12_unpack: invalid argument
+refused: mma12_gemm (jit): mma12_gemm: invalid argument
+refused: mma12_gemm (lib): mma12_gemm: invalid argument
+refused: mma12_gemm_mid (jit): mma12_gemm_mid: invalid argument
+refused: mma12_gemm_mid (lib): mma12_gemm_mid: invalid argument
+refused: mma12_gemm_big (jit): mma12_gemm_big: invalid argument
+refused: mma12_gemm_big (lib): mma12_gemm_big: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_unpack (jit): mma12_unpack: invalid argument
+refused: mma12_unpack (lib): mma12_unpack: invalid argument
+refused: mma12_gemm (jit): mma12_gemm: invalid argument
+refused: mma12_gemm (lib): mma12_gemm: invalid argument
+refused: mma12_gemm_mid (jit): mma12_gemm_mid: invalid argument
+refused: mma12_gemm_mid (lib): mma12_gemm_mid: invalid argument
+refused: mma12_gemm_big (jit): mma12_gemm_big: invalid argument
+refused: mma12_gemm_big (lib): mma12_gemm_big: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_unpack (jit): mma12_unpack: invalid argument
+refused: mma12_unpack (lib): mma12_unpack: invalid argument
+refused: mma12_moe (jit): mma12_moe: invalid argument
+refused: mma12_moe (lib): mma12_moe: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: operation not supported
+refused: mma_linear (lib): mma_linear: operation not supported
+refused: mma_linear (jit): mma_linear: invalid argument
+refused: mma_linear (lib): mma_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: operation not supported
+refused: mma12_linear (lib): mma12_linear: operation not supported
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_linear (jit): mma12_linear: invalid argument
+refused: mma12_linear (lib): mma12_linear: invalid argument
+refused: mma12_gemm (jit): O a multiple of 64, K of 16, up to 64 tokens, X contiguous [M, K]
+refused: mma12_gemm (lib): O a multiple of 64, K of 16, up to 64 tokens, X contiguous [M, K]
+refused: mma12_gemm_mid (jit): O a multiple of 64, K of 64, X contiguous [M, K]
+refused: mma12_gemm_mid (lib): O a multiple of 64, K of 64, X contiguous [M, K]
+refused: mma12_unpack (jit): rows a multiple of 64
+refused: mma12_unpack (lib): rows a multiple of 64
+refused: hold (jit): hold: invalid argument
+refused: hold (lib): hold: invalid argument
+library /home/ubuntu/dfx/w/final/lib/libglyd_gpu_cuda13.so (CUDA 13000), NVIDIA L4: 7041 calls compared bit for bit, all identical; 260052 routes as main's rule (0.24.0's GLinear, with the L4's decode since)
+  A100 prompt decoded: 1
+  GEmbedding.step: 1
+  GLinear decoded ahead: 91
+  GLinear decoded ahead (as on an A100): 91
+  GLinear decodes ahead past a prompt's end: 1
+  GLinear off the order: 43
+  GLinear off the order (as on an A100): 43
+  GLinear off the order after a call below the threshold: 5
+  GLinear off the order, decoded: 15
+  GLinear off the order, decoded (as on an A100): 7
+  GLinear where Ahead does not take it (fused): 8
+  GLinear's decode ahead, as main's: 12
+  GLinear's routes on an A10 / A10G: 6
+  GLinear's routes on an L4 / L40: 9
+  GLinear's routes on an L40S: 4
+  GLinear.step: 306
+  L4 prompt decoded: 3
+  attn_decode: 6
+  decode: 13
+  fast_bgemv: 24
+  fast_decode: 15
+  fast_gemm: 48
+  fast_gemm (refused): 2
+  fast_gemv: 10
+  gemv: 16
+  hold: 1
+  hold (refused): 1
+  lane_bits: 5
+  linear refused, not supported (K not a multiple of 64): 48
+  linear, its route's kernel: 382
+  mma12_gemm: 113
+  mma12_gemm (refused): 5
+  mma12_gemm_big: 208
+  mma12_gemm_big (refused): 4
+  mma12_gemm_mid: 225
+  mma12_gemm_mid (refused): 5
+  mma12_gemm_wg (refused): 16
+  mma12_linear: 218
+  mma12_linear (refused): 62
+  mma12_moe: 122
+  mma12_moe (refused): 1
+  mma12_moe_unpack: 13
+  mma12_unpack: 60
+  mma12_unpack (refused): 5
+  mma_gemm: 112
+  mma_gemm_big: 208
+  mma_gemm_big on two streams at once: 4000
+  mma_gemm_big's blocks: 34
+  mma_linear: 164
+  mma_linear (refused): 36
+  mma_moe: 122
+  mma_moe_unpack: 13
+  mma_unpack: 60
+  moe_route: 13
+  write_codes: 5
+exit 0
