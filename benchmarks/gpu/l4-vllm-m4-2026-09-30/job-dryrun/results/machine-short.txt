@@ -1,0 +1,1 @@
+1 x NVIDIA L4 (compute 8.9, sm_89, 23034 MiB), x86_64 host, 16 CPUs; tree 61825a1 (vllm-plugin, v0.25.1 with the plugin); steps moebench,profile; TP 1; model Qwen/Qwen3-1.7B, big none, experts ibm-granite/granite-3.1-3b-a800m-instruct

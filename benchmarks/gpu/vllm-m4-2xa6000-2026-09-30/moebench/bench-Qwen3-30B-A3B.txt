@@ -1,0 +1,55 @@
+== 12:06:15 bf16: vllm serve Qwen/Qwen3-30B-A3B , first (cold where VLLM_CACHE_ROOT is empty)
+Model loading took 28.46 GiB memory and 12.145002 seconds
+Model loading took 28.46 GiB memory and 12.397016 seconds
+GPU KV cache size: 283,904 tokens, Maximum concurrency for 4,096 tokens per request: 69.31x
+44382 MiB, 49140 MiB
+44382 MiB, 49140 MiB
+== 12:08:42 bf16: vllm serve Qwen/Qwen3-30B-A3B  (the GPU at 38 C)
+Model loading took 28.46 GiB memory and 12.175591 seconds
+Model loading took 28.46 GiB memory and 12.348223 seconds
+GPU KV cache size: 283,904 tokens, Maximum concurrency for 4,096 tokens per request: 69.31x
+44382 MiB, 49140 MiB
+44382 MiB, 49140 MiB
+== 12:10:02 bf16: rate 1, 64 prompts
+   exit 0
+== 12:11:23 bf16: rate 4, 128 prompts
+   exit 0
+== 12:12:16 bf16: rate inf, 256 prompts
+   exit 0
+== 12:13:21 glyd: vllm serve Qwen/Qwen3-30B-A3B --quantization glyd, first (cold where VLLM_CACHE_ROOT is empty)
+glyd: tensor parallel 2: each rank packs its own shard (not measured yet)
+glyd: mma layout
+glyd: tensor parallel 2: each rank packs its own shard (not measured yet)
+glyd: mma layout
+Model loading took 19.75 GiB memory and 39.211130 seconds
+Model loading took 19.75 GiB memory and 39.424824 seconds
+GPU KV cache size: 473,232 tokens, Maximum concurrency for 4,096 tokens per request: 115.54x
+44372 MiB, 49140 MiB
+44376 MiB, 49140 MiB
+== 12:17:18 glyd: vllm serve Qwen/Qwen3-30B-A3B --quantization glyd (the GPU at 43 C)
+glyd: tensor parallel 2: each rank packs its own shard (not measured yet)
+glyd: mma layout
+glyd: tensor parallel 2: each rank packs its own shard (not measured yet)
+glyd: mma layout
+Model loading took 19.75 GiB memory and 39.042244 seconds
+Model loading took 19.75 GiB memory and 39.223546 seconds
+GPU KV cache size: 473,232 tokens, Maximum concurrency for 4,096 tokens per request: 115.54x
+44370 MiB, 49140 MiB
+44374 MiB, 49140 MiB
+== 12:19:03 glyd: rate 1, 64 prompts
+   exit 0
+== 12:20:24 glyd: rate 4, 128 prompts
+   exit 0
+== 12:21:23 glyd: rate inf, 256 prompts
+   exit 0
+bf16: weights 28.46 GiB, KV cache 283,904 tokens, max concurrency 69.31x at 4,096 tokens (started cold, on an empty compile cache: weights 28.46 GiB, KV cache 283,904 tokens, max concurrency 69.31x at 4,096 tokens)
+glyd: weights 19.75 GiB, KV cache 473,232 tokens, max concurrency 115.54x at 4,096 tokens (started cold, on an empty compile cache: weights 19.75 GiB, KV cache 473,232 tokens, max concurrency 115.54x at 4,096 tokens)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.94 | 239.7 | 156 / 531 | 16.4 / 21.6 | 64 | 1920 MHz, 62 C |
+| 1 | glyd | 0.94 | 239.8 | 204 / 399 | 15.3 / 21.8 | 64 | 1905 MHz, 71 C |
+| 4 | bf16 | 3.20 | 818.1 | 198 / 515 | 44.7 / 61.5 | 128 | 1905 MHz, 70 C |
+| 4 | glyd | 2.83 | 723.6 | 378 / 1151 | 70.9 / 97.5 | 128 | 1845 MHz, 75 C |
+| inf | bf16 | 5.68 | 1453.6 | 5840 / 19990 | 126.8 / 139.0 | 256 | 1800 MHz, 74 C |
+| inf | glyd | 4.92 | 1260.6 | 7851 / 27691 | 162.6 / 184.8 | 256 | 1830 MHz, 77 C |

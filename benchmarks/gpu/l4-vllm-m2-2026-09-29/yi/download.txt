@@ -1,0 +1,1 @@
+exit 0: /home/ubuntu/hf/hub/models--01-ai--Yi-1.5-6B-Chat/snapshots/771924d1c83d67527d665913415d7086f11ea9c0, 12126768533 bytes in 102 s

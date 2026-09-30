@@ -1,0 +1,193 @@
+========= COMPUTE-SANITIZER
+2048 2048 mma 1 2.39e-03
+2048 2048 mma 16 1.88e-03
+2048 2048 mma 17 2.12e-03
+2048 2048 mma 33 1.78e-03
+2048 2048 mma 64 1.99e-03
+2048 2048 mma 65 2.01e-03
+2048 2048 mma 129 2.60e-03
+2048 2048 mma 300 2.79e-03
+2048 2048 mma 1024 3.13e-03
+2048 2048 mma12 1 2.27e-03
+2048 2048 mma12 16 2.06e-03
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0xe60
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8550 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8580 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8a70 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8aa0 [138880 hazards]
+========= 
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0xe70
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8510 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8550 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8a30 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8a70 [138880 hazards]
+========= 
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0xe80
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8510 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8590 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8a30 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8ab0 [138880 hazards]
+========= 
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0xe90
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8580 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8590 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8aa0 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8ab0 [138880 hazards]
+========= 
+========= Error: Race reported between Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8240
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2220 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2250 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2260 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2270 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2300 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2320 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2410 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2420 [35840 hazards]
+========= 
+========= Error: Race reported between Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8270
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2220 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2250 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2260 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2270 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2300 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2320 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2410 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2420 [35840 hazards]
+========= 
+========= Error: Race reported between Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8290
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2220 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2250 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2260 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2270 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2300 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2320 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2410 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2420 [35840 hazards]
+========= 
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0xe10
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8590 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8ab0 [138880 hazards]
+========= 
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0xe30
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8580 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8aa0 [138880 hazards]
+========= 
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0xe40
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8550 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8a70 [138880 hazards]
+========= 
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0xe50
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8510 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8a30 [138880 hazards]
+========= 
+========= Error: Race reported between Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8210
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2220 [31360 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2250 [31360 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2260 [31360 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2270 [31360 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2300 [31360 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2320 [31360 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2410 [31360 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2420 [31360 hazards]
+========= 
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0xde0
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8800 [4480 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8cc0 [4480 hazards]
+========= 
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0xdb0
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8840 [2240 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8cf0 [2240 hazards]
+========= 
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x19b0
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x87d0 [8 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)32, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8c90 [12 hazards]
+========= 
+2048 2048 mma12 17 2.02e-03
+========= Warning: Maximum number of hazards reached. Environment variable NV_COMPUTE_SANITIZER_MAX_RACECHECK_HAZARDS can be used to increase this count.
+========= 
+========= Error: Race reported between Write access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8b50
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2580 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x25b0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x25f0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2610 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2620 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2680 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x26b0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x26c0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x26f0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2720 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2730 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2760 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x27c0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x27f0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2820 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2830 [35840 hazards]
+========= 
+========= Error: Race reported between Write access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8b80
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2580 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x25b0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x25f0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2610 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2620 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2680 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x26b0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x26c0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x26f0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2720 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2730 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2760 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x27c0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x27f0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2820 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2830 [35840 hazards]
+========= 
+========= Error: Race reported between Write access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8ba0
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2580 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x25b0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x25f0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2610 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2620 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2680 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x26b0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x26c0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x26f0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2720 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2730 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2760 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x27c0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x27f0 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2820 [35840 hazards]
+=========     and Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x2830 [35840 hazards]
+========= 
+========= Error: Race reported between Read access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x1230
+=========     and Write access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8e50 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x8e80 [138880 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x9360 [138028 hazards]
+=========     and Write access at void mma12_mid_kernel<(int)64, (int)2>(Nib, long, long, long, const __nv_bfloat16 *, const __nv_bfloat16 *, __nv_bfloat16 *, float *, int *)+0x9390 [137666 hazards]
+========= 
+2048 2048 mma12 33 1.96e-03
+2048 2048 mma12 64 2.86e-03
+2048 2048 mma12 65 2.82e-03
+2048 2048 mma12 129 2.76e-03
+2048 2048 mma12 300 3.42e-03
+2048 2048 mma12 1024 3.05e-03
+1024 4096 mma 1 1.88e-03
+1024 4096 mma 16 3.18e-03
+1024 4096 mma 17 3.02e-03
+1024 4096 mma 33 2.68e-03
+1024 4096 mma 64 2.78e-03
+1024 4096 mma 65 2.66e-03
+1024 4096 mma 129 2.29e-03
+1024 4096 mma 300 2.72e-03
+1024 4096 mma 1024 2.32e-03
+1024 4096 mma12 1 1.85e-03
+1024 4096 mma12 16 2.67e-03
+1024 4096 mma12 17 2.55e-03
+1024 4096 mma12 33 2.85e-03
+1024 4096 mma12 64 2.82e-03
+1024 4096 mma12 65 2.71e-03
+1024 4096 mma12 129 2.58e-03
+1024 4096 mma12 300 2.66e-03
+1024 4096 mma12 1024 2.50e-03
+opcheck: done
+========= RACECHECK SUMMARY: 20 hazards displayed (30 errors, 1 warning)

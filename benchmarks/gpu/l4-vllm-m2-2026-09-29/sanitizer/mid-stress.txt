@@ -1,0 +1,25 @@
+mma12 O 2048 K 2048 M 17 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 2.05e-03
+mma12 O 2048 K 2048 M 33 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 2.65e-03
+mma12 O 2048 K 2048 M 64 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 1.86e-03
+mma O 2048 K 2048 M 17 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 2.11e-03
+mma O 2048 K 2048 M 33 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 2.16e-03
+mma O 2048 K 2048 M 64 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 2.01e-03
+mma12 O 6144 K 2048 M 17 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 2.34e-03
+mma12 O 6144 K 2048 M 33 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 2.68e-03
+mma12 O 6144 K 2048 M 64 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 2.77e-03
+mma O 6144 K 2048 M 17 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 2.69e-03
+mma O 6144 K 2048 M 33 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 1.93e-03
+mma O 6144 K 2048 M 64 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 2.82e-03
+mma12 O 2048 K 6144 M 17 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 2.26e-03
+mma12 O 2048 K 6144 M 33 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 2.28e-03
+mma12 O 2048 K 6144 M 64 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 2.07e-03
+mma O 2048 K 6144 M 17 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 2.29e-03
+mma O 2048 K 6144 M 33 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 1.96e-03
+mma O 2048 K 6144 M 64 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 2.32e-03
+mma12 O 12288 K 2048 M 17 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 1.91e-03
+mma12 O 12288 K 2048 M 33 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 2.31e-03
+mma12 O 12288 K 2048 M 64 route 2: 2000 calls, 0 with other bits than the first; first against the decoded product 3.10e-03
+mma O 12288 K 2048 M 17 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 1.84e-03
+mma O 12288 K 2048 M 33 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 3.05e-03
+mma O 12288 K 2048 M 64 route 1: 2000 calls, 0 with other bits than the first; first against the decoded product 3.41e-03
+midstress: done

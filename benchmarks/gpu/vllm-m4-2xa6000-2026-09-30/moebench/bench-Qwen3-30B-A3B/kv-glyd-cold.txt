@@ -1,0 +1,9 @@
+glyd: tensor parallel 2: each rank packs its own shard (not measured yet)
+glyd: mma layout
+glyd: tensor parallel 2: each rank packs its own shard (not measured yet)
+glyd: mma layout
+Model loading took 19.75 GiB memory and 39.211130 seconds
+Model loading took 19.75 GiB memory and 39.424824 seconds
+GPU KV cache size: 473,232 tokens, Maximum concurrency for 4,096 tokens per request: 115.54x
+44372 MiB, 49140 MiB
+44376 MiB, 49140 MiB

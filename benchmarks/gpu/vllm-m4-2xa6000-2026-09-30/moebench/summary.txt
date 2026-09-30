@@ -1,0 +1,22 @@
+2 x NVIDIA RTX A6000 (compute 8.6, sm_86, 49140 MiB), x86_64 host, 28 CPUs; tree 5513d94 (vllm-plugin, v0.25.1 with the plugin); steps moebench; TP 2; model Qwen/Qwen3-8B, big none, experts ibm-granite/granite-3.1-3b-a800m-instruct Qwen/Qwen3-30B-A3B
+12:05:57 (+1 s) machine
+12:06:12 (+16 s) env: vLLM and nvcc in 15 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA RTX A6000)
+12:06:15 (+19 s) build: sm_86 in 3 s (library: C API 5 | GPU code 86)
+12:22:34 (+998 s) bench Qwen3-30B-A3B: exit 0 in 979 s
+download dl-Qwen3-30B-A3B: exit 0: 61084157680 bytes in 0 s (at +2 s)
+download dl-granite-3.1-3b-a800m-instruct: exit 0: 6602352184 bytes in 1 s (at +2 s)
+12:22:34 (+998 s) done
+
+== bench-Qwen3-30B-A3B
+bf16: weights 28.46 GiB, KV cache 283,904 tokens, max concurrency 69.31x at 4,096 tokens (started cold, on an empty compile cache: weights 28.46 GiB, KV cache 283,904 tokens, max concurrency 69.31x at 4,096 tokens)
+glyd: weights 19.75 GiB, KV cache 473,232 tokens, max concurrency 115.54x at 4,096 tokens (started cold, on an empty compile cache: weights 19.75 GiB, KV cache 473,232 tokens, max concurrency 115.54x at 4,096 tokens)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.94 | 239.7 | 156 / 531 | 16.4 / 21.6 | 64 | 1920 MHz, 62 C |
+| 1 | glyd | 0.94 | 239.8 | 204 / 399 | 15.3 / 21.8 | 64 | 1905 MHz, 71 C |
+| 4 | bf16 | 3.20 | 818.1 | 198 / 515 | 44.7 / 61.5 | 128 | 1905 MHz, 70 C |
+| 4 | glyd | 2.83 | 723.6 | 378 / 1151 | 70.9 / 97.5 | 128 | 1845 MHz, 75 C |
+| inf | bf16 | 5.68 | 1453.6 | 5840 / 19990 | 126.8 / 139.0 | 256 | 1800 MHz, 74 C |
+| inf | glyd | 4.92 | 1260.6 | 7851 / 27691 | 162.6 / 184.8 | 256 | 1830 MHz, 77 C |
+

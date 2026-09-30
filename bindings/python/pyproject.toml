@@ -37,6 +37,14 @@ Issues = "https://github.com/surya-koritala/Glyd/issues"
 # glyd.gpu: from_pretrained builds on transformers' quantizer API as of 5.17
 # (register_quantizer, on-the-fly quantize ops); fit needs none of these.
 gpu = ["torch>=2.5", "transformers>=5.17,<6", "accelerate>=1.1", "safetensors>=0.8", "huggingface_hub>=1.5,<2"]
+# vllm serve MODEL --quantization glyd (glyd.gpu.vllm_plugin): the vLLM releases it is tested with (its plugin
+# interfaces and its layerwise loading move between minor releases); vLLM brings torch, transformers and the rest.
+vllm = ["vllm>=0.30,<0.31", "safetensors>=0.8", "huggingface_hub>=1.5,<2"]
+
+[project.entry-points."vllm.general_plugins"]
+# vllm serve MODEL --quantization glyd: vLLM calls it in every process it starts; it loads glyd.gpu.vllm_plugin where
+# vLLM is the release it is tested with, and never raises
+glyd = "glyd.gpu.vllm_entry:register"
 
 [tool.setuptools]
 packages = ["glyd", "glyd.gpu"]

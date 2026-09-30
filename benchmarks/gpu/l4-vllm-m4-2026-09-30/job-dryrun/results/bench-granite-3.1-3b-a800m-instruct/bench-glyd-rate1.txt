@@ -1,0 +1,45 @@
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x75e2c60eaa20>, trust_remote_code=False, seed=0, num_prompts=16, dataset_name='random', no_stream=False, dataset_path=None, no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, custom_ensure_client_side_data=False, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, timed_trace_chunk_hash_size=16, timed_trace_sec_multiplier=1, timed_trace_label_timestamp='timestamp', timed_trace_label_input_length='input_length', timed_trace_label_output_length='output_length', timed_trace_label_hash_ids='hash_ids', blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=1024, random_output_len=256, random_range_ratio='0.0', random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, bfcl_categories=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, speed_bench_dataset_subset='qualitative', speed_bench_output_len=4096, speed_bench_category=None, label=None, backend='vllm', base_url=None, host='127.0.0.1', port=8012, endpoint='/v1/completions', header=None, max_concurrency=None, model='ibm-granite/granite-3.1-3b-a800m-instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=1.0, burstiness=1.0, probe_request_rate=0.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=True, save_detailed=False, append_result=False, metadata=None, result_dir='/home/ubuntu/m4dry/results/bench-granite-3.1-3b-a800m-instruct', result_filename='glyd-rate1.json', ignore_eos=True, self_timed=None, percentile_metrics='ttft,tpot,itl,e2el', metric_percentiles='50,99', goodput=None, request_id_prefix='bench-07f2b51e-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, lora_assignment='random', ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, chat_template_kwargs=None, extra_body=None, skip_tokenizer_init=False, insecure=False, plot_timeline=False, timeline_itl_thresholds='25,50', plot_dataset_stats=False)
+INFO 09-30 07:40:57 [utils.py:90] Sampling input_len from [1024, 1024] and output_len from [256, 256]
+[transformers] Ignoring clean_up_tokenization_spaces=True for BPE tokenizer CachedTokenizersBackend. The clean_up_tokenization post-processing step is designed for WordPiece tokenizers and is destructive for BPE (it strips spaces before punctuation). Set clean_up_tokenization_spaces=False to suppress this warning, or set clean_up_tokenization_spaces_for_bpe_even_though_it_will_corrupt_output=True to force cleanup anyway.
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: 1.0
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: None
+  0%|          | 0/16 [00:00<?, ?it/s]  6%|▋         | 1/16 [00:03<00:50,  3.38s/it] 12%|█▎        | 2/16 [00:05<00:38,  2.75s/it] 19%|█▉        | 3/16 [00:06<00:25,  2.00s/it] 25%|██▌       | 4/16 [00:07<00:18,  1.52s/it] 31%|███▏      | 5/16 [00:08<00:12,  1.13s/it] 38%|███▊      | 6/16 [00:08<00:10,  1.01s/it] 44%|████▍     | 7/16 [00:09<00:07,  1.28it/s] 50%|█████     | 8/16 [00:10<00:06,  1.20it/s] 56%|█████▋    | 9/16 [00:13<00:11,  1.65s/it] 62%|██████▎   | 10/16 [00:14<00:08,  1.37s/it] 69%|██████▉   | 11/16 [00:15<00:07,  1.43s/it] 75%|███████▌  | 12/16 [00:16<00:05,  1.27s/it] 81%|████████▏ | 13/16 [00:17<00:03,  1.08s/it] 88%|████████▊ | 14/16 [00:19<00:02,  1.41s/it]100%|██████████| 16/16 [00:19<00:00,  1.22s/it]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     16        
+Failed requests:                         0         
+Request rate configured (RPS):           1.00      
+Benchmark duration (s):                  19.56     
+Total input tokens:                      16384     
+Total generated tokens:                  4096      
+Request throughput (req/s):              0.82      
+Output token throughput (tok/s):         209.44    
+Peak output token throughput (tok/s):    320.00    
+Peak concurrent requests:                6.00      
+Total token throughput (tok/s):          1047.21   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          126.73    
+Median TTFT (ms):                        124.04    
+P50 TTFT (ms):                           124.04    
+P99 TTFT (ms):                           187.33    
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          13.88     
+Median TPOT (ms):                        14.23     
+P50 TPOT (ms):                           14.23     
+P99 TPOT (ms):                           16.00     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           13.88     
+Median ITL (ms):                         13.51     
+P50 ITL (ms):                            13.51     
+P99 ITL (ms):                            28.11     
+----------------End-to-end Latency----------------
+Mean E2EL (ms):                          3666.86   
+Median E2EL (ms):                        3752.90   
+P50 E2EL (ms):                           3752.90   
+P99 E2EL (ms):                           4202.27   
+==================================================

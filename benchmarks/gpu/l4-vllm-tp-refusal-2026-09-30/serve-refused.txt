@@ -1,0 +1,54 @@
+(APIServer pid=23320) INFO 09-30 13:35:49 [api_utils.py:347] 
+(APIServer pid=23320) INFO 09-30 13:35:49 [api_utils.py:347]        █     █     █▄   ▄█
+(APIServer pid=23320) INFO 09-30 13:35:49 [api_utils.py:347]  ▄▄ ▄█ █     █     █ ▀▄▀ █  version 0.30.0
+(APIServer pid=23320) INFO 09-30 13:35:49 [api_utils.py:347]   █▄█▀ █     █     █     █  model   Qwen/Qwen3-1.7B
+(APIServer pid=23320) INFO 09-30 13:35:49 [api_utils.py:347]    ▀▀  ▀▀▀▀▀ ▀▀▀▀▀ ▀     ▀
+(APIServer pid=23320) INFO 09-30 13:35:49 [api_utils.py:347] 
+(APIServer pid=23320) INFO 09-30 13:35:49 [api_utils.py:286] non-default args: {'model_tag': 'Qwen/Qwen3-1.7B', 'port': 8031, 'model': 'Qwen/Qwen3-1.7B', 'max_model_len': 4096, 'quantization': 'glyd', 'distributed_executor_backend': 'mp'}
+(APIServer pid=23320) INFO 09-30 13:35:49 [arg_utils.py:849] HF_HUB_OFFLINE is True, replace model_id [Qwen/Qwen3-1.7B] to model_path [/home/ubuntu/hf/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e]
+(APIServer pid=23320) INFO 09-30 13:35:49 [model.py:692] Resolved architecture: Qwen3ForCausalLM
+(APIServer pid=23320) INFO 09-30 13:35:49 [model.py:2030] Using max model len 4096
+(APIServer pid=23320) Traceback (most recent call last):
+(APIServer pid=23320)   File "/home/ubuntu/vllm-work/venv/bin/vllm", line 10, in <module>
+(APIServer pid=23320)     sys.exit(main())
+(APIServer pid=23320)              ^^^^^^
+(APIServer pid=23320)   File "/home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/vllm/entrypoints/cli/main.py", line 106, in main
+(APIServer pid=23320)     args.dispatch_function(args)
+(APIServer pid=23320)   File "/home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/vllm/entrypoints/cli/serve.py", line 154, in cmd
+(APIServer pid=23320)     uvloop.run(run_server(args))
+(APIServer pid=23320)   File "/home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/uvloop/__init__.py", line 96, in run
+(APIServer pid=23320)     return __asyncio.run(
+(APIServer pid=23320)            ^^^^^^^^^^^^^^
+(APIServer pid=23320)   File "/usr/lib/python3.12/asyncio/runners.py", line 194, in run
+(APIServer pid=23320)     return runner.run(main)
+(APIServer pid=23320)            ^^^^^^^^^^^^^^^^
+(APIServer pid=23320)   File "/usr/lib/python3.12/asyncio/runners.py", line 118, in run
+(APIServer pid=23320)     return self._loop.run_until_complete(task)
+(APIServer pid=23320)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=23320)   File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=23320)   File "/home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=23320)     return await main
+(APIServer pid=23320)            ^^^^^^^^^^
+(APIServer pid=23320)   File "/home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 176, in run_server
+(APIServer pid=23320)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=23320)   File "/home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 190, in run_server_worker
+(APIServer pid=23320)     async with build_async_engine_client(
+(APIServer pid=23320)   File "/usr/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=23320)     return await anext(self.gen)
+(APIServer pid=23320)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=23320)   File "/home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 58, in build_async_engine_client
+(APIServer pid=23320)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=23320)   File "/usr/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=23320)     return await anext(self.gen)
+(APIServer pid=23320)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=23320)   File "/home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 82, in build_async_engine_client_from_engine_args
+(APIServer pid=23320)     vllm_config = engine_args.create_engine_config(usage_context=usage_context)
+(APIServer pid=23320)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=23320)   File "/home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/vllm/engine/arg_utils.py", line 2647, in create_engine_config
+(APIServer pid=23320)     config = VllmConfig(
+(APIServer pid=23320)              ^^^^^^^^^^^
+(APIServer pid=23320)   File "/home/ubuntu/vllm-work/venv/lib/python3.12/site-packages/pydantic/_internal/_dataclasses.py", line 121, in __init__
+(APIServer pid=23320)     s.__pydantic_validator__.validate_python(ArgsKwargs(args, kwargs), self_instance=s)
+(APIServer pid=23320) pydantic_core._pydantic_core.ValidationError: 1 validation error for VllmConfig
+(APIServer pid=23320)   Value error, glyd: exact mode gives vLLM's bf16 logits bit for bit eager (--enforce-eager), or compiled with inductor's deterministic mode, with which vLLM's compiled bf16 is itself the same from one run to the next: --compilation-config '{"inductor_compile_config": {"deterministic": true, "combo_kernels": true, "benchmark_combo_kernel": false}}' (the bf16 run to compare with the same). Without it inductor times some of its kernels' variants on the GPU, and compiled logits, bf16's too, are not always the same from one run to the next. Add one of the two, or leave exact off [type=value_error, input_value=ArgsKwargs((), {'model_co... 'shutdown_timeout': 0}), input_type=ArgsKwargs]
+(APIServer pid=23320)     For further information visit https://errors.pydantic.dev/2.13/v/value_error

@@ -1,0 +1,35 @@
+== 07:34:12 bf16: vllm serve ibm-granite/granite-3.1-3b-a800m-instruct , first (cold where VLLM_CACHE_ROOT is empty)
+Model loading took 6.17 GiB memory and 5.261540 seconds
+GPU KV cache size: 211,328 tokens, Maximum concurrency for 4,096 tokens per request: 51.59x
+20608 MiB, 23034 MiB
+== 07:36:48 bf16: vllm serve ibm-granite/granite-3.1-3b-a800m-instruct  (the GPU at 48 C)
+Model loading took 6.17 GiB memory and 2.806097 seconds
+GPU KV cache size: 211,968 tokens, Maximum concurrency for 4,096 tokens per request: 51.75x
+20618 MiB, 23034 MiB
+== 07:37:28 bf16: rate 1, 16 prompts
+   exit 0
+== 07:37:58 bf16: rate inf, 32 prompts
+   exit 0
+== 07:38:23 glyd: vllm serve ibm-granite/granite-3.1-3b-a800m-instruct --quantization glyd, first (cold where VLLM_CACHE_ROOT is empty)
+glyd: mma layout
+Model loading took 4.33 GiB memory and 12.255263 seconds
+GPU KV cache size: 238,240 tokens, Maximum concurrency for 4,096 tokens per request: 58.16x
+20494 MiB, 23034 MiB
+== 07:39:58 glyd: vllm serve ibm-granite/granite-3.1-3b-a800m-instruct --quantization glyd (the GPU at 52 C)
+glyd: mma layout
+Model loading took 4.33 GiB memory and 12.273211 seconds
+GPU KV cache size: 240,352 tokens, Maximum concurrency for 4,096 tokens per request: 58.68x
+20500 MiB, 23034 MiB
+== 07:40:48 glyd: rate 1, 16 prompts
+   exit 0
+== 07:41:17 glyd: rate inf, 32 prompts
+   exit 0
+bf16: weights 6.17 GiB, KV cache 211,968 tokens, max concurrency 51.75x at 4,096 tokens (started cold, on an empty compile cache: weights 6.17 GiB, KV cache 211,328 tokens, max concurrency 51.59x at 4,096 tokens)
+glyd: weights 4.33 GiB, KV cache 240,352 tokens, max concurrency 58.68x at 4,096 tokens (started cold, on an empty compile cache: weights 4.33 GiB, KV cache 238,240 tokens, max concurrency 58.16x at 4,096 tokens)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.79 | 201.9 | 129 / 613 | 17.4 / 19.5 | 16 | 2040 MHz, 53 C |
+| 1 | glyd | 0.82 | 209.4 | 127 / 187 | 13.9 / 16.0 | 16 | 1710 MHz, 60 C |
+| inf | bf16 | 3.17 | 811.0 | 413 / 1103 | 37.5 / 38.4 | 32 | 1980 MHz, 56 C |
+| inf | glyd | 3.25 | 832.6 | 575 / 1624 | 35.9 / 37.5 | 32 | 1575 MHz, 61 C |

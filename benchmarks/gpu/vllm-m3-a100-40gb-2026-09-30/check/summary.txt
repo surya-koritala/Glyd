@@ -1,0 +1,25 @@
+NVIDIA A100-SXM4-40GB (compute 8.0, sm_80, 40960 MiB), x86_64 host, 30 CPUs; tree 766746a (vllm-plugin, v0.25.1 with the plugin); steps check; model Qwen/Qwen3-8B, big none
+05:53:29 (+1 s) machine
+05:54:00 (+32 s) env: vLLM and nvcc in 31 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA A100-SXM4-40GB)
+05:54:51 (+83 s) build: sm_80 in 51 s (library: C API 5 | GPU code 80)
+06:12:28 (+1140 s) check: exit 0 in 1057 s (check_vllm: all passed (15 checks))
+download dl-Qwen3-8B: exit 0: 16397431693 bytes in 22 s (at +23 s)
+06:12:28 (+1140 s) done
+
+== check-Qwen3-8B
+PASS Qwen3-8B mma: every pack (144) decoded to its weights bit for bit
+PASS Qwen3-8B mma: each layer's product within 1e-2 of F.linear (3.69e-03) and the same bits every run
+PASS Qwen3-8B mma: top-1 agreement with bf16 on its continuation 0.9883 (at least 0.97; bf16 eager's 0.9903)
+PASS Qwen3-8B mma: mean |logprob difference| 7.31e-03, at most 2.0x bf16 eager's against its graphs (8.26e-03)
+PASS Qwen3-8B mma12: every pack (144) decoded to its weights bit for bit
+PASS Qwen3-8B mma12: each layer's product within 1e-2 of F.linear (3.90e-03) and the same bits every run
+PASS Qwen3-8B mma12: top-1 agreement with bf16 on its continuation 0.9903 (at least 0.97; bf16 eager's 0.9903)
+PASS Qwen3-8B mma12: mean |logprob difference| 6.94e-03, at most 2.0x bf16 eager's against its graphs (8.26e-03)
+PASS Qwen3-8B mma: again on the shared compile cache, its graphs loaded (True), against bf16 as before (top-1 0.9883, mean |diff| 7.31e-03)
+PASS Qwen3-8B mma12: again on the shared compile cache, its graphs loaded (True), against bf16 as before (top-1 0.9903, mean |diff| 6.94e-03)
+PASS Qwen3-8B: a compile cache for each of bf16, glyd tiered and glyd 12-bit on the one VLLM_CACHE_ROOT (3), none reused by another
+PASS Qwen3-8B exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8; continuation True)
+PASS Qwen3-8B exact under torch.compile: refused (ValueError: glyd: exact mode gives vLLM's bf16 logits bit for bit eager (--enforce-eager), or compiled with inductor's d)
+PASS Qwen3-8B exact under torch.compile, inductor deterministic: compiled bf16's tokens, logprobs and prompt_logprobs (the same mode) bit for bit (8 of 8; continuation True)
+PASS Qwen3-8B fused, compiled, inductor deterministic: the same bits from one run to the next, the second on the first's graphs (8 of 8; continuation True; layout mma12)
+

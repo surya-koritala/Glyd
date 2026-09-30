@@ -1,0 +1,2 @@
+06:08:42 check exit 0
+06:26:51 bench exit 0

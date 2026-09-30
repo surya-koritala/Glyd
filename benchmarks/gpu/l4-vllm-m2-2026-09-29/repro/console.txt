@@ -1,0 +1,20 @@
+== 02:08:19 glyd-graphs
+glyd-graphs exit 0
+== 02:10:05 glyd-graphs-again
+glyd-graphs-again exit 0
+== 02:10:41 glyd-nographs
+glyd-nographs exit 0
+== 02:12:18 glyd-nographs-again
+glyd-nographs-again exit 0
+== 02:12:47 bf16-graphs
+bf16-graphs exit 0
+== 02:13:57 bf16-graphs-again
+bf16-graphs-again exit 0
+== 02:14:26 bf16-nographs
+bf16-nographs exit 0
+== 02:15:27 bf16-nographs-again
+bf16-nographs-again exit 0
+glyd-graphs against glyd-graphs-again (one compile cache, its graph loaded): prompts bit for bit 0 of 8; continuation bit for bit False
+glyd-nographs against glyd-nographs-again (one compile cache, its graph loaded): prompts bit for bit 0 of 8; continuation bit for bit False
+bf16-graphs against bf16-graphs-again (one compile cache, its graph loaded): prompts bit for bit 8 of 8; continuation bit for bit True
+bf16-nographs against bf16-nographs-again (one compile cache, its graph loaded): prompts bit for bit 8 of 8; continuation bit for bit True

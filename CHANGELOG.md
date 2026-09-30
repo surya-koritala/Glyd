@@ -8,6 +8,135 @@ every earlier format.
 
 ## v0.26.0 (Unreleased)
 
+- vLLM serves Glyd: `pip install "glyd[vllm]"`, then `vllm serve MODEL
+  --quantization glyd`. The `glyd` package's entry point for vLLM
+  (`vllm.general_plugins`) loads the plugin where vLLM is 0.30, the
+  release it is tested with (`glyd[vllm]` pins `vllm>=0.30,<0.31`); with
+  another it logs one line and loads nothing, and `--quantization glyd`
+  stops with why. A bf16 checkpoint's Linears are packed on the GPU as
+  vLLM's layerwise loading completes each layer (the peak: the packs and a
+  layer), once every piece of the layer has loaded: a checkpoint without
+  one (a merged qkv's k, an expert's up) is refused, naming the layer and
+  the piece, where vLLM's bf16 runs it with that memory never written. A
+  model whose packs cannot fit the GPU's free memory is refused before it
+  loads, with the numbers. A glyd save loads as saved, and its packed LM
+  head is decoded into the bf16 weight vLLM's LM head runs on; saves of
+  Qwen3 and Llama models are checked, and another family's is refused,
+  naming its bf16 source. Each product is one op, `glyd::vllm_linear`, on
+  the library's routes for the GPU: torch.compile takes it as one node and
+  vLLM's CUDA graphs capture it. Embeddings, norms, attention and the KV
+  cache stay vLLM's. vLLM sizes its KV cache after the weights load, so
+  the memory the packs save becomes KV cache. The options go in
+  `--additional-config '{"glyd": {...}}'`, a checkpoint's
+  `quantization_config`, or `GLYD_LAYOUT`, `GLYD_EXACT` and `GLYD_VERIFY`;
+  another key, or a flag not true or false, is refused. `layout` is `auto`
+  by default, `best_layout`'s choice for the GPU. `verify` also checks a
+  save's other tensors by their sha256, and a save packed again in the
+  other layout against the save. The options key vLLM's compile cache,
+  with a digest of the process's packs (a draft model's with the
+  target's), so another layout, mode or checkpoint never loads another's
+  compiled graph ([gpu/vllm/README.md](gpu/vllm/README.md)).
+- Measured with `vllm bench serve`, bf16 against Glyd at the same
+  `--gpu-memory-utilization 0.9`, servers warm, 1,024 tokens in and 256
+  out, v0.25.1's library. On an L4, an A10 and an A100 40 GB (Qwen3-8B;
+  Qwen3-14B too on the A100), Glyd held 1.14-1.89x bf16's KV cache and
+  served 1.19-1.65x its requests a second saturated, the first token
+  25-57% sooner. At low load (1 request a second, 0.25 on the L4) each
+  token came 10-21% sooner there, and the first 16-18% later. Saturated,
+  each token took 30-42% longer on the L4 and A10, and was within 4% on
+  the A100. On a GH200, Qwen3-8B and Qwen3-32B: 1.04x and 1.66x the KV
+  cache, but 0.92x and 0.88x the requests a second saturated (Hopper's gap
+  is not profiled yet), each token at saturation 9% and 82% slower, and at
+  low load the first token 4% and 28% later
+  ([benchmarks/gpu/l4-vllm-m5-2026-09-30](benchmarks/gpu/l4-vllm-m5-2026-09-30),
+  [vllm-m3-a10-2026-09-30](benchmarks/gpu/vllm-m3-a10-2026-09-30),
+  [vllm-m3-a100-40gb-2026-09-30](benchmarks/gpu/vllm-m3-a100-40gb-2026-09-30),
+  [vllm-m3-gh200-2026-09-30](benchmarks/gpu/vllm-m3-gh200-2026-09-30)).
+- Checked against vLLM's own bf16 (`gpu/vllm/check_vllm.py`): Qwen3-1.7B,
+  Qwen3-4B-Instruct-2507, Qwen3-8B, Yi-1.5-6B-Chat (the Llama
+  architecture), granite-3.1-3b-a800m-instruct (a mixture of experts) and
+  Qwen2.5-1.5B-Instruct (Linears with biases) on an L4, and Qwen3-8B on an
+  A10, an A100 and a GH200. Every pack decoded to its weights bit for bit,
+  and every product was within 6.2e-3 of the same product on its matrix
+  decoded. The fused tokens were within vLLM's own bf16 noise, bf16
+  eager's against bf16 with CUDA graphs: fed the 1,536-token continuation
+  bf16 generated, Glyd ranked 0.988-0.997 of its tokens first and bf16
+  eager 0.987-0.995; Glyd's share was at or above bf16 eager's for 16 of
+  the 18 model, GPU and layout pairs, and 0.13 and 0.20 points under it
+  for the other two.
+- `exact` in vLLM: each product's matrix decoded whole, then the GEMM vLLM
+  runs for bf16, its `UnquantizedLinearMethod`'s (F.linear by default, a
+  FlashInfer `--linear-backend`'s, the batch-invariant one under
+  `VLLM_BATCH_INVARIANT`). With `--enforce-eager` the logits are vLLM's
+  bf16 eager's bit for bit; compiled, they are compiled bf16's in
+  inductor's deterministic mode (`--compilation-config
+  '{"inductor_compile_config": {"deterministic": true, "combo_kernels":
+  true, "benchmark_combo_kernel": false}}'`). Without that mode inductor
+  picks some of its kernels' variants by timing them on the GPU, and
+  compiled logits, bf16's too, differ from one process to the next:
+  `exact` compiled is refused without it. It is refused compiled too where
+  a packed Linear has a bias (Qwen2.5's q, k and v), since inductor adds a
+  bf16 Linear's bias apart from its matmul, rounding before the add;
+  eager, those give bf16's bits (Qwen2.5-1.5B-Instruct on an L4). The mode
+  cost nothing measurable on an L4 (Qwen3-8B's tokens/s at 1, 8 and 32
+  sequences within 1%, bf16's and Glyd's), and in it fused Glyd compiled
+  is the same from one run to the next too. Fused products are refused
+  under `VLLM_BATCH_INVARIANT`, which asks for every product's bits not to
+  depend on the batch: the library's kernels are chosen by the batch's
+  tokens.
+- Speculative decoding in vLLM runs on Glyd's packs. On an L4, Qwen3-8B,
+  one user, greedy: Glyd with an EAGLE-3 draft
+  (`RedHatAI/Qwen3-8B-speculator.eagle3`) made 55.0 tokens a second on
+  prompts that edit a given text or code and 38.9 on chat, against bf16's
+  16.6 and 16.7 without speculation, and 43.3 and 30.3 with the same draft
+  (which did not fit the L4 at vLLM's default memory settings, bf16's
+  weights and the draft leaving no KV cache); n-gram prompt lookup, 35.5
+  and 22.1. With speculation, exact eager gave bf16 eager's tokens, 10 of
+  10 requests with each draft. Speculation's greedy tokens can differ from
+  plain decoding's, in vLLM's bf16 too (eager, 5 and 7 of 10 requests
+  parted with n-gram and EAGLE-3): a verify step multiplies up to 1 + k
+  tokens at once, and the GEMMs and attention round by that shape. Under
+  `VLLM_BATCH_INVARIANT=1` they are plain decoding's, bf16's and exact
+  mode's alike (10 of 10). vLLM keeps an EAGLE-3 draft bf16 under
+  `--quantization glyd`; with `"quantization": "glyd"` in
+  `--speculative-config` it is packed too, sized by its own config
+  ([benchmarks/gpu/l4-vllm-spec-2026-09-30](benchmarks/gpu/l4-vllm-spec-2026-09-30)).
+- Mixtures of experts in vLLM (its fused MoE layer): each layer's experts
+  packed as one matrix, their products the library's grouped ones (each
+  token's choices sorted by expert on the GPU, SiLU applied as gate and
+  up's sums are written out, down with the router's weights), captured in
+  vLLM's CUDA graphs. With `exact`, the experts the tokens are routed to
+  are decoded and vLLM's own Triton MoE kernel runs on them; it is refused
+  where vLLM picks another kernel for bf16's experts. Experts with biases,
+  activations other than SiLU, expert parallelism, or sizes off the packs'
+  multiples stay bf16, with a warning. From 1,152 tokens a step (a
+  prompt's), a layer decodes the experts its tokens are routed to and runs
+  vLLM's Triton kernel on them instead, the faster there:
+  granite-3.1-3b-a800m-instruct's layer on an L4 took 0.97x the grouped
+  products' time at 1,152 tokens and 0.65x at 8,192, and a prompt of 4,096
+  tokens 19% less GPU time a step; one layer's experts decoded are held in
+  a scratch buffer, and `GLYD_MOE_DECODE_MIN` moves the threshold (-1:
+  never)
+  ([benchmarks/gpu/l4-vllm-moe-routes-2026-09-30](benchmarks/gpu/l4-vllm-moe-routes-2026-09-30)).
+  granite-3.1-3b-a800m-instruct on an L4 passed every check, exact eager
+  and compiled in the deterministic mode bf16's bits
+  ([benchmarks/gpu/l4-vllm-m4-2026-09-30](benchmarks/gpu/l4-vllm-m4-2026-09-30)).
+  Over two RTX A6000s, tensor parallel (each rank packs its shard):
+  Qwen3-8B's and granite's checks passed but one, where exact compiled was
+  refused in the workers and the check did not see Glyd's message;
+  Qwen3-30B-A3B's, all 5, exact eager bit for bit. Serving Qwen3-30B-A3B
+  there, Glyd held 1.67x bf16's KV cache and served as many requests a
+  second at 1 a second, each token 7% sooner, but from 4 a second
+  0.87-0.88x, each token 28-59% later
+  ([benchmarks/gpu/vllm-m4-2xa6000-2026-09-30](benchmarks/gpu/vllm-m4-2xa6000-2026-09-30)).
+- Refused at start in vLLM, with why, as the engine's process builds
+  vLLM's config and before any worker starts, so that over several GPUs
+  too Glyd's message is the error the user sees: dual-batch overlap
+  (`--enable-dbo`), LoRA, weight offloading and sleep mode; a glyd save
+  over several GPUs, one with a mixture of experts' packs, or one of a
+  family other than Qwen3's and Llama's (their bf16 checkpoints load);
+  exact under torch.compile where a packed Linear has a bias; fused
+  products under `VLLM_BATCH_INVARIANT`.
 - Long prompts on an A100 SXM and a GH200 decode on SMs set apart (the
   route SPLIT): each 12-bit matrix is decoded ahead into a ring of slots on
   a few SMs the driver's green contexts set apart, while cuBLAS multiplies
