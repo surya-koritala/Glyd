@@ -39,7 +39,8 @@ batch's tokens (glyd_gpu_mma[12]_linear), and where it routes a prompt to
 cuBLAS (DECODE, AHEAD) the matrix decoded into the GPU's scratch buffer,
 then F.linear. vLLM's torch.compile takes it as one node, its CUDA graphs
 capture its kernels. Embeddings, the LM head, norms, attention and the KV
-cache stay vLLM's; a mixture of experts' experts too (bf16), for now.
+cache stay vLLM's (a save's packed LM head decoded to bf16 as it loads); a
+mixture of experts' experts too (bf16), for now.
 Under the Business Source License 1.1 (LICENSE-glyd-gpu), as the rest of
 Glyd's GPU code; it uses vLLM's plugin interfaces, and copies none of its
 code.
@@ -54,6 +55,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.layers.linear import LinearBase, LinearMethodBase, UnquantizedLinearMethod
 from vllm.model_executor.layers.quantization import register_quantization_config
 from vllm.model_executor.layers.quantization.base_config import QuantizationConfig
+from vllm.model_executor.layers.vocab_parallel_embedding import UnquantizedEmbeddingMethod, VocabParallelEmbedding
 from vllm.model_executor.model_loader.reload.layerwise import initialize_online_processing
 from vllm.model_executor.parameter import ModelWeightParameter
 from vllm.model_executor.utils import set_weight_attrs
@@ -256,6 +258,13 @@ class GlydConfig(QuantizationConfig):
         log.info("glyd: %s layout%s%s", layout, ", exact" if exact else "", ", verified" if verify else "")
 
     def get_quant_method(self, layer, prefix):
+        if isinstance(layer, VocabParallelEmbedding):  # (the LM head too): a save's pack decoded to bf16 at load
+            e = self.saved(prefix)
+            if e is None:
+                return None
+            if self.opts is None:
+                self.resolve()
+            return GlydSavedEmbeddingMethod(self, e)
         if not isinstance(layer, LinearBase):
             return None
         if self.opts is None:
@@ -289,6 +298,60 @@ def _take_whole(param, loaded_weight, *shard):
     param.data = loaded_weight.to(param.device)
 
 
+def _placeholders(layer, layout):
+    """A save's pack tensors as the layer's parameters, of the save's dtypes, their sizes the save's as they load."""
+    for name in BUFFERS[layout]:
+        p = torch.nn.Parameter(torch.empty(0, dtype=torch.uint8 if fmt.DTYPES[name[5:]] == "U8" else torch.int32), requires_grad=False)
+        set_weight_attrs(p, {"weight_loader": _take_whole})
+        layer.register_parameter(name, p)
+
+
+def _saved_pack(layer, e, verify):
+    """A save's pack from the tensors loaded into layer (its words from glyd.json's entry e), checked by its sha256s with
+    verify."""
+    data, a, b = (getattr(layer, n).data for n in BUFFERS[e["layout"]])
+    if not data.numel():
+        raise ValueError(f"glyd: {getattr(layer, 'prefix', '')}: the save's pack did not load")
+    shape = tuple(e["shape"])
+    p = g.Mma12(shape, data, a, b, int(e["hb"])) if e["layout"] == "mma12" else g.Mma(shape, data, a, b, [int(x) for x in e["tiers"]])
+    if verify:
+        from .model import sha256
+
+        w, r = g.mma_unpack(p), 0
+        for t in e["tensors"]:
+            if sha256(w[r : r + t["shape"][0]]) != t["sha256"]:
+                raise ValueError(f"glyd: {t['name']} decodes to other bits than glyd.json's sha256")
+            r += t["shape"][0]
+    return p
+
+
+class GlydSavedEmbeddingMethod(UnquantizedEmbeddingMethod):
+    """A glyd save's packed LM head (a model's own, not tied to its embeddings) or embedding: the pack's tensors loaded
+    as saved, then decoded into the bf16 weight vLLM runs it on, as it runs a bf16 checkpoint's (the LM head stays
+    vLLM's for now)."""
+
+    def __init__(self, config, saved):
+        super().__init__()
+        self.config, self.saved = config, saved
+
+    def create_weights(self, layer, input_size_per_partition, output_partition_sizes, input_size, output_size, params_dtype, **extra):
+        super().create_weights(layer, input_size_per_partition, output_partition_sizes, input_size, output_size, params_dtype, **extra)
+        _placeholders(layer, self.saved["layout"])
+
+    def process_weights_after_loading(self, layer):
+        if getattr(layer, "glyd_decoded", False):  # (vLLM calls it again after the load)
+            return
+        w = g.mma_unpack(_saved_pack(layer, self.saved, self.config.opts["verify"]))
+        if w.shape[1] != layer.weight.shape[1] or w.shape[0] > layer.weight.shape[0]:
+            raise ValueError(f"glyd: {getattr(layer, 'prefix', '')}: the save's pack is {list(w.shape)}, vLLM's layer {list(layer.weight.shape)}")
+        layer.weight.data[: w.shape[0]].copy_(w)
+        layer.weight.data[w.shape[0] :].zero_()  # (the vocabulary's padding)
+        for name in BUFFERS[self.saved["layout"]]:
+            layer._parameters.pop(name, None)
+        layer.glyd_decoded = True
+        super().process_weights_after_loading(layer)
+
+
 class GlydLinearMethod(LinearMethodBase):
     """A Linear's product from its pack. From a bf16 checkpoint the weight is made on the meta device and packed as
     vLLM's layerwise processing completes the layer (process_weights_after_loading); from a glyd save the pack's
@@ -307,10 +370,7 @@ class GlydLinearMethod(LinearMethodBase):
         if self.saved is not None:
             if list(self.saved["shape"]) != [O, K]:
                 raise ValueError(f"glyd: {getattr(layer, 'prefix', '')}: the save's pack is {self.saved['shape']}, vLLM's layer [{O}, {K}]")
-            for name in BUFFERS[self.saved["layout"]]:  # (their sizes the save's: made as they load)
-                p = torch.nn.Parameter(torch.empty(0, dtype=torch.uint8 if fmt.DTYPES[name[5:]] == "U8" else torch.int32), requires_grad=False)
-                set_weight_attrs(p, {"weight_loader": _take_whole})
-                layer.register_parameter(name, p)
+            _placeholders(layer, self.saved["layout"])
             return
         if O % 64 or K % 16 or params_dtype != torch.bfloat16:
             self.plain, self.uses_meta_device = UnquantizedLinearMethod(), False
@@ -327,7 +387,7 @@ class GlydLinearMethod(LinearMethodBase):
         opts = self.config.opts
         layout = opts["layout"]
         if self.saved is not None:
-            p = self._saved_pack(layer)
+            p = _saved_pack(layer, self.saved, opts["verify"])
             dev = p.data.device
             if isinstance(p, g.Mma12) != (layout == "mma12"):  # another layout asked for: decoded and packed again
                 p = (g.pack_mma12 if layout == "mma12" else g.pack_mma)(g.mma_unpack(p))
@@ -354,24 +414,6 @@ class GlydLinearMethod(LinearMethodBase):
             _SCRATCH[dev] = torch.empty(need, dtype=torch.bfloat16, device=dev)  # (at load: no CUDA graph holds the old one)
         for name in ("mma12_linear", "mma_linear"):  # the device's done counters, made now: never in a CUDA graph's pool
             _lib._counters(name, dev.index, None, 0, _lib._UNITS)
-
-    def _saved_pack(self, layer):
-        """The save's pack from the tensors loaded (its words from glyd.json), checked by its sha256s with verify."""
-        e = self.saved
-        data, a, b = (getattr(layer, n).data for n in BUFFERS[e["layout"]])
-        if not data.numel():
-            raise ValueError(f"glyd: {getattr(layer, 'prefix', '')}: the save's pack did not load")
-        shape = tuple(e["shape"])
-        p = g.Mma12(shape, data, a, b, int(e["hb"])) if e["layout"] == "mma12" else g.Mma(shape, data, a, b, [int(x) for x in e["tiers"]])
-        if self.config.opts["verify"]:
-            from .model import sha256
-
-            w, r = g.mma_unpack(p), 0
-            for t in e["tensors"]:
-                if sha256(w[r : r + t["shape"][0]]) != t["sha256"]:
-                    raise ValueError(f"glyd: {t['name']} decodes to other bits than glyd.json's sha256")
-                r += t["shape"][0]
-        return p
 
     def _decodes(self, dev, words, O, K):
         """Whether any product up to vLLM's batch of tokens decodes the matrix for cuBLAS (the scratch buffer it needs)."""
