@@ -108,8 +108,14 @@ every earlier format.
   L4 passed every check, exact eager and compiled in the deterministic
   mode bf16's bits
   ([benchmarks/gpu/l4-vllm-m4-2026-09-30](benchmarks/gpu/l4-vllm-m4-2026-09-30)).
-  Qwen3-30B-A3B, and tensor parallel over two GPUs (each rank packs its
-  shard): measurements pending.
+  Over two RTX A6000s, tensor parallel (each rank packs its shard):
+  Qwen3-8B's and granite's checks passed but one, where exact compiled was
+  refused in the workers and the check did not see Glyd's message;
+  Qwen3-30B-A3B's, all 5, exact eager bit for bit. Serving Qwen3-30B-A3B
+  there, Glyd held 1.67x bf16's KV cache and served as many requests a
+  second at 1 a second, each token 7% sooner, but from 4 a second
+  0.87-0.88x, each token 28-59% later
+  ([benchmarks/gpu/vllm-m4-2xa6000-2026-09-30](benchmarks/gpu/vllm-m4-2xa6000-2026-09-30)).
 - Refused at start in vLLM, with why: dual-batch overlap (`--enable-dbo`),
   LoRA, weight offloading and sleep mode; a glyd save over several GPUs,
   one with a mixture of experts' packs, or one of a family other than

@@ -1,0 +1,8 @@
+Qwen3-30B-A3B-tp2: bf16 KV cache 223184 tokens; its noise: graphs against eager {'prefix': [9, 64, 64, 64, 15, 9, 64, 63], 'bit_identical': 0, 'mean_abs_dlogprob': 0.016704412734962017, 'long_bit_identical': False, 'long_mean_abs_dlogprob': 0.016931456257114518, 'long_top1': 0.9857235561323816}
+Qwen3-30B-A3B-tp2 glyd auto: KV cache 409712 tokens (bf16 223184); against bf16 {'prefix': [9, 64, 51, 23, 64, 9, 64, 64], 'bit_identical': 0, 'mean_abs_dlogprob': 0.01639862592948276, 'long_bit_identical': False, 'long_mean_abs_dlogprob': 0.014589609145386585, 'long_top1': 0.9870214146658014}; layers {'packed': 288, 'verified': 288, 'moe': 96, 'moe_verified': 96, 'biased': 0, 'worst_rel_error': 0.003757017431780696, 'same_bits': True, 'host_us_op_8': 58.5, 'host_us_linear_8': 18.6, 'host_us_op_1024': 49.8, 'host_us_linear_1024': 16.1}; additional_config None
+PASS Qwen3-30B-A3B-tp2 auto: every pack (288 and 96 mixture of experts' layers' experts) decoded to its weights bit for bit
+PASS Qwen3-30B-A3B-tp2 auto: each layer's product within 1e-2 of F.linear, the experts of their decoded matrices (3.76e-03) and the same bits every run
+PASS Qwen3-30B-A3B-tp2 auto: top-1 agreement with bf16 on its continuation 0.9870 (at least 0.97; bf16 eager's 0.9857)
+PASS Qwen3-30B-A3B-tp2 auto: mean |logprob difference| 1.46e-02, at most 2.0x bf16 eager's against its graphs (1.69e-02)
+PASS Qwen3-30B-A3B-tp2 exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8; continuation True)
+check_vllm: all passed (5 checks)

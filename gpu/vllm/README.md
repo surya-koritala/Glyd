@@ -110,10 +110,10 @@ Glyd's against bf16's; for the times, less is better.
 | A100 40 GB (12-bit) | Qwen3-14B | 1.77x | 1.65x | +18%, -13% | -57%, +4% |
 | GH200 (12-bit) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
 | GH200 (12-bit) | Qwen3-32B | 1.66x | 0.88x | +28%, -6% | -52%, +82% |
-| Two GPUs, tensor parallel | Qwen3-30B-A3B | pending | pending | pending | pending |
+| 2x RTX A6000, tensor parallel (tiered) | Qwen3-30B-A3B (a mixture of experts) | 1.67x | 0.87x | +30%, -7% | +34%, +28% |
 
 - **Wins:**
-  - 1.04-1.89x the KV cache, so more requests at once.
+  - 1.04-1.89x the KV cache, so more requests at once (1.67x for Qwen3-30B-A3B over two RTX A6000s).
   - 1.19-1.65x the requests a second saturated on the L4, A10 and A100.
   - At saturation, the first token 25-57% sooner there, and 52% sooner on the GH200 with Qwen3-32B.
   - At low load, each token 6-21% sooner, but for Qwen3-8B on the GH200 (1% slower).
@@ -123,10 +123,13 @@ Glyd's against bf16's; for the times, less is better.
     cache there. Hopper's gap is not profiled yet.
   - At saturation, each token 30-42% slower on the L4 and A10, where each step carries more requests; within 4% on the
     A100. On the GH200, 9% slower with Qwen3-8B and 82% with Qwen3-32B.
+  - Qwen3-30B-A3B over two RTX A6000s: at 1 request a second the same requests a second, each token 7% sooner; from 4
+    a second 0.87-0.88x, each token 28-59% later, with the two modes running the same batches. The experts' grouped
+    products at those batch sizes are the next work.
 - **The L4's pair** ran back to back in one session. An earlier pair, Glyd's run within the hour after bf16's, gave
   1.39x saturated, +17% and -23% at low load, and -28% and +36% saturated (`l4-vllm-m2-2026-09-29`).
 
-Every rate and percentile, and the logs: [L4](../../benchmarks/gpu/l4-vllm-m5-2026-09-30),
+Every rate and percentile, and the logs: [L4](../../benchmarks/gpu/l4-vllm-m5-2026-09-30), [2x RTX A6000](../../benchmarks/gpu/vllm-m4-2xa6000-2026-09-30),
 [A10](../../benchmarks/gpu/vllm-m3-a10-2026-09-30), [A100](../../benchmarks/gpu/vllm-m3-a100-40gb-2026-09-30),
 [GH200](../../benchmarks/gpu/vllm-m3-gh200-2026-09-30).
 
@@ -142,7 +145,9 @@ an L4, and Qwen3-8B on an L4, A10, A100 and GH200:
     0.20 points under: Yi 12-bit on the L4, and Qwen3-8B tiered on the A100.
   - Glyd's mean logprob difference from bf16's is at most 1.01x bf16 eager's.
 - Exact mode gives bf16's bits: eager, and compiled in the deterministic mode (refused there for Qwen2.5's biases).
-- Tensor parallel (Qwen3-8B over two GPUs) and Qwen3-30B-A3B: pending.
+- Over two GPUs (tensor parallel, 2x RTX A6000): Qwen3-8B and granite, every check but one (below); Qwen3-30B-A3B,
+  `--brief`, all 5, exact eager bit for bit. The one failed check: exact compiled was refused as it should be, but in
+  the workers, where the check did not see Glyd's message.
 
 ## Speculative decoding
 
@@ -187,7 +192,7 @@ Each of these is refused at start, with a message saying why; none runs wrong:
 - exact under torch.compile where a packed Linear has a bias (exact eager runs), and fused products under
   `VLLM_BATCH_INVARIANT`.
 
-Tensor parallelism packs each rank's shard; its two-GPU measurements are pending.
+Tensor parallelism packs each rank's shard (measured over two RTX A6000s above).
 
 ## Files here
 

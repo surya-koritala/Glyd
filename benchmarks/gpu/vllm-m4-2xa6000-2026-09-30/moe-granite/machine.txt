@@ -1,0 +1,37 @@
+Linux 6.8.0-1046-nvidia #49-Ubuntu SMP PREEMPT_DYNAMIC Wed Jan 28 19:07:52 UTC 2026 x86_64 GNU/Linux
+Wed Sep 30 11:42:57 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.20             Driver Version: 580.126.20     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA RTX A6000               On  |   00000000:06:00.0 Off |                  Off |
+| 30%   43C    P0             90W /  300W |       1MiB /  49140MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA RTX A6000               On  |   00000000:07:00.0 Off |                  Off |
+| 30%   40C    P0             90W /  300W |       1MiB /  49140MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
+NVIDIA RTX A6000, 8.6, 580.126.20, 49140 MiB, 2100 MHz, 300.00 W
+NVIDIA RTX A6000, 8.6, 580.126.20, 49140 MiB, 2100 MHz, 300.00 W
+pid, process_name, used_gpu_memory [MiB]
+Architecture:                            x86_64
+Model name:                              AMD EPYC-Rome Processor
+28
+               total        used        free      shared  buff/cache   available
+Mem:             196           4         161           0          32         192
+/dev/vda1       991G   43G  949G   5% /
+Wed Sep 30 11:42:58 UTC 2026
+host LD_LIBRARY_PATH (unset for the job): (none)

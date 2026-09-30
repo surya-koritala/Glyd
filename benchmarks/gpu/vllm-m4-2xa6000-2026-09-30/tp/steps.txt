@@ -1,0 +1,6 @@
+11:23:24 (+1 s) machine
+11:24:02 (+39 s) env: vLLM and nvcc in 37 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA RTX A6000)
+11:24:54 (+91 s) build: sm_86 in 52 s (library: C API 5 | GPU code 86)
+11:42:57 (+1174 s) check: exit 1 in 1083 s (TypeError: 'NoneType' object is not subscriptable)
+download dl-Qwen3-8B: exit 0: 16397431693 bytes in 28 s (at +30 s)
+11:42:57 (+1174 s) done
