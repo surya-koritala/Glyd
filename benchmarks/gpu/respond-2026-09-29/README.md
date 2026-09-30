@@ -31,6 +31,7 @@ b39563d: 3, and at least one then as many as fit 12 s). The GPU's clocks and pow
 | `resp_job.sh` | the modes in turn, the library built for the GPU, the models downloaded: unattended, 35 minutes at most on a cloud GPU. The GPU's plan: Qwen3-8B and, by its memory, Qwen3-32B (a GH200 or H100; an A100 of 60 GB or more) or Qwen3-14B (an A100 of 40 GB; an A10, where its bf16 does not fit), each model's Glyd, bf16 compiled and bf16 eager, then each one's exact. Each run's deadline leaves the later runs their expected time (a GH200's run for the hopper plan, scaled for the others); within a run, repeats go first (at least one each, more while they fit 12 s), then its last configurations: exact's 8 and 32 sequences, left out of its expected time, first |
 | `resp_summary.py` | the tables (summary.txt) and every result in one JSON (respond.json) |
 | `gh200-v0.25.1/` | resp_job.sh at 15d9c04 (v0.25.1) on a GH200, Qwen3-8B and Qwen3-32B, below |
+| `a10-v0.25.1/` | resp_job.sh at 15d9c04 (v0.25.1) on an A10, Qwen3-8B and Qwen3-14B (Glyd's alone fits), below |
 | `l4-smoke/` | resp_job.sh at b39563d on the AWS dev L4, Qwen3-0.6B's four modes (`run.sh`: 15 minutes, each run's expected time given): every configuration of every mode run, in 10.4 minutes with the library's build; a check that the job runs, not a result |
 
 ## An L4 (l4/; AWS g6.4xlarge, AMD EPYC 7R13, 16 vCPUs; 2026-09-29)
@@ -145,3 +146,40 @@ compiled, the rest eager in both (c: the call ran compiled):
   L4's runs repeated in every configuration of every mode. So at 8 and 32 sequences on this GPU, no mode's tokens can
   be compared with bf16 eager's; in the 7 configurations of each model where bf16 eager's calls repeated, exact's
   tokens were bf16 eager's in all 7. benchmarks/gpu/repro-2026-09-30 finds which operation does not repeat.
+
+## An A10 on v0.25.1 (a10-v0.25.1/; Lambda, 2026-09-30)
+
+resp_job.sh at 15d9c04 (the plan a10): an A10 (24 GB, 150 W; an Intel Xeon Platinum 8358 host, 30 vCPUs), Qwen3-8B and
+Qwen3-14B, 26 minutes with the library's build. Glyd's layout there is the 12-bit one for Qwen3-8B and the tiered one
+for Qwen3-14B (the one that fits). Each run waited its 20 s for the GPU to cool and started at 45-61 C (its idle 35 C).
+
+Qwen3-14B fits where bf16 does not: Glyd's default loaded at 20.54 GB on the GPU (22.4 at its peak) and ran every
+configuration but the 8192-token prompt (out of memory); bf16, eager and compiled, and Glyd exact did not load (out of
+memory). Its time to first token 138 / 355 / 1261 ms at 128 / 512 / 2048 tokens, 18.3 tokens a second at one sequence,
+131.2 at 8 and 345.0 at 32, the chat mix 16.26 s and the long one 12.64 s.
+
+| Qwen3-8B | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / compiled |
+| :-- | --: | --: | --: | --: | --: |
+| time to first token, 128-token prompt | 54 ms | 65 ms c | 59 ms c | 117 ms | 0.91x |
+| 512 | 154 ms | 152 ms c | 169 ms c | 209 ms | 1.11x |
+| 2048 | 568 ms | 561 ms | 591 ms | 618 ms | 1.05x |
+| 8192 | 2409 ms | 2391 ms | 2395 ms | 2443 ms | 1.00x |
+| tokens/s, 1 sequence (256 new) | 24.6 | 26.1 c | 34.1 c | 9.6 | 1.31x |
+| 8 sequences | 180.7 | 181.4 | 170.8 | 74.4 | 0.94x |
+| 32 sequences | 599.3 | 601.1 | 668.9 | 274.1 | 1.11x |
+| chat: 200 + 300 (first token / total) | 74 ms / 12.21 s | 79 ms / 11.69 s c | 82 ms / 8.77 s c | 138 ms / 31.12 s | 0.75x |
+| long: 2000 + 200 | 575 ms / 9.01 s | 567 ms / 8.97 s | 592 ms / 7.17 s | 642 ms / 21.67 s | 0.80x |
+
+- **At 8 sequences Glyd's default was slower, 0.94x**, both running eager there (past the compiled calls' 2048
+  positions). The GPU's samples show why it was not the GPU's work: while bf16 compiled's 8 sequences ran, the GPU was
+  busy 96-98% of each second at 1365-1455 MHz; while Glyd's ran, 68-73% at 1605-1680 MHz, both at the 150 W cap
+  (smi-Qwen3-8B-*.csv). So about a quarter of each of Glyd's steps the GPU waited, on the host's launches; the job
+  does not sample the CPU, so the logs do not show the host's own load. At 32 sequences Glyd's GPU was busy 81-97%
+  (rising with the context), and Glyd was 1.11x.
+- **Memory on the GPU after the load:** Qwen3-8B bf16 16.38 GB, Glyd 12.67, exact 13.51.
+- **First calls (the compile, excluded above):** bf16 compiled 50.3 s, Glyd's default 54.0 s (Qwen3-14B's 35.9 s).
+- **Tokens:** every mode's own calls repeated in every configuration here; exact's were bf16 eager's in all 9.
+- **The plan's times:** each run's own time against the plan's expected time (steps.txt gives each run's window: the
+  time it was given, not the time it took): Qwen3-8B Glyd 246 s (230 expected), bf16 compiled 272 (250), bf16 eager
+  170 (200), exact 348 (240, its 8 and 32 sequences run in the time left); Qwen3-14B Glyd 338 (365); bf16, bf16
+  compiled and exact did not fit, 30, 30 and 61 s.
