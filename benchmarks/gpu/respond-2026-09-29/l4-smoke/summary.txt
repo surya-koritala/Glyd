@@ -1,0 +1,37 @@
+# How fast it responds: NVIDIA L4 (23.66 GB; 595.91.07, 2040 MHz, 6251 MHz, 72.00 W, 72.00 W), AMD EPYC 7R13 Processor (16 CPUs, x86_64)
+torch 2.14.0+cu130 (CUDA 13.0), transformers 5.17.0, glyd 0.25.1; greedy decoding, every reply forced to its length; median of repeats, each configuration's first call apart
+
+## Qwen3-0.6B
+
+- bf16 eager: 1.19 GB on the GPU after the load (0.4 s); SM 2040 MHz, 64 W (medians while busy)
+- bf16 compiled: 1.19 GB on the GPU after the load (0.4 s), generate() compiled to 2048 positions; SM 2040 MHz, 69 W (medians while busy)
+- Glyd (default): 1.31 GB on the GPU after the load (11.6 s), layout mma, generate() compiled to 2048 positions; SM 2040 MHz, 69 W (medians while busy)
+- Glyd exact: 1.37 GB on the GPU after the load (2.3 s), layout mma; SM 2040 MHz, 64 W (medians while busy)
+
+Time to first token, ms (Glyd's default over bf16 compiled, the same path: under 1 is sooner)
+
+| prompt | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / bf16 compiled |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 128 | 32 | 38 c | 36 c | 44 | 0.96x |
+| 512 | 33 | 38 c | 37 c | 45 | 0.97x |
+| 2048 | 69 | 69 | 75 | 75 | 1.08x |
+| 8192 | 489 | 487 | 489 | 494 | 1.00x |
+
+Tokens a second after the first (256 new, a 128-token prompt; Glyd's default over bf16 compiled, the same path: over 1 is faster)
+
+| sequences | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / bf16 compiled |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 34.1 | 126.2 c | 148.2 c | 24.4 | 1.17x |
+| 8 | 269.6 | 267.1 | 287.5 | 191.4 | 1.08x |
+| 32 | 1058.0 | 1055.1 | 1128.4 | 748.8 | 1.07x |
+
+The mixes: time to first token, ms / total, s (Glyd's default's total over bf16 compiled's, the same path: under 1 is sooner)
+
+| mix | bf16 eager | bf16 compiled | Glyd (default) | Glyd exact | Glyd / bf16 compiled |
+| :-- | ---: | ---: | ---: | ---: | ---: |
+| chat: 200 + 300 | 33 / 8.78 | 39 / 2.42 c | 37 / 2.06 c | 45 / 12.31 | 0.85x |
+| long: 2000 + 200 | 69 / 5.91 | 69 / 5.97 | 74 / 5.56 | 75 / 8.27 | 0.93x |
+
+c: the call ran compiled (fast_generate). Each process's first call (excluded above; the compile's in a compiled mode): bf16 eager 1.2 s; bf16 compiled 28.2 s; Glyd (default) 25.7 s; Glyd exact 1.3 s.
+Greedy tokens (the first sequence's) the same as bf16 eager's, configurations: bf16 compiled 9 of 9; Glyd (default) 6 of 9; Glyd exact 9 of 9.
+
