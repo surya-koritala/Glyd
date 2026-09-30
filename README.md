@@ -142,6 +142,38 @@ puts bf16 and Glyd alike near 12,000.)
   smaller, a fine-tune against its base 44% smaller, and a training
   checkpoint with its optimizer state 17-23% smaller (below).
 
+### Serving with vLLM
+
+```bash
+pip install "glyd[vllm]"                       # vLLM 0.30, Linux and an NVIDIA GPU as above
+vllm serve Qwen/Qwen3-8B --quantization glyd   # packed as it loads; the memory saved becomes KV cache
+```
+
+vLLM holds the model's Linears, and a mixture of experts' experts, packed
+and multiplies them by Glyd's kernels; its KV cache takes the memory they
+save. `vllm bench serve`, bf16 against Glyd at the same
+`--gpu-memory-utilization 0.9` (servers warm, 1,024 tokens in and 256
+out; low load 1 request a second, 0.25 on the L4):
+
+| GPU (Glyd's layout) | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
+| :--- | :--- | ---: | ---: | :--- | :--- |
+| L4 (tiered) | Qwen3-8B | 1.89x | **1.39x** | +17%, −23% | −28%, +36% |
+| A10 (12-bit) | Qwen3-8B | 1.73x | **1.31x** | +16%, −21% | −25%, +30% |
+| A100 40 GB (12-bit) | Qwen3-8B | 1.14x | **1.19x** | +18%, −10% | −32%, −2% |
+| A100 40 GB (12-bit) | Qwen3-14B | 1.77x | **1.65x** | +18%, −13% | −57%, +4% |
+| GH200 (12-bit) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
+| GH200 (12-bit) | Qwen3-32B | 1.66x | 0.88x | +28%, −6% | −52%, +82% |
+| Two GPUs, tensor parallel | Qwen3-30B-A3B | pending | pending | pending | pending |
+
+More requests at once on every GPU, and more a second on the L4, A10
+and A100; on the GH200 fewer a second saturated, not profiled yet. At
+low load the first token comes 4-28% later. `exact` gives vLLM's bf16
+logits bit for bit, eager or compiled in inductor's deterministic mode.
+Options, exact mode, mixtures of experts, the checks against vLLM's bf16
+and every rate: [gpu/vllm/README.md](gpu/vllm/README.md); logs in
+[benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m2-2026-09-29`,
+`vllm-m3-*-2026-09-30`).
+
 ### Related work
 
 Coding a bf16 weight's exponent losslessly is not new; what Glyd adds is

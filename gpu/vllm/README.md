@@ -1,0 +1,160 @@
+# Glyd in vLLM: `vllm serve MODEL --quantization glyd`
+
+vLLM serves the model with its Linear layers held packed on the GPU, bit for bit, and a mixture of experts' experts
+too. Glyd's kernels multiply them from there. vLLM sizes its KV cache after the weights load, so the memory the packs
+save becomes KV cache: more requests at once on the same GPU.
+
+```bash
+pip install "glyd[vllm]"                                  # vLLM 0.30, and Glyd with its plugin
+vllm serve Qwen/Qwen3-8B --quantization glyd              # a bf16 checkpoint, packed as it loads
+vllm serve ./qwen3-8b-glyd --quantization glyd            # a glyd save (glyd pack, glyd.save_pretrained), as saved
+vllm serve Qwen/Qwen3-8B --quantization glyd --additional-config '{"glyd": {"layout": "mma12"}}'
+```
+
+The `glyd` package registers the plugin with vLLM through its `vllm.general_plugins` entry point; nothing else is
+needed. It is tested with vLLM 0.30.0, and `glyd[vllm]` pins `vllm>=0.30,<0.31`.
+
+## What it does
+
+- **At load.** Each Linear's bf16 weight is held on the meta device. As vLLM's layerwise loading completes a layer,
+  its weights are packed on the GPU, so the load peaks at the packs plus one layer. The layout is Glyd's tiered one
+  (10.80 bits a weight) or its 12-bit one (12.04). With `verify`, every pack is decoded and compared with its weights.
+- **A glyd save** loads as saved: its packs are the layers' buffers, with no bf16 at any point. Asked for the other
+  layout, it is decoded and packed again. A save's packed LM head is decoded into the bf16 weight vLLM's LM head runs
+  on.
+- **Each product** is one op, `glyd::vllm_linear`, which vLLM's torch.compile takes as one node and its CUDA graphs
+  capture. The op takes the library's route for the step's tokens on this GPU: the fused kernels (the weights decoded
+  in registers, straight into the tensor cores), or, for long prompts where cuBLAS is the faster, each matrix decoded
+  and then cuBLAS.
+- **A mixture of experts** (a model vLLM runs by its fused MoE layer): each layer's experts are packed as one matrix,
+  the experts' stacked.
+  - Their products are the library's grouped ones. Each token's choices are sorted by expert on the GPU; gate and up
+    run with SiLU applied as their sums are written out; down runs with the router's weights, each token's rows
+    added.
+  - None of it syncs with the host, so vLLM's CUDA graphs capture it.
+  - These stay bf16, with a warning: experts with biases, activations other than SiLU, expert parallelism, and sizes
+    off the packs' multiples.
+- **Embeddings, the LM head, norms, attention and the KV cache stay vLLM's.**
+- **The compile cache.** The options in effect, with a digest of the packs, go into vLLM's `additional_config`, which
+  its compile cache is keyed by. Another layout, mode or checkpoint never finds another's compiled graph.
+
+## Options
+
+Each option is read from the first of these that sets it: `--additional-config '{"glyd": {...}}'`, the checkpoint's
+`quantization_config` (or `--hf-overrides`'), or the environment (`GLYD_LAYOUT`, `GLYD_EXACT`, `GLYD_VERIFY`).
+
+| Option | Values | What it does |
+| :--- | :--- | :--- |
+| `layout` | `auto` (default), `mma`, `mma12` | `auto` takes `best_layout`'s choice for the GPU: the tiered layout on Ada (L4, L40S, RTX 40) and wherever only it fits, else the 12-bit one (A10, A100, H100, GH200). A save loads in its own. |
+| `exact` | `false` (default), `true` | Each product's matrix decoded whole, then the GEMM vLLM runs for bf16, so the logits are bf16's bit for bit (below). |
+| `verify` | `false` (default), `true` | Every pack decoded at load and compared with its weights bit for bit; a save's by glyd.json's sha256. |
+
+## Exact mode
+
+The fused products sum in another order than cuBLAS's, so logits can differ from bf16's in their last bits. The same
+happens between any two GEMM kernels, and within vLLM's own bf16, between CUDA graphs and eager.
+
+With `exact`, each Linear's matrix is decoded into a scratch buffer and multiplied by the GEMM vLLM runs for bf16. A
+mixture of experts' layer decodes the experts its tokens are routed to and runs vLLM's own bf16 MoE kernel.
+
+- **Eager (`--enforce-eager`):** the logits are vLLM's bf16 eager's, bit for bit.
+- **Compiled:** in inductor's deterministic mode, the logits are vLLM's compiled bf16's in that mode, bit for bit.
+  That is the one mode in which compiled bf16 is itself the same from one run to the next:
+
+  ```bash
+  vllm serve MODEL --quantization glyd --additional-config '{"glyd": {"exact": true}}' \
+    --compilation-config '{"inductor_compile_config": {"deterministic": true, "combo_kernels": true, "benchmark_combo_kernel": false}}'
+  ```
+
+  Otherwise inductor picks some of its kernels' variants by timing them on the GPU, among them the q and k norms and
+  rotary embedding before attention. Compiled logits then vary from one process to the next, bf16's too, so exact
+  refuses to start compiled without the deterministic mode. It never runs inexact without saying so.
+- **The deterministic mode on its own** makes compiled Glyd, fused too, the same from one run to the next. On an L4
+  it cost nothing measurable: Qwen3-8B's tokens/s at 1, 8 and 32 sequences were within 1% of the default's, bf16's
+  and Glyd's alike.
+- **The cost of exact** is a decode per product.
+- **For a mixture of experts,** exact needs vLLM's Triton kernel for bf16's experts, vLLM's pick on the L4. It is
+  refused where vLLM picks another, which lays the weights out otherwise.
+
+## Measured
+
+`vllm bench serve`, bf16 against Glyd:
+
+- the same `--gpu-memory-utilization 0.9`;
+- servers started warm, on the compile cache their first start filled;
+- the random dataset, 1,024 tokens in and 256 out;
+- v0.25.1's library.
+
+Low load is 1 request a second, 0.25 on the L4. Saturated is every request sent at once. A ratio or a percentage is
+Glyd's against bf16's; for the times, less is better.
+
+| GPU (Glyd's layout) | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
+| :--- | :--- | ---: | ---: | :--- | :--- |
+| L4 (tiered) | Qwen3-8B | 1.89x | 1.39x | +17%, -23% | -28%, +36% |
+| A10 (12-bit) | Qwen3-8B | 1.73x | 1.31x | +16%, -21% | -25%, +30% |
+| A100 40 GB (12-bit) | Qwen3-8B | 1.14x | 1.19x | +18%, -10% | -32%, -2% |
+| A100 40 GB (12-bit) | Qwen3-14B | 1.77x | 1.65x | +18%, -13% | -57%, +4% |
+| GH200 (12-bit) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
+| GH200 (12-bit) | Qwen3-32B | 1.66x | 0.88x | +28%, -6% | -52%, +82% |
+| Two GPUs, tensor parallel | Qwen3-30B-A3B | pending | pending | pending | pending |
+
+- **Wins:**
+  - 1.04-1.89x the KV cache, so more requests at once.
+  - 1.19-1.65x the requests a second saturated on the L4, A10 and A100.
+  - At saturation, the first token 25-57% sooner there, and 52% sooner on the GH200 with Qwen3-32B.
+  - At low load, each token 6-23% sooner, but for Qwen3-8B on the GH200 (1% slower).
+- **Losses:**
+  - At low load, the first token 4-28% later.
+  - On the GH200 at saturation, 0.88-0.92x bf16's requests a second, with Qwen3-32B although bf16 ran short of KV
+    cache there. Hopper's gap is not profiled yet.
+  - At saturation, each token 30-36% slower on the L4 and A10, where each step carries more requests; within 4% on the
+    A100. On the GH200, 9% slower with Qwen3-8B and 82% with Qwen3-32B.
+- **The L4's Glyd run** came after its bf16 run, on the same L4 within the hour. Glyd in the same session as bf16, with
+  v0.25.0's library: the first token at low load +30%, and 1.29x the requests a second saturated. v0.25.1 decodes an
+  L4's prompts from 896 tokens for cuBLAS.
+
+Every rate and percentile, and the logs: [L4](../../benchmarks/gpu/l4-vllm-m2-2026-09-29),
+[A10](../../benchmarks/gpu/vllm-m3-a10-2026-09-30), [A100](../../benchmarks/gpu/vllm-m3-a100-40gb-2026-09-30),
+[GH200](../../benchmarks/gpu/vllm-m3-gh200-2026-09-30).
+
+**Against vLLM's own bf16** (`check_vllm.py`): Qwen3-1.7B, Qwen3-4B-Instruct-2507, Yi-1.5-6B-Chat (the Llama
+architecture) and granite-3.1-3b-a800m-instruct (a mixture of experts) on an L4, and Qwen3-8B on an L4, A10, A100
+and GH200:
+
+- Every pack decodes to its weights bit for bit.
+- Every product is within 4.7e-3 (relative) of the same product on its matrix decoded, with the same bits every run.
+- The fused tokens are within vLLM's own bf16 noise, bf16 eager's against bf16 with CUDA graphs. Fed the 1,536-token
+  continuation bf16 generated, Glyd ranks 0.988-0.997 of its tokens first, and bf16 eager 0.987-0.995.
+  - Glyd's share is at or above bf16 eager's for 14 of the 16 model, GPU and layout pairs. The other two are 0.13 and
+    0.20 points under: Yi 12-bit on the L4, and Qwen3-8B tiered on the A100.
+  - Glyd's mean logprob difference from bf16's is at most 1.01x bf16 eager's.
+- Exact mode gives bf16's bits: eager, and compiled in the deterministic mode.
+- Tensor parallel (Qwen3-8B over two GPUs) and Qwen3-30B-A3B: pending.
+
+## Not supported yet
+
+Each of these is refused at start, with a message saying why; none runs wrong:
+
+- dual-batch overlap (`--enable-dbo`), whose two streams would share the GPU's done counters;
+- LoRA;
+- weight offloading (`--cpu-offload-gb`) and sleep mode;
+- a glyd save over several GPUs, or one with a mixture of experts' packs; their bf16 checkpoints load.
+
+Tensor parallelism packs each rank's shard; its two-GPU measurements are pending.
+
+## Files here
+
+- `check_vllm.py [MODEL ...]`: the checks against vLLM's bf16.
+  - Every pack against its weights.
+  - Every layer's product against F.linear on its matrix decoded, and every mixture of experts' layer against its
+    experts decoded.
+  - Tokens and logprobs against bf16's own noise, and exact mode.
+  - The compile cache: a graph for each layout and mode, each loaded again.
+  - Flags: `--saves` (saves, as saved and in the other layout), `--quick`, `--brief`, `--tp N`, `--out DIR`.
+- `bench_serve.sh [MODEL]`, `bench_summary.py`: `vllm bench serve`, bf16 against Glyd at several rates. `WARM=1`
+  notes the cold start and measures warm. The summary adds the GPU's clock and temperature.
+- `profile_steps.py [MODEL]`: a step's GPU time by kind of kernel (Glyd's, GEMMs, attention, the rest), bf16 against
+  Glyd, at decode steps of B sequences and prompt steps of M tokens.
+
+The plugin is `bindings/python/glyd/gpu/vllm_plugin.py`. Like the rest of Glyd's GPU code it is under the Business
+Source License 1.1 (`gpu/LICENSE`). It uses vLLM's plugin interfaces and copies none of vLLM's code.

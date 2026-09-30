@@ -3,6 +3,7 @@
 Lossless AI compression: 33% less GPU memory, bit for bit.
 
     pip install "glyd[gpu]"   # models on the GPU: Linux x86_64 / aarch64, an NVIDIA GPU (Ampere or later)
+    pip install "glyd[vllm]"  # and serving them: vllm serve MODEL --quantization glyd (vLLM 0.30)
     pip install glyd          # the codec alone: Linux x86_64 / aarch64, macOS arm64
 
 ```python
@@ -258,6 +259,25 @@ repo id, from the files for a directory.
 do the same on the CPU with no Python, PyTorch or GPU, and save the same
 bytes (Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe for now; other
 families: the commands above).
+
+### Serving with vLLM
+
+`pip install "glyd[vllm]"` installs vLLM 0.30 and the plugin, which vLLM
+finds by itself (the package's `vllm.general_plugins` entry point):
+
+    vllm serve Qwen/Qwen3-8B --quantization glyd       # a bf16 checkpoint, packed as it loads
+    vllm serve ./qwen3-8b-glyd --quantization glyd     # a glyd save, as saved
+    vllm serve Qwen/Qwen3-8B --quantization glyd --enforce-eager --additional-config '{"glyd": {"exact": true}}'
+
+`layout`, `exact` and `verify` are `from_pretrained`'s options, given in
+`--additional-config`'s `"glyd"` (or `GLYD_LAYOUT`, `GLYD_EXACT`,
+`GLYD_VERIFY`). vLLM sizes its KV cache after the weights load, so the
+memory the packs save becomes KV cache: 1.04-1.89x bf16's on an L4, an
+A10, an A100 and a GH200, at the same `--gpu-memory-utilization`. With
+`exact` the logits are vLLM's bf16 ones bit for bit, eager or compiled in
+inductor's deterministic mode. Throughput against bf16, exact mode
+compiled, mixtures of experts and what is not supported yet:
+[gpu/vllm](https://github.com/surya-koritala/Glyd/tree/main/gpu/vllm).
 
 `glyd.gpu` is under the Business Source License 1.1 (`LICENSE-glyd-gpu`),
 as the rest of Glyd's GPU code; the codec under BSD-3-Clause OR GPL-2.0.

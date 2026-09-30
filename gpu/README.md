@@ -1258,6 +1258,8 @@ names another. The Python side is the glyd package's
 model.py, the modules e2e.py runs); glyd_gpu.py is it for the scripts
 here, taken from this checkout. The API a user types,
 glyd.from_pretrained and the rest, is in bindings/python/README.md.
+Serving with vLLM (`vllm serve MODEL --quantization glyd`, `glyd[vllm]`),
+its checks against vLLM's bf16 and its benches: vllm/README.md.
 
     python check_capi.py [LIBRARY]            # every entry point through the library and through the JIT build, bit for bit
     python check_api.py [MODEL ...]           # glyd.from_pretrained, compress, save_pretrained, verify: against bf16, bit for bit where exact
@@ -1267,6 +1269,7 @@ glyd.from_pretrained and the rest, is in bindings/python/README.md.
     python e2e.py MODEL_DIR --format mma --fused --baseline [--batch 1,8,32] [--compile] [--prefill 16,64] [--ppl TEXT] [--mmlu 1000] [--kv 1024,4096]
     python kv.py                              # the KV cache packed and decoded bit for bit; attn_decode against SDPA
     python sizes.py MODEL_DIR ...             # every Linear's matrix in both layouts, bit for bit: bits a weight, GB
+    python vllm/check_vllm.py [MODEL ...]     # vllm serve --quantization glyd against vLLM's own bf16 (glyd[vllm])
 
 ## The library
 
