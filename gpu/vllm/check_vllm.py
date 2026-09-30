@@ -56,15 +56,15 @@ AGREE, FLOOR = 0.97, 2.0  # fused: top-1 agreement at least; mean |logprob diffe
 
 
 def child(spec):
-    """One vLLM instance (spec: model, quantization, eager, one_by_one, long ids, layers): its tokens, logprobs and
-    prompt_logprobs, the KV cache's size, and (glyd) its layers' products against F.linear."""
+    """One vLLM instance (spec: model, quantization, eager, compilation_config, one_by_one, long ids, layers): its
+    tokens, logprobs and prompt_logprobs, the KV cache's size, and (glyd) its layers' products against F.linear."""
     import torch
     from vllm import LLM, SamplingParams
     from vllm.inputs import TokensPrompt
 
     out = {"spec": spec}
     try:
-        llm = LLM(model=spec["model"], quantization=spec.get("quantization"), dtype="bfloat16", gpu_memory_utilization=0.85, max_model_len=4096, enforce_eager=spec.get("eager", False), seed=0)
+        llm = LLM(model=spec["model"], quantization=spec.get("quantization"), dtype="bfloat16", gpu_memory_utilization=0.85, max_model_len=4096, enforce_eager=spec.get("eager", False), seed=0, **({"compilation_config": spec["compilation_config"]} if spec.get("compilation_config") else {}))
     except Exception as e:  # (exact under compile: refused)
         out["error"] = f"{type(e).__name__}: {e}"
         return out
