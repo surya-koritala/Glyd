@@ -1,0 +1,2 @@
+Fetching 9 files:   0%|          | 0/9 [00:00<?, ?it/s]Fetching 9 files: 100%|██████████| 9/9 [00:00<00:00, 454.83it/s]
+exit 0: 4079423234 bytes in 1 s (at +2 s)

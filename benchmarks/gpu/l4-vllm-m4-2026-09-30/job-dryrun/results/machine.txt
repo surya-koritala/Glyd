@@ -1,0 +1,32 @@
+Linux 7.0.0-1013-aws #13~24.04.1-Ubuntu SMP PREEMPT Sat Sep  5 01:10:01 UTC 2026 x86_64 GNU/Linux
+Wed Sep 30 07:33:17 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.91.07              Driver Version: 595.91.07      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA L4                      On  |   00000000:35:00.0 Off |                    0 |
+| N/A   45C    P0             28W /   72W |       0MiB /  23034MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
+NVIDIA L4, 8.9, 595.91.07, 23034 MiB, 2040 MHz, 72.00 W
+pid, process_name, used_gpu_memory [MiB]
+Architecture:                            x86_64
+Model name:                              AMD EPYC 7R13 Processor
+16
+               total        used        free      shared  buff/cache   available
+Mem:              60           2          48           0          10          58
+/dev/root       290G  110G  180G  38% /
+Wed Sep 30 07:33:17 UTC 2026
+host LD_LIBRARY_PATH (unset for the job): (none)
