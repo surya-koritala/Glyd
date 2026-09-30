@@ -1,0 +1,80 @@
+== 18:02:28 bf16: vllm serve Qwen/Qwen3-8B , first (cold where VLLM_CACHE_ROOT is empty)
+Model loading took 15.27 GiB memory and 3.661869 seconds
+GPU KV cache size: 19,760 tokens, Maximum concurrency for 4,096 tokens per request: 4.82x
+19380 MiB, 23034 MiB
+== 18:07:15 bf16: vllm serve Qwen/Qwen3-8B  (the GPU at 54 C)
+Model loading took 15.27 GiB memory and 3.190862 seconds
+GPU KV cache size: 27,024 tokens, Maximum concurrency for 4,096 tokens per request: 6.60x
+20402 MiB, 23034 MiB
+== 18:08:05 bf16: rate 1, 64 prompts
+   exit 0
+== 18:09:51 bf16: rate inf, 256 prompts
+   exit 0
+== 18:15:47 glyd@0: vllm serve Qwen/Qwen3-8B --quantization glyd, first (cold where VLLM_CACHE_ROOT is empty)
+glyd: mma layout, 0 of 36 layers packed (fraction 0)
+Model loading took 15.27 GiB memory and 3.164772 seconds
+GPU KV cache size: 19,760 tokens, Maximum concurrency for 4,096 tokens per request: 4.82x
+19380 MiB, 23034 MiB
+== 18:20:13 glyd@0: vllm serve Qwen/Qwen3-8B --quantization glyd (the GPU at 62 C)
+glyd: mma layout, 0 of 36 layers packed (fraction 0)
+Model loading took 15.27 GiB memory and 3.186079 seconds
+GPU KV cache size: 27,024 tokens, Maximum concurrency for 4,096 tokens per request: 6.60x
+20402 MiB, 23034 MiB
+== 18:21:03 glyd@0: rate 1, 64 prompts
+   exit 0
+== 18:22:50 glyd@0: rate inf, 256 prompts
+   exit 0
+== 18:28:45 glyd@0.5: vllm serve Qwen/Qwen3-8B --quantization glyd, first (cold where VLLM_CACHE_ROOT is empty)
+glyd: mma layout, 18 of 36 layers packed (fraction 0.5)
+Model loading took 13.65 GiB memory and 13.182125 seconds
+GPU KV cache size: 22,336 tokens, Maximum concurrency for 4,096 tokens per request: 5.45x
+19362 MiB, 23034 MiB
+== 18:34:11 glyd@0.5: vllm serve Qwen/Qwen3-8B --quantization glyd (the GPU at 60 C)
+glyd: mma layout, 18 of 36 layers packed (fraction 0.5)
+Model loading took 13.65 GiB memory and 13.173986 seconds
+GPU KV cache size: 37,904 tokens, Maximum concurrency for 4,096 tokens per request: 9.25x
+20384 MiB, 23034 MiB
+== 18:35:16 glyd@0.5: rate 1, 64 prompts
+   exit 0
+== 18:36:54 glyd@0.5: rate inf, 256 prompts
+   exit 0
+== 18:41:38 glyd@1: vllm serve Qwen/Qwen3-8B --quantization glyd, first (cold where VLLM_CACHE_ROOT is empty)
+glyd: mma layout
+Model loading took 11.83 GiB memory and 23.019509 seconds
+GPU KV cache size: 35,488 tokens, Maximum concurrency for 4,096 tokens per request: 8.66x
+19386 MiB, 23034 MiB
+== 18:47:15 glyd@1: vllm serve Qwen/Qwen3-8B --quantization glyd (the GPU at 59 C)
+glyd: mma layout
+Model loading took 11.83 GiB memory and 22.974244 seconds
+GPU KV cache size: 51,040 tokens, Maximum concurrency for 4,096 tokens per request: 12.46x
+20404 MiB, 23034 MiB
+== 18:48:30 glyd@1: rate 1, 64 prompts
+   exit 0
+== 18:50:03 glyd@1: rate inf, 256 prompts
+   exit 0
+bf16: weights 15.27 GiB, KV cache 27,024 tokens, max concurrency 6.60x at 4,096 tokens (started cold, on an empty compile cache: weights 15.27 GiB, KV cache 19,760 tokens, max concurrency 4.82x at 4,096 tokens)
+glyd@0: weights 15.27 GiB, KV cache 27,024 tokens, max concurrency 6.60x at 4,096 tokens (started cold, on an empty compile cache: weights 15.27 GiB, KV cache 19,760 tokens, max concurrency 4.82x at 4,096 tokens)
+glyd@0.5: weights 13.65 GiB, KV cache 37,904 tokens, max concurrency 9.25x at 4,096 tokens (started cold, on an empty compile cache: weights 13.65 GiB, KV cache 22,336 tokens, max concurrency 5.45x at 4,096 tokens)
+glyd@1: weights 11.83 GiB, KV cache 51,040 tokens, max concurrency 12.46x at 4,096 tokens (started cold, on an empty compile cache: weights 11.83 GiB, KV cache 35,488 tokens, max concurrency 8.66x at 4,096 tokens)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.66 | 169.7 | 3351 / 13084 | 100.2 / 112.5 | 64 | 1485 MHz, 77 C |
+| 1 | glyd@0 | 0.66 | 169.3 | 3539 / 13253 | 100.8 / 113.2 | 64 | 1410 MHz, 80 C |
+| 1 | glyd@0.5 | 0.72 | 185.5 | 1095 / 6444 | 99.9 / 120.7 | 64 | 1275 MHz, 77 C |
+| 1 | glyd@1 | 0.77 | 197.2 | 772 / 1587 | 95.6 / 122.5 | 64 | 1155 MHz, 79 C |
+| inf | bf16 | 0.75 | 193.1 | 152281 / 311025 | 111.2 / 182.8 | 256 | 1380 MHz, 85 C |
+| inf | glyd@0 | 0.76 | 193.4 | 151872 / 310481 | 111.0 / 182.5 | 256 | 1365 MHz, 85 C |
+| inf | glyd@0.5 | 0.96 | 244.5 | 122428 / 246760 | 125.4 / 206.4 | 256 | 1200 MHz, 85 C |
+| inf | glyd@1 | 1.04 | 265.7 | 109789 / 223587 | 152.4 / 240.5 | 256 | 1125 MHz, 83 C |
+
+| Rate (req/s) | Mode | Weights (GiB) | KV cache (tokens) | Requests/s | TTFT mean (ms) | TPOT mean (ms) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 15.27 | 27,024 | 0.66 | 3,351 | 100.2 |
+| 1 | glyd@0 | 15.27 (1.00x) | 27,024 (1.00x) | 0.66 (1.00x) | 3,539 (1.06x) | 100.8 (1.01x) |
+| 1 | glyd@0.5 | 13.65 (0.89x) | 37,904 (1.40x) | 0.72 (1.09x) | 1,095 (0.33x) | 99.9 (1.00x) |
+| 1 | glyd@1 | 11.83 (0.77x) | 51,040 (1.89x) | 0.77 (1.16x) | 772 (0.23x) | 95.6 (0.95x) |
+| inf | bf16 | 15.27 | 27,024 | 0.75 | 152,281 | 111.2 |
+| inf | glyd@0 | 15.27 (1.00x) | 27,024 (1.00x) | 0.76 (1.00x) | 151,872 (1.00x) | 111.0 (1.00x) |
+| inf | glyd@0.5 | 13.65 (0.89x) | 37,904 (1.40x) | 0.96 (1.27x) | 122,428 (0.80x) | 125.4 (1.13x) |
+| inf | glyd@1 | 11.83 (0.77x) | 51,040 (1.89x) | 1.04 (1.38x) | 109,789 (0.72x) | 152.4 (1.37x) |

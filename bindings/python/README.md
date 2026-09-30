@@ -271,11 +271,14 @@ finds by itself (the package's `vllm.general_plugins` entry point):
 
 `layout`, `exact` and `verify` are `from_pretrained`'s options, given in
 `--additional-config`'s `"glyd"` (or `GLYD_LAYOUT`, `GLYD_EXACT`,
-`GLYD_VERIFY`). vLLM sizes its KV cache after the weights load, so the
-memory the packs save becomes KV cache: 1.04-1.89x bf16's on an L4, an
-A10, an A100 and a GH200, at the same `--gpu-memory-utilization`. With
-`exact` the logits are vLLM's bf16 ones bit for bit, eager, or compiled in
-inductor's deterministic mode where the packed Linears have no biases.
+`GLYD_VERIFY`). `fraction` (0 to 1, `GLYD_FRACTION`) packs only that share
+of the decoder layers, spread evenly over the depth, and leaves the rest as
+vLLM runs them: 0 is bf16, 1 (the default) every layer. vLLM sizes its KV
+cache after the weights load, so the memory the packs save becomes KV
+cache: 1.04-1.89x bf16's on an L4, an A10, an A100 and a GH200, at the same
+`--gpu-memory-utilization`. With `exact` the logits are vLLM's bf16 ones
+bit for bit, eager, or compiled in inductor's deterministic mode where the
+packed Linears have no biases.
 Throughput against bf16, exact mode
 compiled, mixtures of experts and what is not supported yet:
 [gpu/vllm](https://github.com/surya-koritala/Glyd/tree/main/gpu/vllm).

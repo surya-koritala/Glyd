@@ -1,0 +1,19 @@
+PASS Qwen3-8B mma: every pack (72) decoded to its weights bit for bit
+PASS Qwen3-8B mma: each layer's product within 1e-2 of F.linear (4.15e-03) and the same bits every run
+PASS Qwen3-8B mma: top-1 agreement with bf16 on its continuation 0.9916 (at least 0.97; bf16 eager's 0.9922)
+PASS Qwen3-8B mma: mean |logprob difference| 8.71e-03, at most 2.0x bf16 eager's against its graphs (9.08e-03)
+PASS Qwen3-8B mma, fraction 0.5: 18 of 36 layers packed, spread evenly (layer i where floor((i + 1) f) > floor(i f)), each with all its Linears, the other 18 vLLM's own method (packed [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35])
+PASS Qwen3-8B mma12: every pack (72) decoded to its weights bit for bit
+PASS Qwen3-8B mma12: each layer's product within 1e-2 of F.linear (3.80e-03) and the same bits every run
+PASS Qwen3-8B mma12: top-1 agreement with bf16 on its continuation 0.9929 (at least 0.97; bf16 eager's 0.9922)
+PASS Qwen3-8B mma12: mean |logprob difference| 8.29e-03, at most 2.0x bf16 eager's against its graphs (9.08e-03)
+PASS Qwen3-8B mma12, fraction 0.5: 18 of 36 layers packed, spread evenly (layer i where floor((i + 1) f) > floor(i f)), each with all its Linears, the other 18 vLLM's own method (packed [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35])
+PASS Qwen3-8B mma: again on the shared compile cache, its graphs loaded (True), against bf16 as before (top-1 0.9916, mean |diff| 8.33e-03)
+PASS Qwen3-8B mma12: again on the shared compile cache, its graphs loaded (True), against bf16 as before (top-1 0.9922, mean |diff| 8.77e-03)
+PASS Qwen3-8B: a compile cache for each of bf16, glyd tiered and glyd 12-bit on the one VLLM_CACHE_ROOT (3), none reused by another
+PASS Qwen3-8B exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8; continuation True)
+PASS Qwen3-8B fraction 0, eager: nothing packed, bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8; continuation True; KV cache 17568 tokens, bf16 eager's 17568)
+PASS Qwen3-8B exact under torch.compile: refused, with Glyd's message (ValidationError: 1 validation error for VllmConfig
+  Value error, glyd: exact mode gives vLLM's bf16 logits bit for bit )
+PASS Qwen3-8B exact under torch.compile, inductor deterministic: compiled bf16's tokens, logprobs and prompt_logprobs (the same mode) bit for bit (8 of 8; continuation True)
+PASS Qwen3-8B fused, compiled, inductor deterministic: the same bits from one run to the next, the second on the first's graphs (8 of 8; continuation True; layout mma)

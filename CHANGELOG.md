@@ -137,6 +137,30 @@ every earlier format.
   family other than Qwen3's and Llama's (their bf16 checkpoints load);
   exact under torch.compile where a packed Linear has a bias; fused
   products under `VLLM_BATCH_INVARIANT`.
+- `fraction` in vLLM (`--additional-config '{"glyd": {"fraction": 0.5}}'`,
+  or `GLYD_FRACTION`): packs only that share of the decoder layers and
+  leaves the rest as vLLM runs them without a quantization, so that a
+  server can keep some of the memory the packs save and skip some of the
+  rebuild each step costs. Layer i's Linears, and a mixture of experts'
+  experts, are packed where floor((i + 1) f) > floor(i f): floor(L f) of
+  L layers, spread evenly over the depth, a layer's Linears together; 0 is
+  vLLM's bf16 (nothing packed, Glyd's library not loaded) and 1, the
+  default, every layer as before. A value outside 0 to 1 is refused, a
+  glyd save takes only 1, and the option keys vLLM's compile cache with
+  the others. On an L4 with Qwen3-8B (`vllm bench serve`, servers warm,
+  the tiered layout), fractions 0, 0.5 and 1 held 15.27, 13.65 and 11.83
+  GiB of weights and 27,024, 37,904 and 51,040 tokens of KV cache, and
+  served 0.76, 0.96 and 1.04 requests a second at once against bf16's
+  0.75 (each token at once 111.0, 125.4 and 152.4 ms against 111.2; at 1
+  request a second 100.8, 99.9 and 95.6 ms against 100.2, the first token
+  3,539, 1,095 and 772 ms against 3,351)
+  ([benchmarks/gpu/l4-vllm-fraction-2026-09-30](benchmarks/gpu/l4-vllm-fraction-2026-09-30)).
+  `check_vllm.py --quick --fraction 0.5` passed all 18 checks on it: every
+  pack decoded bit for bit, the layers packed the rule's, exact eager and
+  compiled (deterministic mode) bf16's bits; fraction 0 in eager gave
+  bf16 eager's tokens, logprobs and prompt_logprobs bit for bit. Not
+  measured yet on a GH200, where fraction 1 served 0.88x bf16's requests
+  a second with Qwen3-32B.
 
 ## v0.25.1 — 2026-09-29
 
