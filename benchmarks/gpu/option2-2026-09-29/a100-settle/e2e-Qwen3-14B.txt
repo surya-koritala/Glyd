@@ -1,0 +1,17 @@
+Loading weights:   0%|          | 0/443 [00:00<?, ?it/s]Loading weights: 100%|██████████| 443/443 [00:00<00:00, 5371.17it/s]
+merged: 80 groups of Linears as one product each
+bf16 (weights 29.54 GB): batch 1: 21.6 tokens/s (21.6 a sequence), peak VRAM 29.56 GB
+bf16 prefill: 769 tokens 128.9 ms (5968 tokens/s), first token 133.4 ms, 1024 tokens 156.7 ms (6534 tokens/s), first token 159.8 ms, 2048 tokens 303.5 ms (6749 tokens/s), first token 306.5 ms, 4096 tokens 611.6 ms (6697 tokens/s), first token 614.6 ms, 8192 tokens 1282.6 ms (6387 tokens/s), first token 1287.1 ms; from 2026/09/30 14:33:28 to 2026/09/30 14:33:53
+mma12 fused: packed in 11 s; weights 22.15 GB against 29.54 GB bf16 (75.0%), scratch 0.27 GB, VRAM in use 22.43 GB on 1 GPU
+glyd mma12 fused: batch 1: 22.4 tokens/s (22.4 a sequence), peak VRAM 22.44 GB
+glyd mma12 prefill: 769 tokens 149.2 ms (5153 tokens/s), first token 153.1 ms, 1024 tokens 175.7 ms (5829 tokens/s), first token 178.4 ms, 2048 tokens 327.6 ms (6252 tokens/s), first token 331.5 ms, 4096 tokens 639.4 ms (6406 tokens/s), first token 642.9 ms, 8192 tokens 1322.2 ms (6196 tokens/s), first token 1327.9 ms; from 2026/09/30 14:34:26 to 2026/09/30 14:34:52
+the route SPLIT's ring: cuda:0 ran
+glyd mma12 without SPLIT prefill: 769 tokens 178.9 ms (4300 tokens/s), first token 182.2 ms, 1024 tokens 205.0 ms (4996 tokens/s), first token 207.1 ms, 2048 tokens 362.1 ms (5657 tokens/s), first token 364.8 ms, 4096 tokens 679.5 ms (6028 tokens/s), first token 682.9 ms, 8192 tokens 1370.6 ms (5977 tokens/s), first token 1374.3 ms; from 2026/09/30 14:34:52 to 2026/09/30 14:35:20
+glyd mma12 without SPLIT prefill: 769 tokens 179.5 ms (4285 tokens/s), first token 182.8 ms, 1024 tokens 205.9 ms (4974 tokens/s), first token 208.7 ms, 2048 tokens 362.0 ms (5658 tokens/s), first token 364.7 ms, 4096 tokens 680.9 ms (6016 tokens/s), first token 684.2 ms, 8192 tokens 1373.9 ms (5963 tokens/s), first token 1377.4 ms; from 2026/09/30 14:35:20 to 2026/09/30 14:35:48
+glyd mma12 prefill: 769 tokens 151.7 ms (5068 tokens/s), first token 154.8 ms, 1024 tokens 178.1 ms (5748 tokens/s), first token 181.4 ms, 2048 tokens 332.0 ms (6169 tokens/s), first token 334.9 ms, 4096 tokens 644.5 ms (6355 tokens/s), first token 648.0 ms, 8192 tokens 1330.0 ms (6159 tokens/s), first token 1331.6 ms; from 2026/09/30 14:35:48 to 2026/09/30 14:36:15
+glyd mma12 prefill: 769 tokens 151.8 ms (5067 tokens/s), first token 154.8 ms, 1024 tokens 178.0 ms (5752 tokens/s), first token 181.3 ms, 2048 tokens 332.3 ms (6163 tokens/s), first token 335.2 ms, 4096 tokens 645.1 ms (6350 tokens/s), first token 648.0 ms, 8192 tokens 1329.6 ms (6161 tokens/s), first token 1333.4 ms; from 2026/09/30 14:36:15 to 2026/09/30 14:36:41
+glyd mma12 without SPLIT prefill: 769 tokens 179.5 ms (4283 tokens/s), first token 182.5 ms, 1024 tokens 206.0 ms (4971 tokens/s), first token 208.9 ms, 2048 tokens 362.8 ms (5645 tokens/s), first token 364.9 ms, 4096 tokens 681.4 ms (6011 tokens/s), first token 684.0 ms, 8192 tokens 1374.1 ms (5962 tokens/s), first token 1376.7 ms; from 2026/09/30 14:36:41 to 2026/09/30 14:37:09
+logits bit-identical: False
+generated tokens identical to bf16: 10 of 32
+text:  in the 1940s with the work of Shannon and Huffman, who laid the theoretical foundations for lossless compression. In the 197
+exit 0

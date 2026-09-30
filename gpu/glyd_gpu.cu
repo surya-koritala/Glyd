@@ -3955,12 +3955,13 @@ static int64_t dec_from(bool twelve, int64_t gpu, int64_t dec_min) {
 
 // Option 2 (the route SPLIT): a 12-bit prompt's matrices decoded ahead on SMs set apart (green contexts), cuBLAS on the
 // rest (glyd_gpu_mma12_ring_linear), where a model's forward pass took at least 2% less time than by the routes without
-// it, measured end to end (e2e.py --prefill, the Linears merged; benchmarks/gpu/option2-2026-09-29): an A100 SXM's
-// prompts from 769 to 4096 tokens (on an A100-SXM4-40GB against v0.25.0's routes, which v0.25.1 left as they were
-// there: Qwen3-8B's pass 0.851-0.964x, 14B's 0.832-0.935x; at 8192 0.988x and 1.000x, not taken); a GH200's (the
+// it, measured end to end against v0.25.1's routes (e2e.py --prefill, the Linears merged, the median of 3 rounds each
+// way in turn; benchmarks/gpu/option2-2026-09-29): an A100 SXM's prompts from 769 to 4096 tokens, and to 8192 for a
+// matrix whose O and K are both at least 5120 (on an A100-SXM4-40GB: Qwen3-8B's pass 0.876-0.971x at 769-4096, 0.994x
+// at 8192, not taken there; 14B's, every matrix O and K at least 5120, 0.845-0.947x, 0.968x at 8192); a GH200's (the
 // Hopper measured; its class by name) from 2048 to 8192 tokens for a matrix whose O and K are both at least 5120,
-// every matrix of a layer of hidden size 5120 or more with q, k, v and gate, up merged (against v0.25.1's routes, the
-// median of 3 rounds: Qwen3-32B's pass 0.909-0.952x; 8B's, hidden size 4096, 0.978x at 2048 and 0.994x at 4096 and
+// every matrix of a layer of hidden size 5120 or more with q, k, v and gate, up merged (Qwen3-32B's pass
+// 0.909-0.952x; 8B's, hidden size 4096, 0.978x at 2048 and 0.994x at 4096 and
 // 8192, not taken: 2.2% at 2048 alone, for a ring of 600 MiB; at 1024 tokens both slower in the first session, 32B's
 // 1.012x and 8B's 1.106x). Never on a PCIe card (an A100 PCIe, an H100 PCIe), an H100 SXM or an H200 (not measured
 // end to end: an H100 SXM's 3.35 TB/s and 700 W against the GH200's 4 TB/s and larger budget), nor past 8192 tokens
@@ -3976,7 +3977,7 @@ static int64_t split_sms(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t
     bool a100 = code == 80, gh200 = code == GLYD_GPU_GH200 + 90, large = O >= 5120 && K >= 5120;
     if (!twelve || !(gpu & GLYD_GPU_WITH_SPLIT) || K % 64 || t.split_min < 0 || cc < 80) return 0;
     int64_t lo = t.split_min ? t.split_min : a100 ? 769 : gh200 && large ? 2048 : INT64_MAX;
-    int64_t hi = t.split_max ? t.split_max : a100 ? 4096 : 8192;
+    int64_t hi = t.split_max ? t.split_max : a100 && !large ? 4096 : 8192;
     if (M < lo || M > hi) return 0;
     if (t.split_sms) return t.split_sms;
     if (a100) return M < 1536 ? 12 : M < 3072 ? 8 : 4;

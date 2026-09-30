@@ -1,0 +1,17 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 5164.16it/s]
+merged: 72 groups of Linears as one product each
+bf16 (weights 16.38 GB): batch 1: 22.7 tokens/s (22.7 a sequence), peak VRAM 16.40 GB
+bf16 prefill: 769 tokens 80.9 ms (9506 tokens/s), first token 83.8 ms, 1024 tokens 93.0 ms (11008 tokens/s), first token 96.3 ms, 2048 tokens 181.9 ms (11261 tokens/s), first token 184.3 ms, 4096 tokens 363.0 ms (11283 tokens/s), first token 364.8 ms, 8192 tokens 766.3 ms (10691 tokens/s), first token 769.3 ms; from 2026/09/30 14:30:51 to 2026/09/30 14:31:06
+mma12 fused: packed in 6 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.55 GB on 1 GPU
+glyd mma12 fused: batch 1: 24.9 tokens/s (24.9 a sequence), peak VRAM 12.56 GB
+glyd mma12 prefill: 769 tokens 91.4 ms (8409 tokens/s), first token 94.8 ms, 1024 tokens 99.8 ms (10263 tokens/s), first token 102.6 ms, 2048 tokens 194.2 ms (10544 tokens/s), first token 197.1 ms, 4096 tokens 372.7 ms (10991 tokens/s), first token 375.0 ms, 8192 tokens 782.2 ms (10473 tokens/s), first token 787.6 ms; from 2026/09/30 14:31:25 to 2026/09/30 14:31:41
+the route SPLIT's ring: cuda:0 ran
+glyd mma12 without SPLIT prefill: 769 tokens 103.2 ms (7453 tokens/s), first token 106.4 ms, 1024 tokens 115.1 ms (8899 tokens/s), first token 118.1 ms, 2048 tokens 204.2 ms (10028 tokens/s), first token 207.0 ms, 4096 tokens 386.4 ms (10601 tokens/s), first token 389.3 ms, 8192 tokens 792.5 ms (10337 tokens/s), first token 795.1 ms; from 2026/09/30 14:31:41 to 2026/09/30 14:31:57
+glyd mma12 without SPLIT prefill: 769 tokens 103.3 ms (7444 tokens/s), first token 106.9 ms, 1024 tokens 115.1 ms (8897 tokens/s), first token 118.7 ms, 2048 tokens 204.9 ms (9994 tokens/s), first token 207.4 ms, 4096 tokens 387.2 ms (10580 tokens/s), first token 389.8 ms, 8192 tokens 792.6 ms (10335 tokens/s), first token 795.6 ms; from 2026/09/30 14:31:57 to 2026/09/30 14:32:13
+glyd mma12 prefill: 769 tokens 92.9 ms (8277 tokens/s), first token 96.0 ms, 1024 tokens 101.2 ms (10115 tokens/s), first token 104.1 ms, 2048 tokens 196.6 ms (10419 tokens/s), first token 199.4 ms, 4096 tokens 375.8 ms (10899 tokens/s), first token 378.5 ms, 8192 tokens 788.0 ms (10396 tokens/s), first token 789.9 ms; from 2026/09/30 14:32:13 to 2026/09/30 14:32:29
+glyd mma12 prefill: 769 tokens 92.9 ms (8280 tokens/s), first token 96.1 ms, 1024 tokens 101.2 ms (10123 tokens/s), first token 104.1 ms, 2048 tokens 196.6 ms (10419 tokens/s), first token 199.5 ms, 4096 tokens 376.0 ms (10894 tokens/s), first token 379.2 ms, 8192 tokens 787.1 ms (10408 tokens/s), first token 790.2 ms; from 2026/09/30 14:32:29 to 2026/09/30 14:32:44
+glyd mma12 without SPLIT prefill: 769 tokens 103.3 ms (7446 tokens/s), first token 106.9 ms, 1024 tokens 115.5 ms (8865 tokens/s), first token 118.6 ms, 2048 tokens 204.4 ms (10019 tokens/s), first token 207.5 ms, 4096 tokens 386.7 ms (10591 tokens/s), first token 389.2 ms, 8192 tokens 791.3 ms (10353 tokens/s), first token 794.5 ms; from 2026/09/30 14:32:44 to 2026/09/30 14:33:01
+logits bit-identical: False
+generated tokens identical to bf16: 30 of 32
+text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to transmit information over long distances, and it
+exit 0

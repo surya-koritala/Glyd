@@ -24,6 +24,7 @@ unattended (`jobs/`), its tree a `git archive` of this branch with a COMMIT file
 | `a100-3` | A100-SXM4-40GB | 8f10750 | the A100's routes: checks, the stress, layer.py, e2e.py with its breakdown |
 | `gh200` | GH200 480GB (132 SMs) | 8f10750 | Hopper's routes: checks, the stress, layer.py, e2e.py with its breakdown, the decode's SMs at 1024, the scheduling before the gates |
 | `gh200-settle` | GH200 480GB (132 SMs) | 9c218a1 | the settle against v0.25.1's routes: checks, the stress, e2e.py 3 rounds each way in turn, layer.py |
+| `a100-settle` | A100-SXM4-40GB (108 SMs) | 4687dd4 | the settle against v0.25.1's routes (o4_job.sh): checks, the stress and the stress skewed, e2e.py 3 rounds each way in turn at 769-8192 (8192 forced past the route), layer.py, test_gpu.py whole |
 | `l4-v0.25.1/review-1` | L4 | d26efb4 | review 1's fixes: check_capi, test_gpu.py whole, the stress at the default split and skewed both ways (`--sms=-2,1`: 30,336 products), a probe of Split.measured and the cuBLAS lookup |
 
 ## Results
@@ -57,10 +58,17 @@ The GPU was at its power cap in 96-100% of the samples of both ways' phases, the
 average by SPLIT against 1713, 32B's 1580 against 1617; the tree then gave 8B's matrices the route too, O and K at least
 4096).
 
-The routes, where a pass took at least 2% less time: an A100 SXM's prompts from 769 to 4096 tokens, every matrix; a
-GH200's from 2048 to 8192 for a matrix whose O and K are both at least 5120, as Qwen3-32B's (8B's, 4096 on a side:
-2.2% at 2048 alone, for a ring of 600 MiB, not taken). An H100 SXM, an H200 and the PCIe cards on v0.25.1's routes
-until measured; nothing past 8192.
+The settle on the A100 the same way (`a100-settle/`, at 4687dd4; 8192 forced past the route's end then, a measurement):
+
+| model | 769 | 1024 | 2048 | 4096 | 8192 |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B | 0.899 (0.886, 0.899, 0.899) | 0.876 (0.867, 0.879, 0.876) | 0.959 (0.951, 0.959, 0.962) | 0.971 (0.965, 0.971, 0.972) | 0.994 (0.987, 0.994, 0.995) |
+| Qwen3-14B | 0.845 (0.834, 0.845, 0.846) | 0.864 (0.857, 0.865, 0.864) | 0.916 (0.905, 0.917, 0.916) | 0.947 (0.941, 0.947, 0.947) | 0.968 (0.965, 0.968, 0.968) |
+
+The routes, where a pass took at least 2% less time: an A100 SXM's prompts from 769 to 4096 tokens, every matrix, and
+to 8192 for a matrix whose O and K are both at least 5120, as Qwen3-14B's (8B's, 4096 on a side: 0.6% at 8192, not
+taken); a GH200's from 2048 to 8192 for such a matrix, as Qwen3-32B's (8B's: 2.2% at 2048 alone, for a ring of 600
+MiB, not taken). An H100 SXM, an H200 and the PCIe cards on v0.25.1's routes until measured; nothing past 8192.
 
 Where the time went before the gates (`a100-1` against a layer's products): the rest of a Qwen3-8B pass at 1024 tokens
 (norms, activations, rotary, attention) took 43.5 ms by the route against 28.5 in bf16 and 28.9 by today's route: the
