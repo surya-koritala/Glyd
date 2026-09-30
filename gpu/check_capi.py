@@ -367,11 +367,11 @@ for gpu in (80, 86, 87, 89, 1086, 1089, 2086, 3089, 4089, 90, 100, 120, 1120):
     for twelve in (False, True):
         for K in (1024, 1040):
             name = "mma12_route" if twelve else "mma_route"
-            got = [lib._route(name, gpu | g.NO_SPLIT, 512, K, M) for M in range(5001)]  # (without the route SPLIT: main's rule; SPLIT's below)
+            got = [lib._route(name, gpu, 512, K, M) for M in range(5001)]  # (without GLYD_GPU_WITH_SPLIT: main's rule; SPLIT's, asked, below)
             assert [r for r, _ in got] == [main_route(gpu, twelve, K, M) for M in range(5001)], ("routes", gpu, twelve, K)
             for M, (r, last) in enumerate(got):
                 assert all(got[i][0] == r for i in range(M, min(last, 5000) + 1)) and (last >= 5000 or got[last + 1][0] != r), ("a route's last", gpu, twelve, K, M)
-            assert jit.mma12_route(gpu | g.NO_SPLIT, 512, K, 700) == got[700] if twelve else jit.mma_route(gpu | g.NO_SPLIT, 512, K, 700) == got[700]
+            assert jit.mma12_route(gpu, 512, K, 700) == got[700] if twelve else jit.mma_route(gpu, 512, K, 700) == got[700]
             looked_up += 5001
 from glyd.gpu import model as gm
 
@@ -425,7 +425,8 @@ print(f"routes on 13 GPUs as main's GLinear took them (the L4's decode and the L
 # prompt, K a multiple of 64, on an A100 SXM (80) from 769 to 8192 tokens (a matrix over 2 x 50 M weights to 4096), on
 # a GH200 (6090) from 2048 to 8192 for a matrix of O and K at least 4096, on an H100 SXM or H200 (90) and a PCIe card
 # (5080, 5090) never (not measured); its decode's
-# SMs by the GPU and M; every other route main's, through both hosts; GLYD_GPU_NO_SPLIT none of it. The route's 'last'
+# SMs by the GPU and M, asked for (GLYD_GPU_WITH_SPLIT); every other route main's, through both hosts; without the flag
+# none of it, every route main's (the C API's other callers: v0.25.1's routes). The route's 'last'
 # as every route's.
 SPLIT_MIN, SPLIT_MAX, SPLIT_SMS = (int(os.environ.get(v, 0)) for v in ("GLYD_SPLIT_MIN", "GLYD_SPLIT_MAX", "GLYD_SPLIT_SMS"))
 
@@ -456,15 +457,16 @@ for gpu in (80, 5080, 90, 5090, 6090, 86, 89, 1089, 2086, 3089, 4089, 100, 120):
             name = "mma12_route" if twelve else "mma_route"
             Ms = sorted({*range(0, 2100, 7), 767, 768, 769, 1023, 1024, 1025, 1535, 1536, 2047, 2048, 3071, 3072, 4096, 4097, 6143, 6144, 8192, 8193})
             for M in Ms:
-                r, last = lib._route(name, gpu, O, K, M)
+                asked = gpu | g.WITH_SPLIT
+                r, last = lib._route(name, asked, O, K, M)
                 sms = split_rule(gpu, twelve, O, K, M)
                 assert (r == g.SPLIT) == (sms > 0) and (sms or r == main_route(gpu, twelve, K, M)), ("the route SPLIT's rule", gpu, twelve, O, K, M, r)
-                assert (lib.mma12_split_sms(gpu, O, K, M) == jit.mma12_split_sms(gpu, O, K, M) == sms) if twelve else True, ("the route SPLIT's SMs", gpu, O, K, M)
-                assert lib._route(name, gpu | g.NO_SPLIT, O, K, M)[0] == main_route(gpu, twelve, K, M), ("GLYD_GPU_NO_SPLIT", gpu, O, K, M)
+                assert (lib.mma12_split_sms(asked, O, K, M) == jit.mma12_split_sms(asked, O, K, M) == sms) if twelve else True, ("the route SPLIT's SMs", gpu, O, K, M)
+                assert lib._route(name, gpu, O, K, M)[0] == main_route(gpu, twelve, K, M) and (not twelve or lib.mma12_split_sms(gpu, O, K, M) == 0), ("not asked: main's route", gpu, O, K, M)
                 if last < 1 << 62:
-                    assert lib._route(name, gpu, O, K, last)[0] == r and lib._route(name, gpu, O, K, last + 1)[0] != r, ("the route SPLIT's last", gpu, O, K, M, last)
+                    assert lib._route(name, asked, O, K, last)[0] == r and lib._route(name, asked, O, K, last + 1)[0] != r, ("the route SPLIT's last", gpu, O, K, M, last)
                 pinned += 1
-print(f"the route SPLIT's rule: {pinned} routes pinned (an A100 SXM's from 769 to 8192, a matrix over 2 x 50 M weights to 4096; a GH200's from 2048 to 8192, O and K at least 4096; no H100 SXM, H200 or PCIe card), its SMs alike through both hosts")
+print(f"the route SPLIT's rule: {pinned} routes pinned, asked (an A100 SXM's from 769 to 8192, a matrix over 2 x 50 M weights to 4096; a GH200's from 2048 to 8192, O and K at least 4096; no H100 SXM, H200 or PCIe card) and not (main's), its SMs alike through both hosts")
 
 # Its decode, built for few SMs: every row bit for bit as the pack's (rows from 0 and a row block on; grids for 1, 3,
 # 16 and 200 SMs), through both hosts; K not a multiple of 64 refused alike.
@@ -862,7 +864,7 @@ for M in (769, 1024, 2048, 4096, 8192):
         takes = split_rule(here, True, O, K, M) > 0
         assert (lin.route(M)[0] == g.SPLIT) == takes, ("this GPU's route SPLIT by the rule", here, O, K, M)
         if not takes:
-            assert lin.route(M)[0] == g.route(lin.p, here | g.NO_SPLIT, M)[0], ("today's route", here, O, K, M)
+            assert lin.route(M)[0] == g.route(lin.p, here, M)[0], ("today's route", here, O, K, M)
             x = torch.randn(M, K, dtype=bf, device=dev)
             near(lin(x), F.linear(x.float(), w.float()))
             assert dev_ not in gm.Split.of, ("no ring made", here, O, K, M)

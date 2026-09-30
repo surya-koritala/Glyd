@@ -42,7 +42,7 @@
  * 12-bit layout, a code into its 15 commonest exponents, has other bytes
  * and words, which the library refuses: pack it again; 6 from the route
  * SPLIT (glyd_gpu_ring_*, glyd_gpu_mma12_ring_*, glyd_gpu_mma12_unpack_split,
- * glyd_gpu_mma12_split_sms), a GPU's PCIe class and GLYD_GPU_NO_SPLIT in its
+ * glyd_gpu_mma12_split_sms), a GPU's PCIe class and GLYD_GPU_WITH_SPLIT in its
  * code (0.26.0). */
 #define GLYD_GPU_API_VERSION 6
 
@@ -177,9 +177,9 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
  * else none. 1089: an RTX 40; 3089: an L4; 4089: an L40S; 89: an L40 or RTX
  * 6000 Ada; 2086: an A10; 86: an A10G, A40 or RTX A6000; 80: an A100 SXM4;
  * 5080: an A100 PCIe; 90: an H100 SXM or H200; 6090: a GH200; 5090: an H100
- * PCIe. GLYD_GPU_NO_SPLIT added to a code: its routes
- * where the route SPLIT cannot run (no green contexts, a CUDA graph being
- * captured).
+ * PCIe. GLYD_GPU_WITH_SPLIT added to a code asks for the route SPLIT (a
+ * caller that runs the ring below: glyd.gpu's GLinear, where the split can
+ * run); without it no route is SPLIT (v0.25.1's routes).
  * ---------------------------------------------------------------------- */
 #define GLYD_GPU_ROUTE_DECODE 0 /* W decoded (glyd_gpu_*_unpack), then the caller's GEMM */
 #define GLYD_GPU_ROUTE_GEMM 1   /* glyd_gpu_mma_gemm, glyd_gpu_mma12_gemm */
@@ -194,7 +194,7 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
 #define GLYD_GPU_L40S 4000      /* a GPU's class: "L40S" in its name as a word */
 #define GLYD_GPU_PCIE 5000      /* a GPU's class: "PCIe" in its name */
 #define GLYD_GPU_GH200 6000     /* a GPU's class: "GH200" in its name as a word */
-#define GLYD_GPU_NO_SPLIT 1048576 /* a flag in a GPU's code (1 << 20): the routes without SPLIT */
+#define GLYD_GPU_WITH_SPLIT 1048576 /* a flag in a GPU's code (1 << 20): its routes with SPLIT, which the caller runs (opt-in) */
 
 /* The current device's GPU as the routes take it: its code. */
 int glyd_gpu_gpu(int* gpu);
@@ -209,17 +209,19 @@ int glyd_gpu_gpu(int* gpu);
  * an A100's from 769 and an L4's from 2560 (its tiered ones from 896). */
 int glyd_gpu_mma_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
 int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
-/* The route SPLIT's SMs for the decode, where the route is SPLIT (else 0): a
- * 12-bit prompt decoded ahead on SMs set apart (green contexts), cuBLAS on
- * the rest, where a forward pass took less time so than by the routes
- * before it (gpu/README.md): an A100 SXM's from 769 to 8192 tokens (a matrix
- * over 2 x 50 M weights to 4096), a GH200's from 2048 to 8192 for a matrix
- * whose O and K are both at least 4096 (an H100 SXM, H200 or H100 PCIe:
- * never, until measured); the decode's
- * SMs 4 to 12 by the GPU and M. GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset:
- * the GPU's; a negative GLYD_SPLIT_MIN: never) and GLYD_SPLIT_SMS move them,
- * on any GPU from Ampere and any matrix, read as the routes' others. K a
- * multiple of 64. */
+/* The route SPLIT's SMs for the decode, where the route of the code with
+ * GLYD_GPU_WITH_SPLIT is SPLIT (else 0; without the flag, 0): a 12-bit
+ * prompt decoded ahead on SMs set apart (green contexts), cuBLAS on the rest,
+ * where a forward pass took less time so than by the routes before it
+ * (gpu/README.md): an A100 SXM's from 769 to 8192 tokens (a matrix over 2 x
+ * 50 M weights to 4096), a GH200's from 2048 to 8192 for a matrix whose O and
+ * K are both at least 4096 (an H100 SXM, an H200 and the PCIe cards: never,
+ * until measured); the decode's SMs 4 to 12 by the GPU and M. The route is
+ * opt-in: glyd_gpu_*_route give it only for a code with GLYD_GPU_WITH_SPLIT,
+ * and glyd_gpu_*_linear's own route (-1) never is. GLYD_SPLIT_MIN,
+ * GLYD_SPLIT_MAX (0 or unset: the GPU's; a negative GLYD_SPLIT_MIN: never)
+ * and GLYD_SPLIT_SMS move them, on any GPU from Ampere and any matrix, read as
+ * the routes' others. K a multiple of 64. */
 int glyd_gpu_mma12_split_sms(int64_t gpu, int64_t O, int64_t K, int64_t M, int64_t* sms);
 
 /* Y [M, O] = X W^T (+ bias) by a route (negative: the current GPU's for M):
@@ -262,7 +264,7 @@ int glyd_gpu_mma12_linear(const uint8_t* data, const uint32_t* exc, const int32_
  * A ring serves one host thread and one device (the current one when made);
  * cudaErrorNotSupported where the split cannot run (a driver before CUDA
  * 12.4, one that refuses the split: MIG, MPS; stream cs being captured into
- * a CUDA graph): take the route the code with GLYD_GPU_NO_SPLIT gives.
+ * a CUDA graph): take the route the code without GLYD_GPU_WITH_SPLIT gives.
  * ---------------------------------------------------------------------- */
 typedef struct glyd_gpu_ring glyd_gpu_ring;
 

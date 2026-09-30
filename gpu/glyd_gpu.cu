@@ -3965,16 +3965,17 @@ static int64_t dec_from(bool twelve, int64_t gpu, int64_t dec_min) {
 // end: an H100 SXM's 3.35 TB/s and 700 W against the GH200's 4 TB/s and larger budget), nor past 8192 tokens (not
 // measured). Its SMs for the decode: an A100's 12 to 1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143,
 // then 4 (the split's granularity there: 8, cuBLAS a co-scheduled group). GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset:
-// the GPU's; GLYD_SPLIT_MIN negative: never) and GLYD_SPLIT_SMS move them, on any GPU from Ampere and any matrix; a
-// GPU's code with GLYD_GPU_NO_SPLIT never takes it (where the split cannot run: no green contexts, a capture). The
-// decode is the 12-bit layout's (K a multiple of 64).
+// the GPU's; GLYD_SPLIT_MIN negative: never) and GLYD_SPLIT_SMS move them, on any GPU from Ampere and any matrix. The
+// route is opt-in: a GPU's code with GLYD_GPU_WITH_SPLIT asks for it (a caller that runs the ring: glyd.gpu's GLinear,
+// where the split can run); without the flag no route is SPLIT and glyd_gpu_*_linear's own route never is (v0.25.1's
+// routes, for the C API's other callers). The decode is the 12-bit layout's (K a multiple of 64).
 constexpr int64_t SPLIT_SLOT_WEIGHTS = 50 << 20;  // a ring slot of 100 MiB of bf16, as measured
 
 static int64_t split_sms(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M) {
     const RouteMins& t = route_mins();
-    int64_t code = gpu & ~(int64_t)GLYD_GPU_NO_SPLIT, cc = code % 1000;
+    int64_t code = gpu & ~(int64_t)GLYD_GPU_WITH_SPLIT, cc = code % 1000;
     bool a100 = code == 80, gh200 = code == GLYD_GPU_GH200 + 90, large = O >= 4096 && K >= 4096;
-    if (!twelve || gpu & GLYD_GPU_NO_SPLIT || K % 64 || t.split_min < 0 || cc < 80) return 0;
+    if (!twelve || !(gpu & GLYD_GPU_WITH_SPLIT) || K % 64 || t.split_min < 0 || cc < 80) return 0;
     int64_t lo = t.split_min ? t.split_min : a100 ? 769 : gh200 && large ? 2048 : INT64_MAX;
     int64_t hi = t.split_max ? t.split_max : a100 && O * K > 2 * SPLIT_SLOT_WEIGHTS ? 4096 : 8192;
     if (M < lo || M > hi) return 0;
@@ -3987,7 +3988,7 @@ static int64_t split_sms(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t
 static int route_for(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M) {
     const RouteMins& t = route_mins();
     if (split_sms(twelve, gpu, O, K, M)) return GLYD_GPU_ROUTE_SPLIT;
-    gpu &= ~(int64_t)GLYD_GPU_NO_SPLIT;
+    gpu &= ~(int64_t)GLYD_GPU_WITH_SPLIT;
     int64_t cc = gpu % 1000;
     bool a100 = cc == 80, hopper = cc == 90, mid = cc == 80 || cc == 86 || cc == 87 || cc == 89, k64 = K % 64 == 0;
     if (hopper && twelve && k64 && M >= t.wg_min && M <= t.wg_max) return GLYD_GPU_ROUTE_WG;  // TMA and wgmma
@@ -4042,7 +4043,7 @@ static int route_run(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M, 
     const RouteMins& t = route_mins();
     int here = *route = route_for(twelve, gpu, O, K, M);
     if (last) {
-        int64_t plain = gpu & ~(int64_t)GLYD_GPU_NO_SPLIT;  // (dec_from and ahead_min take the code without the flag)
+        int64_t plain = gpu & ~(int64_t)GLYD_GPU_WITH_SPLIT;  // (dec_from and ahead_min take the code without the flag)
         int64_t cuts[] = {t.wg_min, t.wg_max + 1, t.mid_min, 65, 129, dec_from(twelve, plain, t.dec_min), 769, ahead_min(twelve, plain), 512, 513, 640, 1793,
                           1024, 1025, 2048, 4097, 8193, t.split_min, t.split_max + 1}, next = INT64_MAX;
         for (int64_t c : cuts)
@@ -4092,7 +4093,7 @@ static int mma_linear_run(Fmt f, int64_t O, int64_t K, const uint16_t* x, int64_
         return cudaErrorInvalidValue;  // the 12-bit layout's alone
     case GLYD_GPU_ROUTE_DECODE:
     case GLYD_GPU_ROUTE_AHEAD:
-    case GLYD_GPU_ROUTE_SPLIT:  // (the pipelined product is glyd_gpu_mma12_ring_linear, with the caller's cuBLAS)
+    case GLYD_GPU_ROUTE_SPLIT:  // (given: the prompt kernel; never its own route. The pipelined product is glyd_gpu_mma12_ring_linear)
         if (K % 64) return cudaErrorNotSupported;
         [[fallthrough]];
     case GLYD_GPU_ROUTE_BIG:

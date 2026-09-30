@@ -49,9 +49,13 @@ every earlier format.
   `GLYD_GPU_ROUTE_SPLIT` and its SMs (`glyd_gpu_mma12_split_sms`), a GPU's
   PCIe and GH200 classes in its code (`GLYD_GPU_PCIE`, `GLYD_GPU_GH200`:
   an A100 PCIe 5080, an H100 PCIe 5090, a GH200 6090) and
-  `GLYD_GPU_NO_SPLIT` (a code's routes without SPLIT). `glyd_gpu_mma12_linear` takes SPLIT by the
+  `GLYD_GPU_WITH_SPLIT` (a code's routes with SPLIT). The route is opt-in:
+  only a code with that flag gets it, which the glyd package's Linears ask
+  for where the split can run; `glyd_gpu_*_linear`'s own route (-1) never
+  is, so the C API's other callers (the glyd-gpu crate, the vLLM plugin)
+  keep v0.25.1's routes. `glyd_gpu_mma12_linear` given SPLIT takes it by the
   prompt kernel. v0.25's libraries (version 5) are refused by this package
-  and the glyd-gpu crate (`Route::Split`, `PCIE`, `GH200`, `NO_SPLIT`,
+  and the glyd-gpu crate (`Route::Split`, `PCIE`, `GH200`, `WITH_SPLIT`,
   `Library::split_sms`; the ring declared, not wrapped yet).
 - `gpu/e2e.py --without-split` times a prompt again with the route off in
   the same process; `--breakdown` gives a pass's host time and its GPU

@@ -48,9 +48,9 @@ pub const L40S: i32 = 4000;
 pub const PCIE: i32 = 5000;
 /// A GPU's class by name in its code: "GH200" in its name as a word.
 pub const GH200: i32 = 6000;
-/// A flag added to a GPU's code for [`Library::route`]: its routes without [`Route::Split`] (where the split cannot
-/// run, or its ring is not used).
-pub const NO_SPLIT: i32 = 1 << 20;
+/// A flag added to a GPU's code for [`Library::route`]: its routes with [`Route::Split`], which the caller runs
+/// (opt-in: without it no route is Split, v0.25.1's routes).
+pub const WITH_SPLIT: i32 = 1 << 20;
 /// A status: `cudaErrorInvalidValue`, an argument out of range.
 pub const INVALID_VALUE: i32 = 1;
 /// A status: `cudaErrorNotSupported`, a kernel that is not for this GPU.
@@ -276,8 +276,8 @@ pub enum Route {
     Ahead = 5,
     /// 12-bit: W decoded ahead on SMs set apart (the driver's green contexts), cuBLAS on the rest, through the
     /// library's ring (glyd_gpu.h's `glyd_gpu_mma12_ring_*`, with a cuBLAS of the caller's; [`Library::split_sms`]
-    /// the decode's SMs): an A100's and Hopper's prompts. This crate does not wrap the ring yet: take it as Decode
-    /// (as [`Library::linear`] does, by the prompt kernel), or ask the route of the GPU's code plus [`NO_SPLIT`].
+    /// the decode's SMs): an A100 SXM's and a GH200's prompts, only for a code with [`WITH_SPLIT`] (opt-in: without it,
+    /// never). This crate does not wrap the ring yet: it does not ask.
     Split = 6,
 }
 
@@ -672,7 +672,7 @@ impl Library {
         Ok((Route::from_c(r)?, last))
     }
 
-    /// The decode's SMs where the route of `w` for m tokens on `gpu` is [`Route::Split`], else 0.
+    /// The decode's SMs where the route of `w` for m tokens on `gpu` (with [`WITH_SPLIT`]) is [`Route::Split`], else 0.
     pub fn split_sms(&self, gpu: i32, w: &Matrix, m: i64) -> Result<i64> {
         let mut sms = 0i64;
         if let Pack::Twelve(_) = w.pack {
@@ -967,8 +967,8 @@ mod tests {
             assert_eq!(Route::from_c(r as c_int).unwrap(), r);
         }
         assert_eq!(
-            (define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10"), define("GLYD_GPU_L4"), define("GLYD_GPU_L40S"), define("GLYD_GPU_PCIE"), define("GLYD_GPU_GH200"), define("GLYD_GPU_NO_SPLIT")),
-            (GEFORCE, A10, L4, L40S, PCIE, GH200, NO_SPLIT)
+            (define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10"), define("GLYD_GPU_L4"), define("GLYD_GPU_L40S"), define("GLYD_GPU_PCIE"), define("GLYD_GPU_GH200"), define("GLYD_GPU_WITH_SPLIT")),
+            (GEFORCE, A10, L4, L40S, PCIE, GH200, WITH_SPLIT)
         );
     }
 

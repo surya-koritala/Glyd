@@ -1135,7 +1135,11 @@ before its product; decoded ahead beside the products (above), it takes
 their SMs as it goes. The route SPLIT sets a few SMs apart for the decode
 instead, with the driver's green contexts (no library of their own: the
 driver's entry points), and cuBLAS multiplies on the rest, told how many
-(`cublasSetSmCountTarget` on PyTorch's own handle):
+(`cublasSetSmCountTarget` on PyTorch's own handle). The route is opt-in: the
+glyd package's Linears ask for it (a GPU's code with `GLYD_GPU_WITH_SPLIT`,
+where the split can run); every other caller of the library's routes and
+`linear` (the C API's, the Rust crate's, the vLLM plugin's) gets v0.25.1's
+routes unless it asks and runs the ring:
 
 - the decode: the 12-bit layout's steps, four at a time a warp, their
   next four loaded while these are decoded, written out through shared
@@ -1382,8 +1386,9 @@ there; SPLIT, whose products are the caller's cuBLAS on the ring, through
 `glyd_gpu_mma12_ring_linear`). A GPU's code, which the routes take, is its
 compute capability plus a class where the name tells GPUs apart
 (`GLYD_GPU_GEFORCE`, `GLYD_GPU_A10`, `GLYD_GPU_L4`, `GLYD_GPU_L40S`,
-`GLYD_GPU_PCIE`, `GLYD_GPU_GH200`: `glyd_gpu.h`), and `GLYD_GPU_NO_SPLIT` gives its routes
-without SPLIT. The glyd package's Linears take their routes from the library
+`GLYD_GPU_PCIE`, `GLYD_GPU_GH200`: `glyd_gpu.h`); `GLYD_GPU_WITH_SPLIT` added
+to it asks for the route SPLIT, which only glyd.gpu's Linears do (opt-in:
+without it the routes and `linear` are v0.25.1's). The glyd package's Linears take their routes from the library
 and multiply by `linear` in their one C call, so every caller routes the same
 way.
 

@@ -359,7 +359,8 @@ class Split:
     are the JIT build's, not the prebuilt library's; a driver without green contexts, before CUDA 12.4; MIG or MPS
     refusing the split; no cublasSetSmCountTarget on Hopper, where cuBLAS untold ran 1.3-1.4x slower; too little memory
     for the ring; a CUDA graph being captured, or a torch.compile graph's node: its streams and events are not the
-    graph's) the Linear takes the route the library gives without it (GLYD_GPU_NO_SPLIT): today's, never an error. A
+    graph's) the Linear takes the route the library gives without it (its code without GLYD_GPU_WITH_SPLIT, which it
+    adds where the split can run: the route is opt-in, never another caller's): today's, never an error. A
     compiled generate() runs its prompt eager, as before: the route there; its captured steps are far below it."""
 
     of = {}  # {device: Split, or False where it cannot run}
@@ -484,7 +485,7 @@ class Split:
         if any(m is None for m in mods):
             self.order, self.rec, self.run_, self.at = None, [], [], -1
             return 0
-        self.run_, self.pos, self.queued = [j for j in range(i, len(mods)) if g.split_sms(mods[j].p, mods[j].gpu, M) == sms], 0, 0
+        self.run_, self.pos, self.queued = [j for j in range(i, len(mods)) if g.split_sms(mods[j].p, mods[j].gpu | g.WITH_SPLIT, M) == sms], 0, 0
         return _lib.ring_reset(self.ring) or self.top_up(sms)
 
     def top_up(self, sms):
@@ -527,7 +528,7 @@ class Split:
 
     def run(self, lin, x):
         M, h, p = x.shape[0], lin.handle, lin.p
-        sms = g.split_sms(p, lin.gpu, M)
+        sms = g.split_sms(p, lin.gpu | g.WITH_SPLIT, M)
         r = self.follow(h, M, sms)
         if r:
             return self.fail(r, "its queue")
@@ -640,7 +641,7 @@ class GLinear(_Node, nn.Module):
         """The library's route for M tokens on this GPU (kernels.py's DECODE, GEMM, MID, WG, BIG, AHEAD, SPLIT), and
         the last token count from M on that takes it (the mma layouts); where SPLIT cannot run now (Split.off), the
         route without it."""
-        return g.route(self.p, self.gpu | g.NO_SPLIT if Split.off(self.p.sm.device) else self.gpu, M)
+        return g.route(self.p, self.gpu if Split.off(self.p.sm.device) else self.gpu | g.WITH_SPLIT, M)
 
     def after(self, M, routes):
         """The first token count from M on whose route is one of routes, else 1 << 62."""

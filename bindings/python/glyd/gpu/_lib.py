@@ -450,7 +450,7 @@ def mma12_unpack_split(data, exc, exc_base, sym, K, row0, rows, out, sms):
 
 @functools.lru_cache(maxsize=4096)
 def mma12_split_sms(gpu, O, K, M):
-    """The route SPLIT's SMs for the decode for M tokens of W [O, K] on gpu (0: another route)."""
+    """The route SPLIT's SMs for the decode for M tokens of W [O, K] on gpu (its code with WITH_SPLIT; 0: another route)."""
     sms = ctypes.c_int64()
     r = _loaded("mma12_split_sms")(gpu, O, K, M, ctypes.byref(sms))
     if r:

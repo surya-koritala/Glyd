@@ -106,7 +106,7 @@ for M in [int(m) for m in args.M.split(",")]:
     gm.Split.of.pop(dev, None)
     if split is not None:
         gm.Split.of[dev] = split
-    routes = ", ".join(f"{k} {ROUTE[lins[0][i].route(M)[0]]}" + (f" ({g.split_sms(P[k], gpu, M)} SMs)" if lins[0][i].route(M)[0] == g.SPLIT else "") for i, k in enumerate(names))
+    routes = ", ".join(f"{k} {ROUTE[lins[0][i].route(M)[0]]}" + (f" ({g.split_sms(P[k], gpu | g.WITH_SPLIT, M)} SMs)" if lins[0][i].route(M)[0] == g.SPLIT else "") for i, k in enumerate(names))
     t = {m: statistics.median(v) / args.copies for m, v in ts.items()}
     print(f"M={M}: a layer bf16 {t['bf16']:.3f} ms, today's route {t['today']:.3f} ms ({t['today'] / t['bf16']:.3f}x bf16), "
           f"SPLIT {t['split']:.3f} ms ({t['split'] / t['bf16']:.3f}x bf16, {t['split'] / t['today']:.3f}x today's); routes: {routes}; "

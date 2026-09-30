@@ -537,19 +537,20 @@ def hold(ns):
 # matrix decoded, then cuBLAS; AHEAD: so, decoded ahead beside the products before it (model.Ahead).
 DECODE, GEMM, MID, WG, BIG, AHEAD, SPLIT = range(7)
 GEFORCE, A10, L4, L40S, PCIE, GH200 = 1000, 2000, 3000, 4000, 5000, 6000  # a GPU's classes by name in its code (glyd_gpu.h's GLYD_GPU_GEFORCE, _A10, _L4, _L40S, _PCIE, _GH200)
-NO_SPLIT = 1 << 20  # in a GPU's code: its routes without SPLIT (glyd_gpu.h's GLYD_GPU_NO_SPLIT)
+WITH_SPLIT = 1 << 20  # in a GPU's code: its routes with SPLIT (glyd_gpu.h's GLYD_GPU_WITH_SPLIT: opt-in, asked by GLinear, which runs the ring)
 
 
 def route(p, gpu, M):
     """(route, last): the library's route for M tokens of pack p (the mma layouts) on gpu (its code, model.gpu_code:
-    compute capability and class), and the last token count from M on that takes it."""
+    compute capability and class; plus WITH_SPLIT for the route SPLIT, opt-in), and the last token count from M on that
+    takes it."""
     O, K = p.shape
     return (_ext.mma12_route if isinstance(p, Mma12) else _ext.mma_route)(gpu, O, K, M)
 
 
 def split_sms(p, gpu, M):
-    """The route SPLIT's SMs for the decode for M tokens of pack p on gpu (0: another route; the 12-bit layout's
-    alone)."""
+    """The route SPLIT's SMs for the decode for M tokens of pack p on gpu (its code with WITH_SPLIT; 0: another route,
+    or no flag; the 12-bit layout's alone)."""
     O, K = p.shape
     return _ext.mma12_split_sms(gpu, O, K, M) if isinstance(p, Mma12) else 0
 
