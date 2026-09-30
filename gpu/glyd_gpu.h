@@ -40,8 +40,11 @@
  * class in its code (never released: builds of main alone); 5 from the
  * 12-bit layout in split byte (its data, exc and sym[4] as below): 0.24's
  * 12-bit layout, a code into its 15 commonest exponents, has other bytes
- * and words, which the library refuses: pack it again. */
-#define GLYD_GPU_API_VERSION 5
+ * and words, which the library refuses: pack it again; 6 from the route
+ * SPLIT (glyd_gpu_ring_*, glyd_gpu_mma12_ring_*, glyd_gpu_mma12_unpack_split,
+ * glyd_gpu_mma12_split_sms), a GPU's PCIe class and GLYD_GPU_NO_SPLIT in its
+ * code (0.26.0). */
+#define GLYD_GPU_API_VERSION 6
 
 #ifdef __cplusplus
 extern "C" {
