@@ -1,0 +1,14 @@
+BITS PASS: 8 steps run, each exit 0; e2e: 14 sha256 lines, 1 outputs, the same in every variant and tree
+NVIDIA L4 (8.9, sm_89), x86_64 host, 16 CPUs; v0.25.1 fd24666 (decode-fix: v0.25.1's code), orders 73b9560 (decode-fix), v0.25.0 bfb2c4e (rust-splitbyte, v0.25.0's tree), main db8e7b0 (origin/main)
+environment: ~/gpuenv; torch 2.14.0+cu130 CUDA 13.0 | transformers 5.17.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+
+The decode a layer (dec_time.py; median of its repetitions), us, each over main's; whole: a warp a step (for cuBLAS,
+exact mode), ahead: 2 warps an SM (decode ahead). v0.25.0: its library; order N: 73b9560's, GLYD_DEC_ORDER=N (0 v0.25.0's
+kernel); v0.25.1: the fix as merged, as machine-short.txt names it (fd24666: the whole decode in order 3's loads on
+every GPU; dc490e4: on Hopper alone, elsewhere order 0's; the decode ahead order 0's in both).
+
+End to end (dec_e2e.py), each over main's: exact mode's steps (ms a token) and prompts (ms)
+  exact steps: main 40.093 | main2 40.532 (1.011) | v0.25.0 40.500 (1.010) | v0.25.0-2 40.339 (1.006) | order 0 39.386 (0.982) | order 0 (fix-2) 40.510 (1.010) | order 1 39.418 (0.983) | order 1 (fix-2) 40.525 (1.011) | order 2 39.440 (0.984) | order 2 (fix-2) 40.567 (1.012) | order 3 39.409 (0.983) | order 3 (fix-2) 40.535 (1.011) | v0.25.1 40.445 (1.009) | v0.25.1-2 40.081 (1.000)
+
+steps:

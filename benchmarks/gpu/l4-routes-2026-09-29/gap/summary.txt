@@ -1,0 +1,24 @@
+## Qwen3-8B, tiered (mma), NVIDIA L4 (code 3089), glyd 0.25.0
+
+A prompt's pass, ms (over bf16's; SM clock and power, medians over the window); * the fastest route
+
+| tokens | bf16 | decoded | ahead |
+| ---: | ---: | ---: | ---: |
+| 896 |  | 385.4* [998 MHz 72 W] | 413.1 [728 MHz 73 W] |
+| 1024 |  | 449.5* [960 MHz 72 W] | 463.8 [720 MHz 73 W] |
+| 2048 |  | 793.6* [1035 MHz 72 W] | 804.3 [900 MHz 72 W] |
+| 4096 |  | 1561.3 [1110 MHz 72 W] | 1547.6* [1035 MHz 72 W] |
+| 8192 |  | 3215.5 [1125 MHz 72 W] | 3200.8* [1080 MHz 72 W] |
+
+## Qwen3-8B, 12-bit (mma12), NVIDIA L4 (code 3089), glyd 0.25.0
+
+A prompt's pass, ms (over bf16's; SM clock and power, medians over the window); * the fastest route
+
+| tokens | bf16 | decoded | ahead |
+| ---: | ---: | ---: | ---: |
+| 896 |  | 363.0* [1110 MHz 72 W] | 372.2 [810 MHz 72 W] |
+| 1024 |  | 423.7* [1050 MHz 72 W] | 439.9 [810 MHz 72 W] |
+| 2048 |  | 768.1* [1095 MHz 72 W] | 785.7 [960 MHz 73 W] |
+| 4096 |  | 1572.7* [1080 MHz 72 W] | 1588.4 [1012 MHz 72 W] |
+| 8192 |  | 3282.8 [1080 MHz 72 W] | 3251.5* [1080 MHz 72 W] |
+

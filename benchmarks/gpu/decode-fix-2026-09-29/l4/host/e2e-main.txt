@@ -1,0 +1,7 @@
+NVIDIA L4, Qwen/Qwen3-0.6B, library /home/ubuntu/dfx/w/main/lib/libglyd_gpu_cuda13.so
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:   1%|▏         | 4/311 [00:00<00:15, 19.95it/s]Loading weights:  24%|██▍       | 76/311 [00:00<00:00, 310.83it/s]Loading weights:  48%|████▊     | 148/311 [00:00<00:00, 462.03it/s]Loading weights:  71%|███████   | 221/311 [00:00<00:00, 553.68it/s]Loading weights:  94%|█████████▍| 292/311 [00:00<00:00, 603.20it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 496.66it/s]
+exact: loaded in 1 s
+exact as built: 64 tokens sha256 199f1b0cacd31cea
+exact as built: steps 40.093 ms a token (24.94 tokens/s)  [runs of 64, ms a token: 40.097 40.093 39.988 40.143 40.027]
+median of 5
+exit 0

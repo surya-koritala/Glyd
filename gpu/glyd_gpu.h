@@ -163,17 +163,21 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
  * compute capability does not tell GPUs apart: GLYD_GPU_GEFORCE with
  * "GeForce" in its name, GLYD_GPU_A10 with "A10" in it as a word (between
  * characters that are not ASCII letters, digits or '_': an A10, not an A10G,
- * A100 or A40), else none. 1089: an RTX 40; 2086: an A10; 86: an A10G, A40
- * or RTX A6000; 80: an A100; 90: an H100.
+ * A100 or A40), GLYD_GPU_L4 with "L4" in it as a word (an L4, not an L40S or
+ * L40), GLYD_GPU_L40S with "L40S" in it as a word (not an L40), else none.
+ * 1089: an RTX 40; 3089: an L4; 4089: an L40S; 89: an L40 or RTX 6000 Ada;
+ * 2086: an A10; 86: an A10G, A40 or RTX A6000; 80: an A100; 90: an H100.
  * ---------------------------------------------------------------------- */
 #define GLYD_GPU_ROUTE_DECODE 0 /* W decoded (glyd_gpu_*_unpack), then the caller's GEMM */
 #define GLYD_GPU_ROUTE_GEMM 1   /* glyd_gpu_mma_gemm, glyd_gpu_mma12_gemm */
 #define GLYD_GPU_ROUTE_MID 2    /* glyd_gpu_mma12_gemm_mid */
 #define GLYD_GPU_ROUTE_WG 3     /* glyd_gpu_mma12_gemm_wg */
 #define GLYD_GPU_ROUTE_BIG 4    /* glyd_gpu_mma_gemm_big, glyd_gpu_mma12_gemm_big: variant 0 */
-#define GLYD_GPU_ROUTE_AHEAD 5  /* DECODE, W decoded ahead beside the products before it (GeForce Ada's, an A10's prompts) */
+#define GLYD_GPU_ROUTE_AHEAD 5  /* DECODE, W decoded ahead beside the products before it (GeForce Ada's, an A10's, an L40S's prompts) */
 #define GLYD_GPU_GEFORCE 1000   /* a GPU's class: "GeForce" in its name */
 #define GLYD_GPU_A10 2000       /* a GPU's class: "A10" in its name as a word */
+#define GLYD_GPU_L4 3000        /* a GPU's class: "L4" in its name as a word */
+#define GLYD_GPU_L40S 4000      /* a GPU's class: "L40S" in its name as a word */
 
 /* The current device's GPU as the routes take it: its code. */
 int glyd_gpu_gpu(int* gpu);
@@ -185,7 +189,7 @@ int glyd_gpu_gpu(int* gpu);
  * each a whole number in base 10 (spaces around it, a sign), else taken as
  * unset (the glyd package refuses such a value at import); GLYD_DEC_MIN: a
  * 12-bit prompt decoded from that many tokens on any GPU, where unset or 0
- * an A100's from 769. */
+ * an A100's from 769 and an L4's from 2560 (its tiered ones from 896). */
 int glyd_gpu_mma_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
 int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
 
