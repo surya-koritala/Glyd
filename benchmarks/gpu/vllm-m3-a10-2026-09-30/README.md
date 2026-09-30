@@ -60,8 +60,8 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
     - requests a second: 0.92x with Qwen3-8B and 0.88x with Qwen3-32B;
     - the time per output token: 9% and 82% more;
     - each request's whole time: 9% and 28% more;
-    - SM clock: Glyd's kernels ran lower (median 1,845 against 1,972 MHz with Qwen3-8B, 1,890 against 1,965 with
-      Qwen3-32B).
+    - the GPU's power the same (a median 659-667 W while it worked), and its SM clock 1,830 MHz against bf16's 1,575 with
+      Qwen3-8B, 1,875 against 1,950 with Qwen3-32B.
 
     Hopper's gap is not profiled yet.
   - **On the GH200 below saturation, Qwen3-8B:** parity in requests a second at 1 and 4 a second, with the time per
@@ -69,6 +69,10 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
   - **The time per output token at saturation on the other GPUs:** 30-32% more on the A10 and 48% on the L4, where
     each step carries more requests; within 4% on the A100.
   - **The inter-token p99** (the steps with a prompt in them): 13-25% more on the A10 and A100.
+
+The SM clock in the tables is nvidia-smi's median over the samples while the GPU worked (`bench_summary.py`: above the
+midpoint of the least and most power drawn), recomputed from the logs after the runs; the jobs' own `summary.txt` and
+console files keep the median over every sample, idle ones included.
 
 ## Check: all 15 passed (`check/`, 979 s)
 
@@ -94,13 +98,13 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
 | Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | ITL median / p99 (ms) | SM clock, temperature |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1 | bf16 | 0.85 | 217.9 | 384 / 838 | 50.9 / 61.2 | 41.0 / 263 | 1335 MHz, 66 C |
-| 1 | glyd | 0.88 | 225.7 | 445 / 993 | 40.4 / 52.0 | 30.8 / 312 | 1335 MHz, 68 C |
+| 1 | glyd | 0.88 | 225.7 | 445 / 993 | 40.4 / 52.0 | 30.8 / 312 | 1320 MHz, 68 C |
 | 4 | bf16 | 1.24 | 316.3 | 27,898 / 61,054 | 66.8 / 103.5 | 46.6 / 469 | 1275 MHz, 72 C |
 | 4 | glyd | 1.51 | 385.9 | 17,134 / 44,857 | 88.5 / 127.6 | 46.4 / 546 | 1155 MHz, 72 C |
 | inf | bf16 | 1.24 | 317.5 | 93,052 / 189,275 | 66.1 / 107.8 | 46.8 / 475 | 1245 MHz, 75 C |
-| inf | glyd | 1.62 | 415.6 | 70,196 / 148,741 | 85.7 / 136.5 | 47.0 / 549 | 1125 MHz, 74 C |
+| inf | glyd | 1.62 | 415.6 | 70,196 / 148,741 | 85.7 / 136.5 | 47.0 / 549 | 1110 MHz, 74 C |
 
 The prompts: 64 at 1 request a second, 128 at 4, 256 at once. Every request completed. bf16 saturates at 1.24
 requests a second here, KV-bound; at 1 a second it ran up to 24 requests at once, Glyd 20. At saturation Glyd's
-kernels ran at a median 1,125-1,155 MHz against bf16's 1,245-1,275, both drawing the GPU's 150 W cap (the median of
-nvidia-smi's samples in every run).
+kernels ran at a median 1,110-1,155 MHz against bf16's 1,245-1,275, both drawing the GPU's 150 W cap (the median of
+nvidia-smi's samples while the GPU worked, in every run).

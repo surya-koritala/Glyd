@@ -60,8 +60,8 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
     - requests a second: 0.92x with Qwen3-8B and 0.88x with Qwen3-32B;
     - the time per output token: 9% and 82% more;
     - each request's whole time: 9% and 28% more;
-    - SM clock: Glyd's kernels ran lower (median 1,845 against 1,972 MHz with Qwen3-8B, 1,890 against 1,965 with
-      Qwen3-32B).
+    - the GPU's power the same (a median 659-667 W while it worked), and its SM clock 1,830 MHz against bf16's 1,575 with
+      Qwen3-8B, 1,875 against 1,950 with Qwen3-32B.
 
     Hopper's gap is not profiled yet.
   - **On the GH200 below saturation, Qwen3-8B:** parity in requests a second at 1 and 4 a second, with the time per
@@ -69,6 +69,10 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
   - **The time per output token at saturation on the other GPUs:** 30-32% more on the A10 and 48% on the L4, where
     each step carries more requests; within 4% on the A100.
   - **The inter-token p99** (the steps with a prompt in them): 13-25% more on the A10 and A100.
+
+The SM clock in the tables is nvidia-smi's median over the samples while the GPU worked (`bench_summary.py`: above the
+midpoint of the least and most power drawn), recomputed from the logs after the runs; the jobs' own `summary.txt` and
+console files keep the median over every sample, idle ones included.
 
 ## Check: all 15 passed (`check/`, 1,057 s)
 
@@ -98,7 +102,7 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
 | 4 | bf16 | 3.56 | 912.0 | 97 / 257 | 19.4 / 26.6 | 16.2 / 80 | 1410 MHz, 58 C |
 | 4 | glyd | 3.59 | 919.8 | 112 / 367 | 18.9 / 28.2 | 14.6 / 98 | 1410 MHz, 60 C |
 | inf | bf16 | 6.36 | 1627.0 | 13,452 / 35,863 | 58.7 / 103.4 | 32.1 / 186 | 1350 MHz, 64 C |
-| inf | glyd | 7.55 | 1931.8 | 9,098 / 25,869 | 57.5 / 110.5 | 41.5 / 210 | 1365 MHz, 64 C |
+| inf | glyd | 7.55 | 1931.8 | 9,098 / 25,869 | 57.5 / 110.5 | 41.5 / 210 | 1395 MHz, 64 C |
 
 The prompts: 64 at 1 request a second, 128 at 4, 256 at once. Every request completed. Neither mode queued at 1 and 4
 requests a second: the KV cache holds about 110 requests of 1,280 tokens for bf16 and 125 for Glyd.
@@ -117,7 +121,7 @@ requests a second: the KV cache holds about 110 requests of 1,280 tokens for bf1
 | 4 | bf16 | 2.38 | 609.4 | 418 / 3,763 | 37.8 / 47.0 | 30.9 / 227 | 1410 MHz, 59 C |
 | 4 | glyd | 2.73 | 698.2 | 292 / 1,012 | 33.2 / 44.5 | 26.2 / 284 | 1410 MHz, 60 C |
 | inf | bf16 | 2.65 | 679.7 | 17,726 / 41,718 | 48.4 / 78.2 | 32.8 / 250 | 1410 MHz, 64 C |
-| inf | glyd | 4.37 | 1118.9 | 7,636 / 21,584 | 50.2 / 97.3 | 32.6 / 303 | 1350 MHz, 63 C |
+| inf | glyd | 4.37 | 1118.9 | 7,636 / 21,584 | 50.2 / 97.3 | 32.6 / 303 | 1410 MHz, 63 C |
 
 The prompts: 32 at 1 request a second, 64 at 4, 128 at once. Every request completed. bf16's KV cache holds about 36
 requests of 1,280 tokens, Glyd's about 63: at 4 a second bf16 began to queue (its TTFT p99 3.8 s against Glyd's 1.0),

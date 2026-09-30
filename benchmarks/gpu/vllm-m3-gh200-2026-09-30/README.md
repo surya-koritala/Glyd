@@ -60,8 +60,8 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
     - requests a second: 0.92x with Qwen3-8B and 0.88x with Qwen3-32B;
     - the time per output token: 9% and 82% more;
     - each request's whole time: 9% and 28% more;
-    - SM clock: Glyd's kernels ran lower (median 1,845 against 1,972 MHz with Qwen3-8B, 1,890 against 1,965 with
-      Qwen3-32B).
+    - the GPU's power the same (a median 659-667 W while it worked), and its SM clock 1,830 MHz against bf16's 1,575 with
+      Qwen3-8B, 1,875 against 1,950 with Qwen3-32B.
 
     Hopper's gap is not profiled yet.
   - **On the GH200 below saturation, Qwen3-8B:** parity in requests a second at 1 and 4 a second, with the time per
@@ -69,6 +69,10 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
   - **The time per output token at saturation on the other GPUs:** 30-32% more on the A10 and 48% on the L4, where
     each step carries more requests; within 4% on the A100.
   - **The inter-token p99** (the steps with a prompt in them): 13-25% more on the A10 and A100.
+
+The SM clock in the tables is nvidia-smi's median over the samples while the GPU worked (`bench_summary.py`: above the
+midpoint of the least and most power drawn), recomputed from the logs after the runs; the jobs' own `summary.txt` and
+console files keep the median over every sample, idle ones included.
 
 ## Check: all 15 passed (`check/`, 1,093 s)
 
@@ -97,12 +101,12 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
 | 1 | glyd | 0.98 | 249.9 | 46 / 66 | 6.1 / 6.6 | 5.9 / 10 | 1980 MHz, 54 C |
 | 4 | bf16 | 3.81 | 974.7 | 37 / 77 | 6.7 / 7.8 | 6.3 / 33 | 1980 MHz, 55 C |
 | 4 | glyd | 3.80 | 973.4 | 39 / 76 | 7.0 / 8.4 | 6.5 / 30 | 1980 MHz, 57 C |
-| inf | bf16 | 27.60 | 7066.5 | 1,448 / 3,952 | 29.7 / 33.4 | 21.8 / 212 | 1980 MHz, 60 C |
-| inf | glyd | 25.43 | 6508.8 | 1,501 / 4,116 | 32.5 / 36.4 | 24.3 / 249 | 1845 MHz, 59 C |
+| inf | bf16 | 27.60 | 7066.5 | 1,448 / 3,952 | 29.7 / 33.4 | 21.8 / 212 | 1575 MHz, 60 C |
+| inf | glyd | 25.43 | 6508.8 | 1,501 / 4,116 | 32.5 / 36.4 | 24.3 / 249 | 1830 MHz, 59 C |
 
 The prompts: 64 at 1 request a second, 128 at 4, 256 at once. Every request completed. Neither mode was short of KV
-cache: at once, at most 48% of bf16's was in use and 55% of Glyd's (the servers' logs, every 10 s). At saturation the
-GPU drew a median of 387 W with bf16 and 426 W with Glyd, of its 900 W.
+cache: at once, at most 48% of bf16's was in use and 55% of Glyd's (the servers' logs, every 10 s). At saturation, while
+it worked, the GPU drew a median of 659 W with bf16 and 661 W with Glyd, of its 900 W.
 
 ## Big: Qwen3-32B (`big/`, 1,063 s)
 
@@ -117,11 +121,12 @@ GPU drew a median of 387 W with bf16 and 426 W with Glyd, of its 900 W.
 | 1 | glyd | 0.86 | 221.4 | 228 / 547 | 21.7 / 23.4 | 19.3 / 129 | 1980 MHz, 58 C |
 | 4 | bf16 | 2.85 | 730.5 | 180 / 560 | 28.8 / 35.9 | 23.5 / 206 | 1980 MHz, 60 C |
 | 4 | glyd | 2.75 | 704.5 | 246 / 870 | 32.7 / 42.9 | 26.5 / 216 | 1980 MHz, 60 C |
-| inf | bf16 | 5.55 | 1421.5 | 6,342 / 16,097 | 37.7 / 79.0 | 27.8 / 263 | 1965 MHz, 61 C |
-| inf | glyd | 4.89 | 1252.5 | 3,047 / 7,541 | 68.4 / 76.1 | 40.4 / 889 | 1890 MHz, 61 C |
+| inf | bf16 | 5.55 | 1421.5 | 6,342 / 16,097 | 37.7 / 79.0 | 27.8 / 263 | 1950 MHz, 61 C |
+| inf | glyd | 4.89 | 1252.5 | 3,047 / 7,541 | 68.4 / 76.1 | 40.4 / 889 | 1875 MHz, 61 C |
 
 The prompts: 32 at 1 request a second, 64 at 4, 128 at once. Every request completed. bf16's KV cache holds about 62
 requests of 1,280 tokens and Glyd's about 103. At once (the servers' logs, every 10 s), bf16 ran at most 69 requests
 together with up to 59 waiting, and Glyd 107 with up to 23 waiting. Glyd's median inter-token latency, a step's time,
-was 40.4 ms against 27.8. At saturation the GPU drew a median of 659 W in both modes. What Glyd's kernels cost there
+was 40.4 ms against 27.8. At saturation, while it worked, the GPU drew a median of 667 W with bf16 and 662 W with Glyd.
+What Glyd's kernels cost there
 is not profiled yet.

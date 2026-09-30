@@ -103,15 +103,15 @@ server started again does. The saving is the same 3.63 GiB of weights, about 25,
 | Glyd tiered | 11.64 GiB | 52,496 tokens (1.94x) | 41.0 | 45,200 tokens (2.29x) | 35.3 |
 
 **Warm** (`bench-Qwen3-8B-low/`: 32 prompts at 0.25 requests a second; `bench-Qwen3-8B-warm/`: 64 at 1, 256 at once;
-each mode from about the GPU's idle temperature; the clock is nvidia-smi's median over the rate, the temperature its
-highest):
+each mode from about the GPU's idle temperature; the clock is nvidia-smi's median over the rate's samples while the GPU
+worked, the temperature its highest):
 
 | Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | ITL median / p99 (ms) | SM clock, temperature |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | 0.25 | bf16 | 0.22 | 56.5 | 458 / 903 | 69.9 / 73.2 | 66.7 / 322.1 | 1605 MHz, 74 C |
-| 0.25 | glyd | 0.23 | 58.1 | 594 / 1,263 | 54.8 / 59.0 | 49.9 / 467.4 | 1260 MHz, 72 C |
-| 1 | bf16 | 0.67 | 170.5 | 3,213 / 12,672 | 99.3 / 111.0 | 83.6 / 355.1 | 1515 MHz, 71 C |
-| 1 | glyd | 0.77 | 196.5 | 870 / 1,779 | 100.1 / 132.1 | 67.9 / 829.8 | 1245 MHz, 70 C |
+| 0.25 | glyd | 0.23 | 58.1 | 594 / 1,263 | 54.8 / 59.0 | 49.9 / 467.4 | 1245 MHz, 72 C |
+| 1 | bf16 | 0.67 | 170.5 | 3,213 / 12,672 | 99.3 / 111.0 | 83.6 / 355.1 | 1500 MHz, 71 C |
+| 1 | glyd | 0.77 | 196.5 | 870 / 1,779 | 100.1 / 132.1 | 67.9 / 829.8 | 1230 MHz, 70 C |
 | inf | bf16 | 0.77 | 196.4 | 148,852 / 305,366 | 109.6 / 181.2 | 84.6 / 603.2 | 1425 MHz, 79 C |
 | inf | glyd | 0.99 | 252.5 | 115,115 / 238,703 | 162.1 / 260.4 | 94.3 / 866.9 | 1215 MHz, 80 C |
 
@@ -148,7 +148,7 @@ With requests waiting (the servers' logs, every 10 s), bf16 ran a median of 22 r
   branch routes an L4's prompts from 896 tokens to a decode and cuBLAS instead.
 - **Steps without a prompt** (the median inter-token latency) were 25% shorter at 0.25 requests a second, 19% at 1,
   and 11% longer saturated, for about twice the requests a step.
-- **Clock:** at the L4's 72 W cap Glyd's kernels ran at a median 1,215-1,260 MHz, bf16's at 1,425-1,605.
+- **Clock:** at the L4's 72 W cap Glyd's kernels ran at a median 1,215-1,245 MHz, bf16's at 1,425-1,605.
 
 **Host overhead.** The op costs the host 44-54 µs a product, against F.linear's 15-22 µs (`host_us_*` in each check's
 layers). It shows only where a step is not a CUDA graph, over 512 tokens. For Qwen3-8B that is 144 products, under 4 ms
@@ -240,7 +240,7 @@ then cuBLAS. The plugin takes the library's routes, so with that library built a
   prompt +27% at inter-token p99 (+45%); at 1 request a second a token every 79.9 ms against 99.3 (-20%); saturated,
   1.39x the requests a second (1.29x) and a token every 148.7 ms against 109.6 (+36%; +48%).
 - It ran as hot as v0.25.0's library's bench or hotter (76-80 C at most, against 70-80 C) and at a lower median clock
-  (1,140-1,230 MHz, against 1,215-1,260).
+  (1,140-1,230 MHz, against 1,215-1,245).
 
 ## compute-sanitizer on v0.25.1's kernels (`sanitizer/`)
 

@@ -1,6 +1,6 @@
 """bench_serve.sh's results as a table: each request rate, bf16 against Glyd: requests/s, output tokens/s, time to
-first token (TTFT, mean and p99), time per output token (TPOT, mean and p99), the GPU's median SM clock and its
-hottest (nvidia-smi's each second, where logged), and each mode's KV cache.
+first token (TTFT, mean and p99), time per output token (TPOT, mean and p99), the GPU's median SM clock while it
+worked and its hottest (nvidia-smi's each second, where logged), and each mode's KV cache.
 
     python bench_summary.py RESULTS_DIR"""
 import glob
@@ -32,12 +32,21 @@ print("| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (m
 print("| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
 
 
+def loaded(rows):
+    """nvidia-smi's samples (timestamp, temperature, SM clock, power) while the GPU worked: above the midpoint of the
+    least and the most power drawn, where the most is over 1.5x the least (the idle seconds before the requests came,
+    between them and after, left out), else all of them."""
+    w = [float(r[3]) for r in rows]
+    lo, hi = min(w), max(w)
+    return [r for r, x in zip(rows, w) if hi <= 1.5 * lo or x > (lo + hi) / 2]
+
+
 def smi(p):
-    """nvidia-smi's samples (timestamp, temperature, SM clock, power): the median clock (MHz) and the hottest (C)."""
+    """The median SM clock (MHz) over the GPU's loaded samples, and the hottest (C)."""
     try:
         rows = [r.split(", ") for r in open(p).read().splitlines() if r.count(",") == 3]
-        clocks, temps = sorted(float(r[2]) for r in rows), [float(r[1]) for r in rows]
-        return f"{clocks[len(clocks) // 2]:.0f} MHz, {max(temps):.0f} C"
+        clocks = sorted(float(r[2]) for r in loaded(rows))
+        return f"{clocks[len(clocks) // 2]:.0f} MHz, {max(float(r[1]) for r in rows):.0f} C"
     except (OSError, ValueError, IndexError):
         return ""
 

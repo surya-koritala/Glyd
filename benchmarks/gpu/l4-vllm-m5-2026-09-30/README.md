@@ -37,7 +37,8 @@ It replaces the L4's earlier pair, whose Glyd run came within the hour after bf1
 | inf | glyd | 0.99 | 254.5 | 114,859 / 233,774 | 158.9 / 251.0 | 97.9 / 806.9 | 83 C |
 
 Every request completed. In the servers' logs (every 10 s), with requests waiting, bf16 ran a median of 23 requests at
-once and Glyd 41; at most 25 and 48.
+once and Glyd 41; at most 25 and 48. At the L4's 72 W cap, while it worked, Glyd's kernels ran at a median 915-1,170 MHz,
+bf16's at 1,350-1,590 (nvidia-smi's samples; `summary.txt`).
 
 **Glyd against bf16:**
 
