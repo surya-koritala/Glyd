@@ -170,6 +170,8 @@ jobs:
           ${{ matrix.python }} -m pip install --quiet wheels/*.whl
           cd bindings/python && ${{ matrix.python }} -c "import glyd; import test_glyd; test_glyd.test_round_trips()"
           ${{ matrix.python }} test_gpu.py
+          # glyd run / serve / doctor: the checks, the settings, the chat and install.sh, against fakes (no GPU, no vLLM)
+          ${{ matrix.python }} test_onboard.py
           # The GPU libraries load without a GPU (their CUDA runtime is linked in; the driver is looked for at the first call).
           cd / && ${{ matrix.python }} -c "import ctypes, glob, os, glyd.gpu; d = os.path.dirname(glyd.gpu.__file__); [print(os.path.basename(f), os.path.getsize(f), 'bytes, CUDA runtime', ctypes.CDLL(f).glyd_gpu_cuda_version()) for f in sorted(glob.glob(d + '/libglyd_gpu_cuda*.so'))]"
       - uses: actions/upload-artifact@v4
