@@ -1,0 +1,574 @@
+test_fit_as_the_site ok
+test_fit_a_directory ok
+test_kv_cache ok
+test_manifest_and_names ok
+test_check_files ok
+test_c_header ok
+test_split_route ok
+  split_stress: 1536 products checked, 0 failures
+test_split_stress ok
+test_split_order ok
+test_split_queue ok
+test_names_defined_once ok
+test_gpu_class_by_name ok
+test_route_env ok
+test_import_without_torch_or_library ok
+test_source_files_copied_once_and_writable ok
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 103.27it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 3978.44it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 980.51it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 5830.87it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 1405.19it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 6110.77it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 785.91it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 5750.65it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 3813.10it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 138.13it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 3087.85it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 787.08it/s]
+Loading weights:   0%|          | 0/75 [00:00<?, ?it/s]Loading weights: 100%|██████████| 75/75 [00:00<00:00, 5959.40it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 1119.12it/s]
+Loading weights:   0%|          | 0/75 [00:00<?, ?it/s]Loading weights: 100%|██████████| 75/75 [00:00<00:00, 5923.60it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 790.00it/s]
+Loading weights:   0%|          | 0/75 [00:00<?, ?it/s]Loading weights: 100%|██████████| 75/75 [00:00<00:00, 6011.10it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 3058.10it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 142.19it/s]
+Loading weights:   0%|          | 0/47 [00:00<?, ?it/s]Loading weights: 100%|██████████| 47/47 [00:00<00:00, 4308.15it/s]
+Loading weights:   0%|          | 0/47 [00:00<?, ?it/s]Loading weights: 100%|██████████| 47/47 [00:00<00:00, 943.14it/s]
+Loading weights:   0%|          | 0/88 [00:00<?, ?it/s]Loading weights: 100%|██████████| 88/88 [00:00<00:00, 5919.22it/s]
+Loading weights:   0%|          | 0/47 [00:00<?, ?it/s]Loading weights: 100%|██████████| 47/47 [00:00<00:00, 1359.52it/s]
+Loading weights:   0%|          | 0/88 [00:00<?, ?it/s]Loading weights: 100%|██████████| 88/88 [00:00<00:00, 6061.73it/s]
+Loading weights:   0%|          | 0/47 [00:00<?, ?it/s]Loading weights: 100%|██████████| 47/47 [00:00<00:00, 918.08it/s]
+Loading weights:   0%|          | 0/88 [00:00<?, ?it/s]Loading weights: 100%|██████████| 88/88 [00:00<00:00, 5952.05it/s]
+Loading weights:   0%|          | 0/47 [00:00<?, ?it/s]Loading weights: 100%|██████████| 47/47 [00:00<00:00, 4353.82it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 140.39it/s]
+Loading weights:   0%|          | 0/18 [00:00<?, ?it/s]Loading weights: 100%|██████████| 18/18 [00:00<00:00, 1934.34it/s]
+Loading weights:   0%|          | 0/18 [00:00<?, ?it/s]Loading weights: 100%|██████████| 18/18 [00:00<00:00, 806.63it/s]
+Loading weights:   0%|          | 0/30 [00:00<?, ?it/s]Loading weights: 100%|██████████| 30/30 [00:00<00:00, 5969.41it/s]
+Loading weights:   0%|          | 0/18 [00:00<?, ?it/s]Loading weights: 100%|██████████| 18/18 [00:00<00:00, 1102.93it/s]
+Loading weights:   0%|          | 0/30 [00:00<?, ?it/s]Loading weights: 100%|██████████| 30/30 [00:00<00:00, 6199.09it/s]
+Loading weights:   0%|          | 0/18 [00:00<?, ?it/s]Loading weights: 100%|██████████| 18/18 [00:00<00:00, 594.13it/s]
+Loading weights:   0%|          | 0/30 [00:00<?, ?it/s]Loading weights: 100%|██████████| 30/30 [00:00<00:00, 5618.12it/s]
+Loading weights:   0%|          | 0/18 [00:00<?, ?it/s]Loading weights: 100%|██████████| 18/18 [00:00<00:00, 2017.25it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 117.53it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 2847.81it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 728.50it/s]
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 6084.04it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 1036.12it/s]
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 5861.31it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 726.31it/s]
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 6113.77it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 2919.90it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 167.66it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 2946.32it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 769.71it/s]
+Loading weights:   0%|          | 0/73 [00:00<?, ?it/s]Loading weights: 100%|██████████| 73/73 [00:00<00:00, 6032.35it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 1099.73it/s]
+Loading weights:   0%|          | 0/73 [00:00<?, ?it/s]Loading weights: 100%|██████████| 73/73 [00:00<00:00, 6113.05it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 769.36it/s]
+Loading weights:   0%|          | 0/73 [00:00<?, ?it/s]Loading weights: 100%|██████████| 73/73 [00:00<00:00, 6046.77it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 2844.26it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 152.48it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 3488.15it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 867.32it/s]
+Loading weights:   0%|          | 0/87 [00:00<?, ?it/s]Loading weights: 100%|██████████| 87/87 [00:00<00:00, 5990.29it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 1229.35it/s]
+Loading weights:   0%|          | 0/87 [00:00<?, ?it/s]Loading weights: 100%|██████████| 87/87 [00:00<00:00, 5967.76it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 883.06it/s]
+Loading weights:   0%|          | 0/87 [00:00<?, ?it/s]Loading weights: 100%|██████████| 87/87 [00:00<00:00, 5936.49it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 3346.10it/s]
+[transformers] Last layer must use `full_attention`, but got `sliding_attention`. Forcing last layer to `full_attention`.
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  3.32it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  3.32it/s]
+Loading weights:   0%|          | 0/262 [00:00<?, ?it/s]Loading weights: 100%|██████████| 262/262 [00:00<00:00, 4592.50it/s]
+Loading weights:   0%|          | 0/262 [00:00<?, ?it/s]Loading weights:  36%|███▌      | 94/262 [00:00<00:00, 913.10it/s]Loading weights:  71%|███████   | 186/262 [00:00<00:00, 606.84it/s]Loading weights:  97%|█████████▋| 253/262 [00:00<00:00, 567.20it/s]Loading weights: 100%|██████████| 262/262 [00:00<00:00, 599.82it/s]
+Loading weights:   0%|          | 0/522 [00:00<?, ?it/s]Loading weights: 100%|██████████| 522/522 [00:00<00:00, 5616.12it/s]
+Loading weights:   0%|          | 0/262 [00:00<?, ?it/s]Loading weights:  51%|█████     | 133/262 [00:00<00:00, 1314.68it/s]Loading weights: 100%|██████████| 262/262 [00:00<00:00, 1080.47it/s]
+Loading weights:   0%|          | 0/522 [00:00<?, ?it/s]Loading weights: 100%|██████████| 522/522 [00:00<00:00, 5716.47it/s]
+Loading weights:   0%|          | 0/262 [00:00<?, ?it/s]Loading weights:  36%|███▌      | 94/262 [00:00<00:00, 914.85it/s]Loading weights:  71%|███████   | 186/262 [00:00<00:00, 610.37it/s]Loading weights:  97%|█████████▋| 253/262 [00:00<00:00, 570.23it/s]Loading weights: 100%|██████████| 262/262 [00:00<00:00, 602.96it/s]
+Loading weights:   0%|          | 0/522 [00:00<?, ?it/s]Loading weights: 100%|██████████| 522/522 [00:00<00:00, 5727.94it/s]
+Loading weights:   0%|          | 0/262 [00:00<?, ?it/s]Loading weights: 100%|██████████| 262/262 [00:00<00:00, 4616.87it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 166.88it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 2684.59it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 875.68it/s]
+Loading weights:   0%|          | 0/59 [00:00<?, ?it/s]Loading weights: 100%|██████████| 59/59 [00:00<00:00, 5491.02it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 1233.62it/s]
+Loading weights:   0%|          | 0/59 [00:00<?, ?it/s]Loading weights: 100%|██████████| 59/59 [00:00<00:00, 6306.74it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 731.70it/s]
+Loading weights:   0%|          | 0/59 [00:00<?, ?it/s]Loading weights: 100%|██████████| 59/59 [00:00<00:00, 6144.81it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 2875.44it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 274.33it/s]
+Loading weights:   0%|          | 0/24 [00:00<?, ?it/s]Loading weights: 100%|██████████| 24/24 [00:00<00:00, 3423.22it/s]
+Loading weights:   0%|          | 0/24 [00:00<?, ?it/s]Loading weights: 100%|██████████| 24/24 [00:00<00:00, 881.21it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 6538.65it/s]
+Loading weights:   0%|          | 0/24 [00:00<?, ?it/s]Loading weights: 100%|██████████| 24/24 [00:00<00:00, 1263.58it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 6243.34it/s]
+Loading weights:   0%|          | 0/24 [00:00<?, ?it/s]Loading weights: 100%|██████████| 24/24 [00:00<00:00, 654.52it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 6271.34it/s]
+Loading weights:   0%|          | 0/24 [00:00<?, ?it/s]Loading weights: 100%|██████████| 24/24 [00:00<00:00, 3276.91it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 171.76it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 2928.24it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 873.93it/s]
+Loading weights:   0%|          | 0/59 [00:00<?, ?it/s]Loading weights: 100%|██████████| 59/59 [00:00<00:00, 5552.25it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 1232.27it/s]
+Loading weights:   0%|          | 0/59 [00:00<?, ?it/s]Loading weights: 100%|██████████| 59/59 [00:00<00:00, 6053.28it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 727.06it/s]
+Loading weights:   0%|          | 0/59 [00:00<?, ?it/s]Loading weights: 100%|██████████| 59/59 [00:00<00:00, 5847.17it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 2897.10it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 191.66it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 2434.92it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 1007.03it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 5891.51it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 1377.31it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 6339.74it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 762.02it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 6204.36it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 2519.65it/s]
+[transformers] Last layer must use `full_attention`, but got `sliding_attention`. Forcing last layer to `full_attention`.
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  4.50it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00,  4.50it/s]
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 2714.17it/s]
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 857.60it/s]
+Loading weights:   0%|          | 0/117 [00:00<?, ?it/s]Loading weights: 100%|██████████| 117/117 [00:00<00:00, 3424.18it/s]
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 1092.12it/s]
+Loading weights:   0%|          | 0/117 [00:00<?, ?it/s]Loading weights: 100%|██████████| 117/117 [00:00<00:00, 2925.96it/s]
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 745.05it/s]
+Loading weights:   0%|          | 0/117 [00:00<?, ?it/s]Loading weights: 100%|██████████| 117/117 [00:00<00:00, 2881.19it/s]
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 5504.74it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 176.89it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 2710.65it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 789.08it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 6081.75it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 1105.87it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 6292.60it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 653.66it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 6259.99it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 2681.96it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 238.76it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 3886.17it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 741.83it/s]
+Loading weights:   0%|          | 0/66 [00:00<?, ?it/s]Loading weights: 100%|██████████| 66/66 [00:00<00:00, 6064.32it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 1075.65it/s]
+Loading weights:   0%|          | 0/66 [00:00<?, ?it/s]Loading weights: 100%|██████████| 66/66 [00:00<00:00, 6036.94it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 707.11it/s]
+Loading weights:   0%|          | 0/66 [00:00<?, ?it/s]Loading weights: 100%|██████████| 66/66 [00:00<00:00, 6158.21it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 3700.79it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 153.49it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 3441.84it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 880.64it/s]
+Loading weights:   0%|          | 0/87 [00:00<?, ?it/s]Loading weights: 100%|██████████| 87/87 [00:00<00:00, 5707.87it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 1267.83it/s]
+Loading weights:   0%|          | 0/87 [00:00<?, ?it/s]Loading weights: 100%|██████████| 87/87 [00:00<00:00, 6063.25it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 885.78it/s]
+Loading weights:   0%|          | 0/87 [00:00<?, ?it/s]Loading weights: 100%|██████████| 87/87 [00:00<00:00, 6116.71it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 3382.38it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 132.37it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 3611.87it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 943.58it/s]
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 6068.31it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 1332.76it/s]
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 6115.95it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 831.56it/s]
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 5897.49it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 3693.06it/s]
+[transformers] `causal_conv1d_fn` is falling back to its reference PyTorch implementation because `causal_conv1d` is not installed. This is correct but much slower; install `causal_conv1d` for the optimized kernel.
+[transformers] `chunk_kda` is falling back to its reference PyTorch implementation because `flash-linear-attention` is not installed. This is correct but much slower; install `flash-linear-attention` for the optimized kernel.
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 106.12it/s]
+Loading weights:   0%|          | 0/85 [00:00<?, ?it/s]Loading weights: 100%|██████████| 85/85 [00:00<00:00, 4085.91it/s]
+Loading weights:   0%|          | 0/85 [00:00<?, ?it/s]Loading weights: 100%|██████████| 85/85 [00:00<00:00, 1192.79it/s]
+Loading weights:   0%|          | 0/141 [00:00<?, ?it/s]Loading weights: 100%|██████████| 141/141 [00:00<00:00, 6036.39it/s]
+Loading weights:   0%|          | 0/85 [00:00<?, ?it/s]Loading weights: 100%|██████████| 85/85 [00:00<00:00, 1669.94it/s]
+Loading weights:   0%|          | 0/141 [00:00<?, ?it/s]Loading weights: 100%|██████████| 141/141 [00:00<00:00, 6087.21it/s]
+Loading weights:   0%|          | 0/85 [00:00<?, ?it/s]Loading weights: 100%|██████████| 85/85 [00:00<00:00, 1127.16it/s]
+Loading weights:   0%|          | 0/141 [00:00<?, ?it/s]Loading weights: 100%|██████████| 141/141 [00:00<00:00, 5931.41it/s]
+Loading weights:   0%|          | 0/85 [00:00<?, ?it/s]Loading weights: 100%|██████████| 85/85 [00:00<00:00, 4254.26it/s]
+[transformers] The explicitly set RoPE scaling factor (config.rope_parameters['factor'] = 32.0) does not match the ratio implicitly set by other parameters (implicit factor = post-yarn context length / pre-yarn context length = config.max_position_embeddings / config.rope_parameters['original_max_position_embeddings'] = 0.125). Using the explicit factor (32.0) in YaRN. This may cause unexpected behaviour in model usage, please correct the 'original_max_position_embeddings' fields in the model config.
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 279.40it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 5874.82it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 1580.69it/s]
+Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 5779.15it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 2181.25it/s]
+Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 6212.70it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 1190.02it/s]
+Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 6421.39it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 6124.04it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 389.84it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 6049.48it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 985.93it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 6342.92it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1402.62it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 6229.34it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 725.18it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 6323.53it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 5322.08it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 395.17it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 6062.38it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 981.38it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 5785.47it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1389.46it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 5900.58it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 717.58it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 7030.01it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 6264.16it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 356.45it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 6828.70it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 1058.88it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 6479.99it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 1498.24it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 6071.57it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 782.09it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 6008.57it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 6251.23it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 170.18it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 2770.17it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 837.23it/s]
+Loading weights:   0%|          | 0/57 [00:00<?, ?it/s]Loading weights: 100%|██████████| 57/57 [00:00<00:00, 6131.08it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 1169.32it/s]
+Loading weights:   0%|          | 0/57 [00:00<?, ?it/s]Loading weights: 100%|██████████| 57/57 [00:00<00:00, 6277.58it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 695.78it/s]
+Loading weights:   0%|          | 0/57 [00:00<?, ?it/s]Loading weights: 100%|██████████| 57/57 [00:00<00:00, 6233.87it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 2891.14it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 262.74it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 3736.86it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 991.81it/s]
+Loading weights:   0%|          | 0/48 [00:00<?, ?it/s]Loading weights: 100%|██████████| 48/48 [00:00<00:00, 6267.95it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 1390.43it/s]
+Loading weights:   0%|          | 0/48 [00:00<?, ?it/s]Loading weights: 100%|██████████| 48/48 [00:00<00:00, 6024.14it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 745.29it/s]
+Loading weights:   0%|          | 0/48 [00:00<?, ?it/s]Loading weights: 100%|██████████| 48/48 [00:00<00:00, 6174.15it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 3654.34it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 226.55it/s]
+Loading weights:   0%|          | 0/60 [00:00<?, ?it/s]Loading weights: 100%|██████████| 60/60 [00:00<00:00, 5550.22it/s]
+Loading weights:   0%|          | 0/60 [00:00<?, ?it/s]Loading weights: 100%|██████████| 60/60 [00:00<00:00, 1272.15it/s]
+Loading weights:   0%|          | 0/97 [00:00<?, ?it/s]Loading weights: 100%|██████████| 97/97 [00:00<00:00, 5918.21it/s]
+Loading weights:   0%|          | 0/60 [00:00<?, ?it/s]Loading weights: 100%|██████████| 60/60 [00:00<00:00, 1824.47it/s]
+Loading weights:   0%|          | 0/97 [00:00<?, ?it/s]Loading weights: 100%|██████████| 97/97 [00:00<00:00, 6130.54it/s]
+Loading weights:   0%|          | 0/60 [00:00<?, ?it/s]Loading weights: 100%|██████████| 60/60 [00:00<00:00, 1227.83it/s]
+Loading weights:   0%|          | 0/97 [00:00<?, ?it/s]Loading weights: 100%|██████████| 97/97 [00:00<00:00, 5983.84it/s]
+Loading weights:   0%|          | 0/60 [00:00<?, ?it/s]Loading weights: 100%|██████████| 60/60 [00:00<00:00, 5436.44it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 119.60it/s]
+Loading weights:   0%|          | 0/48 [00:00<?, ?it/s]Loading weights: 100%|██████████| 48/48 [00:00<00:00, 5893.81it/s]
+Loading weights:   0%|          | 0/48 [00:00<?, ?it/s]Loading weights: 100%|██████████| 48/48 [00:00<00:00, 1469.26it/s]
+Loading weights:   0%|          | 0/66 [00:00<?, ?it/s]Loading weights: 100%|██████████| 66/66 [00:00<00:00, 6122.94it/s]
+Loading weights:   0%|          | 0/48 [00:00<?, ?it/s]Loading weights: 100%|██████████| 48/48 [00:00<00:00, 2078.32it/s]
+Loading weights:   0%|          | 0/66 [00:00<?, ?it/s]Loading weights: 100%|██████████| 66/66 [00:00<00:00, 5974.15it/s]
+Loading weights:   0%|          | 0/48 [00:00<?, ?it/s]Loading weights: 100%|██████████| 48/48 [00:00<00:00, 1206.24it/s]
+Loading weights:   0%|          | 0/66 [00:00<?, ?it/s]Loading weights: 100%|██████████| 66/66 [00:00<00:00, 6124.43it/s]
+Loading weights:   0%|          | 0/48 [00:00<?, ?it/s]Loading weights: 100%|██████████| 48/48 [00:00<00:00, 5823.74it/s]
+[transformers] `mamba_chunk_scan_combined` is falling back to its reference PyTorch implementation because `mamba_ssm` is not installed. This is correct but much slower; install `mamba_ssm` for the optimized kernel.
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 253.82it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 6605.92it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 994.09it/s]
+Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 6170.23it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 1407.34it/s]
+Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 6108.73it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 868.54it/s]
+Loading weights:   0%|          | 0/51 [00:00<?, ?it/s]Loading weights: 100%|██████████| 51/51 [00:00<00:00, 5947.05it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 6137.90it/s]
+[transformers] `selective_scan_fn` is falling back to its reference PyTorch implementation because `mamba_ssm` is not installed. This is correct but much slower; install `mamba_ssm` for the optimized kernel.
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 177.45it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 2808.08it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 1149.32it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 5928.44it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 1547.28it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 5998.72it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 1017.80it/s]
+Loading weights:   0%|          | 0/45 [00:00<?, ?it/s]Loading weights: 100%|██████████| 45/45 [00:00<00:00, 5891.61it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 2719.55it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 153.17it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 3132.76it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 888.90it/s]
+Loading weights:   0%|          | 0/77 [00:00<?, ?it/s]Loading weights: 100%|██████████| 77/77 [00:00<00:00, 6015.08it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 1243.51it/s]
+Loading weights:   0%|          | 0/77 [00:00<?, ?it/s]Loading weights: 100%|██████████| 77/77 [00:00<00:00, 6031.36it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 818.64it/s]
+Loading weights:   0%|          | 0/77 [00:00<?, ?it/s]Loading weights: 100%|██████████| 77/77 [00:00<00:00, 5812.84it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 3123.94it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 250.21it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 3699.52it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 1046.89it/s]
+Loading weights:   0%|          | 0/50 [00:00<?, ?it/s]Loading weights: 100%|██████████| 50/50 [00:00<00:00, 5821.22it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 1462.09it/s]
+Loading weights:   0%|          | 0/50 [00:00<?, ?it/s]Loading weights: 100%|██████████| 50/50 [00:00<00:00, 6061.83it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 785.62it/s]
+Loading weights:   0%|          | 0/50 [00:00<?, ?it/s]Loading weights: 100%|██████████| 50/50 [00:00<00:00, 6067.09it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 3703.32it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 191.82it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 2361.66it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 1031.60it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 6384.81it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 1377.05it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 5891.55it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 877.83it/s]
+Loading weights:   0%|          | 0/37 [00:00<?, ?it/s]Loading weights: 100%|██████████| 37/37 [00:00<00:00, 6038.26it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 2411.97it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 184.69it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 2475.10it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 1017.60it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 6256.56it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 1388.00it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 6050.15it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 772.33it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 6093.19it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 2478.79it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 277.14it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 3386.78it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 997.33it/s]
+Loading weights:   0%|          | 0/36 [00:00<?, ?it/s]Loading weights: 100%|██████████| 36/36 [00:00<00:00, 6119.60it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 1380.32it/s]
+Loading weights:   0%|          | 0/36 [00:00<?, ?it/s]Loading weights: 100%|██████████| 36/36 [00:00<00:00, 6418.22it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 703.13it/s]
+Loading weights:   0%|          | 0/36 [00:00<?, ?it/s]Loading weights: 100%|██████████| 36/36 [00:00<00:00, 6705.52it/s]
+Loading weights:   0%|          | 0/23 [00:00<?, ?it/s]Loading weights: 100%|██████████| 23/23 [00:00<00:00, 3337.10it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 174.60it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 2509.58it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 950.04it/s]
+Loading weights:   0%|          | 0/43 [00:00<?, ?it/s]Loading weights: 100%|██████████| 43/43 [00:00<00:00, 6193.30it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 1267.88it/s]
+Loading weights:   0%|          | 0/43 [00:00<?, ?it/s]Loading weights: 100%|██████████| 43/43 [00:00<00:00, 6167.46it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 824.20it/s]
+Loading weights:   0%|          | 0/43 [00:00<?, ?it/s]Loading weights: 100%|██████████| 43/43 [00:00<00:00, 6189.26it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 2476.09it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 183.61it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 2532.57it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 1095.37it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 6366.77it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 1459.38it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 5950.81it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 827.90it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 5835.70it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 2699.62it/s]
+[transformers] The explicitly set RoPE scaling factor (config.rope_parameters['factor'] = 128.0) does not match the ratio implicitly set by other parameters (implicit factor = post-yarn context length / pre-yarn context length = config.max_position_embeddings / config.rope_parameters['original_max_position_embeddings'] = 0.0625). Using the explicit factor (128.0) in YaRN. This may cause unexpected behaviour in model usage, please correct the 'original_max_position_embeddings' fields in the model config.
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 292.41it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 5793.00it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 771.19it/s]
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 6089.14it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 1134.92it/s]
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 6253.45it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 776.88it/s]
+Loading weights:   0%|          | 0/71 [00:00<?, ?it/s]Loading weights: 100%|██████████| 71/71 [00:00<00:00, 6219.23it/s]
+Loading weights:   0%|          | 0/33 [00:00<?, ?it/s]Loading weights: 100%|██████████| 33/33 [00:00<00:00, 5836.72it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 193.84it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 2240.55it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 878.30it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 6052.64it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 1194.55it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 6360.24it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 659.65it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 6183.68it/s]
+Loading weights:   0%|          | 0/21 [00:00<?, ?it/s]Loading weights: 100%|██████████| 21/21 [00:00<00:00, 2290.54it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 143.39it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 4102.38it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 877.39it/s]
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/transformers/initialization.py:108: UserWarning: Initializing zero-element tensors is a no-op
+  return TORCH_INIT_FUNCTIONS["kaiming_uniform_"](
+Loading weights:   0%|          | 0/49 [00:00<?, ?it/s]Loading weights: 100%|██████████| 49/49 [00:00<00:00, 6016.95it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 1331.54it/s]
+Loading weights:   0%|          | 0/49 [00:00<?, ?it/s]Loading weights: 100%|██████████| 49/49 [00:00<00:00, 5926.72it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 843.37it/s]
+Loading weights:   0%|          | 0/49 [00:00<?, ?it/s]Loading weights: 100%|██████████| 49/49 [00:00<00:00, 6169.02it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 4159.79it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 184.45it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 2441.33it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 927.17it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 6334.58it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 1398.51it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 5957.17it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 769.22it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 6355.99it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 2336.92it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 177.63it/s]
+Loading weights:   0%|          | 0/26 [00:00<?, ?it/s]Loading weights: 100%|██████████| 26/26 [00:00<00:00, 2532.91it/s]
+Loading weights:   0%|          | 0/26 [00:00<?, ?it/s]Loading weights: 100%|██████████| 26/26 [00:00<00:00, 1051.66it/s]
+Loading weights:   0%|          | 0/40 [00:00<?, ?it/s]Loading weights: 100%|██████████| 40/40 [00:00<00:00, 5989.51it/s]
+Loading weights:   0%|          | 0/26 [00:00<?, ?it/s]Loading weights: 100%|██████████| 26/26 [00:00<00:00, 1421.84it/s]
+Loading weights:   0%|          | 0/40 [00:00<?, ?it/s]Loading weights: 100%|██████████| 40/40 [00:00<00:00, 6345.87it/s]
+Loading weights:   0%|          | 0/26 [00:00<?, ?it/s]Loading weights: 100%|██████████| 26/26 [00:00<00:00, 805.98it/s]
+Loading weights:   0%|          | 0/40 [00:00<?, ?it/s]Loading weights: 100%|██████████| 40/40 [00:00<00:00, 6208.27it/s]
+Loading weights:   0%|          | 0/26 [00:00<?, ?it/s]Loading weights: 100%|██████████| 26/26 [00:00<00:00, 2548.24it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 90.18it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 3809.72it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 921.16it/s]
+Loading weights:   0%|          | 0/100 [00:00<?, ?it/s]Loading weights: 100%|██████████| 100/100 [00:00<00:00, 6068.59it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 1370.65it/s]
+Loading weights:   0%|          | 0/100 [00:00<?, ?it/s]Loading weights: 100%|██████████| 100/100 [00:00<00:00, 6035.93it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 820.99it/s]
+Loading weights:   0%|          | 0/100 [00:00<?, ?it/s]Loading weights: 100%|██████████| 100/100 [00:00<00:00, 6156.87it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 3532.46it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 161.88it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 3113.75it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 931.80it/s]
+Loading weights:   0%|          | 0/61 [00:00<?, ?it/s]Loading weights: 100%|██████████| 61/61 [00:00<00:00, 6028.85it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 1295.99it/s]
+Loading weights:   0%|          | 0/61 [00:00<?, ?it/s]Loading weights: 100%|██████████| 61/61 [00:00<00:00, 5873.57it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 767.87it/s]
+Loading weights:   0%|          | 0/61 [00:00<?, ?it/s]Loading weights: 100%|██████████| 61/61 [00:00<00:00, 6156.37it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 2929.33it/s]
+[transformers] `chunk_gated_delta_rule` is falling back to its reference PyTorch implementation because `flash-linear-attention` is not installed. This is correct but much slower; install `flash-linear-attention` for the optimized kernel.
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 160.19it/s]
+Loading weights:   0%|          | 0/36 [00:00<?, ?it/s]Loading weights: 100%|██████████| 36/36 [00:00<00:00, 3161.93it/s]
+Loading weights:   0%|          | 0/36 [00:00<?, ?it/s]Loading weights: 100%|██████████| 36/36 [00:00<00:00, 902.44it/s]
+Loading weights:   0%|          | 0/66 [00:00<?, ?it/s]Loading weights: 100%|██████████| 66/66 [00:00<00:00, 5886.62it/s]
+Loading weights:   0%|          | 0/36 [00:00<?, ?it/s]Loading weights: 100%|██████████| 36/36 [00:00<00:00, 1281.21it/s]
+Loading weights:   0%|          | 0/66 [00:00<?, ?it/s]Loading weights: 100%|██████████| 66/66 [00:00<00:00, 5999.00it/s]
+Loading weights:   0%|          | 0/36 [00:00<?, ?it/s]Loading weights: 100%|██████████| 36/36 [00:00<00:00, 830.04it/s]
+Loading weights:   0%|          | 0/66 [00:00<?, ?it/s]Loading weights: 100%|██████████| 66/66 [00:00<00:00, 5954.49it/s]
+Loading weights:   0%|          | 0/36 [00:00<?, ?it/s]Loading weights: 100%|██████████| 36/36 [00:00<00:00, 3158.82it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 187.40it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 2591.00it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 1016.56it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 6191.21it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 1376.07it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 6235.10it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 775.04it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 6059.34it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 2499.82it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 169.00it/s]
+Loading weights:   0%|          | 0/34 [00:00<?, ?it/s]Loading weights: 100%|██████████| 34/34 [00:00<00:00, 2882.28it/s]
+Loading weights:   0%|          | 0/34 [00:00<?, ?it/s]Loading weights: 100%|██████████| 34/34 [00:00<00:00, 903.84it/s]
+Loading weights:   0%|          | 0/62 [00:00<?, ?it/s]Loading weights: 100%|██████████| 62/62 [00:00<00:00, 6483.50it/s]
+Loading weights:   0%|          | 0/34 [00:00<?, ?it/s]Loading weights: 100%|██████████| 34/34 [00:00<00:00, 1245.81it/s]
+Loading weights:   0%|          | 0/62 [00:00<?, ?it/s]Loading weights: 100%|██████████| 62/62 [00:00<00:00, 6124.66it/s]
+Loading weights:   0%|          | 0/34 [00:00<?, ?it/s]Loading weights: 100%|██████████| 34/34 [00:00<00:00, 800.48it/s]
+Loading weights:   0%|          | 0/62 [00:00<?, ?it/s]Loading weights: 100%|██████████| 62/62 [00:00<00:00, 6181.73it/s]
+Loading weights:   0%|          | 0/34 [00:00<?, ?it/s]Loading weights: 100%|██████████| 34/34 [00:00<00:00, 2828.09it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 106.11it/s]
+Loading weights:   0%|          | 0/81 [00:00<?, ?it/s]Loading weights: 100%|██████████| 81/81 [00:00<00:00, 4133.88it/s]
+Loading weights:   0%|          | 0/81 [00:00<?, ?it/s]Loading weights: 100%|██████████| 81/81 [00:00<00:00, 1255.76it/s]
+Loading weights:   0%|          | 0/129 [00:00<?, ?it/s]Loading weights: 100%|██████████| 129/129 [00:00<00:00, 5855.56it/s]
+Loading weights:   0%|          | 0/81 [00:00<?, ?it/s]Loading weights: 100%|██████████| 81/81 [00:00<00:00, 1709.70it/s]
+Loading weights:   0%|          | 0/129 [00:00<?, ?it/s]Loading weights: 100%|██████████| 129/129 [00:00<00:00, 5957.75it/s]
+Loading weights:   0%|          | 0/81 [00:00<?, ?it/s]Loading weights: 100%|██████████| 81/81 [00:00<00:00, 1086.53it/s]
+Loading weights:   0%|          | 0/129 [00:00<?, ?it/s]Loading weights: 100%|██████████| 129/129 [00:00<00:00, 6077.40it/s]
+Loading weights:   0%|          | 0/81 [00:00<?, ?it/s]Loading weights: 100%|██████████| 81/81 [00:00<00:00, 4139.87it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 181.94it/s]
+Loading weights:   0%|          | 0/64 [00:00<?, ?it/s]Loading weights: 100%|██████████| 64/64 [00:00<00:00, 5445.16it/s]
+Loading weights:   0%|          | 0/64 [00:00<?, ?it/s]Loading weights: 100%|██████████| 64/64 [00:00<00:00, 1219.50it/s]
+Loading weights:   0%|          | 0/102 [00:00<?, ?it/s]Loading weights: 100%|██████████| 102/102 [00:00<00:00, 6118.08it/s]
+Loading weights:   0%|          | 0/64 [00:00<?, ?it/s]Loading weights: 100%|██████████| 64/64 [00:00<00:00, 1727.80it/s]
+Loading weights:   0%|          | 0/102 [00:00<?, ?it/s]Loading weights: 100%|██████████| 102/102 [00:00<00:00, 5950.94it/s]
+Loading weights:   0%|          | 0/64 [00:00<?, ?it/s]Loading weights: 100%|██████████| 64/64 [00:00<00:00, 1062.42it/s]
+Loading weights:   0%|          | 0/102 [00:00<?, ?it/s]Loading weights: 100%|██████████| 102/102 [00:00<00:00, 6067.92it/s]
+Loading weights:   0%|          | 0/64 [00:00<?, ?it/s]Loading weights: 100%|██████████| 64/64 [00:00<00:00, 5720.28it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 175.71it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 2646.88it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 765.83it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 6100.73it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 1077.33it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 5863.92it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 648.97it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 6082.39it/s]
+Loading weights:   0%|          | 0/29 [00:00<?, ?it/s]Loading weights: 100%|██████████| 29/29 [00:00<00:00, 2546.37it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 172.58it/s]
+Loading weights:   0%|          | 0/67 [00:00<?, ?it/s]Loading weights: 100%|██████████| 67/67 [00:00<00:00, 5761.52it/s]
+Loading weights:   0%|          | 0/67 [00:00<?, ?it/s]Loading weights: 100%|██████████| 67/67 [00:00<00:00, 1634.76it/s]
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 5859.45it/s]
+Loading weights:   0%|          | 0/67 [00:00<?, ?it/s]Loading weights: 100%|██████████| 67/67 [00:00<00:00, 2267.58it/s]
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 5793.88it/s]
+Loading weights:   0%|          | 0/67 [00:00<?, ?it/s]Loading weights: 100%|██████████| 67/67 [00:00<00:00, 1655.51it/s]
+Loading weights:   0%|          | 0/99 [00:00<?, ?it/s]Loading weights: 100%|██████████| 99/99 [00:00<00:00, 5946.22it/s]
+Loading weights:   0%|          | 0/67 [00:00<?, ?it/s]Loading weights: 100%|██████████| 67/67 [00:00<00:00, 5939.68it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 113.29it/s]
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|██████████| 53/53 [00:00<00:00, 3490.86it/s]
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|██████████| 53/53 [00:00<00:00, 860.06it/s]
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 6063.69it/s]
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|██████████| 53/53 [00:00<00:00, 1210.69it/s]
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 5936.45it/s]
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|██████████| 53/53 [00:00<00:00, 776.10it/s]
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 6048.91it/s]
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|██████████| 53/53 [00:00<00:00, 3532.92it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 110.83it/s]
+Loading weights:   0%|          | 0/70 [00:00<?, ?it/s]Loading weights: 100%|██████████| 70/70 [00:00<00:00, 3843.00it/s]
+Loading weights:   0%|          | 0/70 [00:00<?, ?it/s]Loading weights: 100%|██████████| 70/70 [00:00<00:00, 1031.50it/s]
+Loading weights:   0%|          | 0/120 [00:00<?, ?it/s]Loading weights: 100%|██████████| 120/120 [00:00<00:00, 5906.43it/s]
+Loading weights:   0%|          | 0/70 [00:00<?, ?it/s]Loading weights: 100%|██████████| 70/70 [00:00<00:00, 1456.64it/s]
+Loading weights:   0%|          | 0/120 [00:00<?, ?it/s]Loading weights: 100%|██████████| 120/120 [00:00<00:00, 5891.22it/s]
+Loading weights:   0%|          | 0/70 [00:00<?, ?it/s]Loading weights: 100%|██████████| 70/70 [00:00<00:00, 920.20it/s]
+Loading weights:   0%|          | 0/120 [00:00<?, ?it/s]Loading weights: 100%|██████████| 120/120 [00:00<00:00, 6034.75it/s]
+Loading weights:   0%|          | 0/70 [00:00<?, ?it/s]Loading weights: 100%|██████████| 70/70 [00:00<00:00, 3912.75it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 129.85it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 3476.50it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 973.72it/s]
+Loading weights:   0%|          | 0/97 [00:00<?, ?it/s]Loading weights: 100%|██████████| 97/97 [00:00<00:00, 5910.65it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 1369.85it/s]
+Loading weights:   0%|          | 0/97 [00:00<?, ?it/s]Loading weights: 100%|██████████| 97/97 [00:00<00:00, 5969.88it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 823.62it/s]
+Loading weights:   0%|          | 0/97 [00:00<?, ?it/s]Loading weights: 100%|██████████| 97/97 [00:00<00:00, 5923.21it/s]
+Loading weights:   0%|          | 0/55 [00:00<?, ?it/s]Loading weights: 100%|██████████| 55/55 [00:00<00:00, 3477.03it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 314.91it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 6187.30it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 757.17it/s]
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|██████████| 53/53 [00:00<00:00, 6141.17it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 1086.19it/s]
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|██████████| 53/53 [00:00<00:00, 6219.17it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 615.40it/s]
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|██████████| 53/53 [00:00<00:00, 5911.71it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 5859.48it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 332.80it/s]
+Loading weights:   0%|          | 0/24 [00:00<?, ?it/s]Loading weights: 100%|██████████| 24/24 [00:00<00:00, 5986.52it/s]
+Loading weights:   0%|          | 0/24 [00:00<?, ?it/s]Loading weights: 100%|██████████| 24/24 [00:00<00:00, 963.11it/s]
+Loading weights:   0%|          | 0/44 [00:00<?, ?it/s]Loading weights: 100%|██████████| 44/44 [00:00<00:00, 5782.17it/s]
+Loading weights:   0%|          | 0/24 [00:00<?, ?it/s]Loading weights: 100%|██████████| 24/24 [00:00<00:00, 1391.90it/s]
+Loading weights:   0%|          | 0/44 [00:00<?, ?it/s]Loading weights: 100%|██████████| 44/44 [00:00<00:00, 5980.41it/s]
+Loading weights:   0%|          | 0/24 [00:00<?, ?it/s]Loading weights: 100%|██████████| 24/24 [00:00<00:00, 1005.80it/s]
+Loading weights:   0%|          | 0/44 [00:00<?, ?it/s]Loading weights: 100%|██████████| 44/44 [00:00<00:00, 5939.79it/s]
+Loading weights:   0%|          | 0/24 [00:00<?, ?it/s]Loading weights: 100%|██████████| 24/24 [00:00<00:00, 6320.69it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 330.70it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 5828.42it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 791.72it/s]
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|██████████| 53/53 [00:00<00:00, 5941.73it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 1146.07it/s]
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|██████████| 53/53 [00:00<00:00, 6166.04it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 645.64it/s]
+Loading weights:   0%|          | 0/53 [00:00<?, ?it/s]Loading weights: 100%|██████████| 53/53 [00:00<00:00, 6095.37it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 5838.94it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 537.04it/s]
+Loading weights:   0%|          | 0/19 [00:00<?, ?it/s]Loading weights: 100%|██████████| 19/19 [00:00<00:00, 6156.18it/s]
+Loading weights:   0%|          | 0/19 [00:00<?, ?it/s]Loading weights: 100%|██████████| 19/19 [00:00<00:00, 773.02it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 6057.50it/s]
+Loading weights:   0%|          | 0/19 [00:00<?, ?it/s]Loading weights: 100%|██████████| 19/19 [00:00<00:00, 1115.74it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 6059.42it/s]
+Loading weights:   0%|          | 0/19 [00:00<?, ?it/s]Loading weights: 100%|██████████| 19/19 [00:00<00:00, 773.09it/s]
+Loading weights:   0%|          | 0/41 [00:00<?, ?it/s]Loading weights: 100%|██████████| 41/41 [00:00<00:00, 6000.64it/s]
+Loading weights:   0%|          | 0/19 [00:00<?, ?it/s]Loading weights: 100%|██████████| 19/19 [00:00<00:00, 5781.05it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 226.93it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 3443.05it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 784.31it/s]
+Loading weights:   0%|          | 0/65 [00:00<?, ?it/s]Loading weights: 100%|██████████| 65/65 [00:00<00:00, 6077.89it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 1113.68it/s]
+Loading weights:   0%|          | 0/65 [00:00<?, ?it/s]Loading weights: 100%|██████████| 65/65 [00:00<00:00, 5962.38it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 775.17it/s]
+Loading weights:   0%|          | 0/65 [00:00<?, ?it/s]Loading weights: 100%|██████████| 65/65 [00:00<00:00, 5971.52it/s]
+Loading weights:   0%|          | 0/31 [00:00<?, ?it/s]Loading weights: 100%|██████████| 31/31 [00:00<00:00, 3646.91it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 186.11it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 5445.81it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 1192.11it/s]
+Loading weights:   0%|          | 0/98 [00:00<?, ?it/s]Loading weights: 100%|██████████| 98/98 [00:00<00:00, 5870.60it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 1700.87it/s]
+Loading weights:   0%|          | 0/98 [00:00<?, ?it/s]Loading weights: 100%|██████████| 98/98 [00:00<00:00, 5617.55it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 1026.25it/s]
+Loading weights:   0%|          | 0/98 [00:00<?, ?it/s]Loading weights: 100%|██████████| 98/98 [00:00<00:00, 5912.82it/s]
+Loading weights:   0%|          | 0/58 [00:00<?, ?it/s]Loading weights: 100%|██████████| 58/58 [00:00<00:00, 5279.29it/s]
+test_moe_families ok
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 164.55it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 766.59it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 91.20it/s]
+Loading weights:   0%|          | 0/35 [00:00<?, ?it/s]Loading weights: 100%|██████████| 35/35 [00:00<00:00, 753.67it/s]
+W0930 14:35:11.910000 39919 torch/_inductor/utils.py:1806] [0/0] Not enough SMs to use max_autotune_gemm mode
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 136.07it/s]
+Loading weights:   0%|          | 0/27 [00:00<?, ?it/s]Loading weights: 100%|██████████| 27/27 [00:00<00:00, 775.80it/s]
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 117.25it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 1005.58it/s]
+test_compiled_generate_where_the_static_cache_works ok
+test_compiled_generate_from_torch_2_13 ok
+[transformers] Last layer must use `full_attention`, but got `sliding_attention`. Forcing last layer to `full_attention`.
+test_compiled_generate_eager_where_transformers_differs ok
+test_hooks_put_before_the_packs ok
+test_gpu_code_loads_the_library ok
+test_packed_weight_view ok
+test_quantized_checkpoint_refused ok
+Writing model shards:   0%|          | 0/1 [00:00<?, ?it/s]Writing model shards: 100%|██████████| 1/1 [00:00<00:00, 103.73it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 5953.70it/s]
+Loading weights:   0%|          | 0/25 [00:00<?, ?it/s]Loading weights: 100%|██████████| 25/25 [00:00<00:00, 1331.14it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 5861.75it/s]
+Loading weights:   0%|          | 0/39 [00:00<?, ?it/s]Loading weights: 100%|██████████| 39/39 [00:00<00:00, 6176.48it/s]
+test_cli_pack_and_verify ok
+exit 0
