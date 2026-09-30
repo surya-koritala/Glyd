@@ -212,6 +212,17 @@ def test_settings_blackwell_16gb_uses_tiered():
     assert "GLYD_LAYOUT" not in pf.settings(saved, r5080, "run", environ={}).env  # (a save loads in its own layout)
 
 
+def test_unknown_architecture_leaves_the_context_to_vllm():
+    """A config that does not say enough to size a KV cache: the weights counted as the measured mean, the context left to vLLM (--max-model-len auto)."""
+    m = pf.model_of("some/Odd-3B", {"model_type": "odd"}, bf16=6_000_000_000)
+    assert m.lin == 0 and m.kv_token == 0 and m.max_len == 0
+    s = pf.settings(m, L4_GPU, "run", environ={})
+    assert s.context == 0 and abs(s.weights - (6_000_000_000 * 0.673 + 0.3 * GiB)) < 1e6 and "context: vLLM's choice" in pf.summary(s, L4_GPU)
+    args = pf.vllm_args(m, s, "127.0.0.1", 8000)
+    assert args[args.index("--max-model-len") + 1] == "auto" and "--gpu-memory-utilization" in args
+    raises(lambda: pf.settings(pf.model_of("big/Odd-70B", {"model_type": "odd"}, bf16=140 * 10**9), L4_GPU, "run", environ={}), "needs about")
+
+
 def test_parsers():
     p = lambda repo, kind, **kw: pf.parsers(pf.model_of(repo, {"model_type": kind, **kw}))
     assert p("Qwen/Qwen3-8B", "qwen3") == ("hermes", "qwen3") and p("Qwen/Qwen3-30B-A3B", "qwen3_moe") == ("hermes", "qwen3")
