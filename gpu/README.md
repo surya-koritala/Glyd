@@ -1430,7 +1430,8 @@ lib in a toolkit from pip, as setup_env.sh's):
         -L . -lglyd_gpu_cuda13 -L $CUDA_HOME/lib64 -lcudart -Wl,-rpath,$PWD:$CUDA_HOME/lib64:$CUDA_HOME/lib
     python -m glyd.gpu pack Qwen/Qwen3-0.6B qwen3-0.6b-glyd
 
-On an RTX 4080 SUPER (CUDA 13.0), the first pack, then a merged one (every
+On an RTX 4080 SUPER (CUDA 13.0; a v0.25 library, C API 5: this
+release's prints 7), the first pack, then a merged one (every
 one of Qwen3-0.6B's 112 packs, its 196 Linears, decodes to the checkpoint's
 bits so; a bit flipped in the checkpoint is found):
 

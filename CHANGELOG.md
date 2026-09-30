@@ -195,6 +195,23 @@ every earlier format.
 - `gpu/e2e.py --without-split` times a prompt again with the route off in
   the same process (`--rounds N`: N times each way in turn); `--breakdown`
   gives a pass's host time and its GPU time by kind of kernel.
+- `gpu/respond.py`: how fast a model responds through `generate()`, its
+  time to first token for prompts of 128-8192 tokens, its tokens a second
+  at 1, 8 and 32 sequences, and a chat and a long-document mix, in four
+  modes a process each: bf16 eager, bf16 compiled (`fast_generate`, the
+  same calls compiled as Glyd's default), Glyd's default and
+  `exact=True`. Glyd's default is compared with bf16 compiled alone, the
+  same path. On a GH200 (v0.25.1), its tokens a second over bf16
+  compiled's at 1 / 8 / 32 sequences: Qwen3-8B 1.06 / 1.21 / 1.20x,
+  Qwen3-32B 1.19 / 1.33 / 1.30x; on an L4 (Qwen3-8B, its routes as in
+  v0.25.1) 1.27 / 1.27 / 1.22x. On the GH200 greedy tokens did not repeat
+  from one identical call to the next at 8 and 32 sequences, bf16 eager's
+  own included, nor compiled at one sequence, so no mode's tokens there
+  are compared with bf16's; where bf16 eager's repeated, exact's were its
+  tokens (`benchmarks/gpu/repro-2026-09-30`: a job to find the operation
+  that does not repeat). `resp_job.sh` runs the modes unattended in 35
+  minutes on a GH200 (Qwen3-8B and 32B), an A100 or an A10
+  ([benchmarks/gpu/respond-2026-09-29](benchmarks/gpu/respond-2026-09-29)).
 
 ## v0.25.1 — 2026-09-29
 
