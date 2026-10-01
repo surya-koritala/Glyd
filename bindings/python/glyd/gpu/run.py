@@ -131,6 +131,7 @@ def download(m, ui):
         def __init__(self, *args, **kwargs):
             self.glyd_name = kwargs.get("name") or ""
             kwargs["disable"] = False  # (the hub's bars are off where stderr is not a terminal, and would count nothing)
+            kwargs["leave"] = False  # (a closed tqdm bar writes a newline, which left the last drawn bar behind as a line of its own)
             super().__init__(*args, **kwargs)
             bars.append(self)
 
