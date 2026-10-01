@@ -81,6 +81,7 @@ case "$spec" in
     fi ;;
   *) say "Installing $spec and Python $PYTHON" ;;
 esac
+# shellcheck disable=SC2086  # ($with is two words, "--with ziglang==...", or nothing: it is meant to split)
 "$uv" tool install --force --managed-python --python "$PYTHON" $with "$spec"
 
 bin=$("$uv" tool dir --bin)

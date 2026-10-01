@@ -336,7 +336,7 @@ glyd_logs() {  # the traceback and allocator checks over every server log this h
 }
 
 glyd_flow() {
-  local line env rc t0 py gf ans new up pid key
+  local line env rc t0 py gf ans new up key
   # 2. the README's install line, with this checkout's install.sh where the line fetches getglyd.com's
   line=$(block install)
   [ "$line" = 'curl -LsSf https://getglyd.com/install.sh | sh' ] || { fail "the README's <!-- acceptance: install --> block is not the one line this script replaces: $line"; return 1; }
