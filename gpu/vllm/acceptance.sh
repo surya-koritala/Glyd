@@ -65,6 +65,8 @@
 #                    for glyd run (there is no tool: it says so)
 #   --reuse          the glyd flow, in the --work of a run that installed: not installed (or checked) again, the rest run
 #                    (the way to run only what comes after the install again)
+#   --up-wait SECONDS  how long the glyd flow waits for a server it started with a key, or to kill (default 1800, glyd's own limit):
+#                    shorter where the code under test is expected not to get ready
 #
 # Needs: Linux, an NVIDIA GPU and its driver, Docker with the NVIDIA container toolkit (or --host, and Docker for the
 # Docker route), and the network. Ports 8000 and 3000 must be free. It runs the README's blocks marked
@@ -73,7 +75,7 @@
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 README=$HERE/README.md
-FLOW=glyd VERSION= WHEEL= BUDGET= CARD= GEFORCE= COMMAND= WEBUI=both HOLD= IMAGE= WORK=$HOME/glyd-acceptance HOST= MODEL=Qwen/Qwen3-8B COMPILER=none EXPECT=fit PIPREF= MODEL_SET= RUSTGLYD= REUSE=
+FLOW=glyd VERSION= WHEEL= BUDGET= CARD= GEFORCE= COMMAND= WEBUI=both HOLD= IMAGE= WORK=$HOME/glyd-acceptance HOST= MODEL=Qwen/Qwen3-8B COMPILER=none EXPECT=fit PIPREF= MODEL_SET= RUSTGLYD= REUSE= UPWAIT=1800
 while [ $# -gt 0 ]; do
   case $1 in
     --flow) FLOW=$2; shift;;
@@ -84,6 +86,7 @@ while [ $# -gt 0 ]; do
     --command) COMMAND=$2; shift;; --webui) WEBUI=$2; shift;; --hold) HOLD=$2; shift;; --image) IMAGE=$2; shift;; --work) WORK=$2; shift;; --host) HOST=1;;
     --pip-refusal) PIPREF=1;;
     --rust-glyd) RUSTGLYD=$(cd "$(dirname "$2")" && pwd)/$(basename "$2"); shift;; --reuse) REUSE=1;;
+    --up-wait) UPWAIT=$2; shift;;
     -h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;;
     *) echo "unknown option $1 (--help)"; exit 2;;
   esac
@@ -560,7 +563,7 @@ glyd_chat_dies() {  # a terminal chat with an answer under way, and the engine k
   local up out
   : > "$LOGS/serve-die.out"
   bg "${gf}glyd serve $MODEL --port 8000 > $IN/logs/serve-die.out 2>&1"
-  up=; for _ in $(seq 1 600); do run 'curl -sf http://127.0.0.1:8000/v1/models' > /dev/null 2>&1 && { up=1; break; }; run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 3; done
+  up=; for _ in $(seq 1 $((UPWAIT / 3))); do run 'curl -sf http://127.0.0.1:8000/v1/models' > /dev/null 2>&1 && { up=1; break; }; run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 3; done
   [ -n "$up" ] || { fail "glyd serve did not come up for the engine-killed check (logs/serve-die.out)"; return; }
   cat > "$WORK/chatdies.sh" <<EOF
 #!/bin/bash
@@ -692,7 +695,7 @@ glyd_flow() {
     # the key as -- --api-key: glyd's readiness probe needs none of it (it asked /v1 and was told 401, so a server with a key never came up)
     : > "$LOGS/serve-flag.out"
     bg "${gf}glyd serve $MODEL --port 8000 --host 0.0.0.0 -- --api-key $key > $IN/logs/serve-flag.out 2>&1"
-    up=; for _ in $(seq 1 600); do grep -q '^Serving' "$LOGS/serve-flag.out" && { up=1; break; }; run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 3; done
+    up=; for _ in $(seq 1 $((UPWAIT / 3))); do grep -q '^Serving' "$LOGS/serve-flag.out" && { up=1; break; }; run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 3; done
     if [ -n "$up" ]; then glyd_key "$LOGS/serve-flag.out" "$key" flag; else fail "glyd serve --host 0.0.0.0 -- --api-key never printed Serving (logs/serve-flag.out): $(tail -3 "$LOGS/serve-flag.out" | tr '\n' '|' | cut -c1-200)"; fi
     glyd_stop_serve
     # the key as the README says (VLLM_API_KEY in the environment), and Open WebUI against it
@@ -703,7 +706,7 @@ glyd_flow() {
     say "-- serve with a key: $(printf '%s' "$line" | sed "s|$key|YOUR_KEY|")"
     : > "$LOGS/serve-bridge.out"
     bg "${gf}$line > $IN/logs/serve-bridge.out 2>&1"
-    up=; for _ in $(seq 1 600); do grep -q '^Serving' "$LOGS/serve-bridge.out" && { up=1; break; }; run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 3; done
+    up=; for _ in $(seq 1 $((UPWAIT / 3))); do grep -q '^Serving' "$LOGS/serve-bridge.out" && { up=1; break; }; run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 3; done
     if [ -n "$up" ]; then glyd_key "$LOGS/serve-bridge.out" "$key" env; route bridge && webui_route bridge "$py" "$MODEL" "$key"; else fail "the README's serve-key command never printed Serving (logs/serve-bridge.out): $(tail -3 "$LOGS/serve-bridge.out" | tr '\n' '|' | cut -c1-200)"; fi
   fi
   if [ -n "$HOLD" ]; then
