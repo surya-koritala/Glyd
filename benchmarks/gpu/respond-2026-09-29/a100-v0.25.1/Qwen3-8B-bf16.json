@@ -1,0 +1,377 @@
+{
+ "model": "/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218",
+ "mode": "bf16",
+ "greedy": true,
+ "gpu": "NVIDIA A100-SXM4-40GB",
+ "capability": "8.0",
+ "gpu_memory_gb": 42.4,
+ "smi": "580.126.20, 1410 MHz, 1215 MHz, 400.00 W, 400.00 W",
+ "torch": "2.14.0+cu130",
+ "cuda": "13.0",
+ "transformers": "5.17.0",
+ "cpu": "AMD EPYC 7J13 64-Core Processor",
+ "cpus": 30,
+ "host": "x86_64",
+ "args": {
+  "model": "/home/ubuntu/hf/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218",
+  "mode": "bf16",
+  "out": "/home/ubuntu/results/Qwen3-8B-bf16.json",
+  "prompts": "128,512,2048,8192",
+  "ttft_new": 16,
+  "batches": "1,8,32",
+  "rate_prompt": 128,
+  "new": 256,
+  "mixes": "chat:200:300,long:2000:200",
+  "reps_ttft": 3,
+  "reps_rate": 3,
+  "reps_mix": 3,
+  "rep_budget": 12.0,
+  "deadline": 1790781368.0
+ },
+ "configs": [
+  {
+   "name": "ttft 128",
+   "prompt": 128,
+   "batch": 1,
+   "new": 16,
+   "gpu_at_start": "41, 1095 MHz, 79.43 W",
+   "warmup": {
+    "ttft": 1.0254557580001347,
+    "total": 1.7111211830001594,
+    "path": "eager",
+    "tokens_per_s": 21.883007785818982,
+    "sha": "aad5dc04f67b8144"
+   },
+   "reps": 3,
+   "runs": [
+    {
+     "ttft": 0.04777377800019167,
+     "total": 0.695118807000199,
+     "path": "eager",
+     "tokens_per_s": 23.178887967915927,
+     "sha": "aad5dc04f67b8144"
+    },
+    {
+     "ttft": 0.04747829999996611,
+     "total": 0.6978389210003115,
+     "path": "eager",
+     "tokens_per_s": 23.071772924765636,
+     "sha": "aad5dc04f67b8144"
+    },
+    {
+     "ttft": 0.047423886000160564,
+     "total": 0.6960133669999777,
+     "path": "eager",
+     "tokens_per_s": 23.133667935729722,
+     "sha": "aad5dc04f67b8144"
+    }
+   ],
+   "peak_gb": 16.42,
+   "ttft": 0.04747829999996611,
+   "total": 0.6960133669999777,
+   "tokens_per_s": 23.133667935729722,
+   "path": "eager",
+   "sha": "aad5dc04f67b8144",
+   "same_tokens": true
+  },
+  {
+   "name": "ttft 512",
+   "prompt": 512,
+   "batch": 1,
+   "new": 16,
+   "gpu_at_start": "45, 1410 MHz, 157.60 W",
+   "warmup": {
+    "ttft": 0.0542415479999363,
+    "total": 0.7028724430001603,
+    "path": "eager",
+    "tokens_per_s": 23.132077458614084,
+    "sha": "2ab1ad73f90a2447"
+   },
+   "reps": 3,
+   "runs": [
+    {
+     "ttft": 0.05269421000002694,
+     "total": 0.7042816769999263,
+     "path": "eager",
+     "tokens_per_s": 23.02759297756145,
+     "sha": "2ab1ad73f90a2447"
+    },
+    {
+     "ttft": 0.05267623000008825,
+     "total": 0.7114997230000881,
+     "path": "eager",
+     "tokens_per_s": 22.773989840778935,
+     "sha": "2ab1ad73f90a2447"
+    },
+    {
+     "ttft": 0.052701080000133516,
+     "total": 0.7033460130001004,
+     "path": "eager",
+     "tokens_per_s": 23.060392394295036,
+     "sha": "2ab1ad73f90a2447"
+    }
+   ],
+   "peak_gb": 16.52,
+   "ttft": 0.05269421000002694,
+   "total": 0.7042816769999263,
+   "tokens_per_s": 23.02759297756145,
+   "path": "eager",
+   "sha": "2ab1ad73f90a2447",
+   "same_tokens": true
+  },
+  {
+   "name": "ttft 2048",
+   "prompt": 2048,
+   "batch": 1,
+   "new": 16,
+   "gpu_at_start": "46, 1410 MHz, 159.91 W",
+   "warmup": {
+    "ttft": 0.18338405299982696,
+    "total": 0.8385044179999568,
+    "path": "eager",
+    "tokens_per_s": 22.903376092000926,
+    "sha": "858cbda26ab79883"
+   },
+   "reps": 3,
+   "runs": [
+    {
+     "ttft": 0.18405784900005528,
+     "total": 0.8354711080000925,
+     "path": "eager",
+     "tokens_per_s": 23.03387156611087,
+     "sha": "858cbda26ab79883"
+    },
+    {
+     "ttft": 0.18314740999994683,
+     "total": 0.8325531340001362,
+     "path": "eager",
+     "tokens_per_s": 23.104445483368814,
+     "sha": "858cbda26ab79883"
+    },
+    {
+     "ttft": 0.183774104999884,
+     "total": 0.8359951930001444,
+     "path": "eager",
+     "tokens_per_s": 23.004729175720797,
+     "sha": "858cbda26ab79883"
+    }
+   ],
+   "peak_gb": 16.91,
+   "ttft": 0.183774104999884,
+   "total": 0.8354711080000925,
+   "tokens_per_s": 23.03387156611087,
+   "path": "eager",
+   "sha": "858cbda26ab79883",
+   "same_tokens": true
+  },
+  {
+   "name": "ttft 8192",
+   "prompt": 8192,
+   "batch": 1,
+   "new": 16,
+   "gpu_at_start": "47, 1410 MHz, 166.16 W",
+   "warmup": {
+    "ttft": 0.7467435819999082,
+    "total": 1.4007726780000667,
+    "path": "eager",
+    "tokens_per_s": 22.94285491586795,
+    "sha": "458b17874e4bad10"
+   },
+   "reps": 3,
+   "runs": [
+    {
+     "ttft": 0.7487009760002366,
+     "total": 1.4114059019998422,
+     "path": "eager",
+     "tokens_per_s": 22.64186965329364,
+     "sha": "458b17874e4bad10"
+    },
+    {
+     "ttft": 0.7498365720002766,
+     "total": 1.4096015190002618,
+     "path": "eager",
+     "tokens_per_s": 22.742461211087928,
+     "sha": "458b17874e4bad10"
+    },
+    {
+     "ttft": 0.7455614820000847,
+     "total": 1.4204313649997857,
+     "path": "eager",
+     "tokens_per_s": 22.234457597195043,
+     "sha": "458b17874e4bad10"
+    }
+   ],
+   "peak_gb": 18.47,
+   "ttft": 0.7487009760002366,
+   "total": 1.4114059019998422,
+   "tokens_per_s": 22.64186965329364,
+   "path": "eager",
+   "sha": "458b17874e4bad10",
+   "same_tokens": true
+  },
+  {
+   "name": "mix chat",
+   "prompt": 200,
+   "batch": 1,
+   "new": 300,
+   "gpu_at_start": "50, 1410 MHz, 174.92 W",
+   "warmup": {
+    "ttft": 0.04982072800021342,
+    "total": 13.123214004000147,
+    "path": "eager",
+    "tokens_per_s": 22.87124378210562,
+    "sha": "f96e76521e75ea57"
+   },
+   "reps": 1,
+   "runs": [
+    {
+     "ttft": 0.04796969300014098,
+     "total": 13.081916586000261,
+     "path": "eager",
+     "tokens_per_s": 22.94045973259331,
+     "sha": "f96e76521e75ea57"
+    }
+   ],
+   "peak_gb": 16.47,
+   "ttft": 0.04796969300014098,
+   "total": 13.081916586000261,
+   "tokens_per_s": 22.94045973259331,
+   "path": "eager",
+   "sha": "f96e76521e75ea57",
+   "same_tokens": true
+  },
+  {
+   "name": "rate 1",
+   "prompt": 128,
+   "batch": 1,
+   "new": 256,
+   "gpu_at_start": "47, 1410 MHz, 160.45 W",
+   "warmup": {
+    "ttft": 0.04952317100014625,
+    "total": 11.131741564000095,
+    "path": "eager",
+    "tokens_per_s": 23.010264784552277,
+    "sha": "8d7502932e63c015"
+   },
+   "reps": 1,
+   "runs": [
+    {
+     "ttft": 0.048120702000232995,
+     "total": 11.13186788100029,
+     "path": "eager",
+     "tokens_per_s": 23.00708540647014,
+     "sha": "8d7502932e63c015"
+    }
+   ],
+   "peak_gb": 16.45,
+   "ttft": 0.048120702000232995,
+   "total": 11.13186788100029,
+   "tokens_per_s": 23.00708540647014,
+   "path": "eager",
+   "sha": "8d7502932e63c015",
+   "same_tokens": true
+  },
+  {
+   "name": "mix long",
+   "prompt": 2000,
+   "batch": 1,
+   "new": 200,
+   "gpu_at_start": "46, 1410 MHz, 160.07 W",
+   "warmup": {
+    "ttft": 0.18255495499988683,
+    "total": 8.835245329999907,
+    "path": "eager",
+    "tokens_per_s": 22.99917945203372,
+    "sha": "61dcbed8463dabd0"
+   },
+   "reps": 1,
+   "runs": [
+    {
+     "ttft": 0.1832763239999622,
+     "total": 8.841294405000099,
+     "path": "eager",
+     "tokens_per_s": 22.985009962496594,
+     "sha": "61dcbed8463dabd0"
+    }
+   ],
+   "peak_gb": 16.9,
+   "ttft": 0.1832763239999622,
+   "total": 8.841294405000099,
+   "tokens_per_s": 22.985009962496594,
+   "path": "eager",
+   "sha": "61dcbed8463dabd0",
+   "same_tokens": true
+  },
+  {
+   "name": "rate 8",
+   "prompt": 128,
+   "batch": 8,
+   "new": 256,
+   "gpu_at_start": "47, 1410 MHz, 164.11 W",
+   "warmup": {
+    "ttft": 0.0961342139999033,
+    "total": 11.329910884999663,
+    "path": "eager",
+    "tokens_per_s": 181.59851147012182,
+    "sha": "27c22190613d3a7f"
+   },
+   "reps": 1,
+   "runs": [
+    {
+     "ttft": 0.09387672699995164,
+     "total": 11.322363382000276,
+     "path": "eager",
+     "tokens_per_s": 181.68411013418054,
+     "sha": "27c22190613d3a7f"
+    }
+   ],
+   "peak_gb": 16.87,
+   "ttft": 0.09387672699995164,
+   "total": 11.322363382000276,
+   "tokens_per_s": 181.68411013418054,
+   "path": "eager",
+   "sha": "27c22190613d3a7f",
+   "same_tokens": true
+  },
+  {
+   "name": "rate 32",
+   "prompt": 128,
+   "batch": 32,
+   "new": 256,
+   "gpu_at_start": "47, 1410 MHz, 167.04 W",
+   "warmup": {
+    "ttft": 0.33446972999990976,
+    "total": 11.588760777000061,
+    "path": "eager",
+    "tokens_per_s": 725.0696592059581,
+    "sha": "362233bd9b9df4b8"
+   },
+   "reps": 1,
+   "runs": [
+    {
+     "ttft": 0.3327162620003037,
+     "total": 11.581046210000295,
+     "path": "eager",
+     "tokens_per_s": 725.4542918418352,
+     "sha": "362233bd9b9df4b8"
+    }
+   ],
+   "peak_gb": 18.31,
+   "ttft": 0.3327162620003037,
+   "total": 11.581046210000295,
+   "tokens_per_s": 725.4542918418352,
+   "path": "eager",
+   "sha": "362233bd9b9df4b8",
+   "same_tokens": true
+  }
+ ],
+ "load": {
+  "fits": true,
+  "seconds": 3.4,
+  "gb": 16.38,
+  "peak_gb": 16.38,
+  "layout": null,
+  "compiled_cap": null
+ },
+ "done": true
+}

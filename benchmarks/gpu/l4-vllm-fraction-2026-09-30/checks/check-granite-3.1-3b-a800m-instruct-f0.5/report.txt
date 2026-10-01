@@ -1,0 +1,7 @@
+PASS granite-3.1-3b-a800m-instruct auto: every pack (32 and 16 mixture of experts' layers' experts) decoded to its weights bit for bit
+PASS granite-3.1-3b-a800m-instruct auto: each layer's product within 1e-2 of F.linear, the experts of their decoded matrices (3.38e-03) and the same bits every run
+PASS granite-3.1-3b-a800m-instruct auto: top-1 agreement with bf16 on its continuation 0.9896 (at least 0.97; bf16 eager's 0.9883)
+PASS granite-3.1-3b-a800m-instruct auto: mean |logprob difference| 0.00e+00, at most 2.0x bf16 eager's against its graphs (1.16e-02)
+PASS granite-3.1-3b-a800m-instruct auto, fraction 0.5: 16 of 32 layers packed, spread evenly (layer i where floor((i + 1) f) > floor(i f)), each with all its Linears, the other 16 vLLM's own method (packed [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31])
+PASS granite-3.1-3b-a800m-instruct exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8; continuation True)
+PASS granite-3.1-3b-a800m-instruct fraction 0, eager: nothing packed, bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8; continuation True; KV cache 194560 tokens, bf16 eager's 194560)

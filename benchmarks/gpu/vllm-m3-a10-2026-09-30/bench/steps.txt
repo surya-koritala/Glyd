@@ -1,0 +1,6 @@
+06:08:42 (+0 s) machine
+06:08:52 (+10 s) env: vLLM and nvcc in 10 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA A10)
+06:08:53 (+11 s) build: sm_86 in 1 s (library: C API 5 | GPU code 2086)
+06:26:51 (+1089 s) bench Qwen3-8B: exit 0 in 1078 s
+download dl-Qwen3-8B: exit 0: 16397431693 bytes in 0 s (at +0 s)
+06:26:51 (+1089 s) done

@@ -1,0 +1,10 @@
+exact: loaded in 12.8 s, 6.82 GB (layout mma, compiled calls to None positions)
+exact ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.0894 total 1.177 tokens_per_s 13.79 [warm-up 1.84 s, eager, 5 repeats]
+exact ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.1531 total 1.254 tokens_per_s 13.63 [warm-up 1.25 s, eager, 5 repeats]
+exact ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.4534 total 1.61 tokens_per_s 12.99 [warm-up 1.61 s, eager, 5 repeats]
+exact ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 2.153 total 3.443 tokens_per_s 11.62 [warm-up 3.43 s, eager, 5 repeats]
+exact mix chat (200 + 300 tokens, 1 a batch): ttft 0.1088 total 22.12 tokens_per_s 13.59 [warm-up 22.06 s, eager, 3 repeats]
+exact rate 1 (128 + 256 tokens, 1 a batch): ttft 0.08997 total 18.77 tokens_per_s 13.65 [warm-up 18.79 s, eager, 3 repeats]
+exact rate 8 (128 + 256 tokens, 8 a batch): ttft 0.2864 total 20.44 tokens_per_s 101.2 [warm-up 20.45 s, eager, 3 repeats]
+exact rate 32 (128 + 256 tokens, 32 a batch): ttft 0.9187 total 24.51 tokens_per_s 345.8 [warm-up 24.52 s, eager, 3 repeats]
+exact mix long (2000 + 200 tokens, 1 a batch): ttft 0.4646 total 15.86 tokens_per_s 12.93 [warm-up 15.89 s, eager, 3 repeats]

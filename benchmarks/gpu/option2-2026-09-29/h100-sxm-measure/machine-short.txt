@@ -1,0 +1,1 @@
+NVIDIA H100 80GB HBM3 (9.0, sm_90a, 81559 MiB, power limit 700.00 W), x86_64 host, 26 CPUs; tree 7fe66a2 (release-0.26.0, v0.26.0 candidate); SPLIT forced on by GLYD_SPLIT_MIN=2048 on an NVIDIA H100 80GB HBM3: a measurement, not a route

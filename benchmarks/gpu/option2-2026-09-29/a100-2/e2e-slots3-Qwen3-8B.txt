@@ -1,0 +1,13 @@
+Loading weights:   0%|          | 0/399 [00:00<?, ?it/s]Loading weights: 100%|██████████| 399/399 [00:00<00:00, 5128.06it/s]
+merged: 72 groups of Linears as one product each
+mma12 fused: packed in 6 s; weights 12.27 GB against 16.38 GB bf16 (74.9%), scratch 0.27 GB, VRAM in use 12.54 GB on 1 GPU
+glyd mma12 fused: batch 1: 25.6 tokens/s (25.6 a sequence), peak VRAM 12.55 GB
+glyd mma12 prefill: 1024 tokens 106.3 ms (9630 tokens/s), first token 109.9 ms
+USDT:2026-09-29 18:45:56 3494:3494 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-29 18:45:56 3494:3494 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, SPLIT: a pass 106.9 ms, the host issues it in 52.7; GPU span 109.0 ms, idle 3.4; kernels: GEMMs 60.6 ms, the decode 47.6 (beside GEMMs 14.2, beside the rest 28.5, alone 4.8), attention 3.4, the rest 36.7
+USDT:2026-09-29 18:45:56 3494:3494 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-09-29 18:45:56 3494:3494 SyncActivityProfilerHandler.cpp:46] profiler_stop
+glyd mma12 breakdown, 1024 tokens, without SPLIT: a pass 112.8 ms, the host issues it in 57.7; GPU span 114.4 ms, idle 3.5; kernels: GEMMs 59.6 ms, the decode 21.8 (beside GEMMs 0.0, beside the rest 0.0, alone 21.8), attention 3.4, the rest 26.1
+text:  with the invention of the telegraph in the 1830s. The telegraph was the first system to transmit information over long distances, and it
+exit 0

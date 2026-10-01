@@ -1,0 +1,17 @@
+Loading weights:   0%|          | 0/707 [00:00<?, ?it/s]Loading weights: 100%|██████████| 707/707 [00:00<00:00, 8047.67it/s]
+merged: 128 groups of Linears as one product each
+bf16 (weights 65.52 GB): batch 1: 10.6 tokens/s (10.6 a sequence), peak VRAM 65.57 GB
+bf16 prefill: 2048 tokens 280.1 ms (7312 tokens/s), first token 279.8 ms, 4096 tokens 564.5 ms (7256 tokens/s), first token 564.7 ms, 8192 tokens 1190.1 ms (6884 tokens/s), first token 1192.4 ms; from 2026/09/30 08:24:34 to 2026/09/30 08:24:54
+mma12 fused: packed in 14 s; weights 49.22 GB against 65.52 GB bf16 (75.1%), scratch 0.27 GB, VRAM in use 49.52 GB on 1 GPU
+glyd mma12 fused: batch 1: 16.3 tokens/s (16.3 a sequence), peak VRAM 49.54 GB
+glyd mma12 prefill: 2048 tokens 304.0 ms (6738 tokens/s), first token 304.3 ms, 4096 tokens 592.2 ms (6917 tokens/s), first token 591.1 ms, 8192 tokens 1207.6 ms (6784 tokens/s), first token 1212.2 ms; from 2026/09/30 08:25:49 to 2026/09/30 08:26:11
+the route SPLIT's ring: cuda:0 ran
+glyd mma12 without SPLIT prefill: 2048 tokens 332.9 ms (6152 tokens/s), first token 335.2 ms, 4096 tokens 629.8 ms (6503 tokens/s), first token 632.6 ms, 8192 tokens 1281.3 ms (6393 tokens/s), first token 1279.4 ms; from 2026/09/30 08:26:11 to 2026/09/30 08:26:33
+glyd mma12 without SPLIT prefill: 2048 tokens 335.7 ms (6100 tokens/s), first token 337.9 ms, 4096 tokens 636.2 ms (6438 tokens/s), first token 634.9 ms, 8192 tokens 1279.3 ms (6404 tokens/s), first token 1279.7 ms; from 2026/09/30 08:26:33 to 2026/09/30 08:26:56
+glyd mma12 prefill: 2048 tokens 305.1 ms (6712 tokens/s), first token 307.8 ms, 4096 tokens 598.7 ms (6842 tokens/s), first token 600.0 ms, 8192 tokens 1218.4 ms (6724 tokens/s), first token 1220.9 ms; from 2026/09/30 08:26:56 to 2026/09/30 08:27:17
+glyd mma12 prefill: 2048 tokens 305.3 ms (6708 tokens/s), first token 307.7 ms, 4096 tokens 599.0 ms (6838 tokens/s), first token 600.8 ms, 8192 tokens 1220.0 ms (6715 tokens/s), first token 1224.3 ms; from 2026/09/30 08:27:17 to 2026/09/30 08:27:38
+glyd mma12 without SPLIT prefill: 2048 tokens 336.4 ms (6089 tokens/s), first token 338.4 ms, 4096 tokens 637.3 ms (6428 tokens/s), first token 637.1 ms, 8192 tokens 1279.9 ms (6401 tokens/s), first token 1280.0 ms; from 2026/09/30 08:27:38 to 2026/09/30 08:28:01
+logits bit-identical: False
+generated tokens identical to bf16: 17 of 32
+text:  in 1948 with the publication of A Mathematical Theory of Communication by the American mathematician and electrical engineer Claude Shannon. In this paper, Shannon introduced
+exit 0

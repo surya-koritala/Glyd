@@ -1,0 +1,13 @@
+# NVIDIA A100-SXM4-40GB, 108 SMs, sm_8x; Qwen3-8B layer 10: 192.9 M weights in 5 chunks (qkv 0+6144, o 0+4096, gate_up 0+12288, gate_up 12288+12288, down 0+4096); sb 12.038 bits a weight; loaded and packed in 0.5 s
+a sb ldg           s= 16:   9.58 weights a clock an SM,  13.51 G weights/s an SM,   216.1 G weights/s,  0.76 TB/s (1410 MHz, 194 W; 3 blocks x 4 warps an SM)
+a sb cpa D2        s= 16:   5.39 weights a clock an SM,   7.60 G weights/s an SM,   121.6 G weights/s,  0.43 TB/s (1410 MHz, 191 W; 6 blocks x 1 warps an SM)
+a sb cpa D3        s= 16:   6.02 weights a clock an SM,   8.49 G weights/s an SM,   135.8 G weights/s,  0.48 TB/s (1410 MHz, 174 W; 5 blocks x 1 warps an SM)
+a sb cpa D4        s= 16:   6.98 weights a clock an SM,   9.84 G weights/s an SM,   157.5 G weights/s,  0.55 TB/s (1410 MHz, 185 W; 4 blocks x 1 warps an SM)
+a sb ldg           s=  4:  10.05 weights a clock an SM,  14.17 G weights/s an SM,    56.7 G weights/s,  0.20 TB/s (1410 MHz, 142 W; 3 blocks x 4 warps an SM)
+a sb ldg           s=  8:   9.86 weights a clock an SM,  13.90 G weights/s an SM,   111.2 G weights/s,  0.39 TB/s (1410 MHz, 158 W; 3 blocks x 4 warps an SM)
+a sb ldg           s= 24:   8.89 weights a clock an SM,  12.53 G weights/s an SM,   300.7 G weights/s,  1.05 TB/s (1410 MHz, 167 W; 3 blocks x 4 warps an SM)
+a sb ldg           s=108:   2.13 weights a clock an SM,   3.00 G weights/s an SM,   324.4 G weights/s,  1.14 TB/s (1410 MHz, 253 W; 3 blocks x 4 warps an SM)
+a sb cpa D4        s=  4:   7.30 weights a clock an SM,  10.29 G weights/s an SM,    41.2 G weights/s,  0.14 TB/s (1410 MHz, 134 W; 4 blocks x 1 warps an SM)
+a sb cpa D4        s=  8:   7.19 weights a clock an SM,  10.14 G weights/s an SM,    81.1 G weights/s,  0.28 TB/s (1410 MHz, 153 W; 4 blocks x 1 warps an SM)
+a sb cpa D4        s= 24:   6.81 weights a clock an SM,   9.60 G weights/s an SM,   230.5 G weights/s,  0.81 TB/s (1410 MHz, 180 W; 4 blocks x 1 warps an SM)
+a sb cpa D4        s=108:   2.13 weights a clock an SM,   3.01 G weights/s an SM,   324.7 G weights/s,  1.14 TB/s (1410 MHz, 224 W; 4 blocks x 1 warps an SM)

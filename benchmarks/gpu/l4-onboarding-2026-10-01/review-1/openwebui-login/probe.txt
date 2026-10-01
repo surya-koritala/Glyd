@@ -1,0 +1,25 @@
+--- no token: GET /api/models -> 401
+--- signin with empty credentials -> 400
+--- config, no token (does it say signup is open?)
+{'onboarding': True, 'auth': None, 'features': {'slim': False, 'auth': True, 'auth_trusted_header': False, 'enable_signup_password_confirmation': False, 'enable_ldap': False, 'enable_signup': True, 'enable_login_form': True, 'enable_websocket': True}}
+--- the first signup (what a person does on first visit)
+{'id': 'e8f08d46-3c7a-4a4f-b395-b41df3b3c0de', 'name': 'Acceptance', 'role': 'admin', 'email': 'acceptance@example.com', 'token': '<token>', 'token_type': 'Bearer', 'expires_at': 1793279297, 'permissions': {'workspace': {'models': False, 'knowledge': False, 'prompts': False, 'tools': False, 'skills': False, 'models_import': False, 'models_export': False, 'prompts_import': False, 'prompts_export': False, 'tools_import': False, 'tools_export': False, 'skills_import': False, 'skills_export': False}, 'sharing': {'models': False, 'public_models': False, 'knowledge': False, 'public_knowledge': False, 'prompts': False, 'public_prompts': False, 'tools': False, 'public_tools': False, 'skills': False, 'public_skills': False, 'notes': False, 'public_notes': False, 'folders': False, 'public_chats': False, 'open_chats': False, 'public_calendars': False}, 'access_grants': {'allow_users': True, 'allow_groups': True}, 'chat': {'controls': True, 'valves': True, 'system_prompt': True, 'params': True, 'file_upload': True, 'web_upload': True, 'delete': True, 'delete_message': True, 'continue_response': True, 'regenerate_response': True, 'rate_response': True, 'edit': True, 'share': True, 'export': True, 'import': True, 'stt': True, 'tts': True, 'call': True, 'multiple_models': True, 'temporary': True, 'temporary_enforced': False}, 'features': {'api_keys': False, 'notes': True, 'folders': True, 'channels': True, 'direct_tool_servers': False, 'web_search': True, 'image_generation': True, 'code_interpreter': True, 'memories': True, 'automations': False, 'calendar': True, 'webhooks': False}, 'settings': {'interface': True}}}
+--- a second signup
+{'detail': 'You do not have permission to access this resource. Please contact your administrator for assistance.'}
+--- with the token: GET /api/models -> 200
+--- /api/v1/auths/ (who am I)
+{'role': 'admin', 'email': 'acceptance@example.com', 'name': 'Acceptance'}
+--- signin with the account's credentials -> 200
+--- CORS: evil origin POST signin
+HTTP/1.1 400 Bad Request
+access-control-allow-credentials: true
+--- CORS: preflight from evil
+HTTP/1.1 400 Bad Request
+access-control-allow-methods: DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT
+access-control-max-age: 600
+access-control-allow-credentials: true
+access-control-allow-headers: content-type,authorization
+--- CORS: own origin POST signin (bad credentials)
+HTTP/1.1 400 Bad Request
+access-control-allow-credentials: true
+access-control-allow-origin: http://localhost:3000

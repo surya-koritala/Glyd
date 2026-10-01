@@ -1,0 +1,6 @@
+11:42:58 (+1 s) machine
+11:43:14 (+17 s) env: vLLM and nvcc in 16 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA RTX A6000)
+11:43:17 (+20 s) build: sm_86 in 3 s (library: C API 5 | GPU code 86)
+11:56:52 (+835 s) moe granite-3.1-3b-a800m-instruct --quick: exit 1 in 809 s (TypeError: 'NoneType' object is not subscriptable)
+download dl-granite-3.1-3b-a800m-instruct: exit 0: 6602352184 bytes in 24 s (at +25 s)
+11:56:52 (+835 s) done

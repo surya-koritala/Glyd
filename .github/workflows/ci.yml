@@ -27,13 +27,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Versions agree (crate, store, GPU crate, Python package)
+      # One version in Cargo's spelling (0.26.0-rc.2) and Python's (0.26.0rc2), in every file that has it; for
+      # a release (0.26.0) the docs and the CHANGELOG heading name it too. scripts/bump_version.py sets them.
+      - name: Versions agree (crate, store, GPU crate, Cargo.lock, Python package)
         run: |
-          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-          for f in glyd-store/Cargo.toml glyd-gpu/Cargo.toml bindings/python/pyproject.toml; do
-            grep -q "^version = \"$v\"" "$f" || { echo "$f is not $v"; exit 1; }
-          done
-          grep -q "__version__ = \"$v\"" bindings/python/glyd/__init__.py || { echo "__init__.py is not $v"; exit 1; }
+          python3 scripts/bump_version.py --check
+          python3 scripts/bump_version.py --selftest
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -69,3 +68,27 @@ jobs:
         run: |
           head -c 3000000 corpus/dickens > /tmp/sample.bin
           scripts/verify_roundtrip.sh /tmp/sample.bin
+
+  # The vLLM plugin's logic and the packers' CPU-checkable parts, with vLLM installed (a CUDA wheel of it imports without
+  # a GPU). GLYD_REQUIRE_VLLM=1: a run without vLLM fails instead of skipping its tests as if they had passed.
+  vllm-plugin:
+    name: vLLM plugin (vLLM installed, no GPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install vLLM (the minor release the plugin is tested with)
+        run: |
+          python -m pip install --quiet --no-cache-dir "vllm>=0.30,<0.31"
+          python -c "import vllm; print('vllm', vllm.__version__)"
+      - name: Plugin tests and the GPU-free tests of glyd.gpu
+        working-directory: bindings/python
+        env:
+          GLYD_REQUIRE_VLLM: "1"
+        run: |
+          python test_vllm.py
+          python test_gpu.py
+          python test_onboard.py  # (glyd run, serve, doctor; with vLLM installed, its parser names are checked against vLLM's registries)

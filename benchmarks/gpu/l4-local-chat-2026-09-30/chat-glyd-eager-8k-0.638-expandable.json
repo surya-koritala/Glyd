@@ -1,0 +1,46 @@
+{
+ "model": "Qwen/Qwen3-8B",
+ "turns": [
+  {
+   "user": "Hi! In two sentences, what is lossless compression?",
+   "ttft_s": 0.11469257999942783,
+   "tokens": 30,
+   "prompt_tokens": 35,
+   "tok_s": 22.29389430781067,
+   "text": "Lossless compression is a method of reducing file size without losing any data. It allows the original data to be perfectly reconstructed from the compressed data.",
+   "reasoning": ""
+  },
+  {
+   "user": "Give me one everyday example of it, and one of lossy compression.",
+   "ttft_s": 0.11850076999962766,
+   "tokens": 61,
+   "prompt_tokens": 89,
+   "tok_s": 21.66698589539892,
+   "text": "An everyday example of lossless compression is when you compress a document or image using ZIP format, as it retains all the original data. An example of lossy compression is when you compress a photo using JPEG format, which reduces file size by removing some data that is less noticeable to the human eye.",
+   "reasoning": ""
+  },
+  {
+   "user": "Now summarize our conversation so far in one sentence.",
+   "ttft_s": 0.12349536100009573,
+   "tokens": 23,
+   "prompt_tokens": 169,
+   "tok_s": 22.250872805653756,
+   "text": "We discussed lossless and lossy compression, providing examples like ZIP for lossless and JPEG for lossy.",
+   "reasoning": ""
+  }
+ ],
+ "long": {
+  "ttft_s": 0.09856257200044638,
+  "tokens": 512,
+  "prompt_tokens": 22,
+  "tok_s": 21.19339167231847
+ },
+ "thinking": {
+  "ttft_s": 0.05633371299973078,
+  "tokens": 1024,
+  "prompt_tokens": 18,
+  "tok_s": 21.00363727421086,
+  "answer": " \n2*1 = 2, plus the carried over 1 is 3. So the second partial product is 340.  \n\nNow add 51 and 340: 51 + 340 = 391. \n\nAll right, same result. Maybe I can check with another multiplication trick. For",
+  "reasoning_chars": 0
+ }
+}

@@ -1,0 +1,1 @@
+2 x NVIDIA RTX A6000 (compute 8.6, sm_86, 49140 MiB), x86_64 host, 28 CPUs; tree 5513d94 (vllm-plugin, v0.25.1 with the plugin); steps check; TP 2; model Qwen/Qwen3-8B, big none, experts none

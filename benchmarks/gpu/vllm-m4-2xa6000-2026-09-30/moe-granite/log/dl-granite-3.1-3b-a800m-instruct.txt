@@ -1,0 +1,3 @@
+Fetching 11 files:   0%|          | 0/11 [00:00<?, ?it/s]Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Fetching 11 files:   9%|▉         | 1/11 [00:00<00:01,  6.08it/s]Fetching 11 files:  27%|██▋       | 3/11 [00:00<00:00,  9.67it/s]Fetching 11 files:  82%|████████▏ | 9/11 [00:00<00:00, 22.24it/s]Fetching 11 files:  91%|█████████ | 10/11 [00:20<00:00, 22.24it/s]Fetching 11 files: 100%|██████████| 11/11 [00:22<00:00,  2.99s/it]Fetching 11 files: 100%|██████████| 11/11 [00:22<00:00,  2.07s/it]
+exit 0: 6602352184 bytes in 24 s (at +25 s)

@@ -1,0 +1,1 @@
+NVIDIA L4 (8.9, sm_89, 23034 MiB), x86_64 host, 16 CPUs; the tree d7b6ddf (respond-bench); runs: Qwen/Qwen3-8B:bf16 Qwen/Qwen3-8B:glyd Qwen/Qwen3-8B:exact Qwen/Qwen3-4B-Instruct-2507:bf16 Qwen/Qwen3-4B-Instruct-2507:glyd Qwen/Qwen3-4B-Instruct-2507:exact

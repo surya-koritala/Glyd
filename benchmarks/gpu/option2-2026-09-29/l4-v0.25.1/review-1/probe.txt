@@ -1,0 +1,7 @@
+NVIDIA L4, 58 SMs, PCI 00000000:35:00.0
+/home/ubuntu/gpuenv/lib/python3.12/site-packages/torch/cuda/__init__.py:1362: UserWarning: Attempting to run cuBLAS, but there was no current CUDA context! Attempting to set the primary context... (Triggered internally at /__w/pytorch/pytorch/aten/src/ATen/cuda/CublasHandlePool.cpp:410.)
+  return torch._C._cuda_getCurrentBlasHandle()
+cuBLAS through libtorch_cuda.so: {'cublasGemmEx': True, 'cublasSetStream_v2': True, 'cublasGetStream_v2': True, 'cublasSetWorkspace_v2': True, 'cublasSetSmCountTarget': True, 'cublasGetSmCountTarget': True}
+measured: this L4 as it is False | read as code 80 False | as 6090 False
+measured with GLYD_SPLIT_MIN=769 (a measurement): True
+exit 0

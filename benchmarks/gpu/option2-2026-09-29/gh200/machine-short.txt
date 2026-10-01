@@ -1,0 +1,1 @@
+NVIDIA GH200 480GB (9.0, sm_90a, 97871 MiB), aarch64 host, 64 CPUs; CLASS=hopper; tree gpu-option2 8f10750

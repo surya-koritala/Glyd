@@ -1,0 +1,4 @@
+l4-routes library, tiered, against bf16: {'prefix': [30, 64, 64, 64, 52, 64, 64, 51], 'bit_identical': 0, 'mean_abs_dlogprob': 0.009441177105070574, 'long_bit_identical': True, 'long_mean_abs_dlogprob': 0.0, 'long_top1': 0.9935107073329007}
+layers: {'packed': 144, 'verified': 144, 'worst_rel_error': 0.004668405745178461, 'same_bits': True, 'host_us_op_8': 52.4, 'host_us_linear_8': 15.4, 'host_us_op_1024': 85.1, 'host_us_linear_1024': 19.9}
+v0.25.0's library (the 8B check), tiered, against bf16: {'prefix': [30, 64, 64, 64, 52, 64, 64, 51], 'bit_identical': 0, 'mean_abs_dlogprob': 0.009441177105070574, 'long_bit_identical': False, 'long_mean_abs_dlogprob': 0.008402686330787761, 'long_top1': 0.9941596365996106}
+bf16 eager against its graphs (the floor): {'prefix': [20, 64, 64, 64, 52, 64, 57, 64], 'bit_identical': 0, 'mean_abs_dlogprob': 0.010710321054958156, 'long_bit_identical': False, 'long_mean_abs_dlogprob': 0.0090759610605836, 'long_top1': 0.9922128487994809}

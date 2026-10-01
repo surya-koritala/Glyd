@@ -1,0 +1,7 @@
+12:05:57 (+1 s) machine
+12:06:12 (+16 s) env: vLLM and nvcc in 15 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA RTX A6000)
+12:06:15 (+19 s) build: sm_86 in 3 s (library: C API 5 | GPU code 86)
+12:22:34 (+998 s) bench Qwen3-30B-A3B: exit 0 in 979 s
+download dl-Qwen3-30B-A3B: exit 0: 61084157680 bytes in 0 s (at +2 s)
+download dl-granite-3.1-3b-a800m-instruct: exit 0: 6602352184 bytes in 1 s (at +2 s)
+12:22:34 (+998 s) done

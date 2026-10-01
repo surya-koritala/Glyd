@@ -1,0 +1,5 @@
+22:33:53 (+6 s) machine and environment (~/gpuenv)
+22:34:30 (+43 s) library built
+22:40:47 (+420 s) Qwen3-8B glyd12 (exit 0, its share 5668 s)
+22:44:53 (+666 s) Qwen3-4B-Instruct-2507 glyd12 (exit 0, its share 10960 s)
+22:44:53 (+666 s) done

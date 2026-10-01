@@ -142,6 +142,55 @@ puts bf16 and Glyd alike near 12,000.)
   smaller, a fine-tune against its base 44% smaller, and a training
   checkpoint with its optimizer state 17-23% smaller (below).
 
+### Serving with vLLM
+
+```bash
+curl -LsSf https://getglyd.com/install.sh | sh   # Glyd, vLLM 0.30 and PyTorch as one tool: Linux, an NVIDIA GPU, driver 580 or newer (on a Mac, or with no GPU: the compression program)
+glyd run Qwen/Qwen3-8B                           # downloads the model, starts it packed, and opens a chat
+```
+
+`glyd run` checks the machine, works out the memory share, the context and
+the parsers from the GPU it finds (a 16 GB card included), and chats in the
+terminal and at http://localhost:8000; `glyd serve MODEL` leaves it up as an
+OpenAI API, and `glyd doctor` says what this machine has and which models fit.
+The steps, the settings and the manual `vllm serve` commands:
+[gpu/vllm/README.md](gpu/vllm/README.md#local-chat-like-ollama). The GPU code
+is under the Business Source License 1.1: free for personal, educational,
+research and other non-commercial use; commercial use needs a license
+([gpu/LICENSE](gpu/LICENSE)).
+
+vLLM holds the model's Linears, and a mixture of experts' experts, packed
+and multiplies them by Glyd's kernels; its KV cache takes the memory they
+save. `vllm bench serve`, bf16 against Glyd at the same
+`--gpu-memory-utilization 0.9` (servers warm, 1,024 tokens in and 256
+out; low load 1 request a second, 0.25 on the L4):
+
+| GPU (Glyd's layout) | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
+| :--- | :--- | ---: | ---: | :--- | :--- |
+| L4 (tiered) | Qwen3-8B | 1.89x | **1.33x** | +16%, −21% | −25%, +42% |
+| A10 (12-bit) | Qwen3-8B | 1.73x | **1.31x** | +16%, −21% | −25%, +30% |
+| A100 40 GB (12-bit) | Qwen3-8B | 1.14x | **1.19x** | +18%, −10% | −32%, −2% |
+| A100 40 GB (12-bit) | Qwen3-14B | 1.77x | **1.65x** | +18%, −13% | −57%, +4% |
+| GH200 (12-bit) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
+| GH200 (12-bit) | Qwen3-32B | 1.66x | 0.88x | +28%, −6% | −52%, +82% |
+| H100 SXM (12-bit) | Qwen3-30B-A3B | 2.11x | 0.95x | +39%, +8% | −74%, +118% |
+| 2x RTX A6000, tensor parallel (tiered) | Qwen3-30B-A3B | 1.67x | 0.87x | +30%, −7% | +34%, +28% |
+
+More requests at once on every GPU, and more a second on the L4, A10
+and A100; on the GH200, with Qwen3-30B-A3B over two RTX A6000s and on an
+H100 SXM, fewer a second saturated. On an 80 GB H100 SXM, where
+Qwen3-32B's bf16 weights leave room for 32,320 tokens of KV cache, Glyd
+served 1.56x bf16's requests a second saturated (`fraction` 1, a bench of
+its own: [gpu/vllm/README.md](gpu/vllm/README.md#a-fraction-of-the-layers)). At
+low load the first token comes 4-39% later. `exact` gives vLLM's bf16
+logits bit for bit, eager, or compiled in inductor's deterministic mode
+where the packed Linears have no biases.
+Options, exact mode, mixtures of experts, the checks against vLLM's bf16
+and every rate: [gpu/vllm/README.md](gpu/vllm/README.md); logs in
+[benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m5-2026-09-30`,
+`vllm-m3-*-2026-09-30`, `vllm-m4-2xa6000-2026-09-30`,
+`vllm-m6-h100-2026-10-01`).
+
 ### Related work
 
 Coding a bf16 weight's exponent losslessly is not new; what Glyd adds is

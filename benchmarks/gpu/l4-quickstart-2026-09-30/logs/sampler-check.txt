@@ -1,0 +1,4 @@
+support of the exact distribution: 12 tokens
+pytorch    total variation from the exact 0.0010, mass outside the support 0.0e+00, 9.405 ms a batch of 256
+flashinfer total variation from the exact 0.0016, mass outside the support 0.0e+00, 5.923 ms a batch of 256
+flashinfer against pytorch: total variation 0.0020

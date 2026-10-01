@@ -1,0 +1,136 @@
+NVIDIA H100 80GB HBM3 (9.0, sm_90a), x86_64 host, 26 CPUs; the tree 8b86631 (respond-bench, v0.25.1); Qwen/Qwen3-8B
+environment: ~/gpuenv; torch 2.14.1+cu130 CUDA 13.0 cuDNN 92400 | transformers 5.18.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+
+== run-b1-bf16
+USDT:2026-10-01 01:00:02 11851:11851 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:00:02 11851:11851 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16, batch 1, 128 + 32 tokens, attention default (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 07f70f98c3b65be0 B 07f70f98c3b65be0 (the same; every sequence the same in each: True, True); 9248 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b1-exact
+USDT:2026-10-01 01:00:22 11926:11926 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:00:23 11926:11926 SyncActivityProfilerHandler.cpp:46] profiler_stop
+exact, batch 1, 128 + 32 tokens, attention default (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 07f70f98c3b65be0 B 07f70f98c3b65be0 (the same; every sequence the same in each: True, True); 9248 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b32-bf16
+USDT:2026-10-01 00:59:20 11688:11688 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 00:59:22 11688:11688 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16, batch 32, 128 + 32 tokens, attention default (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 07f70f98c3b65be0 B 9f5f099219fc5d43 (DIFFER; every sequence the same in each: False, False); 9248 calls, 4 with the same inputs and another output; the first call whose output differs: {'i': 340, 'step': 1, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True} {'step': 1, 'in_step': 51, 'kind': 'sdpa', 'q': [[32, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; its kernels: ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+exit 0
+== run-b32-cublas-bf16
+USDT:2026-10-01 01:03:49 13267:13267 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:03:50 13267:13267 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16, batch 32, 128 + 32 tokens, attention default (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 07f70f98c3b65be0 B 9f5f099219fc5d43 (DIFFER; every sequence the same in each: False, False); 9248 calls, 4 with the same inputs and another output; the first call whose output differs: {'i': 340, 'step': 1, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True} {'step': 1, 'in_step': 51, 'kind': 'sdpa', 'q': [[32, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; its kernels: ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+exit 0
+== run-b32-cublaslt-bf16
+USDT:2026-10-01 01:04:09 13402:13402 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:04:10 13402:13402 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16, batch 32, 128 + 32 tokens, attention default (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 07f70f98c3b65be0 B 07f70f98c3b65be0 (DIFFER; every sequence the same in each: False, False); 9248 calls, 2 with the same inputs and another output; the first call whose output differs: {'i': 340, 'step': 1, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True} {'step': 1, 'in_step': 51, 'kind': 'sdpa', 'q': [[32, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; its kernels: ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+exit 0
+== run-b32-cudnn-bf16
+USDT:2026-10-01 01:03:29 13117:13117 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:03:30 13117:13117 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16, batch 32, 128 + 32 tokens, attention cudnn (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 07f70f98c3b65be0 B 07f70f98c3b65be0 (DIFFER; every sequence the same in each: False, False); 9248 calls, 4 with the same inputs and another output; the first call whose output differs: {'i': 340, 'step': 1, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True} {'step': 1, 'in_step': 51, 'kind': 'sdpa', 'q': [[32, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; its kernels: ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+exit 0
+== run-b32-det-bf16
+USDT:2026-10-01 01:00:43 12052:12052 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:00:45 12052:12052 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16, batch 32, 128 + 32 tokens, attention default, deterministic (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 9f5f099219fc5d43 B 07f70f98c3b65be0 (DIFFER; every sequence the same in each: False, False); 9248 calls, 4 with the same inputs and another output; the first call whose output differs: {'i': 340, 'step': 1, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True} {'step': 1, 'in_step': 51, 'kind': 'sdpa', 'q': [[32, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; its kernels: ['void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<long>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<long>, std::array<char*, 1ul>)', 'void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<long>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<long>, std::array<char*, 1ul>)', 'void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)', 'cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+exit 0
+== run-b32-det-exact
+USDT:2026-10-01 01:01:08 12151:12151 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:01:10 12151:12151 SyncActivityProfilerHandler.cpp:46] profiler_stop
+exact, batch 32, 128 + 32 tokens, attention default, deterministic (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 9f5f099219fc5d43 B 9f5f099219fc5d43 (DIFFER; every sequence the same in each: False, False); 9248 calls, 4 with the same inputs and another output; the first call whose output differs: {'i': 340, 'step': 1, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True} {'step': 1, 'in_step': 51, 'kind': 'sdpa', 'q': [[32, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; its kernels: ['void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<long>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<long>, std::array<char*, 1ul>)', 'void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<long>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<long>, std::array<char*, 1ul>)', 'void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)', 'cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+exit 0
+== run-b32-efficient-bf16
+USDT:2026-10-01 01:02:50 12867:12867 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:02:51 12867:12867 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16, batch 32, 128 + 32 tokens, attention efficient (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 9f5f099219fc5d43 B 9f5f099219fc5d43 (the same; every sequence the same in each: True, True); 9248 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b32-exact
+USDT:2026-10-01 00:59:43 11772:11772 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 00:59:44 11772:11772 SyncActivityProfilerHandler.cpp:46] profiler_stop
+exact, batch 32, 128 + 32 tokens, attention default (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 9f5f099219fc5d43 B 07f70f98c3b65be0 (DIFFER; every sequence the same in each: False, False); 9248 calls, 4 with the same inputs and another output; the first call whose output differs: {'i': 340, 'step': 1, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True} {'step': 1, 'in_step': 51, 'kind': 'sdpa', 'q': [[32, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; its kernels: ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+exit 0
+== run-b32-flash-bf16
+USDT:2026-10-01 01:03:09 12990:12990 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:03:10 12990:12990 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16, batch 32, 128 + 32 tokens, attention flash (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 07f70f98c3b65be0 B 07f70f98c3b65be0 (the same; every sequence the same in each: True, True); 9248 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b32-math-bf16
+USDT:2026-10-01 01:01:29 12289:12289 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:01:30 12289:12289 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16, batch 32, 128 + 32 tokens, attention math (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 07f70f98c3b65be0 B 07f70f98c3b65be0 (the same; every sequence the same in each: True, True); 9248 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b32-math-exact
+USDT:2026-10-01 01:01:51 12407:12407 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:01:53 12407:12407 SyncActivityProfilerHandler.cpp:46] profiler_stop
+exact, batch 32, 128 + 32 tokens, attention math (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 07f70f98c3b65be0 B 07f70f98c3b65be0 (the same; every sequence the same in each: True, True); 9248 calls, 0 with the same inputs and another output; every call's output the same
+exit 0
+== run-b8-bf16
+USDT:2026-10-01 01:02:11 12559:12559 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:02:11 12559:12559 SyncActivityProfilerHandler.cpp:46] profiler_stop
+bf16, batch 8, 128 + 32 tokens, attention default (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 9f5f099219fc5d43 B 9f5f099219fc5d43 (DIFFER; every sequence the same in each: False, False); 9248 calls, 3 with the same inputs and another output; the first call whose output differs: {'i': 1552, 'step': 5, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True} {'step': 5, 'in_step': 107, 'kind': 'sdpa', 'q': [[8, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; its kernels: ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+exit 0
+== run-b8-exact
+USDT:2026-10-01 01:02:31 12672:12672 SyncActivityProfilerHandler.cpp:39] profiler_start
+USDT:2026-10-01 01:02:32 12672:12672 SyncActivityProfilerHandler.cpp:46] profiler_stop
+exact, batch 8, 128 + 32 tokens, attention default (NVIDIA H100 80GB HBM3, torch 2.14.1+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 07f70f98c3b65be0 B 9f5f099219fc5d43 (DIFFER; every sequence the same in each: False, False); 9248 calls, 3 with the same inputs and another output; the first call whose output differs: {'i': 1552, 'step': 5, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True} {'step': 5, 'in_step': 107, 'kind': 'sdpa', 'q': [[8, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; its kernels: ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+exit 0
+== compare-b1
+/home/ubuntu/results/run-b1-bf16.json (bf16) run A against /home/ubuntu/results/run-b1-exact.json (exact) run A: batch 1, attention default
+  tokens (every sequence): the same; calls 9248 and 9248
+  linear calls with the same inputs: 8096, of them with another output: 0
+  the prompt's linear calls' weights: 253 of 253 the same words
+  every call's output the same
+== compare-b32-det
+/home/ubuntu/results/run-b32-det-bf16.json (bf16) run A against /home/ubuntu/results/run-b32-det-exact.json (exact) run A: batch 32, attention default, deterministic
+  tokens (every sequence): differ; calls 9248 and 9248
+  linear calls with the same inputs: 1105, of them with another output: 0
+  the prompt's linear calls' weights: 253 of 253 the same words
+  the first call whose output differs: {'i': 340, 'step': 1, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True}
+    bf16: {'step': 1, 'in_step': 51, 'kind': 'sdpa', 'q': [[32, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; kernels (the profiled step 1): ['void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<long>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<long>, std::array<char*, 1ul>)', 'void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<long>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<long>, std::array<char*, 1ul>)', 'void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)', 'cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+    exact: {'step': 1, 'in_step': 51, 'kind': 'sdpa', 'q': [[32, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; kernels (the profiled step 1): ['void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<long>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<long>, std::array<char*, 1ul>)', 'void at::native::vectorized_elementwise_kernel<2, at::native::FillFunctor<long>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<long>, std::array<char*, 1ul>)', 'void at::native::vectorized_elementwise_kernel<8, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>, false>(int, at::native::FillFunctor<c10::BFloat16>, std::array<char*, 1ul>)', 'cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+== compare-b32-math
+/home/ubuntu/results/run-b32-math-bf16.json (bf16) run A against /home/ubuntu/results/run-b32-math-exact.json (exact) run A: batch 32, attention math
+  tokens (every sequence): the same; calls 9248 and 9248
+  linear calls with the same inputs: 8096, of them with another output: 0
+  the prompt's linear calls' weights: 253 of 253 the same words
+  every call's output the same
+== compare-b32
+/home/ubuntu/results/run-b32-bf16.json (bf16) run A against /home/ubuntu/results/run-b32-exact.json (exact) run A: batch 32, attention default
+  tokens (every sequence): differ; calls 9248 and 9248
+  linear calls with the same inputs: 1105, of them with another output: 0
+  the prompt's linear calls' weights: 253 of 253 the same words
+  the first call whose output differs: {'i': 340, 'step': 1, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True}
+    bf16: {'step': 1, 'in_step': 51, 'kind': 'sdpa', 'q': [[32, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; kernels (the profiled step 1): ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+    exact: {'step': 1, 'in_step': 51, 'kind': 'sdpa', 'q': [[32, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; kernels (the profiled step 1): ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+== compare-b8
+/home/ubuntu/results/run-b8-bf16.json (bf16) run A against /home/ubuntu/results/run-b8-exact.json (exact) run A: batch 8, attention default
+  tokens (every sequence): differ; calls 9248 and 9248
+  linear calls with the same inputs: 1923, of them with another output: 0
+  the prompt's linear calls' weights: 253 of 253 the same words
+  the first call whose output differs: {'i': 1552, 'step': 5, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True}
+    bf16: {'step': 5, 'in_step': 107, 'kind': 'sdpa', 'q': [[8, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; kernels (the profiled step 1): ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+    exact: {'step': 5, 'in_step': 107, 'kind': 'sdpa', 'q': [[8, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; kernels (the profiled step 1): ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+
+00:58:19 (+0 s) machine
+00:58:19 (+0 s) environment
+00:58:23 (+4 s) in the background: Qwen/Qwen3-8B, whole
+00:58:23 (+4 s) the library for sm_90a (build_lib.sh's flags)
+00:59:04 (+45 s) run b32, bf16: --batch 32
+00:59:25 (+66 s) run b32, exact: --batch 32
+00:59:47 (+88 s) run b1, bf16: --batch 1
+01:00:05 (+106 s) run b1, exact: --batch 1
+01:00:26 (+127 s) run b32-det, bf16: --batch 32 --det
+01:00:48 (+149 s) run b32-det, exact: --batch 32 --det
+01:01:13 (+174 s) run b32-math, bf16: --batch 32 --attn math
+01:01:33 (+194 s) run b32-math, exact: --batch 32 --attn math
+01:01:56 (+217 s) run b8, bf16: --batch 8
+01:02:14 (+235 s) run b8, exact: --batch 8
+01:02:35 (+256 s) run b32-efficient, bf16: --batch 32 --attn efficient
+01:02:54 (+275 s) run b32-flash, bf16: --batch 32 --attn flash
+01:03:14 (+295 s) run b32-cudnn, bf16: --batch 32 --attn cudnn
+01:03:33 (+314 s) run b32-cublas, bf16: --batch 32 --blas cublas
+01:03:53 (+334 s) run b32-cublaslt, bf16: --batch 32 --blas cublaslt
+01:04:13 (+354 s) done in 354 s

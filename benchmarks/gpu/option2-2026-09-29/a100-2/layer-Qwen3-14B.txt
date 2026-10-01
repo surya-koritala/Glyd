@@ -1,0 +1,8 @@
+NVIDIA A100-SXM4-40GB (code 80, 108 SMs), layer 10 of 40c069824f4251a91eefaf281ebe4c544efd3e18: qkv [7168, 5120], o [5120, 5120], gate_up [34816, 5120], down [5120, 17408]; 8 copies a pass; CUDA_DEVICE_MAX_CONNECTIONS=(unset)
+M=768: a layer bf16 2.105 ms, today's route 3.068 ms (1.457x bf16), SPLIT 3.087 ms (1.466x bf16, 1.006x today's); routes: qkv BIG, o BIG, gate_up BIG, down BIG; the ring not made; 2.6e-03 off fp32, the same bits pass to pass; SPLIT's passes 3.047-3.103 ms
+Traceback (most recent call last):
+  File "/home/ubuntu/o2w/src/benchmarks/gpu/option2-2026-09-29/layer.py", line 99, in <module>
+    assert all(torch.equal(p.view(torch.int16), q.view(torch.int16)) for p, q in zip(ys, outs[m])), f"M={M}: the route SPLIT's outputs differ pass to pass"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: M=769: the route SPLIT's outputs differ pass to pass
+exit 1

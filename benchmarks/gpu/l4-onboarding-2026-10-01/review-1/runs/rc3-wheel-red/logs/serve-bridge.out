@@ -1,0 +1,5 @@
+Qwen3-1.7B: 3.4 GB on the GPU with Glyd, instead of 4.1 GB; your GPU has 23.7 GB free.
+Qwen3-1.7B is downloaded already.
+Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+Note: listening on 0.0.0.0: anyone who can reach this computer can use the model. Add  -- --api-key SECRET  to require a key.
+Loading Qwen3-1.7B with Glyd: 3.4 GB instead of 4.1 GB...

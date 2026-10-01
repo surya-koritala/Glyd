@@ -137,6 +137,15 @@ class Packed:
 
 
 CHUNK = 1 << 25  # weights the packers widen to int32 at a time
+# The mma packers run in passes of PACK_CHUNK weights, _hist of HIST_CHUNK, sized for PyTorch's allocator as vLLM's load
+# sets it up (max_split_size_mb 20: a block past 20 MiB is never split, so each larger temporary keeps a block of its own,
+# which only the same size reuses, and a long-lived pack takes such a block whole, up to 20 MiB over its size). An int64
+# temporary of PACK_CHUNK weights is 16 MiB: past 10 MiB, where the allocator cuts a block to size (below it each request
+# takes a 20 MiB segment: at 1 << 20 weights a load logged 5,312 allocator warnings on a 16 GB card), and under 20 MiB.
+# _hist counts int16 as it is, 8 MiB a pass. The packs' bits do not depend on either (benchmarks/gpu/l4-quickstart-2026-09-30:
+# the same bits at 1 << 19 to 1 << 25 weights a pass).
+HIST_CHUNK = 1 << 22
+PACK_CHUNK = 1 << 21
 
 
 def _chunks(u):
@@ -145,9 +154,10 @@ def _chunks(u):
 
 
 def _hist(u):
+    """The 256 exponent counts of u (bf16's bits, int16), HIST_CHUNK weights a pass, in int16: no widened copy."""
     h = torch.zeros(256, dtype=torch.int64, device=u.device)
-    for _, v in _chunks(u):
-        h += torch.bincount((v >> 7) & 0xFF, minlength=256)
+    for a in range(0, u.numel(), HIST_CHUNK):
+        h += torch.bincount((u[a : a + HIST_CHUNK] >> 7) & 0xFF, minlength=256)
     return h
 
 
@@ -346,7 +356,7 @@ class Mma:
         return self.nbytes() * 8 / self.n
 
 
-def pack_mma(w, tiers=None, chunk=1 << 22):
+def pack_mma(w, tiers=None, chunk=PACK_CHUNK):
     """w [O, K] in the mma layout; tiers: another pack's (its exponents by
     count), else this matrix's own. Packed about `chunk` weights at a time
     (its scratch: some 100 bytes a weight)."""
@@ -448,7 +458,7 @@ def pack_mma12(w):
     data = torch.empty(steps, 1536, dtype=torch.uint8, device=dev)  # a warp step: [32 lanes][16 bytes] of codes, then [32 lanes][32 bytes] as two halves
     j = torch.arange(4, dtype=torch.int64, device=dev)
     exc_parts, counts = [], []
-    per = max(1, (1 << 22) // (64 * K))  # row blocks a chunk
+    per = max(1, PACK_CHUNK // (64 * K))  # row blocks a chunk
     for b0 in range(0, RB, per):
         b1 = min(RB, b0 + per)
         # [rb, n, g, ks, j >> 1, t, j & 1] -> [rb, ks, lane = 4g + t, i = 4n + j]
@@ -535,15 +545,34 @@ def hold(ns):
 
 # The library's routes (glyd_gpu.h's GLYD_GPU_ROUTE_*): how a product for M tokens is taken on a GPU. DECODE: the
 # matrix decoded, then cuBLAS; AHEAD: so, decoded ahead beside the products before it (model.Ahead).
-DECODE, GEMM, MID, WG, BIG, AHEAD = range(6)
-GEFORCE, A10, L4, L40S = 1000, 2000, 3000, 4000  # a GPU's classes by name in its code (glyd_gpu.h's GLYD_GPU_GEFORCE, GLYD_GPU_A10, GLYD_GPU_L4, GLYD_GPU_L40S)
+DECODE, GEMM, MID, WG, BIG, AHEAD, SPLIT = range(7)
+GEFORCE, A10, L4, L40S, PCIE, GH200, H100 = 1000, 2000, 3000, 4000, 5000, 6000, 7000  # a GPU's classes by name in its code (glyd_gpu.h's GLYD_GPU_GEFORCE, _A10, _L4, _L40S, _PCIE, _GH200, _H100)
+WITH_SPLIT = 1 << 20  # in a GPU's code: its routes with SPLIT (glyd_gpu.h's GLYD_GPU_WITH_SPLIT: opt-in, asked by GLinear, which runs the ring)
 
 
 def route(p, gpu, M):
     """(route, last): the library's route for M tokens of pack p (the mma layouts) on gpu (its code, model.gpu_code:
-    compute capability and class), and the last token count from M on that takes it."""
+    compute capability and class; plus WITH_SPLIT for the route SPLIT, opt-in), and the last token count from M on that
+    takes it."""
     O, K = p.shape
     return (_ext.mma12_route if isinstance(p, Mma12) else _ext.mma_route)(gpu, O, K, M)
+
+
+def split_sms(p, gpu, M):
+    """The route SPLIT's SMs for the decode for M tokens of pack p on gpu (its code with WITH_SPLIT; 0: another route,
+    or no flag; the 12-bit layout's alone)."""
+    O, K = p.shape
+    return _ext.mma12_split_sms(gpu, O, K, M) if isinstance(p, Mma12) else 0
+
+
+def mma_unpack_split(p, sms, out=None, row0=0, rows=None):
+    """Rows [row0, row0 + rows) of a 12-bit W by the route SPLIT's decode, a grid for sms SMs: bf16 [rows, K]."""
+    O, K = p.shape
+    rows = O - row0 if rows is None else rows
+    if out is None:
+        out = torch.empty(rows * K, dtype=torch.bfloat16, device=p.sm.device)
+    _ext.mma12_unpack_split(p.data, p.exc, p.exc_base, p.sym, K, row0, rows, out.view(torch.int16), sms)
+    return out[: rows * K].view(rows, K)
 
 
 def mma_linear(p, x, bias=None, route=-1):

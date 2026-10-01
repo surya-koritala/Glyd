@@ -1,0 +1,46 @@
+{
+ "model": "Qwen/Qwen3-8B",
+ "turns": [
+  {
+   "user": "Hi! In two sentences, what is lossless compression?",
+   "ttft_s": 0.11145525700021608,
+   "tokens": 32,
+   "prompt_tokens": 35,
+   "tok_s": 22.448875466889014,
+   "text": "Lossless compression is a data reduction technique that compresses files without losing any information. It allows the original data to be perfectly reconstructed from the compressed data.",
+   "reasoning": ""
+  },
+  {
+   "user": "Give me one everyday example of it, and one of lossy compression.",
+   "ttft_s": 0.11777453400009108,
+   "tokens": 56,
+   "prompt_tokens": 91,
+   "tok_s": 22.00234508914944,
+   "text": "An everyday example of lossless compression is when you compress a document or image using ZIP files, as the original file can be perfectly restored. An example of lossy compression is when you compress a photo using JPEG format, where some data is permanently removed to reduce file size.",
+   "reasoning": ""
+  },
+  {
+   "user": "Now summarize our conversation so far in one sentence.",
+   "ttft_s": 0.12459930399973018,
+   "tokens": 26,
+   "prompt_tokens": 166,
+   "tok_s": 22.505422699605408,
+   "text": "We discussed lossless and lossy compression, providing examples like ZIP files for lossless and JPEG images for lossy compression.",
+   "reasoning": ""
+  }
+ ],
+ "long": {
+  "ttft_s": 0.09717387099999542,
+  "tokens": 512,
+  "prompt_tokens": 22,
+  "tok_s": 21.522804512371167
+ },
+ "thinking": {
+  "ttft_s": 0.05592759399996794,
+  "tokens": 1024,
+  "prompt_tokens": 18,
+  "tok_s": 21.369684442595968,
+  "answer": "and 340. 51 + 340. Let's add 50 + 340 = 390, then add 1 more to get 391. Yep. \n\nAlternatively, I can use the area model. Imagine a rectangle with one side being 17 and the other 23. Breaking 23 into 2",
+  "reasoning_chars": 0
+ }
+}

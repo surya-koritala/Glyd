@@ -1,0 +1,9 @@
+14:31:04 the library for sm_89
+14:31:42 check_capi.py
+14:33:56 test_gpu.py
+14:36:15 split_stress.py --quick
+14:37:50 cargo test
+14:37:57 check_vllm.py --quick Qwen/Qwen3-8B
+14:56:20 check_vllm.py --quick ibm-granite/granite-3.1-3b-a800m-instruct
+15:07:17 respond.py, Qwen3-0.6B, each mode
+15:15:09 done

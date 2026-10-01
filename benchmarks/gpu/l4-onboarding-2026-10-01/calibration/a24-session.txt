@@ -1,0 +1,875 @@
+== 00:53:57 session a24
+
+################ 00:53:57 A1-full-install-doctor-run
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 00:54:13 stage install
+==> Installing /onb/wheels/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm] and Python 3.12 (PyTorch and vLLM: several GB, a few minutes)
+Resolved 199 packages in 391ms
+Prepared 1 package in 72ms
+Installed 199 packages in 2.51s
+ + agent-detector==2.0.0
+ + aiohappyeyeballs==2.7.1
+ + aiohttp==3.14.3
+ + aiosignal==1.4.0
+ + annotated-doc==0.0.5
+ + annotated-types==0.8.0
+ + anthropic==1.11.0
+ + anyio==4.15.1
+ + apache-tvm-ffi==0.1.11
+ + astor==0.8.1
+ + attrs==26.1.0
+ + blake3==1.0.10
+ + cachetools==7.2.0
+ + cbor2==6.1.4
+ + certifi==2026.7.22
+ + cffi==2.1.1
+ + charset-normalizer==3.5.2
+ + click==8.5.0
+ + cloudpickle==3.1.2
+ + compressed-tensors==0.17.0
+ + cryptography==50.0.2
+ + cuda-bindings==13.4.3
+ + cuda-core==1.2.1
+ + cuda-pathfinder==1.8.2
+ + cuda-python==13.4.1
+ + cuda-tile==1.6.0
+ + cuda-toolkit==13.0.3.0
+ + depyf==0.20.0
+ + detect-installer==0.2.1
+ + dill==0.4.1
+ + dnspython==2.8.0
+ + docstring-parser==0.18.0
+ + einops==0.8.2
+ + email-validator==2.3.0
+ + fastapi==0.136.3
+ + fastapi-cli==0.0.32
+ + fastapi-cloud-cli==0.26.0
+ + fastar==0.12.0
+ + fastsafetensors==0.4.0
+ + filelock==4.0.7
+ + flashinfer-python==0.6.18.post1
+ + frozenlist==1.8.0
+ + fsspec==2026.9.0
+ + glyd==0.26.0rc2 (from file:///onb/wheels/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl)
+ + googleapis-common-protos==1.75.5
+ + grpcio==1.84.0
+ + h11==0.16.0
+ + hf-xet==1.6.0
+ + httpcore==1.0.9
+ + httpcore2==2.13.1
+ + httptools==0.8.0
+ + httpx==0.28.1
+ + httpx2==2.13.1
+ + huggingface-hub==1.33.0
+ + humming-kernels==0.1.12
+ + idna==3.20
+ + ijson==3.5.1
+ + instanttensor==0.2.0
+ + interegular==0.3.3
+ + jinja2==3.1.6
+ + jiter==0.17.0
+ + jmespath==1.1.0
+ + jsonschema==4.26.0
+ + jsonschema-specifications==2025.9.1
+ + lark==1.2.2
+ + llguidance==1.7.6
+ + llvmlite==0.47.0
+ + lm-format-enforcer==0.11.3
+ + loguru==0.7.3
+ + markdown-it-py==4.2.0
+ + markupsafe==3.0.3
+ + mcp==2.2.0
+ + mcp-types==2.2.0
+ + mdurl==0.1.2
+ + mistral-common==1.12.0
+ + ml-dtypes==0.6.0
+ + model-hosting-container-standards==0.1.16
+ + mpmath==1.3.0
+ + msgspec==0.22.0
+ + multidict==6.9.1
+ + nccl4py==0.6.0
+ + networkx==3.7
+ + ninja==1.13.2
+ + numba==0.65.0
+ + numpy==2.3.5
+ + nvidia-cublas==13.1.1.3
+ + nvidia-cuda-cccl==13.3.4.3.1
+ + nvidia-cuda-crt==13.4.92
+ + nvidia-cuda-cupti==13.0.85
+ + nvidia-cuda-nvcc==13.4.92
+ + nvidia-cuda-nvdisasm==13.4.92
+ + nvidia-cuda-nvrtc==13.0.88
+ + nvidia-cuda-runtime==13.0.96
+ + nvidia-cudnn-cu13==9.20.0.48
+ + nvidia-cudnn-frontend==1.30.0
+ + nvidia-cufft==12.0.0.61
+ + nvidia-cufile==1.15.1.6
+ + nvidia-curand==10.4.0.35
+ + nvidia-cusolver==12.0.4.66
+ + nvidia-cusparse==12.6.3.3
+ + nvidia-cusparselt-cu13==0.8.1
+ + nvidia-cutlass-dsl==4.7.1
+ + nvidia-cutlass-dsl-libs-base==4.7.1
+ + nvidia-cutlass-dsl-libs-core==4.7.1
+ + nvidia-cutlass-dsl-libs-cu12==4.7.1
+ + nvidia-cutlass-dsl-libs-cu13==4.7.1
+ + nvidia-ml-py==13.615.71
+ + nvidia-nccl-cu13==2.29.7
+ + nvidia-nvjitlink==13.4.92
+ + nvidia-nvshmem-cu13==3.4.5
+ + nvidia-nvtx==13.0.85
+ + nvidia-nvvm==13.4.92
+ + nvtx==0.2.15
+ + openai==3.22.1
+ + openai-harmony==0.0.8
+ + opencv-python-headless==5.0.0.93
+ + opentelemetry-api==1.45.0
+ + opentelemetry-exporter-http-transport==0.66b0
+ + opentelemetry-exporter-otlp==1.45.0
+ + opentelemetry-exporter-otlp-common==0.66b0
+ + opentelemetry-exporter-otlp-proto-common==1.45.0
+ + opentelemetry-exporter-otlp-proto-grpc==1.45.0
+ + opentelemetry-exporter-otlp-proto-http==1.45.0
+ + opentelemetry-proto==1.45.0
+ + opentelemetry-sdk==1.45.0
+ + opentelemetry-semantic-conventions==0.66b0
+ + opentelemetry-semantic-conventions-ai==0.5.1
+ + outlines-core==0.2.14
+ + packaging==26.3
+ + partial-json-parser==0.2.1.1.post7
+ + pillow==12.3.0
+ + prometheus-client==0.26.0
+ + prometheus-fastapi-instrumentator==8.1.0
+ + propcache==0.5.4
+ + protobuf==7.36.2
+ + psutil==7.2.2
+ + py-cpuinfo==9.0.0
+ + pybase64==1.5.0
+ + pycountry==26.2.16
+ + pycparser==3.0
+ + pydantic==2.13.5
+ + pydantic-core==2.46.5
+ + pydantic-extra-types==2.11.1
+ + pydantic-settings==2.15.0
+ + pygments==2.21.0
+ + pyjwt==2.15.1
+ + pynvvideocodec==2.0.4
+ + python-dotenv==1.2.3
+ + python-json-logger==4.2.0
+ + python-multipart==0.0.32
+ + pyyaml==6.0.3
+ + pyzmq==27.2.0
+ + quack-kernels==0.6.5
+ + referencing==0.37.0
+ + regex==2026.9.29
+ + requests==2.34.2
+ + rich==15.0.0
+ + rich-toolkit==0.20.5
+ + rignore==0.8.1
+ + rpds-py==2026.6.3
+ + safetensors==0.8.0
+ + sentencepiece==0.2.2
+ + sentry-sdk==2.71.0
+ + setproctitle==1.3.7
+ + setuptools==80.10.2
+ + shellingham==1.5.4
+ + six==1.17.0
+ + sniffio==1.3.1
+ + sse-starlette==3.5.0
+ + starlette==1.7.0
+ + supervisor==4.3.0
+ + sympy==1.14.0
+ + tabulate==0.10.0
+ + tiktoken==0.14.0
+ + tilelang==0.1.12
+ + tokenizers==0.23.2
+ + tokenspeed-mla==0.1.8
+ + tokenspeed-triton==3.8.10.post20260920
+ + torch==2.13.0
+ + torch-c-dlpack-ext==0.1.5
+ + torchaudio==2.11.0
+ + torchcodec==0.17.0
+ + torchvision==0.28.0
+ + tqdm==4.70.1
+ + transformers==5.18.0
+ + triton==3.7.1
+ + truststore==0.10.4
+ + typer==0.27.2
+ + typing-extensions==4.16.0
+ + typing-inspection==0.4.4
+ + urllib3==2.8.0
+ + uvicorn==0.54.0
+ + uvloop==0.22.1
+ + vllm==0.30.0
+ + watchfiles==1.3.0
+ + websockets==17.1
+ + xgrammar==0.2.8
+ + yarl==1.25.1
+ + z3-solver==4.15.4.0
+Installed 1 executable: glyd
+==> Checking this machine (glyd doctor)
+ ok  Glyd             0.26.0rc2, Python 3.12 (/root/.local/share/uv/tools/glyd/bin/python)
+ ok  GPU              NVIDIA L4: 23.7 GB, 23.7 GB free, compute capability 8.9
+ ok  Driver           595.91.07, runs CUDA 13.2
+ ok  PyTorch          2.13.0, built for CUDA 13.0
+ ok  vLLM             0.30.0
+ ok  Glyd GPU library libglyd_gpu_cuda13.so
+ ok  C compiler       /usr/bin/gcc, and Python.h (vLLM builds its Triton launchers with them)
+ ok  CUDA compiler    not found: not needed (glyd run turns FlashInfer's sampler off, which would compile)
+ ok  Disk             66.8 GB free for models, in /hf/hub
+
+Models that fit this GPU with Glyd (a chat as long as the GPU allows):
+  Qwen/Qwen3-8B     12.1 GB on the GPU (bf16 16.4 GB): fits, a 40,960-token context
+  Qwen/Qwen3-14B    21.4 GB on the GPU (bf16 29.5 GB): does not fit; it needs 24.0 GB free
+  Qwen/Qwen3-32B    45.8 GB on the GPU (bf16 65.5 GB): does not fit; it needs 48.9 GB free
+
+Ready: glyd run Qwen/Qwen3-8B
+glyd v0.26.0rc2
+- glyd
+
+== 00:54:24 stage freeze
+fastapi==0.136.3
+fastapi-cli==0.0.32
+fastapi-cloud-cli==0.26.0
+flashinfer-python==0.6.18.post1
+glyd @ file:///onb/wheels/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl
+hf-xet==1.6.0
+huggingface-hub==1.33.0
+numpy==2.3.5
+pydantic==2.13.5
+pydantic-core==2.46.5
+pydantic-extra-types==2.11.1
+pydantic-settings==2.15.0
+safetensors==0.8.0
+tokenizers==0.23.2
+torch==2.13.0
+torch-c-dlpack-ext==0.1.5
+torchaudio==2.11.0
+torchcodec==0.17.0
+torchvision==0.28.0
+transformers==5.18.0
+triton==3.7.1
+uvicorn==0.54.0
+vllm==0.30.0
+
+== 00:54:24 stage doctor
+ ok  Glyd             0.26.0rc2, Python 3.12 (/root/.local/share/uv/tools/glyd/bin/python)
+ ok  GPU              NVIDIA L4: 23.7 GB, 23.7 GB free, compute capability 8.9
+ ok  Driver           595.91.07, runs CUDA 13.2
+ ok  PyTorch          2.13.0, built for CUDA 13.0
+ ok  vLLM             0.30.0
+ ok  Glyd GPU library libglyd_gpu_cuda13.so
+ ok  C compiler       /usr/bin/gcc, and Python.h (vLLM builds its Triton launchers with them)
+ ok  CUDA compiler    not found: not needed (glyd run turns FlashInfer's sampler off, which would compile)
+ ok  Disk             66.8 GB free for models, in /hf/hub
+
+Models that fit this GPU with Glyd (a chat as long as the GPU allows):
+  Qwen/Qwen3-8B     12.1 GB on the GPU (bf16 16.4 GB): fits, a 40,960-token context
+  Qwen/Qwen3-14B    21.4 GB on the GPU (bf16 29.5 GB): does not fit; it needs 24.0 GB free
+  Qwen/Qwen3-32B    45.8 GB on the GPU (bf16 65.5 GB): does not fit; it needs 48.9 GB free
+
+Ready: glyd run Qwen/Qwen3-8B
+
+== 00:54:24 stage run
+Qwen3-8B: 12.1 GB on the GPU with Glyd, instead of 16.4 GB; your GPU has 23.7 GB free.
+Qwen3-8B is downloaded already.
+Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-8B with Glyd: 12.1 GB instead of 16.4 GB...
+Ready in 1m41s. (The server's log: /root/.local/state/glyd/logs/run-20261001-005425.log)
+Thinking...
+
+Okay, the user is asking for a one-sentence definition of lossless compression. Let me start by recalling what lossless compression is. It's a method of reducing file size without losing any data. So, the key points are: data is compressed, no loss of information, and it can be decompressed back to the original. I need to make sure the sentence is concise but covers all these aspects. Maybe start with "Lossless compression is..." then mention reducing file size while preserving all original data, and the ability to reconstruct the original. Let me check if that's accurate. Yes, that's right. Also, maybe include that it's used for text, software, and exact replicas. Wait, but the user wants one sentence. So I need to keep it brief. Let me put it all together: "Lossless compression is a data encoding method that reduces file size without losing any information, allowing the original data to be perfectly reconstructed from the compressed data." That seems to cover everything. Let me verify if there's any technical term I'm missing. Maybe "encoding method" is okay. Alternatively, "technique" could work. Hmm. Also, the user might be a student or someone learning about data compression, so clarity is key. I think that sentence is clear and accurate.
+
+
+Loss
+...done thinking.
+
+less compression is a data encoding technique that reduces file size without losing any information, allowing the original data to be perfectly reconstructed from the compressed data.Stopping the server...
+
+run rc=0
+
+== 00:56:21 logs: run-20261001-005425.log 
+== tracebacks in the logs: 0  allocator warnings: 1
+memwatch: 718 samples; lowest free 1142 MiB, most used 21424 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/A1-full-install-doctor-run-run-20261001-005425.log': Permission denied
+
+################ 00:56:21 A1b-full-run-no-think
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 00:56:37 stage run
+Qwen3-8B: 12.1 GB on the GPU with Glyd, instead of 16.4 GB; your GPU has 23.7 GB free.
+Qwen3-8B is downloaded already.
+Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-8B with Glyd: 12.1 GB instead of 16.4 GB...
+Ready in 45s. (The server's log: /root/.local/state/glyd/logs/run-20261001-005637.log)
+Hello, how can I help?Stopping the server...
+
+run rc=0
+
+== 00:57:24 logs: run-20261001-005425.log run-20261001-005637.log 
+== tracebacks in the logs: 0  allocator warnings: 2
+memwatch: 314 samples; lowest free 962 MiB, most used 21604 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/A1b-full-run-no-think-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/A1b-full-run-no-think-run-20261001-005637.log': Permission denied
+
+################ 00:57:24 B1-16gb-run-serve
+hog: 7544 MiB held, 14827 of 22565 MiB free
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 00:57:39 stage doctor
+ ok  Glyd             0.26.0rc2, Python 3.12 (/root/.local/share/uv/tools/glyd/bin/python)
+ ok  GPU              NVIDIA L4: 23.7 GB, 15.5 GB free, compute capability 8.9
+ ok  Driver           595.91.07, runs CUDA 13.2
+ ok  PyTorch          2.13.0, built for CUDA 13.0
+ ok  vLLM             0.30.0
+ ok  Glyd GPU library libglyd_gpu_cuda13.so
+ ok  C compiler       /usr/bin/gcc, and Python.h (vLLM builds its Triton launchers with them)
+ ok  CUDA compiler    not found: not needed (glyd run turns FlashInfer's sampler off, which would compile)
+ ok  Disk             66.6 GB free for models, in /hf/hub
+
+Models that fit this GPU with Glyd (a chat as long as the GPU allows):
+  Qwen/Qwen3-8B     12.1 GB on the GPU (bf16 16.4 GB): fits, a 10,240-token context
+  Qwen/Qwen3-14B    21.4 GB on the GPU (bf16 29.5 GB): does not fit; it needs 24.0 GB free
+  Qwen/Qwen3-32B    45.8 GB on the GPU (bf16 65.5 GB): does not fit; it needs 48.9 GB free
+
+Ready: glyd run Qwen/Qwen3-8B
+
+== 00:57:40 stage run
+Qwen3-8B: 12.1 GB on the GPU with Glyd, instead of 16.4 GB, which does not fit the 15.5 GB your GPU has free.
+Qwen3-8B is downloaded already.
+Settings: 10,240-token context (the most that fits), eager mode, 61% of GPU memory (14.4 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-8B with Glyd: 12.1 GB instead of 16.4 GB...
+Ready in 47s. (The server's log: /root/.local/state/glyd/logs/run-20261001-005740.log)
+Thinking...
+
+Okay, the user is asking for a one-sentence definition of lossless compression. Let me start by recalling what lossless compression is. It's a method of reducing file size without losing any data. So, the key points are: data is compressed, no loss of information, and it can be decompressed back to the original. I need to make sure the sentence is concise but covers all these aspects. Maybe start with "Lossless compression is..." then mention reducing file size while preserving all original data, and the ability to reconstruct the original. Let me check if that's accurate. Yes, that's right. Also, maybe include that it's used for text, software, and exact replicas. Wait, but the user wants one sentence. So I need to keep it brief. Let me put it all together: "Lossless compression is a data encoding method that reduces file size without losing any information, allowing the original data to be perfectly reconstructed from the compressed data." That seems to cover everything. Let me verify if there's any technical term I'm missing. Maybe "encoding method" is okay. Alternatively, "technique" could work. Hmm. Also, the user might be a student or someone learning about data compression, so clarity is key. I think that sentence is clear and accurate.
+
+...done thinking.
+
+
+
+Lossless compression is a data encoding technique that reduces file size without losing any information, allowing the original data to be perfectly reconstructed from the compressed data.
+Stopping the server...
+run rc=0
+
+== 00:58:42 stage serve
+Qwen3-8B: 12.1 GB on the GPU with Glyd, instead of 16.4 GB, which does not fit the 15.5 GB your GPU has free.
+Qwen3-8B is downloaded already.
+Settings: 10,240-token context (the most that fits), eager mode, 61% of GPU memory (14.4 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-8B with Glyd: 12.1 GB instead of 16.4 GB...
+Ready in 47s. (The server's log: /root/.local/state/glyd/logs/serve-20261001-005842.log)
+
+Serving Qwen/Qwen3-8B with Glyd (10,240-token window).
+  OpenAI API   http://localhost:8100/v1   (model name: Qwen/Qwen3-8B)
+  Chat page    http://localhost:8100
+  Log          /root/.local/state/glyd/logs/serve-20261001-005842.log
+Press Ctrl-C to stop.
+
+== 00:59:29 stage http
+-- GET /: 200 text/html; charset=utf-8 19799 bytes  title: <title>Glyd chat
+-- CSP: content-security-policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-
+-- HEAD /: HTTP/1.1 200 OK
+-- /v1/models: /onb/http_checks.sh: line 7: python3: command not found
+-- /health: 200   /docs: 200   /nope: 404
+/onb/http_checks.sh: line 9: python3: command not found
+-- streamed chat, two turns (first bytes of each SSE stream, and the fields seen):
+/onb/http_checks.sh: line 11: python3: command not found
+-- a tool call with tool_choice auto (what Open WebUI sends; the server must have its tool-call parser):
+/onb/http_checks.sh: line 33: python3: command not found
+-- a conversation longer than the window, through glyd's own chat client:
+/onb/http_checks.sh: line 47: python3: command not found
+
+== 00:59:29 stage api
+ok   OpenAI API, turn 1 (streamed, greedy): 'Paris', 53.8 tokens/s, first token 217 ms
+ok   OpenAI API, turn 2 (streamed, top-p, turn 1 as history): 'Berlin', 53.5 tokens/s, first token 240 ms
+ok   OpenAI API, a tool call (tool_choice auto): {'name': 'get_weather', 'arguments': '{"city": "Paris"}'}
+
+== 00:59:31 stage stop
+  Log          /root/.local/state/glyd/logs/serve-20261001-005842.log
+Press Ctrl-C to stop.
+Stopping the server...
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+
+== 00:59:34 logs: run-20261001-005425.log run-20261001-005637.log run-20261001-005740.log serve-20261001-005842.log 
+== tracebacks in the logs: 0  allocator warnings: 50
+memwatch: 639 samples; lowest free 22 MiB, most used 22544 MiB; samples under 512 MiB free: 8
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/B1-16gb-run-serve-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/B1-16gb-run-serve-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/B1-16gb-run-serve-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/B1-16gb-run-serve-serve-20261001-005842.log': Permission denied
+
+################ 00:59:35 B1b-16gb-run-default-allocator
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 00:59:48 stage run
+Qwen3-8B: 12.1 GB on the GPU with Glyd, instead of 16.4 GB, which does not fit the 15.5 GB your GPU has free.
+Qwen3-8B is downloaded already.
+Settings: 10,240-token context (the most that fits), eager mode, 61% of GPU memory (14.4 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-8B with Glyd: 12.1 GB instead of 16.4 GB...
+Ready in 38s. (The server's log: /root/.local/state/glyd/logs/run-20261001-005949.log)
+Thinking...
+
+Okay, the user is asking for a one-sentence definition of lossless compression. Let me start by recalling what lossless compression is. It's a method of reducing file size without losing any data. So, the key points are: data is compressed, no loss of information, and it can be decompressed back to the original. I need to make sure the sentence is concise but covers all these aspects. Maybe start with "Lossless compression is..." then mention reducing file size while preserving all original data, and the ability to reconstruct the original. Let me check if that's accurate. Yes, that's right. Also, maybe include that it's used for text, software, and exact replicas. Wait, but the user wants one sentence. So I need to keep it brief. Let me put it all together: "Lossless compression is a data encoding method that reduces file size without losing any information, allowing the original data to be perfectly reconstructed from the compressed data." That seems to cover everything. Let me verify if there's any technical term I'm missing. Maybe "encoding method" is okay. Alternatively, "technique" could work. Hmm. Also, the user might be a student or someone learning about data compression, so clarity is key. I think that sentence is clear and accurate.
+
+...done thinking.
+
+
+
+Lossless compression is a data encoding technique that reduces file size without losing any information, allowing the original data to be perfectly reconstructed from the compressed data.
+Stopping the server...
+run rc=0
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+
+== 01:00:42 logs: run-20261001-005425.log run-20261001-005637.log run-20261001-005740.log run-20261001-005949.log serve-20261001-005842.log 
+== tracebacks in the logs: 0  allocator warnings: 50
+memwatch: 338 samples; lowest free 752 MiB, most used 21814 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/B1b-16gb-run-default-allocator-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/B1b-16gb-run-default-allocator-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/B1b-16gb-run-default-allocator-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/B1b-16gb-run-default-allocator-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/B1b-16gb-run-default-allocator-serve-20261001-005842.log': Permission denied
+
+################ 01:00:42 B2-16gb-bigprompt
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 01:00:56 stage bigprompt
+Qwen3-8B: 12.1 GB on the GPU with Glyd, instead of 16.4 GB, which does not fit the 15.5 GB your GPU has free.
+Qwen3-8B is downloaded already.
+Settings: 10,240-token context (the most that fits), eager mode, 61% of GPU memory (14.4 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-8B with Glyd: 12.1 GB instead of 16.4 GB...
+Ready in 47s. (The server's log: /root/.local/state/glyd/logs/run-20261001-010056.log)
+
+This prompt is longer than the model's window (10,240 tokens). Shorten it, or start glyd with a larger --context.
+Stopping the server...
+run rc=1
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+cp: warning: behavior of -n is non-portable and may change in future; use --update=none instead
+
+== 01:01:44 logs: run-20261001-005425.log run-20261001-005637.log run-20261001-005740.log run-20261001-005949.log run-20261001-010056.log serve-20261001-005842.log 
+== tracebacks in the logs: 0  allocator warnings: 74
+memwatch: 312 samples; lowest free 108 MiB, most used 22458 MiB; samples under 512 MiB free: 5
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/B2-16gb-bigprompt-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/B2-16gb-bigprompt-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/B2-16gb-bigprompt-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/B2-16gb-bigprompt-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/B2-16gb-bigprompt-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/B2-16gb-bigprompt-serve-20261001-005842.log': Permission denied
+
+################ 01:01:45 C1-8gb-refusal
+hog: 14571 MiB held, 7799 of 22565 MiB free
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 01:02:06 stage doctor
+ ok  Glyd             0.26.0rc2, Python 3.12 (/root/.local/share/uv/tools/glyd/bin/python)
+ ok  GPU              NVIDIA L4: 23.7 GB, 8.2 GB free, compute capability 8.9
+ ok  Driver           595.91.07, runs CUDA 13.2
+ ok  PyTorch          2.13.0, built for CUDA 13.0
+ ok  vLLM             0.30.0
+ ok  Glyd GPU library libglyd_gpu_cuda13.so
+ ok  C compiler       /usr/bin/gcc, and Python.h (vLLM builds its Triton launchers with them)
+ ok  CUDA compiler    not found: not needed (glyd run turns FlashInfer's sampler off, which would compile)
+ ok  Disk             66.4 GB free for models, in /hf/hub
+
+Models that fit this GPU with Glyd (a chat as long as the GPU allows):
+  Qwen/Qwen3-8B     12.1 GB on the GPU (bf16 16.4 GB): not now (8.2 GB free, it needs 14.7 GB); on an idle GPU a 40,960-token context
+  Qwen/Qwen3-14B    21.4 GB on the GPU (bf16 29.5 GB): does not fit; it needs 24.0 GB free
+  Qwen/Qwen3-32B    45.8 GB on the GPU (bf16 65.5 GB): does not fit; it needs 48.9 GB free
+
+Ready: glyd run Qwen/Qwen3-1.7B
+
+== 01:02:06 stage runfail
+glyd: Qwen3-8B needs about 14.7 GB of GPU memory with Glyd (12.1 GB of weights and room for a 4,096-token chat); your GPU has 8.2 GB free.
+  Or try Qwen/Qwen3-1.7B, which needs about 5.1 GB: glyd run Qwen/Qwen3-1.7B
+run rc=1
+
+== 01:02:06 logs: run-20261001-005425.log run-20261001-005637.log run-20261001-005740.log run-20261001-005949.log run-20261001-010056.log serve-20261001-005842.log 
+== tracebacks in the logs: 0  allocator warnings: 74
+memwatch: 89 samples; lowest free 7800 MiB, most used 14766 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/C1-8gb-refusal-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/C1-8gb-refusal-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/C1-8gb-refusal-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/C1-8gb-refusal-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/C1-8gb-refusal-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/C1-8gb-refusal-serve-20261001-005842.log': Permission denied
+
+################ 01:02:08 C2-8gb-4b
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 01:02:23 stage runfail
+glyd: Qwen3-4B needs about 8.4 GB of GPU memory with Glyd (5.9 GB of weights and room for a 4,096-token chat); your GPU has 8.2 GB free.
+  Or try Qwen/Qwen3-1.7B, which needs about 5.1 GB: glyd run Qwen/Qwen3-1.7B
+run rc=1
+
+== 01:02:23 logs: run-20261001-005425.log run-20261001-005637.log run-20261001-005740.log run-20261001-005949.log run-20261001-010056.log serve-20261001-005842.log 
+== tracebacks in the logs: 0  allocator warnings: 74
+memwatch: 84 samples; lowest free 7800 MiB, most used 14766 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/C2-8gb-4b-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/C2-8gb-4b-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/C2-8gb-4b-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/C2-8gb-4b-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/C2-8gb-4b-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/C2-8gb-4b-serve-20261001-005842.log': Permission denied
+
+################ 01:02:25 C2b-8gb-4b-forced
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 01:02:39 stage run
+glyd: Qwen3-4B needs about 8.4 GB of GPU memory with Glyd (5.9 GB of weights and room for a 4,096-token chat); your GPU has 8.2 GB free.
+  Or try Qwen/Qwen3-1.7B, which needs about 5.1 GB: glyd run Qwen/Qwen3-1.7B
+run rc=1
+
+== 01:02:40 logs: run-20261001-005425.log run-20261001-005637.log run-20261001-005740.log run-20261001-005949.log run-20261001-010056.log serve-20261001-005842.log 
+== tracebacks in the logs: 0  allocator warnings: 74
+memwatch: 82 samples; lowest free 7800 MiB, most used 14766 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/C2b-8gb-4b-forced-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/C2b-8gb-4b-forced-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/C2b-8gb-4b-forced-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/C2b-8gb-4b-forced-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/C2b-8gb-4b-forced-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/C2b-8gb-4b-forced-serve-20261001-005842.log': Permission denied
+
+################ 01:02:41 C3-8gb-1.7b
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 01:02:57 stage run
+Qwen3-1.7B: 3.3 GB on the GPU with Glyd, instead of 4.1 GB; your GPU has 8.2 GB free.
+Qwen3-1.7B is downloaded already.
+Settings: 25,600-token context (the most that fits), eager mode, 30% of GPU memory (7.1 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-1.7B with Glyd: 3.3 GB instead of 4.1 GB...
+Ready in 34s. (The server's log: /root/.local/state/glyd/logs/run-20261001-010257.log)
+Thinking...
+
+Okay, the user is asking for a one-sentence definition of lossless compression. Let me start by recalling what lossless compression is. From what I remember, it's a method of reducing file size without losing any data. So the key points are that it doesn't lose data and it's used for things like images, audio, or videos.
+
+I need to make sure the sentence is concise. Maybe start with "Lossless compression" and then explain the main idea. Words like "without losing data" and "reduces file size" are important. Also, mentioning that it's used for media files would be good. Let me check if there's a standard term or a common way to phrase this. Oh right, the main concept is that the original data is preserved, and the file size is reduced. So putting it all together: "Lossless compression is a method of reducing file size without losing any data, preserving all original information and commonly used for media files like images, audio, and video." Wait, that's a bit long. Let me make it shorter. Maybe "Lossless compression reduces file size without losing any data, preserving all original information and commonly used for media files." Hmm, that's better. But maybe "without losing any data" is more precise. Let me adjust: "Lossless compression reduces file size without losing any data, preserving all original information and commonly used for media files like images, audio, and video." Yes, that seems to cover it in one sentence. I think that's accurate.
+
+...done thinking.
+
+
+
+Lossless compression reduces file size without losing any data, preserving all original information and commonly used for media files like images, audio, and video.
+Stopping the server...
+run rc=0
+
+== 01:03:40 logs: run-20261001-005425.log run-20261001-005637.log run-20261001-005740.log run-20261001-005949.log run-20261001-010056.log run-20261001-010257.log serve-20261001-005842.log 
+== tracebacks in the logs: 0  allocator warnings: 74
+memwatch: 480 samples; lowest free 684 MiB, most used 21882 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/C3-8gb-1.7b-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/C3-8gb-1.7b-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/C3-8gb-1.7b-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/C3-8gb-1.7b-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/C3-8gb-1.7b-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010257.log' to '/home/ubuntu/onb/runs/a24/logs/C3-8gb-1.7b-run-20261001-010257.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/C3-8gb-1.7b-serve-20261001-005842.log': Permission denied
+
+################ 01:04:20 D1-no-gcc
+== tools: nvcc=none gcc=none cuda_dir= user=root
+
+== 01:04:32 stage doctor
+ ok  Glyd             0.26.0rc2, Python 3.12 (/root/.local/share/uv/tools/glyd/bin/python)
+ ok  GPU              NVIDIA L4: 23.7 GB, 23.7 GB free, compute capability 8.9
+ ok  Driver           595.91.07, runs CUDA 13.2
+ ok  PyTorch          2.13.0, built for CUDA 13.0
+ ok  vLLM             0.30.0
+ ok  Glyd GPU library libglyd_gpu_cuda13.so
+ NO  C compiler       no C compiler: vLLM cannot start without them. Install one: sudo apt install build-essential python3-dev
+ ok  CUDA compiler    not found: not needed (glyd run turns FlashInfer's sampler off, which would compile)
+ ok  Disk             66.5 GB free for models, in /hf/hub
+
+Models that fit this GPU with Glyd (a chat as long as the GPU allows):
+  Qwen/Qwen3-8B     12.1 GB on the GPU (bf16 16.4 GB): fits, a 40,960-token context
+  Qwen/Qwen3-14B    21.4 GB on the GPU (bf16 29.5 GB): does not fit; it needs 24.0 GB free
+  Qwen/Qwen3-32B    45.8 GB on the GPU (bf16 65.5 GB): does not fit; it needs 48.9 GB free
+
+Not ready: fix the lines marked NO.
+
+== 01:04:32 stage runfail
+glyd: vLLM needs a C compiler to start (Triton builds its GPU launchers with one), and this machine has none.
+  Install one: sudo apt install build-essential python3-dev
+run rc=1
+
+== 01:04:32 logs: run-20261001-005425.log run-20261001-005637.log run-20261001-005740.log run-20261001-005949.log run-20261001-010056.log run-20261001-010257.log serve-20261001-005842.log 
+== tracebacks in the logs: 0  allocator warnings: 74
+memwatch: 60 samples; lowest free 22566 MiB, most used 0 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/D1-no-gcc-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/D1-no-gcc-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/D1-no-gcc-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/D1-no-gcc-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/D1-no-gcc-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010257.log' to '/home/ubuntu/onb/runs/a24/logs/D1-no-gcc-run-20261001-010257.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/D1-no-gcc-serve-20261001-005842.log': Permission denied
+
+################ 01:04:32 D2-no-gcc-zig
+== tools: nvcc=none gcc=none cuda_dir= user=root
+
+== 01:04:40 stage zig
+ + ziglang==0.16.0
+gcc: none
+Qwen3-0.6B: 1.3 GB on the GPU with Glyd, instead of 1.5 GB; your GPU has 23.7 GB free.
+Qwen3-0.6B is downloaded already.
+Settings: 40,960-token context (the model's own limit), eager mode, 50% of GPU memory (11.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-0.6B with Glyd: 1.3 GB instead of 1.5 GB...
+Ready in 45s. (The server's log: /root/.local/state/glyd/logs/run-20261001-010442.log)
+Thinking...
+
+Okay, the user is asking for a concise definition of lossless compression in one sentence. Let me start by recalling what I know about compression techniques. Lossless compression is about storing data without loss of information, right? So, the main idea is that it preserves all the original data, which is why it's called lossless.
+
+I should mention that it's used for data like images, videos, and text. Maybe include examples like JPEG or ZIP files. Wait, but the user wants it in one sentence. Let me structure it. Start with the purpose, then explain the process, and the benefit. But how to make it concise?
+
+"Lossless compression preserves all original data by encoding information without loss, making it suitable for applications like images and text." Hmm, that works. Let me check if there's a better way. Maybe "Lossless compression stores data without loss, allowing for the preservation of all original information." That's even shorter. Yeah, that's a good one. I think that's all.
+
+...done thinking.
+
+
+
+Lossless compression preserves all original data by encoding information without loss.Stopping the server...
+
+run rc=0
+
+== 01:05:33 logs: run-20261001-005425.log run-20261001-005637.log run-20261001-005740.log run-20261001-005949.log run-20261001-010056.log run-20261001-010257.log run-20261001-010442.log serve-20261001-005842.log 
+== tracebacks in the logs: 0  allocator warnings: 74
+memwatch: 301 samples; lowest free 10926 MiB, most used 11640 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/D2-no-gcc-zig-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/D2-no-gcc-zig-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/D2-no-gcc-zig-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/D2-no-gcc-zig-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/D2-no-gcc-zig-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010257.log' to '/home/ubuntu/onb/runs/a24/logs/D2-no-gcc-zig-run-20261001-010257.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010442.log' to '/home/ubuntu/onb/runs/a24/logs/D2-no-gcc-zig-run-20261001-010442.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/D2-no-gcc-zig-serve-20261001-005842.log': Permission denied
+
+################ 01:05:33 A2-full-serve-auto-openwebui
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 01:05:48 stage serve
+Qwen3-8B: 12.1 GB on the GPU with Glyd, instead of 16.4 GB; your GPU has 23.7 GB free.
+Qwen3-8B is downloaded already.
+Settings: 40,960-token context (the model's own limit), compiled mode (CUDA graphs), 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-8B with Glyd: 12.1 GB instead of 16.4 GB...
+Ready in 2m45s. (The server's log: /root/.local/state/glyd/logs/serve-20261001-010548.log)
+
+Serving Qwen/Qwen3-8B with Glyd (40,960-token window).
+  OpenAI API   http://localhost:8100/v1   (model name: Qwen/Qwen3-8B)
+  Chat page    http://localhost:8100
+  Log          /root/.local/state/glyd/logs/serve-20261001-010548.log
+Press Ctrl-C to stop.
+
+== 01:08:35 stage http
+-- GET /: 200 text/html; charset=utf-8 19799 bytes  title: <title>Glyd chat
+-- CSP: content-security-policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-
+-- HEAD /: HTTP/1.1 200 OK
+-- /v1/models: Qwen/Qwen3-8B max_model_len 40960
+-- /health: 200   /docs: 200   /nope: 404
+-- streamed chat, two turns (first bytes of each SSE stream, and the fields seen):
+   turn 1: fields ['content', 'reasoning', 'role'] finish length usage {'prompt_tokens': 14, 'total_tokens': 314, 'completion_tokens': 300, 'completion_tokens_details': {'reasoning_tokens': 299}} answer ''
+   turn 2: fields ['content', 'reasoning', 'role'] finish length usage {'prompt_tokens': 28, 'total_tokens': 328, 'completion_tokens': 300, 'completion_tokens_details': {'reasoning_tokens': 299}} answer ''
+-- a tool call with tool_choice auto (what Open WebUI sends; the server must have its tool-call parser):
+   HTTP 200, finish tool_calls, tool calls [('get_weather', '{"city": "Paris"}')]
+-- a conversation longer than the window, through glyd's own chat client:
+
+This conversation is longer than the model's window (40,960 tokens). Start a new chat with /clear.
+   messages left after the refused turn: 0
+
+== 01:09:04 stage api
+ok   OpenAI API, turn 1 (streamed, greedy): 'Paris', 54.4 tokens/s, first token 191 ms
+ok   OpenAI API, turn 2 (streamed, top-p, turn 1 as history): 'Berlin', 54.2 tokens/s, first token 237 ms
+ok   OpenAI API, a tool call (tool_choice auto): {'name': 'get_weather', 'arguments': '{"city": "Paris"}'}
+
+== 01:09:06 stage webui
+ok   Open WebUI lists the model: /api/models: ['Qwen/Qwen3-8B', 'arena-model']
+ok   Open WebUI chat (the browser's request, its tools on): 'Paris'
+ok   Open WebUI chat, a tool call in the stream: tool calls ['get_current_timestamp'], text ''
+
+== 01:09:09 stage bench
+model Qwen/Qwen3-8B, 200 tokens a stream
+   1 at once:   21.7 tokens/s in all,  21.6 each, first token    54 ms
+   4 at once:   84.8 tokens/s in all,  21.2 each, first token   108 ms
+   8 at once:  165.8 tokens/s in all,  20.8 each, first token   126 ms
+
+== 01:10:48 stage stop
+  Log          /root/.local/state/glyd/logs/serve-20261001-010548.log
+Press Ctrl-C to stop.
+Stopping the server...
+
+== 01:10:51 logs: run-20261001-005425.log run-20261001-005637.log run-20261001-005740.log run-20261001-005949.log run-20261001-010056.log run-20261001-010257.log run-20261001-010442.log serve-20261001-005842.log serve-20261001-010548.log 
+== tracebacks in the logs: 0  allocator warnings: 75
+memwatch: 1589 samples; lowest free 562 MiB, most used 22004 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/A2-full-serve-auto-openwebui-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/A2-full-serve-auto-openwebui-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/A2-full-serve-auto-openwebui-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/A2-full-serve-auto-openwebui-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/A2-full-serve-auto-openwebui-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010257.log' to '/home/ubuntu/onb/runs/a24/logs/A2-full-serve-auto-openwebui-run-20261001-010257.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010442.log' to '/home/ubuntu/onb/runs/a24/logs/A2-full-serve-auto-openwebui-run-20261001-010442.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/A2-full-serve-auto-openwebui-serve-20261001-005842.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-010548.log' to '/home/ubuntu/onb/runs/a24/logs/A2-full-serve-auto-openwebui-serve-20261001-010548.log': Permission denied
+2026-10-01 01:05:57.901 | ERROR    | open_webui.routers.openai:send_get_request:118 - Connection error: Cannot connect to host 127.0.0.1:8100 ssl:default [Connect call failed ('127.0.0.1', 8100)]
+
+################ 01:10:51 A3-full-serve-eager
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 01:11:04 stage serve
+Qwen3-8B: 12.1 GB on the GPU with Glyd, instead of 16.4 GB; your GPU has 23.7 GB free.
+Qwen3-8B is downloaded already.
+Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-8B with Glyd: 12.1 GB instead of 16.4 GB...
+Ready in 47s. (The server's log: /root/.local/state/glyd/logs/serve-20261001-011105.log)
+
+Serving Qwen/Qwen3-8B with Glyd (40,960-token window).
+  OpenAI API   http://localhost:8100/v1   (model name: Qwen/Qwen3-8B)
+  Chat page    http://localhost:8100
+  Log          /root/.local/state/glyd/logs/serve-20261001-011105.log
+Press Ctrl-C to stop.
+
+== 01:11:53 stage bench
+model Qwen/Qwen3-8B, 200 tokens a stream
+   1 at once:   21.2 tokens/s in all,  21.1 each, first token    55 ms
+   4 at once:   82.3 tokens/s in all,  20.6 each, first token   109 ms
+   8 at once:  161.2 tokens/s in all,  20.2 each, first token   129 ms
+
+== 01:13:34 stage stop
+  Log          /root/.local/state/glyd/logs/serve-20261001-011105.log
+Press Ctrl-C to stop.
+Stopping the server...
+
+== 01:13:37 logs: run-20261001-005425.log run-20261001-005637.log run-20261001-005740.log run-20261001-005949.log run-20261001-010056.log run-20261001-010257.log run-20261001-010442.log serve-20261001-005842.log serve-20261001-010548.log serve-20261001-011105.log 
+== tracebacks in the logs: 0  allocator warnings: 76
+memwatch: 827 samples; lowest free 486 MiB, most used 22080 MiB; samples under 512 MiB free: 1
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005425.log' to '/home/ubuntu/onb/runs/a24/logs/A3-full-serve-eager-run-20261001-005425.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/A3-full-serve-eager-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/A3-full-serve-eager-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/A3-full-serve-eager-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/A3-full-serve-eager-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010257.log' to '/home/ubuntu/onb/runs/a24/logs/A3-full-serve-eager-run-20261001-010257.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010442.log' to '/home/ubuntu/onb/runs/a24/logs/A3-full-serve-eager-run-20261001-010442.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/A3-full-serve-eager-serve-20261001-005842.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-010548.log' to '/home/ubuntu/onb/runs/a24/logs/A3-full-serve-eager-serve-20261001-010548.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-011105.log' to '/home/ubuntu/onb/runs/a24/logs/A3-full-serve-eager-serve-20261001-011105.log': Permission denied
+
+################ 01:13:37 A4-full-calibration-models
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 01:13:51 stage run
+Qwen3-0.6B: 1.3 GB on the GPU with Glyd, instead of 1.5 GB; your GPU has 23.7 GB free.
+Qwen3-0.6B is downloaded already.
+Settings: 40,960-token context (the model's own limit), eager mode, 50% of GPU memory (11.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-0.6B with Glyd: 1.3 GB instead of 1.5 GB...
+Ready in 28s. (The server's log: /root/.local/state/glyd/logs/run-20261001-011351.log)
+Thinking...
+
+Okay, the user is asking for a concise definition of lossless compression in one sentence. Let me start by recalling what I know about compression techniques. Lossless compression is about storing data without loss of information, right? So, the main idea is that it preserves all the original data, which is why it's called lossless.
+
+I should mention that it's used for data like images, videos, and text. Maybe include examples like JPEG or ZIP files. Wait, but the user wants it in one sentence. Let me structure it. Start with the purpose, then explain the process, and the benefit. But how to make it concise?
+
+"Lossless compression preserves all original data by encoding information without loss, making it suitable for applications like images and text." Hmm, that works. Let me check if there's a better way. Maybe "Lossless compression stores data without loss, allowing for the preservation of all original information." That's even shorter. Yeah, that's a good one. I think that's all.
+
+
+Loss
+...done thinking.
+
+less compression preserves all original data by encoding information without loss.Stopping the server...
+
+run rc=0
+
+== 01:14:25 logs: run-20261001-005637.log run-20261001-005740.log run-20261001-005949.log run-20261001-010056.log run-20261001-010257.log run-20261001-010442.log run-20261001-011351.log serve-20261001-005842.log serve-20261001-010548.log serve-20261001-011105.log 
+== tracebacks in the logs: 0  allocator warnings: 75
+memwatch: 238 samples; lowest free 10926 MiB, most used 11640 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005637.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-005637.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010257.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-010257.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010442.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-010442.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-011351.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-011351.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-serve-20261001-005842.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-010548.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-serve-20261001-010548.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-011105.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-serve-20261001-011105.log': Permission denied
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 01:14:41 stage run
+Qwen3-1.7B: 3.3 GB on the GPU with Glyd, instead of 4.1 GB; your GPU has 23.7 GB free.
+Qwen3-1.7B is downloaded already.
+Settings: 40,960-token context (the model's own limit), eager mode, 58% of GPU memory (13.7 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-1.7B with Glyd: 3.3 GB instead of 4.1 GB...
+Ready in 39s. (The server's log: /root/.local/state/glyd/logs/run-20261001-011441.log)
+Thinking...
+
+Okay, the user is asking for a one-sentence definition of lossless compression. Let me start by recalling what lossless compression is. From what I remember, it's a method of reducing file size without losing any data. So the key points are that it doesn't lose data and it's used for things like images, audio, or videos.
+
+I need to make sure the sentence is concise. Maybe start with "Lossless compression" and then explain the main idea. Words like "without losing data" and "reduces file size" are important. Also, mentioning that it's used for media files would be good. Let me check if there's a standard term or a common way to phrase this. Oh right, the main concept is that the original data is preserved, and the file size is reduced. So putting it all together: "Lossless compression is a method of reducing file size without losing any data, preserving all original information and commonly used for media files like images, audio, and video." Wait, that's a bit long. Let me make it shorter. Maybe "Lossless compression reduces file size without losing any data, preserving all original information and commonly used for media files." Hmm, that's better. But maybe "without losing any data" is more precise. Let me adjust: "Lossless compression reduces file size without losing any data, preserving all original information and commonly used for media files like images, audio, and video." Yes, that seems to cover it in one sentence. I think that's accurate.
+
+
+Loss
+...done thinking.
+
+less compression reduces file size without losing any data, preserving all original information and commonly used for media files like images, audio, and video.Stopping the server...
+
+run rc=0
+
+== 01:15:28 logs: run-20261001-005740.log run-20261001-005949.log run-20261001-010056.log run-20261001-010257.log run-20261001-010442.log run-20261001-011351.log run-20261001-011441.log serve-20261001-005842.log serve-20261001-010548.log serve-20261001-011105.log 
+== tracebacks in the logs: 0  allocator warnings: 74
+memwatch: 318 samples; lowest free 9148 MiB, most used 13418 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005740.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-005740.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010257.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-010257.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010442.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-010442.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-011351.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-011351.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-011441.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-011441.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-serve-20261001-005842.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-010548.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-serve-20261001-010548.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-011105.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-serve-20261001-011105.log': Permission denied
+== tools: nvcc=none gcc=/usr/bin/gcc cuda_dir= user=root
+
+== 01:15:43 stage run
+Qwen3-4B: 5.9 GB on the GPU with Glyd, instead of 8.0 GB; your GPU has 23.7 GB free.
+Qwen3-4B is downloaded already.
+Settings: 40,960-token context (the model's own limit), eager mode, 81% of GPU memory (19.2 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler is installed.
+Loading Qwen3-4B with Glyd: 5.9 GB instead of 8.0 GB...
+Ready in 44s. (The server's log: /root/.local/state/glyd/logs/run-20261001-011543.log)
+Thinking...
+
+Okay, the user is asking for a one-sentence definition of lossless compression. Let me start by recalling what lossless compression is. From what I remember, it's a method of reducing file size without losing any data. So the key points here are that the original data can be perfectly reconstructed from the compressed data.
+
+I need to make sure I'm not mixing it up with lossy compression, which does lose some data. The main difference is that lossless is reversible. So the sentence should mention that the file can be decompressed back to its original form without any loss of information.
+
+I should also mention the purpose, which is to reduce file size while maintaining all the original data. Maybe something like: "Lossless compression is a method of reducing file size by encoding data in a way that allows the original data to be perfectly reconstructed from the compressed data."
+
+Wait, is there a more concise way to phrase that? Let me check. Maybe "Lossless compression reduces file size by encoding data without losing any information, allowing the original data to be fully recovered." That's better. It's concise and includes the key elements: reducing size, encoding, no loss, and full recovery.
+
+I should verify if that's accurate. Yes, lossless compression techniques like ZIP or PNG use algorithms that remove redundancy without altering the original data. So the sentence should capture that. I think that's a solid one-sentence answer. Let me make sure there's no jargon or unnecessary words. "Lossless compression is a method of reducing file size by encoding data without losing any information, allowing the original data to be fully recovered." Yep, that's clear and to the point.
+
+...done thinking.
+
+
+
+Lossless compression is a method of reducing file size by encoding data without losing any information, allowing the original data to be fully recovered.Stopping the server...
+
+run rc=0
+
+== 01:16:38 logs: run-20261001-005949.log run-20261001-010056.log run-20261001-010257.log run-20261001-010442.log run-20261001-011351.log run-20261001-011441.log run-20261001-011543.log serve-20261001-005842.log serve-20261001-010548.log serve-20261001-011105.log 
+== tracebacks in the logs: 0  allocator warnings: 50
+memwatch: 350 samples; lowest free 3982 MiB, most used 18584 MiB; samples under 512 MiB free: 0
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-005949.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-005949.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010056.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-010056.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010257.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-010257.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-010442.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-010442.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-011351.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-011351.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-011441.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-011441.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/run-20261001-011543.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-run-20261001-011543.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-005842.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-serve-20261001-005842.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-010548.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-serve-20261001-010548.log': Permission denied
+mv: cannot move '/home/ubuntu/onb/ctr-home/.local/state/glyd/logs/serve-20261001-011105.log' to '/home/ubuntu/onb/runs/a24/logs/A4-full-calibration-models-serve-20261001-011105.log': Permission denied
+== 01:16:38 session a24 over

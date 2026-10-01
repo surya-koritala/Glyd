@@ -1,0 +1,17 @@
+Loading weights:   0%|          | 0/443 [00:00<?, ?it/s]Loading weights: 100%|██████████| 443/443 [00:00<00:00, 11395.33it/s]
+merged: 80 groups of Linears as one product each
+bf16 (weights 29.54 GB): batch 1: 15.9 tokens/s (15.9 a sequence), peak VRAM 29.58 GB
+bf16 prefill: 2048 tokens 119.2 ms (17186 tokens/s), first token 126.4 ms, 4096 tokens 245.7 ms (16670 tokens/s), first token 244.7 ms, 8192 tokens 504.5 ms (16237 tokens/s), first token 505.7 ms; from 2026/10/01 00:30:34 to 2026/10/01 00:30:44
+mma12 fused: packed in 7 s; weights 22.15 GB against 29.54 GB bf16 (75.0%), scratch 0.27 GB, VRAM in use 22.45 GB on 1 GPU
+glyd mma12 fused: batch 1: 44.0 tokens/s (44.0 a sequence), peak VRAM 22.47 GB
+glyd mma12 prefill: 2048 tokens 132.4 ms (15473 tokens/s), first token 136.4 ms, 4096 tokens 260.4 ms (15732 tokens/s), first token 258.9 ms, 8192 tokens 516.6 ms (15856 tokens/s), first token 518.6 ms; from 2026/10/01 00:31:07 to 2026/10/01 00:31:16
+the route SPLIT's ring: cuda:0 ran
+glyd mma12 without SPLIT prefill: 2048 tokens 149.9 ms (13666 tokens/s), first token 151.3 ms, 4096 tokens 277.9 ms (14740 tokens/s), first token 280.2 ms, 8192 tokens 551.0 ms (14868 tokens/s), first token 552.6 ms; from 2026/10/01 00:31:16 to 2026/10/01 00:31:26
+glyd mma12 without SPLIT prefill: 2048 tokens 151.0 ms (13560 tokens/s), first token 151.9 ms, 4096 tokens 279.0 ms (14680 tokens/s), first token 281.0 ms, 8192 tokens 551.4 ms (14856 tokens/s), first token 553.3 ms; from 2026/10/01 00:31:26 to 2026/10/01 00:31:36
+glyd mma12 prefill: 2048 tokens 135.2 ms (15150 tokens/s), first token 136.8 ms, 4096 tokens 264.0 ms (15515 tokens/s), first token 262.8 ms, 8192 tokens 518.4 ms (15803 tokens/s), first token 521.5 ms; from 2026/10/01 00:31:36 to 2026/10/01 00:31:45
+glyd mma12 prefill: 2048 tokens 134.4 ms (15238 tokens/s), first token 136.9 ms, 4096 tokens 258.9 ms (15819 tokens/s), first token 262.4 ms, 8192 tokens 518.2 ms (15810 tokens/s), first token 521.3 ms; from 2026/10/01 00:31:45 to 2026/10/01 00:31:54
+glyd mma12 without SPLIT prefill: 2048 tokens 150.5 ms (13611 tokens/s), first token 152.4 ms, 4096 tokens 280.2 ms (14619 tokens/s), first token 281.1 ms, 8192 tokens 554.1 ms (14783 tokens/s), first token 554.7 ms; from 2026/10/01 00:31:54 to 2026/10/01 00:32:04
+logits bit-identical: False
+generated tokens identical to bf16: 10 of 32
+text:  in the 1940s with the work of Shannon and Huffman, who laid the theoretical foundations for lossless compression. In the 197
+exit 0

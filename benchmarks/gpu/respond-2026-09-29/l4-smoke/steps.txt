@@ -1,0 +1,7 @@
+07:59:00 (+5 s) machine and environment (~/gpuenv)
+07:59:38 (+43 s) library built
+08:02:04 (+189 s) Qwen3-0.6B glyd (exit 0, its time 527 s, expected 150 s)
+08:04:52 (+357 s) Qwen3-0.6B bf16c (exit 0, its time 509 s, expected 150 s)
+08:06:52 (+477 s) Qwen3-0.6B bf16 (exit 0, its time 400 s, expected 60 s)
+08:09:20 (+625 s) Qwen3-0.6B exact (exit 0, its time 341 s, expected 60 s)
+08:09:20 (+625 s) done

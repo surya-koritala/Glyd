@@ -1,0 +1,44 @@
+CHECKS PASS: 6 steps run, each exit 0
+NVIDIA H100 80GB HBM3 (9.0, sm_90a, 81559 MiB, power limit 700.00 W), x86_64 host, 26 CPUs; tree 7fe66a2 (release-0.26.0, v0.26.0 candidate); SPLIT forced on by GLYD_SPLIT_MIN=2048 on an NVIDIA H100 80GB HBM3: a measurement, not a route
+environment: ~/gpuenv; torch 2.14.1+cu130 CUDA 13.0 | transformers 5.18.0
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+driver: 580.126.20, CUDA 13.0
+the route SPLIT: a split of 12 + 120 SMs; products within 1e-2 of fp32, the same bits run to run; GLinear by it as on an A100
+the stress: split_stress: 16512 products checked, 0 failures
+e2e Qwen3-14B, the route SPLIT's ring: cuda:0 ran
+
+e2e.py Qwen3-14B (a forward pass ms, the first token ms): bf16 | v0.25.1's routes | SPLIT, the medians of 3 rounds | SPLIT/v0.25.1, the median of the rounds' ratios (each round's)
+   2048: bf16 119.2 (126.4) | v0.25.1 150.5 (151.9) | SPLIT 134.4 (136.8) | SPLIT/v0.25.1 0.893 (first token 0.901; rounds 0.883, 0.895, 0.893) | SPLIT/bf16 1.128, v0.25.1/bf16 1.263
+   4096: bf16 245.7 (244.7) | v0.25.1 279.0 (281.0) | SPLIT 260.4 (262.4) | SPLIT/v0.25.1 0.937 (first token 0.933; rounds 0.937, 0.946, 0.924) | SPLIT/bf16 1.060, v0.25.1/bf16 1.136
+   8192: bf16 504.5 (505.7) | v0.25.1 551.4 (553.3) | SPLIT 518.2 (521.3) | SPLIT/v0.25.1 0.938 (first token 0.940; rounds 0.938, 0.940, 0.935) | SPLIT/bf16 1.027, v0.25.1/bf16 1.093
+layer.py Qwen3-14B, layer 10 (ms): bf16 | v0.25.1's route | SPLIT
+   2048: 1.912 | 2.752 (1.439x) | 2.300 (1.203x bf16, 0.836x v0.25.1's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   4096: 3.870 | 4.895 (1.265x) | 4.504 (1.164x bf16, 0.920x v0.25.1's); qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran
+   8192: 7.655 | 9.110 (1.190x) | 8.400 (1.097x bf16, 0.922x v0.25.1's); qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran
+  0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+  ptxas info    : Used 146 registers, used 0 barriers, 32768 bytes smem
+
+clocks and power (1155 samples): SM MHz mean (min-max), W mean (max), temperature max, samples power-capped (0x4) / thermal (0x20, 0x40)
+  step check_capi: 1892 (345-1980) MHz, 119 (167) W, 27 C, 0% / 0%
+  step test_split: 1980 (1980-1980) MHz, 123 (141) W, 27 C, 0% / 0%
+  step split_stress: 1950 (1650-1980) MHz, 444 (674) W, 51 C, 36% / 0%
+  step e2e-Qwen3-14B: 1768 (345-1980) MHz, 490 (701) W, 60 C, 64% / 0%
+  step layer-Qwen3-14B: 1784 (1320-1980) MHz, 356 (702) W, 60 C, 43% / 0%
+  step split_stress_skewed: 1960 (1575-1980) MHz, 287 (672) W, 52 C, 11% / 0%
+  e2e Qwen3-14B, the SPLIT phases: 1696 (1590-1980) MHz, 677 (696) W, 60 C, 98% / 0%
+  e2e Qwen3-14B, the v0.25.1 phases: 1729 (1605-1980) MHz, 690 (700) W, 60 C, 100% / 0%
+  e2e Qwen3-14B, the bf16 phases: 1744 (1560-1980) MHz, 581 (701) W, 53 C, 82% / 0%
+
+check_capi: exit 0
+test_split: exit 0
+split_stress: exit 0
+e2e-Qwen3-14B: exit 0
+layer-Qwen3-14B: exit 0
+split_stress_skewed: exit 0
+steps: 00:32:11 (+255 s) layer-Qwen3-14B (exit 0)
+steps: 00:32:45 (+289 s) split_stress_skewed (exit 0)
+steps: 00:32:45 (+289 s) done
+
+DECIDES Qwen3-14B 2048 tokens: SPLIT/v0.25.1 0.893, a forward pass, the median of 3 rounds (0.883, 0.895, 0.893; SPLIT 134.4 ms, v0.25.1 150.5 ms; first token 0.901): SPLIT stays (10.7% faster, at least 2%) [SPLIT forced on by GLYD_SPLIT_MIN=2048 on an NVIDIA H100 80GB HBM3: a measurement, not a route]
+DECIDES Qwen3-14B 4096 tokens: SPLIT/v0.25.1 0.937, a forward pass, the median of 3 rounds (0.937, 0.946, 0.924; SPLIT 260.4 ms, v0.25.1 279.0 ms; first token 0.933): SPLIT stays (6.3% faster, at least 2%) [SPLIT forced on by GLYD_SPLIT_MIN=2048 on an NVIDIA H100 80GB HBM3: a measurement, not a route]
+DECIDES Qwen3-14B 8192 tokens: SPLIT/v0.25.1 0.938, a forward pass, the median of 3 rounds (0.938, 0.940, 0.935; SPLIT 518.2 ms, v0.25.1 551.4 ms; first token 0.940): SPLIT stays (6.2% faster, at least 2%) [SPLIT forced on by GLYD_SPLIT_MIN=2048 on an NVIDIA H100 80GB HBM3: a measurement, not a route]

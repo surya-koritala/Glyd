@@ -1,0 +1,4 @@
+[W930 09:48:20.191364487 Context.cpp:629] Warning: torch.backends.cuda.preferred_blas_library is an experimental feature. If you see any error or unexpected behavior when this flag is set please file an issue on GitHub. (function operator())
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 3221.73it/s]
+bf16, batch 32, 128 + 32 tokens, attention default (NVIDIA L4, torch 2.14.0+cu130, SDPA {'flash': True, 'mem_efficient': True, 'math': True, 'cudnn': True}): tokens A 166c6242ee632153 B 166c6242ee632153 (the same; every sequence the same in each: True, True); 7200 calls, 0 with the same inputs and another output; every call's output the same
+exit 0

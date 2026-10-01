@@ -1,0 +1,13 @@
+Qwen3-1.7B: 3.4 GB on the GPU with Glyd, instead of 4.1 GB; your GPU has 23.7 GB free.
+Qwen3-1.7B is downloaded already.
+Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+Note: listening on 0.0.0.0: anyone who can reach this computer's network address can send the model prompts, and the traffic is plain HTTP, not encrypted (use a VPN or an SSH tunnel, or add  -- --ssl-keyfile FILE --ssl-certfile FILE ). The API key guards /v1 only. The chat page, /health, /metrics, /version, /tokenize, /detokenize and the API's /docs stay open without a key.
+Loading Qwen3-1.7B with Glyd: 3.4 GB instead of 4.1 GB...
+Ready in 30s. (The server's log: /work/home/.local/state/glyd/logs/serve-20261001-125638.log)
+
+Serving Qwen/Qwen3-1.7B with Glyd (40,960-token window).
+  OpenAI API   http://localhost:8000/v1   (model name: Qwen/Qwen3-1.7B)   (asks for the API key)
+  Chat page    http://localhost:8000
+  Log          /work/home/.local/state/glyd/logs/serve-20261001-125638.log
+Press Ctrl-C to stop.
+Stopping the server (a few seconds)...

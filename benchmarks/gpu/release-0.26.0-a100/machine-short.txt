@@ -1,0 +1,1 @@
+1 x NVIDIA A100-SXM4-40GB (compute 8.0, sm_80, 40960 MiB), x86_64 host, 30 CPUs; tree 0b217d3 (vllm-plugin, v0.25.1 with the plugin); steps check; TP 1; model Qwen/Qwen3-8B, big none, experts none

@@ -21,6 +21,7 @@ gated one), from the files for a directory.
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from .format import MANIFEST, header
@@ -89,22 +90,55 @@ def checkpoint(files):
     return st
 
 
-def _get(url):
-    """JSON from the Hugging Face Hub (HF_ENDPOINT), with the user's token where there is one."""
+class HubError(ValueError):
+    """The Hub refused a read (401, 403 or 404: no such repo, or a gated or private one); `status` is the HTTP code."""
+
+    def __init__(self, message, status):
+        super().__init__(message)
+        self.status = status
+
+
+def _token():
+    """The user's Hugging Face token. huggingface_hub's own answer where it is installed (it always is with the vllm extra): HF_TOKEN,
+    HF_TOKEN_PATH, the cache's token file wherever XDG_CACHE_HOME or HF_HOME put it, and the refresh of a browser login's short-lived
+    token. Else HF_TOKEN, or the file under HF_HOME."""
+    try:
+        from huggingface_hub import get_token
+
+        return get_token()
+    except Exception:  # (not installed, or one that cannot say)
+        pass
     token = os.environ.get("HF_TOKEN")
     saved = os.path.join(os.environ.get("HF_HOME", os.path.join(os.path.expanduser("~"), ".cache", "huggingface")), "token")
     if not token and os.path.exists(saved):
         with open(saved) as f:
             token = f.read().strip()
+    return token
+
+
+class _SameHostAuth(urllib.request.HTTPRedirectHandler):
+    """urllib forwards a request's headers to wherever a redirect points, the token's included: only to the host it was sent to."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and urllib.parse.urlsplit(newurl).netloc != urllib.parse.urlsplit(req.full_url).netloc:
+            new.headers.pop("Authorization", None)
+            new.unredirected_hdrs.pop("Authorization", None)
+        return new
+
+
+def _get(url):
+    """JSON from the Hugging Face Hub (HF_ENDPOINT), with the user's token where there is one."""
+    token = _token()
     headers = {"User-Agent": "glyd"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
-        with urllib.request.urlopen(urllib.request.Request(os.environ.get("HF_ENDPOINT", "https://huggingface.co") + url, headers=headers), timeout=60) as r:
+        with urllib.request.build_opener(_SameHostAuth).open(urllib.request.Request(os.environ.get("HF_ENDPOINT", "https://huggingface.co") + url, headers=headers), timeout=60) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403, 404):
-            raise ValueError(f"{url}: no such repo on the Hub, or a gated or private one (then set HF_TOKEN, or run hf auth login)") from e
+            raise HubError(f"{url}: no such repo on the Hub, or a gated or private one (then run glyd login, or set HF_TOKEN)", e.code) from e
         raise
 
 

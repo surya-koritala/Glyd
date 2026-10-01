@@ -1,0 +1,21 @@
+NVIDIA A10 (compute 8.6, sm_86, 23028 MiB), x86_64 host, 30 CPUs; tree 766746a (vllm-plugin, v0.25.1 with the plugin); steps bench; model Qwen/Qwen3-8B, big none
+06:08:42 (+0 s) machine
+06:08:52 (+10 s) env: vLLM and nvcc in 10 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA A10)
+06:08:53 (+11 s) build: sm_86 in 1 s (library: C API 5 | GPU code 2086)
+06:26:51 (+1089 s) bench Qwen3-8B: exit 0 in 1078 s
+download dl-Qwen3-8B: exit 0: 16397431693 bytes in 0 s (at +0 s)
+06:26:51 (+1089 s) done
+
+== bench-Qwen3-8B
+bf16: weights 15.27 GiB, KV cache 27,072 tokens, max concurrency 6.61x at 4,096 tokens (started cold, on an empty compile cache: weights 15.27 GiB, KV cache 19,824 tokens, max concurrency 4.84x at 4,096 tokens)
+glyd: weights 12.53 GiB, KV cache 46,784 tokens, max concurrency 11.42x at 4,096 tokens (started cold, on an empty compile cache: weights 12.53 GiB, KV cache 39,552 tokens, max concurrency 9.66x at 4,096 tokens)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.85 | 217.9 | 384 / 838 | 50.9 / 61.2 | 64 | 1335 MHz, 66 C |
+| 1 | glyd | 0.88 | 225.7 | 445 / 993 | 40.4 / 52.0 | 64 | 1335 MHz, 68 C |
+| 4 | bf16 | 1.24 | 316.3 | 27898 / 61054 | 66.8 / 103.5 | 128 | 1275 MHz, 72 C |
+| 4 | glyd | 1.51 | 385.9 | 17134 / 44857 | 88.5 / 127.6 | 128 | 1155 MHz, 72 C |
+| inf | bf16 | 1.24 | 317.5 | 93052 / 189275 | 66.1 / 107.8 | 256 | 1245 MHz, 75 C |
+| inf | glyd | 1.62 | 415.6 | 70196 / 148741 | 85.7 / 136.5 | 256 | 1125 MHz, 74 C |
+

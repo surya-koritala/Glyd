@@ -1,0 +1,6 @@
+test_version_rule ok
+test_options ok
+test_saved ok
+test_pieces ok
+test_refusals ok
+test_draft ok

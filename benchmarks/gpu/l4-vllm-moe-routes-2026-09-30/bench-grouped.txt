@@ -1,0 +1,23 @@
+== 14:02:07 glyd: vllm serve ibm-granite/granite-3.1-3b-a800m-instruct --quantization glyd, first (cold where VLLM_CACHE_ROOT is empty)
+glyd: mma layout
+Model loading took 4.33 GiB memory and 12.321933 seconds
+GPU KV cache size: 238,240 tokens, Maximum concurrency for 4,096 tokens per request: 58.16x
+20494 MiB, 23034 MiB
+== 14:06:38 glyd: vllm serve ibm-granite/granite-3.1-3b-a800m-instruct --quantization glyd (the GPU at 50 C)
+glyd: mma layout
+Model loading took 4.33 GiB memory and 12.274331 seconds
+GPU KV cache size: 240,352 tokens, Maximum concurrency for 4,096 tokens per request: 58.68x
+20502 MiB, 23034 MiB
+== 14:07:28 glyd: rate 1, 64 prompts
+   exit 0
+== 14:08:46 glyd: rate 4, 128 prompts
+   exit 0
+== 14:09:37 glyd: rate inf, 256 prompts
+   exit 0
+glyd: weights 4.33 GiB, KV cache 240,352 tokens, max concurrency 58.68x at 4,096 tokens (started cold, on an empty compile cache: weights 4.33 GiB, KV cache 238,240 tokens, max concurrency 58.16x at 4,096 tokens)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | glyd | 0.93 | 239.1 | 134 / 243 | 16.1 / 21.1 | 64 | 1575 MHz, 69 C |
+| 4 | glyd | 3.06 | 783.3 | 206 / 610 | 50.9 / 71.1 | 128 | 1455 MHz, 69 C |
+| inf | glyd | 4.27 | 1092.8 | 9383 / 48660 | 145.4 / 162.4 | 256 | 1410 MHz, 74 C |

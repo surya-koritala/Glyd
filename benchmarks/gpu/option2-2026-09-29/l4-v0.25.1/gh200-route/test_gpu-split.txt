@@ -1,0 +1,9 @@
+test_c_header ok
+test_gpu_class_by_name ok
+test_route_env ok
+test_split_route ok
+  split_stress: 1536 products checked, 0 failures
+test_split_stress ok
+test_split_order ok
+test_gpu_code_loads_the_library ok
+exit 0

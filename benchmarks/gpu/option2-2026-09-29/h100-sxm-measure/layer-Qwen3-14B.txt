@@ -1,0 +1,5 @@
+NVIDIA H100 80GB HBM3 (code 90, 132 SMs), layer 10 of 40c069824f4251a91eefaf281ebe4c544efd3e18: qkv [7168, 5120], o [5120, 5120], gate_up [34816, 5120], down [5120, 17408]; 8 copies a pass; CUDA_DEVICE_MAX_CONNECTIONS=(unset)
+M=2048: a layer bf16 1.912 ms, today's route 2.752 ms (1.439x bf16), SPLIT 2.300 ms (1.203x bf16, 0.836x today's); routes: qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran; 2.5e-03 off fp32, the same bits pass to pass; SPLIT's passes 2.168-2.337 ms
+M=4096: a layer bf16 3.870 ms, today's route 4.895 ms (1.265x bf16), SPLIT 4.504 ms (1.164x bf16, 0.920x today's); routes: qkv SPLIT (12 SMs), o SPLIT (12 SMs), gate_up SPLIT (12 SMs), down SPLIT (12 SMs); the ring ran; 2.5e-03 off fp32, the same bits pass to pass; SPLIT's passes 4.374-4.570 ms
+M=8192: a layer bf16 7.655 ms, today's route 9.110 ms (1.190x bf16), SPLIT 8.400 ms (1.097x bf16, 0.922x today's); routes: qkv SPLIT (4 SMs), o SPLIT (4 SMs), gate_up SPLIT (4 SMs), down SPLIT (4 SMs); the ring ran; 2.9e-03 off fp32, the same bits pass to pass; SPLIT's passes 7.738-8.690 ms
+exit 0

@@ -1,0 +1,7 @@
+/home/ubuntu/results/run-b8-bf16.json (bf16) run A against /home/ubuntu/results/run-b8-exact.json (exact) run A: batch 8, attention default
+  tokens (every sequence): differ; calls 9248 and 9248
+  linear calls with the same inputs: 1923, of them with another output: 0
+  the prompt's linear calls' weights: 253 of 253 the same words
+  the first call whose output differs: {'i': 1552, 'step': 5, 'kind': 'sdpa', 'kinds_same': True, 'inputs_same': True}
+    bf16: {'step': 5, 'in_step': 107, 'kind': 'sdpa', 'q': [[8, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; kernels (the profiled step 1): ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']
+    exact: {'step': 5, 'in_step': 107, 'kind': 'sdpa', 'q': [[8, 32, 1, 128], [4096, 128, 128, 1], 0], 'mask': None, 'stream': 0}; kernels (the profiled step 1): ['cudnn_generated_fort_native_sdpa_sm80_flash_fprop_wmma_f16_knob_2_16x128x128_1x4x1_cga1x1x1_kernel0_0']

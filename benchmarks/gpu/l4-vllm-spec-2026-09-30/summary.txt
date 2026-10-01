@@ -1,0 +1,79 @@
+| Run | Mix | Output tokens/s | TTFT mean (ms) | Draft tokens accepted | Tokens a step |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| bf16 | edit | 16.6 | 150 |  |  |
+| bf16 | chat | 16.7 | 82 |  |  |
+| bf16-ngram | edit | 27.1 | 107 | 40% (500 of 1259) | 2.98 |
+| bf16-ngram | chat | 16.7 | 71 | 12% (127 of 1037) | 1.61 |
+| bf16-eager | edit | 16.4 | 155 |  |  |
+| bf16-eager | chat | 16.5 | 83 |  |  |
+| glyd | edit | 21.2 | 178 |  |  |
+| glyd | chat | 21.5 | 61 |  |  |
+| glyd-ngram | edit | 35.5 | 152 | 40% (500 of 1259) | 2.98 |
+| glyd-ngram | chat | 22.1 | 57 | 12% (119 of 1033) | 1.57 |
+| glyd-eagle3 | edit | 55.0 | 201 | 74% (803 of 1092) | 3.21 |
+| glyd-eagle3 | chat | 38.9 | 102 | 39% (980 of 2502) | 2.18 |
+| glyd-eagle3-packed | edit | 56.0 | 190 | 73% (796 of 1089) | 3.19 |
+| glyd-eagle3-packed | chat | 39.7 | 78 | 39% (1019 of 2586) | 2.18 |
+| glyd-eagle3-packed-again | edit | 55.5 | 204 | 73% (801 of 1098) | 3.19 |
+| glyd-eagle3-packed-again | chat | 39.6 | 101 | 39% (985 of 2499) | 2.18 |
+| bf16-tight | edit | 16.6 | 157 |  |  |
+| bf16-tight | chat | 16.7 | 82 |  |  |
+| bf16-eagle3-tight | edit | 43.3 | 171 | 73% (802 of 1095) | 3.20 |
+| bf16-eagle3-tight | chat | 30.3 | 119 | 39% (1010 of 2562) | 2.18 |
+| glyd-eagle3-tight | edit | 54.6 | 203 | 73% (801 of 1098) | 3.19 |
+| glyd-eagle3-tight | chat | 39.0 | 91 | 40% (998 of 2517) | 2.19 |
+| bf16-eager-ngram | edit | 27.6 | 100 | 40% (500 of 1259) | 2.98 |
+| bf16-eager-ngram | chat | 17.2 | 72 | 12% (119 of 975) | 1.61 |
+| glyd-exact-eager-ngram | edit | 11.8 | 200 | 40% (500 of 1259) | 2.98 |
+| glyd-exact-eager-ngram | chat | 7.3 | 159 | 12% (119 of 975) | 1.61 |
+| bf16-eager-eagle3 | edit | 42.7 | 188 | 74% (802 of 1089) | 3.21 |
+| bf16-eager-eagle3 | chat | 29.6 | 136 | 39% (1012 of 2589) | 2.17 |
+| glyd-exact-eager-eagle3 | edit | 19.6 | 358 | 74% (802 of 1089) | 3.21 |
+| glyd-exact-eager-eagle3 | chat | 13.5 | 292 | 39% (1012 of 2589) | 2.17 |
+| glyd-exact-eager-eagle3-packed | edit | 18.6 | 380 | 74% (802 of 1089) | 3.21 |
+| glyd-exact-eager-eagle3-packed | chat | 12.8 | 308 | 39% (1012 of 2589) | 2.17 |
+| bi-bf16-eager | edit | 12.5 | 187 |  |  |
+| bi-bf16-eager | chat | 12.6 | 96 |  |  |
+| bi-bf16-eager-ngram | edit | 21.4 | 124 | 39% (499 of 1264) | 2.97 |
+| bi-bf16-eager-ngram | chat | 13.3 | 80 | 11% (125 of 1118) | 1.56 |
+| bi-glyd-exact-eager-ngram | edit | 10.2 | 213 | 39% (499 of 1264) | 2.97 |
+| bi-glyd-exact-eager-ngram | chat | 6.3 | 170 | 11% (125 of 1118) | 1.56 |
+
+| Runs compared | Requests with the same tokens |
+| :--- | :--- |
+| bf16-ngram against bf16 | 5 of 10 (parted: chat 1 at 48, chat 2 at 51, chat 3 at 171, chat 4 at 27, chat 5 at 164) |
+| bf16-eagle3-tight against bf16-tight | 5 of 10 (parted: edit 4 at 137, chat 2 at 45, chat 3 at 231, chat 4 at 18, chat 5 at 39) |
+| glyd-ngram against glyd | 4 of 10 (parted: edit 4 at 137, chat 1 at 158, chat 2 at 45, chat 3 at 221, chat 4 at 18, chat 5 at 39) |
+| glyd-eagle3 against glyd | 5 of 10 (parted: chat 1 at 227, chat 2 at 155, chat 3 at 292, chat 4 at 109, chat 5 at 138) |
+| glyd-eagle3-packed against glyd | 3 of 10 (parted: edit 2 at 330, edit 4 at 137, chat 1 at 280, chat 2 at 51, chat 3 at 231, chat 4 at 18, chat 5 at 66) |
+| glyd-eagle3-packed-again against glyd-eagle3-packed | 3 of 10 (parted: edit 2 at 330, edit 4 at 137, chat 1 at 115, chat 2 at 51, chat 3 at 171, chat 4 at 158, chat 5 at 29) |
+| glyd-exact-eager-ngram against bf16-eager-ngram | 10 of 10 |
+| glyd-exact-eager-eagle3 against bf16-eager-eagle3 | 10 of 10 |
+| glyd-exact-eager-eagle3-packed against bf16-eager-eagle3 | 10 of 10 |
+| bf16-eager-ngram against bf16-eager | 5 of 10 (parted: chat 1 at 304, chat 2 at 153, chat 3 at 231, chat 4 at 18, chat 5 at 66) |
+| bf16-eager-eagle3 against bf16-eager | 3 of 10 (parted: edit 2 at 195, edit 4 at 188, chat 1 at 48, chat 2 at 45, chat 3 at 171, chat 4 at 27, chat 5 at 208) |
+| bi-bf16-eager-ngram against bi-bf16-eager | 10 of 10 |
+| bi-glyd-exact-eager-ngram against bi-bf16-eager-ngram | 10 of 10 |
+| bi-glyd-exact-eager-ngram against bi-bf16-eager | 10 of 10 |
+| glyd against bf16 | 6 of 10 (parted: chat 2 at 98, chat 3 at 171, chat 4 at 211, chat 5 at 66) |
+| bf16-tight against bf16 | 4 of 10 (parted: edit 4 at 137, chat 1 at 115, chat 2 at 45, chat 3 at 171, chat 4 at 211, chat 5 at 39) |
+
+bf16: load 212.6 s; Glyd's key None
+bf16-ngram: load 158.4 s; Glyd's key None
+bf16-eager: load 12.4 s; Glyd's key None
+glyd: load 145.2 s; Glyd's key {'layout': 'mma', 'exact': False, 'verify': False, 'glyd': '0.25.1', 'packs': 'e4acc9daa09858a0'}
+glyd-ngram: load 229.6 s; Glyd's key {'layout': 'mma', 'exact': False, 'verify': False, 'glyd': '0.25.1', 'packs': 'e4acc9daa09858a0'}
+glyd-eagle3: load 172.2 s; Glyd's key {'layout': 'mma', 'exact': False, 'verify': False, 'glyd': '0.25.1', 'packs': 'e4acc9daa09858a0'}; drafter {'packed': 0, 'linears': 5}
+glyd-eagle3-packed: load 172.6 s; Glyd's key {'layout': 'mma', 'exact': False, 'verify': False, 'glyd': '0.25.1', 'packs': '1919f39e5d861b88'}; drafter {'packed': 5, 'linears': 5}
+glyd-eagle3-packed-again: load 70.8 s; Glyd's key {'layout': 'mma', 'exact': False, 'verify': False, 'glyd': '0.25.1', 'packs': '1919f39e5d861b88'}; drafter {'packed': 5, 'linears': 5}
+bf16-tight: load 67.9 s; Glyd's key None
+bf16-eagle3-tight: load 92.9 s; Glyd's key None; drafter {'packed': 0, 'linears': 5}
+glyd-eagle3-tight: load 163.7 s; Glyd's key {'layout': 'mma', 'exact': False, 'verify': False, 'glyd': '0.25.1', 'packs': 'e4acc9daa09858a0'}; drafter {'packed': 0, 'linears': 5}
+bf16-eager-ngram: load 112.0 s; Glyd's key None
+glyd-exact-eager-ngram: load 33.2 s; Glyd's key {'layout': 'mma', 'exact': True, 'verify': False, 'glyd': '0.25.1', 'packs': 'e4acc9daa09858a0'}
+bf16-eager-eagle3: load 16.4 s; Glyd's key None; drafter {'packed': 0, 'linears': 5}
+glyd-exact-eager-eagle3: load 36.2 s; Glyd's key {'layout': 'mma', 'exact': True, 'verify': False, 'glyd': '0.25.1', 'packs': 'e4acc9daa09858a0'}; drafter {'packed': 0, 'linears': 5}
+glyd-exact-eager-eagle3-packed: load 38.4 s; Glyd's key {'layout': 'mma', 'exact': True, 'verify': False, 'glyd': '0.25.1', 'packs': '1919f39e5d861b88'}; drafter {'packed': 5, 'linears': 5}
+bi-bf16-eager: load 13.9 s; Glyd's key None
+bi-bf16-eager-ngram: load 13.0 s; Glyd's key None
+bi-glyd-exact-eager-ngram: load 33.4 s; Glyd's key {'layout': 'mma', 'exact': True, 'verify': False, 'glyd': '0.25.1', 'packs': 'e4acc9daa09858a0'}

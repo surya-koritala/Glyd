@@ -1,0 +1,30 @@
+{
+ "greedy": {
+  "tps_median": 21.12,
+  "tps_all": [
+   21.13,
+   21.12,
+   21.12,
+   21.09,
+   21.06
+  ],
+  "first_ms_median": 53,
+  "tokens": 256,
+  "same_text": true,
+  "text_sha": "00b02abc33a9",
+  "tps_8_users_total": 161.0
+ },
+ "top-p": {
+  "tps_median": 20.98,
+  "tps_all": [
+   21.0,
+   21.01,
+   20.98,
+   20.94,
+   20.94
+  ],
+  "first_ms_median": 54,
+  "tokens": 256,
+  "tps_8_users_total": 159.9
+ }
+}

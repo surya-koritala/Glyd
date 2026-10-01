@@ -1,0 +1,15 @@
+2 x NVIDIA RTX A6000 (compute 8.6, sm_86, 49140 MiB), x86_64 host, 28 CPUs; tree 5513d94 (vllm-plugin, v0.25.1 with the plugin); steps moe; TP 2; model Qwen/Qwen3-8B, big none, experts Qwen/Qwen3-30B-A3B
+11:56:53 (+1 s) machine
+11:57:08 (+16 s) env: vLLM and nvcc in 15 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA RTX A6000)
+11:57:11 (+19 s) build: sm_86 in 3 s (library: C API 5 | GPU code 86)
+12:05:56 (+544 s) moe Qwen3-30B-A3B --brief: exit 0 in 462 s (check_vllm: all passed (5 checks))
+download dl-Qwen3-30B-A3B: exit 0: 61084157680 bytes in 81 s (at +82 s)
+12:05:56 (+544 s) done
+
+== check-Qwen3-30B-A3B
+PASS Qwen3-30B-A3B-tp2 auto: every pack (288 and 96 mixture of experts' layers' experts) decoded to its weights bit for bit
+PASS Qwen3-30B-A3B-tp2 auto: each layer's product within 1e-2 of F.linear, the experts of their decoded matrices (3.76e-03) and the same bits every run
+PASS Qwen3-30B-A3B-tp2 auto: top-1 agreement with bf16 on its continuation 0.9870 (at least 0.97; bf16 eager's 0.9857)
+PASS Qwen3-30B-A3B-tp2 auto: mean |logprob difference| 1.46e-02, at most 2.0x bf16 eager's against its graphs (1.69e-02)
+PASS Qwen3-30B-A3B-tp2 exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8; continuation True)
+

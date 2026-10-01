@@ -1,0 +1,128 @@
+Downloading cpython-3.11.16-linux-x86_64-gnu (download) (29.4MiB)
+ Downloaded cpython-3.11.16-linux-x86_64-gnu (download)
+Loading WEBUI_SECRET_KEY from file, not provided as an environment variable.
+Loading WEBUI_SECRET_KEY from /work/home/.webui_secret_key
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 7e5b5dc7342b
+INFO  [alembic.runtime.migration] Running upgrade 7e5b5dc7342b -> ca81bd47c050, Add config table.
+INFO  [alembic.runtime.migration] Running upgrade ca81bd47c050 -> c0fbf31ca0db, Update file table
+INFO  [alembic.runtime.migration] Running upgrade c0fbf31ca0db -> 6a39f3d8e55c, Add knowledge table
+INFO  [alembic.runtime.migration] Running upgrade 6a39f3d8e55c -> 242a2047eae0, Update chat table
+INFO  [alembic.runtime.migration] Running upgrade 242a2047eae0 -> 1af9b942657b, Migrate tags
+INFO  [alembic.runtime.migration] Running upgrade 1af9b942657b -> 3ab32c4b8f59, Update tags
+/work/home/.local/share/uv/python/cpython-3.11.16-linux-x86_64-gnu/lib/python3.11/contextlib.py:144: SAWarning: Table '_alembic_tmp_tag' specifies columns 'id' as primary_key=True, not matching locally specified columns 'id', 'user_id'; setting the current primary key columns to 'id', 'user_id'. This warning may become an exception in a future release
+  next(self.gen)
+INFO  [alembic.runtime.migration] Running upgrade 3ab32c4b8f59 -> c69f45358db4, Add folder table
+INFO  [alembic.runtime.migration] Running upgrade c69f45358db4 -> c29facfe716b, Update file table path
+INFO  [alembic.runtime.migration] Running upgrade c29facfe716b -> af906e964978, Add feedback table
+INFO  [alembic.runtime.migration] Running upgrade af906e964978 -> 4ace53fd72c8, Update folder table and change DateTime to BigInteger for timestamp fields
+INFO  [alembic.runtime.migration] Running upgrade 4ace53fd72c8 -> 922e7a387820, Add group table
+INFO  [alembic.runtime.migration] Running upgrade 922e7a387820 -> 57c599a3cb57, Add channel table
+INFO  [alembic.runtime.migration] Running upgrade 57c599a3cb57 -> 7826ab40b532, Update file table
+INFO  [alembic.runtime.migration] Running upgrade 7826ab40b532 -> 3781e22d8b01, Update message & channel tables
+INFO  [alembic.runtime.migration] Running upgrade 3781e22d8b01 -> 9f0c9cd09105, Add note table
+INFO  [alembic.runtime.migration] Running upgrade 9f0c9cd09105 -> d31026856c01, Update folder table data
+INFO  [alembic.runtime.migration] Running upgrade d31026856c01 -> 018012973d35, Add indexes
+INFO  [alembic.runtime.migration] Running upgrade 018012973d35 -> 3af16a1c9fb6, update user table
+INFO  [alembic.runtime.migration] Running upgrade 3af16a1c9fb6 -> 38d63c18f30f, Add oauth_session table
+INFO  [alembic.runtime.migration] Running upgrade 38d63c18f30f -> a5c220713937, Add reply_to_id column to message
+INFO  [alembic.runtime.migration] Running upgrade a5c220713937 -> 37f288994c47, add_group_member_table
+INFO  [alembic.runtime.migration] Running upgrade 37f288994c47 -> 2f1211949ecc, Update messages and channel member table
+INFO  [alembic.runtime.migration] Running upgrade 2f1211949ecc -> b10670c03dd5, Update user table
+INFO  [alembic.runtime.migration] Running upgrade b10670c03dd5 -> 90ef40d4714e, Update channel and channel members table
+INFO  [alembic.runtime.migration] Running upgrade 90ef40d4714e -> 3e0e00844bb0, Add knowledge_file table
+INFO  [alembic.runtime.migration] Running upgrade 3e0e00844bb0 -> 6283dc0e4d8d, Add channel file table
+INFO  [alembic.runtime.migration] Running upgrade 6283dc0e4d8d -> 81cc2ce44d79, Update channel file and knowledge table
+INFO  [alembic.runtime.migration] Running upgrade 81cc2ce44d79 -> c440947495f3, Add chat_file table
+INFO  [alembic.runtime.migration] Running upgrade c440947495f3 -> 374d2f66af06, Add prompt history table
+INFO  [alembic.runtime.migration] Running upgrade 374d2f66af06 -> 8452d01d26d7, Add chat_message table
+INFO  [alembic.runtime.migration] Running upgrade 8452d01d26d7 -> f1e2d3c4b5a6, Add access_grant table
+INFO  [alembic.runtime.migration] Running upgrade f1e2d3c4b5a6 -> a1b2c3d4e5f6, Add skill table
+INFO  [alembic.runtime.migration] Running upgrade a1b2c3d4e5f6 -> b2c3d4e5f6a7, add scim column to user table
+INFO  [alembic.runtime.migration] Running upgrade b2c3d4e5f6a7 -> a3dd5bedd151, Add tasks and summary columns to chat table
+INFO  [alembic.runtime.migration] Running upgrade a3dd5bedd151 -> d4e5f6a7b8c9, add automation tables
+INFO  [alembic.runtime.migration] Running upgrade d4e5f6a7b8c9 -> b7c8d9e0f1a2, add last_read_at to chat
+INFO  [alembic.runtime.migration] Running upgrade b7c8d9e0f1a2 -> e1f2a3b4c5d6, Add is_pinned to note table
+INFO  [alembic.runtime.migration] Running upgrade e1f2a3b4c5d6 -> c1d2e3f4a5b6, Add shared_chat table and migrate existing shares
+INFO  [alembic.runtime.migration] Running upgrade c1d2e3f4a5b6 -> 56359461a091, add calendar tables
+INFO  [alembic.runtime.migration] Running upgrade 56359461a091 -> 4de81c2a3af1, add pinned_note table
+INFO  [alembic.runtime.migration] Running upgrade 4de81c2a3af1 -> a0b1c2d3e4f5, Add memory user_id index
+INFO  [alembic.runtime.migration] Running upgrade a0b1c2d3e4f5 -> 3c9b0ca343fd, add knowledge_directory table
+INFO  [alembic.runtime.migration] Running upgrade 3c9b0ca343fd -> 461111b60977, add missing primary keys to legacy peewee tables
+INFO  [alembic.runtime.migration] Running upgrade 461111b60977 -> 3ff2c63645b8, reshape config to per key rows
+INFO  [alembic.runtime.migration] Running upgrade 3ff2c63645b8 -> 4c5ce3d2f27f, add context summary to chat message
+INFO  [alembic.runtime.migration] Running upgrade 4c5ce3d2f27f -> 7b3f2a9c1d4e, add memory type
+INFO  [alembic.runtime.migration] Running upgrade 7b3f2a9c1d4e -> 42e2978c7933, add memory path and meta
+INFO  [alembic.runtime.migration] Running upgrade 42e2978c7933 -> 856c5b02fb54, add chat message meta
+INFO  [alembic.runtime.migration] Running upgrade 856c5b02fb54 -> 9a1b2c3d4e5f, add current_message_id to chat
+INFO  [alembic.runtime.migration] Running upgrade 9a1b2c3d4e5f -> c49178636c78, add chat variables
+INFO  [alembic.runtime.migration] Running upgrade c49178636c78 -> b0018471bbbe, add user variables
+INFO  [alembic.runtime.migration] Running upgrade b0018471bbbe -> 55f1302ac17c, Add memory (id, user_id) covering index
+INFO  [alembic.runtime.migration] Running upgrade 55f1302ac17c -> 959eaac8f909, add automation folder id
+INFO  [alembic.runtime.migration] Running upgrade 959eaac8f909 -> f0bd01a18a3d, add unique normalized user email index
+INFO  [alembic.runtime.migration] Running upgrade f0bd01a18a3d -> 1ce6ade7d93b, Add group_member user_id index
+INFO  [alembic.runtime.migration] Running upgrade 1ce6ade7d93b -> 6d09d1bf1f23, repair double encoded user oauth
+INFO  [alembic.runtime.migration] Running upgrade 6d09d1bf1f23 -> d4c1a8e37b62, add chat timer_at and chat list, unread and timer indexes
+/work/uv-cache/archive-v0/EHqWQieGlpVNxetV/lib/python3.11/site-packages/pydub/utils.py:170: RuntimeWarning: Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work
+  warn("Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work", RuntimeWarning)
+INFO:     Started server process [1296]
+INFO:     Waiting for application startup.
+Creating knowledge table
+Migrating data from document table to knowledge table
+Converting 'chat' column to JSON
+Renaming 'chat' column to 'old_chat'
+Adding new 'chat' column of type JSON
+Dropping 'old_chat' column
+Primary Key: {'constrained_columns': ['id'], 'name': None}
+Unique Constraints: [{'name': 'uq_id_user_id', 'column_names': ['id', 'user_id']}]
+Indexes: []
+Creating new primary key with 'id' and 'user_id'.
+Dropping unique constraint: uq_id_user_id
+[]
+
+ ██████╗ ██████╗ ███████╗███╗   ██╗    ██╗    ██╗███████╗██████╗ ██╗   ██╗██╗
+██╔═══██╗██╔══██╗██╔════╝████╗  ██║    ██║    ██║██╔════╝██╔══██╗██║   ██║██║
+██║   ██║██████╔╝█████╗  ██╔██╗ ██║    ██║ █╗ ██║█████╗  ██████╔╝██║   ██║██║
+██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║    ██║███╗██║██╔══╝  ██╔══██╗██║   ██║██║
+╚██████╔╝██║     ███████╗██║ ╚████║    ╚███╔███╔╝███████╗██████╔╝╚██████╔╝██║
+ ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝     ╚══╝╚══╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝
+
+
+v0.11.4 - building the best AI user interface.
+
+https://github.com/open-webui/open-webui
+
+2026-10-01 14:50:29.440 | INFO     | open_webui.utils.logger:start_logger:223 - GLOBAL_LOG_LEVEL: INFO
+2026-10-01 14:50:29.516 | INFO     | httpx._client:_send_single_request:1025 - HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/revision/main "HTTP/1.1 200 OK"
+Fetching 30 files:   0%|          | 0/30 [00:00<?, ?it/s]Fetching 30 files: 100%|██████████| 30/30 [00:00<00:00, 2224.98it/s]
+2026-10-01 14:50:29.537 | INFO     | sentence_transformers.base.model:_load_modules:992 - Loading SentenceTransformer model from /hf/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/1110a243fdf4706b3f48f1d95db1a4f5529b4d41.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 1424.24it/s]
+[1mBertModel LOAD REPORT[0m from: /hf/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+2026-10-01 14:50:29.873 | INFO     | open_webui.main:lifespan:387 - Installing external dependencies of functions and tools...
+2026-10-01 14:50:29.878 | INFO     | open_webui.utils.plugin:install_frontmatter_requirements:450 - No requirements found in frontmatter.
+2026-10-01 14:50:29.878 | INFO     | open_webui.utils.automations:scheduler_worker_loop:79 - Scheduler worker started (timer poll interval: 1s, scheduler poll interval: 10s)
+2026-10-01 14:50:30.328 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:58914 - "GET /api/models HTTP/1.1" 401
+2026-10-01 14:50:30.332 | INFO     | open_webui.models.auths:authenticate_user:151 - authenticate_user: 
+2026-10-01 14:50:30.576 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:58924 - "POST /api/v1/auths/signin HTTP/1.1" 400
+2026-10-01 14:50:30.822 | INFO     | open_webui.models.auths:insert_new_auth:116 - insert_new_auth
+2026-10-01 14:50:30.838 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:58926 - "POST /api/v1/auths/signup HTTP/1.1" 200
+2026-10-01 14:50:30.855 | INFO     | open_webui.routers.openai:get_all_models:797 - get_all_models()
+2026-10-01 14:50:30.855 | INFO     | open_webui.routers.ollama:get_all_models:392 - get_all_models()
+2026-10-01 14:50:30.856 | INFO     | open_webui.utils.session_pool:get_session:77 - Created shared aiohttp session pool (limit=unlimited, per_host=unlimited, dns_ttl=300)
+2026-10-01 14:50:30.859 | ERROR    | open_webui.routers.ollama:send_get_request:93 - Connection error: Cannot connect to host localhost:11434 ssl:default [Connect call failed ('127.0.0.1', 11434)]
+2026-10-01 14:50:30.863 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:58928 - "GET /api/models HTTP/1.1" 200
+2026-10-01 14:50:30.864 | INFO     | open_webui.models.auths:authenticate_user:151 - authenticate_user: 
+2026-10-01 14:50:31.108 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:58944 - "POST /api/v1/auths/signin HTTP/1.1" 400
+2026-10-01 14:50:31.109 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:58960 - "OPTIONS /api/v1/auths/signin HTTP/1.1" 400
+2026-10-01 14:50:31.109 | INFO     | open_webui.models.auths:authenticate_user:151 - authenticate_user: 
+2026-10-01 14:50:31.352 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:58970 - "POST /api/v1/auths/signin HTTP/1.1" 400
+2026-10-01 14:50:31.423 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:58982 - "POST /api/chat/completions HTTP/1.1" 200
+2026-10-01 14:50:33.626 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:58994 - "POST /api/chat/completions HTTP/1.1" 200
+2026-10-01 14:50:35.514 | INFO     | open_webui.utils.session_pool:close_session:91 - Closed shared aiohttp session pool

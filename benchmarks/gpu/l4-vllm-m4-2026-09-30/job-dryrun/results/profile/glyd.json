@@ -1,0 +1,196 @@
+{
+ "mode": "glyd",
+ "model": "Qwen/Qwen3-1.7B",
+ "gpu": "NVIDIA L4",
+ "vllm_glyd": {
+  "layout": "mma",
+  "exact": false,
+  "verify": false,
+  "glyd": "0.25.1",
+  "packs": "ada5c3f2230e3690"
+ },
+ "decode": [
+  {
+   "M": 1,
+   "gpu_ms": {
+    "glyd": 8.665941000000021,
+    "gemm": 2.830947999999995,
+    "attention": 0.06971340000000043,
+    "other": 0.3440195999999779
+   },
+   "wall_ms": 15.932174199997462,
+   "top": [
+    [
+     "void mma_gemm_kernel<Tiered, 1>(Tiered, long, long, long, __nv_bfloat16 const*, __nv_bfloa",
+     8.665941000000021
+    ],
+    [
+     "std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv",
+     2.4385115999999964
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<128, 64, 128, 4, false, false",
+     0.22450550000001696
+    ],
+    [
+     "void flash::flash_fwd_splitkv_combine_kernel<Flash_fwd_kernel_traits<128, 64, 128, 4, fals",
+     0.16793089999999594
+    ],
+    [
+     "triton_red_fused_3",
+     0.07060304999998966
+    ],
+    [
+     "void vllm::reshape_and_cache_flash_kernel<__nv_bfloat16, __nv_bfloat16, (vllm::Fp8KVCacheD",
+     0.06971340000000043
+    ]
+   ]
+  },
+  {
+   "M": 8,
+   "gpu_ms": {
+    "glyd": 8.866690450000013,
+    "gemm": 3.0835858000000176,
+    "attention": 0.0718529000000079,
+    "other": 0.48444960000000087
+   },
+   "wall_ms": 16.517217500017978,
+   "top": [
+    [
+     "void mma_gemm_kernel<Tiered, 1>(Tiered, long, long, long, __nv_bfloat16 const*, __nv_bfloa",
+     8.866690450000013
+    ],
+    [
+     "void cutlass::Kernel2<cutlass_80_wmma_tensorop_bf16_s161616gemm_bf16_16x16_128x2_tn_align8",
+     2.489476599999996
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<128, 64, 128, 4, false, false",
+     0.4502784499999986
+    ],
+    [
+     "void flash::flash_fwd_splitkv_combine_kernel<Flash_fwd_kernel_traits<128, 64, 128, 4, fals",
+     0.14383075000000484
+    ],
+    [
+     "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:",
+     0.13516589999998935
+    ],
+    [
+     "triton_red_fused_fused_add_rms_norm_vllm_linear_2",
+     0.07855755000001795
+    ]
+   ]
+  },
+  {
+   "M": 32,
+   "gpu_ms": {
+    "glyd": 9.832359450000062,
+    "gemm": 3.632207749999994,
+    "attention": 0.08261454999998934,
+    "other": 0.6733172000000215
+   },
+   "wall_ms": 18.20526344999962,
+   "top": [
+    [
+     "void mma_gemm_kernel<Tiered, 2>(Tiered, long, long, long, __nv_bfloat16 const*, __nv_bfloa",
+     9.832359450000062
+    ],
+    [
+     "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8",
+     2.792894950000002
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<128, 64, 64, 4, false, false,",
+     0.8393127999999896
+    ],
+    [
+     "void at::native::elementwise_kernel<128, 4, at::native::gpu_kernel_impl_nocast<at::native:",
+     0.15716064999999055
+    ],
+    [
+     "triton_red_fused_3",
+     0.10265409999999404
+    ],
+    [
+     "triton_red_fused_fused_add_rms_norm_vllm_linear_2",
+     0.08862855000000149
+    ]
+   ]
+  }
+ ],
+ "prompt": [
+  {
+   "M": 512,
+   "gpu_ms": {
+    "glyd": 32.846168000000006,
+    "gemm": 3.594409000000005,
+    "attention": 0.23942500000000516,
+    "other": 1.757186000000012
+   },
+   "wall_ms": 45.962185000007594,
+   "top": [
+    [
+     "void mma_gemm_big_kernel<Tiered, 4, 4, 2, 1, false>(Tiered, long, long, long, long, __nv_b",
+     31.599638999999993
+    ],
+    [
+     "std::enable_if<!(false), void>::type internal::gemvx::kernel<int, int, __nv_bfloat16, __nv",
+     2.4527750000000013
+    ],
+    [
+     "finish_kernel(float const*, long, __nv_bfloat16 const*, long, long, __nv_bfloat16*)",
+     1.2465290000000204
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<128, 64, 128, 4, false, false",
+     1.1416340000000038
+    ],
+    [
+     "triton_red_fused_3",
+     0.6168649999999924
+    ],
+    [
+     "triton_poi_fused_mul_silu_slice_vllm_linear_1",
+     0.4544970000000048
+    ]
+   ]
+  },
+  {
+   "M": 2048,
+   "gpu_ms": {
+    "glyd": 16.99306099999995,
+    "gemm": 102.83859000000012,
+    "attention": 1.4140529999999176,
+    "other": 15.37352400000002
+   },
+   "wall_ms": 146.53192299965667,
+   "top": [
+    [
+     "ampere_bf16_s1688gemm_bf16_128x128_ldg8_f2f_stages_32x1_tn",
+     44.273361
+    ],
+    [
+     "void cutlass::Kernel2<cutlass_80_tensorop_bf16_s16816gemm_relu_bf16_256x128_32x3_tn_align8",
+     43.814731000000016
+    ],
+    [
+     "void mma_unpack_kernel<Tiered, false, false>(Tiered, long, long, long, unsigned short*, in",
+     16.99306099999995
+    ],
+    [
+     "void flash::flash_fwd_splitkv_kernel<Flash_fwd_kernel_traits<128, 64, 128, 4, false, false",
+     12.306780000000035
+    ],
+    [
+     "triton_poi_fused_mul_silu_slice_vllm_linear_1",
+     7.258036999999975
+    ],
+    [
+     "triton_red_fused_3",
+     3.1307959999999677
+    ]
+   ]
+  }
+ ]
+}

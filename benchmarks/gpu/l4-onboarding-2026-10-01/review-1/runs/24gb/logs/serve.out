@@ -1,0 +1,12 @@
+Qwen3-8B: 12.2 GB on the GPU with Glyd, instead of 16.4 GB; your GPU has 23.7 GB free.
+Qwen3-8B is downloaded already.
+Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+Loading Qwen3-8B with Glyd: 12.2 GB instead of 16.4 GB...
+Ready in 40s. (The server's log: /work/home/.local/state/glyd/logs/serve-20261001-115011.log)
+
+Serving Qwen/Qwen3-8B with Glyd (40,960-token window).
+  OpenAI API   http://localhost:8000/v1   (model name: Qwen/Qwen3-8B)
+  Chat page    http://localhost:8000
+  Log          /work/home/.local/state/glyd/logs/serve-20261001-115011.log
+Press Ctrl-C to stop.
+Stopping the server (a few seconds)...

@@ -1,0 +1,13 @@
+Loading weights:   0%|          | 0/311 [00:00<?, ?it/s]Loading weights:  96%|█████████▌| 299/311 [00:00<00:00, 2988.06it/s]Loading weights: 100%|██████████| 311/311 [00:00<00:00, 3011.17it/s]
+bf16c: loaded in 0.5 s, 1.19 GB (layout None, compiled calls to 2048 positions)
+W0930 15:09:15.956000 52105 torch/_inductor/utils.py:1806] [0/0] Not enough SMs to use max_autotune_gemm mode
+bf16c ttft 128 (128 + 16 tokens, 1 a batch): ttft 0.03811 total 0.1461 tokens_per_s 139.2 [warm-up 28.58 s, compiled, 2 repeats]
+bf16c ttft 512 (512 + 16 tokens, 1 a batch): ttft 0.03847 total 0.1575 tokens_per_s 126.2 [warm-up 37.13 s, compiled, 2 repeats]
+bf16c ttft 2048 (2048 + 16 tokens, 1 a batch): ttft 0.07063 total 0.5116 tokens_per_s 34.03 [warm-up 0.51 s, eager, 2 repeats]
+bf16c ttft 8192 (8192 + 16 tokens, 1 a batch): ttft 0.4931 total 0.9343 tokens_per_s 34.01 [warm-up 0.93 s, eager, 2 repeats]
+bf16c mix chat (200 + 300 tokens, 1 a batch): ttft 0.03878 total 2.436 tokens_per_s 124.8 [warm-up 2.47 s, compiled, 1 repeats]
+bf16c rate 1 (128 + 256 tokens, 1 a batch): ttft 0.03794 total 2.063 tokens_per_s 126 [warm-up 2.09 s, compiled, 1 repeats]
+bf16c mix long (2000 + 200 tokens, 1 a batch): ttft 0.07003 total 5.906 tokens_per_s 34.1 [warm-up 5.90 s, eager, 1 repeats]
+bf16c rate 8 (128 + 256 tokens, 8 a batch): ttft 0.03454 total 7.599 tokens_per_s 269.7 [warm-up 7.64 s, eager, 1 repeats]
+bf16c rate 32 (128 + 256 tokens, 32 a batch): ttft 0.1587 total 7.83 tokens_per_s 1064 [warm-up 7.83 s, eager, 1 repeats]
+exit 0

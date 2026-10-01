@@ -1,0 +1,6 @@
+06:35:00 (+0 s) machine
+06:35:09 (+9 s) env: vLLM and nvcc in 9 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA GH200 480GB)
+06:35:11 (+11 s) build: sm_90a in 2 s (library: C API 5 | GPU code 90)
+06:53:39 (+1119 s) bench Qwen3-32B: exit 0 in 1063 s
+download dl-Qwen3-32B: exit 0: 65540268929 bytes in 53 s (at +53 s)
+06:53:39 (+1119 s) done

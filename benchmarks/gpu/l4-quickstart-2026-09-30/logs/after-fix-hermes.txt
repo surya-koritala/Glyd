@@ -1,0 +1,3 @@
+thinking on, streamed: delta fields {'role': 1, 'content': 1365}
+  content has <think>: True; content: "<think>\nOkay, let's see. I need to calculate 17 multiplied by 23. Hmm, how do I approach this? Well,"; reasoning chars: 0
+thinking on, a tool call: [{"id": "chatcmpl-tool-9ad097a039cc1ef0", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}}] | finish: tool_calls | content: <think> Okay, the user is asking about the weather in Paris. I need to use the g | reasoning: 0 chars

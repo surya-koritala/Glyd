@@ -1,0 +1,1 @@
+NVIDIA A10 (8.6, sm_86, 23028 MiB), x86_64 host, 30 CPUs; the tree 15d9c04 (respond-bench, v0.25.1); plan a10; runs (expected s): Qwen/Qwen3-8B:glyd:230 Qwen/Qwen3-8B:bf16c:250 Qwen/Qwen3-8B:bf16:200 Qwen/Qwen3-14B:glyd:365 Qwen/Qwen3-14B:bf16c:40 Qwen/Qwen3-14B:bf16:40 Qwen/Qwen3-8B:exact:240 Qwen/Qwen3-14B:exact:355 

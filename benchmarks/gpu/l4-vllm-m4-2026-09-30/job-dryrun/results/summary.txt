@@ -1,0 +1,40 @@
+1 x NVIDIA L4 (compute 8.9, sm_89, 23034 MiB), x86_64 host, 16 CPUs; tree 61825a1 (vllm-plugin, v0.25.1 with the plugin); steps moebench,profile; TP 1; model Qwen/Qwen3-1.7B, big none, experts ibm-granite/granite-3.1-3b-a800m-instruct
+07:33:17 (+0 s) machine
+07:33:34 (+17 s) env: vLLM and nvcc in 16 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA L4)
+07:34:12 (+55 s) build: sm_89 in 38 s (library: C API 5 | GPU code 3089)
+07:41:41 (+504 s) bench granite-3.1-3b-a800m-instruct: exit 0 in 449 s
+07:43:17 (+600 s) profile bf16: exit 0 in 96 s
+07:45:03 (+706 s) profile glyd: exit 0 in 106 s
+download dl-Qwen3-1.7B: exit 0: 4079423234 bytes in 1 s (at +2 s)
+download dl-granite-3.1-3b-a800m-instruct: exit 0: 6602352184 bytes in 0 s (at +2 s)
+07:45:03 (+706 s) done
+
+== bench-granite-3.1-3b-a800m-instruct
+bf16: weights 6.17 GiB, KV cache 211,968 tokens, max concurrency 51.75x at 4,096 tokens (started cold, on an empty compile cache: weights 6.17 GiB, KV cache 211,328 tokens, max concurrency 51.59x at 4,096 tokens)
+glyd: weights 4.33 GiB, KV cache 240,352 tokens, max concurrency 58.68x at 4,096 tokens (started cold, on an empty compile cache: weights 4.33 GiB, KV cache 238,240 tokens, max concurrency 58.16x at 4,096 tokens)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.79 | 201.9 | 129 / 613 | 17.4 / 19.5 | 16 | 2040 MHz, 53 C |
+| 1 | glyd | 0.82 | 209.4 | 127 / 187 | 13.9 / 16.0 | 16 | 1710 MHz, 60 C |
+| inf | bf16 | 3.17 | 811.0 | 413 / 1103 | 37.5 / 38.4 | 32 | 1980 MHz, 56 C |
+| inf | glyd | 3.25 | 832.6 | 575 / 1624 | 35.9 / 37.5 | 32 | 1575 MHz, 61 C |
+
+== profile bf16
+| Step | M | GPU ms | linear (Glyd + GEMMs) | Glyd | GEMMs | attention | other | wall ms |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| decode | 1 | 14.52 | 14.11 (97%) | 0.00 | 14.11 | 0.06 | 0.35 | 20.12 |
+| decode | 8 | 15.28 | 14.75 (97%) | 0.00 | 14.75 | 0.06 | 0.46 | 19.39 |
+| decode | 32 | 17.00 | 16.28 (96%) | 0.00 | 16.28 | 0.07 | 0.65 | 21.06 |
+| prompt | 512 | 27.93 | 25.96 (93%) | 0.00 | 25.96 | 0.22 | 1.74 | 34.71 |
+| prompt | 2048 | 123.24 | 107.35 (87%) | 0.00 | 107.35 | 0.95 | 14.94 | 132.04 |
+
+== profile glyd
+| Step | M | GPU ms | linear (Glyd + GEMMs) | Glyd | GEMMs | attention | other | wall ms |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| decode | 1 | 11.91 | 11.50 (97%) | 8.67 | 2.83 | 0.07 | 0.34 | 15.93 |
+| decode | 8 | 12.51 | 11.95 (96%) | 8.87 | 3.08 | 0.07 | 0.48 | 16.52 |
+| decode | 32 | 14.22 | 13.46 (95%) | 9.83 | 3.63 | 0.08 | 0.67 | 18.21 |
+| prompt | 512 | 38.44 | 36.44 (95%) | 32.85 | 3.59 | 0.24 | 1.76 | 45.96 |
+| prompt | 2048 | 136.62 | 119.83 (88%) | 16.99 | 102.84 | 1.41 | 15.37 | 146.53 |
+

@@ -1,0 +1,107 @@
+$ VLLM_USE_FLASHINFER_SAMPLER=0 VLLM_NO_USAGE_STATS=1 CC=/work/home/.local/state/glyd/zigcc GLYD_LAYOUT=mma /work/home/.local/share/uv/tools/glyd/bin/python -m vllm.entrypoints.cli.main serve Qwen/Qwen3-1.7B --quantization glyd --host 127.0.0.1 --port 8000 --middleware glyd.gpu.page.ChatPage --max-model-len 40960 --gpu-memory-utilization 0.58 --enforce-eager --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3
+(APIServer pid=3488) INFO 10-01 12:48:14 [api_utils.py:347] 
+(APIServer pid=3488) INFO 10-01 12:48:14 [api_utils.py:347]        █     █     █▄   ▄█
+(APIServer pid=3488) INFO 10-01 12:48:14 [api_utils.py:347]  ▄▄ ▄█ █     █     █ ▀▄▀ █  version 0.30.0
+(APIServer pid=3488) INFO 10-01 12:48:14 [api_utils.py:347]   █▄█▀ █     █     █     █  model   Qwen/Qwen3-1.7B
+(APIServer pid=3488) INFO 10-01 12:48:14 [api_utils.py:347]    ▀▀  ▀▀▀▀▀ ▀▀▀▀▀ ▀     ▀
+(APIServer pid=3488) INFO 10-01 12:48:14 [api_utils.py:347] 
+(APIServer pid=3488) INFO 10-01 12:48:14 [api_utils.py:286] non-default args: {'model_tag': 'Qwen/Qwen3-1.7B', 'enable_auto_tool_choice': True, 'tool_call_parser': 'hermes', 'host': '127.0.0.1', 'middleware': ['glyd.gpu.page.ChatPage'], 'model': 'Qwen/Qwen3-1.7B', 'max_model_len': 40960, 'quantization': 'glyd', 'enforce_eager': True, 'reasoning_parser': 'qwen3', 'gpu_memory_utilization': 0.58}
+(APIServer pid=3488) INFO 10-01 12:48:14 [arg_utils.py:849] HF_HUB_OFFLINE is True, replace model_id [Qwen/Qwen3-1.7B] to model_path [/hf/hub/models--Qwen--Qwen3-1.7B/snapshots/70d244cc86ccca08cf5af4e1e306ecf908b1ad5e]
+(APIServer pid=3488) INFO 10-01 12:48:14 [model.py:692] Resolved architecture: Qwen3ForCausalLM
+(APIServer pid=3488) INFO 10-01 12:48:14 [model.py:2030] Using max model len 40960
+(APIServer pid=3488) WARNING 10-01 12:48:14 [vllm.py:1547] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(APIServer pid=3488) WARNING 10-01 12:48:14 [vllm.py:1570] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(APIServer pid=3488) INFO 10-01 12:48:14 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native'])
+(APIServer pid=3488) INFO 10-01 12:48:14 [vllm.py:1780] Cudagraph is disabled under eager mode
+(APIServer pid=3488) INFO 10-01 12:48:15 [compilation.py:336] Enabled custom fusions: norm_quant, act_quant
+(APIServer pid=3488) Traceback (most recent call last):
+(APIServer pid=3488)   File "<frozen runpy>", line 198, in _run_module_as_main
+(APIServer pid=3488)   File "<frozen runpy>", line 88, in _run_code
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/cli/main.py", line 112, in <module>
+(APIServer pid=3488)     main()
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/cli/main.py", line 106, in main
+(APIServer pid=3488)     args.dispatch_function(args)
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/cli/serve.py", line 154, in cmd
+(APIServer pid=3488)     uvloop.run(run_server(args))
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/uvloop/__init__.py", line 96, in run
+(APIServer pid=3488)     return __asyncio.run(
+(APIServer pid=3488)            ^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 195, in run
+(APIServer pid=3488)     return runner.run(main)
+(APIServer pid=3488)            ^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 118, in run
+(APIServer pid=3488)     return self._loop.run_until_complete(task)
+(APIServer pid=3488)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "uvloop/loop.pyx", line 1509, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=3488)   File "uvloop/loop.pyx", line 1502, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=3488)   File "uvloop/loop.pyx", line 1371, in uvloop.loop.Loop.run_forever
+(APIServer pid=3488)   File "uvloop/loop.pyx", line 551, in uvloop.loop.Loop._run
+(APIServer pid=3488)   File "uvloop/loop.pyx", line 471, in uvloop.loop.Loop._on_idle
+(APIServer pid=3488)   File "uvloop/cbhandles.pyx", line 86, in uvloop.loop.Handle._run
+(APIServer pid=3488)   File "uvloop/cbhandles.pyx", line 64, in uvloop.loop.Handle._run
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=3488)     return await main
+(APIServer pid=3488)            ^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 176, in run_server
+(APIServer pid=3488)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 190, in run_server_worker
+(APIServer pid=3488)     async with build_async_engine_client(
+(APIServer pid=3488)                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=3488)     return await anext(self.gen)
+(APIServer pid=3488)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 58, in build_async_engine_client
+(APIServer pid=3488)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=3488)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=3488)     return await anext(self.gen)
+(APIServer pid=3488)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 94, in build_async_engine_client_from_engine_args
+(APIServer pid=3488)     async_llm = AsyncLLM.from_vllm_config(
+(APIServer pid=3488)                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/async_llm.py", line 235, in from_vllm_config
+(APIServer pid=3488)     return cls(
+(APIServer pid=3488)            ^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/v1/engine/async_llm.py", line 143, in __init__
+(APIServer pid=3488)     self.renderer = renderer = renderer_from_config(self.vllm_config)
+(APIServer pid=3488)                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/renderers/registry.py", line 89, in renderer_from_config
+(APIServer pid=3488)     return RENDERER_REGISTRY.load_renderer(renderer_mode, config, tokenizer)
+(APIServer pid=3488)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/renderers/registry.py", line 71, in load_renderer
+(APIServer pid=3488)     return renderer_cls(config, tokenizer)
+(APIServer pid=3488)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/renderers/hf.py", line 1011, in __init__
+(APIServer pid=3488)     maybe_make_thread_pool(
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/tokenizers/hf.py", line 46, in maybe_make_thread_pool
+(APIServer pid=3488)     tokenizer_pool.put(copy.deepcopy(og_tokenizer))
+(APIServer pid=3488)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/copy.py", line 162, in deepcopy
+(APIServer pid=3488)     y = _reconstruct(x, memo, *rv)
+(APIServer pid=3488)         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/copy.py", line 253, in _reconstruct
+(APIServer pid=3488)     y = func(*args)
+(APIServer pid=3488)         ^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/copy.py", line 252, in <genexpr>
+(APIServer pid=3488)     args = (deepcopy(arg, memo) for arg in args)
+(APIServer pid=3488)             ^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/copy.py", line 162, in deepcopy
+(APIServer pid=3488)     y = _reconstruct(x, memo, *rv)
+(APIServer pid=3488)         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/copy.py", line 259, in _reconstruct
+(APIServer pid=3488)     state = deepcopy(state, memo)
+(APIServer pid=3488)             ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/copy.py", line 136, in deepcopy
+(APIServer pid=3488)     y = copier(x, memo)
+(APIServer pid=3488)         ^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/copy.py", line 221, in _deepcopy_dict
+(APIServer pid=3488)     y[deepcopy(key, memo)] = deepcopy(value, memo)
+(APIServer pid=3488)                              ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/copy.py", line 162, in deepcopy
+(APIServer pid=3488)     y = _reconstruct(x, memo, *rv)
+(APIServer pid=3488)         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=3488)   File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/copy.py", line 261, in _reconstruct
+(APIServer pid=3488)     y.__setstate__(state)
+(APIServer pid=3488)   File "/work/home/.local/share/uv/tools/glyd/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 171, in _interrupt_init
+(APIServer pid=3488)     raise KeyboardInterrupt("terminated")
+(APIServer pid=3488) KeyboardInterrupt: terminated

@@ -1,0 +1,10 @@
+test_install_sh_on_a_gpu_machine                                             FAIL AssertionError: uv tool install --force --managed-python --python 3.12 glyd[vllm]==0.26.0rc3
+test_install_sh_cut_short_runs_nothing                                       FAIL AssertionError: (4383, "'shell >/dev/null 2>&1 || true\\nfirst=$(co'", ['uv tool install --force --managed-python --python 3.12 glyd[vllm]==0.26.0rc3'
+test_install_sh_does_not_hide_a_failed_download_of_uv                        FAIL AssertionError: (1, 'curl: (22) The requested URL returned error: 503\nglyd install: uv installed, but it is not where its installer says; open a new 
+test_install_sh_will_not_replace_a_program_it_did_not_make                   FAIL AssertionError: (0, '')
+test_install_sh_says_what_it_does_to_the_path                                FAIL AssertionError: (['uv tool install --force --managed-python --python 3.12 glyd[vllm]==0.26.0rc3', 'uv tool dir --bin', 'uv tool update-shell', 'glyd d
+test_install_sh_a_glyd_ahead_on_path_is_said_with_the_fix                    FAIL AssertionError: glyd install: another glyd (/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmp9jj5_ksh/glyd) comes first on your PATH: it is the com
+test_install_sh_checks_the_machine_before_the_big_download                   FAIL AssertionError: (0, '')
+test_install_sh_where_glyd_run_has_nothing_to_run_on                         FAIL ==> Open a new terminal (or run: export PATH="/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmpql9i9rm7/.local/bin:$PATH") so that glyd is found.
+test_install_constraints_are_the_acceptance_runs_versions                    FAIL FileNotFoundError: [Errno 2] No such file or directory: '/private/tmp/glyd-base/bindings/python/../../scripts/install_constraints.py'
+0 of 9 ok

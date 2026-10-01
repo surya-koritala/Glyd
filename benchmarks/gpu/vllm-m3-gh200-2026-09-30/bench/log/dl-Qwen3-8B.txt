@@ -1,0 +1,2 @@
+Fetching 12 files:   0%|          | 0/12 [00:00<?, ?it/s]Fetching 12 files: 100%|██████████| 12/12 [00:00<00:00, 2868.72it/s]
+exit 0: 16397431693 bytes in 0 s (at +0 s)

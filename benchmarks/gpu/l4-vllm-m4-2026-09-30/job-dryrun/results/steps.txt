@@ -1,0 +1,9 @@
+07:33:17 (+0 s) machine
+07:33:34 (+17 s) env: vLLM and nvcc in 16 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.17.0 | GPU NVIDIA L4)
+07:34:12 (+55 s) build: sm_89 in 38 s (library: C API 5 | GPU code 3089)
+07:41:41 (+504 s) bench granite-3.1-3b-a800m-instruct: exit 0 in 449 s
+07:43:17 (+600 s) profile bf16: exit 0 in 96 s
+07:45:03 (+706 s) profile glyd: exit 0 in 106 s
+download dl-Qwen3-1.7B: exit 0: 4079423234 bytes in 1 s (at +2 s)
+download dl-granite-3.1-3b-a800m-instruct: exit 0: 6602352184 bytes in 0 s (at +2 s)
+07:45:03 (+706 s) done

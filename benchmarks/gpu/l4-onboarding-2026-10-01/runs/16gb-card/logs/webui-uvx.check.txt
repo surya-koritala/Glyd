@@ -1,0 +1,3 @@
+ok   Open WebUI lists the model: /api/models: ['Qwen/Qwen3-8B', 'arena-model']
+ok   Open WebUI chat (the browser's request, its tools on): 'Paris'
+ok   Open WebUI chat, a tool call in the stream: tool calls ['get_current_timestamp'], text ''

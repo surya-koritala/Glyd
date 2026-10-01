@@ -1,0 +1,2 @@
+release-0.26.0 4a8ed6b, gpu-route-split 8ad4c01 merged (the route SPLIT on an A100 SXM to 8192 for O and K at least 5120), on the dev L4: check_capi and test_gpu.py's split tests (the L4's own code takes the route without SPLIT: the A100's new lengths run on the host checks alone)
+NVIDIA L4, 595.91.07, 23034 MiB, Cuda compilation tools, release 13.0, V13.0.88, torch 2.14.0+cu130

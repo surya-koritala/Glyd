@@ -1,0 +1,1 @@
+NVIDIA GH200 480GB (9.0, sm_90a, 97871 MiB), aarch64 host, 64 CPUs; the tree 15d9c04 (respond-bench, v0.25.1); plan hopper; runs (expected s): Qwen/Qwen3-8B:glyd:195 Qwen/Qwen3-8B:bf16c:213 Qwen/Qwen3-8B:bf16:175 Qwen/Qwen3-32B:glyd:326 Qwen/Qwen3-32B:bf16c:354 Qwen/Qwen3-32B:bf16:268 Qwen/Qwen3-8B:exact:139 Qwen/Qwen3-32B:exact:236 
