@@ -2155,31 +2155,36 @@ def test_glyd_login_asks_again_and_says_who():
 def test_the_gpu_picked_is_one_glyd_can_use():
     """S11: the freest GPU was picked first and refused for its age (a P40 beside a 3060); MIG showed the whole GPU's memory to a process that sees a slice.
     (The fake GPUs carry a CUDA 13 driver, so the driver check passes wherever PyTorch for CUDA 13 is installed, as in ci.yml's vLLM job.)"""
-    p40 = pf.Gpu(0, "Tesla P40", 24 * GiB, 23 * GiB, (6, 1), "595", (13, 2))
-    r3060 = pf.Gpu(1, "NVIDIA GeForce RTX 3060", 12 * GiB, 11 * GiB, (8, 6), "595", (13, 2))
-    assert pf.pick_gpu([p40, r3060], "").index == 1 and pf.setup_checks(False, gpus=[p40, r3060])[0].index == 1
-    assert pf.pick_gpu([p40, r3060], "0").index == 0  # (CUDA_VISIBLE_DEVICES names the old one: refused, as asked for)
-    r = raises(lambda: pf.setup_checks(False, gpus=[p40, pf.Gpu(1, "Tesla P4", 8 * GiB, 7 * GiB, (6, 1), "595", (13, 2))]), "too old")
-    assert "none of this computer's 2 GPUs" in r.what
-    mig = pf.Gpu(0, "NVIDIA A100 80GB", 80 * GiB, 79 * GiB, (8, 0), "595", (13, 2), mig=True)
-    r = raises(lambda: pf.setup_checks(False, gpus=[mig]), "MIG is on")
-    assert "--gpu-memory-utilization" in r.fix and "nvidia-smi -i 0 -mig 0" in r.fix
-    saved = os.environ.get("CUDA_VISIBLE_DEVICES")
-    os.environ["CUDA_VISIBLE_DEVICES"] = "MIG-1234"
+    saved_torch_cuda = pf.torch_cuda
+    pf.torch_cuda = lambda: None  # (GPU picking alone: no installed PyTorch's CUDA or Glyd library decides here; ci.yml's vLLM job has both)
     try:
-        assert pf.setup_checks(False, gpus=[mig])[0] is mig  # (a slice named: the user's own sizing)
+        p40 = pf.Gpu(0, "Tesla P40", 24 * GiB, 23 * GiB, (6, 1), "595", (13, 2))
+        r3060 = pf.Gpu(1, "NVIDIA GeForce RTX 3060", 12 * GiB, 11 * GiB, (8, 6), "595", (13, 2))
+        assert pf.pick_gpu([p40, r3060], "").index == 1 and pf.setup_checks(False, gpus=[p40, r3060])[0].index == 1
+        assert pf.pick_gpu([p40, r3060], "0").index == 0  # (CUDA_VISIBLE_DEVICES names the old one: refused, as asked for)
+        r = raises(lambda: pf.setup_checks(False, gpus=[p40, pf.Gpu(1, "Tesla P4", 8 * GiB, 7 * GiB, (6, 1), "595", (13, 2))]), "too old")
+        assert "none of this computer's 2 GPUs" in r.what
+        mig = pf.Gpu(0, "NVIDIA A100 80GB", 80 * GiB, 79 * GiB, (8, 0), "595", (13, 2), mig=True)
+        r = raises(lambda: pf.setup_checks(False, gpus=[mig]), "MIG is on")
+        assert "--gpu-memory-utilization" in r.fix and "nvidia-smi -i 0 -mig 0" in r.fix
+        saved = os.environ.get("CUDA_VISIBLE_DEVICES")
+        os.environ["CUDA_VISIBLE_DEVICES"] = "MIG-1234"
+        try:
+            assert pf.setup_checks(False, gpus=[mig])[0] is mig  # (a slice named: the user's own sizing)
+        finally:
+            if saved is None:
+                os.environ.pop("CUDA_VISIBLE_DEVICES")
+            else:
+                os.environ["CUDA_VISIBLE_DEVICES"] = saved
+        raises(lambda: pf.setup_checks(False, gpus=[pf.Gpu(0, "NVIDIA A100 MIG 1g.10gb", 0, 0, (8, 0), "595", (13, 2))]), "did not say how much memory")  # ([N/A] memory)
+        r4090 = pf.Gpu(1, "NVIDIA GeForce RTX 4090", 24 * GiB, 23 * GiB, (8, 9), "595", (13, 2))  # N7: a MIG-enabled card with more memory is not picked ahead of a usable one
+        assert pf.pick_gpu([mig, r4090], "").index == 1 and pf.setup_checks(False, gpus=[mig, r4090])[0].index == 1
+        assert pf.pick_gpu([mig, r4090], "0").index == 0 and pf.pick_gpu([mig, r4090], "MIG-1234").index == 0  # (named: as asked for)
+        assert pf.pick_gpu([mig], "").index == 0  # (the only one: picked, for the MIG refusal)
+        g = pf.probe_gpus(smi("0, NVIDIA A100 80GB, 81920, 80000, 400, 595.91.07, 8.0, Disabled, Enabled\n"))[0]
+        assert g.mig and not pf.probe_gpus(smi("0, NVIDIA L4, 23034, 22566, 469, 595.91.07, 8.9, Disabled, Disabled\n"))[0].mig
     finally:
-        if saved is None:
-            os.environ.pop("CUDA_VISIBLE_DEVICES")
-        else:
-            os.environ["CUDA_VISIBLE_DEVICES"] = saved
-    raises(lambda: pf.setup_checks(False, gpus=[pf.Gpu(0, "NVIDIA A100 MIG 1g.10gb", 0, 0, (8, 0), "595", (13, 2))]), "did not say how much memory")  # ([N/A] memory)
-    r4090 = pf.Gpu(1, "NVIDIA GeForce RTX 4090", 24 * GiB, 23 * GiB, (8, 9), "595", (13, 2))  # N7: a MIG-enabled card with more memory is not picked ahead of a usable one
-    assert pf.pick_gpu([mig, r4090], "").index == 1 and pf.setup_checks(False, gpus=[mig, r4090])[0].index == 1
-    assert pf.pick_gpu([mig, r4090], "0").index == 0 and pf.pick_gpu([mig, r4090], "MIG-1234").index == 0  # (named: as asked for)
-    assert pf.pick_gpu([mig], "").index == 0  # (the only one: picked, for the MIG refusal)
-    g = pf.probe_gpus(smi("0, NVIDIA A100 80GB, 81920, 80000, 400, 595.91.07, 8.0, Disabled, Enabled\n"))[0]
-    assert g.mig and not pf.probe_gpus(smi("0, NVIDIA L4, 23034, 22566, 469, 595.91.07, 8.9, Disabled, Disabled\n"))[0].mig
+        pf.torch_cuda = saved_torch_cuda
 
 
 def test_small_review_nits_in_the_settings_and_the_ports():
