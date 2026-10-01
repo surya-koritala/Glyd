@@ -330,6 +330,7 @@ async function send(text) {
     box.value = text; grow();
     if (!failure) { say('Stopped'); return; }
     if (/maximum context length|max_model_len|context (length|window)/i.test(failure.message)) fullNotice();
+    else if (failure.status === 401) notice('This server wants an API key, and this page does not send one.');
     else if (failure.status === 0) notice('Cannot reach the model server. If you started it with glyd run, check that it is still running in the terminal.');
     else notice('The server refused the request: ' + failure.message);
     say('The request failed');
@@ -362,6 +363,7 @@ $('#think').addEventListener('change', () => { try { localStorage.setItem('glyd.
 (async () => {
   try {
     const r = await fetch('/v1/models');
+    if (r.status === 401) { $('#model').textContent = 'needs an API key'; notice('This server wants an API key (it was started with --api-key), and this page does not send one. Use another client, or start the server without a key.'); box.focus(); return; }
     const d = (await r.json()).data[0];
     S.model = d.id; S.window = d.max_model_len || 0;
     $('#model').textContent = d.id + (S.window ? ' · ' + fmt(S.window) + '-token window' : '');
