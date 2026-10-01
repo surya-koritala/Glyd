@@ -10,7 +10,8 @@ release.yml builds it. The Rust `glyd` for the cases that need it was built from
 | Run (`review-1/runs/NAME/`) | Command | Result |
 | :--- | :--- | :--- |
 | `24gb` | `acceptance.sh --wheel W --rust-glyd R --webui none` (a fresh work directory: a cold uv cache) | PASSED, 49 checks |
-| `16gb-card` | `acceptance.sh --wheel W --rust-glyd R --card 4080s --webui all --pip-refusal` | PASSED, 58 checks |
+| `16gb-card` | `acceptance.sh --wheel W --rust-glyd R --card 4080s --webui all --pip-refusal` | PASSED, 58 checks, with Open WebUI as the README had it then (`WEBUI_AUTH=False`: no login) |
+| `16gb-card-login` | the same, after the README's Open WebUI commands lost `WEBUI_AUTH=False` (264af19; the run is of be01a5d, which also makes the pip refusal's environment new) | PASSED, 64 checks: in each of the three routes Open WebUI asks for a login and its first account signs up as the administrator |
 | `8gb-card` | `acceptance.sh --wheel W --rust-glyd R --card 8gb` | PASSED, 17 checks: Qwen3-4B refused with a model to try, Qwen3-1.7B (24,576 tokens, 29%) run |
 | `head-smoke-1.7b` | `acceptance.sh --wheel W --rust-glyd R --model Qwen/Qwen3-1.7B --webui none` on the branch's head (cf616b7), after the three runs: the one commit of Python code since their wheel (1260fa1: a server's message that ends in a full stop is not given a second), this install.sh, and the Ctrl-C cases' stricter check that glyd says it is stopping | PASSED, 49 checks |
 | `cli-x86_64-no-gpu` | `acceptance.sh --flow cli --rust-glyd R` (a container with no GPU on the box) | PASSED, 11 checks |
@@ -39,9 +40,11 @@ What the new cases checked, in the order the glyd flow runs them (`runs/24gb/acc
   (glyd's readiness check no longer needs the key), its banner says it asks for the key, the note names plain HTTP and what the key does not guard,
   the key is on no command line (`ps`) and in no log or output, `/v1` is 401 without it and 200 with it, `/health` stays open. Open WebUI's bridge
   route runs against the second. (B1, S2)
-- **Open WebUI's CORS** (`webui_cors` in `check.py`, in each of the three routes of the 16 GB run): another site's request gets no
-  `access-control-allow-origin`, its preflight is 400, the page's own origin is granted. (S14; `openwebui-cors/` is the probe that found what
-  the default does.)
+- **Open WebUI** (each of the three routes of `16gb-card-login`, `check.py`'s `webui`): its login is on, as the README's commands leave it: `/api/models`
+  with no token is 401 and the sign-in that no-login mode took (empty credentials) is 400; the first account, signed up through the API as a person
+  does on first visit, is the administrator; the model is listed and chats (a tool call in the stream too) with that account's token; and its CORS is
+  limited to its own addresses (another site's request gets no `access-control-allow-origin`, its preflight is 400, the page's own origin is
+  granted). (S14; `openwebui-login/` is the probe of that first visit, `openwebui-cors/` the one of no-login mode that decided the default.)
 - **Ctrl-C while the model loads**, once and twice: glyd exits 130, prints that it is stopping, no vLLM process is left. The first run of this case
   took 50 s from the Ctrl-C to the exit (the engine does not answer SIGTERM until the load is over, and glyd waited 30 s for it): a server that is
   still loading is now swept after 5 s. (S7)
@@ -56,13 +59,20 @@ the 16 GB and 8 GB runs after it kept uv's cache and Triton's launchers (their `
 README's table has the first round's, from a fresh home each time). Everything else in a run's home is cleaned before its install.
 
 The server logs the checks scan for tracebacks and allocator warnings are those before the Ctrl-C and engine-kill cases, which make their own:
-4 in `24gb`, 4 in `16gb-card`. None has a traceback or an allocator warning.
+4 in `24gb`, 4 in `16gb-card`, 4 in `16gb-card-login`. None has a traceback or an allocator warning.
 
 `openwebui-cors/` (S14, run on the box with Open WebUI 0.11.4's image, CPU only): with `WEBUI_AUTH=False` and the default `CORS_ALLOW_ORIGIN` (`*`)
 a sign-in with `Origin: http://evil.example` is answered with the administrator's token and `access-control-allow-origin: http://evil.example`,
 and the administrator's `/api/v1/functions/`, `/tools/` and `/users/` answer 200; with `CORS_ALLOW_ORIGIN=http://localhost:3000;http://127.0.0.1:3000`
 the same request gets no grant, its preflight is 400, and the page's own origin is granted. A request with `Host: evil.example:3000` is answered
-either way: Open WebUI does not check the Host (DNS rebinding is not closed by this setting).
+either way: Open WebUI does not check the Host (DNS rebinding is not closed by this setting). That is why the README's commands no longer set
+`WEBUI_AUTH=False`; its "if you want no login" note names the risk.
+
+`openwebui-login/` (the same image and box, the README's Docker command without `WEBUI_AUTH=False`): `/api/models` with no token is 401; a sign-in with
+empty credentials is 400; `/api/config` says `onboarding: true`; the first sign-up (`/api/v1/auths/signup`) returns `role: admin` and a token; a second
+sign-up is refused (403: "contact your administrator"); with the token `/api/models` is 200; a sign-in from `Origin: http://evil.example` and its
+preflight get no `access-control-allow-origin` (400), the page's own origin does. Until the first account exists, whoever reaches the port first makes it:
+the README says to make it at once.
 
 `rc3-wheel-red` is what the acceptance run says about the code before the fixes (the rc3 wheel from the release, this tree's `install.sh` and
 `acceptance.sh`): the server on 127.0.0.1 answers another site's Origin with 200 (its preflight 200, its POST 400, vLLM's CORS `*`) and a rebinding
