@@ -116,7 +116,9 @@ and needs no permission at all (DNS rebinding). So the server checks each reques
 `localhost`, `127.0.0.1` or `[::1]` is refused with 421, an Origin that is not the server's own (`http://` and its Host) with 403, a preflight
 and a websocket's handshake included, and vLLM's own CORS is limited to the server's addresses. `curl`, the OpenAI libraries and Open WebUI's
 server send no Origin and an address as their Host, and are answered; the chat page is the server's own origin. `acceptance.sh` checks this
-against a live server.
+against a live server. A web app of your own on another origin (a dev server on localhost:5173) is refused too; to let it in, name the
+address yourself, which turns these checks off and leaves the origins to vLLM: `glyd serve MODEL --host 127.0.0.1 -- --allowed-origins
+'["http://localhost:5173"]'`.
 
 `glyd serve --host ADDRESS` (or `-- --host`) is the way onto the network, and the checks are off for an address you chose: anyone who can
 reach this computer can send the model prompts. Give it a key, in the environment:

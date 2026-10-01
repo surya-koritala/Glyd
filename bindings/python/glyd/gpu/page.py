@@ -51,7 +51,8 @@ def refusal(headers):
     if host and _hostname(host) not in LOOPBACK:
         return 421, f"this server answers to localhost, 127.0.0.1 and [::1], not to {host[:80]!r} (glyd serve --host sets another address)"
     if origin and origin.lower() != "http://" + host.strip().lower():
-        return 403, f"this server answers to its own page, not to a script from {origin[:80]!r}"
+        return 403, (f"this server answers to its own page, not to a script from {origin[:80]!r} (to let a web app of your own in: glyd serve MODEL --host 127.0.0.1 "
+                     "-- --allowed-origins '[\"http://localhost:5173\"]', which leaves the origins to vLLM)")
     return None
 
 
