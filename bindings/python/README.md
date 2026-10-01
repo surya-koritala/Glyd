@@ -279,6 +279,12 @@ entry point):
     vllm serve ./qwen3-8b-glyd --quantization glyd     # a glyd save, as saved
     vllm serve Qwen/Qwen3-8B --quantization glyd --enforce-eager --additional-config '{"glyd": {"exact": true}}'
 
+On a 16 GB card these defaults do not leave room for a chat (vLLM takes
+0.92 of the memory and sizes the context to the model's 40,960 tokens):
+`glyd run` works both out from the card, and
+[gpu/vllm](https://github.com/surya-koritala/Glyd/tree/main/gpu/vllm#advanced-vllm-serve-by-hand)
+has the flags by hand.
+
 `layout`, `exact` and `verify` are `from_pretrained`'s options, given in
 `--additional-config`'s `"glyd"` (or `GLYD_LAYOUT`, `GLYD_EXACT`,
 `GLYD_VERIFY`). `fraction` (0 to 1, `GLYD_FRACTION`) packs only that share

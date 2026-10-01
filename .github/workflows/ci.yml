@@ -91,3 +91,4 @@ jobs:
         run: |
           python test_vllm.py
           python test_gpu.py
+          python test_onboard.py  # (glyd run, serve, doctor; with vLLM installed, its parser names are checked against vLLM's registries)

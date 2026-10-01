@@ -156,6 +156,46 @@ jobs:
           mkdir /tmp/plugin-tests && cp src/bindings/python/test_vllm.py /tmp/plugin-tests/
           cd /tmp/plugin-tests && python test_vllm.py
 
+  # scripts/install.sh from the release's own tag, as a user runs it, on a runner with no GPU: uv installed by its own installer,
+  # a Python 3.12 that uv manages, glyd==V from PyPI as a tool (the compression tools alone: no NVIDIA GPU answered), then
+  # `glyd --version` and `glyd doctor`, which says so. The GPU path of the script (glyd[vllm], the compiler stand-in) is
+  # run by gpu/vllm/acceptance.sh on a machine with a GPU.
+  installer:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+      - name: "sh scripts/install.sh (retry: PyPI can lag the release)"
+        run: |
+          set -e
+          if [ ! -f scripts/install.sh ]; then echo "v$V has no scripts/install.sh: nothing to check"; exit 0; fi
+          ok=0
+          for i in $(seq 1 40); do
+            sh scripts/install.sh && { ok=1; break; }
+            echo "install.sh did not finish (attempt $i/40: PyPI can lag the release); retrying in 30s"
+            sleep 30
+          done
+          [ "$ok" = 1 ] || { echo "scripts/install.sh never finished"; exit 1; }
+      - name: glyd is the release, and glyd doctor says there is no GPU
+        run: |
+          set -e
+          [ -f scripts/install.sh ] || exit 0
+          export PATH="$HOME/.local/bin:$PATH"
+          glyd --version | head -3
+          glyd --version | grep -q "$V" || { echo "glyd --version does not say $V"; exit 1; }
+          doctor=$(glyd doctor || true)
+          echo "$doctor"
+          echo "$doctor" | grep -q "no NVIDIA GPU answered" || { echo "glyd doctor did not report the missing GPU"; exit 1; }
+
   homebrew:
     needs: version
     strategy:

@@ -11,14 +11,168 @@ vllm serve ./qwen3-8b-glyd --quantization glyd            # a glyd save (glyd pa
 vllm serve Qwen/Qwen3-8B --quantization glyd --additional-config '{"glyd": {"layout": "mma12"}}'
 ```
 
+On a 16 GB card these defaults do not leave room for a chat: vLLM sizes the context to the model's own 40,960 tokens and
+takes 0.92 of the memory, which a desktop shares. Start with `glyd run` ([below](#local-chat-like-ollama)), which works the
+memory and the context out from the card, or give `vllm serve` the flags of [the by-hand section](#advanced-vllm-serve-by-hand).
+
 The `glyd` package registers the plugin with vLLM through its `vllm.general_plugins` entry point; nothing else is
 needed. It is tested with vLLM 0.30.0, and `glyd[vllm]` pins `vllm>=0.30,<0.31`. With another minor release of vLLM
 the entry point logs one line and loads nothing, and `--quantization glyd` stops with why.
 
 ## Local chat, like Ollama
 
-One server command, then a chat page in the browser, on a 16 GB GeForce card such as an RTX 4080 SUPER. Qwen3-8B's bf16
-weights (15.26 GiB) leave such a card no room for a chat. Packed by Glyd they take 11.39 GiB.
+Two commands, on Linux with an NVIDIA GPU:
+
+<!-- acceptance: install -->
+```bash
+curl -LsSf https://getglyd.com/install.sh | sh
+```
+
+<!-- acceptance: run -->
+```bash
+glyd run Qwen/Qwen3-8B
+```
+
+The script installs [uv](https://docs.astral.sh/uv/) if it is missing, then Glyd with vLLM 0.30 and PyTorch as one isolated
+tool, on a Python 3.12 that uv fetches for it ({{DISK}} of disk; no sudo, no virtual environment, no pip), and ends with
+`glyd doctor`. `glyd run` downloads the model (Qwen3-8B is 16.4 GB the first time), checks that this machine can run it,
+starts vLLM with settings it works out from the GPU, and opens a chat: type in the terminal (`/bye` leaves, `/clear`
+starts over, `/think` turns the model's thinking on and off), or open http://localhost:8000.
+
+**Needs:** Linux on x86_64 (the installer also takes aarch64, which this flow was not run on); an NVIDIA GPU of the
+Ampere generation or newer (RTX 30 and 40 series, A10, A100, L4, H100 and later) and its driver, 580 or newer (the CUDA 13
+PyTorch that vLLM 0.30 installs); curl; and disk for the packages and the model. It needs no CUDA toolkit and no sudo.
+vLLM's Triton builds small launchers with a C compiler when the server starts: where the machine has no gcc or clang, the
+installer adds ziglang, a compiler from PyPI, and `glyd run` hands it to vLLM. `glyd doctor` checks each of these and says
+what to do about a line that fails.
+
+`glyd run`, in order, stopping with a plain message and what to do where it must:
+
+1. **Checks** the GPU and its driver (against the CUDA this PyTorch was built for), the compiler, vLLM's version, the model
+   (it is on the Hugging Face Hub, bf16, and not gated without your token), whether the model with Glyd fits the memory free
+   now (otherwise: how much it needs, what holds the GPU's memory, and the largest model of its family that fits), the disk
+   the download needs, and the port.
+2. **Downloads** the model, with one progress bar. A gated model (Llama, Gemma): accept its licence on its Hugging Face page,
+   then `glyd login` (the `hf` command is not on the PATH of a tool install).
+3. **Chooses** the settings below and prints them on one line.
+4. **Starts** vLLM with its output in a log file, and shows what it is doing.
+5. **Chats**, in the terminal and at the printed address. A conversation longer than the model's window is said so in both:
+   "This conversation is longer than the model's window (10,240 tokens). Start a new chat with /clear."
+
+`glyd run MODEL --prompt "Say hello"` prints one answer on stdout (the thinking and notices go to stderr) and exits; a
+prompt on stdin does the same. `--context N` sets the context. Any vLLM flag after a lone `--` is passed on and wins over
+what was chosen: `glyd run MODEL -- --max-model-len 4096`. A `glyd serve` of the same model already up on the port is used
+instead of a second server.
+
+### The settings
+
+| Setting | `glyd run` and `glyd serve` choose | Why |
+| :--- | :--- | :--- |
+| `--gpu-memory-utilization` | the memory free now, less 0.55 GiB for the server's CUDA context (outside vLLM's share) and 0.4 GiB left for a desktop, over the card's total as CUDA reports it (not nvidia-smi's), rounded down to 1%; at most 0.92. `glyd run` (one chat) takes only what two windows of KV cache need, `glyd serve` the whole share | vLLM's share is of that total: an RTX 4080 SUPER's is 15.57 GiB, nvidia-smi's 16,376 MiB is 15.99 |
+| `--max-model-len` | the model's own length, or the most the KV cache holds at that share (a multiple of 1,024). Under 4,096 the model does not fit | the KV cache is what is left after the weights |
+| eager mode (`--enforce-eager`) | always; `-- --no-enforce-eager` compiles | on an L4 with Qwen3-8B compiled was 2-3% faster in all, for 1, 4 and 8 users (21.7, 84.8 and 165.8 tokens/s against 21.2, 82.3 and 161.2), the server up in 2 min 45 s against 47 s, and it needs 2.15 GiB beyond the weights where eager needs 0.5 |
+| the layout (`GLYD_LAYOUT`) | the plugin's own choice for the GPU (the tiered layout, 10.80 bits a weight, on Ada and wherever only it fits; else the 12-bit one), the tiered one also where the 12-bit one leaves less room than an 8,192-token chat | the layout is counted into the memory above, so the plugin packs what was counted |
+| the sampler (`VLLM_USE_FLASHINFER_SAMPLER=0`) | PyTorch's | FlashInfer's compiles with nvcc at the first request that samples, which stopped a server on a machine with no CUDA toolkit; the same tokens a second (21.1 and 21.2 for one user) |
+| tool calls and thinking | by family: Qwen3 `hermes` and `qwen3`; Qwen3 Instruct-2507 and Qwen2.5 `hermes`; Qwen3-Coder `qwen3_coder`; DeepSeek-R1 distills `deepseek_r1`; Llama 3.x `llama3_json`; Mistral `mistral`. Another family chats without tool calls | the names are vLLM 0.30's |
+| the allocator | PyTorch's default | `expandable_segments:True` gave 24 allocator warnings in a load at a 16 GB budget, and the default none |
+| telemetry, the address | `VLLM_NO_USAGE_STATS=1`; the server listens on 127.0.0.1 | `glyd serve --host 0.0.0.0` opens it to the network, with no key unless `-- --api-key SECRET` is added |
+
+The one line printed before loading is these, for example `Settings: 10,240-token context (the most that fits), eager
+mode, 61% of GPU memory (14.4 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler
+is installed.` The model's weights with Glyd are counted from its config and file sizes before anything downloads
+(Qwen3-8B: 12.2 GB, bf16's 16.4).
+
+### `glyd serve`, `glyd doctor` and Open WebUI
+
+`glyd serve MODEL` does the same checks and chooses the same settings, and leaves the server up for other programs: the
+OpenAI API at http://localhost:8000/v1 and the chat page at http://localhost:8000. `glyd doctor` prints the GPU, driver,
+CUDA, free memory, compilers and versions, and which of Qwen3-8B, 14B and 32B fit, at Glyd's sizes.
+
+Open WebUI is a chat page with accounts, history and tools, which talks to that API. It uses no GPU memory. Pinned to
+0.11.4, the version tested. Without Docker:
+
+<!-- acceptance: webui-uvx -->
+```bash
+OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 OPENAI_API_KEY=none WEBUI_AUTH=False ENABLE_PERSISTENT_CONFIG=False \
+  uvx --python 3.11 open-webui@0.11.4 serve --host 127.0.0.1 --port 3000
+```
+
+With Docker Engine on Linux, whose containers can share the host's network (`--network=host` is Linux's: Docker Desktop on
+macOS and Windows does not give the container the host's 127.0.0.1):
+
+<!-- acceptance: webui-docker -->
+```bash
+docker run -d --name open-webui --network=host -e PORT=3000 -e HOST=127.0.0.1 \
+  -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 -e OPENAI_API_KEY=none -e WEBUI_AUTH=False \
+  -e ENABLE_PERSISTENT_CONFIG=False -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:v0.11.4
+```
+
+With Docker Desktop, or any Docker without host networking, the container reaches the host by name, and the server has to
+listen on every interface, which opens it to the network: give it a key.
+
+```bash
+glyd serve Qwen/Qwen3-8B --host 0.0.0.0 -- --api-key YOUR_KEY
+```
+
+<!-- acceptance: webui-bridge -->
+```bash
+docker run -d --name open-webui -p 127.0.0.1:3000:8080 --add-host=host.docker.internal:host-gateway \
+  -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 -e OPENAI_API_KEY=YOUR_KEY -e WEBUI_AUTH=False \
+  -e ENABLE_PERSISTENT_CONFIG=False -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:v0.11.4
+```
+
+Open http://localhost:3000. The third command was run on Docker Engine on Linux without host networking, which is the
+case `host-gateway` makes work there; Docker Desktop is the case it is written for and was not run. Notes:
+
+- `WEBUI_AUTH=False` leaves Open WebUI with no login, and it can run tools: anyone who can reach port 3000 uses it. The
+  commands keep it on this computer (`HOST`, `--host` and `127.0.0.1:3000` publish nothing else); to let others in, take
+  `WEBUI_AUTH=False` out and make an account.
+- `ENABLE_PERSISTENT_CONFIG=False` makes these variables the settings on every start. Open WebUI otherwise keeps the
+  connection it first started with (the default, OpenAI's) in its data directory, takes the variables only on a first
+  start, and shows "No models available" on a later one that has them.
+- Run `uvx` from a directory you can write to: Open WebUI keeps a secret key file in it.
+- Its chats offer the model Open WebUI's built-in tools, which is why `glyd serve` starts vLLM with a tool-call parser
+  (Qwen3: `hermes`): without one every chat is answered with `"auto" tool choice requires --enable-auto-tool-choice and
+  --tool-call-parser to be set`. The thinking arrives as a field of its own (`--reasoning-parser qwen3`), which Open WebUI
+  shows as a collapsed "Thought".
+
+### Measured
+
+On an L4 (24 GB) with no CUDA toolkit, installed by the script from this tree's wheel, vLLM 0.30.0, Qwen3-8B unless it says
+otherwise. The 16 GB row is the L4 with another process holding the GPU's memory down to what an RTX 4080 SUPER with a
+desktop has free (14.48 GiB: the card's 15.57 GiB total, a desktop's share taken), and the plugin reading it as the
+GeForce Ada card that it is; likewise the 8 GB row (7.8 GiB free). `glyd` prints GB (10^9 bytes), vLLM's log GiB.
+
+| Free at start | `glyd run` chose | vLLM logged | Ready in |
+| :--- | :--- | :--- | ---: |
+| 23.7 GB (the whole L4) | 92% of GPU memory (21.8 GB), a 40,960-token context (the model's own limit) | weights 11.38 GiB, KV cache 61,104 tokens | 59 s |
+| 15.5 GB (a 16 GB card, a desktop) | 61% (14.4 GB) of the L4's total, the share of 0.86 on a 4080 SUPER's, a 10,240-token context | weights 11.39 GiB, KV cache 11,360 tokens | 39 s |
+| 8.2 GB (an 8 GB card) | Qwen3-8B refused: "needs about 14.7 GB of GPU memory with Glyd (12.2 GB of weights and room for a 4,096-token chat); your GPU has 8.2 GB free. Or try Qwen/Qwen3-1.7B, which needs about 5.1 GB" | | |
+| the same, Qwen3-1.7B | 30% (7.1 GB), a 26,624-token context | weights 2.47 GiB, KV cache 35,248 tokens | 32 s |
+| the same, Qwen3-4B, `-- --max-model-len 2048` | 30% (7.1 GB), the context given | weights 5.48 GiB, KV cache 4,528 tokens | 39 s |
+
+The numbers `glyd run` predicts from the config were within 0.11 GiB of the weights vLLM logged (over, for the smaller
+models) and 2-7% under its KV cache tokens: it never promised a context vLLM then refused. In the servers' logs, no
+traceback and no allocator warning ("memory allocation failed with OOM" or "memory mapping failed with OOM"), 0 of 8 runs
+in this table's logs. {{MEASURED_EXTRA}}
+
+### Update, remove, logs
+
+Run the install line again to update (it installs the release the script was written for). `uv tool uninstall glyd` removes
+the tool; the models stay in the Hugging Face cache (`~/.cache/huggingface`, or where `HF_HOME` says), and a run's log is
+in `~/.local/state/glyd/logs` (the last ten are kept). The `glyd` command is the compression program's too: the Rust
+program is not in the wheel, so `glyd FILE` and `glyd pack` work where that program is on the PATH (Homebrew, `cargo
+install glyd`, the release tarball), and `glyd` says where to get it where it is not.
+
+`bash gpu/vllm/acceptance.sh` runs this section from nothing, in a container with no CUDA toolkit and no compiler: the
+two commands above, the chat page, the API, a conversation longer than the window and Open WebUI, failing on a traceback,
+an allocator warning or a missing answer. `--card 4080s` leaves the server a 16 GB card's memory, `--card 8gb` an 8 GB
+card's, where it expects the refusal and runs the model suggested (`--help`).
+
+### Advanced: `vllm serve` by hand
+
+`glyd run` is `vllm serve` with its flags decided for you, so every vLLM flag works with it, and the plugin works with
+`vllm serve` as it is. By hand, for Qwen3-8B on an RTX 4080 SUPER with a desktop, and what each flag is for:
 
 **Needs**, none of it a CUDA toolkit: an NVIDIA driver 580 or newer (the CUDA 13 build of PyTorch that vLLM 0.30
 installs; the tests ran on 595), [uv](https://docs.astral.sh/uv/) (it fetches Python 3.12, with its headers), a C
@@ -70,28 +224,7 @@ The server answers on http://localhost:8000 once it logs `Application startup co
   with "maximum context length is 8192 tokens".
 - **`--host 127.0.0.1`** keeps the server on this machine. Without it vLLM listens on every interface, with no key.
 
-The chat page is Open WebUI, which talks to the server's OpenAI API. It uses no GPU memory. Without Docker:
-
-<!-- acceptance: webui-uvx -->
-```bash
-OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 OPENAI_API_KEY=none WEBUI_AUTH=False ENABLE_PERSISTENT_CONFIG=False \
-  uvx --python 3.11 open-webui@0.11.4 serve --host 127.0.0.1 --port 3000
-```
-
-With Docker:
-
-<!-- acceptance: webui-docker -->
-```bash
-docker run -d --name open-webui --network=host -e PORT=3000 -e HOST=127.0.0.1 \
-  -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 -e OPENAI_API_KEY=none -e WEBUI_AUTH=False \
-  -e ENABLE_PERSISTENT_CONFIG=False -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:v0.11.4
-```
-
-Open http://localhost:3000. Run `uvx` from a directory you can write to: Open WebUI keeps a secret key file in it.
-`HOST` and `--host` keep the page, which has no login here, on this machine; `--network=host` lets the container reach
-the server on 127.0.0.1. `ENABLE_PERSISTENT_CONFIG=False` makes these variables the settings on every start: Open WebUI
-otherwise keeps the connection it first started with (the default, OpenAI's) in its data directory, takes the variables
-only on a first start, and shows "No models available" on a later one that has them. To test the server alone:
+Open WebUI, as above, on the server's port 8000. To test the server alone:
 
 ```bash
 curl localhost:8000/v1/models
@@ -103,12 +236,12 @@ curl localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d '
 
 Qwen3 thinks before it answers. `/no_think` at the end of a message skips that.
 
-`bash gpu/vllm/acceptance.sh` runs this section from nothing, on a machine with no CUDA toolkit: a clean environment, the
-install, the serve command above as written, a chat through the OpenAI API (two streamed turns and a tool call) and
+`bash gpu/vllm/acceptance.sh --flow vllm` runs this part from nothing, on a machine with no CUDA toolkit: a clean environment,
+the install, the serve command above as written, a chat through the OpenAI API (two streamed turns and a tool call) and
 through Open WebUI both ways, failing on a traceback, an allocator warning or a missing answer. Where the GPU is bigger
 than a card it stands in for, `--card 4080s` leaves the server that card's memory and budget (`--help`).
 
-**Measured** on an L4 held to what an RTX 4080 SUPER with a desktop leaves (14.48 GiB free at start, a budget of 13.71
+**Measured, by hand,** on an L4 held to what an RTX 4080 SUPER with a desktop leaves (14.48 GiB free at start, a budget of 13.71
 GiB: `--card 4080s`, which runs `--gpu-memory-utilization 0.88` as 0.622), with the plugin reading it as a GeForce Ada
 card; vLLM 0.30.0, Open WebUI 0.11.4. 0.26.0rc2's load was also run on an RTX 4080 SUPER with a desktop (the
 fixes of this section were not): the stand-in's numbers for 0.26.0rc2 match it, 11.83 GiB of weights and 1.35 GiB of KV
