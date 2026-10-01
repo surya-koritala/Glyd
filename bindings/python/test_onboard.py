@@ -23,8 +23,11 @@ import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import importlib  # noqa: E402
 from glyd.gpu import chat, page, preflight as pf, run  # noqa: E402
 from glyd import cli  # noqa: E402
+
+fit = importlib.import_module("glyd.gpu.fit")  # (glyd.gpu's own `fit` is the function)
 
 GiB = 2**30
 QWEN = dict(pf.LADDERS["qwen"])
@@ -69,8 +72,12 @@ def test_probe_gpus():
     older = lambda cmd: None if len(cmd) > 1 and "memory.reserved" in cmd[1] else smi("0, NVIDIA L4, 23034, 22566, 535.183, 8.9\n")(cmd)
     g = pf.probe_gpus(older)[0]  # (an older driver: no reserved field; the driver keeps about 2%)
     assert g.cc == (8, 9) and 0.97 * 23034 * 2**20 < g.total < 23034 * 2**20
-    r = raises(lambda: pf.probe_gpus(lambda cmd: None), "no NVIDIA GPU answered")
-    assert "ubuntu-drivers" in r.fix
+    r = raises(lambda: pf.probe_gpus(lambda cmd: None, platform="linux"), "no NVIDIA GPU answered")
+    assert "nvidia-driver-580" in r.fix and "ubuntu-drivers install" not in r.fix and "work without one" in r.fix  # (the package that has the number, not whichever is recommended)
+    mac = raises(lambda: pf.probe_gpus(lambda cmd: None, platform="darwin"), "needs Linux and an NVIDIA GPU")
+    assert "driver" not in (mac.what + mac.fix).lower() and "glyd FILE -o OUT" in mac.fix and "Mac" in mac.what  # (S12: no driver advice for a Mac)
+    win = raises(lambda: pf.probe_gpus(lambda cmd: None, platform="win32"), "needs Linux and an NVIDIA GPU")
+    assert "WSL2" in win.fix
     raises(lambda: pf.probe_gpus(smi("")), "no usable GPU")
     assert pf.other_users(smi(L4, apps="123, /usr/bin/python3, 6495\n456, ollama, 2000\n")) == [("python3", 6495 * 2**20), ("ollama", 2000 * 2**20)]
 
@@ -426,7 +433,7 @@ def test_diagnose():
     assert d("torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.16 GiB. GPU 0 has a total capacity of 22.04 GiB").kind == "oom"
     assert d("ERROR: [Errno 98] error while attempting to bind on address ('127.0.0.1', 8000): address already in use").kind == "port"
     f = d("RuntimeError: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.")
-    assert f.kind == "compiler" and "gcc" in f.fix or "build-essential" in f.fix or "package manager" in f.fix
+    assert f.kind == "compiler" and ("build-essential" in f.fix or "package manager" in f.fix or "dnf" in f.fix or "pacman" in f.fix)
     f = d("usage: main.py [-h] [-v]\n               {chat,complete,serve,launch,bench,collect-env,run-batch} ...\nmain.py: error: unrecognized arguments: --max-model-length 4096")
     assert f.kind == "args" and "unrecognized arguments: --max-model-length 4096" in f.what and "lone --" in f.fix
     assert d("fatal error: Python.h: No such file or directory").kind == "headers"
@@ -550,10 +557,24 @@ def test_doctor():
     finally:
         sys.stdout = real
     assert "With the GPU to itself: glyd run Qwen/Qwen3-8B" in out.text() and "Only 2.1 GB of the GPU's 23.7 GB is free now" in out.text() and "Ready:" not in out.text(), out.text()
-    rows, gpu = run.doctor_lines(environ={}, run=lambda cmd: None)
-    assert rows[-1][0] == "fail" and "no NVIDIA GPU" in rows[-1][2] and gpu is None
+    rows, gpu = run.doctor_lines(environ={}, run=lambda cmd: None, platform="linux")  # (S12: no GPU is information, not a failure)
+    assert rows[-1][0] == "info" and "no NVIDIA GPU" in rows[-1][2] and "nvidia-driver-580" in rows[-1][2] and gpu is None
+    rows, gpu = run.doctor_lines(environ={}, run=lambda cmd: None, platform="darwin")
+    assert rows[-1][0] == "info" and "needs Linux and an NVIDIA GPU" in rows[-1][2] and "driver" not in rows[-1][2].lower() and gpu is None
+    for platform, said in (("darwin", "this computer is a Mac"), ("linux", "no NVIDIA GPU answered")):  # (and the command says so, and exits 0)
+        out, real = Sink(), sys.stdout
+        sys.stdout = out
+        try:
+            with Patched(run__doctor_lines=lambda platform=platform: real_rows(environ={}, run=lambda cmd: None, platform=platform)):
+                assert run.cmd_doctor([]) == 0
+        finally:
+            sys.stdout = real
+        assert said in out.text() and "glyd run cannot run models on this computer" in out.text() and "Not ready" not in out.text(), out.text()
     rows, _ = run.doctor_lines(environ={}, run=smi("0, NVIDIA T4, 15360, 14000, 400, 550.1, 7.5, Disabled\n"))
     assert any(r[0] == "fail" and "Ampere" in r[2] for r in rows)
+    mig = "0, NVIDIA A100 80GB, 81920, 80000, 400, 595.91.07, 8.0, Disabled, Enabled\n"
+    rows, _ = run.doctor_lines(environ={}, run=smi(mig))  # (S11b: MIG on: CUDA sees a slice)
+    assert any(r[0] == "fail" and r[1] == "GPU" and "MIG is on" in r[2] for r in rows)
 
 
 # --- run.start and the commands, with the server and the GPU faked ---------------------------------------------------------------
@@ -561,6 +582,10 @@ def test_doctor():
 class Proc:
     def __init__(self, code=None):
         self.code, self.pid = code, 1
+
+    @property
+    def returncode(self):
+        return self.code
 
     def poll(self):
         return self.code
@@ -605,10 +630,16 @@ def test_start_retries_and_attaches():
         a = run.parse("run", ["fake/Model-1B"])
         with Patched(pf__setup_checks=lambda gpus=None: (OWNER_GPU, ["a warning"]), pf__probe_gpus=lambda: [OWNER_GPU], pf__load_model=lambda name: m, pf__check_disk=lambda m: None,
                      pf__pick_port=lambda host, port, explicit: 8123, run__download=lambda m, ui: None, run__launch=launch, run__time=types.SimpleNamespace(time=time.time, sleep=lambda s: None, strftime=time.strftime)):
-            # attach: a server of this name is already there
+            # attach: this user's own glyd serve of this model is already there (its record is the proof: another user can bind the port first and
+            # answer to the same model name, and a chat sent there is theirs)
             a.port = int(srv.base.rsplit(":", 1)[1])
+            run.write_marker(a.port, "fake/Model-1B", srv.base)
             got = run.start(a, [], "run", ui)
             assert got.proc is None and launched == [] and "already being served" in ui.f.text()
+            run.drop_marker(a.port)
+            got = run.start(a, [], "run", ui)  # (no record: a server that answers to the name is not adopted: this one starts its own)
+            assert got.proc is not None and len(launched) == 2 and "already being served" not in ui.f.text().split("Ready in")[-1], launched
+            launched.clear()
             a.port = None
             real_model = srv.base
             m.repo = "fake/Other"  # not the served name: a new server is started, and the first one is retried at what vLLM says fits
@@ -629,6 +660,19 @@ def test_start_retries_and_attaches():
             finally:
                 run.launch = real_launch
             assert seen[0]["CUDA_VISIBLE_DEVICES"] == "1" and seen[0]["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID", seen[0]
+            # S11c: the retry after "Free memory ... less than desired" is sized for the same GPU: it keeps the pin
+            pinned = []
+
+            def launch_free(model, s, host, port, extra, log, environ=None):
+                pinned.append(dict(s.env))
+                with open(log, "w") as f:
+                    f.write("(EngineCore pid=1) ValueError: Free memory on device cuda:0 (15.32/22.04 GiB) on startup is less than desired GPU memory utilization (0.88, 19.39 GiB). Decrease GPU\n" if len(pinned) == 1 else "")
+                return run.Server(srv.base, log, Proc(1) if len(pinned) == 1 else Proc(None))
+
+            with Patched(pf__setup_checks=lambda gpus=None: (second, []), pf__probe_gpus=lambda: [OWNER_GPU, second], run__launch=launch_free):
+                m.repo = "fake/Third"
+                run.start(a, [], "run", ui, environ={})
+            assert len(pinned) == 2 and all(e.get("CUDA_VISIBLE_DEVICES") == "1" and e.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID" for e in pinned), pinned
             # a memory refusal comes with what to do
             tiny = pf.Gpu(0, "tiny", 6 * 10**9, 5 * 10**9, (8, 6), "580", (13, 0))
             with Patched(pf__setup_checks=lambda gpus=None: (tiny, []), pf__probe_gpus=lambda: [tiny]):
@@ -656,16 +700,18 @@ def test_commands_with_a_running_server():
             sys.stdout, sys.stderr = Sink(), Sink()
             try:
                 assert run.main("serve", ["M"]) == 0  # (attached: nothing of its own to wait for)
-                assert run.main("run", ["M", "--prompt", "x", "--bogus"]) == 2 or True
-            except SystemExit as e:
-                assert e.code == 2
+                try:
+                    run.main("run", ["M", "--prompt", "x", "--bogus"])
+                    raise AssertionError("an option glyd run does not have was taken")
+                except SystemExit as e:  # (argparse: usage, status 2)
+                    assert e.code == 2
             finally:
                 sys.stdout, sys.stderr = real
             e = Sink()
             sys.stderr = e
             try:
                 with Patched(run__start=lambda *a, **k: (_ for _ in ()).throw(pf.Refusal("no NVIDIA GPU answered", "Install the driver"))):
-                    assert run.main("run", ["M"]) == 1
+                    assert run.main("run", ["M", "--prompt", "x"]) == 1
             finally:
                 sys.stderr = real[1]
             assert "glyd: no NVIDIA GPU answered." in e.text() and "  Install the driver" in e.text()
@@ -687,7 +733,17 @@ def main():
     port = int(args[args.index("--port") + 1])
     mode = open(os.environ["FAKE_MODE"]).read().strip() if os.path.exists(os.environ["FAKE_MODE"]) else "ok"
     window = int(args[args.index("--max-model-len") + 1]) if "--max-model-len" in args and args[args.index("--max-model-len") + 1].isdigit() else 4096
+    if os.environ.get("FAKE_DUMP"):  # (what this server was started with)
+        import json
+        json.dump({"argv": sys.argv, "env": {k: os.environ.get(k) for k in ("VLLM_API_KEY", "HF_HUB_OFFLINE", "GLYD_LOCAL_ONLY", "CUDA_VISIBLE_DEVICES")}}, open(os.environ["FAKE_DUMP"], "w"))
     print("(EngineCore pid=1) Loading safetensors checkpoint shards:  40% Completed | 2/5 [00:13<00:20,  6.7s/it]", flush=True)
+    if mode == "context-then-oom":  # (the first start's words, then a second start that fails of something else: the second one's cause is what is reported)
+        open(os.environ["FAKE_MODE"], "w").write("oom")
+        print("(EngineCore pid=1) ValueError: To serve at least one request with the model's max seq len (%d), (1.3 GiB KV cache is needed, which is larger than the available KV cache memory (1.0 GiB). Based on the available memory, the estimated maximum model length is 7000. Try increasing" % window, flush=True)
+        sys.exit(1)
+    if mode == "oom":
+        print("(EngineCore pid=1) torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.16 GiB. GPU 0 has a total capacity of 22.04 GiB", flush=True)
+        sys.exit(1)
     if mode == "context-once":  # (vLLM's own words; the next start works)
         open(os.environ["FAKE_MODE"], "w").write("ok")
         print("(EngineCore pid=1) ValueError: To serve at least one request with the model's max seq len (%d), (1.3 GiB KV cache is needed, which is larger than the available KV cache memory (1.0 GiB). Based on the available memory, the estimated maximum model length is 7000. Try increasing" % window, flush=True)
@@ -699,7 +755,8 @@ def main():
     if mode == "slow":
         time.sleep(60)
     print("(EngineCore pid=1) INFO [model_runner.py:428] Model loading took 11.31 GiB memory and 34.1 seconds", flush=True)
-    Fake(window=window, port=port, start=True)
+    key = args[args.index("--api-key") + 1] if "--api-key" in args else os.environ.get("VLLM_API_KEY")  # (the flag wins over the variable, as in vLLM)
+    Fake(window=window, port=port, start=True, key=key or None)
     print("INFO:     Application startup complete.", flush=True)
     while True:
         time.sleep(1)
@@ -727,47 +784,98 @@ def alive(pid):
         return True
 
 
+class FakeVllmHome:
+    """A fake `vllm.entrypoints.cli.main` on PYTHONPATH (real subprocesses, real signals and logs), a model folder and a state directory, for
+    glyd run and glyd serve end to end: `go(argv, out, err, cancel_when)` runs the command with the GPU faked and Ctrl-C sent once the terminal shows a text."""
+    NAMES = ("PYTHONPATH", "FAKE_HERE", "FAKE_MODE", "FAKE_CHILD", "FAKE_DUMP", "XDG_STATE_HOME", "HF_HUB_OFFLINE", "VLLM_API_KEY")
+
+    def __enter__(self):
+        self.d, self.state = tempfile.mkdtemp(), tempfile.mkdtemp()
+        self.saved = {k: os.environ.get(k) for k in self.NAMES}
+        os.makedirs(os.path.join(self.d, "vllm/entrypoints/cli"))
+        for pkg in ("vllm", "vllm/entrypoints", "vllm/entrypoints/cli"):
+            open(os.path.join(self.d, pkg, "__init__.py"), "w").write('__version__ = "0.30.0"\n' if pkg == "vllm" else "")
+        open(os.path.join(self.d, "vllm/entrypoints/cli/main.py"), "w").write(FAKE_MAIN)
+        self.model = os.path.join(self.d, "qwen3-8b")  # (a folder: a config and a safetensors file of 1,000 weights)
+        os.makedirs(self.model)
+        json.dump(QWEN["Qwen/Qwen3-8B"], open(os.path.join(self.model, "config.json"), "w"))
+        header = json.dumps({"w": {"dtype": "BF16", "shape": [1000], "data_offsets": [0, 2000]}}).encode()
+        with open(os.path.join(self.model, "model.safetensors"), "wb") as f:
+            f.write(len(header).to_bytes(8, "little") + header + b"\0" * 2000)
+        os.environ.update(PYTHONPATH=self.d + os.pathsep + HERE, FAKE_HERE=HERE, FAKE_MODE=os.path.join(self.d, "mode"), FAKE_CHILD=os.path.join(self.d, "child.pid"),
+                          FAKE_DUMP=os.path.join(self.d, "dump.json"), XDG_STATE_HOME=self.state)
+        os.environ.pop("VLLM_API_KEY", None)
+        os.environ.pop("HF_HUB_OFFLINE", None)
+        self.patches = dict(pf__probe_gpus=lambda: [L4_GPU], pf__setup_checks=lambda gpus=None: (L4_GPU, []), pf__have_cc=lambda *a, **k: True, pf__have_nvcc=lambda *a, **k: False)
+        return self
+
+    def __exit__(self, *exc):
+        run.STOP_WAIT, run.STOP_API_WAIT = (5, 5, 10), 30
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.d)
+        shutil.rmtree(self.state)
+
+    def mode(self, text):
+        open(os.environ["FAKE_MODE"], "w").write(text)
+
+    def free_port(self):
+        import socket
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def go(self, argv, out, err, cancel_when=None):
+        import signal
+        real = sys.stdout, sys.stderr
+        sys.stdout, sys.stderr = out, err
+
+        def cancel():  # (Ctrl-C, once the terminal has shown this)
+            for _ in range(600):
+                if cancel_when in err.text():
+                    time.sleep(0.5)
+                    return os.kill(os.getpid(), signal.SIGINT)
+                time.sleep(0.1)
+
+        if cancel_when:
+            threading.Thread(target=cancel, daemon=True).start()
+        try:
+            return run.main("run" if argv[0] != "serve" else "serve", argv[1:] if argv[0] == "serve" else argv)
+        finally:
+            sys.stdout, sys.stderr = real
+
+
+def test_serve_with_an_api_key_is_ready_and_the_key_stays_off_the_command_line():
+    """B1 and S2, end to end: vLLM answers 401 on /v1 and 200 on /health when it has a key. glyd's readiness check asked /v1/models without the key, so
+    `glyd serve ... -- --api-key K` never said ready and, 30 minutes on, stopped the server that worked. The key goes in VLLM_API_KEY: not on the
+    server's command line (ps), not in its log."""
+    with FakeVllmHome() as h:
+        saved_wait = run.wait_ready.__defaults__
+        run.wait_ready.__defaults__ = (8,)  # (the failure was a wait of 30 minutes)
+        try:
+            with Patched(**h.patches):
+                out, err, port = Sink(), Sink(), h.free_port()
+                code = h.go(["serve", h.model, "--port", str(port), "--", "--api-key", "SECRET123"], out, err, cancel_when="Press Ctrl-C to stop.")
+        finally:
+            run.wait_ready.__defaults__ = saved_wait
+        assert code == 130 and "Press Ctrl-C to stop." in err.text() and "did not come up" not in err.text(), err.text()
+        started = json.load(open(os.environ["FAKE_DUMP"]))
+        assert "--api-key" not in started["argv"] and "SECRET123" not in " ".join(started["argv"]) and started["env"]["VLLM_API_KEY"] == "SECRET123", started
+        logs = "".join(open(f).read() for f in glob.glob(os.path.join(h.state, "glyd", "logs", "*.log")))
+        assert "SECRET123" not in logs and "SECRET123" not in err.text() and "taken off the server's command line" in err.text()
+        assert "(asks for the API key)" in err.text() and f"OpenAI API   http://localhost:{port}/v1" in err.text()
+
+
 def test_end_to_end_with_a_fake_vllm():
     import signal
-    import socket
 
-    d, state = tempfile.mkdtemp(), tempfile.mkdtemp()
-    saved = {k: os.environ.get(k) for k in ("PYTHONPATH", "FAKE_HERE", "FAKE_MODE", "FAKE_CHILD", "XDG_STATE_HOME", "HF_HUB_OFFLINE")}
-    try:
-        for sub in ("vllm/entrypoints/cli",):
-            os.makedirs(os.path.join(d, sub))
-        for pkg in ("vllm", "vllm/entrypoints", "vllm/entrypoints/cli"):
-            open(os.path.join(d, pkg, "__init__.py"), "w").write('__version__ = "0.30.0"\n' if pkg == "vllm" else "")
-        open(os.path.join(d, "vllm/entrypoints/cli/main.py"), "w").write(FAKE_MAIN)
-        model = os.path.join(d, "qwen3-8b")  # (a folder: a config and a safetensors file of 1,000 weights)
-        os.makedirs(model)
-        json.dump(QWEN["Qwen/Qwen3-8B"], open(os.path.join(model, "config.json"), "w"))
-        header = json.dumps({"w": {"dtype": "BF16", "shape": [1000], "data_offsets": [0, 2000]}}).encode()
-        with open(os.path.join(model, "model.safetensors"), "wb") as f:
-            f.write(len(header).to_bytes(8, "little") + header + b"\0" * 2000)
-        os.environ.update(PYTHONPATH=d + os.pathsep + HERE, FAKE_HERE=HERE, FAKE_MODE=os.path.join(d, "mode"), FAKE_CHILD=os.path.join(d, "child.pid"), XDG_STATE_HOME=state)
-        free_port = lambda: (lambda s: (s.bind(("127.0.0.1", 0)), s.getsockname()[1], s.close())[1])(socket.socket())
-        ui_out = Sink()
-        patches = dict(pf__probe_gpus=lambda: [L4_GPU], pf__setup_checks=lambda gpus=None: (L4_GPU, []), pf__have_cc=lambda *a, **k: True, pf__have_nvcc=lambda *a, **k: False)
-
-        def go(argv, out, err, cancel_when=None):
-            real = sys.stdout, sys.stderr
-            sys.stdout, sys.stderr = out, err
-
-            def cancel():  # (Ctrl-C, once the terminal has shown this)
-                for _ in range(600):
-                    if cancel_when in err.text():
-                        time.sleep(0.5)
-                        return os.kill(os.getpid(), signal.SIGINT)
-                    time.sleep(0.1)
-
-            if cancel_when:
-                threading.Thread(target=cancel, daemon=True).start()
-            try:
-                return run.main("run" if argv[0] != "serve" else "serve", argv[1:] if argv[0] == "serve" else argv)
-            finally:
-                sys.stdout, sys.stderr = real
-
+    with FakeVllmHome() as h:
+        d, state, model, go, free_port, patches = h.d, h.state, h.model, h.go, h.free_port, h.patches
         with Patched(**patches):
             # one answer: the server starts, answers and is gone
             port = free_port()
@@ -775,7 +883,7 @@ def test_end_to_end_with_a_fake_vllm():
             assert go([model, "--prompt", "hi", "--port", str(port)], out, err) == 0, err.text()
             assert out.text() == "Hello there, friend.\n", (out.text(), err.text())
             text = err.text()
-            assert "Settings: " in text and "40,960-token context (the model's own limit)" in text and "Ready in" in text and "Stopping the server..." in text and "PyTorch sampler" in text
+            assert "Settings: " in text and "40,960-token context (the model's own limit)" in text and "Ready in" in text and "Stopping the server" in text and "PyTorch sampler" in text
             log = glob.glob(os.path.join(state, "glyd", "logs", "run-*.log"))[0]
             first = open(log).read().splitlines()[0]
             assert first.startswith("$ ") and "--quantization glyd" in first and "--middleware glyd.gpu.page.ChatPage" in first and "VLLM_USE_FLASHINFER_SAMPLER=0" in first and "--enforce-eager" in first
@@ -788,6 +896,11 @@ def test_end_to_end_with_a_fake_vllm():
                 raise AssertionError("the server was left running")
             except OSError:
                 pass
+            started = json.load(open(os.environ["FAKE_DUMP"]))  # (what the server was started with)
+            assert started["env"]["HF_HUB_OFFLINE"] == "1", started  # (a folder, a cached snapshot or a download: vLLM does not wait on a network)
+            assert started["env"]["GLYD_LOCAL_ONLY"] == "1" and "--allowed-origins" in started["argv"], started  # (S1: this computer's own page and programs only)
+            assert json.loads(started["argv"][started["argv"].index("--allowed-origins") + 1]) == page.own_origins(port)
+            assert os.stat(log).st_mode & 0o077 == 0 and os.stat(os.path.dirname(log)).st_mode & 0o077 == 0  # (the log and its folder are the user's alone)
             # vLLM says the context does not fit: one more start, at the number it gives
             open(os.environ["FAKE_MODE"], "w").write("context-once")
             out, err = Sink(), Sink()
@@ -798,8 +911,15 @@ def test_end_to_end_with_a_fake_vllm():
             open(os.environ["FAKE_MODE"], "w").write("slow")
             out, err = Sink(), Sink()
             assert go([model, "--prompt", "hi", "--port", str(free_port())], out, err, cancel_when="with Glyd: ") == 130 and "Stopped." in err.text()
+            assert "Stopping the server" in err.text()  # (S7a: said, not a silence of up to 30 seconds)
             time.sleep(0.5)
             assert not alive(int(open(os.environ["FAKE_CHILD"]).read()))
+            # S8b: a second start that fails of something else is reported as that, not as the first start's words that are still in the log
+            open(os.environ["FAKE_MODE"], "w").write("context-then-oom")
+            out, err = Sink(), Sink()
+            assert go([model, "--prompt", "hi", "--port", str(free_port())], out, err) == 1
+            assert "ran out of memory" in err.text() and "conversation cache did not fit" not in err.text(), err.text()
+            assert "Close programs that use the GPU" in err.text() or "Or try Qwen/Qwen3-" in err.text()  # (and what to do)
             # serve: up with its address, stopped by Ctrl-C
             open(os.environ["FAKE_MODE"], "w").write("ok")
             out, err = Sink(), Sink()
@@ -816,15 +936,6 @@ def test_end_to_end_with_a_fake_vllm():
             child = int(open(os.environ["FAKE_CHILD"]).read())
             time.sleep(0.3)
             assert not alive(child), "an engine left behind by its API server was not swept"
-    finally:
-        run.STOP_WAIT = (5, 5, 10)
-        for k, v in saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        shutil.rmtree(d)
-        shutil.rmtree(state)
 
 
 # --- the `glyd` command -----------------------------------------------------------------------------------------------------------
@@ -846,16 +957,27 @@ def fake_native(d):
 
 
 def test_cli_forwarding():
-    d, e = tempfile.mkdtemp(), tempfile.mkdtemp()
+    d, e, w, cwd = tempfile.mkdtemp(), tempfile.mkdtemp(), tempfile.mkdtemp(), tempfile.mkdtemp()
     try:
         native = fake_native(d)
         if native is None:
             return print("test_cli_forwarding: skipped (no native program to forward to)")
-        with open(os.path.join(e, "glyd"), "w") as f:  # (a script named glyd, this entry point's kind: skipped)
-            f.write("#!/bin/sh\necho script\n")
+        with open(os.path.join(e, "glyd"), "w") as f:  # (another copy of this Python tool, a console script: skipped, so that two of them never forward to each other)
+            f.write("#!/usr/bin/python3\nimport sys\nfrom glyd.cli import main\nsys.exit(main())\n")
         os.chmod(os.path.join(e, "glyd"), 0o755)
         assert cli.find_native(e + os.pathsep + d, me="/nowhere") == native and cli.find_native(e, me="/nowhere") is None
         assert cli.find_native(d, me=native) is None  # (itself, by its real path)
+        with open(os.path.join(w, "glyd"), "w") as f:  # (S13b: a wrapper around the real program, as Nix's wrapProgram or an asdf shim makes, is the program)
+            f.write(f'#!/bin/sh\nexec {native} "$@"\n')
+        os.chmod(os.path.join(w, "glyd"), 0o755)
+        assert cli.find_native(w, me="/nowhere") == os.path.join(w, "glyd")
+        shutil.copy(native, os.path.join(cwd, "glyd"))  # (S13b: an empty entry of PATH is not the current directory)
+        here = os.getcwd()
+        os.chdir(cwd)
+        try:
+            assert cli.find_native(os.pathsep + "/nonexistent", me="/nowhere") is None and cli.find_native(":/nonexistent:", me="/nowhere") is None
+        finally:
+            os.chdir(here)
         env = {"PATH": e + os.pathsep + d, "PYTHONPATH": HERE}
         r = subprocess.run([sys.executable, "-m", "glyd.cli", "input.tar", "-o", "input.tar.glyd"], env=env, capture_output=True, text=True)
         assert r.returncode == 0 and r.stdout.strip() == "input.tar -o input.tar.glyd", (r.stdout, r.stderr)  # (forwarded as it came)
@@ -868,12 +990,58 @@ def test_cli_forwarding():
         r = subprocess.run([sys.executable, "-m", "glyd.cli", "input.tar"], env=none, capture_output=True, text=True)
         assert r.returncode == 127 and "brew install surya-koritala/glyd/glyd" in r.stderr
         r = subprocess.run([sys.executable, "-m", "glyd.cli"], env=none, capture_output=True, text=True)
-        assert "glyd doctor" in r.stdout and "brew install" in r.stdout and r.returncode == 0
+        assert "glyd run" in r.stdout and "brew install" in r.stdout and r.returncode == 0
         for cmd in ("doctor", "run", "serve", "login"):
             assert cmd in cli.GPU_COMMANDS
+        # S13b: no loop. The program it forwards to is started with GLYD_FORWARDED=1, and a glyd that finds it set forwards nothing
+        with open(os.path.join(w, "glyd"), "w") as f:
+            f.write('#!/bin/sh\necho "forwarded=$GLYD_FORWARDED $@"\n')
+        r = subprocess.run([sys.executable, "-m", "glyd.cli", "input.tar"], env={"PATH": w, "PYTHONPATH": HERE}, capture_output=True, text=True)
+        assert r.returncode == 0 and r.stdout.strip() == "forwarded=1 input.tar", (r.stdout, r.stderr)
+        r = subprocess.run([sys.executable, "-m", "glyd.cli", "input.tar"], env={"PATH": w, "PYTHONPATH": HERE, "GLYD_FORWARDED": "1"}, capture_output=True, text=True)
+        assert r.returncode == 127 and r.stdout == "" and "another glyd forwarded" in r.stderr, (r.stdout, r.stderr)
+        # a file named glyd that is no program for this machine: a message, not a traceback
+        with open(os.path.join(w, "glyd"), "w") as f:
+            f.write("not a program\n")
+        r = subprocess.run([sys.executable, "-m", "glyd.cli", "input.tar"], env={"PATH": w, "PYTHONPATH": HERE}, capture_output=True, text=True)
+        assert r.returncode == 126 and "cannot run" in r.stderr and "Traceback" not in r.stderr, (r.returncode, r.stderr)
+        # S13c: the hint is the README's own command
+        readme = open(os.path.join(HERE, "..", "..", "README.md")).read()
+        assert "cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store glyd-gpu" in readme and "cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store glyd-gpu" in cli.MISSING
+        assert "brew install surya-koritala/glyd/glyd" in readme and "cargo install glyd\n" not in cli.MISSING
     finally:
-        shutil.rmtree(d)
-        shutil.rmtree(e)
+        for x in (d, e, w, cwd):
+            shutil.rmtree(x)
+
+
+def test_a_glyd_ahead_on_path_is_found_and_said():
+    """S13a: with the Rust glyd earlier on PATH, `glyd run` typed alone reaches it, which takes `run` for a file name. glyd doctor says so, with the way out."""
+    t = tempfile.mkdtemp()
+    try:
+        import venv
+        envdir, home, rust = (os.path.join(t, n) for n in ("env", "home", "rust"))
+        venv.EnvBuilder(symlinks=True, with_pip=False).create(envdir)  # (the tool environment: its Python is run by its own path, and its glyd is beside it)
+        envbin, py = os.path.join(envdir, "bin"), os.path.join(envdir, "bin", "python")
+        for x in (home, rust):
+            os.makedirs(x)
+        open(os.path.join(envbin, "glyd"), "w").write("#!/bin/sh\n")
+        os.chmod(os.path.join(envbin, "glyd"), 0o755)
+        os.symlink(os.path.join(envbin, "glyd"), os.path.join(home, "glyd"))  # (what uv puts on PATH)
+        open(os.path.join(rust, "glyd"), "w").write("#!/bin/sh\n")
+        os.chmod(os.path.join(rust, "glyd"), 0o755)
+        code = "from glyd.gpu import preflight as pf; import json, sys; print(json.dumps(pf.path_shadow()))"
+        run1 = lambda path: json.loads(subprocess.run([py, "-c", code], env={"PATH": path, "PYTHONPATH": HERE}, capture_output=True, text=True, check=True).stdout)
+        assert run1(rust + os.pathsep + home) == [os.path.join(rust, "glyd"), os.path.join(home, "glyd")]  # (the Rust one first: said, with ours by the name on PATH)
+        assert run1(home + os.pathsep + rust) is None and run1(home) is None and run1(rust) == [os.path.join(rust, "glyd"), os.path.realpath(os.path.join(envbin, "glyd"))]  # (ours is not on PATH at all: by its real path)
+        ours = os.path.join(envbin, "glyd")
+        rows, _ = run.doctor_lines(environ={"PATH": rust + os.pathsep + home}, run=smi(L4), mine=ours)
+        row = [r for r in rows if r[1] == "glyd on PATH"]
+        assert len(row) == 1 and row[0][0] == "warn" and os.path.join(rust, "glyd") in row[0][2], rows
+        assert os.path.join(home, "glyd") in row[0][2] and f'export PATH="{home}:$PATH"' in row[0][2], row[0][2]  # (the exact way out: ours by its name on PATH, and its folder first)
+        rows, _ = run.doctor_lines(environ={"PATH": home + os.pathsep + rust}, run=smi(L4), mine=ours)
+        assert not [r for r in rows if r[1] == "glyd on PATH"]  # (ours first: nothing to say)
+    finally:
+        shutil.rmtree(t)
 
 
 # --- a fake OpenAI server: the terminal chat and the page's server side -------------------------------------------------------------
@@ -881,9 +1049,9 @@ def test_cli_forwarding():
 class Fake(http.server.ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, window=40, reasoning=True, field="reasoning_content", port=0, start=True):
+    def __init__(self, window=40, reasoning=True, field="reasoning_content", port=0, start=True, key=None):
         super().__init__(("127.0.0.1", port), FakeHandler)
-        self.window, self.reasoning, self.field, self.requests = window, reasoning, field, []
+        self.window, self.reasoning, self.field, self.requests, self.key = window, reasoning, field, [], key  # (key: vLLM's --api-key / VLLM_API_KEY: /v1 asks for it, /health does not)
         if start:
             threading.Thread(target=self.serve_forever, daemon=True).start()
 
@@ -902,8 +1070,19 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body if isinstance(body, bytes) else json.dumps(body).encode())
 
+    def unauthorized(self):
+        """vLLM's AuthenticationMiddleware: /v1 wants the key, every other path is open. True where the request was refused."""
+        if self.server.key and self.path.startswith("/v1") and self.headers.get("Authorization") != "Bearer " + self.server.key:
+            self.send(401, {"error": "Unauthorized"})
+            return True
+        return False
+
     def do_GET(self):
-        if self.path == "/v1/models":
+        if self.unauthorized():
+            return
+        if self.path == "/health":
+            self.send(200, b"")
+        elif self.path == "/v1/models":
             self.send(200, {"object": "list", "data": [{"id": "fake/Model-1B", "max_model_len": self.server.window}]})
         elif self.path == "/":
             self.send(200, page.PAGE, "text/html; charset=utf-8")
@@ -912,6 +1091,8 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.unauthorized():
+            return
         self.server.requests.append(body)
         window = self.server.window
         prompt = sum(len(m["content"].split()) + 3 for m in body["messages"])
@@ -924,6 +1105,8 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
         if "MARKDOWN" in last:  # (markdown, and HTML that must stay text)
             text = "# Title\nSome **bold**, *italic* and `code` with a [link](https://example.com).\n\n- one\n- two\n\n1. first\n2. second\n\n```python\nprint('<b>not bold</b>')\n```\n<img src=x onerror=alert(1)> and <script>alert(2)</script>"
             pieces = [("c", text[i:i + 7]) for i in range(0, len(text), 7)]
+        if "ESCAPES" in last:  # (a model, or text it was given, that writes terminal control sequences: OSC 52 sets the clipboard, CSI moves the cursor)
+            pieces = [("c", "ok \x1b]52;c;aGk=\x07 then "), ("c", "\x1b[31mred\x1b[0m\x9b2J\x00 end\ttabbed\nsecond line")]
         if "NEWLINES" in last:  # (what vLLM streams around </think>: the template's newlines, and an answer's first words as their own deltas)
             pieces = [("r", "\n"), ("r", "Hm."), ("r", "\n"), ("c", "\n\n"), ("c", "Loss"), ("c", "less.")]
         if "SLOW" in last:
@@ -934,6 +1117,20 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
+        event = lambda d: b"data: " + json.dumps(d).encode() + b"\n\n"
+        if "EMPTYANSWER" in last:  # (an empty generation: a finish and nothing else)
+            pieces = []
+        if "ERROREVENT" in last:  # (vLLM 0.30 sends the failure as an event, then [DONE])
+            self.wfile.write(event({"choices": [{"index": 0, "delta": {"content": "Half "}, "finish_reason": None}]}))
+            self.wfile.write(event({"error": {"message": "EngineCore died: out of memory", "type": "InternalServerError", "code": 500}}))
+            self.wfile.write(b"data: [DONE]\n\n")
+            return
+        if "EOFSTREAM" in last:  # (the connection ends with no finish and no [DONE])
+            self.wfile.write(event({"choices": [{"index": 0, "delta": {"content": "Half an answer "}, "finish_reason": None}]}))
+            return
+        if "BADJSON" in last:  # (cut inside a message)
+            self.wfile.write(b'data: {"choices": [{"index": 0, "delta": {"content": "Hel')
+            return
         used = prompt
         for kind, text in pieces:
             if used >= window and finish == "length":
@@ -948,9 +1145,12 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(b"data: [DONE]\n\n")
 
 
-def new_chat(srv, **kw):
-    api = chat.Api(srv.base)
-    name, window = api.model()
+def new_chat(srv, key=None, **kw):
+    api = chat.Api(srv.base, token=key) if key else chat.Api(srv.base)
+    try:
+        name, window = api.model()
+    except chat.ApiError:  # (a server that wants a key the chat has none for)
+        name, window = "fake/Model-1B", 0
     out, err = Sink(), Sink()
     return chat.Chat(api, name, window, out=out, err=err, **kw), out, err
 
@@ -977,6 +1177,71 @@ def test_chat_template_newlines_are_not_shown():
         c, out, err = new_chat(srv)
         assert c.turn("NEWLINES") == "Lossless." and c.messages[-1]["content"] == "Lossless."
         assert out.text() == "Thinking...\nHm.\n\n...done thinking.\n\nLossless.\n", repr(out.text())  # (no blank line after Thinking... or before the answer)
+    finally:
+        srv.shutdown()
+
+
+def test_terminal_text_has_no_control_sequences():
+    """S5: what a model writes goes to the terminal as text: no ESC (OSC 52 sets the clipboard, CSI moves the cursor), no C1 control, no NUL, no
+    bell; newlines and tabs stay."""
+    srv = Fake()
+    try:
+        c, out, err = new_chat(srv)
+        reply = c.turn("ESCAPES please")
+        shown = out.text() + err.text()
+        assert not any(ch in shown for ch in "\x1b\x07\x00\x9b"), repr(shown)
+        assert "ok ]52;c;aGk= then" in shown and "red" in shown and "end\ttabbed\nsecond line" in shown, repr(shown)  # (the text of it stays, inert)
+        assert chat.clean("a\x1b]52;c;x\x07b\tc\nd\r\x7f\x85e") == "a]52;c;xb\tc\ndе".replace("е", "e") or chat.clean("a\x1b]52;c;x\x07b\tc\nd\r\x7f\x85e") == "a]52;c;xb\tc\nde"
+        assert reply and "\x1b" not in reply
+        ui = run.Ui(Sink())
+        ui.line("a refusal quoting a log: \x1b]0;title\x07 and \x1b[2J")
+        assert "\x1b" not in ui.f.text() and "\x07" not in ui.f.text()
+    finally:
+        srv.shutdown()
+
+
+def test_a_stream_that_does_not_end_is_said_so():
+    """S6: an error event, a connection closed before the answer finished, a message cut in two, an empty answer: each says what happened,
+    keeps nothing in the conversation, and a one-shot answer exits 1 (it said 'done' and 0 for the first, and nothing for the others)."""
+    srv = Fake()
+    try:
+        for trigger, said in (("ERROREVENT", "EngineCore died: out of memory"), ("EOFSTREAM", "stopped answering in the middle of the answer"),
+                              ("BADJSON", "stopped answering in the middle of the answer"), ("EMPTYANSWER", "The model sent no answer")):
+            c, out, err = new_chat(srv, log="/tmp/x.log")
+            assert c.once(trigger) == 1, trigger  # (a one-shot answer that did not come: status 1)
+            assert said in err.text(), (trigger, err.text())
+            assert c.messages == [], (trigger, c.messages)  # (no question left unanswered, no empty assistant turn)
+            if trigger in ("EOFSTREAM", "ERROREVENT"):
+                assert "Half" in out.text() + err.text()  # (what came stays on the screen)
+        c, out, err = new_chat(srv)  # (the next question works, on the same server)
+        assert c.turn("hi") == "Hello there, friend."
+    finally:
+        srv.shutdown()
+
+
+def test_the_api_key_is_sent_and_readiness_does_not_need_it():
+    """B1: a server started with an API key answers 401 on /v1 and 200 on /health. glyd's readiness check used /v1/models without the key, so
+    `glyd serve ... --api-key` never reported ready and was stopped at 30 minutes, working."""
+    srv = Fake(key="s3cret")
+    try:
+        assert chat.Api(srv.base).status("/health", timeout=2) == 200  # (open, with or without a key; its body is empty, not JSON)
+        try:
+            chat.Api(srv.base).model()
+            raise AssertionError("a request with no key was answered")
+        except chat.ApiError as e:
+            assert e.status == 401
+        assert chat.Api(srv.base, token="s3cret").model() == ("fake/Model-1B", 40)
+        server = run.Server(srv.base, "/nonexistent.log", Proc(None))
+        saved = run.wait_ready.__defaults__
+        run.wait_ready.__defaults__ = (4,)  # (a short wait: the failure was a 30-minute one)
+        try:
+            assert run.wait_ready(server, run.Ui(Sink()), "fake", "x") is None  # (ready: /health, which asks for no key)
+        finally:
+            run.wait_ready.__defaults__ = saved
+        c, out, err = new_chat(srv, key="s3cret")
+        assert c.turn("hi") == "Hello there, friend." and srv.requests
+        c, out, err = new_chat(srv)  # (no key: a plain message, not a trace and not silence)
+        assert c.turn("hi") == "" and "API key" in err.text() and "VLLM_API_KEY" in err.text(), err.text()
     finally:
         srv.shutdown()
 
@@ -1040,7 +1305,7 @@ def test_chat_loop_and_once():
 
 # --- the page ------------------------------------------------------------------------------------------------------------------
 
-def call_asgi(app, method, path, scope_type="http"):
+def call_asgi(app, method, path, scope_type="http", headers=()):
     sent = []
 
     async def send(msg):
@@ -1049,7 +1314,10 @@ def call_asgi(app, method, path, scope_type="http"):
     async def receive():
         return {"type": "http.request"}
 
-    asyncio.run(app({"type": scope_type, "method": method, "path": path, "headers": []}, receive, send))
+    scope = {"type": scope_type, "path": path, "headers": [(k.lower().encode(), v.encode()) for k, v in headers]}
+    if scope_type == "http":
+        scope["method"] = method
+    asyncio.run(app(scope, receive, send))
     return sent
 
 
@@ -1057,7 +1325,7 @@ def test_page_middleware():
     seen = []
 
     async def app(scope, receive, send):
-        seen.append((scope["method"], scope["path"]))
+        seen.append((scope.get("method"), scope["path"]))
         await send({"type": "http.response.start", "status": 404, "headers": []})
         await send({"type": "http.response.body", "body": b"{}"})
 
@@ -1071,7 +1339,8 @@ def test_page_middleware():
     for method, path in (("POST", "/"), ("GET", "/v1/models"), ("POST", "/v1/chat/completions"), ("GET", "/health"), ("GET", "/docs")):
         assert call_asgi(mw, method, path)[0]["status"] == 404  # (handed to vLLM's app untouched)
     assert seen == [("POST", "/"), ("GET", "/v1/models"), ("POST", "/v1/chat/completions"), ("GET", "/health"), ("GET", "/docs")]
-    call_asgi(mw, "GET", "/", scope_type="websocket") if False else None
+    ws = call_asgi(mw, "GET", "/chat", scope_type="websocket")  # (a websocket: handed on, with no method in its scope, as vLLM's realtime API is)
+    assert ws[0]["status"] == 404 and seen[-1] == (None, "/chat") or seen[-1][1] == "/chat"
 
 
 def test_page_is_self_contained():
@@ -1081,7 +1350,9 @@ def test_page_is_self_contained():
     urls = re.findall(r"""(?:src|href)\s*=\s*["']([^"']+)["']""", html) + re.findall(r"url\(([^)]+)\)", html) + re.findall(r"""@import\s+["']([^"']+)""", html)
     assert all(u.startswith(("data:", "#")) for u in urls), urls  # (no script, stylesheet, font or image from anywhere)
     assert "http://" not in re.sub(r"http://www\.w3\.org/2000/svg", "", html).replace("https?:\\/\\/", "")  # (the regex for links, and the svg namespace, are the only ones)
-    assert "innerHTML" not in html and "eval(" not in html and "document.write" not in html  # (model text goes in as text)
+    for sink in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function", "srcdoc", "DOMParser", "createContextualFragment", "setAttribute('on", 'setAttribute("on', "javascript:"):
+        assert sink not in html, sink  # (model text goes in as text)
+    assert "a.title = a.hostname" in html  # (a link shows where it goes)
     for text in ("/v1/models", "/v1/chat/completions", "reasoning_content", "max_model_len", "New chat", "maximum context length"):
         assert text in html, text
 
@@ -1180,6 +1451,446 @@ def test_install_sh():
     assert calls[0].endswith(f"glyd=={V}") and "Linux and an NVIDIA GPU" in err
     rc, out, err, calls = run_install(os_name="FreeBSD")
     assert rc == 1 and "Linux and macOS" in err and not calls
+
+
+# --- the review's findings (onboard-review-1.md): each of these failed on the code it was written against -------------------------------------
+
+def test_the_page_refuses_another_origin_and_a_rebinding_host():
+    """S1: vLLM allows any origin, and checks no Host. A page in the user's browser can use a server on 127.0.0.1 (a script from any site, or a
+    name that DNS points at 127.0.0.1: no CORS involved). With GLYD_LOCAL_ONLY (glyd run and glyd serve set it) a Host that is not local is
+    421, an Origin that is not the server's own 403, a preflight too, a websocket's handshake too; the API and the page are answered to
+    the page's own origin and to programs that send no Origin."""
+    seen = []
+
+    async def app(scope, receive, send):
+        seen.append(scope["path"])
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"api"})
+
+    saved = os.environ.get("GLYD_LOCAL_ONLY")
+    os.environ["GLYD_LOCAL_ONLY"] = "1"
+    try:
+        mw = page.ChatPage(app)
+        ok = lambda method, path, **h: call_asgi(mw, method, path, headers=list(h.items()))[0]["status"]
+        assert ok("GET", "/v1/models", Host="localhost:8000") == 200 and ok("GET", "/v1/models", Host="127.0.0.1:8000") == 200 and ok("GET", "/health", Host="[::1]:8000") == 200
+        assert ok("POST", "/v1/chat/completions", Host="localhost:8000", Origin="http://localhost:8000") == 200  # (the page's own requests)
+        assert ok("POST", "/v1/chat/completions", Host="127.0.0.1:8000", Origin="http://127.0.0.1:8000") == 200 and ok("GET", "/", Host="localhost:8000") == 200
+        seen.clear()
+        for host in ("evil.example", "evil.example:8000", "localhost.evil.example:8000", "127.0.0.1.evil.example", "192.168.1.5:8000", "0.0.0.0:8000"):  # (a rebinding page's own name)
+            assert ok("GET", "/v1/models", Host=host) == 421, host
+            assert ok("GET", "/", Host=host) == 421, host  # (not the page either)
+        for origin in ("http://evil.example", "https://localhost:8000", "http://localhost:5173", "http://127.0.0.1:8000", "null", "http://localhost:8000.evil.example"):
+            assert ok("POST", "/v1/chat/completions", Host="localhost:8000", Origin=origin) == 403, origin  # (only http:// and the Host itself is the server's own)
+        assert ok("OPTIONS", "/v1/chat/completions", Host="localhost:8000", Origin="http://evil.example", **{"Access-Control-Request-Method": "POST"}) == 403  # (the preflight)
+        assert seen == []  # (nothing refused reached vLLM)
+        refused = call_asgi(mw, "GET", "/", headers=[("host", "evil.example")])
+        assert refused[0]["status"] == 421 and b"evil.example" in refused[1]["body"] and json.loads(refused[1]["body"])["error"]["code"] == 421
+        ws = call_asgi(mw, "GET", "/v1/realtime", scope_type="websocket", headers=[("host", "localhost:8000"), ("origin", "http://evil.example")])  # (CORS does not cover a websocket)
+        assert ws == [{"type": "websocket.close", "code": 1008}] and seen == []
+        assert call_asgi(mw, "GET", "/v1/realtime", scope_type="websocket", headers=[("host", "localhost:8000")])[0]["status"] == 200
+        assert page.own_origins(8000) == ["http://localhost:8000", "http://127.0.0.1:8000", "http://[::1]:8000"]
+        os.environ.pop("GLYD_LOCAL_ONLY")  # (by hand, or where the user chose an address with --host: vLLM's own rules)
+        mw = page.ChatPage(app)
+        assert ok("GET", "/v1/models", Host="evil.example") == 200 and ok("POST", "/v1/chat/completions", Host="x:1", Origin="http://evil.example") == 200
+    finally:
+        if saved is None:
+            os.environ.pop("GLYD_LOCAL_ONLY", None)
+        else:
+            os.environ["GLYD_LOCAL_ONLY"] = saved
+
+
+def test_the_server_is_started_local_only_unless_a_host_was_chosen():
+    """S1: glyd's own choice of address (127.0.0.1) comes with the guard and with vLLM's CORS limited to the page's origins; an address the user chose
+    (glyd serve --host, -- --host) is theirs, and so is an --allowed-origins of their own."""
+    m = model("Qwen3-8B", 16_381_470_720)
+    s = pf.settings(m, L4_GPU, "run", environ={})
+    s.local_only = True
+    args = pf.vllm_args(m, s, "127.0.0.1", 8123)
+    assert json.loads(args[args.index("--allowed-origins") + 1]) == ["http://localhost:8123", "http://127.0.0.1:8123", "http://[::1]:8123"]
+    s.given = pf.flags_given(["--allowed-origins", '["https://mine.example"]'])
+    assert "--allowed-origins" not in pf.vllm_args(m, s, "127.0.0.1", 8123)
+    s.local_only, s.given = False, {}
+    assert "--allowed-origins" not in pf.vllm_args(m, s, "0.0.0.0", 8123)
+    seen = []
+    srv = Fake(window=4096)
+    d = tempfile.mkdtemp()
+    os.environ["XDG_STATE_HOME"] = d
+    try:
+        mm = pf.model_of("fake/Model-1B", QWEN["Qwen/Qwen3-8B"], bf16=16_381_470_720, files=[("model.safetensors", 1)])
+
+        def launch(model, st, host, port, extra, log, environ=None):
+            seen.append((st.local_only, st.env.get("GLYD_LOCAL_ONLY"), host))
+            open(log, "w").close()
+            return run.Server(srv.base, log, Proc(None))
+
+        with Patched(pf__setup_checks=lambda gpus=None: (L4_GPU, []), pf__probe_gpus=lambda: [L4_GPU], pf__load_model=lambda name: mm, pf__check_disk=lambda m: None,
+                     pf__pick_port=lambda host, port, explicit: 8123, run__download=lambda m, ui: None, run__launch=launch, run__wait_ready=lambda *a, **k: None):
+            for argv, extra, mode in ((["fake/Model-1B"], [], "run"), (["fake/Model-1B"], [], "serve"), (["fake/Model-1B", "--host", "0.0.0.0"], [], "serve"),
+                                      (["fake/Model-1B"], ["--host", "127.0.0.1"], "serve"), (["fake/Model-1B"], ["--host", "127.0.0.1"], "run")):
+                run.start(run.parse(mode, argv), extra, mode, run.Ui(Sink()))
+        assert seen == [(True, "1", "127.0.0.1"), (True, "1", "127.0.0.1"), (False, None, "0.0.0.0"), (False, None, "127.0.0.1"), (False, None, "127.0.0.1")], seen
+    finally:
+        os.environ.pop("XDG_STATE_HOME", None)
+        srv.shutdown()
+        shutil.rmtree(d)
+
+
+def test_the_open_server_warning_names_what_stays_open():
+    """S2: a server on an address other than this computer's says it is plain HTTP, that the key goes in the environment (not on a command line,
+    where ps shows it), and which paths stay open with a key."""
+    no_key, with_key = run.open_note("0.0.0.0", None), run.open_note("0.0.0.0", "k")
+    for text in (no_key, with_key):
+        assert "plain HTTP" in text and "/health" in text and "/metrics" in text and "/tokenize" in text and "chat page" in text and "SSH tunnel" in text, text
+    assert "VLLM_API_KEY=KEY glyd serve" in no_key and "--api-key" not in no_key and "There is no API key" in no_key
+    assert "guards /v1 only" in with_key and "There is no API key" not in with_key
+    srv = Fake(window=4096)
+    d = tempfile.mkdtemp()
+    os.environ["XDG_STATE_HOME"] = d
+    try:
+        mm = pf.model_of("fake/Model-1B", QWEN["Qwen/Qwen3-8B"], bf16=16_381_470_720, files=[("model.safetensors", 1)])
+        with Patched(pf__setup_checks=lambda gpus=None: (L4_GPU, []), pf__probe_gpus=lambda: [L4_GPU], pf__load_model=lambda name: mm, pf__check_disk=lambda m: None, pf__pick_port=lambda host, port, explicit: 8123,
+                     run__download=lambda m, ui: None, run__wait_ready=lambda *a, **k: None, run__launch=lambda *a, **k: (open(a[5], "w").close(), run.Server(srv.base, a[5], Proc(None)))[1]):
+            ui = run.Ui(Sink())
+            run.start(run.parse("serve", ["fake/Model-1B", "--host", "0.0.0.0"]), [], "serve", ui, environ={})
+            assert "Note: listening on 0.0.0.0" in ui.f.text() and "plain HTTP" in ui.f.text() and "There is no API key" in ui.f.text()
+            ui = run.Ui(Sink())
+            run.start(run.parse("serve", ["fake/Model-1B", "--host", "0.0.0.0"]), [], "serve", ui, environ={"VLLM_API_KEY": "k"})
+            assert "guards /v1 only" in ui.f.text() and "taken off" not in ui.f.text()  # (a key from the environment was never on a command line)
+            ui = run.Ui(Sink())
+            run.start(run.parse("serve", ["fake/Model-1B", "--host", "0.0.0.0"]), ["--api-key", "k"], "serve", ui, environ={})
+            assert "taken off the server's command line" in ui.f.text() and "VLLM_API_KEY=KEY yourself" in ui.f.text()
+    finally:
+        os.environ.pop("XDG_STATE_HOME", None)
+        srv.shutdown()
+        shutil.rmtree(d)
+
+
+def test_a_second_ctrl_c_does_not_skip_the_sweep():
+    """S7b: Ctrl-C while the server is stopped raised out of Server.stop before its sweep, and the engine kept the GPU's memory."""
+    if not sys.platform.startswith(("linux", "darwin")):
+        return print("test_a_second_ctrl_c_does_not_skip_the_sweep: skipped (needs process groups)")
+    import signal
+    d = tempfile.mkdtemp()
+    pidfile = os.path.join(d, "engine.pid")
+    code = ("import signal, subprocess, sys, time\nchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])\nopen(sys.argv[1], 'w').write(str(child.pid))\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(600)")  # (an API server that does not stop on SIGTERM, with an engine)
+    proc = subprocess.Popen([sys.executable, "-c", code, pidfile], start_new_session=True)
+    saved = run.STOP_API_WAIT, run.STOP_WAIT
+    try:
+        for _ in range(100):
+            if os.path.exists(pidfile) and open(pidfile).read():
+                break
+            time.sleep(0.1)
+        engine = int(open(pidfile).read())
+        server = run.Server("http://127.0.0.1:1", "", proc)
+        run.STOP_API_WAIT, run.STOP_WAIT = 3, (0.3, 0.3, 2)
+        threading.Timer(0.8, lambda: os.kill(os.getpid(), signal.SIGINT)).start()  # (the second Ctrl-C, while the first one's stop waits)
+        ui = run.Ui(Sink())
+        try:
+            server.stop(ui)
+        except KeyboardInterrupt:
+            raise AssertionError("a Ctrl-C meanwhile ended the stop before its sweep")
+        time.sleep(0.3)
+        assert not alive(proc.pid) and not alive(engine), "the server or its engine outlived the stop"
+        assert "Stopping the server" in ui.f.text()
+        assert signal.getsignal(signal.SIGINT) == signal.default_int_handler  # (and Ctrl-C works again after)
+    finally:
+        run.STOP_API_WAIT, run.STOP_WAIT = saved
+        for pid in [proc.pid] + ([int(open(pidfile).read())] if os.path.exists(pidfile) and open(pidfile).read() else []):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        shutil.rmtree(d)
+
+
+def test_signals_nohup_download_and_a_terminal_that_went():
+    """S7c, S7d, nit 10: nohup's ignored SIGHUP stays ignored (ssh host 'nohup glyd serve MODEL &' is how a server outlives its login); Ctrl-C in a
+    download ends the process at once (huggingface_hub's threads are not daemons); a terminal that has gone is not an error; a pipe closed by
+    `| head` is not a traceback; no SIGHUP (Windows) is not an AttributeError."""
+    import signal
+    if hasattr(signal, "SIGHUP"):
+        before_hup, before_term = signal.getsignal(signal.SIGHUP), signal.getsignal(signal.SIGTERM)
+        try:
+            signal.signal(signal.SIGHUP, signal.SIG_IGN)
+            with Patched(run__cmd_doctor=lambda argv: 0):
+                run.main("doctor", [])
+            assert signal.getsignal(signal.SIGHUP) == signal.SIG_IGN  # (nohup)
+            signal.signal(signal.SIGHUP, signal.SIG_DFL)
+            with Patched(run__cmd_doctor=lambda argv: 0):
+                run.main("doctor", [])
+            assert signal.getsignal(signal.SIGHUP) not in (signal.SIG_IGN, signal.SIG_DFL)  # (not ignored: a hangup stops the server)
+        finally:
+            signal.signal(signal.SIGHUP, before_hup)
+            signal.signal(signal.SIGTERM, before_term)
+    seen = []
+    stub = types.SimpleNamespace(SIGTERM=15, SIGINT=2, SIG_IGN=1, signal=lambda *a: seen.append(a), getsignal=lambda n: None)  # (no SIGHUP in it)
+    real_signal, run.signal = run.signal, stub
+    try:
+        run.install_signal_handlers()
+    finally:
+        run.signal = real_signal
+    assert [a[0] for a in seen] == [15]
+    calls, real_exit = [], os._exit
+    os._exit = lambda code: calls.append(code)
+    try:
+        with Patched(run__main=lambda cmd, argv: 130):
+            assert cli.main(["run", "M"]) == 130 and calls == [130]  # (S7c)
+        with Patched(run__main=lambda cmd, argv: 0):
+            assert cli.main(["doctor"]) == 0 and calls == [130]
+    finally:
+        os._exit = real_exit
+    class Gone:  # (a terminal that was closed: writes fail with EIO)
+        def write(self, t):
+            raise OSError(5, "Input/output error")
+
+        def flush(self):
+            raise OSError(5, "Input/output error")
+
+        def isatty(self):
+            return True
+
+    ui = run.Ui(Gone())
+    ui.line("Stopping the server")
+    ui.status("Loading")
+    ui.note("x")
+    err, real, fd1 = Sink(), sys.stderr, os.dup(1)  # (the handler points standard output at /dev/null, as a CLI that was cut off by `| head` should: put it back)
+    sys.stderr = err
+    try:
+        with Patched(run__cmd_doctor=lambda argv: (_ for _ in ()).throw(BrokenPipeError())):
+            assert run.main("doctor", []) == 0  # (glyd doctor | head -1)
+    finally:
+        sys.stderr = real
+        os.dup2(fd1, 1)
+        os.close(fd1)
+    assert "unexpected error" not in err.text() and "Traceback" not in err.text()
+    os.environ["TERM"] = "dumb"
+    try:
+        assert run.Ui(Sink(tty=True)).tty is False  # (nit 9: \r and ESC [ K do not work there)
+    finally:
+        os.environ.pop("TERM")
+    assert run.Ui(Sink(tty=True)).tty is True
+
+
+def test_a_failure_says_the_next_step():
+    """S8: the disk full is not the network; a retry is diagnosed from its own lines; a failure with no retry still says what to do; a user's mistakes are not
+    for the issue tracker."""
+    import errno
+    fake = types.ModuleType("huggingface_hub")
+    fake.snapshot_download = lambda *a, **k: (_ for _ in ()).throw(OSError(errno.ENOSPC, "No space left on device"))
+    utils, lg = types.ModuleType("huggingface_hub.utils"), types.ModuleType("huggingface_hub.utils.logging")
+    lg.set_verbosity_error = lambda: None
+    utils.logging = lg
+    utils.tqdm = type("tqdm", (), {"__init__": lambda self, *a, **k: None, "close": lambda self: None})
+    fake.utils = utils
+    mods = {"huggingface_hub": fake, "huggingface_hub.utils": utils, "huggingface_hub.utils.logging": lg}
+    saved = {k: sys.modules.get(k) for k in mods}
+    d = tempfile.mkdtemp()
+    os.environ["HF_HUB_CACHE"] = d
+    try:
+        sys.modules.update(mods)
+        mm = pf.model_of("some/Model", QWEN["Qwen/Qwen3-8B"], bf16=16_381_470_720, files=[("model.safetensors", 10**9)])
+        r = raises(lambda: run.download(mm, run.Ui(Sink())), "is full")  # (S8a: not "check the network connection")
+        assert "network" not in r.what + r.fix and "HF_HOME=/path/on/that/drive glyd run some/Model" in r.fix and d in r.what
+    finally:
+        os.environ.pop("HF_HUB_CACHE", None)
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+        shutil.rmtree(d)
+    log = os.path.join(tempfile.mkdtemp(), "x.log")  # (S8b: the lines of the first start are not the second's)
+    open(log, "w").write("(EngineCore) ValueError: ... the estimated maximum model length is 3280. Try increasing\n")
+    start = os.path.getsize(log)
+    open(log, "a").write("(EngineCore) torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.16 GiB\n")
+    assert run.diagnose(run.log_tail(log)).kind == "context" and run.diagnose(run.log_tail(log, start=start)).kind == "oom"
+    f = run.diagnose("torch.OutOfMemoryError: CUDA out of memory")
+    r = run.stopped(f, M8, OWNER_GPU, "run", log)  # (S8c)
+    assert "Close programs that use the GPU" in r.fix and "The server's log" in r.fix and "Report it" not in r.fix
+    f = run.diagnose("estimated maximum model length is 2000. Try increasing")  # (no retry possible: under 4,096: still says what to do)
+    assert f.kind == "context" and "Close programs that use the GPU" in run.stopped(f, M8, OWNER_GPU, "run", log).fix
+    raises(lambda: pf.settings(M8, L4_GPU, "run", context=100_000, environ={}), "own window is 40,960 tokens")  # (S8d: a mistake of the user's, said before the download)
+    f = run.diagnose("ValueError: Model architectures ['FooForCausalLM'] are not supported for now.")
+    assert f.kind == "arch" and "FooForCausalLM" in f.what and "Report it" not in f.fix
+    f = run.diagnose("User-specified max_model_len (100000) is greater than the derived max_model_len (max_position_embeddings=40960 or model_max_length=None in model's config.json).")
+    assert f.kind == "window" and "40,960" in f.what and "--context 40,960" in f.fix
+    f = run.diagnose("", rc=-9)
+    assert f.kind == "killed" and "ran out of memory" in f.what and "Report it" not in f.fix and run.diagnose("", rc=1).kind == "other"
+
+
+def test_a_float16_checkpoint_is_refused_before_the_download():
+    """S9: the plugin runs bfloat16, and vLLM stops a float16 checkpoint's load with 'float16 is not supported for quantization method glyd': 14 GB later."""
+    f16 = pf.model_of("meta/Llama-2-7b", QWEN["Qwen/Qwen3-8B"], bf16=13_000_000_000, dtype="f16")
+    r = raises(lambda: pf.check_dtype(f16, {}), "float16")
+    assert "bf16 version" in r.fix and "--dtype bfloat16" in r.fix
+    pf.check_dtype(f16, pf.flags_given(["--dtype", "bfloat16"]))
+    pf.check_dtype(M8, {})
+    hub = lambda name: (QWEN["Qwen/Qwen3-8B"], {"F16": 6_000_000_000, "BF16": 10}, [("model.safetensors", 12_000_000_000)])
+    assert pf.load_model("meta/Llama-2-7b", hub=hub).dtype == "f16" and pf.load_model("meta/Llama-2-7b", hub=lambda n: (QWEN["Qwen/Qwen3-8B"], {"BF16": 6_000_000_000}, [("model.safetensors", 12_000_000_000)])).dtype == "bf16"
+    called = []
+    d = tempfile.mkdtemp()
+    os.environ["XDG_STATE_HOME"] = d
+    try:
+        with Patched(pf__setup_checks=lambda gpus=None: (L4_GPU, []), pf__probe_gpus=lambda: [L4_GPU], pf__load_model=lambda name: f16, run__download=lambda m, ui: called.append(1)):
+            raises(lambda: run.start(run.parse("run", ["meta/Llama-2-7b"]), [], "run", run.Ui(Sink())), "float16")
+        assert called == []  # (before the download)
+    finally:
+        os.environ.pop("XDG_STATE_HOME", None)
+        shutil.rmtree(d)
+
+
+def test_glyd_login_asks_again_and_says_who():
+    """S10: huggingface_hub 1.x skips login() where any token is saved, so glyd login did nothing and said nothing, and a stale token stayed; the token
+    glyd reads for the Hub's metadata is huggingface_hub's own, and goes to the host it was meant for only."""
+    calls = []
+    fake = types.ModuleType("huggingface_hub")
+    fake.login = lambda token=None, *, add_to_git_credential=False, skip_if_logged_in=True: calls.append((token, add_to_git_credential, skip_if_logged_in))
+    fake.whoami = lambda: {"name": "octocat"}
+    saved = sys.modules.get("huggingface_hub")
+    out, real = Sink(), sys.stdout
+    try:
+        sys.modules["huggingface_hub"] = fake
+        sys.stdout = out
+        try:
+            assert run.cmd_login([]) == 0
+        finally:
+            sys.stdout = real
+        assert calls == [(None, False, False)] and "Logged in to Hugging Face as octocat." in out.text(), (calls, out.text())
+        fake.login = lambda *a, **k: (_ for _ in ()).throw(ValueError("Invalid token passed!"))
+        r = raises(lambda: run.cmd_login([]), "did not accept that token")
+        assert "settings/tokens" in r.fix and "glyd login" in r.fix
+        fake.get_token = lambda: "tok-from-the-hub"  # (S10b: its answer, not a file under HF_HOME that the hub may not use)
+        d = tempfile.mkdtemp()
+        os.environ["HF_HOME"] = d
+        open(os.path.join(d, "token"), "w").write("stale-token")
+        try:
+            assert fit._token() == "tok-from-the-hub"
+            del fake.get_token
+            assert fit._token() == "stale-token"  # (no get_token: the file)
+            sys.modules.pop("huggingface_hub")
+            assert fit._token() == "stale-token"
+        finally:
+            os.environ.pop("HF_HOME")
+            shutil.rmtree(d)
+    finally:
+        if saved is None:
+            sys.modules.pop("huggingface_hub", None)
+        else:
+            sys.modules["huggingface_hub"] = saved
+    import urllib.request
+    h = fit._SameHostAuth()
+    req = urllib.request.Request("https://huggingface.co/api/models/a/b", headers={"Authorization": "Bearer secret", "User-Agent": "glyd"})
+    away = h.redirect_request(req, None, 302, "Found", {}, "https://cas-bridge.example.net/x")
+    same = h.redirect_request(req, None, 302, "Found", {}, "https://huggingface.co/api/models/a/c")
+    assert "Authorization" not in away.headers and "Authorization" not in away.unredirected_hdrs and same.headers.get("Authorization") == "Bearer secret"
+
+
+def test_the_gpu_picked_is_one_glyd_can_use():
+    """S11: the freest GPU was picked first and refused for its age (a P40 beside a 3060); MIG showed the whole GPU's memory to a process that sees a slice."""
+    p40 = pf.Gpu(0, "Tesla P40", 24 * GiB, 23 * GiB, (6, 1), "570", (12, 8))
+    r3060 = pf.Gpu(1, "NVIDIA GeForce RTX 3060", 12 * GiB, 11 * GiB, (8, 6), "570", (12, 8))
+    assert pf.pick_gpu([p40, r3060], "").index == 1 and pf.setup_checks(False, gpus=[p40, r3060])[0].index == 1
+    assert pf.pick_gpu([p40, r3060], "0").index == 0  # (CUDA_VISIBLE_DEVICES names the old one: refused, as asked for)
+    r = raises(lambda: pf.setup_checks(False, gpus=[p40, pf.Gpu(1, "Tesla P4", 8 * GiB, 7 * GiB, (6, 1), "570", (12, 8))]), "too old")
+    assert "none of this computer's 2 GPUs" in r.what
+    mig = pf.Gpu(0, "NVIDIA A100 80GB", 80 * GiB, 79 * GiB, (8, 0), "595", (13, 2), mig=True)
+    r = raises(lambda: pf.setup_checks(False, gpus=[mig]), "MIG is on")
+    assert "--gpu-memory-utilization" in r.fix and "nvidia-smi -i 0 -mig 0" in r.fix
+    saved = os.environ.get("CUDA_VISIBLE_DEVICES")
+    os.environ["CUDA_VISIBLE_DEVICES"] = "MIG-1234"
+    try:
+        assert pf.setup_checks(False, gpus=[mig])[0] is mig  # (a slice named: the user's own sizing)
+    finally:
+        if saved is None:
+            os.environ.pop("CUDA_VISIBLE_DEVICES")
+        else:
+            os.environ["CUDA_VISIBLE_DEVICES"] = saved
+    raises(lambda: pf.setup_checks(False, gpus=[pf.Gpu(0, "NVIDIA A100 MIG 1g.10gb", 0, 0, (8, 0), "595", (13, 2))]), "did not say how much memory")  # ([N/A] memory)
+    g = pf.probe_gpus(smi("0, NVIDIA A100 80GB, 81920, 80000, 400, 595.91.07, 8.0, Disabled, Enabled\n"))[0]
+    assert g.mig and not pf.probe_gpus(smi("0, NVIDIA L4, 23034, 22566, 469, 595.91.07, 8.9, Disabled, Disabled\n"))[0].mig
+
+
+def test_small_review_nits_in_the_settings_and_the_ports():
+    """Nits 1, 2, 5, 6, 8: a context the 92% cap makes smaller than the smallest chat is refused; a port that is not one; the last ten logs by time; a
+    port listening on [::1]; the zig script written whole."""
+    gpu = pf.Gpu(0, "x", int(22.91 * GiB), int(22.76 * GiB), (8, 9), "595", (13, 2))
+    raises(lambda: pf.settings(model("Qwen3-14B", 29_540_000_000), gpu, "serve", environ={}), "need more than the 92% of this GPU's memory")  # (it returned a 3,072-token context)
+    for bad in ("abc", "99999", "0", "-1", "80.5"):
+        raises(lambda bad=bad: pf.parse_port(bad), "is not a port number")
+    assert pf.parse_port("8000") == 8000 and pf.parse_port("8k") == 8000
+    try:
+        run.parse("run", ["M", "--port", "abc"])
+        raise AssertionError("a port that is not a number was taken")
+    except SystemExit as e:
+        assert e.code == 2
+    d = tempfile.mkdtemp()
+    os.environ["XDG_STATE_HOME"] = d
+    try:
+        logs = os.path.join(d, "glyd", "logs")
+        os.makedirs(logs)
+        for i, name in enumerate(["serve-20260101-000001", "run-20260101-000002"] + [f"serve-2026010{n}-000000" for n in range(3, 9)] + [f"run-2026011{n}-000000" for n in range(0, 4)]):
+            path = os.path.join(logs, name + ".log")
+            open(path, "w").close()
+            os.utime(path, (1_000_000 + i, 1_000_000 + i))  # (by name, run-* sorts before serve-*: by time the oldest are the first written)
+        new = run.new_log("run")
+        left = sorted(os.listdir(logs))
+        assert len(left) == 9 and "serve-20260101-000001.log" not in left and "run-20260101-000002.log" not in left and os.stat(logs).st_mode & 0o077 == 0, left
+        assert new.startswith(logs)
+        # nit 8: a zig script that is a link at its name is replaced, not written through; and it is whole at every moment
+        elsewhere = os.path.join(d, "elsewhere")
+        open(elsewhere, "w").write("not ours\n")
+        os.symlink(elsewhere, os.path.join(d, "glyd", "zigcc"))
+        path = run.zig_cc()
+        assert open(elsewhere).read() == "not ours\n" and not os.path.islink(path) and os.access(path, os.X_OK) and open(path).read().startswith("#!/bin/sh")
+        assert run.zig_cc() == path and not [f for f in os.listdir(os.path.join(d, "glyd")) if f.startswith(".zigcc-")]
+    finally:
+        os.environ.pop("XDG_STATE_HOME", None)
+        shutil.rmtree(d)
+    assert run.base_url("::1", 8000) == "http://[::1]:8000" and run.base_url("0.0.0.0", 8000) == "http://127.0.0.1:8000" and run.base_url("127.0.0.1", 9) == "http://127.0.0.1:9"
+    import socket
+    if socket.has_ipv6:  # (nit 6: a dev server on [::1]:8000 is what a browser opening http://localhost:8000 reaches)
+        s6 = socket.socket(socket.AF_INET6)
+        try:
+            s6.bind(("::1", 0))
+            s6.listen(1)
+            port = s6.getsockname()[1]
+            assert not pf.port_free("127.0.0.1", port), "a program listening on [::1] was not seen"
+            assert pf.pick_port("127.0.0.1", port, False) != port
+        except OSError:
+            pass  # (no IPv6 loopback on this machine)
+        finally:
+            s6.close()
+    assert pf._run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff\\xfeok')"]).endswith("ok")  # (nit 10: output in another encoding)
+
+
+def test_an_empty_prompt_is_found_before_the_download_and_a_served_model_is_not_started_again():
+    """Nits 3 and 4."""
+    started = []
+    with Patched(run__start=lambda *a, **k: started.append(1)):
+        raises(lambda: run.cmd_run(["M", "--prompt", "  "]), "the prompt is empty")
+        r, w = os.pipe()
+        os.close(w)  # (standard input at its end at once: nothing was piped)
+        real = sys.stdin
+        sys.stdin = os.fdopen(r)
+        try:
+            raises(lambda: run.cmd_run(["M"]), "standard input is empty")
+        finally:
+            sys.stdin.close()
+            sys.stdin = real
+    assert started == []  # (found before any download or load)
+    srv = Fake()
+    d = tempfile.mkdtemp()
+    out, real = Sink(), sys.stderr
+    try:
+        with Patched(run__start=lambda *a, **k: run.Server(srv.base, model="fake/Model-1B")):
+            sys.stderr = out
+            assert run.main("serve", ["M"]) == 0
+    finally:
+        sys.stderr = real
+        srv.shutdown()
+        shutil.rmtree(d)
+    assert "Nothing to start" in out.text() and "Press Ctrl-C" not in out.text(), out.text()
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

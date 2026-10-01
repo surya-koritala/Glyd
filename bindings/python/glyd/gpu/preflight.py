@@ -22,25 +22,29 @@ memory, benchmarks/gpu/l4-local-chat-2026-09-30):
   where eager needs 0.5.
 Under the Business Source License 1.1 (LICENSE-glyd-gpu), as the rest of Glyd's GPU code.
 """
+import errno
 import glob
 import importlib.metadata
 import importlib.util
+import json
 import math
 import os
 import re
 import shutil
 import socket
 import subprocess
+import sys
 import sysconfig
 from dataclasses import dataclass, field
 from .fit import RATIO, HubError, _hub, _local, checkpoint, kv_bytes
 from .format import MANIFEST
+from .page import own_origins
 from .vllm_entry import TESTED, tested
 
 GiB = 2**30
 CTX = 0.55 * GiB  # the CUDA context and driver's share, outside vLLM's budget (EngineCore held 14,958 MiB at a 14.06 GiB budget)
-HEADROOM = 0.4 * GiB  # left free for a desktop (the owner's card ran with 0.23 GiB of it)
-NON_KV = 0.55 * GiB  # vLLM's non-torch memory and peak activation beyond the weights, eager (Qwen3 0.6B to 8B on an L4: 0.38 to 0.70 GiB, 0.49 for the 8B)
+HEADROOM = 0.4 * GiB  # left free for a desktop (the owner's card ran with 0.23 GiB of it). Not more where a display is attached (Gpu.display): no desktop's growth has been measured, and this is more than that one took
+NON_KV = 0.55 * GiB  # vLLM's non-torch memory and peak activation beyond the weights, eager (Qwen3 0.6B to 8B on an L4: 0.38 to 0.70 GiB, 0.49 for the 8B), at the batch sizes vLLM 0.30 uses below 70 GiB of GPU memory (2,048 tokens, 256 sequences); from 70 GiB it sizes them up (8,192 and 1,024, 16,384 from 160 GiB), and the activation peak with them: not measured there, where a chat's context is the model's own length with GiBs to spare
 NON_KV_COMPILED = 2.3 * GiB  # the same compiled (Qwen3-8B: 2.15 GiB, a 1.66 GiB activation peak and CUDA graphs): only for a user's --no-enforce-eager
 EXTRA = 0.15 * GiB  # the plugin's other workspaces on top of its packs and its decode buffer (Qwen3-8B: 11.39 GiB measured, 11.24 from the bits and the buffer)
 UTIL_MAX = 0.92
@@ -79,29 +83,48 @@ class Gpu:
     driver: str  # "595.91.07"
     cuda: tuple  # the newest CUDA the driver runs, (13, 2); () where not told
     display: bool = False  # a display is attached to it (a desktop)
+    mig: bool = False  # Multi-Instance GPU is on: CUDA sees a slice, nvidia-smi the whole GPU
 
 
 def _run(cmd):
-    """A command's output, or None where it is not there or fails."""
+    """A command's output (decoded where it is not UTF-8), or None where it is not there or fails."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return None
     return r.stdout if r.returncode == 0 else None
 
 
-def probe_gpus(run=_run):
+COMPRESSION = "The compression commands (glyd FILE -o OUT) work here."
+DRIVER_PACKAGE = "sudo apt install nvidia-driver-{want}, then reboot"  # (Ubuntu's package for a driver of that number: ubuntu-drivers install takes the recommended one, which may be older)
+
+
+def no_gpu_refusal(platform=None):
+    """Why this computer has no GPU glyd can use, in words that fit it: no driver advice for a Mac, one message for a Linux machine
+    that has no NVIDIA GPU and one that has a GPU and no driver (nvidia-smi is missing either way)."""
+    platform = sys.platform if platform is None else platform
+    if platform == "darwin":
+        return Refusal("glyd run needs Linux and an NVIDIA GPU, and this computer is a Mac", COMPRESSION)
+    if platform in ("win32", "cygwin"):
+        return Refusal("glyd run needs Linux and an NVIDIA GPU, and this computer runs Windows", "Run glyd inside WSL2, which uses the NVIDIA driver of Windows. " + COMPRESSION)
+    return Refusal("no NVIDIA GPU answered: nvidia-smi is missing or failed",
+                   "glyd run needs an NVIDIA GPU (Ampere or newer) on Linux; the compression commands (glyd FILE -o OUT) work without one.\n"
+                   "If this computer has one, install its driver (Ubuntu: " + DRIVER_PACKAGE.format(want=MIN_DRIVER[max(MIN_DRIVER)]) + "), then run: glyd doctor")
+
+
+def probe_gpus(run=_run, platform=None):
     """The NVIDIA GPUs nvidia-smi lists, or a Refusal saying why there are none. `run` (a command's output, or None) is
     replaced by the tests."""
     query = lambda fields: run(["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits"])
-    fields = "index,name,memory.total,memory.free,memory.reserved,driver_version,compute_cap,display_active"
-    out = query(fields)
-    if out is None:  # (an older driver has no memory.reserved or display_active)
-        fields = "index,name,memory.total,memory.free,driver_version,compute_cap"
+    base = "index,name,memory.total,memory.free"
+    out = None
+    for fields in (base + ",memory.reserved,driver_version,compute_cap,display_active,mig.mode.current", base + ",memory.reserved,driver_version,compute_cap,display_active",
+                   base + ",driver_version,compute_cap"):  # (an older driver has no mig.mode, memory.reserved or display_active)
         out = query(fields)
+        if out is not None:
+            break
     if out is None:
-        raise Refusal("no NVIDIA GPU answered: nvidia-smi is missing or failed",
-                      "Glyd runs models on an NVIDIA GPU (Ampere or newer). Install the NVIDIA driver (Ubuntu: sudo ubuntu-drivers install, then reboot), then run: glyd doctor")
+        raise no_gpu_refusal(platform)
     m = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", run(["nvidia-smi"]) or "")
     cuda = (int(m.group(1)), int(m.group(2))) if m else ()
     gpus = []
@@ -112,7 +135,8 @@ def probe_gpus(run=_run):
             total = mib("memory.total")
             reserved = mib("memory.reserved") if "memory.reserved" in row else int(total * 0.023)  # (the driver keeps about 2%)
             cc = tuple(int(x) for x in row["compute_cap"].split("."))
-            gpus.append(Gpu(int(row["index"]), row["name"], total - reserved, mib("memory.free"), cc, row["driver_version"], cuda, row.get("display_active", "").lower() == "enabled"))
+            gpus.append(Gpu(int(row["index"]), row["name"], total - reserved, mib("memory.free"), cc, row["driver_version"], cuda,
+                            row.get("display_active", "").lower() == "enabled", row.get("mig.mode.current", "").lower() == "enabled"))
         except (KeyError, ValueError):
             continue
     if not gpus:
@@ -121,10 +145,12 @@ def probe_gpus(run=_run):
 
 
 def pick_gpu(gpus, visible=None):
-    """The GPU with the most free memory (among those CUDA_VISIBLE_DEVICES lists, where it is numbers)."""
+    """The GPU with the most free memory among those new enough for Glyd (and among those CUDA_VISIBLE_DEVICES lists, where it is
+    numbers): an older card with more memory is not the one to refuse for. Where none is new enough, the freest, for the refusal."""
     visible = os.environ.get("CUDA_VISIBLE_DEVICES", "") if visible is None else visible
     want = [int(x) for x in visible.split(",") if x.strip().isdigit()]
-    return max([g for g in gpus if g.index in want] or gpus, key=lambda g: g.free)
+    pool = [g for g in gpus if g.index in want] or gpus
+    return max([g for g in pool if g.cc >= MIN_CAPABILITY] or pool, key=lambda g: g.free)
 
 
 def other_users(run=_run):
@@ -167,7 +193,7 @@ def check_driver(gpu, built):
     if not built or not gpu.cuda or gpu.cuda >= built:
         return None
     want = MIN_DRIVER.get(max([k for k in MIN_DRIVER if k <= built], default=None))
-    fix = f"Update the NVIDIA driver to {want} or newer (Ubuntu: sudo ubuntu-drivers install, then reboot)" if want else "Update the NVIDIA driver (https://www.nvidia.com/drivers)"
+    fix = f"Update the NVIDIA driver to {want} or newer (Ubuntu: {DRIVER_PACKAGE.format(want=want)}; other systems: https://www.nvidia.com/drivers)" if want else "Update the NVIDIA driver (https://www.nvidia.com/drivers)"
     what = f"your NVIDIA driver {gpu.driver} runs CUDA {gpu.cuda[0]}.{gpu.cuda[1]}, and the PyTorch installed here was built for CUDA {built[0]}.{built[1]}"
     if gpu.cuda[0] < built[0]:
         raise Refusal(what, fix)
@@ -237,10 +263,18 @@ def vllm_ready():
 def setup_checks(need_vllm=True, gpus=None):
     """The checks before a model is looked at: a GPU (the freest), its compute capability, vLLM, a C compiler and Python's headers, a
     driver new enough for PyTorch's CUDA, and Glyd's library. (gpu, [warnings]), or a Refusal."""
-    gpu = pick_gpu(gpus or probe_gpus())
+    gpus = gpus or probe_gpus()
+    gpu = pick_gpu(gpus)
     if gpu.cc < MIN_CAPABILITY:
-        raise Refusal(f"{gpu.name} is too old for Glyd (compute capability {gpu.cc[0]}.{gpu.cc[1]}); it needs an NVIDIA Ampere GPU or newer",
+        raise Refusal(f"{gpu.name} is too old for Glyd (compute capability {gpu.cc[0]}.{gpu.cc[1]}); it needs an NVIDIA Ampere GPU or newer"
+                      + (f" (none of this computer's {len(gpus)} GPUs is)" if len(gpus) > 1 else ""),
                       "RTX 30 series, A10, A100, L4, RTX 40 series, H100 and newer work")
+    if gpu.mig and "MIG-" not in os.environ.get("CUDA_VISIBLE_DEVICES", ""):
+        raise Refusal(f"MIG is on for {gpu.name}: CUDA sees one slice of it, and glyd does not size a slice",
+                      "Use the whole GPU (an administrator turns MIG off with: sudo nvidia-smi -i " + str(gpu.index) + " -mig 0), or name a slice with CUDA_VISIBLE_DEVICES=MIG-... and set the memory by hand:\n"
+                      "glyd run MODEL -- --gpu-memory-utilization 0.8")
+    if gpu.total <= 0:
+        raise Refusal(f"nvidia-smi did not say how much memory {gpu.name} has", "Run nvidia-smi to see what it prints; a driver in an odd state (or MIG) can leave the memory out")
     if need_vllm:
         vllm_ready()
         if not (have_cc() or have_zig()):
@@ -272,6 +306,7 @@ class Model:
     files: list = field(default_factory=list)  # [(path, bytes)] to download
     saved: bool = False  # a glyd save: its files as they are
     local: bool = False  # a directory, or a snapshot already downloaded
+    dtype: str = "bf16"  # what the checkpoint holds most of: "bf16", or "f16" (float16: the plugin runs bfloat16)
 
     @property
     def text(self):
@@ -306,7 +341,7 @@ def buffer_bytes(t):
         return 0
 
 
-def model_of(repo, config, bf16=None, files=(), saved=False, local=False):
+def model_of(repo, config, bf16=None, files=(), saved=False, local=False, dtype="bf16"):
     """A Model from a config, and the checkpoint's bytes where they are known (else the config's own count)."""
     t = config.get("text_config", config)
     lin, other, moe = linear_bytes(t)
@@ -319,7 +354,7 @@ def model_of(repo, config, bf16=None, files=(), saved=False, local=False):
         kv = kv_bytes(config, 1)
     except (KeyError, TypeError, ZeroDivisionError):
         kv = 0
-    return Model(repo, repo.rstrip("/").split("/")[-1], config, bf16, lin, other, moe, kv, int(t.get("max_position_embeddings") or 0), buffer_bytes(t), list(files), saved, local)
+    return Model(repo, repo.rstrip("/").split("/")[-1], config, bf16, lin, other, moe, kv, int(t.get("max_position_embeddings") or 0), buffer_bytes(t), list(files), saved, local, dtype)
 
 
 def layout_for(cc, lin, other, total, moe=False):
@@ -419,7 +454,16 @@ def load_model(name, hub=_hub, local=_local):
         fmt = "FP8" if params.get("F8_E4M3", 0) > max(params.get("U8", 0), params.get("I8", 0)) else "4-bit"
         raise Refusal(f"{name} is already quantized ({fmt}), and Glyd packs bf16 weights", "Run the model's bf16 version: usually the same name without -FP8, -AWQ or -GPTQ")
     local_copy = os.path.isdir(name) or cached
-    return model_of(name, config, weights if saved else bf16, [] if local_copy else download_files(files), saved, local_copy)
+    dtype = "f16" if not saved and params.get("F16", 0) > params.get("BF16", 0) else "bf16"
+    return model_of(name, config, weights if saved else bf16, [] if local_copy else download_files(files), saved, local_copy, dtype)
+
+
+def check_dtype(m, given=None):
+    """A Refusal for a float16 checkpoint, before its download: the plugin runs bfloat16 and vLLM stops the load with "float16 is not
+    supported for quantization method glyd". `-- --dtype bfloat16` makes vLLM convert the weights, which is the user's to ask for."""
+    if m.dtype == "f16" and str((given or {}).get("dtype", "")).lower() not in ("bfloat16", "bf16"):
+        raise Refusal(f"{m.name} is stored in float16, and Glyd packs bfloat16 weights",
+                      "Use the model's bf16 version if it has one, or add  -- --dtype bfloat16  and vLLM converts the weights (the result is then not bit for bit the checkpoint's)")
 
 
 # --- the settings ------------------------------------------------------------------------------------------------------------
@@ -439,6 +483,7 @@ class Settings:
     env: dict = field(default_factory=dict)  # what to add to the server's environment (only where the user has set none)
     notes: list = field(default_factory=list)  # why a setting is what it is, for the summary line
     given: dict = field(default_factory=dict)  # the vLLM flags the user passed, which win
+    local_only: bool = False  # the server answers this computer's own page and programs only (page.py): vLLM's CORS is limited to the page's origin too
 
 
 def parsers(m):
@@ -496,6 +541,53 @@ def need(weights, m, gpu, context=MIN_CONTEXT, non_kv=NON_KV):
     return int(weights + non_kv + context * m.kv_token / KV_FIT + CTX + HEADROOM + 0.01 * gpu.total)
 
 
+def take_api_key(extra, environ=None):
+    """(the API key, the vLLM flags without it): `--api-key KEY` (or `--api-key=KEY`) among the flags after `--` is taken out, so that the key
+    is not on the server's command line (`ps`, the log): it reaches the server in VLLM_API_KEY. Without one, the key is VLLM_API_KEY's, or
+    None. Several keys after one `--api-key` cannot go through one variable: those flags stay as they were."""
+    env = os.environ if environ is None else environ
+    out, key, i, extra = [], None, 0, list(extra)
+    while i < len(extra):
+        tok = extra[i]
+        name, eq, value = tok.partition("=")
+        if name in ("--api-key", "--api_key"):
+            vals, j = ([value] if eq else []), i + 1
+            while not eq and j < len(extra) and not extra[j].startswith("-"):
+                vals.append(extra[j])
+                j += 1
+            if len(vals) == 1:
+                key, i = vals[0], j
+                continue
+        out.append(tok)
+        i += 1
+    return (key or env.get("VLLM_API_KEY") or None), out
+
+
+def parse_port(v):
+    """A port number from a flag's value, or a Refusal in words (it was int(None) and an OverflowError)."""
+    n = number(v)
+    if n is None or n != int(n) or not 1 <= n <= 65535:
+        raise Refusal(f"{v!r} is not a port number", "A port is a whole number from 1 to 65535: --port 8000")
+    return int(n)
+
+
+def path_shadow(environ=None, me=None):
+    """(the glyd that comes first on PATH, this program's own path on PATH or its real one) where another program named glyd (the Rust
+    compression program) comes first, so that `glyd run` typed alone reaches it; None where this program is first, or none is on PATH."""
+    env = os.environ if environ is None else environ
+    mine = os.path.realpath(me or os.path.join(os.path.dirname(sys.executable), "glyd"))  # (the tool environment's own bin has it beside its Python)
+    first, own = None, None
+    for d in (env.get("PATH", "") or "").split(os.pathsep):
+        exe = os.path.join(d, "glyd") if d else ""
+        if not exe or not (os.path.isfile(exe) and os.access(exe, os.X_OK)):
+            continue
+        if os.path.realpath(exe) == mine:
+            own = own or exe
+        elif first is None and own is None:
+            first = exe
+    return (first, own or mine) if first else None
+
+
 def footprint(m, gpu, layouts=None, context=MIN_CONTEXT, non_kv=NON_KV):
     """(weights on the GPU with Glyd, free memory needed to start with a `context`-token chat) in the layout that takes the least."""
     w = min(weights_on_gpu(m, l) for l in layouts or ["mma", "mma12"])
@@ -549,11 +641,15 @@ def settings(m, gpu, mode="run", context=None, nvcc=True, environ=None, given=No
         s.notes.append("tiered layout: smaller weights, room for a longer chat")
     s.weights, s.util = weights[s.layout], round(cap, 2)
     s.kv_tokens = tokens(s.layout, cap)
+    if kv and "gpu-memory-utilization" not in given and s.kv_tokens < least:  # (vLLM's own 92% limit leaves less than the memory check counted on: a 14B on 22.9 GiB)
+        raise Refusal(f"{m.name} with Glyd ({gb(base)} of weights) and a {least:,}-token chat need more than the {UTIL_MAX:.0%} of this GPU's memory that vLLM uses ({gb(UTIL_MAX * T)}); your GPU has {gb(gpu.free)} free")
     fits = s.kv_tokens // 1024 * 1024
     if "max-model-len" in given:
         s.context = int(number(given["max-model-len"]) or 0)
         s.context_why = "as you set it"
     elif context:
+        if m.max_len and context > m.max_len:
+            raise Refusal(f"{m.name}'s own window is {m.max_len:,} tokens, and --context {context:,} is more", f"Use --context {m.max_len:,} or less")
         if kv and context > s.kv_tokens:
             raise Refusal(f"a {context:,}-token context needs more memory than is free: at most {fits:,} tokens fit beside {m.name}", f"Use --context {fits:,} or less")
         s.context, s.context_why = context, "as you asked"
@@ -584,6 +680,8 @@ def vllm_args(m, s, host, port, extra=()):
         args += ["--enable-auto-tool-choice", "--tool-call-parser", s.tool_parser]
     if s.reasoning_parser and "reasoning-parser" not in g:
         args += ["--reasoning-parser", s.reasoning_parser]
+    if s.local_only and "allowed-origins" not in g:  # (vLLM allows any origin by default: another web page's script could use this server from the user's browser)
+        args += ["--allowed-origins", json.dumps(own_origins(port))]
     return args + list(extra)
 
 
@@ -639,15 +737,21 @@ def suggest(m, gpu, mode="run"):
     return best
 
 
-def refusal_with_fix(m, gpu, refusal, mode="run", users=()):
-    """A Refusal for a model that does not fit, with what to do: stop what holds the GPU's memory, or run the largest model that fits."""
+def memory_fixes(m, gpu, mode="run", users=()):
+    """The lines that say what to do about a model that does not fit: what holds the GPU's memory, and the largest model of its family that fits."""
     fixes = []
     if users:
         fixes.append("Close what holds GPU memory now: " + ", ".join(f"{n} ({gb(b)})" for n, b in users[:3]))
     pick = suggest(m, gpu, mode)
     if pick:
         fixes.append(f"Or try {pick[0]}, which needs about {gb(pick[1].needs)}: glyd {mode} {pick[0]}")
-    elif not fixes:
+    return fixes
+
+
+def refusal_with_fix(m, gpu, refusal, mode="run", users=()):
+    """A Refusal for a model that does not fit, with what to do: stop what holds the GPU's memory, or run the largest model that fits."""
+    fixes = memory_fixes(m, gpu, mode, users)
+    if not fixes:
         fixes.append("No model Glyd suggests fits this GPU's free memory; run glyd doctor to see what it has")
     return Refusal(refusal.what, "\n".join(fixes))
 
@@ -673,13 +777,21 @@ def check_disk(m, free=None):
 
 
 def port_free(host, port):
-    """Whether host:port can be bound now."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    """Whether host:port can be bound now: for a local address, on 127.0.0.1 and on ::1 (a program listening on [::1]:8000, a dev server
+    say, is what a browser opening http://localhost:8000 reaches first)."""
+    for h in (["127.0.0.1", "::1"] if host in ("127.0.0.1", "localhost", "::1") else [host]):
         try:
-            s.bind((host, port))
-        except OSError:
-            return False
+            sock = socket.socket(socket.AF_INET6 if ":" in h else socket.AF_INET, socket.SOCK_STREAM)
+        except OSError:  # (no IPv6 here)
+            continue
+        with sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((h, port))
+            except OSError as e:
+                if e.errno in (errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT):  # (IPv6 is not set up on this machine)
+                    continue
+                return False
     return True
 
 

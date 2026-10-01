@@ -139,7 +139,7 @@ function inline(parent, text) {
     else {
       const k = t.indexOf('](');
       const a = el('a', null, t.slice(1, k));
-      a.href = t.slice(k + 2, -1); a.target = '_blank'; a.rel = 'noopener noreferrer';
+      a.href = t.slice(k + 2, -1); a.target = '_blank'; a.rel = 'noopener noreferrer'; a.title = a.hostname;  // (where the link goes, whatever its text says)
       parent.append(a);
     }
     last = re.lastIndex;
@@ -294,20 +294,23 @@ async function send(text) {
       failure = { status: r.status, message: msg };
     } else {
       const reader = r.body.getReader(), dec = new TextDecoder();
-      let buf = '';
+      let buf = '', ended = false;
+      const cut = (why) => { if (!failure) failure = { status: 0, cut: true, message: why }; };
       const handle = (line) => {
         line = line.trim();
         if (!line.startsWith('data:')) return;
         const data = line.slice(5).trim();
-        if (data === '[DONE]') return;
-        const j = JSON.parse(data);
+        if (data === '[DONE]') { ended = true; return; }
+        let j;
+        try { j = JSON.parse(data); } catch (e) { cut('a message arrived cut in two'); return; }
+        if (j.error) { failure = { status: 0, cut: true, serverError: true, message: (j.error && j.error.message) || String(j.error) }; return; }
         if (j.usage && j.usage.total_tokens) usage = j.usage.total_tokens;
         for (const ch of j.choices || []) {
           const d = ch.delta || {};
           const r1 = d.reasoning_content || d.reasoning;
           if (r1) feed('reasoning', r1);
           if (d.content) for (const [k, p] of split.feed(d.content, false)) feed(k, p);
-          if (ch.finish_reason) finish = ch.finish_reason;
+          if (ch.finish_reason) { finish = ch.finish_reason; ended = true; }
         }
       };
       for (;;) {
@@ -317,7 +320,9 @@ async function send(text) {
         let i;
         while ((i = buf.indexOf('\n')) >= 0) { handle(buf.slice(0, i)); buf = buf.slice(i + 1); }
       }
+      if (buf.trim()) handle(buf);
       for (const [k, p] of split.feed('', true)) feed(k, p);
+      if (!ended) cut('the connection closed before the answer was finished');
     }
   } catch (e) {
     if (e.name !== 'AbortError') failure = { status: 0, message: String(e && e.message || e) };
@@ -325,6 +330,7 @@ async function send(text) {
   if (frame) clearTimeout(frame);
   draw(); waiting.remove();
   const stopped = ctl.signal.aborted;
+  if (!failure && !stopped && !content && !reasoning) failure = { status: 0, empty: true, message: 'no answer' };
   S.abort = null; setBusy(false);
   if (failure || (stopped && !content)) {  // (the question is taken back, as if unasked, and put back in the box)
     bot.root.remove(); userEl.remove(); S.messages.pop();
@@ -333,14 +339,16 @@ async function send(text) {
     if (!failure) { say('Stopped'); return; }
     if (/maximum context length|max_model_len|context (length|window)/i.test(failure.message)) fullNotice();
     else if (failure.status === 401) notice('This server wants an API key, and this page does not send one.');
+    else if (failure.empty) notice('The model sent no answer. Your question is back in the box: ask again.');
+    else if (failure.cut) notice(failure.serverError ? 'The server could not finish the answer: ' + failure.message + '. Your question is back in the box.' : 'The server stopped answering in the middle of the answer (' + failure.message + '). Your question is back in the box: ask again.');
     else if (failure.status === 0) notice('Cannot reach the model server. If you started it with glyd run, check that it is still running in the terminal.');
     else notice('The server refused the request: ' + failure.message);
     say('The request failed');
     return;
   }
-  if (!content && !reasoning) { bot.answer.append(el('div', 'note', '(No answer came back.)')); }
   if (stopped) bot.answer.append(el('div', 'note', '(Stopped.)'));
-  S.messages.push({ role: 'assistant', content });
+  if (content) S.messages.push({ role: 'assistant', content });
+  else S.messages.pop();  // (thinking that never ended: no answer to keep, and no empty assistant turn)
   if (reasoning && !content) { bot.summary.textContent = 'Thinking'; }
   if (usage) { S.used = usage; meter(); }
   if (finish === 'length') {
