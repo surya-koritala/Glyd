@@ -381,6 +381,7 @@ glyd_flow() {
   if [ $EXPECT = refusal ]; then
     if [ $rc != 0 ] && grep -q 'needs about' "$LOGS/run.err" && grep -qE 'Or try [A-Za-z0-9_./-]+, which needs about' "$LOGS/run.err"; then
       ok "$MODEL refused, with a model to try: $(grep -E 'needs about|Or try' "$LOGS/run.err" | sed 's/^ *//' | cut -c1-200 | tr '\n' '|')"
+      grep -qF "needs about" "$README" && grep -qF "Or try" "$README" || fail "the README does not quote the refusal's wording (needs about ... Or try ...)"
       new=$(sed -nE 's/.*Or try ([A-Za-z0-9_./-]+),.*/\1/p' "$LOGS/run.err" | head -1)
       ans=$new
       run "${gf}glyd run $new --prompt 'What is the capital of France? Answer in one word. /no_think'" > "$LOGS/run2.out" 2> "$LOGS/run2.err"; rc=$?
@@ -419,6 +420,7 @@ glyd_flow() {
   case $big in *"This prompt is longer than the model's window"*"rc=1"*) ok "glyd run --prompt (a prompt on stdin) says so when the prompt outgrows the window: $(printf '%s' "$big" | cut -c1-150)";; *) fail "no plain message from glyd run for a prompt longer than the window: $big";; esac
   win=$(run 'curl -s http://127.0.0.1:8000/v1/models' | sed -nE 's/.*"max_model_len":([0-9]+).*/\1/p' | head -1)
   chatout=$(run "( sleep 6; echo '\"\"\"'; yes \"\$(yes word | head -n 600 | tr '\n' ' ')\" | head -n \$(( ${win:-10240} / 600 + 3 )); echo '\"\"\"'; sleep 10; echo /bye ) | ${gf}script -qec 'glyd run $MODEL' /dev/null" 2>&1 | tr -d '\r' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g')
+  grep -qF "This conversation is longer than the model's window" "$README" && grep -qF "Start a new chat with /clear" "$README" || fail "the README does not quote the message the terminal chat gives for a conversation past the window"
   case $chatout in *"This conversation is longer than the model's window"*"Start a new chat with /clear"*) ok "the terminal chat says so when the conversation outgrows the window (typed as one message of several lines)";; *) fail "no plain message in the terminal chat for a conversation longer than the window: $(printf '%s' "$chatout" | tail -5 | tr '\n' '|' | cut -c1-300)";; esac
   for r in uvx docker; do route $r && { webui_route $r "$py" "$MODEL" || break; }; done
   if route bridge; then  # the container on its own network reaches the server on the host's address, which needs the server on every interface and a key
