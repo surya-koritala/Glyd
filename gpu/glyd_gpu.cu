@@ -3963,9 +3963,12 @@ static int64_t dec_from(bool twelve, int64_t gpu, int64_t dec_min) {
 // every matrix of a layer of hidden size 5120 or more with q, k, v and gate, up merged (Qwen3-32B's pass
 // 0.909-0.952x; 8B's, hidden size 4096, 0.978x at 2048 and 0.994x at 4096 and
 // 8192, not taken: 2.2% at 2048 alone, for a ring of 600 MiB; at 1024 tokens both slower in the first session, 32B's
-// 1.012x and 8B's 1.106x). Never on a PCIe card (an A100 PCIe, an H100 PCIe), an H100 SXM or an H200 (not measured
-// end to end: an H100 SXM's 3.35 TB/s and 700 W against the GH200's 4 TB/s and larger budget), nor past 8192 tokens
-// (not measured). Its SMs for the decode: an A100's 12 to 1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143,
+// 1.012x and 8B's 1.106x); an H100 SXM's by the same rule (its class by name, 132 SMs; measured with Qwen3-14B, every
+// matrix of which has O and K at least 5120, SPLIT forced on: its pass 0.893x, 0.937x and 0.938x at 2048, 4096 and 8192
+// tokens, benchmarks/gpu/option2-2026-09-29/h100-sxm-measure; Qwen3-32B's matrices are such too and take the route by
+// that shape, not run on an H100 SXM). Never on a PCIe card (an A100 PCIe, an H100 PCIe), an H200 or an H100 NVL (not
+// measured end to end), nor past 8192 tokens (not measured). Its SMs for the decode: an A100's 12 to 1535 tokens, 8 to
+// 3071, then 4; Hopper's 12 to 6143,
 // then 4 (the split's granularity there: 8, cuBLAS a co-scheduled group). GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset:
 // the GPU's; GLYD_SPLIT_MIN negative: never) and GLYD_SPLIT_SMS move them, on any GPU from Ampere and any matrix. The
 // route is opt-in: a GPU's code with GLYD_GPU_WITH_SPLIT asks for it (a caller that runs the ring: glyd.gpu's GLinear,
@@ -3974,14 +3977,14 @@ static int64_t dec_from(bool twelve, int64_t gpu, int64_t dec_min) {
 static int64_t split_sms(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M) {
     const RouteMins& t = route_mins();
     int64_t code = gpu & ~(int64_t)GLYD_GPU_WITH_SPLIT, cc = code % 1000;
-    bool a100 = code == 80, gh200 = code == GLYD_GPU_GH200 + 90, large = O >= 5120 && K >= 5120;
+    bool a100 = code == 80, hopper = code == GLYD_GPU_GH200 + 90 || code == GLYD_GPU_H100 + 90, large = O >= 5120 && K >= 5120;
     if (!twelve || !(gpu & GLYD_GPU_WITH_SPLIT) || K % 64 || t.split_min < 0 || cc < 80) return 0;
-    int64_t lo = t.split_min ? t.split_min : a100 ? 769 : gh200 && large ? 2048 : INT64_MAX;
+    int64_t lo = t.split_min ? t.split_min : a100 ? 769 : hopper && large ? 2048 : INT64_MAX;
     int64_t hi = t.split_max ? t.split_max : a100 && !large ? 4096 : 8192;
     if (M < lo || M > hi) return 0;
     if (t.split_sms) return t.split_sms;
     if (a100) return M < 1536 ? 12 : M < 3072 ? 8 : 4;
-    if (cc == 90) return M < 6144 ? 12 : 4;  // (a GH200's; any Hopper's where GLYD_SPLIT_MIN is set)
+    if (cc == 90) return M < 6144 ? 12 : 4;  // (a GH200's and an H100 SXM's; any Hopper's where GLYD_SPLIT_MIN is set)
     return 12;  // (GLYD_SPLIT_MIN set on another GPU: not measured)
 }
 
@@ -4004,7 +4007,9 @@ static int route_for(bool twelve, int64_t gpu, int64_t O, int64_t K, int64_t M) 
 // "GeForce" in the name; GLYD_GPU_A10 with "A10" as a word, between characters that are not letters, digits or '_'
 // (an A10, not an A10G, A100 or A40: Python's re.search(r"\bA10\b", name, re.ASCII), as model.py's GLinear asks);
 // GLYD_GPU_L4 with "L4" as one (an L4, not an L40S or L40); GLYD_GPU_L40S with "L40S" as one (not an L40);
-// GLYD_GPU_PCIE with "PCIe" in any case (an A100 PCIe, an H100 PCIe); GLYD_GPU_GH200 with "GH200" as a word; else 0.
+// GLYD_GPU_PCIE with "PCIe" in any case (an A100 PCIe, an H100 PCIe); GLYD_GPU_GH200 with "GH200" as a word;
+// GLYD_GPU_H100 with "H100" as a word, unless "NVL" is one (an H100 SXM, "NVIDIA H100 80GB HBM3": not an H100 NVL, a PCIe
+// card by its form, nor an H100 PCIe, PCIE's above); else 0.
 static bool has_word(const char* name, const char* word) {
     size_t n = strlen(word);
     auto part = [](char c) { return isalnum((unsigned char)c) || c == '_'; };
@@ -4019,7 +4024,7 @@ static bool has_pcie(const char* name) {  // "PCIe" in any case (an A100-PCIE-40
     return false;
 }
 
-static int gpu_class(const char* name) { return strstr(name, "GeForce") ? GLYD_GPU_GEFORCE : has_word(name, "A10") ? GLYD_GPU_A10 : has_word(name, "L4") ? GLYD_GPU_L4 : has_word(name, "L40S") ? GLYD_GPU_L40S : has_pcie(name) ? GLYD_GPU_PCIE : has_word(name, "GH200") ? GLYD_GPU_GH200 : 0; }
+static int gpu_class(const char* name) { return strstr(name, "GeForce") ? GLYD_GPU_GEFORCE : has_word(name, "A10") ? GLYD_GPU_A10 : has_word(name, "L4") ? GLYD_GPU_L4 : has_word(name, "L40S") ? GLYD_GPU_L40S : has_pcie(name) ? GLYD_GPU_PCIE : has_word(name, "GH200") ? GLYD_GPU_GH200 : has_word(name, "H100") && !has_word(name, "NVL") ? GLYD_GPU_H100 : 0; }
 
 // The current device as the routes take it (asked once a device).
 GLYD_GPU_API int glyd_gpu_gpu(int* gpu) {

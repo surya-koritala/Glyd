@@ -176,10 +176,12 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
  * A100 or A40), GLYD_GPU_L4 with "L4" in it as a word (an L4, not an L40S or
  * L40), GLYD_GPU_L40S with "L40S" in it as a word (not an L40), GLYD_GPU_PCIE
  * with "PCIe" in it in any case, GLYD_GPU_GH200 with "GH200" in it as a word,
- * else none. 1089: an RTX 40; 3089: an L4; 4089: an L40S; 89: an L40 or RTX
- * 6000 Ada; 2086: an A10; 86: an A10G, A40 or RTX A6000; 80: an A100 SXM4;
- * 5080: an A100 PCIe; 90: an H100 SXM or H200; 6090: a GH200; 5090: an H100
- * PCIe. GLYD_GPU_WITH_SPLIT added to a code asks for the route SPLIT (a
+ * GLYD_GPU_H100 with "H100" in it as a word, but not an H100 NVL (an H100 SXM
+ * is "NVIDIA H100 80GB HBM3"; an H100 PCIe is PCIE's), else none. 1089: an RTX
+ * 40; 3089: an L4; 4089: an L40S; 89: an L40 or RTX 6000 Ada; 2086: an A10; 86:
+ * an A10G, A40 or RTX A6000; 80: an A100 SXM4; 5080: an A100 PCIe; 90: an H200
+ * or H100 NVL; 7090: an H100 SXM; 6090: a GH200; 5090: an H100 PCIe.
+ * GLYD_GPU_WITH_SPLIT added to a code asks for the route SPLIT (a
  * caller that runs the ring below: glyd.gpu's GLinear, where the split can
  * run); without it no route is SPLIT (v0.25.1's routes).
  * ---------------------------------------------------------------------- */
@@ -196,6 +198,7 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
 #define GLYD_GPU_L40S 4000      /* a GPU's class: "L40S" in its name as a word */
 #define GLYD_GPU_PCIE 5000      /* a GPU's class: "PCIe" in its name */
 #define GLYD_GPU_GH200 6000     /* a GPU's class: "GH200" in its name as a word */
+#define GLYD_GPU_H100 7000      /* a GPU's class: "H100" in its name as a word, not an H100 NVL (an H100 PCIe is PCIE's) */
 #define GLYD_GPU_WITH_SPLIT 1048576 /* a flag in a GPU's code (1 << 20): its routes with SPLIT, which the caller runs (opt-in) */
 
 /* The current device's GPU as the routes take it: its code. */
@@ -216,9 +219,9 @@ int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* rout
  * prompt decoded ahead on SMs set apart (green contexts), cuBLAS on the rest,
  * where a forward pass took at least 2% less time by it than by the routes
  * without it (gpu/README.md): an A100 SXM's from 769 to 4096 tokens, and to
- * 8192 for a matrix whose O and K are both at least 5120; a GH200's from 2048
- * to 8192 for such a matrix (an H100 SXM, an H200 and the PCIe cards: never,
- * until measured); the
+ * 8192 for a matrix whose O and K are both at least 5120; a GH200's and an
+ * H100 SXM's from 2048 to 8192 for such a matrix (an H200, an H100 NVL and the
+ * PCIe cards: never, until measured); the
  * decode's SMs 4 to 12 by the GPU and M. The route is
  * opt-in: glyd_gpu_*_route give it only for a code with GLYD_GPU_WITH_SPLIT,
  * and glyd_gpu_*_linear's own route (-1) never is. GLYD_SPLIT_MIN,

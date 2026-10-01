@@ -380,7 +380,7 @@ gm.Split.of[torch.device(dev, torch.cuda.current_device())] = False  # (the GLin
 assert jit.gpu() == lib.gpu() == gm.gpu_code(torch.cuda.get_device_capability(), torch.cuda.get_device_name())
 for name, cls in (("NVIDIA A10", g.A10), ("NVIDIA A10-24GB", g.A10), ("NVIDIA A10G", 0), ("NVIDIA A100-SXM4-80GB", 0), ("NVIDIA A40", 0), ("NVIDIA RTX A6000", 0), ("NVIDIA GeForce RTX 4080 SUPER", g.GEFORCE), ("A10", g.A10), ("NVIDIA A10_X", 0),
                   ("NVIDIA L4", g.L4), ("L4", g.L4), ("NVIDIA L40S", g.L40S), ("L40S", g.L40S), ("NVIDIA L40", 0), ("NVIDIA RTX 6000 Ada Generation", 0),
-                  ("NVIDIA H100 PCIe", g.PCIE), ("NVIDIA A100-PCIE-40GB", g.PCIE), ("NVIDIA A10 PCIe", g.A10), ("NVIDIA H100 80GB HBM3", 0), ("NVIDIA GH200 480GB", g.GH200), ("NVIDIA H200", 0)):
+                  ("NVIDIA H100 PCIe", g.PCIE), ("NVIDIA A100-PCIE-40GB", g.PCIE), ("NVIDIA A10 PCIe", g.A10), ("NVIDIA H100 80GB HBM3", g.H100), ("NVIDIA H100 NVL", 0), ("NVIDIA GH200 480GB", g.GH200), ("NVIDIA H200", 0)):
     assert gm.gpu_code((8, 6), name) == 86 + cls, (name, cls)
 here = lib.gpu()
 for O, K, wild in [(192, 128, 0), (1024, 2048, 0.001), (192, 4096, 0.1), (192, 1040, 0.01)]:
@@ -423,8 +423,8 @@ print(f"routes on 13 GPUs as main's GLinear took them (the L4's decode and the L
 
 # The route SPLIT (option 2): its rule pinned, as measured end to end (benchmarks/gpu/option2-2026-09-29): a 12-bit
 # prompt, K a multiple of 64, on an A100 SXM (80) from 769 to 4096 tokens (to 8192 for a matrix of O and K at least
-# 5120), on a GH200 (6090) from 2048 to 8192 for such a matrix, on an H100 SXM or H200 (90) and a PCIe card
-# (5080, 5090) never (not measured); its decode's
+# 5120), on a GH200 (6090) or an H100 SXM (7090) from 2048 to 8192 for such a matrix, on an H200 or an H100 NVL (90)
+# and a PCIe card (5080, 5090) never (not measured); its decode's
 # SMs by the GPU and M, asked for (GLYD_GPU_WITH_SPLIT); every other route main's, through both hosts; without the flag
 # none of it, every route main's (the C API's other callers: v0.25.1's routes). The route's 'last'
 # as every route's.
@@ -434,7 +434,7 @@ SPLIT_MIN, SPLIT_MAX, SPLIT_SMS = (int(os.environ.get(v, 0)) for v in ("GLYD_SPL
 def split_rule(gpu, twelve, O, K, M):
     """The route SPLIT's decode SMs by the rule (0: another route)."""
     cc = gpu % 1000
-    a100, hopper = gpu == 80, gpu == g.GH200 + 90
+    a100, hopper = gpu == 80, gpu in (g.GH200 + 90, g.H100 + 90)
     if not twelve or K % 64 or SPLIT_MIN < 0 or cc < 80:
         return 0
     lo = SPLIT_MIN or (769 if a100 else 2048 if hopper and O >= 5120 and K >= 5120 else 1 << 62)
@@ -451,7 +451,7 @@ def split_rule(gpu, twelve, O, K, M):
 
 
 pinned = 0
-for gpu in (80, 5080, 90, 5090, 6090, 86, 89, 1089, 2086, 3089, 4089, 100, 120):
+for gpu in (80, 5080, 90, 5090, 6090, 7090, 86, 89, 1089, 2086, 3089, 4089, 100, 120):
     for twelve in (False, True):
         for O, K in ((512, 1024), (512, 1040), (131072, 1024), (4096, 4096), (5120, 5120), (5056, 8192), (8192, 5056)):  # (8B's class on Hopper; one large there; each side under 5120)
             name = "mma12_route" if twelve else "mma_route"
@@ -466,7 +466,7 @@ for gpu in (80, 5080, 90, 5090, 6090, 86, 89, 1089, 2086, 3089, 4089, 100, 120):
                 if last < 1 << 62:
                     assert lib._route(name, asked, O, K, last)[0] == r and lib._route(name, asked, O, K, last + 1)[0] != r, ("the route SPLIT's last", gpu, O, K, M, last)
                 pinned += 1
-print(f"the route SPLIT's rule: {pinned} routes pinned, asked (an A100 SXM's from 769 to 4096, to 8192 for O and K at least 5120; a GH200's from 2048 to 8192 for such a matrix; no H100 SXM, H200 or PCIe card) and not (main's), its SMs alike through both hosts")
+print(f"the route SPLIT's rule: {pinned} routes pinned, asked (an A100 SXM's from 769 to 4096, to 8192 for O and K at least 5120; a GH200's and an H100 SXM's from 2048 to 8192 for such a matrix; no H200, H100 NVL or PCIe card) and not (main's), its SMs alike through both hosts")
 
 # Its decode, built for few SMs: every row bit for bit as the pack's (rows from 0 and a row block on; grids for 1, 3,
 # 16 and 200 SMs), through both hosts; K not a multiple of 64 refused alike.

@@ -347,9 +347,10 @@ def ring_plan(shapes, slot):
 
 class Split:
     """The route SPLIT (glyd_gpu.h; option 2): a 12-bit prompt's products (an A100 SXM's from 769 to 4096 tokens and to
-    8192 for a matrix of O and K at least 5120, a GH200's from 2048 to 8192 for such a matrix) with each matrix decoded ahead into a ring of slots on SMs set apart by the driver's
-    green contexts, while cuBLAS multiplies from the ring on the others, told how many (cublasSetSmCountTarget on
-    PyTorch's own handle, with a workspace of the ring's for its stream), the two ordered by events, never the host.
+    8192 for a matrix of O and K at least 5120, a GH200's and an H100 SXM's from 2048 to 8192 for such a matrix) with
+    each matrix decoded ahead into a ring of slots on SMs set apart by the driver's green contexts, while cuBLAS
+    multiplies from the ring on the others, told how many (cublasSetSmCountTarget on PyTorch's own handle, with a
+    workspace of the ring's for its stream), the two ordered by events, never the host.
     A chunk's decode waits for the product of the last chunk of its shape before it to start (the same matrix of the
     layer before), so that it runs beside the products and not beside the norms, activations and attention between
     them, whose memory bandwidth it took; the ring has slots for a layer's chunks ahead (plan). The order: recorded
@@ -358,8 +359,8 @@ class Split:
     one the prompt before called (a Linear called once, as a full-logits pass's lm_head, is not decoded again for
     nothing); a call off the order, or on another split, queues again from there (a Linear the order lacks put in). Its
     products are cuBLAS's own on the decoded bf16, a row chunk a call: not bit for bit a whole-matrix product, so exact
-    never takes it. Only on the GPUs it was measured on (measured: an A100 SXM's 108 SMs, a GH200's 132, not a MIG
-    slice), but where GLYD_SPLIT_MIN moves it. Where it cannot run (the kernels are the JIT build's, not the prebuilt
+    never takes it. Only on the GPUs it was measured on (measured: an A100 SXM's 108 SMs, a GH200's and an H100 SXM's 132,
+    not a MIG slice), but where GLYD_SPLIT_MIN moves it. Where it cannot run (the kernels are the JIT build's, not the prebuilt
     library's; the driver's green contexts not available, as before CUDA 12.5; no cublasSetSmCountTarget on Hopper,
     where cuBLAS untold ran 1.3-1.4x slower; too little memory for the ring; a CUDA graph being captured, or a
     torch.compile graph's node: its streams and events are not the graph's) the Linear takes the route the library gives
@@ -382,8 +383,9 @@ class Split:
     @staticmethod
     def measured(d, gpu):
         """Whether device d (its code gpu) is a GPU the route SPLIT was measured on: an A100 SXM (80) with its 108 SMs,
-        a GH200 (6090) with its 132; or any where GLYD_SPLIT_MIN moves the route (a measurement); never a MIG slice
-        ("MIG" in its name, as CUDA names one, or MIG mode on at its PCI address: NVML's, where the driver has it)."""
+        a GH200 (6090) or an H100 SXM (7090) with its 132; or any where GLYD_SPLIT_MIN moves the route (a measurement);
+        never a MIG slice ("MIG" in its name, as CUDA names one, or MIG mode on at its PCI address: NVML's, where the
+        driver has it)."""
         p = torch.cuda.get_device_properties(d)
         if "MIG" in p.name:
             return False
@@ -394,7 +396,7 @@ class Split:
                 return False
         except (OSError, AttributeError):  # (no NVML, or a PyTorch without the PCI address: the name alone)
             pass
-        return int(os.environ.get("GLYD_SPLIT_MIN") or 0) > 0 or (gpu, p.multi_processor_count) in ((80, 108), (g.GH200 + 90, 132))
+        return int(os.environ.get("GLYD_SPLIT_MIN") or 0) > 0 or (gpu, p.multi_processor_count) in ((80, 108), (g.GH200 + 90, 132), (g.H100 + 90, 132))
 
     @staticmethod
     def blas_fns():
@@ -951,10 +953,12 @@ def gpu_code(cc, name):
     """A GPU as the library's routes take it (glyd_gpu.h, glyd_gpu_gpu): its compute capability cc, major * 10 +
     minor, plus its class by name: GEFORCE with "GeForce" in it, A10 with "A10" in it as a word (an A10, not an A10G,
     A100 or A40), L4 with "L4" in it as a word (an L4, not an L40S or L40), L40S with "L40S" in it as a word (not an
-    L40), PCIE with "PCIe" in it in any case, GH200 with "GH200" in it as a word, else none."""
+    L40), PCIE with "PCIe" in it in any case, GH200 with "GH200" in it as a word, H100 with "H100" in it as a word unless
+    "NVL" is one (an H100 SXM, not an H100 NVL; an H100 PCIe is PCIE's), else none."""
     cls = (g.GEFORCE if "GeForce" in name else g.A10 if re.search(r"\bA10\b", name, re.ASCII) else g.L4 if re.search(r"\bL4\b", name, re.ASCII)
            else g.L40S if re.search(r"\bL40S\b", name, re.ASCII) else g.PCIE if re.search("pcie", name, re.ASCII | re.I)
-           else g.GH200 if re.search(r"\bGH200\b", name, re.ASCII) else 0)
+           else g.GH200 if re.search(r"\bGH200\b", name, re.ASCII)
+           else g.H100 if re.search(r"\bH100\b", name, re.ASCII) and not re.search(r"\bNVL\b", name, re.ASCII) else 0)
     return cc[0] * 10 + cc[1] + cls
 
 
