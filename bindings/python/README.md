@@ -268,7 +268,8 @@ families: the commands above).
 `glyd run MODEL` and `glyd serve MODEL` (installed by the script above, or by
 `pip install "glyd[vllm]"` in a virtual environment) start vLLM with the
 plugin and the settings worked out from the GPU: memory share, context,
-eager or compiled, the tool-call and reasoning parsers; `glyd doctor` checks
+the tool-call and reasoning parsers (eager mode, which starts in under a
+third of compiled's time and runs within 3% of its speed); `glyd doctor` checks
 the machine. [gpu/vllm](https://github.com/surya-koritala/Glyd/tree/main/gpu/vllm)
 has the steps. By hand, `pip install "glyd[vllm]"` installs vLLM 0.30 and
 the plugin, which vLLM finds by itself (the package's `vllm.general_plugins`

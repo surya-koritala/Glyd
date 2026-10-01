@@ -172,16 +172,23 @@ class Chat:
         """One exchange: the question appended, the answer streamed and appended. Returns the answer; "" where it failed or was
         stopped (the question is then left out of the conversation, as if unasked)."""
         self.messages.append({"role": "user", "content": text})
-        answer, thinking, think, finish, used = [], False, Think(), None, self.used
+        answer, thinking, said_think, think, finish, used = [], False, False, Think(), None, self.used
 
         def show(kind, piece):
-            nonlocal thinking
+            nonlocal thinking, said_think
             if kind == "reasoning":
-                if not thinking:
-                    thinking = True
+                if not said_think:  # (the newline after <think>, and the ones after </think> below, are the template's, not text)
+                    piece = piece.lstrip("\n")
+                    if not piece:
+                        return
+                    said_think = thinking = True
                     self.say(self.dim("Thinking...", to_err), err=to_err)
                 self.say(self.dim(piece, to_err), end="", err=to_err)
             else:
+                if not answer:
+                    piece = piece.lstrip("\n")
+                    if not piece:
+                        return
                 if thinking:
                     thinking = False
                     self.say("\n" + self.dim("...done thinking.", to_err) + "\n", err=to_err)

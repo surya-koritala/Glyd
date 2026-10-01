@@ -884,6 +884,8 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
         if "MARKDOWN" in last:  # (markdown, and HTML that must stay text)
             text = "# Title\nSome **bold**, *italic* and `code` with a [link](https://example.com).\n\n- one\n- two\n\n1. first\n2. second\n\n```python\nprint('<b>not bold</b>')\n```\n<img src=x onerror=alert(1)> and <script>alert(2)</script>"
             pieces = [("c", text[i:i + 7]) for i in range(0, len(text), 7)]
+        if "NEWLINES" in last:  # (what vLLM streams around </think>: the template's newlines, and an answer's first words as their own deltas)
+            pieces = [("r", "\n"), ("r", "Hm."), ("r", "\n"), ("c", "\n\n"), ("c", "Loss"), ("c", "less.")]
         if "SLOW" in last:
             pieces = ([("r", "hmm ")] * 8 if think else []) + [("c", "slow ")] * 50
         if "LONGANSWER" in last:
@@ -925,6 +927,16 @@ def test_chat_turns():
         c.think = False
         c.turn("again")
         assert srv.requests[1]["chat_template_kwargs"] == {"enable_thinking": False} and [m["role"] for m in srv.requests[1]["messages"]] == ["user", "assistant", "user"]
+    finally:
+        srv.shutdown()
+
+
+def test_chat_template_newlines_are_not_shown():
+    srv = Fake()
+    try:
+        c, out, err = new_chat(srv)
+        assert c.turn("NEWLINES") == "Lossless." and c.messages[-1]["content"] == "Lossless."
+        assert out.text() == "Thinking...\nHm.\n\n...done thinking.\n\nLossless.\n", repr(out.text())  # (no blank line after Thinking... or before the answer)
     finally:
         srv.shutdown()
 

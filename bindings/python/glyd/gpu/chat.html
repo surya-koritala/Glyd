@@ -273,6 +273,8 @@ async function send(text) {
     if (near) log.scrollTop = log.scrollHeight;
   };
   const feed = (kind, piece) => {
+    if (!(kind === 'reasoning' ? reasoning : content)) piece = piece.replace(/^\n+/, '');  // (the template's newlines after <think> and </think> are not text)
+    if (!piece) return;
     if (kind === 'reasoning') { if (!reasoning) bot.details.open = true; reasoning += piece; }
     else {
       if (!content && reasoning) { tThink = Math.round((Date.now() - t0) / 1000); bot.summary.textContent = 'Thought for ' + tThink + ' s'; bot.details.open = false; }
