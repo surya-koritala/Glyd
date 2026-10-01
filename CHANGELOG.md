@@ -8,6 +8,23 @@ every earlier format.
 
 ## v0.26.0 (Unreleased)
 
+- A model on an NVIDIA GPU with no flags to find: `curl -LsSf https://getglyd.com/install.sh | sh`, then `glyd run Qwen/Qwen3-8B`. The script
+  (`scripts/install.sh`) installs uv where there is none, then Glyd with vLLM and PyTorch as an isolated tool on a Python 3.12 that uv manages
+  (no sudo, no virtual environment, no pip; the release is pinned, so no pre-release of a dependency is taken), and ends with `glyd doctor`.
+  `glyd run MODEL` checks the GPU, the driver against the CUDA PyTorch was built for (580 or newer for the CUDA 13 build vLLM 0.30 installs), a C
+  compiler and Python.h (vLLM's Triton builds its launchers with them), vLLM's version, the model (not found, gated, not bf16) and whether it fits the
+  memory free now, with the largest model of its family that does where it does not, the disk the download needs and the port; downloads the model with
+  one progress bar; chooses `--gpu-memory-utilization` from the card's own total and free memory (the total CUDA reports, not nvidia-smi's), the longest
+  context its KV cache holds (a multiple of 1,024, at most the model's own), eager or compiled, the layout (the tiered one where the 12-bit one leaves
+  less KV cache than an 8,192-token chat), `VLLM_USE_FLASHINFER_SAMPLER=0` where there is no nvcc, expandable segments, and the tool-call and reasoning
+  parsers by family (Qwen3 hermes and qwen3, Qwen2.5 hermes, Llama 3.x llama3_json, Mistral mistral, Qwen3-Coder, DeepSeek-R1 distills), and prints that
+  on one line; starts vLLM with its log in a file; and chats in the terminal (streamed, thinking shown apart; `/bye`, `/clear`, `/think`) and at a
+  chat page the same server shows at its address (`--middleware glyd.gpu.page.ChatPage`: one HTML file with no external resource, thinking in a
+  collapsible block, a context meter, a clear state where the conversation has outgrown the model's window). `glyd run MODEL --prompt "..."` prints one
+  answer for scripts. `glyd serve MODEL` leaves the server up as an OpenAI API; `glyd doctor` reports the GPU, driver, CUDA, free memory, compilers,
+  versions and which 8B, 14B and 32B models fit; `glyd login` saves a Hugging Face token. Any vLLM flag after `--` wins over the settings. Any other
+  `glyd` command is the compression program's (the Rust `glyd`, found on PATH). ([gpu/vllm/README.md](gpu/vllm/README.md#local-chat-like-ollama))
+
 - vLLM serves Glyd: `pip install "glyd[vllm]"`, then `vllm serve MODEL
   --quantization glyd`. The `glyd` package's entry point for vLLM
   (`vllm.general_plugins`) loads the plugin where vLLM is 0.30, the
