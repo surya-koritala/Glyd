@@ -1,0 +1,27 @@
+== queued 02:41:54: --wheel /home/ubuntu/onb/wheels/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl --card 8gb
+== started 03:02:44
+== checkout 503faf4 acceptance.sh: the README must quote the context-full message the term
+== 2026-10-01T03:02:45Z: glyd flow, glyd[vllm] wheel /home/ubuntu/onb/wheels/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl, glyd-accept:ubuntu26.04-curl, GPU NVIDIA L4, 23034 MiB, budget 7500 MiB free, card as is MiB
+ok   no nvcc: not on PATH, no /usr/local/cuda, no CUDA_HOME
+-- install: curl -LsSf https://getglyd.com/install.sh | sh   (this checkout's scripts/install.sh instead of getglyd.com's; GLYD_SPEC='/work/wheel/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]' )
+ok   install.sh took 100 s and exited 0; its last lines:   Qwen/Qwen3-32B    45.9 GB on the GPU (bf16 65.5 GB): does not fit; it needs 48.9 GB free||Ready: glyd run Qwen/Qwen3-8B|
+note: no PATH line in .bashrc or .profile (uv tool update-shell found the path already set, or could not write)
+-- resolved: glyd v0.26.0rc2 [with: ziglang==0.16.0] flashinfer-python==0.6.18.post1 glyd pydantic==2.13.5 safetensors==0.8.0 tokenizers==0.23.2 torch==2.13.0 transformers==5.18.0 triton==3.7.1 vllm==0.30.0 ziglang==0.16.0 
+ok   no pre-release among the dependencies (install.sh names no --prerelease; opentelemetry's betas are all there is of those)
+ok   no gcc: install.sh added ziglang==0.16.0
+ok   glyd doctor: Ready: glyd run Qwen/Qwen3-8B
+-- hog: 14681 MiB held, 7689 of 22565 MiB free
+-- glyd doctor under the budget:
+     Models that fit this GPU with Glyd (a chat as long as the GPU allows):
+       Qwen/Qwen3-8B     12.2 GB on the GPU (bf16 16.4 GB): not now (8.1 GB free, it needs 14.7 GB); on an idle GPU a 40,960-token context
+       Qwen/Qwen3-14B    21.5 GB on the GPU (bf16 29.5 GB): does not fit; it needs 24.0 GB free
+       Qwen/Qwen3-32B    45.9 GB on the GPU (bf16 65.5 GB): does not fit; it needs 48.9 GB free
+     
+     Ready: glyd run Qwen/Qwen3-1.7B
+note: the README's run block (glyd run Qwen/Qwen3-8B) is not 'glyd run Qwen/Qwen3-4B': this run uses Qwen/Qwen3-4B
+ok   Qwen/Qwen3-4B refused, with a model to try: glyd: Qwen3-4B needs about 8.4 GB of GPU memory with Glyd (5.9 GB of weights and room for a 4,096-token chat); your GPU has 8.1 GB free.|Or try Qwen/Qwen3-1.7B, which needs about 5.1 GB: glyd run Qwen/Qwen3-1.7B|
+ok   glyd run Qwen/Qwen3-1.7B --prompt: Paris, Settings: 24,576-token context (the most that fits), eager mode, 29% of GPU memory (6.9 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+     Ready in 58s. (The server's log: /work/home/.local/state/glyd/logs/run-20261001-
+-- 1 server logs checked: no traceback, no allocator out-of-memory warning unless failed above
+PASSED
+== finished 03:05:33 rc=0

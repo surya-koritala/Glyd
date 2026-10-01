@@ -253,6 +253,8 @@ jobs:
           ${{ matrix.python }} -m pip install --quiet wheels/*.whl
           cd bindings/python && ${{ matrix.python }} -c "import glyd; import test_glyd; test_glyd.test_round_trips()"
           ${{ matrix.python }} test_gpu.py
+          # glyd run / serve / doctor: the checks, the settings, the chat and install.sh, against fakes (no GPU, no vLLM)
+          ${{ matrix.python }} test_onboard.py
           # From outside the source tree, so it is the installed wheel that is looked at: its GPU libraries load without
           # a GPU (their CUDA runtime is linked in; the driver is looked for at the first call), both CUDA majors are
           # there on Linux, each answers the C API the package's calls are written for (stale libraries do not), and

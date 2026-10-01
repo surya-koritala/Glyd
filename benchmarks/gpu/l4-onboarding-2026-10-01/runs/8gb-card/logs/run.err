@@ -1,0 +1,9 @@
+glyd: Qwen3-4B needs about 8.4 GB of GPU memory with Glyd (5.9 GB of weights and room for a 4,096-token chat); your GPU has 8.1 GB free.
+  Close what holds GPU memory now: python (15.6 GB)
+  Or try Qwen/Qwen3-1.7B, which needs about 5.1 GB: glyd run Qwen/Qwen3-1.7B
+Qwen3-1.7B: 3.4 GB on the GPU with Glyd, instead of 4.1 GB; your GPU has 8.1 GB free.
+Qwen3-1.7B is downloaded already.
+Settings: 24,576-token context (the most that fits), eager mode, 29% of GPU memory (6.9 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+Loading Qwen3-1.7B with Glyd: 3.4 GB instead of 4.1 GB...
+Ready in 58s. (The server's log: /work/home/.local/state/glyd/logs/run-20261001-030432.log)
+Stopping the server...

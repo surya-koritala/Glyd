@@ -89,6 +89,14 @@ def checkpoint(files):
     return st
 
 
+class HubError(ValueError):
+    """The Hub refused a read (401, 403 or 404: no such repo, or a gated or private one); `status` is the HTTP code."""
+
+    def __init__(self, message, status):
+        super().__init__(message)
+        self.status = status
+
+
 def _get(url):
     """JSON from the Hugging Face Hub (HF_ENDPOINT), with the user's token where there is one."""
     token = os.environ.get("HF_TOKEN")
@@ -104,7 +112,7 @@ def _get(url):
             return json.load(r)
     except urllib.error.HTTPError as e:
         if e.code in (401, 403, 404):
-            raise ValueError(f"{url}: no such repo on the Hub, or a gated or private one (then set HF_TOKEN, or run hf auth login)") from e
+            raise HubError(f"{url}: no such repo on the Hub, or a gated or private one (then set HF_TOKEN, or run hf auth login)", e.code) from e
         raise
 
 

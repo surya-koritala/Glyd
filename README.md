@@ -145,9 +145,19 @@ puts bf16 and Glyd alike near 12,000.)
 ### Serving with vLLM
 
 ```bash
-pip install "glyd[vllm]"                       # vLLM 0.30, Linux and an NVIDIA GPU as above
-vllm serve Qwen/Qwen3-8B --quantization glyd   # packed as it loads; the memory saved becomes KV cache
+curl -LsSf https://getglyd.com/install.sh | sh   # Glyd, vLLM 0.30 and PyTorch as one tool: Linux, an NVIDIA GPU, driver 580 or newer
+glyd run Qwen/Qwen3-8B                           # downloads the model, starts it packed, and opens a chat
 ```
+
+`glyd run` checks the machine, works out the memory share, the context and
+the parsers from the GPU it finds (a 16 GB card included), and chats in the
+terminal and at http://localhost:8000; `glyd serve MODEL` leaves it up as an
+OpenAI API, and `glyd doctor` says what this machine has and which models fit.
+The steps, the settings and the manual `vllm serve` commands:
+[gpu/vllm/README.md](gpu/vllm/README.md#local-chat-like-ollama). The GPU code
+is under the Business Source License 1.1: free for personal, educational,
+research and other non-commercial use; commercial use needs a license
+([gpu/LICENSE](gpu/LICENSE)).
 
 vLLM holds the model's Linears, and a mixture of experts' experts, packed
 and multiplies them by Glyd's kernels; its KV cache takes the memory they
