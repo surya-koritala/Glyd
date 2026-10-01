@@ -27,7 +27,10 @@ every earlier format.
   collapsible block, a context meter, a clear state where the conversation has outgrown the model's window). `glyd run MODEL --prompt "..."` prints one
   answer for scripts. `glyd serve MODEL` leaves the server up as an OpenAI API; `glyd doctor` reports the GPU, driver, CUDA, free memory, compilers,
   versions and which 8B, 14B and 32B models fit; `glyd login` saves a Hugging Face token. Any vLLM flag after `--` wins over the settings. Any other
-  `glyd` command is the compression program's (the Rust `glyd`, found on PATH). ([gpu/vllm/README.md](gpu/vllm/README.md#local-chat-like-ollama))
+  `glyd` command is the compression program's (the Rust `glyd`, found on PATH). `gpu/vllm/acceptance.sh` runs the two commands from nothing, in a
+  container with no CUDA toolkit and no compiler, as a user that is not root (the chat page, the API, the thinking apart, a conversation longer than the
+  window, Open WebUI by uvx and by Docker with and without host networking), at a 24 GB, a 16 GB and an 8 GB card's memory, and `install-check.yml` runs
+  install.sh from each release's tag. ([gpu/vllm/README.md](gpu/vllm/README.md#local-chat-like-ollama))
 
 - vLLM serves Glyd: `pip install "glyd[vllm]"`, then `vllm serve MODEL
   --quantization glyd`. The `glyd` package's entry point for vLLM

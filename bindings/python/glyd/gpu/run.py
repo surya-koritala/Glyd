@@ -432,8 +432,10 @@ def start(a, extra, mode, ui, environ=None):
     fits_bf16 = pf.need(m.bf16, m, gpu) <= gpu.free
     ui.line(f"{m.name}: {pf.gb(s.weights)} on the GPU with Glyd, instead of {bf16}" + (f"; your GPU has {pf.gb(gpu.free)} free." if fits_bf16 else f", which does not fit the {pf.gb(gpu.free)} your GPU has free."))
     download(m, ui)
-    if len(gpus) > 1 and "CUDA_VISIBLE_DEVICES" not in env:
+    if len(gpus) > 1 and "CUDA_VISIBLE_DEVICES" not in env:  # (nvidia-smi's index is the PCI bus order; CUDA's default is the fastest first)
         s.env["CUDA_VISIBLE_DEVICES"] = str(gpu.index)
+        if "CUDA_DEVICE_ORDER" not in env:
+            s.env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     ui.line("Settings: " + pf.summary(s, gpu))
     if host not in ("127.0.0.1", "localhost", "::1"):
         ui.note(f"listening on {host}: anyone who can reach this computer can use the model. Add  -- --api-key SECRET  to require a key.")

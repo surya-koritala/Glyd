@@ -600,6 +600,19 @@ def test_start_retries_and_attaches():
             assert len(launched) == 2 and launched[0][0] % 1024 == 0 and launched[1][0] == 6144, launched  # (7,000 rounded down to 1,024s)
             assert "starting again with 6,144" in ui.f.text() and "Note: a warning" in ui.f.text() and "Ready in" in ui.f.text() and "Settings:" in ui.f.text()
             assert "which does not fit the 15.5 GB your GPU has free" in ui.f.text()  # (bf16's 16.4 GB on the owner's card: said)
+            # two GPUs: the freest one by nvidia-smi's index, which CUDA must count the same way
+            second = pf.Gpu(1, "second", L4_GPU.total, L4_GPU.free, L4_GPU.cc, "595", (13, 2))
+            launched.clear()
+            seen = []
+            real_launch = run.launch
+            run.launch = lambda model, s, host, port, extra, log, environ=None: (seen.append(dict(s.env)), real_launch(model, s, host, port, extra, log, environ))[1]
+            try:
+                with Patched(pf__setup_checks=lambda gpus=None: (second, []), pf__probe_gpus=lambda: [OWNER_GPU, second]):
+                    m.repo = "fake/Another"
+                    run.start(a, [], "run", ui, environ={})
+            finally:
+                run.launch = real_launch
+            assert seen[0]["CUDA_VISIBLE_DEVICES"] == "1" and seen[0]["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID", seen[0]
             # a memory refusal comes with what to do
             tiny = pf.Gpu(0, "tiny", 6 * 10**9, 5 * 10**9, (8, 6), "580", (13, 0))
             with Patched(pf__setup_checks=lambda gpus=None: (tiny, []), pf__probe_gpus=lambda: [tiny]):
