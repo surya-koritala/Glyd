@@ -791,6 +791,14 @@ def alive(pid):
         return True
 
 
+WAIT_READY = 90  # seconds a test gives a fake vLLM to come up where a regression would otherwise wait 30 minutes: a shared runner (macOS, 3 cores) takes more than 8 s to start one
+
+
+def glyd_logs_tail(h, n=1500):
+    """The tail of the logs glyd wrote in a FakeVllmHome, for a failed assertion's message: a CI log is all there is of a test that failed there."""
+    return "".join(open(f).read()[-n:] for f in sorted(glob.glob(os.path.join(h.state, "glyd", "logs", "*.log"))))
+
+
 class FakeVllmHome:
     """A fake `vllm.entrypoints.cli.main` on PYTHONPATH (real subprocesses, real signals and logs), a model folder and a state directory, for
     glyd run and glyd serve end to end: `go(argv, out, err, cancel_when)` runs the command with the GPU faked and Ctrl-C sent once the terminal shows a text."""
@@ -863,14 +871,14 @@ def test_serve_with_an_api_key_is_ready_and_the_key_stays_off_the_command_line()
     server's command line (ps), not in its log."""
     with FakeVllmHome() as h:
         saved_wait = run.wait_ready.__defaults__
-        run.wait_ready.__defaults__ = (8,)  # (the failure was a wait of 30 minutes)
+        run.wait_ready.__defaults__ = (WAIT_READY,)  # (the failure was a wait of 30 minutes)
         try:
             with Patched(**h.patches):
                 out, err, port = Sink(), Sink(), h.free_port()
                 code = h.go(["serve", h.model, "--port", str(port), "--", "--api-key", "SECRET123"], out, err, cancel_when="Press Ctrl-C to stop.")
         finally:
             run.wait_ready.__defaults__ = saved_wait
-        assert code == 130 and "Press Ctrl-C to stop." in err.text() and "did not come up" not in err.text(), err.text()
+        assert code == 130 and "Press Ctrl-C to stop." in err.text() and "did not come up" not in err.text(), (code, err.text(), glyd_logs_tail(h))
         started = json.load(open(os.environ["FAKE_DUMP"]))
         assert "--api-key" not in started["argv"] and "SECRET123" not in " ".join(started["argv"]) and started["env"]["VLLM_API_KEY"] == "SECRET123", started
         logs = "".join(open(f).read() for f in glob.glob(os.path.join(h.state, "glyd", "logs", "*.log")))
@@ -1411,7 +1419,7 @@ class Inst:
     line each), .home (the folder everything happened in)."""
 
     TOOLS = ("head", "tr", "mkdir", "cp", "chmod", "cat", "sed", "sh", "dirname", "cut", "awk", "df", "grep", "rm", "mv", "ln", "tar", "mktemp",
-             "readlink", "sha256sum", "shasum", "basename", "touch")
+             "readlink", "sha256sum", "shasum", "basename", "touch", "gzip")
 
     def __init__(self, nvidia=None, uv=True, os_name="Linux", arch="x86_64", compiler="gcc", other_glyd=False, curl_fail=False, bad_sha=False,
                  uv_version="0.12.21", df_kb=None, on_path=False, path_extra=(), uv_fail=False, no_home=False, tool_glyd=False, foreign=None, broken_program=False):
@@ -1925,29 +1933,41 @@ def test_a_second_ctrl_c_does_not_skip_the_sweep():
 def test_a_server_still_loading_is_not_waited_for_as_long():
     """S7: Ctrl-C while the model loads took 50 s on the L4 (the engine does not answer SIGTERM until the load is over, and the API server's
     wait is 30 s): a server that has not answered /health is swept after a few seconds, and says it is still loading; a ready one gets its
-    graceful stop."""
-    if not sys.platform.startswith(("linux", "darwin")):
-        return print("test_a_server_still_loading_is_not_waited_for_as_long: skipped (needs process groups)")
-    import signal
-    code = "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(600)"  # (a server that is busy, and does not stop on SIGTERM)
-    saved = run.STOP_API_WAIT, run.STOP_LOADING_WAIT, run.STOP_WAIT
-    run.STOP_API_WAIT, run.STOP_LOADING_WAIT, run.STOP_WAIT = 2.0, 0.2, (0.2, 0.2, 2)
+    graceful stop. What stop() waits for is recorded here, not timed: a shared runner's clock, and a zombie that nothing has reaped yet in a
+    container, made the first version of this test take 2.6 s where it asserted 1.5."""
+    assert run.STOP_LOADING_WAIT < run.STOP_API_WAIT
+    signals, waits = [], []
+
+    class Proc:  # a server that does not stop on SIGTERM; stop() is not given a process to signal, only this
+        pid = 4242424
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            waits.append(timeout)
+            raise subprocess.TimeoutExpired("server", timeout)
+
+    def killpg(pgid, sig):
+        signals.append((pgid, sig))
+        raise ProcessLookupError  # (the group is gone as soon as stop() looks)
+
+    real_kill, real_killpg = os.kill, os.killpg
+    os.kill, os.killpg = lambda pid, sig: signals.append((pid, sig)), killpg
     try:
-        took = {}
+        said = {}
         for ready in (False, True):
-            proc = subprocess.Popen([sys.executable, "-c", code], start_new_session=True)
-            time.sleep(0.3)
-            server = run.Server("http://127.0.0.1:1", "", proc)
+            del waits[:], signals[:]
+            server = run.Server("http://127.0.0.1:1", "", Proc())
             server.ready = ready
             ui = run.Ui(Sink())
-            t0 = time.time()
             server.stop(ui)
-            took[ready] = time.time() - t0, ui.f.text()
-            assert not alive(proc.pid)
-        assert took[False][0] < 1.5 and "still loading" in took[False][1], took[False]
-        assert took[True][0] >= 1.8 and "a few seconds" in took[True][1] and "still loading" not in took[True][1], took[True]  # (the full graceful wait, then the sweep)
+            said[ready] = (waits[0], ui.f.text(), signals[0])
     finally:
-        run.STOP_API_WAIT, run.STOP_LOADING_WAIT, run.STOP_WAIT = saved
+        os.kill, os.killpg = real_kill, real_killpg
+    assert said[False][0] == run.STOP_LOADING_WAIT and "still loading" in said[False][1], said[False]
+    assert said[True][0] == run.STOP_API_WAIT and "a few seconds" in said[True][1] and "still loading" not in said[True][1], said[True]
+    assert said[False][2] == (4242424, __import__("signal").SIGTERM)  # (the API server gets SIGTERM first, as before)
 
 
 def test_signals_nohup_download_and_a_terminal_that_went():
@@ -2298,7 +2318,7 @@ def test_several_api_keys_are_refused_and_a_hugging_face_token_stays_off_the_com
     assert pf.take_secret(["--hf-token", "--dtype", "bfloat16"], ("--hf-token",), "token") == (None, ["--hf-token", "--dtype", "bfloat16"])  # (alone: the saved login, no secret)
     with FakeVllmHome() as h:
         saved_wait, saved_env = run.wait_ready.__defaults__, os.environ.get("HF_TOKEN")
-        run.wait_ready.__defaults__ = (8,)
+        run.wait_ready.__defaults__ = (WAIT_READY,)
         try:
             with Patched(**h.patches):
                 out, err, port = Sink(), Sink(), h.free_port()
@@ -2309,7 +2329,7 @@ def test_several_api_keys_are_refused_and_a_hugging_face_token_stays_off_the_com
                 os.environ.pop("HF_TOKEN", None)
             else:
                 os.environ["HF_TOKEN"] = saved_env
-        assert code == 130 and "Press Ctrl-C to stop." in err.text(), err.text()
+        assert code == 130 and "Press Ctrl-C to stop." in err.text(), (code, err.text(), glyd_logs_tail(h))
         started = json.load(open(os.environ["FAKE_DUMP"]))
         assert "--hf-token" not in started["argv"] and "hf_SECRET123" not in " ".join(started["argv"]) and started["env"]["HF_TOKEN"] == "hf_SECRET123", started
         logs = "".join(open(f).read() for f in glob.glob(os.path.join(h.state, "glyd", "logs", "*.log")))
@@ -2322,13 +2342,13 @@ def test_several_api_keys_are_refused_and_a_hugging_face_token_stays_off_the_com
 
 def test_sigterm_during_a_download_does_not_wait_for_the_shard():
     """N4 of the re-review: Ctrl-C ended through os._exit, but SIGTERM and SIGHUP ended by SystemExit, and the interpreter then joined
-    huggingface_hub's download threads (not daemons): 143 after 12 s for a shard of 12 s."""
+    huggingface_hub's download threads (not daemons): 143 only when the shard in flight was done."""
     if not hasattr(__import__("signal"), "SIGHUP"):
         return print("test_sigterm_during_a_download_does_not_wait_for_the_shard: skipped (no SIGHUP)")
     import signal
     code = ("import sys, threading, time\n"
             "from glyd import cli\nfrom glyd.gpu import run\n"
-            "threading.Thread(target=time.sleep, args=(12,)).start()  # a shard in flight: a thread that is not a daemon\n"
+            "threading.Thread(target=time.sleep, args=(20,)).start()  # a shard in flight: a thread that is not a daemon\n"
             "run.cmd_run = lambda argv: (print('waiting', flush=True), time.sleep(30))\n"
             "sys.exit(cli.main(['run', 'M']))\n")
     for sig, status in ((signal.SIGTERM, 143), (signal.SIGHUP, 129)):
@@ -2337,7 +2357,7 @@ def test_sigterm_during_a_download_does_not_wait_for_the_shard():
         t0 = time.time()
         p.send_signal(sig)
         rc = p.wait(timeout=30)
-        assert rc == status and time.time() - t0 < 5, (sig, rc, time.time() - t0)
+        assert rc == status and time.time() - t0 < 10, (sig, rc, time.time() - t0)  # (a shard of 20 s: ten seconds below its end is not a slow runner)
 
 
 def test_a_loopback_address_that_was_chosen_says_what_is_off():
@@ -2345,7 +2365,7 @@ def test_a_loopback_address_that_was_chosen_says_what_is_off():
     off for it, as the README says; nothing said so where the server starts. glyd's own default says nothing: the checks are on there."""
     with FakeVllmHome() as h:
         saved_wait = run.wait_ready.__defaults__
-        run.wait_ready.__defaults__ = (8,)
+        run.wait_ready.__defaults__ = (WAIT_READY,)
         try:
             with Patched(**h.patches):
                 said = {}
@@ -2355,7 +2375,7 @@ def test_a_loopback_address_that_was_chosen_says_what_is_off():
                     said[name] = "the checks that keep another web page's script" in err.text()
         finally:
             run.wait_ready.__defaults__ = saved_wait
-    assert said == {"default": False, "chosen": True, "flag": True}, said
+    assert said == {"default": False, "chosen": True, "flag": True}, (said, err.text())
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
