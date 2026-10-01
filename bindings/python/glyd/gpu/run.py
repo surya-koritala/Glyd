@@ -556,9 +556,9 @@ def doctor_lines(environ=None, run=pf._run):
                      + (". Or run the installer again, which adds a compiler from PyPI where there is none" if not cc else "")))
     nvcc = pf.have_nvcc(env)
     rows.append(("ok", "CUDA compiler", "found" if nvcc else "not found: not needed (glyd run turns FlashInfer's sampler off, which would compile)"))
-    users = pf.other_users(run) if gpu.free < 0.8 * gpu.total else []
-    if users:
-        rows.append(("warn", "GPU in use", ", ".join(f"{n} ({pf.gb(b)})" for n, b in users[:4]) + ": memory these hold is not free for a model"))
+    if gpu.free < 0.8 * gpu.total:
+        users = pf.other_users(run)
+        rows.append(("warn", "GPU in use", (", ".join(f"{n} ({pf.gb(b)})" for n, b in users[:4]) + ": " if users else "") + f"{pf.gb(gpu.total - gpu.free)} of the GPU's {pf.gb(gpu.total)} is held by other programs, and is not free for a model"))
     cache = pf.hub_cache()
     free = pf.disk_free(cache)
     rows.append(("ok" if free > 20e9 else "warn", "Disk", f"{pf.gb(free)} free for models, in {cache}"))
@@ -587,15 +587,21 @@ def cmd_doctor(argv):
                     print(f"  {repo:<16} {pf.gb(weights):>8} on the GPU (bf16 {pf.gb(m.bf16)}): not now ({pf.gb(gpu.free)} free, it needs {pf.gb(needs)}); on an idle GPU a {s.context:,}-token context")
                 except pf.Refusal:
                     print(f"  {repo:<16} {pf.gb(weights):>8} on the GPU (bf16 {pf.gb(m.bf16)}): does not fit; it needs {pf.gb(needs)} free")
+        idle = None
         for repo, cfg in pf.LADDERS["qwen"]:
-            try:
-                pf.settings(pf.model_of(repo, cfg), gpu, "run")
-                best = repo
-            except pf.Refusal:
-                pass
+            for g in (gpu, replace(gpu, free=gpu.total)):
+                try:
+                    pf.settings(pf.model_of(repo, cfg), g, "run")
+                except pf.Refusal:
+                    continue
+                if g is gpu:
+                    best = repo
+                idle = repo
     print()
     if not ready:
         print("Not ready: fix the lines marked NO.")
+    elif best is None and idle:
+        print(f"Only {pf.gb(gpu.free)} of the GPU's {pf.gb(gpu.total)} is free now: other programs hold the rest (nvidia-smi lists them). With the GPU to itself: glyd run {idle}")
     elif best is None:
         print("This GPU has room for no model Glyd suggests.")
     else:

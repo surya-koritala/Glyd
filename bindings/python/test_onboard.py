@@ -534,6 +534,16 @@ def test_doctor():
     busy = "0, NVIDIA L4, 23034, 2000, 469, 595.91.07, 8.9, Disabled\n"  # (another program holds the GPU: said, and what fits an idle one)
     rows, gpu = run.doctor_lines(environ={}, run=smi(busy, apps="9, VLLM::EngineCore, 20000\n"))
     assert any(r[0] == "warn" and "GPU in use" == r[1] and "VLLM::EngineCore" in r[2] for r in rows)
+    rows, gpu = run.doctor_lines(environ={}, run=smi(busy))  # (nothing named: the memory held is still said)
+    assert any(r[0] == "warn" and "GPU in use" == r[1] and "held by other programs" in r[2] for r in rows)
+    out, real, real_rows = Sink(), sys.stdout, run.doctor_lines
+    sys.stdout = out
+    try:
+        with Patched(run__doctor_lines=lambda: (lambda r, g: ([x for x in r if x[0] != "fail"], g))(*real_rows(environ={}, run=smi(busy)))):  # (this machine's own vLLM and compiler left out)
+            assert run.cmd_doctor([]) == 0
+    finally:
+        sys.stdout = real
+    assert "With the GPU to itself: glyd run Qwen/Qwen3-8B" in out.text() and "Only 2.1 GB of the GPU's 23.7 GB is free now" in out.text() and "Ready:" not in out.text(), out.text()
     rows, gpu = run.doctor_lines(environ={}, run=lambda cmd: None)
     assert rows[-1][0] == "fail" and "no NVIDIA GPU" in rows[-1][2] and gpu is None
     rows, _ = run.doctor_lines(environ={}, run=smi("0, NVIDIA T4, 15360, 14000, 400, 550.1, 7.5, Disabled\n"))
