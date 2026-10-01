@@ -155,10 +155,11 @@ ziglang), a few tens of seconds; the second is the next `glyd serve`.
 
 What `glyd run` predicts from the config was within 0.11 GiB of the weights vLLM logged (over, for the smaller models) and
 3-18% under its KV cache tokens, in every run of these and of a 0.6B, a 1.7B and a 4B before them: it never promised a context
-vLLM then refused. In the 7 server logs of the acceptance runs (6 of `glyd run` and `glyd serve`, 1 of the by-hand command) there
+vLLM then refused. In the 9 server logs of the acceptance runs (8 of `glyd run` and `glyd serve`, 1 of the by-hand command) there
 was no allocator warning ("memory allocation failed with OOM", "memory mapping failed with OOM") and no traceback; the warnings
 that remain are vLLM's own notices (eager mode set, the model's generation_config overriding its sampling defaults, and its
-engine process being stopped at shutdown).
+engine process being stopped at shutdown). Every run with its logs, the first run's terminal text, and the calibration of the
+constants: [benchmarks/gpu/l4-onboarding-2026-10-01](../../benchmarks/gpu/l4-onboarding-2026-10-01).
 
 ### Update, remove, logs
 

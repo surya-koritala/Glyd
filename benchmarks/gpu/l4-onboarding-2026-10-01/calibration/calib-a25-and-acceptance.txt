@@ -1,0 +1,52 @@
+run-20261001-013708.log | Qwen/Qwen3-8B | layout mma | ctx 40960 | eager
+   weights: vLLM 11.38 GiB, predicted 11.39 (+0.01)
+   non-KV beyond the weights: vLLM 0.50 GiB (consumed 11.68 = weights + 0.30 non-torch; activation 0.2; graphs 0.0), constant 0.55
+   KV tokens: vLLM 61,104 at budget 20.27 GiB (util 0.92 of 22.04, free at start 21.85); predicted 58,894 (-2,210)
+run-20261001-013840.log | Qwen/Qwen3-8B | layout mma | ctx 10240 | eager
+   weights: vLLM 11.39 GiB, predicted 11.39 (-0.00)
+   non-KV beyond the weights: vLLM 0.49 GiB (consumed 11.68 = weights + 0.29 non-torch; activation 0.2; graphs 0.0), constant 0.55
+   KV tokens: vLLM 11,360 at budget 13.44 GiB (util 0.61 of 22.04, free at start 14.29); predicted 10,635 (-725)
+run-20261001-014104.log | Qwen/Qwen3-8B | layout mma | ctx 10240 | eager
+   weights: vLLM 11.39 GiB, predicted 11.39 (-0.00)
+   non-KV beyond the weights: vLLM 0.49 GiB (consumed 11.68 = weights + 0.29 non-torch; activation 0.2; graphs 0.0), constant 0.55
+   KV tokens: vLLM 11,360 at budget 13.44 GiB (util 0.61 of 22.04, free at start 14.29); predicted 10,635 (-725)
+run-20261001-014221.log | Qwen/Qwen3-4B | layout mma | ctx 2048 | eager
+   weights: vLLM 5.48 GiB, predicted 5.54 (+0.06)
+   non-KV beyond the weights: vLLM 0.51 GiB (consumed 5.84 = weights + 0.36 non-torch; activation 0.15; graphs 0.0), constant 0.55
+   KV tokens: vLLM 4,528 at budget 6.61 GiB (util 0.3 of 22.04, free at start 7.43); predicted 3,719 (-809)
+run-20261001-014325.log | Qwen/Qwen3-1.7B | layout mma | ctx 26624 | eager
+   weights: vLLM 2.47 GiB, predicted 2.55 (+0.08)
+   non-KV beyond the weights: vLLM 0.37 GiB (consumed 2.74 = weights + 0.27 non-torch; activation 0.1; graphs 0.0), constant 0.55
+   KV tokens: vLLM 35,248 at budget 6.61 GiB (util 0.3 of 22.04, free at start 7.43); predicted 31,909 (-3,339)
+run-20261001-014421.log | Qwen/Qwen3-0.6B | layout mma | ctx 40960 | eager
+   weights: vLLM 0.9 GiB, predicted 1.01 (+0.11)
+   non-KV beyond the weights: vLLM 0.35 GiB (consumed 1.17 = weights + 0.27 non-torch; activation 0.08; graphs 0.0), constant 0.55
+   KV tokens: vLLM 91,504 at budget 11.02 GiB (util 0.5 of 22.04, free at start 21.85); predicted 85,953 (-5,551)
+serve-20261001-013935.log | Qwen/Qwen3-8B | layout mma | ctx 10240 | eager
+   weights: vLLM 11.39 GiB, predicted 11.39 (-0.00)
+   non-KV beyond the weights: vLLM 0.49 GiB (consumed 11.68 = weights + 0.29 non-torch; activation 0.2; graphs 0.0), constant 0.55
+   KV tokens: vLLM 11,360 at budget 13.44 GiB (util 0.61 of 22.04, free at start 14.29); predicted 10,635 (-725)
+run-20261001-030658.log | Qwen/Qwen3-8B | layout mma | ctx 40960 | eager
+   weights: vLLM 11.38 GiB, predicted 11.39 (+0.01)
+   non-KV beyond the weights: vLLM 0.50 GiB (consumed 11.68 = weights + 0.30 non-torch; activation 0.2; graphs 0.0), constant 0.55
+   KV tokens: vLLM 61,104 at budget 20.27 GiB (util 0.92 of 22.04, free at start 21.85); predicted 58,894 (-2,210)
+serve-20261001-030801.log | Qwen/Qwen3-8B | layout mma | ctx 40960 | eager
+   weights: vLLM 11.38 GiB, predicted 11.39 (+0.01)
+   non-KV beyond the weights: vLLM 0.50 GiB (consumed 11.68 = weights + 0.30 non-torch; activation 0.2; graphs 0.0), constant 0.55
+   KV tokens: vLLM 61,104 at budget 20.27 GiB (util 0.92 of 22.04, free at start 21.85); predicted 58,894 (-2,210)
+run-20261001-030432.log | Qwen/Qwen3-1.7B | layout mma | ctx 24576 | eager
+   weights: vLLM 2.47 GiB, predicted 2.55 (+0.08)
+   non-KV beyond the weights: vLLM 0.38 GiB (consumed 2.74 = weights + 0.27 non-torch; activation 0.1; graphs 0.0), constant 0.55
+   KV tokens: vLLM 33,184 at budget 6.39 GiB (util 0.29 of 22.04, free at start 7.32); predicted 29,907 (-3,277)
+run-20261001-031847.log | Qwen/Qwen3-8B | layout mma | ctx 11264 | eager
+   weights: vLLM 11.39 GiB, predicted 11.39 (-0.00)
+   non-KV beyond the weights: vLLM 0.49 GiB (consumed 11.68 = weights + 0.29 non-torch; activation 0.2; graphs 0.0), constant 0.55
+   KV tokens: vLLM 12,960 at budget 13.66 GiB (util 0.62 of 22.04, free at start 14.48); predicted 12,192 (-768)
+serve-20261001-032003.log | Qwen/Qwen3-8B | layout mma | ctx 11264 | eager
+   weights: vLLM 11.39 GiB, predicted 11.39 (-0.00)
+   non-KV beyond the weights: vLLM 0.49 GiB (consumed 11.68 = weights + 0.29 non-torch; activation 0.2; graphs 0.0), constant 0.55
+   KV tokens: vLLM 12,960 at budget 13.66 GiB (util 0.62 of 22.04, free at start 14.48); predicted 12,192 (-768)
+serve-20261001-032242.log | Qwen/Qwen3-8B | layout mma | ctx 11264 | eager
+   weights: vLLM 11.39 GiB, predicted 11.39 (-0.00)
+   non-KV beyond the weights: vLLM 0.49 GiB (consumed 11.68 = weights + 0.29 non-torch; activation 0.2; graphs 0.0), constant 0.55
+   KV tokens: vLLM 12,960 at budget 13.66 GiB (util 0.62 of 22.04, free at start 14.48); predicted 12,192 (-768)

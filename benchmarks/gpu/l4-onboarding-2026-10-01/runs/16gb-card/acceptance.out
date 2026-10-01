@@ -1,0 +1,54 @@
+== queued 03:10:24: --wheel /home/ubuntu/onb/wheels/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl --card 4080s --webui all --pip-refusal
+== started 03:18:30
+== checkout 0a1ff2a acceptance.sh: the glyd flow installs with uv's own hardlinks (the cac
+== 2026-10-01T03:18:31Z: glyd flow, glyd[vllm] wheel /home/ubuntu/onb/wheels/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl, glyd-accept:ubuntu26.04-curl, GPU NVIDIA L4, 23034 MiB, budget 14828 MiB free, card 15942 MiB
+ok   no nvcc: not on PATH, no /usr/local/cuda, no CUDA_HOME
+-- install: curl -LsSf https://getglyd.com/install.sh | sh   (this checkout's scripts/install.sh instead of getglyd.com's; GLYD_SPEC='/work/wheel/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]' )
+ok   install.sh took 3 s and exited 0; its last lines:   Qwen/Qwen3-32B    45.9 GB on the GPU (bf16 65.5 GB): does not fit; it needs 48.9 GB free||Ready: glyd run Qwen/Qwen3-8B|
+note: no PATH line in .bashrc or .profile (uv tool update-shell found the path already set, or could not write)
+-- resolved: glyd v0.26.0rc2 [with: ziglang==0.16.0] flashinfer-python==0.6.18.post1 glyd pydantic==2.13.5 safetensors==0.8.0 tokenizers==0.23.2 torch==2.13.0 transformers==5.18.0 triton==3.7.1 vllm==0.30.0 ziglang==0.16.0 
+ok   no pre-release among the dependencies (install.sh names no --prerelease; opentelemetry's betas are all there is of those)
+ok   no gcc: install.sh added ziglang==0.16.0
+ok   glyd doctor: Ready: glyd run Qwen/Qwen3-8B
+-- hog: 7353 MiB held, 15017 of 22565 MiB free
+-- glyd doctor under the budget:
+     Models that fit this GPU with Glyd (a chat as long as the GPU allows):
+       Qwen/Qwen3-8B     12.2 GB on the GPU (bf16 16.4 GB): fits, a 11,264-token context
+       Qwen/Qwen3-14B    21.5 GB on the GPU (bf16 29.5 GB): does not fit; it needs 24.0 GB free
+       Qwen/Qwen3-32B    45.9 GB on the GPU (bf16 65.5 GB): does not fit; it needs 48.9 GB free
+     
+     Ready: glyd run Qwen/Qwen3-8B
+ok   glyd run Qwen/Qwen3-8B --prompt: Paris, Settings: 11,264-token context (the most that fits), eager mode, 62% of GPU memory (14.7 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+     Ready in 1m15s. (The server's log: /work/home/.local/state/glyd/logs/run-2026100
+-- 1 server logs checked: no traceback, no allocator out-of-memory warning unless failed above
+ok   glyd serve up after 44 s: Settings: 11,264-token context (the most that fits), eager mode, 62% of GPU memory (14.7 GB), tool calls (hermes), thinking shown apart (qwen3); PyTor|Ready in 40s. (The server's log: /work/home/.local/state/glyd/logs/serve-20261001-032003.log)|
+ok   GET / is the chat page (19983 bytes, content-security-policy: default-src 'none')
+ok   other paths stay vLLM's (/nope is 404; the API answers below)
+ok   OpenAI API, turn 1 (streamed, greedy): 'Paris', 6 tokens in 0.3 s
+ok   OpenAI API, turn 2 (streamed, top-p, turn 1 as history): 'Berlin', 6 tokens in 0.3 s
+ok   OpenAI API, a tool call (tool_choice auto): {'name': 'get_weather', 'arguments': '{"city": "Paris"}'}
+ok   the thinking apart from the answer: 768 characters of reasoning, answer '17 times 3 is calculated as follows:\n\n17 × 3 = (10'
+ok   a conversation longer than the window: HTTP 400, "This model's maximum context length is 11264 tokens. However, you requested 10 output toke"
+ok   glyd run --prompt (a prompt on stdin) says so when the prompt outgrows the window:  This prompt is longer than the model's window (11,264 tokens). Shorten it, or start glyd with a larger --context. rc=1 
+ok   the terminal chat says so when the conversation outgrows the window (typed as one message of several lines)
+-- Open WebUI, uvx: OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 OPENAI_API_KEY=none WEBUI_AUTH=False ENABLE_PERSISTENT_CONFIG=False \ uvx --python 3.11 open-webui@0.11.4 serve --host 127.0.0.1 --port 3000 
+     (the uvx route brought 0 GB into uv's cache: Open WebUI and its own PyTorch)
+ok   Open WebUI lists the model: /api/models: ['Qwen/Qwen3-8B', 'arena-model']
+ok   Open WebUI chat (the browser's request, its tools on): 'Paris'
+ok   Open WebUI chat, a tool call in the stream: tool calls ['get_current_timestamp'], text ''
+-- Open WebUI, docker: docker run -d --name open-webui --network=host -e PORT=3000 -e HOST=127.0.0.1 \ -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 -e OPENAI_API_KEY=none -e WEBUI_AUTH=False \ -e ENABLE_PERSISTENT_CONFIG
+     (the image: 6.5 GB)
+ok   Open WebUI lists the model: /api/models: ['Qwen/Qwen3-8B', 'arena-model']
+ok   Open WebUI chat (the browser's request, its tools on): 'Paris'
+ok   Open WebUI chat, a tool call in the stream: tool calls ['get_current_timestamp'], text ''
+ok   the key is asked for (/v1/models without it is 401)
+-- Open WebUI, bridge: docker run -d --name open-webui -p 127.0.0.1:3000:8080 --add-host=host.docker.internal:host-gateway \ -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 -e OPENAI_API_KEY=YOUR_KEY -e WEBUI_AUT
+     (the image: 6.5 GB)
+ok   Open WebUI lists the model: /api/models: ['Qwen/Qwen3-8B', 'arena-model']
+ok   Open WebUI chat (the browser's request, its tools on): 'Paris'
+ok   Open WebUI chat, a tool call in the stream: tool calls ['get_current_timestamp'], text ''
+ok   glyd serve stopped on SIGTERM
+-- 3 server logs checked: no traceback, no allocator out-of-memory warning unless failed above
+ok   pip install, no compiler: glyd run stops with the install command (glyd: vLLM needs a C compiler to start (Triton builds its GPU launchers with one), and this machine has none.   Install one: sudo apt install build-essential python3-dev. Or run the installer again, w)
+PASSED
+== finished 03:23:56 rc=0
