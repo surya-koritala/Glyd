@@ -1,0 +1,8 @@
+hog: 7355 MiB held, 15015 of 22565 MiB free
+up after 51 s
+OOM warnings: 0
+(EngineCore pid=174) INFO 09-30 22:47:45 [model_runner.py:428] Model loading took 11.84 GiB memory and 25.329075 seconds
+(EngineCore pid=174) INFO 09-30 22:47:47 [gpu_worker.py:640] Available KV cache memory: 1.36 GiB
+(EngineCore pid=174) INFO 09-30 22:47:47 [kv_cache_utils.py:2395] GPU KV cache size: 9,920 tokens, Maximum concurrency for 8,192 tokens per request: 1.21x
+(EngineCore pid=174) INFO 09-30 22:47:48 [gpu_worker.py:888] Free memory on device (14.48/22.04 GiB) on startup. Desired GPU memory utilization is (0.622, 13.71 GiB). Actual usage is 12.14 GiB for consumed memory (weights + non-torch), 0.2 GiB for peak activat
+memwatch: most used 21886 MiB of 22565, so least free 679 MiB

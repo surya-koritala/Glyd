@@ -1,0 +1,5 @@
+PASS Qwen3-1.7B auto: every pack (112) decoded to its weights bit for bit
+PASS Qwen3-1.7B auto: each layer's product within 1e-2 of F.linear (4.06e-03) and the same bits every run
+PASS Qwen3-1.7B auto: top-1 agreement with bf16 on its continuation 0.9942 (at least 0.97; bf16 eager's 0.9929)
+PASS Qwen3-1.7B auto: mean |logprob difference| 4.30e-03, at most 2.0x bf16 eager's against its graphs (8.28e-03)
+PASS Qwen3-1.7B exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8; continuation True)

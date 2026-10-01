@@ -1,0 +1,30 @@
+qkv 6144x4096        old: hist int32 32M, pack 4M   tiered     71.1 ms  peak +   296 MiB  same bits as old
+qkv 6144x4096        old: hist int32 32M, pack 4M   12-bit     19.9 ms  peak +   288 MiB  same bits as old
+qkv 6144x4096        hist 4M, pack 4M               tiered     68.4 ms  peak +   296 MiB  same bits as old
+qkv 6144x4096        hist 4M, pack 4M               12-bit     17.2 ms  peak +   206 MiB  same bits as old
+qkv 6144x4096        hist 4M, pack 2M               tiered     42.2 ms  peak +   164 MiB  same bits as old
+qkv 6144x4096        hist 4M, pack 2M               12-bit     15.7 ms  peak +   121 MiB  same bits as old
+qkv 6144x4096        hist 2M, pack 1M               tiered     43.0 ms  peak +    98 MiB  same bits as old
+qkv 6144x4096        hist 2M, pack 1M               12-bit     23.0 ms  peak +    79 MiB  same bits as old
+qkv 6144x4096        hist 1M, pack 512K             tiered     73.6 ms  peak +    66 MiB  same bits as old
+qkv 6144x4096        hist 1M, pack 512K             12-bit     41.7 ms  peak +    58 MiB  same bits as old
+gate_up 24576x4096   old: hist int32 32M, pack 4M   tiered    284.3 ms  peak +   392 MiB  same bits as old
+gate_up 24576x4096   old: hist int32 32M, pack 4M   12-bit     78.2 ms  peak +   384 MiB  same bits as old
+gate_up 24576x4096   hist 4M, pack 4M               tiered    271.4 ms  peak +   392 MiB  same bits as old
+gate_up 24576x4096   hist 4M, pack 4M               12-bit     67.0 ms  peak +   315 MiB  same bits as old
+gate_up 24576x4096   hist 4M, pack 2M               tiered    166.2 ms  peak +   261 MiB  same bits as old
+gate_up 24576x4096   hist 4M, pack 2M               12-bit     58.2 ms  peak +   230 MiB  same bits as old
+gate_up 24576x4096   hist 2M, pack 1M               tiered    166.0 ms  peak +   195 MiB  same bits as old
+gate_up 24576x4096   hist 2M, pack 1M               12-bit     90.8 ms  peak +   188 MiB  same bits as old
+gate_up 24576x4096   hist 1M, pack 512K             tiered    288.3 ms  peak +   163 MiB  same bits as old
+gate_up 24576x4096   hist 1M, pack 512K             12-bit    163.1 ms  peak +   167 MiB  same bits as old
+down 4096x12288      old: hist int32 32M, pack 4M   tiered    135.7 ms  peak +   384 MiB  same bits as old
+down 4096x12288      old: hist int32 32M, pack 4M   12-bit     38.7 ms  peak +   384 MiB  same bits as old
+down 4096x12288      hist 4M, pack 4M               tiered    129.7 ms  peak +   311 MiB  same bits as old
+down 4096x12288      hist 4M, pack 4M               12-bit     32.7 ms  peak +   232 MiB  same bits as old
+down 4096x12288      hist 4M, pack 2M               tiered     75.4 ms  peak +   163 MiB  same bits as old
+down 4096x12288      hist 4M, pack 2M               12-bit     31.8 ms  peak +   136 MiB  same bits as old
+down 4096x12288      hist 2M, pack 1M               tiered    102.8 ms  peak +   114 MiB  same bits as old
+down 4096x12288      hist 2M, pack 1M               12-bit     57.4 ms  peak +   105 MiB  same bits as old
+down 4096x12288      hist 1M, pack 512K             tiered    103.5 ms  peak +   114 MiB  same bits as old
+down 4096x12288      hist 1M, pack 512K             12-bit     59.1 ms  peak +   105 MiB  same bits as old
