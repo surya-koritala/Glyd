@@ -1,0 +1,6 @@
+Qwen3-8B: 12.2 GB on the GPU with Glyd, instead of 16.4 GB, which does not fit the 15.7 GB your GPU has free.
+Qwen3-8B is downloaded already.
+Settings: 11,264-token context (the most that fits), eager mode, 62% of GPU memory (14.7 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+Loading Qwen3-8B with Glyd: 12.2 GB instead of 16.4 GB...
+Ready in 3m05s. (The server's log: /work/home/.local/state/glyd/logs/run-20261001-144514.log)
+Stopping the server (a few seconds)...
