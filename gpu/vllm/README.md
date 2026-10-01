@@ -87,8 +87,9 @@ mode, 61% of GPU memory (14.4 GB), tool calls (hermes), thinking shown apart (qw
 OpenAI API at http://localhost:8000/v1 and the chat page at http://localhost:8000. `glyd doctor` prints the GPU, driver,
 CUDA, free memory, compilers and versions, and which of Qwen3-8B, 14B and 32B fit, at Glyd's sizes.
 
-Open WebUI is a chat page with accounts, history and tools, which talks to that API. It uses no GPU memory. Pinned to
-0.11.4, the version tested. Without Docker:
+Open WebUI is a chat page with accounts, history and tools, which talks to that API. It uses no GPU memory, and it is large:
+the Docker image is 6.5 GB, and `uvx` puts 7.1 GB into uv's cache (it brings its own PyTorch). Pinned to 0.11.4, the version
+tested. Without Docker:
 
 <!-- acceptance: webui-uvx -->
 ```bash
@@ -138,23 +139,26 @@ case `host-gateway` makes work there; Docker Desktop is the case it is written f
 
 ### Measured
 
-On an L4 (24 GB) with no CUDA toolkit, installed by the script from this tree's wheel, vLLM 0.30.0, Qwen3-8B unless it says
-otherwise. The 16 GB row is the L4 with another process holding the GPU's memory down to what an RTX 4080 SUPER with a
-desktop has free (14.48 GiB: the card's 15.57 GiB total, a desktop's share taken), and the plugin reading it as the
-GeForce Ada card that it is; likewise the 8 GB row (7.8 GiB free). `glyd` prints GB (10^9 bytes), vLLM's log GiB.
+On an L4 (24 GB) with no CUDA toolkit and no compiler, installed by the script from this tree's wheel, vLLM 0.30.0,
+Qwen3-8B unless it says otherwise. The 16 GB row is the L4 with another process holding the GPU's memory down to what an
+RTX 4080 SUPER with a desktop has free (vLLM logged 14.48 GiB free at start, the figure on that card), and the plugin
+reading it as the GeForce Ada card that it is; the 8 GB row the same at 7.5 GiB. `glyd` prints GB (10^9 bytes), vLLM's log
+GiB. The first start is the first on a machine that has not run vLLM: Triton builds its launchers once (here with
+ziglang), a few tens of seconds; the second is the next `glyd serve`.
 
-| Free at start | `glyd run` chose | vLLM logged | Ready in |
-| :--- | :--- | :--- | ---: |
-| 23.7 GB (the whole L4) | 92% of GPU memory (21.8 GB), a 40,960-token context (the model's own limit) | weights 11.38 GiB, KV cache 61,104 tokens | 59 s |
-| 15.5 GB (a 16 GB card, a desktop) | 61% (14.4 GB) of the L4's total, the share of 0.86 on a 4080 SUPER's, a 10,240-token context | weights 11.39 GiB, KV cache 11,360 tokens | 39 s |
-| 8.2 GB (an 8 GB card) | Qwen3-8B refused: "needs about 14.7 GB of GPU memory with Glyd (12.2 GB of weights and room for a 4,096-token chat); your GPU has 8.2 GB free. Or try Qwen/Qwen3-1.7B, which needs about 5.1 GB" | | |
-| the same, Qwen3-1.7B | 30% (7.1 GB), a 26,624-token context | weights 2.47 GiB, KV cache 35,248 tokens | 32 s |
-| the same, Qwen3-4B, `-- --max-model-len 2048` | 30% (7.1 GB), the context given | weights 5.48 GiB, KV cache 4,528 tokens | 39 s |
+| Free at start | `glyd run` chose | vLLM logged | First start | Second |
+| :--- | :--- | :--- | ---: | ---: |
+| 23.7 GB (the whole L4) | 92% of GPU memory (21.8 GB), a 40,960-token context (the model's own limit) | weights 11.38 GiB, KV cache 61,104 tokens | 61 s | 41 s |
+| 15.7 GB (a 16 GB card, a desktop) | 62% (14.7 GB) of the L4's total, which is the share 0.86 is on a 4080 SUPER, a 11,264-token context | weights 11.39 GiB, KV cache 12,960 tokens | 78 s | 40 s |
+| 8.1 GB (an 8 GB card), Qwen3-4B | refused: "needs about 8.4 GB of GPU memory with Glyd (5.9 GB of weights and room for a 4,096-token chat); your GPU has 8.1 GB free. Or try Qwen/Qwen3-1.7B, which needs about 5.1 GB" | | | |
+| the same, Qwen3-1.7B | 29% (6.9 GB), a 24,576-token context | weights 2.47 GiB, KV cache 33,184 tokens | 58 s | |
 
-The numbers `glyd run` predicts from the config were within 0.11 GiB of the weights vLLM logged (over, for the smaller
-models) and 2-7% under its KV cache tokens: it never promised a context vLLM then refused. In the servers' logs, no
-traceback and no allocator warning ("memory allocation failed with OOM" or "memory mapping failed with OOM"), 0 of 8 runs
-in this table's logs. {{MEASURED_EXTRA}}
+What `glyd run` predicts from the config was within 0.11 GiB of the weights vLLM logged (over, for the smaller models) and
+3-18% under its KV cache tokens, in every run of these and of a 0.6B, a 1.7B and a 4B before them: it never promised a context
+vLLM then refused. In the 7 server logs of the acceptance runs (6 of `glyd run` and `glyd serve`, 1 of the by-hand command) there
+was no allocator warning ("memory allocation failed with OOM", "memory mapping failed with OOM") and no traceback; the warnings
+that remain are vLLM's own notices (eager mode set, the model's generation_config overriding its sampling defaults, and its
+engine process being stopped at shutdown).
 
 ### Update, remove, logs
 
