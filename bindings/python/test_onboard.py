@@ -239,6 +239,7 @@ def test_parsers():
         from vllm.tool_parsers import ToolParserManager
         from vllm.reasoning import ReasoningParserManager
     except ImportError:
+        assert not os.environ.get("GLYD_REQUIRE_VLLM"), "GLYD_REQUIRE_VLLM is set and vLLM is not installed: the parser names were not checked"
         return print("test_parsers: parser names not checked against vLLM (not installed)")
     tools, reasoning = set(ToolParserManager.list_registered()), set(ReasoningParserManager.list_registered())
     assert {"hermes", "llama3_json", "mistral", "qwen3_coder"} <= tools and {"qwen3", "deepseek_r1"} <= reasoning
