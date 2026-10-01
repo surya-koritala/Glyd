@@ -623,11 +623,17 @@ if __name__ == "__main__":
 
 
 def alive(pid):
+    """Whether a process is running (a zombie is not: nothing has reaped it yet)."""
     try:
         os.kill(pid, 0)
     except OSError:
         return False
-    try:  # (a zombie is not alive)
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        pass
+    try:  # (no /proc: macOS)
         return subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()[:1] not in ("Z", "")
     except OSError:
         return True
