@@ -34,7 +34,7 @@ glyd run Qwen/Qwen3-8B
 ```
 
 The script installs [uv](https://docs.astral.sh/uv/) if it is missing, then Glyd with vLLM 0.30 and PyTorch as one isolated
-tool, on a Python 3.12 that uv fetches for it ({{DISK}} of disk; no sudo, no virtual environment, no pip), and ends with
+tool, on a Python 3.12 that uv fetches for it (about 8 GB of disk; no sudo, no virtual environment, no pip), and ends with
 `glyd doctor`. `glyd run` downloads the model (Qwen3-8B is 16.4 GB the first time), checks that this machine can run it,
 starts vLLM with settings it works out from the GPU, and opens a chat: type in the terminal (`/bye` leaves, `/clear`
 starts over, `/think` turns the model's thinking on and off), or open http://localhost:8000.
@@ -130,7 +130,8 @@ case `host-gateway` makes work there; Docker Desktop is the case it is written f
 - `ENABLE_PERSISTENT_CONFIG=False` makes these variables the settings on every start. Open WebUI otherwise keeps the
   connection it first started with (the default, OpenAI's) in its data directory, takes the variables only on a first
   start, and shows "No models available" on a later one that has them.
-- Run `uvx` from a directory you can write to: Open WebUI keeps a secret key file in it.
+- The `uvx` route needs no Docker. `docker run` needs a user in the `docker` group (or `sudo`), which a Docker Engine install
+  does not give you by itself. Run `uvx` from a directory you can write to: Open WebUI keeps a secret key file in it.
 - Its chats offer the model Open WebUI's built-in tools, which is why `glyd serve` starts vLLM with a tool-call parser
   (Qwen3: `hermes`): without one every chat is answered with `"auto" tool choice requires --enable-auto-tool-choice and
   --tool-call-parser to be set`. The thinking arrives as a field of its own (`--reasoning-parser qwen3`), which Open WebUI

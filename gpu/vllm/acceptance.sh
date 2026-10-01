@@ -356,8 +356,9 @@ glyd_flow() {
   py=$(run 'echo $(uv tool dir)/glyd/bin/python' | tail -1)
   run "uv tool list --show-with; uv pip freeze --python $py" > "$LOGS/freeze.txt" 2>&1
   say "-- resolved: $(grep -iE '^(glyd|vllm|torch|flashinfer-python|transformers|safetensors|tokenizers|pydantic|triton|ziglang)[ =@]' "$LOGS/freeze.txt" | sed -E 's/ \(.*//; s/ @ .*//' | tr '\n' ' ')"
-  pre=$(grep -E '^[A-Za-z0-9_.-]+==[0-9][0-9.]*(a|b|rc|dev)[0-9]+' "$LOGS/freeze.txt" | grep -v '^glyd==' | tr '\n' ' ')
-  [ -z "$pre" ] && ok "no pre-release among the dependencies (install.sh names no --prerelease)" || fail "pre-releases among the dependencies: $pre"
+  # (opentelemetry's instrumentation packages publish only betas, 0.66b0: no stable release to take instead; pydantic, safetensors and tokenizers have both)
+  pre=$(grep -E '^[A-Za-z0-9_.-]+==[0-9][0-9.]*(a|b|rc|dev)[0-9]+' "$LOGS/freeze.txt" | grep -v '^glyd==' | grep -vE '^opentelemetry-[a-z-]+==[0-9.]+b[0-9]+$' | tr '\n' ' ')
+  [ -z "$pre" ] && ok "no pre-release among the dependencies (install.sh names no --prerelease; opentelemetry's betas are all there is of those)" || fail "pre-releases among the dependencies: $pre"
   if [ $COMPILER = none ]; then
     grep -q '^ziglang==' "$LOGS/freeze.txt" && ok "no gcc: install.sh added $(grep -o '^ziglang==[0-9.]*' "$LOGS/freeze.txt")" || fail "no gcc here, and install.sh added no ziglang"
   else
