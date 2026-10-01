@@ -843,10 +843,11 @@ def test_cli_forwarding():
         env = {"PATH": e + os.pathsep + d, "PYTHONPATH": HERE}
         r = subprocess.run([sys.executable, "-m", "glyd.cli", "input.tar", "-o", "input.tar.glyd"], env=env, capture_output=True, text=True)
         assert r.returncode == 0 and r.stdout.strip() == "input.tar -o input.tar.glyd", (r.stdout, r.stderr)  # (forwarded as it came)
+        plain = subprocess.run([native, "--version"], capture_output=True, text=True).stdout.strip() == "--version"  # (GNU echo, the fallback, answers --version and --help itself)
         r = subprocess.run([sys.executable, "-m", "glyd.cli", "--help"], env=env, capture_output=True, text=True)
-        assert "glyd run MODEL" in r.stdout and "--help" in r.stdout and r.returncode == 0  # (its help, then the program's)
+        assert "glyd run MODEL" in r.stdout and r.returncode == 0 and (not plain or "--help" in r.stdout)  # (its help, then the program's)
         r = subprocess.run([sys.executable, "-m", "glyd.cli", "--version"], env=env, capture_output=True, text=True)
-        assert r.stdout.startswith("glyd 0.") and "--version" in r.stdout
+        assert r.stdout.startswith("glyd 0.") and (not plain or "--version" in r.stdout)
         none = {"PATH": e, "PYTHONPATH": HERE}
         r = subprocess.run([sys.executable, "-m", "glyd.cli", "input.tar"], env=none, capture_output=True, text=True)
         assert r.returncode == 127 and "brew install surya-koritala/glyd/glyd" in r.stderr

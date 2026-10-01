@@ -31,7 +31,8 @@
 #                    the card's (glyd works that out itself). --geforce: the plugin reads the GPU as GeForce Ada (for an
 #                    L4 standing in for one). On an RTX 4080 SUPER none of the three is needed.
 #                    --card 4080s is --budget-mib 14828 --card-mib 15942 --geforce (the owner's card with a desktop);
-#                    --card 8gb is --budget-mib 7800, and expects the refusal
+#                    --card 8gb is --budget-mib 7500, expects the refusal of the model (Qwen/Qwen3-4B, unless --model
+#                    says another) with a smaller one to try, and runs that
 #   --model M        the model glyd run and glyd serve are given (default Qwen/Qwen3-8B)
 #   --compiler C     the glyd flow's container: none (the default: no gcc, so install.sh adds ziglang) or gcc
 #   --command CMD    the vllm flow's serve command in place of the README's
@@ -56,14 +57,14 @@
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 README=$HERE/README.md
-FLOW=glyd VERSION= WHEEL= BUDGET= CARD= GEFORCE= COMMAND= WEBUI=both HOLD= IMAGE= WORK=$HOME/glyd-acceptance HOST= MODEL=Qwen/Qwen3-8B COMPILER=none EXPECT=fit PIPREF=
+FLOW=glyd VERSION= WHEEL= BUDGET= CARD= GEFORCE= COMMAND= WEBUI=both HOLD= IMAGE= WORK=$HOME/glyd-acceptance HOST= MODEL=Qwen/Qwen3-8B COMPILER=none EXPECT=fit PIPREF= MODEL_SET=
 while [ $# -gt 0 ]; do
   case $1 in
     --flow) FLOW=$2; shift;;
     --version) VERSION=$2; shift;; --wheel) WHEEL=$2; shift;;
     --budget-mib) BUDGET=$2; shift;; --card-mib) CARD=$2; shift;; --geforce) GEFORCE=1;;
-    --card) case $2 in 4080s) BUDGET=14828 CARD=15942 GEFORCE=1;; 8gb) BUDGET=7800 EXPECT=refusal;; *) echo "unknown card $2 (4080s, 8gb)"; exit 2;; esac; shift;;
-    --model) MODEL=$2; shift;; --compiler) COMPILER=$2; shift;;
+    --card) case $2 in 4080s) BUDGET=14828 CARD=15942 GEFORCE=1;; 8gb) BUDGET=7500 EXPECT=refusal;; *) echo "unknown card $2 (4080s, 8gb)"; exit 2;; esac; shift;;
+    --model) MODEL=$2 MODEL_SET=1; shift;; --compiler) COMPILER=$2; shift;;
     --command) COMMAND=$2; shift;; --webui) WEBUI=$2; shift;; --hold) HOLD=$2; shift;; --image) IMAGE=$2; shift;; --work) WORK=$2; shift;; --host) HOST=1;;
     --pip-refusal) PIPREF=1;;
     -h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;;
@@ -72,6 +73,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 case $FLOW in glyd|vllm) ;; *) echo "unknown flow $FLOW (glyd, vllm)"; exit 2;; esac
+[ $EXPECT = fit ] || [ -n "$MODEL_SET" ] || MODEL=Qwen/Qwen3-4B  # (the 8 GB card: the model that does not quite fit)
 case $COMPILER in none|gcc) ;; *) echo "unknown compiler $COMPILER (none, gcc)"; exit 2;; esac
 [ -z "$HOST" ] || [ "$FLOW" = vllm ] || { echo "--host is for the vllm flow: the glyd flow installs into a home of its own, in a container"; exit 2; }
 [ "$WEBUI" != all ] || WEBUI=uvx,docker,bridge
