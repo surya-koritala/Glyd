@@ -1910,6 +1910,34 @@ def test_a_second_ctrl_c_does_not_skip_the_sweep():
         shutil.rmtree(d)
 
 
+def test_a_server_still_loading_is_not_waited_for_as_long():
+    """S7: Ctrl-C while the model loads took 50 s on the L4 (the engine does not answer SIGTERM until the load is over, and the API server's
+    wait is 30 s): a server that has not answered /health is swept after a few seconds, and says it is still loading; a ready one gets its
+    graceful stop."""
+    if not sys.platform.startswith(("linux", "darwin")):
+        return print("test_a_server_still_loading_is_not_waited_for_as_long: skipped (needs process groups)")
+    import signal
+    code = "import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(600)"  # (a server that is busy, and does not stop on SIGTERM)
+    saved = run.STOP_API_WAIT, run.STOP_LOADING_WAIT, run.STOP_WAIT
+    run.STOP_API_WAIT, run.STOP_LOADING_WAIT, run.STOP_WAIT = 2.0, 0.2, (0.2, 0.2, 2)
+    try:
+        took = {}
+        for ready in (False, True):
+            proc = subprocess.Popen([sys.executable, "-c", code], start_new_session=True)
+            time.sleep(0.3)
+            server = run.Server("http://127.0.0.1:1", "", proc)
+            server.ready = ready
+            ui = run.Ui(Sink())
+            t0 = time.time()
+            server.stop(ui)
+            took[ready] = time.time() - t0, ui.f.text()
+            assert not alive(proc.pid)
+        assert took[False][0] < 1.5 and "still loading" in took[False][1], took[False]
+        assert took[True][0] >= 1.8 and "a few seconds" in took[True][1] and "still loading" not in took[True][1], took[True]  # (the full graceful wait, then the sweep)
+    finally:
+        run.STOP_API_WAIT, run.STOP_LOADING_WAIT, run.STOP_WAIT = saved
+
+
 def test_signals_nohup_download_and_a_terminal_that_went():
     """S7c, S7d, nit 10: nohup's ignored SIGHUP stays ignored (ssh host 'nohup glyd serve MODEL &' is how a server outlives its login); Ctrl-C in a
     download ends the process at once (huggingface_hub's threads are not daemons); a terminal that has gone is not an error; a pipe closed by

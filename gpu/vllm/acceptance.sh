@@ -418,7 +418,7 @@ chk "a rebinding name (Host)" 421 "$(code -H 'Host: evil.example:8000' $b/v1/mod
 chk "the page under a rebinding name" 421 "$(code -H 'Host: evil.example:8000' $b/)"
 chk "the page itself" 200 "$(code $b/)"
 chk "no CORS grant to another site" 0 "$(curl -s -D - -o /dev/null -H 'Origin: http://evil.example' $b/v1/models | tr -d '\r' | grep -ic '^access-control-allow-origin')"
-chk "CORS names the page's own origin" "http://localhost:8000" "$(curl -s -D - -o /dev/null -H 'Origin: http://localhost:8000' $b/v1/models | tr -d '\r' | sed -n 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin: //p')"
+chk "CORS names the page's own origin" "http://localhost:8000" "$(curl -s -D - -o /dev/null -H 'Origin: http://localhost:8000' -H 'Host: localhost:8000' $b/v1/models | tr -d '\r' | sed -n 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin: //p')"
 exit $bad
 EOF
 }
@@ -564,9 +564,14 @@ glyd_chat_dies() {  # a terminal chat with an answer under way, and the engine k
   [ -n "$up" ] || { fail "glyd serve did not come up for the engine-killed check (logs/serve-die.out)"; return; }
   cat > "$WORK/chatdies.sh" <<EOF
 #!/bin/bash
-( sleep 8; echo 'Write the numbers from 1 to 2000, one on each line, and nothing else. /no_think'; sleep 70; echo /bye ) | ${gf}script -qec 'glyd run $MODEL' /dev/null > $IN/logs/chatdies.out 2>&1 &
+# the question is typed 8 s in; the engine is killed 3 s after the answer has started to come (not before: a short answer is over by then)
+out=$IN/logs/chatdies.out
+( sleep 8; echo 'Write a long story, at least 2000 words, about a lighthouse keeper, and do not stop before the end. /no_think'; sleep 60; echo /bye ) | ${gf}script -qec 'glyd run $MODEL' /dev/null > \$out 2>&1 &
 chat=\$!
-sleep 24
+sleep 9
+base=\$(stat -c %s \$out)
+for i in \$(seq 1 40); do [ \$(( \$(stat -c %s \$out) - base )) -gt 600 ] && break; sleep 1; done
+sleep 3
 pkill -KILL -f 'EngineCore'
 wait \$chat
 EOF

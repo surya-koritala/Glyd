@@ -33,6 +33,7 @@ from .. import __version__
 
 ISSUES = "https://github.com/surya-koritala/Glyd/issues"
 STOP_API_WAIT = 30  # seconds the API server gets to stop itself, and its engine, after SIGTERM
+STOP_LOADING_WAIT = 5  # ... where the server is still loading its model: the engine does not answer a SIGTERM until the load is over (50 s on an L4 with Qwen3-1.7B at 30 s), so the group is swept sooner
 STOP_WAIT = (5, 5, 10)  # then: seconds the engine gets to follow it out, to obey SIGTERM, and to die of SIGKILL, when a server is stopped
 LOOPBACK = ("127.0.0.1", "localhost", "::1")
 SECRET_ENV = ("VLLM_API_KEY", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")  # (never written to the server's log)
@@ -261,6 +262,7 @@ class Server:
     log_start: int = 0  # where this start's lines begin in the log (a retry appends to it)
     model: str = ""
     token: str = ""  # the API key the server asks for on /v1, if any
+    ready: bool = False  # it has answered /health: it is stopped by its own graceful stop, not by the sweep that a server in the middle of loading needs
 
     @property
     def url(self):
@@ -282,10 +284,10 @@ class Server:
         try:
             if self.proc.poll() is None:
                 if ui is not None:
-                    ui.line("Stopping the server (a few seconds)...")
+                    ui.line("Stopping the server (a few seconds)..." if self.ready else "Stopping the server (it is still loading: up to half a minute)...")
                 try:
                     os.kill(pgid, signal.SIGTERM)
-                    self.proc.wait(STOP_API_WAIT)
+                    self.proc.wait(STOP_API_WAIT if self.ready else STOP_LOADING_WAIT)
                 except subprocess.TimeoutExpired:
                     pass
                 except ProcessLookupError:
@@ -593,6 +595,7 @@ def start(a, extra, mode, ui, environ=None):
             server.stop(ui)
             raise
         if failure is None:
+            server.ready = True
             ui.line(f"Ready in {fmt_time(time.time() - t0)}. (The server's log: {log})")
             return server
         server.stop()
