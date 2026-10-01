@@ -156,7 +156,7 @@ def test_ziglang_stands_in_for_a_missing_compiler():
         out = subprocess.run([path, "k.c", "-O3", "-shared", "-L/nowhere", f"-L{libs}", "-l:libcuda.so.1", "-l:libmissing.so", "-lm", "-o", "k.so"],
                              capture_output=True, text=True, env={"PYTHONPATH": fake, "PATH": os.environ.get("PATH", "")})
         assert out.returncode == 0, out.stderr
-        assert json.loads(out.stdout) == ["cc", "k.c", "-O3", "-shared", "-L/nowhere", f"-L{libs}", os.path.join(libs, "libcuda.so.1"), "-l:libmissing.so", "-lm", "-o", "k.so"], out.stdout
+        assert json.loads(out.stdout) == ["cc", "-w", "k.c", "-O3", "-shared", "-L/nowhere", f"-L{libs}", os.path.join(libs, "libcuda.so.1"), "-l:libmissing.so", "-lm", "-o", "k.so"], out.stdout
     finally:
         shutil.rmtree(d)
         shutil.rmtree(fake)
@@ -461,8 +461,14 @@ def test_stage_of_a_log():
     try:
         log = os.path.join(d, "x.log")
         assert run.stage(os.path.join(d, "none.log")) == ""
-        open(log, "w").write("$ vllm serve\n(APIServer pid=1) INFO Resolved architecture: Qwen3ForCausalLM\n")
+        open(log, "w").write("$ vllm serve\n(APIServer pid=1) INFO [api_utils.py:286] non-default args: {'model_tag': 'Qwen/Qwen3-8B'}\n")
         assert run.stage(log) == ""
+        open(log, "a").write("(EngineCore pid=2) INFO [model.py:692] Resolved architecture: Qwen3ForCausalLM\n")
+        assert run.stage(log) == "reading the model's details"
+        open(log, "a").write("(EngineCore pid=2) INFO [core.py:123] Initializing a V1 LLM engine (v0.30.0) with config\n")
+        assert run.stage(log) == "starting the engine"
+        open(log, "a").write("(APIServer pid=1) WARNING [vllm.py:1547] Enforce eager set, disabling torch.compile and CUDAGraphs.\n")
+        assert run.stage(log) == "starting the engine"  # (not "compiling": eager mode compiles nothing)
         open(log, "a").write("(EngineCore pid=2) Loading safetensors checkpoint shards:   0% Completed | 0/5 [00:00<?, ?it/s]\r(EngineCore pid=2) Loading safetensors checkpoint shards:  40% Completed | 2/5 [00:13<00:20,  6.7s/it]\n")
         assert run.stage(log) == "loading the weights, 2 of 5 parts"
         open(log, "a").write("(EngineCore pid=2) INFO [model_runner.py:428] Model loading took 11.31 GiB memory and 34.1 seconds\n")

@@ -247,14 +247,15 @@ exec {python} -c 'import os, sys
 a = sys.argv[1:]
 d = [x[2:] for x in a if x.startswith("-L")]
 o = [next((os.path.join(p, x[3:]) for p in d if os.path.exists(os.path.join(p, x[3:]))), x) if x.startswith("-l:") else x for x in a]
-os.execv(sys.executable, [sys.executable, "-m", "ziglang", "cc"] + o)' "$@"
+os.execv(sys.executable, [sys.executable, "-m", "ziglang", "cc", "-w"] + o)' "$@"
 """
 
 
 def zig_cc():
     """A C compiler for vLLM's Triton on a machine that has none: a `cc` script in the state directory that runs ziglang's (installed
     by install.sh where there is no gcc or clang). Triton links with `-l:libcuda.so.1`, which zig's linker does not take, so the script
-    gives that one as the library's path, found in the -L directories."""
+    gives that one as the library's path, found in the -L directories, and -w keeps clang's warnings about Python's own headers out of
+    the server's log."""
     path = os.path.join(state_dir(), "zigcc")
     os.makedirs(state_dir(), exist_ok=True)
     with open(path, "w") as f:
@@ -277,8 +278,9 @@ def launch(m, s, host, port, extra, log, environ=None):
     return Server(f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}", log, proc)
 
 
-STAGES = (("Capturing CUDA graph", "capturing CUDA graphs"), ("torch.compile", "compiling"), ("Model loading took", "warming up"),
-          ("Loading safetensors checkpoint shards", "loading the weights"), ("Loading weights", "loading the weights"), ("Starting vLLM", "starting"))
+STAGES = (("Capturing CUDA graph", "capturing CUDA graphs"), ("Dynamo bytecode transform", "compiling"), ("Model loading took", "warming up"),
+          ("Loading safetensors checkpoint shards", "loading the weights"), ("Loading weights", "loading the weights"),
+          ("Initializing a V1 LLM engine", "starting the engine"), ("Resolved architecture", "reading the model's details"), ("Starting vLLM", "starting"))
 
 
 def stage(log):
