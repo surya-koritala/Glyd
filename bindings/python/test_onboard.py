@@ -1408,7 +1408,7 @@ class Inst:
              "readlink", "sha256sum", "shasum", "basename", "touch")
 
     def __init__(self, nvidia=None, uv=True, os_name="Linux", arch="x86_64", compiler="gcc", other_glyd=False, curl_fail=False, bad_sha=False,
-                 uv_version="0.12.21", df_kb=None, on_path=False, path_extra=(), uv_fail=False, no_home=False, tool_glyd=False, foreign=None):
+                 uv_version="0.12.21", df_kb=None, on_path=False, path_extra=(), uv_fail=False, no_home=False, tool_glyd=False, foreign=None, broken_program=False):
         self.home, self.fake, self.tools, self.tmpdir = (tempfile.mkdtemp() for _ in range(4))
         self.bindir = os.path.join(self.fake, "bin")
         os.makedirs(self.bindir)
@@ -1441,6 +1441,7 @@ class Inst:
             script("glyd", foreign, os.path.join(self.home, ".local", "bin"))
         if tool_glyd:
             open(os.path.join(self.home, ".fake-tool-glyd"), "w").close()
+        self.broken_program = broken_program
         self.make_release(bad_sha)
 
     def make_release(self, bad_sha):
@@ -1458,7 +1459,8 @@ class Inst:
                 ti.size, ti.mode = len(data), mode
                 t.addfile(ti, io.BytesIO(data))
             for prog in ("glyd", "glyd-store", "glyd-gpu"):
-                add(prog, f'#!/bin/sh\necho "{prog} $*" >> "$HOME/calls.log"\ncase "$1" in --version) echo "glyd 0.26.0-rc.3"; echo "SIMD: AVX2";; esac\n'.encode(), 0o755)
+                body = 'exit 4\n' if self.broken_program else f'echo "{prog} $*" >> "$HOME/calls.log"\ncase "$1" in --version) echo "glyd 0.26.0-rc.3"; echo "SIMD: AVX2";; esac\n'
+                add(prog, ("#!/bin/sh\n" + body).encode(), 0o755)
             for lic in ("LICENSE", "COPYING", "LICENSE-glyd-store", "LICENSE-glyd-gpu", "README.md"):
                 add(lic, b"licence\n", 0o644)
         digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
@@ -1713,6 +1715,10 @@ def test_install_sh_where_glyd_run_has_nothing_to_run_on():
         r = i.run()
         assert r.rc == 1 and "not the file the release lists" in r.err, (r.rc, r.err)
         assert not os.path.exists(i.at(".local", "share", "glyd")) and not os.path.exists(i.at(".local", "bin", "glyd"))
+    with Inst(nvidia=None, broken_program=True) as i:  # a program that does not start here (a CPU without AVX2): said, and nothing of it left
+        r = i.run()
+        assert r.rc == 1 and "does not start on this machine" in r.err and "cargo install --git" in r.err, (r.rc, r.err)
+        assert not os.path.exists(i.at(".local", "share", "glyd", "cli")) and not os.path.exists(i.at(".local", "share", "glyd", "cli.new")) and not os.path.exists(i.at(".local", "bin", "glyd"))
     with Inst(nvidia=None, curl_fail=True) as i:
         r = i.run()
         assert r.rc == 1 and "could not download" in r.err and "check the network" in r.err

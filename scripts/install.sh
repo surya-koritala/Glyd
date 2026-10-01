@@ -96,11 +96,12 @@ install_cli() {
   mkdir "$tmp/x"
   tar -xzf "$tmp/$name.tar.gz" -C "$tmp/x" "$name/glyd" "$name/glyd-store" "$name/glyd-gpu" "$name/LICENSE" "$name/COPYING" "$name/LICENSE-glyd-store" "$name/LICENSE-glyd-gpu" \
     || die "the release's tarball is not laid out as this installer expects ($name/glyd, ...): run this again, or take the program from $REPO/releases."
-  "$tmp/x/$name/glyd" --version >/dev/null 2>&1 \
-    || die "the compression program from the release does not start on this machine (the Linux x86_64 one needs a CPU with AVX2 and BMI2). Build it: cargo install --git $REPO glyd"
+  mkdir -p "$cli.new" "$bin"  # (tried where it will live: a temporary folder can be noexec)
+  cp "$tmp/x/$name"/* "$cli.new"/
+  "$cli.new/glyd" --version >/dev/null 2>&1 \
+    || { rm -rf "$cli.new"; die "the compression program from the release does not start on this machine (the Linux x86_64 one needs a CPU with AVX2 and BMI2). Build it: cargo install --git $REPO glyd"; }
   rm -rf "$cli"
-  mkdir -p "$cli" "$bin"
-  cp "$tmp/x/$name"/* "$cli"/
+  mv "$cli.new" "$cli"
   for f in glyd glyd-store glyd-gpu; do ln -sf "$cli/$f" "$bin/$f"; done
   say "$("$bin/glyd" --version | head -n 1) is installed in $cli, linked from $bin (glyd, glyd-store, glyd-gpu)"
   case ":$PATH:" in
