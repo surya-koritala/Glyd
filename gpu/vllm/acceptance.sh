@@ -784,7 +784,8 @@ glyd_pip() {  # --pip-refusal: the same wheel by pip into a virtual environment:
   [ -n "$PIPREF" ] && [ $COMPILER = none ] || return 0
   local spec=${WHEEL:+$IN/wheel/$(basename "$WHEEL")[vllm]} out
   spec=${spec:-glyd[vllm]${VERSION:+==$VERSION}}
-  run "uv venv --python 3.12 $IN/pipenv > /dev/null 2>&1 && uv pip install --python $IN/pipenv/bin/python '$spec' > $IN/logs/pip.log 2>&1" || { fail "the pip install did not work (logs/pip.log)"; return; }
+  rm -rf "$WORK/pipenv"  # (uv venv will not replace one: a work directory that was used before has it)
+  run "uv venv --python 3.12 $IN/pipenv > $IN/logs/pip.log 2>&1 && uv pip install --python $IN/pipenv/bin/python '$spec' >> $IN/logs/pip.log 2>&1" || { fail "the pip install did not work (logs/pip.log)"; return; }
   out=$(run "$IN/pipenv/bin/glyd run $MODEL --prompt hi 2>&1; echo rc=\$?" | tr '\n' ' ')
   case $out in
     *"needs a C compiler"*"build-essential"*"installer again"*"rc=1"*) ok "pip install, no compiler: glyd run stops with the install command ($(printf '%s' "$out" | cut -c1-200))";;
