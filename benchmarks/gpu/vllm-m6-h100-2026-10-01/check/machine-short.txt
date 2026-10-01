@@ -1,0 +1,1 @@
+1 x NVIDIA H100 80GB HBM3 (compute 9.0, sm_90a, 81559 MiB), x86_64 host, 26 CPUs; tree 7fe66a2 (release-0.26.0, v0.26.0 candidate); steps check; TP 1; model Qwen/Qwen3-8B, big none, experts none
