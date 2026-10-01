@@ -19,3 +19,10 @@ l4-check/: diag_job.sh on the AWS dev L4 with Qwen3-0.6B (a check that it runs),
 sequences with each attention backend held. On the L4 every run repeated call for call; exact's linear outputs were
 bf16's in every call whose inputs were the same (1576-6304 calls a run), its prompt's weights bf16's words (197 of
 197). The cuDNN attention backend gave other tokens than the rest (repeatably, bf16 and exact alike).
+
+h100-sxm/: diag_job.sh on an H100 SXM (2026-10-01, tree 8b86631), Qwen3-8B. At 8 and 32 sequences, bf16 and exact alike, the
+first call to differ between the two identical `generate()` calls was PyTorch's cuDNN attention kernel, called with the
+same inputs (4 of 154 attention calls with the same inputs at 32 sequences; none of the 1,105 matmuls); at 1 sequence
+nothing differed, nor with the attention held to the math backend (bf16 and exact: exact's tokens bf16 eager's) or to the
+flash or efficient one (bf16), and torch's deterministic algorithms, cuBLAS and cuBLASLt changed nothing. Its README has
+every run and the comparisons.
