@@ -4,7 +4,9 @@ The plugin's `fraction` option packs only that share of a model's decoder layers
 (`0` is bf16, `1` every layer, as before). Runs on the dev L4: a smoke on Qwen3-0.6B, `check_vllm.py --quick --fraction
 0.5` on Qwen3-8B and `--brief` on granite-3.1-3b-a800m-instruct (a mixture of experts), values the option refuses, and
 `vllm bench serve` on Qwen3-8B at fractions 0, 0.5 and 1 against bf16. They are sanity numbers for the option, not the
-GH200's answer: the GH200 job is prepared and not run.
+GH200's answer: the GH200 job is prepared and not run. `h100-sxm/` (2026-10-01) is the sweep on an H100 SXM, Qwen3-32B
+served saturated at fractions 0, 0.25, 0.5, 0.75 and 1 against bf16: the first Hopper run of the option, from the
+v0.26.0 candidate (its own README).
 
 ## Setup
 
@@ -123,3 +125,4 @@ request a second and 256 at once. Each mode waited up to 180 s for the GPU to co
 - `smoke/`: `smoke.py`, `smoke.sh` and each fraction's JSON (tokens, logprobs, the layers packed, `additional_config`) and
   log.
 - `l4_sweep.sh`, `chain.sh`, `chain2.sh`: how the bench ran, and the runs in turn.
+- `h100-sxm/`: the H100 SXM's sweep: its README, the job (`budget_job.sh`) and its results.

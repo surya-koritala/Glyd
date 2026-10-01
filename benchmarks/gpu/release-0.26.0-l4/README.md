@@ -10,3 +10,5 @@ benchmark logs), the library built for sm_89 with build_lib.sh's flags, under th
   check passed; granite-3.1-3b-a800m-instruct, every check passed.
 - respond.py, Qwen3-0.6B, its four modes (2 repeats for the time to first token, 1 for the rest): every
   configuration ran, each mode's tokens the same call to call.
+- `h100-sxm-route/`: the route SPLIT's extension to an H100 SXM, 2026-10-01 (889f4e3 and the extension's code): check_capi.py,
+  test_gpu.py whole, split_stress.py --quick and the crate's tests on the L4, and the host route check (36,236,800 routes).

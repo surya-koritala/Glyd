@@ -1,0 +1,21 @@
+1 x NVIDIA H100 80GB HBM3 (compute 9.0, sm_90a, 81559 MiB), x86_64 host, 26 CPUs; tree 7fe66a2 (release-0.26.0, v0.26.0 candidate); steps moebench; TP 1; model Qwen/Qwen3-8B, big none, experts Qwen/Qwen3-30B-A3B
+00:47:20 (+0 s) machine
+00:47:28 (+8 s) env: vLLM and nvcc in 8 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA H100 80GB HBM3)
+00:47:30 (+10 s) build: sm_90a in 2 s (library: C API 7 | GPU code 90)
+00:58:19 (+659 s) bench Qwen3-30B-A3B: exit 0 in 649 s
+download dl-Qwen3-30B-A3B: exit 0: 61084157680 bytes in 0 s (at +0 s)
+00:58:19 (+659 s) done
+
+== bench-Qwen3-30B-A3B
+bf16: weights 56.88 GiB, KV cache 124,720 tokens, max concurrency 30.45x at 4,096 tokens (started cold, on an empty compile cache: weights 56.88 GiB, KV cache 118,720 tokens, max concurrency 28.98x at 4,096 tokens)
+glyd: weights 44.27 GiB, KV cache 263,376 tokens, max concurrency 64.30x at 4,096 tokens (started cold, on an empty compile cache: weights 44.27 GiB, KV cache 257,392 tokens, max concurrency 62.84x at 4,096 tokens)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.97 | 249.2 | 60 / 258 | 6.7 / 8.6 | 64 | 1980 MHz, 40 C |
+| 1 | glyd | 0.97 | 248.4 | 82 / 124 | 7.2 / 10.0 | 64 | 1980 MHz, 38 C |
+| 4 | bf16 | 3.75 | 959.2 | 49 / 100 | 11.2 / 13.5 | 128 | 1980 MHz, 44 C |
+| 4 | glyd | 3.70 | 946.4 | 102 / 746 | 17.6 / 28.9 | 128 | 1980 MHz, 44 C |
+| inf | bf16 | 12.16 | 3113.7 | 6772 / 16912 | 28.6 / 51.9 | 256 | 1980 MHz, 55 C |
+| inf | glyd | 11.58 | 2963.5 | 1766 / 17386 | 62.4 / 70.1 | 256 | 1980 MHz, 50 C |
+

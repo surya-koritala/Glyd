@@ -1,0 +1,11 @@
+01:08:20 (+0 s) machine
+01:08:47 (+27 s) env: vLLM and nvcc in 26 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA H100 80GB HBM3)
+01:09:32 (+72 s) build: sm_90a in 45 s (library: C API 7 | GPU code 90)
+01:13:27 (+307 s) sweep bf16: exit 0 in 235 s
+01:17:15 (+535 s) sweep glyd@1: exit 0 in 228 s
+01:21:03 (+763 s) sweep glyd@0.5: exit 0 in 228 s
+01:24:24 (+964 s) sweep glyd@0.25: exit 0 in 201 s
+01:28:18 (+1198 s) sweep glyd@0.75: exit 0 in 234 s
+01:31:13 (+1373 s) sweep glyd@0: exit 0 in 175 s
+download dl-Qwen3-32B: exit 0: 65540268929 bytes in 35 s (at +36 s)
+01:31:13 (+1373 s) done

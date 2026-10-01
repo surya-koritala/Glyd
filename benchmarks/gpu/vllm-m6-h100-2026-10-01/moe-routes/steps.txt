@@ -1,0 +1,7 @@
+00:45:29 (+1 s) machine
+00:45:39 (+11 s) env: vLLM and nvcc in 10 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA H100 80GB HBM3)
+00:45:40 (+12 s) build: sm_90a in 1 s (library: C API 7 | GPU code 90)
+00:46:54 (+86 s) moeroutes glyd: exit 0 in 44 s
+00:47:19 (+111 s) moeroutes bf16: exit 0 in 25 s
+download dl-Qwen3-30B-A3B: exit 0: 61084157680 bytes in 41 s (at +42 s)
+00:47:20 (+112 s) done

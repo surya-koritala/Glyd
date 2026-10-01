@@ -48,6 +48,8 @@ pub const L40S: i32 = 4000;
 pub const PCIE: i32 = 5000;
 /// A GPU's class by name in its code: "GH200" in its name as a word.
 pub const GH200: i32 = 6000;
+/// A GPU's class by name in its code: "H100" in its name as a word, not an H100 NVL (an H100 SXM; an H100 PCIe is [`PCIE`]'s).
+pub const H100: i32 = 7000;
 /// A flag added to a GPU's code for [`Library::route`]: its routes with [`Route::Split`], which the caller runs
 /// (opt-in: without it no route is Split, v0.25.1's routes).
 pub const WITH_SPLIT: i32 = 1 << 20;
@@ -276,7 +278,7 @@ pub enum Route {
     Ahead = 5,
     /// 12-bit: W decoded ahead on SMs set apart (the driver's green contexts), cuBLAS on the rest, through the
     /// library's ring (glyd_gpu.h's `glyd_gpu_mma12_ring_*`, with a cuBLAS of the caller's; [`Library::split_sms`]
-    /// the decode's SMs): an A100 SXM's and a GH200's prompts, only for a code with [`WITH_SPLIT`] (opt-in: without it,
+    /// the decode's SMs): an A100 SXM's, a GH200's and an H100 SXM's prompts, only for a code with [`WITH_SPLIT`] (opt-in: without it,
     /// never). This crate does not wrap the ring yet: it does not ask.
     Split = 6,
 }
@@ -967,8 +969,8 @@ mod tests {
             assert_eq!(Route::from_c(r as c_int).unwrap(), r);
         }
         assert_eq!(
-            (define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10"), define("GLYD_GPU_L4"), define("GLYD_GPU_L40S"), define("GLYD_GPU_PCIE"), define("GLYD_GPU_GH200"), define("GLYD_GPU_WITH_SPLIT")),
-            (GEFORCE, A10, L4, L40S, PCIE, GH200, WITH_SPLIT)
+            (define("GLYD_GPU_GEFORCE"), define("GLYD_GPU_A10"), define("GLYD_GPU_L4"), define("GLYD_GPU_L40S"), define("GLYD_GPU_PCIE"), define("GLYD_GPU_GH200"), define("GLYD_GPU_H100"), define("GLYD_GPU_WITH_SPLIT")),
+            (GEFORCE, A10, L4, L40S, PCIE, GH200, H100, WITH_SPLIT)
         );
     }
 

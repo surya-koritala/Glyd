@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The route SPLIT against v0.25.1's routes on one Hopper GPU, to settle it (gpu-route-split, SPLIT opt-in, C API 6;
-# COMMIT in o3_src.tar). On a GH200 it measures the shipping route (2048-8192 tokens, O and K at least 5120). On any
-# other GPU (an H100 SXM, an H200, an H100 PCIe) SPLIT is forced on by GLYD_SPLIT_MIN=FORCE_MIN (2048: the GH200's
+# COMMIT in o3_src.tar). On a GH200 or an H100 SXM it measures the shipping route (2048-8192 tokens, O and K at least 5120). On any
+# other GPU (an H200, an H100 NVL, an H100 PCIe) SPLIT is forced on by GLYD_SPLIT_MIN=FORCE_MIN (2048: the GH200's
 # range, its SMs, every matrix of these models' merged Linears O and K at least 4096): a measurement, not a route. In
 # order, most needed first, so that a cap leaves the first answers:
 #   builds    the library for this GPU alone (build_lib.sh's flags) and the JIT build, at once; the models download
@@ -67,8 +67,8 @@ PLIM=$(nvidia-smi --query-gpu=power.limit --format=csv,noheader | head -1)
 ARCH=$([ "$CC" = "9.0" ] && echo 90a || echo "${CC/./}")
 [ "$CC" = "9.0" ] || echo "NOTE: not Hopper (compute capability $CC, $NAME): run as it is" | tee -a "$R/machine.txt"
 KNOB=()
-if echo "$NAME" | grep -qw GH200; then
-  echo "SPLIT: the shipping route (a GH200: 2048-8192 tokens, O and K at least 5120)" > "$R/route.txt"
+if echo "$NAME" | grep -qw GH200 || { echo "$NAME" | grep -qw H100 && ! echo "$NAME" | grep -qiE 'pcie|nvl'; }; then
+  echo "SPLIT: the shipping route (a GH200 or an H100 SXM: 2048-8192 tokens, O and K at least 5120)" > "$R/route.txt"
 else
   KNOB=(GLYD_SPLIT_MIN="$FORCE_MIN")
   echo "SPLIT forced on by GLYD_SPLIT_MIN=$FORCE_MIN on an $NAME: a measurement, not a route" | tee "$R/route.txt" | sed 's/^/* /' > "$R/forced.txt"
@@ -184,6 +184,6 @@ for m in $MODELS; do
   skip layer || { left && step "(b) layer.py, $m: layer 10" && layer "$m"; }
 done
 skip stress_skewed || { left && step "(c) split_stress.py, the split skewed both ways (the products on the fewest SMs, the decode on the fewest)" &&
-  ( cd "$W/src/gpu" && run split_stress_skewed 300 "$PY" -u split_stress.py "$LIB" --sms=-2,1 --quick --models 0.6B,8B,14B --ms 769,2048 ); }
+  ( cd "$W/src/gpu" && run split_stress_skewed 300 "$PY" -u split_stress.py "$LIB" --sms=-2,1 --quick --models 0.6B,8B,14B --ms 769,2048,8192 ); }
 step "done in $(el) s"
 done_ "done"

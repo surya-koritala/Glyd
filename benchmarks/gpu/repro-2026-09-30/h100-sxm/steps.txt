@@ -1,0 +1,20 @@
+00:58:19 (+0 s) machine
+00:58:19 (+0 s) environment
+00:58:23 (+4 s) in the background: Qwen/Qwen3-8B, whole
+00:58:23 (+4 s) the library for sm_90a (build_lib.sh's flags)
+00:59:04 (+45 s) run b32, bf16: --batch 32
+00:59:25 (+66 s) run b32, exact: --batch 32
+00:59:47 (+88 s) run b1, bf16: --batch 1
+01:00:05 (+106 s) run b1, exact: --batch 1
+01:00:26 (+127 s) run b32-det, bf16: --batch 32 --det
+01:00:48 (+149 s) run b32-det, exact: --batch 32 --det
+01:01:13 (+174 s) run b32-math, bf16: --batch 32 --attn math
+01:01:33 (+194 s) run b32-math, exact: --batch 32 --attn math
+01:01:56 (+217 s) run b8, bf16: --batch 8
+01:02:14 (+235 s) run b8, exact: --batch 8
+01:02:35 (+256 s) run b32-efficient, bf16: --batch 32 --attn efficient
+01:02:54 (+275 s) run b32-flash, bf16: --batch 32 --attn flash
+01:03:14 (+295 s) run b32-cudnn, bf16: --batch 32 --attn cudnn
+01:03:33 (+314 s) run b32-cublas, bf16: --batch 32 --blas cublas
+01:03:53 (+334 s) run b32-cublaslt, bf16: --batch 32 --blas cublaslt
+01:04:13 (+354 s) done in 354 s

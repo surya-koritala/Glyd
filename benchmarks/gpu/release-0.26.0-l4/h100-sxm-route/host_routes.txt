@@ -1,0 +1,6 @@
+no GLYD_ variables: 7247360 routes, 0 against check_capi's rule
+{'GLYD_SPLIT_MIN': '-1'}: 7247360 routes, 0 against check_capi's rule
+{'GLYD_SPLIT_MIN': '100', 'GLYD_SPLIT_MAX': '3000', 'GLYD_SPLIT_SMS': '6'}: 7247360 routes, 0 against check_capi's rule
+{'GLYD_DEC_MIN': '1000'}: 7247360 routes, 0 against check_capi's rule
+{'GLYD_WG_MIN': '33', 'GLYD_WG_MAX': '2048', 'GLYD_MID_MIN': '40'}: 7247360 routes, 0 against check_capi's rule
+36236800 routes in all

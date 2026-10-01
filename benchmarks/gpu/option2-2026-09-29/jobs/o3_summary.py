@@ -1,6 +1,6 @@
 """o3_job.sh's and o4_job.sh's results in one page: python o3_summary.py RESULTS_DIR. First line: CHECKS PASS or FAIL (every step run
 exited 0; check_capi's ring ran; the split tests and the stress passed; the ring ran in every e2e.py run). Then the
-GPU, and whether SPLIT is the shipping route (a GH200) or forced on (a measurement, not a route); e2e.py's forward
+GPU, and whether SPLIT is the shipping route (a GH200 or an H100 SXM) or forced on (a measurement, not a route); e2e.py's forward
 pass and first token per model and length (bf16; v0.25.1's routes and SPLIT, the medians of the rounds; SPLIT over
 v0.25.1 each round); layer.py per layer; the SM clock and power over each step and over each e2e.py phase (SPLIT,
 v0.25.1); each step's exit. Last, a DECIDES line per model and length: SPLIT's forward pass over v0.25.1's, the median

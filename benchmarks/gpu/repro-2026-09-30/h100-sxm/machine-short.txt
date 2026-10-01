@@ -1,0 +1,1 @@
+NVIDIA H100 80GB HBM3 (9.0, sm_90a), x86_64 host, 26 CPUs; the tree 8b86631 (respond-bench, v0.25.1); Qwen/Qwen3-8B
