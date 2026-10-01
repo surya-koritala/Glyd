@@ -196,6 +196,11 @@ class Server:
     log: str = ""
     proc: object = None  # None where an existing server was attached to
 
+    @property
+    def url(self):
+        """The address as a person types it: localhost where the server is on this computer only."""
+        return self.base.replace("//127.0.0.1:", "//localhost:")
+
     def stop(self, ui=None):
         """Stop the server this run started (its process group: the engine too), waiting for the GPU's memory to be let go."""
         if self.proc is None or self.proc.poll() is not None or self.proc.pid <= 1:  # (pid <= 1: never signal a group that is not ours)
@@ -439,7 +444,7 @@ def cmd_run(argv):
             if not prompt:
                 raise pf.Refusal("no prompt: standard input is empty", "Give one with --prompt TEXT, or run glyd in a terminal to chat")
             return chat.once(prompt)
-        ui.line(f"Chat here, or open {server.base} in a browser.")
+        ui.line(f"Chat here, or open {server.url} in a browser.")
         return chat.loop()
     finally:
         server.stop(ui)
@@ -451,7 +456,7 @@ def cmd_serve(argv):
     ui = Ui()
     server = start(a, extra, "serve", ui)
     name, window = Api(server.base).model()
-    ui.line(f"\nServing {name} with Glyd" + (f" ({window:,}-token window)" if window else "") + f".\n  OpenAI API   {server.base}/v1   (model name: {name})\n  Chat page    {server.base}\n  Log          {server.log}\nPress Ctrl-C to stop.")
+    ui.line(f"\nServing {name} with Glyd" + (f" ({window:,}-token window)" if window else "") + f".\n  OpenAI API   {server.url}/v1   (model name: {name})\n  Chat page    {server.url}\n  Log          {server.log}\nPress Ctrl-C to stop.")
     try:
         while server.proc is not None and server.proc.poll() is None:
             time.sleep(1)

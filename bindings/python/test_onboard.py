@@ -708,7 +708,7 @@ def test_end_to_end_with_a_fake_vllm():
             out, err = Sink(), Sink()
             port = free_port()
             assert go(["serve", model, "--port", str(port)], out, err, cancel_when="Press Ctrl-C to stop.") == 130, err.text()
-            assert f"OpenAI API   http://127.0.0.1:{port}/v1" in err.text() and f"Chat page    http://127.0.0.1:{port}" in err.text() and "Press Ctrl-C to stop." in err.text()
+            assert f"OpenAI API   http://localhost:{port}/v1" in err.text() and f"Chat page    http://localhost:{port}" in err.text() and "Press Ctrl-C to stop." in err.text()
             time.sleep(0.5)
             assert not alive(int(open(os.environ["FAKE_CHILD"]).read()))
     finally:
