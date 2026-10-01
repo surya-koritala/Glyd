@@ -12,6 +12,7 @@ release.yml builds it. The Rust `glyd` for the cases that need it was built from
 | `24gb` | `acceptance.sh --wheel W --rust-glyd R --webui none` (a fresh work directory: a cold uv cache) | PASSED, 49 checks |
 | `16gb-card` | `acceptance.sh --wheel W --rust-glyd R --card 4080s --webui all --pip-refusal` | PASSED, 58 checks, with Open WebUI as the README had it then (`WEBUI_AUTH=False`: no login) |
 | `16gb-card-login` | the same, after the README's Open WebUI commands lost `WEBUI_AUTH=False` (264af19; the run is of be01a5d, which also makes the pip refusal's environment new) | PASSED, 64 checks: in each of the three routes Open WebUI asks for a login and its first account signs up as the administrator |
+| `16gb-card-rereview` | the same, on the code after the re-review's fixes (df2be01: `glyd run` looks at standard input after the checks of the machine and the model, SIGTERM and SIGHUP during a download end at once, one API key and `--hf-token` moved to the environment, a loopback address that was chosen says its checks are off, a MIG GPU not picked ahead of a usable one); the wheel and the Rust `glyd` are built from df2be01 | PASSED, 64 checks |
 | `8gb-card` | `acceptance.sh --wheel W --rust-glyd R --card 8gb` | PASSED, 17 checks: Qwen3-4B refused with a model to try, Qwen3-1.7B (24,576 tokens, 29%) run |
 | `head-smoke-1.7b` | `acceptance.sh --wheel W --rust-glyd R --model Qwen/Qwen3-1.7B --webui none` on the branch's head (cf616b7), after the three runs: the one commit of Python code since their wheel (1260fa1: a server's message that ends in a full stop is not given a second), this install.sh, and the Ctrl-C cases' stricter check that glyd says it is stopping | PASSED, 49 checks |
 | `cli-x86_64-no-gpu` | `acceptance.sh --flow cli --rust-glyd R` (a container with no GPU on the box) | PASSED, 11 checks |
@@ -83,6 +84,8 @@ chat's answer the terminal shows nothing (S6); `glyd doctor` has no row for a gl
 long conversation in the terminal chat, fail because the SIGHUP stopped the server they use. The Ctrl-C cases and `uv tool uninstall` pass on the old code: a
 Linux server is also stopped when glyd dies (`PR_SET_PDEATHSIG`), so a second Ctrl-C leaves no engine behind (the stand-in test of
 `test_a_second_ctrl_c_does_not_skip_the_sweep` is what shows the skipped sweep); what the new code adds there is the message, and 5 s instead of 30 s.
+
+`review-1/tests/python-rereview-nits-on-the-code-before.txt` is the re-review's new tests against the code before its fixes (f5c2791): 5 of the 7 fail (N1 says "no prompt: standard input is empty" on a machine with no GPU, SIGTERM during a download takes 12 s for a 12 s shard, several keys are not refused, a chosen loopback address says nothing, a MIG card is picked ahead of an RTX 4090); the other two are the updated empty-prompt test, which holds on both orders, and the SIGINT-ignored test, whose fix is in the test file itself. 64 of 64 pass on the branch.
 
 `review-1/tests/`: the review's tests, run on the first round's code (4ed64ef) and on the branch. `python-on-the-code-before.txt`: 27 of the 59 tests of
 `bindings/python/test_onboard.py` pass there (the old ones) and 32 do not (the new ones and the old ones changed for the new behavior: some fail
