@@ -9,8 +9,10 @@
 #                 `glyd doctor`, `glyd run MODEL --prompt`, then `glyd serve MODEL` and over HTTP: the chat page, the
 #                 OpenAI API (two streamed turns, the thinking apart, a tool call), a conversation longer than the
 #                 window (the API's refusal, and the terminal chat's own message), and Open WebUI by the README's
-#                 routes. It lists what the install resolved (uv's tool list and pip freeze) and fails on a pre-release
-#                 among the dependencies, and on a package that is not at the version install.sh's list gives. Where the
+#                 routes (its login is on: nothing is answered without one, its first account is signed up as a person
+#                 does on first visit and is the administrator, and its CORS is limited to its own addresses). It lists
+#                 what the install resolved (uv's tool list and pip freeze) and fails on a pre-release among the
+#                 dependencies, and on a package that is not at the version install.sh's list gives. Where the
 #                 budget is too small for MODEL (--card 8gb) it expects the refusal with a model to try, and runs that model.
 #                 Around those, what a user meets: install.sh where a program of the user's own is where uv puts its link (it
 #                 stops, and leaves it), run again (an update: the shell-profile edit said where ~/.local/bin is off PATH, a
@@ -171,7 +173,7 @@ start_hog() {  # start_hog PYTHON: a process of this Python holds all of the GPU
 }
 write_check() {
   cat > "$WORK/check.py" <<'EOF'
-import json, re, sys, time, urllib.request
+import json, os, re, sys, time, urllib.request
 
 
 def call(url, body=None, token=None, timeout=300):
@@ -260,6 +262,15 @@ def webui_cors(url):
                  f"another site's request: {evil}, its preflight: {pre}, the page's own origin: {own}")
 
 
+def code_of(url, body=None, token=None):
+    """The HTTP status of a request, whether the server answered it or refused it."""
+    try:
+        with call(url, body, token, timeout=30) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
 def webui(url, model):
     for _ in range(150):
         try:
@@ -267,9 +278,15 @@ def webui(url, model):
                 break
         except Exception:
             time.sleep(2)
-    token = json.load(call(url + "/api/v1/auths/signin", {"email": "", "password": ""}))["token"]
+    # the login is on (the README's commands do not set WEBUI_AUTH=False): nothing is answered without one, and the sign-in that no-login mode took is refused
+    anon, empty = code_of(url + "/api/models"), code_of(url + "/api/v1/auths/signin", {"email": "", "password": ""})
+    ok = check("Open WebUI asks for a login", anon == 401 and empty == 400, f"/api/models with no token: {anon}; a sign-in with empty credentials: {empty}")
+    # the first visit: the first account made is the administrator
+    account = json.load(call(url + "/api/v1/auths/signup", {"name": "Acceptance", "email": "acceptance@example.com", "password": "Pw-" + os.urandom(6).hex(), "profile_image_url": "/user.png"}))
+    token = account["token"]
+    ok &= check("the first account made is the administrator", account.get("role") == "admin", f"role {account.get('role')!r}")
     ids = [m["id"] for m in json.load(call(url + "/api/models", token=token))["data"]]
-    ok = check("Open WebUI lists the model", model in ids, f"/api/models: {ids}")
+    ok &= check("Open WebUI lists the model", model in ids, f"/api/models: {ids}")
     ok &= webui_cors(url)
 
     def chat(msg):  # the browser's request (Open WebUI 0.11): features, params, a session (with which Open WebUI offers the model its built-in tools)
@@ -372,6 +389,7 @@ webui_route() {  # webui_route ROUTE PYTHON MODEL [KEY]
   say "-- Open WebUI, $route: $(block webui-$route | tr '\n' ' ' | tr -s ' ' | cut -c1-200)"
   local before; before=$(du -sm "$WORK/uv-cache" 2> /dev/null | cut -f1)
   block webui-$route | sed "s|-v open-webui:|-v $VOLUME:|; s|YOUR_KEY|$key|g" > "$WORK/webui-$route.sh"
+  [ $route != uvx ] || rm -rf "$WORK/home/.open-webui"  # (the first account is made in every route: an earlier run's data folder would hold it already)
   case $route in
     uvx) bg "setsid bash -c 'echo \$\$ > $IN/logs/webui.pid; exec bash $IN/webui-uvx.sh' > $IN/logs/webui-uvx.log 2>&1";;
     *) OWUI=1; bash "$WORK/webui-$route.sh" > "$LOGS/webui-$route.log" 2>&1 || { fail "the README's $route command failed (logs/webui-$route.log)"; return; };;

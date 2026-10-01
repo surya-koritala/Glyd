@@ -52,9 +52,10 @@ every earlier format.
   are removed (they could move the cursor, retitle the window or write to the clipboard); an error event, a connection closed mid-answer, a cut message and an
   empty answer are said in plain words and the question is kept; Ctrl-C while the model loads stops everything it started, twice too; `nohup`'s SIGHUP is kept
   ignored; a full disk, an interrupted download, a float16 checkpoint (refused before its download), a bad `glyd login` token, two GPUs of which one is too old, MIG, a
-  context longer than the model's window and a port that is not a number each end in a message with the next step. Open WebUI's commands set `CORS_ALLOW_ORIGIN` to
-  the page's own addresses (its default, `*`, handed the administrator's token to any page's script: measured on 0.11.4), and the README says what `WEBUI_AUTH=False` leaves
-  open. `gpu/vllm/acceptance.sh` runs the new cases (a program of the user's own in `~/.local/bin`, an update, a `glyd` ahead on PATH, `nohup` and SIGHUP, the Host
+  context longer than the model's window and a port that is not a number each end in a message with the next step. Open WebUI's commands no longer set
+  `WEBUI_AUTH=False`: the first account made on its first visit is the administrator, and `CORS_ALLOW_ORIGIN` is set to the page's own addresses (its default, `*`, handed the
+  administrator's token to any page's script where the login is off: measured on 0.11.4). A short note in the README says what the no-login setting leaves open, DNS rebinding
+  included, which Open WebUI does not check for. `gpu/vllm/acceptance.sh` runs the new cases (a program of the user's own in `~/.local/bin`, an update, a `glyd` ahead on PATH, `nohup` and SIGHUP, the Host
   and Origin refusals, a server with a key both ways, escape sequences in an answer, Ctrl-C while loading, the engine killed under a chat, `uv tool uninstall glyd`, and the
   installer on a machine with no GPU), and tests of each fail on the code before.
 

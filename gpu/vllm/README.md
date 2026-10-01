@@ -146,7 +146,7 @@ tested. Without Docker:
 
 <!-- acceptance: webui-uvx -->
 ```bash
-OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 OPENAI_API_KEY=none WEBUI_AUTH=False ENABLE_PERSISTENT_CONFIG=False \
+DATA_DIR="$HOME/.open-webui" OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 OPENAI_API_KEY=none ENABLE_PERSISTENT_CONFIG=False \
   CORS_ALLOW_ORIGIN='http://localhost:3000;http://127.0.0.1:3000' \
   uvx --python 3.11 open-webui@0.11.4 serve --host 127.0.0.1 --port 3000
 ```
@@ -157,7 +157,7 @@ macOS and Windows does not give the container the host's 127.0.0.1):
 <!-- acceptance: webui-docker -->
 ```bash
 docker run -d --name open-webui --network=host -e PORT=3000 -e HOST=127.0.0.1 \
-  -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 -e OPENAI_API_KEY=none -e WEBUI_AUTH=False \
+  -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 -e OPENAI_API_KEY=none \
   -e 'CORS_ALLOW_ORIGIN=http://localhost:3000;http://127.0.0.1:3000' \
   -e ENABLE_PERSISTENT_CONFIG=False -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:v0.11.4
 ```
@@ -169,26 +169,24 @@ listen on every interface, which opens it to the network: give it a key, as [abo
 <!-- acceptance: webui-bridge -->
 ```bash
 docker run -d --name open-webui -p 127.0.0.1:3000:8080 --add-host=host.docker.internal:host-gateway \
-  -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 -e OPENAI_API_KEY=YOUR_KEY -e WEBUI_AUTH=False \
+  -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 -e OPENAI_API_KEY=YOUR_KEY \
   -e 'CORS_ALLOW_ORIGIN=http://localhost:3000;http://127.0.0.1:3000' \
   -e ENABLE_PERSISTENT_CONFIG=False -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:v0.11.4
 ```
 
-Open http://localhost:3000. The third command was run on Docker Engine on Linux without host networking, which is the
-case `host-gateway` makes work there; Docker Desktop is the case it is written for and was not run. Notes:
+Open http://localhost:3000 and make the first account at once: it is the administrator (until it exists, whoever reaches the
+port first can make it), and Open WebUI asks for a login after that. The account and the chats are kept in the `open-webui`
+volume (Docker) or in `~/.open-webui` (`uvx`). The third command was run on Docker Engine on Linux without host networking,
+which is the case `host-gateway` makes work there; Docker Desktop is the case it is written for and was not run. Notes:
 
-- `WEBUI_AUTH=False` signs everyone in as Open WebUI's administrator, with no login, and the administrator's tools and functions run
-  Python code (as you, for `uvx`; in the container, for Docker). Whoever reaches port 3000 has that. The commands keep the port on
-  this computer (`HOST`, `--host` and `127.0.0.1:3000` publish nothing else), which leaves this computer's programs and the web
-  pages your browser runs. Open WebUI's `CORS_ALLOW_ORIGIN` is `*` unless set, and with it a script on any page you open is handed
-  the administrator's token (measured on 0.11.4: a sign-in sent with `Origin: http://evil.example` came back with
-  `access-control-allow-origin: http://evil.example`, `access-control-allow-credentials: true` and the token, and `/api/v1/functions/`
-  answered with it). The commands set `CORS_ALLOW_ORIGIN` to the page's own two addresses, and then another site's request gets no
-  `access-control-allow-origin` and its preflight is refused with 400 (measured, same version). That does not stop DNS rebinding:
-  Open WebUI does not look at the Host header (a request with `Host: evil.example:3000` is answered), so a page whose name is pointed
-  at 127.0.0.1 is Open WebUI's own origin to the browser. Browsers' protections for local networks narrow that; Open WebUI does not
-  close it. Where this computer is shared, or you browse with such protections off, take `WEBUI_AUTH=False` and `CORS_ALLOW_ORIGIN`
-  out: the first account you make is the administrator, and every visitor then signs in.
+- `CORS_ALLOW_ORIGIN` is set to the page's own two addresses: Open WebUI's default, `*`, answers a script on any page you open with
+  `access-control-allow-origin` naming that page, credentials allowed (measured on 0.11.4); with it set, another site's request gets no
+  such header and its preflight is refused with 400 (`acceptance.sh` checks both).
+- **If you want no login:** add `WEBUI_AUTH=False` (`-e WEBUI_AUTH=False` for Docker). Everyone who reaches port 3000 is then signed
+  in as the administrator, whose tools and functions run Python code (as you, for `uvx`). `CORS_ALLOW_ORIGIN` stops another site's
+  script (measured on 0.11.4: with the default `*`, a sign-in from `Origin: http://evil.example` came back with the administrator's
+  token), but not **DNS rebinding**: Open WebUI does not check the Host header, so a web page whose name is pointed at 127.0.0.1 is
+  Open WebUI's own origin to your browser and can use the administrator's session. Use it only on a computer that is yours alone.
 - `ENABLE_PERSISTENT_CONFIG=False` makes these variables the settings on every start. Open WebUI otherwise keeps the
   connection it first started with (the default, OpenAI's) in its data directory, takes the variables only on a first
   start, and shows "No models available" on a later one that has them.
