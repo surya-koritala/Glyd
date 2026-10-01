@@ -1,0 +1,17 @@
+ ok  Glyd             0.26.0, Python 3.12 (/work/home/.local/share/uv/tools/glyd/bin/python)
+ ok  GPU              NVIDIA L4: 23.7 GB, 15.7 GB free, compute capability 8.9
+ ok  Driver           595.91.07, runs CUDA 13.2
+ ok  PyTorch          2.13.0, built for CUDA 13.0
+ ok  vLLM             0.30.0
+ ok  Glyd GPU library libglyd_gpu_cuda13.so
+ ok  C compiler       ziglang (a C compiler from PyPI), and Python.h: vLLM builds its Triton launchers with them
+ ok  CUDA compiler    not found: not needed (glyd run turns FlashInfer's sampler off, which would compile)
+ !!  GPU in use       python (7.9 GB): 7.9 GB of the GPU's 23.7 GB is held by other programs, and is not free for a model
+ ok  Disk             41.7 GB free for models, in /hf/hub
+
+Models that fit this GPU with Glyd (a chat as long as the GPU allows):
+  Qwen/Qwen3-8B     12.2 GB on the GPU (bf16 16.4 GB): fits, a 11,264-token context
+  Qwen/Qwen3-14B    21.5 GB on the GPU (bf16 29.5 GB): does not fit; it needs 24.0 GB free
+  Qwen/Qwen3-32B    45.9 GB on the GPU (bf16 65.5 GB): does not fit; it needs 48.9 GB free
+
+Ready: glyd run Qwen/Qwen3-8B
