@@ -1,0 +1,5 @@
+ok   OpenAI API, turn 1 (streamed, greedy): 'Paris', 6 tokens in 0.3 s
+ok   OpenAI API, turn 2 (streamed, top-p, turn 1 as history): 'Berlin', 6 tokens in 0.3 s
+ok   OpenAI API, a tool call (tool_choice auto): {'name': 'get_weather', 'arguments': '{"city": "Paris"}'}
+ok   the thinking apart from the answer: 768 characters of reasoning, answer '17 times 3 is calculated as follows:\n\n17 × 3 = (10'
+ok   a conversation longer than the window: HTTP 400, "This model's maximum context length is 40960 tokens. However, you requested 10 output toke"

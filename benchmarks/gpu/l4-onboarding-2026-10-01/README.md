@@ -121,6 +121,8 @@ Stopping the server...
 
 ## Files
 
+Files the box named `.log` are `.txt` here (the repository ignores `*.log`); the text inside still says `.log`.
+
 - `runs/NAME/`: `acceptance.out` and `summary.txt`; `glyd-logs/`, the servers' logs; `logs/`, what each step printed (`freeze.txt`, `doctor*.txt`,
   `chat.log` (the API checks), `run.err` (`glyd run`'s own output), `webui-*.check.log`, `pip.log`, `page.head`).
 - `calibration/`: the servers' logs of the two sessions on the box before the runs (`a24-*`: the first, with expandable segments and
