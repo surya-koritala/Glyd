@@ -1,0 +1,6 @@
+test a_file_named_run_is_compressed_as_dot_slash_run ... ok
+test the_python_tools_commands_are_passed_to_it_from_a_rust_first_path ... ok
+test a_program_that_is_not_the_python_tool_is_not_taken_for_it ... ok
+test a_tool_that_sends_the_command_back_does_not_start_a_loop ... ok
+test the_tool_is_found_where_uv_puts_it_before_the_terminal_knows ... ok
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s

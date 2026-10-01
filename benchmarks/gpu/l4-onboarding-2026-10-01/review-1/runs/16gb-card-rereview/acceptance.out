@@ -1,0 +1,91 @@
+== queued 14:44:53: --wheel /home/ubuntu/onb/wheels/glyd-0.26.0rc3-py3-none-manylinux_2_28_x86_64.whl --rust-glyd /home/ubuntu/onb/glyd-rust --card 4080s --webui all --pip-refusal
+== started 14:44:53
+== checkout df2be01 glyd run looks at standard input after the checks of this machine and 
+== 2026-10-01T14:44:55Z: glyd flow, glyd[vllm] wheel /home/ubuntu/onb/wheels/glyd-0.26.0rc3-py3-none-manylinux_2_28_x86_64.whl, glyd-accept:ubuntu26.04-curl, GPU NVIDIA L4, 23034 MiB, budget 14828 MiB free, card 15942 MiB
+ok   no nvcc: not on PATH, no /usr/local/cuda, no CUDA_HOME
+ok   a glyd of the user's own in ~/.local/bin: install.sh stopped before it installed Glyd and left that program as it was (glyd install: /work/home-foreign/.local/bin/glyd is not Glyd's Python tool (it is the compression program, a p...)
+-- install: curl -LsSf https://getglyd.com/install.sh | sh   (this checkout's scripts/install.sh instead of getglyd.com's; GLYD_SPEC='/work/wheel/glyd-0.26.0rc3-py3-none-manylinux_2_28_x86_64.whl[vllm]' )
+ok   install.sh took 5 s and exited 0; its last lines: |Ready: glyd run Qwen/Qwen3-8B|==> Next: glyd run Qwen/Qwen3-8B|
+ok   uv was installed by its own installer, at a version: ==> Installing uv 0.12.21, which manages Python for Glyd (its own inst; downloading uv 0.12.21 x86_64-unknown-linux-gnu
+ok   no shell startup file touched (~/.local/bin was on PATH; uv's installer was told to edit none)
+-- resolved: glyd v0.26.0rc3 [with: ziglang==0.16.0] flashinfer-python==0.6.18.post1 glyd pydantic==2.13.5 safetensors==0.8.0 tokenizers==0.23.2 torch==2.13.0 transformers==5.18.0 triton==3.7.1 vllm==0.30.0 ziglang==0.16.0 
+ok   no pre-release among the dependencies (install.sh names no --prerelease; opentelemetry's betas are all there is of those)
+ok   every one of the 199 packages installed is at the version install.sh's list gives (199 listed; ziglang is only there where there is no compiler)
+ok   no gcc: install.sh added ziglang==0.16.0
+ok   install.sh run again (an update; ~/.local/bin not on PATH): exit 0, the shell-profile edit said first, uv's own line naming the file: Created configuration file: /work/home/.bash_profile
+ok   the PATH line is in the shell's startup file (.bashrc )
+     (uv's answer to the update: `glyd[vllm] @ file:///work/wheel/glyd-0.26.0rc3-py3-none-manylinux_2_28_x86_64.whl` is already insta)
+ok   a glyd ahead of it on PATH: install.sh says which, and the line to add and the path to run it by
+ok   glyd doctor reports it too, with the same line
+ok   the Rust glyd first on PATH hands glyd doctor to the Python tool (glyd 0.26.0-rc.3)
+ok   glyd doctor: Ready: glyd run Qwen/Qwen3-8B
+-- hog: 7353 MiB held, 15017 of 22565 MiB free
+-- glyd doctor under the budget:
+     Models that fit this GPU with Glyd (a chat as long as the GPU allows):
+       Qwen/Qwen3-8B     12.2 GB on the GPU (bf16 16.4 GB): fits, a 11,264-token context
+       Qwen/Qwen3-14B    21.5 GB on the GPU (bf16 29.5 GB): does not fit; it needs 24.0 GB free
+       Qwen/Qwen3-32B    45.9 GB on the GPU (bf16 65.5 GB): does not fit; it needs 48.9 GB free
+     
+     Ready: glyd run Qwen/Qwen3-8B
+ok   glyd run Qwen/Qwen3-8B --prompt: Paris, Settings: 11,264-token context (the most that fits), eager mode, 62% of GPU memory (14.7 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+     Ready in 3m05s. (The server's log: /work/home/.local/state/glyd/logs/run-2026100
+-- 1 server logs checked: no traceback, no allocator out-of-memory warning unless failed above
+ok   glyd serve up after 44 s (started through the Rust glyd first on PATH): Settings: 11,264-token context (the most that fits), eager mode, 62% of GPU memory (14.7 GB), tool calls (hermes), thinking shown apart (qwen3); PyTor|Ready in 40s. (The server's log: /work/home/.local/state/glyd/logs/serve-20261001-144820.log)|
+ok   GET / is the chat page (21073 bytes, content-security-policy: default-src 'none')
+ok   other paths stay vLLM's (/nope is 404; the API answers below)
+ok   the server on 127.0.0.1 answers its own page and local programs, and refuses another site's script and a rebinding name (11 checks, logs/guard.log)
+ok   glyd serve under nohup kept running when it was sent SIGHUP (nohup's ignore is kept)
+ok   OpenAI API, turn 1 (streamed, greedy): 'Paris', 6 tokens in 0.3 s
+ok   OpenAI API, turn 2 (streamed, top-p, turn 1 as history): 'Berlin', 6 tokens in 0.3 s
+ok   OpenAI API, a tool call (tool_choice auto): {'name': 'get_weather', 'arguments': '{"city": "Paris"}'}
+ok   the thinking apart from the answer: 768 characters of reasoning, answer '17 times 3 is calculated as follows:\n\n17 × 3 = (10'
+ok   a conversation longer than the window: HTTP 400, "This model's maximum context length is 11264 tokens. However, you requested 10 output toke"
+ok   glyd run's answer to a prompt full of escape sequences has no control character in it (24 bytes: [31mRED[0m ]0;pwned end); the model's own answer has 4 control characters ('\x1b[31mRED\x1b[0m \x1b]0;pwned\x07 end')
+ok   glyd run --prompt (a prompt on stdin) says so when the prompt outgrows the window:  This prompt is longer than the model's window (11,264 tokens). Shorten it, or start glyd with a larger --context. rc=1 
+ok   the terminal chat says so when the conversation outgrows the window (typed as one message of several lines)
+-- Open WebUI, uvx: DATA_DIR="$HOME/.open-webui" OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 OPENAI_API_KEY=none ENABLE_PERSISTENT_CONFIG=False \ CORS_ALLOW_ORIGIN='http://localhost:3000;http://127.0.0.1:3000' \ uvx --p
+     (the uvx route brought 0 GB into uv's cache: Open WebUI and its own PyTorch)
+ok   Open WebUI asks for a login: /api/models with no token: 401; a sign-in with empty credentials: 400
+ok   the first account made is the administrator: role 'admin'
+ok   Open WebUI lists the model: /api/models: ['Qwen/Qwen3-8B', 'arena-model']
+ok   Open WebUI's CORS is limited to its own addresses: another site's request: (400, None), its preflight: (400, None), the page's own origin: (400, 'http://localhost:3000')
+ok   Open WebUI chat (the browser's request, its tools on): 'Paris'
+ok   Open WebUI chat, a tool call in the stream: tool calls ['get_current_timestamp'], text ''
+-- Open WebUI, docker: docker run -d --name open-webui --network=host -e PORT=3000 -e HOST=127.0.0.1 \ -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 -e OPENAI_API_KEY=none \ -e 'CORS_ALLOW_ORIGIN=http://localhost:3000;htt
+     (the image: 6.5 GB)
+ok   Open WebUI asks for a login: /api/models with no token: 401; a sign-in with empty credentials: 400
+ok   the first account made is the administrator: role 'admin'
+ok   Open WebUI lists the model: /api/models: ['Qwen/Qwen3-8B', 'arena-model']
+ok   Open WebUI's CORS is limited to its own addresses: another site's request: (400, None), its preflight: (400, None), the page's own origin: (400, 'http://localhost:3000')
+ok   Open WebUI chat (the browser's request, its tools on): 'Paris'
+ok   Open WebUI chat, a tool call in the stream: tool calls ['get_current_timestamp'], text ''
+ok   glyd serve with the key (flag): ready, serving, and its banner says it asks for the key
+ok   its note on an open address names plain HTTP and the endpoints a key does not guard
+ok   the key is on no other command line (ps)
+ok   the key is in no log and not in glyd's output
+ok   given as -- --api-key, glyd says it was taken off the server's command line
+ok   /v1 without the key is 401
+ok   /health stays open (the note says so)
+ok   /v1 with the key is 200
+-- serve with a key: VLLM_API_KEY=YOUR_KEY glyd serve Qwen/Qwen3-8B --host 0.0.0.0
+ok   glyd serve with the key (env): ready, serving, and its banner says it asks for the key
+ok   its note on an open address names plain HTTP and the endpoints a key does not guard
+ok   the key is on no other command line (ps)
+ok   the key is in no log and not in glyd's output
+ok   /v1 without the key is 401
+ok   /health stays open (the note says so)
+ok   /v1 with the key is 200
+-- Open WebUI, bridge: docker run -d --name open-webui -p 127.0.0.1:3000:8080 --add-host=host.docker.internal:host-gateway \ -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 -e OPENAI_API_KEY=YOUR_KEY \ -e 'CORS_A
+     (the image: 6.5 GB)
+ok   Open WebUI asks for a login: /api/models with no token: 401; a sign-in with empty credentials: 400
+ok   the first account made is the administrator: role 'admin'
+ok   Open WebUI lists the model: /api/models: ['Qwen/Qwen3-8B', 'arena-model']
+ok   Open WebUI's CORS is limited to its own addresses: another site's request: (400, None), its preflight: (400, None), the page's own origin: (400, 'http://localhost:3000')
+ok   Open WebUI chat (the browser's request, its tools on): 'Paris'
+ok   Open WebUI chat, a tool call in the stream: tool calls ['get_current_timestamp'], text ''
+ok   glyd serve stopped on SIGTERM
+-- 4 server logs checked: no traceback, no allocator out-of-memory warning unless failed above
+ok   uv tool uninstall glyd: the tool and its link are gone; ~/.local/state/glyd (logs serving zigcc ), the Hugging Face cache and uv stay (as the README says)
+ok   pip install, no compiler: glyd run stops with the install command (glyd: vLLM needs a C compiler to start (Triton builds its GPU launchers with one), and this machine has none.   Install one: sudo apt install build-essential python3-dev. Or run the installer again, w)
+PASSED
+== finished 14:53:28 rc=0

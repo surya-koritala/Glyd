@@ -39,17 +39,43 @@ tool, on a Python 3.12 that uv fetches for it (about 8 GB of disk; no sudo, no v
 starts vLLM with settings it works out from the GPU, and opens a chat: type in the terminal (`/bye` leaves, `/clear`
 starts over, `/think` turns the model's thinking on and off), or open http://localhost:8000.
 
+What the script does to your machine, all of it under your home directory:
+
+- **uv**, where there is none: uv's own installer at the version the script names (0.12.21), checked against that installer's sha256
+  (which lists the sha256 of each file the installer downloads), and told to edit no shell startup file; into `~/.local/bin`.
+- **Glyd**, at the release the script names, with its packages at the versions the acceptance run installed (the list of about 200 at the
+  end of the script; `GLYD_CONSTRAINTS=none` in front of `sh` resolves them fresh, where one has been withdrawn from PyPI): in uv's tool
+  directory (`~/.local/share/uv/tools/glyd`) and uv's cache (`~/.cache/uv`), with a link `~/.local/bin/glyd`.
+- **Your PATH**, where `~/.local/bin` is not on it: `uv tool update-shell` adds a line to your shell's startup file. The script says so
+  before it does, and uv names the file.
+- Nothing else, and nothing of yours replaced. Where `~/.local/bin/glyd` is a program uv did not put there (the compression program, a pip
+  install of glyd, one of your own), the script stops before it installs Glyd and says so, with the way to keep both: the tool in another
+  folder, which the script then puts first on your PATH (`curl -LsSf https://getglyd.com/install.sh | UV_TOOL_BIN_DIR=$HOME/.glyd/bin sh`).
+
+A `glyd` that comes before `~/.local/bin` on your PATH (Homebrew's, cargo's, a release tarball's: the compression program) is what typing
+`glyd run` reaches. The script says so, with the line to add to your shell's startup file (`export PATH="$HOME/.local/bin:$PATH"`), and
+`glyd doctor` does too (run it as `~/.local/bin/glyd doctor`). The Rust `glyd` of the release after 0.26.0rc3 passes `run`, `serve`, `doctor`
+and `login` to the tool itself, found on PATH or in `~/.local/bin`; an earlier one takes `run` for a file name.
+
+**On a Mac, or a Linux machine with no NVIDIA GPU,** `glyd run` has nothing to run on. The script says so (`glyd run needs Linux with an
+NVIDIA GPU`) and installs what works there, the compression program (`glyd FILE -o OUT`, `glyd pack`): the release's tarball, checked
+against its sha256, in `~/.local/share/glyd/cli`, with `glyd`, `glyd-store` and `glyd-gpu` linked from `~/.local/bin`. (Homebrew's
+`brew install surya-koritala/glyd/glyd` is the other way.) `glyd run` there says the same, and gives no advice about drivers to a Mac.
+
 **Needs:** Linux on x86_64 (the installer also takes aarch64, which this flow was not run on); an NVIDIA GPU of the
 Ampere generation or newer (RTX 30 and 40 series, A10, A100, L4, H100 and later) and its driver, 580 or newer (the CUDA 13
-PyTorch that vLLM 0.30 installs); curl; and disk for the packages and the model. It needs no CUDA toolkit and no sudo.
+PyTorch that vLLM 0.30 installs); curl; and disk for the packages (the script asks for 10 GB free in your home directory, and
+stops with a plain message under that) and the model. It needs no CUDA toolkit and no sudo.
 vLLM's Triton builds small launchers with a C compiler when the server starts: where the machine has no gcc or clang, the
 installer adds ziglang, a compiler from PyPI, and `glyd run` hands it to vLLM. `glyd doctor` checks each of these and says
 what to do about a line that fails.
 
 `glyd run`, in order, stopping with a plain message and what to do where it must:
 
-1. **Checks** the GPU and its driver (against the CUDA this PyTorch was built for), the compiler, vLLM's version, the model
-   (it is on the Hugging Face Hub, bf16, and not gated without your token), whether the model with Glyd fits the memory free
+1. **Checks** the GPU and its driver (against the CUDA this PyTorch was built for; with several GPUs, the one Glyd can use: an Ampere
+   card is taken over an older one beside it), the compiler, vLLM's version, the model (it is on the Hugging Face Hub, bf16 (a float16
+   checkpoint is refused before its download, and `-- --dtype bfloat16` asks vLLM to convert it), and not gated without your token),
+   whether the model with Glyd fits the memory free
    now (otherwise: how much it needs, what holds the GPU's memory, and the largest model of its family that fits), the disk
    the download needs, and the port.
 2. **Downloads** the model, with one progress bar. A gated model (Llama, Gemma): accept its licence on its Hugging Face page,
@@ -61,8 +87,8 @@ what to do about a line that fails.
 
 `glyd run MODEL --prompt "Say hello"` prints one answer on stdout (the thinking and notices go to stderr) and exits; a
 prompt on stdin does the same. `--context N` sets the context. Any vLLM flag after a lone `--` is passed on and wins over
-what was chosen: `glyd run MODEL -- --max-model-len 4096`. A `glyd serve` of the same model already up on the port is used
-instead of a second server.
+what was chosen: `glyd run MODEL -- --max-model-len 4096`. A server that `glyd serve` started for the same model on the port is
+used by `glyd run` instead of a second one (`glyd serve` of it again says "Nothing to start").
 
 ### The settings
 
@@ -75,11 +101,40 @@ instead of a second server.
 | the sampler (`VLLM_USE_FLASHINFER_SAMPLER=0`) | PyTorch's | FlashInfer's compiles with nvcc at the first request that samples, which stopped a server on a machine with no CUDA toolkit; the same tokens a second (21.1 and 21.2 for one user) |
 | tool calls and thinking | by family: Qwen3 `hermes` and `qwen3`; Qwen3 Instruct-2507 and Qwen2.5 `hermes`; Qwen3-Coder `qwen3_coder`; DeepSeek-R1 distills `deepseek_r1`; Llama 3.x `llama3_json`; Mistral `mistral`. Another family chats without tool calls | the names are vLLM 0.30's |
 | the allocator | PyTorch's default | `expandable_segments:True` gave 24 allocator warnings in a load at a 16 GB budget, and the default none |
-| telemetry, the address | `VLLM_NO_USAGE_STATS=1`; the server listens on 127.0.0.1 | `glyd serve --host 0.0.0.0` opens it to the network, with no key unless `-- --api-key SECRET` is added |
+| telemetry, the address | `VLLM_NO_USAGE_STATS=1`; the server listens on 127.0.0.1 and answers this computer's programs and its own page only ([below](#who-can-reach-the-server)) | `glyd serve --host 0.0.0.0` opens it to the network, with no key unless `VLLM_API_KEY=KEY` is set |
 
 The one line printed before loading is these, for example `Settings: 10,240-token context (the most that fits), eager
 mode, 61% of GPU memory (14.4 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit).` The model's weights with Glyd are counted from its config and file sizes before anything downloads
 (Qwen3-8B: 12.2 GB, bf16's 16.4).
+
+### Who can reach the server
+
+`glyd run` and `glyd serve` listen on 127.0.0.1, which is this computer's own address, and answer this computer's programs and the page
+they serve. A web page you open in your browser can still send requests to 127.0.0.1: a script from any site, where the server lets it
+(vLLM's default allows every origin), or a page whose name an attacker points at 127.0.0.1, which is the server's own origin to the browser
+and needs no permission at all (DNS rebinding). So the server checks each request, as the outermost layer of vLLM's app: a Host that is not
+`localhost`, `127.0.0.1` or `[::1]` is refused with 421, an Origin that is not the server's own (`http://` and its Host) with 403, a preflight
+and a websocket's handshake included, and vLLM's own CORS is limited to the server's addresses. `curl`, the OpenAI libraries and Open WebUI's
+server send no Origin and an address as their Host, and are answered; the chat page is the server's own origin. `acceptance.sh` checks this
+against a live server. A web app of your own on another origin (a dev server on localhost:5173) is refused too; to let it in, name the
+address yourself, which turns these checks off and leaves the origins to vLLM: `glyd serve MODEL --host 127.0.0.1 -- --allowed-origins
+'["http://localhost:5173"]'` (`glyd` says so where it starts a server on an address you named, a loopback one too).
+
+`glyd serve --host ADDRESS` (or `-- --host`) is the way onto the network, and the checks are off for an address you chose: anyone who can
+reach this computer can send the model prompts. Give it a key, in the environment:
+
+<!-- acceptance: serve-key -->
+```bash
+VLLM_API_KEY=YOUR_KEY glyd serve Qwen/Qwen3-8B --host 0.0.0.0
+```
+
+The environment, not `-- --api-key KEY`: a flag's value is in `ps` and in the log. (`-- --api-key KEY` still works: `glyd` moves the key to
+the environment, says so, and keeps it out of the server's command line and of the log, but your own `glyd serve` command line shows it.
+One key: vLLM takes several after `--api-key`, `VLLM_API_KEY` holds one, and `glyd` refuses the rest; `-- --hf-token TOKEN` is moved to
+`HF_TOKEN` the same way.) The
+key guards `/v1` only: the chat page, `/health`, `/metrics`, `/version`, `/tokenize`, `/detokenize` and the API's `/docs` stay open without it,
+and the traffic is plain HTTP, so a key crosses the network readable: use a VPN or an SSH tunnel, or `-- --ssl-keyfile FILE --ssl-certfile
+FILE`. `glyd serve` says all of this where it starts a server on another address.
 
 ### `glyd serve`, `glyd doctor` and Open WebUI
 
@@ -93,7 +148,8 @@ tested. Without Docker:
 
 <!-- acceptance: webui-uvx -->
 ```bash
-OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 OPENAI_API_KEY=none WEBUI_AUTH=False ENABLE_PERSISTENT_CONFIG=False \
+DATA_DIR="$HOME/.open-webui" OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 OPENAI_API_KEY=none ENABLE_PERSISTENT_CONFIG=False \
+  CORS_ALLOW_ORIGIN='http://localhost:3000;http://127.0.0.1:3000' \
   uvx --python 3.11 open-webui@0.11.4 serve --host 127.0.0.1 --port 3000
 ```
 
@@ -103,30 +159,36 @@ macOS and Windows does not give the container the host's 127.0.0.1):
 <!-- acceptance: webui-docker -->
 ```bash
 docker run -d --name open-webui --network=host -e PORT=3000 -e HOST=127.0.0.1 \
-  -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 -e OPENAI_API_KEY=none -e WEBUI_AUTH=False \
+  -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 -e OPENAI_API_KEY=none \
+  -e 'CORS_ALLOW_ORIGIN=http://localhost:3000;http://127.0.0.1:3000' \
   -e ENABLE_PERSISTENT_CONFIG=False -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:v0.11.4
 ```
 
 With Docker Desktop, or any Docker without host networking, the container reaches the host by name, and the server has to
-listen on every interface, which opens it to the network: give it a key.
-
-```bash
-glyd serve Qwen/Qwen3-8B --host 0.0.0.0 -- --api-key YOUR_KEY
-```
+listen on every interface, which opens it to the network: give it a key, as [above](#who-can-reach-the-server)
+(`VLLM_API_KEY=YOUR_KEY glyd serve Qwen/Qwen3-8B --host 0.0.0.0`), and give Open WebUI the same one:
 
 <!-- acceptance: webui-bridge -->
 ```bash
 docker run -d --name open-webui -p 127.0.0.1:3000:8080 --add-host=host.docker.internal:host-gateway \
-  -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 -e OPENAI_API_KEY=YOUR_KEY -e WEBUI_AUTH=False \
+  -e OPENAI_API_BASE_URL=http://host.docker.internal:8000/v1 -e OPENAI_API_KEY=YOUR_KEY \
+  -e 'CORS_ALLOW_ORIGIN=http://localhost:3000;http://127.0.0.1:3000' \
   -e ENABLE_PERSISTENT_CONFIG=False -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:v0.11.4
 ```
 
-Open http://localhost:3000. The third command was run on Docker Engine on Linux without host networking, which is the
-case `host-gateway` makes work there; Docker Desktop is the case it is written for and was not run. Notes:
+Open http://localhost:3000 and make the first account at once: it is the administrator (until it exists, whoever reaches the
+port first can make it), and Open WebUI asks for a login after that. The account and the chats are kept in the `open-webui`
+volume (Docker) or in `~/.open-webui` (`uvx`). The third command was run on Docker Engine on Linux without host networking,
+which is the case `host-gateway` makes work there; Docker Desktop is the case it is written for and was not run. Notes:
 
-- `WEBUI_AUTH=False` leaves Open WebUI with no login, and it can run tools: anyone who can reach port 3000 uses it. The
-  commands keep it on this computer (`HOST`, `--host` and `127.0.0.1:3000` publish nothing else); to let others in, take
-  `WEBUI_AUTH=False` out and make an account.
+- `CORS_ALLOW_ORIGIN` is set to the page's own two addresses: Open WebUI's default, `*`, answers a script on any page you open with
+  `access-control-allow-origin` naming that page, credentials allowed (measured on 0.11.4); with it set, another site's request gets no
+  such header and its preflight is refused with 400 (`acceptance.sh` checks both).
+- **If you want no login:** add `WEBUI_AUTH=False` (`-e WEBUI_AUTH=False` for Docker). Everyone who reaches port 3000 is then signed
+  in as the administrator, whose tools and functions run Python code (as you, for `uvx`). `CORS_ALLOW_ORIGIN` stops another site's
+  script (measured on 0.11.4: with the default `*`, a sign-in from `Origin: http://evil.example` came back with the administrator's
+  token), but not **DNS rebinding**: Open WebUI does not check the Host header, so a web page whose name is pointed at 127.0.0.1 is
+  Open WebUI's own origin to your browser and can use the administrator's session. Use it only on a computer that is yours alone.
 - `ENABLE_PERSISTENT_CONFIG=False` makes these variables the settings on every start. Open WebUI otherwise keeps the
   connection it first started with (the default, OpenAI's) in its data directory, takes the variables only on a first
   start, and shows "No models available" on a later one that has them.
@@ -148,14 +210,15 @@ ziglang), a few tens of seconds; the second is the next `glyd serve`.
 
 | Free at start | `glyd run` chose | vLLM logged | First start | Second |
 | :--- | :--- | :--- | ---: | ---: |
-| 23.7 GB (the whole L4) | 92% of GPU memory (21.8 GB), a 40,960-token context (the model's own limit) | weights 11.38 GiB, KV cache 61,104 tokens | 61 s | 41 s |
+| 23.7 GB (the whole L4) | 92% of GPU memory (21.8 GB), a 40,960-token context (the model's own limit) | weights 11.38 GiB, KV cache 61,104 tokens | 61-79 s | 41 s |
 | 15.7 GB (a 16 GB card, a desktop) | 62% (14.7 GB) of the L4's total, which is the share 0.86 is on a 4080 SUPER, a 11,264-token context | weights 11.39 GiB, KV cache 12,960 tokens | 78 s | 40 s |
 | 8.1 GB (an 8 GB card), Qwen3-4B | refused: "needs about 8.4 GB of GPU memory with Glyd (5.9 GB of weights and room for a 4,096-token chat); your GPU has 8.1 GB free. Or try Qwen/Qwen3-1.7B, which needs about 5.1 GB" | | | |
 | the same, Qwen3-1.7B | 29% (6.9 GB), a 24,576-token context | weights 2.47 GiB, KV cache 33,184 tokens | 58 s | |
 
 What `glyd run` predicts from the config was within 0.11 GiB of the weights vLLM logged (over, for the smaller models) and
 3-18% under its KV cache tokens, in every run of these and of a 0.6B, a 1.7B and a 4B before them: it never promised a context
-vLLM then refused. In the 9 server logs of the acceptance runs (8 of `glyd run` and `glyd serve`, 1 of the by-hand command) there
+vLLM then refused. In the 18 server logs of the acceptance runs (9 in each of the two rounds, the by-hand command's among the first round's;
+the logs of the cases that stop a server on purpose, Ctrl-C while loading and a killed engine, left out) there
 was no allocator warning ("memory allocation failed with OOM", "memory mapping failed with OOM") and no traceback; the warnings
 that remain are vLLM's own notices (eager mode set, the model's generation_config overriding its sampling defaults, and its
 engine process being stopped at shutdown). Every run with its logs, the first run's terminal text, and the calibration of the
@@ -163,16 +226,21 @@ constants: [benchmarks/gpu/l4-onboarding-2026-10-01](../../benchmarks/gpu/l4-onb
 
 ### Update, remove, logs
 
-Run the install line again to update (it installs the release the script was written for). `uv tool uninstall glyd` removes
-the tool; the models stay in the Hugging Face cache (`~/.cache/huggingface`, or where `HF_HOME` says), and a run's log is
-in `~/.local/state/glyd/logs` (the last ten are kept). The `glyd` command is the compression program's too: the Rust
-program is not in the wheel, so `glyd FILE` and `glyd pack` work where that program is on the PATH (Homebrew, `cargo
-install glyd`, the release tarball), and `glyd` says where to get it where it is not.
+Run the install line again to update: it installs the release the script was written for, at the package versions the acceptance
+run installed, and does nothing where that is what is there. `uv tool uninstall glyd` removes the tool and its link, and leaves
+what is not the tool's: the models in the Hugging Face cache (`~/.cache/huggingface`, or where `HF_HOME` says), a run's log (the
+last ten are kept) and the compiler wrapper, in `~/.local/state/glyd`, uv itself (`~/.local/bin/uv`, `uv self uninstall`) and its cache
+(`~/.cache/uv`, `uv cache clean`), and the line in your shell's startup file if the script added one. Delete those by hand. The `glyd` command
+is the compression program's too: the Rust program is not in the wheel, so `glyd FILE` and `glyd pack` work where that program is on the PATH
+(the script's tarball on a machine with no GPU, Homebrew, `cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store glyd-gpu`,
+the release tarball), and `glyd` says where to get it where it is not.
 
-`bash gpu/vllm/acceptance.sh` runs this section from nothing, in a container with no CUDA toolkit and no compiler: the
-two commands above, the chat page, the API, a conversation longer than the window and Open WebUI, failing on a traceback,
-an allocator warning or a missing answer. `--card 4080s` leaves the server a 16 GB card's memory, `--card 8gb` an 8 GB
-card's, where it expects the refusal and runs the model suggested (`--help`).
+`bash gpu/vllm/acceptance.sh` runs this section from nothing, in a container with no CUDA toolkit and no compiler: the two commands
+above, the chat page, the API, a conversation longer than the window and Open WebUI, failing on a traceback, an allocator warning or a
+missing answer; and what a user meets around them: a program of the user's own where uv puts its link, an update, a `glyd` ahead on
+PATH, `nohup` and SIGHUP, another site's script and a rebinding Host refused, a server with a key, Ctrl-C while the model loads, the
+engine killed under a chat, `uv tool uninstall glyd`. `--card 4080s` leaves the server a 16 GB card's memory, `--card 8gb` an 8 GB
+card's, where it expects the refusal and runs the model suggested; `--flow cli` runs the installer on a machine with no GPU (`--help`).
 
 ### Advanced: `vllm serve` by hand
 

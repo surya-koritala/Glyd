@@ -14,6 +14,14 @@ import re
 import sys
 import urllib.parse
 
+_CONTROL = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def clean(text):
+    """Text safe to print in a terminal: every control character removed but the newline and the tab (ESC and the C1 range included, so
+    no escape sequence survives: a model's text, or a server's error, must not set the clipboard or the title, or move the cursor)."""
+    return _CONTROL.sub("", text)
+
 HELP = """  /bye           leave (or Ctrl-D)
   /clear         start a new chat
   /think         turn the model's thinking on or off
@@ -40,23 +48,51 @@ class ApiError(Exception):
         return bool(re.search(r"maximum context length|max_model_len|context (length|window)", self.message, re.I))
 
 
+class StreamError(Exception):
+    """An answer that did not end: the server sent an error in the stream (`server`), the connection closed before the answer was
+    finished, or a message arrived cut in two."""
+
+    def __init__(self, message, server=False):
+        super().__init__(message)
+        self.server = server
+
+
 class Api:
-    def __init__(self, base, timeout=3600):
+    """The server's OpenAI API; `token` is its API key (VLLM_API_KEY, or --api-key), sent as vLLM wants it on /v1."""
+
+    def __init__(self, base, token=None, timeout=3600):
         u = urllib.parse.urlsplit(base)
-        self.host, self.port, self.timeout = u.hostname, u.port or 80, timeout
+        self.host, self.port, self.timeout, self.token = u.hostname, u.port or 80, timeout, token
 
     def _conn(self, timeout=None):
         return http.client.HTTPConnection(self.host, self.port, timeout=timeout or self.timeout)
 
+    def _headers(self, extra=None):
+        h = dict(extra or {})
+        if self.token:
+            h["Authorization"] = "Bearer " + self.token
+        return h
+
     def get(self, path, timeout=5):
         c = self._conn(timeout)
         try:
-            c.request("GET", path)
+            c.request("GET", path, headers=self._headers())
             r = c.getresponse()
             body = r.read()
             if r.status != 200:
                 raise ApiError(r.status, _message(body))
             return json.loads(body)
+        finally:
+            c.close()
+
+    def status(self, path, timeout=5):
+        """The HTTP status of a GET, its body not read as JSON (vLLM's /health answers 200 with an empty one, and needs no API key)."""
+        c = self._conn(timeout)
+        try:
+            c.request("GET", path, headers=self._headers())
+            r = c.getresponse()
+            r.read()
+            return r.status
         finally:
             c.close()
 
@@ -67,25 +103,34 @@ class Api:
 
     def stream(self, model, messages, think=True):
         """The server's answer to a chat, streamed: ("reasoning" | "content", text), then ("usage", total tokens) and ("finish", reason).
-        An ApiError where the server refuses; the connection is closed where the generator is (Ctrl-C aborts the request)."""
+        An ApiError where the server refuses; a StreamError where the answer does not end (an error event, a connection closed before
+        the finish or [DONE], a message cut in two); the connection is closed where the generator is (Ctrl-C aborts the request)."""
         body = {"model": model, "messages": messages, "stream": True, "stream_options": {"include_usage": True}, "chat_template_kwargs": {"enable_thinking": bool(think)}}
         c = self._conn()
         try:
-            c.request("POST", "/v1/chat/completions", json.dumps(body), {"Content-Type": "application/json"})
+            c.request("POST", "/v1/chat/completions", json.dumps(body), self._headers({"Content-Type": "application/json"}))
             r = c.getresponse()
             if r.status != 200:
                 raise ApiError(r.status, _message(r.read()))
+            ended = False
             while True:
                 line = r.readline()
                 if not line:
-                    return
+                    break
                 line = line.strip()
                 if not line.startswith(b"data:"):
                     continue
                 data = line[5:].strip()
                 if data == b"[DONE]":
-                    return
-                d = json.loads(data)
+                    ended = True
+                    break
+                try:
+                    d = json.loads(data)
+                except ValueError:
+                    raise StreamError("a message arrived cut in two") from None
+                if isinstance(d, dict) and d.get("error"):
+                    e = d["error"]
+                    raise StreamError(str(e.get("message") or e) if isinstance(e, dict) else str(e), server=True)
                 if d.get("usage"):
                     yield "usage", int(d["usage"].get("total_tokens") or 0)
                 for ch in d.get("choices") or ():
@@ -96,7 +141,10 @@ class Api:
                     if delta.get("content"):
                         yield "content", delta["content"]
                     if ch.get("finish_reason"):
+                        ended = True
                         yield "finish", ch["finish_reason"]
+            if not ended:
+                raise StreamError("the connection closed before the answer was finished")
         finally:
             c.close()
 
@@ -176,6 +224,7 @@ class Chat:
 
         def show(kind, piece):
             nonlocal thinking, said_think
+            piece = clean(piece)
             if kind == "reasoning":
                 if not said_think:  # (the newline after <think>, and the ones after </think> below, are the template's, not text)
                     piece = piece.lstrip("\n")
@@ -210,27 +259,47 @@ class Chat:
                 show(k, piece)
         except ApiError as e:
             self.messages.pop()
-            self.say("\n" + (full_message(self.window, self.interactive) if e.context_full else f"The server refused the request: {e.message}"), err=True)
+            if e.context_full:
+                what = full_message(self.window, self.interactive)
+            elif e.status == 401:
+                what = "The server asks for an API key, and none was sent or it was not accepted. Start glyd with the key in the environment: VLLM_API_KEY=KEY glyd run ..."
+            else:
+                what = f"The server refused the request: {clean(e.message)}"
+            self.say("\n" + what, err=True)
             return ""
         except KeyboardInterrupt:
             self.messages.pop()
             self.say("\n(stopped)", err=True)
             return ""
+        except StreamError as e:  # (what was shown stays on the screen; the question is taken back, as if unasked)
+            self.messages.pop()
+            what = f"The server could not finish the answer: {clean(str(e)).rstrip('. ')}." if e.server else f"The server stopped answering in the middle of the answer ({clean(str(e)).rstrip('. ')})."
+            self.say("\n" + what + (f" See its log: {self.log}" if self.log else "") + " Ask again.", err=True)
+            return ""
         except (OSError, http.client.HTTPException) as e:
             self.messages.pop()
-            self.say(f"\nThe server stopped answering ({e})." + (f" See its log: {self.log}" if self.log else ""), err=True)
+            self.say(f"\nThe server stopped answering ({clean(str(e))})." + (f" See its log: {self.log}" if self.log else ""), err=True)
             return ""
         reply = "".join(answer)
         if thinking:
             self.say("\n" + self.dim("...done thinking.", to_err), err=to_err)
         if reply:
             self.say()
+        if not reply:  # (no answer, or thinking that never ended: nothing to keep, and no empty assistant turn)
+            self.messages.pop()
+            self.used = used
+            what = "The model was still thinking" if finish == "length" else "The model sent no answer"
+            if finish == "length":
+                advice = "turn thinking off with /think, or start a new chat with /clear" if self.interactive else "ask for less, or start glyd with a larger --context"
+                self.say(f"\n({what} when the conversation reached the model's window" + (f" ({self.window:,} tokens)" if self.window else "") + f": {advice}.)", err=True)
+            else:
+                self.say(f"\n({what}. Ask again.)", err=True)
+            return ""
         self.messages.append({"role": "assistant", "content": reply})
         self.used = used
         if finish == "length":
-            what = "The answer was cut off" if reply else "The model was still thinking"
-            advice = ("Start a new chat with /clear" + ("" if reply else ", or turn thinking off with /think")) if self.interactive else "Ask for less, or start glyd with a larger --context"
-            self.say(f"\n({what}: the conversation reached the model's window" + (f" ({self.window:,} tokens)" if self.window else "") + f". {advice}.)", err=True)
+            advice = "Start a new chat with /clear" if self.interactive else "Ask for less, or start glyd with a larger --context"
+            self.say("\n(The answer was cut off: the conversation reached the model's window" + (f" ({self.window:,} tokens)" if self.window else "") + f". {advice}.)", err=True)
         elif self.window and self.used >= 0.8 * self.window:
             self.say(self.dim(f"({self.used:,} of {self.window:,} tokens of this conversation used; /clear starts a new chat)", True), err=True)
         return reply
@@ -246,7 +315,7 @@ class Chat:
             import readline  # noqa: F401  (line editing and history for input())
         except ImportError:
             pass
-        self.say(f"Chatting with {self.model}. /bye to leave, /clear for a new chat, /? for more.")
+        self.say(f"Chatting with {clean(self.model)}. /bye to leave, /clear for a new chat, /? for more.")
         while True:
             try:
                 text = read(">>> ").strip()

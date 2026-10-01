@@ -1,6 +1,6 @@
 use std::env;
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 fn print_usage() {
@@ -9,6 +9,8 @@ Usage: glyd [OPTIONS] [INPUT] [-o OUTPUT]
        glyd pack MODEL OUT | glyd verify PATH   (a model's weights for Glyd's GPU layouts:
        packed and checked on the CPU by the glyd-gpu command; glyd pack --help)
        (the store, which compresses across objects, is the glyd-store command)
+       glyd run MODEL | serve MODEL | doctor | login   (the local chat, on Linux with an NVIDIA GPU:
+       the Python tool's commands, which this program passes to it; a file named run is ./run)
 
 Options:
     -c, --compress         Compress input (default if output is .glyd)
@@ -83,6 +85,63 @@ fn gpu_command(args: &[String]) -> ! {
     }
 }
 
+/// Whether a file is a console script of Glyd's Python tool: a `#!` line, and the module it imports (glyd.cli) in its first 4 KB.
+fn is_python_tool(path: &Path) -> bool {
+    let mut head = Vec::new();
+    let read = std::fs::File::open(path).and_then(|f| f.take(4096).read_to_end(&mut head));
+    read.is_ok() && head.starts_with(b"#!") && head.windows(8).any(|w| w == b"glyd.cli")
+}
+
+/// The Python tool's `glyd`: the first one on PATH that is not this program, else where `uv tool install` puts it (UV_TOOL_BIN_DIR,
+/// XDG_BIN_HOME, ~/.local/bin), which a terminal opened before the install does not have on its PATH yet. An empty entry of PATH
+/// (the current directory) is skipped.
+fn find_python_tool() -> Option<PathBuf> {
+    let me = env::current_exe().ok().and_then(|p| p.canonicalize().ok());
+    let mut dirs: Vec<PathBuf> = env::var_os("PATH").map(|p| env::split_paths(&p).collect()).unwrap_or_default();
+    let home = env::var_os("HOME").map(PathBuf::from);
+    for v in ["UV_TOOL_BIN_DIR", "XDG_BIN_HOME"] {
+        dirs.extend(env::var_os(v).map(PathBuf::from));
+    }
+    dirs.extend(home.map(|h| h.join(".local").join("bin")));
+    dirs.into_iter()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.join("glyd"))
+        .find(|exe| exe.is_file() && exe.canonicalize().ok() != me && is_python_tool(exe))
+}
+
+/// `glyd run`, `glyd serve`, `glyd doctor` and `glyd login` are the local chat's commands, in Glyd's Python tool (install.sh,
+/// `pip install "glyd[vllm]"`): not a file's name here, which is what `glyd run MODEL` was before, with the usage text for an answer.
+/// The tool's `glyd` takes them over from this program (its Ctrl-C and its exit status are its own), started with GLYD_FORWARDED=1:
+/// the tool passes the compression commands the other way with the same variable and takes none of them back, so an older tool that
+/// sends `run` here cannot start a loop. Where there is no tool the answer says what to do, or that this computer is not for it.
+fn python_command(args: &[String]) -> ! {
+    let forwarded = env::var_os("GLYD_FORWARDED").map_or(false, |v| !v.is_empty()); // (empty is not set, as the Python tool takes it)
+    if !forwarded {
+        if let Some(exe) = find_python_tool() {
+            let mut cmd = std::process::Command::new(&exe);
+            cmd.args(args).env("GLYD_FORWARDED", "1");
+            #[cfg(unix)]
+            let e = std::os::unix::process::CommandExt::exec(&mut cmd);
+            #[cfg(not(unix))]
+            let e = match cmd.status() {
+                Ok(s) => std::process::exit(s.code().unwrap_or(1)),
+                Err(e) => e,
+            };
+            eprintln!("glyd {}: could not start {}: {e}", args[0], exe.display());
+            std::process::exit(126);
+        }
+    }
+    let why = if forwarded {
+        "the Python tool's glyd sent it back to this program, so it has no such command: update it with curl -LsSf https://getglyd.com/install.sh | sh"
+    } else if cfg!(target_os = "linux") {
+        "that is the local chat's command, in Glyd's Python tool, which is not installed here. On Linux with an NVIDIA GPU: curl -LsSf https://getglyd.com/install.sh | sh"
+    } else {
+        "glyd run needs Linux with an NVIDIA GPU, and this computer is not one (this program compresses files: glyd --help)"
+    };
+    eprintln!("glyd {}: {why} (a file named {} is compressed as ./{})", args[0], args[0], args[0]);
+    std::process::exit(127);
+}
+
 fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.len() == 1 {
@@ -91,6 +150,9 @@ fn main() -> io::Result<()> {
     }
     if matches!(args[1].as_str(), "pack" | "verify") {
         gpu_command(&args[1..]); // (a file named pack or verify: ./pack)
+    }
+    if matches!(args[1].as_str(), "run" | "serve" | "doctor" | "login") {
+        python_command(&args[1..]); // (a file named run: ./run)
     }
 
     let mut input_path: Option<String> = None;

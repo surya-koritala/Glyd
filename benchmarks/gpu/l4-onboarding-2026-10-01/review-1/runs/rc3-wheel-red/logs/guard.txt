@@ -1,0 +1,11 @@
+ok   a program, no Origin (curl): 200
+ok   the page's own origin, localhost: 200
+ok   the page's own origin, 127.0.0.1: 200
+FAIL a script of another site (Origin): got 200, wanted 403
+FAIL its preflight: got 200, wanted 403
+FAIL its POST: got 400, wanted 403
+FAIL a rebinding name (Host): got 200, wanted 421
+FAIL the page under a rebinding name: got 200, wanted 421
+ok   the page itself: 200
+FAIL no CORS grant to another site: got 1, wanted 0
+FAIL CORS names the page's own origin: got *, wanted http://localhost:8000

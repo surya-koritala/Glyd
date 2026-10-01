@@ -156,10 +156,10 @@ jobs:
           mkdir /tmp/plugin-tests && cp src/bindings/python/test_vllm.py /tmp/plugin-tests/
           cd /tmp/plugin-tests && python test_vllm.py
 
-  # scripts/install.sh from the release's own tag, as a user runs it, on a runner with no GPU: uv installed by its own installer,
-  # a Python 3.12 that uv manages, glyd==V from PyPI as a tool (the compression tools alone: no NVIDIA GPU answered), then
-  # `glyd --version` and `glyd doctor`, which says so. The GPU path of the script (glyd[vllm], the compiler stand-in) is
-  # run by gpu/vllm/acceptance.sh on a machine with a GPU.
+  # scripts/install.sh from the release's own tag, as a user runs it, on a runner with no GPU: there is nothing for glyd run to run on,
+  # so it installs the compression program (the release's tarball for the platform, its sha256 checked) and says what glyd run
+  # needs. Then the program itself: its version, a file through it and back, and the answer of glyd run. The GPU path of the script
+  # (uv, glyd[vllm], the compiler stand-in) is run by gpu/vllm/acceptance.sh on a machine with a GPU.
   installer:
     needs: version
     strategy:
@@ -174,27 +174,34 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.version.outputs.tag }}
-      - name: "sh scripts/install.sh (retry: PyPI can lag the release)"
+      - name: "sh scripts/install.sh (retry: the release's assets can lag the release)"
         run: |
           set -e
           if [ ! -f scripts/install.sh ]; then echo "v$V has no scripts/install.sh: nothing to check"; exit 0; fi
           ok=0
           for i in $(seq 1 40); do
-            sh scripts/install.sh && { ok=1; break; }
-            echo "install.sh did not finish (attempt $i/40: PyPI can lag the release); retrying in 30s"
+            if sh scripts/install.sh > install.log 2>&1; then cat install.log; ok=1; break; fi
+            cat install.log
+            echo "install.sh did not finish (attempt $i/40: the release's assets can lag the release); retrying in 30s"
             sleep 30
           done
           [ "$ok" = 1 ] || { echo "scripts/install.sh never finished"; exit 1; }
-      - name: glyd is the release, and glyd doctor says there is no GPU
+          grep -q 'needs Linux with an NVIDIA GPU' install.log || { echo "install.sh did not say what glyd run needs"; exit 1; }
+      - name: glyd is the release, a file goes through it and back, and glyd run says what it needs
         run: |
           set -e
           [ -f scripts/install.sh ] || exit 0
           export PATH="$HOME/.local/bin:$PATH"
           glyd --version | head -3
-          glyd --version | grep -q "$V" || { echo "glyd --version does not say $V"; exit 1; }
-          doctor=$(glyd doctor || true)
-          echo "$doctor"
-          echo "$doctor" | grep -q "no NVIDIA GPU answered" || { echo "glyd doctor did not report the missing GPU"; exit 1; }
+          glyd --version | grep -q "glyd $V" || { echo "glyd --version does not say $V"; exit 1; }
+          printf 'glyd install check %.0s' $(seq 1 500) > a.txt
+          glyd --max a.txt -o a.glyd
+          glyd -d a.glyd -o b.txt
+          cmp a.txt b.txt
+          out=$(glyd run Qwen/Qwen3-8B 2>&1) && { echo "glyd run succeeded with no GPU"; exit 1; } || true
+          echo "$out" | head -4
+          echo "$out" | grep -qE 'needs Linux with an NVIDIA GPU|not installed here' || { echo "glyd run did not say what it needs"; exit 1; }
+          echo "installer: glyd $V, round trip ok, glyd run says what it needs"
 
   homebrew:
     needs: version

@@ -1,0 +1,60 @@
+test_probe_gpus                                                              FAIL TypeError: probe_gpus() got an unexpected keyword argument 'platform'
+test_driver_rule                                                             ok
+test_torch_cuda_from_version_py                                              ok
+test_compiler_checks                                                         ok
+test_ziglang_stands_in_for_a_missing_compiler                                ok
+test_weights_match_what_vllm_measured                                        ok
+test_settings_owner_card                                                     ok
+test_settings_l4_and_modes                                                   ok
+test_a_shorter_context_needs_less_memory                                     ok
+test_settings_small_card_and_suggestion                                      ok
+test_settings_blackwell_16gb_uses_tiered                                     ok
+test_unknown_architecture_leaves_the_context_to_vllm                         ok
+test_parsers                                                                 ok
+test_flags_and_vllm_args                                                     ok
+test_load_model_and_hub_errors                                               ok
+test_port                                                                    ok
+test_vllm_ready_and_setup_checks                                             ok
+test_diagnose                                                                ok
+test_stage_of_a_log                                                          ok
+test_progress                                                                ok
+test_ui_and_args                                                             ok
+test_doctor                                                                  FAIL TypeError: doctor_lines() got an unexpected keyword argument 'platform'
+test_start_retries_and_attaches                                              FAIL AttributeError: module 'glyd.gpu.run' has no attribute 'write_marker'
+test_commands_with_a_running_server                                          ok
+test_serve_with_an_api_key_is_ready_and_the_key_stays_off_the_command_line   FAIL   The server's log: /var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmppbtm83vw/glyd/logs/serve-20261001-085254.log
+test_end_to_end_with_a_fake_vllm                                             FAIL AssertionError: {'argv': ['/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmp8yxgytq6/vllm/entrypoints/cli/main.py', 'serve', '/var/folders/mv/f3dzc
+test_cli_forwarding                                                          FAIL AssertionError
+test_a_glyd_ahead_on_path_is_found_and_said                                  FAIL subprocess.CalledProcessError: Command '['/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmpoc8my1j3/env/bin/python', '-c', 'from glyd.gpu import pr
+test_chat_turns                                                              ok
+test_chat_template_newlines_are_not_shown                                    ok
+test_terminal_text_has_no_control_sequences                                  FAIL AssertionError: 'ok \x1b]52;c;aGk=\x07 then \x1b[31mred\x1b[0m\x9b2J\x00 end\ttabbed\nsecond line\n'
+test_a_stream_that_does_not_end_is_said_so                                   FAIL AssertionError: ERROREVENT
+test_the_api_key_is_sent_and_readiness_does_not_need_it                      FAIL AttributeError: 'Api' object has no attribute 'status'
+test_chat_reasoning_field_names_and_inline_think                             ok
+test_chat_context_full                                                       ok
+test_chat_loop_and_once                                                      ok
+test_page_middleware                                                         ok
+test_page_is_self_contained                                                  FAIL AssertionError
+test_install_sh_on_a_gpu_machine                                             FAIL AssertionError: uv tool install --force --managed-python --python 3.12 glyd[vllm]==0.26.0rc3
+test_install_sh_cut_short_runs_nothing                                       FAIL AssertionError: (4383, "'shell >/dev/null 2>&1 || true\\nfirst=$(co'", ['uv tool install --force --managed-python --python 3.12 glyd[vllm]==0.26.0rc3'
+test_install_sh_does_not_hide_a_failed_download_of_uv                        FAIL AssertionError: (1, 'curl: (22) The requested URL returned error: 503\nglyd install: uv installed, but it is not where its installer says; open a new 
+test_install_sh_will_not_replace_a_program_it_did_not_make                   FAIL AssertionError: (0, '')
+test_install_sh_says_what_it_does_to_the_path                                FAIL AssertionError: (['uv tool install --force --managed-python --python 3.12 glyd[vllm]==0.26.0rc3', 'uv tool dir --bin', 'uv tool update-shell', 'glyd d
+test_install_sh_a_glyd_ahead_on_path_is_said_with_the_fix                    FAIL AssertionError: glyd install: another glyd (/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmp7y7u5khz/glyd) comes first on your PATH: it is the com
+test_install_sh_checks_the_machine_before_the_big_download                   FAIL AssertionError: (0, '')
+test_install_sh_where_glyd_run_has_nothing_to_run_on                         FAIL ==> Open a new terminal (or run: export PATH="/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmpvrkp3xxv/.local/bin:$PATH") so that glyd is found.
+test_install_constraints_are_the_acceptance_runs_versions                    FAIL FileNotFoundError: [Errno 2] No such file or directory: '/private/tmp/glyd-base/bindings/python/../../scripts/install_constraints.py'
+test_the_page_refuses_another_origin_and_a_rebinding_host                    FAIL AssertionError: evil.example
+test_the_server_is_started_local_only_unless_a_host_was_chosen               FAIL ValueError: list.index(x): x not in list
+test_the_open_server_warning_names_what_stays_open                           FAIL AttributeError: module 'glyd.gpu.run' has no attribute 'open_note'
+test_a_second_ctrl_c_does_not_skip_the_sweep                                 TIMEOUT
+test_a_server_still_loading_is_not_waited_for_as_long                        FAIL AttributeError: module 'glyd.gpu.run' has no attribute 'STOP_API_WAIT'. Did you mean: 'STOP_WAIT'?
+test_signals_nohup_download_and_a_terminal_that_went                         FAIL AssertionError
+test_a_failure_says_the_next_step                                            FAIL AssertionError: ('is full', 'the download of some/Model stopped (OSError: [Errno 28] No space left on device)', 'Check the network connection and run 
+test_a_float16_checkpoint_is_refused_before_the_download                     FAIL TypeError: model_of() got an unexpected keyword argument 'dtype'
+test_glyd_login_asks_again_and_says_who                                      FAIL AssertionError: ([(None, False, True)], 'Open https://huggingface.co/settings/tokens, create a token with read access, and paste it here (nothing show
+test_the_gpu_picked_is_one_glyd_can_use                                      FAIL AssertionError
+test_small_review_nits_in_the_settings_and_the_ports                         FAIL AssertionError: not refused: need more than the 92% of this GPU's memory
+test_an_empty_prompt_is_found_before_the_download_and_a_served_model_is_not_started_again FAIL AttributeError: 'NoneType' object has no attribute 'stop'
+27 of 59 ok

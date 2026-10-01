@@ -1,0 +1,19 @@
+test the_python_tools_commands_are_passed_to_it_from_a_rust_first_path ... FAILED
+test a_program_that_is_not_the_python_tool_is_not_taken_for_it ... FAILED
+test the_tool_is_found_where_uv_puts_it_before_the_terminal_knows ... FAILED
+test a_tool_that_sends_the_command_back_does_not_start_a_loop ... FAILED
+test a_file_named_run_is_compressed_as_dot_slash_run ... ok
+thread 'the_python_tools_commands_are_passed_to_it_from_a_rust_first_path' (7171048) panicked at tests/cli_python_tool.rs:46:9:
+thread 'a_program_that_is_not_the_python_tool_is_not_taken_for_it' (7171046) panicked at tests/cli_python_tool.rs:77:5:
+assertion `left == right` failed
+  left: Some(1)
+ right: Some(127)
+thread 'the_tool_is_found_where_uv_puts_it_before_the_terminal_knows' (7171049) panicked at tests/cli_python_tool.rs:59:5:
+assertion `left == right` failed: Error: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+  left: ""
+ right: "python glyd: doctor"
+thread 'a_tool_that_sends_the_command_back_does_not_start_a_loop' (7171047) panicked at tests/cli_python_tool.rs:96:5:
+assertion `left == right` failed: Unknown option: m
+  left: Some(1)
+ right: Some(127)
+test result: FAILED. 1 passed; 4 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s

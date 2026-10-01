@@ -1,0 +1,50 @@
+=== cors-set ===
+--- signin, no Origin (a program on this computer)
+HTTP/1.1 200 OK
+content-type: application/json
+vary: Accept-Encoding
+body: token yes | role admin | name User
+--- signin with Origin: http://evil.example (a script of another page)
+HTTP/1.1 200 OK
+content-type: application/json
+vary: Accept-Encoding
+access-control-allow-credentials: true
+--- preflight from http://evil.example
+HTTP/1.1 400 Bad Request
+vary: Origin
+access-control-allow-methods: DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT
+access-control-max-age: 600
+access-control-allow-credentials: true
+access-control-allow-headers: content-type,authorization
+content-type: text/plain; charset=utf-8
+--- signin with the page's own Origin http://localhost:3000
+HTTP/1.1 200 OK
+content-type: application/json
+vary: Accept-Encoding, Origin
+access-control-allow-credentials: true
+access-control-allow-origin: http://localhost:3000
+--- signin with Host: evil.example:3000 (DNS rebinding: the browser sends the page's own name as Host and no Origin on a same-origin POST)
+HTTP/1.1 200 OK
+content-type: application/json
+vary: Accept-Encoding
+--- socket.io handshake with Origin: http://evil.example
+HTTP/1.1 400 Bad Request
+content-type: text/plain
+access-control-allow-credentials: true
+access-control-allow-credentials: true
+--- socket.io handshake with Origin: http://localhost:3000
+HTTP/1.1 400 Bad Request
+content-type: text/plain
+access-control-allow-origin: http://localhost:3000
+access-control-allow-credentials: true
+access-control-allow-credentials: true
+access-control-allow-origin: http://localhost:3000
+vary: Origin
+--- the admin session's reach: GET /api/v1/functions/ and /api/v1/tools/ with the no-auth token
+/api/v1/functions/ -> 200
+/api/v1/tools/ -> 200
+/api/v1/users/ -> 200
+--- the same, with Origin: http://evil.example, ACAO shows whether the page may read it
+HTTP/1.1 200 OK
+content-type: application/json
+access-control-allow-credentials: true

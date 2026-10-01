@@ -272,7 +272,18 @@ jobs:
               assert lib.glyd_gpu_api_version() == api, f"{f}: its C API is not the package's ({api})"
           assert sys.platform != "linux" or len(libs) == 2, libs
           assert {e.name: e.value for e in entry_points(group="vllm.general_plugins")}.get("glyd") == "glyd.gpu.vllm_entry:register"
+          # glyd run's chat page is package data (chat.html), and the wheel installs the `glyd` console script
+          import glyd.gpu.page, glyd.gpu.run
+          assert b"<!doctype html>" in glyd.gpu.page.PAGE.lower() and b"</html>" in glyd.gpu.page.PAGE, "chat.html is not in the wheel"
+          assert {e.name: e.value for e in entry_points(group="console_scripts")}.get("glyd") == "glyd.cli:main"
           EOF
+          bindir=$(${{ matrix.python }} -c 'import sysconfig; print(sysconfig.get_path("scripts"))')
+          "$bindir/glyd" --version | head -3
+          "$bindir/glyd" --version | grep -q "$(${{ matrix.python }} -c 'import glyd; print(glyd.__version__)')"
+          # a runner has no NVIDIA GPU: glyd run says what it needs, and does not start
+          out=$("$bindir/glyd" run Qwen/Qwen3-8B 2>&1) && { echo "glyd run succeeded with no GPU"; exit 1; } || true
+          echo "$out" | head -4
+          echo "$out" | grep -q 'NVIDIA GPU'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: tarballs-${{ matrix.name }}
