@@ -257,7 +257,7 @@ def stage(log):
 
 @dataclass
 class Failure:
-    kind: str  # context, free, kv, oom, port, compiler, headers, nvcc, driver, other
+    kind: str  # context, free, args, kv, oom, port, compiler, headers, nvcc, driver, other
     what: str
     fix: str = ""
     value: object = None
@@ -271,6 +271,9 @@ def diagnose(text):
     m = re.search(r"Free memory on device \S+ \(([\d.]+)/([\d.]+) GiB\) on startup is less than desired", text)
     if m:
         return Failure("free", f"another program holds GPU memory (only {float(m.group(1)) * 2**30 / 1e9:.1f} GB was free when the server started)", "Close programs that use the GPU (nvidia-smi lists them), or run a smaller model", (float(m.group(1)), float(m.group(2))))
+    m = re.search(r"\b(?:main\.py|vllm(?: serve)?): error: (.+)", text)
+    if m:  # (a flag after -- that vLLM does not take)
+        return Failure("args", f"vLLM did not accept the flags: {m.group(1).strip()[:200]}", "Check what follows the lone -- (vllm serve --help lists the flags), or leave it out")
     if "No available memory for the cache blocks" in text:
         return Failure("kv", "no GPU memory was left for the conversation cache after the model's weights", "Close programs that use the GPU, or run a smaller model")
     if re.search(r"CUDA out of memory|OutOfMemoryError", text):

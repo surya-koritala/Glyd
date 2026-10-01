@@ -368,6 +368,8 @@ def test_diagnose():
     assert d("ERROR: [Errno 98] error while attempting to bind on address ('127.0.0.1', 8000): address already in use").kind == "port"
     f = d("RuntimeError: Failed to find C compiler. Please specify via CC environment variable or set triton.knobs.build.impl.")
     assert f.kind == "compiler" and "gcc" in f.fix or "build-essential" in f.fix or "package manager" in f.fix
+    f = d("usage: main.py [-h] [-v]\n               {chat,complete,serve,launch,bench,collect-env,run-batch} ...\nmain.py: error: unrecognized arguments: --max-model-length 4096")
+    assert f.kind == "args" and "unrecognized arguments: --max-model-length 4096" in f.what and "lone --" in f.fix
     assert d("fatal error: Python.h: No such file or directory").kind == "headers"
     assert d("RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist").kind == "nvcc"
     assert d("RuntimeError: The NVIDIA driver on your system is too old (found version 12040).").kind == "driver"
