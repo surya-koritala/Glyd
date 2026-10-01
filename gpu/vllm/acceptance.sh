@@ -71,6 +71,7 @@ fi
 UV=$(readlink -f "$UV"); UVX=$(dirname "$UV")/uvx
 [ -x "$UVX" ] || UVX=$(command -v uvx || echo "$UV")
 NAME=glyd-accept-$$
+VOLUME=$NAME-open-webui
 if [ -z "$HOST" ]; then
   IN=/work; INHF=/hf
   if [ -z "$IMAGE" ]; then
@@ -91,7 +92,8 @@ else
 fi
 cleanup() {
   if [ -z "$HOST" ]; then docker rm -f $NAME > /dev/null 2>&1; else pkill -u "$(id -u)" -f "$WORK/home/" 2> /dev/null; fi
-  [ -n "${OWUI:-}" ] && docker rm -f open-webui > /dev/null 2>&1
+  [ -n "${OWUI:-}" ] && docker rm -f open-webui > /dev/null 2>&1 && docker volume rm "$VOLUME" > /dev/null 2>&1
+  true
 }
 trap cleanup EXIT
 
@@ -280,7 +282,7 @@ if [ -n "$up" ]; then
   for route in uvx docker; do
     case $WEBUI in both|*$route*) ;; *) continue;; esac
     say "-- Open WebUI, $route: $(block webui-$route | tr '\n' ' ' | tr -s ' ' | cut -c1-200)"
-    block webui-$route > "$WORK/webui-$route.sh"
+    block webui-$route | sed "s|-v open-webui:|-v $VOLUME:|" > "$WORK/webui-$route.sh"  # (a volume of its own: not a user's)
     if [ $route = uvx ]; then
       bg "setsid bash -c 'echo \$\$ > $IN/logs/webui.pid; exec bash $IN/webui-uvx.sh' > $IN/logs/webui-uvx.log 2>&1"
     else
@@ -289,7 +291,7 @@ if [ -n "$up" ]; then
     fi
     run "$VENV/bin/python $IN/check.py webui http://127.0.0.1:3000 '$MODEL'" > "$LOGS/webui-$route.check.log" 2>&1 || fail "Open WebUI, $route (logs/webui-$route.check.log)"
     tee -a "$WORK/summary.txt" < "$LOGS/webui-$route.check.log"
-    if [ $route = uvx ]; then run "kill -TERM -- -\$(cat $IN/logs/webui.pid)" > /dev/null 2>&1; else docker rm -f open-webui > /dev/null 2>&1; OWUI=; fi
+    if [ $route = uvx ]; then run "kill -TERM -- -\$(cat $IN/logs/webui.pid)" > /dev/null 2>&1; else docker rm -f open-webui > /dev/null 2>&1; docker volume rm "$VOLUME" > /dev/null 2>&1; OWUI=; fi
     for _ in $(seq 1 30); do ss -ltn 2> /dev/null | grep -q ':3000 ' || break; sleep 1; done
     ! ss -ltn 2> /dev/null | grep -q ':3000 ' || { fail "port 3000 is still in use after stopping Open WebUI ($route)"; break; }
   done
