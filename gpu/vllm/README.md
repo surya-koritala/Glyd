@@ -118,7 +118,7 @@ and a websocket's handshake included, and vLLM's own CORS is limited to the serv
 server send no Origin and an address as their Host, and are answered; the chat page is the server's own origin. `acceptance.sh` checks this
 against a live server. A web app of your own on another origin (a dev server on localhost:5173) is refused too; to let it in, name the
 address yourself, which turns these checks off and leaves the origins to vLLM: `glyd serve MODEL --host 127.0.0.1 -- --allowed-origins
-'["http://localhost:5173"]'`.
+'["http://localhost:5173"]'` (`glyd` says so where it starts a server on an address you named, a loopback one too).
 
 `glyd serve --host ADDRESS` (or `-- --host`) is the way onto the network, and the checks are off for an address you chose: anyone who can
 reach this computer can send the model prompts. Give it a key, in the environment:
@@ -129,7 +129,9 @@ VLLM_API_KEY=YOUR_KEY glyd serve Qwen/Qwen3-8B --host 0.0.0.0
 ```
 
 The environment, not `-- --api-key KEY`: a flag's value is in `ps` and in the log. (`-- --api-key KEY` still works: `glyd` moves the key to
-the environment, says so, and keeps it out of the server's command line and of the log, but your own `glyd serve` command line shows it.) The
+the environment, says so, and keeps it out of the server's command line and of the log, but your own `glyd serve` command line shows it.
+One key: vLLM takes several after `--api-key`, `VLLM_API_KEY` holds one, and `glyd` refuses the rest; `-- --hf-token TOKEN` is moved to
+`HF_TOKEN` the same way.) The
 key guards `/v1` only: the chat page, `/health`, `/metrics`, `/version`, `/tokenize`, `/detokenize` and the API's `/docs` stay open without it,
 and the traffic is plain HTTP, so a key crosses the network readable: use a VPN or an SSH tunnel, or `-- --ssl-keyfile FILE --ssl-certfile
 FILE`. `glyd serve` says all of this where it starts a server on another address.

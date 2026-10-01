@@ -24,6 +24,12 @@ import types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import signal  # noqa: E402
+try:
+    if signal.getsignal(signal.SIGINT) == signal.SIG_IGN:  # (a background job of a non-interactive shell: Python leaves it ignored, and the tests that send themselves a Ctrl-C need the default)
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+except ValueError:  # (imported outside the main thread)
+    pass
 import importlib  # noqa: E402
 from glyd.gpu import chat, page, preflight as pf, run  # noqa: E402
 from glyd import cli  # noqa: E402
@@ -691,7 +697,7 @@ def test_commands_with_a_running_server():
     out, err, real = Sink(), Sink(), (sys.stdout, sys.stderr)
     try:
         server = run.Server(srv.base, os.path.join(d, "x.log"))
-        with Patched(run__start=lambda a, extra, mode, ui, environ=None: server):
+        with Patched(run__start=lambda a, extra, mode, ui, environ=None, **k: server):
             sys.stdout, sys.stderr = out, err
             try:
                 assert run.main("run", ["M", "--prompt", "hello"]) == 0
@@ -736,7 +742,7 @@ def main():
     window = int(args[args.index("--max-model-len") + 1]) if "--max-model-len" in args and args[args.index("--max-model-len") + 1].isdigit() else 4096
     if os.environ.get("FAKE_DUMP"):  # (what this server was started with)
         import json
-        json.dump({"argv": sys.argv, "env": {k: os.environ.get(k) for k in ("VLLM_API_KEY", "HF_HUB_OFFLINE", "GLYD_LOCAL_ONLY", "CUDA_VISIBLE_DEVICES")}}, open(os.environ["FAKE_DUMP"], "w"))
+        json.dump({"argv": sys.argv, "env": {k: os.environ.get(k) for k in ("VLLM_API_KEY", "HF_TOKEN", "HF_HUB_OFFLINE", "GLYD_LOCAL_ONLY", "CUDA_VISIBLE_DEVICES")}}, open(os.environ["FAKE_DUMP"], "w"))
     print("(EngineCore pid=1) Loading safetensors checkpoint shards:  40% Completed | 2/5 [00:13<00:20,  6.7s/it]", flush=True)
     if mode == "context-then-oom":  # (the first start's words, then a second start that fails of something else: the second one's cause is what is reported)
         open(os.environ["FAKE_MODE"], "w").write("oom")
@@ -788,7 +794,7 @@ def alive(pid):
 class FakeVllmHome:
     """A fake `vllm.entrypoints.cli.main` on PYTHONPATH (real subprocesses, real signals and logs), a model folder and a state directory, for
     glyd run and glyd serve end to end: `go(argv, out, err, cancel_when)` runs the command with the GPU faked and Ctrl-C sent once the terminal shows a text."""
-    NAMES = ("PYTHONPATH", "FAKE_HERE", "FAKE_MODE", "FAKE_CHILD", "FAKE_DUMP", "XDG_STATE_HOME", "HF_HUB_OFFLINE", "VLLM_API_KEY")
+    NAMES = ("PYTHONPATH", "FAKE_HERE", "FAKE_MODE", "FAKE_CHILD", "FAKE_DUMP", "XDG_STATE_HOME", "HF_HUB_OFFLINE", "VLLM_API_KEY", "HF_TOKEN")
 
     def __enter__(self):
         self.d, self.state = tempfile.mkdtemp(), tempfile.mkdtemp()
@@ -2147,6 +2153,10 @@ def test_the_gpu_picked_is_one_glyd_can_use():
         else:
             os.environ["CUDA_VISIBLE_DEVICES"] = saved
     raises(lambda: pf.setup_checks(False, gpus=[pf.Gpu(0, "NVIDIA A100 MIG 1g.10gb", 0, 0, (8, 0), "595", (13, 2))]), "did not say how much memory")  # ([N/A] memory)
+    r4090 = pf.Gpu(1, "NVIDIA GeForce RTX 4090", 24 * GiB, 23 * GiB, (8, 9), "595", (13, 2))  # N7: a MIG-enabled card with more memory is not picked ahead of a usable one
+    assert pf.pick_gpu([mig, r4090], "").index == 1 and pf.setup_checks(False, gpus=[mig, r4090])[0].index == 1
+    assert pf.pick_gpu([mig, r4090], "0").index == 0 and pf.pick_gpu([mig, r4090], "MIG-1234").index == 0  # (named: as asked for)
+    assert pf.pick_gpu([mig], "").index == 0  # (the only one: picked, for the MIG refusal)
     g = pf.probe_gpus(smi("0, NVIDIA A100 80GB, 81920, 80000, 400, 595.91.07, 8.0, Disabled, Enabled\n"))[0]
     assert g.mig and not pf.probe_gpus(smi("0, NVIDIA L4, 23034, 22566, 469, 595.91.07, 8.9, Disabled, Disabled\n"))[0].mig
 
@@ -2204,21 +2214,30 @@ def test_small_review_nits_in_the_settings_and_the_ports():
     assert pf._run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xff\\xfeok')"]).endswith("ok")  # (nit 10: output in another encoding)
 
 
+def stdin_at_its_end():
+    """sys.stdin as a pipe nothing was written to and whose writer has gone: a script's `</dev/null`, a CI step's closed input."""
+    r, w = os.pipe()
+    os.close(w)
+    return os.fdopen(r)
+
+
 def test_an_empty_prompt_is_found_before_the_download_and_a_served_model_is_not_started_again():
-    """Nits 3 and 4."""
-    started = []
-    with Patched(run__start=lambda *a, **k: started.append(1)):
+    """Nits 3 and 4; N1 of the re-review: the empty prompt is found once this machine and the model were checked (a machine with no GPU says that
+    first), and before the download and the load."""
+    m = pf.model_of("fake/Model-1B", QWEN["Qwen/Qwen3-8B"], bf16=16_381_470_720, files=[("model.safetensors", 1)])
+    calls = []
+    with Patched(pf__setup_checks=lambda gpus=None: (L4_GPU, []), pf__probe_gpus=lambda: [L4_GPU], pf__load_model=lambda name: m, pf__check_disk=lambda m: None,
+                 pf__pick_port=lambda host, port, explicit: 8123, run__download=lambda m, ui: calls.append("download"), run__launch=lambda *a, **k: calls.append("launch")):
         raises(lambda: run.cmd_run(["M", "--prompt", "  "]), "the prompt is empty")
-        r, w = os.pipe()
-        os.close(w)  # (standard input at its end at once: nothing was piped)
+        assert calls == []  # (an argument: found before anything is looked at)
         real = sys.stdin
-        sys.stdin = os.fdopen(r)
+        sys.stdin = stdin_at_its_end()  # (standard input at its end at once: nothing was piped)
         try:
             raises(lambda: run.cmd_run(["M"]), "standard input is empty")
         finally:
             sys.stdin.close()
             sys.stdin = real
-    assert started == []  # (found before any download or load)
+    assert calls == []  # (found before any download or load)
     srv = Fake()
     d = tempfile.mkdtemp()
     out, real = Sink(), sys.stderr
@@ -2231,6 +2250,112 @@ def test_an_empty_prompt_is_found_before_the_download_and_a_served_model_is_not_
         srv.shutdown()
         shutil.rmtree(d)
     assert "Nothing to start" in out.text() and "Press Ctrl-C" not in out.text(), out.text()
+
+
+def test_a_machine_with_no_gpu_says_so_before_it_looks_at_stdin():
+    """N1 of the re-review: `glyd run` with standard input at its end (a CI step's, `ssh host glyd run M`, cron, `docker run` without -i) said
+    "no prompt: standard input is empty" before any GPU was looked for, so a runner with no GPU never heard what glyd run needs, and
+    release.yml's wheel test, which greps for the GPU message, failed."""
+    for platform, said in (("linux", "no NVIDIA GPU answered"), ("darwin", "needs Linux and an NVIDIA GPU")):
+        real = sys.stdin
+        sys.stdin = stdin_at_its_end()
+        try:
+            with Patched(pf__probe_gpus=lambda: (_ for _ in ()).throw(pf.no_gpu_refusal(platform))):
+                r = raises(lambda: run.cmd_run(["Qwen/Qwen3-8B"]), said)
+                assert "standard input" not in r.what + r.fix
+        finally:
+            sys.stdin.close()
+            sys.stdin = real
+    # and as the CLI runs it, with nothing on PATH that is nvidia-smi and standard input closed: the step's own lines
+    empty = tempfile.mkdtemp()
+    try:
+        p = subprocess.run([sys.executable, "-m", "glyd.cli", "run", "Qwen/Qwen3-8B"], cwd=HERE, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           env={**os.environ, "PATH": empty, "PYTHONPATH": HERE})
+        assert p.returncode != 0 and "NVIDIA GPU" in p.stdout + p.stderr and "standard input" not in p.stdout + p.stderr, (p.returncode, p.stdout, p.stderr)
+    finally:
+        shutil.rmtree(empty)
+
+
+def test_the_suite_runs_with_sigint_ignored():
+    """N2 of the re-review: a background job of a non-interactive shell has SIGINT ignored, which Python then keeps, and the tests that send
+    themselves a Ctrl-C (and one that asserts the default handler) failed. The module puts the default handler back."""
+    p = subprocess.run([sys.executable, "-c", "import signal; signal.signal(signal.SIGINT, signal.SIG_IGN); import test_onboard; "
+                        "assert signal.getsignal(signal.SIGINT) == signal.default_int_handler"], cwd=HERE, capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr[-300:]
+
+
+def test_several_api_keys_are_refused_and_a_hugging_face_token_stays_off_the_command_line():
+    """N3 and N6 of the re-review: `-- --api-key K1 K2` stayed on the server's command line and in its log, and `glyd serve` died on its banner's
+    401 ("unexpected error: ApiError"); `-- --hf-token T` was on the command line and in the log as `--api-key` had been."""
+    r = raises(lambda: pf.take_api_key(["--api-key", "K1", "K2"], {}), "one API key")
+    assert "VLLM_API_KEY" in r.fix and "vllm serve by hand" in r.fix
+    raises(lambda: pf.take_api_key(["--api-key=K1", "--api-key", "K2", "K3"], {}), "one API key")
+    assert pf.take_api_key(["--api-key", "K1", "--max-model-len", "4096"], {}) == ("K1", ["--max-model-len", "4096"])
+    assert pf.take_api_key(["--api-key", "K1", "--api-key", "K2"], {}) == ("K2", [])  # (twice: the last one, as argparse takes it)
+    assert pf.take_api_key([], {"VLLM_API_KEY": "E"}) == ("E", [])
+    assert pf.take_secret(["--hf-token", "T", "--dtype", "bfloat16"], ("--hf-token", "--hf_token"), "token") == ("T", ["--dtype", "bfloat16"])
+    assert pf.take_secret(["--hf_token=T"], ("--hf-token", "--hf_token"), "token") == ("T", [])
+    assert pf.take_secret(["--hf-token", "--dtype", "bfloat16"], ("--hf-token",), "token") == (None, ["--hf-token", "--dtype", "bfloat16"])  # (alone: the saved login, no secret)
+    with FakeVllmHome() as h:
+        saved_wait, saved_env = run.wait_ready.__defaults__, os.environ.get("HF_TOKEN")
+        run.wait_ready.__defaults__ = (8,)
+        try:
+            with Patched(**h.patches):
+                out, err, port = Sink(), Sink(), h.free_port()
+                code = h.go(["serve", h.model, "--port", str(port), "--", "--hf-token", "hf_SECRET123"], out, err, cancel_when="Press Ctrl-C to stop.")
+        finally:
+            run.wait_ready.__defaults__ = saved_wait
+            if saved_env is None:
+                os.environ.pop("HF_TOKEN", None)
+            else:
+                os.environ["HF_TOKEN"] = saved_env
+        assert code == 130 and "Press Ctrl-C to stop." in err.text(), err.text()
+        started = json.load(open(os.environ["FAKE_DUMP"]))
+        assert "--hf-token" not in started["argv"] and "hf_SECRET123" not in " ".join(started["argv"]) and started["env"]["HF_TOKEN"] == "hf_SECRET123", started
+        logs = "".join(open(f).read() for f in glob.glob(os.path.join(h.state, "glyd", "logs", "*.log")))
+        assert "hf_SECRET123" not in logs and "hf_SECRET123" not in err.text() and "Hugging Face token was taken off" in err.text()
+        out, err = Sink(), Sink()
+        with Patched(**h.patches):  # (several keys: refused before anything starts)
+            code = h.go(["serve", h.model, "--port", str(h.free_port()), "--", "--api-key", "K1", "K2"], out, err, cancel_when="Press Ctrl-C to stop.")
+        assert code == 1 and "one API key" in err.text() and "Loading" not in err.text(), (code, err.text())
+
+
+def test_sigterm_during_a_download_does_not_wait_for_the_shard():
+    """N4 of the re-review: Ctrl-C ended through os._exit, but SIGTERM and SIGHUP ended by SystemExit, and the interpreter then joined
+    huggingface_hub's download threads (not daemons): 143 after 12 s for a shard of 12 s."""
+    if not hasattr(__import__("signal"), "SIGHUP"):
+        return print("test_sigterm_during_a_download_does_not_wait_for_the_shard: skipped (no SIGHUP)")
+    import signal
+    code = ("import sys, threading, time\n"
+            "from glyd import cli\nfrom glyd.gpu import run\n"
+            "threading.Thread(target=time.sleep, args=(12,)).start()  # a shard in flight: a thread that is not a daemon\n"
+            "run.cmd_run = lambda argv: (print('waiting', flush=True), time.sleep(30))\n"
+            "sys.exit(cli.main(['run', 'M']))\n")
+    for sig, status in ((signal.SIGTERM, 143), (signal.SIGHUP, 129)):
+        p = subprocess.Popen([sys.executable, "-c", code], cwd=HERE, env={**os.environ, "PYTHONPATH": HERE}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        assert p.stdout.readline().strip() == "waiting"
+        t0 = time.time()
+        p.send_signal(sig)
+        rc = p.wait(timeout=30)
+        assert rc == status and time.time() - t0 < 5, (sig, rc, time.time() - t0)
+
+
+def test_a_loopback_address_that_was_chosen_says_what_is_off():
+    """N5 of the re-review: `--host 127.0.0.1` (or localhost, ::1) is an address the user named, so the Host and Origin checks and the CORS limit are
+    off for it, as the README says; nothing said so where the server starts. glyd's own default says nothing: the checks are on there."""
+    with FakeVllmHome() as h:
+        saved_wait = run.wait_ready.__defaults__
+        run.wait_ready.__defaults__ = (8,)
+        try:
+            with Patched(**h.patches):
+                said = {}
+                for name, argv in (("default", []), ("chosen", ["--host", "127.0.0.1"]), ("flag", ["--", "--host", "localhost"])):
+                    out, err = Sink(), Sink()
+                    h.go(["serve", h.model, "--port", str(h.free_port())] + argv, out, err, cancel_when="Press Ctrl-C to stop.")
+                    said[name] = "the checks that keep another web page's script" in err.text()
+        finally:
+            run.wait_ready.__defaults__ = saved_wait
+    assert said == {"default": False, "chosen": True, "flag": True}, said
 
 
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]

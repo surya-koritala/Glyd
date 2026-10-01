@@ -103,6 +103,16 @@ fn a_tool_that_sends_the_command_back_does_not_start_a_loop() {
 }
 
 #[test]
+fn an_empty_guard_variable_is_not_a_guard() {
+    // GLYD_FORWARDED="" is not set, for the Python tool (it tests the string) and so for this program: the command is passed on
+    let t = tmp("emptyguard");
+    let bin = t.join("pybin");
+    python_tool(&bin, r#"echo "python glyd: $*""#);
+    let o = glyd(&["run", "m"], bin.to_str().unwrap(), &t, &[("GLYD_FORWARDED", "")]);
+    assert_eq!(text(&o.stdout).trim(), "python glyd: run m", "{}", text(&o.stderr));
+}
+
+#[test]
 fn a_file_named_run_is_compressed_as_dot_slash_run() {
     let t = tmp("file");
     let data: Vec<u8> = b"glyd test line, repeated\n".iter().cycle().take(20000).copied().collect();

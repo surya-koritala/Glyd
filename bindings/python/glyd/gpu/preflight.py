@@ -145,12 +145,15 @@ def probe_gpus(run=_run, platform=None):
 
 
 def pick_gpu(gpus, visible=None):
-    """The GPU with the most free memory among those new enough for Glyd (and among those CUDA_VISIBLE_DEVICES lists, where it is
-    numbers): an older card with more memory is not the one to refuse for. Where none is new enough, the freest, for the refusal."""
+    """The GPU with the most free memory among those Glyd can use: new enough, and not in MIG mode unless CUDA_VISIBLE_DEVICES names a MIG
+    slice (and among those it lists, where it is numbers): an older card, or a MIG-enabled one, with more memory is not the one to refuse
+    for. Where none can be used, the freest of those new enough, then the freest, for the refusal."""
     visible = os.environ.get("CUDA_VISIBLE_DEVICES", "") if visible is None else visible
     want = [int(x) for x in visible.split(",") if x.strip().isdigit()]
     pool = [g for g in gpus if g.index in want] or gpus
-    return max([g for g in pool if g.cc >= MIN_CAPABILITY] or pool, key=lambda g: g.free)
+    capable = [g for g in pool if g.cc >= MIN_CAPABILITY]
+    usable = [g for g in capable if not g.mig or "MIG-" in visible]
+    return max(usable or capable or pool, key=lambda g: g.free)
 
 
 def other_users(run=_run):
@@ -541,25 +544,37 @@ def need(weights, m, gpu, context=MIN_CONTEXT, non_kv=NON_KV):
     return int(weights + non_kv + context * m.kv_token / KV_FIT + CTX + HEADROOM + 0.01 * gpu.total)
 
 
-def take_api_key(extra, environ=None):
-    """(the API key, the vLLM flags without it): `--api-key KEY` (or `--api-key=KEY`) among the flags after `--` is taken out, so that the key
-    is not on the server's command line (`ps`, the log): it reaches the server in VLLM_API_KEY. Without one, the key is VLLM_API_KEY's, or
-    None. Several keys after one `--api-key` cannot go through one variable: those flags stay as they were."""
-    env = os.environ if environ is None else environ
-    out, key, i, extra = [], None, 0, list(extra)
+def take_secret(extra, names, what):
+    """(the value, the flags without it): a vLLM flag that carries a secret (`--api-key KEY`, `--hf-token=TOKEN`) among the flags after `--`
+    is taken out, so that the secret is not on the server's command line (`ps`, the log): the caller hands it over in the environment. None
+    where the flag is not there, or has no value (`--hf-token` alone means the saved login: it stays). Several values go through no one
+    variable (vLLM takes several keys after `--api-key`, and VLLM_API_KEY holds one): a Refusal."""
+    out, value, i, extra = [], None, 0, list(extra)
     while i < len(extra):
         tok = extra[i]
-        name, eq, value = tok.partition("=")
-        if name in ("--api-key", "--api_key"):
-            vals, j = ([value] if eq else []), i + 1
+        name, eq, v = tok.partition("=")
+        if name in names:
+            vals, j = ([v] if eq else []), i + 1
             while not eq and j < len(extra) and not extra[j].startswith("-"):
                 vals.append(extra[j])
                 j += 1
+            if len(vals) > 1:
+                raise Refusal(f"glyd passes one {what}, and {name} was given {len(vals)}",
+                              "Give one (VLLM_API_KEY=KEY glyd serve ... for an API key), or start vLLM yourself for several keys: see \"Advanced: vllm serve by hand\" in gpu/vllm/README.md")
             if len(vals) == 1:
-                key, i = vals[0], j
+                value, i = vals[0], j
                 continue
         out.append(tok)
         i += 1
+    return value, out
+
+
+def take_api_key(extra, environ=None):
+    """(the API key, the vLLM flags without it): `--api-key KEY` (or `--api-key=KEY`) among the flags after `--` is taken out, so that the key
+    is not on the server's command line (`ps`, the log): it reaches the server in VLLM_API_KEY. Without one, the key is VLLM_API_KEY's, or
+    None. Several keys after one `--api-key` are refused (take_secret)."""
+    env = os.environ if environ is None else environ
+    key, out = take_secret(extra, ("--api-key", "--api_key"), "API key")
     return (key or env.get("VLLM_API_KEY") or None), out
 
 

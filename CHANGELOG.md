@@ -57,7 +57,10 @@ every earlier format.
   administrator's token to any page's script where the login is off: measured on 0.11.4). A short note in the README says what the no-login setting leaves open, DNS rebinding
   included, which Open WebUI does not check for. `gpu/vllm/acceptance.sh` runs the new cases (a program of the user's own in `~/.local/bin`, an update, a `glyd` ahead on PATH, `nohup` and SIGHUP, the Host
   and Origin refusals, a server with a key both ways, escape sequences in an answer, Ctrl-C while loading, the engine killed under a chat, `uv tool uninstall glyd`, and the
-  installer on a machine with no GPU), and tests of each fail on the code before.
+  installer on a machine with no GPU), and tests of each fail on the code before. From the re-review: `glyd run` looks at standard input after the checks of this machine
+  and the model, so a machine with no GPU says what `glyd run` needs even with input at its end (a CI step's, cron's); a SIGTERM or SIGHUP during a download ends at once, as
+  Ctrl-C does; several keys after `-- --api-key` are refused and `-- --hf-token` is moved to `HF_TOKEN`, off the command line and the log; a loopback address that was
+  chosen says its Host and Origin checks are off; a MIG-enabled GPU is not picked ahead of a usable one; an empty `GLYD_FORWARDED` is not a guard.
 
 - vLLM serves Glyd: `pip install "glyd[vllm]"`, then `vllm serve MODEL
   --quantization glyd`. The `glyd` package's entry point for vLLM

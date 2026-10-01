@@ -66,10 +66,10 @@ def main(argv=None):
         from .gpu import run  # (the GPU half is imported where it is asked for)
 
         code = run.main(args[0], args[1:])
-        if code == 130:  # (Ctrl-C: huggingface_hub's download threads are not daemons, and a normal exit would wait for the shard in flight)
+        if code in (129, 130, 143):  # (Ctrl-C, SIGHUP, SIGTERM: huggingface_hub's download threads are not daemons, and a normal exit would wait for the shard in flight)
             sys.stdout.flush()
             sys.stderr.flush()
-            os._exit(130)
+            os._exit(code)
         return code
     forwarded = bool(os.environ.get("GLYD_FORWARDED"))  # (a glyd that was started by a glyd does not start another)
     native = None if forwarded else find_native()

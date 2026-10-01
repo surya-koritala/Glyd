@@ -115,7 +115,7 @@ fn find_python_tool() -> Option<PathBuf> {
 /// the tool passes the compression commands the other way with the same variable and takes none of them back, so an older tool that
 /// sends `run` here cannot start a loop. Where there is no tool the answer says what to do, or that this computer is not for it.
 fn python_command(args: &[String]) -> ! {
-    let forwarded = env::var_os("GLYD_FORWARDED").is_some();
+    let forwarded = env::var_os("GLYD_FORWARDED").map_or(false, |v| !v.is_empty()); // (empty is not set, as the Python tool takes it)
     if !forwarded {
         if let Some(exe) = find_python_tool() {
             let mut cmd = std::process::Command::new(&exe);

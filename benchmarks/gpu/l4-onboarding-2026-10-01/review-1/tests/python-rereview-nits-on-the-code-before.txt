@@ -1,0 +1,8 @@
+test_a_machine_with_no_gpu_says_so_before_it_looks_at_stdin                  FAIL AssertionError: ('no NVIDIA GPU answered', 'no prompt: standard input is empty', 'Give one with --prompt TEXT, or run glyd in a terminal to chat')
+test_the_suite_runs_with_sigint_ignored                                      ok
+test_several_api_keys_are_refused_and_a_hugging_face_token_stays_off_the_command_line FAIL AssertionError: not refused: one API key
+test_sigterm_during_a_download_does_not_wait_for_the_shard                   FAIL AssertionError: (<Signals.SIGTERM: 15>, 143, 12.062833786010742)
+test_a_loopback_address_that_was_chosen_says_what_is_off                     FAIL AssertionError: {'default': False, 'chosen': False, 'flag': False}
+test_an_empty_prompt_is_found_before_the_download_and_a_served_model_is_not_started_again ok
+test_the_gpu_picked_is_one_glyd_can_use                                      FAIL AssertionError
+2 of 7 ok

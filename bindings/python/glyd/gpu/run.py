@@ -502,6 +502,10 @@ def parse(cmd, argv):
     return a
 
 
+CHOSEN_LOOPBACK = ("listening on the address you chose: the checks that keep another web page's script, and a name that DNS points at this computer, away from "
+                   "the server are off for it (vLLM answers every origin unless -- --allowed-origins limits them). For this computer's own programs and page, leave --host out.")
+
+
 def open_note(host, key):
     """What a server on an address other than this computer's own leaves open, said where it is started."""
     note = (f"listening on {host}: anyone who can reach this computer's network address can send the model prompts, and the traffic is plain HTTP, not encrypted "
@@ -512,14 +516,19 @@ def open_note(host, key):
     return note + " There is no API key: start it with  VLLM_API_KEY=KEY glyd serve ...  (the key goes in the environment, not on the command line, where ps and a log show it). " + open_paths
 
 
-def start(a, extra, mode, ui, environ=None):
-    """The checks, the download, the settings and the server up: a Server, or a Refusal. `a` is the parsed arguments."""
+def start(a, extra, mode, ui, environ=None, before_download=None):
+    """The checks, the download, the settings and the server up: a Server, or a Refusal. `a` is the parsed arguments. `before_download` is called
+    once the checks of this machine and the model have passed, and before the download, where a command has one more thing to find wrong."""
     env = os.environ if environ is None else environ
-    typed = list(extra)
-    key, extra = pf.take_api_key(extra, env)  # (a key given as --api-key goes to the server in VLLM_API_KEY: not on its command line or in its log)
-    if extra != typed:
+    key, rest = pf.take_api_key(extra, env)  # (a key given as --api-key goes to the server in VLLM_API_KEY: not on its command line or in its log)
+    if rest != list(extra):
         ui.note("the API key was taken off the server's command line and goes to it in VLLM_API_KEY. It is still in glyd's own command line, "
                 "which ps shows: next time set VLLM_API_KEY=KEY yourself.")
+    hf, extra = pf.take_secret(rest, ("--hf-token", "--hf_token"), "Hugging Face token")  # (the same for vLLM's own token flag, which glyd's download uses too)
+    if hf:
+        ui.note("the Hugging Face token was taken off the server's command line and goes to it in HF_TOKEN, which glyd's own download uses too. It is still in "
+                "glyd's own command line, which ps shows: next time set HF_TOKEN=TOKEN yourself, or run glyd login.")
+        env["HF_TOKEN"] = hf
     given = pf.flags_given(extra)
     gpus = pf.probe_gpus()
     gpu, warnings = pf.setup_checks(gpus=gpus)
@@ -572,6 +581,8 @@ def start(a, extra, mode, ui, environ=None):
             base = base_url(host, port)
     elif not pf.port_free(host, port):
         raise pf.Refusal(f"port {port} is in use by another program", f"Choose another: -- --port {port + 1}")
+    if before_download is not None:
+        before_download()
     bf16 = pf.gb(m.bf16)
     fits_bf16 = pf.need(m.bf16, m, gpu) <= gpu.free
     ui.line(f"{m.name}: {pf.gb(s.weights)} on the GPU with Glyd, instead of {bf16}" + (f"; your GPU has {pf.gb(gpu.free)} free." if fits_bf16 else f", which does not fit the {pf.gb(gpu.free)} your GPU has free."))
@@ -579,6 +590,8 @@ def start(a, extra, mode, ui, environ=None):
     ui.line("Settings: " + pf.summary(s, gpu))
     if host not in LOOPBACK:
         ui.note(open_note(host, key))
+    elif not strict:
+        ui.note(CHOSEN_LOOPBACK)
     log = new_log(mode)
     detail = f"{pf.gb(s.weights)} instead of {bf16}"
     child = dict(env)
@@ -644,13 +657,17 @@ def cmd_run(argv):
     a = parse("run", argv)
     ui = Ui()
     prompt = a.prompt
-    if prompt is None and not sys.stdin.isatty():
-        prompt = stdin_now()  # (before the download and the load: an empty one is found now, not in minutes; a pipe with nothing in it yet is read after)
-        if prompt is not None and not prompt.strip():
-            raise pf.Refusal("no prompt: standard input is empty", "Give one with --prompt TEXT, or run glyd in a terminal to chat")
-    elif prompt is not None and not prompt.strip():
-        raise pf.Refusal("the prompt is empty", "Give one: --prompt \"Say hello\"")
-    server = start(a, extra, "run", ui)
+    if prompt is not None and not prompt.strip():
+        raise pf.Refusal("the prompt is empty", "Give one: --prompt \"Say hello\"")  # (an argument: found at once)
+
+    def look_at_stdin():  # (after this machine and the model were checked, so that a machine with no GPU says that first; before the download and the load: an empty one is found now, not in minutes; a pipe with nothing in it yet is read after)
+        nonlocal prompt
+        if prompt is None and not sys.stdin.isatty():
+            prompt = stdin_now()
+            if prompt is not None and not prompt.strip():
+                raise pf.Refusal("no prompt: standard input is empty", "Give one with --prompt TEXT, or run glyd in a terminal to chat")
+
+    server = start(a, extra, "run", ui, before_download=look_at_stdin)
     try:
         api = Api(server.base, token=server.token or None)
         try:
@@ -838,8 +855,10 @@ def main(cmd, argv):
         except (OSError, ValueError):
             pass
         return 0
-    except SystemExit:
-        raise
+    except SystemExit as e:
+        if e.code in (129, 143):  # (a SIGHUP or SIGTERM: the handlers exit this way, after the finally blocks stopped the server; cli.main leaves like Ctrl-C does)
+            return e.code
+        raise  # (argparse's usage, status 2)
     except Exception as e:
         if os.environ.get("GLYD_DEBUG"):
             raise
