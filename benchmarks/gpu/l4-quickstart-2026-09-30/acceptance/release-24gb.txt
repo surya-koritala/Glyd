@@ -1,0 +1,11 @@
+== 2026-10-01T01:34:25Z: glyd[vllm] wheel /home/ubuntu/accept/wheels-final/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl, glyd-accept:ubuntu26.04, GPU NVIDIA L4, 23034 MiB, budget all MiB free, card as is MiB
+ok   no nvcc: not on PATH, no /usr/local/cuda, no CUDA_HOME
+-- setup: uv venv --python 3.12 ~/glyd-env && source ~/glyd-env/bin/activate;uv pip install "/work/wheel/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]"
+ok   installed in 84 s: flashinfer-python==0.6.18.post1 torch==2.13.0 transformers==5.18.0 triton==3.7.1 vllm==0.30.0 
+-- serve: VLLM_USE_FLASHINFER_SAMPLER=0 vllm serve Qwen/Qwen3-8B --quantization glyd --enforce-eager \ --max-model-len 8192 --gpu-memory-utilization 0.88 --host 127.0.0.1 \ --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3
+-- server: up after 52 s; Model loading took 11.38 GiB memory and 16.621210 seconds;GPU KV cache size: 54,688 tokens, Maximum concurrency for 8,192 tokens per request: 6.68x;Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.88, 19.39 GiB). Actual usage is 11.68 GiB for consu;
+ok   no traceback and no allocator warning in the server's log
+ok   OpenAI API, turn 1 (streamed, greedy): 'Paris', 6 tokens in 0.3 s
+ok   OpenAI API, turn 2 (streamed, top-p, turn 1 as history): 'Berlin', 6 tokens in 0.3 s
+ok   OpenAI API, a tool call (tool_choice auto): {'name': 'get_weather', 'arguments': '{"city": "Paris"}'}
+PASSED

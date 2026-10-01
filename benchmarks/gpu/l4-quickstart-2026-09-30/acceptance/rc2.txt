@@ -1,0 +1,12 @@
+== 2026-10-01T00:25:15Z: glyd[vllm] ==0.26.0rc2, glyd-accept:ubuntu26.04, GPU NVIDIA L4, 23034 MiB, budget 14828 MiB free, card 15942 MiB
+ok   no nvcc: not on PATH, no /usr/local/cuda, no CUDA_HOME
+-- setup: uv venv --python 3.12 ~/glyd-env && source ~/glyd-env/bin/activate;uv pip install "glyd[vllm]==0.26.0rc2"
+ok   installed in 102 s: flashinfer-python==0.6.18.post1 glyd==0.26.0rc2 torch==2.13.0 transformers==5.18.0 triton==3.7.1 vllm==0.30.0 
+-- hog: 7353 MiB held, 15017 of 22565 MiB free
+-- --gpu-memory-utilization 0.88 is 0.622 here: the same budget as on a card of 15942 MiB (this one has 22565)
+-- serve: vllm serve Qwen/Qwen3-8B --quantization glyd --enforce-eager --max-model-len 8192 --gpu-memory-utilization 0.622 --host 127.0.0.1
+-- server: did not come up; Model loading took 11.83 GiB memory and 25.828474 seconds;GPU KV cache size: 9,856 tokens, Maximum concurrency for 8,192 tokens per request: 1.20x;
+FAIL the server did not come up (logs/server.log)
+FAIL 3 tracebacks in the server's log:       1 RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist;
+FAIL 256 allocator out-of-memory warnings in the server's log (256 allocation, 0 mapping)
+FAILED (3): the server did not come up (logs/server.log); 3 tracebacks in the server's log:       1 RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist;; 256 allocator out-of-memory warnings in the server's log (256 allocation, 0 mapping); 

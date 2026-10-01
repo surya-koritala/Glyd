@@ -1,0 +1,39 @@
+hog: 7355 MiB held, 15015 of 22565 MiB free
+up after 39 s
+== python /work/chatbench.py http://127.0.0.1:8000/v1 Qwen/Qwen3-8B 5
+{
+ "greedy": {
+  "tps_median": 21.23,
+  "tps_all": [
+   21.28,
+   21.25,
+   21.23,
+   21.21,
+   21.19
+  ],
+  "first_ms_median": 53,
+  "tokens": 256,
+  "same_text": true,
+  "text_sha": "00b02abc33a9",
+  "tps_8_users_total": 161.9
+ },
+ "top-p": {
+  "tps_median": 21.07,
+  "tps_all": [
+   21.08,
+   21.07,
+   21.07,
+   21.05,
+   21.01
+  ],
+  "first_ms_median": 53,
+  "tokens": 256,
+  "tps_8_users_total": 125.4
+ }
+}
+OOM warnings: 0
+(EngineCore pid=174) INFO 10-01 00:02:47 [model_runner.py:428] Model loading took 11.39 GiB memory and 14.989920 seconds
+(EngineCore pid=174) INFO 10-01 00:02:48 [gpu_worker.py:640] Available KV cache memory: 1.83 GiB
+(EngineCore pid=174) INFO 10-01 00:02:48 [kv_cache_utils.py:2395] GPU KV cache size: 13,280 tokens, Maximum concurrency for 8,192 tokens per request: 1.62x
+(EngineCore pid=174) INFO 10-01 00:02:49 [gpu_worker.py:888] Free memory on device (14.48/22.04 GiB) on startup. Desired GPU memory utilization is (0.622, 13.71 GiB). Actual usage is 11.68 GiB for consumed memory (weights + non-torch), 0.2 GiB for peak activat
+memwatch: most used 21896 MiB of 22565, so least free 669 MiB

@@ -112,6 +112,50 @@ jobs:
           [ "$ok" = 1 ] || { echo "glyd[gpu]==$V never resolved from PyPI"; exit 1; }
           python -m glyd.gpu fit Qwen/Qwen3-0.6B --gpu 16GB
 
+  # glyd[vllm]==V as a user installs it (no GPU on the runner): vLLM registers the plugin's quantization method from the
+  # wheel's entry point, and the plugin's tests run against the installed wheel (test_vllm.py alone in a directory of its own,
+  # so the source tree cannot stand in for it). scripts/check_gpu_install.sh and gpu/vllm/acceptance.sh run the rest on a GPU.
+  vllm:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      V: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+          path: src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: "pip install glyd[vllm]==V (retry: PyPI can lag the release)"
+        run: |
+          set -e
+          ok=0
+          for i in $(seq 1 80); do
+            python -m pip install --quiet --no-cache-dir "glyd[vllm]==$V" && { ok=1; break; }
+            echo "glyd[vllm]==$V not resolvable yet on PyPI (attempt $i/80); retrying in 30s"
+            sleep 30
+          done
+          [ "$ok" = 1 ] || { echo "glyd[vllm]==$V never became installable from PyPI"; exit 1; }
+      - name: vLLM loads the plugin from the wheel's entry point
+        run: |
+          python - <<'EOF'
+          from vllm.plugins import load_general_plugins
+          load_general_plugins()
+          from vllm.model_executor.layers.quantization import get_quantization_config
+          cfg = get_quantization_config("glyd")
+          assert cfg.__name__ == "GlydConfig", cfg
+          print("vllm", __import__("vllm").__version__, "->", cfg.__module__, cfg.__name__)
+          EOF
+      - name: The plugin's tests against the installed wheel
+        env:
+          GLYD_REQUIRE_VLLM: "1"
+        run: |
+          mkdir /tmp/plugin-tests && cp src/bindings/python/test_vllm.py /tmp/plugin-tests/
+          cd /tmp/plugin-tests && python test_vllm.py
+
   homebrew:
     needs: version
     strategy:

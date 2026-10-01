@@ -279,6 +279,44 @@ every earlier format.
   their experts too, were packed, all 7 checks passed. Not measured yet
   on a GH200, where fraction 1 served 0.88x bf16's requests a second with
   Qwen3-32B.
+- The local-chat quickstart (gpu/vllm/README.md) runs on a machine with
+  no CUDA toolkit, and its load no longer fills the log. 0.26.0rc2
+  stopped on an RTX 4080 SUPER with a desktop two ways: vLLM's
+  FlashInfer sampler builds its top-k and top-p kernel with nvcc at
+  warmup (`Could not find nvcc`), and the load of Qwen3-8B logged about
+  300 allocator warnings, "memory allocation failed with OOM". The
+  command now sets `VLLM_USE_FLASHINFER_SAMPLER=0`, so vLLM samples with
+  PyTorch and Triton (the same tokens a second for 1 and for 8 users,
+  and the same draws as FlashInfer's, which `flashinfer-jit-cache`
+  provides without nvcc), and the plugin logs one warning at start where
+  it finds no nvcc and the sampler on, naming both, and sets nothing.
+  The warnings came from the packers' temporaries under the allocator
+  setting vLLM loads with (`max_split_size_mb` 20: `kernels._hist`
+  widened 32M weights to int32, 128 MiB a temporary): the passes are now
+  4M weights (int16, no widening) and 2M (the same packs bit for bit, a
+  gate_up pack in 166 ms against 284), a layer's bf16 weight is dropped
+  as soon as it is packed, and PyTorch's unused blocks go back to the
+  driver where they outweigh its free memory. On an L4 held to the 14.48
+  GiB an RTX 4080 SUPER with a desktop leaves free, loading Qwen3-8B
+  logged 0 allocator warnings (254), left 669 MiB free at the least (3),
+  and held 11.39 GiB of weights (11.83) and a KV cache of 1.83 GiB,
+  13,280 tokens (1.35 GiB, 9,856); one user's tokens a second were the
+  same, 21.25 and 21.00 (greedy and top-p) against 21.28 and 21.09;
+  `check_vllm.py --brief` passed on Qwen3-1.7B and
+  granite-3.1-3b-a800m-instruct. The quickstart's Open WebUI runs by
+  `uvx` or Docker, pinned to 0.11.4 with
+  `ENABLE_PERSISTENT_CONFIG=False` (its connection is otherwise the
+  first start's, and a later start with the variables lists no models),
+  and the server takes `--enable-auto-tool-choice --tool-call-parser
+  hermes --reasoning-parser qwen3` (Open WebUI's chats carry tools).
+  `gpu/vllm/acceptance.sh` runs the quickstart's blocks from nothing, in
+  a container with no nvcc, the GPU memory of a 16 GB card, a chat
+  through the OpenAI API and through Open WebUI both ways: it failed on
+  0.26.0rc2 (no server, 3 tracebacks, 256 allocator warnings) and passed
+  on the fixed tree; CI installs vLLM and runs the plugin's tests with
+  `GLYD_REQUIRE_VLLM=1`, which fails a run without vLLM where it used to
+  skip
+  ([benchmarks/gpu/l4-quickstart-2026-09-30](benchmarks/gpu/l4-quickstart-2026-09-30)).
 
 ## v0.25.1 — 2026-09-29
 

@@ -1,7 +1,9 @@
 """glyd.gpu's vLLM plugin, its logic that needs no GPU: the entry point's version rule; the options' precedence and
 what is refused among them; the layers a fraction packs (how many, how spread); a save's packs by vLLM's layer names;
 the pieces a checkpoint gave; what is refused in vLLM's config; and a draft model asked for --quantization glyd (its
-own size, its packs in the digest). Needs vLLM (glyd[vllm]) but for the version rule, else skipped.
+own size, its packs in the digest); the load's allocator trim and the warning where there is no nvcc. Needs vLLM
+(glyd[vllm]; no GPU) but for the version rule, else skipped with a line saying so: GLYD_REQUIRE_VLLM=1 (the CI job that
+installs vLLM) makes it a failure, so a run without vLLM cannot pass as if it had run.
 
     python test_vllm.py              (or pytest test_vllm.py)"""
 import os
@@ -15,7 +17,9 @@ from glyd.gpu import vllm_entry  # noqa: E402
 try:
     import vllm  # noqa: F401
     from glyd.gpu import vllm_plugin as vp
-except ImportError:
+except ImportError as e:
+    if os.environ.get("GLYD_REQUIRE_VLLM") == "1":
+        raise SystemExit(f"GLYD_REQUIRE_VLLM=1 and vLLM or the plugin does not import: {type(e).__name__}: {e}")
     vp = None
 
 
@@ -244,8 +248,83 @@ def test_moe_route():
             os.environ["GLYD_MOE_DECODE_MIN"] = was
 
 
+def test_trim_and_drop():
+    """The load's allocator trim: PyTorch's unused blocks handed back to the driver only where they outweigh the
+    driver's free memory; a packed bf16 weight's memory dropped at once."""
+    if vp is None:
+        return print("test_trim_and_drop: skipped (no vLLM)")
+    import torch
+
+    flushed = []
+    cuda = torch.cuda
+    saved = (cuda.memory_reserved, cuda.memory_allocated, cuda.mem_get_info, cuda.empty_cache)
+    try:
+        cuda.memory_allocated = lambda *a: 100
+        cuda.empty_cache = lambda: flushed.append(1)
+        for reserved, free, trimmed in ((100, 50, False), (150, 100, False), (200, 100, False), (201, 100, True), (900, 100, True), (900, 5000, False)):
+            cuda.memory_reserved = lambda *a, r=reserved: r
+            cuda.mem_get_info = lambda *a, f=free: (f, 10_000)
+            flushed.clear()
+            vp._trim()
+            assert bool(flushed) == trimmed, (reserved, free)  # (cached = reserved - 100: over the free memory only)
+    finally:
+        cuda.memory_reserved, cuda.memory_allocated, cuda.mem_get_info, cuda.empty_cache = saved
+    w = torch.nn.Parameter(torch.ones(4, 8), requires_grad=False)
+    vp._drop(w)
+    assert w.numel() == 0
+    vp._drop(None)
+
+
+def test_no_nvcc():
+    """One warning where vLLM's FlashInfer sampler has no nvcc to compile with, naming the fix; none where the sampler
+    is off, where nvcc is found (PATH, CUDA_HOME, /usr/local/cuda), where FlashInfer's precompiled kernels are
+    installed or FlashInfer is not; one a process."""
+    if vp is None:
+        return print("test_no_nvcc: skipped (no vLLM)")
+    import importlib.util
+    import tempfile
+
+    msgs = []
+    warning, find_spec, which = vp.log.warning, importlib.util.find_spec, vp.shutil.which
+    env = {k: os.environ.pop(k, None) for k in ("VLLM_USE_FLASHINFER_SAMPLER", "CUDA_HOME")}
+    try:
+        vp.log.warning = lambda m, *a: msgs.append(m % a if a else m)
+
+        def run(sampler=None, flashinfer=True, jit_cache=False, nvcc=None, cuda_home=None):
+            importlib.util.find_spec = lambda name, *a: object() if (name == "flashinfer" and flashinfer) or (name == "flashinfer_jit_cache" and jit_cache) else None
+            vp.shutil.which = lambda name: nvcc
+            for k, v in (("VLLM_USE_FLASHINFER_SAMPLER", sampler), ("CUDA_HOME", cuda_home)):
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+            vp._NVCC_WARNED.clear()
+            msgs.clear()
+            vp._warn_no_nvcc()
+            return list(msgs)
+
+        got = run()
+        assert len(got) == 1 and "no nvcc" in got[0] and "VLLM_USE_FLASHINFER_SAMPLER=0" in got[0], got
+        vp._warn_no_nvcc()
+        assert len(msgs) == 1  # (once a process)
+        assert run(sampler="0") == [] and run(sampler="1") != []
+        assert run(nvcc="/usr/bin/nvcc") == [] and run(jit_cache=True) == [] and run(flashinfer=False) == []
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "bin"))
+            assert run(cuda_home=d) != []  # (CUDA_HOME with no nvcc in it)
+            open(os.path.join(d, "bin", "nvcc"), "w").close()
+            assert run(cuda_home=d) == []
+    finally:
+        vp.log.warning, importlib.util.find_spec, vp.shutil.which = warning, find_spec, which
+        for k, v in env.items():
+            os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+        vp._NVCC_WARNED.clear()
+
+
 if __name__ == "__main__":
-    for name, test in list(globals().items()):
-        if name.startswith("test_"):
-            test()
-            print(name, "ok")
+    tests = [t for name, t in list(globals().items()) if name.startswith("test_")]
+    for test in tests:
+        test()
+        print(test.__name__, "ok")
+    if vp is None:
+        import inspect
+
+        n = sum("if vp is None" in inspect.getsource(t) for t in tests)
+        print(f"NOTE: vLLM is not installed, so {n} of these {len(tests)} tests did not run (GLYD_REQUIRE_VLLM=1 makes that a failure)")
