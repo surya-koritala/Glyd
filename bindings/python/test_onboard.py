@@ -1556,9 +1556,15 @@ def test_install_sh_on_a_gpu_machine():
         assert seen == load_constraints_module().listed(text) and len(seen) > 150 and "vllm==0.30.0" in seen, len(seen)
     with Inst(nvidia="595.91.07") as i:  # a pre-release is named, and only that one is taken
         assert uv_install_lines(i.run(env={"GLYD_VERSION": "0.26.0rc3"}))[0].endswith("glyd[vllm]==0.26.0rc3")
-    with Inst(nvidia="595.91.07") as i:  # another build: its own wheel, its packages resolved fresh
-        (install,) = uv_install_lines(i.run(env={"GLYD_SPEC": "/tmp/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]"}))
-        assert install == "uv tool install --managed-python --python 3.12 /tmp/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]", install
+    with Inst(nvidia="595.91.07") as i:  # another build: its own wheel, under the same list of versions (the acceptance run installs a wheel)
+        r = i.run(env={"GLYD_SPEC": "/tmp/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]"})
+        (install,) = uv_install_lines(r)
+        assert re.fullmatch(r"uv tool install --managed-python --python 3\.12 --constraints \S+/constraints\.txt /tmp/glyd-0\.26\.0rc2-py3-none-manylinux_2_28_x86_64\.whl\[vllm\]", install), install
+    with Inst(nvidia="595.91.07", uv_fail=True) as i:  # where uv fails with the list in use, the way round it is named
+        r = i.run()
+        assert "GLYD_CONSTRAINTS=none in front of sh resolves the packages fresh" in r.err, r.err
+    with Inst(nvidia="595.91.07", uv_fail=True) as i:
+        assert "GLYD_CONSTRAINTS" not in i.run(env={"GLYD_CONSTRAINTS": "none"}).err
     with Inst(nvidia="595.91.07") as i:  # (or the list left out, where a version in it has been withdrawn)
         assert "--constraints" not in uv_install_lines(i.run(env={"GLYD_CONSTRAINTS": "none"}))[0]
     with Inst(nvidia="595.91.07", arch="aarch64") as i:  # (none was tested on aarch64)

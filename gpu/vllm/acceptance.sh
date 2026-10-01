@@ -288,8 +288,26 @@ def webui(url, model):
     return ok & check("Open WebUI chat, a tool call in the stream", "get_current_timestamp" in tools, f"tool calls {tools}, text {a.strip()[:60]!r}")
 
 
+CONTROL = r"[\x00-\x08\x0b-\x1f\x7f]"
+
+
+def raw(base, prompt_file):
+    """The control characters in the model's own answer to a prompt that carries escape sequences: what glyd run's output is compared with."""
+    model = json.load(call(base + "/models"))["data"][0]["id"]
+    r = json.load(call(base + "/chat/completions", {"model": model, "max_tokens": 100, "temperature": 0, "messages": [{"role": "user", "content": open(prompt_file).read()}]}))
+    text = r["choices"][0]["message"].get("content") or ""
+    print(f"the model's own answer has {len(re.findall(CONTROL, text))} control characters ({text.strip()[:30]!r})", flush=True)
+    return True
+
+
 what = sys.argv[1]
-sys.exit(0 if (api(sys.argv[2]) & thinking(sys.argv[2]) & too_long(sys.argv[2]) if what == "api" else webui(sys.argv[2], sys.argv[3])) else 1)
+if what == "api":
+    good = api(sys.argv[2]) & thinking(sys.argv[2]) & too_long(sys.argv[2])
+elif what == "raw":
+    good = raw(sys.argv[2], sys.argv[3])
+else:
+    good = webui(sys.argv[2], sys.argv[3])
+sys.exit(0 if good else 1)
 EOF
 }
 
@@ -469,7 +487,7 @@ glyd_again() {  # install.sh again, which is the README's way to update: nothing
     fail "install.sh run again with ~/.local/bin off PATH (exit $rc, logs/install-again.log): $(tail -4 "$LOGS/install-again.log" | tr '\n' '|' | cut -c1-300)"
   fi
   grep -qs 'local/bin' "$WORK/home/.bashrc" "$WORK/home/.profile" "$WORK/home/.zshenv" && ok "the PATH line is in the shell's startup file ($(grep -ls 'local/bin' "$WORK/home/.bashrc" "$WORK/home/.profile" "$WORK/home/.zshenv" | xargs -n1 basename | tr '\n' ' '))" || fail "the PATH edit install.sh announced is in none of .bashrc, .profile, .zshenv"
-  grep -q 'uv tool install' "$LOGS/install-again.log" && say "     (it ran: $(grep -c 'already installed' "$LOGS/install-again.log") already installed)"
+  say "     (uv's answer to the update: $(grep -m1 -E 'already installed|Installed|Uninstalled|Audited' "$LOGS/install-again.log" | cut -c1-100))"
   mkdir -p "$WORK/shadow"; printf '#!/bin/sh\necho "the compression program"\n' > "$WORK/shadow/glyd"; chmod +x "$WORK/shadow/glyd"
   run "PATH=$IN/shadow:$IN/home/.local/bin:/usr/local/bin:/usr/bin:/bin ${env}sh $IN/install.sh" > "$LOGS/install-shadow.log" 2>&1; rc=$?
   if [ $rc = 0 ] && grep -q "another glyd comes first on your PATH: $IN/shadow/glyd" "$LOGS/install-shadow.log" && grep -qF "export PATH=\"$IN/home/.local/bin:\$PATH\"" "$LOGS/install-shadow.log" && grep -qF "$IN/home/.local/bin/glyd run MODEL" "$LOGS/install-shadow.log"; then
@@ -503,7 +521,7 @@ glyd_key() {  # glyd serve with an API key: ready (the probe needs no key), the 
 
 glyd_hup() {  # nohup ignores SIGHUP, and glyd keeps it ignored: the server under it lives through the terminal closing
   local pid
-  pid=$(run 'pgrep -f "[g]lyd serve" | head -1' | tail -1)
+  pid=$(run 'pgrep -f "[/]bin/glyd serve" | head -1' | tail -1)  # (the tool's own process: its command line has the script's path, the wrapper's has not)
   [ -n "$pid" ] || { fail "no glyd serve process to send SIGHUP to"; return; }
   run "kill -HUP $pid" > /dev/null 2>&1; sleep 8
   if run "kill -0 $pid" > /dev/null 2>&1 && [ "$(run "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health")" = 200 ] && ! grep -q 'Stopping the server' "$LOGS/serve.out"; then
@@ -539,14 +557,14 @@ glyd_ctrlc() {  # Ctrl-C while the model loads, once and twice: glyd exits promp
 }
 
 glyd_chat_dies() {  # a terminal chat with an answer under way, and the engine killed under it: a plain message, no hang, no traceback
-  local key=${1:-} up out
+  local up out
   : > "$LOGS/serve-die.out"
   bg "${gf}glyd serve $MODEL --port 8000 > $IN/logs/serve-die.out 2>&1"
   up=; for _ in $(seq 1 600); do run 'curl -sf http://127.0.0.1:8000/v1/models' > /dev/null 2>&1 && { up=1; break; }; run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 3; done
   [ -n "$up" ] || { fail "glyd serve did not come up for the engine-killed check (logs/serve-die.out)"; return; }
   cat > "$WORK/chatdies.sh" <<EOF
 #!/bin/bash
-( sleep 8; echo 'Write the numbers from 1 to 600, one on each line, and nothing else. /no_think'; sleep 70; echo /bye ) | ${gf}script -qec 'glyd run $MODEL' /dev/null > $IN/logs/chatdies.out 2>&1 &
+( sleep 8; echo 'Write the numbers from 1 to 2000, one on each line, and nothing else. /no_think'; sleep 70; echo /bye ) | ${gf}script -qec 'glyd run $MODEL' /dev/null > $IN/logs/chatdies.out 2>&1 &
 chat=\$!
 sleep 24
 pkill -KILL -f 'EngineCore'
@@ -647,11 +665,14 @@ glyd_flow() {
   tee -a "$WORK/summary.txt" < "$LOGS/chat.log"
   # (a model that repeats escape sequences does not move the user's terminal: glyd run attaches to this server)
   printf 'Repeat this text exactly, character for character, and say nothing else: \033[31mRED\033[0m \033]0;pwned\007 end /no_think' > "$WORK/esc-prompt.txt"
-  run "${gf}glyd run $MODEL --prompt \"\$(cat $IN/esc-prompt.txt)\"" > "$LOGS/escapes.out" 2> "$LOGS/escapes.err"
-  if LC_ALL=C grep -q $'[\x01-\x08\x0b-\x1f\x7f]' "$LOGS/escapes.out"; then
-    fail "glyd run's answer carries control characters (logs/escapes.out): $(LC_ALL=C tr -d '[:print:]\n\t' < "$LOGS/escapes.out" | od -c | head -2 | tr '\n' ' ' | cut -c1-100)"
+  run "${gf}glyd run $MODEL --prompt \"\$(cat $IN/esc-prompt.txt)\"" > "$LOGS/escapes.out" 2> "$LOGS/escapes.err"; rc=$?
+  run "$py $IN/check.py raw http://127.0.0.1:8000/v1 $IN/esc-prompt.txt" > "$LOGS/escapes.raw" 2>&1
+  if LC_ALL=C grep -q $'[\x01-\x08\x0b-\x1f\x7f]' "$LOGS/escapes.out" "$LOGS/escapes.err"; then
+    fail "glyd run's output carries control characters (logs/escapes.out, escapes.err): $(cat "$LOGS/escapes.out" "$LOGS/escapes.err" | LC_ALL=C tr -d '[:print:]\n\t' | od -c | head -2 | tr '\n' ' ' | cut -c1-100)"
+  elif [ $rc != 0 ]; then
+    fail "glyd run with a prompt full of escape sequences exited $rc (logs/escapes.err): $(tail -2 "$LOGS/escapes.err" | tr '\n' '|' | cut -c1-200)"
   else
-    ok "glyd run's answer to a prompt full of escape sequences has no control character in it ($(wc -c < "$LOGS/escapes.out" | tr -d ' ') bytes: $(tr -d '\n' < "$LOGS/escapes.out" | cut -c1-50))"
+    ok "glyd run's answer to a prompt full of escape sequences has no control character in it ($(wc -c < "$LOGS/escapes.out" | tr -d ' ') bytes: $(tr -d '\n' < "$LOGS/escapes.out" | cut -c1-50)); $(cat "$LOGS/escapes.raw" | cut -c1-120)"
   fi
   big=$(run "yes word | head -n 60000 | tr '\n' ' ' | ${gf}glyd run $MODEL 2>&1 >/dev/null; echo rc=\$?" | tail -3 | tr '\n' ' ')
   case $big in *"This prompt is longer than the model's window"*"rc=1"*) ok "glyd run --prompt (a prompt on stdin) says so when the prompt outgrows the window: $(printf '%s' "$big" | cut -c1-150)";; *) fail "no plain message from glyd run for a prompt longer than the window: $big";; esac

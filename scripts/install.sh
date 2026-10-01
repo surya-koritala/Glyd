@@ -19,7 +19,7 @@
 #
 #   GLYD_VERSION      the release to install (default below; a pre-release is named here, e.g. 0.26.0rc3, and only that one is taken)
 #   GLYD_SPEC         the package to install instead, as uv takes it: a wheel with its extra ("/path/glyd-...whl[vllm]"), for another
-#                     build; its packages are resolved fresh, not from the list below
+#                     build (the list below still applies to it: a build that needs other versions says GLYD_CONSTRAINTS=none)
 #   GLYD_CONSTRAINTS  none: resolve the packages fresh, where one of the versions listed below has been withdrawn from PyPI
 set -eu
 
@@ -210,9 +210,11 @@ main() {
   fi
 
   set -- tool install --managed-python --python "$PYTHON"
-  if [ "$stack" = yes ] && [ -z "${GLYD_SPEC:-}" ] && [ "$arch" = x86_64 ] && [ "${GLYD_CONSTRAINTS:-}" != none ]; then
+  constrained=
+  if [ "$stack" = yes ] && [ "$arch" = x86_64 ] && [ "${GLYD_CONSTRAINTS:-}" != none ]; then
     constraints > "$tmp/constraints.txt"  # (what the acceptance run installed: for aarch64, none was run)
     set -- "$@" --constraints "$tmp/constraints.txt"
+    constrained=yes
   fi
   if [ "$stack" = yes ]; then
     say "Installing $spec and Python $PYTHON (PyTorch and vLLM: several GB, a few minutes)"
@@ -224,6 +226,7 @@ main() {
     say "Installing $spec and Python $PYTHON"
   fi
   resume="uv keeps what it downloaded."
+  if [ -n "$constrained" ]; then resume="$resume If uv reports that versions conflict, the list at the end of this script is for glyd $GLYD_VERSION; GLYD_CONSTRAINTS=none in front of sh resolves the packages fresh."; fi
   "$uv" "$@" "$spec"
   resume=
   [ -x "$bin/glyd" ] || die "uv installed Glyd, but there is no $bin/glyd: run this again."
