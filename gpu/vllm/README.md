@@ -18,38 +18,80 @@ the entry point logs one line and loads nothing, and `--quantization glyd` stops
 ## Local chat, like Ollama
 
 One server command, then a chat page in the browser, on a 16 GB GeForce card such as an RTX 4080 SUPER. Qwen3-8B's bf16
-weights (15.26 GiB) leave such a card no room for a chat. Packed by Glyd they take 11.83 GiB.
+weights (15.26 GiB) leave such a card no room for a chat. Packed by Glyd they take 11.39 GiB.
 
+**Needs**, none of it a CUDA toolkit: an NVIDIA driver 580 or newer (the CUDA 13 build of PyTorch that vLLM 0.30
+installs; the tests ran on 595), [uv](https://docs.astral.sh/uv/) (it fetches Python 3.12, with its headers), a C
+compiler (`sudo apt install build-essential`: Triton builds its launchers with one, and without it vLLM stops at start
+with "Failed to find C compiler"), and disk: about 8 GB for the packages and 16 GB for the model.
+
+<!-- acceptance: setup -->
 ```bash
-pip install "glyd[vllm]"
-vllm serve Qwen/Qwen3-8B --quantization glyd --enforce-eager --max-model-len 8192 \
-  --gpu-memory-utilization 0.88 --host 127.0.0.1
+uv venv --python 3.12 ~/glyd-env && source ~/glyd-env/bin/activate
+uv pip install "glyd[vllm]"
+```
+
+<!-- acceptance: serve -->
+```bash
+VLLM_USE_FLASHINFER_SAMPLER=0 vllm serve Qwen/Qwen3-8B --quantization glyd --enforce-eager \
+  --max-model-len 8192 --gpu-memory-utilization 0.88 --host 127.0.0.1 \
+  --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3
 ```
 
 The server answers on http://localhost:8000 once it logs `Application startup complete`.
 
+- **`VLLM_USE_FLASHINFER_SAMPLER=0`**: vLLM 0.30 samples top-k and top-p, which Qwen3's own settings use, with
+  FlashInfer. FlashInfer builds that kernel with nvcc on the first request that samples, and vLLM's warmup makes that
+  request at start: with no CUDA toolkit the server stopped there, after loading the weights, with "Could not find nvcc
+  and default cuda_home='/usr/local/cuda' doesn't exist". This makes vLLM sample with PyTorch and Triton instead, with
+  the same speed: 21.25 tokens/s greedy and 21.00 with top-p for one user, 161.4 and 159.5 in all for 8 users at once,
+  against 21.12, 20.98, 161.0 and 159.9 with FlashInfer's own kernel (`flashinfer-jit-cache`, 1 GB, installed in place of
+  the toolkit); the greedy answer is the same text, and the two samplers' draws are the same distribution (about
+  400,000 each: 0.0010 and 0.0016 from the exact one in total variation, 0.0020 from each other). Glyd logs one warning
+  at start where it finds no nvcc and the sampler on, naming both ways out.
+- **`--enable-auto-tool-choice --tool-call-parser hermes`**: Open WebUI offers the model its built-in tools in every
+  chat. The request carries `tools`, which vLLM takes as `tool_choice` auto, and without these flags it answers every
+  chat with `"auto" tool choice requires --enable-auto-tool-choice and --tool-call-parser to be set`. hermes is Qwen3's
+  tool-call format.
+- **`--reasoning-parser qwen3`**: Qwen3 thinks before it answers. With the parser the thinking is a field of its own
+  (`reasoning`, which Open WebUI shows as a collapsed Thought), and the answer's `content` has no `<think>` in it; without
+  it the thinking comes in the content, tags and all. A tool call parses either way.
 - **`--gpu-memory-utilization 0.88`** is vLLM's share of the card's total memory, for the weights, the KV cache and the
-  working memory. On a 16,376 MiB card (an RTX 4080 SUPER's) it is 14.07 GiB, the budget the tests ran with (14.06 to
-  14.13 GiB). The server's CUDA context and the desktop live outside it: the server held 14,958 MiB of the L4 in the
-  test, so about 1.4 GiB of a 16,376 MiB card stays free. If something else holds more, vLLM stops at start with "Free
-  memory on device ... is less than desired GPU memory utilization". Close that program, or lower the number.
+  working memory, of the total CUDA reports (`python -c "import torch; print(torch.cuda.mem_get_info()[1] / 2**30)"`):
+  an RTX 4080 SUPER's is 15.57 GiB (16,376 MiB is nvidia-smi's, 15.99 GiB), so 0.88 is 13.70 GiB. The server's CUDA
+  context and the desktop live outside it: on that card with a desktop vLLM logged 14.48 GiB free at start. If something
+  else holds more, vLLM stops at start with "Free memory on device ... is less than desired GPU memory utilization". Close
+  that program, or lower the number.
 - **`--enforce-eager`** runs without torch.compile and CUDA graphs. At this budget vLLM's defaults gave no server (-0.83
-  GiB left for the KV cache). A compiled server (context 4,096, 8 sequences, 512 tokens a step) started on its second
-  try, from the compile cache. Eager started at once, and one user's tokens a second were within 2% of compiled's.
-- **`--max-model-len 8192`** is the longest chat, in tokens. The KV cache holds 1.52 of them. A longer chat is refused
+  GiB left for the KV cache, measured on an L4 at 14.1 GiB). A compiled server (context 4,096, 8 sequences, 512 tokens a
+  step) started on its second try, from the compile cache. Eager started at once, and one user's tokens a second were
+  within 2% of compiled's.
+- **`--max-model-len 8192`** is the longest chat, in tokens. The KV cache holds 1.62 of them. A longer chat is refused
   with "maximum context length is 8192 tokens".
 - **`--host 127.0.0.1`** keeps the server on this machine. Without it vLLM listens on every interface, with no key.
 
-The chat page is Open WebUI, which talks to the server's OpenAI API. It uses no GPU memory.
+The chat page is Open WebUI, which talks to the server's OpenAI API. It uses no GPU memory. Without Docker:
 
+<!-- acceptance: webui-uvx -->
+```bash
+OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 OPENAI_API_KEY=none WEBUI_AUTH=False ENABLE_PERSISTENT_CONFIG=False \
+  uvx --python 3.11 open-webui@0.11.4 serve --host 127.0.0.1 --port 3000
+```
+
+With Docker:
+
+<!-- acceptance: webui-docker -->
 ```bash
 docker run -d --name open-webui --network=host -e PORT=3000 -e HOST=127.0.0.1 \
   -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 -e OPENAI_API_KEY=none -e WEBUI_AUTH=False \
-  -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:main
+  -e ENABLE_PERSISTENT_CONFIG=False -v open-webui:/app/backend/data ghcr.io/open-webui/open-webui:v0.11.4
 ```
 
-Open http://localhost:3000. `--network=host` lets the container reach the server on 127.0.0.1, and `HOST=127.0.0.1`
-keeps the page, which has no login here, on this machine. To test the server alone:
+Open http://localhost:3000. Run `uvx` from a directory you can write to: Open WebUI keeps a secret key file in it.
+`HOST` and `--host` keep the page, which has no login here, on this machine; `--network=host` lets the container reach
+the server on 127.0.0.1. `ENABLE_PERSISTENT_CONFIG=False` makes these variables the settings on every start: Open WebUI
+otherwise keeps the connection it first started with (the default, OpenAI's) in its data directory, takes the variables
+only on a first start, and shows "No models available" on a later one that has them. To test the server alone:
 
 ```bash
 curl localhost:8000/v1/models
@@ -61,31 +103,48 @@ curl localhost:8000/v1/chat/completions -H "Content-Type: application/json" -d '
 
 Qwen3 thinks before it answers. `/no_think` at the end of a message skips that.
 
-**Measured** on an L4 held to 15.5 GiB free (about 16 GB: an RTX 4080 SUPER's memory less 500 MiB for a desktop),
-with the plugin reading it as a GeForce Ada card; vLLM 0.30.0, Open WebUI 0.11.4. It was not run on an RTX 4080 SUPER,
-and these are not its speeds. The L4 takes 0.638 where a 16,376 MiB card takes 0.88, for the same budget of 14.1 GiB.
+`bash gpu/vllm/acceptance.sh` runs this section from nothing, on a machine with no CUDA toolkit: a clean environment, the
+install, the serve command above as written, a chat through the OpenAI API (two streamed turns and a tool call) and
+through Open WebUI both ways, failing on a traceback, an allocator warning or a missing answer. Where the GPU is bigger
+than a card it stands in for, `--card 4080s` leaves the server that card's memory and budget (`--help`).
 
-- **One user:** 21-22 tokens/s (three chat turns 21.6-22.2, a 512-token answer 21.1, a thinking answer of 1,024
-  tokens 21.0), the first token 57-126 ms after the request. Through Open WebUI's API the stream ran at 21.2
-  tokens/s, the first token at 99 ms.
-- **KV cache:** 1.71 GiB, 12,432 tokens, at the 14.06 GiB budget (1.77 GiB, 12,912 tokens, at 14.13 GiB).
+**Measured** on an L4 held to what an RTX 4080 SUPER with a desktop leaves (14.48 GiB free at start, a budget of 13.71
+GiB: `--card 4080s`, which runs `--gpu-memory-utilization 0.88` as 0.622), with the plugin reading it as a GeForce Ada
+card; vLLM 0.30.0, Open WebUI 0.11.4. 0.26.0rc2's load was also run on an RTX 4080 SUPER with a desktop (the
+fixes of this section were not): the stand-in's numbers for 0.26.0rc2 match it, 11.83 GiB of weights and 1.35 GiB of KV
+cache against 1.34 GiB there.
+
+- **One user:** 21.0-21.3 tokens/s (five answers of 256 tokens each, greedy 21.23, top-p 21.07), the first token 53 ms
+  after the request; 162 tokens/s in all for 8 users at once, greedy.
+- **KV cache:** 1.83 GiB, 13,280 tokens, at the 13.71 GiB budget, with the weights at 11.39 GiB. 0.26.0rc2's weights took
+  11.83 GiB and its KV cache 1.35 GiB (9,856 tokens) in the same run, 1.34 GiB (9,744 tokens) on the RTX 4080 SUPER.
 - **bf16's weights leave no room:** its server did not start with the same flags (without `--quantization glyd`). It ran
   out of memory loading the weights, 15.26 GiB into about 15.3 GiB free.
-- **Loading** took 22 s for the weights and 39 s to a running server. While it loads, the server takes nearly all the
-  free GPU memory: 1 MiB was the lowest free, and under 512 MiB for 8 s. No desktop ran in the test, so what one does in
-  those seconds is not measured.
-- **Open WebUI:** its model list showed Qwen/Qwen3-8B, and a chat through its API completed. Its page was not opened.
-- **A tip:** `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` before `vllm serve` gave 2.13 GiB of KV cache (15,504
-  tokens) at the same budget, the same tokens a second, and a load 10 s longer (one run each).
+- **Loading** took 15 s for the weights (24 s with 0.26.0rc2) and 39-46 s to a running server. While it loads, the
+  server takes most of the free GPU memory: 669 MiB were left free at the least, where 0.26.0rc2 took the card to 3 MiB
+  and its log held 254 allocator warnings, "memory allocation failed with OOM", one for each time PyTorch's allocator
+  could not get a block and freed its cache to try again. Now it holds none, at 14.48 GiB free and at the 21.7 GiB the L4
+  has free with no hog (0.26.0rc2 held none there either: its KV cache 7.04 GiB, 51,264 tokens, against 7.51 GiB, 54,688).
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, which gave 0.26.0rc2 1.74 GiB of KV cache, replaced its 254
+  warnings with 73 of its own, "memory mapping failed with OOM". No desktop ran in the test, so what one does in those
+  seconds is not measured.
+- **Open WebUI:** its model list showed Qwen/Qwen3-8B, a chat through its chat endpoint with the browser's request (its
+  tools on) completed, and it passed the model's tool call, by both routes. In a browser (Open WebUI 0.11.4's page over a tunnel) a chat showed a collapsed "Thought for 7
+  seconds" and its answer, and a question about the time called the tool, "Explored get_current_timestamp", and answered
+  with its result.
 
-The hog that held the L4's memory, the GeForce emulation, every run and its log:
-[benchmarks/gpu/l4-local-chat-2026-09-30](../../benchmarks/gpu/l4-local-chat-2026-09-30).
+The packing's passes, the allocator and every run with its log:
+[benchmarks/gpu/l4-quickstart-2026-09-30](../../benchmarks/gpu/l4-quickstart-2026-09-30). The hog that held the L4's
+memory and the GeForce emulation of the first test: [benchmarks/gpu/l4-local-chat-2026-09-30](../../benchmarks/gpu/l4-local-chat-2026-09-30).
 
 ## What it does
 
 - **At load.** Each Linear's bf16 weight is held on the meta device. As vLLM's layerwise loading completes a layer,
-  its weights are packed on the GPU, so the load peaks at the packs plus one layer. The layout is Glyd's tiered one
-  (10.80 bits a weight) or its 12-bit one (12.04). With `verify`, every pack is decoded and compared with its weights.
+  its weights are packed on the GPU, so the load peaks at the packs plus one layer; the layer's bf16 is dropped at
+  once, and PyTorch's unused blocks go back to the driver where they outweigh its free memory (vLLM loads with the
+  allocator told not to split a block past 20 MiB, and on a card the weights nearly fill the unused blocks would pile up
+  until an allocation failed and PyTorch warned, 254 times on a 16 GB card). The layout is Glyd's tiered one (10.80 bits a
+  weight) or its 12-bit one (12.04). With `verify`, every pack is decoded and compared with its weights.
   - A layer whose checkpoint lacks a piece (a merged qkv's k, say, or an expert's up) is refused, naming the layer and
     the piece. vLLM's bf16 runs such a checkpoint with that piece's memory never written.
   - A model whose packs cannot fit the GPU's free memory is refused before it loads, with the numbers; running out of

@@ -1,0 +1,870 @@
+$ vllm serve Qwen/Qwen3-8B --quantization glyd --enforce-eager --max-model-len 8192 --gpu-memory-utilization 0.622 --host 127.0.0.1 
+GLYD_PROBE=1
+GLYD_PROBE_GEFORCE=1
+HF_HOME=/hf
+PYTHONPATH=/work/probe
+PATH=/work/env-rc2/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+glyd test: the plugin reads this GPU as GeForce Ada (1089)
+(APIServer pid=82) INFO 09-30 22:21:26 [api_utils.py:347] 
+(APIServer pid=82) INFO 09-30 22:21:26 [api_utils.py:347]        █     █     █▄   ▄█
+(APIServer pid=82) INFO 09-30 22:21:26 [api_utils.py:347]  ▄▄ ▄█ █     █     █ ▀▄▀ █  version 0.30.0
+(APIServer pid=82) INFO 09-30 22:21:26 [api_utils.py:347]   █▄█▀ █     █     █     █  model   Qwen/Qwen3-8B
+(APIServer pid=82) INFO 09-30 22:21:26 [api_utils.py:347]    ▀▀  ▀▀▀▀▀ ▀▀▀▀▀ ▀     ▀
+(APIServer pid=82) INFO 09-30 22:21:26 [api_utils.py:347] 
+(APIServer pid=82) INFO 09-30 22:21:26 [api_utils.py:286] non-default args: {'model_tag': 'Qwen/Qwen3-8B', 'host': '127.0.0.1', 'model': 'Qwen/Qwen3-8B', 'max_model_len': 8192, 'quantization': 'glyd', 'enforce_eager': True, 'gpu_memory_utilization': 0.622}
+(APIServer pid=82) INFO 09-30 22:21:26 [model.py:692] Resolved architecture: Qwen3ForCausalLM
+(APIServer pid=82) INFO 09-30 22:21:26 [model.py:2030] Using max model len 8192
+(APIServer pid=82) Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+(APIServer pid=82) WARNING 09-30 22:21:27 [vllm.py:1547] Enforce eager set, disabling torch.compile and CUDAGraphs. This is equivalent to setting -cc.mode=none -cc.cudagraph_mode=none
+(APIServer pid=82) WARNING 09-30 22:21:27 [vllm.py:1570] Inductor compilation was disabled by user settings, optimizations settings that are only active during inductor compilation will be ignored.
+(APIServer pid=82) INFO 09-30 22:21:27 [kernel.py:416] Final IR op priority after setting platform defaults: IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native'])
+(APIServer pid=82) INFO 09-30 22:21:27 [vllm.py:1780] Cudagraph is disabled under eager mode
+(APIServer pid=82) INFO 09-30 22:21:27 [compilation.py:336] Enabled custom fusions: norm_quant, act_quant
+glyd test: the plugin reads this GPU as GeForce Ada (1089)
+(EngineCore pid=174) INFO 09-30 22:21:36 [core.py:123] Initializing a V1 LLM engine (v0.30.0) with config: model='Qwen/Qwen3-8B', speculative_config=None, tokenizer='Qwen/Qwen3-8B', skip_tokenizer_init=False, tokenizer_mode=auto, revision=main, tokenizer_revision=main, trust_remote_code=False, dtype=torch.bfloat16, max_seq_len=8192, download_dir=None, load_format=auto, tensor_parallel_size=1, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_size=1, dcp_comm_backend=ag_rs, disable_custom_all_reduce=False, quantization=glyd, quantization_config=None, enforce_eager=True, enable_return_routed_experts=False, kv_cache_dtype=auto, device_config=cuda, structured_outputs_config=StructuredOutputsConfig(backend='auto', disable_any_whitespace=False, disable_additional_properties=False, reasoning_parser='', reasoning_parser_plugin='', enable_in_reasoning=False), observability_config=ObservabilityConfig(show_hidden_metrics_for_version=None, otlp_traces_endpoint=None, collect_detailed_traces=None, per_request_spec_decode_metrics='none', kv_cache_metrics=False, kv_cache_metrics_sample=0.01, cudagraph_metrics=False, enable_layerwise_nvtx_tracing=False, enable_mfu_metrics=False, enable_mm_processor_stats=False, enable_logging_iteration_details=False, jit_monitor_mode='warn', jit_monitor_verbose=False), seed=0, served_model_name=Qwen/Qwen3-8B, enable_prefix_caching=True, enable_chunked_prefill=True, pooler_config=None, compilation_config={'mode': <CompilationMode.NONE: 0>, 'debug_dump_path': None, 'cache_dir': '', 'compile_cache_save_format': 'binary', 'backend': 'inductor', 'custom_ops': ['all'], 'ir_enable_torch_wrap': False, 'splitting_ops': [], 'compile_mm_encoder': False, 'cudagraph_mm_encoder': False, 'encoder_cudagraph_token_budgets': [], 'encoder_cudagraph_max_vision_items_per_batch': 0, 'encoder_cudagraph_max_frames_per_batch': None, 'compile_sizes': [], 'compile_ranges_endpoints': [2048], 'inductor_compile_config': {'enable_auto_functionalized_v2': False, 'combo_kernels': True, 'benchmark_combo_kernel': True}, 'inductor_passes': {}, 'cudagraph_mode': <CUDAGraphMode.NONE: 0>, 'cudagraph_num_of_warmups': 0, 'cudagraph_capture_sizes': [], 'cudagraph_copy_inputs': False, 'cudagraph_specialize_lora': True, 'use_inductor_graph_partition': False, 'pass_config': {'fuse_norm_quant': True, 'fuse_act_quant': True, 'fuse_attn_quant': False, 'enable_sp': False, 'fuse_gemm_comms': False, 'fuse_allreduce_rms': False, 'enable_qk_norm_rope_fusion': False, 'fuse_rope_kvcache_cat_mla': False, 'fuse_act_padding': False, 'fuse_qk_norm_rope_kvcache': False}, 'max_cudagraph_capture_size': 0, 'dynamic_shapes_config': {'type': <DynamicShapesType.BACKED: 'backed'>, 'evaluate_guards': False, 'assume_32_bit_indexing': False}, 'local_cache_dir': None, 'fast_moe_cold_start': False, 'static_all_moe_layers': []}, kernel_config=KernelConfig(ir_op_priority=IrOpPriorityConfig(rms_norm=['vllm_c', 'native'], fused_add_rms_norm=['vllm_c', 'native'], gelu_and_mul_sparse=['triton', 'native']), enable_flashinfer_autotune=True, enable_cutedsl_warmup=True, enable_jit_warmup=True, moe_backend='auto', sparse_indexer_topk_backend='auto', linear_backend='auto', linear_backend_per_quant=None)
+(EngineCore pid=174) INFO 09-30 22:21:36 [parallel_state.py:1827] world_size=1 rank=0 local_rank=0 distributed_init_method=file:///tmp/vllm_dist_dd1eee14883f490fa5c50634155e9006 backend=nccl
+(EngineCore pid=174) INFO 09-30 22:21:36 [parallel_state.py:2267] rank 0 in world size 1 is assigned as DP rank 0, PP rank 0, PCP rank 0, TP rank 0, ETP rank 0, EP rank N/A, EPLB rank N/A
+(EngineCore pid=174) INFO 09-30 22:21:36 [gpu_worker.py:441] Using V2 Model Runner
+(EngineCore pid=174) INFO 09-30 22:21:37 [model_runner.py:396] Loading model from scratch...
+(EngineCore pid=174) INFO 09-30 22:21:37 [vllm_plugin.py:424] glyd: mma layout
+(EngineCore pid=174) INFO 09-30 22:21:38 [cuda.py:538] Using FLASH_ATTN attention backend out of potential backends: ['FLASH_ATTN', 'FLASHINFER', 'TRITON_ATTN', 'FLEX_ATTENTION'].
+(EngineCore pid=174) INFO 09-30 22:21:38 [flash_attn.py:1116] Using FlashAttention version 2
+(EngineCore pid=174) INFO 09-30 22:21:38 [weight_utils.py:895] Filesystem type for checkpoints: EXT4. Checkpoint size: 15.26 GiB. Available RAM: 55.64 GiB.
+(EngineCore pid=174) INFO 09-30 22:21:38 [weight_utils.py:918] Auto-prefetch is disabled because the filesystem (EXT4) is not a recognized network FS (NFS/Lustre). If you want to force prefetching, start vLLM with --safetensors-load-strategy=prefetch.
+(EngineCore pid=174) Loading safetensors checkpoint shards:   0% Completed | 0/5 [00:00<?, ?it/s]
+(EngineCore pid=174) [probe] packed model.layers.0.mlp.down_proj: alloc 2649 MiB, reserved 3494, free 11280, retries 0, ooms 0, peak alloc 2866, peak reserved 3494
+(EngineCore pid=174) [probe] packed model.layers.0.mlp.gate_up_proj: alloc 2978 MiB, reserved 4096, free 10678, retries 0, ooms 0, peak alloc 3146, peak reserved 4096
+(EngineCore pid=174) [probe] packed model.layers.0.self_attn.o_proj: alloc 2840 MiB, reserved 4352, free 10422, retries 0, ooms 0, peak alloc 3146, peak reserved 4352
+(EngineCore pid=174) [probe] packed model.layers.0.self_attn.qkv_proj: alloc 2904 MiB, reserved 4506, free 10268, retries 0, ooms 0, peak alloc 3168, peak reserved 4506
+(EngineCore pid=174) [probe] packed model.layers.1.mlp.down_proj: alloc 3012 MiB, reserved 4674, free 10100, retries 0, ooms 0, peak alloc 3320, peak reserved 4674
+(EngineCore pid=174) [probe] packed model.layers.1.mlp.gate_up_proj: alloc 3272 MiB, reserved 5246, free 9528, retries 0, ooms 0, peak alloc 3556, peak reserved 5246
+(EngineCore pid=174) [probe] packed model.layers.1.self_attn.o_proj: alloc 3134 MiB, reserved 5310, free 9464, retries 0, ooms 0, peak alloc 3556, peak reserved 5310
+(EngineCore pid=174) [probe] packed model.layers.1.self_attn.qkv_proj: alloc 3198 MiB, reserved 5430, free 9344, retries 0, ooms 0, peak alloc 3556, peak reserved 5430
+(EngineCore pid=174) [probe] packed model.layers.2.mlp.down_proj: alloc 3306 MiB, reserved 5560, free 9214, retries 0, ooms 0, peak alloc 3614, peak reserved 5560
+(EngineCore pid=174) [probe] packed model.layers.2.mlp.gate_up_proj: alloc 3573 MiB, reserved 6564, free 8210, retries 0, ooms 0, peak alloc 3854, peak reserved 6564
+(EngineCore pid=174) [probe] packed model.layers.2.self_attn.o_proj: alloc 3434 MiB, reserved 6628, free 8146, retries 0, ooms 0, peak alloc 3854, peak reserved 6628
+(EngineCore pid=174) [probe] packed model.layers.2.self_attn.qkv_proj: alloc 3499 MiB, reserved 6668, free 8106, retries 0, ooms 0, peak alloc 3854, peak reserved 6668
+(EngineCore pid=174) [probe] packed model.layers.3.mlp.down_proj: alloc 3606 MiB, reserved 6796, free 7978, retries 0, ooms 0, peak alloc 3915, peak reserved 6796
+(EngineCore pid=174) [probe] packed model.layers.3.mlp.gate_up_proj: alloc 3875 MiB, reserved 7490, free 7284, retries 0, ooms 0, peak alloc 4147, peak reserved 7490
+(EngineCore pid=174) [probe] packed model.layers.3.self_attn.o_proj: alloc 3736 MiB, reserved 7554, free 7220, retries 0, ooms 0, peak alloc 4147, peak reserved 7554
+(EngineCore pid=174) [probe] packed model.layers.3.self_attn.qkv_proj: alloc 3801 MiB, reserved 7674, free 7100, retries 0, ooms 0, peak alloc 4147, peak reserved 7674
+(EngineCore pid=174) [probe] packed model.layers.4.mlp.down_proj: alloc 3903 MiB, reserved 8282, free 6492, retries 0, ooms 0, peak alloc 4217, peak reserved 8282
+(EngineCore pid=174) [probe] packed model.layers.4.mlp.gate_up_proj: alloc 4139 MiB, reserved 8284, free 6490, retries 0, ooms 0, peak alloc 4406, peak reserved 8284
+(EngineCore pid=174) [probe] packed model.layers.4.self_attn.o_proj: alloc 4001 MiB, reserved 8348, free 6426, retries 0, ooms 0, peak alloc 4406, peak reserved 8348
+(EngineCore pid=174) [probe] packed model.layers.4.self_attn.qkv_proj: alloc 4065 MiB, reserved 8348, free 6426, retries 0, ooms 0, peak alloc 4406, peak reserved 8348
+(EngineCore pid=174) [probe] packed model.layers.5.mlp.down_proj: alloc 4166 MiB, reserved 8476, free 6298, retries 0, ooms 0, peak alloc 4481, peak reserved 8476
+(EngineCore pid=174) [probe] packed model.layers.5.mlp.gate_up_proj: alloc 4399 MiB, reserved 8476, free 6298, retries 0, ooms 0, peak alloc 4663, peak reserved 8476
+(EngineCore pid=174) [probe] packed model.layers.5.self_attn.o_proj: alloc 4260 MiB, reserved 8540, free 6234, retries 0, ooms 0, peak alloc 4663, peak reserved 8540
+(EngineCore pid=174) [probe] packed model.layers.5.self_attn.qkv_proj: alloc 4326 MiB, reserved 8620, free 6154, retries 0, ooms 0, peak alloc 4663, peak reserved 8620
+(EngineCore pid=174) [probe] packed model.layers.6.mlp.down_proj: alloc 4426 MiB, reserved 8748, free 6026, retries 0, ooms 0, peak alloc 4742, peak reserved 8748
+(EngineCore pid=174) [probe] packed model.layers.6.mlp.gate_up_proj: alloc 4659 MiB, reserved 8748, free 6026, retries 0, ooms 0, peak alloc 4922, peak reserved 8748
+(EngineCore pid=174) [probe] packed model.layers.6.self_attn.o_proj: alloc 4521 MiB, reserved 8812, free 5962, retries 0, ooms 0, peak alloc 4922, peak reserved 8812
+(EngineCore pid=174) [probe] packed model.layers.6.self_attn.qkv_proj: alloc 4587 MiB, reserved 8812, free 5962, retries 0, ooms 0, peak alloc 4922, peak reserved 8812
+(EngineCore pid=174) [probe] packed model.layers.7.self_attn.qkv_proj: alloc 4621 MiB, reserved 8924, free 5850, retries 0, ooms 0, peak alloc 4922, peak reserved 8924
+(EngineCore pid=174) Loading safetensors checkpoint shards:  20% Completed | 1/5 [00:04<00:17,  4.43s/it]
+(EngineCore pid=174) [probe] packed model.layers.10.mlp.down_proj: alloc 4722 MiB, reserved 9052, free 5722, retries 0, ooms 0, peak alloc 5037, peak reserved 9052
+(EngineCore pid=174) [probe] packed model.layers.10.mlp.gate_up_proj: alloc 4954 MiB, reserved 9052, free 5722, retries 0, ooms 0, peak alloc 5218, peak reserved 9052
+(EngineCore pid=174) [probe] packed model.layers.10.self_attn.o_proj: alloc 4816 MiB, reserved 9164, free 5610, retries 0, ooms 0, peak alloc 5218, peak reserved 9164
+(EngineCore pid=174) [probe] packed model.layers.10.self_attn.qkv_proj: alloc 4883 MiB, reserved 9164, free 5610, retries 0, ooms 0, peak alloc 5218, peak reserved 9164
+(EngineCore pid=174) [probe] packed model.layers.11.mlp.down_proj: alloc 4983 MiB, reserved 9292, free 5482, retries 0, ooms 0, peak alloc 5299, peak reserved 9292
+(EngineCore pid=174) [probe] packed model.layers.11.mlp.gate_up_proj: alloc 5216 MiB, reserved 9308, free 5466, retries 0, ooms 0, peak alloc 5479, peak reserved 9308
+(EngineCore pid=174) [probe] packed model.layers.11.self_attn.o_proj: alloc 5078 MiB, reserved 9422, free 5352, retries 0, ooms 0, peak alloc 5479, peak reserved 9422
+(EngineCore pid=174) [probe] packed model.layers.11.self_attn.qkv_proj: alloc 5144 MiB, reserved 9462, free 5312, retries 0, ooms 0, peak alloc 5479, peak reserved 9462
+(EngineCore pid=174) [probe] packed model.layers.12.mlp.down_proj: alloc 5244 MiB, reserved 9590, free 5184, retries 0, ooms 0, peak alloc 5560, peak reserved 9590
+(EngineCore pid=174) [probe] packed model.layers.12.mlp.gate_up_proj: alloc 5477 MiB, reserved 9608, free 5166, retries 0, ooms 0, peak alloc 5741, peak reserved 9608
+(EngineCore pid=174) [probe] packed model.layers.12.self_attn.o_proj: alloc 5339 MiB, reserved 9704, free 5070, retries 0, ooms 0, peak alloc 5741, peak reserved 9704
+(EngineCore pid=174) [probe] packed model.layers.12.self_attn.qkv_proj: alloc 5405 MiB, reserved 9824, free 4950, retries 0, ooms 0, peak alloc 5741, peak reserved 9824
+(EngineCore pid=174) [probe] packed model.layers.13.mlp.down_proj: alloc 5506 MiB, reserved 9952, free 4822, retries 0, ooms 0, peak alloc 5821, peak reserved 9952
+(EngineCore pid=174) [probe] packed model.layers.13.mlp.gate_up_proj: alloc 5739 MiB, reserved 9972, free 4802, retries 0, ooms 0, peak alloc 6002, peak reserved 9972
+(EngineCore pid=174) [probe] packed model.layers.13.self_attn.o_proj: alloc 5601 MiB, reserved 10068, free 4706, retries 0, ooms 0, peak alloc 6002, peak reserved 10068
+(EngineCore pid=174) [probe] packed model.layers.13.self_attn.qkv_proj: alloc 5667 MiB, reserved 10148, free 4626, retries 0, ooms 0, peak alloc 6002, peak reserved 10148
+(EngineCore pid=174) [probe] packed model.layers.14.mlp.down_proj: alloc 5768 MiB, reserved 10276, free 4498, retries 0, ooms 0, peak alloc 6083, peak reserved 10276
+(EngineCore pid=174) [probe] packed model.layers.14.mlp.gate_up_proj: alloc 6000 MiB, reserved 10294, free 4480, retries 0, ooms 0, peak alloc 6264, peak reserved 10294
+(EngineCore pid=174) [probe] packed model.layers.14.self_attn.o_proj: alloc 5862 MiB, reserved 10390, free 4384, retries 0, ooms 0, peak alloc 6264, peak reserved 10390
+(EngineCore pid=174) [probe] packed model.layers.14.self_attn.qkv_proj: alloc 5929 MiB, reserved 10390, free 4384, retries 0, ooms 0, peak alloc 6264, peak reserved 10390
+(EngineCore pid=174) [probe] packed model.layers.15.mlp.down_proj: alloc 6029 MiB, reserved 10518, free 4256, retries 0, ooms 0, peak alloc 6345, peak reserved 10518
+(EngineCore pid=174) [probe] packed model.layers.15.mlp.gate_up_proj: alloc 6262 MiB, reserved 10538, free 4236, retries 0, ooms 0, peak alloc 6525, peak reserved 10538
+(EngineCore pid=174) [probe] packed model.layers.15.self_attn.o_proj: alloc 6124 MiB, reserved 10634, free 4140, retries 0, ooms 0, peak alloc 6525, peak reserved 10634
+(EngineCore pid=174) [probe] packed model.layers.15.self_attn.qkv_proj: alloc 6190 MiB, reserved 10754, free 4020, retries 0, ooms 0, peak alloc 6525, peak reserved 10754
+(EngineCore pid=174) [probe] packed model.layers.16.mlp.down_proj: alloc 6291 MiB, reserved 10882, free 3892, retries 0, ooms 0, peak alloc 6606, peak reserved 10882
+(EngineCore pid=174) [probe] packed model.layers.16.mlp.gate_up_proj: alloc 6524 MiB, reserved 10900, free 3874, retries 0, ooms 0, peak alloc 6787, peak reserved 10900
+(EngineCore pid=174) [probe] packed model.layers.16.self_attn.o_proj: alloc 6385 MiB, reserved 10996, free 3778, retries 0, ooms 0, peak alloc 6787, peak reserved 10996
+(EngineCore pid=174) [probe] packed model.layers.16.self_attn.qkv_proj: alloc 6452 MiB, reserved 11156, free 3618, retries 0, ooms 0, peak alloc 6787, peak reserved 11156
+(EngineCore pid=174) [probe] packed model.layers.17.self_attn.o_proj: alloc 6442 MiB, reserved 11188, free 3586, retries 0, ooms 0, peak alloc 6787, peak reserved 11188
+(EngineCore pid=174) [probe] packed model.layers.17.self_attn.qkv_proj: alloc 6508 MiB, reserved 11388, free 3386, retries 0, ooms 0, peak alloc 6787, peak reserved 11388
+(EngineCore pid=174) [probe] packed model.layers.7.mlp.down_proj: alloc 6609 MiB, reserved 11516, free 3258, retries 0, ooms 0, peak alloc 6924, peak reserved 11516
+(EngineCore pid=174) [probe] packed model.layers.7.mlp.gate_up_proj: alloc 6842 MiB, reserved 11516, free 3258, retries 0, ooms 0, peak alloc 7105, peak reserved 11516
+(EngineCore pid=174) [probe] packed model.layers.7.self_attn.o_proj: alloc 6704 MiB, reserved 11612, free 3162, retries 0, ooms 0, peak alloc 7105, peak reserved 11612
+(EngineCore pid=174) [probe] packed model.layers.8.mlp.down_proj: alloc 6836 MiB, reserved 11740, free 3034, retries 0, ooms 0, peak alloc 7152, peak reserved 11740
+(EngineCore pid=174) [probe] packed model.layers.8.mlp.gate_up_proj: alloc 7069 MiB, reserved 11756, free 3018, retries 0, ooms 0, peak alloc 7332, peak reserved 11756
+(EngineCore pid=174) [probe] packed model.layers.8.self_attn.o_proj: alloc 6930 MiB, reserved 11838, free 2936, retries 0, ooms 0, peak alloc 7332, peak reserved 11838
+(EngineCore pid=174) [probe] packed model.layers.8.self_attn.qkv_proj: alloc 6997 MiB, reserved 11838, free 2936, retries 0, ooms 0, peak alloc 7332, peak reserved 11838
+(EngineCore pid=174) [probe] packed model.layers.9.mlp.down_proj: alloc 7097 MiB, reserved 11966, free 2808, retries 0, ooms 0, peak alloc 7413, peak reserved 11966
+(EngineCore pid=174) [probe] packed model.layers.9.mlp.gate_up_proj: alloc 7330 MiB, reserved 11986, free 2788, retries 0, ooms 0, peak alloc 7593, peak reserved 11986
+(EngineCore pid=174) [probe] packed model.layers.9.self_attn.o_proj: alloc 7192 MiB, reserved 12082, free 2692, retries 0, ooms 0, peak alloc 7593, peak reserved 12082
+(EngineCore pid=174) [probe] packed model.layers.9.self_attn.qkv_proj: alloc 7258 MiB, reserved 12242, free 2532, retries 0, ooms 0, peak alloc 7593, peak reserved 12242
+(EngineCore pid=174) Loading safetensors checkpoint shards:  40% Completed | 2/5 [00:10<00:15,  5.22s/it]
+(EngineCore pid=174) [probe] packed model.layers.17.mlp.down_proj: alloc 7359 MiB, reserved 12370, free 2404, retries 0, ooms 0, peak alloc 7674, peak reserved 12370
+(EngineCore pid=174) [probe] packed model.layers.17.mlp.gate_up_proj: alloc 7592 MiB, reserved 12388, free 2386, retries 0, ooms 0, peak alloc 7855, peak reserved 12388
+(EngineCore pid=174) [probe] packed model.layers.18.mlp.down_proj: alloc 7564 MiB, reserved 12580, free 2194, retries 0, ooms 0, peak alloc 7880, peak reserved 12580
+(EngineCore pid=174) [probe] packed model.layers.18.mlp.gate_up_proj: alloc 7797 MiB, reserved 12600, free 2174, retries 0, ooms 0, peak alloc 8061, peak reserved 12600
+(EngineCore pid=174) [probe] packed model.layers.18.self_attn.o_proj: alloc 7659 MiB, reserved 12816, free 1958, retries 0, ooms 0, peak alloc 8061, peak reserved 12816
+(EngineCore pid=174) [probe] packed model.layers.18.self_attn.qkv_proj: alloc 7726 MiB, reserved 12976, free 1798, retries 0, ooms 0, peak alloc 8061, peak reserved 12976
+(EngineCore pid=174) [probe] packed model.layers.19.mlp.down_proj: alloc 7826 MiB, reserved 13104, free 1670, retries 0, ooms 0, peak alloc 8142, peak reserved 13104
+(EngineCore pid=174) [probe] packed model.layers.19.mlp.gate_up_proj: alloc 8059 MiB, reserved 13122, free 1652, retries 0, ooms 0, peak alloc 8322, peak reserved 13122
+(EngineCore pid=174) [probe] packed model.layers.19.self_attn.o_proj: alloc 7921 MiB, reserved 13298, free 1476, retries 0, ooms 0, peak alloc 8322, peak reserved 13298
+(EngineCore pid=174) [probe] packed model.layers.19.self_attn.qkv_proj: alloc 7988 MiB, reserved 13458, free 1316, retries 0, ooms 0, peak alloc 8322, peak reserved 13458
+(EngineCore pid=174) [probe] packed model.layers.20.mlp.down_proj: alloc 8089 MiB, reserved 13586, free 1188, retries 0, ooms 0, peak alloc 8404, peak reserved 13586
+(EngineCore pid=174) [probe] packed model.layers.20.mlp.gate_up_proj: alloc 8322 MiB, reserved 13606, free 1168, retries 0, ooms 0, peak alloc 8585, peak reserved 13606
+(EngineCore pid=174) [probe] packed model.layers.20.self_attn.o_proj: alloc 8184 MiB, reserved 13702, free 1072, retries 0, ooms 0, peak alloc 8585, peak reserved 13702
+(EngineCore pid=174) [probe] packed model.layers.20.self_attn.qkv_proj: alloc 8251 MiB, reserved 13822, free 952, retries 0, ooms 0, peak alloc 8585, peak reserved 13822
+(EngineCore pid=174) [probe] packed model.layers.21.mlp.down_proj: alloc 8351 MiB, reserved 13950, free 824, retries 0, ooms 0, peak alloc 8667, peak reserved 13950
+(EngineCore pid=174) [probe] packed model.layers.21.mlp.gate_up_proj: alloc 8585 MiB, reserved 13970, free 804, retries 0, ooms 0, peak alloc 8848, peak reserved 13970
+(EngineCore pid=174) [probe] packed model.layers.21.self_attn.o_proj: alloc 8446 MiB, reserved 14106, free 668, retries 0, ooms 0, peak alloc 8848, peak reserved 14106
+(EngineCore pid=174) [probe] packed model.layers.21.self_attn.qkv_proj: alloc 8514 MiB, reserved 14266, free 508, retries 0, ooms 0, peak alloc 8848, peak reserved 14266
+(EngineCore pid=174) [probe] packed model.layers.22.mlp.down_proj: alloc 8614 MiB, reserved 14394, free 380, retries 0, ooms 0, peak alloc 8930, peak reserved 14394
+(EngineCore pid=174) [probe] packed model.layers.22.mlp.gate_up_proj: alloc 8847 MiB, reserved 14412, free 362, retries 0, ooms 0, peak alloc 9110, peak reserved 14412
+(EngineCore pid=174) [probe] packed model.layers.22.self_attn.o_proj: alloc 8709 MiB, reserved 14508, free 266, retries 0, ooms 0, peak alloc 9110, peak reserved 14508
+(EngineCore pid=174) [probe] packed model.layers.22.self_attn.qkv_proj: alloc 8776 MiB, reserved 14628, free 146, retries 0, ooms 0, peak alloc 9110, peak reserved 14628
+(EngineCore pid=174) [probe] packed model.layers.23.mlp.down_proj: alloc 8877 MiB, reserved 14756, free 18, retries 0, ooms 0, peak alloc 9192, peak reserved 14756
+[rank0]:[W930 22:21:52.445488421 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 18874368 bytes (free: 18874368, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.23.mlp.gate_up_proj: alloc 9110 MiB, reserved 14754, free 20, retries 0, ooms 0, peak alloc 9373, peak reserved 14756
+[rank0]:[W930 22:21:52.693504803 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 20971520, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.23.self_attn.o_proj: alloc 8972 MiB, reserved 14754, free 20, retries 0, ooms 0, peak alloc 9373, peak reserved 14756
+[rank0]:[W930 22:21:52.750860763 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 20971520, total: 23661248512).
+[rank0]:[W930 22:21:52.776984230 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:52.780668700 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:52.802504783 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:52.805669580 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:52.816705900 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:52.819671242 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:52.830604919 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:52.833655983 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.23.self_attn.qkv_proj: alloc 9038 MiB, reserved 14762, free 12, retries 0, ooms 0, peak alloc 9373, peak reserved 14762
+[rank0]:[W930 22:21:52.849584082 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:52.856417079 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 79691776, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.24.mlp.down_proj: alloc 9138 MiB, reserved 14634, free 140, retries 0, ooms 0, peak alloc 9454, peak reserved 14762
+[rank0]:[W930 22:21:52.996494137 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 146800640, total: 23661248512).
+[rank0]:[W930 22:21:52.019807856 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 79691776, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.24.mlp.gate_up_proj: alloc 9371 MiB, reserved 14686, free 88, retries 0, ooms 0, peak alloc 9634, peak reserved 14762
+[rank0]:[W930 22:21:53.311328680 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 25165824, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.24.self_attn.o_proj: alloc 9233 MiB, reserved 14718, free 56, retries 0, ooms 0, peak alloc 9634, peak reserved 14762
+[rank0]:[W930 22:21:53.367969042 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 58720256, total: 23661248512).
+[rank0]:[W930 22:21:53.372757429 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 92274688, total: 23661248512).
+[rank0]:[W930 22:21:53.422978464 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:53.426716926 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:53.437702604 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:53.440670266 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:53.451616613 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:53.454674228 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.24.self_attn.qkv_proj: alloc 9301 MiB, reserved 14766, free 8, retries 0, ooms 0, peak alloc 9634, peak reserved 14766
+[rank0]:[W930 22:21:53.470438023 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:53.475501706 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 75497472, total: 23661248512).
+[rank0]:[W930 22:21:53.479520334 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 75497472, total: 23661248512).
+[rank0]:[W930 22:21:53.487432277 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:53.500161708 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 8388608, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.25.mlp.down_proj: alloc 9401 MiB, reserved 14762, free 12, retries 0, ooms 0, peak alloc 9717, peak reserved 14766
+[rank0]:[W930 22:21:53.626149693 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:53.649217475 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 79691776, total: 23661248512).
+[rank0]:[W930 22:21:53.654787041 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 113246208, total: 23661248512).
+[rank0]:[W930 22:21:53.659476406 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 113246208, total: 23661248512).
+[rank0]:[W930 22:21:53.688674828 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 25165824, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.25.mlp.gate_up_proj: alloc 9634 MiB, reserved 14736, free 38, retries 0, ooms 0, peak alloc 9897, peak reserved 14766
+[rank0]:[W930 22:21:53.951811869 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 39845888, total: 23661248512).
+[rank0]:[W930 22:21:53.956488244 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 39845888, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.25.self_attn.o_proj: alloc 9496 MiB, reserved 14640, free 134, retries 0, ooms 0, peak alloc 9897, peak reserved 14766
+[rank0]:[W930 22:21:53.013581767 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 39845888, total: 23661248512).
+[rank0]:[W930 22:21:53.017541044 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 73400320, total: 23661248512).
+[rank0]:[W930 22:21:53.030976911 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 6291456, total: 23661248512).
+[rank0]:[W930 22:21:53.033331149 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 6291456, total: 23661248512).
+[rank0]:[W930 22:21:53.070483805 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 10485760, total: 23661248512).
+[rank0]:[W930 22:21:53.073666273 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 10485760, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.25.self_attn.qkv_proj: alloc 9562 MiB, reserved 14764, free 10, retries 0, ooms 0, peak alloc 9897, peak reserved 14768
+[rank0]:[W930 22:21:53.110976824 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 10485760, total: 23661248512).
+[rank0]:[W930 22:21:53.116506768 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 44040192, total: 23661248512).
+[rank0]:[W930 22:21:53.121477250 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 44040192, total: 23661248512).
+[rank0]:[W930 22:21:53.130315696 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 60817408, total: 23661248512).
+[rank0]:[W930 22:21:53.137658315 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 60817408, total: 23661248512).
+[rank0]:[W930 22:21:53.147275129 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 2097152, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.26.mlp.down_proj: alloc 9662 MiB, reserved 14768, free 6, retries 0, ooms 0, peak alloc 9978, peak reserved 14772
+[rank0]:[W930 22:21:53.272790772 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 6291456, total: 23661248512).
+[rank0]:[W930 22:21:54.294216485 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 39845888, total: 23661248512).
+[rank0]:[W930 22:21:54.299480033 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 67108864, total: 23661248512).
+[rank0]:[W930 22:21:54.304489116 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 69206016, total: 23661248512).
+[rank0]:[W930 22:21:54.331924155 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 14680064, total: 23661248512).
+[rank0]:[W930 22:21:54.351434912 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 18874368 bytes (free: 14680064, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.26.mlp.gate_up_proj: alloc 9895 MiB, reserved 14758, free 16, retries 0, ooms 0, peak alloc 10158, peak reserved 14772
+[rank0]:[W930 22:21:54.599759491 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 16777216, total: 23661248512).
+[rank0]:[W930 22:21:54.603707808 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 16777216, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.26.self_attn.o_proj: alloc 9757 MiB, reserved 14662, free 112, retries 0, ooms 0, peak alloc 10158, peak reserved 14772
+[rank0]:[W930 22:21:54.662943043 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 16777216, total: 23661248512).
+[rank0]:[W930 22:21:54.668491798 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 50331648, total: 23661248512).
+[rank0]:[W930 22:21:54.679510078 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 16777216, total: 23661248512).
+[rank0]:[W930 22:21:54.695370174 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:54.698681995 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:54.720453766 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:54.723671195 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:54.734651043 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:54.737685237 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.26.self_attn.qkv_proj: alloc 9823 MiB, reserved 14766, free 8, retries 0, ooms 0, peak alloc 10158, peak reserved 14772
+[rank0]:[W930 22:21:54.756398304 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:54.777266153 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:54.781518707 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:54.786512518 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:54.813454266 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 20971520, total: 23661248512).
+[rank0]:[W930 22:21:54.819327119 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 20971520, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.27.mlp.gate_up_proj: alloc 10088 MiB, reserved 14692, free 82, retries 0, ooms 0, peak alloc 10351, peak reserved 14772
+[rank0]:[W930 22:21:54.085629378 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 18874368, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.27.self_attn.o_proj: alloc 9950 MiB, reserved 14724, free 50, retries 0, ooms 0, peak alloc 10351, peak reserved 14772
+[rank0]:[W930 22:21:54.145099059 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 52428800, total: 23661248512).
+[rank0]:[W930 22:21:54.148521043 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 85983232, total: 23661248512).
+[rank0]:[W930 22:21:54.152515150 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 85983232, total: 23661248512).
+[rank0]:[W930 22:21:54.161559611 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:54.169548266 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:54.206678382 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 2097152, total: 23661248512).
+[rank0]:[W930 22:21:54.209685925 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 2097152, total: 23661248512).
+[rank0]:[W930 22:21:54.220746165 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 2097152, total: 23661248512).
+[rank0]:[W930 22:21:54.223691327 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 2097152, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.27.self_attn.qkv_proj: alloc 10016 MiB, reserved 14772, free 2, retries 0, ooms 0, peak alloc 10351, peak reserved 14772
+(EngineCore pid=174) Loading safetensors checkpoint shards:  60% Completed | 3/5 [00:16<00:11,  5.72s/it]
+[rank0]:[W930 22:21:54.261183332 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 2097152, total: 23661248512).
+[rank0]:[W930 22:21:54.265547808 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 2097152, total: 23661248512).
+[rank0]:[W930 22:21:54.270417677 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 2097152, total: 23661248512).
+[rank0]:[W930 22:21:54.279360216 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 14680064, total: 23661248512).
+[rank0]:[W930 22:21:55.286525420 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 14680064, total: 23661248512).
+[rank0]:[W930 22:21:55.294501815 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:55.297831146 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 23068672, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.27.mlp.down_proj: alloc 10117 MiB, reserved 14748, free 26, retries 0, ooms 0, peak alloc 10432, peak reserved 14772
+[rank0]:[W930 22:21:55.430735919 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 27262976, total: 23661248512).
+[rank0]:[W930 22:21:55.436522451 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 50331648, total: 23661248512).
+[rank0]:[W930 22:21:55.445329355 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 52428800, total: 23661248512).
+[rank0]:[W930 22:21:55.452686045 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 52428800, total: 23661248512).
+[rank0]:[W930 22:21:55.462945256 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:55.467351973 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 12582912, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.28.mlp.down_proj: alloc 10185 MiB, reserved 14728, free 46, retries 0, ooms 0, peak alloc 10501, peak reserved 14772
+[rank0]:[W930 22:21:55.590099258 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 48234496, total: 23661248512).
+[rank0]:[W930 22:21:55.611305096 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 81788928, total: 23661248512).
+[rank0]:[W930 22:21:55.616492683 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 104857600, total: 23661248512).
+[rank0]:[W930 22:21:55.621302020 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 106954752, total: 23661248512).
+[rank0]:[W930 22:21:55.650667846 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 18874368, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.28.mlp.gate_up_proj: alloc 10418 MiB, reserved 14742, free 32, retries 0, ooms 0, peak alloc 10680, peak reserved 14772
+[rank0]:[W930 22:21:55.912381343 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 33554432, total: 23661248512).
+[rank0]:[W930 22:21:55.917037546 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 33554432, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.28.self_attn.o_proj: alloc 10280 MiB, reserved 14646, free 128, retries 0, ooms 0, peak alloc 10680, peak reserved 14772
+[rank0]:[W930 22:21:55.975996755 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 33554432, total: 23661248512).
+[rank0]:[W930 22:21:55.981539261 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 67108864, total: 23661248512).
+[rank0]:[W930 22:21:55.992497788 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 33554432, total: 23661248512).
+[rank0]:[W930 22:21:55.020722957 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 4194304, total: 23661248512).
+[rank0]:[W930 22:21:55.042387545 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 4194304, total: 23661248512).
+[rank0]:[W930 22:21:55.045654955 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 4194304, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.28.self_attn.qkv_proj: alloc 10346 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 10680, peak reserved 14772
+[rank0]:[W930 22:21:55.072104841 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 4194304, total: 23661248512).
+[rank0]:[W930 22:21:55.077537513 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 37748736, total: 23661248512).
+[rank0]:[W930 22:21:55.082548056 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 37748736, total: 23661248512).
+[rank0]:[W930 22:21:55.091322610 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 54525952, total: 23661248512).
+[rank0]:[W930 22:21:55.099045708 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 54525952, total: 23661248512).
+[rank0]:[W930 22:21:55.108958170 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 27262976, total: 23661248512).
+[rank0]:[W930 22:21:55.113334267 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 31457280, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.29.mlp.down_proj: alloc 10447 MiB, reserved 14710, free 64, retries 0, ooms 0, peak alloc 10762, peak reserved 14772
+[rank0]:[W930 22:21:55.235987390 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 67108864, total: 23661248512).
+[rank0]:[W930 22:21:55.257277249 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 100663296, total: 23661248512).
+[rank0]:[W930 22:21:55.262581599 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 123731968, total: 23661248512).
+[rank0]:[W930 22:21:55.267317325 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 125829120, total: 23661248512).
+[rank0]:[W930 22:21:56.296827885 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 4194304, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.29.mlp.gate_up_proj: alloc 10679 MiB, reserved 14724, free 50, retries 0, ooms 0, peak alloc 10942, peak reserved 14772
+[rank0]:[W930 22:21:56.559633578 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 52428800, total: 23661248512).
+[rank0]:[W930 22:21:56.563710867 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 52428800, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.29.self_attn.o_proj: alloc 10541 MiB, reserved 14628, free 146, retries 0, ooms 0, peak alloc 10942, peak reserved 14772
+[rank0]:[W930 22:21:56.621102858 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 52428800, total: 23661248512).
+[rank0]:[W930 22:21:56.626806827 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 85983232, total: 23661248512).
+[rank0]:[W930 22:21:56.639899657 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:56.642334486 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:56.691750472 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 2097152, total: 23661248512).
+[rank0]:[W930 22:21:56.702627717 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 2097152, total: 23661248512).
+[rank0]:[W930 22:21:56.705674632 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 2097152, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.29.self_attn.qkv_proj: alloc 10607 MiB, reserved 14772, free 2, retries 0, ooms 0, peak alloc 10942, peak reserved 14772
+[rank0]:[W930 22:21:56.721540649 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 2097152, total: 23661248512).
+[rank0]:[W930 22:21:56.726583102 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 35651584, total: 23661248512).
+[rank0]:[W930 22:21:56.731547333 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 35651584, total: 23661248512).
+[rank0]:[W930 22:21:56.740339837 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 52428800, total: 23661248512).
+[rank0]:[W930 22:21:56.747720678 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 52428800, total: 23661248512).
+[rank0]:[W930 22:21:56.757961708 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 25165824, total: 23661248512).
+[rank0]:[W930 22:21:56.762323914 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 29360128, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.30.mlp.down_proj: alloc 10708 MiB, reserved 14712, free 62, retries 0, ooms 0, peak alloc 11023, peak reserved 14772
+[rank0]:[W930 22:21:56.884287230 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 65011712, total: 23661248512).
+[rank0]:[W930 22:21:56.907214060 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 98566144, total: 23661248512).
+[rank0]:[W930 22:21:56.912561930 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 121634816, total: 23661248512).
+[rank0]:[W930 22:21:56.917574582 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 123731968, total: 23661248512).
+[rank0]:[W930 22:21:56.947059892 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 2097152, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.30.mlp.gate_up_proj: alloc 10941 MiB, reserved 14728, free 46, retries 0, ooms 0, peak alloc 11203, peak reserved 14772
+[rank0]:[W930 22:21:56.212186012 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 48234496, total: 23661248512).
+[rank0]:[W930 22:21:56.216751393 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 48234496, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.30.self_attn.o_proj: alloc 10802 MiB, reserved 14632, free 142, retries 0, ooms 0, peak alloc 11203, peak reserved 14772
+[rank0]:[W930 22:21:56.274441081 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 48234496, total: 23661248512).
+[rank0]:[W930 22:21:56.278732456 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 81788928, total: 23661248512).
+[rank0]:[W930 22:21:57.292025520 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 14680064, total: 23661248512).
+[rank0]:[W930 22:21:57.294332656 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 14680064, total: 23661248512).
+[rank0]:[W930 22:21:57.331604706 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:57.334668931 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:57.345767952 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:57.348671623 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 18874368, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.30.self_attn.qkv_proj: alloc 10869 MiB, reserved 14756, free 18, retries 0, ooms 0, peak alloc 11203, peak reserved 14772
+[rank0]:[W930 22:21:57.375296242 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:57.380557471 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 52428800, total: 23661248512).
+[rank0]:[W930 22:21:57.385491211 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 52428800, total: 23661248512).
+[rank0]:[W930 22:21:57.394512941 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 2097152, total: 23661248512).
+[rank0]:[W930 22:21:57.405292394 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 2097152, total: 23661248512).
+[rank0]:[W930 22:21:57.407697963 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 6291456, total: 23661248512).
+[rank0]:[W930 22:21:57.411811053 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 10485760, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.31.mlp.down_proj: alloc 10969 MiB, reserved 14696, free 78, retries 0, ooms 0, peak alloc 11285, peak reserved 14772
+[rank0]:[W930 22:21:57.538309260 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 81788928, total: 23661248512).
+[rank0]:[W930 22:21:57.561367823 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 115343360, total: 23661248512).
+[rank0]:[W930 22:21:57.566776905 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 4194304, total: 23661248512).
+[rank0]:[W930 22:21:57.594688706 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 6291456, total: 23661248512).
+[rank0]:[W930 22:21:57.600500558 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 6291456, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.31.mlp.gate_up_proj: alloc 11202 MiB, reserved 14722, free 52, retries 0, ooms 0, peak alloc 11464, peak reserved 14772
+[rank0]:[W930 22:21:57.865568166 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 54525952, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.31.self_attn.o_proj: alloc 11064 MiB, reserved 14754, free 20, retries 0, ooms 0, peak alloc 11464, peak reserved 14772
+[rank0]:[W930 22:21:57.923551721 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 20971520, total: 23661248512).
+[rank0]:[W930 22:21:57.928568584 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 54525952, total: 23661248512).
+[rank0]:[W930 22:21:57.932553621 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 54525952, total: 23661248512).
+[rank0]:[W930 22:21:57.941334335 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 20971520, total: 23661248512).
+[rank0]:[W930 22:21:57.945710002 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 20971520, total: 23661248512).
+[rank0]:[W930 22:21:57.963366923 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:57.966673514 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:57.988479956 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:57.991670774 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:57.002711903 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:57.005664275 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.31.self_attn.qkv_proj: alloc 11130 MiB, reserved 14762, free 12, retries 0, ooms 0, peak alloc 11464, peak reserved 14772
+[rank0]:[W930 22:21:57.032080000 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:57.036558709 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:57.041570821 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:57.050311135 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 25165824, total: 23661248512).
+[rank0]:[W930 22:21:57.057746406 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 25165824, total: 23661248512).
+[rank0]:[W930 22:21:57.066342096 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 29360128, total: 23661248512).
+[rank0]:[W930 22:21:57.072244120 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 2097152, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.32.mlp.down_proj: alloc 11230 MiB, reserved 14738, free 36, retries 0, ooms 0, peak alloc 11546, peak reserved 14772
+[rank0]:[W930 22:21:57.194979995 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 37748736, total: 23661248512).
+[rank0]:[W930 22:21:57.216285065 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 71303168, total: 23661248512).
+[rank0]:[W930 22:21:57.221556563 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 94371840, total: 23661248512).
+[rank0]:[W930 22:21:57.226584546 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 96468992, total: 23661248512).
+[rank0]:[W930 22:21:57.255745888 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 8388608, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.32.mlp.gate_up_proj: alloc 11463 MiB, reserved 14752, free 22, retries 0, ooms 0, peak alloc 11726, peak reserved 14772
+[rank0]:[W930 22:21:58.524106177 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 23068672, total: 23661248512).
+[rank0]:[W930 22:21:58.528763820 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 23068672, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.32.self_attn.o_proj: alloc 11325 MiB, reserved 14658, free 116, retries 0, ooms 0, peak alloc 11726, peak reserved 14772
+[rank0]:[W930 22:21:58.586245093 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 20971520, total: 23661248512).
+[rank0]:[W930 22:21:58.591627934 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 54525952, total: 23661248512).
+[rank0]:[W930 22:21:58.602470289 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 20971520, total: 23661248512).
+[rank0]:[W930 22:21:58.642303541 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:58.645672783 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:58.656736483 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:58.659693095 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 12582912, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.32.self_attn.qkv_proj: alloc 11391 MiB, reserved 14762, free 12, retries 0, ooms 0, peak alloc 11726, peak reserved 14772
+[rank0]:[W930 22:21:58.686701014 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:58.692665120 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 46137344, total: 23661248512).
+[rank0]:[W930 22:21:58.697602060 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 46137344, total: 23661248512).
+[rank0]:[W930 22:21:58.706410355 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 62914560, total: 23661248512).
+[rank0]:[W930 22:21:58.713497398 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 62914560, total: 23661248512).
+[rank0]:[W930 22:21:58.723409150 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 4194304, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.33.mlp.down_proj: alloc 11492 MiB, reserved 14766, free 8, retries 0, ooms 0, peak alloc 11807, peak reserved 14772
+[rank0]:[W930 22:21:58.848434381 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:58.871349510 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 41943040, total: 23661248512).
+[rank0]:[W930 22:21:58.876587248 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 69206016, total: 23661248512).
+[rank0]:[W930 22:21:58.881587730 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 71303168, total: 23661248512).
+[rank0]:[W930 22:21:58.908848775 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 16777216, total: 23661248512).
+[rank0]:[W930 22:21:58.926745792 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 18874368 bytes (free: 16777216, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.33.mlp.gate_up_proj: alloc 11724 MiB, reserved 14756, free 18, retries 0, ooms 0, peak alloc 11987, peak reserved 14772
+[rank0]:[W930 22:21:58.178345892 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:58.182459432 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 18874368, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.33.self_attn.o_proj: alloc 11586 MiB, reserved 14660, free 114, retries 0, ooms 0, peak alloc 11987, peak reserved 14772
+[rank0]:[W930 22:21:58.240348005 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:58.244330542 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 52428800, total: 23661248512).
+[rank0]:[W930 22:21:58.255448784 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 18874368, total: 23661248512).
+[rank0]:[W930 22:21:59.293569494 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 10485760, total: 23661248512).
+[rank0]:[W930 22:21:59.296670189 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 10485760, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.33.self_attn.qkv_proj: alloc 11653 MiB, reserved 14764, free 10, retries 0, ooms 0, peak alloc 11987, peak reserved 14772
+[rank0]:[W930 22:21:59.334401220 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 10485760, total: 23661248512).
+[rank0]:[W930 22:21:59.339606687 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 44040192, total: 23661248512).
+[rank0]:[W930 22:21:59.344667451 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 44040192, total: 23661248512).
+[rank0]:[W930 22:21:59.353343922 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 60817408, total: 23661248512).
+[rank0]:[W930 22:21:59.360773354 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 60817408, total: 23661248512).
+[rank0]:[W930 22:21:59.371229389 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 2097152, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.34.mlp.down_proj: alloc 11753 MiB, reserved 14768, free 6, retries 0, ooms 0, peak alloc 12069, peak reserved 14772
+[rank0]:[W930 22:21:59.496352042 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 6291456, total: 23661248512).
+[rank0]:[W930 22:21:59.519024485 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 39845888, total: 23661248512).
+[rank0]:[W930 22:21:59.524578921 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 67108864, total: 23661248512).
+[rank0]:[W930 22:21:59.529604554 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 69206016, total: 23661248512).
+[rank0]:[W930 22:21:59.556938591 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 14680064, total: 23661248512).
+[rank0]:[W930 22:21:59.574946610 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 18874368 bytes (free: 14680064, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.34.mlp.gate_up_proj: alloc 11986 MiB, reserved 14758, free 16, retries 0, ooms 0, peak alloc 12249, peak reserved 14772
+[rank0]:[W930 22:21:59.828764814 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 16777216, total: 23661248512).
+[rank0]:[W930 22:21:59.832593347 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 16777216, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.34.self_attn.o_proj: alloc 11848 MiB, reserved 14662, free 112, retries 0, ooms 0, peak alloc 12249, peak reserved 14772
+[rank0]:[W930 22:21:59.890371157 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 16777216, total: 23661248512).
+[rank0]:[W930 22:21:59.894649392 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 50331648, total: 23661248512).
+[rank0]:[W930 22:21:59.905592889 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 16777216, total: 23661248512).
+[rank0]:[W930 22:21:59.932686320 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:59.935707324 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:59.946754143 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:59.949658384 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 8388608, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.34.self_attn.qkv_proj: alloc 11915 MiB, reserved 14766, free 8, retries 0, ooms 0, peak alloc 12249, peak reserved 14772
+[rank0]:[W930 22:21:59.987803745 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 8388608, total: 23661248512).
+[rank0]:[W930 22:21:59.993662668 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 41943040, total: 23661248512).
+[rank0]:[W930 22:21:59.998623809 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 41943040, total: 23661248512).
+[rank0]:[W930 22:21:59.007346542 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 58720256, total: 23661248512).
+[rank0]:[W930 22:21:59.014789463 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 58720256, total: 23661248512).
+[rank0]:[W930 22:21:59.024961112 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 31457280 bytes (free: 31457280, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.35.mlp.down_proj: alloc 12015 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12331, peak reserved 14772
+[rank0]:[W930 22:21:59.151674024 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 201326592 bytes (free: 4194304, total: 23661248512).
+[rank0]:[W930 22:21:59.173330342 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 37748736, total: 23661248512).
+[rank0]:[W930 22:21:59.178607611 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 65011712, total: 23661248512).
+[rank0]:[W930 22:21:59.183629974 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 134217728 bytes (free: 67108864, total: 23661248512).
+[rank0]:[W930 22:21:59.210930240 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:21:59.228890178 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 18874368 bytes (free: 12582912, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.35.mlp.gate_up_proj: alloc 12248 MiB, reserved 14762, free 12, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+[rank0]:[W930 22:22:00.482519857 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:22:00.486502365 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 67108864 bytes (free: 12582912, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.35.self_attn.o_proj: alloc 12110 MiB, reserved 14666, free 108, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+[rank0]:[W930 22:22:00.544354276 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:22:00.548641461 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 100663296 bytes (free: 46137344, total: 23661248512).
+[rank0]:[W930 22:22:00.559376313 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 33554432 bytes (free: 12582912, total: 23661248512).
+[rank0]:[W930 22:22:00.610639474 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 4194304, total: 23661248512).
+[rank0]:[W930 22:22:00.613676088 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 20971520 bytes (free: 4194304, total: 23661248512).
+(EngineCore pid=174) [probe] packed model.layers.35.self_attn.qkv_proj: alloc 12176 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) Loading safetensors checkpoint shards:  80% Completed | 4/5 [00:21<00:05,  5.59s/it]
+(EngineCore pid=174) Loading safetensors checkpoint shards: 100% Completed | 5/5 [00:22<00:00,  3.61s/it]
+(EngineCore pid=174) Loading safetensors checkpoint shards: 100% Completed | 5/5 [00:22<00:00,  4.40s/it]
+(EngineCore pid=174) 
+(EngineCore pid=174) INFO 09-30 22:22:00 [default_loader.py:430] Loading weights took 22.01 seconds
+(EngineCore pid=174) [probe] packed model.layers.0.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.0.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.0.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.0.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.1.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.1.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.1.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.1.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.2.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.2.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.2.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.2.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.3.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.3.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.3.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.3.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.4.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.4.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.4.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.4.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.5.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.5.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.5.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.5.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.6.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.6.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.6.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.6.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.7.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.7.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.7.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.7.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.8.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.8.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.8.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.8.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.9.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.9.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.9.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.9.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.10.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.10.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.10.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.10.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.11.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.11.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.11.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.11.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.12.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.12.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.12.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.12.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.13.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.13.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.13.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.13.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.14.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.14.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.14.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.14.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.15.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.15.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.15.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.15.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.16.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.16.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.16.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.16.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.17.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.17.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.17.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.17.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.18.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.18.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.18.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.18.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.19.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.19.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.19.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.19.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.20.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.20.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.20.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.20.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.21.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.21.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.21.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.21.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.22.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.22.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.22.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.22.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.23.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.23.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.23.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.23.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.24.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.24.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.24.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.24.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.25.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.25.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.25.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.25.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.26.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.26.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.26.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.26.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.27.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.27.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.27.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.27.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.28.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.28.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.28.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.28.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.29.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.29.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.29.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.29.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.30.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.30.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.30.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.30.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.31.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.31.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.31.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.31.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.32.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.32.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.32.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.32.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.33.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.33.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.33.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.33.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.34.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.34.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.34.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.34.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.35.self_attn.qkv_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.35.self_attn.o_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.35.mlp.gate_up_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) [probe] packed model.layers.35.mlp.down_proj: alloc 12112 MiB, reserved 14770, free 4, retries 0, ooms 0, peak alloc 12511, peak reserved 14772
+(EngineCore pid=174) INFO 09-30 22:22:01 [model_runner.py:428] Model loading took 11.83 GiB memory and 23.854019 seconds
+(EngineCore pid=174) INFO 09-30 22:22:01 [topk_topp_sampler.py:78] Using FlashInfer for top-p & top-k sampling.
+(EngineCore pid=174) INFO 09-30 22:22:01 [utils.py:320] Using LBNHC KV cache layout.
+In file included from /work/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/include/python3.12/Python.h:12,
+                 from /tmp/tmpw2c21pmc/cuda_utils.c:9:
+/work/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/include/python3.12/pyconfig.h:1877:9: warning: ‘_POSIX_C_SOURCE’ redefined
+ 1877 | #define _POSIX_C_SOURCE 200809L
+      |         ^~~~~~~~~~~~~~~
+In file included from /usr/include/x86_64-linux-gnu/bits/libc-header-start.h:33,
+                 from /usr/include/stdlib.h:26,
+                 from /work/env-rc2/lib/python3.12/site-packages/triton/backends/nvidia/include/cuda.h:56,
+                 from /tmp/tmpw2c21pmc/cuda_utils.c:1:
+/usr/include/features.h:319:10: note: this is the location of the previous definition
+  319 | # define _POSIX_C_SOURCE        202405L
+      |          ^~~~~~~~~~~~~~~
+(EngineCore pid=174) INFO 09-30 22:22:03 [gpu_worker.py:640] Available KV cache memory: 1.35 GiB
+(EngineCore pid=174) INFO 09-30 22:22:03 [kv_cache_utils.py:2395] GPU KV cache size: 9,856 tokens, Maximum concurrency for 8,192 tokens per request: 1.20x
+(EngineCore pid=174) INFO 09-30 22:22:03 [kernel_warmup.py:172] JIT kernel warmup starting.
+(EngineCore pid=174) INFO 09-30 22:22:03 [kernel_warmup.py:185] JIT kernel warmup finished in 0.00s.
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366] EngineCore failed to start.
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366] Traceback (most recent call last):
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1328, in run_engine_core
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return func(*args, **kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1085, in __init__
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     super().__init__(
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 145, in __init__
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     kv_cache_config = self._initialize_kv_caches(vllm_config)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return func(*args, **kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 356, in _initialize_kv_caches
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     self.model_executor.compile_or_warm_up_model()
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 126, in compile_or_warm_up_model
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     compilation_times: list[CompilationTimes] = self.collective_rpc(
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]                                                 ^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py", line 103, in collective_rpc
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     result = run_method(self.driver_worker, method, args, kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/serial_utils.py", line 510, in run_method
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return func(*args, **kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return func(*args, **kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 811, in compile_or_warm_up_model
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     warmup_kernels(self.model_runner, self.execute_model, self.sample_tokens)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return func(*args, **kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/warmup.py", line 235, in warmup_kernels
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     _warmup_kernels(model_runner, worker_execute_model, worker_sample_tokens)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/warmup.py", line 373, in _warmup_kernels
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     worker_sample_tokens(grammar_output)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return func(*args, **kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 1145, in sample_tokens
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return self.model_runner.sample_tokens(grammar_output)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return func(*args, **kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/eplb_utils.py", line 27, in wrapper
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     result = fn(self, *args, **kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]              ^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 2048, in sample_tokens
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     sampler_output, num_sampled, num_rejected = self.sample(
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]                                                 ^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 1554, in sample
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     sampler_output = self.sampler(logits, input_batch)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/sample/sampler.py", line 141, in __call__
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     sampled, processed_logits = self.sample(
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]                                 ^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/sample/sampler.py", line 310, in sample
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return self._sample_random(
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/sample/sampler.py", line 331, in _sample_random
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     sampled = flashinfer_sample(processed_logits, top_k, top_p).to(torch.int64)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/sample/ops/topk_topp_sampler.py", line 522, in flashinfer_sample
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     next_token_ids = flashinfer.sampling.top_k_top_p_sampling_from_logits(
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return _inner(*args, **kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/sampling.py", line 1547, in top_k_top_p_sampling_from_logits
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     masked_logits = top_k_mask_logits(logits, top_k)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return _inner(*args, **kwargs)
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/sampling.py", line 1974, in top_k_mask_logits
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     return get_sampling_module().top_k_mask_logits(
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/sampling.py", line 68, in get_sampling_module
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     module = gen_sampling_module().build_and_load()
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/jit/core.py", line 320, in build_and_load
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     self.build()
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/jit/core.py", line 426, in build
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     self.write_ninja()
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/jit/core.py", line 381, in write_ninja
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     content = generate_ninja_build_for_op(
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 249, in generate_ninja_build_for_op
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     cuda_home = get_cuda_path()
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]                 ^^^^^^^^^^^^^^^
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 61, in get_cuda_path
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366]     raise RuntimeError(
+(EngineCore pid=174) ERROR 09-30 22:22:05 [core.py:1366] RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist
+(EngineCore pid=174) Process EngineCore:
+(EngineCore pid=174) Traceback (most recent call last):
+(EngineCore pid=174)   File "/work/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+(EngineCore pid=174)     self.run()
+(EngineCore pid=174)   File "/work/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 108, in run
+(EngineCore pid=174)     self._target(*self._args, **self._kwargs)
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1370, in run_engine_core
+(EngineCore pid=174)     raise e
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1328, in run_engine_core
+(EngineCore pid=174)     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=174)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=174)     return func(*args, **kwargs)
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1085, in __init__
+(EngineCore pid=174)     super().__init__(
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 145, in __init__
+(EngineCore pid=174)     kv_cache_config = self._initialize_kv_caches(vllm_config)
+(EngineCore pid=174)                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=174)     return func(*args, **kwargs)
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 356, in _initialize_kv_caches
+(EngineCore pid=174)     self.model_executor.compile_or_warm_up_model()
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 126, in compile_or_warm_up_model
+(EngineCore pid=174)     compilation_times: list[CompilationTimes] = self.collective_rpc(
+(EngineCore pid=174)                                                 ^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py", line 103, in collective_rpc
+(EngineCore pid=174)     result = run_method(self.driver_worker, method, args, kwargs)
+(EngineCore pid=174)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/serial_utils.py", line 510, in run_method
+(EngineCore pid=174)     return func(*args, **kwargs)
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=174)     return func(*args, **kwargs)
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 811, in compile_or_warm_up_model
+(EngineCore pid=174)     warmup_kernels(self.model_runner, self.execute_model, self.sample_tokens)
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=174)     return func(*args, **kwargs)
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/warmup.py", line 235, in warmup_kernels
+(EngineCore pid=174)     _warmup_kernels(model_runner, worker_execute_model, worker_sample_tokens)
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/warmup.py", line 373, in _warmup_kernels
+(EngineCore pid=174)     worker_sample_tokens(grammar_output)
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=174)     return func(*args, **kwargs)
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu_worker.py", line 1145, in sample_tokens
+(EngineCore pid=174)     return self.model_runner.sample_tokens(grammar_output)
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/torch/utils/_contextlib.py", line 124, in decorate_context
+(EngineCore pid=174)     return func(*args, **kwargs)
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/eplb_utils.py", line 27, in wrapper
+(EngineCore pid=174)     result = fn(self, *args, **kwargs)
+(EngineCore pid=174)              ^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 2048, in sample_tokens
+(EngineCore pid=174)     sampler_output, num_sampled, num_rejected = self.sample(
+(EngineCore pid=174)                                                 ^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/model_runner.py", line 1554, in sample
+(EngineCore pid=174)     sampler_output = self.sampler(logits, input_batch)
+(EngineCore pid=174)                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/sample/sampler.py", line 141, in __call__
+(EngineCore pid=174)     sampled, processed_logits = self.sample(
+(EngineCore pid=174)                                 ^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/sample/sampler.py", line 310, in sample
+(EngineCore pid=174)     return self._sample_random(
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/worker/gpu/sample/sampler.py", line 331, in _sample_random
+(EngineCore pid=174)     sampled = flashinfer_sample(processed_logits, top_k, top_p).to(torch.int64)
+(EngineCore pid=174)               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/sample/ops/topk_topp_sampler.py", line 522, in flashinfer_sample
+(EngineCore pid=174)     next_token_ids = flashinfer.sampling.top_k_top_p_sampling_from_logits(
+(EngineCore pid=174)                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+(EngineCore pid=174)     return _inner(*args, **kwargs)
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/sampling.py", line 1547, in top_k_top_p_sampling_from_logits
+(EngineCore pid=174)     masked_logits = top_k_mask_logits(logits, top_k)
+(EngineCore pid=174)                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/api_logging.py", line 2333, in _auto_dump_wrapper
+(EngineCore pid=174)     return _inner(*args, **kwargs)
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/sampling.py", line 1974, in top_k_mask_logits
+(EngineCore pid=174)     return get_sampling_module().top_k_mask_logits(
+(EngineCore pid=174)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/sampling.py", line 68, in get_sampling_module
+(EngineCore pid=174)     module = gen_sampling_module().build_and_load()
+(EngineCore pid=174)              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/jit/core.py", line 320, in build_and_load
+(EngineCore pid=174)     self.build()
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/jit/core.py", line 426, in build
+(EngineCore pid=174)     self.write_ninja()
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/jit/core.py", line 381, in write_ninja
+(EngineCore pid=174)     content = generate_ninja_build_for_op(
+(EngineCore pid=174)               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 249, in generate_ninja_build_for_op
+(EngineCore pid=174)     cuda_home = get_cuda_path()
+(EngineCore pid=174)                 ^^^^^^^^^^^^^^^
+(EngineCore pid=174)   File "/work/env-rc2/lib/python3.12/site-packages/flashinfer/jit/cpp_ext.py", line 61, in get_cuda_path
+(EngineCore pid=174)     raise RuntimeError(
+(EngineCore pid=174) RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist
+[rank0]:[W930 22:22:06.852561795 ProcessGroupNCCL.cpp:1624] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+(APIServer pid=82) INFO 09-30 22:22:07 [utils.py:632] [shutdown] Process manager: send sigterm to process EngineCore
+(APIServer pid=82) Traceback (most recent call last):
+(APIServer pid=82)   File "/work/env-rc2/bin/vllm", line 10, in <module>
+(APIServer pid=82)     sys.exit(main())
+(APIServer pid=82)              ^^^^^^
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/entrypoints/cli/main.py", line 106, in main
+(APIServer pid=82)     args.dispatch_function(args)
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/entrypoints/cli/serve.py", line 154, in cmd
+(APIServer pid=82)     uvloop.run(run_server(args))
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/uvloop/__init__.py", line 96, in run
+(APIServer pid=82)     return __asyncio.run(
+(APIServer pid=82)            ^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 195, in run
+(APIServer pid=82)     return runner.run(main)
+(APIServer pid=82)            ^^^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 118, in run
+(APIServer pid=82)     return self._loop.run_until_complete(task)
+(APIServer pid=82)            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=82)   File "uvloop/loop.pyx", line 1518, in uvloop.loop.Loop.run_until_complete
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/uvloop/__init__.py", line 48, in wrapper
+(APIServer pid=82)     return await main
+(APIServer pid=82)            ^^^^^^^^^^
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 176, in run_server
+(APIServer pid=82)     await run_server_worker(listen_address, sock, args, **uvicorn_kwargs)
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 190, in run_server_worker
+(APIServer pid=82)     async with build_async_engine_client(
+(APIServer pid=82)                ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=82)     return await anext(self.gen)
+(APIServer pid=82)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 58, in build_async_engine_client
+(APIServer pid=82)     async with build_async_engine_client_from_engine_args(
+(APIServer pid=82)                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 210, in __aenter__
+(APIServer pid=82)     return await anext(self.gen)
+(APIServer pid=82)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/entrypoints/launchers/api_server/entry.py", line 94, in build_async_engine_client_from_engine_args
+(APIServer pid=82)     async_llm = AsyncLLM.from_vllm_config(
+(APIServer pid=82)                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/async_llm.py", line 235, in from_vllm_config
+(APIServer pid=82)     return cls(
+(APIServer pid=82)            ^^^^
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/async_llm.py", line 169, in __init__
+(APIServer pid=82)     self.engine_core = EngineCoreClient.make_async_mp_client(
+(APIServer pid=82)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=82)     return func(*args, **kwargs)
+(APIServer pid=82)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 163, in make_async_mp_client
+(APIServer pid=82)     return AsyncMPClient(
+(APIServer pid=82)            ^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(APIServer pid=82)     return func(*args, **kwargs)
+(APIServer pid=82)            ^^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 1060, in __init__
+(APIServer pid=82)     super().__init__(
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 656, in __init__
+(APIServer pid=82)     with launch_core_engines(
+(APIServer pid=82)          ^^^^^^^^^^^^^^^^^^^^
+(APIServer pid=82)   File "/work/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/contextlib.py", line 144, in __exit__
+(APIServer pid=82)     next(self.gen)
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1240, in launch_core_engines
+(APIServer pid=82)     wait_for_engine_startup(
+(APIServer pid=82)   File "/work/env-rc2/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1320, in wait_for_engine_startup
+(APIServer pid=82)     raise RuntimeError(
+(APIServer pid=82) RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}

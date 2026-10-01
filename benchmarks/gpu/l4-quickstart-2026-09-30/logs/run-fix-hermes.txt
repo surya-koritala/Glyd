@@ -1,0 +1,12 @@
+hog: 7355 MiB held, 15015 of 22565 MiB free
+up after 39 s
+== python /work/reason_probe.py
+thinking on, streamed: delta fields {'role': 1, 'content': 1365}
+  content has <think>: True; content: "<think>\nOkay, let's see. I need to calculate 17 multiplied by 23. Hmm, how do I approach this? Well,"; reasoning chars: 0
+thinking on, a tool call: [{"id": "chatcmpl-tool-9ad097a039cc1ef0", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}}] | finish: tool_calls | content: <think> Okay, the user is asking about the weather in Paris. I need to use the g | reasoning: 0 chars
+OOM warnings: 0
+(EngineCore pid=175) INFO 10-01 00:10:38 [model_runner.py:428] Model loading took 11.39 GiB memory and 15.041700 seconds
+(EngineCore pid=175) INFO 10-01 00:10:39 [gpu_worker.py:640] Available KV cache memory: 1.83 GiB
+(EngineCore pid=175) INFO 10-01 00:10:39 [kv_cache_utils.py:2395] GPU KV cache size: 13,280 tokens, Maximum concurrency for 8,192 tokens per request: 1.62x
+(EngineCore pid=175) INFO 10-01 00:10:40 [gpu_worker.py:888] Free memory on device (14.48/22.04 GiB) on startup. Desired GPU memory utilization is (0.622, 13.71 GiB). Actual usage is 11.68 GiB for consumed memory (weights + non-torch), 0.2 GiB for peak activat
+memwatch: most used 21896 MiB of 22565, so least free 669 MiB

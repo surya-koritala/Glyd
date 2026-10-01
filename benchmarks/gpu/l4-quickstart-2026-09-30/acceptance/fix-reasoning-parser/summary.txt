@@ -1,0 +1,22 @@
+== 2026-10-01T00:42:39Z: glyd[vllm] wheel /home/ubuntu/accept/wheels/glyd-0.25.1-py3-none-manylinux_2_28_x86_64.whl, glyd-accept:ubuntu26.04, GPU NVIDIA L4, 23034 MiB, budget 14828 MiB free, card 15942 MiB
+ok   no nvcc: not on PATH, no /usr/local/cuda, no CUDA_HOME
+-- setup: uv venv --python 3.12 ~/glyd-env && source ~/glyd-env/bin/activate;uv pip install "/work/wheel/glyd-0.25.1-py3-none-manylinux_2_28_x86_64.whl[vllm]"
+ok   installed in 67 s: flashinfer-python==0.6.18.post1 torch==2.13.0 transformers==5.18.0 triton==3.7.1 vllm==0.30.0 
+-- hog: 7353 MiB held, 15017 of 22565 MiB free
+-- --gpu-memory-utilization 0.88 is 0.622 here: the same budget as on a card of 15942 MiB (this one has 22565)
+-- serve: VLLM_USE_FLASHINFER_SAMPLER=0 vllm serve Qwen/Qwen3-8B --quantization glyd --enforce-eager \ --max-model-len 8192 --gpu-memory-utilization 0.622 --host 127.0.0.1 \ --enable-auto-tool-choice --tool-call-parser hermes --reasoning-parser qwen3
+-- server: up after 49 s; Model loading took 11.39 GiB memory and 16.561983 seconds;GPU KV cache size: 13,280 tokens, Maximum concurrency for 8,192 tokens per request: 1.62x;Free memory on device (14.48/22.04 GiB) on startup. Desired GPU memory utilization is (0.622, 13.71 GiB). Actual usage is 11.68 GiB for cons;
+ok   no traceback and no allocator warning in the server's log
+ok   OpenAI API, turn 1 (streamed, greedy): 'Paris', 53.6 tokens/s, first token 240 ms
+ok   OpenAI API, turn 2 (streamed, top-p, turn 1 as history): 'Berlin', 53.3 tokens/s, first token 239 ms
+ok   OpenAI API, a tool call (tool_choice auto): {'name': 'get_weather', 'arguments': '{"city": "Paris"}'}
+-- Open WebUI, uvx: OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 OPENAI_API_KEY=none WEBUI_AUTH=False ENABLE_PERSISTENT_CONFIG=False \ uvx --python 3.11 open-webui@0.11.4 serve --host 127.0.0.1 --port 3000 
+ok   Open WebUI lists the model: /api/models: ['Qwen/Qwen3-8B', 'arena-model']
+ok   Open WebUI chat (the browser's request, its tools on): 'Paris'
+ok   Open WebUI chat, a tool call in the stream: tool calls ['get_current_timestamp'], text ''
+-- Open WebUI, docker: docker run -d --name open-webui --network=host -e PORT=3000 -e HOST=127.0.0.1 \ -e OPENAI_API_BASE_URL=http://127.0.0.1:8000/v1 -e OPENAI_API_KEY=none -e WEBUI_AUTH=False \ -e ENABLE_PERSISTENT_CONFIG
+ok   Open WebUI lists the model: /api/models: ['Qwen/Qwen3-8B', 'arena-model']
+ok   Open WebUI chat (the browser's request, its tools on): 'Paris'
+ok   Open WebUI chat, a tool call in the stream: tool calls ['get_current_timestamp'], text ''
+-- held for 25 minutes (touch /home/ubuntu/accept/work/stop to end): the server on http://127.0.0.1:8000, Open WebUI on http://127.0.0.1:3000
+PASSED

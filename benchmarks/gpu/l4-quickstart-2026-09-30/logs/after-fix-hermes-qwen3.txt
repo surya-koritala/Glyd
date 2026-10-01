@@ -1,0 +1,3 @@
+thinking on, streamed: delta fields {'role': 1, 'reasoning': 1223, 'content': 140}
+  content has <think>: False; content: 'To solve $ 17 \\times 23 $, we can use the distributive property of multiplication:\n\n$$\n17 \\times 23 '; reasoning chars: 3236
+thinking on, a tool call: [{"id": "chatcmpl-tool-aee61d65e8da7d49", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"}}] | finish: tool_calls | content:  | reasoning: 327 chars

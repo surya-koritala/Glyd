@@ -1,0 +1,14 @@
+hog: 7355 MiB held, 15015 of 22565 MiB free
+exited after 39 s
+OOM warnings: 0
+(APIServer pid=82) WARNING 10-01 00:09:31 [vllm_plugin.py:315] glyd: no nvcc (not on PATH, nor in CUDA_HOME or /usr/local/cuda) and vLLM's FlashInfer sampler is on: it compiles its top-k and top-p kernels with nvcc on the first request that samples, and vLLM's
+(EngineCore pid=174) INFO 10-01 00:09:56 [model_runner.py:428] Model loading took 11.39 GiB memory and 14.998854 seconds
+(EngineCore pid=174) INFO 10-01 00:09:57 [gpu_worker.py:640] Available KV cache memory: 1.83 GiB
+(EngineCore pid=174) INFO 10-01 00:09:57 [kv_cache_utils.py:2395] GPU KV cache size: 13,280 tokens, Maximum concurrency for 8,192 tokens per request: 1.62x
+(EngineCore pid=174) ERROR 10-01 00:09:58 [core.py:1366] Traceback (most recent call last):
+(EngineCore pid=174) ERROR 10-01 00:09:58 [core.py:1366]     raise RuntimeError(
+(EngineCore pid=174) ERROR 10-01 00:09:58 [core.py:1366] RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist
+(EngineCore pid=174) Traceback (most recent call last):
+(EngineCore pid=174)     raise RuntimeError(
+(EngineCore pid=174) RuntimeError: Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist
+memwatch: most used 21860 MiB of 22565, so least free 705 MiB

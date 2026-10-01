@@ -1,0 +1,50 @@
+Loading WEBUI_SECRET_KEY from file, not provided as an environment variable.
+Loading WEBUI_SECRET_KEY from /work/home/.webui_secret_key
+INFO  [alembic.runtime.migration] Context impl SQLiteImpl.
+INFO  [alembic.runtime.migration] Will assume non-transactional DDL.
+WARNI [open_webui.env] 
+
+WARNING: CORS_ALLOW_ORIGIN IS SET TO '*' - NOT RECOMMENDED FOR PRODUCTION DEPLOYMENTS.
+
+/work/uv-cache/archive-v0/SUFuC9Ucu___ISsC/lib/python3.11/site-packages/pydub/utils.py:170: RuntimeWarning: Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work
+  warn("Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work", RuntimeWarning)
+INFO:     Started server process [622]
+INFO:     Waiting for application startup.
+
+ ██████╗ ██████╗ ███████╗███╗   ██╗    ██╗    ██╗███████╗██████╗ ██╗   ██╗██╗
+██╔═══██╗██╔══██╗██╔════╝████╗  ██║    ██║    ██║██╔════╝██╔══██╗██║   ██║██║
+██║   ██║██████╔╝█████╗  ██╔██╗ ██║    ██║ █╗ ██║█████╗  ██████╔╝██║   ██║██║
+██║   ██║██╔═══╝ ██╔══╝  ██║╚██╗██║    ██║███╗██║██╔══╝  ██╔══██╗██║   ██║██║
+╚██████╔╝██║     ███████╗██║ ╚████║    ╚███╔███╔╝███████╗██████╔╝╚██████╔╝██║
+ ╚═════╝ ╚═╝     ╚══════╝╚═╝  ╚═══╝     ╚══╝╚══╝ ╚══════╝╚═════╝  ╚═════╝ ╚═╝
+
+
+v0.11.4 - building the best AI user interface.
+
+https://github.com/open-webui/open-webui
+
+2026-10-01 00:32:18.503 | INFO     | open_webui.utils.logger:start_logger:223 - GLOBAL_LOG_LEVEL: INFO
+2026-10-01 00:32:18.603 | INFO     | httpx._client:_send_single_request:1025 - HTTP Request: GET https://huggingface.co/api/models/sentence-transformers/all-MiniLM-L6-v2/revision/main "HTTP/1.1 200 OK"
+Fetching 30 files:   0%|          | 0/30 [00:00<?, ?it/s]Fetching 30 files: 100%|██████████| 30/30 [00:00<00:00, 2650.48it/s]
+2026-10-01 00:32:18.620 | INFO     | sentence_transformers.base.model:_load_modules:992 - Loading SentenceTransformer model from /hf/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/1110a243fdf4706b3f48f1d95db1a4f5529b4d41.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|██████████| 103/103 [00:00<00:00, 1417.21it/s]
+[1mBertModel LOAD REPORT[0m from: /hf/hub/models--sentence-transformers--all-MiniLM-L6-v2/snapshots/1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+2026-10-01 00:32:18.954 | INFO     | open_webui.main:lifespan:387 - Installing external dependencies of functions and tools...
+2026-10-01 00:32:18.962 | INFO     | open_webui.utils.plugin:install_frontmatter_requirements:450 - No requirements found in frontmatter.
+2026-10-01 00:32:18.963 | INFO     | open_webui.utils.automations:scheduler_worker_loop:79 - Scheduler worker started (timer poll interval: 1s, scheduler poll interval: 10s)
+2026-10-01 00:32:19.673 | INFO     | open_webui.models.auths:authenticate_user:151 - authenticate_user: admin@localhost
+2026-10-01 00:32:19.920 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:53434 - "POST /api/v1/auths/signin HTTP/1.1" 200
+2026-10-01 00:32:19.942 | INFO     | open_webui.routers.openai:get_all_models:797 - get_all_models()
+2026-10-01 00:32:19.942 | INFO     | open_webui.routers.ollama:get_all_models:392 - get_all_models()
+2026-10-01 00:32:19.942 | INFO     | open_webui.utils.session_pool:get_session:77 - Created shared aiohttp session pool (limit=unlimited, per_host=unlimited, dns_ttl=300)
+2026-10-01 00:32:19.945 | ERROR    | open_webui.routers.ollama:send_get_request:93 - Connection error: Cannot connect to host localhost:11434 ssl:default [Connect call failed ('127.0.0.1', 11434)]
+2026-10-01 00:32:19.949 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:53448 - "GET /api/models HTTP/1.1" 200
+2026-10-01 00:32:20.022 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:53464 - "POST /api/chat/completions HTTP/1.1" 200
+2026-10-01 00:32:22.247 | INFO     | uvicorn.protocols.http.httptools_impl:send:485 - 127.0.0.1:53476 - "POST /api/chat/completions HTTP/1.1" 200
+2026-10-01 00:32:23.582 | INFO     | open_webui.utils.session_pool:close_session:91 - Closed shared aiohttp session pool

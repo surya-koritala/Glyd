@@ -68,3 +68,26 @@ jobs:
         run: |
           head -c 3000000 corpus/dickens > /tmp/sample.bin
           scripts/verify_roundtrip.sh /tmp/sample.bin
+
+  # The vLLM plugin's logic and the packers' CPU-checkable parts, with vLLM installed (a CUDA wheel of it imports without
+  # a GPU). GLYD_REQUIRE_VLLM=1: a run without vLLM fails instead of skipping its tests as if they had passed.
+  vllm-plugin:
+    name: vLLM plugin (vLLM installed, no GPU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install vLLM (the minor release the plugin is tested with)
+        run: |
+          python -m pip install --quiet --no-cache-dir "vllm>=0.30,<0.31"
+          python -c "import vllm; print('vllm', vllm.__version__)"
+      - name: Plugin tests and the GPU-free tests of glyd.gpu
+        working-directory: bindings/python
+        env:
+          GLYD_REQUIRE_VLLM: "1"
+        run: |
+          python test_vllm.py
+          python test_gpu.py
