@@ -6,7 +6,7 @@
 class Glyd < Formula
   desc "Compression for object storage: record mode, packs, a cross-object store"
   homepage "https://getglyd.com"
-  version "0.25.1"
+  version "0.26.0"
   # The codec and CLI: BSD-3-Clause or GPL-2.0; the glyd-store binary: BUSL-1.1.
   license all_of: [
     { any_of: ["BSD-3-Clause", "GPL-2.0-only"] },
@@ -20,23 +20,23 @@ class Glyd < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.25.1/glyd-v0.25.1-macos-arm64.tar.gz"
-      sha256 "b4566a2bcd362375ba3886baeaf375df2796cf113ad81fdb2bd69f674f56e399"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.26.0/glyd-v0.26.0-macos-arm64.tar.gz"
+      sha256 "80df429eea41859f0a2faf21eea7dc3140f2985230527c3c9d406febc03fb37f"
     end
     on_intel do
-      url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.25.1.tar.gz"
-      sha256 "7b1661b8fe4d0ee2914c21d3fe2629ae83f727bd1e09bbe3b56b308b9bcf33d2"
+      url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.26.0.tar.gz"
+      sha256 "ed6592c4ef3d324c8b1aec476a1eedac3df383e8713f9953837bc02d9b0695f0"
       depends_on "rust" => :build
     end
   end
   on_linux do
     on_intel do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.25.1/glyd-v0.25.1-linux-x86_64.tar.gz"
-      sha256 "514735940d91dc608f3b746c49f10b85a5d916c66457c2d68ec71dea7ad8383a"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.26.0/glyd-v0.26.0-linux-x86_64.tar.gz"
+      sha256 "160b81b88789ede86553925dc361e4211e68822c2aef3906c9566be7ea5c0bd5"
     end
     on_arm do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.25.1/glyd-v0.25.1-linux-aarch64.tar.gz"
-      sha256 "13806de69b8fb87a5a2af9707d4d5c03c8b320084b85ffb736f24520f1f680ec"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.26.0/glyd-v0.26.0-linux-aarch64.tar.gz"
+      sha256 "7d5d9e26cc1f4b6f38dc64c0c4371e307c63de1dd4fdccbc93d55ba1f0128b8b"
     end
   end
 
