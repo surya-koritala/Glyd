@@ -473,6 +473,37 @@ FAMILIES = {
 }  # Doge's experts, rows of two nn.Embedding, are packed as embeddings; its MoE layer does not run in 5.17 (a tuple where its layer takes a tensor)
 
 
+def test_hist_without_widening():
+    """kernels._hist counts the exponents of int16 bits HIST_CHUNK a pass, without widening them: the counts the int32
+    widening gave (what it did before), whatever the chunk, signs, zeros, subnormals, infinities and NaNs among them. The
+    packers' int64 temporaries are between 10 MiB (below it PyTorch's allocator takes a 20 MiB segment for each) and the
+    20 MiB that vLLM's load sets its max_split_size_mb to (PACK_CHUNK weights at 8 bytes); _hist's under it (HIST_CHUNK at 2)."""
+    try:
+        import torch
+    except ImportError:
+        return print("test_hist_without_widening: skipped (no torch)")
+    from glyd.gpu import kernels as g
+
+    gen = torch.Generator().manual_seed(0)
+    w = (torch.randn(5000, generator=gen) * 10).to(torch.bfloat16)
+    w[::7] = 0
+    w[3::11] = float("inf")
+    w[5::13] = -float("inf")
+    w[9::17] = float("nan")
+    w[2::19] = 1e-40
+    w[4::23] *= -1
+    u = w.view(torch.int16)
+    want = torch.bincount(((u.to(torch.int32) & 0xFFFF) >> 7) & 0xFF, minlength=256)
+    was = g.HIST_CHUNK
+    try:
+        for chunk in (1, 7, 4999, 5000, 5001, 1 << 22):
+            g.HIST_CHUNK = chunk
+            assert torch.equal(g._hist(u), want), chunk
+    finally:
+        g.HIST_CHUNK = was
+    assert 10 * 2**20 <= g.PACK_CHUNK * 8 < 20 * 2**20 and g.HIST_CHUNK * 2 < 20 * 2**20
+
+
 def cuda():
     """torch with a CUDA GPU and transformers, else None (the tests that need them skipped)."""
     try:

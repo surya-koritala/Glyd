@@ -54,8 +54,13 @@ layout, mode or checkpoint never finds another's compiled graph.
 A Linear's weight (bf16) is held on the meta device and packed a layer at a
 time as vLLM's layerwise online processing completes it (the peak: the
 packs and a layer), once every piece of the weight has loaded (else refused,
-naming the layer); a glyd save's packs load as saved (TP 1, the same layout, the
-families checked; else decoded and packed again). A product is one op,
+naming the layer); its bf16 is dropped as soon as it is packed, and PyTorch's
+unused blocks are handed back to the driver where they outweigh its free
+memory (_trim: vLLM loads with the allocator's max_split_size_mb at 20, which
+never splits a larger block, so on a full card the cache of many sizes of
+block piled up until a cudaMalloc failed and the allocator warned, hundreds of
+times on a 16 GB card); a glyd save's packs load as saved (TP 1, the same
+layout, the families checked; else decoded and packed again). A product is one op,
 glyd::vllm_linear, over the pack's tensors: the library's route by the
 batch's tokens (glyd_gpu_mma[12]_linear), and where it routes a prompt to
 cuBLAS (DECODE, AHEAD) the matrix decoded into the GPU's scratch buffer,
@@ -84,7 +89,8 @@ minor release):
   enable_sleep_mode, hf_text_config), compilation_config (mode,
   cudagraph_mode, inductor_compile_config) and scheduler_config
   (max_num_batched_tokens); vllm.envs (VLLM_BATCH_INVARIANT,
-  VLLM_DISABLE_SHARED_EXPERTS_STREAM);
+  VLLM_DISABLE_SHARED_EXPERTS_STREAM, VLLM_USE_FLASHINFER_SAMPLER: read, for
+  a warning where FlashInfer's sampler has no nvcc; never set);
 - for a mixture of experts (without them, experts stay bf16): RoutedExperts
   (moe_config, layer_name, top_k, activation, expert_map,
   apply_router_weight_on_input), OnlineMoEMethodBase,
@@ -95,8 +101,10 @@ It copies none of vLLM's code. Under the Business Source License 1.1
 (LICENSE-glyd-gpu), as the rest of Glyd's GPU code.
 """
 import hashlib
+import importlib.util
 import json
 import os
+import shutil
 import sys
 import types
 from fractions import Fraction
@@ -275,6 +283,38 @@ def _nobias(dev):
     return t
 
 
+def _drop(param):
+    """A bf16 weight that has been packed: its memory goes back to PyTorch's allocator now, not when vLLM lets go of its
+    Parameter (it keeps it, with the loads it replayed, until the layer is done)."""
+    if param is not None:
+        param.data = param.data.new_empty(0)
+
+
+def _trim():
+    """PyTorch's unused blocks handed back to the driver where they outweigh the driver's free memory. vLLM loads with the
+    allocator's max_split_size_mb at 20, so a block past 20 MiB is never split: the packing's blocks of many sizes pile up
+    unused until a cudaMalloc fails, the allocator frees them all and warns (hundreds of times on a 16 GB card)."""
+    if torch.cuda.memory_reserved() - torch.cuda.memory_allocated() > torch.cuda.mem_get_info()[0]:
+        torch.cuda.empty_cache()
+
+
+_NVCC_WARNED = []  # (one warning a process)
+
+
+def _warn_no_nvcc():
+    """One warning where vLLM's FlashInfer sampler (its default for top-k and top-p, which Qwen3's own sampling settings
+    use) has no nvcc to compile with: FlashInfer builds its sampling kernels on the first request that samples, found
+    through CUDA_HOME, PATH, then /usr/local/cuda (flashinfer.jit.cpp_ext.get_cuda_path), and vLLM's warmup stops with
+    "Could not find nvcc". Not where a flashinfer-jit-cache package has them built. vLLM's own settings stay as they are."""
+    if _NVCC_WARNED or not envs.VLLM_USE_FLASHINFER_SAMPLER or importlib.util.find_spec("flashinfer") is None:
+        return
+    _NVCC_WARNED.append(1)
+    home = os.environ.get("CUDA_HOME") or "/usr/local/cuda"
+    if shutil.which("nvcc") or os.path.isfile(os.path.join(home, "bin", "nvcc")) or importlib.util.find_spec("flashinfer_jit_cache"):
+        return
+    log.warning("glyd: no nvcc (not on PATH, nor in CUDA_HOME or /usr/local/cuda) and vLLM's FlashInfer sampler is on: it compiles its top-k and top-p kernels with nvcc on the first request that samples, and vLLM's warmup stops with 'Could not find nvcc'. Start the server with VLLM_USE_FLASHINFER_SAMPLER=0 (vLLM then samples with PyTorch and Triton), or install flashinfer-jit-cache (FlashInfer's precompiled kernels) or the CUDA toolkit")
+
+
 def register():
     """The "glyd" quantization method and its op, in this process (again: the same). vllm_entry.register() calls it
     where vLLM is the release this is tested with."""
@@ -421,6 +461,7 @@ class GlydConfig(QuantizationConfig):
         if vc is not None and getattr(vc.model_config, "hf_config", None) is hf_config and isinstance(vc.additional_config, dict):
             o = _options(vc.additional_config.get(KEY) or {}, self.given, _env())
             _refusals(vc, o[1], self.manifest, o[3])  # (the model's own, not a draft's)
+            _warn_no_nvcc()
 
     def resolve(self):
         """The options in effect (_options); the layout "auto" best_layout's for this GPU (a save's own where that is
@@ -724,7 +765,8 @@ class GlydLinearMethod(LinearMethodBase):
         O, K = p.shape
         layer.glyd_words = list(p.sym if isinstance(p, g.Mma12) else p.tiers)
         layer.glyd_out, layer.glyd_exact, layer.glyd_verified = O, opts["exact"], opts["verify"]
-        layer._parameters.pop("weight", None)
+        _drop(layer._parameters.pop("weight", None))
+        w = None
         layer.weight = torch.nn.Parameter(torch.empty(0, K, dtype=torch.bfloat16, device=dev), requires_grad=False)  # (read for its dtype and K)
         self.config.packed(name, layout, layer.glyd_words, t)
         need = O * K if opts["exact"] or self._decodes(dev, layer.glyd_words, O, K) else 0
@@ -732,6 +774,7 @@ class GlydLinearMethod(LinearMethodBase):
             _SCRATCH[dev] = torch.empty(need, dtype=torch.bfloat16, device=dev)  # (at load: no CUDA graph holds the old one)
         for n in ("mma12_linear", "mma_linear"):  # the device's done counters, made now: never in a CUDA graph's pool
             _lib._counters(n, dev.index, None, 0, _lib._UNITS)
+        _trim()
 
     def _decodes(self, dev, words, O, K):
         """Whether any product up to vLLM's batch of tokens decodes the matrix for cuBLAS (the scratch buffer it needs)."""
@@ -835,7 +878,8 @@ class GlydMoEMethod(OnlineMoEMethodBase):
             for part, x in zip(("data", "a", "b"), t):
                 layer.register_buffer(f"glyd_{name}_{part}", x, persistent=False)
             dev = w.device
-            layer._parameters.pop(name + "_weight", None)
+            _drop(layer._parameters.pop(name + "_weight", None))
+            w = m = None
             setattr(layer, name + "_weight", torch.nn.Parameter(torch.empty(0, dtype=torch.bfloat16, device=dev), requires_grad=False))
             self.config.packed(f"{layer.layer_name}.{name}", layout, list(p.sym if isinstance(p, g.Mma12) else p.tiers), t)
             packs.append(p)
@@ -848,6 +892,7 @@ class GlydMoEMethod(OnlineMoEMethodBase):
             need = sum(p.shape[0] * p.shape[1] for p in packs)
             if dev not in _SCRATCH or _SCRATCH[dev].numel() < need:
                 _SCRATCH[dev] = torch.empty(need, dtype=torch.bfloat16, device=dev)  # (at load: no CUDA graph holds the old one)
+        _trim()
 
     def apply(self, layer, x, topk_weights, topk_ids, shared_experts, shared_experts_input):
         up, down, E = layer.glyd_moe
