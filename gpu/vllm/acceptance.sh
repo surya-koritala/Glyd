@@ -323,11 +323,13 @@ webui_route() {  # webui_route ROUTE PYTHON MODEL [KEY]
 
 # --- the glyd flow: install.sh, glyd doctor, glyd run, glyd serve, the page, the API, Open WebUI
 glyd_logs() {  # the traceback and allocator checks over every server log this home has
-  local f tb oom n=0
+  local f tb oom n=0 body
   for f in "$WORK"/home/.local/state/glyd/logs/*.log; do
     [ -f "$f" ] || continue
-    n=$((n + 1)); tb=$(count Traceback "$f"); oom=$(count 'with OOM' "$f")
-    [ "$tb" = 0 ] || fail "$tb tracebacks in $(basename "$f"): $(grep -E '^([A-Za-z_]+\.)*[A-Za-z]+(Error|Exception): |^\(EngineCore[^)]*\) ([A-Za-z_.]+)?(Error|Exception): ' "$f" | sed -E 's/^\([^)]*\) //' | sort | uniq -c | sort -rn | head -2 | sed -E 's/^ +//' | cut -c1-160 | tr '\n' ';')"
+    # (a traceback after vLLM's own "[shutdown]" lines is its output handler finding the engine stopped, which glyd's stop does on purpose: vLLM 0.30 logs it at ERROR on some stops)
+    body=$(sed '/\[shutdown\]/q' "$f")
+    n=$((n + 1)); tb=$(printf '%s\n' "$body" | grep -c Traceback || true); oom=$(count 'with OOM' "$f")
+    [ "$tb" = 0 ] || fail "$tb tracebacks in $(basename "$f") before its shutdown: $(printf '%s\n' "$body" | grep -E '^([A-Za-z_]+\.)*[A-Za-z]+(Error|Exception): |^\(EngineCore[^)]*\) ([A-Za-z_.]+)?(Error|Exception): |Traceback' | sed -E 's/^\([^)]*\) //' | sort | uniq -c | sort -rn | head -3 | sed -E 's/^ +//' | cut -c1-160 | tr '\n' ';')"
     [ "$oom" = 0 ] || fail "$oom allocator out-of-memory warnings in $(basename "$f") ($(count 'memory allocation failed with OOM' "$f") allocation, $(count 'memory mapping failed with OOM' "$f") mapping)"
     cp "$f" "$LOGS/" 2> /dev/null
   done
@@ -402,7 +404,7 @@ glyd_flow() {
   up=; t0=$(date +%s)
   for _ in $(seq 1 600); do
     run 'curl -sf http://127.0.0.1:8000/v1/models' > /dev/null 2>&1 && { up=1; break; }
-    run 'pgrep -f "glyd serve" > /dev/null' > /dev/null 2>&1 || break
+    run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break
     sleep 3
   done
   [ -n "$up" ] || { fail "glyd serve did not come up (logs/serve.out)"; tail -5 "$LOGS/serve.out"; glyd_logs; return 1; }
@@ -420,8 +422,8 @@ glyd_flow() {
   case $chatout in *"This conversation is longer than the model's window"*"Start a new chat with /clear"*) ok "the terminal chat says so when the conversation outgrows the window (typed as one message of several lines)";; *) fail "no plain message in the terminal chat for a conversation longer than the window: $(printf '%s' "$chatout" | tail -5 | tr '\n' '|' | cut -c1-300)";; esac
   for r in uvx docker; do route $r && { webui_route $r "$py" "$MODEL" || break; }; done
   if route bridge; then  # the container on its own network reaches the server on the host's address, which needs the server on every interface and a key
-    run 'pkill -TERM -f "glyd serve"' > /dev/null 2>&1
-    for _ in $(seq 1 60); do run 'pgrep -f "glyd serve" > /dev/null' > /dev/null 2>&1 || break; sleep 1; done
+    run 'pkill -TERM -f "[g]lyd serve"' > /dev/null 2>&1
+    for _ in $(seq 1 60); do run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 1; done
     key=acceptance-$RANDOM$RANDOM
     bg "${gf}glyd serve $MODEL --port 8000 --host 0.0.0.0 -- --api-key $key > $IN/logs/serve-bridge.out 2>&1"
     up=; for _ in $(seq 1 600); do run "curl -sf -H 'Authorization: Bearer $key' http://127.0.0.1:8000/v1/models" > /dev/null 2>&1 && { up=1; break; }; sleep 3; done
@@ -437,9 +439,9 @@ glyd_flow() {
     for _ in $(seq 1 $(( HOLD * 20 ))); do [ -e "$WORK/stop" ] && break; sleep 3; done
   fi
   # 6. stopped: the port and the GPU's memory let go
-  run 'pkill -TERM -f "glyd serve"' > /dev/null 2>&1
-  for _ in $(seq 1 60); do run 'pgrep -f "glyd serve" > /dev/null' > /dev/null 2>&1 || break; sleep 1; done
-  run 'pgrep -f "glyd serve" > /dev/null' > /dev/null 2>&1 && fail "glyd serve did not stop on SIGTERM" || ok "glyd serve stopped on SIGTERM"
+  run 'pkill -TERM -f "[g]lyd serve"' > /dev/null 2>&1
+  for _ in $(seq 1 60); do run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 1; done
+  run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 && fail "glyd serve did not stop on SIGTERM" || ok "glyd serve stopped on SIGTERM"
   ss -ltn 2> /dev/null | grep -q ':8000 ' && fail "port 8000 is still in use after glyd serve stopped" || true
   glyd_logs
   glyd_pip
