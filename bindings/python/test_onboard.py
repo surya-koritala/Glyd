@@ -293,10 +293,11 @@ def test_load_model_and_hub_errors():
     assert "bf16 version" in r.fix
     raises(lambda: pf.load_model("x/y", hub=hub_answer(cfg, {}, [("config.json", 1)])), "no safetensors")
     down = lambda repo: (_ for _ in ()).throw(OSError("Network is unreachable"))
-    raises(lambda: pf.load_model("Qwen/Qwen3-8B", hub=down), "cannot read Qwen/Qwen3-8B from the Hugging Face Hub")
     d = tempfile.mkdtemp()
-    try:  # (offline, with the model downloaded: read from the cache)
-        os.environ["HF_HUB_CACHE"] = d
+    try:
+        os.environ["HF_HUB_CACHE"] = d  # (an empty cache: this machine's own must not answer)
+        raises(lambda: pf.load_model("Qwen/Qwen3-8B", hub=down), "cannot read Qwen/Qwen3-8B from the Hugging Face Hub")
+        # (offline, with the model downloaded: read from the cache)
         snap = os.path.join(d, "models--Qwen--Qwen3-8B", "snapshots", "abc")
         os.makedirs(snap)
         open(os.path.join(snap, "config.json"), "w").close()
@@ -1004,6 +1005,8 @@ esac
         script("fakeuv", uvbody)
         if nvidia:
             script("nvidia-smi", f'case "$1" in -L) echo "GPU 0: NVIDIA L4";; --query-gpu=driver_version) echo "{nvidia}";; esac\n')
+        else:
+            script("nvidia-smi", "exit 9\n")  # (this machine's own, if it has one, must not answer)
         if os_name or arch:
             script("uname", f'case "$1" in -s) echo "{os_name or "Linux"}";; -m) echo "{arch or "x86_64"}";; esac\n')
         if other_glyd:
