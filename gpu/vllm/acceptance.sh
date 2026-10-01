@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The release gate for Glyd's local chat: gpu/vllm/README.md's quickstart, run from nothing on a machine with no CUDA
 # toolkit, as a user runs it. It fails on a traceback in a server's log, an allocator out-of-memory warning (either
-# kind), a missing answer, or a model Open WebUI does not list. Two flows:
+# kind), a missing answer, or a model Open WebUI does not list. Three flows:
 #
 #   --flow glyd   (the default) "Local chat, like Ollama": the README's two commands. In a clean container (Ubuntu
 #                 26.04, a user that is not root, no CUDA toolkit and, by default, no C compiler) it runs install.sh
@@ -10,17 +10,28 @@
 #                 OpenAI API (two streamed turns, the thinking apart, a tool call), a conversation longer than the
 #                 window (the API's refusal, and the terminal chat's own message), and Open WebUI by the README's
 #                 routes. It lists what the install resolved (uv's tool list and pip freeze) and fails on a pre-release
-#                 among the dependencies. Where the budget is too small for MODEL (--card 8gb) it expects the refusal
-#                 with a model to try, and runs that model.
+#                 among the dependencies, and on a package that is not at the version install.sh's list gives. Where the
+#                 budget is too small for MODEL (--card 8gb) it expects the refusal with a model to try, and runs that model.
+#                 Around those, what a user meets: install.sh where a program of the user's own is where uv puts its link (it
+#                 stops, and leaves it), run again (an update: the shell-profile edit said where ~/.local/bin is off PATH, a
+#                 glyd ahead of it on PATH said with the line to add, glyd doctor's own row for it); glyd serve under nohup
+#                 (SIGHUP does not stop it), through the Rust glyd with --rust-glyd; the server's refusal of another site's
+#                 script (Origin) and a rebinding name (Host); a server with an API key given as -- --api-key and as the
+#                 README's VLLM_API_KEY (ready, the key on no command line or in a log, the note on what stays open); an
+#                 answer to a prompt full of escape sequences; Ctrl-C while the model loads (once, twice); the engine killed
+#                 under a terminal chat; uv tool uninstall glyd.
+#   --flow cli    install.sh on a machine with no NVIDIA GPU (a container started without --gpus): the compression program
+#                 from the release's tarball (its sha256 checked), no uv or tool environment, glyd run said to need Linux
+#                 with an NVIDIA GPU, a file through glyd and back, an update, and a program of the user's own left alone.
 #   --flow vllm   the README's "Advanced" section: it makes a clean environment, installs glyd[vllm] (a version from
 #                 PyPI, or a wheel), hides nvcc, leaves the server only the GPU memory of a card, runs the section's
 #                 serve command as the README gives it, chats through the OpenAI API (streaming, two turns, a tool
 #                 call), and runs Open WebUI on it by the routes the README gives (uvx, Docker), chatting through its
 #                 chat endpoint as the browser does.
 #
-#   bash acceptance.sh [--flow glyd|vllm] [--version V | --wheel FILE] [--budget-mib N] [--card-mib N] [--geforce]
+#   bash acceptance.sh [--flow glyd|vllm|cli] [--version V | --wheel FILE] [--budget-mib N] [--card-mib N] [--geforce]
 #                      [--card 4080s|8gb] [--model M] [--compiler none|gcc] [--command CMD] [--webui ROUTES]
-#                      [--hold MINUTES] [--image IMG] [--work DIR] [--host] [--pip-refusal]
+#                      [--hold MINUTES] [--image IMG] [--work DIR] [--host] [--pip-refusal] [--rust-glyd FILE] [--reuse]
 #
 #   --version V      glyd[vllm]==V from PyPI (glyd flow: install.sh with GLYD_VERSION=V; vllm flow: in place of the
 #                    README's install line); --wheel FILE: this wheel, with its vllm extra; with neither, the glyd flow
@@ -49,15 +60,20 @@
 #   --pip-refusal    the glyd flow, after the checks: pip-install the same wheel into a virtual environment (no
 #                    installer, so no ziglang) and expect `glyd run` to stop with the compiler's install command
 #                    (only with --compiler none)
+#   --rust-glyd FILE the Rust glyd built from this tree (cargo build --release --bin glyd): the glyd flow puts it first on PATH
+#                    for glyd doctor and glyd serve (it passes run, serve, doctor and login to the Python tool), the cli flow
+#                    for glyd run (there is no tool: it says so)
+#   --reuse          the glyd flow, in the --work of a run that installed: not installed (or checked) again, the rest run
+#                    (the way to run only what comes after the install again)
 #
 # Needs: Linux, an NVIDIA GPU and its driver, Docker with the NVIDIA container toolkit (or --host, and Docker for the
 # Docker route), and the network. Ports 8000 and 3000 must be free. It runs the README's blocks marked
-# "<!-- acceptance: install | run | webui-uvx | webui-docker | webui-bridge | setup | serve -->". Exit status 0 if
-# nothing failed.
+# "<!-- acceptance: install | run | serve-key | webui-uvx | webui-docker | webui-bridge | setup | serve -->". Exit
+# status 0 if nothing failed. The logs of the last run only: DIR/logs is emptied when it starts.
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 README=$HERE/README.md
-FLOW=glyd VERSION= WHEEL= BUDGET= CARD= GEFORCE= COMMAND= WEBUI=both HOLD= IMAGE= WORK=$HOME/glyd-acceptance HOST= MODEL=Qwen/Qwen3-8B COMPILER=none EXPECT=fit PIPREF= MODEL_SET=
+FLOW=glyd VERSION= WHEEL= BUDGET= CARD= GEFORCE= COMMAND= WEBUI=both HOLD= IMAGE= WORK=$HOME/glyd-acceptance HOST= MODEL=Qwen/Qwen3-8B COMPILER=none EXPECT=fit PIPREF= MODEL_SET= RUSTGLYD= REUSE=
 while [ $# -gt 0 ]; do
   case $1 in
     --flow) FLOW=$2; shift;;
@@ -67,21 +83,25 @@ while [ $# -gt 0 ]; do
     --model) MODEL=$2 MODEL_SET=1; shift;; --compiler) COMPILER=$2; shift;;
     --command) COMMAND=$2; shift;; --webui) WEBUI=$2; shift;; --hold) HOLD=$2; shift;; --image) IMAGE=$2; shift;; --work) WORK=$2; shift;; --host) HOST=1;;
     --pip-refusal) PIPREF=1;;
+    --rust-glyd) RUSTGLYD=$(cd "$(dirname "$2")" && pwd)/$(basename "$2"); shift;; --reuse) REUSE=1;;
     -h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;;
     *) echo "unknown option $1 (--help)"; exit 2;;
   esac
   shift
 done
-case $FLOW in glyd|vllm) ;; *) echo "unknown flow $FLOW (glyd, vllm)"; exit 2;; esac
+case $FLOW in glyd|vllm|cli) ;; *) echo "unknown flow $FLOW (glyd, vllm, cli)"; exit 2;; esac
+[ -z "$RUSTGLYD" ] || [ -x "$RUSTGLYD" ] || { echo "--rust-glyd: $RUSTGLYD is not an executable"; exit 2; }
 [ $EXPECT = fit ] || [ -n "$MODEL_SET" ] || MODEL=Qwen/Qwen3-4B  # (the 8 GB card: the model that does not quite fit)
 case $COMPILER in none|gcc) ;; *) echo "unknown compiler $COMPILER (none, gcc)"; exit 2;; esac
-[ -z "$HOST" ] || [ "$FLOW" = vllm ] || { echo "--host is for the vllm flow: the glyd flow installs into a home of its own, in a container"; exit 2; }
+[ -z "$HOST" ] || [ "$FLOW" = vllm ] || { echo "--host is for the vllm flow: the glyd and cli flows install into a home of their own, in a container"; exit 2; }
 [ "$WEBUI" != all ] || WEBUI=uvx,docker,bridge
 [ "$WEBUI" != both ] || WEBUI=uvx,docker
 mkdir -p "$WORK" && WORK=$(cd "$WORK" && pwd)
 HF=${HF_HOME:-$HOME/.cache/huggingface}
+rm -rf "$WORK/logs"  # (the logs of this run only: a file of an earlier run in them reads as this run's)
 mkdir -p "$WORK/home" "$WORK/logs" "$WORK/bin" "$WORK/uv-cache" "$WORK/wheel" "$HF"
 LOGS=$WORK/logs
+[ -z "$RUSTGLYD" ] || { mkdir -p "$WORK/rust" && cp "$RUSTGLYD" "$WORK/rust/glyd" && chmod +x "$WORK/rust/glyd"; }
 FAILS=()
 : > "$WORK/summary.txt"
 say() { printf '%s\n' "$*" | tee -a "$WORK/summary.txt"; }
@@ -220,6 +240,23 @@ def too_long(base):
     return check("a conversation longer than the window", False, "the server took it")
 
 
+def webui_cors(url):
+    """The README's CORS_ALLOW_ORIGIN: a script of another site gets no grant and its preflight is refused; the page's own origin is granted."""
+    def req(origin, method="POST", pre=False):
+        h = {"Origin": origin, "Content-Type": "application/json"}
+        if pre:
+            h.update({"Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type,authorization"})
+        r = urllib.request.Request(url + "/api/v1/auths/signin", None if method == "OPTIONS" else json.dumps({"email": "", "password": ""}).encode(), h, method=method)
+        try:
+            with urllib.request.urlopen(r, timeout=30) as resp:
+                return resp.status, resp.headers.get("access-control-allow-origin")
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("access-control-allow-origin")
+    evil, pre, own = req("http://evil.example"), req("http://evil.example", "OPTIONS", True), req("http://localhost:3000")
+    return check("Open WebUI's CORS is limited to its own addresses", evil[1] is None and pre[0] == 400 and pre[1] is None and own[1] == "http://localhost:3000",
+                 f"another site's request: {evil}, its preflight: {pre}, the page's own origin: {own}")
+
+
 def webui(url, model):
     for _ in range(150):
         try:
@@ -230,6 +267,7 @@ def webui(url, model):
     token = json.load(call(url + "/api/v1/auths/signin", {"email": "", "password": ""}))["token"]
     ids = [m["id"] for m in json.load(call(url + "/api/models", token=token))["data"]]
     ok = check("Open WebUI lists the model", model in ids, f"/api/models: {ids}")
+    ok &= webui_cors(url)
 
     def chat(msg):  # the browser's request (Open WebUI 0.11): features, params, a session (with which Open WebUI offers the model its built-in tools)
         body = {"stream": True, "model": model, "messages": [{"role": "user", "content": msg}], "params": {}, "tool_servers": [],
@@ -280,7 +318,8 @@ if [ -z "$HOST" ]; then
   MOUNTS=()
   # (the glyd flow keeps uv's own default, hardlinks from its cache, as on a user's disk: the cache and the home are one mount here; the vllm flow copies)
   if [ "$FLOW" = vllm ]; then MOUNTS=(-v "$UV:/usr/local/bin/uv:ro" -v "$UVX:/usr/local/bin/uvx:ro"); E+=(-e UV_LINK_MODE=copy); else E+=(-e PATH=$IN/home/.local/bin:/usr/local/bin:/usr/bin:/bin); fi
-  docker run -d --rm --name $NAME --gpus all --network host --ipc host --user "$(id -u):$(id -g)" -e NVIDIA_DRIVER_CAPABILITIES=compute,utility "${E[@]}" \
+  GPUS=(--gpus all); [ "$FLOW" != cli ] || GPUS=()  # (the cli flow: a machine with no NVIDIA GPU)
+  docker run -d --rm --name $NAME ${GPUS[@]+"${GPUS[@]}"} --network host --ipc host --user "$(id -u):$(id -g)" -e NVIDIA_DRIVER_CAPABILITIES=compute,utility "${E[@]}" \
     -v "$WORK:$IN" -v "$HF:$INHF" ${MOUNTS[@]+"${MOUNTS[@]}"} $IMAGE sleep infinity > /dev/null || exit 2
   run() { docker exec -i -w $IN/home "${E[@]}" $NAME bash -c "$1"; }
   bg() { docker exec -d -w $IN/home "${E[@]}" $NAME bash -c "$1"; }
@@ -298,7 +337,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-say "== $(date -u +%FT%TZ): $FLOW flow, glyd[vllm] ${VERSION:+==$VERSION}${WHEEL:+wheel $WHEEL}, ${IMAGE:-the host}, GPU $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -1), budget ${BUDGET:-all} MiB free, card ${CARD:-as is} MiB"
+say "== $(date -u +%FT%TZ): $FLOW flow, glyd[vllm] ${VERSION:+==$VERSION}${WHEEL:+wheel $WHEEL}, ${IMAGE:-the host}, GPU $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2> /dev/null | head -1), budget ${BUDGET:-all} MiB free, card ${CARD:-as is} MiB"
 
 # --- 1. no nvcc
 if run 'command -v nvcc > /dev/null || test -e /usr/local/cuda || test -n "${CUDA_HOME:-}${CUDA_PATH:-}"'; then
@@ -341,8 +380,201 @@ glyd_logs() {  # the traceback and allocator checks over every server log this h
   say "-- $n server logs checked: no traceback, no allocator out-of-memory warning unless failed above"
 }
 
+# --- helper scripts that run inside the container (written here: one place for the quoting)
+write_guard() {
+  cat > "$WORK/guard.sh" <<'EOF'
+#!/bin/bash
+# What a server started by glyd on 127.0.0.1 answers: its own page and this computer's programs, and not a page of another site
+# (CORS lets a script from any origin reach 127.0.0.1) nor a name that DNS points here (DNS rebinding sends no Origin at all).
+b=http://127.0.0.1:8000
+code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+bad=0
+chk() { if [ "$2" = "$3" ]; then echo "ok   $1: $3"; else echo "FAIL $1: got $3, wanted $2"; bad=1; fi; }
+chk "a program, no Origin (curl)" 200 "$(code $b/v1/models)"
+chk "the page's own origin, localhost" 200 "$(code -H 'Origin: http://localhost:8000' -H 'Host: localhost:8000' $b/v1/models)"
+chk "the page's own origin, 127.0.0.1" 200 "$(code -H 'Origin: http://127.0.0.1:8000' $b/v1/models)"
+chk "a script of another site (Origin)" 403 "$(code -H 'Origin: http://evil.example' $b/v1/models)"
+chk "its preflight" 403 "$(code -X OPTIONS -H 'Origin: http://evil.example' -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: content-type' $b/v1/chat/completions)"
+chk "its POST" 403 "$(code -X POST -H 'Origin: http://evil.example' -H 'Content-Type: application/json' -d '{}' $b/v1/chat/completions)"
+chk "a rebinding name (Host)" 421 "$(code -H 'Host: evil.example:8000' $b/v1/models)"
+chk "the page under a rebinding name" 421 "$(code -H 'Host: evil.example:8000' $b/)"
+chk "the page itself" 200 "$(code $b/)"
+chk "no CORS grant to another site" 0 "$(curl -s -D - -o /dev/null -H 'Origin: http://evil.example' $b/v1/models | tr -d '\r' | grep -ic '^access-control-allow-origin')"
+chk "CORS names the page's own origin" "http://localhost:8000" "$(curl -s -D - -o /dev/null -H 'Origin: http://localhost:8000' $b/v1/models | tr -d '\r' | sed -n 's/^[Aa]ccess-[Cc]ontrol-[Aa]llow-[Oo]rigin: //p')"
+exit $bad
+EOF
+}
+
+# --- the glyd flow's parts
+glyd_foreign() {  # a program of the user's own where uv puts its entry point: install.sh stops, and leaves it as it was
+  local env=$1 rc h=$IN/home-foreign
+  rm -rf "$WORK/home-foreign"; mkdir -p "$WORK/home-foreign/.local/bin"
+  printf '#!/bin/sh\necho mine\n' > "$WORK/home-foreign/.local/bin/glyd"; chmod +x "$WORK/home-foreign/.local/bin/glyd"
+  run "HOME=$h ${env}sh $IN/install.sh" > "$LOGS/install-foreign.log" 2>&1; rc=$?
+  if [ $rc = 1 ] && grep -q "is not Glyd's Python tool" "$LOGS/install-foreign.log" && grep -q 'UV_TOOL_BIN_DIR' "$LOGS/install-foreign.log" \
+     && [ "$(cat "$WORK/home-foreign/.local/bin/glyd")" = "$(printf '#!/bin/sh\necho mine')" ] && ! grep -q 'and Python 3.12' "$LOGS/install-foreign.log"; then
+    ok "a glyd of the user's own in ~/.local/bin: install.sh stopped before it installed Glyd and left that program as it was ($(grep -m1 "is not Glyd's" "$LOGS/install-foreign.log" | cut -c1-110)...)"
+  else
+    fail "install.sh with a glyd of the user's own in ~/.local/bin (exit $rc, logs/install-foreign.log): $(tail -3 "$LOGS/install-foreign.log" | tr '\n' '|' | cut -c1-250)"
+  fi
+  rm -rf "$WORK/home-foreign"
+}
+
+glyd_install() {  # the README's install line with this checkout's script, and what it left
+  local line=$1 env=$2 rc t0 py pre
+  say "-- install: $line   (this checkout's scripts/install.sh instead of getglyd.com's${env:+; $env})"
+  rm -rf "$WORK/home/.local" "$WORK/home/.cache"
+  t0=$(date +%s)
+  run "${env}sh $IN/install.sh" > "$LOGS/install.log" 2>&1; rc=$?
+  [ $rc = 0 ] || { fail "install.sh exited $rc (logs/install.log)"; tail -8 "$LOGS/install.log"; return 1; }
+  ok "install.sh took $(( $(date +%s) - t0 )) s and exited 0; its last lines: $(tail -n 3 "$LOGS/install.log" | tr '\n' '|' | cut -c1-200)"
+  grep -q 'glyd doctor' "$LOGS/install.log" && grep -q 'Ready: glyd run' "$LOGS/install.log" && grep -q 'Next: glyd run' "$LOGS/install.log" || fail "install.sh did not end with glyd doctor saying Ready: glyd run ... and the next command (logs/install.log)"
+  grep -q "edits your shell's startup file" "$LOGS/install.log" && fail "install.sh announced a shell-profile edit where ~/.local/bin is on PATH already"
+  grep -q 'Installing uv' "$LOGS/install.log" && ok "uv was installed by its own installer, at a version: $(grep -m1 'Installing uv' "$LOGS/install.log" | cut -c1-70); $(grep -m1 'downloading uv' "$LOGS/install.log" | cut -c1-60)" || fail "install.sh did not install uv (the clean machine has none): logs/install.log"
+  run 'command -v glyd' > /dev/null 2>&1 || fail "glyd is not on the PATH after the install"
+  if [ -n "$(ls -A "$WORK/home" | grep -E '^\.(bashrc|profile|zshenv|zshrc|bash_profile)$')" ]; then
+    fail "the install edited a shell startup file where ~/.local/bin was on PATH already ($(ls -A "$WORK/home" | grep -E '^\.(bashrc|profile|zshenv|zshrc|bash_profile)$' | tr '\n' ' '))"
+  else
+    ok "no shell startup file touched (~/.local/bin was on PATH; uv's installer was told to edit none)"
+  fi
+  py=$(run 'echo $(uv tool dir)/glyd/bin/python' | tail -1)
+  run "uv tool list --show-with; uv pip freeze --python $py" > "$LOGS/freeze.txt" 2>&1
+  say "-- resolved: $(grep -iE '^(glyd|vllm|torch|flashinfer-python|transformers|safetensors|tokenizers|pydantic|triton|ziglang)[ =@]' "$LOGS/freeze.txt" | sed -E 's/ \(.*//; s/ @ .*//' | tr '\n' ' ')"
+  # (opentelemetry's instrumentation packages publish only betas, 0.66b0: no stable release to take instead; pydantic, safetensors and tokenizers have both)
+  pre=$(grep -E '^[A-Za-z0-9_.-]+==[0-9][0-9.]*(a|b|rc|dev)[0-9]+' "$LOGS/freeze.txt" | grep -v '^glyd==' | grep -vE '^opentelemetry-[a-z-]+==[0-9.]+b[0-9]+$' | tr '\n' ' ')
+  [ -z "$pre" ] && ok "no pre-release among the dependencies (install.sh names no --prerelease; opentelemetry's betas are all there is of those)" || fail "pre-releases among the dependencies: $pre"
+  # the packages are the versions install.sh lists (the last acceptance run's): none other, and none of another version
+  python3 "$HERE/../../scripts/install_constraints.py" --list | sort > "$LOGS/constraints.list"
+  grep -E '^[A-Za-z0-9][A-Za-z0-9._-]*==' "$LOGS/freeze.txt" | grep -v '^glyd==' | sort > "$LOGS/freeze.pins"
+  if [ -z "$(comm -23 "$LOGS/freeze.pins" "$LOGS/constraints.list")" ]; then
+    ok "every one of the $(wc -l < "$LOGS/freeze.pins" | tr -d ' ') packages installed is at the version install.sh's list gives ($(wc -l < "$LOGS/constraints.list" | tr -d ' ') listed; ziglang is only there where there is no compiler)"
+  else
+    fail "packages installed at versions that install.sh's list does not give: $(comm -23 "$LOGS/freeze.pins" "$LOGS/constraints.list" | head -8 | tr '\n' ' ') (python3 scripts/install_constraints.py logs/freeze.txt)"
+  fi
+  if [ $COMPILER = none ]; then
+    grep -q '^ziglang==' "$LOGS/freeze.txt" && ok "no gcc: install.sh added $(grep -o '^ziglang==[0-9.]*' "$LOGS/freeze.txt")" || fail "no gcc here, and install.sh added no ziglang"
+  else
+    grep -q '^ziglang==' "$LOGS/freeze.txt" && fail "ziglang was installed on a machine with gcc"
+  fi
+}
+
+glyd_again() {  # install.sh again, which is the README's way to update: nothing to do, the PATH edit said, a glyd that comes first said; then glyd doctor's own row for it
+  local env=$1 rc out
+  run "SHELL=/bin/bash PATH=/usr/local/bin:/usr/bin:/bin ${env}sh $IN/install.sh" > "$LOGS/install-again.log" 2>&1; rc=$?   # (uv's folder is not on this PATH: the edit is said, then made)
+  if [ $rc = 0 ] && grep -q "is not on your PATH: adding it, which edits your shell's startup file" "$LOGS/install-again.log" && grep -q 'Open a new terminal' "$LOGS/install-again.log" \
+     && grep -qE 'Created configuration file|Updated configuration file|already up-to-date' "$LOGS/install-again.log"; then
+    ok "install.sh run again (an update; ~/.local/bin not on PATH): exit 0, the shell-profile edit said first, uv's own line naming the file: $(grep -E 'configuration file|up-to-date' "$LOGS/install-again.log" | head -1 | cut -c1-120)"
+  else
+    fail "install.sh run again with ~/.local/bin off PATH (exit $rc, logs/install-again.log): $(tail -4 "$LOGS/install-again.log" | tr '\n' '|' | cut -c1-300)"
+  fi
+  grep -qs 'local/bin' "$WORK/home/.bashrc" "$WORK/home/.profile" "$WORK/home/.zshenv" && ok "the PATH line is in the shell's startup file ($(grep -ls 'local/bin' "$WORK/home/.bashrc" "$WORK/home/.profile" "$WORK/home/.zshenv" | xargs -n1 basename | tr '\n' ' '))" || fail "the PATH edit install.sh announced is in none of .bashrc, .profile, .zshenv"
+  grep -q 'uv tool install' "$LOGS/install-again.log" && say "     (it ran: $(grep -c 'already installed' "$LOGS/install-again.log") already installed)"
+  mkdir -p "$WORK/shadow"; printf '#!/bin/sh\necho "the compression program"\n' > "$WORK/shadow/glyd"; chmod +x "$WORK/shadow/glyd"
+  run "PATH=$IN/shadow:$IN/home/.local/bin:/usr/local/bin:/usr/bin:/bin ${env}sh $IN/install.sh" > "$LOGS/install-shadow.log" 2>&1; rc=$?
+  if [ $rc = 0 ] && grep -q "another glyd comes first on your PATH: $IN/shadow/glyd" "$LOGS/install-shadow.log" && grep -qF "export PATH=\"$IN/home/.local/bin:\$PATH\"" "$LOGS/install-shadow.log" && grep -qF "$IN/home/.local/bin/glyd run MODEL" "$LOGS/install-shadow.log"; then
+    ok "a glyd ahead of it on PATH: install.sh says which, and the line to add and the path to run it by"
+  else
+    fail "install.sh with another glyd first on PATH did not say so with the fix (exit $rc, logs/install-shadow.log): $(tail -5 "$LOGS/install-shadow.log" | tr '\n' '|' | cut -c1-300)"
+  fi
+  run "PATH=$IN/shadow:\$PATH $IN/home/.local/bin/glyd doctor" > "$LOGS/doctor-shadow.txt" 2>&1
+  grep -q 'another program named glyd comes first on your PATH' "$LOGS/doctor-shadow.txt" && grep -qF "export PATH=\"$IN/home/.local/bin:\$PATH\"" "$LOGS/doctor-shadow.txt" && ok "glyd doctor reports it too, with the same line" || fail "glyd doctor did not report the glyd ahead of it (logs/doctor-shadow.txt)"
+  if [ -n "$RUSTGLYD" ]; then  # the Rust glyd built from this tree, first on PATH: it passes run, serve, doctor and login to the Python tool
+    run "PATH=$IN/rust:\$PATH glyd --version | head -1; PATH=$IN/rust:\$PATH glyd doctor" > "$LOGS/doctor-rust.txt" 2>&1; rc=$?
+    if [ $rc = 0 ] && grep -q 'Ready: glyd run' "$LOGS/doctor-rust.txt" && ! grep -q 'Unknown option' "$LOGS/doctor-rust.txt"; then
+      ok "the Rust glyd first on PATH hands glyd doctor to the Python tool ($(head -1 "$LOGS/doctor-rust.txt"))"
+    else fail "the Rust glyd first on PATH did not run glyd doctor through to the Python tool (logs/doctor-rust.txt): $(tail -3 "$LOGS/doctor-rust.txt" | tr '\n' '|' | cut -c1-200)"; fi
+  fi
+}
+
+glyd_key() {  # glyd serve with an API key: ready (the probe needs no key), the key on no command line or log, the note says what stays open  [glyd_key OUTFILE KEY FORM]
+  local out=$1 key=$2 form=$3 n
+  grep -q '^Ready in' "$out" && grep -q '^Serving' "$out" && grep -q 'asks for the API key' "$out" && ok "glyd serve with the key ($form): ready, serving, and its banner says it asks for the key" || fail "glyd serve with the key ($form) did not get ready and say so (logs/$(basename "$out")): $(tail -3 "$out" | tr '\n' '|' | cut -c1-200)"
+  grep -q 'plain HTTP' "$out" && grep -q '/health' "$out" && grep -q 'guards /v1 only' "$out" && ok "its note on an open address names plain HTTP and the endpoints a key does not guard" || fail "glyd serve's note on a server open to the network is missing what stays open (logs/$(basename "$out"))"
+  n=$(run "ps -eo args | grep -v 'glyd serve' | grep -v grep | grep -c -- '$key' || true" | tail -1)
+  [ "${n:-1}" = 0 ] && ok "the key is on no other command line (ps)" || fail "the API key is on $n command lines (ps), besides glyd's own"
+  n=$(cat "$WORK"/home/.local/state/glyd/logs/*.log "$out" 2> /dev/null | grep -c -- "$key" || true)
+  [ "${n:-1}" = 0 ] && ok "the key is in no log and not in glyd's output" || fail "the API key is in $n lines of the logs or glyd's output"
+  [ "$form" = flag ] && { grep -q 'taken off the server' "$out" && ok "given as -- --api-key, glyd says it was taken off the server's command line" || fail "no note that the key given as --api-key was moved to the environment"; }
+  [ "$(run "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/v1/models")" = 401 ] && ok "/v1 without the key is 401" || fail "the server took a request to /v1 without its key"
+  [ "$(run "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health")" = 200 ] && ok "/health stays open (the note says so)" || fail "/health is not open"
+  [ "$(run "curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer $key' http://127.0.0.1:8000/v1/models")" = 200 ] && ok "/v1 with the key is 200" || fail "the key is not accepted"
+}
+
+glyd_hup() {  # nohup ignores SIGHUP, and glyd keeps it ignored: the server under it lives through the terminal closing
+  local pid
+  pid=$(run 'pgrep -f "[g]lyd serve" | head -1' | tail -1)
+  [ -n "$pid" ] || { fail "no glyd serve process to send SIGHUP to"; return; }
+  run "kill -HUP $pid" > /dev/null 2>&1; sleep 8
+  if run "kill -0 $pid" > /dev/null 2>&1 && [ "$(run "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health")" = 200 ] && ! grep -q 'Stopping the server' "$LOGS/serve.out"; then
+    ok "glyd serve under nohup kept running when it was sent SIGHUP (nohup's ignore is kept)"
+  else
+    fail "glyd serve under nohup did not survive SIGHUP (logs/serve.out): $(tail -3 "$LOGS/serve.out" | tr '\n' '|' | cut -c1-200)"
+  fi
+}
+
+glyd_ctrlc() {  # Ctrl-C while the model loads, once and twice: glyd exits promptly, and nothing it started is left running or holding the GPU
+  local n pid t gone left rc
+  for n in 1 2; do
+    : > "$LOGS/ctrlc$n.out"
+    bg "setsid bash -c 'echo \$\$ > $IN/logs/ctrlc.pid; ${gf}glyd run $MODEL --prompt hi; echo rc=\$?' > $IN/logs/ctrlc$n.out 2>&1"
+    for _ in $(seq 1 60); do grep -q '^Settings:' "$LOGS/ctrlc$n.out" 2> /dev/null && break; sleep 1; done
+    sleep 12   # (the weights are loading)
+    pid=$(cat "$LOGS/ctrlc.pid" 2> /dev/null)
+    run "kill -INT -- -$pid" > /dev/null 2>&1
+    [ $n = 2 ] && { sleep 1.5; run "kill -INT -- -$pid" > /dev/null 2>&1; }
+    t=$(date +%s); gone=
+    for _ in $(seq 1 90); do grep -q '^rc=' "$LOGS/ctrlc$n.out" && { gone=1; break; }; sleep 1; done
+    t=$(( $(date +%s) - t ))
+    rc=$(sed -n 's/^rc=//p' "$LOGS/ctrlc$n.out" | head -1)
+    for _ in $(seq 1 20); do left=$(run 'pgrep -fa "EngineCore|vllm" | grep -v pgrep' | tail -3 | tr '\n' ' '); [ -z "$left" ] && break; sleep 1; done
+    if [ -n "$gone" ] && [ "$rc" = 130 ] && [ -z "$left" ] && ! grep -qE 'Traceback|unexpected error' "$LOGS/ctrlc$n.out"; then
+      ok "Ctrl-C ${n}x while the model loads: glyd exited 130 in $t s, no vLLM process left ($(grep -E 'Stopping|stopp' "$LOGS/ctrlc$n.out" | head -1 | cut -c1-60))"
+    else
+      fail "Ctrl-C ${n}x while the model loads: exit ${rc:-none} after $t s, left running: ${left:-nothing}; $(tail -3 "$LOGS/ctrlc$n.out" | tr '\n' '|' | cut -c1-200) (logs/ctrlc$n.out)"
+      run 'pkill -KILL -f "EngineCore|vllm|glyd run"' > /dev/null 2>&1; sleep 3
+    fi
+    ss -ltn 2> /dev/null | grep -q ':8000 ' && { fail "port 8000 is in use after the Ctrl-C"; return; }
+  done
+}
+
+glyd_chat_dies() {  # a terminal chat with an answer under way, and the engine killed under it: a plain message, no hang, no traceback
+  local key=${1:-} up out
+  : > "$LOGS/serve-die.out"
+  bg "${gf}glyd serve $MODEL --port 8000 > $IN/logs/serve-die.out 2>&1"
+  up=; for _ in $(seq 1 600); do run 'curl -sf http://127.0.0.1:8000/v1/models' > /dev/null 2>&1 && { up=1; break; }; run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 3; done
+  [ -n "$up" ] || { fail "glyd serve did not come up for the engine-killed check (logs/serve-die.out)"; return; }
+  cat > "$WORK/chatdies.sh" <<EOF
+#!/bin/bash
+( sleep 8; echo 'Write the numbers from 1 to 600, one on each line, and nothing else. /no_think'; sleep 70; echo /bye ) | ${gf}script -qec 'glyd run $MODEL' /dev/null > $IN/logs/chatdies.out 2>&1 &
+chat=\$!
+sleep 24
+pkill -KILL -f 'EngineCore'
+wait \$chat
+EOF
+  run "bash $IN/chatdies.sh" > /dev/null 2>&1
+  out=$(tr -d '\r' < "$LOGS/chatdies.out" | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g')
+  if printf '%s' "$out" | grep -qE 'The server (stopped answering|could not finish the answer)' && ! printf '%s' "$out" | grep -qE 'Traceback|unexpected error'; then
+    ok "the engine killed under a terminal chat's answer: $(printf '%s' "$out" | grep -E 'The server (stopped answering|could not finish)' | head -1 | cut -c1-140)"
+  else
+    fail "the engine killed under a terminal chat's answer: no plain message, or a traceback (logs/chatdies.out): $(printf '%s' "$out" | tail -4 | tr '\n' '|' | cut -c1-250)"
+  fi
+  for _ in $(seq 1 60); do run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 1; done
+  run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 && { fail "glyd serve did not exit after its engine was killed (logs/serve-die.out)"; run 'pkill -TERM -f "[g]lyd serve"' > /dev/null 2>&1; sleep 5; } || ok "glyd serve exited when its engine died: $(grep -iE 'stopped|exited|died' "$LOGS/serve-die.out" | head -1 | cut -c1-120)"
+  run 'pkill -KILL -f "EngineCore|vllm"' > /dev/null 2>&1; sleep 3
+}
+
+glyd_remove() {  # the README's removal: uv tool uninstall glyd takes the tool and its link, and leaves the logs, the models and uv
+  local logs=$WORK/home/.local/state/glyd
+  run 'uv tool uninstall glyd' > "$LOGS/uninstall.log" 2>&1
+  if ! run 'command -v glyd' > /dev/null 2>&1 && [ ! -e "$WORK/home/.local/bin/glyd" ] && [ -d "$logs/logs" ] && [ -x "$WORK/home/.local/bin/uv" ] && ! run 'uv tool list' 2>&1 | grep -q '^glyd '; then
+    ok "uv tool uninstall glyd: the tool and its link are gone; ~/.local/state/glyd ($(ls "$logs" | tr '\n' ' ')), the Hugging Face cache and uv stay (as the README says)"
+  else
+    fail "uv tool uninstall glyd did not leave what the README says (logs/uninstall.log): $(cat "$LOGS/uninstall.log" | tail -3 | tr '\n' '|')"
+  fi
+}
+
 glyd_flow() {
-  local line env rc t0 py gf ans new up key
+  local line env rc t0 py gf ans new up key rp big win chatout pid
   # 2. the README's install line, with this checkout's install.sh where the line fetches getglyd.com's
   line=$(block install)
   [ "$line" = 'curl -LsSf https://getglyd.com/install.sh | sh' ] || { fail "the README's <!-- acceptance: install --> block is not the one line this script replaces: $line"; return 1; }
@@ -350,26 +582,16 @@ glyd_flow() {
   env=
   [ -n "$VERSION" ] && env="GLYD_VERSION=$VERSION "
   [ -n "$WHEEL" ] && { cp "$WHEEL" "$WORK/wheel/" && env="GLYD_SPEC='$IN/wheel/$(basename "$WHEEL")[vllm]' "; }
-  say "-- install: $line   (this checkout's scripts/install.sh instead of getglyd.com's${env:+; $env})"
-  rm -rf "$WORK/home/.local" "$WORK/home/.cache"
-  t0=$(date +%s)
-  run "${env}sh $IN/install.sh" > "$LOGS/install.log" 2>&1; rc=$?
-  [ $rc = 0 ] || { fail "install.sh exited $rc (logs/install.log)"; tail -8 "$LOGS/install.log"; return 1; }
-  ok "install.sh took $(( $(date +%s) - t0 )) s and exited 0; its last lines: $(tail -n 3 "$LOGS/install.log" | tr '\n' '|' | cut -c1-200)"
-  grep -q 'glyd doctor' "$LOGS/install.log" && grep -q 'Ready: glyd run' "$LOGS/install.log" || fail "install.sh did not end with glyd doctor saying Ready: glyd run ... (logs/install.log)"
-  run 'command -v glyd' > /dev/null 2>&1 || fail "glyd is not on the PATH after the install"
-  grep -qE 'local/bin' "$WORK/home/.bashrc" "$WORK/home/.profile" 2> /dev/null && ok "uv's PATH line is in the shell's profile (a new terminal finds glyd)" || say "note: no PATH line in .bashrc or .profile (uv tool update-shell found the path already set, or could not write)"
-  py=$(run 'echo $(uv tool dir)/glyd/bin/python' | tail -1)
-  run "uv tool list --show-with; uv pip freeze --python $py" > "$LOGS/freeze.txt" 2>&1
-  say "-- resolved: $(grep -iE '^(glyd|vllm|torch|flashinfer-python|transformers|safetensors|tokenizers|pydantic|triton|ziglang)[ =@]' "$LOGS/freeze.txt" | sed -E 's/ \(.*//; s/ @ .*//' | tr '\n' ' ')"
-  # (opentelemetry's instrumentation packages publish only betas, 0.66b0: no stable release to take instead; pydantic, safetensors and tokenizers have both)
-  pre=$(grep -E '^[A-Za-z0-9_.-]+==[0-9][0-9.]*(a|b|rc|dev)[0-9]+' "$LOGS/freeze.txt" | grep -v '^glyd==' | grep -vE '^opentelemetry-[a-z-]+==[0-9.]+b[0-9]+$' | tr '\n' ' ')
-  [ -z "$pre" ] && ok "no pre-release among the dependencies (install.sh names no --prerelease; opentelemetry's betas are all there is of those)" || fail "pre-releases among the dependencies: $pre"
-  if [ $COMPILER = none ]; then
-    grep -q '^ziglang==' "$LOGS/freeze.txt" && ok "no gcc: install.sh added $(grep -o '^ziglang==[0-9.]*' "$LOGS/freeze.txt")" || fail "no gcc here, and install.sh added no ziglang"
+  rp=; [ -z "$RUSTGLYD" ] || rp="PATH=$IN/rust:\$PATH "
+  write_guard
+  if [ -n "$REUSE" ]; then
+    say "-- --reuse: the install in $WORK/home as the last run left it (not run again, and not checked again)"
   else
-    grep -q '^ziglang==' "$LOGS/freeze.txt" && fail "ziglang was installed on a machine with gcc"
+    glyd_foreign "$env"
+    glyd_install "$line" "$env" || return 1
+    glyd_again "$env"
   fi
+  py=$(run 'echo $(uv tool dir)/glyd/bin/python' | tail -1)
   run 'glyd doctor' > "$LOGS/doctor.txt" 2>&1; rc=$?
   [ $rc = 0 ] && grep -q 'Ready: glyd run' "$LOGS/doctor.txt" && ok "glyd doctor: $(grep 'Ready:' "$LOGS/doctor.txt")" || { fail "glyd doctor (logs/doctor.txt)"; cat "$LOGS/doctor.txt"; }
   # 3. the GPU's memory: a process holds all but the budget
@@ -402,10 +624,10 @@ glyd_flow() {
   fi
   grep -qE 'Traceback|unexpected error' "$LOGS/run.out" "$LOGS/run.err" && fail "a traceback or an unexpected error in glyd run's own output"
   glyd_logs
-  [ $EXPECT = refusal ] && { glyd_pip; return; }
-  # 5. glyd serve, then the page, the API, the longer-than-the-window conversation, Open WebUI
+  [ $EXPECT = refusal ] && { glyd_remove; glyd_pip; return; }
+  # 5. glyd serve (under nohup, and through the Rust glyd where there is one), then the page, the API, the longer-than-the-window conversation, Open WebUI
   : > "$LOGS/serve.out"
-  bg "${gf}glyd serve $MODEL --port 8000 > $IN/logs/serve.out 2>&1"
+  bg "${gf}${rp}nohup glyd serve $MODEL --port 8000 > $IN/logs/serve.out 2>&1"
   up=; t0=$(date +%s)
   for _ in $(seq 1 600); do
     run 'curl -sf http://127.0.0.1:8000/v1/models' > /dev/null 2>&1 && { up=1; break; }
@@ -413,13 +635,23 @@ glyd_flow() {
     sleep 3
   done
   [ -n "$up" ] || { fail "glyd serve did not come up (logs/serve.out)"; tail -5 "$LOGS/serve.out"; glyd_logs; return 1; }
-  ok "glyd serve up after $(( $(date +%s) - t0 )) s: $(grep -E '^(Settings|Ready in)' "$LOGS/serve.out" | cut -c1-150 | tr '\n' '|')"
+  ok "glyd serve up after $(( $(date +%s) - t0 )) s${RUSTGLYD:+ (started through the Rust glyd first on PATH)}: $(grep -E '^(Settings|Ready in)' "$LOGS/serve.out" | cut -c1-150 | tr '\n' '|')"
   run "curl -s -D $IN/logs/page.head -o $IN/logs/page.html http://127.0.0.1:8000/" > /dev/null 2>&1
   head -1 "$LOGS/page.head" | grep -q ' 200' && grep -qi '^content-type: text/html' "$LOGS/page.head" && grep -q '<title>Glyd' "$LOGS/page.html" && ok "GET / is the chat page ($(wc -c < "$LOGS/page.html" | tr -d ' ') bytes, $(grep -io '^content-security-policy: [^;]*' "$LOGS/page.head" | tr -d '\r'))" || fail "GET / is not the chat page (logs/page.head)"
   grep -qE "(src|href)=[\"']https?:|url\(https?:|@import" "$LOGS/page.html" && fail "the chat page names an external resource"
   [ "$(run 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/nope')" = 404 ] && ok "other paths stay vLLM's (/nope is 404; the API answers below)" || fail "/nope is not 404"
+  run "bash $IN/guard.sh" > "$LOGS/guard.log" 2>&1 && ok "the server on 127.0.0.1 answers its own page and local programs, and refuses another site's script and a rebinding name ($(grep -c '^ok' "$LOGS/guard.log") checks, logs/guard.log)" || { fail "the server on 127.0.0.1 let in a page of another origin or a rebinding Host (logs/guard.log)"; grep '^FAIL' "$LOGS/guard.log"; }
+  glyd_hup
   run "$py $IN/check.py api http://127.0.0.1:8000/v1" > "$LOGS/chat.log" 2>&1 || fail "the OpenAI API checks (logs/chat.log)"
   tee -a "$WORK/summary.txt" < "$LOGS/chat.log"
+  # (a model that repeats escape sequences does not move the user's terminal: glyd run attaches to this server)
+  printf 'Repeat this text exactly, character for character, and say nothing else: \033[31mRED\033[0m \033]0;pwned\007 end /no_think' > "$WORK/esc-prompt.txt"
+  run "${gf}glyd run $MODEL --prompt \"\$(cat $IN/esc-prompt.txt)\"" > "$LOGS/escapes.out" 2> "$LOGS/escapes.err"
+  if LC_ALL=C grep -q $'[\x01-\x08\x0b-\x1f\x7f]' "$LOGS/escapes.out"; then
+    fail "glyd run's answer carries control characters (logs/escapes.out): $(LC_ALL=C tr -d '[:print:]\n\t' < "$LOGS/escapes.out" | od -c | head -2 | tr '\n' ' ' | cut -c1-100)"
+  else
+    ok "glyd run's answer to a prompt full of escape sequences has no control character in it ($(wc -c < "$LOGS/escapes.out" | tr -d ' ') bytes: $(tr -d '\n' < "$LOGS/escapes.out" | cut -c1-50))"
+  fi
   big=$(run "yes word | head -n 60000 | tr '\n' ' ' | ${gf}glyd run $MODEL 2>&1 >/dev/null; echo rc=\$?" | tail -3 | tr '\n' ' ')
   case $big in *"This prompt is longer than the model's window"*"rc=1"*) ok "glyd run --prompt (a prompt on stdin) says so when the prompt outgrows the window: $(printf '%s' "$big" | cut -c1-150)";; *) fail "no plain message from glyd run for a prompt longer than the window: $big";; esac
   win=$(run 'curl -s http://127.0.0.1:8000/v1/models' | sed -nE 's/.*"max_model_len":([0-9]+).*/\1/p' | head -1)
@@ -428,14 +660,24 @@ glyd_flow() {
   case $chatout in *"This conversation is longer than the model's window"*"Start a new chat with /clear"*) ok "the terminal chat says so when the conversation outgrows the window (typed as one message of several lines)";; *) fail "no plain message in the terminal chat for a conversation longer than the window: $(printf '%s' "$chatout" | tail -5 | tr '\n' '|' | cut -c1-300)";; esac
   for r in uvx docker; do route $r && { webui_route $r "$py" "$MODEL" || break; }; done
   if route bridge; then  # the container on its own network reaches the server on the host's address, which needs the server on every interface and a key
-    run 'pkill -TERM -f "[g]lyd serve"' > /dev/null 2>&1
-    for _ in $(seq 1 60); do run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 1; done
+    glyd_stop_serve
     key=acceptance-$RANDOM$RANDOM
-    bg "${gf}glyd serve $MODEL --port 8000 --host 0.0.0.0 -- --api-key $key > $IN/logs/serve-bridge.out 2>&1"
-    up=; for _ in $(seq 1 600); do run "curl -sf -H 'Authorization: Bearer $key' http://127.0.0.1:8000/v1/models" > /dev/null 2>&1 && { up=1; break; }; sleep 3; done
-    [ -n "$up" ] || fail "glyd serve --host 0.0.0.0 -- --api-key did not come up (logs/serve-bridge.out)"
-    [ "$(run 'curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/v1/models')" = 401 ] && ok "the key is asked for (/v1/models without it is 401)" || fail "the server on 0.0.0.0 took a request without its key"
-    [ -z "$up" ] || webui_route bridge "$py" "$MODEL" "$key"
+    # the key as -- --api-key: glyd's readiness probe needs none of it (it asked /v1 and was told 401, so a server with a key never came up)
+    : > "$LOGS/serve-flag.out"
+    bg "${gf}glyd serve $MODEL --port 8000 --host 0.0.0.0 -- --api-key $key > $IN/logs/serve-flag.out 2>&1"
+    up=; for _ in $(seq 1 600); do grep -q '^Serving' "$LOGS/serve-flag.out" && { up=1; break; }; run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 3; done
+    if [ -n "$up" ]; then glyd_key "$LOGS/serve-flag.out" "$key" flag; else fail "glyd serve --host 0.0.0.0 -- --api-key never printed Serving (logs/serve-flag.out): $(tail -3 "$LOGS/serve-flag.out" | tr '\n' '|' | cut -c1-200)"; fi
+    glyd_stop_serve
+    # the key as the README says (VLLM_API_KEY in the environment), and Open WebUI against it
+    key=acceptance-$RANDOM$RANDOM
+    line=$(block serve-key)
+    [ -n "$line" ] || fail "the README has no <!-- acceptance: serve-key --> block"
+    line=$(printf '%s' "$line" | sed "s|YOUR_KEY|$key|; s|Qwen/Qwen3-8B|$MODEL|")
+    say "-- serve with a key: $(printf '%s' "$line" | sed "s|$key|YOUR_KEY|")"
+    : > "$LOGS/serve-bridge.out"
+    bg "${gf}$line > $IN/logs/serve-bridge.out 2>&1"
+    up=; for _ in $(seq 1 600); do grep -q '^Serving' "$LOGS/serve-bridge.out" && { up=1; break; }; run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 3; done
+    if [ -n "$up" ]; then glyd_key "$LOGS/serve-bridge.out" "$key" env; webui_route bridge "$py" "$MODEL" "$key"; else fail "the README's serve-key command never printed Serving (logs/serve-bridge.out): $(tail -3 "$LOGS/serve-bridge.out" | tr '\n' '|' | cut -c1-200)"; fi
   fi
   if [ -n "$HOLD" ]; then
     block webui-uvx > "$WORK/webui-uvx.sh"
@@ -445,12 +687,49 @@ glyd_flow() {
     for _ in $(seq 1 $(( HOLD * 20 ))); do [ -e "$WORK/stop" ] && break; sleep 3; done
   fi
   # 6. stopped: the port and the GPU's memory let go
+  glyd_stop_serve
+  run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 && fail "glyd serve did not stop on SIGTERM" || ok "glyd serve stopped on SIGTERM"
+  ss -ltn 2> /dev/null | grep -q ':8000 ' && fail "port 8000 is in use after glyd serve stopped" || true
+  glyd_logs
+  # 7. what a user does to it: Ctrl-C while the model loads, the engine dying under a chat (their logs are not checked for tracebacks: those are the point)
+  [ -n "$BUDGET" ] || { glyd_ctrlc; glyd_chat_dies; }
+  glyd_remove
+  glyd_pip
+}
+
+glyd_stop_serve() {  # SIGTERM to glyd serve, and its port and processes let go
   run 'pkill -TERM -f "[g]lyd serve"' > /dev/null 2>&1
   for _ in $(seq 1 60); do run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 1; done
-  run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 && fail "glyd serve did not stop on SIGTERM" || ok "glyd serve stopped on SIGTERM"
-  ss -ltn 2> /dev/null | grep -q ':8000 ' && fail "port 8000 is still in use after glyd serve stopped" || true
-  glyd_logs
-  glyd_pip
+}
+
+# --- the cli flow: install.sh on a machine with no NVIDIA GPU (a container started without --gpus): the compression program from the release, and what glyd run says
+cli_flow() {
+  local env rc out
+  cp "$HERE/../../scripts/install.sh" "$WORK/install.sh" || { fail "no scripts/install.sh beside gpu/vllm"; return 1; }
+  env=; [ -z "$VERSION" ] || env="GLYD_VERSION=$VERSION "
+  rm -rf "$WORK/home/.local" "$WORK/home/.cache" "$WORK/home-foreign"
+  say "-- install.sh with no NVIDIA GPU: $(run 'command -v nvidia-smi || echo no nvidia-smi' | tail -1)"
+  run "${env}sh $IN/install.sh" > "$LOGS/install.log" 2>&1; rc=$?
+  [ $rc = 0 ] || { fail "install.sh exited $rc (logs/install.log)"; tail -8 "$LOGS/install.log"; return 1; }
+  ok "install.sh exited 0; its output: $(tr '\n' '|' < "$LOGS/install.log" | cut -c1-420)"
+  grep -q 'No NVIDIA GPU answered' "$LOGS/install.log" && grep -q 'needs Linux with an NVIDIA GPU' "$LOGS/install.log" && ok "it says plainly that glyd run needs Linux with an NVIDIA GPU" || fail "install.sh did not say that glyd run needs Linux with an NVIDIA GPU (logs/install.log)"
+  grep -q 'sha256' "$LOGS/install.log" && ok "the tarball was checked against the release's sha256" || fail "no sha256 check in install.sh's output"
+  [ ! -e "$WORK/home/.local/bin/uv" ] && [ ! -d "$WORK/home/.local/share/uv" ] && ok "no uv, and no tool environment, for a machine that cannot run glyd run" || fail "install.sh put uv or a tool environment where there is no GPU"
+  for p in glyd glyd-store glyd-gpu; do [ -L "$WORK/home/.local/bin/$p" ] || fail "no link ~/.local/bin/$p"; done
+  run 'glyd --version' > "$LOGS/version.txt" 2>&1; rc=$?
+  [ $rc = 0 ] && ok "glyd --version: $(head -2 "$LOGS/version.txt" | tr '\n' ' ')" || fail "glyd --version (logs/version.txt)"
+  run "base64 /dev/urandom | head -c 3000000 > $IN/home/a.txt; glyd --max $IN/home/a.txt -o $IN/home/a.glyd && glyd -d $IN/home/a.glyd -o $IN/home/b.txt && cmp $IN/home/a.txt $IN/home/b.txt" > "$LOGS/roundtrip.txt" 2>&1 \
+    && ok "a file through glyd and back: $(run "stat -c %s $IN/home/a.txt $IN/home/a.glyd" | tr '\n' ' ') bytes, identical" || fail "the compression round trip (logs/roundtrip.txt)"
+  if [ -n "$RUSTGLYD" ]; then  # the Rust glyd of this tree: run, serve, doctor and login say what they are, in place of the usage text of a file named run
+    run "PATH=$IN/rust:\$PATH glyd run Qwen/Qwen3-8B; echo rc=\$?" > "$LOGS/run-rust.txt" 2>&1
+    grep -q 'not installed here' "$LOGS/run-rust.txt" && grep -q 'rc=127' "$LOGS/run-rust.txt" && ! grep -q 'Usage:' "$LOGS/run-rust.txt" && ok "glyd run, where there is no Python tool: $(head -1 "$LOGS/run-rust.txt" | cut -c1-200)" || fail "glyd run with no Python tool did not say so (logs/run-rust.txt): $(head -3 "$LOGS/run-rust.txt" | tr '\n' '|' | cut -c1-200)"
+  fi
+  run "${env}sh $IN/install.sh" > "$LOGS/install-again.log" 2>&1; rc=$?
+  [ $rc = 0 ] && ok "install.sh run again (an update) replaced its own links and exited 0" || fail "install.sh run again exited $rc (logs/install-again.log): $(tail -3 "$LOGS/install-again.log" | tr '\n' '|')"
+  mkdir -p "$WORK/home-foreign/.local/bin"; printf '#!/bin/sh\necho mine\n' > "$WORK/home-foreign/.local/bin/glyd"; chmod +x "$WORK/home-foreign/.local/bin/glyd"
+  run "HOME=$IN/home-foreign ${env}sh $IN/install.sh" > "$LOGS/install-foreign.log" 2>&1; rc=$?
+  [ $rc = 1 ] && grep -q 'this installer did not make it' "$LOGS/install-foreign.log" && [ "$(cat "$WORK/home-foreign/.local/bin/glyd")" = "$(printf '#!/bin/sh\necho mine')" ] && ok "a glyd of the user's own in ~/.local/bin is not replaced" || fail "install.sh with a glyd of the user's own (exit $rc, logs/install-foreign.log)"
+  rm -rf "$WORK/home-foreign"
 }
 
 glyd_pip() {  # --pip-refusal: the same wheel by pip into a virtual environment: no installer, no ziglang: the compiler's refusal
@@ -465,6 +744,12 @@ glyd_pip() {  # --pip-refusal: the same wheel by pip into a virtual environment:
   esac
 }
 
+if [ "$FLOW" = cli ]; then
+  cli_flow
+  if [ ${#FAILS[@]} = 0 ]; then say "PASSED"; else say "FAILED (${#FAILS[@]}): $(printf '%s; ' "${FAILS[@]}")"; fi
+  [ ${#FAILS[@]} = 0 ]
+  exit
+fi
 if [ "$FLOW" = glyd ]; then
   glyd_flow
   if [ ${#FAILS[@]} = 0 ]; then say "PASSED"; else say "FAILED (${#FAILS[@]}): $(printf '%s; ' "${FAILS[@]}")"; fi

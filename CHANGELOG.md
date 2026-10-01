@@ -33,6 +33,31 @@ every earlier format.
   install.sh from each release's tag. ([gpu/vllm/README.md](gpu/vllm/README.md#local-chat-like-ollama),
   [benchmarks/gpu/l4-onboarding-2026-10-01](benchmarks/gpu/l4-onboarding-2026-10-01))
 
+- `glyd run`, `glyd serve` and `scripts/install.sh`, from the review of v0.26.0rc3. A server with an API key now starts: `glyd` asked `/v1` whether the
+  server was up and was told 401, so `glyd serve -- --api-key KEY` never got ready; it asks `/health` and sends the key where the chat needs it. The server
+  on 127.0.0.1 answers this computer's programs and its own page only: a Host that is not localhost, 127.0.0.1 or [::1] is refused with 421 (DNS
+  rebinding), an Origin that is not its own with 403 (a script from another site; a preflight and a websocket's handshake too), and vLLM's CORS, which
+  allows every origin, is limited to its addresses. The key goes to the server in `VLLM_API_KEY` (a `-- --api-key` is moved there and said so), so it is
+  on no command line of the server and in no log, and the note for a server on another address names plain HTTP and what a key does not guard (the chat
+  page, `/health`, `/metrics`, `/version`, `/tokenize`, `/detokenize`, `/docs`). The install script is one function called on its last line (a cut-short
+  download runs nothing), installs uv at a version through its own installer, checked against that installer's sha256, and fetches it with `curl -f`
+  (a failed download was reported as "uv is not where its installer says"); installs Glyd's packages at the versions the acceptance run installed (a list
+  in the script, `GLYD_CONSTRAINTS=none` to resolve fresh); no longer passes `--force`, and stops where `~/.local/bin/glyd` is a program uv did not put
+  there; says before it edits a shell startup file, and not at all where `~/.local/bin` is on PATH (an exact match: `/x/bin2` is not `/x/bin`); says
+  where another `glyd` comes first on PATH with the line to add; checks HOME, 10 GB of disk and uv's age first. On a Mac, or where there is no NVIDIA GPU, it
+  installs the compression program from the release's tarball (checked against its sha256) and says that `glyd run` needs Linux with an NVIDIA GPU, which `glyd run` says
+  too, with no driver advice for a Mac; `glyd doctor` reports such a machine without failing. The Rust `glyd` passes `run`, `serve`, `doctor` and `login` to the Python
+  tool (loop-guarded by `GLYD_FORWARDED`) and says plainly where there is none; a file named run is `./run`. The Python `glyd` finds a compression program that is a
+  wrapper script, skips an empty PATH entry, and `cargo install --git ...` is the hint it gives. In the terminal chat control and escape sequences in a model's text
+  are removed (they could move the cursor, retitle the window or write to the clipboard); an error event, a connection closed mid-answer, a cut message and an
+  empty answer are said in plain words and the question is kept; Ctrl-C while the model loads stops everything it started, twice too; `nohup`'s SIGHUP is kept
+  ignored; a full disk, an interrupted download, a float16 checkpoint (refused before its download), a bad `glyd login` token, two GPUs of which one is too old, MIG, a
+  context longer than the model's window and a port that is not a number each end in a message with the next step. Open WebUI's commands set `CORS_ALLOW_ORIGIN` to
+  the page's own addresses (its default, `*`, handed the administrator's token to any page's script: measured on 0.11.4), and the README says what `WEBUI_AUTH=False` leaves
+  open. `gpu/vllm/acceptance.sh` runs the new cases (a program of the user's own in `~/.local/bin`, an update, a `glyd` ahead on PATH, `nohup` and SIGHUP, the Host
+  and Origin refusals, a server with a key both ways, escape sequences in an answer, Ctrl-C while loading, the engine killed under a chat, `uv tool uninstall glyd`, and the
+  installer on a machine with no GPU), and tests of each fail on the code before.
+
 - vLLM serves Glyd: `pip install "glyd[vllm]"`, then `vllm serve MODEL
   --quantization glyd`. The `glyd` package's entry point for vLLM
   (`vllm.general_plugins`) loads the plugin where vLLM is 0.30, the

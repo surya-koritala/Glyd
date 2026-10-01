@@ -145,7 +145,7 @@ puts bf16 and Glyd alike near 12,000.)
 ### Serving with vLLM
 
 ```bash
-curl -LsSf https://getglyd.com/install.sh | sh   # Glyd, vLLM 0.30 and PyTorch as one tool: Linux, an NVIDIA GPU, driver 580 or newer
+curl -LsSf https://getglyd.com/install.sh | sh   # Glyd, vLLM 0.30 and PyTorch as one tool: Linux, an NVIDIA GPU, driver 580 or newer (on a Mac, or with no GPU: the compression program)
 glyd run Qwen/Qwen3-8B                           # downloads the model, starts it packed, and opens a chat
 ```
 
