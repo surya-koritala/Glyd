@@ -2153,12 +2153,13 @@ def test_glyd_login_asks_again_and_says_who():
 
 
 def test_the_gpu_picked_is_one_glyd_can_use():
-    """S11: the freest GPU was picked first and refused for its age (a P40 beside a 3060); MIG showed the whole GPU's memory to a process that sees a slice."""
-    p40 = pf.Gpu(0, "Tesla P40", 24 * GiB, 23 * GiB, (6, 1), "570", (12, 8))
-    r3060 = pf.Gpu(1, "NVIDIA GeForce RTX 3060", 12 * GiB, 11 * GiB, (8, 6), "570", (12, 8))
+    """S11: the freest GPU was picked first and refused for its age (a P40 beside a 3060); MIG showed the whole GPU's memory to a process that sees a slice.
+    (The fake GPUs carry a CUDA 13 driver, so the driver check passes wherever PyTorch for CUDA 13 is installed, as in ci.yml's vLLM job.)"""
+    p40 = pf.Gpu(0, "Tesla P40", 24 * GiB, 23 * GiB, (6, 1), "595", (13, 2))
+    r3060 = pf.Gpu(1, "NVIDIA GeForce RTX 3060", 12 * GiB, 11 * GiB, (8, 6), "595", (13, 2))
     assert pf.pick_gpu([p40, r3060], "").index == 1 and pf.setup_checks(False, gpus=[p40, r3060])[0].index == 1
     assert pf.pick_gpu([p40, r3060], "0").index == 0  # (CUDA_VISIBLE_DEVICES names the old one: refused, as asked for)
-    r = raises(lambda: pf.setup_checks(False, gpus=[p40, pf.Gpu(1, "Tesla P4", 8 * GiB, 7 * GiB, (6, 1), "570", (12, 8))]), "too old")
+    r = raises(lambda: pf.setup_checks(False, gpus=[p40, pf.Gpu(1, "Tesla P4", 8 * GiB, 7 * GiB, (6, 1), "595", (13, 2))]), "too old")
     assert "none of this computer's 2 GPUs" in r.what
     mig = pf.Gpu(0, "NVIDIA A100 80GB", 80 * GiB, 79 * GiB, (8, 0), "595", (13, 2), mig=True)
     r = raises(lambda: pf.setup_checks(False, gpus=[mig]), "MIG is on")
