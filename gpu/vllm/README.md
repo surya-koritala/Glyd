@@ -374,7 +374,26 @@ a second and 256 at once, against bf16 in the same session):
   passed): 16 of 32 layers packed, their experts too, the other 16 vLLM's own methods.
 - **The GH200,** where fraction 1 served 0.88x bf16's requests a second with Qwen3-32B, is not measured with it yet.
 
-Runs and logs: [benchmarks/gpu/l4-vllm-fraction-2026-09-30](../../benchmarks/gpu/l4-vllm-fraction-2026-09-30).
+**Measured on an H100 SXM** (80 GB) with Qwen3-32B, every request sent at once (192 prompts, 1,024 tokens in and 256 out,
+each server started cold, `--max-model-len 4096 --max-num-seqs 128`, one run each), against bf16 in the same job:
+
+| | Layers packed | Weights | KV cache | Requests/s | First token | Each token |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bf16 | | 61.03 GiB | 32,320 tokens | 2.51 | 32,958 ms | 36.6 ms |
+| fraction 0 | 0 of 64 | 61.03 GiB | 32,320 tokens | 2.51 | 32,982 ms | 36.6 ms |
+| fraction 0.25 | 16 of 64 | 58.20 GiB | 43,872 tokens | 2.85 | 27,116 ms | 41.7 ms |
+| fraction 0.5 | 32 of 64 | 54.89 GiB | 57,392 tokens | 3.54 | 23,198 ms | 46.2 ms |
+| fraction 0.75 | 48 of 64 | 51.59 GiB | 70,912 tokens | 3.50 | 20,883 ms | 52.8 ms |
+| fraction 1 | 64 of 64 | 48.27 GiB | 84,528 tokens | 3.91 | 20,014 ms | 56.8 ms |
+
+- **On an 80 GB H100, Qwen3-32B's bf16 weights leave room for only 32,320 tokens of KV cache, and every packed fraction
+  served more requests a second than bf16:** 1.14x at 0.25, 1.41x at 0.5, 1.40x at 0.75 and 1.56x with every layer
+  packed. bf16 ran at most 25 requests at a time with up to 175 waiting; fraction 1 ran at most 81.
+- **The first token came sooner at every packed fraction** (0.61x bf16's 33.0 s at fraction 1) **and each token later**
+  (1.14x to 1.55x). At fraction 1 the GPU drew a median of 698 W of its 700 W limit, at 1,770 MHz.
+- **Fraction 0 was bf16:** 2.506 against 2.507 requests a second, each token 36.6 ms in both.
+
+Runs and logs: [the L4's](../../benchmarks/gpu/l4-vllm-fraction-2026-09-30) and [the H100 SXM's](../../benchmarks/gpu/l4-vllm-fraction-2026-09-30/h100-sxm).
 
 ## Exact mode
 
@@ -418,7 +437,7 @@ routed to and runs vLLM's own bf16 MoE kernel.
 - the same `--gpu-memory-utilization 0.9`;
 - servers started warm, on the compile cache their first start filled;
 - the random dataset, 1,024 tokens in and 256 out;
-- v0.25.1's library.
+- v0.25.1's library (the H100 SXM's run: the v0.26.0 candidate's, whose routes for the plugin are v0.25.1's).
 
 Low load is 1 request a second, 0.25 on the L4. Saturated is every request sent at once. A ratio or a percentage is
 Glyd's against bf16's; for the times, less is better.
@@ -431,19 +450,27 @@ Glyd's against bf16's; for the times, less is better.
 | A100 40 GB (12-bit) | Qwen3-14B | 1.77x | 1.65x | +18%, -13% | -57%, +4% |
 | GH200 (12-bit) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
 | GH200 (12-bit) | Qwen3-32B | 1.66x | 0.88x | +28%, -6% | -52%, +82% |
+| H100 SXM (12-bit) | Qwen3-30B-A3B (a mixture of experts) | 2.11x | 0.95x | +39%, +8% | -74%, +118% |
 | 2x RTX A6000, tensor parallel (tiered) | Qwen3-30B-A3B (a mixture of experts) | 1.67x | 0.87x | +30%, -7% | +34%, +28% |
 
 - **Wins:**
-  - 1.04-1.89x the KV cache, so more requests at once (1.67x for Qwen3-30B-A3B over two RTX A6000s).
+  - 1.04-2.11x the KV cache, so more requests at once (1.67x for Qwen3-30B-A3B over two RTX A6000s, 2.11x on one H100
+    SXM).
   - 1.19-1.65x the requests a second saturated on the L4, A10 and A100.
-  - At saturation, the first token 25-57% sooner there, and 52% sooner on the GH200 with Qwen3-32B.
-  - At low load, each token 6-21% sooner, but for Qwen3-8B on the GH200 (1% slower).
+  - Qwen3-32B on an 80 GB H100 SXM, where bf16 is short of KV cache: 1.56x the requests a second saturated and 2.62x the KV
+    cache with every layer packed (`fraction`, above; a different bench from the table's).
+  - At saturation, the first token 25-57% sooner there, 52% sooner on the GH200 with Qwen3-32B and 74% on the H100 SXM
+    with Qwen3-30B-A3B.
+  - At low load, each token 6-21% sooner, but for Qwen3-8B on the GH200 (1% slower) and Qwen3-30B-A3B on the H100 SXM (8%
+    slower).
 - **Losses:**
-  - At low load, the first token 4-28% later.
+  - At low load, the first token 4-39% later (39% on the H100 SXM with Qwen3-30B-A3B).
   - On the GH200 at saturation, 0.88-0.92x bf16's requests a second, with Qwen3-32B although bf16 ran short of KV
     cache there. Hopper's gap is not profiled yet.
+  - On the H100 SXM at saturation with Qwen3-30B-A3B, 0.95x bf16's requests a second although bf16 filled its KV cache
+    (104 requests running, 152 waiting; Glyd ran up to 220).
   - At saturation, each token 30-42% slower on the L4 and A10, where each step carries more requests; within 4% on the
-    A100. On the GH200, 9% slower with Qwen3-8B and 82% with Qwen3-32B.
+    A100. On the GH200, 9% slower with Qwen3-8B and 82% with Qwen3-32B; on the H100 SXM 118% with Qwen3-30B-A3B.
   - Qwen3-30B-A3B over two RTX A6000s: at 1 request a second the same requests a second, each token 7% sooner; from 4
     a second 0.87-0.88x, each token 28-59% later, with the two modes running the same batches. The experts' grouped
     products at those batch sizes are the next work.
@@ -452,17 +479,17 @@ Glyd's against bf16's; for the times, less is better.
 
 Every rate and percentile, and the logs: [L4](../../benchmarks/gpu/l4-vllm-m5-2026-09-30), [2x RTX A6000](../../benchmarks/gpu/vllm-m4-2xa6000-2026-09-30),
 [A10](../../benchmarks/gpu/vllm-m3-a10-2026-09-30), [A100](../../benchmarks/gpu/vllm-m3-a100-40gb-2026-09-30),
-[GH200](../../benchmarks/gpu/vllm-m3-gh200-2026-09-30).
+[GH200](../../benchmarks/gpu/vllm-m3-gh200-2026-09-30), [H100 SXM](../../benchmarks/gpu/vllm-m6-h100-2026-10-01).
 
 **Against vLLM's own bf16** (`check_vllm.py`): Qwen3-1.7B, Qwen3-4B-Instruct-2507, Yi-1.5-6B-Chat (the Llama
 architecture), granite-3.1-3b-a800m-instruct (a mixture of experts) and Qwen2.5-1.5B-Instruct (Linears with biases) on
-an L4, and Qwen3-8B on an L4, A10, A100 and GH200:
+an L4, and Qwen3-8B on an L4, A10, A100, GH200 and H100 SXM:
 
 - Every pack decodes to its weights bit for bit.
 - Every product is within 6.2e-3 (relative) of the same product on its matrix decoded, with the same bits every run.
 - The fused tokens are within vLLM's own bf16 noise, bf16 eager's against bf16 with CUDA graphs. Fed the 1,536-token
   continuation bf16 generated, Glyd ranks 0.988-0.997 of its tokens first, and bf16 eager 0.987-0.995.
-  - Glyd's share is at or above bf16 eager's for 16 of the 18 model, GPU and layout pairs. The other two are 0.13 and
+  - Glyd's share is at or above bf16 eager's for 18 of the 20 model, GPU and layout pairs. The other two are 0.13 and
     0.20 points under: Yi 12-bit on the L4, and Qwen3-8B tiered on the A100.
   - Glyd's mean logprob difference from bf16's is at most 1.01x bf16 eager's.
 - Exact mode gives bf16's bits: eager, and compiled in the deterministic mode (refused there for Qwen2.5's biases).

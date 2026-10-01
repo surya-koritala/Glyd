@@ -173,18 +173,23 @@ out; low load 1 request a second, 0.25 on the L4):
 | A100 40 GB (12-bit) | Qwen3-14B | 1.77x | **1.65x** | +18%, −13% | −57%, +4% |
 | GH200 (12-bit) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
 | GH200 (12-bit) | Qwen3-32B | 1.66x | 0.88x | +28%, −6% | −52%, +82% |
+| H100 SXM (12-bit) | Qwen3-30B-A3B | 2.11x | 0.95x | +39%, +8% | −74%, +118% |
 | 2x RTX A6000, tensor parallel (tiered) | Qwen3-30B-A3B | 1.67x | 0.87x | +30%, −7% | +34%, +28% |
 
 More requests at once on every GPU, and more a second on the L4, A10
-and A100; on the GH200, and with Qwen3-30B-A3B over two RTX A6000s,
-fewer a second saturated. At
-low load the first token comes 4-28% later. `exact` gives vLLM's bf16
+and A100; on the GH200, with Qwen3-30B-A3B over two RTX A6000s and on an
+H100 SXM, fewer a second saturated. On an 80 GB H100 SXM, where
+Qwen3-32B's bf16 weights leave room for 32,320 tokens of KV cache, Glyd
+served 1.56x bf16's requests a second saturated (`fraction` 1, a bench of
+its own: [gpu/vllm/README.md](gpu/vllm/README.md#a-fraction-of-the-layers)). At
+low load the first token comes 4-39% later. `exact` gives vLLM's bf16
 logits bit for bit, eager, or compiled in inductor's deterministic mode
 where the packed Linears have no biases.
 Options, exact mode, mixtures of experts, the checks against vLLM's bf16
 and every rate: [gpu/vllm/README.md](gpu/vllm/README.md); logs in
 [benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m5-2026-09-30`,
-`vllm-m3-*-2026-09-30`, `vllm-m4-2xa6000-2026-09-30`).
+`vllm-m3-*-2026-09-30`, `vllm-m4-2xa6000-2026-09-30`,
+`vllm-m6-h100-2026-10-01`).
 
 ### Related work
 

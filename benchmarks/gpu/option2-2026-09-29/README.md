@@ -12,7 +12,7 @@ unattended (`jobs/`), its tree a `git archive` of this branch with a COMMIT file
 | `layer.py MODEL` | layer 10's products through GLinear in a prompt's order, 8 layers' Linears over the same packs a pass, each pass timed whole, the median of 5: the route SPLIT, today's route and bf16; the route's outputs within 1e-2 of fp32 and the same bits pass to pass |
 | `gpu/split_stress.py` | every Qwen3 layer's matrices (0.6B-32B, weights of a trained matrix's spread, a few far out) through the ring at 769-4096 tokens, rings of 3-16 slots of three sizes, the order queued whole or a few ahead, 36 passes, then GLinear's recording pass and 6 after: every product the same bits across layers, passes and slot counts, within 1e-2 of fp32 |
 | `ring_model.py` | a model of the ring's ordering (glyd_gpu.cu's ring_pump, ring_restart, ring_queue, mma12_ring_linear) on CUDA's stream and event rules, random schedules: every slot written after its last reader's product and read after its decode |
-| `jobs/` | `o2_job.sh` (the steps, their budget; `o2_summary.py` writes summary.txt), `o2_a100.sh` and `o2_hopper.sh` (a GPU class's lists); `o3_job.sh` and `o3_summary.py`, the settle on one Hopper GPU against v0.25.1's routes (a GH200: the route as shipped; any other: forced on, a measurement, not a route), its summary a DECIDES line per model and length; `o4_job.sh`, the same on an A100 (Qwen3-8B and 14B at 769-8192 tokens, 8192 forced past the route's end: a measurement), with the checks, the stress skewed both ways and test_gpu.py whole |
+| `jobs/` | `o2_job.sh` (the steps, their budget; `o2_summary.py` writes summary.txt), `o2_a100.sh` and `o2_hopper.sh` (a GPU class's lists); `o3_job.sh` and `o3_summary.py`, the settle on one Hopper GPU against v0.25.1's routes (a GH200 or an H100 SXM: the route as shipped; any other: forced on, a measurement, not a route; the H100 SXM's session ran it forced, before the route was extended to it: `h100-sxm-measure/o3_job.sh` is the script as it ran), its summary a DECIDES line per model and length; `o4_job.sh`, the same on an A100 (Qwen3-8B and 14B at 769-8192 tokens, 8192 forced past the route's end: a measurement), with the checks, the stress skewed both ways and test_gpu.py whole |
 
 ## The sessions
 
@@ -26,6 +26,7 @@ unattended (`jobs/`), its tree a `git archive` of this branch with a COMMIT file
 | `gh200-settle` | GH200 480GB (132 SMs) | 9c218a1 | the settle against v0.25.1's routes: checks, the stress, e2e.py 3 rounds each way in turn, layer.py |
 | `a100-settle` | A100-SXM4-40GB (108 SMs) | 4687dd4 | the settle against v0.25.1's routes (o4_job.sh): checks, the stress and the stress skewed, e2e.py 3 rounds each way in turn at 769-8192 (8192 forced past the route), layer.py, test_gpu.py whole |
 | `l4-v0.25.1/review-1` | L4 | d26efb4 | review 1's fixes: check_capi, test_gpu.py whole, the stress at the default split and skewed both ways (`--sms=-2,1`: 30,336 products), a probe of Split.measured and the cuBLAS lookup |
+| `h100-sxm-measure` | H100 80GB HBM3, the SXM5 (132 SMs) | 7fe66a2 | the settle on Qwen3-14B against v0.25.1's routes (o3_job.sh), SPLIT forced on (the tree's route for an H100 SXM was v0.25.1's): checks, the stress and the stress skewed, e2e.py 3 rounds each way in turn at 2048-8192, layer.py |
 
 ## Results
 
@@ -65,10 +66,23 @@ The settle on the A100 the same way (`a100-settle/`, at 4687dd4; 8192 forced pas
 | Qwen3-8B | 0.899 (0.886, 0.899, 0.899) | 0.876 (0.867, 0.879, 0.876) | 0.959 (0.951, 0.959, 0.962) | 0.971 (0.965, 0.971, 0.972) | 0.994 (0.987, 0.994, 0.995) |
 | Qwen3-14B | 0.845 (0.834, 0.845, 0.846) | 0.864 (0.857, 0.865, 0.864) | 0.916 (0.905, 0.917, 0.916) | 0.947 (0.941, 0.947, 0.947) | 0.968 (0.965, 0.968, 0.968) |
 
+The first session on an H100 SXM (`h100-sxm-measure/`, tree 7fe66a2, Qwen3-14B, SPLIT forced on by `GLYD_SPLIT_MIN=2048`:
+all of 14B's matrices have O and K at least 5120, so it is the rule's own choice for them) the same way, 3 rounds each way
+in turn:
+
+| model | 2048 | 4096 | 8192 |
+| :--- | ---: | ---: | ---: |
+| Qwen3-14B | 0.893 (0.883, 0.895, 0.893) | 0.937 (0.937, 0.946, 0.924) | 0.938 (0.938, 0.940, 0.935) |
+
+A pass took 119.2, 245.7 and 504.5 ms in bf16 at those lengths, 150.5, 279.0 and 551.4 by v0.25.1's routes and 134.4,
+260.4 and 518.2 by SPLIT. The GPU was at its 700 W cap in 98% of the samples of SPLIT's phases and 100% of v0.25.1's
+(SM clock 1,696 MHz on average against 1,729). Qwen3-32B's matrices are such matrices too and were not run there.
+
 The routes, where a pass took at least 2% less time: an A100 SXM's prompts from 769 to 4096 tokens, every matrix, and
 to 8192 for a matrix whose O and K are both at least 5120, as Qwen3-14B's (8B's, 4096 on a side: 0.6% at 8192, not
-taken); a GH200's from 2048 to 8192 for such a matrix, as Qwen3-32B's (8B's: 2.2% at 2048 alone, for a ring of 600
-MiB, not taken). An H100 SXM, an H200 and the PCIe cards on v0.25.1's routes until measured; nothing past 8192.
+taken); a GH200's and an H100 SXM's from 2048 to 8192 for such a matrix, as Qwen3-32B's on the GH200 and Qwen3-14B's on
+the H100 SXM (8B's on the GH200: 2.2% at 2048 alone, for a ring of 600 MiB, not taken). An H200, an H100 NVL and the
+PCIe cards on v0.25.1's routes until measured; nothing past 8192.
 
 Where the time went before the gates (`a100-1` against a layer's products): the rest of a Qwen3-8B pass at 1024 tokens
 (norms, activations, rotary, attention) took 43.5 ms by the route against 28.5 in bf16 and 28.9 by today's route: the
@@ -77,7 +91,7 @@ the A100's bandwidth. Gated (`a100-3`, breakdown at 1024): the decode beside the
 against 29.5 without the route; on the GH200 the scheduling before the gates (GLYD_SPLIT_SLOTS=3) had the decode beside
 them 11.6 of its 19.8 ms.
 
-The stress (`l4-stress/`, `a100-3/`, `gh200/` split_stress.txt): 16,512 products, no failure, on each GPU. On the tree
+The stress (`l4-stress/`, `a100-3/`, `gh200/`, `h100-sxm-measure/` split_stress.txt): 16,512 products, no failure, on each GPU. On the tree
 before 244baf4, GLinear's passes after its first were not its bits (96 of 1,984 on the L4 and the A100, 24 on the
 GH200): a device's first prompt, the order being recorded, cut its matrices in 100 MiB row chunks, the prompts after
 it in the planned slots' (Qwen3-14B's 178 MB, 32B's 262 MB), other cuBLAS calls; since, a device's ring keeps one slot

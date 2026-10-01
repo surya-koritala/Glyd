@@ -60,9 +60,9 @@ every earlier format.
   with a digest of the process's packs (a draft model's with the
   target's), so another layout, mode or checkpoint never loads another's
   compiled graph ([gpu/vllm/README.md](gpu/vllm/README.md)). The plugin ran
-  on an L4, an A10, an A100 SXM4 40 GB, a GH200 and two RTX A6000s (the
-  checks and benches below). Any GPU from Ampere loads it, and an H100
-  (SXM or PCIe), an H200, an A100 80 GB, an A800 and Blackwell were not
+  on an L4, an A10, an A100 SXM4 40 GB, a GH200, an H100 SXM and two RTX
+  A6000s (the checks and benches below). Any GPU from Ampere loads it, and
+  an H100 PCIe, an H200, an A100 80 GB, an A800 and Blackwell were not
   run: they take the library's routes for their class, not measured
   through vLLM.
 - Measured with `vllm bench serve`, bf16 against Glyd at the same
@@ -76,23 +76,30 @@ every earlier format.
   the A100. On a GH200, Qwen3-8B and Qwen3-32B: 1.04x and 1.66x the KV
   cache, but 0.92x and 0.88x the requests a second saturated (Hopper's gap
   is not profiled yet), each token at saturation 9% and 82% slower, and at
-  low load the first token 4% and 28% later
+  low load the first token 4% and 28% later. On an H100 SXM, Qwen3-30B-A3B
+  (a mixture of experts, one GPU; the v0.26.0 candidate's library, whose
+  routes for the plugin are v0.25.1's): 2.11x the KV cache and 0.95x the
+  requests a second saturated, where bf16 filled its KV cache (104
+  requests running, 152 waiting) and Glyd ran 220 at the most; at
+  saturation the first token 74% sooner and each token 118% slower, at
+  low load the first token 39% later and each token 8%
   ([benchmarks/gpu/l4-vllm-m5-2026-09-30](benchmarks/gpu/l4-vllm-m5-2026-09-30),
   [vllm-m3-a10-2026-09-30](benchmarks/gpu/vllm-m3-a10-2026-09-30),
   [vllm-m3-a100-40gb-2026-09-30](benchmarks/gpu/vllm-m3-a100-40gb-2026-09-30),
-  [vllm-m3-gh200-2026-09-30](benchmarks/gpu/vllm-m3-gh200-2026-09-30)).
+  [vllm-m3-gh200-2026-09-30](benchmarks/gpu/vllm-m3-gh200-2026-09-30),
+  [vllm-m6-h100-2026-10-01](benchmarks/gpu/vllm-m6-h100-2026-10-01)).
 - Checked against vLLM's own bf16 (`gpu/vllm/check_vllm.py`): Qwen3-1.7B,
   Qwen3-4B-Instruct-2507, Qwen3-8B, Yi-1.5-6B-Chat (the Llama
   architecture), granite-3.1-3b-a800m-instruct (a mixture of experts) and
   Qwen2.5-1.5B-Instruct (Linears with biases) on an L4, and Qwen3-8B on an
-  A10, an A100 and a GH200. Every pack decoded to its weights bit for bit,
-  and every product was within 6.2e-3 of the same product on its matrix
-  decoded. The fused tokens were within vLLM's own bf16 noise, bf16
-  eager's against bf16 with CUDA graphs: fed the 1,536-token continuation
-  bf16 generated, Glyd ranked 0.988-0.997 of its tokens first and bf16
-  eager 0.987-0.995; Glyd's share was at or above bf16 eager's for 16 of
-  the 18 model, GPU and layout pairs, and 0.13 and 0.20 points under it
-  for the other two.
+  A10, an A100, a GH200 and an H100 SXM. Every pack decoded to its
+  weights bit for bit, and every product was within 6.2e-3 of the same
+  product on its matrix decoded. The fused tokens were within vLLM's own
+  bf16 noise, bf16 eager's against bf16 with CUDA graphs: fed the
+  1,536-token continuation bf16 generated, Glyd ranked 0.988-0.997 of its
+  tokens first and bf16 eager 0.987-0.995; Glyd's share was at or above
+  bf16 eager's for 18 of the 20 model, GPU and layout pairs, and 0.13 and
+  0.20 points under it for the other two.
 - `exact` in vLLM: each product's matrix decoded whole, then the GEMM vLLM
   runs for bf16, its `UnquantizedLinearMethod`'s (F.linear by default, a
   FlashInfer `--linear-backend`'s, the batch-invariant one under
@@ -167,41 +174,48 @@ every earlier format.
   family other than Qwen3's and Llama's (their bf16 checkpoints load);
   exact under torch.compile where a packed Linear has a bias; fused
   products under `VLLM_BATCH_INVARIANT`.
-- Long prompts on an A100 SXM4 40 GB and a GH200 decode on SMs set apart
-  (the route SPLIT): each 12-bit matrix is decoded ahead into a ring of
-  slots on a few SMs the driver's green contexts set apart, while cuBLAS
-  multiplies from the ring on the others, told how many. Each decode
-  waits for the product of the same matrix of the layer before to start,
-  so it runs beside the products and not beside the norms, activations
-  and attention between them. One forward pass against v0.25.1's routes,
-  the same model and prompt in one process, the median of 3 rounds each
-  way in turn (`e2e.py --prefill --merge --without-split --rounds 3`): on
-  an A100-SXM4-40GB, Qwen3-8B's 0.899 / 0.876 / 0.959 / 0.971 / 0.994 at
-  769 / 1024 / 2048 / 4096 / 8192 tokens (each the median of the rounds'
+- Long prompts on an A100 SXM4 40 GB, a GH200 and an H100 SXM decode on
+  SMs set apart (the route SPLIT): each 12-bit matrix is decoded ahead
+  into a ring of slots on a few SMs the driver's green contexts set
+  apart, while cuBLAS multiplies from the ring on the others, told how
+  many. Each decode waits for the product of the same matrix of the layer
+  before to start, so it runs beside the products and not beside the
+  norms, activations and attention between them. One forward pass against
+  v0.25.1's routes, the same model and prompt in one process, the median
+  of 3 rounds each way in turn (`e2e.py --prefill --merge --without-split
+  --rounds 3`): on an A100-SXM4-40GB, Qwen3-8B's 0.899 / 0.876 / 0.959 /
+  0.971 / 0.994 at 769 / 1024 / 2048 / 4096 / 8192 tokens (each the median of the rounds'
   own ratios, so not quite the ratio of the times' medians: 101.2 ms at
   1024 against 115.1 is 0.879; bf16's 93.0) and 14B's 0.845 / 0.864 /
   0.916 / 0.947 / 0.968; on a GH200, Qwen3-32B's 0.909 / 0.940 / 0.952 at
-  2048 / 4096 / 8192 and 8B's 0.978 / 0.994 / 0.994. So the routes, where
-  a pass took at least 2% less time: an A100 SXM4 40 GB's 12-bit prompts
-  from 769 to 4096 tokens, and to 8192 for a matrix whose O and K are
-  both at least 5120, as Qwen3-14B's (8B's at 8192 not taken); a GH200's
-  from 2048 to 8192 for such a matrix, as Qwen3-32B's (8B's matrices,
-  4096 on a side, not taken: 2.2% at 2048 alone, for a ring of 600 MiB;
-  at 1024 tokens the GH200's first session had the route lose, 1.106 and
-  1.012 of v0.25.0's routes' time). An H100 SXM, an H200 and the PCIe
-  cards keep v0.25.1's routes until a session measures them, and nothing
-  past 8192 tokens takes it, not measured. The ring holds a
+  2048 / 4096 / 8192 and 8B's 0.978 / 0.994 / 0.994; on an H100 SXM,
+  Qwen3-14B's 0.893 / 0.937 / 0.938 at 2048 / 4096 / 8192 (the route
+  forced on there by `GLYD_SPLIT_MIN=2048`, which for 14B is the rule's
+  own choice: each of its matrices has O and K at least 5120). So the
+  routes, where a pass took at least 2% less time: an A100 SXM4 40 GB's
+  12-bit prompts from 769 to 4096 tokens, and to 8192 for a matrix whose
+  O and K are both at least 5120, as Qwen3-14B's (8B's at 8192 not
+  taken); a GH200's and an H100 SXM's from 2048 to 8192 for such a
+  matrix, as Qwen3-32B's on the GH200 and Qwen3-14B's on the H100 SXM
+  (Qwen3-32B's matrices are such too, so on the H100 SXM it takes the
+  route by their shape, not run there; 8B's matrices, 4096 on a side, not
+  taken: 2.2% at 2048 alone on the GH200, for a ring of 600 MiB; at 1024
+  tokens the GH200's first session had the route lose, 1.106 and 1.012 of
+  v0.25.0's routes' time). An H200, an H100 NVL and the PCIe cards keep
+  v0.25.1's routes until a session measures them, and nothing past 8192
+  tokens takes it, not measured. The ring holds a
   layer's chunks ahead: 600 MiB for Qwen3-8B, 1.0 GiB for 14B, 1.5 GiB for
   32B, and a 32 MiB cuBLAS workspace. Its products are cuBLAS's own on the
   decoded bf16, a row chunk a call: the same bits run to run and prompt to
   prompt within a process, not bit for bit a whole-matrix product, so
   `exact=True` never takes it. The ring is let go with its model.
-  Measured on an A100-SXM4-40GB (108 SMs) and a GH200 480GB (132). The
-  rule goes by a GPU's code (its compute capability and its class by
-  name) and its SM count, so glyd.gpu's Linears ask for the route on an
-  A100 SXM4 80 GB or an A800 SXM4 too (compute capability 8.0, no PCIe in
-  the name, 108 SMs): by class and SM count, not measured there. Never on
-  a MIG slice. Where it cannot run (the JIT build, the driver's green
+  Measured on an A100-SXM4-40GB (108 SMs), a GH200 480GB (132) and an
+  H100 80GB HBM3, the SXM5 (132). The rule goes by a GPU's code (its
+  compute capability and its class by name) and its SM count, so
+  glyd.gpu's Linears ask for the route on an A100 SXM4 80 GB or an A800
+  SXM4 too (compute capability 8.0, no PCIe in the name, 108 SMs): by
+  class and SM count, not measured there. Never on a MIG slice. Where it
+  cannot run (the JIT build, the driver's green
   contexts not available, as before CUDA 12.5, with a warning; too little
   memory, a CUDA graph capture, a torch.compile graph's node) a prompt
   takes the routes before it; `GLYD_SPLIT_MIN=-1` turns it off,
@@ -209,17 +223,20 @@ every earlier format.
   stress check (`gpu/split_stress.py`, in test_gpu.py quick): every
   Qwen3 layer's matrices, 0.6B-32B, at 769-4096 tokens, rings of 3-16
   slots, 36 passes; 16,512 products the same bits across layers, passes
-  and slot counts, within 1e-2 of fp32, on an L4, an A100 and a GH200, and
-  with the split skewed both ways 30,336 more on the L4 (the products on 2
-  SMs, then the decode on 2) and 5,280 on the A100 (4, then 2)
-  ([benchmarks/gpu/option2-2026-09-29](benchmarks/gpu/option2-2026-09-29)).
+  and slot counts, within 1e-2 of fp32, on an L4, an A100, a GH200 and an
+  H100 SXM, and with the split skewed both ways 30,336 more on the L4
+  (the products on 2 SMs, then the decode on 2), 5,280 on the A100 (4,
+  then 2) and 7,920 on the H100 SXM (8, then 4)
+  ([benchmarks/gpu/option2-2026-09-29](benchmarks/gpu/option2-2026-09-29),
+  the H100 SXM's in its `h100-sxm-measure`).
 - C API version 7: the ring (`glyd_gpu_ring_create`, `_destroy`, `_split`,
   `_reset`, `glyd_gpu_mma12_ring_queue`, `glyd_gpu_mma12_ring_linear`,
   with the caller's cuBLAS as `glyd_gpu_blas`: the library does not link
   it), its decode (`glyd_gpu_mma12_unpack_split`), the route
   `GLYD_GPU_ROUTE_SPLIT` and its SMs (`glyd_gpu_mma12_split_sms`), a GPU's
-  PCIe and GH200 classes in its code (`GLYD_GPU_PCIE`, `GLYD_GPU_GH200`:
-  an A100 PCIe 5080, an H100 PCIe 5090, a GH200 6090) and
+  PCIe, GH200 and H100 classes in its code (`GLYD_GPU_PCIE`,
+  `GLYD_GPU_GH200`, `GLYD_GPU_H100`: an A100 PCIe 5080, an H100 PCIe 5090,
+  a GH200 6090, an H100 SXM 7090; an H100 NVL and an H200 stay 90) and
   `GLYD_GPU_WITH_SPLIT` (a code's routes with SPLIT). The route is opt-in:
   only a code with that flag gets it, which the glyd package's Linears ask
   for where the split can run; `glyd_gpu_*_linear`'s own route (-1) never
@@ -227,8 +244,8 @@ every earlier format.
   keep v0.25.1's routes. `glyd_gpu_mma12_linear` given SPLIT takes it by the
   prompt kernel. v0.25's libraries (version 5) and builds of the route's
   branch before it was opt-in (version 6) are refused by this package
-  and the glyd-gpu crate (`Route::Split`, `PCIE`, `GH200`, `WITH_SPLIT`,
-  `Library::split_sms`; the ring declared, not wrapped yet).
+  and the glyd-gpu crate (`Route::Split`, `PCIE`, `GH200`, `H100`,
+  `WITH_SPLIT`, `Library::split_sms`; the ring declared, not wrapped yet).
 - `gpu/e2e.py --without-split` times a prompt again with the route off in
   the same process (`--rounds N`: N times each way in turn); `--breakdown`
   gives a pass's host time and its GPU time by kind of kernel.
@@ -252,8 +269,18 @@ every earlier format.
   did not repeat from one identical call to the next at 8 and 32
   sequences, bf16 eager's own included, nor compiled at one sequence, so
   no mode's tokens there are compared with bf16's; where bf16 eager's
-  repeated, exact's were its tokens (`benchmarks/gpu/repro-2026-09-30`: a
-  job to find the operation that does not repeat). `resp_job.sh` runs the modes unattended in 35
+  repeated, exact's were its tokens. The job that finds the operation
+  that does not repeat (`benchmarks/gpu/repro-2026-09-30`) ran on an H100
+  SXM, Qwen3-8B eager: at 8 and 32 sequences, bf16 and exact alike, the
+  first call to differ between two identical `generate()` calls was
+  PyTorch's cuDNN attention kernel, on the same inputs; at 32 sequences,
+  of the calls whose inputs were the same in both, 4 of 154 attention
+  calls and none of 1,105 matrix products gave another output. At 1
+  sequence nothing differed, nor with the attention held to the math
+  backend (bf16 and exact, at 32 sequences: exact's tokens were bf16
+  eager's) or to the flash or efficient one (bf16 alone). That job's tree
+  was v0.25.1's.
+  `resp_job.sh` runs the modes unattended in 35
   minutes on a GH200 (Qwen3-8B and 32B), an A100 or an A10
   ([benchmarks/gpu/respond-2026-09-29](benchmarks/gpu/respond-2026-09-29)).
 - `fraction` in vLLM (`--additional-config '{"glyd": {"fraction": 0.5}}'`,
@@ -274,7 +301,18 @@ every earlier format.
   request a second 100.8, 99.9 and 95.6 ms against 100.2, the first token
   3,539, 1,095 and 772 ms against 3,351)
   ([benchmarks/gpu/l4-vllm-fraction-2026-09-30](benchmarks/gpu/l4-vllm-fraction-2026-09-30)).
-  `check_vllm.py --quick --fraction 0.5` passed all 18 checks on it: every
+  On an 80 GB H100 SXM, Qwen3-32B's bf16 weights leave room for only
+  32,320 tokens of KV cache, and every packed fraction served more
+  requests a second than bf16: 1.14x at 0.25, 1.41x at 0.5, 1.40x at 0.75
+  and 1.56x with every layer packed. Fractions 0, 0.25, 0.5, 0.75 and 1
+  held 61.03, 58.20, 54.89, 51.59 and 48.27 GiB of weights and 32,320,
+  43,872, 57,392, 70,912 and 84,528 tokens of KV cache, and served 2.51,
+  2.85, 3.54, 3.50 and 3.91 requests a second against bf16's 2.51, every
+  request sent at once (`vllm bench serve`, 192 prompts, 1,024 tokens in
+  and 256 out, each server started cold): the first token after 33.0 s on
+  average for bf16 and 20.0 s at fraction 1, each token 36.6 ms and 56.8
+  ([benchmarks/gpu/l4-vllm-fraction-2026-09-30/h100-sxm](benchmarks/gpu/l4-vllm-fraction-2026-09-30/h100-sxm)).
+  `check_vllm.py --quick --fraction 0.5` passed all 18 checks on the L4: every
   pack decoded bit for bit, the layers packed the rule's, exact eager and
   compiled (deterministic mode) bf16's bits; fraction 0 in eager gave
   bf16 eager's tokens, logprobs and prompt_logprobs bit for bit; on

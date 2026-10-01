@@ -1,0 +1,1 @@
+NVIDIA L4, 8.9, 595.91.07, 23034 MiB, Build cuda_13.0.r13.0/compiler.36424714_0, torch 2.14.0+cu130; the tree 889f4e3 (release-0.26.0) with the H100 SXM route's code patch

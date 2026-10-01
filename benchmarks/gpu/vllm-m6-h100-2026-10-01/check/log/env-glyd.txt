@@ -1,0 +1,7 @@
+Using Python 3.12.3 environment at: vllmw/venv
+Resolved 1 package in 2ms
+   Building glyd @ file:///home/ubuntu/vllmw/src/bindings/python
+      Built glyd @ file:///home/ubuntu/vllmw/src/bindings/python
+Prepared 1 package in 570ms
+Installed 1 package in 0.44ms
+ + glyd==0.26.0rc2 (from file:///home/ubuntu/vllmw/src/bindings/python)

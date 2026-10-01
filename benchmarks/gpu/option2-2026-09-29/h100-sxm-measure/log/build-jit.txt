@@ -1,0 +1,2 @@
+JIT build: <module 'glyd_gpu' from '/home/ubuntu/o3w/torch_ext/glyd_gpu/glyd_gpu.so'>
+exit 0

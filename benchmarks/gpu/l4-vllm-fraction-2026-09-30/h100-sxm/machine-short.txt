@@ -1,0 +1,2 @@
+NVIDIA H100 80GB HBM3 (compute 9.0, sm_90a, 81559 MiB), x86_64 host, 26 CPUs; tree 7fe66a2 (release-0.26.0, v0.26.0 candidate); model Qwen/Qwen3-32B; modes bf16 glyd@1 glyd@0.5 glyd@0.25 glyd@0.75 glyd@0; 192 prompts, 1024 tokens in, 256 out
+gpu-memory-utilization 0.9193 (VJ_UTIL 0.9, a cold start's 1.54 GiB of compile added; 81559 MiB)

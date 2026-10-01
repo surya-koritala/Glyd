@@ -1,0 +1,136 @@
+== 01:09:32 bf16: vllm serve Qwen/Qwen3-32B  (the GPU at 25 C)
+Model loading took 61.03 GiB memory and 12.990882 seconds
+GPU KV cache size: 32,320 tokens, Maximum concurrency for 4,096 tokens per request: 7.89x
+73367 MiB, 81559 MiB
+== 01:11:57 bf16: rate inf, 192 prompts
+   exit 0
+bf16: weights 61.03 GiB, KV cache 32,320 tokens, max concurrency 7.89x at 4,096 tokens
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| inf | bf16 | 2.51 | 641.9 | 32958 / 65458 | 36.6 / 65.5 | 192 | 1980 MHz, 60 C |
+== 01:13:27 glyd@1: vllm serve Qwen/Qwen3-32B --quantization glyd (the GPU at 35 C)
+glyd: mma12 layout
+Model loading took 48.27 GiB memory and 17.958665 seconds
+GPU KV cache size: 84,528 tokens, Maximum concurrency for 4,096 tokens per request: 20.64x
+73335 MiB, 81559 MiB
+== 01:16:12 glyd@1: rate inf, 192 prompts
+   exit 0
+bf16: weights 61.03 GiB, KV cache 32,320 tokens, max concurrency 7.89x at 4,096 tokens
+glyd@1: weights 48.27 GiB, KV cache 84,528 tokens, max concurrency 20.64x at 4,096 tokens
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| inf | bf16 | 2.51 | 641.9 | 32958 / 65458 | 36.6 / 65.5 | 192 | 1980 MHz, 60 C |
+| inf | glyd@1 | 3.91 | 1001.5 | 20014 / 41658 | 56.8 / 102.8 | 192 | 1770 MHz, 60 C |
+
+| Rate (req/s) | Mode | Weights (GiB) | KV cache (tokens) | Requests/s | TTFT mean (ms) | TPOT mean (ms) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| inf | bf16 | 61.03 | 32,320 | 2.51 | 32,958 | 36.6 |
+| inf | glyd@1 | 48.27 (0.79x) | 84,528 (2.62x) | 3.91 (1.56x) | 20,014 (0.61x) | 56.8 (1.55x) |
+== 01:17:15 glyd@0.5: vllm serve Qwen/Qwen3-32B --quantization glyd (the GPU at 36 C)
+glyd: mma12 layout, 32 of 64 layers packed (fraction 0.5)
+Model loading took 54.89 GiB memory and 14.769876 seconds
+GPU KV cache size: 57,392 tokens, Maximum concurrency for 4,096 tokens per request: 14.01x
+73351 MiB, 81559 MiB
+== 01:19:55 glyd@0.5: rate inf, 192 prompts
+   exit 0
+bf16: weights 61.03 GiB, KV cache 32,320 tokens, max concurrency 7.89x at 4,096 tokens
+glyd@0.5: weights 54.89 GiB, KV cache 57,392 tokens, max concurrency 14.01x at 4,096 tokens
+glyd@1: weights 48.27 GiB, KV cache 84,528 tokens, max concurrency 20.64x at 4,096 tokens
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| inf | bf16 | 2.51 | 641.9 | 32958 / 65458 | 36.6 / 65.5 | 192 | 1980 MHz, 60 C |
+| inf | glyd@0.5 | 3.54 | 907.2 | 23198 / 46544 | 46.2 / 80.5 | 192 | 1965 MHz, 59 C |
+| inf | glyd@1 | 3.91 | 1001.5 | 20014 / 41658 | 56.8 / 102.8 | 192 | 1770 MHz, 60 C |
+
+| Rate (req/s) | Mode | Weights (GiB) | KV cache (tokens) | Requests/s | TTFT mean (ms) | TPOT mean (ms) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| inf | bf16 | 61.03 | 32,320 | 2.51 | 32,958 | 36.6 |
+| inf | glyd@0.5 | 54.89 (0.90x) | 57,392 (1.78x) | 3.54 (1.41x) | 23,198 (0.70x) | 46.2 (1.26x) |
+| inf | glyd@1 | 48.27 (0.79x) | 84,528 (2.62x) | 3.91 (1.56x) | 20,014 (0.61x) | 56.8 (1.55x) |
+== 01:21:03 glyd@0.25: vllm serve Qwen/Qwen3-32B --quantization glyd (the GPU at 36 C)
+glyd: mma12 layout, 16 of 64 layers packed (fraction 0.25)
+Model loading took 58.2 GiB memory and 12.824776 seconds
+GPU KV cache size: 43,872 tokens, Maximum concurrency for 4,096 tokens per request: 10.71x
+73355 MiB, 81559 MiB
+== 01:23:03 glyd@0.25: rate inf, 192 prompts
+   exit 0
+bf16: weights 61.03 GiB, KV cache 32,320 tokens, max concurrency 7.89x at 4,096 tokens
+glyd@0.25: weights 58.2 GiB, KV cache 43,872 tokens, max concurrency 10.71x at 4,096 tokens
+glyd@0.5: weights 54.89 GiB, KV cache 57,392 tokens, max concurrency 14.01x at 4,096 tokens
+glyd@1: weights 48.27 GiB, KV cache 84,528 tokens, max concurrency 20.64x at 4,096 tokens
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| inf | bf16 | 2.51 | 641.9 | 32958 / 65458 | 36.6 / 65.5 | 192 | 1980 MHz, 60 C |
+| inf | glyd@0.25 | 2.85 | 729.1 | 27116 / 52647 | 41.7 / 75.3 | 192 | 1980 MHz, 60 C |
+| inf | glyd@0.5 | 3.54 | 907.2 | 23198 / 46544 | 46.2 / 80.5 | 192 | 1965 MHz, 59 C |
+| inf | glyd@1 | 3.91 | 1001.5 | 20014 / 41658 | 56.8 / 102.8 | 192 | 1770 MHz, 60 C |
+
+| Rate (req/s) | Mode | Weights (GiB) | KV cache (tokens) | Requests/s | TTFT mean (ms) | TPOT mean (ms) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| inf | bf16 | 61.03 | 32,320 | 2.51 | 32,958 | 36.6 |
+| inf | glyd@0.25 | 58.20 (0.95x) | 43,872 (1.36x) | 2.85 (1.14x) | 27,116 (0.82x) | 41.7 (1.14x) |
+| inf | glyd@0.5 | 54.89 (0.90x) | 57,392 (1.78x) | 3.54 (1.41x) | 23,198 (0.70x) | 46.2 (1.26x) |
+| inf | glyd@1 | 48.27 (0.79x) | 84,528 (2.62x) | 3.91 (1.56x) | 20,014 (0.61x) | 56.8 (1.55x) |
+== 01:24:24 glyd@0.75: vllm serve Qwen/Qwen3-32B --quantization glyd (the GPU at 35 C)
+glyd: mma12 layout, 48 of 64 layers packed (fraction 0.75)
+Model loading took 51.59 GiB memory and 16.216321 seconds
+GPU KV cache size: 70,912 tokens, Maximum concurrency for 4,096 tokens per request: 17.31x
+73351 MiB, 81559 MiB
+== 01:27:10 glyd@0.75: rate inf, 192 prompts
+   exit 0
+bf16: weights 61.03 GiB, KV cache 32,320 tokens, max concurrency 7.89x at 4,096 tokens
+glyd@0.25: weights 58.2 GiB, KV cache 43,872 tokens, max concurrency 10.71x at 4,096 tokens
+glyd@0.5: weights 54.89 GiB, KV cache 57,392 tokens, max concurrency 14.01x at 4,096 tokens
+glyd@0.75: weights 51.59 GiB, KV cache 70,912 tokens, max concurrency 17.31x at 4,096 tokens
+glyd@1: weights 48.27 GiB, KV cache 84,528 tokens, max concurrency 20.64x at 4,096 tokens
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| inf | bf16 | 2.51 | 641.9 | 32958 / 65458 | 36.6 / 65.5 | 192 | 1980 MHz, 60 C |
+| inf | glyd@0.25 | 2.85 | 729.1 | 27116 / 52647 | 41.7 / 75.3 | 192 | 1980 MHz, 60 C |
+| inf | glyd@0.5 | 3.54 | 907.2 | 23198 / 46544 | 46.2 / 80.5 | 192 | 1965 MHz, 59 C |
+| inf | glyd@0.75 | 3.50 | 895.6 | 20883 / 48706 | 52.8 / 89.5 | 192 | 1950 MHz, 60 C |
+| inf | glyd@1 | 3.91 | 1001.5 | 20014 / 41658 | 56.8 / 102.8 | 192 | 1770 MHz, 60 C |
+
+| Rate (req/s) | Mode | Weights (GiB) | KV cache (tokens) | Requests/s | TTFT mean (ms) | TPOT mean (ms) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| inf | bf16 | 61.03 | 32,320 | 2.51 | 32,958 | 36.6 |
+| inf | glyd@0.25 | 58.20 (0.95x) | 43,872 (1.36x) | 2.85 (1.14x) | 27,116 (0.82x) | 41.7 (1.14x) |
+| inf | glyd@0.5 | 54.89 (0.90x) | 57,392 (1.78x) | 3.54 (1.41x) | 23,198 (0.70x) | 46.2 (1.26x) |
+| inf | glyd@0.75 | 51.59 (0.85x) | 70,912 (2.19x) | 3.50 (1.40x) | 20,883 (0.63x) | 52.8 (1.44x) |
+| inf | glyd@1 | 48.27 (0.79x) | 84,528 (2.62x) | 3.91 (1.56x) | 20,014 (0.61x) | 56.8 (1.55x) |
+== 01:28:18 glyd@0: vllm serve Qwen/Qwen3-32B --quantization glyd (the GPU at 36 C)
+glyd: mma12 layout, 0 of 64 layers packed (fraction 0)
+Model loading took 61.03 GiB memory and 11.123753 seconds
+GPU KV cache size: 32,320 tokens, Maximum concurrency for 4,096 tokens per request: 7.89x
+73367 MiB, 81559 MiB
+== 01:29:43 glyd@0: rate inf, 192 prompts
+   exit 0
+bf16: weights 61.03 GiB, KV cache 32,320 tokens, max concurrency 7.89x at 4,096 tokens
+glyd@0: weights 61.03 GiB, KV cache 32,320 tokens, max concurrency 7.89x at 4,096 tokens
+glyd@0.25: weights 58.2 GiB, KV cache 43,872 tokens, max concurrency 10.71x at 4,096 tokens
+glyd@0.5: weights 54.89 GiB, KV cache 57,392 tokens, max concurrency 14.01x at 4,096 tokens
+glyd@0.75: weights 51.59 GiB, KV cache 70,912 tokens, max concurrency 17.31x at 4,096 tokens
+glyd@1: weights 48.27 GiB, KV cache 84,528 tokens, max concurrency 20.64x at 4,096 tokens
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| inf | bf16 | 2.51 | 641.9 | 32958 / 65458 | 36.6 / 65.5 | 192 | 1980 MHz, 60 C |
+| inf | glyd@0 | 2.51 | 641.6 | 32982 / 65501 | 36.6 / 65.5 | 192 | 1980 MHz, 60 C |
+| inf | glyd@0.25 | 2.85 | 729.1 | 27116 / 52647 | 41.7 / 75.3 | 192 | 1980 MHz, 60 C |
+| inf | glyd@0.5 | 3.54 | 907.2 | 23198 / 46544 | 46.2 / 80.5 | 192 | 1965 MHz, 59 C |
+| inf | glyd@0.75 | 3.50 | 895.6 | 20883 / 48706 | 52.8 / 89.5 | 192 | 1950 MHz, 60 C |
+| inf | glyd@1 | 3.91 | 1001.5 | 20014 / 41658 | 56.8 / 102.8 | 192 | 1770 MHz, 60 C |
+
+| Rate (req/s) | Mode | Weights (GiB) | KV cache (tokens) | Requests/s | TTFT mean (ms) | TPOT mean (ms) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| inf | bf16 | 61.03 | 32,320 | 2.51 | 32,958 | 36.6 |
+| inf | glyd@0 | 61.03 (1.00x) | 32,320 (1.00x) | 2.51 (1.00x) | 32,982 (1.00x) | 36.6 (1.00x) |
+| inf | glyd@0.25 | 58.20 (0.95x) | 43,872 (1.36x) | 2.85 (1.14x) | 27,116 (0.82x) | 41.7 (1.14x) |
+| inf | glyd@0.5 | 54.89 (0.90x) | 57,392 (1.78x) | 3.54 (1.41x) | 23,198 (0.70x) | 46.2 (1.26x) |
+| inf | glyd@0.75 | 51.59 (0.85x) | 70,912 (2.19x) | 3.50 (1.40x) | 20,883 (0.63x) | 52.8 (1.44x) |
+| inf | glyd@1 | 48.27 (0.79x) | 84,528 (2.62x) | 3.91 (1.56x) | 20,014 (0.61x) | 56.8 (1.55x) |

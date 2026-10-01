@@ -1,0 +1,30 @@
+Linux host 6.8.0-1046-nvidia #49-Ubuntu SMP PREEMPT_DYNAMIC Wed Jan 28 19:07:52 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+Thu Oct  1 00:58:19 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.20             Driver Version: 580.126.20     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA H100 80GB HBM3          On  |   00000000:06:00.0 Off |                    0 |
+| N/A   32C    P0             72W /  700W |       0MiB /  81559MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
+NVIDIA H100 80GB HBM3, 9.0, 580.126.20, 81559 MiB, 1980 MHz, 700.00 W
+Architecture:                            x86_64
+Model name:                              Intel(R) Xeon(R) Platinum 8480+
+26
+               total        used        free      shared  buff/cache   available
+Mem:             221           4          99           0         118         216
+Thu Oct  1 00:58:19 UTC 2026
+host LD_LIBRARY_PATH (unset for the job): (none)

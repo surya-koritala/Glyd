@@ -1,0 +1,5 @@
+/home/ubuntu/results/run-b32-math-bf16.json (bf16) run A against /home/ubuntu/results/run-b32-math-exact.json (exact) run A: batch 32, attention math
+  tokens (every sequence): the same; calls 9248 and 9248
+  linear calls with the same inputs: 8096, of them with another output: 0
+  the prompt's linear calls' weights: 253 of 253 the same words
+  every call's output the same

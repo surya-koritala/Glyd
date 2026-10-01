@@ -291,7 +291,7 @@ has the flags by hand.
 of the decoder layers, spread evenly over the depth, and leaves the rest as
 vLLM runs them: 0 is bf16, 1 (the default) every layer. vLLM sizes its KV
 cache after the weights load, so the memory the packs save becomes KV
-cache: 1.04-1.89x bf16's on an L4, an A10, an A100 and a GH200, at the same
+cache: 1.04-2.11x bf16's on an L4, an A10, an A100, a GH200 and an H100 SXM, at the same
 `--gpu-memory-utilization`. With `exact` the logits are vLLM's bf16 ones
 bit for bit, eager, or compiled in inductor's deterministic mode where the
 packed Linears have no biases.

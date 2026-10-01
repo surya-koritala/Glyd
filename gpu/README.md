@@ -1128,7 +1128,7 @@ ran about 10 C cooler than the one above (medians 66-72 C against 78-81
 C), and its times are lower throughout, the unchanged routes' too (logs:
 benchmarks/gpu/l4-routes-2026-09-29).
 
-### Long prompts on an A100 SXM4 40 GB and a GH200: the decode on SMs set apart
+### Long prompts on an A100 SXM4 40 GB, a GH200 and an H100 SXM: the decode on SMs set apart
 
 Decoded first, a matrix of a long prompt costs its decode on every SM
 before its product; decoded ahead beside the products (above), it takes
@@ -1168,19 +1168,25 @@ The routes, as measured end to end, where a forward pass took at least 2%
 less time than by the routes without it: an A100 SXM4 40 GB's 12-bit prompts
 from 769 to 4096 tokens, and to 8192 for a matrix whose O and K are both at
 least 5120, as Qwen3-14B's (its pass 0.968 of the time at 8192; Qwen3-8B's
-0.994 there, not taken); a GH200's from 2048 to 8192 for such a matrix, as
-Qwen3-32B's (its pass 0.909 / 0.940 / 0.952 of the time at 2048 / 4096 /
-8192; Qwen3-8B's matrices, 4096 on a side, 0.978 / 0.994 / 0.994: 2.2% at
-2048 alone, for a ring of 600 MiB, not taken). An H100 SXM,
-an H200 and the PCIe cards (an A100 PCIe, an H100 PCIe) keep v0.25.1's
-routes until a session measures them (an H100 SXM has the GH200's 132 SMs
-but 3.35 TB/s against its 4 and a 700 W budget), and nothing past 8192
+0.994 there, not taken); a GH200's and an H100 SXM's from 2048 to 8192
+for such a matrix, as Qwen3-32B's on the GH200 (its pass 0.909 / 0.940 /
+0.952 of the time at 2048 / 4096 / 8192; Qwen3-8B's matrices, 4096 on a
+side, 0.978 / 0.994 / 0.994: 2.2% at 2048 alone, for a ring of 600 MiB,
+not taken) and Qwen3-14B's on the H100 SXM (its pass 0.893 / 0.937 /
+0.938 at 2048 / 4096 / 8192, with the route forced on by
+`GLYD_SPLIT_MIN=2048`, which for 14B is the rule's own choice: every one
+of its matrices has O and K at least 5120). Qwen3-32B's matrices are such
+too, so on the H100 SXM it takes the route by their shape: not run there.
+An H200, an H100 NVL and the PCIe cards (an A100 PCIe, an H100 PCIe) keep
+v0.25.1's routes until a session measures them, and nothing past 8192
 tokens takes it, not measured. Its SMs for the decode: an A100's 12 to
-1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143, then 4. One forward
-pass (`e2e.py --prefill --merge`, bf16 and v0.25.1's routes in the same
-process, the medians of 3 rounds each way in turn), ms, the A100's
-Qwen3-8B at 8192 (SPLIT forced there, a measurement) and the GH200's
-Qwen3-8B not taken:
+1535 tokens, 8 to 3071, then 4; Hopper's 12 to 6143, then 4 (the H100
+SXM's layer 10 of Qwen3-14B took 12 SMs at 2048 and 4096 tokens and 4 at
+8192). One forward pass (`e2e.py --prefill --merge`, bf16 and v0.25.1's
+routes in the same process, the medians of 3 rounds each way in turn),
+ms, the A100's Qwen3-8B at 8192 (SPLIT forced there, a measurement), the
+GH200's Qwen3-8B not taken and the H100 SXM's Qwen3-14B (SPLIT forced on
+there, as above):
 
 | Prompt | 769 | 1024 | 2048 | 4096 | 8192 |
 | :--- | ---: | ---: | ---: | ---: | ---: |
@@ -1196,6 +1202,9 @@ Qwen3-8B not taken:
 | Qwen3-32B, bf16 | | | 280.1 | 564.5 | 1190.1 |
 | v0.25.1's routes | | | 335.7 | 636.2 | 1279.9 |
 | SPLIT | | | 305.1 | 598.7 | 1218.4 |
+| H100 SXM, Qwen3-14B, bf16 | | | 119.2 | 245.7 | 504.5 |
+| v0.25.1's routes | | | 150.5 | 279.0 | 551.4 |
+| SPLIT | | | 134.4 | 260.4 | 518.2 |
 
 The ratios in the text are each round's SPLIT time over v0.25.1's, the
 median of the 3 (Qwen3-8B at 1024 tokens on the A100: rounds 0.867, 0.879,
@@ -1206,12 +1215,16 @@ median of the 3 (Qwen3-8B at 1024 tokens on the A100: rounds 0.867, 0.879,
 the route lose: Qwen3-8B's pass was issued by the host in 47.6 of its 48.0
 ms, the route's calls costing the host more than the GPU saved; 32B's took
 1.2% longer. Hopper keeps its wgmma kernel to 1024 and the matrix decoded
-first to 2047.) Measured on an A100-SXM4-40GB (108 SMs) and a GH200 480GB
-(132 SMs). The rule goes by a GPU's code (its compute capability and its
-class by name) and its SM count, so the glyd package's Linears ask for the
-route on an A100 SXM4 80 GB or an A800 SXM4 too (compute capability 8.0, no
-PCIe in the name, 108 SMs): by class and SM count, not measured there.
-Never on a MIG slice. Where it cannot run, a
+first to 2047.) Measured on an A100-SXM4-40GB (108 SMs), a GH200 480GB
+(132 SMs) and an H100 80GB HBM3, the SXM5 (132 SMs; at its 700 W cap in
+98% of the samples of SPLIT's phases and 100% of v0.25.1's, its SM clock
+1,696 MHz on average by SPLIT against 1,729). The rule goes by a GPU's
+code (its compute capability and its class by name: an H100 SXM's is
+"H100" as a word in the name, not an H100 NVL) and its SM count, so the
+glyd package's Linears ask for the route on an A100 SXM4 80 GB or an A800
+SXM4 too (compute capability 8.0, no PCIe in the name, 108 SMs): by class
+and SM count, not measured there. Never on a MIG slice. Where it cannot
+run, a
 prompt takes the routes before it, never an error: the JIT build (the
 ring is the prebuilt library's), the driver's green contexts not available
 (a driver before CUDA 12.5, or one that refuses them: a warning says so),
@@ -1224,10 +1237,10 @@ routes' others). A stress check holds the ring to its ordering
 (`split_stress.py`: every Qwen3 layer's matrices, 0.6B-32B, at 769-4096
 tokens, rings of 3-16 slots, 36 passes; 16,512 products the same bits
 across layers, passes and slot counts and within 1e-2 of fp32 on an L4, an
-A100 and a GH200, and with the split skewed both ways (`--sms=-2,1`) 30,336
-more on the L4 (the products on 2 SMs, then the decode on 2) and 5,280 on
-the A100 (4, then 2); logs:
-benchmarks/gpu/option2-2026-09-29).
+A100, a GH200 and an H100 SXM, and with the split skewed both ways
+(`--sms=-2,1`) 30,336 more on the L4 (the products on 2 SMs, then the
+decode on 2), 5,280 on the A100 (4, then 2) and 7,920 on the H100 SXM (8,
+then 4); logs: benchmarks/gpu/option2-2026-09-29).
 
 ## Popular models
 
@@ -1345,6 +1358,15 @@ a time after the prompt, perplexity 2.9895 / 4.3106 / 2.4778 against the
 plain cache's 2.9950 / 4.3130 / 2.4809, the next token the plain cache's
 97.3% / 99.6% / 99.6% of the time.
 
+A research prototype, not part of 0.26.0 (the `kv-study` branch,
+`research/kv-cache`): a paged decode-attention kernel that reads the keys
+and values in a 12-bit lossless layout (12.06 bits a value, a quarter under
+bf16) ran 1.27-1.29x the speed of the same kernel over bf16 pages on an
+H100 SXM, at 8k-32k tokens of context and batch 32 or more, its outputs
+equal to the bf16 kernel's bit for bit in every shape, the bf16 kernel
+itself at 0.969 or more of the speed of the fastest of vLLM's
+FlashAttention 2 and 3 and FlashInfer's decodes.
+
 ## Running
 
 Needs PyTorch with CUDA, and nvcc (the extension builds on first import)
@@ -1403,8 +1425,9 @@ an L4's from 896 tiered and 2560 12-bit, GeForce Ada's from 513 tiered and
 1793 12-bit (641 exact), an A10's from 512 tiered and 640 12-bit and an
 L40S's from 1024 tiered and 2048 12-bit (not exact), decoded ahead; an A100
 SXM4 40 GB's 12-bit prompts from 769 to 4096 tokens (to 8192 for a matrix
-whose O and K are both at least 5120) and a GH200's from 2048 to 8192 for
-such a matrix decoded on SMs set apart, the route SPLIT, above;
+whose O and K are both at least 5120), and a GH200's and an H100 SXM's from
+2048 to 8192 for such a matrix, decoded on SMs set apart, the route SPLIT,
+above;
 `GLYD_WG_MIN`, `GLYD_WG_MAX`, `GLYD_MID_MIN`, `GLYD_DEC_MIN` and the
 `GLYD_SPLIT_*` ones move them, read once a process, at the library's first
 route: set them in the environment before the first model is loaded).
@@ -1416,7 +1439,7 @@ there; SPLIT, whose products are the caller's cuBLAS on the ring, through
 `glyd_gpu_mma12_ring_linear`). A GPU's code, which the routes take, is its
 compute capability plus a class where the name tells GPUs apart
 (`GLYD_GPU_GEFORCE`, `GLYD_GPU_A10`, `GLYD_GPU_L4`, `GLYD_GPU_L40S`,
-`GLYD_GPU_PCIE`, `GLYD_GPU_GH200`: `glyd_gpu.h`); `GLYD_GPU_WITH_SPLIT` added
+`GLYD_GPU_PCIE`, `GLYD_GPU_GH200`, `GLYD_GPU_H100`: `glyd_gpu.h`); `GLYD_GPU_WITH_SPLIT` added
 to it asks for the route SPLIT, which only glyd.gpu's Linears do (opt-in:
 without it the routes and `linear` are v0.25.1's). The glyd package's Linears take their routes from the library
 and multiply by `linear` in their one C call, so every caller routes the same
@@ -1424,7 +1447,8 @@ way. The routes are measured on an RTX 4080 SUPER, an L4, an L40S, an A10,
 an A100 SXM4 40 GB, an H100 (SXM5 and PCIe) and a GH200 (logs:
 benchmarks/gpu); a GPU with the same code takes the same routes, not
 measured there: an A100 SXM4 80 GB and an A800 SXM4 have an A100 SXM4's
-(80), an H200 an H100 SXM's (90).
+(80); an H200 and an H100 NVL take an H100 SXM's routes but for the route
+SPLIT (their code 90, its 7090).
 
 Every release carries it on its own for Linux x86_64 and aarch64 (glibc 2.28
 or later), CUDA 12 (built with 12.8) and 13:

@@ -1,0 +1,13 @@
+split: asked the decode 130 of 132 SMs, made 124 for the decode and 8 for the products
+split: asked the decode 1 of 132 SMs, made 4 for the decode and 128 for the products
+0.6B M=769: 0 failures; GLinear's ring 5 x 12 MiB (2 s)
+0.6B M=2048: 0 failures; GLinear's ring 5 x 12 MiB (3 s)
+0.6B M=8192: 0 failures; GLinear's ring - x 0 MiB (4 s)
+8B M=769: 0 failures; GLinear's ring 6 x 100 MiB (5 s)
+8B M=2048: 0 failures; GLinear's ring 6 x 100 MiB (7 s)
+8B M=8192: 0 failures; GLinear's ring - x 0 MiB (14 s)
+14B M=769: 0 failures; GLinear's ring 6 x 170 MiB (16 s)
+14B M=2048: 0 failures; GLinear's ring 6 x 170 MiB (20 s)
+14B M=8192: 0 failures; GLinear's ring 6 x 170 MiB (31 s)
+split_stress: 7920 products checked, 0 failures
+exit 0
