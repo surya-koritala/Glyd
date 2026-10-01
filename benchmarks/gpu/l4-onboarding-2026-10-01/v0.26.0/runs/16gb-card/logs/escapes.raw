@@ -1,0 +1,1 @@
+the model's own answer has 4 control characters ('\x1b[31mRED\x1b[0m \x1b]0;pwned\x07 end')

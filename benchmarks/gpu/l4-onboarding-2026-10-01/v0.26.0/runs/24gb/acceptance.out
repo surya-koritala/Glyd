@@ -1,0 +1,63 @@
+== queued 22:09:22: --rust-glyd /home/ubuntu/onb/post-rust/glyd --install-url https://raw.githubusercontent.com/surya-koritala/Glyd/v0.26.0/scripts/install.sh --webui none
+== started 22:19:36
+== checkout 2392e98 gpu/vllm/acceptance.sh: --install-url (a release's raw install.sh in p
+== 2026-10-01T22:19:37Z: glyd flow, glyd[vllm] as install.sh pins it, from PyPI, glyd-accept:ubuntu26.04-curl, GPU NVIDIA L4, 23034 MiB, budget all MiB free, card as is MiB
+ok   no nvcc: not on PATH, no /usr/local/cuda, no CUDA_HOME
+-- install.sh: https://raw.githubusercontent.com/surya-koritala/Glyd/v0.26.0/scripts/install.sh, sha256 f6277177225fbed55fd06e2f43d5cbc7ca8dbbc4e74010c22b75805ef78301e2
+ok   a glyd of the user's own in ~/.local/bin: install.sh stopped before it installed Glyd and left that program as it was (glyd install: /work/home-foreign/.local/bin/glyd is not Glyd's Python tool (it is the compression program, a p...)
+-- install: curl -LsSf https://getglyd.com/install.sh | sh   (https://raw.githubusercontent.com/surya-koritala/Glyd/v0.26.0/scripts/install.sh instead of getglyd.com's)
+ok   install.sh took 3 s and exited 0; its last lines: |Ready: glyd run Qwen/Qwen3-8B|==> Next: glyd run Qwen/Qwen3-8B|
+ok   uv was installed by its own installer, at a version: ==> Installing uv 0.12.21, which manages Python for Glyd (its own inst; downloading uv 0.12.21 x86_64-unknown-linux-gnu
+ok   no shell startup file touched (~/.local/bin was on PATH; uv's installer was told to edit none)
+-- resolved: glyd v0.26.0 [with: ziglang==0.16.0] flashinfer-python==0.6.18.post1 glyd==0.26.0 pydantic==2.13.5 safetensors==0.8.0 tokenizers==0.23.2 torch==2.13.0 transformers==5.18.0 triton==3.7.1 vllm==0.30.0 ziglang==0.16.0 
+ok   no pre-release among the dependencies (install.sh names no --prerelease; opentelemetry's betas are all there is of those)
+ok   every one of the 199 packages installed is at the version install.sh's list gives (199 listed; ziglang is only there where there is no compiler)
+ok   no gcc: install.sh added ziglang==0.16.0
+ok   install.sh run again (an update; ~/.local/bin not on PATH): exit 0, the shell-profile edit said first, uv's own line naming the file: Created configuration file: /work/home/.bash_profile
+ok   the PATH line is in the shell's startup file (.bashrc )
+     (uv's answer to the update: `glyd[vllm]==0.26.0` is already installed)
+ok   a glyd ahead of it on PATH: install.sh says which, and the line to add and the path to run it by
+ok   glyd doctor reports it too, with the same line
+ok   the Rust glyd first on PATH hands glyd doctor to the Python tool (glyd 0.26.0)
+ok   glyd doctor: Ready: glyd run Qwen/Qwen3-8B
+ok   glyd run Qwen/Qwen3-8B --prompt: Paris, Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+     Ready in 1m04s. (The server's log: /work/home/.local/state/glyd/logs/run-2026100
+-- 1 server logs checked: no traceback, no allocator out-of-memory warning unless failed above
+ok   glyd serve up after 41 s (started through the Rust glyd first on PATH): Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); Py|Ready in 40s. (The server's log: /work/home/.local/state/glyd/logs/serve-20261001-222051.log)|
+ok   GET / is the chat page (21073 bytes, content-security-policy: default-src 'none')
+ok   other paths stay vLLM's (/nope is 404; the API answers below)
+ok   the server on 127.0.0.1 answers its own page and local programs, and refuses another site's script and a rebinding name (11 checks, logs/guard.log)
+ok   glyd serve under nohup kept running when it was sent SIGHUP (nohup's ignore is kept)
+ok   OpenAI API, turn 1 (streamed, greedy): 'Paris', 6 tokens in 0.3 s
+ok   OpenAI API, turn 2 (streamed, top-p, turn 1 as history): 'Berlin', 6 tokens in 0.3 s
+ok   OpenAI API, a tool call (tool_choice auto): {'name': 'get_weather', 'arguments': '{"city": "Paris"}'}
+ok   the thinking apart from the answer: 768 characters of reasoning, answer '17 times 3 is calculated as follows:\n\n17 × 3 = (10'
+ok   a conversation longer than the window: HTTP 400, "This model's maximum context length is 40960 tokens. However, you requested 10 output toke"
+ok   glyd run's answer to a prompt full of escape sequences has no control character in it (24 bytes: [31mRED[0m ]0;pwned end); the model's own answer has 4 control characters ('\x1b[31mRED\x1b[0m \x1b]0;pwned\x07 end')
+ok   glyd run --prompt (a prompt on stdin) says so when the prompt outgrows the window:  This prompt is longer than the model's window (40,960 tokens). Shorten it, or start glyd with a larger --context. rc=1 
+ok   the terminal chat says so when the conversation outgrows the window (typed as one message of several lines)
+ok   glyd serve with the key (flag): ready, serving, and its banner says it asks for the key
+ok   its note on an open address names plain HTTP and the endpoints a key does not guard
+ok   the key is on no other command line (ps)
+ok   the key is in no log and not in glyd's output
+ok   given as -- --api-key, glyd says it was taken off the server's command line
+ok   /v1 without the key is 401
+ok   /health stays open (the note says so)
+ok   /v1 with the key is 200
+-- serve with a key: VLLM_API_KEY=YOUR_KEY glyd serve Qwen/Qwen3-8B --host 0.0.0.0
+ok   glyd serve with the key (env): ready, serving, and its banner says it asks for the key
+ok   its note on an open address names plain HTTP and the endpoints a key does not guard
+ok   the key is on no other command line (ps)
+ok   the key is in no log and not in glyd's output
+ok   /v1 without the key is 401
+ok   /health stays open (the note says so)
+ok   /v1 with the key is 200
+ok   glyd serve stopped on SIGTERM
+-- 4 server logs checked: no traceback, no allocator out-of-memory warning unless failed above
+ok   Ctrl-C 1x while the model loads: glyd exited 130 in 2 s, no vLLM process left (Stopping the server (it is still loading: up to half a minut)
+ok   Ctrl-C 2x while the model loads: glyd exited 130 in 0 s, no vLLM process left (Stopping the server (it is still loading: up to half a minut)
+ok   the engine killed under a terminal chat's answer: The server could not finish the answer: EngineCore encountered an issue. See stack trace (above) for the root cause. Ask again.
+ok   glyd serve exited when its engine died: glyd: the server stopped: ERROR 10-01 22:26:08 [serving.py:906] vllm.v1.engine.exceptions.EngineDeadError: EngineCore en
+ok   uv tool uninstall glyd: the tool and its link are gone; ~/.local/state/glyd (logs serving zigcc ), the Hugging Face cache and uv stay (as the README says)
+PASSED
+== finished 22:27:02 rc=0

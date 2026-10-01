@@ -1,0 +1,14 @@
+Note: the API key was taken off the server's command line and goes to it in VLLM_API_KEY. It is still in glyd's own command line, which ps shows: next time set VLLM_API_KEY=KEY yourself.
+Qwen3-8B: 12.2 GB on the GPU with Glyd, instead of 16.4 GB, which does not fit the 15.7 GB your GPU has free.
+Qwen3-8B is downloaded already.
+Settings: 11,264-token context (the most that fits), eager mode, 62% of GPU memory (14.7 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+Note: listening on 0.0.0.0: anyone who can reach this computer's network address can send the model prompts, and the traffic is plain HTTP, not encrypted (use a VPN or an SSH tunnel, or add  -- --ssl-keyfile FILE --ssl-certfile FILE ). The API key guards /v1 only. The chat page, /health, /metrics, /version, /tokenize, /detokenize and the API's /docs stay open without a key.
+Loading Qwen3-8B with Glyd: 12.2 GB instead of 16.4 GB...
+Ready in 40s. (The server's log: /work/home/.local/state/glyd/logs/serve-20261001-220703.log)
+
+Serving Qwen/Qwen3-8B with Glyd (11,264-token window).
+  OpenAI API   http://localhost:8000/v1   (model name: Qwen/Qwen3-8B)   (asks for the API key)
+  Chat page    http://localhost:8000
+  Log          /work/home/.local/state/glyd/logs/serve-20261001-220703.log
+Press Ctrl-C to stop.
+Stopping the server (a few seconds)...

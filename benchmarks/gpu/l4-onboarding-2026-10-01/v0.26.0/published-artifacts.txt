@@ -1,0 +1,21 @@
+# What the post-release acceptance ran against (fetched 2026-10-01, from the published sources)
+
+PyPI glyd==0.26.0 (https://pypi.org/project/glyd/0.26.0/):
+  glyd-0.26.0-py3-none-macosx_11_0_arm64.whl  2206804 bytes  sha256 fcf5bc03080ae57e52a120fd2d1aba375ef355a0bcd9f7067173be3b235a09be  uploaded 2026-10-01T21:30:12.105090Z
+  glyd-0.26.0-py3-none-manylinux_2_28_aarch64.whl  16419448 bytes  sha256 e1fa88cfa26e0170b2199d7eb178e29d51deb3a4f6ca86b233786cb995c83569  uploaded 2026-10-01T21:30:14.170120Z
+  glyd-0.26.0-py3-none-manylinux_2_28_x86_64.whl  16566161 bytes  sha256 d4890a6aebed63c57eef0f47ef51d01cb9a08ebf198e596f7bd3ca6605699c83  uploaded 2026-10-01T21:30:16.470166Z
+  requires_dist (extras): torch>=2.5; extra == "gpu"; transformers<6,>=5.17; extra == "gpu"; accelerate>=1.1; extra == "gpu"; safetensors>=0.8; extra == "gpu"; huggingface_hub<2,>=1.5; extra == "gpu"; vllm<0.31,>=0.30; extra == "vllm"; safetensors>=0.8; extra == "vllm"; huggingface_hub<2,>=1.5; extra == "vllm"
+
+install.sh:
+  https://raw.githubusercontent.com/surya-koritala/Glyd/v0.26.0/scripts/install.sh  sha256 f6277177225fbed55fd06e2f43d5cbc7ca8dbbc4e74010c22b75805ef78301e2 19794 bytes
+  https://getglyd.com/install.sh                                                   sha256 f6277177225fbed55fd06e2f43d5cbc7ca8dbbc4e74010c22b75805ef78301e2 19794 bytes (identical to the tag's)
+  pins: GLYD_VERSION="${GLYD_VERSION:-0.26.0}"; UV_VERSION=0.12.21  # the uv the acceptance run installed; its installer (https://astral.sh/uv/$UV_VERSION/install.sh) names the sha256 of each download; UV_INSTALLER_SHA256=0722d6c438395e39e1c27a86a79054d3b2820dd9399c7f8b0f6f84cd27ce36c3
+
+GitHub release v0.26.0 (published 2026-10-01T21:11:58Z, pre-release: False); the Rust glyd the runs put first on PATH is the linux-x86_64 tarball's:
+  glyd-v0.26.0-linux-x86_64.tar.gz  37499172 bytes
+  glyd-v0.26.0-linux-x86_64.tar.gz.sha256  99 bytes
+
+10e8caea831ba379c83baafdb6fc98a6e8e9b861 = the commit of tag v0.26.0
+
+The Rust glyd the runs put first on PATH (box: ~/onb/post-rust, scripts/post-setup.sh): the release's glyd-v0.26.0-linux-x86_64.tar.gz, its .sha256 checked
+(160b81b88789ede86553925dc361e4211e68822c2aef3906c9566be7ea5c0bd5), `glyd --version`: glyd 0.26.0, SIMD: AVX2.
