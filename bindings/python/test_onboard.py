@@ -156,7 +156,8 @@ def test_settings_owner_card():
     assert s.env["VLLM_NO_USAGE_STATS"] == "1"
     t = pf.settings(M8, OWNER_GPU, "run", environ={"VLLM_USE_FLASHINFER_SAMPLER": "1", "PYTORCH_ALLOC_CONF": "x", "DO_NOT_TRACK": "1"}, nvcc=False)
     assert not {"VLLM_USE_FLASHINFER_SAMPLER", "PYTORCH_CUDA_ALLOC_CONF", "VLLM_NO_USAGE_STATS"} & set(t.env)  # (the user's own are left alone)
-    assert "VLLM_USE_FLASHINFER_SAMPLER" not in pf.settings(M8, OWNER_GPU, "run", environ=env, nvcc=True).env
+    withnvcc = pf.settings(M8, OWNER_GPU, "run", environ=env, nvcc=True)
+    assert withnvcc.env["VLLM_USE_FLASHINFER_SAMPLER"] == "0" and "PyTorch sampler" not in pf.summary(withnvcc, OWNER_GPU)  # (off with nvcc too: no compile at the first request)
     line = pf.summary(s, OWNER_GPU)
     assert "PyTorch sampler" in line and "eager mode" in line and "(the most that fits)" in line and "86% of GPU memory" in line and line.endswith(".") and "\n" not in line
     a = pf.settings(M8, OWNER_GPU, "run", context=4096, environ=env)  # (--context)

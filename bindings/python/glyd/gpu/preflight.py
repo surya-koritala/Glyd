@@ -498,9 +498,10 @@ def settings(m, gpu, mode="run", context=None, nvcc=True, cc=True, environ=None,
     s = Settings(given=given)
     s.tool_parser, s.reasoning_parser = parsers(m)
     kv, T = m.kv_token, gpu.total
-    if not nvcc and "VLLM_USE_FLASHINFER_SAMPLER" not in env:
-        s.env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
-        s.notes.append("PyTorch sampler, as no CUDA compiler is installed")
+    if "VLLM_USE_FLASHINFER_SAMPLER" not in env:  # (FlashInfer's sampler compiles with nvcc at the first request that samples, and the same tokens a
+        s.env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"  # second come from PyTorch's: 21.1 against 21.2 on an L4 with Qwen3-8B)
+        if not nvcc:
+            s.notes.append("PyTorch sampler, as no CUDA compiler is installed")
     if "PYTORCH_CUDA_ALLOC_CONF" not in env and "PYTORCH_ALLOC_CONF" not in env:
         s.env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     if "VLLM_NO_USAGE_STATS" not in env and "DO_NOT_TRACK" not in env:
