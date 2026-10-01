@@ -538,6 +538,7 @@ def test_start_retries_and_attaches():
             got = run.start(a, [], "run", ui)
             assert len(launched) == 2 and launched[0][0] % 1024 == 0 and launched[1][0] == 6144, launched  # (7,000 rounded down to 1,024s)
             assert "starting again with 6,144" in ui.f.text() and "Note: a warning" in ui.f.text() and "Ready in" in ui.f.text() and "Settings:" in ui.f.text()
+            assert "which does not fit the 15.5 GB your GPU has free" in ui.f.text()  # (bf16's 16.4 GB on the owner's card: said)
             # a memory refusal comes with what to do
             tiny = pf.Gpu(0, "tiny", 6 * 10**9, 5 * 10**9, (8, 6), "580", (13, 0))
             with Patched(pf__setup_checks=lambda gpus=None: (tiny, []), pf__probe_gpus=lambda: [tiny]):

@@ -376,7 +376,8 @@ def start(a, extra, mode, ui, environ=None):
         if port != want:
             ui.note(f"port {want} is in use; using {port}")
     bf16 = pf.gb(m.bf16)
-    ui.line(f"{m.name}: {pf.gb(s.weights)} on the GPU with Glyd, instead of {bf16}; your GPU has {pf.gb(gpu.free)} free.")
+    fits_bf16 = m.bf16 + pf.NON_KV + pf.MIN_CONTEXT * m.kv_token + pf.CTX + pf.HEADROOM <= gpu.free
+    ui.line(f"{m.name}: {pf.gb(s.weights)} on the GPU with Glyd, instead of {bf16}" + (f"; your GPU has {pf.gb(gpu.free)} free." if fits_bf16 else f", which does not fit the {pf.gb(gpu.free)} your GPU has free."))
     download(m, ui)
     if len(gpus) > 1 and "CUDA_VISIBLE_DEVICES" not in env:
         s.env["CUDA_VISIBLE_DEVICES"] = str(gpu.index)
