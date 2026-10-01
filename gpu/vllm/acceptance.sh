@@ -421,7 +421,7 @@ glyd_foreign() {  # a program of the user's own where uv puts its entry point: i
 }
 
 glyd_install() {  # the README's install line with this checkout's script, and what it left
-  local line=$1 env=$2 rc t0 py pre
+  local line=$1 env=$2 rc t0 py pre touched f
   say "-- install: $line   (this checkout's scripts/install.sh instead of getglyd.com's${env:+; $env})"
   rm -rf "$WORK/home/.local" "$WORK/home/.cache"
   t0=$(date +%s)
@@ -432,8 +432,9 @@ glyd_install() {  # the README's install line with this checkout's script, and w
   grep -q "edits your shell's startup file" "$LOGS/install.log" && fail "install.sh announced a shell-profile edit where ~/.local/bin is on PATH already"
   grep -q 'Installing uv' "$LOGS/install.log" && ok "uv was installed by its own installer, at a version: $(grep -m1 'Installing uv' "$LOGS/install.log" | cut -c1-70); $(grep -m1 'downloading uv' "$LOGS/install.log" | cut -c1-60)" || fail "install.sh did not install uv (the clean machine has none): logs/install.log"
   run 'command -v glyd' > /dev/null 2>&1 || fail "glyd is not on the PATH after the install"
-  if [ -n "$(ls -A "$WORK/home" | grep -E '^\.(bashrc|profile|zshenv|zshrc|bash_profile)$')" ]; then
-    fail "the install edited a shell startup file where ~/.local/bin was on PATH already ($(ls -A "$WORK/home" | grep -E '^\.(bashrc|profile|zshenv|zshrc|bash_profile)$' | tr '\n' ' '))"
+  touched=; for f in .bashrc .profile .zshenv .zshrc .bash_profile; do [ -e "$WORK/home/$f" ] && touched="$touched $f"; done
+  if [ -n "$touched" ]; then
+    fail "the install edited a shell startup file where ~/.local/bin was on PATH already ($touched)"
   else
     ok "no shell startup file touched (~/.local/bin was on PATH; uv's installer was told to edit none)"
   fi

@@ -194,7 +194,7 @@ main() {
   uvminor=${uvv#*.}
   uvminor=${uvminor%%.*}
   case "$uvmajor.$uvminor" in
-    '' | . | .* | *.) ;;  # (a version this cannot read: go on)
+    . | .* | *.) ;;  # (a version this cannot read: go on)
     *[!0-9.]*) ;;
     *) if [ "$uvmajor" -eq 0 ] && [ "$uvminor" -lt "$UV_MIN_MINOR" ]; then
          die "uv $uvv is older than 0.$UV_MIN_MINOR, which this installer needs. Update it ($uv self update, or the way you installed it) and run this again."
