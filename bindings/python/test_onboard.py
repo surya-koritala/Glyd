@@ -12,6 +12,7 @@ import glob
 import http.server
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1360,97 +1361,396 @@ def test_page_is_self_contained():
 # --- install.sh ------------------------------------------------------------------------------------------------------------------
 
 INSTALL = os.path.join(HERE, "..", "..", "scripts", "install.sh")
+CONSTRAINTS_PY = os.path.join(HERE, "..", "..", "scripts", "install_constraints.py")
+REPO_URL = "https://github.com/surya-koritala/Glyd"
 
-
-def run_install(nvidia=None, uv=True, other_glyd=False, env=None, os_name=None, arch=None, compiler="gcc"):
-    """scripts/install.sh with a fake uv (and curl, nvidia-smi, uname, and a `compiler` such as gcc or clang, or none): the commands it
-    ran, its output, its exit status. PATH holds only those and the few programs the script uses, so this machine's own compilers and
-    nvidia-smi do not answer."""
-    home, bindir, tools = tempfile.mkdtemp(), tempfile.mkdtemp(), tempfile.mkdtemp()
-    try:
-        for t in ("head", "tr", "mkdir", "cp", "chmod", "cat", "sed", "sh", "dirname", "uname"):
-            if shutil.which(t):
-                os.symlink(shutil.which(t), os.path.join(tools, t))
-        def script(name, body, d=bindir):
-            with open(os.path.join(d, name), "w") as f:
-                f.write("#!/bin/sh\n" + body)
-            os.chmod(os.path.join(d, name), 0o755)
-
-        log = os.path.join(home, "calls.log")
-        uvbody = f'''echo "uv $*" >> "{log}"
+FAKE_UV = r'''#!/bin/sh
+echo "uv $*" >> "$HOME/calls.log"
+BIN="${UV_TOOL_BIN_DIR:-$HOME/.local/bin}"
 case "$1 $2" in
-  "tool dir") echo "{home}/.local/bin" ;;
-  "tool install") mkdir -p "{home}/.local/bin"; printf '#!/bin/sh\\necho "glyd $*" >> "{log}"\\n' > "{home}/.local/bin/glyd"; chmod +x "{home}/.local/bin/glyd" ;;
+  "--version "*) echo "uv ${FAKE_UV_VERSION:-0.12.21} (fake)" ;;
+  "tool dir") echo "$BIN" ;;
+  "tool list") if [ -e "$HOME/.fake-tool-glyd" ]; then printf 'glyd v0.26.0rc3\n- glyd\n'; else echo "No tools installed" >&2; fi ;;
+  "tool install")
+    [ -z "${FAKE_UV_FAIL:-}" ] || { echo "error: fake uv failed" >&2; exit 2; }
+    prev=
+    for a in "$@"; do [ "$prev" = --constraints ] && cp "$a" "$HOME/constraints.seen"; prev=$a; done
+    mkdir -p "$BIN"
+    printf '#!/bin/sh\necho "glyd $*" >> "%s"\nexit 0\n' "$HOME/calls.log" > "$BIN/glyd"
+    chmod +x "$BIN/glyd"
+    touch "$HOME/.fake-tool-glyd" ;;
+  "tool update-shell") echo "Updated configuration file: $HOME/.zshenv" ;;
 esac
 '''
-        if uv:
-            script("uv", uvbody)
-        os.makedirs(os.path.join(home, ".local", "bin"), exist_ok=True)
-        script("curl", f'echo "curl $*" >> "{log}"\nprintf \'mkdir -p "{home}/.local/bin"; cp "{bindir}/fakeuv" "{home}/.local/bin/uv"\\n\'\n')
-        script("fakeuv", uvbody)
-        if nvidia:
-            script("nvidia-smi", f'case "$1" in -L) echo "GPU 0: NVIDIA L4";; --query-gpu=driver_version) echo "{nvidia}";; esac\n')
-        else:
-            script("nvidia-smi", "exit 9\n")  # (this machine's own, if it has one, must not answer)
-        if os_name or arch:
-            script("uname", f'case "$1" in -s) echo "{os_name or "Linux"}";; -m) echo "{arch or "x86_64"}";; esac\n')
+FAKE_UV_INSTALLER = '#!/bin/sh\necho "uv-installer UV_NO_MODIFY_PATH=${UV_NO_MODIFY_PATH:-}" >> "$HOME/calls.log"\nmkdir -p "$HOME/.local/bin"\ncp "$FAKE_DIR/uv" "$HOME/.local/bin/uv"\nchmod +x "$HOME/.local/bin/uv"\n'
+FAKE_CURL = r'''#!/bin/sh
+url=; out=
+while [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift ;; http*) url=$1 ;; esac; shift; done
+echo "curl $url" >> "$HOME/calls.log"
+[ -z "${FAKE_CURL_FAIL:-}" ] || { echo "curl: (22) The requested URL returned error: 503" >&2; exit 22; }
+case "$url" in
+  */install.sh) cp "$FAKE_DIR/uv-installer.sh" "$out" ;;
+  *.tar.gz.sha256) cp "$FAKE_DIR/release.sha256" "$out" ;;
+  *.tar.gz) cp "$FAKE_DIR/release.tar.gz" "$out" ;;
+  *) echo "fake curl: unexpected $url" >&2; exit 22 ;;
+esac
+'''
+PLATFORMS = {("Linux", "x86_64"): "linux-x86_64", ("Linux", "aarch64"): "linux-aarch64", ("Darwin", "arm64"): "macos-arm64"}
+
+
+class Inst:
+    """scripts/install.sh run against fakes: uv (its tool list, tool dir, tool install and update-shell), curl (uv's installer, a release's
+    tarball and its checksum, or a failure), nvidia-smi, uname, and a compiler (gcc, clang, or none). PATH holds only those and the few
+    programs the script uses, so this machine's own compilers, nvidia-smi and uv do not answer. After .run(): .calls (what was run, one
+    line each), .home (the folder everything happened in)."""
+
+    TOOLS = ("head", "tr", "mkdir", "cp", "chmod", "cat", "sed", "sh", "dirname", "cut", "awk", "df", "grep", "rm", "mv", "ln", "tar", "mktemp",
+             "readlink", "sha256sum", "shasum", "basename", "touch")
+
+    def __init__(self, nvidia=None, uv=True, os_name="Linux", arch="x86_64", compiler="gcc", other_glyd=False, curl_fail=False, bad_sha=False,
+                 uv_version="0.12.21", df_kb=None, on_path=False, path_extra=(), uv_fail=False, no_home=False, tool_glyd=False, foreign=None):
+        self.home, self.fake, self.tools, self.tmpdir = (tempfile.mkdtemp() for _ in range(4))
+        self.bindir = os.path.join(self.fake, "bin")
+        os.makedirs(self.bindir)
+        self.os_name, self.arch, self.no_home, self.uv_fail = os_name, arch, no_home, uv_fail
+        self.uv_version, self.curl_fail, self.on_path, self.path_extra = uv_version, curl_fail, on_path, path_extra
+        for t in self.TOOLS:
+            if shutil.which(t):
+                os.symlink(shutil.which(t), os.path.join(self.tools, t))
+
+        def script(name, body, d=self.bindir):
+            with open(os.path.join(d, name), "w") as f:
+                f.write(body if body.startswith("#!") else "#!/bin/sh\n" + body)
+            os.chmod(os.path.join(d, name), 0o755)
+
+        script("uv", FAKE_UV, self.bindir if uv else self.fake)
+        script("uv-installer.sh", FAKE_UV_INSTALLER, self.fake)
+        script("curl", FAKE_CURL)
+        script("uname", f'case "$1" in -s) echo "{os_name}";; -m) echo "{arch}";; esac\n')
+        script("nvidia-smi", f'case "$1" in -L) echo "GPU 0: NVIDIA L4";; --query-gpu=driver_version) echo "{nvidia}";; esac\n' if nvidia else "exit 9\n")
         if compiler:
             script(compiler, "exit 0\n")
+        if df_kb is not None:
+            script("df", f'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"\necho "/dev/fake 99999999 1 {df_kb} 1% /"\n')
+        self.other = None
         if other_glyd:
-            other = tempfile.mkdtemp()
-            script("glyd", "echo compression\n", other)
-        path = (other + os.pathsep if other_glyd else "") + bindir + os.pathsep + tools
-        e = {"HOME": home, "PATH": path, **(env or {})}
-        r = subprocess.run(["/bin/sh", INSTALL], env=e, capture_output=True, text=True)
+            self.other = tempfile.mkdtemp()
+            script("glyd", "echo compression\n", self.other)
+        if foreign is not None:
+            os.makedirs(os.path.join(self.home, ".local", "bin"), exist_ok=True)
+            script("glyd", foreign, os.path.join(self.home, ".local", "bin"))
+        if tool_glyd:
+            open(os.path.join(self.home, ".fake-tool-glyd"), "w").close()
+        self.make_release(bad_sha)
+
+    def make_release(self, bad_sha):
+        """glyd-vV-PLAT.tar.gz as release.yml makes it (glyd-vV-PLAT/ with the three programs, shell scripts here, and the licenses), its .sha256, and
+        the version the fake program says."""
+        import hashlib
+        import io
+        import tarfile
+        plat = PLATFORMS.get((self.os_name, self.arch), "nowhere")
+        name = f"glyd-v{self.version()}-{plat}"
+        path = os.path.join(self.fake, "release.tar.gz")
+        with tarfile.open(path, "w:gz") as t:
+            def add(member, data, mode):
+                ti = tarfile.TarInfo(f"{name}/{member}")
+                ti.size, ti.mode = len(data), mode
+                t.addfile(ti, io.BytesIO(data))
+            for prog in ("glyd", "glyd-store", "glyd-gpu"):
+                add(prog, f'#!/bin/sh\necho "{prog} $*" >> "$HOME/calls.log"\ncase "$1" in --version) echo "glyd 0.26.0-rc.3"; echo "SIMD: AVX2";; esac\n'.encode(), 0o755)
+            for lic in ("LICENSE", "COPYING", "LICENSE-glyd-store", "LICENSE-glyd-gpu", "README.md"):
+                add(lic, b"licence\n", 0o644)
+        digest = hashlib.sha256(open(path, "rb").read()).hexdigest()
+        with open(os.path.join(self.fake, "release.sha256"), "w") as f:
+            f.write(("0" * 64 if bad_sha else digest) + f"  {name}.tar.gz\n")
+        self.release = f"{REPO_URL}/releases/download/v{self.version()}/{name}.tar.gz"
+
+    @staticmethod
+    def version():
+        import glyd
+        return glyd.__version__
+
+    def script_text(self):
+        """install.sh with the pin of uv's installer set to the stand-in's, which is the file this run serves."""
+        import hashlib
+        text = open(INSTALL).read()
+        digest = hashlib.sha256(open(os.path.join(self.fake, "uv-installer.sh"), "rb").read()).hexdigest()
+        pinned = [l for l in text.splitlines() if l.startswith("UV_INSTALLER_SHA256=")]
+        return text.replace(pinned[0], f"UV_INSTALLER_SHA256={digest}") if len(pinned) == 1 else text
+
+    def run(self, env=None, text=None, stdin=False, shell="/bin/sh", cut=None):
+        """Run the script (`text`, else install.sh as it is with uv's installer pinned to the stand-in: a test of the pin passes install.sh's own text), as
+        `sh install.sh`, or through stdin as `curl | sh` runs it. Returns a namespace with .rc .out .err .calls."""
+        text = self.script_text() if text is None else text
+        text = text if cut is None else text[:cut]
+        extra = os.pathsep.join([self.other] * bool(self.other) + ([os.path.join(self.home, ".local", "bin")] if self.on_path else []) + list(self.path_extra))
+        path = os.pathsep.join(filter(None, [extra, self.bindir, self.tools]))
+        e = {"PATH": path, "FAKE_DIR": self.fake, "TMPDIR": self.tmpdir, "FAKE_UV_VERSION": self.uv_version, "SHELL": "/bin/zsh", **({} if self.no_home else {"HOME": self.home})}
+        if self.curl_fail:
+            e["FAKE_CURL_FAIL"] = "1"
+        if self.uv_fail:
+            e["FAKE_UV_FAIL"] = "1"
+        e.update(env or {})
+        script = os.path.join(self.fake, "install.sh")
+        with open(script, "w") as f:
+            f.write(text)
+        if stdin:
+            r = subprocess.run([shell], input=text, env=e, capture_output=True, text=True, cwd=self.home)
+        else:
+            r = subprocess.run([shell, script], env=e, capture_output=True, text=True, cwd=self.home, stdin=subprocess.DEVNULL)
+        log = os.path.join(self.home, "calls.log")
         calls = open(log).read().splitlines() if os.path.exists(log) else []
-        return r.returncode, r.stdout, r.stderr, calls
-    finally:
-        shutil.rmtree(home)
-        shutil.rmtree(bindir)
-        shutil.rmtree(tools)
+        self.last = types.SimpleNamespace(rc=r.returncode, out=r.stdout, err=r.stderr, calls=calls)
+        return self.last
+
+    def at(self, *parts):
+        return os.path.join(self.home, *parts)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        for d in (self.home, self.fake, self.tools, self.tmpdir, self.other):
+            if d:
+                shutil.rmtree(d, ignore_errors=True)
 
 
-def test_install_sh():
-    sh_check = subprocess.run(["/bin/sh", "-n", INSTALL])
-    assert sh_check.returncode == 0
-    if not shutil.which("uname"):
-        return
-    if subprocess.run(["uname", "-s"], capture_output=True, text=True).stdout.strip() == "Darwin":
-        os_name_arg = "Linux"  # (the fake uname: the Linux path on this Mac)
-    else:
-        os_name_arg = None
+def load_constraints_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("install_constraints", CONSTRAINTS_PY)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def uv_install_lines(r):
+    return [c for c in r.calls if c.startswith("uv tool install")]
+
+
+SHELLS = [s for s in ("/bin/sh", "/bin/dash") if os.path.exists(s)]
+
+
+def test_install_sh_on_a_gpu_machine():
+    for sh in SHELLS:
+        assert subprocess.run([sh, "-n", INSTALL]).returncode == 0, sh
     import glyd
     V = glyd.__version__  # (the release the script pins is the tree's: scripts/bump_version.py keeps them one)
-    assert f'GLYD_VERSION="${{GLYD_VERSION:-{V}}}"' in open(INSTALL).read()
-    rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg)  # Linux, an NVIDIA GPU, uv present
-    assert rc == 0, (out, err)
-    assert calls[0] == f"uv tool install --force --managed-python --python 3.12 glyd[vllm]=={V}", calls  # (pinned: no --prerelease)
-    assert "--prerelease" not in " ".join(calls) and "uv tool dir --bin" in calls and "glyd doctor" in calls[-1] and not err.strip(), (calls, err)
-    rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, env={"GLYD_VERSION": "0.26.0rc3"})  # (a pre-release is named, and only that one is taken)
-    assert calls[0].endswith("glyd[vllm]==0.26.0rc3")
-    rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, env={"GLYD_SPEC": "/tmp/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]"})
-    assert calls[0].endswith("--python 3.12 /tmp/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]")
-    rc, out, err, calls = run_install(nvidia=None, os_name=os_name_arg)  # (Linux, no GPU: the compression tools alone, said so)
-    assert calls[0].endswith(f"glyd=={V}") and "no NVIDIA GPU" in err and rc == 0
-    rc, out, err, calls = run_install(nvidia="550.163.01", os_name=os_name_arg)  # (an older driver: a warning, before the big download)
-    assert "older than 580" in err and calls[0].endswith(f"glyd[vllm]=={V}")
-    rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, uv=False)  # (uv missing: its own installer, then the tool)
-    assert calls[0].startswith("curl -LsSf https://astral.sh/uv/install.sh") and any(c.startswith("uv tool install") for c in calls) and rc == 0, (calls, err)
-    rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, other_glyd=True)  # (the compression program first on PATH: said so)
-    assert "another glyd" in err and "no 'run'" in err
-    zig = "--managed-python --python 3.12 --with ziglang==0.16.0 "  # (no gcc or clang: a compiler from PyPI, no sudo; vLLM's Triton builds its launchers with one)
-    rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, compiler=None)
-    assert calls[0] == f"uv tool install --force {zig}glyd[vllm]=={V}" and "No C compiler found" in out and rc == 0, (calls, out)
-    assert "ZIGLANG=0.16.0" in open(INSTALL).read()
+    text = open(INSTALL).read()
+    assert f'GLYD_VERSION="${{GLYD_VERSION:-{V}}}"' in text
+    for sh in SHELLS:
+        for via_stdin in (False, True):  # (as a file, and as `curl | sh` runs it: from its stdin)
+            with Inst(nvidia="595.91.07") as i:
+                r = i.run(shell=sh, stdin=via_stdin)
+                assert r.rc == 0, (sh, via_stdin, r.out, r.err)
+                (install,) = uv_install_lines(r)
+                assert re.fullmatch(rf"uv tool install --managed-python --python 3\.12 --constraints \S+/constraints\.txt glyd\[vllm\]=={re.escape(V)}", install), install
+                assert "--force" not in install and "--prerelease" not in install  # (uv itself refuses to replace what it did not make; a new pin is a reinstall)
+                assert "uv tool dir --bin" in r.calls and r.calls[-1] == "glyd doctor" and not r.err.strip(), (r.calls, r.err)
+                assert "Next: glyd run Qwen/Qwen3-8B" in r.out
+                assert not glob.glob(os.path.join(i.tmpdir, "*"))  # (the temporary folder is gone)
+                assert not [f for f in os.listdir(i.home) if f in (".bashrc", ".zshenv", ".zshrc", ".profile", ".bash_profile")]  # (no startup file of its own)
+    with Inst(nvidia="595.91.07") as i:  # the constraints uv was given are the list in the script, which is the acceptance run's
+        i.run()
+        seen = open(i.at("constraints.seen")).read().splitlines()
+        assert seen == load_constraints_module().listed(text) and len(seen) > 150 and "vllm==0.30.0" in seen, len(seen)
+    with Inst(nvidia="595.91.07") as i:  # a pre-release is named, and only that one is taken
+        assert uv_install_lines(i.run(env={"GLYD_VERSION": "0.26.0rc3"}))[0].endswith("glyd[vllm]==0.26.0rc3")
+    with Inst(nvidia="595.91.07") as i:  # another build: its own wheel, its packages resolved fresh
+        (install,) = uv_install_lines(i.run(env={"GLYD_SPEC": "/tmp/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]"}))
+        assert install == "uv tool install --managed-python --python 3.12 /tmp/glyd-0.26.0rc2-py3-none-manylinux_2_28_x86_64.whl[vllm]", install
+    with Inst(nvidia="595.91.07") as i:  # (or the list left out, where a version in it has been withdrawn)
+        assert "--constraints" not in uv_install_lines(i.run(env={"GLYD_CONSTRAINTS": "none"}))[0]
+    with Inst(nvidia="595.91.07", arch="aarch64") as i:  # (none was tested on aarch64)
+        r = i.run()
+        assert r.rc == 0 and "--constraints" not in uv_install_lines(r)[0] and uv_install_lines(r)[0].endswith(f"glyd[vllm]=={V}"), r.calls
+    zig = "--managed-python --python 3.12 "
+    with Inst(nvidia="595.91.07", compiler=None) as i:  # no gcc or clang: a compiler from PyPI, no sudo; vLLM's Triton builds its launchers with one
+        r = i.run()
+        assert "--with ziglang==0.16.0 glyd[vllm]" in uv_install_lines(r)[0] and "No C compiler found" in r.out and r.rc == 0, (r.calls, r.out)
+        assert "ZIGLANG=0.16.0" in text
     for compiler, extra in (("gcc", None), ("clang", None), (None, {"CC": "/opt/cc/bin/cc"})):  # (a compiler there, or $CC set: none is added)
-        rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, compiler=compiler, env=extra)
-        assert "ziglang" not in " ".join(calls) and "No C compiler" not in out, (compiler, calls)
-    rc, out, err, calls = run_install(nvidia=None, os_name=os_name_arg, compiler=None)  # (no vLLM to install: no compiler needed)
-    assert "ziglang" not in " ".join(calls)
-    rc, out, err, calls = run_install(nvidia="595.91.07", os_name="Darwin", arch="arm64")
-    assert calls[0].endswith(f"glyd=={V}") and "Linux and an NVIDIA GPU" in err
-    rc, out, err, calls = run_install(os_name="FreeBSD")
-    assert rc == 1 and "Linux and macOS" in err and not calls
+        with Inst(nvidia="595.91.07", compiler=compiler) as i:
+            r = i.run(env=extra)
+            assert "ziglang" not in " ".join(r.calls) and "No C compiler" not in r.out, (compiler, r.calls)
+    with Inst(nvidia="595.91.07", compiler=None) as i:  # a wheel's path that says vllm is not the extra (the stack is decided by the extra itself)
+        assert "ziglang" not in " ".join(i.run(env={"GLYD_SPEC": "/tmp/vllm-build/glyd-0.26.0-py3-none-any.whl"}).calls)
+    with Inst(nvidia="550.163.01") as i:  # an older driver: a warning, before the big download
+        r = i.run()
+        assert "older than 580" in r.err and "nvidia-driver-580" in r.err and r.calls.index(uv_install_lines(r)[0]) > 0 and r.rc == 0
+    with Inst(os_name="FreeBSD") as i:
+        r = i.run()
+        assert r.rc == 1 and "Linux and macOS" in r.err and not r.calls
+
+
+def test_install_sh_cut_short_runs_nothing():
+    """A download that stops partway: the script is one function and its call is the last line, so no prefix of it runs a command (a half
+    install, reported as a success, was what the first version did)."""
+    text = open(INSTALL).read()
+    last = text.rfind("\nmain ") + 1 or len(text)  # (the call, on the last line: `main "$@"`; ending the text at "\nmain" is the whole script run)
+    cuts = sorted(c for c in set(range(0, len(text), 487)) | set(m.end() for k, m in enumerate(re.finditer("\n", text)) if k % 9 == 0) | set(range(max(0, last - 30), len(text))) if c < last + 3)
+    with Inst(nvidia="595.91.07") as i:
+        full = i.script_text()
+        assert full.count("\nmain ") <= 1
+        for cut in cuts:
+            r = i.run(text=full, stdin=True, cut=cut)
+            assert r.calls == [], (cut, repr(full[max(0, cut - 40):cut]), r.calls, r.out[-200:])
+        assert i.run(text=full, stdin=True).calls  # (and the whole of it does run)
+
+
+def test_install_sh_does_not_hide_a_failed_download_of_uv():
+    with Inst(nvidia="595.91.07", uv=False, curl_fail=True) as i:  # (the first version ran `curl | sh`, which has sh's status)
+        r = i.run()
+        assert r.rc == 1 and "could not download uv's installer" in r.err and "astral.sh" in r.err, (r.rc, r.err)
+        assert "not where its installer says" not in r.err and "open a new terminal" not in r.err.lower()
+        assert not any(c.startswith("uv ") or c.startswith("uv-installer") for c in r.calls), r.calls
+        assert "Run the same command again" not in r.err  # (nothing was downloaded that a second run keeps)
+    with Inst(nvidia="595.91.07", uv=False) as i:  # uv's own installer, at a version, from a file whose sha256 is the one pinned, told to edit no startup file
+        r = i.run()
+        assert r.rc == 0, (r.out, r.err)
+        assert r.calls[0] == "curl https://astral.sh/uv/0.12.21/install.sh" and "uv-installer UV_NO_MODIFY_PATH=1" in r.calls, r.calls
+        assert os.path.exists(i.at(".local", "bin", "uv")) and any(c.startswith("uv tool install") for c in r.calls)
+    with Inst(nvidia="595.91.07", uv=False) as i:  # a file that is not the one pinned is not run
+        r = i.run(text=open(INSTALL).read())
+        assert r.rc == 1 and "not the file this script was written for" in r.err, (r.rc, r.err)
+        assert not any(c.startswith("uv-installer") for c in r.calls), r.calls
+    assert re.search(r"^UV_VERSION=\d+\.\d+\.\d+", open(INSTALL).read(), re.M) and re.search(r"^UV_INSTALLER_SHA256=[0-9a-f]{64}\b", open(INSTALL).read(), re.M)
+
+
+def test_install_sh_will_not_replace_a_program_it_did_not_make():
+    with Inst(nvidia="595.91.07", foreign="echo mine\n") as i:  # a glyd of the user's own in uv's folder, which uv does not list
+        mine = open(i.at(".local", "bin", "glyd")).read()
+        r = i.run()
+        assert r.rc == 1 and "is not Glyd's Python tool" in r.err and "does not replace a program it did not make" in r.err, (r.rc, r.err)
+        assert "UV_TOOL_BIN_DIR" in r.err and "Run the same command again" not in r.err
+        assert open(i.at(".local", "bin", "glyd")).read() == mine  # (not touched)
+        assert not uv_install_lines(r) and not any("--force" in c for c in r.calls), r.calls
+    with Inst(nvidia="595.91.07", foreign="echo old tool\n", tool_glyd=True) as i:  # Glyd's own, from an earlier run: an update
+        r = i.run()
+        assert r.rc == 0 and uv_install_lines(r), (r.out, r.err)
+    with Inst(nvidia="595.91.07", foreign="echo mine\n") as i:  # kept, with the tool in another folder (then it is not on PATH, and that is said)
+        r = i.run(env={"UV_TOOL_BIN_DIR": i.at("glyd-bin")})
+        assert r.rc == 0 and uv_install_lines(r), (r.out, r.err)
+        assert "update-shell" in " ".join(r.calls) and open(i.at(".local", "bin", "glyd")).read() == "#!/bin/sh\necho mine\n"
+
+
+def test_install_sh_says_what_it_does_to_the_path():
+    with Inst(nvidia="595.91.07") as i:  # ~/.local/bin is not on PATH: the edit is said, before it is made
+        r = i.run()
+        assert "uv tool update-shell" in r.calls and "edits your shell's startup file" in r.out, (r.calls, r.out)
+        assert "Open a new terminal" in r.out and f'export PATH="{i.at(".local", "bin")}:$PATH"' in r.out
+        assert "Updated configuration file" in r.out  # (uv's own line: which file)
+    with Inst(nvidia="595.91.07", on_path=True) as i:  # it is: nothing is edited
+        r = i.run()
+        assert "uv tool update-shell" not in r.calls and "startup file" not in r.out and "Open a new terminal" not in r.out, (r.calls, r.out)
+    with Inst(nvidia="595.91.07") as i:  # a folder whose name starts with it is not it
+        i.path_extra = (i.at(".local", "bin2"),)
+        assert "uv tool update-shell" in i.run().calls
+
+
+def test_install_sh_a_glyd_ahead_on_path_is_said_with_the_fix():
+    with Inst(nvidia="595.91.07", other_glyd=True, on_path=True) as i:  # (~/.local/bin on PATH, behind the compression program's folder)
+        r = i.run()
+        bin_ = i.at(".local", "bin")
+        assert r.rc == 0 and "another glyd comes first on your PATH" in r.err and f"{i.other}/glyd" in r.err, r.err
+        assert f'export PATH="{bin_}:$PATH"' in r.err and f"{bin_}/glyd run MODEL" in r.err and "~/.zshrc" in r.err
+    with Inst(nvidia="595.91.07", on_path=True) as i:  # (first on PATH: nothing to say)
+        assert "another glyd" not in i.run().err
+
+
+def test_install_sh_checks_the_machine_before_the_big_download():
+    with Inst(nvidia="595.91.07", df_kb=3 * 1024 * 1024) as i:  # 3 GB free
+        r = i.run()
+        assert r.rc == 1 and "3 GB free" in r.err and "about 8 GB" in r.err and "UV_CACHE_DIR" in r.err and not uv_install_lines(r), (r.rc, r.err)
+    with Inst(nvidia="595.91.07", df_kb=3 * 1024 * 1024) as i:  # (uv's folders set by the user are the user's to size)
+        assert i.run(env={"UV_CACHE_DIR": "/big/cache"}).rc == 0
+    with Inst(nvidia="595.91.07", df_kb=40 * 1024 * 1024) as i:
+        assert i.run().rc == 0
+    with Inst(nvidia="595.91.07", no_home=True) as i:  # (HOME unset died in `set -u`: "HOME: parameter not set")
+        r = i.run()
+        assert r.rc == 1 and "HOME is not set" in r.err and not r.calls, (r.rc, r.err)
+    with Inst(nvidia="595.91.07", uv_version="0.6.0") as i:  # a uv without --managed-python on `tool install`
+        r = i.run()
+        assert r.rc == 1 and "older than 0.7" in r.err and "self update" in r.err and not uv_install_lines(r), (r.rc, r.err)
+    with Inst(nvidia="595.91.07", uv_version="1.2.3") as i:
+        assert i.run().rc == 0
+    with Inst(nvidia="595.91.07", uv_version="garbage") as i:  # (a version it cannot read: go on)
+        assert i.run().rc == 0
+    with Inst(nvidia="595.91.07", uv_fail=True) as i:  # the install itself fails: the one hint that is true for it
+        r = i.run()
+        assert r.rc != 0 and "Run the same command again: uv keeps what it downloaded" in r.err and "glyd doctor" not in r.calls, (r.rc, r.err, r.calls)
+
+
+def test_install_sh_where_glyd_run_has_nothing_to_run_on():
+    import glyd
+    V = glyd.__version__
+    for os_name, arch, plat, says in (("Linux", "x86_64", "linux-x86_64", "No NVIDIA GPU answered"), ("Linux", "aarch64", "linux-aarch64", "No NVIDIA GPU answered"),
+                                      ("Darwin", "arm64", "macos-arm64", "This computer is a Mac")):
+        with Inst(nvidia=None, os_name=os_name, arch=arch) as i:
+            r = i.run()
+            assert r.rc == 0, (os_name, r.out, r.err)
+            assert says in r.out and "glyd run" in r.out and "needs Linux with an NVIDIA GPU" in r.out, r.out
+            assert ("nvidia-driver-580" in r.out) == (os_name == "Linux"), r.out  # (no driver advice for a Mac)
+            assert not any(c.startswith("uv ") for c in r.calls), r.calls  # (no tool environment that holds no compression program)
+            base = f"{REPO_URL}/releases/download/v{V}/glyd-v{V}-{plat}.tar.gz"
+            assert [c for c in r.calls if c.startswith("curl")] == [f"curl {base}", f"curl {base}.sha256"], r.calls
+            for prog in ("glyd", "glyd-store", "glyd-gpu"):
+                link = i.at(".local", "bin", prog)
+                assert os.path.islink(link) and os.readlink(link) == i.at(".local", "share", "glyd", "cli", prog), prog
+            assert os.path.exists(i.at(".local", "share", "glyd", "cli", "LICENSE")) and os.path.exists(i.at(".local", "share", "glyd", "cli", "COPYING"))
+            assert "glyd 0.26.0-rc.3 is installed" in r.out and "Open a new terminal" not in r.out
+            assert f'export PATH="{i.at(".local", "bin")}:$PATH"' in r.out  # (not on PATH, and no profile edit of its own: the line to add)
+            assert not glob.glob(os.path.join(i.tmpdir, "*"))
+            again = i.run()  # (an update: its own links are replaced)
+            assert again.rc == 0, again.err
+    with Inst(nvidia=None, bad_sha=True) as i:  # a download that is not the file the release lists: nothing is installed
+        r = i.run()
+        assert r.rc == 1 and "not the file the release lists" in r.err, (r.rc, r.err)
+        assert not os.path.exists(i.at(".local", "share", "glyd")) and not os.path.exists(i.at(".local", "bin", "glyd"))
+    with Inst(nvidia=None, curl_fail=True) as i:
+        r = i.run()
+        assert r.rc == 1 and "could not download" in r.err and "check the network" in r.err
+    with Inst(nvidia=None, foreign="echo mine\n") as i:  # not replaced
+        r = i.run()
+        assert r.rc == 1 and "this installer did not make it" in r.err and not [c for c in r.calls if c.startswith("curl")], (r.rc, r.err, r.calls)
+        assert open(i.at(".local", "bin", "glyd")).read() == "#!/bin/sh\necho mine\n"
+    with Inst(nvidia=None, os_name="Darwin", arch="x86_64") as i:  # an Intel Mac has no tarball: Homebrew builds one
+        r = i.run()
+        assert r.rc == 1 and "brew install surya-koritala/glyd/glyd" in r.err and "cargo install --git" in r.err
+    with Inst(nvidia=None, other_glyd=True) as i:  # another glyd first on PATH, here too
+        i.on_path = True
+        assert "another glyd comes first on your PATH" in i.run().err
+    with Inst(nvidia="595.91.07", arch="ppc64le") as i:  # a GPU, and no vLLM build for the architecture
+        r = i.run()
+        assert r.rc == 1 and "no vLLM build for ppc64le" in r.out and "no prebuilt compression program" in r.err
+    with Inst(nvidia=None) as i:  # a Linux GPU machine's own spec is kept even where nvidia-smi says nothing
+        assert uv_install_lines(i.run(env={"GLYD_SPEC": "/tmp/x.whl"}))[0].endswith("/tmp/x.whl")
+
+
+def test_install_constraints_are_the_acceptance_runs_versions():
+    ic = load_constraints_module()
+    text = open(INSTALL).read()
+    lines = ic.listed(text)
+    names = [l.split("==")[0] for l in lines]
+    assert 150 < len(lines) < 400 and names == sorted(names, key=str.lower) and len(set(names)) == len(names), len(lines)
+    assert all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*==[0-9][A-Za-z0-9.+!_-]*", l) for l in lines)
+    versions = dict(l.split("==") for l in lines)
+    assert "glyd" not in versions and versions["vllm"].startswith("0.30.") and versions["torch"].startswith("2.13"), versions["vllm"]
+    pre = [l for l in lines if re.search(r"==[0-9][0-9.]*(a|b|rc|dev)[0-9]+$", l) and not l.startswith("opentelemetry-")]
+    assert not pre, pre
+    pyproject = open(os.path.join(HERE, "pyproject.toml")).read()
+    lo, hi = re.search(r'"vllm>=(\d+\.\d+),<(\d+\.\d+)"', pyproject).groups()  # (the list holds the vLLM the package asks for)
+    v = tuple(int(x) for x in versions["vllm"].split(".")[:2])
+    assert tuple(int(x) for x in lo.split(".")) <= v < tuple(int(x) for x in hi.split(".")), (lo, hi, versions["vllm"])
+    freeze = "glyd v0.26.0rc3 [with: ziglang==0.16.0]\n- glyd\nzzz==1.0\nglyd @ file:///w/glyd-0.26.0rc3-py3-none-any.whl\nglyd==0.26.0rc3\nAaa_Bbb==2.0\nopentelemetry-api==1.0.0b3\n"
+    assert ic.parse(freeze) == ["Aaa_Bbb==2.0", "opentelemetry-api==1.0.0b3", "zzz==1.0"], ic.parse(freeze)
+    try:
+        ic.parse("foo==1.0rc1\n")
+        raise AssertionError("a pre-release was taken")
+    except ValueError:
+        pass
+    assert ic.listed(ic.rewrite(text, ["a==1", "b==2"])) == ["a==1", "b==2"]
+    assert ic.rewrite(ic.rewrite(text, ["a==1"]), ic.listed(text)) == text  # (the list round-trips)
 
 
 # --- the review's findings (onboard-review-1.md): each of these failed on the code it was written against -------------------------------------
