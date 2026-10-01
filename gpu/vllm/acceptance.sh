@@ -441,7 +441,7 @@ glyd_foreign() {  # a program of the user's own where uv puts its entry point: i
 glyd_install() {  # the README's install line with this checkout's script, and what it left
   local line=$1 env=$2 rc t0 py pre touched f
   say "-- install: $line   (this checkout's scripts/install.sh instead of getglyd.com's${env:+; $env})"
-  rm -rf "$WORK/home/.local" "$WORK/home/.cache"
+  rm -rf "$WORK/home/.local" "$WORK/home/.cache" "$WORK/home/.config" "$WORK"/home/.bashrc "$WORK"/home/.bash_profile "$WORK"/home/.profile "$WORK"/home/.zshenv "$WORK"/home/.zshrc  # (a clean home: an earlier run's edits of a shell startup file are not this run's)
   t0=$(date +%s)
   run "${env}sh $IN/install.sh" > "$LOGS/install.log" 2>&1; rc=$?
   [ $rc = 0 ] || { fail "install.sh exited $rc (logs/install.log)"; tail -8 "$LOGS/install.log"; return 1; }

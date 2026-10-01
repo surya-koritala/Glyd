@@ -273,7 +273,7 @@ class Chat:
             return ""
         except StreamError as e:  # (what was shown stays on the screen; the question is taken back, as if unasked)
             self.messages.pop()
-            what = f"The server could not finish the answer: {clean(str(e))}." if e.server else f"The server stopped answering in the middle of the answer ({clean(str(e))})."
+            what = f"The server could not finish the answer: {clean(str(e)).rstrip('. ')}." if e.server else f"The server stopped answering in the middle of the answer ({clean(str(e)).rstrip('. ')})."
             self.say("\n" + what + (f" See its log: {self.log}" if self.log else "") + " Ask again.", err=True)
             return ""
         except (OSError, http.client.HTTPException) as e:

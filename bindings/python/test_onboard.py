@@ -1123,7 +1123,7 @@ class FakeHandler(http.server.BaseHTTPRequestHandler):
             pieces = []
         if "ERROREVENT" in last:  # (vLLM 0.30 sends the failure as an event, then [DONE])
             self.wfile.write(event({"choices": [{"index": 0, "delta": {"content": "Half "}, "finish_reason": None}]}))
-            self.wfile.write(event({"error": {"message": "EngineCore died: out of memory", "type": "InternalServerError", "code": 500}}))
+            self.wfile.write(event({"error": {"message": "EngineCore died: out of memory.", "type": "InternalServerError", "code": 500}}))
             self.wfile.write(b"data: [DONE]\n\n")
             return
         if "EOFSTREAM" in last:  # (the connection ends with no finish and no [DONE])
@@ -1210,7 +1210,7 @@ def test_a_stream_that_does_not_end_is_said_so():
                               ("BADJSON", "stopped answering in the middle of the answer"), ("EMPTYANSWER", "The model sent no answer")):
             c, out, err = new_chat(srv, log="/tmp/x.log")
             assert c.once(trigger) == 1, trigger  # (a one-shot answer that did not come: status 1)
-            assert said in err.text(), (trigger, err.text())
+            assert said in err.text() and ".." not in err.text(), (trigger, err.text())  # (a server's message that ends in a full stop is not given a second)
             assert c.messages == [], (trigger, c.messages)  # (no question left unanswered, no empty assistant turn)
             if trigger in ("EOFSTREAM", "ERROREVENT"):
                 assert "Half" in out.text() + err.text()  # (what came stays on the screen)
