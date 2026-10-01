@@ -218,6 +218,27 @@ class Server:
                 return
 
 
+ZIGCC = """#!/bin/sh
+exec {python} -c 'import os, sys
+a = sys.argv[1:]
+d = [x[2:] for x in a if x.startswith("-L")]
+o = [next((os.path.join(p, x[3:]) for p in d if os.path.exists(os.path.join(p, x[3:]))), x) if x.startswith("-l:") else x for x in a]
+os.execv(sys.executable, [sys.executable, "-m", "ziglang", "cc"] + o)' "$@"
+"""
+
+
+def zig_cc():
+    """A C compiler for vLLM's Triton on a machine that has none: a `cc` script in the state directory that runs ziglang's (installed
+    by install.sh where there is no gcc or clang). Triton links with `-l:libcuda.so.1`, which zig's linker does not take, so the script
+    gives that one as the library's path, found in the -L directories."""
+    path = os.path.join(state_dir(), "zigcc")
+    os.makedirs(state_dir(), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(ZIGCC.format(python=shlex.quote(sys.executable)))
+    os.chmod(path, 0o755)
+    return path
+
+
 def launch(m, s, host, port, extra, log, environ=None):
     """vLLM's server, started with these settings: its output appended to `log`, in a session of its own."""
     env = dict(os.environ if environ is None else environ)
@@ -370,7 +391,8 @@ def start(a, extra, mode, ui, environ=None):
             return Server(base)
     except Exception:
         pass
-    settings = lambda g: pf.settings(m, g, mode, a.context, nvcc=pf.have_nvcc(env), cc=pf.have_cc(env), environ=env, given=given)
+    zig = zig_cc() if "CC" not in env and not pf.have_cc(env) and pf.have_zig() else ""
+    settings = lambda g: pf.settings(m, g, mode, a.context, nvcc=pf.have_nvcc(env), environ=env, given=given, cc=zig)
     try:
         s = settings(gpu)
     except pf.Refusal as r:
@@ -384,7 +406,7 @@ def start(a, extra, mode, ui, environ=None):
         if port != want:
             ui.note(f"port {want} is in use; using {port}")
     bf16 = pf.gb(m.bf16)
-    fits_bf16 = m.bf16 + pf.NON_KV + pf.MIN_CONTEXT * m.kv_token + pf.CTX + pf.HEADROOM <= gpu.free
+    fits_bf16 = pf.need(m.bf16, m, gpu) <= gpu.free
     ui.line(f"{m.name}: {pf.gb(s.weights)} on the GPU with Glyd, instead of {bf16}" + (f"; your GPU has {pf.gb(gpu.free)} free." if fits_bf16 else f", which does not fit the {pf.gb(gpu.free)} your GPU has free."))
     download(m, ui)
     if len(gpus) > 1 and "CUDA_VISIBLE_DEVICES" not in env:
@@ -416,7 +438,7 @@ def start(a, extra, mode, ui, environ=None):
         elif attempt == 1 and failure.kind == "free" and "gpu-memory-utilization" not in given:
             free = int(failure.value[0] * 2**30) + int(pf.CTX)
             try:
-                s2 = pf.settings(m, replace(gpu, free=free), mode, a.context, nvcc=pf.have_nvcc(env), cc=pf.have_cc(env), environ=env, given=given)
+                s2 = settings(replace(gpu, free=free))
                 ui.line(f"Only {pf.gb(int(failure.value[0] * 2**30))} of GPU memory was free when the server started: starting again with less ({s2.util * 100:.0f}%, {s2.context:,}-token context).")
             except pf.Refusal:
                 s2 = None
@@ -502,10 +524,11 @@ def doctor_lines(environ=None, run=pf._run):
     lib = pf.gpu_library(built, env)
     rows.append(("ok" if lib else "fail", "Glyd GPU library", os.path.basename(lib) if lib else f"libglyd_gpu_cuda{built[0] if built else 'N'}.so is not in this install: run the installer again"))
     cc = shutil.which(env.get("CC") or "gcc") or shutil.which("clang")
-    if cc and pf.python_headers():
-        rows.append(("ok", "C compiler", f"{cc}, and Python.h (vLLM builds its Triton launchers with them)"))
+    if (cc or pf.have_zig()) and pf.python_headers():
+        rows.append(("ok", "C compiler", f"{cc}, and Python.h (vLLM builds its Triton launchers with them)" if cc else "ziglang (a C compiler from PyPI), and Python.h: vLLM builds its Triton launchers with them"))
     else:
-        rows.append(("fail", "C compiler", ("no C compiler" if not cc else f"{cc}, but no Python.h") + ": vLLM cannot start without them. " + pf.compiler_hint()))
+        rows.append(("fail", "C compiler", ("no C compiler" if not (cc or pf.have_zig()) else f"{cc or 'ziglang'}, but no Python.h") + ": vLLM cannot start without them. " + pf.compiler_hint()
+                     + (". Or run the installer again, which adds a compiler from PyPI where there is none" if not cc else "")))
     nvcc = pf.have_nvcc(env)
     rows.append(("ok", "CUDA compiler", "found" if nvcc else "not found: not needed (glyd run turns FlashInfer's sampler off, which would compile)"))
     users = pf.other_users(run) if gpu.free < 0.8 * gpu.total else []

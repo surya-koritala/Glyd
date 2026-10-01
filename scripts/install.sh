@@ -4,7 +4,8 @@
 # Installs Glyd as an isolated tool (uv tool install) on a Python 3.12 that uv manages, so the system's Python is left alone: no virtual
 # environment to make, no pip refusing to install (PEP 668), no Python version to choose, no C headers to find. On Linux with an NVIDIA
 # GPU it installs the serving stack too (vLLM and PyTorch, several GB), which is what `glyd run MODEL` uses; elsewhere the compression
-# tools alone. It installs uv first where there is none (uv's own installer), never uses sudo, and ends with `glyd doctor`.
+# tools alone (where the machine has no gcc or clang, which vLLM's Triton builds its launchers with, it adds ziglang, a compiler from PyPI,
+# so no sudo is needed). It installs uv first where there is none (uv's own installer), never uses sudo, and ends with `glyd doctor`.
 #
 #   GLYD_VERSION   the release to install (default below; a pre-release is named here, e.g. 0.26.0rc3, and only that one is taken)
 #   GLYD_SPEC      the package to install instead, as uv takes it: a wheel with its extra ("/path/glyd-...whl[vllm]"), for another build
@@ -13,6 +14,7 @@ set -eu
 GLYD_VERSION="${GLYD_VERSION:-0.26.0rc2}"
 PYTHON=3.12
 DRIVER_MIN=580  # the NVIDIA driver vLLM 0.30's PyTorch (2.13, CUDA 13.0) runs on
+ZIGLANG=0.16.0  # the C compiler from PyPI that stands in where the machine has none (the version glyd run was tried with)
 
 say() { printf '==> %s\n' "$*"; }
 warn() { printf 'glyd install: %s\n' "$*" >&2; }
@@ -69,11 +71,17 @@ if [ -z "$uv" ]; then
   [ -n "$uv" ] || die "uv installed, but it is not where its installer says; open a new terminal and run this again."
 fi
 
+with=
 case "$spec" in
-  *vllm*) say "Installing $spec and Python $PYTHON (PyTorch and vLLM: several GB, a few minutes)" ;;
+  *vllm*)
+    say "Installing $spec and Python $PYTHON (PyTorch and vLLM: several GB, a few minutes)"
+    if [ -z "${CC:-}" ] && ! command -v gcc >/dev/null 2>&1 && ! command -v clang >/dev/null 2>&1; then
+      with="--with ziglang==$ZIGLANG"
+      say "No C compiler found, and vLLM needs one: adding ziglang, a compiler from PyPI (no sudo)"
+    fi ;;
   *) say "Installing $spec and Python $PYTHON" ;;
 esac
-"$uv" tool install --force --managed-python --python "$PYTHON" "$spec"
+"$uv" tool install --force --managed-python --python "$PYTHON" $with "$spec"
 
 bin=$("$uv" tool dir --bin)
 "$uv" tool update-shell >/dev/null 2>&1 || true

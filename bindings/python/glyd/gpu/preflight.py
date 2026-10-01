@@ -17,6 +17,9 @@ memory, benchmarks/gpu/l4-local-chat-2026-09-30):
   bits a weight tiered, 12.04 12-bit), the embeddings, LM head and norms as they are, and the plugin's buffer and workspaces.
 - context = the model's own length, or the most the KV cache holds in (util x T - weights - NON_KV), rounded down to a multiple
   of 1024 (at KV_FIT of it: block rounding and the estimate's own error); under MIN_CONTEXT the model does not fit.
+- eager always (`--enforce-eager`): on an L4 with Qwen3-8B one user's tokens a second were within 2% of compiled, with 4 and 8 users
+  within 3%, and the server was up in under a third of the time (47 s against 2 min 45 s); compiled needs 2.15 GiB beyond the weights
+  where eager needs 0.5.
 Under the Business Source License 1.1 (LICENSE-glyd-gpu), as the rest of Glyd's GPU code.
 """
 import glob
@@ -37,13 +40,13 @@ from .vllm_entry import TESTED, tested
 GiB = 2**30
 CTX = 0.55 * GiB  # the CUDA context and driver's share, outside vLLM's budget (EngineCore held 14,958 MiB at a 14.06 GiB budget)
 HEADROOM = 0.4 * GiB  # left free for a desktop (the owner's card ran with 0.23 GiB of it)
-NON_KV = 0.65 * GiB  # vLLM's non-torch memory (0.42 GiB) and peak activation (0.2) beyond the weights, with slack
-EXTRA = 0.07 * GiB  # the plugin's other workspaces on top of its packs and its decode buffer (Qwen3-8B: 11.31 GiB, 11.05 from the bits, 0.19 buffer)
+NON_KV = 0.55 * GiB  # vLLM's non-torch memory and peak activation beyond the weights, eager (Qwen3 0.6B to 8B on an L4: 0.38 to 0.70 GiB, 0.49 for the 8B)
+NON_KV_COMPILED = 2.3 * GiB  # the same compiled (Qwen3-8B: 2.15 GiB, a 1.66 GiB activation peak and CUDA graphs): only for a user's --no-enforce-eager
+EXTRA = 0.15 * GiB  # the plugin's other workspaces on top of its packs and its decode buffer (Qwen3-8B: 11.39 GiB measured, 11.24 from the bits and the buffer)
 UTIL_MAX = 0.92
 MIN_CONTEXT = 4096
 CONTEXT_WANT = 8192  # tokens a chat should have: below it a smaller layout is considered
 KV_FIT = 0.97
-COMPILE_SPARE = 2.5 * GiB  # memory left after the context's KV cache that a compiled `serve` wants (CUDA graphs, the compile's peak)
 BITS = {"mma": 10.80, "mma12": 12.04}
 MIN_CAPABILITY = (8, 0)  # Ampere: the plugin's get_min_capability
 MIN_DRIVER = {(12, 4): "550", (12, 6): "560", (12, 8): "570", (12, 9): "575", (13, 0): "580"}  # the driver that runs a CUDA version (Linux)
@@ -192,6 +195,11 @@ def have_cc(environ=None, which=shutil.which):
     return bool(which(env["CC"]) if env.get("CC") else which("gcc") or which("clang"))
 
 
+def have_zig():
+    """Whether ziglang (a C compiler from PyPI, which the installer adds where a machine has none) is in this Python: nothing is imported."""
+    return importlib.util.find_spec("ziglang") is not None
+
+
 def python_headers():
     """Whether this Python has its C headers (Python.h, which Triton's launcher includes); a uv-managed Python does."""
     return os.path.exists(os.path.join(sysconfig.get_path("include") or "", "Python.h"))
@@ -235,8 +243,9 @@ def setup_checks(need_vllm=True, gpus=None):
                       "RTX 30 series, A10, A100, L4, RTX 40 series, H100 and newer work")
     if need_vllm:
         vllm_ready()
-        if not have_cc():
-            raise Refusal("vLLM needs a C compiler to start (Triton builds its GPU launchers with one), and this machine has none", compiler_hint())
+        if not (have_cc() or have_zig()):
+            raise Refusal("vLLM needs a C compiler to start (Triton builds its GPU launchers with one), and this machine has none",
+                          compiler_hint() + f". Or run the installer again, which adds a compiler from PyPI where there is none: {INSTALLER}")
         if not python_headers():
             raise Refusal("this Python has no C headers (Python.h), which vLLM's Triton launchers need", compiler_hint() + " (or install Glyd with the installer, which uses uv's own Python)")
     built = torch_cuda()
@@ -481,18 +490,25 @@ def number(v):
     return float(m.group(1)) * {"": 1, "k": 1000, "K": 1024, "m": 10**6, "M": 2**20}[m.group(2)] if m else None
 
 
-def footprint(m, gpu, layouts=None):
-    """(weights on the GPU with Glyd, free memory needed to start with a MIN_CONTEXT-token chat) in the layout that takes the least."""
-    layouts = layouts or ["mma", "mma12"]
-    w = min(weights_on_gpu(m, l) for l in layouts)
-    return int(w), int(w + NON_KV + MIN_CONTEXT * m.kv_token / KV_FIT + CTX + HEADROOM + 0.01 * gpu.total)  # (+ what rounding the fraction down to 0.01 can cost)
+def need(weights, m, gpu, context=MIN_CONTEXT, non_kv=NON_KV):
+    """The free memory a start needs: the weights, vLLM's other memory, a `context`-token KV cache, the CUDA context, the desktop's
+    headroom, and what rounding the fraction down to 0.01 can cost."""
+    return int(weights + non_kv + context * m.kv_token / KV_FIT + CTX + HEADROOM + 0.01 * gpu.total)
 
 
-def settings(m, gpu, mode="run", context=None, nvcc=True, cc=True, environ=None, given=None):
+def footprint(m, gpu, layouts=None, context=MIN_CONTEXT, non_kv=NON_KV):
+    """(weights on the GPU with Glyd, free memory needed to start with a `context`-token chat) in the layout that takes the least."""
+    w = min(weights_on_gpu(m, l) for l in layouts or ["mma", "mma12"])
+    return int(w), need(w, m, gpu, context, non_kv)
+
+
+def settings(m, gpu, mode="run", context=None, nvcc=True, environ=None, given=None, cc=""):
     """The settings for this model on this GPU, or a Refusal where it does not fit. `mode` is "run" (one user's chat) or "serve";
-    `context` and `given` (flags_given) are what the user chose, each used as it is. The layout is chosen here and handed to the
-    plugin (GLYD_LAYOUT), so the plugin packs what was counted: the plugin's own choice for the GPU, or the tiered layout where the
-    12-bit one leaves less KV cache than a CONTEXT_WANT-token chat and the tiered one more."""
+    `context` and `given` (flags_given) are what the user chose, each used as it is (a context under MIN_CONTEXT is also what the memory
+    check needs). The server is started eager (`--no-enforce-eager` compiles it, and the KV cache is counted for that). The layout is
+    chosen here and handed to the plugin (GLYD_LAYOUT), so the plugin packs what was counted: the plugin's own choice for the GPU, or the
+    tiered layout where the 12-bit one leaves less KV cache than a CONTEXT_WANT-token chat and the tiered one more. `cc` is a C compiler
+    for Triton (run.py's ziglang wrapper) where the machine has none."""
     env = os.environ if environ is None else environ
     given = given or {}
     s = Settings(given=given)
@@ -502,16 +518,21 @@ def settings(m, gpu, mode="run", context=None, nvcc=True, cc=True, environ=None,
         s.env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"  # second come from PyTorch's: 21.1 against 21.2 on an L4 with Qwen3-8B)
         if not nvcc:
             s.notes.append("PyTorch sampler, as no CUDA compiler is installed")
-    if "PYTORCH_CUDA_ALLOC_CONF" not in env and "PYTORCH_ALLOC_CONF" not in env:
-        s.env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     if "VLLM_NO_USAGE_STATS" not in env and "DO_NOT_TRACK" not in env:
         s.env["VLLM_NO_USAGE_STATS"] = "1"
+    if cc and "CC" not in env:
+        s.env["CC"] = cc
+        s.notes.append("ziglang as the C compiler, as none is installed")
     auto, mine = layout_for(gpu.cc, m.lin, m.other, T, m.moe), (env.get("GLYD_LAYOUT") or "").strip().lower()
     layouts = [mine] if mine in BITS else [auto] + (["mma"] if auto == "mma12" and not m.saved else [])
     weights = {l: int(weights_on_gpu(m, l)) for l in layouts}
-    tokens = lambda l, util: int(max(0.0, (util * T - weights[l] - NON_KV) * KV_FIT) // kv) if kv else 0
+    s.eager = bool(given.get("enforce-eager", True))
+    non_kv = NON_KV if s.eager else NON_KV_COMPILED
+    asked = int(number(given["max-model-len"]) or 0) if "max-model-len" in given else (context or 0)
+    least = min(MIN_CONTEXT, asked) if asked > 0 else MIN_CONTEXT  # (a chat the user wants shorter needs less)
+    tokens = lambda l, util: int(max(0.0, (util * T - weights[l] - non_kv) * KV_FIT) // kv) if kv else 0
     s.layout, s.weights = layouts[0], weights[layouts[0]]
-    s.needs = footprint(m, gpu, layouts)[1]
+    base, s.needs = footprint(m, gpu, layouts, least, non_kv)
     if any((number(given.get(k)) or 1) > 1 for k in ("tensor-parallel-size", "pipeline-parallel-size", "data-parallel-size")):
         s.notes.append("several GPUs: memory settings are yours")
         return s
@@ -519,7 +540,7 @@ def settings(m, gpu, mode="run", context=None, nvcc=True, cc=True, environ=None,
         cap = float(number(given["gpu-memory-utilization"]) or 0)
         s.notes.append("memory use as you set it")
     elif s.needs > gpu.free:
-        raise Refusal(f"{m.name} needs about {gb(s.needs)} of GPU memory with Glyd ({gb(footprint(m, gpu, layouts)[0])} of weights and room for a {MIN_CONTEXT:,}-token chat); your GPU has {gb(gpu.free)} free")
+        raise Refusal(f"{m.name} needs about {gb(s.needs)} of GPU memory with Glyd ({gb(base)} of weights and room for a {least:,}-token chat); your GPU has {gb(gpu.free)} free")
     else:
         cap = min(UTIL_MAX, int((gpu.free - CTX - HEADROOM) / T * 100) / 100)
     want = min(CONTEXT_WANT, m.max_len) if m.max_len else CONTEXT_WANT
@@ -542,11 +563,8 @@ def settings(m, gpu, mode="run", context=None, nvcc=True, cc=True, environ=None,
     else:
         s.notes.append("context: vLLM's choice (the config does not say enough to size it)")
     if mode == "run" and kv and s.context and "gpu-memory-utilization" not in given:  # (one chat: two windows of KV cache, not the whole GPU)
-        s.util = min(s.util, math.ceil((s.weights + NON_KV + 2 * s.context * kv / KV_FIT) / T * 100) / 100)
+        s.util = min(s.util, math.ceil((s.weights + non_kv + 2 * s.context * kv / KV_FIT) / T * 100) / 100)
         s.kv_tokens = tokens(s.layout, s.util)
-    s.eager = not (mode == "serve" and cc and kv and s.util * T - s.weights - NON_KV - s.context * kv >= COMPILE_SPARE)
-    if "enforce-eager" in given:
-        s.eager = bool(given["enforce-eager"])
     if not m.saved and "GLYD_LAYOUT" not in env and "additional-config" not in given:
         s.env["GLYD_LAYOUT"] = s.layout
     return s

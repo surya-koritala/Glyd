@@ -10,13 +10,17 @@ every earlier format.
 
 - A model on an NVIDIA GPU with no flags to find: `curl -LsSf https://getglyd.com/install.sh | sh`, then `glyd run Qwen/Qwen3-8B`. The script
   (`scripts/install.sh`) installs uv where there is none, then Glyd with vLLM and PyTorch as an isolated tool on a Python 3.12 that uv manages
-  (no sudo, no virtual environment, no pip; the release is pinned, so no pre-release of a dependency is taken), and ends with `glyd doctor`.
+  (no sudo, no virtual environment, no pip; the release is pinned, so no pre-release of a dependency is taken), and ends with `glyd doctor`. Where
+  the machine has no gcc or clang, which vLLM's Triton builds its launchers with, it adds ziglang (a C compiler from PyPI, no sudo) and `glyd run`
+  hands vLLM that as `$CC`.
   `glyd run MODEL` checks the GPU, the driver against the CUDA PyTorch was built for (580 or newer for the CUDA 13 build vLLM 0.30 installs), a C
-  compiler and Python.h (vLLM's Triton builds its launchers with them), vLLM's version, the model (not found, gated, not bf16) and whether it fits the
+  compiler and Python.h, vLLM's version, the model (not found, gated, not bf16) and whether it fits the
   memory free now, with the largest model of its family that does where it does not, the disk the download needs and the port; downloads the model with
   one progress bar; chooses `--gpu-memory-utilization` from the card's own total and free memory (the total CUDA reports, not nvidia-smi's), the longest
-  context its KV cache holds (a multiple of 1,024, at most the model's own), eager or compiled, the layout (the tiered one where the 12-bit one leaves
-  less KV cache than an 8,192-token chat), `VLLM_USE_FLASHINFER_SAMPLER=0` where there is no nvcc, expandable segments, and the tool-call and reasoning
+  context its KV cache holds (a multiple of 1,024, at most the model's own), the layout (the tiered one where the 12-bit one leaves
+  less KV cache than an 8,192-token chat), eager mode (on an L4 with Qwen3-8B one user's tokens a second were within 2% of compiled, 8 users' within 3%,
+  and the server was up in 47 seconds against 2 minutes 45; `-- --no-enforce-eager` compiles it), `VLLM_USE_FLASHINFER_SAMPLER=0` (the sampler that
+  needs no nvcc), and the tool-call and reasoning
   parsers by family (Qwen3 hermes and qwen3, Qwen2.5 hermes, Llama 3.x llama3_json, Mistral mistral, Qwen3-Coder, DeepSeek-R1 distills), and prints that
   on one line; starts vLLM with its log in a file; and chats in the terminal (streamed, thinking shown apart; `/bye`, `/clear`, `/think`) and at a
   chat page the same server shows at its address (`--middleware glyd.gpu.page.ChatPage`: one HTML file with no external resource, thinking in a

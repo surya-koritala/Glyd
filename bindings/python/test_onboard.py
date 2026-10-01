@@ -122,6 +122,46 @@ def test_compiler_checks():
         shutil.rmtree(d)
 
 
+def test_ziglang_stands_in_for_a_missing_compiler():
+    """No gcc or clang: setup_checks accepts ziglang (which install.sh adds), and the `cc` script gives Triton's -l:libcuda.so.1 to zig as a path."""
+    saved = pf.package_version, pf.have_cc, pf.have_zig, pf.python_headers, pf.torch_cuda
+    gpu = pf.Gpu(0, "NVIDIA L4", 22 * GiB, 20 * GiB, (8, 9), "595", (13, 2))
+    try:
+        pf.package_version, pf.python_headers, pf.torch_cuda = (lambda n: "0.30.0"), (lambda: True), (lambda: None)
+        pf.have_cc, pf.have_zig = (lambda env=None: False), (lambda: False)
+        r = raises(lambda: pf.setup_checks(True, gpus=[gpu]), "needs a C compiler")
+        assert "build-essential" in r.fix or "package manager" in r.fix or "dnf" in r.fix or "pacman" in r.fix
+        assert "installer again" in r.fix and "PyPI" in r.fix
+        pf.have_zig = lambda: True
+        assert pf.setup_checks(True, gpus=[gpu])[0] is gpu  # (ziglang is there: nothing refused)
+    finally:
+        pf.package_version, pf.have_cc, pf.have_zig, pf.python_headers, pf.torch_cuda = saved
+    s = pf.settings(M8, L4_GPU, "run", environ={}, cc="/state/glyd/zigcc")
+    assert s.env["CC"] == "/state/glyd/zigcc" and "ziglang as the C compiler" in pf.summary(s, L4_GPU)
+    assert "CC" not in pf.settings(M8, L4_GPU, "run", environ={}).env and "CC" not in pf.settings(M8, L4_GPU, "run", environ={"CC": "gcc-13"}, cc="/x").env  # (the user's own $CC wins)
+    d, fake = tempfile.mkdtemp(), tempfile.mkdtemp()
+    try:  # (a ziglang that prints what it was given, and the script run against it)
+        os.makedirs(os.path.join(fake, "ziglang"))
+        open(os.path.join(fake, "ziglang", "__init__.py"), "w").close()
+        open(os.path.join(fake, "ziglang", "__main__.py"), "w").write("import json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+        libs = os.path.join(d, "lib")
+        os.makedirs(libs)
+        open(os.path.join(libs, "libcuda.so.1"), "w").close()
+        os.environ["XDG_STATE_HOME"] = d
+        try:
+            path = run.zig_cc()
+        finally:
+            del os.environ["XDG_STATE_HOME"]
+        assert path == os.path.join(d, "glyd", "zigcc") and os.access(path, os.X_OK)
+        out = subprocess.run([path, "k.c", "-O3", "-shared", "-L/nowhere", f"-L{libs}", "-l:libcuda.so.1", "-l:libmissing.so", "-lm", "-o", "k.so"],
+                             capture_output=True, text=True, env={"PYTHONPATH": fake, "PATH": os.environ.get("PATH", "")})
+        assert out.returncode == 0, out.stderr
+        assert json.loads(out.stdout) == ["cc", "k.c", "-O3", "-shared", "-L/nowhere", f"-L{libs}", os.path.join(libs, "libcuda.so.1"), "-l:libmissing.so", "-lm", "-o", "k.so"], out.stdout
+    finally:
+        shutil.rmtree(d)
+        shutil.rmtree(fake)
+
+
 # --- the settings -------------------------------------------------------------------------------------------------------------
 
 def model(name, bf16):
@@ -134,8 +174,8 @@ L4_GPU = pf.probe_gpus(smi(L4))[0]
 
 
 def test_weights_match_what_vllm_measured():
-    # Qwen3-8B, tiered, expandable segments, on the L4 (benchmarks/gpu/l4-local-chat-2026-09-30): "Model loading took 11.31 GiB"
-    assert abs(pf.weights_on_gpu(M8, "mma") / GiB - 11.31) < 0.01
+    # Qwen3-8B, tiered, on the L4 with PyTorch's default allocator and the plugin of 0.26.0 (the load's allocator warnings gone): "Model loading took 11.39 GiB"
+    assert abs(pf.weights_on_gpu(M8, "mma") / GiB - 11.39) < 0.01
     assert M8.kv_token == 147456 and M8.max_len == 40960 and not M8.moe  # (36 layers x 8 heads x 128 x 2 x 2 bytes)
     assert pf.layout_for((8, 9), M8.lin, M8.other, L4_GPU.total) == "mma" and pf.layout_for((8, 0), M8.lin, M8.other, 40 * 10**9) == "mma12"
     assert pf.layout_for((8, 6), M8.lin, M8.other, 23 * GiB, moe=True) == "mma" and pf.layout_for((8, 6), M8.lin, M8.other, 23 * GiB) == "mma12"
@@ -152,10 +192,10 @@ def test_settings_owner_card():
     assert budget + pf.CTX + pf.HEADROOM <= OWNER_GPU.free  # (the desktop's room is kept)
     assert s.kv_tokens * M8.kv_token + s.weights + pf.NON_KV <= budget  # (and the context's KV cache fits the budget)
     assert s.eager and (s.tool_parser, s.reasoning_parser) == ("hermes", "qwen3") and s.layout == "mma"
-    assert s.env["VLLM_USE_FLASHINFER_SAMPLER"] == "0" and s.env["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True" and s.env["GLYD_LAYOUT"] == "mma"
+    assert s.env["VLLM_USE_FLASHINFER_SAMPLER"] == "0" and s.env["GLYD_LAYOUT"] == "mma" and not {"PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_ALLOC_CONF"} & set(s.env)  # (the default allocator: expandable segments made the load's warnings worse)
     assert s.env["VLLM_NO_USAGE_STATS"] == "1"
     t = pf.settings(M8, OWNER_GPU, "run", environ={"VLLM_USE_FLASHINFER_SAMPLER": "1", "PYTORCH_ALLOC_CONF": "x", "DO_NOT_TRACK": "1"}, nvcc=False)
-    assert not {"VLLM_USE_FLASHINFER_SAMPLER", "PYTORCH_CUDA_ALLOC_CONF", "VLLM_NO_USAGE_STATS"} & set(t.env)  # (the user's own are left alone)
+    assert not {"VLLM_USE_FLASHINFER_SAMPLER", "VLLM_NO_USAGE_STATS"} & set(t.env)  # (the user's own are left alone)
     withnvcc = pf.settings(M8, OWNER_GPU, "run", environ=env, nvcc=True)
     assert withnvcc.env["VLLM_USE_FLASHINFER_SAMPLER"] == "0" and "PyTorch sampler" not in pf.summary(withnvcc, OWNER_GPU)  # (off with nvcc too: no compile at the first request)
     line = pf.summary(s, OWNER_GPU)
@@ -170,15 +210,30 @@ def test_settings_owner_card():
 def test_settings_l4_and_modes():
     s = pf.settings(M8, L4_GPU, "run", environ={})
     assert s.context == 40960 and s.util <= 0.92 and s.eager  # (the model's own length: nothing to squeeze on 24 GB)
-    assert pf.settings(M8, L4_GPU, "serve", environ={}, cc=True).eager is False  # (several users: CUDA graphs, where memory is spare)
-    assert pf.settings(M8, L4_GPU, "serve", environ={}, cc=False).eager is True
-    assert pf.settings(M8, OWNER_GPU, "serve", environ={}, cc=True).eager is True  # (16 GB: no spare)
+    sv = pf.settings(M8, L4_GPU, "serve", environ={})
+    assert sv.eager and sv.util == 0.92 and "--enforce-eager" in pf.vllm_args(M8, sv, "127.0.0.1", 8000)  # (eager for serve too: 2-3% fewer tokens a second, up in a third of the time)
+    comp = pf.settings(M8, L4_GPU, "serve", environ={}, given=pf.flags_given(["--no-enforce-eager"]))  # (compiled where the user asks: it needs 2.15 GiB more than eager)
+    assert not comp.eager and comp.kv_tokens < sv.kv_tokens - 8000 and "compiled mode" in pf.summary(comp, L4_GPU)
+    assert "--enforce-eager" not in pf.vllm_args(M8, comp, "127.0.0.1", 8000, ["--no-enforce-eager"])
     big = pf.Gpu(0, "A100", 40 * 10**9, 39 * 10**9, (8, 0), "580", (13, 0))
     r = pf.settings(M8, big, "run", environ={})
     assert r.layout == "mma12" and r.util < 0.8  # (one chat: two windows of KV cache, not the whole GPU)
     assert pf.settings(M8, big, "serve", environ={}).util >= 0.9
     t = pf.settings(M8, L4_GPU, "run", environ={}, given=pf.flags_given(["--tensor-parallel-size", "2"]))
     assert t.util == 0 and t.context == 0 and "several GPUs" in pf.summary(t, L4_GPU) and "context chosen by vLLM" in pf.summary(t, L4_GPU)  # (memory settings are the user's)
+
+
+def test_a_shorter_context_needs_less_memory():
+    """A context the user asks for (--context, or --max-model-len after --) under MIN_CONTEXT is the chat the memory check counts."""
+    gpu = pf.Gpu(0, "x", 8 * 10**9, 0, (8, 6), "580", (13, 0))
+    gpu.free = pf.footprint(M4, gpu)[1] - 2 * 10**8  # (a card 0.2 GB short of a 4,096-token chat)
+    raises(lambda: pf.settings(M4, gpu, "run", environ={}), "room for a 4,096-token chat")
+    s = pf.settings(M4, gpu, "run", context=1024, environ={})
+    assert s.context == 1024 and s.needs <= gpu.free
+    g = pf.settings(M4, gpu, "run", environ={}, given=pf.flags_given(["--max-model-len", "2K"]))  # (and so is a flag after --)
+    assert g.context == 2048 and g.needs <= gpu.free
+    raises(lambda: pf.settings(M4, gpu, "run", context=2 * 10**5, environ={}), "needs about")  # (a longer one is the 4,096-token check: refused)
+    raises(lambda: pf.settings(M4, gpu, "run", environ={}, given=pf.flags_given(["--max-model-len", "auto"])), "needs about")
 
 
 def test_settings_small_card_and_suggestion():
@@ -257,8 +312,9 @@ def test_flags_and_vllm_args():
     assert "--enforce-eager" in args and args[args.index("--tool-call-parser") + 1] == "hermes" and "--enable-auto-tool-choice" in args
     assert args[args.index("--reasoning-parser") + 1] == "qwen3" and args[args.index("--host") + 1] == "127.0.0.1"
     given = pf.flags_given(["--max-model-len", "4096", "--no-enforce-eager", "--tool-call-parser", "x", "--host", "0.0.0.0"])  # (the user's flags win)
-    s2 = pf.settings(M8, OWNER_GPU, "run", environ={}, given=given)
+    s2 = pf.settings(M8, L4_GPU, "run", environ={}, given=given)  # (compiled needs 2.15 GiB more than eager: not on the 16 GB card)
     a2 = pf.vllm_args(M8, s2, "0.0.0.0", 8000, ["--max-model-len", "4096", "--no-enforce-eager", "--tool-call-parser", "x", "--host", "0.0.0.0"])
+    raises(lambda: pf.settings(M8, OWNER_GPU, "run", environ={}, given=given), "needs about")
     assert a2.count("--max-model-len") == 1 and "--enforce-eager" not in a2 and a2.count("--tool-call-parser") == 1 and a2.count("--host") == 1 and "--enable-auto-tool-choice" not in a2
     plain = pf.model_of("some/Unknown-1B", {"model_type": "gpt2", **QWEN["Qwen/Qwen3-0.6B"], "model_type2": 1})
     plain.config["model_type"] = "gpt2"
@@ -983,10 +1039,15 @@ def test_page_is_self_contained():
 INSTALL = os.path.join(HERE, "..", "..", "scripts", "install.sh")
 
 
-def run_install(nvidia=None, uv=True, other_glyd=False, env=None, os_name=None, arch=None):
-    """scripts/install.sh with a fake uv (and curl, nvidia-smi, uname): the commands it ran, its output, its exit status."""
-    home, bindir = tempfile.mkdtemp(), tempfile.mkdtemp()
+def run_install(nvidia=None, uv=True, other_glyd=False, env=None, os_name=None, arch=None, compiler="gcc"):
+    """scripts/install.sh with a fake uv (and curl, nvidia-smi, uname, and a `compiler` such as gcc or clang, or none): the commands it
+    ran, its output, its exit status. PATH holds only those and the few programs the script uses, so this machine's own compilers and
+    nvidia-smi do not answer."""
+    home, bindir, tools = tempfile.mkdtemp(), tempfile.mkdtemp(), tempfile.mkdtemp()
     try:
+        for t in ("head", "tr", "mkdir", "cp", "chmod", "cat", "sed", "sh", "dirname", "uname"):
+            if shutil.which(t):
+                os.symlink(shutil.which(t), os.path.join(tools, t))
         def script(name, body, d=bindir):
             with open(os.path.join(d, name), "w") as f:
                 f.write("#!/bin/sh\n" + body)
@@ -1010,10 +1071,12 @@ esac
             script("nvidia-smi", "exit 9\n")  # (this machine's own, if it has one, must not answer)
         if os_name or arch:
             script("uname", f'case "$1" in -s) echo "{os_name or "Linux"}";; -m) echo "{arch or "x86_64"}";; esac\n')
+        if compiler:
+            script(compiler, "exit 0\n")
         if other_glyd:
             other = tempfile.mkdtemp()
             script("glyd", "echo compression\n", other)
-        path = (other + os.pathsep if other_glyd else "") + bindir + os.pathsep + "/usr/bin" + os.pathsep + "/bin"
+        path = (other + os.pathsep if other_glyd else "") + bindir + os.pathsep + tools
         e = {"HOME": home, "PATH": path, **(env or {})}
         r = subprocess.run(["/bin/sh", INSTALL], env=e, capture_output=True, text=True)
         calls = open(log).read().splitlines() if os.path.exists(log) else []
@@ -1021,6 +1084,7 @@ esac
     finally:
         shutil.rmtree(home)
         shutil.rmtree(bindir)
+        shutil.rmtree(tools)
 
 
 def test_install_sh():
@@ -1051,6 +1115,15 @@ def test_install_sh():
     assert calls[0].startswith("curl -LsSf https://astral.sh/uv/install.sh") and any(c.startswith("uv tool install") for c in calls) and rc == 0, (calls, err)
     rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, other_glyd=True)  # (the compression program first on PATH: said so)
     assert "another glyd" in err and "no 'run'" in err
+    zig = "--managed-python --python 3.12 --with ziglang==0.16.0 "  # (no gcc or clang: a compiler from PyPI, no sudo; vLLM's Triton builds its launchers with one)
+    rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, compiler=None)
+    assert calls[0] == f"uv tool install --force {zig}glyd[vllm]=={V}" and "No C compiler found" in out and rc == 0, (calls, out)
+    assert "ZIGLANG=0.16.0" in open(INSTALL).read()
+    for compiler, extra in (("gcc", None), ("clang", None), (None, {"CC": "/opt/cc/bin/cc"})):  # (a compiler there, or $CC set: none is added)
+        rc, out, err, calls = run_install(nvidia="595.91.07", os_name=os_name_arg, compiler=compiler, env=extra)
+        assert "ziglang" not in " ".join(calls) and "No C compiler" not in out, (compiler, calls)
+    rc, out, err, calls = run_install(nvidia=None, os_name=os_name_arg, compiler=None)  # (no vLLM to install: no compiler needed)
+    assert "ziglang" not in " ".join(calls)
     rc, out, err, calls = run_install(nvidia="595.91.07", os_name="Darwin", arch="arm64")
     assert calls[0].endswith(f"glyd=={V}") and "Linux and an NVIDIA GPU" in err
     rc, out, err, calls = run_install(os_name="FreeBSD")
