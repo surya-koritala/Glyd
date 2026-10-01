@@ -15,7 +15,7 @@ import os
 import re
 import sys
 
-INSTALL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "install.sh")
+INSTALL = os.environ.get("INSTALL_SH") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "install.sh")  # (INSTALL_SH: another copy of the script, the one a run used)
 LINE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*==[0-9][A-Za-z0-9.+!_-]*$")
 PRE = re.compile(r"==[0-9][0-9.]*(a|b|rc|dev)[0-9]+$")
 BLOCK = re.compile(r"(cat <<'CONSTRAINTS'\n)(.*?)(CONSTRAINTS\n)", re.S)

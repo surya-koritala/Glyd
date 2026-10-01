@@ -69,6 +69,12 @@
 #                    (the way to run only what comes after the install again)
 #   --up-wait SECONDS  how long the glyd flow waits for a server it started with a key, or to kill (default 1800, glyd's own limit):
 #                    shorter where the code under test is expected not to get ready
+#   --install-url URL  the glyd flow's install.sh from this URL (a release's raw GitHub file) in place of this checkout's, which
+#                    is what a release's acceptance runs; with neither --version nor --wheel it installs what that script pins,
+#                    from PyPI
+#   --served         the glyd flow installs by the README's line as it is, `curl -LsSf https://getglyd.com/install.sh | sh`,
+#                    from the network: the script the site serves. A copy of it is kept for the cases that run the script
+#                    again, and with --install-url it is compared with that file (no --version or --wheel: the line is run as it is)
 #
 # Needs: Linux, an NVIDIA GPU and its driver, Docker with the NVIDIA container toolkit (or --host, and Docker for the
 # Docker route), and the network. Ports 8000 and 3000 must be free. It runs the README's blocks marked
@@ -77,7 +83,7 @@
 set -u
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 README=$HERE/README.md
-FLOW=glyd VERSION= WHEEL= BUDGET= CARD= GEFORCE= COMMAND= WEBUI=both HOLD= IMAGE= WORK=$HOME/glyd-acceptance HOST= MODEL=Qwen/Qwen3-8B COMPILER=none EXPECT=fit PIPREF= MODEL_SET= RUSTGLYD= REUSE= UPWAIT=1800
+FLOW=glyd VERSION= WHEEL= BUDGET= CARD= GEFORCE= COMMAND= WEBUI=both HOLD= IMAGE= WORK=$HOME/glyd-acceptance HOST= MODEL=Qwen/Qwen3-8B COMPILER=none EXPECT=fit PIPREF= MODEL_SET= RUSTGLYD= REUSE= UPWAIT=1800 INSTALL_URL= SERVED=
 while [ $# -gt 0 ]; do
   case $1 in
     --flow) FLOW=$2; shift;;
@@ -89,6 +95,7 @@ while [ $# -gt 0 ]; do
     --pip-refusal) PIPREF=1;;
     --rust-glyd) RUSTGLYD=$(cd "$(dirname "$2")" && pwd)/$(basename "$2"); shift;; --reuse) REUSE=1;;
     --up-wait) UPWAIT=$2; shift;;
+    --install-url) INSTALL_URL=$2; shift;; --served) SERVED=1;;
     -h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d;s/^# \{0,1\}//'; exit 0;;
     *) echo "unknown option $1 (--help)"; exit 2;;
   esac
@@ -96,6 +103,7 @@ while [ $# -gt 0 ]; do
 done
 case $FLOW in glyd|vllm|cli) ;; *) echo "unknown flow $FLOW (glyd, vllm, cli)"; exit 2;; esac
 [ -z "$RUSTGLYD" ] || [ -x "$RUSTGLYD" ] || { echo "--rust-glyd: $RUSTGLYD is not an executable"; exit 2; }
+[ -z "$SERVED" ] || [ -z "$VERSION$WHEEL" ] || { echo "--served runs the README's install line as it is: no --version or --wheel"; exit 2; }
 [ $EXPECT = fit ] || [ -n "$MODEL_SET" ] || MODEL=Qwen/Qwen3-4B  # (the 8 GB card: the model that does not quite fit)
 case $COMPILER in none|gcc) ;; *) echo "unknown compiler $COMPILER (none, gcc)"; exit 2;; esac
 [ -z "$HOST" ] || [ "$FLOW" = vllm ] || { echo "--host is for the vllm flow: the glyd and cli flows install into a home of their own, in a container"; exit 2; }
@@ -113,6 +121,7 @@ say() { printf '%s\n' "$*" | tee -a "$WORK/summary.txt"; }
 fail() { FAILS+=("$*"); say "FAIL $*"; }
 ok() { say "ok   $*"; }
 count() { grep -c "$1" "$2" 2> /dev/null || true; }
+sha256() { { sha256sum "$1" 2> /dev/null || shasum -a 256 "$1"; } | cut -d' ' -f1; }
 block() {  # the fenced block after the README's marker "<!-- acceptance: $1 -->"
   awk -v n="$1" '$0 == "<!-- acceptance: " n " -->" {f = 1; next} f == 1 && /^```/ {f = 2; next} f == 2 && /^```/ {exit} f == 2 {print}' "$README"
 }
@@ -375,7 +384,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-say "== $(date -u +%FT%TZ): $FLOW flow, glyd[vllm] ${VERSION:+==$VERSION}${WHEEL:+wheel $WHEEL}, ${IMAGE:-the host}, GPU $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2> /dev/null | head -1), budget ${BUDGET:-all} MiB free, card ${CARD:-as is} MiB"
+PKG="glyd[vllm] as install.sh pins it, from PyPI"; [ -z "$VERSION" ] || PKG="glyd[vllm]==$VERSION from PyPI"; [ -z "$WHEEL" ] || PKG="glyd[vllm] wheel $WHEEL"
+say "== $(date -u +%FT%TZ): $FLOW flow, $PKG, ${IMAGE:-the host}, GPU $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2> /dev/null | head -1), budget ${BUDGET:-all} MiB free, card ${CARD:-as is} MiB"
 
 # --- 1. no nvcc
 if run 'command -v nvcc > /dev/null || test -e /usr/local/cuda || test -n "${CUDA_HOME:-}${CUDA_PATH:-}"'; then
@@ -461,10 +471,11 @@ glyd_foreign() {  # a program of the user's own where uv puts its entry point: i
 
 glyd_install() {  # the README's install line with this checkout's script, and what it left
   local line=$1 env=$2 rc t0 py pre touched f
-  say "-- install: $line   (this checkout's scripts/install.sh instead of getglyd.com's${env:+; $env})"
+  if [ -n "$SERVED" ]; then say "-- install: $line   (as the README gives it: the script getglyd.com serves, from the network)"
+  else say "-- install: $line   ($INSTALL_NOTE instead of getglyd.com's${env:+; $env})"; fi
   rm -rf "$WORK/home/.local" "$WORK/home/.cache" "$WORK/home/.config" "$WORK"/home/.bashrc "$WORK"/home/.bash_profile "$WORK"/home/.profile "$WORK"/home/.zshenv "$WORK"/home/.zshrc  # (a clean home: an earlier run's edits of a shell startup file are not this run's)
   t0=$(date +%s)
-  run "${env}sh $IN/install.sh" > "$LOGS/install.log" 2>&1; rc=$?
+  if [ -n "$SERVED" ]; then run "$line" > "$LOGS/install.log" 2>&1; rc=$?; else run "${env}sh $IN/install.sh" > "$LOGS/install.log" 2>&1; rc=$?; fi
   [ $rc = 0 ] || { fail "install.sh exited $rc (logs/install.log)"; tail -8 "$LOGS/install.log"; return 1; }
   ok "install.sh took $(( $(date +%s) - t0 )) s and exited 0; its last lines: $(tail -n 3 "$LOGS/install.log" | tr '\n' '|' | cut -c1-200)"
   grep -q 'glyd doctor' "$LOGS/install.log" && grep -q 'Ready: glyd run' "$LOGS/install.log" && grep -q 'Next: glyd run' "$LOGS/install.log" || fail "install.sh did not end with glyd doctor saying Ready: glyd run ... and the next command (logs/install.log)"
@@ -484,7 +495,7 @@ glyd_install() {  # the README's install line with this checkout's script, and w
   pre=$(grep -E '^[A-Za-z0-9_.-]+==[0-9][0-9.]*(a|b|rc|dev)[0-9]+' "$LOGS/freeze.txt" | grep -v '^glyd==' | grep -vE '^opentelemetry-[a-z-]+==[0-9.]+b[0-9]+$' | tr '\n' ' ')
   [ -z "$pre" ] && ok "no pre-release among the dependencies (install.sh names no --prerelease; opentelemetry's betas are all there is of those)" || fail "pre-releases among the dependencies: $pre"
   # the packages are the versions install.sh lists (the last acceptance run's): none other, and none of another version
-  python3 "$HERE/../../scripts/install_constraints.py" --list | sort > "$LOGS/constraints.list"
+  INSTALL_SH="$WORK/install.sh" python3 "$HERE/../../scripts/install_constraints.py" --list | sort > "$LOGS/constraints.list"  # (the list in the script that was run)
   grep -E '^[A-Za-z0-9][A-Za-z0-9._-]*==' "$LOGS/freeze.txt" | grep -v '^glyd==' | sort > "$LOGS/freeze.pins"
   if [ -z "$(comm -23 "$LOGS/freeze.pins" "$LOGS/constraints.list")" ]; then
     ok "every one of the $(wc -l < "$LOGS/freeze.pins" | tr -d ' ') packages installed is at the version install.sh's list gives ($(wc -l < "$LOGS/constraints.list" | tr -d ' ') listed; ziglang is only there where there is no compiler)"
@@ -623,7 +634,20 @@ glyd_flow() {
   # 2. the README's install line, with this checkout's install.sh where the line fetches getglyd.com's
   line=$(block install)
   [ "$line" = 'curl -LsSf https://getglyd.com/install.sh | sh' ] || { fail "the README's <!-- acceptance: install --> block is not the one line this script replaces: $line"; return 1; }
-  cp "$HERE/../../scripts/install.sh" "$WORK/install.sh" || { fail "no scripts/install.sh beside gpu/vllm"; return 1; }
+  if [ -n "$SERVED" ]; then
+    curl -fsSL https://getglyd.com/install.sh -o "$WORK/install.sh" || { fail "https://getglyd.com/install.sh is not served"; return 1; }
+    INSTALL_NOTE="the script getglyd.com serves"
+  elif [ -n "$INSTALL_URL" ]; then
+    curl -fsSL "$INSTALL_URL" -o "$WORK/install.sh" || { fail "could not fetch $INSTALL_URL"; return 1; }
+    INSTALL_NOTE="$INSTALL_URL"
+  else
+    cp "$HERE/../../scripts/install.sh" "$WORK/install.sh" || { fail "no scripts/install.sh beside gpu/vllm"; return 1; }
+    INSTALL_NOTE="this checkout's scripts/install.sh"
+  fi
+  say "-- install.sh: $INSTALL_NOTE, sha256 $(sha256 "$WORK/install.sh")"
+  if [ -n "$SERVED" ] && [ -n "$INSTALL_URL" ]; then  # (the site serves the release's own file)
+    [ "$(curl -fsSL "$INSTALL_URL" | sha256 /dev/stdin)" = "$(sha256 "$WORK/install.sh")" ] && ok "the script getglyd.com serves is $INSTALL_URL, byte for byte" || fail "the script getglyd.com serves is not $INSTALL_URL"
+  fi
   env=
   [ -n "$VERSION" ] && env="GLYD_VERSION=$VERSION "
   [ -n "$WHEEL" ] && { cp "$WHEEL" "$WORK/wheel/" && env="GLYD_SPEC='$IN/wheel/$(basename "$WHEEL")[vllm]' "; }
