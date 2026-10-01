@@ -78,8 +78,7 @@ instead of a second server.
 | telemetry, the address | `VLLM_NO_USAGE_STATS=1`; the server listens on 127.0.0.1 | `glyd serve --host 0.0.0.0` opens it to the network, with no key unless `-- --api-key SECRET` is added |
 
 The one line printed before loading is these, for example `Settings: 10,240-token context (the most that fits), eager
-mode, 61% of GPU memory (14.4 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler, as no CUDA compiler
-is installed.` The model's weights with Glyd are counted from its config and file sizes before anything downloads
+mode, 61% of GPU memory (14.4 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit).` The model's weights with Glyd are counted from its config and file sizes before anything downloads
 (Qwen3-8B: 12.2 GB, bf16's 16.4).
 
 ### `glyd serve`, `glyd doctor` and Open WebUI

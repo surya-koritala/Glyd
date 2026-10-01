@@ -517,12 +517,12 @@ def settings(m, gpu, mode="run", context=None, nvcc=True, environ=None, given=No
     if "VLLM_USE_FLASHINFER_SAMPLER" not in env:  # (FlashInfer's sampler compiles with nvcc at the first request that samples, and the same tokens a
         s.env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"  # second come from PyTorch's: 21.1 against 21.2 on an L4 with Qwen3-8B)
         if not nvcc:
-            s.notes.append("PyTorch sampler, as no CUDA compiler is installed")
+            s.notes.append("PyTorch sampler (no CUDA toolkit)")
     if "VLLM_NO_USAGE_STATS" not in env and "DO_NOT_TRACK" not in env:
         s.env["VLLM_NO_USAGE_STATS"] = "1"
     if cc and "CC" not in env:
         s.env["CC"] = cc
-        s.notes.append("ziglang as the C compiler, as none is installed")
+        s.notes.append("ziglang as the C compiler (no gcc)")
     auto, mine = layout_for(gpu.cc, m.lin, m.other, T, m.moe), (env.get("GLYD_LAYOUT") or "").strip().lower()
     layouts = [mine] if mine in BITS else [auto] + (["mma"] if auto == "mma12" and not m.saved else [])
     weights = {l: int(weights_on_gpu(m, l)) for l in layouts}

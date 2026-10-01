@@ -137,7 +137,7 @@ def test_ziglang_stands_in_for_a_missing_compiler():
     finally:
         pf.package_version, pf.have_cc, pf.have_zig, pf.python_headers, pf.torch_cuda = saved
     s = pf.settings(M8, L4_GPU, "run", environ={}, cc="/state/glyd/zigcc")
-    assert s.env["CC"] == "/state/glyd/zigcc" and "ziglang as the C compiler" in pf.summary(s, L4_GPU)
+    assert s.env["CC"] == "/state/glyd/zigcc" and "ziglang as the C compiler (no gcc)" in pf.summary(s, L4_GPU)
     assert "CC" not in pf.settings(M8, L4_GPU, "run", environ={}).env and "CC" not in pf.settings(M8, L4_GPU, "run", environ={"CC": "gcc-13"}, cc="/x").env  # (the user's own $CC wins)
     d, fake = tempfile.mkdtemp(), tempfile.mkdtemp()
     try:  # (a ziglang that prints what it was given, and the script run against it)
