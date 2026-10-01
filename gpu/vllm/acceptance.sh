@@ -276,9 +276,10 @@ if [ -z "$HOST" ]; then
     IMAGE=glyd-accept:ubuntu26.04-$TAG
     printf 'FROM ubuntu:26.04\nRUN apt-get update -qq && apt-get install -y -qq --no-install-recommends %s && rm -rf /var/lib/apt/lists/*\n' "$PKGS" | docker build -q -t $IMAGE - > /dev/null || exit 2
   fi
-  E=(-e HOME=$IN/home -e UV_CACHE_DIR=$IN/uv-cache -e HF_HOME=$INHF -e UV_LINK_MODE=copy)
+  E=(-e HOME=$IN/home -e UV_CACHE_DIR=$IN/uv-cache -e HF_HOME=$INHF)
   MOUNTS=()
-  if [ "$FLOW" = vllm ]; then MOUNTS=(-v "$UV:/usr/local/bin/uv:ro" -v "$UVX:/usr/local/bin/uvx:ro"); else E+=(-e PATH=$IN/home/.local/bin:/usr/local/bin:/usr/bin:/bin); fi
+  # (the glyd flow keeps uv's own default, hardlinks from its cache, as on a user's disk: the cache and the home are one mount here; the vllm flow copies)
+  if [ "$FLOW" = vllm ]; then MOUNTS=(-v "$UV:/usr/local/bin/uv:ro" -v "$UVX:/usr/local/bin/uvx:ro"); E+=(-e UV_LINK_MODE=copy); else E+=(-e PATH=$IN/home/.local/bin:/usr/local/bin:/usr/bin:/bin); fi
   docker run -d --rm --name $NAME --gpus all --network host --ipc host --user "$(id -u):$(id -g)" -e NVIDIA_DRIVER_CAPABILITIES=compute,utility "${E[@]}" \
     -v "$WORK:$IN" -v "$HF:$INHF" ${MOUNTS[@]+"${MOUNTS[@]}"} $IMAGE sleep infinity > /dev/null || exit 2
   run() { docker exec -i -w $IN/home "${E[@]}" $NAME bash -c "$1"; }
@@ -309,12 +310,15 @@ ok "no nvcc: not on PATH, no /usr/local/cuda, no CUDA_HOME"
 webui_route() {  # webui_route ROUTE PYTHON MODEL [KEY]
   local route=$1 py=$2 model=$3 key=${4:-none}
   say "-- Open WebUI, $route: $(block webui-$route | tr '\n' ' ' | tr -s ' ' | cut -c1-200)"
+  local before; before=$(du -sm "$WORK/uv-cache" 2> /dev/null | cut -f1)
   block webui-$route | sed "s|-v open-webui:|-v $VOLUME:|; s|YOUR_KEY|$key|g" > "$WORK/webui-$route.sh"
   case $route in
     uvx) bg "setsid bash -c 'echo \$\$ > $IN/logs/webui.pid; exec bash $IN/webui-uvx.sh' > $IN/logs/webui-uvx.log 2>&1";;
     *) OWUI=1; bash "$WORK/webui-$route.sh" > "$LOGS/webui-$route.log" 2>&1 || { fail "the README's $route command failed (logs/webui-$route.log)"; return; };;
   esac
   run "$py $IN/check.py webui http://127.0.0.1:3000 '$model'" > "$LOGS/webui-$route.check.log" 2>&1 || fail "Open WebUI, $route (logs/webui-$route.check.log)"
+  if [ $route = uvx ]; then say "     (the uvx route brought $(( ($(du -sm "$WORK/uv-cache" 2> /dev/null | cut -f1) - ${before:-0}) / 1024 )) GB into uv's cache: Open WebUI and its own PyTorch)"
+  else say "     (the image: $(docker image inspect --format '{{.Size}}' ghcr.io/open-webui/open-webui:v0.11.4 2> /dev/null | awk '{printf "%.1f GB", $1 / 1e9}'))"; fi
   tee -a "$WORK/summary.txt" < "$LOGS/webui-$route.check.log"
   if [ $route = uvx ]; then run "kill -TERM -- -\$(cat $IN/logs/webui.pid)" > /dev/null 2>&1; else docker rm -f open-webui > /dev/null 2>&1; docker volume rm "$VOLUME" > /dev/null 2>&1; OWUI=; fi
   for _ in $(seq 1 30); do ss -ltn 2> /dev/null | grep -q ':3000 ' || break; sleep 1; done
