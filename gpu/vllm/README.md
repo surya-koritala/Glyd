@@ -114,24 +114,25 @@ card; vLLM 0.30.0, Open WebUI 0.11.4. 0.26.0rc2's load was also run on an RTX 40
 fixes of this section were not): the stand-in's numbers for 0.26.0rc2 match it, 11.83 GiB of weights and 1.35 GiB of KV
 cache against 1.34 GiB there.
 
-- **One user:** 21.0-21.3 tokens/s (five answers of 256 tokens each, greedy 21.23, top-p 21.07), the first token 53 ms
-  after the request; 162 tokens/s in all for 8 users at once, greedy.
+- **One user:** 21.25 tokens/s greedy and 21.00 with top-p (the median of five answers of 256 tokens each), the first
+  token 53 ms after the request; 161.4 and 159.5 tokens/s in all for 8 users at once.
 - **KV cache:** 1.83 GiB, 13,280 tokens, at the 13.71 GiB budget, with the weights at 11.39 GiB. 0.26.0rc2's weights took
   11.83 GiB and its KV cache 1.35 GiB (9,856 tokens) in the same run, 1.34 GiB (9,744 tokens) on the RTX 4080 SUPER.
-- **bf16's weights leave no room:** its server did not start with the same flags (without `--quantization glyd`). It ran
-  out of memory loading the weights, 15.26 GiB into about 15.3 GiB free.
+- **bf16's weights leave no room:** its server did not start with the same flags (without `--quantization glyd`; the
+  earlier record below). It ran out of memory loading the weights, 15.26 GiB into about 15.3 GiB free.
 - **Loading** took 15 s for the weights (24 s with 0.26.0rc2) and 39-46 s to a running server. While it loads, the
   server takes most of the free GPU memory: 669 MiB were left free at the least, where 0.26.0rc2 took the card to 3 MiB
   and its log held 254 allocator warnings, "memory allocation failed with OOM", one for each time PyTorch's allocator
   could not get a block and freed its cache to try again. Now it holds none, at 14.48 GiB free and at the 21.7 GiB the L4
   has free with no hog (0.26.0rc2 held none there either: its KV cache 7.04 GiB, 51,264 tokens, against 7.51 GiB, 54,688).
   `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, which gave 0.26.0rc2 1.74 GiB of KV cache, replaced its 254
-  warnings with 73 of its own, "memory mapping failed with OOM". No desktop ran in the test, so what one does in those
-  seconds is not measured.
+  warnings with 73 of its own, "memory mapping failed with OOM". If PyTorch's warning shows in another setup it is
+  harmless: it freed its cache and tried again, as it did each time here. No desktop ran in the test, so what one does
+  in those seconds is not measured.
 - **Open WebUI:** its model list showed Qwen/Qwen3-8B, a chat through its chat endpoint with the browser's request (its
-  tools on) completed, and it passed the model's tool call, by both routes. In a browser (Open WebUI 0.11.4's page over a tunnel) a chat showed a collapsed "Thought for 7
-  seconds" and its answer, and a question about the time called the tool, "Explored get_current_timestamp", and answered
-  with its result.
+  tools on) completed, and it passed the model's tool call, by both routes. In a browser (Open WebUI 0.11.4's page over
+  a tunnel) a chat showed a collapsed "Thought for 7 seconds" and its answer, and a question about the time called the
+  tool, "Explored get_current_timestamp", and answered with its result.
 
 The packing's passes, the allocator and every run with its log:
 [benchmarks/gpu/l4-quickstart-2026-09-30](../../benchmarks/gpu/l4-quickstart-2026-09-30). The hog that held the L4's
