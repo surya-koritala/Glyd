@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## v0.26.0 (Unreleased)
+## v0.26.0 — 2026-10-01
 
 - A model on an NVIDIA GPU with no flags to find: `curl -LsSf https://getglyd.com/install.sh | sh`, then `glyd run Qwen/Qwen3-8B`. The script
   (`scripts/install.sh`) installs uv where there is none, then Glyd with vLLM and PyTorch as an isolated tool on a Python 3.12 that uv manages
