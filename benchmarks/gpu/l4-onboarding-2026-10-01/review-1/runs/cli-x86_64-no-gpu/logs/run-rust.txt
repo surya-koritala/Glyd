@@ -1,0 +1,2 @@
+glyd run: that is the local chat's command, in Glyd's Python tool, which is not installed here. On Linux with an NVIDIA GPU: curl -LsSf https://getglyd.com/install.sh | sh (a file named run is compressed as ./run)
+rc=127

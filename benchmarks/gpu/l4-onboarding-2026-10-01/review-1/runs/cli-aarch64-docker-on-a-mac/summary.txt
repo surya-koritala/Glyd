@@ -1,0 +1,12 @@
+== 2026-10-01T12:17:12Z: cli flow, glyd[vllm] , glyd-accept:ubuntu26.04-curl, GPU , budget all MiB free, card as is MiB
+ok   no nvcc: not on PATH, no /usr/local/cuda, no CUDA_HOME
+-- install.sh with no NVIDIA GPU: no nvidia-smi
+ok   install.sh exited 0; its output: ==> No NVIDIA GPU answered here (nvidia-smi): glyd run (the local chat) needs Linux with an NVIDIA GPU. The compression commands work without one.|==> If this machine has an NVIDIA GPU, install its driver first (Ubuntu: sudo apt install nvidia-driver-580, then reboot) and run this again.|==> Installing the compression program, glyd 0.26.0rc3 for linux-aarch64 (the release's tarball, checked against its sha256)|==> gl
+ok   it says plainly that glyd run needs Linux with an NVIDIA GPU
+ok   the tarball was checked against the release's sha256
+ok   no uv, and no tool environment, for a machine that cannot run glyd run
+ok   glyd --version: glyd 0.26.0-rc.3 SIMD: NEON 
+ok   a file through glyd and back: 3000000 2261369  bytes, identical
+ok   install.sh run again (an update) replaced its own links and exited 0
+ok   a glyd of the user's own in ~/.local/bin is not replaced
+PASSED

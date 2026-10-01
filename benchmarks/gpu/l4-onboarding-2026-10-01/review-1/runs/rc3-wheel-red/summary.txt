@@ -1,0 +1,94 @@
+== 2026-10-01T12:26:23Z: glyd flow, glyd[vllm] wheel /home/ubuntu/onb/wheels-old/glyd-0.26.0rc3-py3-none-manylinux_2_28_x86_64.whl, glyd-accept:ubuntu26.04-curl, GPU NVIDIA L4, 23034 MiB, budget all MiB free, card as is MiB
+ok   no nvcc: not on PATH, no /usr/local/cuda, no CUDA_HOME
+ok   a glyd of the user's own in ~/.local/bin: install.sh stopped before it installed Glyd and left that program as it was (glyd install: /work/home-foreign/.local/bin/glyd is not Glyd's Python tool (it is the compression program, a p...)
+-- install: curl -LsSf https://getglyd.com/install.sh | sh   (this checkout's scripts/install.sh instead of getglyd.com's; GLYD_SPEC='/work/wheel/glyd-0.26.0rc3-py3-none-manylinux_2_28_x86_64.whl[vllm]' )
+ok   install.sh took 3 s and exited 0; its last lines: |Ready: glyd run Qwen/Qwen3-8B|==> Next: glyd run Qwen/Qwen3-8B|
+ok   uv was installed by its own installer, at a version: ==> Installing uv 0.12.21, which manages Python for Glyd (its own inst; downloading uv 0.12.21 x86_64-unknown-linux-gnu
+ok   no shell startup file touched (~/.local/bin was on PATH; uv's installer was told to edit none)
+-- resolved: glyd v0.26.0rc3 [with: ziglang==0.16.0] flashinfer-python==0.6.18.post1 glyd pydantic==2.13.5 safetensors==0.8.0 tokenizers==0.23.2 torch==2.13.0 transformers==5.18.0 triton==3.7.1 vllm==0.30.0 ziglang==0.16.0 
+ok   no pre-release among the dependencies (install.sh names no --prerelease; opentelemetry's betas are all there is of those)
+ok   every one of the 199 packages installed is at the version install.sh's list gives (199 listed; ziglang is only there where there is no compiler)
+ok   no gcc: install.sh added ziglang==0.16.0
+ok   install.sh run again (an update; ~/.local/bin not on PATH): exit 0, the shell-profile edit said first, uv's own line naming the file: Created configuration file: /work/home/.bash_profile
+ok   the PATH line is in the shell's startup file (.bashrc )
+     (uv's answer to the update: `glyd[vllm] @ file:///work/wheel/glyd-0.26.0rc3-py3-none-manylinux_2_28_x86_64.whl` is already insta)
+ok   a glyd ahead of it on PATH: install.sh says which, and the line to add and the path to run it by
+FAIL glyd doctor did not report the glyd ahead of it (logs/doctor-shadow.txt)
+ok   the Rust glyd first on PATH hands glyd doctor to the Python tool (glyd 0.26.0-rc.3)
+ok   glyd doctor: Ready: glyd run Qwen/Qwen3-8B
+note: the README's run block (glyd run Qwen/Qwen3-8B) is not 'glyd run Qwen/Qwen3-1.7B': this run uses Qwen/Qwen3-1.7B
+ok   glyd run Qwen/Qwen3-1.7B --prompt: Paris, Settings: 40,960-token context (the model's own limit), eager mode, 58% of GPU memory (13.7 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+     Ready in 50s. (The server's log: /work/home/.local/state/glyd/logs/run-20261001-
+-- 1 server logs checked: no traceback, no allocator out-of-memory warning unless failed above
+ok   glyd serve up after 31 s (started through the Rust glyd first on PATH): Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); Py|Ready in 30s. (The server's log: /work/home/.local/state/glyd/logs/serve-20261001-122721.log)|
+ok   GET / is the chat page (19983 bytes, content-security-policy: default-src 'none')
+ok   other paths stay vLLM's (/nope is 404; the API answers below)
+FAIL the server on 127.0.0.1 let in a page of another origin or a rebinding Host (logs/guard.log)
+FAIL glyd serve under nohup did not survive SIGHUP (logs/serve.out):   Log          /work/home/.local/state/glyd/logs/serve-20261001-122721.log|Press Ctrl-C to stop.|Stopping the server...|
+FAIL the OpenAI API checks (logs/chat.log)
+Traceback (most recent call last):
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/urllib/request.py", line 1344, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/http/client.py", line 1386, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/http/client.py", line 1432, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/http/client.py", line 1381, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/http/client.py", line 1141, in _send_output
+    self.send(msg)
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/http/client.py", line 1085, in send
+    self.connect()
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/http/client.py", line 1051, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/socket.py", line 865, in create_connection
+    raise exceptions[0]
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/socket.py", line 850, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 111] Connection refused
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/work/check.py", line 135, in <module>
+    good = api(sys.argv[2]) & thinking(sys.argv[2]) & too_long(sys.argv[2])
+           ^^^^^^^^^^^^^^^^
+  File "/work/check.py", line 34, in api
+    model = json.load(call(base + "/models"))["data"][0]["id"]
+                      ^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/check.py", line 6, in call
+    return urllib.request.urlopen(urllib.request.Request(url, None if body is None else json.dumps(body).encode(), h), timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/urllib/request.py", line 515, in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/urllib/request.py", line 532, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/urllib/request.py", line 1373, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/home/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/urllib/request.py", line 1347, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error [Errno 111] Connection refused>
+FAIL glyd run's output carries control characters (logs/escapes.out, escapes.err): 0000000 033 033  \a 0000003 
+ok   glyd run --prompt (a prompt on stdin) says so when the prompt outgrows the window: This prompt is longer than the model's window (40,960 tokens). Shorten it, or start glyd with a larger --context. Stopping the server... rc=1 
+FAIL no plain message in the terminal chat for a conversation longer than the window: |</think>||Sure, I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with tha
+FAIL glyd serve --host 0.0.0.0 -- --api-key never printed Serving (logs/serve-flag.out): Settings: 37,888-token context (the most that fits), eager mode, 36% of GPU memory (8.5 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C comp
+-- serve with a key: VLLM_API_KEY=YOUR_KEY glyd serve Qwen/Qwen3-1.7B --host 0.0.0.0
+FAIL the README's serve-key command never printed Serving (logs/serve-bridge.out): Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C 
+ok   glyd serve stopped on SIGTERM
+-- 7 server logs checked: no traceback, no allocator out-of-memory warning unless failed above
+ok   Ctrl-C 1x while the model loads: glyd exited 130 in 50 s, no vLLM process left ()
+ok   Ctrl-C 2x while the model loads: glyd exited 130 in 1 s, no vLLM process left ()
+FAIL the engine killed under a terminal chat's answer: no plain message, or a traceback (logs/chatdies.out): |### The||>>> /bye
+ok   glyd serve exited when its engine died: glyd: the server stopped: ERROR 10-01 12:49:06 [serving.py:906] vllm.v1.engine.exceptions.EngineDeadError: EngineCore en
+ok   uv tool uninstall glyd: the tool and its link are gone; ~/.local/state/glyd (logs zigcc ), the Hugging Face cache and uv stay (as the README says)
+FAILED (9): glyd doctor did not report the glyd ahead of it (logs/doctor-shadow.txt); the server on 127.0.0.1 let in a page of another origin or a rebinding Host (logs/guard.log); glyd serve under nohup did not survive SIGHUP (logs/serve.out):   Log          /work/home/.local/state/glyd/logs/serve-20261001-122721.log|Press Ctrl-C to stop.|Stopping the server...|; the OpenAI API checks (logs/chat.log); glyd run's output carries control characters (logs/escapes.out, escapes.err): 0000000 033 033  \a 0000003 ; no plain message in the terminal chat for a conversation longer than the window: |</think>||Sure, I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with that. I can help you with tha; glyd serve --host 0.0.0.0 -- --api-key never printed Serving (logs/serve-flag.out): Settings: 37,888-token context (the most that fits), eager mode, 36% of GPU memory (8.5 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C comp; the README's serve-key command never printed Serving (logs/serve-bridge.out): Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C ; the engine killed under a terminal chat's answer: no plain message, or a traceback (logs/chatdies.out): |### The||>>> /bye; 

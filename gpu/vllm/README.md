@@ -210,14 +210,15 @@ ziglang), a few tens of seconds; the second is the next `glyd serve`.
 
 | Free at start | `glyd run` chose | vLLM logged | First start | Second |
 | :--- | :--- | :--- | ---: | ---: |
-| 23.7 GB (the whole L4) | 92% of GPU memory (21.8 GB), a 40,960-token context (the model's own limit) | weights 11.38 GiB, KV cache 61,104 tokens | 61 s | 41 s |
+| 23.7 GB (the whole L4) | 92% of GPU memory (21.8 GB), a 40,960-token context (the model's own limit) | weights 11.38 GiB, KV cache 61,104 tokens | 61-79 s | 41 s |
 | 15.7 GB (a 16 GB card, a desktop) | 62% (14.7 GB) of the L4's total, which is the share 0.86 is on a 4080 SUPER, a 11,264-token context | weights 11.39 GiB, KV cache 12,960 tokens | 78 s | 40 s |
 | 8.1 GB (an 8 GB card), Qwen3-4B | refused: "needs about 8.4 GB of GPU memory with Glyd (5.9 GB of weights and room for a 4,096-token chat); your GPU has 8.1 GB free. Or try Qwen/Qwen3-1.7B, which needs about 5.1 GB" | | | |
 | the same, Qwen3-1.7B | 29% (6.9 GB), a 24,576-token context | weights 2.47 GiB, KV cache 33,184 tokens | 58 s | |
 
 What `glyd run` predicts from the config was within 0.11 GiB of the weights vLLM logged (over, for the smaller models) and
 3-18% under its KV cache tokens, in every run of these and of a 0.6B, a 1.7B and a 4B before them: it never promised a context
-vLLM then refused. In the 9 server logs of the acceptance runs (8 of `glyd run` and `glyd serve`, 1 of the by-hand command) there
+vLLM then refused. In the 18 server logs of the acceptance runs (9 in each of the two rounds, the by-hand command's among the first round's;
+the logs of the cases that stop a server on purpose, Ctrl-C while loading and a killed engine, left out) there
 was no allocator warning ("memory allocation failed with OOM", "memory mapping failed with OOM") and no traceback; the warnings
 that remain are vLLM's own notices (eager mode set, the model's generation_config overriding its sampling defaults, and its
 engine process being stopped at shutdown). Every run with its logs, the first run's terminal text, and the calibration of the

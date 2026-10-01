@@ -549,10 +549,10 @@ glyd_ctrlc() {  # Ctrl-C while the model loads, once and twice: glyd exits promp
     t=$(( $(date +%s) - t ))
     rc=$(sed -n 's/^rc=//p' "$LOGS/ctrlc$n.out" | head -1)
     for _ in $(seq 1 20); do left=$(run 'pgrep -fa "EngineCore|vllm" | grep -v pgrep' | tail -3 | tr '\n' ' '); [ -z "$left" ] && break; sleep 1; done
-    if [ -n "$gone" ] && [ "$rc" = 130 ] && [ -z "$left" ] && ! grep -qE 'Traceback|unexpected error' "$LOGS/ctrlc$n.out"; then
+    if [ -n "$gone" ] && [ "$rc" = 130 ] && [ -z "$left" ] && grep -q 'Stopping the server' "$LOGS/ctrlc$n.out" && ! grep -qE 'Traceback|unexpected error' "$LOGS/ctrlc$n.out"; then
       ok "Ctrl-C ${n}x while the model loads: glyd exited 130 in $t s, no vLLM process left ($(grep -E 'Stopping|stopp' "$LOGS/ctrlc$n.out" | head -1 | cut -c1-60))"
     else
-      fail "Ctrl-C ${n}x while the model loads: exit ${rc:-none} after $t s, left running: ${left:-nothing}; $(tail -3 "$LOGS/ctrlc$n.out" | tr '\n' '|' | cut -c1-200) (logs/ctrlc$n.out)"
+      fail "Ctrl-C ${n}x while the model loads: exit ${rc:-none} after $t s, left running: ${left:-nothing}, said it was stopping: $(grep -c 'Stopping the server' "$LOGS/ctrlc$n.out"); $(tail -3 "$LOGS/ctrlc$n.out" | tr '\n' '|' | cut -c1-200) (logs/ctrlc$n.out)"
       run 'pkill -KILL -f "EngineCore|vllm|glyd run"' > /dev/null 2>&1; sleep 3
     fi
     ss -ltn 2> /dev/null | grep -q ':8000 ' && { fail "port 8000 is in use after the Ctrl-C"; return; }
@@ -569,7 +569,7 @@ glyd_chat_dies() {  # a terminal chat with an answer under way, and the engine k
 #!/bin/bash
 # the question is typed 8 s in; the engine is killed 3 s after the answer has started to come (not before: a short answer is over by then)
 out=$IN/logs/chatdies.out
-( sleep 8; echo 'Write a long story, at least 2000 words, about a lighthouse keeper, and do not stop before the end. /no_think'; sleep 60; echo /bye ) | ${gf}script -qec 'glyd run $MODEL' /dev/null > \$out 2>&1 &
+( sleep 8; echo 'Write a long story, at least 2000 words, about a lighthouse keeper, and do not stop before the end. /no_think'; sleep 60; echo /bye ) | ${gf}timeout 300 script -qec 'glyd run $MODEL' /dev/null > \$out 2>&1 &
 chat=\$!
 sleep 9
 base=\$(stat -c %s \$out)
@@ -685,7 +685,7 @@ glyd_flow() {
   big=$(run "yes word | head -n 60000 | tr '\n' ' ' | ${gf}glyd run $MODEL 2>&1 >/dev/null; echo rc=\$?" | tail -3 | tr '\n' ' ')
   case $big in *"This prompt is longer than the model's window"*"rc=1"*) ok "glyd run --prompt (a prompt on stdin) says so when the prompt outgrows the window: $(printf '%s' "$big" | cut -c1-150)";; *) fail "no plain message from glyd run for a prompt longer than the window: $big";; esac
   win=$(run 'curl -s http://127.0.0.1:8000/v1/models' | sed -nE 's/.*"max_model_len":([0-9]+).*/\1/p' | head -1)
-  chatout=$(run "( sleep 6; echo '\"\"\"'; yes \"\$(yes word | head -n 600 | tr '\n' ' ')\" | head -n \$(( ${win:-10240} / 600 + 3 )); echo '\"\"\"'; sleep 10; echo /bye ) | ${gf}script -qec 'glyd run $MODEL' /dev/null" 2>&1 | tr -d '\r' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g')
+  chatout=$(run "( sleep 6; echo '\"\"\"'; yes \"\$(yes word | head -n 600 | tr '\n' ' ')\" | head -n \$(( ${win:-10240} / 600 + 3 )); echo '\"\"\"'; sleep 10; echo /bye ) | ${gf}timeout 600 script -qec 'glyd run $MODEL' /dev/null" 2>&1 | tr -d '\r' | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g')  # (a limit: a glyd that starts a server of its own is not at the prompt when the input has been typed)
   grep -qF "This conversation is longer than the model's window" "$README" && grep -qF "Start a new chat with /clear" "$README" || fail "the README does not quote the message the terminal chat gives for a conversation past the window"
   case $chatout in *"This conversation is longer than the model's window"*"Start a new chat with /clear"*) ok "the terminal chat says so when the conversation outgrows the window (typed as one message of several lines)";; *) fail "no plain message in the terminal chat for a conversation longer than the window: $(printf '%s' "$chatout" | tail -5 | tr '\n' '|' | cut -c1-300)";; esac
   for r in uvx docker; do route $r && { webui_route $r "$py" "$MODEL" || break; }; done

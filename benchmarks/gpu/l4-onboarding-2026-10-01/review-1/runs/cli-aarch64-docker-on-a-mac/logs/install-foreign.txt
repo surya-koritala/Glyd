@@ -1,0 +1,3 @@
+==> No NVIDIA GPU answered here (nvidia-smi): glyd run (the local chat) needs Linux with an NVIDIA GPU. The compression commands work without one.
+==> If this machine has an NVIDIA GPU, install its driver first (Ubuntu: sudo apt install nvidia-driver-580, then reboot) and run this again.
+glyd install: /work/home-foreign/.local/bin/glyd exists, and this installer did not make it: it does not replace a program it did not make. Move it away (or set XDG_BIN_HOME to another folder on your PATH), then run this again.

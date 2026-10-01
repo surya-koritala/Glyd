@@ -1,0 +1,13 @@
+/app/backend/open_webui/main.py:48:    CORS_ALLOW_ORIGIN,
+/app/backend/open_webui/main.py:833:    allow_origins=CORS_ALLOW_ORIGIN,
+/app/backend/open_webui/socket/main.py:15:    CORS_ALLOW_ORIGIN,
+/app/backend/open_webui/socket/main.py:70:SOCKETIO_CORS_ORIGINS = '*' if CORS_ALLOW_ORIGIN == ['*'] else CORS_ALLOW_ORIGIN
+---
+751:WEBUI_AUTH = os.getenv('WEBUI_AUTH', 'True').lower() == 'true'
+780:if WEBUI_AUTH and WEBUI_SECRET_KEY == '':
+---
+15:732-    if WEBUI_AUTH_TRUSTED_EMAIL_HEADER:
+17:734-        if WEBUI_AUTH_TRUSTED_EMAIL_HEADER not in request.headers:
+20:737-        email = request.headers[WEBUI_AUTH_TRUSTED_EMAIL_HEADER].lower()
+23:740-        if WEBUI_AUTH_TRUSTED_NAME_HEADER:
+24:741-            name = request.headers.get(WEBUI_AUTH_TRUSTED_NAME_HEADER, email)
