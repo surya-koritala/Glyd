@@ -28,6 +28,7 @@ from .chat import Api, Chat
 from .. import __version__
 
 ISSUES = "https://github.com/surya-koritala/Glyd/issues"
+STOP_WAIT = (5, 5, 10)  # seconds the engine gets to follow the API server out, then to obey SIGTERM, then SIGKILL, when a server is stopped
 
 
 # --- the terminal ------------------------------------------------------------------------------------------------------------
@@ -202,20 +203,42 @@ class Server:
         return self.base.replace("//127.0.0.1:", "//localhost:")
 
     def stop(self, ui=None):
-        """Stop the server this run started (its process group: the engine too), waiting for the GPU's memory to be let go."""
-        if self.proc is None or self.proc.poll() is not None or self.proc.pid <= 1:  # (pid <= 1: never signal a group that is not ours)
+        """Stop the server this run started and wait for its GPU memory to be let go. The API server gets SIGTERM alone: it stops the engine
+        itself (a SIGTERM to the engine as well made the API server log the dead engine as an error, with a traceback). What is left of
+        the process group after that is terminated, then killed."""
+        if self.proc is None or self.proc.pid <= 1:  # (pid <= 1: never signal a group that is not ours)
             return
-        if ui is not None:
-            ui.line("Stopping the server...")
-        for sig, wait in ((signal.SIGTERM, 30), (signal.SIGKILL, 10)):
+        pgid = self.proc.pid
+        if self.proc.poll() is None:
+            if ui is not None:
+                ui.line("Stopping the server...")
             try:
-                os.killpg(self.proc.pid, sig)
-                self.proc.wait(wait)
-                return
+                os.kill(pgid, signal.SIGTERM)
+                self.proc.wait(30)
             except subprocess.TimeoutExpired:
-                continue
-            except (ProcessLookupError, PermissionError):
-                return
+                pass
+            except ProcessLookupError:
+                pass
+        for sig, seconds in zip((None, signal.SIGTERM, signal.SIGKILL), STOP_WAIT):
+            if sig is not None:
+                try:
+                    os.killpg(pgid, sig)
+                except (ProcessLookupError, PermissionError):
+                    break
+            end = time.time() + seconds
+            while time.time() < end:
+                try:
+                    os.killpg(pgid, 0)
+                except (ProcessLookupError, PermissionError):
+                    sig = "gone"
+                    break
+                time.sleep(0.1)
+            if sig == "gone":
+                break
+        try:
+            self.proc.wait(1)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 ZIGCC = """#!/bin/sh

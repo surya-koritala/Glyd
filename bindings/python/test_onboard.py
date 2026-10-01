@@ -665,12 +665,13 @@ def main():
         sys.exit(1)
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])  # (the engine process)
     open(os.environ["FAKE_CHILD"], "w").write(str(child.pid))
+    # (vLLM's API server stops its engine on SIGTERM; mode "orphan" is one that does not, and leaves it for the group's sweep)
+    signal.signal(signal.SIGTERM, (lambda *a: os._exit(0)) if mode == "orphan" else (lambda *a: (child.kill(), os._exit(0))))
     if mode == "slow":
         time.sleep(60)
     print("(EngineCore pid=1) INFO [model_runner.py:428] Model loading took 11.31 GiB memory and 34.1 seconds", flush=True)
     Fake(window=window, port=port, start=True)
     print("INFO:     Application startup complete.", flush=True)
-    signal.signal(signal.SIGTERM, lambda *a: (child.kill(), os._exit(0)))
     while True:
         time.sleep(1)
 
@@ -778,7 +779,16 @@ def test_end_to_end_with_a_fake_vllm():
             assert f"OpenAI API   http://localhost:{port}/v1" in err.text() and f"Chat page    http://localhost:{port}" in err.text() and "Press Ctrl-C to stop." in err.text()
             time.sleep(0.5)
             assert not alive(int(open(os.environ["FAKE_CHILD"]).read()))
+            # a server that leaves its engine behind when it is stopped: the group's sweep (TERM, then KILL) takes it
+            open(os.environ["FAKE_MODE"], "w").write("orphan")
+            run.STOP_WAIT = (0.3, 0.3, 2)
+            out, err = Sink(), Sink()
+            assert go(["serve", model, "--port", str(free_port())], out, err, cancel_when="Press Ctrl-C to stop.") == 130, err.text()
+            child = int(open(os.environ["FAKE_CHILD"]).read())
+            time.sleep(0.3)
+            assert not alive(child), "an engine left behind by its API server was not swept"
     finally:
+        run.STOP_WAIT = (5, 5, 10)
         for k, v in saved.items():
             if v is None:
                 os.environ.pop(k, None)
