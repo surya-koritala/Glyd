@@ -1,0 +1,13 @@
+Qwen3-1.7B: 3.4 GB on the GPU with Glyd, instead of 4.1 GB; your GPU has 23.7 GB free.
+Qwen3-1.7B is downloaded already.
+Settings: 40,960-token context (the model's own limit), eager mode, 92% of GPU memory (21.8 GB), tool calls (hermes), thinking shown apart (qwen3); PyTorch sampler (no CUDA toolkit); ziglang as the C compiler (no gcc).
+Loading Qwen3-1.7B with Glyd: 3.4 GB instead of 4.1 GB...
+Ready in 31s. (The server's log: /work/home/.local/state/glyd/logs/serve-20261001-125805.log)
+
+Serving Qwen/Qwen3-1.7B with Glyd (40,960-token window).
+  OpenAI API   http://localhost:8000/v1   (model name: Qwen/Qwen3-1.7B)
+  Chat page    http://localhost:8000
+  Log          /work/home/.local/state/glyd/logs/serve-20261001-125805.log
+Press Ctrl-C to stop.
+glyd: the server stopped: ERROR 10-01 12:58:54 [serving.py:906] vllm.v1.engine.exceptions.EngineDeadError: EngineCore encountered an issue. See stack trace (above) for the root cause..
+  The server's log: /work/home/.local/state/glyd/logs/serve-20261001-125805.log

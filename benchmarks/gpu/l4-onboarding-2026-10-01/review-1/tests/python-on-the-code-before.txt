@@ -22,10 +22,10 @@ test_ui_and_args                                                             ok
 test_doctor                                                                  FAIL TypeError: doctor_lines() got an unexpected keyword argument 'platform'
 test_start_retries_and_attaches                                              FAIL AttributeError: module 'glyd.gpu.run' has no attribute 'write_marker'
 test_commands_with_a_running_server                                          ok
-test_serve_with_an_api_key_is_ready_and_the_key_stays_off_the_command_line   FAIL   The server's log: /var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmp71nyp003/glyd/logs/serve-20261001-080819.log
-test_end_to_end_with_a_fake_vllm                                             FAIL AssertionError: {'argv': ['/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmppsxapra7/vllm/entrypoints/cli/main.py', 'serve', '/var/folders/mv/f3dzc
+test_serve_with_an_api_key_is_ready_and_the_key_stays_off_the_command_line   FAIL   The server's log: /var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmppbtm83vw/glyd/logs/serve-20261001-085254.log
+test_end_to_end_with_a_fake_vllm                                             FAIL AssertionError: {'argv': ['/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmp8yxgytq6/vllm/entrypoints/cli/main.py', 'serve', '/var/folders/mv/f3dzc
 test_cli_forwarding                                                          FAIL AssertionError
-test_a_glyd_ahead_on_path_is_found_and_said                                  FAIL subprocess.CalledProcessError: Command '['/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmpt4rbzwju/env/bin/python', '-c', 'from glyd.gpu import pr
+test_a_glyd_ahead_on_path_is_found_and_said                                  FAIL subprocess.CalledProcessError: Command '['/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmpoc8my1j3/env/bin/python', '-c', 'from glyd.gpu import pr
 test_chat_turns                                                              ok
 test_chat_template_newlines_are_not_shown                                    ok
 test_terminal_text_has_no_control_sequences                                  FAIL AssertionError: 'ok \x1b]52;c;aGk=\x07 then \x1b[31mred\x1b[0m\x9b2J\x00 end\ttabbed\nsecond line\n'
@@ -41,9 +41,9 @@ test_install_sh_cut_short_runs_nothing                                       FAI
 test_install_sh_does_not_hide_a_failed_download_of_uv                        FAIL AssertionError: (1, 'curl: (22) The requested URL returned error: 503\nglyd install: uv installed, but it is not where its installer says; open a new 
 test_install_sh_will_not_replace_a_program_it_did_not_make                   FAIL AssertionError: (0, '')
 test_install_sh_says_what_it_does_to_the_path                                FAIL AssertionError: (['uv tool install --force --managed-python --python 3.12 glyd[vllm]==0.26.0rc3', 'uv tool dir --bin', 'uv tool update-shell', 'glyd d
-test_install_sh_a_glyd_ahead_on_path_is_said_with_the_fix                    FAIL AssertionError: glyd install: another glyd (/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmpt0r6200e/glyd) comes first on your PATH: it is the com
+test_install_sh_a_glyd_ahead_on_path_is_said_with_the_fix                    FAIL AssertionError: glyd install: another glyd (/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmp7y7u5khz/glyd) comes first on your PATH: it is the com
 test_install_sh_checks_the_machine_before_the_big_download                   FAIL AssertionError: (0, '')
-test_install_sh_where_glyd_run_has_nothing_to_run_on                         FAIL ==> Open a new terminal (or run: export PATH="/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmp7ta0m7hi/.local/bin:$PATH") so that glyd is found.
+test_install_sh_where_glyd_run_has_nothing_to_run_on                         FAIL ==> Open a new terminal (or run: export PATH="/var/folders/mv/f3dzcp294nxcbx41q39j4bm80000gn/T/tmpvrkp3xxv/.local/bin:$PATH") so that glyd is found.
 test_install_constraints_are_the_acceptance_runs_versions                    FAIL FileNotFoundError: [Errno 2] No such file or directory: '/private/tmp/glyd-base/bindings/python/../../scripts/install_constraints.py'
 test_the_page_refuses_another_origin_and_a_rebinding_host                    FAIL AssertionError: evil.example
 test_the_server_is_started_local_only_unless_a_host_was_chosen               FAIL ValueError: list.index(x): x not in list

@@ -3,7 +3,7 @@
 The review of the first round's tree (1 blocker, 15 should-fix, 19 nits) was answered on the `onboarding` branch (merged with `release-0.26.0`
 at the rc3 bump) and the acceptance run again, with cases for what the review found. What changed, as the review numbered it, is in the
 CHANGELOG's v0.26.0 entry and in the commits; what was run is here. The machine is the first round's: the L4, driver 595.91.07 (CUDA 13.2),
-Ubuntu 26.04 containers with no CUDA toolkit and no gcc, vLLM 0.30.0 and PyTorch 2.13.0. The wheel is the branch's at 109923e, built as
+Ubuntu 26.04 containers with no CUDA toolkit and no gcc, vLLM 0.30.0 and PyTorch 2.13.0. The wheel of the three runs is the branch's at 109923e, built as
 release.yml builds it. The Rust `glyd` for the cases that need it was built from the same tree on the box (`scripts/rustbuild.sh`, `cargo build
 --release --bin glyd`). What the tests and the runs say about the code before the fixes is in `review-1/tests/`.
 
@@ -12,6 +12,7 @@ release.yml builds it. The Rust `glyd` for the cases that need it was built from
 | `24gb` | `acceptance.sh --wheel W --rust-glyd R --webui none` (a fresh work directory: a cold uv cache) | PASSED, 49 checks |
 | `16gb-card` | `acceptance.sh --wheel W --rust-glyd R --card 4080s --webui all --pip-refusal` | PASSED, 58 checks |
 | `8gb-card` | `acceptance.sh --wheel W --rust-glyd R --card 8gb` | PASSED, 17 checks: Qwen3-4B refused with a model to try, Qwen3-1.7B (24,576 tokens, 29%) run |
+| `head-smoke-1.7b` | `acceptance.sh --wheel W --rust-glyd R --model Qwen/Qwen3-1.7B --webui none` on the branch's head (cf616b7), after the three runs: the one commit of Python code since their wheel (1260fa1: a server's message that ends in a full stop is not given a second), this install.sh, and the Ctrl-C cases' stricter check that glyd says it is stopping | PASSED, 49 checks |
 | `cli-x86_64-no-gpu` | `acceptance.sh --flow cli --rust-glyd R` (a container with no GPU on the box) | PASSED, 11 checks |
 | `cli-aarch64-docker-on-a-mac` | `acceptance.sh --flow cli` (Docker on an Apple-silicon Mac: the linux-aarch64 tarball) | PASSED, 9 checks |
 | `rc3-wheel-red` | the same acceptance.sh against the published rc3 wheel (the code before), `--up-wait 240` | FAILED, 9 of 32 checks, as the review said it would (below) |
