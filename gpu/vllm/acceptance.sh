@@ -659,7 +659,7 @@ glyd_flow() {
   grep -qF "This conversation is longer than the model's window" "$README" && grep -qF "Start a new chat with /clear" "$README" || fail "the README does not quote the message the terminal chat gives for a conversation past the window"
   case $chatout in *"This conversation is longer than the model's window"*"Start a new chat with /clear"*) ok "the terminal chat says so when the conversation outgrows the window (typed as one message of several lines)";; *) fail "no plain message in the terminal chat for a conversation longer than the window: $(printf '%s' "$chatout" | tail -5 | tr '\n' '|' | cut -c1-300)";; esac
   for r in uvx docker; do route $r && { webui_route $r "$py" "$MODEL" || break; }; done
-  if route bridge; then  # the container on its own network reaches the server on the host's address, which needs the server on every interface and a key
+  if true; then  # a server on every interface needs a key; Open WebUI's bridge route (the container on its own network, reaching the server by the host's address) is the user of one
     glyd_stop_serve
     key=acceptance-$RANDOM$RANDOM
     # the key as -- --api-key: glyd's readiness probe needs none of it (it asked /v1 and was told 401, so a server with a key never came up)
@@ -677,7 +677,7 @@ glyd_flow() {
     : > "$LOGS/serve-bridge.out"
     bg "${gf}$line > $IN/logs/serve-bridge.out 2>&1"
     up=; for _ in $(seq 1 600); do grep -q '^Serving' "$LOGS/serve-bridge.out" && { up=1; break; }; run 'pgrep -f "[g]lyd serve"' > /dev/null 2>&1 || break; sleep 3; done
-    if [ -n "$up" ]; then glyd_key "$LOGS/serve-bridge.out" "$key" env; webui_route bridge "$py" "$MODEL" "$key"; else fail "the README's serve-key command never printed Serving (logs/serve-bridge.out): $(tail -3 "$LOGS/serve-bridge.out" | tr '\n' '|' | cut -c1-200)"; fi
+    if [ -n "$up" ]; then glyd_key "$LOGS/serve-bridge.out" "$key" env; route bridge && webui_route bridge "$py" "$MODEL" "$key"; else fail "the README's serve-key command never printed Serving (logs/serve-bridge.out): $(tail -3 "$LOGS/serve-bridge.out" | tr '\n' '|' | cut -c1-200)"; fi
   fi
   if [ -n "$HOLD" ]; then
     block webui-uvx > "$WORK/webui-uvx.sh"
