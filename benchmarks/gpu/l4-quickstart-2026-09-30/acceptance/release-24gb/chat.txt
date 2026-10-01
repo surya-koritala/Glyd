@@ -1,0 +1,3 @@
+ok   OpenAI API, turn 1 (streamed, greedy): 'Paris', 6 tokens in 0.3 s
+ok   OpenAI API, turn 2 (streamed, top-p, turn 1 as history): 'Berlin', 6 tokens in 0.3 s
+ok   OpenAI API, a tool call (tool_choice auto): {'name': 'get_weather', 'arguments': '{"city": "Paris"}'}

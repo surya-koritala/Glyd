@@ -203,8 +203,13 @@ directories its logs.
   the model listed, the browser's chat request answered, a tool call (`get_current_timestamp`) in the stream. The first
   run's command was without `--reasoning-parser`: the empty `<think>` block of a `/no_think` answer is in its answers'
   content (`'<think>\n\n</think>\n\nParis'`).
+- **The merged release tree** (`acceptance/release-16gb.txt`, `acceptance/release-24gb.txt`, `scripts/final.sh`): a wheel of
+  `bindings/python` as merged into release-0.26.0 (`7f2b218`; its own version, 0.26.0rc2, over rc2's libraries) and the
+  script of the branch's last commit, the README's command as it stands. At the 16 GB card: PASSED, both Open WebUI routes
+  (install 94 s, up after 52 s, 11.39 GiB, 13,280 tokens, no traceback, no allocator warning). With no hog (21.85 GiB free at start, the
+  plugin reading GeForce Ada, no Open WebUI): PASSED (up after 52 s, 11.38 GiB, 54,688 tokens, no warning).
 - Its own checks first ran against a stand-in server (`scripts/stub_server.py`) on a machine without a GPU, which is
-  how the working directory of `uvx` and the exit status of the checks were found.
+  how the working directory of `uvx`, the exit status of the checks and the Docker route's volume were found.
 
 ## The plugin against vLLM's bf16, after the change
 
