@@ -29,7 +29,7 @@ this is the first run through vLLM on an H100.
 
 `check_vllm.py --quick` on Qwen3-8B (TP 1):
 
-| Qwen3-8B, against vLLM's bf16 | Glyd tiered | Glyd 12-bit |
+| Qwen3-8B, against vLLM's bf16 | Glyd, the smallest layout (`mma`) | Glyd 12-bit |
 | :--- | ---: | ---: |
 | Packs unpacked to their weights, bit for bit | 144 of 144 | 144 of 144 |
 | Worst layer against F.linear, 1-4,096 tokens | 3.78e-3 | 3.78e-3 |

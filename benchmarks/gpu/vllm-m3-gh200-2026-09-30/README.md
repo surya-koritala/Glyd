@@ -23,9 +23,9 @@ on the compile cache its first (cold) start filled, at `--gpu-memory-utilization
 
 | GPU (Glyd's layout) | Model | KV cache, warm | Load (req/s) | Requests/s | TTFT mean | TPOT mean | Request's time (E2E mean) |
 | :--- | :--- | ---: | :--- | ---: | ---: | ---: | ---: |
-| L4 (M2, tiered, v0.25.0) | Qwen3-8B | 1.94x | 0.25 | 1.03x (0.22 to 0.23) | +30% (458 to 594 ms) | -22% (69.9 to 54.8 ms) | -20% |
-| L4 (M2, tiered, v0.25.0) | Qwen3-8B | 1.94x | 1 | 1.15x (0.67 to 0.77) | -73% (3,213 to 870 ms) | +1% (99.3 to 100.1 ms) | -7% |
-| L4 (M2, tiered, v0.25.0) | Qwen3-8B | 1.94x | inf | 1.29x (0.77 to 0.99) | -23% (148,852 to 115,115 ms) | +48% (109.6 to 162.1 ms) | -12% |
+| L4 (M2, the smallest layout (`mma`), v0.25.0) | Qwen3-8B | 1.94x | 0.25 | 1.03x (0.22 to 0.23) | +30% (458 to 594 ms) | -22% (69.9 to 54.8 ms) | -20% |
+| L4 (M2, `mma`, v0.25.0) | Qwen3-8B | 1.94x | 1 | 1.15x (0.67 to 0.77) | -73% (3,213 to 870 ms) | +1% (99.3 to 100.1 ms) | -7% |
+| L4 (M2, `mma`, v0.25.0) | Qwen3-8B | 1.94x | inf | 1.29x (0.77 to 0.99) | -23% (148,852 to 115,115 ms) | +48% (109.6 to 162.1 ms) | -12% |
 | A10 (12-bit) | Qwen3-8B | 1.73x | 1 | 1.04x (0.85 to 0.88) | +16% (384 to 445 ms) | -21% (50.9 to 40.4 ms) | -20% |
 | A10 (12-bit) | Qwen3-8B | 1.73x | 4 | 1.22x (1.24 to 1.51) | -39% (27,898 to 17,134 ms) | +32% (66.8 to 88.5 ms) | -12% |
 | A10 (12-bit) | Qwen3-8B | 1.73x | inf | 1.31x (1.24 to 1.62) | -25% (93,052 to 70,196 ms) | +30% (66.1 to 85.7 ms) | -16% |
@@ -76,7 +76,7 @@ console files keep the median over every sample, idle ones included.
 
 ## Check: all 15 passed (`check/`, 1,093 s)
 
-| Qwen3-8B, against vLLM's bf16 | Glyd tiered | Glyd 12-bit |
+| Qwen3-8B, against vLLM's bf16 | Glyd `mma` | Glyd 12-bit |
 | :--- | ---: | ---: |
 | Packs unpacked to their weights, bit for bit | 144 of 144 | 144 of 144 |
 | Worst layer against F.linear, 1-4,096 tokens | 3.78e-3 | 3.78e-3 |

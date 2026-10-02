@@ -22,7 +22,7 @@ their exit and its byte-identical and differing saves.
 | pack-python.txt | `python -m glyd.gpu pack` of each model in each layout (on the GPU): the reference, its files' sha256 |
 | pack.txt | `glyd-gpu pack`, three rounds a model and layout on 16 threads: time, GB/s of bf16, peak RSS, every file's sha256 against Python's |
 | verify.txt | `glyd-gpu verify` of each Rust save, three rounds on the CPU (16 threads) and one on the GPU (`--device cuda:0`), and `python -m glyd.gpu verify` of it |
-| examples.txt | the crate's examples on Qwen3-0.6B's tiered save: unpack.rs (a pack, a merged one; the checkpoint's bits) and linear.rs (a product by each of the library's paths, bit for bit its kernel's) |
+| examples.txt | the crate's examples on Qwen3-0.6B's save in the smallest layout (`mma`): unpack.rs (a pack, a merged one; the checkpoint's bits) and linear.rs (a product by each of the library's paths, bit for bit its kernel's) |
 | tiny.txt | tiny.py's checkpoints (Llama tied and not, Qwen2, Mistral, Granite, Qwen3 with a hidden size no multiple of 128 and one untied, GraniteMoe) packed by both in both layouts, every file's sha256; each Rust save verified by both |
 
 ## Results
@@ -30,13 +30,13 @@ their exit and its byte-identical and differing saves.
 Every step exited 0.
 
 - Byte for byte: all 30 rounds of Qwen3-0.6B, 1.7B, 4B-Instruct-2507 and 8B and granite-3.1-3b-a800m-instruct
-  (glyd-v3's only mixture of experts here), tiered and 12-bit, every file's sha256 Python's. The same for all 16
+  (glyd-v3's only mixture of experts here), `mma` and 12-bit, every file's sha256 Python's. The same for all 16
   tiny saves.
 - Verified: every Rust save, by `glyd-gpu verify` on the CPU and on the GPU and by `python -m glyd.gpu verify`.
 
-`glyd-gpu pack` on 16 threads, three rounds, GB/s of bf16 (tiered / 12-bit):
+`glyd-gpu pack` on 16 threads, three rounds, GB/s of bf16 (`mma` / 12-bit):
 
-| model | bf16 | tiered | 12-bit | peak RSS |
+| model | bf16 | `mma` | 12-bit | peak RSS |
 | :--- | ---: | ---: | ---: | ---: |
 | Qwen3-0.6B | 1.19 GB | 1.55 | 1.64-1.67 | 1.1 / 1.2 GB |
 | Qwen3-1.7B | 3.44 GB | 1.55-1.58 | 1.88-1.91 | 3.1-3.2 / 3.3-3.4 GB |
@@ -48,5 +48,5 @@ Qwen3-8B's rounds took the disk's pace. Its three shards were written with the k
 flush in the state lines), and the pack used 3.2-6.4 of the 16 CPUs (320-635% in pack.txt). The smaller models used
 more.
 
-`glyd-gpu verify` of Qwen3-8B (253 packed tensors and 146 saved as they are): 11.6-11.8 s tiered and 8.8-9.0 s
+`glyd-gpu verify` of Qwen3-8B (253 packed tensors and 146 saved as they are): 11.6-11.8 s `mma` and 8.8-9.0 s
 12-bit on the CPU (16 threads, 2.5-2.7 GB peak RSS), 29.9 s and 26.6 s on the GPU.

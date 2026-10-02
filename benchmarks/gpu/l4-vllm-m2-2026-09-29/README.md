@@ -55,23 +55,23 @@ Serving). "Top-1" is the share of the continuation's tokens that each run also r
 
 | | Qwen3-1.7B | Qwen3-4B-Instruct-2507 | Qwen3-8B | Yi-1.5-6B-Chat (after M2) |
 | :--- | ---: | ---: | ---: | ---: |
-| Weights: bf16 / tiered / 12-bit (GiB) | 3.22 / 2.48 / 2.90 | 7.64 / 5.52 / 6.44 | 15.27 / 11.64 / 12.34 | 11.29 / 8.63 / 9.05 |
-| KV cache: bf16 / tiered / 12-bit (tokens) | 128,064 / 139,760 / 134,480 | 70,192 / 84,368 / 78,672 | 11,056 / 36,144 / 31,872 | 101,568 / 143,488 / 137,664 |
+| Weights: bf16 / the smallest layout (`mma`) / 12-bit (GiB) | 3.22 / 2.48 / 2.90 | 7.64 / 5.52 / 6.44 | 15.27 / 11.64 / 12.34 | 11.29 / 8.63 / 9.05 |
+| KV cache: bf16 / `mma` / 12-bit (tokens) | 128,064 / 139,760 / 134,480 | 70,192 / 84,368 / 78,672 | 11,056 / 36,144 / 31,872 | 101,568 / 143,488 / 137,664 |
 | Packs unpacked to their weights, bit for bit | 112 of 112 | 144 of 144 | 144 of 144 | 128 of 128 |
 | Worst layer against F.linear, 1-4,096 tokens (relative) | 3.70e-3 | 3.72e-3 | 3.66e-3 | 3.61e-3 |
 | bf16 eager against bf16: top-1 / \|Δ\| (the floor) | 0.9870 / 1.24e-2 | 0.9929 / 9.56e-3 | 0.9922 / 9.08e-3 | 0.9942 / 5.93e-3 |
-| Glyd tiered against bf16: top-1 / \|Δ\| | 0.9916 / 1.16e-2 | 0.9935 / 7.87e-3 | 0.9942 / 8.40e-3 | 0.9948 / 4.97e-3 |
+| Glyd `mma` against bf16: top-1 / \|Δ\| | 0.9916 / 1.16e-2 | 0.9935 / 7.87e-3 | 0.9942 / 8.40e-3 | 0.9948 / 4.97e-3 |
 | Glyd 12-bit against bf16: top-1 / \|Δ\| | 0.9890 / 1.25e-2 | 0.9935 / 7.87e-3 | 0.9942 / 8.40e-3 | 0.9929 / 5.34e-3 |
 | Exact, eager: bf16 eager's tokens, logprobs and continuation, bit for bit | 8 of 8, yes | 8 of 8, yes | 8 of 8, yes | 8 of 8, yes |
 | Exact under torch.compile | refused | refused | refused | refused; with inductor deterministic, compiled bf16's bit for bit (8 of 8, yes) |
 | Default mode, compiled, inductor deterministic, a run and a restart on its graphs | | | | the same bits (8 of 8, yes) |
-| Saves, tiered and 12-bit, each loaded in both layouts | bit for bit | bit for bit | not run | bit for bit (after the LM head fix) |
+| Saves, `mma` and 12-bit, each loaded in both layouts | bit for bit | bit for bit | not run | bit for bit (after the LM head fix) |
 
 - **Every layer's product** matched F.linear on its unpacked matrix within 1e-2 at 13 batch sizes, and gave the same
   bits on a second call.
 - **Glyd's tokens in its default mode are within bf16's own noise** on all three models, in both layouts: Glyd's top-1
   agreement with bf16 is at or above bf16 eager's, and its |Δ| at most 1.003x bf16 eager's (the check allows 2x).
-- **The compile cache** kept a graph for each of bf16, tiered and 12-bit on one `VLLM_CACHE_ROOT` (3 of 3, each
+- **The compile cache** kept a graph for each of bf16, `mma` and 12-bit on one `VLLM_CACHE_ROOT` (3 of 3, each
   model). Each layout started again on it loaded its own graph ("Directly load AOT compilation") and stood against
   bf16 as before.
 - **Saves:** `glyd.save_pretrained` of each layout, loaded as saved and in the other layout (unpacked and packed again),
@@ -86,7 +86,7 @@ Serving). "Top-1" is the share of the continuation's tokens that each run also r
 ## Serving Qwen3-8B (`bench_serve.sh`)
 
 `vllm serve Qwen/Qwen3-8B [--quantization glyd] --max-model-len 4096 --gpu-memory-utilization 0.9`, then `vllm bench
-serve` on the random dataset: 1,024 tokens in, 256 out (`--ignore-eos`). Glyd is the tiered layout, the L4's default.
+serve` on the random dataset: 1,024 tokens in, 256 out (`--ignore-eos`). Glyd is `mma`, the L4's default.
 Every request completed in every run.
 
 **Two starts.** vLLM keeps each server's compiled graph in its compile cache. The first bench started each server on
@@ -97,7 +97,7 @@ server started again does. The saving is the same 3.63 GiB of weights, about 25,
 | | Weights | KV cache, warm | Requests of 1,280 tokens at once | KV cache, cold | At once |
 | :--- | ---: | ---: | ---: | ---: | ---: |
 | bf16 | 15.27 GiB | 27,024 tokens | 21.1 | 19,760 tokens | 15.4 |
-| Glyd tiered | 11.64 GiB | 52,496 tokens (1.94x) | 41.0 | 45,200 tokens (2.29x) | 35.3 |
+| Glyd `mma` | 11.64 GiB | 52,496 tokens (1.94x) | 41.0 | 45,200 tokens (2.29x) | 35.3 |
 
 **Warm** (`bench-Qwen3-8B-low/`: 32 prompts at 0.25 requests a second; `bench-Qwen3-8B-warm/`: 64 at 1, 256 at once;
 each mode from about the GPU's idle temperature; the clock is nvidia-smi's median over the rate's samples while the GPU
@@ -154,7 +154,7 @@ prompt steps is the GPU's time, not the host's.
 
 ## The same run in a fresh process, and exact mode
 
-Qwen3-1.7B, tiered, the check's 8 prompts and continuation. `determinism.sh` and `repro.sh` start each run in a
+Qwen3-1.7B, `mma`, the check's 8 prompts and continuation. `determinism.sh` and `repro.sh` start each run in a
 process of its own; `repeat.py` generates three times in one process (prefix caching off).
 
 | Runs compared | Glyd: prompts bit for bit, continuation | bf16 |
@@ -171,7 +171,7 @@ Qwen3-4B-Instruct-2507. So vLLM's own compiled bf16 is not always the same from 
 ### The cause (`nondeterminism/`, after M2)
 
 Not Glyd's kernels. `dbg_hash.py` hashes, in call order, every product's input and output and every FlashAttention
-call's query, key, value and output over the continuation's one pass (1,542 tokens; Qwen3-1.7B, tiered, compiled with
+call's query, key, value and output over the continuation's one pass (1,542 tokens; Qwen3-1.7B, `mma`, compiled with
 CUDA graphs off so every call runs its Python), each run a process of its own, the first compiling and the others
 loading its graphs (`dbg1.sh`, `dbg2.sh`: v0.25.0's library).
 
@@ -197,7 +197,7 @@ compile cache; tokens/s at 1, 8 and 32 sequences, then 8 prompts of 1,024 tokens
 | | Default | Deterministic |
 | :--- | :--- | :--- |
 | bf16 | 16.7 / 126.3 / 449.5 tokens/s; 2.179 s | 16.7 / 126.1 / 448.6 tokens/s; 2.183 s |
-| Glyd tiered | 21.7 / 168.0 / 584.9 tokens/s; 2.284 s | 21.6 / 167.5 / 589.2 tokens/s; 2.240 s |
+| Glyd `mma` | 21.7 / 168.0 / 584.9 tokens/s; 2.284 s | 21.6 / 167.5 / 589.2 tokens/s; 2.240 s |
 
 Its compiles were faster, having no combo kernels to benchmark: Glyd's cold start took 118 s against 153.
 
@@ -210,10 +210,10 @@ bit for bit on all four models.
 
 ## The l4-routes library (`l4routes/`, `bench-Qwen3-8B-l4routes/`)
 
-The l4-routes branch (1f4343b, not merged) takes a faster path for an L4's prompts from 896 tokens in the tiered
+The l4-routes branch (1f4343b, not merged) takes a faster path for an L4's prompts from 896 tokens in the smallest
 layout. The plugin takes the library's choices, so with that library built and loaded in place of v0.25.0's:
 
-- **Qwen3-8B's check run** (tiered, compiled): every pack verified (144), every layer within 4.67e-3 of F.linear with
+- **Qwen3-8B's check run** (`mma`, compiled): every pack verified (144), every layer within 4.67e-3 of F.linear with
   the same bits on a second call. The continuation's 1,543-token pass took the new path, and its logits were compiled
   bf16's bit for bit (top-1 0.9935, as bf16's own). The 8 prompts' steps, in the default mode, were as before (0 of 8
   bit for bit, the same tokens as v0.25.0's library).
@@ -246,6 +246,6 @@ checked against the unpacked matrix's.
   and Ada (to 128 on an A100); the other kernels were clean. The hazards are "potential" ones
   (`mid-racecheck-lineinfo.txt`).
   - Called 2,000 times a shape (2048x2048, 6144x2048, 2048x6144, 12288x2048) and M (17, 33, 64), that kernel gave the
-    same bits on every call, within 1.9-3.1e-3 of the unpacked matrix's product (`mid-stress.txt`); the tiered layout's
-    kernel beside it likewise. So these read as false positives, not a race; the tiered layout, whose products never
+    same bits on every call, within 1.9-3.1e-3 of the unpacked matrix's product (`mid-stress.txt`); `mma`'s
+    kernel beside it likewise. So these read as false positives, not a race; `mma`, whose products never
     differed for the same inputs across processes, does not take this path.

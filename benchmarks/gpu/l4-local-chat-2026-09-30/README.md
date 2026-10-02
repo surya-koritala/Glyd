@@ -21,9 +21,9 @@ SUPER, so no speed here is that card's.
   (1089)".
   - The plugin sizes its scratch buffer by that code, at load. It is in the weights' memory in the logs below: 11.83
     GiB with vLLM's own chunk of prompt tokens, 11.64 GiB with `--max-num-batched-tokens 512`.
-  - The library's own kernel choices stay the L4's, and `layout auto` takes the tiered layout on Ada (`glyd: mma
-    layout` in the log of each server that loaded Glyd's weights). So the memory numbers are what the plugin asks of a
-    GeForce Ada card; the speeds are the L4's.
+  - The library's own kernel choices stay the L4's, and `layout auto` takes the smallest layout (`mma`) on Ada (`glyd:
+    mma layout` in the log of each server that loaded Glyd's weights). So the memory numbers are what the plugin asks of
+    a GeForce Ada card; the speeds are the L4's.
 
 ## Setup
 

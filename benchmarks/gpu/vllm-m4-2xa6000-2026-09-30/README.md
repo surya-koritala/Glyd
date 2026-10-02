@@ -11,8 +11,8 @@ the checks on a dense model and two mixtures of experts, then `vllm bench serve`
   there for sm_86 (C API 5; GPU code 86).
 - **Run:** 4 jobs in 59 minutes (`steps.txt`): `tp`, `moe-granite`, `moe-30b`, `moebench`. Qwen3-30B-A3B (61.1 GB)
   downloaded in 81 s.
-- **Glyd's layout:** the one `best_layout` picks, tiered for the mixtures of experts on this GDDR Ampere GPU (`glyd:
-  mma layout` in the servers' logs).
+- **Glyd's layout:** the one `best_layout` picks, the smallest layout (`mma`) for the mixtures of experts on this GDDR
+  Ampere GPU (`glyd: mma layout` in the servers' logs).
 
 ## Checks, tensor parallel over the two GPUs
 
@@ -47,7 +47,7 @@ and 256 out: 64 prompts at 1 request a second, 128 at 4, 256 at once.
 | | Weights, a GPU | KV cache | Requests of 1,280 tokens at once |
 | :--- | ---: | ---: | ---: |
 | bf16 | 28.46 GiB | 283,904 tokens | 221 |
-| Glyd tiered | 19.75 GiB | 473,232 tokens (1.67x) | 369 |
+| Glyd `mma` | 19.75 GiB | 473,232 tokens (1.67x) | 369 |
 
 | Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | ITL median / p99 (ms) |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: |

@@ -25,7 +25,7 @@ packs them; lm_head apart).
 
 | Layout | Qwen3-0.6B | Qwen3-1.7B | Qwen3-4B-Instruct-2507 | granite-3.1-3b-a800m | Qwen3-8B |
 | :-- | :-- | :-- | :-- | :-- | :-- |
-| tiered (`mma`) | 10.82 | 10.77 | 10.85 | 10.80 | 10.87 |
+| the smallest layout (`mma`) | 10.82 | 10.77 | 10.85 | 10.80 | 10.87 |
 | 12-bit (`mma12`), before and after | 12.04 | 12.04 | 12.04 | 12.07 | 12.04 |
 
 ## One layer, RTX 4080 SUPER (`layer-*`; time against cuBLAS, run 1 / run 2)

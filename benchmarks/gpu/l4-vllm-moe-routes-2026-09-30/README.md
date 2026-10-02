@@ -1,9 +1,9 @@
 # A mixture of experts' two ways to run, by tokens a step, in vLLM on an L4 (2026-09-30)
 
-granite-3.1-3b-a800m-instruct under `--quantization glyd` (tiered, the L4's layout). Each MoE layer holds 40 experts,
-routes each token to 8, and has hidden 1,536 and intermediate 512. The plugin has two ways to run a layer's experts,
-picked by tokens a step with `GLYD_MOE_DECODE_MIN` (`-1`: always the first, `1`: always the second; by default the
-second from 1,152 tokens a step, as exact mode runs it).
+granite-3.1-3b-a800m-instruct under `--quantization glyd`, in the smallest layout (`mma`), the L4's layout. Each MoE
+layer holds 40 experts, routes each token to 8, and has hidden 1,536 and intermediate 512. The plugin has two ways to
+run a layer's experts, picked by tokens a step with `GLYD_MOE_DECODE_MIN` (`-1`: always the first, `1`: always the
+second; by default the second from 1,152 tokens a step, as exact mode runs it).
 
 This directory measures both, per layer and per step, and serves with the default.
 

@@ -7,8 +7,8 @@ and with an EAGLE-3 draft. Every run is `gpu/vllm/spec_decode.py`, a vLLM of its
 
 - **Machine:** the dev L4 (AWS g6.4xlarge, 24 GB, 72 W), vLLM 0.30.0, v0.25.1's library. The plugin is the
   vllm-plugin branch after review 1 (5513d94) with this task's fix for a packed draft.
-- **Model:** Qwen/Qwen3-8B, Glyd's layout the L4's (tiered), `--gpu-memory-utilization 0.9`, `max_model_len` 4096.
-  Default is compiled with CUDA graphs; runs named `eager` use `--enforce-eager`.
+- **Model:** Qwen/Qwen3-8B, Glyd's layout the L4's, the smallest layout (`mma`), `--gpu-memory-utilization 0.9`,
+  `max_model_len` 4096. Default is compiled with CUDA graphs; runs named `eager` use `--enforce-eager`.
 - **Speculation:**
   - n-gram: 5 tokens, lookup of 2 to 4;
   - EAGLE-3: `RedHatAI/Qwen3-8B-speculator.eagle3` (Apache-2.0, ungated, revision 08610ff, 2.0 GB, 3 tokens). vLLM

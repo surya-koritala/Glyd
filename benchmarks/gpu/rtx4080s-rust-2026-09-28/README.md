@@ -17,7 +17,7 @@ by ps's %CPU (a process's average over its life). Every round is kept.
 | pack-python.txt | `python -m glyd.gpu pack` of each model in each layout (on the GPU): the reference |
 | pack.txt | `glyd-gpu pack`, three rounds a model and layout on 8 threads: time, GB/s of bf16, peak RSS, every file's sha256 against Python's |
 | verify.txt | `glyd-gpu verify` of each save: three rounds on the CPU (8 threads), one on the GPU |
-| load.txt | `from_pretrained(layout="mma12")` (load_time.py) from the bf16 checkpoint, the tiered save and the 12-bit save; three rounds, fresh processes, warm page cache |
+| load.txt | `from_pretrained(layout="mma12")` (load_time.py) from the bf16 checkpoint, the save in the smallest layout (`mma`) and the 12-bit save; three rounds, fresh processes, warm page cache |
 | unpack_c.txt | gpu/examples/unpack.c against the branch's library, on the saved Qwen3-0.6B |
 | generate.txt | generate() eager (gen.py: the best of three runs a process, 128 tokens), main's package and library and the branch's in turn, the order swapped each round; four rounds |
 | tiny.txt | tiny random checkpoints of each family packed by Python and by glyd-gpu (built from 70fa411), both layouts, every file's sha256; each save verified by both (tiny.py, tiny_job.sh) |
@@ -32,11 +32,11 @@ beside it):
 
 - pack.txt, 1 of 30 steps: round 1 of Qwen3-4B-Instruct-2507 in the 12-bit layout (2.88 GB/s; rounds 2-3: 2.91,
   2.87).
-- verify.txt, 3 of 40: round 1 of Qwen3-4B-Instruct-2507 12-bit on the CPU (2.82 s; 2.83, 2.84), of Qwen3-8B tiered
+- verify.txt, 3 of 40: round 1 of Qwen3-4B-Instruct-2507 12-bit on the CPU (2.82 s; 2.83, 2.84), of Qwen3-8B `mma`
   (9.14 s; 9.14, 9.19) and of Qwen3-8B 12-bit (7.34 s; 7.35, 7.46).
 - load.txt, 2 of 27: round 3 of Qwen3-4B-Instruct-2507 from the 12-bit save, with cicc (99.8%) too (0.84 s; 0.85,
   0.84); round 1 of Qwen3-8B from the bf16 checkpoint (3.61 s; 3.54, 3.55).
-- generate.txt, 30 of 32 steps, main's and the branch's alike: all but round 1's main Qwen3-1.7B tiered and round 3's
+- generate.txt, 30 of 32 steps, main's and the branch's alike: all but round 1's main Qwen3-1.7B `mma` and round 3's
   main Qwen3-4B-Instruct-2507 12-bit.
 - pack-python.txt (the reference, not quoted for speed), 1 of 10: Qwen3-8B in the 12-bit layout; test_gpu.txt (a
   check).

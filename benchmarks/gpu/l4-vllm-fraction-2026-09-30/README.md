@@ -39,28 +39,28 @@ packs' digest: empty at 0, and a different one at 0.5 and at 1.
 
 ## Check: `check_vllm.py --quick --fraction 0.5` on Qwen3-8B, all 18 passed (`checks/`, 19 minutes)
 
-The 15 checks of a `--quick` run on Glyd at fraction 0.5, tiered and 12-bit, and three more:
+The 15 checks of a `--quick` run on Glyd at fraction 0.5, in the smallest layout (`mma`) and in 12-bit, and three more:
 
 - Every pack (72: 18 layers' qkv, o, gate_up and down) unpacked to its weights bit for bit, in both layouts.
-- Every layer's product within 4.15e-3 (tiered) and 3.80e-3 (12-bit) of F.linear on its matrix unpacked, the same bits
+- Every layer's product within 4.15e-3 (`mma`) and 3.80e-3 (12-bit) of F.linear on its matrix unpacked, the same bits
   every run.
-- Top-1 agreement with bf16 on its 1,536-token continuation 0.9916 (tiered) and 0.9929 (12-bit), bf16 eager's 0.9922.
+- Top-1 agreement with bf16 on its 1,536-token continuation 0.9916 (`mma`) and 0.9929 (12-bit), bf16 eager's 0.9922.
 - **The layers:** 18 of 36 packed, which are the rule's (layer i where floor((i + 1) f) > floor(i f): 1, 3, 5, ... 35),
   each with all four of its Linears, the other 18 with vLLM's own method. Checked in both layouts.
 - Exact eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8 prompts, the continuation too).
 - Exact compiled, inductor deterministic: compiled bf16's bits (8 of 8, the continuation too), and exact compiled without
   the mode refused with Glyd's message.
 - Default mode, compiled, inductor deterministic: the same bits from one run to the next, the second loading the first's graphs.
-- The compile cache: a graph for each of bf16, tiered and 12-bit on one cache, each loaded again.
+- The compile cache: a graph for each of bf16, `mma` and 12-bit on one cache, each loaded again.
 - **Fraction 0, eager:** nothing packed, and bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8, the
   continuation too), with the same KV cache (17,568 tokens each).
 
-The KV cache of these runs (0.85 utilization, 4,096 tokens): bf16 11,056 tokens, fraction 0.5 tiered 22,064 and 12-bit
+The KV cache of these runs (0.85 utilization, 4,096 tokens): bf16 11,056 tokens, fraction 0.5 `mma` 22,064 and 12-bit
 19,936.
 
 ## Check: `check_vllm.py --brief --fraction 0.5` on granite-3.1-3b-a800m-instruct, all 7 passed (`checks/`, 4 minutes)
 
-A mixture of experts (32 layers, each with attention Linears and 40 experts), Glyd in the layout the GPU's best (tiered):
+A mixture of experts (32 layers, each with attention Linears and 40 experts), Glyd in the layout the GPU's best (`mma`):
 
 - 16 of 32 layers packed (1, 3, 5, ... 31): 32 Linears and the experts of 16 layers (`moe: 16`), every pack unpacked to its weights bit for bit, every product (the experts' too) within 3.38e-3 of its matrix unpacked.
 - The other 16 layers, their Linears and their experts, are vLLM's own methods (`UnquantizedLinearMethod`,
@@ -85,7 +85,7 @@ as the error.
 ## Bench: Qwen3-8B, bf16 and fractions 0, 0.5 and 1 (`bench-Qwen3-8B/`)
 
 M5's run (`../l4-vllm-m5-2026-09-30`) with two more modes in between bf16 and fraction 1, all back to back in one session:
-`bench_serve.sh` with `WARM=1`, so each server started twice on a new compile cache and the second measured; the tiered
+`bench_serve.sh` with `WARM=1`, so each server started twice on a new compile cache and the second measured; the `mma`
 layout (the L4's); `--gpu-memory-utilization 0.9`; the random dataset, 1,024 tokens in and 256 out; 64 prompts at 1
 request a second and 256 at once. Each mode waited up to 180 s for the GPU to cool to 50 C; the measured servers started at
 54 C (bf16), 62, 60 and 59 C, and the GPU ran at up to 85 C.

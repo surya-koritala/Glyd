@@ -2,7 +2,7 @@
 
 Qwen3-4B-Instruct-2507 on an RTX 4080 SUPER, one mode a process (`gpu/fp8_compare.py`, run by `fp8_job.sh` and
 `fp8_job2.sh`): bf16; bf16 through eager attention in place of SDPA (bf16's own variation between two valid kernels);
-Glyd with `exact=True` and by default (the tiered layout); FP8 as Qwen releases it
+Glyd with `exact=True` and by default, both in the smallest layout (`mma`); FP8 as Qwen releases it
 (Qwen/Qwen3-4B-Instruct-2507-FP8: e4m3 weights in 128 x 128 blocks, activations quantized per token). Glyd 0.22.0's
 code (main at 4fd327d's wheel), transformers 5.17, torch 2.14 + CUDA 13.
 

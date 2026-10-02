@@ -21,39 +21,40 @@ gives its window's SM clock and power.
   test_gpu.py and the crate's tests, all passing. The release's head is checked in
   benchmarks/gpu/decode-fix-2026-09-29/l4-head.
 
-The L4 ran at its 72 W cap from about 512 tokens up. From 896 tokens (tiered) and 2560 (12-bit) the library now takes a
-faster path for prompts on the L4 (not for exact mode), by more the longer the prompt.
+The L4 ran at its 72 W cap from about 512 tokens up. For the smallest layout (`mma`) from 896 tokens, and for 12-bit
+from 2560, the library now takes a faster path for prompts on the L4 (not for exact mode), by more the longer the
+prompt.
 
 Qwen3-8B, a prompt's pass over bf16's time, each row from main/ (one run: "now" is the new path where the library
 changed, the earlier one where it did not):
 
 | Prompt | 128 | 512 | 1024 | 2048 | 4096 | 8192 |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| tiered, v0.25.0 | +5.6% | +17.6% | +27.8% | +31.0% | +37.9% | +98.4% |
-| **tiered, now** | +5.6% | +17.6% | +25.5% | +11.3% | +8.4% | +4.7% |
+| `mma`, v0.25.0 | +5.6% | +17.6% | +27.8% | +31.0% | +37.9% | +98.4% |
+| **`mma`, now** | +5.6% | +17.6% | +25.5% | +11.3% | +8.4% | +4.7% |
 | 12-bit, v0.25.0 | -9.0% | -0.8% | +7.2% | +11.0% | +19.8% | +105.0% |
 | **12-bit, now** | -9.0% | -0.8% | +7.2% | +11.0% | +9.3% | +4.4% |
 
-Qwen3-4B-Instruct-2507 in main/, tiered, now: +4.6 / +25.8 / +12.9 / +14.0 / +10.1 / +4.3%; before: +4.6 / +25.8 /
+Qwen3-4B-Instruct-2507 in main/, `mma`, now: +4.6 / +25.8 / +12.9 / +14.0 / +10.1 / +4.3%; before: +4.6 / +25.8 /
 +9.5 / +30.9 / +33.2 / +43.0% (at 1024 tokens the earlier pass the faster in this run, even in main-fine/). 12-bit,
 now: -13.3 / +7.4 / -8.0 / +9.9 / +6.8 / +5.0%.
 
 l4-routes/ (the library as built, against bf16 in the same run) ran about 10 C cooler than main/ (the Glyd runs' medians
-66-72 C against 78-81 C), so its times are lower throughout, the unchanged ones' too: Qwen3-8B tiered +4.6 / +15.7 /
+66-72 C against 78-81 C), so its times are lower throughout, the unchanged ones' too: Qwen3-8B `mma` +4.6 / +15.7 /
 +20.5 / +6.8 / +4.1 / -0.0%, 12-bit -10.5 / -6.6 / +1.9 / +4.3 / +5.8 / +2.4%. Its rows are for the library as built,
 not for "was" against "now".
 
-Each layout as the library runs it, the 12-bit layout's prompts took 5-20% less time than the tiered layout's to 1536
+Each layout as the library runs it, the 12-bit layout's prompts took 5-20% less time than `mma`'s to 1536
 tokens and about the same from 1792 (2.4% more to 3.6% less; both models, main/, main-fine/ and l4-routes/).
 
 ## generate() against a forward pass, and the L4's temperature (gap/)
 
-Within one process a prompt's time to its first token through generate() was its forward pass's. Qwen3-8B tiered,
+Within one process a prompt's time to its first token through generate() was its forward pass's. Qwen3-8B `mma`,
 gen1 over forward: 1.005x at 2048 and 8192 tokens compiled, 1.001x and 1.008x not; bf16 1.000x and 0.983x. A
 forward pass right after a generate() of 16 tokens took the same time.
 
 The 5-9% seen between the respond job's time to first token and route_e2e.py's pass came from comparing runs at
-different temperatures. At its 72 W cap the L4's clock falls as it heats. The same pass of Qwen3-8B (tiered, 2048
+different temperatures. At its 72 W cap the L4's clock falls as it heats. The same pass of Qwen3-8B (`mma`, 2048
 tokens) took:
 
 | run | ms | SM clock | temperature |
@@ -69,18 +70,18 @@ The respond job's Glyd process ran after 20 minutes of bf16's.
 
 The L40S has the L4's bandwidth per FLOP: 350 W for 864 GB/s, where the L4 has 72 W for 300. From 2048 tokens the new
 path ran at the GPU's 350 W cap (medians 342-352 W and 1718-1935 MHz, the software power cap set in every sample). From
-1024 tokens (tiered) and 2048 (12-bit) the library now takes it on an L40S, not for exact mode. It is a class of its
+1024 tokens (`mma`) and 2048 (12-bit) the library now takes it on an L40S, not for exact mode. It is a class of its
 own (`GLYD_GPU_L40S`, 4000: an L40S's code is 4089): the L40 and RTX 6000 Ada were not measured. Qwen3-8B, over bf16's
 time, before and with the new path (forced on at every length here; the library takes it from the lengths above):
 
 | Prompt | 512 | 768 | 1024 | 1536 | 2048 | 3072 | 4096 | 8192 |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| tiered, before | +20.6% | +27.9% | +38.1% | +34.1% | +41.2% | +37.3% | +39.4% | +35.0% |
-| tiered, new path | +53.5% | +33.7% | +30.3% | +13.9% | +11.9% | +8.0% | +10.9% | +3.8% |
+| `mma`, before | +20.6% | +27.9% | +38.1% | +34.1% | +41.2% | +37.3% | +39.4% | +35.0% |
+| `mma`, new path | +53.5% | +33.7% | +30.3% | +13.9% | +11.9% | +8.0% | +10.9% | +3.8% |
 | 12-bit, before | -0.3% | +4.8% | +13.6% | +9.4% | +15.5% | +14.9% | +20.0% | +18.2% |
 | 12-bit, new path | +56.3% | +36.5% | +35.0% | +17.8% | +12.9% | +7.7% | +11.3% | +3.9% |
 
-At 512 tokens the 12-bit layout takes bf16's time (-0.3%), where the tiered one is +20.6%. Each layout as the library
-runs it, the 12-bit layout's prompts took 17.3 / 18.1 / 12.8 / 4.0% less time than the tiered layout's at 512 / 768 /
-1024 / 1536 tokens and were within 0.9% of them from 2048. The layout stays tiered (33% less memory); `layout="mma12"`
+At 512 tokens the 12-bit layout takes bf16's time (-0.3%), where `mma` is +20.6%. Each layout as the library
+runs it, the 12-bit layout's prompts took 17.3 / 18.1 / 12.8 / 4.0% less time than `mma`'s at 512 / 768 /
+1024 / 1536 tokens and were within 0.9% of them from 2048. The layout stays `mma` (33% less memory); `layout="mma12"`
 (25%) for the fastest short prompts.

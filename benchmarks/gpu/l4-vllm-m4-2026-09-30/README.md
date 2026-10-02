@@ -11,7 +11,7 @@ and exact mode's experts. Then M4's job for two GPUs, run here on one: the steps
 
 ## First runs (`smoke/`: `moe_smoke.sh`, `moe_exact.sh`)
 
-- **Glyd tiered, eager, verified:**
+- **Glyd in the smallest layout (`mma`), eager, verified:**
   - 64 Linears packed and verified, and 32 MoE layers' experts. The router's gate (40 rows) stays bf16.
   - Every product was within 3.79e-3 of its reference: the experts' against their matrices unpacked, in float32. A
     second call gave the same bits.
@@ -20,7 +20,7 @@ and exact mode's experts. Then M4's job for two GPUs, run here on one: the steps
 
 ## check_vllm.py --quick: all 15 passed (`check-granite-3.1-3b-a800m-instruct/`, 677 s)
 
-| Against vLLM's bf16 | Glyd tiered | Glyd 12-bit |
+| Against vLLM's bf16 | Glyd `mma` | Glyd 12-bit |
 | :--- | ---: | ---: |
 | Packs unpacked to their weights, bit for bit | 64 and 32 MoE layers' experts | 64 and 32 |
 | Worst product against its reference, 1-4,096 tokens | 3.79e-3 | 3.79e-3 |
@@ -38,7 +38,7 @@ and exact mode's experts. Then M4's job for two GPUs, run here on one: the steps
 - **`VJ_TP=2`:** stopped at once, "VJ_TP 2, but 1 GPUs here" (`tp-on-one-gpu.txt`).
 - **`VJ_STEPS=moebench,profile`** with granite, Qwen3-1.7B and short rates: every step ran, and results/DONE was written,
   in 706 s.
-  - **moebench on granite:** bf16's KV cache 211,968 tokens, Glyd's (tiered) 240,352; 16 prompts at 1 request a
+  - **moebench on granite:** bf16's KV cache 211,968 tokens, Glyd's (`mma`) 240,352; 16 prompts at 1 request a
     second, 32 at once.
   - **profile on Qwen3-1.7B:** a step's GPU time by kind, bf16 against Glyd, at generation steps of 1, 8 and 32 sequences
     and prompts of 512 and 2,048 tokens (`results/profile/`).

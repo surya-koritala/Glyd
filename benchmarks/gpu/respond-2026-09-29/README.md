@@ -8,9 +8,9 @@ greedy decoding, every reply forced to its length (`min_new_tokens`: no early en
   dynamic cache).
 - **bf16 compiled**: the same bf16 model, its `generate()` compiled as Glyd's default is (`fast_generate`:
   transformers' static cache and `torch.compile`'s CUDA graphs for the same calls, the rest eager): bf16 like for like.
-- **Glyd (default)**: `glyd.from_pretrained(MODEL)` as it loads by default: the layout the GPU's (`"auto"`: tiered on
-  Ada, 12-bit on an A10, A100 and H100, where it fits), `generate()` compiled (a static cache, CUDA graphs) where a
-  call's cache holds at most 2048 positions in all (1280 on a GeForce card), else eager.
+- **Glyd (default)**: `glyd.from_pretrained(MODEL)` as it loads by default: the layout the GPU's (`"auto"`: the smallest
+  layout (`mma`) on Ada, 12-bit on an A10, A100 and H100, where it fits), `generate()` compiled (a static cache, CUDA
+  graphs) where a call's cache holds at most 2048 positions in all (1280 on a GeForce card), else eager.
 - **Glyd exact**: `glyd.from_pretrained(MODEL, exact=True)`: every matrix unpacked whole, then `F.linear`, the logits
   bf16's bit for bit; eager.
 
@@ -40,7 +40,7 @@ b39563d: 3, and at least one then as many as fit 12 s). The GPU's clocks and pow
 `l4.sh`: resp_job.sh on the tree at d7b6ddf, the models from the machine's cache, Qwen3-8B then
 Qwen3-4B-Instruct-2507, every configuration at its full repeats. The L4 held its 72 W cap in every mode, its SM clock
 lower under Glyd's kernels (Qwen3-8B, medians while busy: bf16 1575 MHz, Glyd 1260, exact 1365). Glyd's layout there
-is the tiered one (Ada). Qwen3-8B (summary.txt has both models):
+is `mma` (Ada). Qwen3-8B (summary.txt has both models):
 
 | | bf16 | Glyd (default) | Glyd exact |
 | :-- | --: | --: | --: |
@@ -64,11 +64,11 @@ diverge: its products sum in another order than cuBLAS), each configuration's re
 ## The L4 again: bf16 compiled, and the L4's prompt handling (l4-routes/; 2026-09-29)
 
 `l4b.sh` and `l4c.sh`: resp_job.sh on branch l4-routes (72a46e2: a faster path for an L4's prompts from 896 tokens
-tiered and 2560 12-bit; benchmarks/gpu/l4-routes-2026-09-29 there) with this branch's respond.py (bcb540e; glyd12
+`mma` and 2560 12-bit; benchmarks/gpu/l4-routes-2026-09-29 there) with this branch's respond.py (bcb540e; glyd12
 5639409). The modes, the same machine and cache:
 - bf16 eager.
 - bf16 compiled, as Glyd's default compiles (the same calls: to 2048 positions).
-- Glyd's default (tiered on the L4).
+- Glyd's default (`mma` on the L4).
 - Glyd in the 12-bit layout (glyd12).
 Qwen3-8B (summary.txt has Qwen3-4B-Instruct-2507 too):
 
@@ -93,8 +93,8 @@ for tokens a second, over 1 is faster.
   2.10x at 8192; now 1.16x and 1.04x.
 - **Compiling bf16:** it gains 4% on one sequence and nothing at 8 and 32, which run eager in both (past the 2048
   positions). Its compiled calls take 8-10 ms longer to their first token (the static cache).
-- **The 12-bit layout on the L4:** bf16's time to first token to 512 tokens (0.98-0.99x bf16 eager's), and the
-  tiered layout's tokens a second (0.98-1.03x), for 9% more memory (12.54 GB against 11.45 on the GPU after the load).
+- **The 12-bit layout on the L4:** bf16's time to first token to 512 tokens (0.98-0.99x bf16 eager's), and
+  `mma`'s tokens a second (0.98-1.03x), for 9% more memory (12.54 GB against 11.45 on the GPU after the load).
 - **First calls (the compile):** bf16 compiled 36.5-37.3 s. Glyd's took 9.1-9.5 s here, 33 s in l4/: PyTorch's
   compile cache in /tmp still held its graphs from the day's earlier runs.
 - **Tokens:** bf16 compiled's greedy tokens are bf16 eager's in 8 of 9 configurations.
@@ -149,7 +149,7 @@ compiled, the rest eager in both (c: the call ran compiled):
 ## An A10 on v0.25.1 (a10-v0.25.1/; Lambda, 2026-09-30)
 
 resp_job.sh at 15d9c04 (the plan a10): an A10 (24 GB, 150 W; an Intel Xeon Platinum 8358 host, 30 vCPUs), Qwen3-8B and
-Qwen3-14B, 26 minutes with the library's build. Glyd's layout there is the 12-bit one for Qwen3-8B and the tiered one
+Qwen3-14B, 26 minutes with the library's build. Glyd's layout there is the 12-bit one for Qwen3-8B and `mma`
 for Qwen3-14B (the one that fits). Each run waited its 20 s for the GPU to cool and started at 45-61 C (its idle 35 C).
 
 Qwen3-14B fits where bf16 does not: Glyd's default loaded at 20.54 GB on the GPU (22.4 at its peak) and ran every

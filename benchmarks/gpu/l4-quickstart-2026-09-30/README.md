@@ -114,8 +114,8 @@ reserved after each packed layer and the allocator's blocks at the end of the lo
 | `rc2-24gb` | 0.26.0rc2, no hog | 0 | 11.83 GiB, 23.2 s | 7.04 GiB, 51,264 | | 19,622 | 526 MiB |
 
 - **The fix's packing** (`packbench.py`, `packbench.txt`): the packs' bits are the same, both layouts and three shapes
-  ("same bits as old"). A pack of gate_up (24,576 x 4,096) takes 166 ms against 284 (tiered) and 58 against 78
-  (12-bit), with its temporary memory 261 MiB over the pack against 392.
+  ("same bits as old"). A pack of gate_up (24,576 x 4,096) takes 166 ms against 284 in the smallest layout (`mma`) and
+  58 against 78 in 12-bit, with its temporary memory 261 MiB over the pack against 392.
 - **`expandable_segments:True` is not the fix:** its warnings are of another kind, "expandable_segments: memory mapping
   failed with OOM" (73 of them, the other count's name not matching them), and the allocator still reached 15 MiB free.
   `acceptance.sh` counts both kinds (`with OOM`).
