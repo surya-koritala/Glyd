@@ -334,8 +334,8 @@ tokens and were within 0.9% of them from 2048; `mma` is its default too (33% les
 
 ### Long prompts on an A100, a GH200 and an H100 SXM
 
-Long `mma12` prompts take less time on these GPUs with the Python package's long-prompt path than without
-it (a forward pass at least 2% less):
+Long `mma12` prompts take less time on these GPUs with the Python package's extra long-prompt path
+(`GLYD_SPLIT_*`) than without it (a forward pass at least 2% less):
 
 - an A100 SXM4 40 GB: from 769 to 4096 tokens, and to 8192 for a matrix whose O and K are both at least 5120,
   as Qwen3-14B's (its pass 0.968 of the time at 8192; Qwen3-8B's 0.994 there, not taken);
@@ -346,34 +346,34 @@ it (a forward pass at least 2% less):
   `GLYD_SPLIT_MIN=2048`, which for 14B is the rule's own choice).
 
 The Python package takes it by default where it applies. Other callers of the library (the C API, the Rust
-crate and the vLLM plugin) get the default routes unless they ask for it with `GLYD_GPU_WITH_SPLIT`. One
+crate and the vLLM plugin) get the default path unless they ask for it with `GLYD_GPU_WITH_SPLIT`. One
 forward pass (`e2e.py --prefill --merge`), ms, the medians of 3 rounds each way in turn:
 
 | Prompt                         |   769 |  1024 |  2048 |  4096 |   8192 |
 | :----------------------------- | ----: | ----: | ----: | ----: | -----: |
 | A100-SXM4-40GB, Qwen3-8B, bf16 |  80.9 |  93.0 | 181.9 | 363.0 |  766.3 |
-| Glyd, long-prompt path off     | 103.3 | 115.1 | 204.4 | 386.7 |  792.5 |
+| Glyd, `GLYD_SPLIT_MIN=-1`      | 103.3 | 115.1 | 204.4 | 386.7 |  792.5 |
 | Glyd                           |  92.9 | 101.2 | 196.6 | 375.8 |  787.1 |
 | Qwen3-14B, bf16                | 128.9 | 156.7 | 303.5 | 611.6 | 1282.6 |
-| Glyd, long-prompt path off     | 179.5 | 205.9 | 362.1 | 680.9 | 1373.9 |
+| Glyd, `GLYD_SPLIT_MIN=-1`      | 179.5 | 205.9 | 362.1 | 680.9 | 1373.9 |
 | Glyd                           | 151.7 | 178.0 | 332.0 | 644.5 | 1329.6 |
 | GH200, Qwen3-8B, bf16          |       |       |  72.1 | 146.7 |  306.7 |
-| Glyd, long-prompt path off     |       |       |  81.5 | 155.4 |  314.8 |
+| Glyd, `GLYD_SPLIT_MIN=-1`      |       |       |  81.5 | 155.4 |  314.8 |
 | Glyd                           |       |       |  79.7 | 154.0 |  312.3 |
 | Qwen3-32B, bf16                |       |       | 280.1 | 564.5 | 1190.1 |
-| Glyd, long-prompt path off     |       |       | 335.7 | 636.2 | 1279.9 |
+| Glyd, `GLYD_SPLIT_MIN=-1`      |       |       | 335.7 | 636.2 | 1279.9 |
 | Glyd                           |       |       | 305.1 | 598.7 | 1218.4 |
 | H100 SXM, Qwen3-14B, bf16      |       |       | 119.2 | 245.7 |  504.5 |
-| Glyd, long-prompt path off     |       |       | 150.5 | 279.0 |  551.4 |
+| Glyd, `GLYD_SPLIT_MIN=-1`      |       |       | 150.5 | 279.0 |  551.4 |
 | Glyd                           |       |       | 134.4 | 260.4 |  518.2 |
 
 The A100's Qwen3-8B at 8192 tokens and the GH200's Qwen3-8B are outside the default rule (not taken: a
-measurement). The ratios above are each round's time over the path-off time, the median of the 3 (Qwen3-8B at
-1024 tokens on the A100: rounds 0.867, 0.879, 0.876, median 0.876).
+measurement). The ratios above are each round's time over the `GLYD_SPLIT_MIN=-1` time, the median of the 3
+(Qwen3-8B at 1024 tokens on the A100: rounds 0.867, 0.879, 0.876, median 0.876).
 
 - **Where measured:** an A100-SXM4-40GB, a GH200 480GB and an H100 80GB HBM3, the SXM5. The package takes
   it on an A100 SXM4 80 GB and an A800 SXM4 too, by name and size, not measured there. An H200, an H100 NVL
-  and the PCIe cards (an A100 PCIe, an H100 PCIe) keep the default routes until a session measures them.
+  and the PCIe cards (an A100 PCIe, an H100 PCIe) keep the default path until a session measures them.
   Nothing past 8192 tokens takes it, not measured. Never on a MIG slice.
 - **Where it cannot run,** a prompt takes the default path, never an error: the JIT build (the prebuilt
   library only), a driver before CUDA 12.5 or one that refuses it (a warning says so), too little memory, a
@@ -501,7 +501,7 @@ Measured, and in the tables above:
   bf16's 49.1; on an A10, an L4 and an L40S, long prompts take the percentages above.
 - **With vLLM** at saturation on a GH200, an H100 SXM and two RTX A6000s: [vllm/README.md](vllm/README.md#measured).
 - **Not measured:** Blackwell; the long-prompt path on an H200, an H100 NVL and the PCIe cards; the L40 and
-  the RTX 6000 Ada, which take the default routes.
+  the RTX 6000 Ada, which take the default path.
 
 ## Reproduce
 
