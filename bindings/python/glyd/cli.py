@@ -1,9 +1,10 @@
 """The `glyd` command.
 
-    glyd run Qwen/Qwen3-8B          # download, start and chat: the GPU half (glyd.gpu.run)
+    glyd run Qwen/Qwen3-8B          # download, start and chat: the GPU half (the glyd-gpu package)
     glyd serve Qwen/Qwen3-8B        # the same, left up as an OpenAI API
     glyd doctor                     # what this machine has, and what fits
     glyd login                      # a Hugging Face token, for gated models
+    glyd pack MODEL OUT             # a model's weights packed on the GPU and saved; glyd verify PATH checks a save
     glyd input.tar -o input.tar.glyd   # anything else: the compression program (the Rust `glyd`), found on PATH
 
 The wheel carries the libraries, not the Rust program, so a compression command is forwarded to the `glyd` executable that is
@@ -17,7 +18,7 @@ import subprocess
 import sys
 from . import __version__
 
-GPU_COMMANDS = ("run", "serve", "doctor", "login")
+GPU_COMMANDS = ("run", "serve", "doctor", "login", "pack", "verify")
 HELP = """glyd {version}
 
 Run a model on your NVIDIA GPU with its weights packed by Glyd (about a third less GPU memory, the same bits):
@@ -25,6 +26,7 @@ Run a model on your NVIDIA GPU with its weights packed by Glyd (about a third le
   glyd serve MODEL            the same, left up as an OpenAI API for other apps
   glyd doctor                 check this machine: GPU, driver, compilers, which models fit
   glyd login                  save a Hugging Face token (for gated models such as Llama)
+  glyd pack MODEL OUT         MODEL's weights packed on the GPU, each pack checked, saved in OUT; glyd verify PATH checks a save
   MODEL is a Hugging Face name (Qwen/Qwen3-8B) or a folder. glyd run --help shows the options;
   any vLLM flag can follow a lone --:  glyd run MODEL -- --max-model-len 4096
 
@@ -63,14 +65,12 @@ def find_native(path=None, me=None):
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if args and args[0] in GPU_COMMANDS:
-        from .gpu import run  # (the GPU half is imported where it is asked for)
-
-        code = run.main(args[0], args[1:])
-        if code in (129, 130, 143):  # (Ctrl-C, SIGHUP, SIGTERM: huggingface_hub's download threads are not daemons, and a normal exit would wait for the shard in flight)
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os._exit(code)
-        return code
+        try:
+            from glyd_gpu import _cli  # (the GPU half is the glyd-gpu package, imported where it is asked for)
+        except ImportError as e:
+            sys.stderr.write(f'glyd {args[0]}: the GPU half of glyd is the glyd-gpu package, which is not installed here: pip install "glyd[gpu]" ({e})\n')
+            return 1
+        return _cli.main(args, prog="glyd")
     forwarded = bool(os.environ.get("GLYD_FORWARDED"))  # (a glyd that was started by a glyd does not start another)
     native = None if forwarded else find_native()
     env = dict(os.environ, GLYD_FORWARDED="1")
