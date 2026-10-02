@@ -55,27 +55,26 @@ layout also from `GLYD_DEC_MIN` where that is set lower) they return
 The long-prompt path (the route SPLIT) is opt-in: `glyd_gpu_mma12_route` gives
 it only for a GPU's code with `GLYD_GPU_WITH_SPLIT`, and
 `glyd_gpu_mma12_linear`'s own route (-1) never is, so without the flag the
-routes are v0.25.1's. Asked for, a prompt of the mma12 layout on an A100
-SXM4 40 GB (769-4096 tokens, and to 8192 for a matrix whose O and K are both at
+routes are v0.25.1's. Asked for, a prompt of the mma12 layout on an A100 SXM4
+40 GB (769-4096 tokens, and to 8192 for a matrix whose O and K are both at
 least 5120), a GH200 or an H100 SXM (2048-8192, such a matrix alone; an H200,
 an H100 NVL and the PCIe cards not yet, until measured) takes it
-(`glyd_gpu_mma12_route`, `glyd_gpu_mma12_split_sms`): its matrices are decoded
-ahead into a ring of slots in your device memory while your cuBLAS multiplies
-from the ring. The library does not link cuBLAS: give
-`glyd_gpu_mma12_ring_linear` your handle and its functions
-(`glyd_gpu_blas`); queue a prompt's matrices in their order
-(`glyd_gpu_mma12_ring_queue`), then call each product, on the device the
-ring was made on. Where it cannot run (a driver before CUDA 12.5 or one that
-refuses it; a stream being captured) it returns `cudaErrorNotSupported`: take
-the route the GPU's code without the flag gives. Measured on an A100-SXM4-40GB,
-a GH200 480GB and an H100 80GB HBM3 (the SXM5, with Qwen3-14B's matrices;
-Qwen3-32B's have O and K at least 5120 too: not run there). The library's rule
-goes by the GPU's code alone, so any GPU of an A100 SXM4's code (compute
-capability 8.0, no PCIe in its name: an A100 SXM4 80 GB, an A800, an A30), a
-GH200's or an H100 SXM's (`GLYD_GPU_H100`: "H100" as a word in its name, not an
-H100 NVL) gets the route where it is asked for, not measured there; glyd.gpu's
-Linears ask for it only on an A100 SXM4, a GH200 or an H100 SXM, never on a MIG
-slice. `glyd_gpu_mma12_linear` given SPLIT takes it by the prompt kernel.
+(`glyd_gpu_mma12_route`, `glyd_gpu_mma12_split_sms`): you give the library a
+scratch buffer (a ring, `glyd_gpu_ring_create`) and your cuBLAS handle and its
+functions (`glyd_gpu_blas`; the library does not link cuBLAS); queue a
+prompt's matrices in their order (`glyd_gpu_mma12_ring_queue`), then call each
+product with `glyd_gpu_mma12_ring_linear`, on the device the ring was made on.
+Where it cannot run (a driver before CUDA 12.5 or one that refuses it; a
+stream being captured) it returns `cudaErrorNotSupported`: take the route the
+GPU's code without the flag gives. Measured on an A100-SXM4-40GB, a GH200
+480GB and an H100 80GB HBM3 (the SXM5, with Qwen3-14B's matrices; Qwen3-32B's
+have O and K at least 5120 too: not run there). The library's rule goes by the
+GPU's code alone, so any GPU of an A100 SXM4's code (compute capability 8.0,
+no PCIe in its name: an A100 SXM4 80 GB, an A800, an A30), a GH200's or an
+H100 SXM's (`GLYD_GPU_H100`: "H100" as a word in its name, not an H100 NVL)
+gets the route where it is asked for, not measured there; glyd.gpu's Linears
+ask for it only on an A100 SXM4, a GH200 or an H100 SXM, never on a MIG slice.
+`glyd_gpu_mma12_linear` given SPLIT takes it by the prompt kernel.
 
 Rust calls them through the `glyd-gpu` crate in the Glyd repository (the
 library loaded at run time and held to its API version, each function

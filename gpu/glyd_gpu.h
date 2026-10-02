@@ -124,11 +124,11 @@ int glyd_gpu_mma12_gemm_wg(const uint8_t* data, const uint32_t* exc, const int32
                            void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs);
 
 /* Rows [row0, row0 + rows) of W (multiples of 64) back to bf16, into out
- * [rows, K]. warps 0: the default launch; else that many warps in all (for a
- * decode that runs beside a product on another stream). Also, mma12:
- * glyd_gpu_mma12_unpack_split, the route SPLIT's decode (K a multiple of 64,
- * out 16-byte aligned), sized for sms SMs (glyd_gpu_ring_* below run it on
- * theirs). */
+ * [rows, K]. warps 0: the default launch; else the launch is limited to that
+ * many warps in all, so it can run beside a product on another stream.
+ * glyd_gpu_mma12_unpack_split: the same for the route SPLIT, sized by sms (the
+ * split size of glyd_gpu_mma12_split_sms; K a multiple of 64, out 16-byte
+ * aligned). */
 int glyd_gpu_mma_unpack(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3],
                         int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t warps, cudaStream_t cs);
 int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
@@ -136,13 +136,13 @@ int glyd_gpu_mma12_unpack(const uint8_t* data, const uint32_t* exc, const int32_
 int glyd_gpu_mma12_unpack_split(const uint8_t* data, const uint32_t* exc, const int32_t* exc_base, const uint32_t sym[4],
                                 int64_t K, int64_t row0, int64_t rows, uint16_t* out, int64_t sms, cudaStream_t cs);
 
-/* Stream cs held ns nanoseconds by a one-thread kernel: a launch after it on
- * cs starts that much later. */
+/* Holds stream cs for ns nanoseconds: work queued on cs after it starts that
+ * much later. */
 int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
 
 /* ------------------------------------------------------------------------
  * Routes: how glyd.gpu multiplies by a packed W [O, K] for M tokens on a
- * GPU, as measured there (gpu/README.md): the kernel it takes, or W decoded
+ * GPU, as measured there (gpu/README.md): the kernel it takes, or W unpacked
  * for a bf16 GEMM of the caller's own (cuBLAS) where that is the faster.
  * glyd.gpu's Linears take their routes from here. A GPU is a code: its
  * compute capability, major * 10 + minor, plus its class by name where the
@@ -157,17 +157,18 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
  * 40; 3089: an L4; 4089: an L40S; 89: an L40 or RTX 6000 Ada; 2086: an A10; 86:
  * an A10G, A40 or RTX A6000; 80: an A100 SXM4; 5080: an A100 PCIe; 90: an H200
  * or H100 NVL; 7090: an H100 SXM; 6090: a GH200; 5090: an H100 PCIe.
- * GLYD_GPU_WITH_SPLIT added to a code asks for the route SPLIT (a
- * caller that runs the ring below: glyd.gpu's GLinear, where the split can
- * run); without it no route is SPLIT (v0.25.1's routes).
+ * GLYD_GPU_WITH_SPLIT added to a code asks for the route SPLIT, the faster
+ * route for a long mma12 prompt on an A100 SXM, a GH200 and an H100 SXM, which
+ * a caller runs through glyd_gpu_mma12_ring_linear (glyd.gpu's Linears do,
+ * where it can run); without the flag no route is SPLIT (v0.25.1's routes).
  * ---------------------------------------------------------------------- */
-#define GLYD_GPU_ROUTE_DECODE 0 /* W decoded (glyd_gpu_*_unpack), then the caller's GEMM */
+#define GLYD_GPU_ROUTE_DECODE 0 /* W unpacked (glyd_gpu_*_unpack), then the caller's GEMM */
 #define GLYD_GPU_ROUTE_GEMM 1   /* glyd_gpu_mma_gemm, glyd_gpu_mma12_gemm */
 #define GLYD_GPU_ROUTE_MID 2    /* glyd_gpu_mma12_gemm_mid */
 #define GLYD_GPU_ROUTE_WG 3     /* glyd_gpu_mma12_gemm_wg */
 #define GLYD_GPU_ROUTE_BIG 4    /* glyd_gpu_mma_gemm_big, glyd_gpu_mma12_gemm_big: variant 0 */
-#define GLYD_GPU_ROUTE_AHEAD 5  /* DECODE, with W decoded ahead of its product (GeForce Ada's, an A10's, an L40S's prompts) */
-#define GLYD_GPU_ROUTE_SPLIT 6  /* mma12: the long-prompt path of an A100 SXM, a GH200 and an H100 SXM, opt-in (glyd_gpu_mma12_ring_linear) */
+#define GLYD_GPU_ROUTE_AHEAD 5  /* DECODE for a caller; the faster route for a long prompt on GeForce Ada, an A10 and an L40S in glyd.gpu */
+#define GLYD_GPU_ROUTE_SPLIT 6  /* mma12, opt-in: the faster route for a long prompt on an A100 SXM, a GH200 and an H100 SXM (glyd_gpu_mma12_ring_linear) */
 #define GLYD_GPU_GEFORCE 1000   /* a GPU's class: "GeForce" in its name */
 #define GLYD_GPU_A10 2000       /* a GPU's class: "A10" in its name as a word */
 #define GLYD_GPU_L4 3000        /* a GPU's class: "L4" in its name as a word */
@@ -179,42 +180,54 @@ int glyd_gpu_hold(int64_t ns, cudaStream_t cs);
 
 /* The current device's GPU as the routes take it: its code. */
 int glyd_gpu_gpu(int* gpu);
-/* The route of W [O, K] for M tokens on gpu, in the mma layout or the
- * mma12 one; last (NULL: not asked): the last token count from M on that
- * takes it (INT64_MAX: every one past M). GLYD_WG_MIN, GLYD_WG_MAX,
- * GLYD_MID_MIN and GLYD_DEC_MIN in the environment move its thresholds:
- * read once a process, at the first route (a later change has no effect),
- * each a whole number in base 10 (spaces around it, a sign), else taken as
- * unset (the glyd package refuses such a value at import); GLYD_DEC_MIN: a
- * mma12 prompt takes the DECODE route from that many tokens on any GPU;
- * unset or 0: the GPU's own. */
+/* The route of W [O, K] for M tokens on gpu, in the mma layout or the mma12
+ * one; last (NULL: not asked): the last token count from M on that takes it
+ * (INT64_MAX: every one past M). These environment variables move the token
+ * counts where a route starts or stops; each is read once a process, at the
+ * first route (a later change has no effect), as a whole number in base 10
+ * (spaces around it, a sign), else taken as unset (the glyd package refuses
+ * such a value at import):
+ *   GLYD_WG_MIN, GLYD_WG_MAX  raise or lower the token counts where Hopper's
+ *                             route for many tokens a step (WG) starts and stops
+ *   GLYD_MID_MIN              raises or lowers the token count where the route
+ *                             for many tokens a step (MID) starts, on Ampere and
+ *                             Ada
+ *   GLYD_DEC_MIN              raises or lowers the token count where an mma12
+ *                             prompt takes the DECODE route, on any GPU (0 or
+ *                             unset: the GPU's own) */
 int glyd_gpu_mma_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
 int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* route, int64_t* last);
-/* The SMs the route SPLIT takes for its decode, where the route of the code
- * with GLYD_GPU_WITH_SPLIT is SPLIT (else 0; without the flag, 0): the
- * long-prompt path of an mma12 prompt, where a forward pass took at least 2%
- * less time by it than by the routes without it (gpu/README.md): an A100
- * SXM's from 769 to 4096 tokens, and to 8192 for a matrix whose O and K are
- * both at least 5120; a GH200's and an H100 SXM's from 2048 to 8192 for such
- * a matrix (an H200, an H100 NVL and the PCIe cards: never, until measured).
- * The route is opt-in: glyd_gpu_*_route give it only for a code with
- * GLYD_GPU_WITH_SPLIT, and glyd_gpu_*_linear's own route (-1) never is.
- * GLYD_SPLIT_MIN, GLYD_SPLIT_MAX (0 or unset: the GPU's; a negative
- * GLYD_SPLIT_MIN: never) and GLYD_SPLIT_SMS move them, on any GPU from Ampere
- * and any matrix, read as the routes' others. K a multiple of 64. */
+/* The split size of the route SPLIT for W [O, K] and M tokens on gpu (a code
+ * with GLYD_GPU_WITH_SPLIT): pass it as sms to glyd_gpu_ring_split,
+ * glyd_gpu_mma12_ring_queue and glyd_gpu_mma12_ring_linear. 0 where the route is
+ * not SPLIT (and without the flag). The route runs a long mma12 prompt's
+ * products faster than the others where a forward pass took at least 2% less
+ * time by it (gpu/README.md): on an A100 SXM from 769 to 4096 tokens, and to
+ * 8192 for a matrix whose O and K are both at least 5120; on a GH200 and an
+ * H100 SXM from 2048 to 8192 for such a matrix (an H200, an H100 NVL and the
+ * PCIe cards: never, until measured). It is opt-in: glyd_gpu_*_route give it
+ * only for a code with GLYD_GPU_WITH_SPLIT, and glyd_gpu_*_linear's own route
+ * (-1) never is. These environment variables work on any GPU from Ampere and
+ * any matrix, and are read as the routes' others:
+ *   GLYD_SPLIT_MIN, GLYD_SPLIT_MAX  raise or lower the token counts where the
+ *                                   route starts and stops (0 or unset: the
+ *                                   GPU's own; GLYD_SPLIT_MIN -1 turns it off)
+ *   GLYD_SPLIT_SMS                  sets the split size (0 or unset: the GPU's
+ *                                   own)
+ * K a multiple of 64. */
 int glyd_gpu_mma12_split_sms(int64_t gpu, int64_t O, int64_t K, int64_t M, int64_t* sms);
 
 /* Y [M, O] = X W^T (+ bias) by a route (negative: the current GPU's for M):
  * its kernel, its arguments as that kernel's; DECODE and AHEAD by the prompt
- * kernel (BIG, variant 0) on every GPU, Hopper's too (not measured there). No kernel here takes
- * DECODE or AHEAD where K is not a multiple of 64 (the prompt kernel's
- * blocks), and a matrix of such a K takes one of them for M past 64 on every
- * GPU and in either layout (in the mma12 layout also from GLYD_DEC_MIN
- * tokens where that is set lower): there these functions and their
- * workspace queries return cudaErrorNotSupported, nothing launched, and the
- * caller decodes W (glyd_gpu_*_unpack, [O, K] bf16) for a GEMM of its own,
- * Y = X W^T + bias, as glyd.gpu does. done: (M + 127) / 128 x O / 64
- * counters, and at least 1024 (the WG route's, as glyd_gpu_mma12_gemm_wg's). */
+ * kernel (BIG, variant 0) on every GPU, Hopper's too (not measured there). No
+ * kernel here takes DECODE or AHEAD where K is not a multiple of 64, and a
+ * matrix of such a K takes one of them for M past 64 on every GPU and in
+ * either layout (in the mma12 layout also from GLYD_DEC_MIN tokens where that
+ * is set lower): there these functions and their workspace queries return
+ * cudaErrorNotSupported, nothing launched, and the caller unpacks W
+ * (glyd_gpu_*_unpack, [O, K] bf16) for a GEMM of its own, Y = X W^T + bias, as
+ * glyd.gpu does. done: (M + 127) / 128 x O / 64 counters, and at least 1024
+ * (the WG route's, as glyd_gpu_mma12_gemm_wg's). */
 int glyd_gpu_mma_linear_workspace(int64_t O, int64_t K, int64_t M, int64_t route, size_t* bytes);
 int glyd_gpu_mma_linear(const uint8_t* data, const uint8_t* blocks, const int32_t* block_base, const uint32_t tiers[3],
                         int64_t O, int64_t K, const uint16_t* x, int64_t M, const uint16_t* bias, uint16_t* y,
@@ -225,17 +238,17 @@ int glyd_gpu_mma12_linear(const uint8_t* data, const uint32_t* exc, const int32_
                           int64_t route, void* workspace, size_t workspace_bytes, int* done, cudaStream_t cs);
 
 /* ------------------------------------------------------------------------
- * The route SPLIT: a prompt's matrices decoded ahead, into a ring of slots in
- * the caller's device memory, while the caller's cuBLAS multiplies from the
- * ring, the two sides ordered by events (the host never waits). Queue a
- * prompt's matrices in the order their products will be called, as its first
- * product starts (or a few ahead of its products as they go), then call each
- * product; a product whose matrix is not next in the queue drops it and
- * decodes its own. Give the ring slots for a layer's chunks and one. Its
- * products are cuBLAS's own on the decoded bf16 (a row chunk a call): not bit
- * for bit a whole-matrix product. A ring serves one host thread and one
+ * The route SPLIT: the faster route for a long mma12 prompt on an A100 SXM, a
+ * GH200 and an H100 SXM, opt-in (glyd_gpu_*_route give it only for a code with
+ * GLYD_GPU_WITH_SPLIT). You give the library a scratch buffer (a ring) and your
+ * cuBLAS handle. Queue a prompt's matrices in the order their products will be
+ * called, as its first product starts (or a few ahead of its products as they
+ * go), then call each product with glyd_gpu_mma12_ring_linear; a product whose
+ * matrix is not next in the queue drops it and runs on its own. None of these
+ * calls waits on the host. Its products are cuBLAS's own on the unpacked bf16:
+ * not bit for bit a whole-matrix product. A ring serves one host thread and one
  * device (the current one when made: cudaErrorInvalidDevice with another
- * current); cudaErrorNotSupported where the split cannot run (a driver before
+ * current); cudaErrorNotSupported where the route cannot run (a driver before
  * CUDA 12.5 or one that refuses it; stream cs being captured into a CUDA
  * graph): take the route the code without GLYD_GPU_WITH_SPLIT gives.
  * ---------------------------------------------------------------------- */
@@ -243,12 +256,11 @@ typedef struct glyd_gpu_ring glyd_gpu_ring;
 
 /* The caller's cuBLAS, which the library does not link: a handle and its
  * functions (the calls' own types, int for their enums and status; get_* and
- * set_workspace may be NULL). A call sets the handle's stream to the ring's
- * product stream, its workspace to workspace (where given: the ring's stream
- * alone uses it) and its SM count target to the products' SMs, and puts back
- * the stream and target it had where get_stream and get_sm_count_target read
- * them (the target is set only where it can be read back). A cuBLAS status s
- * is returned as GLYD_GPU_BLAS_ERROR + s. */
+ * set_workspace may be NULL). A call changes the handle's stream, SM-count
+ * target and, where one is given here, workspace (used by these calls alone)
+ * while it runs, and puts back the stream and target it had where get_stream and
+ * get_sm_count_target read them (the target is set only where it can be read
+ * back). A cuBLAS status s is returned as GLYD_GPU_BLAS_ERROR + s. */
 typedef struct glyd_gpu_blas {
     void* handle; /* cublasHandle_t */
     int (*gemm_ex)(void* handle, int transa, int transb, int m, int n, int k, const void* alpha, const void* A, int Atype, int lda,
@@ -264,27 +276,28 @@ typedef struct glyd_gpu_blas {
 } glyd_gpu_blas;
 #define GLYD_GPU_BLAS_ERROR 10000
 
-/* A ring over buffer (bytes long, 16-byte aligned) in slots of slot_bytes (a
- * multiple of 256; 3 to 16 of them), on the current device. */
+/* A ring over the scratch buffer you give it (bytes long, 16-byte aligned), used
+ * in parts of slot_bytes (a multiple of 256; 3 to 16 of them), on the current
+ * device. */
 int glyd_gpu_ring_create(void* buffer, size_t bytes, size_t slot_bytes, glyd_gpu_ring** ring);
-/* Its streams waited for, its streams and events let go (on its device,
- * whichever is current): the first failure's status (then its buffer may
- * still be written: keep it). */
+/* Destroys the ring: its streams are waited for and let go with its events (on
+ * its device, whichever is current); the first failure's status (then its buffer
+ * may still be written: keep it). */
 int glyd_gpu_ring_destroy(glyd_gpu_ring* ring);
-/* The split for a decode of sms SMs (glyd_gpu_mma12_split_sms's): made where
- * it is not yet and kept; the SMs each side has. */
+/* Sets the ring up for a split of size sms (glyd_gpu_mma12_split_sms's), where it
+ * is not yet, and keeps it; the sizes of its two sides. */
 int glyd_gpu_ring_split(glyd_gpu_ring* ring, int64_t sms, int64_t* decode_sms, int64_t* product_sms);
 /* The queue dropped: stream cs waits for everything the ring has queued. */
 int glyd_gpu_ring_reset(glyd_gpu_ring* ring, cudaStream_t cs);
-/* W [O, K] queued after the matrices before it, decoded on the split of sms
- * SMs as slots come free (the queue's split: a queue's matrices share one). */
+/* W [O, K] queued after the matrices before it (sms: the queue's split size; a
+ * queue's matrices share one). */
 int glyd_gpu_mma12_ring_queue(glyd_gpu_ring* ring, int64_t sms, const uint8_t* data, const uint32_t* exc,
                               const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K);
-/* Y [M, O] = X W^T (+ bias) by W's chunks from the ring (decoded ahead where
- * W is next in the queue, else queued alone now), each multiplied by cuBLAS
- * (bf16, fp32 sums; a bias written into Y first, then added by cuBLAS); X
- * taken once the work queued on cs before is done, and cs waits for Y. x and
- * y 16-byte aligned, rows of K and O. */
+/* Y [M, O] = X W^T (+ bias) for a long prompt: W is the next matrix in the queue
+ * (else it is queued now), and your cuBLAS runs the products (bf16, fp32 sums; a
+ * bias written into Y first, then added by cuBLAS). X is taken once the work
+ * queued on cs before is done, and cs waits for Y. x and y 16-byte aligned, rows
+ * of K and O. */
 int glyd_gpu_mma12_ring_linear(glyd_gpu_ring* ring, int64_t sms, const uint8_t* data, const uint32_t* exc,
                                const int32_t* exc_base, const uint32_t sym[4], int64_t O, int64_t K, const uint16_t* x,
                                int64_t M, const uint16_t* bias, uint16_t* y, const glyd_gpu_blas* blas, cudaStream_t cs);
