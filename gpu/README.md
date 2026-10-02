@@ -70,12 +70,14 @@ glyd run Qwen/Qwen3-8B                    # downloads it, starts it packed with 
 | Environment variable | What it does |
 | :--- | :--- |
 | `GLYD_GPU_LIB` | The library to load, in place of the one the package carries. |
-| `GLYD_WG_MIN`, `GLYD_WG_MAX` | The token counts between which Hopper takes its batch kernel: 17 to 1024 by default. |
-| `GLYD_MID_MIN` | The token count from which Ampere and Ada take their batch kernel: 17 by default. |
-| `GLYD_DEC_MIN` | The token count from which an `mma12` prompt takes the long-prompt path, on any GPU. Unset or 0: the GPU's own. |
-| `GLYD_AHEAD_MIN`, `GLYD_AHEAD_WARPS`, `GLYD_AHEAD_RATE`, `GLYD_AHEAD_FLOPS` | Tune the long-prompt path of GeForce Ada, an A10 and an L40S. The defaults are the measured ones. |
-| `GLYD_SPLIT_MIN`, `GLYD_SPLIT_MAX`, `GLYD_SPLIT_SMS` | Move the long-prompt path of an A100 SXM, a GH200 and an H100 SXM ([below](#long-prompts-on-an-a100-a-gh200-and-an-h100-sxm)). `GLYD_SPLIT_MIN=-1` turns it off. |
-| `GLYD_MOE_DECODE_MIN` | A mixture of experts' token count a step from which a layer takes its other path (-1: never): [vllm/README.md](vllm/README.md). |
+| `GLYD_WG_MIN`, `GLYD_WG_MAX` | Raise or lower the token counts where Hopper's route for many tokens a step starts and stops (17 and 1024 by default). |
+| `GLYD_MID_MIN` | Raises or lowers the token count where the route for many tokens a step starts on Ampere and Ada (17 by default). |
+| `GLYD_DEC_MIN` | Raises or lowers the token count where an `mma12` prompt takes the long-prompt path, on any GPU (0 or unset: the GPU's own). |
+| `GLYD_AHEAD_MIN` | Raises or lowers the token count where the long-prompt path of GeForce Ada, an A10 and an L40S starts. |
+| `GLYD_AHEAD_WARPS`, `GLYD_AHEAD_RATE`, `GLYD_AHEAD_FLOPS` | Tune that path; the defaults are the measured ones. |
+| `GLYD_SPLIT_MIN`, `GLYD_SPLIT_MAX` | Raise or lower the token counts where the extra long-prompt path of an A100 SXM, a GH200 and an H100 SXM starts and stops ([below](#long-prompts-on-an-a100-a-gh200-and-an-h100-sxm)). `GLYD_SPLIT_MIN=-1` turns it off. |
+| `GLYD_SPLIT_SMS` | Tunes that path (0 or unset: the GPU's own). |
+| `GLYD_MOE_DECODE_MIN` | Raises or lowers the token count a step where a mixture of experts' layer takes its other path (-1: never): [vllm/README.md](vllm/README.md). |
 
 The route variables are read once a process, at the library's first route: set them in the environment
 before the first model is loaded. The glyd package refuses a value that is not a whole number at import; the C
@@ -210,14 +212,13 @@ GPU; Qwen3-32B's bf16 row from the log's `bf16prof.py`, since `e2e.py`'s own bf1
 | H100 PCIe, GPU time a step |         1 |         8 |        32 | 64 sequences |
 | :------------------------- | --------: | --------: | --------: | -----------: |
 | Qwen3-8B, bf16             |     12.30 |     13.34 |     14.57 |     15.66 ms |
-| Qwen3-8B, `mma12`          | **11.13** | **12.32** | **13.48** | **14.64 ms** |
+| Qwen3-8B, `mma12`          | **11.26** | **12.46** | **13.55** | **14.86 ms** |
 | Qwen3-32B, bf16            |     42.44 |     44.40 |     47.10 |     49.56 ms |
-| Qwen3-32B, `mma12`         | **34.65** | **37.34** | **41.24** | **44.41 ms** |
+| Qwen3-32B, `mma12`         | **34.76** | **37.53** | **40.65** | **43.90 ms** |
 
 A layer's products against bf16's (weights read from memory, as a model's step reads them), 32 / 64 / 96 /
 128 tokens: Qwen3-8B 0.84x / 0.86x / 0.95x / 1.01x, Qwen3-32B 0.77x / 0.84x / 0.91x / 1.04x; the output
-layer (151936 x 4096) 0.78x at 32 and 0.93x at 64. Logs: [h100-hopper-2026-09-28](../benchmarks/gpu/h100-hopper-2026-09-28) and
-[h100-prompts-2026-09-28](../benchmarks/gpu/h100-prompts-2026-09-28).
+layer (151936 x 4096) 0.78x at 32 and 0.93x at 64. Logs: [h100-hopper-2026-09-28](../benchmarks/gpu/h100-hopper-2026-09-28).
 
 #### RTX 4080 SUPER
 
@@ -293,16 +294,16 @@ bit, 8 of 8 tokens. Prompts past 1024 tokens take the long-prompt path. Logs:
 Qwen3-8B, one forward pass, over bf16's time in the same run (`e2e.py --prefill --merge`); a + is a
 longer time.
 
-An A10 (Lambda Cloud, 150 W), `mma12`:
+An A10 (Lambda Cloud, 150 W), `mma12`. Each row is one run, over the bf16 of that run, with its own log
+(the runs are in [lambda-a10-routes-2026-09-28](../benchmarks/gpu/lambda-a10-routes-2026-09-28)):
 
-| Prompt  |   128 |    512 |   1024 |  2048 |  4096 |
-| :------ | ----: | -----: | -----: | ----: | ----: |
-| `mma12` | +2.2% | +15.8% | +10.0% | +5.2% | +2.6% |
+| Prompts of                 | Over bf16's time       | Log                                                                 |
+| :------------------------- | :--------------------- | :------------------------------------------------------------------ |
+| 128 and 512 tokens         | +2.2% / +15.8%         | [log](../benchmarks/gpu/lambda-a10-routes-2026-09-28/e2e-fused.txt) |
+| 1024, 2048 and 4096 tokens | +10.0% / +5.2% / +2.6% | [log](../benchmarks/gpu/lambda-a10-routes-2026-09-28/e2e-ahead.txt) |
 
-The A10G, the same chip at 300 W, stays at most +5.3% over bf16's to 4096 tokens. Logs:
-[lambda-a10-routes-2026-09-28](../benchmarks/gpu/lambda-a10-routes-2026-09-28),
-[rtx4080s-prompts-2026-09-27](../benchmarks/gpu/rtx4080s-prompts-2026-09-27) and
-[sweep-2026-09-28/a10g-aws-g5](../benchmarks/gpu/sweep-2026-09-28/a10g-aws-g5).
+The A10G, the same chip at 300 W, stays at most +5.3% over bf16's to 4096 tokens
+([log](../benchmarks/gpu/sweep-2026-09-28/a10g-aws-g5)).
 
 An L4 (AWS g6.4xlarge, 72 W):
 
@@ -337,13 +338,13 @@ tokens and were within 0.9% of them from 2048; `mma` is its default too (33% les
 Long `mma12` prompts take less time on these GPUs with the Python package's extra long-prompt path
 (`GLYD_SPLIT_*`) than without it (a forward pass at least 2% less):
 
-- an A100 SXM4 40 GB: from 769 to 4096 tokens, and to 8192 for a matrix whose O and K are both at least 5120,
-  as Qwen3-14B's (its pass 0.968 of the time at 8192; Qwen3-8B's 0.994 there, not taken);
-- a GH200: from 2048 to 8192 for such a matrix, as Qwen3-32B's (its pass 0.909 / 0.940 / 0.952 of the time at
-  2048 / 4096 / 8192; Qwen3-8B's matrices, 4096 on a side, 0.978 / 0.994 / 0.994: 2.2% at 2048 alone, not
-  taken);
-- an H100 SXM: the same range; Qwen3-14B's pass 0.893 / 0.937 / 0.938 at 2048 / 4096 / 8192 (with
-  `GLYD_SPLIT_MIN=2048`, which for 14B is the rule's own choice).
+- an A100 SXM4 40 GB: prompts of 769 to 4096 tokens, and up to 8192 tokens for 14B and larger models
+  (Qwen3-14B's pass takes 0.968 of the time at 8192; Qwen3-8B's 0.994 there, so it is not taken);
+- a GH200: 14B and larger models, prompts of 2048 to 8192 tokens (Qwen3-32B's pass takes 0.909 / 0.940 / 0.952
+  of the time at 2048 / 4096 / 8192; Qwen3-8B's 0.978 / 0.994 / 0.994, 2.2% at 2048 alone, so it is not taken);
+- an H100 SXM: 14B and larger models, prompts of 2048 to 8192 tokens (Qwen3-14B's pass takes 0.893 / 0.937 /
+  0.938 of the time at 2048 / 4096 / 8192, run with `GLYD_SPLIT_MIN=2048`, which is also the package's own
+  choice for a 14B).
 
 The Python package takes it by default where it applies. Other callers of the library (the C API, the Rust
 crate and the vLLM plugin) get the default path unless they ask for it with `GLYD_GPU_WITH_SPLIT`. One
@@ -367,14 +368,14 @@ forward pass (`e2e.py --prefill --merge`), ms, the medians of 3 rounds each way 
 | Glyd, `GLYD_SPLIT_MIN=-1`      |       |       | 150.5 | 279.0 |  551.4 |
 | Glyd                           |       |       | 134.4 | 260.4 |  518.2 |
 
-The A100's Qwen3-8B at 8192 tokens and the GH200's Qwen3-8B are outside the default rule (not taken: a
-measurement). The ratios above are each round's time over the `GLYD_SPLIT_MIN=-1` time, the median of the 3
-(Qwen3-8B at 1024 tokens on the A100: rounds 0.867, 0.879, 0.876, median 0.876).
+The A100's Qwen3-8B at 8192 tokens and the GH200's Qwen3-8B are not taken by default: they were run with
+`GLYD_SPLIT_MIN` set, as a measurement. The ratios above are each round's time over the `GLYD_SPLIT_MIN=-1`
+time, the median of the 3 (Qwen3-8B at 1024 tokens on the A100: rounds 0.867, 0.879, 0.876, median 0.876).
 
 - **Where measured:** an A100-SXM4-40GB, a GH200 480GB and an H100 80GB HBM3, the SXM5. The package takes
-  it on an A100 SXM4 80 GB and an A800 SXM4 too, by name and size, not measured there. An H200, an H100 NVL
-  and the PCIe cards (an A100 PCIe, an H100 PCIe) keep the default path until a session measures them.
-  Nothing past 8192 tokens takes it, not measured. Never on a MIG slice.
+  it on an A100 SXM4 80 GB and an A800 SXM4 too, not measured there. An H200, an H100 NVL and the PCIe cards
+  (an A100 PCIe, an H100 PCIe) keep the default path until a session measures them. Nothing past 8192 tokens
+  takes it, not measured. Never on a MIG slice.
 - **Where it cannot run,** a prompt takes the default path, never an error: the JIT build (the prebuilt
   library only), a driver before CUDA 12.5 or one that refuses it (a warning says so), too little memory, a
   CUDA graph being captured or a torch.compile graph (a compiled `generate()` runs its prompt eager).

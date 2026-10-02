@@ -31,10 +31,10 @@ as fast through attention on the packed pages (v0.18.0). On an H100
 token than bf16. Many tokens a step on Hopper: Qwen3-32B's MLP matrices
 at 32-64 tokens in 83-92 us against cuBLAS's 90-96; the model 12% under
 bf16's GPU time a token at one sequence, 6-11% over at 32-64 (merged
-projections). Next on the GPU: 32-64 sequences on an A100 and an H100;
-FP8 models (measured floor 16.7-18.0% on Qwen3-8B-FP8, DeepSeek-V3 and
-Llama 3.3 70B FP8). A terabyte-year in S3 read monthly: `--max -r` $61.7,
-zstd -3 $73.3.
+projections). Next on the GPU: 32-64 sequences on an A100 and an H100.
+Work on the GPU is bf16 only now. FP8 checkpoints load as they are; their
+measured floor is 16.7-18.0% (Qwen3-8B-FP8, DeepSeek-V3, Llama 3.3 70B
+FP8). A terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
 
 Measured floors, not to be retried: JSON API events and crawl indexes
 are 20–65% hashes and random ids once compressed (typed columns gain
@@ -51,14 +51,12 @@ objects. Gzip objects opened (v0.12.0): 23–69% under the gzip.
 
 ## Next, in order of what moves the bill
 
-0. **The store at scale.** Done: the fingerprint table on disk
-   (mapped, 12 bytes per 4 KB stored), packs for small puts, delete
-   and compaction, verification, levels, rebase, a second candidate
-   tried on a sample, and S3 spoken directly (SigV4 over HTTPS, the
-   standard credential chain, any S3-compatible endpoint; v0.11.0).
-   Multipart upload (v0.11.1): 64 MB parts on 8 connections, aborted
-   whole on any failure. Rebuild (v0.11.2): index lines beside every
-   object, the directory remade from the bucket alone. The gate
+0. **The store at scale.** Done: packs for small puts, delete and
+   compaction, verification, levels, rebase, and S3 spoken directly
+   (SigV4 over HTTPS, the standard credential chain, any S3-compatible
+   endpoint; v0.11.0). Multipart upload (v0.11.1): 64 MB parts on 8
+   connections, aborted whole on any failure. Rebuild (v0.11.2): the
+   directory remade from the bucket alone. The gate
    (v0.12.0, [report](docs/benchmarks/store-gate-2026-09-22.md)): 1.18
    TB, 1,192 objects, 49.0 GB stored against zstd -3's 153.5 GB,
    every object back byte-exact, rebuilt from the bucket and verified;

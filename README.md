@@ -297,7 +297,7 @@ less where the data has structure; it writes at 0.77× zstd -3's speed
 right side of the trade; for data written constantly and rarely read,
 zstd -3 or LZ4 still win on write cost.
 
-- 🏪 **The store (`glyd-store`)**: `put` an object and it is kept as a delta against the stored object it most resembles, found by fingerprints, when that pays; chains capped at four. A 39 GB bucket (six Ubuntu image builds, fifteen kernel releases, two months of Wikipedia tables, twelve hours of GitHub events) stores in 1,334 MB against zstd -3's 6,132 MB: **4.6× fewer bytes**, put at 500 MB/s end to end, every object read back byte-exact.
+- 🏪 **The store (`glyd-store`)**: `put` an object and it is kept as a delta against the stored object it most resembles, when that pays; a read is at most five decodes. A 39 GB bucket (six Ubuntu image builds, fifteen kernel releases, two months of Wikipedia tables, twelve hours of GitHub events) stores in 1,334 MB against zstd -3's 6,132 MB: **4.6× fewer bytes**, put at 500 MB/s end to end, every object read back byte-exact.
 - 🗂️ **Record mode (`-r`)**: logs, SQL dumps, CSV and JSON lines as typed columns; logs of varying shape as templates plus typed variables. Telemetry stores 2.5–3.5× less than zstd -3 and 1.5–2× less than zstd -19; application and system logs 1.4–3.3× less than zstd -3 and 1.1–2.1× less than zstd -19; the whole corpus 19% less than zstd -3.
 - 📦 **Packs (`--pack`)**: many small objects as one record-mode stream with an index; 2–4× fewer bytes than zstd + dictionary per object, any one object read back in a millisecond.
 - 🧩 **Shape dictionaries (`--shape`)**: record mode for a single small object. Trained on a sample; a 1–4 KB event or log object stores 1.1–1.9× less than with a zstd dictionary.
@@ -488,26 +488,17 @@ cannot know it.
 
 The store is its own crate, `glyd-store` (`glyd-store DIR --put ...`;
 under the Business Source License, the codec being BSD-3-Clause OR GPL-2.0).
-`Store::put` fingerprints the object (one sparse anchor in 4 KB, the
-same map base mode uses), looks the fingerprints up in the store's
-table, takes the stored object sharing the most as the base, and keeps
-the object as a delta against it (`--base`) when that saves a fifth or
-more of what it costs alone; else alone at `--max` (record mode where
-it pays; `--ultra` or `--cold` on request). Chains are at most four
-long; past that the base is the first object of the version's family
-(an object whose base holds under 98% of its fingerprints, a new major
-release against the old one, starts a family; its point releases join
-it), so a read is at most five decodes at 6–10 GB/s and a 6.6 kernel
-is never a delta of 5.15's; `rebase(id)` stores an object read often
-alone again. `get`, `id_of(name)`, `delete` (a deleted object's bytes
-stay while a live chain runs through them), `compact` (frees what no
-live object needs), `verify` (every object read back and checked).
-The objects' bytes go through a `Backend`: a directory, or an S3
-bucket over HTTPS (`--s3 s3://bucket/prefix`, or any S3-compatible
-service through `AWS_ENDPOINT_URL`). Metadata stays local, but every
-object's index lines ride beside it in the backend, so `--rebuild`
-remakes a lost metadata directory from the objects alone. When two stored objects score
-within 2× of each other as bases, both are tried on the first 32 MB. Measured on a realistic bucket
+`put` keeps an object as a delta against the stored object it most
+resembles when that pays, and otherwise on its own at `--max` (record
+mode where it pays; `--ultra` or `--cold` on request). A read is at most
+five decodes at 6–10 GB/s; `rebase(id)` stores an object read often
+alone again. `get`, `id_of(name)`, `delete` (the bytes another object
+still needs stay), `compact` (frees what no live object needs), `verify`
+(every object read back and checked). The objects' bytes go through a
+`Backend`: a directory, or an S3 bucket over HTTPS (`--s3
+s3://bucket/prefix`, or any S3-compatible service through
+`AWS_ENDPOINT_URL`). Metadata stays local, and `--rebuild` remakes a lost
+metadata directory from the objects alone. Measured on a realistic bucket
 (`scripts/download_bucket.sh`, 39 objects, 39.2 GB, each arriving in
 order), every object read back and compared:
 
@@ -534,27 +525,20 @@ v0.14.9; kernel releases 286–425× against raw, Wikipedia tables
 MB/s (zstd -3's own read-back on the same instance: 346 MB/s) and the
 restore at 559 MB/s, S3 included, on that instance.
 
-Put runs at 620 MB/s end to end over the bucket on ten cores (reading
-the file, rebuilding the base, writing the delta; a version of the
-last object put runs at 900 MB/s, that object being kept in memory as
-the likeliest next base); verifying the whole bucket reads it back at
-1.5 GB/s. On a Ryzen 9 7950X3D (16 cores, v0.14.7) a kernel release
-arriving as a version of the last one is put at 1,224 MB/s and read
-back at 1,590; the first of them, alone, at 2,545 MB/s; an Ubuntu root
-filesystem with gzip inside as a version at 215 MB/s (the deflate
-emulation's speed). The same store built on zstd's own
+Put runs at 620 MB/s end to end over the bucket on ten cores (a version
+of the last object put runs at 900 MB/s); verifying the whole bucket
+reads it back at 1.5 GB/s. On a Ryzen 9 7950X3D (16 cores, v0.14.7) a
+kernel release arriving as a version of the last one is put at 1,224 MB/s
+and read back at 1,590; the first of them, alone, at 2,545 MB/s; an
+Ubuntu root filesystem with gzip inside as a version at 215 MB/s (the
+deflate emulation's speed). The same store built on zstd's own
 `--patch-from` would land around 3–4×: our deltas are 1.1–2.1× smaller
-and read 10× faster, and the store design does the rest. In money, a
-petabyte of such data in S3 Standard costs $43K a year with zstd -3
-and $9.4K with the store. Chunk-level dedup, what backup systems do, gains
-1–4× on the same pairs. The store is a directory: `objects/<id>`, the
-fingerprints, an index, and the fingerprint table — an open-addressing
-hash table mapped from disk (12 bytes per 4 KB stored, kept at most
-half full), so the store's memory does not grow with what it holds;
-the 39 GB bucket's table is 100 MB. Objects under 256 KB have nothing
-to fingerprint and would cost their whole size alone, so `put` gathers
-them into 2 MB packs (record mode where it pays) and `get` decodes the
-pack and slices: 2,000 GitHub events put one by one store at 9.0×
+and read 10× faster. In money, a petabyte of such data in S3 Standard
+costs $43K a year with zstd -3 and $9.4K with the store. Chunk-level
+dedup, what backup systems do, gains 1–4× on the same pairs. The store's
+memory does not grow with what it holds. Objects under 256 KB are
+gathered into 2 MB packs (record mode where it pays) and `get` decodes
+the pack and slices: 2,000 GitHub events put one by one store at 9.0×
 against zstd -3's 3.6× per event.
 
 ## Base mode: a version compressed against the last one

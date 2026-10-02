@@ -202,13 +202,13 @@ int glyd_gpu_mma12_route(int64_t gpu, int64_t O, int64_t K, int64_t M, int* rout
  * glyd_gpu_mma12_ring_queue and glyd_gpu_mma12_ring_linear. 0 where the route is
  * not SPLIT (and without the flag). The route runs a long mma12 prompt's
  * products faster than the others where a forward pass took at least 2% less
- * time by it (gpu/README.md): on an A100 SXM from 769 to 4096 tokens, and to
- * 8192 for a matrix whose O and K are both at least 5120; on a GH200 and an
- * H100 SXM from 2048 to 8192 for such a matrix (an H200, an H100 NVL and the
+ * time by it (gpu/README.md): on an A100 SXM from 769 to 4096 tokens, and up
+ * to 8192 tokens for 14B and larger models; on a GH200 and an H100 SXM from
+ * 2048 to 8192 tokens, for 14B and larger models (an H200, an H100 NVL and the
  * PCIe cards: never, until measured). It is opt-in: glyd_gpu_*_route give it
  * only for a code with GLYD_GPU_WITH_SPLIT, and glyd_gpu_*_linear's own route
  * (-1) never is. These environment variables work on any GPU from Ampere and
- * any matrix, and are read as the routes' others:
+ * any model, and are read as the routes' others:
  *   GLYD_SPLIT_MIN, GLYD_SPLIT_MAX  raise or lower the token counts where the
  *                                   route starts and stops (0 or unset: the
  *                                   GPU's own; GLYD_SPLIT_MIN -1 turns it off)
