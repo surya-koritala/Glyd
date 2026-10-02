@@ -1,0 +1,10 @@
+== 23:22:12 (+0 s) machine
+2 x NVIDIA H100 80GB HBM3 (compute 9.0, sm_90a, 81559 MiB each), x86_64 host, 52 CPUs; tree 10e8caea (v0.26.0); model Qwen/Qwen2.5-72B-Instruct, tensor parallel 2; modes glyd bf16; rates 1 inf, prompts 64 192, 1024 tokens in, 256 out
+== 23:22:13 (+1 s) uv, then the download (in the background, timed)
+== 23:22:13 (+1 s) env: vLLM from PyPI (vllm==0.30.0) and nvcc, then the glyd package
+vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPUs 2 x NVIDIA H100 80GB HBM3
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+== 23:22:36 (+24 s) build: the library for sm_90a
+== 23:23:29 (+77 s) serve: Qwen/Qwen2.5-72B-Instruct over 2 GPUs, a mode at a time: glyd bf16 (waiting for its download)
+download: exit 0: 145424086864 bytes in 129 s (at +130 s)
+== 23:40:57 (+1125 s) done in 1125 s

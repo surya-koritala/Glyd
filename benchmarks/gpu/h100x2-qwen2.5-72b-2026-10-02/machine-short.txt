@@ -1,0 +1,1 @@
+2 x NVIDIA H100 80GB HBM3 (compute 9.0, sm_90a, 81559 MiB each), x86_64 host, 52 CPUs; tree 10e8caea (v0.26.0); model Qwen/Qwen2.5-72B-Instruct, tensor parallel 2; modes glyd bf16; rates 1 inf, prompts 64 192, 1024 tokens in, 256 out
