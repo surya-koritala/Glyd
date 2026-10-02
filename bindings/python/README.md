@@ -79,24 +79,18 @@ shard.
 
 - `device`: the GPU. `device_map="auto"` (with accelerate) or a device map
   in `hf_kwargs` spreads the layers over several.
-- `layout`: `"auto"` picks for the GPU (the tiered layout on Ada, a
-  mixture of experts' on an A10 too, and wherever only it fits; the
-  12-bit one on A10, A100 and H100); `"mma"`, the tiered layout (10.8
-  bits a weight); `"mma12"`, the 12-bit layout (12.0 bits, a lighter
-  decode). Embeddings go in the fast format, their rows decoded as they
+- `layout`: `"auto"` picks for the GPU (`mma` on Ada, for a mixture of experts on an A10 too, and wherever only it
+  fits; `mma12` on A10, A100 and H100); `"mma"`, the most memory off (10.8 bits a weight); `"mma12"`, 12.0 bits a
+  weight, the faster one on an A10, A100 and H100. Embeddings are held compressed too, their rows rebuilt as they
   are looked up.
-- `exact`: every product decodes its matrix whole and multiplies as
-  `nn.Linear` does, so the logits are bf16's bit for bit. By default the
-  products run straight from the packed weights (decoded in registers):
-  faster, their sums in another order than cuBLAS's, so late tokens may
-  differ from bf16's as between any two GEMM kernels.
+- `exact`: the logits are bf16's bit for bit (every product multiplies as `nn.Linear` does). By default the
+  products run straight from the packed weights: faster, their sums in another order than bf16's, so late tokens
+  may differ from bf16's as between any two GEMM kernels.
 - `merge`: q, k, v and gate, up as one product each, as serving engines
   run them (not with `exact`).
-- `verify`: every pack decoded and compared with its weights bit for bit
-  as it is made; from a saved checkpoint, every packed tensor decoded and
-  its sha256 checked against `glyd.json`, and every tensor saved as it is
-  by its own there (a save of glyd 0.25 on), each file's tensors back to
-  back, each a pack's buffer or of a sha256 there.
+- `verify`: every pack unpacked and compared with its weights bit for bit as it is made; from a saved checkpoint,
+  every packed tensor unpacked and checked against the sha256 in `glyd.json`, and every other tensor against its
+  own (a save of glyd 0.25 on).
 - `compile`: `generate()` compiled (below); `False`, or `GLYD_COMPILE=0`
   in the environment, runs it eager, as transformers runs it.
 - `hf_kwargs`: transformers' `from_pretrained`'s (`revision`, `token`,
@@ -107,14 +101,9 @@ packs a model already loaded in bf16 in place, on the GPU its weights are
 on (the current one for weights on the CPU), and returns it
 (`glyd.compress` is the codec's, for bytes).
 
-A mixture of experts is packed too, each layer's experts as one matrix:
-every family of transformers 5.17, those whose Experts modules it runs
-through an experts implementation (OLMoE, granite MoE, Qwen3-MoE,
-gpt-oss, DeepSeek V3 ...) by `glyd`, one registered with it, and those
-whose own code runs their experts (Llama 4, DBRX, Aria, JetMoE, Step 3.7,
-LongCat-Flash) taken over where it multiplies; with `exact=True` the
-experts are decoded and bf16's own implementation runs on them. glyd-v1
-holds them packed, and a model with them can't be copied or pickled
+A mixture of experts is packed too: every family of transformers 5.17 (OLMoE, granite MoE, Qwen3-MoE, gpt-oss,
+DeepSeek V3, Llama 4, DBRX, Aria, JetMoE, Step 3.7, LongCat-Flash ...); with `exact=True` the experts' products
+are bf16's own. A saved model holds them packed, and a model with them can't be copied or pickled
 (`copy.deepcopy`, `torch.save`): load it again.
 
 On PyTorch 2.13.0 or later (measured on 2.14), `generate()` is compiled;
@@ -122,14 +111,12 @@ below it, a 2.13 pre-release included, it runs eager, as in glyd 0.23. A
 compiled call runs as `generate(..., cache_implementation="static")`
 asks transformers to run it, a static cache and the forward compiled
 (`torch.compile`, `mode="reduce-overhead"`: CUDA graphs), so a step's
-host time goes and what is left is its GPU time, less than bf16's. Each
-GLinear and GEmbedding is one op of the graph (`glyd::linear`,
-`glyd::embedding`), with no graph break, and the CUDA graph captures
-Glyd's kernels; the prompt runs eager (transformers compiles the steps
-after it). Tokens/s generating 128 tokens at 1 / 8 sequences on an RTX
-4080 SUPER (a Ryzen 9 7950X3D), each in a process of its own, the median
-of 3 runs (logs: benchmarks/gpu/rtx4080s-fastloop-2026-09-28,
-`gen-main.txt` and `gen-branch.txt`):
+host time goes and what is left is its GPU time, less than bf16's. The
+prompt runs eager (transformers compiles the steps after it). Tokens/s
+generating 128 tokens at 1 / 8 sequences on an RTX 4080 SUPER (a Ryzen 9
+7950X3D), each in a process of its own, the median of 3 runs (logs:
+benchmarks/gpu/rtx4080s-fastloop-2026-09-28, `gen-main.txt` and
+`gen-branch.txt`):
 
 | | bf16 | bf16, `cache_implementation="static"` | Glyd, `compile=False` | **Glyd** |
 | :--- | ---: | ---: | ---: | ---: |
@@ -164,12 +151,10 @@ attentions or hidden states, `custom_generate`, or
 `disable_compile=True` (one call eager); so does one whose static cache
 would hold more positions in all (its sequences times the prompt and
 `max_new_tokens`, or `max_cache_len` where longer) than 1280 on a
-GeForce card and 2048 on another: the static cache holds every position
-a call may reach from its first step and each step's attention reads all
-of it, so past that the eager loop is as fast (Qwen3-8B), sooner the
-faster the host's CPU (what compiling saves is eager's host time a
-step). A step's ms compiled against eager, Qwen3-8B, the static cache
-that long with 64 positions used:
+GeForce card and 2048 on another: past that the eager loop is as fast
+(Qwen3-8B), sooner the faster the host's CPU. A step's ms compiled
+against eager, Qwen3-8B, the static cache that long with 64 positions
+used:
 
 | | 256 | 1024 | 2048 | 4096 positions | 8 sequences |
 | :--- | ---: | ---: | ---: | ---: | :--- |
@@ -192,59 +177,35 @@ attempt had not streamed, and a sampled call draws again from the random
 state it started with: its tokens and text are the eager run's), and so
 do the model's later calls, with one warning; any other error (out of
 memory included) is the call's own, and the next call compiles as
-before. Each model's forward compiles to a graph of its own, so Glyd's
-compiled calls run with `torch._dynamo.config.recompile_limit` at 64 at
-least (dynamo compiles 8 graphs a frame by default and runs the rest
-uncompiled; ten Qwen3-0.6B models one after another in a process all
-compiled (graphs 2 to 11), the second to tenth at 296.5-301.3 tokens/s
-against 99.6 eager), set for those calls alone: the process's own
-setting is left as it is. A model that has generated compiled is freed
-at `del`, as an eager one (its compiled forward does not refer to it).
+before. Several models in one process all compile (ten Qwen3-0.6B models one after another: the second to tenth at
+296.5-301.3 tokens/s against 99.6 eager); the process's own `torch._dynamo` settings are left as they are. A
+model that has generated compiled is freed at `del`, as an eager one.
 
-How: `from_pretrained` and `compress` take over the `generate` and
-`get_compiled_call` of the model's class, once for the process, as Glyd
-takes over the forward of the mixture-of-experts classes it runs; a
-model of that class Glyd did not set up (a bf16 one, or one loaded with
-`compile=False`) runs transformers' own. `compile=False`, or
-`GLYD_COMPILE=0` before the load, sets nothing up and takes nothing
-over. transformers sets `TOKENIZERS_PARALLELISM=0` for the process where
-it compiles; Glyd puts back the value it had, or its absence, after each
-compiled call (per call: two calls at once in two threads can leave it
-0, as transformers' own compiled calls do).
+A bf16 model, or one loaded with `compile=False`, runs transformers' own `generate()`. `compile=False`, or
+`GLYD_COMPILE=0` before the load, takes nothing over. transformers sets `TOKENIZERS_PARALLELISM=0` for the process
+where it compiles; Glyd puts back the value it had, or its absence, after each compiled call (two calls at once in
+two threads can leave it 0, as transformers' own compiled calls do).
 
 `torch.compile(model.forward, mode="reduce-overhead", fullgraph=True)`
 compiles the forward as it would the bf16 model's, likewise. Eager, a
-step's product is one C call, with less host time than
-`nn.Linear`'s. Compile the whole forward, as these do: an op names its
-module by a number the graph is specialized on, so compiling each layer
-on its own compiles every layer anew (and meets torch._dynamo's
-recompile limit). With `exact=True` each product in the graph is
-`F.linear`'s, as eager, but the logits are the bf16 model's compiled the
-same way bit for bit only with
-`torch._inductor.config.emulate_precision_casts = True`: by default
-Inductor keeps a bf16 value in fp32 across a fused kernel, and fuses
-differently around Glyd's op than around bf16's matmul (so an exact
-model's `generate()` stays eager: its tokens are bf16's eager ones).
+step's product has less host time than `nn.Linear`'s. Compile the whole
+forward, as these do: compiling each layer on its own compiles every
+layer anew. With `exact=True` each product in the graph is `F.linear`'s,
+as eager, but the logits are the bf16 model's compiled the same way bit
+for bit only with `torch._inductor.config.emulate_precision_casts = True`
+(so an exact model's `generate()` stays eager: its tokens are bf16's
+eager ones).
 
-`glyd.save_pretrained(model, path)` writes glyd-v1: the packs in the
-tiered layout as safetensors (each packed Linear's buffers under its
-module path, `.glyd_data`, `.glyd_blocks`, `.glyd_block_base`; a mixture
-of experts' weight's under the module holding it, `.glyd_gate_up_proj_data`
-and so on), the rest of the model as it is, `glyd.json` (the format, the
-source repo and revision, for every packed tensor its shape and the
-sha256 of its bf16 bytes, and from glyd 0.25 the sha256 of every tensor
-saved as it is), and the source's config, generation config
-and tokenizer files. With a mixture of experts' packs the format is
-glyd-v2, which glyd 0.21 refuses by its format ("this glyd reads
-glyd-v1"): load it with 0.22 or later. `from_pretrained(path)` loads the packs as saved;
-on a GPU where the 12-bit layout is the pick, it decodes and packs them
-again. `save_pretrained(model, path, layout="mma12")` (`pack --layout
-mma12`) saves the packs in the 12-bit layout instead, as an A10, A100 or
-H100 runs them (`.glyd_data`, `.glyd_exc`, `.glyd_exc_base`; glyd-v3,
-which glyd 0.24 and before refuse): loaded there as saved, 2.7-3.9x
-faster than packing again (on an RTX 4080 SUPER, Qwen3-8B in 1.17-1.18 s
-against 3.14-4.55 s from a tiered save and 3.54-3.61 s from the bf16
-checkpoint; benchmarks/gpu/rtx4080s-rust-2026-09-28).
+`glyd.save_pretrained(model, path)` writes glyd-v1: the packed weights as safetensors, the rest of the model as it
+is, `glyd.json` (the format, the source repo and revision, and for every packed tensor its shape and the sha256 of
+its bf16 bytes; from glyd 0.25 the sha256 of every tensor saved as it is), and the source's config, generation config
+and tokenizer files. With a mixture of experts' packs the format is glyd-v2, which glyd 0.21 refuses by its format
+("this glyd reads glyd-v1"): load it with 0.22 or later. `from_pretrained(path)` loads the packs as saved; on a GPU
+where `mma12` is the pick, it decodes and packs them again. `save_pretrained(model, path, layout="mma12")` (`pack
+--layout mma12`) saves the `mma12` layout instead, as an A10, A100 or H100 runs it (glyd-v3, which glyd 0.24 and
+before refuse): loaded there as saved, 2.7-3.9x faster than packing again (on an RTX 4080 SUPER, Qwen3-8B in
+1.17-1.18 s against 3.14-4.55 s from an `mma` save and 3.54-3.61 s from the bf16 checkpoint;
+benchmarks/gpu/rtx4080s-rust-2026-09-28).
 
 `glyd.fit(name_or_path, gpu="48GB", context=8192)`: whether the model
 fits one GPU in bf16 and with Glyd, by the site's rule: the weights (with

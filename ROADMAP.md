@@ -26,17 +26,15 @@ bit), 1.25-1.32x bf16's tokens/s at 1 to 32 sequences at once, 1.04x at
 64; prompts to 128 tokens as fast or faster, to 4096 within 5-10%.
 Qwen3-32B on one 48 GB GPU and Qwen2.5-72B on three (bf16: two and
 four), MMLU within 0.5 points (v0.18.0); the KV cache 31% smaller, a step
-as fast through attention on the packed pages (v0.18.0). On an H100 the
-12-bit layout (v0.19.0): Qwen3-32B 25% smaller at 6.5% less GPU time a
-token than bf16. Many tokens a step on Hopper by the copy engine and
-wgmma (unreleased): Qwen3-32B's MLP matrices at 32-64 tokens in 83-92 us
-against cuBLAS's 90-96; the model 12% under bf16's GPU time a token at
-one sequence, 6-11% over at 32-64 (merged projections). Next on the GPU:
-32-64 sequences on an A100 and an H100 (ptxas serializes the four wgmma
-of a stage, its C7513: the descriptors share uniform registers); FP8
-models (measured floor 16.7-18.0% on Qwen3-8B-FP8, DeepSeek-V3 and Llama
-3.3 70B FP8; a tiered 2-bit code would take about 16%). A terabyte-year in S3
-read monthly: `--max -r` $61.7, zstd -3 $73.3.
+as fast through attention on the packed pages (v0.18.0). On an H100
+`mma12` (v0.19.0): Qwen3-32B 25% smaller at 6.5% less GPU time a
+token than bf16. Many tokens a step on Hopper: Qwen3-32B's MLP matrices
+at 32-64 tokens in 83-92 us against cuBLAS's 90-96; the model 12% under
+bf16's GPU time a token at one sequence, 6-11% over at 32-64 (merged
+projections). Next on the GPU: 32-64 sequences on an A100 and an H100;
+FP8 models (measured floor 16.7-18.0% on Qwen3-8B-FP8, DeepSeek-V3 and
+Llama 3.3 70B FP8). A terabyte-year in S3 read monthly: `--max -r` $61.7,
+zstd -3 $73.3.
 
 Measured floors, not to be retried: JSON API events and crawl indexes
 are 20–65% hashes and random ids once compressed (typed columns gain
