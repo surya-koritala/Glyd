@@ -6,11 +6,10 @@ use std::time::Instant;
 fn print_usage() {
     eprintln!(r#"Glyd: compression for cloud storage
 Usage: glyd [OPTIONS] [INPUT] [-o OUTPUT]
-       glyd pack MODEL OUT | glyd verify PATH   (a model's weights for Glyd's GPU layouts:
-       packed and checked on the CPU by the glyd-gpu command; glyd pack --help)
        (the store, which compresses across objects, is the glyd-store command)
-       glyd run MODEL | serve MODEL | doctor | login   (the local chat, on Linux with an NVIDIA GPU:
-       the Python tool's commands, which this program passes to it; a file named run is ./run)
+       glyd run MODEL | serve MODEL | doctor | login | pack MODEL OUT | verify PATH   (the local chat, and a model's
+       weights packed for the GPU, on Linux with an NVIDIA GPU: the Python tool's commands, which this program
+       passes to it; a file named run is ./run)
 
 Options:
     -c, --compress         Compress input (default if output is .glyd)
@@ -71,20 +70,6 @@ fn print_version() {
     println!("SIMD: scalar");
 }
 
-/// `glyd pack` and `glyd verify`: the glyd-gpu command's (the GPU weights' packer and checker, a program of its own
-/// under their license), found beside this one, else on PATH; its exit status this one's.
-fn gpu_command(args: &[String]) -> ! {
-    let beside = env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("glyd-gpu"))).filter(|p| p.exists());
-    let exe = beside.unwrap_or_else(|| "glyd-gpu".into());
-    match std::process::Command::new(&exe).args(args).status() {
-        Ok(s) => std::process::exit(s.code().unwrap_or(1)),
-        Err(e) => {
-            eprintln!("glyd {}: the glyd-gpu command ({}): {e}; it ships beside glyd (cargo install --git https://github.com/surya-koritala/Glyd glyd-gpu)", args[0], exe.display());
-            std::process::exit(1);
-        }
-    }
-}
-
 /// Whether a file is a console script of Glyd's Python tool: a `#!` line, and the module it imports (glyd.cli) in its first 4 KB.
 fn is_python_tool(path: &Path) -> bool {
     let mut head = Vec::new();
@@ -109,8 +94,9 @@ fn find_python_tool() -> Option<PathBuf> {
         .find(|exe| exe.is_file() && exe.canonicalize().ok() != me && is_python_tool(exe))
 }
 
-/// `glyd run`, `glyd serve`, `glyd doctor` and `glyd login` are the local chat's commands, in Glyd's Python tool (install.sh,
-/// `pip install "glyd[vllm]"`): not a file's name here, which is what `glyd run MODEL` was before, with the usage text for an answer.
+/// `glyd run`, `glyd serve`, `glyd doctor`, `glyd login`, `glyd pack` and `glyd verify` are the GPU half's commands (the local chat, and a
+/// model's weights packed and checked), in Glyd's Python tool (install.sh, `pip install "glyd[vllm]"`): not a file's name here, which is
+/// what `glyd run MODEL` was before, with the usage text for an answer.
 /// The tool's `glyd` takes them over from this program (its Ctrl-C and its exit status are its own), started with GLYD_FORWARDED=1:
 /// the tool passes the compression commands the other way with the same variable and takes none of them back, so an older tool that
 /// sends `run` here cannot start a loop. Where there is no tool the answer says what to do, or that this computer is not for it.
@@ -134,9 +120,9 @@ fn python_command(args: &[String]) -> ! {
     let why = if forwarded {
         "the Python tool's glyd sent it back to this program, so it has no such command: update it with curl -LsSf https://getglyd.com/install.sh | sh"
     } else if cfg!(target_os = "linux") {
-        "that is the local chat's command, in Glyd's Python tool, which is not installed here. On Linux with an NVIDIA GPU: curl -LsSf https://getglyd.com/install.sh | sh"
+        "that is a command of Glyd's Python tool (the GPU half), which is not installed here. On Linux with an NVIDIA GPU: curl -LsSf https://getglyd.com/install.sh | sh"
     } else {
-        "glyd run needs Linux with an NVIDIA GPU, and this computer is not one (this program compresses files: glyd --help)"
+        "needs Linux with an NVIDIA GPU, and this computer is not one (this program compresses files: glyd --help)"
     };
     eprintln!("glyd {}: {why} (a file named {} is compressed as ./{})", args[0], args[0], args[0]);
     std::process::exit(127);
@@ -148,10 +134,7 @@ fn main() -> io::Result<()> {
         print_usage();
         return Ok(());
     }
-    if matches!(args[1].as_str(), "pack" | "verify") {
-        gpu_command(&args[1..]); // (a file named pack or verify: ./pack)
-    }
-    if matches!(args[1].as_str(), "run" | "serve" | "doctor" | "login") {
+    if matches!(args[1].as_str(), "run" | "serve" | "doctor" | "login" | "pack" | "verify") {
         python_command(&args[1..]); // (a file named run: ./run)
     }
 
