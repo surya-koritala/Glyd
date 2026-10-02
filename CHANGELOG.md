@@ -52,10 +52,10 @@ every earlier format.
   - On a Mac, or where there is no NVIDIA GPU, it installs the compression program from the release's tarball (checked
     against its sha256) and says that `glyd run` needs Linux with an NVIDIA GPU. `glyd doctor` reports such a machine
     without failing.
-    - The Rust `glyd` passes `run`, `serve`, `doctor` and `login` to the Python tool (`GLYD_FORWARDED` guards against
-      loops) and says plainly where there is none; a file named run is `./run`. The Python `glyd` finds a compression
-      program that is a wrapper script, skips an empty PATH entry, and where there is none hints `cargo install --git
-      ...`.
+  - The Rust `glyd` passes `run`, `serve`, `doctor` and `login` to the Python tool (`GLYD_FORWARDED` guards against
+    loops) and says plainly where there is none; a file named run is `./run`. The Python `glyd` finds a compression
+    program that is a wrapper script, skips an empty PATH entry, and where there is none hints `cargo install --git
+    ...`.
   - In the terminal chat, control and escape sequences in a model's text are removed. An error, a connection closed
     mid-answer, a cut message and an empty answer are said in plain words and the question is kept. Ctrl-C while the
     model loads stops everything it started. A full disk, an interrupted download, a float16 checkpoint (refused
