@@ -251,7 +251,6 @@ main() {
 # Regenerate from a run's logs/freeze.txt:  python3 scripts/install_constraints.py FREEZE
 constraints() {
   cat <<'CONSTRAINTS'
-accelerate==1.15.0
 agent-detector==2.0.0
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.3
