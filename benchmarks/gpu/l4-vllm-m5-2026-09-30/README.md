@@ -61,7 +61,7 @@ bf16's at 1,350-1,590 (nvidia-smi's samples; `summary.txt`).
 
 ## The earlier pair
 
-`../l4-vllm-m2-2026-09-29` measured Glyd (`bench-Qwen3-8B-l4routes/`, the same library's L4 routes) within the hour
+`../l4-vllm-m2-2026-09-29` measured Glyd (`bench-Qwen3-8B-l4routes/`, the l4-routes library) within the hour
 after bf16 (`bench-Qwen3-8B-low/`, `bench-Qwen3-8B-warm/`), on the same L4. It ran cooler then (at most 71-80 C, against
 78-85 C here), and gave:
 
@@ -86,14 +86,14 @@ The plugin at e7ac9e9, the review's fixes, on this L4 with v0.25.1's library:
 | `b2check.py`: Qwen3-0.6B's checkpoint without layer 3's k_proj weight | refused by Glyd, naming the layer and the piece; bf16 loaded it |
 
 - **Qwen2.5-1.5B-Instruct:**
-  - every pack (112) decoded to its weights bit for bit;
-  - every product within 6.20e-3 (tiered) and 4.27e-3 (12-bit) of the same product on its matrix decoded;
+  - every pack (112) unpacked to its weights bit for bit;
+  - every product within 6.20e-3 (tiered) and 4.27e-3 (12-bit) of the same product on its matrix unpacked;
   - top-1 0.9948 and 0.9929 on bf16's continuation, against bf16 eager's 0.9922;
   - exact eager bf16 eager's bits (8 of 8 prompts, and the continuation);
   - exact compiled refused in inductor's deterministic mode, its 28 packed Linears having biases.
 - **Qwen3-8B:** top-1 0.9929 in both layouts against bf16 eager's 0.9909; products within 4.67e-3.
 - **Yi-1.5-6B-Chat:** each save (tiered and 12-bit) loaded as saved and in the other layout with verify on (its
-  tensors saved as they are checked by sha256, its LM head decoded in place): the bf16 checkpoint packed at load, bit
+  tensors saved as they are checked by sha256, its LM head unpacked in place): the bf16 checkpoint packed at load, bit
   for bit.
 - **granite:** as before the fixes (`../l4-vllm-m4-2026-09-30`).
 

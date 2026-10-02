@@ -30,10 +30,10 @@ directory ([scripts/acc-post-and-chains.sh](scripts/acc-post-and-chains.sh)); on
   its profile edit first where it was not.
 - **The script the site serves is the tag's.** getglyd.com/install.sh answered 200 as `text/plain` and is `install.sh` of v0.26.0 byte for byte (the check is in
   `16gb-card-served-script/summary.txt`); the third run's install is the README's line itself, from the network.
-- **At the owner's card's memory (14.8 GB free, a desktop's), Qwen3-8B**: `glyd run` chose a 11,264-token context at 62% (14.7 GB) and vLLM logged 12,960 KV tokens, as in the
+- **At a 16 GB card's memory (14.8 GB free, a desktop's), Qwen3-8B**: `glyd run` chose a 11,264-token context at 62% (14.7 GB) and vLLM logged 12,960 KV tokens, as in the
   release candidates; first `glyd run` 1 min 17 s, then `glyd serve` 41 s. **At 24 GB**: 40,960 tokens at 92% (21.8 GB), 61,104 KV tokens; 1 min 4 s, then 41 s. (The third run's first
   start took 3 min 4 s: the box had been restarted and the model's 16 GB came off a cold disk.)
-- **Open WebUI 0.11.4 in all three routes** (uvx, Docker with host networking, Docker's own network with a key; the first and third run): its login is on
+- **Open WebUI 0.11.4 in all three ways** (uvx, Docker with host networking, Docker's own network with a key; the first and third run): its login is on
   (`/api/models` with no token 401, the no-login sign-in 400), the first account signed up is the administrator, the model is listed, it chats and calls a tool with that account's
   token, and its CORS is limited to its own addresses.
 - **What a user meets:** a program of the user's own in `~/.local/bin` is not replaced; a `glyd` ahead on PATH is said, with the line to add, by the script and by `glyd doctor`; the release's

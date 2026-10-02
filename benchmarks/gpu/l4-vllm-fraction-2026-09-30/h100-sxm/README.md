@@ -11,7 +11,7 @@ The job was the last of the session's seven (1,373 s; the others: `../../vllm-m6
   580.126.20. Xeon Platinum 8480+ (26 CPUs), x86_64. Lambda `gpu_1x_h100_sxm5`.
 - **Software:** the tree 7fe66a2 (release-0.26.0, the v0.26.0 candidate, with `fraction`; C API 7, GPU code 90); vLLM
   0.30.0 from PyPI (torch 2.13.0+cu130, transformers 5.18.0, nvcc 13.0, in the job); the library built there for sm_90a
-  in 45 s. The plugin does not ask for the route SPLIT, so the library's routes are v0.25.1's.
+  in 45 s. The plugin does not ask for the opt-in long-prompt mode (`GLYD_GPU_WITH_SPLIT`), so the library behaves as v0.25.1's.
 - **Model:** Qwen3-32B (64 layers, 65.5 GB), downloaded in 35 s. Glyd's layout: the 12-bit one.
 - **Run:** one mode at a time, in the order bf16, glyd@1, glyd@0.5, glyd@0.25, glyd@0.75, glyd@0 (every one ran, 175-235 s
   each). Each: a `vllm serve` started cold on an empty compile cache

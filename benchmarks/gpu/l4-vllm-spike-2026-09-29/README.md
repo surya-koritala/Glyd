@@ -43,7 +43,7 @@ Everything is in `results/`. The comparison is `results/compare.txt`.
 **Exact mode** (`GLYD_EXACT=1`) with `--enforce-eager` gives bf16 eager's tokens and logprobs, bit for bit, on all 8
 prompts. With CUDA graphs it does not.
 
-**Fused tokens against bf16** (Qwen3-1.7B, tiered, both with CUDA graphs):
+**Default-mode tokens against bf16** (Qwen3-1.7B, tiered, both with CUDA graphs):
 
 - tokens the same: [17, 64, 64, 64, 64, 40, 64, 42] of 64;
 - mean |Δ logprob| 9.7e-3.

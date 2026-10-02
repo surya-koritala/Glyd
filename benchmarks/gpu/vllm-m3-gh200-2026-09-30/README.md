@@ -63,7 +63,7 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
     - the GPU's power the same (a median 659-667 W while it worked), and its SM clock 1,830 MHz against bf16's 1,575 with
       Qwen3-8B, 1,875 against 1,950 with Qwen3-32B.
 
-    Hopper's gap is not profiled yet.
+    Hopper's gap is not profiled here.
   - **On the GH200 below saturation, Qwen3-8B:** parity in requests a second at 1 and 4 a second, with the time per
     output token 1-6% more.
   - **The time per output token at saturation on the other GPUs:** 30-32% more on the A10 and 48% on the L4, where
@@ -78,7 +78,7 @@ console files keep the median over every sample, idle ones included.
 
 | Qwen3-8B, against vLLM's bf16 | Glyd tiered | Glyd 12-bit |
 | :--- | ---: | ---: |
-| Packs decoded to their weights, bit for bit | 144 of 144 | 144 of 144 |
+| Packs unpacked to their weights, bit for bit | 144 of 144 | 144 of 144 |
 | Worst layer against F.linear, 1-4,096 tokens | 3.78e-3 | 3.78e-3 |
 | Top-1 / \|Δ\| on bf16's continuation (bf16 eager's: 0.9948 / 3.46e-3) | 0.9955 / 0.00e+00 | 0.9974 / 3.48e-3 |
 
@@ -86,7 +86,7 @@ console files keep the median over every sample, idle ones included.
 - **Exact eager:** bf16 eager's bits (8 of 8 prompts, and the continuation).
 - **Exact compiled:** refused. With inductor's deterministic mode, compiled bf16's bits (8 of 8, and the
   continuation).
-- **Fused compiled in that mode:** the same bits across a restart on its graphs.
+- **Default mode compiled in that mode:** the same bits across a restart on its graphs.
 
 ## Bench: Qwen3-8B (`bench/`, 698 s)
 
@@ -129,4 +129,4 @@ requests of 1,280 tokens and Glyd's about 103. At once (the servers' logs, every
 together with up to 59 waiting, and Glyd 107 with up to 23 waiting. Glyd's median inter-token latency, a step's time,
 was 40.4 ms against 27.8. At saturation, while it worked, the GPU drew a median of 667 W with bf16 and 662 W with Glyd.
 What Glyd's kernels cost there
-is not profiled yet.
+is not profiled here.

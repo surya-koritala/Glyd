@@ -63,7 +63,7 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
     - the GPU's power the same (a median 659-667 W while it worked), and its SM clock 1,830 MHz against bf16's 1,575 with
       Qwen3-8B, 1,875 against 1,950 with Qwen3-32B.
 
-    Hopper's gap is not profiled yet.
+    Hopper's gap is not profiled here.
   - **On the GH200 below saturation, Qwen3-8B:** parity in requests a second at 1 and 4 a second, with the time per
     output token 1-6% more.
   - **The time per output token at saturation on the other GPUs:** 30-32% more on the A10 and 48% on the L4, where
@@ -78,7 +78,7 @@ console files keep the median over every sample, idle ones included.
 
 | Qwen3-8B, against vLLM's bf16 | Glyd tiered | Glyd 12-bit |
 | :--- | ---: | ---: |
-| Packs decoded to their weights, bit for bit | 144 of 144 | 144 of 144 |
+| Packs unpacked to their weights, bit for bit | 144 of 144 | 144 of 144 |
 | Worst layer against F.linear, 1-4,096 tokens | 4.17e-3 | 3.81e-3 |
 | Top-1 / \|Δ\| on bf16's continuation (bf16 eager's: 0.9935 / 4.57e-3) | 0.9948 / 3.89e-3 | 0.9948 / 3.89e-3 |
 
@@ -86,7 +86,7 @@ console files keep the median over every sample, idle ones included.
 - **Exact eager:** bf16 eager's bits (8 of 8 prompts, and the continuation).
 - **Exact compiled:** refused. With inductor's deterministic mode, compiled bf16's bits (8 of 8, and the
   continuation).
-- **Fused compiled in that mode:** the same bits across a restart on its graphs.
+- **Default mode compiled in that mode:** the same bits across a restart on its graphs.
 
 ## Bench: Qwen3-8B (`bench/`, 1,078 s)
 

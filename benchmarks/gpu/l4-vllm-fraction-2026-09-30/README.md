@@ -41,8 +41,8 @@ packs' digest: empty at 0, and a different one at 0.5 and at 1.
 
 The 15 checks of a `--quick` run on Glyd at fraction 0.5, tiered and 12-bit, and three more:
 
-- Every pack (72: 18 layers' qkv, o, gate_up and down) decoded to its weights bit for bit, in both layouts.
-- Every layer's product within 4.15e-3 (tiered) and 3.80e-3 (12-bit) of F.linear on its matrix decoded, the same bits
+- Every pack (72: 18 layers' qkv, o, gate_up and down) unpacked to its weights bit for bit, in both layouts.
+- Every layer's product within 4.15e-3 (tiered) and 3.80e-3 (12-bit) of F.linear on its matrix unpacked, the same bits
   every run.
 - Top-1 agreement with bf16 on its 1,536-token continuation 0.9916 (tiered) and 0.9929 (12-bit), bf16 eager's 0.9922.
 - **The layers:** 18 of 36 packed, which are the rule's (layer i where floor((i + 1) f) > floor(i f): 1, 3, 5, ... 35),
@@ -50,7 +50,7 @@ The 15 checks of a `--quick` run on Glyd at fraction 0.5, tiered and 12-bit, and
 - Exact eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8 prompts, the continuation too).
 - Exact compiled, inductor deterministic: compiled bf16's bits (8 of 8, the continuation too), and exact compiled without
   the mode refused with Glyd's message.
-- Fused, compiled, inductor deterministic: the same bits from one run to the next, the second loading the first's graphs.
+- Default mode, compiled, inductor deterministic: the same bits from one run to the next, the second loading the first's graphs.
 - The compile cache: a graph for each of bf16, tiered and 12-bit on one cache, each loaded again.
 - **Fraction 0, eager:** nothing packed, and bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8, the
   continuation too), with the same KV cache (17,568 tokens each).
@@ -62,8 +62,7 @@ The KV cache of these runs (0.85 utilization, 4,096 tokens): bf16 11,056 tokens,
 
 A mixture of experts (32 layers, each with attention Linears and 40 experts), Glyd in the layout the GPU's best (tiered):
 
-- 16 of 32 layers packed (1, 3, 5, ... 31): 32 Linears and the experts of 16 layers (`moe: 16`), every pack decoded to its
-  weights bit for bit, every product (the experts' too) within 3.38e-3 of its matrix decoded.
+- 16 of 32 layers packed (1, 3, 5, ... 31): 32 Linears and the experts of 16 layers (`moe: 16`), every pack unpacked to its weights bit for bit, every product (the experts' too) within 3.38e-3 of its matrix unpacked.
 - The other 16 layers, their Linears and their experts, are vLLM's own methods (`UnquantizedLinearMethod`,
   `UnquantizedFusedMoEMethod`); the layers packed are the rule's, each with all its Linears and its experts.
 - Top-1 agreement with bf16 on the 1,536-token continuation 0.9896 (bf16 eager's 0.9883).

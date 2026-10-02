@@ -19,10 +19,8 @@ SUPER, so no speed here is that card's.
   read this GPU as GeForce Ada (code 1089, `glyd_gpu.h`'s GLYD_GPU_GEFORCE + 89) instead of as an L4 (3089, which the
   library reads from the device's name). Every server log prints "glyd test: the plugin reads this GPU as GeForce Ada
   (1089)".
-  - The plugin takes its routes by that code (on GeForce Ada, a prompt past 512 tokens a step is decoded ahead for
-    cuBLAS, as on an RTX 4080). It also sizes its scratch buffer by the routes, at load: the buffer is made only if a
-    step of up to `--max-num-batched-tokens` tokens takes a route that decodes a matrix. It is in the weights' memory in
-    the logs below: 11.83 GiB with vLLM's own chunk of prompt tokens, 11.64 GiB with `--max-num-batched-tokens 512`.
+  - The plugin sizes its scratch buffer by that code, at load. It is in the weights' memory in the logs below: 11.83
+    GiB with vLLM's own chunk of prompt tokens, 11.64 GiB with `--max-num-batched-tokens 512`.
   - The library's own kernel choices stay the L4's, and `layout auto` takes the tiered layout on Ada (`glyd: mma
     layout` in the log of each server that loaded Glyd's weights). So the memory numbers are what the plugin asks of a
     GeForce Ada card; the speeds are the L4's.
