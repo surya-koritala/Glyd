@@ -35,8 +35,9 @@ Issues = "https://github.com/surya-koritala/Glyd/issues"
 
 [project.optional-dependencies]
 # The GPU half is the glyd-gpu package (compiled wheels, the same version as this one): gpu, for glyd.from_pretrained and glyd.fit; vllm,
-# for vllm serve MODEL --quantization glyd and glyd run (glyd-gpu's own extra holds the vLLM release it is tested with).
-gpu = ["glyd-gpu==0.27.0rc1"]
+# for vllm serve MODEL --quantization glyd and glyd run. glyd-gpu's own extras hold what these held in glyd 0.26 (PyTorch, transformers,
+# accelerate; the vLLM release it is tested with), so an install resolves as before, plus glyd-gpu.
+gpu = ["glyd-gpu[gpu]==0.27.0rc1"]
 vllm = ["glyd-gpu[vllm]==0.27.0rc1"]
 
 [project.scripts]
