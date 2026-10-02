@@ -34,7 +34,7 @@ Compress files and object-storage data:
 """
 MISSING = """  The compression program is not installed here. Get it with one of:
     brew install surya-koritala/glyd/glyd
-    cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store glyd-gpu
+    cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store
     a release from https://github.com/surya-koritala/Glyd/releases
 """
 

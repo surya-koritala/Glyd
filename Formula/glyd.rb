@@ -44,10 +44,9 @@ class Glyd < Formula
     if File.exist?("Cargo.toml")
       system "cargo", "install", *std_cargo_args
       system "cargo", "install", *std_cargo_args(path: "glyd-store")
-      system "cargo", "install", *std_cargo_args(path: "glyd-gpu")
       include.install "include/glyd.h"
     else
-      bin.install "glyd", "glyd-store", "glyd-gpu"
+      bin.install "glyd", "glyd-store"
       include.install "glyd.h"
     end
   end

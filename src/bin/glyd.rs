@@ -120,7 +120,7 @@ fn python_command(args: &[String]) -> ! {
     let why = if forwarded {
         "the Python tool's glyd sent it back to this program, so it has no such command: update it with curl -LsSf https://getglyd.com/install.sh | sh"
     } else if cfg!(target_os = "linux") {
-        "that is a command of Glyd's Python tool (the GPU half), which is not installed here. On Linux with an NVIDIA GPU: curl -LsSf https://getglyd.com/install.sh | sh"
+        "that is a command of Glyd's Python tool (the GPU half), which is not installed here. On Linux with an NVIDIA GPU: pip install \"glyd[gpu]\" (glyd run and glyd serve: \"glyd[vllm]\"), or curl -LsSf https://getglyd.com/install.sh | sh"
     } else {
         "needs Linux with an NVIDIA GPU, and this computer is not one (this program compresses files: glyd --help)"
     };

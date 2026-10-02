@@ -79,7 +79,7 @@ fn a_program_that_is_not_the_python_tool_is_not_taken_for_it() {
     let err = text(&o.stderr);
     assert!(!text(&o.stdout).contains("some other glyd") && !err.contains("Usage:"), "{err}");
     if cfg!(target_os = "linux") {
-        assert!(err.contains("not installed here") && err.contains("https://getglyd.com/install.sh"), "{err}");
+        assert!(err.contains("not installed here") && err.contains("pip install \"glyd[gpu]\"") && err.contains("https://getglyd.com/install.sh") && !err.contains("cargo"), "{err}");
     } else {
         assert!(err.contains("needs Linux with an NVIDIA GPU"), "{err}");
     }

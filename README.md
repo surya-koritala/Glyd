@@ -352,7 +352,7 @@ million a year at list price; the percentages above are what to multiply.
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 pip install glyd                             # Python: Linux x86_64 / aarch64, macOS arm64 (PyPI)
 pip install "glyd[gpu]"                      # models on the GPU: Linux x86_64 / aarch64 (glyd.from_pretrained)
-cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store glyd-gpu   # from source
+cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store   # from source
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
