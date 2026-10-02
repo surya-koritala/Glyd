@@ -215,14 +215,11 @@ and 1.5 GiB for the runtime, against the memory nvidia-smi reports
 (`16GB` ... `141GB`, or a number of bytes). From the Hub's metadata for a
 repo id, from the files for a directory.
 
-    python -m glyd.gpu fit Qwen/Qwen3-32B --gpu 48GB
-    python -m glyd.gpu pack Qwen/Qwen3-8B qwen3-8b-glyd     # packed, checked, saved as glyd-v1
-    python -m glyd.gpu verify qwen3-8b-glyd
+    python -m glyd_gpu fit Qwen/Qwen3-32B --gpu 48GB
+    python -m glyd_gpu pack Qwen/Qwen3-8B qwen3-8b-glyd     # packed, checked, saved as glyd-v1
+    python -m glyd_gpu verify qwen3-8b-glyd
 
-`glyd pack` and `glyd verify`, the Rust CLI's (the glyd-gpu command),
-do the same on the CPU with no Python, PyTorch or GPU, and save the same
-bytes (Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe for now; other
-families: the commands above).
+`glyd pack` and `glyd verify` are the same two commands (the `glyd` program passes them to the Python tool).
 
 ### Serving with vLLM
 
@@ -260,5 +257,5 @@ Throughput against bf16, exact mode
 compiled, mixtures of experts and what is not supported yet:
 [gpu/vllm](https://github.com/surya-koritala/Glyd/tree/main/gpu/vllm).
 
-`glyd.gpu` is under the Business Source License 1.1 (`LICENSE-glyd-gpu`),
+The GPU half is the `glyd-gpu` package (compiled wheels; `glyd.gpu` re-exports its API), under the Business Source License 1.1,
 as the rest of Glyd's GPU code; the codec under BSD-3-Clause OR GPL-2.0.
