@@ -97,7 +97,7 @@ used by `glyd run` instead of a second one (`glyd serve` of it again says "Nothi
 | `--gpu-memory-utilization` | the memory free now, less 0.55 GiB for the server's CUDA context (outside vLLM's share) and 0.4 GiB left for a desktop, over the card's total as CUDA reports it (not nvidia-smi's), rounded down to 1%; at most 0.92. `glyd run` (one chat) takes only what two windows of KV cache need, `glyd serve` the whole share | vLLM's share is of that total: an RTX 4080 SUPER's is 15.57 GiB, nvidia-smi's 16,376 MiB is 15.99 |
 | `--max-model-len` | the model's own length, or the most the KV cache holds at that share (a multiple of 1,024). Under 4,096 the model does not fit | the KV cache is what is left after the weights |
 | eager mode (`--enforce-eager`) | always; `-- --no-enforce-eager` compiles | on an L4 with Qwen3-8B compiled was 2-3% faster in all, for 1, 4 and 8 users (21.7, 84.8 and 165.8 tokens/s against 21.2, 82.3 and 161.2), the server up in 2 min 45 s against 47 s, and it needs 2.15 GiB beyond the weights where eager needs 0.5 |
-| the layout (`GLYD_LAYOUT`) | the plugin's own choice for the GPU (the tiered layout, 10.80 bits a weight, on Ada and wherever only it fits; else the 12-bit one), the tiered one also where the 12-bit one leaves less room than an 8,192-token chat | the layout is counted into the memory above, so the plugin packs what was counted |
+| the layout (`GLYD_LAYOUT`) | the plugin's own choice for the GPU (`mma` on Ada and wherever only it fits; else `mma12`), `mma` also where `mma12` leaves less room than an 8,192-token chat | the layout's size is counted into the memory above, so the plugin packs what was counted |
 | the sampler (`VLLM_USE_FLASHINFER_SAMPLER=0`) | PyTorch's | FlashInfer's compiles with nvcc at the first request that samples, which stopped a server on a machine with no CUDA toolkit; the same tokens a second (21.1 and 21.2 for one user) |
 | tool calls and thinking | by family: Qwen3 `hermes` and `qwen3`; Qwen3 Instruct-2507 and Qwen2.5 `hermes`; Qwen3-Coder `qwen3_coder`; DeepSeek-R1 distills `deepseek_r1`; Llama 3.x `llama3_json`; Mistral `mistral`. Another family chats without tool calls | the names are vLLM 0.30's |
 | the allocator | PyTorch's default | `expandable_segments:True` gave 24 allocator warnings in a load at a 16 GB budget, and the default none |
@@ -316,69 +316,51 @@ than a card it stands in for, `--card 4080s` leaves the server that card's memor
 
 **Measured, by hand,** on an L4 held to what an RTX 4080 SUPER with a desktop leaves (14.48 GiB free at start, a budget of 13.71
 GiB: `--card 4080s`, which runs `--gpu-memory-utilization 0.88` as 0.622), with the plugin reading it as a GeForce Ada
-card; vLLM 0.30.0, Open WebUI 0.11.4. 0.26.0rc2's load was also run on an RTX 4080 SUPER with a desktop (the
-fixes of this section were not): the stand-in's numbers for 0.26.0rc2 match it, 11.83 GiB of weights and 1.35 GiB of KV
-cache against 1.34 GiB there.
+card; vLLM 0.30.0, Open WebUI 0.11.4.
 
 - **One user:** 21.25 tokens/s greedy and 21.00 with top-p (the median of five answers of 256 tokens each), the first
   token 53 ms after the request; 161.4 and 159.5 tokens/s in all for 8 users at once.
-- **KV cache:** 1.83 GiB, 13,280 tokens, at the 13.71 GiB budget, with the weights at 11.39 GiB. 0.26.0rc2's weights took
-  11.83 GiB and its KV cache 1.35 GiB (9,856 tokens) in the same run, 1.34 GiB (9,744 tokens) on the RTX 4080 SUPER.
+- **KV cache:** 1.83 GiB, 13,280 tokens, at the 13.71 GiB budget, with the weights at 11.39 GiB.
 - **bf16's weights leave no room:** its server did not start with the same flags (without `--quantization glyd`; the
   earlier record below). It ran out of memory loading the weights, 15.26 GiB into about 15.3 GiB free.
-- **Loading** took 15 s for the weights (24 s with 0.26.0rc2) and 39-46 s to a running server. While it loads, the
-  server takes most of the free GPU memory: 669 MiB were left free at the least, where 0.26.0rc2 took the card to 3 MiB
-  and its log held 254 allocator warnings, "memory allocation failed with OOM", one for each time PyTorch's allocator
-  could not get a block and freed its cache to try again. Now it holds none, at 14.48 GiB free and at the 21.7 GiB the L4
-  has free with no hog (0.26.0rc2 held none there either: its KV cache 7.04 GiB, 51,264 tokens, against 7.51 GiB, 54,688).
-  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, which gave 0.26.0rc2 1.74 GiB of KV cache, replaced its 254
-  warnings with 73 of its own, "memory mapping failed with OOM". If PyTorch's warning shows in another setup it is
-  harmless: it freed its cache and tried again, as it did each time here. No desktop ran in the test, so what one does
-  in those seconds is not measured.
+- **Loading** took 15 s for the weights and 39-46 s to a running server. While it loads, the server takes most of the
+  free GPU memory: 669 MiB were left free at the least. The log holds no allocator warning, at 14.48 GiB free and at the
+  21.7 GiB the L4 has free with no hog (KV cache 7.51 GiB, 54,688 tokens, at the latter). If PyTorch's warning shows in
+  another setup it is harmless: it freed its cache and tried again. No desktop ran in the test, so what one does in
+  those seconds is not measured.
 - **Open WebUI:** its model list showed Qwen/Qwen3-8B, a chat through its chat endpoint with the browser's request (its
   tools on) completed, and it passed the model's tool call, by both routes. In a browser (Open WebUI 0.11.4's page over
   a tunnel) a chat showed a collapsed "Thought for 7 seconds" and its answer, and a question about the time called the
   tool, "Explored get_current_timestamp", and answered with its result.
 
-The packing's passes, the allocator and every run with its log:
+Every run with its log:
 [benchmarks/gpu/l4-quickstart-2026-09-30](../../benchmarks/gpu/l4-quickstart-2026-09-30). The hog that held the L4's
 memory and the GeForce emulation of the first test: [benchmarks/gpu/l4-local-chat-2026-09-30](../../benchmarks/gpu/l4-local-chat-2026-09-30).
 
 ## What it does
 
-- **At load.** Each Linear's bf16 weight is held on the meta device. As vLLM's layerwise loading completes a layer,
-  its weights are packed on the GPU, so the load peaks at the packs plus one layer; the layer's bf16 is dropped at
-  once, and PyTorch's unused blocks go back to the driver where they outweigh its free memory (vLLM loads with the
-  allocator told not to split a block past 20 MiB, and on a card the weights nearly fill the unused blocks would pile up
-  until an allocation failed and PyTorch warned, 254 times on a 16 GB card). The layout is Glyd's tiered one (10.80 bits a
-  weight) or its 12-bit one (12.04). With `verify`, every pack is decoded and compared with its weights.
+- **At load.** Each Linear's weight is packed on the GPU as vLLM loads it, layer by layer, so the load peaks at the
+  packs plus one layer, and the layer's bf16 weight is dropped at once. The layout is `mma` or `mma12`. With
+  `verify`, every pack is unpacked and compared with its weights.
   - A layer whose checkpoint lacks a piece (a merged qkv's k, say, or an expert's up) is refused, naming the layer and
     the piece. vLLM's bf16 runs such a checkpoint with that piece's memory never written.
   - A model whose packs cannot fit the GPU's free memory is refused before it loads, with the numbers; running out of
     memory while packing says which layer and how much was packed.
-- **A glyd save** loads as saved: its packs are the layers' buffers, with no bf16 at any point. Asked for the other
-  layout, it is decoded and packed again. A save's packed LM head is decoded into the bf16 weight vLLM's LM head runs
-  on. Saves of Qwen3 and Llama models are checked in vLLM; another family's save is refused, naming its bf16 source.
-- **Each product** is one op, `glyd::vllm_linear`, which vLLM's torch.compile takes as one node and its CUDA graphs
-  capture. The op takes the library's route for the step's tokens on this GPU: the fused kernels (the weights decoded
-  in registers, straight into the tensor cores), or, for long prompts where cuBLAS is the faster, each matrix decoded
-  and then cuBLAS.
-- **A mixture of experts** (a model vLLM runs by its fused MoE layer): each layer's experts are packed as one matrix,
-  the experts' stacked.
-  - Their products are the library's grouped ones. Each token's choices are sorted by expert on the GPU; gate and up
-    run with SiLU applied as their sums are written out; down runs with the router's weights, each token's rows
-    added.
-  - None of it syncs with the host, so vLLM's CUDA graphs capture it.
-  - From 1,152 tokens a step (a prompt's), the layer decodes the experts its tokens are routed to and runs vLLM's own
-    Triton MoE kernel on them instead, exact mode's way, the faster there: granite's layer on an L4 took 0.97x the
-    grouped products' time at 1,152 tokens and 0.65x at 8,192. `GLYD_MOE_DECODE_MIN` moves the threshold (-1: never).
+- **A glyd save** loads as saved, with no bf16 at any point. Asked for the other layout, it is decoded and packed
+  again. A save's packed LM head is decoded into the bf16 weight vLLM's LM head runs on. Saves of Qwen3 and Llama
+  models are checked in vLLM; another family's save is refused, naming its bf16 source.
+- **Each product** runs Glyd's kernels, inside vLLM's torch.compile and CUDA graphs.
+- **A mixture of experts** (a model vLLM runs by its fused MoE layer): each layer's experts are packed, and Glyd's
+  kernels multiply them.
+  - From 1,152 tokens a step (a prompt's), the layer takes another path, which is faster there: granite's layer on an
+    L4 took 0.97x the time at 1,152 tokens and 0.65x at 8,192. `GLYD_MOE_DECODE_MIN` moves the threshold (-1: never).
     It holds one layer's experts decoded in a scratch buffer
     ([benchmarks/gpu/l4-vllm-moe-routes-2026-09-30](../../benchmarks/gpu/l4-vllm-moe-routes-2026-09-30)).
   - These stay bf16, with a warning: experts with biases, activations other than SiLU, expert parallelism, and sizes
     off the packs' multiples.
 - **Embeddings, the LM head, norms, attention and the KV cache stay vLLM's.**
-- **The compile cache.** The options in effect, with a digest of the packs, go into vLLM's `additional_config`, which
-  its compile cache is keyed by. Another layout, mode or checkpoint never finds another's compiled graph.
+- **The compile cache** is keyed by the options in effect and the checkpoint: another layout, mode or checkpoint never
+  finds another's compiled graph.
 
 ## Options
 
@@ -389,14 +371,14 @@ fraction outside 0 to 1 is refused.
 
 | Option | Values | What it does |
 | :--- | :--- | :--- |
-| `layout` | `auto` (default), `mma`, `mma12` | `auto` takes `best_layout`'s choice for the GPU: the tiered layout on Ada (L4, L40S, RTX 40), for a mixture of experts on an A10 too, and wherever only it fits; else the 12-bit one (A10, A100, H100, GH200). A save loads in its own. |
+| `layout` | `auto` (default), `mma`, `mma12` | `auto` takes `best_layout`'s choice for the GPU: `mma` on Ada (L4, L40S, RTX 40), for a mixture of experts on an A10 too, and wherever only it fits; else `mma12` (A10, A100, H100, GH200). A save loads in its own. |
 | `exact` | `false` (default), `true` | Each product's matrix decoded whole, then the GEMM vLLM runs for bf16, so the logits are bf16's bit for bit (below). |
 | `verify` | `false` (default), `true` | Every pack decoded at load and compared with its weights bit for bit. A save's packs by glyd.json's sha256, its other tensors too, and a save packed again in the other layout against the save. |
 | `fraction` | `1` (default), a number from 0 to 1 | The share of the decoder layers packed; the rest stay vLLM's own bf16 ([below](#a-fraction-of-the-layers)). `0` is bf16, `1` every layer. A glyd save takes only `1`. |
 
 ## A fraction of the layers
 
-A packed layer saves memory and costs a rebuild of its weights at every step; a layer left as it is saves nothing and
+A packed layer saves memory and costs some time at every step; a layer left as it is saves nothing and
 costs nothing extra. `fraction` says how many layers are packed: `0` packs none, which is vLLM's own bf16, and `1` every
 layer, as before.
 
@@ -405,22 +387,19 @@ vllm serve Qwen/Qwen3-8B --quantization glyd --additional-config '{"glyd": {"fra
 GLYD_FRACTION=0.5 vllm serve Qwen/Qwen3-8B --quantization glyd
 ```
 
-- **Which layers.** Layer i's Linears (qkv, o, gate and up, down) are packed where floor((i + 1) × fraction) >
-  floor(i × fraction): floor(L × fraction) of a model's L layers, spread evenly over its depth (0.5 packs layers 1, 3,
-  5 and so on; 0.25 packs 3, 7, 11). All of a layer's Linears go together, and a mixture of experts' layer's experts
-  with them. The fraction counts as the decimal it is written in: 0.29 of 100 layers is 29. A layer is found by the
-  first number in a module's name (`model.layers.12.mlp.down_proj`); a Linear outside the numbered layers is packed at
-  `1` only. Embeddings and the LM head are as without the option.
-- **The others** run vLLM's own methods, `UnquantizedLinearMethod` and `UnquantizedFusedMoEMethod`, as vLLM runs a model
-  with no quantization. At `0` nothing is packed, Glyd's library is not loaded, and a mixture of experts' shared experts
-  keep their side stream.
-- **Exact mode** is unaffected: a layer left as it is gives bf16's bits, and a packed layer's decoded matrix goes through
-  the same GEMM as before.
+- **Which layers.** floor(L × fraction) of a model's L layers are packed, spread evenly over its depth (0.5 packs
+  layers 1, 3, 5 and so on; 0.25 packs 3, 7, 11). All of a layer's Linears go together, and a mixture of experts'
+  layer's experts with them. The fraction counts as the decimal it is written in: 0.29 of 100 layers is 29. A layer is
+  found by the first number in a module's name (`model.layers.12.mlp.down_proj`); a Linear outside the numbered
+  layers is packed at `1` only. Embeddings and the LM head are as without the option.
+- **The others** run vLLM's own code, as vLLM runs a model with no quantization. At `0` nothing is packed and Glyd's
+  library is not loaded.
+- **Exact mode** is unaffected: a layer left as it is gives bf16's bits.
 - **A glyd save** takes only `1`, its layers being packed on disk; a bf16 checkpoint takes any fraction. A fraction outside
   0 to 1 is refused.
 - **The compile cache** is keyed by the fraction with the other options.
 
-**Measured** on an L4 with Qwen3-8B (the tiered layout, `vllm bench serve` as above, servers warm, 64 prompts at 1 request
+**Measured** on an L4 with Qwen3-8B (`mma`, `vllm bench serve` as above, servers warm, 64 prompts at 1 request
 a second and 256 at once, against bf16 in the same session):
 
 | | Weights | KV cache | Requests/s, at once | First token at 1 a second | Each token at 1 a second |
@@ -466,7 +445,7 @@ Runs and logs: [the L4's](../../benchmarks/gpu/l4-vllm-fraction-2026-09-30) and 
 
 ## Exact mode
 
-The fused products sum in another order than cuBLAS's, so logits can differ from bf16's in their last bits. The same
+Glyd's products sum in another order than bf16's, so logits can differ from bf16's in their last bits. The same
 happens between any two GEMM kernels, and within vLLM's own bf16, between CUDA graphs and eager.
 
 With `exact`, each Linear's matrix is decoded into a scratch buffer and multiplied by the GEMM vLLM runs for bf16:
@@ -489,12 +468,12 @@ routed to and runs vLLM's own bf16 MoE kernel.
 - **Compiled, Linears with biases** (Qwen2.5's q, k and v, for one) are refused: in bf16's graph inductor adds a
   Linear's bias apart from its matmul, rounding before the add, where exact's product adds it in the GEMM. Eager, exact
   gives bf16's bits there too (Qwen2.5-1.5B-Instruct on an L4).
-- **`VLLM_BATCH_INVARIANT`** asks for every product's bits not to depend on the batch. The fused kernels are chosen by
+- **`VLLM_BATCH_INVARIANT`** asks for every product's bits not to depend on the batch. Glyd's kernels are chosen by
   the batch's tokens, so without exact it is refused; with exact the products are vLLM's batch-invariant GEMM on the
   decoded weights.
-- **The deterministic mode on its own** makes compiled Glyd, fused too, the same from one run to the next. On an L4
-  it cost nothing measurable: Qwen3-8B's tokens/s at 1, 8 and 32 sequences were within 1% of the default's, bf16's
-  and Glyd's alike.
+- **The deterministic mode on its own** makes compiled Glyd, in its default mode too, the same from one run to the
+  next. On an L4 it cost nothing measurable: Qwen3-8B's tokens/s at 1, 8 and 32 sequences were within 1% of the
+  default's, bf16's and Glyd's alike.
 - **The cost of exact** is a decode per product.
 - **For a mixture of experts,** exact needs vLLM's Triton kernel for bf16's experts, vLLM's pick on the L4. It is
   refused where vLLM picks another, which lays the weights out otherwise.
@@ -506,21 +485,21 @@ routed to and runs vLLM's own bf16 MoE kernel.
 - the same `--gpu-memory-utilization 0.9`;
 - servers started warm, on the compile cache their first start filled;
 - the random dataset, 1,024 tokens in and 256 out;
-- v0.25.1's library (the H100 SXM's run: the v0.26.0 candidate's, whose routes for the plugin are v0.25.1's).
+- v0.25.1's library (the H100 SXM's run: the v0.26.0 candidate's, which behaves as v0.25.1's for the plugin).
 
 Low load is 1 request a second, 0.25 on the L4. Saturated is every request sent at once. A ratio or a percentage is
 Glyd's against bf16's; for the times, less is better.
 
 | GPU (Glyd's layout) | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
 | :--- | :--- | ---: | ---: | :--- | :--- |
-| L4 (tiered) | Qwen3-8B | 1.89x | 1.33x | +16%, -21% | -25%, +42% |
-| A10 (12-bit) | Qwen3-8B | 1.73x | 1.31x | +16%, -21% | -25%, +30% |
-| A100 40 GB (12-bit) | Qwen3-8B | 1.14x | 1.19x | +18%, -10% | -32%, -2% |
-| A100 40 GB (12-bit) | Qwen3-14B | 1.77x | 1.65x | +18%, -13% | -57%, +4% |
-| GH200 (12-bit) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
-| GH200 (12-bit) | Qwen3-32B | 1.66x | 0.88x | +28%, -6% | -52%, +82% |
-| H100 SXM (12-bit) | Qwen3-30B-A3B (a mixture of experts) | 2.11x | 0.95x | +39%, +8% | -74%, +118% |
-| 2x RTX A6000, tensor parallel (tiered) | Qwen3-30B-A3B (a mixture of experts) | 1.67x | 0.87x | +30%, -7% | +34%, +28% |
+| L4 (`mma`) | Qwen3-8B | 1.89x | 1.33x | +16%, -21% | -25%, +42% |
+| A10 (`mma12`) | Qwen3-8B | 1.73x | 1.31x | +16%, -21% | -25%, +30% |
+| A100 40 GB (`mma12`) | Qwen3-8B | 1.14x | 1.19x | +18%, -10% | -32%, -2% |
+| A100 40 GB (`mma12`) | Qwen3-14B | 1.77x | 1.65x | +18%, -13% | -57%, +4% |
+| GH200 (`mma12`) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
+| GH200 (`mma12`) | Qwen3-32B | 1.66x | 0.88x | +28%, -6% | -52%, +82% |
+| H100 SXM (`mma12`) | Qwen3-30B-A3B (a mixture of experts) | 2.11x | 0.95x | +39%, +8% | -74%, +118% |
+| 2x RTX A6000, tensor parallel (`mma`) | Qwen3-30B-A3B (a mixture of experts) | 1.67x | 0.87x | +30%, -7% | +34%, +28% |
 
 - **Wins:**
   - 1.04-2.11x the KV cache, so more requests at once (1.67x for Qwen3-30B-A3B over two RTX A6000s, 2.11x on one H100
@@ -535,14 +514,13 @@ Glyd's against bf16's; for the times, less is better.
 - **Losses:**
   - At low load, the first token 4-39% later (39% on the H100 SXM with Qwen3-30B-A3B).
   - On the GH200 at saturation, 0.88-0.92x bf16's requests a second, with Qwen3-32B although bf16 ran short of KV
-    cache there. Hopper's gap is not profiled yet.
+    cache there.
   - On the H100 SXM at saturation with Qwen3-30B-A3B, 0.95x bf16's requests a second although bf16 filled its KV cache
     (104 requests running, 152 waiting; Glyd ran up to 220).
   - At saturation, each token 30-42% slower on the L4 and A10, where each step carries more requests; within 4% on the
     A100. On the GH200, 9% slower with Qwen3-8B and 82% with Qwen3-32B; on the H100 SXM 118% with Qwen3-30B-A3B.
   - Qwen3-30B-A3B over two RTX A6000s: at 1 request a second the same requests a second, each token 7% sooner; from 4
-    a second 0.87-0.88x, each token 28-59% later, with the two modes running the same batches. The experts' grouped
-    products at those batch sizes are the next work.
+    a second 0.87-0.88x, each token 28-59% later, with the two modes running the same batches.
 - **The L4's pair** ran back to back in one session. An earlier pair, Glyd's run within the hour after bf16's, gave
   1.39x saturated, +17% and -23% at low load, and -28% and +36% saturated (`l4-vllm-m2-2026-09-29`).
 
@@ -556,10 +534,10 @@ an L4, and Qwen3-8B on an L4, A10, A100, GH200 and H100 SXM:
 
 - Every pack decodes to its weights bit for bit.
 - Every product is within 6.2e-3 (relative) of the same product on its matrix decoded, with the same bits every run.
-- The fused tokens are within vLLM's own bf16 noise, bf16 eager's against bf16 with CUDA graphs. Fed the 1,536-token
+- Glyd's tokens are within vLLM's own bf16 noise, bf16 eager's against bf16 with CUDA graphs. Fed the 1,536-token
   continuation bf16 generated, Glyd ranks 0.988-0.997 of its tokens first, and bf16 eager 0.987-0.995.
   - Glyd's share is at or above bf16 eager's for 18 of the 20 model, GPU and layout pairs. The other two are 0.13 and
-    0.20 points under: Yi 12-bit on the L4, and Qwen3-8B tiered on the A100.
+    0.20 points under: Yi `mma12` on the L4, and Qwen3-8B `mma` on the A100.
   - Glyd's mean logprob difference from bf16's is at most 1.01x bf16 eager's.
 - Exact mode gives bf16's bits: eager, and compiled in the deterministic mode (refused there for Qwen2.5's biases).
 - Over two GPUs (tensor parallel, 2x RTX A6000): Qwen3-8B and granite, every check but one (below); Qwen3-30B-A3B,
@@ -568,7 +546,7 @@ an L4, and Qwen3-8B on an L4, A10, A100, GH200 and H100 SXM:
 
 ## Speculative decoding
 
-vLLM's speculation runs on Glyd's packs as on bf16's weights. Qwen3-8B on an L4, one user, greedy, the tiered layout,
+vLLM's speculation runs on Glyd's packs as on bf16's weights. Qwen3-8B on an L4, one user, greedy, `mma`,
 in two mixes of five prompts: "edit" (fix, annotate, convert, rewrite or summarize a given text, code or data) and
 "chat". The drafts are n-gram (5 tokens) and EAGLE-3 (`RedHatAI/Qwen3-8B-speculator.eagle3`, Apache-2.0, 3 tokens).
 
@@ -602,13 +580,13 @@ Every run and its log: [benchmarks/gpu/l4-vllm-spec-2026-09-30](../../benchmarks
 Each of these is refused at start, with a message saying why; none runs wrong. What vLLM's config tells is refused as
 the engine builds it, before any worker starts, so over several GPUs too Glyd's message is the error the user sees:
 
-- dual-batch overlap (`--enable-dbo`), whose two streams would share the GPU's done counters;
+- dual-batch overlap (`--enable-dbo`);
 - LoRA;
 - weight offloading (`--cpu-offload-gb`) and sleep mode;
 - a glyd save over several GPUs, one with a mixture of experts' packs, or one of a family other than Qwen3's and
   Llama's; their bf16 checkpoints load;
 - a glyd save with a `fraction` below 1: its layers are packed on disk, and its bf16 checkpoint takes a fraction;
-- exact under torch.compile where a packed Linear has a bias (exact eager runs), and fused products under
+- exact under torch.compile where a packed Linear has a bias (exact eager runs), and Glyd's default products under
   `VLLM_BATCH_INVARIANT`.
 
 Tensor parallelism packs each rank's shard (measured over two RTX A6000s above).
@@ -630,35 +608,16 @@ Tensor parallelism packs each rank's shard (measured over two RTX A6000s above).
   requests a second, TTFT and TPOT against bf16's. `SERVE_ARGS` adds arguments to every `vllm serve`.
 - `profile_steps.py [MODEL]`: a step's GPU time by kind of kernel (Glyd's, GEMMs, attention, the rest), bf16 against
   Glyd, at decode steps of B sequences and prompt steps of M tokens.
-- `moe_routes.py [MODEL]`: a mixture of experts' layer by tokens a step, the grouped products against the routed
-  experts decoded for vLLM's Triton kernel, and bf16's own layer (the threshold `GLYD_MOE_DECODE_MIN` routes by).
+- `moe_routes.py [MODEL]`: a mixture of experts' layer by tokens a step, Glyd's two paths against bf16's own layer
+  (the threshold `GLYD_MOE_DECODE_MIN` moves).
 - `spec_decode.py`, `spec_summary.py`: one user's tokens/s, first token and speculation's acceptance for a configuration
   (bf16 or Glyd, n-gram or EAGLE-3, eager, exact), and the runs' tables and token-for-token comparisons.
 - `bindings/python/test_vllm.py`: the plugin's logic that needs no GPU (options, the layers a fraction packs and the
   method each layer gets, a save's packs by vLLM's layer names, the pieces a checkpoint gave, what is refused, the entry
   point's version rule), with vLLM installed.
 
-## vLLM's internals
+## The plugin's source
 
 The plugin is `bindings/python/glyd/gpu/vllm_plugin.py`, loaded by `vllm_entry.py`, the entry point, which checks
-vLLM's version first. Beyond vLLM's plugin entry point and `register_quantization_config`, it relies on these of vLLM
-0.30's internals:
-
-- `QuantizationConfig` (`from_config`, `maybe_update_config`, `get_quant_method`).
-- `LinearBase` and `LinearMethodBase`; `QKVParallelLinear` and `MergedColumnParallelLinear`, for their loaders' shard ids;
-  `UnquantizedLinearMethod`, whose GEMM exact runs.
-- `VocabParallelEmbedding` and `UnquantizedEmbeddingMethod`; `ModelWeightParameter` and `set_weight_attrs`.
-- The layerwise online processing in `model_loader.reload.layerwise`: `initialize_online_processing`, and
-  `get_layerwise_info`'s record of the weights loaded.
-- The config through `get_current_vllm_config_or_none`:
-  - `additional_config`, the compile cache's key;
-  - the parallel, LoRA, offload, model, compilation and scheduler configs;
-  - `vllm.envs`: `VLLM_BATCH_INVARIANT` and `VLLM_DISABLE_SHARED_EXPERTS_STREAM`.
-- For a mixture of experts (without these, experts stay bf16, with a warning):
-  - `RoutedExperts` and its `moe_config`;
-  - `OnlineMoEMethodBase`, `FusedMoEQuantConfig.make` and `MoEActivation`;
-  - `UnquantizedFusedMoEMethod` (its `unquantized_backend`, `_init_moe_kernel` and `moe_kernel.apply`'s arguments) with
-    `UnquantizedMoeBackend`.
-
-It copies none of vLLM's code. Like the rest of Glyd's GPU code it is under the Business Source License 1.1
-(`gpu/LICENSE`).
+vLLM's version first. It relies on vLLM 0.30's plugin and quantization interfaces, and copies none of vLLM's code. Like
+the rest of Glyd's GPU code it is under the Business Source License 1.1 (`gpu/LICENSE`).

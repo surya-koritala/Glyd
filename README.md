@@ -30,11 +30,9 @@
 
 ## AI models on fewer GPUs
 
-A model's weights and KV cache are bf16 numbers whose sign and mantissa
-are noise and whose exponent carries under 3 of its 8 bits. Glyd holds
-them compressed in GPU memory, the model bit for bit, and decodes them on
-the GPU where they are used: inside the matrix product and inside
-attention ([gpu/](gpu/README.md)).
+Glyd holds a bf16 model's weights and KV cache in fewer bits in GPU
+memory and rebuilds the exact values on the GPU as the model runs: the
+model bit for bit ([gpu/](gpu/README.md)).
 
 ```bash
 pip install "glyd[gpu]"      # Linux x86_64 / aarch64, a CUDA GPU (Ampere or later), PyTorch for CUDA 12 or 13
@@ -47,7 +45,7 @@ model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits bit for bit
 ```
 ```bash
 glyd pack Qwen/Qwen3-8B qwen3-8b-glyd                    # saved packed on the CPU, no Python or GPU: python -m glyd.gpu pack's bytes (Qwen3, Qwen2, Llama, Mistral, Granite)
-glyd pack Qwen/Qwen3-8B qwen3-8b-glyd12 --layout mma12   # the 12-bit layout: an A10, A100 or H100 loads it as saved
+glyd pack Qwen/Qwen3-8B qwen3-8b-glyd12 --layout mma12   # the mma12 layout: an A10, A100 or H100 loads it as saved
 ```
 
 <p align="center"><img src="docs/img/qwen3-32b-gpus.svg" width="100%" alt="nvidia-smi: Qwen3-32B in bf16 across two 48 GB GPUs (44,554 + 18,514 MiB), and with Glyd on one (43,338 MiB)"></p>
@@ -114,7 +112,7 @@ an H100 PCIe, 2026-09-27; logs in
 | SmolLM3 3B | 5.6 GB | **3.8 GB** (−32.9%) | 29.1467&nbsp;→&nbsp;29.1422 | 63.3%&nbsp;→&nbsp;63.3% |
 | Llama 3.2 3B Instruct | 5.6 GB | **3.8 GB** (−32.8%) | 25.1298&nbsp;→&nbsp;25.1437 | 63.7%&nbsp;→&nbsp;64.3% |
 
-(The tiered layout; the 12-bit one takes 23.5-24.8% off each. Quality
+(Sizes in `mma`; `mma12` takes 23.5-24.8% off each. Quality
 where the harness loads the model on one GPU in bf16: the MMLU answers
 are bf16's on 98.0-100% of the questions. Gemma 3's perplexity is left
 out: the harness's windows start without the BOS token Gemma needs, which
@@ -130,17 +128,17 @@ puts bf16 and Glyd alike near 12,000.)
   on an RTX 4080 SUPER. At 64 sequences it is 0.82-0.86x on the A6000s
   (1.04x on the 4080). Prompts take 1.2-1.6x bf16's time on the A6000s;
   on the 4080 up to 128 tokens as fast or faster, past that 1.05-1.10x.
-  On an H100 the tiered decode is bound by arithmetic (Qwen3-32B: 40.6 ms
-  of GPU time a token against bf16's 28.2); the 12-bit layout (`mma12`)
-  keeps up with its HBM3: Qwen3-32B in 49.2 GB instead of 65.5 at 26.4 ms
-  of GPU time a token, its products at one token 1.1-1.2x faster than cuBLAS's.
-- **The limit.** A bf16 number's sign and mantissa are noise, so no
-  lossless code takes more than about 34% off bf16 weights or KV cache
-  (measured: 10.5-10.6 bits a value); Glyd's 10.80 bits is 32.5% off.
-  Models shipped in FP8 have about 18% to take, in NVFP4 about 7%.
-- **On disk** the same exponent coding makes a bf16 checkpoint 33%
-  smaller, a fine-tune against its base 44% smaller, and a training
-  checkpoint with its optimizer state 17-23% smaller (below).
+  On an H100 `mma` takes more GPU time a token than bf16 (Qwen3-32B: 40.6
+  ms against 28.2); `mma12` is the faster one there: Qwen3-32B in 49.2 GB
+  instead of 65.5 at 26.4 ms of GPU time a token, its products at one
+  token 1.1-1.2x faster than bf16's.
+- **The limit.** No lossless code takes more than about 34% off bf16
+  weights or KV cache (measured: 10.5-10.6 bits a value); Glyd's 10.80
+  bits is 32.5% off. Models shipped in FP8 have about 18% to take, in
+  NVFP4 about 7%.
+- **On disk** a bf16 checkpoint is 33% smaller, a fine-tune against its
+  base 44% smaller, and a training checkpoint with its optimizer state
+  17-23% smaller (below).
 
 ### Serving with vLLM
 
@@ -167,14 +165,14 @@ out; low load 1 request a second, 0.25 on the L4):
 
 | GPU (Glyd's layout) | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
 | :--- | :--- | ---: | ---: | :--- | :--- |
-| L4 (tiered) | Qwen3-8B | 1.89x | **1.33x** | +16%, −21% | −25%, +42% |
-| A10 (12-bit) | Qwen3-8B | 1.73x | **1.31x** | +16%, −21% | −25%, +30% |
-| A100 40 GB (12-bit) | Qwen3-8B | 1.14x | **1.19x** | +18%, −10% | −32%, −2% |
-| A100 40 GB (12-bit) | Qwen3-14B | 1.77x | **1.65x** | +18%, −13% | −57%, +4% |
-| GH200 (12-bit) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
-| GH200 (12-bit) | Qwen3-32B | 1.66x | 0.88x | +28%, −6% | −52%, +82% |
-| H100 SXM (12-bit) | Qwen3-30B-A3B | 2.11x | 0.95x | +39%, +8% | −74%, +118% |
-| 2x RTX A6000, tensor parallel (tiered) | Qwen3-30B-A3B | 1.67x | 0.87x | +30%, −7% | +34%, +28% |
+| L4 (`mma`) | Qwen3-8B | 1.89x | **1.33x** | +16%, −21% | −25%, +42% |
+| A10 (`mma12`) | Qwen3-8B | 1.73x | **1.31x** | +16%, −21% | −25%, +30% |
+| A100 40 GB (`mma12`) | Qwen3-8B | 1.14x | **1.19x** | +18%, −10% | −32%, −2% |
+| A100 40 GB (`mma12`) | Qwen3-14B | 1.77x | **1.65x** | +18%, −13% | −57%, +4% |
+| GH200 (`mma12`) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
+| GH200 (`mma12`) | Qwen3-32B | 1.66x | 0.88x | +28%, −6% | −52%, +82% |
+| H100 SXM (`mma12`) | Qwen3-30B-A3B | 2.11x | 0.95x | +39%, +8% | −74%, +118% |
+| 2x RTX A6000, tensor parallel (`mma`) | Qwen3-30B-A3B | 1.67x | 0.87x | +30%, −7% | +34%, +28% |
 
 More requests at once on every GPU, and more a second on the L4, A10
 and A100; on the GH200, with Qwen3-30B-A3B over two RTX A6000s and on an
@@ -193,8 +191,8 @@ and every rate: [gpu/vllm/README.md](gpu/vllm/README.md); logs in
 
 ### Related work
 
-Coding a bf16 weight's exponent losslessly is not new; what Glyd adds is
-the combination below.
+Lossless compression of bf16 weights is not new; what Glyd adds is the
+combination below.
 
 - [DFloat11](https://arxiv.org/abs/2504.11651) (Zhang et al., NeurIPS
   2025): Huffman codes for the exponent, about 30% smaller, outputs bit
@@ -208,10 +206,8 @@ the combination below.
   (Tan et al., ISCA 2026): ANS codes within 0.01-0.05 bits of the
   entropy bound for bf16, fp8 and integer formats, decoded a tile at a
   time in SGLang.
-- [SplitZip](https://arxiv.org/abs/2605.01708) (2026): the KV cache's
-  exponents as 4-bit codes into the 16 commonest with escapes, for
-  moving it between servers, the scheme of Glyd's 12-bit layout before
-  split byte (v0.19-v0.24).
+- [SplitZip](https://arxiv.org/abs/2605.01708) (2026): lossless coding of
+  the KV cache, for moving it between servers.
 - [ZipNN](https://arxiv.org/abs/2411.05239) (2024) and
   [NeuZip](https://arxiv.org/abs/2410.20650) (2024) for storage and
   training memory, [Huff-LLM](https://arxiv.org/abs/2502.00922) (2025)
@@ -220,28 +216,26 @@ the combination below.
   (2025), and Cloudflare's [Unweight](https://research.cloudflare.com/papers/unweight-2026.pdf)
   (2026) for MLP weights.
 
-Where Glyd differs: 10.80 bits a weight (32.5% off) decoded inside the
-product itself (the others: about 30% so decoded, or at the bound with
-an ANS decoder); the KV cache held compressed, attention reading its
-pages (31%); the same result every run; the model on disk, fine-tunes
-against their base and training checkpoints by the same coding.
+Where Glyd differs: 10.80 bits a weight (32.5% off; the others: about
+30%, or at the bound with an ANS decoder); the KV cache held compressed
+(31%); the same result every run; the model on disk, fine-tunes against
+their base and training checkpoints.
 
 Side by side on one GPU, an RTX 4080 SUPER (16 GB), with Qwen3-8B, whose
 16.38 GB of bf16 does not fit it ([benchmarks/gpu/head-to-head-rtx4080s-2026-09-26](benchmarks/gpu/head-to-head-rtx4080s-2026-09-26)):
 
-| Qwen3-8B, RTX 4080 SUPER | DFloat11 | ⚡&nbsp;**Glyd**, tiered | Glyd, 12-bit |
+| Qwen3-8B, RTX 4080 SUPER | DFloat11 | ⚡&nbsp;**Glyd**, `mma` | Glyd, `mma12` |
 | :--- | ---: | ---: | ---: |
 | Weights in GPU memory | 11.16 GB | **11.15 GB** | 12.27 GB |
 | Tokens/s at 1 / 8 / 32 / 64 sequences | 13.8 / 104.7 / 387.5 / 746.2 | **47.2 / 360.2 / 1268.6** / 1897.2 | 45.9 / 350.9 / 1259.9 / **2150.8** |
 | GPU time a token at 1 / 8 / 32 / 64 sequences | 71.4 / 74.9 / 79.9 / 81.4 ms | **19.8 / 20.6 / 22.9** / 30.6 ms | 20.4 / 21.3 / 23.2 / **26.6** ms |
 
 DFloat11 decodes each transformer block's weights to bf16 before the
-block runs (47 ms of every token here); Glyd decodes inside the product.
-ZipServ ships its product as a kernel (end to end it runs inside its own
-vLLM), so product against product, on layer 18's matrices, timed as
-ZipServ times itself (the L2 cache flushed before every call), ZipServ
-at its best split of K; Glyd's tiered layout at 1-32 tokens, its 12-bit
-one (12.04 bits) at 64:
+block runs (47 ms of every token here). ZipServ ships its product as a
+kernel (end to end it runs inside its own vLLM), so product against
+product, on layer 18's matrices, timed as ZipServ times itself (the L2
+cache flushed before every call), ZipServ at its best split of K; Glyd's
+`mma` at 1-32 tokens, `mma12` (12.04 bits) at 64:
 
 | Qwen3-8B, layer 18, us | Bits a weight, ZipServ / Glyd | 1 token: cuBLAS / ZipServ / Glyd | 16 tokens | 32 tokens | 64 tokens |
 | :--- | ---: | ---: | ---: | ---: | ---: |
@@ -252,8 +246,7 @@ one (12.04 bits) at 64:
 
 So: DFloat11's size at 2.9-3.4x its speed. Against ZipServ, 5% fewer
 bytes; at 1 to 16 tokens as fast or faster (within 2%), at 32 and 64
-tokens behind it on most matrices, by up to 20%: what the next kernel
-for Ampere and Ada is for.
+tokens behind it on most matrices, by up to 20%.
 
 ---
 
@@ -304,12 +297,12 @@ less where the data has structure; it writes at 0.77× zstd -3's speed
 right side of the trade; for data written constantly and rarely read,
 zstd -3 or LZ4 still win on write cost.
 
-- 🏪 **The store (`glyd-store`)**: `put` an object and it is kept as a delta against the stored object it most resembles, found by fingerprints, when that pays; chains capped at four. A 39 GB bucket (six Ubuntu image builds, fifteen kernel releases, two months of Wikipedia tables, twelve hours of GitHub events) stores in 1,334 MB against zstd -3's 6,132 MB: **4.6× fewer bytes**, put at 500 MB/s end to end, every object read back byte-exact.
+- 🏪 **The store (`glyd-store`)**: `put` an object and it is kept as a delta against the stored object it most resembles, when that pays; a read is at most five decodes. A 39 GB bucket (six Ubuntu image builds, fifteen kernel releases, two months of Wikipedia tables, twelve hours of GitHub events) stores in 1,334 MB against zstd -3's 6,132 MB: **4.6× fewer bytes**, put at 500 MB/s end to end, every object read back byte-exact.
 - 🗂️ **Record mode (`-r`)**: logs, SQL dumps, CSV and JSON lines as typed columns; logs of varying shape as templates plus typed variables. Telemetry stores 2.5–3.5× less than zstd -3 and 1.5–2× less than zstd -19; application and system logs 1.4–3.3× less than zstd -3 and 1.1–2.1× less than zstd -19; the whole corpus 19% less than zstd -3.
 - 📦 **Packs (`--pack`)**: many small objects as one record-mode stream with an index; 2–4× fewer bytes than zstd + dictionary per object, any one object read back in a millisecond.
 - 🧩 **Shape dictionaries (`--shape`)**: record mode for a single small object. Trained on a sample; a 1–4 KB event or log object stores 1.1–1.9× less than with a zstd dictionary.
 - 🧊 **Cold level (`--cold`)**: context mixing for what is stored for years and read rarely. 1.5–2.6× fewer bytes than zstd -19 on logs, dumps, JSON and text — the zpaq -m5 class at 3–4× its speed — at 1.2–1.5 MB/s per core each way.
-- 🧠 **Model weights**: safetensors files opened tensor by tensor as byte planes; Pythia-410M 13% under zstd -19 at 26× its write speed, Qwen2.5-0.5B 12% under. A checkpoint against the one before it (`--base`) goes in as each tensor XOR its predecessor: 612 MB where `zstd -19 --patch-from` stores 805. PyTorch training checkpoints with optimizer state: 83% of their size alone, 77% against the one before (zstd -19: 92%). On the GPU ([gpu/](gpu/README.md)) the weights stay compressed in memory, bit for bit: a 7B model in 10.6 GB instead of 15.3 (its matrices 32.5% smaller), generating 1.25–1.32× faster than bf16 from 1 to 32 sequences at once (1.04× at 64), prompts up to 128 tokens as fast or faster and longer ones within 5–10%.
+- 🧠 **Model weights**: safetensors files opened tensor by tensor; Pythia-410M 13% under zstd -19 at 26× its write speed, Qwen2.5-0.5B 12% under. A checkpoint against the one before it (`--base`) stores in 612 MB where `zstd -19 --patch-from` stores 805. PyTorch training checkpoints with optimizer state: 83% of their size alone, 77% against the one before (zstd -19: 92%). On the GPU ([gpu/](gpu/README.md)) the weights stay compressed in memory, bit for bit: a 7B model in 10.6 GB instead of 15.3 (its matrices 32.5% smaller), generating 1.25–1.32× faster than bf16 from 1 to 32 sequences at once (1.04× at 64), prompts up to 128 tokens as fast or faster and longer ones within 5–10%.
 - 🔁 **Base mode (`--base`)**: a new version against the old one, its content found wherever it moved. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 1.8–3× its speed; 15 kernel releases in 228 MB instead of 3 GB.
 - 🔭 **128 MB long-distance matcher** (`--max --long`, `--ultra`, the store): JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
 - 🚀 **Fastest reads at every ratio**: 8-way interleaved entropy coding and copy-only loops, units that decode one per core.
@@ -495,26 +488,17 @@ cannot know it.
 
 The store is its own crate, `glyd-store` (`glyd-store DIR --put ...`;
 under the Business Source License, the codec being BSD-3-Clause OR GPL-2.0).
-`Store::put` fingerprints the object (one sparse anchor in 4 KB, the
-same map base mode uses), looks the fingerprints up in the store's
-table, takes the stored object sharing the most as the base, and keeps
-the object as a delta against it (`--base`) when that saves a fifth or
-more of what it costs alone; else alone at `--max` (record mode where
-it pays; `--ultra` or `--cold` on request). Chains are at most four
-long; past that the base is the first object of the version's family
-(an object whose base holds under 98% of its fingerprints, a new major
-release against the old one, starts a family; its point releases join
-it), so a read is at most five decodes at 6–10 GB/s and a 6.6 kernel
-is never a delta of 5.15's; `rebase(id)` stores an object read often
-alone again. `get`, `id_of(name)`, `delete` (a deleted object's bytes
-stay while a live chain runs through them), `compact` (frees what no
-live object needs), `verify` (every object read back and checked).
-The objects' bytes go through a `Backend`: a directory, or an S3
-bucket over HTTPS (`--s3 s3://bucket/prefix`, or any S3-compatible
-service through `AWS_ENDPOINT_URL`). Metadata stays local, but every
-object's index lines ride beside it in the backend, so `--rebuild`
-remakes a lost metadata directory from the objects alone. When two stored objects score
-within 2× of each other as bases, both are tried on the first 32 MB. Measured on a realistic bucket
+`put` keeps an object as a delta against the stored object it most
+resembles when that pays, and otherwise on its own at `--max` (record
+mode where it pays; `--ultra` or `--cold` on request). A read is at most
+five decodes at 6–10 GB/s; `rebase(id)` stores an object read often
+alone again. `get`, `id_of(name)`, `delete` (the bytes another object
+still needs stay), `compact` (frees what no live object needs), `verify`
+(every object read back and checked). The objects' bytes go through a
+`Backend`: a directory, or an S3 bucket over HTTPS (`--s3
+s3://bucket/prefix`, or any S3-compatible service through
+`AWS_ENDPOINT_URL`). Metadata stays local, and `--rebuild` remakes a lost
+metadata directory from the objects alone. Measured on a realistic bucket
 (`scripts/download_bucket.sh`, 39 objects, 39.2 GB, each arriving in
 order), every object read back and compared:
 
@@ -541,27 +525,20 @@ v0.14.9; kernel releases 286–425× against raw, Wikipedia tables
 MB/s (zstd -3's own read-back on the same instance: 346 MB/s) and the
 restore at 559 MB/s, S3 included, on that instance.
 
-Put runs at 620 MB/s end to end over the bucket on ten cores (reading
-the file, rebuilding the base, writing the delta; a version of the
-last object put runs at 900 MB/s, that object being kept in memory as
-the likeliest next base); verifying the whole bucket reads it back at
-1.5 GB/s. On a Ryzen 9 7950X3D (16 cores, v0.14.7) a kernel release
-arriving as a version of the last one is put at 1,224 MB/s and read
-back at 1,590; the first of them, alone, at 2,545 MB/s; an Ubuntu root
-filesystem with gzip inside as a version at 215 MB/s (the deflate
-emulation's speed). The same store built on zstd's own
+Put runs at 620 MB/s end to end over the bucket on ten cores (a version
+of the last object put runs at 900 MB/s); verifying the whole bucket
+reads it back at 1.5 GB/s. On a Ryzen 9 7950X3D (16 cores, v0.14.7) a
+kernel release arriving as a version of the last one is put at 1,224 MB/s
+and read back at 1,590; the first of them, alone, at 2,545 MB/s; an
+Ubuntu root filesystem with gzip inside as a version at 215 MB/s (the
+deflate emulation's speed). The same store built on zstd's own
 `--patch-from` would land around 3–4×: our deltas are 1.1–2.1× smaller
-and read 10× faster, and the store design does the rest. In money, a
-petabyte of such data in S3 Standard costs $43K a year with zstd -3
-and $9.4K with the store. Chunk-level dedup, what backup systems do, gains
-1–4× on the same pairs. The store is a directory: `objects/<id>`, the
-fingerprints, an index, and the fingerprint table — an open-addressing
-hash table mapped from disk (12 bytes per 4 KB stored, kept at most
-half full), so the store's memory does not grow with what it holds;
-the 39 GB bucket's table is 100 MB. Objects under 256 KB have nothing
-to fingerprint and would cost their whole size alone, so `put` gathers
-them into 2 MB packs (record mode where it pays) and `get` decodes the
-pack and slices: 2,000 GitHub events put one by one store at 9.0×
+and read 10× faster. In money, a petabyte of such data in S3 Standard
+costs $43K a year with zstd -3 and $9.4K with the store. Chunk-level
+dedup, what backup systems do, gains 1–4× on the same pairs. The store's
+memory does not grow with what it holds. Objects under 256 KB are
+gathered into 2 MB packs (record mode where it pays) and `get` decodes
+the pack and slices: 2,000 GitHub events put one by one store at 9.0×
 against zstd -3's 3.6× per event.
 
 ## Base mode: a version compressed against the last one
@@ -1030,15 +1007,12 @@ panic or an unbounded allocation; every unsafe block carries its bound.
   0.5–7.8% smaller on each (v0.14.6). zstd's default is two threads (one compressing,
   one on I/O and the checksum), so the CLI writes on a second thread
   too; against `zstd -3 --single-thread` it is 1.03–1.26× on all five.
-  What is left on match-dense data is the sequence side: the codes and
-  eight-stream sections written per sequence run more instructions
-  than zstd's single sequence stream, at a higher IPC. On eight cores
-  against `zstd -3 -T8`: 1.08–1.21× on events, the log and mozilla,
-  0.97× on enwik8, 0.83× on the dump. On a Ryzen 9 7950X3D it is
-  1.07–1.26× faster on all five. Against zstd 1.5.7, whose block
-  splitter gains 1.4% on mozilla against ours 0.9%, that file is 0.2%
-  larger. `--long` adds the 128 MB matcher at a third more time. Record mode's transform
-  halves the write speed again (200–400 MB/s per core).
+  On eight cores against `zstd -3 -T8`: 1.08–1.21× on events, the log
+  and mozilla, 0.97× on enwik8, 0.83× on the dump. On a Ryzen 9 7950X3D
+  it is 1.07–1.26× faster on all five. Against zstd 1.5.7, mozilla is
+  0.2% larger. `--long` adds the 128 MB matcher at a third more time.
+  Record mode's transform halves the write speed again (200–400 MB/s
+  per core).
 - Reads in record mode spend 2–2.7× zstd's CPU rebuilding the columns
   (5–30 ns per value by column type), which makes zstd -3 the cheaper
   choice at a hundred CPU-billed reads a month; the plain CLI's
@@ -1051,8 +1025,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
   of the base farther apart than 96 MB has only the denser one in reach.
 - On Sapphire Rapids `--max` decodes at 0.79–0.97× zstd -3 on one core
   (v0.14.7), against 1.15–1.32× on Graviton3 and 1.00–1.30× on a Ryzen 9
-  7950X3D: what is left there is the decode loop's instructions per
-  cycle on Intel.
+  7950X3D.
 - Small objects with a dictionary: sizes tie, zstd is 1.4–2× faster per
   object. Record mode works on files, not on single small objects.
 - JSON API events and crawl indexes are 20–65% hashes and random ids once
@@ -1081,7 +1054,7 @@ panic or an unbounded allocation; every unsafe block carries its bound.
 
 ## Releases and versioning
 
-Current release: **v0.14.3** ([CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases)).
+Releases: [CHANGELOG.md](CHANGELOG.md), [releases](https://github.com/surya-koritala/Glyd/releases).
 Glyd follows SemVer. The on-disk format is versioned separately in every
 block header (v6 for default/fast/turbo, v9 for `--max` and `--ultra`; v7
 and v8 are read); record and base envelopes carry their own magic. Every
