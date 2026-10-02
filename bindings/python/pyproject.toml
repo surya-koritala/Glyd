@@ -21,9 +21,9 @@ classifiers = [
 ]
 readme = "README.md"
 # The binding and the codec: BSD-3-Clause or GPL-2.0; the bundled
-# libglyd_store (the Store class): BUSL-1.1, see LICENSE-glyd-store;
-# glyd.gpu (the weights on the GPU): BUSL-1.1, see LICENSE-glyd-gpu.
-license = { text = "BSD-3-Clause OR GPL-2.0-only; bundled libglyd_store BUSL-1.1; glyd.gpu BUSL-1.1" }
+# libglyd_store (the Store class): BUSL-1.1, see LICENSE-glyd-store.
+# (The weights on the GPU are the glyd-gpu package, BUSL-1.1.)
+license = { text = "BSD-3-Clause OR GPL-2.0-only; bundled libglyd_store BUSL-1.1" }
 requires-python = ">=3.8"
 
 [project.urls]
@@ -34,27 +34,18 @@ Changelog = "https://getglyd.com/changelog/"
 Issues = "https://github.com/surya-koritala/Glyd/issues"
 
 [project.optional-dependencies]
-# glyd.gpu: from_pretrained builds on transformers' quantizer API as of 5.17
-# (register_quantizer, on-the-fly quantize ops); fit needs none of these.
-gpu = ["torch>=2.5", "transformers>=5.17,<6", "accelerate>=1.1", "safetensors>=0.8", "huggingface_hub>=1.5,<2"]
-# vllm serve MODEL --quantization glyd (glyd.gpu.vllm_plugin): the vLLM releases it is tested with (its plugin
-# interfaces and its layerwise loading move between minor releases); vLLM brings torch, transformers and the rest.
-vllm = ["vllm>=0.30,<0.31", "safetensors>=0.8", "huggingface_hub>=1.5,<2"]
+# The GPU half is the glyd-gpu package (compiled wheels, the same version as this one): gpu, for glyd.from_pretrained and glyd.fit; vllm,
+# for vllm serve MODEL --quantization glyd and glyd run (glyd-gpu's own extra holds the vLLM release it is tested with).
+gpu = ["glyd-gpu==0.26.0"]
+vllm = ["glyd-gpu[vllm]==0.26.0"]
 
 [project.scripts]
-# glyd run / serve / doctor / login here; any other command goes to the compression program (the Rust glyd), found on PATH
+# glyd run / serve / doctor / login / pack / verify go to glyd-gpu; any other command to the compression program (the Rust glyd), found on PATH
 glyd = "glyd.cli:main"
-
-[project.entry-points."vllm.general_plugins"]
-# vllm serve MODEL --quantization glyd: vLLM calls it in every process it starts; it loads glyd.gpu.vllm_plugin where
-# vLLM is the release it is tested with, and never raises
-glyd = "glyd.gpu.vllm_entry:register"
 
 [tool.setuptools]
 packages = ["glyd", "glyd.gpu"]
-license-files = ["LICENSE", "COPYING", "LICENSE-glyd-store", "LICENSE-glyd-gpu"]
+license-files = ["LICENSE", "COPYING", "LICENSE-glyd-store"]
 
 [tool.setuptools.package-data]
 glyd = ["libglyd_store.dylib", "libglyd_store.so", "glyd_store.dll", "libglyd.dylib", "libglyd.so", "glyd.dll"]
-# The GPU kernels (gpu/build_lib.sh), for PyTorch built with CUDA 12 and with CUDA 13: in the Linux wheels; the chat page glyd run shows.
-"glyd.gpu" = ["libglyd_gpu_cuda12.so", "libglyd_gpu_cuda13.so", "chat.html"]
