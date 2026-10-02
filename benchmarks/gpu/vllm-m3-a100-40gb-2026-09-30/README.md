@@ -2,7 +2,7 @@
 
 M3's unattended job (`vllm_job.sh`) on one NVIDIA A100-SXM4-40GB: the M2 checks against vLLM's own bf16, then `vllm
 bench serve` bf16 against Glyd on Qwen3-8B and on Qwen3-14B. Qwen3-32B does not fit 40 GB packed either: its Linears
-are about 39 GiB tiered and 44 GiB 12-bit, with 2.9 GiB of embeddings and LM head on top.
+are about 39 GiB in the smallest layout (`mma`) and 44 GiB in 12-bit, with 2.9 GiB of embeddings and LM head on top.
 
 ## Setup
 
@@ -23,9 +23,9 @@ on the compile cache its first (cold) start filled, at `--gpu-memory-utilization
 
 | GPU (Glyd's layout) | Model | KV cache, warm | Load (req/s) | Requests/s | TTFT mean | TPOT mean | Request's time (E2E mean) |
 | :--- | :--- | ---: | :--- | ---: | ---: | ---: | ---: |
-| L4 (M2, tiered, v0.25.0) | Qwen3-8B | 1.94x | 0.25 | 1.03x (0.22 to 0.23) | +30% (458 to 594 ms) | -22% (69.9 to 54.8 ms) | -20% |
-| L4 (M2, tiered, v0.25.0) | Qwen3-8B | 1.94x | 1 | 1.15x (0.67 to 0.77) | -73% (3,213 to 870 ms) | +1% (99.3 to 100.1 ms) | -7% |
-| L4 (M2, tiered, v0.25.0) | Qwen3-8B | 1.94x | inf | 1.29x (0.77 to 0.99) | -23% (148,852 to 115,115 ms) | +48% (109.6 to 162.1 ms) | -12% |
+| L4 (M2, `mma`, v0.25.0) | Qwen3-8B | 1.94x | 0.25 | 1.03x (0.22 to 0.23) | +30% (458 to 594 ms) | -22% (69.9 to 54.8 ms) | -20% |
+| L4 (M2, `mma`, v0.25.0) | Qwen3-8B | 1.94x | 1 | 1.15x (0.67 to 0.77) | -73% (3,213 to 870 ms) | +1% (99.3 to 100.1 ms) | -7% |
+| L4 (M2, `mma`, v0.25.0) | Qwen3-8B | 1.94x | inf | 1.29x (0.77 to 0.99) | -23% (148,852 to 115,115 ms) | +48% (109.6 to 162.1 ms) | -12% |
 | A10 (12-bit) | Qwen3-8B | 1.73x | 1 | 1.04x (0.85 to 0.88) | +16% (384 to 445 ms) | -21% (50.9 to 40.4 ms) | -20% |
 | A10 (12-bit) | Qwen3-8B | 1.73x | 4 | 1.22x (1.24 to 1.51) | -39% (27,898 to 17,134 ms) | +32% (66.8 to 88.5 ms) | -12% |
 | A10 (12-bit) | Qwen3-8B | 1.73x | inf | 1.31x (1.24 to 1.62) | -25% (93,052 to 70,196 ms) | +30% (66.1 to 85.7 ms) | -16% |
@@ -63,7 +63,7 @@ The runs are in `../l4-vllm-m2-2026-09-29`, `../vllm-m3-a10-2026-09-30`, `../vll
     - the GPU's power the same (a median 659-667 W while it worked), and its SM clock 1,830 MHz against bf16's 1,575 with
       Qwen3-8B, 1,875 against 1,950 with Qwen3-32B.
 
-    Hopper's gap is not profiled yet.
+    Hopper's gap is not profiled here.
   - **On the GH200 below saturation, Qwen3-8B:** parity in requests a second at 1 and 4 a second, with the time per
     output token 1-6% more.
   - **The time per output token at saturation on the other GPUs:** 30-32% more on the A10 and 48% on the L4, where
@@ -76,9 +76,9 @@ console files keep the median over every sample, idle ones included.
 
 ## Check: all 15 passed (`check/`, 1,057 s)
 
-| Qwen3-8B, against vLLM's bf16 | Glyd tiered | Glyd 12-bit |
+| Qwen3-8B, against vLLM's bf16 | Glyd `mma` | Glyd 12-bit |
 | :--- | ---: | ---: |
-| Packs decoded to their weights, bit for bit | 144 of 144 | 144 of 144 |
+| Packs unpacked to their weights, bit for bit | 144 of 144 | 144 of 144 |
 | Worst layer against F.linear, 1-4,096 tokens | 3.69e-3 | 3.90e-3 |
 | Top-1 / \|Δ\| on bf16's continuation (bf16 eager's: 0.9903 / 8.26e-3) | 0.9883 / 7.31e-3 | 0.9903 / 6.94e-3 |
 
@@ -86,7 +86,7 @@ console files keep the median over every sample, idle ones included.
 - **Exact eager:** bf16 eager's bits (8 of 8 prompts, and the continuation).
 - **Exact compiled:** refused. With inductor's deterministic mode, compiled bf16's bits (8 of 8, and the
   continuation).
-- **Fused compiled in that mode:** the same bits across a restart on its graphs.
+- **Default mode compiled in that mode:** the same bits across a restart on its graphs.
 
 ## Bench: Qwen3-8B (`bench/`, 738 s)
 

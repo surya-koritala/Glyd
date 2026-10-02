@@ -3,10 +3,10 @@
 The plugin's checks against vLLM's own bf16 on Qwen3-8B, a mixture of experts' layer by tokens a step on Qwen3-30B-A3B,
 and `vllm bench serve` bf16 against Glyd on Qwen3-30B-A3B, on one NVIDIA H100 SXM, from the v0.26.0 candidate. They are
 three of the seven jobs of the session's 68 minutes; the others are in
-`../option2-2026-09-29/h100-sxm-measure` (the route SPLIT, Qwen3-14B), `../l4-vllm-fraction-2026-09-30/h100-sxm`
-(`fraction`, Qwen3-32B) and `../repro-2026-09-30/h100-sxm` (bf16's repeatability); the KV-cache kernel's job is in the
-`kv-study` branch's `research/kv-cache`. The Hopper row of M3 was a GH200; this is the first run through vLLM on an
-H100.
+`../option2-2026-09-29/h100-sxm-measure` (the long-prompt mode, Qwen3-14B),
+`../l4-vllm-fraction-2026-09-30/h100-sxm` (`fraction`, Qwen3-32B) and `../repro-2026-09-30/h100-sxm` (bf16's
+repeatability); the KV-cache job is in the `kv-study` branch's `research/kv-cache`. The Hopper row of M3 was a GH200;
+this is the first run through vLLM on an H100.
 
 ## Setup
 
@@ -15,8 +15,8 @@ H100.
   (`session/`).
 - **Software:** the tree 7fe66a2, release-0.26.0 (the v0.26.0 candidate: C API 7, the plugin with `fraction`); vLLM 0.30.0
   from PyPI (torch 2.13.0+cu130, transformers 5.18.0, nvcc 13.0, in the job); the library built there for sm_90a (GPU code
-  90: this tree had no H100 class). The library's routes for the plugin are v0.25.1's: the route SPLIT is opt-in, and the
-  plugin does not ask for it.
+  90: this tree had no H100 class). The plugin runs the library as v0.25.1's: the long-prompt mode is opt-in, and the plugin
+  does not ask for it.
 - **Run:** `session/hop4_all.sh` ran the session's jobs one after another; each of these three is `vllm_job.sh` (as it
   ran) with its steps in `VJ_STEPS`: `check` (Qwen3-8B), `moeroutes` and `moebench` (Qwen3-30B-A3B).
   - The first lines of each job's log show two shell errors, `line 98: 30: command not found` and `line 99: [: :
@@ -29,9 +29,9 @@ H100.
 
 `check_vllm.py --quick` on Qwen3-8B (TP 1):
 
-| Qwen3-8B, against vLLM's bf16 | Glyd tiered | Glyd 12-bit |
+| Qwen3-8B, against vLLM's bf16 | Glyd, the smallest layout (`mma`) | Glyd 12-bit |
 | :--- | ---: | ---: |
-| Packs decoded to their weights, bit for bit | 144 of 144 | 144 of 144 |
+| Packs unpacked to their weights, bit for bit | 144 of 144 | 144 of 144 |
 | Worst layer against F.linear, 1-4,096 tokens | 3.78e-3 | 3.78e-3 |
 | Top-1 on bf16's continuation (bf16 eager's: 0.9922) | 0.9922 | 0.9935 |
 | Mean \|Δ logprob\| (bf16 eager's against its graphs: 9.25e-3) | 8.12e-3 | 7.32e-3 |
@@ -41,17 +41,16 @@ H100.
 - **Exact eager:** bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8 prompts, and the continuation).
 - **Exact compiled:** refused, with Glyd's message. With inductor's deterministic mode, compiled bf16's bits (8 of 8, and
   the continuation).
-- **Fused compiled in that mode:** the same bits across a restart on its graphs (12-bit layout).
+- **Default mode compiled in that mode:** the same bits across a restart on its graphs (12-bit layout).
 
 ## A mixture of experts' layer by tokens a step (`moe-routes/`, 112 s)
 
 `moe_routes.py` on Qwen3-30B-A3B's first MoE layer (128 experts, 8 a token, hidden 2,048, intermediate 768), one GPU:
 T random tokens each routed to 8 experts at random, the GPU time of a call (the median of 20 after a warm-up), the Glyd
-layer's two routes against vLLM's Triton kernel on the bf16 experts. Grouped: the library's grouped products on the
-packs. Decoded: the experts the tokens are routed to decoded into a scratch buffer, then vLLM's Triton kernel on them
-(`GLYD_MOE_DECODE_MIN=1` for the measurement; the plugin's default switches at 1,152 tokens).
+layer's two settings of `GLYD_MOE_DECODE_MIN` (`-1`: the first way to run the experts throughout, `1`: the second; the
+plugin's default switches to the second at 1,152 tokens) against vLLM's own kernel on the bf16 experts.
 
-| Tokens a step | Grouped (ms) | Decoded (ms) | Decoded against grouped | bf16's layer (ms) | Grouped against bf16's | Decoded against bf16's |
+| Tokens a step | Setting -1 (ms) | Setting 1 (ms) | Setting 1 against -1 | bf16's layer (ms) | Setting -1 against bf16's | Setting 1 against bf16's |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1 | 0.075 | 0.275 | 3.68x | 0.207 | 0.36x | 1.33x |
 | 2 | 0.097 | 0.264 | 2.73x | 0.200 | 0.48x | 1.32x |
@@ -67,14 +66,13 @@ packs. Decoded: the experts the tokens are routed to decoded into a scratch buff
 | 2,048 | 1.948 | 1.896 | 0.97x | 0.749 | 2.60x | 2.53x |
 | 4,096 | 3.567 | 2.551 | 0.72x | 1.030 | 3.46x | 2.48x |
 
-- **The decoded route is the faster from 2,048 tokens a step here**, between 1,024 (where it took 1.15x grouped's time)
-  and 2,048 (0.97x), against the plugin's switch at 1,152 tokens, which an L4 and granite-3.1-3b-a800m-instruct set
-  (`../l4-vllm-moe-routes-2026-09-30`). From 1,152 tokens to the crossing, which 1,152 and 1,536 were not run to
-  place, the plugin takes the decoded route where grouped is probably the faster.
-- **Grouped against bf16's layer:** faster to 16 tokens a step (0.36-0.69x), the same at 32 (1.03x), slower from 64
-  (1.27x, 3.46x at 4,096). The decoded route never beats bf16's layer: it runs the same kernel after a decode (2.5-2.6x
-  from 32 tokens).
-- **The two routes' outputs** differed by at most 5.6e-3 (relative).
+- **Setting 1 is the faster from 2,048 tokens a step here**, between 1,024 (where it took 1.15x setting -1's time) and
+  2,048 (0.97x), against the plugin's switch at 1,152 tokens, which an L4 and granite-3.1-3b-a800m-instruct set
+  (`../l4-vllm-moe-routes-2026-09-30`). From 1,152 tokens to the crossing, which 1,152 and 1,536 were not run to place,
+  the plugin takes the second way where the first is probably the faster.
+- **Setting -1 against bf16's layer:** faster to 16 tokens a step (0.36-0.69x), the same at 32 (1.03x), slower from 64
+  (1.27x, 3.46x at 4,096). Setting 1 never beats bf16's layer (2.5-2.6x from 32 tokens).
+- **The two settings' outputs** differed by at most 5.6e-3 (relative).
 
 ## Bench: Qwen3-30B-A3B, bf16 and Glyd (`moe-bench/`, 649 s)
 

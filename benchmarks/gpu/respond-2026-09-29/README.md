@@ -8,10 +8,10 @@ greedy decoding, every reply forced to its length (`min_new_tokens`: no early en
   dynamic cache).
 - **bf16 compiled**: the same bf16 model, its `generate()` compiled as Glyd's default is (`fast_generate`:
   transformers' static cache and `torch.compile`'s CUDA graphs for the same calls, the rest eager): bf16 like for like.
-- **Glyd (default)**: `glyd.from_pretrained(MODEL)` as it loads by default: the layout the GPU's (`"auto"`: tiered on
-  Ada, 12-bit on an A10, A100 and H100, where it fits), `generate()` compiled (a static cache, CUDA graphs) where a
-  call's cache holds at most 2048 positions in all (1280 on a GeForce card), else eager.
-- **Glyd exact**: `glyd.from_pretrained(MODEL, exact=True)`: every matrix decoded whole, then `F.linear`, the logits
+- **Glyd (default)**: `glyd.from_pretrained(MODEL)` as it loads by default: the layout the GPU's (`"auto"`: the smallest
+  layout (`mma`) on Ada, 12-bit on an A10, A100 and H100, where it fits), `generate()` compiled (a static cache, CUDA
+  graphs) where a call's cache holds at most 2048 positions in all (1280 on a GeForce card), else eager.
+- **Glyd exact**: `glyd.from_pretrained(MODEL, exact=True)`: every matrix unpacked whole, then `F.linear`, the logits
   bf16's bit for bit; eager.
 
 Each call is timed by a streamer (transformers hands it the prompt, then each step's tokens, syncing the GPU a step):
@@ -28,11 +28,11 @@ b39563d: 3, and at least one then as many as fit 12 s). The GPU's clocks and pow
 | file | what |
 | :--- | :--- |
 | `gpu/respond.py` | one model in one mode: `python respond.py MODEL --mode bf16|bf16c|glyd|exact --out RESULT.json` |
-| `resp_job.sh` | the modes in turn, the library built for the GPU, the models downloaded: unattended, 35 minutes at most on a cloud GPU. The GPU's plan: Qwen3-8B and, by its memory, Qwen3-32B (a GH200 or H100; an A100 of 60 GB or more) or Qwen3-14B (an A100 of 40 GB; an A10, where its bf16 does not fit), each model's Glyd, bf16 compiled and bf16 eager, then each one's exact. Each run's deadline leaves the later runs their expected time (a GH200's run for the hopper plan, scaled for the others); within a run, repeats go first (at least one each, more while they fit 12 s), then its last configurations: exact's 8 and 32 sequences, left out of its expected time, first |
+| `resp_job.sh` | the modes in turn, the library built for the GPU, the models downloaded: unattended, 35 minutes at most on a cloud GPU. The GPU's plan: Qwen3-8B and, by its memory, Qwen3-32B (a GH200 or H100; an A100 of 60 GB or more) or Qwen3-14B (an A100 of 40 GB; an A10, where its bf16 does not fit), each model's Glyd, bf16 compiled and bf16 eager, then each one's exact |
 | `resp_summary.py` | the tables (summary.txt) and every result in one JSON (respond.json) |
 | `gh200-v0.25.1/` | resp_job.sh at 15d9c04 (v0.25.1) on a GH200, Qwen3-8B and Qwen3-32B, below |
 | `a10-v0.25.1/` | resp_job.sh at 15d9c04 (v0.25.1) on an A10, Qwen3-8B and Qwen3-14B (Glyd's alone fits), below |
-| `a100-v0.25.1/` | resp_job.sh at 15d9c04 (v0.25.1's routes) on an A100 SXM4 40 GB, Qwen3-8B and Qwen3-14B, below |
+| `a100-v0.25.1/` | resp_job.sh at 15d9c04 (v0.25.1) on an A100 SXM4 40 GB, Qwen3-8B and Qwen3-14B, below |
 | `l4-smoke/` | resp_job.sh at b39563d on the AWS dev L4, Qwen3-0.6B's four modes (`run.sh`: 15 minutes, each run's expected time given): every configuration of every mode run, in 10.4 minutes with the library's build; a check that the job runs, not a result |
 
 ## An L4 (l4/; AWS g6.4xlarge, AMD EPYC 7R13, 16 vCPUs; 2026-09-29)
@@ -40,7 +40,7 @@ b39563d: 3, and at least one then as many as fit 12 s). The GPU's clocks and pow
 `l4.sh`: resp_job.sh on the tree at d7b6ddf, the models from the machine's cache, Qwen3-8B then
 Qwen3-4B-Instruct-2507, every configuration at its full repeats. The L4 held its 72 W cap in every mode, its SM clock
 lower under Glyd's kernels (Qwen3-8B, medians while busy: bf16 1575 MHz, Glyd 1260, exact 1365). Glyd's layout there
-is the tiered one (Ada). Qwen3-8B (summary.txt has both models):
+is `mma` (Ada). Qwen3-8B (summary.txt has both models):
 
 | | bf16 | Glyd (default) | Glyd exact |
 | :-- | --: | --: | --: |
@@ -59,16 +59,16 @@ over bf16 eager where both ran eager). The mixes: time to first token / total. O
 GB, exact 12.41 GB. The first call of each process (excluded above): bf16 1.8 s, Glyd 33.4 s (its first compile; the
 512-token configuration compiled again, 45.1 s, as its static cache grew), exact 3.1 s. Greedy tokens as bf16's: exact
 in all 9 configurations of each model; Glyd's default in 6 of 9 (the three tokens-a-second runs, 256 new tokens,
-diverge: its fused products sum in another order than cuBLAS), each configuration's repeats the same tokens.
+diverge: its products sum in another order than cuBLAS), each configuration's repeats the same tokens.
 
-## The L4 again: bf16 compiled, and the L4's prompt routes (l4-routes/; 2026-09-29)
+## The L4 again: bf16 compiled, and the L4's prompt handling (l4-routes/; 2026-09-29)
 
-`l4b.sh` and `l4c.sh`: resp_job.sh on branch l4-routes (72a46e2: an L4's prompts decoded for cuBLAS from 896 tokens
-tiered and 2560 12-bit; benchmarks/gpu/l4-routes-2026-09-29 there) with this branch's respond.py (bcb540e; glyd12
+`l4b.sh` and `l4c.sh`: resp_job.sh on branch l4-routes (72a46e2: a faster path for an L4's prompts from 896 tokens
+`mma` and 2560 12-bit; benchmarks/gpu/l4-routes-2026-09-29 there) with this branch's respond.py (bcb540e; glyd12
 5639409). The modes, the same machine and cache:
 - bf16 eager.
 - bf16 compiled, as Glyd's default compiles (the same calls: to 2048 positions).
-- Glyd's default (tiered on the L4).
+- Glyd's default (`mma` on the L4).
 - Glyd in the 12-bit layout (glyd12).
 Qwen3-8B (summary.txt has Qwen3-4B-Instruct-2507 too):
 
@@ -89,24 +89,22 @@ both. None is given over bf16 eager, whose one-sequence calls run eager where Gl
 to first token or a mix's total, under 1 is sooner;
 for tokens a second, over 1 is faster.
 
-- **Before the L4's routes** (l4/, v0.25.0), Glyd's time to first token was 1.38x bf16 eager's at 2048 tokens and
+- **Before the L4's change** (l4/, v0.25.0), Glyd's time to first token was 1.38x bf16 eager's at 2048 tokens and
   2.10x at 8192; now 1.16x and 1.04x.
 - **Compiling bf16:** it gains 4% on one sequence and nothing at 8 and 32, which run eager in both (past the 2048
   positions). Its compiled calls take 8-10 ms longer to their first token (the static cache).
-- **The 12-bit layout on the L4:** bf16's time to first token to 512 tokens (0.98-0.99x bf16 eager's), and the
-  tiered layout's tokens a second (0.98-1.03x), for 9% more memory (12.54 GB against 11.45 on the GPU after the load).
+- **The 12-bit layout on the L4:** bf16's time to first token to 512 tokens (0.98-0.99x bf16 eager's), and
+  `mma`'s tokens a second (0.98-1.03x), for 9% more memory (12.54 GB against 11.45 on the GPU after the load).
 - **First calls (the compile):** bf16 compiled 36.5-37.3 s. Glyd's took 9.1-9.5 s here, 33 s in l4/: PyTorch's
   compile cache in /tmp still held its graphs from the day's earlier runs.
 - **Tokens:** bf16 compiled's greedy tokens are bf16 eager's in 8 of 9 configurations.
 
 ## A GH200 on v0.25.1 (gh200-v0.25.1/; Lambda, 2026-09-30)
 
-resp_job.sh at 15d9c04 (v0.25.1: Hopper's whole-matrix decode with its low bytes first), riding along with a Hopper
-session: a GH200 480GB (96 GB, 132 SMs; a 64-core Neoverse V2 host), Qwen3-8B and Qwen3-32B, each model's four modes,
-34.4 minutes with the library's build. Every configuration ran but Qwen3-32B exact's 32 sequences, which the plan cuts
-first. The six runs but exact's took their expected times to within 3% (steps.txt); exact's ran their several-sequence
-rates in the time left (Qwen3-8B's both, Qwen3-32B's at 8). Repeats: 3 for the time to first token, 1 to 3 for the
-rest (as many as fit 12 s: one for each eager call of 200-300 tokens). Glyd's layout there is the 12-bit one.
+resp_job.sh at 15d9c04 (v0.25.1: the Hopper change to the whole-matrix unpack), riding along with a Hopper
+session: a GH200 480GB (96 GB; a 64-core Neoverse V2 host), Qwen3-8B and Qwen3-32B, each model's four modes,
+34.4 minutes with the library's build. Every configuration ran but Qwen3-32B exact's 32 sequences, cut for time.
+Repeats: 3 for the time to first token, 1 to 3 for the rest. Glyd's layout there is the 12-bit one.
 
 Eager `generate()` is bound by the host on this machine: bf16 eager makes 21.9 tokens a second on one Qwen3-8B
 sequence, bf16 compiled 119.1. The ratio column is therefore Glyd's default over bf16 compiled, the same calls
@@ -151,7 +149,7 @@ compiled, the rest eager in both (c: the call ran compiled):
 ## An A10 on v0.25.1 (a10-v0.25.1/; Lambda, 2026-09-30)
 
 resp_job.sh at 15d9c04 (the plan a10): an A10 (24 GB, 150 W; an Intel Xeon Platinum 8358 host, 30 vCPUs), Qwen3-8B and
-Qwen3-14B, 26 minutes with the library's build. Glyd's layout there is the 12-bit one for Qwen3-8B and the tiered one
+Qwen3-14B, 26 minutes with the library's build. Glyd's layout there is the 12-bit one for Qwen3-8B and `mma`
 for Qwen3-14B (the one that fits). Each run waited its 20 s for the GPU to cool and started at 45-61 C (its idle 35 C).
 
 Qwen3-14B fits where bf16 does not: Glyd's default loaded at 20.54 GB on the GPU (22.4 at its peak) and ran every
@@ -180,16 +178,12 @@ memory). Its time to first token 138 / 355 / 1261 ms at 128 / 512 / 2048 tokens,
 - **Memory on the GPU after the load:** Qwen3-8B bf16 16.38 GB, Glyd 12.67, exact 13.51.
 - **First calls (the compile, excluded above):** bf16 compiled 50.3 s, Glyd's default 54.0 s (Qwen3-14B's 35.9 s).
 - **Tokens:** every mode's own calls repeated in every configuration here; exact's were bf16 eager's in all 9.
-- **The plan's times:** each run's own time against the plan's expected time (steps.txt gives each run's window: the
-  time it was given, not the time it took): Qwen3-8B Glyd 246 s (230 expected), bf16 compiled 272 (250), bf16 eager
-  170 (200), exact 348 (240, its 8 and 32 sequences run in the time left); Qwen3-14B Glyd 338 (365); bf16, bf16
-  compiled and exact did not fit, 30, 30 and 61 s.
 
 ## An A100 SXM4 40 GB on v0.25.1 (a100-v0.25.1/; Lambda, 2026-09-30)
 
 resp_job.sh at 15d9c04 (the plan a100): an A100-SXM4-40GB (400 W; an AMD EPYC 7J13 host, 30 vCPUs), Qwen3-8B and
-Qwen3-14B, 29.4 minutes with the library's build, every configuration of every mode. These are v0.25.1's routes: from
-v0.26.0 an A100 SXM's 12-bit prompts of 769-4096 tokens take the route SPLIT (option 2), which this run predates.
+Qwen3-14B, 29.4 minutes with the library's build, every configuration of every mode. These are v0.25.1's: from
+v0.26.0 an A100 SXM's 12-bit prompts of 769-4096 tokens take the opt-in long-prompt mode (option 2), which this run predates.
 Glyd's layout there is the 12-bit one. Every mode's own calls repeated in every configuration, and exact's tokens were
 bf16 eager's in all 9 of each model.
 
@@ -221,6 +215,3 @@ bf16 eager's in all 9 of each model.
   Glyd 22.43, exact 23.71.
 - **First calls (the compile, excluded above):** bf16 compiled 48.4 s (8B) and 53.8 s (14B), Glyd's default 43.7 and
   48.7 s.
-- **The plan's times** (from steps.txt's times of day; its "its time" is each run's window): Qwen3-8B Glyd 216 s (200
-  expected), bf16 compiled 227 (220), bf16 eager 137 (180), exact 190 with its several-sequence rates (145 without);
-  Qwen3-14B 251 (235), 264 (255), 162 (205), exact 260 with them (210 without).

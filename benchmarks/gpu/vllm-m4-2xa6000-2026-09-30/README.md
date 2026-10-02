@@ -11,8 +11,8 @@ the checks on a dense model and two mixtures of experts, then `vllm bench serve`
   there for sm_86 (C API 5; GPU code 86).
 - **Run:** 4 jobs in 59 minutes (`steps.txt`): `tp`, `moe-granite`, `moe-30b`, `moebench`. Qwen3-30B-A3B (61.1 GB)
   downloaded in 81 s.
-- **Glyd's layout:** the one `best_layout` picks, tiered for the mixtures of experts on this GDDR Ampere GPU (`glyd:
-  mma layout` in the servers' logs).
+- **Glyd's layout:** the one `best_layout` picks, the smallest layout (`mma`) for the mixtures of experts on this GDDR
+  Ampere GPU (`glyd: mma layout` in the servers' logs).
 
 ## Checks, tensor parallel over the two GPUs
 
@@ -23,9 +23,9 @@ the checks on a dense model and two mixtures of experts, then `vllm bench serve`
 | Qwen3-30B-A3B, `--brief --tp 2` (`moe-30b/`) | all 5 passed |
 
 - **Passed over two GPUs:**
-  - every pack decoded to its weights bit for bit: 288 Linears for Qwen3-8B, 128 and 64 layers' experts for granite,
+  - every pack unpacked to its weights bit for bit: 288 Linears for Qwen3-8B, 128 and 64 layers' experts for granite,
     288 and 96 layers' experts for Qwen3-30B-A3B, each rank's own;
-  - every product within 3.64e-3, 3.78e-3 and 3.76e-3 of the same product on its matrix decoded;
+  - every product within 3.64e-3, 3.78e-3 and 3.76e-3 of the same product on its matrix unpacked;
   - top-1 on bf16's continuation 0.9942 and 0.9948 for Qwen3-8B (bf16 eager's 0.9942), 0.9857 for granite (0.9818)
     and 0.9870 for Qwen3-30B-A3B (0.9857);
   - exact eager bf16 eager's bits, for all three;
@@ -34,7 +34,7 @@ the checks on a dense model and two mixtures of experts, then `vllm bench serve`
 - **Failed: "exact under torch.compile: refused".** The refusal happened, but in the two workers. The check saw
   vLLM's "WorkerProc initialization failed", not Glyd's message, which stood in the workers' log
   (`*-glyd-exact-compiled.log`: "glyd: exact mode gives vLLM's bf16 logits bit for bit eager ...").
-- **The last check ("fused, compiled, deterministic: the same bits from one run to the next") did not report.**
+- **The last check (default mode, compiled, deterministic: the same bits from one run to the next) did not report.**
   - `check_vllm.py` stopped on a TypeError while writing its line: over several GPUs the plugin's options stand in the
     workers' config, not the engine's.
   - Its two runs' JSONs give 8 of 8 prompts bit for bit and the continuation the same, for Qwen3-8B and for granite.
@@ -47,7 +47,7 @@ and 256 out: 64 prompts at 1 request a second, 128 at 4, 256 at once.
 | | Weights, a GPU | KV cache | Requests of 1,280 tokens at once |
 | :--- | ---: | ---: | ---: |
 | bf16 | 28.46 GiB | 283,904 tokens | 221 |
-| Glyd tiered | 19.75 GiB | 473,232 tokens (1.67x) | 369 |
+| Glyd `mma` | 19.75 GiB | 473,232 tokens (1.67x) | 369 |
 
 | Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | ITL median / p99 (ms) |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
@@ -74,8 +74,7 @@ and 256 out: 64 prompts at 1 request a second, 128 at 4, 256 at once.
   are more than bf16's KV cache holds (221), but the servers' logs show both modes running about 200 at once with
   requests waiting (bf16 a median of 210, Glyd 199). So both ran the same batches, and the steps' time decided.
 - **The steps' time:** Glyd's ran longer (the ITL median 58.5 against 37.2 ms at 4 a second, 109.6 against 76.7
-  saturated). The mixture of experts' grouped products at these batch sizes are the next work: measured against the
-  routed experts decoded and vLLM's Triton kernel, on the dev L4.
+  saturated).
 
 ## Files
 

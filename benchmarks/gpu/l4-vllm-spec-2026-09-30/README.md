@@ -7,8 +7,8 @@ and with an EAGLE-3 draft. Every run is `gpu/vllm/spec_decode.py`, a vLLM of its
 
 - **Machine:** the dev L4 (AWS g6.4xlarge, 24 GB, 72 W), vLLM 0.30.0, v0.25.1's library. The plugin is the
   vllm-plugin branch after review 1 (5513d94) with this task's fix for a packed draft.
-- **Model:** Qwen/Qwen3-8B, Glyd's layout the L4's (tiered), `--gpu-memory-utilization 0.9`, `max_model_len` 4096.
-  Default is compiled with CUDA graphs; runs named `eager` use `--enforce-eager`.
+- **Model:** Qwen/Qwen3-8B, Glyd's layout the L4's, the smallest layout (`mma`), `--gpu-memory-utilization 0.9`,
+  `max_model_len` 4096. Default is compiled with CUDA graphs; runs named `eager` use `--enforce-eager`.
 - **Speculation:**
   - n-gram: 5 tokens, lookup of 2 to 4;
   - EAGLE-3: `RedHatAI/Qwen3-8B-speculator.eagle3` (Apache-2.0, ungated, revision 08610ff, 2.0 GB, 3 tokens). vLLM
@@ -62,7 +62,7 @@ and with an EAGLE-3 draft. Every run is `gpu/vllm/spec_decode.py`, a vLLM of its
 | Compiled: Glyd with its draft packed, run again on the same compile cache | 3 of 10 |
 
 - **Exact mode with speculation gives bf16's tokens,** eager, with the n-gram and the EAGLE-3 drafts, and with the
-  draft packed by Glyd too (its products then bf16's GEMM on its decoded weights, as the target's).
+  draft packed by Glyd too (its products then bf16's GEMM on its unpacked weights, as the target's).
 - **Speculation's tokens are the plain decode's only where the products' bits do not depend on the batch.** vLLM's own
   bf16, eager, which gives the same tokens from one process to the next, gave other tokens with speculation in 5 of 10
   requests (n-gram) and 7 of 10 (EAGLE-3).
@@ -85,17 +85,15 @@ and with an EAGLE-3 draft. Every run is `gpu/vllm/spec_decode.py`, a vLLM of its
   - The target's packs stay in the digest.
   - A second run on the same compile cache loaded both graphs ("Directly load AOT compilation") under the same key.
   - Speed was as with the bf16 draft, and exact mode's tokens bf16's.
-- **Found and fixed:** at first that run was refused by the plugin's memory check.
-  - The draft's config sized the target model (vLLM's model config) instead of the draft.
-  - It counted memory PyTorch had cached after the target's packing as used: "2.6 GiB ... the GPU has 1.4 GiB free".
-  - Now each config sizes its own model from the config vLLM gives it. A draft counts by its Linears (it shares its
-    target's embeddings), and PyTorch's cached, unused memory counts as free.
-  - `bindings/python/test_vllm.py` (`test_draft`) checks the sizing and the digest.
+- **Found and fixed:** at first that run was refused by the plugin's memory check: it sized the target model for the
+  draft, and counted memory PyTorch had cached after the target's packing as used ("2.6 GiB ... the GPU has 1.4 GiB
+  free"). Now each config sizes its own model, and `bindings/python/test_vllm.py` (`test_draft`) checks the sizing and
+  the digest.
 
 ## Files
 
-- `m6_spec.sh`, `m6_bi.sh`, `m6_tight.sh`, `m6_retry.sh` and `m6_eager.sh`, with their logs: the runs, in that order,
-  each under the box's lock. `m6_retry.sh` ran again the runs refused before the fix.
+- `m6_spec.sh`, `m6_bi.sh`, `m6_tight.sh`, `m6_retry.sh` and `m6_eager.sh`, with their logs: the runs, in that order.
+  `m6_retry.sh` ran again the runs refused before the fix.
 - `runs/`: each run's JSON (its tokens, times and counters) and vLLM's log. `bf16-eagle3.log` is the run that did not
   fit.
 - `summary.txt`: `gpu/vllm/spec_summary.py runs`.
