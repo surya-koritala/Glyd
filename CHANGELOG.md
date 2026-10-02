@@ -111,8 +111,8 @@ every earlier format.
 - Checked against vLLM's own bf16 (`gpu/vllm/check_vllm.py`): Qwen3-1.7B, Qwen3-4B-Instruct-2507, Qwen3-8B,
   Yi-1.5-6B-Chat (the Llama architecture), granite-3.1-3b-a800m-instruct (a mixture of experts) and
   Qwen2.5-1.5B-Instruct (Linears with biases) on an L4, and Qwen3-8B on an A10, an A100, a GH200 and an H100 SXM.
-  Every pack decoded to its weights bit for bit, and every product was within 6.2e-3 of the same product on its matrix
-  decoded. The fused tokens were within vLLM's own bf16 noise, bf16 eager's against bf16 with CUDA graphs: fed the
+  Every pack decoded to its weights bit for bit, and every product was within 6.2e-3 of the same product on the exact
+  weights. The fused tokens were within vLLM's own bf16 noise, bf16 eager's against bf16 with CUDA graphs: fed the
   1,536-token continuation bf16 generated, Glyd ranked 0.988-0.997 of its tokens first and bf16 eager 0.987-0.995.
   Glyd's share was at or above bf16 eager's for 18 of the 20 model, GPU and layout pairs, and 0.13 and 0.20 points
   under it for the other two.
@@ -139,13 +139,13 @@ every earlier format.
   `--speculative-config` it is packed too, sized by its own config
   ([benchmarks/gpu/l4-vllm-spec-2026-09-30](benchmarks/gpu/l4-vllm-spec-2026-09-30)).
 - Mixtures of experts in vLLM (its fused MoE layer): each layer's experts are packed together and captured in vLLM's
-  CUDA graphs. With `exact`, vLLM's own Triton MoE kernel runs on the decoded experts; it is refused where vLLM picks
+  CUDA graphs. With `exact`, the experts run through vLLM's own Triton MoE kernel; it is refused where vLLM picks
   another kernel for bf16's experts. Experts with biases, activations other than SiLU, expert parallelism, or sizes
   the packing does not suit stay bf16, with a warning.
   - Long prompts take a faster path: granite-3.1-3b-a800m-instruct's layer on an L4 took 0.97x the time of the path
-    before at 1,152 tokens and 0.65x at 8,192, and a prompt of 4,096 tokens 19% less GPU time a step. It holds one
-    layer's experts decoded in extra memory. `GLYD_MOE_DECODE_MIN` moves the prompt length from which it is taken (-1:
-    never) ([benchmarks/gpu/l4-vllm-moe-routes-2026-09-30](benchmarks/gpu/l4-vllm-moe-routes-2026-09-30)).
+    before at 1,152 tokens and 0.65x at 8,192, and a prompt of 4,096 tokens 19% less GPU time a step. It uses extra
+    memory for one layer's experts. `GLYD_MOE_DECODE_MIN` moves the prompt length from which it is taken (-1: never)
+    ([benchmarks/gpu/l4-vllm-moe-routes-2026-09-30](benchmarks/gpu/l4-vllm-moe-routes-2026-09-30)).
   - granite-3.1-3b-a800m-instruct on an L4 passed every check, exact eager and compiled in the deterministic mode
     bf16's bits ([benchmarks/gpu/l4-vllm-m4-2026-09-30](benchmarks/gpu/l4-vllm-m4-2026-09-30)).
   - Over two RTX A6000s, tensor parallel (each rank packs its shard): Qwen3-8B's and granite's checks passed but one,
@@ -172,17 +172,16 @@ every earlier format.
 
   (Columns are prompt lengths in tokens; empty cells were not measured in this comparison. The H100 SXM was run with
   `GLYD_SPLIT_MIN=2048`.)
-  - It is used where the measurements show a gain: for 12-bit prompts on an A100 SXM4 40 GB from 769 to 4096 tokens,
-    and to 8192 for Qwen3-14B (Qwen3-8B at 8192 is not taken); from 2048 to 8192 tokens for Qwen3-32B on the GH200 and
-    Qwen3-14B on the H100 SXM. Qwen3-8B on the GH200 gained 2.2% at 2048 alone and does not take it. At 1024 tokens
-    the GH200's first session had it lose, 1.106 and 1.012 of v0.25.0's time.
+  - It is used for 12-bit prompts where it was measured faster. It is not taken for Qwen3-8B at 8192 tokens on the
+    A100 (0.994) or for Qwen3-8B on the GH200, which gained 2.2% at 2048 alone. At 1024 tokens on the GH200 it was
+    slower (1.106 and 1.012 of v0.25.0's time).
   - An H200, an H100 NVL and the PCIe cards keep v0.25.1's behavior until a session measures them, and nothing past
     8192 tokens takes it, not measured. It is taken on an A100 SXM4 80 GB or an A800 SXM4 too, not measured there.
     Never on a MIG slice.
   - It needs extra GPU memory: 600 MiB for Qwen3-8B, 1.0 GiB for 14B, 1.5 GiB for 32B, and a 32 MiB cuBLAS workspace.
     Measured on an A100-SXM4-40GB, a GH200 480GB and an H100 80GB HBM3, the SXM5.
-  - Its results are the same bits run to run and prompt to prompt within a process, but not bit for bit those of a
-    whole-matrix product, so `exact=True` never takes it.
+  - Its results are the same bits run to run and prompt to prompt within a process, but not bit for bit bf16's, so
+    `exact=True` never takes it.
   - Where it cannot run (the JIT build, a driver older than CUDA 12.5 (with a warning), too little memory, a CUDA
     graph capture, a torch.compile graph) a prompt takes the path before it. `GLYD_SPLIT_MIN=-1` turns it off;
     `GLYD_SPLIT_MIN`, `GLYD_SPLIT_MAX` and `GLYD_SPLIT_SMS` change the prompt lengths it covers and the part of the
@@ -225,9 +224,9 @@ every earlier format.
   of the memory the packs save and skip some of the rebuild each step costs. The layers packed are floor(L f) of L,
   spread evenly over the depth, a layer's Linears together; 0 is vLLM's bf16 (nothing packed, Glyd's library not
   loaded) and 1, the default, every layer as before. A value outside 0 to 1 is refused, and a glyd save takes only 1.
-  - On an L4 with Qwen3-8B (`vllm bench serve`, servers warm, the tiered layout; "at once" is every request sent at
-    once), against bf16's 0.75 requests a second at once, each token 111.2 ms at once and 100.2 ms at 1 request a
-    second, and the first token 3,351 ms at 1 request a second:
+  - On an L4 with Qwen3-8B (`vllm bench serve`, servers warm, the smallest layout, `mma`; "at once" is every request
+    sent at once), against bf16's 0.75 requests a second at once, each token 111.2 ms at once and 100.2 ms at 1
+    request a second, and the first token 3,351 ms at 1 request a second:
 
     | Fraction                            |      0 |    0.5 |      1 |
     | :---------------------------------- | -----: | -----: | -----: |
@@ -275,32 +274,32 @@ every earlier format.
 
 ## v0.25.1 — 2026-09-29
 
-- Hopper: the 12-bit layout's whole-matrix decode (long prompts, `exact=True`'s steps and prompts, and a mixture of
-  experts' exact decode) is faster than v0.25.0's, which took 3.0-6.0% longer than the 12-bit layout's decode before
-  v0.25.0 (H100 SXM, GH200). On a GH200, layer 10 of Qwen3-8B, 14B and 32B, over the decode before v0.25.0:
+- Hopper: rebuilding the weights for long prompts and `exact=True` (steps and prompts, and a mixture of experts' exact
+  mode) on the 12-bit layout is faster than in v0.25.0, which took 3.0-6.0% longer than before v0.25.0 (H100 SXM,
+  GH200). On a GH200, the time to rebuild layer 10's weights of Qwen3-8B, 14B and 32B, over the time before v0.25.0:
   0.964-0.975 (v0.25.0 1.035-1.060). Measured on a GH200 alone; the H100 SXM, where v0.25.0's 3.0-5.8% was measured,
   and the H100 PCIe were not run again. GeForce Ada's, an A10's and an L40S's prompts and every other GPU keep
-  v0.25.0's decode (on an L4 the new decode took 1.6-1.9% longer than v0.25.0's; the others were not measured). The
-  same bits: the self-test and xcheck.py pass on the GH200, and on the L4 with this release's library
+  v0.25.0's behavior (on an L4 this release's rebuild took 1.6-1.9% longer than v0.25.0's; the others were not
+  measured). The same bits: the self-test and xcheck.py pass on the GH200, and on the L4 with this release's library
   ([benchmarks/gpu/decode-fix-2026-09-29](benchmarks/gpu/decode-fix-2026-09-29)).
 - L4: long prompts are faster. Qwen3-8B, one forward pass, over bf16's time in the same run at 1024 / 2048 / 4096 /
-  8192 tokens: tiered +25.5 / +11.3 / +8.4 / +4.7% (were +27.8 / +31.0 / +37.9 / +98.4%), 12-bit at 4096 / 8192 +9.3 /
+  8192 tokens: `mma` +25.5 / +11.3 / +8.4 / +4.7% (were +27.8 / +31.0 / +37.9 / +98.4%), `mma12` at 4096 / 8192 +9.3 /
   +4.4% (were +19.8 / +105.0%); shorter prompts as before. The time to the first token through `generate()` moves with
   the pass.
-  - The tiered layout stays the L4's default (33% less memory). For the fastest short prompts, at 25% less, load with
-    `layout="mma12"`: its prompts took 5-20% less time than the tiered layout's to 1536 tokens, and about the same
-    from 1792 (Qwen3-8B and Qwen3-4B-Instruct-2507).
+  - `mma`, the smallest layout, stays the L4's default (33% less memory). For the fastest short prompts, at 25% less,
+    load with `layout="mma12"`: its prompts took 5-20% less time than `mma`'s to 1536 tokens, and about the same from
+    1792 (Qwen3-8B and Qwen3-4B-Instruct-2507).
   - The L4 is a GPU class of its own in the library's GPU codes (`GLYD_GPU_L4`; the glyd package and the glyd-gpu
     crate have it too, `L4`), so the L40 and RTX 6000 Ada, which share its compute capability and were not measured,
-    keep their previous behavior. `GLYD_DEC_MIN` still sets any GPU's 12-bit threshold
+    keep their previous behavior. `GLYD_DEC_MIN` still moves the 12-bit layout's long-prompt point on any GPU
     ([benchmarks/gpu/l4-routes-2026-09-29](benchmarks/gpu/l4-routes-2026-09-29)).
 - L40S: long prompts are faster. Qwen3-8B on an AWS g6e.xlarge, one forward pass, over bf16's time in the same run at
-  1024 / 2048 / 3072 / 4096 / 8192 tokens: tiered +30.3 / +11.9 / +8.0 / +10.9 / +3.8% (were +38.1 / +41.2 / +37.3 /
-  +39.4 / +35.0%), 12-bit at 2048 / 3072 / 4096 / 8192 +12.9 / +7.7 / +11.3 / +3.9% (were +15.5 / +14.9 / +20.0 /
+  1024 / 2048 / 3072 / 4096 / 8192 tokens: `mma` +30.3 / +11.9 / +8.0 / +10.9 / +3.8% (were +38.1 / +41.2 / +37.3 /
+  +39.4 / +35.0%), `mma12` at 2048 / 3072 / 4096 / 8192 +12.9 / +7.7 / +11.3 / +3.9% (were +15.5 / +14.9 / +20.0 /
   +18.2%); shorter prompts as before. Qwen3-8B's working memory there is 0.40 GB (was 0.27).
-  - The L40S's 12-bit prompts took 17.3 / 18.1 / 12.8 / 4.0% less time than the tiered layout's at 512 / 768 / 1024 /
-    1536 tokens (at 512 tokens -0.3% over bf16's time, the tiered one's +20.6%) and were within 0.9% of them from 2048
-    tokens. The tiered layout stays its default (33% less memory; `layout="mma12"` for 25%).
+  - The L40S's `mma12` prompts took 17.3 / 18.1 / 12.8 / 4.0% less time than `mma`'s at 512 / 768 / 1024 / 1536 tokens
+    (at 512 tokens -0.3% over bf16's time, `mma`'s +20.6%) and were within 0.9% of them from 2048 tokens. `mma` stays
+    its default (33% less memory; `layout="mma12"` for 25%).
   - The L40S is a GPU class of its own (`GLYD_GPU_L40S`; the package and the crate have it too), so the L40 and RTX
     6000 Ada keep their previous behavior until measured.
 - `glyd_gpu_*_route` at M = INT64_MAX tokens gives the route before it, as `last` says (with `GLYD_WG_MAX` below
@@ -311,11 +310,11 @@ every earlier format.
 
 ## v0.25.0 — 2026-09-29
 
-- The 12-bit layout is cheaper to decode, with the same size (12.04-12.07 bits a weight) and the same bits decoded, so
-  the same products. On an L4, an A10, an A100 SXM4 40 GB, an H100 PCIe and an H100 SXM (2026-09-29) every output of
-  the layout's kernels was main's bits; models' logits and greedy tokens, fused and exact, the same as main's:
-  Qwen3-1.7B and granite-3.1-3b-a800m-instruct on the L4, A10, A100 and H100 PCIe (round 1), and those two and
-  Qwen3-4B-Instruct-2507 on an L4 on the release candidate.
+- The 12-bit layout (`mma12`) is faster on the H100 and the A100 and the same on the A10 and L4, with the same size
+  (12.04-12.07 bits a weight) and the same bits, so every product is bit for bit what it was. On an L4, an A10, an
+  A100 SXM4 40 GB, an H100 PCIe and an H100 SXM (2026-09-29) every output of the layout was main's bits; models'
+  logits and greedy tokens, fused and exact, the same as main's: Qwen3-1.7B and granite-3.1-3b-a800m-instruct on the
+  L4, A10, A100 and H100 PCIe (round 1), and those two and Qwen3-4B-Instruct-2507 on an L4 on the release candidate.
   - A layer's time against the 12-bit layout's before, main's library and this release's in one process (layer 10 of
     Qwen3-8B with 4B-Instruct-2507, 14B or 32B, two runs each):
     - H100 SXM: faster, 0.933-0.969 at 32-1024 tokens (3.1-6.7% less; the H100 PCIe 0.942-0.991) and 0.986-0.992 at
@@ -323,25 +322,25 @@ every earlier format.
     - A100: faster, 0.923-0.987 at 64-128 (5.5-7.7% less at 128), 0.969-0.982 at 256-768 (prompts) and 0.976-0.998 at
       1-16; the same to 1.5% faster at 32 (0.985-1.003).
     - A10 and L4: the same, 0.989-1.010 at 1-1024 tokens.
-    - Slower: a matrix decoded whole takes 3.0-5.8% longer on the H100 SXM and 1.0-1.6% on the A10 (0.998-1.012 on the
-      A100, the same on the L4). Long prompts on Hopper and the A100, 12-bit prompts on an A10 (their time not
-      measured) and every step of exact mode take that decode
+    - Slower: the weights' rebuild that exact mode and long prompts use takes 3.0-5.8% longer on the H100 SXM and
+      1.0-1.6% on the A10 (0.998-1.012 on the A100, the same on the L4). Long prompts on Hopper and the A100, the
+      A10's 12-bit prompts (their time not measured) and every step of exact mode use it
       ([benchmarks/gpu/splitbyte-2026-09-29](benchmarks/gpu/splitbyte-2026-09-29)).
   - The 12-bit layout's bytes change from v0.24's (v0.19-v0.24): the library refuses v0.24's packs with
     `cudaErrorInvalidValue`, so pack those models again. The C API is version 5. A glyd-v3 save of the layout before
     is refused as it loads: save it again. `glyd pack --layout mma12` packs the new layout on the CPU, byte for byte
-    as `pack_mma12` does, and `glyd verify` decodes it and refuses a 12-bit pack of the layout before. Tiered saves
+    as `pack_mma12` does, and `glyd verify` decodes it and refuses a 12-bit pack of the layout before. `mma` saves
     (glyd-v1, glyd-v2) are unchanged.
 - Saved models in the 12-bit layout too: `glyd.save_pretrained(model, path, layout="mma12")`, `python -m glyd.gpu pack
   MODEL OUT --layout mma12` and `glyd pack MODEL OUT --layout mma12` write glyd-v3, which an A10, A100 or H100 runs as
   saved. `from_pretrained` loads it as saved where the 12-bit layout is the one (else it decodes and packs again, as
-  it does a tiered save there; glyd 0.24 and before refuse glyd-v3 by its format). The same bytes from Rust and Python
+  it does an `mma` save there; glyd 0.24 and before refuse glyd-v3 by its format). The same bytes from Rust and Python
   for the five models of `glyd pack` below, and `glyd verify` reads it. Loaded for the 12-bit layout on an RTX 4080
   SUPER (`layout="mma12"`, warm cache, three fresh processes each; measured on the 12-bit layout before this release's
-  change, whose load is the same): granite-3.1-3b-a800m-instruct in 0.49 s against 1.32-1.33 s from the tiered save
-  and 1.44-1.45 s from the bf16 checkpoint, Qwen3-4B-Instruct-2507 in 0.84-0.85 s against 1.76-1.77 and 1.95, Qwen3-8B
-  in 1.17-1.18 s against 3.14-4.55 and 3.54-3.61 (2.7-3.9x faster than packing again; 2.1-3.9x across the three), its
-  peak 0.56 GB below the tiered save's (14.34 GB against 14.90)
+  change, whose load is the same): granite-3.1-3b-a800m-instruct in 0.49 s against 1.32-1.33 s from the `mma` save and
+  1.44-1.45 s from the bf16 checkpoint, Qwen3-4B-Instruct-2507 in 0.84-0.85 s against 1.76-1.77 and 1.95, Qwen3-8B in
+  1.17-1.18 s against 3.14-4.55 and 3.54-3.61 (2.7-3.9x faster than packing again; 2.1-3.9x across the three), its
+  peak 0.56 GB below the `mma` save's (14.34 GB against 14.90)
   ([benchmarks/gpu/rtx4080s-rust-2026-09-28](benchmarks/gpu/rtx4080s-rust-2026-09-28)).
 - glyd.json holds the sha256 of every tensor saved as it is too (its `tensors`: the norms, biases, an embedding or
   output layer not packed), and verify checks them: `python -m glyd.gpu verify`, `from_pretrained(verify=True)` and
@@ -358,12 +357,12 @@ every earlier format.
     it is made, and each Rust save verified by `glyd verify` on the CPU and the GPU and by `python -m glyd.gpu
     verify`.
   - On the AWS dev machine (a g6.4xlarge: 16 vCPUs of an AMD EPYC 7R13, an NVIDIA L4), 16 threads, three rounds each,
-    `glyd pack` takes 18.5-23.0 s tiered and 22.8-24.6 s in the 12-bit layout for Qwen3-8B's 16.4 GB (at the pace of
-    the disk its shards were written to: 3.2-6.4 of the CPUs busy). About 15 GB of memory at most for a model of
-    several shards; Qwen3-8B measured 11.4-13.6 GB peak RSS on 16 threads.
+    `glyd pack` takes 18.5-23.0 s in `mma` and 22.8-24.6 s in `mma12` for Qwen3-8B's 16.4 GB (at the pace of the disk
+    its shards were written to: 3.2-6.4 of the CPUs busy). About 15 GB of memory at most for a model of several
+    shards; Qwen3-8B measured 11.4-13.6 GB peak RSS on 16 threads.
   - `glyd verify` checks a save as `python -m glyd.gpu verify` does, its packs decoded on the CPU or (`--device
-    cuda:0`) on the GPU (Qwen3-8B's 253 packed tensors and 146 saved as they are in 11.6-11.8 s tiered, 8.8-9.0 s
-    12-bit, on 16 threads) ([benchmarks/gpu/l4-rust-2026-09-29](benchmarks/gpu/l4-rust-2026-09-29)).
+    cuda:0`) on the GPU (Qwen3-8B's 253 packed tensors and 146 saved as they are in 11.6-11.8 s in `mma`, 8.8-9.0 s in
+    `mma12`, on 16 threads) ([benchmarks/gpu/l4-rust-2026-09-29](benchmarks/gpu/l4-rust-2026-09-29)).
   - The families are written out as transformers 5.17 holds them: Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe
     for now (tiny random checkpoints of each family save the same bytes too, both layouts), anything else refused with
     Python's command.
@@ -439,15 +438,15 @@ every earlier format.
   / 4096 tokens: +10.0 / +5.2 / +2.6% (were +30.3 / +38.8 / +50.9%); shorter prompts as before (+2.2% at 128, +15.8%
   at 512). Qwen3-8B's working memory there is 0.40 GB (was 0.27). The A10G (its prompts at most +5.3% over bf16's to
   4096 tokens) and the L4, L40S and RTX 6000 Ada keep their previous behavior until measured.
-- Prompts of 129-1024 tokens on Hopper are faster. On an H100 SXM (benchmarks/gpu/h100-hopper2-val-2026-09-28)
-  Qwen3-8B's decoder layer (q, k, v and gate, up merged) takes 1.16 / 1.24 / 1.43 / 1.38x cuBLAS's time at 129 / 256 /
-  512 / 1024 tokens, and one forward pass over 1024 tokens (`gpu/e2e.py --prefill --merge`) 45.0 ms against bf16's
-  36.9; longer prompts as before. Before, in an earlier run (benchmarks/gpu/h100-hopper2-2026-09-28), Qwen3-8B's layer
-  took 1.31 / 1.33 / 1.55 / 1.64x there and its pass 48.4 ms (bf16 36.4).
+- Prompts on Hopper are faster. On an H100 SXM (benchmarks/gpu/h100-hopper2-val-2026-09-28) Qwen3-8B's decoder layer
+  (q, k, v and gate, up merged) takes 1.16 / 1.24 / 1.43 / 1.38x cuBLAS's time at 129 / 256 / 512 / 1024 tokens, and
+  one forward pass over 1024 tokens (`gpu/e2e.py --prefill --merge`) 45.0 ms against bf16's 36.9; longer prompts as
+  before. Before, in an earlier run (benchmarks/gpu/h100-hopper2-2026-09-28), Qwen3-8B's layer took 1.31 / 1.33 / 1.55
+  / 1.64x there and its pass 48.4 ms (bf16 36.4).
   - A layer still takes more than cuBLAS's time (`gpu/README.md`).
-  - Some outputs past 128 tokens differ from before in their last bits.
-  - Steps of 17-128 tokens (generation) took as long as before in the second run's CUDA 13 libraries (a median 0.0%
-    apart, 1.1% less to 2.2% more).
+  - Some prompt outputs differ from before in their last bits.
+  - Generation steps took as long as before in the second run's CUDA 13 libraries (a median 0.0% apart, 1.1% less to
+    2.2% more).
   - `GLYD_WG_MAX` sets the longest prompt that takes this path.
 - On Hopper, the CUDA 12 library's (`libglyd_gpu_cuda12.so`, built with CUDA 12.8; the wheels load it for PyTorch
   built for CUDA 12) 12-bit products, the step products of v0.22.0 and v0.23.0 too, were slower than the CUDA 13
@@ -470,15 +469,15 @@ every earlier format.
 ## v0.23.0 — 2026-09-28
 
 - Prompts on GeForce Ada (RTX 40) are faster, with the same bits. On an RTX 4080 SUPER a Qwen3-1.7B, 4B or 8B layer's
-  products take 1.7-4.3% less time in the 12-bit layout at 256-4096 tokens (Qwen3-4B-Instruct-2507's 1.03-1.04x
-  cuBLAS's at 512-4096, were 1.06-1.08x) and about 1-2% less in the tiered layout.
-  - One forward pass (`gpu/e2e.py --prefill --merge`), 12-bit, Qwen3-4B-Instruct-2507 at 256 / 384 / 512 / 640 / 768
+  products take 1.7-4.3% less time in `mma12` at 256-4096 tokens (Qwen3-4B-Instruct-2507's 1.03-1.04x cuBLAS's at
+  512-4096, were 1.06-1.08x) and about 1-2% less in `mma`.
+  - One forward pass (`gpu/e2e.py --prefill --merge`), `mma12`, Qwen3-4B-Instruct-2507 at 256 / 384 / 512 / 640 / 768
     tokens: 28.3 / 40.8 / 50.9 / 64.2 / 75.2 ms against bf16's 28.1 / 39.5 / 49.1 / 62.7 / 73.0 (were 28.9 / 41.9 /
     51.8 / 65.8 / 76.6); Qwen3-1.7B at 384 / 640 / 1024 / 1536: 18.6 / 26.8 / 42.5 / 63.6 against 18.7 / 25.9 / 42.3 /
     63.0 (were 19.2 / 27.8 / 43.5 / 67.8).
   - Generation to 64 sequences is unchanged; larger batches are faster (the same bits): at 128 sequences
-    Qwen3-4B-Instruct-2507 makes 5069 tokens/s 12-bit (were 4977; bf16 4702) and 4971 tiered (were 4950), Qwen3-1.7B
-    8845 and 8384 (were 8699 and 8368; bf16 8452).
+    Qwen3-4B-Instruct-2507 makes 5069 tokens/s in `mma12` (were 4977; bf16 4702) and 4971 in `mma` (were 4950),
+    Qwen3-1.7B 8845 and 8384 (were 8699 and 8368; bf16 8452).
 - The GPU kernels as a library of their own, for engines in C, C++, Rust or any language with a C FFI, with no Python
   or PyTorch: every release carries `glyd-gpu-TAG-linux-ARCH-cudaN.tar.gz` for x86_64 and aarch64, CUDA 12 and 13 (the
   library, its header, the example below, `gpu/LICENSE` and a README with the example's build line), each with its
@@ -490,51 +489,51 @@ every earlier format.
 
 ## v0.22.0 — 2026-09-28
 
-- Prompts of 129-512 tokens on Hopper are faster. On an H100 PCIe (`gpu/e2e.py --prefill --merge`), Qwen3-32B's
-  prompts of 129 / 256 / 384 / 512 tokens take 63.1 / 79.7 / 118.3 / 141.0 ms against bf16's 58.6 / 70.3 / 89.3 /
-  113.1 (were 131.1 / 142.1 / 165.3 / 189.8), Qwen3-8B's of 384 / 512 tokens 33.2 / 39.2 against 25.9 / 32.6 (were
-  41.6 / 47.7); Qwen3-8B's pass at 129-256 tokens is mostly the host's launches, 22.3-28.7 ms in four runs against
-  bf16's 22.7-51.5 (was 33.4-36.7). A layer's products take 1.12-1.97x cuBLAS's time at 129-512 tokens (weights read
-  from memory). `GLYD_WG_MAX` sets the longest prompt that takes this path.
-- Steps of 17-128 tokens on Hopper are faster. On an H100 PCIe (`gpu/e2e.py --merge --profile`), a step's GPU time at
-  1 / 8 / 32 / 64 sequences is 11.13 / 12.32 / 13.48 / 14.64 ms for Qwen3-8B against bf16's 12.30 / 13.34 / 14.57 /
-  15.66 (were 11.24 / 12.45 / 15.55 / 17.57), 34.65 / 37.34 / 41.24 / 44.41 for Qwen3-32B against 42.44 / 44.40 /
-  47.10 / 49.56 (were 34.75 / 37.48 / 44.97 / 49.84). A layer's products (weights read from memory) take 0.85x / 0.86x
-  / 0.96x / 1.05x cuBLAS's time at 32 / 64 / 96 / 128 tokens for Qwen3-8B (were 0.92x / 1.00x / 1.20x / 1.20x), 0.78x
-  / 0.81x / 0.95x / 1.08x for Qwen3-32B. Steps of 1-16 tokens (on other GPUs to 64) are faster for some layers
-  (Qwen3-8B's gate, up and down in layers 1-3): 210 us at 8 tokens against 242-269 on an H100 PCIe, 2-3% faster on an
-  RTX 4080 SUPER, the others as before; outputs bit for bit as before.
+- Prompts on Hopper are faster. On an H100 PCIe (`gpu/e2e.py --prefill --merge`), Qwen3-32B's prompts of 129 / 256 /
+  384 / 512 tokens take 63.1 / 79.7 / 118.3 / 141.0 ms against bf16's 58.6 / 70.3 / 89.3 / 113.1 (were 131.1 / 142.1 /
+  165.3 / 189.8), Qwen3-8B's of 384 / 512 tokens 33.2 / 39.2 against 25.9 / 32.6 (were 41.6 / 47.7); Qwen3-8B's pass
+  at 129-256 tokens is mostly the host's launches, 22.3-28.7 ms in four runs against bf16's 22.7-51.5 (was 33.4-36.7).
+  A layer's products take 1.12-1.97x cuBLAS's time at 129-512 tokens (weights read from memory). `GLYD_WG_MAX` sets
+  the longest prompt that takes this path.
+- Batched steps on Hopper are faster. On an H100 PCIe (`gpu/e2e.py --merge --profile`), a step's GPU time at 1 / 8 /
+  32 / 64 sequences is 11.13 / 12.32 / 13.48 / 14.64 ms for Qwen3-8B against bf16's 12.30 / 13.34 / 14.57 / 15.66
+  (were 11.24 / 12.45 / 15.55 / 17.57), 34.65 / 37.34 / 41.24 / 44.41 for Qwen3-32B against 42.44 / 44.40 / 47.10 /
+  49.56 (were 34.75 / 37.48 / 44.97 / 49.84). A layer's products (weights read from memory) take 0.85x / 0.86x / 0.96x
+  / 1.05x cuBLAS's time at 32 / 64 / 96 / 128 tokens for Qwen3-8B (were 0.92x / 1.00x / 1.20x / 1.20x), 0.78x / 0.81x
+  / 0.95x / 1.08x for Qwen3-32B. Small steps are faster for some layers (Qwen3-8B's gate, up and down in layers 1-3):
+  210 us at 8 tokens against 242-269 on an H100 PCIe, 2-3% faster on an RTX 4080 SUPER, the others as before; outputs
+  bit for bit as before.
 - The prebuilt library carries native Blackwell code (sm_100, sm_120) where nvcc has it (CUDA 12.8 on:
   `gpu/build_lib.sh` builds without it with an older nvcc). The Hopper code needs a build with sm_90a: one without it
   now traps on an H100, where it returned its output untouched; `GLYD_GPU_ARCH=sm_90` builds sm_90a.
   `glyd_gpu_mma12_gemm_wg` and its workspace query return cudaErrorInvalidValue for O under 64 (O = 0 returned
   success, launching nothing).
 - Short prompts on GeForce Ada are faster. On an RTX 4080 SUPER (`gpu/e2e.py --prefill --merge`), Qwen3-1.7B's prompts
-  of 128 / 256 / 512 tokens take 10.3 / 14.6 / 23.8 ms tiered and 10.2 / 14.5 / 23.7 12-bit against bf16's 10.8 / 14.0
-  / 24.3 (0.21.0: 11.4 / 15.8 / 25.4 and 11.4 / 15.4 / 24.7), Qwen3-4B-Instruct-2507's 128 / 256 / 512 tokens 19.4 /
-  29.3 / 52.6 and 19.2 / 28.7 / 51.5 against 20.7 / 28.0 / 49.1 (were 19.7 / 29.9 / 53.3 and 18.6 / 29.3 / 52.0); at
-  384 tokens Qwen3-1.7B's 20.1 / 19.2 against 18.7 (were 23.9 / 23.2), Qwen3-4B's 44.4 / 41.7 against 39.5 (were 50.2
-  / 49.3); the time to the first token with them (Qwen3-1.7B at 128 tokens 11.6 / 11.8 ms against 13.0 / 12.8);
-  generation as before. The C API's `glyd_gpu_mma_gemm_big` and `glyd_gpu_mma12_gemm_big` take a product's done
+  of 128 / 256 / 512 tokens take 10.3 / 14.6 / 23.8 ms in `mma` and 10.2 / 14.5 / 23.7 in `mma12` against bf16's 10.8
+  / 14.0 / 24.3 (0.21.0: 11.4 / 15.8 / 25.4 and 11.4 / 15.4 / 24.7), Qwen3-4B-Instruct-2507's 128 / 256 / 512 tokens
+  19.4 / 29.3 / 52.6 and 19.2 / 28.7 / 51.5 against 20.7 / 28.0 / 49.1 (were 19.7 / 29.9 / 53.3 and 18.6 / 29.3 /
+  52.0); at 384 tokens Qwen3-1.7B's 20.1 / 19.2 against 18.7 (were 23.9 / 23.2), Qwen3-4B's 44.4 / 41.7 against 39.5
+  (were 50.2 / 49.3); the time to the first token with them (Qwen3-1.7B at 128 tokens 11.6 / 11.8 ms against 13.0 /
+  12.8); generation as before. The C API's `glyd_gpu_mma_gemm_big` and `glyd_gpu_mma12_gemm_big` take a product's done
   counters, and `glyd_gpu_api_version` tells the C API's version (2; the package refuses a library of another).
 - Products on two streams of one GPU at once no longer share done counters (a set a stream, as the workspace): a small
   product's outputs could come out wrong that way.
 - Long prompts on GeForce Ada within 0.2-0.7% of bf16's time from 2048 tokens, 1.5-2.9% at 1024 (were 5-10% behind).
   On an RTX 4080 SUPER (`gpu/e2e.py --prefill --merge`), Qwen3-4B-Instruct-2507's prompts of 1024 / 2048 / 4096 tokens
-  take 97.5 / 199.5 / 447.5 ms tiered against bf16's 96.1 / 198.3 / 445.4 (were 102.8 / 211.5 / 476.5), Qwen3-1.7B's
+  take 97.5 / 199.5 / 447.5 ms in `mma` against bf16's 96.1 / 198.3 / 445.4 (were 102.8 / 211.5 / 476.5), Qwen3-1.7B's
   43.3 / 86.8 / 186.0 against 42.1 / 86.6 / 185.3 (were 45.9 / 91.5 / 190.1), Qwen3-8B's 175.2 / 345.1 / 767.6 (were
   185.6 / 370.8 / 811.3); the time to the first token with them; generation as before. With `exact=True` the same
   path, the logits bf16's bit for bit. This long-prompt path is off on an H100, L4, L40S and RTX 6000 Ada until
   measured (`GLYD_AHEAD_MIN=513` turns it on there); on an A100 it is off, as measured: it was slower there.
-- On an A100, batched steps of 65-128 tokens and prompts are faster in the 12-bit layout. On an A100-SXM4-40GB
-  (`gpu/e2e.py --merge --fused --profile 16`), Qwen3-8B's GPU time a step at 32 / 64 / 128 sequences is 18.54 / 21.05
-  / 28.17 ms against bf16's 21.12 / 21.13 / 25.71 (was 19.14 / 21.69 / 29.45), Qwen3-14B's 28.70 / 31.81 / 42.41
-  against 32.89 / 36.01 / 41.15 (was 29.24 / 32.95 / 49.23); Qwen3-8B generates 2993.6 tokens/s at 128 sequences
-  against bf16's 2997.4 (was 2747.0). Qwen3-8B's prompts of 128 / 512 / 1024 / 2048 / 4096 tokens (`--prefill`) take
-  40.9 / 64.5 / 112.0 / 195.7 / 368.2 ms against bf16's 41.0 / 48.4 / 90.1 / 174.3 / 347.9 (were 44.9 / 68.3 / 120.7 /
-  237.1 / 489.2), Qwen3-14B's 512 / 1024 / 2048 / 4096 tokens 111.7 / 198.6 / 347.5 / 653.7 against 82.7 / 151.2 /
-  291.1 / 584.6 (were 113.1 / 207.3 / 416.6 / 855.4). `GLYD_DEC_MIN` sets the prompt length from which the 12-bit
-  layout's prompts take the long-prompt path.
+- On an A100, batched steps and prompts are faster in `mma12`. On an A100-SXM4-40GB (`gpu/e2e.py --merge --fused
+  --profile 16`), Qwen3-8B's GPU time a step at 32 / 64 / 128 sequences is 18.54 / 21.05 / 28.17 ms against bf16's
+  21.12 / 21.13 / 25.71 (was 19.14 / 21.69 / 29.45), Qwen3-14B's 28.70 / 31.81 / 42.41 against 32.89 / 36.01 / 41.15
+  (was 29.24 / 32.95 / 49.23); Qwen3-8B generates 2993.6 tokens/s at 128 sequences against bf16's 2997.4 (was 2747.0).
+  Qwen3-8B's prompts of 128 / 512 / 1024 / 2048 / 4096 tokens (`--prefill`) take 40.9 / 64.5 / 112.0 / 195.7 / 368.2
+  ms against bf16's 41.0 / 48.4 / 90.1 / 174.3 / 347.9 (were 44.9 / 68.3 / 120.7 / 237.1 / 489.2), Qwen3-14B's 512 /
+  1024 / 2048 / 4096 tokens 111.7 / 198.6 / 347.5 / 653.7 against 82.7 / 151.2 / 291.1 / 584.6 (were 113.1 / 207.3 /
+  416.6 / 855.4). `GLYD_DEC_MIN` sets the prompt length from which the 12-bit layout's prompts take the long-prompt
+  path.
 - `glyd.save_pretrained` saves a mixture of experts: glyd-v1 holds each layer's experts as one pack, and `glyd.json`
   the sha256 of each weight as the model holds it; such a checkpoint's format is glyd-v2, which glyd 0.21 refuses (a
   dense model's stays glyd-v1). `from_pretrained(path)` loads the packs as saved (the 12-bit layout packed again from
@@ -551,9 +550,8 @@ every earlier format.
   experts packed, its logits as near fp32's as bf16's, exact bit for bit, saved and loaded in both layouts. Fixed
   along the way: models that failed before (Llama 4's embedding device, Gemma 4's pad row, HunYuan V4's output layer
   in fp32) and a model with packed experts that held reference cycles when let go of.
-- `best_layout()` takes a mixture of experts into account: the tiered layout on an A10 as on Ada (on an A10 1-6% less
-  GPU time a step than the 12-bit one, on an RTX 4080 SUPER 6-7%, and 10-11% smaller); the 12-bit one on an A100 and
-  an H100.
+- `best_layout()` takes a mixture of experts into account: `mma` on an A10 as on Ada (on an A10 1-6% less GPU time a
+  step than `mma12`, on an RTX 4080 SUPER 6-7%, and 10-11% smaller); `mma12` on an A100 and an H100.
 - `gpu/sizes.py` counts granite's and Mixtral's checkpoint names for their experts (granite-3.1-3b-a800m: 3.22 B
   weights, was 0.20 B); `gpu/e2e.py` frees the Glyd model before bf16's profile (Qwen3-30B-A3B ran out of memory there
   on an H100).
@@ -612,10 +610,10 @@ every earlier format.
     each): Qwen3-8B 26.1 tokens/s at one sequence against bf16's 23.0 and 201.1 against 182.3 at eight, compiled 37.1
     against 27.1 and 256.5 against 197.5; Qwen3-4B-Instruct-2507 compiled 58.3 against 45.8; granite-3.1-3b-a800m (a
     mixture of experts) 31.4 against 25.3.
-- On an A100, steps of 17-64 tokens (batched generation) are faster (compute capability 8.0 only): Qwen3-8B's layer at
-  17-64 tokens takes 0.87-0.98x cuBLAS's GPU time (was 0.96-1.32x), Qwen3-32B's 0.79-0.87x; a Qwen3-8B step at 32
-  sequences 19.79 ms against bf16's 20.82 (was 21.27), at 64 21.80 against 21.67 (was 25.96). Every other GPU is
-  unchanged, bit for bit ([benchmarks/gpu/a100-mid-2026-09-27](benchmarks/gpu/a100-mid-2026-09-27)).
+- On an A100, batched generation steps are faster (compute capability 8.0 only): Qwen3-8B's layer at 17-64 tokens
+  takes 0.87-0.98x cuBLAS's GPU time (was 0.96-1.32x), Qwen3-32B's 0.79-0.87x; a Qwen3-8B step at 32 sequences 19.79
+  ms against bf16's 20.82 (was 21.27), at 64 21.80 against 21.67 (was 25.96). Every other GPU is unchanged, bit for
+  bit ([benchmarks/gpu/a100-mid-2026-09-27](benchmarks/gpu/a100-mid-2026-09-27)).
 - `glyd.save_pretrained` copies the source's tokenizer files once and their content only: the Hub's cache keeps them
   read-only, and `tokenizer.model`, which two patterns match, failed on its second copy (Mistral 7B).
   `gpu/check_models.py`: each model against bf16 and the fp32 model over eight prompts, exact mode and save/verify;
@@ -637,13 +635,13 @@ every earlier format.
   the release workflow by trusted publishing.
 - Nine more open models measured, nineteen in all: GLM-4.5-Air, Llama 4 Scout, Qwen3-Next 80B-A3B, Muse Glimmer 30B,
   Qwen3.8 27B, Gemma 4 26B-A4B, Gemma 3 12B, Qwen3 4B 2507 and Llama 3.2 3B, every projection's matrix 32.2-33.0%
-  smaller in the tiered layout, bit for bit. `sizes.py` counts a layer's experts kept as one tensor (Gemma 4, Llama 4)
-  a matrix an expert, and every projection (the linear-attention inputs of Qwen3-Next and Qwen3.8); `e2e.py` runs
-  Gemma 3 and 4, Qwen3.5-style linear-attention layers and checkpoints that load only with their vision tower. Qwen3.8
-  27B, the highest-scoring open model that fits one GPU, uses 41,071 MiB with Glyd against bf16's 51,771 (under a 48
-  GB card's 49,140), perplexity 15.1941 against 15.1946, MMLU answers as bf16's on 99.67% of 300
+  smaller in `mma`, bit for bit. `sizes.py` counts a layer's experts kept as one tensor (Gemma 4, Llama 4) a matrix an
+  expert, and every projection (the linear-attention inputs of Qwen3-Next and Qwen3.8); `e2e.py` runs Gemma 3 and 4,
+  Qwen3.5-style linear-attention layers and checkpoints that load only with their vision tower. Qwen3.8 27B, the
+  highest-scoring open model that fits one GPU, uses 41,071 MiB with Glyd against bf16's 51,771 (under a 48 GB card's
+  49,140), perplexity 15.1941 against 15.1946, MMLU answers as bf16's on 99.67% of 300
   ([gpu/](gpu/README.md#popular-models)).
-- On Hopper, steps of 17-128 tokens from the 12-bit layout are faster ([gpu/](gpu/README.md)): the same result every
+- On Hopper, batched steps from the 12-bit layout (`mma12`) are faster ([gpu/](gpu/README.md)): the same result every
   run. On an H100 SXM, Qwen3-32B's MLP matrices at 32 and 64 tokens take 83 and 92 us against cuBLAS's 90-96 (the
   kernel before 105-140); at 128 tokens 121-124 against 98-99. Small matrices still cost more than cuBLAS's, so end to
   end 32 and 64 sequences take 37.71 and 43.04 ms of GPU time a step against bf16's 32.44 and 35.50 (Qwen3-32B, 25%
@@ -653,19 +651,18 @@ every earlier format.
   bf16's 27.90 / 29.78 / 31.44 / 33.52.
 - The layouts measured on an RTX 4080 SUPER, an A10, an A100 and an H100
   ([gpu/](gpu/README.md#which-layout-on-which-gpu)); `best_layout()` and `e2e.py --format auto` take the faster for
-  the GPU (the tiered layout on Ada and wherever only it fits). Steps of 17-64 tokens on GDDR Ampere and Ada take a
-  new path.
+  the GPU (`mma` on Ada and wherever only it fits). Batched steps on GDDR Ampere and Ada take a new path.
 - Side by side with DFloat11 and ZipServ ([README](README.md#related-work)).
 
 ## v0.19.0 — 2026-09-26
 
 - A second GPU layout, `mma12` (the 12-bit layout): 12.04 bits a weight, 25% under bf16, bit for bit, and the faster
   one on an H100. On an H100 SXM, **Qwen3-32B in 49.23 GB at 26.39 ms of GPU time a token against bf16's 65.52 GB and
-  28.22 ms** (the tiered layout: 44.45 GB, 40.58 ms); Qwen2.5-7B 7.35 ms against 7.47; the products at 1-16 tokens
-  1.1-1.2x faster than cuBLAS's (Qwen3-32B's MLP at one token: 75-79 us against 86-90); MMLU 78.1% (bf16 78.3%). On an
-  RTX 4080 SUPER, where memory is the limit, the tiered layout stays the faster at 1-32 sequences and `mma12` leads at
-  64 (2,455.9 tokens/s against 2,244.7; bf16 2,160.0). `pack_mma12`; `mma_gemm`, `mma_gemm_big` and `mma_unpack` take
-  either layout; `e2e.py --format mma12` ([gpu/](gpu/README.md)).
+  28.22 ms** (`mma`: 44.45 GB, 40.58 ms); Qwen2.5-7B 7.35 ms against 7.47; the products at 1-16 tokens 1.1-1.2x faster
+  than cuBLAS's (Qwen3-32B's MLP at one token: 75-79 us against 86-90); MMLU 78.1% (bf16 78.3%). On an RTX 4080 SUPER,
+  where memory is the limit, `mma` stays the faster at 1-32 sequences and `mma12` leads at 64 (2,455.9 tokens/s
+  against 2,244.7; bf16 2,160.0). `pack_mma12`; `mma_gemm`, `mma_gemm_big` and `mma_unpack` take either layout;
+  `e2e.py --format mma12` ([gpu/](gpu/README.md)).
 
 ## v0.18.0 — 2026-09-26
 
@@ -687,12 +684,12 @@ every earlier format.
 
 ## v0.17.0 — 2026-09-26
 
-- Model weights on the GPU ([gpu/](gpu/README.md)): the `mma` layout (the tiered layout) is smaller: **10.80 bits a
-  weight over Qwen2.5-7B's matrices, 32.5% under bf16** (was 11.25), every tensor bit for bit. Qwen2.5-7B-Instruct on
-  an RTX 4080 SUPER: 10.61 GB where bf16 takes 15.25 (was 11.05); **1.25-1.32x bf16's tokens/s at 1 to 32 sequences**
-  (one: 55.7, bf16 43.4; 32: 1,518.9, bf16 1,153.7), 1.13x at 48, 1.04x at 64; prompts of 16 to 128 tokens 19-29 ms
-  (bf16 24-29), 256 to 4096 within 5-10%. Perplexity as before (Wikipedia, 64-token windows 17.0052 vs bf16's 17.0015,
-  512-token 7.5660 vs 7.5677).
+- Model weights on the GPU ([gpu/](gpu/README.md)): the `mma` layout is smaller: **10.80 bits a weight over
+  Qwen2.5-7B's matrices, 32.5% under bf16** (was 11.25), every tensor bit for bit. Qwen2.5-7B-Instruct on an RTX 4080
+  SUPER: 10.61 GB where bf16 takes 15.25 (was 11.05); **1.25-1.32x bf16's tokens/s at 1 to 32 sequences** (one: 55.7,
+  bf16 43.4; 32: 1,518.9, bf16 1,153.7), 1.13x at 48, 1.04x at 64; prompts of 16 to 128 tokens 19-29 ms (bf16 24-29),
+  256 to 4096 within 5-10%. Perplexity as before (Wikipedia, 64-token windows 17.0052 vs bf16's 17.0015, 512-token
+  7.5660 vs 7.5677).
 - The GPU extension builds for the GPU it runs on (`sm_90a` on Hopper); `e2e.py --profile N` splits GPU time by
   kernel. `scripts/gpu_lambda.sh` runs `gemm.py` and `e2e.py` on one Lambda Cloud GPU instance launched for the run (a
   time cap, terminated and checked on exit).
