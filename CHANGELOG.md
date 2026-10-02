@@ -449,14 +449,15 @@ every earlier format.
   - Steps of 17-128 tokens (generation) took as long as before in the second run's CUDA 13 libraries (a median 0.0%
     apart, 1.1% less to 2.2% more).
   - `GLYD_WG_MAX` sets the longest prompt that takes this path.
-- On Hopper, the CUDA 12 library (`libglyd_gpu_cuda12.so`, built with CUDA 12.8; the wheels load it for PyTorch built
-  for CUDA 12) was slower than the CUDA 13 library's in v0.22.0 and v0.23.0, the new Hopper code's too; fixed. In the
-  second run's libraries (on an H100 SXM, benchmarks/gpu/h100-hopper2-cu12-2026-09-28), the CUDA 12 library's products
-  (Qwen3-8B's four and Qwen3-32B's o and gate_up at 17-1024 tokens) took a median 4% less time than before, up to 9%,
-  Qwen3-8B's layer 2-8% less (1.58x cuBLAS's time at 1024 tokens before, 1.45x with the fix alone), as fast as the
-  CUDA 13 library's (a median 0.3% apart); the CUDA 13 library's took as long as before (a median 0.2% apart), and
-  every output was the same, bit for bit. As committed, the CUDA 12 library's Qwen3-8B layer takes 0.94-1.42x cuBLAS's
-  time at 17-1024 tokens, within 0.8% of the CUDA 13 library's (benchmarks/gpu/h100-hopper2-val-2026-09-28).
+- On Hopper, the CUDA 12 library's (`libglyd_gpu_cuda12.so`, built with CUDA 12.8; the wheels load it for PyTorch
+  built for CUDA 12) 12-bit products, the step products of v0.22.0 and v0.23.0 too, were slower than the CUDA 13
+  library's; fixed. In the second run's libraries (on an H100 SXM, benchmarks/gpu/h100-hopper2-cu12-2026-09-28), the
+  CUDA 12 library's products (Qwen3-8B's four and Qwen3-32B's o and gate_up at 17-1024 tokens) took a median 4% less
+  time than before, up to 9%, Qwen3-8B's layer 2-8% less (1.58x cuBLAS's time at 1024 tokens before, 1.45x with the
+  fix alone), as fast as the CUDA 13 library's (a median 0.3% apart); the CUDA 13 library's took as long as before (a
+  median 0.2% apart), and every output was the same, bit for bit. As committed, the CUDA 12 library's Qwen3-8B layer
+  takes 0.94-1.42x cuBLAS's time at 17-1024 tokens, within 0.8% of the CUDA 13 library's
+  (benchmarks/gpu/h100-hopper2-val-2026-09-28).
 - Validated as committed on an H100 SXM, with the library built for CUDA 12.8 and for CUDA 13.0
   (benchmarks/gpu/h100-hopper2-val-2026-09-28): the full self-test passed through both; the two libraries' 342 outputs
   of the Hopper path on the self-test's matrices (1-2100 tokens) are the same, bit for bit; and `gpu/e2e.py --exact`
