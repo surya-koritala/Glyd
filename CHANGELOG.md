@@ -163,7 +163,7 @@ every earlier format.
   so not quite the ratio of the times' medians: 101.2 ms at 1024 against 115.1 is 0.879; bf16's 93.0):
 
   | GPU            | Model     |   769 |  1024 |  2048 |  4096 |  8192 |
-  | :---           | :---      |  ---: |  ---: |  ---: |  ---: |  ---: |
+  | :------------- | :-------- | ----: | ----: | ----: | ----: | ----: |
   | A100 SXM4 40GB | Qwen3-8B  | 0.899 | 0.876 | 0.959 | 0.971 | 0.994 |
   | A100 SXM4 40GB | Qwen3-14B | 0.845 | 0.864 | 0.916 | 0.947 | 0.968 |
   | GH200          | Qwen3-32B |       |       | 0.909 | 0.940 | 0.952 |
@@ -229,26 +229,26 @@ every earlier format.
     once), against bf16's 0.75 requests a second at once, each token 111.2 ms at once and 100.2 ms at 1 request a
     second, and the first token 3,351 ms at 1 request a second:
 
-    | Fraction                            |     0 |   0.5 |     1 |
-    | :---                                | ----: | ----: | ----: |
-    | Weights, GiB                        | 15.27 | 13.65 | 11.83 |
+    | Fraction                            |      0 |    0.5 |      1 |
+    | :---------------------------------- | -----: | -----: | -----: |
+    | Weights, GiB                        |  15.27 |  13.65 |  11.83 |
     | KV cache, tokens                    | 27,024 | 37,904 | 51,040 |
-    | Requests a second, at once          |  0.76 |  0.96 |  1.04 |
-    | Each token, at once, ms             | 111.0 | 125.4 | 152.4 |
-    | Each token, 1 request a second, ms  | 100.8 |  99.9 |  95.6 |
-    | First token, 1 request a second, ms | 3,539 | 1,095 |   772 |
+    | Requests a second, at once          |   0.76 |   0.96 |   1.04 |
+    | Each token, at once, ms             |  111.0 |  125.4 |  152.4 |
+    | Each token, 1 request a second, ms  |  100.8 |   99.9 |   95.6 |
+    | First token, 1 request a second, ms |  3,539 |  1,095 |    772 |
 
     ([benchmarks/gpu/l4-vllm-fraction-2026-09-30](benchmarks/gpu/l4-vllm-fraction-2026-09-30)).
   - On an 80 GB H100 SXM, Qwen3-32B's bf16 weights leave room for only 32,320 tokens of KV cache, and every packed
     fraction served more requests a second than bf16 (`vllm bench serve`, 192 prompts, 1,024 tokens in and 256 out,
     every request sent at once, each server started cold):
 
-    | Fraction                |  0    |  0.25 |   0.5 |  0.75 |     1 |
-    | :---                    | ----: | ----: | ----: | ----: | ----: |
-    | Weights, GiB            | 61.03 | 58.20 | 54.89 | 51.59 | 48.27 |
-    | KV cache, tokens        | 32,320 | 43,872 | 57,392 | 70,912 | 84,528 |
-    | Requests a second       |  2.51 |  2.85 |  3.54 |  3.50 |  3.91 |
-    | Against bf16's 2.51     |       | 1.14x | 1.41x | 1.40x | 1.56x |
+    | Fraction            |      0 |   0.25 |    0.5 |   0.75 |      1 |
+    | :------------------ | -----: | -----: | -----: | -----: | -----: |
+    | Weights, GiB        |  61.03 |  58.20 |  54.89 |  51.59 |  48.27 |
+    | KV cache, tokens    | 32,320 | 43,872 | 57,392 | 70,912 | 84,528 |
+    | Requests a second   |   2.51 |   2.85 |   3.54 |   3.50 |   3.91 |
+    | Against bf16's 2.51 |        |  1.14x |  1.41x |  1.40x |  1.56x |
 
     The first token came after 33.0 s on average for bf16 and 20.0 s at fraction 1, each token 36.6 ms and 56.8
     ([benchmarks/gpu/l4-vllm-fraction-2026-09-30/h100-sxm](benchmarks/gpu/l4-vllm-fraction-2026-09-30/h100-sxm)).
