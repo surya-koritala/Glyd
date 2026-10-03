@@ -42,6 +42,8 @@ Every request completed. **Glyd against bf16** (the runs' JSON means):
 | 4 | 0.99x (3.74 to 3.71) | +92% (67 to 129 ms) | +73% (11.8 to 20.3 ms) | +73% |
 | inf | 0.84x (12.03 to 10.07) | -37% (6,737 to 4,248 ms) | +126% (28.6 to 64.5 ms) | +48% |
 
+At once (the servers' logs, every 10 s), bf16's KV cache filled: its two busiest samples had 117 requests running with 139 waiting and 107 with 43 (99.6% and 99.3% of the cache used); Glyd's had 222 running with 34 waiting (99.7% used) and 137 with 119 (54.0%).
+
 ## Against the published run
 
 | Saturated requests a second, Glyd against bf16 | published | here |
