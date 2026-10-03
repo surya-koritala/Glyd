@@ -1,5 +1,8 @@
 # Roadmap
 
+The next releases, in order, and how releases are supported:
+[getglyd.com/roadmap](https://getglyd.com/roadmap/). This file is the codec's research plan.
+
 Every item has a measured gate, taken against the reference codec on the
 same machine and thread count, on named public data. Nothing ships on a
 number that was not reproduced.
@@ -31,7 +34,8 @@ as fast through attention on the packed pages (v0.18.0). On an H100
 token than bf16. Many tokens a step on Hopper: Qwen3-32B's MLP matrices
 at 32-64 tokens in 83-92 us against cuBLAS's 90-96; the model 12% under
 bf16's GPU time a token at one sequence, 6-11% over at 32-64 (merged
-projections). Next on the GPU: 32-64 sequences on an A100 and an H100.
+projections). The GPU work by release, and which releases get fixes:
+[getglyd.com/roadmap](https://getglyd.com/roadmap/).
 Work on the GPU is bf16 only now. FP8 checkpoints load as they are; their
 measured floor is 16.7-18.0% (Qwen3-8B-FP8, DeepSeek-V3, Llama 3.3 70B
 FP8). A terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
