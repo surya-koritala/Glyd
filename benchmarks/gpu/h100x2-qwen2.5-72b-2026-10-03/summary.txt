@@ -1,0 +1,30 @@
+2 x NVIDIA H100 80GB HBM3 (compute 9.0, sm_90a, 81559 MiB each), x86_64 host, 52 CPUs; tree 10e8caea (v0.26.0) + gpu/vllm/bench_serve.sh and bench_summary.py of bench-distinct-prompts 6a82f3bc (a seed for each pass, the prefix cache hit rate); model Qwen/Qwen2.5-72B-Instruct, tensor parallel 2; modes glyd bf16; rates 1 inf, prompts 64 192, 1024 tokens in, 256 out
+vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPUs 2 x NVIDIA H100 80GB HBM3
+vllm serve --max-model-len 4096 --gpu-memory-utilization 0.9 --tensor-parallel-size 2 --max-num-seqs 128 --compilation-config {"max_cudagraph_capture_size":128}; each server started cold, on an empty compile cache
+vllm bench serve: random dataset, 1024 tokens in, 256 out, --ignore-eos, a seed for each rate (0, 1: no rate's prompts are an earlier one's on the server; each mode gets the same prompts); rate 1: one request a second, saturated: every request at once
+Prefix cache hit rate, at most (the servers' logs): Glyd at 0.9 1.2%, bf16 at 0.9 0.0%
+NOT COMPARABLE: the prefix cache skipped the prefill of repeated prompts (hit rate above 1%: Glyd at 0.9 1.2%)
+download (no token): exit 0, 145,424,086,864 bytes in 125 s = 1.16 GB/s, finished at +126 s of the job
+
+Qwen/Qwen2.5-72B-Instruct, 2 GPUs (tensor parallel): a row for each run
+
+| Run | --gpu-memory-utilization | Server | Weights, each GPU (GiB) | Available KV cache memory, each GPU (GiB) | KV cache (tokens) | Max concurrency at 4,096 tokens | Prefix cache hit rate, at most | rate 1, 64 prompts: requests/s | rate 1: TTFT mean / p99 (ms) | rate 1: TPOT mean / p99 (ms) | saturated, 192 prompts: requests/s | saturated: output tokens/s | saturated: TTFT mean / p99 (ms) | saturated: TPOT mean / p99 (ms) |
+| :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Glyd | 0.9 | yes, about 349 s | 52.16 | 16.99 | 111,328 | 27.18x | 1.2% | 0.90 | 245 / 512 | 29.0 / 32.6 | 3.59 | 918.4 | 18,737 / 37,592 | 79.3 / 134.2 |
+| bf16 | 0.9 | yes, about 85 s | 67.80 | 1.34 | 8,800 | 2.15x | 0.0% | 0.76 | 2,802 / 11,249 | 30.6 / 39.7 | 0.88 | 225.9 | 104,694 / 210,482 | 31.2 / 50.8 |
+
+Glyd at --gpu-memory-utilization 0.9: KV cache 111,328 tokens, 27.18x a 4,096-token request, each GPU holding 52.16 GiB of weights.
+bf16 at --gpu-memory-utilization 0.9: KV cache 8,800 tokens, 2.15x a 4,096-token request, each GPU holding 67.8 GiB of weights.
+
+Glyd against bf16, at the same setting (NOT COMPARABLE, as flagged above):
+  0.9: KV cache 12.65x (111,328 against 8,800 tokens), weights 0.77x (52.16 against 67.8 GiB); rate 1 requests/s 1.19x, TTFT 0.09x, TPOT 0.95x; saturated requests/s 4.07x, TTFT 0.18x, TPOT 2.54x.
+
+03:45:50 (+0 s) machine
+03:46:13 (+23 s) env: vLLM and nvcc in 22 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPUs 2 x NVIDIA H100 80GB HBM3)
+03:47:01 (+71 s) build: sm_90a in 48 s (library: C API 7 | GPU code 7090)
+03:56:25 (+635 s) serve glyd at 0.9: exit 0 in 506 s; GPU KV cache size: 111,328 tokens, Maximum concurrency for 4,096 tokens per request: 27.18x; prefix cache hit rate at most 1.2%; NOT COMPARABLE
+04:03:23 (+1053 s) serve bf16 at 0.9: exit 0 in 418 s; GPU KV cache size: 8,800 tokens, Maximum concurrency for 4,096 tokens per request: 2.15x; prefix cache hit rate at most 0.0%
+download dl-Qwen2.5-72B-Instruct: exit 0: 145424086864 bytes in 125 s (at +126 s)
+04:03:23 (+1053 s) done
+
+NOT COMPARABLE: the prefix cache skipped the prefill of repeated prompts (hit rate above 1%: Glyd at 0.9 1.2%)
