@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## v0.27.0 (Unreleased)
+## v0.27.0 — 2026-10-02
 
 - The lossless KV cache in vLLM: vLLM's KV cache held in fewer bits, every key and value read back as written, bit for
   bit. On the five models measured it holds 1.25x to 1.30x vLLM's tokens in the same memory, and on an A100, an L4 and an
