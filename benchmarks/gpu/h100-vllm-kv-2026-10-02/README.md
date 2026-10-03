@@ -38,4 +38,4 @@ The KV cache at those flags: 388,928 tokens with vLLM's and 510,288 with `kv` (1
 
 ## Files
 
-`kvs1h/` (the 1,024-token serve: `steps.txt`, `machine-short.txt`, `env.txt`, `serve-1k/` with each run's `vllm bench serve` output and result, the prefix cache's hit-rate lines (`hit-*.txt`) and the summary), `kvh/` (the decode tables and each round's result), `kvh2/` (the 8,192-token serving runs: each run's `vllm bench serve` output and result, and the summary table; the 1 x 1,024 rounds), `kvh3/` (`steps.txt`: the steps and the checks' results). Each has `env.txt`.
+`kvs1h/` (the 1,024-token serve: `steps.txt`, `env.txt`, `serve-1k/` with each run's `vllm bench serve` output and result, the prefix cache's hit-rate lines (`hit-*.txt`) and the summary), `kvh/` (the decode tables and each round's result), `kvh2/` (the 8,192-token serving runs: each run's `vllm bench serve` output and result, and the summary table; the 1 x 1,024 rounds), `kvh3/` (`steps.txt`: the steps and the checks' results). Each has `env.txt`.

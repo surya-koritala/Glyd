@@ -41,4 +41,4 @@ The KV cache holds 141,040 tokens with vLLM's and 183,424 with `kv` (1.30x); the
 
 ## Files
 
-`kvs1a/` (the serving job: `steps.txt`, `machine-short.txt`, `env.txt`, `serve-1k/` with each run's `vllm bench serve` output and result, the prefix cache's hit-rate lines (`hit-*.txt`) and the summary), `tps/tps-batch1.json` (each round's tokens a second), `profile/` (stock and kv). Prefix hits on this machine type: [`a100-vllm-kv-prefix-2026-10-02`](../a100-vllm-kv-prefix-2026-10-02).
+`kvs1a/` (the serving job: `steps.txt`, `env.txt`, `serve-1k/` with each run's `vllm bench serve` output and result, the prefix cache's hit-rate lines (`hit-*.txt`) and the summary), `tps/tps-batch1.json` (each round's tokens a second), `profile/` (stock and kv). Prefix hits on this machine type: [`a100-vllm-kv-prefix-2026-10-02`](../a100-vllm-kv-prefix-2026-10-02).

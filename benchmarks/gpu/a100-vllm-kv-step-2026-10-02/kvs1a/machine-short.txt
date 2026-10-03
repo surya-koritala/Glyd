@@ -1,1 +1,0 @@
-NVIDIA A100-SXM4-40GB (compute 8.0, sm_80, 40 GB), x86_64 host, 30 CPUs; tree d766885b (kv-vllm); steps env,build,serve
