@@ -165,6 +165,8 @@ save. `vllm bench serve`, bf16 against Glyd at the same
 `--gpu-memory-utilization 0.9` (servers warm, 1,024 tokens in and 256
 out; low load 1 request a second, 0.25 on the L4):
 
+<!-- TODO(v0.27.0 re-measure): these rows were measured before each pass of vllm bench serve drew prompts of its own (see the CHANGELOG's v0.27.0 entry); they stay as published until the re-measured rows replace them. -->
+
 | GPU (Glyd's layout) | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
 | :--- | :--- | ---: | ---: | :--- | :--- |
 | L4 (`mma`) | Qwen3-8B | 1.89x | **1.33x** | +16%, −21% | −25%, +42% |
