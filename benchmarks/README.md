@@ -13,3 +13,7 @@ Reproduce on your own account:
 ```bash
 AWS_PROFILE=you REGION=us-east-1 TYPES="c7g.2xlarge c7i.2xlarge" scripts/bench_aws.sh main
 ```
+
+GPU results are in [gpu/](gpu), a directory for each run with its README and
+logs; for example [h100x2-qwen2.5-72b-2026-10-03](gpu/h100x2-qwen2.5-72b-2026-10-03),
+Qwen2.5-72B over two H100s in vLLM, bf16 against Glyd.

@@ -1,0 +1,10 @@
+== 03:45:50 (+0 s) machine
+2 x NVIDIA H100 80GB HBM3 (compute 9.0, sm_90a, 81559 MiB each), x86_64 host, 52 CPUs; tree 10e8caea (v0.26.0) + gpu/vllm/bench_serve.sh and bench_summary.py of bench-distinct-prompts 6a82f3bc (a seed for each pass, the prefix cache hit rate); model Qwen/Qwen2.5-72B-Instruct, tensor parallel 2; modes glyd bf16; rates 1 inf, prompts 64 192, 1024 tokens in, 256 out
+== 03:45:50 (+0 s) uv, then the download (in the background, timed)
+== 03:45:51 (+1 s) env: vLLM from PyPI (vllm==0.30.0) and nvcc, then the glyd package
+vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPUs 2 x NVIDIA H100 80GB HBM3
+nvcc: Build cuda_13.0.r13.0/compiler.36424714_0
+== 03:46:13 (+23 s) build: the library for sm_90a
+== 03:47:01 (+71 s) serve: Qwen/Qwen2.5-72B-Instruct over 2 GPUs, a mode at a time: glyd bf16 (waiting for its download)
+download: exit 0: 145424086864 bytes in 125 s (at +126 s)
+== 04:03:23 (+1053 s) done in 1053 s

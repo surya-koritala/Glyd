@@ -1,0 +1,7 @@
+03:45:50 (+0 s) machine
+03:46:13 (+23 s) env: vLLM and nvcc in 22 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPUs 2 x NVIDIA H100 80GB HBM3)
+03:47:01 (+71 s) build: sm_90a in 48 s (library: C API 7 | GPU code 7090)
+03:56:25 (+635 s) serve glyd at 0.9: exit 0 in 506 s; GPU KV cache size: 111,328 tokens, Maximum concurrency for 4,096 tokens per request: 27.18x; prefix cache hit rate at most 1.2%; NOT COMPARABLE
+04:03:23 (+1053 s) serve bf16 at 0.9: exit 0 in 418 s; GPU KV cache size: 8,800 tokens, Maximum concurrency for 4,096 tokens per request: 2.15x; prefix cache hit rate at most 0.0%
+download dl-Qwen2.5-72B-Instruct: exit 0: 145424086864 bytes in 125 s (at +126 s)
+04:03:23 (+1053 s) done
