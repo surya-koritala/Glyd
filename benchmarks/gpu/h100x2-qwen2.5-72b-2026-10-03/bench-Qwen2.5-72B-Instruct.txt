@@ -1,0 +1,47 @@
+== 03:47:59 glyd: vllm serve Qwen/Qwen2.5-72B-Instruct --quantization glyd (the GPU at 23 C)
+glyd: tensor parallel 2: each rank packs its own shard (not measured yet)
+glyd: mma12 layout
+glyd: tensor parallel 2: each rank packs its own shard (not measured yet)
+glyd: mma12 layout
+Model loading took 52.16 GiB memory and 26.328017 seconds
+Model loading took 52.15 GiB memory and 26.780968 seconds
+GPU KV cache size: 111,328 tokens, Maximum concurrency for 4,096 tokens per request: 27.18x
+73621 MiB, 81559 MiB
+73621 MiB, 81559 MiB
+== 03:53:59 glyd: rate 1, 64 prompts
+   exit 0
+== 03:55:17 glyd: rate inf, 192 prompts
+   exit 0
+glyd: weights 52.16 GiB, KV cache 111,328 tokens, max concurrency 27.18x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): glyd 1.2%
+NOT COMPARABLE: the prefix cache skipped the prefill of repeated prompts (hit rate above 1%: glyd 1.2%)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | glyd | 0.90 | 231.3 | 245 / 512 | 29.0 / 32.6 | 64 | 1980 MHz, 59 C |
+| inf | glyd | 3.59 | 918.4 | 18737 / 37592 | 79.3 / 134.2 | 192 | 1590 MHz, 65 C |
+
+NOT COMPARABLE: the prefix cache skipped the prefill of repeated prompts (hit rate above 1%: glyd 1.2%)
+== 03:56:25 bf16: vllm serve Qwen/Qwen2.5-72B-Instruct  (the GPU at 39 C)
+Model loading took 67.8 GiB memory and 15.207681 seconds
+Model loading took 67.8 GiB memory and 15.229560 seconds
+GPU KV cache size: 8,800 tokens, Maximum concurrency for 4,096 tokens per request: 2.15x
+73649 MiB, 81559 MiB
+73649 MiB, 81559 MiB
+== 03:58:00 bf16: rate 1, 64 prompts
+   exit 0
+== 03:59:32 bf16: rate inf, 192 prompts
+   exit 0
+bf16: weights 67.8 GiB, KV cache 8,800 tokens, max concurrency 2.15x at 4,096 tokens
+glyd: weights 52.16 GiB, KV cache 111,328 tokens, max concurrency 27.18x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): bf16 0.0%, glyd 1.2%
+NOT COMPARABLE: the prefix cache skipped the prefill of repeated prompts (hit rate above 1%: glyd 1.2%)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.76 | 194.8 | 2802 / 11249 | 30.6 / 39.7 | 64 | 1980 MHz, 58 C |
+| 1 | glyd | 0.90 | 231.3 | 245 / 512 | 29.0 / 32.6 | 64 | 1980 MHz, 59 C |
+| inf | bf16 | 0.88 | 225.9 | 104694 / 210482 | 31.2 / 50.8 | 192 | 1980 MHz, 61 C |
+| inf | glyd | 3.59 | 918.4 | 18737 / 37592 | 79.3 / 134.2 | 192 | 1590 MHz, 65 C |
+
+NOT COMPARABLE: the prefix cache skipped the prefill of repeated prompts (hit rate above 1%: glyd 1.2%)

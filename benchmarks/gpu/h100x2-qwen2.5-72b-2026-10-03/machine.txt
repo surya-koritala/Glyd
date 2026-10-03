@@ -1,0 +1,56 @@
+Linux 6.8.0-1046-nvidia #49-Ubuntu SMP PREEMPT_DYNAMIC Wed Jan 28 19:07:52 UTC 2026 x86_64 GNU/Linux
+Sat Oct  3 03:45:50 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.20             Driver Version: 580.126.20     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA H100 80GB HBM3          On  |   00000000:06:00.0 Off |                    0 |
+| N/A   24C    P0             71W /  700W |       0MiB /  81559MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+|   1  NVIDIA H100 80GB HBM3          On  |   00000000:07:00.0 Off |                    0 |
+| N/A   22C    P0             69W /  700W |       0MiB /  81559MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+index, name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
+0, NVIDIA H100 80GB HBM3, 9.0, 580.126.20, 81559 MiB, 1980 MHz, 700.00 W
+1, NVIDIA H100 80GB HBM3, 9.0, 580.126.20, 81559 MiB, 1980 MHz, 700.00 W
+	GPU0	GPU1	NIC0	CPU Affinity	NUMA Affinity	GPU NUMA ID
+GPU0	 X 	NV18	PHB	0-51	0		N/A
+GPU1	NV18	 X 	PHB	0-51	0		N/A
+NIC0	PHB	PHB	 X 				
+
+Legend:
+
+  X    = Self
+  SYS  = Connection traversing PCIe as well as the SMP interconnect between NUMA nodes (e.g., QPI/UPI)
+  NODE = Connection traversing PCIe as well as the interconnect between PCIe Host Bridges within a NUMA node
+  PHB  = Connection traversing PCIe as well as a PCIe Host Bridge (typically the CPU)
+  PXB  = Connection traversing multiple PCIe bridges (without traversing the PCIe Host Bridge)
+  PIX  = Connection traversing at most a single PCIe bridge
+  NV#  = Connection traversing a bonded set of # NVLinks
+
+NIC Legend:
+
+  NIC0: mlx5_0
+
+pid, process_name, used_gpu_memory [MiB]
+Architecture:                            x86_64
+Model name:                              Intel(R) Xeon(R) Platinum 8480+
+52
+               total        used        free      shared  buff/cache   available
+Mem:             442           7         431           0           7         435
+/dev/vda1       5.4T   18G  5.4T   1% /
+Sat Oct  3 03:45:50 UTC 2026
+host LD_LIBRARY_PATH (unset for the job): (none)
