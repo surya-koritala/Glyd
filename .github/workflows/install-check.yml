@@ -8,9 +8,7 @@ name: Install check
 # The GPU half is the glyd-gpu package (compiled wheels, published from its own repository,
 # which tests them before it publishes): its extras are checked as a user installs them, that
 # they bring glyd-gpu of this version. No GPU runners here: the gpu extra is checked for its
-# wheel resolving and its GPU-free CLI (`python -m glyd_gpu fit`) only. scripts/check_gpu_install.sh
-# runs the rest — an actual model loaded and generating — on a machine with an NVIDIA GPU (see
-# its header, and the README's "Install checks" section).
+# wheel resolving and its GPU-free CLI (`python -m glyd_gpu fit`) only.
 on:
   release:
     types: [published]
@@ -126,7 +124,7 @@ jobs:
 
   # glyd[vllm]==V as a user installs it (no GPU on the runner): vLLM registers the plugin's quantization method from the
   # entry point of the glyd-gpu wheel it brings, of this version. The plugin's tests run in glyd-gpu's own repository, against
-  # its wheels, before they are published. scripts/check_gpu_install.sh runs the rest on a GPU.
+  # its wheels, before they are published.
   vllm:
     needs: version
     runs-on: ubuntu-latest
