@@ -1,0 +1,25 @@
+1 x NVIDIA H100 80GB HBM3 (compute 9.0, sm_90a, 81559 MiB), x86_64 host, 26 CPUs; tree 7fe66a2 (release-0.26.0, v0.26.0 candidate) + gpu/vllm/bench_serve.sh and bench_summary.py of bench-distinct-prompts 6a82f3bc (a seed for each pass, the prefix cache hit rate); steps moebench; TP 1; model Qwen/Qwen3-8B, big none, experts Qwen/Qwen3-30B-A3B
+01:43:47 (+0 s) machine
+01:44:21 (+34 s) env: vLLM and nvcc in 33 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA H100 80GB HBM3)
+01:45:08 (+81 s) build: sm_90a in 47 s (library: C API 7 | GPU code 90)
+01:57:23 (+816 s) bench Qwen3-30B-A3B: exit 0 in 735 s; Prefix cache hit rate, at most (the servers' logs): bf16 1.1%, glyd 1.0%; NOT COMPARABLE
+download dl-Qwen3-30B-A3B: exit 0: 61084157680 bytes in 36 s (at +37 s)
+01:57:23 (+816 s) done
+
+== bench-Qwen3-30B-A3B
+bf16: weights 56.88 GiB, KV cache 124,720 tokens, max concurrency 30.45x at 4,096 tokens (started cold, on an empty compile cache: weights 56.88 GiB, KV cache 118,720 tokens, max concurrency 28.98x at 4,096 tokens)
+glyd: weights 44.27 GiB, KV cache 263,376 tokens, max concurrency 64.30x at 4,096 tokens (started cold, on an empty compile cache: weights 44.27 GiB, KV cache 257,392 tokens, max concurrency 62.84x at 4,096 tokens)
+Prefix cache hit rate, at most (the servers' logs): bf16 1.1%, glyd 1.0%
+NOT COMPARABLE: the prefix cache skipped the prefill of repeated prompts (hit rate above 1%: bf16 1.1%)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.97 | 249.0 | 62 / 265 | 6.8 / 9.1 | 64 | 1980 MHz, 45 C |
+| 1 | glyd | 0.97 | 248.7 | 84 / 125 | 7.2 / 9.7 | 64 | 1980 MHz, 45 C |
+| 4 | bf16 | 3.74 | 957.5 | 67 / 114 | 11.8 / 13.9 | 128 | 1980 MHz, 51 C |
+| 4 | glyd | 3.71 | 950.8 | 129 / 536 | 20.3 / 25.6 | 128 | 1980 MHz, 48 C |
+| inf | bf16 | 12.03 | 3080.5 | 6737 / 16684 | 28.6 / 51.8 | 256 | 1980 MHz, 59 C |
+| inf | glyd | 10.07 | 2577.5 | 4248 / 20028 | 64.5 / 70.7 | 256 | 1980 MHz, 56 C |
+
+NOT COMPARABLE: the prefix cache skipped the prefill of repeated prompts (hit rate above 1%: bf16 1.1%)
+

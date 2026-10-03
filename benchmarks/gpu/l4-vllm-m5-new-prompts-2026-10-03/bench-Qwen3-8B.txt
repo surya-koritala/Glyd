@@ -1,0 +1,27 @@
+== 00:33:19 bf16: vllm serve Qwen/Qwen3-8B , first (cold where VLLM_CACHE_ROOT is empty)
+Model loading took 15.27 GiB memory and 3.991044 seconds
+GPU KV cache size: 19,760 tokens, Maximum concurrency for 4,096 tokens per request: 4.82x
+19380 MiB, 23034 MiB
+== 00:37:20 bf16: vllm serve Qwen/Qwen3-8B  (the GPU at 50 C)
+Model loading took 15.27 GiB memory and 3.258984 seconds
+GPU KV cache size: 27,024 tokens, Maximum concurrency for 4,096 tokens per request: 6.60x
+20402 MiB, 23034 MiB
+== 00:38:10 bf16: rate 0.25, 32 prompts
+   exit 0
+== 00:40:44 bf16: rate 1, 64 prompts
+   exit 0
+== 00:42:29 bf16: rate 4, 128 prompts
+   exit 0
+== 00:45:29 bf16: rate inf, 256 prompts
+   exit 0
+== 00:51:23 glyd: vllm serve Qwen/Qwen3-8B --quantization glyd, first (cold where VLLM_CACHE_ROOT is empty)
+glyd: the server did not start (serve-glyd-cold.txt)
+bf16: weights 15.27 GiB, KV cache 27,024 tokens, max concurrency 6.60x at 4,096 tokens (started cold, on an empty compile cache: weights 15.27 GiB, KV cache 19,760 tokens, max concurrency 4.82x at 4,096 tokens)
+Prefix cache hit rate, at most (the servers' logs): bf16 0.1%
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0.25 | bf16 | 0.22 | 56.5 | 474 / 936 | 70.1 / 73.5 | 32 | 1620 MHz, 78 C |
+| 1 | bf16 | 0.67 | 172.7 | 2323 / 7745 | 104.4 / 124.7 | 64 | 1425 MHz, 81 C |
+| 4 | bf16 | 0.75 | 192.7 | 55807 / 119443 | 109.5 / 182.1 | 128 | 1365 MHz, 84 C |
+| inf | bf16 | 0.76 | 193.7 | 151874 / 309861 | 110.9 / 182.0 | 256 | 1410 MHz, 85 C |
