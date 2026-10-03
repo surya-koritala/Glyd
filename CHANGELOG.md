@@ -28,8 +28,8 @@ every earlier format.
     says why).
   - `kv: lossless` is refused, with why, for tensor, pipeline and context parallel, speculative decoding, sliding-window,
     linear-attention and state-space layers, MLA, LoRA, KV connectors and offloading, `--kv-cache-dtype` other than
-    auto, head sizes other than 128, another attention backend, GPUs other than Ampere, Ada and Hopper, and a model
-    whose keys and values it cannot hold well.
+    auto, head sizes other than 128, more than 8 query heads to a KV head, a model that is not bf16, another attention
+    backend, GPUs other than Ampere, Ada and Hopper, and a model whose keys and values it cannot hold well.
   - What is exact: the stored values. Every value read back was the value written: 0 of 25,683,296,256 differ in a stress
     run, and `verify`, which compares every write with a bf16 copy, found none that differs in 6,329,327,616 values
     (Qwen3-8B). Prompt logprobs are vLLM's bit for bit (a 36,000-token prompt: 35,999 of 35,999; 14 of 14 prompts with
