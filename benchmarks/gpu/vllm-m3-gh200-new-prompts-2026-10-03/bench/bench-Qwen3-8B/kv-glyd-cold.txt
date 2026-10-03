@@ -1,0 +1,4 @@
+glyd: mma12 layout
+Model loading took 12.53 GiB memory and 6.064852 seconds
+GPU KV cache size: 497,168 tokens, Maximum concurrency for 4,096 tokens per request: 121.38x
+86103 MiB, 97871 MiB
