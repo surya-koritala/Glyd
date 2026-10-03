@@ -1,0 +1,35 @@
+bf16: weights 15.27 GiB, KV cache 27,024 tokens, max concurrency 6.60x at 4,096 tokens (started cold, on an empty compile cache: weights 15.27 GiB, KV cache 27,024 tokens, max concurrency 6.60x at 4,096 tokens)
+glyd@1: weights 11.38 GiB, KV cache 54,464 tokens, max concurrency 13.30x at 4,096 tokens (started cold, on an empty compile cache: weights 11.38 GiB, KV cache 54,464 tokens, max concurrency 13.30x at 4,096 tokens)
+kv: weights 15.36 GiB, KV cache 34,912 tokens, max concurrency 8.52x at 4,096 tokens (started cold, on an empty compile cache: weights 15.36 GiB, KV cache 34,912 tokens, max concurrency 8.52x at 4,096 tokens)
+kv+glyd: weights 11.49 GiB, KV cache 71,248 tokens, max concurrency 17.39x at 4,096 tokens (started cold, on an empty compile cache: weights 11.49 GiB, KV cache 71,248 tokens, max concurrency 17.39x at 4,096 tokens)
+Prefix cache hit rate, at most (the servers' logs): bf16 0.0%, glyd@1 0.0%, kv 0.0%, kv+glyd 0.0%
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.65 | 166.4 | 5861 / 16710 | 100.7 / 112.9 | 64 | 1500 MHz, 74 C |
+| 1 | glyd@1 | 0.78 | 200.3 | 698 / 1126 | 102.8 / 132.4 | 64 | 1215 MHz, 72 C |
+| 1 | kv | 0.72 | 184.6 | 2171 / 8144 | 101.4 / 114.3 | 64 | 1500 MHz, 74 C |
+| 1 | kv+glyd | 0.80 | 203.7 | 680 / 1133 | 96.7 / 124.9 | 64 | 1185 MHz, 76 C |
+| inf | bf16 | 0.76 | 193.5 | 151326 / 310359 | 111.0 / 182.8 | 256 | 1380 MHz, 83 C |
+| inf | glyd@1 | 1.05 | 269.6 | 105717 / 224786 | 156.3 / 253.4 | 256 | 1080 MHz, 84 C |
+| inf | kv | 0.93 | 237.8 | 122692 / 254981 | 117.7 / 198.9 | 256 | 1410 MHz, 83 C |
+| inf | kv+glyd | 1.20 | 307.9 | 87962 / 197773 | 172.4 / 268.1 | 256 | 1140 MHz, 83 C |
+| one | bf16 | 0.06 | 16.2 | 331 / 339 | 60.6 / 60.7 | 8 |  |
+| one | glyd@1 | 0.08 | 20.3 | 431 / 438 | 47.9 / 48.0 | 8 |  |
+| one | kv | 0.06 | 16.3 | 333 / 344 | 60.2 / 60.3 | 8 |  |
+| one | kv+glyd | 0.08 | 20.4 | 432 / 441 | 47.6 / 47.7 | 8 |  |
+
+| Rate (req/s) | Mode | Weights (GiB) | KV cache (tokens) | Requests/s | TTFT mean (ms) | TPOT mean (ms) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 15.27 | 27,024 | 0.65 | 5,861 | 100.7 |
+| 1 | glyd@1 | 11.38 (0.75x) | 54,464 (2.02x) | 0.78 (1.20x) | 698 (0.12x) | 102.8 (1.02x) |
+| 1 | kv | 15.36 (1.01x) | 34,912 (1.29x) | 0.72 (1.11x) | 2,171 (0.37x) | 101.4 (1.01x) |
+| 1 | kv+glyd | 11.49 (0.75x) | 71,248 (2.64x) | 0.80 (1.22x) | 680 (0.12x) | 96.7 (0.96x) |
+| inf | bf16 | 15.27 | 27,024 | 0.76 | 151,326 | 111.0 |
+| inf | glyd@1 | 11.38 (0.75x) | 54,464 (2.02x) | 1.05 (1.39x) | 105,717 (0.70x) | 156.3 (1.41x) |
+| inf | kv | 15.36 (1.01x) | 34,912 (1.29x) | 0.93 (1.23x) | 122,692 (0.81x) | 117.7 (1.06x) |
+| inf | kv+glyd | 11.49 (0.75x) | 71,248 (2.64x) | 1.20 (1.59x) | 87,962 (0.58x) | 172.4 (1.55x) |
+| one | bf16 | 15.27 | 27,024 | 0.06 | 331 | 60.6 |
+| one | glyd@1 | 11.38 (0.75x) | 54,464 (2.02x) | 0.08 (1.25x) | 431 (1.30x) | 47.9 (0.79x) |
+| one | kv | 15.36 (1.01x) | 34,912 (1.29x) | 0.06 (1.01x) | 333 (1.00x) | 60.2 (0.99x) |
+| one | kv+glyd | 11.49 (0.75x) | 71,248 (2.64x) | 0.08 (1.26x) | 432 (1.30x) | 47.6 (0.78x) |

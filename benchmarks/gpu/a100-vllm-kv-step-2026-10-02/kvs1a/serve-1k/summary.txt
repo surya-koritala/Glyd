@@ -1,0 +1,21 @@
+bf16: weights 15.27 GiB, KV cache 141,040 tokens, max concurrency 34.43x at 4,096 tokens (started cold, on an empty compile cache: weights 15.27 GiB, KV cache 133,776 tokens, max concurrency 32.66x at 4,096 tokens)
+kv: weights 15.64 GiB, KV cache 183,424 tokens, max concurrency 44.78x at 4,096 tokens (started cold, on an empty compile cache: weights 15.64 GiB, KV cache 173,792 tokens, max concurrency 42.43x at 4,096 tokens)
+Prefix cache hit rate, at most (the servers' logs): bf16 0.9%, kv 0.8%
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.95 | 242.1 | 113 / 172 | 14.7 / 16.2 | 64 | 1410 MHz, 57 C |
+| 1 | kv | 0.95 | 242.4 | 114 / 181 | 14.3 / 15.8 | 64 | 1410 MHz, 55 C |
+| inf | bf16 | 5.92 | 1514.6 | 15319 / 38737 | 63.5 / 100.9 | 256 | 1350 MHz, 68 C |
+| inf | kv | 7.62 | 1950.2 | 12408 / 27258 | 59.0 / 76.1 | 256 | 1350 MHz, 66 C |
+| one | bf16 | 0.28 | 73.0 | 91 / 104 | 13.4 / 13.4 | 8 |  |
+| one | kv | 0.29 | 74.1 | 94 / 111 | 13.2 / 13.2 | 8 |  |
+
+| Rate (req/s) | Mode | Weights (GiB) | KV cache (tokens) | Requests/s | TTFT mean (ms) | TPOT mean (ms) |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 15.27 | 141,040 | 0.95 | 113 | 14.7 |
+| 1 | kv | 15.64 (1.02x) | 183,424 (1.30x) | 0.95 (1.00x) | 114 (1.01x) | 14.3 (0.97x) |
+| inf | bf16 | 15.27 | 141,040 | 5.92 | 15,319 | 63.5 |
+| inf | kv | 15.64 (1.02x) | 183,424 (1.30x) | 7.62 (1.29x) | 12,408 (0.81x) | 59.0 (0.93x) |
+| one | bf16 | 15.27 | 141,040 | 0.28 | 91 | 13.4 |
+| one | kv | 15.64 (1.02x) | 183,424 (1.30x) | 0.29 (1.02x) | 94 (1.04x) | 13.2 (0.98x) |
