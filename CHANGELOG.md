@@ -108,6 +108,8 @@ every earlier format.
   | :--- | :--- | ---: | ---: | :--- | :--- |
   | A100 40 GB | Qwen3-8B | 1.19x | **0.98x** (5.73 against 5.85) | 43.1% / 53.5% | 1.3% / 1.3% |
   | A100 40 GB | Qwen3-14B | 1.65x | **1.28x** (3.37 against 2.63) | 40.8% / 52.7% | 0.0% / 0.0% |
+  | GH200 | Qwen3-8B | 0.92x | **0.93x** (19.61 against 21.16) | 46.1% / 46.8% | 0.9% / 1.0% |
+  | GH200 | Qwen3-32B | 0.88x | **0.89x** (3.88 against 4.36) | 53.5% / 46.3% | 0.0% / 0.0% |
   | H100 SXM | Qwen3-30B-A3B | 0.95x | **0.84x** (10.07 against 12.03) | 46.1% / 51.4% | 1.1% / 1.0% |
   | L4 | Qwen3-8B | 1.33x | 1.33x, unchanged (1.39x measured again: 1.05 against 0.76) | 0.0% / 48.3% | 0.1% / 0.2% |
   | A10 | Qwen3-8B | 1.31x | 1.31x, unchanged (its logs show no hits; not measured again) | 0.0% / 0.0% | |
@@ -118,14 +120,15 @@ every earlier format.
   - The Qwen3-8B run on the A100 and the run on the H100 have hit rates just above the summary's 1% line (1.3% and 1.1%),
     the same on both sides; on the L4 a run with one repeated prompt of 328 (hit rates 1.1% to 1.2%) and one with none
     (0.0%) gave saturated rows within 1.4%.
-  - GH200 (Qwen3-8B and Qwen3-32B) and 2x RTX A6000 (Qwen3-30B-A3B): being re-measured after a benchmark fix;
-    v0.26.0's rows for them are withdrawn until then.
+  - The GH200's rows moved by 0.01x. 2x RTX A6000 (Qwen3-30B-A3B): being re-measured after a benchmark fix; v0.26.0's
+    row for it is withdrawn until then.
 
   Logs: [benchmarks/gpu/vllm-m3-a100-40gb-new-prompts-2026-10-03](benchmarks/gpu/vllm-m3-a100-40gb-new-prompts-2026-10-03),
+  [vllm-m3-gh200-new-prompts-2026-10-03](benchmarks/gpu/vllm-m3-gh200-new-prompts-2026-10-03),
   [vllm-m6-h100-new-prompts-2026-10-03](benchmarks/gpu/vllm-m6-h100-new-prompts-2026-10-03),
   [l4-vllm-m5-new-prompts-2026-10-03](benchmarks/gpu/l4-vllm-m5-new-prompts-2026-10-03); the v0.26.0 runs' hit rates
   are in their own logs ([vllm-m3-a100-40gb-2026-09-30](benchmarks/gpu/vllm-m3-a100-40gb-2026-09-30),
-  [vllm-m6-h100-2026-10-01](benchmarks/gpu/vllm-m6-h100-2026-10-01), [l4-vllm-m5-2026-09-30](benchmarks/gpu/l4-vllm-m5-2026-09-30)).
+  [vllm-m3-gh200-2026-09-30](benchmarks/gpu/vllm-m3-gh200-2026-09-30), [vllm-m6-h100-2026-10-01](benchmarks/gpu/vllm-m6-h100-2026-10-01), [l4-vllm-m5-2026-09-30](benchmarks/gpu/l4-vllm-m5-2026-09-30)).
 
 ## v0.26.0 — 2026-10-01
 

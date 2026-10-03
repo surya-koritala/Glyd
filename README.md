@@ -171,24 +171,27 @@ out; low load 1 request a second, 0.25 on the L4):
 | A10 (`mma12`) | Qwen3-8B | 1.73x | **1.31x** | +16%, −21% | −25%, +30% |
 | A100 40 GB (`mma12`) | Qwen3-8B | 1.14x | 0.98x | +19%, −10% | +9%, +17% |
 | A100 40 GB (`mma12`) | Qwen3-14B | 1.77x | **1.28x** | +19%, −13% | −21%, +33% |
+| GH200 (`mma12`) | Qwen3-8B | 1.04x | 0.93x | +6%, +1% | +5%, +9% |
+| GH200 (`mma12`) | Qwen3-32B | 1.66x | 0.89x | +27%, −6% | −24%, +58% |
 | H100 SXM (`mma12`) | Qwen3-30B-A3B | 2.11x | 0.84x | +35%, +5% | −37%, +126% |
 
-GH200 and 2x RTX A6000: being re-measured after a benchmark fix (the benchmark's passes repeated prompts, so a large
-KV cache could serve some of them; each pass now uses new prompts. The [CHANGELOG](CHANGELOG.md) has the corrected rows).
+2x RTX A6000: being re-measured after a benchmark fix (the benchmark's passes repeated prompts, so a large KV cache
+could serve some of them; each pass now uses new prompts. The [CHANGELOG](CHANGELOG.md) has the corrected rows).
 
 More requests at once on every GPU, and more a second on the L4, A10 and the A100 with Qwen3-14B; about the same on the
-A100 with Qwen3-8B, and fewer a second saturated with Qwen3-30B-A3B on an H100 SXM. On an 80 GB H100 SXM, where
+A100 with Qwen3-8B, and fewer a second saturated on the GH200 and with Qwen3-30B-A3B on an H100 SXM. On an 80 GB H100 SXM, where
 Qwen3-32B's bf16 weights leave room for 32,320 tokens of KV cache, Glyd
 served 1.56x bf16's requests a second saturated (`fraction` 1, a bench of
 its own: [docs](https://getglyd.com/docs/vllm/#a-fraction-of-the-layers)). At
-low load the first token comes 16-35% later. `exact` gives vLLM's bf16
+low load the first token comes 6-35% later. `exact` gives vLLM's bf16
 logits bit for bit, eager, or compiled in inductor's deterministic mode
 where the packed Linears have no biases.
 Options, exact mode, mixtures of experts, the checks against vLLM's bf16
 and every rate: [getglyd.com/docs/vllm](https://getglyd.com/docs/vllm/); logs in
 [benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m5-2026-09-30` and
 `l4-vllm-m5-new-prompts-2026-10-03`, `vllm-m3-a10-2026-09-30`,
-`vllm-m3-a100-40gb-new-prompts-2026-10-03`, `vllm-m6-h100-new-prompts-2026-10-03`).
+`vllm-m3-a100-40gb-new-prompts-2026-10-03`, `vllm-m3-gh200-new-prompts-2026-10-03`,
+`vllm-m6-h100-new-prompts-2026-10-03`).
 
 ### The lossless KV cache in vLLM
 
