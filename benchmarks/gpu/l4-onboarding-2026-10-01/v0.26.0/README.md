@@ -6,7 +6,7 @@ getglyd.com), and the Rust `glyd` of the release's linux-x86_64 tarball. The mac
 595.91.07 (CUDA 13.2), clean Ubuntu 26.04 containers with no CUDA toolkit and no gcc, as a user that is not root. What the artifacts are, with
 hashes: [published-artifacts.txt](published-artifacts.txt).
 
-[gpu/vllm/acceptance.sh](../../../../gpu/vllm/acceptance.sh) of this branch is the script (v0.26.0's, with two options added for this: `--install-url`,
+[gpu/vllm/acceptance.sh](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/vllm/acceptance.sh) of this branch is the script (v0.26.0's, with two options added for this: `--install-url`,
 a release's raw `install.sh` in place of the checkout's, and `--served`, the README's install line run as it is, from the network, with a copy of
 what the site served kept for the cases that run the script again and compared with the tag's). Every run takes the model's files from the
 box's Hugging Face cache; the packages come from PyPI.

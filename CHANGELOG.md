@@ -6,6 +6,109 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.27.0 (Unreleased)
+
+- The lossless KV cache in vLLM: vLLM's KV cache held in fewer bits, every key and value read back as written, bit for
+  bit. On the five models measured it holds 1.25x to 1.30x vLLM's tokens in the same memory, and on an A100, an L4 and an
+  H100 decoding is faster than with vLLM's own cache at every batch measured.
+  - The option is `kv`: `auto` (the default), `lossless` or `off`, set with `GLYD_KV` or `--additional-config '{"glyd":
+    {"kv": "lossless"}}'`. `auto` holds the cache on an A100, an L4 and an H100 (by the name the GPU gives; measured on an
+    A100 SXM4 40 GB, an L4 and an H100 SXM) and leaves vLLM's own cache on any other GPU, with a line in the log that
+    says so (an L40S, an RTX 40, a GH200, an H200 and an A10 are not measured yet); it leaves it where `exact` or
+    `verify` is on too. `lossless` holds it on any GPU it supports and refuses with why where it cannot; `off` is
+    vLLM's own. It works with any `fraction`, 0 included (bf16 weights with the cache held).
+  - `glyd run` keeps vLLM's own cache unless `GLYD_KV` is set (`GLYD_KV=auto glyd run MODEL`); `glyd serve` and
+    `vllm serve --quantization glyd` use `auto`.
+  - A first start with the cache on sets it up once for the model, for the longest context the server will serve
+    (4,096, 8,192, 16,384, 32,768 or 40,960 tokens), and keeps the result in `~/.cache/glyd/kv` (`$GLYD_CACHE/kv`):
+    217 s on an L4 for Qwen3-8B at its whole window of 40,960 tokens, 3.9 MB. Through the compiled package, `glyd run
+    Qwen/Qwen3-8B` with the cache on took 435 s the first time (216 s of them the set-up) and 88 s the second; with the
+    set-up kept `GLYD_KV=auto glyd run` was ready in 40 s and `glyd serve` in 45 s, against 39 s for `glyd run` without
+    the cache. A window past 40,960 tokens keeps vLLM's own cache (`auto` and `lossless` alike, with one line that
+    says why).
+  - `kv: lossless` is refused, with why, for tensor, pipeline and context parallel, speculative decoding, sliding-window,
+    linear-attention and state-space layers, MLA, LoRA, KV connectors and offloading, `--kv-cache-dtype` other than
+    auto, head sizes other than 128, another attention backend, GPUs other than Ampere, Ada and Hopper, and a model
+    whose keys and values it cannot hold well.
+  - What is exact: the stored values. Every value read back was the value written: 0 of 25,683,296,256 differ in a stress
+    run, and `verify`, which compares every write with a bf16 copy, found none that differs in 6,329,327,616 values
+    (Qwen3-8B). Prompt logprobs are vLLM's bit for bit (a 36,000-token prompt: 35,999 of 35,999; 14 of 14 prompts with
+    chunked prefill on Llama-3.1-8B). A decode step's attention is not bit-equal to vLLM's, so greedy tokens can part
+    from vLLM's after some tokens (that 36,000-token prompt: the same for the first 19 of 64), as they do with vLLM's
+    own attention when one of its settings changes. In the prefix-hit scenario on an A100 (14 prompts, one request at a
+    time) 13 of 14 first tokens were vLLM's bit for bit and 8 of 14 sequences of 64 tokens identical (vLLM's own with the
+    setting changed: 13 and 9); with `exact`, which runs vLLM's own attention for decode steps too, 14 of 14 and 14 of
+    14.
+  - Measured against vLLM's own cache, Qwen3-8B, vLLM 0.30.0 in its default mode (compiled, CUDA graphs), 128 new tokens
+    a request, the tokens a second at the same batch:
+    - On an L4: 1.023x (1 request of 8,192 tokens), 1.052x (3 of 8,192), 1.047x (24 of 1,024), 1.053x (6 of 4,096) and
+      1.007x (1 of 1,024); a decode step 1.005x to 1.053x faster; the KV cache 41,408 tokens against 32,208 (1.286x).
+    - On an A100 SXM4 40 GB: 1.032x (1 of 8,192) and 1.018x (1 of 1,024); a decode step 1.013x to 1.097x faster; the KV
+      cache 177,392 tokens against 136,592 (1.299x).
+    - On an H100 SXM: 1.005x (1 of 1,024) to 1.197x (32 of 8,192), and 1.342x with each cache at the largest batch it
+      holds (46 against 60 requests of 8,192 tokens); the KV cache 499,312 tokens against 382,448 (1.306x). With
+      `vllm bench serve`, 8,192 tokens in and 256 out, saturated, it served more requests a second and its first token
+      came sooner, but each generated token took longer: 2.80 requests a second against 2.67 (1.05x), the first token
+      after 8,196 ms against 9,199 (0.89x), each token 49.2 ms against 43.9 (1.12x as long). In that run the KV cache
+      held 494,256 tokens against 377,024 (1.31x) and the model's memory was 1.07x (16.34 against 15.27 GiB). A GH200
+      and an H200 are not measured yet.
+    - The KV cache on five models, an L4, eager, `--max-model-len 8704`: Qwen3-4B 1.2982x, Qwen3-8B 1.2834x,
+      Qwen2.5-7B 1.2773x, Mistral-7B-v0.3 1.2743x, Llama-3.1-8B 1.2526x.
+  - Prompts of a model's rare tokens (tokens whose embeddings were never trained: Llama-3.1-8B has 289, Mistral-7B-v0.3
+    902, the Qwen models none) are the cache's known limit. 40 of them of 1,400 tokens at once with 8 ordinary prompts:
+    all 40 served on every one of the five models, none ended with an error; the flood ran at 0.88x (Llama-3.1-8B) and
+    0.77x (Mistral-7B-v0.3) of vLLM's prompt tokens a second, and at 1.00x to 1.01x on the Qwen models. The ordinary
+    prompts sent with it were not held behind it: 8.1 s on Mistral-7B-v0.3 and 10.5 s on Llama-3.1-8B, where vLLM's own
+    took 19.0 s and 19.8 s.
+  - The model checks against vLLM's own pass on all five models (13 of 13 on Qwen3-4B and Qwen2.5-7B, 21 of 21 on
+    Qwen3-8B, Mistral-7B-v0.3 and Llama-3.1-8B); Llama-3.1-8B's full run passes 34 of 35, the one miss being the
+    prefix-hit check, where 13 of 14 first tokens were vLLM's bit for bit. On the H100 the kernels' 81 of 81 checks and
+    the prefix-caching, chunked-prefill and `exact` checks, 12 of 12, pass.
+
+  Logs: [benchmarks/gpu/l4-vllm-kv-step-2026-10-02](benchmarks/gpu/l4-vllm-kv-step-2026-10-02),
+  [a100-vllm-kv-step-2026-10-02](benchmarks/gpu/a100-vllm-kv-step-2026-10-02),
+  [a100-vllm-kv-prefix-2026-10-02](benchmarks/gpu/a100-vllm-kv-prefix-2026-10-02),
+  [h100-vllm-kv-2026-10-02](benchmarks/gpu/h100-vllm-kv-2026-10-02),
+  [l4-vllm-kv-window-2026-10-02](benchmarks/gpu/l4-vllm-kv-window-2026-10-02),
+  [l4-vllm-kv-wait-2026-10-02](benchmarks/gpu/l4-vllm-kv-wait-2026-10-02).
+- The GPU parts ship compiled, as the new `glyd-gpu` package: Glyd's GPU half (`glyd.from_pretrained`, the vLLM plugin,
+  `glyd run`, `glyd serve`, `glyd pack`, `glyd verify` and `python -m glyd_gpu`) is compiled wheels for Linux x86_64 and
+  aarch64. `glyd` stays the public package, with a thin `glyd.gpu` that re-exports the package's API and says what to
+  install where it is missing.
+  - The install commands are the same: `curl -LsSf https://getglyd.com/install.sh | sh`, `glyd run MODEL`, `pip install
+    "glyd[gpu]"` and `pip install "glyd[vllm]"` (each brings `glyd-gpu` of the same version).
+  - The license is unchanged: the Business Source License 1.1, on the same terms as before. Versions up to v0.26.0
+    stay source-available in their tags.
+  - The C API's public header, `glyd_gpu.h`, comes in the `glyd-gpu` wheel with the libraries (CUDA 12 and 13) and
+    carries 8 functions: the version, the text of an error, and for each of the two layouts a product with its
+    workspace query and an unpack to bf16, bit for bit. The C API is version 14; v0.26.0's header declared 52
+    functions (version 7), and it and its libraries stay in that release. The release no longer carries separate CUDA
+    library downloads.
+  - `glyd pack` and `glyd verify` are the Python tool's commands, as `glyd run` is (Linux, an NVIDIA GPU); the
+    `glyd-gpu` program and crate are gone. The release's tarballs and Homebrew carry `glyd` and `glyd-store`.
+- Fixes: with transformers 5.18, Inkling's embedding, whose rows are normed after the lookup, is packed with its norm
+  kept and gives what it gave bit for bit, and the 24 embedding classes that are not plain lookups are no longer packed.
+  `glyd run` with the cache on no longer cuts the window to fit it: a window up to 40,960 tokens keeps the lossless
+  cache and a longer one keeps vLLM's.
+- The benchmark's method: each `vllm bench serve` pass now draws prompts of its own. Earlier passes shared one set of
+  prompts, which vLLM's prefix cache could serve, and the summary now gives each server's prefix-cache hit rate and
+  marks a run above 1% as not comparable. The serving rows published before v0.27.0 are being measured again with it;
+  the corrected rows come in the table below, and the rows of earlier releases stay as they were published until then.
+
+  <!-- TODO(v0.27.0 re-measure): replace the pending cells with the re-measured `vllm bench serve` rows (new prompts for
+  every pass); nothing in this table is measured yet. -->
+
+  | GPU | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
+  | :--- | :--- | ---: | ---: | :--- | :--- |
+  | L4 | Qwen3-8B | pending | pending | pending | pending |
+  | A10 | Qwen3-8B | pending | pending | pending | pending |
+  | A100 40 GB | Qwen3-8B | pending | pending | pending | pending |
+  | A100 40 GB | Qwen3-14B | pending | pending | pending | pending |
+  | GH200 | Qwen3-8B | pending | pending | pending | pending |
+  | GH200 | Qwen3-32B | pending | pending | pending | pending |
+  | H100 SXM | Qwen3-30B-A3B | pending | pending | pending | pending |
+  | 2x RTX A6000, tensor parallel | Qwen3-30B-A3B | pending | pending | pending | pending |
+
 ## v0.26.0 — 2026-10-01
 
 - A model on an NVIDIA GPU with no flags to find: `curl -LsSf https://getglyd.com/install.sh | sh`, then `glyd run
@@ -33,7 +136,7 @@ every earlier format.
   `glyd`, found on PATH). The two commands were run from nothing, in a container with no CUDA toolkit and no compiler,
   as a user that is not root (the chat page, the API, the thinking apart, a conversation longer than the window, Open
   WebUI by uvx and by Docker with and without host networking), at a 24 GB, a 16 GB and an 8 GB card's memory, and CI
-  runs `install.sh` from each release's tag ([gpu/vllm/README.md](gpu/vllm/README.md#local-chat-like-ollama),
+  runs `install.sh` from each release's tag ([gpu/vllm/README.md](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/vllm/README.md#local-chat-like-ollama),
   [benchmarks/gpu/l4-onboarding-2026-10-01](benchmarks/gpu/l4-onboarding-2026-10-01)).
 - `glyd run`, `glyd serve` and `scripts/install.sh`, from the review of v0.26.0rc3:
   - A server with an API key now starts (`glyd serve -- --api-key KEY`).
@@ -85,7 +188,7 @@ every earlier format.
     `GLYD_EXACT` and `GLYD_VERIFY`; another key, or a flag not true or false, is refused. `layout` is `auto` by
     default, which picks the layout for the GPU. `verify` also checks a save's other tensors by their sha256, and a
     save packed again in the other layout against the save. A change of layout, mode or checkpoint never loads
-    another's compiled graph ([gpu/vllm/README.md](gpu/vllm/README.md)).
+    another's compiled graph ([gpu/vllm/README.md](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/vllm/README.md)).
   - The plugin ran on an L4, an A10, an A100 SXM4 40 GB, a GH200, an H100 SXM and two RTX A6000s (the checks and
     benches below). Any GPU from Ampere loads it. An H100 PCIe, an H200, an A100 80 GB, an A800 and Blackwell were not
     run: they take the library's settings for their class, not measured through vLLM.
@@ -640,8 +743,8 @@ every earlier format.
   Qwen3.5-style linear-attention layers and checkpoints that load only with their vision tower. Qwen3.8 27B, the
   highest-scoring open model that fits one GPU, uses 41,071 MiB with Glyd against bf16's 51,771 (under a 48 GB card's
   49,140), perplexity 15.1941 against 15.1946, MMLU answers as bf16's on 99.67% of 300
-  ([gpu/](gpu/README.md#popular-models)).
-- On Hopper, batched steps from the 12-bit layout (`mma12`) are faster ([gpu/](gpu/README.md)): the same result every
+  ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md#popular-models)).
+- On Hopper, batched steps from the 12-bit layout (`mma12`) are faster ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md)): the same result every
   run. On an H100 SXM, Qwen3-32B's MLP matrices at 32 and 64 tokens take 83 and 92 us against cuBLAS's 90-96 (the
   kernel before 105-140); at 128 tokens 121-124 against 98-99. Small matrices still cost more than cuBLAS's, so end to
   end 32 and 64 sequences take 37.71 and 43.04 ms of GPU time a step against bf16's 32.44 and 35.50 (Qwen3-32B, 25%
@@ -650,7 +753,7 @@ every earlier format.
   Qwen3-32B on an H100 takes 24.50 / 26.75 / 33.46 / 37.35 ms of GPU time a token at 1 / 8 / 32 / 64 sequences against
   bf16's 27.90 / 29.78 / 31.44 / 33.52.
 - The layouts measured on an RTX 4080 SUPER, an A10, an A100 and an H100
-  ([gpu/](gpu/README.md#which-layout-on-which-gpu)); `best_layout()` and `e2e.py --format auto` take the faster for
+  ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md#which-layout-on-which-gpu)); `best_layout()` and `e2e.py --format auto` take the faster for
   the GPU (`mma` on Ada and wherever only it fits). Batched steps on GDDR Ampere and Ada take a new path.
 - Side by side with DFloat11 and ZipServ ([README](README.md#related-work)).
 
@@ -662,18 +765,18 @@ every earlier format.
   than cuBLAS's (Qwen3-32B's MLP at one token: 75-79 us against 86-90); MMLU 78.1% (bf16 78.3%). On an RTX 4080 SUPER,
   where memory is the limit, `mma` stays the faster at 1-32 sequences and `mma12` leads at 64 (2,455.9 tokens/s
   against 2,244.7; bf16 2,160.0). `pack_mma12`; `mma_gemm`, `mma_gemm_big` and `mma_unpack` take either layout;
-  `e2e.py --format mma12` ([gpu/](gpu/README.md)).
+  `e2e.py --format mma12` ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md)).
 
 ## v0.18.0 — 2026-09-26
 
-- The KV cache compressed in GPU memory ([gpu/kv.py](gpu/kv.py)), bit for bit: `GlydKVCache(config)` for a Hugging
+- The KV cache compressed in GPU memory ([gpu/kv.py](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/kv.py)), bit for bit: `GlydKVCache(config)` for a Hugging
   Face model; with `fused=True` a step of one new token a sequence runs `attn_decode`, attention straight from the
   compressed cache. Qwen2.5-7B-Instruct on an RTX 4080 SUPER: **the cache 31% smaller** (16K tokens: 651 MB for 947),
   peak memory below the plain cache's, a step as fast (21.7 ms against 21.6 at 16K; 19.2 against 18.3 at 1K); decoded,
   the cache is the plain one's bit for bit (the same tokens); through `attn_decode`, 256 tokens fed one at a time give
   perplexity 2.4778 against 2.4809 (16K).
 - Larger models on rented GPUs, bf16 and Glyd in the same runs, MMLU on 1,000 questions
-  ([gpu/README.md](gpu/README.md#larger-models)): **Qwen3-32B on one 48 GB RTX A6000** (44.45 GB; bf16 65.52 GB across
+  ([gpu/README.md](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md#larger-models)): **Qwen3-32B on one 48 GB RTX A6000** (44.45 GB; bf16 65.52 GB across
   two) at 1.24-1.28x bf16's tokens/s for 1-8 sequences, MMLU 78.0% (bf16 78.5%); **Qwen2.5-72B on three** (97.80 GB;
   bf16 145.41 GB across four) at 1.40-1.42x, MMLU 81.8% (81.9%); on an H100 SXM Qwen3-32B in 44.45 GB with MMLU 78.2%
   as bf16's, a token taking more GPU time than bf16's (40.6 ms against 28.2).
@@ -684,7 +787,7 @@ every earlier format.
 
 ## v0.17.0 — 2026-09-26
 
-- Model weights on the GPU ([gpu/](gpu/README.md)): the `mma` layout is smaller: **10.80 bits a weight over
+- Model weights on the GPU ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md)): the `mma` layout is smaller: **10.80 bits a weight over
   Qwen2.5-7B's matrices, 32.5% under bf16** (was 11.25), every tensor bit for bit. Qwen2.5-7B-Instruct on an RTX 4080
   SUPER: 10.61 GB where bf16 takes 15.25 (was 11.05); **1.25-1.32x bf16's tokens/s at 1 to 32 sequences** (one: 55.7,
   bf16 43.4; 32: 1,518.9, bf16 1,153.7), 1.13x at 48, 1.04x at 64; prompts of 16 to 128 tokens 19-29 ms (bf16 24-29),
@@ -698,7 +801,7 @@ every earlier format.
 
 ## v0.16.0 — 2026-09-25
 
-- Model weights on the GPU, several tokens at once ([gpu/](gpu/README.md)): a new layout, `mma` (`pack_mma`), for
+- Model weights on the GPU, several tokens at once ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md)): a new layout, `mma` (`pack_mma`), for
   batches of tokens and prompts. Qwen2.5-7B-Instruct on an RTX 4080 SUPER, in 11.05 GB where bf16 takes 15.25:
   **1.23-1.33x bf16's tokens/s at 1 to 48 sequences at once** (one: 55.2 tokens/s, bf16 43.3; 32: 1,528.6, bf16
   1,149.0; the batched product it replaces ran 0.72-0.90x); prompts of up to 128 tokens faster than bf16 (128: 27 ms,
@@ -710,7 +813,7 @@ every earlier format.
 
 ## v0.15.0 — 2026-09-25
 
-- Model weights on the GPU ([gpu/](gpu/README.md), Python and CUDA beside the library): a bf16 model's weights held
+- Model weights on the GPU ([gpu/](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/README.md), Python and CUDA beside the library): a bf16 model's weights held
   compressed in GPU memory and rebuilt there bit for bit, in two formats: dense (10.9 bits a weight) and fast (11.25).
   Qwen2.5-7B-Instruct on an RTX 4080 SUPER (16 GB): **55.1 tokens/s in 11.05 GB** (fast) and **52.0 in 10.60 GB**
   (dense), against bf16's 43.2 in 15.25 GB; the fast format's 128 tokens as bf16's. Prompts of up to 64 tokens take

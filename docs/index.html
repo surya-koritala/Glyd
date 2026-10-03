@@ -113,7 +113,7 @@
     <tr><td>bf16</td><td>15.25 GB</td><td>43.4 tokens/s</td><td>1,154 tokens/s</td><td>29 ms</td><td>645 ms</td></tr>
     <tr class="g"><td>Glyd, <code>mma</code></td><td>10.61 GB</td><td>55.7</td><td>1,519</td><td>29 ms</td><td>702 ms</td></tr>
   </table></div>
-  <p class="muted">The weights stay compressed in GPU memory and are rebuilt bit for bit as the model runs (<a href="https://github.com/surya-koritala/Glyd/blob/main/gpu/README.md">gpu/</a>): about a third of a bf16 model's memory back, and generation faster than bf16; perplexity as bf16's (17.0052 against 17.0015 on Wikipedia text).</p>
+  <p class="muted">The weights stay compressed in GPU memory and are rebuilt bit for bit as the model runs (<a href="https://getglyd.com/docs/gpu/">docs</a>): about a third of a bf16 model's memory back, and generation faster than bf16; perplexity as bf16's (17.0052 against 17.0015 on Wikipedia text).</p>
 
   <h2>Record mode: the data's own structure, not just its bytes</h2>
   <p>Byte-level matching (zstd, LZ4, Glyd's own levels) is a plateau: on real data zstd -19, xz and Glyd <code>--ultra</code> land within a few percent of each other. The redundancy of a log, a dump or a telemetry export sits in the same field of every record. <code>glyd -r</code> detects delimited lines, SQL dumps and JSON lines, turns them into one typed stream per field (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those, and rebuilds the bytes exactly. Logs whose lines vary in shape take a template: the line's text with a hole where every token holding a digit was, and the tokens as typed columns keyed by template and slot. Anything else is left as it is.</p>
