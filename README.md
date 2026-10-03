@@ -165,33 +165,30 @@ save. `vllm bench serve`, bf16 against Glyd at the same
 `--gpu-memory-utilization 0.9` (servers warm, 1,024 tokens in and 256
 out; low load 1 request a second, 0.25 on the L4):
 
-<!-- TODO(v0.27.0 re-measure): these rows were measured before each pass of vllm bench serve drew prompts of its own (see the CHANGELOG's v0.27.0 entry); they stay as published until the re-measured rows replace them. -->
-
 | GPU (Glyd's layout) | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
 | :--- | :--- | ---: | ---: | :--- | :--- |
 | L4 (`mma`) | Qwen3-8B | 1.89x | **1.33x** | +16%, −21% | −25%, +42% |
 | A10 (`mma12`) | Qwen3-8B | 1.73x | **1.31x** | +16%, −21% | −25%, +30% |
-| A100 40 GB (`mma12`) | Qwen3-8B | 1.14x | **1.19x** | +18%, −10% | −32%, −2% |
-| A100 40 GB (`mma12`) | Qwen3-14B | 1.77x | **1.65x** | +18%, −13% | −57%, +4% |
-| GH200 (`mma12`) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
-| GH200 (`mma12`) | Qwen3-32B | 1.66x | 0.88x | +28%, −6% | −52%, +82% |
-| H100 SXM (`mma12`) | Qwen3-30B-A3B | 2.11x | 0.95x | +39%, +8% | −74%, +118% |
-| 2x RTX A6000, tensor parallel (`mma`) | Qwen3-30B-A3B | 1.67x | 0.87x | +30%, −7% | +34%, +28% |
+| A100 40 GB (`mma12`) | Qwen3-8B | 1.14x | 0.98x | +19%, −10% | +9%, +17% |
+| A100 40 GB (`mma12`) | Qwen3-14B | 1.77x | **1.28x** | +19%, −13% | −21%, +33% |
+| H100 SXM (`mma12`) | Qwen3-30B-A3B | 2.11x | 0.84x | +35%, +5% | −37%, +126% |
 
-More requests at once on every GPU, and more a second on the L4, A10
-and A100; on the GH200, with Qwen3-30B-A3B over two RTX A6000s and on an
-H100 SXM, fewer a second saturated. On an 80 GB H100 SXM, where
+GH200 and 2x RTX A6000: being re-measured after a benchmark fix (the benchmark's passes repeated prompts, so a large
+KV cache could serve some of them; each pass now uses new prompts. The [CHANGELOG](CHANGELOG.md) has the corrected rows).
+
+More requests at once on every GPU, and more a second on the L4, A10 and the A100 with Qwen3-14B; about the same on the
+A100 with Qwen3-8B, and fewer a second saturated with Qwen3-30B-A3B on an H100 SXM. On an 80 GB H100 SXM, where
 Qwen3-32B's bf16 weights leave room for 32,320 tokens of KV cache, Glyd
 served 1.56x bf16's requests a second saturated (`fraction` 1, a bench of
 its own: [docs](https://getglyd.com/docs/vllm/#a-fraction-of-the-layers)). At
-low load the first token comes 4-39% later. `exact` gives vLLM's bf16
+low load the first token comes 16-35% later. `exact` gives vLLM's bf16
 logits bit for bit, eager, or compiled in inductor's deterministic mode
 where the packed Linears have no biases.
 Options, exact mode, mixtures of experts, the checks against vLLM's bf16
 and every rate: [getglyd.com/docs/vllm](https://getglyd.com/docs/vllm/); logs in
-[benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m5-2026-09-30`,
-`vllm-m3-*-2026-09-30`, `vllm-m4-2xa6000-2026-09-30`,
-`vllm-m6-h100-2026-10-01`).
+[benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m5-2026-09-30` and
+`l4-vllm-m5-new-prompts-2026-10-03`, `vllm-m3-a10-2026-09-30`,
+`vllm-m3-a100-40gb-new-prompts-2026-10-03`, `vllm-m6-h100-new-prompts-2026-10-03`).
 
 ### The lossless KV cache in vLLM
 
@@ -210,26 +207,30 @@ GLYD_KV=auto glyd run Qwen/Qwen3-8B                            # glyd run keeps 
 `auto` leaves vLLM's own cache on any other GPU, with a line in the log that
 says so (an L40S, an RTX 40, a GH200, an H200 and an A10 are not measured
 yet), and where `exact` or `verify` is on; a window past 40,960 tokens keeps
-vLLM's cache too. A first start sets the cache up once for the model (217 s on
-an L4 for Qwen3-8B at its whole 40,960-token window, kept in `~/.cache/glyd/kv`),
-which is why `glyd run`, one user's chat, keeps vLLM's cache unless `GLYD_KV`
-says otherwise; `glyd serve` and `vllm serve --quantization glyd` use `auto`.
+vLLM's cache too. A first start sets the cache up once for the model (on an L4,
+130 s for 8,192 tokens and 217 s for Qwen3-8B's whole 40,960-token window, kept
+in `~/.cache/glyd/kv`), which is why `glyd run`, one user's chat, keeps vLLM's
+cache unless `GLYD_KV` says otherwise; `glyd serve` and
+`vllm serve --quantization glyd` use `auto`.
 
-| Against vLLM's own cache, Qwen3-8B, default mode | KV cache | Decode tokens/s at the same batch |
-| :--- | ---: | ---: |
-| L4 | 1.286x | 1.007x-1.053x |
-| A100 SXM4 40 GB | 1.299x | 1.018x-1.032x |
-| H100 SXM | 1.306x | 1.005x-1.197x |
+| Against vLLM's own cache, Qwen3-8B, default mode | KV cache | Decode tokens/s at the same batch | Requests/s, saturated (1,024 tokens in, 256 out) |
+| :--- | ---: | ---: | ---: |
+| L4 | 1.286x | 1.007x-1.053x | 1.23x |
+| A100 SXM4 40 GB | 1.299x | 1.018x-1.032x | 1.29x |
+| H100 SXM | 1.306x | 1.005x-1.197x | 1.05x |
 
+On the L4 with Glyd's weights as well, it served 1.59x bf16's requests a second
+saturated (1.20 against 0.76) with 2.64x the KV tokens (71,248 against 27,024).
 On an H100 SXM with 8,192 tokens in and 256 out, saturated, it served 1.05x the
 requests a second and the first token came after 0.89x the time, but each
 generated token took 1.12x as long; a GH200 and an H200 are not measured. Every
 value read back was the value written (0 differ in every run); a decode step's
 attention is not bit-equal to vLLM's, so greedy tokens can part from vLLM's after
 some tokens. Logs in [benchmarks/gpu](benchmarks/gpu):
-`l4-vllm-kv-step-2026-10-02`, `a100-vllm-kv-step-2026-10-02`,
-`a100-vllm-kv-prefix-2026-10-02`, `h100-vllm-kv-2026-10-02`,
-`l4-vllm-kv-window-2026-10-02` and `l4-vllm-kv-wait-2026-10-02`.
+`l4-vllm-kv-step-2026-10-02`, `l4-vllm-kv-graphs-2026-10-01`,
+`a100-vllm-kv-step-2026-10-02`, `a100-vllm-kv-prefix-2026-10-02`,
+`h100-vllm-kv-2026-10-02`, `l4-vllm-kv-window-2026-10-02` and
+`l4-vllm-kv-wait-2026-10-02`.
 
 ### Related work
 

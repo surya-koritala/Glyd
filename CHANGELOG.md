@@ -20,12 +20,10 @@ every earlier format.
   - `glyd run` keeps vLLM's own cache unless `GLYD_KV` is set (`GLYD_KV=auto glyd run MODEL`); `glyd serve` and
     `vllm serve --quantization glyd` use `auto`.
   - A first start with the cache on sets it up once for the model, for the longest context the server will serve
-    (4,096, 8,192, 16,384, 32,768 or 40,960 tokens), and keeps the result in `~/.cache/glyd/kv` (`$GLYD_CACHE/kv`):
-    217 s on an L4 for Qwen3-8B at its whole window of 40,960 tokens, 3.9 MB. Through the compiled package, `glyd run
-    Qwen/Qwen3-8B` with the cache on took 435 s the first time (216 s of them the set-up) and 88 s the second; with the
-    set-up kept `GLYD_KV=auto glyd run` was ready in 40 s and `glyd serve` in 45 s, against 39 s for `glyd run` without
-    the cache. A window past 40,960 tokens keeps vLLM's own cache (`auto` and `lossless` alike, with one line that
-    says why).
+    (4,096, 8,192, 16,384, 32,768 or 40,960 tokens), and keeps the result in `~/.cache/glyd/kv` (`$GLYD_CACHE/kv`). On
+    an L4 that took 130 s for 8,192 tokens (through `glyd run`) and 217 s for Qwen3-8B's whole window of 40,960 tokens
+    (the file 3.9 MB). A window past 40,960 tokens keeps vLLM's own cache (`auto` and `lossless` alike, with one line
+    that says why).
   - `kv: lossless` is refused, with why, for tensor, pipeline and context parallel, speculative decoding, sliding-window,
     linear-attention and state-space layers, MLA, LoRA, KV connectors and offloading, `--kv-cache-dtype` other than
     auto, head sizes other than 128, more than 8 query heads to a KV head, a model that is not bf16, another attention
@@ -43,15 +41,25 @@ every earlier format.
     a request, the tokens a second at the same batch:
     - On an L4: 1.023x (1 request of 8,192 tokens), 1.052x (3 of 8,192), 1.047x (24 of 1,024), 1.053x (6 of 4,096) and
       1.007x (1 of 1,024); a decode step 1.005x to 1.053x faster; the KV cache 41,408 tokens against 32,208 (1.286x).
+      With `vllm bench serve` (1,024 tokens in and 256 out, every pass with prompts of its own, 0.0% prefix-cache hits),
+      saturated: 0.93 requests a second against 0.76 (1.23x) with the cache alone, on 34,912 KV tokens against 27,024
+      (1.29x); 1.11x at 1 request a second; one user's token 60.2 ms against 60.6 (0.99x). With Glyd's weights and the
+      cache together, against bf16: 1.20 requests a second against 0.76 (**1.59x**) with **2.64x the KV tokens**
+      (71,248 against 27,024), the first token 0.58x and each token 1.55x as long.
     - On an A100 SXM4 40 GB: 1.032x (1 of 8,192) and 1.018x (1 of 1,024); a decode step 1.013x to 1.097x faster; the KV
-      cache 177,392 tokens against 136,592 (1.299x).
+      cache 177,392 tokens against 136,592 (1.299x). With `vllm bench serve`, 1,024 tokens in and 256 out, saturated:
+      7.62 requests a second against 5.92 (1.29x), each token 59.0 ms against 63.5 (0.93x), the first token 12,408 ms
+      against 15,319 (0.81x), on 183,424 KV tokens against 141,040 (1.30x); at 1 request a second and for one user
+      within 4% of vLLM's.
     - On an H100 SXM: 1.005x (1 of 1,024) to 1.197x (32 of 8,192), and 1.342x with each cache at the largest batch it
       holds (46 against 60 requests of 8,192 tokens); the KV cache 499,312 tokens against 382,448 (1.306x). With
-      `vllm bench serve`, 8,192 tokens in and 256 out, saturated, it served more requests a second and its first token
-      came sooner, but each generated token took longer: 2.80 requests a second against 2.67 (1.05x), the first token
-      after 8,196 ms against 9,199 (0.89x), each token 49.2 ms against 43.9 (1.12x as long). In that run the KV cache
-      held 494,256 tokens against 377,024 (1.31x) and the model's memory was 1.07x (16.34 against 15.27 GiB). A GH200
-      and an H200 are not measured yet.
+      `vllm bench serve`, 1,024 tokens in and 256 out, saturated: 21.68 requests a second against 20.58 (1.05x), each
+      token 31.2 ms against 33.9 (0.92x), the first token 1.02x, on 510,288 KV tokens against 388,928 (1.31x). With 8,192
+      tokens in and 256 out, saturated, it served more requests a second and its first token came sooner, but each
+      generated token took longer: 2.80 requests a second against 2.67 (1.05x), the first token after 8,196 ms against
+      9,199 (0.89x), each token 49.2 ms against 43.9 (1.12x as long). In that run the KV cache held 494,256 tokens
+      against 377,024 (1.31x) and the model's memory was 1.07x (16.34 against 15.27 GiB). A GH200 and an H200 are not
+      measured yet.
     - The KV cache on five models, an L4, eager, `--max-model-len 8704`: Qwen3-4B 1.2982x, Qwen3-8B 1.2834x,
       Qwen2.5-7B 1.2773x, Mistral-7B-v0.3 1.2743x, Llama-3.1-8B 1.2526x.
   - Prompts of a model's rare tokens (tokens whose embeddings were never trained: Llama-3.1-8B has 289, Mistral-7B-v0.3
@@ -66,6 +74,7 @@ every earlier format.
     the prefix-caching, chunked-prefill and `exact` checks, 12 of 12, pass.
 
   Logs: [benchmarks/gpu/l4-vllm-kv-step-2026-10-02](benchmarks/gpu/l4-vllm-kv-step-2026-10-02),
+  [l4-vllm-kv-graphs-2026-10-01](benchmarks/gpu/l4-vllm-kv-graphs-2026-10-01),
   [a100-vllm-kv-step-2026-10-02](benchmarks/gpu/a100-vllm-kv-step-2026-10-02),
   [a100-vllm-kv-prefix-2026-10-02](benchmarks/gpu/a100-vllm-kv-prefix-2026-10-02),
   [h100-vllm-kv-2026-10-02](benchmarks/gpu/h100-vllm-kv-2026-10-02),
@@ -87,27 +96,36 @@ every earlier format.
   - `glyd pack` and `glyd verify` are the Python tool's commands, as `glyd run` is (Linux, an NVIDIA GPU); the
     `glyd-gpu` program and crate are gone. The release's tarballs and Homebrew carry `glyd` and `glyd-store`.
 - Fixes: with transformers 5.18, Inkling's embedding, whose rows are normed after the lookup, is packed with its norm
-  kept and gives what it gave bit for bit, and the 24 embedding classes that are not plain lookups are no longer packed.
+  kept and gives what it gave bit for bit, and several embedding classes that are not plain lookups are no longer packed.
   `glyd run` with the cache on no longer cuts the window to fit it: a window up to 40,960 tokens keeps the lossless
   cache and a longer one keeps vLLM's.
-- The benchmark's method: each `vllm bench serve` pass now draws prompts of its own. Earlier passes shared one set of
-  prompts, which vLLM's prefix cache could serve, and the summary now gives each server's prefix-cache hit rate and
-  marks a run above 1% as not comparable. The serving rows published before v0.27.0 are being measured again with it;
-  the corrected rows come in the table below, and the rows of earlier releases stay as they were published until then.
+- Corrected serving numbers. The `vllm bench serve` rows published in v0.26.0 came from a benchmark whose passes
+  repeated prompts, so a large KV cache could serve some of them from vLLM's prefix cache; each pass now uses new
+  prompts and every summary prints each server's prefix-cache hit rate. The rows measured again that way (Glyd's
+  requests a second against bf16's, saturated):
 
-  <!-- TODO(v0.27.0 re-measure): replace the pending cells with the re-measured `vllm bench serve` rows (new prompts for
-  every pass); nothing in this table is measured yet. -->
-
-  | GPU | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
+  | GPU | Model | Saturated requests/s, v0.26.0 | Saturated requests/s, now | Prefix-cache hit rate, bf16 / Glyd, v0.26.0 | Prefix-cache hit rate, now |
   | :--- | :--- | ---: | ---: | :--- | :--- |
-  | L4 | Qwen3-8B | pending | pending | pending | pending |
-  | A10 | Qwen3-8B | pending | pending | pending | pending |
-  | A100 40 GB | Qwen3-8B | pending | pending | pending | pending |
-  | A100 40 GB | Qwen3-14B | pending | pending | pending | pending |
-  | GH200 | Qwen3-8B | pending | pending | pending | pending |
-  | GH200 | Qwen3-32B | pending | pending | pending | pending |
-  | H100 SXM | Qwen3-30B-A3B | pending | pending | pending | pending |
-  | 2x RTX A6000, tensor parallel | Qwen3-30B-A3B | pending | pending | pending | pending |
+  | A100 40 GB | Qwen3-8B | 1.19x | **0.98x** (5.73 against 5.85) | 43.1% / 53.5% | 1.3% / 1.3% |
+  | A100 40 GB | Qwen3-14B | 1.65x | **1.28x** (3.37 against 2.63) | 40.8% / 52.7% | 0.0% / 0.0% |
+  | H100 SXM | Qwen3-30B-A3B | 0.95x | **0.84x** (10.07 against 12.03) | 46.1% / 51.4% | 1.1% / 1.0% |
+  | L4 | Qwen3-8B | 1.33x | 1.33x, unchanged (1.39x measured again: 1.05 against 0.76) | 0.0% / 48.3% | 0.1% / 0.2% |
+  | A10 | Qwen3-8B | 1.31x | 1.31x, unchanged (its logs show no hits; not measured again) | 0.0% / 0.0% | |
+
+  - The L4's saturated pass served nothing from the cache (its Glyd server's hit rate rose only in the pass at 1
+    request a second), so its 1.33x stands. At 1 request a second its first token is 68% sooner than bf16's (2,323 ms
+    against 739), not 85% sooner, and its requests a second 1.18x, not 1.15x.
+  - The Qwen3-8B run on the A100 and the run on the H100 have hit rates just above the summary's 1% line (1.3% and 1.1%),
+    the same on both sides; on the L4 a run with one repeated prompt of 328 (hit rates 1.1% to 1.2%) and one with none
+    (0.0%) gave saturated rows within 1.4%.
+  - GH200 (Qwen3-8B and Qwen3-32B) and 2x RTX A6000 (Qwen3-30B-A3B): being re-measured after a benchmark fix;
+    v0.26.0's rows for them are withdrawn until then.
+
+  Logs: [benchmarks/gpu/vllm-m3-a100-40gb-new-prompts-2026-10-03](benchmarks/gpu/vllm-m3-a100-40gb-new-prompts-2026-10-03),
+  [vllm-m6-h100-new-prompts-2026-10-03](benchmarks/gpu/vllm-m6-h100-new-prompts-2026-10-03),
+  [l4-vllm-m5-new-prompts-2026-10-03](benchmarks/gpu/l4-vllm-m5-new-prompts-2026-10-03); the v0.26.0 runs' hit rates
+  are in their own logs ([vllm-m3-a100-40gb-2026-09-30](benchmarks/gpu/vllm-m3-a100-40gb-2026-09-30),
+  [vllm-m6-h100-2026-10-01](benchmarks/gpu/vllm-m6-h100-2026-10-01), [l4-vllm-m5-2026-09-30](benchmarks/gpu/l4-vllm-m5-2026-09-30)).
 
 ## v0.26.0 — 2026-10-01
 
