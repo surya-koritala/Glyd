@@ -408,5 +408,5 @@ COPYING): the same licenses as zstd. The store (`glyd-store`) is under
 the [Business Source License 1.1](../glyd-store/LICENSE): free for
 personal, educational, research and other non-commercial use, a
 commercial license for any commercial production use
-(suryakoritala1324@gmail.com), and each version converts to the Apache
+(suryakoritala@getglyd.com), and each version converts to the Apache
 License 2.0 four years after its release.

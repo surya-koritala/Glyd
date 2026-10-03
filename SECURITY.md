@@ -11,7 +11,7 @@ the fix for every version.
 Please do not open a public issue. Report it privately, either way:
 
 - GitHub: the repository's **Security** tab, **Report a vulnerability**
-- email: suryakoritala1324@gmail.com
+- email: suryakoritala@getglyd.com
 
 Include the version (`glyd --version`), the input that triggers it (or how
 to make it), and what happens.
