@@ -605,7 +605,10 @@ Tensor parallelism packs each rank's shard (measured over two RTX A6000s above).
 - `bench_serve.sh [MODEL]`, `bench_summary.py`: `vllm bench serve`, bf16 against Glyd at several rates. `WARM=1`
   notes the cold start and measures warm. The summary adds the GPU's clock and temperature. A mode `glyd@F` in `MODES`
   is Glyd at fraction F (`MODES="bf16 glyd@0.5 glyd@1"`), and the summary then adds each mode's weights, KV cache,
-  requests a second, TTFT and TPOT against bf16's. `SERVE_ARGS` adds arguments to every `vllm serve`.
+  requests a second, TTFT and TPOT against bf16's. `SERVE_ARGS` adds arguments to every `vllm serve`. Each rate's prompts
+  are new to the server (the seed is `SEED` plus the rate's place in `RATES`), since vLLM's prefix cache, on as in a
+  deployment, skips the prefill of a prompt it holds; the summary gives each server's highest prefix cache hit rate and
+  flags a run with hits as not comparable. `test_bench_summary.py` checks that.
 - `profile_steps.py [MODEL]`: a step's GPU time by kind of kernel (Glyd's, GEMMs, attention, the rest), bf16 against
   Glyd, at decode steps of B sequences and prompt steps of M tokens.
 - `moe_routes.py [MODEL]`: a mixture of experts' layer by tokens a step, Glyd's two paths against bf16's own layer
