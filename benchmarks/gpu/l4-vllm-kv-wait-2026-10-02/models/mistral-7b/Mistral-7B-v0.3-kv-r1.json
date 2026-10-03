@@ -1,0 +1,1 @@
+{"spec": {"model": "mistralai/Mistral-7B-v0.3", "kv": true, "eager": true, "r1": true}, "blocks": 3466, "block_size": 16, "cudagraph_mode": "NONE", "graphs_captured": 0, "num_layers": 32, "glyd": {"layout": "mma", "exact": false, "verify": false, "fraction": 0.0, "kv": "lossless", "glyd": "0.26.0rc2"}}

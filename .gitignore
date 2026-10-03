@@ -12,8 +12,6 @@
 quick3_log.csv
 benchmarks/suite/*/DONE
 /bindings/python/glyd/libglyd*.*
-/gpu/libglyd_gpu*.so
-/bindings/python/glyd/gpu/libglyd_gpu*.so
 /bindings/python/glyd/glyd*.dll
 /bindings/python/build
 /bindings/python/*.egg-info
@@ -21,4 +19,3 @@ __pycache__/
 bindings/python/LICENSE
 bindings/python/COPYING
 bindings/python/LICENSE-glyd-store
-bindings/python/LICENSE-glyd-gpu

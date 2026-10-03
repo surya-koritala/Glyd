@@ -1,0 +1,3 @@
+Model loading took 15.27 GiB memory and 8.440214 seconds
+GPU KV cache size: 133,776 tokens, Maximum concurrency for 4,096 tokens per request: 32.66x
+35699 MiB, 40960 MiB

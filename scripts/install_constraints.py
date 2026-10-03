@@ -6,7 +6,8 @@
     python3 scripts/install_constraints.py --list           print the list in install.sh
 
 FREEZE is a run's logs/freeze.txt (gpu/vllm/acceptance.sh writes it: `uv tool list --show-with`, then `uv pip freeze` of the tool's
-environment). Every `name==version` line goes into the list but glyd itself, which the script's own pin names; a pre-release other
+environment). Every `name==version` line goes into the list but glyd and glyd-gpu, which the script's own pin names (glyd[vllm] asks
+for glyd-gpu of its own version); a pre-release other
 than an OpenTelemetry beta is refused (the acceptance run fails on one as well). uv takes the list as constraints: it limits which
 version of a package is chosen and installs nothing that the requirements do not ask for, so ziglang, which only a machine with no C
 compiler gets, can be in it.
@@ -22,14 +23,14 @@ BLOCK = re.compile(r"(cat <<'CONSTRAINTS'\n)(.*?)(CONSTRAINTS\n)", re.S)
 
 
 def parse(freeze):
-    """The sorted `name==version` lines of a freeze, without glyd; ValueError for a pre-release (other than opentelemetry's betas)."""
+    """The sorted `name==version` lines of a freeze, without glyd and glyd-gpu; ValueError for a pre-release (other than opentelemetry's betas)."""
     out = {}
     for line in freeze.splitlines():
         line = line.strip()
         if not LINE.match(line):
             continue  # (the uv tool list lines, a `glyd @ file://...` line, comments)
         name = line.split("==")[0].lower().replace("_", "-")
-        if name == "glyd":
+        if name in ("glyd", "glyd-gpu"):
             continue
         if PRE.search(line) and not (name.startswith("opentelemetry-") and re.search(r"==[0-9.]+b[0-9]+$", line)):
             raise ValueError(f"a pre-release in the freeze: {line}")

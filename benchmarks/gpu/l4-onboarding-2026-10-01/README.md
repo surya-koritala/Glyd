@@ -102,7 +102,7 @@ the code before its fixes (f5c2791): 5 of the 7 fail; 64 of 64 pass on the branc
 # `glyd run`, `glyd serve` and the installer, from nothing, on an L4: the first round
 
 What was run: [scripts/install.sh](../../../scripts/install.sh) and `glyd run`, `glyd serve`, `glyd doctor` of the `onboarding` branch,
-by [gpu/vllm/acceptance.sh](../../../gpu/vllm/acceptance.sh), in a clean container (Ubuntu 26.04, a user that is not root, no CUDA
+by [gpu/vllm/acceptance.sh](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/vllm/acceptance.sh), in a clean container (Ubuntu 26.04, a user that is not root, no CUDA
 toolkit, no gcc) on the AWS dev machine: an NVIDIA L4 (24 GB, Ada, sm_89), driver 595.91.07 (CUDA 13.2). The install resolved vLLM
 0.30.0, PyTorch 2.13.0 (CUDA 13.0), Triton 3.7.1, transformers 5.18.0, safetensors 0.8.0, tokenizers 0.23.2, pydantic 2.13.5 and,
 where there was no gcc, ziglang 0.16.0 (`runs/*/logs/freeze.txt`); uv 0.12.21. The wheel is the branch's, built as release.yml builds it,

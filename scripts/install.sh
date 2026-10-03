@@ -23,7 +23,7 @@
 #   GLYD_CONSTRAINTS  none: resolve the packages fresh, where one of the versions listed below has been withdrawn from PyPI
 set -eu
 
-GLYD_VERSION="${GLYD_VERSION:-0.26.0}"
+GLYD_VERSION="${GLYD_VERSION:-0.27.0}"
 PYTHON=3.12
 DRIVER_MIN=580  # the NVIDIA driver vLLM 0.30's PyTorch (2.13, CUDA 13.0) runs on
 ZIGLANG=0.16.0  # the C compiler from PyPI that stands in where the machine has none (the version glyd run was tried with)
@@ -73,13 +73,13 @@ install_cli() {
     Linux-x86_64) plat=linux-x86_64 ;;
     Linux-aarch64 | Linux-arm64) plat=linux-aarch64 ;;
     Darwin-arm64) plat=macos-arm64 ;;
-    *) die "there is no prebuilt compression program for $os on $arch. Homebrew builds one (brew install surya-koritala/glyd/glyd), or: cargo install --git $REPO glyd glyd-store glyd-gpu" ;;
+    *) die "there is no prebuilt compression program for $os on $arch. Homebrew builds one (brew install surya-koritala/glyd/glyd), or: cargo install --git $REPO glyd glyd-store" ;;
   esac
   bin=${XDG_BIN_HOME:-$HOME/.local/bin}
   cli=${XDG_DATA_HOME:-$HOME/.local/share}/glyd/cli
   name=glyd-v$GLYD_VERSION-$plat
   url=$REPO/releases/download/v$GLYD_VERSION
-  for f in glyd glyd-store glyd-gpu; do  # (before anything is downloaded: only a link of this installer's own is replaced)
+  for f in glyd glyd-store; do  # (before anything is downloaded: only a link of this installer's own is replaced)
     if [ -e "$bin/$f" ] || [ -L "$bin/$f" ]; then
       case $(readlink "$bin/$f" 2>/dev/null || true) in
         "$cli"/*) ;;
@@ -94,7 +94,7 @@ install_cli() {
   got=$(sha256_of "$tmp/$name.tar.gz") || die "there is no sha256sum or shasum here to check the download with."
   [ -n "$want" ] && [ "$got" = "$want" ] || die "the download is not the file the release lists (its sha256 is $got, the release says ${want:-nothing}). Run this again; if it happens again, tell the Glyd project."
   mkdir "$tmp/x"
-  tar -xzf "$tmp/$name.tar.gz" -C "$tmp/x" "$name/glyd" "$name/glyd-store" "$name/glyd-gpu" "$name/LICENSE" "$name/COPYING" "$name/LICENSE-glyd-store" "$name/LICENSE-glyd-gpu" \
+  tar -xzf "$tmp/$name.tar.gz" -C "$tmp/x" "$name/glyd" "$name/glyd-store" "$name/LICENSE" "$name/COPYING" "$name/LICENSE-glyd-store" \
     || die "the release's tarball is not laid out as this installer expects ($name/glyd, ...): run this again, or take the program from $REPO/releases."
   mkdir -p "$cli.new" "$bin"  # (tried where it will live: a temporary folder can be noexec)
   cp "$tmp/x/$name"/* "$cli.new"/
@@ -102,8 +102,8 @@ install_cli() {
     || { rm -rf "$cli.new"; die "the compression program from the release does not start on this machine (the Linux x86_64 one needs a CPU with AVX2 and BMI2). Build it: cargo install --git $REPO glyd"; }
   rm -rf "$cli"
   mv "$cli.new" "$cli"
-  for f in glyd glyd-store glyd-gpu; do ln -sf "$cli/$f" "$bin/$f"; done
-  say "$("$bin/glyd" --version | head -n 1) is installed in $cli, linked from $bin (glyd, glyd-store, glyd-gpu)"
+  for f in glyd glyd-store; do ln -sf "$cli/$f" "$bin/$f"; done
+  say "$("$bin/glyd" --version | head -n 1) is installed in $cli, linked from $bin (glyd, glyd-store)"
   case ":$PATH:" in
     *":$bin:"*) ;;
     *) say "$bin is not on your PATH. Add this line to your shell's startup file (~/.zshrc for zsh, ~/.bashrc for bash) and open a new terminal:  export PATH=\"$bin:\$PATH\"" ;;

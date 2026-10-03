@@ -1,0 +1,32 @@
+Linux 6.8.0-1046-nvidia #49-Ubuntu SMP PREEMPT_DYNAMIC Wed Jan 28 19:07:52 UTC 2026 x86_64 GNU/Linux
+Sat Oct  3 01:40:29 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.20             Driver Version: 580.126.20     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A100-SXM4-40GB          On  |   00000000:06:00.0 Off |                    0 |
+| N/A   52C    P0             77W /  400W |       0MiB /  40960MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
+NVIDIA A100-SXM4-40GB, 8.0, 580.126.20, 40960 MiB, 1410 MHz, 400.00 W
+pid, process_name, used_gpu_memory [MiB]
+Architecture:                            x86_64
+Model name:                              AMD EPYC 7J13 64-Core Processor
+30
+               total        used        free      shared  buff/cache   available
+Mem:             216           3         183           0          31         212
+/dev/vda1       495G   42G  454G   9% /
+Sat Oct  3 01:40:30 UTC 2026
+host LD_LIBRARY_PATH (unset for the job): (none)

@@ -1,0 +1,4 @@
+02:02:50 (+0 s) machine
+02:03:32 (+42 s) env: in 42 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | GPU NVIDIA H100 80GB HBM3 (9, 0))
+02:04:28 (+98 s) build: sm_90a in 56 s
+02:13:50 (+660 s) serve: exit 0 (1k), skipped (8k) in 562 s

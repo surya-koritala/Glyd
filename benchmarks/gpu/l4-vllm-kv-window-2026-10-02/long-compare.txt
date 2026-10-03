@@ -1,0 +1,2 @@
+36,000-token prompt: 35,999 of 35,999 prompt logprobs bit for bit vLLM's (the largest difference 0); the first generated token's logprob bit for bit; 20 of 64 generated tokens the same (19 from the start)
+prompt 20.993 s with vLLM's cache and 21.83 s with kv; a decode step at that depth 67.459 ms and 62.045 ms (1.087x)

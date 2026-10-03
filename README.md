@@ -5,7 +5,7 @@
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
 <a href="LICENSE"><img alt="License: BSD-3-Clause OR GPL-2.0" src="https://img.shields.io/badge/codec-BSD--3--Clause%20OR%20GPL--2.0-blue.svg"></a>
 <a href="glyd-store/LICENSE"><img alt="Store: BUSL-1.1" src="https://img.shields.io/badge/store-BUSL--1.1-blue.svg"></a>
-<a href="gpu/LICENSE"><img alt="GPU: BUSL-1.1" src="https://img.shields.io/badge/GPU-BUSL--1.1-blue.svg"></a>
+<a href="#license"><img alt="GPU: BUSL-1.1" src="https://img.shields.io/badge/GPU-BUSL--1.1-blue.svg"></a>
 <img alt="Rust 1.80+" src="https://img.shields.io/badge/rust-1.80%2B-blue.svg">
 <img alt="SIMD: AVX2 | NEON" src="https://img.shields.io/badge/SIMD-AVX2%20%7C%20NEON-orange.svg">
 <a href="include/glyd.h"><img alt="C ABI" src="https://img.shields.io/badge/C%20ABI-include%2Fglyd.h-brightgreen.svg"></a>
@@ -32,7 +32,7 @@
 
 Glyd holds a bf16 model's weights and KV cache in fewer bits in GPU
 memory and rebuilds the exact values on the GPU as the model runs: the
-model bit for bit ([gpu/](gpu/README.md)).
+model bit for bit ([docs](https://getglyd.com/docs/gpu/)).
 
 ```bash
 pip install "glyd[gpu]"      # Linux x86_64 / aarch64, a CUDA GPU (Ampere or later), PyTorch for CUDA 12 or 13
@@ -44,13 +44,13 @@ model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits bit for bit
 # generate() runs compiled on PyTorch 2.13.0 or later (a static cache, CUDA graphs); compile=False, or GLYD_COMPILE=0, runs it eager
 ```
 ```bash
-glyd pack Qwen/Qwen3-8B qwen3-8b-glyd                    # saved packed on the CPU, no Python or GPU: python -m glyd.gpu pack's bytes (Qwen3, Qwen2, Llama, Mistral, Granite)
+glyd pack Qwen/Qwen3-8B qwen3-8b-glyd                    # saved packed, on the GPU: the Python tool's pack, as python -m glyd_gpu pack; glyd verify PATH checks a save
 glyd pack Qwen/Qwen3-8B qwen3-8b-glyd12 --layout mma12   # the mma12 layout: an A10, A100 or H100 loads it as saved
 ```
 
 <p align="center"><img src="docs/img/qwen3-32b-gpus.svg" width="100%" alt="nvidia-smi: Qwen3-32B in bf16 across two 48 GB GPUs (44,554 + 18,514 MiB), and with Glyd on one (43,338 MiB)"></p>
 
-<p align="center"><sub><code>nvidia-smi</code> during the runs, taken by <code>e2e.py --smi</code>: Lambda Cloud, 4x RTX A6000 (48 GB each), 2026-09-26. Raw output and every run's log: <a href="benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757">benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757</a>.</sub></p>
+<p align="center"><sub><code>nvidia-smi</code> during the runs: Lambda Cloud, 4x RTX A6000 (48 GB each), 2026-09-26. Raw output and every run's log: <a href="benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757">benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757</a>.</sub></p>
 
 | The same runs | bf16 | ⚡&nbsp;**Glyd** |
 | :--- | ---: | ---: |
@@ -82,7 +82,7 @@ than bf16's, 400.5 against 488.4 for Qwen3-32B, and still costs less a
 token.)
 
 The same on every popular open model measured, and the same model
-afterwards (`gpu/sizes.py`: every Linear layer's matrix packed and
+afterwards (every Linear layer's matrix packed and
 unpacked bit for bit; perplexity on enwik8 and MMLU on 300 questions,
 bf16 against Glyd in the same run; H100 SXM, 2026-09-26, and an A10 and
 an H100 PCIe, 2026-09-27; logs in
@@ -152,10 +152,12 @@ the parsers from the GPU it finds (a 16 GB card included), and chats in the
 terminal and at http://localhost:8000; `glyd serve MODEL` leaves it up as an
 OpenAI API, and `glyd doctor` says what this machine has and which models fit.
 The steps, the settings and the manual `vllm serve` commands:
-[gpu/vllm/README.md](gpu/vllm/README.md#local-chat-like-ollama). The GPU code
-is under the Business Source License 1.1: free for personal, educational,
-research and other non-commercial use; commercial use needs a license
-([gpu/LICENSE](gpu/LICENSE)).
+[getglyd.com/docs/vllm](https://getglyd.com/docs/vllm/#local-chat-like-ollama).
+From v0.27 the GPU package, `glyd-gpu`, ships compiled; the install commands
+are the same. It is under the Business Source License 1.1, as before: free for
+personal, educational, research and other non-commercial use; commercial use
+needs a license ([License](#license)). Its source up to v0.26 is in those
+releases' tags.
 
 vLLM holds the model's Linears, and a mixture of experts' experts, packed
 and multiplies them by Glyd's kernels; its KV cache takes the memory they
@@ -167,27 +169,74 @@ out; low load 1 request a second, 0.25 on the L4):
 | :--- | :--- | ---: | ---: | :--- | :--- |
 | L4 (`mma`) | Qwen3-8B | 1.89x | **1.33x** | +16%, −21% | −25%, +42% |
 | A10 (`mma12`) | Qwen3-8B | 1.73x | **1.31x** | +16%, −21% | −25%, +30% |
-| A100 40 GB (`mma12`) | Qwen3-8B | 1.14x | **1.19x** | +18%, −10% | −32%, −2% |
-| A100 40 GB (`mma12`) | Qwen3-14B | 1.77x | **1.65x** | +18%, −13% | −57%, +4% |
-| GH200 (`mma12`) | Qwen3-8B | 1.04x | 0.92x | +4%, +1% | +4%, +9% |
-| GH200 (`mma12`) | Qwen3-32B | 1.66x | 0.88x | +28%, −6% | −52%, +82% |
-| H100 SXM (`mma12`) | Qwen3-30B-A3B | 2.11x | 0.95x | +39%, +8% | −74%, +118% |
-| 2x RTX A6000, tensor parallel (`mma`) | Qwen3-30B-A3B | 1.67x | 0.87x | +30%, −7% | +34%, +28% |
+| A100 40 GB (`mma12`) | Qwen3-8B | 1.14x | 0.98x | +19%, −10% | +9%, +17% |
+| A100 40 GB (`mma12`) | Qwen3-14B | 1.77x | **1.28x** | +19%, −13% | −21%, +33% |
+| GH200 (`mma12`) | Qwen3-8B | 1.04x | 0.93x | +6%, +1% | +5%, +9% |
+| GH200 (`mma12`) | Qwen3-32B | 1.66x | 0.89x | +27%, −6% | −24%, +58% |
+| H100 SXM (`mma12`) | Qwen3-30B-A3B | 2.11x | 0.84x | +35%, +5% | −37%, +126% |
 
-More requests at once on every GPU, and more a second on the L4, A10
-and A100; on the GH200, with Qwen3-30B-A3B over two RTX A6000s and on an
-H100 SXM, fewer a second saturated. On an 80 GB H100 SXM, where
+2x RTX A6000: being re-measured after a benchmark fix (the benchmark's passes repeated prompts, so a large KV cache
+could serve some of them; each pass now uses new prompts. The [CHANGELOG](CHANGELOG.md) has the corrected rows).
+
+More requests at once on every GPU, and more a second on the L4, A10 and the A100 with Qwen3-14B; about the same on the
+A100 with Qwen3-8B, and fewer a second saturated on the GH200 and with Qwen3-30B-A3B on an H100 SXM. On an 80 GB H100 SXM, where
 Qwen3-32B's bf16 weights leave room for 32,320 tokens of KV cache, Glyd
 served 1.56x bf16's requests a second saturated (`fraction` 1, a bench of
-its own: [gpu/vllm/README.md](gpu/vllm/README.md#a-fraction-of-the-layers)). At
-low load the first token comes 4-39% later. `exact` gives vLLM's bf16
+its own: [docs](https://getglyd.com/docs/vllm/#a-fraction-of-the-layers)). At
+low load the first token comes 6-35% later. `exact` gives vLLM's bf16
 logits bit for bit, eager, or compiled in inductor's deterministic mode
 where the packed Linears have no biases.
 Options, exact mode, mixtures of experts, the checks against vLLM's bf16
-and every rate: [gpu/vllm/README.md](gpu/vllm/README.md); logs in
-[benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m5-2026-09-30`,
-`vllm-m3-*-2026-09-30`, `vllm-m4-2xa6000-2026-09-30`,
-`vllm-m6-h100-2026-10-01`).
+and every rate: [getglyd.com/docs/vllm](https://getglyd.com/docs/vllm/); logs in
+[benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m5-2026-09-30` and
+`l4-vllm-m5-new-prompts-2026-10-03`, `vllm-m3-a10-2026-09-30`,
+`vllm-m3-a100-40gb-new-prompts-2026-10-03`, `vllm-m3-gh200-new-prompts-2026-10-03`,
+`vllm-m6-h100-new-prompts-2026-10-03`).
+
+### The lossless KV cache in vLLM
+
+vLLM's KV cache held in fewer bits, every key and value read back bit for bit:
+1.25x to 1.30x vLLM's tokens in the same memory on five models, and decoding
+faster than with vLLM's own cache at every batch measured on an A100, an L4,
+an H100 and a GH200.
+
+```bash
+vllm serve Qwen/Qwen3-8B --quantization glyd                   # kv auto, the default: on for an A100, an L4, an H100, a GH200
+GLYD_KV=lossless vllm serve Qwen/Qwen3-8B --quantization glyd  # on any GPU it supports (or --additional-config '{"glyd": {"kv": "lossless"}}')
+GLYD_KV=off vllm serve Qwen/Qwen3-8B --quantization glyd       # vLLM's own cache
+GLYD_KV=auto glyd run Qwen/Qwen3-8B                            # glyd run keeps vLLM's own cache unless GLYD_KV is set
+```
+
+`auto` leaves vLLM's own cache on any other GPU, with a line in the log that
+says so (an L40S, an RTX 40, an H200 and an A10 are not measured yet),
+and where `exact` or `verify` is on; a window past 40,960 tokens keeps
+vLLM's cache too. A first start sets the cache up once for the model (on an L4,
+130 s for 8,192 tokens and 217 s for Qwen3-8B's whole 40,960-token window, kept
+in `~/.cache/glyd/kv`), which is why `glyd run`, one user's chat, keeps vLLM's
+cache unless `GLYD_KV` says otherwise; `glyd serve` and
+`vllm serve --quantization glyd` use `auto`.
+
+| Against vLLM's own cache, Qwen3-8B, default mode | KV cache | Decode tokens/s at the same batch | Requests/s, saturated (1,024 tokens in, 256 out) |
+| :--- | ---: | ---: | ---: |
+| L4 | 1.286x | 1.007x-1.053x | 1.23x |
+| A100 SXM4 40 GB | 1.299x | 1.018x-1.032x | 1.29x |
+| H100 SXM | 1.306x | 1.005x-1.197x | 1.05x |
+| GH200 | 1.305x | 1.003x-1.187x | 1.06x |
+
+On the L4 with Glyd's weights as well, it served 1.59x bf16's requests a second
+saturated (1.20 against 0.76) with 2.64x the KV tokens (71,248 against 27,024).
+On an H100 SXM with 8,192 tokens in and 256 out, saturated, it served 1.05x the
+requests a second and the first token came after 0.89x the time, but each
+generated token took 1.12x as long; on a GH200 the same run served 1.12x the
+requests a second, with the first token after 0.95x the time and each token
+0.97x as long. An H200 is not measured. Every value read back was the value
+written (0 differ in every run); a decode step's attention is not bit-equal to
+vLLM's, so greedy tokens can part from vLLM's after some tokens. Logs in
+[benchmarks/gpu](benchmarks/gpu):
+`l4-vllm-kv-step-2026-10-02`, `l4-vllm-kv-graphs-2026-10-01`,
+`a100-vllm-kv-step-2026-10-02`, `a100-vllm-kv-prefix-2026-10-02`,
+`h100-vllm-kv-2026-10-02`, `gh200-vllm-kv-2026-10-03`,
+`l4-vllm-kv-window-2026-10-02` and `l4-vllm-kv-wait-2026-10-02`.
 
 ### Related work
 
@@ -302,7 +351,7 @@ zstd -3 or LZ4 still win on write cost.
 - 📦 **Packs (`--pack`)**: many small objects as one record-mode stream with an index; 2–4× fewer bytes than zstd + dictionary per object, any one object read back in a millisecond.
 - 🧩 **Shape dictionaries (`--shape`)**: record mode for a single small object. Trained on a sample; a 1–4 KB event or log object stores 1.1–1.9× less than with a zstd dictionary.
 - 🧊 **Cold level (`--cold`)**: context mixing for what is stored for years and read rarely. 1.5–2.6× fewer bytes than zstd -19 on logs, dumps, JSON and text — the zpaq -m5 class at 3–4× its speed — at 1.2–1.5 MB/s per core each way.
-- 🧠 **Model weights**: safetensors files opened tensor by tensor; Pythia-410M 13% under zstd -19 at 26× its write speed, Qwen2.5-0.5B 12% under. A checkpoint against the one before it (`--base`) stores in 612 MB where `zstd -19 --patch-from` stores 805. PyTorch training checkpoints with optimizer state: 83% of their size alone, 77% against the one before (zstd -19: 92%). On the GPU ([gpu/](gpu/README.md)) the weights stay compressed in memory, bit for bit: a 7B model in 10.6 GB instead of 15.3 (its matrices 32.5% smaller), generating 1.25–1.32× faster than bf16 from 1 to 32 sequences at once (1.04× at 64), prompts up to 128 tokens as fast or faster and longer ones within 5–10%.
+- 🧠 **Model weights**: safetensors files opened tensor by tensor; Pythia-410M 13% under zstd -19 at 26× its write speed, Qwen2.5-0.5B 12% under. A checkpoint against the one before it (`--base`) stores in 612 MB where `zstd -19 --patch-from` stores 805. PyTorch training checkpoints with optimizer state: 83% of their size alone, 77% against the one before (zstd -19: 92%). On the GPU ([docs](https://getglyd.com/docs/gpu/)) the weights stay compressed in memory, bit for bit: a 7B model in 10.6 GB instead of 15.3 (its matrices 32.5% smaller), generating 1.25–1.32× faster than bf16 from 1 to 32 sequences at once (1.04× at 64), prompts up to 128 tokens as fast or faster and longer ones within 5–10%.
 - 🔁 **Base mode (`--base`)**: a new version against the old one, its content found wherever it moved. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 1.8–3× its speed; 15 kernel releases in 228 MB instead of 3 GB.
 - 🔭 **128 MB long-distance matcher** (`--max --long`, `--ultra`, the store): JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
 - 🚀 **Fastest reads at every ratio**: 8-way interleaved entropy coding and copy-only loops, units that decode one per core.
@@ -352,7 +401,7 @@ million a year at list price; the percentages above are what to multiply.
 brew install surya-koritala/glyd/glyd        # macOS / Linux: the glyd and glyd-store CLIs, glyd.h
 pip install glyd                             # Python: Linux x86_64 / aarch64, macOS arm64 (PyPI)
 pip install "glyd[gpu]"                      # models on the GPU: Linux x86_64 / aarch64 (glyd.from_pretrained)
-cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store glyd-gpu   # from source
+cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store   # from source
 ```
 
 Every [release](https://github.com/surya-koritala/Glyd/releases) carries
@@ -1083,10 +1132,8 @@ macOS and Linux, and the release's own tarballs (every asset present, each
 it). It runs when a release publishes, weekly, and by hand for a chosen
 version (`gh workflow run install-check.yml -f version=X.Y.Z`). GitHub's
 runners have no GPU, so `pip install "glyd[gpu]"` is checked there for
-resolving and for `python -m glyd.gpu fit` only; on a machine with an
-NVIDIA GPU, `scripts/check_gpu_install.sh X.Y.Z` installs `glyd[gpu]==X.Y.Z`
-from PyPI into a fresh venv and runs a model through it — generating,
-`exact=True` bit for bit with bf16, saved and loaded back.
+resolving and for `python -m glyd_gpu fit` only; the GPU half is run on
+machines with an NVIDIA GPU before each release.
 
 ---
 
@@ -1105,11 +1152,13 @@ from PyPI into a fresh venv and runs a model through it — generating,
   any commercial production use needs a license
   (suryakoritala1324@gmail.com); each version converts to Apache-2.0
   four years after its release.
-- **The GPU weights — [gpu/](gpu/README.md), model weights held
-  compressed in GPU memory, and the glyd-gpu crate and command — are under the
-  [Business Source License 1.1](gpu/LICENSE)** on the same terms as the
-  store (from v0.17.0; earlier releases of gpu/ carry the codec's
-  licenses).
+- **The GPU package — `glyd-gpu`, model weights and the KV cache held
+  compressed in GPU memory, compiled wheels from v0.27 — is under the
+  [Business Source License 1.1](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/LICENSE)**
+  on the same terms as the store (from v0.17.0; earlier releases of the GPU
+  code carry the codec's licenses). The terms are unchanged by the move to
+  compiled wheels; the license ships in the wheel, and the source of v0.17.0 to
+  v0.26.0 stays in those releases' tags.
 
 Why the split: a codec is adopted by being embedded, and nothing is
 embedded under a source-available license; the store and the GPU weights

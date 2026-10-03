@@ -1,0 +1,64 @@
+{
+ "mode": "stock",
+ "graphs": true,
+ "gpu": "NVIDIA L4",
+ "kv_blocks": 2013,
+ "rows": [
+  {
+   "B": 1,
+   "L": 8192,
+   "wall_ms": 64.33,
+   "profiled_wall_ms": 71.064,
+   "gpu_busy_ms": 64.307,
+   "gpu_idle_ms_in_profiled": 6.757,
+   "by_kind_ms": {
+    "other": 0.409,
+    "gemm": 58.714,
+    "kv write": 0.082,
+    "attention": 5.102
+   }
+  },
+  {
+   "B": 3,
+   "L": 8192,
+   "wall_ms": 76.805,
+   "profiled_wall_ms": 81.681,
+   "gpu_busy_ms": 76.83,
+   "gpu_idle_ms_in_profiled": 4.85,
+   "by_kind_ms": {
+    "other": 0.576,
+    "gemm": 61.674,
+    "kv write": 0.085,
+    "attention": 14.497
+   }
+  },
+  {
+   "B": 32,
+   "L": 1024,
+   "wall_ms": 86.722,
+   "profiled_wall_ms": 91.744,
+   "gpu_busy_ms": 87.137,
+   "gpu_idle_ms_in_profiled": 4.607,
+   "by_kind_ms": {
+    "other": 0.938,
+    "gemm": 67.798,
+    "kv write": 0.099,
+    "attention": 18.302
+   }
+  },
+  {
+   "B": 1,
+   "L": 1024,
+   "wall_ms": 60.276,
+   "profiled_wall_ms": 64.425,
+   "gpu_busy_ms": 60.258,
+   "gpu_idle_ms_in_profiled": 4.167,
+   "by_kind_ms": {
+    "other": 0.42,
+    "gemm": 58.743,
+    "kv write": 0.085,
+    "attention": 1.009
+   }
+  }
+ ]
+}

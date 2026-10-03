@@ -1,0 +1,4 @@
+glyd: [...] (32 s to load)
+glyd: pass 1 of 3 [...] (44 s)
+glyd: pass 2 of 3 [...] (45 s)
+glyd: 40,960 positions [...] (95 s) [...] (217 s)

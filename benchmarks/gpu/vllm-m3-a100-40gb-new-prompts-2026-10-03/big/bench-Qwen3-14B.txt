@@ -1,0 +1,42 @@
+== 01:40:50 bf16: vllm serve Qwen/Qwen3-14B , first (cold where VLLM_CACHE_ROOT is empty)
+Model loading took 27.52 GiB memory and 8.128517 seconds
+GPU KV cache size: 37,728 tokens, Maximum concurrency for 4,096 tokens per request: 9.21x
+35387 MiB, 40960 MiB
+== 01:42:46 bf16: vllm serve Qwen/Qwen3-14B  (the GPU at 39 C)
+Model loading took 27.52 GiB memory and 7.947707 seconds
+GPU KV cache size: 45,744 tokens, Maximum concurrency for 4,096 tokens per request: 11.17x
+36639 MiB, 40960 MiB
+== 01:43:41 bf16: rate 1, 32 prompts
+   exit 0
+== 01:44:33 bf16: rate 4, 64 prompts
+   exit 0
+== 01:45:13 bf16: rate inf, 128 prompts
+   exit 0
+== 01:46:22 glyd: vllm serve Qwen/Qwen3-14B --quantization glyd, first (cold where VLLM_CACHE_ROOT is empty)
+glyd: mma12 layout
+Model loading took 21.98 GiB memory and 13.431287 seconds
+GPU KV cache size: 63,568 tokens, Maximum concurrency for 4,096 tokens per request: 15.52x
+35373 MiB, 40960 MiB
+== 01:49:39 glyd: vllm serve Qwen/Qwen3-14B --quantization glyd (the GPU at 39 C)
+glyd: mma12 layout
+Model loading took 21.98 GiB memory and 13.410081 seconds
+GPU KV cache size: 80,960 tokens, Maximum concurrency for 4,096 tokens per request: 19.77x
+36627 MiB, 40960 MiB
+== 01:50:49 glyd: rate 1, 32 prompts
+   exit 0
+== 01:51:40 glyd: rate 4, 64 prompts
+   exit 0
+== 01:52:16 glyd: rate inf, 128 prompts
+   exit 0
+bf16: weights 27.52 GiB, KV cache 45,744 tokens, max concurrency 11.17x at 4,096 tokens (started cold, on an empty compile cache: weights 27.52 GiB, KV cache 37,728 tokens, max concurrency 9.21x at 4,096 tokens)
+glyd: weights 21.98 GiB, KV cache 80,960 tokens, max concurrency 19.77x at 4,096 tokens (started cold, on an empty compile cache: weights 21.98 GiB, KV cache 63,568 tokens, max concurrency 15.52x at 4,096 tokens)
+Prefix cache hit rate, at most (the servers' logs): bf16 0.0%, glyd 0.0%
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.84 | 214.3 | 213 / 455 | 26.3 / 27.9 | 32 | 1410 MHz, 57 C |
+| 1 | glyd | 0.86 | 220.0 | 253 / 561 | 22.8 / 25.1 | 32 | 1410 MHz, 58 C |
+| 4 | bf16 | 2.44 | 623.4 | 737 / 2762 | 43.7 / 51.0 | 64 | 1410 MHz, 63 C |
+| 4 | glyd | 2.76 | 706.0 | 503 / 952 | 45.3 / 62.2 | 64 | 1380 MHz, 63 C |
+| inf | bf16 | 2.63 | 673.2 | 17956 / 42177 | 48.8 / 78.8 | 128 | 1410 MHz, 68 C |
+| inf | glyd | 3.37 | 861.7 | 14109 / 30149 | 64.9 / 98.7 | 128 | 1305 MHz, 68 C |

@@ -1,0 +1,32 @@
+Linux 6.8.0-1046-nvidia-64k #49-Ubuntu SMP PREEMPT_DYNAMIC Wed Jan 28 19:46:31 UTC 2026 aarch64 GNU/Linux
+Sat Oct  3 03:39:09 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.126.20             Driver Version: 580.126.20     CUDA Version: 13.0     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GH200 480GB             On  |   00000000:DD:00.0 Off |                    0 |
+| N/A   36C    P0             75W /  700W |       1MiB /  97871MiB |      0%      Default |
+|                                         |                        |             Disabled |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
+NVIDIA GH200 480GB, 9.0, 580.126.20, 97871 MiB, 1980 MHz, 900.00 W
+pid, process_name, used_gpu_memory [MiB]
+Architecture:                            aarch64
+Model name:                              Neoverse-V2
+64
+               total        used        free      shared  buff/cache   available
+Mem:             525          28         512           0           8         497
+/dev/vda1       3.9T   18G  3.9T   1% /
+Sat Oct  3 03:39:09 UTC 2026
+host LD_LIBRARY_PATH (unset for the job): (none)

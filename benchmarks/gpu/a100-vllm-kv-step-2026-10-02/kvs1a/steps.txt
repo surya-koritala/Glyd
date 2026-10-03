@@ -1,0 +1,4 @@
+01:49:27 (+1 s) machine
+01:50:44 (+78 s) env: in 77 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | GPU NVIDIA A100-SXM4-40GB (8, 0))
+01:52:21 (+175 s) build: sm_80 in 96 s
+02:09:22 (+1196 s) serve: exit 0 (1k), skipped (8k) in 1021 s

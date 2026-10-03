@@ -1,0 +1,45 @@
+== 01:45:08 bf16: vllm serve Qwen/Qwen3-30B-A3B , first (cold where VLLM_CACHE_ROOT is empty)
+Model loading took 56.88 GiB memory and 16.046804 seconds
+GPU KV cache size: 118,720 tokens, Maximum concurrency for 4,096 tokens per request: 28.98x
+72729 MiB, 81559 MiB
+== 01:47:54 bf16: vllm serve Qwen/Qwen3-30B-A3B  (the GPU at 33 C)
+Model loading took 56.88 GiB memory and 14.432353 seconds
+GPU KV cache size: 124,720 tokens, Maximum concurrency for 4,096 tokens per request: 30.45x
+72731 MiB, 81559 MiB
+== 01:48:49 bf16: rate 1, 64 prompts
+   exit 0
+== 01:50:03 bf16: rate 4, 128 prompts
+   exit 0
+== 01:50:45 bf16: rate inf, 256 prompts
+   exit 0
+== 01:51:21 glyd: vllm serve Qwen/Qwen3-30B-A3B --quantization glyd, first (cold where VLLM_CACHE_ROOT is empty)
+glyd: mma12 layout
+Model loading took 44.27 GiB memory and 21.428826 seconds
+GPU KV cache size: 257,392 tokens, Maximum concurrency for 4,096 tokens per request: 62.84x
+72951 MiB, 81559 MiB
+== 01:53:46 glyd: vllm serve Qwen/Qwen3-30B-A3B --quantization glyd (the GPU at 33 C)
+glyd: mma12 layout
+Model loading took 44.27 GiB memory and 21.320754 seconds
+GPU KV cache size: 263,376 tokens, Maximum concurrency for 4,096 tokens per request: 64.30x
+72949 MiB, 81559 MiB
+== 01:54:46 glyd: rate 1, 64 prompts
+   exit 0
+== 01:56:00 glyd: rate 4, 128 prompts
+   exit 0
+== 01:56:43 glyd: rate inf, 256 prompts
+   exit 0
+bf16: weights 56.88 GiB, KV cache 124,720 tokens, max concurrency 30.45x at 4,096 tokens (started cold, on an empty compile cache: weights 56.88 GiB, KV cache 118,720 tokens, max concurrency 28.98x at 4,096 tokens)
+glyd: weights 44.27 GiB, KV cache 263,376 tokens, max concurrency 64.30x at 4,096 tokens (started cold, on an empty compile cache: weights 44.27 GiB, KV cache 257,392 tokens, max concurrency 62.84x at 4,096 tokens)
+Prefix cache hit rate, at most (the servers' logs): bf16 1.1%, glyd 1.0%
+NOT COMPARABLE: the prefix cache skipped the prefill of repeated prompts (hit rate above 1%: bf16 1.1%)
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.97 | 249.0 | 62 / 265 | 6.8 / 9.1 | 64 | 1980 MHz, 45 C |
+| 1 | glyd | 0.97 | 248.7 | 84 / 125 | 7.2 / 9.7 | 64 | 1980 MHz, 45 C |
+| 4 | bf16 | 3.74 | 957.5 | 67 / 114 | 11.8 / 13.9 | 128 | 1980 MHz, 51 C |
+| 4 | glyd | 3.71 | 950.8 | 129 / 536 | 20.3 / 25.6 | 128 | 1980 MHz, 48 C |
+| inf | bf16 | 12.03 | 3080.5 | 6737 / 16684 | 28.6 / 51.8 | 256 | 1980 MHz, 59 C |
+| inf | glyd | 10.07 | 2577.5 | 4248 / 20028 | 64.5 / 70.7 | 256 | 1980 MHz, 56 C |
+
+NOT COMPARABLE: the prefix cache skipped the prefill of repeated prompts (hit rate above 1%: bf16 1.1%)

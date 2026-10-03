@@ -1,0 +1,6 @@
+01:40:30 (+1 s) machine
+01:40:47 (+18 s) env: vLLM and nvcc in 17 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA A100-SXM4-40GB)
+01:40:50 (+21 s) build: sm_80 in 3 s (library: C API 5 | GPU code 80)
+01:53:14 (+765 s) bench Qwen3-14B: exit 0 in 744 s; Prefix cache hit rate, at most (the servers' logs): bf16 0.0%, glyd 0.0%
+download dl-Qwen3-14B: exit 0: 29552584193 bytes in 18 s (at +19 s)
+01:53:14 (+765 s) done

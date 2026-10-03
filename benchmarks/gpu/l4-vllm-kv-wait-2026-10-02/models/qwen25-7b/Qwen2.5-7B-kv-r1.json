@@ -1,0 +1,1 @@
+{"spec": {"model": "Qwen/Qwen2.5-7B", "kv": true, "eager": true, "r1": true}, "blocks": 6159, "block_size": 16, "cudagraph_mode": "NONE", "graphs_captured": 0, "num_layers": 28, "glyd": {"layout": "mma", "exact": false, "verify": false, "fraction": 0.0, "kv": "lossless", "glyd": "0.26.0rc2"}}

@@ -48,14 +48,13 @@ crate, BSD-3-Clause OR GPL-2.0) everything but `Store` works.
 
 Needs a CUDA GPU (Ampere or later) and `pip install "glyd[gpu]"`
 (PyTorch 2.5+ built for CUDA 12 or 13, transformers 5.17+, accelerate,
-safetensors, huggingface_hub). The Linux wheels (x86_64, aarch64; glibc 2.28 or later)
+safetensors, huggingface_hub). The `glyd-gpu` Linux wheels it brings (x86_64, aarch64; glibc 2.28 or later)
 carry the kernels, `libglyd_gpu_cuda12.so` and `libglyd_gpu_cuda13.so`
 (CUDA 12.8 and 13.0, their runtime linked in), and the one for PyTorch's
-CUDA is taken; `GLYD_GPU_LIB` names another. From a checkout,
-`bash gpu/build_lib.sh bindings/python/glyd/gpu` builds the one for your
-nvcc. `fit` needs none of it. The kernels are a C library too, on every
-release by themselves with their header, for engines in C, C++, Rust or any
-language with a C FFI: [gpu/README.md](https://github.com/surya-koritala/Glyd/tree/main/gpu#the-library).
+CUDA is taken; `GLYD_GPU_LIB` names another. `fit` needs none of it. The
+libraries are a C library too, with their header, `glyd_gpu.h` (8 functions), in the
+wheel's `glyd_gpu` directory, for engines in C, C++, Rust or any language with
+a C FFI.
 
 ```python
 import glyd
@@ -128,11 +127,10 @@ benchmarks/gpu/rtx4080s-fastloop-2026-09-28, `gen-main.txt` and
 Greedy tokens compiled can differ from 0.23's eager loop's, as a
 compiled bf16 model's can from its eager ones (the first 8 of 32 the
 same on Qwen3-0.6B, 17 on Qwen3-1.7B, 32 on
-granite-3.1-3b-a800m-instruct: `gpu/check_api.py`). In the default mode
+granite-3.1-3b-a800m-instruct). In the default mode
 they can also vary within a process, between calls whose cache sizes
 compile differently (Qwen3-1.7B's first compiled call and its later
-ones, after a longer cache, shared 13 of 32 in one run of
-`gpu/check_api.py`:
+ones, after a longer cache, shared 13 of 32 in one run:
 benchmarks/gpu/rtx4080s-fastloop-2026-09-28/checks-merge-6e17b3f);
 `exact=True` is never compiled and stays bit-identical to bf16. The
 first call compiles and captures: Qwen3-8B's took 17.5 s with PyTorch's
@@ -215,14 +213,11 @@ and 1.5 GiB for the runtime, against the memory nvidia-smi reports
 (`16GB` ... `141GB`, or a number of bytes). From the Hub's metadata for a
 repo id, from the files for a directory.
 
-    python -m glyd.gpu fit Qwen/Qwen3-32B --gpu 48GB
-    python -m glyd.gpu pack Qwen/Qwen3-8B qwen3-8b-glyd     # packed, checked, saved as glyd-v1
-    python -m glyd.gpu verify qwen3-8b-glyd
+    python -m glyd_gpu fit Qwen/Qwen3-32B --gpu 48GB
+    python -m glyd_gpu pack Qwen/Qwen3-8B qwen3-8b-glyd     # packed, checked, saved as glyd-v1
+    python -m glyd_gpu verify qwen3-8b-glyd
 
-`glyd pack` and `glyd verify`, the Rust CLI's (the glyd-gpu command),
-do the same on the CPU with no Python, PyTorch or GPU, and save the same
-bytes (Qwen3, Qwen2, Llama, Mistral, Granite and GraniteMoe for now; other
-families: the commands above).
+`glyd pack` and `glyd verify` are the same two commands (the `glyd` program passes them to the Python tool).
 
 ### Serving with vLLM
 
@@ -231,8 +226,8 @@ families: the commands above).
 plugin and the settings worked out from the GPU: memory share, context,
 the tool-call and reasoning parsers (eager mode, which starts in under a
 third of compiled's time and runs within 3% of its speed); `glyd doctor` checks
-the machine. [gpu/vllm](https://github.com/surya-koritala/Glyd/tree/main/gpu/vllm)
-has the steps. By hand, `pip install "glyd[vllm]"` installs vLLM 0.30 and
+the machine. [The docs](https://getglyd.com/docs/vllm/)
+have the steps. By hand, `pip install "glyd[vllm]"` installs vLLM 0.30 and
 the plugin, which vLLM finds by itself (the package's `vllm.general_plugins`
 entry point):
 
@@ -243,8 +238,8 @@ entry point):
 On a 16 GB card these defaults do not leave room for a chat (vLLM takes
 0.92 of the memory and sizes the context to the model's 40,960 tokens):
 `glyd run` works both out from the card, and
-[gpu/vllm](https://github.com/surya-koritala/Glyd/tree/main/gpu/vllm#advanced-vllm-serve-by-hand)
-has the flags by hand.
+[the docs](https://getglyd.com/docs/vllm/#advanced-vllm-serve-by-hand)
+have the flags by hand.
 
 `layout`, `exact` and `verify` are `from_pretrained`'s options, given in
 `--additional-config`'s `"glyd"` (or `GLYD_LAYOUT`, `GLYD_EXACT`,
@@ -256,9 +251,15 @@ cache: 1.04-2.11x bf16's on an L4, an A10, an A100, a GH200 and an H100 SXM, at 
 `--gpu-memory-utilization`. With `exact` the logits are vLLM's bf16 ones
 bit for bit, eager, or compiled in inductor's deterministic mode where the
 packed Linears have no biases.
+`kv` (`auto`, the default, `lossless` or `off`; `GLYD_KV`) holds vLLM's KV cache
+in fewer bits, every value read back bit for bit: 1.25x to 1.30x vLLM's tokens in
+the same memory on five models. `auto` holds it on an A100, an L4, an H100 and a GH200 and
+leaves vLLM's own cache on any other GPU, with a line in the log; `glyd run` keeps
+vLLM's cache unless `GLYD_KV` is set, because the first start sets the cache up
+for the model (217 s on an L4 for Qwen3-8B at its whole window).
 Throughput against bf16, exact mode
 compiled, mixtures of experts and what is not supported yet:
-[gpu/vllm](https://github.com/surya-koritala/Glyd/tree/main/gpu/vllm).
+[the docs](https://getglyd.com/docs/vllm/).
 
-`glyd.gpu` is under the Business Source License 1.1 (`LICENSE-glyd-gpu`),
+The GPU half is the `glyd-gpu` package (compiled wheels; `glyd.gpu` re-exports its API), under the Business Source License 1.1,
 as the rest of Glyd's GPU code; the codec under BSD-3-Clause OR GPL-2.0.

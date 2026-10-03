@@ -1,5 +1,6 @@
-//! `glyd run`, `glyd serve`, `glyd doctor` and `glyd login` reach Glyd's Python tool from the Rust `glyd` (src/bin/glyd.rs), whichever of
-//! the two programs is first on PATH; where there is no tool, the answer says so, in place of the usage text of a file named run.
+//! `glyd run`, `glyd serve`, `glyd doctor`, `glyd login`, `glyd pack` and `glyd verify` reach Glyd's Python tool from the Rust `glyd`
+//! (src/bin/glyd.rs), whichever of the two programs is first on PATH; where there is no tool, the answer says so, in place of the usage
+//! text of a file named run.
 #![cfg(all(unix, feature = "deflate"))]
 
 use std::fs;
@@ -41,7 +42,7 @@ fn the_python_tools_commands_are_passed_to_it_from_a_rust_first_path() {
     let t = tmp("pass");
     let bin = t.join("pybin");
     python_tool(&bin, r#"echo "python glyd: forwarded=$GLYD_FORWARDED args=$*""#);
-    for cmd in ["run", "serve", "doctor", "login"] {
+    for cmd in ["run", "serve", "doctor", "login", "pack", "verify"] {
         let o = glyd(&[cmd, "Qwen/Qwen3-8B", "--prompt", "hi"], bin.to_str().unwrap(), &t, &[]);
         assert!(o.status.success(), "{cmd}: {}", text(&o.stderr));
         assert_eq!(text(&o.stdout).trim(), format!("python glyd: forwarded=1 args={cmd} Qwen/Qwen3-8B --prompt hi"), "{cmd}");
@@ -78,7 +79,7 @@ fn a_program_that_is_not_the_python_tool_is_not_taken_for_it() {
     let err = text(&o.stderr);
     assert!(!text(&o.stdout).contains("some other glyd") && !err.contains("Usage:"), "{err}");
     if cfg!(target_os = "linux") {
-        assert!(err.contains("not installed here") && err.contains("https://getglyd.com/install.sh"), "{err}");
+        assert!(err.contains("not installed here") && err.contains("pip install \"glyd[gpu]\"") && err.contains("https://getglyd.com/install.sh") && !err.contains("cargo"), "{err}");
     } else {
         assert!(err.contains("needs Linux with an NVIDIA GPU"), "{err}");
     }

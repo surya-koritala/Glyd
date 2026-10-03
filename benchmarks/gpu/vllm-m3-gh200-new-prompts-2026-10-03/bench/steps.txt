@@ -1,0 +1,6 @@
+03:39:09 (+0 s) machine
+03:39:35 (+26 s) env: vLLM and nvcc in 25 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA GH200 480GB)
+03:40:11 (+62 s) build: sm_90a in 36 s (library: C API 5 | GPU code 90)
+03:52:49 (+820 s) bench Qwen3-8B: exit 0 in 758 s; Prefix cache hit rate, at most (the servers' logs): bf16 0.9%, glyd 1.0%
+download dl-Qwen3-8B: exit 0: 16397431693 bytes in 19 s (at +20 s)
+03:52:49 (+820 s) done

@@ -1,0 +1,68 @@
+{
+ "mode": "stock",
+ "graphs": true,
+ "gpu": "NVIDIA A100-SXM4-40GB",
+ "kv_blocks": 9616,
+ "rows": [
+  {
+   "B": 1,
+   "L": 8192,
+   "wall_ms": 14.052,
+   "profiled_wall_ms": 19.861,
+   "gpu_busy_ms": 14.034,
+   "gpu_idle_ms_in_profiled": 5.828,
+   "by_kind_ms": {
+    "other": 0.782,
+    "gemm": 11.608,
+    "attention": 1.644,
+    "kv write": 0.0,
+    "stock cache write": 0.112
+   }
+  },
+  {
+   "B": 3,
+   "L": 8192,
+   "wall_ms": 15.885,
+   "profiled_wall_ms": 21.526,
+   "gpu_busy_ms": 15.913,
+   "gpu_idle_ms_in_profiled": 5.613,
+   "by_kind_ms": {
+    "other": 0.875,
+    "gemm": 11.585,
+    "attention": 3.45,
+    "kv write": 0.002,
+    "stock cache write": 0.108
+   }
+  },
+  {
+   "B": 32,
+   "L": 1024,
+   "wall_ms": 17.513,
+   "profiled_wall_ms": 23.773,
+   "gpu_busy_ms": 17.667,
+   "gpu_idle_ms_in_profiled": 6.106,
+   "by_kind_ms": {
+    "other": 1.058,
+    "gemm": 12.112,
+    "attention": 4.496,
+    "kv write": 0.002,
+    "stock cache write": 0.116
+   }
+  },
+  {
+   "B": 1,
+   "L": 1024,
+   "wall_ms": 13.342,
+   "profiled_wall_ms": 17.655,
+   "gpu_busy_ms": 13.275,
+   "gpu_idle_ms_in_profiled": 4.38,
+   "by_kind_ms": {
+    "other": 0.785,
+    "gemm": 11.608,
+    "attention": 0.881,
+    "kv write": 0.0,
+    "stock cache write": 0.112
+   }
+  }
+ ]
+}
