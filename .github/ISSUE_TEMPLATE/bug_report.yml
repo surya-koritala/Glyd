@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        A file that does not decode, or decodes to different bytes, is the most serious bug there is: say so in the title. A security problem goes by email to suryakoritala1324@gmail.com, not here.
+        A file that does not decode, or decodes to different bytes, is the most serious bug there is: say so in the title. A security problem goes by email to suryakoritala@getglyd.com, not here.
   - type: input
     id: version
     attributes:

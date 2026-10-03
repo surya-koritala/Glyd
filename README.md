@@ -1150,7 +1150,7 @@ machines with an NVIDIA GPU before each release.
   [Business Source License 1.1](glyd-store/LICENSE)**: source available,
   free for personal, educational, research and other non-commercial use;
   any commercial production use needs a license
-  (suryakoritala1324@gmail.com); each version converts to Apache-2.0
+  (suryakoritala@getglyd.com); each version converts to Apache-2.0
   four years after its release.
 - **The GPU package — `glyd-gpu`, model weights and the KV cache held
   compressed in GPU memory, compiled wheels from v0.27 — is under the
