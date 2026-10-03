@@ -122,8 +122,8 @@ every earlier format.
   | A10 | Qwen3-8B | 1.31x | 1.31x, unchanged (its logs show no hits; not measured again) | 0.0% / 0.0% | |
 
   - The L4's saturated pass served nothing from the cache (its Glyd server's hit rate rose only in the pass at 1
-    request a second), so its 1.33x stands. At 1 request a second its first token is 68% sooner than bf16's (2,323 ms
-    against 739), not 85% sooner, and its requests a second 1.18x, not 1.15x.
+    request a second), so its 1.33x stands. At 1 request a second its first token is 68% sooner than bf16's (739 ms
+    against 2,323), not 85% sooner, and its requests a second 1.18x, not 1.15x.
   - The Qwen3-8B run on the A100 and the run on the H100 have hit rates just above the summary's 1% line (1.3% and 1.1%),
     the same on both sides; on the L4 a run with one repeated prompt of 328 (hit rates 1.1% to 1.2%) and one with none
     (0.0%) gave saturated rows within 1.4%.
