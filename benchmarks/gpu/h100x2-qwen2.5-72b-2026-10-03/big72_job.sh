@@ -111,7 +111,7 @@ def server(mode, d):
     s["conc"] = float(m.group(2)) if m else None
     s["avail"] = re.findall(r"Available KV cache memory: (-?[\d.]+) GiB", text)
     m = re.search(r"glyd: (mma12|mma) layout", text)
-    s["layout"] = {"mma12": "12-bit (mma12)", "mma": "tiered (mma)"}[m.group(1)] if m else None
+    s["layout"] = {"mma12": "12-bit (mma12)", "mma": "smallest (mma)"}[m.group(1)] if m else None
     t = [int(h) * 3600 + int(mi) * 60 + int(sec) for h, mi, sec in (STAMP.search(l).groups() for l in raw if STAMP.search(l))]
     up = [int(h) * 3600 + int(mi) * 60 + int(sec) for h, mi, sec in (STAMP.search(l).groups() for l in raw if "Starting vLLM server" in l and STAMP.search(l))]
     s["start"] = (up[0] - t[0]) % 86400 if t and up else None
