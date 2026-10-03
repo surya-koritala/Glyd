@@ -197,19 +197,19 @@ and every rate: [getglyd.com/docs/vllm](https://getglyd.com/docs/vllm/); logs in
 
 vLLM's KV cache held in fewer bits, every key and value read back bit for bit:
 1.25x to 1.30x vLLM's tokens in the same memory on five models, and decoding
-faster than with vLLM's own cache at every batch measured on an A100, an L4
-and an H100.
+faster than with vLLM's own cache at every batch measured on an A100, an L4,
+an H100 and a GH200.
 
 ```bash
-vllm serve Qwen/Qwen3-8B --quantization glyd                   # kv auto, the default: on for an A100, an L4 and an H100
+vllm serve Qwen/Qwen3-8B --quantization glyd                   # kv auto, the default: on for an A100, an L4, an H100, a GH200
 GLYD_KV=lossless vllm serve Qwen/Qwen3-8B --quantization glyd  # on any GPU it supports (or --additional-config '{"glyd": {"kv": "lossless"}}')
 GLYD_KV=off vllm serve Qwen/Qwen3-8B --quantization glyd       # vLLM's own cache
 GLYD_KV=auto glyd run Qwen/Qwen3-8B                            # glyd run keeps vLLM's own cache unless GLYD_KV is set
 ```
 
 `auto` leaves vLLM's own cache on any other GPU, with a line in the log that
-says so (an L40S, an RTX 40, a GH200, an H200 and an A10 are not measured
-yet), and where `exact` or `verify` is on; a window past 40,960 tokens keeps
+says so (an L40S, an RTX 40, an H200 and an A10 are not measured yet),
+and where `exact` or `verify` is on; a window past 40,960 tokens keeps
 vLLM's cache too. A first start sets the cache up once for the model (on an L4,
 130 s for 8,192 tokens and 217 s for Qwen3-8B's whole 40,960-token window, kept
 in `~/.cache/glyd/kv`), which is why `glyd run`, one user's chat, keeps vLLM's
@@ -221,19 +221,22 @@ cache unless `GLYD_KV` says otherwise; `glyd serve` and
 | L4 | 1.286x | 1.007x-1.053x | 1.23x |
 | A100 SXM4 40 GB | 1.299x | 1.018x-1.032x | 1.29x |
 | H100 SXM | 1.306x | 1.005x-1.197x | 1.05x |
+| GH200 | 1.305x | 1.003x-1.187x | 1.06x |
 
 On the L4 with Glyd's weights as well, it served 1.59x bf16's requests a second
 saturated (1.20 against 0.76) with 2.64x the KV tokens (71,248 against 27,024).
 On an H100 SXM with 8,192 tokens in and 256 out, saturated, it served 1.05x the
 requests a second and the first token came after 0.89x the time, but each
-generated token took 1.12x as long; a GH200 and an H200 are not measured. Every
-value read back was the value written (0 differ in every run); a decode step's
-attention is not bit-equal to vLLM's, so greedy tokens can part from vLLM's after
-some tokens. Logs in [benchmarks/gpu](benchmarks/gpu):
+generated token took 1.12x as long; on a GH200 the same run served 1.12x the
+requests a second, with the first token after 0.95x the time and each token
+0.97x as long. An H200 is not measured. Every value read back was the value
+written (0 differ in every run); a decode step's attention is not bit-equal to
+vLLM's, so greedy tokens can part from vLLM's after some tokens. Logs in
+[benchmarks/gpu](benchmarks/gpu):
 `l4-vllm-kv-step-2026-10-02`, `l4-vllm-kv-graphs-2026-10-01`,
 `a100-vllm-kv-step-2026-10-02`, `a100-vllm-kv-prefix-2026-10-02`,
-`h100-vllm-kv-2026-10-02`, `l4-vllm-kv-window-2026-10-02` and
-`l4-vllm-kv-wait-2026-10-02`.
+`h100-vllm-kv-2026-10-02`, `gh200-vllm-kv-2026-10-03`,
+`l4-vllm-kv-window-2026-10-02` and `l4-vllm-kv-wait-2026-10-02`.
 
 ### Related work
 

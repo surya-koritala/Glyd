@@ -253,7 +253,7 @@ bit for bit, eager, or compiled in inductor's deterministic mode where the
 packed Linears have no biases.
 `kv` (`auto`, the default, `lossless` or `off`; `GLYD_KV`) holds vLLM's KV cache
 in fewer bits, every value read back bit for bit: 1.25x to 1.30x vLLM's tokens in
-the same memory on five models. `auto` holds it on an A100, an L4 and an H100 and
+the same memory on five models. `auto` holds it on an A100, an L4, an H100 and a GH200 and
 leaves vLLM's own cache on any other GPU, with a line in the log; `glyd run` keeps
 vLLM's cache unless `GLYD_KV` is set, because the first start sets the cache up
 for the model (217 s on an L4 for Qwen3-8B at its whole window).

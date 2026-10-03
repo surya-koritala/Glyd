@@ -9,14 +9,14 @@ every earlier format.
 ## v0.27.0 — 2026-10-02
 
 - The lossless KV cache in vLLM: vLLM's KV cache held in fewer bits, every key and value read back as written, bit for
-  bit. On the five models measured it holds 1.25x to 1.30x vLLM's tokens in the same memory, and on an A100, an L4 and an
-  H100 decoding is faster than with vLLM's own cache at every batch measured.
+  bit. On the five models measured it holds 1.25x to 1.30x vLLM's tokens in the same memory, and on an A100, an L4, an
+  H100 and a GH200 decoding is faster than with vLLM's own cache at every batch measured.
   - The option is `kv`: `auto` (the default), `lossless` or `off`, set with `GLYD_KV` or `--additional-config '{"glyd":
-    {"kv": "lossless"}}'`. `auto` holds the cache on an A100, an L4 and an H100 (by the name the GPU gives; measured on an
-    A100 SXM4 40 GB, an L4 and an H100 SXM) and leaves vLLM's own cache on any other GPU, with a line in the log that
-    says so (an L40S, an RTX 40, a GH200, an H200 and an A10 are not measured yet); it leaves it where `exact` or
-    `verify` is on too. `lossless` holds it on any GPU it supports and refuses with why where it cannot; `off` is
-    vLLM's own. It works with any `fraction`, 0 included (bf16 weights with the cache held).
+    {"kv": "lossless"}}'`. `auto` holds the cache on an A100, an L4, an H100 and a GH200 (by the name the GPU gives;
+    measured on an A100 SXM4 40 GB, an L4, an H100 SXM and a GH200) and leaves vLLM's own cache on any other GPU, with
+    a line in the log that says so (an L40S, an RTX 40, an H200 and an A10 are not measured yet); it leaves it where
+    `exact` or `verify` is on too. `lossless` holds it on any GPU it supports and refuses with why where it cannot;
+    `off` is vLLM's own. It works with any `fraction`, 0 included (bf16 weights with the cache held).
   - `glyd run` keeps vLLM's own cache unless `GLYD_KV` is set (`GLYD_KV=auto glyd run MODEL`); `glyd serve` and
     `vllm serve --quantization glyd` use `auto`.
   - A first start with the cache on sets it up once for the model, for the longest context the server will serve
@@ -58,8 +58,13 @@ every earlier format.
       tokens in and 256 out, saturated, it served more requests a second and its first token came sooner, but each
       generated token took longer: 2.80 requests a second against 2.67 (1.05x), the first token after 8,196 ms against
       9,199 (0.89x), each token 49.2 ms against 43.9 (1.12x as long). In that run the KV cache held 494,256 tokens
-      against 377,024 (1.31x) and the model's memory was 1.07x (16.34 against 15.27 GiB). A GH200 and an H200 are not
-      measured yet.
+      against 377,024 (1.31x) and the model's memory was 1.07x (16.34 against 15.27 GiB).
+    - On a GH200: 1.003x (1 of 1,024) to 1.187x (32 of 8,192), and 1.305x with each cache at the largest batch it
+      holds (58 against 76 requests of 8,192 tokens); the KV cache 630,112 tokens against 482,864 (1.305x). With
+      `vllm bench serve`, 1,024 tokens in and 256 out, saturated: 22.47 requests a second against 21.18 (1.06x), each
+      token 29.3 ms against 32.1 (0.91x), the first token 1.01x, on 641,072 KV tokens against 489,344 (1.31x). With 8,192
+      tokens in and 256 out, saturated: 3.12 requests a second against 2.78 (1.12x), the first token after 7,944 ms
+      against 8,321 (0.95x), each token 47.8 ms against 49.5 (0.97x). An H200 is not measured yet.
     - The KV cache on five models, an L4, eager, `--max-model-len 8704`: Qwen3-4B 1.2982x, Qwen3-8B 1.2834x,
       Qwen2.5-7B 1.2773x, Mistral-7B-v0.3 1.2743x, Llama-3.1-8B 1.2526x.
   - Prompts of a model's rare tokens (tokens whose embeddings were never trained: Llama-3.1-8B has 289, Mistral-7B-v0.3
@@ -70,14 +75,15 @@ every earlier format.
     took 19.0 s and 19.8 s.
   - The model checks against vLLM's own pass on all five models (13 of 13 on Qwen3-4B and Qwen2.5-7B, 21 of 21 on
     Qwen3-8B, Mistral-7B-v0.3 and Llama-3.1-8B); Llama-3.1-8B's full run passes 34 of 35, the one miss being the
-    prefix-hit check, where 13 of 14 first tokens were vLLM's bit for bit. On the H100 the kernels' 81 of 81 checks and
-    the prefix-caching, chunked-prefill and `exact` checks, 12 of 12, pass.
+    prefix-hit check, where 13 of 14 first tokens were vLLM's bit for bit. On the H100 and the GH200 the kernels'
+    81 of 81 checks and the prefix-caching, chunked-prefill and `exact` checks, 12 of 12, pass.
 
   Logs: [benchmarks/gpu/l4-vllm-kv-step-2026-10-02](benchmarks/gpu/l4-vllm-kv-step-2026-10-02),
   [l4-vllm-kv-graphs-2026-10-01](benchmarks/gpu/l4-vllm-kv-graphs-2026-10-01),
   [a100-vllm-kv-step-2026-10-02](benchmarks/gpu/a100-vllm-kv-step-2026-10-02),
   [a100-vllm-kv-prefix-2026-10-02](benchmarks/gpu/a100-vllm-kv-prefix-2026-10-02),
   [h100-vllm-kv-2026-10-02](benchmarks/gpu/h100-vllm-kv-2026-10-02),
+  [gh200-vllm-kv-2026-10-03](benchmarks/gpu/gh200-vllm-kv-2026-10-03),
   [l4-vllm-kv-window-2026-10-02](benchmarks/gpu/l4-vllm-kv-window-2026-10-02),
   [l4-vllm-kv-wait-2026-10-02](benchmarks/gpu/l4-vllm-kv-wait-2026-10-02).
 - The GPU parts ship compiled, as the new `glyd-gpu` package: Glyd's GPU half (`glyd.from_pretrained`, the vLLM plugin,
@@ -93,6 +99,7 @@ every earlier format.
     workspace query and an unpack to bf16, bit for bit. The C API is version 14; v0.26.0's header declared 52
     functions (version 7), and it and its libraries stay in that release. The release no longer carries separate CUDA
     library downloads.
+  - The compiled GPU package exposes only its public C functions.
   - `glyd pack` and `glyd verify` are the Python tool's commands, as `glyd run` is (Linux, an NVIDIA GPU); the
     `glyd-gpu` program and crate are gone. The release's tarballs and Homebrew carry `glyd` and `glyd-store`.
 - Fixes: with transformers 5.18, Inkling's embedding, whose rows are normed after the lookup, is packed with its norm
