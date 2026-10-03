@@ -2,7 +2,8 @@
 first token (TTFT, mean and p99), time per output token (TPOT, mean and p99), the GPU's median SM clock while it
 worked and its hottest (nvidia-smi's each second, where logged), and each mode's KV cache. Where modes glyd@F ran
 (Glyd packing the fraction F of the layers), a second table of each rate's weights, KV cache, requests/s, TTFT and TPOT
-against bf16's.
+against bf16's. Each server's highest prefix cache hit rate is printed (its log's, every 10 s); one above 1% flags the
+run NOT COMPARABLE, since the random prompts are new to a server and a hit is a prefill that mode did not do.
 
     python bench_summary.py RESULTS_DIR"""
 import glob
@@ -36,9 +37,24 @@ def kv(m, suffix=""):
     return f"weights {load if load is not None else '?'} GiB, KV cache {f'{tokens:,}' if tokens is not None else '?'} tokens, max concurrency {conc[1] + 'x at ' + conc[0] + ' tokens' if conc else '?'}"
 
 
+def hit(m):
+    """The highest "Prefix cache hit rate" (%) in mode m's server log (serve-MODE.txt), or None."""
+    try:
+        rates = re.findall(r"Prefix cache hit rate: ([\d.]+)%", open(os.path.join(R, f"serve-{m}.txt"), errors="replace").read())
+    except OSError:
+        return None
+    return max(map(float, rates)) if rates else None
+
+
 for m in modes:
     cold = kv(m, "-cold")
     print(f"{m}: {kv(m) or 'no server'}" + (f" (started cold, on an empty compile cache: {cold})" if cold else ""))
+hits = {m: hit(m) for m in modes}
+print("Prefix cache hit rate, at most (the servers' logs): " + ", ".join(f"{m} {'n/a' if h is None else f'{h:.1f}%'}" for m, h in hits.items()))
+over = [f"{m} {h:.1f}%" for m, h in hits.items() if h is not None and h > 1]
+warn = f"NOT COMPARABLE: the prefix cache skipped the prefill of repeated prompts (hit rate above 1%: {', '.join(over)})" if over else ""
+if warn:
+    print(warn)
 print()
 print("| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |")
 print("| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |")
@@ -99,3 +115,6 @@ def against_bf16():
 
 
 against_bf16()
+if warn:
+    print()
+    print(warn)

@@ -9,12 +9,15 @@
 # start: its compile, and its KV cache in kv-MODE-cold.txt), the one measured after it (its graphs loaded).
 # A mode glyd@F is Glyd packing the fraction F of the layers (GLYD_FRACTION=F for its server: glyd@0 is vLLM's own bf16
 # method through the plugin, glyd@1 is glyd), its results in files of its own.
+# The passes of a mode share one server, and vLLM's prefix cache is on (its default, as deployments run it) and skips the prefill
+# of a prompt it still holds: so pass i (the i-th rate) draws its prompts with --seed SEED+i, none of them any earlier pass's, and
+# each mode's pass i gets the same prompts. The summary gives each server's highest prefix cache hit rate and flags a run above 1%.
 #   bash bench_serve.sh [MODEL]       (default Qwen/Qwen3-8B)
 #   MODES="bf16 glyd@0 glyd@0.5 glyd@1" RATES="1 inf" bash bench_serve.sh [MODEL]
 # Env: VLLM (the vllm command), R (results; default ./bench-MODEL), UTIL (0.9), IN (1024), OUT (256), RATES
-# ("0.25 1 4 16 inf"), PROMPTS (per rate: "32 64 128 256 256"), MODES ("bf16 glyd"), WARM, BUSYWAIT, COOL, COOLWAIT,
-# TP (1: the servers over that many GPUs, tensor parallel), SERVE_ARGS (more arguments for every vllm serve), GLYD_*
-# (the plugin's options).
+# ("0.25 1 4 16 inf"), PROMPTS (per rate: "32 64 128 256 256"), SEED (0: the first pass's seed), MODES ("bf16 glyd"), WARM,
+# BUSYWAIT, COOL, COOLWAIT, TP (1: the servers over that many GPUs, tensor parallel), SERVE_ARGS (more arguments for every
+# vllm serve), GLYD_* (the plugin's options).
 set -u
 MODEL=${1:-Qwen/Qwen3-8B}
 VLLM=${VLLM:-vllm}
@@ -59,7 +62,7 @@ for mode in ${MODES:-bf16 glyd}; do
     nvidia-smi --query-gpu=timestamp,temperature.gpu,clocks.sm,power.draw --format=csv,noheader,nounits -l 1 > "$R/smi-$mode-rate$rate.csv" &
     SMI=$!
     "$VLLM" bench serve --backend vllm --model "$MODEL" --port "$PORT" --dataset-name random --random-input-len "$IN" \
-      --random-output-len "$OUT" --ignore-eos --num-prompts "$n" --request-rate "$rate" --seed 0 --save-result \
+      --random-output-len "$OUT" --ignore-eos --num-prompts "$n" --request-rate "$rate" --seed $(( ${SEED:-0} + i )) --save-result \
       --result-dir "$R" --result-filename "$mode-rate$rate.json" --percentile-metrics ttft,tpot,itl,e2el \
       --metric-percentiles 50,99 > "$R/bench-$mode-rate$rate.txt" 2>&1
     echo "   exit $?"
