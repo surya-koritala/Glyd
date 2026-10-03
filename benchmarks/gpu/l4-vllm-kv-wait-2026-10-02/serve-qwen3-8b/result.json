@@ -1,0 +1,82 @@
+{
+ "model": "Qwen/Qwen3-8B",
+ "stock": false,
+ "flood": 24,
+ "env": {},
+ "start_seconds": 159.0,
+ "heavy": {
+  "text": 0,
+  "ids": 0,
+  "used": 1
+ },
+ "ordinary_alone": {
+  "n": 6,
+  "median": 0.965,
+  "max": 0.965,
+  "min": 0.964
+ },
+ "ordinary_alone_codes": [
+  200
+ ],
+ "heavy_prompt": [
+  200,
+  "length",
+  0.7
+ ],
+ "flood_result": {
+  "requests": 24,
+  "served": 24,
+  "codes": [
+   200
+  ],
+  "failed": [],
+  "seconds": 10.17,
+  "prompt_tokens_per_second": 3304.5,
+  "heavy_latency": {
+   "n": 24,
+   "median": 9.22,
+   "max": 9.65,
+   "min": 7.507
+  },
+  "ordinary_codes": [
+   200,
+   200,
+   200,
+   200,
+   200,
+   200
+  ],
+  "ordinary_latency_during": {
+   "n": 6,
+   "median": 9.603,
+   "max": 9.853,
+   "min": 9.353
+  },
+  "ordinary_same_text_as_alone": true,
+  "ordinary_finished_at": [
+   10.17,
+   10.17,
+   10.17,
+   10.17,
+   10.17,
+   10.17
+  ]
+ },
+ "alive_after_flood": true,
+ "heavy_after_flood": [
+  200,
+  "length",
+  0.65
+ ],
+ "after_same": true,
+ "longest_heavy_prompt": [
+  200,
+  "length",
+  1.36
+ ],
+ "server_alive_end": true,
+ "server_log": {
+  "lines": 0,
+  "sample": []
+ }
+}

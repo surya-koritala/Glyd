@@ -1,0 +1,77 @@
+{
+ "model": "NousResearch/Meta-Llama-3.1-8B",
+ "stock": false,
+ "flood": 24,
+ "env": {},
+ "start_seconds": 258.1,
+ "heavy": {
+  "text": 21,
+  "ids": 268
+ },
+ "ordinary_alone": {
+  "n": 6,
+  "median": 0.953,
+  "max": 0.954,
+  "min": 0.949
+ },
+ "ordinary_alone_codes": [
+  200
+ ],
+ "heavy_prompt": [
+  200,
+  "stop",
+  0.41
+ ],
+ "flood_result": {
+  "requests": 24,
+  "served": 24,
+  "codes": [
+   200
+  ],
+  "failed": [],
+  "seconds": 11.43,
+  "prompt_tokens_per_second": 2939.7,
+  "heavy_latency": {
+   "n": 24,
+   "median": 6.634,
+   "max": 11.416,
+   "min": 1.178
+  },
+  "ordinary_codes": [
+   200,
+   200,
+   200,
+   200,
+   200,
+   200
+  ],
+  "ordinary_latency_during": {
+   "n": 6,
+   "median": 4.024,
+   "max": 4.274,
+   "min": 3.774
+  },
+  "ordinary_same_text_as_alone": true,
+  "ordinary_finished_at": [
+   4.59,
+   4.59,
+   4.59,
+   4.59,
+   4.59,
+   4.59
+  ]
+ },
+ "alive_after_flood": true,
+ "heavy_after_flood": [
+  200,
+  "stop",
+  0.4
+ ],
+ "after_same": true,
+ "longest_heavy_prompt": [
+  200,
+  "stop",
+  1.29
+ ],
+ "server_alive_end": true
+}

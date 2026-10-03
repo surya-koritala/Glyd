@@ -1,0 +1,64 @@
+{
+ "model": "NousResearch/Meta-Llama-3.1-8B",
+ "stock": true,
+ "seconds": 150,
+ "rate": 3.0,
+ "burst": 12,
+ "every": 30,
+ "start_seconds": 36.0,
+ "ordinary": {
+  "requests": 450,
+  "codes": {
+   "200": 450
+  },
+  "quiet": {
+   "n": 368,
+   "median": 2.068,
+   "p95": 6.605,
+   "max": 6.851
+  },
+  "in_a_burst": {
+   "n": 82,
+   "median": 4.456,
+   "p95": 6.775,
+   "max": 6.943
+  }
+ },
+ "heavy": {
+  "requests": 60,
+  "codes": {
+   "200": 60
+  },
+  "latency": {
+   "median": 4.908,
+   "max": 5.428
+  },
+  "bursts": [
+   [
+    10.0,
+    15.4
+   ],
+   [
+    40.1,
+    45.2
+   ],
+   [
+    70.1,
+    75.5
+   ],
+   [
+    100.2,
+    105.5
+   ],
+   [
+    130.2,
+    135.4
+   ]
+  ]
+ },
+ "server_alive_end": true,
+ "server_log": {
+  "lines": 0,
+  "sample": []
+ }
+}

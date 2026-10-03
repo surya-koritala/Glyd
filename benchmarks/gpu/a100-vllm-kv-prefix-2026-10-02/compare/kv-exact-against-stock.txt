@@ -1,0 +1,18 @@
+kv/fwd (benchmarks/gpu/a100-vllm-kv-prefix-2026-10-02/runs/kv-exact.json) against stock/fwd (benchmarks/gpu/a100-vllm-kv-prefix-2026-10-02/runs/stock.json)
+ 0 short-0                    cached R1     0/0     R2     0/0     first token same (-0.003398 -0.003398) tokens same for 64 of 64 | R1: no digests | R2: no digests
+ 1 short-1                    cached R1     0/0     R2     0/0     first token same (-1.039793 -1.039793) tokens same for 64 of 64 | R1: no digests | R2: no digests
+ 2 short-2                    cached R1    16/16    R2    16/16    first token same (-1.737763 -1.737763) tokens same for 64 of 64 | R1: no digests | R2: no digests
+ 3 short-3                    cached R1     0/0     R2     0/0     first token same (-1.769680 -1.769680) tokens same for 64 of 64 | R1: no digests | R2: no digests
+ 4 short-4                    cached R1    16/16    R2     0/0     first token same (-0.679964 -0.679964) tokens same for 64 of 64 | R1: no digests | R2: no digests
+ 5 short-5                    cached R1     0/0     R2     0/0     first token same (-0.095167 -0.095167) tokens same for 64 of 64 | R1: no digests | R2: no digests
+ 6 short-6                    cached R1     0/0     R2     0/0     first token same (-0.022405 -0.022405) tokens same for 64 of 64 | R1: no digests | R2: no digests
+ 7 short-7                    cached R1     0/0     R2     0/0     first token same (-0.000433 -0.000433) tokens same for 64 of 64 | R1: no digests | R2: all layers equal
+ 8 README.md                  cached R1   304/304   R2   816/816   first token same (-0.745402 -0.745402) tokens same for 64 of 64 | R1: all layers equal | R2: all layers equal
+ 9 gpu/README.md              cached R1     0/0     R2  1632/1632  first token same (-0.973054 -0.973054) tokens same for 64 of 64 | R1: all layers equal | R2: all layers equal
+10 CHANGELOG.md               cached R1     0/0     R2  3264/3264  first token same (-0.979544 -0.979544) tokens same for 64 of 64 | R1: all layers equal | R2: all layers equal
+11 docs/engineering-notes.md  cached R1     0/0     R2  3264/3264  first token same (-0.298051 -0.298051) tokens same for 64 of 64 | R1: all layers equal | R2: all layers equal
+12 gpu/vllm/README.md         cached R1     0/0     R2  3264/3264  first token same (-0.433316 -0.433316) tokens same for 64 of 64 | R1: all layers equal | R2: all layers equal
+13 docs/spec.md               cached R1     0/0     R2  2608/2608  first token same (-0.638127 -0.638127) tokens same for 64 of 64 | R1: all layers equal | R2: no digests
+first token's logprob bit for bit: 14 of 14; the 64 tokens identical: 14 of 14
+8:README.md:R1 layer 1 | q: 0 of 2,949,120 differ, largest 0.00e+00 (of 18.75) | k: 0 of 737,280 differ, largest 0.00e+00 (of 49.25) | v: 0 of 737,280 differ, largest 0.00e+00 (of 0.55) | o: 0 of 2,949,120 differ, largest 0.00e+00 (of 0.53)
+8:README.md:R1 layer 2 | q: 0 of 2,949,120 differ, largest 0.00e+00 (of 14.56) | k: 0 of 737,280 differ, largest 0.00e+00 (of 21.75) | v: 0 of 737,280 differ, largest 0.00e+00 (of 0.78) | o: 0 of 2,949,120 differ, largest 0.00e+00 (of 0.77)

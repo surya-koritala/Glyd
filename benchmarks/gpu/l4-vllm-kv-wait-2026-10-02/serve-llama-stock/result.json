@@ -1,0 +1,82 @@
+{
+ "model": "NousResearch/Meta-Llama-3.1-8B",
+ "stock": true,
+ "flood": 24,
+ "env": {},
+ "start_seconds": 54.0,
+ "heavy": {
+  "text": 21,
+  "ids": 268,
+  "used": 85
+ },
+ "ordinary_alone": {
+  "n": 6,
+  "median": 0.952,
+  "max": 0.952,
+  "min": 0.949
+ },
+ "ordinary_alone_codes": [
+  200
+ ],
+ "heavy_prompt": [
+  200,
+  "stop",
+  0.42
+ ],
+ "flood_result": {
+  "requests": 24,
+  "served": 24,
+  "codes": [
+   200
+  ],
+  "failed": [],
+  "seconds": 9.99,
+  "prompt_tokens_per_second": 3362.7,
+  "heavy_latency": {
+   "n": 24,
+   "median": 8.94,
+   "max": 9.248,
+   "min": 1.155
+  },
+  "ordinary_codes": [
+   200,
+   200,
+   200,
+   200,
+   200,
+   200
+  ],
+  "ordinary_latency_during": {
+   "n": 6,
+   "median": 9.428,
+   "max": 9.678,
+   "min": 9.177
+  },
+  "ordinary_same_text_as_alone": true,
+  "ordinary_finished_at": [
+   9.99,
+   9.99,
+   9.99,
+   9.99,
+   9.99,
+   9.99
+  ]
+ },
+ "alive_after_flood": true,
+ "heavy_after_flood": [
+  200,
+  "stop",
+  0.35
+ ],
+ "after_same": true,
+ "longest_heavy_prompt": [
+  200,
+  "stop",
+  1.28
+ ],
+ "server_alive_end": true,
+ "server_log": {
+  "lines": 0,
+  "sample": []
+ }
+}

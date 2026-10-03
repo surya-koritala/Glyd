@@ -1,0 +1,96 @@
+{
+ "spec": {
+  "kv_real": true,
+  "model": "NousResearch/Meta-Llama-3.1-8B",
+  "n_gen": 130
+ },
+ "prompts": [
+  {
+   "name": "short-0",
+   "prompt_tokens": 7,
+   "tokens": 136,
+   "differing": 0
+  },
+  {
+   "name": "short-1",
+   "prompt_tokens": 14,
+   "tokens": 143,
+   "differing": 0
+  },
+  {
+   "name": "short-2",
+   "prompt_tokens": 30,
+   "tokens": 159,
+   "differing": 0
+  },
+  {
+   "name": "short-3",
+   "prompt_tokens": 6,
+   "tokens": 135,
+   "differing": 0
+  },
+  {
+   "name": "short-4",
+   "prompt_tokens": 19,
+   "tokens": 148,
+   "differing": 0
+  },
+  {
+   "name": "short-5",
+   "prompt_tokens": 10,
+   "tokens": 139,
+   "differing": 0
+  },
+  {
+   "name": "short-6",
+   "prompt_tokens": 11,
+   "tokens": 140,
+   "differing": 0
+  },
+  {
+   "name": "short-7",
+   "prompt_tokens": 17,
+   "tokens": 146,
+   "differing": 0
+  },
+  {
+   "name": "README.md",
+   "prompt_tokens": 1024,
+   "tokens": 1153,
+   "differing": 0
+  },
+  {
+   "name": "gpu/README.md",
+   "prompt_tokens": 2048,
+   "tokens": 2177,
+   "differing": 0
+  },
+  {
+   "name": "CHANGELOG.md",
+   "prompt_tokens": 4096,
+   "tokens": 4225,
+   "differing": 0
+  },
+  {
+   "name": "docs/engineering-notes.md",
+   "prompt_tokens": 5864,
+   "tokens": 5993,
+   "differing": 0
+  },
+  {
+   "name": "gpu/vllm/README.md",
+   "prompt_tokens": 8192,
+   "tokens": 8321,
+   "differing": 0
+  },
+  {
+   "name": "docs/spec.md",
+   "prompt_tokens": 3193,
+   "tokens": 3322,
+   "differing": 0
+  }
+ ],
+ "differing": 0,
+ "values": 1726021632,
+ "layers": 32
+}
