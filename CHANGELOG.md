@@ -84,7 +84,7 @@ every earlier format.
   weights take 38.77 GiB against bf16's 50.22 (22.8% under, the `mma12` layout this GPU takes by default; v0.27.0:
   39.69), and the KV cache holds 204,117 tokens against 122,538 (1.67x; bf16 started again at the end: 132,778).
   Saturated (256 requests at once): 5.05 requests a second against 4.72 and 4.70 (**1.07x**), the first token 0.84x
-  as late, each token 1.43x as long. At 1 request a second: 0.92 against 0.92, each token 21.7 ms against 23.4 (0.93x),
+  as late, each token 1.43x as long. At 1 request a second: 0.92 against 0.92, each token 21.7 ms against 23.4 (0.92x),
   the first token 227 ms against 199. bf16's continuations scored on Glyd: top-1 99.22% (bf16 against itself started
   again: 99.22%). The lossless KV cache stays off for this model, with a line in the log that says why (linear
   attention and head size 256 are not held yet). Glyd's saturated passes drew more power and ran at a lower clock

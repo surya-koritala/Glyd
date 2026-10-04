@@ -225,7 +225,7 @@ time on the H100 (0.53x on the A100) and each token takes 1.69x and 1.61x as lon
 [benchmarks/gpu/h100-moe-v028-2026-10-03](benchmarks/gpu/h100-moe-v028-2026-10-03), [a100-moe-v028-2026-10-03](benchmarks/gpu/a100-moe-v028-2026-10-03).
 
 A newer model, Qwen3.8-27B (text only), on an H100 80GB HBM3 under vLLM 0.30.0: the weights take 38.77 GiB against bf16's 50.22 (−22.8%, the `mma12` layout this GPU takes by default) and
-the KV cache holds 204,117 tokens against 122,538 (1.67x); saturated, 5.05 requests a second against 4.72 (**1.07x**); at 1 request a second each token takes 0.93x as long. Its
+the KV cache holds 204,117 tokens against 122,538 (1.67x); saturated, 5.05 requests a second against 4.72 (**1.07x**); at 1 request a second each token takes 0.92x as long. Its
 attention layers keep vLLM's own KV cache for now. Logs: [benchmarks/gpu/h100-qwen38-v028-2026-10-03](benchmarks/gpu/h100-qwen38-v028-2026-10-03).
 
 ### The lossless KV cache in vLLM
