@@ -44,7 +44,7 @@ model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits bit for bit
 # generate() runs compiled on PyTorch 2.13.0 or later (a static cache, CUDA graphs); compile=False, or GLYD_COMPILE=0, runs it eager
 ```
 ```bash
-glyd pack Qwen/Qwen3-8B qwen3-8b-glyd                    # saved packed, on the GPU: the Python tool's pack, as python -m glyd_gpu pack; glyd verify PATH checks a save
+glyd pack Qwen/Qwen3-8B qwen3-8b-glyd                    # saved packed (glyd-v4; earlier saves still load), on the GPU: the Python tool's pack, as python -m glyd_gpu pack; glyd verify PATH checks a save
 glyd pack Qwen/Qwen3-8B qwen3-8b-glyd12 --layout mma12   # the mma12 layout: an A10, A100 or H100 loads it as saved
 ```
 
@@ -159,11 +159,13 @@ personal, educational, research and other non-commercial use; commercial use
 needs a license ([License](#license)). Its source up to v0.26 is in those
 releases' tags.
 
-vLLM holds the model's Linears, and a mixture of experts' experts, packed
-and multiplies them by Glyd's kernels; its KV cache takes the memory they
-save. `vllm bench serve`, bf16 against Glyd at the same
+vLLM holds the whole model packed: the Linears, from v0.28.0 the embedding
+and the output layer too (every embedding row comes back bit for bit), and a
+mixture of experts' experts, multiplied by Glyd's kernels; its KV cache takes
+the memory they save. `vllm bench serve`, bf16 against Glyd at the same
 `--gpu-memory-utilization 0.9` (servers warm, 1,024 tokens in and 256
-out; low load 1 request a second, 0.25 on the L4):
+out; low load 1 request a second, 0.25 on the L4), with v0.26.0's and
+v0.27.0's plugin, before the embedding and the output layer were packed:
 
 | GPU (Glyd's layout) | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
 | :--- | :--- | ---: | ---: | :--- | :--- |
@@ -173,13 +175,13 @@ out; low load 1 request a second, 0.25 on the L4):
 | A100 40 GB (`mma12`) | Qwen3-14B | 1.77x | **1.28x** | +19%, −13% | −21%, +33% |
 | GH200 (`mma12`) | Qwen3-8B | 1.04x | 0.93x | +6%, +1% | +5%, +9% |
 | GH200 (`mma12`) | Qwen3-32B | 1.66x | 0.89x | +27%, −6% | −24%, +58% |
-| H100 SXM (`mma12`) | Qwen3-30B-A3B | 2.11x | 0.84x | +35%, +5% | −37%, +126% |
+| H100 SXM (`mma12`) | Qwen3-30B-A3B | 2.11x | 0.84x (v0.28.0: 1.07x, below) | +35%, +5% | −37%, +126% |
 
 2x RTX A6000: being re-measured after a benchmark fix (the benchmark's passes repeated prompts, so a large KV cache
 could serve some of them; each pass now uses new prompts. The [CHANGELOG](CHANGELOG.md) has the corrected rows).
 
 More requests at once on every GPU, and more a second on the L4, A10 and the A100 with Qwen3-14B; about the same on the
-A100 with Qwen3-8B, and fewer a second saturated on the GH200 and with Qwen3-30B-A3B on an H100 SXM. On an 80 GB H100 SXM, where
+A100 with Qwen3-8B, and fewer a second saturated on the GH200 and, with v0.27.0's plugin, with Qwen3-30B-A3B on an H100 SXM. On an 80 GB H100 SXM, where
 Qwen3-32B's bf16 weights leave room for 32,320 tokens of KV cache, Glyd
 served 1.56x bf16's requests a second saturated (`fraction` 1, a bench of
 its own: [docs](https://getglyd.com/docs/vllm/#a-fraction-of-the-layers)). At
@@ -192,6 +194,35 @@ and every rate: [getglyd.com/docs/vllm](https://getglyd.com/docs/vllm/); logs in
 `l4-vllm-m5-new-prompts-2026-10-03`, `vllm-m3-a10-2026-09-30`,
 `vllm-m3-a100-40gb-new-prompts-2026-10-03`, `vllm-m3-gh200-new-prompts-2026-10-03`,
 `vllm-m6-h100-new-prompts-2026-10-03`).
+
+#### The whole model, and mixtures of experts (v0.28.0)
+
+The embedding and the output layer are packed too. On an L4, v0.27.0 from PyPI against v0.28.0 with the same vLLM 0.30.0, alternated in one session: the weights and
+the KV cache as vLLM's log gives them with its own KV cache (`--max-model-len 4096`, 0.9 of the GPU's memory; a later start's), one user's tokens a second
+(1,024 tokens in, 256 out, three rounds) and the requests a second saturated with `kv` at its default (`auto`, lossless on an L4; v0.28.0 against v0.27.0, two rounds):
+
+| L4 | Weights GiB: bf16 | v0.27.0 | ⚡&nbsp;**v0.28.0** | KV cache tokens: bf16 | v0.27.0 | ⚡&nbsp;**v0.28.0** | One user, tokens/s: v0.28.0 against v0.27.0 | Requests/s saturated, v0.28.0 against v0.27.0 (two rounds) |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-8B | 15.27 | 11.38 | **10.38** (−32.0%) | 27,024 | 54,464 | **60,736** | **1.065x** | **1.095x and 1.095x** |
+| Llama-3.1-8B | 15.0 | 11.05 | **10.16** (−32.3%) | 32,592 | 64,368 | **70,112** | **1.050x** | **1.040x and 1.041x** |
+| Qwen3-4B | 7.56 | 5.48 | **5.16** (−31.7%) | 83,408 | 97,488 | **99,312** | **1.055x** | **1.031x and 1.037x** |
+
+A first start, on an empty compile cache, no longer logs a much smaller KV cache than a later one (Qwen3-8B: v0.27.0 38,912 tokens against 54,464, v0.28.0 60,736 on both). The faster steps of the smallest layout alone, with the embedding and the output layer left as vLLM runs them, give one user 1.042x
+v0.27.0's tokens a second on Qwen3-8B. `exact` is unchanged: vLLM's bf16 logits bit for bit. Logs: [benchmarks/gpu/vllm-v028-l4-2026-10-04](benchmarks/gpu/vllm-v028-l4-2026-10-04), and
+[benchmarks/gpu/vllm-full33-l4-2026-10-03](benchmarks/gpu/vllm-full33-l4-2026-10-03) (the same on an earlier tree), [l4x2-vllm-tp2-2026-10-04](benchmarks/gpu/l4x2-vllm-tp2-2026-10-04)
+(tensor parallel 2 over two L4s: every lookup and every product checked).
+
+Mixtures of experts, against vLLM's own bf16 path with its default (untuned) MoE settings (a tuned bf16 would be faster than that baseline: not measured); `vllm bench serve`,
+1,024 tokens in and 256 out, saturated, vLLM 0.30.0:
+
+| Requests/s | bf16 | ⚡&nbsp;**Glyd** | Glyd with the lossless KV cache |
+| :--- | ---: | ---: | ---: |
+| H100 SXM, Qwen3-30B-A3B | 12.32 | **13.13** (1.07x) | **17.10** (1.39x) |
+| A100 40 GB, Qwen3-16B-A3B | 4.12 | | **6.18** (1.50x) |
+
+Qwen3-16B-A3B is Qwen3-30B-A3B with half its experts (the 30B does not fit an A100 40 GB in bf16). The weights leave room for more requests at once: the first token comes after 0.56x and 0.50x the
+time on the H100 (0.53x on the A100) and each token takes 1.69x and 1.61x as long (2.04x). Prompt steps are where Glyd is behind (22 microseconds a prompt token against bf16's 15 on the H100). Logs:
+[benchmarks/gpu/h100-moe-v028-2026-10-03](benchmarks/gpu/h100-moe-v028-2026-10-03), [a100-moe-v028-2026-10-03](benchmarks/gpu/a100-moe-v028-2026-10-03).
 
 ### The lossless KV cache in vLLM
 

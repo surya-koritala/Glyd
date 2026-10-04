@@ -194,12 +194,13 @@ for bit only with `torch._inductor.config.emulate_precision_casts = True`
 (so an exact model's `generate()` stays eager: its tokens are bf16's
 eager ones).
 
-`glyd.save_pretrained(model, path)` writes glyd-v1: the packed weights as safetensors, the rest of the model as it
-is, `glyd.json` (the format, the source repo and revision, and for every packed tensor its shape and the sha256 of
-its bf16 bytes; from glyd 0.25 the sha256 of every tensor saved as it is), and the source's config, generation config
-and tokenizer files. With a mixture of experts' packs the format is glyd-v2, which glyd 0.21 refuses by its format
-("this glyd reads glyd-v1"): load it with 0.22 or later. `from_pretrained(path)` loads the packs as saved; on a GPU
-where `mma12` is the pick, it decodes and packs them again. `save_pretrained(model, path, layout="mma12")` (`pack
+`glyd.save_pretrained(model, path)` writes glyd-v4 (from glyd 0.28): the packed weights as safetensors, the rest of the
+model as it is, `glyd.json` (the format, the source repo and revision, and for every packed tensor its shape and the
+sha256 of its bf16 bytes; from glyd 0.25 the sha256 of every tensor saved as it is), and the source's config,
+generation config and tokenizer files. Glyd 0.27 and before wrote glyd-v1, and glyd-v2 with a mixture of experts'
+packs; glyd 0.28 loads both and packs them again as they load, and glyd 0.27 and before refuse a glyd-v4 save by its
+format. `from_pretrained(path)` loads the packs as saved; on a GPU where `mma12` is the pick, it decodes and packs
+them again. `save_pretrained(model, path, layout="mma12")` (`pack
 --layout mma12`) saves the `mma12` layout instead, as an A10, A100 or H100 runs it (glyd-v3, which glyd 0.24 and
 before refuse): loaded there as saved, 2.7-3.9x faster than packing again (on an RTX 4080 SUPER, Qwen3-8B in
 1.17-1.18 s against 3.14-4.55 s from an `mma` save and 3.54-3.61 s from the bf16 checkpoint;
@@ -214,7 +215,7 @@ and 1.5 GiB for the runtime, against the memory nvidia-smi reports
 repo id, from the files for a directory.
 
     python -m glyd_gpu fit Qwen/Qwen3-32B --gpu 48GB
-    python -m glyd_gpu pack Qwen/Qwen3-8B qwen3-8b-glyd     # packed, checked, saved as glyd-v1
+    python -m glyd_gpu pack Qwen/Qwen3-8B qwen3-8b-glyd     # packed, checked, saved as glyd-v4
     python -m glyd_gpu verify qwen3-8b-glyd
 
 `glyd pack` and `glyd verify` are the same two commands (the `glyd` program passes them to the Python tool).
@@ -245,7 +246,9 @@ have the flags by hand.
 `--additional-config`'s `"glyd"` (or `GLYD_LAYOUT`, `GLYD_EXACT`,
 `GLYD_VERIFY`). `fraction` (0 to 1, `GLYD_FRACTION`) packs only that share
 of the decoder layers, spread evenly over the depth, and leaves the rest as
-vLLM runs them: 0 is bf16, 1 (the default) every layer. vLLM sizes its KV
+vLLM runs them: 0 is bf16, 1 (the default) every layer, and from v0.28 the
+embedding and the output layer too (every embedding row comes back bit for
+bit; `exact` keeps the output layer as vLLM runs it). vLLM sizes its KV
 cache after the weights load, so the memory the packs save becomes KV
 cache: 1.04-2.11x bf16's on an L4, an A10, an A100, a GH200 and an H100 SXM, at the same
 `--gpu-memory-utilization`. With `exact` the logits are vLLM's bf16 ones
