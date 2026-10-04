@@ -1,0 +1,21 @@
+21:35:11 save ut mma: exit 0 (config.json generation_config.json glyd.json merges.txt model.safetensors tokenizer.json tokenizer_config.json vocab.json )
+21:35:34 vLLM on the ut save (mma) as mma: exit 0
+ut save (mma) as mma against the checkpoint packed at load: bit for bit True | tables [('model.embed_tokens', 'GlydEmbeddingMethod', True), ('lm_head', 'GlydEmbeddingMethod', True)]
+21:36:02 vLLM on the ut save (mma) as mma12: exit 0
+ut save (mma) as mma12 against the checkpoint packed at load: bit for bit True | tables [('model.embed_tokens', 'GlydEmbeddingMethod', True), ('lm_head', 'GlydEmbeddingMethod', True)]
+21:36:22 save ut mma12: exit 0 (config.json generation_config.json glyd.json merges.txt model.safetensors tokenizer.json tokenizer_config.json vocab.json )
+21:36:36 vLLM on the ut save (mma12) as mma: exit 0
+ut save (mma12) as mma against the checkpoint packed at load: bit for bit True | tables [('model.embed_tokens', 'GlydEmbeddingMethod', True), ('lm_head', 'GlydEmbeddingMethod', True)]
+21:37:05 vLLM on the ut save (mma12) as mma12: exit 0
+ut save (mma12) as mma12 against the checkpoint packed at load: bit for bit True | tables [('model.embed_tokens', 'GlydEmbeddingMethod', True), ('lm_head', 'GlydEmbeddingMethod', True)]
+21:37:25 save tt mma: exit 0 (config.json generation_config.json glyd.json merges.txt model.safetensors tokenizer.json tokenizer_config.json vocab.json )
+21:37:40 vLLM on the tt save (mma) as mma: exit 0
+tt save (mma) as mma against the checkpoint packed at load: bit for bit True | tables [('model.embed_tokens', 'GlydEmbeddingMethod', True), ('lm_head', 'GlydEmbeddingMethod', True)]
+21:38:10 vLLM on the tt save (mma) as mma12: exit 0
+tt save (mma) as mma12 against the checkpoint packed at load: bit for bit True | tables [('model.embed_tokens', 'GlydEmbeddingMethod', True), ('lm_head', 'GlydEmbeddingMethod', True)]
+21:38:29 save tt mma12: exit 0 (config.json generation_config.json glyd.json merges.txt model.safetensors tokenizer.json tokenizer_config.json vocab.json )
+21:38:44 vLLM on the tt save (mma12) as mma: exit 0
+tt save (mma12) as mma against the checkpoint packed at load: bit for bit True | tables [('model.embed_tokens', 'GlydEmbeddingMethod', True), ('lm_head', 'GlydEmbeddingMethod', True)]
+21:39:13 vLLM on the tt save (mma12) as mma12: exit 0
+tt save (mma12) as mma12 against the checkpoint packed at load: bit for bit True | tables [('model.embed_tokens', 'GlydEmbeddingMethod', True), ('lm_head', 'GlydEmbeddingMethod', True)]
+21:39:27 saves done

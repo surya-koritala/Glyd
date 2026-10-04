@@ -1,0 +1,13 @@
+| Mode | Steps | Seconds | Prompt steps | s | ms a step | us a token | Decode steps | s | ms a step | us a token | Decode steps' mean sequences | Highest KV usage |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bf16 | 2076 | 61.6 | 171 | 15.7 | 92 | 52 | 1905 | 45.9 | 24.1 | 758 | 32 | 100% |
+| glyd-picked+kv | 784 | 40.9 | 166 | 22.0 | 133 | 72 | 618 | 18.9 | 30.5 | 380 | 103 | 100% |
+| bf16-2 | 2077 | 64.6 | 173 | 16.0 | 92 | 52 | 1904 | 48.7 | 25.6 | 805 | 32 | 100% |
+
+| Mode | Steps | Count | Seconds | Mean |
+| :--- | :--- | ---: | ---: | ---: |
+| bf16 | decode steps of <64 sequences | 1905 | 45.9 s | 24.1 ms a step |
+| glyd-picked+kv | decode steps of <64 sequences | 230 | 3.3 s | 14.3 ms a step |
+| glyd-picked+kv | decode steps of 64-127 sequences | 273 | 10.9 s | 39.9 ms a step |
+| glyd-picked+kv | decode steps of 128-191 sequences | 115 | 4.7 s | 40.9 ms a step |
+| bf16-2 | decode steps of <64 sequences | 1904 | 48.7 s | 25.6 ms a step |

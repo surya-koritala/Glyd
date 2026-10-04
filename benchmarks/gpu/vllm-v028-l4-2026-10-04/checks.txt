@@ -1,0 +1,2 @@
+test_vllm (from the sources): exit 0 (27 ok)
+test_vllm (from the built wheel): exit 0 (27 ok)

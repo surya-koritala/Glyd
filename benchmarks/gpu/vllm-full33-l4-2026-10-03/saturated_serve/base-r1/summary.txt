@@ -1,0 +1,6 @@
+glyd: weights 11.38 GiB, KV cache 54,464 tokens, max concurrency 13.30x at 4,096 tokens (started cold, on an empty compile cache: weights 11.38 GiB, KV cache 38,912 tokens, max concurrency 9.50x at 4,096 tokens)
+Prefix cache hit rate, at most (the servers' logs): glyd 0.0%
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| inf | glyd | 1.05 | 269.2 | 105024 / 224762 | 156.6 / 253.2 | 256 | 1080 MHz, 81 C |

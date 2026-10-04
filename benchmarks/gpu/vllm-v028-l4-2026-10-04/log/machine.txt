@@ -1,0 +1,53 @@
+== date: 2026-10-04 21:48 UTC
+ 21:48:06 up  5:25,  1 user,  load average: 0.50, 0.97, 1.18
+Sun Oct  4 21:48:06 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.91.07              Driver Version: 595.91.07      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA L4                      On  |   00000000:35:00.0 Off |                    0 |
+| N/A   63C    P0             31W /   72W |       0MiB /  23034MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+name, compute_cap, driver_version, memory.total [MiB], clocks.max.sm [MHz], power.limit [W]
+NVIDIA L4, 8.9, 595.91.07, 23034 MiB, 2040 MHz, 72.00 W
+CPU(s):                                  16
+Model name:                              AMD EPYC 7R13 Processor
+Linux 7.0.0-1013-aws #13~24.04.1-Ubuntu SMP PREEMPT Sat Sep  5 01:10:01 UTC 2026 x86_64
+MemTotal:       63393244 kB
+vllm 0.30.0 torch 2.13.0+cu130 cuda 13.0 transformers 5.18.0
+-rw-rw-r-- 1 ubuntu ubuntu 28604236 Oct  4 16:38 wheel/glyd_gpu-0.27.0-cp310-abi3-manylinux_2_28_x86_64.whl
+
+pypi:
+total 16012
+drwxrwxr-x  2 ubuntu ubuntu     4096 Oct  4 16:38 .
+drwxrwxr-x 18 ubuntu ubuntu     4096 Oct  4 21:31 ..
+-rw-rw-r--  1 ubuntu ubuntu 16385552 Oct  4 16:38 glyd_gpu-0.27.0-cp310-abi3-manylinux_2_28_x86_64.whl
+1158aad78cfffda69f51bea985042cad7a31527271c3ea6af4e732e54485ad7d  pypi/glyd_gpu-0.27.0-cp310-abi3-manylinux_2_28_x86_64.whl
+526779afde59fe38352907a3a441a412516ddf8ef1e686f216399b6e2fbf28ec  wheel/glyd_gpu-0.27.0-cp310-abi3-manylinux_2_28_x86_64.whl
+pip 26.2.1 from /usr/local/lib/python3.12/dist-packages/pip (python 3.12)
+== v027
+module v027/glyd_gpu/__init__.abi3.so
+version 0.27.0
+distribution 0.27.0 v027/glyd_gpu-0.27.0.dist-info
+entry points [('glyd', 'glyd_gpu.vllm_entry:register')]
+libraries ['libglyd_gpu_cuda12.so', 'libglyd_gpu_cuda13.so']
+== v028
+module v028/glyd_gpu/__init__.abi3.so
+version 0.27.0
+distribution 0.27.0 v028/glyd_gpu-0.27.0.dist-info
+entry points [('glyd', 'glyd_gpu.vllm_entry:register')]
+libraries ['libglyd_gpu_cuda12.so', 'libglyd_gpu_cuda13.so']
+0.30.0
+/dev/root       290G  247G   43G  86% /

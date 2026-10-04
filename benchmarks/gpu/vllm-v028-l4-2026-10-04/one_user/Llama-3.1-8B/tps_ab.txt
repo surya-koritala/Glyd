@@ -1,0 +1,14 @@
+round 0 v027: 22.00 tokens/s (runs [22.04, 22.0, 21.95]; weights 11.05 GiB, KV cache 49,264 tokens; GPU 1215, 73, 72.16)
+round 0 v028: 23.10 tokens/s (runs [23.13, 23.1, 23.08]; weights 10.16 GiB, KV cache 65,808 tokens; GPU 1320, 74, 71.79)
+round 1 v028: 23.01 tokens/s (runs [23.05, 23.01, 23.0]; weights 10.16 GiB, KV cache 65,808 tokens; GPU 1305, 80, 72.01)
+round 1 v027: 21.92 tokens/s (runs [21.97, 21.9, 21.92]; weights 11.05 GiB, KV cache 59,184 tokens; GPU 1200, 77, 71.70)
+round 2 v027: 21.77 tokens/s (runs [21.86, 21.77, 21.67]; weights 11.05 GiB, KV cache 59,184 tokens; GPU 1170, 82, 71.87)
+round 2 v028: 22.94 tokens/s (runs [23.01, 22.94, 22.94]; weights 10.16 GiB, KV cache 65,808 tokens; GPU 1260, 82, 72.00)
+
+NousResearch/Meta-Llama-3.1-8B, one user, 1024 tokens in, 256 out, vLLM's default mode (compiled, CUDA graphs), the median of 3 rounds, alternated:
+| | tokens a second | weights GiB | KV cache tokens (the last round's start: vLLM's memory profile of a start that compiles reads other than that of one that does not) |
+| :--- | ---: | ---: | ---: |
+| v027 | 21.92 (rounds 22.00, 21.92, 21.77) | 11.05 | 59,184 |
+| v028 | 23.01 (rounds 23.10, 23.01, 22.94) | 10.16 | 65,808 |
+
+v028 against v027: 1.050x the tokens a second (each round 1.050, 1.050, 1.054)

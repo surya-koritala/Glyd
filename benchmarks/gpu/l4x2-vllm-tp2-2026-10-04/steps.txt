@@ -1,0 +1,9 @@
+12:14:44 (+1 s) machine
+12:14:59 (+16 s) env: vLLM and nvcc in 15 s
+12:17:03 (+140 s) build: sm_89 in 113 s (library: C API 14 | GPU code 3089)
+12:18:00 (+197 s) sweep: exit 0 in 57 s (Qwen/Qwen3-8B: lm_head.weight 151936 x 4096 bf16 on NVIDIA L4 (GPU code 3089), torch 2.13.0+cu130)
+12:22:32 (+470 s) tiny: exit 0 in 272 s (tables_check: all passed (8 checks))
+12:27:19 (+756 s) real: exit 0 in 286 s (check_vllm: all passed (7 checks))
+download dl-Qwen3-4B: exit 0: 8060899111 bytes in 93 s (at +112 s)
+download dl-Qwen3-8B: exit 0: 1258905803 bytes in 18 s (at +19 s)
+12:27:19 (+756 s) done

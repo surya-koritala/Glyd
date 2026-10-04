@@ -1,0 +1,18 @@
+Qwen/Qwen3-30B-A3B's layer 0 (128 experts), GPU time in a CUDA graph a layer, by tokens a step: vLLM's bf16 layer (its default fused-MoE configuration) against Glyd's (the table of the run's own sweep, ratios as it prints them).
+
+| Tokens a step | bf16 (vLLM's layer) | Glyd | the best setting tried | best / bf16 |
+| ---: | ---: | ---: | ---: | ---: |
+| 16 | 272 us | 247 us | 246 us | 0.90x |
+| 24 | 330 us | 339 us | 339 us | 1.03x |
+| 32 | 362 us | 381 us | 377 us | 1.04x |
+| 48 | 394 us | 401 us | 401 us | 1.02x |
+| 64 | 404 us | 414 us | 414 us | 1.02x |
+| 128 | 424 us | 421 us | 421 us | 0.99x |
+| 232 | 432 us | 438 us | 438 us | 1.01x |
+| 384 | 442 us | 482 us | 480 us | 1.08x |
+| 512 | 451 us | 506 us | 502 us | 1.12x |
+| 768 | 477 us | 548 us | 548 us | 1.15x |
+| 1,152 | 502 us | 693 us | 692 us | 1.38x |
+| 2,048 | 607 us | 1,052 us | 1,052 us | 1.73x |
+| 4,096 | 940 us | 1,856 us | 1,850 us | 1.97x |
+| 8,192 | 1,713 us | 3,453 us | 3,453 us | 2.01x |

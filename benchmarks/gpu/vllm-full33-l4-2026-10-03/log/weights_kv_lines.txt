@@ -1,0 +1,90 @@
+== mem8-base
+[model_runner.py:428] Model loading took 11.38 GiB memory and 20.931736 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 50,368 tokens, Maximum concurrency for 2,048 tokens per request: 24.59x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 11.68 GiB for consumed memory (weights + non-torch), 1.23 GiB for peak activation, and 0.26 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 32.42 s (compilation: 2.05 s)
+== mem8-src
+[model_runner.py:428] Model loading took 10.63 GiB memory and 18.639412 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 55,904 tokens, Maximum concurrency for 2,048 tokens per request: 27.30x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 10.92 GiB for consumed memory (weights + non-torch), 1.24 GiB for peak activation, and 0.26 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 117.64 s (compilation: 85.77 s)
+== q8-base
+[model_runner.py:428] Model loading took 11.38 GiB memory and 15.369738 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 38,224 tokens, Maximum concurrency for 2,048 tokens per request: 18.66x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 12.82 GiB for consumed memory (weights + non-torch), 1.76 GiB for peak activation, and 0.26 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 117.44 s (compilation: 86.07 s)
+== sc-q8-1
+[model_runner.py:428] Model loading took 10.45 GiB memory and 120.736789 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 56,816 tokens, Maximum concurrency for 2,048 tokens per request: 27.74x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 10.73 GiB for consumed memory (weights + non-torch), 1.3 GiB for peak activation, and 0.26 GiB for CUDAGraph memory. Rep
+[core.py:372] init engine (profile, create kv cache, warmup model) took 126.23 s (compilation: 88.95 s)
+== sc-q8-2
+[model_runner.py:428] Model loading took 10.45 GiB memory and 17.837808 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 56,816 tokens, Maximum concurrency for 2,048 tokens per request: 27.74x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 10.73 GiB for consumed memory (weights + non-torch), 1.3 GiB for peak activation, and 0.26 GiB for CUDAGraph memory. Rep
+[core.py:372] init engine (profile, create kv cache, warmup model) took 32.14 s (compilation: 2.27 s)
+== wk-q8-bf16-1
+[model_runner.py:428] Model loading took 15.27 GiB memory and 195.465817 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 22,928 tokens, Maximum concurrency for 2,048 tokens per request: 11.20x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 15.5 GiB for consumed memory (weights + non-torch), 1.18 GiB for peak activation, and 0.23 GiB for CUDAGraph memory. Rep
+[core.py:372] init engine (profile, create kv cache, warmup model) took 36.49 s (compilation: 1.36 s)
+== wk-q8-bf16-2
+[model_runner.py:428] Model loading took 15.27 GiB memory and 53.065642 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 22,928 tokens, Maximum concurrency for 2,048 tokens per request: 11.20x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 15.5 GiB for consumed memory (weights + non-torch), 1.18 GiB for peak activation, and 0.23 GiB for CUDAGraph memory. Rep
+[core.py:372] init engine (profile, create kv cache, warmup model) took 30.04 s (compilation: 0.27 s)
+== wk-q8-base-2
+[model_runner.py:428] Model loading took 11.38 GiB memory and 17.620807 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 38,224 tokens, Maximum concurrency for 2,048 tokens per request: 18.66x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 12.82 GiB for consumed memory (weights + non-torch), 1.76 GiB for peak activation, and 0.26 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 137.75 s (compilation: 102.94 s)
+== wk-q8-src-2
+[model_runner.py:428] Model loading took 10.63 GiB memory and 19.397551 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 55,904 tokens, Maximum concurrency for 2,048 tokens per request: 27.30x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 10.92 GiB for consumed memory (weights + non-torch), 1.24 GiB for peak activation, and 0.26 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 146.14 s (compilation: 108.68 s)
+== wk-q4-src-1
+[model_runner.py:428] Model loading took 5.15 GiB memory and 14.888695 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 88,832 tokens, Maximum concurrency for 2,048 tokens per request: 43.38x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.85, 18.73 GiB). Actual usage is 5.49 GiB for consumed memory (weights + non-torch), 1.04 GiB for peak activation, and 0.24 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 108.45 s (compilation: 84.24 s)
+== wk-llama-bf16-1
+[model_runner.py:428] Model loading took 15.0 GiB memory and 32.012314 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 25,232 tokens, Maximum concurrency for 2,048 tokens per request: 12.32x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 15.22 GiB for consumed memory (weights + non-torch), 1.54 GiB for peak activation, and 0.24 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 44.14 s (compilation: 16.61 s)
+== wk-llama-base-1
+[model_runner.py:428] Model loading took 11.05 GiB memory and 16.793016 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 49,264 tokens, Maximum concurrency for 2,048 tokens per request: 24.05x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 12.28 GiB for consumed memory (weights + non-torch), 1.54 GiB for peak activation, and 0.23 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 76.98 s (compilation: 46.53 s)
+== wk-llama-src-1
+[model_runner.py:428] Model loading took 10.16 GiB memory and 19.066850 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 66,096 tokens, Maximum concurrency for 2,048 tokens per request: 32.27x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 10.41 GiB for consumed memory (weights + non-torch), 1.36 GiB for peak activation, and 0.23 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 77.83 s (compilation: 47.76 s)
+== wk-llama-base-2
+[model_runner.py:428] Model loading took 11.05 GiB memory and 54.291493 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 59,184 tokens, Maximum concurrency for 2,048 tokens per request: 28.90x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 11.32 GiB for consumed memory (weights + non-torch), 1.29 GiB for peak activation, and 0.23 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 28.05 s (compilation: 1.15 s)
+== wk-llama-src-2
+[model_runner.py:428] Model loading took 10.16 GiB memory and 17.399567 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 66,096 tokens, Maximum concurrency for 2,048 tokens per request: 32.27x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.9, 19.83 GiB). Actual usage is 10.41 GiB for consumed memory (weights + non-torch), 1.35 GiB for peak activation, and 0.23 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 28.39 s (compilation: 1.12 s)
+== q4-bf16
+[model_runner.py:428] Model loading took 7.56 GiB memory and 2.641840 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 70,800 tokens, Maximum concurrency for 2,048 tokens per request: 34.57x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.85, 18.73 GiB). Actual usage is 7.79 GiB for consumed memory (weights + non-torch), 1.21 GiB for peak activation, and 0.22 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 61.55 s (compilation: 38.59 s)
+== q4-base
+[model_runner.py:428] Model loading took 5.48 GiB memory and 9.002594 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 84,880 tokens, Maximum concurrency for 2,048 tokens per request: 41.45x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.85, 18.73 GiB). Actual usage is 5.82 GiB for consumed memory (weights + non-torch), 1.25 GiB for peak activation, and 0.24 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 110.86 s (compilation: 86.94 s)
+== q4-glyd
+[model_runner.py:428] Model loading took 5.24 GiB memory and 63.854877 seconds
+[kv_cache_utils.py:2395] GPU KV cache size: 88,144 tokens, Maximum concurrency for 2,048 tokens per request: 43.04x
+[gpu_worker.py:888] Free memory on device (21.85/22.04 GiB) on startup. Desired GPU memory utilization is (0.85, 18.73 GiB). Actual usage is 5.58 GiB for consumed memory (weights + non-torch), 1.04 GiB for peak activation, and 0.24 GiB for CUDAGraph memory. Re
+[core.py:372] init engine (profile, create kv cache, warmup model) took 116.07 s (compilation: 90.30 s)

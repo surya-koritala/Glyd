@@ -1,0 +1,5 @@
+04:37:25 sanitize start
+04:37:28 memcheck: exit 0 (========= ERROR SUMMARY: 0 errors )
+04:37:31 initcheck: exit 0 (========= ERROR SUMMARY: 0 errors )
+04:37:40 racecheck: exit 0 (========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings) )
+04:37:43 synccheck: exit 0 (========= ERROR SUMMARY: 0 errors )

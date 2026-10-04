@@ -1,0 +1,11 @@
+Qwen/Qwen3-8B model.embed_tokens.weight (151936, 4096) mma: all 151936 rows bit for bit, in order and shuffled (1.8 s)
+Qwen/Qwen3-8B model.embed_tokens.weight (151936, 4096) mma12: all 151936 rows bit for bit, in order and shuffled (0.9 s)
+Qwen/Qwen3-8B lm_head.weight (151936, 4096) mma: all 151936 rows bit for bit, in order and shuffled (1.5 s)
+Qwen/Qwen3-8B lm_head.weight (151936, 4096) mma12: all 151936 rows bit for bit, in order and shuffled (0.7 s)
+Qwen/Qwen3-4B model.embed_tokens.weight (151936, 2560) mma: all 151936 rows bit for bit, in order and shuffled (1.0 s)
+Qwen/Qwen3-4B model.embed_tokens.weight (151936, 2560) mma12: all 151936 rows bit for bit, in order and shuffled (0.6 s)
+NousResearch/Meta-Llama-3.1-8B model.embed_tokens.weight (128256, 4096) mma: all 128256 rows bit for bit, in order and shuffled (1.2 s)
+NousResearch/Meta-Llama-3.1-8B model.embed_tokens.weight (128256, 4096) mma12: all 128256 rows bit for bit, in order and shuffled (0.6 s)
+NousResearch/Meta-Llama-3.1-8B lm_head.weight (128256, 4096) mma: all 128256 rows bit for bit, in order and shuffled (1.2 s)
+NousResearch/Meta-Llama-3.1-8B lm_head.weight (128256, 4096) mma12: all 128256 rows bit for bit, in order and shuffled (0.6 s)
+FAILURES: 0

@@ -1,0 +1,7 @@
+glyd: weights 5.41 GiB, KV cache 129,344 tokens, max concurrency 31.58x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): glyd 0.0%
+
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | glyd | 0.89 | 228.6 | 291 / 484 | 38.5 / 46.2 | 64 | 1470 MHz, 73 C |
+| inf | glyd | 2.33 | 597.3 | 40708 / 96605 | 150.7 / 245.9 | 256 | 1155 MHz, 80 C |

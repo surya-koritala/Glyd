@@ -1,0 +1,26 @@
+kalomaze/Qwen3-16B-A3B on NVIDIA A100-SXM4-40GB; vllm bench serve, 1,024 tokens in and 256 out, rates 1 inf, prompts 64 256 (a seed a pass)
+
+######## bf16
+bf16: weights 29.87 GiB, KV cache 40,288 tokens, max concurrency 9.84x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): bf16 1.0%
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.94 | 241.2 | 102 / 401 | 13.9 / 19.2 | 64 | 1410 MHz, 49 C |
+| inf | bf16 | 4.12 | 1055.7 | 27100 / 57564 | 30.9 / 52.9 | 256 | 1410 MHz, 64 C |
+
+######## glyd-picked+kv
+kv+glyd: weights 23.97 GiB, KV cache 144,896 tokens, max concurrency 35.38x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): kv+glyd 0.8%
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | kv+glyd | 0.95 | 243.2 | 110 / 175 | 12.3 / 16.0 | 64 | 1410 MHz, 50 C |
+| inf | kv+glyd | 6.18 | 1582.4 | 14233 / 37123 | 62.9 / 99.9 | 256 | 1410 MHz, 56 C |
+
+######## bf16-2
+bf16: weights 29.87 GiB, KV cache 40,288 tokens, max concurrency 9.84x at 4,096 tokens
+Prefix cache hit rate, at most (the servers' logs): bf16 1.0%
+| Rate (req/s) | Mode | Requests/s | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | bf16 | 0.94 | 241.2 | 103 / 404 | 14.1 / 19.2 | 64 | 1410 MHz, 50 C |
+| inf | bf16 | 3.94 | 1007.8 | 28024 / 59623 | 32.2 / 54.7 | 256 | 1410 MHz, 64 C |
+

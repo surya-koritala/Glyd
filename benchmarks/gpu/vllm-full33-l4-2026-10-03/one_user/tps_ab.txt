@@ -1,0 +1,14 @@
+round 0 base: 21.10 tokens/s (runs [21.18, 21.1, 21.06]; weights 11.38 GiB, KV cache 38,224 tokens; GPU 1200, 75, 71.83)
+round 0 new: 21.74 tokens/s (runs [21.8, 21.73, 21.74]; weights 10.45 GiB, KV cache 56,816 tokens; GPU 1455, 69, 71.79)
+round 1 new: 21.68 tokens/s (runs [21.76, 21.68, 21.68]; weights 10.45 GiB, KV cache 56,816 tokens; GPU 1155, 74, 71.95)
+round 1 base: 21.06 tokens/s (runs [21.13, 21.04, 21.06]; weights 11.38 GiB, KV cache 50,368 tokens; GPU 1155, 76, 69.98)
+round 2 base: 21.04 tokens/s (runs [21.1, 21.04, 21.02]; weights 11.38 GiB, KV cache 50,368 tokens; GPU 1470, 77, 71.90)
+round 2 new: 21.48 tokens/s (runs [21.56, 21.48, 21.33]; weights 10.45 GiB, KV cache 56,816 tokens; GPU 1200, 78, 72.10)
+
+Qwen/Qwen3-8B, one user, 1024 tokens in, 256 out, vLLM's default mode (compiled, CUDA graphs), the median of 3 rounds, alternated:
+| | tokens a second | weights GiB | KV cache tokens (the last round's start: vLLM's memory profile of a start that compiles reads other than that of one that does not) |
+| :--- | ---: | ---: | ---: |
+| base | 21.06 (rounds 21.10, 21.06, 21.04) | 11.38 | 50,368 |
+| new | 21.68 (rounds 21.74, 21.68, 21.48) | 10.45 | 56,816 |
+
+new against base: 1.029x the tokens a second (each round 1.030, 1.029, 1.021)
