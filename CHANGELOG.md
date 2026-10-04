@@ -80,6 +80,15 @@ every earlier format.
     not repeated on the release's final tree.
   Logs: [benchmarks/gpu/h100-moe-v028-2026-10-03](benchmarks/gpu/h100-moe-v028-2026-10-03),
   [a100-moe-v028-2026-10-03](benchmarks/gpu/a100-moe-v028-2026-10-03).
+- A newer model under vLLM: Qwen3.8-27B (text only), on an H100 80GB HBM3, vLLM 0.30.0, 1,024 tokens in and 256 out. The
+  weights take 38.77 GiB against bf16's 50.22 (22.8% under, the `mma12` layout this GPU takes by default; v0.27.0:
+  39.69), and the KV cache holds 204,117 tokens against 122,538 (1.67x; bf16 started again at the end: 132,778).
+  Saturated (256 requests at once): 5.05 requests a second against 4.72 and 4.70 (**1.07x**), the first token 0.84x
+  as late, each token 1.43x as long. At 1 request a second: 0.92 against 0.92, each token 21.7 ms against 23.4 (0.93x),
+  the first token 227 ms against 199. bf16's continuations scored on Glyd: top-1 99.22% (bf16 against itself started
+  again: 99.22%). The lossless KV cache stays off for this model, with a line in the log that says why (linear
+  attention and head size 256 are not held yet). Glyd's saturated passes drew more power and ran at a lower clock
+  (1,852 MHz against 1,980), so the run's own clock check marks it not comparable. Logs: [benchmarks/gpu/h100-qwen38-v028-2026-10-03](benchmarks/gpu/h100-qwen38-v028-2026-10-03).
 - The smallest layout (`mma`) is faster at 1 to 16 tokens a step. On an L4, which takes it by default, one user's tokens
   a second on Qwen3-8B with the embedding and the output layer left as vLLM runs them are **1.042x** v0.27.0's (22.07
   against 21.19; rounds 1.041, 1.043, 1.036), and 1.065x with them packed too (above). The GPUs that take the `mma12`

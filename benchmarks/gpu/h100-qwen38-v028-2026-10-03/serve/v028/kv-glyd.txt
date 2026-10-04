@@ -1,0 +1,6 @@
+glyd: the KV cache stays vLLM's (kv auto): sliding window, linear attention and state-space layers are not held; head size 256: 128 only
+glyd: mma12 layout
+glyd: the embedding and the LM head packed too
+Model loading took 38.77 GiB memory and 24.173650 seconds
+GPU KV cache size: 204,117 tokens, Maximum concurrency for 4,096 tokens per request: 49.83x
+70779 MiB, 81559 MiB

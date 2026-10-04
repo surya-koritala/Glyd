@@ -1,0 +1,16 @@
+NOT COMPARABLE: the passes' median clocks differ by 9% (1800 to 1980 MHz), over 5%
+
+| Mode | Pass | Requests/s | SM clock median (MHz) | lowest | Highest temperature (C) | Power median (W) | Seconds |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bf16 | 1 |  | 1980 | 1230 | 72 | 493 | 132 |
+| bf16 | inf | 4.72 | 1980 | 1335 | 79 | 664 | 53 |
+| bf16-2 | 1 |  | 1980 | 1425 | 74 | 495 | 133 |
+| bf16-2 | inf | 4.70 | 1980 | 1350 | 80 | 676 | 53 |
+| v027 | 1 |  | 1980 | 1200 | 77 | 547 | 131 |
+| v027 | inf | 5.05 | 1800 | 1380 | 79 | 696 | 50 |
+| v028 | 1 |  | 1980 | 1380 | 78 | 549 | 131 |
+| v028 | inf | 5.05 | 1852 | 1380 | 80 | 696 | 50 |
+bf16-2: the driver's slowdown reasons, seconds active of 310: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 53, hardware power brake 0
+bf16: the driver's slowdown reasons, seconds active of 359: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 55, hardware power brake 0
+v027: the driver's slowdown reasons, seconds active of 395: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 77, hardware power brake 0
+v028: the driver's slowdown reasons, seconds active of 395: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 77, hardware power brake 0

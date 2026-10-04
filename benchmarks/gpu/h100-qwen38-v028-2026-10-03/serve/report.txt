@@ -1,0 +1,46 @@
+################ the weights and the KV cache (each server's log: Model loading took, GPU KV cache size, Maximum concurrency; nvidia-smi's memory in use)
+| Server | Weights (GiB) | against bf16 | KV cache (tokens) | against bf16 | Maximum concurrency at 4,096 tokens | GPU memory in use (GiB) |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bf16 | 50.22 |  | 122,538 |  | 29.92x | 69.1 |
+| Glyd 0.28 | 38.77 | 0.772x | 204,117 | 1.67x | 49.83x | 69.1 |
+| Glyd 0.27.0 | 39.69 | 0.790x | 197,632 | 1.61x | 48.25x | 69.1 |
+| bf16 again | 50.22 | 1.000x | 132,778 | 1.08x | 32.42x | 70.5 |
+
+################ requests, tokens and token times by pass
+Random prompts of 1,024 tokens, 256 out, 1 request a second (64 prompts):
+
+| Server | Requests/s | against bf16 | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bf16 | 0.92 |  | 234.8 | 199 / 326 | 23.4 / 25.3 | 64 | 1980 MHz, 72 C |
+| Glyd 0.28 | 0.92 | 1.01x | 236.4 | 227 / 426 | 21.7 / 24.4 | 64 | 1980 MHz, 78 C |
+| Glyd 0.27.0 | 0.92 | 1.01x | 236.6 | 225 / 421 | 21.6 / 24.4 | 64 | 1980 MHz, 77 C |
+| bf16 again | 0.92 | 1.00x | 234.4 | 195 / 330 | 23.8 / 25.6 | 64 | 1980 MHz, 74 C |
+
+Random prompts of 1,024 tokens, 256 out, every request at once (256 prompts):
+
+| Server | Requests/s | against bf16 | Output tokens/s | TTFT mean / p99 (ms) | TPOT mean / p99 (ms) | Completed | SM clock, temperature |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bf16 | 4.72 |  | 1207.6 | 22972 / 47234 | 46.4 / 54.7 | 256 | 1980 MHz, 79 C |
+| Glyd 0.28 | 5.05 | 1.07x | 1293.5 | 19394 / 44830 | 66.2 / 81.1 | 256 | 1860 MHz, 80 C |
+| Glyd 0.27.0 | 5.05 | 1.07x | 1292.0 | 19784 / 44663 | 64.7 / 79.0 | 256 | 1800 MHz, 79 C |
+| bf16 again | 4.70 | 1.00x | 1203.4 | 22147 / 47986 | 48.8 / 58.3 | 256 | 1980 MHz, 80 C |
+
+Prefix cache hit rate, at most (each server's log, every 10 s): bf16 0.0%, Glyd 0.28 0.0%, Glyd 0.27.0 0.0%, bf16 again 0.0%
+Triton kernels compiled while serving (vLLM's jit_monitor): bf16: 0 compiled after the warm-up, 0 in all; Glyd 0.28: 0 compiled after the warm-up, 0 in all; Glyd 0.27.0: 0 compiled after the warm-up, 0 in all; bf16 again: 0 compiled after the warm-up, 0 in all
+
+################ quality sanity: eight prompts greedy, 384 tokens, and bf16's continuations scored by each server (bf16 again is the noise between two runs of bf16)
+| Mode | First token | Whole continuation | Tokens before the first difference (of 384) | bf16's continuation: top-1 | Mean \|logprob difference\| | Largest |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bf16 | 8 of 8 | 8 of 8 | 384-384 | 99.19% | 0.0000 | 0.000 |
+| Glyd 0.28 | 8 of 8 | 2 of 8 | 23-384 | 99.22% | 0.0003 | 0.129 |
+| Glyd 0.27.0 | 8 of 8 | 2 of 8 | 23-384 | 99.22% | 0.0003 | 0.129 |
+| bf16 again | 8 of 8 | 7 of 8 | 47-384 | 99.22% | 0.0013 | 0.126 |
+
+################ what the Glyd servers' logs say (the layout, the embedding and the output layer, the KV cache)
+Glyd 0.28:
+  glyd: mma12 layout
+  glyd: the KV cache stays vLLM's (kv auto): sliding window, linear attention and state-space layers are not held; head size 256: 128 only
+  glyd: the embedding and the LM head packed too
+Glyd 0.27.0:
+  glyd: mma12 layout
+  glyd: the KV cache stays vLLM's (kv auto): sliding window, linear attention and state-space layers are not held; head size 256: 128 only
