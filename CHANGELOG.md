@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## v0.28.0 (Unreleased)
+## v0.28.0 — 2026-10-04
 
 - The whole model smaller under vLLM: `vllm serve --quantization glyd`, and so `glyd run` and `glyd serve`, packs the
   embedding and the output layer (the LM head) as it packs the Linears, so the whole model's weights are about a third
