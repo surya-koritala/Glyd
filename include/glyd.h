@@ -1,8 +1,7 @@
 /*
  * Glyd C API.
  *
- * License: BSD-3-Clause OR GPL-2.0 (see LICENSE and COPYING); the store
- * functions, in libglyd_store, are under BUSL-1.1 (glyd-store/LICENSE).
+ * License: BUSL-1.1 (see LICENSE).
  */
 
 #ifndef GLYD_H
@@ -207,8 +206,8 @@ int64_t glyd_pack_len(const uint8_t* pack, size_t pack_len);
 /* The store: objects compressed across each other. Metadata at dir; the
  * objects there too, or in s3_url (s3://bucket/prefix, through the AWS
  * CLI) when it is not NULL. These live in libglyd_store (the glyd-store
- * crate, BUSL-1.1), which also carries everything above; libglyd (the
- * glyd crate, BSD-3-Clause OR GPL-2.0) has everything above and none of these. */
+ * crate), which also carries everything above; libglyd (the glyd crate)
+ * has everything above and none of these. */
 typedef struct GlydStore GlydStore;
 GlydStore* glyd_store_open(const char* dir, const char* s3_url);
 void glyd_store_close(GlydStore* store);

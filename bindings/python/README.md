@@ -39,10 +39,10 @@ with glyd.Store("meta/", s3="s3://bucket/prefix") as s:   # objects in S3
     ...
 ```
 
-A thin ctypes layer over `include/glyd.h` (BSD-3-Clause OR GPL-2.0); no build step
+A thin ctypes layer over `include/glyd.h`; no build step
 beyond placing the shared library. `build.sh` places `libglyd_store`,
 which carries the codec and the store; with `libglyd` alone (the codec
-crate, BSD-3-Clause OR GPL-2.0) everything but `Store` works.
+crate) everything but `Store` works.
 
 ## On the GPU: a model's weights held compressed
 
@@ -264,5 +264,10 @@ Throughput against bf16, exact mode
 compiled, mixtures of experts and what is not supported yet:
 [the docs](https://getglyd.com/docs/vllm/).
 
-The GPU half is the `glyd-gpu` package (compiled wheels; `glyd.gpu` re-exports its API), under the Business Source License 1.1,
-as the rest of Glyd's GPU code; the codec under BSD-3-Clause OR GPL-2.0.
+The GPU half is the `glyd-gpu` package (compiled wheels; `glyd.gpu` re-exports its API).
+
+## License
+
+From v0.29.0 all of Glyd is under the Business Source License 1.1 (`LICENSE`). Free for personal and non-commercial use on your own computers, forever, and for anyone to try, test and develop with. Commercial use needs a license: suryakoritala@getglyd.com. Each version becomes Apache-2.0 four years after its release.
+
+Releases up to v0.28 keep the licenses they shipped with.

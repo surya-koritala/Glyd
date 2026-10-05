@@ -6,9 +6,10 @@ pays, small objects go into packs, and any object comes back
 byte-exact. On a 1.2 TB bucket of releases, dumps and events: 3.1×
 fewer bytes than zstd -3 per object (24× against raw), every object
 back byte-exact; 4.6× on a 39 GB one. Built on the
-[glyd](https://github.com/surya-koritala/Glyd) codec (BSD-3-Clause OR
-GPL-2.0); the store is under the Business Source License 1.1
-(LICENSE).
+[glyd](https://github.com/surya-koritala/Glyd) codec. Under the
+[Business Source License 1.1](https://github.com/surya-koritala/Glyd/blob/main/LICENSE):
+free for personal and non-commercial use on your own computers, forever;
+commercial use needs a license (suryakoritala@getglyd.com).
 
     glyd-store bucket/ --put mon.tar tue.tar wed.tar
     glyd-store bucket/ --get 2 -o wed.tar

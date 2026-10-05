@@ -146,8 +146,7 @@ jobs:
           cp target/release/glyd target/release/glyd-store "$DIR/"
           cp target/release/libglyd_store.* target/release/libglyd.* "$DIR/" 2>/dev/null || true
           rm -f "$DIR"/*.d "$DIR"/*.rlib
-          cp include/glyd.h LICENSE COPYING README.md "$DIR/"
-          cp glyd-store/LICENSE "$DIR/LICENSE-glyd-store"
+          cp include/glyd.h LICENSE README.md "$DIR/"
           tar -czf "$DIR.tar.gz" "$DIR"
           (shasum -a 256 "$DIR.tar.gz" 2> /dev/null || sha256sum "$DIR.tar.gz") > "$DIR.tar.gz.sha256"
       - name: Build the Python wheel
@@ -156,7 +155,7 @@ jobs:
         run: |
           set -e
           cp target/release/libglyd_store.* bindings/python/glyd/ 2>/dev/null || true
-          cp LICENSE COPYING bindings/python/ && cp glyd-store/LICENSE bindings/python/LICENSE-glyd-store
+          cp LICENSE bindings/python/
           ${{ matrix.python }} -m pip install --quiet build wheel
           ${{ matrix.python }} -m build --wheel --outdir wheels bindings/python
           # The wheel carries this platform's shared library (the codec's): tag it so.

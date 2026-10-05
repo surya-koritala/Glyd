@@ -6,6 +6,18 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- The license: from v0.29.0 all of Glyd is under the Business Source License 1.1 (`LICENSE`): the `glyd` crate and
+  command line, the C ABI, the Python and Go bindings, the store and the GPU package `glyd-gpu`. Free for personal and
+  non-commercial use on your own computers, forever, and for anyone to try, test and develop with; commercial use needs
+  a license (suryakoritala@getglyd.com); each version becomes Apache-2.0 four years after its release.
+  - Releases up to v0.28 keep the licenses they shipped with: the codec (the `glyd` crate, the command line, the C ABI
+    and the bindings) BSD-3-Clause OR GPL-2.0-only, the store and the GPU package BUSL-1.1 on the terms of their own
+    LICENSE files. Their tags, wheels and crates are unchanged.
+  - `LICENSE` is the one license file: `COPYING` (the GPL's text) and `glyd-store/LICENSE` are gone, and the release
+    tarballs, the wheels and the crates carry `LICENSE` alone. Code in `third_party/` keeps its own license.
+
 ## v0.28.0 — 2026-10-04
 
 - The whole model smaller under vLLM: `vllm serve --quantization glyd`, and so `glyd run` and `glyd serve`, packs the

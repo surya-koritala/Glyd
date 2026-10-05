@@ -4,7 +4,7 @@
 <p align="center">
 <a href="https://github.com/surya-koritala/Glyd/actions"><img alt="CI" src="https://github.com/surya-koritala/Glyd/actions/workflows/ci.yml/badge.svg"></a>
 <a href="https://github.com/surya-koritala/Glyd/releases"><img alt="Release" src="https://img.shields.io/github/v/release/surya-koritala/Glyd?label=release"></a>
-<a href="#license"><img alt="License: BSD-3-Clause OR GPL-2.0, GPU and store BUSL-1.1" src="https://img.shields.io/badge/license-BSD--3%20%7C%20GPL--2.0%20%7C%20BUSL--1.1-blue.svg"></a>
+<a href="#license"><img alt="License: BUSL-1.1" src="https://img.shields.io/badge/license-BUSL--1.1-blue.svg"></a>
 </p>
 
 Glyd keeps a bf16 model's weights and KV cache in fewer bits in GPU memory and rebuilds the exact values
@@ -72,9 +72,11 @@ glyd -d events.glyd -o events.json
 
 ## License
 
-- **The codec** (the `glyd` crate, CLI, C ABI, and Python and Go bindings): [BSD 3-Clause](LICENSE) or,
-  at your option, [GPL 2.0](COPYING), the same licenses as zstd.
-- **The store** (`glyd-store`) and **the GPU package** (`glyd-gpu`):
-  Business Source License 1.1 ([store](glyd-store/LICENSE), [GPU](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/LICENSE)). Free for personal, research and other
-  non-commercial use; commercial production use needs a license (suryakoritala@getglyd.com). Each
-  version becomes Apache-2.0 four years after its release.
+From v0.29.0 all of Glyd is under the [Business Source License 1.1](LICENSE): the `glyd` crate and CLI, the C ABI, the
+Python and Go bindings, the store (`glyd-store`) and the GPU package (`glyd-gpu`).
+
+Free for personal and non-commercial use on your own computers, forever, and for anyone to try, test and develop with. Commercial use needs a license: suryakoritala@getglyd.com. Each version becomes Apache-2.0 four years after its release.
+
+Releases up to v0.28 keep the licenses they shipped with, in those releases' tags: the codec (the `glyd` crate, CLI, C ABI
+and bindings) under BSD-3-Clause OR GPL-2.0, the store and the GPU package under BUSL-1.1. Code in
+[third_party/](third_party/) keeps its own license.

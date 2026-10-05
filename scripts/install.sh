@@ -94,7 +94,7 @@ install_cli() {
   got=$(sha256_of "$tmp/$name.tar.gz") || die "there is no sha256sum or shasum here to check the download with."
   [ -n "$want" ] && [ "$got" = "$want" ] || die "the download is not the file the release lists (its sha256 is $got, the release says ${want:-nothing}). Run this again; if it happens again, tell the Glyd project."
   mkdir "$tmp/x"
-  tar -xzf "$tmp/$name.tar.gz" -C "$tmp/x" "$name/glyd" "$name/glyd-store" "$name/LICENSE" "$name/COPYING" "$name/LICENSE-glyd-store" \
+  tar -xzf "$tmp/$name.tar.gz" -C "$tmp/x" "$name/glyd" "$name/glyd-store" "$name/LICENSE" \
     || die "the release's tarball is not laid out as this installer expects ($name/glyd, ...): run this again, or take the program from $REPO/releases."
   mkdir -p "$cli.new" "$bin"  # (tried where it will live: a temporary folder can be noexec)
   cp "$tmp/x/$name"/* "$cli.new"/
