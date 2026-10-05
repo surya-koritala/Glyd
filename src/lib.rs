@@ -27,6 +27,8 @@ pub mod shape;
 pub mod mmap;
 #[cfg(feature = "deflate")]
 pub mod deflate;
+#[cfg(feature = "deflate")]
+pub mod weights;
 pub mod reflate;
 pub mod resnappy;
 pub mod rezstd;
