@@ -75,7 +75,7 @@ glyd -d events.glyd -o events.json
 From v0.29.0 all of Glyd is under the [Business Source License 1.1](LICENSE): the `glyd` crate and CLI, the C ABI, the
 Python and Go bindings, the store (`glyd-store`) and the GPU package (`glyd-gpu`).
 
-Free for personal and non-commercial use on your own computers, forever, and for anyone to try, test and develop with. Commercial use needs a license: suryakoritala@getglyd.com. Each version becomes Apache-2.0 four years after its release.
+Free forever for personal and non-commercial use (including education, research and nonprofits) on computers you own or rent for yourself, and for anyone to try, test and develop with. Commercial use needs a license: suryakoritala@getglyd.com. Each version becomes Apache-2.0 four years after its release.
 
 Releases up to v0.28 keep the licenses they shipped with, in those releases' tags: the codec (the `glyd` crate, CLI, C ABI
 and bindings) under BSD-3-Clause OR GPL-2.0, the store and the GPU package under BUSL-1.1. Code in

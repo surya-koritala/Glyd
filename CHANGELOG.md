@@ -9,9 +9,10 @@ every earlier format.
 ## Unreleased
 
 - The license: from v0.29.0 all of Glyd is under the Business Source License 1.1 (`LICENSE`): the `glyd` crate and
-  command line, the C ABI, the Python and Go bindings, the store and the GPU package `glyd-gpu`. Free for personal and
-  non-commercial use on your own computers, forever, and for anyone to try, test and develop with; commercial use needs
-  a license (suryakoritala@getglyd.com); each version becomes Apache-2.0 four years after its release.
+  command line, the C ABI, the Python and Go bindings, the store and the GPU package `glyd-gpu`. Free forever for
+  personal and non-commercial use (including education, research and nonprofits) on computers you own or rent for
+  yourself, and for anyone to try, test and develop with; commercial use needs a license (suryakoritala@getglyd.com);
+  each version becomes Apache-2.0 four years after its release.
   - Releases up to v0.28 keep the licenses they shipped with: the codec (the `glyd` crate, the command line, the C ABI
     and the bindings) BSD-3-Clause OR GPL-2.0-only, the store and the GPU package BUSL-1.1 on the terms of their own
     LICENSE files. Their tags, wheels and crates are unchanged.
