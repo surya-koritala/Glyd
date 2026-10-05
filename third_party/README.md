@@ -3,10 +3,14 @@
 ## preflate-rs
 
 `preflate-rs/` is [microsoft/preflate-rs](https://github.com/microsoft/preflate-rs)
-0.7.6 (Apache-2.0, see `preflate-rs/LICENSE.txt` and `NOTICE.txt`), the
+0.7.6 (Apache-2.0, see `preflate-rs/LICENSE`), the
 library that turns a deflate stream into its plain text plus the
 corrections that re-create the stream bit for bit. It is built as the
 package `glyd-preflate`, used under the name `preflate_rs`.
+
+`preflate-rs/LICENSE` is upstream's file, byte for byte, from the tag `v0.7.6`
+(commit `3bcd33441849a8a25d2b26077128f4e3a88d071b`, the one crates.io's
+preflate-rs 0.7.6 was published from). Upstream has no NOTICE file at that tag.
 
 Changes from upstream, all in service of opening and closing one stream
 on every core (`src/chunked.rs`):
