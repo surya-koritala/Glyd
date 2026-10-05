@@ -42,3 +42,12 @@ Since v0.13.4 nothing new is written with it: every deflate stream is
 opened by Glyd's own reconstruction (`src/reflate/`), and this copy is
 here to read what v0.12.0 to v0.13.3 wrote (`GLYDGZIP`, `GLYDDEFL`,
 `GLYDDEF2`) and to open the bases their deltas were made against.
+
+## silesia/
+
+Test data, not code, read by the tests of `src/rezstd/` alone. `silesia/moz35k.raw` is 34,972 bytes at offset 156,114 of
+`mozilla`, a file of the [Silesia compression corpus](https://sun.aei.polsl.pl/~sdeor/index.php?page=silesia) (Mozilla 1.0
+for Tru64 UNIX, tarred): the start of its `mozilla/chrome/en-US.jar`. The jar's files are Mozilla.org code under the
+Netscape Public License 1.1, or the Mozilla Public License 1.1 with the GPL 2.0 and LGPL 2.1, as each file's header says
+(some have none); the corpus page states no terms of its own. `moz35k.zst` and `moz35k.v152.zst` are the same bytes
+compressed by zstd 1.5.5 and 1.5.2 at level 1.

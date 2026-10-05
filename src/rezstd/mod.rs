@@ -477,6 +477,11 @@ mod tests {
         std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/zstd/").to_string() + name).unwrap()
     }
 
+    /// The slice of the Silesia corpus and its frames: not Glyd's own data, so under third_party/ (its README says whose).
+    fn silesia(name: &str) -> Vec<u8> {
+        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/third_party/silesia/").to_string() + name).unwrap()
+    }
+
     const NAMES: [&str; 11] = ["text50", "text3k", "page0", "page1", "page2", "random40k", "zeros100k", "mixed170k", "text200k", "planes300k", "farrep526k"];
 
     const V155_L1: Build = build(Version::V1_5_5, Level::One, Writer::OneShot);
@@ -547,10 +552,10 @@ mod tests {
         // zeros to 640 KB then 20 KB of text: the text lands past the
         // single-thread stream's ring wrap, where 1.5.2 runs the older
         // extDict loop. 1.5.4 to 1.5.7 write the same bytes for both.
-        let moz = fixture("moz35k.raw");
-        check("moz35k", &moz, &fixture("moz35k.zst"), V155_L1);
-        check("moz35k.v152", &moz, &fixture("moz35k.v152.zst"), build(Version::V1_5_2, Level::One, Writer::OneShot));
-        assert_eq!(reproduce(&fixture("moz35k.v152.zst")).unwrap().1.version, Version::V1_5_2);
+        let moz = silesia("moz35k.raw");
+        check("moz35k", &moz, &silesia("moz35k.zst"), V155_L1);
+        check("moz35k.v152", &moz, &silesia("moz35k.v152.zst"), build(Version::V1_5_2, Level::One, Writer::OneShot));
+        assert_eq!(reproduce(&silesia("moz35k.v152.zst")).unwrap().1.version, Version::V1_5_2);
         let wrap = fixture("wrap676k.raw");
         let stream = |version| Build { checksum: true, ..build(version, Level::One, Writer::Stream) };
         check("wrap676k.st1", &wrap, &fixture("wrap676k.st1.zst"), stream(Version::V1_5_5));
