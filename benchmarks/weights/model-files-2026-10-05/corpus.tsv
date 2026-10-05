@@ -1,0 +1,22 @@
+st-qwen3.8-27b-bf16	st-qwen3.8-27b-bf16.safetensors	134778712	12472	109	{"BF16": 134766240}
+st-gemma-4-26b-a4b-bf16	st-gemma-4-26b-a4b-bf16.safetensors	134515928	13520	105	{"BF16": 134502408}
+st-glm-5.3-flash-bf16	st-glm-5.3-flash-bf16.safetensors	202519968	14720	125	{"F32": 100872, "BF16": 202404376}
+st-minimax-m3-bf16	st-minimax-m3-bf16.safetensors	201551064	14512	109	{"BF16": 201395200, "F32": 141352}
+st-glm-5.3-flash-fp8	st-glm-5.3-flash-fp8.safetensors	99749276	18704	153	{"F32": 164616, "BF16": 23712132, "F8_E4M3": 75853824}
+st-qwen3.8-27b-fp8	st-qwen3.8-27b-fp8.safetensors	134964976	12720	106	{"BF16": 102574400, "F8_E4M3": 32377856}
+st-mistral-small-4-fp8	st-mistral-small-4-fp8.safetensors	134577232	20392	154	{"BF16": 3741864, "F8_E4M3": 130814976}
+gguf-qwen3.8-27b-bf16	gguf-qwen3.8-27b-bf16.gguf	212908064	10947104	57	{"F32": 851456, "BF16": 201109504}
+gguf-qwen3.8-27b-q8_0	gguf-qwen3.8-27b-q8_0.gguf	181393984	10947264	60	{"Q8_0": 169595264, "F32": 851456}
+gguf-qwen3.8-27b-q4_k_m	gguf-qwen3.8-27b-q4_k_m.gguf	181285856	10947392	62	{"Q6_K": 12872160, "F32": 851456, "Q4_K": 91466496, "Q8_0": 65148352}
+gguf-gemma-4-26b-a4b-bf16	gguf-gemma-4-26b-a4b-bf16.gguf	217406944	15788256	74	{"F32": 554000, "BF16": 201064576}
+gguf-gemma-4-26b-a4b-q8_0	gguf-gemma-4-26b-a4b-q8_0.gguf	183875200	15788160	73	{"F32": 643088, "Q8_0": 167443676}
+gguf-gemma-4-26b-a4b-ud-q4_k_m	gguf-gemma-4-26b-a4b-ud-q4_k_m.gguf	183900544	15788800	72	{"F32": 813072, "Q8_0": 27754200, "Q4_K": 84856464, "Q5_1": 54687600}
+gguf-glm-5.3-flash-bf16	gguf-glm-5.3-flash-bf16.gguf	213280480	9437408	124	{"BF16": 201757696, "F32": 2085216}
+gguf-glm-5.3-flash-q8_0	gguf-glm-5.3-flash-q8_0.gguf	179878752	9437440	121	{"Q8_0": 168323120, "F32": 2117984}
+gguf-mistral-small-4-bf16	gguf-mistral-small-4-bf16.gguf	209315552	7878368	46	{"BF16": 201203712, "F32": 233472}
+gguf-mistral-small-4-q8_0	gguf-mistral-small-4-q8_0.gguf	175822400	7869760	43	{"Q8_0": 167686368, "F32": 266240}
+gguf-mistral-small-4-q4_k_m	gguf-mistral-small-4-q4_k_m.gguf	175779200	7869888	45	{"Q6_K": 38849160, "F32": 331776, "Q4_K": 126243072, "Q8_0": 1288464, "Q5_K": 1196800}
+gguf-minimax-m3-bf16	gguf-minimax-m3-bf16.gguf	209652608	8246144	52	{"BF16": 201105408, "F32": 301056}
+gguf-minimax-m3-q8_0	gguf-minimax-m3-q8_0.gguf	176178656	8246176	49	{"Q8_0": 167631424, "F32": 301056}
+gguf-minimax-m3-q4_k_m	gguf-minimax-m3-q4_k_m.gguf	176142144	8247008	61	{"Q6_K": 39279240, "F32": 870400, "Q4_K": 125051904, "Q8_0": 1364352, "Q5_K": 1329152}
+gguf-gpt-oss-20b-f16	gguf-gpt-oss-20b-f16.gguf	180927648	12984224	55	{"MXFP4": 123599520, "F32": 647936, "F16": 43695872}

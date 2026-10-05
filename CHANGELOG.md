@@ -6,6 +6,10 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- Model files: `glyd --max`, and the levels above it, code the tensors of safetensors and GGUF files by their element types (bf16, f16, fp8, ggml's quantised blocks) and read them back at 335-666 MB/s a core. On 22 files cut from 2026 models (3.9 GB: BF16, FP8, Q8_0, Q4_K_M and F16 files of Qwen3.8, Gemma 4, GLM-5.3-Flash, MiniMax-M3, Mistral Small 4 and gpt-oss) the set is 31.8% smaller, where v0.28.0's `--max` gives 24.2%, zstd -19 24.8% and xz -9 26.7%; per file 1.2 to 15.7 points ahead of zstd -19 (19 of 22 by 3 or more; the others: an FP8 checkpoint, whose floor is 19.4%, and two Q8_0 files whose tokenizer metadata, 6 and 9% of these cut-down files, takes more bytes than zstd's) and ahead of xz -9 on every file, writing at 115-286 MB/s a core. Streams and files of every earlier release read as before; v0.28.0 refuses the new streams (`GLYDWGT1`) as an unknown block header. Table and logs: [benchmarks/weights/model-files-2026-10-05](benchmarks/weights/model-files-2026-10-05).
+
 ## v0.28.0 — 2026-10-04
 
 - The whole model smaller under vLLM: `vllm serve --quantization glyd`, and so `glyd run` and `glyd serve`, packs the
