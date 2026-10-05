@@ -1,0 +1,8 @@
+PASS to tp2: the embedding and the LM head packed (1 pack, 1 expected; shard rows [16032]), every lookup the checkpoint's row bit for bit on 2 ranks, each product within 1e-2 (2.8e-03) and the same bits twice
+PASS to tp2: the first token of every prompt bf16's where bf16's margin is over 0.1 (3 of 4)
+PASS to tp2: prompt logprobs within 0.0065 on average of bf16's (at most 0.05; the largest 0.024)
+PASS to tp2: exact: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit; the tied model stays as vLLM runs it ([('model.embed_tokens', 'UnquantizedEmbeddingMethod'), ('lm_head', 'UnquantizedEmbeddingMethod')])
+PASS uo tp2: the embedding and the LM head packed (2 packs, 2 expected; shard rows [16032]), every lookup the checkpoint's row bit for bit on 2 ranks, each product within 1e-2 (3.0e-03) and the same bits twice
+PASS uo tp2: the first token of every prompt bf16's where bf16's margin is over 0.1 (1 of 4)
+PASS uo tp2: prompt logprobs within 0.0071 on average of bf16's (at most 0.05; the largest 0.027)
+PASS uo tp2: exact: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit; the embedding packed, the LM head as vLLM runs it ([('model.embed_tokens', 'GlydEmbeddingMethod'), ('lm_head', 'UnquantizedEmbeddingMethod')])

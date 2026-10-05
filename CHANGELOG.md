@@ -6,6 +6,102 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.28.0 — 2026-10-05
+
+- The whole model smaller under vLLM: `vllm serve --quantization glyd`, and so `glyd run` and `glyd serve`, packs the
+  embedding and the output layer (the LM head) as it packs the Linears, so the whole model's weights are about a third
+  under bf16's, not only its large matrices, and the memory this frees becomes KV cache. Every row of the embedding
+  reads back bit for bit; the output layer's product is within the same tolerance as every other product; a model
+  whose config ties the two has one packed copy. `exact` is unchanged: vLLM's bf16 logits bit for bit (it keeps the
+  output layer as vLLM runs it).
+  - On an L4, v0.27.0 from PyPI against v0.28.0, the same vLLM 0.30.0 in its default mode (compiled, CUDA graphs),
+    alternated in one session. The weights and the KV cache as vLLM's log gives them with its own KV cache
+    (`--max-model-len 4096`, 90% of the GPU's memory), the cache of a later start with a first start's, on an empty
+    compile cache, in brackets:
+    - Qwen3-8B: weights 15.27 GiB in bf16, 11.38 with v0.27.0 (25.5% under bf16's) and **10.38 (32.0% under)**; KV cache
+      27,024 tokens in bf16, 54,464 (38,912) with v0.27.0 and **60,736 (60,736)**.
+    - Llama-3.1-8B: weights 15.0 GiB in bf16, 11.05 with v0.27.0 (26.3% under bf16's) and **10.16 (32.3% under)**; KV
+      cache 32,592 tokens in bf16, 64,368 (50,032) with v0.27.0 and **70,112 (70,112)**.
+    - Qwen3-4B (the config ties the embedding and the output layer: one packed copy): weights 7.56 GiB in bf16, 5.48
+      with v0.27.0 (27.5% under bf16's) and **5.16 (31.7% under)**; KV cache 83,408 tokens in bf16, 97,488 (88,048) with
+      v0.27.0 and **99,312 (99,120)**.
+  - A first start (on an empty compile cache) no longer logs a much smaller KV cache than a later one. For Qwen3-8B,
+    Llama-3.1-8B, Qwen3-4B, v0.27.0's first start held 38,912 against 54,464; 50,032 against 64,368; 88,048 against
+    97,488 tokens on a later start; v0.28.0's held 60,736 on both; 70,112 on both; 99,120 against 99,312 (bf16's own,
+    Qwen3-8B: 19,760 against 27,024).
+  - One user's tokens a second (one request, 1,024 tokens in and 256 out, vLLM's own KV cache, the median of three
+    rounds, alternated): Qwen3-8B 22.54 against 21.16 (**1.065x**; rounds 1.059, 1.064, 1.065); Llama-3.1-8B 23.01
+    against 21.92 (**1.050x**; rounds 1.050, 1.050, 1.054); Qwen3-4B 39.62 against 37.54 (**1.055x**; rounds 1.053,
+    1.055, 1.054).
+  - `vllm bench serve`, 1,024 tokens in and 256 out, the same flags but the KV cache at its default (`auto`: lossless on
+    an L4), saturated (256 requests at once), two rounds with prompts of their own a pass (the prefix cache's hit rate
+    in the servers' logs at most 0.4%): Qwen3-8B 1.33 and 1.31 requests a second against 1.21 and 1.20 (**1.095x** and
+    **1.095x**), the first token after 81,904 and 83,147 ms against 87,470 and 88,085, each token 176.9 and 178.4 ms
+    against 171.6 and 173.0, the KV cache 79,600 tokens against 71,248 (a first start of v0.27.0's: 50,608);
+    Llama-3.1-8B 1.37 and 1.36 requests a second against 1.32 and 1.31 (**1.040x** and **1.041x**), the first token
+    after 75,873 and 76,185 ms against 81,325 and 81,793, each token 187.6 and 188.3 ms against 181.0 and 181.8, the KV
+    cache 90,384 tokens against 81,792 (a first start of v0.27.0's: 62,784); Qwen3-4B 2.33 and 2.33 requests a second
+    against 2.26 and 2.25 (**1.031x** and **1.037x**), the first token after 40,851 and 40,708 ms against 42,008 and
+    42,143, each token 151.2 and 150.7 ms against 153.9 and 154.3, the KV cache 129,344 tokens against 127,152 (a first
+    start of v0.27.0's: 114,656).
+    - At 1 request a second (64 requests, the same flags): Qwen3-8B 0.83 and 0.82 requests a second against 0.82 and
+      0.81, the first token 633 and 593 ms against 659 and 608, each token 83.8 and 85.3 ms against 88.4 and 91.0;
+      Llama-3.1-8B 0.83 and 0.83 requests a second against 0.83 and 0.82, the first token 638 and 588 ms against 639 and
+      601, each token 79.8 and 82.1 ms against 83.6 and 86.0; Qwen3-4B 0.90 and 0.89 requests a second against 0.89 and
+      0.89, the first token 298 and 291 ms against 300 and 295, each token 38.1 and 38.5 ms against 38.8 and 39.6.
+  - They stay as vLLM runs them, with a line in the log that says why, under a `fraction` below 1, speculative
+    decoding, `exact` (the output layer alone: an untied model's embedding is packed, a tied model's one table stays),
+    an output layer whose dtype is not bf16, an embedding class that is not a plain lookup, and a hidden size that is
+    not a multiple of 64. The lossless KV cache works with them. `glyd run` and `glyd doctor` count the packed tables
+    when they work out what fits the GPU.
+  - Tensor parallel 2 was checked on two L4s (of an AWS g6.12xlarge): Qwen3-4B (7 of 7 checks) and two tiny models, one
+    tied and one untied (8 of 8): each rank packs its share of the tables, every lookup is the checkpoint's row bit for
+    bit, and `exact` is bf16 eager's bit for bit. That run was on the code as of 2026-10-04, before the release's last
+    merges.
+  Logs: [benchmarks/gpu/vllm-v028-l4-2026-10-04](benchmarks/gpu/vllm-v028-l4-2026-10-04), [vllm-full33-l4-2026-10-03](benchmarks/gpu/vllm-full33-l4-2026-10-03),
+  [l4x2-vllm-tp2-2026-10-04](benchmarks/gpu/l4x2-vllm-tp2-2026-10-04).
+- Mixtures of experts serve faster than bf16. Against vLLM's own bf16 path with its default MoE settings (its log says
+  `Using default MoE config. Performance might be sub-optimal!`, and a tuned bf16 would be faster than that baseline:
+  not measured), 1,024 tokens in and 256 out, saturated, vLLM 0.30.0:
+  - On an H100 SXM, Qwen3-30B-A3B: 13.13 requests a second against 12.32 (**1.07x**), and 17.10 with the lossless KV
+    cache (**1.39x**); the first token after 3,853 ms and 3,437 ms against 6,920 (0.56x and 0.50x), each token 45.9 and
+    43.7 ms against 27.2 (1.69x and 1.61x as long). The weights take 44.65 GiB against 56.88, and the KV cache holds
+    251,696 and 331,008 tokens against 118,720. At 1 request a second: 0.98 and 0.97 requests a second against 0.97,
+    each token 6.3 ms against 6.6.
+  - On an A100 40 GB, Qwen3-16B-A3B (Qwen3-30B-A3B with half its experts; the 30B does not fit in bf16): 6.18 requests
+    a second with the lossless KV cache against 4.12 (**1.50x**), the first token after 14,233 ms against 27,100
+    (0.53x), each token 62.9 ms against 30.9 (2.04x as long). The weights take 23.97 GiB against 29.87, and the KV cache
+    holds 144,896 tokens against 40,288 (3.60x). At 1 request a second: 0.95 against 0.94 requests a second, each
+    token 12.3 ms against 13.9 (0.88x), and the first token 110 ms against 102 (1.08x later).
+  - Prompt steps are where Glyd is behind: in the H100 run 5.7 s of the saturated pass's 14.3 s with the KV cache were
+    32 prompt steps, 22 us a prompt token against bf16's 15, while its 255 decode steps took 8.6 s against bf16's 15.7.
+    The attention products and the router stay bf16 for a mixture of experts' model on an H100 and an A100.
+  - Both runs are of the mixture-of-experts work as it stood on 2026-10-03, with no setting changed by hand; they were
+    not repeated on the release's final tree.
+  Logs: [benchmarks/gpu/h100-moe-v028-2026-10-03](benchmarks/gpu/h100-moe-v028-2026-10-03),
+  [a100-moe-v028-2026-10-03](benchmarks/gpu/a100-moe-v028-2026-10-03).
+- A newer model under vLLM: Qwen3.8-27B (text only), on an H100 80GB HBM3, vLLM 0.30.0, 1,024 tokens in and 256 out. The
+  weights take 38.77 GiB against bf16's 50.22 (22.8% under, the `mma12` layout this GPU takes by default; v0.27.0:
+  39.69), and the KV cache holds 204,117 tokens against 122,538 (1.67x; bf16 started again at the end: 132,778).
+  Saturated (256 requests at once): 5.05 requests a second against 4.72 and 4.70 (**1.07x**), the first token 0.84x
+  as late, each token 1.43x as long. At 1 request a second: 0.92 against 0.92, each token 21.7 ms against 23.4 (0.92x),
+  the first token 227 ms against 199. bf16's continuations scored on Glyd: top-1 99.22% (bf16 against itself started
+  again: 99.22%). The lossless KV cache stays off for this model, with a line in the log that says why (linear
+  attention and head size 256 are not held yet). Glyd's saturated passes drew more power and ran at a lower clock
+  (1,852 MHz against 1,980), so the run's own clock check marks it not comparable. Logs: [benchmarks/gpu/h100-qwen38-v028-2026-10-03](benchmarks/gpu/h100-qwen38-v028-2026-10-03).
+- The smallest layout (`mma`) is faster at 1 to 16 tokens a step. On an L4, which takes it by default, one user's tokens
+  a second on Qwen3-8B with the embedding and the output layer left as vLLM runs them are **1.042x** v0.27.0's (22.07
+  against 21.19; rounds 1.041, 1.043, 1.036), and 1.065x with them packed too (above). The GPUs that take the `mma12`
+  layout by default (the A10, A100, H100 and GH200) are unchanged. Logs:
+  [benchmarks/gpu/vllm-v028-l4-2026-10-04](benchmarks/gpu/vllm-v028-l4-2026-10-04) (`one_user/Qwen3-8B/layout_alone`).
+- Saves are format glyd-v4: `glyd pack` and `save_pretrained` write the smallest layout as glyd-v4 (`--layout mma12`
+  stays glyd-v3). Every earlier save loads (a glyd-v1 or glyd-v2 save is packed again as it loads); glyd-v4 saves are
+  refused, by their format, by v0.27.0 and earlier. The C API is version 15 (v0.27.0's was 14): the header still
+  carries 8 functions, and `glyd_gpu_mma_linear` takes the packs of a glyd-v4 save and refuses (`cudaErrorInvalidValue`)
+  those of a glyd-v1 or glyd-v2 save, which `glyd_gpu_mma_unpack` still unpacks.
+- The `mma12` layout stays the default on the A10, A100, H100 and GH200, and the KV cache defaults are as in v0.27.0
+  (`kv` auto: on for an A100, an L4, an H100 and a GH200).
+
 ## v0.27.0 — 2026-10-03
 
 - The lossless KV cache in vLLM: vLLM's KV cache held in fewer bits, every key and value read back as written, bit for

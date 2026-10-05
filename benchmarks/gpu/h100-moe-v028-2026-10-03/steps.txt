@@ -1,0 +1,10 @@
+19:11:53 (+1 s) machine
+19:12:14 (+22 s) env: 21 s (vllm 0.30.0 | torch 2.13.0+cu130 CUDA 13.0 | transformers 5.18.0 | GPU NVIDIA H100 80GB HBM3)
+19:12:56 (+64 s) thermal preflight: ok: 42 s of load: the last 10 s 67 C at most, SM clock 1360 MHz, 698 W, thermal slowdown in 0 of them, power cap in 10
+19:17:37 (+345 s) serve bf16: exit 0 in 243 s
+19:17:48 (+356 s) check: exit 0 in 11 s, 84 checks ()
+19:23:00 (+668 s) serve glyd-picked+kv: exit 0 in 311 s
+19:27:00 (+908 s) serve glyd-picked: exit 0 in 240 s
+19:30:47 (+1135 s) serve bf16-2: exit 0 in 227 s
+19:30:47 (+1135 s) serve: COMPARABLE: bf16 1980 MHz, 58 C; bf16-2 1980 MHz, 58 C; glyd-picked 1980 MHz, 60 C; glyd-picked+kv 1980 MHz, 57 C
+19:31:39 (+1187 s) done

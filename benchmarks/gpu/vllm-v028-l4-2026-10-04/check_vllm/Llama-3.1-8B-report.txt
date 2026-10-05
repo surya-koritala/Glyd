@@ -1,0 +1,19 @@
+PASS Meta-Llama-3.1-8B mma: the embedding and the LM head packed (2 packs, 1353 MiB; 2 expected), every lookup of random ids and of the shard's ends the checkpoint's own row bit for bit, each product within 1e-2 of its matrix (3.42e-03) and the same bits twice
+PASS Meta-Llama-3.1-8B mma: every pack (128) decoded to its weights bit for bit
+PASS Meta-Llama-3.1-8B mma: each layer's product within 1e-2 of F.linear (3.66e-03) and the same bits every run
+PASS Meta-Llama-3.1-8B mma: top-1 agreement with bf16 on its continuation 0.9948 (at least 0.97; bf16 eager's 0.9948)
+PASS Meta-Llama-3.1-8B mma: mean |logprob difference| 1.36e-03, at most 2.0x bf16 eager's against its graphs (3.10e-03)
+PASS Meta-Llama-3.1-8B mma12: the embedding and the LM head packed (2 packs, 1512 MiB; 2 expected), every lookup of random ids and of the shard's ends the checkpoint's own row bit for bit, each product within 1e-2 of its matrix (3.42e-03) and the same bits twice
+PASS Meta-Llama-3.1-8B mma12: every pack (128) decoded to its weights bit for bit
+PASS Meta-Llama-3.1-8B mma12: each layer's product within 1e-2 of F.linear (3.66e-03) and the same bits every run
+PASS Meta-Llama-3.1-8B mma12: top-1 agreement with bf16 on its continuation 0.9948 (at least 0.97; bf16 eager's 0.9948)
+PASS Meta-Llama-3.1-8B mma12: mean |logprob difference| 2.47e-03, at most 2.0x bf16 eager's against its graphs (3.10e-03)
+PASS Meta-Llama-3.1-8B mma: again on the shared compile cache, its graphs loaded (True), against bf16 as before (top-1 0.9948, mean |diff| 1.36e-03)
+PASS Meta-Llama-3.1-8B mma12: again on the shared compile cache, its graphs loaded (True), against bf16 as before (top-1 0.9948, mean |diff| 2.47e-03)
+PASS Meta-Llama-3.1-8B: a compile cache for each of bf16, glyd mma and glyd mma12 on the one VLLM_CACHE_ROOT (3), none reused by another
+PASS Meta-Llama-3.1-8B exact, eager: bf16 eager's tokens, logprobs and prompt_logprobs bit for bit (8 of 8; continuation True)
+PASS Meta-Llama-3.1-8B exact: the embedding packed, its rows the checkpoint's bit for bit, the LM head as vLLM runs it ([('model.embed_tokens', 'GlydEmbeddingMethod'), ('lm_head', 'UnquantizedEmbeddingMethod')])
+PASS Meta-Llama-3.1-8B exact under torch.compile: refused, with Glyd's message (ValidationError: 1 validation error for VllmConfig
+  Value error, glyd: exact mode gives vLLM's bf16 logits bit for bit )
+PASS Meta-Llama-3.1-8B exact under torch.compile, inductor deterministic: compiled bf16's tokens, logprobs and prompt_logprobs (the same mode) bit for bit (8 of 8; continuation True)
+PASS Meta-Llama-3.1-8B fused, compiled, inductor deterministic: the same bits from one run to the next, the second on the first's graphs (8 of 8; continuation True; layout mma)

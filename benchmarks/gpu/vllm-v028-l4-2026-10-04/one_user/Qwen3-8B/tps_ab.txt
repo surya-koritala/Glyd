@@ -1,0 +1,14 @@
+round 0 v027: 21.31 tokens/s (runs [21.36, 21.31, 21.3]; weights 11.38 GiB, KV cache 38,224 tokens; GPU 1275, 71, 72.24)
+round 0 v028: 22.57 tokens/s (runs [22.6, 22.57, 22.55]; weights 10.38 GiB, KV cache 57,328 tokens; GPU 1395, 72, 71.73)
+round 1 v028: 22.50 tokens/s (runs [22.54, 22.5, 22.47]; weights 10.38 GiB, KV cache 57,328 tokens; GPU 1395, 76, 71.98)
+round 1 v027: 21.15 tokens/s (runs [21.23, 21.15, 21.14]; weights 11.38 GiB, KV cache 50,368 tokens; GPU 1185, 78, 72.12)
+round 2 v027: 21.16 tokens/s (runs [21.24, 21.16, 21.14]; weights 11.38 GiB, KV cache 50,368 tokens; GPU 1230, 78, 72.00)
+round 2 v028: 22.54 tokens/s (runs [22.57, 22.54, 22.51]; weights 10.38 GiB, KV cache 57,328 tokens; GPU 1380, 73, 72.11)
+
+Qwen/Qwen3-8B, one user, 1024 tokens in, 256 out, vLLM's default mode (compiled, CUDA graphs), the median of 3 rounds, alternated:
+| | tokens a second | weights GiB | KV cache tokens (the last round's start: vLLM's memory profile of a start that compiles reads other than that of one that does not) |
+| :--- | ---: | ---: | ---: |
+| v027 | 21.16 (rounds 21.31, 21.15, 21.16) | 11.38 | 50,368 |
+| v028 | 22.54 (rounds 22.57, 22.50, 22.54) | 10.38 | 57,328 |
+
+v028 against v027: 1.065x the tokens a second (each round 1.059, 1.064, 1.065)

@@ -1,0 +1,13 @@
+COMPARABLE: bf16 1410 MHz, 64 C; bf16-2 1410 MHz, 64 C; glyd-picked+kv 1410 MHz, 56 C
+
+| Mode | Pass | Requests/s | SM clock median (MHz) | lowest | Highest temperature (C) | Power median (W) | Seconds |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bf16 | 1 |  | 1410 | 1095 | 49 | 200 | 92 |
+| bf16 | inf | 4.12 | 1410 | 1410 | 64 | 264 | 61 |
+| bf16-2 | 1 |  | 1410 | 1095 | 50 | 200 | 90 |
+| bf16-2 | inf | 3.94 | 1410 | 1410 | 64 | 265 | 65 |
+| glyd-picked+kv | 1 |  | 1410 | 1095 | 50 | 196 | 89 |
+| glyd-picked+kv | inf | 6.18 | 1410 | 1410 | 56 | 284 | 41 |
+bf16-2: the driver's slowdown reasons, seconds active of 324: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 0, hardware power brake 0
+bf16: the driver's slowdown reasons, seconds active of 351: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 0, hardware power brake 0
+glyd-picked+kv: the driver's slowdown reasons, seconds active of 425: hardware thermal slowdown 0, software thermal slowdown 0, software power cap 0, hardware power brake 0

@@ -1,0 +1,1 @@
+4 x NVIDIA L4 (compute 8.9, sm_89, 23034 MiB), x86_64 host, 48 CPUs; steps sweep,tiny,real; TP 2

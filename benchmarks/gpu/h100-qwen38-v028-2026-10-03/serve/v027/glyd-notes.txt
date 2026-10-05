@@ -1,0 +1,2 @@
+glyd: mma12 layout
+glyd: the KV cache stays vLLM's (kv auto): sliding window, linear attention and state-space layers are not held; head size 256: 128 only

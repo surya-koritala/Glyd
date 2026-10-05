@@ -1,0 +1,5 @@
+module v028/glyd_gpu/__init__.abi3.so
+version 0.27.0
+distribution 0.27.0 v028/glyd_gpu-0.27.0.dist-info
+entry points [('glyd', 'glyd_gpu.vllm_entry:register')]
+libraries ['libglyd_gpu_cuda12.so', 'libglyd_gpu_cuda13.so']

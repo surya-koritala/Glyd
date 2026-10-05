@@ -2,7 +2,7 @@
 
 What a Linux distribution, a cloud storage system or a large
 deployment needs before it will store data in a format, and where Glyd
-stands on each (v0.27.0, October 2026). Ratio is not on the list
+stands on each (v0.28.0, October 2026). Ratio is not on the list
 because ratio is what gets a codec looked at; the items below are what
 gets it kept. Each line says done, partly, or not, and what the gap is.
 
