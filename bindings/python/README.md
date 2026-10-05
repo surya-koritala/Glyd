@@ -12,10 +12,10 @@ Lossless AI compression: 33% less GPU memory, bit for bit.
 ```python
 import glyd
 model = glyd.from_pretrained("Qwen/Qwen3-8B")               # packed on the GPU as it loads
-model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits bit for bit bf16's
+model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits exactly bf16's
 ```
 
-Every option: [on the GPU](https://github.com/surya-koritala/Glyd/tree/main/bindings/python#on-the-gpu-a-models-weights-held-compressed-bit-for-bit) below, and
+Every option: [on the GPU](https://github.com/surya-koritala/Glyd/tree/main/bindings/python#on-the-gpu-a-models-weights-held-compressed) below, and
 [getglyd.com](https://getglyd.com/docs/) for which models fit which GPU.
 
 ## The codec
@@ -44,7 +44,7 @@ beyond placing the shared library. `build.sh` places `libglyd_store`,
 which carries the codec and the store; with `libglyd` alone (the codec
 crate, BSD-3-Clause OR GPL-2.0) everything but `Store` works.
 
-## On the GPU: a model's weights held compressed, bit for bit
+## On the GPU: a model's weights held compressed
 
 Needs a CUDA GPU (Ampere or later) and `pip install "glyd[gpu]"`
 (PyTorch 2.5+ built for CUDA 12 or 13, transformers 5.17+, accelerate,
@@ -63,7 +63,7 @@ model = glyd.from_pretrained("Qwen/Qwen3-8B")            # any bf16 checkpoint, 
 tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
 out = model.generate(**tok("Hello", return_tensors="pt").to(model.device), max_new_tokens=64)
 
-model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True) # logits bit-identical to bf16's
+model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True) # logits exactly bf16's
 glyd.save_pretrained(model, "qwen3-8b-glyd")               # the packed format, loads without repacking
 model = glyd.from_pretrained("qwen3-8b-glyd", verify=True) # re-hashes every weight against the source
 print(glyd.fit("Qwen/Qwen3-32B", gpu="48GB"))              # will it fit, bf16 against Glyd
@@ -82,12 +82,12 @@ shard.
   fits; `mma12` on A10, A100 and H100); `"mma"`, the most memory off (10.8 bits a weight); `"mma12"`, 12.0 bits a
   weight, the faster one on an A10, A100 and H100. Embeddings are held compressed too, their rows rebuilt as they
   are looked up.
-- `exact`: the logits are bf16's bit for bit (every product multiplies as `nn.Linear` does). By default the
+- `exact`: the logits are exactly bf16's (every product multiplies as `nn.Linear` does). By default the
   products run straight from the packed weights: faster, their sums in another order than bf16's, so late tokens
   may differ from bf16's as between any two GEMM kernels.
 - `merge`: q, k, v and gate, up as one product each, as serving engines
   run them (not with `exact`).
-- `verify`: every pack unpacked and compared with its weights bit for bit as it is made; from a saved checkpoint,
+- `verify`: every pack unpacked and compared with its weights as it is made; from a saved checkpoint,
   every packed tensor unpacked and checked against the sha256 in `glyd.json`, and every other tensor against its
   own (a save of glyd 0.25 on).
 - `compile`: `generate()` compiled (below); `False`, or `GLYD_COMPILE=0`
@@ -132,7 +132,7 @@ they can also vary within a process, between calls whose cache sizes
 compile differently (Qwen3-1.7B's first compiled call and its later
 ones, after a longer cache, shared 13 of 32 in one run:
 benchmarks/gpu/rtx4080s-fastloop-2026-09-28/checks-merge-6e17b3f);
-`exact=True` is never compiled and stays bit-identical to bf16. The
+`exact=True` is never compiled and stays exactly bf16's. The
 first call compiles and captures: Qwen3-8B's took 17.5 s with PyTorch's
 compile caches empty, 6.7 s in a later process (4-6 s for the others); a
 call whose cache is longer than any before it compiles again once, then
@@ -251,11 +251,11 @@ embedding and the output layer too (every embedding row comes back bit for
 bit; `exact` keeps the output layer as vLLM runs it). vLLM sizes its KV
 cache after the weights load, so the memory the packs save becomes KV
 cache: 1.04-2.11x bf16's on an L4, an A10, an A100, a GH200 and an H100 SXM, at the same
-`--gpu-memory-utilization`. With `exact` the logits are vLLM's bf16 ones
-bit for bit, eager, or compiled in inductor's deterministic mode where the
+`--gpu-memory-utilization`. With `exact` the logits are exactly vLLM's bf16
+ones, eager, or compiled in inductor's deterministic mode where the
 packed Linears have no biases.
 `kv` (`auto`, the default, `lossless` or `off`; `GLYD_KV`) holds vLLM's KV cache
-in fewer bits, every value read back bit for bit: 1.25x to 1.30x vLLM's tokens in
+in fewer bits, every value read back exactly: 1.25x to 1.30x vLLM's tokens in
 the same memory on five models. `auto` holds it on an A100, an L4, an H100 and a GH200 and
 leaves vLLM's own cache on any other GPU, with a line in the log; `glyd run` keeps
 vLLM's cache unless `GLYD_KV` is set, because the first start sets the cache up
