@@ -5,6 +5,8 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # by hand on a tag (gh workflow run ci.yml --ref vX.Y.Z): release.yml publishes a tag only once CI succeeded on its commit
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
