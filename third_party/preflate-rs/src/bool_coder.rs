@@ -8,9 +8,8 @@
  *  specification and the RFC alone, and writes and reads, bit for bit, the streams
  *  that crate wrote, so everything earlier releases wrote still opens.
  *
- *  Licensed under the BSD 3-Clause License or the GNU General Public License
- *  version 2, at your option, like the rest of Glyd's codec (LICENSE and COPYING at
- *  the repository root).
+ *  Licensed under the Apache License, Version 2.0, like the rest of this crate
+ *  (third_party/preflate-rs/LICENSE.txt).
  *--------------------------------------------------------------------------------------------*/
 
 //! The coder for preflate's corrections: every decision is a bit coded with
