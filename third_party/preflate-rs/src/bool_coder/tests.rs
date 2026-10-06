@@ -80,7 +80,10 @@ impl ModelCtx {
         if x < 255 {
             x += 1;
         } else if y >= 2 {
-            y = (y + 1) / 2;
+            #[allow(clippy::manual_div_ceil)] // as the description writes it
+            {
+                y = (y + 1) / 2;
+            }
             x = 129;
         }
         if bit {
@@ -187,7 +190,7 @@ impl ModelEnc {
 }
 
 /// `add_one_to_output` of the RFC, here the one the model has.
-fn add_one(out: &mut Vec<u8>) {
+fn add_one(out: &mut [u8]) {
     let mut i = out.len();
     loop {
         i -= 1;
@@ -270,6 +273,7 @@ fn counts(c: VP8Context) -> (u32, u32, u32) {
 #[test]
 fn context_transitions_of_the_specification() {
     let (f, t) = (false, true);
+    #[allow(clippy::type_complexity)]
     let cases: [(&[(bool, usize)], (u32, u32, u32)); 16] = [
         (&[], (1, 1, 128)),
         (&[(f, 1)], (2, 1, 170)),
@@ -493,6 +497,7 @@ fn bank_of(states: &[(u8, u8)]) -> Vec<(u8, u8)> {
 fn helper_vectors() {
     // (the calls, the stream, the unary bank, the literal bank)
     type Calls = Box<dyn Fn(&mut VP8Writer<&mut Vec<u8>>, &mut Bank, &mut Bank)>;
+    #[allow(clippy::type_complexity)]
     let cases: Vec<(&str, Calls, &str, Vec<(u8, u8)>, Vec<(u8, u8)>)> = vec![
         (
             "H1",
