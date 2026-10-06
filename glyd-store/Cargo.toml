@@ -1,6 +1,6 @@
 [package]
 name = "glyd-store"
-version = "0.28.0"
+version = "0.29.0-rc.1"
 edition = "2021"
 description = "A store that compresses across the objects it holds: each object kept as a delta against the stored object it most resembles, small objects in packs, on a directory or S3 (built on the glyd codec)"
 repository = "https://github.com/surya-koritala/Glyd"
@@ -8,6 +8,7 @@ readme = "README.md"
 keywords = ["compression", "storage", "s3", "deduplication", "backup"]
 categories = ["compression", "filesystem"]
 license = "BUSL-1.1"
+license-file = "../LICENSE"
 
 [lib]
 crate-type = ["rlib", "cdylib", "staticlib"]
@@ -17,7 +18,7 @@ name = "glyd-store"
 path = "src/bin/glyd-store.rs"
 
 [dependencies]
-glyd = { version = "0.28.0", path = ".." }
+glyd = { version = "0.29.0-rc.1", path = ".." }
 hmac = "0.13"
 sha2 = "0.11"
 ureq = "3"

@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "glyd"
-version = "0.28.0"
+version = "0.29.0rc1"
 description = "Lossless AI compression: 33% less GPU memory, bit for bit. Models load with their weights packed on the GPU (glyd.from_pretrained); a codec for files and object storage."
 keywords = ["compression", "lossless", "llm", "gpu", "cuda", "bfloat16", "transformers", "pytorch", "object-storage"]
 classifiers = [
@@ -20,10 +20,10 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 readme = "README.md"
-# The binding and the codec: BSD-3-Clause or GPL-2.0; the bundled
-# libglyd_store (the Store class): BUSL-1.1, see LICENSE-glyd-store.
-# (The weights on the GPU are the glyd-gpu package, BUSL-1.1.)
-license = { text = "BSD-3-Clause OR GPL-2.0-only; bundled libglyd_store BUSL-1.1" }
+# The binding, the codec and the bundled libglyd_store (the Store class): BUSL-1.1, see LICENSE.
+# (The weights on the GPU are the glyd-gpu package, BUSL-1.1 as well.)
+license = "BUSL-1.1"
+license-files = ["LICENSE"]
 requires-python = ">=3.8"
 
 [project.urls]
@@ -37,8 +37,8 @@ Issues = "https://github.com/surya-koritala/Glyd/issues"
 # The GPU half is the glyd-gpu package (compiled wheels, the same version as this one): gpu, for glyd.from_pretrained and glyd.fit; vllm,
 # for vllm serve MODEL --quantization glyd and glyd run. glyd-gpu's own extras hold what these held in glyd 0.26 (PyTorch, transformers,
 # accelerate; the vLLM release it is tested with), so an install resolves as before, plus glyd-gpu.
-gpu = ["glyd-gpu[gpu]==0.28.0"]
-vllm = ["glyd-gpu[vllm]==0.28.0"]
+gpu = ["glyd-gpu[gpu]==0.29.0rc1"]
+vllm = ["glyd-gpu[vllm]==0.29.0rc1"]
 
 [project.scripts]
 # glyd run / serve / doctor / login / pack / verify go to glyd-gpu; any other command to the compression program (the Rust glyd), found on PATH
@@ -46,7 +46,6 @@ glyd = "glyd.cli:main"
 
 [tool.setuptools]
 packages = ["glyd", "glyd.gpu"]
-license-files = ["LICENSE", "COPYING", "LICENSE-glyd-store"]
 
 [tool.setuptools.package-data]
 glyd = ["libglyd_store.dylib", "libglyd_store.so", "glyd_store.dll", "libglyd.dylib", "libglyd.so", "glyd.dll"]

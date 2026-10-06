@@ -27,14 +27,14 @@ import ctypes
 import os
 import sys
 
-__version__ = "0.28.0"
+__version__ = "0.29.0rc1"
 
 _LEVELS = {"default": 0, "fast": 1, "turbo": 2, "max": 3, "ultra": 4, "cold": 5, "max-long": 6}
 
 
 def _load():
-    """libglyd_store (the codec and the store, BUSL-1.1) when present,
-    else libglyd (the codec alone, BSD-3-Clause OR GPL-2.0; Store then raises)."""
+    """libglyd_store (the codec and the store) when present,
+    else libglyd (the codec alone; Store then raises)."""
     ext = {"darwin": ".dylib", "win32": ".dll"}.get(sys.platform, ".so")
     pre = "" if sys.platform == "win32" else "lib"
     here = os.path.dirname(os.path.abspath(__file__))

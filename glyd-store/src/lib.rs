@@ -33,8 +33,8 @@
 //! objects (`Store::rebuild_with`): the index from the sidecars, the
 //! table by reading every object back.
 //!
-//! This crate is the store; the codec it builds on is the `glyd` crate
-//! (BSD-3-Clause OR GPL-2.0). The store is under the Business Source License 1.1.
+//! This crate is the store; the codec it builds on is the `glyd` crate.
+//! Both are under the Business Source License 1.1.
 
 pub mod c_api;
 

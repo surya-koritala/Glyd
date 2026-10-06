@@ -149,7 +149,7 @@ def selftest():
     day = datetime.date(2031, 2, 3)
     with tempfile.TemporaryDirectory() as d:
         root = tree(d)
-        released = re.sub(r"^(## v\S+) \(Unreleased\)$", rf"\1 {DASH} 2000-01-01", read(root, CHANGELOG), flags=re.M)
+        released = re.sub(r"^## (?:(v\S+) \(Unreleased\)|Unreleased)$", lambda m: f"## {m.group(1) or 'v0.0.0'} {DASH} 2000-01-01", read(root, CHANGELOG), flags=re.M)
         (root / CHANGELOG).write_text("## v9.9.9 (Unreleased)\n\n" + released, encoding="utf-8")  # (whatever the real one says, now)
         docs = {p: read(root, p) for p, *_ in DOCS}
 
