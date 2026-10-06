@@ -12,7 +12,8 @@ new = sys.argv[1].lstrip("v")
 path = pathlib.Path(__file__).resolve().parent.parent / "Formula" / "glyd.rb"
 text = path.read_text()
 old = re.search(r'^  version "([^"]+)"$', text, re.M).group(1)
-text = text.replace(old, new)
+# comments keep their versions (the license note names v0.28.0 on purpose)
+text = "".join(l if l.lstrip().startswith("#") else l.replace(old, new) for l in text.splitlines(True))
 
 def sha256(match):
     url = match.group(2)
