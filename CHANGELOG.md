@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## v0.29.0 (Unreleased)
+## v0.29.0 — 2026-10-06
 
 - Glyd's own engine, `glyd-engine`, ships in the `glyd-gpu` wheels beside the library (Linux, x86_64 and aarch64): a program of its own (Rust; the CUDA driver and Glyd's GPU library are all it
   opens) that runs Qwen3 models in the terminal, at a page and as an OpenAI-compatible API. `glyd run` hands a Qwen3 model to it only on a GPU where it is measured at least as fast as vLLM and with less memory,
