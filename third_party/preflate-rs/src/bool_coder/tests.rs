@@ -72,7 +72,11 @@ impl ModelCtx {
     }
 
     pub fn update(&mut self, bit: bool) {
-        let (mut x, mut y) = if bit { (self.n1, self.n0) } else { (self.n0, self.n1) };
+        let (mut x, mut y) = if bit {
+            (self.n1, self.n0)
+        } else {
+            (self.n0, self.n1)
+        };
         if x < 255 {
             x += 1;
         } else if y >= 2 {
@@ -103,7 +107,13 @@ pub(super) struct ModelEnc {
 
 impl ModelEnc {
     pub fn new() -> Self {
-        let mut e = Self { range: 255, bottom: 0, bit_count: 24, out: Vec::new(), max_ff_run_carried: 0 };
+        let mut e = Self {
+            range: 255,
+            bottom: 0,
+            bit_count: 24,
+            out: Vec::new(),
+            max_ff_run_carried: 0,
+        };
         e.put(false, &mut ModelCtx { n0: 1, n1: 1 }); // the marker
         e
     }
@@ -329,7 +339,13 @@ fn bypass(bit: bool, n: usize) -> Vec<Op> {
 #[test]
 fn encoder_vectors() {
     use Op::{Bypass, Put};
-    let e11 = [Put(true, 0), Put(false, 1), Put(true, 0), Put(true, 1), Put(false, 0)];
+    let e11 = [
+        Put(true, 0),
+        Put(false, 1),
+        Put(true, 0),
+        Put(true, 1),
+        Put(false, 0),
+    ];
     let cases: Vec<(&str, Vec<Op>, &str)> = vec![
         ("E1", vec![], ""),
         ("E2", vec![Put(false, 0)], ""),
@@ -340,7 +356,11 @@ fn encoder_vectors() {
         ("E7", ones(3), "60 40"),
         ("E8", ones(4), "66 a0"),
         ("E9", ones(8), "72"),
-        ("E10", vec![Put(true, 0), Put(false, 0), Put(true, 0)], "4a c0"),
+        (
+            "E10",
+            vec![Put(true, 0), Put(false, 0), Put(true, 0)],
+            "4a c0",
+        ),
         ("E11", e11.to_vec(), "58 e0"),
         ("E12/16", ones(16), "78 a8"),
         ("E12/17", ones(17), "79 10"),
@@ -358,7 +378,11 @@ fn encoder_vectors() {
         ("E15/24", bypass(false, 24), "00"),
         ("E15/25", bypass(false, 25), "00"),
         ("E15/32", bypass(false, 32), "00 00"),
-        ("E15/100", bypass(false, 100), "00 00 00 00 00 00 00 00 00 00"),
+        (
+            "E15/100",
+            bypass(false, 100),
+            "00 00 00 00 00 00 00 00 00 00",
+        ),
         ("E16", vec![Put(false, 0); 17], ""),
         ("E17", vec![Put(false, 0); 300], ""),
     ];
@@ -374,11 +398,21 @@ fn encoder_vectors() {
 fn encoder_traces_of_the_specification() {
     // E9, step by step: (range after, shifts, bottom after)
     let mut w = VP8Writer::new(Vec::new()).unwrap();
-    assert_eq!((w.range, w.bottom, w.bit_count), (128, 0, 24), "after the marker");
+    assert_eq!(
+        (w.range, w.bottom, w.bit_count),
+        (128, 0, 24),
+        "after the marker"
+    );
     let mut c = VP8Context::default();
     let trace = [
-        (128, 0x80), (170, 0x156), (254, 0x302), (203, 0x335),
-        (169, 0x357), (145, 0x36f), (252, 0x704), (224, 0x720),
+        (128, 0x80),
+        (170, 0x156),
+        (254, 0x302),
+        (203, 0x335),
+        (169, 0x357),
+        (145, 0x36f),
+        (252, 0x704),
+        (224, 0x720),
     ];
     for (i, (range, bottom)) in trace.into_iter().enumerate() {
         w.put(true, &mut c).unwrap();
@@ -395,20 +429,43 @@ fn decoder_vectors() {
     let t = true;
     let f = false;
     let cases: Vec<(&str, &str, Vec<Op>, Vec<bool>)> = vec![
-        ("D1", "", vec![Put(f, 0), Put(f, 1), Bypass(f), Put(f, 0), Bypass(f)], vec![f; 5]),
+        (
+            "D1",
+            "",
+            vec![Put(f, 0), Put(f, 1), Bypass(f), Put(f, 0), Bypass(f)],
+            vec![f; 5],
+        ),
         ("D2", "40", puts(&[f; 4]), vec![t, f, f, f]),
         ("D3", "55 80", puts(&[f; 3]), vec![t, t, f]),
         ("D4", "4a c0", puts(&[f; 4]), vec![t, f, t, f]),
-        ("D5", "72", puts(&[f; 10]), vec![t, t, t, t, t, t, t, t, f, f]),
+        (
+            "D5",
+            "72",
+            puts(&[f; 10]),
+            vec![t, t, t, t, t, t, t, t, f, f],
+        ),
         (
             "D6",
             "58 e0",
-            [0, 1, 0, 1, 0, 1, 1].iter().map(|&i| Op::Put(f, i)).collect(),
+            [0, 1, 0, 1, 0, 1, 1]
+                .iter()
+                .map(|&i| Op::Put(f, i))
+                .collect(),
             vec![t, f, t, t, f, f, f],
         ),
         ("D7", "41", bypass(f, 3), vec![t, f, f]),
-        ("D8", "7f 89", bypass(f, 10), vec![t, t, t, t, t, t, t, t, f, f]),
-        ("D9", "7f ff ff 99", bypass(f, 26), [vec![t; 24], vec![f; 2]].concat()),
+        (
+            "D8",
+            "7f 89",
+            bypass(f, 10),
+            vec![t, t, t, t, t, t, t, t, f, f],
+        ),
+        (
+            "D9",
+            "7f ff ff 99",
+            bypass(f, 26),
+            [vec![t; 24], vec![f; 2]].concat(),
+        ),
         ("D10", "00", puts(&[f; 6]), vec![f; 6]),
     ];
     for (id, stream, ops, want) in cases {
@@ -421,7 +478,9 @@ fn decoder_vectors() {
 type Bank = [VP8Context; 8];
 
 fn state(bank: &Bank) -> Vec<(u8, u8)> {
-    bank.iter().map(|c| (c.counts().0 as u8, c.counts().1 as u8)).collect()
+    bank.iter()
+        .map(|c| (c.counts().0 as u8, c.counts().1 as u8))
+        .collect()
 }
 
 fn bank_of(states: &[(u8, u8)]) -> Vec<(u8, u8)> {
@@ -435,8 +494,20 @@ fn helper_vectors() {
     // (the calls, the stream, the unary bank, the literal bank)
     type Calls = Box<dyn Fn(&mut VP8Writer<&mut Vec<u8>>, &mut Bank, &mut Bank)>;
     let cases: Vec<(&str, Calls, &str, Vec<(u8, u8)>, Vec<(u8, u8)>)> = vec![
-        ("H1", Box::new(|w, u, _| w.put_unary_encoded(0, u).unwrap()), "", bank_of(&[(2, 1)]), bank_of(&[])),
-        ("H2", Box::new(|w, u, _| w.put_unary_encoded(1, u).unwrap()), "40", bank_of(&[(1, 2), (2, 1)]), bank_of(&[])),
+        (
+            "H1",
+            Box::new(|w, u, _| w.put_unary_encoded(0, u).unwrap()),
+            "",
+            bank_of(&[(2, 1)]),
+            bank_of(&[]),
+        ),
+        (
+            "H2",
+            Box::new(|w, u, _| w.put_unary_encoded(1, u).unwrap()),
+            "40",
+            bank_of(&[(1, 2), (2, 1)]),
+            bank_of(&[]),
+        ),
         (
             "H3",
             Box::new(|w, u, _| w.put_unary_encoded(3, u).unwrap()),
@@ -448,7 +519,16 @@ fn helper_vectors() {
             "H4",
             Box::new(|w, u, _| w.put_unary_encoded(10, u).unwrap()),
             "7f c0 80",
-            bank_of(&[(1, 2), (1, 2), (1, 2), (1, 2), (1, 2), (1, 2), (1, 2), (2, 4)]),
+            bank_of(&[
+                (1, 2),
+                (1, 2),
+                (1, 2),
+                (1, 2),
+                (1, 2),
+                (1, 2),
+                (1, 2),
+                (2, 4),
+            ]),
             bank_of(&[]),
         ),
         (
@@ -485,7 +565,16 @@ fn helper_vectors() {
                 w.put_n_bits(100, 6, b).unwrap();
             }),
             "7f d9 20",
-            bank_of(&[(1, 2), (1, 2), (1, 2), (1, 2), (1, 2), (1, 2), (1, 2), (2, 6)]),
+            bank_of(&[
+                (1, 2),
+                (1, 2),
+                (1, 2),
+                (1, 2),
+                (1, 2),
+                (1, 2),
+                (1, 2),
+                (2, 6),
+            ]),
             bank_of(&[(2, 1), (2, 1), (1, 2), (2, 1), (2, 1), (1, 2)]),
         ),
     ];
@@ -508,35 +597,69 @@ fn helper_decoding_vectors() {
 
     let (mut u, _) = fresh();
     let mut r = reader("70");
-    assert_eq!((r.get_unary_encoded(&mut u).unwrap(), r.get_unary_encoded(&mut u).unwrap()), (3, 0));
+    assert_eq!(
+        (
+            r.get_unary_encoded(&mut u).unwrap(),
+            r.get_unary_encoded(&mut u).unwrap()
+        ),
+        (3, 0)
+    );
 
     let (mut u, _) = fresh();
     let mut r = reader("7f c0 80");
-    assert_eq!((r.get_unary_encoded(&mut u).unwrap(), r.get_unary_encoded(&mut u).unwrap()), (10, 0));
+    assert_eq!(
+        (
+            r.get_unary_encoded(&mut u).unwrap(),
+            r.get_unary_encoded(&mut u).unwrap()
+        ),
+        (10, 0)
+    );
 
     let (_, mut b) = fresh();
     let mut r = reader("50");
-    assert_eq!((r.get_n_bits(3, &mut b).unwrap(), r.get_n_bits(3, &mut b).unwrap()), (5, 0));
+    assert_eq!(
+        (
+            r.get_n_bits(3, &mut b).unwrap(),
+            r.get_n_bits(3, &mut b).unwrap()
+        ),
+        (5, 0)
+    );
 
     let (mut u, mut b) = fresh();
     let mut r = reader("72");
-    assert_eq!((r.get_unary_encoded(&mut u).unwrap(), r.get_n_bits(2, &mut b).unwrap()), (3, 1));
+    assert_eq!(
+        (
+            r.get_unary_encoded(&mut u).unwrap(),
+            r.get_n_bits(2, &mut b).unwrap()
+        ),
+        (3, 1)
+    );
 
     let (mut u, mut b) = fresh();
     let mut r = reader("7f d9 20");
-    assert_eq!((r.get_unary_encoded(&mut u).unwrap(), r.get_n_bits(6, &mut b).unwrap()), (12, 36));
+    assert_eq!(
+        (
+            r.get_unary_encoded(&mut u).unwrap(),
+            r.get_n_bits(6, &mut b).unwrap()
+        ),
+        (12, 36)
+    );
 }
 
 // ---- section 9.6: the pseudo-random workloads ----
 
-const THRESHOLDS: [u64; 8] = [8388608, 2097152, 14680064, 524288, 16252928, 4194304, 16384, 16760832];
+const THRESHOLDS: [u64; 8] = [
+    8388608, 2097152, 14680064, 524288, 16252928, 4194304, 16384, 16760832,
+];
 
 /// The workload of the specification: decision `i` is a bit under one of
 /// eight contexts, the context and the bit from a 64-bit LCG.
 pub(super) fn workload_calls(seed: u64, n: usize) -> impl Iterator<Item = (usize, bool)> {
     let mut x = seed;
     (0..n).map(move |_| {
-        x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        x = x
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let k = (x >> 61) as usize;
         let u = (x >> 32) & 0xff_ffff;
         (k, u < THRESHOLDS[k])
@@ -544,7 +667,9 @@ pub(super) fn workload_calls(seed: u64, n: usize) -> impl Iterator<Item = (usize
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf29ce484222325u64, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x100000001b3))
+    bytes.iter().fold(0xcbf29ce484222325u64, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100000001b3)
+    })
 }
 
 fn encode_workload(seed: u64, n: usize) -> Vec<u8> {
@@ -562,8 +687,16 @@ fn check_workload(seed: u64, n: usize, len: usize, hash: u64, first: &str, last:
     let stream = encode_workload(seed, n);
     assert_eq!(stream.len(), len, "seed {seed}, {n} decisions: length");
     assert_eq!(fnv1a(&stream), hash, "seed {seed}, {n} decisions: hash");
-    assert_eq!(stream[..stream.len().min(16)], hex(first)[..], "first bytes");
-    assert_eq!(stream[stream.len().saturating_sub(16)..], hex(last)[..], "last bytes");
+    assert_eq!(
+        stream[..stream.len().min(16)],
+        hex(first)[..],
+        "first bytes"
+    );
+    assert_eq!(
+        stream[stream.len().saturating_sub(16)..],
+        hex(last)[..],
+        "last bytes"
+    );
     // and back
     let mut r = VP8Reader::new(Cursor::new(&stream)).unwrap();
     let mut ctx = [VP8Context::default(); 8];
@@ -578,14 +711,35 @@ fn workloads_of_the_specification() {
     check_workload(1, 8, 2, 0x07e3c607b4a804f6, "2bf8", "2bf8");
     check_workload(1, 24, 4, 0xa12c4a961656eb34, "2c0d6680", "2c0d6680");
     check_workload(2, 50, 6, 0xf857e4d3e7a57fd1, "2d203bafdba0", "2d203bafdba0");
-    check_workload(1, 1000, 52, 0xe07370d2c71c2ec7, "2c0d791417823eaa13313d8c6af01ff4", "1c7fce6d39423e2341f7866c5c92e8b1");
-    check_workload(1, 100000, 5184, 0x064bb862c43a5f85, "2c0d791417823eaa13313d8c6af01ff4", "91d933092cc654e2b7af2a7499ebee30");
+    check_workload(
+        1,
+        1000,
+        52,
+        0xe07370d2c71c2ec7,
+        "2c0d791417823eaa13313d8c6af01ff4",
+        "1c7fce6d39423e2341f7866c5c92e8b1",
+    );
+    check_workload(
+        1,
+        100000,
+        5184,
+        0x064bb862c43a5f85,
+        "2c0d791417823eaa13313d8c6af01ff4",
+        "91d933092cc654e2b7af2a7499ebee30",
+    );
 }
 
 #[test]
 #[cfg_attr(debug_assertions, ignore = "slow without optimisation")]
 fn workload_of_three_million_decisions() {
-    check_workload(1, 3_000_000, 156323, 0x00b09cf39c9506e2, "2c0d791417823eaa13313d8c6af01ff4", "ccc5aa08787b4a16a4f71dcba01525b0");
+    check_workload(
+        1,
+        3_000_000,
+        156323,
+        0x00b09cf39c9506e2,
+        "2c0d791417823eaa13313d8c6af01ff4",
+        "ccc5aa08787b4a16a4f71dcba01525b0",
+    );
 }
 
 /// 6 carries each into bytes already out, one across a 0xff byte (decision
@@ -593,8 +747,22 @@ fn workload_of_three_million_decisions() {
 #[test]
 #[cfg_attr(debug_assertions, ignore = "slow without optimisation")]
 fn workloads_with_carries_across_ff() {
-    check_workload(18, 10_400_000, 543050, 0x3fad1bdaffa55da9, "4d546e4bffe0856e0ba6f9953219e73a", "573f95d879700c56fc07f19395bf05c0");
-    check_workload(13, 40_100_000, 2094580, 0x193091ab722539ce, "427e74cf84891a62341a78dd1fe8b553", "0ba60adba5301b111105211069a5fa80");
+    check_workload(
+        18,
+        10_400_000,
+        543050,
+        0x3fad1bdaffa55da9,
+        "4d546e4bffe0856e0ba6f9953219e73a",
+        "573f95d879700c56fc07f19395bf05c0",
+    );
+    check_workload(
+        13,
+        40_100_000,
+        2094580,
+        0x193091ab722539ce,
+        "427e74cf84891a62341a78dd1fe8b553",
+        "0ba60adba5301b111105211069a5fa80",
+    );
 }
 
 // ---- the model, and a carry made by hand ----
@@ -607,7 +775,11 @@ fn random_ops(rng: &mut Rng, n: usize) -> Vec<Op> {
                 Op::Bypass(rng.chance(2))
             } else {
                 // a skewed bit, mostly under few contexts, so they saturate
-                let k = if rng.chance(3) { rng.below(8) as usize } else { 0 };
+                let k = if rng.chance(3) {
+                    rng.below(8) as usize
+                } else {
+                    0
+                };
                 Op::Put(!rng.chance(skew), k)
             }
         })
@@ -618,7 +790,11 @@ fn random_ops(rng: &mut Rng, n: usize) -> Vec<Op> {
 fn writer_matches_the_model_and_its_flush_formulation() {
     let mut rng = Rng(5);
     for i in 0..300 * scale() {
-        let n = if i % 50 == 0 { 5000 } else { rng.below(120) as usize };
+        let n = if i % 50 == 0 {
+            5000
+        } else {
+            rng.below(120) as usize
+        };
         let ops = random_ops(&mut rng, n);
         let (spec, flush) = model_encode(&ops);
         assert_eq!(encode(&ops), spec, "case {i}");
@@ -655,7 +831,10 @@ fn carry_on_bytes() {
         (&[0x12, 0xff, 0xff, 0xff], &[0x13, 0, 0, 0]),
         (&[0x12, 0xff], &[0x13, 0]),
         (&[0x12], &[0x13]),
-        (&[0x00, 0xff, 0xff, 0xff, 0xff, 0xff], &[0x01, 0, 0, 0, 0, 0]),
+        (
+            &[0x00, 0xff, 0xff, 0xff, 0xff, 0xff],
+            &[0x01, 0, 0, 0, 0, 0],
+        ),
         (&[0x7f, 0xff, 0x12, 0xff], &[0x7f, 0xff, 0x13, 0x00]),
         (&[0x7e, 0xfe, 0xff, 0xff], &[0x7e, 0xff, 0, 0]),
         (&[], &[]),
@@ -678,7 +857,11 @@ fn carry_on_bytes() {
 /// a run of 0xff.
 fn random_state(rng: &mut Rng) -> ModelEnc {
     loop {
-        let bit_count = if rng.chance(4) { 1 + rng.below(24) } else { 1 + rng.below(8) } as u32;
+        let bit_count = if rng.chance(4) {
+            1 + rng.below(24)
+        } else {
+            1 + rng.below(8)
+        } as u32;
         let pending_bits = 24 - bit_count;
         let pending = match rng.below(3) {
             0 => (1u64 << pending_bits) - 1,
@@ -698,7 +881,13 @@ fn random_state(rng: &mut Rng) -> ModelEnc {
         if out.first().is_none_or(|&b| b >= 0x80) {
             out.insert(0, rng.below(0x80) as u8);
         }
-        return ModelEnc { range: 128 + rng.below(128) as u32, bottom: bottom as u32, bit_count, out, max_ff_run_carried: 0 };
+        return ModelEnc {
+            range: 128 + rng.below(128) as u32,
+            bottom: bottom as u32,
+            bit_count,
+            out,
+            max_ff_run_carried: 0,
+        };
     }
 }
 
@@ -749,7 +938,11 @@ fn writer_matches_the_model_state_by_state() {
             );
             // how many bytes a carry changed: itself, and the 0xff bytes
             // it went back through
-            let common = before.iter().zip(&m.out).take_while(|(a, b)| a == b).count();
+            let common = before
+                .iter()
+                .zip(&m.out)
+                .take_while(|(a, b)| a == b)
+                .count();
             carries_through_ff[(before.len() - common).min(9)] += 1;
         }
         w.finish().unwrap();
@@ -757,7 +950,10 @@ fn writer_matches_the_model_state_by_state() {
     }
     // the generator reaches carries across runs of 0xff of every length up to eight
     for (n, &seen) in carries_through_ff.iter().enumerate().skip(1) {
-        assert!(seen > 0, "no carry changed {n} bytes: {carries_through_ff:?}");
+        assert!(
+            seen > 0,
+            "no carry changed {n} bytes: {carries_through_ff:?}"
+        );
     }
 }
 
@@ -774,7 +970,13 @@ fn carry_through_four_ff_bytes_by_hand() {
         bit_count: 1,
     };
     let model = {
-        let mut m = ModelEnc { range: 128, bottom: 0x8000_005a, bit_count: 1, out: w.out.clone(), max_ff_run_carried: 0 };
+        let mut m = ModelEnc {
+            range: 128,
+            bottom: 0x8000_005a,
+            bit_count: 1,
+            out: w.out.clone(),
+            max_ff_run_carried: 0,
+        };
         m.step(false, 1);
         assert_eq!(m.max_ff_run_carried, 4);
         m
@@ -842,7 +1044,12 @@ fn reader_gives_the_same_decisions_from_any_kind_of_source() {
         let stream = encode(&ops);
         let want = decode(&stream, &ops);
         for n in [1, 2, 3, 7] {
-            let mut r = VP8Reader::new(Stuttering { data: &stream, n, toggle: false }).unwrap();
+            let mut r = VP8Reader::new(Stuttering {
+                data: &stream,
+                n,
+                toggle: false,
+            })
+            .unwrap();
             let mut ctx = [VP8Context::default(); 8];
             let got: Vec<bool> = ops
                 .iter()
@@ -859,10 +1066,20 @@ fn reader_gives_the_same_decisions_from_any_kind_of_source() {
 #[test]
 fn reader_returns_its_source_errors_and_never_panics_on_them() {
     // the constructor reads ahead: an error there is the constructor's
-    assert!(VP8Reader::new(Failing { data: &[1, 2, 3, 4, 5, 6, 7, 8, 9], ok: 0 }).is_err());
+    assert!(
+        VP8Reader::new(Failing {
+            data: &[1, 2, 3, 4, 5, 6, 7, 8, 9],
+            ok: 0
+        })
+        .is_err()
+    );
     // a stream longer than the read-ahead whose source fails later
     let stream: Vec<u8> = (0..200).map(|i| (i * 7 % 120) as u8).collect();
-    let mut r = VP8Reader::new(Failing { data: &stream, ok: 30 }).unwrap();
+    let mut r = VP8Reader::new(Failing {
+        data: &stream,
+        ok: 30,
+    })
+    .unwrap();
     let mut ctx = VP8Context::default();
     let mut got_error = false;
     for _ in 0..100_000 {
@@ -909,8 +1126,15 @@ impl<R: CabacReader<VP8Context>> CabacReader<VP8Context> for Counting<R> {
 #[test]
 fn the_single_byte_ff_does_not_hang_a_unary_read() {
     // the stream the crate this replaces looped on: every decision is a one
-    for stream in [vec![0xffu8], vec![0xff, 0, 0, 0], vec![0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]] {
-        let mut r = Counting { inner: VP8Reader::new(Cursor::new(stream.clone())).unwrap(), gets: 0 };
+    for stream in [
+        vec![0xffu8],
+        vec![0xff, 0, 0, 0],
+        vec![0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ] {
+        let mut r = Counting {
+            inner: VP8Reader::new(Cursor::new(stream.clone())).unwrap(),
+            gets: 0,
+        };
         let mut ctx = [VP8Context::default(); 32];
         let e = r.get_unary_encoded(&mut ctx).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidData, "{stream:02x?}");
@@ -918,7 +1142,10 @@ fn the_single_byte_ff_does_not_hang_a_unary_read() {
     }
     // streams of ones: whatever they decode to, the read returns
     for len in 0..70 {
-        let mut r = Counting { inner: VP8Reader::new(Cursor::new(vec![0xffu8; len])).unwrap(), gets: 0 };
+        let mut r = Counting {
+            inner: VP8Reader::new(Cursor::new(vec![0xffu8; len])).unwrap(),
+            gets: 0,
+        };
         let mut ctx = [VP8Context::default(); 32];
         let _ = r.get_unary_encoded(&mut ctx);
         assert!(r.gets <= MAX_RUN);
@@ -955,7 +1182,10 @@ fn a_unary_read_is_bounded_by_the_input_unless_it_starts_with_ff() {
         let mut count = 0usize;
         while r.get(&mut ctx[count.min(31)]).unwrap() {
             count += 1;
-            assert!(count <= bound, "case {case}: {bytes:02x?} reads {count} ones, the bound is {bound}");
+            assert!(
+                count <= bound,
+                "case {case}: {bytes:02x?} reads {count} ones, the bound is {bound}"
+            );
         }
         worst = worst.max(count * 100 / bound);
     }
@@ -970,8 +1200,14 @@ fn the_limits_of_unary_codes_and_literals() {
     let mut buf = Vec::new();
     let mut w = VP8Writer::new(&mut buf).unwrap();
     w.put_unary_encoded(MAX_RUN - 1, &mut u).unwrap();
-    assert_eq!(w.put_unary_encoded(MAX_RUN, &mut u).unwrap_err().kind(), io::ErrorKind::InvalidInput);
-    assert_eq!(w.put_n_bits(0, MAX_RUN + 1, &mut b).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        w.put_unary_encoded(MAX_RUN, &mut u).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
+    assert_eq!(
+        w.put_n_bits(0, MAX_RUN + 1, &mut b).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
     // a literal wider than 64 bits has zeros above the 64th
     w.put_n_bits(u64::MAX, 70, &mut b).unwrap();
     w.put_n_bits(5, 0, &mut b).unwrap(); // nothing
@@ -981,7 +1217,10 @@ fn the_limits_of_unary_codes_and_literals() {
     assert_eq!(r.get_unary_encoded(&mut u).unwrap(), MAX_RUN - 1);
     assert_eq!(r.get_n_bits(70, &mut b).unwrap(), u64::MAX);
     assert_eq!(r.get_n_bits(0, &mut b).unwrap(), 0);
-    assert_eq!(r.get_n_bits(MAX_RUN + 1, &mut b).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(
+        r.get_n_bits(MAX_RUN + 1, &mut b).unwrap_err().kind(),
+        io::ErrorKind::InvalidInput
+    );
 }
 
 #[test]
@@ -1030,7 +1269,10 @@ fn fuzz_the_reader_with_random_bytes_and_calls() {
         if rng.chance(5) && !bytes.is_empty() {
             bytes[0] = 0xff; // the first byte no stream starts with
         }
-        let mut r = Counting { inner: VP8Reader::new(Cursor::new(bytes)).unwrap(), gets: 0 };
+        let mut r = Counting {
+            inner: VP8Reader::new(Cursor::new(bytes)).unwrap(),
+            gets: 0,
+        };
         let mut ctx = [VP8Context::default(); 32];
         let mut single = VP8Context::default();
         for _ in 0..rng.below(30) {
@@ -1040,14 +1282,26 @@ fn fuzz_the_reader_with_random_bytes_and_calls() {
                 1 => r.inner.get_bypass().map(|_| ()),
                 2 => r.get_unary_encoded(&mut ctx).map(|_| ()),
                 3 => r.get_n_bits(rng.below(70) as usize, &mut ctx).map(|_| ()),
-                _ => r.get_n_bits([0, 1, 33, 64, 65, MAX_RUN, MAX_RUN + 1][rng.below(7) as usize], &mut ctx).map(|_| ()),
+                _ => r
+                    .get_n_bits(
+                        [0, 1, 33, 64, 65, MAX_RUN, MAX_RUN + 1][rng.below(7) as usize],
+                        &mut ctx,
+                    )
+                    .map(|_| ()),
             };
             errors += usize::from(result.is_err());
             assert!(r.gets - before <= MAX_RUN, "case {case}");
         }
     }
-    assert!(errors > 0, "no call was refused: the inputs are not hostile enough");
-    assert!(started.elapsed().as_secs() < 60, "slow: {:?}", started.elapsed());
+    assert!(
+        errors > 0,
+        "no call was refused: the inputs are not hostile enough"
+    );
+    assert!(
+        started.elapsed().as_secs() < 60,
+        "slow: {:?}",
+        started.elapsed()
+    );
 }
 
 // ---- the writer, the sink, and what the types allow ----
@@ -1131,7 +1385,11 @@ fn the_debug_coder_finds_a_context_mix_up() {
     let mut r = DebugReader::new(Cursor::new(&buf)).unwrap();
     let (mut a, mut b) = (DebugContext::default(), DebugContext::default());
     assert_eq!(
-        [r.get(&mut a).unwrap(), r.get(&mut b).unwrap(), r.get(&mut a).unwrap()],
+        [
+            r.get(&mut a).unwrap(),
+            r.get(&mut b).unwrap(),
+            r.get(&mut a).unwrap()
+        ],
         [true, false, true]
     );
     let swapped = std::panic::catch_unwind(|| {

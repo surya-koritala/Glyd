@@ -200,7 +200,11 @@ fn script(rng: &mut Rng, n: usize) -> Vec<Call> {
                 let widest = if rng.chance(8) { 64 } else { 12 };
                 let w = 1 + rng.below(widest) as usize;
                 let x = rng.next() >> rng.below(64);
-                calls.push(if rng.chance(4) { Call::Bits4(x, w) } else { Call::Bits(x, w, rng.below(2) as usize) });
+                calls.push(if rng.chance(4) {
+                    Call::Bits4(x, w)
+                } else {
+                    Call::Bits(x, w, rng.below(2) as usize)
+                });
             }
         }
     }
@@ -214,7 +218,11 @@ fn writers_make_the_same_bytes_from_random_scripts() {
     let mut rng = Rng(21);
     let mut decisions = 0usize;
     for i in 0..300 * scale() {
-        let n = if i % 30 == 0 { 20_000 } else { rng.below(400) as usize };
+        let n = if i % 30 == 0 {
+            20_000
+        } else {
+            rng.below(400) as usize
+        };
         let calls = script(&mut rng, n);
         let (new, old) = (stream_new(&calls), stream_old(&calls));
         assert_eq!(new, old, "script {i} ({} calls)", calls.len());
@@ -234,7 +242,11 @@ fn writers_make_the_same_bytes_from_a_long_script() {
 fn writers_make_the_same_bytes_for_the_workloads_of_the_specification() {
     // the specification's 9.6, with the seeds the table has and many others
     for seed in (1..200u64).chain([18, 13]) {
-        let n = if seed == 13 || seed == 18 { 0 } else { 1 + (seed as usize * 7919) % 200_000 };
+        let n = if seed == 13 || seed == 18 {
+            0
+        } else {
+            1 + (seed as usize * 7919) % 200_000
+        };
         let calls: Vec<Call> = super::tests::workload_calls(seed, n)
             .map(|(k, bit)| Call::Put(bit, k))
             .collect();
@@ -251,15 +263,29 @@ fn every_state_of_a_context_codes_the_same() {
     counts.extend([2, 3, 4, 126, 127, 128, 129, 130, 253, 254, 255]);
     counts.sort();
     counts.dedup();
-    let shapers: &[&[bool]] = &[&[], &[true], &[false, true, true], &[true, true, false, false, true, false]];
+    let shapers: &[&[bool]] = &[
+        &[],
+        &[true],
+        &[false, true, true],
+        &[true, true, false, false, true, false],
+    ];
     for &n0 in &counts {
         for &n1 in &counts {
             for shaper in shapers {
                 let mut calls: Vec<Call> = shaper.iter().map(|&b| Call::Put(b, 1)).collect();
                 calls.extend((1..n0).map(|_| Call::Put(false, 0)));
                 calls.extend((1..n1).map(|_| Call::Put(true, 0)));
-                calls.extend([Call::Put(true, 0), Call::Put(false, 0), Call::Put(true, 0), Call::Put(true, 0)]);
-                assert_eq!(stream_new(&calls), stream_old(&calls), "state ({n0}, {n1}) after {shaper:?}");
+                calls.extend([
+                    Call::Put(true, 0),
+                    Call::Put(false, 0),
+                    Call::Put(true, 0),
+                    Call::Put(true, 0),
+                ]);
+                assert_eq!(
+                    stream_new(&calls),
+                    stream_old(&calls),
+                    "state ({n0}, {n1}) after {shaper:?}"
+                );
             }
         }
     }
@@ -279,13 +305,25 @@ fn writers_end_the_stream_the_same_after_every_number_of_decisions() {
             vec![Call::Bypass(true); n],
             (0..n).map(|i| Call::Put(i % 3 == 0, i % 8)).collect(),
             (0..n).map(|i| Call::Put(i % 17 != 0, 0)).collect(),
-            (0..n).map(|i| if i % 5 == 0 { Call::Bypass(i % 2 == 0) } else { Call::Put(i % 7 < 3, 1) }).collect(),
+            (0..n)
+                .map(|i| {
+                    if i % 5 == 0 {
+                        Call::Bypass(i % 2 == 0)
+                    } else {
+                        Call::Put(i % 7 < 3, 1)
+                    }
+                })
+                .collect(),
         ];
         for (p, calls) in patterns.iter().enumerate() {
             let (new, old) = (stream_new(calls), stream_old(calls));
             assert_eq!(new, old, "pattern {p}, {n} decisions");
             // read back, and read past the end
-            let more: Vec<Call> = calls.iter().copied().chain(calls.iter().copied().take(40)).collect();
+            let more: Vec<Call> = calls
+                .iter()
+                .copied()
+                .chain(calls.iter().copied().take(40))
+                .collect();
             let (nv, ov) = values_of(&new, &more);
             assert_eq!(nv, ov, "pattern {p}, {n} decisions, read past the end");
         }
@@ -298,7 +336,11 @@ fn writers_end_the_stream_the_same_after_every_number_of_decisions() {
 fn readers_return_what_was_written_and_the_same_as_each_other() {
     let mut rng = Rng(23);
     for i in 0..300 * scale() {
-        let n = if i % 30 == 0 { 20_000 } else { rng.below(400) as usize };
+        let n = if i % 30 == 0 {
+            20_000
+        } else {
+            rng.below(400) as usize
+        };
         let calls = script(&mut rng, n);
         let stream = stream_old(&calls);
         let want: Vec<u64> = calls.iter().map(|&c| expected(c)).collect();
@@ -334,7 +376,10 @@ fn readers_agree_past_the_end() {
             let (new, old) = values_of(&s, &both);
             assert_eq!(new, old, "script {i}, variant {variant}");
             if variant < 2 {
-                assert_eq!(new[..calls.len()], calls.iter().map(|&c| expected(c)).collect::<Vec<_>>()[..]);
+                assert_eq!(
+                    new[..calls.len()],
+                    calls.iter().map(|&c| expected(c)).collect::<Vec<_>>()[..]
+                );
             }
         }
     }
@@ -394,7 +439,10 @@ fn readers_agree_on_input_no_writer_made() {
             match rng.below(6) {
                 0 | 1 => {
                     let k = rng.below(8) as usize;
-                    let (a, b) = (new.get(&mut nb.single[k]).unwrap(), old.get(&mut ob.single[k]).unwrap());
+                    let (a, b) = (
+                        new.get(&mut nb.single[k]).unwrap(),
+                        old.get(&mut ob.single[k]).unwrap(),
+                    );
                     assert_eq!(a, b, "{at}");
                 }
                 2 => assert_eq!(new.get_bypass().unwrap(), old.get_bypass().unwrap(), "{at}"),
@@ -428,7 +476,10 @@ fn readers_agree_on_input_no_writer_made() {
             }
         }
     }
-    assert!(refused > 0, "no unary read was refused: the inputs are not hostile enough");
+    assert!(
+        refused > 0,
+        "no unary read was refused: the inputs are not hostile enough"
+    );
 }
 
 // ---- carries across runs of 0xff ----
@@ -477,7 +528,10 @@ fn carries_across_many_ff_bytes_are_the_same() {
         &[0x01],
         &[0x40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
         &[0x00, 0x80],
-        &[0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x80],
+        &[
+            0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0x80,
+        ],
     ];
     for seed in 1..=200 * scale() as u64 {
         let target = targets[(seed % 6) as usize];
@@ -491,7 +545,10 @@ fn carries_across_many_ff_bytes_are_the_same() {
     assert!(with_a_carry > 20, "{longest_by_count:?}");
     for run in [1, 2, 3, 4, 6, 8] {
         let seen: usize = longest_by_count[run..].iter().sum();
-        assert!(seen > 0, "no carry went through {run} 0xff bytes: {longest_by_count:?}");
+        assert!(
+            seen > 0,
+            "no carry went through {run} 0xff bytes: {longest_by_count:?}"
+        );
     }
     eprintln!("carries by the longest run of 0xff bytes they went through: {longest_by_count:?}");
 }
@@ -512,11 +569,20 @@ impl<W: Write> CabacWriter<OldContext> for OldCoder<OldWriter<W>> {
     }
 
     // the old crate's own helpers, not this crate's
-    fn put_unary_encoded<const A: usize>(&mut self, v: usize, contexts: &mut [OldContext; A]) -> io::Result<()> {
+    fn put_unary_encoded<const A: usize>(
+        &mut self,
+        v: usize,
+        contexts: &mut [OldContext; A],
+    ) -> io::Result<()> {
         self.0.put_unary_encoded(v, contexts)
     }
 
-    fn put_n_bits<const A: usize>(&mut self, bits: u64, num_bits: usize, contexts: &mut [OldContext; A]) -> io::Result<()> {
+    fn put_n_bits<const A: usize>(
+        &mut self,
+        bits: u64,
+        num_bits: usize,
+        contexts: &mut [OldContext; A],
+    ) -> io::Result<()> {
         self.0.put_n_bits(bits, num_bits, contexts)
     }
 }
@@ -526,11 +592,18 @@ impl<R: Read> CabacReader<OldContext> for OldCoder<OldReader<R>> {
         self.0.get(ctx)
     }
 
-    fn get_unary_encoded<const A: usize>(&mut self, contexts: &mut [OldContext; A]) -> io::Result<usize> {
+    fn get_unary_encoded<const A: usize>(
+        &mut self,
+        contexts: &mut [OldContext; A],
+    ) -> io::Result<usize> {
         self.0.get_unary_encoded(contexts)
     }
 
-    fn get_n_bits<const A: usize>(&mut self, num_bits: usize, contexts: &mut [OldContext; A]) -> io::Result<u64> {
+    fn get_n_bits<const A: usize>(
+        &mut self,
+        num_bits: usize,
+        contexts: &mut [OldContext; A],
+    ) -> io::Result<u64> {
         self.0.get_n_bits(num_bits, contexts)
     }
 }
@@ -549,7 +622,11 @@ mod preflate_level {
 
     /// The stream recreated by preflate's decoder, over a coder of the
     /// caller's choice.
-    fn recreate<D: PredictionDecoder>(params: &crate::TokenPredictorParameters, plain: &crate::PlainText, mut dec: D) -> Vec<u8> {
+    fn recreate<D: PredictionDecoder>(
+        params: &crate::TokenPredictorParameters,
+        plain: &crate::PlainText,
+        mut dec: D,
+    ) -> Vec<u8> {
         let mut input = PreflateInput::new(plain);
         let mut tp = TokenPredictor::new(params);
         let mut w = DeflateWriter::new();
@@ -589,9 +666,17 @@ mod preflate_level {
         assert_eq!(new, old, "{name}: the corrections");
         let stream = &deflate[..contents.compressed_size];
         for bytes in [&new, &old] {
-            let by_new = recreate(&params, &plain, PredictionDecoderCabac::new(VP8Reader::new(Cursor::new(bytes)).unwrap()));
+            let by_new = recreate(
+                &params,
+                &plain,
+                PredictionDecoderCabac::new(VP8Reader::new(Cursor::new(bytes)).unwrap()),
+            );
             assert!(by_new == stream, "{name}: recreated by the new reader");
-            let by_old = recreate(&params, &plain, PredictionDecoderCabac::new(OldCoder(OldReader::new(Cursor::new(bytes)).unwrap())));
+            let by_old = recreate(
+                &params,
+                &plain,
+                PredictionDecoderCabac::new(OldCoder(OldReader::new(Cursor::new(bytes)).unwrap())),
+            );
             assert!(by_old == stream, "{name}: recreated by the old reader");
         }
         true
@@ -602,7 +687,9 @@ mod preflate_level {
         let mut v = Vec::with_capacity(n);
         while v.len() < n {
             let w = rng.below(3000);
-            v.extend_from_slice(format!("word{w} line {} value {}\n", rng.below(1000), rng.below(7)).as_bytes());
+            v.extend_from_slice(
+                format!("word{w} line {} value {}\n", rng.below(1000), rng.below(7)).as_bytes(),
+            );
         }
         v.truncate(n);
         v
@@ -617,7 +704,11 @@ mod preflate_level {
     /// dev-dependencies have.
     #[test]
     fn corrections_are_the_same_on_generated_streams() {
-        let size = if cfg!(debug_assertions) { 40_000 } else { 300_000 };
+        let size = if cfg!(debug_assertions) {
+            40_000
+        } else {
+            300_000
+        };
         let mut mixed = text(size / 2, 3);
         mixed.extend(noise(size / 2, 4));
         mixed.extend(vec![b'a'; size / 8]);
@@ -654,7 +745,9 @@ mod preflate_level {
                 checked += usize::from(check(&format!("{name} at {at}"), stream));
             }
         }
-        eprintln!("{checked} streams of the repository's fixtures: same corrections, recreated by either reader");
+        eprintln!(
+            "{checked} streams of the repository's fixtures: same corrections, recreated by either reader"
+        );
         assert!(checked >= 3, "only {checked} streams from {dir:?}");
     }
 
@@ -682,7 +775,9 @@ mod preflate_level {
             found.push((at, &data[at..]));
         } else if data.starts_with(b"PK\x03\x04") {
             let le16 = |p: usize| usize::from(u16::from_le_bytes([data[p], data[p + 1]]));
-            let le32 = |p: usize| u32::from_le_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]) as usize;
+            let le32 = |p: usize| {
+                u32::from_le_bytes([data[p], data[p + 1], data[p + 2], data[p + 3]]) as usize
+            };
             let mut at = 0;
             while at + 30 <= data.len() && &data[at..at + 4] == b"PK\x03\x04" {
                 let (method, csize) = (le16(at + 8), le32(at + 18));
@@ -774,8 +869,16 @@ fn read_back(stream: &[u8], decisions: &[(usize, bool)]) {
     let mut nc = [VP8Context::default(); 8];
     let mut oc: [OldContext; 8] = Default::default();
     for (i, &(k, bit)) in decisions.iter().enumerate() {
-        assert_eq!(new.get(&mut nc[k]).unwrap(), bit, "decision {i}: the new reader");
-        assert_eq!(old.get(&mut oc[k]).unwrap(), bit, "decision {i}: the old reader");
+        assert_eq!(
+            new.get(&mut nc[k]).unwrap(),
+            bit,
+            "decision {i}: the new reader"
+        );
+        assert_eq!(
+            old.get(&mut oc[k]).unwrap(),
+            bit,
+            "decision {i}: the old reader"
+        );
     }
 }
 
@@ -793,7 +896,11 @@ fn read_noise(seed: u64, len: usize, n: usize) {
     let mut oc: [OldContext; 8] = Default::default();
     for i in 0..n {
         let k = rng.below(8) as usize;
-        assert_eq!(new.get(&mut nc[k]).unwrap(), old.get(&mut oc[k]).unwrap(), "seed {seed}, decision {i}");
+        assert_eq!(
+            new.get(&mut nc[k]).unwrap(),
+            old.get(&mut oc[k]).unwrap(),
+            "seed {seed}, decision {i}"
+        );
     }
 }
 
@@ -808,7 +915,10 @@ fn read_noise(seed: u64, len: usize, n: usize) {
 #[ignore = "on demand: minutes to hours"]
 fn long_differential() {
     use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-    let total: u64 = std::env::var("DECISIONS").ok().and_then(|s| s.parse().ok()).unwrap_or(2_000_000_000);
+    let total: u64 = std::env::var("DECISIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2_000_000_000);
     let block = 5_000_000usize;
     let blocks = total / block as u64;
     let next = AtomicU64::new(0);
@@ -818,7 +928,8 @@ fn long_differential() {
     std::thread::scope(|s| {
         for _ in 0..threads {
             s.spawn(|| {
-                let (mut new_bytes, mut old_bytes) = (Vec::with_capacity(block / 8), Vec::with_capacity(block / 8));
+                let (mut new_bytes, mut old_bytes) =
+                    (Vec::with_capacity(block / 8), Vec::with_capacity(block / 8));
                 loop {
                     let b = next.fetch_add(1, Relaxed);
                     if b >= blocks {
@@ -839,20 +950,31 @@ fn long_differential() {
                         new.finish().unwrap();
                         old.finish().unwrap();
                     }
-                    assert!(new_bytes == old_bytes, "block {b}, seed {seed}: the streams differ");
+                    assert!(
+                        new_bytes == old_bytes,
+                        "block {b}, seed {seed}: the streams differ"
+                    );
                     if b % 16 == 0 {
                         read_back(&new_bytes, &mix(seed, block));
                         read_noise(seed, 3_000_000, 20_000_000);
                     }
                     let d = done.fetch_add(1, Relaxed) + 1;
                     if d % 20_000 == 0 {
-                        eprintln!("{} blocks ({} decisions), {:.0} s", d, d * block as u64, started.elapsed().as_secs_f64());
+                        eprintln!(
+                            "{} blocks ({} decisions), {:.0} s",
+                            d,
+                            d * block as u64,
+                            started.elapsed().as_secs_f64()
+                        );
                     }
                 }
             });
         }
     });
-    let c: Vec<u64> = super::tests::CARRIES.iter().map(|c| c.load(Relaxed)).collect();
+    let c: Vec<u64> = super::tests::CARRIES
+        .iter()
+        .map(|c| c.load(Relaxed))
+        .collect();
     eprintln!(
         "{} decisions in {} blocks on {threads} threads, {:.0} s: every stream identical. Carries by the 0xff bytes they went back through (0, 1, 2, 3, 4+): {c:?}",
         done.load(Relaxed) * block as u64,

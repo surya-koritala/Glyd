@@ -113,7 +113,11 @@ impl VP8Context {
     /// is halved (rounding up) and this one is set to 129.
     #[inline(always)]
     fn update(&mut self, bit: bool) {
-        let (x, y) = if bit { (self.n1, self.n0) } else { (self.n0, self.n1) };
+        let (x, y) = if bit {
+            (self.n1, self.n0)
+        } else {
+            (self.n0, self.n1)
+        };
         let (x, y) = if x < 255 {
             (x + 1, y)
         } else if y > 1 {
@@ -132,7 +136,10 @@ impl VP8Context {
 
     #[cfg(test)]
     fn with_counts(n0: u32, n1: u32) -> Self {
-        Self { n0: n0 as u8, n1: n1 as u8 }
+        Self {
+            n0: n0 as u8,
+            n1: n1 as u8,
+        }
     }
 }
 
