@@ -4,8 +4,19 @@
 //! coder: `vs_cabac.rs` compares with the crate this one replaces.
 
 use std::io::{self, Cursor, Read};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
 use super::*;
+
+/// How many carries went back through 0, 1, 2, 3 and 4 or more 0xff bytes
+/// (the writer's own routine counts them: a run over a long workload says
+/// how often the carry that the specification could not settle happens).
+pub(super) static CARRIES: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+
+pub(super) fn note_carry(out: &[u8]) {
+    let run = out.iter().rev().take_while(|&&b| b == 0xff).count();
+    CARRIES[run.min(4)].fetch_add(1, Relaxed);
+}
 
 /// More work in a release build, which is how CI runs the tests.
 fn scale() -> usize {
@@ -86,11 +97,13 @@ pub(super) struct ModelEnc {
     pub bottom: u32,
     pub bit_count: u32,
     pub out: Vec<u8>,
+    /// the longest run of 0xff bytes a carry has gone back through
+    pub max_ff_run_carried: usize,
 }
 
 impl ModelEnc {
     pub fn new() -> Self {
-        let mut e = Self { range: 255, bottom: 0, bit_count: 24, out: Vec::new() };
+        let mut e = Self { range: 255, bottom: 0, bit_count: 24, out: Vec::new(), max_ff_run_carried: 0 };
         e.put(false, &mut ModelCtx { n0: 1, n1: 1 }); // the marker
         e
     }
@@ -107,6 +120,8 @@ impl ModelEnc {
         while self.range < 128 {
             self.range *= 2;
             if self.bottom & 0x8000_0000 != 0 {
+                let run = self.out.iter().rev().take_while(|&&b| b == 0xff).count();
+                self.max_ff_run_carried = self.max_ff_run_carried.max(run);
                 add_one(&mut self.out);
             }
             self.bottom = self.bottom.wrapping_mul(2);
@@ -239,7 +254,7 @@ fn after(history: &[(bool, usize)]) -> VP8Context {
 }
 
 fn counts(c: VP8Context) -> (u32, u32, u32) {
-    (u32::from(c.n0), u32::from(c.n1), c.prob())
+    (c.counts().0, c.counts().1, c.prob())
 }
 
 #[test]
@@ -279,7 +294,7 @@ fn context_matches_its_integer_model_on_runs_of_every_length() {
             // runs from 1 to 700: past the ceiling both ways, and the rescale
             let longest = 1 << rng.below(10);
             for _ in 0..1 + rng.below(longest) {
-                assert_eq!((u32::from(a.n0), u32::from(a.n1)), (b.n0, b.n1));
+                assert_eq!(a.counts(), (b.n0, b.n1));
                 assert_eq!(a.prob(), b.p0());
                 a.update(bit);
                 b.update(bit);
@@ -293,7 +308,7 @@ fn context_matches_its_integer_model_on_runs_of_every_length() {
 fn probability_of_every_state_is_in_range_and_is_the_formula() {
     for n0 in 1..=255u32 {
         for n1 in 1..=255u32 {
-            let c = VP8Context { n0: n0 as u8, n1: n1 as u8 };
+            let c = VP8Context::with_counts(n0, n1);
             let p = c.prob();
             assert_eq!(p, 256 * n0 / (n0 + n1));
             assert!((1..=255).contains(&p), "({n0}, {n1}) -> {p}");
@@ -369,7 +384,7 @@ fn encoder_traces_of_the_specification() {
         w.put(true, &mut c).unwrap();
         assert_eq!((w.range, w.bottom), (range, bottom), "E9 step {}", i + 1);
     }
-    assert_eq!((c.n0, c.n1), (1, 9));
+    assert_eq!(c.counts(), (1, 9));
 }
 
 // ---- section 9.4: the decoder's vectors ----
@@ -406,7 +421,7 @@ fn decoder_vectors() {
 type Bank = [VP8Context; 8];
 
 fn state(bank: &Bank) -> Vec<(u8, u8)> {
-    bank.iter().map(|c| (c.n0, c.n1)).collect()
+    bank.iter().map(|c| (c.counts().0 as u8, c.counts().1 as u8)).collect()
 }
 
 fn bank_of(states: &[(u8, u8)]) -> Vec<(u8, u8)> {
@@ -518,7 +533,7 @@ const THRESHOLDS: [u64; 8] = [8388608, 2097152, 14680064, 524288, 16252928, 4194
 
 /// The workload of the specification: decision `i` is a bit under one of
 /// eight contexts, the context and the bit from a 64-bit LCG.
-fn workload(seed: u64, n: usize) -> impl Iterator<Item = (usize, bool)> {
+pub(super) fn workload_calls(seed: u64, n: usize) -> impl Iterator<Item = (usize, bool)> {
     let mut x = seed;
     (0..n).map(move |_| {
         x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -536,7 +551,7 @@ fn encode_workload(seed: u64, n: usize) -> Vec<u8> {
     let mut buf = Vec::new();
     let mut w = VP8Writer::new(&mut buf).unwrap();
     let mut ctx = [VP8Context::default(); 8];
-    for (k, bit) in workload(seed, n) {
+    for (k, bit) in workload_calls(seed, n) {
         w.put(bit, &mut ctx[k]).unwrap();
     }
     w.finish().unwrap();
@@ -552,7 +567,7 @@ fn check_workload(seed: u64, n: usize, len: usize, hash: u64, first: &str, last:
     // and back
     let mut r = VP8Reader::new(Cursor::new(&stream)).unwrap();
     let mut ctx = [VP8Context::default(); 8];
-    for (i, (k, bit)) in workload(seed, n).enumerate() {
+    for (i, (k, bit)) in workload_calls(seed, n).enumerate() {
         assert_eq!(r.get(&mut ctx[k]).unwrap(), bit, "decision {i}");
     }
 }
@@ -683,7 +698,7 @@ fn random_state(rng: &mut Rng) -> ModelEnc {
         if out.first().is_none_or(|&b| b >= 0x80) {
             out.insert(0, rng.below(0x80) as u8);
         }
-        return ModelEnc { range: 128 + rng.below(128) as u32, bottom: bottom as u32, bit_count, out };
+        return ModelEnc { range: 128 + rng.below(128) as u32, bottom: bottom as u32, bit_count, out, max_ff_run_carried: 0 };
     }
 }
 
@@ -759,8 +774,9 @@ fn carry_through_four_ff_bytes_by_hand() {
         bit_count: 1,
     };
     let model = {
-        let mut m = ModelEnc { range: 128, bottom: 0x8000_005a, bit_count: 1, out: w.out.clone() };
+        let mut m = ModelEnc { range: 128, bottom: 0x8000_005a, bit_count: 1, out: w.out.clone(), max_ff_run_carried: 0 };
         m.step(false, 1);
+        assert_eq!(m.max_ff_run_carried, 4);
         m
     };
     // a zero at the extreme: range 128 -> 1, seven shifts; the first

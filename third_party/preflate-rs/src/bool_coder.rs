@@ -78,13 +78,31 @@ impl Default for VP8Context {
     }
 }
 
+/// `PROB[n0 << 8 | n1]` is `256 * n0 / (n0 + n1)` for counts in 1..=255
+/// (the other entries are never read); the table is made when the crate is
+/// built, so that a decision does not divide.
+static PROB: [u8; 1 << 16] = prob_table();
+
+const fn prob_table() -> [u8; 1 << 16] {
+    let mut table = [1u8; 1 << 16];
+    let mut n0 = 1usize;
+    while n0 < 256 {
+        let mut n1 = 1usize;
+        while n1 < 256 {
+            table[n0 << 8 | n1] = ((n0 << 8) / (n0 + n1)) as u8;
+            n1 += 1;
+        }
+        n0 += 1;
+    }
+    table
+}
+
 impl VP8Context {
     /// 256 times the probability of a zero, `1..=255` (both counts are
     /// at least one and at most 255).
     #[inline(always)]
     fn prob(self) -> u32 {
-        let (n0, n1) = (u32::from(self.n0), u32::from(self.n1));
-        (n0 << 8) / (n0 + n1)
+        u32::from(PROB[usize::from(self.n0) << 8 | usize::from(self.n1)])
     }
 
     /// Counts the coded bit. Its count goes up to 255 and stays there while
@@ -92,17 +110,26 @@ impl VP8Context {
     /// is halved (rounding up) and this one is set to 129.
     #[inline(always)]
     fn update(&mut self, bit: bool) {
-        let (x, y) = if bit {
-            (&mut self.n1, &mut self.n0)
+        let (x, y) = if bit { (self.n1, self.n0) } else { (self.n0, self.n1) };
+        let (x, y) = if x < 255 {
+            (x + 1, y)
+        } else if y > 1 {
+            (129, y.div_ceil(2))
         } else {
-            (&mut self.n0, &mut self.n1)
+            (x, y)
         };
-        if *x < 255 {
-            *x += 1;
-        } else if *y > 1 {
-            *y = y.div_ceil(2);
-            *x = 129;
-        }
+        (self.n0, self.n1) = if bit { (y, x) } else { (x, y) };
+    }
+
+    /// The counts of zeros and ones.
+    #[cfg(test)]
+    fn counts(self) -> (u32, u32) {
+        (u32::from(self.n0), u32::from(self.n1))
+    }
+
+    #[cfg(test)]
+    fn with_counts(n0: u32, n1: u32) -> Self {
+        Self { n0: n0 as u8, n1: n1 as u8 }
     }
 }
 
@@ -214,6 +241,8 @@ pub trait CabacReader<Context> {
 /// A carry out of the first byte cannot happen (the marker keeps the stream
 /// below 0.5), and is dropped.
 fn carry(out: &mut [u8]) {
+    #[cfg(test)]
+    tests::note_carry(out);
     for b in out.iter_mut().rev() {
         if *b == 0xff {
             *b = 0;
@@ -266,33 +295,31 @@ impl<W: Write> VP8Writer<W> {
             self.range = split;
         }
         let shift = self.range.leading_zeros() - 24;
-        if shift != 0 {
-            self.normalize(shift);
+        self.range <<= shift;
+        if shift < self.bit_count {
+            self.bottom <<= shift;
+            self.bit_count -= shift;
+        } else {
+            self.byte_out(shift);
         }
     }
 
-    /// `shift` (1 to 7) shifts of `range` and `bottom` in one step. A byte
-    /// comes out at the shift that takes `bit_count` to 0: first the carry,
-    /// the bit that is in the one-bit slot, and that shift pushes out of the
-    /// register, goes to the bytes already out; then the top byte of the
-    /// register; then what is left of `shift` is done on the register with
-    /// that byte taken off.
-    #[inline]
-    fn normalize(&mut self, shift: u32) {
-        self.range <<= shift;
+    /// `shift` (1 to 7) shifts of `bottom` that take `bit_count` to 0 or
+    /// below, in one step. The byte comes out at the shift that takes
+    /// `bit_count` to 0: first the carry, the bit that is in the one-bit
+    /// slot, and that shift pushes out of the register, goes to the bytes
+    /// already out; then the top byte of the register; then what is left of
+    /// `shift` is done on the register with that byte taken off.
+    #[inline(never)]
+    fn byte_out(&mut self, shift: u32) {
         let c = self.bit_count;
-        if shift < c {
-            self.bottom <<= shift;
-            self.bit_count = c - shift;
-        } else {
-            if (self.bottom >> (32 - c)) & 1 != 0 {
-                carry(&mut self.out);
-            }
-            let shifted = self.bottom << c;
-            self.out.push((shifted >> 24) as u8);
-            self.bottom = (shifted & 0x00ff_ffff) << (shift - c);
-            self.bit_count = 8 - (shift - c);
+        if (self.bottom >> (32 - c)) & 1 != 0 {
+            carry(&mut self.out);
         }
+        let shifted = self.bottom << c;
+        self.out.push((shifted >> 24) as u8);
+        self.bottom = (shifted & 0x00ff_ffff) << (shift - c);
+        self.bit_count = 8 - (shift - c);
     }
 
     /// A decision with no context: it is the one the end of the stream is
@@ -333,8 +360,7 @@ pub struct VP8Reader<R: Read> {
     /// `128..=255` between decisions.
     range: u32,
     /// How many of the top bits of `value` are stream bits (or the zeros
-    /// past its end): at least 16 before a decision, so that 7 shifts leave
-    /// the window whole.
+    /// past its end): at least 8, a whole window, when a decision starts.
     avail: u32,
     /// The source has said it has no more.
     eof: bool,
@@ -403,7 +429,7 @@ impl<R: Read> VP8Reader<R> {
     /// The decision with no context (see `VP8Writer::put_bypass`).
     #[cfg(test)]
     pub(crate) fn get_bypass(&mut self) -> io::Result<bool> {
-        if self.avail < 16 {
+        if self.avail < 8 {
             self.refill()?;
         }
         Ok(self.decode(bypass_split(self.range)))
@@ -413,7 +439,7 @@ impl<R: Read> VP8Reader<R> {
 impl<R: Read> CabacReader<VP8Context> for VP8Reader<R> {
     #[inline]
     fn get(&mut self, ctx: &mut VP8Context) -> io::Result<bool> {
-        if self.avail < 16 {
+        if self.avail < 8 {
             self.refill()?;
         }
         let bit = self.decode(split_of(self.range, ctx.prob()));
