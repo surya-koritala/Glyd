@@ -10,15 +10,22 @@ name: Release
 # `vllm` extras name it.
 #
 # What publishes: a pushed v* tag, or a dispatch whose `tag` is one, that exists, whose
-# commit is on main or a release-* branch, and whose version files all say the tag's version
-# (scripts/bump_version.py --check TAG). The `plan` job decides that once; every later job
-# builds the commit it names, and a dispatch builds the tag's commit, not the ref it was run
-# on (run it on a branch with a fixed workflow to re-run a tag whose own run failed).
+# commit is on main or a release-X.Y.Z branch, whose version files all say the tag's version
+# (scripts/bump_version.py --check TAG), and on whose exact commit CI (ci.yml) has succeeded in a
+# push or a run by hand (a pull request's run tests a merge, not the commit). Tag a commit after
+# its CI passed (scripts/release_ready.sh VERSION says), an rc too: tag a main commit whose own CI
+# run passed. A tag whose commit has no passed run fails here: run CI on the tag (gh workflow run
+# ci.yml --ref vX.Y.Z), then re-run this run (gh run rerun RUN). In an emergency only, a dispatch
+# with the tag and -f untested_ok=true publishes it without CI's success, and says so in a
+# warning. The `plan` job decides that once; every later job builds the commit it names, and
+# a dispatch builds the tag's commit, not the ref it was run on (run it on a branch with a fixed
+# workflow to re-run a tag whose own run failed).
 # Run by hand without a tag (gh workflow run release.yml --ref BRANCH): the same builds and
 # checks of that branch, kept as the run's artifacts only; no release, no tag, no publishing.
 #
-# Permissions: read everywhere but `attach` (it uploads to the release). `publish-pypi` alone has
-# id-token: write, and runs only Python's setup, the wheels' download and PyPI's action; the
+# Permissions: read everywhere but `attach` (it uploads to the release); `plan` also reads the
+# Actions runs (actions: read), in a step that runs nothing of the tag's tree. `publish-pypi`
+# alone has id-token: write, and runs only Python's setup, the wheels' download and PyPI's action; the
 # crates.io token is in the environment of the one step that publishes. Every action is a commit,
 # with its version in the comment.
 on:
@@ -30,6 +37,11 @@ on:
         description: "Release to publish (e.g. v0.26.0): that tag's commit is built and published; it must exist and be on main or a release-* branch. Empty: build only, of the ref chosen, as the run's artifacts"
         required: false
         default: ""
+      untested_ok:
+        description: "Emergencies only, with a tag: publish it although CI has not succeeded on its commit"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -40,6 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      actions: read # CI's runs on the tag's commit
     outputs:
       sha: ${{ steps.plan.outputs.sha }}
       tag: ${{ steps.plan.outputs.tag }}
@@ -73,7 +86,7 @@ jobs:
             [[ "$tag" =~ ^v[0-9][0-9A-Za-z._-]*$ ]] || fail "$(printf '%q' "$tag") is not a v* version tag"
             git rev-parse -q --verify "refs/tags/$tag^{commit}" > /dev/null || fail "$tag is not a tag of this repository"
             sha=$(git rev-parse "refs/tags/$tag^{commit}")
-            on=$(git branch -r --contains "$sha" --format='%(refname:short)' | grep -E '^origin/(main|release-.+)$' || true)
+            on=$(git branch -r --contains "$sha" --format='%(refname:short)' | grep -E '^origin/(main|release-[0-9].*)$' || true)
             [ -n "$on" ] || fail "$tag is at $sha, which is on neither main nor a release-* branch"
             echo "$tag is $sha, on: $(echo "$on" | tr '\n' ' ')"
             git checkout -q --detach "$sha"
@@ -90,6 +103,28 @@ jobs:
             echo "publish=$publish"
           } >> "$GITHUB_OUTPUT"
           cat "$GITHUB_OUTPUT"
+      - name: CI passed on the commit
+        # A push's or a by-hand run of ci.yml tests the commit itself; a pull request's run tests its merge with main, so it does not count.
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          SHA: ${{ steps.plan.outputs.sha }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          UNTESTED_OK: ${{ github.event.inputs.untested_ok }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { printf '::error::%s\n' "$*"; exit 1; }
+          if [ "$UNTESTED_OK" = true ]; then
+            echo "::warning::untested_ok: $TAG ($SHA) is released without CI's success on its commit"; exit 0
+          fi
+          runs="repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$SHA"
+          passed=$(gh api "$runs&status=success&per_page=100" --jq '[.workflow_runs[] | select(.event != "pull_request")] | length') \
+            || fail "cannot read CI's (ci.yml) runs on $SHA"
+          if ! [[ "$passed" =~ ^[1-9][0-9]*$ ]]; then
+            last=$(gh api "$runs&per_page=1" --jq '.workflow_runs[0] // empty | "\(.event) \(.status) \(.conclusion // "-") \(.html_url)"') || last="unreadable"
+            fail "CI (ci.yml) has not succeeded on $SHA, $TAG's commit, in a push or a run by hand (its latest run: ${last:-none}). Run it on the tag: gh workflow run ci.yml --ref $TAG; once it has passed, re-run this run: gh run rerun $GITHUB_RUN_ID. In an emergency only, run this workflow by hand with -f tag=$TAG -f untested_ok=true"
+          fi
+          echo "CI (ci.yml) succeeded on $SHA"
 
   build:
     needs: plan
