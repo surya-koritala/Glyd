@@ -17,10 +17,9 @@
 
 use std::io::Cursor;
 
-use cabac::vp8::{VP8Reader, VP8Writer};
-
 use crate::{
     PreflateConfig, Result,
+    bool_coder::{VP8Reader, VP8Writer},
     cabac_codec::{PredictionDecoderCabac, PredictionEncoderCabac},
     deflate::{deflate_reader::DeflateParser, deflate_token::DeflateTokenBlockType, deflate_writer::DeflateWriter},
     estimator::preflate_parameter_estimator::{TokenPredictorParameters, estimate_preflate_parameters},

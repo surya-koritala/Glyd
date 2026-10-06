@@ -50,14 +50,18 @@ version = "0.6.3"
 [dependencies.byteorder]
 version = "1.4"
 
-[dependencies.cabac]
-version = "0.15.0"
-
 [dependencies.default-boxed]
 version = "0.2"
 
 [dependencies.deranged]
 version = "0.5"
+
+# Not a dependency: the crate this one used to code its corrections with
+# (src/bool_coder.rs replaces it). Tests only, as the oracle the
+# replacement's streams are compared with (src/bool_coder/vs_cabac.rs);
+# it is linked into no library or binary.
+[dev-dependencies.cabac]
+version = "=0.15.0"
 
 [dev-dependencies.miniz_oxide]
 version = "0.9"

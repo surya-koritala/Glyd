@@ -9,10 +9,10 @@
 use std::io::{BufRead, Cursor};
 
 use bitcode::{Decode, Encode};
-use cabac::vp8::{VP8Reader, VP8Writer};
 
 use crate::{
     PreflateConfig, Result,
+    bool_coder::{VP8Reader, VP8Writer},
     cabac_codec::{PredictionDecoderCabac, PredictionEncoderCabac},
     deflate::{
         deflate_reader::DeflateParser, deflate_token::DeflateTokenBlock,
@@ -418,8 +418,8 @@ fn decompress_deflate_stream_assert(
     compressed_data: &[u8],
     verify: bool,
 ) -> Result<(PreflateStreamChunkResult, PlainText)> {
+    use crate::bool_coder::debug::{DebugReader, DebugWriter};
     use crate::deflate::deflate_reader::parse_deflate_whole;
-    use cabac::debug::{DebugReader, DebugWriter};
 
     use crate::preflate_error::AddContext;
 
@@ -532,7 +532,7 @@ fn recompress_deflate_stream_assert(
     plain_text: &PlainText,
     prediction_corrections: &[u8],
 ) -> Result<Vec<u8>> {
-    use cabac::debug::DebugReader;
+    use crate::bool_coder::debug::DebugReader;
 
     let r = ReconstructionData::read(prediction_corrections)?;
 
@@ -557,7 +557,7 @@ fn analyze_compressed_data_fast(
     };
     use std::io::Cursor;
 
-    use cabac::vp8::{VP8Reader, VP8Writer};
+    use crate::bool_coder::{VP8Reader, VP8Writer};
 
     let mut buffer = Vec::new();
 
@@ -610,7 +610,7 @@ fn analyze_compressed_data_verify(
         statistical_codec::{VerifyPredictionDecoder, VerifyPredictionEncoder},
         utils::assert_eq_array,
     };
-    use cabac::debug::{DebugReader, DebugWriter};
+    use crate::bool_coder::debug::{DebugReader, DebugWriter};
     use std::io::Cursor;
 
     let mut buffer = Vec::new();

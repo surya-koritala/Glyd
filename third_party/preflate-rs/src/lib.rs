@@ -20,6 +20,7 @@
 #![warn(unused_macro_rules)]
 
 mod bit_helper;
+mod bool_coder;
 mod cabac_codec;
 pub mod chunked;
 mod deflate;
