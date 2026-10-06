@@ -23,7 +23,7 @@
 #   GLYD_CONSTRAINTS  none: resolve the packages fresh, where one of the versions listed below has been withdrawn from PyPI
 set -eu
 
-GLYD_VERSION="${GLYD_VERSION:-0.28.0}"
+GLYD_VERSION="${GLYD_VERSION:-0.29.0rc1}"
 PYTHON=3.12
 DRIVER_MIN=580  # the NVIDIA driver vLLM 0.30's PyTorch (2.13, CUDA 13.0) runs on
 ZIGLANG=0.16.0  # the C compiler from PyPI that stands in where the machine has none (the version glyd run was tried with)
