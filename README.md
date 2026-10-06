@@ -15,37 +15,37 @@ more requests on the same one.
 
 ```bash
 curl -LsSf https://getglyd.com/install.sh | sh
-glyd run Qwen/Qwen3-8B                         # settings for your GPU, then a chat in the terminal
+glyd run Qwen/Qwen3.5-9B                       # settings for your GPU, then a chat in the terminal
 ```
 
 With vLLM, or in Python:
 
 ```bash
 pip install "glyd[vllm]"
-vllm serve Qwen/Qwen3-8B --quantization glyd
+vllm serve Qwen/Qwen3.5-9B --quantization glyd
 ```
 ```python
 import glyd
-model = glyd.from_pretrained("Qwen/Qwen3-8B")
+model = glyd.from_pretrained("Qwen/Qwen3.5-9B")
 ```
 
-Linux (x86_64 or aarch64) with an NVIDIA GPU: Ampere, Ada or Hopper, driver 580 or newer.
+Linux (x86_64 or aarch64) with an NVIDIA GPU: Ampere, Ada, Hopper or Blackwell, driver 580 or newer.
 
 ## Results
 
 | Measured | bf16 | Glyd |
 | :--- | ---: | ---: |
-| Qwen3-8B under vLLM on an L4: weights | 15.27 GiB | **10.38 GiB** (−32.0%) |
-| Qwen3-32B: 48 GB GPUs it needs | 2 | **1** |
-| Qwen2.5-72B on two H100s: requests a second, at full load | 0.88 | **3.59** (4.1x) |
-| Qwen3-30B-A3B on an H100: requests a second, at full load | 12.32 | **17.10** (1.39x) |
+| Qwen3.5-9B under vLLM on an RTX 4090: weights | 17.66 GiB | **12.68 GiB** (−28.2%) |
+| Qwen3.5-9B under vLLM on an RTX 5090: weights | 17.66 GiB | **13.89 GiB** (−21.3%) |
+| Qwen3.5-9B on an RTX 4090 (24 GB): context | out of memory at start (even at 4,096 tokens) | **189,440 tokens** |
+| Qwen3.8-27B under vLLM on an H100: weights | 50.22 GiB | **38.77 GiB** (−22.8%) |
+| Qwen3.8-27B: its layers' matrices, read back bit for bit | 49.52 GB | **33.28 GB** (−32.8%) |
 
-The freed memory becomes KV cache, which is where the extra requests come from. Logs:
-[vllm-v028-l4-2026-10-04](benchmarks/gpu/vllm-v028-l4-2026-10-04),
-[lambda-gpu_4x_a6000-20260926-084757](benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757),
-[h100x2-qwen2.5-72b-2026-10-03](benchmarks/gpu/h100x2-qwen2.5-72b-2026-10-03),
-[h100-moe-v028-2026-10-03](benchmarks/gpu/h100-moe-v028-2026-10-03). Every result, and where Glyd is
-still slower than bf16: [getglyd.com/benchmarks](https://getglyd.com/benchmarks/).
+The freed memory becomes KV cache. Logs: [rtx4090-5090-qwen35-9b-v029-2026-10-06](benchmarks/gpu/rtx4090-5090-qwen35-9b-v029-2026-10-06)
+(Qwen3.5-9B, vLLM 0.30.0; [CHANGELOG v0.29.0](CHANGELOG.md#v0290--2026-10-06)),
+[h100-qwen38-v028-2026-10-03](benchmarks/gpu/h100-qwen38-v028-2026-10-03) and
+[open-models-a10-2026-09-27](benchmarks/gpu/open-models-a10-2026-09-27) (`sizes.txt`). Every result:
+[getglyd.com/benchmarks](https://getglyd.com/benchmarks/).
 
 **What lossless means here:** every weight, and every key and value in the KV cache, reads back as the
 exact bf16 value. Outputs can still differ from bf16's in the last bits, because Glyd's kernels add the
@@ -66,7 +66,7 @@ glyd -d events.glyd -o events.json
 ## Docs
 
 - [getglyd.com/docs](https://getglyd.com/docs/): getting started, vLLM, the GPU package, the codec.
-- [DETAILS.md](DETAILS.md): everything on one page, with every result and its log
+- [DETAILS.md](DETAILS.md): everything on one page, with the results and their logs
   ([as text for LLMs](https://getglyd.com/llms-full.txt)).
 - [CHANGELOG.md](CHANGELOG.md), [the roadmap](https://getglyd.com/roadmap/), [SECURITY.md](SECURITY.md).
 

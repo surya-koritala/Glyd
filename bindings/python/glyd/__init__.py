@@ -19,9 +19,9 @@ or on the system path; bindings/python/build.sh builds and places it.
 A bf16 model's weights held compressed on the GPU, bit for bit (glyd.gpu,
 imported at first use; pip install "glyd[gpu]"):
 
-    model = glyd.from_pretrained("Qwen/Qwen3-8B")   # packed as it loads, ready for generate()
-    glyd.save_pretrained(model, "qwen3-8b-glyd")
-    print(glyd.fit("Qwen/Qwen3-32B", gpu="48GB"))   # bf16 against Glyd on one GPU
+    model = glyd.from_pretrained("Qwen/Qwen3.5-9B")   # packed as it loads, ready for generate()
+    glyd.save_pretrained(model, "qwen3.5-9b-glyd")
+    print(glyd.fit("Qwen/Qwen3.5-27B", gpu="48GB"))   # bf16 against Glyd on one GPU
 """
 import ctypes
 import os

@@ -3,7 +3,7 @@
 Lossless AI compression: 33% less GPU memory, bit for bit.
 
     curl -LsSf https://getglyd.com/install.sh | sh   # a model on your GPU in two commands: Linux, an NVIDIA GPU, driver 580 or newer
-    glyd run Qwen/Qwen3-8B                           # downloads it, starts it packed, and chats (glyd serve, glyd doctor)
+    glyd run Qwen/Qwen3.5-9B                         # downloads it, starts it packed, and chats (glyd serve, glyd doctor)
 
     pip install "glyd[gpu]"   # models on the GPU: Linux x86_64 / aarch64, an NVIDIA GPU (Ampere or later)
     pip install "glyd[vllm]"  # and serving them: vllm serve MODEL --quantization glyd (vLLM 0.30)
@@ -11,8 +11,8 @@ Lossless AI compression: 33% less GPU memory, bit for bit.
 
 ```python
 import glyd
-model = glyd.from_pretrained("Qwen/Qwen3-8B")               # packed on the GPU as it loads
-model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits exactly bf16's
+model = glyd.from_pretrained("Qwen/Qwen3.5-9B")               # packed on the GPU as it loads
+model = glyd.from_pretrained("Qwen/Qwen3.5-9B", exact=True)   # logits exactly bf16's
 ```
 
 Every option: [on the GPU](https://github.com/surya-koritala/Glyd/tree/main/bindings/python#on-the-gpu-a-models-weights-held-compressed) below, and
@@ -59,14 +59,14 @@ a C FFI.
 ```python
 import glyd
 from transformers import AutoTokenizer
-model = glyd.from_pretrained("Qwen/Qwen3-8B")            # any bf16 checkpoint, packed as it loads, on the GPU
-tok = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
+model = glyd.from_pretrained("Qwen/Qwen3.5-9B")            # any bf16 checkpoint, packed as it loads, on the GPU
+tok = AutoTokenizer.from_pretrained("Qwen/Qwen3.5-9B")
 out = model.generate(**tok("Hello", return_tensors="pt").to(model.device), max_new_tokens=64)
 
-model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True) # logits exactly bf16's
-glyd.save_pretrained(model, "qwen3-8b-glyd")               # the packed format, loads without repacking
-model = glyd.from_pretrained("qwen3-8b-glyd", verify=True) # re-hashes every weight against the source
-print(glyd.fit("Qwen/Qwen3-32B", gpu="48GB"))              # will it fit, bf16 against Glyd
+model = glyd.from_pretrained("Qwen/Qwen3.5-9B", exact=True) # logits exactly bf16's
+glyd.save_pretrained(model, "qwen3.5-9b-glyd")               # the packed format, loads without repacking
+model = glyd.from_pretrained("qwen3.5-9b-glyd", verify=True) # re-hashes every weight against the source
+print(glyd.fit("Qwen/Qwen3.5-27B", gpu="48GB"))              # will it fit, bf16 against Glyd
 ```
 
 `glyd.from_pretrained(name_or_path, *, device="cuda:0", layout="auto", exact=False, merge=True, verify=False, compile=True, **hf_kwargs)`
@@ -100,8 +100,7 @@ packs a model already loaded in bf16 in place, on the GPU its weights are
 on (the current one for weights on the CPU), and returns it
 (`glyd.compress` is the codec's, for bytes).
 
-A mixture of experts is packed too: every family of transformers 5.17 (OLMoE, granite MoE, Qwen3-MoE, gpt-oss,
-DeepSeek V3, Llama 4, DBRX, Aria, JetMoE, Step 3.7, LongCat-Flash ...); with `exact=True` the experts' products
+A mixture of experts is packed too: every mixture-of-experts family of transformers 5.17; with `exact=True` the experts' products
 are bf16's own. A saved model holds them packed, and a model with them can't be copied or pickled
 (`copy.deepcopy`, `torch.save`): load it again.
 
@@ -110,34 +109,18 @@ below it, a 2.13 pre-release included, it runs eager, as in glyd 0.23. A
 compiled call runs as `generate(..., cache_implementation="static")`
 asks transformers to run it, a static cache and the forward compiled
 (`torch.compile`, `mode="reduce-overhead"`: CUDA graphs), so a step's
-host time goes and what is left is its GPU time, less than bf16's. The
-prompt runs eager (transformers compiles the steps after it). Tokens/s
-generating 128 tokens at 1 / 8 sequences on an RTX 4080 SUPER (a Ryzen 9
-7950X3D), each in a process of its own, the median of 3 runs (logs:
-benchmarks/gpu/rtx4080s-fastloop-2026-09-28, `gen-main.txt` and
-`gen-branch.txt`):
-
-| | bf16 | bf16, `cache_implementation="static"` | Glyd, `compile=False` | **Glyd** |
-| :--- | ---: | ---: | ---: | ---: |
-| Qwen3-1.7B | 88.4 / 694 | 147.9 / 994 | 96.6 / 772 | **184.6 / 1260** |
-| Qwen3-4B-Instruct-2507 | 61.8 / 456 | 73.1 / 477 | 75.1 / 563 | **94.3 / 610** |
-| Qwen3-8B | does not fit | does not fit | 48.6 / 365 | **55.3 / 386** |
-| granite-3.1-3b-a800m-instruct (a mixture of experts) | | | 90.3 / 699 | **232.3 / 1547** |
+host time goes and what is left is its GPU time. The
+prompt runs eager (transformers compiles the steps after it).
 
 Greedy tokens compiled can differ from 0.23's eager loop's, as a
-compiled bf16 model's can from its eager ones (the first 8 of 32 the
-same on Qwen3-0.6B, 17 on Qwen3-1.7B, 32 on
-granite-3.1-3b-a800m-instruct). In the default mode
+compiled bf16 model's can from its eager ones. In the default mode
 they can also vary within a process, between calls whose cache sizes
-compile differently (Qwen3-1.7B's first compiled call and its later
-ones, after a longer cache, shared 13 of 32 in one run:
-benchmarks/gpu/rtx4080s-fastloop-2026-09-28/checks-merge-6e17b3f);
+compile differently;
 `exact=True` is never compiled and stays exactly bf16's. The
-first call compiles and captures: Qwen3-8B's took 17.5 s with PyTorch's
-compile caches empty, 6.7 s in a later process (4-6 s for the others); a
+first call compiles and captures (faster in a later process, from
+PyTorch's compile caches); a
 call whose cache is longer than any before it compiles again once, then
-captures a graph (Qwen3-4B-Instruct-2507, a chat's turns: 15.0 s, then
-5.6 s, then 0.8-0.9 s for 64 tokens). Before serving, warm up with one
+captures a graph. Before serving, warm up with one
 short `generate()`: the first compiled step comes after the first token
 is streamed, so a streamer's consumer waits through the compile (give a
 `TextIteratorStreamer` a `timeout` longer than it, or use
@@ -149,34 +132,25 @@ attentions or hidden states, `custom_generate`, or
 `disable_compile=True` (one call eager); so does one whose static cache
 would hold more positions in all (its sequences times the prompt and
 `max_new_tokens`, or `max_cache_len` where longer) than 1280 on a
-GeForce card and 2048 on another: past that the eager loop is as fast
-(Qwen3-8B), sooner the faster the host's CPU. A step's ms compiled
-against eager, Qwen3-8B, the static cache that long with 64 positions
-used:
-
-| | 256 | 1024 | 2048 | 4096 positions | 8 sequences |
-| :--- | ---: | ---: | ---: | ---: | :--- |
-| RTX 4080 SUPER, Ryzen 9 7950X3D (a desktop) | 18.2 / 20.5 | 20.4 / 20.5 | 23.0 / 20.5 | 27.6 / 20.5 | 19.5 / 21.8 with 80 each |
-| A10, Xeon Platinum 8358 (a server) | 28.3 / 38.3 | 31.3 / 36.9 | 34.9 / 37.2 | 42.8 / 33.6 | 33.9 / 35.8 with 256 each, 52.6 / 33.6 with 1024 |
+GeForce card and 2048 on another: past that the eager loop is as fast,
+sooner the faster the host's CPU.
 
 `GLYD_COMPILE_MAX` sets the cap on any GPU. Not with `exact=True`
 (below), a family transformers does not compile whole (its
 `_can_compile_fullgraph`), the model over several GPUs, or a
 transformers whose generation helpers are not as 5.17 has them (one
 warning at the load), which run eager, nor where transformers 5.17's
-static cache fails (bf16's too), which run eager from the start: Llama 4
-(transformers compiles none of its forwards), and a model with
+static cache fails (bf16's too), which run eager from the start: a family none of whose forwards
+transformers compiles, and a model with
 multi-head latent attention whose config has fewer key/value heads than
-heads (as tiny DeepSeek V2 and V3, Kimi Linear and AXK1 test models do;
-the released checkpoints, with as many as heads, compile). A call whose
+heads (released checkpoints, with as many as heads, compile). A call whose
 forward fails to compile anyway (torch._dynamo's or Inductor's error)
 runs again eager, from its start (a streamer gets only what the failed
 attempt had not streamed, and a sampled call draws again from the random
 state it started with: its tokens and text are the eager run's), and so
 do the model's later calls, with one warning; any other error (out of
 memory included) is the call's own, and the next call compiles as
-before. Several models in one process all compile (ten Qwen3-0.6B models one after another: the second to tenth at
-296.5-301.3 tokens/s against 99.6 eager); the process's own `torch._dynamo` settings are left as they are. A
+before. Several models in one process all compile; the process's own `torch._dynamo` settings are left as they are. A
 model that has generated compiled is freed at `del`, as an eager one.
 
 A bf16 model, or one loaded with `compile=False`, runs transformers' own `generate()`. `compile=False`, or
@@ -202,9 +176,7 @@ packs; glyd 0.28 loads both and packs them again as they load, and glyd 0.27 and
 format. `from_pretrained(path)` loads the packs as saved; on a GPU where `mma12` is the pick, it decodes and packs
 them again. `save_pretrained(model, path, layout="mma12")` (`pack
 --layout mma12`) saves the `mma12` layout instead, as an A10, A100 or H100 runs it (glyd-v3, which glyd 0.24 and
-before refuse): loaded there as saved, 2.7-3.9x faster than packing again (on an RTX 4080 SUPER, Qwen3-8B in
-1.17-1.18 s against 3.14-4.55 s from an `mma` save and 3.54-3.61 s from the bf16 checkpoint;
-benchmarks/gpu/rtx4080s-rust-2026-09-28).
+before refuse): loaded there as saved, without packing again.
 
 `glyd.fit(name_or_path, gpu="48GB", context=8192)`: whether the model
 fits one GPU in bf16 and with Glyd, by the site's rule: the weights (with
@@ -214,9 +186,9 @@ and 1.5 GiB for the runtime, against the memory nvidia-smi reports
 (`16GB` ... `141GB`, or a number of bytes). From the Hub's metadata for a
 repo id, from the files for a directory.
 
-    python -m glyd_gpu fit Qwen/Qwen3-32B --gpu 48GB
-    python -m glyd_gpu pack Qwen/Qwen3-8B qwen3-8b-glyd     # packed, checked, saved as glyd-v4
-    python -m glyd_gpu verify qwen3-8b-glyd
+    python -m glyd_gpu fit Qwen/Qwen3.5-27B --gpu 48GB
+    python -m glyd_gpu pack Qwen/Qwen3.5-9B qwen3.5-9b-glyd     # packed, checked, saved as glyd-v4
+    python -m glyd_gpu verify qwen3.5-9b-glyd
 
 `glyd pack` and `glyd verify` are the same two commands (the `glyd` program passes them to the Python tool).
 
@@ -225,19 +197,21 @@ repo id, from the files for a directory.
 `glyd run MODEL` and `glyd serve MODEL` (installed by the script above, or by
 `pip install "glyd[vllm]"` in a virtual environment) start vLLM with the
 plugin and the settings worked out from the GPU: memory share, context,
-the tool-call and reasoning parsers (eager mode, which starts in under a
-third of compiled's time and runs within 3% of its speed); `glyd doctor` checks
+the tool-call and reasoning parsers, compiled wherever the chat keeps 8,192 tokens of context
+(eager only where that gives a longer chat); `glyd doctor` checks
 the machine. [The docs](https://getglyd.com/docs/vllm/)
 have the steps. By hand, `pip install "glyd[vllm]"` installs vLLM 0.30 and
 the plugin, which vLLM finds by itself (the package's `vllm.general_plugins`
 entry point):
 
-    vllm serve Qwen/Qwen3-8B --quantization glyd       # a bf16 checkpoint, packed as it loads
-    vllm serve ./qwen3-8b-glyd --quantization glyd     # a glyd save, as saved
-    vllm serve Qwen/Qwen3-8B --quantization glyd --enforce-eager --additional-config '{"glyd": {"exact": true}}'
+    vllm serve Qwen/Qwen3.5-9B --quantization glyd       # a bf16 checkpoint, packed as it loads
+    vllm serve ./SAVE --quantization glyd                # a glyd save, as saved (not yet of a 2026 model)
+    vllm serve Qwen/Qwen3.5-9B --quantization glyd --enforce-eager --additional-config '{"glyd": {"exact": true}}'
 
-On a 16 GB card these defaults do not leave room for a chat (vLLM takes
-0.92 of the memory and sizes the context to the model's 40,960 tokens):
+vLLM's own settings need not fit the card: Qwen3.5-9B in bf16 ran out of memory at start
+on an RTX 4090 (24 GB), even with the context capped at 4,096 tokens, and Glyd's
+settings run it there packed with a 189,440-token context
+([log](https://github.com/surya-koritala/Glyd/tree/main/benchmarks/gpu/rtx4090-5090-qwen35-9b-v029-2026-10-06)).
 `glyd run` works both out from the card, and
 [the docs](https://getglyd.com/docs/vllm/#advanced-vllm-serve-by-hand)
 have the flags by hand.
@@ -250,16 +224,17 @@ vLLM runs them: 0 is bf16, 1 (the default) every layer, and from v0.28 the
 embedding and the output layer too (every embedding row comes back bit for
 bit; `exact` keeps the output layer as vLLM runs it). vLLM sizes its KV
 cache after the weights load, so the memory the packs save becomes KV
-cache: 1.04-2.11x bf16's on an L4, an A10, an A100, a GH200 and an H100 SXM, at the same
-`--gpu-memory-utilization`. With `exact` the logits are exactly vLLM's bf16
+cache: Qwen3.8-27B on an H100, 204,117 tokens against bf16's 122,538 at the same
+`--gpu-memory-utilization` (benchmarks/gpu/h100-qwen38-v028-2026-10-03). With `exact` the logits are exactly vLLM's bf16
 ones, eager, or compiled in inductor's deterministic mode where the
 packed Linears have no biases.
 `kv` (`auto`, the default, `lossless` or `off`; `GLYD_KV`) holds vLLM's KV cache
-in fewer bits, every value read back exactly: 1.25x to 1.30x vLLM's tokens in
-the same memory on five models. `auto` holds it on an A100, an L4, an H100 and a GH200 and
+in fewer bits, every value read back exactly, for models with head size 128 and
+full attention only: none of the 2026 models measured so far (Qwen3.5, Qwen3.8, Gemma 4)
+is one, so they keep vLLM's cache, with a line in the log. `auto` holds it on an A100, an L4, an H100 and a GH200 and
 leaves vLLM's own cache on any other GPU, with a line in the log; `glyd run` keeps
 vLLM's cache unless `GLYD_KV` is set, because the first start sets the cache up
-for the model (217 s on an L4 for Qwen3-8B at its whole window).
+for the model.
 Throughput against bf16, exact mode
 compiled, mixtures of experts and what is not supported yet:
 [the docs](https://getglyd.com/docs/vllm/).

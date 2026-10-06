@@ -23,22 +23,15 @@ weights (safetensors, v0.14.9): 12–13% under zstd -19 at 25× its
 write speed; a checkpoint against the last, 24% under zstd -19's
 patch. PyTorch checkpoints with optimizer state (v0.15.0): 83% of their
 size alone, 77% against the one before (zstd -19 92%). Weights compressed
-in GPU memory (`gpu/`, v0.17.0): Qwen2.5-7B in 10.61 GB on a 16 GB
-card, where bf16 takes 15.25 GB (its matrices 32.5% smaller, bit for
-bit), 1.25-1.32x bf16's tokens/s at 1 to 32 sequences at once, 1.04x at
-64; prompts to 128 tokens as fast or faster, to 4096 within 5-10%.
-Qwen3-32B on one 48 GB GPU and Qwen2.5-72B on three (bf16: two and
-four), MMLU within 0.5 points (v0.18.0); the KV cache 31% smaller, a step
-as fast through attention on the packed pages (v0.18.0). On an H100
-`mma12` (v0.19.0): Qwen3-32B 25% smaller at 6.5% less GPU time a
-token than bf16. Many tokens a step on Hopper: Qwen3-32B's MLP matrices
-at 32-64 tokens in 83-92 us against cuBLAS's 90-96; the model 12% under
-bf16's GPU time a token at one sequence, 6-11% over at 32-64 (merged
-projections). The GPU work by release, and which releases get fixes:
+in GPU memory (`gpu/`, from v0.17.0), measured on 2026 models: Qwen3.5-9B
+under vLLM 0.30.0 in 12.68 GiB on an RTX 4090 and 13.89 on an RTX 5090,
+where bf16 takes 17.66; Qwen3.8-27B on an H100 in 38.77 GiB against 50.22,
+its KV cache 1.67x bf16's in the same memory; the layers' matrices of
+Qwen3.8-27B and Gemma 4 26B-A4B 32.8% smaller, bit for bit. The GPU work by release, and which releases get fixes:
 [getglyd.com/roadmap](https://getglyd.com/roadmap/).
-Work on the GPU is bf16 only now. FP8 checkpoints load as they are; their
-measured floor is 16.7-18.0% (Qwen3-8B-FP8, DeepSeek-V3, Llama 3.3 70B
-FP8). A terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
+Work on the GPU is bf16 only now. FP8 checkpoints load as they are; on FP8
+files cut from 2026 models the codec takes 19.1-30.3% off
+([benchmarks/weights/model-files-2026-10-05](benchmarks/weights/model-files-2026-10-05)). A terabyte-year in S3 read monthly: `--max -r` $61.7, zstd -3 $73.3.
 
 Measured floors, not to be retried: JSON API events and crawl indexes
 are 20–65% hashes and random ids once compressed (typed columns gain
