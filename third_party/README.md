@@ -30,6 +30,25 @@ on every core (`src/chunked.rs`):
   crate are marked `#[ignore]`; the rest, and `chunked`'s, run with
   Glyd's suite.
 
+And one change that is not about chunks: upstream codes its corrections
+with the `cabac` crate (LGPL-3.0-or-later). preflate-rs no longer uses
+that crate:
+
+- `bool_coder.rs` (new, Glyd's own code, BSD-3-Clause OR GPL-2.0-only
+  like Glyd's codec, not Apache-2.0): the boolean entropy coder of RFC
+  6386 section 7 with the adaptive probability context of the
+  corrections stream, written from a functional description of that
+  stream and the RFC alone. It writes and reads the same bytes as
+  `cabac` 0.15.0 did, so every corrections stream an earlier release
+  wrote opens, and every one it would have written is the same bytes.
+  A unary code or a literal longer than 4096 decisions is refused by its
+  reader (the old one looped for ever on some malformed input).
+- `cabac_codec.rs`, `stream_processor.rs`, `chunked.rs`: the `use` paths.
+- `Cargo.toml`: `cabac` is a dev-dependency, `=0.15.0`, the oracle of
+  `src/bool_coder/vs_cabac.rs`, which compares the two coders' streams
+  (and preflate's corrections for real deflate streams) in the tests. No
+  library or binary links it.
+
 The output for a stream handled whole is unchanged from upstream 0.7.6:
 objects written by earlier versions of Glyd, and bases their deltas
 were made against, open to the same plain text.
