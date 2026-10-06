@@ -925,6 +925,43 @@ fn the_single_byte_ff_does_not_hang_a_unary_read() {
     }
 }
 
+/// The only thing that makes a unary read endless is a window that is not
+/// below the range at the start, which only a first byte of 0xff gives (the
+/// marker takes 0x80 off the others): for any other input the window stays
+/// below the range for ever, and the read ends within what the input can
+/// hold: a decision that shifts nothing is followed by one within 127
+/// decisions that does, a shift takes a bit of the input, and when the input
+/// is used up the window is zero and the next decision is a zero.
+#[test]
+fn a_unary_read_is_bounded_by_the_input_unless_it_starts_with_ff() {
+    let mut rng = Rng(31);
+    let mut worst = 0usize;
+    for case in 0..20_000 * scale() {
+        let len = rng.below(48) as usize;
+        let mut bytes: Vec<u8> = (0..len)
+            .map(|_| match rng.below(5) {
+                0 => 0xff,
+                1 => 0x00,
+                2 => 0x7f,
+                _ => rng.next() as u8,
+            })
+            .collect();
+        if bytes.first() == Some(&0xff) {
+            bytes[0] = 0xfe;
+        }
+        let bound = 1024 * len + 2200;
+        let mut r = VP8Reader::new(Cursor::new(bytes.clone())).unwrap();
+        let mut ctx = [VP8Context::default(); 32];
+        let mut count = 0usize;
+        while r.get(&mut ctx[count.min(31)]).unwrap() {
+            count += 1;
+            assert!(count <= bound, "case {case}: {bytes:02x?} reads {count} ones, the bound is {bound}");
+        }
+        worst = worst.max(count * 100 / bound);
+    }
+    eprintln!("the longest unary read was {worst}% of its bound");
+}
+
 #[test]
 fn the_limits_of_unary_codes_and_literals() {
     let mut u = [VP8Context::default(); 32];

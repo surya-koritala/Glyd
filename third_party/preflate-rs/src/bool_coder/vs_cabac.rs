@@ -265,6 +265,33 @@ fn every_state_of_a_context_codes_the_same() {
     }
 }
 
+/// A stream that ends after every number of decisions from none to a few
+/// hundred, of each kind: the first byte comes out at the 24th shift and
+/// one more every eighth, and the end is made of zeros whichever byte the
+/// last decision left off at.
+#[test]
+fn writers_end_the_stream_the_same_after_every_number_of_decisions() {
+    for n in 0..400 {
+        let patterns: [Vec<Call>; 7] = [
+            vec![Call::Put(false, 0); n],
+            vec![Call::Put(true, 0); n],
+            vec![Call::Bypass(false); n],
+            vec![Call::Bypass(true); n],
+            (0..n).map(|i| Call::Put(i % 3 == 0, i % 8)).collect(),
+            (0..n).map(|i| Call::Put(i % 17 != 0, 0)).collect(),
+            (0..n).map(|i| if i % 5 == 0 { Call::Bypass(i % 2 == 0) } else { Call::Put(i % 7 < 3, 1) }).collect(),
+        ];
+        for (p, calls) in patterns.iter().enumerate() {
+            let (new, old) = (stream_new(calls), stream_old(calls));
+            assert_eq!(new, old, "pattern {p}, {n} decisions");
+            // read back, and read past the end
+            let more: Vec<Call> = calls.iter().copied().chain(calls.iter().copied().take(40)).collect();
+            let (nv, ov) = values_of(&new, &more);
+            assert_eq!(nv, ov, "pattern {p}, {n} decisions, read past the end");
+        }
+    }
+}
+
 // ---- the readers ----
 
 #[test]
@@ -771,11 +798,12 @@ fn read_noise(seed: u64, len: usize, n: usize) {
 }
 
 /// Blocks of decisions on every core, new against old, until `DECISIONS`
-/// (default two billion) are done: the streams the writers make, what each
-/// reader reads back from them, and what the readers make of noise.
-/// `DECISIONS=1000000000000 cargo test --release -- --ignored --nocapture
-/// long_differential`. The carries the new writer made, by the run of 0xff
-/// bytes they went back through, are counted and printed.
+/// (default two billion) are done: the streams the two writers make from the
+/// same decisions, and every sixteenth block what each reader reads back from
+/// it and what both make of noise. `DECISIONS=1000000000000 cargo test
+/// --release -- --ignored --nocapture long_differential`. The carries the
+/// new writer made, by the run of 0xff bytes they went back through, are
+/// counted and printed.
 #[test]
 #[ignore = "on demand: minutes to hours"]
 fn long_differential() {
@@ -789,23 +817,37 @@ fn long_differential() {
     let started = std::time::Instant::now();
     std::thread::scope(|s| {
         for _ in 0..threads {
-            s.spawn(|| loop {
-                let b = next.fetch_add(1, Relaxed);
-                if b >= blocks {
-                    break;
-                }
-                let seed = 1_000_003 + b;
-                let decisions = mix(seed, block);
-                let calls: Vec<Call> = decisions.iter().map(|&(k, bit)| Call::Put(bit, k)).collect();
-                let (new, old) = (stream_new(&calls), stream_old(&calls));
-                assert_eq!(new, old, "block {b}, seed {seed}");
-                if b % 4 == 0 {
-                    read_back(&new, &decisions);
-                    read_noise(seed, 3_000_000, 20_000_000);
-                }
-                let d = done.fetch_add(1, Relaxed) + 1;
-                if d % 2000 == 0 {
-                    eprintln!("{} blocks, {:.0} s", d, started.elapsed().as_secs_f64());
+            s.spawn(|| {
+                let (mut new_bytes, mut old_bytes) = (Vec::with_capacity(block / 8), Vec::with_capacity(block / 8));
+                loop {
+                    let b = next.fetch_add(1, Relaxed);
+                    if b >= blocks {
+                        break;
+                    }
+                    let seed = 1_000_003 + b;
+                    new_bytes.clear();
+                    old_bytes.clear();
+                    {
+                        let mut new = VP8Writer::new(&mut new_bytes).unwrap();
+                        let mut old = OldWriter::new(&mut old_bytes).unwrap();
+                        let mut nc = [VP8Context::default(); 8];
+                        let mut oc: [OldContext; 8] = Default::default();
+                        for (k, bit) in super::tests::workload_calls(seed, block) {
+                            new.put(bit, &mut nc[k]).unwrap();
+                            old.put(bit, &mut oc[k]).unwrap();
+                        }
+                        new.finish().unwrap();
+                        old.finish().unwrap();
+                    }
+                    assert!(new_bytes == old_bytes, "block {b}, seed {seed}: the streams differ");
+                    if b % 16 == 0 {
+                        read_back(&new_bytes, &mix(seed, block));
+                        read_noise(seed, 3_000_000, 20_000_000);
+                    }
+                    let d = done.fetch_add(1, Relaxed) + 1;
+                    if d % 20_000 == 0 {
+                        eprintln!("{} blocks ({} decisions), {:.0} s", d, d * block as u64, started.elapsed().as_secs_f64());
+                    }
                 }
             });
         }

@@ -31,11 +31,14 @@
 //!   the bytes that carry no information are not written, and the reader
 //!   reads a missing byte as 0x00, as far as it is asked to go.
 //!
-//! The reader is bounded: a unary code longer than `MAX_RUN`, or a literal
-//! wider than that, is an error (`InvalidData`, `InvalidInput`) where the
-//! crate this replaces looped for ever on some malformed input (the single
-//! byte 0xff and a unary read). preflate's own codes are at most 33
-//! decisions long; no stream it wrote is affected.
+//! The reader is bounded: a unary code of `MAX_RUN` ones or more, or a
+//! literal wider than that, is an error (`InvalidData`, `InvalidInput`)
+//! where the crate this replaces looped for ever on some malformed input
+//! (the single byte 0xff and a unary read: every decision is a one). Only a
+//! first byte of 0xff can do that, since only it starts the window not below
+//! the range; any other input ends a unary read within about a thousand
+//! decisions per byte of it. preflate's own codes are at most 33 decisions
+//! long; no stream it wrote is affected.
 
 use std::io::{self, Read, Write};
 
