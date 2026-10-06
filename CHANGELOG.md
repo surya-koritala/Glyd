@@ -6,6 +6,37 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.29.1 — 2026-10-06
+
+- Mixtures of experts whose experts clamp their activation (GLM-5.3-Flash-BF16, Hy4-preview, K-EXAONE-2.0, Ling-3.0-flash): v0.29.0 ran those
+  experts without the clamp under `--quantization glyd` (and so under `glyd run` and `glyd serve`), so their outputs could differ from bf16's.
+  They now give bf16's result: those layers' experts stay bf16, and `exact` mode is bf16's bit for bit as before.
+- `glyd run` and `glyd serve` on 2026 models that v0.29.0 did not start or answered wrongly:
+  - Gemma 4 starts (v0.29.0 stopped with `AmbiguousGlobalPerLayerAttributeError` under transformers 5.18).
+  - NVIDIA-Nemotron-3-Nano-4B-BF16 is no longer refused (v0.29.0 put its weights at 33.6 GiB).
+  - vLLM's tool-call and reasoning parsers for every 2026 family: Qwen3.5, 3.6 and 3.8, Qwen3-Coder-Next, Gemma 4, Nemotron 3 and 3.5,
+    GLM-5.x and GLM-4.7-Flash, MiniMax M2.x and M3, Kimi K2.x and K3, DeepSeek V4 and V4.1, MiMo V2, Ling 3, EXAONE 4.5, LFM2.5, Granite 4.1
+    and 4.2, MiniCPM5, Apertus, Muse-Glimmer, Inkling, Jamba2, Mellum2, Command A+, Hy3 and Hy4, Step 3.5 and 3.7. v0.29.0 gave Qwen3.5 and
+    Gemma 4 none on the Hub's configs, and MiniCPM5's tool calls failed with HTTP 400.
+  - The context is sized from each layer of the model (full and sliding-window attention, linear attention, Mamba, experts), so it fits
+    vLLM on the first start: v0.29.0 asked vLLM for more than it held on Qwen3.5-9B and restarted it.
+  - Where a model does not fit, the smaller one `glyd run` suggests is from the model's own family for Gemma 4, Granite 4.2, LFM2.5,
+    Nemotron and MiniCPM5.
+  - Measured on an RTX 4090 with vLLM 0.30.0, `glyd run --prompt` and `glyd serve` with a tool call, the turn after it, the thinking
+    apart from the answer and a prompt of about 90% of the context, every check passed: Qwen3.5-9B (context 183,296 tokens),
+    gemma-4-12B-it (124,928), MiniCPM5-2B (131,072), NVIDIA-Nemotron-3-Nano-4B-BF16 (262,144).
+- Less memory on 2026 models: `--quantization glyd` also packs the embeddings and other layers that v0.29.0 left bf16 on these
+  models (Qwen3.5, 3.6 and 3.8, Nemotron 3, LFM2.5, Jamba2, Olmo-Hybrid, Ling and others). Measured on an RTX
+  4090 with vLLM 0.30.0: Qwen3.5-9B's weights take 12.01 GiB against 12.69 with glyd-gpu 0.29.0, at the same speed (one user 74.1 tokens a
+  second against 73.9, 32 users 954.9 against 954.9; 1,024 tokens in, 256 out). Against bf16 in the same run (Qwen3.5-9B's language model alone,
+  as bf16 does not fit the card with vLLM's defaults): 11.38 against 16.80 GiB; Qwen3.5-0.8B 1.23 against 1.72, LFM2.5-350M 0.48 against
+  0.69, NVIDIA-Nemotron-3-Nano-4B-BF16 5.40 against 7.47, AI21-Jamba2-3B 4.71 against 5.68. Every packed weight reads back bit for bit and
+  `exact` mode gives bf16's tokens and log-probabilities bit for bit on all five.
+- `python -m glyd_gpu pack MODEL OUT --tables` (and `glyd.save_pretrained(model, path, tables=True)`) also packs a model's embeddings and its other large tables
+  in the save, for a smaller save; it loads to the same weights, bit for bit, and the same GPU memory. Such a save is format glyd-v5:
+  glyd 0.29.0 and before do not load it, and vLLM does not serve it yet. Saves made without `--tables` are unchanged (glyd-v4, glyd-v3 with
+  `--layout mma12`). `glyd verify` reads glyd-v5.
+
 ## v0.29.0 — 2026-10-06
 
 - Glyd's own engine, `glyd-engine`, ships in the `glyd-gpu` wheels beside the library (Linux, x86_64 and aarch64): a program of its own (Rust; the CUDA driver and Glyd's GPU library are all it
