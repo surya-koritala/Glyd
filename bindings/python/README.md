@@ -205,7 +205,7 @@ the plugin, which vLLM finds by itself (the package's `vllm.general_plugins`
 entry point):
 
     vllm serve Qwen/Qwen3.5-9B --quantization glyd       # a bf16 checkpoint, packed as it loads
-    vllm serve ./qwen3.5-9b-glyd --quantization glyd     # a glyd save, as saved
+    vllm serve ./SAVE --quantization glyd                # a glyd save, as saved (not yet of a 2026 model)
     vllm serve Qwen/Qwen3.5-9B --quantization glyd --enforce-eager --additional-config '{"glyd": {"exact": true}}'
 
 vLLM's defaults (0.92 of the memory, the context as long as the model's)
