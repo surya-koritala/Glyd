@@ -28,6 +28,11 @@ pub fn is_safetensors(input: &[u8]) -> bool {
 /// The tensors of `input`, in file order, non-overlapping and inside
 /// the data; `None` for anything else.
 pub fn tensors(input: &[u8]) -> Option<Vec<Tensor>> {
+    tensors_typed(input).map(|v| v.into_iter().map(|(t, _)| t).collect())
+}
+
+/// `tensors` with each tensor's dtype as the header spells it (`BF16`, `F8_E4M3`, ...).
+pub fn tensors_typed(input: &[u8]) -> Option<Vec<(Tensor, Vec<u8>)>> {
     if !is_safetensors(input) {
         return None;
     }
@@ -55,7 +60,7 @@ pub fn tensors(input: &[u8]) -> Option<Vec<Tensor>> {
                 if s > e || end > input.len() {
                     return None;
                 }
-                out.push(Tensor { name, start, end, width });
+                out.push((Tensor { name, start, end, width }, dtype));
             }
             if p.eat(b',') {
                 continue;
@@ -64,8 +69,8 @@ pub fn tensors(input: &[u8]) -> Option<Vec<Tensor>> {
             break;
         }
     }
-    out.sort_unstable_by_key(|t| t.start);
-    out.windows(2).all(|w| w[0].end <= w[1].start).then_some(out)
+    out.sort_unstable_by_key(|t| t.0.start);
+    out.windows(2).all(|w| w[0].0.end <= w[1].0.start).then_some(out)
 }
 
 struct Json<'a> {

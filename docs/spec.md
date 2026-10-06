@@ -65,6 +65,7 @@ with an 8-byte magic.
 | `GLYDCOLD` | the cold level (`--cold`) | varint `n_units`; per unit: varint length, varint stream length, `u32` CRC32; then the units' arithmetic-coded streams, each from an empty model ([design/format-v7.md](design/format-v7.md#the-cold-level-context-mixing), `src/cm.rs`). |
 | `GLYDPACK` | packs (`--pack`) | varint `n_objects`, varint `index_len`, the index (the objects' lengths as zigzag deltas, itself a `--max` block stream), then one stream of the objects' concatenation (record mode or plain). Object *i* is bytes `[Σ len<i, +len_i)` of the decoded concatenation. |
 | `GLYDDICT` | a prepared dictionary (`Dict`) | `u16` version, `u32` content length, the content, then the literal Huffman lengths and three tANS tables; blocks compressed with it carry its id (`src/dict.rs`). |
+| `GLYDWGT1` | model files (safetensors, GGUF), section 2d | `u64` original length (varint), the regions, the kept stream, the payloads; see 2d |
 | `GLYDSHP1` | a shape dictionary (`--shape`) | the kind, the frames (text with a 0 per hole and a column per hole), the columns (type, parameter, seeds), then a `GLYDDICT`; an object's image is a varint row count and flags, per row its frame or the raw line, then every column's values (`src/shape.rs`). |
 
 A decoder that meets a magic it does not know should stop: the
@@ -160,6 +161,60 @@ v0.13.4 wrote Lepton's stream (`lepton_jpeg`, the format of Dropbox's
 Lepton; the `jpeg` feature keeps reading it). Baseline JPEGs
 (SOF0/SOF1, 8-bit, Huffman) are recoded; a progressive,
 arithmetic-coded or 12-bit one stays as it is.
+
+## 2d. Model files (`GLYDWGT1`)
+
+A safetensors or GGUF file whose tensors have an element type the coder knows. Everything the tensors do
+not claim (the header, padding, a tensor of another type, a run too short to pay for its tables) is the
+*kept* bytes, and the file is the kept bytes and the regions laid together, so any file comes back whatever
+it holds. All integers are varints unless said otherwise.
+
+```text
+"GLYDWGT1"  original_len  n_regions  kept_len  kept_stream_len
+per region, in file order:  gap  len  kind (u8)  payload_len
+the kept stream (kept_stream_len bytes): a plain block stream (section 1, any level) of the kept bytes in file order
+the payloads, back to back
+```
+
+`gap` is the number of kept bytes between the end of the region before (the start of the file for the first)
+and this region; the kept bytes after the last region are the rest of `kept_len`. `kept_len` plus the regions'
+lengths is `original_len`. A region is a run of whole units of its kind:
+
+| kind | unit | kind | unit |
+| :--- | :--- | :--- | :--- |
+| 1 bytes (8-bit floats, integers, unknown types) | 1 byte | 9 Q5_1 | 24-byte block |
+| 2 planes (`params[0]` = 2, 4 or 8) | that many bytes | 10 Q4_K | 144 |
+| 3 bf16 | 2 | 11 Q5_K | 176 |
+| 4 f16 | 2 | 12 Q6_K | 210 |
+| 5 Q8_0 | 34-byte block | 13 IQ4_NL | 18 |
+| 6 Q4_0 | 18 | 14 IQ4_XS | 136 |
+| 7 Q4_1 | 20 | 15 MXFP4 | 17 |
+| 8 Q5_0 | 22 | | |
+
+A region's payload: the variant (u8), `n_params` and the params, the number of streams (u8) and for each
+stream its mode (u8: 0 raw, 1 constant followed by its symbol, 2 bits, 3 coded followed by its tables), the
+number of chunks and each chunk's payload length, then the chunks. A chunk is up to 1 MiB of units; for each
+stream it holds a varint length and that many bytes, then the CRC-32C (`u32`) of the chunk's bytes as the
+file has them. A unit is cut into the streams of its kind (`src/weights/kinds.rs` is normative for the cut and
+for the streams' order): a float into its exponent, sign and mantissa fields, a quantised block into its
+scales, mins and codes, the 6-bit scales and the 5- and 6-bit codes of the K-quants put together from the
+pieces ggml scatters them in. A stream of mode 0 is its symbols as bytes, of mode 2 a bit a symbol packed
+eight to a byte, low bit first; a coded stream is symbols under static tables and a context per symbol that
+the kind names (none, the symbol of another stream at the same position, a class given to each unit, a
+mantissa's exponent class and the mantissa before it, whether a block has yet shown its extreme codes).
+
+A coded stream (`src/weights/rans.rs`): rANS with 32-bit states, 16-bit renormalisation, eight lanes. The
+tables: the precision in bits (8 to 12), the number of contexts and of distinct tables, a map from contexts to
+tables (or the identity), and for each table its non-zero frequencies (the gap from the symbol before, the
+frequency; the frequencies sum to `1 << bits`). The stream: eight `u32` initial states, then the 16-bit
+words; lane `l` of `n` symbols holds symbols `l * (n / 8)` up to the next lane's (the last lane takes the
+rest); a symbol is decoded as `slot = x & mask; x = freq * (x >> bits) + slot - start`, the next 16 bits
+read when `x` falls under 2^16, the lanes in turn from the first symbol on. A decoder checks that every
+lane ends on 2^16 and every word was read. A context is picked from a byte of state a lane carries, 0
+at its start.
+
+A decoder that does not know the magic stops (the magics are the versions); every earlier stream, and every
+stream of the levels, decodes as before.
 
 ## 3. The store
 

@@ -1,0 +1,6 @@
+Apple M1 Max, 10 cores (8 performance, 2 efficiency), 32 GB, macOS (Darwin 27.0.0)
+zstd 1.5.7, xz 5.8.4, brotli 1.2.0, rustc 1.98.1
+glyd v0.28.0 (the "before": built from the base of this branch, fe3b827c) and this change
+Every codec single-threaded (zstd -T1, xz -T1, glyd -s), one process a file, the files in 2 to 4 processes at a time.
+The machine was shared with other jobs while this ran (load average 8 to 120): the speeds are the CPU time (user+sys)
+of the process, not the wall clock, and are still noisier and slower than on an idle machine.

@@ -114,7 +114,7 @@ pub fn is_container(input: &[u8]) -> bool {
     if crate::jpeg::is_jpeg(input) {
         return true;
     }
-    is_gzip(input) || is_zip(input) || is_png(input) || is_pdf(input) || is_tar(input) || is_zlib(input) || crate::parquet::is_parquet(input) || is_zstd(input) || crate::safetensors::is_safetensors(input)
+    is_gzip(input) || is_zip(input) || is_png(input) || is_pdf(input) || is_tar(input) || is_zlib(input) || crate::parquet::is_parquet(input) || is_zstd(input) || crate::weights::is_model_file(input)
 }
 
 /// A zstd build as one recipe byte: its index among `rezstd::BUILDS`
@@ -1503,6 +1503,9 @@ fn parse_any(compressed: &[u8]) -> Option<(usize, Vec<u8>, &[u8], Kind)> {
 
 /// The original length of an envelope, when `compressed` is one.
 pub(crate) fn original_len(compressed: &[u8]) -> Option<usize> {
+    if let Some(n) = crate::weights::original_len(compressed) {
+        return Some(n);
+    }
     if compressed.len() < 10 || ![&MAGIC[..], &MAGIC_DEF2[..], &MAGIC_V013[..], &MAGIC_V012[..]].contains(&&compressed[..8]) {
         return None;
     }
@@ -1551,12 +1554,16 @@ pub(crate) fn embedded_close(b: &[u8], plain: &[u8]) -> Option<Vec<u8>> {
 /// and that is smaller than `closed_level` on it as it is; then the
 /// smaller of the two is written and `true` returned. `false`, with
 /// nothing written, for anything else. Never on a part of a stream.
-pub(crate) fn wrap(input: &[u8], output: &mut Vec<u8>, inner: impl FnOnce(&[u8], &mut Vec<u8>), closed_level: impl FnOnce(&[u8], &mut Vec<u8>)) -> bool {
+pub(crate) fn wrap(input: &[u8], output: &mut Vec<u8>, inner: impl Fn(&[u8], &mut Vec<u8>), closed_level: impl Fn(&[u8], &mut Vec<u8>)) -> bool {
     if crate::in_part() || !is_container(input) {
         return false;
     }
     if crate::jpeg::is_jpeg(input) {
         return crate::jpeg::wrap(input, output);
+    }
+    // Model files (safetensors, GGUF): the tensors coded by their types, the rest at the caller's level.
+    if crate::weights::wrap(input, output, &inner) {
+        return true;
     }
     let Some(opened) = open(input) else { return false };
     // Opened against closed, both at the caller's level: a container's
@@ -1577,6 +1584,9 @@ pub(crate) fn wrap(input: &[u8], output: &mut Vec<u8>, inner: impl FnOnce(&[u8],
 pub(crate) fn unwrap(compressed: &[u8], inner: impl FnOnce(&[u8]) -> crate::Result<Vec<u8>>) -> Option<crate::Result<Vec<u8>>> {
     if let Some(r) = crate::jpeg::unwrap(compressed) {
         return Some(r);
+    }
+    if compressed.starts_with(crate::weights::MAGIC) {
+        return crate::weights::unwrap(compressed, inner);
     }
     let (original, recipe, stream, kind) = parse_any(compressed)?;
     Some(inner(stream).and_then(|plain| match close_kind(kind, &recipe, &plain) {
