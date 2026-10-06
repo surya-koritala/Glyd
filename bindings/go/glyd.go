@@ -12,8 +12,9 @@
 // Binds include/glyd.h through cgo; build the libraries first (cargo
 // build --release --workspace) and point cgo at them, as the flags
 // below do for a checkout. libglyd_store carries the codec and the
-// store (the store is BUSL-1.1); link -lglyd instead for the codec
-// alone (BSD-3-Clause OR GPL-2.0), dropping Store.
+// store; link -lglyd instead for the codec alone, dropping Store.
+//
+// License: BUSL-1.1 (see LICENSE at the root of the repository).
 package glyd
 
 /*

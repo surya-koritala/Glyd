@@ -130,9 +130,8 @@ OpenAI API, and `glyd doctor` says what this machine has and which models fit.
 The steps, the settings and the manual `vllm serve` commands:
 [getglyd.com/docs/vllm](https://getglyd.com/docs/vllm/#local-chat-like-ollama).
 From v0.27 the GPU package, `glyd-gpu`, ships compiled; the install commands
-are the same. It is under the Business Source License 1.1, as before: free for
-personal, educational, research and other non-commercial use; commercial use
-needs a license ([License](#license)). Its source up to v0.26 is in those
+are the same. It is under the Business Source License 1.1, as all of Glyd is
+from v0.29.0 ([License](#license)). Its source up to v0.26 is in those
 releases' tags.
 
 vLLM holds the whole model packed: the Linears, from v0.28.0 the embedding
@@ -546,8 +545,7 @@ objects. A bucket holds builds, snapshots, dumps and releases that are
 near-copies of earlier ones, and a codec that sees one object at a time
 cannot know it.
 
-The store is its own crate, `glyd-store` (`glyd-store DIR --put ...`;
-under the Business Source License, the codec being BSD-3-Clause OR GPL-2.0).
+The store is its own crate, `glyd-store` (`glyd-store DIR --put ...`).
 `put` keeps an object as a delta against the stored object it most
 resembles when that pays, and otherwise on its own at `--max` (record
 mode where it pays; `--ultra` or `--cold` on request). A read is at most
@@ -1150,27 +1148,24 @@ machines with an NVIDIA GPU before each release.
 
 ## License
 
-- **The codec — the `glyd` crate, the `glyd` CLI, the C ABI, the Python
-  and Go bindings — is under the [BSD 3-Clause License](LICENSE) or, at
-  your option, the [GNU GPL version 2](COPYING)**: the same licenses as
-  zstd, so anything that may ship zstd may ship Glyd, GPLv2 projects such
-  as the Linux kernel included. Use it, embed it, ship it, sell it; keep
-  the notice. That is everything in this repository except the store
-  and the GPU weights.
-- **The store — the `glyd-store` crate and CLI — is under the
-  [Business Source License 1.1](glyd-store/LICENSE)**: source available,
-  free for personal, educational, research and other non-commercial use;
-  any commercial production use needs a license
-  (suryakoritala@getglyd.com); each version converts to Apache-2.0
-  four years after its release.
-- **The GPU package — `glyd-gpu`, model weights and the KV cache held
-  compressed in GPU memory, compiled wheels from v0.27 — is under the
-  [Business Source License 1.1](https://github.com/surya-koritala/Glyd/blob/v0.26.0/gpu/LICENSE)**
-  on the same terms as the store (from v0.17.0; earlier releases of the GPU
-  code carry the codec's licenses). The terms are unchanged by the move to
-  compiled wheels; the license ships in the wheel, and the source of v0.17.0 to
-  v0.26.0 stays in those releases' tags.
+From v0.29.0 **all of Glyd is under the [Business Source License
+1.1](LICENSE)**: the `glyd` crate and CLI, the C ABI, the Python and Go
+bindings, the store (`glyd-store`) and the GPU package (`glyd-gpu`: model
+weights and the KV cache held compressed in GPU memory; compiled wheels).
 
-Why the split: a codec is adopted by being embedded, and nothing is
-embedded under a source-available license; the store and the GPU weights
-are the products.
+Free forever for personal and non-commercial use (including education, research and nonprofits) on computers you own or rent for yourself, and for anyone to try, test and develop with. Commercial use needs a license: suryakoritala@getglyd.com. Each version becomes Apache-2.0 four years after its release. The source is available; the Business Source License is not an Open Source license.
+
+Releases up to v0.28 keep the licenses they shipped with, in those
+releases' tags:
+
+- **The codec** — the `glyd` crate, the `glyd` CLI, the C ABI, the Python
+  and Go bindings — under the BSD 3-Clause License or, at your option, the
+  GNU GPL version 2.
+- **The store** — the `glyd-store` crate and CLI — under the Business
+  Source License 1.1, with its own `glyd-store/LICENSE`.
+- **The GPU package** — `glyd-gpu` — under the Business Source License 1.1
+  from v0.17.0 (earlier releases of the GPU code carry the codec's
+  licenses); its license ships in the wheel, and the source of v0.17.0 to
+  v0.26.0 is in those releases' tags.
+
+Code in [third_party/](third_party/) keeps its own license and notices.

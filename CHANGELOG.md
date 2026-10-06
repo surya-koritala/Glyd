@@ -6,6 +6,40 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.29.0 (Unreleased)
+
+- Glyd's own engine, `glyd-engine`, ships in the `glyd-gpu` wheels beside the library (Linux, x86_64 and aarch64): a program of its own (Rust; the CUDA driver and Glyd's GPU library are all it
+  opens) that runs Qwen3 models in the terminal, at a page and as an OpenAI-compatible API. `glyd run` hands a Qwen3 model to it only on a GPU where it is measured at least as fast as vLLM and with less memory,
+  and only where it will certainly run the model: before anything is downloaded it checks the GPU a run would use (the one with the most free memory), its driver, the model, the memory and the disks. No GPU
+  meets that yet, so by default every model runs on vLLM, as in v0.28; the first line a command prints says which one runs the model, and why where it is vLLM. `glyd serve` runs vLLM, which serves more
+  users at once than the engine's 8. `GLYD_ENGINE=1` runs the engine on any GPU it runs on (its checks of the GPU, the driver, the model and the memory still apply), `GLYD_ENGINE=0` keeps vLLM for any model, and `glyd-engine run` and `glyd-engine serve` run the engine
+  directly. Where the engine does not get up (it refuses the model, runs out of memory, crashes, is killed, or shows no sign of life for 15 minutes) the same command goes on with vLLM; once it is up, a crash is
+  reported and the model is not started again. The engine downloads and packs the model on its first run, chooses the context from the GPU's
+  memory (8,192 tokens where it has room), and decodes up to 4 users' replies together by default (`--users N`, 1 to 8, as far as the memory allows).
+  - Its API takes tool calls (`tools` with `tool_choice` auto, none, a named function or required, and `parallel_tool_calls`; the model's `<tool_call>` blocks as `tool_calls`, whole and streamed, so Open WebUI's
+    chats, which carry `tools`, are answered; the arguments of a forced call are the model's, not checked against the tool's schema), `logprobs` and `top_logprobs` up to 20 (the model's own log-probabilities, as
+    vLLM's default gives them) and a plain completion's `logprobs`, `n` up to 8 (each choice has its own seed, index and finish reason), `logit_bias`, `stop_token_ids`, `min_tokens`, `allowed_token_ids`,
+    `include_stop_str_in_output`, `skip_special_tokens`, `echo`, prompts as token ids or as a list, and the ranges and messages of vLLM's own checks. A request for a JSON object or a JSON schema
+    (`response_format`), `guided_*`, `structured_outputs` or another field only vLLM does is refused with a 400 that says so (`GLYD_ENGINE=0` runs vLLM, which takes it). On this computer's own address the server
+    makes the Host (421) and Origin (403) checks of the vLLM-based server, a request's header block is bounded (431 past 64 KiB or 256 headers), and `--hf-token` is read.
+- `glyd run` and `glyd serve` start vLLM compiled (torch.compile and CUDA graphs, vLLM's own default) wherever the chat keeps
+  8,192 tokens of context, and eager only where that gives a longer chat; v0.28 always started it eager. One user's reply of 256
+  tokens to a prompt of about 1,000, the median of three, vLLM 0.30.0: Qwen3.5-9B 115.9 tokens a second against 28.7 eager (v0.28's
+  mode) on an RTX 5090, 77.3 against 26.6 on an RTX 4090. A first start compiles: Qwen3.5-9B was up in 135 s on the RTX 5090 (72 s eager).
+- Qwen3.5 (2026), measured with Qwen3.5-9B and vLLM 0.30.0: the weights take 12.68 GiB on an RTX 4090 (the tiered layout) and
+  13.89 GiB on an RTX 5090 (the 12-bit layout) against bf16's 17.66 GiB. On the RTX 4090 (24 GB) bf16 did not start with vLLM's
+  default settings (out of memory at a 4,096-token context); `glyd run` runs it there with a 189,440-token context.
+- The license: from v0.29.0 all of Glyd is under the Business Source License 1.1 (`LICENSE`): the `glyd` crate and
+  command line, the C ABI, the Python and Go bindings, the store and the GPU package `glyd-gpu`. Free forever for
+  personal and non-commercial use (including education, research and nonprofits) on computers you own or rent for
+  yourself, and for anyone to try, test and develop with; commercial use needs a license (suryakoritala@getglyd.com);
+  each version becomes Apache-2.0 four years after its release.
+  - Releases up to v0.28 keep the licenses they shipped with: the codec (the `glyd` crate, the command line, the C ABI
+    and the bindings) BSD-3-Clause OR GPL-2.0-only, the store and the GPU package BUSL-1.1 on the terms of their own
+    LICENSE files. Their tags, wheels and crates are unchanged.
+  - `LICENSE` is the one license file: `COPYING` (the GPL's text) and `glyd-store/LICENSE` are gone, and the release
+    tarballs, the wheels and the crates carry `LICENSE` alone. Code in `third_party/` keeps its own license.
+
 ## v0.28.0 — 2026-10-04
 
 - The whole model smaller under vLLM: `vllm serve --quantization glyd`, and so `glyd run` and `glyd serve`, packs the

@@ -44,10 +44,9 @@ accepts the [contributor license agreement](CLA.md): you keep your
 copyright and grant the project the right to use and relicense your
 contribution. A check on every pull request requires it.
 
-The codec (the `glyd` crate, CLI, C ABI and bindings) is under the BSD
-3-Clause License or the GPL version 2, at the user's option; the store
-(`glyd-store`) is under the Business Source License 1.1. See
-[README.md](README.md#license).
+From v0.29.0 Glyd is under the Business Source License 1.1
+([LICENSE](LICENSE)); earlier releases keep the licenses they shipped
+with. See [README.md](README.md#license).
 
 ## Conduct
 
