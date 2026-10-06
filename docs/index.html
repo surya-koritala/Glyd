@@ -105,14 +105,15 @@
     <tr class="g"><td>Qwen3.8-27B (FP8, safetensors)</td><td>22.63%</td><td>26.86%</td><td>30.34%</td></tr>
     <tr class="g"><td>Mistral Small 4 119B (FP8, safetensors)</td><td>17.88%</td><td>18.01%</td><td>19.08%</td></tr>
     <tr class="g"><td>MiniMax-M3 (Q8_0, GGUF)</td><td>12.97%</td><td>13.24%</td><td>28.16%</td></tr>
+    <tr class="g"><td>All 22 files (3.9 GB: BF16, FP8, Q8_0, Q4_K_M and F16)</td><td>24.82%</td><td>26.71%</td><td>31.81%</td></tr>
   </table></div>
   <div class="wrap"><table>
     <tr><th>Qwen3.5-9B under vLLM 0.30.0</th><th>bf16</th><th>Glyd</th></tr>
     <tr><td>Weights, RTX 4090</td><td>17.66 GiB</td><td>12.68 GiB</td></tr>
     <tr><td>Weights, RTX 5090</td><td>17.66 GiB</td><td>13.89 GiB</td></tr>
-    <tr><td>Context on an RTX 4090 (24 GB)</td><td>out of memory at vLLM's defaults</td><td>189,440 tokens (<code>glyd run</code>)</td></tr>
+    <tr><td>Context on an RTX 4090 (24 GB)</td><td>out of memory at start (even at 4,096 tokens)</td><td>189,440 tokens</td></tr>
   </table></div>
-  <p class="muted">The weights stay compressed in GPU memory and are rebuilt bit for bit as the model runs (<a href="https://getglyd.com/docs/gpu/">docs</a>; source: <a href="https://github.com/surya-koritala/Glyd/blob/main/CHANGELOG.md#v0290--2026-10-06">CHANGELOG v0.29.0</a>).</p>
+  <p class="muted">The weights stay compressed in GPU memory and are rebuilt bit for bit as the model runs (<a href="https://getglyd.com/docs/gpu/">docs</a>; logs: <a href="https://github.com/surya-koritala/Glyd/tree/main/benchmarks/gpu/rtx4090-5090-qwen35-9b-v029-2026-10-06">record</a>).</p>
 
   <h2>Record mode: the data's own structure, not just its bytes</h2>
   <p>Byte-level matching (zstd, LZ4, Glyd's own levels) is a plateau: on real data zstd -19, xz and Glyd <code>--ultra</code> land within a few percent of each other. The redundancy of a log, a dump or a telemetry export sits in the same field of every record. <code>glyd -r</code> detects delimited lines, SQL dumps and JSON lines, turns them into one typed stream per field (integer, decimal and date-time deltas, dictionaries with recency ranks, text), compresses those, and rebuilds the bytes exactly. Logs whose lines vary in shape take a template: the line's text with a hole where every token holding a digit was, and the tokens as typed columns keyed by template and slot. Anything else is left as it is.</p>

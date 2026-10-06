@@ -37,11 +37,14 @@ Linux (x86_64 or aarch64) with an NVIDIA GPU: Ampere, Ada, Hopper or Blackwell, 
 | :--- | ---: | ---: |
 | Qwen3.5-9B under vLLM on an RTX 4090: weights | 17.66 GiB | **12.68 GiB** (−28.2%) |
 | Qwen3.5-9B under vLLM on an RTX 5090: weights | 17.66 GiB | **13.89 GiB** (−21.3%) |
-| Qwen3.5-9B on an RTX 4090 (24 GB): context | out of memory at vLLM's defaults | **189,440 tokens** (`glyd run`) |
+| Qwen3.5-9B on an RTX 4090 (24 GB): context | out of memory at start (even at 4,096 tokens) | **189,440 tokens** |
 | Qwen3.8-27B under vLLM on an H100: weights | 50.22 GiB | **38.77 GiB** (−22.8%) |
+| Qwen3.8-27B: its layers' matrices, read back bit for bit | 49.52 GB | **33.28 GB** (−32.8%) |
 
-The freed memory becomes KV cache. Sources: [CHANGELOG v0.29.0](CHANGELOG.md#v0290--2026-10-06) (Qwen3.5-9B,
-vLLM 0.30.0) and [h100-qwen38-v028-2026-10-03](benchmarks/gpu/h100-qwen38-v028-2026-10-03). Every result:
+The freed memory becomes KV cache. Logs: [rtx4090-5090-qwen35-9b-v029-2026-10-06](benchmarks/gpu/rtx4090-5090-qwen35-9b-v029-2026-10-06)
+(Qwen3.5-9B, vLLM 0.30.0; [CHANGELOG v0.29.0](CHANGELOG.md#v0290--2026-10-06)),
+[h100-qwen38-v028-2026-10-03](benchmarks/gpu/h100-qwen38-v028-2026-10-03) and
+[open-models-a10-2026-09-27](benchmarks/gpu/open-models-a10-2026-09-27) (`sizes.txt`). Every result:
 [getglyd.com/benchmarks](https://getglyd.com/benchmarks/).
 
 **What lossless means here:** every weight, and every key and value in the KV cache, reads back as the
@@ -63,7 +66,7 @@ glyd -d events.glyd -o events.json
 ## Docs
 
 - [getglyd.com/docs](https://getglyd.com/docs/): getting started, vLLM, the GPU package, the codec.
-- [DETAILS.md](DETAILS.md): everything on one page, with every result and its log
+- [DETAILS.md](DETAILS.md): everything on one page, with the results and their logs
   ([as text for LLMs](https://getglyd.com/llms-full.txt)).
 - [CHANGELOG.md](CHANGELOG.md), [the roadmap](https://getglyd.com/roadmap/), [SECURITY.md](SECURITY.md).
 

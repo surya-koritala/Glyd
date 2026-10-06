@@ -15,112 +15,43 @@ pip install "glyd[gpu]"      # Linux x86_64 / aarch64, a CUDA GPU (Ampere or lat
 ```
 ```python
 import glyd
-model = glyd.from_pretrained("Qwen/Qwen3-8B")               # packed on the GPU as it loads: 11.2 GB of weights, not 16.4
-model = glyd.from_pretrained("Qwen/Qwen3-8B", exact=True)   # logits bit for bit bf16's
+model = glyd.from_pretrained("Qwen/Qwen3.5-9B")               # packed on the GPU as it loads
+model = glyd.from_pretrained("Qwen/Qwen3.5-9B", exact=True)   # logits bit for bit bf16's
 # generate() runs compiled on PyTorch 2.13.0 or later (a static cache, CUDA graphs); compile=False, or GLYD_COMPILE=0, runs it eager
 ```
 ```bash
-glyd pack Qwen/Qwen3-8B qwen3-8b-glyd                    # saved packed (glyd-v4; earlier saves still load), on the GPU: the Python tool's pack, as python -m glyd_gpu pack; glyd verify PATH checks a save
-glyd pack Qwen/Qwen3-8B qwen3-8b-glyd12 --layout mma12   # the mma12 layout: an A10, A100 or H100 loads it as saved
+glyd pack Qwen/Qwen3.5-9B qwen3.5-9b-glyd     # saved packed, on the GPU (as python -m glyd_gpu pack); glyd verify PATH checks a save
 ```
 
-<p align="center"><img src="docs/img/qwen3-32b-gpus.svg" width="100%" alt="nvidia-smi: Qwen3-32B in bf16 across two 48 GB GPUs (44,554 + 18,514 MiB), and with Glyd on one (43,338 MiB)"></p>
+Measured on models released in 2026:
 
-<p align="center"><sub><code>nvidia-smi</code> during the runs: Lambda Cloud, 4x RTX A6000 (48 GB each), 2026-09-26. Raw output and every run's log: <a href="benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757">benchmarks/gpu/lambda-gpu_4x_a6000-20260926-084757</a>.</sub></p>
-
-| The same runs | bf16 | ⚡&nbsp;**Glyd** |
+| Measured | bf16 | ⚡&nbsp;**Glyd** |
 | :--- | ---: | ---: |
-| Qwen3-32B: weights | 65.5 GB | **44.5 GB** |
-| Qwen3-32B: 48 GB GPUs it takes | 2 | **1** |
-| Qwen3-32B: tokens/s at 1 / 8 / 32 sequences | 9.5 / 74 / 276 | **11.8 / 95 / 290** |
-| Qwen3-32B: MMLU, 1,000 questions | 78.5% | 78.0% |
-| Qwen2.5-72B: weights | 145.4 GB | **97.8 GB** |
-| Qwen2.5-72B: 48 GB GPUs it takes | 4 | **3** |
-| Qwen2.5-72B: tokens/s at 1 / 8 / 32 sequences | 4.5 / 35 / 135 | **6.4 / 49 / 154** |
-| Qwen2.5-72B: MMLU, 1,000 questions | 81.9% | 81.8% |
-| KV cache, Qwen2.5-7B, 16K tokens | 947 MB | **651 MB** |
+| Qwen3.5-9B under vLLM 0.30.0 on an RTX 4090: weights | 17.66 GiB | **12.68 GiB** (−28.2%) |
+| Qwen3.5-9B under vLLM 0.30.0 on an RTX 5090: weights | 17.66 GiB | **13.89 GiB** (−21.3%) |
+| Qwen3.5-9B on an RTX 4090 (24 GB): context | out of memory at start (even at 4,096 tokens) | **189,440 tokens** |
+| Qwen3.8-27B under vLLM 0.30.0 on an H100 80GB HBM3: weights | 50.22 GiB | **38.77 GiB** (−22.8%) |
+| Qwen3.8-27B on that H100: KV cache at the same memory share | 122,538 tokens | **204,117 tokens** (1.67x) |
+| Qwen3.8-27B: its layers' matrices, every one read back bit for bit | 49.52 GB | **33.28 GB** (−32.8%) |
+| Gemma 4 26B-A4B: its layers' matrices, every one read back bit for bit | 49.00 GB | **32.92 GB** (−32.8%) |
 
-What those runs cost, at Lambda Cloud's on-demand price for the GPUs
-they ran on ($1.09 an RTX A6000-hour, 2026-09-26), from the tokens/s
-measured:
-
-| Around the clock | bf16 | ⚡&nbsp;**Glyd** |
-| :--- | ---: | ---: |
-| Qwen3-32B: GPUs, an hour | 2, $2.18 | **1, $1.09** |
-| Qwen3-32B: a year | $19,097 | **$9,548** (−50%) |
-| Qwen3-32B: a million tokens at 1 / 8 / 32 / 64 sequences | $63.74 / 8.14 / 2.19 / 1.24 | **$25.66 / 3.19 / 1.04 / 0.76** |
-| Qwen2.5-72B: GPUs, an hour | 4, $4.36 | **3, $3.27** |
-| Qwen2.5-72B: a year | $38,194 | **$28,645** (−25%) |
-| Qwen2.5-72B: a million tokens at 1 / 8 / 32 / 64 sequences | $269.14 / 34.60 / 9.00 / 4.76 | **$141.93 / 18.54 / 5.91 / 4.16** |
-
-(At 64 sequences Glyd's model on fewer GPUs makes fewer tokens a second
-than bf16's, 400.5 against 488.4 for Qwen3-32B, and still costs less a
-token.)
-
-The same on every popular open model measured, and the same model
-afterwards (every Linear layer's matrix packed and
-unpacked bit for bit; perplexity on enwik8 and MMLU on 300 questions,
-bf16 against Glyd in the same run; H100 SXM, 2026-09-26, and an A10 and
-an H100 PCIe, 2026-09-27; logs in
-[benchmarks/gpu/popular-h100-2026-09-26](benchmarks/gpu/popular-h100-2026-09-26),
-[open-models-a10-2026-09-27](benchmarks/gpu/open-models-a10-2026-09-27) and
-[lambda-gpu_1x_h100_pcie-20260926-213544](benchmarks/gpu/lambda-gpu_1x_h100_pcie-20260926-213544)):
-
-| Model | Matrices in bf16 | ⚡&nbsp;**Glyd** | Perplexity, bf16&nbsp;→&nbsp;Glyd | MMLU, bf16&nbsp;→&nbsp;Glyd |
-| :--- | ---: | ---: | ---: | ---: |
-| GLM-4.5-Air 106B (MoE) | 215.9 GB | **144.6 GB** (−33.0%) | | |
-| Llama 4 Scout 109B (MoE) | 211.9 GB | **142.2 GB** (−32.9%) | | |
-| Qwen3-Next 80B-A3B (MoE) | 161.3 GB | **109.4 GB** (−32.2%) | | |
-| Llama 3.3 70B Instruct | 136.9 GB | **91.9 GB** (−32.9%) | | |
-| Qwen3 30B-A3B (MoE) | 59.8 GB | **40.2 GB** (−32.7%) | | |
-| Gemma 3 27B | 51.5 GB | **34.6 GB** (−32.8%) | | |
-| Muse Glimmer 30B | 51.3 GB | **34.5 GB** (−32.8%) | | |
-| Qwen3.8 27B | 49.5 GB | **33.3 GB** (−32.8%) | 15.1946&nbsp;→&nbsp;15.1941 | 79.7%&nbsp;→&nbsp;80.0% |
-| Gemma 4 26B-A4B (MoE) | 49.0 GB | **32.9 GB** (−32.8%) | | |
-| Mistral Small 3.2 24B | 45.3 GB | **30.3 GB** (−33.0%) | | |
-| Phi-4 (14B) | 27.3 GB | **18.3 GB** (−32.9%) | 14.7888&nbsp;→&nbsp;14.7855 | 76.7%&nbsp;→&nbsp;76.3% |
-| DeepSeek-R1-Distill-Qwen 14B | 26.4 GB | **18.0 GB** (−31.9%) | 27.1955&nbsp;→&nbsp;27.1975 | 78.0%&nbsp;→&nbsp;78.0% |
-| Gemma 3 12B | 21.8 GB | **14.6 GB** (−32.9%) | | 74.0%&nbsp;→&nbsp;74.0% |
-| Llama 3.1 8B Instruct | 14.0 GB | **9.4 GB** (−32.8%) | 19.5915&nbsp;→&nbsp;19.5909 | 71.7%&nbsp;→&nbsp;72.0% |
-| Mistral 7B Instruct v0.3 | 14.0 GB | **9.4 GB** (−32.7%) | 12.1422&nbsp;→&nbsp;12.1473 | 60.7%&nbsp;→&nbsp;60.7% |
-| Qwen3 8B | 13.9 GB | **9.4 GB** (−32.1%) | 20.7490&nbsp;→&nbsp;20.7428 | 74.0%&nbsp;→&nbsp;74.3% |
-| Qwen3 4B 2507 | 7.3 GB | **4.9 GB** (−32.2%) | 22.4636&nbsp;→&nbsp;22.4672 | 71.0%&nbsp;→&nbsp;71.0% |
-| SmolLM3 3B | 5.6 GB | **3.8 GB** (−32.9%) | 29.1467&nbsp;→&nbsp;29.1422 | 63.3%&nbsp;→&nbsp;63.3% |
-| Llama 3.2 3B Instruct | 5.6 GB | **3.8 GB** (−32.8%) | 25.1298&nbsp;→&nbsp;25.1437 | 63.7%&nbsp;→&nbsp;64.3% |
-
-(Sizes in `mma`; `mma12` takes 23.5-24.8% off each. Quality
-where the harness loads the model on one GPU in bf16: the MMLU answers
-are bf16's on 98.0-100% of the questions. Gemma 3's perplexity is left
-out: the harness's windows start without the BOS token Gemma needs, which
-puts bf16 and Glyd alike near 12,000.)
+Logs: [rtx4090-5090-qwen35-9b-v029-2026-10-06](benchmarks/gpu/rtx4090-5090-qwen35-9b-v029-2026-10-06),
+[h100-qwen38-v028-2026-10-03](benchmarks/gpu/h100-qwen38-v028-2026-10-03) and
+[open-models-a10-2026-09-27](benchmarks/gpu/open-models-a10-2026-09-27) (`sizes.txt`). The freed memory becomes KV cache.
 
 - **Bit for bit.** Every weight and every cached key and value decodes to
   itself. The products sum in another order than cuBLAS's and
-  FlashAttention's, as any two kernels do: MMLU answers are bf16's on
-  98.0-100% of the questions, perplexity within 0.06% (Llama 3.2 3B
-  25.1298 against 25.1437).
-- **Speed.** Generating for 1 to 32 sequences at once is 1.05-1.42x
-  bf16's tokens/s on the A6000s (the model on fewer GPUs) and 1.25-1.32x
-  on an RTX 4080 SUPER. At 64 sequences it is 0.82-0.86x on the A6000s
-  (1.04x on the 4080). Prompts take 1.2-1.6x bf16's time on the A6000s;
-  on the 4080 up to 128 tokens as fast or faster, past that 1.05-1.10x.
-  On an H100 `mma` takes more GPU time a token than bf16 (Qwen3-32B: 40.6
-  ms against 28.2); `mma12` is the faster one there: Qwen3-32B in 49.2 GB
-  instead of 65.5 at 26.4 ms of GPU time a token, its products at one
-  token 1.1-1.2x faster than bf16's.
-- **The limit.** No lossless code takes more than about 34% off bf16
-  weights or KV cache (measured: 10.5-10.6 bits a value); Glyd's 10.80
-  bits is 32.5% off. Models shipped in FP8 have about 18% to take, in
-  NVFP4 about 7%.
-- **On disk** a bf16 checkpoint is 33% smaller, a fine-tune against its
-  base 44% smaller, and a training checkpoint with its optimizer state
-  17-23% smaller (below).
+  FlashAttention's, as any two kernels do, so late tokens can differ from
+  bf16's; `exact=True` gives bf16's logits bit for bit.
+- **On disk** model files are smaller too: 22 files cut from 2026 models are
+  31.8% smaller, where zstd -19 takes 24.8% off and xz -9 26.7%
+  ([benchmarks/weights/model-files-2026-10-05](benchmarks/weights/model-files-2026-10-05)).
 
 ### Serving with vLLM
 
 ```bash
 curl -LsSf https://getglyd.com/install.sh | sh   # Glyd, vLLM 0.30 and PyTorch as one tool: Linux, an NVIDIA GPU, driver 580 or newer (on a Mac, or with no GPU: the compression program)
-glyd run Qwen/Qwen3-8B                           # downloads the model, starts it packed, and opens a chat
+glyd run Qwen/Qwen3.5-9B                         # downloads the model, starts it packed, and opens a chat
 ```
 
 `glyd run` checks the machine, works out the memory share, the context and
@@ -136,117 +67,19 @@ releases' tags.
 
 vLLM holds the whole model packed: the Linears, from v0.28.0 the embedding
 and the output layer too (every embedding row comes back bit for bit), and a
-mixture of experts' experts, multiplied by Glyd's kernels; its KV cache takes
-the memory they save. `vllm bench serve`, bf16 against Glyd at the same
-`--gpu-memory-utilization 0.9` (servers warm, 1,024 tokens in and 256
-out; low load 1 request a second, 0.25 on the L4), with v0.26.0's and
-v0.27.0's plugin, before the embedding and the output layer were packed:
+mixture of experts' experts; its KV cache takes the memory they save.
+`exact` gives vLLM's bf16 logits bit for bit, eager, or compiled in
+inductor's deterministic mode where the packed Linears have no biases.
+Options, exact mode, mixtures of experts and the checks against vLLM's bf16:
+[getglyd.com/docs/vllm](https://getglyd.com/docs/vllm/).
 
-| GPU (Glyd's layout) | Model | KV cache | Requests/s, saturated | Low load: first token, each token | Saturated: first token, each token |
-| :--- | :--- | ---: | ---: | :--- | :--- |
-| L4 (`mma`) | Qwen3-8B | 1.89x | **1.33x** | +16%, −21% | −25%, +42% |
-| A10 (`mma12`) | Qwen3-8B | 1.73x | **1.31x** | +16%, −21% | −25%, +30% |
-| A100 40 GB (`mma12`) | Qwen3-8B | 1.14x | 0.98x | +19%, −10% | +9%, +17% |
-| A100 40 GB (`mma12`) | Qwen3-14B | 1.77x | **1.28x** | +19%, −13% | −21%, +33% |
-| GH200 (`mma12`) | Qwen3-8B | 1.04x | 0.93x | +6%, +1% | +5%, +9% |
-| GH200 (`mma12`) | Qwen3-32B | 1.66x | 0.89x | +27%, −6% | −24%, +58% |
-| H100 SXM (`mma12`) | Qwen3-30B-A3B | 2.11x | 0.84x (v0.28.0: 1.07x, below) | +35%, +5% | −37%, +126% |
+The lossless KV cache in vLLM (`kv`: `auto`, `lossless` or `off`; `GLYD_KV`)
+holds vLLM's KV cache in fewer bits, every key and value read back bit for
+bit, for models with head size 128 and full attention only. None of the 2026
+models measured so far (Qwen3.5, Qwen3.8, Gemma 4) is one: they keep vLLM's
+own cache, with a line in the log.
 
-2x RTX A6000: being re-measured after a benchmark fix (the benchmark's passes repeated prompts, so a large KV cache
-could serve some of them; each pass now uses new prompts. The [CHANGELOG](CHANGELOG.md) has the corrected rows).
-
-More requests at once on every GPU, and more a second on the L4, A10 and the A100 with Qwen3-14B; about the same on the
-A100 with Qwen3-8B, and fewer a second saturated on the GH200 and, with v0.27.0's plugin, with Qwen3-30B-A3B on an H100 SXM. On an 80 GB H100 SXM, where
-Qwen3-32B's bf16 weights leave room for 32,320 tokens of KV cache, Glyd
-served 1.56x bf16's requests a second saturated (`fraction` 1, a bench of
-its own: [docs](https://getglyd.com/docs/vllm/#a-fraction-of-the-layers)). At
-low load the first token comes 6-35% later. `exact` gives vLLM's bf16
-logits bit for bit, eager, or compiled in inductor's deterministic mode
-where the packed Linears have no biases.
-Options, exact mode, mixtures of experts, the checks against vLLM's bf16
-and every rate: [getglyd.com/docs/vllm](https://getglyd.com/docs/vllm/); logs in
-[benchmarks/gpu](benchmarks/gpu) (`l4-vllm-m5-2026-09-30` and
-`l4-vllm-m5-new-prompts-2026-10-03`, `vllm-m3-a10-2026-09-30`,
-`vllm-m3-a100-40gb-new-prompts-2026-10-03`, `vllm-m3-gh200-new-prompts-2026-10-03`,
-`vllm-m6-h100-new-prompts-2026-10-03`).
-
-#### The whole model, and mixtures of experts (v0.28.0)
-
-The embedding and the output layer are packed too. On an L4, v0.27.0 from PyPI against v0.28.0 with the same vLLM 0.30.0, alternated in one session: the weights and
-the KV cache as vLLM's log gives them with its own KV cache (`--max-model-len 4096`, 0.9 of the GPU's memory; a later start's), one user's tokens a second
-(1,024 tokens in, 256 out, three rounds) and the requests a second saturated with `kv` at its default (`auto`, lossless on an L4; v0.28.0 against v0.27.0, two rounds):
-
-| L4 | Weights GiB: bf16 | v0.27.0 | ⚡&nbsp;**v0.28.0** | KV cache tokens: bf16 | v0.27.0 | ⚡&nbsp;**v0.28.0** | One user, tokens/s: v0.28.0 against v0.27.0 | Requests/s saturated, v0.28.0 against v0.27.0 (two rounds) |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-8B | 15.27 | 11.38 | **10.38** (−32.0%) | 27,024 | 54,464 | **60,736** | **1.065x** | **1.095x and 1.095x** |
-| Llama-3.1-8B | 15.0 | 11.05 | **10.16** (−32.3%) | 32,592 | 64,368 | **70,112** | **1.050x** | **1.040x and 1.041x** |
-| Qwen3-4B | 7.56 | 5.48 | **5.16** (−31.7%) | 83,408 | 97,488 | **99,312** | **1.055x** | **1.031x and 1.037x** |
-
-A first start, on an empty compile cache, no longer logs a much smaller KV cache than a later one (Qwen3-8B: v0.27.0 38,912 tokens against 54,464, v0.28.0 60,736 on both). The faster steps of the smallest layout alone, with the embedding and the output layer left as vLLM runs them, give one user 1.042x
-v0.27.0's tokens a second on Qwen3-8B. `exact` is unchanged: vLLM's bf16 logits bit for bit. Logs: [benchmarks/gpu/vllm-v028-l4-2026-10-04](benchmarks/gpu/vllm-v028-l4-2026-10-04), and
-[benchmarks/gpu/vllm-full33-l4-2026-10-03](benchmarks/gpu/vllm-full33-l4-2026-10-03) (the same on an earlier tree), [l4x2-vllm-tp2-2026-10-04](benchmarks/gpu/l4x2-vllm-tp2-2026-10-04)
-(tensor parallel 2 over two L4s: every lookup and every product checked).
-
-Mixtures of experts, against vLLM's own bf16 path with its default (untuned) MoE settings (a tuned bf16 would be faster than that baseline: not measured); `vllm bench serve`,
-1,024 tokens in and 256 out, saturated, vLLM 0.30.0:
-
-| Requests/s | bf16 | ⚡&nbsp;**Glyd** | Glyd with the lossless KV cache |
-| :--- | ---: | ---: | ---: |
-| H100 SXM, Qwen3-30B-A3B | 12.32 | **13.13** (1.07x) | **17.10** (1.39x) |
-| A100 40 GB, Qwen3-16B-A3B | 4.12 | | **6.18** (1.50x) |
-
-Qwen3-16B-A3B is Qwen3-30B-A3B with half its experts (the 30B does not fit an A100 40 GB in bf16). The weights leave room for more requests at once: the first token comes after 0.56x and 0.50x the
-time on the H100 (0.53x on the A100) and each token takes 1.69x and 1.61x as long (2.04x). Prompt steps are where Glyd is behind (22 microseconds a prompt token against bf16's 15 on the H100). Logs:
-[benchmarks/gpu/h100-moe-v028-2026-10-03](benchmarks/gpu/h100-moe-v028-2026-10-03), [a100-moe-v028-2026-10-03](benchmarks/gpu/a100-moe-v028-2026-10-03).
-
-A newer model, Qwen3.8-27B (text only), on an H100 80GB HBM3 under vLLM 0.30.0: the weights take 38.77 GiB against bf16's 50.22 (−22.8%, the `mma12` layout this GPU takes by default) and
-the KV cache holds 204,117 tokens against 122,538 (1.67x); saturated, 5.05 requests a second against 4.72 (**1.07x**); at 1 request a second each token takes 0.92x as long. Its
-attention layers keep vLLM's own KV cache for now. Logs: [benchmarks/gpu/h100-qwen38-v028-2026-10-03](benchmarks/gpu/h100-qwen38-v028-2026-10-03).
-
-### The lossless KV cache in vLLM
-
-vLLM's KV cache held in fewer bits, every key and value read back bit for bit:
-1.25x to 1.30x vLLM's tokens in the same memory on five models, and decoding
-faster than with vLLM's own cache at every batch measured on an A100, an L4,
-an H100 and a GH200.
-
-```bash
-vllm serve Qwen/Qwen3-8B --quantization glyd                   # kv auto, the default: on for an A100, an L4, an H100, a GH200
-GLYD_KV=lossless vllm serve Qwen/Qwen3-8B --quantization glyd  # on any GPU it supports (or --additional-config '{"glyd": {"kv": "lossless"}}')
-GLYD_KV=off vllm serve Qwen/Qwen3-8B --quantization glyd       # vLLM's own cache
-GLYD_KV=auto glyd run Qwen/Qwen3-8B                            # glyd run keeps vLLM's own cache unless GLYD_KV is set
-```
-
-`auto` leaves vLLM's own cache on any other GPU, with a line in the log that
-says so (an L40S, an RTX 40, an H200 and an A10 are not measured yet),
-and where `exact` or `verify` is on; a window past 40,960 tokens keeps
-vLLM's cache too. A first start sets the cache up once for the model (on an L4,
-130 s for 8,192 tokens and 217 s for Qwen3-8B's whole 40,960-token window, kept
-in `~/.cache/glyd/kv`), which is why `glyd run`, one user's chat, keeps vLLM's
-cache unless `GLYD_KV` says otherwise; `glyd serve` and
-`vllm serve --quantization glyd` use `auto`.
-
-| Against vLLM's own cache, Qwen3-8B, default mode | KV cache | Decode tokens/s at the same batch | Requests/s, saturated (1,024 tokens in, 256 out) |
-| :--- | ---: | ---: | ---: |
-| L4 | 1.286x | 1.007x-1.053x | 1.23x |
-| A100 SXM4 40 GB | 1.299x | 1.018x-1.032x | 1.29x |
-| H100 SXM | 1.306x | 1.005x-1.197x | 1.05x |
-| GH200 | 1.305x | 1.003x-1.187x | 1.06x |
-
-On the L4 with Glyd's weights as well, it served 1.59x bf16's requests a second
-saturated (1.20 against 0.76) with 2.64x the KV tokens (71,248 against 27,024).
-On an H100 SXM with 8,192 tokens in and 256 out, saturated, it served 1.05x the
-requests a second and the first token came after 0.89x the time, but each
-generated token took 1.12x as long; on a GH200 the same run served 1.12x the
-requests a second, with the first token after 0.95x the time and each token
-0.97x as long. An H200 is not measured. Every value read back was the value
-written (0 differ in every run); a decode step's attention is not bit-equal to
-vLLM's, so greedy tokens can part from vLLM's after some tokens. Logs in
-[benchmarks/gpu](benchmarks/gpu):
-`l4-vllm-kv-step-2026-10-02`, `l4-vllm-kv-graphs-2026-10-01`,
-`a100-vllm-kv-step-2026-10-02`, `a100-vllm-kv-prefix-2026-10-02`,
-`h100-vllm-kv-2026-10-02`, `gh200-vllm-kv-2026-10-03`,
-`l4-vllm-kv-window-2026-10-02` and `l4-vllm-kv-wait-2026-10-02`.
+Measurements on models released before 2026 stay in [benchmarks/gpu](benchmarks/gpu) as records.
 
 ### Related work
 
@@ -275,37 +108,9 @@ combination below.
   (2025), and Cloudflare's [Unweight](https://research.cloudflare.com/papers/unweight-2026.pdf)
   (2026) for MLP weights.
 
-Where Glyd differs: 10.80 bits a weight (32.5% off; the others: about
-30%, or at the bound with an ANS decoder); the KV cache held compressed
-(31%); the same result every run; the model on disk, fine-tunes against
-their base and training checkpoints.
-
-Side by side on one GPU, an RTX 4080 SUPER (16 GB), with Qwen3-8B, whose
-16.38 GB of bf16 does not fit it ([benchmarks/gpu/head-to-head-rtx4080s-2026-09-26](benchmarks/gpu/head-to-head-rtx4080s-2026-09-26)):
-
-| Qwen3-8B, RTX 4080 SUPER | DFloat11 | ⚡&nbsp;**Glyd**, `mma` | Glyd, `mma12` |
-| :--- | ---: | ---: | ---: |
-| Weights in GPU memory | 11.16 GB | **11.15 GB** | 12.27 GB |
-| Tokens/s at 1 / 8 / 32 / 64 sequences | 13.8 / 104.7 / 387.5 / 746.2 | **47.2 / 360.2 / 1268.6** / 1897.2 | 45.9 / 350.9 / 1259.9 / **2150.8** |
-| GPU time a token at 1 / 8 / 32 / 64 sequences | 71.4 / 74.9 / 79.9 / 81.4 ms | **19.8 / 20.6 / 22.9** / 30.6 ms | 20.4 / 21.3 / 23.2 / **26.6** ms |
-
-DFloat11 decodes each transformer block's weights to bf16 before the
-block runs (47 ms of every token here). ZipServ ships its product as a
-kernel (end to end it runs inside its own vLLM), so product against
-product, on layer 18's matrices, timed as ZipServ times itself (the L2
-cache flushed before every call), ZipServ at its best split of K; Glyd's
-`mma` at 1-32 tokens, `mma12` (12.04 bits) at 64:
-
-| Qwen3-8B, layer 18, us | Bits a weight, ZipServ / Glyd | 1 token: cuBLAS / ZipServ / Glyd | 16 tokens | 32 tokens | 64 tokens |
-| :--- | ---: | ---: | ---: | ---: | ---: |
-| q_proj, o_proj (4096 x 4096) | 11.35 / **10.81** | 73 / 57 / **56** | 73 / **57** / 58 | 74 / **58** / 62 | 77 / **69** / 73 |
-| k_proj (1024 x 4096) | 11.43 / **10.83** | 23 / 22 / **19** | 27 / 23 / **21** | 26 / **23** / 24 | 28 / **25** / 30 |
-| gate_proj (12288 x 4096) | 11.35 / **10.76** | 175 / 151 / **144** | 204 / 152 / **148** | 235 / 155 / **153** | 225 / **162** / 172 |
-| down_proj (4096 x 12288) | 11.35 / **10.75** | 176 / 153 / **147** | 208 / 154 / **150** | 228 / 155 / **153** | 214 / 187 / **181** |
-
-So: DFloat11's size at 2.9-3.4x its speed. Against ZipServ, 5% fewer
-bytes; at 1 to 16 tokens as fast or faster (within 2%), at 32 and 64
-tokens behind it on most matrices, by up to 20%.
+Where Glyd differs: the weights and the KV cache both held compressed on the
+GPU; the same result every run; the model on disk, fine-tunes against their
+base and training checkpoints.
 
 ---
 
@@ -361,7 +166,7 @@ zstd -3 or LZ4 still win on write cost.
 - 📦 **Packs (`--pack`)**: many small objects as one record-mode stream with an index; 2–4× fewer bytes than zstd + dictionary per object, any one object read back in a millisecond.
 - 🧩 **Shape dictionaries (`--shape`)**: record mode for a single small object. Trained on a sample; a 1–4 KB event or log object stores 1.1–1.9× less than with a zstd dictionary.
 - 🧊 **Cold level (`--cold`)**: context mixing for what is stored for years and read rarely. 1.5–2.6× fewer bytes than zstd -19 on logs, dumps, JSON and text — the zpaq -m5 class at 3–4× its speed — at 1.2–1.5 MB/s per core each way.
-- 🧠 **Model weights**: safetensors and GGUF files coded tensor by tensor by their element types (bf16, f16, fp8, ggml's quantised blocks): 22 files cut from 2026 models are 31.8% smaller, zstd -19 24.8%, xz -9 26.7% ([benchmarks/weights/model-files-2026-10-05](benchmarks/weights/model-files-2026-10-05)); earlier, Pythia-410M 13% under zstd -19 at 26× its write speed, Qwen2.5-0.5B 12% under. A checkpoint against the one before it (`--base`) stores in 612 MB where `zstd -19 --patch-from` stores 805. PyTorch training checkpoints with optimizer state: 83% of their size alone, 77% against the one before (zstd -19: 92%). On the GPU ([docs](https://getglyd.com/docs/gpu/)) the weights stay compressed in memory, bit for bit: a 7B model in 10.6 GB instead of 15.3 (its matrices 32.5% smaller), generating 1.25–1.32× faster than bf16 from 1 to 32 sequences at once (1.04× at 64), prompts up to 128 tokens as fast or faster and longer ones within 5–10%.
+- 🧠 **Model weights**: safetensors and GGUF files coded tensor by tensor by their element types (bf16, f16, fp8, ggml's quantised blocks): 22 files cut from 2026 models are 31.8% smaller, zstd -19 24.8%, xz -9 26.7% ([benchmarks/weights/model-files-2026-10-05](benchmarks/weights/model-files-2026-10-05)). A checkpoint against the one before it (`--base`) stores in 612 MB where `zstd -19 --patch-from` stores 805. PyTorch training checkpoints with optimizer state: 83% of their size alone, 77% against the one before (zstd -19: 92%). On the GPU ([docs](https://getglyd.com/docs/gpu/)) the weights stay compressed in memory, bit for bit: Qwen3.5-9B under vLLM on an RTX 4090 in 12.68 GiB instead of 17.66 ([log](benchmarks/gpu/rtx4090-5090-qwen35-9b-v029-2026-10-06)).
 - 🔁 **Base mode (`--base`)**: a new version against the old one, its content found wherever it moved. Dumps, images and source trees at 1–5% of their plain size; 1.1–2.1× less than `zstd --patch-from` at the fast tier, at 1.8–3× its speed; 15 kernel releases in 228 MB instead of 3 GB.
 - 🔭 **128 MB long-distance matcher** (`--max --long`, `--ultra`, the store): JSON events 22% smaller than zstd -3, 10% smaller than zstd -19.
 - 🚀 **Fastest reads at every ratio**: 8-way interleaved entropy coding and copy-only loops, units that decode one per core.

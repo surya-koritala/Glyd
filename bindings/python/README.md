@@ -198,7 +198,7 @@ repo id, from the files for a directory.
 `pip install "glyd[vllm]"` in a virtual environment) start vLLM with the
 plugin and the settings worked out from the GPU: memory share, context,
 the tool-call and reasoning parsers, compiled wherever the chat keeps 8,192 tokens of context
-(Qwen3.5-9B: 77.3 tokens a second on an RTX 4090 against 26.6 eager; CHANGELOG v0.29.0); `glyd doctor` checks
+(eager only where that gives a longer chat); `glyd doctor` checks
 the machine. [The docs](https://getglyd.com/docs/vllm/)
 have the steps. By hand, `pip install "glyd[vllm]"` installs vLLM 0.30 and
 the plugin, which vLLM finds by itself (the package's `vllm.general_plugins`
@@ -208,9 +208,10 @@ entry point):
     vllm serve ./SAVE --quantization glyd                # a glyd save, as saved (not yet of a 2026 model)
     vllm serve Qwen/Qwen3.5-9B --quantization glyd --enforce-eager --additional-config '{"glyd": {"exact": true}}'
 
-vLLM's defaults (0.92 of the memory, the context as long as the model's)
-need not fit the card: Qwen3.5-9B in bf16 runs out of memory on an RTX 4090 (24 GB)
-with them, and `glyd run` runs it there packed with a 189,440-token context.
+vLLM's own settings need not fit the card: Qwen3.5-9B in bf16 ran out of memory at start
+on an RTX 4090 (24 GB), even with the context capped at 4,096 tokens, and Glyd's
+settings run it there packed with a 189,440-token context
+([log](https://github.com/surya-koritala/Glyd/tree/main/benchmarks/gpu/rtx4090-5090-qwen35-9b-v029-2026-10-06)).
 `glyd run` works both out from the card, and
 [the docs](https://getglyd.com/docs/vllm/#advanced-vllm-serve-by-hand)
 have the flags by hand.
@@ -229,8 +230,8 @@ ones, eager, or compiled in inductor's deterministic mode where the
 packed Linears have no biases.
 `kv` (`auto`, the default, `lossless` or `off`; `GLYD_KV`) holds vLLM's KV cache
 in fewer bits, every value read back exactly, for models with head size 128 and
-full attention only: Qwen3.5, Qwen3.8 and Gemma 4 keep vLLM's cache, with a line in the
-log. `auto` holds it on an A100, an L4, an H100 and a GH200 and
+full attention only: none of the 2026 models measured so far (Qwen3.5, Qwen3.8, Gemma 4)
+is one, so they keep vLLM's cache, with a line in the log. `auto` holds it on an A100, an L4, an H100 and a GH200 and
 leaves vLLM's own cache on any other GPU, with a line in the log; `glyd run` keeps
 vLLM's cache unless `GLYD_KV` is set, because the first start sets the cache up
 for the model.
