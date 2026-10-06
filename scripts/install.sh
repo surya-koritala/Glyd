@@ -241,7 +241,7 @@ main() {
 
   say "Checking this machine (glyd doctor)"
   if "$bin/glyd" doctor; then
-    [ "$stack" != yes ] || say "Next: glyd run Qwen/Qwen3-8B"
+    [ "$stack" != yes ] || say "Next: glyd run Qwen/Qwen3.5-9B"
   else
     say "Fix the lines marked NO above, then run: glyd doctor"
   fi

@@ -1,7 +1,7 @@
 """The `glyd` command.
 
-    glyd run Qwen/Qwen3-8B          # download, start and chat: the GPU half (the glyd-gpu package)
-    glyd serve Qwen/Qwen3-8B        # the same, left up as an OpenAI API
+    glyd run Qwen/Qwen3.5-9B        # download, start and chat: the GPU half (the glyd-gpu package)
+    glyd serve Qwen/Qwen3.5-9B      # the same, left up as an OpenAI API
     glyd doctor                     # what this machine has, and what fits
     glyd login                      # a Hugging Face token, for gated models
     glyd pack MODEL OUT             # a model's weights packed on the GPU and saved; glyd verify PATH checks a save
@@ -25,9 +25,9 @@ Run a model on your NVIDIA GPU with its weights packed by Glyd (about a third le
   glyd run MODEL              download, start and chat, in the terminal and at http://localhost:8000
   glyd serve MODEL            the same, left up as an OpenAI API for other apps
   glyd doctor                 check this machine: GPU, driver, compilers, which models fit
-  glyd login                  save a Hugging Face token (for gated models such as Llama)
+  glyd login                  save a Hugging Face token (for gated models)
   glyd pack MODEL OUT         MODEL's weights packed on the GPU, each pack checked, saved in OUT; glyd verify PATH checks a save
-  MODEL is a Hugging Face name (Qwen/Qwen3-8B) or a folder. glyd run --help shows the options;
+  MODEL is a Hugging Face name (Qwen/Qwen3.5-9B) or a folder. glyd run --help shows the options;
   any vLLM flag can follow a lone --:  glyd run MODEL -- --max-model-len 4096
 
 Compress files and object-storage data:

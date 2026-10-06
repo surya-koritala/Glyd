@@ -11,7 +11,7 @@ use glyd::{compress, decompress, compress_parallel, decompress_parallel};
 
 /// Simulates a standard PagedAttention Block (vLLM style):
 /// - 16 tokens per block
-/// - 32 KV attention heads (Llama-3 / Mistral architecture)
+/// - 32 KV attention heads
 /// - 128 head dimension
 /// - 2 tensors (Key and Value) in FP16 (2 bytes)
 /// Total Block Size: 2 * 32 * 16 * 128 * 2 = 262,144 bytes (256 KB)
