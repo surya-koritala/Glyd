@@ -6,6 +6,18 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.29.2 — 2026-10-08
+
+- `glyd run MODEL --lossy`: Qwen3.5, Qwen3.6 and Qwen3.8 dense models on Glyd's own engine with every weight rounded (about 6.8 bits per
+  weight; not lossless), one user at a time, in the terminal (one answer with `--prompt`, or a chat). It downloads the model's bf16
+  checkpoint and packs it as it loads. vLLM has no such path: where the engine does not run the model (the GPU, its memory, the driver),
+  `--lossy` says why and stops, and nothing runs on vLLM. Measured on one L40 with Qwen/Qwen3.8-27B, a prompt of 1,024 tokens and 256 more:
+  21.2 GiB of weights and 25.8 tokens a second, against 28.0 GiB and 25.4 tokens a second for vLLM 0.30.0 with Qwen/Qwen3.8-27B-FP8
+  (first token 526 ms against 504 ms); started in 67 s with the checkpoint on disk; 32,768 tokens of context. The same values scored a
+  78.68% mean on 13,243 questions of six suites (ARC-Challenge, HellaSwag, WinoGrande, PIQA, BoolQ, MMLU) against 78.54% for bf16 and
+  78.55% for the FP8 checkpoint, a statistically inconclusive difference.
+- glyd-gpu 0.29.2 loads and saves these weights (`glyd-v6` checkpoints).
+
 ## v0.29.1 — 2026-10-06
 
 - Mixtures of experts whose experts clamp their activation (GLM-5.3-Flash-BF16, Hy4-preview, K-EXAONE-2.0, Ling-3.0-flash): v0.29.0 ran those
