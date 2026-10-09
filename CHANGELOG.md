@@ -6,6 +6,20 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.29.4 — 2026-10-09
+
+- Levels: `glyd run MODEL:LEVEL` sets how many bits the weights keep on the GPU. `:penguin` is lossless, the default; `:kestrel` is about
+  6.5 bits per weight (v0.29.3's `--lossy`, which still works); `:swift` is new, about 5.5 bits per weight. Kestrel and swift are not
+  lossless and run on Glyd's engine only (Qwen3.5, Qwen3.6 and Qwen3.8 dense models); a level that is not built yet is refused with
+  the list of those that are. Qwen/Qwen3.8-27B, a prompt of 1,024 tokens and 256 more, one user, one A100 80GB:
+  - `:swift`: 17.4 GiB of weights, 47.5 tokens a second, 19.5 GiB of GPU memory in use.
+  - `:kestrel`: 20.5 GiB of weights, 46.3 tokens a second, 22.6 GiB in use.
+- `:kestrel` (and `--lossy`) is closer to bf16: with Qwen/Qwen3.8-27B the next token's distribution differs from bf16's by a KL
+  divergence of 0.00477 on 253,952 positions of WikiText-2 (v0.29.3: 0.00513; Qwen/Qwen3.8-27B-FP8: 0.00465); `:swift` 0.01393.
+- Starting at a lossy level takes longer, as the weights are fitted more closely while they load: on the A100, 127 s for kestrel and
+  157 s for swift (v0.29.3: about 50 s).
+- `glyd --help` and the READMEs show the levels.
+
 ## v0.29.3 — 2026-10-09
 
 - `glyd run MODEL --lossy` keeps about 6.5 bits per weight (6.8 in v0.29.2), still not lossless, and is closer to bf16: with
