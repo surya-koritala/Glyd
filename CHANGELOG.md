@@ -6,6 +6,18 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.29.3 — 2026-10-09
+
+- `glyd run MODEL --lossy` keeps about 6.5 bits per weight (6.8 in v0.29.2), still not lossless, and is closer to bf16: with
+  Qwen/Qwen3.8-27B, the next token's distribution differs from bf16's by a KL divergence of 0.00513 on 253,952 positions of WikiText-2,
+  against 0.00831 for v0.29.2 and 0.00465 for Qwen/Qwen3.8-27B-FP8. It is faster too. Qwen/Qwen3.8-27B, a prompt of 1,024 tokens and
+  256 more, one user:
+  - one L40: 31.3 tokens a second (v0.29.2: 25.8) with 20.5 GiB of weights, first token 481 ms; vLLM 0.30.0 with the FP8 checkpoint
+    25.4 tokens a second with 28.0 GiB, first token 504 ms (measured on another L40).
+  - one A100 80GB: 45.0 tokens a second (v0.29.2: 18.5), first token 438 ms; vLLM 0.30.0 with the FP8 checkpoint 47.5 tokens a second,
+    first token 380 ms, on the same GPU.
+  - Loading packs the weights faster: 52 s on the L40 (v0.29.2: 78 s).
+
 ## v0.29.2 — 2026-10-08
 
 - `glyd run MODEL --lossy`: Qwen3.5, Qwen3.6 and Qwen3.8 dense models on Glyd's own engine with every weight rounded (about 6.8 bits per
