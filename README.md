@@ -16,6 +16,7 @@ more requests on the same one.
 ```bash
 curl -LsSf https://getglyd.com/install.sh | sh
 glyd run Qwen/Qwen3.5-9B                       # settings for your GPU, then a chat in the terminal
+glyd run Qwen/Qwen3.8-27B:swift                # fewer bits, not lossless: :kestrel 6.5 bits per weight, :swift 5.5
 ```
 
 With vLLM, or in Python:

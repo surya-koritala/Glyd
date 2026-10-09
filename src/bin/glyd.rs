@@ -7,9 +7,10 @@ fn print_usage() {
     eprintln!(r#"Glyd: compression for cloud storage
 Usage: glyd [OPTIONS] [INPUT] [-o OUTPUT]
        (the store, which compresses across objects, is the glyd-store command)
-       glyd run MODEL | serve MODEL | doctor | login | pack MODEL OUT | verify PATH   (the local chat, and a model's
-       weights packed for the GPU, on Linux with an NVIDIA GPU: the Python tool's commands, which this program
-       passes to it; a file named run is ./run)
+       glyd run MODEL[:LEVEL] | serve MODEL | doctor | login | pack MODEL OUT | verify PATH   (the local chat, and a
+       model's weights packed for the GPU, on Linux with an NVIDIA GPU: the Python tool's commands, which this program
+       passes to it; a file named run is ./run. LEVEL: penguin, lossless, the default; kestrel, 6.5 bits per weight;
+       swift, 5.5)
 
 Options:
     -c, --compress         Compress input (default if output is .glyd)
