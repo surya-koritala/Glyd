@@ -4,6 +4,7 @@ Lossless AI compression: 33% less GPU memory, bit for bit.
 
     curl -LsSf https://getglyd.com/install.sh | sh   # a model on your GPU in two commands: Linux, an NVIDIA GPU, driver 580 or newer
     glyd run Qwen/Qwen3.5-9B                         # downloads it, starts it packed, and chats (glyd serve, glyd doctor)
+    glyd run Qwen/Qwen3.8-27B:swift                  # fewer bits, not lossless: :kestrel 6.5 bits per weight, :swift 5.5
 
     pip install "glyd[gpu]"   # models on the GPU: Linux x86_64 / aarch64, an NVIDIA GPU (Ampere or later)
     pip install "glyd[vllm]"  # and serving them: vllm serve MODEL --quantization glyd (vLLM 0.30)
@@ -79,7 +80,7 @@ shard.
 - `device`: the GPU. `device_map="auto"` (with accelerate) or a device map
   in `hf_kwargs` spreads the layers over several.
 - `layout`: `"auto"` picks for the GPU (`mma` on Ada, for a mixture of experts on an A10 too, and wherever only it
-  fits; `mma12` on A10, A100 and H100); `"mma"`, the most memory off (10.8 bits a weight); `"mma12"`, 12.0 bits a
+  fits; `mma12` on A10, A100 and H100); `"mma"`, the most memory off (10.8 bits per weight); `"mma12"`, 12.0 bits a
   weight, the faster one on an A10, A100 and H100. Embeddings are held compressed too, their rows rebuilt as they
   are looked up.
 - `exact`: the logits are exactly bf16's (every product multiplies as `nn.Linear` does). By default the

@@ -23,6 +23,8 @@ HELP = """glyd {version}
 
 Run a model on your NVIDIA GPU with its weights packed by Glyd (about a third less GPU memory, the same bits):
   glyd run MODEL              download, start and chat, in the terminal and at http://localhost:8000
+  glyd run MODEL:LEVEL        the same in fewer bits, not lossless: kestrel (6.5 bits per weight; --lossy is the same) or
+                              swift (5.5); penguin is lossless, the default. Qwen3.8-27B: 20.5 GiB of weights at kestrel, 17.4 at swift
   glyd serve MODEL            the same, left up as an OpenAI API for other apps
   glyd doctor                 check this machine: GPU, driver, compilers, which models fit
   glyd login                  save a Hugging Face token (for gated models)
