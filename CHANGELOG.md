@@ -6,6 +6,25 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.30.0 — 2026-10-10
+
+- Download and run: `glyd run MODEL:swift` (or `:kestrel`) downloads a ready-made checkpoint from Hugging Face and starts from it, instead of
+  fitting the weights on your computer first. Ready now: Qwen3.8-27B, Qwen3.6-27B and Qwen3.5-27B, 9B, 4B, 2B and 0.8B, each at swift and
+  kestrel (`glyd/NAME-LEVEL`), each with a card of what was measured: size, speed on an RTX 4090, an RTX A6000 and an L40S (and a 16 GB card
+  for the 9B), and how close it stays to bf16; the 9B and Qwen3.8-27B cards also have GSM8K beside bf16. Other models are fitted once and
+  kept.
+- Nemotron 3 Super (120B) at `:hummingbird`, about 3 bits per weight for its experts: `glyd run nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16:hummingbird`
+  downloads `glyd/nemotron-3-hummingbird` (48.7 GB). When the GPU cannot hold the whole model, Glyd keeps the most-used parts on the GPU
+  and the rest in the computer's memory, and the CPU does the work for the parts that are not on the GPU; on a computer with less memory
+  than the model, the rest is read from the SSD as needed (`--host-memory GIB` sets how much memory it may use). One user, measured:
+  - RTX 4090: 43.6 tokens a second; held to a 16 GB card's memory: 35.4; RTX 3090: 37.0.
+  - With 20 GiB of the computer's memory for it (a 32 GB PC) and a fast NVMe SSD: 17.7 on the RTX 4090, 13.1 held to 16 GB.
+  - GSM8K 97.0% (300 questions), MMLU-Pro 76.6% (222), not thinking.
+- `glyd serve`: tool calls from Qwen3.5, Qwen3.6, Qwen3.8 and Nemotron 3 (which write them as XML) now come back as `tool_calls`, streamed
+  or not, as vLLM returns them; before, they came back as plain text.
+- Sampling (temperature above 0) on the levels picks the next token on the GPU instead of copying every score to the CPU at each step.
+- The levels are penguin (lossless, the default), kestrel, swift and hummingbird; `:sparrow` is no longer a level.
+
 ## v0.29.4 — 2026-10-09
 
 - Levels: `glyd run MODEL:LEVEL` sets how many bits the weights keep on the GPU. `:penguin` is lossless, the default; `:kestrel` is about
