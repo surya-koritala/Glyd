@@ -6,6 +6,11 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## Unreleased
+
+- `glyd run`, `serve`, `pack` and `verify` on a computer other than Linux say they run on Linux with an NVIDIA GPU, instead of
+  suggesting `pip install "glyd[gpu]"`, which finds no glyd-gpu build there.
+
 ## v0.31.0 — 2026-10-15
 
 - Gemma 4 31B and 12B at `:wren`: `glyd run google/gemma-4-31B-it:wren` (or `glyd run glyd/gemma-4-31B-wren`) downloads

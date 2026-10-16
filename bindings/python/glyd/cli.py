@@ -70,6 +70,9 @@ def main(argv=None):
         try:
             from glyd_gpu import _cli  # (the GPU half is the glyd-gpu package, imported where it is asked for)
         except ImportError as e:
+            if not sys.platform.startswith("linux"):  # (glyd-gpu is built for Linux only: pip would find no glyd-gpu for this computer)
+                sys.stderr.write(f"glyd {args[0]}: runs on Linux with an NVIDIA GPU; glyd-gpu, its GPU half, has no build for {sys.platform}\n")
+                return 1
             sys.stderr.write(f'glyd {args[0]}: the GPU half of glyd is the glyd-gpu package, which is not installed here: pip install "glyd[gpu]" ({e})\n')
             return 1
         return _cli.main(args, prog="glyd")
