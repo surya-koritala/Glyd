@@ -57,10 +57,14 @@ except AttributeError:
     pass
 from glyd import cli
 import io
-err, sys.stderr = sys.stderr, io.StringIO()
-code = cli.main(["pack", "m", "out"])
-msg, sys.stderr = sys.stderr.getvalue(), err
-assert code == 1 and 'pip install "glyd[gpu]"' in msg, (code, msg)
+platform = sys.platform
+for plat, says in (("linux", 'pip install "glyd[gpu]"'), ("darwin", "runs on Linux with an NVIDIA GPU")):
+    sys.platform = plat  # (Linux: install glyd-gpu; elsewhere there is no glyd-gpu to install)
+    err, sys.stderr = sys.stderr, io.StringIO()
+    code = cli.main(["verify", "m"])
+    msg, sys.stderr = sys.stderr.getvalue(), err
+    assert code == 1 and says in msg, (plat, code, msg)
+sys.platform = platform
 print("ok")
 ''')
     assert out == "ok", out
