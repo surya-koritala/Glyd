@@ -6,6 +6,21 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.31.0 — 2026-10-15
+
+- Gemma 4 31B and 12B at `:wren`: `glyd run google/gemma-4-31B-it:wren` (or `glyd run glyd/gemma-4-31B-wren`) downloads
+  `glyd/gemma-4-31B-wren` (17.4 GB, plus Google's 1.0 GB draft model); the 12B is `glyd/gemma-4-12B-wren` (6.8 GB + 0.85 GB). They are
+  made from Google's QAT checkpoints and keep those weights bit for bit, at 4.5 bits per weight. Wren on other models stays a preview.
+- Drafting with Google's Gemma 4 draft models: the small model guesses up to 8 tokens and the big one checks them in one pass. Greedy
+  output is the same token for token as without it; sampled output keeps the model's probabilities. `--no-draft` turns it off.
+  Measured, one user, greedy:
+  - RTX 4090, 31B: 46 tokens a second plain, 78-80 with the draft model on chat prompts (up to 176 on predictable text); a 30K-token
+    prompt read in 20 s; 21.8 of 24.6 GB in use at 32K context. GSM8K 72/75, MMLU-Pro 70/75.
+  - RTX 4080 SUPER, 12B: 82.5 plain, 109 with the draft model on chat prompts (232 on predictable text); a 30K-token prompt in 12.9 s.
+    GSM8K 72/75, MMLU-Pro 66/75.
+- `glyd verify MODEL` checks every tensor of a Glyd model against the sha256 recorded when it was made, and says whether the weights
+  are the source's bit for bit (penguin, and wren made from a QAT checkpoint).
+
 ## v0.30.0 — 2026-10-10
 
 - Download and run: `glyd run MODEL:swift` (or `:kestrel`) downloads a ready-made checkpoint from Hugging Face and starts from it, instead of
