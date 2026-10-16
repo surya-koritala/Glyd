@@ -6,8 +6,14 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## Unreleased
+## v0.31.1 — 2026-10-16
 
+- `glyd run google/gemma-4-31B-it:wren` (and `google/gemma-4-12B-it:wren`) runs the wren repo on Glyd's engine; 0.31.0 refused it
+  (":wren is not built yet"). `glyd run glyd/gemma-4-31B-wren` works as before.
+- `glyd serve` runs Gemma 4 on Glyd's engine. 0.31.0 handed it to vLLM, which has no route for these files.
+- Downloads from Hugging Face go on over IPv4 when a request over IPv6 fails or is reset, and stay on IPv4 for the run;
+  `GLYD_IPV4=1` uses IPv4 from the start.
+- `/health` answers 503 (`{"status":"loading"}`) while the Qwen3.8-Flash-Next server is still loading its model, and 200 once it can serve.
 - `glyd run`, `serve`, `pack` and `verify` on a computer other than Linux say they run on Linux with an NVIDIA GPU, instead of
   suggesting `pip install "glyd[gpu]"`, which finds no glyd-gpu build there.
 
