@@ -13,7 +13,7 @@ every earlier format.
 
 ## v0.31.0 — 2026-10-15
 
-- Gemma 4 31B and 12B at `:wren`: `glyd run google/gemma-4-31B-it:wren` (or `glyd run glyd/gemma-4-31B-wren`) downloads
+- Gemma 4 31B and 12B at `:wren`: `glyd run glyd/gemma-4-31B-wren` downloads
   `glyd/gemma-4-31B-wren` (17.4 GB, plus Google's 1.0 GB draft model); the 12B is `glyd/gemma-4-12B-wren` (6.8 GB + 0.85 GB). They are
   made from Google's QAT checkpoints and keep those weights bit for bit, at 4.5 bits per weight. Wren on other models stays a preview.
 - Drafting with Google's Gemma 4 draft models: the small model guesses up to 8 tokens and the big one checks them in one pass. Greedy
