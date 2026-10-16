@@ -235,7 +235,9 @@ jobs:
           # glyd-gpu is not installed here: glyd run says so, and what to install, and does not start
           out=$("$bindir/glyd" run Qwen/Qwen3-8B 2>&1) && { echo "glyd run succeeded without glyd-gpu"; exit 1; } || true
           echo "$out" | head -4
-          echo "$out" | grep -q 'pip install "glyd\[gpu\]"'
+          # (on Linux it names glyd[gpu]; elsewhere glyd-gpu has no build, and it says glyd runs on Linux with an NVIDIA GPU)
+          if [ "$(uname)" = Linux ]; then says='pip install "glyd\[gpu\]"'; else says='runs on Linux with an NVIDIA GPU'; fi
+          echo "$out" | grep -q "$says"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: tarballs-${{ matrix.name }}
