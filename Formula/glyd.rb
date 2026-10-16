@@ -6,7 +6,7 @@
 class Glyd < Formula
   desc "Compression for object storage: record mode, packs, a cross-object store"
   homepage "https://getglyd.com"
-  version "0.31.0"
+  version "0.31.1"
   # BUSL-1.1 from v0.29.0, the glyd and glyd-store programs both (v0.28.0 and earlier: glyd BSD-3-Clause or GPL-2.0, glyd-store BUSL-1.1).
   license "BUSL-1.1"
 
@@ -17,23 +17,23 @@ class Glyd < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.31.0/glyd-v0.31.0-macos-arm64.tar.gz"
-      sha256 "6dec17e80165dde58ec0fdd3ef2ee9bce84d47d48fa7eb45c4598aa5a7a4446e"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.31.1/glyd-v0.31.1-macos-arm64.tar.gz"
+      sha256 "19f26e50d68ff9bb4f74278e2d495e3df9df2c7a1a9f3a881f06d96ff0fa0368"
     end
     on_intel do
-      url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.31.0.tar.gz"
-      sha256 "f3b4b6ed18bbffb5bdf2d85c10917ac9daf975bbf763bc1a6312cced8f0b53e5"
+      url "https://github.com/surya-koritala/Glyd/archive/refs/tags/v0.31.1.tar.gz"
+      sha256 "46b4b34b9a41d9eaddc0f35e3e4177f9d468b5df2681ca92749520c8707cf878"
       depends_on "rust" => :build
     end
   end
   on_linux do
     on_intel do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.31.0/glyd-v0.31.0-linux-x86_64.tar.gz"
-      sha256 "280e31b463163d431b2db33e50b80f4e2161b4fa088ff66835bec9ffbe107fb5"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.31.1/glyd-v0.31.1-linux-x86_64.tar.gz"
+      sha256 "f8cac806444e2e900635296f02c6a15fc37cc6b4c255c9ce1b09a1541c7f2023"
     end
     on_arm do
-      url "https://github.com/surya-koritala/Glyd/releases/download/v0.31.0/glyd-v0.31.0-linux-aarch64.tar.gz"
-      sha256 "c5bd8ea24ae51746e89ce52a4016ff0a7b134a9651a7ee21c5f877bf8c3a766d"
+      url "https://github.com/surya-koritala/Glyd/releases/download/v0.31.1/glyd-v0.31.1-linux-aarch64.tar.gz"
+      sha256 "a2b74e1d72046dbea429676ce8b19b8430293e3fa073fb0b0ca8832f1911e2cc"
     end
   end
 
