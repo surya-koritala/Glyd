@@ -6,6 +6,20 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.32.0 — 2026-10-17
+
+- Gemma 4 12B and 31B at `:penguin`, lossless: `glyd run glyd/gemma-4-12B-penguin` downloads `glyd/gemma-4-12B-penguin` (16.1 GB, plus
+  Google's 0.88 GB draft model); the 31B is `glyd/gemma-4-31B-penguin` (SIZE31 GB + 0.97 GB). Every weight is Google's bf16 weight, bit for
+  bit (`glyd verify` checks it), at about 10.8 bits per weight: the 12B takes 15.0 GiB on the GPU in place of 22.2 GiB and runs on a 24 GB
+  card, the 31B 38.4 GiB in place of 57.2 GiB and runs on a 48 GB card. Measured, one user, greedy, with the draft model (without it):
+  - RTX 4090, 12B: 89.8 tokens a second in chat (50.8); a 28K-token prompt read in 7.6 s.
+  - RTX A6000 48 GB, 31B: 34.3 in chat (13.3); a 24K-token prompt read in 35.5 s. H100 PCIe, 31B: 61.8 (30.0); 23.0 s.
+  - GSM8K 72/75 and MMLU-Pro 67/75, both sizes. KLD against transformers' float32 run (wikitext-2, 32 x 512), 12B: 0.170, where
+    transformers' own bf16 runs are at 0.132 and 0.143.
+- `glyd run google/gemma-4-12B-it` (and 31B), with no level, runs penguin on Glyd's engine where the GPU has room and downloads the penguin
+  repo; before, the engine's check said it runs Qwen3 models only and handed Gemma 4 to vLLM.
+- `glyd serve`: a request that fails has its reason in the server's log, not only in the reply to the client.
+
 ## v0.31.1 — 2026-10-16
 
 - `glyd run google/gemma-4-31B-it:wren` (and `google/gemma-4-12B-it:wren`) runs the wren repo on Glyd's engine; 0.31.0 refused it
