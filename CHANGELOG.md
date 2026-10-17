@@ -6,6 +6,15 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
+## v0.32.1 (Unreleased)
+
+- `glyd fetch MODEL` downloads a model (or `MODEL:LEVEL`'s pre-packed repo) without running it; the pip-installed `glyd` sent it to
+  the compression program. `glyd fetch glyd/gemma-4-12B-wren` asked the Hub for `glyd/gemma-4-12B-wren-wren`; a repo's own name is now
+  fetched as it is.
+- `glyd verify glyd/gemma-4-12B-penguin` downloads the repo first when it is not on this computer (it said to download it with `hf download`).
+- `glyd run` of a Gemma 4 or lossy-level `glyd/` repo on a GPU without room for it says so and stops; it handed the repo to vLLM, which
+  cannot read those files, and printed a second, different estimate.
+
 ## v0.32.0 — 2026-10-17
 
 - Gemma 4 12B and 31B at `:penguin`, lossless: `glyd run glyd/gemma-4-12B-penguin` downloads `glyd/gemma-4-12B-penguin` (16.1 GB, plus
