@@ -6,7 +6,7 @@ Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
 
-## v0.32.1 (Unreleased)
+## v0.32.1 — 2026-10-17
 
 - `glyd fetch MODEL` downloads a model (or `MODEL:LEVEL`'s pre-packed repo) without running it; the pip-installed `glyd` sent it to
   the compression program. `glyd fetch glyd/gemma-4-12B-wren` asked the Hub for `glyd/gemma-4-12B-wren-wren`; a repo's own name is now
@@ -14,6 +14,9 @@ every earlier format.
 - `glyd verify glyd/gemma-4-12B-penguin` downloads the repo first when it is not on this computer (it said to download it with `hf download`).
 - `glyd run` of a Gemma 4 or lossy-level `glyd/` repo on a GPU without room for it says so and stops; it handed the repo to vLLM, which
   cannot read those files, and printed a second, different estimate.
+- Gemma 4 writes faster on Glyd's engine. RTX 4080 SUPER, Gemma 4 12B at wren, one user, without the draft model: 81.2 to 83.3 tokens a
+  second in chat, 74.7 to 77.3 after a 4K-token prompt, 59.5 to 60.9 after a 30K-token prompt; on RTX 40-series cards a step is a further
+  1.3% shorter (12.12 to 11.96 ms).
 
 ## v0.32.0 — 2026-10-17
 
