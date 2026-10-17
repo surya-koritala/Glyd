@@ -14,9 +14,9 @@ every earlier format.
 - `glyd verify glyd/gemma-4-12B-penguin` downloads the repo first when it is not on this computer (it said to download it with `hf download`).
 - `glyd run` of a Gemma 4 or lossy-level `glyd/` repo on a GPU without room for it says so and stops; it handed the repo to vLLM, which
   cannot read those files, and printed a second, different estimate.
-- Gemma 4 writes faster on Glyd's engine. RTX 4080 SUPER, Gemma 4 12B at wren, one user, without the draft model: 81.2 to 83.3 tokens a
-  second in chat, 74.7 to 77.3 after a 4K-token prompt, 59.5 to 60.9 after a 30K-token prompt; on RTX 40-series cards a step is a further
-  1.3% shorter (12.12 to 11.96 ms).
+- Gemma 4 writes faster on Glyd's engine (wren and drafting; the step's attention, and the products of a step and of a drafts' check read
+  closer to the card's memory speed). RTX 4080 SUPER, Gemma 4 12B at wren, one user, without the draft model: 81.2 to 88.9 tokens a second
+  in chat, 74.7 to 82.1 after a 4K-token prompt, 59.5 to 64.0 after a 30K-token prompt. Outputs are the same, with and without drafting.
 
 ## v0.32.0 — 2026-10-17
 
