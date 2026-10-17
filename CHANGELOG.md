@@ -9,7 +9,7 @@ every earlier format.
 ## v0.32.0 — 2026-10-17
 
 - Gemma 4 12B and 31B at `:penguin`, lossless: `glyd run glyd/gemma-4-12B-penguin` downloads `glyd/gemma-4-12B-penguin` (16.1 GB, plus
-  Google's 0.88 GB draft model); the 31B is `glyd/gemma-4-31B-penguin` (SIZE31 GB + 0.97 GB). Every weight is Google's bf16 weight, bit for
+  Google's 0.88 GB draft model); the 31B is `glyd/gemma-4-31B-penguin` (41.3 GB + 0.97 GB). Every weight is Google's bf16 weight, bit for
   bit (`glyd verify` checks it), at about 10.8 bits per weight: the 12B takes 15.0 GiB on the GPU in place of 22.2 GiB and runs on a 24 GB
   card, the 31B 38.4 GiB in place of 57.2 GiB and runs on a 48 GB card. Measured, one user, greedy, with the draft model (without it):
   - RTX 4090, 12B: 89.8 tokens a second in chat (50.8); a 28K-token prompt read in 7.6 s.
