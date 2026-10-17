@@ -5,6 +5,7 @@
     glyd doctor                     # what this machine has, and what fits
     glyd login                      # a Hugging Face token, for gated models
     glyd pack MODEL OUT             # a model's weights packed on the GPU and saved; glyd verify PATH checks a save
+    glyd fetch MODEL                # the model downloaded, not run
     glyd input.tar -o input.tar.glyd   # anything else: the compression program (the Rust `glyd`), found on PATH
 
 The wheel carries the libraries, not the Rust program, so a compression command is forwarded to the `glyd` executable that is
@@ -18,7 +19,7 @@ import subprocess
 import sys
 from . import __version__
 
-GPU_COMMANDS = ("run", "serve", "doctor", "login", "pack", "verify")
+GPU_COMMANDS = ("run", "serve", "doctor", "login", "pack", "verify", "fetch")
 HELP = """glyd {version}
 
 Run a model on your NVIDIA GPU with its weights packed by Glyd (about a third less GPU memory, the same bits):
@@ -29,6 +30,7 @@ Run a model on your NVIDIA GPU with its weights packed by Glyd (about a third le
   glyd doctor                 check this machine: GPU, driver, compilers, which models fit
   glyd login                  save a Hugging Face token (for gated models)
   glyd pack MODEL OUT         MODEL's weights packed on the GPU, each pack checked, saved in OUT; glyd verify PATH checks a save
+  glyd fetch MODEL            download MODEL (or MODEL:LEVEL's pre-packed repo) without running it; glyd verify MODEL checks it
   MODEL is a Hugging Face name (Qwen/Qwen3.5-9B) or a folder. glyd run --help shows the options;
   any vLLM flag can follow a lone --:  glyd run MODEL -- --max-model-len 4096
 

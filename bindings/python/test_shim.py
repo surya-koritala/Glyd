@@ -79,7 +79,7 @@ from glyd import cli
 from glyd_gpu import _cli
 for cmd in cli.GPU_COMMANDS:
     assert cli.main([cmd, "a", "b"]) == 7
-assert [c[0][0] for c in _cli.calls] == ["run", "serve", "doctor", "login", "pack", "verify"] and all(c[1] == "glyd" for c in _cli.calls) and cli.GPU_COMMANDS[-2:] == ("pack", "verify")
+assert [c[0][0] for c in _cli.calls] == ["run", "serve", "doctor", "login", "pack", "verify", "fetch"] and all(c[1] == "glyd" for c in _cli.calls) and cli.GPU_COMMANDS[-3:] == ("pack", "verify", "fetch")
 print("ok")
 ''', fake=True)
     assert out == "ok", out
