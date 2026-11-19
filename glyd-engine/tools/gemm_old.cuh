@@ -214,7 +214,7 @@ GEMM2_KERNEL(gemm2_128x256_b64_s2, 128, 256, 64, 2, 4, 2, 8, 1)
 
 
 
-// (kernels/engine.cu writes its kernels out, for gpu/gen_names.py; these experiments are made by a macro)
+// (kernels/engine.cu writes its kernels out; these experiments are made by a macro)
 #define GEMM3_KERNEL(name, BM, BN, BK, WM_, WN_, ST, GRP, MINB, FUSE_) \
     extern "C" __global__ void __launch_bounds__(WM_ * WN_ * 32, MINB) name(const bf16* X, const bf16* W, bf16* Y, int M, int N, int K) { gemm3_nt_t<BM, BN, BK, WM_, WN_, ST, GRP, FUSE_>(X, W, Y, M, N, K); }
 GEMM3_KERNEL(gemm3_128x256_s4, 128, 256, 32, 2, 4, 4, 8, 1, false)
