@@ -27,6 +27,41 @@ env:
   BUILD_TOOLS: "build==1.6.1 wheel==0.48.0 setuptools==84.0.0 Cython==3.3.0"
 
 jobs:
+  # The codec and store (the root crate and glyd-store): their tests, the regression floors, the C ABI and a CLI round trip.
+  # Its name is the required check on main.
+  codec:
+    name: Build & Test
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (as below)
+    timeout-minutes: 45
+    env:
+      # the codec's release builds target x86-64-v3 (AVX2), as its benchmarks do
+      RUSTFLAGS: "-C target-cpu=x86-64-v3"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/pc-job
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: actions/cache@v4
+        with:
+          path: corpus
+          key: corpus-${{ hashFiles('scripts/download_corpus.sh') }}
+      - run: bash scripts/download_corpus.sh
+      - run: cargo test --release --all-targets -p glyd -p glyd-store
+      - run: cargo test --release -p glyd --test regression_floors -- --nocapture
+      - name: C ABI
+        run: |
+          cargo build --release -p glyd --lib
+          cc -O2 -o target/c_abi tests/test_c_abi.c -Ltarget/release -lglyd -Wl,-rpath,$PWD/target/release
+          ./target/c_abi
+      - name: CLI round trip and corruption
+        run: |
+          cargo build --release -p glyd --bin glyd
+          head -c 3000000 corpus/dickens > /tmp/sample.bin
+          scripts/verify_roundtrip.sh /tmp/sample.bin
+
   versions:
     name: Versions agree
     runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC, never for a fork's pull request; unset: GitHub's)
