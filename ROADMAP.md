@@ -1,5 +1,8 @@
 # Roadmap
 
+The product plan for all of Glyd (the engine on NVIDIA, AMD and Apple; Condor and Starlings in one program; Rust only;
+how it compares with Ollama, vLLM, SGLang and exo): [docs/PLAN.md](docs/PLAN.md).
+
 The next releases, in order, and how releases are supported:
 [getglyd.com/roadmap](https://getglyd.com/roadmap/). This file is the codec's research plan.
 
