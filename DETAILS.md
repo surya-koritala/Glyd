@@ -1146,9 +1146,9 @@ Contributing: open an issue with the measured number for anything that
 touches speed or ratio (`examples/bench_suite.rs`, `examples/v7_bench.rs`
 and `scripts/bench_versions.sh` print same-run comparisons); pull requests
 run the full suite including the 1M-mutation fuzz in CI. Every commit
-needs a `Signed-off-by:` line (`git commit -s`), which accepts the
-[contributor license agreement](CLA.md): you keep your copyright and
-grant the project the right to use and relicense the contribution. The
+needs a `Signed-off-by:` line (`git commit -s`), certifying the
+[Developer Certificate of Origin](DCO): you keep your copyright and the
+contribution is licensed under Apache-2.0, like the project. The
 whole of it is in [CONTRIBUTING.md](CONTRIBUTING.md); the
 [code of conduct](CODE_OF_CONDUCT.md) applies to everyone taking part.
 

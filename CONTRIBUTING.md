@@ -46,8 +46,11 @@ a GPU runner is registered (`vars.GPU_RUNNER`); until then, run them locally as 
 
 ## Commits and licensing
 
-Every commit carries `Signed-off-by:` (`git commit -s`), accepting the [contributor license agreement](CLA.md). Glyd is
-under the Apache License 2.0 ([LICENSE](LICENSE)); see [NOTICE](NOTICE) for earlier releases.
+Every commit carries `Signed-off-by: Your Name <you@example.com>` (`git commit -s`), certifying the
+[Developer Certificate of Origin 1.1](DCO): you wrote the change or have the right to submit it under the project's
+license. Contributions are licensed under the Apache License 2.0 ([LICENSE](LICENSE)), the license the project ships under;
+there is no separate contributor agreement. Contributions made before 2026-11-19 were made under an earlier contributor
+license agreement (in the git history). See [NOTICE](NOTICE) for earlier releases.
 
 ## Conduct
 
