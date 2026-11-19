@@ -47,7 +47,7 @@ One public repository for all of Glyd under Apache-2.0; a release built entirely
 - [ ] S11 Docs and repository identity match the code ([#215](https://github.com/surya-koritala/Glyd/issues/215))
 - [ ] S12 Security policy for the inference product ([#216](https://github.com/surya-koritala/Glyd/issues/216))
 - [ ] S13 Community: discussions, issue templates, triage, first issues ([#217](https://github.com/surya-koritala/Glyd/issues/217))
-- [ ] S14 Governance: contributor terms, maintainers and trademark ([#218](https://github.com/surya-koritala/Glyd/issues/218))
+- [ ] S14 Governance: maintainers, decisions and trademark ([#218](https://github.com/surya-koritala/Glyd/issues/218))
 - [ ] S15 Hardware access plan for CI and release gates ([#219](https://github.com/surya-koritala/Glyd/issues/219))
 - [ ] S16 One kernel ABI check and no closed-source leftovers ([#220](https://github.com/surya-koritala/Glyd/issues/220))
 
