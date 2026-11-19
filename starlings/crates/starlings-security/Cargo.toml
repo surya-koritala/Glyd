@@ -25,7 +25,7 @@ rustls = { version = "0.23.46", default-features = false, features = ["ring", "s
 ring = "0.17.14"
 x509-parser = "0.18.1"
 private-fs = "0.1"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.41.0", features = ["bundled"] }
 
 socket2 = "0.6.5"
 if-addrs = { version = "0.15.0", features = ["link-local"] }

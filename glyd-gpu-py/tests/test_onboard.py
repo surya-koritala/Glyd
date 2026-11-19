@@ -1191,8 +1191,8 @@ def test_cli_forwarding():
             f.write("not a program\n")
         r = subprocess.run([sys.executable, "-m", "glyd.cli", "input.tar"], env={"PATH": w, "PYTHONPATH": PYPATH}, capture_output=True, text=True)
         assert r.returncode == 126 and "cannot run" in r.stderr and "Traceback" not in r.stderr, (r.returncode, r.stderr)
-        # S13c: the hint is the README's own command
-        readme = open(os.path.join(HERE, "..", "..", "README.md")).read()
+        # S13c: the hint is the documented install command (the codec's install section lives in DETAILS.md since the monorepo)
+        readme = open(os.path.join(HERE, "..", "..", "DETAILS.md")).read()
         assert "cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store   #" in readme and "cargo install --git https://github.com/surya-koritala/Glyd glyd glyd-store\n" in cli.MISSING
         assert "brew install surya-koritala/glyd/glyd" in readme and "cargo install glyd\n" not in cli.MISSING
     finally:
