@@ -7,9 +7,8 @@ license = "Apache-2.0"
 publish = false
 build = "build.rs"
 
-# `dev` (the default): the checks, the proofs and the tuning variables of a development build, and the names engine.cu has. The release build (release.yml, `cargo build --release
-# --no-default-features`) compiles none of them in: its binary has no command, flag or variable that only a development build has and names none of them, and its kernels and the
-# library's functions are under neutral names or ids (build.rs runs gpu/gen_names.py, which needs python3). check_wheel.py reads the binary, the machine code in it and these sources for it.
+# `dev` (the default): the checks, the proofs and the tuning variables of a development build. The release build (release-gpu.yml, `cargo build --release
+# --no-default-features`) leaves them out to stay small; its kernels keep the names the sources give them.
 [features]
 default = ["dev"]
 dev = []

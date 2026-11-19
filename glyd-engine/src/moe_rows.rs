@@ -21,7 +21,7 @@ use crate::launch;
 use crate::moe::{Act, ExpertStack, MoeCfg};
 use glyd_gpu::pack::{rows_bits, rows_stride, Tiered};
 
-// The kernels' names, as moe.rs has them: kernels/moe_rows.cu's in a development build, neutral ones in a release build.
+// The kernels' names: those the .cu sources give them, in every build (kname!).
 macro_rules! kname {
     ($n:literal) => {
         $n

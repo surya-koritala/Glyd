@@ -8,20 +8,12 @@
 #endif
 #include <math.h>
 #include <stdint.h>
-#ifdef GLYD_RELEASE
-#include "engine_names.h"  // a release build: every kernel, device function and type under a neutral name (gpu/gen_names.py makes the header, build.rs includes it)
-#endif
 #include "gemm_idx.h"
 
 typedef __nv_bfloat16 bf16;
 
-// A broken state's words before a kernel traps: a development build's device printf; a release build traps alone (printf's format strings and
-// vprintf would be in its binary: glyd-gpu-py/check_engine_leaks.py refuses them).
-#ifdef GLYD_RELEASE
-#define DEV_SAY(...) ((void)0)
-#else
+// A broken state's words before a kernel traps (device printf), in every build.
 #define DEV_SAY(...) printf(__VA_ARGS__)
-#endif
 
 __device__ __forceinline__ float b2f(bf16 x) { return __bfloat162float(x); }
 __device__ __forceinline__ bf16 f2b(float x) { return __float2bfloat16_rn(x); }
@@ -997,7 +989,7 @@ __device__ __forceinline__ void gemm3_nt_t(const bf16* __restrict__ X, const bf1
 }
 
 // dynamic shared memory: STAGES * (BM + BN) * BK * 2 bytes
-// the tiles kern.rs chooses among (and the experiments' in tools/gemm_old.cuh); each is written out, not made by a macro: gpu/gen_names.py reads the declarations
+// the tiles kern.rs chooses among (and the experiments' in tools/gemm_old.cuh); each is written out, not made by a macro
 extern "C" __global__ void __launch_bounds__(256, 1) gemm3_256x128_s3(const bf16* X, const bf16* W, bf16* Y, int M, int N, int K) { gemm3_nt_t<256, 128, 32, 4, 2, 3, 8, false>(X, W, Y, M, N, K); }
 extern "C" __global__ void __launch_bounds__(256, 1) gemm3_128x256_b64_s2(const bf16* X, const bf16* W, bf16* Y, int M, int N, int K) { gemm3_nt_t<128, 256, 64, 2, 4, 2, 8, false>(X, W, Y, M, N, K); }
 extern "C" __global__ void __launch_bounds__(128, 1) gemm3_128x128_b64_s3(const bf16* X, const bf16* W, bf16* Y, int M, int N, int K) { gemm3_nt_t<128, 128, 64, 2, 2, 3, 8, false>(X, W, Y, M, N, K); }

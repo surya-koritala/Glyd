@@ -18,7 +18,7 @@ use glyd_gpu::safetensors::Checkpoint;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-// The kernels' names, as kern.rs has them: a development build's are kernels/qwen35.cu's, a release build's neutral.
+// The kernels' names: those the .cu sources give them, in every build (kname!).
 macro_rules! kname {
     ($n:literal) => {
         $n

@@ -15,7 +15,7 @@ use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout, 
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
-// The kernels' names, as kern.rs has them: kernels/dsv4.cu's in a development build, neutral ones in a release build.
+// The kernels' names: those the .cu sources give them, in every build (kname!).
 macro_rules! kname {
     ($n:literal) => {
         $n

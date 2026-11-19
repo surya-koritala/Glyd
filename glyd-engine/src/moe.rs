@@ -21,7 +21,7 @@ use crate::offload::CPU_TOKENS;
 use crate::weights::PackBuf;
 use glyd_gpu::pack::{Tiered, FP4R_TAG, FP4_TAG, INT4_STEP_BYTES, INT4_TAG, INT5_STEP_BYTES, INT5_TAG, INT6_STEP_BYTES, INT6_TAG};
 
-// The kernels' names, as kern.rs has them: kernels/moe.cu's in a development build, neutral ones in a release build.
+// The kernels' names: those the .cu sources give them, in every build (kname!).
 macro_rules! kname {
     ($n:literal) => {
         $n

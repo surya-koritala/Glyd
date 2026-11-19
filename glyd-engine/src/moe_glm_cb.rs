@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
-// The kernels' names, as moe_rows.rs has them: kernels/glm_cb.cu's in a development build, neutral ones in a release build.
+// The kernels' names: those the .cu sources give them, in every build (kname!).
 macro_rules! kname {
     ($n:literal) => {
         $n

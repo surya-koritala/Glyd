@@ -449,12 +449,12 @@ impl Kern {
 mod tests {
     use super::*;
 
-    /// A release build looks its kernels up by neutral names (build.rs runs gpu/gen_names.py: gk_N), a development build by the names engine.cu has; no two tiles go by one name.
+    /// Every build looks its kernels up by the names engine.cu gives them (release builds once renamed them gk_N); no two tiles go by one name.
     #[test]
-    fn kernel_names_are_neutral_in_a_release_build() {
+    fn kernel_names_are_the_sources_in_every_build() {
         let tiles: Vec<&str> = PLAIN.iter().chain(FUSED.iter()).map(|t| t.0).collect();
         for n in tiles.iter().copied().chain([kname!("copy_row"), kname!("kv_hist"), kname!("prefill_attn_w4_b64"), kname!("topk64_bf16"), kname!("expsum_bf16")]) {
-            assert_eq!(n.starts_with("gk_") && n[3..].bytes().all(|b| b.is_ascii_digit()), !cfg!(feature = "dev"), "{n}");
+            assert!(!(n.starts_with("gk_") && n[3..].bytes().all(|b| b.is_ascii_digit())), "{n}");
         }
         assert_eq!(tiles.iter().collect::<std::collections::HashSet<_>>().len(), tiles.len());
     }

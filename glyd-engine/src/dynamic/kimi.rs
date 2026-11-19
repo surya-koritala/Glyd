@@ -24,7 +24,7 @@ use std::cell::OnceCell;
 use std::path::Path;
 use std::rc::Rc;
 
-// The kernels' names, as kern.rs has them: a development build's are kernels/kimi.cu's, a release build's neutral.
+// The kernels' names: those the .cu sources give them, in every build (kname!).
 macro_rules! kname {
     ($n:literal) => {
         $n

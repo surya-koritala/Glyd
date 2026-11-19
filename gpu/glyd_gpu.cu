@@ -43,9 +43,6 @@
 #include <map>
 #include <type_traits>
 #include "glyd_gpu.h"  // every definition of the C API below held to its declaration there
-#ifdef GLYD_RELEASE
-#include "glyd_gpu_names.h"  // a release build: every kernel, device function and type under a neutral name (gen_names.py)
-#endif
 // (a lambda forced inline: MSVC's dialect, nvcc's on Windows, takes no attribute there, so the inliner decides)
 #ifdef _MSC_VER
 #define GLYD_LAMBDA_INLINE

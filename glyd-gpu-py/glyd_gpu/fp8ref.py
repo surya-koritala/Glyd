@@ -1,6 +1,6 @@
 """The lossless FP8 (e4m3) weight format, in numpy: pack(w) and unpack(p), bit for bit. The reference the GPU kernels follow byte for byte,
 and what gpu/fp8/README.md's table is measured on. numpy only (no torch); a release build compiles this module, so no name or message in
-it says how the format works (check_wheel's words: the layout is described here, in the docstring, which is not compiled).
+it says how the format works.
 
 The matrix and its patches
     w is uint8 [O, K], e4m3fn bytes (sign 1 bit, exponent 4 bits with bias 7, mantissa 3 bits; 0x7F and 0xFF are NaN; no infinity).
