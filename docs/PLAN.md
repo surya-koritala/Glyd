@@ -6,6 +6,7 @@ bottom, Apache-2.0, no Python on the user's path.
 
 This file says what exists today (measured, with where it is in this repository), what the product looks like when it is
 done, how it compares with Ollama, llama.cpp, vLLM, SGLang, exo, mistral.rs and TensorRT-LLM, and the order of the work.
+Why, what wins adoption in each segment, and the full audit of what is missing: [ADOPTION.md](ADOPTION.md).
 
 ---
 
@@ -310,7 +311,9 @@ starts; an 8-GPU node serves a 1T+ MoE (Kimi-K3 class) at datacenter batch sizes
 
 ## 6. Decisions for the owner
 
-1. **When the vLLM plugin stops.** Recommended: frozen now (fixes only), deleted at the end of phase 3.
+1. **When the vLLM plugin stops.** Recommended here: frozen now (fixes only), deleted at the end of phase 3.
+   [ADOPTION.md](ADOPTION.md#6-two-earlier-decisions-reconsidered) argues for the alternative: replace its Python logic with
+   a thin shim over the Rust/C library, as a channel into vLLM and SGLang deployments while the engine catches up.
 2. **pip.** Recommended: keep `pip install glyd` as a binary-only wheel; drop `glyd.from_pretrained`.
 3. **Apple backend route.** Recommended: MLX through `mlx-c` (fast path to good speed), custom Metal kernels for Glyd's
    formats; revisit direct Metal if MLX limits the formats.

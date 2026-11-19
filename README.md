@@ -68,7 +68,8 @@ as any two GPU kernels do. The lossy levels (`:kestrel`, `:swift`, `:wren`, `:hu
 One Rust program from a gaming card to a datacenter, on NVIDIA, AMD and Apple: the levels chosen for the hardware, one
 placement planner across GPU memory, RAM, other GPUs and other machines, and serving from one user to thousands.
 What exists today, what is missing, how it compares with Ollama, llama.cpp, vLLM, SGLang and exo, and the order of the
-work: **[docs/PLAN.md](docs/PLAN.md)**.
+work: **[docs/PLAN.md](docs/PLAN.md)**. What it takes to be adopted from consumers to multi-cluster datacenters, and
+everything missing today: **[docs/ADOPTION.md](docs/ADOPTION.md)**.
 
 ## Build from source
 
