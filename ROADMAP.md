@@ -31,7 +31,8 @@ outputs matching the reference.
 - [ ] P1 One binary `glyd` (engine linked in): `run`, `serve`, `pull`, `ls`, `rm`, `ps`, `stop`, `fit`, `doctor`, `bench`,
       `pack`, `verify`, `login`, `cluster`.
 - [ ] P2 Planner v1 (`docs/architecture.md#adaptation`): backend, level, placement, context, users from costs × rates;
-      `glyd fit` prints the plan and predicted tokens/s before any download.
+      `glyd fit` prints the plan and predicted tokens/s before any download. Started: `glyd-engine fit` (src/plan.rs); next:
+      `run` and `serve` load by the plan, exact sizes from safetensors headers, measured rates instead of the bandwidth table.
 - [ ] P3 Background service: user-level systemd / launchd / Windows service; load on request, unload when idle, several
       models; shrink KV and expert caches when other programs take VRAM.
 - [ ] P4 Model names: Hugging Face IDs, local paths, GGUF files, and short names (`qwen3.5`, `qwen3.5:27b`) that pick the

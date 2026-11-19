@@ -16,6 +16,8 @@
 //!   glyd-engine preflight [MODEL[:LEVEL]] [--costs]               whether the engine will certainly run MODEL on this computer, said before anything is downloaded (exit 3: no, and why on stderr); --costs: its cost profile
 //!   glyd-engine costs MODEL[:LEVEL] [--predict [--rates FILE]]    the model's cost profile at the level (what each layer holds, what a token reads; docs/cost-profile.md), and predicted decode speed
 //!   glyd-engine rates [--dir DIR]                                 this machine's memory tiers measured: the GPU's memory, the link to it, the computer's memory, the disk under DIR
+//!   glyd-engine fit MODEL[:LEVEL] [--machine NAME|FILE] [--context N] [--users N]
+//!                                                             the plan before anything is downloaded: level, placement, context, predicted tokens/s (src/plan.rs)
 //!   glyd-engine rangeworker --model MODEL[:LEVEL] --layers A..B [--ctx N] [--chunk N] [--head-rows N] [--sessions N] [--device D]
 //!                                                             one range of a Qwen3.5 model's layers on this GPU, its frames on the standard input and output: one model across
 //!                                                             processes or machines (docs/range-worker.md, glyd-range/1)
@@ -30,9 +32,9 @@ use glyd_engine::ffi::{err, Result};
 mod devcmd;
 
 #[cfg(feature = "dev")]
-const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | doctor | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5), wren (about 4.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
+const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | doctor | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5), wren (about 4.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
 #[cfg(not(feature = "dev"))] // (wren runs in a development build only)
-const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | doctor | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
+const USAGE: &str = "usage: glyd-engine run MODEL[:LEVEL] [--prompt TEXT] [--host-memory GIB] | serve MODEL [--port N] [--host-memory GIB] | doctor | login | supports MODEL | preflight [MODEL[:LEVEL]] | fetch MODEL | prepare MODEL | verify MODEL | costs MODEL[:LEVEL] [--predict] | rates [--dir DIR] | fit MODEL[:LEVEL] [--machine NAME|FILE] | rangeworker --model MODEL[:LEVEL] --layers A..B | --version\n  LEVEL: penguin (lossless, the default), kestrel (about 6.5 bits per weight; --lossy is the same), swift (about 5.5) or hummingbird (Nemotron 3 Super's experts at about 3)";
 
 /// glibc's allocator told to keep freed buffers up to 32 MB (its largest such setting) in the heap and not hand freed memory back: a load's threads (one a GPU,
 /// each with its packers) free buffers of a few MB to tens of MB by the thousand, and every unmapping stops every CPU the process runs on to flush its TLB (the
@@ -91,6 +93,8 @@ fn run() -> Result<()> {
         // the cost profile of a model at a level, and this machine's memory tiers (docs/cost-profile.md)
         Some("costs") => glyd_engine::costs::costs_cmd(&a),
         Some("rates") => glyd_engine::costs::tiers_cmd(&a),
+        // what a run of MODEL would do on this machine (or a described one), before anything is downloaded
+        Some("fit") => glyd_engine::plan::fit_cmd(&a),
         // a range of a model's layers as a process: glyd-range/1 on the standard input and output (docs/range-worker.md)
         Some("rangeworker") => glyd_engine::dynamic::range::worker(&a),
         // Qwen3.8-Flash-Next behind glyd-hummingbird's tools/qwen_shim.py: one JSON request a line on stdin, one answer a line on stdout

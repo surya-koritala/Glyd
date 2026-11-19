@@ -1598,7 +1598,7 @@ fn run_lossy(a: &Args, layout: Layout, ui: &RefCell<Ui>, mut prompt: Option<Stri
 // ---- the other commands ---------------------------------------------------------------------------------------------------------------------------
 
 /// The model's config.json as text: from the directory it is, or its snapshot in the cache, else from the Hub (that one file: nothing is downloaded).
-fn config_text(model: &str) -> Done<String> {
+pub(crate) fn config_text(model: &str) -> Done<String> {
     let read = |p: PathBuf| std::fs::read_to_string(&p).map_err(|e| Refusal::new(format!("{}: {e}", p.display()), ""));
     if Path::new(model).join("config.json").exists() {
         return read(Path::new(model).join("config.json"));

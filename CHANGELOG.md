@@ -12,6 +12,12 @@ every earlier format.
   the Python GPU package (`glyd-gpu-py/`) and Glyd's engine (`glyd-engine/`), released compiled only from v0.27, are in this repository with
   their source, beside the codec and the store. Condor (`condor/`) and Starlings (`starlings/`, one model across GPUs and machines) moved in
   too. Releases v0.29.0 to v0.32.1 shipped under the Business Source License 1.1; their code is Apache-2.0 here.
+- `glyd-engine fit MODEL[:LEVEL]` prints what a run would do before anything is downloaded: the level (lossless first, then the
+  highest lossy level that fits, then a mixture of experts' experts in RAM), where the weights and experts go (one GPU, split, or
+  experts in RAM with a GPU cache), the context, and predicted tokens/s, with every other level's fit. `--machine NAME|FILE` plans
+  for another computer (presets: rtx4060-laptop, rtx4080s, rtx4090, 2x3090, l4, a6000, a100-80g, h100, 8xh100, rx7900xtx,
+  m4max-64g). Predictions are checked against measured runs (src/plan.rs tests).
+- The engine's five level tables and tag parsers are one module (src/levels.rs).
 - Repository: concise developer docs (`docs/architecture.md`, `ROADMAP.md`, `CONTRIBUTING.md`); codec research records moved
   under `research/codec/`, engine design notes under `glyd-engine/docs/design/`. CI split by path (`ci.yml`, `python.yml`,
   `kernels.yml`); GPU tests on a self-hosted GPU machine (`gpu.yml`) or an ephemeral cloud instance (`gpu-cloud.yml`).

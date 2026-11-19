@@ -12,6 +12,7 @@ glyd-engine serve MODEL --port N          API server: /v1/chat/completions, /v1/
 glyd-engine preflight MODEL               exit 0 if it will run here, 3 with the reason if not (nothing downloaded)
 glyd-engine costs MODEL[:level] [--predict]   bytes per layer, per token, per KV position; predicted tokens/s
 glyd-engine rates                         measure this machine's memory tiers
+glyd-engine fit MODEL[:level] [--machine NAME|FILE]   the plan before any download: level, placement, context, predicted tokens/s
 glyd-engine doctor | login | fetch | prepare | verify | supports | rangeworker
 ```
 
