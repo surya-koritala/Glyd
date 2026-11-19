@@ -1,7 +1,7 @@
 """vLLM's entry point for the "glyd" quantization method (vllm.general_plugins: glyd), in every process vLLM starts,
 whatever it serves: where vLLM is the minor release the plugin is tested with, glyd_gpu.vllm_plugin.register(); else
 one line in the log, and a "glyd" method that says why when it is asked for (--quantization glyd). It never raises.
-Under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code."""
+Under the Apache License 2.0 (LICENSE), as the rest of Glyd."""
 import logging
 
 TESTED = "0.30"  # vLLM's minor release the plugin is tested with (glyd[vllm] pins it)

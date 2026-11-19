@@ -5,7 +5,7 @@
     chat = Chat(api, *api.model())      # the model's name and window, from /v1/models
     chat.loop()                         # the terminal's chat
     chat.once("Say hello")              # one answer on stdout (thinking on stderr)
-Under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code.
+Under the Apache License 2.0 (LICENSE), as the rest of Glyd.
 """
 import http.client
 import json

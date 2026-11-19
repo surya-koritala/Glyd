@@ -1,0 +1,222 @@
+name: Starlings CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['starlings/**', '.github/workflows/starlings-*.yml']
+  pull_request:
+    paths: ['starlings/**', '.github/workflows/starlings-*.yml']
+    # (labeled: adding the full-ci label runs the full main matrix on the PR)
+    types: [opened, synchronize, reopened, labeled]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  RUSTFLAGS: -D warnings
+  RUSTDOCFLAGS: -D warnings
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  core:
+    name: ${{ matrix.partition == 'all' && format('Core ({0})', matrix.os) || format('Windows {0}', matrix.partition) }}
+    strategy:
+      fail-fast: false
+      # (pull requests: Linux; main: every OS. macOS minutes count 10x and Windows 2x against the org's Actions minutes, used up on Oct 20)
+      matrix: ${{ fromJSON(github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'full-ci') && '{"os":["ubuntu-latest"],"partition":["all"]}' || '{"os":["ubuntu-latest","ubuntu-24.04-arm","macos-latest"],"partition":["all"],"include":[{"os":"windows-latest","partition":"default"},{"os":"windows-latest","partition":"backend"},{"os":"windows-latest","partition":"lifecycle"}]}') }}
+    # (Linux x64 runs on the owner's PC when CI_RUNNER is '["self-hosted","glyd-pc"]', for pushes and same-repo PRs only: fork code never runs there)
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && vars.CI_RUNNER && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || matrix.os }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+        working-directory: starlings
+    steps:
+      - name: Own home and persistent target on the PC
+        working-directory: ${{ github.workspace }}
+        if: runner.environment == 'self-hosted'
+        run: |
+          # (TMPDIR short: systemd-analyze binds sockets under it, and a Unix socket path is at most 108 bytes)
+          mkdir -p "$RUNNER_TEMP/job-home/.config/systemd/user"
+          # (Ubuntu's spice-vdagent user unit has a bad key that fails the unit-file check; the PC is no VM, so mask it for the job)
+          ln -s /dev/null "$RUNNER_TEMP/job-home/.config/systemd/user/spice-vdagent.service"
+          { echo "HOME=$RUNNER_TEMP/job-home"; echo "TMPDIR=$(mktemp -d /tmp/starlings-ci.XXXXXX)"; echo "CARGO_TARGET_DIR=$RUNNER_WORKSPACE/target"; } >> "$GITHUB_ENV"
+      - name: Set initial branch name
+        working-directory: ${{ github.workspace }}
+        run: |
+          echo "STARLINGS_CORE_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          git config --global init.defaultBranch main
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Restore pinned Windows toolchain
+        if: runner.os == 'Windows'
+        id: windows_toolchain
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: |
+            ~/.rustup/toolchains/1.97.1-x86_64-pc-windows-msvc
+            ~/.rustup/update-hashes/1.97.1-x86_64-pc-windows-msvc
+          key: toolchain-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('starlings/rust-toolchain.toml') }}
+      - name: Install pinned toolchain
+        if: runner.os != 'Windows' || steps.windows_toolchain.outputs.cache-hit != 'true'
+        run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
+      - name: Save validated pinned Windows toolchain
+        if: runner.os == 'Windows' && matrix.partition == 'backend' && steps.windows_toolchain.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: |
+            ~/.rustup/toolchains/1.97.1-x86_64-pc-windows-msvc
+            ~/.rustup/update-hashes/1.97.1-x86_64-pc-windows-msvc
+          key: ${{ steps.windows_toolchain.outputs.cache-primary-key }}
+      - name: Formatting
+        run: |
+          rustup run 1.97.1 cargo fmt --all -- --check
+          rustup run 1.97.1 cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+      - name: Cache locked Rust dependencies and builds
+        id: cache
+        if: runner.environment != 'self-hosted'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5, Node 24
+        with:
+          path: |
+            ~/.cargo/registry
+            starlings/target
+          key: core-v5-${{ runner.os }}-${{ runner.arch }}-${{ matrix.partition }}-${{ hashFiles('starlings/Cargo.lock', 'starlings/Cargo.toml', 'starlings/crates/**/Cargo.toml', 'starlings/rust-toolchain.toml', '.github/workflows/starlings-ci.yml') }}
+          # Cargo checks source, compiler, features and lockfile fingerprints before reuse.
+          restore-keys: |
+            core-v5-${{ runner.os }}-${{ runner.arch }}-
+            core-v4-${{ runner.os }}-${{ runner.arch }}-
+      - name: Remove unpacked sources from legacy fallback caches
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: rm -rf "$HOME/.cargo/registry/src"
+      - name: Fetch locked dependencies
+        run: |
+          if ! rustup run 1.97.1 cargo fetch --target host-tuple --locked --offline 2> "$RUNNER_TEMP/glyd-offline-fetch.log"; then
+            rustup run 1.97.1 cargo fetch --target host-tuple --locked
+          fi
+      - name: Default lint
+        if: matrix.partition == 'all' || matrix.partition == 'default'
+        run: rustup run 1.97.1 cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+      - name: Development backend lint
+        if: matrix.partition == 'all' || matrix.partition == 'backend'
+        run: rustup run 1.97.1 cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings
+      - name: Default tests
+        if: matrix.partition == 'all' || matrix.partition == 'default'
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            security_case=generation::tests::enrolled_worker_applies_whole_requests_once_and_retains_buffers_until_local_drain
+            STARLINGS_TEST_GENERATION_GATE_TRACE=1 rustup run 1.97.1 cargo test --workspace --exclude starlings-cli --locked --offline -- --exact "$security_case" --nocapture
+            STARLINGS_TEST_REGISTRY_TRACE=1 rustup run 1.97.1 cargo test --workspace --exclude starlings-cli --locked --offline -- --nocapture --skip "$security_case"
+          else
+            rustup run 1.97.1 cargo test --workspace --locked --offline -- --nocapture
+          fi
+      - name: Default CLI tests
+        if: matrix.partition == 'backend'
+        run: rustup run 1.97.1 cargo test -p starlings-cli --locked --offline -- --nocapture --test-threads=1
+      - name: Development backend tests
+        if: matrix.partition == 'all' || matrix.partition == 'lifecycle'
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            export RUST_TEST_THREADS=1
+            # One build graph can compile the independent test binaries together.
+            # Execution stays serialized in the same disjoint groups below.
+            rustup run 1.97.1 cargo test -p starlings-cli -p starlings-adapters --all-features --lib --bins --test cli --test daemon --locked --offline --no-run
+            relay_case=inference::tests::enrolled_relay_preserves_json_sse_and_fragmented_output
+            STARLINGS_TEST_REGISTRY_TRACE=1 rustup run 1.97.1 cargo test -p starlings-cli --all-features --lib --locked --offline -- --exact "$relay_case" --nocapture
+            rustup run 1.97.1 cargo test -p starlings-cli -p starlings-adapters --all-features --lib --bins --test cli --locked --offline -- --nocapture --skip "$relay_case"
+          else
+            rustup run 1.97.1 cargo test -p starlings-cli -p starlings-adapters --all-features --lib --bins --test cli --locked --offline -- --nocapture
+          fi
+      - name: Catalog service daemon lifecycle
+        if: matrix.partition == 'all' || matrix.partition == 'backend'
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            export RUST_TEST_THREADS=1
+            rustup run 1.97.1 cargo test -p starlings-cli --all-features --test daemon catalog_service_production_route_counts_relays_reuses_slot_and_revokes_client_tokens --locked --offline -- --exact --nocapture
+          else
+            rustup run 1.97.1 cargo test -p starlings-cli --all-features --test daemon catalog_service_ --locked --offline -- --nocapture
+          fi
+      - name: Daemon pipeline with the stand-in engine
+        if: (matrix.partition == 'all' || matrix.partition == 'backend') && runner.os != 'Windows'
+        run: rustup run 1.97.1 cargo test -p starlings-cli --all-features --test daemon pipeline_fake_engine --locked --offline -- --nocapture
+      - name: Catalog lifecycle and recovery cases
+        if: matrix.partition == 'lifecycle'
+        run: |
+          export RUST_TEST_THREADS=1
+          rustup run 1.97.1 cargo test -p starlings-cli --all-features --test daemon catalog_service_ --locked --offline -- --nocapture --skip catalog_service_production_route_counts_relays_reuses_slot_and_revokes_client_tokens --skip catalog_service_survives_failure_and_retains_pins_on_drain_and_restart
+          rustup run 1.97.1 cargo test -p starlings-cli --all-features --test daemon catalog_service_survives_failure_and_retains_pins_on_drain_and_restart --locked --offline -- --exact --nocapture
+      - name: Prepare dependency build cache after validation
+        id: cache_prepare
+        if: always() && !cancelled() && runner.environment != 'self-hosted' && steps.cache.outputs.cache-hit != 'true'
+        run: |
+          if (( $(date +%s) - ${STARLINGS_CORE_STARTED_AT:-0} >= 420 )); then
+            echo 'Cache write skipped: preserve the remaining job budget.'
+            exit 0
+          fi
+          du -sh target
+          rustup run 1.97.1 cargo clean --workspace --locked --offline
+          du -sh target
+          rm -rf "$HOME/.cargo/registry/src"
+          if (( $(date +%s) - ${STARLINGS_CORE_STARTED_AT:-0} < 420 )); then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Cache write skipped: preparation used the remaining cache budget.'
+          fi
+      - name: Save build cache even when a test fails
+        if: always() && !cancelled() && steps.cache_prepare.outputs.ready == 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            starlings/target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Remove the job temp folder on the PC
+        if: always() && runner.environment == 'self-hosted'
+        run: rm -rf "$TMPDIR"
+      - name: Failure summary
+        if: failure()
+        run: |
+          echo "::error::Core CI failed on $RUNNER_OS/$RUNNER_ARCH (${{ matrix.partition }}). Open the first failed step for diagnostics."
+
+  windows:
+    name: Core (windows-latest)
+    needs: core
+    if: always()
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 1
+    steps:
+      - name: Require every core partition
+        working-directory: ${{ github.workspace }}
+        env:
+          CORE_RESULT: ${{ needs.core.result }}
+        run: |
+          if [[ "$CORE_RESULT" != success ]]; then
+            echo '::error::A core partition failed, timed out or was cancelled; inspect the platform jobs.'
+            exit 1
+          fi
+
+  dependencies:
+    name: Dependency policy
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install verified dependency checker
+        run: |
+          curl --fail --silent --show-error --location --retry 2 --max-time 60 \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz -o "$RUNNER_TEMP/cargo-deny.tar.gz"
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  $RUNNER_TEMP/cargo-deny.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/cargo-deny.tar.gz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/cargo-deny-0.20.2-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+      - name: Advisory, license, dependency and source policy
+        run: |
+          cargo-deny --locked check --deny warnings
+          cargo-deny --manifest-path fuzz/Cargo.toml --config fuzz/deny.toml --locked check --deny warnings

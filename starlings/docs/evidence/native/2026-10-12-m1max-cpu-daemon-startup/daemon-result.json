@@ -1,0 +1,33 @@
+{
+  "kind": "NativeDaemonAcceptanceExperiment",
+  "success": false,
+  "implementation": "8d2eb777edcc56ad1eca6f9729b7e06b7da582f0",
+  "binary_sha256": "66f58631f7544e647f2e614799c2df3478794a3b051d20d6ba95f57778883819",
+  "manifest": "8f993f2242910f9f535611e0e82e62e6054bcaccc96dc28297f09bc6731e0835",
+  "service_configuration": "c11fcf2921da6478d1c2ef23e1101c1edb2f4d5c236e013a8a32e961b25ac683",
+  "worker_record": "9ab2ade0826f900d4fa9ee6e74c258becfedab017657fec21ccd732abb1139b0",
+  "profile_evidence": "deaf6a2e97d06b22214a495759e56a48e4830f2217f8b59cb59658a4b0b7b0c1",
+  "generations_requested": 0,
+  "count_call_upper_bound": 0,
+  "count_calls_instrumented": false,
+  "output_tokens_total_cap": 0,
+  "runs": [],
+  "refusal_statuses": [],
+  "json_sse_semantic_parity": false,
+  "revocation_withdraws_done": false,
+  "failed_reservation_retained": false,
+  "quarantine_retained": true,
+  "process_observation_available": true,
+  "owned_server_groups_observed": 1,
+  "owned_group_remaining": false,
+  "sampled_owned_peak_rss_bytes": 57622528,
+  "sample_interval_ms": 100,
+  "elapsed_seconds": 71.758,
+  "external_spend_usd": 0,
+  "faults": [
+    "ACCEPTANCE_RuntimeError"
+  ],
+  "general_production_qualification_issued": false,
+  "service_cleanup_qualified": false,
+  "base_conversion_fidelity_qualified": false
+}

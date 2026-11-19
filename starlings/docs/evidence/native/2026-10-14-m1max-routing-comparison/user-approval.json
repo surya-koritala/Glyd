@@ -1,0 +1,21 @@
+{
+  "kind": "ExplicitNativeRunApproval",
+  "approved_at_utc": "2026-10-14T17:12:22.176319+00:00",
+  "user_response": "Approve one corrected bounded attempt",
+  "plan_sha256": "a5b54b665a2e07b9cf2b0366350c4d49f9e1e31677679f5645b37f227e1e8906",
+  "implementation": "78b737495ff52fc69e05b928a460f400fcd4af70",
+  "merged_commit": "1094af0a04d491f444b12966cfb49de9211c7517",
+  "runner_sha256": "6f0f6a62b78dbef11be7f3d21453a37890d6dabe2c548743f0d9faafe47a388c",
+  "attempts": 1,
+  "cpu_threads": 2,
+  "sequential_starts": 2,
+  "request_cap": 20,
+  "output_tokens_per_request_cap": 8,
+  "count_call_upper_bound": 41,
+  "seconds_including_cleanup": 300,
+  "monitored_rss_cap_bytes": 4294967296,
+  "spend_usd_cap": 0,
+  "network": "loopback only",
+  "cached_assets_only": true,
+  "automatic_retry": false
+}

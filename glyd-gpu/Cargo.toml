@@ -7,7 +7,7 @@ repository = "https://github.com/surya-koritala/Glyd"
 readme = "README.md"
 keywords = ["cuda", "gpu", "compression", "llm", "inference"]
 categories = ["compression", "api-bindings"]
-license = "BUSL-1.1"
+license = "Apache-2.0"
 
 [dependencies]
 sha2 = "0.11"

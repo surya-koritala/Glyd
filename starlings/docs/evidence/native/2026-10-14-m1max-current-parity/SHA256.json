@@ -1,0 +1,18 @@
+{
+  "README.md": "d474908017ab1638fac2b2f408a04b0e9e485f7188b8f6fd22a00d073f3f95b3",
+  "activated-route.json": "d8f8c1dc7e4fbac766c0fb8967d75570250504487672eb3c7192b6deba55b1fc",
+  "approved-plan.md": "9c140c222378b1de034bf16880f840aa358f39df75d8a77beea6356c573c7d64",
+  "approved-run.log": "d1b52b27d46c4fd956df8360442bf0d1902d84b14e7aa991f15f4e6800e03513",
+  "coordinator-route.template.json": "83d0b6ca165c44958205387272dd6faa967bfc14f71e62e07250f163a3bb83d0",
+  "daemon-result.json": "f1600542573020482bd9663bf11a80aa3b212a734b46902532293383b88d4619",
+  "derived-elapsed-summary.json": "dcbca35ef7c5ea5a371c9daa9baf6a942d519b7e0ed95ddd515bfff74df609a2",
+  "direct-pin.json": "171c90c2b5cd998d977bb2b35008f7034a481381fb4e995cacfe41a8f775e1b6",
+  "identities.json": "8bded8b4c123a7b4bd6c99adcf602ab90baaf644d545abb82c1c8f11b1ae9a98",
+  "machine-inventory.json": "f42bf7bd5f99c3deab01e81ff56a8e7774a10ac90ab54bc8c52c10b1c704a567",
+  "preflight-result.json": "af11232bdeae9e25a4f3f22a4c47636dc6967d4f1fa0bbacb8a8eef66b2e6847",
+  "preparation.json": "09dd6368274fb91865cb9f3b0f3d86f4cb226a5f1a1340eb970c2044579d9ad7",
+  "reviewed-merge.json": "e98cbd8ebdcbddaa2fc19bd046c0cffcae163b44e1543535311d7d942eb8527f",
+  "started-once": "fa04314af597f4e8b991926a329f1fe2c92d6e67b4de6af4dee6fbf4fd0297b7",
+  "user-approval.json": "3c46dd433642e6c79faaead046ae8a997575d3fc7c9d68d3e56356c22cc5544e",
+  "worker-route.proposed.json": "a8478894ad047797ef5e201e6e02e3c4136255bca866d733878de29b5befce39"
+}

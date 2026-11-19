@@ -169,7 +169,7 @@ model = glyd.from_pretrained("glyd/{name}-{level}")   # pip install "glyd[gpu]"
     good = [runs] + (["Text only: the model's vision part is not included."] if text_only else []) + [
         f"The Hub's \"8-bit precision\" and \"Model size\" labels count packed bytes: this checkpoint {stores} about {bpw:.1f} bits per weight, from a model with {params:,} parameters."]
     license_text = (f"Weights: {license_.replace('apache-2.0', 'Apache-2.0')}, from [{repo}](https://huggingface.co/{repo}). "
-                    "Glyd's engine, which runs them: BUSL-1.1, free for personal and non-commercial use on your own computers; commercial use needs a license. [getglyd.com](https://getglyd.com)")
+                    "Glyd's engine, which runs them: open source, Apache-2.0 ([GitHub](https://github.com/surya-koritala/Glyd)).")
     return f"""---
 license: {license_}
 base_model: {repo}

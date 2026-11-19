@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+bench-out/
+bench-report.md
+.DS_Store

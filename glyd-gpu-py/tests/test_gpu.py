@@ -450,7 +450,7 @@ def test_check_wheel():
         os.mkdir(os.path.join(d, "src"))
         for name, text in {"__init__": '"""The package."""\n', "__main__": "", "_trace": "", "fit": f'def f():\n    """{doc}"""\n'}.items():
             open(os.path.join(d, "src", name + ".py"), "w").write(text)
-        meta = "Metadata-Version: 2.4\nName: glyd-gpu\nVersion: 9.9.9\nLicense-Expression: BUSL-1.1\nLicense-File: LICENSE\nProvides-Extra: gpu\nProvides-Extra: vllm\nRequires-Dist: torch>=2.5; extra == 'gpu'\n"
+        meta = "Metadata-Version: 2.4\nName: glyd-gpu\nVersion: 9.9.9\nLicense-Expression: Apache-2.0\nLicense-File: LICENSE\nProvides-Extra: gpu\nProvides-Extra: vllm\nRequires-Dist: torch>=2.5; extra == 'gpu'\n"
         tag = "cpython-312-x86_64-linux-gnu"
 
         def files(**over):

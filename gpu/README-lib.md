@@ -18,12 +18,7 @@ or any language with a C FFI. No Python, no PyTorch.
 - `unpack.c`: an example in C alone. A matrix of a model saved by
   `glyd.save_pretrained` read back, unpacked on the GPU with this library and
   checked against the bf16 checkpoint it was packed from, bit for bit.
-- `LICENSE`: the Business Source License 1.1: free forever for personal
-  and non-commercial use (including education, research and nonprofits)
-  on computers you own or rent for yourself, and for anyone to try, test
-  and develop with; commercial use needs a license
-  (suryakoritala@getglyd.com); each version becomes Apache-2.0 four
-  years after its release.
+- `LICENSE`: the Apache License 2.0.
 
 Take the download whose CUDA major version is your toolkit's and runtime's:
 cuda12 for CUDA 12, cuda13 for CUDA 13. Your program links its own CUDA

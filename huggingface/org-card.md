@@ -49,6 +49,6 @@ Linux (x86_64 or aarch64) with an NVIDIA GPU: Ampere, Ada, Hopper or Blackwell, 
 
 Every result and its logs: [getglyd.com/benchmarks](https://getglyd.com/benchmarks/).
 
-License: BUSL-1.1. Free for personal and non-commercial use on your own computers; commercial use needs a license; each version becomes Apache-2.0 four years after release. Contact: suryakoritala@getglyd.com.
+License: Apache-2.0, open source, for any use. Contact: suryakoritala@getglyd.com.
 
 [getglyd.com](https://getglyd.com) · [GitHub](https://github.com/surya-koritala/Glyd)

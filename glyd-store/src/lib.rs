@@ -34,7 +34,7 @@
 //! table by reading every object back.
 //!
 //! This crate is the store; the codec it builds on is the `glyd` crate.
-//! Both are under the Business Source License 1.1.
+//! Both are under the Apache License 2.0.
 
 pub mod c_api;
 

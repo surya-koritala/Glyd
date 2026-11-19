@@ -3,7 +3,7 @@ name = "glyd-engine"
 version = "0.32.1"
 edition = "2021"
 description = "Glyd's own inference engine: Qwen3 on CUDA from Glyd-packed weights, every matrix compressed, the lossless KV cache, a chat and an OpenAI-compatible API"
-license = "BUSL-1.1"
+license = "Apache-2.0"
 publish = false
 build = "build.rs"
 

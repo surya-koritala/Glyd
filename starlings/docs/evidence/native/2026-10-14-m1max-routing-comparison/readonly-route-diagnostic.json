@@ -1,0 +1,10 @@
+{
+  "kind": "ReadOnlyRouteValidationDiagnostic",
+  "returncode": 0,
+  "elapsed_seconds": 0.008,
+  "stdout": "{\n  \"approval_granted\": false,\n  \"configuration\": \"e368e3eeb1dd89206082434e982ae117c629017784839449cd6aa2e6035ea14c\"\n}\n",
+  "stderr": "",
+  "model_started": false,
+  "native_attempt_repeated": false,
+  "configuration_sha256": "f4b560e2690fddd5b6e1924d210f51efc3ccc003ae73ad4539e91444dfaeb55a"
+}

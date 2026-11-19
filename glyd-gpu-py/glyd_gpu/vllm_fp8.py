@@ -71,7 +71,7 @@ data is swapped (the layer after process_weights_after_loading), layer.input_siz
 own attributes, read through the wrapper (use_marlin, block_quant, fp8_linear ...); the kernel object a Linear's method holds (Fp8LinearMethod's and a
 compressed-tensors scheme's fp8_linear, ModelOptLinearMethod's kernel) and the name of vLLM's base class Fp8BlockScaledMMLinearKernel; the VllmConfig under construction
 (vllm_plugin._building_config: its additional_config keys vLLM's compile cache; its parallel, lora, offload and model configs).
-It copies none of vLLM's code. Under the Business Source License 1.1 (LICENSE-glyd-gpu), as the rest of Glyd's GPU code."""
+It copies none of vLLM's code. Under the Apache License 2.0 (LICENSE), as the rest of Glyd."""
 import json
 import os
 import weakref

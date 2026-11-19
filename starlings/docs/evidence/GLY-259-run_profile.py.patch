@@ -1,0 +1,18 @@
+--- a/run_profile.py
++++ b/run_profile.py
+@@ -121 +121,4 @@
+-def chat(stream=False,text='Reply with the single word ready.',limit=8):return {'model':model,'messages':[{'role':'user','content':text}],'max_tokens':limit,'temperature':0,'top_p':1,'seed':42,'stream':stream}
++def chat(stream=False,text='Reply with the single word ready.',limit=8):
++ body={'model':model,'messages':[{'role':'user','content':text}],'max_tokens':limit,'temperature':0,'top_p':1,'seed':42,'stream':stream}
++ if stream and stage=='direct':body['stream_options']={'include_usage':True}
++ return body
+@@ -172 +175,2 @@
+-  u=value['usage'];assert u['prompt_tokens']==17 and 0<=u['completion_tokens']<=8 and u['total_tokens']==17+u['completion_tokens']
++  u=value['usage']
++  if not isinstance(u,dict) or any(type(u.get(k)) is not int for k in ('prompt_tokens','completion_tokens','total_tokens')) or u['prompt_tokens']!=17 or not 0<=u['completion_tokens']<=8 or u['total_tokens']!=17+u['completion_tokens']:raise RuntimeError('USAGE_MISSING_OR_INVALID')
+@@ -250 +254 @@
+- faults.append('ACCEPTANCE_'+type(error).__name__)
++ faults.append('ACCEPTANCE_'+('USAGE_MISSING_OR_INVALID' if str(error)=='USAGE_MISSING_OR_INVALID' else type(error).__name__))
+@@ -273 +277 @@
+- server_groups=groups-{p.pid for p in children.values()}
++ server_groups=groups-{p.pid for name,p in children.items() if name!='direct'}

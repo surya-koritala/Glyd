@@ -1,0 +1,12 @@
+{
+  "kind": "ReadonlyBackendVersionInspection",
+  "at": "2026-10-13T08:00:11.498769+00:00",
+  "executable_sha256": "66b94f533a684c97b8954b80a1bda9eb952f8e924f15c5eb16e71a36209e1398",
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": "version: 0.6.0 (build 1, commit d812350)\nbuilt with AppleClang 21.0.0.21000334 for Darwin arm64\n",
+  "model_started": false,
+  "gpu_initialized": false,
+  "qualification_issued": false,
+  "external_spend_usd": 0
+}

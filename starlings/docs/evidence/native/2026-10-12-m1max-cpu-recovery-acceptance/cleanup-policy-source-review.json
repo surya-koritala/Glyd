@@ -1,0 +1,47 @@
+{
+  "kind": "BoundedMacCpuCleanupPolicySourceReview",
+  "runtime_commit": "d81235049384534c167caea52b85a694f6103d14",
+  "executable_sha256": "66b94f533a684c97b8954b80a1bda9eb952f8e924f15c5eb16e71a36209e1398",
+  "build_cache_sha256": "7adf02760b4717a5b65d1030ef424e6c94966a18b64992c9f9cea4d49cf264ae",
+  "off_backend_flags": {
+    "GGML_CUDA": "OFF",
+    "GGML_METAL": "OFF",
+    "GGML_RPC": "OFF",
+    "GGML_HIP": "OFF",
+    "GGML_SYCL": "OFF",
+    "GGML_VULKAN": "OFF",
+    "GGML_MUSA": "OFF",
+    "GGML_OPENCL": "OFF",
+    "GGML_WEBGPU": "OFF",
+    "GGML_OPENVINO": "OFF",
+    "GGML_VIRTGPU": "OFF",
+    "GGML_ZDNN": "OFF",
+    "GGML_ZENDNN": "OFF",
+    "GGML_HEXAGON": "OFF",
+    "GGML_ET": "OFF",
+    "GGML_BLAS": "OFF",
+    "GGML_ACCELERATE": "OFF",
+    "GGML_BACKEND_DL": "OFF",
+    "LLAMA_SUBPROCESS": "OFF",
+    "LLAMA_OPENSSL": "OFF"
+  },
+  "reviewed_sources": {
+    "ggml/src/ggml.c": "7e8bf2b60598b50d718f46aa3c36c9293b10f4e7dfde6844f0693e6fc976d505",
+    "common/subproc.cpp": "5a9e0d0e4ca4441cac5ac57af1622ff4a6dcdd598dcecd0f28079d95dca81ffa",
+    "common/subproc.h": "ac5f9d21b53d11c4763f5fb1ff8c7c8b516ab680d178c6ee39004f561e3c028f",
+    "common/CMakeLists.txt": "67cedba04a44face1177e3aa9fc192712873dda0b30bde1ab356007dcde0d9f1",
+    "tools/server/server-tools.cpp": "9213d2c45718bd3703a3d788b0cb7aad4d9722397f102962838fa23a123b3f4d",
+    "tools/server/server-models.cpp": "d165d053ebf587db6c40f3eb1b965136ecf5c96a32e53dc6e1a82f5166801a0a"
+  },
+  "libraries": [
+    "\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1359.0.0)",
+    "\t/usr/lib/libc++.1.dylib (compatibility version 1.0.0, current version 2200.27.0)"
+  ],
+  "scope": "posix-cpu-group-v1",
+  "no_device_work_reviewed": true,
+  "no_escaped_children_reviewed": true,
+  "review": "Exact CPU-only static build; only libSystem/libc++ shared libraries. Direct local model, no router/tools/MCP/projector/UI/remote fetch. LLAMA_SUBPROCESS=OFF compiles dummy subprocess wrapper. ggml.c diagnostic fork is skipped by explicit GGML_NO_BACKTRACE=1; otherwise macOS uses native stacktrace when GGML_BACKTRACE_LLDB is absent. Cleared explicit environment excludes that opt-in. Reviewed runtime CPU source has no other fork/spawn/setsid/setpgid paths. Native policy is trusted bounded operator review, not attestation; hostile same-user replacement/system libraries are outside trust boundary.",
+  "prior_native_group_observation": "docs/evidence/native/2026-10-12-m1max-cpu-daemon-acceptance/README.md; historical record remains unqualified, not retroactively modified",
+  "native_recovery_passed": false,
+  "general_profile_issued": false
+}

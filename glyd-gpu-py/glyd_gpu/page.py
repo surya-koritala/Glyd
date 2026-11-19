@@ -14,7 +14,7 @@ needs no CORS at all. Then a request whose Host is not localhost, 127.0.0.1 or [
 and a request with an Origin that is not this server's own (http:// and its Host) with 403 (another page's script, a preflight too);
 a WebSocket's handshake is checked the same way, as CORS does not cover it. Open WebUI's server sends no Origin and a Host that is an
 address, so it passes; so do curl and the OpenAI libraries.
-Under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code.
+Under the Apache License 2.0 (LICENSE), as the rest of Glyd.
 """
 import json
 import os

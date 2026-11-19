@@ -1,0 +1,15 @@
+{
+  "kind": "PostRunMachineInventory",
+  "os": "macos",
+  "architecture": "arm64",
+  "os_version": "27.0",
+  "os_build": "26A428",
+  "cpu": "Apple M1 Max",
+  "ram_bytes": 34359738368,
+  "physical_cpu_count": 10,
+  "logical_cpu_count": 10,
+  "network": "one physical host; isolated IPv4 loopback",
+  "client_timezone": "America/Toronto",
+  "native_approval_at_utc": "2026-10-14T17:12:22.176319+00:00",
+  "observation": "collected after the failed attempt; frozen qualification target checked before it"
+}

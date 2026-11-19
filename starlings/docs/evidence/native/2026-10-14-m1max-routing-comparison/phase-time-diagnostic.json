@@ -1,0 +1,7 @@
+{
+  "route_write_to_result_seconds": 1.253,
+  "token_write_to_result_seconds": 28.047,
+  "marker_to_result_seconds": 93.055,
+  "inference_repeated": false,
+  "caveat": "filesystem timestamps narrow timing, not a retained exact control error"
+}

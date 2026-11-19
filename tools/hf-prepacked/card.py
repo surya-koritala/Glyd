@@ -63,8 +63,7 @@ def card(r, on, serve=False):
         "",
         f"The model is {repo} by {maker}, under the {lic} license (LICENSE in this repository); its weights are the original's, "
         "stored in Glyd's format (the safetensors files and glyd.json differ from the original's files; NOTICE says so). "
-        "Loading it takes Glyd, under the Business Source License 1.1: free for personal and other non-commercial use; "
-        "commercial use needs a license (suryakoritala@getglyd.com).",
+        "Loading it takes Glyd, open source under the Apache License 2.0 (https://github.com/surya-koritala/Glyd).",
         "",
     ]
     return "\n".join(lines)

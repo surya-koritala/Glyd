@@ -1,0 +1,24 @@
+﻿chat: 10.9 tokens/s
+4K: read in 3.3 s, then 10.0 tokens/s
+16K: read in 7.7 s, then 10.6 tokens/s
+32K: read in 14.5 s, then 10.5 tokens/s
+report: bench-report.md
+
+---- paste from here ----
+```
+GPU:     NVIDIA L4, 23034 MiB
+Driver:  581.80
+PCIe:    now gen 4 x8, max gen 4 x16
+CPU:     AMD EPYC 7R13 Processor
+RAM:     62 GiB
+OS:      Microsoft Windows Server 2022 Datacenter
+Mode:    precise
+Engine:  glyd-engine 0.32.1, sha256 70d5eb49b5f9
+| Test | Prompt tokens | Reading the prompt (s) | Writing (tokens/s) | Tokens written |
+|---|--:|--:|--:|--:|
+| Chat (short prompt) | 33 | 8.3 | 10.9 | 512 |
+| 4K prompt | 3287 | 3.3 | 10.0 | 256 |
+| 16K prompt | 13063 | 7.7 | 10.6 | 256 |
+| 32K prompt | 26094 | 14.5 | 10.5 | 256 |
+```
+---- to here ----

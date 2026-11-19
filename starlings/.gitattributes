@@ -1,0 +1,2 @@
+# The web UI is served and compared byte for byte on every platform.
+crates/starlings-cli/ui/*.html text eol=lf

@@ -1,0 +1,16 @@
+{
+  "architecture": "aarch64",
+  "cancel_to_parent_exit_ms": 11,
+  "configuration_digest": "9f09cdc741ce2130635dcb72d9ecb31cef81eddbe2cdd895e46b4ffcfde31522",
+  "declared_backend_version": "llama.cpp-0.6.0-d81235049384534c167caea52b85a694f6103d14",
+  "declared_execution_profile": "unqualified-cpu-bf16-weights-f32-kv",
+  "declared_manifest_digest": "cedf89af31c9041b601fa58303285bc46d99c51baee1b13f5e919626ca526ee5",
+  "device_drain_qualified": false,
+  "executable_sha256": "66b94f533a684c97b8954b80a1bda9eb952f8e924f15c5eb16e71a36209e1398",
+  "kind": "NativeCancellationSmokeOnly",
+  "memory_qualified": false,
+  "os": "macos",
+  "parent_exit_observed": true,
+  "request_cancelled": true,
+  "unfinished_text_observed": true
+}

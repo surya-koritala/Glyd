@@ -629,5 +629,5 @@ Tensor parallelism packs each rank's shard.
 The plugin is `glyd-gpu-py/glyd_gpu/vllm_plugin.py`, loaded by `vllm_entry.py`, the entry point, which checks
 vLLM's version first. It relies on vLLM 0.30's plugin and quantization interfaces, and copies none of vLLM's code.
 `kv: lossless` is an attention backend of the plugin (`vllm_kv.py`, with `vllm_sched.py` and `vllm_admit.py`), which
-relies on more of vLLM's internals, listed in their docstrings. Like the rest of Glyd's GPU code it is under the
-Business Source License 1.1 (`gpu/LICENSE`).
+relies on more of vLLM's internals, listed in their docstrings. Like the rest of Glyd it is under the
+Apache License 2.0 (`gpu/LICENSE`).

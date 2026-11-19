@@ -6,7 +6,7 @@ with an error finish instead.
 
 vLLM's internals it relies on: v1.engine.input_processor.InputProcessor._validate_model_input (wrapped, in every process: after vLLM's own checks), its vllm_config (additional_config, cache_config.num_gpu_blocks and block_size),
 and vllm.exceptions.VLLMValidationError (the 400).
-Under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code."""
+Under the Apache License 2.0 (LICENSE), as the rest of Glyd."""
 import functools
 import os
 

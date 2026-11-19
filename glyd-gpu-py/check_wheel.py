@@ -38,7 +38,7 @@ not be in it. Pure Python (a demangler, c++filt, where a library is read; cuobjd
              sources (gen_names.py reads them) and with --table-header none of the library's functions that its table hides; and with --engine-source no
              string of the Rust sources of the release build (a module declared under #[cfg(feature = "dev")], an item under it, a #[cfg(test)] module and
              tune!("NAME") are not compiled into it) that says a method word
-  metadata   no dependency without an extra (torch, transformers and vLLM are glyd-gpu[gpu] and glyd-gpu[vllm]), BUSL-1.1, the licence file
+  metadata   no dependency without an extra (torch, transformers and vLLM are glyd-gpu[gpu] and glyd-gpu[vllm]), Apache-2.0, the licence file
 
 Every line it prints carries a tag, [file], [export], [symbols], [docstring], [words], [kernel], [name], [env], [table], [identifier], [dev], [path] or [meta];
 --summary adds the count of each. Exit status 1 if anything is wrong, with a line for each."""
@@ -1148,8 +1148,8 @@ def check(path, version=None, platform=None, source=None, header=None, licence=N
             bad.append(f"{name}: [meta] dependencies without an extra: {plain}")
         if set(md.get_all("Provides-Extra") or []) != EXTRAS:
             bad.append(f"{name}: [meta] extras {md.get_all('Provides-Extra')}, not {sorted(EXTRAS)}")
-        if md["Name"] != "glyd-gpu" or md.get("License-Expression") != "BUSL-1.1" or "LICENSE" not in (md.get_all("License-File") or []):
-            bad.append(f"{name}: [meta] Name, License-Expression or License-File is not glyd-gpu's, BUSL-1.1 and LICENSE")
+        if md["Name"] != "glyd-gpu" or md.get("License-Expression") != "Apache-2.0" or "LICENSE" not in (md.get_all("License-File") or []):
+            bad.append(f"{name}: [meta] Name, License-Expression or License-File is not glyd-gpu's, Apache-2.0 and LICENSE")
         if md["Version"] != m["v"]:
             bad.append(f"{name}: [meta] METADATA's version {md['Version']}")
     if licence:

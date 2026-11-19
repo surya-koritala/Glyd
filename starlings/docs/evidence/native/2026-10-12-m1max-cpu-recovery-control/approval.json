@@ -1,0 +1,19 @@
+{
+  "kind": "NativeCpuRecoveryApproval",
+  "approved": true,
+  "user_authorization": "Approve this bounded CPU recovery test",
+  "implementation": "419a6fdbb6e26d008d7e407ce3c4121738dbd86f",
+  "merge": "e13418f0d397c5ca131f1a87c8ab7159a2a950a8",
+  "ci": "https://github.com/Sigbound/glyd-compute/actions/runs/38330352244",
+  "attempts": 1,
+  "requests_max": 2,
+  "output_tokens_per_request_max": 8,
+  "count_calls_upper_bound": 4,
+  "cpu_threads": 2,
+  "runtime_seconds_max": 300,
+  "sampled_rss_cap_bytes": 4294967296,
+  "external_spend_usd": 0,
+  "cached_assets_only": true,
+  "old_quarantine_reset": false,
+  "general_deployment": false
+}

@@ -138,10 +138,10 @@ terminal and at http://localhost:8000; `glyd serve MODEL` leaves it up as an
 OpenAI API, and `glyd doctor` says what this machine has and which models fit.
 The steps, the settings and the manual `vllm serve` commands:
 [getglyd.com/docs/vllm](https://getglyd.com/docs/vllm/#local-chat-like-ollama).
-From v0.27 the GPU package, `glyd-gpu`, ships compiled; the install commands
-are the same. It is under the Business Source License 1.1, as all of Glyd is
-from v0.29.0 ([License](#license)). Its source up to v0.26 is in those
-releases' tags.
+The GPU package, `glyd-gpu`, its kernels and Glyd's engine are open source
+in this repository (`gpu/`, `glyd-gpu/`, `glyd-gpu-py/`, `glyd-engine/`),
+under the Apache License 2.0 as all of Glyd ([License](#license)). Releases
+v0.27 to v0.32.1 shipped them compiled only.
 
 vLLM holds the whole model packed: the Linears, from v0.28.0 the embedding
 and the output layer too (every embedding row comes back bit for bit), and a
@@ -1169,13 +1169,14 @@ machines with an NVIDIA GPU before each release.
 
 ## License
 
-From v0.29.0 **all of Glyd is under the [Business Source License
-1.1](LICENSE)**: the `glyd` crate and CLI, the C ABI, the Python and Go
-bindings, the store (`glyd-store`) and the GPU package (`glyd-gpu`: model
-weights and the KV cache held compressed in GPU memory; compiled wheels).
+**All of Glyd is open source under the [Apache License 2.0](LICENSE)**: the
+`glyd` crate and CLI, the C ABI, the Python and Go bindings, the store
+(`glyd-store`), the GPU library and its kernels (`gpu/`), the packer
+(`glyd-gpu`), the Python GPU package (`glyd-gpu-py`), the inference engine
+(`glyd-engine`), Condor (`condor/`) and Starlings (`starlings/`). Any use,
+commercial included, with no license to ask for.
 
-Free forever for personal and non-commercial use (including education, research and nonprofits) on computers you own or rent for yourself, and for anyone to try, test and develop with. Commercial use needs a license: suryakoritala@getglyd.com. Each version becomes Apache-2.0 four years after its release. The source is available; the Business Source License is not an Open Source license.
-
+Releases v0.29.0 to v0.32.1 shipped under the Business Source License 1.1.
 Releases up to v0.28 keep the licenses they shipped with, in those
 releases' tags:
 

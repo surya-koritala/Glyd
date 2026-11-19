@@ -1,0 +1,703 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:starlings:control:v1",
+  "title": "Starlings control records \u2014 draft",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/NodeCapabilities"
+    },
+    {
+      "$ref": "#/$defs/PlacementPlan"
+    },
+    {
+      "$ref": "#/$defs/Lease"
+    },
+    {
+      "$ref": "#/$defs/Session"
+    },
+    {
+      "$ref": "#/$defs/Error"
+    }
+  ],
+  "$defs": {
+    "MemoryPool": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pool_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "system",
+            "device",
+            "unified"
+          ]
+        },
+        "total_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        },
+        "available_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        },
+        "reserved_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        },
+        "device_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "minItems": 1,
+          "maxItems": 8
+        }
+      },
+      "required": [
+        "pool_id",
+        "kind",
+        "total_bytes",
+        "available_bytes",
+        "reserved_bytes",
+        "device_ids"
+      ]
+    },
+    "Backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "build_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "architectures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "minItems": 1,
+          "maxItems": 32
+        },
+        "execution_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "minItems": 1,
+          "maxItems": 32
+        },
+        "boundary_profiles": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "minItems": 0,
+          "maxItems": 32
+        },
+        "task_types": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "generate",
+              "embed",
+              "transcribe"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "layer_sharding": {
+          "type": "boolean"
+        },
+        "max_context_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "max_sessions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "device_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "memory_pool_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "minItems": 1,
+          "maxItems": 4
+        }
+      },
+      "required": [
+        "backend_id",
+        "build_digest",
+        "architectures",
+        "execution_profiles",
+        "boundary_profiles",
+        "task_types",
+        "layer_sharding",
+        "max_context_tokens",
+        "max_sessions",
+        "device_id",
+        "memory_pool_ids"
+      ]
+    },
+    "NodeCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "NodeCapabilities"
+        },
+        "protocol_version": {
+          "const": 1
+        },
+        "fixture": {
+          "type": "boolean"
+        },
+        "node_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "cluster_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        "sample_age_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 60000
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "draining",
+            "unavailable"
+          ]
+        },
+        "os": {
+          "type": "string",
+          "enum": [
+            "linux",
+            "macos",
+            "windows",
+            "ios",
+            "android"
+          ]
+        },
+        "architecture": {
+          "type": "string",
+          "enum": [
+            "x86_64",
+            "aarch64"
+          ]
+        },
+        "memory_pools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemoryPool"
+          },
+          "minItems": 1,
+          "maxItems": 16
+        },
+        "backends": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Backend"
+          },
+          "minItems": 0,
+          "maxItems": 16
+        },
+        "control_endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "tensor_endpoint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "kind",
+        "protocol_version",
+        "fixture",
+        "node_id",
+        "cluster_id",
+        "snapshot_id",
+        "observed_at",
+        "sample_age_ms",
+        "state",
+        "os",
+        "architecture",
+        "memory_pools",
+        "backends",
+        "control_endpoint",
+        "tensor_endpoint"
+      ]
+    },
+    "Stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "node_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "device_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "backend_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "backend_build_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "layer_start": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4096
+        },
+        "layer_end_exclusive": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "owns_embedding": {
+          "type": "boolean"
+        },
+        "owns_final_norm_and_head": {
+          "type": "boolean"
+        },
+        "memory_pool_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "resident_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        },
+        "state_budget_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        },
+        "scratch_budget_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        },
+        "safety_reserve_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        }
+      },
+      "required": [
+        "index",
+        "node_id",
+        "device_id",
+        "backend_id",
+        "backend_build_digest",
+        "layer_start",
+        "layer_end_exclusive",
+        "owns_embedding",
+        "owns_final_norm_and_head",
+        "memory_pool_id",
+        "resident_bytes",
+        "state_budget_bytes",
+        "scratch_budget_bytes",
+        "safety_reserve_bytes"
+      ]
+    },
+    "PlacementPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "PlacementPlan"
+        },
+        "protocol_version": {
+          "const": 1
+        },
+        "fixture": {
+          "type": "boolean"
+        },
+        "plan_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "plan_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "cluster_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "authority_epoch": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        },
+        "manifest_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "whole_request",
+            "layer_pipeline"
+          ]
+        },
+        "model_layer_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "execution_profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "boundary_profile": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "context_limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "max_sessions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Stage"
+          },
+          "minItems": 1,
+          "maxItems": 8
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        }
+      },
+      "required": [
+        "kind",
+        "protocol_version",
+        "fixture",
+        "plan_id",
+        "plan_digest",
+        "cluster_id",
+        "authority_epoch",
+        "manifest_digest",
+        "mode",
+        "model_layer_count",
+        "execution_profile",
+        "boundary_profile",
+        "context_limit",
+        "max_sessions",
+        "stages",
+        "created_at",
+        "expires_at"
+      ]
+    },
+    "Lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "Lease"
+        },
+        "protocol_version": {
+          "const": 1
+        },
+        "lease_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "cluster_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "plan_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authority_epoch": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        },
+        "owner_node_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        },
+        "lifetime_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 60000
+        },
+        "max_sessions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 256
+        },
+        "reserved_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        }
+      },
+      "required": [
+        "kind",
+        "protocol_version",
+        "lease_id",
+        "cluster_id",
+        "plan_digest",
+        "authority_epoch",
+        "owner_node_id",
+        "issued_at",
+        "lifetime_ms",
+        "max_sessions",
+        "reserved_bytes"
+      ]
+    },
+    "Sampling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "profile": {
+          "const": "sample-v1"
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "top_p": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        }
+      },
+      "required": [
+        "profile",
+        "temperature",
+        "top_p",
+        "seed"
+      ]
+    },
+    "Session": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "Session"
+        },
+        "protocol_version": {
+          "const": 1
+        },
+        "session_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "generation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "client_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "lease_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "plan_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authority_epoch": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        },
+        "prompt_token_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "max_output_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "context_limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "sampling": {
+          "$ref": "#/$defs/Sampling"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "queued",
+            "admitted",
+            "prefilling",
+            "decoding",
+            "cancelling",
+            "completed",
+            "failed",
+            "cancelled"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "protocol_version",
+        "session_id",
+        "generation_id",
+        "client_id",
+        "lease_id",
+        "plan_digest",
+        "authority_epoch",
+        "prompt_token_count",
+        "max_output_tokens",
+        "context_limit",
+        "sampling",
+        "state"
+      ]
+    },
+    "Error": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "INVALID_REQUEST",
+                "UNAUTHENTICATED",
+                "FORBIDDEN",
+                "UNSUPPORTED_MODEL",
+                "UNSUPPORTED_PROFILE",
+                "UNSUPPORTED_FEATURE",
+                "STALE_CAPABILITY",
+                "CAPACITY_UNAVAILABLE",
+                "DEADLINE_EXCEEDED",
+                "ARTIFACT_MISMATCH",
+                "PROTOCOL_MISMATCH",
+                "STALE_EPOCH",
+                "WORKER_LOST",
+                "CANCELLED",
+                "INTERNAL"
+              ]
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "request_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "code",
+            "message",
+            "request_id",
+            "retryable"
+          ]
+        }
+      },
+      "required": [
+        "error"
+      ]
+    }
+  }
+}

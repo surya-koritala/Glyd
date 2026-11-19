@@ -118,8 +118,7 @@ which 10 (plus 1 shared) run for each token, and it pairs Gated DeltaNet with Qw
 ## License
 
 These weights are derived from Qwen3.8-Flash-Next and are under its license, the Qwen Community License 1.0 ([LICENSE](LICENSE)). The
-Glyd engine that runs them is released separately, in compiled form, under the Business Source License 1.1: free for personal, research
-and other non-commercial use (see the GitHub repository).
+Glyd engine that runs them is open source under the Apache License 2.0: https://github.com/surya-koritala/Glyd.
 
 ## Acknowledgements
 

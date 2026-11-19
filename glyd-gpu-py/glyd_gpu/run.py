@@ -8,7 +8,7 @@
 vLLM runs as a subprocess (`python -m vllm.entrypoints.cli.main serve ...`) with its output in a log file; the terminal shows a
 status line and, if the server stops, what went wrong in plain words. preflight.py decides what is checked and chosen; chat.py is the
 terminal chat; page.py the chat page the server also shows.
-Under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code.
+Under the Apache License 2.0 (LICENSE), as the rest of Glyd.
 """
 import argparse
 import ctypes

@@ -402,11 +402,8 @@ LD_LIBRARY_PATH=target/release ./target/release/test_c_abi
 
 ## License
 
-The codec (the `glyd` crate, CLI, C ABI and bindings) is under the BSD
-3-Clause License or, at your option, the GPL version 2 (LICENSE,
-COPYING): the same licenses as zstd. The store (`glyd-store`) is under
-the [Business Source License 1.1](glyd-store/LICENSE): free for
-personal, educational, research and other non-commercial use, a
-commercial license for any commercial production use
-(suryakoritala@getglyd.com), and each version converts to the Apache
-License 2.0 four years after its release.
+All of Glyd (the `glyd` crate, CLI, C ABI and bindings, the store, the
+GPU library, the engine) is under the [Apache License 2.0](../LICENSE).
+Releases v0.29.0 to v0.32.1 shipped under the Business Source License
+1.1; v0.28 and earlier: the codec BSD-3-Clause or GPL-2.0, the store
+BUSL-1.1.

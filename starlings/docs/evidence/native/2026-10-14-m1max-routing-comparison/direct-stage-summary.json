@@ -1,0 +1,15 @@
+{
+  "kind": "DerivedDirectStageEvidence",
+  "source_raw_sha256": "95a65fb676f0b965e7c5198b20855af522b19258d318654cb2a0882d518af81e",
+  "derivation": "All direct iterations assert semantic/usage equality before worker stage; failure occurred later. Raw overall direct/proxy parity remains false.",
+  "direct_json_sse_reference_match": true,
+  "direct_json_count": 5,
+  "direct_sse_count": 5,
+  "proxy_requests": 0,
+  "timing_includes": "HTTP generation, decoding and direct slot-idle confirmation; cold first request and fixed JSON/SSE order included",
+  "direct_json_median_ms": 6239,
+  "direct_sse_median_ms": 6251,
+  "direct_proxy_overhead_measured": false,
+  "ttft_tpot_throughput_measured": false,
+  "conversion_fidelity_qualified": false
+}

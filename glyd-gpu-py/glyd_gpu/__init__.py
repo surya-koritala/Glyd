@@ -11,8 +11,8 @@ glyd.from_pretrained, glyd.save_pretrained and glyd.fit are these, through the g
 fit needs only the standard library; the rest needs PyTorch,
 transformers, safetensors and huggingface_hub, imported at first use, and
 the kernels' library (libglyd_gpu_cudaN.so; GLYD_GPU_LIB names another).
-Under the Business Source License 1.1 (LICENSE), as the rest of
-Glyd's GPU code.
+Under the Apache License 2.0 (LICENSE), as the rest of
+Glyd.
 """
 import importlib
 

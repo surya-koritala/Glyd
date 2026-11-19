@@ -44,9 +44,10 @@ accepts the [contributor license agreement](CLA.md): you keep your
 copyright and grant the project the right to use and relicense your
 contribution. A check on every pull request requires it.
 
-From v0.29.0 Glyd is under the Business Source License 1.1
-([LICENSE](LICENSE)); earlier releases keep the licenses they shipped
-with. See [README.md](README.md#license).
+Glyd is open source under the Apache License 2.0 ([LICENSE](LICENSE)):
+all of it, the codec, the store, the GPU library, the engine, Condor and
+Starlings. Releases v0.29.0 to v0.32.1 shipped under the Business Source
+License 1.1 and earlier ones under the licenses in their tags (NOTICE).
 
 ## Conduct
 

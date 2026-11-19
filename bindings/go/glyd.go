@@ -14,7 +14,7 @@
 // below do for a checkout. libglyd_store carries the codec and the
 // store; link -lglyd instead for the codec alone, dropping Store.
 //
-// License: BUSL-1.1 (see LICENSE at the root of the repository).
+// License: Apache-2.0 (see LICENSE at the root of the repository).
 package glyd
 
 /*

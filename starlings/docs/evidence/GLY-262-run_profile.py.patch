@@ -1,0 +1,45 @@
+--- a/run_profile.py
++++ b/run_profile.py
+@@ -5,0 +6 @@
++control_events=[];control_next={};resource_history=[]
+@@ -13,0 +15,4 @@
++ if args[0]=='cluster':
++  delay=control_next.get(str(state),0)-time.monotonic()
++  if delay>0:time.sleep(delay)
++  control_next[str(state)]=time.monotonic()+.2
+@@ -15 +20,11 @@
+- r=subprocess.run([str(BIN),'--state-dir',str(state),*map(str,args)],capture_output=True,timeout=timeout)
++ operation='/'.join(args[:2])
++ if operation not in {'cluster/status','cluster/service','cluster/permissions','cluster/token','cluster/revoke-token','cluster/route','cluster/resources','cluster/stop','model/route-digest','model/qualification-target'}:operation='unknown_operation'
++ role=state.name if state.name in {'worker','coordinator'} else 'unknown_role'
++ try:r=subprocess.run([str(BIN),'--state-dir',str(state),*map(str,args)],capture_output=True,timeout=timeout)
++ except subprocess.TimeoutExpired:
++  control_events.append({'operation':operation,'role':role,'code':'CONTROL_TIMEOUT','returncode':None});raise
++ if r.returncode:
++  code='UNKNOWN_CONTROL_ERROR'
++  for prefix,label in [('REFUSED: CONTROL_UNAVAILABLE:','CONTROL_OUTCOME_UNKNOWN'),('REFUSED: CONTROL_EXPIRED:','CONTROL_NOT_EXECUTED'),('REFUSED: ROUTE_ACTIVATION_REFUSED','ROUTE_ACTIVATION_REFUSED'),('REFUSED: CONTROL_BUSY','CONTROL_BUSY'),('REFUSED: SECURITY_Denied:','CONTROL_DENIED'),('REFUSED: SECURITY_Invalid:','CONTROL_INVALID'),('REFUSED: SECURITY_Capacity:','CONTROL_CAPACITY'),('SECURITY_Capacity:','CONTROL_CAPACITY'),('REFUSED: SECURITY_Transport:','CONTROL_TRANSPORT'),('SECURITY_Transport:','CONTROL_TRANSPORT'),('DAEMON_UNAVAILABLE:','DAEMON_UNAVAILABLE')]:
++   if r.stderr.decode(errors='replace').startswith(prefix):code=label;break
++  control_events.append({'operation':operation,'role':role,'returncode':r.returncode,'code':code})
+@@ -112,0 +128,5 @@
++def ready_resource():
++ value=report(coordinator,'resources',ids['worker'])
++ observed=None if value is None else {'state':value['sample']['capabilities']['state'],'sequence':value['sample']['sequence'],'age_ms':value['age_ms']}
++ if not resource_history or observed!=resource_history[-1]:resource_history.append(observed)
++ return value if value is not None and value['sample']['capabilities']['state']=='ready' else None
+@@ -242 +262,5 @@
+- route_digest=json.loads(call(coordinator,'model','route-digest',route))['configuration'];call(coordinator,'cluster','route',route,'--approve',route_digest)
++ phase='coordinator_route_hash'
++ route_digest=json.loads(call(coordinator,'model','route-digest',route))['configuration']
++ phase='coordinator_route_activation'
++ call(coordinator,'cluster','route',route,'--approve',route_digest)
++ phase='coordinator_route_status'
+@@ -244 +268,2 @@
+- wait_for(lambda:report(coordinator,'resources',ids['worker'])['sample']['capabilities']['state']=='ready',10)
++ phase='coordinator_resource_readiness'
++ wait_for(ready_resource,10)
+@@ -254 +279 @@
+- faults.append('ACCEPTANCE_'+('USAGE_MISSING_OR_INVALID' if str(error)=='USAGE_MISSING_OR_INVALID' else type(error).__name__))
++ faults.append('ACCEPTANCE_'+(str(error) if str(error) in {'USAGE_MISSING_OR_INVALID','CONTROL_COMMAND_FAILED','STATE_TIMEOUT','JOB_DEADLINE','SERVICE_STARTUP_FAILED'} else type(error).__name__))
+@@ -279 +304 @@
+- result={'kind':'NativeCurrentRouteCPUComparison','success':success and not faults and remaining is False,'service_status_history':service_history,'implementation':prep['implementation_commit'],'binary_sha256':prep['binary_sha256'],'manifest':worker_route['qualification']['replica']['manifest'],'service_configuration':prep['configuration'],'worker_record':prep['worker_record_digest'],'profile_evidence':prep['profile_evidence'],'generations_requested':requests,'count_call_upper_bound':requests*2+(1 if requests else 0),'count_calls_instrumented':False,'output_tokens_total_cap':160,'runs':runs,'json_sse_semantic_parity':success,'matched_direct_proxy':success,'physical_hosts':1,'two_machine_qualification':False,'temporary_token_rows':token_rows,'old_ownership_preserved':old_preserved,'direct_pin_retained':(ROOT/'direct-pin.json').exists(),'quarantine_retained':(worker/'cache/models/service-start.json').exists(),'process_observation_available':remaining is not None,'owned_server_groups_observed':len(server_groups),'owned_group_remaining':remaining,'sampled_owned_peak_rss_bytes':max(samples,default=0),'sample_interval_ms':100,'elapsed_seconds':round(time.monotonic()-START,3),'external_spend_usd':0,'faults':faults,'failure_phase':failure_phase,'general_production_qualification_issued':False,'service_cleanup_qualified':False,'base_conversion_fidelity_qualified':False}
++ result={'kind':'NativeCurrentRouteCPUComparison','success':success and not faults and remaining is False,'control_failures':control_events,'control_spacing_seconds':.2,'resource_history':resource_history,'service_status_history':service_history,'implementation':prep['implementation_commit'],'binary_sha256':prep['binary_sha256'],'manifest':worker_route['qualification']['replica']['manifest'],'service_configuration':prep['configuration'],'worker_record':prep['worker_record_digest'],'profile_evidence':prep['profile_evidence'],'generations_requested':requests,'count_call_upper_bound':requests*2+(1 if requests else 0),'count_calls_instrumented':False,'output_tokens_total_cap':160,'runs':runs,'json_sse_semantic_parity':success,'matched_direct_proxy':success,'physical_hosts':1,'two_machine_qualification':False,'temporary_token_rows':token_rows,'old_ownership_preserved':old_preserved,'direct_pin_retained':(ROOT/'direct-pin.json').exists(),'quarantine_retained':(worker/'cache/models/service-start.json').exists(),'process_observation_available':remaining is not None,'owned_server_groups_observed':len(server_groups),'owned_group_remaining':remaining,'sampled_owned_peak_rss_bytes':max(samples,default=0),'sample_interval_ms':100,'elapsed_seconds':round(time.monotonic()-START,3),'external_spend_usd':0,'faults':faults,'failure_phase':failure_phase,'general_production_qualification_issued':False,'service_cleanup_qualified':False,'base_conversion_fidelity_qualified':False}

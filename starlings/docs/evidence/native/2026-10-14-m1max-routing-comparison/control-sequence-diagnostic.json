@@ -1,0 +1,72 @@
+{
+  "kind": "ModelFreeFullPostReadyControlSequence",
+  "route_activation_passed": true,
+  "coordinator_status_passed": true,
+  "resources": [
+    {
+      "index": 0,
+      "control_success": true,
+      "state": null
+    },
+    {
+      "index": 1,
+      "control_success": true,
+      "state": null
+    },
+    {
+      "index": 2,
+      "control_success": true,
+      "state": null
+    },
+    {
+      "index": 3,
+      "control_success": true,
+      "state": null
+    },
+    {
+      "index": 4,
+      "control_success": true,
+      "state": null
+    },
+    {
+      "index": 5,
+      "control_success": true,
+      "state": null
+    },
+    {
+      "index": 6,
+      "control_success": true,
+      "state": null
+    },
+    {
+      "index": 7,
+      "control_success": true,
+      "state": null
+    },
+    {
+      "index": 8,
+      "control_success": true,
+      "state": null
+    },
+    {
+      "index": 9,
+      "control_success": true,
+      "state": null
+    },
+    {
+      "index": 10,
+      "control_success": true,
+      "state": null
+    },
+    {
+      "index": 11,
+      "control_success": true,
+      "state": "unavailable"
+    }
+  ],
+  "runtime_started": false,
+  "generation_requests": 0,
+  "count_calls": 0,
+  "native_attempt_repeated": false,
+  "limitation": "worker advertises unavailable because no model is started; this tests control admission/activation only"
+}

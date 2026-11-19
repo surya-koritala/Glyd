@@ -1,0 +1,10 @@
+PASS  openai data URL: a color   Red
+PASS  left of right   Blue
+PASS  counting  3
+PASS  a digit  7
+PASS  a local http URL is refused  400 hits=0 {"error":{"message":"the image at http://127.0.0.1:52476/halves.png: a host on t
+PASS  two pictures   Red
+PASS  second turn  Black
+PASS  anthropic image block   red
+PASS  a bad image is refused  400 b'{"error":{"message":"an image that is neither PNG nor JPEG","type":"invalid_request_error","code":40'
+9 of 9 passed

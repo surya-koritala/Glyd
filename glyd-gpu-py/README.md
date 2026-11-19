@@ -32,4 +32,4 @@ For a program that multiplies by the matrices of a model saved by `glyd pack` (o
 bit for bit, without Python: the functions the header declares take the arrays of a pack as the save names them, passed as they are,
 and choose how to run each product themselves. Linking: `gcc prog.c -I DIR -I CUDA/include -L DIR -lglyd_gpu_cuda13 -L CUDA/lib64 -lcudart -Wl,-rpath,DIR`.
 
-License: Business Source License 1.1 (LICENSE), as all of Glyd from v0.29.0. Free forever for personal and non-commercial use (including education, research and nonprofits) on computers you own or rent for yourself, and for anyone to try, test and develop with. Commercial use needs a license: suryakoritala@getglyd.com. Each version becomes Apache-2.0 four years after its release.
+License: the Apache License 2.0 (LICENSE), as all of Glyd.

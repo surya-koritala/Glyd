@@ -1,0 +1,214 @@
+{
+ "engine": "glyd-engine release 8c667f40 (sha256 eb3f4a5467dee751a623\u2026)",
+ "gpu_library_sha256_prefix": "f15088de58f07251fdda",
+ "starlings": "a0c4ce8 + examples/pipeline_tool, release, test-backend (sha256 772065f1a502e3a71d39\u2026)",
+ "model": "glyd/Qwen3.5-9B-swift 073a2132abeaa41c119678b9687092871521eb4d",
+ "pods": {
+  "C": "RTX 6000 Ada, US-WA-1, 10.0.26.59, coordinator + stage 0 (layers 0..16)",
+  "G": "RTX 6000 Ada, US-KS-2, 10.1.54.61, stage 1 (layers 16..32)"
+ },
+ "ping_rtt_ms": 43.1,
+ "runs": [
+  {
+   "run": "greedy-48",
+   "prompt_text": "Explain in three sentences why the sky is blue.",
+   "max_tokens": 48,
+   "temperature": 0.0,
+   "top_p": 1.0,
+   "seed": 7,
+   "tokens_equal": true,
+   "pipeline_report": {
+    "finish": "length",
+    "ms": 6908.336356999999,
+    "plan": "86a0d758767de66d6f51e3de5b1dad2cdc1d7a530e6d6624fed25faa946a0942",
+    "prompt_tokens": 21,
+    "stages": [
+     {
+      "decode_steps": 47,
+      "ended_tokens": 68,
+      "engine_ms": 196.73765699999998,
+      "first": true,
+      "last": false,
+      "layers": [
+       0,
+       16
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": "248c18c8715f0f897f71436e0eb166de693f337ea8bb322c0b3aba9049d4939d",
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 68,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 48,
+      "tokens_sha256": "6a4659506278c91f4be68f8da0cd595210e5b04e62aa8b3c5414ed2a5965080c"
+     },
+     {
+      "decode_steps": 47,
+      "ended_tokens": 68,
+      "engine_ms": 260.117482,
+      "first": false,
+      "last": true,
+      "layers": [
+       16,
+       32
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": null,
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 68,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 48,
+      "tokens_sha256": "6a4659506278c91f4be68f8da0cd595210e5b04e62aa8b3c5414ed2a5965080c"
+     }
+    ]
+   },
+   "whole_model_reference": {
+    "ms": 379.439793,
+    "prompt_sha256": "248c18c8715f0f897f71436e0eb166de693f337ea8bb322c0b3aba9049d4939d",
+    "prompt_tokens": 21,
+    "stopped": false,
+    "tokens": 48,
+    "tokens_sha256": "6a4659506278c91f4be68f8da0cd595210e5b04e62aa8b3c5414ed2a5965080c"
+   },
+   "client_ms": 8496.8,
+   "cross_datacenter_ms_per_token": 143.9
+  },
+  {
+   "run": "long-200",
+   "prompt_text": "You are reviewing a design for splitting a large language model across two consumer GPUs in two different machines. Each machine runs half of the layers. The first machine embeds the prompt tokens and runs layers zero to fifteen; the second runs layers sixteen to thirty-one, the final norm and the language model head, and samples the next token, which it sends back to the first machine. List the three biggest sources of latency in this design and suggest one way to reduce each.",
+   "max_tokens": 200,
+   "temperature": 0.0,
+   "top_p": 1.0,
+   "seed": 7,
+   "tokens_equal": true,
+   "pipeline_report": {
+    "finish": "length",
+    "ms": 27391.397458,
+    "plan": "6079c1e49e685af329b43c364b966598c463979e9e25d8aee6a22d1dc9b06019",
+    "prompt_tokens": 104,
+    "stages": [
+     {
+      "decode_steps": 199,
+      "ended_tokens": 303,
+      "engine_ms": 806.8782590000005,
+      "first": true,
+      "last": false,
+      "layers": [
+       0,
+       16
+      ],
+      "prefill_steps": 4,
+      "prompt_sha256": "428a826316c2e57f47a129edd0d91b2c85e313a3a1b5ef7713fbd14b1c98767d",
+      "prompt_tokens": 104,
+      "refused_connections": 0,
+      "rows": 303,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 200,
+      "tokens_sha256": "49bbae4fc6ec11e0cfd3ced47e659728c2567f52749decbacd02058fb3a864ee"
+     },
+     {
+      "decode_steps": 199,
+      "ended_tokens": 303,
+      "engine_ms": 1098.7811900000002,
+      "first": false,
+      "last": true,
+      "layers": [
+       16,
+       32
+      ],
+      "prefill_steps": 4,
+      "prompt_sha256": null,
+      "prompt_tokens": 104,
+      "refused_connections": 0,
+      "rows": 303,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 200,
+      "tokens_sha256": "49bbae4fc6ec11e0cfd3ced47e659728c2567f52749decbacd02058fb3a864ee"
+     }
+    ]
+   },
+   "whole_model_reference": {
+    "ms": 1582.5131900000001,
+    "prompt_sha256": "428a826316c2e57f47a129edd0d91b2c85e313a3a1b5ef7713fbd14b1c98767d",
+    "prompt_tokens": 104,
+    "stopped": false,
+    "tokens": 200,
+    "tokens_sha256": "49bbae4fc6ec11e0cfd3ced47e659728c2567f52749decbacd02058fb3a864ee"
+   },
+   "client_ms": null,
+   "cross_datacenter_ms_per_token": 137.0
+  },
+  {
+   "run": "sampled-64",
+   "prompt_text": "Explain in three sentences why the sky is blue.",
+   "max_tokens": 64,
+   "temperature": 0.7,
+   "top_p": 0.9,
+   "seed": 7,
+   "tokens_equal": true,
+   "pipeline_report": {
+    "finish": "length",
+    "ms": 9851.031844,
+    "plan": "54d98f5533521200f0ef1a32f18777963e82bd7d9dc1ac5b07f22b3647ad648a",
+    "prompt_tokens": 21,
+    "stages": [
+     {
+      "decode_steps": 63,
+      "ended_tokens": 84,
+      "engine_ms": 253.200076,
+      "first": true,
+      "last": false,
+      "layers": [
+       0,
+       16
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": "248c18c8715f0f897f71436e0eb166de693f337ea8bb322c0b3aba9049d4939d",
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 84,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 64,
+      "tokens_sha256": "a0df36acfa3bcf875b7bf64f79e878f88da08c2dc086a55e2086e80119c3dd23"
+     },
+     {
+      "decode_steps": 63,
+      "ended_tokens": 84,
+      "engine_ms": 3461.1001159999987,
+      "first": false,
+      "last": true,
+      "layers": [
+       16,
+       32
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": null,
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 84,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 64,
+      "tokens_sha256": "a0df36acfa3bcf875b7bf64f79e878f88da08c2dc086a55e2086e80119c3dd23"
+     }
+    ]
+   },
+   "whole_model_reference": {
+    "ms": 1768.662156,
+    "prompt_sha256": "248c18c8715f0f897f71436e0eb166de693f337ea8bb322c0b3aba9049d4939d",
+    "prompt_tokens": 21,
+    "stopped": false,
+    "tokens": 64,
+    "tokens_sha256": "a0df36acfa3bcf875b7bf64f79e878f88da08c2dc086a55e2086e80119c3dd23"
+   },
+   "client_ms": 11440.3,
+   "cross_datacenter_ms_per_token": 153.9
+  }
+ ]
+}

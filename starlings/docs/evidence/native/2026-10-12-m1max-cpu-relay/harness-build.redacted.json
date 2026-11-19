@@ -1,0 +1,5 @@
+{
+  "binary": "<NATIVE_ROOT>/relay-check/relay-acceptance",
+  "sha256": "20cdbd2c3c5cdaf8195aec7127e9ab4c1283f9546281a97672283ac0d8ee5f9d",
+  "head": "0535cc14296fdf9ee432d2da9e89acc3c3b4cbfc"
+}

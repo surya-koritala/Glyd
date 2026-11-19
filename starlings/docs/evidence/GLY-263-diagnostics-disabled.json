@@ -1,0 +1,13 @@
+{
+  "kind": "DefaultCliDiagnosticsDisabledCheck",
+  "success": true,
+  "default_features": true,
+  "debug_assertions": false,
+  "fully_optimized_release_qualification": false,
+  "binary_sha256": "9a4e034d5093332b40247ac50fa184d7cb9a0938de553eea472f3eea716fa3f3",
+  "trace_strings_absent": true,
+  "opt_in_env_cannot_emit_markers": true,
+  "initialization_succeeded": true,
+  "model_started": false,
+  "generation_count": 0
+}

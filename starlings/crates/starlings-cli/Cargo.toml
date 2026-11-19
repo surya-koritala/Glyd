@@ -1,0 +1,45 @@
+[package]
+name = "starlings-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "starlings"
+path = "src/main.rs"
+
+[features]
+default = []
+test-backend = ["starlings-adapters/test-backend"]
+
+[dependencies]
+starlings-security = { version = "0.1.0", path = "../starlings-security" }
+serde.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+time = { workspace = true, features = ["formatting"] }
+dirs = "6.0.0"
+ctrlc = { version = "3.5.2", features = ["termination"] }
+starlings-protocol.workspace = true
+starlings-adapters.workspace = true
+
+mdns-sd = { version = "=0.21.5", default-features = false }
+ureq = { version = "3.4.2", default-features = false }
+base64 = "0.23.1"
+httparse = "1.10.1"
+
+[lints]
+workspace = true
+
+[dependencies.starlings-core]
+workspace = true
+
+[dependencies.serde_json]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+socket2 = "0.6.5"
+rusqlite = { version = "0.40.2", features = ["bundled"] }

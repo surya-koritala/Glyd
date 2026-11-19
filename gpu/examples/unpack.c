@@ -16,7 +16,7 @@
  *   gcc -O2 -I LIB -I CUDA/include unpack.c -o unpack \
  *       -L LIB -lglyd_gpu_cuda13 -L CUDA/lib64 -lcudart -Wl,-rpath,LIB:CUDA/lib64
  *
- * License: BUSL-1.1 (gpu/LICENSE).
+ * License: Apache-2.0 (gpu/LICENSE).
  */
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>

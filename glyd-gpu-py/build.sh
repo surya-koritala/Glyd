@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# glyd-gpu's wheel in glyd-gpu-py/dist: the compiled package (setup.py), the BUSL license, the public C header (include/), and the GPU libraries
+# glyd-gpu's wheel in glyd-gpu-py/dist: the package (setup.py), the Apache-2.0 license, the public C header (include/), and the GPU libraries
 # (libglyd_gpu_cuda12.so, libglyd_gpu_cuda13.so) where they are given or this machine can build them:
 #   GLYD_GPU_LIBS=DIR   prebuilt libraries (libglyd_gpu_cuda*.so) to take: a CI job's, one a CUDA version
 #   GLYD_GPU_ENGINE=PATH  the engine's program (glyd-engine, built and checked by release.yml's engine job: cargo build --release --no-default-features

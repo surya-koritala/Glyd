@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "listen": "127.0.0.1:0",
+  "worker_endpoint": "127.0.0.1:1",
+  "plan": {
+    "kind": "PlacementPlan",
+    "protocol_version": 1,
+    "fixture": false,
+    "plan_id": "0c5c3677-d8c9-405d-a2bf-a9f9b3f801e2",
+    "plan_digest": "c232267e0e4f48b9d920ea44a4f572755f67e6e1e900052b101fbfa01ca97fc6",
+    "cluster_id": "e1b677cc-2e50-47e7-83e9-72df5a2979ff",
+    "authority_epoch": "1",
+    "manifest_digest": "8f993f2242910f9f535611e0e82e62e6054bcaccc96dc28297f09bc6731e0835",
+    "mode": "whole_request",
+    "model_layer_count": 24,
+    "execution_profile": "cpu-qwen35-gguf-bf16-f32-f32kv-ctx128-v1",
+    "boundary_profile": "opaque-whole-request-v1",
+    "context_limit": 128,
+    "max_sessions": 1,
+    "stages": [
+      {
+        "index": 0,
+        "node_id": "26e68245-5070-4d2c-8158-b53b861b18b6",
+        "device_id": "cpu",
+        "backend_id": "cpu-service",
+        "backend_build_digest": "66b94f533a684c97b8954b80a1bda9eb952f8e924f15c5eb16e71a36209e1398",
+        "layer_start": 0,
+        "layer_end_exclusive": 24,
+        "owns_embedding": true,
+        "owns_final_norm_and_head": true,
+        "memory_pool_id": "host",
+        "resident_bytes": "0",
+        "state_budget_bytes": "0",
+        "scratch_budget_bytes": "67108864",
+        "safety_reserve_bytes": "1073741824"
+      }
+    ],
+    "created_at": "2026-10-11T20:00:00-04:00",
+    "expires_at": "2026-10-11T20:01:00-04:00"
+  },
+  "qualification": {
+    "version": 1,
+    "fixture": false,
+    "os": "macos",
+    "architecture": "aarch64",
+    "device_kind": "cpu",
+    "target": "f32a6b3e25cb84ad5cb153c604d25a9435a3e6646e074621d744ca2431376e68",
+    "loading_bytes": "2818572288",
+    "model_layer_count": 24,
+    "boundary_profile": "opaque-whole-request-v1",
+    "request_drain_profile": "slots-idle-v1",
+    "configuration": "c11fcf2921da6478d1c2ef23e1101c1edb2f4d5c236e013a8a32e961b25ac683",
+    "replica": {
+      "node": "26e68245-5070-4d2c-8158-b53b861b18b6",
+      "manifest": "8f993f2242910f9f535611e0e82e62e6054bcaccc96dc28297f09bc6731e0835",
+      "profile": "cpu-qwen35-gguf-bf16-f32-f32kv-ctx128-v1",
+      "backend": "cpu-service",
+      "build": "66b94f533a684c97b8954b80a1bda9eb952f8e924f15c5eb16e71a36209e1398",
+      "pool": "host",
+      "evidence": "deaf6a2e97d06b22214a495759e56a48e4830f2217f8b59cb59658a4b0b7b0c1",
+      "request_bytes": "1140850688",
+      "measured_request_ms": "30000",
+      "context_limit": 128,
+      "max_sessions": 1,
+      "accepting": true
+    },
+    "max_output_tokens": 8,
+    "memory_qualified": true,
+    "exact_count_qualified": true,
+    "request_drain_qualified": true
+  }
+}

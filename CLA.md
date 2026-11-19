@@ -1,8 +1,8 @@
 # Contributor License Agreement
 
-Thank you for contributing to Glyd. So that the project can keep
-offering Glyd under the Business Source License 1.1, and under other
-terms in the future, every contribution must be covered by this
+Thank you for contributing to Glyd. Glyd is open source under the
+Apache License 2.0. So that the project can keep offering it under that
+license, and under other terms in the future, every contribution must be covered by this
 agreement. You keep the copyright in your contribution; you grant the
 project the rights below.
 

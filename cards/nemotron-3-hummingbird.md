@@ -70,5 +70,5 @@ Closeness to bf16 (the bf16 model run layer by layer as the reference):
 
 Weights: the [NVIDIA Nemotron Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-nemotron-open-model-license/),
 from [nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16](https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16); see NOTICE. Licensed by NVIDIA
-Corporation under the NVIDIA Nemotron Model License. Glyd's engine, which runs them: BUSL-1.1, free for personal and non-commercial use on your own
-computers; commercial use needs a license. [getglyd.com](https://getglyd.com)
+Corporation under the NVIDIA Nemotron Model License. Glyd's engine, which runs them: open source, Apache-2.0
+([GitHub](https://github.com/surya-koritala/Glyd)).

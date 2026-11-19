@@ -30,4 +30,4 @@ model = glyd.from_pretrained("glyd/Qwen3.5-4B")
 
 ## License and attribution
 
-The model is Qwen/Qwen3.5-4B by the Qwen team (Alibaba Cloud), under the Apache-2.0 license (LICENSE in this repository); its weights are the original's, stored in Glyd's format (the safetensors files and glyd.json differ from the original's files; NOTICE says so). Loading it takes Glyd, under the Business Source License 1.1: free for personal and other non-commercial use; commercial use needs a license (suryakoritala@getglyd.com).
+The model is Qwen/Qwen3.5-4B by the Qwen team (Alibaba Cloud), under the Apache-2.0 license (LICENSE in this repository); its weights are the original's, stored in Glyd's format (the safetensors files and glyd.json differ from the original's files; NOTICE says so). Loading it takes Glyd, open source under the Apache License 2.0 (https://github.com/surya-koritala/Glyd).

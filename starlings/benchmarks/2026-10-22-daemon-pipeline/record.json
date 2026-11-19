@@ -1,0 +1,498 @@
+[
+ {
+  "answer": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Topic: Why the sky is blue.\n    *   Constraint: Explain in exactly three sentences.\n\n2.  **Identify Key Scientific Concepts:**",
+  "chunk_tokens": 32,
+  "client_stream_ms": 1540.335869,
+  "engine_sha256": "7c7261c3bedb7b69764eb8b63d4e139c6b231b6a7ed19a72552f37e587b37c5c",
+  "manifest": "09d73185bf312ddba52ffdd6ec0fffbc6bd6f160db8dfc70f924d88d9e658730",
+  "max_tokens": 48,
+  "model": "/home/surya-koritala/glyd-baseline/hf/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d",
+  "pipeline_reports": [
+   {
+    "finish": "length",
+    "ms": 682.9583259999999,
+    "plan": "cceeb6c2d8680c502b0d9aa34e67cc5a3f1118461e28bc6dc3a09903a7cb449c",
+    "prompt_tokens": 21,
+    "stages": [
+     {
+      "decode_steps": 47,
+      "ended_tokens": 68,
+      "engine_ms": 205.85569099999998,
+      "first": true,
+      "last": false,
+      "layers": [
+       0,
+       16
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": "248c18c8715f0f897f71436e0eb166de693f337ea8bb322c0b3aba9049d4939d",
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 68,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 48,
+      "tokens_sha256": "6a4659506278c91f4be68f8da0cd595210e5b04e62aa8b3c5414ed2a5965080c"
+     },
+     {
+      "decode_steps": 47,
+      "ended_tokens": 68,
+      "engine_ms": 255.298591,
+      "first": false,
+      "last": true,
+      "layers": [
+       16,
+       32
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": null,
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 68,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 48,
+      "tokens_sha256": "6a4659506278c91f4be68f8da0cd595210e5b04e62aa8b3c5414ed2a5965080c"
+     }
+    ]
+   },
+   {
+    "finish": "length",
+    "ms": 685.817469,
+    "plan": "a61759fb9192ae6c251df3e9a3780ca6328103778d9fbccf15a5e43fb3cd1730",
+    "prompt_tokens": 21,
+    "stages": [
+     {
+      "decode_steps": 47,
+      "ended_tokens": 68,
+      "engine_ms": 205.25928399999998,
+      "first": true,
+      "last": false,
+      "layers": [
+       0,
+       16
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": "248c18c8715f0f897f71436e0eb166de693f337ea8bb322c0b3aba9049d4939d",
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 68,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 48,
+      "tokens_sha256": "6a4659506278c91f4be68f8da0cd595210e5b04e62aa8b3c5414ed2a5965080c"
+     },
+     {
+      "decode_steps": 47,
+      "ended_tokens": 68,
+      "engine_ms": 254.55073800000002,
+      "first": false,
+      "last": true,
+      "layers": [
+       16,
+       32
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": null,
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 68,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 48,
+      "tokens_sha256": "6a4659506278c91f4be68f8da0cd595210e5b04e62aa8b3c5414ed2a5965080c"
+     }
+    ]
+   }
+  ],
+  "pipeline_tokens": 48,
+  "pipeline_tokens_sha256": "6a4659506278c91f4be68f8da0cd595210e5b04e62aa8b3c5414ed2a5965080c",
+  "prompt_text": "Explain in three sentences why the sky is blue.",
+  "prompt_tokens": 21,
+  "seed": 7,
+  "stop_tokens": [
+   248044,
+   248046
+  ],
+  "temperature": 0.0,
+  "test": "real_pipeline_daemons_generate_through_two_stages_like_the_whole_model",
+  "tokens_equal": true,
+  "top_p": 1.0,
+  "whole_model_ms": 448.799971,
+  "whole_tokens": 48,
+  "whole_tokens_sha256": "6a4659506278c91f4be68f8da0cd595210e5b04e62aa8b3c5414ed2a5965080c",
+  "run": "greedy-48"
+ },
+ {
+  "answer": "Here's a thinking process that leads to the suggested answer:\n\n1.  **Analyze the Request:**\n    *   **Scenario:** Splitting a Large Language Model (LLM) across two consumer GPUs on two different machines.\n    *   **Architecture:**\n        *   Machine 1 (M1): Embeddings + Layers 0-15.\n        *   Machine 2 (M2): Layers 16-31 + Final Norm + LM Head.\n        *   Communication: M2 samples the next token and sends it back to M1.\n    *   **Task:** Identify the *three biggest sources of latency* in this specific design and suggest *one way to reduce each*.\n\n2.  **Deconstruct the Workflow & Identify Latency Bottlenecks:**\n    *   *Step 1: Input Processing (M1).* Embedding tokens.\n    *   *Step 2: Forward Pass (M1",
+  "chunk_tokens": 32,
+  "client_stream_ms": 3060.8666869999997,
+  "engine_sha256": "7c7261c3bedb7b69764eb8b63d4e139c6b231b6a7ed19a72552f37e587b37c5c",
+  "manifest": "09d73185bf312ddba52ffdd6ec0fffbc6bd6f160db8dfc70f924d88d9e658730",
+  "max_tokens": 200,
+  "model": "/home/surya-koritala/glyd-baseline/hf/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d",
+  "pipeline_reports": [
+   {
+    "finish": "length",
+    "ms": 2205.844516,
+    "plan": "e64769859c1b333a7890ec5d7cb303e15487ab5112b3712857a3b4834e719064",
+    "prompt_tokens": 104,
+    "stages": [
+     {
+      "decode_steps": 199,
+      "ended_tokens": 303,
+      "engine_ms": 877.8715129999999,
+      "first": true,
+      "last": false,
+      "layers": [
+       0,
+       16
+      ],
+      "prefill_steps": 4,
+      "prompt_sha256": "428a826316c2e57f47a129edd0d91b2c85e313a3a1b5ef7713fbd14b1c98767d",
+      "prompt_tokens": 104,
+      "refused_connections": 0,
+      "rows": 303,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 200,
+      "tokens_sha256": "49bbae4fc6ec11e0cfd3ced47e659728c2567f52749decbacd02058fb3a864ee"
+     },
+     {
+      "decode_steps": 199,
+      "ended_tokens": 303,
+      "engine_ms": 1095.317226999999,
+      "first": false,
+      "last": true,
+      "layers": [
+       16,
+       32
+      ],
+      "prefill_steps": 4,
+      "prompt_sha256": null,
+      "prompt_tokens": 104,
+      "refused_connections": 0,
+      "rows": 303,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 200,
+      "tokens_sha256": "49bbae4fc6ec11e0cfd3ced47e659728c2567f52749decbacd02058fb3a864ee"
+     }
+    ]
+   },
+   {
+    "finish": "length",
+    "ms": 2196.8384260000003,
+    "plan": "45726f36121fa0b2ca69da6dacea7cd153f2c19af7cd69e565c91d0e1bb4a197",
+    "prompt_tokens": 104,
+    "stages": [
+     {
+      "decode_steps": 199,
+      "ended_tokens": 303,
+      "engine_ms": 876.987809,
+      "first": true,
+      "last": false,
+      "layers": [
+       0,
+       16
+      ],
+      "prefill_steps": 4,
+      "prompt_sha256": "428a826316c2e57f47a129edd0d91b2c85e313a3a1b5ef7713fbd14b1c98767d",
+      "prompt_tokens": 104,
+      "refused_connections": 0,
+      "rows": 303,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 200,
+      "tokens_sha256": "49bbae4fc6ec11e0cfd3ced47e659728c2567f52749decbacd02058fb3a864ee"
+     },
+     {
+      "decode_steps": 199,
+      "ended_tokens": 303,
+      "engine_ms": 1092.7794539999995,
+      "first": false,
+      "last": true,
+      "layers": [
+       16,
+       32
+      ],
+      "prefill_steps": 4,
+      "prompt_sha256": null,
+      "prompt_tokens": 104,
+      "refused_connections": 0,
+      "rows": 303,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 200,
+      "tokens_sha256": "49bbae4fc6ec11e0cfd3ced47e659728c2567f52749decbacd02058fb3a864ee"
+     }
+    ]
+   }
+  ],
+  "pipeline_tokens": 200,
+  "pipeline_tokens_sha256": "49bbae4fc6ec11e0cfd3ced47e659728c2567f52749decbacd02058fb3a864ee",
+  "prompt_text": "You are reviewing a design for splitting a large language model across two consumer GPUs in two different machines. Each machine runs half of the layers. The first machine embeds the prompt tokens and runs layers zero to fifteen; the second runs layers sixteen to thirty-one, the final norm and the language model head, and samples the next token, which it sends back to the first machine. List the three biggest sources of latency in this design and suggest one way to reduce each.",
+  "prompt_tokens": 104,
+  "seed": 7,
+  "stop_tokens": [
+   248044,
+   248046
+  ],
+  "temperature": 0.0,
+  "test": "real_pipeline_daemons_generate_through_two_stages_like_the_whole_model",
+  "tokens_equal": true,
+  "top_p": 1.0,
+  "whole_model_ms": 1901.559366,
+  "whole_tokens": 200,
+  "whole_tokens_sha256": "49bbae4fc6ec11e0cfd3ced47e659728c2567f52749decbacd02058fb3a864ee",
+  "run": "greedy-long-prompt-200"
+ },
+ {
+  "answer": "Thinking Process:\n\n1.  **Analyze the Request:** The user is asking for the result of the arithmetic operation \"2+2\" and specifies a constraint: \"Answer with one digit.\"\n\n2.  **Calculate the Result:** 2 + 2 = 4.\n\n3.  **Check the Constraint:** The result is 4, which is a single digit.\n\n4.  **Formulate the Output:** The answer should be just the digit \"4\". No extra text, no explanations.\n\n5.  **Final Verification:** Does \"4\" satisfy \"Answer with one digit\"? Yes.\n\n6.  **Construct Final Response:** 4.cw\n</think>\n\n4",
+  "chunk_tokens": 32,
+  "client_stream_ms": 2500.800705,
+  "engine_sha256": "7c7261c3bedb7b69764eb8b63d4e139c6b231b6a7ed19a72552f37e587b37c5c",
+  "manifest": "09d73185bf312ddba52ffdd6ec0fffbc6bd6f160db8dfc70f924d88d9e658730",
+  "max_tokens": 256,
+  "model": "/home/surya-koritala/glyd-baseline/hf/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d",
+  "pipeline_reports": [
+   {
+    "finish": "stop",
+    "ms": 1656.9215239999999,
+    "plan": "8e3de325210ca4c99e18d18306df6002f124c3be7b65f62561a48dc4e5b5adbb",
+    "prompt_tokens": 22,
+    "stages": [
+     {
+      "decode_steps": 144,
+      "ended_tokens": 166,
+      "engine_ms": 621.8576960000001,
+      "first": true,
+      "last": false,
+      "layers": [
+       0,
+       16
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": "55b9ad2a0ac1b6397470dc1d365c1dd5dc8de380e62bf995707462f4f6ebc510",
+      "prompt_tokens": 22,
+      "refused_connections": 0,
+      "rows": 166,
+      "session_closed": true,
+      "stopped": true,
+      "tokens": 145,
+      "tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5"
+     },
+     {
+      "decode_steps": 144,
+      "ended_tokens": 166,
+      "engine_ms": 772.6515980000001,
+      "first": false,
+      "last": true,
+      "layers": [
+       16,
+       32
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": null,
+      "prompt_tokens": 22,
+      "refused_connections": 0,
+      "rows": 166,
+      "session_closed": true,
+      "stopped": true,
+      "tokens": 145,
+      "tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5"
+     }
+    ]
+   },
+   {
+    "finish": "stop",
+    "ms": 1579.959357,
+    "plan": "13a18d1db5dcecf0600eb620de64f3cd49705ab038e17725c36056cca9081e45",
+    "prompt_tokens": 22,
+    "stages": [
+     {
+      "decode_steps": 144,
+      "ended_tokens": 166,
+      "engine_ms": 622.9939799999999,
+      "first": true,
+      "last": false,
+      "layers": [
+       0,
+       16
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": "55b9ad2a0ac1b6397470dc1d365c1dd5dc8de380e62bf995707462f4f6ebc510",
+      "prompt_tokens": 22,
+      "refused_connections": 0,
+      "rows": 166,
+      "session_closed": true,
+      "stopped": true,
+      "tokens": 145,
+      "tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5"
+     },
+     {
+      "decode_steps": 144,
+      "ended_tokens": 166,
+      "engine_ms": 770.4430930000001,
+      "first": false,
+      "last": true,
+      "layers": [
+       16,
+       32
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": null,
+      "prompt_tokens": 22,
+      "refused_connections": 0,
+      "rows": 166,
+      "session_closed": true,
+      "stopped": true,
+      "tokens": 145,
+      "tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5"
+     }
+    ]
+   }
+  ],
+  "pipeline_tokens": 145,
+  "pipeline_tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5",
+  "prompt_text": "What is 2+2? Answer with one digit.",
+  "prompt_tokens": 22,
+  "seed": 7,
+  "stop_tokens": [
+   248044,
+   248046
+  ],
+  "temperature": 0.0,
+  "test": "real_pipeline_daemons_generate_through_two_stages_like_the_whole_model",
+  "tokens_equal": true,
+  "top_p": 1.0,
+  "whole_model_ms": 1355.069233,
+  "whole_tokens": 145,
+  "whole_tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5",
+  "run": "greedy-stop-token"
+ },
+ {
+  "answer": "Thinking Process:\n\n1.  **Analyze the Request:**\n    *   Topic: Why the sky is blue.\n    *   Constraint: Explain in exactly three sentences.\n\n2.  **Identify Key Scientific Concepts:**\n    *   Sunlight contains all colors of the visible spectrum.\n   ",
+  "chunk_tokens": 32,
+  "client_stream_ms": 2780.397314,
+  "engine_sha256": "7c7261c3bedb7b69764eb8b63d4e139c6b231b6a7ed19a72552f37e587b37c5c",
+  "manifest": "09d73185bf312ddba52ffdd6ec0fffbc6bd6f160db8dfc70f924d88d9e658730",
+  "max_tokens": 64,
+  "model": "/home/surya-koritala/glyd-baseline/hf/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d",
+  "pipeline_reports": [
+   {
+    "finish": "length",
+    "ms": 1933.903871,
+    "plan": "42196f7f3d1356e4347a284339062ba1bfcc19010cc3b2443bac49e35b3380f6",
+    "prompt_tokens": 21,
+    "stages": [
+     {
+      "decode_steps": 63,
+      "ended_tokens": 84,
+      "engine_ms": 277.15902500000004,
+      "first": true,
+      "last": false,
+      "layers": [
+       0,
+       16
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": "248c18c8715f0f897f71436e0eb166de693f337ea8bb322c0b3aba9049d4939d",
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 84,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 64,
+      "tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af"
+     },
+     {
+      "decode_steps": 63,
+      "ended_tokens": 84,
+      "engine_ms": 1338.3605790000001,
+      "first": false,
+      "last": true,
+      "layers": [
+       16,
+       32
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": null,
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 84,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 64,
+      "tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af"
+     }
+    ]
+   },
+   {
+    "finish": "length",
+    "ms": 1928.8460280000002,
+    "plan": "9dcc41554748f588d5e26a29afe022f671176bd6f9f96cc1baaddc975a72cd4b",
+    "prompt_tokens": 21,
+    "stages": [
+     {
+      "decode_steps": 63,
+      "ended_tokens": 84,
+      "engine_ms": 277.61459799999994,
+      "first": true,
+      "last": false,
+      "layers": [
+       0,
+       16
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": "248c18c8715f0f897f71436e0eb166de693f337ea8bb322c0b3aba9049d4939d",
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 84,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 64,
+      "tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af"
+     },
+     {
+      "decode_steps": 63,
+      "ended_tokens": 84,
+      "engine_ms": 1321.0711109999997,
+      "first": false,
+      "last": true,
+      "layers": [
+       16,
+       32
+      ],
+      "prefill_steps": 1,
+      "prompt_sha256": null,
+      "prompt_tokens": 21,
+      "refused_connections": 0,
+      "rows": 84,
+      "session_closed": true,
+      "stopped": false,
+      "tokens": 64,
+      "tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af"
+     }
+    ]
+   }
+  ],
+  "pipeline_tokens": 64,
+  "pipeline_tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af",
+  "prompt_text": "Explain in three sentences why the sky is blue.",
+  "prompt_tokens": 21,
+  "seed": 7,
+  "stop_tokens": [
+   248044,
+   248046
+  ],
+  "temperature": 0.7,
+  "test": "real_pipeline_daemons_generate_through_two_stages_like_the_whole_model",
+  "tokens_equal": true,
+  "top_p": 0.9,
+  "whole_model_ms": 1538.4169889999998,
+  "whole_tokens": 64,
+  "whole_tokens_sha256": "ac8eac4daf94672a9682c8dc03f7e74e166c99e51b307653a385dc6e138468af",
+  "run": "sampled-t0.7-64"
+ }
+]

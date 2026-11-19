@@ -17,7 +17,7 @@ before it runs).
 The corpus (kvcorpus.bin, zlib-compressed, made by gpu/vllm/make_kvcorpus.py) is public domain prose (Project Gutenberg's A Tale of Two
 Cities, The Adventures of Sherlock Holmes, On the Origin of Species and Pride and Prejudice), excerpts of this repository's
 own documents, short modules and conversations written for it, and a table and JSON records generated from fixed seeds.
-Under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code."""
+Under the Apache License 2.0 (LICENSE), as the rest of Glyd."""
 import argparse
 import hashlib
 import json

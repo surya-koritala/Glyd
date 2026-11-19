@@ -49,7 +49,7 @@ with tempfile.TemporaryDirectory() as t:
             assert "| **penguin (lossless, this repo)** | **12.0 GB** | **33%** | **0** | **–** |" in rows
         assert "Size: the files you download. KL:" in text and "## Good to know" in text and "\"8-bit precision\" and \"Model size\" labels count packed bytes" in text
         assert "from a model with 9,000,000,000 parameters." in text and "(the Hub's \"Model size\" counts" not in text and "## Glyd levels" not in text
-        assert text.endswith("## License\n\nWeights: Apache-2.0, from [Qwen/Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B). Glyd's engine, which runs them: BUSL-1.1, free for personal and non-commercial use on your own computers; commercial use needs a license. [getglyd.com](https://getglyd.com)\n")
+        assert text.endswith("## License\n\nWeights: Apache-2.0, from [Qwen/Qwen3.5-9B](https://huggingface.co/Qwen/Qwen3.5-9B). Glyd's engine, which runs them: open source, Apache-2.0 ([GitHub](https://github.com/surya-koritala/Glyd)).\n")
         assert ("## Speed and memory" in text) == (numbers is not None)
         if numbers:   # (short names, sorted by tokens/s, GiB to GB: 7.2 GiB = 7.7 GB)
             assert "| GPU | Tokens/s | First token | Memory at 4k | 32k context |" in text

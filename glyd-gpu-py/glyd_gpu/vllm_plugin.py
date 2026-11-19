@@ -145,8 +145,8 @@ minor release):
   between their two products), and UnquantizedFusedMoEMethod
   (unquantized_backend, _init_moe_kernel, moe_kernel.apply's keyword
   arguments) with UnquantizedMoeBackend.
-It copies none of vLLM's code. Under the Business Source License 1.1
-(LICENSE), as the rest of Glyd's GPU code.
+It copies none of vLLM's code. Under the Apache License 2.0
+(LICENSE), as the rest of Glyd.
 """
 import hashlib
 import importlib.util

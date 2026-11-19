@@ -1,0 +1,6 @@
+whole model: loaded in 5.7 s: NVIDIA GeForce RTX 4090 (sm_89): Qwen3.5 on the dynamic engine, 64 layers, weights 17.351 GiB (layout i5), KV 0.062 GiB (1024 positions), 19.09 of 23.52 GiB in use
+whole model: prompt 193.7 ms, a step 22.09 ms (the logits read each step); tokens [220, 17, 15, 16, 24, 15, 23, 17, 15, 16, 24, 15]..; sha256(tokens, logits) c3e9f0c6d8f90ab68c15ccb21ce9e91a68e7049b87ad493d0b48f4583f2b9b7c
+whole model: a step 21.72 ms; a verify pass of 8 rows 23.97 ms, of it the states' copy 0.419 ms (153,944,064 bytes); a rewind keeping 1..=8 of them: ["0.977", "1.040", "1.101", "1.161", "1.221", "1.283", "1.344", "0.000"] ms
+stages: prompt 193.8 ms, a step 21.92 ms; sha256 c3e9f0c6d8f90ab68c15ccb21ce9e91a68e7049b87ad493d0b48f4583f2b9b7c
+workers: prompt 210.4 ms, a step 22.38 ms (the frames and the logits' body each step); sha256 c3e9f0c6d8f90ab68c15ccb21ce9e91a68e7049b87ad493d0b48f4583f2b9b7c
+all checks passed

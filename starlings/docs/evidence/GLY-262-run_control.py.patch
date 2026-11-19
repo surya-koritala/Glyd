@@ -1,0 +1,166 @@
+--- a/run_control.py
++++ b/run_control.py
+@@ -2 +2 @@
+-import hashlib,json,os,pathlib,platform,signal,socket,subprocess,sys,threading,time,urllib.error,urllib.request,sqlite3
++import hashlib,json,os,pathlib,platform,signal,socket,subprocess,sys,threading,time,sqlite3
+@@ -5,0 +6 @@
++control_events=[];control_next={};resource_history=[]
+@@ -10 +11 @@
+-state_lock=threading.Lock();children={};locks={};groups=set();samples=[];faults=[];watch_stop=threading.Event();runs=[];statuses=[];requests=0;success=False;stage='direct';failure_phase=None;phase='preflight';direct_generations=0;reference=None;service_history=[];token_path=coordinator/'routing-profile-token.json'
++state_lock=threading.Lock();children={};locks={};groups=set();samples=[];faults=[];watch_stop=threading.Event();success=False;failure_phase=None;phase='preflight';service_history=[];token_path=coordinator/'routing-profile-token.json'
+@@ -13,0 +15,4 @@
++ if args[0]=='cluster':
++  delay=control_next.get(str(state),0)-time.monotonic()
++  if delay>0:time.sleep(delay)
++  control_next[str(state)]=time.monotonic()+.2
+@@ -15 +20,11 @@
+- r=subprocess.run([str(BIN),'--state-dir',str(state),*map(str,args)],capture_output=True,timeout=timeout)
++ operation='/'.join(args[:2])
++ if operation not in {'cluster/status','cluster/service','cluster/permissions','cluster/token','cluster/revoke-token','cluster/route','cluster/resources','cluster/stop','model/route-digest','model/qualification-target'}:operation='unknown_operation'
++ role=state.name if state.name in {'worker','coordinator'} else 'unknown_role'
++ try:r=subprocess.run([str(BIN),'--state-dir',str(state),*map(str,args)],capture_output=True,timeout=timeout)
++ except subprocess.TimeoutExpired:
++  control_events.append({'operation':operation,'role':role,'code':'CONTROL_TIMEOUT','returncode':None});raise
++ if r.returncode:
++  code='UNKNOWN_CONTROL_ERROR'
++  for prefix,label in [('REFUSED: CONTROL_UNAVAILABLE:','CONTROL_OUTCOME_UNKNOWN'),('REFUSED: CONTROL_EXPIRED:','CONTROL_NOT_EXECUTED'),('REFUSED: ROUTE_ACTIVATION_REFUSED','ROUTE_ACTIVATION_REFUSED'),('REFUSED: CONTROL_BUSY','CONTROL_BUSY'),('REFUSED: SECURITY_Denied:','CONTROL_DENIED'),('REFUSED: SECURITY_Invalid:','CONTROL_INVALID'),('REFUSED: SECURITY_Capacity:','CONTROL_CAPACITY'),('SECURITY_Capacity:','CONTROL_CAPACITY'),('REFUSED: SECURITY_Transport:','CONTROL_TRANSPORT'),('SECURITY_Transport:','CONTROL_TRANSPORT'),('DAEMON_UNAVAILABLE:','DAEMON_UNAVAILABLE')]:
++   if r.stderr.decode(errors='replace').startswith(prefix):code=label;break
++  control_events.append({'operation':operation,'role':role,'returncode':r.returncode,'code':code})
+@@ -112,0 +128,5 @@
++def ready_resource():
++ value=report(coordinator,'resources',ids['worker'])
++ observed=None if value is None else {'state':value['sample']['capabilities']['state'],'sequence':value['sample']['sequence'],'age_ms':value['age_ms']}
++ if not resource_history or observed!=resource_history[-1]:resource_history.append(observed)
++ return value if value is not None and value['sample']['capabilities']['state']=='ready' else None
+@@ -121,60 +140,0 @@
+-def chat(stream=False,text='Reply with the single word ready.',limit=8):
+- body={'model':model,'messages':[{'role':'user','content':text}],'max_tokens':limit,'temperature':0,'top_p':1,'seed':42,'stream':stream}
+- if stream and stage=='direct':body['stream_options']={'include_usage':True}
+- return body
+-def send(body,authorized=True):
+- global requests
+- if faults or time.monotonic()>=DEADLINE:raise RuntimeError('WATCHDOG_STOP')
+- data=json.dumps(body).encode();req=urllib.request.Request('http://'+address+'/v1/chat/completions',data=data,headers={'Content-Type':'application/json',**({'Authorization':'Bearer '+token} if authorized else {})})
+- return urllib.request.urlopen(req,timeout=min(60,max(.01,DEADLINE-time.monotonic())))
+-def refused(body,code,authorized=True):
+- try:
+-  with send(body,authorized):pass
+-  raise RuntimeError('EXPECTED_REFUSAL')
+- except urllib.error.HTTPError as error:
+-  assert error.code==code;statuses.append(code)
+-def decode_stream(response,revoke=False):
+- value={'content':'','reasoning_content':'','finish':None,'usage':None};done=False;revoked=False
+- while True:
+-  line=response.readline(65537)
+-  if len(line)>65536:raise RuntimeError('STREAM_EVENT_LIMIT')
+-  if not line:break
+-  if not line.startswith(b'data: '):continue
+-  if done:raise RuntimeError('OUTPUT_AFTER_DONE')
+-  data=line[6:].strip()
+-  if data==b'[DONE]':done=True;continue
+-  event=json.loads(data)
+-  if event.get('error'):
+-   if revoke:continue
+-   raise RuntimeError('STREAM_FAILURE')
+-  if event.get('choices'):
+-   c=event['choices'][0];delta=c.get('delta',{})
+-   value['content']+=delta.get('content') or '';value['reasoning_content']+=delta.get('reasoning_content') or ''
+-   if c.get('finish_reason') is not None:value['finish']=c['finish_reason']
+-   if revoke and not revoked and (delta.get('content') or delta.get('reasoning_content')):
+-    assert not done;call(coordinator,'cluster','revoke-token',token_path);revoked=True
+-  if event.get('usage') is not None:value['usage']=event['usage']
+- if revoke:
+-  assert revoked and not done
+-  return None
+- assert done
+- if stage=='proxy':assert response.headers.get('X-Compute-Session-Id')
+- return value
+-def generate(stream=False,revoke=False):
+- global requests
+- requests+=1
+- if requests>20:raise RuntimeError('GENERATION_BUDGET')
+- before=time.monotonic()
+- with send(chat(stream)) as response:
+-  assert response.status==200
+-  if stream:value=decode_stream(response,revoke)
+-  else:
+-   raw=response.read(1024**2+1);assert len(raw)<=1024**2
+-   body=json.loads(raw);c=body['choices'][0];m=c['message'];value={'content':m.get('content') or '','reasoning_content':m.get('reasoning_content') or '','finish':c['finish_reason'],'usage':body['usage']}
+- if value is not None:
+-  u=value['usage']
+-  if not isinstance(u,dict) or any(type(u.get(k)) is not int for k in ('prompt_tokens','completion_tokens','total_tokens')) or u['prompt_tokens']!=17 or not 0<=u['completion_tokens']<=8 or u['total_tokens']!=17+u['completion_tokens']:raise RuntimeError('USAGE_MISSING_OR_INVALID')
+-  if stage=='proxy':wait_for(settled,5)
+-  else:wait_for(direct_idle,2)
+- runs.append({'stream':stream,'stage':stage,'elapsed_ms':round((time.monotonic()-before)*1000),'trusted_request_drained':value is not None})
+- return value
+@@ -191,38 +150,0 @@
+- # Direct reference uses the same cached artifact/runtime/precision/threads and fixed input.
+- direct_config=worker_route['service']; model=direct_config['backend_model']
+- direct_key=os.urandom(32).hex();token=direct_key
+- with socket.socket() as reserved:reserved.bind(('127.0.0.1',0));port=reserved.getsockname()[1]
+- address='127.0.0.1:'+str(port)
+- args=list(direct_config['arguments']);args[args.index('--port')+1]=str(port)
+- phase='direct_launch'
+- log=open(ROOT/'direct.log','wb')
+- direct=subprocess.Popen([direct_config['executable'],*args],cwd=direct_config['directory'],env={direct_config['key_environment']:direct_key},stdout=log,stderr=log,start_new_session=True);log.close()
+- with state_lock:children['direct']=direct;locks['direct']=threading.Lock()
+- def direct_get(path):
+-  req=urllib.request.Request('http://'+address+path,headers={'Authorization':'Bearer '+direct_key})
+-  with urllib.request.urlopen(req,timeout=2) as response:
+-   data=response.read(65537);assert len(data)<=65536
+-   return json.loads(data)
+- def direct_ready():
+-  try:
+-   models=direct_get('/v1/models')['data']
+-   assert len(models)==1 and models[0]['id']==model
+-   return True
+-  except urllib.error.HTTPError as error:
+-   if error.code!=503:raise
+-   return False
+-  except urllib.error.URLError:return False
+- def direct_idle():
+-  slots=direct_get('/slots');return len(slots)==1 and slots[0].get('is_processing') is False
+- phase='direct_readiness'
+- wait_for(direct_ready,60)
+- phase='direct_comparison'
+- for _ in range(5):
+-  for stream in (False,True):
+-   value=generate(stream)
+-   if reference is None:reference=value
+-   assert value==reference
+- interrupt('direct')
+- with locks['direct']:direct.wait(timeout=8)
+- assert not any(group==direct.pid for _,_,group,_ in rows()),'DIRECT_GROUP_REMAINING'
+- del direct_key;stage='proxy';model=worker_route['qualification']['replica']['manifest']
+@@ -232 +154 @@
+- for node,action in [(ids['coordinator'],'control'),(ids['worker'],'infer'),(ids['client'],'infer')]:
++ for node,action in [(ids['coordinator'],'control'),(ids['worker'],'infer')]:
+@@ -234,2 +155,0 @@
+- call(coordinator,'cluster','token',ids['client'],scopes,'300',token_path)
+- secret=json.loads(token_path.read_text())['secret'];assert len(secret)==32;token=bytes(secret).hex();del secret
+@@ -242 +162,5 @@
+- route_digest=json.loads(call(coordinator,'model','route-digest',route))['configuration'];call(coordinator,'cluster','route',route,'--approve',route_digest)
++ phase='coordinator_route_hash'
++ route_digest=json.loads(call(coordinator,'model','route-digest',route))['configuration']
++ phase='coordinator_route_activation'
++ call(coordinator,'cluster','route',route,'--approve',route_digest)
++ phase='coordinator_route_status'
+@@ -244,7 +168,5 @@
+- wait_for(lambda:report(coordinator,'resources',ids['worker'])['sample']['capabilities']['state']=='ready',10)
+- phase='proxy_comparison'
+- for _ in range(5):
+-  for stream in (False,True):assert generate(stream)==reference
+- assert requests==20 and len(runs)==20
+- routing=field(call(coordinator,'cluster','status'),'routing=')
+- routing=json.loads(routing);assert routing['retained_requests']==0 and routing['retained_bytes']=='0'
++ phase='coordinator_resource_readiness'
++ wait_for(ready_resource,10)
++ phase='coordinator_empty_route'
++ routing=json.loads(field(call(coordinator,'cluster','status'),'routing='))
++ assert routing['retained_requests']==0 and routing['retained_bytes']=='0'
+@@ -254 +176 @@
+- faults.append('ACCEPTANCE_'+('USAGE_MISSING_OR_INVALID' if str(error)=='USAGE_MISSING_OR_INVALID' else type(error).__name__))
++ faults.append('ACCEPTANCE_'+(str(error) if str(error) in {'USAGE_MISSING_OR_INVALID','CONTROL_COMMAND_FAILED','STATE_TIMEOUT','JOB_DEADLINE','SERVICE_STARTUP_FAILED'} else type(error).__name__))
+@@ -279 +201 @@
+- result={'kind':'NativeCurrentRouteCPUComparison','success':success and not faults and remaining is False,'service_status_history':service_history,'implementation':prep['implementation_commit'],'binary_sha256':prep['binary_sha256'],'manifest':worker_route['qualification']['replica']['manifest'],'service_configuration':prep['configuration'],'worker_record':prep['worker_record_digest'],'profile_evidence':prep['profile_evidence'],'generations_requested':requests,'count_call_upper_bound':requests*2+(1 if requests else 0),'count_calls_instrumented':False,'output_tokens_total_cap':160,'runs':runs,'json_sse_semantic_parity':success,'matched_direct_proxy':success,'physical_hosts':1,'two_machine_qualification':False,'temporary_token_rows':token_rows,'old_ownership_preserved':old_preserved,'direct_pin_retained':(ROOT/'direct-pin.json').exists(),'quarantine_retained':(worker/'cache/models/service-start.json').exists(),'process_observation_available':remaining is not None,'owned_server_groups_observed':len(server_groups),'owned_group_remaining':remaining,'sampled_owned_peak_rss_bytes':max(samples,default=0),'sample_interval_ms':100,'elapsed_seconds':round(time.monotonic()-START,3),'external_spend_usd':0,'faults':faults,'failure_phase':failure_phase,'general_production_qualification_issued':False,'service_cleanup_qualified':False,'base_conversion_fidelity_qualified':False}
++ result={'kind':'NativeRoutingControlDiagnosis','success':success and not faults and remaining is False,'control_failures':control_events,'control_spacing_seconds':.2,'resource_history':resource_history,'service_status_history':service_history,'implementation':prep['implementation_commit'],'binary_sha256':prep['binary_sha256'],'manifest':worker_route['qualification']['replica']['manifest'],'service_configuration':prep['configuration'],'worker_record':prep['worker_record_digest'],'profile_evidence':prep['profile_evidence'],'generations_requested':0,'count_call_upper_bound':0,'count_calls_instrumented':False,'output_tokens_total_cap':0,'runs':[],'json_sse_semantic_parity':False,'matched_direct_proxy':False,'physical_hosts':1,'two_machine_qualification':False,'temporary_token_rows':token_rows,'old_ownership_preserved':old_preserved,'direct_pin_retained':(ROOT/'direct-pin.json').exists(),'quarantine_retained':(worker/'cache/models/service-start.json').exists(),'process_observation_available':remaining is not None,'owned_server_groups_observed':len(server_groups),'owned_group_remaining':remaining,'sampled_owned_peak_rss_bytes':max(samples,default=0),'sample_interval_ms':100,'elapsed_seconds':round(time.monotonic()-START,3),'external_spend_usd':0,'faults':faults,'failure_phase':failure_phase,'general_production_qualification_issued':False,'service_cleanup_qualified':False,'base_conversion_fidelity_qualified':False}

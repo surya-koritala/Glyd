@@ -1,5 +1,5 @@
 """Text for the lossless KV cache's stress test (kv_stress.py), written for it: short passages in fourteen languages and scripts, and generators for the
-kinds of text a tokenizer cuts into odd tokens (numbers, tables, hex, base64, code, mathematics). Our own text, under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code."""
+kinds of text a tokenizer cuts into odd tokens (numbers, tables, hex, base64, code, mathematics). Our own text, under the Apache License 2.0 (LICENSE), as the rest of Glyd."""
 import base64
 import random
 

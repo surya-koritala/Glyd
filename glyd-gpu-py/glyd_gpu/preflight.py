@@ -21,7 +21,7 @@ memory, benchmarks/gpu/l4-local-chat-2026-09-30):
 - compiled (vLLM's own default: torch.compile and CUDA graphs) wherever it fits, eager (`--enforce-eager`) where only eager leaves room for
   the chat: compiled needs 2.15 GiB beyond the weights where eager needs 0.5, and on an RTX 4090 and an RTX 5090 eager gave Qwen3.5-9B
   under a third of compiled's tokens a second (on an L4 with Qwen3-8B eager was within 2-3% of compiled).
-Under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code.
+Under the Apache License 2.0 (LICENSE), as the rest of Glyd.
 """
 import errno
 import glob

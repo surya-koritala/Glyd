@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:starlings:tensor-header:v1",
+  "title": "GCP1 tensor frame JSON header \u2014 draft",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "TensorChunk"
+    },
+    "protocol_version": {
+      "const": 1
+    },
+    "lease_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "plan_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "authority_epoch": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "generation_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "invocation_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sequence": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+    },
+    "source_stage": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 7
+    },
+    "destination_stage": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 7
+    },
+    "phase": {
+      "type": "string",
+      "enum": [
+        "prefill",
+        "decode"
+      ]
+    },
+    "position_start": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1048575
+    },
+    "token_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1048576
+    },
+    "boundary_profile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "tensor_index": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 7
+    },
+    "tensor_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8
+    },
+    "tensor_role": {
+      "type": "string",
+      "enum": [
+        "hidden",
+        "residual",
+        "token_ids"
+      ]
+    },
+    "dtype": {
+      "type": "string",
+      "enum": [
+        "bf16",
+        "f16",
+        "f32",
+        "u32"
+      ]
+    },
+    "shape": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1048576
+      },
+      "minItems": 1,
+      "maxItems": 4
+    },
+    "total_tensor_bytes": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+    },
+    "chunk_offset_bytes": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+    },
+    "chunk_bytes": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]{0,19})$",
+      "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+    },
+    "end_of_tensor": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "kind",
+    "protocol_version",
+    "lease_id",
+    "plan_digest",
+    "authority_epoch",
+    "session_id",
+    "generation_id",
+    "invocation_id",
+    "sequence",
+    "source_stage",
+    "destination_stage",
+    "phase",
+    "position_start",
+    "token_count",
+    "boundary_profile",
+    "tensor_index",
+    "tensor_count",
+    "tensor_role",
+    "dtype",
+    "shape",
+    "total_tensor_bytes",
+    "chunk_offset_bytes",
+    "chunk_bytes",
+    "end_of_tensor"
+  ]
+}

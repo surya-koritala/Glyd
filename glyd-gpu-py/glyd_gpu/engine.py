@@ -22,7 +22,7 @@ level are refused with status 1, and nothing runs.
 The settings the vLLM path reads and the engine does not (GLYD_KV other than auto, GLYD_LAYOUT, GLYD_EXACT, GLYD_VERIFY, GLYD_FRACTION) keep the command on the vLLM path where one is set. The
 Rust `glyd` (the compression program) passes run and serve to this tool, with GLYD_ENGINE naming the engine program it found where the user named none, and GLYD_ENGINE_ASKED=1 where the user's
 GLYD_ENGINE was 1 (the tool tells the engine's preflight so in the same variable).
-Under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code.
+Under the Apache License 2.0 (LICENSE), as the rest of Glyd.
 """
 import json
 import os

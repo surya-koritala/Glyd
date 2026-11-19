@@ -1,0 +1,16 @@
+{
+  "kind": "PostRunHardwareInventory",
+  "platform": "Darwin",
+  "architecture": "arm64",
+  "macos_version": "27.0",
+  "macos_build": "26A428",
+  "hardware_model": "MacBookPro18,2",
+  "cpu_model": "Apple M1 Max",
+  "ram_bytes": 34359738368,
+  "physical_cpu_count": 10,
+  "logical_cpu_count": 10,
+  "physical_hosts": 1,
+  "network": "loopback only",
+  "gpu_used": false,
+  "inventory_observation": "sandbox hw.model refused; host-permission read-only retry succeeded; no native repeat"
+}

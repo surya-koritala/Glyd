@@ -17,7 +17,7 @@ engine: vLLM with kv lossless (and --verify: a bf16 shadow of every layer's cach
 GlydKVVerifyError is the failure; written: per workload what the pool took (kv_status), and the cache entirely of repeated tokens, with the pool the plugin made. --ext: prefix
 caching and chunked prefill on (1,024 tokens a step): the prompts' shared starts are cache hits and the long ones go in chunks, so rows read their contexts through the staging cache (with --verify, compared with the shadow).
 
-Under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code."""
+Under the Apache License 2.0 (LICENSE), as the rest of Glyd."""
 import json
 import os
 import random

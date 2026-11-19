@@ -1,0 +1,28 @@
+{
+  "kind": "NativeFullComparisonApproval",
+  "response": "Approve one bounded full comparison",
+  "recorded_at_utc": "2026-10-14T18:18:07.539486+00:00",
+  "plan_sha256": "9c140c222378b1de034bf16880f840aa358f39df75d8a77beea6356c573c7d64",
+  "runner_sha256": "00d867278eb06343daf1506c1b3930ea2068e1ab593146d772b0183d8fda2c4c",
+  "precondition": "PR #63 passes all seven exact-head checks and merges before native execution",
+  "bounds": {
+    "attempts": 1,
+    "sequential_cpu_starts": 2,
+    "cpu_threads": 2,
+    "generation_requests": 20,
+    "output_tokens_per_request_cap": 8,
+    "output_tokens_total_cap": 160,
+    "count_call_upper_bound": 41,
+    "wall_seconds_including_cleanup": 300,
+    "monitored_owned_rss_bytes": 4294967296,
+    "spend_usd": 0,
+    "loopback_only": true,
+    "cached_assets_only": true,
+    "download": false,
+    "rebuild": false,
+    "gpu": false,
+    "ubuntu": false,
+    "automatic_repeat": false,
+    "quarantine_reset": false
+  }
+}

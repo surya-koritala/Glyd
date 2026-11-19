@@ -4,7 +4,7 @@
  * glyd saved compressed is multiplied from where it is held in GPU memory, or unpacked back to bf16 bit for bit. The
  * glyd_gpu Python package calls these through ctypes; C, C++, Rust or any language with a C FFI calls the same.
  *
- * License: BUSL-1.1 (LICENSE).
+ * License: Apache-2.0 (LICENSE).
  *
  * A packed matrix W [O, K] (O rows, K columns: the pack's "shape" in glyd.json) is passed as a glyd save holds it, as it
  * is: its arrays, the safetensors tensors <module>.glyd_<array>, copied to device memory, and its parameters, the

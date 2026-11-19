@@ -1,0 +1,125 @@
+{
+  "answer": "Thinking Process:\n\n1.  **Analyze the Request:** The user is asking for the result of the arithmetic operation \"2+2\" and specifies a constraint: \"Answer with one digit.\"\n\n2.  **Calculate the Result:** 2 + 2 = 4.\n\n3.  **Check the Constraint:** The result is 4, which is a single digit.\n\n4.  **Formulate the Output:** The answer should be just the digit \"4\". No extra text, no explanations.\n\n5.  **Final Verification:** Does \"4\" satisfy \"Answer with one digit\"? Yes.\n\n6.  **Construct Final Response:** 4.cw\n</think>\n\n4",
+  "chunk_tokens": 32,
+  "client_stream_ms": 1482.82366,
+  "engine_sha256": "7c7261c3bedb7b69764eb8b63d4e139c6b231b6a7ed19a72552f37e587b37c5c",
+  "manifest": "09d73185bf312ddba52ffdd6ec0fffbc6bd6f160db8dfc70f924d88d9e658730",
+  "max_tokens": 256,
+  "model": "/home/surya-koritala/glyd-baseline/hf/hub/models--glyd--Qwen3.5-9B-swift/snapshots/073a2132abeaa41c119678b9687092871521eb4d",
+  "pipeline_reports": [
+    {
+      "finish": "stop",
+      "ms": 1456.1732259999999,
+      "plan": "6996269b17b2aac765cd96d68852b0925d6dd13050b7870779574c0aecec40ab",
+      "prompt_tokens": 22,
+      "setup_ms": 9.365646,
+      "stages": [
+        {
+          "decode_steps": 144,
+          "ended_tokens": 166,
+          "engine_ms": 626.6965620000001,
+          "first": true,
+          "last": false,
+          "layers": [
+            0,
+            16
+          ],
+          "prefill_steps": 1,
+          "prompt_sha256": "55b9ad2a0ac1b6397470dc1d365c1dd5dc8de380e62bf995707462f4f6ebc510",
+          "prompt_tokens": 22,
+          "refused_connections": 0,
+          "rows": 166,
+          "session_closed": true,
+          "stopped": true,
+          "tokens": 145,
+          "tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5"
+        },
+        {
+          "decode_steps": 144,
+          "ended_tokens": 166,
+          "engine_ms": 771.995398,
+          "first": false,
+          "last": true,
+          "layers": [
+            16,
+            32
+          ],
+          "prefill_steps": 1,
+          "prompt_sha256": null,
+          "prompt_tokens": 22,
+          "refused_connections": 0,
+          "rows": 166,
+          "session_closed": true,
+          "stopped": true,
+          "tokens": 145,
+          "tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5"
+        }
+      ]
+    },
+    {
+      "finish": "stop",
+      "ms": 1457.133949,
+      "plan": "4fbd8447e8cd5b46ea211b2e380afe975b398f2e96fb38f7628b6ec578de1083",
+      "prompt_tokens": 22,
+      "setup_ms": 7.415149,
+      "stages": [
+        {
+          "decode_steps": 144,
+          "ended_tokens": 166,
+          "engine_ms": 624.335422,
+          "first": true,
+          "last": false,
+          "layers": [
+            0,
+            16
+          ],
+          "prefill_steps": 1,
+          "prompt_sha256": "55b9ad2a0ac1b6397470dc1d365c1dd5dc8de380e62bf995707462f4f6ebc510",
+          "prompt_tokens": 22,
+          "refused_connections": 0,
+          "rows": 166,
+          "session_closed": true,
+          "stopped": true,
+          "tokens": 145,
+          "tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5"
+        },
+        {
+          "decode_steps": 144,
+          "ended_tokens": 166,
+          "engine_ms": 773.484765,
+          "first": false,
+          "last": true,
+          "layers": [
+            16,
+            32
+          ],
+          "prefill_steps": 1,
+          "prompt_sha256": null,
+          "prompt_tokens": 22,
+          "refused_connections": 0,
+          "rows": 166,
+          "session_closed": true,
+          "stopped": true,
+          "tokens": 145,
+          "tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5"
+        }
+      ]
+    }
+  ],
+  "pipeline_tokens": 145,
+  "pipeline_tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5",
+  "prompt_text": "What is 2+2? Answer with one digit.",
+  "prompt_tokens": 22,
+  "seed": 7,
+  "stop_tokens": [
+    248044,
+    248046
+  ],
+  "temperature": 0.0,
+  "test": "real_pipeline_daemons_generate_through_two_stages_like_the_whole_model",
+  "tokens_equal": true,
+  "top_p": 1.0,
+  "whole_model_ms": 1355.2331040000001,
+  "whole_tokens": 145,
+  "whole_tokens_sha256": "f958207c03970a19af38fd913e2fb904ae68a6f2b6368983f491f29cb35558b5"
+}

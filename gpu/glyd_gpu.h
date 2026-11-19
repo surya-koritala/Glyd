@@ -8,7 +8,7 @@
  * language with a C FFI calls the same. gpu/examples/unpack.c decodes a
  * saved model's matrix with them.
  *
- * License: BUSL-1.1 (gpu/LICENSE).
+ * License: Apache-2.0 (gpu/LICENSE).
  *
  * Every call: arrays in device memory (bf16 as its bits, uint16_t) but for a
  * layout's words (tiers[3], kt[3], vt[3], sym[4]) and a workspace query's

@@ -7,8 +7,8 @@ class Glyd < Formula
   desc "Compression for object storage: record mode, packs, a cross-object store"
   homepage "https://getglyd.com"
   version "0.32.1"
-  # BUSL-1.1 from v0.29.0, the glyd and glyd-store programs both (v0.28.0 and earlier: glyd BSD-3-Clause or GPL-2.0, glyd-store BUSL-1.1).
-  license "BUSL-1.1"
+  # Apache-2.0 from the release after v0.32.1 (v0.29.0 to v0.32.1: BUSL-1.1; v0.28.0 and earlier: glyd BSD-3-Clause or GPL-2.0, glyd-store BUSL-1.1).
+  license "Apache-2.0"
 
   head do
     url "https://github.com/surya-koritala/Glyd.git", branch: "main"

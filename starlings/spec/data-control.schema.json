@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:starlings:data-control:v1",
+  "title": "GCP1 bounded control headers v1",
+  "$defs": {
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "plan_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authority_epoch": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        },
+        "lease_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "session_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "generation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "invocation_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "sequence": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        },
+        "source_stage": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "destination_stage": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        }
+      },
+      "required": [
+        "plan_digest",
+        "authority_epoch",
+        "lease_id",
+        "session_id",
+        "generation_id",
+        "invocation_id",
+        "sequence",
+        "source_stage",
+        "destination_stage"
+      ]
+    },
+    "failure": {
+      "type": "string",
+      "enum": [
+        "cancelled",
+        "expired",
+        "protocol",
+        "capacity",
+        "backend",
+        "disconnected"
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "Credit"
+        },
+        "protocol_version": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        }
+      },
+      "required": [
+        "kind",
+        "protocol_version",
+        "scope",
+        "bytes"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "ReceiptAck"
+        },
+        "protocol_version": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "tensor_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "received_through_bytes": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,19})$",
+          "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+        }
+      },
+      "required": [
+        "kind",
+        "protocol_version",
+        "scope",
+        "tensor_index",
+        "received_through_bytes"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "ExecutionResult"
+        },
+        "protocol_version": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        }
+      },
+      "required": [
+        "kind",
+        "protocol_version",
+        "scope"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "Cancel"
+        },
+        "protocol_version": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "code": {
+          "$ref": "#/$defs/failure"
+        }
+      },
+      "required": [
+        "kind",
+        "protocol_version",
+        "scope",
+        "code"
+      ]
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "Error"
+        },
+        "protocol_version": {
+          "const": 1
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "code": {
+          "$ref": "#/$defs/failure"
+        }
+      },
+      "required": [
+        "kind",
+        "protocol_version",
+        "scope",
+        "code"
+      ]
+    }
+  ]
+}

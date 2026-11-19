@@ -1,0 +1,308 @@
+{
+  "kind": "ModelManifest",
+  "manifest_version": 1,
+  "fixture": false,
+  "manifest_digest": "8f993f2242910f9f535611e0e82e62e6054bcaccc96dc28297f09bc6731e0835",
+  "canonicalization": "RFC8785-without-manifest_digest",
+  "model_id": "unsloth/Qwen3.5-0.8B-GGUF:BF16-artifact-text",
+  "source": {
+    "repository": "unsloth/Qwen3.5-0.8B-GGUF",
+    "revision": "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0",
+    "created_at_evidence": "2026-03-01T14:38:35.000Z"
+  },
+  "architecture": "qwen35",
+  "source_precision": "mixed-bf16-f32",
+  "execution_precision": "mixed-bf16-f32",
+  "execution_profile": "cpu-qwen35-gguf-bf16-f32-f32kv-ctx128-v1",
+  "is_lossy": false,
+  "execution_scope": [
+    "text"
+  ],
+  "required_boundary_profile": "opaque-whole-request-v1",
+  "config_sha256": "2a9c57d8070cf9a78ab550ce7e8a4bd9dccc021549392565a08ce258e417acf8",
+  "tokenizer_sha256": "e1dbc2de94c3ed6498abf601cab218da59e30d24ded4cc69e63477fbfc408f3d",
+  "template_sha256": "7f0e529032c25183bcd66c7f238da2d377f43be754a94e2725a58c4e16d2ed67",
+  "assets": [
+    {
+      "path": "metadata.json",
+      "role": "config",
+      "sha256": "2a9c57d8070cf9a78ab550ce7e8a4bd9dccc021549392565a08ce258e417acf8",
+      "size_bytes": "1305"
+    },
+    {
+      "path": "tokenizer.json",
+      "role": "tokenizer",
+      "sha256": "e1dbc2de94c3ed6498abf601cab218da59e30d24ded4cc69e63477fbfc408f3d",
+      "size_bytes": "7960004"
+    },
+    {
+      "path": "template.txt",
+      "role": "template",
+      "sha256": "7f0e529032c25183bcd66c7f238da2d377f43be754a94e2725a58c4e16d2ed67",
+      "size_bytes": "7816"
+    },
+    {
+      "path": "weights.gguf",
+      "role": "weights",
+      "sha256": "cedf89af31c9041b601fa58303285bc46d99c51baee1b13f5e919626ca526ee5",
+      "size_bytes": "1516744736"
+    }
+  ],
+  "layers": [
+    {
+      "index": 0,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 1,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 2,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 3,
+      "type": "full_attention",
+      "resident_weight_bytes": "36710400",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 4,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 5,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 6,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 7,
+      "type": "full_attention",
+      "resident_weight_bytes": "36710400",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 8,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 9,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 10,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 11,
+      "type": "full_attention",
+      "resident_weight_bytes": "36710400",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 12,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 13,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 14,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 15,
+      "type": "full_attention",
+      "resident_weight_bytes": "36710400",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 16,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 17,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 18,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 19,
+      "type": "full_attention",
+      "resident_weight_bytes": "36710400",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 20,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 21,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 22,
+      "type": "linear_attention",
+      "resident_weight_bytes": "43164288",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "index": 23,
+      "type": "full_attention",
+      "resident_weight_bytes": "36710400",
+      "state_profile": "whole-service-owned-v1",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    }
+  ],
+  "non_layer_components": [
+    {
+      "name": "embedding",
+      "disposition": "executed",
+      "resident_weight_bytes": "508559360",
+      "owner_role": "first",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "name": "final_norm_and_tied_head",
+      "disposition": "executed",
+      "resident_weight_bytes": "4096",
+      "owner_role": "last",
+      "asset_paths": [
+        "weights.gguf"
+      ]
+    },
+    {
+      "name": "separate_vision_projector",
+      "disposition": "not_in_scope",
+      "resident_weight_bytes": "0",
+      "owner_role": "none",
+      "asset_paths": []
+    },
+    {
+      "name": "mtp",
+      "disposition": "not_in_scope",
+      "resident_weight_bytes": "0",
+      "owner_role": "none",
+      "asset_paths": []
+    }
+  ],
+  "license": {
+    "source_identifier": "Apache-2.0",
+    "terms_url": "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/blob/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/README.md",
+    "redistribution_approved": false
+  }
+}

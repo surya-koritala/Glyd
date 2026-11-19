@@ -64,4 +64,4 @@ bit for bit (`gpu/examples/unpack.c` in Rust):
 
     cargo run --release -p glyd-gpu --example unpack -- qwen3-0.6b-glyd ~/.cache/huggingface/hub/models--Qwen--Qwen3-0.6B/snapshots/*/
 
-License: the Business Source License 1.1 (LICENSE), as all of Glyd from v0.29.0.
+License: the Apache License 2.0 (LICENSE), as all of Glyd.

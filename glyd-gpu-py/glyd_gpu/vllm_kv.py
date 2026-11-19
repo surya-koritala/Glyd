@@ -49,7 +49,7 @@ vLLM's internals it relies on, beyond vllm_plugin's (vLLM 0.30; the entry point 
 - v1.worker.gpu_worker.warmup_kernels (the V2 runner's warmup of its kernels, with steps of dummy requests whose prompts are the token ids 0, 1, 2 ...), wrapped, and only for a model whose tables count tokens
   the cache cannot store at 12 bits (skip_warmup_writes: the KV writes of those steps are skipped);
 - v1.worker.gpu_worker.Worker.execute_model, wrapped (release_early): the blocks handed over are cleared first, before the model runner zeroes new blocks and copies Mamba states (hybrid models).
-Under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code."""
+Under the Apache License 2.0 (LICENSE), as the rest of Glyd."""
 import dataclasses
 import functools
 import os

@@ -1,0 +1,19 @@
+[
+  {
+    "dataset": "openai/gsm8k",
+    "task_id": "gsm8k",
+    "value": 1.0,
+    "n": 25,
+    "shard": "1/2",
+    "limit": 150,
+    "slice": [
+      125,
+      150
+    ],
+    "harness": {
+      "inspect_ai": "0.3.278",
+      "inspect_evals": "0.24.0"
+    },
+    "notes": "10-shot, numeric match, non-thinking"
+  }
+]

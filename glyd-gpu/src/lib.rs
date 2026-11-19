@@ -20,7 +20,7 @@
 //! them), live and not written by other work until the stream has run the
 //! call; bf16 is its bits, `u16`.
 //!
-//! License: BUSL-1.1 (LICENSE).
+//! License: Apache-2.0 (LICENSE).
 
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::fmt;

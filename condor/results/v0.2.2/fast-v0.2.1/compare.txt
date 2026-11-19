@@ -1,0 +1,582 @@
+warm-up request ...
+| Chat (short prompt) | 33 | 0.11 | 297 | 120.3 | 512 |
+| ~4K prompt | 4016 | 1.40 | 2860 | 117.3 | 189 |
+| ~30K prompt | 29663 | 7.36 | 4033 | 140.8 | 178 |
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Generating train split: 0 examples [00:00, ? examples/s]Generating train split: 7473 examples [00:00, 576198.28 examples/s]
+Generating test split: 0 examples [00:00, ? examples/s]Generating test split: 1319 examples [00:00, 757432.50 examples/s]
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 2245274.63 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 2204066.79 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 997887.26 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 956646.55 examples/s]
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Generating test split:   0%|          | 0/12032 [00:00<?, ? examples/s]Generating test split: 100%|██████████| 12032/12032 [00:00<00:00, 830700.17 examples/s]
+Generating validation split:   0%|          | 0/70 [00:00<?, ? examples/s]Generating validation split: 100%|██████████| 70/70 [00:00<00:00, 63798.63 examples/s]
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 1585033.00 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 1572978.39 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+---------------------------------------------------------                       
+                                                                                
+generate     | Steps:   2/25   8% | Samples:   2/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   6/25  24% | Samples:   6/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   8/25  32% | Samples:   8/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  11/25  44% | Samples:  11/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  13/25  52% | Samples:  13/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  15/25  60% | Samples:  15/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  18/25  72% | Samples:  18/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+generate     | Steps:  21/25  84% | Samples:  21/ 25 | accuracy: 1.00 | openai-api:  4/ 8 | HTTP retries: 0
+generate     | Steps:  23/25  92% | Samples:  23/ 25 | accuracy: 1.00 | openai-api:  2/ 8 | HTTP retries: 0
+generate     | Steps:  25/25 100% | Samples:  25/ 25 | accuracy: 1.00 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+                                                                                
+total time:                 0:00:54                                             
+openai-api/glyd/q           60,627 tokens [I: 56,781, O: 3,846]                 
+match                                                                           
+accuracy  1.000                                                                 
+stderr    0.000                                                                 
+Log:                                                                            
+cmp/gsm8k-0/logs/2026-10-20T03-19-32-00-00_gsm8k_BNyTTfBubSSpcsiBQpofu8.eval    
+---------------------------------------------------------                       
+                                                                                
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 916411.83 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 907365.50 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 1000413.56 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 954500.86 examples/s] 
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 954401.08 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 949463.16 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+---------------------------------------------------------                       
+                                                                                
+generate     | Steps:   2/25   8% | Samples:   2/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   6/25  24% | Samples:   6/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   9/25  36% | Samples:   9/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  11/25  44% | Samples:  11/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  13/25  52% | Samples:  13/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  15/25  60% | Samples:  15/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  18/25  72% | Samples:  18/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+generate     | Steps:  20/25  80% | Samples:  20/ 25 | accuracy: 1.00 | openai-api:  5/ 8 | HTTP retries: 0
+generate     | Steps:  23/25  92% | Samples:  23/ 25 | accuracy: 1.00 | openai-api:  2/ 8 | HTTP retries: 0
+generate     | Steps:  25/25 100% | Samples:  25/ 25 | accuracy: 1.00 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+                                                                                
+total time:                 0:00:53                                             
+openai-api/glyd/q           60,589 tokens [I: 56,814, O: 3,775]                 
+match                                                                           
+accuracy  1.000                                                                 
+stderr    0.000                                                                 
+Log:                                                                            
+cmp/gsm8k-25/logs/2026-10-20T03-20-30-00-00_gsm8k_QdPoCN5xtNjG9JUrxemDXZ.eval   
+---------------------------------------------------------                       
+                                                                                
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 882955.40 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 874359.34 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 963141.88 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 920513.64 examples/s]
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 968040.09 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 961602.59 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+---------------------------------------------------------                       
+                                                                                
+generate     | Steps:   2/25   8% | Samples:   2/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   6/25  24% | Samples:   6/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   9/25  36% | Samples:   9/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  11/25  44% | Samples:  11/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  14/25  56% | Samples:  14/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  16/25  64% | Samples:  16/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  19/25  76% | Samples:  19/ 25 | accuracy: 1.00 | openai-api:  6/ 8 | HTTP retries: 0
+generate     | Steps:  21/25  84% | Samples:  21/ 25 | accuracy: 1.00 | openai-api:  4/ 8 | HTTP retries: 0
+generate     | Steps:  23/25  92% | Samples:  23/ 25 | accuracy: 1.00 | openai-api:  2/ 8 | HTTP retries: 0
+generate     | Steps:  25/25 100% | Samples:  25/ 25 | accuracy: 1.00 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+                                                                                
+total time:                 0:00:53                                             
+openai-api/glyd/q           60,564 tokens [I: 56,942, O: 3,622]                 
+match                                                                           
+accuracy  1.000                                                                 
+stderr    0.000                                                                 
+Log:                                                                            
+cmp/gsm8k-50/logs/2026-10-20T03-21-26-00-00_gsm8k_i2AYrH9xFayss5FXHJ9my7.eval   
+---------------------------------------------------------                       
+                                                                                
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 913420.77 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 904824.74 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 1012312.35 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 971258.25 examples/s] 
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 945159.86 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 939809.04 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+---------------------------------------------------------                       
+                                                                                
+generate     | Steps:   2/25   8% | Samples:   2/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   7/25  28% | Samples:   7/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   9/25  36% | Samples:   9/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  11/25  44% | Samples:  11/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  13/25  52% | Samples:  13/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  16/25  64% | Samples:  16/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  17/25  68% | Samples:  17/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  20/25  80% | Samples:  20/ 25 | accuracy: 1.00 | openai-api:  5/ 8 | HTTP retries: 0
+generate     | Steps:  22/25  88% | Samples:  22/ 25 | accuracy: 1.00 | openai-api:  3/ 8 | HTTP retries: 0
+generate     | Steps:  25/25 100% | Samples:  25/ 25 | accuracy: 0.96 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+                                                                                
+total time:                 0:00:55                                             
+openai-api/glyd/q           60,805 tokens [I: 56,763, O: 4,042]                 
+match                                                                           
+accuracy  0.960                                                                 
+stderr    0.040                                                                 
+Log:                                                                            
+cmp/gsm8k-75/logs/2026-10-20T03-22-22-00-00_gsm8k_gXLG6vN7MfTu8MsaqfNtss.eval   
+---------------------------------------------------------                       
+                                                                                
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 958621.09 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 948726.73 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 978992.56 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 939746.39 examples/s]
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 958588.80 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 952851.34 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+---------------------------------------------------------                       
+                                                                                
+generate     | Steps:   2/25   8% | Samples:   2/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   7/25  28% | Samples:   7/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   9/25  36% | Samples:   9/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  11/25  44% | Samples:  11/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  13/25  52% | Samples:  13/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  16/25  64% | Samples:  16/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  18/25  72% | Samples:  18/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+generate     | Steps:  21/25  84% | Samples:  21/ 25 | accuracy: 1.00 | openai-api:  4/ 8 | HTTP retries: 0
+generate     | Steps:  23/25  92% | Samples:  23/ 25 | accuracy: 0.96 | openai-api:  2/ 8 | HTTP retries: 0
+generate     | Steps:  25/25 100% | Samples:  25/ 25 | accuracy: 0.96 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+                                                                                
+total time:                 0:00:53                                             
+openai-api/glyd/q           60,808 tokens [I: 56,750, O: 4,058]                 
+match                                                                           
+accuracy  0.960                                                                 
+stderr    0.040                                                                 
+Log:                                                                            
+cmp/gsm8k-100/logs/2026-10-20T03-23-20-00-00_gsm8k_DEJoXTsovYbsaxWSJeVQ8v.eval  
+---------------------------------------------------------                       
+                                                                                
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 980542.88 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 972360.29 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 998968.40 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 959966.51 examples/s]
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 955937.75 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 950822.70 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+---------------------------------------------------------                       
+                                                                                
+generate     | Steps:   2/25   8% | Samples:   2/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   6/25  24% | Samples:   6/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:   8/25  32% | Samples:   8/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  11/25  44% | Samples:  11/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  14/25  56% | Samples:  14/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  16/25  64% | Samples:  16/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+generate     | Steps:  19/25  76% | Samples:  19/ 25 | accuracy: 1.00 | openai-api:  6/ 8 | HTTP retries: 0
+generate     | Steps:  21/25  84% | Samples:  21/ 25 | accuracy: 1.00 | openai-api:  4/ 8 | HTTP retries: 0
+generate     | Steps:  24/25  96% | Samples:  24/ 25 | accuracy: 1.00 | openai-api:  1/ 8 | HTTP retries: 0
+generate     | Steps:  25/25 100% | Samples:  25/ 25 | accuracy: 0.96 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+gsm8k (25 samples): openai-api/glyd/q                                           
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+dataset: openai/gsm8k                                                           
+                                                                                
+total time:                 0:00:52                                             
+openai-api/glyd/q           60,901 tokens [I: 56,747, O: 4,154]                 
+match                                                                           
+accuracy  0.960                                                                 
+stderr    0.040                                                                 
+Log:                                                                            
+cmp/gsm8k-125/logs/2026-10-20T03-24-17-00-00_gsm8k_o6MeafSD38nTAQXEGLxX2J.eval  
+---------------------------------------------------------                       
+                                                                                
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 953865.91 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 946063.62 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 1019212.78 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 980380.47 examples/s] 
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 988712.55 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 977017.13 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+---------------------------------------------------------                       
+                                                                                
+multiple_... | Steps:   1/25   4% | Samples:   1/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   2/25   8% | Samples:   1/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   3/25  12% | Samples:   3/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   5/25  20% | Samples:   5/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   6/25  24% | Samples:   5/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   7/25  28% | Samples:   7/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   8/25  32% | Samples:   7/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   9/25  36% | Samples:   8/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  10/25  40% | Samples:  10/ 25 | accuracy: 0.90 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  11/25  44% | Samples:  10/ 25 | accuracy: 0.90 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  12/25  48% | Samples:  12/ 25 | accuracy: 0.83 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  13/25  52% | Samples:  12/ 25 | accuracy: 0.83 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  14/25  56% | Samples:  14/ 25 | accuracy: 0.79 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  15/25  60% | Samples:  15/ 25 | accuracy: 0.80 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  16/25  64% | Samples:  16/ 25 | accuracy: 0.81 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  17/25  68% | Samples:  16/ 25 | accuracy: 0.81 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  18/25  72% | Samples:  18/ 25 | accuracy: 0.78 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  19/25  76% | Samples:  18/ 25 | accuracy: 0.78 | openai-api:  6/ 8 | HTTP retries: 0
+multiple_... | Steps:  20/25  80% | Samples:  20/ 25 | accuracy: 0.80 | openai-api:  5/ 8 | HTTP retries: 0
+multiple_... | Steps:  21/25  84% | Samples:  20/ 25 | accuracy: 0.80 | openai-api:  4/ 8 | HTTP retries: 0
+multiple_... | Steps:  22/25  88% | Samples:  22/ 25 | accuracy: 0.82 | openai-api:  3/ 8 | HTTP retries: 0
+multiple_... | Steps:  23/25  92% | Samples:  23/ 25 | accuracy: 0.83 | openai-api:  2/ 8 | HTTP retries: 0
+multiple_... | Steps:  24/25  96% | Samples:  23/ 25 | accuracy: 0.83 | openai-api:  1/ 8 | HTTP retries: 0
+multiple_... | Steps:  25/25 100% | Samples:  25/ 25 | accuracy: 0.84 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+                                                                                
+total time:                 0:03:32                                             
+openai-api/glyd/q           41,108 tokens [I: 6,421, O: 34,687]                 
+choice                                                                          
+accuracy  0.840                                                                 
+stderr    0.075                                                                 
+Log:                                                                            
+cmp/mmlu_pro-0/logs/2026-10-20T03-25-13-00-00_mmlu-pro_HQXftScJindVRccp2cbFFA.e…
+---------------------------------------------------------                       
+                                                                                
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 932386.41 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 920529.63 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 716431.88 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 677810.22 examples/s]
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 914800.16 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 909606.27 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+---------------------------------------------------------                       
+                                                                                
+multiple_... | Steps:   1/25   4% | Samples:   1/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   2/25   8% | Samples:   2/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   3/25  12% | Samples:   2/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 0.75 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   5/25  20% | Samples:   4/ 25 | accuracy: 0.75 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   6/25  24% | Samples:   5/ 25 | accuracy: 0.80 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   7/25  28% | Samples:   7/ 25 | accuracy: 0.71 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   8/25  32% | Samples:   7/ 25 | accuracy: 0.71 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   9/25  36% | Samples:   9/ 25 | accuracy: 0.78 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  10/25  40% | Samples:   9/ 25 | accuracy: 0.78 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  11/25  44% | Samples:  10/ 25 | accuracy: 0.70 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  12/25  48% | Samples:  12/ 25 | accuracy: 0.67 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  13/25  52% | Samples:  13/ 25 | accuracy: 0.69 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  14/25  56% | Samples:  14/ 25 | accuracy: 0.71 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  15/25  60% | Samples:  15/ 25 | accuracy: 0.73 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  16/25  64% | Samples:  16/ 25 | accuracy: 0.75 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  17/25  68% | Samples:  16/ 25 | accuracy: 0.75 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  18/25  72% | Samples:  18/ 25 | accuracy: 0.78 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  20/25  80% | Samples:  20/ 25 | accuracy: 0.80 | openai-api:  5/ 8 | HTTP retries: 0
+multiple_... | Steps:  21/25  84% | Samples:  20/ 25 | accuracy: 0.80 | openai-api:  4/ 8 | HTTP retries: 0
+multiple_... | Steps:  22/25  88% | Samples:  22/ 25 | accuracy: 0.77 | openai-api:  3/ 8 | HTTP retries: 0
+multiple_... | Steps:  23/25  92% | Samples:  22/ 25 | accuracy: 0.77 | openai-api:  2/ 8 | HTTP retries: 0
+multiple_... | Steps:  24/25  96% | Samples:  23/ 25 | accuracy: 0.78 | openai-api:  1/ 8 | HTTP retries: 0
+multiple_... | Steps:  25/25 100% | Samples:  25/ 25 | accuracy: 0.80 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+                                                                                
+total time:                 0:03:23                                             
+openai-api/glyd/q           40,769 tokens [I: 6,096, O: 34,673]                 
+choice                                                                          
+accuracy  0.800                                                                 
+stderr    0.082                                                                 
+Log:                                                                            
+cmp/mmlu_pro-25/logs/2026-10-20T03-28-48-00-00_mmlu-pro_PGNuG5iPAiVEo9QxGMWqLP.…
+---------------------------------------------------------                       
+                                                                                
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 918264.31 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 907050.40 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 937358.01 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 900144.32 examples/s]
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 912303.01 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 907398.33 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+---------------------------------------------------------                       
+                                                                                
+multiple_... | Steps:   1/25   4% | Samples:   1/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   2/25   8% | Samples:   1/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   3/25  12% | Samples:   3/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   5/25  20% | Samples:   5/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   6/25  24% | Samples:   5/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   7/25  28% | Samples:   7/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   8/25  32% | Samples:   8/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  10/25  40% | Samples:  10/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  11/25  44% | Samples:  10/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  12/25  48% | Samples:  11/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  13/25  52% | Samples:  13/ 25 | accuracy: 0.92 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  14/25  56% | Samples:  14/ 25 | accuracy: 0.93 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  15/25  60% | Samples:  15/ 25 | accuracy: 0.93 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  16/25  64% | Samples:  16/ 25 | accuracy: 0.94 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  17/25  68% | Samples:  17/ 25 | accuracy: 0.94 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  18/25  72% | Samples:  18/ 25 | accuracy: 0.94 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  19/25  76% | Samples:  19/ 25 | accuracy: 0.95 | openai-api:  6/ 8 | HTTP retries: 0
+multiple_... | Steps:  20/25  80% | Samples:  20/ 25 | accuracy: 0.90 | openai-api:  5/ 8 | HTTP retries: 0
+multiple_... | Steps:  21/25  84% | Samples:  21/ 25 | accuracy: 0.90 | openai-api:  4/ 8 | HTTP retries: 0
+multiple_... | Steps:  22/25  88% | Samples:  22/ 25 | accuracy: 0.91 | openai-api:  3/ 8 | HTTP retries: 0
+multiple_... | Steps:  24/25  96% | Samples:  24/ 25 | accuracy: 0.92 | openai-api:  1/ 8 | HTTP retries: 0
+multiple_... | Steps:  25/25 100% | Samples:  25/ 25 | accuracy: 0.92 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+                                                                                
+total time:                 0:02:31                                             
+openai-api/glyd/q           29,965 tokens [I: 5,705, O: 24,260]                 
+choice                                                                          
+accuracy  0.920                                                                 
+stderr    0.055                                                                 
+Log:                                                                            
+cmp/mmlu_pro-50/logs/2026-10-20T03-32-14-00-00_mmlu-pro_89j3UMMZzfwJhcdzGm2AKi.…
+---------------------------------------------------------                       
+                                                                                
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 2276916.59 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 2219360.89 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 948121.16 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 905596.17 examples/s]
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 1600109.89 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 1584734.36 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+---------------------------------------------------------                       
+                                                                                
+multiple_... | Steps:   1/25   4% | Samples:   1/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   2/25   8% | Samples:   2/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   3/25  12% | Samples:   2/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 0.75 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   5/25  20% | Samples:   4/ 25 | accuracy: 0.75 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   6/25  24% | Samples:   6/ 25 | accuracy: 0.67 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   7/25  28% | Samples:   7/ 25 | accuracy: 0.71 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   8/25  32% | Samples:   8/ 25 | accuracy: 0.75 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   9/25  36% | Samples:   8/ 25 | accuracy: 0.75 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  10/25  40% | Samples:  10/ 25 | accuracy: 0.70 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  11/25  44% | Samples:  10/ 25 | accuracy: 0.70 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  12/25  48% | Samples:  11/ 25 | accuracy: 0.64 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  14/25  56% | Samples:  14/ 25 | accuracy: 0.64 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  15/25  60% | Samples:  15/ 25 | accuracy: 0.67 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  16/25  64% | Samples:  16/ 25 | accuracy: 0.69 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  18/25  72% | Samples:  18/ 25 | accuracy: 0.72 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  20/25  80% | Samples:  20/ 25 | accuracy: 0.75 | openai-api:  5/ 8 | HTTP retries: 0
+multiple_... | Steps:  21/25  84% | Samples:  21/ 25 | accuracy: 0.76 | openai-api:  4/ 8 | HTTP retries: 0
+multiple_... | Steps:  22/25  88% | Samples:  22/ 25 | accuracy: 0.77 | openai-api:  3/ 8 | HTTP retries: 0
+multiple_... | Steps:  23/25  92% | Samples:  23/ 25 | accuracy: 0.78 | openai-api:  2/ 8 | HTTP retries: 0
+multiple_... | Steps:  24/25  96% | Samples:  23/ 25 | accuracy: 0.78 | openai-api:  1/ 8 | HTTP retries: 0
+multiple_... | Steps:  25/25 100% | Samples:  24/ 25 | accuracy: 0.79 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+                                                                                
+total time:                 0:03:03                                             
+openai-api/glyd/q           37,344 tokens [I: 6,071, O: 31,273]                 
+choice                                                                          
+accuracy  0.760                                                                 
+stderr    0.087                                                                 
+Log:                                                                            
+cmp/mmlu_pro-75/logs/2026-10-20T03-34-48-00-00_mmlu-pro_7ep7vWTbE3PtPwer3sJKW6.…
+---------------------------------------------------------                       
+                                                                                
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 936817.32 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 928684.60 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 812615.60 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 785724.61 examples/s]
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 956336.28 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 951145.27 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+---------------------------------------------------------                       
+                                                                                
+multiple_... | Steps:   1/25   4% | Samples:   1/ 25 | accuracy: 1.00 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   2/25   8% | Samples:   1/ 25 | accuracy: 1.00 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   3/25  12% | Samples:   3/ 25 | accuracy: 0.67 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 0.75 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   5/25  20% | Samples:   5/ 25 | accuracy: 0.80 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   7/25  28% | Samples:   7/ 25 | accuracy: 0.86 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   8/25  32% | Samples:   7/ 25 | accuracy: 0.86 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   9/25  36% | Samples:   8/ 25 | accuracy: 0.88 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  10/25  40% | Samples:   9/ 25 | accuracy: 0.89 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  11/25  44% | Samples:  11/ 25 | accuracy: 0.82 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  12/25  48% | Samples:  11/ 25 | accuracy: 0.82 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  13/25  52% | Samples:  13/ 25 | accuracy: 0.77 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  14/25  56% | Samples:  14/ 25 | accuracy: 0.79 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  16/25  64% | Samples:  16/ 25 | accuracy: 0.81 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  17/25  68% | Samples:  17/ 25 | accuracy: 0.82 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  18/25  72% | Samples:  17/ 25 | accuracy: 0.82 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  19/25  76% | Samples:  18/ 25 | accuracy: 0.78 | openai-api:  6/ 8 | HTTP retries: 0
+multiple_... | Steps:  20/25  80% | Samples:  20/ 25 | accuracy: 0.80 | openai-api:  5/ 8 | HTTP retries: 0
+multiple_... | Steps:  21/25  84% | Samples:  21/ 25 | accuracy: 0.81 | openai-api:  4/ 8 | HTTP retries: 0
+multiple_... | Steps:  22/25  88% | Samples:  21/ 25 | accuracy: 0.81 | openai-api:  3/ 8 | HTTP retries: 0
+multiple_... | Steps:  23/25  92% | Samples:  23/ 25 | accuracy: 0.83 | openai-api:  2/ 8 | HTTP retries: 0
+multiple_... | Steps:  24/25  96% | Samples:  24/ 25 | accuracy: 0.83 | openai-api:  1/ 8 | HTTP retries: 0
+multiple_... | Steps:  25/25 100% | Samples:  25/ 25 | accuracy: 0.84 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+                                                                                
+total time:                 0:02:59                                             
+openai-api/glyd/q           36,157 tokens [I: 6,337, O: 29,820]                 
+choice                                                                          
+accuracy  0.840                                                                 
+stderr    0.075                                                                 
+Log:                                                                            
+cmp/mmlu_pro-100/logs/2026-10-20T03-37-55-00-00_mmlu-pro_C4DkFD8Hc63VXLX24QEuSq…
+---------------------------------------------------------                       
+                                                                                
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/7473 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 936649.35 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 7473/7473 [00:00<00:00, 927064.00 examples/s]
+Loading dataset openai/gsm8k from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/1319 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 965326.64 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 1319/1319 [00:00<00:00, 928547.66 examples/s]
+Loading dataset TIGER-Lab/MMLU-Pro from Hugging Face...
+Saving the dataset (0/1 shards):   0%|          | 0/12032 [00:00<?, ? examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 963603.94 examples/s]Saving the dataset (1/1 shards): 100%|██████████| 12032/12032 [00:00<00:00, 957606.56 examples/s]
+Running 1 tasks...
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+---------------------------------------------------------                       
+                                                                                
+multiple_... | Steps:   2/25   8% | Samples:   2/ 25 | accuracy: 0.50 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   3/25  12% | Samples:   2/ 25 | accuracy: 0.50 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   4/25  16% | Samples:   4/ 25 | accuracy: 0.50 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   5/25  20% | Samples:   5/ 25 | accuracy: 0.60 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   6/25  24% | Samples:   6/ 25 | accuracy: 0.67 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   7/25  28% | Samples:   6/ 25 | accuracy: 0.67 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:   8/25  32% | Samples:   8/ 25 | accuracy: 0.62 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:   9/25  36% | Samples:   9/ 25 | accuracy: 0.67 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  10/25  40% | Samples:  10/ 25 | accuracy: 0.70 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  11/25  44% | Samples:  11/ 25 | accuracy: 0.73 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  12/25  48% | Samples:  12/ 25 | accuracy: 0.75 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  14/25  56% | Samples:  14/ 25 | accuracy: 0.79 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  15/25  60% | Samples:  15/ 25 | accuracy: 0.80 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  16/25  64% | Samples:  15/ 25 | accuracy: 0.80 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  17/25  68% | Samples:  17/ 25 | accuracy: 0.71 | openai-api:  8/ 8 | HTTP retries: 0
+multiple_... | Steps:  18/25  72% | Samples:  18/ 25 | accuracy: 0.72 | openai-api:  7/ 8 | HTTP retries: 0
+multiple_... | Steps:  19/25  76% | Samples:  19/ 25 | accuracy: 0.74 | openai-api:  6/ 8 | HTTP retries: 0
+multiple_... | Steps:  20/25  80% | Samples:  19/ 25 | accuracy: 0.74 | openai-api:  5/ 8 | HTTP retries: 0
+multiple_... | Steps:  21/25  84% | Samples:  21/ 25 | accuracy: 0.76 | openai-api:  4/ 8 | HTTP retries: 0
+multiple_... | Steps:  23/25  92% | Samples:  23/ 25 | accuracy: 0.78 | openai-api:  2/ 8 | HTTP retries: 0
+multiple_... | Steps:  24/25  96% | Samples:  23/ 25 | accuracy: 0.78 | openai-api:  1/ 8 | HTTP retries: 0
+multiple_... | Steps:  25/25 100% | Samples:  25/ 25 | accuracy: 0.80 | openai-api:  0/ 8 | HTTP retries: 0
+
+---------------------------------------------------------                       
+mmlu_pro (25 samples): openai-api/glyd/q                                        
+max_connections: 8, max_tokens: 3072, temperature: 0.0, extra_body: {...},      
+shuffle: False, dataset: TIGER-Lab/MMLU-Pro                                     
+                                                                                
+total time:                 0:02:36                                             
+openai-api/glyd/q           32,843 tokens [I: 7,199, O: 25,644]                 
+choice                                                                          
+accuracy  0.800                                                                 
+stderr    0.082                                                                 
+Log:                                                                            
+cmp/mmlu_pro-125/logs/2026-10-20T03-40-57-00-00_mmlu-pro_XsmEKKW7YCvmp2knRBDzJB…
+---------------------------------------------------------                       
+                                                                                
+
+---- paste from here ----
+```
+compare.py compare-v1, 2026-10-19 23:43 EDT
+Server:  http://127.0.0.1:8096, model q
+Note:    v0.2.1 fast experts, control
+GPU:     NVIDIA GeForce RTX 4080 SUPER, 16376 MiB
+Driver:  595.91.07
+PCIe:    now gen 4 x16, max gen 4 x16
+CPU:     AMD Ryzen 9 7950X3D 16-Core Processor
+RAM:     61 GiB
+OS:      Ubuntu 26.04.1 LTS, kernel 7.0.0-38-generic
+| Test | Prompt tokens | First token (s) | Prompt read (tokens/s) | Writing (tokens/s) | Tokens written |
+|---|--:|--:|--:|--:|--:|
+| Chat (short prompt) | 33 | 0.11 | 297 | 120.3 | 512 |
+| ~4K prompt | 4016 | 1.40 | 2860 | 117.3 | 189 |
+| ~30K prompt | 29663 | 7.36 | 4033 | 140.8 | 178 |
+GSM8K     147 / 150   (0 hit the 3,072 cap, mean 157 tokens an answer)
+MMLU-Pro  124 / 150   (18 hit the 3,072 cap, mean 1202 tokens an answer)
+```
+---- to here ----

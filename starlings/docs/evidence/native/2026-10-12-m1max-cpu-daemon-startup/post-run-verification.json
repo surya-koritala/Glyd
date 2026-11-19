@@ -1,0 +1,7 @@
+{
+  "kind": "NativeDaemonPostRunVerification",
+  "temporary_token_in_database": false,
+  "quarantine_retained": true,
+  "native_requests": 0,
+  "spend_usd": 0
+}

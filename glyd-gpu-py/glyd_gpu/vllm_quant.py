@@ -41,7 +41,7 @@ of vLLM's methods, in the order of ModelConfig._verify_quantization's overrides 
 (model_config, load_config) and models.utils.get_draft_quant_config (vllm_config); the config classes' from_config and their
 objects' state (copied into the subclass), get_quant_method, maybe_update_config, get_min_capability, get_supported_act_dtypes;
 UnquantizedLinearMethod, UnquantizedEmbeddingMethod; ModelConfig.is_nvfp4_quantized and model_arch_config.quantization_config.
-It copies none of vLLM's code. Under the Business Source License 1.1 (LICENSE), as the rest of Glyd's GPU code."""
+It copies none of vLLM's code. Under the Apache License 2.0 (LICENSE), as the rest of Glyd."""
 import copy
 import sys
 

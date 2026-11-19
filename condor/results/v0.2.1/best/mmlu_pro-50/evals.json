@@ -1,0 +1,19 @@
+[
+  {
+    "dataset": "TIGER-Lab/MMLU-Pro",
+    "task_id": "mmlu_pro",
+    "value": 0.88,
+    "n": 25,
+    "shard": "1/2",
+    "limit": 150,
+    "slice": [
+      50,
+      75
+    ],
+    "harness": {
+      "inspect_ai": "0.3.278",
+      "inspect_evals": "0.24.0"
+    },
+    "notes": "0-shot chain of thought, non-thinking"
+  }
+]

@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:starlings:model-manifest:v1",
+  "title": "Verified model inventory \u2014 draft",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "ModelManifest"
+    },
+    "manifest_version": {
+      "const": 1
+    },
+    "fixture": {
+      "type": "boolean"
+    },
+    "manifest_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "canonicalization": {
+      "const": "RFC8785-without-manifest_digest"
+    },
+    "model_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "created_at_evidence": {
+          "type": "string",
+          "format": "date-time",
+          "maxLength": 40
+        }
+      },
+      "required": [
+        "repository",
+        "revision",
+        "created_at_evidence"
+      ]
+    },
+    "architecture": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "source_precision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "execution_precision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "execution_profile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "is_lossy": {
+      "type": "boolean"
+    },
+    "execution_scope": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "text",
+          "vision",
+          "audio",
+          "mtp"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 4
+    },
+    "required_boundary_profile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "config_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "tokenizer_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "template_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_./-]{0,255}$"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "config",
+              "tokenizer",
+              "template",
+              "weights",
+              "conversion_metadata"
+            ]
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size_bytes": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,19})$",
+            "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+          }
+        },
+        "required": [
+          "path",
+          "role",
+          "sha256",
+          "size_bytes"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    },
+    "layers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4095
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "full_attention",
+              "linear_attention",
+              "other"
+            ]
+          },
+          "resident_weight_bytes": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,19})$",
+            "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+          },
+          "state_profile": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "asset_paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "minItems": 1,
+            "maxItems": 1024
+          }
+        },
+        "required": [
+          "index",
+          "type",
+          "resident_weight_bytes",
+          "state_profile",
+          "asset_paths"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 4096
+    },
+    "non_layer_components": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "disposition": {
+            "type": "string",
+            "enum": [
+              "executed",
+              "not_in_scope",
+              "unsupported"
+            ]
+          },
+          "resident_weight_bytes": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]{0,19})$",
+            "description": "Canonical decimal u64. Also reject values above 18446744073709551615 in semantic validation."
+          },
+          "owner_role": {
+            "type": "string",
+            "enum": [
+              "first",
+              "last",
+              "none"
+            ]
+          },
+          "asset_paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "minItems": 0,
+            "maxItems": 1024
+          }
+        },
+        "required": [
+          "name",
+          "disposition",
+          "resident_weight_bytes",
+          "owner_role",
+          "asset_paths"
+        ]
+      },
+      "minItems": 1,
+      "maxItems": 128
+    },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_identifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "terms_url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "redistribution_approved": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source_identifier",
+        "terms_url",
+        "redistribution_approved"
+      ]
+    }
+  },
+  "required": [
+    "kind",
+    "manifest_version",
+    "fixture",
+    "manifest_digest",
+    "canonicalization",
+    "model_id",
+    "source",
+    "architecture",
+    "source_precision",
+    "execution_precision",
+    "execution_profile",
+    "is_lossy",
+    "execution_scope",
+    "required_boundary_profile",
+    "config_sha256",
+    "tokenizer_sha256",
+    "template_sha256",
+    "assets",
+    "layers",
+    "non_layer_components",
+    "license"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "kind": "NativeServiceRecoveryPreparation",
+  "implementation_commit": "419a6fdbb6e26d008d7e407ce3c4121738dbd86f",
+  "binary_sha256": "4b1abdea6193208a776999faa08045b5c85c382879004e1dcf8af6340c708a89",
+  "configuration": "db15560f87a2cdf03c8e984add657f4f4a06fb47272854c65f34ed03b0552b1f",
+  "worker_record_digest": "10361f54e172cbe3f1004f7b944f679cea0430f6845438b36636a723517f0cc4",
+  "profile_evidence": "deaf6a2e97d06b22214a495759e56a48e4830f2217f8b59cb59658a4b0b7b0c1",
+  "worker_file_sha256": "872fe3094801ab4ab7164e418ec0cdfbeda6a58c7cb89e26c891a8a4558f5773",
+  "coordinator_template_sha256": "9a94516903e85e2d8a1a76c405291a383b208eb1e91500722fcdd7f7263b5c28",
+  "policy_scope": "proposed fixed-input monitored CPU experiment; verified cache path/node/cluster plus disabled diagnostic backtrace and exact pre-reviewed cleanup policy; bounded experimental route, not a general qualification",
+  "native_started": false,
+  "approval_granted": false,
+  "prior_quarantine_preserved": true,
+  "old_ownership_files_sha256": {
+    "/private/tmp/glyd-m2-daemon-3-7ca2939d/worker/cache/models/service-start.json": "395fa4b0fff37d98934b5cb3e117a79fe7da9d23254b6de3a0e1544300315f52",
+    "/private/tmp/glyd-m2-daemon-3-7ca2939d/worker/cache/models/pin-dca8b946-a014-4b0c-b1dd-10464ca752de.json": "5dd3e7288fec2769757ae9ff2858629e61b5de034a5b8c55fc7356f49131fe6e",
+    "/private/tmp/glyd-m2-qualification-8f993f22/worker/cache/models/service-start.json": "a95423df5ba4f301b74dfefac735cc2dc44bb975d034775ba8b793aaf4b84f60",
+    "/private/tmp/glyd-m2-qualification-8f993f22/worker/cache/models/pin-badac062-7b66-40a7-a94f-43ffe56339e4.json": "f661d0659c851c57bc7a92be0432d4de988299e0a23c913daa5f23439861f58e",
+    "/private/tmp/glyd-m2-recovery-59a5aee6/worker/cache/models/service-start.json": "04fef73431770ed0c3880606d65173c8bf47cb535669f506d2188346949f22ff",
+    "/private/tmp/glyd-m2-recovery-59a5aee6/worker/cache/models/pin-b8e097f9-9a2f-4e3a-b482-a8566b741dac.json": "6b2a8740d7dbd91c237ceecb772474e23a1051cf0e37b4b961a54178f0e241cd"
+  },
+  "runner_sha256": "4da99d8523806bafb3db6b00cc4313c26b9604d3942ec2f4970cd4f25097722e",
+  "cleanup_policy_source_review": "697cab7b280d1bf94871df36601f7816446d1c753616386cc274d5e4f70861a0",
+  "preflight_requires_host_permission": true,
+  "control_check": "outputs/M2-recovery-control-check.json",
+  "control_spacing_seconds": 0.2
+}

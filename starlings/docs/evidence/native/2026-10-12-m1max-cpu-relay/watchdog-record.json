@@ -1,0 +1,18 @@
+{
+  "failure": null,
+  "exit_code": 0,
+  "elapsed_seconds": 23.183,
+  "configuration_digest": "d4d455b75dce64a5eadcf1603a2a00416237d511d94fcbc64208a501f84f9bf5",
+  "owned_server_observed": true,
+  "owned_server_remaining": false,
+  "owned_group_remaining": false,
+  "scope": "three CPU requests, at most eight output tokens each; two prompt counts; two service starts",
+  "implementation_head": "0535cc14296fdf9ee432d2da9e89acc3c3b4cbfc",
+  "harness_sha256": "20cdbd2c3c5cdaf8195aec7127e9ab4c1283f9546281a97672283ac0d8ee5f9d",
+  "sampled_server_peak_rss_kib": 1630976,
+  "rss_sample_period_ms": 100,
+  "rss_is_reservation_profile": false,
+  "external_spend_usd": 0,
+  "manifest_identity_is_catalog_qualified": false,
+  "relay_record_found": true
+}

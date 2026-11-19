@@ -17,7 +17,7 @@ one after the other, in one call that never reads the ids on the host: the step'
 The codec in effect: DEFAULT, or the "f8_codec" option of --additional-config's "glyd". "f8" (DEFAULT) is the lossless FP8 format (the library's
 glyd_gpu_f8_pack, _unpack and _unpack_experts through kernels.py; fp8ref.py's docstring is the layout): about 6.7 bits a value where the rows' bytes
 are a multiple of 128 (a matrix whose rows are not is packed as its bytes 128 at a time, so that no patch is mostly padding). "identity" (the bytes as
-they are, no gain) stays for the checks. Under the Business Source License 1.1 (LICENSE-glyd-gpu), as the rest of Glyd's GPU code."""
+they are, no gain) stays for the checks. Under the Apache License 2.0 (LICENSE), as the rest of Glyd."""
 import os
 
 import torch

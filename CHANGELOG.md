@@ -8,6 +8,12 @@ every earlier format.
 
 ## Unreleased
 
+- **Glyd is open source, all of it, under the Apache License 2.0.** The GPU library and its kernels (`gpu/`), the packer (`glyd-gpu/`),
+  the Python GPU package (`glyd-gpu-py/`) and Glyd's engine (`glyd-engine/`), released compiled only from v0.27, are in this repository with
+  their source, beside the codec and the store. Condor (`condor/`) and Starlings (`starlings/`, one model across GPUs and machines) moved in
+  too. Releases v0.29.0 to v0.32.1 shipped under the Business Source License 1.1; their code is Apache-2.0 here.
+- Release builds no longer rename the kernels or strip the engine's development commands: the binaries are built from this source as it
+  reads.
 - On Linux with an NVIDIA GPU, install.sh installs the Rust `glyd`, Glyd's engine and its GPU library in one folder: about 100 MB, no
   Python, no PyTorch. `GLYD_WITH_VLLM=1` installs the Python tool with vLLM as before (about 8 GB), for the bf16 models the engine does not
   run; a machine that already has the Python tool keeps it.
