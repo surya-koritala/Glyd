@@ -109,6 +109,13 @@ pub trait Backend {
 The engine opens drivers at run time (`glyd-engine/src/ffi.rs`); nothing vendor-specific is linked, so one binary per OS
 and architecture carries every backend whose driver is present.
 
+## Build or reuse
+
+Reused (all Apache-2.0/MIT-compatible): `tokenizers`, `minijinja` (chat templates), `llguidance` (constrained decoding),
+`safetensors`, `hf-hub`, `cudarc` (cuBLAS, NCCL), `mlx-c`, NCCL/RCCL, NIXL (datacenter KV transfer). Built here: the kernels
+(one CUDA/HIP source tree, MLX custom Metal kernels, Rust SIMD on CPU), the KV block store and scheduler, the planner, the
+GGUF reader (quant kernels ported from ggml), and the API front-ends.
+
 ## Formats
 
 | Format | Bits per weight | Lossless | Notes |
