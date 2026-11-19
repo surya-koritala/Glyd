@@ -57,7 +57,7 @@
 //! ```
 //!
 //! Measured on 50 MB slices with zstd -19 as the second stage (the
-//! prototypes in experiments/structure): access logs 1.23-1.39x smaller
+//! prototypes in research/codec/experiments/structure): access logs 1.23-1.39x smaller
 //! than zstd -19 on the raw text, pageviews 1.08x, SQL dumps 1.41-1.52x.
 //! JSON lines of telemetry (cluster and weather records) through the
 //! max level: 3.5x and 2.5x smaller than zstd -3, 1.9x and 1.5x than

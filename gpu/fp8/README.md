@@ -1,6 +1,6 @@
 # Lossless FP8 (e4m3) weights: the format
 
-Private (glyd-gpu-private). Tasks 1, 2 and 5 of `docs/superpowers/plans/2026-10-05-fp8-lossless.md`: the format chosen by measurement on 2026
+Private (glyd-gpu-private). Tasks 1, 2 and 5 of `glyd-engine/docs/design/plans/2026-10-05-fp8-lossless.md`: the format chosen by measurement on 2026
 checkpoints and its numpy reference (`glyd-gpu-py/glyd_gpu/fp8ref.py`, the byte layout in its docstring), the GPU's pack and unpack, and the
 fused product of 1 to 64 tokens with the packed weights (`f8_linear`).
 

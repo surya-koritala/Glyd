@@ -13,8 +13,8 @@ own ecosystem's, and --check fails on a file in the other's. Only X.Y.Z and its 
 pre-releases (X.Y.Zrc3, X.Y.Za1, X.Y.Zb2) exist here.
 
 What carries it: the four Cargo.toml (and glyd-store's dependency on glyd), the four glyd entries in
-Cargo.lock, pyproject.toml (and its extras' pins of glyd-gpu), glyd/__init__.py, glyd-gpu-py's pyproject.toml and glyd_gpu/__init__.py and scripts/install.sh (the release it installs), in every version. In a release (X.Y.Z) also ROADMAP.md,
-docs/adoption.md and docs/index.html, where they name the current release, and CHANGELOG.md's heading
+Cargo.lock, pyproject.toml (and its extras' pins of glyd-gpu), glyd/__init__.py, glyd-gpu-py's pyproject.toml and glyd_gpu/__init__.py and scripts/install.sh (the release it installs), in every version. In a release (X.Y.Z) also ROADMAP.md
+and docs/index.html, where they name the current release, and CHANGELOG.md's heading
 (`## Unreleased` or `## vX.Y.Z (Unreleased)` becomes `## vX.Y.Z` with the date). Formula/glyd.rb is not
 here: it needs the release's files to exist, see scripts/bump_formula.py.
 """
@@ -51,7 +51,6 @@ CODE = [
 # where a release is named in prose: the text (version in group v) and what a release writes there
 DOCS = [
     ("ROADMAP.md", r"^## Where it stands \(v(?P<v>[\d.]+), \d{4}-\d{2}-\d{2}\)$", "## Where it stands (v{v}, {date})"),
-    ("docs/adoption.md", r"stands on each \(v(?P<v>[\d.]+), [A-Z][a-z]+ \d{4}\)", "stands on each (v{v}, {month})"),
     ("docs/index.html", r"Rust, C ABI, CLI; v(?P<v>[\d.]+), [A-Z][a-z]+ \d{4}\.", "Rust, C ABI, CLI; v{v}, {month}."),
 ]
 
@@ -172,9 +171,9 @@ def selftest():
         assert not problems(root) and "9.9.9rc2" in read(root, "bindings/python/pyproject.toml")
 
         changed = bump(root, "9.9.9", day)  # the release: the docs and the heading too (v0.25.1's ten files, the engine's Cargo.toml, and the installer's pin)
-        assert not problems(root) and len(changed) == 14, changed
+        assert not problems(root) and len(changed) == 13, changed
         assert f"## v9.9.9 {DASH} 2031-02-03\n" in read(root, CHANGELOG) and "(Unreleased)" not in read(root, CHANGELOG)
-        assert "(v9.9.9, 2031-02-03)" in read(root, "ROADMAP.md") and "(v9.9.9, February 2031)" in read(root, "docs/adoption.md")
+        assert "(v9.9.9, 2031-02-03)" in read(root, "ROADMAP.md")
         assert "CLI; v9.9.9, February 2031." in read(root, "docs/index.html")
         assert bump(root, "9.9.9", day) == []  # a second run changes nothing
 

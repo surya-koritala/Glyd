@@ -1,6 +1,6 @@
 // Qwen3.5's own kernels (included by engine.cu in a development build; src/model35.rs runs them): the zero-centered norms, the gated attention at head 256
 // with its partial rotary, and the linear-attention layer (the causal convolution, the gated delta rule as a recurrence and in chunks, the gated norm).
-// bf16 in memory, fp32 inside; the rounding points are vLLM 0.30's (docs/superpowers/specs/2026-10-06-engine-qwen35-design.md).
+// bf16 in memory, fp32 inside; the rounding points are vLLM 0.30's (glyd-engine/docs/design/specs/2026-10-06-engine-qwen35-design.md).
 
 // ---- norms -----------------------------------------------------------------------------------------------------------------------------
 // out [M, K] = rmsnorm(x) * (1 + w): the norms of Qwen3.5 store their weight centered on zero (vLLM's GemmaRMSNorm). One block a row, as rmsnorm.

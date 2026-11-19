@@ -20,8 +20,6 @@
 
 ## Global constraints
 
-- **Private work.** This is private work in glyd-gpu-private, branch `kv-newer`. Push to the `private` remote only, never to `origin`.
-- **Commits.** Identity `git -c user.name="Surya Koritala" -c user.email="suryakoritala1324@gmail.com" commit -s -m "<one line>"`. No AI attribution.
 - **Exact means exact.** Every value read back is the value written. No check may be loosened to pass.
 - **Head size 128 must not change.** Its outputs must stay the same bit for bit: the 81 kernel checks (`check_vllm.py --kv --kernels-only`) pass unchanged at every task, and the decode plan's bits for D = 128 do not move.
 - **Our own kernels only.** No third-party kernel code or dependencies; FlashAttention stays vLLM's installed one, called, not copied.

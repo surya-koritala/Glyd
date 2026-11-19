@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# glyd-engine runs Qwen3.5 (2026) on one GPU, unattended (docs/superpowers/plans/2026-10-06-engine-qwen35.md, tasks 10 to 12, its GPU runs batched in one):
+# glyd-engine runs Qwen3.5 (2026) on one GPU, unattended (glyd-engine/docs/design/plans/2026-10-06-engine-qwen35.md, tasks 10 to 12, its GPU runs batched in one):
 #   1. Qwen3.5's kernels against the CPU reference (glyd-engine kcheck35);
 #   2. Qwen/Qwen3.5-0.8B: the hidden states of a prompt's last token, layer by layer, against transformers' (dump35, tools/ref_dump35.py);
 #   3. Qwen/Qwen3.5-0.8B and Qwen/Qwen3.5-9B: greedy tokens of 16 short prompts and 3 long ones (the tree's README.md's first 1,030, 2,100 and 3,500 tokens; 64 tokens each) against

@@ -1,6 +1,6 @@
 # Lossless FP8 weights on the GPU
 
-This is a private design for glyd-gpu-private. The owner approved it on 2026-10-05 ("Go") in this build order, ahead of the KV work.
+Design note. The owner approved it on 2026-10-05 ("Go") in this build order, ahead of the KV work.
 
 ## Goal
 

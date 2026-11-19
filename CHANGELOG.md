@@ -1,7 +1,7 @@
 # Changelog
 
 All notable user-facing changes. Measurement history, floors and refuted
-ideas live in [CHANGELOG-BENCH.md](CHANGELOG-BENCH.md).
+ideas live in [research/codec/CHANGELOG-BENCH.md](research/codec/CHANGELOG-BENCH.md).
 Versioning follows [SemVer](https://semver.org); the on-disk format has its
 own version in every block header (v6, v7) and every release decodes
 every earlier format.
@@ -12,6 +12,9 @@ every earlier format.
   the Python GPU package (`glyd-gpu-py/`) and Glyd's engine (`glyd-engine/`), released compiled only from v0.27, are in this repository with
   their source, beside the codec and the store. Condor (`condor/`) and Starlings (`starlings/`, one model across GPUs and machines) moved in
   too. Releases v0.29.0 to v0.32.1 shipped under the Business Source License 1.1; their code is Apache-2.0 here.
+- Repository: concise developer docs (`docs/architecture.md`, `ROADMAP.md`, `CONTRIBUTING.md`); codec research records moved
+  under `research/codec/`, engine design notes under `glyd-engine/docs/design/`. CI split by path (`ci.yml`, `python.yml`,
+  `kernels.yml`); GPU tests on a self-hosted GPU machine (`gpu.yml`) or an ephemeral cloud instance (`gpu-cloud.yml`).
 - Release builds no longer rename the kernels or strip the engine's development commands: the binaries are built from this source as it
   reads.
 - On Linux with an NVIDIA GPU, install.sh installs the Rust `glyd`, Glyd's engine and its GPU library in one folder: about 100 MB, no

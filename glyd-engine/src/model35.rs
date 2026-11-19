@@ -1,6 +1,6 @@
 //! Qwen3.5 (2026) on the GPU, one sequence: the packed weights (every matrix the library packs; the small tensors as the checkpoint has them), the forward pass of its two
 //! kinds of layer (kernels/qwen35.cu), a prompt in chunks and a decode step as one CUDA graph, greedy tokens. A development build's until the engine serves the model
-//! (docs/superpowers/plans/2026-10-06-engine-qwen35.md, tasks 10 to 12).
+//! (glyd-engine/docs/design/plans/2026-10-06-engine-qwen35.md, tasks 10 to 12).
 //!
 //! A layer: x += mixer(norm1(x)); x += mlp(norm2(x)), the norms zero-centered. Full attention (1 in 4): the qkv product (each query head with its gate), the q/k norms and
 //! the rotary on 64 of 256 dims, the keys and values into a bf16 cache (contiguous: one sequence), the causal attention times sigmoid(gate), the o product. Linear attention:

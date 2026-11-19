@@ -651,7 +651,7 @@ from a coarse map of the base (one anchor per KB), so a version with
 48 MB inserted before the kernel tree still costs 18.4 MB (zstd -3
 --patch-from 18.7; a fixed window around the unit's own position,
 33.5). Chunk-level dedup, the backup approach, gains 1–4× on the same
-pairs ([experiments/structure/README.md](experiments/structure/README.md)).
+pairs ([research/codec/experiments/structure/README.md](research/codec/experiments/structure/README.md)).
 
 Over a chain of versions, the Linux 6.10 point releases (15 versions
 of a 1.5 GB tree; `scripts/download_chain.sh`, `scripts/bench_chain.sh`),
@@ -839,7 +839,7 @@ every one — at 13–22 MB/s in and 25–46 out on this Mac's cores, the
 identical JPEG back — inside a zip or an Office document too, stored
 or deflated. Parquet (its columns as records,
 26–40%, the same table rather than the same bytes) is measured in
-[experiments/research](experiments/research/README.md#j-re-doing-what-is-already-compressed)
+[research/codec/experiments/research](research/codec/experiments/research/README.md#j-re-doing-what-is-already-compressed)
 and not yet built.
 
 ### The cold level: context mixing for what is read rarely
@@ -1067,9 +1067,9 @@ Design: [docs/design/format-v7.md](docs/design/format-v7.md) (formats v7–v9,
 dictionaries, record mode, the matcher, base mode) and
 [docs/design/ultra-parse.md](docs/design/ultra-parse.md). Every
 measurement, refuted idea and floor: [docs/engineering-notes.md](docs/engineering-notes.md),
-[CHANGELOG-BENCH.md](CHANGELOG-BENCH.md) and
-[experiments/structure/README.md](experiments/structure/README.md). What
-comes next: [ROADMAP.md](ROADMAP.md).
+[research/codec/CHANGELOG-BENCH.md](research/codec/CHANGELOG-BENCH.md) and
+[research/codec/experiments/structure/README.md](research/codec/experiments/structure/README.md). What
+comes next: [research/codec/ROADMAP.md](research/codec/ROADMAP.md).
 
 Safety: the decoder is fuzzed with a million random mutations per run into
 exact-size buffers with sentinel guards, on every level; corrupted record

@@ -12,8 +12,6 @@
 
 ## Global constraints
 
-- **Private work:** branch `fp8-lossless` of glyd-gpu-private, worktree `/Users/suryakoritala/glyd-fp8`. Push to `private` only, never `origin`.
-- **Commits:** `git -c user.name="Surya Koritala" -c user.email="suryakoritala1324@gmail.com" commit -s -m "<one line>"`. No AI attribution.
 - **Lossless means bit for bit.** No check may be loosened.
 - **Our own kernels only.** vLLM's FP8 GEMM and fused-MoE are called as installed, never copied. No third-party kernel code.
 - **Compute:**

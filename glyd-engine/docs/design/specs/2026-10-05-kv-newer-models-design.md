@@ -1,6 +1,6 @@
 # The lossless KV cache for newer models: head size 256, hybrid attention, long context
 
-Private design (glyd-gpu-private). Owner's scope, 2026-10-05: Qwen3.8-style models plus long context; sliding window later.
+Design note. Owner's scope, 2026-10-05: Qwen3.8-style models plus long context; sliding window later.
 
 ## Goal
 

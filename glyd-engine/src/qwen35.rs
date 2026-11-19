@@ -1,6 +1,6 @@
 //! Qwen3.5 (2026) as the engine reads it: its config (the model with its text model under `text_config`, `qwen3_5`, or the text model
 //! alone, `qwen3_5_text`), the order of its two kinds of layer, the tensors it loads and how they are packed, and what one sequence
-//! holds. The design: docs/superpowers/specs/2026-10-06-engine-qwen35-design.md.
+//! holds. The design: glyd-engine/docs/design/specs/2026-10-06-engine-qwen35-design.md.
 
 use crate::ffi::{err, Error, Result};
 use crate::weights::{eos_ids, num};

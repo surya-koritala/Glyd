@@ -12,7 +12,7 @@
 //! delta of an older major's. Measured on
 //! a 39 GB bucket of images, releases, dumps and
 //! events: 4.6x fewer bytes than zstd -3 per object
-//! (experiments/research/README.md, section H).
+//! (research/codec/experiments/research/README.md, section H).
 //!
 //! Small objects (under `SMALL`) have nothing to fingerprint and would
 //! cost their whole size alone; they are gathered into packs (`pack`,

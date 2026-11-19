@@ -1,6 +1,6 @@
 # glyd-engine runs Qwen3.5 natively, then Gemma 4
 
-Private design (glyd-gpu-private). Owner's direction, 2026-10-06: Glyd's own engine replaces vLLM, vLLM is the fallback only; 2026 models only. This is objective 2 of `glyd-priorities`: the engine runs the 2026 models, first Qwen3.5 (and the models built on its architecture), then Gemma 4, then the MoE models.
+Design note. Owner's direction, 2026-10-06: Glyd's own engine replaces vLLM, vLLM is the fallback only; 2026 models only. This is objective 2 of `glyd-priorities`: the engine runs the 2026 models, first Qwen3.5 (and the models built on its architecture), then Gemma 4, then the MoE models.
 
 ## Goal
 
