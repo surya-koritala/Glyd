@@ -35,12 +35,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      # the public package, whose `glyd` command test_onboard.py tests (its own branch of this repository)
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          ref: glyd-shim
-          path: public
-          persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: ${{ matrix.python }}
@@ -51,7 +45,7 @@ jobs:
       - name: Tests
         working-directory: glyd-gpu-py/tests
         env:
-          PYTHONPATH: ${{ github.workspace }}/glyd-gpu-py:${{ github.workspace }}/public/bindings/python
+          PYTHONPATH: ${{ github.workspace }}/glyd-gpu-py:${{ github.workspace }}/bindings/python
         run: |
           python test_gpu.py
           python test_onboard.py
@@ -66,11 +60,6 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          ref: glyd-shim
-          path: public
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -93,7 +82,7 @@ jobs:
       - name: "Install it in CPython 3.14 with PyTorch (CPU) and test it (not the sources: nothing of the checkout is on the path)"
         working-directory: glyd-gpu-py/tests
         env:
-          PYTHONPATH: ${{ github.workspace }}/public/bindings/python
+          PYTHONPATH: ${{ github.workspace }}/bindings/python
         run: |
           python3.14 -m venv /tmp/t
           /tmp/t/bin/python -m pip install --quiet --index-url https://download.pytorch.org/whl/cpu "torch>=2.5"
@@ -113,11 +102,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          ref: glyd-shim
-          path: public
-          persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
@@ -135,7 +119,7 @@ jobs:
         working-directory: glyd-gpu-py/tests
         env:
           GLYD_REQUIRE_VLLM: "1"
-          PYTHONPATH: ${{ github.workspace }}/glyd-gpu-py:${{ github.workspace }}/public/bindings/python
+          PYTHONPATH: ${{ github.workspace }}/glyd-gpu-py:${{ github.workspace }}/bindings/python
         run: |
           python test_vllm.py
           python test_vllm_fp8.py  # (the FP8 path: a development build's opt-in; test_off checks it is off by default)

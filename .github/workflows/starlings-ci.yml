@@ -217,6 +217,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/cargo-deny.tar.gz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/cargo-deny-0.20.2-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
       - name: Advisory, license, dependency and source policy
+        working-directory: starlings
         run: |
           cargo-deny --locked check --deny warnings
           cargo-deny --manifest-path fuzz/Cargo.toml --config fuzz/deny.toml --locked check --deny warnings
