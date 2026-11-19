@@ -22,14 +22,11 @@ use crate::weights::PackBuf;
 use glyd_gpu::pack::{Tiered, FP4R_TAG, FP4_TAG, INT4_STEP_BYTES, INT4_TAG, INT5_STEP_BYTES, INT5_TAG, INT6_STEP_BYTES, INT6_TAG};
 
 // The kernels' names, as kern.rs has them: kernels/moe.cu's in a development build, neutral ones in a release build.
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// Experts a router takes (moe_select8, 16 and 32: 256, 512 and 1,024), and choices a token has.
 pub const MAX_EXPERTS: usize = 1024;

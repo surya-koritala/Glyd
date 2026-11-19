@@ -25,14 +25,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 // The kernels' names, as moe_rows.rs has them: kernels/glm_cb.cu's in a development build, neutral ones in a release build.
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// The hidden width, the neurons of an expert and the bytes of a row of codes (2 bits a code, 4,096 codes).
 const HIDDEN: usize = 4096;

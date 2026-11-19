@@ -16,14 +16,11 @@ use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
 // The kernels' names, as kern.rs has them: kernels/dsv4.cu's in a development build, neutral ones in a release build.
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// kernels/dsv4.cu's kernels (and glm.cu's streams).
 pub(crate) struct KernV4 {

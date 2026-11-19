@@ -17,14 +17,11 @@ use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// kernels/tp.cu's blocks a gather.
 const BLOCKS: usize = 16;

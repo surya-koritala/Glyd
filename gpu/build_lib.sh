@@ -8,12 +8,9 @@
 # the CUDA major version: libglyd_gpu_cuda13.so.
 #   bash gpu/build_lib.sh [OUT_DIR]      (default: next to glyd_gpu_dev.py)
 # GLYD_GPU_NVCC_THREADS=N: nvcc's threads for the compile (default 0: one an architecture; a CI runner of 2 cores and 7 GB takes 2).
-# GLYD_GPU_PYTHON=PATH: the Python that runs gen_names.py in a release build (default python3).
-# GLYD_GPU_RELEASE=1 (the wheel's build, glyd-gpu-py/build.sh): the machine code alone for those architectures (no PTX), no line
-# or debug information, the library stripped of its symbols and exporting the public header's eight functions and glyd_gpu_table
-# (the package's way to the rest) alone, every kernel, device function and type of it under a neutral name (gen_names.py: the
-# header it makes holds them, and GLYD_GPU_NAMES_MAP names a private file for the map from the new names to the old), the
-# tuning variables not read (GLYD_RELEASE in glyd_gpu.cu), and an nvcc without Blackwell's architectures refused.
+# GLYD_GPU_RELEASE=1 (the release build, glyd-gpu-py/build.sh): machine code for those architectures and Ampere's PTX for newer GPUs,
+# no line or debug information, the library stripped and exporting the public header's eight functions and glyd_gpu_table, and an
+# nvcc without Blackwell's architectures refused. Kernel names are the source's in every build.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT="${1:-$HERE}"
@@ -33,10 +30,7 @@ RELEASE=()
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 if [ "${GLYD_GPU_RELEASE:-0}" = 1 ]; then
-    PTX=()
-    STRIP=(-Xlinker --strip-all)
-    "${GLYD_GPU_PYTHON:-python3}" "$HERE/gen_names.py" "$HERE/glyd_gpu.cu" "$TMP/glyd_gpu_names.h" ${GLYD_GPU_NAMES_MAP:+"$GLYD_GPU_NAMES_MAP"}
-    RELEASE=(-DGLYD_RELEASE -I"$TMP")  # (no -g, -G or -lineinfo anywhere: the machine code carries no line, and the host code no debug, information)
+    STRIP=(-Xlinker --strip-all)  # (no -g, -G or -lineinfo anywhere: the machine code carries no line, and the host code no debug, information)
 fi
 # The kernels' flags as PyTorch's extension build has them (the same code; CUDA's headers as system
 # headers, as there: glibc 2.43 declares rsqrt too); only the C API exported, the runtime's symbols kept

@@ -21,22 +21,24 @@ bird: penguin, kestrel, swift, wren, hummingbird.
 - [ ] Each model card's first screen: what the quant is (bits per weight, lossless or not, against what), quality against the
       original (KLD + one non-saturated eval), speed on 2-3 common cards with the machine named, known limits, how-it-works link.
 - [ ] Numbers in the notes and cards match research/*/results/ (no number without a results file).
-- [ ] Release gate clean: `check_wheel.py` on the engine and the library (no dev strings, no unlisted GLYD_* variables, no codec words).
 - [ ] Binaries built on Ubuntu 22.04 (glibc 2.35 or older), sha256 written down.
 - [ ] Clean-install check on a fresh machine: `pip install glyd==X.Y.Z`, `glyd run` each new model, `glyd verify` it.
 - [ ] Plain style everywhere (first person, raw numbers, no adjectives, no comparisons with other projects).
 
-## Release day (order matters: see memory glyd-release-steps)
+## Release day (one repository: surya-koritala/Glyd)
 
-1. Private: `scripts/bump_version.py X.Y.Z`, CHANGELOG `## Unreleased` → `## X.Y.Z`.
-2. Public: the same bump + CHANGELOG (what, not how: no formats or kernels).
-3. Fast-forward private `glyd-shim` to the public release commit.
-4. Merge private, tag private `vX.Y.Z` → `glyd-gpu` to PyPI.
-5. Merge public, tag public `vX.Y.Z`, `gh release create vX.Y.Z --verify-tag --notes-file notes.md` right away.
-   Then attach Glyd's engine for install.sh's Rust-only install (GLY-353): download the private release run's `engine-bundle-linux-x86_64` and
-   `engine-bundle-linux-aarch64` artifacts (`gh run download RUN -R Sigbound/glyd-gpu-private -p 'engine-bundle-*'`) and
-   `gh release upload vX.Y.Z -R surya-koritala/Glyd glyd-engine-vX.Y.Z-linux-*.tar.gz glyd-engine-vX.Y.Z-linux-*.tar.gz.sha256`. install.sh
-   refuses a release without them on Linux with an NVIDIA GPU (GLYD_WITH_VLLM=1 still installs the Python tool).
+1. `scripts/bump_version.py X.Y.Z` (every Cargo.toml, both pyproject.toml, the installer's pin), CHANGELOG `## Unreleased` → `## vX.Y.Z`.
+   PR to main, CI green.
+2. `scripts/release_ready.sh X.Y.Z` on the merge commit, then tag `vX.Y.Z` there, push the tag, and right away
+   `gh release create vX.Y.Z --verify-tag --notes-file notes.md` (notes below): both workflows upload to that release.
+3. The tag runs both release workflows from this source:
+   - `release.yml`: the `glyd` CLI tarballs and wheels attached to the release, `glyd` to PyPI and crates.io.
+   - `release-gpu.yml`: the GPU library, the engine, the `glyd-gpu` wheels to PyPI, and the engine bundles
+     (`glyd-engine-vX.Y.Z-linux-*.tar.gz` and their `.sha256`) attached to the same GitHub release (`attach-engine`), which `install.sh`
+     and `condor/tools/install.sh` download.
+   PyPI's trusted publisher for `glyd-gpu` must name this repository and `release-gpu.yml` (environment `pypi`).
+4. Check the release page has the CLI tarballs, the wheels and both engine bundles.
+5. (reserved)
 6. Hugging Face: flip the release's model repos to public, tag each `vX.Y.Z`.
 7. Homebrew formula PR + tap commit.
 8. Site PR (owner approves).

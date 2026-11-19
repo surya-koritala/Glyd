@@ -20,14 +20,11 @@ use std::collections::HashMap;
 use std::path::Path;
 
 // The kernels' names, as kern.rs has them: a development build's are kernels/nemotron.cu's, a release build's neutral.
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// A Mamba-2 head's channels, the state a channel has, the tokens of a chunk of the chunked scan (kernels/nemotron.cu).
 pub const NH_P: usize = 64;

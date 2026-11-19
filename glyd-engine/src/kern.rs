@@ -4,15 +4,12 @@ use crate::dev::{Dev, Kernel};
 use crate::ffi::{Result, Stream};
 use crate::launch;
 
-// The kernels' names: those of kernels/engine.cu in a development build; a release build's are neutral (build.rs makes `kname!` from gpu/gen_names.py's map), so that its binary names none of them.
-#[cfg(feature = "dev")]
+// The kernels' names: those kernels/engine.cu gives them, in every build.
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// Candidates the sampling kernel returns for a row of logits (kernels/engine.cu).
 pub const TOPK: usize = 64;

@@ -15,14 +15,11 @@ use crate::weights::{as_bytes, pack_words, upload_bytes, upload_packed, Layout};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// kernels/muse.cu's kernels the executor launches (the experts' are moe.rs's).
 pub struct KernMuse {

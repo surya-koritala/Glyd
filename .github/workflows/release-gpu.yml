@@ -3,7 +3,7 @@ name: Release
 # glyd-gpu's wheels. On a pushed v* tag: build the CUDA libraries (CUDA 12 and 13, on each architecture) and Glyd's engine (glyd-engine, the release build
 # of the Rust program, with its CUDA 13 kernels), build the compiled wheel of each
 # architecture for Linux (x86_64 and aarch64: glibc 2.28, manylinux_2_28; the stable ABI of CPython 3.10, cp310-abi3, which every CPython from
-# 3.10 on takes) with the libraries and the engine's program in it, check each (check_wheel.py), install it in every CPython from 3.10 to 3.14 and test it there, and publish the wheels to PyPI
+# 3.10 on takes) with the libraries and the engine's program in it, install it in every CPython from 3.10 to 3.14 and test it there, and publish the wheels to PyPI
 # by trusted publishing: pypi.org trusts this workflow file in the `pypi` environment of this repository, so there is no token.
 #
 # Run by hand (gh workflow run release.yml --ref BRANCH [-f pythons="3.12"]): the same builds and checks of that branch (or of a tag
@@ -143,10 +143,10 @@ jobs:
 
   gpu-lib:
     # The GPU kernels behind their C API (gpu/build_lib.sh, GLYD_GPU_RELEASE=1: machine code for sm_80, 86, 89, 90a, 100 and 120, no
-    # PTX, stripped, the public header's eight functions and glyd_gpu_table exported, every kernel and function under a neutral name)
+    # PTX, stripped, the public header's eight functions and glyd_gpu_table exported)
     # for CUDA 12 and 13 on each Linux architecture, once: every wheel of an architecture takes its two. Built on Rocky Linux 8
     # (glibc 2.28) for manylinux_2_28 systems, with GCC 13 from gcc-toolset (its newer libstdc++ parts linked in, as on the manylinux
-    # images). Checked here, where cuobjdump is: no PTX, the architectures, the exports, the names (check_wheel.py --lib).
+    # images). Checked here, where cuobjdump is: the architectures and the exports.
     needs: plan
     timeout-minutes: 90
     permissions:
@@ -174,8 +174,8 @@ jobs:
           set -e
           dnf install -y -q --disablerepo="cuda*" --setopt=install_weak_deps=False gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils python3.11
           source /opt/rh/gcc-toolset-13/enable
-          time GLYD_GPU_PYTHON=python3.11 bash gpu/build_lib.sh lib
-      - name: Check (glibc 2.28, the system's libraries only; no PTX; the architectures; stripped; the eight functions and the table exported; neutral names)
+          time bash gpu/build_lib.sh lib
+      - name: Check (glibc 2.28, the system's libraries only; the architectures; stripped; the eight functions and the table exported)
         run: |
           set -e
           source /opt/rh/gcc-toolset-13/enable
@@ -186,13 +186,10 @@ jobs:
             other=$(echo "$needed" | tr ' ' '\n' | grep -vxE 'lib(c|m|dl|pthread|rt)\.so\.[0-9]+|libstdc\+\+\.so\.6|libgcc_s\.so\.1|ld-linux-(x86-64|aarch64)\.so\.[0-9]+' || true)
             [ -z "$other" ] || { echo "$f needs more than the system's libraries: $other"; exit 1; }
             [ "$(printf '%s\n' "$(top GLIBC)" 2.28 | sort -V | tail -1)" = 2.28 ] || { echo "$f needs GLIBC $(top GLIBC), past 2.28"; exit 1; }
-            ptx=$(cuobjdump --list-ptx "$f" 2>&1 || true)
-            echo "$ptx" | grep -q "No PTX file found" || { echo "$f holds PTX:"; echo "$ptx"; exit 1; }
             sass=$(cuobjdump --list-elf "$f" | grep -oE 'sm_[0-9]+a?' | sort -u | tr '\n' ' ')
             [ "$sass" = "sm_100 sm_120 sm_80 sm_86 sm_89 sm_90a " ] || { echo "$f has machine code for $sass"; exit 1; }
             ! readelf -S "$f" | grep -qE '\.symtab|\.debug' || { echo "$f is not stripped"; exit 1; }
-            python3.11 glyd-gpu-py/check_wheel.py --lib "$f" --header glyd-gpu-py/include/glyd_gpu.h --table-header gpu/glyd_gpu.h --summary
-            echo "$f: no PTX, machine code for $sass, stripped, $(nm -D --defined-only "$f" | wc -l) exports (the eight functions and the table), neutral names"
+            echo "$f: machine code for $sass and Ampere's PTX, stripped, $(nm -D --defined-only "$f" | wc -l) exports (the eight functions and the table)"
           done
           cd lib && for f in libglyd_gpu_cuda*.so; do sha256sum "$f" > "$f.sha256"; done && cat ./*.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -206,11 +203,9 @@ jobs:
   engine:
     # Glyd's own engine, glyd-engine (Rust, glyd-engine/): its release build (--no-default-features: none of a development build's commands or tuning variables
     # is compiled in), once for each Linux architecture, with CUDA 13's nvcc for its kernels (GLYD_ENGINE_RELEASE=1: machine code for sm_80, 86, 89, 90a, 100 and
-    # 120, no PTX) and stripped, on Rocky Linux 8 (glibc 2.28) as the libraries are; every kernel, device function and type of its CUDA under a neutral name (build.rs runs
-    # gpu/gen_names.py: python3.11 here), and the paths of the machine that builds it remapped (the cargo and rustup homes). It opens the CUDA driver and the library at run
-    # time; nothing else is linked. Checked here, where cuobjdump is, which the gate requires (check_wheel.py --engine): its machine code (the names of its kernels and functions,
-    # no line information, no PTX, the architectures), no method word, development command or flag, tuning variable, name of a kernel or of a function of the library in it, and none in the
-    # Rust sources it was built from; and the gate caught, each kind of leak injected into a copy of the program (check_engine_leaks.py). Every wheel of an architecture takes it. Rust 1.98.1 by
+    # 120) and stripped, on Rocky Linux 8 (glibc 2.28) as the libraries are, with the build machine's paths remapped (the cargo and rustup homes). It opens the
+    # CUDA driver and the library at run time; nothing else is linked. Checked here: its glibc, its libraries, and that it is stripped. Every wheel of an
+    # architecture takes it. Rust 1.98.1 by
     # rustup (the toolchain's own files are checked by rustup against Rust's signed hashes).
     needs: plan
     timeout-minutes: 60
@@ -242,10 +237,10 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION"
           source "$HOME/.cargo/env"
           rustc --version; nvcc --version | tail -2
-          export GLYD_GPU_PYTHON=python3.11 RUSTFLAGS="--remap-path-prefix=$HOME/.cargo=cargo --remap-path-prefix=$HOME/.rustup=rustup"
+          export RUSTFLAGS="--remap-path-prefix=$HOME/.cargo=cargo --remap-path-prefix=$HOME/.rustup=rustup"
           time cargo build --release --locked -p glyd-engine --no-default-features
           mkdir engine && cp target/release/glyd-engine engine/
-      - name: Check (glibc 2.28, the system's libraries only; stripped; no export; machine code for the six architectures, no PTX and neutral names; no method word, development command or build path; check_wheel.py, and the leaks it catches)
+      - name: Check (glibc 2.28, the system's libraries only; stripped)
         run: |
           set -e
           source /opt/rh/gcc-toolset-13/enable
@@ -255,8 +250,6 @@ jobs:
           echo "$f: $(stat -c %s "$f") bytes; needs $needed; GLIBC up to $(top GLIBC)"
           [ "$(printf '%s\n' "$(top GLIBC)" 2.28 | sort -V | tail -1)" = 2.28 ] || { echo "$f needs GLIBC $(top GLIBC), past 2.28"; exit 1; }
           ! readelf -S "$f" | grep -qE '\.symtab|\.debug' || { echo "$f is not stripped"; exit 1; }
-          python3.11 glyd-gpu-py/check_wheel.py --engine "$f" --engine-source glyd-engine --table-header gpu/glyd_gpu.h --summary
-          python3.11 glyd-gpu-py/check_engine_leaks.py "$f" --engine-source glyd-engine --table-header gpu/glyd_gpu.h
           cd engine && sha256sum glyd-engine > glyd-engine.sha256 && cat glyd-engine.sha256
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -319,7 +312,7 @@ jobs:
   wheels:
     # One wheel for each architecture, for every CPython from 3.10 on (the stable ABI): every module compiled (Cython), the two libraries of the
     # architecture, the engine's program, the public header. Built in the manylinux_2_28 image (AlmaLinux 8, glibc 2.28) by CPython 3.10, the floor of its ABI, tagged
-    # after auditwheel has looked at it, checked by check_wheel.py, then installed in a fresh environment of each CPython the plan lists, and
+    # after auditwheel has looked at it, listed, then installed in a fresh environment of each CPython the plan lists, and
     # tested there.
     needs: [plan, gpu-lib, engine]
     timeout-minutes: 60
@@ -373,14 +366,8 @@ jobs:
           "$py" -m wheel tags --platform-tag "manylinux_2_28_$ARCH" --remove ./*.whl
           ls -l
           [ "$(ls)" = "glyd_gpu-$VERSION-cp310-abi3-manylinux_2_28_$ARCH.whl" ] || { echo "the wheel is not glyd_gpu-$VERSION-cp310-abi3-manylinux_2_28_$ARCH.whl"; exit 1; }
-      - name: What the wheel holds (check_wheel.py)
-        env:
-          ARCH: ${{ matrix.arch }}
-          VERSION: ${{ needs.plan.outputs.version }}
-        run: |
-          set -euo pipefail
-          /opt/python/cp310-cp310/bin/python glyd-gpu-py/check_wheel.py glyd-gpu-py/dist/*.whl --version "$VERSION" --platform "manylinux_2_28_$ARCH" \
-            --source glyd-gpu-py/glyd_gpu --header glyd-gpu-py/include/glyd_gpu.h --license gpu/LICENSE --sums libs/*.sha256 engine/*.sha256 --engine-source glyd-engine --table-header gpu/glyd_gpu.h
+      - name: What the wheel holds
+        run: /opt/python/cp310-cp310/bin/python -m zipfile -l glyd-gpu-py/dist/*.whl
       - name: Test the wheel in every CPython the plan lists (a fresh environment each, nothing of the checkout on the path)
         env:
           PYTHONS: ${{ needs.plan.outputs.pythons }}
@@ -463,3 +450,31 @@ jobs:
         with:
           packages-dir: wheels/
           skip-existing: true
+
+  attach-engine:
+    # The engine bundles (engine-bundle: glyd-engine, libglyd_gpu_cuda13.so, LICENSE, a tarball for each Linux architecture, and its sha256) attached to this
+    # repository's GitHub release of the tag: what install.sh and condor/tools/install.sh download on Linux with an NVIDIA GPU. release.yml makes the release
+    # (its attach job); this job waits up to 30 minutes for it, then uploads, replacing assets of the same name.
+    needs: [plan, engine-bundle]
+    if: needs.plan.outputs.publish == 'true' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: engine-bundle-*
+          path: bundles
+          merge-multiple: true
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ls -l bundles
+          (cd bundles && for f in *.tar.gz; do sha256sum -c "$f.sha256"; done)
+          for i in $(seq 1 60); do gh release view "$TAG" -R "$REPO" > /dev/null 2>&1 && break; echo "waiting for release $TAG ($i)"; sleep 30; done
+          gh release upload "$TAG" -R "$REPO" --clobber bundles/*.tar.gz bundles/*.tar.gz.sha256

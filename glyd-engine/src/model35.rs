@@ -19,14 +19,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 // The kernels' names, as kern.rs has them: a development build's are kernels/qwen35.cu's, a release build's neutral.
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// Bytes of dynamic shared memory gdn_chunk takes (kernels/qwen35.cu).
 const GDN_CHUNK_SMEM: u32 = (2 * 64 * 65 + 64 * 64 + 64 * 64 + 128 * 64 + 2 * 64) * 4;

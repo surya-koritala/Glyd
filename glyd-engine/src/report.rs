@@ -4,14 +4,11 @@ use crate::ffi::Result;
 use crate::model::Engine;
 use std::time::Instant;
 
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 const GIB: f64 = (1u64 << 30) as f64;
 

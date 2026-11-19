@@ -43,14 +43,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 // The kernels' names, as moe_rows.rs has them: kernels/moe_hb.cu's in a development build, neutral ones in a release build.
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// The share (percent) of a layer's experts at three bits in the recipe hb40, which a plan assumes where it has not read the directory.
 pub const HB40_THREE_BIT_PERCENT: usize = 40;

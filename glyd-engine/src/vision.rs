@@ -18,14 +18,11 @@ use std::net::{IpAddr, ToSocketAddrs};
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// The shapes this tower is written for (Qwen3.8-Flash-Next's vision_config): kernels/vision.cu has them as constants.
 const HIDDEN: usize = 1152;

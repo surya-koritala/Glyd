@@ -11,14 +11,11 @@ use crate::dev::{Dev, Kernel};
 use crate::ffi::{err, Pack, Result, Stream, Words};
 use crate::launch;
 
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// The layouts' numbers (tiers[0] >> 24; glyd-gpu's INT6_TAG, INT5_TAG and INT4_TAG).
 const INT6: u32 = 4;

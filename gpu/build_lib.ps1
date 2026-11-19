@@ -2,8 +2,8 @@
 # release rules; MSVC is nvcc's host compiler, so run it from a Developer PowerShell or after vcvars64). The CUDA runtime
 # is linked in, so the DLL needs only the driver. The name carries the CUDA major version: libglyd_gpu_cuda13.dll (the .so's name).
 #   powershell -ExecutionPolicy Bypass -File gpu\build_lib.ps1 [OUT_DIR]      (default: next to this script)
-# GLYD_GPU_RELEASE=1: machine code alone (no PTX) for sm_80/86/89/90a/100/120, every kernel under a neutral name
-# (gen_names.py, run by GLYD_GPU_PYTHON or python), an nvcc without Blackwell refused. The DLL always exports the nine
+# GLYD_GPU_RELEASE=1: machine code for sm_80/86/89/90a/100/120 and Ampere's PTX, an nvcc without Blackwell refused; kernel
+# names are the source's in every build. The DLL always exports the nine
 # functions the Linux release keeps (exports.def below); the rest are reached through glyd_gpu_table.
 param([string]$Out = $PSScriptRoot)
 $ErrorActionPreference = 'Stop'
@@ -19,13 +19,6 @@ $ptx = @('-gencode', 'arch=compute_80,code=compute_80')
 $release = @()
 $tmp = Join-Path $env:TEMP "glyd_gpu_$PID"
 New-Item -ItemType Directory -Force $tmp | Out-Null
-if ($env:GLYD_GPU_RELEASE -eq '1') {
-    $ptx = @()
-    $py = if ($env:GLYD_GPU_PYTHON) { $env:GLYD_GPU_PYTHON } else { 'python' }
-    & $py "$PSScriptRoot\gen_names.py" "$PSScriptRoot\glyd_gpu.cu" "$tmp\glyd_gpu_names.h" $env:GLYD_GPU_NAMES_MAP
-    if ($LASTEXITCODE) { throw 'gen_names.py failed' }
-    $release = @('-DGLYD_RELEASE', "-I$tmp")
-}
 $flags = @('-O3', '-std=c++20', '--expt-relaxed-constexpr',
     '-D__CUDA_NO_HALF_OPERATORS__', '-D__CUDA_NO_HALF_CONVERSIONS__', '-D__CUDA_NO_BFLOAT16_CONVERSIONS__', '-D__CUDA_NO_HALF2_OPERATORS__',
     '-gencode', 'arch=compute_80,code=sm_80', '-gencode', 'arch=compute_86,code=sm_86', '-gencode', 'arch=compute_89,code=sm_89',

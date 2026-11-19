@@ -17,14 +17,11 @@ use std::cell::{Cell, OnceCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// The width and the neurons the kernels are made for.
 const H: usize = 2560;

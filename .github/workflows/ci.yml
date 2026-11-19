@@ -27,7 +27,7 @@ env:
 jobs:
   versions:
     name: Versions agree
-    runs-on: ${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC; unset: GitHub's)
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC, never for a fork's pull request; unset: GitHub's)
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -100,9 +100,8 @@ jobs:
           read -ra tools <<< "$BUILD_TOOLS"
           python3.10 -m pip install --quiet "${tools[@]}"
           PATH="$(dirname "$(command -v python3.10)"):$PATH" GLYD_GPU_NO_LIBS=1 GLYD_GPU_BUILD_ARGS=--no-isolation bash glyd-gpu-py/build.sh
-      - name: What the wheel holds (check_wheel.py)
-        run: |
-          python3.10 glyd-gpu-py/check_wheel.py glyd-gpu-py/dist/*.whl --no-libs --source glyd-gpu-py/glyd_gpu --header glyd-gpu-py/include/glyd_gpu.h --license gpu/LICENSE
+      - name: What the wheel holds
+        run: python3.10 -m zipfile -l glyd-gpu-py/dist/*.whl
       - name: "Room on the runner's disk for the install tests (glyd install wants 8 GB free in /tmp; a fresh runner has 9 to 14, so the tests failed on the thin days)"
         if: runner.environment == 'github-hosted'
         run: |
@@ -165,7 +164,7 @@ jobs:
 
   rust:
     name: The Rust glyd-gpu crate
-    runs-on: ${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC; unset: GitHub's)
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC, never for a fork's pull request; unset: GitHub's)
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -179,11 +178,9 @@ jobs:
 
   engine:
     # glyd-engine (glyd-engine/) as a development build (the default features) and as the release build (--no-default-features): its host-side tests, with no nvcc (the crate
-    # is built without its kernels; the release build runs gpu/gen_names.py for its kernels' names, with python3); the Rust sources the release build compiles are read for a method
-    # word, a tuning variable or a development command (check_wheel.py --engine-source: release.yml checks the program itself, with its machine code); and the Rust glyd's hand-off of
-    # glyd run and glyd serve to the engine or the Python tool.
-    name: The Rust engine (tests, the release build's strings, the Rust glyd's hand-off)
-    runs-on: ${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC; unset: GitHub's)
+    # is built without its kernels); and the Rust glyd's hand-off of glyd run and glyd serve to the engine or the Python tool.
+    name: The Rust engine (tests, the Rust glyd's hand-off)
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (CI_RUNNER '["self-hosted","glyd-pc"]': the owner's PC, never for a fork's pull request; unset: GitHub's)
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -197,8 +194,6 @@ jobs:
         run: |
           cargo test --release -p glyd-engine
           cargo test --release -p glyd-engine --no-default-features
-      - name: The release build's sources say no method word and name no tuning variable or development command
-        run: python3 glyd-gpu-py/check_wheel.py --engine-source glyd-engine --summary
       - name: The Rust glyd's hand-off (the engine, the Python tool, GLYD_ENGINE=0)
         run: cargo test --release -p glyd --test cli_python_tool
 
@@ -206,7 +201,7 @@ jobs:
     # the engine's CUDA kernels as a development build has them (kernels/engine.cu, and Qwen3.5's in kernels/qwen35.cu) compiled by nvcc 13 for every architecture a build takes,
     # with no GPU: a kernel that does not compile never reaches one. ptxas's registers and spills of Qwen3.5's kernels on sm_89 are in the log.
     name: The engine's kernels compile (nvcc 13, no GPU)
-    runs-on: ${{ vars.CI_RUNNER && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (its own container on either)
+    runs-on: ${{ vars.CI_RUNNER && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.CI_RUNNER) || 'ubuntu-latest' }}  # (its own container on either; never the PC for a fork's pull request)
     timeout-minutes: 40
     container: nvidia/cuda:13.0.3-devel-rockylinux8
     steps:

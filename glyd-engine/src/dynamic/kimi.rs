@@ -25,14 +25,11 @@ use std::path::Path;
 use std::rc::Rc;
 
 // The kernels' names, as kern.rs has them: a development build's are kernels/kimi.cu's, a release build's neutral.
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// kernels/kimi.cu's kernels.
 pub struct KernKimi {

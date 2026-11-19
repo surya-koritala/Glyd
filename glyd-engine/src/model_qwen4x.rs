@@ -23,14 +23,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// Keys a tile of `qx_attn_sel` and its padded row (kernels/qwen4x.cu), and the parts a decode step's attention over picked tokens is split into.
 const QX_KB: u32 = 32;

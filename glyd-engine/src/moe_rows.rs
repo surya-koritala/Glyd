@@ -22,14 +22,11 @@ use crate::moe::{Act, ExpertStack, MoeCfg};
 use glyd_gpu::pack::{rows_bits, rows_stride, Tiered};
 
 // The kernels' names, as moe.rs has them: kernels/moe_rows.cu's in a development build, neutral ones in a release build.
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// Outputs a block of `moe_down_rows` takes, the neurons it lists at most, and the blocks it asks for at most beyond one a pair (kernels/moe_rows.cu defines the first two: a test holds them equal).
 pub const ROWS_OUT: usize = 1024;

@@ -21,14 +21,11 @@ use std::collections::HashMap;
 use std::path::Path;
 
 // The kernels' names, as kern.rs has them: a development build's are kernels/glm.cu's (and qwen35.cu's and engine.cu's), a release build's neutral.
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// A development build's timeline marker: `mark!(engine, "stage")` records an event on the stream (also while a CUDA graph is captured) when `EngineGlm::prof` is on, so that `glmprof` can say how long each stage of a layer
 /// takes in a graph's replay. Not compiled into a release build.

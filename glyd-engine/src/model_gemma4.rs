@@ -16,14 +16,11 @@ use glyd_gpu::json::{self, Value};
 use glyd_gpu::safetensors::Checkpoint;
 use std::path::Path;
 
-#[cfg(feature = "dev")]
 macro_rules! kname {
     ($n:literal) => {
         $n
     };
 }
-#[cfg(not(feature = "dev"))]
-include!(concat!(env!("OUT_DIR"), "/kernel_names.rs"));
 
 /// Keys a tile of the attention kernels (G4_KB in kernels/gemma4.cu).
 pub(crate) const KB: usize = 32;
