@@ -44,6 +44,24 @@ Decision order (`glyd fit MODEL` prints every step):
 4. **Context and users**: the KV cache takes what is left, sized for the asked context, else the largest that fits.
 5. **Speed**: the cost profile against measured rates gives tokens/s; if below a floor, the next level down is offered.
 
+```mermaid
+flowchart TD
+  A["glyd run MODEL<br/>model bytes vs free memory"] --> Q1{"Fits VRAM bit for bit?"}
+  Q1 -- yes --> L["Lossless (penguin)<br/>sign+mantissa byte, exponent coded<br/>≈10.75 bits, decoded in the kernel"]
+  Q1 -- no --> Q2{"Fits at a lossy level?"}
+  Q2 -- yes --> Y["kestrel 6.5 · swift 5.5 · wren 4.5 bits<br/>KL printed before download"]
+  Q2 -- no --> Q3{"MoE, RAM to spare?"}
+  Q3 -- yes --> C["Expert tiers (hummingbird)<br/>hot experts in VRAM, rest in RAM/NVMe<br/>CPU computes misses"]
+  Q3 -- no --> Q4{"More GPUs here?"}
+  Q4 -- yes --> G["Split across GPUs<br/>(tensor/expert parallel: M5)"]
+  Q4 -- no --> Q5{"Other machines joined?"}
+  Q5 -- yes --> S["Starlings: layer ranges per machine<br/>mutual TLS, one round trip a step"]
+  Q5 -- no --> R["Refuse with the numbers"]
+```
+
+The ladder is the order of preference; the planner scores level and placement together and takes the best predicted
+speed above a floor.
+
 The pieces exist today: `glyd-engine/src/costs.rs` (cost profile and rates), `machine.rs` and `preflight` (probe),
 `offload.rs` (expert cache), `dynamic/split.rs` (layer split), `starlings/` (other machines). The work is to make them one
 planner used by every model.
@@ -103,11 +121,42 @@ and architecture carries every backend whose driver is present.
 
 `glyd verify` checks a lossless pack tensor by tensor against the source's sha256.
 
+## MoE experts across tiers
+
+```mermaid
+flowchart LR
+  T["token state"] --> AT["attention (GPU)"] --> RT["router: k of N experts"]
+  RT -- "hit (~70-76% on 16 GB)" --> SL["expert slots in VRAM"]
+  RT -- miss --> CPU["CPU computes from RAM<br/>AVX2 / AVX-512 / NEON"]
+  RAM[("RAM: every expert, 2-4 bits by use")] --> CPU
+  RAM -. "promote: used twice in 16 calls" .-> SL
+  NVMe[("NVMe pack")] --> RAM
+  SL --> SUM["weighted sum → next layer"]
+  CPU --> SUM
+```
+
+GPU and CPU work on the same layer at once (`glyd-engine/src/offload.rs`). A draft head (MTP) proposes the next token
+and the same pass checks it.
+
 ## Multi-GPU and multi-machine
 
+```mermaid
+sequenceDiagram
+  participant C as client
+  participant A as machine A (layers 0-31)
+  participant B as machine B (layers 32-63 + head)
+  B->>A: join code + key fingerprint (once, approved on A)
+  C->>A: /v1/chat/completions
+  loop each step
+    A->>B: residual stream, bf16 (~16 KiB/token for 9B)
+    B->>A: next token
+  end
+  A-->>C: stream
+```
+
 - In one machine: layer split today (`--split`, `--devices`); tensor/expert parallel over P2P, NVLink or NCCL/RCCL.
-- Across machines (`starlings/`): enrollment with fingerprints, mutual TLS over TCP, a layer-range pipeline through the
-  engine's `rangeworker` (`docs/range-worker.md`); RDMA transports for datacenters.
+- Across machines (`starlings/`): enrollment with fingerprints, mutual TLS over TCP, the engine's `rangeworker` per
+  stage (`docs/range-worker.md`); RDMA transports for datacenters.
 - One planner decides between them from measured link rates.
 
 ## Repository map
