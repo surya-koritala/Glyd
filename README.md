@@ -12,28 +12,37 @@
 - **Lossy levels when that is not enough**: 6.5, 5.5, 4.5 and ~2-3 bits, chosen for the machine.
 - **MoE larger than the GPU**: busy experts in VRAM, the rest in RAM or on NVMe, misses computed on the CPU.
 - **Many GPUs and machines**: layer split across GPUs; one model across machines ([starlings/](starlings/), beta).
-- **One binary, driver only**: no CUDA toolkit, no Python. OpenAI and Anthropic APIs, a chat page.
+- **One binary, driver only** (the goal; see Status): no CUDA toolkit, no Python. OpenAI and Anthropic APIs, a chat page.
 
-## Run
+## Status
+
+The Rust engine runs Qwen3 dense (lossless), Qwen3.5/3.8 and Nemotron-H (lossy levels), Gemma 4 12B/31B and Condor's
+180B MoE on NVIDIA Ampere or newer, Linux x86_64, driver 580+. The current release (v0.32.1) still sends other models, and
+`glyd run` by default, through a frozen vLLM path that needs Python. v0.33.0 is the first release built only from this
+repository, with an engine install that needs no Python; Windows, aarch64 and CUDA 12 drivers follow in v0.34.0. Plan and
+dates: [ROADMAP.md](ROADMAP.md).
+
+## Run the engine
 
 ```bash
-curl -LsSf https://getglyd.com/install.sh | sh
-glyd run Qwen/Qwen3.5-9B               # plan for this GPU, download, chat in the terminal and at http://localhost:8000
-glyd run Qwen/Qwen3.8-27B:swift        # pin a level: :kestrel 6.5 bits, :swift 5.5
-glyd serve MODEL                       # API server
+cargo build --release -p glyd-engine                    # needs the CUDA toolkit to build kernels: CONTRIBUTING.md
+target/release/glyd-engine fit Qwen/Qwen3-32B             # the plan and predicted speed for this GPU, before any download
+target/release/glyd-engine run Qwen/Qwen3-8B             # download, pack, chat in the terminal and at http://localhost:8000
+target/release/glyd-engine run Qwen/Qwen3.8-27B:swift    # a lossy level: :kestrel 6.5 bits, :swift 5.5
+target/release/glyd-engine serve MODEL                   # OpenAI and Anthropic APIs
+target/release/glyd-engine doctor                        # what this machine can run, and why not
 ```
 
-Today: Linux x86_64/aarch64, NVIDIA Ampere or newer, driver 580+. Windows, AMD, Apple and older drivers:
-[ROADMAP.md](ROADMAP.md). A 180B MoE on one 12-16 GB GPU: [condor/](condor/).
+A 180B MoE on one 12-16 GB GPU, on Linux or Windows: [condor/](condor/).
 
 ## Results
 
-| Measured | bf16 | Glyd |
-| :--- | ---: | ---: |
-| Qwen3-32B: 48 GB GPUs needed | 2 | **1** |
-| Qwen3.8-27B layer matrices, bit for bit | 49.52 GB | **33.28 GB** |
-| Qwen3.5-9B on an RTX 4090: max context | out of memory | **189,440 tokens** |
-| Qwen3.8-Flash-Next 180B MoE on an RTX 4080 SUPER 16 GB | does not fit | **91 tokens/s** |
+| Measured | bf16 | Glyd | Path |
+| :--- | ---: | ---: | :--- |
+| Qwen3-32B: 48 GB GPUs needed | 2 | **1** | vLLM plugin |
+| Qwen3.8-27B layer matrices, bit for bit | 49.52 GB | **33.28 GB** | pack |
+| Qwen3.5-9B on an RTX 4090: max context | out of memory | **189,440 tokens** | vLLM plugin |
+| Qwen3.8-Flash-Next 180B MoE on an RTX 4080 SUPER 16 GB | does not fit | **91 tokens/s** | engine (2.9 bits, MTP on) |
 
 Logs: [benchmarks/](benchmarks/), [condor/results/](condor/results/). All results: [DETAILS.md](DETAILS.md).
 

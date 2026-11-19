@@ -1,7 +1,7 @@
 # Condor
 
 Qwen3.8-Flash-Next (180B, MoE) on one 12-16 GB NVIDIA GPU with 32-64 GB of RAM, on Linux or Windows. Our own engine and our own
-compressed weights. OpenAI- and Anthropic-compatible APIs, a chat page, MCP. Free for personal use. More Flash-class models will come here.
+compressed weights. OpenAI- and Anthropic-compatible APIs, a chat page, MCP. Apache-2.0, like the rest of Glyd. More Flash-class models will come here.
 
 ![Star Drift, a space shooter the model wrote in one prompt](docs/media/star-drift.gif)
 
